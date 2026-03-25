@@ -12,11 +12,15 @@ struct SecretListView: View {
 		store.selectedProject
 	}
 
-	private var filteredSecrets: [VaultSecret] {
+	private var currentSecrets: [VaultSecret] {
 		guard let project else { return [] }
-		guard !localSearch.isEmpty else { return project.sortedSecrets }
+		return project.sortedSecrets(for: store.selectedEnvironment)
+	}
+
+	private var filteredSecrets: [VaultSecret] {
+		guard !localSearch.isEmpty else { return currentSecrets }
 		let query = localSearch.lowercased()
-		return project.sortedSecrets.filter {
+		return currentSecrets.filter {
 			$0.key.lowercased().contains(query) || $0.value.lowercased().contains(query)
 		}
 	}
@@ -41,9 +45,15 @@ struct SecretListView: View {
 	@ViewBuilder
 	private func secretList(_ project: VaultProject) -> some View {
 		VStack(spacing: 0) {
-			// Custom header bar (not SwiftUI .toolbar — gives us full control over grouping)
+			// Custom header bar
 			customToolbar(project)
 			Divider()
+
+			// Environment tabs (only show if more than one environment)
+			if project.environmentNames.count > 1 {
+				environmentTabs(project)
+				Divider()
+			}
 
 			// Search bar
 			if showSearch {
@@ -51,8 +61,14 @@ struct SecretListView: View {
 				Divider()
 			}
 
-			if project.secrets.isEmpty {
+			if currentSecrets.isEmpty && !showSearch {
 				emptyState
+			} else if filteredSecrets.isEmpty && showSearch {
+				VStack(spacing: 8) {
+					Text("No secrets matching \"\(localSearch)\"")
+						.foregroundStyle(.secondary)
+				}
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
 			} else {
 				List {
 					ForEach(filteredSecrets) { secret in
@@ -70,6 +86,7 @@ struct SecretListView: View {
 						)
 					}
 				}
+				.id(store.selectedEnvironment)  // Reset scroll position on tab change
 			}
 
 			Divider()
@@ -121,7 +138,7 @@ struct SecretListView: View {
 			// Data [copy, export]
 			ToolbarButtonGroup {
 				ToolbarIconButton(icon: "doc.on.clipboard", help: "Copy all as KEY=VALUE") {
-					let envString = project.sortedSecrets
+					let envString = project.sortedSecrets(for: store.selectedEnvironment)
 						.map { "\($0.key)=\($0.value)" }
 						.joined(separator: "\n")
 					ClipboardManager.shared.copy(envString, clearAfter: 60)
@@ -155,6 +172,47 @@ struct SecretListView: View {
 		}
 		.padding(.horizontal, 16)
 		.padding(.vertical, 10)
+	}
+
+	// MARK: - Environment Tabs
+
+	private func environmentTabs(_ project: VaultProject) -> some View {
+		ScrollView(.horizontal, showsIndicators: false) {
+			HStack(spacing: 0) {
+				ForEach(project.environmentNames, id: \.self) { env in
+					Button {
+						store.selectedEnvironment = env
+					} label: {
+						HStack(spacing: 4) {
+							Text(env)
+								.font(.subheadline)
+								.fontWeight(store.selectedEnvironment == env ? .semibold : .regular)
+							Text("\(project.secretCount(for: env))")
+								.font(.caption2)
+								.foregroundStyle(.tertiary)
+						}
+						.padding(.horizontal, 12)
+						.padding(.vertical, 6)
+						.contentShape(Rectangle())  // Entire area is clickable
+						.background(
+							store.selectedEnvironment == env
+								? Color.accentColor.opacity(0.15)
+								: Color.clear,
+							in: RoundedRectangle(cornerRadius: 6)
+						)
+					}
+					.buttonStyle(.plain)
+				}
+			}
+			.padding(.horizontal, 16)
+			.padding(.vertical, 4)
+		}
+		.onAppear {
+			// Select first environment if current selection doesn't exist in this project
+			if !project.environmentNames.contains(store.selectedEnvironment) {
+				store.selectedEnvironment = project.environmentNames.first ?? "default"
+			}
+		}
 	}
 
 	// MARK: - Search Bar
@@ -204,11 +262,12 @@ struct SecretListView: View {
 	private func exportToFile() {
 		guard let project else { return }
 		let panel = NSSavePanel()
-		panel.nameFieldStringValue = ".env"
-		panel.message = "Export vault secrets to .env file"
+		let envSuffix = store.selectedEnvironment == "default" ? "" : ".\(store.selectedEnvironment)"
+		panel.nameFieldStringValue = ".env\(envSuffix)"
+		panel.message = "Export \(store.selectedEnvironment) secrets to .env file"
 
 		if panel.runModal() == .OK, let url = panel.url {
-			let content = project.sortedSecrets
+			let content = project.sortedSecrets(for: store.selectedEnvironment)
 				.map { secret in
 					let v = secret.value
 					if v.contains(" ") || v.contains("\"") || v.contains("'") || v.contains("\n") {

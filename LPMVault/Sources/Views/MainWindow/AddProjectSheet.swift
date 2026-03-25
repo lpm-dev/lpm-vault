@@ -152,22 +152,44 @@ struct AddProjectSheet: View {
 			}
 	}
 
-	private func createProject() {
-		store.addProject(name: name, path: path)
+	/// Extract environment name from filename: ".env.local" → "local", ".env" → "default"
+	private func envNameFromFileName(_ fileName: String) -> String {
+		if fileName == ".env" { return "default" }
+		let prefix = ".env."
+		if fileName.hasPrefix(prefix) {
+			return String(fileName.dropFirst(prefix.count))
+		}
+		return "default"
+	}
 
-		// Import selected .env files
+	private func createProject() {
+		// Build environments from selected .env files
 		let selectedFiles = detectedEnvFiles.filter { $0.selected }
-		if let projectId = store.selectedProjectId, !selectedFiles.isEmpty {
+		var environments: [String: [String: String]] = [:]
+
+		if !selectedFiles.isEmpty {
 			for file in selectedFiles {
-				let filePath = file.fullPath
-				// Read and import each .env file
-				if let content = try? String(contentsOfFile: filePath, encoding: .utf8) {
+				if let content = try? String(contentsOfFile: file.fullPath, encoding: .utf8) {
 					let pairs = parseEnvContent(content)
+					let envName = envNameFromFileName(file.fileName)
+					var envSecrets: [String: String] = [:]
 					for (key, value) in pairs {
-						store.addSecret(to: projectId, key: key, value: value)
+						envSecrets[key] = value
 					}
+					environments[envName] = envSecrets
 				}
 			}
+		}
+
+		if environments.isEmpty {
+			environments["default"] = [:]
+		}
+
+		store.addProject(name: name, path: path, environments: environments)
+
+		// Select the first environment tab
+		if let firstEnv = environments.keys.sorted().first {
+			store.selectedEnvironment = firstEnv
 		}
 
 		dismiss()

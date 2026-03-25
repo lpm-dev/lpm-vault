@@ -5,6 +5,16 @@ import Security
 
 protocol KeychainServiceProtocol {
 	func listProjects() -> [VaultProject]
+	func getEnvironments(vaultId: String) -> [String: [String: String]]?
+	func saveEnvironments(
+		vaultId: String,
+		projectName: String,
+		projectPath: String,
+		environments: [String: [String: String]]
+	) -> KeychainResult
+	func deleteProject(vaultId: String) -> Bool
+
+	// Legacy compatibility
 	func getSecrets(vaultId: String) -> [String: String]?
 	func saveSecrets(
 		vaultId: String,
@@ -12,7 +22,6 @@ protocol KeychainServiceProtocol {
 		projectPath: String,
 		secrets: [String: String]
 	) -> KeychainResult
-	func deleteProject(vaultId: String) -> Bool
 }
 
 enum KeychainResult {
@@ -55,6 +64,13 @@ private struct VaultIndexEntry: Codable {
 	var path: String
 }
 
+// MARK: - Environments Wrapper (new Keychain data format)
+
+/// Wraps environment data so we can distinguish from the old flat format.
+private struct EnvironmentsWrapper: Codable {
+	let environments: [String: [String: String]]
+}
+
 // MARK: - Implementation
 
 /// Keychain-backed vault storage.
@@ -77,19 +93,51 @@ final class KeychainService: KeychainServiceProtocol {
 	func listProjects() -> [VaultProject] {
 		let index = readIndex()
 		return index.map { entry in
-			let secrets = getSecrets(vaultId: entry.id) ?? [:]
+			let environments = getEnvironments(vaultId: entry.id) ?? ["default": [:]]
 			return VaultProject(
 				id: entry.id,
 				name: entry.name,
 				path: entry.path,
-				secrets: secrets
+				environments: environments
 			)
 		}
 	}
 
-	func getSecrets(vaultId: String) -> [String: String]? {
+	/// Read environments from Keychain. Handles backwards compatibility:
+	/// - New format: `{"environments": {"local": {...}, "live": {...}}}`
+	/// - Old format: `{"KEY": "VALUE"}` → migrated to `{"default": {"KEY": "VALUE"}}`
+	func getEnvironments(vaultId: String) -> [String: [String: String]]? {
 		guard let data = readItem(account: vaultId) else { return nil }
-		return try? JSONDecoder().decode([String: String].self, from: data)
+
+		// Try new format first
+		if let wrapper = try? JSONDecoder().decode(EnvironmentsWrapper.self, from: data) {
+			return wrapper.environments
+		}
+
+		// Fall back to old flat format → wrap in "default"
+		if let flat = try? JSONDecoder().decode([String: String].self, from: data) {
+			return ["default": flat]
+		}
+
+		return nil
+	}
+
+	func saveEnvironments(
+		vaultId: String,
+		projectName: String,
+		projectPath: String,
+		environments: [String: [String: String]]
+	) -> KeychainResult {
+		let wrapper = EnvironmentsWrapper(environments: environments)
+		guard let data = try? JSONEncoder().encode(wrapper) else {
+			return .failure(.encodingFailed)
+		}
+		return saveData(vaultId: vaultId, projectName: projectName, projectPath: projectPath, data: data)
+	}
+
+	// Legacy compatibility
+	func getSecrets(vaultId: String) -> [String: String]? {
+		getEnvironments(vaultId: vaultId)?["default"]
 	}
 
 	func saveSecrets(
@@ -98,9 +146,19 @@ final class KeychainService: KeychainServiceProtocol {
 		projectPath: String,
 		secrets: [String: String]
 	) -> KeychainResult {
-		guard let data = try? JSONEncoder().encode(secrets) else {
-			return .failure(.encodingFailed)
-		}
+		var environments = getEnvironments(vaultId: vaultId) ?? [:]
+		environments["default"] = secrets
+		return saveEnvironments(vaultId: vaultId, projectName: projectName, projectPath: projectPath, environments: environments)
+	}
+
+	// MARK: - Data Save (shared)
+
+	private func saveData(
+		vaultId: String,
+		projectName: String,
+		projectPath: String,
+		data: Data
+	) -> KeychainResult {
 
 		if data.count > VaultConstants.maxVaultSizeWarning {
 			return .failure(.dataTooLarge(data.count))

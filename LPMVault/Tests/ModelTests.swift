@@ -10,10 +10,10 @@ struct VaultProjectTests {
 			id: "test-id",
 			name: "test",
 			path: "/tmp/test",
-			secrets: ["ZEBRA": "z", "APPLE": "a", "MANGO": "m", "banana": "b"]
+			environments: ["default": ["ZEBRA": "z", "APPLE": "a", "MANGO": "m", "banana": "b"]]
 		)
 
-		let sorted = project.sortedSecrets
+		let sorted = project.sortedSecrets(for: "default")
 		#expect(sorted.count == 4)
 		#expect(sorted[0].key == "APPLE")
 		#expect(sorted[1].key == "banana")
@@ -27,36 +27,68 @@ struct VaultProjectTests {
 			id: "test-id",
 			name: "test",
 			path: "/tmp/test",
-			secrets: [:]
+			environments: ["default": [:]]
 		)
 
-		#expect(project.sortedSecrets.isEmpty)
+		#expect(project.sortedSecrets(for: "default").isEmpty)
 	}
 
-	@Test("secret count matches dictionary count")
+	@Test("secret count across environments")
 	func secretCount() {
 		let project = VaultProject(
 			id: "test-id",
 			name: "test",
 			path: "/tmp/test",
-			secrets: ["A": "1", "B": "2", "C": "3"]
+			environments: [
+				"local": ["A": "1", "B": "2"],
+				"live": ["A": "x", "C": "3"],
+			]
 		)
 
-		#expect(project.secretCount == 3)
+		#expect(project.secretCount == 4)  // total across all envs
+		#expect(project.secretCount(for: "local") == 2)
+		#expect(project.secretCount(for: "live") == 2)
+	}
+
+	@Test("environment names sorted")
+	func environmentNames() {
+		let project = VaultProject(
+			id: "test-id",
+			name: "test",
+			path: "/tmp/test",
+			environments: ["live": [:], "ci": [:], "local": [:]]
+		)
+
+		#expect(project.environmentNames == ["ci", "live", "local"])
+	}
+
+	@Test("backwards compatible secrets property uses default env")
+	func backwardsCompatSecrets() {
+		var project = VaultProject(
+			id: "test-id",
+			name: "test",
+			path: "/tmp/test",
+			environments: ["default": ["KEY": "val"]]
+		)
+
+		#expect(project.secrets["KEY"] == "val")
+
+		project.secrets["NEW"] = "added"
+		#expect(project.environments["default"]?["NEW"] == "added")
 	}
 
 	@Test("identifiable: same vault ID means same identity")
 	func identifiable() {
-		let a = VaultProject(id: "same-id", name: "Project A", path: "/a", secrets: ["K": "V"])
-		let b = VaultProject(id: "same-id", name: "Project B", path: "/b", secrets: [:])
+		let a = VaultProject(id: "same-id", name: "A", path: "/a", environments: ["default": ["K": "V"]])
+		let b = VaultProject(id: "same-id", name: "B", path: "/b", environments: [:])
 
 		#expect(a.id == b.id)
 	}
 
 	@Test("identifiable: different vault ID means different identity")
 	func differentIdentity() {
-		let a = VaultProject(id: "id-1", name: "Same Name", path: "/a", secrets: [:])
-		let b = VaultProject(id: "id-2", name: "Same Name", path: "/a", secrets: [:])
+		let a = VaultProject(id: "id-1", name: "Same", path: "/a", environments: [:])
+		let b = VaultProject(id: "id-2", name: "Same", path: "/a", environments: [:])
 
 		#expect(a.id != b.id)
 	}

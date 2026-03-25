@@ -95,15 +95,19 @@ final class VaultStore {
 
 	// MARK: - Project Operations
 
-	func addProject(name: String, path: String) {
-		let vaultId = UUID().uuidString.lowercased()
-		let project = VaultProject(id: vaultId, name: name, path: path, secrets: [:])
+	/// Currently selected environment tab name
+	var selectedEnvironment: String = "default"
 
-		let result = keychainService.saveSecrets(
+	func addProject(name: String, path: String, environments: [String: [String: String]]? = nil) {
+		let vaultId = UUID().uuidString.lowercased()
+		let envs = environments ?? ["default": [:]]
+		let project = VaultProject(id: vaultId, name: name, path: path, environments: envs)
+
+		let result = keychainService.saveEnvironments(
 			vaultId: vaultId,
 			projectName: name,
 			projectPath: path,
-			secrets: [:]
+			environments: envs
 		)
 
 		switch result {
@@ -127,28 +131,30 @@ final class VaultStore {
 		}
 	}
 
-	// MARK: - Secret Operations
+	// MARK: - Secret Operations (environment-aware)
 
 	func addSecret(to projectId: String, key: String, value: String) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
 		guard !key.isEmpty else { return }
 
-		project.secrets[key] = value
+		var envSecrets = project.environments[selectedEnvironment] ?? [:]
+		envSecrets[key] = value
+		project.environments[selectedEnvironment] = envSecrets
 		saveAndUpdate(project)
 	}
 
 	func updateSecret(in projectId: String, key: String, newValue: String) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
-		guard project.secrets[key] != nil else { return }
+		guard project.environments[selectedEnvironment]?[key] != nil else { return }
 
-		project.secrets[key] = newValue
+		project.environments[selectedEnvironment]?[key] = newValue
 		saveAndUpdate(project)
 	}
 
 	func deleteSecret(from projectId: String, key: String) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
 
-		project.secrets.removeValue(forKey: key)
+		project.environments[selectedEnvironment]?.removeValue(forKey: key)
 		saveAndUpdate(project)
 	}
 
@@ -237,11 +243,11 @@ final class VaultStore {
 	// MARK: - Private
 
 	private func saveAndUpdate(_ project: VaultProject) {
-		let result = keychainService.saveSecrets(
+		let result = keychainService.saveEnvironments(
 			vaultId: project.id,
 			projectName: project.name,
 			projectPath: project.path,
-			secrets: project.secrets
+			environments: project.environments
 		)
 
 		switch result {
