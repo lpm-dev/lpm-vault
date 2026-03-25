@@ -6,6 +6,22 @@ struct MenuBarView: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
+			// Expiring tokens warning
+			if !store.expiringTokens.isEmpty {
+				Button {
+					store.selectedSidebarItem = .personalTokens
+					showMainWindow()
+				} label: {
+					Label(
+						"\(store.expiringTokens.count) token\(store.expiringTokens.count == 1 ? "" : "s") expiring soon",
+						systemImage: "exclamationmark.triangle.fill"
+					)
+				}
+
+				Divider()
+			}
+
+			// Projects
 			if store.projects.isEmpty {
 				Text("No vaults yet")
 					.foregroundStyle(.secondary)
@@ -14,6 +30,7 @@ struct MenuBarView: View {
 			} else {
 				ForEach(store.projects.prefix(5)) { project in
 					Button {
+						store.selectedSidebarItem = .project(project.id)
 						store.selectedProjectId = project.id
 						showMainWindow()
 					} label: {
@@ -39,6 +56,25 @@ struct MenuBarView: View {
 
 			Divider()
 
+			// Auth status
+			if let user = store.currentUser {
+				Button {
+					store.selectedSidebarItem = .authStatus
+					showMainWindow()
+				} label: {
+					HStack {
+						Text("@\(user.username)")
+						if let email = user.email {
+							Text("·")
+								.foregroundStyle(.tertiary)
+							Text(email)
+								.foregroundStyle(.secondary)
+						}
+					}
+				}
+				Divider()
+			}
+
 			Button {
 				showMainWindow()
 			} label: {
@@ -58,16 +94,8 @@ struct MenuBarView: View {
 	}
 
 	private func showMainWindow() {
+		// Regular app — just open window and activate. No policy dance needed.
 		openWindow(id: "main")
-		// Menu bar apps (LSUIElement / MenuBarExtra-only) don't own the active
-		// application state, so the window opens behind whatever is focused.
-		// orderFrontRegardless() is the only reliable way to bring an accessory
-		// app's window above all other windows.
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-			NSApplication.shared.activate(ignoringOtherApps: true)
-			for window in NSApplication.shared.windows where window.title == "LPM Vault" {
-				window.orderFrontRegardless()
-			}
-		}
+		NSApplication.shared.activate(ignoringOtherApps: true)
 	}
 }

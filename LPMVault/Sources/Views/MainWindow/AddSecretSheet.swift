@@ -67,7 +67,7 @@ struct AddSecretSheet: View {
 					Text("Value")
 						.font(.subheadline)
 						.fontWeight(.medium)
-					SecureField("Secret value", text: $value)
+					TextField("Secret value", text: $value)
 						.textFieldStyle(.roundedBorder)
 						.font(.system(.body, design: .monospaced))
 						.focused($focusedField, equals: .value)

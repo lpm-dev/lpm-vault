@@ -72,4 +72,37 @@ final class MockBiometricService: BiometricServiceProtocol {
 	func biometricType() -> BiometricType {
 		type
 	}
+
+	func resetCache() {}
+}
+
+// MARK: - Mock API Service
+
+final class MockAPIService: LPMAPIServiceProtocol {
+	var user: LPMUser?
+	var personalTokens: [LPMToken] = []
+	var orgTokensMap: [String: [LPMToken]] = [:]
+	var revokedTokenIds: [String] = []
+
+	func fetchCurrentUser() async -> LPMUser? {
+		user
+	}
+
+	func fetchPersonalTokens() async -> [LPMToken] {
+		personalTokens
+	}
+
+	func revokePersonalToken(id: String) async -> Bool {
+		revokedTokenIds.append(id)
+		return true
+	}
+
+	func fetchOrgTokens(orgSlug: String) async -> [LPMToken] {
+		orgTokensMap[orgSlug] ?? []
+	}
+
+	func revokeOrgToken(orgSlug: String, id: String) async -> Bool {
+		revokedTokenIds.append(id)
+		return true
+	}
 }

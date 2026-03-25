@@ -5,11 +5,12 @@ struct ProjectListView: View {
 	@Binding var showingAddProject: Bool
 
 	var body: some View {
-		List(selection: $store.selectedProjectId) {
+		List(selection: $store.selectedSidebarItem) {
+			// MARK: - Projects
 			Section("Projects") {
 				ForEach(store.filteredProjects) { project in
 					projectRow(project)
-						.tag(project.id)
+						.tag(SidebarItem.project(project.id))
 						.contextMenu {
 							Button("Show in Finder") {
 								if project.pathExists {
@@ -29,8 +30,79 @@ struct ProjectListView: View {
 						}
 				}
 			}
+
+			// MARK: - Tokens
+			if store.isLoggedIn {
+				Section("Tokens") {
+					Label {
+						HStack {
+							Text("Personal")
+							Spacer()
+							if !store.personalTokens.isEmpty {
+								Text("\(store.personalTokens.count)")
+									.font(.caption)
+									.padding(.horizontal, 6)
+									.padding(.vertical, 2)
+									.background(.quaternary, in: Capsule())
+							}
+						}
+					} icon: {
+						Image(systemName: "key")
+					}
+					.tag(SidebarItem.personalTokens)
+
+					ForEach(store.userOrgs) { org in
+						Label {
+							HStack {
+								Text(org.name)
+								Spacer()
+								if let count = store.orgTokens[org.slug]?.count, count > 0 {
+									Text("\(count)")
+										.font(.caption)
+										.padding(.horizontal, 6)
+										.padding(.vertical, 2)
+										.background(.quaternary, in: Capsule())
+								}
+							}
+						} icon: {
+							Image(systemName: "building.2")
+						}
+						.tag(SidebarItem.orgTokens(org.slug))
+					}
+				}
+
+				Section("Auth") {
+					Label {
+						Text("@\(store.currentUser?.username ?? "")")
+					} icon: {
+						Image(systemName: "person.circle")
+					}
+					.tag(SidebarItem.authStatus)
+				}
+			} else if !store.isLoadingTokens {
+				Section("Auth") {
+					Label {
+						VStack(alignment: .leading, spacing: 2) {
+							Text("Not logged in")
+								.foregroundStyle(.secondary)
+							Text("Run `lpm login`")
+								.font(.caption)
+								.foregroundStyle(.tertiary)
+						}
+					} icon: {
+						Image(systemName: "person.circle")
+							.foregroundStyle(.secondary)
+					}
+				}
+			}
 		}
 		.listStyle(.sidebar)
+		.onChange(of: store.selectedSidebarItem) { _, newValue in
+			// Sync selectedProjectId when a project is selected via SidebarItem
+			if case .project(let id) = newValue {
+				store.selectedProjectId = id
+			}
+		}
 		.safeAreaInset(edge: .bottom) {
 			Button {
 				showingAddProject = true

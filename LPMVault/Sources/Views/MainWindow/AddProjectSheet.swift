@@ -5,10 +5,18 @@ struct AddProjectSheet: View {
 	@Environment(\.dismiss) private var dismiss
 	@State private var name = ""
 	@State private var path = ""
+	@State private var detectedEnvFiles: [EnvFileInfo] = []
 	@FocusState private var focusedField: Field?
 
 	private enum Field {
 		case name
+	}
+
+	struct EnvFileInfo: Identifiable {
+		let id = UUID()
+		let fileName: String
+		let fullPath: String
+		var selected: Bool = true
 	}
 
 	private var canCreate: Bool {
@@ -59,6 +67,33 @@ struct AddProjectSheet: View {
 						}
 					}
 				}
+
+				// Detected .env files
+				if !detectedEnvFiles.isEmpty {
+					VStack(alignment: .leading, spacing: 8) {
+						Text("Environment Files Found")
+							.font(.subheadline)
+							.fontWeight(.medium)
+
+						ForEach($detectedEnvFiles) { $file in
+							HStack {
+								Image(systemName: file.selected ? "checkmark.circle.fill" : "circle")
+									.foregroundStyle(file.selected ? .green : .secondary)
+									.onTapGesture { file.selected.toggle() }
+								Text(file.fileName)
+									.font(.system(.body, design: .monospaced))
+								Spacer()
+								Text("Import")
+									.font(.caption)
+									.foregroundStyle(file.selected ? .primary : .tertiary)
+							}
+						}
+
+						Text("Selected files will be imported into the vault")
+							.font(.caption)
+							.foregroundStyle(.tertiary)
+					}
+				}
 			}
 			.padding()
 
@@ -71,9 +106,8 @@ struct AddProjectSheet: View {
 					dismiss()
 				}
 
-				Button("Create") {
-					store.addProject(name: name, path: path)
-					dismiss()
+				Button(detectedEnvFiles.contains(where: { $0.selected }) ? "Create & Import" : "Create") {
+					createProject()
 				}
 				.buttonStyle(.borderedProminent)
 				.disabled(!canCreate)
@@ -81,7 +115,7 @@ struct AddProjectSheet: View {
 			}
 			.padding()
 		}
-		.frame(width: 420)
+		.frame(width: 460)
 		.onAppear {
 			focusedField = .name
 		}
@@ -99,6 +133,70 @@ struct AddProjectSheet: View {
 			if name.isEmpty {
 				name = url.lastPathComponent
 			}
+			detectEnvFiles(at: url)
 		}
+	}
+
+	private func detectEnvFiles(at url: URL) {
+		let fm = FileManager.default
+		guard let contents = try? fm.contentsOfDirectory(atPath: url.path) else { return }
+
+		detectedEnvFiles = contents
+			.filter { $0.hasPrefix(".env") && !$0.hasSuffix(".example") }
+			.sorted()
+			.map { fileName in
+				EnvFileInfo(
+					fileName: fileName,
+					fullPath: url.appendingPathComponent(fileName).path
+				)
+			}
+	}
+
+	private func createProject() {
+		store.addProject(name: name, path: path)
+
+		// Import selected .env files
+		let selectedFiles = detectedEnvFiles.filter { $0.selected }
+		if let projectId = store.selectedProjectId, !selectedFiles.isEmpty {
+			for file in selectedFiles {
+				let filePath = file.fullPath
+				// Read and import each .env file
+				if let content = try? String(contentsOfFile: filePath, encoding: .utf8) {
+					let pairs = parseEnvContent(content)
+					for (key, value) in pairs {
+						store.addSecret(to: projectId, key: key, value: value)
+					}
+				}
+			}
+		}
+
+		dismiss()
+	}
+
+	/// Simple .env parser (matches the Rust CLI parser behavior)
+	private func parseEnvContent(_ content: String) -> [(String, String)] {
+		var result: [(String, String)] = []
+		for line in content.components(separatedBy: .newlines) {
+			let trimmed = line.trimmingCharacters(in: .whitespaces)
+			if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+
+			let line = trimmed.hasPrefix("export ") ? String(trimmed.dropFirst(7)) : trimmed
+			guard let eqIndex = line.firstIndex(of: "=") else { continue }
+
+			let key = String(line[line.startIndex..<eqIndex]).trimmingCharacters(in: .whitespaces)
+			var value = String(line[line.index(after: eqIndex)...]).trimmingCharacters(in: .whitespaces)
+
+			// Remove surrounding quotes
+			if (value.hasPrefix("\"") && value.hasSuffix("\""))
+				|| (value.hasPrefix("'") && value.hasSuffix("'"))
+			{
+				value = String(value.dropFirst().dropLast())
+			}
+
+			if !key.isEmpty {
+				result.append((key, value))
+			}
+		}
+		return result
 	}
 }

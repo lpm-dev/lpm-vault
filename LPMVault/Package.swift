@@ -13,6 +13,7 @@ let package = Package(
 			path: "Sources",
 			resources: [
 				.process("Assets.xcassets"),
+				.copy("Resources"),
 			]
 		),
 		.testTarget(
