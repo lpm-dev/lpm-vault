@@ -5,23 +5,48 @@ import Foundation
 // MARK: - Mock Keychain Service
 
 final class MockKeychainService: KeychainServiceProtocol {
-	var storage: [String: (name: String, path: String, secrets: [String: String])] = [:]
+	var envStorage: [String: (name: String, path: String, environments: [String: [String: String]])] = [:]
 	var shouldFail = false
 	var failureError: KeychainError = .accessDenied
 
+	// Convenience for old tests that use flat secrets
+	var storage: [String: (name: String, path: String, secrets: [String: String])] {
+		get {
+			envStorage.mapValues { (name: $0.name, path: $0.path, secrets: $0.environments["default"] ?? [:]) }
+		}
+		set {
+			envStorage = newValue.mapValues { (name: $0.name, path: $0.path, environments: ["default": $0.secrets]) }
+		}
+	}
+
 	func listProjects() -> [VaultProject] {
-		storage.map { vaultId, data in
+		envStorage.map { vaultId, data in
 			VaultProject(
 				id: vaultId,
 				name: data.name,
 				path: data.path,
-				secrets: data.secrets
+				environments: data.environments
 			)
 		}
 	}
 
+	func getEnvironments(vaultId: String) -> [String: [String: String]]? {
+		envStorage[vaultId]?.environments
+	}
+
+	func saveEnvironments(
+		vaultId: String,
+		projectName: String,
+		projectPath: String,
+		environments: [String: [String: String]]
+	) -> KeychainResult {
+		if shouldFail { return .failure(failureError) }
+		envStorage[vaultId] = (name: projectName, path: projectPath, environments: environments)
+		return .success
+	}
+
 	func getSecrets(vaultId: String) -> [String: String]? {
-		storage[vaultId]?.secrets
+		envStorage[vaultId]?.environments["default"]
 	}
 
 	func saveSecrets(
@@ -30,24 +55,16 @@ final class MockKeychainService: KeychainServiceProtocol {
 		projectPath: String,
 		secrets: [String: String]
 	) -> KeychainResult {
-		if shouldFail {
-			return .failure(failureError)
-		}
-
-		// Simulate size check
-		if let data = try? JSONEncoder().encode(secrets),
-			data.count > VaultConstants.maxVaultSizeWarning
-		{
-			return .failure(.dataTooLarge(data.count))
-		}
-
-		storage[vaultId] = (name: projectName, path: projectPath, secrets: secrets)
+		if shouldFail { return .failure(failureError) }
+		var envs = envStorage[vaultId]?.environments ?? [:]
+		envs["default"] = secrets
+		envStorage[vaultId] = (name: projectName, path: projectPath, environments: envs)
 		return .success
 	}
 
 	func deleteProject(vaultId: String) -> Bool {
 		if shouldFail { return false }
-		storage.removeValue(forKey: vaultId)
+		envStorage.removeValue(forKey: vaultId)
 		return true
 	}
 }
