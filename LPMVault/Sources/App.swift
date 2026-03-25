@@ -1,40 +1,55 @@
 import SwiftUI
 
-@main
-struct LPMVaultApp: App {
-	@State private var store = VaultStore()
+/// Handles dock click and prevents quit on window close.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+	var openWindow: (() -> Void)?
+	var lockVault: (() -> Void)?
 
-	init() {
-		// Force regular app mode — shows in dock + Cmd+Tab
-		NSApplication.shared.setActivationPolicy(.regular)
-
-		// Set dock icon from bundled .icns
-		if let iconURL = Bundle.module.url(forResource: "LPMVault", withExtension: "icns"),
-			let icon = NSImage(contentsOf: iconURL)
-		{
-			NSApplication.shared.applicationIconImage = icon
+	func applicationDidFinishLaunching(_ notification: Notification) {
+		// When launched from Xcode (bare executable, no .app bundle),
+		// the asset catalog icon isn't available. Set it programmatically.
+		if NSApplication.shared.applicationIconImage == nil || Bundle.main.url(forResource: "AppIcon", withExtension: "icns") == nil {
+			if let iconURL = Bundle.main.url(forResource: "LPMVault", withExtension: "icns"),
+				let icon = NSImage(contentsOf: iconURL)
+			{
+				NSApplication.shared.applicationIconImage = icon
+			}
 		}
 	}
 
-	var body: some Scene {
-		// Menu bar quick access (always visible)
-		MenuBarExtra {
-			MenuBarView(store: store)
-		} label: {
-			let hasExpiring = !store.expiringTokens.isEmpty
-			Image(systemName: store.isUnlocked ? "lock.open.fill" : "lock.fill")
-				.symbolRenderingMode(hasExpiring ? .multicolor : .monochrome)
-			if hasExpiring {
-				Text("\(store.expiringTokens.count)")
-			}
-		}
+	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+		// Hide on red traffic light close, don't quit — but lock immediately
+		lockVault?()
+		return false
+	}
 
-		// Main window
-		Window("", id: "main") {
+	func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+		if !flag {
+			openWindow?()
+		}
+		return true
+	}
+}
+
+@main
+struct LPMVaultApp: App {
+	@NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
+	@Environment(\.openWindow) private var openWindow
+	@State private var store = VaultStore()
+
+	var body: some Scene {
+		// Main window — opens automatically on launch
+		Window("LPM Vault", id: "main") {
 			ContentView(store: store)
 				.onAppear {
 					store.loadProjects()
 					Task { await store.loadTokens() }
+					appDelegate.openWindow = { [openWindow] in
+						openWindow(id: "main")
+					}
+					appDelegate.lockVault = { [store] in
+						store.lock()
+					}
 				}
 		}
 		.defaultSize(width: 900, height: 550)

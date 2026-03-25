@@ -10,8 +10,8 @@ struct ToolbarButtonGroup<Content: View>: View {
 			content
 		}
 		.padding(.horizontal, 4)
-		.padding(.vertical, 2)
-		.background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+		.padding(.vertical, 4)
+		.background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
 	}
 }
 
@@ -27,7 +27,8 @@ struct ToolbarIconButton: View {
 			action()
 		} label: {
 			Image(systemName: icon)
-				.frame(width: 20, height: 20)
+				.frame(width: 26, height: 26)
+				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
 		.help(help)

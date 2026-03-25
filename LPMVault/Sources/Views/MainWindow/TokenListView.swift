@@ -10,6 +10,7 @@ struct TokenListView: View {
 	@State private var tokenToRevoke: LPMToken?
 	@State private var localSearch = ""
 	@State private var showSearch = false
+	@FocusState private var isSearchFocused: Bool
 
 	private var filteredTokens: [LPMToken] {
 		guard !localSearch.isEmpty else { return tokens }
@@ -68,7 +69,8 @@ struct TokenListView: View {
 	private var customToolbar: some View {
 		HStack(spacing: 8) {
 			Text(title)
-				.font(.headline)
+				.font(.title3)
+				.fontWeight(.semibold)
 
 			Spacer()
 
@@ -86,19 +88,16 @@ struct TokenListView: View {
 					help: "Search tokens"
 				) {
 					showSearch.toggle()
-					if !showSearch { localSearch = "" }
-				}
-			}
-
-			// Lock (always last)
-			ToolbarButtonGroup {
-				ToolbarIconButton(icon: "lock.open.fill", help: "Lock vault") {
-					store.lock()
+					if showSearch {
+						isSearchFocused = true
+					} else {
+						localSearch = ""
+					}
 				}
 			}
 		}
 		.padding(.horizontal, 16)
-		.padding(.vertical, 8)
+		.padding(.vertical, 10)
 	}
 
 	// MARK: - Search Bar
@@ -109,6 +108,11 @@ struct TokenListView: View {
 				.foregroundStyle(.secondary)
 			TextField("Filter tokens...", text: $localSearch)
 				.textFieldStyle(.plain)
+				.focused($isSearchFocused)
+				.onExitCommand {
+					showSearch = false
+					localSearch = ""
+				}
 			if !localSearch.isEmpty {
 				Button {
 					localSearch = ""
