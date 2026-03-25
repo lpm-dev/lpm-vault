@@ -169,11 +169,12 @@ final class VaultStore {
 				}
 			}
 		}
+		let resolvedOrgTokens = orgTokensMap
 
 		await MainActor.run {
 			currentUser = user
 			personalTokens = tokens
-			orgTokens = orgTokensMap
+			orgTokens = resolvedOrgTokens
 			isLoadingTokens = false
 		}
 	}

@@ -5,11 +5,45 @@ struct AuthStatusView: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
+			// Custom header bar (consistent with SecretListView / TokenListView)
+			HStack(spacing: 8) {
+				Text("Auth Status")
+					.font(.title3)
+					.fontWeight(.semibold)
+
+				Spacer()
+
+				ToolbarButtonGroup {
+					ToolbarIconButton(icon: "arrow.up.right.square", help: "Manage account on lpm.dev") {
+						NSWorkspace.shared.open(URL(string: "https://lpm.dev/dashboard/settings")!)
+					}
+				}
+			}
+			.padding(.horizontal, 16)
+			.padding(.vertical, 10)
+
+			Divider()
+
 			if let user = store.currentUser {
 				List {
-					Section("Account") {
-						HStack(spacing: 12) {
-							// Avatar placeholder
+					HStack(spacing: 12) {
+						// Avatar
+						if let avatarUrl = user.avatarUrl, let url = URL(string: avatarUrl) {
+							AsyncImage(url: url) { image in
+								image.resizable().scaledToFill()
+							} placeholder: {
+								Circle()
+									.fill(.quaternary)
+									.overlay {
+										Text(String(user.username.prefix(1)).uppercased())
+											.font(.title2)
+											.fontWeight(.medium)
+											.foregroundStyle(.secondary)
+									}
+							}
+							.frame(width: 48, height: 48)
+							.clipShape(Circle())
+						} else {
 							Circle()
 								.fill(.quaternary)
 								.frame(width: 48, height: 48)
@@ -19,24 +53,24 @@ struct AuthStatusView: View {
 										.fontWeight(.medium)
 										.foregroundStyle(.secondary)
 								}
+						}
 
-							VStack(alignment: .leading, spacing: 2) {
-								Text("@\(user.username)")
-									.font(.title3)
-									.fontWeight(.semibold)
-								if let name = user.name, !name.isEmpty {
-									Text(name)
-										.foregroundStyle(.secondary)
-								}
-								if let email = user.email {
-									Text(email)
-										.font(.caption)
-										.foregroundStyle(.tertiary)
-								}
+						VStack(alignment: .leading, spacing: 2) {
+							Text("@\(user.username)")
+								.font(.title3)
+								.fontWeight(.semibold)
+							if let name = user.name, !name.isEmpty {
+								Text(name)
+									.foregroundStyle(.secondary)
+							}
+							if let email = user.email {
+								Text(email)
+									.font(.caption)
+									.foregroundStyle(.tertiary)
 							}
 						}
-						.padding(.vertical, 4)
 					}
+					.padding(.vertical, 4)
 
 					if let plan = store.currentUser?.plan {
 						Section("Plan") {
@@ -60,12 +94,6 @@ struct AuthStatusView: View {
 							.foregroundStyle(.orange)
 						}
 					}
-
-					Section {
-						Link(destination: URL(string: "https://lpm.dev/dashboard/settings")!) {
-							Label("Manage account on lpm.dev", systemImage: "arrow.up.right.square")
-						}
-					}
 				}
 			} else {
 				VStack(spacing: 12) {
@@ -82,6 +110,5 @@ struct AuthStatusView: View {
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 			}
 		}
-		.navigationTitle("Auth Status")
 	}
 }

@@ -6,6 +6,7 @@ struct SecretListView: View {
 	@State private var showDeleteProjectConfirmation = false
 	@State private var localSearch = ""
 	@State private var showSearch = false
+	@FocusState private var isSearchFocused: Bool
 
 	private var project: VaultProject? {
 		store.selectedProject
@@ -94,7 +95,8 @@ struct SecretListView: View {
 		HStack(spacing: 8) {
 			// Left: project name + delete
 			Text(project.name)
-				.font(.headline)
+				.font(.title3)
+				.fontWeight(.semibold)
 
 			ToolbarButtonGroup {
 				ToolbarIconButton(icon: "trash", help: "Delete project", role: .destructive) {
@@ -143,19 +145,16 @@ struct SecretListView: View {
 					help: "Search secrets"
 				) {
 					showSearch.toggle()
-					if !showSearch { localSearch = "" }
-				}
-			}
-
-			// Lock (always last)
-			ToolbarButtonGroup {
-				ToolbarIconButton(icon: "lock.open.fill", help: "Lock vault") {
-					store.lock()
+					if showSearch {
+						isSearchFocused = true
+					} else {
+						localSearch = ""
+					}
 				}
 			}
 		}
 		.padding(.horizontal, 16)
-		.padding(.vertical, 8)
+		.padding(.vertical, 10)
 	}
 
 	// MARK: - Search Bar
@@ -166,6 +165,11 @@ struct SecretListView: View {
 				.foregroundStyle(.secondary)
 			TextField("Filter secrets...", text: $localSearch)
 				.textFieldStyle(.plain)
+				.focused($isSearchFocused)
+				.onExitCommand {
+					showSearch = false
+					localSearch = ""
+				}
 			if !localSearch.isEmpty {
 				Button {
 					localSearch = ""

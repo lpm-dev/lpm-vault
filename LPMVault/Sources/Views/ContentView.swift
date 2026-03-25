@@ -1,5 +1,7 @@
 import SwiftUI
 
+private let sidebarColor = Color(hex: 0x191919)
+
 struct ContentView: View {
 	@Bindable var store: VaultStore
 	@State private var showingAddProject = false
@@ -67,13 +69,46 @@ struct ContentView: View {
 		}
 	}
 
+	@State private var sidebarWidth: CGFloat = 240
+	@GestureState private var dragOffset: CGFloat = 0
+
+	private var effectiveSidebarWidth: CGFloat {
+		min(max(sidebarWidth + dragOffset, 180), 400)
+	}
+
 	private var unlockedContent: some View {
-		NavigationSplitView {
+		HStack(spacing: 0) {
 			ProjectListView(store: store, showingAddProject: $showingAddProject)
-				.navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
-		} detail: {
+				.frame(width: effectiveSidebarWidth)
+				.background(sidebarColor)
+				.tint(Color(hex: 0x17793A))
+
+			// Draggable resize handle
+			Color.clear
+				.frame(width: 6)
+				.overlay(Rectangle().fill(Color.gray.opacity(0.2)).frame(width: 1))
+				.contentShape(Rectangle())
+				.gesture(
+					DragGesture(minimumDistance: 1, coordinateSpace: .global)
+						.updating($dragOffset) { value, state, _ in
+							state = value.translation.width
+						}
+						.onEnded { value in
+							sidebarWidth = min(max(sidebarWidth + value.translation.width, 180), 400)
+						}
+				)
+				.onHover { hovering in
+					if hovering {
+						NSCursor.resizeLeftRight.push()
+					} else {
+						NSCursor.pop()
+					}
+				}
+
 			detailView
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
 		}
+		.ignoresSafeArea(.container, edges: .top)
 		.sheet(isPresented: $showingAddProject) {
 			AddProjectSheet(store: store)
 		}
@@ -116,40 +151,24 @@ struct ContentView: View {
 	}
 
 	private var emptyState: some View {
-		VStack(spacing: 0) {
-			// Lock button header (consistent with other views)
-			HStack {
-				Spacer()
-				ToolbarButtonGroup {
-					ToolbarIconButton(icon: "lock.open.fill", help: "Lock vault") {
-						store.lock()
-					}
+		VStack(spacing: 12) {
+			Image(systemName: "lock.shield")
+				.font(.system(size: 48))
+				.foregroundStyle(.secondary)
+			Text("No project selected")
+				.font(.title2)
+				.foregroundStyle(.secondary)
+			if store.projects.isEmpty {
+				Text(
+					"Use `lpm env vars set` to create your first vault,\nor add a project manually."
+				)
+				.font(.callout)
+				.foregroundStyle(.tertiary)
+				.multilineTextAlignment(.center)
+				Button("Add Project") {
+					showingAddProject = true
 				}
 			}
-			.padding(.horizontal, 16)
-			.padding(.vertical, 8)
-
-			Spacer()
-			VStack(spacing: 12) {
-				Image(systemName: "lock.shield")
-					.font(.system(size: 48))
-					.foregroundStyle(.secondary)
-				Text("No project selected")
-					.font(.title2)
-					.foregroundStyle(.secondary)
-				if store.projects.isEmpty {
-					Text(
-						"Use `lpm env vars set` to create your first vault,\nor add a project manually."
-					)
-					.font(.callout)
-					.foregroundStyle(.tertiary)
-					.multilineTextAlignment(.center)
-					Button("Add Project") {
-						showingAddProject = true
-					}
-				}
-			}
-			Spacer()
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
 	}
