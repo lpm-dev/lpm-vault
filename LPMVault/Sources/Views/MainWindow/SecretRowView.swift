@@ -48,12 +48,12 @@ struct SecretRowView: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 
 			// Actions
-			HStack(spacing: 4) {
+			HStack(spacing: 6) {
 				if !isEditing {
 					if isUnlocked {
 						// Copy
 						Button {
-							ClipboardManager.shared.copy(secret.value)
+							ClipboardManager.shared.copy("\(secret.key)=\(secret.value)")
 							withAnimation {
 								copyFeedback = true
 							}
@@ -67,9 +67,11 @@ struct SecretRowView: View {
 								systemName: copyFeedback
 									? "checkmark.circle.fill" : "doc.on.doc"
 							)
-							.foregroundStyle(copyFeedback ? .green : .secondary)
+							.frame(width: 14, height: 14)
 						}
-						.buttonStyle(.plain)
+						.buttonStyle(.bordered)
+						.controlSize(.small)
+						.tint(copyFeedback ? .green : nil)
 						.help(copyFeedback ? "Copied! Clears in 30s" : "Copy value")
 
 						// Edit
@@ -77,9 +79,10 @@ struct SecretRowView: View {
 							startEdit()
 						} label: {
 							Image(systemName: "pencil")
-								.foregroundStyle(.secondary)
+								.frame(width: 14, height: 14)
 						}
-						.buttonStyle(.plain)
+						.buttonStyle(.bordered)
+						.controlSize(.small)
 						.help("Edit value")
 					} else {
 						// Reveal
@@ -87,20 +90,22 @@ struct SecretRowView: View {
 							onReveal()
 						} label: {
 							Image(systemName: "eye")
-								.foregroundStyle(.secondary)
+								.frame(width: 14, height: 14)
 						}
-						.buttonStyle(.plain)
+						.buttonStyle(.bordered)
+						.controlSize(.small)
 						.help("Reveal value (requires authentication)")
 					}
 
 					// Delete
-					Button {
+					Button(role: .destructive) {
 						showDeleteConfirmation = true
 					} label: {
 						Image(systemName: "trash")
-							.foregroundStyle(.secondary)
+							.frame(width: 14, height: 14)
 					}
-					.buttonStyle(.plain)
+					.buttonStyle(.bordered)
+					.controlSize(.small)
 					.help("Delete secret")
 				} else {
 					Button("Save") {

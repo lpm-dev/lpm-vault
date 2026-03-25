@@ -10,10 +10,22 @@ final class VaultStore {
 	var searchQuery: String = ""
 	var error: String?
 
+	// Token state (Phase 3)
+	var currentUser: LPMUser?
+	var personalTokens: [LPMToken] = []
+	var orgTokens: [String: [LPMToken]] = [:]  // orgSlug → tokens
+	var selectedSidebarItem: SidebarItem?
+	var isLoadingTokens: Bool = false
+
+	// Sync state (Phase 4)
+	var isSyncing: Bool = false
+	var lastSyncStatus: String?
+
 	// MARK: - Dependencies
 
 	private let keychainService: KeychainServiceProtocol
 	private let biometricService: BiometricServiceProtocol
+	private let apiService: LPMAPIServiceProtocol
 	private var autoLockTask: Task<Void, Never>?
 	private let autoLockDuration: TimeInterval
 
@@ -22,6 +34,18 @@ final class VaultStore {
 	var selectedProject: VaultProject? {
 		guard let id = selectedProjectId else { return nil }
 		return projects.first { $0.id == id }
+	}
+
+	var isLoggedIn: Bool { currentUser != nil }
+
+	var userOrgs: [LPMOrg] { currentUser?.orgs ?? [] }
+
+	var expiringTokens: [LPMToken] {
+		let allTokens = personalTokens + orgTokens.values.flatMap { $0 }
+		return allTokens.filter { token in
+			guard let days = token.daysUntilExpiry else { return false }
+			return days >= 0 && days <= 7
+		}
 	}
 
 	var filteredProjects: [VaultProject] {
@@ -33,15 +57,31 @@ final class VaultStore {
 		}
 	}
 
+	var filteredPersonalTokens: [LPMToken] {
+		guard !searchQuery.isEmpty else { return personalTokens }
+		let query = searchQuery.lowercased()
+		return personalTokens.filter { $0.name.lowercased().contains(query) }
+	}
+
+	var filteredOrgTokens: [String: [LPMToken]] {
+		guard !searchQuery.isEmpty else { return orgTokens }
+		let query = searchQuery.lowercased()
+		return orgTokens.mapValues { tokens in
+			tokens.filter { $0.name.lowercased().contains(query) }
+		}
+	}
+
 	// MARK: - Init
 
 	init(
 		keychainService: KeychainServiceProtocol = KeychainService(),
 		biometricService: BiometricServiceProtocol = BiometricService(),
+		apiService: LPMAPIServiceProtocol = LPMAPIService(),
 		autoLockDuration: TimeInterval = VaultConstants.biometricCacheDuration
 	) {
 		self.keychainService = keychainService
 		self.biometricService = biometricService
+		self.apiService = apiService
 		self.autoLockDuration = autoLockDuration
 	}
 
@@ -112,6 +152,50 @@ final class VaultStore {
 		saveAndUpdate(project)
 	}
 
+	// MARK: - Token Operations
+
+	func loadTokens() async {
+		await MainActor.run { isLoadingTokens = true }
+
+		let user = await apiService.fetchCurrentUser()
+		let tokens = await apiService.fetchPersonalTokens()
+
+		var orgTokensMap: [String: [LPMToken]] = [:]
+		if let orgs = user?.orgs {
+			for org in orgs {
+				let orgToks = await apiService.fetchOrgTokens(orgSlug: org.slug)
+				if !orgToks.isEmpty {
+					orgTokensMap[org.slug] = orgToks
+				}
+			}
+		}
+
+		await MainActor.run {
+			currentUser = user
+			personalTokens = tokens
+			orgTokens = orgTokensMap
+			isLoadingTokens = false
+		}
+	}
+
+	func revokePersonalToken(_ token: LPMToken) async {
+		let success = await apiService.revokePersonalToken(id: token.id)
+		if success {
+			await MainActor.run {
+				personalTokens.removeAll { $0.id == token.id }
+			}
+		}
+	}
+
+	func revokeOrgToken(_ token: LPMToken, orgSlug: String) async {
+		let success = await apiService.revokeOrgToken(orgSlug: orgSlug, id: token.id)
+		if success {
+			await MainActor.run {
+				orgTokens[orgSlug]?.removeAll { $0.id == token.id }
+			}
+		}
+	}
+
 	// MARK: - Auth
 
 	func unlock() async {
@@ -130,6 +214,7 @@ final class VaultStore {
 		autoLockTask?.cancel()
 		autoLockTask = nil
 		isUnlocked = false
+		biometricService.resetCache()
 	}
 
 	/// Reset the auto-lock timer (call on user interaction while unlocked)

@@ -13,6 +13,7 @@ protocol BiometricServiceProtocol {
 	func authenticate(reason: String) async -> Bool
 	func isBiometricAvailable() -> Bool
 	func biometricType() -> BiometricType
+	func resetCache()
 }
 
 // MARK: - Implementation
