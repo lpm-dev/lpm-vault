@@ -3,6 +3,7 @@ import SwiftUI
 struct ProjectListView: View {
 	@Bindable var store: VaultStore
 	@Binding var showingAddProject: Bool
+	@Binding var showingOrgVaults: Bool
 
 	var body: some View {
 		List(selection: $store.selectedSidebarItem) {
@@ -49,18 +50,31 @@ struct ProjectListView: View {
 				}
 			} else if !store.isLoadingTokens {
 				Section("Auth") {
-					Label {
-						VStack(alignment: .leading, spacing: 2) {
-							Text("Not logged in")
-								.foregroundStyle(.secondary)
-							Text("Run `lpm login`")
-								.font(.caption)
-								.foregroundStyle(.tertiary)
+					Button {
+						Task { await store.login() }
+					} label: {
+						Label {
+							VStack(alignment: .leading, spacing: 2) {
+								Text(store.isLoggingIn ? "Signing in..." : "Sign In")
+									.foregroundStyle(store.isLoggingIn ? .secondary : .primary)
+								if store.isLoggingIn {
+									Text("Check your browser")
+										.font(.caption)
+										.foregroundStyle(.tertiary)
+								}
+							}
+						} icon: {
+							if store.isLoggingIn {
+								ProgressView()
+									.controlSize(.small)
+							} else {
+								Image(systemName: "person.circle")
+									.foregroundStyle(.secondary)
+							}
 						}
-					} icon: {
-						Image(systemName: "person.circle")
-							.foregroundStyle(.secondary)
 					}
+					.buttonStyle(.plain)
+					.disabled(store.isLoggingIn)
 				}
 			}
 
@@ -92,6 +106,19 @@ struct ProjectListView: View {
 				HStack {
 					Text("Projects")
 					Spacer()
+					if store.isLoggedIn && !store.userOrgs.isEmpty {
+						Button {
+							showingOrgVaults = true
+						} label: {
+							HStack(spacing: 2) {
+								Image(systemName: "building.2")
+								Text("Org")
+							}
+							.font(.caption)
+						}
+						.buttonStyle(.plain)
+						.help("Import from org vault")
+					}
 					Button {
 						showingAddProject = true
 					} label: {
@@ -147,6 +174,16 @@ struct ProjectListView: View {
 			}
 			.buttonStyle(.plain)
 
+			if store.appEnvironment == .development {
+				Text("DEV")
+					.font(.system(size: 9, weight: .bold, design: .monospaced))
+					.foregroundStyle(.white)
+					.padding(.horizontal, 5)
+					.padding(.vertical, 2)
+					.background(.orange, in: RoundedRectangle(cornerRadius: 4))
+					.help("Connected to localhost:3000")
+			}
+
 			Spacer()
 
 			Button {
@@ -160,6 +197,17 @@ struct ProjectListView: View {
 		}
 		.padding(.horizontal, 12)
 		.padding(.vertical, 8)
+		.contextMenu {
+			if store.appEnvironment == .production {
+				Button("Switch to Development Server") {
+					store.switchEnvironment(to: .development)
+				}
+			} else {
+				Button("Switch to Production Server") {
+					store.switchEnvironment(to: .production)
+				}
+			}
+		}
 	}
 
 	@ViewBuilder
@@ -200,6 +248,7 @@ struct ProjectListView: View {
 							.foregroundStyle(.orange)
 							.help("Project path not found: \(project.path)")
 					}
+					syncStatusDot(for: project.id)
 				}
 				Text(abbreviatePath(project.path))
 					.font(.caption)
@@ -212,6 +261,24 @@ struct ProjectListView: View {
 				.padding(.horizontal, 6)
 				.padding(.vertical, 2)
 				.background(.quaternary, in: Capsule())
+		}
+	}
+
+	@ViewBuilder
+	private func syncStatusDot(for vaultId: String) -> some View {
+		switch store.syncStatus(for: vaultId) {
+		case .synced:
+			Circle()
+				.fill(.green)
+				.frame(width: 6, height: 6)
+				.help("Synced with cloud")
+		case .localChanges:
+			Circle()
+				.fill(.orange)
+				.frame(width: 6, height: 6)
+				.help("Local changes not pushed")
+		case .neverSynced:
+			EmptyView()
 		}
 	}
 

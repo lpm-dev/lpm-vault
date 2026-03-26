@@ -46,3 +46,19 @@ targets:
       - path: Tests
     dependencies:
       - target: LPMVault
+    settings:
+      base:
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/LPM Vault.app/Contents/MacOS/LPM Vault"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  LPMVault:
+    build:
+      targets:
+        LPMVault: [run, test, build]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - LPMVaultTests

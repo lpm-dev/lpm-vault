@@ -67,6 +67,12 @@ final class MockKeychainService: KeychainServiceProtocol {
 		envStorage.removeValue(forKey: vaultId)
 		return true
 	}
+
+	func removeFromSidebar(vaultId: String) -> Bool {
+		if shouldFail { return false }
+		// Only remove from listing, keep data (like real implementation)
+		return true
+	}
 }
 
 // MARK: - Mock Biometric Service

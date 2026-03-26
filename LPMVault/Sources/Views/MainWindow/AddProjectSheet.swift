@@ -6,6 +6,10 @@ struct AddProjectSheet: View {
 	@State private var name = ""
 	@State private var path = ""
 	@State private var detectedEnvFiles: [EnvFileInfo] = []
+	@State private var existingVaultId: String?
+	@State private var cloudVaultAvailable = false
+	@State private var cloudVaultOrg: String?  // org slug if found via org
+	@State private var checkingCloud = false
 	@FocusState private var focusedField: Field?
 
 	private enum Field {
@@ -65,6 +69,43 @@ struct AddProjectSheet: View {
 						Button("Browse...") {
 							selectFolder()
 						}
+					}
+				}
+
+				// Cloud vault detected
+				if cloudVaultAvailable, let vaultId = existingVaultId {
+					HStack(spacing: 8) {
+						Image(systemName: cloudVaultOrg != nil ? "building.2.fill" : "cloud.fill")
+							.foregroundStyle(.blue)
+						VStack(alignment: .leading, spacing: 2) {
+							if let org = cloudVaultOrg {
+								Text("Org vault found (\(org))")
+									.font(.subheadline)
+									.fontWeight(.medium)
+							} else {
+								Text("Cloud vault found")
+									.font(.subheadline)
+									.fontWeight(.medium)
+							}
+							Text("Vault ID: \(vaultId)")
+								.font(.caption)
+								.foregroundStyle(.secondary)
+						}
+						Spacer()
+						Text(cloudVaultOrg != nil ? "Pull from org after create" : "Will pull on create")
+							.font(.caption)
+							.foregroundStyle(.blue)
+					}
+					.padding(10)
+					.background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+				}
+
+				if checkingCloud {
+					HStack {
+						ProgressView().controlSize(.small)
+						Text("Checking cloud...")
+							.font(.caption)
+							.foregroundStyle(.secondary)
 					}
 				}
 
@@ -134,6 +175,67 @@ struct AddProjectSheet: View {
 				name = url.lastPathComponent
 			}
 			detectEnvFiles(at: url)
+			detectExistingVault(at: url)
+		}
+	}
+
+	/// Check if lpm.json exists and has a vault ID. If so, check cloud for data.
+	private func detectExistingVault(at url: URL) {
+		let lpmJsonPath = url.appendingPathComponent("lpm.json")
+		guard FileManager.default.fileExists(atPath: lpmJsonPath.path) else { return }
+
+		guard let data = try? Data(contentsOf: lpmJsonPath),
+			  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+			  let vaultId = json["vault"] as? String else { return }
+
+		existingVaultId = vaultId
+
+		// Also read project name from package.json if we haven't set one
+		if name.isEmpty || name == url.lastPathComponent {
+			let pkgJsonPath = url.appendingPathComponent("package.json")
+			if let pkgData = try? Data(contentsOf: pkgJsonPath),
+			   let pkg = try? JSONSerialization.jsonObject(with: pkgData) as? [String: Any],
+			   let pkgName = pkg["name"] as? String {
+				name = pkgName
+			}
+		}
+
+		// Check cloud for this vault — personal first, then org vaults
+		checkingCloud = true
+		Task.detached { [store] in
+			let syncService = SyncService(baseURL: store.appEnvironment.baseURL)
+			guard let authToken = store.readCLIAuthTokenPublic() else {
+				await MainActor.run { [self] in checkingCloud = false }
+				return
+			}
+
+			// 1. Check personal vault
+			let personalResult = await syncService.pull(authToken: authToken, vaultId: vaultId)
+			if personalResult?.encryptedBlob != nil {
+				await MainActor.run { [self] in
+					checkingCloud = false
+					cloudVaultAvailable = true
+					cloudVaultOrg = nil
+				}
+				return
+			}
+
+			// 2. Check org vaults
+			for org in store.userOrgs {
+				let orgResult = await syncService.pullOrg(
+					authToken: authToken, orgSlug: org.slug, vaultId: vaultId
+				)
+				if orgResult?.encryptedBlob != nil {
+					await MainActor.run { [self] in
+						checkingCloud = false
+						cloudVaultAvailable = true
+						cloudVaultOrg = org.slug
+					}
+					return
+				}
+			}
+
+			await MainActor.run { [self] in checkingCloud = false }
 		}
 	}
 
@@ -181,11 +283,37 @@ struct AddProjectSheet: View {
 			}
 		}
 
+		// Only create empty "default" if no .env files were imported at all
+		// (i.e., the user is adding a blank project)
 		if environments.isEmpty {
 			environments["default"] = [:]
 		}
+		// Remove empty environments (don't keep "default" if user imported .env.live and .env.dev)
+		environments = environments.filter { !$0.value.isEmpty || environments.count == 1 }
 
-		store.addProject(name: name, path: path, environments: environments)
+		// If existing vault ID found, use it instead of generating new one
+		if let vaultId = existingVaultId {
+			// Only auto-pull for personal vaults (org vaults need the org pull button)
+			let shouldAutoPull = cloudVaultAvailable && cloudVaultOrg == nil
+			store.addProjectWithVaultId(
+				vaultId: vaultId,
+				name: name,
+				path: path,
+				environments: environments,
+				pullAfterAdd: shouldAutoPull
+			)
+
+			// For org vaults, auto-pull from the detected org
+			if cloudVaultAvailable, let orgSlug = cloudVaultOrg {
+				Task.detached { [store] in
+					// Wait a moment for the project to be added to the store
+					try? await Task.sleep(nanoseconds: 500_000_000)
+					await store.pullFromOrg(orgSlug: orgSlug)
+				}
+			}
+		} else {
+			store.addProject(name: name, path: path, environments: environments)
+		}
 
 		// Select the first environment tab
 		if let firstEnv = environments.keys.sorted().first {

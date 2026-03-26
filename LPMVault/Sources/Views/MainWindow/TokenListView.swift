@@ -40,6 +40,9 @@ struct TokenListView: View {
 				}
 			}
 		}
+		.onAppear {
+			Task { await store.loadTokens() }
+		}
 		.alert(
 			"Revoke \"\(tokenToRevoke?.name ?? "")\"?",
 			isPresented: $showRevokeConfirmation
@@ -74,11 +77,24 @@ struct TokenListView: View {
 
 			Spacer()
 
-			// Create token
+			// Refresh + Create token
 			ToolbarButtonGroup {
-				ToolbarIconButton(icon: "plus", help: "Create token on lpm.dev") {
-					NSWorkspace.shared.open(URL(string: "https://lpm.dev/dashboard/settings/tokens")!)
+				ToolbarIconButton(icon: "arrow.clockwise", help: "Refresh tokens") {
+					Task { await store.loadTokens() }
 				}
+				.disabled(store.isLoadingTokens)
+
+				ToolbarIconButton(icon: "plus", help: "Create token on lpm.dev") {
+					let url = store.appEnvironment == .development
+						? "http://localhost:3000/dashboard/settings/tokens"
+						: "https://lpm.dev/dashboard/settings/tokens"
+					NSWorkspace.shared.open(URL(string: url)!)
+				}
+			}
+
+			if store.isLoadingTokens {
+				ProgressView()
+					.controlSize(.small)
 			}
 
 			// Search

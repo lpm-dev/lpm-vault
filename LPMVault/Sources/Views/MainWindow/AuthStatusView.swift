@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AuthStatusView: View {
 	@Bindable var store: VaultStore
+	@State private var showLogoutConfirmation = false
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -13,9 +14,17 @@ struct AuthStatusView: View {
 
 				Spacer()
 
-				ToolbarButtonGroup {
-					ToolbarIconButton(icon: "arrow.up.right.square", help: "Manage account on lpm.dev") {
-						NSWorkspace.shared.open(URL(string: "https://lpm.dev/dashboard/settings")!)
+				if store.isLoggedIn {
+					ToolbarButtonGroup {
+						ToolbarIconButton(icon: "arrow.up.right.square", help: "Manage account on lpm.dev") {
+							NSWorkspace.shared.open(URL(string: "https://lpm.dev/dashboard/settings")!)
+						}
+					}
+
+					ToolbarButtonGroup {
+						ToolbarIconButton(icon: "rectangle.portrait.and.arrow.right", help: "Sign out") {
+							showLogoutConfirmation = true
+						}
 					}
 				}
 			}
@@ -96,19 +105,66 @@ struct AuthStatusView: View {
 					}
 				}
 			} else {
-				VStack(spacing: 12) {
+				VStack(spacing: 16) {
 					Image(systemName: "person.crop.circle.badge.questionmark")
 						.font(.system(size: 48))
 						.foregroundStyle(.secondary)
+
 					Text("Not logged in")
 						.font(.title2)
 						.foregroundStyle(.secondary)
-					Text("Run `lpm login` in your terminal to authenticate")
+
+					Text("Sign in to sync secrets with the cloud, manage tokens, and share vaults with your team.")
 						.font(.callout)
 						.foregroundStyle(.tertiary)
+						.multilineTextAlignment(.center)
+						.frame(maxWidth: 320)
+
+					Button {
+						Task { await store.login() }
+					} label: {
+						Label("Sign In with Browser", systemImage: "globe")
+					}
+					.buttonStyle(.borderedProminent)
+					.controlSize(.large)
+					.disabled(store.isLoggingIn)
+
+					if store.isLoggingIn {
+						VStack(spacing: 8) {
+							ProgressView()
+								.controlSize(.small)
+							Text("Waiting for browser login...")
+								.font(.caption)
+								.foregroundStyle(.secondary)
+						}
+					}
+
+					if let error = store.error {
+						Text(error)
+							.font(.caption)
+							.foregroundStyle(.red)
+							.multilineTextAlignment(.center)
+							.frame(maxWidth: 300)
+					}
+
+					Text("Or run `lpm login` in your terminal")
+						.font(.caption)
+						.foregroundStyle(.quaternary)
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 			}
+		}
+		.confirmationDialog(
+			"Sign out?",
+			isPresented: $showLogoutConfirmation,
+			titleVisibility: .visible
+		) {
+			Button("Sign Out", role: .destructive) {
+				store.logout()
+			}
+			Button("Cancel", role: .cancel) {}
+		} message: {
+			Text("This will remove your auth token from this device. Your vault data stays in Keychain. You can sign in again anytime.")
 		}
 	}
 }
