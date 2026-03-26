@@ -51,6 +51,92 @@ final class SyncService {
 		return await get(url: url, token: authToken)
 	}
 
+	// MARK: - Org Sync
+
+	/// Push a vault to an org with X25519-wrapped keys for each member.
+	func pushOrg(
+		authToken: String,
+		orgSlug: String,
+		vaultId: String,
+		encryptedBlob: String,
+		wrappedKeys: [[String: String]]
+	) async -> SyncStatus? {
+		guard let url = URL(string: "/api/orgs/\(orgSlug)/vaults/\(vaultId)", relativeTo: apiBaseURL) else {
+			return nil
+		}
+
+		let body: [String: Any] = [
+			"encryptedBlob": encryptedBlob,
+			"wrappedKeys": wrappedKeys,
+		]
+
+		return await post(url: url, token: authToken, body: body)
+	}
+
+	/// Pull a vault from an org. Returns the encrypted blob + the user's wrapped key.
+	func pullOrg(
+		authToken: String,
+		orgSlug: String,
+		vaultId: String
+	) async -> SyncStatus? {
+		guard let url = URL(string: "/api/orgs/\(orgSlug)/vaults/\(vaultId)", relativeTo: apiBaseURL) else {
+			return nil
+		}
+		return await get(url: url, token: authToken)
+	}
+
+	// MARK: - Public Key Management
+
+	struct MemberPublicKey: Decodable {
+		let userId: String
+		let role: String
+		let publicKey: String?
+		let hasPublicKey: Bool
+	}
+
+	/// Fetch all org members' public keys.
+	func getOrgMemberKeys(authToken: String, orgSlug: String) async -> [MemberPublicKey] {
+		guard let url = URL(string: "/api/orgs/\(orgSlug)/members/public-keys", relativeTo: apiBaseURL) else {
+			return []
+		}
+		let result: [MemberPublicKey]? = await get(url: url, token: authToken)
+		return result ?? []
+	}
+
+	/// Upload the user's X25519 public key.
+	func uploadPublicKey(authToken: String, publicKey: String) async -> Bool {
+		guard let url = URL(string: "/api/users/me/public-key", relativeTo: apiBaseURL) else {
+			return false
+		}
+		let body: [String: Any] = ["publicKey": publicKey]
+		let _: SyncStatus? = await post(url: url, token: authToken, body: body)
+		return true
+	}
+
+	// MARK: - Org Vault Discovery
+
+	struct OrgVaultEntry: Decodable, Identifiable {
+		let vaultId: String
+		let version: Int?
+		let updatedAt: String?
+		let updatedBy: String?
+
+		var id: String { vaultId }
+	}
+
+	private struct OrgVaultsResponse: Decodable {
+		let vaults: [OrgVaultEntry]
+	}
+
+	/// List all shared vaults for an org.
+	func listOrgVaults(authToken: String, orgSlug: String) async -> [OrgVaultEntry] {
+		guard let url = URL(string: "/api/orgs/\(orgSlug)/vaults", relativeTo: apiBaseURL) else {
+			return []
+		}
+		let result: OrgVaultsResponse? = await get(url: url, token: authToken)
+		return result?.vaults ?? []
+	}
+
 	// MARK: - HTTP Helpers
 
 	private func get<T: Decodable>(url: URL, token: String) async -> T? {

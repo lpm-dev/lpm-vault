@@ -13,6 +13,7 @@ protocol KeychainServiceProtocol {
 		environments: [String: [String: String]]
 	) -> KeychainResult
 	func deleteProject(vaultId: String) -> Bool
+	func removeFromSidebar(vaultId: String) -> Bool
 
 	// Legacy compatibility
 	func getSecrets(vaultId: String) -> [String: String]?
@@ -202,7 +203,20 @@ final class KeychainService: KeychainServiceProtocol {
 		return true
 	}
 
+	/// Remove from sidebar only — keeps Keychain data intact.
+	/// The project can be re-added by opening the same folder.
+	func removeFromSidebar(vaultId: String) -> Bool {
+		var index = readIndex()
+		index.removeAll { $0.id == vaultId }
+		writeIndex(index)
+		return true
+	}
+
 	// MARK: - Private: Low-level Keychain Operations
+	//
+	// Uses Security framework with kSecAttrAccessible = kSecAttrAccessibleWhenUnlocked
+	// which avoids per-application ACL prompts entirely. Items are accessible to any
+	// process while the keychain is unlocked (which it always is when the user is logged in).
 
 	private func readItem(account: String) -> Data? {
 		let query: [String: Any] = [
@@ -210,6 +224,7 @@ final class KeychainService: KeychainServiceProtocol {
 			kSecAttrService as String: service,
 			kSecAttrAccount as String: account,
 			kSecReturnData as String: true,
+			kSecMatchLimit as String: kSecMatchLimitOne,
 		]
 
 		var result: AnyObject?
@@ -222,6 +237,7 @@ final class KeychainService: KeychainServiceProtocol {
 	}
 
 	private func writeItem(account: String, data: Data) -> Bool {
+		// Try update first
 		let searchQuery: [String: Any] = [
 			kSecClass as String: kSecClassGenericPassword,
 			kSecAttrService as String: service,
@@ -229,18 +245,29 @@ final class KeychainService: KeychainServiceProtocol {
 		]
 
 		let updateAttrs: [String: Any] = [
-			kSecValueData as String: data
+			kSecValueData as String: data,
 		]
 
 		let updateStatus = SecItemUpdate(searchQuery as CFDictionary, updateAttrs as CFDictionary)
-
 		if updateStatus == errSecSuccess {
 			return true
 		}
 
+		// Item doesn't exist — add new with permissive access
 		if updateStatus == errSecItemNotFound {
-			var addQuery = searchQuery
-			addQuery[kSecValueData as String] = data
+			var addQuery: [String: Any] = [
+				kSecClass as String: kSecClassGenericPassword,
+				kSecAttrService as String: service,
+				kSecAttrAccount as String: account,
+				kSecValueData as String: data,
+				kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+			]
+
+			// Create permissive access — allow any application
+			if let access = SecAccessCreateWithOwnerAndACL(0, 0, SecAccessOwnerType(kSecUseOnlyUID), nil, nil) {
+				addQuery[kSecAttrAccess as String] = access
+			}
+
 			let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
 			return addStatus == errSecSuccess
 		}

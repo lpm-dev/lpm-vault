@@ -5,6 +5,8 @@ private let sidebarColor = Color(hex: 0x191919)
 struct ContentView: View {
 	@Bindable var store: VaultStore
 	@State private var showingAddProject = false
+	@State private var showingOrgVaults = false
+	@State private var updateChecker = UpdateChecker()
 
 	var body: some View {
 		Group {
@@ -77,8 +79,34 @@ struct ContentView: View {
 	}
 
 	private var unlockedContent: some View {
+		VStack(spacing: 0) {
+			// Update banner
+			if updateChecker.updateAvailable, let latest = updateChecker.latestVersion {
+				HStack {
+					Image(systemName: "arrow.up.circle.fill")
+						.foregroundStyle(.blue)
+					Text("Update available: \(updateChecker.currentVersion) → \(latest)")
+						.font(.callout)
+					Spacer()
+					if let url = updateChecker.releaseURL {
+						Link("Download", destination: url)
+							.font(.callout.bold())
+					}
+					Button {
+						updateChecker.updateAvailable = false
+					} label: {
+						Image(systemName: "xmark")
+							.font(.caption)
+					}
+					.buttonStyle(.plain)
+				}
+				.padding(.horizontal, 16)
+				.padding(.vertical, 8)
+				.background(.blue.opacity(0.1))
+			}
+
 		HStack(spacing: 0) {
-			ProjectListView(store: store, showingAddProject: $showingAddProject)
+			ProjectListView(store: store, showingAddProject: $showingAddProject, showingOrgVaults: $showingOrgVaults)
 				.frame(width: effectiveSidebarWidth)
 				.background(sidebarColor)
 				.tint(Color(hex: 0x17793A))
@@ -112,12 +140,17 @@ struct ContentView: View {
 		.sheet(isPresented: $showingAddProject) {
 			AddProjectSheet(store: store)
 		}
+		.sheet(isPresented: $showingOrgVaults) {
+			OrgVaultsSheet(store: store)
+		}
 		.frame(minWidth: 700, minHeight: 450)
 		.onChange(of: store.selectedSidebarItem) { _, _ in store.resetAutoLock() }
 		.onChange(of: store.selectedProjectId) { _, _ in store.resetAutoLock() }
 		.onHover { hovering in
 			if hovering { store.resetAutoLock() }
 		}
+		} // end outer VStack
+		.task { await updateChecker.checkForUpdate() }
 	}
 
 	@ViewBuilder

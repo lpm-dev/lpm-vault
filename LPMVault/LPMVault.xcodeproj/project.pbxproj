@@ -11,6 +11,7 @@
 		0F13FF2AB12CF6C91E8957B7 /* AuthStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BAA26D2A3091F62FA6095E0 /* AuthStatusView.swift */; };
 		1502B1EBDA3730B341AC1C18 /* ClipboardManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA17FB26EDFE51906892C132 /* ClipboardManager.swift */; };
 		22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10F9038EDB0DF8525A388573 /* ModelTests.swift */; };
+		235B145D124AB17033C2979E /* VaultCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF8259DCF0973664EDEE6EA /* VaultCrypto.swift */; };
 		2F28F076F8507E567903E2DB /* AddProjectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 863346436CE92979B54D59D7 /* AddProjectSheet.swift */; };
 		36C0755D785CA0709C67EC3D /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE075C602D66BE2D2585F9A4 /* ContentView.swift */; };
 		38AFEC6E457B9C83373C397F /* BiometricService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09F3D97EC4B3C023F301406F /* BiometricService.swift */; };
@@ -20,11 +21,14 @@
 		49208572B2677AAF550F893E /* VaultProject.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69F8D1CB69E6B442457DAE3C /* VaultProject.swift */; };
 		4C60693621D2C5D37FF804A5 /* LPMUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BCB466A07FD38A73347A910 /* LPMUser.swift */; };
 		4F2594937CC0514ABE83290E /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 176F614BCA46D100B0DFE439 /* KeychainService.swift */; };
+		53BEA16BDEA8F0F8EACD5BB1 /* LoginService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCFFA64462F1369E71D85556 /* LoginService.swift */; };
+		5537F30818AE6D9798D8E644 /* CryptoInteropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */; };
 		57A001303744444FA2C886F0 /* VaultSecret.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19D08703D037783F67B61C56 /* VaultSecret.swift */; };
 		5CFF8C9C3F7163E4F9EB4625 /* LPMToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178A6AD4D7254CB4955C912E /* LPMToken.swift */; };
 		683ACA166A8ACAD4FEBE60B8 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */; };
 		70ED10E6A8102DE374267B56 /* ToolbarButtonGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F19439D47245FF226585465 /* ToolbarButtonGroup.swift */; };
 		79239F41A5347411FC68689B /* Mocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63C91F636E4DF09BA177F24F /* Mocks.swift */; };
+		807FC1E43E1B2323EF15E42B /* SyncConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761C4D9E223B7D35615B12C6 /* SyncConfirmationSheet.swift */; };
 		85D8879B93AEABF31B2C941C /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9FF906993D46DE0663FDBE6 /* Constants.swift */; };
 		89A4B6EF8C27BB520DC3C148 /* KeychainServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */; };
 		8B2777BE3740C9B343834C89 /* SecretRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E6BE2E9151A66D75D9576BD /* SecretRowView.swift */; };
@@ -34,8 +38,10 @@
 		B2A852F546218B41B5CEA658 /* LPMAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */; };
 		BAA9E2D180F712ECC9C1371F /* MaskedValueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D52677CF431D36EA77FD7C /* MaskedValueView.swift */; };
 		BC518002C99E73972765138F /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5DC3DA10D1CADAAA1391DC0 /* MenuBarView.swift */; };
+		CB784E0AA475268E9D5B3449 /* OrgVaultsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD5E1BFFFE44C134A0DAD2E /* OrgVaultsSheet.swift */; };
 		CD366278CA66735CA979B005 /* VaultStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFE4B46C5693219A4558C620 /* VaultStore.swift */; };
 		D0D7DD9246C17D99EC747F74 /* VaultStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7132CB4C93FB5453AD934A4F /* VaultStoreTests.swift */; };
+		DF99157CC6CB92499358AC6E /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36365D62B5851474D2DC178D /* UpdateChecker.swift */; };
 		F5F4B0C83146195EA9F0B875 /* AddSecretSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2707A4D8851C8C9EA46EB8C /* AddSecretSheet.swift */; };
 /* End PBXBuildFile section */
 
@@ -52,19 +58,23 @@
 /* Begin PBXFileReference section */
 		09F3D97EC4B3C023F301406F /* BiometricService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiometricService.swift; sourceTree = "<group>"; };
 		0BAA26D2A3091F62FA6095E0 /* AuthStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthStatusView.swift; sourceTree = "<group>"; };
+		0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CryptoInteropTests.swift; sourceTree = "<group>"; };
 		10F9038EDB0DF8525A388573 /* ModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelTests.swift; sourceTree = "<group>"; };
 		15998269700BB6B76AB5F9CD /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		176F614BCA46D100B0DFE439 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		178A6AD4D7254CB4955C912E /* LPMToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LPMToken.swift; sourceTree = "<group>"; };
 		19D08703D037783F67B61C56 /* VaultSecret.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSecret.swift; sourceTree = "<group>"; };
 		1BCB466A07FD38A73347A910 /* LPMUser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LPMUser.swift; sourceTree = "<group>"; };
+		36365D62B5851474D2DC178D /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
 		38D52677CF431D36EA77FD7C /* MaskedValueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaskedValueView.swift; sourceTree = "<group>"; };
+		4CD5E1BFFFE44C134A0DAD2E /* OrgVaultsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrgVaultsSheet.swift; sourceTree = "<group>"; };
 		5D6CBBC8709449B5DA33D8DD /* LPMVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LPMVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F19439D47245FF226585465 /* ToolbarButtonGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarButtonGroup.swift; sourceTree = "<group>"; };
 		63C91F636E4DF09BA177F24F /* Mocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Mocks.swift; sourceTree = "<group>"; };
 		69F8D1CB69E6B442457DAE3C /* VaultProject.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultProject.swift; sourceTree = "<group>"; };
 		7132CB4C93FB5453AD934A4F /* VaultStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultStoreTests.swift; sourceTree = "<group>"; };
 		72C3FAD279B500DCF05CDFC0 /* SidebarItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarItem.swift; sourceTree = "<group>"; };
+		761C4D9E223B7D35615B12C6 /* SyncConfirmationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncConfirmationSheet.swift; sourceTree = "<group>"; };
 		7CEFDB752A8CA0EF3E0007CF /* LPMOrg.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LPMOrg.swift; sourceTree = "<group>"; };
 		863346436CE92979B54D59D7 /* AddProjectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddProjectSheet.swift; sourceTree = "<group>"; };
 		8E6BE2E9151A66D75D9576BD /* SecretRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretRowView.swift; sourceTree = "<group>"; };
@@ -72,12 +82,14 @@
 		AA17FB26EDFE51906892C132 /* ClipboardManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardManager.swift; sourceTree = "<group>"; };
 		ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncService.swift; sourceTree = "<group>"; };
 		B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainServiceTests.swift; sourceTree = "<group>"; };
+		BCFFA64462F1369E71D85556 /* LoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginService.swift; sourceTree = "<group>"; };
 		BE075C602D66BE2D2585F9A4 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		C655825820A27FA2D32A160A /* TokenListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenListView.swift; sourceTree = "<group>"; };
 		CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LPMAPIService.swift; sourceTree = "<group>"; };
 		D2707A4D8851C8C9EA46EB8C /* AddSecretSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddSecretSheet.swift; sourceTree = "<group>"; };
 		DA8EA707752049B451C924F7 /* LPMVaultTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LPMVaultTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5DC3DA10D1CADAAA1391DC0 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		EBF8259DCF0973664EDEE6EA /* VaultCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCrypto.swift; sourceTree = "<group>"; };
 		EFC5AC77A4978E53EB9B07B2 /* SecretListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretListView.swift; sourceTree = "<group>"; };
 		F9FF906993D46DE0663FDBE6 /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		FE8F0F0F76EE2FBA670DC8E0 /* ProjectListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectListView.swift; sourceTree = "<group>"; };
@@ -128,6 +140,7 @@
 		6746521328BAA2FF63764522 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */,
 				B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */,
 				63C91F636E4DF09BA177F24F /* Mocks.swift */,
 				10F9038EDB0DF8525A388573 /* ModelTests.swift */,
@@ -162,9 +175,11 @@
 				863346436CE92979B54D59D7 /* AddProjectSheet.swift */,
 				D2707A4D8851C8C9EA46EB8C /* AddSecretSheet.swift */,
 				0BAA26D2A3091F62FA6095E0 /* AuthStatusView.swift */,
+				4CD5E1BFFFE44C134A0DAD2E /* OrgVaultsSheet.swift */,
 				FE8F0F0F76EE2FBA670DC8E0 /* ProjectListView.swift */,
 				EFC5AC77A4978E53EB9B07B2 /* SecretListView.swift */,
 				8E6BE2E9151A66D75D9576BD /* SecretRowView.swift */,
+				761C4D9E223B7D35615B12C6 /* SyncConfirmationSheet.swift */,
 				C655825820A27FA2D32A160A /* TokenListView.swift */,
 			);
 			path = MainWindow;
@@ -189,8 +204,11 @@
 				09F3D97EC4B3C023F301406F /* BiometricService.swift */,
 				AA17FB26EDFE51906892C132 /* ClipboardManager.swift */,
 				176F614BCA46D100B0DFE439 /* KeychainService.swift */,
+				BCFFA64462F1369E71D85556 /* LoginService.swift */,
 				CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */,
 				ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */,
+				36365D62B5851474D2DC178D /* UpdateChecker.swift */,
+				EBF8259DCF0973664EDEE6EA /* VaultCrypto.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -281,6 +299,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5537F30818AE6D9798D8E644 /* CryptoInteropTests.swift in Sources */,
 				89A4B6EF8C27BB520DC3C148 /* KeychainServiceTests.swift in Sources */,
 				79239F41A5347411FC68689B /* Mocks.swift in Sources */,
 				22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */,
@@ -305,15 +324,20 @@
 				8CDB854CC6FDB5D81FA4A298 /* LPMOrg.swift in Sources */,
 				5CFF8C9C3F7163E4F9EB4625 /* LPMToken.swift in Sources */,
 				4C60693621D2C5D37FF804A5 /* LPMUser.swift in Sources */,
+				53BEA16BDEA8F0F8EACD5BB1 /* LoginService.swift in Sources */,
 				BAA9E2D180F712ECC9C1371F /* MaskedValueView.swift in Sources */,
 				BC518002C99E73972765138F /* MenuBarView.swift in Sources */,
+				CB784E0AA475268E9D5B3449 /* OrgVaultsSheet.swift in Sources */,
 				0ED13E7746F2F95E4C608911 /* ProjectListView.swift in Sources */,
 				3F8533441163F96799FAC39F /* SecretListView.swift in Sources */,
 				8B2777BE3740C9B343834C89 /* SecretRowView.swift in Sources */,
 				4183C63D9ECD97870BB9BAE4 /* SidebarItem.swift in Sources */,
+				807FC1E43E1B2323EF15E42B /* SyncConfirmationSheet.swift in Sources */,
 				683ACA166A8ACAD4FEBE60B8 /* SyncService.swift in Sources */,
 				8C4C4910FF955A5E3891DCDA /* TokenListView.swift in Sources */,
 				70ED10E6A8102DE374267B56 /* ToolbarButtonGroup.swift in Sources */,
+				DF99157CC6CB92499358AC6E /* UpdateChecker.swift in Sources */,
+				235B145D124AB17033C2979E /* VaultCrypto.swift in Sources */,
 				49208572B2677AAF550F893E /* VaultProject.swift in Sources */,
 				57A001303744444FA2C886F0 /* VaultSecret.swift in Sources */,
 				CD366278CA66735CA979B005 /* VaultStore.swift in Sources */,
@@ -358,7 +382,7 @@
 					"@loader_path/../Frameworks",
 				);
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LPMVault.app/Contents/MacOS/LPMVault";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LPM Vault.app/Contents/MacOS/LPM Vault";
 			};
 			name = Release;
 		};
@@ -373,7 +397,7 @@
 					"@loader_path/../Frameworks",
 				);
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LPMVault.app/Contents/MacOS/LPMVault";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LPM Vault.app/Contents/MacOS/LPM Vault";
 			};
 			name = Debug;
 		};

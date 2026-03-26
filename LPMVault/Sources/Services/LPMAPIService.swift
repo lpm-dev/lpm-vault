@@ -63,40 +63,23 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 	// MARK: - Auth Token from Keychain
 
 	/// Read the CLI auth token from macOS Keychain.
-	/// The CLI stores it as service: "lpm-cli", account: "auth-token:{registry_url}"
+	/// Prioritizes the token matching this service's base URL.
 	private func readAuthToken() -> String? {
-		// Account keys to try (both Rust CLI and JS CLI use https://lpm.dev,
-		// legacy JS CLI may use plain "auth-token" without registry suffix)
-		let accountKeys = [
-			"auth-token:https://lpm.dev",
-			"auth-token:http://localhost:3000",
-			"auth-token",  // Legacy JS CLI unscoped key
-		]
-
-		// Try Security framework first (works for items created by this app or with -A flag)
-		for account in accountKeys {
-			let query: [String: Any] = [
-				kSecClass as String: kSecClassGenericPassword,
-				kSecAttrService as String: VaultConstants.cliAuthService,
-				kSecAttrAccount as String: account,
-				kSecReturnData as String: true,
-			]
-
-			var result: AnyObject?
-			let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-			if status == errSecSuccess,
-				let data = result as? Data,
-				let token = String(data: data, encoding: .utf8),
-				!token.isEmpty
-			{
-				return token
-			}
+		// Determine primary account based on what server we're talking to
+		let primary: String
+		if baseURL.host == "localhost" || baseURL.host == "127.0.0.1" {
+			primary = "auth-token:\(baseURL.absoluteString)"
+		} else {
+			primary = "auth-token:https://lpm.dev"
 		}
 
-		// Fallback: try macOS `security` CLI (can read keytar-created items —
-		// may prompt for Keychain password once, user clicks "Always Allow")
-		for account in accountKeys {
+		// Check primary first, then fallbacks
+		var accounts = [primary]
+		for fallback in ["auth-token:https://lpm.dev", "auth-token:http://localhost:3000", "auth-token"] {
+			if fallback != primary { accounts.append(fallback) }
+		}
+
+		for account in accounts {
 			if let token = readTokenViaSecurity(account: account) {
 				return token
 			}
@@ -119,21 +102,30 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 		process.standardOutput = pipe
 		process.standardError = FileHandle.nullDevice
 
+		let sem = DispatchSemaphore(value: 0)
+		var exitCode: Int32 = -1
+		process.terminationHandler = { p in
+			exitCode = p.terminationStatus
+			sem.signal()
+		}
+
 		do {
 			try process.run()
-			process.waitUntilExit()
+		} catch {
+			return nil
+		}
 
-			if process.terminationStatus == 0 {
-				let data = pipe.fileHandleForReading.readDataToEndOfFile()
-				let token = String(data: data, encoding: .utf8)?.trimmingCharacters(
-					in: .whitespacesAndNewlines)
-				if let token, !token.isEmpty {
-					return token
-				}
-			}
-		} catch {}
+		let result = sem.wait(timeout: .now() + 10)
+		if result == .timedOut {
+			process.terminate()
+			return nil
+		}
 
-		return nil
+		guard exitCode == 0 else { return nil }
+
+		let data = pipe.fileHandleForReading.readDataToEndOfFile()
+		let token = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+		return (token?.isEmpty == false) ? token : nil
 	}
 
 	// MARK: - HTTP Helpers

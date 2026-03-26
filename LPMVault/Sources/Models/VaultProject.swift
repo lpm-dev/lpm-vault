@@ -6,10 +6,16 @@ struct VaultProject: Identifiable, Hashable {
 	var path: String
 	var environments: [String: [String: String]]  // env name → secrets
 
-	/// All environment names, sorted. Always has at least "default".
+	/// All environment names (internal keys), sorted. Always has at least "default".
 	var environmentNames: [String] {
 		let names = Array(environments.keys).sorted()
 		return names.isEmpty ? ["default"] : names
+	}
+
+	/// Convert internal env name to display format: "default" → ".env", "live" → ".env.live"
+	static func displayName(for env: String) -> String {
+		if env == "default" { return ".env" }
+		return ".env.\(env)"
 	}
 
 	/// Get secrets for a specific environment.
