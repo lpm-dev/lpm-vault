@@ -1,22 +1,31 @@
 import SwiftUI
 
-/// Sheet that lists shared org vaults for discovery and import.
-/// Allows users to pull org vaults without needing lpm.json.
-struct OrgVaultsSheet: View {
+/// Sheet that lists personal cloud vaults for discovery and import.
+struct CloudVaultsSheet: View {
 	@Bindable var store: VaultStore
-	var fixedOrgSlug: String? = nil  // When set, skip org selector
 	@Environment(\.dismiss) private var dismiss
-	@State private var selectedOrg: String?
-	@State private var orgVaults: [SyncService.OrgVaultEntry] = []
+	@State private var vaults: [CloudVaultEntry] = []
 	@State private var isLoading = false
-	@State private var isPulling: String?  // vault ID being pulled
+	@State private var isPulling: String?
 	@State private var pullResult: String?
+
+	struct CloudVaultEntry: Identifiable, Decodable {
+		let vaultId: String
+		let version: Int?
+		let updatedAt: String?
+
+		var id: String { vaultId }
+	}
+
+	private struct ListResponse: Decodable {
+		let vaults: [CloudVaultEntry]
+	}
 
 	var body: some View {
 		VStack(spacing: 0) {
 			// Header
 			HStack {
-				Text("Org Vaults")
+				Text("Cloud Vaults")
 					.font(.headline)
 				Spacer()
 				Button {
@@ -32,44 +41,23 @@ struct OrgVaultsSheet: View {
 
 			Divider()
 
-			// Org selector (only if no fixed org and multiple orgs)
-			if fixedOrgSlug == nil && store.userOrgs.count > 1 {
-				Picker("Organization", selection: Binding(
-					get: { selectedOrg ?? store.userOrgs.first?.slug ?? "" },
-					set: { newValue in
-						selectedOrg = newValue
-						Task { await loadVaults(for: newValue) }
-					}
-				)) {
-					ForEach(store.userOrgs) { org in
-						Text(org.name).tag(org.slug)
-					}
-				}
-				.pickerStyle(.segmented)
-				.padding(.horizontal)
-				.padding(.vertical, 8)
-
-				Divider()
-			}
-
-			// Vault list
 			if isLoading {
 				VStack(spacing: 8) {
 					ProgressView()
-					Text("Loading org vaults...")
+					Text("Loading cloud vaults...")
 						.font(.callout)
 						.foregroundStyle(.secondary)
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
-			} else if orgVaults.isEmpty {
+			} else if vaults.isEmpty {
 				VStack(spacing: 12) {
-					Image(systemName: "building.2")
+					Image(systemName: "cloud")
 						.font(.system(size: 36))
 						.foregroundStyle(.secondary)
-					Text("No shared vaults")
+					Text("No cloud vaults")
 						.font(.title3)
 						.foregroundStyle(.secondary)
-					Text("Share a vault with this org using\n`lpm env vars share --org \(selectedOrg ?? "org-slug")`\nor the Share button in the toolbar.")
+					Text("Push a vault with `lpm env vars push`\nor the Push button in the toolbar.")
 						.font(.callout)
 						.foregroundStyle(.tertiary)
 						.multilineTextAlignment(.center)
@@ -77,7 +65,7 @@ struct OrgVaultsSheet: View {
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 			} else {
 				List {
-					ForEach(orgVaults) { vault in
+					ForEach(vaults) { vault in
 						vaultRow(vault)
 					}
 				}
@@ -95,15 +83,11 @@ struct OrgVaultsSheet: View {
 			}
 		}
 		.frame(width: 500, height: 400)
-		.task {
-			let org = fixedOrgSlug ?? store.userOrgs.first?.slug ?? ""
-			selectedOrg = org
-			await loadVaults(for: org)
-		}
+		.task { await loadVaults() }
 	}
 
 	@ViewBuilder
-	private func vaultRow(_ vault: SyncService.OrgVaultEntry) -> some View {
+	private func vaultRow(_ vault: CloudVaultEntry) -> some View {
 		let alreadyAdded = store.projects.contains { $0.id == vault.vaultId }
 
 		HStack(spacing: 12) {
@@ -150,36 +134,50 @@ struct OrgVaultsSheet: View {
 		.padding(.vertical, 4)
 	}
 
-	private func loadVaults(for orgSlug: String) async {
-		guard !orgSlug.isEmpty else { return }
+	private func loadVaults() async {
 		isLoading = true
-		let syncService = SyncService(baseURL: store.appEnvironment.baseURL)
 		guard let authToken = store.readCLIAuthTokenPublic() else {
 			isLoading = false
 			return
 		}
-		orgVaults = await syncService.listOrgVaults(authToken: authToken, orgSlug: orgSlug)
+
+		let syncService = SyncService(baseURL: store.appEnvironment.baseURL)
+		guard let url = URL(string: "/api/vaults", relativeTo: store.appEnvironment.baseURL) else {
+			isLoading = false
+			return
+		}
+
+		var request = URLRequest(url: url)
+		request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+
+		do {
+			let (data, response) = try await URLSession.shared.data(for: request)
+			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+				isLoading = false
+				return
+			}
+			let result = try JSONDecoder().decode(ListResponse.self, from: data)
+			vaults = result.vaults
+		} catch {
+			// silent fail
+		}
 		isLoading = false
 	}
 
-	private func importVault(_ vault: SyncService.OrgVaultEntry) async {
-		guard let orgSlug = selectedOrg else { return }
+	private func importVault(_ vault: CloudVaultEntry) async {
 		isPulling = vault.vaultId
 		pullResult = nil
 
-		// Create a project entry for this vault
 		store.addProjectWithVaultId(
 			vaultId: vault.vaultId,
-			name: "org-vault-\(vault.vaultId.prefix(8))",
+			name: "vault-\(vault.vaultId.prefix(8))",
 			path: "",
-			environments: ["default": [:]]
+			environments: ["default": [:]],
+			pullAfterAdd: true
 		)
 
-		// Wait for project to be added to store
-		try? await Task.sleep(nanoseconds: 500_000_000)
-
-		// Pull from org
-		await store.pullFromOrg(orgSlug: orgSlug)
+		// Wait for pull to complete
+		try? await Task.sleep(nanoseconds: 2_000_000_000)
 
 		isPulling = nil
 		if store.lastSyncStatus?.contains("Pulled") == true {

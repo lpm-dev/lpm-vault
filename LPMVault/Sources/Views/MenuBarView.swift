@@ -6,21 +6,6 @@ struct MenuBarView: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
-			// Expiring tokens warning
-			if !store.expiringTokens.isEmpty {
-				Button {
-					store.selectedSidebarItem = .personalTokens
-					showMainWindow()
-				} label: {
-					Label(
-						"\(store.expiringTokens.count) token\(store.expiringTokens.count == 1 ? "" : "s") expiring soon",
-						systemImage: "exclamationmark.triangle.fill"
-					)
-				}
-
-				Divider()
-			}
-
 			// Projects
 			if store.projects.isEmpty {
 				Text("No vaults yet")
@@ -30,7 +15,6 @@ struct MenuBarView: View {
 			} else {
 				ForEach(store.projects.prefix(5)) { project in
 					Button {
-						store.selectedSidebarItem = .project(project.id)
 						store.selectedProjectId = project.id
 						showMainWindow()
 					} label: {
@@ -59,18 +43,10 @@ struct MenuBarView: View {
 			// Auth status
 			if let user = store.currentUser {
 				Button {
-					store.selectedSidebarItem = .authStatus
+					store.showAuthStatus = true
 					showMainWindow()
 				} label: {
-					HStack {
-						Text("@\(user.username)")
-						if let email = user.email {
-							Text("·")
-								.foregroundStyle(.tertiary)
-							Text(email)
-								.foregroundStyle(.secondary)
-						}
-					}
+					Text("@\(user.username)")
 				}
 				Divider()
 			}
@@ -94,7 +70,6 @@ struct MenuBarView: View {
 	}
 
 	private func showMainWindow() {
-		// Regular app — just open window and activate. No policy dance needed.
 		openWindow(id: "main")
 		NSApplication.shared.activate(ignoringOtherApps: true)
 	}

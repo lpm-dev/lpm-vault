@@ -6,72 +6,42 @@ struct AuthStatusView: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
-			// Custom header bar (consistent with SecretListView / TokenListView)
-			HStack(spacing: 8) {
-				Text("Auth Status")
-					.font(.title3)
-					.fontWeight(.semibold)
-
+			HStack {
+				Text("Settings")
+					.font(.headline)
 				Spacer()
-
-				if store.isLoggedIn {
-					ToolbarButtonGroup {
-						ToolbarIconButton(icon: "arrow.up.right.square", help: "Manage account on lpm.dev") {
-							NSWorkspace.shared.open(URL(string: "https://lpm.dev/dashboard/settings")!)
-						}
-					}
-
-					ToolbarButtonGroup {
-						ToolbarIconButton(icon: "rectangle.portrait.and.arrow.right", help: "Sign out") {
-							showLogoutConfirmation = true
-						}
-					}
-				}
 			}
-			.padding(.horizontal, 16)
+			.padding(.horizontal, 12)
 			.padding(.vertical, 10)
 
 			Divider()
 
 			if let user = store.currentUser {
 				List {
+					// Profile
 					HStack(spacing: 12) {
-						// Avatar
 						if let avatarUrl = user.avatarUrl, let url = URL(string: avatarUrl) {
 							AsyncImage(url: url) { image in
 								image.resizable().scaledToFill()
 							} placeholder: {
-								Circle()
-									.fill(.quaternary)
-									.overlay {
-										Text(String(user.username.prefix(1)).uppercased())
-											.font(.title2)
-											.fontWeight(.medium)
-											.foregroundStyle(.secondary)
-									}
+								Circle().fill(.quaternary).overlay {
+									Text(String(user.username.prefix(1)).uppercased())
+										.font(.title2).fontWeight(.medium).foregroundStyle(.secondary)
+								}
 							}
-							.frame(width: 48, height: 48)
+							.frame(width: 40, height: 40)
 							.clipShape(Circle())
 						} else {
-							Circle()
-								.fill(.quaternary)
-								.frame(width: 48, height: 48)
-								.overlay {
-									Text(String(user.username.prefix(1)).uppercased())
-										.font(.title2)
-										.fontWeight(.medium)
-										.foregroundStyle(.secondary)
-								}
+							Circle().fill(.quaternary).frame(width: 40, height: 40).overlay {
+								Text(String(user.username.prefix(1)).uppercased())
+									.font(.title2).fontWeight(.medium).foregroundStyle(.secondary)
+							}
 						}
 
 						VStack(alignment: .leading, spacing: 2) {
 							Text("@\(user.username)")
-								.font(.title3)
+								.font(.callout)
 								.fontWeight(.semibold)
-							if let name = user.name, !name.isEmpty {
-								Text(name)
-									.foregroundStyle(.secondary)
-							}
 							if let email = user.email {
 								Text(email)
 									.font(.caption)
@@ -79,46 +49,58 @@ struct AuthStatusView: View {
 							}
 						}
 					}
-					.padding(.vertical, 4)
+					.padding(.vertical, 2)
 
-					if let plan = store.currentUser?.plan {
+					if let plan = user.plan {
 						Section("Plan") {
 							Label(plan.capitalized, systemImage: "creditcard")
 						}
 					}
 
-					Section("Token Summary") {
-						LabeledContent("Personal tokens") {
-							Text("\(store.personalTokens.count)")
+					// Environment toggle
+					Section("Server") {
+						HStack {
+							Label(
+								store.appEnvironment == .production ? "Production (lpm.dev)" : "Development (localhost:3000)",
+								systemImage: store.appEnvironment == .production ? "globe" : "laptopcomputer"
+							)
+							Spacer()
+							if store.appEnvironment == .development {
+								Text("DEV")
+									.font(.system(size: 9, weight: .bold, design: .monospaced))
+									.foregroundStyle(.white)
+									.padding(.horizontal, 5)
+									.padding(.vertical, 2)
+									.background(.orange, in: RoundedRectangle(cornerRadius: 4))
+							}
 						}
-						LabeledContent("Organizations") {
-							Text("\(store.userOrgs.count)")
+						Button(store.appEnvironment == .production ? "Switch to Development" : "Switch to Production") {
+							store.switchEnvironment(to: store.appEnvironment == .production ? .development : .production)
+						}
+					}
+
+					Section {
+						Button("Manage Account on lpm.dev") {
+							let url = store.appEnvironment == .development
+								? "http://localhost:3000/dashboard/settings"
+								: "https://lpm.dev/dashboard/settings"
+							NSWorkspace.shared.open(URL(string: url)!)
 						}
 
-						if !store.expiringTokens.isEmpty {
-							Label(
-								"\(store.expiringTokens.count) token\(store.expiringTokens.count == 1 ? "" : "s") expiring soon",
-								systemImage: "exclamationmark.triangle.fill"
-							)
-							.foregroundStyle(.orange)
+						Button("Sign Out", role: .destructive) {
+							showLogoutConfirmation = true
 						}
 					}
 				}
 			} else {
 				VStack(spacing: 16) {
 					Image(systemName: "person.crop.circle.badge.questionmark")
-						.font(.system(size: 48))
+						.font(.system(size: 40))
 						.foregroundStyle(.secondary)
 
 					Text("Not logged in")
-						.font(.title2)
+						.font(.title3)
 						.foregroundStyle(.secondary)
-
-					Text("Sign in to sync secrets with the cloud, manage tokens, and share vaults with your team.")
-						.font(.callout)
-						.foregroundStyle(.tertiary)
-						.multilineTextAlignment(.center)
-						.frame(maxWidth: 320)
 
 					Button {
 						Task { await store.login() }
@@ -126,45 +108,29 @@ struct AuthStatusView: View {
 						Label("Sign In with Browser", systemImage: "globe")
 					}
 					.buttonStyle(.borderedProminent)
-					.controlSize(.large)
 					.disabled(store.isLoggingIn)
 
 					if store.isLoggingIn {
-						VStack(spacing: 8) {
-							ProgressView()
-								.controlSize(.small)
-							Text("Waiting for browser login...")
-								.font(.caption)
-								.foregroundStyle(.secondary)
-						}
+						ProgressView().controlSize(.small)
+						Text("Waiting for browser...")
+							.font(.caption).foregroundStyle(.secondary)
 					}
 
 					if let error = store.error {
 						Text(error)
-							.font(.caption)
-							.foregroundStyle(.red)
+							.font(.caption).foregroundStyle(.red)
 							.multilineTextAlignment(.center)
-							.frame(maxWidth: 300)
+							.frame(maxWidth: 240)
 					}
-
-					Text("Or run `lpm login` in your terminal")
-						.font(.caption)
-						.foregroundStyle(.quaternary)
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 			}
 		}
-		.confirmationDialog(
-			"Sign out?",
-			isPresented: $showLogoutConfirmation,
-			titleVisibility: .visible
-		) {
-			Button("Sign Out", role: .destructive) {
-				store.logout()
-			}
+		.confirmationDialog("Sign out?", isPresented: $showLogoutConfirmation, titleVisibility: .visible) {
+			Button("Sign Out", role: .destructive) { store.logout() }
 			Button("Cancel", role: .cancel) {}
 		} message: {
-			Text("This will remove your auth token from this device. Your vault data stays in Keychain. You can sign in again anytime.")
+			Text("Your vault data stays in Keychain. You can sign in again anytime.")
 		}
 	}
 }

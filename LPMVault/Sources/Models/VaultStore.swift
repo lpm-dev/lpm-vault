@@ -57,20 +57,26 @@ final class VaultStore {
 	var searchQuery: String = ""
 	var error: String?
 
-	// Token state (Phase 3)
+	// Auth state
 	var currentUser: LPMUser?
 	var personalTokens: [LPMToken] = []
 	var orgTokens: [String: [LPMToken]] = [:]  // orgSlug → tokens
-	var selectedSidebarItem: SidebarItem?
 	var isLoadingTokens: Bool = false
 	var isLoggingIn: Bool = false
 
-	// Sync state (Phase 4)
+	// Navigation state
+	var selectedAccount: SelectedAccount = .personal
+	var showAuthStatus: Bool = false
+
+	// Sync state
 	var isSyncing: Bool = false
 	var lastSyncStatus: String?
 
 	// Sync metadata (persisted across launches)
 	var syncMetadata: [String: SyncMetadata] = [:]
+
+	// Vault → org associations (persisted in UserDefaults)
+	var vaultOrgAssociations: [String: String] = [:]  // vaultId → orgSlug
 
 	// Environment tab ordering (persisted across launches)
 	var environmentOrders: [String: [String]] = [:]
@@ -110,26 +116,23 @@ final class VaultStore {
 		}
 	}
 
-	var filteredProjects: [VaultProject] {
-		guard !searchQuery.isEmpty else { return projects }
-		let query = searchQuery.lowercased()
-		return projects.filter { project in
-			project.name.lowercased().contains(query)
-				|| project.secrets.keys.contains { $0.lowercased().contains(query) }
+	/// Vaults for the currently selected account context.
+	var activeVaults: [VaultProject] {
+		switch selectedAccount {
+		case .personal:
+			projects.filter { vaultOrgAssociations[$0.id] == nil }
+		case .org(let slug):
+			projects.filter { vaultOrgAssociations[$0.id] == slug }
 		}
 	}
 
-	var filteredPersonalTokens: [LPMToken] {
-		guard !searchQuery.isEmpty else { return personalTokens }
+	/// Filtered vaults for search.
+	var filteredVaults: [VaultProject] {
+		guard !searchQuery.isEmpty else { return activeVaults }
 		let query = searchQuery.lowercased()
-		return personalTokens.filter { $0.name.lowercased().contains(query) }
-	}
-
-	var filteredOrgTokens: [String: [LPMToken]] {
-		guard !searchQuery.isEmpty else { return orgTokens }
-		let query = searchQuery.lowercased()
-		return orgTokens.mapValues { tokens in
-			tokens.filter { $0.name.lowercased().contains(query) }
+		return activeVaults.filter { project in
+			project.name.lowercased().contains(query)
+				|| project.secrets.keys.contains { $0.lowercased().contains(query) }
 		}
 	}
 
@@ -150,6 +153,11 @@ final class VaultStore {
 		if let saved = UserDefaults.standard.string(forKey: "lpm-vault-environment"),
 		   let env = AppEnvironment(rawValue: saved) {
 			self.appEnvironment = env
+		}
+
+		// Load org associations
+		if let saved = UserDefaults.standard.dictionary(forKey: "lpm-vault-org-associations") as? [String: String] {
+			self.vaultOrgAssociations = saved
 		}
 	}
 
@@ -189,6 +197,30 @@ final class VaultStore {
 	/// Currently selected environment tab name
 	var selectedEnvironment: String = "default"
 
+	/// Create a new vault with just a name (no folder needed).
+	/// If orgSlug is provided, immediately shares with that org.
+	func createVault(name: String, orgSlug: String? = nil) {
+		let vaultId = UUID().uuidString.lowercased()
+		let environments: [String: [String: String]] = ["default": [:]]
+
+		addProjectWithVaultId(vaultId: vaultId, name: name, path: "", environments: environments)
+
+		if let slug = orgSlug {
+			associateVaultWithOrg(vaultId: vaultId, orgSlug: slug)
+			// Share with org after creation
+			Task.detached { [weak self] in
+				try? await Task.sleep(nanoseconds: 500_000_000)
+				await self?.pushToOrg(orgSlug: slug)
+			}
+		}
+	}
+
+	/// Associate a vault with an org (for column 2 filtering).
+	func associateVaultWithOrg(vaultId: String, orgSlug: String) {
+		vaultOrgAssociations[vaultId] = orgSlug
+		UserDefaults.standard.set(vaultOrgAssociations, forKey: "lpm-vault-org-associations")
+	}
+
 	/// Add a project with a specific vault ID (for re-adding existing vaults).
 	/// When `pullAfterAdd` is true, automatically pulls from cloud after the project is saved to Keychain and added to the store.
 	func addProjectWithVaultId(vaultId: String, name: String, path: String, environments: [String: [String: String]], pullAfterAdd: Bool = false) {
@@ -215,7 +247,7 @@ final class VaultStore {
 						$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
 					}
 					self?.selectedProjectId = vaultId
-					self?.selectedSidebarItem = .project(vaultId)
+					// selectedProjectId already set above
 					self?.writeLpmJson(vaultId: vaultId, projectPath: path)
 					print("[DEBUG] Project added to sidebar: \(name)")
 				case .failure(let err):
@@ -273,7 +305,7 @@ final class VaultStore {
 						$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
 					}
 					self?.selectedProjectId = vaultId
-					self?.selectedSidebarItem = .project(vaultId)
+					// selectedProjectId already set above
 					self?.writeLpmJson(vaultId: vaultId, projectPath: path)
 				case .failure(let err):
 					self?.error = err.description
