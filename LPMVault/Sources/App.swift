@@ -1,5 +1,62 @@
 import SwiftUI
 
+private enum TrafficLightStyle {
+	static let buttonSize: CGFloat = 6
+	static let buttonSpacing: CGFloat = 12
+	static let leadingInset: CGFloat = 14
+	static let topInset: CGFloat = 11
+
+	static func apply(to window: NSWindow) {
+		guard
+			let closeButton = window.standardWindowButton(.closeButton),
+			let miniaturizeButton = window.standardWindowButton(.miniaturizeButton),
+			let zoomButton = window.standardWindowButton(.zoomButton),
+			let titlebarContainer = closeButton.superview
+		else {
+			return
+		}
+
+		window.titleVisibility = .hidden
+		window.titlebarAppearsTransparent = true
+		window.toolbarStyle = .unifiedCompact
+
+		let buttons = [closeButton, miniaturizeButton, zoomButton]
+		let originY = titlebarContainer.bounds.height - topInset - buttonSize
+
+		for (index, button) in buttons.enumerated() {
+			button.setFrameSize(NSSize(width: buttonSize, height: buttonSize))
+			button.setFrameOrigin(
+				NSPoint(
+					x: leadingInset + CGFloat(index) * (buttonSize + buttonSpacing),
+					y: originY
+				)
+			)
+		}
+	}
+}
+
+private struct WindowConfigurator: NSViewRepresentable {
+	let configure: (NSWindow) -> Void
+
+	func makeNSView(context: Context) -> NSView {
+		let view = NSView()
+		DispatchQueue.main.async {
+			if let window = view.window {
+				configure(window)
+			}
+		}
+		return view
+	}
+
+	func updateNSView(_ nsView: NSView, context: Context) {
+		DispatchQueue.main.async {
+			if let window = nsView.window {
+				configure(window)
+			}
+		}
+	}
+}
+
 /// Handles dock click and prevents quit on window close.
 final class AppDelegate: NSObject, NSApplicationDelegate {
 	var openWindow: (() -> Void)?
@@ -16,24 +73,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			}
 		}
 
-		// Compact traffic lights
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-			for window in NSApplication.shared.windows {
-				window.titlebarAppearsTransparent = true
-				window.titleVisibility = .hidden
-				window.styleMask.insert(.fullSizeContentView)
-				// Use unified compact toolbar for smaller traffic lights
-				let toolbar = NSToolbar(identifier: "main")
-				toolbar.showsBaselineSeparator = false
-				toolbar.displayMode = .iconOnly
-				window.toolbar = toolbar
-				window.toolbarStyle = .unifiedCompact
-				// Move traffic lights closer together
-				if let closeButton = window.standardWindowButton(.closeButton) {
-					closeButton.superview?.superview?.frame.size.height = 28
-				}
-			}
-		}
 	}
 
 	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -60,6 +99,11 @@ struct LPMVaultApp: App {
 		// Main window — opens automatically on launch
 		Window("LPM Vault", id: "main") {
 			ContentView(store: store)
+				.background(
+					WindowConfigurator { window in
+						TrafficLightStyle.apply(to: window)
+					}
+				)
 				.onAppear {
 					store.loadProjects()
 					Task { await store.loadTokens() }
@@ -73,6 +117,7 @@ struct LPMVaultApp: App {
 		}
 		.defaultSize(width: 900, height: 550)
 		.windowStyle(.hiddenTitleBar)
+		.windowToolbarStyle(.unifiedCompact)
 		.commands {
 			CommandGroup(replacing: .newItem) {}
 		}
