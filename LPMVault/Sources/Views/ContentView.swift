@@ -1,12 +1,13 @@
 import SwiftUI
 
-private let sidebarColor = Color(hex: 0x191919)
+private let railColor = Color(hex: 0x141414)
+private let listColor = Color(hex: 0x191919)
 
 struct ContentView: View {
 	@Bindable var store: VaultStore
-	@State private var showingAddProject = false
-	@State private var showingOrgVaults = false
 	@State private var updateChecker = UpdateChecker()
+	@State private var listWidth: CGFloat = 240
+	@GestureState private var dragOffset: CGFloat = 0
 
 	var body: some View {
 		Group {
@@ -35,15 +36,11 @@ struct ContentView: View {
 				.foregroundStyle(.secondary)
 				.multilineTextAlignment(.center)
 
-			// Password field with inline Touch ID button (like Passwords app)
 			HStack(spacing: 0) {
 				SecureField("Enter password", text: .constant(""))
 					.textFieldStyle(.plain)
 					.focused($passwordFieldFocused)
-					.onSubmit {
-						// Enter key triggers system auth (password + Touch ID)
-						Task { await store.unlock() }
-					}
+					.onSubmit { Task { await store.unlock() } }
 
 				Button {
 					Task { await store.unlock() }
@@ -58,24 +55,16 @@ struct ContentView: View {
 			.padding(.horizontal, 10)
 			.padding(.vertical, 6)
 			.background(.quinary, in: RoundedRectangle(cornerRadius: 7))
-			.overlay(
-				RoundedRectangle(cornerRadius: 7)
-					.stroke(.quaternary, lineWidth: 1)
-			)
+			.overlay(RoundedRectangle(cornerRadius: 7).stroke(.quaternary, lineWidth: 1))
 			.frame(width: 280)
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
-		.frame(minWidth: 700, minHeight: 450)
-		.onAppear {
-			passwordFieldFocused = true
-		}
+		.frame(minWidth: 800, minHeight: 500)
+		.onAppear { passwordFieldFocused = true }
 	}
 
-	@State private var sidebarWidth: CGFloat = 240
-	@GestureState private var dragOffset: CGFloat = 0
-
-	private var effectiveSidebarWidth: CGFloat {
-		min(max(sidebarWidth + dragOffset, 180), 400)
+	private var effectiveListWidth: CGFloat {
+		min(max(listWidth + dragOffset, 180), 360)
 	}
 
 	private var unlockedContent: some View {
@@ -83,20 +72,15 @@ struct ContentView: View {
 			// Update banner
 			if updateChecker.updateAvailable, let latest = updateChecker.latestVersion {
 				HStack {
-					Image(systemName: "arrow.up.circle.fill")
-						.foregroundStyle(.blue)
+					Image(systemName: "arrow.up.circle.fill").foregroundStyle(.blue)
 					Text("Update available: \(updateChecker.currentVersion) → \(latest)")
 						.font(.callout)
 					Spacer()
 					if let url = updateChecker.releaseURL {
-						Link("Download", destination: url)
-							.font(.callout.bold())
+						Link("Download", destination: url).font(.callout.bold())
 					}
-					Button {
-						updateChecker.updateAvailable = false
-					} label: {
-						Image(systemName: "xmark")
-							.font(.caption)
+					Button { updateChecker.updateAvailable = false } label: {
+						Image(systemName: "xmark").font(.caption)
 					}
 					.buttonStyle(.plain)
 				}
@@ -105,104 +89,62 @@ struct ContentView: View {
 				.background(.blue.opacity(0.1))
 			}
 
-		HStack(spacing: 0) {
-			ProjectListView(store: store, showingAddProject: $showingAddProject, showingOrgVaults: $showingOrgVaults)
-				.frame(width: effectiveSidebarWidth)
-				.background(sidebarColor)
-				.tint(Color(hex: 0x17793A))
+			HStack(spacing: 0) {
+				// Column 1: Account rail
+				AccountRailView(store: store)
+					.background(railColor)
 
-			// Draggable resize handle
-			Color.clear
-				.frame(width: 6)
-				.overlay(Rectangle().fill(Color.gray.opacity(0.2)).frame(width: 1))
-				.contentShape(Rectangle())
-				.gesture(
-					DragGesture(minimumDistance: 1, coordinateSpace: .global)
-						.updating($dragOffset) { value, state, _ in
-							state = value.translation.width
-						}
-						.onEnded { value in
-							sidebarWidth = min(max(sidebarWidth + value.translation.width, 180), 400)
-						}
-				)
-				.onHover { hovering in
-					if hovering {
-						NSCursor.resizeLeftRight.push()
-					} else {
-						NSCursor.pop()
-					}
+				Divider()
+
+				// Column 2: Vault list
+				if store.showAuthStatus {
+					AuthStatusView(store: store)
+						.frame(width: effectiveListWidth)
+						.background(listColor)
+				} else {
+					VaultListView(store: store)
+						.frame(width: effectiveListWidth)
+						.background(listColor)
+						.tint(Color(hex: 0x17793A))
 				}
 
-			detailView
-				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				// Resize handle
+				Color.clear
+					.frame(width: 6)
+					.overlay(Rectangle().fill(Color.gray.opacity(0.2)).frame(width: 1))
+					.contentShape(Rectangle())
+					.gesture(
+						DragGesture(minimumDistance: 1, coordinateSpace: .global)
+							.updating($dragOffset) { value, state, _ in state = value.translation.width }
+							.onEnded { value in listWidth = min(max(listWidth + value.translation.width, 180), 360) }
+					)
+					.onHover { hovering in
+						if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+					}
+
+				// Column 3: Vault detail
+				VaultDetailView(store: store)
+					.frame(maxWidth: .infinity, maxHeight: .infinity)
+			}
+			.ignoresSafeArea(.container, edges: .top)
+			.frame(minWidth: 800, minHeight: 500)
+			.onChange(of: store.selectedAccount) { _, _ in store.resetAutoLock() }
+			.onChange(of: store.selectedProjectId) { _, _ in store.resetAutoLock() }
+			.onHover { hovering in if hovering { store.resetAutoLock() } }
 		}
-		.ignoresSafeArea(.container, edges: .top)
-		.sheet(isPresented: $showingAddProject) {
-			AddProjectSheet(store: store)
-		}
-		.sheet(isPresented: $showingOrgVaults) {
-			OrgVaultsSheet(store: store)
-		}
-		.frame(minWidth: 700, minHeight: 450)
-		.onChange(of: store.selectedSidebarItem) { _, _ in store.resetAutoLock() }
-		.onChange(of: store.selectedProjectId) { _, _ in store.resetAutoLock() }
-		.onHover { hovering in
-			if hovering { store.resetAutoLock() }
-		}
-		} // end outer VStack
 		.task { await updateChecker.checkForUpdate() }
 	}
+}
 
-	@ViewBuilder
-	private var detailView: some View {
-		switch store.selectedSidebarItem {
-		case .project:
-			if store.selectedProject != nil {
-				SecretListView(store: store)
-			} else {
-				emptyState
-			}
-		case .personalTokens:
-			TokenListView(
-				store: store,
-				title: "Personal Tokens",
-				tokens: store.filteredPersonalTokens,
-				orgSlug: nil
-			)
-		case .orgTokens(let slug):
-			TokenListView(
-				store: store,
-				title: "\(store.userOrgs.first { $0.slug == slug }?.name ?? slug) Tokens",
-				tokens: store.filteredOrgTokens[slug] ?? [],
-				orgSlug: slug
-			)
-		case .authStatus:
-			AuthStatusView(store: store)
-		case nil:
-			emptyState
-		}
-	}
+// MARK: - Color Hex Extension
 
-	private var emptyState: some View {
-		VStack(spacing: 12) {
-			Image(systemName: "lock.shield")
-				.font(.system(size: 48))
-				.foregroundStyle(.secondary)
-			Text("No project selected")
-				.font(.title2)
-				.foregroundStyle(.secondary)
-			if store.projects.isEmpty {
-				Text(
-					"Use `lpm env vars set` to create your first vault,\nor add a project manually."
-				)
-				.font(.callout)
-				.foregroundStyle(.tertiary)
-				.multilineTextAlignment(.center)
-				Button("Add Project") {
-					showingAddProject = true
-				}
-			}
-		}
-		.frame(maxWidth: .infinity, maxHeight: .infinity)
+extension Color {
+	init(hex: UInt, opacity: Double = 1.0) {
+		self.init(
+			red: Double((hex >> 16) & 0xFF) / 255.0,
+			green: Double((hex >> 8) & 0xFF) / 255.0,
+			blue: Double(hex & 0xFF) / 255.0,
+			opacity: opacity
+		)
 	}
 }

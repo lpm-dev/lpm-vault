@@ -15,6 +15,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 				NSApplication.shared.applicationIconImage = icon
 			}
 		}
+
+		// Compact traffic lights
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+			for window in NSApplication.shared.windows {
+				window.titlebarAppearsTransparent = true
+				window.titleVisibility = .hidden
+				window.styleMask.insert(.fullSizeContentView)
+				// Use unified compact toolbar for smaller traffic lights
+				let toolbar = NSToolbar(identifier: "main")
+				toolbar.showsBaselineSeparator = false
+				toolbar.displayMode = .iconOnly
+				window.toolbar = toolbar
+				window.toolbarStyle = .unifiedCompact
+				// Move traffic lights closer together
+				if let closeButton = window.standardWindowButton(.closeButton) {
+					closeButton.superview?.superview?.frame.size.height = 28
+				}
+			}
+		}
 	}
 
 	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
