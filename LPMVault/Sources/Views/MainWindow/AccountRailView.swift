@@ -11,25 +11,27 @@ struct AccountRailView: View {
 				store.selectedAccount = .personal
 				store.showAuthStatus = false
 			} label: {
-				avatarCircle(
+				avatarView(
 					url: store.currentUser?.avatarUrl,
 					fallback: store.currentUser?.username.prefix(1).uppercased() ?? "?",
-					isSelected: store.selectedAccount == .personal
+					isSelected: store.selectedAccount == .personal,
+					isOrg: false
 				)
 			}
 			.buttonStyle(.plain)
 			.help(store.currentUser?.username ?? "Personal")
 
-			// Org avatars
+			// Org avatars (rounded squares)
 			ForEach(store.userOrgs) { org in
 				Button {
 					store.selectedAccount = .org(org.slug)
 					store.showAuthStatus = false
 				} label: {
-					avatarCircle(
+					avatarView(
 						url: nil,
 						fallback: String(org.name.prefix(1)).uppercased(),
-						isSelected: store.selectedAccount == .org(org.slug)
+						isSelected: store.selectedAccount == .org(org.slug),
+						isOrg: true
 					)
 				}
 				.buttonStyle(.plain)
@@ -45,10 +47,11 @@ struct AccountRailView: View {
 				Image(systemName: "gearshape.fill")
 					.font(.system(size: 16))
 					.foregroundStyle(store.showAuthStatus ? .white : .secondary)
-					.frame(width: 40, height: 40)
+					.frame(width: 44, height: 44)
+					.contentShape(Rectangle())
 					.background(
 						store.showAuthStatus ? Color.accentColor : Color.clear,
-						in: RoundedRectangle(cornerRadius: 8)
+						in: RoundedRectangle(cornerRadius: 10)
 					)
 			}
 			.buttonStyle(.plain)
@@ -61,7 +64,8 @@ struct AccountRailView: View {
 				Image(systemName: "lock.open.fill")
 					.font(.system(size: 14))
 					.foregroundStyle(.secondary)
-					.frame(width: 40, height: 40)
+					.frame(width: 44, height: 44)
+					.contentShape(Rectangle())
 			}
 			.buttonStyle(.plain)
 			.help("Lock vault")
@@ -72,26 +76,26 @@ struct AccountRailView: View {
 	}
 
 	@ViewBuilder
-	private func avatarCircle(url: String?, fallback: String, isSelected: Bool) -> some View {
+	private func avatarView(url: String?, fallback: String, isSelected: Bool, isOrg: Bool) -> some View {
+		let shape = isOrg ? AnyShape(RoundedRectangle(cornerRadius: 10)) : AnyShape(Circle())
+
 		Group {
 			if let avatarUrl = url, let imageURL = URL(string: avatarUrl) {
 				AsyncImage(url: imageURL) { image in
 					image.resizable().scaledToFill()
 				} placeholder: {
-					textAvatar(fallback)
+					textAvatar(fallback, isOrg: isOrg)
 				}
 			} else {
-				textAvatar(fallback)
+				textAvatar(fallback, isOrg: isOrg)
 			}
 		}
 		.frame(width: 40, height: 40)
-		.clipShape(Circle())
+		.clipShape(shape)
 		.overlay(
-			Circle()
-				.stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+			shape.stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
 		)
 		.overlay(
-			// DEV badge
 			Group {
 				if store.appEnvironment == .development && isSelected {
 					Text("D")
@@ -99,19 +103,24 @@ struct AccountRailView: View {
 						.foregroundStyle(.white)
 						.frame(width: 12, height: 12)
 						.background(.orange, in: Circle())
-						.offset(x: 12, y: 12)
+						.offset(x: 14, y: 14)
 				}
 			}
 		)
 	}
 
-	private func textAvatar(_ text: String) -> some View {
-		Circle()
-			.fill(.quaternary)
-			.overlay {
-				Text(text)
-					.font(.system(size: 14, weight: .semibold))
-					.foregroundStyle(.secondary)
+	private func textAvatar(_ text: String, isOrg: Bool = false) -> some View {
+		Group {
+			if isOrg {
+				RoundedRectangle(cornerRadius: 10).fill(.quaternary)
+			} else {
+				Circle().fill(.quaternary)
 			}
+		}
+		.overlay {
+			Text(text)
+				.font(.system(size: 14, weight: .semibold))
+				.foregroundStyle(.secondary)
+		}
 	}
 }
