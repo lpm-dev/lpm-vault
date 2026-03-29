@@ -94,6 +94,7 @@ struct LPMVaultApp: App {
 	@NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 	@Environment(\.openWindow) private var openWindow
 	@State private var store = VaultStore()
+	@State private var isObscured = false
 
 	var body: some Scene {
 		// Main window — opens automatically on launch
@@ -104,6 +105,28 @@ struct LPMVaultApp: App {
 						TrafficLightStyle.apply(to: window)
 					}
 				)
+				.overlay {
+					if isObscured {
+						ZStack {
+							Color(nsColor: .windowBackgroundColor)
+							VStack(spacing: 12) {
+								Image(systemName: "lock.shield")
+									.font(.system(size: 40))
+									.foregroundStyle(.secondary)
+								Text("LPM Vault")
+									.font(.headline)
+									.foregroundStyle(.secondary)
+							}
+						}
+						.ignoresSafeArea()
+					}
+				}
+				.onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+					isObscured = true
+				}
+				.onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+					isObscured = false
+				}
 				.onAppear {
 					store.loadProjects()
 					Task { await store.loadTokens() }

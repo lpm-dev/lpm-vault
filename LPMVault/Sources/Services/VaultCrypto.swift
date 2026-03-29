@@ -227,7 +227,11 @@ enum VaultCrypto {
 	/// Store an X25519 private key in Keychain.
 	static func writeX25519PrivateKey(_ privateKey: Data) {
 		let b64 = privateKey.base64EncodedString()
+		// Delete existing entry first
 		runSecurity(args: ["delete-generic-password", "-s", "dev.lpm.vault", "-a", x25519Account])
+		// -A flag: shared with Rust CLI which reads this key for org vault sync.
+		// Acceptable because: macOS encrypts at rest, lifecycle scripts are blocked,
+		// physical access + unlocked session = full compromise regardless.
 		runSecurity(args: ["add-generic-password", "-A", "-s", "dev.lpm.vault", "-a", x25519Account, "-w", b64])
 	}
 

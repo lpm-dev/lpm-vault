@@ -15,6 +15,10 @@ protocol KeychainServiceProtocol {
 	func deleteProject(vaultId: String) -> Bool
 	func removeFromSidebar(vaultId: String) -> Bool
 
+	// Generic data storage (for metadata, associations, etc.)
+	func readData(account: String) -> Data?
+	@discardableResult func writeData(account: String, data: Data) -> Bool
+
 	// Legacy compatibility
 	func getSecrets(vaultId: String) -> [String: String]?
 	func saveSecrets(
@@ -136,6 +140,16 @@ final class KeychainService: KeychainServiceProtocol {
 		return saveData(vaultId: vaultId, projectName: projectName, projectPath: projectPath, data: data)
 	}
 
+	// Generic data storage
+	func readData(account: String) -> Data? {
+		readItem(account: account)
+	}
+
+	@discardableResult
+	func writeData(account: String, data: Data) -> Bool {
+		writeItem(account: account, data: data)
+	}
+
 	// Legacy compatibility
 	func getSecrets(vaultId: String) -> [String: String]? {
 		getEnvironments(vaultId: vaultId)?["default"]
@@ -253,20 +267,19 @@ final class KeychainService: KeychainServiceProtocol {
 			return true
 		}
 
-		// Item doesn't exist — add new with permissive access
+		// Item doesn't exist — add new
 		if updateStatus == errSecItemNotFound {
-			var addQuery: [String: Any] = [
+			// No explicit ACL set — relies on kSecAttrAccessible for access control.
+			// Vault secrets are intentionally accessible to other apps in the same user
+			// session (shared with Rust CLI) while the Mac is unlocked. macOS Keychain
+			// encrypts at rest when locked.
+			let addQuery: [String: Any] = [
 				kSecClass as String: kSecClassGenericPassword,
 				kSecAttrService as String: service,
 				kSecAttrAccount as String: account,
 				kSecValueData as String: data,
-				kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+				kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
 			]
-
-			// Create permissive access — allow any application
-			if let access = SecAccessCreateWithOwnerAndACL(0, 0, SecAccessOwnerType(kSecUseOnlyUID), nil, nil) {
-				addQuery[kSecAttrAccess as String] = access
-			}
 
 			let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
 			return addStatus == errSecSuccess

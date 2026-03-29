@@ -11,14 +11,21 @@ enum VaultConstants {
 	static let maxVaultSizeWarning = 90 * 1024
 
 	/// Clipboard auto-clear delay in seconds
-	static let clipboardClearDelay: TimeInterval = 30
+	static let clipboardClearDelay: TimeInterval = 10
 
-	/// Biometric auth cache duration in seconds (5 minutes)
-	static let biometricCacheDuration: TimeInterval = 5 * 60
+	/// Biometric auth cache duration in seconds (2 minutes)
+	static let biometricCacheDuration: TimeInterval = 2 * 60
 
 	/// LPM API base URL
 	static let apiBaseURL = URL(string: "https://lpm.dev")!
 
 	/// LPM dev API base URL
-	static let apiDevBaseURL = URL(string: "http://localhost:3000")!
+	static var apiDevBaseURL: URL {
+		#if DEBUG
+		return URL(string: "http://localhost:3000")!
+		#else
+		// Release builds must use HTTPS — prevent accidental HTTP in production
+		return URL(string: "https://dev.lpm.dev")!
+		#endif
+	}
 }

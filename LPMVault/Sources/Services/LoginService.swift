@@ -16,12 +16,14 @@ enum LoginService {
 		case listenerFailed(String)
 		case timeout
 		case noToken
+		case stateMismatch
 
 		var errorDescription: String? {
 			switch self {
 			case .listenerFailed(let msg): "Login server failed: \(msg)"
 			case .timeout: "Login timed out after 2 minutes. Try again."
 			case .noToken: "No token received from login callback"
+			case .stateMismatch: "Login state mismatch — possible CSRF attack. Try again."
 			}
 		}
 	}
@@ -31,6 +33,8 @@ enum LoginService {
 	static func login(registryURL: String = "https://lpm.dev") async throws -> String {
 		let lock = NSLock()
 		var resumed = false
+		// Random state parameter to prevent CSRF on the callback
+		let loginState = UUID().uuidString
 
 		return try await withCheckedThrowingContinuation { continuation in
 			let resumeOnce: (Result<String, Error>) -> Void = { result in
@@ -56,7 +60,7 @@ enum LoginService {
 						resumeOnce(.failure(LoginError.listenerFailed("no port assigned")))
 						return
 					}
-					let url = URL(string: "\(registryURL)/cli/login?port=\(port)")!
+					let url = URL(string: "\(registryURL)/cli/login?port=\(port)&state=\(loginState)")!
 					DispatchQueue.main.async {
 						NSWorkspace.shared.open(url)
 					}
@@ -68,7 +72,7 @@ enum LoginService {
 			}
 
 			listener.newConnectionHandler = { connection in
-				handleConnection(connection) { result in
+				handleConnection(connection, expectedState: loginState) { result in
 					resumeOnce(result)
 					listener.cancel()
 				}
@@ -95,8 +99,10 @@ enum LoginService {
 		// Delete existing entry first (security add fails if exists)
 		runSecurity(args: ["delete-generic-password", "-s", service, "-a", account])
 
-		// Add with -A flag (allow all apps — needed for CLI + Swift app sharing)
-		runSecurity(args: ["add-generic-password", "-A", "-s", service, "-a", account, "-w", token])
+		// Auth token does NOT use -A — only the creating app (`security` CLI)
+		// can read without prompt. Unlike vault secrets, auth tokens don't need
+		// cross-app access because both CLI and Swift app write their own tokens.
+		runSecurity(args: ["add-generic-password", "-s", service, "-a", account, "-w", token])
 	}
 
 	/// Remove auth token from Keychain.
@@ -110,6 +116,7 @@ enum LoginService {
 
 	private static func handleConnection(
 		_ connection: NWConnection,
+		expectedState: String,
 		completion: @escaping (Result<String, Error>) -> Void
 	) {
 		connection.start(queue: .global(qos: .userInitiated))
@@ -120,7 +127,9 @@ enum LoginService {
 				return
 			}
 
-			if let token = extractToken(from: request) {
+			if let (token, callbackState) = extractTokenAndState(from: request),
+				callbackState == expectedState
+			{
 				let html = """
 					<html>
 					<head>
@@ -151,14 +160,19 @@ enum LoginService {
 		}
 	}
 
-	/// Parse `GET /callback?token=lpm_xxx HTTP/1.1` from the raw HTTP request.
-	private static func extractToken(from request: String) -> String? {
+	/// Parse `GET /callback?token=lpm_xxx&state=uuid HTTP/1.1` from the raw HTTP request.
+	/// Returns (token, state) tuple for CSRF validation.
+	private static func extractTokenAndState(from request: String) -> (token: String, state: String)? {
 		guard let firstLine = request.split(separator: "\r\n").first else { return nil }
 		let parts = firstLine.split(separator: " ")
 		guard parts.count >= 2 else { return nil }
 		let path = String(parts[1])
 		guard let components = URLComponents(string: path) else { return nil }
-		return components.queryItems?.first(where: { $0.name == "token" })?.value
+		let queryItems = components.queryItems ?? []
+		guard let token = queryItems.first(where: { $0.name == "token" })?.value,
+			let state = queryItems.first(where: { $0.name == "state" })?.value
+		else { return nil }
+		return (token, state)
 	}
 
 	@discardableResult
