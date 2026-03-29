@@ -17,6 +17,7 @@ enum LoginService {
 		case timeout
 		case noToken
 		case stateMismatch
+		case rateLimited
 
 		var errorDescription: String? {
 			switch self {
@@ -24,13 +25,22 @@ enum LoginService {
 			case .timeout: "Login timed out after 2 minutes. Try again."
 			case .noToken: "No token received from login callback"
 			case .stateMismatch: "Login state mismatch — possible CSRF attack. Try again."
+			case .rateLimited: "Too many login attempts. Please wait a few seconds before trying again."
 			}
 		}
 	}
 
+	/// Tracks the last login attempt time to enforce a 5-second cooldown.
+	private static var lastLoginAttempt: Date?
+
 	/// Start the login flow. Opens the browser and waits for the callback token.
 	/// Returns the raw token string on success.
+	/// Enforces a 5-second cooldown between attempts to prevent abuse.
 	static func login(registryURL: String = "https://lpm.dev") async throws -> String {
+		if let last = lastLoginAttempt, Date().timeIntervalSince(last) < 5 {
+			throw LoginError.rateLimited
+		}
+		lastLoginAttempt = Date()
 		let lock = NSLock()
 		var resumed = false
 		// Random state parameter to prevent CSRF on the callback
@@ -60,6 +70,12 @@ enum LoginService {
 						resumeOnce(.failure(LoginError.listenerFailed("no port assigned")))
 						return
 					}
+					// SECURITY NOTE: The login URL includes an ephemeral localhost port (e.g., port=52341).
+					// This appears in browser history but poses minimal risk because:
+					// 1. The port is random and used only once
+					// 2. The state parameter prevents replay attacks even if the URL is discovered
+					// 3. The callback token is single-use and validated server-side
+					// Accepted risk — inherent to the OAuth callback flow pattern.
 					let url = URL(string: "\(registryURL)/cli/login?port=\(port)&state=\(loginState)")!
 					DispatchQueue.main.async {
 						NSWorkspace.shared.open(url)

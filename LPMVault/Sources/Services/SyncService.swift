@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Handles vault cloud sync via LPM API.
@@ -7,7 +8,8 @@ final class SyncService {
 
 	init(baseURL: URL = VaultConstants.apiBaseURL) {
 		self.apiBaseURL = baseURL
-		self.session = URLSession(configuration: .ephemeral)
+		self.session = URLSession(
+			configuration: .ephemeral, delegate: PinnedSessionDelegate(), delegateQueue: nil)
 	}
 
 	// MARK: - Personal Sync
@@ -148,6 +150,9 @@ final class SyncService {
 			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
 				return nil
 			}
+			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
+				return nil
+			}
 			return try JSONDecoder().decode(T.self, from: data)
 		} catch {
 			return nil
@@ -164,6 +169,9 @@ final class SyncService {
 		do {
 			let (data, response) = try await session.data(for: request)
 			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+				return nil
+			}
+			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
 				return nil
 			}
 			return try JSONDecoder().decode(T.self, from: data)

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 /// E2E encryption for vault sync — 1:1 port of Rust crypto.rs.
 ///
@@ -211,28 +212,98 @@ enum VaultCrypto {
 		return SymmetricKey(data: aesKeyData)
 	}
 
-	// MARK: - X25519 Key Storage (Keychain)
+	// MARK: - X25519 Key Storage (Keychain via Security.framework)
 
 	private static let x25519Account = "__x25519_private_key__"
+	private static let x25519Service = VaultConstants.keychainService
 
-	/// Read the stored X25519 private key from Keychain.
-	static func readX25519PrivateKey() -> Data? {
+	/// Store an X25519 private key in Keychain using Security.framework.
+	/// Uses `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — no iCloud sync, no backup extraction.
+	/// Compatible with Rust CLI's `keyring` crate (same service/account, Security.framework under the hood).
+	private static func storeX25519Key(_ keyData: Data, account: String) throws {
+		let query: [String: Any] = [
+			kSecClass as String: kSecClassGenericPassword,
+			kSecAttrService as String: x25519Service,
+			kSecAttrAccount as String: account,
+			kSecValueData as String: keyData.base64EncodedString().data(using: .utf8)!,
+			kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+		]
+
+		// Delete existing if present
+		SecItemDelete(query as CFDictionary)
+
+		let status = SecItemAdd(query as CFDictionary, nil)
+		guard status == errSecSuccess else {
+			throw CryptoError.keychainWriteFailed(status)
+		}
+	}
+
+	/// Load an X25519 private key from Keychain using Security.framework.
+	private static func loadX25519Key(account: String) -> Data? {
+		let query: [String: Any] = [
+			kSecClass as String: kSecClassGenericPassword,
+			kSecAttrService as String: x25519Service,
+			kSecAttrAccount as String: account,
+			kSecReturnData as String: true,
+			kSecMatchLimit as String: kSecMatchLimitOne,
+		]
+
+		var result: AnyObject?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+		guard status == errSecSuccess, let data = result as? Data else {
+			return nil
+		}
+		// Stored as base64 string for compatibility with Rust CLI's keyring crate
+		guard let b64String = String(data: data, encoding: .utf8) else { return nil }
+		return Data(base64Encoded: b64String)
+	}
+
+	/// Read X25519 private key from Keychain via legacy `security` CLI (migration fallback).
+	private static func readX25519PrivateKeyLegacy() -> Data? {
 		let (code, output) = runSecurity(args: [
-			"find-generic-password", "-s", "dev.lpm.vault", "-a", x25519Account, "-w",
+			"find-generic-password", "-s", x25519Service, "-a", x25519Account, "-w",
 		])
 		guard code == 0, !output.isEmpty else { return nil }
 		return Data(base64Encoded: output)
 	}
 
+	/// Delete legacy `security` CLI entry for X25519 key.
+	private static func deleteX25519LegacyEntry() {
+		runSecurity(args: ["delete-generic-password", "-s", x25519Service, "-a", x25519Account])
+	}
+
+	/// Read the stored X25519 private key from Keychain.
+	/// Tries Security.framework first, then falls back to legacy `security` CLI
+	/// for backward compatibility. If found via legacy path, migrates to Security.framework.
+	static func readX25519PrivateKey() -> Data? {
+		// Primary path: Security.framework
+		if let key = loadX25519Key(account: x25519Account) {
+			return key
+		}
+
+		// Migration fallback: read from legacy `security` CLI entry
+		guard let legacyKey = readX25519PrivateKeyLegacy() else { return nil }
+
+		// Migrate: store via Security.framework and delete old entry
+		do {
+			try storeX25519Key(legacyKey, account: x25519Account)
+			deleteX25519LegacyEntry()
+		} catch {
+			// Migration failed — still return the key so we don't break the user
+		}
+
+		return legacyKey
+	}
+
 	/// Store an X25519 private key in Keychain.
 	static func writeX25519PrivateKey(_ privateKey: Data) {
-		let b64 = privateKey.base64EncodedString()
-		// Delete existing entry first
-		runSecurity(args: ["delete-generic-password", "-s", "dev.lpm.vault", "-a", x25519Account])
-		// -A flag: shared with Rust CLI which reads this key for org vault sync.
-		// Acceptable because: macOS encrypts at rest, lifecycle scripts are blocked,
-		// physical access + unlocked session = full compromise regardless.
-		runSecurity(args: ["add-generic-password", "-A", "-s", "dev.lpm.vault", "-a", x25519Account, "-w", b64])
+		do {
+			try storeX25519Key(privateKey, account: x25519Account)
+		} catch {
+			// Log but don't crash — this is called during key generation
+			print("VaultCrypto: failed to write X25519 key to Keychain: \(error)")
+		}
 	}
 
 	/// Get or create the X25519 keypair. Returns (privateKeyData, publicKeyData).
@@ -257,6 +328,7 @@ enum VaultCrypto {
 		case invalidIVSize(Int)
 		case invalidKeySize(Int)
 		case invalidUTF8
+		case keychainWriteFailed(OSStatus)
 
 		var errorDescription: String? {
 			switch self {
@@ -272,6 +344,8 @@ enum VaultCrypto {
 				"Invalid key size: \(n) bytes (expected 32)"
 			case .invalidUTF8:
 				"Decrypted data is not valid UTF-8"
+			case .keychainWriteFailed(let status):
+				"Failed to write to Keychain (OSStatus: \(status))"
 			}
 		}
 	}

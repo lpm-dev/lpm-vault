@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 
@@ -19,7 +20,8 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 
 	init(baseURL: URL = VaultConstants.apiBaseURL) {
 		self.baseURL = baseURL
-		self.session = URLSession(configuration: .ephemeral)
+		self.session = URLSession(
+			configuration: .ephemeral, delegate: PinnedSessionDelegate(), delegateQueue: nil)
 	}
 
 	// MARK: - User
@@ -141,6 +143,9 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
 				return nil
 			}
+			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
+				return nil
+			}
 			return try JSONDecoder().decode(T.self, from: data)
 		} catch {
 			return nil
@@ -155,8 +160,11 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 		request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
 		do {
-			let (_, response) = try await session.data(for: request)
+			let (data, response) = try await session.data(for: request)
 			guard let http = response as? HTTPURLResponse else { return false }
+			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
+				return false
+			}
 			return http.statusCode == 200
 		} catch {
 			return false

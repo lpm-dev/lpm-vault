@@ -1,4 +1,107 @@
+import CryptoKit
 import Foundation
+
+// MARK: - TOFU (Trust-On-First-Use) for Org Member Keys
+
+struct KeyChangeWarning: Identifiable {
+	let id = UUID()
+	let memberId: String
+	let oldFingerprint: String
+	let newFingerprint: String
+}
+
+struct OrgKeyTrust: Codable {
+	/// member_id → SHA256 hex fingerprint of their public key
+	var trustedFingerprints: [String: String]
+
+	init(trustedFingerprints: [String: String] = [:]) {
+		self.trustedFingerprints = trustedFingerprints
+	}
+
+	/// Verify member public keys against trusted fingerprints.
+	/// - New members are accepted automatically (TOFU).
+	/// - Changed keys for existing members produce warnings.
+	/// - Returns warnings for any key changes detected.
+	mutating func verify(members: [(id: String, publicKey: Data)]) -> [KeyChangeWarning] {
+		var warnings: [KeyChangeWarning] = []
+
+		for member in members {
+			let fingerprint = SHA256.hash(data: member.publicKey)
+				.map { String(format: "%02x", $0) }.joined()
+
+			if let existing = trustedFingerprints[member.id] {
+				if existing != fingerprint {
+					warnings.append(KeyChangeWarning(
+						memberId: member.id,
+						oldFingerprint: existing,
+						newFingerprint: fingerprint
+					))
+				}
+				// Same key — no action needed
+			} else {
+				// New member — trust on first use
+				trustedFingerprints[member.id] = fingerprint
+			}
+		}
+
+		return warnings
+	}
+
+	// MARK: - Keychain Persistence
+
+	private static let service = VaultConstants.keychainService
+
+	/// Load trusted fingerprints for an org from Keychain.
+	static func load(orgSlug: String) -> OrgKeyTrust {
+		let account = "__org_keys__\(orgSlug)"
+		let query: [String: Any] = [
+			kSecClass as String: kSecClassGenericPassword,
+			kSecAttrService as String: service,
+			kSecAttrAccount as String: account,
+			kSecReturnData as String: true,
+			kSecMatchLimit as String: kSecMatchLimitOne,
+		]
+
+		var result: AnyObject?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+		guard status == errSecSuccess,
+			  let data = result as? Data,
+			  let trust = try? JSONDecoder().decode(OrgKeyTrust.self, from: data)
+		else {
+			return OrgKeyTrust()
+		}
+		return trust
+	}
+
+	/// Save trusted fingerprints for an org to Keychain.
+	func save(orgSlug: String) {
+		let account = "__org_keys__\(orgSlug)"
+		guard let data = try? JSONEncoder().encode(self) else { return }
+
+		let searchQuery: [String: Any] = [
+			kSecClass as String: kSecClassGenericPassword,
+			kSecAttrService as String: Self.service,
+			kSecAttrAccount as String: account,
+		]
+
+		let updateAttrs: [String: Any] = [
+			kSecValueData as String: data,
+		]
+
+		let updateStatus = SecItemUpdate(searchQuery as CFDictionary, updateAttrs as CFDictionary)
+		if updateStatus == errSecItemNotFound {
+			let addQuery: [String: Any] = [
+				kSecClass as String: kSecClassGenericPassword,
+				kSecAttrService as String: Self.service,
+				kSecAttrAccount as String: account,
+				kSecValueData as String: data,
+				kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+			]
+			SecItemAdd(addQuery as CFDictionary, nil)
+		}
+	}
+}
 
 // MARK: - App Environment
 
@@ -78,11 +181,17 @@ final class VaultStore {
 	// Vault → org associations (persisted in Keychain)
 	var vaultOrgAssociations: [String: String] = [:]  // vaultId → orgSlug
 
-	// Environment tab ordering (persisted across launches)
+	// SECURITY NOTE: Environment tab ordering is stored in UserDefaults (not Keychain).
+	// This is intentional — it contains only the display order of environment names
+	// (e.g., ["default", "staging", "production"]), not secret values.
+	// Moving to Keychain would add unnecessary complexity for non-sensitive UI state.
 	var environmentOrders: [String: [String]] = [:]
 
 	// App environment (dev vs live)
 	var appEnvironment: AppEnvironment = .production
+
+	// TOFU key change warnings (shown in UI)
+	var keyChangeWarnings: [KeyChangeWarning] = []
 
 	// MARK: - Dependencies
 
@@ -927,6 +1036,25 @@ final class VaultStore {
 					lastSyncStatus = "failed"
 				}
 				return
+			}
+
+			// 2b. TOFU verification — detect key changes for existing members
+			var orgTrust = OrgKeyTrust.load(orgSlug: orgSlug)
+			let membersForTOFU: [(id: String, publicKey: Data)] = membersWithKeys.compactMap { member in
+				guard let pubKeyB64 = member.publicKey,
+					  let pubKeyData = Data(base64Encoded: pubKeyB64) else { return nil }
+				return (id: member.userId, publicKey: pubKeyData)
+			}
+			let warnings = orgTrust.verify(members: membersForTOFU)
+			orgTrust.save(orgSlug: orgSlug)
+
+			if !warnings.isEmpty {
+				await MainActor.run {
+					self.keyChangeWarnings = warnings
+				}
+				for w in warnings {
+					print("WARNING: Org member \(w.memberId) public key changed! Old: \(w.oldFingerprint), New: \(w.newFingerprint)")
+				}
 			}
 
 			// 3. Encrypt secrets with random AES key
