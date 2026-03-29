@@ -41,7 +41,8 @@ struct VaultDetailView: View {
 		guard !localSearch.isEmpty else { return currentSecrets }
 		let query = localSearch.lowercased()
 		return currentSecrets.filter {
-			$0.key.lowercased().contains(query) || $0.value.lowercased().contains(query)
+			$0.key.lowercased().contains(query)
+			// Do NOT search values — prevents shoulder surfing via search
 		}
 	}
 
@@ -367,10 +368,16 @@ struct VaultDetailView: View {
 		HStack(spacing: 4) {
 			Group {
 				Button("Copy All") {
-					let envString = project.sortedSecrets(for: store.selectedEnvironment)
-						.map { "\($0.key)=\($0.value)" }
-						.joined(separator: "\n")
-					ClipboardManager.shared.copy(envString, clearAfter: 60)
+					Task {
+						let success = await BiometricService().authenticate(
+							reason: "Copy all secrets to clipboard"
+						)
+						guard success else { return }
+						let envString = project.sortedSecrets(for: store.selectedEnvironment)
+							.map { "\($0.key)=\($0.value)" }
+							.joined(separator: "\n")
+						ClipboardManager.shared.copy(envString, clearAfter: 15)
+					}
 				}
 				Button("Import") { importIntoCurrentEnvironment(project) }
 				Button("Export") { exportToFile() }
@@ -555,7 +562,13 @@ struct VaultDetailView: View {
 			if (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
 				value = String(value.dropFirst().dropLast())
 			}
-			if !key.isEmpty { result[key] = value }
+			// Validate key name (same rules as M8 in VaultStore.addSecret)
+			guard !key.isEmpty,
+				  key.count <= 256,
+				  key.allSatisfy({ !$0.isNewline && $0 != "\0" }) else {
+				continue
+			}
+			result[key] = value
 		}
 		return result
 	}

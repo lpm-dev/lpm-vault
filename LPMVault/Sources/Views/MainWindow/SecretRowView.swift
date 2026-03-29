@@ -37,6 +37,8 @@ struct SecretRowView: View {
 						.font(.system(.body, design: .monospaced))
 						.foregroundStyle(.primary)
 						.lineLimit(1)
+						.accessibilityHidden(true)
+						.accessibilityLabel("Secret value")
 						.onTapGesture(count: 2) {
 							startEdit()
 						}
@@ -72,7 +74,7 @@ struct SecretRowView: View {
 						.buttonStyle(.bordered)
 						.controlSize(.small)
 						.tint(copyFeedback ? .green : nil)
-						.help(copyFeedback ? "Copied! Clears in 30s" : "Copy value")
+						.help(copyFeedback ? "Copied! Clears in 10s" : "Copy value")
 
 						// Edit
 						Button {

@@ -15,6 +15,8 @@ struct MaskedValueView: View {
 		if isRevealed {
 			Text(value)
 				.font(.system(.body, design: .monospaced))
+				.accessibilityHidden(true)
+				.accessibilityLabel("Secret value")
 		} else {
 			Text(String(repeating: "\u{2022}", count: maskLength))
 				.font(.system(.body, design: .monospaced))

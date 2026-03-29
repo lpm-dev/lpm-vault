@@ -75,7 +75,7 @@ final class VaultStore {
 	// Sync metadata (persisted across launches)
 	var syncMetadata: [String: SyncMetadata] = [:]
 
-	// Vault → org associations (persisted in UserDefaults)
+	// Vault → org associations (persisted in Keychain)
 	var vaultOrgAssociations: [String: String] = [:]  // vaultId → orgSlug
 
 	// Environment tab ordering (persisted across launches)
@@ -155,8 +155,9 @@ final class VaultStore {
 			self.appEnvironment = env
 		}
 
-		// Load org associations
-		if let saved = UserDefaults.standard.dictionary(forKey: "lpm-vault-org-associations") as? [String: String] {
+		// Load org associations from Keychain
+		if let data = keychainService.readData(account: "__org_associations__"),
+		   let saved = try? JSONDecoder().decode([String: String].self, from: data) {
 			self.vaultOrgAssociations = saved
 		}
 	}
@@ -218,18 +219,28 @@ final class VaultStore {
 	/// Associate a vault with an org (for column 2 filtering).
 	func associateVaultWithOrg(vaultId: String, orgSlug: String) {
 		vaultOrgAssociations[vaultId] = orgSlug
-		UserDefaults.standard.set(vaultOrgAssociations, forKey: "lpm-vault-org-associations")
+		saveOrgAssociations()
+	}
+
+	private func saveOrgAssociations() {
+		if let data = try? JSONEncoder().encode(vaultOrgAssociations) {
+			keychainService.writeData(account: "__org_associations__", data: data)
+		}
 	}
 
 	/// Add a project with a specific vault ID (for re-adding existing vaults).
 	/// When `pullAfterAdd` is true, automatically pulls from cloud after the project is saved to Keychain and added to the store.
 	func addProjectWithVaultId(vaultId: String, name: String, path: String, environments: [String: [String: String]], pullAfterAdd: Bool = false) {
+		#if DEBUG
 		print("[DEBUG] addProjectWithVaultId: \(name) vaultId=\(vaultId) envs=\(environments.keys.sorted()) pullAfterAdd=\(pullAfterAdd)")
+		#endif
 		let project = VaultProject(id: vaultId, name: name, path: path, environments: environments)
 
 		// Run Keychain write off main thread to prevent UI freeze
 		Task.detached { [keychainService, weak self] in
+			#if DEBUG
 			print("[DEBUG] Task.detached started for saveEnvironments")
+			#endif
 			let result = keychainService.saveEnvironments(
 				vaultId: vaultId,
 				projectName: name,
@@ -237,11 +248,15 @@ final class VaultStore {
 				environments: environments
 			)
 
+			#if DEBUG
 			print("[DEBUG] saveEnvironments returned: \(result)")
+			#endif
 			await MainActor.run {
 				switch result {
 				case .success, .successWithWarning:
+					#if DEBUG
 					print("[DEBUG] Keychain save success, updating UI")
+					#endif
 					self?.projects.append(project)
 					self?.projects.sort {
 						$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -249,23 +264,31 @@ final class VaultStore {
 					self?.selectedProjectId = vaultId
 					// selectedProjectId already set above
 					self?.writeLpmJson(vaultId: vaultId, projectPath: path)
+					#if DEBUG
 					print("[DEBUG] Project added to sidebar: \(name)")
+					#endif
 				case .failure(let err):
+					#if DEBUG
 					print("[DEBUG] Keychain save FAILED: \(err)")
+					#endif
 					self?.error = err.description
 				}
 			}
 
 			// Pull from cloud AFTER project is fully added to the store
 			if pullAfterAdd {
+				#if DEBUG
 				print("[DEBUG] Starting cloud pull after project add")
+				#endif
 				await self?.pullFromCloud()
 			}
 		}
 	}
 
 	func addProject(name: String, path: String, environments: [String: [String: String]]? = nil) {
+		#if DEBUG
 		print("[DEBUG] addProject: \(name) path=\(path)")
+		#endif
 		let envs = environments ?? ["default": [:]]
 
 		// Run all Keychain operations off main thread
@@ -447,6 +470,8 @@ final class VaultStore {
 	func addEnvironment(to projectId: String, name: String, secrets: [String: String] = [:]) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
 		guard !name.isEmpty else { return }
+		guard name.count <= 64 else { return }
+		guard name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }) else { return }
 		guard project.environments[name] == nil else { return }
 		project.environments[name] = secrets
 		saveAndUpdate(project)
@@ -478,6 +503,8 @@ final class VaultStore {
 	func duplicateEnvironment(in projectId: String, from source: String, to newName: String) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
 		guard !newName.isEmpty else { return }
+		guard newName.count <= 64 else { return }
+		guard newName.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }) else { return }
 		guard project.environments[newName] == nil else { return }
 		guard let sourceSecrets = project.environments[source] else { return }
 		project.environments[newName] = sourceSecrets
@@ -497,6 +524,8 @@ final class VaultStore {
 	func renameEnvironment(in projectId: String, from oldName: String, to newName: String) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
 		guard !newName.isEmpty else { return }
+		guard newName.count <= 64 else { return }
+		guard newName.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }) else { return }
 		guard project.environments[newName] == nil else { return }
 		guard let secrets = project.environments[oldName] else { return }
 		project.environments.removeValue(forKey: oldName)
@@ -539,6 +568,8 @@ final class VaultStore {
 	func addSecret(to projectId: String, key: String, value: String) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
 		guard !key.isEmpty else { return }
+		guard key.count <= 256 else { return }
+		guard key.allSatisfy({ !$0.isNewline && $0 != "\0" }) else { return }
 
 		var envSecrets = project.environments[selectedEnvironment] ?? [:]
 		envSecrets[key] = value
@@ -652,6 +683,8 @@ final class VaultStore {
 		await MainActor.run {
 			isUnlocked = success
 			if success {
+				// Reload secrets from Keychain (they were cleared on lock)
+				loadProjects()
 				scheduleAutoLock()
 			}
 		}
@@ -662,6 +695,10 @@ final class VaultStore {
 		autoLockTask = nil
 		isUnlocked = false
 		biometricService.resetCache()
+		// Clear decrypted secrets from memory to reduce exposure window
+		for i in projects.indices {
+			projects[i].environments = projects[i].environments.mapValues { _ in [:] }
+		}
 	}
 
 	/// Reset the auto-lock timer (call on user interaction while unlocked)
@@ -712,6 +749,10 @@ final class VaultStore {
 
 		await MainActor.run { isSyncing = true; lastSyncStatus = nil }
 
+		// Pass local expectedVersion to server for optimistic concurrency control
+		// force allows overwriting server data but the server still increments version
+		let expectedVersion = syncMetadata[project.id]?.lastVersion
+
 		do {
 			// Push ALL non-empty environments
 			let nonEmptyEnvs = project.environments.filter { !$0.value.isEmpty }
@@ -732,6 +773,7 @@ final class VaultStore {
 				vaultId: project.id,
 				encryptedBlob: blob,
 				wrappedKey: wrapped,
+				expectedVersion: force ? nil : expectedVersion,
 				force: force
 			)
 
@@ -789,6 +831,18 @@ final class VaultStore {
 		}
 
 		do {
+			// Replay protection: reject version downgrades
+			if let localVersion = syncMetadata[project.id]?.lastVersion,
+			   let serverVersion = result.version,
+			   serverVersion < localVersion {
+				await MainActor.run {
+					error = "Version downgrade rejected (local: v\(localVersion), server: v\(serverVersion))"
+					isSyncing = false
+					lastSyncStatus = "failed"
+				}
+				return
+			}
+
 			let jsonString = try VaultCrypto.decryptFromSync(
 				authToken: authToken,
 				encryptedBlob: blob,
@@ -974,6 +1028,18 @@ final class VaultStore {
 				return
 			}
 
+			// Replay protection: reject version downgrades
+			if let localVersion = syncMetadata[project.id]?.lastVersion,
+			   let serverVersion = result.version,
+			   serverVersion < localVersion {
+				await MainActor.run {
+					error = "Version downgrade rejected (local: v\(localVersion), server: v\(serverVersion))"
+					isSyncing = false
+					lastSyncStatus = "failed"
+				}
+				return
+			}
+
 			// Unwrap AES key with our X25519 private key
 			let aesKey = try VaultCrypto.unwrapKeyFromSender(wrapped: wrapped, privateKey: privKey)
 			let plaintext = try VaultCrypto.decrypt(key: aesKey, encoded: blob)
@@ -1113,7 +1179,7 @@ final class VaultStore {
 	}
 
 	private func loadSyncMetadata() {
-		if let data = UserDefaults.standard.data(forKey: Self.syncMetadataKey),
+		if let data = keychainService.readData(account: "__sync_metadata__"),
 		   let decoded = try? JSONDecoder().decode([String: SyncMetadata].self, from: data) {
 			syncMetadata = decoded
 		}
@@ -1121,7 +1187,7 @@ final class VaultStore {
 
 	private func saveSyncMetadata() {
 		if let data = try? JSONEncoder().encode(syncMetadata) {
-			UserDefaults.standard.set(data, forKey: Self.syncMetadataKey)
+			keychainService.writeData(account: "__sync_metadata__", data: data)
 		}
 	}
 

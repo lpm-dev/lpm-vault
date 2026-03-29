@@ -6,6 +6,7 @@ import Foundation
 
 final class MockKeychainService: KeychainServiceProtocol {
 	var envStorage: [String: (name: String, path: String, environments: [String: [String: String]])] = [:]
+	var dataStorage: [String: Data] = [:]
 	var shouldFail = false
 	var failureError: KeychainError = .accessDenied
 
@@ -71,6 +72,17 @@ final class MockKeychainService: KeychainServiceProtocol {
 	func removeFromSidebar(vaultId: String) -> Bool {
 		if shouldFail { return false }
 		// Only remove from listing, keep data (like real implementation)
+		return true
+	}
+
+	func readData(account: String) -> Data? {
+		dataStorage[account]
+	}
+
+	@discardableResult
+	func writeData(account: String, data: Data) -> Bool {
+		if shouldFail { return false }
+		dataStorage[account] = data
 		return true
 	}
 }
