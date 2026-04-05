@@ -143,36 +143,44 @@ enum LoginService {
 				return
 			}
 
-			if let (token, callbackState) = extractTokenAndState(from: request),
-				callbackState == expectedState
-			{
-				let html = """
-					<html>
-					<head>
-					<style>
-					body{font-family:system-ui,-apple-system;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#111;color:#fff}
-					div{text-align:center}
-					h1{color:#17793A;margin-bottom:8px}
-					p{color:#888;font-size:15px}
-					</style>
-					</head>
-					<body><div>
-					<h1>Login successful</h1>
-					<p>You can close this tab and return to LPM Vault.</p>
-					</div></body></html>
-					"""
-				let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n\(html)"
-				connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
-					connection.cancel()
-				})
-				completion(.success(token))
-			} else {
+			guard let (token, callbackState) = extractTokenAndState(from: request) else {
 				let response = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><body><p>Login failed — no token received.</p></body></html>"
 				connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
 					connection.cancel()
 				})
 				completion(.failure(LoginError.noToken))
+				return
 			}
+
+			guard callbackState == expectedState else {
+				let response = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><body><p>Login failed — state mismatch (possible CSRF).</p></body></html>"
+				connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
+					connection.cancel()
+				})
+				completion(.failure(LoginError.stateMismatch))
+				return
+			}
+
+			let html = """
+				<html>
+				<head>
+				<style>
+				body{font-family:system-ui,-apple-system;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#111;color:#fff}
+				div{text-align:center}
+				h1{color:#17793A;margin-bottom:8px}
+				p{color:#888;font-size:15px}
+				</style>
+				</head>
+				<body><div>
+				<h1>Login successful</h1>
+				<p>You can close this tab and return to LPM Vault.</p>
+				</div></body></html>
+				"""
+			let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n\(html)"
+			connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
+				connection.cancel()
+			})
+			completion(.success(token))
 		}
 	}
 

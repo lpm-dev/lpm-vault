@@ -6,6 +6,7 @@ import Security
 
 protocol LPMAPIServiceProtocol {
 	func fetchCurrentUser() async -> LPMUser?
+	func fetchCurrentUser(authToken: String) async -> LPMUser?
 	func fetchPersonalTokens() async -> [LPMToken]
 	func revokePersonalToken(id: String) async -> Bool
 	func fetchOrgTokens(orgSlug: String) async -> [LPMToken]
@@ -29,6 +30,12 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 	func fetchCurrentUser() async -> LPMUser? {
 		guard let token = readAuthToken() else { return nil }
 		return await get(path: "/api/user/me", token: token)
+	}
+
+	/// Validate a specific token against the server (used during login
+	/// to verify the token works before persisting it to Keychain).
+	func fetchCurrentUser(authToken: String) async -> LPMUser? {
+		return await get(path: "/api/user/me", token: authToken)
 	}
 
 	// MARK: - Personal Tokens
@@ -143,7 +150,7 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
 				return nil
 			}
-			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
+			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token) else {
 				return nil
 			}
 			return try JSONDecoder().decode(T.self, from: data)
@@ -162,7 +169,7 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 		do {
 			let (data, response) = try await session.data(for: request)
 			guard let http = response as? HTTPURLResponse else { return false }
-			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
+			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token) else {
 				return false
 			}
 			return http.statusCode == 200

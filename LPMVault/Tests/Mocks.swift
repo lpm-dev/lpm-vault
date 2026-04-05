@@ -123,6 +123,10 @@ final class MockAPIService: LPMAPIServiceProtocol {
 		user
 	}
 
+	func fetchCurrentUser(authToken: String) async -> LPMUser? {
+		user
+	}
+
 	func fetchPersonalTokens() async -> [LPMToken] {
 		personalTokens
 	}

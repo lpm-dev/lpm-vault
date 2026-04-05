@@ -133,6 +133,9 @@ struct ContentView: View {
 			.onHover { hovering in if hovering { store.resetAutoLock() } }
 		}
 		.task { await updateChecker.checkForUpdate() }
+		.sheet(isPresented: $store.showKeyApprovalSheet) {
+			KeyApprovalSheet(store: store)
+		}
 	}
 }
 

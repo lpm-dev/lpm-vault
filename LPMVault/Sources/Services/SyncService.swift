@@ -150,7 +150,7 @@ final class SyncService {
 			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
 				return nil
 			}
-			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
+			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token) else {
 				return nil
 			}
 			return try JSONDecoder().decode(T.self, from: data)
@@ -171,7 +171,7 @@ final class SyncService {
 			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
 				return nil
 			}
-			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
+			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token) else {
 				return nil
 			}
 			return try JSONDecoder().decode(T.self, from: data)
