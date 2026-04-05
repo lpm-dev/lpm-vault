@@ -45,6 +45,9 @@
 		E678A38B2928662F13B3E3D3 /* AccountRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C64B98FB47B4B40EB4D55EB0 /* AccountRailView.swift */; };
 		F199462174412DD3BCE43883 /* VaultDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FEA1200FEEE801C4081E8DA /* VaultDetailView.swift */; };
 		F5F4B0C83146195EA9F0B875 /* AddSecretSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2707A4D8851C8C9EA46EB8C /* AddSecretSheet.swift */; };
+		A1B2C3D4E5F60001ABCD0001 /* PinnedSessionDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002ABCD0001 /* PinnedSessionDelegate.swift */; };
+		A1B2C3D4E5F60001ABCD0002 /* KeyApprovalSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002ABCD0002 /* KeyApprovalSheet.swift */; };
+		A1B2C3D4E5F60001ABCD0003 /* SecurityHardeningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002ABCD0003 /* SecurityHardeningTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -98,6 +101,10 @@
 		EEED9FDAD7841AA6C9A04B84 /* CloudVaultsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudVaultsSheet.swift; sourceTree = "<group>"; };
 		F9FF906993D46DE0663FDBE6 /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		FFE4B46C5693219A4558C620 /* VaultStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultStore.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60002ABCD0001 /* PinnedSessionDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedSessionDelegate.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60002ABCD0002 /* KeyApprovalSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyApprovalSheet.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60002ABCD0003 /* SecurityHardeningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityHardeningTests.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60002ABCD0004 /* LPMVault.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LPMVault.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -107,6 +114,7 @@
 				D1B7A69659C81657554157DA /* Sources */,
 				6746521328BAA2FF63764522 /* Tests */,
 				79DAFCCEE1DB9B0A90332112 /* Products */,
+				A1B2C3D4E5F60002ABCD0004 /* LPMVault.entitlements */,
 			);
 			sourceTree = "<group>";
 		};
@@ -148,6 +156,7 @@
 				B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */,
 				63C91F636E4DF09BA177F24F /* Mocks.swift */,
 				10F9038EDB0DF8525A388573 /* ModelTests.swift */,
+				A1B2C3D4E5F60002ABCD0003 /* SecurityHardeningTests.swift */,
 				7132CB4C93FB5453AD934A4F /* VaultStoreTests.swift */,
 			);
 			path = Tests;
@@ -179,6 +188,7 @@
 				C64B98FB47B4B40EB4D55EB0 /* AccountRailView.swift */,
 				D2707A4D8851C8C9EA46EB8C /* AddSecretSheet.swift */,
 				0BAA26D2A3091F62FA6095E0 /* AuthStatusView.swift */,
+				A1B2C3D4E5F60002ABCD0002 /* KeyApprovalSheet.swift */,
 				EEED9FDAD7841AA6C9A04B84 /* CloudVaultsSheet.swift */,
 				14600D8075CD55088CD63D32 /* NewVaultSheet.swift */,
 				4CD5E1BFFFE44C134A0DAD2E /* OrgVaultsSheet.swift */,
@@ -212,6 +222,7 @@
 				176F614BCA46D100B0DFE439 /* KeychainService.swift */,
 				BCFFA64462F1369E71D85556 /* LoginService.swift */,
 				CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */,
+				A1B2C3D4E5F60002ABCD0001 /* PinnedSessionDelegate.swift */,
 				ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */,
 				36365D62B5851474D2DC178D /* UpdateChecker.swift */,
 				EBF8259DCF0973664EDEE6EA /* VaultCrypto.swift */,
@@ -309,6 +320,7 @@
 				89A4B6EF8C27BB520DC3C148 /* KeychainServiceTests.swift in Sources */,
 				79239F41A5347411FC68689B /* Mocks.swift in Sources */,
 				22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */,
+				A1B2C3D4E5F60001ABCD0003 /* SecurityHardeningTests.swift in Sources */,
 				D0D7DD9246C17D99EC747F74 /* VaultStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -333,6 +345,8 @@
 				4C60693621D2C5D37FF804A5 /* LPMUser.swift in Sources */,
 				53BEA16BDEA8F0F8EACD5BB1 /* LoginService.swift in Sources */,
 				BAA9E2D180F712ECC9C1371F /* MaskedValueView.swift in Sources */,
+				A1B2C3D4E5F60001ABCD0001 /* PinnedSessionDelegate.swift in Sources */,
+				A1B2C3D4E5F60001ABCD0002 /* KeyApprovalSheet.swift in Sources */,
 				BC518002C99E73972765138F /* MenuBarView.swift in Sources */,
 				189834C52A067834FF0D5D14 /* NewVaultSheet.swift in Sources */,
 				CB784E0AA475268E9D5B3449 /* OrgVaultsSheet.swift in Sources */,
@@ -367,6 +381,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = LPMVault.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				INFOPLIST_KEY_LSUIElement = NO;
 				INFOPLIST_KEY_NSHighResolutionCapable = YES;
@@ -413,6 +428,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = LPMVault.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				INFOPLIST_KEY_LSUIElement = NO;
 				INFOPLIST_KEY_NSHighResolutionCapable = YES;

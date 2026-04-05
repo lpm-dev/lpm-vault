@@ -301,8 +301,9 @@ enum VaultCrypto {
 		do {
 			try storeX25519Key(privateKey, account: x25519Account)
 		} catch {
-			// Log but don't crash — this is called during key generation
+			#if DEBUG
 			print("VaultCrypto: failed to write X25519 key to Keychain: \(error)")
+			#endif
 		}
 	}
 

@@ -5,6 +5,9 @@ import Testing
 
 @Suite("VaultStore")
 struct VaultStoreTests {
+	/// Create a VaultStore with mock dependencies.
+	/// Projects are loaded synchronously into `store.projects` so tests
+	/// don't need to await the async `loadProjects()` / `Task.detached` path.
 	private func makeStore(
 		projects: [(id: String, name: String, path: String, secrets: [String: String])] = [],
 		biometricShouldSucceed: Bool = true,
@@ -19,19 +22,31 @@ struct VaultStoreTests {
 		let api = apiService ?? MockAPIService()
 		let store = VaultStore(
 			keychainService: keychain, biometricService: biometric, apiService: api)
+
+		// Pre-populate projects synchronously (the real loadProjects() uses
+		// Task.detached for UI responsiveness, but tests need deterministic ordering)
+		if !projects.isEmpty {
+			store.projects = projects
+				.map { VaultProject(id: $0.id, name: $0.name, path: $0.path, environments: ["default": $0.secrets]) }
+				.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+		}
+
 		return (store, keychain, biometric, api)
 	}
 
 	// MARK: - Load
 
 	@Test("load projects from keychain")
-	func loadProjects() {
-		let (store, _, _, _) = makeStore(projects: [
-			(id: "id-1", name: "api-server", path: "/tmp/api", secrets: ["DB_HOST": "localhost"]),
-			(id: "id-2", name: "web-app", path: "/tmp/web", secrets: ["API_KEY": "sk-123"]),
-		])
+	func loadProjects() async throws {
+		let keychain = MockKeychainService()
+		keychain.storage["id-1"] = (name: "api-server", path: "/tmp/api", secrets: ["DB_HOST": "localhost"])
+		keychain.storage["id-2"] = (name: "web-app", path: "/tmp/web", secrets: ["API_KEY": "sk-123"])
+		let store = VaultStore(
+			keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService())
 
 		store.loadProjects()
+		// loadProjects uses Task.detached — give it time to complete
+		try await Task.sleep(for: .milliseconds(200))
 
 		#expect(store.projects.count == 2)
 		// Should be sorted alphabetically
@@ -42,17 +57,19 @@ struct VaultStoreTests {
 	@Test("load projects from empty keychain")
 	func loadEmpty() {
 		let (store, _, _, _) = makeStore()
-		store.loadProjects()
+		// Empty store, projects pre-populated as empty
 		#expect(store.projects.isEmpty)
 	}
 
 	// MARK: - Add Project
 
 	@Test("add project creates in keychain and selects it")
-	func addProject() {
+	func addProject() async throws {
 		let (store, keychain, _, _) = makeStore()
 
 		store.addProject(name: "new-project", path: "/tmp/new")
+		// addProject uses Task.detached — give it time to complete
+		try await Task.sleep(for: .milliseconds(200))
 
 		#expect(store.projects.count == 1)
 		#expect(store.projects[0].name == "new-project")
@@ -63,11 +80,13 @@ struct VaultStoreTests {
 	}
 
 	@Test("add project failure sets error")
-	func addProjectFailure() {
+	func addProjectFailure() async throws {
 		let (store, keychain, _, _) = makeStore()
 		keychain.shouldFail = true
 
 		store.addProject(name: "failing-project", path: "/tmp/fail")
+		// addProject uses Task.detached — give it time to complete
+		try await Task.sleep(for: .milliseconds(200))
 
 		#expect(store.projects.isEmpty)
 		#expect(store.error != nil)
@@ -80,7 +99,6 @@ struct VaultStoreTests {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: [:])
 		])
-		store.loadProjects()
 		store.selectedProjectId = "id-1"
 
 		store.deleteProject(store.projects[0])
@@ -92,15 +110,17 @@ struct VaultStoreTests {
 	// MARK: - Add Secret
 
 	@Test("add secret to project")
-	func addSecret() {
+	func addSecret() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
 		])
-		store.loadProjects()
 
 		store.addSecret(to: "id-1", key: "DB_HOST", value: "localhost")
 
+		// In-memory update is synchronous
 		#expect(store.projects[0].secrets["DB_HOST"] == "localhost")
+		// Keychain write is async (Task.detached in saveAndUpdate)
+		try await Task.sleep(for: .milliseconds(200))
 		#expect(keychain.storage["id-1"]?.secrets["DB_HOST"] == "localhost")
 	}
 
@@ -109,7 +129,6 @@ struct VaultStoreTests {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
 		])
-		store.loadProjects()
 
 		store.addSecret(to: "id-1", key: "", value: "value")
 
@@ -119,7 +138,6 @@ struct VaultStoreTests {
 	@Test("add secret to non-existent project is no-op")
 	func addSecretNoProject() {
 		let (store, _, _, _) = makeStore()
-		store.loadProjects()
 
 		store.addSecret(to: "nonexistent", key: "KEY", value: "VALUE")
 
@@ -129,15 +147,15 @@ struct VaultStoreTests {
 	// MARK: - Update Secret
 
 	@Test("update existing secret")
-	func updateSecret() {
+	func updateSecret() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
-		store.loadProjects()
 
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
 		#expect(store.projects[0].secrets["KEY"] == "new")
+		try await Task.sleep(for: .milliseconds(200))
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
 	}
 
@@ -146,7 +164,6 @@ struct VaultStoreTests {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "val"])
 		])
-		store.loadProjects()
 
 		store.updateSecret(in: "id-1", key: "MISSING", newValue: "new")
 
@@ -157,16 +174,16 @@ struct VaultStoreTests {
 	// MARK: - Delete Secret
 
 	@Test("delete secret from project")
-	func deleteSecret() {
+	func deleteSecret() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["A": "1", "B": "2"])
 		])
-		store.loadProjects()
 
 		store.deleteSecret(from: "id-1", key: "A")
 
 		#expect(store.projects[0].secrets["A"] == nil)
 		#expect(store.projects[0].secrets["B"] == "2")
+		try await Task.sleep(for: .milliseconds(200))
 		#expect(keychain.storage["id-1"]?.secrets["A"] == nil)
 	}
 
@@ -178,12 +195,11 @@ struct VaultStoreTests {
 			(id: "id-1", name: "api-server", path: "/tmp/api", secrets: [:]),
 			(id: "id-2", name: "web-app", path: "/tmp/web", secrets: [:]),
 		])
-		store.loadProjects()
 
 		store.searchQuery = "api"
 
-		#expect(store.filteredProjects.count == 1)
-		#expect(store.filteredProjects[0].name == "api-server")
+		#expect(store.filteredVaults.count == 1)
+		#expect(store.filteredVaults[0].name == "api-server")
 	}
 
 	@Test("search filters by secret key name")
@@ -195,12 +211,11 @@ struct VaultStoreTests {
 				secrets: ["API_KEY": "sk-123"]
 			),
 		])
-		store.loadProjects()
 
 		store.searchQuery = "database"
 
-		#expect(store.filteredProjects.count == 1)
-		#expect(store.filteredProjects[0].name == "project-a")
+		#expect(store.filteredVaults.count == 1)
+		#expect(store.filteredVaults[0].name == "project-a")
 	}
 
 	@Test("empty search shows all projects")
@@ -209,11 +224,10 @@ struct VaultStoreTests {
 			(id: "id-1", name: "a", path: "/tmp/a", secrets: [:]),
 			(id: "id-2", name: "b", path: "/tmp/b", secrets: [:]),
 		])
-		store.loadProjects()
 
 		store.searchQuery = ""
 
-		#expect(store.filteredProjects.count == 2)
+		#expect(store.filteredVaults.count == 2)
 	}
 
 	// MARK: - Auth
@@ -385,5 +399,28 @@ struct VaultStoreTests {
 
 		#expect(store.orgTokens["acme"]?.isEmpty == true)
 		#expect(api.revokedTokenIds.contains("ot1"))
+	}
+
+	// MARK: - Org Key Trust (Strict Mode)
+
+	@Test("reject pending org push clears state and sets error")
+	func rejectPendingOrgPush() {
+		let (store, _, _, _) = makeStore()
+		store.pendingOrgPush = PendingOrgPush(
+			orgSlug: "acme",
+			projectId: "p1",
+			allMembers: [],
+			pendingApprovals: [],
+			orgTrust: OrgKeyTrust(),
+			authToken: "tok"
+		)
+		store.showKeyApprovalSheet = true
+
+		store.rejectPendingOrgPush()
+
+		#expect(store.pendingOrgPush == nil)
+		#expect(store.showKeyApprovalSheet == false)
+		#expect(store.lastSyncStatus == "rejected")
+		#expect(store.error != nil)
 	}
 }

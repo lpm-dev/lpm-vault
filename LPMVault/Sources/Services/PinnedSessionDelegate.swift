@@ -17,11 +17,55 @@ import Foundation
 /// ```
 class PinnedSessionDelegate: NSObject, URLSessionDelegate {
 	// SHA-256 of lpm.dev's SubjectPublicKeyInfo (SPKI) — base64-encoded.
-	// Include the leaf and at least one intermediate to survive certificate rotation.
-	// TODO: Replace PLACEHOLDER_HASH_NEEDS_UPDATE with actual hashes from the command above.
+	// Includes leaf + intermediate so cert rotation doesn't brick the app.
+	// Regenerate with the openssl command above when the certificate chain changes.
+	// Last updated: 2026-04-03
 	static let pinnedHashes: Set<String> = [
-		"PLACEHOLDER_HASH_NEEDS_UPDATE"
+		"gZCKeTFc8HuZ6o47nBbQ2056TZ0s+vTLvSrPR2FNXyU=",  // leaf (EC P-256)
+		"iFvwVyJSxnQdyaUvUERIf+8qk7gRze3612JMwoO3zdU=",  // intermediate (EC P-384)
 	]
+
+	// ASN.1 SPKI headers by key type.
+	// SecKeyCopyExternalRepresentation returns raw key bytes. To compute the
+	// standard SPKI SHA-256 pin (RFC 7469), we prepend the DER header that
+	// identifies the algorithm and curve, then hash the full SPKI structure.
+	// These headers are fixed for each key type — they never change.
+	private static let spkiHeaders: [Int: Data] = [
+		// EC P-256: 26-byte header + 65-byte raw key = 91 bytes SPKI
+		65: Data([
+			0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
+			0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01,
+			0x07, 0x03, 0x42, 0x00,
+		]),
+		// EC P-384: 23-byte header + 97-byte raw key = 120 bytes SPKI
+		97: Data([
+			0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
+			0x02, 0x01, 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22, 0x03, 0x62,
+			0x00,
+		]),
+		// RSA 2048: 24-byte header + 270-byte raw key = 294 bytes SPKI
+		270: Data([
+			0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48,
+			0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03, 0x82, 0x01,
+			0x0f, 0x00,
+		]),
+		// RSA 4096: 24-byte header + 526-byte raw key = 550 bytes SPKI
+		526: Data([
+			0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48,
+			0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03, 0x82, 0x02,
+			0x0f, 0x00,
+		]),
+	]
+
+	/// Compute the SPKI SHA-256 pin for a raw key representation.
+	/// Returns nil if the key size doesn't match any known SPKI header.
+	static func spkiHash(for rawKeyData: Data) -> String? {
+		guard let header = spkiHeaders[rawKeyData.count] else { return nil }
+		var spkiData = header
+		spkiData.append(rawKeyData)
+		let hash = SHA256.hash(data: spkiData)
+		return Data(hash).base64EncodedString()
+	}
 
 	func urlSession(
 		_ session: URLSession,
@@ -51,20 +95,20 @@ class PinnedSessionDelegate: NSObject, URLSessionDelegate {
 		}
 		#endif
 
-		// Walk the certificate chain and check each public key's hash
+		// Walk the certificate chain and check each public key's SPKI hash.
+		// SecKeyCopyExternalRepresentation returns raw key bytes; we prepend the
+		// ASN.1 SPKI header to reconstruct the full SubjectPublicKeyInfo before
+		// hashing, so the result matches standard SPKI SHA-256 pins (RFC 7469).
 		let certCount = SecTrustGetCertificateCount(serverTrust)
 		for i in 0..<certCount {
 			if let cert = SecTrustGetCertificateAtIndex(serverTrust, i),
 				let publicKey = SecCertificateCopyKey(cert)
 			{
 				var extractError: Unmanaged<CFError>?
-				if let keyData = SecKeyCopyExternalRepresentation(publicKey, &extractError) as Data? {
-					let hash = SHA256.hash(data: keyData)
-					let base64Hash = Data(hash).base64EncodedString()
-
-					if Self.pinnedHashes.contains(base64Hash)
-						|| Self.pinnedHashes.contains("PLACEHOLDER_HASH_NEEDS_UPDATE")
-					{
+				if let rawKeyData = SecKeyCopyExternalRepresentation(publicKey, &extractError) as Data?,
+					let base64Hash = Self.spkiHash(for: rawKeyData)
+				{
+					if Self.pinnedHashes.contains(base64Hash) {
 						completionHandler(.useCredential, URLCredential(trust: serverTrust))
 						return
 					}
@@ -81,24 +125,36 @@ class PinnedSessionDelegate: NSObject, URLSessionDelegate {
 		#endif
 	}
 
-	/// Verify the server response signature when available.
-	/// TODO: Activate when server adds X-LPM-Signature header to API responses.
-	/// The server should sign the response body with HMAC-SHA256 using a shared secret
-	/// derived from the auth token (or a session key).
-	static func verifyResponseSignature(_ response: HTTPURLResponse, body: Data) -> Bool {
+	/// Verify the server response signature.
+	///
+	/// Scheme: `X-LPM-Signature: base64(HMAC-SHA256(body, SHA256(auth_token)))`
+	/// Both client and server know the auth token, so no extra shared secrets needed.
+	///
+	/// Behavior:
+	/// - No signature header → accept (non-vault endpoints don't sign responses)
+	/// - Signature present + valid → accept
+	/// - Signature present + invalid → reject (tampered response or wrong key)
+	/// - Signature present + no auth token provided → reject
+	static func verifyResponseSignature(
+		_ response: HTTPURLResponse, body: Data, authToken: String? = nil
+	) -> Bool {
 		guard let signature = response.value(forHTTPHeaderField: "X-LPM-Signature") else {
-			// Server doesn't send signatures yet — allow.
-			// Once server is updated, change this to return false (reject unsigned responses).
+			// No signature header — this endpoint doesn't sign responses. Allow.
 			return true
 		}
 
-		// TODO: Implement HMAC-SHA256 verification
-		// let expectedHMAC = HMAC<SHA256>.authenticationCode(for: body, using: symmetricKey)
-		// return signature == Data(expectedHMAC).base64EncodedString()
+		guard let token = authToken, !token.isEmpty else {
+			// Signature present but no auth token to verify against — reject.
+			return false
+		}
 
-		#if DEBUG
-		print("[PinnedSessionDelegate] Response signature present but verification not yet implemented: \(signature.prefix(20))...")
-		#endif
-		return true
+		// Compute HMAC-SHA256(body, SHA256(auth_token)) and compare
+		let hmacKey = SHA256.hash(data: Data(token.utf8))
+		let expectedMAC = HMAC<SHA256>.authenticationCode(
+			for: body, using: SymmetricKey(data: Data(hmacKey))
+		)
+		let expectedSignature = Data(expectedMAC).base64EncodedString()
+
+		return signature == expectedSignature
 	}
 }

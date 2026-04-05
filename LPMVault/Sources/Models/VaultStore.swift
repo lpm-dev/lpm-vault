@@ -1,13 +1,30 @@
 import CryptoKit
 import Foundation
 
-// MARK: - TOFU (Trust-On-First-Use) for Org Member Keys
+// MARK: - Strict Key Trust for Org Members
 
-struct KeyChangeWarning: Identifiable {
+/// A member key that requires explicit user approval before the vault
+/// is encrypted for them. Covers both new members (never seen) and
+/// existing members whose key changed (rotation or compromise).
+struct PendingKeyApproval: Identifiable {
 	let id = UUID()
 	let memberId: String
-	let oldFingerprint: String
-	let newFingerprint: String
+	let fingerprint: String
+	/// true = first-time member, false = existing member whose key changed
+	let isNewMember: Bool
+	/// Previous fingerprint (nil for new members)
+	let oldFingerprint: String?
+}
+
+/// Holds all context needed to resume an org push after the user
+/// approves pending member keys in the KeyApprovalSheet.
+struct PendingOrgPush {
+	let orgSlug: String
+	let projectId: String
+	let allMembers: [SyncService.MemberPublicKey]
+	let pendingApprovals: [PendingKeyApproval]
+	var orgTrust: OrgKeyTrust
+	let authToken: String
 }
 
 struct OrgKeyTrust: Codable {
@@ -18,12 +35,13 @@ struct OrgKeyTrust: Codable {
 		self.trustedFingerprints = trustedFingerprints
 	}
 
-	/// Verify member public keys against trusted fingerprints.
-	/// - New members are accepted automatically (TOFU).
-	/// - Changed keys for existing members produce warnings.
-	/// - Returns warnings for any key changes detected.
-	mutating func verify(members: [(id: String, publicKey: Data)]) -> [KeyChangeWarning] {
-		var warnings: [KeyChangeWarning] = []
+	/// Verify member public keys against trusted fingerprints (strict mode).
+	/// - New members are NOT auto-trusted — they produce pending approvals.
+	/// - Changed keys for existing members also produce pending approvals.
+	/// - Returns empty array only when every member key is already trusted and unchanged.
+	/// - Does NOT mutate trustedFingerprints — caller must explicitly approve via `approve(_:)`.
+	func verify(members: [(id: String, publicKey: Data)]) -> [PendingKeyApproval] {
+		var pending: [PendingKeyApproval] = []
 
 		for member in members {
 			let fingerprint = SHA256.hash(data: member.publicKey)
@@ -31,20 +49,34 @@ struct OrgKeyTrust: Codable {
 
 			if let existing = trustedFingerprints[member.id] {
 				if existing != fingerprint {
-					warnings.append(KeyChangeWarning(
+					pending.append(PendingKeyApproval(
 						memberId: member.id,
-						oldFingerprint: existing,
-						newFingerprint: fingerprint
+						fingerprint: fingerprint,
+						isNewMember: false,
+						oldFingerprint: existing
 					))
 				}
-				// Same key — no action needed
+				// Same key — trusted, no action needed
 			} else {
-				// New member — trust on first use
-				trustedFingerprints[member.id] = fingerprint
+				// New member — requires explicit approval (strict mode)
+				pending.append(PendingKeyApproval(
+					memberId: member.id,
+					fingerprint: fingerprint,
+					isNewMember: true,
+					oldFingerprint: nil
+				))
 			}
 		}
 
-		return warnings
+		return pending
+	}
+
+	/// Mark approved members as trusted. Call only after the user explicitly
+	/// accepts each key in the KeyApprovalSheet.
+	mutating func approve(_ approvals: [PendingKeyApproval]) {
+		for approval in approvals {
+			trustedFingerprints[approval.memberId] = approval.fingerprint
+		}
 	}
 
 	// MARK: - Keychain Persistence
@@ -190,8 +222,9 @@ final class VaultStore {
 	// App environment (dev vs live)
 	var appEnvironment: AppEnvironment = .production
 
-	// TOFU key change warnings (shown in UI)
-	var keyChangeWarnings: [KeyChangeWarning] = []
+	// Strict key approval — blocks org push until user approves pending keys
+	var pendingOrgPush: PendingOrgPush?
+	var showKeyApprovalSheet: Bool = false
 
 	// MARK: - Dependencies
 
@@ -752,16 +785,28 @@ final class VaultStore {
 	// MARK: - Auth (Login / Logout)
 
 	/// Start the browser-based login flow — same UX as `lpm login`.
+	/// Validates the token with the server before persisting it to Keychain.
 	func login() async {
 		await MainActor.run { isLoggingIn = true; error = nil }
 
 		do {
 			let token = try await LoginService.login(registryURL: appEnvironment.registryURL)
 
-			// Store token in Keychain (shared with CLI)
+			// Validate the token actually works before storing it
+			let validationService = LPMAPIService(baseURL: appEnvironment.baseURL)
+			let user = await validationService.fetchCurrentUser(authToken: token)
+			guard user != nil else {
+				await MainActor.run {
+					error = "Login failed — server rejected the token."
+					isLoggingIn = false
+				}
+				return
+			}
+
+			// Token is valid — persist to Keychain (shared with CLI)
 			LoginService.writeAuthToken(token, registryURL: appEnvironment.registryURL)
 
-			// Reload user info to verify the token works
+			// Load full user info + tokens
 			await loadTokens()
 
 			await MainActor.run { isLoggingIn = false }
@@ -858,8 +903,8 @@ final class VaultStore {
 
 		await MainActor.run { isSyncing = true; lastSyncStatus = nil }
 
-		// Pass local expectedVersion to server for optimistic concurrency control
-		// force allows overwriting server data but the server still increments version
+		// Always send expectedVersion for audit trail. The server uses the `force`
+		// flag to decide whether to allow the override — not the absence of version.
 		let expectedVersion = syncMetadata[project.id]?.lastVersion
 
 		do {
@@ -882,7 +927,7 @@ final class VaultStore {
 				vaultId: project.id,
 				encryptedBlob: blob,
 				wrappedKey: wrapped,
-				expectedVersion: force ? nil : expectedVersion,
+				expectedVersion: expectedVersion,
 				force: force
 			)
 
@@ -1008,6 +1053,8 @@ final class VaultStore {
 	// MARK: - Org Sync
 
 	/// Share (push) the selected project's vault with an org.
+	/// If any member keys are new or changed, the push is blocked and
+	/// `showKeyApprovalSheet` is set — the user must approve before continuing.
 	func pushToOrg(orgSlug: String) async {
 		guard let project = selectedProject else { return }
 		guard let authToken = readCLIAuthToken() else {
@@ -1021,7 +1068,7 @@ final class VaultStore {
 			let syncService = SyncService(baseURL: appEnvironment.baseURL)
 
 			// 1. Ensure our public key is uploaded
-			let (privKey, pubKey) = VaultCrypto.getOrCreateX25519Keypair()
+			let (_, pubKey) = VaultCrypto.getOrCreateX25519Keypair()
 			let pubB64 = pubKey.base64EncodedString()
 			_ = await syncService.uploadPublicKey(authToken: authToken, publicKey: pubB64)
 
@@ -1038,70 +1085,147 @@ final class VaultStore {
 				return
 			}
 
-			// 2b. TOFU verification — detect key changes for existing members
-			var orgTrust = OrgKeyTrust.load(orgSlug: orgSlug)
-			let membersForTOFU: [(id: String, publicKey: Data)] = membersWithKeys.compactMap { member in
+			// 2b. Strict key verification — block on new or changed keys
+			let orgTrust = OrgKeyTrust.load(orgSlug: orgSlug)
+			let membersForVerification: [(id: String, publicKey: Data)] = membersWithKeys.compactMap { member in
 				guard let pubKeyB64 = member.publicKey,
 					  let pubKeyData = Data(base64Encoded: pubKeyB64) else { return nil }
 				return (id: member.userId, publicKey: pubKeyData)
 			}
-			let warnings = orgTrust.verify(members: membersForTOFU)
-			orgTrust.save(orgSlug: orgSlug)
+			let pendingApprovals = orgTrust.verify(members: membersForVerification)
 
-			if !warnings.isEmpty {
+			// If any keys need approval, block the push and show the approval sheet
+			if !pendingApprovals.isEmpty {
 				await MainActor.run {
-					self.keyChangeWarnings = warnings
+					self.pendingOrgPush = PendingOrgPush(
+						orgSlug: orgSlug,
+						projectId: project.id,
+						allMembers: membersWithKeys,
+						pendingApprovals: pendingApprovals,
+						orgTrust: orgTrust,
+						authToken: authToken
+					)
+					self.showKeyApprovalSheet = true
+					self.isSyncing = false
+					self.lastSyncStatus = "approval_required"
 				}
-				for w in warnings {
-					print("WARNING: Org member \(w.memberId) public key changed! Old: \(w.oldFingerprint), New: \(w.newFingerprint)")
-				}
+				return
 			}
 
-			// 3. Encrypt secrets with random AES key
-			let nonEmptyEnvs = project.environments.filter { !$0.value.isEmpty }
-			let payload = ["environments": nonEmptyEnvs]
-			let secretsJSON = try JSONEncoder().encode(payload)
-			guard let jsonString = String(data: secretsJSON, encoding: .utf8) else {
-				throw VaultCrypto.CryptoError.invalidUTF8
-			}
-
-			let aesKey = VaultCrypto.generateAESKey()
-			let blob = try VaultCrypto.encrypt(key: aesKey, plaintext: Data(jsonString.utf8))
-
-			// 4. Wrap AES key for each member
-			var wrappedKeys: [[String: String]] = []
-			for member in membersWithKeys {
-				guard let pubKeyB64 = member.publicKey,
-					  let pubKeyData = Data(base64Encoded: pubKeyB64),
-					  pubKeyData.count == 32 else { continue }
-
-				let wrapped = try VaultCrypto.wrapKeyForRecipient(aesKey: aesKey, recipientPublicKey: pubKeyData)
-				wrappedKeys.append(["userId": member.userId, "wrappedKey": wrapped])
-			}
-
-			// 5. Push to org
-			let result = await syncService.pushOrg(
+			// All keys are trusted — proceed with push
+			try await executeOrgPush(
+				project: project,
 				authToken: authToken,
 				orgSlug: orgSlug,
-				vaultId: project.id,
-				encryptedBlob: blob,
-				wrappedKeys: wrappedKeys
+				membersWithKeys: membersWithKeys,
+				syncService: syncService
 			)
-
-			await MainActor.run {
-				isSyncing = false
-				if let r = result, r.error == nil {
-					lastSyncStatus = "Shared with \(orgSlug) (v\(r.version ?? 0))"
-					markSynced(project.id, action: "push", version: r.version)
-				} else {
-					self.error = result?.error ?? "Org push failed"
-					lastSyncStatus = "failed"
-				}
-			}
 		} catch {
 			await MainActor.run {
 				self.error = error.localizedDescription
 				isSyncing = false
+				lastSyncStatus = "failed"
+			}
+		}
+	}
+
+	/// Called from KeyApprovalSheet when user accepts all pending keys.
+	func approveAndContinueOrgPush(approved: [PendingKeyApproval]) async {
+		guard let pending = pendingOrgPush else { return }
+		guard let project = projects.first(where: { $0.id == pending.projectId }) else { return }
+
+		await MainActor.run {
+			showKeyApprovalSheet = false
+			isSyncing = true
+			lastSyncStatus = nil
+		}
+
+		// Persist the approved fingerprints
+		var orgTrust = pending.orgTrust
+		orgTrust.approve(approved)
+		orgTrust.save(orgSlug: pending.orgSlug)
+
+		// Only wrap keys for members that are now trusted
+		let approvedMemberIds = Set(approved.map(\.memberId))
+		let trustedMemberIds = Set(orgTrust.trustedFingerprints.keys)
+		let allTrustedIds = trustedMemberIds.union(approvedMemberIds)
+		let trustedMembers = pending.allMembers.filter { allTrustedIds.contains($0.userId) }
+
+		do {
+			let syncService = SyncService(baseURL: appEnvironment.baseURL)
+			try await executeOrgPush(
+				project: project,
+				authToken: pending.authToken,
+				orgSlug: pending.orgSlug,
+				membersWithKeys: trustedMembers,
+				syncService: syncService
+			)
+		} catch {
+			await MainActor.run {
+				self.error = error.localizedDescription
+				isSyncing = false
+				lastSyncStatus = "failed"
+			}
+		}
+
+		await MainActor.run { pendingOrgPush = nil }
+	}
+
+	/// Called from KeyApprovalSheet when user rejects pending keys.
+	func rejectPendingOrgPush() {
+		showKeyApprovalSheet = false
+		pendingOrgPush = nil
+		lastSyncStatus = "rejected"
+		error = "Org push cancelled — untrusted member keys were rejected."
+	}
+
+	/// Shared implementation: encrypt and push vault data to an org.
+	/// Only called after all member keys have been verified/approved.
+	private func executeOrgPush(
+		project: VaultProject,
+		authToken: String,
+		orgSlug: String,
+		membersWithKeys: [SyncService.MemberPublicKey],
+		syncService: SyncService
+	) async throws {
+		// Encrypt secrets with random AES key
+		let nonEmptyEnvs = project.environments.filter { !$0.value.isEmpty }
+		let payload = ["environments": nonEmptyEnvs]
+		let secretsJSON = try JSONEncoder().encode(payload)
+		guard let jsonString = String(data: secretsJSON, encoding: .utf8) else {
+			throw VaultCrypto.CryptoError.invalidUTF8
+		}
+
+		let aesKey = VaultCrypto.generateAESKey()
+		let blob = try VaultCrypto.encrypt(key: aesKey, plaintext: Data(jsonString.utf8))
+
+		// Wrap AES key for each trusted member
+		var wrappedKeys: [[String: String]] = []
+		for member in membersWithKeys {
+			guard let pubKeyB64 = member.publicKey,
+				  let pubKeyData = Data(base64Encoded: pubKeyB64),
+				  pubKeyData.count == 32 else { continue }
+
+			let wrapped = try VaultCrypto.wrapKeyForRecipient(aesKey: aesKey, recipientPublicKey: pubKeyData)
+			wrappedKeys.append(["userId": member.userId, "wrappedKey": wrapped])
+		}
+
+		// Push to org
+		let result = await syncService.pushOrg(
+			authToken: authToken,
+			orgSlug: orgSlug,
+			vaultId: project.id,
+			encryptedBlob: blob,
+			wrappedKeys: wrappedKeys
+		)
+
+		await MainActor.run {
+			isSyncing = false
+			if let r = result, r.error == nil {
+				lastSyncStatus = "Shared with \(orgSlug) (v\(r.version ?? 0))"
+				markSynced(project.id, action: "push", version: r.version)
+			} else {
+				self.error = result?.error ?? "Org push failed"
 				lastSyncStatus = "failed"
 			}
 		}
