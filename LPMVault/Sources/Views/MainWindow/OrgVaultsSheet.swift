@@ -7,16 +7,17 @@ struct OrgVaultsSheet: View {
 	var fixedOrgSlug: String? = nil  // When set, skip org selector
 	@Environment(\.dismiss) private var dismiss
 	@State private var selectedOrg: String?
-	@State private var orgVaults: [SyncService.OrgVaultEntry] = []
+	@State private var orgVaults: [SyncService.RemoteProject] = []
 	@State private var isLoading = false
 	@State private var isPulling: String?  // vault ID being pulled
 	@State private var pullResult: String?
+	@State private var loadError: String?
 
 	var body: some View {
 		VStack(spacing: 0) {
 			// Header
 			HStack {
-				Text("Org Vaults")
+				Text("Organization Env Projects")
 					.font(.headline)
 				Spacer()
 				Button {
@@ -56,20 +57,30 @@ struct OrgVaultsSheet: View {
 			if isLoading {
 				VStack(spacing: 8) {
 					ProgressView()
-					Text("Loading org vaults...")
+					Text("Loading organization env projects...")
 						.font(.callout)
 						.foregroundStyle(.secondary)
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
+			} else if let loadError {
+				ContentUnavailableView {
+					Label("Could Not Load Env Projects", systemImage: "exclamationmark.triangle")
+				} description: {
+					Text(loadError)
+				} actions: {
+					Button("Retry") {
+						Task { await loadVaults(for: selectedOrg ?? "") }
+					}
+				}
 			} else if orgVaults.isEmpty {
 				VStack(spacing: 12) {
 					Image(systemName: "building.2")
 						.font(.system(size: 36))
 						.foregroundStyle(.secondary)
-					Text("No shared vaults")
+					Text("No shared env projects")
 						.font(.title3)
 						.foregroundStyle(.secondary)
-					Text("Share a vault with this org using\n`lpm env vars share --org \(selectedOrg ?? "org-slug")`\nor the Share button in the toolbar.")
+					Text("Share a project with this organization using\n`lpm env share --org \(selectedOrg ?? "org-slug")`\nor the Share button in the toolbar.")
 						.font(.callout)
 						.foregroundStyle(.tertiary)
 						.multilineTextAlignment(.center)
@@ -103,7 +114,7 @@ struct OrgVaultsSheet: View {
 	}
 
 	@ViewBuilder
-	private func vaultRow(_ vault: SyncService.OrgVaultEntry) -> some View {
+	private func vaultRow(_ vault: SyncService.RemoteProject) -> some View {
 		let alreadyAdded = store.projects.contains { $0.id == vault.vaultId }
 
 		HStack(spacing: 12) {
@@ -112,7 +123,7 @@ struct OrgVaultsSheet: View {
 				.foregroundStyle(.secondary)
 
 			VStack(alignment: .leading, spacing: 2) {
-				Text(vault.vaultId)
+				Text(vault.name ?? vault.vaultId)
 					.font(.system(.body, design: .monospaced))
 					.lineLimit(1)
 
@@ -153,38 +164,48 @@ struct OrgVaultsSheet: View {
 	private func loadVaults(for orgSlug: String) async {
 		guard !orgSlug.isEmpty else { return }
 		isLoading = true
+		loadError = nil
 		let syncService = SyncService(baseURL: store.appEnvironment.baseURL)
-		guard let authToken = store.readCLIAuthTokenPublic() else {
+		guard let authToken = await store.currentAuthToken() else {
 			isLoading = false
+			loadError = "Sign in to lpm.dev, then retry."
 			return
 		}
-		orgVaults = await syncService.listOrgVaults(authToken: authToken, orgSlug: orgSlug)
+		guard let projects = await syncService.listOrgProjects(authToken: authToken, orgSlug: orgSlug) else {
+			isLoading = false
+			loadError = "The server request failed. Check your connection and try again."
+			return
+		}
+		orgVaults = projects
 		isLoading = false
 	}
 
-	private func importVault(_ vault: SyncService.OrgVaultEntry) async {
+	private func importVault(_ vault: SyncService.RemoteProject) async {
 		guard let orgSlug = selectedOrg else { return }
 		isPulling = vault.vaultId
 		pullResult = nil
 
-		// Create a project entry for this vault
-		store.addProjectWithVaultId(
+		guard await store.addProjectWithVaultId(
 			vaultId: vault.vaultId,
-			name: "org-vault-\(vault.vaultId.prefix(8))",
+			name: vault.name ?? "org-env-\(vault.vaultId.prefix(8))",
 			path: "",
 			environments: ["default": [:]]
-		)
+		) else {
+			isPulling = nil
+			pullResult = store.error ?? "Import failed"
+			return
+		}
+		store.associateVaultWithOrg(vaultId: vault.vaultId, orgSlug: orgSlug)
 
-		// Wait for project to be added to store
-		try? await Task.sleep(nanoseconds: 500_000_000)
-
-		// Pull from org
 		await store.pullFromOrg(orgSlug: orgSlug)
 
 		isPulling = nil
 		if store.lastSyncStatus?.contains("Pulled") == true {
 			pullResult = "Imported successfully"
 		} else {
+			if let placeholder = store.projects.first(where: { $0.id == vault.vaultId }) {
+				_ = await store.deleteLocalVault(placeholder)
+			}
 			pullResult = store.error ?? "Import failed"
 		}
 	}

@@ -20,7 +20,7 @@ struct NewVaultSheet: View {
 	var body: some View {
 		VStack(spacing: 0) {
 			HStack {
-				Text("New Vault")
+				Text("New Env Project")
 					.font(.headline)
 				Spacer()
 				Button {
@@ -38,7 +38,7 @@ struct NewVaultSheet: View {
 
 			VStack(alignment: .leading, spacing: 16) {
 				VStack(alignment: .leading, spacing: 6) {
-					Text("Vault Name")
+					Text("Project Name")
 						.font(.subheadline)
 						.fontWeight(.medium)
 					TextField("e.g. my-api-server", text: $name)

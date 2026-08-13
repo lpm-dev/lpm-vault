@@ -3,6 +3,7 @@ import Foundation
 /// Checks GitHub Releases for a newer version of the app.
 /// Caches the result for 24 hours to avoid excessive API calls.
 @Observable
+@MainActor
 final class UpdateChecker {
 	var latestVersion: String?
 	var updateAvailable: Bool = false
@@ -18,11 +19,9 @@ final class UpdateChecker {
 	func checkForUpdate() async {
 		// Check cache first
 		if let cached = loadCache(), !cached.isExpired {
-			await MainActor.run {
-				latestVersion = cached.version
-				updateAvailable = cached.version != currentVersion && cached.version > currentVersion
-				releaseURL = URL(string: "https://github.com/\(repo)/releases/latest")
-			}
+			latestVersion = cached.version
+			updateAvailable = cached.version != currentVersion && cached.version > currentVersion
+			releaseURL = URL(string: "https://github.com/\(repo)/releases/latest")
 			return
 		}
 
@@ -54,11 +53,9 @@ final class UpdateChecker {
 			// Cache it
 			saveCache(CachedVersion(version: version, checkedAt: Date()))
 
-			await MainActor.run {
-				latestVersion = version
-				updateAvailable = version != currentVersion && version > currentVersion
-				releaseURL = URL(string: release.html_url)
-			}
+			latestVersion = version
+			updateAvailable = version != currentVersion && version > currentVersion
+			releaseURL = URL(string: release.html_url)
 		} catch {
 			// Silently fail — update check is not critical
 		}

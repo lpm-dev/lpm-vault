@@ -28,7 +28,7 @@ struct KeyApprovalSheet: View {
 					.font(.headline)
 			}
 
-			Text("The following member keys must be approved before the vault can be shared. Rejecting will cancel the push.")
+			Text("The following member keys must be approved before the env project can be shared. Rejecting will cancel the push.")
 				.font(.subheadline)
 				.foregroundStyle(.secondary)
 

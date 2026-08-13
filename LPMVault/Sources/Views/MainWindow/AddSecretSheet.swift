@@ -18,11 +18,11 @@ struct AddSecretSheet: View {
 	}
 
 	private var isDuplicate: Bool {
-		project?.secrets[key] != nil
+		project?.environments[store.selectedEnvironment]?[key] != nil
 	}
 
 	private var canAdd: Bool {
-		!key.isEmpty && !isDuplicate
+		EnvValidation.isValidVariableName(key) && !isDuplicate
 	}
 
 	var body: some View {
@@ -56,18 +56,23 @@ struct AddSecretSheet: View {
 						.font(.system(.body, design: .monospaced))
 						.focused($focusedField, equals: .key)
 
-					if isDuplicate {
+						if isDuplicate {
 						Text("A secret with this key already exists")
 							.font(.caption)
 							.foregroundStyle(.red)
-					}
+						}
+						else if !key.isEmpty && !EnvValidation.isValidVariableName(key) {
+							Text("Use letters, numbers, and underscores; the first character cannot be a number")
+								.font(.caption)
+								.foregroundStyle(.red)
+						}
 				}
 
 				VStack(alignment: .leading, spacing: 6) {
 					Text("Value")
 						.font(.subheadline)
 						.fontWeight(.medium)
-					TextField("Secret value", text: $value)
+					SecureField("Secret value", text: $value)
 						.textFieldStyle(.roundedBorder)
 						.font(.system(.body, design: .monospaced))
 						.focused($focusedField, equals: .value)

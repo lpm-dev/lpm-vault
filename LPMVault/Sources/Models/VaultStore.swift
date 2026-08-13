@@ -25,6 +25,17 @@ struct PendingOrgPush {
 	let pendingApprovals: [PendingKeyApproval]
 	var orgTrust: OrgKeyTrust
 	let authToken: String
+	let canReplaceWrappedKeys: Bool
+}
+
+struct VaultSyncError: LocalizedError {
+	let message: String
+
+	init(_ message: String) {
+		self.message = message
+	}
+
+	var errorDescription: String? { message }
 }
 
 struct OrgKeyTrust: Codable {
@@ -139,30 +150,29 @@ struct OrgKeyTrust: Codable {
 
 enum AppEnvironment: String {
 	case production
+	#if DEBUG
 	case development
+	#endif
 
 	var baseURL: URL {
 		switch self {
 		case .production: VaultConstants.apiBaseURL
-		case .development: VaultConstants.apiDevBaseURL
+		#if DEBUG
+		case .development: VaultConstants.localAPIBaseURL
+		#endif
 		}
 	}
 
 	var registryURL: String {
-		switch self {
-		case .production: "https://lpm.dev"
-		case .development: "http://localhost:3000"
-		}
-	}
-
-	var keychainAccount: String {
-		"auth-token:\(registryURL)"
+		AuthSessionStore.registryURL(for: baseURL)
 	}
 
 	var label: String {
 		switch self {
 		case .production: "Live"
-		case .development: "Dev"
+		#if DEBUG
+		case .development: "Local"
+		#endif
 		}
 	}
 }
@@ -183,6 +193,7 @@ enum ProjectSyncStatus {
 }
 
 @Observable
+@MainActor
 final class VaultStore {
 	// MARK: - State
 
@@ -229,6 +240,7 @@ final class VaultStore {
 	// MARK: - Dependencies
 
 	private let keychainService: KeychainServiceProtocol
+	private let persistence: VaultPersistenceCoordinator
 	private let biometricService: BiometricServiceProtocol
 	private let injectedAPIService: LPMAPIServiceProtocol?
 	private var autoLockTask: Task<Void, Never>?
@@ -287,15 +299,18 @@ final class VaultStore {
 		autoLockDuration: TimeInterval = VaultConstants.biometricCacheDuration
 	) {
 		self.keychainService = keychainService
+		self.persistence = VaultPersistenceCoordinator(service: keychainService)
 		self.biometricService = biometricService
 		self.injectedAPIService = apiService
 		self.autoLockDuration = autoLockDuration
 
-		// Load persisted environment
+		#if DEBUG
+		// Local-server selection is a debug-only developer convenience.
 		if let saved = UserDefaults.standard.string(forKey: "lpm-vault-environment"),
 		   let env = AppEnvironment(rawValue: saved) {
 			self.appEnvironment = env
 		}
+		#endif
 
 		// Load org associations from Keychain
 		if let data = keychainService.readData(account: "__org_associations__"),
@@ -304,7 +319,8 @@ final class VaultStore {
 		}
 	}
 
-	/// Switch between production and development servers.
+	#if DEBUG
+	/// Switch between the production server and the local development server.
 	/// Clears current session and reloads tokens for the new environment.
 	func switchEnvironment(to env: AppEnvironment) {
 		guard env != appEnvironment else { return }
@@ -317,6 +333,7 @@ final class VaultStore {
 		// Reload tokens from the new environment's keychain entry
 		Task { await loadTokens() }
 	}
+	#endif
 
 	// MARK: - Load
 
@@ -324,14 +341,12 @@ final class VaultStore {
 	/// to prevent UI freeze if macOS shows a Keychain access prompt.
 	func loadProjects() {
 		loadSyncMetadata()
-		Task.detached { [keychainService] in
-			let loaded = keychainService.listProjects()
+		Task { [persistence] in
+			let loaded = await persistence.listProjects()
 				.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-			await MainActor.run { [weak self] in
-				self?.projects = loaded
-				self?.error = nil
-				self?.loadEnvironmentOrders()
-			}
+			projects = loaded
+			error = nil
+			loadEnvironmentOrders()
 		}
 	}
 
@@ -346,14 +361,19 @@ final class VaultStore {
 		let vaultId = UUID().uuidString.lowercased()
 		let environments: [String: [String: String]] = ["default": [:]]
 
-		addProjectWithVaultId(vaultId: vaultId, name: name, path: "", environments: environments)
+		Task { [weak self] in
+			guard let self,
+				await addProjectWithVaultId(
+					vaultId: vaultId,
+					name: name,
+					path: "",
+					environments: environments
+				)
+			else { return }
 
-		if let slug = orgSlug {
-			associateVaultWithOrg(vaultId: vaultId, orgSlug: slug)
-			// Share with org after creation
-			Task.detached { [weak self] in
-				try? await Task.sleep(nanoseconds: 500_000_000)
-				await self?.pushToOrg(orgSlug: slug)
+			if let slug = orgSlug {
+				associateVaultWithOrg(vaultId: vaultId, orgSlug: slug)
+				await pushToOrg(orgSlug: slug)
 			}
 		}
 	}
@@ -371,147 +391,81 @@ final class VaultStore {
 	}
 
 	/// Add a project with a specific vault ID (for re-adding existing vaults).
-	/// When `pullAfterAdd` is true, automatically pulls from cloud after the project is saved to Keychain and added to the store.
-	func addProjectWithVaultId(vaultId: String, name: String, path: String, environments: [String: [String: String]], pullAfterAdd: Bool = false) {
-		#if DEBUG
-		print("[DEBUG] addProjectWithVaultId: \(name) vaultId=\(vaultId) envs=\(environments.keys.sorted()) pullAfterAdd=\(pullAfterAdd)")
-		#endif
+	/// Returns only after the Keychain write and in-memory selection are complete.
+	@discardableResult
+	func addProjectWithVaultId(
+		vaultId: String,
+		name: String,
+		path: String,
+		environments: [String: [String: String]]
+	) async -> Bool {
+		guard EnvValidation.areValidEnvironments(environments) else {
+			error = "Environment names or variable names do not match the LPM env format."
+			return false
+		}
 		let project = VaultProject(id: vaultId, name: name, path: path, environments: environments)
 
 		// Run Keychain write off main thread to prevent UI freeze
-		Task.detached { [keychainService, weak self] in
-			#if DEBUG
-			print("[DEBUG] Task.detached started for saveEnvironments")
-			#endif
-			let result = keychainService.saveEnvironments(
-				vaultId: vaultId,
-				projectName: name,
-				projectPath: path,
-				environments: environments
-			)
-
-			#if DEBUG
-			print("[DEBUG] saveEnvironments returned: \(result)")
-			#endif
-			await MainActor.run {
-				switch result {
-				case .success, .successWithWarning:
-					#if DEBUG
-					print("[DEBUG] Keychain save success, updating UI")
-					#endif
-					self?.projects.append(project)
-					self?.projects.sort {
-						$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-					}
-					self?.selectedProjectId = vaultId
-					// selectedProjectId already set above
-					self?.writeLpmJson(vaultId: vaultId, projectPath: path)
-					#if DEBUG
-					print("[DEBUG] Project added to sidebar: \(name)")
-					#endif
-				case .failure(let err):
-					#if DEBUG
-					print("[DEBUG] Keychain save FAILED: \(err)")
-					#endif
-					self?.error = err.description
-				}
+		let result = await persistence.save(project)
+		switch result {
+		case .success, .successWithWarning:
+			projects.append(project)
+			projects.sort {
+				$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
 			}
-
-			// Pull from cloud AFTER project is fully added to the store
-			if pullAfterAdd {
-				#if DEBUG
-				print("[DEBUG] Starting cloud pull after project add")
-				#endif
-				await self?.pullFromCloud()
-			}
+			selectedProjectId = vaultId
+			writeLpmJson(vaultId: vaultId, projectPath: path)
+			return true
+		case .failure(let err):
+			error = err.description
+			return false
 		}
 	}
 
 	func addProject(name: String, path: String, environments: [String: [String: String]]? = nil) {
-		#if DEBUG
-		print("[DEBUG] addProject: \(name) path=\(path)")
-		#endif
 		let envs = environments ?? ["default": [:]]
+		guard EnvValidation.areValidEnvironments(envs) else {
+			error = "Environment names or variable names do not match the LPM env format."
+			return
+		}
+		let existingVaultId = readVaultIdFromLpmJson(projectPath: path)
 
 		// Run all Keychain operations off main thread
-		Task.detached { [keychainService, weak self] in
-			// Check if lpm.json already has a vault ID for this path
-			let existingVaultId = await MainActor.run { self?.readVaultIdFromLpmJson(projectPath: path) }
+		let saveTask = Task { [persistence] in
 			let vaultId = existingVaultId ?? UUID().uuidString.lowercased()
-
-			// If re-using existing vault ID, check if Keychain already has data
-			var finalEnvs = envs
-			if existingVaultId != nil {
-				if let keychainEnvs = keychainService.getEnvironments(vaultId: vaultId), !keychainEnvs.isEmpty {
-					var merged = envs
-					for (envName, secrets) in keychainEnvs {
-						var env = merged[envName] ?? [:]
-						env.merge(secrets) { _, kc in kc }
-						merged[envName] = env
-					}
-					finalEnvs = merged
-				}
-			}
-
-			let project = VaultProject(id: vaultId, name: name, path: path, environments: finalEnvs)
-
-			let result = keychainService.saveEnvironments(
+			return await persistence.save(
 				vaultId: vaultId,
-				projectName: name,
-				projectPath: path,
-				environments: finalEnvs
+				name: name,
+				path: path,
+				environments: envs,
+				mergeExisting: existingVaultId != nil
 			)
-
-			await MainActor.run {
-				switch result {
+		}
+		Task { [weak self] in
+			let (project, result) = await saveTask.value
+			guard let self else { return }
+			switch result {
 				case .success, .successWithWarning:
-					self?.projects.append(project)
-					self?.projects.sort {
+					projects.append(project)
+					projects.sort {
 						$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
 					}
-					self?.selectedProjectId = vaultId
-					// selectedProjectId already set above
-					self?.writeLpmJson(vaultId: vaultId, projectPath: path)
+					selectedProjectId = project.id
+					writeLpmJson(vaultId: project.id, projectPath: path)
 				case .failure(let err):
-					self?.error = err.description
+					error = err.description
 				}
-			}
 		}
 	}
 
-	/// Run a `security` CLI command safely (no waitUntilExit deadlock).
-	private func runSecurityCLI(args: [String], timeout: TimeInterval = 10) -> (Int32, String) {
-		let process = Process()
-		process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-		process.arguments = args
-
-		let pipe = Pipe()
-		process.standardOutput = pipe
-		process.standardError = FileHandle.nullDevice
-
-		let sem = DispatchSemaphore(value: 0)
-		var exitCode: Int32 = -1
-
-		process.terminationHandler = { p in
-			exitCode = p.terminationStatus
-			sem.signal()
-		}
-
-		do {
-			try process.run()
-		} catch {
-			return (-1, "")
-		}
-
-		let result = sem.wait(timeout: .now() + timeout)
-		if result == .timedOut {
-			process.terminate()
-			return (-1, "")
-		}
-
-		let data = pipe.fileHandleForReading.readDataToEndOfFile()
-		let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-		return (exitCode, output)
+	func renameProject(_ project: VaultProject, to name: String) {
+		let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !trimmed.isEmpty, trimmed.count <= 120,
+			var updated = projects.first(where: { $0.id == project.id })
+		else { return }
+		updated.name = trimmed
+		saveAndUpdate(updated)
+		markDirty(project.id)
 	}
 
 	// MARK: - lpm.json Integration
@@ -530,6 +484,7 @@ final class VaultStore {
 	/// Write or update vault ID in lpm.json.
 	/// Preserves existing keys (runtime, env, tasks, tools, services).
 	private func writeLpmJson(vaultId: String, projectPath: String) {
+		guard !projectPath.isEmpty else { return }
 		let url = URL(fileURLWithPath: projectPath).appendingPathComponent("lpm.json")
 
 		var json: [String: Any] = [:]
@@ -559,46 +514,31 @@ final class VaultStore {
 			selectedProjectId = projects.first?.id
 		}
 		// Keychain update off main thread
-		Task.detached { [keychainService] in
-			_ = keychainService.removeFromSidebar(vaultId: project.id)
+		Task { [persistence] in
+			await persistence.removeFromSidebar(vaultId: project.id)
 		}
 	}
 
 	/// Delete local vault data (Keychain) but keep cloud copy.
-	/// Can be recovered via `lpm env vars pull`.
-	func deleteLocalVault(_ project: VaultProject) {
-		// Update UI immediately
+	/// Can be recovered via `lpm env pull`.
+	@discardableResult
+	func deleteLocalVault(_ project: VaultProject) async -> Bool {
+		guard await persistence.deleteProject(vaultId: project.id) else {
+			error = "Could not delete the local Keychain copy. The env project was kept."
+			return false
+		}
+
 		projects.removeAll { $0.id == project.id }
 		if selectedProjectId == project.id {
 			selectedProjectId = projects.first?.id
 		}
-		// Keychain delete off main thread
-		Task.detached { [keychainService] in
-			_ = keychainService.deleteProject(vaultId: project.id)
-		}
-	}
-
-	/// Delete vault data everywhere — local Keychain + cloud.
-	/// This is irreversible.
-	func deleteEverywhere(_ project: VaultProject) async {
-		// Delete cloud first
-		if let authToken = readCLIAuthToken() {
-			let syncService = SyncService(baseURL: appEnvironment.baseURL)
-			// Push empty vault to "delete" cloud data
-			let emptyJSON = "{}"
-			if let (blob, wrapped) = try? VaultCrypto.encryptForSync(authToken: authToken, secretsJSON: emptyJSON) {
-				_ = await syncService.push(
-					authToken: authToken,
-					vaultId: project.id,
-					encryptedBlob: blob,
-					wrappedKey: wrapped,
-					force: true
-				)
-			}
-		}
-
-		// Then delete local
-		deleteLocalVault(project)
+		vaultOrgAssociations.removeValue(forKey: project.id)
+		syncMetadata.removeValue(forKey: project.id)
+		environmentOrders.removeValue(forKey: project.id)
+		UserDefaults.standard.removeObject(forKey: Self.envOrderPrefix + project.id)
+		saveOrgAssociations()
+		saveSyncMetadata()
+		return true
 	}
 
 	/// Legacy alias — defaults to remove from sidebar (safe).
@@ -611,9 +551,9 @@ final class VaultStore {
 	/// Add a new environment tab to a project.
 	func addEnvironment(to projectId: String, name: String, secrets: [String: String] = [:]) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
-		guard !name.isEmpty else { return }
-		guard name.count <= 64 else { return }
-		guard name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }) else { return }
+		guard EnvValidation.isValidEnvironmentName(name),
+			secrets.keys.allSatisfy(EnvValidation.isValidVariableName)
+		else { return }
 		guard project.environments[name] == nil else { return }
 		project.environments[name] = secrets
 		saveAndUpdate(project)
@@ -644,9 +584,7 @@ final class VaultStore {
 	/// Duplicate an environment's secrets to a new tab.
 	func duplicateEnvironment(in projectId: String, from source: String, to newName: String) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
-		guard !newName.isEmpty else { return }
-		guard newName.count <= 64 else { return }
-		guard newName.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }) else { return }
+		guard EnvValidation.isValidEnvironmentName(newName) else { return }
 		guard project.environments[newName] == nil else { return }
 		guard let sourceSecrets = project.environments[source] else { return }
 		project.environments[newName] = sourceSecrets
@@ -665,9 +603,7 @@ final class VaultStore {
 	/// Rename an environment tab.
 	func renameEnvironment(in projectId: String, from oldName: String, to newName: String) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
-		guard !newName.isEmpty else { return }
-		guard newName.count <= 64 else { return }
-		guard newName.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }) else { return }
+		guard EnvValidation.isValidEnvironmentName(newName) else { return }
 		guard project.environments[newName] == nil else { return }
 		guard let secrets = project.environments[oldName] else { return }
 		project.environments.removeValue(forKey: oldName)
@@ -698,7 +634,9 @@ final class VaultStore {
 	/// Import multiple secrets into the selected environment. Merges with existing — imported values win on conflict.
 	func importSecrets(to projectId: String, secrets: [String: String]) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
-		guard !secrets.isEmpty else { return }
+		guard !secrets.isEmpty,
+			secrets.keys.allSatisfy(EnvValidation.isValidVariableName)
+		else { return }
 
 		var envSecrets = project.environments[selectedEnvironment] ?? [:]
 		envSecrets.merge(secrets) { _, imported in imported }
@@ -709,9 +647,7 @@ final class VaultStore {
 
 	func addSecret(to projectId: String, key: String, value: String) {
 		guard var project = projects.first(where: { $0.id == projectId }) else { return }
-		guard !key.isEmpty else { return }
-		guard key.count <= 256 else { return }
-		guard key.allSatisfy({ !$0.isNewline && $0 != "\0" }) else { return }
+		guard EnvValidation.isValidVariableName(key) else { return }
 
 		var envSecrets = project.environments[selectedEnvironment] ?? [:]
 		envSecrets[key] = value
@@ -790,11 +726,14 @@ final class VaultStore {
 		await MainActor.run { isLoggingIn = true; error = nil }
 
 		do {
-			let token = try await LoginService.login(registryURL: appEnvironment.registryURL)
+			let credentials = try await LoginService.login(
+				registryURL: appEnvironment.registryURL,
+				baseURL: appEnvironment.baseURL
+			)
 
 			// Validate the token actually works before storing it
 			let validationService = LPMAPIService(baseURL: appEnvironment.baseURL)
-			let user = await validationService.fetchCurrentUser(authToken: token)
+			let user = await validationService.fetchCurrentUser(authToken: credentials.token)
 			guard user != nil else {
 				await MainActor.run {
 					error = "Login failed — server rejected the token."
@@ -804,7 +743,7 @@ final class VaultStore {
 			}
 
 			// Token is valid — persist to Keychain (shared with CLI)
-			LoginService.writeAuthToken(token, registryURL: appEnvironment.registryURL)
+			try LoginService.writeAuthSession(credentials, registryURL: appEnvironment.registryURL)
 
 			// Load full user info + tokens
 			await loadTokens()
@@ -820,7 +759,7 @@ final class VaultStore {
 
 	/// Sign out — clear token from Keychain and reset state.
 	func logout() {
-		LoginService.clearAuthToken(registryURL: appEnvironment.registryURL)
+		LoginService.clearAuthSession(registryURL: appEnvironment.registryURL)
 		currentUser = nil
 		personalTokens = []
 		orgTokens = [:]
@@ -864,9 +803,9 @@ final class VaultStore {
 	private func scheduleAutoLock() {
 		autoLockTask?.cancel()
 		autoLockTask = Task { @MainActor in
-			try? await Task.sleep(nanoseconds: UInt64(autoLockDuration * 1_000_000_000))
+			try? await Task.sleep(for: .seconds(autoLockDuration))
 			if !Task.isCancelled {
-				isUnlocked = false
+				lock()
 			}
 		}
 	}
@@ -896,7 +835,7 @@ final class VaultStore {
 	/// Pushes ALL environments (default, live, local, etc.), not just the selected one.
 	func pushToCloud(force: Bool = false) async {
 		guard let project = selectedProject else { return }
-		guard let authToken = readCLIAuthToken() else {
+		guard let authToken = await currentAuthToken() else {
 			await MainActor.run { error = "Not logged in. Run `lpm login` in terminal first." }
 			return
 		}
@@ -916,10 +855,7 @@ final class VaultStore {
 				throw VaultCrypto.CryptoError.invalidUTF8
 			}
 
-			let (blob, wrapped) = try VaultCrypto.encryptForSync(
-				authToken: authToken,
-				secretsJSON: jsonString
-			)
+			let (blob, wrapped) = try VaultCrypto.encryptForStableSync(secretsJSON: jsonString)
 
 			let syncService = SyncService(baseURL: appEnvironment.baseURL)
 			let result = await syncService.push(
@@ -928,7 +864,9 @@ final class VaultStore {
 				encryptedBlob: blob,
 				wrappedKey: wrapped,
 				expectedVersion: expectedVersion,
-				force: force
+				force: force,
+				name: project.name,
+				schema: syncSchema(for: project)
 			)
 
 			await MainActor.run {
@@ -937,7 +875,7 @@ final class VaultStore {
 					lastSyncStatus = "Pushed (v\(r.version ?? 0))"
 					markSynced(project.id, action: "push", version: r.version)
 				} else {
-					let errMsg = result?.error ?? "Push failed"
+					let errMsg = result?.displayError ?? "Push failed"
 					if errMsg.contains("version conflict") || errMsg.contains("conflict") {
 						lastSyncStatus = "conflict"
 					} else {
@@ -958,7 +896,7 @@ final class VaultStore {
 	/// Pull secrets from cloud and merge into the selected project.
 	func pullFromCloud() async {
 		guard let project = selectedProject else { return }
-		guard let authToken = readCLIAuthToken() else {
+		guard let authToken = await currentAuthToken() else {
 			await MainActor.run { error = "Not logged in. Run `lpm login` in terminal first." }
 			return
 		}
@@ -977,7 +915,7 @@ final class VaultStore {
 
 		guard let blob = result.encryptedBlob, let wrapped = result.wrappedKey else {
 			await MainActor.run {
-				error = result.error ?? "No vault data on cloud. Push first."
+				error = result.error ?? "No env project data on cloud. Push first."
 				isSyncing = false
 				lastSyncStatus = "empty"
 			}
@@ -997,49 +935,52 @@ final class VaultStore {
 				return
 			}
 
-			let jsonString = try VaultCrypto.decryptFromSync(
+			let decrypted = try VaultCrypto.decryptStableSync(
 				authToken: authToken,
 				encryptedBlob: blob,
 				wrappedKey: wrapped
 			)
+			let jsonString = decrypted.plaintext
 
 			guard let jsonData = jsonString.data(using: .utf8) else {
 				throw VaultCrypto.CryptoError.invalidUTF8
 			}
 
+			let merge = try EnvValidation.mergeRemotePayload(
+				jsonData,
+				into: project.environments
+			)
 			var updated = project
-			var totalKeys = 0
-
-			// Try new format: {"environments": {"default": {...}, "live": {...}}}
-			if let wrapper = try? JSONDecoder().decode([String: [String: [String: String]]].self, from: jsonData),
-			   let remoteEnvs = wrapper["environments"] {
-				// Merge each environment: remote wins on conflicts
-				var mergedEnvs = project.environments
-				for (envName, remoteSecrets) in remoteEnvs {
-					var envSecrets = mergedEnvs[envName] ?? [:]
-					envSecrets.merge(remoteSecrets) { _, remote in remote }
-					mergedEnvs[envName] = envSecrets
-					totalKeys += envSecrets.count
-				}
-				updated.environments = mergedEnvs
-			}
-			// Fall back to old flat format: {"KEY": "VALUE"} → merge into "default"
-			else if let remoteSecrets = try? JSONDecoder().decode([String: String].self, from: jsonData) {
-				var merged = project.secrets
-				merged.merge(remoteSecrets) { _, remote in remote }
-				updated.secrets = merged
-				totalKeys = merged.count
-			} else {
-				throw VaultCrypto.CryptoError.invalidUTF8
-			}
+			updated.environments = merge.environments
 
 			let version = result.version ?? 0
+			var syncedVersion = version
+			if decrypted.usedLegacyKey {
+				let (migratedBlob, migratedWrapped) = try VaultCrypto.encryptForStableSync(
+					secretsJSON: jsonString
+				)
+				let migration = await syncService.push(
+					authToken: authToken,
+					vaultId: project.id,
+					encryptedBlob: migratedBlob,
+					wrappedKey: migratedWrapped,
+					expectedVersion: version,
+					name: project.name,
+					schema: syncSchema(for: project)
+				)
+				if migration?.error == nil, let migratedVersion = migration?.version {
+					syncedVersion = migratedVersion
+				}
+			}
 
+			let resolvedProject = updated
+			let resolvedKeyCount = merge.keyCount
+			let resolvedVersion = syncedVersion
 			await MainActor.run {
-				saveAndUpdate(updated)
+				saveAndUpdate(resolvedProject)
 				isSyncing = false
-				lastSyncStatus = "Pulled (v\(version), \(totalKeys) keys)"
-				markSynced(project.id, action: "pull", version: version)
+				lastSyncStatus = "Pulled (v\(resolvedVersion), \(resolvedKeyCount) keys)"
+				markSynced(project.id, action: "pull", version: resolvedVersion)
 			}
 		} catch {
 			await MainActor.run {
@@ -1057,7 +998,7 @@ final class VaultStore {
 	/// `showKeyApprovalSheet` is set — the user must approve before continuing.
 	func pushToOrg(orgSlug: String) async {
 		guard let project = selectedProject else { return }
-		guard let authToken = readCLIAuthToken() else {
+		guard let authToken = await currentAuthToken() else {
 			await MainActor.run { error = "Not logged in." }
 			return
 		}
@@ -1067,13 +1008,31 @@ final class VaultStore {
 		do {
 			let syncService = SyncService(baseURL: appEnvironment.baseURL)
 
-			// 1. Ensure our public key is uploaded
+			// 1. Require the server's registered sharing key to match this device.
 			let (_, pubKey) = VaultCrypto.getOrCreateX25519Keypair()
 			let pubB64 = pubKey.base64EncodedString()
-			_ = await syncService.uploadPublicKey(authToken: authToken, publicKey: pubB64)
+			guard let serverKey = await syncService.getMyPublicKey(authToken: authToken) else {
+				throw VaultSyncError("Could not verify your registered sharing key.")
+			}
+			guard let registeredKey = serverKey.publicKey else {
+				throw VaultSyncError(
+					"Your sharing key is not registered yet. Run `lpm env share --org \(orgSlug)` once to complete secure step-up registration, then retry."
+				)
+			}
+			guard registeredKey == pubB64 else {
+				throw VaultSyncError(
+					"This device's sharing key differs from the account key. Run `lpm env rotate-sharing-key` or restore the matching key before sharing."
+				)
+			}
 
 			// 2. Get all org members' public keys
-			let members = await syncService.getOrgMemberKeys(authToken: authToken, orgSlug: orgSlug)
+			guard let memberAccess = await syncService.getOrgMemberKeyAccess(
+				authToken: authToken,
+				orgSlug: orgSlug
+			) else {
+				throw VaultSyncError("Could not fetch organization member keys.")
+			}
+			let members = memberAccess.members
 			let membersWithKeys = members.filter { $0.hasPublicKey && $0.publicKey != nil }
 
 			if membersWithKeys.isEmpty {
@@ -1103,7 +1062,8 @@ final class VaultStore {
 						allMembers: membersWithKeys,
 						pendingApprovals: pendingApprovals,
 						orgTrust: orgTrust,
-						authToken: authToken
+						authToken: authToken,
+						canReplaceWrappedKeys: memberAccess.canReplaceWrappedKeys
 					)
 					self.showKeyApprovalSheet = true
 					self.isSyncing = false
@@ -1118,7 +1078,8 @@ final class VaultStore {
 				authToken: authToken,
 				orgSlug: orgSlug,
 				membersWithKeys: membersWithKeys,
-				syncService: syncService
+				syncService: syncService,
+				canReplaceWrappedKeys: memberAccess.canReplaceWrappedKeys
 			)
 		} catch {
 			await MainActor.run {
@@ -1158,7 +1119,8 @@ final class VaultStore {
 				authToken: pending.authToken,
 				orgSlug: pending.orgSlug,
 				membersWithKeys: trustedMembers,
-				syncService: syncService
+				syncService: syncService,
+				canReplaceWrappedKeys: pending.canReplaceWrappedKeys
 			)
 		} catch {
 			await MainActor.run {
@@ -1186,7 +1148,8 @@ final class VaultStore {
 		authToken: String,
 		orgSlug: String,
 		membersWithKeys: [SyncService.MemberPublicKey],
-		syncService: SyncService
+		syncService: SyncService,
+		canReplaceWrappedKeys: Bool
 	) async throws {
 		// Encrypt secrets with random AES key
 		let nonEmptyEnvs = project.environments.filter { !$0.value.isEmpty }
@@ -1196,19 +1159,32 @@ final class VaultStore {
 			throw VaultCrypto.CryptoError.invalidUTF8
 		}
 
-		let aesKey = VaultCrypto.generateAESKey()
-		let blob = try VaultCrypto.encrypt(key: aesKey, plaintext: Data(jsonString.utf8))
-
-		// Wrap AES key for each trusted member
-		var wrappedKeys: [[String: String]] = []
-		for member in membersWithKeys {
-			guard let pubKeyB64 = member.publicKey,
-				  let pubKeyData = Data(base64Encoded: pubKeyB64),
-				  pubKeyData.count == 32 else { continue }
-
-			let wrapped = try VaultCrypto.wrapKeyForRecipient(aesKey: aesKey, recipientPublicKey: pubKeyData)
-			wrappedKeys.append(["userId": member.userId, "wrappedKey": wrapped])
+		let aesKey: SymmetricKey
+		let wrappedKeys: [SyncService.WrappedMemberKey]?
+		let expectedVersion = syncMetadata[project.id]?.lastVersion
+		if canReplaceWrappedKeys {
+			aesKey = VaultCrypto.generateAESKey()
+			wrappedKeys = try wrapContentKey(aesKey, for: membersWithKeys)
+		} else {
+			guard let expectedVersion else {
+				throw VaultSyncError("Organization maintainers must pull the current env project before updating it.")
+			}
+			let (privateKey, publicKey) = VaultCrypto.getOrCreateX25519Keypair()
+			guard let current = await syncService.pullOrg(
+				authToken: authToken,
+				orgSlug: orgSlug,
+				vaultId: project.id
+			),
+				current.version == expectedVersion,
+				let wrappedKey = current.wrappedKey,
+				current.recipientPublicKeyFingerprint == VaultCrypto.publicKeyFingerprint(publicKey)
+			else {
+				throw VaultSyncError("The organization env project changed. Pull it and retry.")
+			}
+			aesKey = try VaultCrypto.unwrapKeyFromSender(wrapped: wrappedKey, privateKey: privateKey)
+			wrappedKeys = nil
 		}
+		let blob = try VaultCrypto.encrypt(key: aesKey, plaintext: Data(jsonString.utf8))
 
 		// Push to org
 		let result = await syncService.pushOrg(
@@ -1216,7 +1192,10 @@ final class VaultStore {
 			orgSlug: orgSlug,
 			vaultId: project.id,
 			encryptedBlob: blob,
-			wrappedKeys: wrappedKeys
+			wrappedKeys: wrappedKeys,
+			expectedVersion: expectedVersion,
+			name: project.name,
+			schema: syncSchema(for: project)
 		)
 
 		await MainActor.run {
@@ -1225,16 +1204,51 @@ final class VaultStore {
 				lastSyncStatus = "Shared with \(orgSlug) (v\(r.version ?? 0))"
 				markSynced(project.id, action: "push", version: r.version)
 			} else {
-				self.error = result?.error ?? "Org push failed"
+				self.error = result?.displayError ?? "Org push failed"
 				lastSyncStatus = "failed"
 			}
 		}
 	}
 
+	private func wrapContentKey(
+		_ aesKey: SymmetricKey,
+		for members: [SyncService.MemberPublicKey]
+	) throws -> [SyncService.WrappedMemberKey] {
+		var wrappedKeys: [SyncService.WrappedMemberKey] = []
+		wrappedKeys.reserveCapacity(members.count)
+		for member in members {
+			guard let publicKeyBase64 = member.publicKey,
+				let publicKey = Data(base64Encoded: publicKeyBase64),
+				publicKey.count == 32,
+				let publicKeyVersion = member.publicKeyVersion,
+				publicKeyVersion > 0,
+				let publicKeyFingerprint = member.publicKeyFingerprint,
+				publicKeyFingerprint == VaultCrypto.publicKeyFingerprint(publicKey)
+			else {
+				throw VaultSyncError("Organization member \(member.userId) has an invalid sharing-key binding.")
+			}
+
+			let wrapped = try VaultCrypto.wrapKeyForRecipient(
+				aesKey: aesKey,
+				recipientPublicKey: publicKey
+			)
+			wrappedKeys.append(SyncService.WrappedMemberKey(
+				userId: member.userId,
+				wrappedKey: wrapped,
+				publicKeyVersion: publicKeyVersion,
+				publicKeyFingerprint: publicKeyFingerprint
+			))
+		}
+		guard !wrappedKeys.isEmpty else {
+			throw VaultSyncError("No organization members have complete registered sharing keys.")
+		}
+		return wrappedKeys
+	}
+
 	/// Pull a vault from an org using X25519 decryption.
 	func pullFromOrg(orgSlug: String) async {
 		guard let project = selectedProject else { return }
-		guard let authToken = readCLIAuthToken() else {
+		guard let authToken = await currentAuthToken() else {
 			await MainActor.run { error = "Not logged in." }
 			return
 		}
@@ -1244,10 +1258,21 @@ final class VaultStore {
 		do {
 			let syncService = SyncService(baseURL: appEnvironment.baseURL)
 
-			// Ensure we have a keypair
+			// Ensure the local keypair matches the server before requesting a wrap.
 			let (privKey, pubKey) = VaultCrypto.getOrCreateX25519Keypair()
 			let pubB64 = pubKey.base64EncodedString()
-			_ = await syncService.uploadPublicKey(authToken: authToken, publicKey: pubB64)
+			guard let serverKey = await syncService.getMyPublicKey(authToken: authToken),
+				let registeredKey = serverKey.publicKey
+			else {
+				throw VaultSyncError(
+					"Your sharing key is not registered. Run `lpm env share --org \(orgSlug)` once, then retry."
+				)
+			}
+			guard registeredKey == pubB64 else {
+				throw VaultSyncError(
+					"This device does not hold the sharing key registered for your account."
+				)
+			}
 
 			// Pull
 			guard let result = await syncService.pullOrg(
@@ -1263,7 +1288,7 @@ final class VaultStore {
 
 			guard let blob = result.encryptedBlob else {
 				await MainActor.run {
-					error = result.error ?? "No vault data on this org."
+					error = result.error ?? "No env project data in this organization."
 					isSyncing = false
 					lastSyncStatus = "failed"
 				}
@@ -1273,11 +1298,19 @@ final class VaultStore {
 			guard let wrapped = result.wrappedKey else {
 				// Public key was just uploaded but no wrapped key exists yet
 				await MainActor.run {
-					error = "Your encryption key isn't registered for this vault yet. Your public key has been uploaded — ask an org admin to re-share the vault so it gets wrapped for you."
+					error = "Your encryption key isn't registered for this env project yet. Your public key has been uploaded — ask an org admin to re-share the env project so it gets wrapped for you."
 					isSyncing = false
 					lastSyncStatus = "awaiting access"
 				}
 				return
+			}
+			guard let contentKeyVersion = result.contentKeyVersion,
+				contentKeyVersion > 0,
+				let recipientKeyVersion = result.recipientPublicKeyVersion,
+				recipientKeyVersion > 0,
+				result.recipientPublicKeyFingerprint == VaultCrypto.publicKeyFingerprint(pubKey)
+			else {
+				throw VaultSyncError("The organization response has an invalid sharing-key binding.")
 			}
 
 			// Replay protection: reject version downgrades
@@ -1301,34 +1334,21 @@ final class VaultStore {
 				throw VaultCrypto.CryptoError.invalidUTF8
 			}
 
+			let merge = try EnvValidation.mergeRemotePayload(
+				jsonData,
+				into: project.environments
+			)
 			var updated = project
-			var totalKeys = 0
-
-			if let wrapper = try? JSONDecoder().decode([String: [String: [String: String]]].self, from: jsonData),
-			   let remoteEnvs = wrapper["environments"] {
-				var mergedEnvs = project.environments
-				for (envName, remoteSecrets) in remoteEnvs {
-					var envSecrets = mergedEnvs[envName] ?? [:]
-					envSecrets.merge(remoteSecrets) { _, remote in remote }
-					mergedEnvs[envName] = envSecrets
-					totalKeys += envSecrets.count
-				}
-				updated.environments = mergedEnvs
-			} else if let remoteSecrets = try? JSONDecoder().decode([String: String].self, from: jsonData) {
-				var merged = project.secrets
-				merged.merge(remoteSecrets) { _, remote in remote }
-				updated.secrets = merged
-				totalKeys = merged.count
-			} else {
-				throw VaultCrypto.CryptoError.invalidUTF8
-			}
+			updated.environments = merge.environments
 
 			let version = result.version ?? 0
 
+			let resolvedProject = updated
+			let resolvedKeyCount = merge.keyCount
 			await MainActor.run {
-				saveAndUpdate(updated)
+				saveAndUpdate(resolvedProject)
 				isSyncing = false
-				lastSyncStatus = "Pulled from \(orgSlug) (v\(version), \(totalKeys) keys)"
+				lastSyncStatus = "Pulled from \(orgSlug) (v\(version), \(resolvedKeyCount) keys)"
 				markSynced(project.id, action: "pull", version: version)
 			}
 		} catch {
@@ -1340,27 +1360,39 @@ final class VaultStore {
 		}
 	}
 
-	/// Public accessor for the CLI auth token (used by AddProjectSheet).
-	func readCLIAuthTokenPublic() -> String? { readCLIAuthToken() }
+	func currentAuthToken() async -> String? {
+		await AuthSessionStore.currentAccessToken(
+			registryURL: appEnvironment.registryURL,
+			baseURL: appEnvironment.baseURL
+		)
+	}
 
-	/// Read the CLI auth token from Keychain (shared with Rust CLI).
-	/// Prioritizes the active environment's token.
-	private func readCLIAuthToken() -> String? {
-		// Check active environment first, then fallback
-		let primary = appEnvironment.keychainAccount
-		let fallback = appEnvironment == .production
-			? "auth-token:http://localhost:3000"
-			: "auth-token:https://lpm.dev"
-		let accounts = [primary, fallback]
-		for account in accounts {
-			let (code, output) = runSecurityCLI(args: [
-				"find-generic-password", "-s", VaultConstants.cliAuthService, "-a", account, "-w",
-			])
-			if code == 0, !output.isEmpty {
-				return output
-			}
+	private func syncSchema(for project: VaultProject) -> Data? {
+		guard !project.path.isEmpty else { return nil }
+		let configURL = URL(fileURLWithPath: project.path).appendingPathComponent("lpm.json")
+		guard let data = try? Data(contentsOf: configURL),
+			let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+		else { return nil }
+
+		var schema: [String: Any] = ["version": 2]
+		if let envSchema = root["envSchema"] as? [String: Any] {
+			schema["envSchema"] = envSchema["vars"] ?? envSchema
 		}
-		return nil
+		if let environments = root["environments"] as? [String: Any] {
+			schema["environments"] = environments
+		}
+		if let env = root["env"] as? [String: String] {
+			var envConfig: [String: [String: String]] = [:]
+			for (alias, path) in env {
+				guard path.hasPrefix(".env."), path.count > ".env.".count else { continue }
+				envConfig[alias] = [
+					"canonical": String(path.dropFirst(".env.".count)),
+					"file": path,
+				]
+			}
+			if !envConfig.isEmpty { schema["envConfig"] = envConfig }
+		}
+		return try? JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])
 	}
 
 	// MARK: - Private
@@ -1370,22 +1402,18 @@ final class VaultStore {
 		updateProjectInPlace(project)
 
 		// Write to Keychain off main thread
-		Task.detached { [keychainService, weak self] in
-			let result = keychainService.saveEnvironments(
-				vaultId: project.id,
-				projectName: project.name,
-				projectPath: project.path,
-				environments: project.environments
-			)
-
-			await MainActor.run {
-				switch result {
+		let saveTask = Task { [persistence] in
+			await persistence.save(project)
+		}
+		Task { [weak self] in
+			let result = await saveTask.value
+			guard let self else { return }
+			switch result {
 				case .success, .successWithWarning:
 					break // Already updated above
 				case .failure(let err):
-					self?.error = err.description
+					error = err.description
 				}
-			}
 		}
 	}
 

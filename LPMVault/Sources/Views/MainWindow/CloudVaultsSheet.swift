@@ -8,24 +8,15 @@ struct CloudVaultsSheet: View {
 	@State private var isLoading = false
 	@State private var isPulling: String?
 	@State private var pullResult: String?
+	@State private var loadError: String?
 
-	struct CloudVaultEntry: Identifiable, Decodable {
-		let vaultId: String
-		let version: Int?
-		let updatedAt: String?
-
-		var id: String { vaultId }
-	}
-
-	private struct ListResponse: Decodable {
-		let vaults: [CloudVaultEntry]
-	}
+	typealias CloudVaultEntry = SyncService.RemoteProject
 
 	var body: some View {
 		VStack(spacing: 0) {
 			// Header
 			HStack {
-				Text("Cloud Vaults")
+				Text("Cloud Env Projects")
 					.font(.headline)
 				Spacer()
 				Button {
@@ -44,20 +35,28 @@ struct CloudVaultsSheet: View {
 			if isLoading {
 				VStack(spacing: 8) {
 					ProgressView()
-					Text("Loading cloud vaults...")
+					Text("Loading cloud env projects...")
 						.font(.callout)
 						.foregroundStyle(.secondary)
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
+			} else if let loadError {
+				ContentUnavailableView {
+					Label("Could Not Load Env Projects", systemImage: "exclamationmark.triangle")
+				} description: {
+					Text(loadError)
+				} actions: {
+					Button("Retry") { Task { await loadVaults() } }
+				}
 			} else if vaults.isEmpty {
 				VStack(spacing: 12) {
 					Image(systemName: "cloud")
 						.font(.system(size: 36))
 						.foregroundStyle(.secondary)
-					Text("No cloud vaults")
+					Text("No cloud env projects")
 						.font(.title3)
 						.foregroundStyle(.secondary)
-					Text("Push a vault with `lpm env vars push`\nor the Push button in the toolbar.")
+					Text("Push a project with `lpm env push`\nor the Push button in the toolbar.")
 						.font(.callout)
 						.foregroundStyle(.tertiary)
 						.multilineTextAlignment(.center)
@@ -96,7 +95,7 @@ struct CloudVaultsSheet: View {
 				.foregroundStyle(.secondary)
 
 			VStack(alignment: .leading, spacing: 2) {
-				Text(vault.vaultId)
+				Text(vault.name ?? vault.vaultId)
 					.font(.system(.body, design: .monospaced))
 					.lineLimit(1)
 
@@ -136,31 +135,20 @@ struct CloudVaultsSheet: View {
 
 	private func loadVaults() async {
 		isLoading = true
-		guard let authToken = store.readCLIAuthTokenPublic() else {
+		loadError = nil
+		guard let authToken = await store.currentAuthToken() else {
 			isLoading = false
+			loadError = "Sign in to lpm.dev, then retry."
 			return
 		}
 
 		let syncService = SyncService(baseURL: store.appEnvironment.baseURL)
-		guard let url = URL(string: "/api/vaults", relativeTo: store.appEnvironment.baseURL) else {
+		guard let projects = await syncService.listPersonalProjects(authToken: authToken) else {
 			isLoading = false
+			loadError = "The server request failed. Check your connection and try again."
 			return
 		}
-
-		var request = URLRequest(url: url)
-		request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
-
-		do {
-			let (data, response) = try await URLSession.shared.data(for: request)
-			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-				isLoading = false
-				return
-			}
-			let result = try JSONDecoder().decode(ListResponse.self, from: data)
-			vaults = result.vaults
-		} catch {
-			// silent fail
-		}
+		vaults = projects
 		isLoading = false
 	}
 
@@ -168,21 +156,26 @@ struct CloudVaultsSheet: View {
 		isPulling = vault.vaultId
 		pullResult = nil
 
-		store.addProjectWithVaultId(
+		guard await store.addProjectWithVaultId(
 			vaultId: vault.vaultId,
-			name: "vault-\(vault.vaultId.prefix(8))",
+			name: vault.name ?? "env-\(vault.vaultId.prefix(8))",
 			path: "",
-			environments: ["default": [:]],
-			pullAfterAdd: true
-		)
+			environments: ["default": [:]]
+		) else {
+			isPulling = nil
+			pullResult = store.error ?? "Import failed"
+			return
+		}
 
-		// Wait for pull to complete
-		try? await Task.sleep(nanoseconds: 2_000_000_000)
+		await store.pullFromCloud()
 
 		isPulling = nil
 		if store.lastSyncStatus?.contains("Pulled") == true {
 			pullResult = "Imported successfully"
 		} else {
+			if let placeholder = store.projects.first(where: { $0.id == vault.vaultId }) {
+				_ = await store.deleteLocalVault(placeholder)
+			}
 			pullResult = store.error ?? "Import failed"
 		}
 	}
