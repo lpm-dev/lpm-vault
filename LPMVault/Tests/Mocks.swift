@@ -159,45 +159,81 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	var userResponses: [(delay: Duration?, user: LPMUser?)] = []
 	var personalTokens: [LPMToken] = []
 	var orgTokensMap: [String: [LPMToken]] = [:]
+	var orgTokenErrors: [String: LPMAPIError] = [:]
 	var revokedTokenIds: [String] = []
 	var delay: Duration?
 	var personalTokensDelay: Duration?
 	var personalTokenResponses: [(delay: Duration?, tokens: [LPMToken])] = []
+	var orgTokensDelay: Duration?
+	var personalTokensError: LPMAPIError?
+	var personalRevokeDelay: Duration?
+	var orgRevokeDelay: Duration?
+	var requestedOrgSlugs: [String] = []
+	var receivedAuthTokens: [String] = []
+	var activeOrgRequests = 0
+	var maximumActiveOrgRequests = 0
+	var onPersonalRevokeStart: (() -> Void)?
+	var onOrgRevokeStart: (() -> Void)?
 
-	func fetchCurrentUser() async -> LPMUser? {
+	func fetchCurrentUser(authToken: String) async -> LPMAPIResult<LPMUser> {
 		let response: (delay: Duration?, user: LPMUser?) = lock.withLock {
+			receivedAuthTokens.append(authToken)
 			if !userResponses.isEmpty { return userResponses.removeFirst() }
 			return (delay, user)
 		}
 		if let delay = response.delay { try? await Task.sleep(for: delay) }
-		return response.user
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+		return response.user.map(LPMAPIResult.success) ?? .failure(.unauthorized)
 	}
 
-	func fetchCurrentUser(authToken: String) async -> LPMUser? {
-		user
-	}
-
-	func fetchPersonalTokens() async -> [LPMToken] {
+	func fetchPersonalTokens(authToken: String) async -> LPMAPIResult<[LPMToken]> {
 		let response: (delay: Duration?, tokens: [LPMToken]) = lock.withLock {
+			receivedAuthTokens.append(authToken)
 			if !personalTokenResponses.isEmpty { return personalTokenResponses.removeFirst() }
 			return (personalTokensDelay, personalTokens)
 		}
 		if let delay = response.delay { try? await Task.sleep(for: delay) }
-		return response.tokens
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+		if let personalTokensError { return .failure(personalTokensError) }
+		return .success(response.tokens)
 	}
 
-	func revokePersonalToken(id: String) async -> Bool {
-		revokedTokenIds.append(id)
-		return true
+	func revokePersonalToken(id: String, authToken: String) async -> LPMAPIResult<Void> {
+		lock.withLock {
+			receivedAuthTokens.append(authToken)
+			revokedTokenIds.append(id)
+		}
+		onPersonalRevokeStart?()
+		if let personalRevokeDelay { try? await Task.sleep(for: personalRevokeDelay) }
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+		return .success(())
 	}
 
-	func fetchOrgTokens(orgSlug: String) async -> [LPMToken] {
-		orgTokensMap[orgSlug] ?? []
+	func fetchOrgTokens(orgSlug: String, authToken: String) async -> LPMAPIResult<[LPMToken]> {
+		let response: (delay: Duration?, result: LPMAPIResult<[LPMToken]>) = lock.withLock {
+			receivedAuthTokens.append(authToken)
+			requestedOrgSlugs.append(orgSlug)
+			activeOrgRequests += 1
+			maximumActiveOrgRequests = max(maximumActiveOrgRequests, activeOrgRequests)
+			let result = orgTokenErrors[orgSlug].map(LPMAPIResult.failure)
+				?? .success(orgTokensMap[orgSlug] ?? [])
+			return (orgTokensDelay, result)
+		}
+		if let delay = response.delay { try? await Task.sleep(for: delay) }
+		lock.withLock { activeOrgRequests -= 1 }
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+		return response.result
 	}
 
-	func revokeOrgToken(orgSlug: String, id: String) async -> Bool {
-		revokedTokenIds.append(id)
-		return true
+	func revokeOrgToken(orgSlug: String, id: String, authToken: String) async -> LPMAPIResult<Void> {
+		lock.withLock {
+			receivedAuthTokens.append(authToken)
+			revokedTokenIds.append(id)
+		}
+		onOrgRevokeStart?()
+		if let orgRevokeDelay { try? await Task.sleep(for: orgRevokeDelay) }
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+		return .success(())
 	}
 }
 

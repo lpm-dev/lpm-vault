@@ -151,6 +151,33 @@ struct OrgKeyTrustTests {
 
 @Suite("PinnedSessionDelegate — Response Signature Verification")
 struct PinnedSessionDelegateTests {
+	@Test("redirect policy is installed as a URL session task delegate")
+	func redirectPolicyIsInstalled() {
+		let delegate: AnyObject = PinnedSessionDelegate()
+		#expect(delegate is URLSessionTaskDelegate)
+	}
+
+	@Test("redirects require the exact same origin")
+	func redirectsRequireSameOrigin() {
+		let live = URL(string: "https://lpm.dev/api/tokens")!
+		#expect(PinnedSessionDelegate.isSameOrigin(
+			live,
+			URL(string: "https://lpm.dev/api/user/me")!
+		))
+		#expect(!PinnedSessionDelegate.isSameOrigin(
+			live,
+			URL(string: "https://example.com/api/tokens")!
+		))
+		#expect(!PinnedSessionDelegate.isSameOrigin(
+			live,
+			URL(string: "http://lpm.dev/api/tokens")!
+		))
+		#expect(!PinnedSessionDelegate.isSameOrigin(
+			live,
+			URL(string: "https://lpm.dev:8443/api/tokens")!
+		))
+	}
+
 	/// Helper: create a minimal HTTPURLResponse with optional headers.
 	private func makeResponse(headers: [String: String] = [:]) -> HTTPURLResponse {
 		HTTPURLResponse(
