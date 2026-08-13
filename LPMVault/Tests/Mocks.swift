@@ -14,6 +14,11 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var failDataAccounts: Set<String> = []
 	var saveEnvironmentsCallCount = 0
 	var onCreateEnvironments: (() -> Void)?
+	var blockNextSaveEnvironments: (() -> Void)?
+	var blockNextListProjects: (() -> Void)?
+	var failWriteDataAccounts: Set<String> = []
+	var failRestoreSaveEnvironments = false
+	private var successfulSaveEnvironmentsCallCount = 0
 
 	// Convenience for old tests that use flat secrets
 	var storage: [String: (name: String, path: String, secrets: [String: String])] {
@@ -26,6 +31,11 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	}
 
 	func listProjects() -> [VaultProject] {
+		lock.lock()
+		let blocker = blockNextListProjects
+		blockNextListProjects = nil
+		lock.unlock()
+		blocker?()
 		if let listProjectsDelay { Thread.sleep(forTimeInterval: listProjectsDelay.timeInterval) }
 		lock.lock()
 		defer { lock.unlock() }
@@ -50,8 +60,23 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		environments: [String: [String: String]]
 	) -> KeychainResult {
 		saveEnvironmentsCallCount += 1
+		lock.lock()
+		let blocker = blockNextSaveEnvironments
+		blockNextSaveEnvironments = nil
+		lock.unlock()
+		blocker?()
 		if shouldFail { return .failure(failureError) }
+		if failRestoreSaveEnvironments, successfulSaveEnvironmentsCallCount > 0 {
+			return .failure(.unexpectedStatus(-99))
+		}
+		guard let encodedSize = EnvValidation.encodedVaultSize(environments) else {
+			return .failure(.encodingFailed)
+		}
+		guard encodedSize <= VaultConstants.maxVaultSizeWarning else {
+			return .failure(.dataTooLarge(encodedSize))
+		}
 		envStorage[vaultId] = (name: projectName, path: projectPath, environments: environments)
+		successfulSaveEnvironmentsCallCount += 1
 		return .success
 	}
 
@@ -106,7 +131,9 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	@discardableResult
 	func writeData(account: String, data: Data) -> Bool {
-		if shouldFail || failDataAccounts.contains(account) { return false }
+		if shouldFail || failDataAccounts.contains(account) || failWriteDataAccounts.contains(account) {
+			return false
+		}
 		dataStorage[account] = data
 		return true
 	}
@@ -253,5 +280,43 @@ final class MockEnvProjectImportService: EnvProjectImportServiceProtocol, @unche
 		vaultId: String
 	) async throws -> RemoteEnvProjectPayload {
 		try organizationResult.get()
+	}
+}
+
+actor MockEnvFileImportService: EnvFileImportServiceProtocol {
+	private var results: [String: Result<ImportedEnvFile, EnvFileImportError>] = [:]
+	private var continuations: [String: CheckedContinuation<ImportedEnvFile, Error>] = [:]
+	private var started: Set<String> = []
+	var immediateResult: Result<ImportedEnvFile, EnvFileImportError> = .success(
+		ImportedEnvFile(secrets: ["IMPORTED": "value"])
+	)
+	var usesGate = false
+
+	func load(at url: URL) async throws -> ImportedEnvFile {
+		let key = url.lastPathComponent
+		if !usesGate { return try immediateResult.get() }
+		started.insert(key)
+		return try await withCheckedThrowingContinuation { continuation in
+			if let result = results.removeValue(forKey: key) {
+				continuation.resume(with: result.mapError { $0 as Error })
+			} else {
+				continuations[key] = continuation
+			}
+		}
+	}
+
+	func enableGate() { usesGate = true }
+
+	func hasStarted(_ key: String) -> Bool { started.contains(key) }
+
+	func resolve(
+		_ key: String,
+		with result: Result<ImportedEnvFile, EnvFileImportError>
+	) {
+		if let continuation = continuations.removeValue(forKey: key) {
+			continuation.resume(with: result.mapError { $0 as Error })
+		} else {
+			results[key] = result
+		}
 	}
 }
