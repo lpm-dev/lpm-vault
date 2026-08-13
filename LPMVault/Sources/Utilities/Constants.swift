@@ -16,6 +16,9 @@ enum VaultConstants {
 	/// Biometric auth cache duration in seconds (2 minutes)
 	static let biometricCacheDuration: TimeInterval = 2 * 60
 
+	/// Idle time before an unlocked vault locks itself (2 minutes)
+	static let vaultAutoLockDuration: TimeInterval = 2 * 60
+
 	/// LPM API base URL
 	static let apiBaseURL = URL(string: "https://lpm.dev")!
 

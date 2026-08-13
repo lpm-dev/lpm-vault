@@ -27,7 +27,20 @@ struct LocalEnvImportPersistenceCommit: Sendable {
 enum LocalEnvImportPersistenceResult: Sendable {
 	case success(LocalEnvImportPersistenceCommit)
 	case targetUnavailable
+	case caseInsensitiveCollision
 	case cancelled
+	case failure(KeychainError)
+}
+
+struct SecretPersistenceCommit: Sendable {
+	let project: VaultProject
+	let syncMetadata: [String: SyncMetadata]
+	let warning: String?
+}
+
+enum SecretPersistenceResult: Sendable {
+	case success(SecretPersistenceCommit)
+	case targetUnavailable
 	case failure(KeychainError)
 }
 
@@ -82,6 +95,85 @@ actor VaultPersistenceCoordinator {
 		case .failure:
 			return (result, loadSyncMetadata())
 		}
+	}
+
+	/// Adds one secret to the latest durable snapshot. The in-memory store only
+	/// publishes the returned project after both the vault and dirty metadata
+	/// are durable. If metadata persistence fails, the prior vault is restored.
+	func addSecret(
+		projectId: String,
+		projectName: String,
+		projectPath: String,
+		environment: String,
+		key: String,
+		value: String
+	) -> SecretPersistenceResult {
+		guard let storedProject = service.listProjects().first(where: { $0.id == projectId }),
+			storedProject.name == projectName,
+			storedProject.path == projectPath,
+			var environments = service.getEnvironments(vaultId: projectId),
+			var secrets = environments[environment],
+			secrets[key] == nil,
+			EnvValidation.caseInsensitiveCollision(for: key, in: secrets.keys) == nil
+		else { return .targetUnavailable }
+
+		let previousEnvironments = environments
+		let previousMetadata = service.readData(account: "__sync_metadata__")
+		secrets[key] = value
+		environments[environment] = secrets
+		let project = VaultProject(
+			id: projectId,
+			name: projectName,
+			path: projectPath,
+			environments: environments
+		)
+		var metadata = previousMetadata
+			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) } ?? [:]
+		var item = metadata[projectId] ?? SyncMetadata()
+		item.isDirty = true
+		metadata[projectId] = item
+		guard let metadataData = try? JSONEncoder().encode(metadata) else {
+			return .failure(.encodingFailed)
+		}
+
+		let saveResult = service.saveEnvironments(
+			vaultId: projectId,
+			projectName: projectName,
+			projectPath: projectPath,
+			environments: environments
+		)
+		let warning: String?
+		switch saveResult {
+		case .success:
+			warning = nil
+		case .successWithWarning(let message):
+			warning = message
+		case .failure(let error):
+			return .failure(error)
+		}
+
+		guard service.writeData(account: "__sync_metadata__", data: metadataData) else {
+			let restoredVault = service.saveEnvironments(
+				vaultId: projectId,
+				projectName: projectName,
+				projectPath: projectPath,
+				environments: previousEnvironments
+			)
+			let restoredMetadata = restoreData(
+				account: "__sync_metadata__",
+				snapshot: previousMetadata
+			)
+			guard restoredMetadata, restoredVault.succeeded else {
+				return .failure(.unexpectedStatus(-2))
+			}
+			return .failure(.unexpectedStatus(-1))
+		}
+
+		return .success(SecretPersistenceCommit(
+			project: project,
+			syncMetadata: metadata,
+			warning: warning
+		))
 	}
 
 	func markSynced(vaultId: String, action: String, version: Int?) -> [String: SyncMetadata]? {
@@ -222,6 +314,16 @@ actor VaultPersistenceCoordinator {
 
 		let previousEnvironments = environments
 		var importedEnvironment = environments[environment] ?? [:]
+		var exactKeys = Set(importedEnvironment.keys)
+		var foldedKeys = Set(importedEnvironment.keys.map { $0.lowercased() })
+		for key in secrets.keys {
+			if exactKeys.contains(key) { continue }
+			let foldedKey = key.lowercased()
+			guard foldedKeys.insert(foldedKey).inserted else {
+				return .caseInsensitiveCollision
+			}
+			exactKeys.insert(key)
+		}
 		importedEnvironment.merge(secrets) { _, imported in imported }
 		environments[environment] = importedEnvironment
 

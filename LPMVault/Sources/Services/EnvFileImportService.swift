@@ -27,11 +27,13 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 	case invalidUTF8
 	case readFailed
 	case invalidVariableName(line: Int)
+	case caseInsensitiveCollision(line: Int, existingKey: String, incomingKey: String)
 	case tooManyAssignments(limit: Int)
 	case parsedDataTooLarge(limit: Int)
 	case noValidSecrets
 	case vaultLocked
 	case targetUnavailable
+	case caseInsensitiveCollisionWithExisting
 	case persistence(String)
 
 	var errorDescription: String? {
@@ -50,6 +52,8 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 			"The .env file could not be read."
 		case .invalidVariableName(let line):
 			"Line \(line) has a variable name that does not match [A-Za-z_][A-Za-z0-9_]*."
+		case .caseInsensitiveCollision(let line, let existingKey, let incomingKey):
+			"Line \(line) defines \(incomingKey), which differs from \(existingKey) only by letter case. Rename one key for Windows compatibility."
 		case .tooManyAssignments(let limit):
 			"The .env file contains more than \(limit) assignments."
 		case .parsedDataTooLarge(let limit):
@@ -60,6 +64,8 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 			"Unlock LPM Vault before importing secrets."
 		case .targetUnavailable:
 			"The target env project or environment changed before the import completed."
+		case .caseInsensitiveCollisionWithExisting:
+			"A key in this file differs only by letter case from an existing key. Rename one key for Windows compatibility."
 		case .persistence(let message):
 			"Import failed. \(message)"
 		}
@@ -273,6 +279,7 @@ enum EnvFileCodec {
 	) throws -> [String: String] {
 		var lines = EnvLineIterator(content)
 		var result: [String: String] = [:]
+		var keysByFoldedName: [String: String] = [:]
 		var parsedBytes = 0
 		var assignmentCount = 0
 
@@ -296,6 +303,15 @@ enum EnvFileCodec {
 			guard EnvValidation.isValidVariableName(key) else {
 				throw EnvFileImportError.invalidVariableName(line: lines.lineNumber)
 			}
+			let foldedKey = key.lowercased()
+			if let existingKey = keysByFoldedName[foldedKey], existingKey != key {
+				throw EnvFileImportError.caseInsensitiveCollision(
+					line: lines.lineNumber,
+					existingKey: existingKey,
+					incomingKey: key
+				)
+			}
+			keysByFoldedName[foldedKey] = key
 
 			let valueStart = assignment.index(after: equalsIndex)
 			let oldBytes = result[key].map { key.utf8.count + $0.utf8.count } ?? 0

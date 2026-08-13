@@ -21,6 +21,18 @@ struct VaultProjectTests {
 		#expect(sorted[3].key == "ZEBRA")
 	}
 
+	@Test("sorted secrets use an exact-case tie breaker")
+	func sortedSecretsCaseTieBreaker() {
+		let project = VaultProject(
+			id: "test-id",
+			name: "test",
+			path: "",
+			environments: ["default": ["Hey": "mixed", "HEY": "upper"]]
+		)
+
+		#expect(project.sortedSecrets.map(\.key) == ["HEY", "Hey"])
+	}
+
 	@Test("empty secrets returns empty array")
 	func emptySortedSecrets() {
 		let project = VaultProject(

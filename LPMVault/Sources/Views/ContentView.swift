@@ -16,6 +16,8 @@ struct ContentView: View {
 				lockScreen
 			}
 		}
+		.toolbarBackground(.bar, for: .windowToolbar)
+		.toolbarBackground(.visible, for: .windowToolbar)
 	}
 
 	private var lockScreen: some View {

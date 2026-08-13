@@ -3,10 +3,12 @@ import SwiftUI
 struct AddSecretSheet: View {
 	@Bindable var store: VaultStore
 	let projectId: String
+	let environment: String
 	@Environment(\.dismiss) private var dismiss
 	@State private var key = ""
 	@State private var value = ""
 	@State private var error: String?
+	@State private var isSubmitting = false
 	@FocusState private var focusedField: Field?
 
 	private enum Field {
@@ -17,12 +19,23 @@ struct AddSecretSheet: View {
 		store.projects.first { $0.id == projectId }
 	}
 
-	private var isDuplicate: Bool {
-		project?.environments[store.selectedEnvironment]?[key] != nil
+	private var validationError: String? {
+		guard !key.isEmpty else { return nil }
+		guard EnvValidation.isValidVariableName(key) else {
+			return "Use letters, numbers, and underscores; the first character cannot be a number"
+		}
+		guard let secrets = project?.environments[environment] else { return nil }
+		if secrets[key] != nil {
+			return "A secret with this key already exists"
+		}
+		if let existingKey = EnvValidation.caseInsensitiveCollision(for: key, in: secrets.keys) {
+			return "A key named \(existingKey) already exists. Rename one key for Windows compatibility"
+		}
+		return nil
 	}
 
 	private var canAdd: Bool {
-		EnvValidation.isValidVariableName(key) && !isDuplicate
+		!key.isEmpty && validationError == nil && !isSubmitting
 	}
 
 	var body: some View {
@@ -39,6 +52,7 @@ struct AddSecretSheet: View {
 						.foregroundStyle(.secondary)
 				}
 				.buttonStyle(.plain)
+				.disabled(isSubmitting)
 				.keyboardShortcut(.escape, modifiers: [])
 			}
 			.padding()
@@ -55,17 +69,13 @@ struct AddSecretSheet: View {
 						.textFieldStyle(.roundedBorder)
 						.font(.system(.body, design: .monospaced))
 						.focused($focusedField, equals: .key)
+						.disabled(isSubmitting)
 
-						if isDuplicate {
-						Text("A secret with this key already exists")
-							.font(.caption)
-							.foregroundStyle(.red)
-						}
-						else if !key.isEmpty && !EnvValidation.isValidVariableName(key) {
-							Text("Use letters, numbers, and underscores; the first character cannot be a number")
+					if !isSubmitting, let validationError {
+						Text(validationError)
 								.font(.caption)
 								.foregroundStyle(.red)
-						}
+					}
 				}
 
 				VStack(alignment: .leading, spacing: 6) {
@@ -76,6 +86,7 @@ struct AddSecretSheet: View {
 						.textFieldStyle(.roundedBorder)
 						.font(.system(.body, design: .monospaced))
 						.focused($focusedField, equals: .value)
+						.disabled(isSubmitting)
 				}
 
 				if let error {
@@ -95,13 +106,23 @@ struct AddSecretSheet: View {
 					dismiss()
 				}
 				.keyboardShortcut(.escape, modifiers: [])
+				.disabled(isSubmitting)
 
-				Button("Add") {
-					addSecret()
+				Button {
+					Task { await addSecret() }
+				} label: {
+					if isSubmitting {
+						ProgressView()
+							.controlSize(.small)
+							.frame(minWidth: 26)
+					} else {
+						Text("Add")
+					}
 				}
 				.buttonStyle(.borderedProminent)
 				.disabled(!canAdd)
-				.keyboardShortcut(.return, modifiers: .command)
+				.keyboardShortcut(.defaultAction)
+				.accessibilityLabel(isSubmitting ? "Adding secret" : "Add secret")
 			}
 			.padding()
 		}
@@ -109,17 +130,27 @@ struct AddSecretSheet: View {
 		.onAppear {
 			focusedField = .key
 		}
+		.onChange(of: key) { _, _ in error = nil }
+		.onChange(of: value) { _, _ in error = nil }
 	}
 
-	private func addSecret() {
+	private func addSecret() async {
 		guard canAdd else { return }
+		isSubmitting = true
+		error = nil
 
-		store.addSecret(to: projectId, key: key, value: value)
-
-		if store.error != nil {
-			error = store.error
-		} else {
+		let result = await store.addSecret(
+			to: projectId,
+			environment: environment,
+			key: key,
+			value: value
+		)
+		switch result {
+		case .success:
 			dismiss()
+		case .failure(let addError):
+			error = addError.localizedDescription
+			isSubmitting = false
 		}
 	}
 }
