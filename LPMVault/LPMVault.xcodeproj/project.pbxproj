@@ -53,6 +53,7 @@
 		EFC134143FB11B4F121ABE2C /* VaultPersistenceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA185E326FAD6E725BDC009E /* VaultPersistenceCoordinator.swift */; };
 		F199462174412DD3BCE43883 /* VaultDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FEA1200FEEE801C4081E8DA /* VaultDetailView.swift */; };
 		F5F4B0C83146195EA9F0B875 /* AddSecretSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2707A4D8851C8C9EA46EB8C /* AddSecretSheet.swift */; };
+		F768C8B5AFC0FD0D55134D08 /* EnvProjectImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 547D88A2D08665F045A7D27C /* EnvProjectImportService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -82,6 +83,7 @@
 		407254B9ECE06F58A47AE1E8 /* VaultIDSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultIDSheet.swift; sourceTree = "<group>"; };
 		4688C3AA94245B231B939F2F /* AuthSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionStore.swift; sourceTree = "<group>"; };
 		4CD5E1BFFFE44C134A0DAD2E /* OrgVaultsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrgVaultsSheet.swift; sourceTree = "<group>"; };
+		547D88A2D08665F045A7D27C /* EnvProjectImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvProjectImportService.swift; sourceTree = "<group>"; };
 		58E4E4C897F8E4401D882AF6 /* SecureFileWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureFileWriter.swift; sourceTree = "<group>"; };
 		5D6CBBC8709449B5DA33D8DD /* LPMVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LPMVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F19439D47245FF226585465 /* ToolbarButtonGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarButtonGroup.swift; sourceTree = "<group>"; };
@@ -231,6 +233,7 @@
 				4688C3AA94245B231B939F2F /* AuthSessionStore.swift */,
 				09F3D97EC4B3C023F301406F /* BiometricService.swift */,
 				AA17FB26EDFE51906892C132 /* ClipboardManager.swift */,
+				547D88A2D08665F045A7D27C /* EnvProjectImportService.swift */,
 				176F614BCA46D100B0DFE439 /* KeychainService.swift */,
 				BCFFA64462F1369E71D85556 /* LoginService.swift */,
 				CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */,
@@ -353,6 +356,7 @@
 				63C732A48A3E261D34478D11 /* CloudVaultsSheet.swift in Sources */,
 				85D8879B93AEABF31B2C941C /* Constants.swift in Sources */,
 				36C0755D785CA0709C67EC3D /* ContentView.swift in Sources */,
+				F768C8B5AFC0FD0D55134D08 /* EnvProjectImportService.swift in Sources */,
 				3866F82E3E1C3D5EA8C33910 /* EnvValidation.swift in Sources */,
 				311573303AC72C28104FA9F2 /* KeyApprovalSheet.swift in Sources */,
 				4F2594937CC0514ABE83290E /* KeychainService.swift in Sources */,

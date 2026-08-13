@@ -65,8 +65,10 @@ struct LPMVaultApp: App {
 				.onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
 					isObscured = false
 				}
+				.task {
+					await store.loadTokens()
+				}
 				.onAppear {
-					Task { await store.loadTokens() }
 					appDelegate.openWindow = { [openWindow] in
 						openWindow(id: "main")
 					}

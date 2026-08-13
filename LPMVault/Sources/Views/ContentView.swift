@@ -37,12 +37,20 @@ struct ContentView: View {
 			Button {
 				Task { await store.unlock() }
 			} label: {
-				Label("Unlock", systemImage: "touchid")
-					.frame(minWidth: 120)
+				Group {
+					if store.isUnlocking {
+						ProgressView("Unlocking…")
+							.controlSize(.small)
+					} else {
+						Label("Unlock", systemImage: "touchid")
+					}
+				}
+				.frame(minWidth: 120)
 			}
 			.buttonStyle(.borderedProminent)
 			.controlSize(.large)
 			.keyboardShortcut(.return, modifiers: [])
+			.disabled(store.isUnlocking)
 			.accessibilityHint("Shows the macOS authentication prompt")
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)

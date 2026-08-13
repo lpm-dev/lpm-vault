@@ -44,6 +44,27 @@ enum EnvValidation {
 		}
 	}
 
+	/// Mirrors the Rust client's portable vault ID boundary.
+	static func isSafeVaultId(_ id: String) -> Bool {
+		guard !id.isEmpty, id.utf8.count <= 128,
+			id != ".", id != "..", !id.hasPrefix("~"), !id.hasPrefix("__"),
+			!id.contains("..")
+		else { return false }
+		return !id.unicodeScalars.contains { scalar in
+			CharacterSet.controlCharacters.contains(scalar)
+				|| scalar == "/" || scalar == "\\" || scalar == ":" || scalar.value == 0
+		}
+	}
+
+	static func isSafeOrgSlug(_ slug: String) -> Bool {
+		guard !slug.isEmpty, slug.utf8.count <= 120,
+			let first = slug.utf8.first, isASCIIAlpha(first) || isASCIIDigit(first)
+		else { return false }
+		return slug.utf8.allSatisfy {
+			isASCIIAlpha($0) || isASCIIDigit($0) || $0 == 45 || $0 == 95
+		}
+	}
+
 	static func areValidEnvironments(_ environments: [String: [String: String]]) -> Bool {
 		environments.allSatisfy { environment, secrets in
 			isValidEnvironmentName(environment)

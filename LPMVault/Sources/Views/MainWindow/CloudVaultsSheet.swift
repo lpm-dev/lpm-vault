@@ -7,10 +7,28 @@ struct CloudVaultsSheet: View {
 	@State private var vaults: [CloudVaultEntry] = []
 	@State private var isLoading = false
 	@State private var isPulling: String?
-	@State private var pullResult: String?
+	@State private var importTask: Task<Void, Never>?
+	@State private var importResult: ImportResult?
 	@State private var loadError: String?
+	@State private var reloadID = 0
 
 	typealias CloudVaultEntry = SyncService.RemoteProject
+
+	private enum ImportResult {
+		case success(projectId: String, message: String)
+		case failure(projectId: String, message: String)
+
+		var message: String {
+			switch self {
+			case .success(_, let message), .failure(_, let message): message
+			}
+		}
+
+		var succeeded: Bool {
+			if case .success = self { return true }
+			return false
+		}
+	}
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -20,6 +38,7 @@ struct CloudVaultsSheet: View {
 					.font(.headline)
 				Spacer()
 				Button {
+					importTask?.cancel()
 					dismiss()
 				} label: {
 					Image(systemName: "xmark.circle.fill")
@@ -27,6 +46,7 @@ struct CloudVaultsSheet: View {
 				}
 				.buttonStyle(.plain)
 				.keyboardShortcut(.escape, modifiers: [])
+				.accessibilityLabel("Close")
 			}
 			.padding()
 
@@ -46,7 +66,7 @@ struct CloudVaultsSheet: View {
 				} description: {
 					Text(loadError)
 				} actions: {
-					Button("Retry") { Task { await loadVaults() } }
+					Button("Retry") { reloadID &+= 1 }
 				}
 			} else if vaults.isEmpty {
 				VStack(spacing: 12) {
@@ -70,19 +90,23 @@ struct CloudVaultsSheet: View {
 				}
 			}
 
-			if let result = pullResult {
+			if let result = importResult {
 				HStack {
-					Image(systemName: result.contains("failed") ? "xmark.circle.fill" : "checkmark.circle.fill")
-						.foregroundStyle(result.contains("failed") ? .red : .green)
-					Text(result)
+					Image(systemName: result.succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
+						.foregroundStyle(result.succeeded ? .green : .red)
+					Text(result.message)
 						.font(.callout)
 				}
+				.accessibilityElement(children: .combine)
+				.accessibilityLabel(result.succeeded ? "Import succeeded" : "Import failed")
+				.accessibilityValue(result.message)
 				.padding(.horizontal)
 				.padding(.vertical, 8)
 			}
 		}
-		.frame(width: 500, height: 400)
-		.task { await loadVaults() }
+		.frame(minWidth: 500, minHeight: 400)
+		.task(id: reloadID) { await loadVaults() }
+		.onDisappear { importTask?.cancel() }
 	}
 
 	@ViewBuilder
@@ -120,14 +144,15 @@ struct CloudVaultsSheet: View {
 					.font(.caption)
 					.foregroundStyle(.green)
 			} else if isPulling == vault.vaultId {
-				ProgressView()
+				ProgressView("Importing")
 					.controlSize(.small)
 			} else {
 				Button("Import") {
-					Task { await importVault(vault) }
+					importTask = Task { await importVault(vault) }
 				}
 				.buttonStyle(.borderedProminent)
 				.controlSize(.small)
+				.disabled(isPulling != nil)
 			}
 		}
 		.padding(.vertical, 4)
@@ -137,6 +162,7 @@ struct CloudVaultsSheet: View {
 		isLoading = true
 		loadError = nil
 		guard let authToken = await store.currentAuthToken() else {
+			guard !Task.isCancelled else { return }
 			isLoading = false
 			loadError = "Sign in to lpm.dev, then retry."
 			return
@@ -144,39 +170,36 @@ struct CloudVaultsSheet: View {
 
 		let syncService = SyncService(baseURL: store.appEnvironment.baseURL)
 		guard let projects = await syncService.listPersonalProjects(authToken: authToken) else {
+			guard !Task.isCancelled else { return }
 			isLoading = false
 			loadError = "The server request failed. Check your connection and try again."
 			return
 		}
+		guard !Task.isCancelled else { return }
 		vaults = projects
 		isLoading = false
 	}
 
 	private func importVault(_ vault: CloudVaultEntry) async {
 		isPulling = vault.vaultId
-		pullResult = nil
-
-		guard await store.addProjectWithVaultId(
-			vaultId: vault.vaultId,
-			name: vault.name ?? "env-\(vault.vaultId.prefix(8))",
-			path: "",
-			environments: ["default": [:]]
-		) else {
-			isPulling = nil
-			pullResult = store.error ?? "Import failed"
-			return
-		}
-
-		await store.pullFromCloud()
-
+		importResult = nil
+		let result = await store.importCloudProject(vault)
+		guard !Task.isCancelled else { return }
 		isPulling = nil
-		if store.lastSyncStatus?.contains("Pulled") == true {
-			pullResult = "Imported successfully"
-		} else {
-			if let placeholder = store.projects.first(where: { $0.id == vault.vaultId }) {
-				_ = await store.deleteLocalVault(placeholder)
-			}
-			pullResult = store.error ?? "Import failed"
+		importTask = nil
+		switch result {
+		case .success(let imported):
+			importResult = .success(
+				projectId: imported.projectId,
+				message: "Imported v\(imported.version) with \(imported.keyCount) keys."
+			)
+		case .failure(.cancelled):
+			break
+		case .failure(let error):
+			importResult = .failure(
+				projectId: vault.vaultId,
+				message: error.localizedDescription
+			)
 		}
 	}
 
