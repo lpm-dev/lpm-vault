@@ -8,41 +8,47 @@ struct AccountRailView: View {
 		VStack(spacing: 12) {
 			// User avatar (personal vaults)
 			Button {
-				store.selectedAccount = .personal
-				store.showAuthStatus = false
+				store.selectAccount(.personal)
 			} label: {
 				avatarView(
 					url: store.currentUser?.avatarUrl,
 					fallback: store.currentUser?.username.prefix(1).uppercased() ?? "?",
-					isSelected: store.selectedAccount == .personal,
+					isSelected: !store.showAuthStatus && store.selectedAccount == .personal,
 					isOrg: false
 				)
 			}
 			.buttonStyle(.plain)
 			.help(store.currentUser?.username ?? "Personal")
+			.accessibilityLabel("Personal env projects")
+			.accessibilityAddTraits(
+				!store.showAuthStatus && store.selectedAccount == .personal ? .isSelected : []
+			)
 
 			// Org avatars (rounded squares)
 			ForEach(store.userOrgs) { org in
 				Button {
-					store.selectedAccount = .org(org.slug)
-					store.showAuthStatus = false
+					store.selectAccount(.org(org.slug))
 				} label: {
 					avatarView(
 						url: nil,
 						fallback: String(org.name.prefix(1)).uppercased(),
-						isSelected: store.selectedAccount == .org(org.slug),
+						isSelected: !store.showAuthStatus && store.selectedAccount == .org(org.slug),
 						isOrg: true
 					)
 				}
 				.buttonStyle(.plain)
 				.help(org.name)
+				.accessibilityLabel("\(org.name) env projects")
+				.accessibilityAddTraits(
+					!store.showAuthStatus && store.selectedAccount == .org(org.slug) ? .isSelected : []
+				)
 			}
 
 			Spacer()
 
 			// Settings gear → auth status
 			Button {
-				store.showAuthStatus = true
+				store.showSettings()
 			} label: {
 				Image(systemName: "gearshape.fill")
 					.font(.system(size: 16))
@@ -56,6 +62,8 @@ struct AccountRailView: View {
 			}
 			.buttonStyle(.plain)
 			.help("Settings")
+			.accessibilityLabel("Settings")
+			.accessibilityAddTraits(store.showAuthStatus ? .isSelected : [])
 
 			// Lock button
 			Button {
@@ -69,6 +77,7 @@ struct AccountRailView: View {
 			}
 			.buttonStyle(.plain)
 			.help("Lock vault")
+			.accessibilityLabel("Lock LPM Vault")
 		}
 		.padding(.top, 12)
 		.padding(.bottom, 12)
