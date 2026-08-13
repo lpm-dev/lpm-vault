@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		05F8B08121A9FDBB332690DC /* EnvFileImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E7E17CFD8A20E12558CD8E0 /* EnvFileImportTests.swift */; };
 		0F13FF2AB12CF6C91E8957B7 /* AuthStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BAA26D2A3091F62FA6095E0 /* AuthStatusView.swift */; };
 		1502B1EBDA3730B341AC1C18 /* ClipboardManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA17FB26EDFE51906892C132 /* ClipboardManager.swift */; };
 		189834C52A067834FF0D5D14 /* NewVaultSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14600D8075CD55088CD63D32 /* NewVaultSheet.swift */; };
@@ -32,6 +33,7 @@
 		68D7FC410DFECC514DDF3EDF /* VaultIDSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 407254B9ECE06F58A47AE1E8 /* VaultIDSheet.swift */; };
 		70ED10E6A8102DE374267B56 /* ToolbarButtonGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F19439D47245FF226585465 /* ToolbarButtonGroup.swift */; };
 		79239F41A5347411FC68689B /* Mocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63C91F636E4DF09BA177F24F /* Mocks.swift */; };
+		79314C80BEC853A4C3E50B77 /* EnvFileImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D0B2CD3E26188E14F6418FB /* EnvFileImportService.swift */; };
 		807FC1E43E1B2323EF15E42B /* SyncConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761C4D9E223B7D35615B12C6 /* SyncConfirmationSheet.swift */; };
 		85D8879B93AEABF31B2C941C /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9FF906993D46DE0663FDBE6 /* Constants.swift */; };
 		89A4B6EF8C27BB520DC3C148 /* KeychainServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */; };
@@ -71,6 +73,7 @@
 		09F3D97EC4B3C023F301406F /* BiometricService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiometricService.swift; sourceTree = "<group>"; };
 		0BAA26D2A3091F62FA6095E0 /* AuthStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthStatusView.swift; sourceTree = "<group>"; };
 		0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CryptoInteropTests.swift; sourceTree = "<group>"; };
+		0D0B2CD3E26188E14F6418FB /* EnvFileImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportService.swift; sourceTree = "<group>"; };
 		10F9038EDB0DF8525A388573 /* ModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelTests.swift; sourceTree = "<group>"; };
 		14600D8075CD55088CD63D32 /* NewVaultSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewVaultSheet.swift; sourceTree = "<group>"; };
 		15998269700BB6B76AB5F9CD /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
@@ -95,6 +98,7 @@
 		72C3FAD279B500DCF05CDFC0 /* SidebarItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarItem.swift; sourceTree = "<group>"; };
 		761C4D9E223B7D35615B12C6 /* SyncConfirmationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncConfirmationSheet.swift; sourceTree = "<group>"; };
 		7CEFDB752A8CA0EF3E0007CF /* LPMOrg.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LPMOrg.swift; sourceTree = "<group>"; };
+		7E7E17CFD8A20E12558CD8E0 /* EnvFileImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportTests.swift; sourceTree = "<group>"; };
 		8E6BE2E9151A66D75D9576BD /* SecretRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretRowView.swift; sourceTree = "<group>"; };
 		8F5EBA8FE3F0077FCAA53B63 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8FEA1200FEEE801C4081E8DA /* VaultDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultDetailView.swift; sourceTree = "<group>"; };
@@ -166,6 +170,7 @@
 			children = (
 				0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */,
 				FD248A688D2DCFD4318032CF /* CurrentContractTests.swift */,
+				7E7E17CFD8A20E12558CD8E0 /* EnvFileImportTests.swift */,
 				B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */,
 				63C91F636E4DF09BA177F24F /* Mocks.swift */,
 				10F9038EDB0DF8525A388573 /* ModelTests.swift */,
@@ -233,6 +238,7 @@
 				4688C3AA94245B231B939F2F /* AuthSessionStore.swift */,
 				09F3D97EC4B3C023F301406F /* BiometricService.swift */,
 				AA17FB26EDFE51906892C132 /* ClipboardManager.swift */,
+				0D0B2CD3E26188E14F6418FB /* EnvFileImportService.swift */,
 				547D88A2D08665F045A7D27C /* EnvProjectImportService.swift */,
 				176F614BCA46D100B0DFE439 /* KeychainService.swift */,
 				BCFFA64462F1369E71D85556 /* LoginService.swift */,
@@ -334,6 +340,7 @@
 			files = (
 				5537F30818AE6D9798D8E644 /* CryptoInteropTests.swift in Sources */,
 				1B65DFA8F8C5EE52C99C8D2D /* CurrentContractTests.swift in Sources */,
+				05F8B08121A9FDBB332690DC /* EnvFileImportTests.swift in Sources */,
 				89A4B6EF8C27BB520DC3C148 /* KeychainServiceTests.swift in Sources */,
 				79239F41A5347411FC68689B /* Mocks.swift in Sources */,
 				22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */,
@@ -356,6 +363,7 @@
 				63C732A48A3E261D34478D11 /* CloudVaultsSheet.swift in Sources */,
 				85D8879B93AEABF31B2C941C /* Constants.swift in Sources */,
 				36C0755D785CA0709C67EC3D /* ContentView.swift in Sources */,
+				79314C80BEC853A4C3E50B77 /* EnvFileImportService.swift in Sources */,
 				F768C8B5AFC0FD0D55134D08 /* EnvProjectImportService.swift in Sources */,
 				3866F82E3E1C3D5EA8C33910 /* EnvValidation.swift in Sources */,
 				311573303AC72C28104FA9F2 /* KeyApprovalSheet.swift in Sources */,

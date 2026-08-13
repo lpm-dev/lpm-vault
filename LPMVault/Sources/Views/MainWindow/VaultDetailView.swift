@@ -14,6 +14,12 @@ struct VaultDetailView: View {
 	@State private var showAddEnvironment = false
 	@State private var newEnvName = ""
 	@State private var newEnvSecrets: [String: String] = [:]
+	@State private var currentEnvImportTask: Task<Void, Never>?
+	@State private var currentEnvImportId: UUID?
+	@State private var previewImportTask: Task<Void, Never>?
+	@State private var previewImportId: UUID?
+	@State private var newEnvCreationTask: Task<Void, Never>?
+	@State private var newEnvCreationId: UUID?
 	@State private var environmentToDelete: String?
 	@State private var environmentToClear: String?
 	@State private var showRenameEnvironment = false
@@ -127,6 +133,28 @@ struct VaultDetailView: View {
 			guard project != nil else { return }
 			showSearch = true
 			isSearchFocused = true
+		}
+		.onChange(of: showAddEnvironment) { _, isPresented in
+			if !isPresented { cancelNewEnvironmentWork() }
+		}
+		.onChange(of: store.selectedProjectId) { _, _ in
+			currentEnvImportTask?.cancel()
+			currentEnvImportTask = nil
+			currentEnvImportId = nil
+			cancelNewEnvironmentWork()
+			showAddEnvironment = false
+		}
+		.onChange(of: store.isUnlocked) { _, isUnlocked in
+			guard !isUnlocked else { return }
+			cancelNewEnvironmentWork()
+			newEnvSecrets = [:]
+			showAddEnvironment = false
+		}
+		.onDisappear {
+			currentEnvImportTask?.cancel()
+			currentEnvImportTask = nil
+			currentEnvImportId = nil
+			cancelNewEnvironmentWork()
 		}
 	}
 
@@ -386,7 +414,10 @@ struct VaultDetailView: View {
 						ClipboardManager.shared.copy(envString, clearAfter: 15)
 					}
 				}
-				Button("Import") { importIntoCurrentEnvironment(project) }
+				Button(currentEnvImportTask == nil ? "Import" : "Importing…") {
+					importIntoCurrentEnvironment(project)
+				}
+				.disabled(currentEnvImportTask != nil)
 				Button("Export") { exportToFile() }
 				Button("Add New") { showingAddSecret = true }
 			}
@@ -505,15 +536,9 @@ struct VaultDetailView: View {
 		panel.message = "Export \(store.selectedEnvironment) secrets to .env file"
 
 		if panel.runModal() == .OK, let url = panel.url {
-			let content = project.sortedSecrets(for: store.selectedEnvironment)
-				.map { secret in
-					let v = secret.value
-					if v.contains(" ") || v.contains("\"") || v.contains("'") || v.contains("\n") {
-						return "\(secret.key)=\"\(v.replacingOccurrences(of: "\"", with: "\\\""))\""
-					}
-					return "\(secret.key)=\(v)"
-				}
-				.joined(separator: "\n") + "\n"
+			let content = EnvFileCodec.format(
+				project.secrets(for: store.selectedEnvironment)
+			)
 			do {
 				try SecureFileWriter.write(Data(content.utf8), to: url)
 			} catch {
@@ -523,38 +548,31 @@ struct VaultDetailView: View {
 	}
 
 	private func importIntoCurrentEnvironment(_ project: VaultProject) {
+		let environment = store.selectedEnvironment
 		let panel = NSOpenPanel()
 		panel.canChooseFiles = true
 		panel.canChooseDirectories = false
 		panel.allowsMultipleSelection = false
-		panel.message = "Import secrets into \"\(VaultProject.displayName(for: store.selectedEnvironment))\""
+		panel.message = "Import secrets into \"\(VaultProject.displayName(for: environment))\""
 
 		if panel.runModal() == .OK, let url = panel.url {
-			guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
-			let imported = parseEnvContent(content)
-			guard !imported.isEmpty else { return }
-			store.importSecrets(to: project.id, secrets: imported)
-		}
-	}
-
-	private func parseEnvContent(_ content: String) -> [String: String] {
-		var result: [String: String] = [:]
-		for line in content.components(separatedBy: .newlines) {
-			let trimmed = line.trimmingCharacters(in: .whitespaces)
-			if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-			let line = trimmed.hasPrefix("export ") ? String(trimmed.dropFirst(7)) : trimmed
-			guard let eqIndex = line.firstIndex(of: "=") else { continue }
-			let key = String(line[line.startIndex..<eqIndex]).trimmingCharacters(in: .whitespaces)
-			var value = String(line[line.index(after: eqIndex)...]).trimmingCharacters(in: .whitespaces)
-			if (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
-				value = String(value.dropFirst().dropLast())
+			let requestId = UUID()
+			currentEnvImportTask?.cancel()
+			currentEnvImportId = requestId
+			currentEnvImportTask = Task { [store] in
+				let result = await store.importEnvFile(
+					at: url,
+					to: project.id,
+					environment: environment
+				)
+				guard currentEnvImportId == requestId else { return }
+				currentEnvImportTask = nil
+				currentEnvImportId = nil
+				if case .failure(let error) = result, error != .cancelled {
+					store.error = error.localizedDescription
+				}
 			}
-			guard EnvValidation.isValidVariableName(key) else {
-				continue
-			}
-			result[key] = value
 		}
-		return result
 	}
 
 	// MARK: - Environment Popovers
@@ -581,13 +599,23 @@ struct VaultDetailView: View {
 			}
 			HStack {
 				Button { importEnvFile(for: project) } label: {
-					Label("Import .env file", systemImage: "doc.badge.plus").font(.callout)
+					Label(
+						previewImportTask == nil ? "Import .env file" : "Importing…",
+						systemImage: "doc.badge.plus"
+					).font(.callout)
 				}
+				.disabled(previewImportTask != nil || newEnvCreationTask != nil)
 				Spacer()
-				Button("Cancel") { showAddEnvironment = false }
-				Button("Create") { createEnv(for: project) }
+				Button("Cancel") {
+					cancelNewEnvironmentWork()
+					showAddEnvironment = false
+				}
+				Button(newEnvCreationTask == nil ? "Create" : "Creating…") {
+					createEnv(for: project)
+				}
 					.buttonStyle(.borderedProminent)
-					.disabled(!isValid || project.environments[candidate] != nil)
+					.disabled(!isValid || project.environments[candidate] != nil
+						|| previewImportTask != nil || newEnvCreationTask != nil)
 			}
 		}
 		.padding()
@@ -653,8 +681,19 @@ struct VaultDetailView: View {
 	private func createEnv(for project: VaultProject) {
 		let name = newEnvName.trimmingCharacters(in: .whitespaces)
 		guard EnvValidation.isValidEnvironmentName(name), project.environments[name] == nil else { return }
-		store.addEnvironment(to: project.id, name: name, secrets: newEnvSecrets)
-		showAddEnvironment = false
+		let secrets = newEnvSecrets
+		let requestId = UUID()
+		newEnvCreationTask?.cancel()
+		newEnvCreationId = requestId
+		newEnvCreationTask = Task { [store] in
+			let added = await store.addEnvironment(to: project.id, name: name, secrets: secrets)
+			guard newEnvCreationId == requestId else { return }
+			newEnvCreationTask = nil
+			newEnvCreationId = nil
+			guard added, store.isUnlocked, store.selectedProjectId == project.id else { return }
+			cancelPreviewImport()
+			showAddEnvironment = false
+		}
 	}
 
 	private func performRename(for project: VaultProject) {
@@ -686,10 +725,43 @@ struct VaultDetailView: View {
 				else if fileName.hasPrefix(".env.") { newEnvName = String(fileName.dropFirst(".env.".count)) }
 				else { newEnvName = fileName }
 			}
-			if let content = try? String(contentsOf: url, encoding: .utf8) {
-				newEnvSecrets = parseEnvContent(content)
+			let requestId = UUID()
+			previewImportTask?.cancel()
+			newEnvSecrets = [:]
+			previewImportId = requestId
+			previewImportTask = Task { [store] in
+				let result = await store.loadEnvFilePreview(at: url, for: project.id)
+				guard previewImportId == requestId, showAddEnvironment,
+					store.selectedProjectId == project.id,
+					store.projects.contains(where: { $0.id == project.id })
+				else { return }
+				previewImportTask = nil
+				previewImportId = nil
+				newEnvSecrets = EnvFilePreviewPresentation.replacementSecrets(for: result)
+				switch result {
+				case .success:
+					break
+				case .failure(let error) where error != .cancelled:
+					store.error = error.localizedDescription
+				case .failure:
+					break
+				}
 			}
 		}
+	}
+
+	private func cancelPreviewImport() {
+		previewImportTask?.cancel()
+		previewImportTask = nil
+		previewImportId = nil
+	}
+
+	private func cancelNewEnvironmentWork() {
+		newEnvCreationTask?.cancel()
+		newEnvCreationTask = nil
+		newEnvCreationId = nil
+		cancelPreviewImport()
+		newEnvSecrets = [:]
 	}
 
 	private func formatTimeAgo(_ date: Date) -> String {
@@ -700,5 +772,14 @@ struct VaultDetailView: View {
 		let hours = minutes / 60
 		if hours < 24 { return "\(hours)h ago" }
 		return "\(hours / 24)d ago"
+	}
+}
+
+enum EnvFilePreviewPresentation {
+	static func replacementSecrets(
+		for result: Result<ImportedEnvFile, EnvFileImportError>
+	) -> [String: String] {
+		guard case .success(let imported) = result else { return [:] }
+		return imported.secrets
 	}
 }

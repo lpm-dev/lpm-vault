@@ -2,6 +2,9 @@ import Foundation
 
 /// Shared write-boundary validation matching the Rust client contracts.
 enum EnvValidation {
+	private struct EnvironmentsWrapper: Encodable {
+		let environments: [String: [String: String]]
+	}
 	struct MergeResult {
 		let environments: [String: [String: String]]
 		let keyCount: Int
@@ -70,6 +73,10 @@ enum EnvValidation {
 			isValidEnvironmentName(environment)
 				&& secrets.keys.allSatisfy(isValidVariableName)
 		}
+	}
+
+	static func encodedVaultSize(_ environments: [String: [String: String]]) -> Int? {
+		try? JSONEncoder().encode(EnvironmentsWrapper(environments: environments)).count
 	}
 
 	static func mergeRemotePayload(
