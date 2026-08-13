@@ -1,10 +1,8 @@
-import CryptoKit
 import Foundation
-import Security
 
 // MARK: - Protocol
 
-protocol LPMAPIServiceProtocol {
+protocol LPMAPIServiceProtocol: Sendable {
 	func fetchCurrentUser() async -> LPMUser?
 	func fetchCurrentUser(authToken: String) async -> LPMUser?
 	func fetchPersonalTokens() async -> [LPMToken]
@@ -15,20 +13,23 @@ protocol LPMAPIServiceProtocol {
 
 // MARK: - Implementation
 
-final class LPMAPIService: LPMAPIServiceProtocol {
+final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	private let baseURL: URL
 	private let session: URLSession
+	private let maximumResponseBytes = 2 * 1024 * 1024
+	private let maximumTokenPages = 101
+	private let maximumTokens = 10_000
 
-	init(baseURL: URL = VaultConstants.apiBaseURL) {
+	init(baseURL: URL = VaultConstants.apiBaseURL, session: URLSession? = nil) {
 		self.baseURL = baseURL
-		self.session = URLSession(
+		self.session = session ?? URLSession(
 			configuration: .ephemeral, delegate: PinnedSessionDelegate(), delegateQueue: nil)
 	}
 
 	// MARK: - User
 
 	func fetchCurrentUser() async -> LPMUser? {
-		guard let token = readAuthToken() else { return nil }
+		guard let token = await authToken() else { return nil }
 		return await get(path: "/api/user/me", token: token)
 	}
 
@@ -41,23 +42,33 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 	// MARK: - Personal Tokens
 
 	func fetchPersonalTokens() async -> [LPMToken] {
-		guard let token = readAuthToken() else { return [] }
-		let tokens: [LPMToken]? = await get(path: "/api/tokens", token: token)
-		return tokens ?? []
+		guard let token = await authToken() else { return [] }
+		return await fetchPersonalTokens(authToken: token) ?? []
+	}
+
+	func fetchPersonalTokens(authToken: String) async -> [LPMToken]? {
+		await fetchTokenPages(path: ["api", "tokens"], token: authToken)
 	}
 
 	func revokePersonalToken(id: String) async -> Bool {
-		guard let token = readAuthToken() else { return false }
-		return await delete(path: "/api/tokens/\(id)", token: token)
+		guard let token = await authToken() else { return false }
+		guard let url = endpoint(["api", "tokens", id]) else { return false }
+		return await delete(url: url, token: token)
 	}
 
 	// MARK: - Org Tokens
 
 	func fetchOrgTokens(orgSlug: String) async -> [LPMToken] {
-		guard let token = readAuthToken() else { return [] }
-		let tokens: [LPMToken]? = await get(
-			path: "/api/orgs/\(orgSlug)/tokens", token: token)
-		return (tokens ?? []).map { t in
+		guard let token = await authToken() else { return [] }
+		return await fetchOrgTokens(orgSlug: orgSlug, authToken: token) ?? []
+	}
+
+	func fetchOrgTokens(orgSlug: String, authToken: String) async -> [LPMToken]? {
+		guard let tokens = await fetchTokenPages(
+			path: ["api", "orgs", orgSlug, "tokens"],
+			token: authToken
+		) else { return nil }
+		return tokens.map { t in
 			var token = t
 			token.orgSlug = orgSlug
 			return token
@@ -65,79 +76,66 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 	}
 
 	func revokeOrgToken(orgSlug: String, id: String) async -> Bool {
-		guard let token = readAuthToken() else { return false }
-		return await delete(path: "/api/orgs/\(orgSlug)/tokens/\(id)", token: token)
+		guard let token = await authToken() else { return false }
+		guard let url = endpoint(["api", "orgs", orgSlug, "tokens", id]) else { return false }
+		return await delete(url: url, token: token)
 	}
 
-	// MARK: - Auth Token from Keychain
-
-	/// Read the CLI auth token from macOS Keychain.
-	/// Prioritizes the token matching this service's base URL.
-	private func readAuthToken() -> String? {
-		// Determine primary account based on what server we're talking to
-		let primary: String
-		if baseURL.host == "localhost" || baseURL.host == "127.0.0.1" {
-			primary = "auth-token:\(baseURL.absoluteString)"
-		} else {
-			primary = "auth-token:https://lpm.dev"
-		}
-
-		// Check primary first, then fallbacks
-		var accounts = [primary]
-		for fallback in ["auth-token:https://lpm.dev", "auth-token:http://localhost:3000", "auth-token"] {
-			if fallback != primary { accounts.append(fallback) }
-		}
-
-		for account in accounts {
-			if let token = readTokenViaSecurity(account: account) {
-				return token
-			}
-		}
-
-		return nil
-	}
-
-	private func readTokenViaSecurity(account: String) -> String? {
-		let process = Process()
-		process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-		process.arguments = [
-			"find-generic-password",
-			"-s", VaultConstants.cliAuthService,
-			"-a", account,
-			"-w",
-		]
-
-		let pipe = Pipe()
-		process.standardOutput = pipe
-		process.standardError = FileHandle.nullDevice
-
-		let sem = DispatchSemaphore(value: 0)
-		var exitCode: Int32 = -1
-		process.terminationHandler = { p in
-			exitCode = p.terminationStatus
-			sem.signal()
-		}
-
-		do {
-			try process.run()
-		} catch {
-			return nil
-		}
-
-		let result = sem.wait(timeout: .now() + 10)
-		if result == .timedOut {
-			process.terminate()
-			return nil
-		}
-
-		guard exitCode == 0 else { return nil }
-
-		let data = pipe.fileHandleForReading.readDataToEndOfFile()
-		let token = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-		return (token?.isEmpty == false) ? token : nil
+	private func authToken() async -> String? {
+		return await AuthSessionStore.currentAccessToken(
+			registryURL: AuthSessionStore.registryURL(for: baseURL),
+			baseURL: baseURL
+		)
 	}
 
 	// MARK: - HTTP Helpers
+
+	private func fetchTokenPages(path: [String], token: String) async -> [LPMToken]? {
+		guard let baseEndpoint = endpoint(path) else { return nil }
+		var tokens: [LPMToken] = []
+		var cursor: String?
+		var seenCursors: Set<String> = []
+
+		for _ in 0..<maximumTokenPages {
+			guard var components = URLComponents(url: baseEndpoint, resolvingAgainstBaseURL: false) else {
+				return nil
+			}
+			components.queryItems = [URLQueryItem(name: "limit", value: "100")]
+			if let cursor {
+				components.queryItems?.append(URLQueryItem(name: "cursor", value: cursor))
+			}
+			guard let url = components.url else { return nil }
+
+			var request = URLRequest(url: url)
+			request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+			do {
+				let (data, response) = try await session.data(for: request)
+				guard data.count <= maximumResponseBytes,
+					let http = response as? HTTPURLResponse,
+					http.statusCode == 200,
+					PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token),
+					tokens.count <= maximumTokens
+				else { return nil }
+
+				let page = try JSONDecoder().decode([LPMToken].self, from: data)
+				guard tokens.count + page.count <= maximumTokens else { return nil }
+				tokens.append(contentsOf: page)
+
+				guard let nextCursor = http.value(forHTTPHeaderField: "X-LPM-Next-Cursor") else {
+					return tokens
+				}
+				guard !nextCursor.isEmpty, nextCursor.count <= 160,
+					seenCursors.insert(nextCursor).inserted
+				else {
+					return nil
+				}
+				cursor = nextCursor
+			} catch {
+				return nil
+			}
+		}
+		return nil
+	}
 
 	private func get<T: Decodable>(path: String, token: String) async -> T? {
 		guard let url = URL(string: path, relativeTo: baseURL) else { return nil }
@@ -159,9 +157,7 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 		}
 	}
 
-	private func delete(path: String, token: String) async -> Bool {
-		guard let url = URL(string: path, relativeTo: baseURL) else { return false }
-
+	private func delete(url: URL, token: String) async -> Bool {
 		var request = URLRequest(url: url)
 		request.httpMethod = "DELETE"
 		request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -177,4 +173,23 @@ final class LPMAPIService: LPMAPIServiceProtocol {
 			return false
 		}
 	}
+
+	private func endpoint(_ pathSegments: [String]) -> URL? {
+		var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+		let encodedPath = pathSegments
+			.map { $0.addingPercentEncoding(withAllowedCharacters: .lpmPathSegmentAllowed) ?? "" }
+			.joined(separator: "/")
+		components?.percentEncodedPath = "/\(encodedPath)"
+		components?.query = nil
+		components?.fragment = nil
+		return components?.url
+	}
+}
+
+private extension CharacterSet {
+	static let lpmPathSegmentAllowed: CharacterSet = {
+		var allowed = CharacterSet.urlPathAllowed
+		allowed.remove(charactersIn: "/?#%")
+		return allowed
+	}()
 }

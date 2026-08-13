@@ -3,7 +3,7 @@ import Security
 
 // MARK: - Protocol
 
-protocol KeychainServiceProtocol {
+protocol KeychainServiceProtocol: Sendable {
 	func listProjects() -> [VaultProject]
 	func getEnvironments(vaultId: String) -> [String: [String: String]]?
 	func saveEnvironments(
@@ -29,13 +29,13 @@ protocol KeychainServiceProtocol {
 	) -> KeychainResult
 }
 
-enum KeychainResult {
+enum KeychainResult: Sendable {
 	case success
 	case successWithWarning(String)
 	case failure(KeychainError)
 }
 
-enum KeychainError: Error, CustomStringConvertible {
+enum KeychainError: Error, CustomStringConvertible, Sendable {
 	case encodingFailed
 	case itemNotFound
 	case accessDenied
@@ -56,7 +56,7 @@ enum KeychainError: Error, CustomStringConvertible {
 		case .unexpectedStatus(let status):
 			return "Keychain error: \(status)"
 		case .dataTooLarge(let size):
-			return "Vault data too large: \(size) bytes (Keychain limit ~100KB)"
+			return "Env project data too large: \(size) bytes (Keychain limit ~100KB)"
 		}
 	}
 }
@@ -85,7 +85,7 @@ private struct EnvironmentsWrapper: Codable {
 /// 2. **Data items** (account: `{vault-id}`) — JSON dict of secrets per project
 ///
 /// This design avoids `kSecMatchLimitAll` which is unreliable in some macOS contexts.
-final class KeychainService: KeychainServiceProtocol {
+final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	private let service: String
 	private let indexAccount = "__index__"
 
@@ -181,7 +181,7 @@ final class KeychainService: KeychainServiceProtocol {
 
 		let warning =
 			data.count > VaultConstants.maxVaultSizeWarning * 9 / 10
-			? "Vault is approaching size limit (\(data.count) bytes)"
+			? "Env project is approaching size limit (\(data.count) bytes)"
 			: nil
 
 		// Save secrets data
@@ -207,14 +207,13 @@ final class KeychainService: KeychainServiceProtocol {
 	}
 
 	func deleteProject(vaultId: String) -> Bool {
-		deleteItem(account: vaultId)
+		let status = deleteItem(account: vaultId)
+		guard status == errSecSuccess || status == errSecItemNotFound else { return false }
 
 		// Update index
 		var index = readIndex()
 		index.removeAll { $0.id == vaultId }
-		writeIndex(index)
-
-		return true
+		return writeIndex(index)
 	}
 
 	/// Remove from sidebar only — keeps Keychain data intact.
@@ -222,8 +221,7 @@ final class KeychainService: KeychainServiceProtocol {
 	func removeFromSidebar(vaultId: String) -> Bool {
 		var index = readIndex()
 		index.removeAll { $0.id == vaultId }
-		writeIndex(index)
-		return true
+		return writeIndex(index)
 	}
 
 	// MARK: - Private: Low-level Keychain Operations
@@ -288,13 +286,13 @@ final class KeychainService: KeychainServiceProtocol {
 		return false
 	}
 
-	private func deleteItem(account: String) {
+	private func deleteItem(account: String) -> OSStatus {
 		let query: [String: Any] = [
 			kSecClass as String: kSecClassGenericPassword,
 			kSecAttrService as String: service,
 			kSecAttrAccount as String: account,
 		]
-		SecItemDelete(query as CFDictionary)
+		return SecItemDelete(query as CFDictionary)
 	}
 
 	// MARK: - Private: Index Management
@@ -308,8 +306,9 @@ final class KeychainService: KeychainServiceProtocol {
 		return entries
 	}
 
-	private func writeIndex(_ entries: [VaultIndexEntry]) {
-		guard let data = try? JSONEncoder().encode(entries) else { return }
-		_ = writeItem(account: indexAccount, data: data)
+	@discardableResult
+	private func writeIndex(_ entries: [VaultIndexEntry]) -> Bool {
+		guard let data = try? JSONEncoder().encode(entries) else { return false }
+		return writeItem(account: indexAccount, data: data)
 	}
 }

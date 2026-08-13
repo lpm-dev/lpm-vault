@@ -4,6 +4,7 @@ import Testing
 @testable import LPMVault
 
 @Suite("VaultStore")
+@MainActor
 struct VaultStoreTests {
 	/// Create a VaultStore with mock dependencies.
 	/// Projects are loaded synchronously into `store.projects` so tests
@@ -107,6 +108,21 @@ struct VaultStoreTests {
 		#expect(store.selectedProjectId == nil)
 	}
 
+	@Test("failed local deletion keeps the env project visible")
+	func failedLocalDeletion() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: ["TOKEN": "secret"])
+		])
+		keychain.shouldFail = true
+
+		let deleted = await store.deleteLocalVault(store.projects[0])
+
+		#expect(!deleted)
+		#expect(store.projects.map(\.id) == ["id-1"])
+		#expect(keychain.storage["id-1"]?.secrets["TOKEN"] == "secret")
+		#expect(store.error != nil)
+	}
+
 	// MARK: - Add Secret
 
 	@Test("add secret to project")
@@ -133,6 +149,30 @@ struct VaultStoreTests {
 		store.addSecret(to: "id-1", key: "", value: "value")
 
 		#expect(store.projects[0].secrets.isEmpty)
+	}
+
+	@Test("add secret rejects names outside the Rust env contract")
+	func addSecretInvalidNames() {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
+		])
+
+		for key in ["1LEADING", "WITH-DASH", "WITH SPACE", "ÉNV"] {
+			store.addSecret(to: "id-1", key: key, value: "value")
+		}
+
+		#expect(store.projects[0].secrets.isEmpty)
+	}
+
+	@Test("environment writes reject the reserved index name")
+	func addReservedEnvironment() {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
+		])
+
+		store.addEnvironment(to: "id-1", name: "__index__")
+
+		#expect(store.projects[0].environments["__index__"] == nil)
 	}
 
 	@Test("add secret to non-existent project is no-op")
@@ -412,7 +452,8 @@ struct VaultStoreTests {
 			allMembers: [],
 			pendingApprovals: [],
 			orgTrust: OrgKeyTrust(),
-			authToken: "tok"
+			authToken: "tok",
+			canReplaceWrappedKeys: true
 		)
 		store.showKeyApprovalSheet = true
 

@@ -1,6 +1,6 @@
 import Foundation
 
-struct LPMOrg: Codable, Identifiable {
+struct LPMOrg: Codable, Identifiable, Sendable {
 	let id: String
 	let slug: String
 	let name: String

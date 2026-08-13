@@ -28,12 +28,17 @@ else
 fi
 
 echo "→ Building $APP_NAME ($XCODE_CONFIG)..."
-xcodebuild \
+BUILD_LOG=$(mktemp)
+trap 'rm -f "$BUILD_LOG"' EXIT
+if ! xcodebuild \
 	-project LPMVault.xcodeproj \
 	-scheme LPMVault \
 	-configuration "$XCODE_CONFIG" \
-	build \
-	2>&1 | grep -E "^(Build|Compile|Link|error:|warning:.*error)" || true
+	build >"$BUILD_LOG" 2>&1; then
+	grep -E "^(Build|Compile|Link|error:|warning:|.*error:)" "$BUILD_LOG" || true
+	exit 1
+fi
+grep -E "^(Build|Compile|Link|warning:)" "$BUILD_LOG" || true
 
 # Find the built .app in DerivedData
 DERIVED_APP=$(find ~/Library/Developer/Xcode/DerivedData/LPMVault-*/Build/Products/"$XCODE_CONFIG" -name "$APP_NAME.app" -maxdepth 1 2>/dev/null | head -1)

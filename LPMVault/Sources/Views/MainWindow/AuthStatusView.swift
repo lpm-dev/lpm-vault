@@ -59,9 +59,12 @@ struct AuthStatusView: View {
 
 					// Environment toggle
 					Section("Server") {
+						#if DEBUG
 						HStack {
 							Label(
-								store.appEnvironment == .production ? "Production (lpm.dev)" : "Development (localhost:3000)",
+								store.appEnvironment == .production
+									? "Production (lpm.dev)"
+									: "Local development (localhost:3000)",
 								systemImage: store.appEnvironment == .production ? "globe" : "laptopcomputer"
 							)
 							Spacer()
@@ -77,14 +80,19 @@ struct AuthStatusView: View {
 						Button(store.appEnvironment == .production ? "Switch to Development" : "Switch to Production") {
 							store.switchEnvironment(to: store.appEnvironment == .production ? .development : .production)
 						}
+						#else
+						Label("Production (lpm.dev)", systemImage: "globe")
+						#endif
 					}
 
 					Section {
 						Button("Manage Account on lpm.dev") {
-							let url = store.appEnvironment == .development
-								? "http://localhost:3000/dashboard/settings"
-								: "https://lpm.dev/dashboard/settings"
-							NSWorkspace.shared.open(URL(string: url)!)
+							if let url = URL(
+								string: "/dashboard/settings",
+								relativeTo: store.appEnvironment.baseURL
+							)?.absoluteURL {
+								NSWorkspace.shared.open(url)
+							}
 						}
 
 						Button("Sign Out", role: .destructive) {
@@ -130,7 +138,7 @@ struct AuthStatusView: View {
 			Button("Sign Out", role: .destructive) { store.logout() }
 			Button("Cancel", role: .cancel) {}
 		} message: {
-			Text("Your vault data stays in Keychain. You can sign in again anytime.")
+			Text("Your local env data stays in Keychain. You can sign in again anytime.")
 		}
 	}
 }

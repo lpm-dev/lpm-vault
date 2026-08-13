@@ -65,15 +65,15 @@ struct VaultDetailView: View {
 		.sheet(isPresented: $showPushConfirmation) {
 			if let project {
 				SyncConfirmationSheet(
-					action: isOrg ? "share" : "push",
+					action: isOrg ? .share : .push,
 					projectName: project.name,
 					keyCount: project.environments.values.reduce(0) { $0 + $1.count },
 					onConfirm: { [store] in
 						showPushConfirmation = false
 						if case .org(let slug) = store.selectedAccount {
-							Task.detached { await store.pushToOrg(orgSlug: slug) }
-						} else {
-							Task.detached { await store.pushToCloud() }
+								Task { await store.pushToOrg(orgSlug: slug) }
+							} else {
+								Task { await store.pushToCloud() }
 						}
 					},
 					onCancel: { showPushConfirmation = false }
@@ -83,15 +83,15 @@ struct VaultDetailView: View {
 		.sheet(isPresented: $showPullConfirmation) {
 			if let project {
 				SyncConfirmationSheet(
-					action: "pull",
+					action: .pull,
 					projectName: project.name,
 					keyCount: project.environments.values.reduce(0) { $0 + $1.count },
 					onConfirm: { [store] in
 						showPullConfirmation = false
 						if case .org(let slug) = store.selectedAccount {
-							Task.detached { await store.pullFromOrg(orgSlug: slug) }
-						} else {
-							Task.detached { await store.pullFromCloud() }
+								Task { await store.pullFromOrg(orgSlug: slug) }
+							} else {
+								Task { await store.pullFromCloud() }
 						}
 					},
 					onCancel: { showPullConfirmation = false }
@@ -104,11 +104,11 @@ struct VaultDetailView: View {
 					projectName: project.name,
 					onPullAndMerge: { [store] in
 						showConflictResolution = false
-						Task.detached { await store.pullFromCloud(); await store.pushToCloud() }
+						Task { await store.pullFromCloud(); await store.pushToCloud() }
 					},
 					onForcePush: { [store] in
 						showConflictResolution = false
-						Task.detached { await store.pushToCloud(force: true) }
+						Task { await store.pushToCloud(force: true) }
 					},
 					onCancel: { showConflictResolution = false }
 				)
@@ -120,7 +120,14 @@ struct VaultDetailView: View {
 		.onChange(of: store.lastSyncStatus) { _, newValue in
 			if newValue == "conflict" { showConflictResolution = true }
 		}
-		.background { if let project { keyboardShortcuts(project) } }
+		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in
+			if project != nil { showingAddSecret = true }
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .findSecrets)) { _ in
+			guard project != nil else { return }
+			showSearch = true
+			isSearchFocused = true
+		}
 	}
 
 	// MARK: - Main Content
@@ -427,7 +434,7 @@ struct VaultDetailView: View {
 
 	private func footer(_ project: VaultProject) -> some View {
 		HStack {
-			// Clickable vault ID
+			// Clickable env project ID
 			Button {
 				showVaultIDSheet = true
 			} label: {
@@ -437,7 +444,7 @@ struct VaultDetailView: View {
 					.lineLimit(1)
 			}
 			.buttonStyle(.plain)
-			.help("Click for vault configuration")
+			.help("Click for env project configuration")
 
 			Spacer()
 
@@ -468,7 +475,7 @@ struct VaultDetailView: View {
 			Image(systemName: "lock.shield")
 				.font(.system(size: 48))
 				.foregroundStyle(.secondary)
-			Text("Select a vault")
+			Text("Select an env project")
 				.font(.title2)
 				.foregroundStyle(.secondary)
 		}
@@ -486,30 +493,6 @@ struct VaultDetailView: View {
 			Button("Add Secret") { showingAddSecret = true }
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
-	}
-
-	// MARK: - Keyboard Shortcuts
-
-	@ViewBuilder
-	private func keyboardShortcuts(_ project: VaultProject) -> some View {
-		VStack {
-			Button("") { showingAddSecret = true }
-				.keyboardShortcut("n", modifiers: .command)
-			Button("") { importIntoCurrentEnvironment(project) }
-				.keyboardShortcut("i", modifiers: .command)
-			Button("") { showSearch.toggle(); if showSearch { isSearchFocused = true } else { localSearch = "" } }
-				.keyboardShortcut("f", modifiers: .command)
-			Button("") { exportToFile() }
-				.keyboardShortcut("e", modifiers: .command)
-
-			let envNames = store.orderedEnvironmentNames(for: project)
-			ForEach(Array(envNames.prefix(9).enumerated()), id: \.offset) { idx, env in
-				Button("") { store.selectedEnvironment = env }
-					.keyboardShortcut(KeyEquivalent(Character("\(idx + 1)")), modifiers: .command)
-			}
-		}
-		.frame(width: 0, height: 0)
-		.opacity(0)
 	}
 
 	// MARK: - File Operations
@@ -531,7 +514,11 @@ struct VaultDetailView: View {
 					return "\(secret.key)=\(v)"
 				}
 				.joined(separator: "\n") + "\n"
-			try? content.write(to: url, atomically: true, encoding: .utf8)
+			do {
+				try SecureFileWriter.write(Data(content.utf8), to: url)
+			} catch {
+				store.error = "Export failed. \(error.localizedDescription)"
+			}
 		}
 	}
 
@@ -562,10 +549,7 @@ struct VaultDetailView: View {
 			if (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
 				value = String(value.dropFirst().dropLast())
 			}
-			// Validate key name (same rules as M8 in VaultStore.addSecret)
-			guard !key.isEmpty,
-				  key.count <= 256,
-				  key.allSatisfy({ !$0.isNewline && $0 != "\0" }) else {
+			guard EnvValidation.isValidVariableName(key) else {
 				continue
 			}
 			result[key] = value
@@ -576,12 +560,19 @@ struct VaultDetailView: View {
 	// MARK: - Environment Popovers
 
 	private func addEnvironmentPopover(_ project: VaultProject) -> some View {
-		VStack(alignment: .leading, spacing: 12) {
+		let candidate = newEnvName.trimmingCharacters(in: .whitespaces)
+		let isValid = EnvValidation.isValidEnvironmentName(candidate)
+		return VStack(alignment: .leading, spacing: 12) {
 			Text("Add Environment").font(.headline)
 			TextField("Name (e.g. ci, staging)", text: $newEnvName)
 				.textFieldStyle(.roundedBorder)
 				.focused($isEnvNameFocused)
 				.onSubmit { createEnv(for: project) }
+			if !candidate.isEmpty && !isValid {
+				Text("Use 1–64 ASCII letters, numbers, dots, dashes, or underscores. Do not use __index__ or '..'.")
+					.font(.caption)
+					.foregroundStyle(.red)
+			}
 			if !newEnvSecrets.isEmpty {
 				HStack(spacing: 4) {
 					Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
@@ -596,8 +587,7 @@ struct VaultDetailView: View {
 				Button("Cancel") { showAddEnvironment = false }
 				Button("Create") { createEnv(for: project) }
 					.buttonStyle(.borderedProminent)
-					.disabled(newEnvName.trimmingCharacters(in: .whitespaces).isEmpty
-						|| project.environments[newEnvName.trimmingCharacters(in: .whitespaces)] != nil)
+					.disabled(!isValid || project.environments[candidate] != nil)
 			}
 		}
 		.padding()
@@ -606,20 +596,26 @@ struct VaultDetailView: View {
 	}
 
 	private func renamePopover(_ project: VaultProject) -> some View {
-		VStack(alignment: .leading, spacing: 12) {
+		let candidate = renameEnvNewName.trimmingCharacters(in: .whitespaces)
+		let isValid = EnvValidation.isValidEnvironmentName(candidate)
+		return VStack(alignment: .leading, spacing: 12) {
 			Text("Rename Environment").font(.headline)
 			TextField("New name", text: $renameEnvNewName)
 				.textFieldStyle(.roundedBorder)
 				.focused($isRenameFieldFocused)
 				.onSubmit { performRename(for: project) }
+			if !candidate.isEmpty && !isValid {
+				Text("Use 1–64 ASCII letters, numbers, dots, dashes, or underscores. Do not use __index__ or '..'.")
+					.font(.caption)
+					.foregroundStyle(.red)
+			}
 			HStack {
 				Spacer()
 				Button("Cancel") { showRenameEnvironment = false }
 				Button("Rename") { performRename(for: project) }
 					.buttonStyle(.borderedProminent)
-					.disabled(renameEnvNewName.trimmingCharacters(in: .whitespaces).isEmpty
-						|| renameEnvNewName.trimmingCharacters(in: .whitespaces) == renameEnvTarget
-						|| project.environments[renameEnvNewName.trimmingCharacters(in: .whitespaces)] != nil)
+					.disabled(!isValid || candidate == renameEnvTarget
+						|| project.environments[candidate] != nil)
 			}
 		}
 		.padding()
@@ -628,19 +624,25 @@ struct VaultDetailView: View {
 	}
 
 	private func duplicatePopover(_ project: VaultProject) -> some View {
-		VStack(alignment: .leading, spacing: 12) {
+		let candidate = duplicateEnvNewName.trimmingCharacters(in: .whitespaces)
+		let isValid = EnvValidation.isValidEnvironmentName(candidate)
+		return VStack(alignment: .leading, spacing: 12) {
 			Text("Duplicate \"\(VaultProject.displayName(for: duplicateEnvSource))\"").font(.headline)
 			TextField("New environment name", text: $duplicateEnvNewName)
 				.textFieldStyle(.roundedBorder)
 				.focused($isDuplicateFieldFocused)
 				.onSubmit { performDuplicate(for: project) }
+			if !candidate.isEmpty && !isValid {
+				Text("Use 1–64 ASCII letters, numbers, dots, dashes, or underscores. Do not use __index__ or '..'.")
+					.font(.caption)
+					.foregroundStyle(.red)
+			}
 			HStack {
 				Spacer()
 				Button("Cancel") { showDuplicateEnvironment = false }
 				Button("Duplicate") { performDuplicate(for: project) }
 					.buttonStyle(.borderedProminent)
-					.disabled(duplicateEnvNewName.trimmingCharacters(in: .whitespaces).isEmpty
-						|| project.environments[duplicateEnvNewName.trimmingCharacters(in: .whitespaces)] != nil)
+					.disabled(!isValid || project.environments[candidate] != nil)
 			}
 		}
 		.padding()
@@ -650,21 +652,22 @@ struct VaultDetailView: View {
 
 	private func createEnv(for project: VaultProject) {
 		let name = newEnvName.trimmingCharacters(in: .whitespaces)
-		guard !name.isEmpty, project.environments[name] == nil else { return }
+		guard EnvValidation.isValidEnvironmentName(name), project.environments[name] == nil else { return }
 		store.addEnvironment(to: project.id, name: name, secrets: newEnvSecrets)
 		showAddEnvironment = false
 	}
 
 	private func performRename(for project: VaultProject) {
 		let newName = renameEnvNewName.trimmingCharacters(in: .whitespaces)
-		guard !newName.isEmpty, newName != renameEnvTarget, project.environments[newName] == nil else { return }
+		guard EnvValidation.isValidEnvironmentName(newName), newName != renameEnvTarget,
+			project.environments[newName] == nil else { return }
 		store.renameEnvironment(in: project.id, from: renameEnvTarget, to: newName)
 		showRenameEnvironment = false
 	}
 
 	private func performDuplicate(for project: VaultProject) {
 		let newName = duplicateEnvNewName.trimmingCharacters(in: .whitespaces)
-		guard !newName.isEmpty, project.environments[newName] == nil else { return }
+		guard EnvValidation.isValidEnvironmentName(newName), project.environments[newName] == nil else { return }
 		store.duplicateEnvironment(in: project.id, from: duplicateEnvSource, to: newName)
 		showDuplicateEnvironment = false
 	}

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 
+@MainActor
 final class ClipboardManager {
 	static let shared = ClipboardManager()
 
@@ -24,11 +25,9 @@ final class ClipboardManager {
 
 		// Schedule new clear
 		clearTask = Task {
-			try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+			try? await Task.sleep(for: .seconds(delay))
 			if !Task.isCancelled {
-				await MainActor.run {
-					self.clearClipboard()
-				}
+				clearClipboard()
 			}
 		}
 	}

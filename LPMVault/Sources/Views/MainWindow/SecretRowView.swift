@@ -11,6 +11,8 @@ struct SecretRowView: View {
 	@State private var editValue = ""
 	@State private var showDeleteConfirmation = false
 	@State private var copyFeedback = false
+	@State private var isRevealed = false
+	@FocusState private var editFieldFocused: Bool
 
 	var body: some View {
 		HStack(spacing: 12) {
@@ -26,25 +28,27 @@ struct SecretRowView: View {
 					TextField("Value", text: $editValue)
 						.textFieldStyle(.roundedBorder)
 						.font(.system(.body, design: .monospaced))
+						.focused($editFieldFocused)
 						.onSubmit {
 							commitEdit()
 						}
 						.onExitCommand {
 							isEditing = false
 						}
-				} else if isUnlocked {
+						.accessibilityLabel("Value for \(secret.key)")
+				} else if isUnlocked && isRevealed {
 					Text(secret.value)
 						.font(.system(.body, design: .monospaced))
 						.foregroundStyle(.primary)
 						.lineLimit(1)
 						.accessibilityHidden(true)
-						.accessibilityLabel("Secret value")
 						.onTapGesture(count: 2) {
 							startEdit()
 						}
 				} else {
 					Text(String(repeating: "\u{2022}", count: 12))
 						.foregroundStyle(.secondary)
+						.accessibilityLabel("Hidden value for \(secret.key)")
 				}
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
@@ -53,6 +57,17 @@ struct SecretRowView: View {
 			HStack(spacing: 6) {
 				if !isEditing {
 					if isUnlocked {
+						Button {
+							isRevealed.toggle()
+						} label: {
+							Image(systemName: isRevealed ? "eye.slash" : "eye")
+								.frame(width: 14, height: 14)
+						}
+						.buttonStyle(.bordered)
+						.controlSize(.small)
+						.help(isRevealed ? "Hide value" : "Reveal value")
+						.accessibilityLabel("\(isRevealed ? "Hide" : "Reveal") \(secret.key)")
+
 						// Copy
 						Button {
 							ClipboardManager.shared.copy("\(secret.key)=\(secret.value)")
@@ -75,6 +90,7 @@ struct SecretRowView: View {
 						.controlSize(.small)
 						.tint(copyFeedback ? .green : nil)
 						.help(copyFeedback ? "Copied! Clears in 10s" : "Copy value")
+						.accessibilityLabel(copyFeedback ? "Copied \(secret.key)" : "Copy \(secret.key)")
 
 						// Edit
 						Button {
@@ -86,6 +102,7 @@ struct SecretRowView: View {
 						.buttonStyle(.bordered)
 						.controlSize(.small)
 						.help("Edit value")
+						.accessibilityLabel("Edit \(secret.key)")
 					} else {
 						// Reveal
 						Button {
@@ -97,6 +114,7 @@ struct SecretRowView: View {
 						.buttonStyle(.bordered)
 						.controlSize(.small)
 						.help("Reveal value (requires authentication)")
+						.accessibilityLabel("Reveal \(secret.key)")
 					}
 
 					// Delete
@@ -109,6 +127,7 @@ struct SecretRowView: View {
 					.buttonStyle(.bordered)
 					.controlSize(.small)
 					.help("Delete secret")
+					.accessibilityLabel("Delete \(secret.key)")
 				} else {
 					Button("Save") {
 						commitEdit()
@@ -134,13 +153,15 @@ struct SecretRowView: View {
 			}
 			Button("Cancel", role: .cancel) {}
 		} message: {
-			Text("This secret will be removed from the vault. This action cannot be undone.")
+			Text("This secret will be removed from the env project. This action cannot be undone.")
 		}
 	}
 
 	private func startEdit() {
 		editValue = secret.value
+		isRevealed = true
 		isEditing = true
+		editFieldFocused = true
 	}
 
 	private func commitEdit() {
