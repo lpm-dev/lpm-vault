@@ -5,8 +5,7 @@ import Foundation
 ///
 /// Validates the server's public key hash against a set of known pins (SPKI SHA-256).
 /// In debug builds, localhost connections bypass pinning for local development,
-/// and pin mismatches are logged but allowed. In release builds, a mismatch
-/// causes the connection to be rejected.
+/// while every non-local pin mismatch is rejected in every build configuration.
 ///
 /// To update the pin, run:
 /// ```
@@ -15,7 +14,7 @@ import Foundation
 ///   | openssl pkey -pubin -outform der \
 ///   | openssl dgst -sha256 -binary | base64
 /// ```
-final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
 	// SHA-256 of lpm.dev's SubjectPublicKeyInfo (SPKI) — base64-encoded.
 	// Includes leaf + intermediate so cert rotation doesn't brick the app.
 	// Regenerate with the openssl command above when the certificate chain changes.
@@ -116,13 +115,44 @@ final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @unchecked Send
 			}
 		}
 
-		// No pin matched
-		#if DEBUG
-		print("[PinnedSessionDelegate] Certificate pin mismatch — allowing in debug mode")
-		completionHandler(.useCredential, URLCredential(trust: serverTrust))
-		#else
+		// No pin matched. Debug builds can still connect to localhost through
+		// the explicit bypass above, but live traffic never bypasses pinning.
 		completionHandler(.cancelAuthenticationChallenge, nil)
-		#endif
+	}
+
+	func urlSession(
+		_ session: URLSession,
+		task: URLSessionTask,
+		willPerformHTTPRedirection response: HTTPURLResponse,
+		newRequest request: URLRequest,
+		completionHandler: @escaping (URLRequest?) -> Void
+	) {
+		guard Self.isSameOrigin(response.url, request.url) else {
+			completionHandler(nil)
+			return
+		}
+		completionHandler(request)
+	}
+
+	static func isSameOrigin(_ source: URL?, _ destination: URL?) -> Bool {
+		guard let source, let destination,
+			let sourceScheme = source.scheme?.lowercased(),
+			let destinationScheme = destination.scheme?.lowercased(),
+			let sourceHost = source.host?.lowercased(),
+			let destinationHost = destination.host?.lowercased()
+		else { return false }
+		return sourceScheme == destinationScheme
+			&& sourceHost == destinationHost
+			&& effectivePort(source) == effectivePort(destination)
+	}
+
+	private static func effectivePort(_ url: URL) -> Int? {
+		if let port = url.port { return port }
+		return switch url.scheme?.lowercased() {
+		case "https": 443
+		case "http": 80
+		default: nil
+		}
 	}
 
 	/// Verify the server response signature.

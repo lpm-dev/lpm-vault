@@ -222,7 +222,7 @@ struct CurrentContractTests {
 			}
 		}
 
-		let tokens = try #require(await service.fetchPersonalTokens(authToken: "session-token"))
+		let tokens = try await service.fetchPersonalTokens(authToken: "session-token").get()
 		#expect(tokens.map(\.id) == ["one", "two"])
 		let requests = recorder.requests
 		#expect(requests.count == 2)
@@ -243,7 +243,11 @@ struct CurrentContractTests {
 			}
 		}
 
-		#expect(await service.fetchPersonalTokens(authToken: "session-token") == nil)
+		let result = await service.fetchPersonalTokens(authToken: "session-token")
+		guard case .failure(.invalidResponse) = result else {
+			Issue.record("Expected invalid response for a cursor cycle")
+			return
+		}
 	}
 
 	@Test("token inventory rejects oversized cursors")
@@ -252,7 +256,11 @@ struct CurrentContractTests {
 			.json("[]", nextCursor: String(repeating: "x", count: 161))
 		}
 
-		#expect(await service.fetchPersonalTokens(authToken: "session-token") == nil)
+		let result = await service.fetchPersonalTokens(authToken: "session-token")
+		guard case .failure(.invalidResponse) = result else {
+			Issue.record("Expected invalid response for an oversized cursor")
+			return
+		}
 	}
 
 	@Test("organization token route encodes the slug once")
@@ -260,16 +268,34 @@ struct CurrentContractTests {
 		let recorder = RequestRecorder()
 		let service = makeAPIService(recorder: recorder) { _ in .json("[]") }
 
-		let tokens = try #require(await service.fetchOrgTokens(
+		let tokens = try await service.fetchOrgTokens(
 			orgSlug: "acme/team %",
 			authToken: "session-token"
-		))
+		).get()
 		#expect(tokens.isEmpty)
 		let request = try #require(recorder.requests.first)
 		let components = try #require(request.url.flatMap {
 			URLComponents(url: $0, resolvingAgainstBaseURL: false)
 		})
 		#expect(components.percentEncodedPath == "/api/orgs/acme%2Fteam%20%25/tokens")
+	}
+
+	@Test("empty token inventory is distinct from request failure")
+	func emptyTokenInventoryIsTypedSuccess() async {
+		let emptyService = makeAPIService { _ in .json("[]") }
+		let failureService = makeAPIService { _ in .status(503) }
+
+		let empty = await emptyService.fetchPersonalTokens(authToken: "session-token")
+		let failure = await failureService.fetchPersonalTokens(authToken: "session-token")
+		guard case .success(let tokens) = empty else {
+			Issue.record("Expected an empty successful inventory")
+			return
+		}
+		#expect(tokens.isEmpty)
+		guard case .failure(.server(503)) = failure else {
+			Issue.record("Expected a typed HTTP 503 failure")
+			return
+		}
 	}
 
 	private func makeAPIService(
