@@ -22,7 +22,11 @@ struct VaultStoreTests {
 		biometric.shouldSucceed = biometricShouldSucceed
 		let api = apiService ?? MockAPIService()
 		let store = VaultStore(
-			keychainService: keychain, biometricService: biometric, apiService: api)
+			keychainService: keychain,
+			biometricService: biometric,
+			apiService: api,
+			authTokenProvider: { _, _ in "session-token" }
+		)
 
 		// Pre-populate projects synchronously (the real loadProjects() uses
 		// Task.detached for UI responsiveness, but tests need deterministic ordering)
@@ -464,6 +468,248 @@ struct VaultStoreTests {
 		#expect(store.personalTokens.isEmpty)
 	}
 
+	@Test("token inventory captures one bearer for every request")
+	func tokenInventoryCapturesOneBearer() async {
+		let api = MockAPIService()
+		api.user = testUserWithOrganizations(count: 6)
+		let keychain = MockKeychainService()
+		let biometric = MockBiometricService()
+		let providerCalls = LockedCounter()
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: biometric,
+			apiService: api,
+			authTokenProvider: { _, _ in
+				providerCalls.increment()
+				return "captured-bearer"
+			}
+		)
+
+		await store.loadTokens()
+
+		// One acquisition starts the operation; one commit-time read verifies
+		// that an external CLI login did not replace the session mid-load.
+		#expect(providerCalls.value == 2)
+		#expect(api.receivedAuthTokens.count == 8)
+		#expect(Set(api.receivedAuthTokens) == ["captured-bearer"])
+	}
+
+	@Test("a replaced session cannot publish an old identity inventory")
+	func replacedSessionCannotPublishInventory() async {
+		let api = MockAPIService()
+		api.user = testUserWithOrganizations(count: 1)
+		api.orgTokensDelay = .milliseconds(30)
+		let session = SequencedAuthTokenProvider(tokens: ["old-bearer", "new-bearer"])
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: api,
+			authTokenProvider: { _, _ in session.next() }
+		)
+		store.currentUser = testUser(id: "previous", username: "previous")
+
+		await store.loadTokens()
+
+		#expect(Set(api.receivedAuthTokens) == ["old-bearer"])
+		#expect(store.currentUser?.username == "previous")
+		#expect(store.error?.contains("session changed") == true)
+	}
+
+	@Test("organization token inventory uses a four-request sliding window")
+	func organizationTokenInventoryIsBounded() async {
+		let api = MockAPIService()
+		api.user = testUserWithOrganizations(count: 12)
+		api.orgTokensDelay = .milliseconds(30)
+		for index in 0..<12 {
+			api.orgTokensMap["org-\(index)"] = [testToken(id: "token-\(index)")]
+		}
+		let (store, _, _, _) = makeStore(apiService: api)
+
+		await store.loadTokens()
+
+		#expect(api.maximumActiveOrgRequests == 4)
+		#expect(api.requestedOrgSlugs.count == 12)
+		#expect(store.orgTokens.count == 12)
+		for index in 0..<12 {
+			#expect(store.orgTokens["org-\(index)"]?.first?.id == "token-\(index)")
+		}
+	}
+
+	@Test("token inventory skips organization roles rejected by the server")
+	func tokenInventorySkipsUnauthorizedOrganizationRoles() async {
+		let api = MockAPIService()
+		api.user = LPMUser(
+			id: "u1", username: "user", name: nil, email: nil,
+			avatarUrl: nil, plan: nil, createdAt: nil,
+			orgs: [
+				LPMOrg(id: "1", slug: "owned", name: "Owned", avatarUrl: nil, role: "owner"),
+				LPMOrg(id: "2", slug: "admin", name: "Admin", avatarUrl: nil, role: "admin"),
+				LPMOrg(id: "3", slug: "member", name: "Member", avatarUrl: nil, role: "member"),
+				LPMOrg(id: "4", slug: "maintainer", name: "Maintainer", avatarUrl: nil, role: "maintainer"),
+			]
+		)
+		let (store, _, _, _) = makeStore(apiService: api)
+
+		await store.loadTokens()
+
+		#expect(Set(api.requestedOrgSlugs) == ["owned", "admin"])
+		#expect(store.userOrgs.count == 4)
+	}
+
+	@Test("a failed organization request preserves the prior coherent inventory")
+	func failedOrganizationInventoryPreservesPriorState() async {
+		let api = MockAPIService()
+		api.user = testUserWithOrganizations(count: 2)
+		api.personalTokens = [testToken(id: "old-personal")]
+		api.orgTokensMap["org-0"] = [testToken(id: "old-org")]
+		let (store, _, _, _) = makeStore(apiService: api)
+		await store.loadTokens()
+		api.personalTokens = [testToken(id: "new-personal")]
+		api.orgTokenErrors["org-1"] = .transport
+
+		await store.loadTokens()
+
+		#expect(store.personalTokens.first?.id == "old-personal")
+		#expect(store.orgTokens["org-0"]?.first?.id == "old-org")
+		#expect(store.error == LPMAPIError.transport.localizedDescription)
+	}
+
+	@Test("cancelling token inventory stops admitting organization requests")
+	func cancellingInventoryStopsAdmission() async throws {
+		let api = MockAPIService()
+		api.user = testUserWithOrganizations(count: 1_000)
+		api.orgTokensDelay = .seconds(1)
+		let (store, _, _, _) = makeStore(apiService: api)
+
+		let load = Task { await store.loadTokens() }
+		try await Task.sleep(for: .milliseconds(30))
+		store.logout()
+		await load.value
+
+		#expect(api.maximumActiveOrgRequests <= 4)
+		#expect(api.requestedOrgSlugs.count <= 4)
+		#expect(store.currentUser == nil)
+		#expect(!store.isLoadingTokens)
+	}
+
+	@Test("API service factory retains one session per exact environment")
+	func apiServiceFactoryIsEnvironmentScoped() async {
+		let factory = MockAPIServiceFactory()
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiServiceFactory: { factory.make(baseURL: $0) },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.appEnvironment = .production
+
+		await store.loadTokens()
+		await store.loadTokens()
+		#expect(factory.count(for: VaultConstants.apiBaseURL) == 1)
+
+		#if DEBUG
+		store.switchEnvironment(to: .development)
+		try? await Task.sleep(for: .milliseconds(20))
+		await store.loadTokens()
+		#expect(factory.count(for: VaultConstants.localAPIBaseURL) == 1)
+		#expect(factory.count(for: VaultConstants.apiBaseURL) == 1)
+		#expect(Set(factory.urls) == [VaultConstants.apiBaseURL, VaultConstants.localAPIBaseURL])
+		#endif
+	}
+
+	#if DEBUG
+	@Test("switching environment during login cannot persist the old session")
+	func environmentSwitchInvalidatesLogin() async throws {
+		let gate = AsyncGate()
+		let writes = StringRecorder()
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in nil },
+			loginProvider: { registryURL, _ in
+				#expect(registryURL == VaultConstants.apiBaseURL.absoluteString)
+				await gate.arriveAndWait()
+				return testAuthCredentials()
+			},
+			authSessionWriter: { _, registryURL in writes.append(registryURL) },
+			authSessionClearer: { _ in }
+		)
+		store.appEnvironment = .production
+
+		let login = Task { await store.login() }
+		await gate.waitUntilArrived()
+		store.switchEnvironment(to: .development)
+		await gate.release()
+		await login.value
+
+		#expect(writes.values.isEmpty)
+		#expect(store.appEnvironment == .development)
+		#expect(!store.isLoggingIn)
+	}
+
+	@Test("environment switches discard personal and organization revocations")
+	func environmentSwitchInvalidatesRevocations() async throws {
+		let api = MockAPIService()
+		api.personalRevokeDelay = .milliseconds(150)
+		api.orgRevokeDelay = .milliseconds(150)
+		let personalStarted = AsyncSignal()
+		let organizationStarted = AsyncSignal()
+		api.onPersonalRevokeStart = { Task { await personalStarted.send() } }
+		api.onOrgRevokeStart = { Task { await organizationStarted.send() } }
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: api,
+			authTokenProvider: { registryURL, _ in registryURL },
+			authSessionClearer: { _ in }
+		)
+		store.appEnvironment = .production
+		let personal = testToken(id: "personal")
+		let organization = testToken(id: "organization")
+		store.personalTokens = [personal]
+		store.orgTokens = ["acme": [organization]]
+
+		let personalRevoke = Task { await store.revokePersonalToken(personal) }
+		await personalStarted.wait()
+		store.switchEnvironment(to: .development)
+		try await Task.sleep(for: .milliseconds(20))
+		store.personalTokens = [personal]
+		await personalRevoke.value
+		#expect(store.personalTokens.map(\.id) == [personal.id])
+
+		store.switchEnvironment(to: .production)
+		try await Task.sleep(for: .milliseconds(20))
+		store.orgTokens = ["acme": [organization]]
+		let organizationRevoke = Task {
+			await store.revokeOrgToken(organization, orgSlug: "acme")
+		}
+		await organizationStarted.wait()
+		store.switchEnvironment(to: .development)
+		try await Task.sleep(for: .milliseconds(20))
+		store.orgTokens = ["acme": [organization]]
+		await organizationRevoke.value
+		#expect(store.orgTokens["acme"]?.map(\.id) == [organization.id])
+	}
+	#endif
+
+	@Test("logout clears only the active environment session")
+	func logoutIsEnvironmentScoped() {
+		let cleared = StringRecorder()
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in nil },
+			authSessionClearer: { cleared.append($0) }
+		)
+		store.appEnvironment = .production
+
+		store.logout()
+
+		#expect(cleared.values == [VaultConstants.apiBaseURL.absoluteString])
+	}
+
 	@Test("expiring tokens filters correctly")
 	func expiringTokens() async {
 		let api = MockAPIService()
@@ -512,6 +758,24 @@ struct VaultStoreTests {
 		#expect(store.personalTokens.count == 1)
 		#expect(store.personalTokens[0].name == "keep")
 		#expect(api.revokedTokenIds.contains("t1"))
+	}
+
+	@Test("revoke personal token cannot be undone by an older inventory load")
+	func revokePersonalTokenInvalidatesOlderInventory() async throws {
+		let api = MockAPIService()
+		api.user = testUser(id: "u1", username: "test")
+		let revoked = testToken(id: "t1")
+		api.personalTokenResponses = [(.milliseconds(100), [revoked])]
+		let (store, _, _, _) = makeStore(apiService: api)
+		store.personalTokens = [revoked]
+
+		let load = Task { await store.loadTokens() }
+		try await Task.sleep(for: .milliseconds(20))
+		await store.revokePersonalToken(revoked)
+		await load.value
+
+		#expect(store.personalTokens.isEmpty)
+		#expect(api.revokedTokenIds == ["t1"])
 	}
 
 	@Test("revoke org token removes from org list")
@@ -708,4 +972,153 @@ struct VaultStoreTests {
 			orgs: nil
 		)
 	}
+
+	private func testUserWithOrganizations(count: Int) -> LPMUser {
+		LPMUser(
+			id: "u1",
+			username: "user",
+			name: nil,
+			email: nil,
+			avatarUrl: nil,
+			plan: nil,
+			createdAt: nil,
+			orgs: (0..<count).map { index in
+				LPMOrg(
+					id: "organization-\(index)",
+					slug: "org-\(index)",
+					name: "Organization \(index)",
+					avatarUrl: nil,
+					role: "admin"
+				)
+			}
+		)
+	}
+
+	private func testToken(id: String) -> LPMToken {
+		LPMToken(
+			id: id, name: id, scope: nil, expiresAt: nil,
+			lastUsedAt: nil, downloadCount: nil, createdAt: nil
+		)
+	}
+}
+
+private final class LockedCounter: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage = 0
+
+	var value: Int { lock.withLock { storage } }
+
+	func increment() {
+		lock.withLock { storage += 1 }
+	}
+}
+
+private final class SequencedAuthTokenProvider: @unchecked Sendable {
+	private let lock = NSLock()
+	private var tokens: [String?]
+
+	init(tokens: [String?]) {
+		self.tokens = tokens
+	}
+
+	func next() -> String? {
+		lock.withLock {
+			guard !tokens.isEmpty else { return nil }
+			return tokens.removeFirst()
+		}
+	}
+}
+
+private final class MockAPIServiceFactory: @unchecked Sendable {
+	private let lock = NSLock()
+	private var counts: [URL: Int] = [:]
+	private var services: [URL: MockAPIService] = [:]
+
+	var urls: [URL] { lock.withLock { Array(counts.keys) } }
+
+	func make(baseURL: URL) -> MockAPIService {
+		lock.withLock {
+			counts[baseURL, default: 0] += 1
+			if let service = services[baseURL] { return service }
+			let service = MockAPIService()
+			service.user = LPMUser(
+				id: baseURL.absoluteString,
+				username: baseURL.host ?? "local",
+				name: nil,
+				email: nil,
+				avatarUrl: nil,
+				plan: nil,
+				createdAt: nil,
+				orgs: nil
+			)
+			services[baseURL] = service
+			return service
+		}
+	}
+
+	func count(for baseURL: URL) -> Int {
+		lock.withLock { counts[baseURL, default: 0] }
+	}
+}
+
+private final class StringRecorder: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage: [String] = []
+
+	var values: [String] { lock.withLock { storage } }
+
+	func append(_ value: String) {
+		lock.withLock { storage.append(value) }
+	}
+}
+
+private actor AsyncGate {
+	private var arrived = false
+	private var released = false
+	private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+	private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+	func waitUntilArrived() async {
+		guard !arrived else { return }
+		await withCheckedContinuation { arrivalWaiters.append($0) }
+	}
+
+	func arriveAndWait() async {
+		arrived = true
+		arrivalWaiters.forEach { $0.resume() }
+		arrivalWaiters.removeAll()
+		guard !released else { return }
+		await withCheckedContinuation { releaseWaiters.append($0) }
+	}
+
+	func release() {
+		released = true
+		releaseWaiters.forEach { $0.resume() }
+		releaseWaiters.removeAll()
+	}
+}
+
+private actor AsyncSignal {
+	private var signalled = false
+	private var waiters: [CheckedContinuation<Void, Never>] = []
+
+	func wait() async {
+		guard !signalled else { return }
+		await withCheckedContinuation { waiters.append($0) }
+	}
+
+	func send() {
+		signalled = true
+		waiters.forEach { $0.resume() }
+		waiters.removeAll()
+	}
+}
+
+private func testAuthCredentials() -> AuthSessionCredentials {
+	AuthSessionCredentials(
+		token: "login-access",
+		refreshToken: "login-refresh",
+		expiresIn: 3_600,
+		expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(3_600))
+	)
 }
