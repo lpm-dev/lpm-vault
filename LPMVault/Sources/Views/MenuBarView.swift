@@ -15,7 +15,7 @@ struct MenuBarView: View {
 			} else {
 				ForEach(store.projects.prefix(5)) { project in
 					Button {
-						store.selectedProjectId = project.id
+						store.openProject(id: project.id)
 						showMainWindow()
 					} label: {
 						HStack {
@@ -43,7 +43,7 @@ struct MenuBarView: View {
 			// Auth status
 			if let user = store.currentUser {
 				Button {
-					store.showAuthStatus = true
+					store.showSettings()
 					showMainWindow()
 				} label: {
 					Text("@\(user.username)")
