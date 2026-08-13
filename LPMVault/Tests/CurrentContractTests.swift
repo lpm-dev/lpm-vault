@@ -90,6 +90,19 @@ struct CurrentContractTests {
 		}
 	}
 
+	@Test("vault detects case-only collisions without rejecting Rust-compatible data")
+	func portableVariableNames() {
+		#expect(
+			EnvValidation.caseInsensitiveCollision(
+				for: "Hey",
+				in: ["HEY", "OTHER"]
+			) == "HEY"
+		)
+		#expect(EnvValidation.areValidEnvironments([
+			"default": ["HEY": "upper", "Hey": "mixed"]
+		]))
+	}
+
 	@Test("environment names match the Rust resolver contract")
 	func environmentNameValidation() {
 		for name in ["default", "production", "staging.eu", "my-env_1"] {

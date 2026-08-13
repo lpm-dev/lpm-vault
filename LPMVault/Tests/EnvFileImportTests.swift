@@ -153,6 +153,29 @@ struct EnvFileImportTests {
 		}
 	}
 
+	@Test("case-only key collisions reject the whole parse")
+	func caseOnlyCollisionIsAtomic() {
+		#expect(throws: EnvFileImportError.caseInsensitiveCollision(
+			line: 2,
+			existingKey: "HEY",
+			incomingKey: "Hey"
+		)) {
+			try EnvFileCodec.parse("HEY=upper\nHey=mixed")
+		}
+	}
+
+	@Test("maximum-size unique key sets parse without collision scan amplification")
+	func maximumAssignmentSetParses() throws {
+		let assignmentCount = 16_384
+		let content = (0..<assignmentCount)
+			.map { "K\(String($0, radix: 36).uppercased())=" }
+			.joined(separator: "\n")
+		let parsed = try EnvFileCodec.parse(content)
+
+		#expect(parsed.count == assignmentCount)
+		#expect(parsed["KCN3"] == "")
+	}
+
 	@Test("assignment and parsed-output amplification are bounded")
 	func parserBounds() {
 		let assignments = EnvFileImportLimits(

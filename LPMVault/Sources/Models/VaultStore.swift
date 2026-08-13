@@ -390,6 +390,37 @@ enum ProjectSyncStatus {
 	case localChanges
 }
 
+enum AddSecretError: LocalizedError, Sendable, Equatable {
+	case vaultLocked
+	case targetUnavailable
+	case invalidName
+	case duplicate
+	case caseInsensitiveCollision(existingKey: String)
+	case persistence(String)
+
+	var errorDescription: String? {
+		switch self {
+		case .vaultLocked:
+			"Unlock LPM Vault before adding a secret."
+		case .targetUnavailable:
+			"The target env project or environment changed before the secret was saved."
+		case .invalidName:
+			"Use letters, numbers, and underscores; the first character cannot be a number."
+		case .duplicate:
+			"A secret with this key already exists."
+		case .caseInsensitiveCollision(let existingKey):
+			"A key named \(existingKey) already exists. Rename one key for Windows compatibility."
+		case .persistence(let message):
+			"Could not save the secret. \(message)"
+		}
+	}
+}
+
+enum AddSecretResult: Sendable, Equatable {
+	case success
+	case failure(AddSecretError)
+}
+
 @Observable
 @MainActor
 final class VaultStore {
@@ -465,7 +496,10 @@ final class VaultStore {
 	private let authSessionWriter: @Sendable (AuthSessionCredentials, String) throws -> Void
 	private let authSessionClearer: @Sendable (String) -> Void
 	private let autoLockSleep: @Sendable (Duration) async throws -> Void
+	private let autoLockNow: @Sendable () -> TimeInterval
 	private var autoLockTask: Task<Void, Never>?
+	private var autoLockDeadline: TimeInterval?
+	private var autoLockTaskGeneration = 0
 	private var projectLoadTask: Task<Void, Never>?
 	private var projectLoadGeneration = 0
 	private var tokenLoadTask: Task<Void, Never>?
@@ -685,7 +719,10 @@ final class VaultStore {
 		autoLockSleep: @escaping @Sendable (Duration) async throws -> Void = {
 			try await Task.sleep(for: $0)
 		},
-		autoLockDuration: TimeInterval = VaultConstants.biometricCacheDuration
+		autoLockNow: @escaping @Sendable () -> TimeInterval = {
+			ProcessInfo.processInfo.systemUptime
+		},
+		autoLockDuration: TimeInterval = VaultConstants.vaultAutoLockDuration
 	) {
 		self.keychainService = keychainService
 		self.persistence = VaultPersistenceCoordinator(service: keychainService)
@@ -702,6 +739,7 @@ final class VaultStore {
 		self.authSessionWriter = authSessionWriter
 		self.authSessionClearer = authSessionClearer
 		self.autoLockSleep = autoLockSleep
+		self.autoLockNow = autoLockNow
 		self.autoLockDuration = autoLockDuration
 
 		#if DEBUG
@@ -1190,6 +1228,8 @@ final class VaultStore {
 				error = persistenceError.description
 			case .targetUnavailable:
 				error = EnvFileImportError.targetUnavailable.localizedDescription
+			case .caseInsensitiveCollision:
+				error = EnvFileImportError.caseInsensitiveCollisionWithExisting.localizedDescription
 			case .cancelled:
 				return false
 			case .success:
@@ -1369,6 +1409,8 @@ final class VaultStore {
 				return .success(imported)
 			case .targetUnavailable:
 				return .failure(.targetUnavailable)
+			case .caseInsensitiveCollision:
+				return .failure(.caseInsensitiveCollisionWithExisting)
 			case .cancelled:
 				return .failure(.cancelled)
 			case .failure(let persistenceError):
@@ -1456,14 +1498,52 @@ final class VaultStore {
 		localEnvPreviewTasks.removeAll()
 	}
 
-	func addSecret(to projectId: String, key: String, value: String) {
-		guard var project = projects.first(where: { $0.id == projectId }) else { return }
-		guard EnvValidation.isValidVariableName(key) else { return }
+	func addSecret(
+		to projectId: String,
+		environment: String,
+		key: String,
+		value: String
+	) async -> AddSecretResult {
+		guard isUnlocked else { return .failure(.vaultLocked) }
+		guard EnvValidation.isValidVariableName(key) else { return .failure(.invalidName) }
+		let sessionGeneration = vaultSessionGeneration
+		guard let project = projects.first(where: { $0.id == projectId }),
+			let secrets = project.environments[environment]
+		else { return .failure(.targetUnavailable) }
+		guard secrets[key] == nil else { return .failure(.duplicate) }
+		if let existingKey = EnvValidation.caseInsensitiveCollision(for: key, in: secrets.keys) {
+			return .failure(.caseInsensitiveCollision(existingKey: existingKey))
+		}
 
-		var envSecrets = project.environments[selectedEnvironment] ?? [:]
-		envSecrets[key] = value
-		project.environments[selectedEnvironment] = envSecrets
-		saveAndUpdate(project)
+		invalidateProjectLoad()
+		let commit = await persistence.addSecret(
+			projectId: projectId,
+			projectName: project.name,
+			projectPath: project.path,
+			environment: environment,
+			key: key,
+			value: value
+		)
+		switch commit {
+		case .success(let persisted):
+			guard sessionGeneration == vaultSessionGeneration, isUnlocked else {
+				// Durable success raced a lock. Do not republish plaintext until unlock.
+				return .success
+			}
+			updateProjectInPlace(persisted.project)
+			syncMetadata = persisted.syncMetadata
+			error = persisted.warning
+			return .success
+		case .targetUnavailable:
+			return .failure(.targetUnavailable)
+		case .failure(let persistenceError):
+			if case .unexpectedStatus(-2) = persistenceError,
+				sessionGeneration == vaultSessionGeneration, isUnlocked
+			{
+				_ = await loadProjects()
+			}
+			return .failure(.persistence(persistenceError.description))
+		}
 	}
 
 	func updateSecret(in projectId: String, key: String, newValue: String) {
@@ -1707,6 +1787,8 @@ final class VaultStore {
 		invalidateProjectLoad()
 		autoLockTask?.cancel()
 		autoLockTask = nil
+		autoLockDeadline = nil
+		autoLockTaskGeneration &+= 1
 		isUnlocked = false
 		biometricService.resetCache()
 		// Clear decrypted secrets from memory to reduce exposure window
@@ -1715,20 +1797,44 @@ final class VaultStore {
 		}
 	}
 
-	/// Reset the auto-lock timer (call on user interaction while unlocked)
-	func resetAutoLock() {
+	/// Records local keyboard, click, scroll, or gesture input while unlocked.
+	func recordUserActivity() {
 		guard isUnlocked else { return }
 		scheduleAutoLock()
 	}
 
+	/// Navigation actions are user activity too.
+	private func resetAutoLock() {
+		recordUserActivity()
+	}
+
 	private func scheduleAutoLock() {
-		autoLockTask?.cancel()
-		autoLockTask = Task { @MainActor in
+		let now = autoLockNow()
+		if let autoLockDeadline, now >= autoLockDeadline {
+			lock()
+			return
+		}
+		autoLockDeadline = now + autoLockDuration
+		guard autoLockTask == nil else { return }
+		autoLockTaskGeneration &+= 1
+		let generation = autoLockTaskGeneration
+		autoLockTask = Task { @MainActor [weak self] in
+			guard let self else { return }
 			do {
-				try await autoLockSleep(.seconds(autoLockDuration))
-				try Task.checkCancellation()
-				lock()
+				while isUnlocked, generation == autoLockTaskGeneration {
+					try Task.checkCancellation()
+					guard let autoLockDeadline else { break }
+					let remaining = autoLockDeadline - autoLockNow()
+					if remaining <= 0 {
+						lock()
+						return
+					}
+					try await autoLockSleep(.seconds(remaining))
+				}
 			} catch {}
+			if generation == autoLockTaskGeneration {
+				autoLockTask = nil
+			}
 		}
 	}
 
