@@ -12,6 +12,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var failureError: KeychainError = .accessDenied
 	var listProjectsDelay: Duration?
 	var failDataAccounts: Set<String> = []
+	var failNextWriteDataAccounts: Set<String> = []
 	var saveEnvironmentsCallCount = 0
 	var onCreateEnvironments: (() -> Void)?
 	var blockNextSaveEnvironments: (() -> Void)?
@@ -137,6 +138,9 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	@discardableResult
 	func writeData(account: String, data: Data) -> Bool {
+		if failNextWriteDataAccounts.remove(account) != nil {
+			return false
+		}
 		if shouldFail || failDataAccounts.contains(account) || failWriteDataAccounts.contains(account) {
 			return false
 		}
@@ -429,6 +433,10 @@ actor MockEnvFileImportService: EnvFileImportServiceProtocol {
 	}
 
 	func enableGate() { usesGate = true }
+
+	func setImmediateResult(_ result: Result<ImportedEnvFile, EnvFileImportError>) {
+		immediateResult = result
+	}
 
 	func hasStarted(_ key: String) -> Bool { started.contains(key) }
 

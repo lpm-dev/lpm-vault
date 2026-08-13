@@ -34,6 +34,32 @@ enum EnvValidation {
 		}
 	}
 
+	/// Returns the existing key that differs from `name` only by ASCII case.
+	/// Variable names are ASCII-only, so lowercasing is deterministic here.
+	static func caseInsensitiveCollision(
+		for name: String,
+		in existingNames: some Sequence<String>
+	) -> String? {
+		let foldedName = name.lowercased()
+		return existingNames.first {
+			$0 != name && $0.lowercased() == foldedName
+		}
+	}
+
+	static func firstCaseInsensitiveCollision(
+		in names: some Sequence<String>
+	) -> (first: String, second: String)? {
+		var namesByFoldedValue: [String: String] = [:]
+		for name in names.sorted() {
+			let foldedName = name.lowercased()
+			if let existing = namesByFoldedValue[foldedName], existing != name {
+				return (existing, name)
+			}
+			namesByFoldedValue[foldedName] = name
+		}
+		return nil
+	}
+
 	static func isValidEnvironmentName(_ name: String) -> Bool {
 		guard !name.isEmpty, name.utf8.count <= 64, name != "__index__" else { return false }
 		guard !name.contains("..") else { return false }

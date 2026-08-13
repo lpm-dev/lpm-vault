@@ -1,9 +1,15 @@
 import SwiftUI
 
+private struct AddSecretTarget: Identifiable {
+	let id = UUID()
+	let projectId: String
+	let environment: String
+}
+
 /// Column 3: Vault detail with vertical environment sidebar + secrets list.
 struct VaultDetailView: View {
 	@Bindable var store: VaultStore
-	@State private var showingAddSecret = false
+	@State private var addSecretTarget: AddSecretTarget?
 	@State private var showPushConfirmation = false
 	@State private var showPullConfirmation = false
 	@State private var showConflictResolution = false
@@ -65,8 +71,12 @@ struct VaultDetailView: View {
 				emptyState
 			}
 		}
-		.sheet(isPresented: $showingAddSecret) {
-			if let project { AddSecretSheet(store: store, projectId: project.id) }
+		.sheet(item: $addSecretTarget) { target in
+			AddSecretSheet(
+				store: store,
+				projectId: target.projectId,
+				environment: target.environment
+			)
 		}
 		.sheet(isPresented: $showPushConfirmation) {
 			if let project {
@@ -127,7 +137,7 @@ struct VaultDetailView: View {
 			if newValue == "conflict" { showConflictResolution = true }
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in
-			if project != nil { showingAddSecret = true }
+			presentAddSecret()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .findSecrets)) { _ in
 			guard project != nil else { return }
@@ -419,7 +429,7 @@ struct VaultDetailView: View {
 				}
 				.disabled(currentEnvImportTask != nil)
 				Button("Export") { exportToFile() }
-				Button("Add New") { showingAddSecret = true }
+				Button("Add New") { presentAddSecret() }
 			}
 			.buttonStyle(.bordered)
 			.controlSize(.small)
@@ -521,7 +531,7 @@ struct VaultDetailView: View {
 			Text("No secrets yet")
 				.font(.title3)
 				.foregroundStyle(.secondary)
-			Button("Add Secret") { showingAddSecret = true }
+			Button("Add Secret") { presentAddSecret() }
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
 	}
@@ -762,6 +772,14 @@ struct VaultDetailView: View {
 		newEnvCreationId = nil
 		cancelPreviewImport()
 		newEnvSecrets = [:]
+	}
+
+	private func presentAddSecret() {
+		guard addSecretTarget == nil, let project else { return }
+		addSecretTarget = AddSecretTarget(
+			projectId: project.id,
+			environment: store.selectedEnvironment
+		)
 	}
 
 	private func formatTimeAgo(_ date: Date) -> String {

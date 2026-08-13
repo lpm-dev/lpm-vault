@@ -1,9 +1,31 @@
 import SwiftUI
 
 /// Handles dock click and prevents quit on window close.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+	static let userActivityEvents: NSEvent.EventTypeMask = [
+		.keyDown,
+		.leftMouseDown,
+		.rightMouseDown,
+		.otherMouseDown,
+		.scrollWheel,
+		.gesture,
+		.magnify,
+		.rotate,
+		.swipe,
+	]
+
 	var openWindow: (() -> Void)?
-	var lockVault: (() -> Void)?
+	var lockVault: (() -> Void)? {
+		didSet {
+			guard lockVault != nil, hasPendingSecurityLock else { return }
+			hasPendingSecurityLock = false
+			lockVault?()
+		}
+	}
+	var recordUserActivity: (() -> Void)?
+	private var localEventMonitor: Any?
+	private var hasPendingSecurityLock = false
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		// When launched from Xcode (bare executable, no .app bundle),
@@ -16,6 +38,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			}
 		}
 
+		localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.userActivityEvents) {
+			[weak self] event in
+			self?.recordUserActivity?()
+			return event
+		}
+
+		let workspaceCenter = NSWorkspace.shared.notificationCenter
+		for name in [
+			NSWorkspace.sessionDidResignActiveNotification,
+			NSWorkspace.willSleepNotification,
+			NSWorkspace.screensDidSleepNotification,
+		] {
+			workspaceCenter.addObserver(
+				self,
+				selector: #selector(handleSecurityNotification(_:)),
+				name: name,
+				object: nil
+			)
+		}
+	}
+
+	@objc private func handleSecurityNotification(_ notification: Notification) {
+		handleSecurityStateChange()
+	}
+
+	func handleSecurityStateChange() {
+		guard let lockVault else {
+			hasPendingSecurityLock = true
+			return
+		}
+		lockVault()
+	}
+
+	func applicationWillTerminate(_ notification: Notification) {
+		if let localEventMonitor { NSEvent.removeMonitor(localEventMonitor) }
+		localEventMonitor = nil
+		NSWorkspace.shared.notificationCenter.removeObserver(self)
 	}
 
 	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -75,10 +134,13 @@ struct LPMVaultApp: App {
 					appDelegate.lockVault = { [store] in
 						store.lock()
 					}
+					appDelegate.recordUserActivity = { [store] in
+						store.recordUserActivity()
+					}
 				}
 		}
 		.defaultSize(width: 900, height: 550)
-		.windowToolbarStyle(.unifiedCompact)
+		.windowToolbarStyle(.unified(showsTitle: false))
 		.commands {
 			CommandGroup(replacing: .newItem) {}
 			CommandMenu("Env Project") {
