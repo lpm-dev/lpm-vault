@@ -6,8 +6,7 @@ private let listColor = Color(nsColor: .controlBackgroundColor)
 struct ContentView: View {
 	@Bindable var store: VaultStore
 	@State private var updateChecker = UpdateChecker()
-	@State private var listWidth: CGFloat = 240
-	@GestureState private var dragOffset: CGFloat = 0
+	@State private var columnVisibility: NavigationSplitViewVisibility = .all
 
 	var body: some View {
 		Group {
@@ -57,10 +56,6 @@ struct ContentView: View {
 		.frame(minWidth: 800, minHeight: 500)
 	}
 
-	private var effectiveListWidth: CGFloat {
-		min(max(listWidth + dragOffset, 180), 360)
-	}
-
 	private var unlockedContent: some View {
 		VStack(spacing: 0) {
 			// Update banner
@@ -77,6 +72,7 @@ struct ContentView: View {
 						Image(systemName: "xmark").font(.caption)
 					}
 					.buttonStyle(.plain)
+					.accessibilityLabel("Dismiss update notification")
 				}
 				.padding(.horizontal, 16)
 				.padding(.vertical, 8)
@@ -84,45 +80,30 @@ struct ContentView: View {
 			}
 
 			HStack(spacing: 0) {
-				// Column 1: Account rail
+				// Keep account and security controls available while the native
+				// sidebar command shows or hides the env-project list.
 				AccountRailView(store: store)
 					.background(railColor)
 
 				Divider()
 
-				// Column 2: Vault list
 				if store.showAuthStatus {
 					AuthStatusView(store: store)
-						.frame(width: effectiveListWidth)
-						.background(listColor)
+						.frame(maxWidth: .infinity, maxHeight: .infinity)
 				} else {
-					VaultListView(store: store)
-						.frame(width: effectiveListWidth)
-						.background(listColor)
-						.tint(Color(hex: 0x17793A))
-				}
-
-				// Resize handle
-				Color.clear
-					.frame(width: 6)
-					.overlay(Rectangle().fill(Color.gray.opacity(0.2)).frame(width: 1))
-					.contentShape(Rectangle())
-					.gesture(
-						DragGesture(minimumDistance: 1, coordinateSpace: .global)
-							.updating($dragOffset) { value, state, _ in state = value.translation.width }
-							.onEnded { value in listWidth = min(max(listWidth + value.translation.width, 180), 360) }
-					)
-					.onHover { hovering in
-						if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+					NavigationSplitView(columnVisibility: $columnVisibility) {
+						VaultListView(store: store)
+							.tint(Color(hex: 0x17793A))
+							.navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 360)
+							.background(listColor)
+					} detail: {
+						VaultDetailView(store: store)
+							.frame(maxWidth: .infinity, maxHeight: .infinity)
 					}
-
-				// Column 3: Vault detail
-				VaultDetailView(store: store)
-					.frame(maxWidth: .infinity, maxHeight: .infinity)
+					.navigationSplitViewStyle(.balanced)
+				}
 			}
 			.frame(minWidth: 800, minHeight: 500)
-			.onChange(of: store.selectedAccount) { _, _ in store.resetAutoLock() }
-			.onChange(of: store.selectedProjectId) { _, _ in store.resetAutoLock() }
 		}
 		.task { await updateChecker.checkForUpdate() }
 		.sheet(isPresented: $store.showKeyApprovalSheet) {

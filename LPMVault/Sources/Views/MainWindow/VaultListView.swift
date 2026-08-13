@@ -46,6 +46,7 @@ struct VaultListView: View {
 					}
 					.buttonStyle(.plain)
 					.help("Import from cloud")
+					.accessibilityLabel("Import env project from cloud")
 				}
 
 				Button {
@@ -56,6 +57,7 @@ struct VaultListView: View {
 				}
 				.buttonStyle(.plain)
 				.help("New env project")
+				.accessibilityLabel("New env project")
 			}
 			.padding(.horizontal, 12)
 			.frame(height: 40)
@@ -104,11 +106,20 @@ struct VaultListView: View {
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 			} else {
-				List(selection: $store.selectedProjectId) {
+				List(selection: Binding(
+					get: { store.selectedProjectId },
+					set: { store.selectProject($0) }
+				)) {
 					ForEach(store.filteredVaults) { vault in
 						vaultRow(vault)
 							.tag(vault.id)
 							.listRowBackground(Color.clear)
+							.accessibilityElement(children: .combine)
+							.accessibilityLabel("\(vault.name), \(vault.secretCount) secrets")
+							.accessibilityValue(accessibilitySyncDescription(for: vault))
+							.accessibilityAddTraits(
+								store.selectedProjectId == vault.id ? .isSelected : []
+							)
 							.contextMenu {
 								Button("Edit Name") {
 									projectToRename = vault
@@ -167,10 +178,6 @@ struct VaultListView: View {
 		} message: {
 			Text("This removes the local Keychain copy. A synced cloud copy is not deleted.")
 		}
-		.onChange(of: store.selectedAccount) { _, _ in
-			// Clear selection when switching accounts so column 3 resets
-			store.selectedProjectId = nil
-		}
 	}
 
 	@ViewBuilder
@@ -218,5 +225,16 @@ struct VaultListView: View {
 		let hours = minutes / 60
 		if hours < 24 { return "\(hours)h ago" }
 		return "\(hours / 24)d ago"
+	}
+
+	private func accessibilitySyncDescription(for vault: VaultProject) -> String {
+		let status = switch store.syncStatus(for: vault.id) {
+		case .synced: "Synced"
+		case .localChanges: "Local changes"
+		case .neverSynced: "Never synced"
+		}
+		guard let info = store.lastSyncInfo(for: vault.id) else { return status }
+		let action = info.action == "push" ? "Pushed" : "Pulled"
+		return "\(status), \(action) \(formatTimeAgo(info.date))"
 	}
 }
