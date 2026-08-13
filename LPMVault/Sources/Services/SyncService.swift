@@ -14,7 +14,7 @@ final class SyncService: @unchecked Sendable {
 		)
 	}
 
-	struct SyncStatus: Codable {
+	struct SyncStatus: Codable, Sendable {
 		let vaultId: String?
 		let version: Int?
 		let contentKeyVersion: Int?
@@ -46,7 +46,7 @@ final class SyncService: @unchecked Sendable {
 		var id: String { vaultId }
 	}
 
-	struct MemberPublicKey: Decodable {
+	struct MemberPublicKey: Decodable, Sendable {
 		let userId: String
 		let role: String
 		let publicKey: String?
@@ -55,12 +55,12 @@ final class SyncService: @unchecked Sendable {
 		let hasPublicKey: Bool
 	}
 
-	struct MemberKeyAccess {
+	struct MemberKeyAccess: Sendable {
 		let members: [MemberPublicKey]
 		let canReplaceWrappedKeys: Bool
 	}
 
-	struct PublicKeyRecord: Decodable {
+	struct PublicKeyRecord: Decodable, Sendable {
 		let publicKey: String?
 		let publicKeyVersion: Int?
 		let publicKeyFingerprint: String?
@@ -76,7 +76,7 @@ final class SyncService: @unchecked Sendable {
 		let expectedScope: String?
 	}
 
-	struct WrappedMemberKey: Encodable {
+	struct WrappedMemberKey: Encodable, Sendable {
 		let userId: String
 		let wrappedKey: String
 		let publicKeyVersion: Int
@@ -284,6 +284,53 @@ final class SyncService: @unchecked Sendable {
 		}
 	}
 }
+
+/// The organization-sync surface used by `VaultStore`. Keeping this narrow
+/// makes authorization races testable without replacing unrelated API calls.
+protocol OrgSyncServiceProtocol: Sendable {
+	func pushOrg(
+		authToken: String,
+		orgSlug: String,
+		vaultId: String,
+		encryptedBlob: String,
+		wrappedKeys: [SyncService.WrappedMemberKey]?,
+		expectedVersion: Int?,
+		name: String?,
+		schema: Data?
+	) async -> SyncService.SyncStatus?
+
+	func pullOrg(
+		authToken: String,
+		orgSlug: String,
+		vaultId: String
+	) async -> SyncService.SyncStatus?
+
+	func getOrgMemberKeyAccess(
+		authToken: String,
+		orgSlug: String
+	) async -> SyncService.MemberKeyAccess?
+
+	func getMyPublicKey(authToken: String) async -> SyncService.PublicKeyRecord?
+}
+
+extension SyncService: OrgSyncServiceProtocol {}
+
+protocol PersonalSyncServiceProtocol: Sendable {
+	func push(
+		authToken: String,
+		vaultId: String,
+		encryptedBlob: String,
+		wrappedKey: String,
+		expectedVersion: Int?,
+		force: Bool,
+		name: String?,
+		schema: Data?
+	) async -> SyncService.SyncStatus?
+
+	func pull(authToken: String, vaultId: String) async -> SyncService.SyncStatus?
+}
+
+extension SyncService: PersonalSyncServiceProtocol {}
 
 private extension CharacterSet {
 	static let urlPathSegmentAllowed: CharacterSet = {

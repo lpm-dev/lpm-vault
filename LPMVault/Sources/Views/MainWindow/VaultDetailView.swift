@@ -303,7 +303,7 @@ struct VaultDetailView: View {
 				VStack(spacing: 2) {
 					ForEach(envNames, id: \.self) { env in
 						Button {
-							store.selectedEnvironment = env
+							store.selectEnvironment(env)
 						} label: {
 							HStack {
 								Text(VaultProject.displayName(for: env))
@@ -326,6 +326,11 @@ struct VaultDetailView: View {
 							)
 						}
 						.buttonStyle(.plain)
+						.accessibilityLabel(VaultProject.displayName(for: env))
+						.accessibilityValue("\(project.secretCount(for: env)) secrets")
+						.accessibilityAddTraits(
+							store.selectedEnvironment == env ? .isSelected : []
+						)
 						.contextMenu {
 							Button("Rename...") {
 								renameEnvTarget = env
@@ -356,11 +361,6 @@ struct VaultDetailView: View {
 			}
 		}
 		.frame(width: 120)
-		.onAppear {
-			if !envNames.contains(store.selectedEnvironment) {
-				store.selectedEnvironment = envNames.first ?? "default"
-			}
-		}
 		// Delete env confirmation
 		.confirmationDialog("Delete environment?", isPresented: Binding(
 			get: { environmentToDelete != nil },

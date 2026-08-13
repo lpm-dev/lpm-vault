@@ -183,6 +183,236 @@ struct VaultStoreTests {
 		#expect(store.error != nil)
 	}
 
+	@Test("locking during local deletion never republishes decrypted secrets")
+	func lockDuringLocalDeletionKeepsMemoryScrubbed() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "one", path: "", secrets: ["ONE": "secret"]),
+			(id: "id-2", name: "two", path: "", secrets: ["TWO": "secret"]),
+		])
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextDeleteProject = {
+			entered.signal()
+			release.wait()
+		}
+		store.isUnlocked = true
+		store.selectProject("id-1")
+
+		let deletion = Task { await store.deleteLocalVault(store.projects[0]) }
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.lock()
+		release.signal()
+
+		#expect(await deletion.value)
+		#expect(!store.isUnlocked)
+		#expect(store.projects.allSatisfy { project in
+			project.environments.values.allSatisfy(\.isEmpty)
+		})
+		#expect(keychain.storage["id-1"] == nil)
+		#expect(keychain.storage["id-2"]?.secrets["TWO"] == "secret")
+	}
+
+	// MARK: - Navigation
+
+	@Test("switching accounts clears an incompatible project but reselecting preserves it")
+	func accountSelectionMaintainsNavigationInvariants() {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "personal", name: "personal", path: "", secrets: [:]),
+			(id: "org", name: "org", path: "", secrets: [:]),
+		])
+		store.currentUser = userWithOrganization(slug: "acme")
+		store.vaultOrgAssociations = ["org": "acme"]
+		store.selectProject("personal")
+		store.showSettings()
+
+		store.selectAccount(.personal)
+		#expect(store.selectedProjectId == "personal")
+		#expect(!store.showAuthStatus)
+
+		store.selectAccount(.org("acme"))
+		#expect(store.selectedProjectId == nil)
+		#expect(store.selectedEnvironment == "default")
+	}
+
+	@Test("selected project never crosses the active account boundary")
+	func selectedProjectIsAccountScoped() {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "personal", name: "personal", path: "", secrets: [:]),
+			(id: "org", name: "org", path: "", secrets: [:]),
+		])
+		store.currentUser = userWithOrganization(slug: "acme")
+		store.vaultOrgAssociations = ["org": "acme"]
+		store.selectedAccount = .org("acme")
+		store.selectedProjectId = "personal"
+
+		#expect(store.selectedProject == nil)
+	}
+
+	@Test("global project routing chooses its owning account and exits settings")
+	func openProjectRoutesToOwningAccount() {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "personal", name: "personal", path: "", secrets: [:]),
+			(id: "org", name: "org", path: "", secrets: [:]),
+		])
+		store.currentUser = userWithOrganization(slug: "acme")
+		store.vaultOrgAssociations = ["org": "acme"]
+
+		store.showSettings()
+		store.openProject(id: "org")
+		#expect(store.selectedAccount == .org("acme"))
+		#expect(store.selectedProjectId == "org")
+		#expect(!store.showAuthStatus)
+
+		store.openProject(id: "personal")
+		#expect(store.selectedAccount == .personal)
+		#expect(store.selectedProjectId == "personal")
+	}
+
+	@Test("project routing preserves a shared environment and repairs an invalid one")
+	func projectSelectionNormalizesEnvironment() {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "one", name: "one", path: "", secrets: [:]),
+			(id: "two", name: "two", path: "", secrets: [:]),
+		])
+		store.projects[0].environments = ["default": [:], "staging": [:]]
+		store.projects[1].environments = ["production": [:], "staging": [:]]
+
+		store.selectProject("one")
+		store.selectEnvironment("staging")
+		store.selectProject("two")
+		#expect(store.selectedEnvironment == "staging")
+
+		store.selectEnvironment("production")
+		store.selectProject("one")
+		#expect(store.selectedEnvironment == "default")
+	}
+
+	@Test("removing an active project never selects another account")
+	func removalFallbackIsAccountScoped() {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "personal", name: "a-personal", path: "", secrets: [:]),
+			(id: "org-one", name: "b-org", path: "", secrets: [:]),
+			(id: "org-two", name: "c-org", path: "", secrets: [:]),
+		])
+		store.currentUser = userWithOrganization(slug: "acme")
+		store.vaultOrgAssociations = ["org-one": "acme", "org-two": "acme"]
+		store.openProject(id: "org-one")
+
+		store.removeFromSidebar(store.projects.first { $0.id == "org-one" }!)
+
+		#expect(store.selectedAccount == .org("acme"))
+		#expect(store.selectedProjectId == "org-two")
+		#expect(store.selectedProject?.id == "org-two")
+	}
+
+	@Test("account switching cancels pending dotenv work for the previous project")
+	func accountSwitchCancelsPendingImport() async {
+		let importer = MockEnvFileImportService()
+		await importer.enableGate()
+		let (store, _, _, _) = makeStore(
+			projects: [
+				(id: "personal", name: "personal", path: "", secrets: [:]),
+				(id: "org", name: "org", path: "", secrets: [:]),
+			],
+			envFileImportService: importer
+		)
+		store.currentUser = userWithOrganization(slug: "acme")
+		store.vaultOrgAssociations = ["org": "acme"]
+		store.isUnlocked = true
+		store.selectProject("personal")
+
+		let importTask = Task {
+			await store.importEnvFile(
+				at: URL(fileURLWithPath: "/tmp/account-switch.env"),
+				to: "personal",
+				environment: "default"
+			)
+		}
+		while !(await importer.hasStarted("account-switch.env")) { await Task.yield() }
+		store.selectAccount(.org("acme"))
+		await importer.resolve(
+			"account-switch.env",
+			with: .success(ImportedEnvFile(secrets: ["STALE": "secret"]))
+		)
+
+		#expect(await importTask.value == .failure(.cancelled))
+		#expect(store.selectedProjectId == nil)
+		#expect(store.projects.first { $0.id == "personal" }?.secrets.isEmpty == true)
+	}
+
+	@Test("logout removes an invalid organization route")
+	func logoutNormalizesOrganizationNavigation() {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "org", name: "org", path: "", secrets: [:])
+		])
+		store.currentUser = userWithOrganization(slug: "acme")
+		store.vaultOrgAssociations = ["org": "acme"]
+		store.openProject(id: "org")
+
+		store.logout()
+
+		#expect(store.selectedAccount == .personal)
+		#expect(store.selectedProjectId == nil)
+		#expect(store.selectedProject == nil)
+	}
+
+	@Test("successful deletion fallback stays in the current account")
+	func deletionFallbackIsAccountScoped() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "personal", name: "a-personal", path: "", secrets: [:]),
+			(id: "org-one", name: "b-org", path: "", secrets: [:]),
+			(id: "org-two", name: "c-org", path: "", secrets: [:]),
+		])
+		store.currentUser = userWithOrganization(slug: "acme")
+		store.vaultOrgAssociations = ["org-one": "acme", "org-two": "acme"]
+		keychain.dataStorage["__org_associations__"] = try! JSONEncoder().encode(
+			store.vaultOrgAssociations
+		)
+		store.isUnlocked = true
+		store.openProject(id: "org-one")
+
+		let deleted = await store.deleteLocalVault(store.projects.first { $0.id == "org-one" }!)
+
+		#expect(deleted)
+		#expect(store.selectedAccount == .org("acme"))
+		#expect(store.selectedProjectId == "org-two")
+		#expect(store.selectedProject?.id == "org-two")
+	}
+
+	@Test("only user navigation restarts the auto-lock timer")
+	func navigationOwnsAutoLockReset() async {
+		let sleeper = AutoLockSleeper()
+		let keychain = MockKeychainService()
+		keychain.storage["id-1"] = (name: "one", path: "", secrets: [:])
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) }
+		)
+
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		store.reconcileNavigationState()
+		for _ in 0..<10 { await Task.yield() }
+		#expect(await sleeper.count == 1)
+
+		store.selectProject("id-1")
+		while await sleeper.count < 2 { await Task.yield() }
+		await sleeper.resume(at: 0)
+		for _ in 0..<10 { await Task.yield() }
+		#expect(store.isUnlocked)
+
+		await sleeper.resume(at: 1)
+		while store.isUnlocked { await Task.yield() }
+		#expect(!store.isUnlocked)
+	}
+
 	// MARK: - Add Secret
 
 	@Test("add secret to project")
@@ -781,6 +1011,8 @@ struct VaultStoreTests {
 	@Test("a newer token load wins and owns the loading flag")
 	func newerTokenLoadWins() async throws {
 		let api = MockAPIService()
+		let oldLoadGate = AsyncGate()
+		api.blockNextCurrentUserFetch = { await oldLoadGate.arriveAndWait() }
 		api.userResponses = [
 			(delay: nil, user: testUser(id: "old", username: "old")),
 			(delay: nil, user: testUser(id: "new", username: "new")),
@@ -792,13 +1024,14 @@ struct VaultStoreTests {
 		let (store, _, _, _) = makeStore(apiService: api)
 
 		let oldLoad = Task { await store.loadTokens() }
-		try await Task.sleep(for: .milliseconds(20))
+		await oldLoadGate.waitUntilArrived()
 		let newLoad = Task { await store.loadTokens() }
 		try await Task.sleep(for: .milliseconds(40))
 		#expect(store.isLoadingTokens)
 		await newLoad.value
 		#expect(store.currentUser?.username == "new")
 		#expect(!store.isLoadingTokens)
+		await oldLoadGate.release()
 		await oldLoad.value
 		#expect(store.currentUser?.username == "new")
 	}
@@ -1218,6 +1451,199 @@ struct VaultStoreTests {
 		#expect(store.error != nil)
 	}
 
+	@Test("security transitions discard pending organization authorization")
+	func securityTransitionsDiscardPendingOrgAuthorization() {
+		let (store, _, _, _) = makeStore()
+		func seedApproval() {
+			store.pendingOrgPush = PendingOrgPush(
+				orgSlug: "acme",
+				projectId: "p1",
+				allMembers: [],
+				pendingApprovals: [],
+				orgTrust: OrgKeyTrust(),
+				authToken: "retained-token",
+				canReplaceWrappedKeys: true
+			)
+			store.showKeyApprovalSheet = true
+		}
+
+		seedApproval()
+		store.logout()
+		#expect(store.pendingOrgPush == nil)
+		#expect(!store.showKeyApprovalSheet)
+
+		seedApproval()
+		store.lock()
+		#expect(store.pendingOrgPush == nil)
+		#expect(!store.showKeyApprovalSheet)
+
+		#if DEBUG
+		seedApproval()
+		store.appEnvironment = .production
+		store.switchEnvironment(to: .development)
+		#expect(store.pendingOrgPush == nil)
+		#expect(!store.showKeyApprovalSheet)
+		#endif
+	}
+
+	@Test("lock invalidates organization sharing during member-key lookup")
+	func lockInvalidatesInFlightOrganizationPush() async {
+		await verifyInFlightOrgPushIsInvalidated(by: .lock)
+	}
+
+	@Test("logout invalidates organization sharing during member-key lookup")
+	func logoutInvalidatesInFlightOrganizationPush() async {
+		await verifyInFlightOrgPushIsInvalidated(by: .logout)
+	}
+
+	@Test("account changes invalidate organization sharing during member-key lookup")
+	func accountChangeInvalidatesInFlightOrganizationPush() async {
+		await verifyInFlightOrgPushIsInvalidated(by: .accountChange)
+	}
+
+	#if DEBUG
+	@Test("server changes invalidate organization sharing during member-key lookup")
+	func serverChangeInvalidatesInFlightOrganizationPush() async {
+		await verifyInFlightOrgPushIsInvalidated(by: .serverChange)
+	}
+	#endif
+
+	@Test("session replacement invalidates organization sharing during member-key lookup")
+	func tokenReplacementInvalidatesInFlightOrganizationPush() async {
+		await verifyInFlightOrgPushIsInvalidated(by: .tokenReplacement)
+	}
+
+	@Test("session replacement suppresses a stale personal pull")
+	func tokenReplacementSuppressesStalePersonalPull() async {
+		let gate = AsyncGate()
+		let token = MutableString("session-token")
+		let sync = MockPersonalSyncService()
+		sync.pullHandlers = [{
+			await gate.arriveAndWait()
+			return nil
+		}]
+		let projectId = "personal-pull"
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			personalSyncServiceFactory: { _ in sync },
+			authTokenProvider: { _, _ in token.value }
+		)
+		store.projects = [VaultProject(
+			id: projectId,
+			name: "Personal",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)]
+		store.isUnlocked = true
+		store.selectProject(projectId)
+
+		let pull = Task { await store.pullFromCloud() }
+		await gate.waitUntilArrived()
+		token.value = "replacement-token"
+		await gate.release()
+		await pull.value
+
+		#expect(store.projects.first?.secrets["TOKEN"] == "local")
+		#expect(store.syncMetadata[projectId] == nil)
+		#expect(store.lastSyncStatus == nil)
+		#expect(!store.isSyncing)
+	}
+
+	@Test("account changes suppress a stale organization pull")
+	func accountChangeSuppressesStaleOrganizationPull() async {
+		let slug = "org-pull-\(UUID().uuidString.lowercased())"
+		let projectId = "organization-pull"
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let gate = AsyncGate()
+		let sync = MockOrgSyncService()
+		sync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: keypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey)
+		)
+		sync.blockNextPull = { await gate.arriveAndWait() }
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			orgSyncServiceFactory: { _ in sync },
+			sharingKeypairProvider: { keypair },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.currentUser = userWithOrganization(slug: slug)
+		store.projects = [VaultProject(
+			id: projectId,
+			name: "Organization",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)]
+		store.vaultOrgAssociations[projectId] = slug
+		store.isUnlocked = true
+		store.selectAccount(.org(slug))
+		store.selectProject(projectId)
+
+		let pull = Task { await store.pullFromOrg(orgSlug: slug) }
+		await gate.waitUntilArrived()
+		store.selectAccount(.personal)
+		await gate.release()
+		await pull.value
+
+		#expect(store.projects.first?.secrets["TOKEN"] == "local")
+		#expect(store.syncMetadata[projectId] == nil)
+		#expect(store.lastSyncStatus == nil)
+		#expect(!store.isSyncing)
+	}
+
+	@Test("an older pull cannot clear a newer pull's loading state")
+	func olderPullCannotFinishNewerPull() async {
+		let oldGate = AsyncGate()
+		let newGate = AsyncGate()
+		let sync = MockPersonalSyncService()
+		sync.pullHandlers = [
+			{
+				await oldGate.arriveAndWait()
+				return nil
+			},
+			{
+				await newGate.arriveAndWait()
+				return nil
+			},
+		]
+		let projectId = "overlapping-pulls"
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			personalSyncServiceFactory: { _ in sync },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.projects = [VaultProject(
+			id: projectId,
+			name: "Overlapping",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)]
+		store.isUnlocked = true
+		store.selectProject(projectId)
+
+		let oldPull = Task { await store.pullFromCloud() }
+		await oldGate.waitUntilArrived()
+		let newPull = Task { await store.pullFromCloud() }
+		await newGate.waitUntilArrived()
+		await oldGate.release()
+		await oldPull.value
+
+		#expect(store.isSyncing)
+		#expect(store.lastSyncStatus == nil)
+
+		await newGate.release()
+		await newPull.value
+		#expect(!store.isSyncing)
+		#expect(store.lastSyncStatus == "failed")
+	}
+
 	// MARK: - Transactional Imports
 
 	@Test("failed personal import leaves no local state")
@@ -1245,6 +1671,7 @@ struct VaultStoreTests {
 			keyCount: 1
 		))
 		let (store, keychain) = makeImportStore(importService: importService)
+		store.currentUser = userWithOrganization(slug: "acme")
 
 		let result = await store.importOrganizationProject(
 			remoteProject(id: "org-1", name: "production"),
@@ -1366,6 +1793,25 @@ struct VaultStoreTests {
 		)
 	}
 
+	private func userWithOrganization(slug: String) -> LPMUser {
+		LPMUser(
+			id: "u1",
+			username: "user",
+			name: nil,
+			email: nil,
+			avatarUrl: nil,
+			plan: nil,
+			createdAt: nil,
+			orgs: [LPMOrg(
+				id: "organization-\(slug)",
+				slug: slug,
+				name: slug.capitalized,
+				avatarUrl: nil,
+				role: "admin"
+			)]
+		)
+	}
+
 	private func testUserWithOrganizations(count: Int) -> LPMUser {
 		LPMUser(
 			id: "u1",
@@ -1393,6 +1839,88 @@ struct VaultStoreTests {
 			lastUsedAt: nil, downloadCount: nil, createdAt: nil
 		)
 	}
+
+	private enum OrgPushInvalidation {
+		case lock
+		case logout
+		case accountChange
+		#if DEBUG
+		case serverChange
+		#endif
+		case tokenReplacement
+	}
+
+	private func verifyInFlightOrgPushIsInvalidated(by transition: OrgPushInvalidation) async {
+		let slug = "org-\(UUID().uuidString.lowercased())"
+		let projectId = "project-\(UUID().uuidString.lowercased())"
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let gate = AsyncGate()
+		let token = MutableString("session-token")
+		let sync = MockOrgSyncService()
+		sync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: keypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey)
+		)
+		sync.memberKeyAccess = SyncService.MemberKeyAccess(
+			members: [SyncService.MemberPublicKey(
+				userId: "member",
+				role: "admin",
+				publicKey: keypair.publicKey.base64EncodedString(),
+				publicKeyVersion: 1,
+				publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey),
+				hasPublicKey: true
+			)],
+			canReplaceWrappedKeys: true
+		)
+		sync.blockNextMemberKeyAccess = { await gate.arriveAndWait() }
+
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			orgSyncServiceFactory: { _ in sync },
+			sharingKeypairProvider: { keypair },
+			authTokenProvider: { _, _ in token.value },
+			authSessionClearer: { _ in }
+		)
+		store.appEnvironment = .production
+		store.currentUser = userWithOrganization(slug: slug)
+		store.projects = [VaultProject(
+			id: projectId,
+			name: "Project",
+			path: "",
+			environments: ["default": ["TOKEN": "secret"]]
+		)]
+		store.vaultOrgAssociations[projectId] = slug
+		store.isUnlocked = true
+		store.selectAccount(.org(slug))
+		store.selectProject(projectId)
+
+		let push = Task { await store.pushToOrg(orgSlug: slug) }
+		await gate.waitUntilArrived()
+		switch transition {
+		case .lock:
+			store.lock()
+		case .logout:
+			store.logout()
+		case .accountChange:
+			store.selectAccount(.personal)
+		#if DEBUG
+		case .serverChange:
+			store.switchEnvironment(to: .development)
+		#endif
+		case .tokenReplacement:
+			token.value = "replacement-token"
+		}
+		await gate.release()
+		await push.value
+
+		#expect(store.pendingOrgPush == nil)
+		#expect(!store.showKeyApprovalSheet)
+		#expect(sync.pushCallCount == 0)
+		#expect(!store.isSyncing)
+	}
 }
 
 private final class LockedCounter: @unchecked Sendable {
@@ -1403,6 +1931,27 @@ private final class LockedCounter: @unchecked Sendable {
 
 	func increment() {
 		lock.withLock { storage += 1 }
+	}
+}
+
+private actor AutoLockSleeper {
+	private var continuations: [CheckedContinuation<Void, any Error>?] = []
+
+	var count: Int { continuations.count }
+
+	func sleep(_ duration: Duration) async throws {
+		_ = duration
+		try await withCheckedThrowingContinuation { continuation in
+			continuations.append(continuation)
+		}
+	}
+
+	func resume(at index: Int) {
+		guard continuations.indices.contains(index), let continuation = continuations[index] else {
+			return
+		}
+		continuations[index] = nil
+		continuation.resume()
 	}
 }
 
@@ -1419,6 +1968,20 @@ private final class SequencedAuthTokenProvider: @unchecked Sendable {
 			guard !tokens.isEmpty else { return nil }
 			return tokens.removeFirst()
 		}
+	}
+}
+
+private final class MutableString: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage: String
+
+	init(_ value: String) {
+		storage = value
+	}
+
+	var value: String {
+		get { lock.withLock { storage } }
+		set { lock.withLock { storage = newValue } }
 	}
 }
 

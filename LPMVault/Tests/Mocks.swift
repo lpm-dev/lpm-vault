@@ -16,6 +16,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var onCreateEnvironments: (() -> Void)?
 	var blockNextSaveEnvironments: (() -> Void)?
 	var blockNextListProjects: (() -> Void)?
+	var blockNextDeleteProject: (() -> Void)?
 	var failWriteDataAccounts: Set<String> = []
 	var failRestoreSaveEnvironments = false
 	private var successfulSaveEnvironmentsCallCount = 0
@@ -114,6 +115,11 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	}
 
 	func deleteProject(vaultId: String) -> Bool {
+		lock.lock()
+		let blocker = blockNextDeleteProject
+		blockNextDeleteProject = nil
+		lock.unlock()
+		blocker?()
 		if shouldFail { return false }
 		envStorage.removeValue(forKey: vaultId)
 		return true
@@ -199,15 +205,22 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	var receivedAuthTokens: [String] = []
 	var activeOrgRequests = 0
 	var maximumActiveOrgRequests = 0
+	var blockNextCurrentUserFetch: (@Sendable () async -> Void)?
 	var onPersonalRevokeStart: (() -> Void)?
 	var onOrgRevokeStart: (() -> Void)?
 
 	func fetchCurrentUser(authToken: String) async -> LPMAPIResult<LPMUser> {
-		let response: (delay: Duration?, user: LPMUser?) = lock.withLock {
+		let (response, blocker): (
+			(delay: Duration?, user: LPMUser?),
+			(@Sendable () async -> Void)?
+		) = lock.withLock {
 			receivedAuthTokens.append(authToken)
-			if !userResponses.isEmpty { return userResponses.removeFirst() }
-			return (delay, user)
+			let response = !userResponses.isEmpty ? userResponses.removeFirst() : (delay, user)
+			let blocker = blockNextCurrentUserFetch
+			blockNextCurrentUserFetch = nil
+			return (response, blocker)
 		}
+		await blocker?()
 		if let delay = response.delay { try? await Task.sleep(for: delay) }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
 		return response.user.map(LPMAPIResult.success) ?? .failure(.unauthorized)
@@ -261,6 +274,116 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 		if let orgRevokeDelay { try? await Task.sleep(for: orgRevokeDelay) }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
 		return .success(())
+	}
+}
+
+// MARK: - Mock Organization Sync Service
+
+final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
+	private let lock = NSLock()
+	var publicKeyRecord: SyncService.PublicKeyRecord?
+	var memberKeyAccess: SyncService.MemberKeyAccess?
+	var pullResult: SyncService.SyncStatus?
+	var pushResult: SyncService.SyncStatus?
+	var blockNextMemberKeyAccess: (@Sendable () async -> Void)?
+	var blockNextPull: (@Sendable () async -> Void)?
+	private var pushCalls = 0
+
+	var pushCallCount: Int { lock.withLock { pushCalls } }
+
+	func getMyPublicKey(authToken: String) async -> SyncService.PublicKeyRecord? {
+		_ = authToken
+		return publicKeyRecord
+	}
+
+	func getOrgMemberKeyAccess(
+		authToken: String,
+		orgSlug: String
+	) async -> SyncService.MemberKeyAccess? {
+		_ = authToken
+		_ = orgSlug
+		let blocker: (@Sendable () async -> Void)? = lock.withLock {
+			let blocker = blockNextMemberKeyAccess
+			blockNextMemberKeyAccess = nil
+			return blocker
+		}
+		await blocker?()
+		return memberKeyAccess
+	}
+
+	func pullOrg(
+		authToken: String,
+		orgSlug: String,
+		vaultId: String
+	) async -> SyncService.SyncStatus? {
+		_ = authToken
+		_ = orgSlug
+		_ = vaultId
+		let blocker: (@Sendable () async -> Void)? = lock.withLock {
+			let blocker = blockNextPull
+			blockNextPull = nil
+			return blocker
+		}
+		await blocker?()
+		return pullResult
+	}
+
+	func pushOrg(
+		authToken: String,
+		orgSlug: String,
+		vaultId: String,
+		encryptedBlob: String,
+		wrappedKeys: [SyncService.WrappedMemberKey]?,
+		expectedVersion: Int?,
+		name: String?,
+		schema: Data?
+	) async -> SyncService.SyncStatus? {
+		_ = authToken
+		_ = orgSlug
+		_ = vaultId
+		_ = encryptedBlob
+		_ = wrappedKeys
+		_ = expectedVersion
+		_ = name
+		_ = schema
+		lock.withLock { pushCalls += 1 }
+		return pushResult
+	}
+}
+
+final class MockPersonalSyncService: PersonalSyncServiceProtocol, @unchecked Sendable {
+	private let lock = NSLock()
+	var pullHandlers: [@Sendable () async -> SyncService.SyncStatus?] = []
+
+	func pull(authToken: String, vaultId: String) async -> SyncService.SyncStatus? {
+		_ = authToken
+		_ = vaultId
+		let handler: (@Sendable () async -> SyncService.SyncStatus?)? = lock.withLock {
+			guard !pullHandlers.isEmpty else { return nil }
+			return pullHandlers.removeFirst()
+		}
+		return await handler?()
+	}
+
+	func push(
+		authToken: String,
+		vaultId: String,
+		encryptedBlob: String,
+		wrappedKey: String,
+		expectedVersion: Int?,
+		force: Bool,
+		name: String?,
+		schema: Data?
+	) async -> SyncService.SyncStatus? {
+		_ = authToken
+		_ = vaultId
+		_ = encryptedBlob
+		_ = wrappedKey
+		_ = expectedVersion
+		_ = force
+		_ = name
+		_ = schema
+		return nil
 	}
 }
 
