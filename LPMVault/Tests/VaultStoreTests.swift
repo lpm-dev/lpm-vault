@@ -12,7 +12,8 @@ struct VaultStoreTests {
 	private func makeStore(
 		projects: [(id: String, name: String, path: String, secrets: [String: String])] = [],
 		biometricShouldSucceed: Bool = true,
-		apiService: MockAPIService? = nil
+		apiService: MockAPIService? = nil,
+		envFileImportService: any EnvFileImportServiceProtocol = MockEnvFileImportService()
 	) -> (VaultStore, MockKeychainService, MockBiometricService, MockAPIService) {
 		let keychain = MockKeychainService()
 		for p in projects {
@@ -25,6 +26,7 @@ struct VaultStoreTests {
 			keychainService: keychain,
 			biometricService: biometric,
 			apiService: api,
+			envFileImportService: envFileImportService,
 			authTokenProvider: { _, _ in "session-token" }
 		)
 
@@ -223,14 +225,405 @@ struct VaultStoreTests {
 	}
 
 	@Test("environment writes reject the reserved index name")
-	func addReservedEnvironment() {
+	func addReservedEnvironment() async {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
 		])
 
-		store.addEnvironment(to: "id-1", name: "__index__")
+		store.isUnlocked = true
+		store.selectedProjectId = "id-1"
+		await store.addEnvironment(to: "id-1", name: "__index__")
 
 		#expect(store.projects[0].environments["__index__"] == nil)
+	}
+
+	@Test("local dotenv import persists into the captured environment before publishing")
+	func localEnvImportCommitsCapturedEnvironment() async {
+		let importer = MockEnvFileImportService()
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
+			envFileImportService: importer
+		)
+		store.selectedProjectId = "id-1"
+		store.selectedEnvironment = "default"
+		store.isUnlocked = true
+
+		let result = await store.importEnvFile(
+			at: URL(fileURLWithPath: "/tmp/import.env"),
+			to: "id-1",
+			environment: "default"
+		)
+
+		#expect(result == .success(ImportedEnvFile(secrets: ["IMPORTED": "value"])))
+		#expect(store.projects[0].secrets == ["OLD": "value", "IMPORTED": "value"])
+		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value", "IMPORTED": "value"])
+	}
+
+	@Test("tab changes cancel a pending dotenv import instead of redirecting it")
+	func localEnvImportCannotFollowTabSelection() async {
+		let importer = MockEnvFileImportService()
+		await importer.enableGate()
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
+			envFileImportService: importer
+		)
+		store.projects[0].environments["staging"] = [:]
+		keychain.envStorage["id-1"]?.environments["staging"] = [:]
+		store.selectedProjectId = "id-1"
+		store.selectedEnvironment = "default"
+		store.isUnlocked = true
+
+		let task = Task {
+			await store.importEnvFile(
+				at: URL(fileURLWithPath: "/tmp/slow.env"),
+				to: "id-1",
+				environment: "default"
+			)
+		}
+		while !(await importer.hasStarted("slow.env")) { await Task.yield() }
+		store.selectedEnvironment = "staging"
+		await importer.resolve("slow.env", with: .success(ImportedEnvFile(secrets: ["STALE": "secret"])))
+
+		#expect(await task.value == .failure(.cancelled))
+		#expect(store.projects[0].environments["default"] == ["OLD": "value"])
+		#expect(store.projects[0].environments["staging"]?.isEmpty == true)
+		#expect(keychain.envStorage["id-1"]?.environments["default"] == ["OLD": "value"])
+	}
+
+	@Test("a newer dotenv import supersedes an older request to the same destination")
+	func newestLocalEnvImportWins() async {
+		let importer = MockEnvFileImportService()
+		await importer.enableGate()
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: [:])],
+			envFileImportService: importer
+		)
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+
+		let older = Task {
+			await store.importEnvFile(
+				at: URL(fileURLWithPath: "/tmp/older.env"),
+				to: "id-1", environment: "default"
+			)
+		}
+		while !(await importer.hasStarted("older.env")) { await Task.yield() }
+		let newer = Task {
+			await store.importEnvFile(
+				at: URL(fileURLWithPath: "/tmp/newer.env"),
+				to: "id-1", environment: "default"
+			)
+		}
+		while !(await importer.hasStarted("newer.env")) { await Task.yield() }
+
+		await importer.resolve("newer.env", with: .success(ImportedEnvFile(secrets: ["KEY": "new"])))
+		await importer.resolve("older.env", with: .success(ImportedEnvFile(secrets: ["KEY": "old"])))
+
+		#expect(await newer.value == .success(ImportedEnvFile(secrets: ["KEY": "new"])))
+		#expect(await older.value == .failure(.cancelled))
+		#expect(store.projects[0].secrets["KEY"] == "new")
+		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
+	}
+
+	@Test("superseding a dotenv import before its commit point leaves no stale durable keys")
+	func supersededLocalEnvImportCannotCommit() async {
+		let importer = MockEnvFileImportService()
+		await importer.enableGate()
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: [:])],
+			envFileImportService: importer
+		)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextListProjects = {
+			entered.signal()
+			release.wait()
+		}
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+
+		let older = Task {
+			await store.importEnvFile(
+				at: URL(fileURLWithPath: "/tmp/stale.env"),
+				to: "id-1", environment: "default"
+			)
+		}
+		while !(await importer.hasStarted("stale.env")) { await Task.yield() }
+		await importer.resolve(
+			"stale.env",
+			with: .success(ImportedEnvFile(secrets: ["STALE_ONLY": "old"]))
+		)
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+
+		let newer = Task {
+			await store.importEnvFile(
+				at: URL(fileURLWithPath: "/tmp/fresh.env"),
+				to: "id-1", environment: "default"
+			)
+		}
+		while !(await importer.hasStarted("fresh.env")) { await Task.yield() }
+		await importer.resolve(
+			"fresh.env",
+			with: .success(ImportedEnvFile(secrets: ["FRESH_ONLY": "new"]))
+		)
+		release.signal()
+
+		#expect(await older.value == .failure(.cancelled))
+		#expect(await newer.value == .success(
+			ImportedEnvFile(secrets: ["FRESH_ONLY": "new"])
+		))
+		#expect(store.projects[0].secrets == ["FRESH_ONLY": "new"])
+		#expect(keychain.storage["id-1"]?.secrets == ["FRESH_ONLY": "new"])
+	}
+
+	@Test("locking during dotenv parsing cannot republish decrypted values")
+	func lockCancelsLocalEnvImport() async {
+		let importer = MockEnvFileImportService()
+		await importer.enableGate()
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
+			envFileImportService: importer
+		)
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+
+		let task = Task {
+			await store.importEnvFile(
+				at: URL(fileURLWithPath: "/tmp/locked.env"),
+				to: "id-1", environment: "default"
+			)
+		}
+		while !(await importer.hasStarted("locked.env")) { await Task.yield() }
+		store.lock()
+		await importer.resolve("locked.env", with: .success(ImportedEnvFile(secrets: ["STALE": "secret"])))
+
+		#expect(await task.value == .failure(.cancelled))
+		#expect(store.projects[0].secrets.isEmpty)
+		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value"])
+	}
+
+	@Test("rollback failure after lock never reloads plaintext into memory")
+	func rollbackFailureAfterLockKeepsMemoryCleared() async {
+		let importer = MockEnvFileImportService()
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
+			envFileImportService: importer
+		)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextSaveEnvironments = {
+			entered.signal()
+			release.wait()
+		}
+		keychain.failWriteDataAccounts = ["__sync_metadata__"]
+		keychain.failRestoreSaveEnvironments = true
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+
+		let task = Task {
+			await store.importEnvFile(
+				at: URL(fileURLWithPath: "/tmp/rollback.env"),
+				to: "id-1", environment: "default"
+			)
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.lock()
+		release.signal()
+
+		guard case .failure(.persistence) = await task.value else {
+			Issue.record("Expected rollback persistence failure")
+			return
+		}
+		#expect(!store.isUnlocked)
+		#expect(store.projects[0].environments.values.allSatisfy { $0.isEmpty })
+	}
+
+	@Test("dotenv persistence failure preserves memory and Keychain snapshots")
+	func localEnvImportRollsBackOnPersistenceFailure() async {
+		let importer = MockEnvFileImportService()
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
+			envFileImportService: importer
+		)
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+		keychain.shouldFail = true
+
+		let result = await store.importEnvFile(
+			at: URL(fileURLWithPath: "/tmp/failure.env"),
+			to: "id-1", environment: "default"
+		)
+
+		guard case .failure(.persistence) = result else {
+			Issue.record("Expected persistence failure")
+			return
+		}
+		#expect(store.projects[0].secrets == ["OLD": "value"])
+		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value"])
+	}
+
+	@Test("new-environment import rejects encoded Keychain overflow without publishing")
+	func newEnvironmentImportHonorsEncodedLimit() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "", secrets: [:])
+		])
+
+		store.isUnlocked = true
+		store.selectedProjectId = "id-1"
+		let added = await store.addEnvironment(
+			to: "id-1",
+			name: "large",
+			secrets: ["VALUE": String(repeating: "x", count: VaultConstants.maxVaultSizeWarning)]
+		)
+
+		#expect(!added)
+		#expect(store.projects[0].environments["large"] == nil)
+		#expect(keychain.envStorage["id-1"]?.environments["large"] == nil)
+	}
+
+	@Test("lock during new-environment persistence cannot republish preview secrets")
+	func lockDuringNewEnvironmentCommit() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])
+		])
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextSaveEnvironments = {
+			entered.signal()
+			release.wait()
+		}
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+
+		let creation = Task {
+			await store.addEnvironment(
+				to: "id-1", name: "staging", secrets: ["PREVIEW": "secret"]
+			)
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.lock()
+		release.signal()
+
+		#expect(await creation.value)
+		#expect(!store.isUnlocked)
+		#expect(store.projects[0].environments["staging"] == nil)
+		#expect(store.projects[0].secrets.isEmpty)
+		#expect(keychain.envStorage["id-1"]?.environments["staging"] == ["PREVIEW": "secret"])
+	}
+
+	@Test("project switch during new-environment persistence does not change current selection")
+	func selectionChangeDuringNewEnvironmentCommit() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "one", path: "", secrets: [:]),
+			(id: "id-2", name: "two", path: "", secrets: [:]),
+		])
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextSaveEnvironments = {
+			entered.signal()
+			release.wait()
+		}
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+
+		let creation = Task {
+			await store.addEnvironment(
+				to: "id-1", name: "staging", secrets: ["PREVIEW": "secret"]
+			)
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.selectedProjectId = "id-2"
+		release.signal()
+
+		#expect(await creation.value)
+		#expect(store.selectedProjectId == "id-2")
+		#expect(store.selectedEnvironment == "default")
+		#expect(store.projects.first(where: { $0.id == "id-1" })?.environments["staging"] == nil)
+		#expect(keychain.envStorage["id-1"]?.environments["staging"] == ["PREVIEW": "secret"])
+	}
+
+	@Test("sidebar removal during new-environment persistence does not reinsert the project")
+	func removalDuringNewEnvironmentCommit() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "", secrets: [:])
+		])
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextSaveEnvironments = {
+			entered.signal()
+			release.wait()
+		}
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+
+		let creation = Task {
+			await store.addEnvironment(
+				to: "id-1", name: "staging", secrets: ["PREVIEW": "secret"]
+			)
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.removeFromSidebar(store.projects[0])
+		release.signal()
+
+		#expect(await creation.value)
+		#expect(store.projects.isEmpty)
+		#expect(keychain.envStorage["id-1"]?.environments["staging"] == ["PREVIEW": "secret"])
+	}
+
+	@Test("project switches cancel a pending new-environment preview")
+	func projectSwitchCancelsEnvFilePreview() async {
+		let importer = MockEnvFileImportService()
+		await importer.enableGate()
+		let (store, _, _, _) = makeStore(
+			projects: [
+				(id: "id-1", name: "one", path: "", secrets: [:]),
+				(id: "id-2", name: "two", path: "", secrets: [:]),
+			],
+			envFileImportService: importer
+		)
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+
+		let preview = Task {
+			await store.loadEnvFilePreview(
+				at: URL(fileURLWithPath: "/tmp/project-one.env"),
+				for: "id-1"
+			)
+		}
+		while !(await importer.hasStarted("project-one.env")) { await Task.yield() }
+		store.selectedProjectId = "id-2"
+		await importer.resolve(
+			"project-one.env",
+			with: .success(ImportedEnvFile(secrets: ["PROJECT_ONE": "secret"]))
+		)
+
+		#expect(await preview.value == .failure(.cancelled))
+		#expect(store.selectedProjectId == "id-2")
 	}
 
 	@Test("add secret to non-existent project is no-op")

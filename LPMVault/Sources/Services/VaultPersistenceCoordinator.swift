@@ -18,6 +18,19 @@ enum ImportPersistenceResult: Sendable {
 	case failure(KeychainError)
 }
 
+struct LocalEnvImportPersistenceCommit: Sendable {
+	let project: VaultProject
+	let syncMetadata: [String: SyncMetadata]
+	let warning: String?
+}
+
+enum LocalEnvImportPersistenceResult: Sendable {
+	case success(LocalEnvImportPersistenceCommit)
+	case targetUnavailable
+	case cancelled
+	case failure(KeychainError)
+}
+
 /// Serializes Keychain mutations so older snapshots cannot finish after newer ones.
 actor VaultPersistenceCoordinator {
 	private let service: KeychainServiceProtocol
@@ -188,6 +201,140 @@ actor VaultPersistenceCoordinator {
 		))
 	}
 
+	/// Merges a local dotenv result into the latest stored environment and
+	/// publishes nothing until both the vault and dirty metadata are durable.
+	/// If metadata persistence fails, the prior vault snapshot is restored.
+	func importSecrets(
+		projectId: String,
+		projectName: String,
+		projectPath: String,
+		environment: String,
+		secrets: [String: String],
+		requestId: UUID,
+		authority: LocalEnvImportAuthority
+	) -> LocalEnvImportPersistenceResult {
+		guard let storedProject = service.listProjects().first(where: { $0.id == projectId }),
+			storedProject.name == projectName,
+			storedProject.path == projectPath,
+			var environments = service.getEnvironments(vaultId: projectId),
+			environments[environment] != nil
+		else { return .targetUnavailable }
+
+		let previousEnvironments = environments
+		var importedEnvironment = environments[environment] ?? [:]
+		importedEnvironment.merge(secrets) { _, imported in imported }
+		environments[environment] = importedEnvironment
+
+		let project = VaultProject(
+			id: projectId,
+			name: projectName,
+			path: projectPath,
+			environments: environments
+		)
+		return persistLocalImport(
+			project,
+			previousEnvironments: previousEnvironments,
+			target: LocalEnvImportTarget(projectId: projectId, environment: environment),
+			requestId: requestId,
+			authority: authority
+		)
+	}
+
+	func addEnvironment(
+		projectId: String,
+		projectName: String,
+		projectPath: String,
+		environment: String,
+		secrets: [String: String],
+		requestId: UUID,
+		authority: LocalEnvImportAuthority
+	) -> LocalEnvImportPersistenceResult {
+		guard let storedProject = service.listProjects().first(where: { $0.id == projectId }),
+			storedProject.name == projectName,
+			storedProject.path == projectPath,
+			var environments = service.getEnvironments(vaultId: projectId),
+			environments[environment] == nil
+		else { return .targetUnavailable }
+		let previousEnvironments = environments
+		environments[environment] = secrets
+		let project = VaultProject(
+			id: projectId,
+			name: projectName,
+			path: projectPath,
+			environments: environments
+		)
+		return persistLocalImport(
+			project,
+			previousEnvironments: previousEnvironments,
+			target: LocalEnvImportTarget(projectId: projectId, environment: environment),
+			requestId: requestId,
+			authority: authority
+		)
+	}
+
+	private func persistLocalImport(
+		_ project: VaultProject,
+		previousEnvironments: [String: [String: String]],
+		target: LocalEnvImportTarget,
+		requestId: UUID,
+		authority: LocalEnvImportAuthority
+	) -> LocalEnvImportPersistenceResult {
+		let projectId = project.id
+		let previousMetadata = service.readData(account: "__sync_metadata__")
+		var metadata = previousMetadata
+			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) } ?? [:]
+		var item = metadata[projectId] ?? SyncMetadata()
+		item.isDirty = true
+		metadata[projectId] = item
+		guard let metadataData = try? JSONEncoder().encode(metadata) else {
+			return .failure(.encodingFailed)
+		}
+		guard authority.beginCommit(target, requestId: requestId) else {
+			return .cancelled
+		}
+
+		// No suspension follows this atomic commit point. Cancellation after it
+		// observes durable success and only suppresses stale UI publication.
+		let saveResult = service.saveEnvironments(
+			vaultId: projectId,
+			projectName: project.name,
+			projectPath: project.path,
+			environments: project.environments
+		)
+		let warning: String?
+		switch saveResult {
+		case .success:
+			warning = nil
+		case .successWithWarning(let message):
+			warning = message
+		case .failure(let error):
+			return .failure(error)
+		}
+
+		guard service.writeData(account: "__sync_metadata__", data: metadataData) else {
+			let restoredVault = service.saveEnvironments(
+				vaultId: projectId,
+				projectName: project.name,
+				projectPath: project.path,
+				environments: previousEnvironments
+			)
+			let restoredMetadata = restoreData(
+				account: "__sync_metadata__",
+				snapshot: previousMetadata
+			)
+			guard restoredMetadata, restoredVault.succeeded else {
+				return .failure(.unexpectedStatus(-2))
+			}
+			return .failure(.unexpectedStatus(-1))
+		}
+
+		return .success(LocalEnvImportPersistenceCommit(
+			project: project,
+			syncMetadata: metadata,
+			warning: warning
+		))
+	}
+
 	func save(_ project: VaultProject) -> KeychainResult {
 		service.saveEnvironments(
 			vaultId: project.id,
@@ -260,5 +407,14 @@ actor VaultPersistenceCoordinator {
 	private func writeSyncMetadata(_ metadata: [String: SyncMetadata]) -> Bool {
 		guard let data = try? JSONEncoder().encode(metadata) else { return false }
 		return service.writeData(account: "__sync_metadata__", data: data)
+	}
+}
+
+private extension KeychainResult {
+	var succeeded: Bool {
+		switch self {
+		case .success, .successWithWarning: true
+		case .failure: false
+		}
 	}
 }
