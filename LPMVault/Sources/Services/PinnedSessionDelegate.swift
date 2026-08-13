@@ -15,14 +15,14 @@ import Foundation
 ///   | openssl pkey -pubin -outform der \
 ///   | openssl dgst -sha256 -binary | base64
 /// ```
-class PinnedSessionDelegate: NSObject, URLSessionDelegate {
+final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
 	// SHA-256 of lpm.dev's SubjectPublicKeyInfo (SPKI) — base64-encoded.
 	// Includes leaf + intermediate so cert rotation doesn't brick the app.
 	// Regenerate with the openssl command above when the certificate chain changes.
-	// Last updated: 2026-04-03
+	// Last verified against the production chain: 2026-08-13
 	static let pinnedHashes: Set<String> = [
-		"gZCKeTFc8HuZ6o47nBbQ2056TZ0s+vTLvSrPR2FNXyU=",  // leaf (EC P-256)
-		"iFvwVyJSxnQdyaUvUERIf+8qk7gRze3612JMwoO3zdU=",  // intermediate (EC P-384)
+		"RLZRW68Re+CdnKv+QfzXY6kTIwZPE3Ste7TqAQKflwg=",  // lpm.dev leaf
+		"brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=",  // Let's Encrypt YE1
 	]
 
 	// ASN.1 SPKI headers by key type.
@@ -99,9 +99,9 @@ class PinnedSessionDelegate: NSObject, URLSessionDelegate {
 		// SecKeyCopyExternalRepresentation returns raw key bytes; we prepend the
 		// ASN.1 SPKI header to reconstruct the full SubjectPublicKeyInfo before
 		// hashing, so the result matches standard SPKI SHA-256 pins (RFC 7469).
-		let certCount = SecTrustGetCertificateCount(serverTrust)
-		for i in 0..<certCount {
-			if let cert = SecTrustGetCertificateAtIndex(serverTrust, i),
+		let certificates = SecTrustCopyCertificateChain(serverTrust) as? [SecCertificate] ?? []
+		for cert in certificates {
+			if
 				let publicKey = SecCertificateCopyKey(cert)
 			{
 				var extractError: Unmanaged<CFError>?
@@ -136,11 +136,13 @@ class PinnedSessionDelegate: NSObject, URLSessionDelegate {
 	/// - Signature present + invalid → reject (tampered response or wrong key)
 	/// - Signature present + no auth token provided → reject
 	static func verifyResponseSignature(
-		_ response: HTTPURLResponse, body: Data, authToken: String? = nil
+		_ response: HTTPURLResponse,
+		body: Data,
+		authToken: String? = nil,
+		requireSignature: Bool = false
 	) -> Bool {
 		guard let signature = response.value(forHTTPHeaderField: "X-LPM-Signature") else {
-			// No signature header — this endpoint doesn't sign responses. Allow.
-			return true
+			return !requireSignature
 		}
 
 		guard let token = authToken, !token.isEmpty else {
@@ -150,11 +152,13 @@ class PinnedSessionDelegate: NSObject, URLSessionDelegate {
 
 		// Compute HMAC-SHA256(body, SHA256(auth_token)) and compare
 		let hmacKey = SHA256.hash(data: Data(token.utf8))
-		let expectedMAC = HMAC<SHA256>.authenticationCode(
-			for: body, using: SymmetricKey(data: Data(hmacKey))
+		guard let received = Data(base64Encoded: signature.trimmingCharacters(in: .whitespaces)) else {
+			return false
+		}
+		return HMAC<SHA256>.isValidAuthenticationCode(
+			received,
+			authenticating: body,
+			using: SymmetricKey(data: Data(hmacKey))
 		)
-		let expectedSignature = Data(expectedMAC).base64EncodedString()
-
-		return signature == expectedSignature
 	}
 }

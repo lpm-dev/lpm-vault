@@ -11,10 +11,10 @@ import Security
 /// - AES-256-GCM with 12-byte random IV
 /// - Encoded as: `base64(iv):base64(ciphertext + auth_tag)`
 ///
-/// ## Key derivation
-/// - Wrapping key = SHA256("lpm-vault-wrap:" + auth_token)
+/// ## Personal key wrapping
+/// - Stable wrapping key = system Keychain item `dev.lpm.vault-key` / `wrapping-key`
 /// - Per-vault AES key = random 32 bytes
-/// - Wrapped key = AES-GCM encrypt(wrapping_key, aes_key)
+/// - Token-derived wrapping remains available only for legacy migration
 enum VaultCrypto {
 
 	// MARK: - Key Derivation
@@ -71,7 +71,6 @@ enum VaultCrypto {
 			throw CryptoError.invalidIVSize(ivData.count)
 		}
 
-		let nonce = try AES.GCM.Nonce(data: ivData)
 		// Reconstruct the combined box: nonce + ciphertext + tag
 		let combined = ivData + ciphertextAndTag
 		let sealedBox = try AES.GCM.SealedBox(combined: combined)
@@ -127,6 +126,63 @@ enum VaultCrypto {
 			throw CryptoError.invalidUTF8
 		}
 		return json
+	}
+
+	/// Encrypt personal sync data with the stable wrapping key shared with the Rust client.
+	static func encryptForStableSync(secretsJSON: String) throws -> (encryptedBlob: String, wrappedKey: String) {
+		try encryptForStableSync(secretsJSON: secretsJSON, wrappingKey: stableWrappingKey())
+	}
+
+	static func encryptForStableSync(
+		secretsJSON: String,
+		wrappingKey: SymmetricKey
+	) throws -> (encryptedBlob: String, wrappedKey: String) {
+		let aesKey = generateAESKey()
+		return (
+			try encrypt(key: aesKey, plaintext: Data(secretsJSON.utf8)),
+			try wrapKey(wrappingKey: wrappingKey, aesKey: aesKey)
+		)
+	}
+
+	/// Decrypt stable-key sync data, falling back to legacy token-derived wraps.
+	static func decryptStableSync(
+		authToken: String,
+		encryptedBlob: String,
+		wrappedKey: String
+	) throws -> (plaintext: String, usedLegacyKey: Bool) {
+		if let stableKey = try? stableWrappingKey(),
+			let aesKey = try? unwrapKey(wrappingKey: stableKey, wrapped: wrappedKey),
+			let plaintext = try? decrypt(key: aesKey, encoded: encryptedBlob),
+			let json = String(data: plaintext, encoding: .utf8)
+		{
+			return (json, false)
+		}
+
+		return (
+			try decryptFromSync(
+				authToken: authToken,
+				encryptedBlob: encryptedBlob,
+				wrappedKey: wrappedKey
+			),
+			true
+		)
+	}
+
+	static func decryptStableSync(
+		encryptedBlob: String,
+		wrappedKey: String,
+		wrappingKey: SymmetricKey
+	) throws -> String {
+		let aesKey = try unwrapKey(wrappingKey: wrappingKey, wrapped: wrappedKey)
+		let plaintext = try decrypt(key: aesKey, encoded: encryptedBlob)
+		guard let json = String(data: plaintext, encoding: .utf8) else {
+			throw CryptoError.invalidUTF8
+		}
+		return json
+	}
+
+	static func publicKeyFingerprint(_ publicKey: Data) -> String {
+		SHA256.hash(data: publicKey).map { String(format: "%02x", $0) }.joined()
 	}
 
 	// MARK: - X25519 Org Sync (ECIES-like)
@@ -216,6 +272,96 @@ enum VaultCrypto {
 
 	private static let x25519Account = "__x25519_private_key__"
 	private static let x25519Service = VaultConstants.keychainService
+	private static let wrappingKeyService = "dev.lpm.vault-key"
+	private static let wrappingKeyAccount = "wrapping-key"
+	private static let maximumWrappingKeyFileBytes = 4 * 1024
+
+	private static func stableWrappingKey() throws -> SymmetricKey {
+		if let key = readStableWrappingKeyFromKeychain() {
+			try? FileManager.default.removeItem(at: wrappingKeyFileURL())
+			return SymmetricKey(data: key)
+		}
+		if let key = readStableWrappingKeyFromFile() {
+			_ = storeStableWrappingKeyInKeychain(key)
+			return SymmetricKey(data: key)
+		}
+
+		var bytes = [UInt8](repeating: 0, count: 32)
+		guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+			throw CryptoError.encryptionFailed
+		}
+		let key = Data(bytes)
+		if !storeStableWrappingKeyInKeychain(key) {
+			try storeStableWrappingKeyInFile(key)
+		}
+		return SymmetricKey(data: key)
+	}
+
+	private static func readStableWrappingKeyFromKeychain() -> Data? {
+		let (status, hex) = runSecurity(args: [
+			"find-generic-password", "-s", wrappingKeyService,
+			"-a", wrappingKeyAccount, "-w",
+		])
+		guard status == 0 else { return nil }
+		return decodeWrappingKey(hex)
+	}
+
+	private static func storeStableWrappingKeyInKeychain(_ key: Data) -> Bool {
+		let hex = key.map { String(format: "%02x", $0) }.joined()
+		return runSecurity(args: [
+			"add-generic-password", "-U", "-s", wrappingKeyService,
+			"-a", wrappingKeyAccount, "-w",
+		], input: hex).0 == 0
+	}
+
+	private static func readStableWrappingKeyFromFile() -> Data? {
+		let url = wrappingKeyFileURL()
+		if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+			let permissions = attributes[.posixPermissions] as? NSNumber,
+			permissions.intValue & 0o777 > 0o600
+		{
+			return nil
+		}
+		guard let data = try? Data(contentsOf: url),
+			data.count <= maximumWrappingKeyFileBytes,
+			let hex = String(data: data, encoding: .utf8)
+		else { return nil }
+		return decodeWrappingKey(hex.trimmingCharacters(in: .whitespacesAndNewlines))
+	}
+
+	private static func storeStableWrappingKeyInFile(_ key: Data) throws {
+		let url = wrappingKeyFileURL()
+		try FileManager.default.createDirectory(
+			at: url.deletingLastPathComponent(),
+			withIntermediateDirectories: true
+		)
+		let hex = key.map { String(format: "%02x", $0) }.joined()
+		try Data(hex.utf8).write(to: url, options: .atomic)
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o600],
+			ofItemAtPath: url.path
+		)
+	}
+
+	private static func wrappingKeyFileURL() -> URL {
+		FileManager.default.homeDirectoryForCurrentUser
+			.appendingPathComponent(".lpm", isDirectory: true)
+			.appendingPathComponent(".vault-key")
+	}
+
+	private static func decodeWrappingKey(_ hex: String) -> Data? {
+		guard hex.count == 64 else { return nil }
+		var bytes = [UInt8]()
+		bytes.reserveCapacity(32)
+		var index = hex.startIndex
+		for _ in 0..<32 {
+			let next = hex.index(index, offsetBy: 2)
+			guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+			bytes.append(byte)
+			index = next
+		}
+		return Data(bytes)
+	}
 
 	/// Store an X25519 private key in Keychain using Security.framework.
 	/// Uses `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — no iCloud sync, no backup extraction.
@@ -354,26 +500,27 @@ enum VaultCrypto {
 	// MARK: - Private Helpers
 
 	@discardableResult
-	private static func runSecurity(args: [String]) -> (Int32, String) {
+	private static func runSecurity(args: [String], input: String? = nil) -> (Int32, String) {
 		let process = Process()
 		process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
 		process.arguments = args
 		let pipe = Pipe()
 		process.standardOutput = pipe
 		process.standardError = FileHandle.nullDevice
+		let inputPipe = input.map { _ in Pipe() }
+		process.standardInput = inputPipe
 
-		let sem = DispatchSemaphore(value: 0)
-		var exitCode: Int32 = -1
-		process.terminationHandler = { p in
-			exitCode = p.terminationStatus
-			sem.signal()
-		}
-
-		do { try process.run() } catch { return (-1, "") }
-		_ = sem.wait(timeout: .now() + 10)
+		do {
+			try process.run()
+			if let input, let inputPipe {
+				inputPipe.fileHandleForWriting.write(Data((input + "\n").utf8))
+				inputPipe.fileHandleForWriting.closeFile()
+			}
+		} catch { return (-1, "") }
+		process.waitUntilExit()
 
 		let data = pipe.fileHandleForReading.readDataToEndOfFile()
 		let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-		return (exitCode, output)
+		return (process.terminationStatus, output)
 	}
 }

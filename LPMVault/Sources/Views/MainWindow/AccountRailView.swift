@@ -70,7 +70,7 @@ struct AccountRailView: View {
 			.buttonStyle(.plain)
 			.help("Lock vault")
 		}
-		.padding(.top, 38)
+		.padding(.top, 12)
 		.padding(.bottom, 12)
 		.frame(width: 70)
 	}
@@ -97,6 +97,7 @@ struct AccountRailView: View {
 		)
 		.overlay(
 			Group {
+				#if DEBUG
 				if store.appEnvironment == .development && isSelected {
 					Text("D")
 						.font(.system(size: 7, weight: .bold))
@@ -105,6 +106,7 @@ struct AccountRailView: View {
 						.background(.orange, in: Circle())
 						.offset(x: 14, y: 14)
 				}
+				#endif
 			}
 		)
 	}

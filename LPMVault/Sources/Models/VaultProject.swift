@@ -1,6 +1,6 @@
 import Foundation
 
-struct VaultProject: Identifiable, Hashable {
+struct VaultProject: Identifiable, Hashable, Sendable {
 	let id: String  // vault UUID
 	var name: String
 	var path: String

@@ -8,7 +8,7 @@ struct MenuBarView: View {
 		VStack(alignment: .leading, spacing: 0) {
 			// Projects
 			if store.projects.isEmpty {
-				Text("No vaults yet")
+				Text("No env projects yet")
 					.foregroundStyle(.secondary)
 					.padding(.horizontal, 12)
 					.padding(.vertical, 8)

@@ -161,14 +161,25 @@ struct PinnedSessionDelegateTests {
 		)!
 	}
 
-	@Test("response without signature header is accepted")
-	func noSignatureHeaderAccepted() {
+	@Test("unsigned success is rejected when the endpoint requires a signature")
+	func requiredSignatureRejectsUnsignedSuccess() {
 		let response = makeResponse()
 		let body = Data("test".utf8)
 
-		let result = PinnedSessionDelegate.verifyResponseSignature(response, body: body)
+		let result = PinnedSessionDelegate.verifyResponseSignature(
+			response,
+			body: body,
+			authToken: "token",
+			requireSignature: true
+		)
 
-		#expect(result == true)
+		#expect(result == false)
+	}
+
+	@Test("unsigned non-vault response remains accepted")
+	func optionalSignatureAcceptsUnsignedResponse() {
+		let response = makeResponse()
+		#expect(PinnedSessionDelegate.verifyResponseSignature(response, body: Data()) == true)
 	}
 
 	@Test("response with signature header but no auth token rejects")

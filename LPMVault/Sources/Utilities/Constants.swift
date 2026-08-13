@@ -19,13 +19,8 @@ enum VaultConstants {
 	/// LPM API base URL
 	static let apiBaseURL = URL(string: "https://lpm.dev")!
 
-	/// LPM dev API base URL
-	static var apiDevBaseURL: URL {
-		#if DEBUG
-		return URL(string: "http://localhost:3000")!
-		#else
-		// Release builds must use HTTPS — prevent accidental HTTP in production
-		return URL(string: "https://dev.lpm.dev")!
-		#endif
-	}
+	#if DEBUG
+	/// Local API base URL used only by debug builds.
+	static let localAPIBaseURL = URL(string: "http://localhost:3000")!
+	#endif
 }

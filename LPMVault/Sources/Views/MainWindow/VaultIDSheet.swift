@@ -8,7 +8,7 @@ struct VaultIDSheet: View {
 	var body: some View {
 		VStack(spacing: 0) {
 			HStack {
-				Text("Vault Configuration")
+				Text("Env Project Configuration")
 					.font(.headline)
 				Spacer()
 				Button {
@@ -25,9 +25,9 @@ struct VaultIDSheet: View {
 			Divider()
 
 			VStack(alignment: .leading, spacing: 16) {
-				// Vault ID
+				// Env project ID
 				VStack(alignment: .leading, spacing: 4) {
-					Text("Vault ID")
+					Text("Env Project ID")
 						.font(.subheadline)
 						.fontWeight(.medium)
 					HStack {
@@ -42,7 +42,7 @@ struct VaultIDSheet: View {
 							Image(systemName: "doc.on.doc")
 						}
 						.buttonStyle(.plain)
-						.help("Copy vault ID")
+						.help("Copy env project ID")
 					}
 					.padding(8)
 					.background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
@@ -85,8 +85,8 @@ struct VaultIDSheet: View {
 						.fontWeight(.medium)
 
 					VStack(alignment: .leading, spacing: 6) {
-						cliCommand("Pull secrets into your project:", "lpm env vars pull")
-						cliCommand("Push local changes to cloud:", "lpm env vars push")
+						cliCommand("Pull secrets into your project:", "lpm env pull")
+						cliCommand("Push local changes to cloud:", "lpm env push")
 						cliCommand("Use secrets in scripts:", "lpm run <command>")
 					}
 				}

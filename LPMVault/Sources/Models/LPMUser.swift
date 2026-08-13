@@ -1,6 +1,6 @@
 import Foundation
 
-struct LPMUser: Codable, Identifiable {
+struct LPMUser: Codable, Identifiable, Sendable {
 	let id: String
 	let username: String
 	let name: String?

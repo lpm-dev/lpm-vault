@@ -9,7 +9,7 @@ enum BiometricType {
 	case none
 }
 
-protocol BiometricServiceProtocol {
+protocol BiometricServiceProtocol: Sendable {
 	func authenticate(reason: String) async -> Bool
 	func isBiometricAvailable() -> Bool
 	func biometricType() -> BiometricType
@@ -18,7 +18,8 @@ protocol BiometricServiceProtocol {
 
 // MARK: - Implementation
 
-final class BiometricService: BiometricServiceProtocol {
+final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
+	private let lock = NSLock()
 	private var lastAuthTime: Date?
 	private let cacheDuration: TimeInterval
 
@@ -28,7 +29,8 @@ final class BiometricService: BiometricServiceProtocol {
 
 	func authenticate(reason: String) async -> Bool {
 		// Check cache — avoid repeated prompts during edit sessions
-		if let lastAuth = lastAuthTime,
+		let cachedAuthTime = lock.withLock { lastAuthTime }
+		if let lastAuth = cachedAuthTime,
 			Date().timeIntervalSince(lastAuth) < cacheDuration
 		{
 			return true
@@ -43,7 +45,7 @@ final class BiometricService: BiometricServiceProtocol {
 				localizedReason: reason
 			)
 			if success {
-				lastAuthTime = Date()
+				lock.withLock { lastAuthTime = Date() }
 			}
 			return success
 		} catch {
@@ -77,6 +79,6 @@ final class BiometricService: BiometricServiceProtocol {
 
 	/// Reset the auth cache (e.g., when user locks manually)
 	func resetCache() {
-		lastAuthTime = nil
+		lock.withLock { lastAuthTime = nil }
 	}
 }

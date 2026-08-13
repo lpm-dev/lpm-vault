@@ -1,6 +1,6 @@
 import Foundation
 
-struct LPMToken: Codable, Identifiable {
+struct LPMToken: Codable, Identifiable, Sendable {
 	let id: String
 	let name: String
 	let scope: String?
@@ -34,7 +34,7 @@ struct LPMToken: Codable, Identifiable {
 		return .healthy
 	}
 
-	enum ExpiryStatus {
+	enum ExpiryStatus: Sendable {
 		case healthy    // >30 days
 		case warning    // 7-30 days
 		case critical   // <7 days

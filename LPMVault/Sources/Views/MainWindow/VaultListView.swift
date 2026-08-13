@@ -5,6 +5,9 @@ struct VaultListView: View {
 	@Bindable var store: VaultStore
 	@State private var showCloudVaults = false
 	@State private var showNewVault = false
+	@State private var projectToRename: VaultProject?
+	@State private var renameValue = ""
+	@State private var projectToDelete: VaultProject?
 
 	private var title: String {
 		switch store.selectedAccount {
@@ -52,10 +55,32 @@ struct VaultListView: View {
 						.font(.caption)
 				}
 				.buttonStyle(.plain)
-				.help("New vault")
+				.help("New env project")
 			}
 			.padding(.horizontal, 12)
 			.frame(height: 40)
+
+			HStack(spacing: 6) {
+				Image(systemName: "magnifyingglass")
+					.foregroundStyle(.secondary)
+				TextField("Search env projects", text: $store.searchQuery)
+					.textFieldStyle(.plain)
+				if !store.searchQuery.isEmpty {
+					Button {
+						store.searchQuery = ""
+					} label: {
+						Image(systemName: "xmark.circle.fill")
+							.foregroundStyle(.secondary)
+					}
+					.buttonStyle(.plain)
+					.accessibilityLabel("Clear env project search")
+				}
+			}
+			.padding(.horizontal, 10)
+			.padding(.vertical, 6)
+			.background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
+			.padding(.horizontal, 8)
+			.padding(.bottom, 8)
 
 			Divider()
 
@@ -65,9 +90,17 @@ struct VaultListView: View {
 					Image(systemName: isOrg ? "building.2" : "lock.shield")
 						.font(.system(size: 28))
 						.foregroundStyle(.quaternary)
-					Text("No vaults")
+					Text("No env projects")
 						.font(.callout)
 						.foregroundStyle(.tertiary)
+					if store.searchQuery.isEmpty {
+						Button("Create Env Project") { showNewVault = true }
+							.buttonStyle(.bordered)
+					} else {
+						Text("Try a different search.")
+							.font(.caption)
+							.foregroundStyle(.tertiary)
+					}
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 			} else {
@@ -78,16 +111,12 @@ struct VaultListView: View {
 							.listRowBackground(Color.clear)
 							.contextMenu {
 								Button("Edit Name") {
-									// TODO: inline rename
+									projectToRename = vault
+									renameValue = vault.name
 								}
 								Divider()
-								Button("Delete Locally") {
-									store.deleteLocalVault(vault)
-								}
-								Button("Remove Local + Cloud", role: .destructive) {
-									Task.detached { [store] in
-										await store.deleteEverywhere(vault)
-									}
+								Button("Delete Locally", role: .destructive) {
+									projectToDelete = vault
 								}
 							}
 					}
@@ -105,6 +134,38 @@ struct VaultListView: View {
 			} else {
 				CloudVaultsSheet(store: store)
 			}
+		}
+		.alert("Rename Env Project", isPresented: Binding(
+			get: { projectToRename != nil },
+			set: { if !$0 { projectToRename = nil } }
+		)) {
+			TextField("Project name", text: $renameValue)
+			Button("Cancel", role: .cancel) { projectToRename = nil }
+			Button("Rename") {
+				if let projectToRename {
+					store.renameProject(projectToRename, to: renameValue)
+				}
+				projectToRename = nil
+			}
+			.disabled(renameValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+		} message: {
+			Text("This changes the local name and includes it in the next sync.")
+		}
+		.confirmationDialog("Delete local env project?", isPresented: Binding(
+			get: { projectToDelete != nil },
+			set: { if !$0 { projectToDelete = nil } }
+		), titleVisibility: .visible) {
+			if let projectToDelete {
+				Button("Delete \"\(projectToDelete.name)\" Locally", role: .destructive) {
+					Task {
+						_ = await store.deleteLocalVault(projectToDelete)
+						self.projectToDelete = nil
+					}
+				}
+			}
+			Button("Cancel", role: .cancel) { projectToDelete = nil }
+		} message: {
+			Text("This removes the local Keychain copy. A synced cloud copy is not deleted.")
 		}
 		.onChange(of: store.selectedAccount) { _, _ in
 			// Clear selection when switching accounts so column 3 resets

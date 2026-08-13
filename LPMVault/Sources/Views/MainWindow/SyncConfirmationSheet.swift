@@ -1,8 +1,51 @@
 import SwiftUI
 
+enum SyncConfirmationAction: String {
+	case push
+	case pull
+	case share
+
+	var title: String {
+		switch self {
+		case .push: "Push to Cloud"
+		case .pull: "Pull from Cloud"
+		case .share: "Share with Organization"
+		}
+	}
+
+	var buttonTitle: String {
+		switch self {
+		case .push: "Push"
+		case .pull: "Pull"
+		case .share: "Share"
+		}
+	}
+
+	var systemImage: String {
+		switch self {
+		case .push: "arrow.up.circle.fill"
+		case .pull: "arrow.down.circle.fill"
+		case .share: "person.2.circle.fill"
+		}
+	}
+
+	var tint: Color { self == .pull ? .blue : .orange }
+
+	var detail: String {
+		switch self {
+		case .push:
+			"This will update the cloud env project with your local secrets."
+		case .pull:
+			"This will merge cloud secrets into your local env project. Cloud values take priority on conflicts."
+		case .share:
+			"This will encrypt and share the env project with approved organization members."
+		}
+	}
+}
+
 /// Confirmation sheet shown before push/pull operations.
 struct SyncConfirmationSheet: View {
-	let action: String  // "push" or "pull"
+	let action: SyncConfirmationAction
 	let projectName: String
 	let keyCount: Int
 	let onConfirm: () -> Void
@@ -12,24 +55,17 @@ struct SyncConfirmationSheet: View {
 		VStack(alignment: .leading, spacing: 16) {
 			// Header
 			HStack(spacing: 10) {
-				Image(systemName: action == "push" ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+				Image(systemName: action.systemImage)
 					.font(.title2)
-					.foregroundStyle(action == "push" ? .orange : .blue)
+					.foregroundStyle(action.tint)
 
-				Text(action == "push" ? "Push to Cloud" : "Pull from Cloud")
+				Text(action.title)
 					.font(.headline)
 			}
 
-			// Warning
-			if action == "push" {
-				Text("This will overwrite the cloud vault with your local secrets.")
-					.font(.subheadline)
-					.foregroundStyle(.secondary)
-			} else {
-				Text("This will merge cloud secrets into your local vault. Cloud values take priority on conflicts.")
-					.font(.subheadline)
-					.foregroundStyle(.secondary)
-			}
+			Text(action.detail)
+				.font(.subheadline)
+				.foregroundStyle(.secondary)
 
 			// Details
 			VStack(alignment: .leading, spacing: 6) {
@@ -49,12 +85,12 @@ struct SyncConfirmationSheet: View {
 				}
 				.keyboardShortcut(.escape, modifiers: [])
 
-				Button(action == "push" ? "Push" : "Pull") {
+				Button(action.buttonTitle) {
 					onConfirm()
 				}
 				.keyboardShortcut(.return, modifiers: [])
 				.buttonStyle(.borderedProminent)
-				.tint(action == "push" ? .orange : .blue)
+				.tint(action.tint)
 			}
 		}
 		.padding(20)
@@ -80,7 +116,7 @@ struct ConflictResolutionSheet: View {
 					.font(.headline)
 			}
 
-			Text("Your local vault is behind the cloud version. Someone else may have pushed changes.")
+			Text("Your local env project is behind the cloud version. Someone else may have pushed changes.")
 				.font(.subheadline)
 				.foregroundStyle(.secondary)
 

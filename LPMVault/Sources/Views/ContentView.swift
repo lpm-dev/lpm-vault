@@ -1,7 +1,7 @@
 import SwiftUI
 
-private let railColor = Color(hex: 0x141414)
-private let listColor = Color(hex: 0x191919)
+private let railColor = Color(nsColor: .underPageBackgroundColor)
+private let listColor = Color(nsColor: .controlBackgroundColor)
 
 struct ContentView: View {
 	@Bindable var store: VaultStore
@@ -19,8 +19,6 @@ struct ContentView: View {
 		}
 	}
 
-	@FocusState private var passwordFieldFocused: Bool
-
 	private var lockScreen: some View {
 		VStack(spacing: 16) {
 			Image(systemName: "lock.fill")
@@ -31,36 +29,24 @@ struct ContentView: View {
 				.font(.title3)
 				.fontWeight(.semibold)
 
-			Text("Click the Touch ID icon or enter your password to unlock.")
+			Text("Authenticate with Touch ID or your Mac password to unlock.")
 				.font(.callout)
 				.foregroundStyle(.secondary)
 				.multilineTextAlignment(.center)
 
-			HStack(spacing: 0) {
-				SecureField("Enter password", text: .constant(""))
-					.textFieldStyle(.plain)
-					.focused($passwordFieldFocused)
-					.onSubmit { Task { await store.unlock() } }
-
-				Button {
-					Task { await store.unlock() }
-				} label: {
-					Image(systemName: "touchid")
-						.font(.system(size: 18))
-						.foregroundStyle(.pink)
-				}
-				.buttonStyle(.plain)
-				.help("Unlock with Touch ID")
+			Button {
+				Task { await store.unlock() }
+			} label: {
+				Label("Unlock", systemImage: "touchid")
+					.frame(minWidth: 120)
 			}
-			.padding(.horizontal, 10)
-			.padding(.vertical, 6)
-			.background(.quinary, in: RoundedRectangle(cornerRadius: 7))
-			.overlay(RoundedRectangle(cornerRadius: 7).stroke(.quaternary, lineWidth: 1))
-			.frame(width: 280)
+			.buttonStyle(.borderedProminent)
+			.controlSize(.large)
+			.keyboardShortcut(.return, modifiers: [])
+			.accessibilityHint("Shows the macOS authentication prompt")
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
 		.frame(minWidth: 800, minHeight: 500)
-		.onAppear { passwordFieldFocused = true }
 	}
 
 	private var effectiveListWidth: CGFloat {
@@ -126,11 +112,9 @@ struct ContentView: View {
 				VaultDetailView(store: store)
 					.frame(maxWidth: .infinity, maxHeight: .infinity)
 			}
-			.ignoresSafeArea(.container, edges: .top)
 			.frame(minWidth: 800, minHeight: 500)
 			.onChange(of: store.selectedAccount) { _, _ in store.resetAutoLock() }
 			.onChange(of: store.selectedProjectId) { _, _ in store.resetAutoLock() }
-			.onHover { hovering in if hovering { store.resetAutoLock() } }
 		}
 		.task { await updateChecker.checkForUpdate() }
 		.sheet(isPresented: $store.showKeyApprovalSheet) {

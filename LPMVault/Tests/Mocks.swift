@@ -4,7 +4,7 @@ import Foundation
 
 // MARK: - Mock Keychain Service
 
-final class MockKeychainService: KeychainServiceProtocol {
+final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var envStorage: [String: (name: String, path: String, environments: [String: [String: String]])] = [:]
 	var dataStorage: [String: Data] = [:]
 	var shouldFail = false
@@ -89,7 +89,7 @@ final class MockKeychainService: KeychainServiceProtocol {
 
 // MARK: - Mock Biometric Service
 
-final class MockBiometricService: BiometricServiceProtocol {
+final class MockBiometricService: BiometricServiceProtocol, @unchecked Sendable {
 	var shouldSucceed = true
 	var isAvailable = true
 	var type: BiometricType = .touchID
@@ -113,7 +113,7 @@ final class MockBiometricService: BiometricServiceProtocol {
 
 // MARK: - Mock API Service
 
-final class MockAPIService: LPMAPIServiceProtocol {
+final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	var user: LPMUser?
 	var personalTokens: [LPMToken] = []
 	var orgTokensMap: [String: [LPMToken]] = [:]
