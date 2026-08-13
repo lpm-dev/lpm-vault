@@ -114,14 +114,13 @@ struct VaultStoreTests {
 		let (store, keychain, _, _) = makeStore()
 
 		store.addProject(name: "new-project", path: "/tmp/new")
-		// addProject uses Task.detached — give it time to complete
-		try await Task.sleep(for: .milliseconds(200))
+		await waitUntil { !store.projects.isEmpty }
 
 		#expect(store.projects.count == 1)
-		#expect(store.projects[0].name == "new-project")
-		#expect(store.projects[0].path == "/tmp/new")
-		#expect(store.projects[0].secrets.isEmpty)
-		#expect(store.selectedProjectId == store.projects[0].id)
+		#expect(store.projects.first?.name == "new-project")
+		#expect(store.projects.first?.path == "/tmp/new")
+		#expect(store.projects.first?.secrets.isEmpty == true)
+		#expect(store.selectedProjectId == store.projects.first?.id)
 		#expect(keychain.storage.count == 1)
 	}
 
@@ -131,8 +130,7 @@ struct VaultStoreTests {
 		keychain.shouldFail = true
 
 		store.addProject(name: "failing-project", path: "/tmp/fail")
-		// addProject uses Task.detached — give it time to complete
-		try await Task.sleep(for: .milliseconds(200))
+		await waitUntil { store.error != nil }
 
 		#expect(store.projects.isEmpty)
 		#expect(store.error != nil)
@@ -384,30 +382,103 @@ struct VaultStoreTests {
 		#expect(store.selectedProject?.id == "org-two")
 	}
 
-	@Test("only user navigation restarts the auto-lock timer")
-	func navigationOwnsAutoLockReset() async {
+	@Test("local user activity restarts the auto-lock timer")
+	func userActivityRestartsAutoLock() async {
 		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
 		let keychain = MockKeychainService()
 		keychain.storage["id-1"] = (name: "one", path: "", secrets: [:])
 		let store = VaultStore(
 			keychainService: keychain,
 			biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
-			autoLockSleep: { duration in try await sleeper.sleep(duration) }
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now }
 		)
 
 		await store.unlock()
 		while await sleeper.count < 1 { await Task.yield() }
-		store.reconcileNavigationState()
+		clock.now = 30
+		for _ in 0..<100 { store.recordUserActivity() }
 		for _ in 0..<10 { await Task.yield() }
 		#expect(await sleeper.count == 1)
 
-		store.selectProject("id-1")
+		clock.now = 120
+		await sleeper.resume(at: 0)
 		while await sleeper.count < 2 { await Task.yield() }
+		#expect(store.isUnlocked)
+
+		clock.now = 150
+		await sleeper.resume(at: 1)
+		while store.isUnlocked { await Task.yield() }
+		#expect(!store.isUnlocked)
+	}
+
+	@Test("user activity while locked does not schedule auto-lock")
+	func lockedUserActivityDoesNotScheduleAutoLock() async {
+		let sleeper = AutoLockSleeper()
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) }
+		)
+
+		store.recordUserActivity()
+		for _ in 0..<10 { await Task.yield() }
+
+		#expect(await sleeper.count == 0)
+	}
+
+	@Test("activity at or after the idle deadline locks immediately")
+	func expiredActivityCannotReviveSession() async {
+		for expiredTime in [120.0, 121.0] {
+			let sleeper = AutoLockSleeper()
+			let clock = AutoLockClock()
+			let store = VaultStore(
+				keychainService: MockKeychainService(),
+				biometricService: MockBiometricService(),
+				apiService: MockAPIService(),
+				autoLockSleep: { duration in try await sleeper.sleep(duration) },
+				autoLockNow: { clock.now },
+				autoLockDuration: 120
+			)
+
+			await store.unlock()
+			while await sleeper.count < 1 { await Task.yield() }
+			clock.now = expiredTime
+			store.recordUserActivity()
+
+			#expect(!store.isUnlocked)
+			#expect(await sleeper.count == 1)
+		}
+	}
+
+	@Test("an old idle sleeper cannot affect a newly unlocked session")
+	func staleAutoLockSleeperCannotClearNewGeneration() async {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now },
+			autoLockDuration: 120
+		)
+
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		store.lock()
+		clock.now = 10
+		await store.unlock()
+		while await sleeper.count < 2 { await Task.yield() }
+
 		await sleeper.resume(at: 0)
 		for _ in 0..<10 { await Task.yield() }
 		#expect(store.isUnlocked)
 
+		clock.now = 130
 		await sleeper.resume(at: 1)
 		while store.isUnlocked { await Task.yield() }
 		#expect(!store.isUnlocked)
@@ -420,38 +491,219 @@ struct VaultStoreTests {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
 		])
+		store.isUnlocked = true
 
-		store.addSecret(to: "id-1", key: "DB_HOST", value: "localhost")
+		let result = await store.addSecret(
+			to: "id-1",
+			environment: "default",
+			key: "DB_HOST",
+			value: "localhost"
+		)
 
-		// In-memory update is synchronous
+		#expect(result == .success)
 		#expect(store.projects[0].secrets["DB_HOST"] == "localhost")
-		// Keychain write is async (Task.detached in saveAndUpdate)
-		try await Task.sleep(for: .milliseconds(200))
 		#expect(keychain.storage["id-1"]?.secrets["DB_HOST"] == "localhost")
 	}
 
 	@Test("add secret with empty key is rejected")
-	func addSecretEmptyKey() {
+	func addSecretEmptyKey() async {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
 		])
+		store.isUnlocked = true
 
-		store.addSecret(to: "id-1", key: "", value: "value")
+		let result = await store.addSecret(
+			to: "id-1",
+			environment: "default",
+			key: "",
+			value: "value"
+		)
 
+		#expect(result == .failure(.invalidName))
 		#expect(store.projects[0].secrets.isEmpty)
 	}
 
 	@Test("add secret rejects names outside the Rust env contract")
-	func addSecretInvalidNames() {
+	func addSecretInvalidNames() async {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
 		])
+		store.isUnlocked = true
 
 		for key in ["1LEADING", "WITH-DASH", "WITH SPACE", "ÉNV"] {
-			store.addSecret(to: "id-1", key: key, value: "value")
+			let result = await store.addSecret(
+				to: "id-1",
+				environment: "default",
+				key: key,
+				value: "value"
+			)
+			#expect(result == .failure(.invalidName))
 		}
 
 		#expect(store.projects[0].secrets.isEmpty)
+	}
+
+	@Test("add secret rejects exact and case-only duplicates")
+	func addSecretRejectsPortableDuplicates() async {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["HEY": "value"])
+		])
+		store.isUnlocked = true
+
+		let duplicate = await store.addSecret(
+			to: "id-1", environment: "default", key: "HEY", value: "new"
+		)
+		let collision = await store.addSecret(
+			to: "id-1", environment: "default", key: "Hey", value: "new"
+		)
+
+		#expect(duplicate == .failure(.duplicate))
+		#expect(collision == .failure(.caseInsensitiveCollision(existingKey: "HEY")))
+		#expect(store.projects[0].secrets == ["HEY": "value"])
+	}
+
+	@Test("add secret ignores unrelated global errors")
+	func addSecretIgnoresStaleGlobalError() async {
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
+		])
+		store.isUnlocked = true
+		store.error = "Older unrelated error"
+
+		let result = await store.addSecret(
+			to: "id-1", environment: "default", key: "TOKEN", value: "secret"
+		)
+
+		#expect(result == .success)
+		#expect(store.projects[0].secrets["TOKEN"] == "secret")
+	}
+
+	@Test("add secret does not publish when persistence fails")
+	func addSecretRollsBackOnPersistenceFailure() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: [:])
+		])
+		store.isUnlocked = true
+		keychain.shouldFail = true
+
+		let result = await store.addSecret(
+			to: "id-1", environment: "default", key: "TOKEN", value: "secret"
+		)
+
+		#expect(result == .failure(.persistence(KeychainError.accessDenied.description)))
+		#expect(store.projects[0].secrets.isEmpty)
+		#expect(keychain.storage["id-1"]?.secrets.isEmpty == true)
+	}
+
+	@Test("locking during add secret persistence never republishes plaintext")
+	func lockDuringAddSecretKeepsMemoryCleared() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["OLD": "value"])
+		])
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextSaveEnvironments = {
+			entered.signal()
+			release.wait()
+		}
+		store.isUnlocked = true
+
+		let task = Task {
+			await store.addSecret(
+				to: "id-1",
+				environment: "default",
+				key: "TOKEN",
+				value: "secret"
+			)
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.lock()
+		release.signal()
+
+		#expect(await task.value == .success)
+		#expect(!store.isUnlocked)
+		#expect(store.projects[0].environments.values.allSatisfy { $0.isEmpty })
+		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value", "TOKEN": "secret"])
+		let metadata = keychain.dataStorage["__sync_metadata__"]
+			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) }
+		#expect(metadata?["id-1"]?.isDirty == true)
+	}
+
+	@Test("metadata failure restores add secret vault and metadata snapshots")
+	func addSecretMetadataFailureRollsBackBothSnapshots() async throws {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["OLD": "value"])
+		])
+		let previousMetadata = ["id-1": SyncMetadata(
+			lastSyncedAt: Date(timeIntervalSince1970: 1_700_000_000),
+			lastAction: "pull",
+			lastVersion: 7,
+			isDirty: false
+		)]
+		let previousMetadataData = try JSONEncoder().encode(previousMetadata)
+		keychain.dataStorage["__sync_metadata__"] = previousMetadataData
+		keychain.failNextWriteDataAccounts = ["__sync_metadata__"]
+		store.syncMetadata = previousMetadata
+		store.isUnlocked = true
+
+		let result = await store.addSecret(
+			to: "id-1",
+			environment: "default",
+			key: "TOKEN",
+			value: "secret"
+		)
+
+		#expect(result == .failure(.persistence(KeychainError.unexpectedStatus(-1).description)))
+		#expect(store.projects[0].secrets == ["OLD": "value"])
+		#expect(store.syncMetadata["id-1"]?.lastVersion == 7)
+		#expect(store.syncMetadata["id-1"]?.isDirty == false)
+		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value"])
+		#expect(keychain.dataStorage["__sync_metadata__"] == previousMetadataData)
+	}
+
+	@Test("add secret rollback failure after lock never reloads plaintext")
+	func addSecretRollbackFailureAfterLockKeepsMemoryCleared() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["OLD": "value"])
+		])
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextSaveEnvironments = {
+			entered.signal()
+			release.wait()
+		}
+		keychain.failNextWriteDataAccounts = ["__sync_metadata__"]
+		keychain.failRestoreSaveEnvironments = true
+		store.isUnlocked = true
+
+		let task = Task {
+			await store.addSecret(
+				to: "id-1",
+				environment: "default",
+				key: "TOKEN",
+				value: "secret"
+			)
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.lock()
+		release.signal()
+
+		#expect(await task.value == .failure(
+			.persistence(KeychainError.unexpectedStatus(-2).description)
+		))
+		#expect(!store.isUnlocked)
+		#expect(store.projects[0].environments.values.allSatisfy { $0.isEmpty })
+		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value", "TOKEN": "secret"])
 	}
 
 	@Test("environment writes reject the reserved index name")
@@ -553,6 +805,30 @@ struct VaultStoreTests {
 		#expect(await older.value == .failure(.cancelled))
 		#expect(store.projects[0].secrets["KEY"] == "new")
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
+	}
+
+	@Test("dotenv import rejects a case-only collision with an existing key")
+	func localEnvImportRejectsCaseOnlyExistingCollision() async {
+		let importer = MockEnvFileImportService()
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["HEY": "upper"])],
+			envFileImportService: importer
+		)
+		store.selectedProjectId = "id-1"
+		store.isUnlocked = true
+		await importer.setImmediateResult(
+			.success(ImportedEnvFile(secrets: ["Hey": "mixed"]))
+		)
+
+		let result = await store.importEnvFile(
+			at: URL(fileURLWithPath: "/tmp/collision.env"),
+			to: "id-1",
+			environment: "default"
+		)
+
+		#expect(result == .failure(.caseInsensitiveCollisionWithExisting))
+		#expect(store.projects[0].secrets == ["HEY": "upper"])
+		#expect(keychain.storage["id-1"]?.secrets == ["HEY": "upper"])
 	}
 
 	@Test("superseding a dotenv import before its commit point leaves no stale durable keys")
@@ -857,11 +1133,18 @@ struct VaultStoreTests {
 	}
 
 	@Test("add secret to non-existent project is no-op")
-	func addSecretNoProject() {
+	func addSecretNoProject() async {
 		let (store, _, _, _) = makeStore()
+		store.isUnlocked = true
 
-		store.addSecret(to: "nonexistent", key: "KEY", value: "VALUE")
+		let result = await store.addSecret(
+			to: "nonexistent",
+			environment: "default",
+			key: "KEY",
+			value: "VALUE"
+		)
 
+		#expect(result == .failure(.targetUnavailable))
 		#expect(store.projects.isEmpty)
 	}
 
@@ -876,7 +1159,7 @@ struct VaultStoreTests {
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
 		#expect(store.projects[0].secrets["KEY"] == "new")
-		try await Task.sleep(for: .milliseconds(200))
+		await waitUntil { keychain.storage["id-1"]?.secrets["KEY"] == "new" }
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
 	}
 
@@ -904,7 +1187,7 @@ struct VaultStoreTests {
 
 		#expect(store.projects[0].secrets["A"] == nil)
 		#expect(store.projects[0].secrets["B"] == "2")
-		try await Task.sleep(for: .milliseconds(200))
+		await waitUntil { keychain.storage["id-1"]?.secrets["A"] == nil }
 		#expect(keychain.storage["id-1"]?.secrets["A"] == nil)
 	}
 
@@ -1923,6 +2206,18 @@ struct VaultStoreTests {
 	}
 }
 
+@MainActor
+private func waitUntil(
+	maximumYields: Int = 100_000,
+	_ condition: @MainActor () -> Bool
+) async {
+	for _ in 0..<maximumYields {
+		if condition() { return }
+		await Task.yield()
+	}
+	Issue.record("Timed out while waiting for an asynchronous test condition.")
+}
+
 private final class LockedCounter: @unchecked Sendable {
 	private let lock = NSLock()
 	private var storage = 0
@@ -1952,6 +2247,16 @@ private actor AutoLockSleeper {
 		}
 		continuations[index] = nil
 		continuation.resume()
+	}
+}
+
+private final class AutoLockClock: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage: TimeInterval = 0
+
+	var now: TimeInterval {
+		get { lock.withLock { storage } }
+		set { lock.withLock { storage = newValue } }
 	}
 }
 
