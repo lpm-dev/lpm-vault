@@ -44,6 +44,104 @@ struct ImportedEnvProject: Sendable, Equatable {
 	let keyCount: Int
 }
 
+private struct TokenInventory: Sendable {
+	let user: LPMUser
+	let personalTokens: [LPMToken]
+	let organizationTokens: [String: [LPMToken]]
+}
+
+private struct OrganizationTokenResult: Sendable {
+	let slug: String
+	let result: LPMAPIResult<[LPMToken]>
+}
+
+private enum TokenInventoryLoader {
+	static let maximumConcurrentOrganizations = 4
+
+	static func load(
+		user: LPMUser,
+		authToken: String,
+		service: any LPMAPIServiceProtocol
+	) async -> LPMAPIResult<TokenInventory> {
+		async let personalResult = service.fetchPersonalTokens(authToken: authToken)
+		let organizationResult = await loadOrganizations(
+			user.orgs ?? [],
+			authToken: authToken,
+			service: service
+		)
+		let resolvedPersonal = await personalResult
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+
+		switch (resolvedPersonal, organizationResult) {
+		case (.success(let personal), .success(let organizations)):
+			return .success(TokenInventory(
+				user: user,
+				personalTokens: personal,
+				organizationTokens: organizations
+			))
+		case (.failure(let error), _):
+			return .failure(error)
+		case (_, .failure(let error)):
+			return .failure(error)
+		}
+	}
+
+	private static func loadOrganizations(
+		_ organizations: [LPMOrg],
+		authToken: String,
+		service: any LPMAPIServiceProtocol
+	) async -> LPMAPIResult<[String: [LPMToken]]> {
+		let eligible = organizations
+			.filter { organization in
+				guard let role = organization.role?.lowercased() else { return false }
+				return role == "owner" || role == "admin"
+			}
+			.sorted { $0.slug < $1.slug }
+		guard !eligible.isEmpty else { return .success([:]) }
+
+		return await withTaskGroup(of: OrganizationTokenResult.self) { group in
+			var iterator = eligible.makeIterator()
+			var results: [String: [LPMToken]] = [:]
+
+			func addNext() -> Bool {
+				guard !Task.isCancelled, let organization = iterator.next() else { return false }
+				group.addTask {
+					OrganizationTokenResult(
+						slug: organization.slug,
+						result: await service.fetchOrgTokens(
+							orgSlug: organization.slug,
+							authToken: authToken
+						)
+					)
+				}
+				return true
+			}
+
+			for _ in 0..<min(maximumConcurrentOrganizations, eligible.count) {
+				_ = addNext()
+			}
+
+			while let next = await group.next() {
+				guard !Task.isCancelled else {
+					group.cancelAll()
+					return .failure(.cancelled)
+				}
+				switch next.result {
+				case .success(let tokens):
+					// Keep successful empty inventories distinct from request failure.
+					results[next.slug] = tokens
+				case .failure(let error):
+					group.cancelAll()
+					return .failure(error)
+				}
+				_ = addNext()
+			}
+
+			return .success(results)
+		}
+	}
+}
+
 enum EnvProjectImportError: LocalizedError, Sendable, Equatable {
 	case cancelled
 	case duplicate
@@ -273,21 +371,33 @@ final class VaultStore {
 	private let persistence: VaultPersistenceCoordinator
 	private let biometricService: BiometricServiceProtocol
 	private let injectedAPIService: LPMAPIServiceProtocol?
+	private let apiServiceFactory: @Sendable (URL) -> any LPMAPIServiceProtocol
 	private let importServiceFactory: @Sendable (URL) -> any EnvProjectImportServiceProtocol
 	private let authTokenProvider: @Sendable (String, URL) async -> String?
+	private let loginProvider: @Sendable (String, URL) async throws -> AuthSessionCredentials
+	private let authSessionWriter: @Sendable (AuthSessionCredentials, String) throws -> Void
+	private let authSessionClearer: @Sendable (String) -> Void
 	private var autoLockTask: Task<Void, Never>?
 	private var projectLoadTask: Task<Void, Never>?
 	private var projectLoadGeneration = 0
 	private var tokenLoadTask: Task<Void, Never>?
 	private var tokenLoadGeneration = 0
+	private var authOperationGeneration = 0
+	private var retainedAPIServices: [URL: any LPMAPIServiceProtocol] = [:]
 	private var unlockGeneration = 0
 	private var vaultSessionGeneration = 0
 	private var activeImportIds: Set<String> = []
 	private let autoLockDuration: TimeInterval
 
-	/// Returns the injected mock (for tests) or a live service for the active environment.
-	private var apiService: LPMAPIServiceProtocol {
-		injectedAPIService ?? LPMAPIService(baseURL: appEnvironment.baseURL)
+	/// Retains one connection pool for each exact API base URL. Production and
+	/// the debug-only local server can never share a session.
+	private func apiService(for environment: AppEnvironment) -> any LPMAPIServiceProtocol {
+		if let injectedAPIService { return injectedAPIService }
+		let baseURL = environment.baseURL
+		if let retained = retainedAPIServices[baseURL] { return retained }
+		let service = apiServiceFactory(baseURL)
+		retainedAPIServices[baseURL] = service
+		return service
 	}
 
 	// MARK: - Computed
@@ -335,11 +445,23 @@ final class VaultStore {
 		keychainService: KeychainServiceProtocol = KeychainService(),
 		biometricService: BiometricServiceProtocol = BiometricService(),
 		apiService: LPMAPIServiceProtocol? = nil,
+		apiServiceFactory: @escaping @Sendable (URL) -> any LPMAPIServiceProtocol = {
+			LPMAPIService(baseURL: $0)
+		},
 		importServiceFactory: @escaping @Sendable (URL) -> any EnvProjectImportServiceProtocol = {
 			EnvProjectImportService(baseURL: $0)
 		},
 		authTokenProvider: @escaping @Sendable (String, URL) async -> String? = { registryURL, baseURL in
 			await AuthSessionStore.currentAccessToken(registryURL: registryURL, baseURL: baseURL)
+		},
+		loginProvider: @escaping @Sendable (String, URL) async throws -> AuthSessionCredentials = {
+			try await LoginService.login(registryURL: $0, baseURL: $1)
+		},
+		authSessionWriter: @escaping @Sendable (AuthSessionCredentials, String) throws -> Void = {
+			try LoginService.writeAuthSession($0, registryURL: $1)
+		},
+		authSessionClearer: @escaping @Sendable (String) -> Void = {
+			LoginService.clearAuthSession(registryURL: $0)
 		},
 		autoLockDuration: TimeInterval = VaultConstants.biometricCacheDuration
 	) {
@@ -347,8 +469,12 @@ final class VaultStore {
 		self.persistence = VaultPersistenceCoordinator(service: keychainService)
 		self.biometricService = biometricService
 		self.injectedAPIService = apiService
+		self.apiServiceFactory = apiServiceFactory
 		self.importServiceFactory = importServiceFactory
 		self.authTokenProvider = authTokenProvider
+		self.loginProvider = loginProvider
+		self.authSessionWriter = authSessionWriter
+		self.authSessionClearer = authSessionClearer
 		self.autoLockDuration = autoLockDuration
 
 		#if DEBUG
@@ -366,6 +492,8 @@ final class VaultStore {
 	/// Clears current session and reloads tokens for the new environment.
 	func switchEnvironment(to env: AppEnvironment) {
 		guard env != appEnvironment else { return }
+		authOperationGeneration &+= 1
+		isLoggingIn = false
 		invalidateTokenLoad()
 		appEnvironment = env
 		UserDefaults.standard.set(env.rawValue, forKey: "lpm-vault-environment")
@@ -876,30 +1004,72 @@ final class VaultStore {
 		tokenLoadGeneration &+= 1
 		let generation = tokenLoadGeneration
 		let environment = appEnvironment
-		let service = apiService
+		let service = apiService(for: environment)
 		tokenLoadTask?.cancel()
 		isLoadingTokens = true
 
 		let task = Task { [weak self] in
-			let user = await service.fetchCurrentUser()
-			guard !Task.isCancelled else { return }
-			let tokens = await service.fetchPersonalTokens()
+			guard let self else { return }
+			guard let authToken = await self.authTokenProvider(
+				environment.registryURL,
+				environment.baseURL
+			) else {
+				guard !Task.isCancelled,
+					generation == self.tokenLoadGeneration,
+					environment == self.appEnvironment
+				else { return }
+				self.currentUser = nil
+				self.personalTokens = []
+				self.orgTokens = [:]
+				self.error = nil
+				self.isLoadingTokens = false
+				self.tokenLoadTask = nil
+				return
+			}
 			guard !Task.isCancelled else { return }
 
-			var orgTokensMap: [String: [LPMToken]] = [:]
-			for org in user?.orgs ?? [] {
-				guard !Task.isCancelled else { return }
-				let orgTokens = await service.fetchOrgTokens(orgSlug: org.slug)
-				if !orgTokens.isEmpty { orgTokensMap[org.slug] = orgTokens }
+			let userResult = await service.fetchCurrentUser(authToken: authToken)
+			let inventoryResult: LPMAPIResult<TokenInventory>
+			switch userResult {
+			case .success(let user):
+				inventoryResult = await TokenInventoryLoader.load(
+					user: user, authToken: authToken, service: service)
+			case .failure(let loadError):
+				inventoryResult = .failure(loadError)
 			}
 
-			guard !Task.isCancelled, let self,
+			guard !Task.isCancelled,
 				generation == self.tokenLoadGeneration,
 				environment == self.appEnvironment
 			else { return }
-			self.currentUser = user
-			self.personalTokens = tokens
-			self.orgTokens = orgTokensMap
+			let currentAuthToken = await self.authTokenProvider(
+				environment.registryURL,
+				environment.baseURL
+			)
+			guard !Task.isCancelled,
+				generation == self.tokenLoadGeneration,
+				environment == self.appEnvironment
+			else { return }
+			guard currentAuthToken == authToken else {
+				self.error = "The active lpm.dev session changed while tokens were loading. Reload to use the new session."
+				self.isLoadingTokens = false
+				self.tokenLoadTask = nil
+				return
+			}
+
+			switch inventoryResult {
+			case .success(let inventory):
+				self.currentUser = inventory.user
+				self.personalTokens = inventory.personalTokens
+				self.orgTokens = inventory.organizationTokens
+				self.error = nil
+			case .failure(.cancelled):
+				break
+			case .failure(let loadError):
+				// Keep the prior coherent inventory visible on transient or
+				// per-organization failure; never publish a partial snapshot.
+				self.error = loadError.localizedDescription
+			}
 			self.isLoadingTokens = false
 			self.tokenLoadTask = nil
 		}
@@ -908,20 +1078,61 @@ final class VaultStore {
 	}
 
 	func revokePersonalToken(_ token: LPMToken) async {
-		let success = await apiService.revokePersonalToken(id: token.id)
-		if success {
-			await MainActor.run {
-				personalTokens.removeAll { $0.id == token.id }
-			}
+		let generation = authOperationGeneration
+		let environment = appEnvironment
+		guard let authToken = await authTokenProvider(environment.registryURL, environment.baseURL) else {
+			error = "Sign in to lpm.dev, then retry."
+			return
+		}
+		let result = await apiService(for: environment).revokePersonalToken(
+			id: token.id,
+			authToken: authToken
+		)
+		guard generation == authOperationGeneration, environment == appEnvironment else { return }
+		guard await authTokenProvider(environment.registryURL, environment.baseURL) == authToken,
+			generation == authOperationGeneration,
+			environment == appEnvironment
+		else {
+			error = "The active lpm.dev session changed before revocation completed. Reload and retry."
+			return
+		}
+		switch result {
+		case .success:
+			// A load that started before the revocation may still contain this
+			// token. Invalidate it before committing the newer server state.
+			invalidateTokenLoad()
+			personalTokens.removeAll { $0.id == token.id }
+		case .failure(let revokeError):
+			error = revokeError.localizedDescription
 		}
 	}
 
 	func revokeOrgToken(_ token: LPMToken, orgSlug: String) async {
-		let success = await apiService.revokeOrgToken(orgSlug: orgSlug, id: token.id)
-		if success {
-			await MainActor.run {
-				orgTokens[orgSlug]?.removeAll { $0.id == token.id }
-			}
+		let generation = authOperationGeneration
+		let environment = appEnvironment
+		guard let authToken = await authTokenProvider(environment.registryURL, environment.baseURL) else {
+			error = "Sign in to lpm.dev, then retry."
+			return
+		}
+		let result = await apiService(for: environment).revokeOrgToken(
+			orgSlug: orgSlug,
+			id: token.id,
+			authToken: authToken
+		)
+		guard generation == authOperationGeneration, environment == appEnvironment else { return }
+		guard await authTokenProvider(environment.registryURL, environment.baseURL) == authToken,
+			generation == authOperationGeneration,
+			environment == appEnvironment
+		else {
+			error = "The active lpm.dev session changed before revocation completed. Reload and retry."
+			return
+		}
+		switch result {
+		case .success:
+			invalidateTokenLoad()
+			orgTokens[orgSlug]?.removeAll { $0.id == token.id }
+		case .failure(let revokeError):
+			error = revokeError.localizedDescription
 		}
 	}
 
@@ -930,44 +1141,46 @@ final class VaultStore {
 	/// Start the browser-based login flow — same UX as `lpm login`.
 	/// Validates the token with the server before persisting it to Keychain.
 	func login() async {
-		await MainActor.run { isLoggingIn = true; error = nil }
+		authOperationGeneration &+= 1
+		let generation = authOperationGeneration
+		let environment = appEnvironment
+		isLoggingIn = true
+		error = nil
 
 		do {
-			let credentials = try await LoginService.login(
-				registryURL: appEnvironment.registryURL,
-				baseURL: appEnvironment.baseURL
-			)
+			let credentials = try await loginProvider(environment.registryURL, environment.baseURL)
+			guard generation == authOperationGeneration, environment == appEnvironment else { return }
 
 			// Validate the token actually works before storing it
-			let validationService = LPMAPIService(baseURL: appEnvironment.baseURL)
-			let user = await validationService.fetchCurrentUser(authToken: credentials.token)
-			guard user != nil else {
-				await MainActor.run {
-					error = "Login failed — server rejected the token."
-					isLoggingIn = false
-				}
+			let user = await apiService(for: environment).fetchCurrentUser(authToken: credentials.token)
+			guard generation == authOperationGeneration, environment == appEnvironment else { return }
+			guard case .success = user else {
+				error = "Login failed — server rejected the token."
+				isLoggingIn = false
 				return
 			}
 
 			// Token is valid — persist to Keychain (shared with CLI)
-			try LoginService.writeAuthSession(credentials, registryURL: appEnvironment.registryURL)
+			try authSessionWriter(credentials, environment.registryURL)
 
 			// Load full user info + tokens
 			await loadTokens()
 
-			await MainActor.run { isLoggingIn = false }
+			guard generation == authOperationGeneration, environment == appEnvironment else { return }
+			isLoggingIn = false
 		} catch {
-			await MainActor.run {
-				self.error = error.localizedDescription
-				isLoggingIn = false
-			}
+			guard generation == authOperationGeneration, environment == appEnvironment else { return }
+			self.error = error.localizedDescription
+			isLoggingIn = false
 		}
 	}
 
 	/// Sign out — clear token from Keychain and reset state.
 	func logout() {
+		authOperationGeneration &+= 1
+		isLoggingIn = false
 		invalidateTokenLoad()
-		LoginService.clearAuthSession(registryURL: appEnvironment.registryURL)
+		authSessionClearer(appEnvironment.registryURL)
 		currentUser = nil
 		personalTokens = []
 		orgTokens = [:]
