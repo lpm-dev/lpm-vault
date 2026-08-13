@@ -12,12 +12,19 @@ protocol KeychainServiceProtocol: Sendable {
 		projectPath: String,
 		environments: [String: [String: String]]
 	) -> KeychainResult
+	func createEnvironments(
+		vaultId: String,
+		projectName: String,
+		projectPath: String,
+		environments: [String: [String: String]]
+	) -> KeychainResult
 	func deleteProject(vaultId: String) -> Bool
 	func removeFromSidebar(vaultId: String) -> Bool
 
 	// Generic data storage (for metadata, associations, etc.)
 	func readData(account: String) -> Data?
 	@discardableResult func writeData(account: String, data: Data) -> Bool
+	@discardableResult func deleteData(account: String) -> Bool
 
 	// Legacy compatibility
 	func getSecrets(vaultId: String) -> [String: String]?
@@ -59,6 +66,7 @@ enum KeychainError: Error, CustomStringConvertible, Sendable {
 			return "Env project data too large: \(size) bytes (Keychain limit ~100KB)"
 		}
 	}
+
 }
 
 // MARK: - Index Entry (stored in a separate Keychain item for reliable listing)
@@ -133,11 +141,53 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		projectPath: String,
 		environments: [String: [String: String]]
 	) -> KeychainResult {
+		guard EnvValidation.isSafeVaultId(vaultId) else {
+			return .failure(.accessDenied)
+		}
 		let wrapper = EnvironmentsWrapper(environments: environments)
 		guard let data = try? JSONEncoder().encode(wrapper) else {
 			return .failure(.encodingFailed)
 		}
 		return saveData(vaultId: vaultId, projectName: projectName, projectPath: projectPath, data: data)
+	}
+
+	/// Creates a new env project without ever updating an existing Keychain
+	/// account. This is the import boundary shared with the Rust CLI.
+	func createEnvironments(
+		vaultId: String,
+		projectName: String,
+		projectPath: String,
+		environments: [String: [String: String]]
+	) -> KeychainResult {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		let wrapper = EnvironmentsWrapper(environments: environments)
+		guard let data = try? JSONEncoder().encode(wrapper) else {
+			return .failure(.encodingFailed)
+		}
+		guard data.count <= VaultConstants.maxVaultSizeWarning else {
+			return .failure(.dataTooLarge(data.count))
+		}
+
+		let previousIndex = readIndex()
+		let addStatus = addItem(account: vaultId, data: data)
+		guard addStatus != errSecDuplicateItem else { return .failure(.duplicateItem) }
+		guard addStatus == errSecSuccess else { return .failure(.unexpectedStatus(addStatus)) }
+
+		var index = previousIndex
+		index.append(VaultIndexEntry(id: vaultId, name: projectName, path: projectPath))
+		guard writeIndex(index) else {
+			let deleteStatus = deleteItem(account: vaultId)
+			let deleted = deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound
+			let indexRestored = writeIndex(previousIndex)
+			guard deleted, indexRestored else {
+				return .failure(.unexpectedStatus(-2))
+			}
+			return .failure(.unexpectedStatus(-1))
+		}
+		if data.count > VaultConstants.maxVaultSizeWarning * 9 / 10 {
+			return .successWithWarning("Env project is approaching size limit (\(data.count) bytes)")
+		}
+		return .success
 	}
 
 	// Generic data storage
@@ -148,6 +198,12 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	@discardableResult
 	func writeData(account: String, data: Data) -> Bool {
 		writeItem(account: account, data: data)
+	}
+
+	@discardableResult
+	func deleteData(account: String) -> Bool {
+		let status = deleteItem(account: account)
+		return status == errSecSuccess || status == errSecItemNotFound
 	}
 
 	// Legacy compatibility
@@ -184,6 +240,11 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			? "Env project is approaching size limit (\(data.count) bytes)"
 			: nil
 
+		// Snapshot both records so a failed index update cannot leave orphaned
+		// data or replace the contents of an existing env project.
+		let previousData = readItem(account: vaultId)
+		let previousIndex = readIndex()
+
 		// Save secrets data
 		let dataResult = writeItem(account: vaultId, data: data)
 		guard dataResult else {
@@ -191,14 +252,22 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 
 		// Update index
-		var index = readIndex()
+		var index = previousIndex
 		if let i = index.firstIndex(where: { $0.id == vaultId }) {
 			index[i].name = projectName
 			index[i].path = projectPath
 		} else {
 			index.append(VaultIndexEntry(id: vaultId, name: projectName, path: projectPath))
 		}
-		writeIndex(index)
+		guard writeIndex(index) else {
+			if let previousData {
+				_ = writeItem(account: vaultId, data: previousData)
+			} else {
+				_ = deleteItem(account: vaultId)
+			}
+			_ = writeIndex(previousIndex)
+			return .failure(.unexpectedStatus(-1))
+		}
 
 		if let warning {
 			return .successWithWarning(warning)
@@ -207,13 +276,20 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	}
 
 	func deleteProject(vaultId: String) -> Bool {
+		let previousData = readItem(account: vaultId)
+		let previousIndex = readIndex()
 		let status = deleteItem(account: vaultId)
 		guard status == errSecSuccess || status == errSecItemNotFound else { return false }
 
 		// Update index
-		var index = readIndex()
+		var index = previousIndex
 		index.removeAll { $0.id == vaultId }
-		return writeIndex(index)
+		guard writeIndex(index) else {
+			if let previousData { _ = writeItem(account: vaultId, data: previousData) }
+			_ = writeIndex(previousIndex)
+			return false
+		}
+		return true
 	}
 
 	/// Remove from sidebar only — keeps Keychain data intact.
@@ -271,19 +347,21 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			// Vault secrets are intentionally accessible to other apps in the same user
 			// session (shared with Rust CLI) while the Mac is unlocked. macOS Keychain
 			// encrypts at rest when locked.
-			let addQuery: [String: Any] = [
-				kSecClass as String: kSecClassGenericPassword,
-				kSecAttrService as String: service,
-				kSecAttrAccount as String: account,
-				kSecValueData as String: data,
-				kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-			]
-
-			let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-			return addStatus == errSecSuccess
+			return addItem(account: account, data: data) == errSecSuccess
 		}
 
 		return false
+	}
+
+	private func addItem(account: String, data: Data) -> OSStatus {
+		let addQuery: [String: Any] = [
+			kSecClass as String: kSecClassGenericPassword,
+			kSecAttrService as String: service,
+			kSecAttrAccount as String: account,
+			kSecValueData as String: data,
+			kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+		]
+		return SecItemAdd(addQuery as CFDictionary, nil)
 	}
 
 	private func deleteItem(account: String) -> OSStatus {

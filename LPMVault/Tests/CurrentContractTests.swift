@@ -101,6 +101,29 @@ struct CurrentContractTests {
 		#expect(!EnvValidation.isValidEnvironmentName(String(repeating: "a", count: 65)))
 	}
 
+	@Test("env project identifiers match the Rust portability boundary")
+	func safeVaultIdentifiers() {
+		for id in ["550e8400-e29b-41d4-a716-446655440000", "my-vault", "vault_v2"] {
+			#expect(EnvValidation.isSafeVaultId(id))
+		}
+		for id in [
+			"", ".", "..", "../escape", "foo/bar", "foo\\bar", "~/.lpm", "foo..bar",
+			"__index__", "__sync_metadata__", "__org_associations__", "__x25519_private_key__",
+		] {
+			#expect(!EnvValidation.isSafeVaultId(id))
+		}
+	}
+
+	@Test("organization slugs are portable path segments")
+	func safeOrganizationSlugs() {
+		for slug in ["acme", "acme-team", "team_2"] {
+			#expect(EnvValidation.isSafeOrgSlug(slug))
+		}
+		for slug in ["", "-leading", "../team", "team/other", "team space"] {
+			#expect(!EnvValidation.isSafeOrgSlug(slug))
+		}
+	}
+
 	@Test("decrypted cloud payload rejects invalid environment and variable names")
 	func invalidCloudPayloadNames() throws {
 		let invalidEnvironment = Data(#"{"environments":{"../prod":{"TOKEN":"secret"}}}"#.utf8)

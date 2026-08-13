@@ -45,9 +45,7 @@ struct VaultStoreTests {
 		let store = VaultStore(
 			keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService())
 
-		store.loadProjects()
-		// loadProjects uses Task.detached — give it time to complete
-		try await Task.sleep(for: .milliseconds(200))
+		await store.loadProjects()
 
 		#expect(store.projects.count == 2)
 		// Should be sorted alphabetically
@@ -60,6 +58,47 @@ struct VaultStoreTests {
 		let (store, _, _, _) = makeStore()
 		// Empty store, projects pre-populated as empty
 		#expect(store.projects.isEmpty)
+	}
+
+	@Test("lock cancels a pending project load")
+	func lockCancelsProjectLoad() async throws {
+		let keychain = MockKeychainService()
+		keychain.storage["id-1"] = (name: "project", path: "", secrets: ["TOKEN": "secret"])
+		keychain.listProjectsDelay = .milliseconds(150)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService()
+		)
+
+		let load = Task { await store.loadProjects() }
+		try await Task.sleep(for: .milliseconds(20))
+		store.lock()
+		_ = await load.value
+
+		#expect(store.projects.isEmpty)
+		#expect(!store.isLoadingProjects)
+	}
+
+	@Test("unlock waits for the latest project snapshot")
+	func unlockWaitsForProjectLoad() async throws {
+		let keychain = MockKeychainService()
+		keychain.storage["id-1"] = (name: "project", path: "", secrets: ["TOKEN": "secret"])
+		keychain.listProjectsDelay = .milliseconds(100)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService()
+		)
+
+		let unlock = Task { await store.unlock() }
+		try await Task.sleep(for: .milliseconds(20))
+		#expect(!store.isUnlocked)
+		#expect(store.isUnlocking)
+		await unlock.value
+
+		#expect(store.isUnlocked)
+		#expect(store.projects.first?.secrets["TOKEN"] == "secret")
 	}
 
 	// MARK: - Add Project
@@ -91,6 +130,21 @@ struct VaultStoreTests {
 
 		#expect(store.projects.isEmpty)
 		#expect(store.error != nil)
+	}
+
+	@Test("reserved Keychain accounts cannot be env project IDs")
+	func reservedProjectIdsAreRejected() async {
+		let (store, keychain, _, _) = makeStore()
+		for id in ["__index__", "__sync_metadata__", "__org_associations__", "__x25519_private_key__"] {
+			let added = await store.addProjectWithVaultId(
+				vaultId: id,
+				name: "reserved",
+				path: "",
+				environments: ["default": [:]]
+			)
+			#expect(!added)
+		}
+		#expect(keychain.storage.isEmpty)
 	}
 
 	// MARK: - Delete Project
@@ -306,26 +360,68 @@ struct VaultStoreTests {
 	// MARK: - Selected Project
 
 	@Test("selectedProject returns correct project")
-	func selectedProject() {
+	func selectedProject() async {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: [:]),
 			(id: "id-2", name: "project-b", path: "/tmp/b", secrets: [:]),
 		])
-		store.loadProjects()
+		await store.loadProjects()
 		store.selectedProjectId = "id-2"
 
 		#expect(store.selectedProject?.name == "project-b")
 	}
 
 	@Test("selectedProject returns nil when nothing selected")
-	func noSelectedProject() {
+	func noSelectedProject() async {
 		let (store, _, _, _) = makeStore()
-		store.loadProjects()
+		await store.loadProjects()
 
 		#expect(store.selectedProject == nil)
 	}
 
 	// MARK: - Token Operations
+
+	@Test("a newer token load wins and owns the loading flag")
+	func newerTokenLoadWins() async throws {
+		let api = MockAPIService()
+		api.userResponses = [
+			(delay: nil, user: testUser(id: "old", username: "old")),
+			(delay: nil, user: testUser(id: "new", username: "new")),
+		]
+		api.personalTokenResponses = [
+			(delay: .milliseconds(150), tokens: []),
+			(delay: .milliseconds(100), tokens: []),
+		]
+		let (store, _, _, _) = makeStore(apiService: api)
+
+		let oldLoad = Task { await store.loadTokens() }
+		try await Task.sleep(for: .milliseconds(20))
+		let newLoad = Task { await store.loadTokens() }
+		try await Task.sleep(for: .milliseconds(40))
+		#expect(store.isLoadingTokens)
+		await newLoad.value
+		#expect(store.currentUser?.username == "new")
+		#expect(!store.isLoadingTokens)
+		await oldLoad.value
+		#expect(store.currentUser?.username == "new")
+	}
+
+	@Test("logout invalidates a pending token load")
+	func logoutInvalidatesTokenLoad() async throws {
+		let api = MockAPIService()
+		api.user = testUser(id: "u1", username: "late")
+		api.delay = .milliseconds(150)
+		let (store, _, _, _) = makeStore(apiService: api)
+
+		let load = Task { await store.loadTokens() }
+		try await Task.sleep(for: .milliseconds(20))
+		store.logout()
+		await load.value
+
+		#expect(store.currentUser == nil)
+		#expect(store.personalTokens.isEmpty)
+		#expect(!store.isLoadingTokens)
+	}
 
 	@Test("load tokens populates user and personal tokens")
 	func loadTokens() async {
@@ -463,5 +559,153 @@ struct VaultStoreTests {
 		#expect(store.showKeyApprovalSheet == false)
 		#expect(store.lastSyncStatus == "rejected")
 		#expect(store.error != nil)
+	}
+
+	// MARK: - Transactional Imports
+
+	@Test("failed personal import leaves no local state")
+	func failedPersonalImportIsAtomic() async {
+		let importService = MockEnvProjectImportService()
+		importService.personalResult = .failure(.invalidPayload("Invalid encrypted payload."))
+		let (store, keychain) = makeImportStore(importService: importService)
+
+		let result = await store.importCloudProject(remoteProject(id: "cloud-1", name: "cloud"))
+
+		#expect(result == .failure(.invalidPayload("Invalid encrypted payload.")))
+		#expect(keychain.storage.isEmpty)
+		#expect(keychain.dataStorage["__sync_metadata__"] == nil)
+		#expect(store.projects.isEmpty)
+		#expect(store.selectedProjectId == nil)
+		#expect(store.syncMetadata.isEmpty)
+	}
+
+	@Test("successful organization import publishes the final project once")
+	func successfulOrganizationImportIsAtomic() async throws {
+		let importService = MockEnvProjectImportService()
+		importService.organizationResult = .success(RemoteEnvProjectPayload(
+			environments: ["production": ["TOKEN": "secret"]],
+			version: 7,
+			keyCount: 1
+		))
+		let (store, keychain) = makeImportStore(importService: importService)
+
+		let result = await store.importOrganizationProject(
+			remoteProject(id: "org-1", name: "production"),
+			orgSlug: "acme"
+		)
+
+		#expect(result == .success(ImportedEnvProject(projectId: "org-1", version: 7, keyCount: 1)))
+		#expect(keychain.saveEnvironmentsCallCount == 1)
+		#expect(keychain.envStorage["org-1"]?.environments["production"]?["TOKEN"] == "secret")
+		#expect(store.projects.first?.secrets(for: "production")["TOKEN"] == "secret")
+		#expect(store.vaultOrgAssociations["org-1"] == "acme")
+		#expect(store.syncMetadata["org-1"]?.lastVersion == 7)
+		#expect(store.selectedProjectId == "org-1")
+	}
+
+	@Test("organization association failure rolls back the project")
+	func organizationAssociationFailureRollsBack() async {
+		let importService = MockEnvProjectImportService()
+		importService.organizationResult = .success(RemoteEnvProjectPayload(
+			environments: ["default": ["TOKEN": "secret"]],
+			version: 3,
+			keyCount: 1
+		))
+		let (store, keychain) = makeImportStore(importService: importService)
+		keychain.failDataAccounts = ["__org_associations__"]
+
+		let result = await store.importOrganizationProject(
+			remoteProject(id: "org-fail", name: "failed"),
+			orgSlug: "acme"
+		)
+
+		guard case .failure(.persistence) = result else {
+			Issue.record("Expected persistence failure")
+			return
+		}
+		#expect(keychain.storage["org-fail"] == nil)
+		#expect(store.projects.isEmpty)
+		#expect(store.vaultOrgAssociations["org-fail"] == nil)
+		#expect(store.syncMetadata["org-fail"] == nil)
+	}
+
+	@Test("duplicate cloud import never overwrites local secrets")
+	func duplicateImportDoesNotOverwrite() async {
+		let importService = MockEnvProjectImportService()
+		importService.personalResult = .success(RemoteEnvProjectPayload(
+			environments: ["default": ["TOKEN": "remote"]],
+			version: 2,
+			keyCount: 1
+		))
+		let (store, keychain) = makeImportStore(importService: importService)
+		keychain.storage["duplicate"] = (name: "local", path: "", secrets: ["TOKEN": "local"])
+
+		let result = await store.importCloudProject(remoteProject(id: "duplicate", name: "remote"))
+
+		#expect(result == .failure(.duplicate))
+		#expect(keychain.storage["duplicate"]?.secrets["TOKEN"] == "local")
+		#expect(keychain.saveEnvironmentsCallCount == 0)
+	}
+
+	@Test("a concurrent CLI create wins without being overwritten")
+	func concurrentCreateDuringImportDoesNotOverwrite() async {
+		let importService = MockEnvProjectImportService()
+		importService.personalResult = .success(RemoteEnvProjectPayload(
+			environments: ["default": ["TOKEN": "remote"]],
+			version: 2,
+			keyCount: 1
+		))
+		let (store, keychain) = makeImportStore(importService: importService)
+		keychain.onCreateEnvironments = {
+			keychain.envStorage["raced"] = (
+				name: "cli",
+				path: "",
+				environments: ["default": ["TOKEN": "cli"]]
+			)
+		}
+
+		let result = await store.importCloudProject(remoteProject(id: "raced", name: "remote"))
+
+		#expect(result == .failure(.duplicate))
+		#expect(keychain.envStorage["raced"]?.environments["default"]?["TOKEN"] == "cli")
+		#expect(keychain.saveEnvironmentsCallCount == 0)
+		#expect(store.projects.isEmpty)
+	}
+
+	private func makeImportStore(
+		importService: MockEnvProjectImportService
+	) -> (VaultStore, MockKeychainService) {
+		let keychain = MockKeychainService()
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			importServiceFactory: { _ in importService },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		return (store, keychain)
+	}
+
+	private func remoteProject(id: String, name: String?) -> SyncService.RemoteProject {
+		SyncService.RemoteProject(
+			vaultId: id,
+			name: name,
+			version: 1,
+			updatedAt: nil,
+			updatedBy: nil
+		)
+	}
+
+	private func testUser(id: String, username: String) -> LPMUser {
+		LPMUser(
+			id: id,
+			username: username,
+			name: nil,
+			email: nil,
+			avatarUrl: nil,
+			plan: nil,
+			createdAt: nil,
+			orgs: nil
+		)
 	}
 }

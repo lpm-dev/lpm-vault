@@ -5,17 +5,13 @@ import Testing
 
 /// These tests use a unique service name to avoid polluting the real Keychain.
 /// Each test creates and cleans up its own Keychain items.
-@Suite("KeychainService — Real Keychain Integration")
+@Suite("KeychainService — Real Keychain Integration", .serialized)
 struct KeychainServiceTests {
-	/// Unique service name per test run to avoid collisions
-	private static let testService = "dev.lpm.vault.test.\(UUID().uuidString.prefix(8))"
-
 	private func makeService() -> KeychainService {
-		KeychainService(service: Self.testService)
+		KeychainService(service: "dev.lpm.vault.test.\(UUID().uuidString)")
 	}
 
-	private func cleanup(vaultIds: [String]) {
-		let service = makeService()
+	private func cleanup(service: KeychainService, vaultIds: [String]) {
 		for id in vaultIds {
 			_ = service.deleteProject(vaultId: id)
 		}
@@ -27,7 +23,7 @@ struct KeychainServiceTests {
 	func roundTrip() {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
-		defer { cleanup(vaultIds: [vaultId]) }
+		defer { cleanup(service: service, vaultIds: [vaultId]) }
 
 		let secrets = ["DB_HOST": "localhost", "API_KEY": "sk-123", "PORT": "3000"]
 
@@ -51,7 +47,7 @@ struct KeychainServiceTests {
 	func update() {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
-		defer { cleanup(vaultIds: [vaultId]) }
+		defer { cleanup(service: service, vaultIds: [vaultId]) }
 
 		// Create
 		_ = service.saveSecrets(
@@ -171,7 +167,7 @@ struct KeychainServiceTests {
 	func emptySecrets() {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
-		defer { cleanup(vaultIds: [vaultId]) }
+		defer { cleanup(service: service, vaultIds: [vaultId]) }
 
 		let result = service.saveSecrets(
 			vaultId: vaultId,
@@ -193,7 +189,7 @@ struct KeychainServiceTests {
 	func specialCharacters() {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
-		defer { cleanup(vaultIds: [vaultId]) }
+		defer { cleanup(service: service, vaultIds: [vaultId]) }
 
 		let secrets = [
 			"URL": "postgres://user:p@ss=w0rd@host:5432/db?ssl=true&timeout=30",
