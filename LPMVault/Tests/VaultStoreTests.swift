@@ -1155,6 +1155,8 @@ struct VaultStoreTests {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
+		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
@@ -1168,11 +1170,37 @@ struct VaultStoreTests {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "val"])
 		])
+		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		store.updateSecret(in: "id-1", key: "MISSING", newValue: "new")
 
 		#expect(store.projects[0].secrets["KEY"] == "val")
 		#expect(store.projects[0].secrets["MISSING"] == nil)
+	}
+
+	@Test("update uses the captured environment instead of current navigation")
+	func updateCapturedEnvironment() {
+		let (store, _, _, _) = makeStore()
+		store.projects = [
+			VaultProject(
+				id: "id-1",
+				name: "project",
+				path: "/tmp/p",
+				environments: [
+					"default": ["KEY": "default"],
+					"staging": ["KEY": "staging"],
+				]
+			),
+		]
+		store.isUnlocked = true
+		store.selectProject("id-1")
+		store.selectedEnvironment = "default"
+
+		store.updateSecret(in: "id-1", environment: "staging", key: "KEY", newValue: "updated")
+
+		#expect(store.projects[0].environments["default"]?["KEY"] == "default")
+		#expect(store.projects[0].environments["staging"]?["KEY"] == "updated")
 	}
 
 	// MARK: - Delete Secret
@@ -1182,6 +1210,8 @@ struct VaultStoreTests {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["A": "1", "B": "2"])
 		])
+		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		store.deleteSecret(from: "id-1", key: "A")
 
@@ -1189,6 +1219,47 @@ struct VaultStoreTests {
 		#expect(store.projects[0].secrets["B"] == "2")
 		await waitUntil { keychain.storage["id-1"]?.secrets["A"] == nil }
 		#expect(keychain.storage["id-1"]?.secrets["A"] == nil)
+	}
+
+	@Test("delete uses the captured environment instead of current navigation")
+	func deleteCapturedEnvironment() {
+		let (store, _, _, _) = makeStore()
+		store.projects = [
+			VaultProject(
+				id: "id-1",
+				name: "project",
+				path: "/tmp/p",
+				environments: [
+					"default": ["KEY": "default"],
+					"staging": ["KEY": "staging"],
+				]
+			),
+		]
+		store.isUnlocked = true
+		store.selectProject("id-1")
+		store.selectedEnvironment = "default"
+
+		store.deleteSecret(from: "id-1", environment: "staging", key: "KEY")
+
+		#expect(store.projects[0].environments["default"]?["KEY"] == "default")
+		#expect(store.projects[0].environments["staging"]?["KEY"] == nil)
+	}
+
+	@Test("captured secret mutations reject stale project navigation")
+	func capturedMutationsRejectStaleProject() {
+		let (store, _, _, _) = makeStore()
+		store.projects = [
+			VaultProject(id: "project-a", name: "A", path: "", environments: ["default": ["KEY": "a"]]),
+			VaultProject(id: "project-b", name: "B", path: "", environments: ["default": ["KEY": "b"]]),
+		]
+		store.isUnlocked = true
+		store.selectProject("project-b")
+
+		store.updateSecret(in: "project-a", environment: "default", key: "KEY", newValue: "changed")
+		store.deleteSecret(from: "project-a", environment: "default", key: "KEY")
+
+		#expect(store.projects.first(where: { $0.id == "project-a" })?.secrets["KEY"] == "a")
+		#expect(store.projects.first(where: { $0.id == "project-b" })?.secrets["KEY"] == "b")
 	}
 
 	// MARK: - Search
@@ -1831,6 +1902,54 @@ struct VaultStoreTests {
 		#expect(store.projects.first?.secrets["TOKEN"] == "local")
 		#expect(store.syncMetadata[projectId] == nil)
 		#expect(store.lastSyncStatus == nil)
+		#expect(!store.isSyncing)
+	}
+
+	@Test("project navigation suppresses a stale personal push conflict")
+	func projectNavigationSuppressesStalePersonalPush() async {
+		let gate = AsyncGate()
+		let sync = MockPersonalSyncService()
+		sync.pushHandlers = [{
+			await gate.arriveAndWait()
+			return SyncService.SyncStatus(
+				vaultId: nil,
+				version: nil,
+				contentKeyVersion: nil,
+				recipientPublicKeyVersion: nil,
+				recipientPublicKeyFingerprint: nil,
+				status: nil,
+				error: "version conflict",
+				code: nil,
+				serverVersion: nil,
+				hint: nil,
+				encryptedBlob: nil,
+				wrappedKey: nil,
+				updatedAt: nil
+			)
+		}]
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			personalSyncServiceFactory: { _ in sync },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.projects = [
+			VaultProject(id: "project-a", name: "A", path: "", environments: ["default": ["TOKEN": "a"]]),
+			VaultProject(id: "project-b", name: "B", path: "", environments: ["default": ["TOKEN": "b"]]),
+		]
+		store.isUnlocked = true
+		store.selectProject("project-a")
+
+		let push = Task { await store.pushToCloud() }
+		await gate.waitUntilArrived()
+		store.selectProject("project-b")
+		await gate.release()
+		await push.value
+
+		#expect(store.selectedProjectId == "project-b")
+		#expect(store.lastSyncStatus == nil)
+		#expect(store.syncMetadata["project-a"] == nil)
 		#expect(!store.isSyncing)
 	}
 

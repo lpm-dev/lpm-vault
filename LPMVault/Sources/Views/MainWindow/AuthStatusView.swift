@@ -8,137 +8,137 @@ struct AuthStatusView: View {
 		VStack(spacing: 0) {
 			HStack {
 				Text("Settings")
-					.font(.headline)
+					.font(.system(size: 19, weight: .bold))
+					.foregroundStyle(VaultPalette.textPrimary)
 				Spacer()
 			}
-			.padding(.horizontal, 12)
-			.padding(.vertical, 10)
+			.padding(.horizontal, 20)
+			.frame(height: 58)
 
-			Divider()
+			VaultHairline()
 
 			if let user = store.currentUser {
-				List {
-					// Profile
-					HStack(spacing: 12) {
-						if let avatarUrl = user.avatarUrl, let url = URL(string: avatarUrl) {
-							AsyncImage(url: url) { image in
-								image.resizable().scaledToFill()
-							} placeholder: {
-								Circle().fill(.quaternary).overlay {
-									Text(String(user.username.prefix(1)).uppercased())
-										.font(.title2).fontWeight(.medium).foregroundStyle(.secondary)
+				ScrollView {
+					VStack(alignment: .leading, spacing: 18) {
+						settingsSection("ACCOUNT") {
+							HStack(spacing: 12) {
+								profileAvatar(user)
+								VStack(alignment: .leading, spacing: 2) {
+									Text("@\(user.username)")
+										.font(.system(size: 14, weight: .semibold))
+										.foregroundStyle(VaultPalette.textPrimary)
+									if let email = user.email {
+										Text(email).font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
+									}
+								}
+								Spacer()
+								if let plan = user.plan {
+									VaultTagBadge(text: plan.uppercased(), foreground: VaultPalette.accent, background: VaultPalette.accentTint)
 								}
 							}
-							.frame(width: 40, height: 40)
-							.clipShape(Circle())
-						} else {
-							Circle().fill(.quaternary).frame(width: 40, height: 40).overlay {
-								Text(String(user.username.prefix(1)).uppercased())
-									.font(.title2).fontWeight(.medium).foregroundStyle(.secondary)
+						}
+
+						settingsSection("SERVER") {
+							HStack(spacing: 10) {
+								Image(systemName: store.appEnvironment == .production ? "globe" : "laptopcomputer")
+									.foregroundStyle(VaultPalette.accent)
+								VStack(alignment: .leading, spacing: 2) {
+									Text(store.appEnvironment == .production ? "Production" : "Local development")
+										.font(.system(size: 13, weight: .semibold))
+									Text(store.appEnvironment == .production ? "lpm.dev" : "localhost:3000")
+										.font(VaultTypography.mono(11))
+										.foregroundStyle(VaultPalette.textTertiary)
+								}
+								Spacer()
+								#if DEBUG
+								VaultBarButton(
+									title: store.appEnvironment == .production ? "Use local" : "Use production"
+								) {
+									store.switchEnvironment(to: store.appEnvironment == .production ? .development : .production)
+								}
+								#endif
 							}
 						}
 
-						VStack(alignment: .leading, spacing: 2) {
-							Text("@\(user.username)")
-								.font(.callout)
-								.fontWeight(.semibold)
-							if let email = user.email {
-								Text(email)
-									.font(.caption)
-									.foregroundStyle(.tertiary)
+						settingsSection("ACTIONS") {
+							HStack(spacing: 8) {
+								VaultBarButton(systemImage: "globe", title: "Manage on lpm.dev") {
+									if let url = URL(string: "/dashboard/settings", relativeTo: store.appEnvironment.baseURL)?.absoluteURL {
+										NSWorkspace.shared.open(url)
+									}
+								}
+								VaultBarButton(systemImage: "rectangle.portrait.and.arrow.right", title: "Sign out") {
+									showLogoutConfirmation = true
+								}
 							}
 						}
 					}
-					.padding(.vertical, 2)
-
-					if let plan = user.plan {
-						Section("Plan") {
-							Label(plan.capitalized, systemImage: "creditcard")
-						}
-					}
-
-					// Environment toggle
-					Section("Server") {
-						#if DEBUG
-						HStack {
-							Label(
-								store.appEnvironment == .production
-									? "Production (lpm.dev)"
-									: "Local development (localhost:3000)",
-								systemImage: store.appEnvironment == .production ? "globe" : "laptopcomputer"
-							)
-							Spacer()
-							if store.appEnvironment == .development {
-								Text("DEV")
-									.font(.system(size: 9, weight: .bold, design: .monospaced))
-									.foregroundStyle(.white)
-									.padding(.horizontal, 5)
-									.padding(.vertical, 2)
-									.background(.orange, in: RoundedRectangle(cornerRadius: 4))
-							}
-						}
-						Button(store.appEnvironment == .production ? "Switch to Development" : "Switch to Production") {
-							store.switchEnvironment(to: store.appEnvironment == .production ? .development : .production)
-						}
-						#else
-						Label("Production (lpm.dev)", systemImage: "globe")
-						#endif
-					}
-
-					Section {
-						Button("Manage Account on lpm.dev") {
-							if let url = URL(
-								string: "/dashboard/settings",
-								relativeTo: store.appEnvironment.baseURL
-							)?.absoluteURL {
-								NSWorkspace.shared.open(url)
-							}
-						}
-
-						Button("Sign Out", role: .destructive) {
-							showLogoutConfirmation = true
-						}
-					}
+					.padding(20)
 				}
 			} else {
 				VStack(spacing: 16) {
-					Image(systemName: "person.crop.circle.badge.questionmark")
-						.font(.system(size: 40))
-						.foregroundStyle(.secondary)
+					VaultAppMark(size: 42)
 
 					Text("Not logged in")
-						.font(.title3)
-						.foregroundStyle(.secondary)
+						.font(.system(size: 18, weight: .bold))
+						.foregroundStyle(VaultPalette.textPrimary)
+					Text("Sign in to sync personal and organization env projects.")
+						.font(.system(size: 12.5))
+						.foregroundStyle(VaultPalette.textTertiary)
 
-					Button {
+					VaultBarButton(systemImage: "globe", title: store.isLoggingIn ? "Waiting for browser…" : "Sign in with browser", filled: true, disabled: store.isLoggingIn) {
 						Task { await store.login() }
-					} label: {
-						Label("Sign In with Browser", systemImage: "globe")
 					}
-					.buttonStyle(.borderedProminent)
-					.disabled(store.isLoggingIn)
 
 					if store.isLoggingIn {
 						ProgressView().controlSize(.small)
-						Text("Waiting for browser...")
-							.font(.caption).foregroundStyle(.secondary)
 					}
 
 					if let error = store.error {
 						Text(error)
-							.font(.caption).foregroundStyle(.red)
+							.font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
 							.multilineTextAlignment(.center)
-							.frame(maxWidth: 240)
+							.frame(maxWidth: 320)
 					}
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 			}
 		}
+		.background(VaultPalette.content)
 		.confirmationDialog("Sign out?", isPresented: $showLogoutConfirmation, titleVisibility: .visible) {
 			Button("Sign Out", role: .destructive) { store.logout() }
 			Button("Cancel", role: .cancel) {}
 		} message: {
 			Text("Your local env data stays in Keychain. You can sign in again anytime.")
+		}
+	}
+
+	private func settingsSection<Content: View>(
+		_ title: String,
+		@ViewBuilder content: () -> Content
+	) -> some View {
+		VStack(alignment: .leading, spacing: 8) {
+			Text(title).vaultSectionLabel()
+			content()
+				.padding(14)
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.sidebar))
+				.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		}
+	}
+
+	@ViewBuilder
+	private func profileAvatar(_ user: LPMUser) -> some View {
+		if let avatarUrl = user.avatarUrl, let url = URL(string: avatarUrl) {
+			AsyncImage(url: url) { image in
+				image.resizable().scaledToFill()
+			} placeholder: {
+				VaultInitialsAvatar(initials: String(user.username.prefix(1)).uppercased(), size: 42)
+			}
+			.frame(width: 42, height: 42)
+			.clipShape(Circle())
+		} else {
+			VaultInitialsAvatar(initials: String(user.username.prefix(1)).uppercased(), size: 42)
 		}
 	}
 }
