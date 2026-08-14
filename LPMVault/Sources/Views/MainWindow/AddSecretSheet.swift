@@ -39,99 +39,99 @@ struct AddSecretSheet: View {
 	}
 
 	var body: some View {
-		VStack(spacing: 0) {
-			// Header
-			HStack {
-				Text("Add Secret")
-					.font(.headline)
-				Spacer()
-				Button {
-					dismiss()
-				} label: {
-					Image(systemName: "xmark.circle.fill")
-						.foregroundStyle(.secondary)
-				}
-				.buttonStyle(.plain)
-				.disabled(isSubmitting)
-				.keyboardShortcut(.escape, modifiers: [])
+		VStack(alignment: .leading, spacing: 0) {
+			VStack(alignment: .leading, spacing: 5) {
+				Text("New key")
+					.font(.system(size: 17, weight: .bold))
+					.foregroundStyle(VaultPalette.textPrimary)
+				Text("Stored encrypted in \(VaultProject.displayName(for: environment)).")
+					.font(.system(size: 12.5))
+					.foregroundStyle(VaultPalette.textTertiary)
 			}
-			.padding()
+			.padding(20)
 
-			Divider()
+			VaultHairline()
 
-			// Form
-			VStack(alignment: .leading, spacing: 16) {
-				VStack(alignment: .leading, spacing: 6) {
-					Text("Key")
-						.font(.subheadline)
-						.fontWeight(.medium)
-					TextField("e.g. DATABASE_URL", text: $key)
-						.textFieldStyle(.roundedBorder)
-						.font(.system(.body, design: .monospaced))
+			VStack(alignment: .leading, spacing: 14) {
+				modalField(label: "KEY", error: isSubmitting ? nil : validationError) {
+					TextField("DATABASE_URL", text: $key)
+						.textFieldStyle(.plain)
+						.font(VaultTypography.mono(12.5))
 						.focused($focusedField, equals: .key)
 						.disabled(isSubmitting)
-
-					if !isSubmitting, let validationError {
-						Text(validationError)
-								.font(.caption)
-								.foregroundStyle(.red)
-					}
+						.onSubmit { focusedField = .value }
 				}
 
-				VStack(alignment: .leading, spacing: 6) {
-					Text("Value")
-						.font(.subheadline)
-						.fontWeight(.medium)
+				modalField(label: "VALUE") {
 					SecureField("Secret value", text: $value)
-						.textFieldStyle(.roundedBorder)
-						.font(.system(.body, design: .monospaced))
+						.textFieldStyle(.plain)
+						.font(VaultTypography.mono(12.5))
 						.focused($focusedField, equals: .value)
 						.disabled(isSubmitting)
+						.onSubmit { if canAdd { Task { await addSecret() } } }
+				}
+
+				HStack(spacing: 8) {
+					Text("ENVIRONMENT").vaultSectionLabel()
+					Spacer()
+					VaultTagBadge(
+						text: VaultProject.displayName(for: environment),
+						foreground: VaultPalette.accent,
+						background: VaultPalette.accentTint
+					)
 				}
 
 				if let error {
 					Text(error)
-						.font(.caption)
-						.foregroundStyle(.red)
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.redText)
 				}
 			}
-			.padding()
+			.padding(20)
 
-			Divider()
+			VaultHairline()
 
-			// Actions
-			HStack {
+			HStack(spacing: 8) {
 				Spacer()
-				Button("Cancel") {
-					dismiss()
-				}
-				.keyboardShortcut(.escape, modifiers: [])
-				.disabled(isSubmitting)
-
-				Button {
-					Task { await addSecret() }
-				} label: {
-					if isSubmitting {
-						ProgressView()
-							.controlSize(.small)
-							.frame(minWidth: 26)
-					} else {
-						Text("Add")
-					}
-				}
-				.buttonStyle(.borderedProminent)
-				.disabled(!canAdd)
+				VaultBarButton(title: "Cancel", disabled: isSubmitting) { dismiss() }
+					.keyboardShortcut(.escape, modifiers: [])
+				VaultBarButton(
+					title: isSubmitting ? "Adding…" : "Add key",
+					filled: true,
+					disabled: !canAdd
+				) { Task { await addSecret() } }
 				.keyboardShortcut(.defaultAction)
 				.accessibilityLabel(isSubmitting ? "Adding secret" : "Add secret")
 			}
-			.padding()
+			.padding(16)
 		}
 		.frame(width: 420)
+		.background(VaultPalette.content)
 		.onAppear {
 			focusedField = .key
 		}
 		.onChange(of: key) { _, _ in error = nil }
 		.onChange(of: value) { _, _ in error = nil }
+	}
+
+	private func modalField<Content: View>(
+		label: String,
+		error: String? = nil,
+		@ViewBuilder content: () -> Content
+	) -> some View {
+		VStack(alignment: .leading, spacing: 7) {
+			Text(label).vaultSectionLabel()
+			content()
+				.padding(.horizontal, 11)
+				.frame(height: 34)
+				.background(RoundedRectangle(cornerRadius: 8).fill(.white))
+				.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			if let error {
+				Text(error)
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.redText)
+			}
+		}
 	}
 
 	private func addSecret() async {

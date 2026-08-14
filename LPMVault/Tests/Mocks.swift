@@ -358,6 +358,7 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 final class MockPersonalSyncService: PersonalSyncServiceProtocol, @unchecked Sendable {
 	private let lock = NSLock()
 	var pullHandlers: [@Sendable () async -> SyncService.SyncStatus?] = []
+	var pushHandlers: [@Sendable () async -> SyncService.SyncStatus?] = []
 
 	func pull(authToken: String, vaultId: String) async -> SyncService.SyncStatus? {
 		_ = authToken
@@ -387,7 +388,11 @@ final class MockPersonalSyncService: PersonalSyncServiceProtocol, @unchecked Sen
 		_ = force
 		_ = name
 		_ = schema
-		return nil
+		let handler: (@Sendable () async -> SyncService.SyncStatus?)? = lock.withLock {
+			guard !pushHandlers.isEmpty else { return nil }
+			return pushHandlers.removeFirst()
+		}
+		return await handler?()
 	}
 }
 

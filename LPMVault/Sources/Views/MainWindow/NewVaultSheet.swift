@@ -18,60 +18,60 @@ struct NewVaultSheet: View {
 	}
 
 	var body: some View {
-		VStack(spacing: 0) {
-			HStack {
-				Text("New Env Project")
-					.font(.headline)
-				Spacer()
-				Button {
-					dismiss()
-				} label: {
-					Image(systemName: "xmark.circle.fill")
-						.foregroundStyle(.secondary)
-				}
-				.buttonStyle(.plain)
-				.keyboardShortcut(.escape, modifiers: [])
-			}
-			.padding()
-
-			Divider()
-
+		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 16) {
-				VStack(alignment: .leading, spacing: 6) {
-					Text("Project Name")
-						.font(.subheadline)
-						.fontWeight(.medium)
-					TextField("e.g. my-api-server", text: $name)
-						.textFieldStyle(.roundedBorder)
+				VStack(alignment: .leading, spacing: 5) {
+					Text("New env project")
+						.font(.system(size: 17, weight: .bold))
+						.foregroundStyle(VaultPalette.textPrimary)
+					Text("Create a new encrypted project in \(isOrg ? (orgSlug ?? "this organization") : "your personal vault").")
+						.font(.system(size: 12.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+				}
+
+				VStack(alignment: .leading, spacing: 7) {
+					Text("PROJECT NAME").vaultSectionLabel()
+					TextField("my-api-server", text: $name)
+						.textFieldStyle(.plain)
+						.font(.system(size: 12.5))
 						.focused($isFocused)
 						.onSubmit { create() }
+						.padding(.horizontal, 11)
+						.frame(height: 34)
+						.background(RoundedRectangle(cornerRadius: 8).fill(.white))
+						.overlay { RoundedRectangle(cornerRadius: 8).stroke(isFocused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
 				}
 
 				if isOrg {
 					HStack(spacing: 6) {
 						Image(systemName: "building.2")
-							.foregroundStyle(.blue)
+							.foregroundStyle(VaultPalette.accent)
 						Text("Will be shared with \(orgSlug ?? "org")")
-							.font(.caption)
-							.foregroundStyle(.secondary)
+							.font(.system(size: 11.5))
+							.foregroundStyle(VaultPalette.textTertiary)
 					}
 				}
 			}
-			.padding()
+			.padding(20)
 
-			Divider()
+			VaultHairline()
 
-			HStack {
+			HStack(spacing: 8) {
 				Spacer()
-				Button("Cancel") { dismiss() }
-				Button("Create") { create() }
-					.buttonStyle(.borderedProminent)
-					.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-					.keyboardShortcut(.return, modifiers: .command)
+				VaultBarButton(title: "Cancel") { dismiss() }
+					.keyboardShortcut(.escape, modifiers: [])
+				VaultBarButton(
+					title: "Create project",
+					filled: true,
+					disabled: name.trimmingCharacters(in: .whitespaces).isEmpty,
+					action: create
+				)
+				.keyboardShortcut(.defaultAction)
 			}
-			.padding()
+			.padding(16)
 		}
-		.frame(width: 380)
+		.frame(width: 420)
+		.background(VaultPalette.content)
 		.onAppear { isFocused = true }
 	}
 

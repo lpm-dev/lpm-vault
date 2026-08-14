@@ -104,6 +104,75 @@ struct VaultProjectTests {
 
 		#expect(a.id != b.id)
 	}
+
+	@Test("workspace key union is stable across dynamic environments")
+	func workspaceKeyUnion() {
+		let project = VaultProject(
+			id: "id",
+			name: "project",
+			path: "",
+			environments: [
+				"default": ["ZEBRA": "1", "ALPHA": "2"],
+				"staging": ["MIDDLE": "3", "ALPHA": "4"],
+			]
+		)
+
+		#expect(project.allSecretKeys == ["ALPHA", "MIDDLE", "ZEBRA"])
+	}
+
+	@Test("workspace derives drift only from differing stored values")
+	func workspaceDrift() {
+		let project = VaultProject(
+			id: "id",
+			name: "project",
+			path: "",
+			environments: [
+				"default": ["SAME": "value", "DIFF": "one", "LOCAL_ONLY": "local"],
+				"staging": ["SAME": "value", "DIFF": "two"],
+			]
+		)
+
+		#expect(!project.hasDrift(for: "SAME"))
+		#expect(project.hasDrift(for: "DIFF"))
+		#expect(!project.hasDrift(for: "LOCAL_ONLY"))
+	}
+
+	@Test("workspace derives missing keys across arbitrary environments")
+	func workspaceMissing() {
+		let project = VaultProject(
+			id: "id",
+			name: "project",
+			path: "",
+			environments: [
+				"default": ["EVERYWHERE": "one", "MISSING": "one"],
+				"ci": ["EVERYWHERE": "two"],
+				"production": ["EVERYWHERE": "three", "MISSING": "three"],
+			]
+		)
+
+		#expect(!project.isMissingSomewhere("EVERYWHERE"))
+		#expect(project.isMissingSomewhere("MISSING"))
+		#expect(project.environmentCount(for: "MISSING") == 2)
+	}
+
+	@Test("workspace snapshot aggregates key status once")
+	func workspaceSnapshot() {
+		let project = VaultProject(
+			id: "id",
+			name: "project",
+			path: "",
+			environments: [
+				"default": ["SAME": "one", "DIFF": "one", "MISSING": "one"],
+				"staging": ["SAME": "one", "DIFF": "two"],
+			]
+		)
+		let snapshot = VaultWorkspaceSnapshot(project: project)
+
+		#expect(snapshot.allSecretKeys == ["DIFF", "MISSING", "SAME"])
+		#expect(snapshot.driftingKeyCount == 1)
+		#expect(snapshot.missingKeyCount == 1)
+		#expect(snapshot.environmentCount(for: "MISSING") == 1)
+	}
 }
 
 @Suite("VaultSecret Model")

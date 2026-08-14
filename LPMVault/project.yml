@@ -36,6 +36,7 @@ targets:
     settings:
       base:
         CODE_SIGN_ENTITLEMENTS: LPMVault.entitlements
+        PRODUCT_MODULE_NAME: LPMVault
         ENABLE_APP_SANDBOX: NO
         INFOPLIST_KEY_NSHighResolutionCapable: YES
         INFOPLIST_KEY_LSUIElement: NO
@@ -51,6 +52,9 @@ targets:
       - target: LPMVault
     settings:
       base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.lpm.vault.tests
+        PRODUCT_NAME: LPMVaultTests
+        PRODUCT_MODULE_NAME: LPMVaultTests
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/LPM Vault.app/Contents/MacOS/LPM Vault"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
