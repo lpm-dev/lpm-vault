@@ -102,6 +102,7 @@ struct LPMVaultApp: App {
 		// Main window — opens automatically on launch
 		Window("LPM Vault", id: "main") {
 			ContentView(store: store)
+				.accessibilityHidden(isObscured)
 				.overlay {
 					if isObscured {
 						ZStack {
@@ -139,8 +140,8 @@ struct LPMVaultApp: App {
 					}
 				}
 		}
-		.defaultSize(width: 900, height: 550)
-		.windowToolbarStyle(.unified(showsTitle: false))
+		.defaultSize(width: 1200, height: 760)
+		.windowStyle(.hiddenTitleBar)
 		.commands {
 			CommandGroup(replacing: .newItem) {}
 			CommandMenu("Env Project") {
@@ -164,6 +165,7 @@ struct LPMVaultApp: App {
 			}
 		}
 	}
+
 }
 
 extension Notification.Name {

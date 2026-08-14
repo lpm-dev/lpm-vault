@@ -1547,17 +1547,37 @@ final class VaultStore {
 	}
 
 	func updateSecret(in projectId: String, key: String, newValue: String) {
-		guard var project = projects.first(where: { $0.id == projectId }) else { return }
-		guard project.environments[selectedEnvironment]?[key] != nil else { return }
+		updateSecret(
+			in: projectId,
+			environment: selectedEnvironment,
+			key: key,
+			newValue: newValue
+		)
+	}
 
-		project.environments[selectedEnvironment]?[key] = newValue
+	func updateSecret(in projectId: String, environment: String, key: String, newValue: String) {
+		guard isUnlocked,
+			selectedProjectId == projectId,
+			var project = selectedProject
+		else { return }
+		guard project.environments[environment]?[key] != nil else { return }
+
+		project.environments[environment]?[key] = newValue
 		saveAndUpdate(project)
 	}
 
 	func deleteSecret(from projectId: String, key: String) {
-		guard var project = projects.first(where: { $0.id == projectId }) else { return }
+		deleteSecret(from: projectId, environment: selectedEnvironment, key: key)
+	}
 
-		project.environments[selectedEnvironment]?.removeValue(forKey: key)
+	func deleteSecret(from projectId: String, environment: String, key: String) {
+		guard isUnlocked,
+			selectedProjectId == projectId,
+			var project = selectedProject,
+			project.environments[environment]?[key] != nil
+		else { return }
+
+		project.environments[environment]?.removeValue(forKey: key)
 		saveAndUpdate(project)
 	}
 
@@ -1777,6 +1797,16 @@ final class VaultStore {
 		scheduleAutoLock()
 	}
 
+	func authenticateForSensitiveAction(reason: String) async -> Bool {
+		guard isUnlocked else { return false }
+		let sessionGeneration = vaultSessionGeneration
+		let success = await biometricService.authenticate(reason: reason)
+		return !Task.isCancelled
+			&& success
+			&& isUnlocked
+			&& sessionGeneration == vaultSessionGeneration
+	}
+
 	func lock() {
 		unlockGeneration &+= 1
 		vaultSessionGeneration &+= 1
@@ -1791,6 +1821,7 @@ final class VaultStore {
 		autoLockTaskGeneration &+= 1
 		isUnlocked = false
 		biometricService.resetCache()
+		ClipboardManager.shared.clearClipboard()
 		// Clear decrypted secrets from memory to reduce exposure window
 		for i in projects.indices {
 			projects[i].environments = projects[i].environments.mapValues { _ in [:] }
@@ -1884,19 +1915,47 @@ final class VaultStore {
 	/// Push the selected project's secrets to cloud.
 	/// Pushes ALL environments (default, live, local, etc.), not just the selected one.
 	func pushToCloud(force: Bool = false) async {
-		guard selectedAccount == .personal, let project = selectedProject else { return }
-		guard let authToken = await currentAuthToken() else {
-			await MainActor.run { error = "Not logged in. Run `lpm login` in terminal first." }
+		guard isUnlocked, selectedAccount == .personal, let project = selectedProject else { return }
+		syncOperationGeneration &+= 1
+		let operationGeneration = syncOperationGeneration
+		let sessionGeneration = vaultSessionGeneration
+		let environment = appEnvironment
+		let authGeneration = authOperationGeneration
+		guard let authToken = await authTokenProvider(environment.registryURL, environment.baseURL) else {
+			guard operationGeneration == syncOperationGeneration,
+				environment == appEnvironment,
+				authGeneration == authOperationGeneration,
+				sessionGeneration == vaultSessionGeneration,
+				isUnlocked,
+				selectedAccount == .personal,
+				selectedProject?.id == project.id
+			else { return }
+			error = "Not logged in. Run `lpm login` in terminal first."
 			return
 		}
+		let authority = SyncAuthority(
+			projectId: project.id,
+			account: .personal,
+			environment: environment,
+			authGeneration: authGeneration,
+			sessionGeneration: sessionGeneration,
+			operationGeneration: operationGeneration,
+			authToken: authToken
+		)
+		guard isCurrentSync(authority) else { return }
 
-		await MainActor.run { isSyncing = true; lastSyncStatus = nil }
+		isSyncing = true
+		lastSyncStatus = nil
 
 		// Always send expectedVersion for audit trail. The server uses the `force`
 		// flag to decide whether to allow the override — not the absence of version.
 		let expectedVersion = syncMetadata[project.id]?.lastVersion
 
 		do {
+			guard await hasCurrentSyncAuth(authority) else {
+				finishSyncIfOwned(authority)
+				return
+			}
 			// Push ALL non-empty environments
 			let nonEmptyEnvs = project.environments.filter { !$0.value.isEmpty }
 			let payload = ["environments": nonEmptyEnvs]
@@ -1907,7 +1966,7 @@ final class VaultStore {
 
 			let (blob, wrapped) = try VaultCrypto.encryptForStableSync(secretsJSON: jsonString)
 
-			let syncService = SyncService(baseURL: appEnvironment.baseURL)
+			let syncService = personalSyncServiceFactory(environment.baseURL)
 			let result = await syncService.push(
 				authToken: authToken,
 				vaultId: project.id,
@@ -1918,28 +1977,32 @@ final class VaultStore {
 				name: project.name,
 				schema: syncSchema(for: project)
 			)
+			guard await hasCurrentSyncAuth(authority) else {
+				finishSyncIfOwned(authority)
+				return
+			}
 
-			await MainActor.run {
-				isSyncing = false
-				if let r = result, r.error == nil {
-					lastSyncStatus = "Pushed (v\(r.version ?? 0))"
-					markSynced(project.id, action: "push", version: r.version)
+			finishSyncIfOwned(authority)
+			if let result, result.error == nil {
+				lastSyncStatus = "Pushed (v\(result.version ?? 0))"
+				markSynced(project.id, action: "push", version: result.version)
+			} else {
+				let message = result?.displayError ?? "Push failed"
+				if message.contains("version conflict") || message.contains("conflict") {
+					lastSyncStatus = "conflict"
 				} else {
-					let errMsg = result?.displayError ?? "Push failed"
-					if errMsg.contains("version conflict") || errMsg.contains("conflict") {
-						lastSyncStatus = "conflict"
-					} else {
-						error = errMsg
-						lastSyncStatus = "failed"
-					}
+					error = message
+					lastSyncStatus = "failed"
 				}
 			}
 		} catch {
-			await MainActor.run {
-				self.error = error.localizedDescription
-				isSyncing = false
-				lastSyncStatus = "failed"
+			guard isCurrentSync(authority) else {
+				finishSyncIfOwned(authority)
+				return
 			}
+			self.error = error.localizedDescription
+			finishSyncIfOwned(authority)
+			lastSyncStatus = "failed"
 		}
 	}
 
