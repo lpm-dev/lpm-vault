@@ -52,6 +52,11 @@ private struct SyncAuthority: Sendable {
 	let authToken: String
 }
 
+private struct AuthTokenResolution: Sendable {
+	let token: String?
+	let failure: String?
+}
+
 struct ImportedEnvProject: Sendable, Equatable {
 	let projectId: String
 	let version: Int
@@ -218,6 +223,7 @@ enum EnvProjectImportError: LocalizedError, Sendable, Equatable {
 	case cancelled
 	case duplicate
 	case notAuthenticated
+	case authStorage(String)
 	case noResponse
 	case noData(String)
 	case invalidSharingKey(String)
@@ -230,7 +236,7 @@ enum EnvProjectImportError: LocalizedError, Sendable, Equatable {
 		case .duplicate: "This env project is already available locally."
 		case .notAuthenticated: "Sign in to lpm.dev, then retry."
 		case .noResponse: "The server request failed. Check your connection and try again."
-		case .noData(let message), .invalidSharingKey(let message),
+		case .authStorage(let message), .noData(let message), .invalidSharingKey(let message),
 			.invalidPayload(let message), .persistence(let message): message
 		}
 	}
@@ -491,10 +497,10 @@ final class VaultStore {
 	private let personalSyncServiceFactory: @Sendable (URL) -> any PersonalSyncServiceProtocol
 	private let envFileImportService: any EnvFileImportServiceProtocol
 	private let sharingKeypairProvider: @Sendable () -> (privateKey: Data, publicKey: Data)
-	private let authTokenProvider: @Sendable (String, URL) async -> String?
+	private let authTokenProvider: @Sendable (String, URL) async throws -> String?
 	private let loginProvider: @Sendable (String, URL) async throws -> AuthSessionCredentials
-	private let authSessionWriter: @Sendable (AuthSessionCredentials, String) throws -> Void
-	private let authSessionClearer: @Sendable (String) -> Void
+	private let authSessionWriter: @Sendable (AuthSessionCredentials, String) async throws -> Void
+	private let authSessionClearer: @Sendable (String) async throws -> Void
 	private let autoLockSleep: @Sendable (Duration) async throws -> Void
 	private let autoLockNow: @Sendable () -> TimeInterval
 	private var autoLockTask: Task<Void, Never>?
@@ -704,17 +710,20 @@ final class VaultStore {
 		sharingKeypairProvider: @escaping @Sendable () -> (privateKey: Data, publicKey: Data) = {
 			VaultCrypto.getOrCreateX25519Keypair()
 		},
-		authTokenProvider: @escaping @Sendable (String, URL) async -> String? = { registryURL, baseURL in
-			await AuthSessionStore.currentAccessToken(registryURL: registryURL, baseURL: baseURL)
+		authTokenProvider: @escaping @Sendable (String, URL) async throws -> String? = { registryURL, baseURL in
+			try await AuthSessionStore.currentAccessToken(
+				registryURL: registryURL,
+				baseURL: baseURL
+			)
 		},
 		loginProvider: @escaping @Sendable (String, URL) async throws -> AuthSessionCredentials = {
 			try await LoginService.login(registryURL: $0, baseURL: $1)
 		},
-		authSessionWriter: @escaping @Sendable (AuthSessionCredentials, String) throws -> Void = {
-			try LoginService.writeAuthSession($0, registryURL: $1)
+		authSessionWriter: @escaping @Sendable (AuthSessionCredentials, String) async throws -> Void = {
+			try await LoginService.writeAuthSession($0, registryURL: $1)
 		},
-		authSessionClearer: @escaping @Sendable (String) -> Void = {
-			LoginService.clearAuthSession(registryURL: $0)
+		authSessionClearer: @escaping @Sendable (String) async throws -> Void = {
+			try await LoginService.clearAuthSession(registryURL: $0)
 		},
 		autoLockSleep: @escaping @Sendable (Duration) async throws -> Void = {
 			try await Task.sleep(for: $0)
@@ -838,7 +847,11 @@ final class VaultStore {
 		guard !(await persistence.containsProject(vaultId: remote.vaultId)) else {
 			return .failure(.duplicate)
 		}
-		guard let authToken = await authTokenProvider(environment.registryURL, baseURL) else {
+		let authResolution = await resolveAuthToken(environment.registryURL, baseURL)
+		guard let authToken = authResolution.token else {
+			if let failure = authResolution.failure {
+				return .failure(.authStorage(failure))
+			}
 			return .failure(.notAuthenticated)
 		}
 		guard sessionGeneration == vaultSessionGeneration, environment == appEnvironment else {
@@ -1593,14 +1606,21 @@ final class VaultStore {
 
 		let task = Task { [weak self] in
 			guard let self else { return }
-			guard let authToken = await self.authTokenProvider(
+			let authResolution = await self.resolveAuthToken(
 				environment.registryURL,
 				environment.baseURL
-			) else {
+			)
+			guard let authToken = authResolution.token else {
 				guard !Task.isCancelled,
 					generation == self.tokenLoadGeneration,
 					environment == self.appEnvironment
 				else { return }
+				if let failure = authResolution.failure {
+					self.error = failure
+					self.isLoadingTokens = false
+					self.tokenLoadTask = nil
+					return
+				}
 				self.currentUser = nil
 				self.personalTokens = []
 				self.orgTokens = [:]
@@ -1625,7 +1645,7 @@ final class VaultStore {
 				generation == self.tokenLoadGeneration,
 				environment == self.appEnvironment
 			else { return }
-			let currentAuthToken = await self.authTokenProvider(
+			let currentAuthResolution = await self.resolveAuthToken(
 				environment.registryURL,
 				environment.baseURL
 			)
@@ -1633,8 +1653,9 @@ final class VaultStore {
 				generation == self.tokenLoadGeneration,
 				environment == self.appEnvironment
 			else { return }
-			guard currentAuthToken == authToken else {
-				self.error = "The active lpm.dev session changed while tokens were loading. Reload to use the new session."
+			guard currentAuthResolution.token == authToken else {
+				self.error = currentAuthResolution.failure
+					?? "The active lpm.dev session changed while tokens were loading. Reload to use the new session."
 				self.isLoadingTokens = false
 				self.tokenLoadTask = nil
 				return
@@ -1663,8 +1684,10 @@ final class VaultStore {
 	func revokePersonalToken(_ token: LPMToken) async {
 		let generation = authOperationGeneration
 		let environment = appEnvironment
-		guard let authToken = await authTokenProvider(environment.registryURL, environment.baseURL) else {
-			error = "Sign in to lpm.dev, then retry."
+		let authResolution = await resolveAuthToken(environment.registryURL, environment.baseURL)
+		guard generation == authOperationGeneration, environment == appEnvironment else { return }
+		guard let authToken = authResolution.token else {
+			error = authResolution.failure ?? "Sign in to lpm.dev, then retry."
 			return
 		}
 		let result = await apiService(for: environment).revokePersonalToken(
@@ -1672,11 +1695,14 @@ final class VaultStore {
 			authToken: authToken
 		)
 		guard generation == authOperationGeneration, environment == appEnvironment else { return }
-		guard await authTokenProvider(environment.registryURL, environment.baseURL) == authToken,
-			generation == authOperationGeneration,
-			environment == appEnvironment
-		else {
-			error = "The active lpm.dev session changed before revocation completed. Reload and retry."
+		let currentAuthResolution = await resolveAuthToken(
+			environment.registryURL,
+			environment.baseURL
+		)
+		guard generation == authOperationGeneration, environment == appEnvironment else { return }
+		guard currentAuthResolution.token == authToken else {
+			error = currentAuthResolution.failure
+				?? "The active lpm.dev session changed before revocation completed. Reload and retry."
 			return
 		}
 		switch result {
@@ -1693,8 +1719,10 @@ final class VaultStore {
 	func revokeOrgToken(_ token: LPMToken, orgSlug: String) async {
 		let generation = authOperationGeneration
 		let environment = appEnvironment
-		guard let authToken = await authTokenProvider(environment.registryURL, environment.baseURL) else {
-			error = "Sign in to lpm.dev, then retry."
+		let authResolution = await resolveAuthToken(environment.registryURL, environment.baseURL)
+		guard generation == authOperationGeneration, environment == appEnvironment else { return }
+		guard let authToken = authResolution.token else {
+			error = authResolution.failure ?? "Sign in to lpm.dev, then retry."
 			return
 		}
 		let result = await apiService(for: environment).revokeOrgToken(
@@ -1703,11 +1731,14 @@ final class VaultStore {
 			authToken: authToken
 		)
 		guard generation == authOperationGeneration, environment == appEnvironment else { return }
-		guard await authTokenProvider(environment.registryURL, environment.baseURL) == authToken,
-			generation == authOperationGeneration,
-			environment == appEnvironment
-		else {
-			error = "The active lpm.dev session changed before revocation completed. Reload and retry."
+		let currentAuthResolution = await resolveAuthToken(
+			environment.registryURL,
+			environment.baseURL
+		)
+		guard generation == authOperationGeneration, environment == appEnvironment else { return }
+		guard currentAuthResolution.token == authToken else {
+			error = currentAuthResolution.failure
+				?? "The active lpm.dev session changed before revocation completed. Reload and retry."
 			return
 		}
 		switch result {
@@ -1744,7 +1775,7 @@ final class VaultStore {
 			}
 
 			// Token is valid — persist to Keychain (shared with CLI)
-			try authSessionWriter(credentials, environment.registryURL)
+			try await authSessionWriter(credentials, environment.registryURL)
 
 			// Load full user info + tokens
 			await loadTokens()
@@ -1759,12 +1790,17 @@ final class VaultStore {
 	}
 
 	/// Sign out — clear token from Keychain and reset state.
-	func logout() {
+	func logout() async {
 		authOperationGeneration &+= 1
 		isLoggingIn = false
 		invalidateTokenLoad()
 		invalidatePendingOrgPush()
-		authSessionClearer(appEnvironment.registryURL)
+		do {
+			try await authSessionClearer(appEnvironment.registryURL)
+		} catch {
+			self.error = "Could not clear the shared LPM session. \(error.localizedDescription)"
+			return
+		}
 		currentUser = nil
 		personalTokens = []
 		orgTokens = [:]
@@ -1921,7 +1957,8 @@ final class VaultStore {
 		let sessionGeneration = vaultSessionGeneration
 		let environment = appEnvironment
 		let authGeneration = authOperationGeneration
-		guard let authToken = await authTokenProvider(environment.registryURL, environment.baseURL) else {
+		let authResolution = await resolveAuthToken(environment.registryURL, environment.baseURL)
+		guard let authToken = authResolution.token else {
 			guard operationGeneration == syncOperationGeneration,
 				environment == appEnvironment,
 				authGeneration == authOperationGeneration,
@@ -1930,7 +1967,8 @@ final class VaultStore {
 				selectedAccount == .personal,
 				selectedProject?.id == project.id
 			else { return }
-			error = "Not logged in. Run `lpm login` in terminal first."
+			error = authResolution.failure
+				?? "Not logged in. Run `lpm login` in terminal first."
 			return
 		}
 		let authority = SyncAuthority(
@@ -2014,13 +2052,15 @@ final class VaultStore {
 		let sessionGeneration = vaultSessionGeneration
 		let environment = appEnvironment
 		let authGeneration = authOperationGeneration
-		guard let authToken = await authTokenProvider(environment.registryURL, environment.baseURL) else {
+		let authResolution = await resolveAuthToken(environment.registryURL, environment.baseURL)
+		guard let authToken = authResolution.token else {
 			guard operationGeneration == syncOperationGeneration,
 				environment == appEnvironment,
 				authGeneration == authOperationGeneration,
 				sessionGeneration == vaultSessionGeneration
 			else { return }
-			error = "Not logged in. Run `lpm login` in terminal first."
+			error = authResolution.failure
+				?? "Not logged in. Run `lpm login` in terminal first."
 			return
 		}
 		let authority = SyncAuthority(
@@ -2149,13 +2189,14 @@ final class VaultStore {
 		let environment = appEnvironment
 		let authGeneration = authOperationGeneration
 		let sessionGeneration = vaultSessionGeneration
-		guard let authToken = await authTokenProvider(environment.registryURL, environment.baseURL) else {
+		let authResolution = await resolveAuthToken(environment.registryURL, environment.baseURL)
+		guard let authToken = authResolution.token else {
 			guard operationGeneration == syncOperationGeneration,
 				environment == appEnvironment,
 				authGeneration == authOperationGeneration,
 				sessionGeneration == vaultSessionGeneration
 			else { return }
-			error = "Not logged in."
+			error = authResolution.failure ?? "Not logged in."
 			return
 		}
 		let authority = SyncAuthority(
@@ -2295,11 +2336,11 @@ final class VaultStore {
 			invalidatePendingOrgPush()
 			return
 		}
-		let currentToken = await authTokenProvider(
+		let currentAuthResolution = await resolveAuthToken(
 			pending.environment.registryURL,
 			pending.environment.baseURL
 		)
-		guard currentToken == pending.authToken,
+		guard currentAuthResolution.token == pending.authToken,
 			pending.environment == appEnvironment,
 			pending.authGeneration == authOperationGeneration,
 			pending.sessionGeneration == vaultSessionGeneration,
@@ -2466,11 +2507,12 @@ final class VaultStore {
 
 	private func hasCurrentSyncAuth(_ authority: SyncAuthority) async -> Bool {
 		guard isCurrentSync(authority) else { return false }
-		let currentToken = await authTokenProvider(
+		let currentAuthResolution = await resolveAuthToken(
 			authority.environment.registryURL,
 			authority.environment.baseURL
 		)
-		return isCurrentSync(authority) && currentToken == authority.authToken
+		return isCurrentSync(authority)
+			&& currentAuthResolution.token == authority.authToken
 	}
 
 	private func finishSyncIfOwned(_ authority: SyncAuthority) {
@@ -2526,13 +2568,14 @@ final class VaultStore {
 		let sessionGeneration = vaultSessionGeneration
 		let environment = appEnvironment
 		let authGeneration = authOperationGeneration
-		guard let authToken = await authTokenProvider(environment.registryURL, environment.baseURL) else {
+		let authResolution = await resolveAuthToken(environment.registryURL, environment.baseURL)
+		guard let authToken = authResolution.token else {
 			guard operationGeneration == syncOperationGeneration,
 				environment == appEnvironment,
 				authGeneration == authOperationGeneration,
 				sessionGeneration == vaultSessionGeneration
 			else { return }
-			error = "Not logged in."
+			error = authResolution.failure ?? "Not logged in."
 			return
 		}
 		let authority = SyncAuthority(
@@ -2665,7 +2708,25 @@ final class VaultStore {
 	}
 
 	func currentAuthToken() async -> String? {
-		await authTokenProvider(appEnvironment.registryURL, appEnvironment.baseURL)
+		await resolveAuthToken(
+			appEnvironment.registryURL,
+			appEnvironment.baseURL
+		).token
+	}
+
+	private func resolveAuthToken(
+		_ registryURL: String,
+		_ baseURL: URL
+	) async -> AuthTokenResolution {
+		do {
+			let token = try await authTokenProvider(registryURL, baseURL)
+			return AuthTokenResolution(token: token, failure: nil)
+		} catch is CancellationError {
+			return AuthTokenResolution(token: nil, failure: nil)
+		} catch {
+			let message = "Could not access the shared LPM session. \(error.localizedDescription)"
+			return AuthTokenResolution(token: nil, failure: message)
+		}
 	}
 
 	private func syncSchema(for project: VaultProject) -> Data? {
