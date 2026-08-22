@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct VaultSidebarView: View {
@@ -62,13 +63,21 @@ struct VaultSidebarView: View {
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
 			.frame(maxHeight: .infinity, alignment: .top)
+			.simultaneousGesture(TapGesture().onEnded { searchFocused = false })
 
 			VaultHairline(color: VaultPalette.sidebarBorder)
 			accountFooter
+				.simultaneousGesture(TapGesture().onEnded { searchFocused = false })
 		}
 		.background(VaultPalette.sidebar)
 		.onReceive(NotificationCenter.default.publisher(for: .findSecrets)) { _ in
 			searchFocused = true
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .dismissVaultSearch)) { _ in
+			searchFocused = false
+		}
+		.onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+			searchFocused = false
 		}
 	}
 
@@ -78,12 +87,22 @@ struct VaultSidebarView: View {
 				.font(.system(size: 11, weight: .semibold))
 				.foregroundStyle(VaultPalette.textTertiary)
 
-			TextField("Search projects and keys", text: $searchText)
-				.textFieldStyle(.plain)
-				.font(.system(size: 12.5))
-				.foregroundStyle(VaultPalette.textPrimary)
-				.focused($searchFocused)
-				.onExitCommand { searchText = ""; searchFocused = false }
+			ZStack(alignment: .leading) {
+				if searchText.isEmpty {
+					Text("Search projects and keys")
+						.font(.system(size: 12.5))
+						.foregroundStyle(VaultPalette.textFaint)
+						.allowsHitTesting(false)
+				}
+
+				TextField("", text: $searchText)
+					.textFieldStyle(.plain)
+					.font(.system(size: 12.5))
+					.foregroundStyle(VaultPalette.textPrimary)
+					.focused($searchFocused)
+					.onExitCommand { searchText = ""; searchFocused = false }
+					.accessibilityLabel("Search projects and keys")
+			}
 
 			if searchText.isEmpty {
 				Text("⌘F")

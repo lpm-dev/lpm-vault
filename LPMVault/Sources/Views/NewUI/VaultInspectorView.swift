@@ -224,6 +224,7 @@ private struct VaultSecretEditor: View {
 				}
 				.textFieldStyle(.plain)
 				.font(VaultTypography.mono(11.5))
+				.foregroundStyle(VaultPalette.textPrimary)
 				.focused($focused)
 				.padding(.horizontal, 11)
 				.padding(.vertical, 9)

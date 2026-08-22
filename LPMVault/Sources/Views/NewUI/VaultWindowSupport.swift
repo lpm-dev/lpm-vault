@@ -1,6 +1,85 @@
 import AppKit
 import SwiftUI
 
+private struct VaultContentObscuredKey: EnvironmentKey {
+	static let defaultValue = false
+}
+
+extension EnvironmentValues {
+	var vaultContentObscured: Bool {
+		get { self[VaultContentObscuredKey.self] }
+		set { self[VaultContentObscuredKey.self] = newValue }
+	}
+}
+
+struct VaultPrivacyCurtain: View {
+	var body: some View {
+		ZStack {
+			Color(hex: 0x1C1C1E)
+			VStack(spacing: 12) {
+				Image(systemName: "lock.shield")
+					.font(.system(size: 40))
+				Text("LPM Vault")
+					.font(.headline)
+			}
+			.foregroundStyle(Color.white.opacity(0.65))
+		}
+		.ignoresSafeArea()
+		.accessibilityElement(children: .ignore)
+		.accessibilityLabel("LPM Vault content hidden while the app is inactive")
+	}
+}
+
+private struct VaultPrivacyProtected: ViewModifier {
+	let isObscured: Bool
+
+	func body(content: Content) -> some View {
+		content
+			.accessibilityHidden(isObscured)
+			.overlay {
+				if isObscured { VaultPrivacyCurtain() }
+			}
+	}
+}
+
+extension View {
+	func vaultPrivacyProtected(_ isObscured: Bool) -> some View {
+		modifier(VaultPrivacyProtected(isObscured: isObscured))
+	}
+}
+
+@MainActor
+func runVaultPrivacyAwareModal(_ panel: NSSavePanel) -> NSApplication.ModalResponse {
+	let inactivityObserver = VaultModalPanelInactivityObserver(panel: panel)
+	defer { inactivityObserver.stop() }
+	return panel.runModal()
+}
+
+@MainActor
+private final class VaultModalPanelInactivityObserver: NSObject {
+	private weak var panel: NSSavePanel?
+
+	init(panel: NSSavePanel) {
+		self.panel = panel
+		super.init()
+		NotificationCenter.default.addObserver(
+			self,
+			selector: #selector(applicationDidResignActive),
+			name: NSApplication.didResignActiveNotification,
+			object: nil
+		)
+	}
+
+	func stop() {
+		NotificationCenter.default.removeObserver(self)
+		panel = nil
+	}
+
+	@objc private func applicationDidResignActive() {
+		panel?.cancel(nil)
+	}
+}
+
 struct VaultWindowConfigurator: NSViewRepresentable {
 	func makeNSView(context: Context) -> NSView {
 		let view = NSView()

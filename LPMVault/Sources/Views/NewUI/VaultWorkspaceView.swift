@@ -4,6 +4,7 @@ import SwiftUI
 struct VaultWorkspaceView: View {
 	@Bindable var store: VaultStore
 	@Bindable var updateChecker: UpdateChecker
+	@Environment(\.vaultContentObscured) private var isObscured
 
 	@State private var mode: VaultWorkspaceMode = .matrix
 	@State private var filter: VaultWorkspaceFilter = .all
@@ -57,13 +58,14 @@ struct VaultWorkspaceView: View {
 				mode: mode,
 				onShowVaultID: { showVaultIDSheet = true },
 				onPull: { showPullConfirmation = true },
-				onPush: { showPushConfirmation = true },
-				onNewSecret: presentAddSecret
+				onPush: { showPushConfirmation = true }
 			)
+			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
 
 			if updateChecker.updateAvailable, let latest = updateChecker.latestVersion {
 				updateBanner(latest: latest)
+					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 				VaultHairline()
 			}
 
@@ -125,6 +127,7 @@ struct VaultWorkspaceView: View {
 					}
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 
 				if showsInspector, !store.showAuthStatus, let project {
 					VaultInspectorPane(
@@ -139,6 +142,7 @@ struct VaultWorkspaceView: View {
 						onCopySecret: copySecret,
 						onDeleteSecret: requestDeleteSecret
 					)
+					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 				}
 			}
 		}
@@ -166,19 +170,36 @@ struct VaultWorkspaceView: View {
 		}
 		.ignoresSafeArea(.container, edges: .top)
 		.animation(.easeOut(duration: 0.14), value: showsAccountSwitcher)
-		.sheet(isPresented: $showNewProject) { NewVaultSheet(store: store) }
-		.sheet(isPresented: $showCloudProjects) { cloudProjectSheet }
+		.sheet(isPresented: $showNewProject) {
+			NewVaultSheet(store: store).vaultPrivacyProtected(isObscured)
+		}
+		.sheet(isPresented: $showCloudProjects) {
+			cloudProjectSheet.vaultPrivacyProtected(isObscured)
+		}
 		.sheet(isPresented: $showNewEnvironment) {
-			if let project { NewEnvironmentSheet(store: store, project: project) }
+			if let project {
+				NewEnvironmentSheet(store: store, project: project)
+					.vaultPrivacyProtected(isObscured)
+			}
 		}
 		.sheet(item: $addSecretTarget) { target in
 			AddSecretSheet(store: store, projectId: target.projectId, environment: target.environment)
+				.vaultPrivacyProtected(isObscured)
 		}
-		.sheet(isPresented: $showPushConfirmation) { pushConfirmationSheet }
-		.sheet(isPresented: $showPullConfirmation) { pullConfirmationSheet }
-		.sheet(item: $conflictTarget) { target in conflictResolutionSheet(target) }
+		.sheet(isPresented: $showPushConfirmation) {
+			pushConfirmationSheet.vaultPrivacyProtected(isObscured)
+		}
+		.sheet(isPresented: $showPullConfirmation) {
+			pullConfirmationSheet.vaultPrivacyProtected(isObscured)
+		}
+		.sheet(item: $conflictTarget) { target in
+			conflictResolutionSheet(target).vaultPrivacyProtected(isObscured)
+		}
 		.sheet(isPresented: $showVaultIDSheet) {
-			if let project { VaultIDSheet(vaultId: project.id) }
+			if let project {
+				VaultIDSheet(vaultId: project.id)
+					.vaultPrivacyProtected(isObscured)
+			}
 		}
 		.alert("Rename Env Project", isPresented: Binding(
 			get: { projectToRename != nil },
@@ -284,6 +305,9 @@ struct VaultWorkspaceView: View {
 			if value == "conflict", let project = store.selectedProject {
 				conflictTarget = VaultSyncTarget(projectId: project.id, account: store.selectedAccount)
 			}
+		}
+		.onChange(of: isObscured) { _, obscured in
+			if obscured { dismissNativeDialogsForPrivacy() }
 		}
 		.onDisappear {
 			currentImportTask?.cancel()
@@ -393,6 +417,23 @@ struct VaultWorkspaceView: View {
 		addSecretTarget = VaultSecretTarget(projectId: project.id, environment: store.selectedEnvironment)
 	}
 
+	private func dismissSearchFocus() {
+		NotificationCenter.default.post(name: .dismissVaultSearch, object: nil)
+	}
+
+	private func dismissNativeDialogsForPrivacy() {
+		projectToRename = nil
+		projectNameDraft = ""
+		renameEnvironmentTarget = nil
+		duplicateEnvironmentTarget = nil
+		environmentNameDraft = ""
+		projectToDelete = nil
+		deleteEnvironmentTarget = nil
+		clearEnvironmentTarget = nil
+		deleteSecretTarget = nil
+		store.error = nil
+	}
+
 	private func requestDeleteSecret(_ key: String, _ environment: String) {
 		guard let project else { return }
 		deleteSecretTarget = VaultSecretDeleteTarget(projectId: project.id, environment: environment, key: key)
@@ -441,7 +482,7 @@ struct VaultWorkspaceView: View {
 		panel.canChooseDirectories = false
 		panel.allowsMultipleSelection = false
 		panel.message = "Import secrets into \"\(VaultProject.displayName(for: environment))\""
-		guard panel.runModal() == .OK, let url = panel.url else { return }
+		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
 
 		let requestID = UUID()
 		currentImportID = requestID
@@ -464,7 +505,7 @@ struct VaultWorkspaceView: View {
 		let suffix = environment == "default" ? "" : ".\(environment)"
 		panel.nameFieldStringValue = ".env\(suffix)"
 		panel.message = "Export \(VaultProject.displayName(for: environment))"
-		guard panel.runModal() == .OK, let url = panel.url else { return }
+		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
 		guard store.isUnlocked,
 			store.selectedProjectId == projectID,
 			store.selectedEnvironment == environment,
