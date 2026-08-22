@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
 	@Bindable var store: VaultStore
+	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var updateChecker = UpdateChecker()
 
 	var body: some View {
@@ -16,6 +17,7 @@ struct ContentView: View {
 		.task { await updateChecker.checkForUpdate() }
 		.sheet(isPresented: $store.showKeyApprovalSheet) {
 			KeyApprovalSheet(store: store)
+				.vaultPrivacyProtected(isObscured)
 		}
 	}
 

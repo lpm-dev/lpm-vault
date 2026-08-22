@@ -25,10 +25,18 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	// Convenience for old tests that use flat secrets
 	var storage: [String: (name: String, path: String, secrets: [String: String])] {
 		get {
-			envStorage.mapValues { (name: $0.name, path: $0.path, secrets: $0.environments["default"] ?? [:]) }
+			lock.withLock {
+				envStorage.mapValues {
+					(name: $0.name, path: $0.path, secrets: $0.environments["default"] ?? [:])
+				}
+			}
 		}
 		set {
-			envStorage = newValue.mapValues { (name: $0.name, path: $0.path, environments: ["default": $0.secrets]) }
+			lock.withLock {
+				envStorage = newValue.mapValues {
+					(name: $0.name, path: $0.path, environments: ["default": $0.secrets])
+				}
+			}
 		}
 	}
 
@@ -77,8 +85,14 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		guard encodedSize <= VaultConstants.maxVaultSizeWarning else {
 			return .failure(.dataTooLarge(encodedSize))
 		}
-		envStorage[vaultId] = (name: projectName, path: projectPath, environments: environments)
-		successfulSaveEnvironmentsCallCount += 1
+		lock.withLock {
+			envStorage[vaultId] = (
+				name: projectName,
+				path: projectPath,
+				environments: environments
+			)
+			successfulSaveEnvironmentsCallCount += 1
+		}
 		return .success
 	}
 

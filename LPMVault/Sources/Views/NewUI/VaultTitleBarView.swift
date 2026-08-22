@@ -6,7 +6,6 @@ struct VaultTitleBarView: View {
 	let onShowVaultID: () -> Void
 	let onPull: () -> Void
 	let onPush: () -> Void
-	let onNewSecret: () -> Void
 
 	private var project: VaultProject? { store.selectedProject }
 
@@ -68,16 +67,6 @@ struct VaultTitleBarView: View {
 				store.lock()
 			}
 			.accessibilityLabel("Lock LPM Vault")
-
-			VaultBarButton(
-				systemImage: "plus",
-				title: "New key",
-				filled: true,
-				disabled: project == nil
-			) {
-				onNewSecret()
-			}
-			.accessibilityLabel("New secret")
 		}
 		.padding(.horizontal, 14)
 		.frame(height: VaultMetrics.titleBar)
@@ -132,7 +121,9 @@ struct VaultTitleBarView: View {
 				} else {
 					VaultStatusDot(color: syncColor)
 				}
-				Text(syncLabel).font(.system(size: 12))
+				Text(syncLabel)
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textSecondary)
 				Image(systemName: "chevron.down")
 					.font(.system(size: 8, weight: .bold))
 					.foregroundStyle(VaultPalette.textQuaternary)

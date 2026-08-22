@@ -102,23 +102,9 @@ struct LPMVaultApp: App {
 		// Main window — opens automatically on launch
 		Window("LPM Vault", id: "main") {
 			ContentView(store: store)
-				.accessibilityHidden(isObscured)
-				.overlay {
-					if isObscured {
-						ZStack {
-							Color(nsColor: .windowBackgroundColor)
-							VStack(spacing: 12) {
-								Image(systemName: "lock.shield")
-									.font(.system(size: 40))
-									.foregroundStyle(.secondary)
-								Text("LPM Vault")
-									.font(.headline)
-									.foregroundStyle(.secondary)
-							}
-						}
-						.ignoresSafeArea()
-					}
-				}
+				.environment(\.vaultContentObscured, isObscured)
+				.preferredColorScheme(.light)
+				.vaultPrivacyProtected(isObscured)
 				.onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
 					isObscured = true
 				}
@@ -171,4 +157,5 @@ struct LPMVaultApp: App {
 extension Notification.Name {
 	static let newSecret = Notification.Name("dev.lpm.vault.new-secret")
 	static let findSecrets = Notification.Name("dev.lpm.vault.find-secrets")
+	static let dismissVaultSearch = Notification.Name("dev.lpm.vault.dismiss-search")
 }

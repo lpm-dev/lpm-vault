@@ -71,6 +71,11 @@ struct VaultContentView: View {
 			ViewThatFits(in: .horizontal) {
 				headerPrimaryRow(compactToolbar: false)
 				headerPrimaryRow(compactToolbar: true)
+				VStack(alignment: .leading, spacing: 10) {
+					headerIdentity
+					toolbar(compact: true)
+						.frame(maxWidth: .infinity, alignment: .trailing)
+				}
 			}
 
 			HStack(spacing: 6) {
@@ -106,33 +111,40 @@ struct VaultContentView: View {
 
 	private func headerPrimaryRow(compactToolbar: Bool) -> some View {
 		HStack(spacing: 10) {
-			Group {
-				if case .matrix = mode {
-					Text("All variables")
-						.font(.system(size: 19, weight: .bold))
-						.tracking(-0.28)
-					Text("\(allKeys.count) keys · \(environments.count) envs")
-						.font(.system(size: 12.5))
-						.foregroundStyle(VaultPalette.textTertiary)
-				} else {
-					Text(VaultProject.displayName(for: selectedEnvironment))
-						.font(VaultTypography.mono(19, .bold))
-					VaultTagBadge(
-						text: selectedEnvironment == "default" ? "LOCAL" : selectedEnvironment.uppercased(),
-						foreground: VaultPalette.orangeTintText,
-						background: VaultPalette.orangeTint
-					)
-					Text("\(project.secretCount(for: selectedEnvironment)) keys")
-						.font(.system(size: 12.5))
-						.foregroundStyle(VaultPalette.textTertiary)
-				}
-			}
-			.lineLimit(1)
-			.fixedSize(horizontal: true, vertical: false)
+			headerIdentity
 
 			Spacer(minLength: 8)
 			toolbar(compact: compactToolbar)
 		}
+	}
+
+	@ViewBuilder
+	private var headerIdentity: some View {
+		HStack(spacing: 10) {
+			if case .matrix = mode {
+				Text("All variables")
+					.font(.system(size: 19, weight: .bold))
+					.tracking(-0.28)
+					.foregroundStyle(VaultPalette.textPrimary)
+				Text("\(allKeys.count) keys · \(environments.count) envs")
+					.font(.system(size: 12.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+			} else {
+				Text(VaultProject.displayName(for: selectedEnvironment))
+					.font(VaultTypography.mono(19, .bold))
+					.foregroundStyle(VaultPalette.textPrimary)
+				VaultTagBadge(
+					text: selectedEnvironment == "default" ? "LOCAL" : selectedEnvironment.uppercased(),
+					foreground: VaultPalette.orangeTintText,
+					background: VaultPalette.orangeTint
+				)
+				Text("\(project.secretCount(for: selectedEnvironment)) keys")
+					.font(.system(size: 12.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+			}
+		}
+		.lineLimit(1)
+		.fixedSize(horizontal: true, vertical: false)
 	}
 
 	private func toolbar(compact: Bool) -> some View {
@@ -165,43 +177,63 @@ struct VaultContentView: View {
 				help: showsInspector ? "Hide inspector" : "Show inspector",
 				active: showsInspector
 			) { showsInspector.toggle() }
-			VaultOutlineButton(systemImage: "plus", help: "New secret", action: onAddSecret)
+			VaultBarButton(
+				systemImage: "plus",
+				title: "New key",
+				filled: true,
+				height: 27,
+				action: onAddSecret
+			)
+			.accessibilityLabel("New secret")
 		}
 	}
 
 	private var matrix: some View {
-		let tableWidth = VaultMetrics.keyColumn + CGFloat(max(environments.count, 1)) * VaultMetrics.environmentColumn
-		return ScrollView([.horizontal, .vertical]) {
-			LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-				Section {
-					if filteredKeys.isEmpty {
-						VaultTableEmptyRow(
-							message: searchText.isEmpty ? "No keys in this view" : "No keys match your search",
-							width: tableWidth
-						)
-					} else {
-						ForEach(filteredKeys, id: \.self) { key in
-							VaultMatrixRow(
-								key: key,
-								project: project,
-								snapshot: snapshot,
-								environments: environments,
-								selectedEnvironment: selectedEnvironment,
-								isSelected: selectedKey == key,
-								isRevealed: revealedKeys.contains(key),
-								onSelect: { selectedKey = key; showsInspector = true },
-								onReveal: { toggleReveal(key) }
+		GeometryReader { geometry in
+			let columnCount = CGFloat(max(environments.count, 1))
+			let minimumWidth = VaultMetrics.keyColumn + columnCount * VaultMetrics.environmentColumn
+			let tableWidth = max(geometry.size.width, minimumWidth)
+			let environmentColumnWidth = (tableWidth - VaultMetrics.keyColumn) / columnCount
+
+			ScrollView([.horizontal, .vertical]) {
+				LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+					Section {
+						if filteredKeys.isEmpty {
+							VaultTableEmptyRow(
+								message: searchText.isEmpty ? "No keys in this view" : "No keys match your search",
+								width: tableWidth
 							)
-							.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+						} else {
+							ForEach(filteredKeys, id: \.self) { key in
+								VaultMatrixRow(
+									key: key,
+									project: project,
+									snapshot: snapshot,
+									environments: environments,
+									selectedEnvironment: selectedEnvironment,
+									environmentColumnWidth: environmentColumnWidth,
+									isSelected: selectedKey == key,
+									isRevealed: revealedKeys.contains(key),
+									onSelect: { selectedKey = key; showsInspector = true },
+									onReveal: { toggleReveal(key) }
+								)
+								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+							}
 						}
-					}
-				} header: {
-					VaultMatrixHeader(environments: environments, selectedEnvironment: selectedEnvironment)
+					} header: {
+						VaultMatrixHeader(
+							environments: environments,
+							selectedEnvironment: selectedEnvironment,
+							environmentColumnWidth: environmentColumnWidth
+						)
 						.background(VaultPalette.headerRow)
 						.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
+					}
 				}
+				.frame(width: tableWidth, alignment: .leading)
+				.frame(minHeight: geometry.size.height, alignment: .top)
 			}
-			.frame(width: tableWidth, alignment: .leading)
+			.defaultScrollAnchor(.topLeading)
 		}
 	}
 
@@ -304,6 +336,7 @@ struct VaultContentView: View {
 private struct VaultMatrixHeader: View {
 	let environments: [String]
 	let selectedEnvironment: String
+	let environmentColumnWidth: CGFloat
 
 	var body: some View {
 		LazyHStack(spacing: 0) {
@@ -326,7 +359,7 @@ private struct VaultMatrixHeader: View {
 					}
 				}
 				.padding(.horizontal, 12)
-				.frame(width: VaultMetrics.environmentColumn - 1, height: VaultMetrics.tableHeader)
+				.frame(width: environmentColumnWidth - 1, height: VaultMetrics.tableHeader)
 				.background(environment == selectedEnvironment ? VaultPalette.selectedEnvHeader : .clear)
 				.accessibilityLabel("\(VaultProject.displayName(for: environment))\(environment == selectedEnvironment ? ", editing environment" : "")")
 			}
@@ -340,6 +373,7 @@ private struct VaultMatrixRow: View {
 	let snapshot: VaultWorkspaceSnapshot
 	let environments: [String]
 	let selectedEnvironment: String
+	let environmentColumnWidth: CGFloat
 	let isSelected: Bool
 	let isRevealed: Bool
 	let onSelect: () -> Void
@@ -373,7 +407,7 @@ private struct VaultMatrixRow: View {
 						Spacer(minLength: 0)
 					}
 					.padding(.horizontal, 12)
-					.frame(width: VaultMetrics.environmentColumn - 1, height: VaultMetrics.matrixRow)
+					.frame(width: environmentColumnWidth - 1, height: VaultMetrics.matrixRow)
 					.background(environment == selectedEnvironment ? VaultPalette.selectedEnvCell : .clear)
 				}
 			}
