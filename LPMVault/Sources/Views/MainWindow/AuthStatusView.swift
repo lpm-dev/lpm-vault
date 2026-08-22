@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AuthStatusView: View {
 	@Bindable var store: VaultStore
+	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var showLogoutConfirmation = false
 
 	var body: some View {
@@ -112,6 +113,9 @@ struct AuthStatusView: View {
 			Button("Cancel", role: .cancel) {}
 		} message: {
 			Text("Your local env data stays in Keychain. You can sign in again anytime.")
+		}
+		.onChange(of: isObscured) { _, obscured in
+			if obscured { showLogoutConfirmation = false }
 		}
 	}
 

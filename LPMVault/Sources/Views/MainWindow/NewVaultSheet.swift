@@ -34,6 +34,7 @@ struct NewVaultSheet: View {
 					TextField("my-api-server", text: $name)
 						.textFieldStyle(.plain)
 						.font(.system(size: 12.5))
+						.foregroundStyle(VaultPalette.textPrimary)
 						.focused($isFocused)
 						.onSubmit { create() }
 						.padding(.horizontal, 11)
