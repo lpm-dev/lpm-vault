@@ -22,6 +22,30 @@ struct CurrentContractTests {
 		)
 	}
 
+	@Test("session and credential-store lock names match the Rust client")
+	func sharedSessionLockNames() {
+		#expect(
+			AuthSessionStore.sessionLockName(registryURL: "https://lpm.dev")
+				== "auth-session-bd90fc32d95766d5d543f79f0751c37a.lock"
+		)
+		#expect(
+			AuthSessionStore.sessionLockName(registryURL: "lpm-auth://credential-store")
+				== "auth-session-d1e22cd6f5ad4be6dbd4ded4de2f04f9.lock"
+		)
+	}
+
+	@Test("credential authority identifiers match the Rust client")
+	func sharedCredentialAuthorityIdentifiers() {
+		#expect(
+			AuthSessionStore.authorityID(kind: "access", registryURL: "https://lpm.dev")
+				== "41c1b09ae272839b0a1fd749b7a4aa267af0170297f6b5b887c2b1157efb9c93"
+		)
+		#expect(
+			AuthSessionStore.authorityID(kind: "refresh", registryURL: "https://lpm.dev")
+				== "15832937e4b1454a4a2a6573780ea4f80cff333fd7dbe9c065e2557b776bb05f"
+		)
+	}
+
 	@Test("session registry scope is the exact API base URL")
 	func exactRegistryScope() {
 		#expect(

@@ -27,7 +27,8 @@ struct VaultStoreTests {
 			biometricService: biometric,
 			apiService: api,
 			envFileImportService: envFileImportService,
-			authTokenProvider: { _, _ in "session-token" }
+			authTokenProvider: { _, _ in "session-token" },
+			authSessionClearer: { _ in }
 		)
 
 		// Pre-populate projects synchronously (the real loadProjects() uses
@@ -344,7 +345,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("logout removes an invalid organization route")
-	func logoutNormalizesOrganizationNavigation() {
+	func logoutNormalizesOrganizationNavigation() async {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "org", name: "org", path: "", secrets: [:])
 		])
@@ -352,7 +353,7 @@ struct VaultStoreTests {
 		store.vaultOrgAssociations = ["org": "acme"]
 		store.openProject(id: "org")
 
-		store.logout()
+		await store.logout()
 
 		#expect(store.selectedAccount == .personal)
 		#expect(store.selectedProjectId == nil)
@@ -1399,7 +1400,7 @@ struct VaultStoreTests {
 
 		let load = Task { await store.loadTokens() }
 		try await Task.sleep(for: .milliseconds(20))
-		store.logout()
+		await store.logout()
 		await load.value
 
 		#expect(store.currentUser == nil)
@@ -1563,7 +1564,7 @@ struct VaultStoreTests {
 
 		let load = Task { await store.loadTokens() }
 		try await Task.sleep(for: .milliseconds(30))
-		store.logout()
+		await store.logout()
 		await load.value
 
 		#expect(api.maximumActiveOrgRequests <= 4)
@@ -1674,7 +1675,7 @@ struct VaultStoreTests {
 	#endif
 
 	@Test("logout clears only the active environment session")
-	func logoutIsEnvironmentScoped() {
+	func logoutIsEnvironmentScoped() async {
 		let cleared = StringRecorder()
 		let store = VaultStore(
 			keychainService: MockKeychainService(),
@@ -1685,9 +1686,122 @@ struct VaultStoreTests {
 		)
 		store.appEnvironment = .production
 
-		store.logout()
+		await store.logout()
 
 		#expect(cleared.values == [VaultConstants.apiBaseURL.absoluteString])
+	}
+
+	@Test("logout keeps the visible session when shared storage cannot be cleared")
+	func logoutStorageFailureIsVisible() async {
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in "session-token" },
+			authSessionClearer: { _ in throw TestAuthClearError.failed }
+		)
+		store.currentUser = testUser(id: "current", username: "current")
+		store.personalTokens = [testToken(id: "personal")]
+
+		await store.logout()
+
+		#expect(store.currentUser?.id == "current")
+		#expect(store.personalTokens.map(\.id) == ["personal"])
+		#expect(store.error?.contains("Could not clear the shared LPM session") == true)
+	}
+
+	@Test("token loading keeps the visible session when shared auth storage fails")
+	func authTokenStorageFailureIsVisible() async {
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in throw TestAuthClearError.failed },
+			authSessionClearer: { _ in }
+		)
+		store.currentUser = testUser(id: "current", username: "current")
+		store.personalTokens = [testToken(id: "personal")]
+
+		await store.loadTokens()
+
+		#expect(store.currentUser?.id == "current")
+		#expect(store.personalTokens.map(\.id) == ["personal"])
+		#expect(store.error?.contains("Could not access the shared LPM session") == true)
+	}
+
+	@Test("a superseded auth read cannot publish a storage error")
+	func supersededAuthStorageFailureIsDiscarded() async {
+		let gate = AsyncGate()
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in
+				await gate.arriveAndWait()
+				throw TestAuthClearError.failed
+			},
+			authSessionClearer: { _ in }
+		)
+		store.currentUser = testUser(id: "current", username: "current")
+		let load = Task { await store.loadTokens() }
+		await gate.waitUntilArrived()
+
+		await store.logout()
+		await gate.release()
+		await load.value
+
+		#expect(store.currentUser == nil)
+		#expect(store.error == nil)
+	}
+
+	@Test("logout discards stale personal-revocation auth storage failures")
+	func stalePersonalRevocationAuthFailuresAreDiscarded() async {
+		for failureCall in [1, 2] {
+			let provider = GatedAuthFailureProvider(failureCall: failureCall)
+			let token = testToken(id: "personal-\(failureCall)")
+			let store = VaultStore(
+				keychainService: MockKeychainService(),
+				biometricService: MockBiometricService(),
+				apiService: MockAPIService(),
+				authTokenProvider: { _, _ in try await provider.next() },
+				authSessionClearer: { _ in }
+			)
+			store.personalTokens = [token]
+			let revocation = Task { await store.revokePersonalToken(token) }
+			await provider.waitUntilBlocked()
+
+			await store.logout()
+			await provider.release()
+			await revocation.value
+
+			#expect(store.error == nil)
+		}
+	}
+
+	@Test("logout discards stale organization-revocation auth storage failures")
+	func staleOrganizationRevocationAuthFailuresAreDiscarded() async {
+		for failureCall in [1, 2] {
+			let provider = GatedAuthFailureProvider(failureCall: failureCall)
+			let token = testToken(id: "organization-\(failureCall)")
+			let store = VaultStore(
+				keychainService: MockKeychainService(),
+				biometricService: MockBiometricService(),
+				apiService: MockAPIService(),
+				authTokenProvider: { _, _ in try await provider.next() },
+				authSessionClearer: { _ in }
+			)
+			store.orgTokens = ["acme": [token]]
+			let revocation = Task {
+				await store.revokeOrgToken(token, orgSlug: "acme")
+			}
+			await provider.waitUntilBlocked()
+
+			await store.logout()
+			await provider.release()
+			await revocation.value
+
+			#expect(store.error == nil)
+		}
 	}
 
 	@Test("expiring tokens filters correctly")
@@ -1806,7 +1920,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("security transitions discard pending organization authorization")
-	func securityTransitionsDiscardPendingOrgAuthorization() {
+	func securityTransitionsDiscardPendingOrgAuthorization() async {
 		let (store, _, _, _) = makeStore()
 		func seedApproval() {
 			store.pendingOrgPush = PendingOrgPush(
@@ -1822,7 +1936,7 @@ struct VaultStoreTests {
 		}
 
 		seedApproval()
-		store.logout()
+		await store.logout()
 		#expect(store.pendingOrgPush == nil)
 		#expect(!store.showKeyApprovalSheet)
 
@@ -2062,6 +2176,32 @@ struct VaultStoreTests {
 		#expect(store.projects.isEmpty)
 		#expect(store.selectedProjectId == nil)
 		#expect(store.syncMetadata.isEmpty)
+	}
+
+	@Test("cloud import reports shared auth storage failures")
+	func cloudImportReportsAuthStorageFailure() async {
+		let importService = MockEnvProjectImportService()
+		let keychain = MockKeychainService()
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			importServiceFactory: { _ in importService },
+			authTokenProvider: { _, _ in throw TestAuthClearError.failed },
+			authSessionClearer: { _ in }
+		)
+
+		let result = await store.importCloudProject(
+			remoteProject(id: "auth-storage-failure", name: "cloud")
+		)
+
+		guard case .failure(.authStorage(let message)) = result else {
+			Issue.record("Expected an auth-storage failure")
+			return
+		}
+		#expect(message.contains("Could not access the shared LPM session"))
+		#expect(keychain.storage.isEmpty)
+		#expect(store.projects.isEmpty)
 	}
 
 	@Test("successful organization import publishes the final project once")
@@ -2305,7 +2445,7 @@ struct VaultStoreTests {
 		case .lock:
 			store.lock()
 		case .logout:
-			store.logout()
+			await store.logout()
 		case .accountChange:
 			store.selectAccount(.personal)
 		#if DEBUG
@@ -2492,6 +2632,35 @@ private actor AsyncSignal {
 		waiters.forEach { $0.resume() }
 		waiters.removeAll()
 	}
+}
+
+private actor GatedAuthFailureProvider {
+	private let failureCall: Int
+	private let gate = AsyncGate()
+	private var callCount = 0
+
+	init(failureCall: Int) {
+		self.failureCall = failureCall
+	}
+
+	func next() async throws -> String? {
+		callCount += 1
+		guard callCount == failureCall else { return "session-token" }
+		await gate.arriveAndWait()
+		throw TestAuthClearError.failed
+	}
+
+	func waitUntilBlocked() async {
+		await gate.waitUntilArrived()
+	}
+
+	func release() async {
+		await gate.release()
+	}
+}
+
+private enum TestAuthClearError: Error {
+	case failed
 }
 
 private func testAuthCredentials() -> AuthSessionCredentials {
