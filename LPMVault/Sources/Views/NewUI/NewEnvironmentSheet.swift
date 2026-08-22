@@ -44,6 +44,7 @@ struct NewEnvironmentSheet: View {
 						TextField("staging", text: $name)
 							.textFieldStyle(.plain)
 							.font(VaultTypography.mono(12.5))
+							.foregroundStyle(VaultPalette.textPrimary)
 							.focused($nameFocused)
 							.onSubmit(create)
 							.disabled(isBusy)
@@ -144,7 +145,7 @@ struct NewEnvironmentSheet: View {
 		panel.canChooseDirectories = false
 		panel.allowsMultipleSelection = false
 		panel.message = "Select an .env file to import"
-		guard panel.runModal() == .OK, let url = panel.url else { return }
+		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
 
 		if candidate.isEmpty {
 			let fileName = url.lastPathComponent

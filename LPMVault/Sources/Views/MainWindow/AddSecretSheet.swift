@@ -57,6 +57,7 @@ struct AddSecretSheet: View {
 					TextField("DATABASE_URL", text: $key)
 						.textFieldStyle(.plain)
 						.font(VaultTypography.mono(12.5))
+						.foregroundStyle(VaultPalette.textPrimary)
 						.focused($focusedField, equals: .key)
 						.disabled(isSubmitting)
 						.onSubmit { focusedField = .value }
@@ -66,6 +67,7 @@ struct AddSecretSheet: View {
 					SecureField("Secret value", text: $value)
 						.textFieldStyle(.plain)
 						.font(VaultTypography.mono(12.5))
+						.foregroundStyle(VaultPalette.textPrimary)
 						.focused($focusedField, equals: .value)
 						.disabled(isSubmitting)
 						.onSubmit { if canAdd { Task { await addSecret() } } }
