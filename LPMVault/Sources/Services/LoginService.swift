@@ -122,12 +122,15 @@ enum LoginService {
 		)
 	}
 
-	static func writeAuthSession(_ credentials: AuthSessionCredentials, registryURL: String) throws {
-		try AuthSessionStore.persist(credentials, registryURL: registryURL)
+	static func writeAuthSession(
+		_ credentials: AuthSessionCredentials,
+		registryURL: String
+	) async throws {
+		try await AuthSessionStore.persist(credentials, registryURL: registryURL)
 	}
 
-	static func clearAuthSession(registryURL: String = "https://lpm.dev") {
-		AuthSessionStore.clear(registryURL: registryURL)
+	static func clearAuthSession(registryURL: String = "https://lpm.dev") async throws {
+		try await AuthSessionStore.clear(registryURL: registryURL)
 	}
 
 	static func parseCallbackRequest(_ request: Data) -> (code: String, state: String)? {
