@@ -106,7 +106,9 @@ struct AuthStatusView: View {
 		}
 		.background(VaultPalette.content)
 		.confirmationDialog("Sign out?", isPresented: $showLogoutConfirmation, titleVisibility: .visible) {
-			Button("Sign Out", role: .destructive) { store.logout() }
+			Button("Sign Out", role: .destructive) {
+				Task { await store.logout() }
+			}
 			Button("Cancel", role: .cancel) {}
 		} message: {
 			Text("Your local env data stays in Keychain. You can sign in again anytime.")
