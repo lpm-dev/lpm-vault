@@ -351,3 +351,129 @@ struct LoginServiceErrorTests {
 		#expect(error.errorDescription?.contains("wait") == true)
 	}
 }
+
+// MARK: - Bounded HTTP Responses
+
+@Suite("Bounded HTTP Responses")
+struct BoundedHTTPResponseTests {
+	@Test("streaming limit rejects a body without a Content-Length")
+	func rejectsChunkedOversize() async throws {
+		let host = "\(UUID().uuidString.lowercased()).example"
+		let body = Data("four".utf8)
+		BoundedResponseRoutes.shared.register(host: host, body: body)
+
+		let configuration = URLSessionConfiguration.ephemeral
+		configuration.protocolClasses = [BoundedResponseURLProtocol.self]
+		let session = URLSession(configuration: configuration)
+		let request = URLRequest(url: URL(string: "https://\(host)/body")!)
+
+		let exact = try await BoundedHTTPResponse.load(
+			for: request,
+			using: session,
+			maximumBytes: body.count
+		)
+		#expect(exact.data == body)
+
+		do {
+			_ = try await BoundedHTTPResponse.load(
+				for: request,
+				using: session,
+				maximumBytes: body.count - 1
+			)
+			Issue.record("Oversized response was accepted")
+		} catch let error as BoundedHTTPResponse.LoadError {
+			#expect(error == .responseTooLarge(limit: body.count - 1))
+		}
+	}
+}
+
+@Suite("Stable Wrapping Key File")
+struct StableWrappingKeyFileTests {
+	@Test("legacy key fallback rejects exposed permissions and symbolic links")
+	func rejectsUnsafeFiles() throws {
+		let directory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("lpm-vault-key-\(UUID().uuidString)", isDirectory: true)
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: directory) }
+
+		let key = Data(repeating: 0x5a, count: 32)
+		let encoded = key.map { String(format: "%02x", $0) }.joined()
+		let target = directory.appendingPathComponent("key-target")
+		try Data(encoded.utf8).write(to: target)
+
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o604],
+			ofItemAtPath: target.path
+		)
+		#expect(VaultCrypto.readStableWrappingKeyFile(at: target) == nil)
+
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o600],
+			ofItemAtPath: target.path
+		)
+		#expect(VaultCrypto.readStableWrappingKeyFile(at: target) == key)
+
+		let link = directory.appendingPathComponent("key-link")
+		try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+		#expect(VaultCrypto.readStableWrappingKeyFile(at: link) == nil)
+	}
+}
+
+@Suite("Update Link Validation")
+struct UpdateLinkValidationTests {
+	@Test("only this project's GitHub release pages are accepted")
+	func validatesReleaseOriginAndPath() {
+		#expect(UpdateChecker.validatedReleaseURL(
+			"https://github.com/lpm-dev/lpm-vault/releases/tag/v1.2.3"
+		) != nil)
+		#expect(UpdateChecker.validatedReleaseURL(
+			"https://example.com/lpm-dev/lpm-vault/releases/tag/v1.2.3"
+		) == nil)
+		#expect(UpdateChecker.validatedReleaseURL(
+			"file:///tmp/fake-release"
+		) == nil)
+		#expect(UpdateChecker.validatedReleaseURL(
+			"https://github.com/attacker/project/releases/tag/v1.2.3"
+		) == nil)
+	}
+}
+
+private final class BoundedResponseRoutes: @unchecked Sendable {
+	static let shared = BoundedResponseRoutes()
+	private let lock = NSLock()
+	private var bodies: [String: Data] = [:]
+
+	func register(host: String, body: Data) {
+		lock.withLock { bodies[host] = body }
+	}
+
+	func body(for host: String) -> Data? {
+		lock.withLock { bodies[host] }
+	}
+}
+
+private final class BoundedResponseURLProtocol: URLProtocol {
+	override class func canInit(with request: URLRequest) -> Bool { true }
+	override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+	override func startLoading() {
+		guard let url = request.url,
+			let host = url.host,
+			let body = BoundedResponseRoutes.shared.body(for: host),
+			let response = HTTPURLResponse(
+				url: url,
+				statusCode: 200,
+				httpVersion: "HTTP/1.1",
+				headerFields: ["Content-Type": "application/octet-stream"]
+			)
+		else {
+			client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+			return
+		}
+		client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+		client?.urlProtocol(self, didLoad: body)
+		client?.urlProtocolDidFinishLoading(self)
+	}
+
+	override func stopLoading() {}
+}

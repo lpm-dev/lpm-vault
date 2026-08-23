@@ -341,11 +341,13 @@ enum EnvFileCodec {
 		secrets.sorted { $0.key < $1.key }
 			.map { key, value in
 				if value.contains(" ") || value.contains("\"") || value.contains("'")
-					|| value.contains("\n")
+					|| value.contains("#") || value.contains("\n") || value.contains("\r")
 				{
 					let escaped = value
 						.replacingOccurrences(of: "\\", with: "\\\\")
 						.replacingOccurrences(of: "\"", with: "\\\"")
+						.replacingOccurrences(of: "\n", with: "\\n")
+						.replacingOccurrences(of: "\r", with: "\\r")
 					return "\(key)=\"\(escaped)\""
 				}
 				return "\(key)=\(value)"

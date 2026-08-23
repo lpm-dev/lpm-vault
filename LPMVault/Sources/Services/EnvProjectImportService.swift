@@ -42,7 +42,9 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 			let decrypted = try VaultCrypto.decryptStableSync(
 				authToken: authToken,
 				encryptedBlob: blob,
-				wrappedKey: wrapped
+				wrappedKey: wrapped,
+				vaultId: vaultId,
+				cryptoVersion: result.cryptoVersion ?? 1
 			)
 			try Task.checkCancellation()
 			guard let data = decrypted.plaintext.data(using: .utf8) else {
@@ -125,7 +127,13 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 				wrapped: wrapped,
 				privateKey: privateKey
 			)
-			let data = try VaultCrypto.decrypt(key: aesKey, encoded: blob)
+			let data = try VaultCrypto.decryptPayload(
+				key: aesKey,
+				encoded: blob,
+				scope: .organization(slug: orgSlug),
+				vaultId: vaultId,
+				cryptoVersion: result.cryptoVersion ?? 1
+			)
 			try Task.checkCancellation()
 			let merge = try EnvValidation.mergeRemotePayload(data, into: [:])
 			return RemoteEnvProjectPayload(
