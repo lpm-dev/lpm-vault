@@ -11,9 +11,22 @@ final class UpdateChecker {
 
 	private let repo = "lpm-dev/lpm-vault"
 	private let cacheKey = "lpm-vault-update-check"
+	private let maximumResponseBytes = 1024 * 1024
 
 	var currentVersion: String {
 		Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+	}
+
+	nonisolated static func validatedReleaseURL(_ value: String) -> URL? {
+		guard let url = URL(string: value),
+			url.scheme?.lowercased() == "https",
+			url.host?.lowercased() == "github.com",
+			url.user == nil,
+			url.password == nil,
+			url.port == nil || url.port == 443,
+			url.path.hasPrefix("/lpm-dev/lpm-vault/releases/")
+		else { return nil }
+		return url
 	}
 
 	func checkForUpdate() async {
@@ -35,7 +48,11 @@ final class UpdateChecker {
 		request.timeoutInterval = 10
 
 		do {
-			let (data, response) = try await URLSession.shared.data(for: request)
+			let (data, response) = try await BoundedHTTPResponse.load(
+				for: request,
+				using: URLSession.shared,
+				maximumBytes: maximumResponseBytes
+			)
 			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
 				return
 			}
@@ -46,6 +63,9 @@ final class UpdateChecker {
 			}
 
 			let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+			guard let validatedReleaseURL = Self.validatedReleaseURL(release.html_url) else {
+				return
+			}
 			let version = release.tag_name.hasPrefix("v")
 				? String(release.tag_name.dropFirst())
 				: release.tag_name
@@ -55,7 +75,7 @@ final class UpdateChecker {
 
 			latestVersion = version
 			updateAvailable = version != currentVersion && version > currentVersion
-			releaseURL = URL(string: release.html_url)
+			releaseURL = validatedReleaseURL
 		} catch {
 			// Silently fail — update check is not critical
 		}

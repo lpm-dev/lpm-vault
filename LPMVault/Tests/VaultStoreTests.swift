@@ -2028,6 +2028,7 @@ struct VaultStoreTests {
 			return SyncService.SyncStatus(
 				vaultId: nil,
 				version: nil,
+				cryptoVersion: nil,
 				contentKeyVersion: nil,
 				recipientPublicKeyVersion: nil,
 				recipientPublicKeyFingerprint: nil,

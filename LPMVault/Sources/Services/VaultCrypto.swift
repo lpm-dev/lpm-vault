@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import Security
 
@@ -16,6 +17,13 @@ import Security
 /// - Per-vault AES key = random 32 bytes
 /// - Token-derived wrapping remains available only for legacy migration
 enum VaultCrypto {
+	static let currentCryptoVersion = 2
+	private static let syncAADDomain = Data("lpm-vault-sync".utf8)
+
+	enum SyncScope: Equatable {
+		case personal
+		case organization(slug: String)
+	}
 
 	// MARK: - Key Derivation
 
@@ -38,8 +46,21 @@ enum VaultCrypto {
 	/// Encrypt data with AES-256-GCM.
 	/// Returns `base64(iv):base64(ciphertext+tag)` — matches Rust format.
 	static func encrypt(key: SymmetricKey, plaintext: Data) throws -> String {
+		try encrypt(key: key, plaintext: plaintext, associatedData: Data())
+	}
+
+	private static func encrypt(
+		key: SymmetricKey,
+		plaintext: Data,
+		associatedData: Data
+	) throws -> String {
 		let nonce = AES.GCM.Nonce()
-		let sealed = try AES.GCM.seal(plaintext, using: key, nonce: nonce)
+		let sealed = try AES.GCM.seal(
+			plaintext,
+			using: key,
+			nonce: nonce,
+			authenticating: associatedData
+		)
 
 		let ivData = Data(nonce)
 		// combined = ciphertext + tag (AES.GCM.SealedBox stores them together)
@@ -55,6 +76,14 @@ enum VaultCrypto {
 
 	/// Decrypt data produced by `encrypt()`.
 	static func decrypt(key: SymmetricKey, encoded: String) throws -> Data {
+		try decrypt(key: key, encoded: encoded, associatedData: Data())
+	}
+
+	private static func decrypt(
+		key: SymmetricKey,
+		encoded: String,
+		associatedData: Data
+	) throws -> Data {
 		let parts = encoded.split(separator: ":", maxSplits: 1)
 		guard parts.count == 2 else {
 			throw CryptoError.invalidFormat
@@ -75,7 +104,85 @@ enum VaultCrypto {
 		let combined = ivData + ciphertextAndTag
 		let sealedBox = try AES.GCM.SealedBox(combined: combined)
 
-		return try AES.GCM.open(sealedBox, using: key)
+		return try AES.GCM.open(sealedBox, using: key, authenticating: associatedData)
+	}
+
+	static func syncAssociatedData(
+		scope: SyncScope,
+		vaultId: String,
+		cryptoVersion: Int
+	) throws -> Data {
+		guard cryptoVersion == currentCryptoVersion else {
+			throw CryptoError.unsupportedCryptoVersion(cryptoVersion)
+		}
+
+		let vaultIdData = Data(vaultId.utf8)
+		let scopeByte: UInt8
+		let orgSlugData: Data
+		switch scope {
+		case .personal:
+			scopeByte = 1
+			orgSlugData = Data()
+		case .organization(let slug):
+			scopeByte = 2
+			orgSlugData = Data(slug.utf8)
+		}
+		guard let vaultIdLength = UInt32(exactly: vaultIdData.count),
+			let orgSlugLength = UInt32(exactly: orgSlugData.count)
+		else {
+			throw CryptoError.contextTooLarge
+		}
+
+		var aad = syncAADDomain
+		aad.append(0)
+		appendUInt32(UInt32(cryptoVersion), to: &aad)
+		aad.append(scopeByte)
+		appendUInt32(vaultIdLength, to: &aad)
+		aad.append(vaultIdData)
+		appendUInt32(orgSlugLength, to: &aad)
+		aad.append(orgSlugData)
+		return aad
+	}
+
+	private static func appendUInt32(_ value: UInt32, to data: inout Data) {
+		var bigEndian = value.bigEndian
+		Swift.withUnsafeBytes(of: &bigEndian) { data.append(contentsOf: $0) }
+	}
+
+	static func encryptPayload(
+		key: SymmetricKey,
+		plaintext: Data,
+		scope: SyncScope,
+		vaultId: String
+	) throws -> String {
+		let aad = try syncAssociatedData(
+			scope: scope,
+			vaultId: vaultId,
+			cryptoVersion: currentCryptoVersion
+		)
+		return try encrypt(key: key, plaintext: plaintext, associatedData: aad)
+	}
+
+	static func decryptPayload(
+		key: SymmetricKey,
+		encoded: String,
+		scope: SyncScope,
+		vaultId: String,
+		cryptoVersion: Int
+	) throws -> Data {
+		switch cryptoVersion {
+		case 1:
+			return try decrypt(key: key, encoded: encoded)
+		case currentCryptoVersion:
+			let aad = try syncAssociatedData(
+				scope: scope,
+				vaultId: vaultId,
+				cryptoVersion: cryptoVersion
+			)
+			return try decrypt(key: key, encoded: encoded, associatedData: aad)
+		default:
+			throw CryptoError.unsupportedCryptoVersion(cryptoVersion)
+		}
 	}
 
 	// MARK: - Key Wrapping
@@ -129,17 +236,30 @@ enum VaultCrypto {
 	}
 
 	/// Encrypt personal sync data with the stable wrapping key shared with the Rust client.
-	static func encryptForStableSync(secretsJSON: String) throws -> (encryptedBlob: String, wrappedKey: String) {
-		try encryptForStableSync(secretsJSON: secretsJSON, wrappingKey: stableWrappingKey())
+	static func encryptForStableSync(
+		secretsJSON: String,
+		vaultId: String
+	) throws -> (encryptedBlob: String, wrappedKey: String) {
+		try encryptForStableSync(
+			secretsJSON: secretsJSON,
+			vaultId: vaultId,
+			wrappingKey: stableWrappingKey()
+		)
 	}
 
 	static func encryptForStableSync(
 		secretsJSON: String,
+		vaultId: String,
 		wrappingKey: SymmetricKey
 	) throws -> (encryptedBlob: String, wrappedKey: String) {
 		let aesKey = generateAESKey()
 		return (
-			try encrypt(key: aesKey, plaintext: Data(secretsJSON.utf8)),
+			try encryptPayload(
+				key: aesKey,
+				plaintext: Data(secretsJSON.utf8),
+				scope: .personal,
+				vaultId: vaultId
+			),
 			try wrapKey(wrappingKey: wrappingKey, aesKey: aesKey)
 		)
 	}
@@ -148,33 +268,59 @@ enum VaultCrypto {
 	static func decryptStableSync(
 		authToken: String,
 		encryptedBlob: String,
-		wrappedKey: String
-	) throws -> (plaintext: String, usedLegacyKey: Bool) {
+		wrappedKey: String,
+		vaultId: String,
+		cryptoVersion: Int
+	) throws -> (plaintext: String, needsReencrypt: Bool) {
+		guard cryptoVersion == 1 || cryptoVersion == currentCryptoVersion else {
+			throw CryptoError.unsupportedCryptoVersion(cryptoVersion)
+		}
 		if let stableKey = try? stableWrappingKey(),
-			let aesKey = try? unwrapKey(wrappingKey: stableKey, wrapped: wrappedKey),
-			let plaintext = try? decrypt(key: aesKey, encoded: encryptedBlob),
-			let json = String(data: plaintext, encoding: .utf8)
+			let aesKey = try? unwrapKey(wrappingKey: stableKey, wrapped: wrappedKey)
 		{
-			return (json, false)
+			let plaintext = try decryptPayload(
+				key: aesKey,
+				encoded: encryptedBlob,
+				scope: .personal,
+				vaultId: vaultId,
+				cryptoVersion: cryptoVersion
+			)
+			guard let json = String(data: plaintext, encoding: .utf8) else {
+				throw CryptoError.invalidUTF8
+			}
+			return (json, cryptoVersion == 1)
 		}
 
-		return (
-			try decryptFromSync(
-				authToken: authToken,
-				encryptedBlob: encryptedBlob,
-				wrappedKey: wrappedKey
-			),
-			true
+		let legacyKey = deriveWrappingKey(authToken: authToken)
+		let aesKey = try unwrapKey(wrappingKey: legacyKey, wrapped: wrappedKey)
+		let plaintext = try decryptPayload(
+			key: aesKey,
+			encoded: encryptedBlob,
+			scope: .personal,
+			vaultId: vaultId,
+			cryptoVersion: cryptoVersion
 		)
+		guard let json = String(data: plaintext, encoding: .utf8) else {
+			throw CryptoError.invalidUTF8
+		}
+		return (json, true)
 	}
 
 	static func decryptStableSync(
 		encryptedBlob: String,
 		wrappedKey: String,
+		vaultId: String,
+		cryptoVersion: Int,
 		wrappingKey: SymmetricKey
 	) throws -> String {
 		let aesKey = try unwrapKey(wrappingKey: wrappingKey, wrapped: wrappedKey)
-		let plaintext = try decrypt(key: aesKey, encoded: encryptedBlob)
+		let plaintext = try decryptPayload(
+			key: aesKey,
+			encoded: encryptedBlob,
+			scope: .personal,
+			vaultId: vaultId,
+			cryptoVersion: cryptoVersion
+		)
 		guard let json = String(data: plaintext, encoding: .utf8) else {
 			throw CryptoError.invalidUTF8
 		}
@@ -315,17 +461,44 @@ enum VaultCrypto {
 	}
 
 	private static func readStableWrappingKeyFromFile() -> Data? {
-		let url = wrappingKeyFileURL()
-		if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-			let permissions = attributes[.posixPermissions] as? NSNumber,
-			permissions.intValue & 0o777 > 0o600
-		{
-			return nil
+		readStableWrappingKeyFile(at: wrappingKeyFileURL())
+	}
+
+	/// Reads the legacy file fallback without following links or accepting
+	/// permissions that expose the wrapping key to another local user.
+	static func readStableWrappingKeyFile(at url: URL) -> Data? {
+		let descriptor = url.withUnsafeFileSystemRepresentation { path in
+			guard let path else { return Int32(-1) }
+			return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW)
 		}
-		guard let data = try? Data(contentsOf: url),
-			data.count <= maximumWrappingKeyFileBytes,
-			let hex = String(data: data, encoding: .utf8)
+		guard descriptor >= 0 else { return nil }
+		defer { _ = Darwin.close(descriptor) }
+
+		var metadata = stat()
+		guard Darwin.fstat(descriptor, &metadata) == 0,
+			(metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+			metadata.st_uid == Darwin.geteuid(),
+			(metadata.st_mode & 0o077) == 0,
+			metadata.st_size >= 0,
+			metadata.st_size <= Int64(maximumWrappingKeyFileBytes)
 		else { return nil }
+
+		var data = Data()
+		data.reserveCapacity(Int(metadata.st_size))
+		var buffer = [UInt8](repeating: 0, count: 512)
+		while true {
+			let count = buffer.withUnsafeMutableBytes { bytes in
+				Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+			}
+			if count == 0 { break }
+			if count < 0 {
+				if errno == EINTR { continue }
+				return nil
+			}
+			guard data.count + count <= maximumWrappingKeyFileBytes else { return nil }
+			data.append(buffer, count: count)
+		}
+		guard let hex = String(data: data, encoding: .utf8) else { return nil }
 		return decodeWrappingKey(hex.trimmingCharacters(in: .whitespacesAndNewlines))
 	}
 
@@ -335,12 +508,12 @@ enum VaultCrypto {
 			at: url.deletingLastPathComponent(),
 			withIntermediateDirectories: true
 		)
-		let hex = key.map { String(format: "%02x", $0) }.joined()
-		try Data(hex.utf8).write(to: url, options: .atomic)
 		try FileManager.default.setAttributes(
-			[.posixPermissions: 0o600],
-			ofItemAtPath: url.path
+			[.posixPermissions: 0o700],
+			ofItemAtPath: url.deletingLastPathComponent().path
 		)
+		let hex = key.map { String(format: "%02x", $0) }.joined()
+		try SecureFileWriter.write(Data(hex.utf8), to: url)
 	}
 
 	private static func wrappingKeyFileURL() -> URL {
@@ -475,6 +648,8 @@ enum VaultCrypto {
 		case invalidIVSize(Int)
 		case invalidKeySize(Int)
 		case invalidUTF8
+		case unsupportedCryptoVersion(Int)
+		case contextTooLarge
 		case keychainWriteFailed(OSStatus)
 
 		var errorDescription: String? {
@@ -491,6 +666,10 @@ enum VaultCrypto {
 				"Invalid key size: \(n) bytes (expected 32)"
 			case .invalidUTF8:
 				"Decrypted data is not valid UTF-8"
+			case .unsupportedCryptoVersion(let version):
+				"Unsupported vault crypto version: \(version)"
+			case .contextTooLarge:
+				"Vault encryption context is too large"
 			case .keychainWriteFailed(let status):
 				"Failed to write to Keychain (OSStatus: \(status))"
 			}

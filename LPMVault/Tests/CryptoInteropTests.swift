@@ -128,4 +128,53 @@ struct CryptoInteropTests {
 		let b = try VaultCrypto.wrapKeyForRecipient(aesKey: aesKey, recipientPublicKey: pubData)
 		#expect(a != b)
 	}
+
+	@Test("Protocol v2 AAD matches the cross-language organization vector")
+	func protocolV2AADInteropVector() throws {
+		let aad = try VaultCrypto.syncAssociatedData(
+			scope: .organization(slug: "acme"),
+			vaultId: "vault-123",
+			cryptoVersion: 2
+		)
+
+		#expect(aad.map { String(format: "%02x", $0) }.joined()
+			== "6c706d2d7661756c742d73796e63000000000202000000097661756c742d3132330000000461636d65")
+	}
+
+	@Test("Protocol v2 rejects a payload copied to another vault ID")
+	func protocolV2RejectsCrossVaultSubstitution() throws {
+		let key = VaultCrypto.generateAESKey()
+		let encrypted = try VaultCrypto.encryptPayload(
+			key: key,
+			plaintext: Data(#"{"TOKEN":"secret"}"#.utf8),
+			scope: .personal,
+			vaultId: "vault-a"
+		)
+
+		#expect(throws: (any Error).self) {
+			_ = try VaultCrypto.decryptPayload(
+				key: key,
+				encoded: encrypted,
+				scope: .personal,
+				vaultId: "vault-b",
+				cryptoVersion: 2
+			)
+		}
+	}
+
+	@Test("Unsupported payload versions fail closed")
+	func unsupportedPayloadVersionFailsClosed() throws {
+		let key = VaultCrypto.generateAESKey()
+		let legacy = try VaultCrypto.encrypt(key: key, plaintext: Data("{}".utf8))
+
+		#expect(throws: VaultCrypto.CryptoError.self) {
+			_ = try VaultCrypto.decryptPayload(
+				key: key,
+				encoded: legacy,
+				scope: .personal,
+				vaultId: "vault-a",
+				cryptoVersion: 3
+			)
+		}
+	}
 }

@@ -306,9 +306,18 @@ enum LoginService {
 			delegate: PinnedSessionDelegate(),
 			delegateQueue: nil
 		)
-		let (data, response) = try await session.data(for: request)
-		guard data.count <= maximumExchangeResponseBytes,
-			let http = response as? HTTPURLResponse
+		let data: Data
+		let response: URLResponse
+		do {
+			(data, response) = try await BoundedHTTPResponse.load(
+				for: request,
+				using: session,
+				maximumBytes: maximumExchangeResponseBytes
+			)
+		} catch is BoundedHTTPResponse.LoadError {
+			throw LoginError.exchangeFailed("response exceeded the size limit")
+		}
+		guard let http = response as? HTTPURLResponse
 		else { throw LoginError.exchangeFailed("invalid response") }
 		guard (200..<300).contains(http.statusCode) else {
 			let error = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
