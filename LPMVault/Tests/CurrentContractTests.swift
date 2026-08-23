@@ -203,6 +203,28 @@ struct CurrentContractTests {
 		#expect(try String(contentsOf: destination, encoding: .utf8) == "TOKEN=secret\n")
 	}
 
+	@Test("project config access refuses symbolic links")
+	func projectConfigRejectsSymbolicLinks() throws {
+		let directory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("lpm-vault-config-\(UUID().uuidString)", isDirectory: true)
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: directory) }
+
+		let target = directory.appendingPathComponent("outside.json")
+		let original = Data(#"{"env":{"production":".env.production"}}"#.utf8)
+		try original.write(to: target)
+		let config = directory.appendingPathComponent("lpm.json")
+		try FileManager.default.createSymbolicLink(at: config, withDestinationURL: target)
+
+		#expect(ProjectConfigFile.readObject(at: config) == nil)
+		#expect(throws: ProjectConfigFile.FileError.self) {
+			try ProjectConfigFile.writeVaultID("safe-vault-id", to: config)
+		}
+		#expect(try Data(contentsOf: target) == original)
+		let values = try config.resourceValues(forKeys: [.isSymbolicLinkKey])
+		#expect(values.isSymbolicLink == true)
+	}
+
 	@Test("organization wrapped-key payload carries recipient binding fields")
 	func orgWrappedKeyPayload() throws {
 		let item = SyncService.WrappedMemberKey(
@@ -226,12 +248,15 @@ struct CurrentContractTests {
 		let payload = #"{"environments":{"default":{"TOKEN":"secret"}}}"#
 		let encrypted = try VaultCrypto.encryptForStableSync(
 			secretsJSON: payload,
+			vaultId: "vault-contract",
 			wrappingKey: wrappingKey
 		)
 
 		#expect(try VaultCrypto.decryptStableSync(
 			encryptedBlob: encrypted.encryptedBlob,
 			wrappedKey: encrypted.wrappedKey,
+			vaultId: "vault-contract",
+			cryptoVersion: VaultCrypto.currentCryptoVersion,
 			wrappingKey: wrappingKey
 		) == payload)
 	}

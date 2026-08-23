@@ -202,8 +202,14 @@ struct EnvFileImportTests {
 		let source = [
 			"PLAIN": "value",
 			"ESCAPED": "literal \\n and \\\\ path with \\\"quote\\\"",
+			"MULTILINE": "first\nINJECTED=second\rthird",
+			"HASH": "value # not a comment",
 		]
-		#expect(try EnvFileCodec.parse(EnvFileCodec.format(source)) == source)
+		let formatted = EnvFileCodec.format(source)
+		#expect(formatted.components(separatedBy: "\n").count == source.count + 1)
+		#expect(!formatted.contains("\nINJECTED=second"))
+		#expect(formatted.contains("\\nINJECTED=second\\rthird"))
+		#expect(try EnvFileCodec.parse(formatted) == source)
 	}
 
 	@Test("a failed replacement preview clears previously imported secrets")

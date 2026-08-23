@@ -1098,9 +1098,9 @@ final class VaultStore {
 	/// Read vault ID from lpm.json in the project directory.
 	private func readVaultIdFromLpmJson(projectPath: String) -> String? {
 		let url = URL(fileURLWithPath: projectPath).appendingPathComponent("lpm.json")
-		guard let data = try? Data(contentsOf: url),
-			  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-			  let vaultId = json["vault"] as? String else {
+		guard let json = ProjectConfigFile.readObject(at: url),
+			let vaultId = json["vault"] as? String
+		else {
 			return nil
 		}
 		return vaultId
@@ -1111,23 +1111,7 @@ final class VaultStore {
 	private func writeLpmJson(vaultId: String, projectPath: String) {
 		guard !projectPath.isEmpty else { return }
 		let url = URL(fileURLWithPath: projectPath).appendingPathComponent("lpm.json")
-
-		var json: [String: Any] = [:]
-
-		// Read existing lpm.json if present
-		if let data = try? Data(contentsOf: url),
-		   let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-			json = existing
-		}
-
-		// Only write if vault ID is different or missing
-		if json["vault"] as? String == vaultId { return }
-
-		json["vault"] = vaultId
-
-		if let data = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
-			try? data.write(to: url)
-		}
+		try? ProjectConfigFile.writeVaultID(vaultId, to: url)
 	}
 
 	/// Remove from sidebar only — Keychain data stays.
@@ -2002,7 +1986,10 @@ final class VaultStore {
 				throw VaultCrypto.CryptoError.invalidUTF8
 			}
 
-			let (blob, wrapped) = try VaultCrypto.encryptForStableSync(secretsJSON: jsonString)
+			let (blob, wrapped) = try VaultCrypto.encryptForStableSync(
+				secretsJSON: jsonString,
+				vaultId: project.id
+			)
 
 			let syncService = personalSyncServiceFactory(environment.baseURL)
 			let result = await syncService.push(
@@ -2115,7 +2102,9 @@ final class VaultStore {
 			let decrypted = try VaultCrypto.decryptStableSync(
 				authToken: authToken,
 				encryptedBlob: blob,
-				wrappedKey: wrapped
+				wrappedKey: wrapped,
+				vaultId: project.id,
+				cryptoVersion: result.cryptoVersion ?? 1
 			)
 			let jsonString = decrypted.plaintext
 
@@ -2132,9 +2121,10 @@ final class VaultStore {
 
 			let version = result.version ?? 0
 			var syncedVersion = version
-			if decrypted.usedLegacyKey {
+			if decrypted.needsReencrypt {
 				let (migratedBlob, migratedWrapped) = try VaultCrypto.encryptForStableSync(
-					secretsJSON: jsonString
+					secretsJSON: jsonString,
+					vaultId: project.id
 				)
 				let migration = await syncService.push(
 					authToken: authToken,
@@ -2462,7 +2452,12 @@ final class VaultStore {
 			aesKey = try VaultCrypto.unwrapKeyFromSender(wrapped: wrappedKey, privateKey: privateKey)
 			wrappedKeys = nil
 		}
-		let blob = try VaultCrypto.encrypt(key: aesKey, plaintext: Data(jsonString.utf8))
+		let blob = try VaultCrypto.encryptPayload(
+			key: aesKey,
+			plaintext: Data(jsonString.utf8),
+			scope: .organization(slug: orgSlug(for: authority)),
+			vaultId: project.id
+		)
 
 		// Push to org
 		guard await hasCurrentSyncAuth(authority) else {
@@ -2670,7 +2665,13 @@ final class VaultStore {
 
 			// Unwrap AES key with our X25519 private key
 			let aesKey = try VaultCrypto.unwrapKeyFromSender(wrapped: wrapped, privateKey: privKey)
-			let plaintext = try VaultCrypto.decrypt(key: aesKey, encoded: blob)
+			let plaintext = try VaultCrypto.decryptPayload(
+				key: aesKey,
+				encoded: blob,
+				scope: .organization(slug: orgSlug),
+				vaultId: project.id,
+				cryptoVersion: result.cryptoVersion ?? 1
+			)
 
 			guard let jsonString = String(data: plaintext, encoding: .utf8),
 				  let jsonData = jsonString.data(using: .utf8) else {
@@ -2732,9 +2733,7 @@ final class VaultStore {
 	private func syncSchema(for project: VaultProject) -> Data? {
 		guard !project.path.isEmpty else { return nil }
 		let configURL = URL(fileURLWithPath: project.path).appendingPathComponent("lpm.json")
-		guard let data = try? Data(contentsOf: configURL),
-			let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-		else { return nil }
+		guard let root = ProjectConfigFile.readObject(at: configURL) else { return nil }
 
 		var schema: [String: Any] = ["version": 2]
 		if let envSchema = root["envSchema"] as? [String: Any] {

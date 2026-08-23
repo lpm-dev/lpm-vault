@@ -1,7 +1,8 @@
 import Darwin
 import Foundation
 
-/// Writes sensitive exports atomically without ever creating a world-readable file.
+/// Atomically replaces a file with explicit permissions. Sensitive exports use
+/// the owner-only default; non-secret project metadata can request `0o644`.
 enum SecureFileWriter {
 	enum WriteError: LocalizedError {
 		case createFailed(Int32)
@@ -26,15 +27,26 @@ enum SecureFileWriter {
 		}
 	}
 
-	static func write(_ data: Data, to destination: URL) throws {
+	static func write(
+		_ data: Data,
+		to destination: URL,
+		permissions: mode_t = mode_t(S_IRUSR | S_IWUSR)
+	) throws {
 		let directory = destination.deletingLastPathComponent()
 		let temporary = directory.appendingPathComponent(".lpm-vault-\(UUID().uuidString).tmp")
-		let permissions = mode_t(S_IRUSR | S_IWUSR)
 		let descriptor: Int32 = temporary.withUnsafeFileSystemRepresentation { path in
 			guard let path else { return -1 }
 			return Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, permissions)
 		}
 		guard descriptor >= 0 else { throw WriteError.createFailed(errno) }
+		guard Darwin.fchmod(descriptor, permissions) == 0 else {
+			let code = errno
+			_ = Darwin.close(descriptor)
+			temporary.withUnsafeFileSystemRepresentation { path in
+				if let path { _ = Darwin.unlink(path) }
+			}
+			throw WriteError.createFailed(code)
+		}
 
 		var shouldRemoveTemporary = true
 		var descriptorIsOpen = true

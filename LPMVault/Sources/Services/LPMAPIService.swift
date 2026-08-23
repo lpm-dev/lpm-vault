@@ -128,9 +128,12 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 			var request = URLRequest(url: url)
 			request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 			do {
-				let (data, response) = try await session.data(for: request)
-				guard data.count <= maximumResponseBytes,
-					let http = response as? HTTPURLResponse,
+				let (data, response) = try await BoundedHTTPResponse.load(
+					for: request,
+					using: session,
+					maximumBytes: maximumResponseBytes
+				)
+				guard let http = response as? HTTPURLResponse,
 					tokens.count <= maximumTokens
 				else { return .failure(.invalidResponse) }
 				guard http.statusCode == 200 else { return .failure(error(for: http.statusCode)) }
@@ -153,6 +156,8 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 					return .failure(.invalidResponse)
 				}
 				cursor = nextCursor
+			} catch is BoundedHTTPResponse.LoadError {
+				return .failure(.invalidResponse)
 			} catch is CancellationError {
 				return .failure(.cancelled)
 			} catch {
@@ -169,9 +174,12 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 		request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
 		do {
-			let (data, response) = try await session.data(for: request)
-			guard data.count <= maximumResponseBytes,
-				let http = response as? HTTPURLResponse
+			let (data, response) = try await BoundedHTTPResponse.load(
+				for: request,
+				using: session,
+				maximumBytes: maximumResponseBytes
+			)
+			guard let http = response as? HTTPURLResponse
 			else { return .failure(.invalidResponse) }
 			guard http.statusCode == 200 else { return .failure(error(for: http.statusCode)) }
 			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token) else {
@@ -181,6 +189,8 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 				return .failure(.invalidResponse)
 			}
 			return .success(value)
+		} catch is BoundedHTTPResponse.LoadError {
+			return .failure(.invalidResponse)
 		} catch is CancellationError {
 			return .failure(.cancelled)
 		} catch {
@@ -194,15 +204,20 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 		request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
 		do {
-			let (data, response) = try await session.data(for: request)
-			guard data.count <= maximumResponseBytes,
-				let http = response as? HTTPURLResponse
+			let (data, response) = try await BoundedHTTPResponse.load(
+				for: request,
+				using: session,
+				maximumBytes: maximumResponseBytes
+			)
+			guard let http = response as? HTTPURLResponse
 			else { return .failure(.invalidResponse) }
 			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token) else {
 				return .failure(.invalidSignature)
 			}
 			guard http.statusCode == 200 else { return .failure(error(for: http.statusCode)) }
 			return .success(())
+		} catch is BoundedHTTPResponse.LoadError {
+			return .failure(.invalidResponse)
 		} catch is CancellationError {
 			return .failure(.cancelled)
 		} catch {

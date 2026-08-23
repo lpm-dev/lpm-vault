@@ -17,6 +17,7 @@ final class SyncService: @unchecked Sendable {
 	struct SyncStatus: Codable, Sendable {
 		let vaultId: String?
 		let version: Int?
+		let cryptoVersion: Int?
 		let contentKeyVersion: Int?
 		let recipientPublicKeyVersion: Int?
 		let recipientPublicKeyFingerprint: String?
@@ -97,6 +98,7 @@ final class SyncService: @unchecked Sendable {
 		var body: [String: Any] = [
 			"encryptedBlob": encryptedBlob,
 			"wrappedKey": wrappedKey,
+			"cryptoVersion": VaultCrypto.currentCryptoVersion,
 		]
 		if let expectedVersion { body["expectedVersion"] = expectedVersion }
 		if force { body["force"] = true }
@@ -125,7 +127,10 @@ final class SyncService: @unchecked Sendable {
 		schema: Data? = nil
 	) async -> SyncStatus? {
 		guard let url = endpoint(["api", "orgs", orgSlug, "vaults", vaultId]) else { return nil }
-		var body: [String: Any] = ["encryptedBlob": encryptedBlob]
+		var body: [String: Any] = [
+			"encryptedBlob": encryptedBlob,
+			"cryptoVersion": VaultCrypto.currentCryptoVersion,
+		]
 		if let wrappedKeys,
 			let encoded = try? JSONEncoder().encode(wrappedKeys),
 			let array = try? JSONSerialization.jsonObject(with: encoded)
@@ -152,9 +157,12 @@ final class SyncService: @unchecked Sendable {
 		var request = URLRequest(url: url)
 		request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 		do {
-			let (data, response) = try await session.data(for: request)
-			guard data.count <= maximumResponseBytes,
-				let http = response as? HTTPURLResponse,
+			let (data, response) = try await BoundedHTTPResponse.load(
+				for: request,
+				using: session,
+				maximumBytes: maximumResponseBytes
+			)
+			guard let http = response as? HTTPURLResponse,
 				http.statusCode == 200
 			else { return nil }
 			let capability = http.value(forHTTPHeaderField: "X-LPM-Org-Wrapped-Keys-Write")
@@ -266,9 +274,12 @@ final class SyncService: @unchecked Sendable {
 		}
 
 		do {
-			let (data, response) = try await session.data(for: request)
-			guard data.count <= maximumResponseBytes,
-				let http = response as? HTTPURLResponse
+			let (data, response) = try await BoundedHTTPResponse.load(
+				for: request,
+				using: session,
+				maximumBytes: maximumResponseBytes
+			)
+			guard let http = response as? HTTPURLResponse
 			else { return nil }
 			if (200..<300).contains(http.statusCode), signedSuccess {
 				guard PinnedSessionDelegate.verifyResponseSignature(
