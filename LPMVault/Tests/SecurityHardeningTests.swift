@@ -291,6 +291,16 @@ struct PinnedSessionDelegateTests {
 		#expect(PinnedSessionDelegate.pinnedHashes.count >= 2)
 	}
 
+	@Test("pinset contains the production leaf and active intermediate")
+	func productionPins() {
+		#expect(PinnedSessionDelegate.pinnedHashes.contains(
+			"KuVBh4ZrhWfWkGuZAxfHWy/YBuyWosBE5/8nEWzMCAM="
+		))
+		#expect(PinnedSessionDelegate.pinnedHashes.contains(
+			"s/tdAOmUzd8syaTuqfgGvFcn6DzA5Cmb+Vby1ST+U3Y="
+		))
+	}
+
 	@Test("spkiHash returns nil for unknown key size")
 	func spkiHashUnknownKeySize() {
 		let unknownKey = Data(repeating: 0x42, count: 33)  // not a known key size

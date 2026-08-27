@@ -5,9 +5,9 @@ final class SyncService: @unchecked Sendable {
 	private let session: URLSession
 	private let maximumResponseBytes = 10 * 1024 * 1024
 
-	init(baseURL: URL = VaultConstants.apiBaseURL) {
+	init(baseURL: URL = VaultConstants.apiBaseURL, session: URLSession? = nil) {
 		apiBaseURL = baseURL
-		session = URLSession(
+		self.session = session ?? URLSession(
 			configuration: .ephemeral,
 			delegate: PinnedSessionDelegate(),
 			delegateQueue: nil
@@ -45,6 +45,48 @@ final class SyncService: @unchecked Sendable {
 		let updatedBy: String?
 
 		var id: String { vaultId }
+	}
+
+	enum ProjectListError: Error, LocalizedError, Sendable, Equatable {
+		case cancelled
+		case invalidRequest
+		case transport
+		case unauthorized
+		case sessionNotAuthorized
+		case forbidden
+		case rateLimited
+		case server(Int)
+		case invalidResponse
+		case invalidPagination
+
+		var requiresSignIn: Bool {
+			self == .unauthorized || self == .sessionNotAuthorized
+		}
+
+		var errorDescription: String? {
+			switch self {
+			case .cancelled:
+				"The request was cancelled."
+			case .invalidRequest:
+				"LPM Vault could not create the cloud request."
+			case .transport:
+				"Could not reach lpm.dev. Check your connection and try again."
+			case .unauthorized:
+				"Your lpm.dev session expired. Sign in again."
+			case .sessionNotAuthorized:
+				"This lpm.dev session cannot access cloud env projects. Sign in again to create a current session."
+			case .forbidden:
+				"Your lpm.dev account is not allowed to access these cloud env projects."
+			case .rateLimited:
+				"lpm.dev received too many requests. Wait a moment and retry."
+			case .server(let status):
+				"lpm.dev could not load env projects (HTTP \(status)). Try again later."
+			case .invalidResponse:
+				"lpm.dev returned an invalid env project response."
+			case .invalidPagination:
+				"lpm.dev returned invalid env project pagination data."
+			}
+		}
 	}
 
 	struct MemberPublicKey: Decodable, Sendable {
@@ -200,11 +242,11 @@ final class SyncService: @unchecked Sendable {
 		)
 	}
 
-	func listPersonalProjects(authToken: String) async -> [RemoteProject]? {
+	func listPersonalProjects(authToken: String) async -> Result<[RemoteProject], ProjectListError> {
 		await listProjects(authToken: authToken, path: ["api", "vaults"])
 	}
 
-	func listOrgProjects(authToken: String, orgSlug: String) async -> [RemoteProject]? {
+	func listOrgProjects(authToken: String, orgSlug: String) async -> Result<[RemoteProject], ProjectListError> {
 		await listProjects(authToken: authToken, path: ["api", "orgs", orgSlug, "vaults"])
 	}
 
@@ -213,8 +255,15 @@ final class SyncService: @unchecked Sendable {
 		let nextCursor: String?
 	}
 
-	private func listProjects(authToken: String, path: [String]) async -> [RemoteProject]? {
-		guard var url = endpoint(path) else { return nil }
+	private struct ErrorEnvelope: Decodable {
+		let error: String?
+	}
+
+	private func listProjects(
+		authToken: String,
+		path: [String]
+	) async -> Result<[RemoteProject], ProjectListError> {
+		guard var url = endpoint(path) else { return .failure(.invalidRequest) }
 		var projects: [RemoteProject] = []
 		var cursor: String?
 		var seenCursors: Set<String> = []
@@ -223,24 +272,74 @@ final class SyncService: @unchecked Sendable {
 			if let cursor {
 				var components = URLComponents(url: url, resolvingAgainstBaseURL: true)
 				components?.queryItems = [URLQueryItem(name: "cursor", value: cursor)]
-				guard let nextURL = components?.url else { return nil }
+				guard let nextURL = components?.url else { return .failure(.invalidRequest) }
 				url = nextURL
 			}
-			guard let page: ProjectPage = await request(
-				url: url,
-				method: "GET",
-				token: authToken,
-				signedSuccess: false
-			) else { return nil }
-			guard projects.count + page.vaults.count <= 10_000 else { return nil }
+			let page: ProjectPage
+			switch await loadProjectPage(url: url, authToken: authToken) {
+			case .success(let loadedPage):
+				page = loadedPage
+			case .failure(let error):
+				return .failure(error)
+			}
+			guard projects.count + page.vaults.count <= 10_000 else {
+				return .failure(.invalidPagination)
+			}
 			projects.append(contentsOf: page.vaults)
-			guard let nextCursor = page.nextCursor else { return projects }
+			guard let nextCursor = page.nextCursor else { return .success(projects) }
 			guard !nextCursor.isEmpty, nextCursor.count <= 160,
 				seenCursors.insert(nextCursor).inserted
-			else { return nil }
+			else { return .failure(.invalidPagination) }
 			cursor = nextCursor
 		}
-		return nil
+		return .failure(.invalidPagination)
+	}
+
+	private func loadProjectPage(
+		url: URL,
+		authToken: String
+	) async -> Result<ProjectPage, ProjectListError> {
+		var request = URLRequest(url: url)
+		request.httpMethod = "GET"
+		request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+		do {
+			let (data, response) = try await BoundedHTTPResponse.load(
+				for: request,
+				using: session,
+				maximumBytes: maximumResponseBytes
+			)
+			guard let http = response as? HTTPURLResponse else {
+				return .failure(.invalidResponse)
+			}
+			switch http.statusCode {
+			case 200..<300:
+				guard let page = try? JSONDecoder().decode(ProjectPage.self, from: data) else {
+					return .failure(.invalidResponse)
+				}
+				return .success(page)
+			case 401:
+				return .failure(.unauthorized)
+			case 403:
+				let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data)
+				let normalized = envelope?.error?.lowercased() ?? ""
+				if normalized.contains("requires a cli session")
+					|| normalized.contains("run `lpm login`")
+				{
+					return .failure(.sessionNotAuthorized)
+				}
+				return .failure(.forbidden)
+			case 429:
+				return .failure(.rateLimited)
+			default:
+				return .failure(.server(http.statusCode))
+			}
+		} catch is CancellationError {
+			return .failure(.cancelled)
+		} catch is BoundedHTTPResponse.LoadError {
+			return .failure(.invalidResponse)
+		} catch {
+			return .failure(.transport)
+		}
 	}
 
 	private func endpoint(_ pathSegments: [String]) -> URL? {

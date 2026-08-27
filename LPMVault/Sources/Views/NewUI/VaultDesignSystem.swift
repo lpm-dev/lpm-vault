@@ -66,6 +66,8 @@ enum VaultPalette {
 enum VaultMetrics {
 	static let titleBar: CGFloat = 46
 	static let sidebar: CGFloat = 246
+	static let sidebarMinimum: CGFloat = 220
+	static let sidebarMaximum: CGFloat = 460
 	static let inspector: CGFloat = 300
 	static let tableHeader: CGFloat = 34
 	static let matrixRow: CGFloat = 44
