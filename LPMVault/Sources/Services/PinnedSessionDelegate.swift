@@ -16,12 +16,15 @@ import Foundation
 /// ```
 final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
 	// SHA-256 of lpm.dev's SubjectPublicKeyInfo (SPKI) — base64-encoded.
-	// Includes leaf + intermediate so cert rotation doesn't brick the app.
-	// Regenerate with the openssl command above when the certificate chain changes.
-	// Last verified against the production chain: 2026-08-13
+	// Includes the active leaf and intermediate plus the alternate Let's Encrypt
+	// intermediate used by the previous chain. This permits an intentional
+	// YE1/YE2 rotation without trusting an entire root hierarchy.
+	// Verify with Scripts/audit-tls-pins.sh before every release.
+	// Last verified against the production chain: 2026-08-25
 	static let pinnedHashes: Set<String> = [
-		"RLZRW68Re+CdnKv+QfzXY6kTIwZPE3Ste7TqAQKflwg=",  // lpm.dev leaf
-		"brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=",  // Let's Encrypt YE1
+		"KuVBh4ZrhWfWkGuZAxfHWy/YBuyWosBE5/8nEWzMCAM=",  // lpm.dev leaf
+		"s/tdAOmUzd8syaTuqfgGvFcn6DzA5Cmb+Vby1ST+U3Y=",  // Let's Encrypt YE2
+		"brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=",  // Let's Encrypt YE1 backup
 	]
 
 	// ASN.1 SPKI headers by key type.

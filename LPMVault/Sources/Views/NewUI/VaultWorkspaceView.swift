@@ -14,6 +14,8 @@ struct VaultWorkspaceView: View {
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
 	@State private var showsAccountSwitcher = false
+	@State private var sidebarWidth = VaultMetrics.sidebar
+	@State private var sidebarDragStartWidth: CGFloat?
 
 	@State private var showNewProject = false
 	@State private var showCloudProjects = false
@@ -87,9 +89,9 @@ struct VaultWorkspaceView: View {
 					onClearEnvironment: { clearEnvironmentTarget = $0 },
 					onDeleteEnvironment: { deleteEnvironmentTarget = $0 }
 				)
-				.frame(width: VaultMetrics.sidebar)
+				.frame(width: sidebarWidth)
 
-				VaultHairline(color: VaultPalette.sidebarBorder, axis: .vertical)
+				sidebarDivider
 
 				Group {
 					if store.showAuthStatus {
@@ -161,7 +163,7 @@ struct VaultWorkspaceView: View {
 						store: store,
 						isPresented: $showsAccountSwitcher
 					)
-					.frame(width: VaultMetrics.sidebar - 16)
+					.frame(width: sidebarWidth - 16)
 					.padding(.leading, 8)
 					.padding(.bottom, 56)
 					.transition(.opacity.combined(with: .offset(y: 6)))
@@ -414,7 +416,44 @@ struct VaultWorkspaceView: View {
 
 	private func presentAddSecret() {
 		guard addSecretTarget == nil, let project else { return }
+		store.recordUserActivity()
 		addSecretTarget = VaultSecretTarget(projectId: project.id, environment: store.selectedEnvironment)
+	}
+
+	private var sidebarDivider: some View {
+		Rectangle()
+			.fill(.clear)
+			.frame(width: 7)
+			.overlay {
+				VaultHairline(color: VaultPalette.sidebarBorder, axis: .vertical)
+			}
+			.contentShape(Rectangle())
+			.gesture(
+				DragGesture(minimumDistance: 0)
+					.onChanged { value in
+						if sidebarDragStartWidth == nil { sidebarDragStartWidth = sidebarWidth }
+						let start = sidebarDragStartWidth ?? sidebarWidth
+						sidebarWidth = min(
+							VaultMetrics.sidebarMaximum,
+							max(VaultMetrics.sidebarMinimum, start + value.translation.width)
+						)
+						store.recordUserActivity()
+					}
+					.onEnded { _ in sidebarDragStartWidth = nil }
+			)
+			.onHover { hovering in
+				if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+			}
+			.accessibilityLabel("Resize sidebar")
+			.accessibilityValue("\(Int(sidebarWidth)) points")
+			.accessibilityAdjustableAction { direction in
+				let adjustment: CGFloat = direction == .increment ? 20 : -20
+				sidebarWidth = min(
+					VaultMetrics.sidebarMaximum,
+					max(VaultMetrics.sidebarMinimum, sidebarWidth + adjustment)
+				)
+				store.recordUserActivity()
+			}
 	}
 
 	private func dismissSearchFocus() {

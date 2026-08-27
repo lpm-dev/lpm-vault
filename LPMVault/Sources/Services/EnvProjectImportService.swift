@@ -74,7 +74,7 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 	) async throws -> RemoteEnvProjectPayload {
 		do {
 			try Task.checkCancellation()
-			let (privateKey, publicKey) = VaultCrypto.getOrCreateX25519Keypair()
+			let (privateKey, publicKey) = try VaultCrypto.getOrCreateX25519Keypair()
 			let publicKeyBase64 = publicKey.base64EncodedString()
 			guard let serverKey = await syncService.getMyPublicKey(authToken: authToken),
 				let registeredKey = serverKey.publicKey

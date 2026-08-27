@@ -5,22 +5,29 @@ import Foundation
 // MARK: - Mock Keychain Service
 
 final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
-	private let lock = NSLock()
+	private let lock = NSRecursiveLock()
 	var envStorage: [String: (name: String, path: String, environments: [String: [String: String]])] = [:]
 	var dataStorage: [String: Data] = [:]
 	var shouldFail = false
 	var failureError: KeychainError = .accessDenied
 	var listProjectsDelay: Duration?
 	var failDataAccounts: Set<String> = []
+	var failNextReadDataAccounts: Set<String> = []
 	var failNextWriteDataAccounts: Set<String> = []
 	var saveEnvironmentsCallCount = 0
+	var onGetEnvironments: (() -> Void)?
 	var onCreateEnvironments: (() -> Void)?
 	var blockNextSaveEnvironments: (() -> Void)?
 	var blockNextListProjects: (() -> Void)?
 	var blockNextDeleteProject: (() -> Void)?
 	var failWriteDataAccounts: Set<String> = []
 	var failRestoreSaveEnvironments = false
+	var failNextSaveEnvironments = false
 	private var successfulSaveEnvironmentsCallCount = 0
+
+	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError> {
+		.success(lock.withLock(operation))
+	}
 
 	// Convenience for old tests that use flat secrets
 	var storage: [String: (name: String, path: String, secrets: [String: String])] {
@@ -60,7 +67,27 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	}
 
 	func getEnvironments(vaultId: String) -> [String: [String: String]]? {
-		envStorage[vaultId]?.environments
+		lock.withLock {
+			let hook = onGetEnvironments
+			onGetEnvironments = nil
+			hook?()
+			return envStorage[vaultId]?.environments
+		}
+	}
+
+	func simulateCLISet(
+		vaultId: String,
+		environment: String,
+		key: String,
+		value: String
+	) {
+		lock.withLock {
+			guard var project = envStorage[vaultId] else { return }
+			var secrets = project.environments[environment] ?? [:]
+			secrets[key] = value
+			project.environments[environment] = secrets
+			envStorage[vaultId] = project
+		}
 	}
 
 	func saveEnvironments(
@@ -76,6 +103,10 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		lock.unlock()
 		blocker?()
 		if shouldFail { return .failure(failureError) }
+		if failNextSaveEnvironments {
+			failNextSaveEnvironments = false
+			return .failure(.unexpectedStatus(-98))
+		}
 		if failRestoreSaveEnvironments, successfulSaveEnvironmentsCallCount > 0 {
 			return .failure(.unexpectedStatus(-99))
 		}
@@ -148,6 +179,16 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func readData(account: String) -> Data? {
 		dataStorage[account]
+	}
+
+	func readDataResult(account: String) -> Result<Data?, KeychainError> {
+		if failNextReadDataAccounts.remove(account) != nil {
+			return .failure(failureError)
+		}
+		if shouldFail || failDataAccounts.contains(account) {
+			return .failure(failureError)
+		}
+		return .success(dataStorage[account])
 	}
 
 	@discardableResult

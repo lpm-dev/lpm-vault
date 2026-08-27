@@ -10,6 +10,7 @@ struct CloudVaultsSheet: View {
 	@State private var importTask: Task<Void, Never>?
 	@State private var importResult: ImportResult?
 	@State private var loadError: String?
+	@State private var loadErrorRequiresSignIn = false
 	@State private var reloadID = 0
 
 	typealias CloudVaultEntry = SyncService.RemoteProject
@@ -67,6 +68,14 @@ struct CloudVaultsSheet: View {
 					Text(loadError)
 				} actions: {
 					Button("Retry") { reloadID &+= 1 }
+					if loadErrorRequiresSignIn {
+						Button(store.isLoggingIn ? "Waiting for browser…" : "Sign in again") {
+							Task {
+								if await store.login() { reloadID &+= 1 }
+							}
+						}
+						.disabled(store.isLoggingIn)
+					}
 				}
 			} else if vaults.isEmpty {
 				VStack(spacing: 12) {
@@ -161,6 +170,7 @@ struct CloudVaultsSheet: View {
 	private func loadVaults() async {
 		isLoading = true
 		loadError = nil
+		loadErrorRequiresSignIn = false
 		guard let authToken = await store.currentAuthToken() else {
 			guard !Task.isCancelled else { return }
 			isLoading = false
@@ -169,15 +179,20 @@ struct CloudVaultsSheet: View {
 		}
 
 		let syncService = SyncService(baseURL: store.appEnvironment.baseURL)
-		guard let projects = await syncService.listPersonalProjects(authToken: authToken) else {
+		let result = await syncService.listPersonalProjects(authToken: authToken)
+		switch result {
+		case .success(let projects):
+			guard !Task.isCancelled else { return }
+			vaults = projects
+			isLoading = false
+		case .failure(.cancelled):
+			return
+		case .failure(let error):
 			guard !Task.isCancelled else { return }
 			isLoading = false
-			loadError = "The server request failed. Check your connection and try again."
-			return
+			loadErrorRequiresSignIn = error.requiresSignIn
+			loadError = error.localizedDescription
 		}
-		guard !Task.isCancelled else { return }
-		vaults = projects
-		isLoading = false
 	}
 
 	private func importVault(_ vault: CloudVaultEntry) async {
