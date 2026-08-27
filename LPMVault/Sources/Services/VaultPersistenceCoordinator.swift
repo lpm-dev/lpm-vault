@@ -6,6 +6,11 @@ struct VaultPersistenceSnapshot: Sendable {
 	let orgAssociations: [String: String]
 }
 
+enum DeleteProjectPersistenceResult: Sendable {
+	case success(VaultPersistenceSnapshot)
+	case failure(KeychainError)
+}
+
 struct ImportPersistenceCommit: Sendable {
 	let syncMetadata: [String: SyncMetadata]
 	let orgAssociations: [String: String]
@@ -44,6 +49,57 @@ enum SecretPersistenceResult: Sendable {
 	case failure(KeychainError)
 }
 
+enum VaultProjectMutation: Sendable {
+	case renameProject(expectedName: String, replacement: String)
+	case deleteEnvironment(name: String, expectedSecrets: [String: String])
+	case duplicateEnvironment(
+		source: String,
+		expectedSecrets: [String: String],
+		destination: String
+	)
+	case renameEnvironment(
+		source: String,
+		expectedSecrets: [String: String],
+		destination: String
+	)
+	case clearEnvironment(name: String, expectedSecrets: [String: String])
+	case updateSecret(
+		environment: String,
+		key: String,
+		expectedValue: String,
+		replacement: String
+	)
+	case deleteSecret(environment: String, key: String, expectedValue: String)
+}
+
+enum ProjectMutationPersistenceResult: Sendable {
+	case success(SecretPersistenceCommit)
+	case conflict(latest: VaultProject, metadata: [String: SyncMetadata])
+	case targetUnavailable
+	case failure(KeychainError)
+}
+
+struct SyncPersistenceSnapshot: Sendable {
+	let project: VaultProject
+	let metadata: SyncMetadata?
+}
+
+struct SyncPersistenceCommit: Sendable {
+	let project: VaultProject
+	let syncMetadata: [String: SyncMetadata]
+	let isDirty: Bool
+	let keyCount: Int
+	let warning: String?
+}
+
+enum PullPersistenceResult: Sendable {
+	case success(SyncPersistenceCommit)
+	case conflict(latest: VaultProject, metadata: [String: SyncMetadata])
+	case targetUnavailable
+	case invalidPayload(String)
+	case failure(KeychainError)
+}
+
 /// Serializes Keychain mutations so older snapshots cannot finish after newer ones.
 actor VaultPersistenceCoordinator {
 	private let service: KeychainServiceProtocol
@@ -60,9 +116,11 @@ actor VaultPersistenceCoordinator {
 		let projects = service.listProjects().sorted {
 			$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
 		}
-		let metadata = service.readData(account: "__sync_metadata__")
+		let metadata =
+			service.readData(account: "__sync_metadata__")
 			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) } ?? [:]
-		let associations = service.readData(account: "__org_associations__")
+		let associations =
+			service.readData(account: "__org_associations__")
 			.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
 		return VaultPersistenceSnapshot(
 			projects: projects,
@@ -80,20 +138,39 @@ actor VaultPersistenceCoordinator {
 		result: KeychainResult,
 		metadata: [String: SyncMetadata]
 	) {
+		switch service.withKeychainTransaction({
+			saveProjectUnlocked(project, markDirty: markDirty)
+		}) {
+		case .success(let result): return result
+		case .failure(let error): return (.failure(error), [:])
+		}
+	}
+
+	private func saveProjectUnlocked(_ project: VaultProject, markDirty: Bool) -> (
+		result: KeychainResult,
+		metadata: [String: SyncMetadata]
+	) {
+		guard markDirty else { return (save(project), loadSyncMetadata()) }
+		let previousMetadata: [String: SyncMetadata]
+		switch loadSyncMetadataResult() {
+		case .success(let metadata):
+			previousMetadata = metadata
+		case .failure(let error):
+			return (.failure(error), [:])
+		}
 		let result = save(project)
-		guard markDirty else { return (result, loadSyncMetadata()) }
 		switch result {
 		case .success, .successWithWarning:
-			var metadata = loadSyncMetadata()
+			var metadata = previousMetadata
 			var item = metadata[project.id] ?? SyncMetadata()
 			item.isDirty = true
 			metadata[project.id] = item
 			guard writeSyncMetadata(metadata) else {
-				return (.failure(.unexpectedStatus(-1)), loadSyncMetadata())
+				return (.failure(.unexpectedStatus(-1)), previousMetadata)
 			}
 			return (result, metadata)
 		case .failure:
-			return (result, loadSyncMetadata())
+			return (result, previousMetadata)
 		}
 	}
 
@@ -101,6 +178,29 @@ actor VaultPersistenceCoordinator {
 	/// publishes the returned project after both the vault and dirty metadata
 	/// are durable. If metadata persistence fails, the prior vault is restored.
 	func addSecret(
+		projectId: String,
+		projectName: String,
+		projectPath: String,
+		environment: String,
+		key: String,
+		value: String
+	) -> SecretPersistenceResult {
+		switch service.withKeychainTransaction({
+			addSecretUnlocked(
+				projectId: projectId,
+				projectName: projectName,
+				projectPath: projectPath,
+				environment: environment,
+				key: key,
+				value: value
+			)
+		}) {
+		case .success(let result): return result
+		case .failure(let error): return .failure(error)
+		}
+	}
+
+	private func addSecretUnlocked(
 		projectId: String,
 		projectName: String,
 		projectPath: String,
@@ -118,7 +218,13 @@ actor VaultPersistenceCoordinator {
 		else { return .targetUnavailable }
 
 		let previousEnvironments = environments
-		let previousMetadata = service.readData(account: "__sync_metadata__")
+		let previousMetadata: Data?
+		switch service.readDataResult(account: "__sync_metadata__") {
+		case .success(let data):
+			previousMetadata = data
+		case .failure(let error):
+			return .failure(error)
+		}
 		secrets[key] = value
 		environments[environment] = secrets
 		let project = VaultProject(
@@ -127,7 +233,8 @@ actor VaultPersistenceCoordinator {
 			path: projectPath,
 			environments: environments
 		)
-		var metadata = previousMetadata
+		var metadata =
+			previousMetadata
 			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) } ?? [:]
 		var item = metadata[projectId] ?? SyncMetadata()
 		item.isDirty = true
@@ -169,26 +276,317 @@ actor VaultPersistenceCoordinator {
 			return .failure(.unexpectedStatus(-1))
 		}
 
-		return .success(SecretPersistenceCommit(
-			project: project,
-			syncMetadata: metadata,
-			warning: warning
-		))
+		return .success(
+			SecretPersistenceCommit(
+				project: project,
+				syncMetadata: metadata,
+				warning: warning
+			))
 	}
 
-	func markSynced(vaultId: String, action: String, version: Int?) -> [String: SyncMetadata]? {
-		var metadata = loadSyncMetadata()
-		var item = metadata[vaultId] ?? SyncMetadata()
-		item.isDirty = false
+	func mutateProject(
+		projectId: String,
+		expectedName: String,
+		expectedPath: String,
+		mutation: VaultProjectMutation
+	) -> ProjectMutationPersistenceResult {
+		switch service.withKeychainTransaction({
+			mutateProjectUnlocked(
+				projectId: projectId,
+				expectedName: expectedName,
+				expectedPath: expectedPath,
+				mutation: mutation
+			)
+		}) {
+		case .success(let result): return result
+		case .failure(let error): return .failure(error)
+		}
+	}
+
+	private func mutateProjectUnlocked(
+		projectId: String,
+		expectedName: String,
+		expectedPath: String,
+		mutation: VaultProjectMutation
+	) -> ProjectMutationPersistenceResult {
+		guard var project = service.listProjects().first(where: { $0.id == projectId }) else {
+			return .targetUnavailable
+		}
+		let metadata: [String: SyncMetadata]
+		switch loadSyncMetadataResult() {
+		case .success(let value): metadata = value
+		case .failure(let error): return .failure(error)
+		}
+		guard project.name == expectedName, project.path == expectedPath else {
+			return .conflict(latest: project, metadata: metadata)
+		}
+		let previousProject = project
+
+		let mutationApplies: Bool
+		switch mutation {
+		case .renameProject(let expectedName, let replacement):
+			mutationApplies = project.name == expectedName
+			if mutationApplies { project.name = replacement }
+		case .deleteEnvironment(let name, let expectedSecrets):
+			mutationApplies =
+				project.environments.count > 1
+				&& project.environments[name] == expectedSecrets
+			if mutationApplies { project.environments.removeValue(forKey: name) }
+		case .duplicateEnvironment(let source, let expectedSecrets, let destination):
+			mutationApplies =
+				project.environments[source] == expectedSecrets
+				&& project.environments[destination] == nil
+			if mutationApplies { project.environments[destination] = expectedSecrets }
+		case .renameEnvironment(let source, let expectedSecrets, let destination):
+			mutationApplies =
+				project.environments[source] == expectedSecrets
+				&& project.environments[destination] == nil
+			if mutationApplies {
+				project.environments.removeValue(forKey: source)
+				project.environments[destination] = expectedSecrets
+			}
+		case .clearEnvironment(let name, let expectedSecrets):
+			mutationApplies = project.environments[name] == expectedSecrets
+			if mutationApplies { project.environments[name] = [:] }
+		case .updateSecret(let environment, let key, let expectedValue, let replacement):
+			mutationApplies = project.environments[environment]?[key] == expectedValue
+			if mutationApplies { project.environments[environment]?[key] = replacement }
+		case .deleteSecret(let environment, let key, let expectedValue):
+			mutationApplies = project.environments[environment]?[key] == expectedValue
+			if mutationApplies { project.environments[environment]?.removeValue(forKey: key) }
+		}
+		guard mutationApplies else {
+			return .conflict(latest: project, metadata: metadata)
+		}
+
+		return persistMutation(
+			project,
+			previousProject: previousProject,
+			previousMetadata: metadata
+		)
+	}
+
+	private func persistMutation(
+		_ project: VaultProject,
+		previousProject: VaultProject,
+		previousMetadata: [String: SyncMetadata]
+	) -> ProjectMutationPersistenceResult {
+		let previousMetadataData: Data?
+		switch service.readDataResult(account: "__sync_metadata__") {
+		case .success(let data): previousMetadataData = data
+		case .failure(let error): return .failure(error)
+		}
+
+		var metadata = previousMetadata
+		var item = metadata[project.id] ?? SyncMetadata()
+		item.isDirty = true
+		metadata[project.id] = item
+		guard let metadataData = try? JSONEncoder().encode(metadata) else {
+			return .failure(.encodingFailed)
+		}
+
+		let saveResult = save(project)
+		let warning: String?
+		switch saveResult {
+		case .success:
+			warning = nil
+		case .successWithWarning(let message):
+			warning = message
+		case .failure(let error):
+			return .failure(error)
+		}
+
+		guard service.writeData(account: "__sync_metadata__", data: metadataData) else {
+			let restoredProject = save(previousProject)
+			let restoredMetadata = restoreData(
+				account: "__sync_metadata__",
+				snapshot: previousMetadataData
+			)
+			guard restoredProject.succeeded, restoredMetadata else {
+				return .failure(.unexpectedStatus(-2))
+			}
+			return .failure(.unexpectedStatus(-1))
+		}
+
+		return .success(
+			SecretPersistenceCommit(
+				project: project,
+				syncMetadata: metadata,
+				warning: warning
+			))
+	}
+
+	func syncSnapshot(vaultId: String) -> SyncPersistenceSnapshot? {
+		guard
+			case .success(let snapshot) = service.withKeychainTransaction({
+				() -> SyncPersistenceSnapshot? in
+				guard let project = service.listProjects().first(where: { $0.id == vaultId }),
+					case .success(let metadata) = loadSyncMetadataResult()
+				else { return nil }
+				return SyncPersistenceSnapshot(project: project, metadata: metadata[vaultId])
+			})
+		else { return nil }
+		return snapshot
+	}
+
+	func finishPush(
+		pushedProject: VaultProject,
+		action: String,
+		version: Int?
+	) -> SyncPersistenceCommit? {
+		guard
+			case .success(let result) = service.withKeychainTransaction({
+				finishPushUnlocked(pushedProject: pushedProject, action: action, version: version)
+			})
+		else { return nil }
+		return result
+	}
+
+	private func finishPushUnlocked(
+		pushedProject: VaultProject,
+		action: String,
+		version: Int?
+	) -> SyncPersistenceCommit? {
+		guard
+			let durableProject = service.listProjects().first(where: { $0.id == pushedProject.id }),
+			case .success(var metadata) = loadSyncMetadataResult()
+		else { return nil }
+		let changedDuringPush = durableProject != pushedProject
+		var item = metadata[pushedProject.id] ?? SyncMetadata()
+		item.isDirty = changedDuringPush
 		item.lastSyncedAt = Date()
 		item.lastAction = action
 		item.lastVersion = version
-		metadata[vaultId] = item
-		return writeSyncMetadata(metadata) ? metadata : nil
+		metadata[pushedProject.id] = item
+		guard writeSyncMetadata(metadata) else { return nil }
+		return SyncPersistenceCommit(
+			project: durableProject,
+			syncMetadata: metadata,
+			isDirty: changedDuringPush,
+			keyCount: durableProject.environments.values.reduce(0) { $0 + $1.count },
+			warning: nil
+		)
+	}
+
+	func commitPull(
+		baseline: VaultProject,
+		remotePayload: Data,
+		action: String,
+		version: Int
+	) -> PullPersistenceResult {
+		switch service.withKeychainTransaction({
+			commitPullUnlocked(
+				baseline: baseline,
+				remotePayload: remotePayload,
+				action: action,
+				version: version
+			)
+		}) {
+		case .success(let result): return result
+		case .failure(let error): return .failure(error)
+		}
+	}
+
+	private func commitPullUnlocked(
+		baseline: VaultProject,
+		remotePayload: Data,
+		action: String,
+		version: Int
+	) -> PullPersistenceResult {
+		guard let durableProject = service.listProjects().first(where: { $0.id == baseline.id })
+		else {
+			return .targetUnavailable
+		}
+		let previousMetadataData: Data?
+		switch service.readDataResult(account: "__sync_metadata__") {
+		case .success(let data): previousMetadataData = data
+		case .failure(let error): return .failure(error)
+		}
+		let previousMetadata =
+			previousMetadataData
+			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) } ?? [:]
+
+		let remoteEnvironments: [String: [String: String]]
+		let merge: EnvValidation.MergeResult
+		do {
+			remoteEnvironments = try EnvValidation.decodeRemoteEnvironments(remotePayload)
+			merge = try EnvValidation.mergeRemotePayload(
+				remotePayload,
+				into: durableProject.environments
+			)
+		} catch {
+			return .invalidPayload(error.localizedDescription)
+		}
+
+		for (environment, remoteSecrets) in remoteEnvironments {
+			for (key, remoteValue) in remoteSecrets {
+				let baselineValue = baseline.environments[environment]?[key]
+				let durableValue = durableProject.environments[environment]?[key]
+				if durableValue != baselineValue, durableValue != remoteValue {
+					return .conflict(latest: durableProject, metadata: previousMetadata)
+				}
+			}
+		}
+
+		var mergedProject = durableProject
+		mergedProject.environments = merge.environments
+		let cloudComparable = remoteEnvironments.filter { !$0.value.isEmpty }
+		let localComparable = merge.environments.filter { !$0.value.isEmpty }
+		let isDirty = localComparable != cloudComparable
+		var metadata = previousMetadata
+		var item = metadata[baseline.id] ?? SyncMetadata()
+		item.isDirty = isDirty
+		item.lastSyncedAt = Date()
+		item.lastAction = action
+		item.lastVersion = version
+		metadata[baseline.id] = item
+		guard let metadataData = try? JSONEncoder().encode(metadata) else {
+			return .failure(.encodingFailed)
+		}
+
+		let saveResult = save(mergedProject)
+		let warning: String?
+		switch saveResult {
+		case .success:
+			warning = nil
+		case .successWithWarning(let message):
+			warning = message
+		case .failure(let error):
+			return .failure(error)
+		}
+		guard service.writeData(account: "__sync_metadata__", data: metadataData) else {
+			let restoredProject = save(durableProject)
+			let restoredMetadata = restoreData(
+				account: "__sync_metadata__",
+				snapshot: previousMetadataData
+			)
+			guard restoredProject.succeeded, restoredMetadata else {
+				return .failure(.unexpectedStatus(-2))
+			}
+			return .failure(.unexpectedStatus(-1))
+		}
+
+		return .success(
+			SyncPersistenceCommit(
+				project: mergedProject,
+				syncMetadata: metadata,
+				isDirty: isDirty,
+				keyCount: merge.keyCount,
+				warning: warning
+			))
 	}
 
 	func associate(vaultId: String, orgSlug: String) -> [String: String]? {
-		var associations = loadOrgAssociations()
+		guard
+			case .success(let result) = service.withKeychainTransaction({
+				associateUnlocked(vaultId: vaultId, orgSlug: orgSlug)
+			})
+		else { return nil }
+		return result
+	}
+
+	private func associateUnlocked(vaultId: String, orgSlug: String) -> [String: String]? {
+		guard case .success(var associations) = loadOrgAssociationsResult() else { return nil }
 		associations[vaultId] = orgSlug
 		guard let data = try? JSONEncoder().encode(associations),
 			service.writeData(account: "__org_associations__", data: data)
@@ -196,23 +594,83 @@ actor VaultPersistenceCoordinator {
 		return associations
 	}
 
-	func deleteProjectAndMetadata(vaultId: String) -> VaultPersistenceSnapshot? {
-		guard service.deleteProject(vaultId: vaultId) else { return nil }
-		var metadata = loadSyncMetadata()
+	func deleteProjectAndMetadata(vaultId: String) -> DeleteProjectPersistenceResult {
+		switch service.withKeychainTransaction({
+			deleteProjectAndMetadataUnlocked(vaultId: vaultId)
+		}) {
+		case .success(let result): return result
+		case .failure(let error): return .failure(error)
+		}
+	}
+
+	private func deleteProjectAndMetadataUnlocked(vaultId: String) -> DeleteProjectPersistenceResult {
+		guard let project = service.listProjects().first(where: { $0.id == vaultId }) else {
+			return .failure(.itemNotFound)
+		}
+		let previousMetadataData: Data?
+		switch service.readDataResult(account: "__sync_metadata__") {
+		case .success(let data): previousMetadataData = data
+		case .failure(let error): return .failure(error)
+		}
+		let previousAssociationsData: Data?
+		switch service.readDataResult(account: "__org_associations__") {
+		case .success(let data): previousAssociationsData = data
+		case .failure(let error): return .failure(error)
+		}
+		guard
+			case .success(var metadata) = decodeDataResult(
+				.success(previousMetadataData), as: [String: SyncMetadata].self),
+			case .success(var associations) = decodeDataResult(
+				.success(previousAssociationsData), as: [String: String].self)
+		else { return .failure(.encodingFailed) }
+		guard service.deleteProject(vaultId: vaultId) else { return .failure(.accessDenied) }
 		metadata.removeValue(forKey: vaultId)
-		var associations = loadOrgAssociations()
 		associations.removeValue(forKey: vaultId)
 		guard let associationData = try? JSONEncoder().encode(associations),
-			service.writeData(account: "__org_associations__", data: associationData),
-			writeSyncMetadata(metadata)
-		else { return nil }
-		return VaultPersistenceSnapshot(
-			projects: service.listProjects().sorted {
-				$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-			},
-			syncMetadata: metadata,
-			orgAssociations: associations
+			let metadataData = try? JSONEncoder().encode(metadata)
+		else { return restoreDeletedProject(
+			project,
+			metadata: previousMetadataData,
+			associations: previousAssociationsData,
+			originalError: .encodingFailed
+		) }
+		guard service.writeData(account: "__org_associations__", data: associationData),
+			service.writeData(account: "__sync_metadata__", data: metadataData)
+		else {
+			return restoreDeletedProject(
+				project,
+				metadata: previousMetadataData,
+				associations: previousAssociationsData,
+				originalError: .unexpectedStatus(-1)
+			)
+		}
+		return .success(
+			VaultPersistenceSnapshot(
+				projects: service.listProjects().sorted {
+					$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+				},
+				syncMetadata: metadata,
+				orgAssociations: associations
+			)
 		)
+	}
+
+	private func restoreDeletedProject(
+		_ project: VaultProject,
+		metadata: Data?,
+		associations: Data?,
+		originalError: KeychainError
+	) -> DeleteProjectPersistenceResult {
+		let restoredProject = save(project)
+		let restoredMetadata = restoreData(account: "__sync_metadata__", snapshot: metadata)
+		let restoredAssociations = restoreData(
+			account: "__org_associations__",
+			snapshot: associations
+		)
+		guard restoredProject.succeeded, restoredMetadata, restoredAssociations else {
+			return .failure(.unexpectedStatus(-2))
+		}
+		return .failure(originalError)
 	}
 
 	/// Commits a fully resolved import as one logical transaction. The project
@@ -222,11 +680,33 @@ actor VaultPersistenceCoordinator {
 		orgSlug: String?,
 		version: Int
 	) -> ImportPersistenceResult {
+		switch service.withKeychainTransaction({
+			importProjectUnlocked(project, orgSlug: orgSlug, version: version)
+		}) {
+		case .success(let result): return result
+		case .failure(let error): return .failure(error)
+		}
+	}
+
+	private func importProjectUnlocked(
+		_ project: VaultProject,
+		orgSlug: String?,
+		version: Int
+	) -> ImportPersistenceResult {
 		guard !containsProject(vaultId: project.id) else { return .duplicate }
 
-		let oldMetadata = service.readData(account: "__sync_metadata__")
-		let oldAssociations = service.readData(account: "__org_associations__")
-		var metadata = oldMetadata
+		let oldMetadata: Data?
+		switch service.readDataResult(account: "__sync_metadata__") {
+		case .success(let data): oldMetadata = data
+		case .failure(let error): return .failure(error)
+		}
+		let oldAssociations: Data?
+		switch service.readDataResult(account: "__org_associations__") {
+		case .success(let data): oldAssociations = data
+		case .failure(let error): return .failure(error)
+		}
+		var metadata =
+			oldMetadata
 			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) } ?? [:]
 		metadata[project.id] = SyncMetadata(
 			lastSyncedAt: Date(),
@@ -234,7 +714,8 @@ actor VaultPersistenceCoordinator {
 			lastVersion: version,
 			isDirty: false
 		)
-		var associations = oldAssociations
+		var associations =
+			oldAssociations
 			.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
 		if let orgSlug { associations[project.id] = orgSlug }
 
@@ -286,17 +767,43 @@ actor VaultPersistenceCoordinator {
 			return .failure(.unexpectedStatus(-1))
 		}
 
-		return .success(ImportPersistenceCommit(
-			syncMetadata: metadata,
-			orgAssociations: associations,
-			warning: warning
-		))
+		return .success(
+			ImportPersistenceCommit(
+				syncMetadata: metadata,
+				orgAssociations: associations,
+				warning: warning
+			))
 	}
 
 	/// Merges a local dotenv result into the latest stored environment and
 	/// publishes nothing until both the vault and dirty metadata are durable.
 	/// If metadata persistence fails, the prior vault snapshot is restored.
 	func importSecrets(
+		projectId: String,
+		projectName: String,
+		projectPath: String,
+		environment: String,
+		secrets: [String: String],
+		requestId: UUID,
+		authority: LocalEnvImportAuthority
+	) -> LocalEnvImportPersistenceResult {
+		switch service.withKeychainTransaction({
+			importSecretsUnlocked(
+				projectId: projectId,
+				projectName: projectName,
+				projectPath: projectPath,
+				environment: environment,
+				secrets: secrets,
+				requestId: requestId,
+				authority: authority
+			)
+		}) {
+		case .success(let result): return result
+		case .failure(let error): return .failure(error)
+		}
+	}
+
+	private func importSecretsUnlocked(
 		projectId: String,
 		projectName: String,
 		projectPath: String,
@@ -351,6 +858,31 @@ actor VaultPersistenceCoordinator {
 		requestId: UUID,
 		authority: LocalEnvImportAuthority
 	) -> LocalEnvImportPersistenceResult {
+		switch service.withKeychainTransaction({
+			addEnvironmentUnlocked(
+				projectId: projectId,
+				projectName: projectName,
+				projectPath: projectPath,
+				environment: environment,
+				secrets: secrets,
+				requestId: requestId,
+				authority: authority
+			)
+		}) {
+		case .success(let result): return result
+		case .failure(let error): return .failure(error)
+		}
+	}
+
+	private func addEnvironmentUnlocked(
+		projectId: String,
+		projectName: String,
+		projectPath: String,
+		environment: String,
+		secrets: [String: String],
+		requestId: UUID,
+		authority: LocalEnvImportAuthority
+	) -> LocalEnvImportPersistenceResult {
 		guard let storedProject = service.listProjects().first(where: { $0.id == projectId }),
 			storedProject.name == projectName,
 			storedProject.path == projectPath,
@@ -382,8 +914,13 @@ actor VaultPersistenceCoordinator {
 		authority: LocalEnvImportAuthority
 	) -> LocalEnvImportPersistenceResult {
 		let projectId = project.id
-		let previousMetadata = service.readData(account: "__sync_metadata__")
-		var metadata = previousMetadata
+		let previousMetadata: Data?
+		switch service.readDataResult(account: "__sync_metadata__") {
+		case .success(let data): previousMetadata = data
+		case .failure(let error): return .failure(error)
+		}
+		var metadata =
+			previousMetadata
 			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) } ?? [:]
 		var item = metadata[projectId] ?? SyncMetadata()
 		item.isDirty = true
@@ -430,11 +967,12 @@ actor VaultPersistenceCoordinator {
 			return .failure(.unexpectedStatus(-1))
 		}
 
-		return .success(LocalEnvImportPersistenceCommit(
-			project: project,
-			syncMetadata: metadata,
-			warning: warning
-		))
+		return .success(
+			LocalEnvImportPersistenceCommit(
+				project: project,
+				syncMetadata: metadata,
+				warning: warning
+			))
 	}
 
 	func save(_ project: VaultProject) -> KeychainResult {
@@ -447,6 +985,31 @@ actor VaultPersistenceCoordinator {
 	}
 
 	func save(
+		vaultId: String,
+		name: String,
+		path: String,
+		environments: [String: [String: String]],
+		mergeExisting: Bool
+	) -> (VaultProject, KeychainResult) {
+		switch service.withKeychainTransaction({
+			saveUnlocked(
+				vaultId: vaultId,
+				name: name,
+				path: path,
+				environments: environments,
+				mergeExisting: mergeExisting
+			)
+		}) {
+		case .success(let result): return result
+		case .failure(let error):
+			return (
+				VaultProject(id: vaultId, name: name, path: path, environments: environments),
+				.failure(error)
+			)
+		}
+	}
+
+	private func saveUnlocked(
 		vaultId: String,
 		name: String,
 		path: String,
@@ -497,13 +1060,43 @@ actor VaultPersistenceCoordinator {
 	}
 
 	private func loadSyncMetadata() -> [String: SyncMetadata] {
-		service.readData(account: "__sync_metadata__")
-			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) } ?? [:]
+		(try? loadSyncMetadataResult().get()) ?? [:]
 	}
 
 	private func loadOrgAssociations() -> [String: String] {
-		service.readData(account: "__org_associations__")
-			.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+		(try? loadOrgAssociationsResult().get()) ?? [:]
+	}
+
+	private func loadSyncMetadataResult() -> Result<[String: SyncMetadata], KeychainError> {
+		decodeDataResult(
+			service.readDataResult(account: "__sync_metadata__"),
+			as: [String: SyncMetadata].self
+		)
+	}
+
+	private func loadOrgAssociationsResult() -> Result<[String: String], KeychainError> {
+		decodeDataResult(
+			service.readDataResult(account: "__org_associations__"),
+			as: [String: String].self
+		)
+	}
+
+	private func decodeDataResult<Value: Decodable>(
+		_ result: Result<Data?, KeychainError>,
+		as type: Value.Type
+	) -> Result<Value, KeychainError> where Value: ExpressibleByDictionaryLiteral {
+		switch result {
+		case .failure(let error):
+			return .failure(error)
+		case .success(nil):
+			return .success([:])
+		case .success(let data?):
+			do {
+				return .success(try JSONDecoder().decode(type, from: data))
+			} catch {
+				return .failure(.encodingFailed)
+			}
+		}
 	}
 
 	private func writeSyncMetadata(_ metadata: [String: SyncMetadata]) -> Bool {
@@ -512,8 +1105,8 @@ actor VaultPersistenceCoordinator {
 	}
 }
 
-private extension KeychainResult {
-	var succeeded: Bool {
+extension KeychainResult {
+	fileprivate var succeeded: Bool {
 		switch self {
 		case .success, .successWithWarning: true
 		case .failure: false

@@ -421,44 +421,73 @@ enum VaultCrypto {
 	private static let wrappingKeyService = "dev.lpm.vault-key"
 	private static let wrappingKeyAccount = "wrapping-key"
 	private static let maximumWrappingKeyFileBytes = 4 * 1024
+	private static let x25519KeyStore = SharedKeychainStore(service: x25519Service)
+	private static let wrappingKeyStore = SharedKeychainStore(service: wrappingKeyService)
 
 	private static func stableWrappingKey() throws -> SymmetricKey {
-		if let key = readStableWrappingKeyFromKeychain() {
-			try? FileManager.default.removeItem(at: wrappingKeyFileURL())
-			return SymmetricKey(data: key)
+		try VaultKeychainTransactionLock.withLock {
+			try stableWrappingKeyUnlocked()
 		}
-		if let key = readStableWrappingKeyFromFile() {
-			_ = storeStableWrappingKeyInKeychain(key)
-			return SymmetricKey(data: key)
-		}
+	}
+
+	private static func stableWrappingKeyUnlocked() throws -> SymmetricKey {
+			if let key = try readStableWrappingKeyFromKeychain() {
+				let legacyURL = wrappingKeyFileURL()
+				if FileManager.default.fileExists(atPath: legacyURL.path) {
+					guard let legacy = readStableWrappingKeyFromFile() else {
+						throw CryptoError.invalidStoredKey(
+							"A legacy vault wrapping-key file exists but is not a secure valid key; it was preserved."
+						)
+					}
+					guard legacy == key else {
+						throw CryptoError.invalidStoredKey(
+							"The protected and legacy-file vault wrapping keys conflict; both were preserved."
+						)
+					}
+				}
+				return SymmetricKey(data: key)
+			}
+			if let key = readStableWrappingKeyFromFile() {
+				let stored = try addOrReadStableWrappingKey(key)
+				guard stored == key else {
+					throw CryptoError.invalidStoredKey(
+						"The protected and legacy-file vault wrapping keys conflict; both were preserved."
+					)
+				}
+				return SymmetricKey(data: key)
+			}
 
 		var bytes = [UInt8](repeating: 0, count: 32)
 		guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
 			throw CryptoError.encryptionFailed
-		}
-		let key = Data(bytes)
-		if !storeStableWrappingKeyInKeychain(key) {
-			try storeStableWrappingKeyInFile(key)
-		}
-		return SymmetricKey(data: key)
+			}
+			let key = Data(bytes)
+			return SymmetricKey(data: try addOrReadStableWrappingKey(key))
 	}
 
-	private static func readStableWrappingKeyFromKeychain() -> Data? {
-		let (status, hex) = runSecurity(args: [
-			"find-generic-password", "-s", wrappingKeyService,
-			"-a", wrappingKeyAccount, "-w",
-		])
-		guard status == 0 else { return nil }
-		return decodeWrappingKey(hex)
+	private static func readStableWrappingKeyFromKeychain() throws -> Data? {
+		guard let encoded = try wrappingKeyStore.read(account: wrappingKeyAccount) else { return nil }
+		guard let hex = String(data: encoded, encoding: .utf8),
+			let key = decodeWrappingKey(hex.trimmingCharacters(in: .whitespacesAndNewlines))
+		else {
+			throw CryptoError.invalidStoredKey("The vault wrapping key is invalid.")
+		}
+		return key
 	}
 
-	private static func storeStableWrappingKeyInKeychain(_ key: Data) -> Bool {
-		let hex = key.map { String(format: "%02x", $0) }.joined()
-		return runSecurity(args: [
-			"add-generic-password", "-U", "-s", wrappingKeyService,
-			"-a", wrappingKeyAccount, "-w",
-		], input: hex).0 == 0
-	}
+	private static func addOrReadStableWrappingKey(_ candidate: Data) throws -> Data {
+			guard candidate.count == 32 else { throw CryptoError.invalidKeySize(candidate.count) }
+			let hex = candidate.map { String(format: "%02x", $0) }.joined()
+			do {
+				try wrappingKeyStore.add(account: wrappingKeyAccount, data: Data(hex.utf8))
+				return candidate
+			} catch let error as KeychainStoreError where error.statusCode == errSecDuplicateItem {
+				guard let stored = try readStableWrappingKeyFromKeychain() else {
+					throw KeychainStoreError.migrationConflict
+				}
+				return stored
+			}
+		}
 
 	private static func readStableWrappingKeyFromFile() -> Data? {
 		readStableWrappingKeyFile(at: wrappingKeyFileURL())
@@ -502,25 +531,11 @@ enum VaultCrypto {
 		return decodeWrappingKey(hex.trimmingCharacters(in: .whitespacesAndNewlines))
 	}
 
-	private static func storeStableWrappingKeyInFile(_ key: Data) throws {
-		let url = wrappingKeyFileURL()
-		try FileManager.default.createDirectory(
-			at: url.deletingLastPathComponent(),
-			withIntermediateDirectories: true
-		)
-		try FileManager.default.setAttributes(
-			[.posixPermissions: 0o700],
-			ofItemAtPath: url.deletingLastPathComponent().path
-		)
-		let hex = key.map { String(format: "%02x", $0) }.joined()
-		try SecureFileWriter.write(Data(hex.utf8), to: url)
-	}
-
 	private static func wrappingKeyFileURL() -> URL {
-		FileManager.default.homeDirectoryForCurrentUser
-			.appendingPathComponent(".lpm", isDirectory: true)
-			.appendingPathComponent(".vault-key")
-	}
+			FileManager.default.homeDirectoryForCurrentUser
+				.appendingPathComponent(".lpm", isDirectory: true)
+				.appendingPathComponent(".vault-key")
+		}
 
 	private static func decodeWrappingKey(_ hex: String) -> Data? {
 		guard hex.count == 64 else { return nil }
@@ -533,111 +548,48 @@ enum VaultCrypto {
 			bytes.append(byte)
 			index = next
 		}
-		return Data(bytes)
-	}
+			return Data(bytes)
+		}
 
-	/// Store an X25519 private key in Keychain using Security.framework.
-	/// Uses `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — no iCloud sync, no backup extraction.
-	/// Compatible with Rust CLI's `keyring` crate (same service/account, Security.framework under the hood).
 	private static func storeX25519Key(_ keyData: Data, account: String) throws {
-		let query: [String: Any] = [
-			kSecClass as String: kSecClassGenericPassword,
-			kSecAttrService as String: x25519Service,
-			kSecAttrAccount as String: account,
-			kSecValueData as String: keyData.base64EncodedString().data(using: .utf8)!,
-			kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-		]
-
-		// Delete existing if present
-		SecItemDelete(query as CFDictionary)
-
-		let status = SecItemAdd(query as CFDictionary, nil)
-		guard status == errSecSuccess else {
-			throw CryptoError.keychainWriteFailed(status)
-		}
+		guard keyData.count == 32 else { throw CryptoError.invalidKeySize(keyData.count) }
+		let encoded = Data(keyData.base64EncodedString().utf8)
+		try x25519KeyStore.write(account: account, data: encoded)
 	}
 
-	/// Load an X25519 private key from Keychain using Security.framework.
-	private static func loadX25519Key(account: String) -> Data? {
-		let query: [String: Any] = [
-			kSecClass as String: kSecClassGenericPassword,
-			kSecAttrService as String: x25519Service,
-			kSecAttrAccount as String: account,
-			kSecReturnData as String: true,
-			kSecMatchLimit as String: kSecMatchLimitOne,
-		]
-
-		var result: AnyObject?
-		let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-		guard status == errSecSuccess, let data = result as? Data else {
-			return nil
+	static func readX25519PrivateKey() throws -> Data? {
+		guard let encoded = try x25519KeyStore.read(account: x25519Account) else { return nil }
+		guard let base64 = String(data: encoded, encoding: .utf8),
+			let key = Data(base64Encoded: base64)
+		else {
+			throw CryptoError.invalidStoredKey("The X25519 private key is not valid base64.")
 		}
-		// Stored as base64 string for compatibility with Rust CLI's keyring crate
-		guard let b64String = String(data: data, encoding: .utf8) else { return nil }
-		return Data(base64Encoded: b64String)
+		guard key.count == 32 else { throw CryptoError.invalidKeySize(key.count) }
+		return key
 	}
 
-	/// Read X25519 private key from Keychain via legacy `security` CLI (migration fallback).
-	private static func readX25519PrivateKeyLegacy() -> Data? {
-		let (code, output) = runSecurity(args: [
-			"find-generic-password", "-s", x25519Service, "-a", x25519Account, "-w",
-		])
-		guard code == 0, !output.isEmpty else { return nil }
-		return Data(base64Encoded: output)
-	}
-
-	/// Delete legacy `security` CLI entry for X25519 key.
-	private static func deleteX25519LegacyEntry() {
-		runSecurity(args: ["delete-generic-password", "-s", x25519Service, "-a", x25519Account])
-	}
-
-	/// Read the stored X25519 private key from Keychain.
-	/// Tries Security.framework first, then falls back to legacy `security` CLI
-	/// for backward compatibility. If found via legacy path, migrates to Security.framework.
-	static func readX25519PrivateKey() -> Data? {
-		// Primary path: Security.framework
-		if let key = loadX25519Key(account: x25519Account) {
-			return key
-		}
-
-		// Migration fallback: read from legacy `security` CLI entry
-		guard let legacyKey = readX25519PrivateKeyLegacy() else { return nil }
-
-		// Migrate: store via Security.framework and delete old entry
-		do {
-			try storeX25519Key(legacyKey, account: x25519Account)
-			deleteX25519LegacyEntry()
-		} catch {
-			// Migration failed — still return the key so we don't break the user
-		}
-
-		return legacyKey
-	}
-
-	/// Store an X25519 private key in Keychain.
-	static func writeX25519PrivateKey(_ privateKey: Data) {
-		do {
-			try storeX25519Key(privateKey, account: x25519Account)
-		} catch {
-			#if DEBUG
-			print("VaultCrypto: failed to write X25519 key to Keychain: \(error)")
-			#endif
-		}
+	static func writeX25519PrivateKey(_ privateKey: Data) throws {
+		try storeX25519Key(privateKey, account: x25519Account)
 	}
 
 	/// Get or create the X25519 keypair. Returns (privateKeyData, publicKeyData).
-	static func getOrCreateX25519Keypair() -> (privateKey: Data, publicKey: Data) {
-		if let existing = readX25519PrivateKey(), existing.count == 32 {
-			if let pub_key = try? x25519PublicFromPrivate(existing) {
-				return (existing, pub_key)
-			}
+		static func getOrCreateX25519Keypair() throws -> (privateKey: Data, publicKey: Data) {
+		if let existing = try readX25519PrivateKey() {
+			return (existing, try x25519PublicFromPrivate(existing))
 		}
 
-		let (priv_key, pub_key) = generateX25519Keypair()
-		writeX25519PrivateKey(priv_key)
-		return (priv_key, pub_key)
-	}
+			let (candidate, _) = generateX25519Keypair()
+			let encoded = Data(candidate.base64EncodedString().utf8)
+			do {
+				try x25519KeyStore.add(account: x25519Account, data: encoded)
+				return (candidate, try x25519PublicFromPrivate(candidate))
+			} catch let error as KeychainStoreError where error.statusCode == errSecDuplicateItem {
+				guard let winner = try readX25519PrivateKey() else {
+					throw KeychainStoreError.migrationConflict
+				}
+				return (winner, try x25519PublicFromPrivate(winner))
+			}
+		}
 
 	// MARK: - Errors
 
@@ -650,7 +602,7 @@ enum VaultCrypto {
 		case invalidUTF8
 		case unsupportedCryptoVersion(Int)
 		case contextTooLarge
-		case keychainWriteFailed(OSStatus)
+		case invalidStoredKey(String)
 
 		var errorDescription: String? {
 			switch self {
@@ -670,36 +622,9 @@ enum VaultCrypto {
 				"Unsupported vault crypto version: \(version)"
 			case .contextTooLarge:
 				"Vault encryption context is too large"
-			case .keychainWriteFailed(let status):
-				"Failed to write to Keychain (OSStatus: \(status))"
+			case .invalidStoredKey(let message):
+				message
 			}
 		}
-	}
-
-	// MARK: - Private Helpers
-
-	@discardableResult
-	private static func runSecurity(args: [String], input: String? = nil) -> (Int32, String) {
-		let process = Process()
-		process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-		process.arguments = args
-		let pipe = Pipe()
-		process.standardOutput = pipe
-		process.standardError = FileHandle.nullDevice
-		let inputPipe = input.map { _ in Pipe() }
-		process.standardInput = inputPipe
-
-		do {
-			try process.run()
-			if let input, let inputPipe {
-				inputPipe.fileHandleForWriting.write(Data((input + "\n").utf8))
-				inputPipe.fileHandleForWriting.closeFile()
-			}
-		} catch { return (-1, "") }
-		process.waitUntilExit()
-
-		let data = pipe.fileHandleForReading.readDataToEndOfFile()
-		let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-		return (process.terminationStatus, output)
 	}
 }

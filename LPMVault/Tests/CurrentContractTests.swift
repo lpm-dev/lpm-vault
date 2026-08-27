@@ -360,6 +360,58 @@ struct CurrentContractTests {
 		}
 	}
 
+	@Test("cloud env project listing follows bounded cursor pagination")
+	func cloudProjectPagination() async throws {
+		let recorder = RequestRecorder()
+		let service = makeSyncService(recorder: recorder) { request in
+			#expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer session-token")
+			if request.url?.query == "cursor=cursor-2" {
+				return .json(#"{"vaults":[{"vaultId":"vault-2","name":"two"}],"nextCursor":null}"#)
+			}
+			return .json(#"{"vaults":[{"vaultId":"vault-1","name":"one"}],"nextCursor":"cursor-2"}"#)
+		}
+
+		let result = await service.listPersonalProjects(authToken: "session-token")
+		guard case .success(let projects) = result else {
+			Issue.record("Expected a successful project listing")
+			return
+		}
+		#expect(projects.map(\.vaultId) == ["vault-1", "vault-2"])
+		#expect(recorder.requests.count == 2)
+	}
+
+	@Test("cloud env project listing distinguishes an incompatible session")
+	func cloudProjectSessionAuthorizationFailure() async {
+		let service = makeSyncService { _ in
+			MockResponse(
+				statusCode: 403,
+				body: Data(#"{"error":"This endpoint requires a CLI session. Run `lpm login` to authenticate."}"#.utf8),
+				headers: ["Content-Type": "application/json"]
+			)
+		}
+
+		let result = await service.listPersonalProjects(authToken: "legacy-token")
+
+		guard case .failure(let error) = result else {
+			Issue.record("Expected a typed authorization failure")
+			return
+		}
+		#expect(error == .sessionNotAuthorized)
+	}
+
+	@Test("cloud env project listing rejects malformed success data")
+	func cloudProjectInvalidResponse() async {
+		let service = makeSyncService { _ in .json(#"{"projects":[]}"#) }
+
+		let result = await service.listPersonalProjects(authToken: "session-token")
+
+		guard case .failure(let error) = result else {
+			Issue.record("Expected an invalid-response failure")
+			return
+		}
+		#expect(error == .invalidResponse)
+	}
+
 	private func makeAPIService(
 		recorder: RequestRecorder = RequestRecorder(),
 		handler: @escaping MockURLProtocol.Handler
@@ -372,6 +424,23 @@ struct CurrentContractTests {
 		let configuration = URLSessionConfiguration.ephemeral
 		configuration.protocolClasses = [MockURLProtocol.self]
 		return LPMAPIService(
+			baseURL: URL(string: "https://\(host)")!,
+			session: URLSession(configuration: configuration)
+		)
+	}
+
+	private func makeSyncService(
+		recorder: RequestRecorder = RequestRecorder(),
+		handler: @escaping MockURLProtocol.Handler
+	) -> SyncService {
+		let host = "\(UUID().uuidString.lowercased()).example"
+		MockURLProtocol.routes.register(host: host) { request in
+			recorder.record(request)
+			return try handler(request)
+		}
+		let configuration = URLSessionConfiguration.ephemeral
+		configuration.protocolClasses = [MockURLProtocol.self]
+		return SyncService(
 			baseURL: URL(string: "https://\(host)")!,
 			session: URLSession(configuration: configuration)
 		)

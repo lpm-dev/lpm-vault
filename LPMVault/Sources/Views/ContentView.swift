@@ -13,6 +13,10 @@ struct ContentView: View {
 				lockScreen
 			}
 		}
+		.simultaneousGesture(
+			TapGesture().onEnded { store.recordUserActivity() },
+			including: .all
+		)
 		.background(VaultWindowConfigurator())
 		.task { await updateChecker.checkForUpdate() }
 		.sheet(isPresented: $store.showKeyApprovalSheet) {

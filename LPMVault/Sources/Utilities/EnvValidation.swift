@@ -105,42 +105,41 @@ enum EnvValidation {
 		try? JSONEncoder().encode(EnvironmentsWrapper(environments: environments)).count
 	}
 
-	static func mergeRemotePayload(
-		_ data: Data,
-		into localEnvironments: [String: [String: String]]
-	) throws -> MergeResult {
-		guard areValidEnvironments(localEnvironments) else { throw PayloadError.invalidNames }
-
+	static func decodeRemoteEnvironments(_ data: Data) throws -> [String: [String: String]] {
 		if let wrapper = try? JSONDecoder().decode(
 			[String: [String: [String: String]]].self,
 			from: data
 		), let remoteEnvironments = wrapper["environments"] {
 			guard areValidEnvironments(remoteEnvironments) else { throw PayloadError.invalidNames }
-			var mergedEnvironments = localEnvironments
-			var keyCount = 0
-			for (environment, remoteSecrets) in remoteEnvironments {
-				var mergedSecrets = mergedEnvironments[environment] ?? [:]
-				mergedSecrets.merge(remoteSecrets) { _, remote in remote }
-				mergedEnvironments[environment] = mergedSecrets
-				keyCount += mergedSecrets.count
-			}
-			guard areValidEnvironments(mergedEnvironments) else { throw PayloadError.invalidNames }
-			return MergeResult(environments: mergedEnvironments, keyCount: keyCount)
+			return remoteEnvironments
 		}
 
 		if let remoteSecrets = try? JSONDecoder().decode([String: String].self, from: data) {
 			guard remoteSecrets.keys.allSatisfy(isValidVariableName) else {
 				throw PayloadError.invalidNames
 			}
-			var mergedEnvironments = localEnvironments
-			var defaultSecrets = mergedEnvironments["default"] ?? [:]
-			defaultSecrets.merge(remoteSecrets) { _, remote in remote }
-			mergedEnvironments["default"] = defaultSecrets
-			guard areValidEnvironments(mergedEnvironments) else { throw PayloadError.invalidNames }
-			return MergeResult(environments: mergedEnvironments, keyCount: defaultSecrets.count)
+			return ["default": remoteSecrets]
 		}
 
 		throw PayloadError.invalidFormat
+	}
+
+	static func mergeRemotePayload(
+		_ data: Data,
+		into localEnvironments: [String: [String: String]]
+	) throws -> MergeResult {
+		guard areValidEnvironments(localEnvironments) else { throw PayloadError.invalidNames }
+		let remoteEnvironments = try decodeRemoteEnvironments(data)
+		var mergedEnvironments = localEnvironments
+		var keyCount = 0
+		for (environment, remoteSecrets) in remoteEnvironments {
+			var mergedSecrets = mergedEnvironments[environment] ?? [:]
+			mergedSecrets.merge(remoteSecrets) { _, remote in remote }
+			mergedEnvironments[environment] = mergedSecrets
+			keyCount += mergedSecrets.count
+		}
+		guard areValidEnvironments(mergedEnvironments) else { throw PayloadError.invalidNames }
+		return MergeResult(environments: mergedEnvironments, keyCount: keyCount)
 	}
 
 	private static func isASCIIAlpha(_ byte: UInt8) -> Bool {
