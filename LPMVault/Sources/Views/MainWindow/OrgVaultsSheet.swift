@@ -195,15 +195,19 @@ struct OrgVaultsSheet: View {
 			loadError = "Sign in to lpm.dev, then retry."
 			return
 		}
-		guard let projects = await syncService.listOrgProjects(authToken: authToken, orgSlug: orgSlug) else {
+		let result = await syncService.listOrgProjects(authToken: authToken, orgSlug: orgSlug)
+		switch result {
+		case .success(let projects):
+			guard !Task.isCancelled else { return }
+			orgVaults = projects
+			isLoading = false
+		case .failure(.cancelled):
+			return
+		case .failure(let error):
 			guard !Task.isCancelled else { return }
 			isLoading = false
-			loadError = "The server request failed. Check your connection and try again."
-			return
+			loadError = error.localizedDescription
 		}
-		guard !Task.isCancelled else { return }
-		orgVaults = projects
-		isLoading = false
 	}
 
 	private func importVault(_ vault: SyncService.RemoteProject) async {

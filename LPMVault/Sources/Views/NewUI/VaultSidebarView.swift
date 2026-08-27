@@ -20,6 +20,7 @@ struct VaultSidebarView: View {
 	let onDeleteEnvironment: (VaultEnvironmentTarget) -> Void
 
 	@FocusState private var searchFocused: Bool
+	@State private var collapsedProjectIds: Set<String> = []
 
 	private var visibleProjects: [VaultProject] {
 		let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -50,7 +51,9 @@ struct VaultSidebarView: View {
 					} else {
 						ForEach(visibleProjects) { project in
 							projectRow(project)
-							if store.selectedProjectId == project.id {
+							if store.selectedProjectId == project.id,
+								!collapsedProjectIds.contains(project.id)
+							{
 								environmentRows(project)
 							}
 						}
@@ -161,7 +164,14 @@ struct VaultSidebarView: View {
 
 	private func projectRow(_ project: VaultProject) -> some View {
 		let selected = store.selectedProjectId == project.id && mode == .matrix
+		let expanded = store.selectedProjectId == project.id
+			&& !collapsedProjectIds.contains(project.id)
 		return Button {
+			if store.selectedProjectId == project.id, expanded {
+				collapsedProjectIds.insert(project.id)
+			} else {
+				collapsedProjectIds.remove(project.id)
+			}
 			store.openProject(id: project.id)
 			mode = .matrix
 			filter = .all
@@ -170,6 +180,7 @@ struct VaultSidebarView: View {
 				Image(systemName: "folder")
 					.font(.system(size: 11, weight: .medium))
 					.foregroundStyle(selected ? VaultPalette.accent : VaultPalette.textTertiary)
+					.frame(width: 14)
 				Text(project.name)
 					.font(.system(size: 13, weight: selected ? .semibold : .regular))
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
@@ -187,6 +198,7 @@ struct VaultSidebarView: View {
 		.buttonStyle(.plain)
 		.padding(.horizontal, 8)
 		.accessibilityLabel("\(project.name), \(project.secretCount) secrets")
+		.accessibilityValue(expanded ? "Expanded" : "Collapsed")
 		.accessibilityAddTraits(selected ? .isSelected : [])
 		.contextMenu {
 			Button("Rename…") { onRenameProject(project) }
@@ -199,8 +211,10 @@ struct VaultSidebarView: View {
 		let environments = store.orderedEnvironmentNames(for: project)
 		return LazyVStack(spacing: 1) {
 			Button(action: onNewEnvironment) {
-				HStack(spacing: 6) {
-					Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+				HStack(spacing: 7) {
+					Image(systemName: "plus")
+						.font(.system(size: 9, weight: .bold))
+						.frame(width: 6)
 					Text("New environment").font(.system(size: 10.5, weight: .semibold))
 					Spacer()
 				}
@@ -277,9 +291,10 @@ struct VaultSidebarView: View {
 				.padding(.bottom, 6)
 
 			smartViewRow(title: "Drift between envs", symbol: "diamond.fill", count: drift, tint: VaultPalette.orange, target: .drift)
+				.padding(.horizontal, 8)
 			smartViewRow(title: "Missing in an environment", symbol: "exclamationmark.triangle.fill", count: missing, tint: VaultPalette.red, target: .missing)
+				.padding(.horizontal, 8)
 		}
-		.padding(.horizontal, 8)
 	}
 
 	private func smartViewRow(

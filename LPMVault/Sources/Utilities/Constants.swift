@@ -4,6 +4,9 @@ enum VaultConstants {
 	/// Keychain service name — shared with LPM CLI (Rust)
 	static let keychainService = "dev.lpm.vault"
 
+	/// Team-ID-scoped Data Protection Keychain group shared with the signed CLI.
+	static let keychainAccessGroup = "823S8YKMRW.dev.lpm.vault.shared"
+
 	/// Keychain service for CLI auth tokens
 	static let cliAuthService = "lpm-cli"
 
