@@ -73,6 +73,238 @@ struct AuthSessionCoordinatorTests {
 		)
 	}
 
+	@Test("credential-authority generation invalidates on rotation and logout")
+	func credentialAuthorityGenerationInvalidates() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await coordinator.persist(
+			session(
+				access: "access-one",
+				refresh: "refresh-one",
+				expiresAt: fixedNow.addingTimeInterval(3_600)
+			),
+			registryURL: registryURL
+		)
+		let initial = try #require(
+			try await coordinator.currentAccessAuthorization(
+				registryURL: registryURL,
+				baseURL: baseURL
+			)
+		)
+
+		#expect(initial.token == "access-one")
+		#expect(coordinator.isAuthorityGenerationCurrent(initial.authorityGeneration))
+
+		try await coordinator.persist(
+			session(
+				access: "access-two",
+				refresh: "refresh-two",
+				expiresAt: fixedNow.addingTimeInterval(7_200)
+			),
+			registryURL: registryURL
+		)
+		#expect(!coordinator.isAuthorityGenerationCurrent(initial.authorityGeneration))
+
+		let rotated = try #require(
+			try await coordinator.currentAccessAuthorization(
+				registryURL: registryURL,
+				baseURL: baseURL
+			)
+		)
+		#expect(rotated.token == "access-two")
+		#expect(coordinator.isAuthorityGenerationCurrent(rotated.authorityGeneration))
+
+		try await coordinator.clear(registryURL: registryURL)
+		#expect(!coordinator.isAuthorityGenerationCurrent(rotated.authorityGeneration))
+	}
+
+	@Test("credential-authority generation fails closed for missing corrupt and replaced state")
+	func credentialAuthorityGenerationFailsClosed() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await coordinator.persist(
+			session(
+				access: "access-one",
+				refresh: "refresh-one",
+				expiresAt: fixedNow.addingTimeInterval(3_600)
+			),
+			registryURL: registryURL
+		)
+		let authorityURL = home.appendingPathComponent(
+			".lpm/.credential-authority.json"
+		)
+		let original = try Data(contentsOf: authorityURL)
+		let authorization = try #require(
+			try await coordinator.currentAccessAuthorization(
+				registryURL: registryURL,
+				baseURL: baseURL
+			)
+		)
+
+		try Data("{".utf8).write(to: authorityURL)
+		#expect(
+			!coordinator.isAuthorityGenerationCurrent(
+				authorization.authorityGeneration
+			)
+		)
+
+		try original.write(to: authorityURL, options: .atomic)
+		#expect(
+			!coordinator.isAuthorityGenerationCurrent(
+				authorization.authorityGeneration
+			)
+		)
+
+		try FileManager.default.removeItem(at: authorityURL)
+		#expect(
+			!coordinator.isAuthorityGenerationCurrent(
+				authorization.authorityGeneration
+			)
+		)
+	}
+
+	@Test("vault sync captures authorization once and uses generation checks thereafter")
+	@MainActor
+	func vaultSyncAuthorizationCaptureIsAmortized() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await coordinator.persist(
+			session(
+				access: "access-one",
+				refresh: "refresh-one",
+				expiresAt: fixedNow.addingTimeInterval(3_600)
+			),
+			registryURL: registryURL
+		)
+		let authorizationCaptures = AuthTestCounter()
+		let generationChecks = AuthTestCounter()
+		let sync = MockPersonalSyncService()
+		sync.pullHandlers = [{ nil }]
+		let projectID = "amortized-authorization"
+		let keychain = MockKeychainService()
+		keychain.envStorage[projectID] = (
+			name: "Authorization",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			personalSyncServiceFactory: { _ in sync },
+			authAuthorizationProvider: { registryURL, baseURL in
+				authorizationCaptures.increment()
+				return try await coordinator.currentAccessAuthorization(
+					registryURL: registryURL,
+					baseURL: baseURL
+				)
+			},
+			authAuthorityValidator: { generation in
+				generationChecks.increment()
+				return coordinator.isAuthorityGenerationCurrent(generation)
+			}
+		)
+		store.appEnvironment = .production
+		store.projects = [VaultProject(
+			id: projectID,
+			name: "Authorization",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)]
+		store.isUnlocked = true
+		store.selectProject(projectID)
+
+		await store.pullFromCloud()
+
+		#expect(authorizationCaptures.value == 1)
+		#expect(generationChecks.value >= 3)
+		#expect(store.lastSyncStatus == "failed")
+	}
+
+	@Test("vault sync rejects peer rotation and logout through authority generation")
+	@MainActor
+	func vaultSyncRejectsPeerAuthMutation() async throws {
+		for mutation in AuthTestMutation.allCases {
+			let home = try temporaryHome()
+			defer { try? FileManager.default.removeItem(at: home) }
+			let backend = MemoryAuthCredentialBackend()
+			let coordinator = makeCoordinator(home: home, backend: backend)
+			try await coordinator.persist(
+				session(
+					access: "access-one",
+					refresh: "refresh-one",
+					expiresAt: fixedNow.addingTimeInterval(3_600)
+				),
+				registryURL: registryURL
+			)
+			let gate = AuthTestGate()
+			let sync = MockPersonalSyncService()
+			sync.pullHandlers = [{
+				await gate.arriveAndWait()
+				return nil
+			}]
+			let projectID = "peer-mutation-\(mutation.rawValue)"
+			let keychain = MockKeychainService()
+			keychain.envStorage[projectID] = (
+				name: "Peer mutation",
+				path: "",
+				environments: ["default": ["TOKEN": "local"]]
+			)
+			let store = VaultStore(
+				keychainService: keychain,
+				biometricService: MockBiometricService(),
+				apiService: MockAPIService(),
+				personalSyncServiceFactory: { _ in sync },
+				authAuthorizationProvider: { registryURL, baseURL in
+					try await coordinator.currentAccessAuthorization(
+						registryURL: registryURL,
+						baseURL: baseURL
+					)
+				},
+				authAuthorityValidator: {
+					coordinator.isAuthorityGenerationCurrent($0)
+				}
+			)
+			store.appEnvironment = .production
+			store.projects = [VaultProject(
+				id: projectID,
+				name: "Peer mutation",
+				path: "",
+				environments: ["default": ["TOKEN": "local"]]
+			)]
+			store.isUnlocked = true
+			store.selectProject(projectID)
+
+			let pull = Task { await store.pullFromCloud() }
+			await gate.waitUntilArrived()
+			switch mutation {
+			case .rotation:
+				try await coordinator.persist(
+					session(
+						access: "access-two",
+						refresh: "refresh-two",
+						expiresAt: fixedNow.addingTimeInterval(7_200)
+					),
+					registryURL: registryURL
+				)
+			case .logout:
+				try await coordinator.clear(registryURL: registryURL)
+			}
+			await gate.release()
+			await pull.value
+
+			#expect(store.lastSyncStatus == nil, "Accepted stale \(mutation.rawValue)")
+			#expect(!store.isSyncing)
+			#expect(store.projects[0].secrets["TOKEN"] == "local")
+		}
+	}
+
 	@Test("whitespace-only credentials are rejected before storage")
 	func whitespaceCredentialIsRejected() async throws {
 		let home = try temporaryHome()
@@ -991,6 +1223,48 @@ private final class MemoryAuthCredentialBackend: AuthCredentialBackend, @uncheck
 
 private enum TestCredentialBackendError: Error {
 	case writeFailed
+}
+
+private enum AuthTestMutation: String, CaseIterable {
+	case rotation
+	case logout
+}
+
+private final class AuthTestCounter: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage = 0
+
+	var value: Int { lock.withLock { storage } }
+
+	func increment() {
+		lock.withLock { storage += 1 }
+	}
+}
+
+private actor AuthTestGate {
+	private var arrived = false
+	private var released = false
+	private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+	private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+	func arriveAndWait() async {
+		arrived = true
+		arrivalWaiters.forEach { $0.resume() }
+		arrivalWaiters = []
+		guard !released else { return }
+		await withCheckedContinuation { releaseWaiters.append($0) }
+	}
+
+	func waitUntilArrived() async {
+		guard !arrived else { return }
+		await withCheckedContinuation { arrivalWaiters.append($0) }
+	}
+
+	func release() {
+		released = true
+		releaseWaiters.forEach { $0.resume() }
+		releaseWaiters = []
+	}
 }
 
 private actor ControlledRefresh {

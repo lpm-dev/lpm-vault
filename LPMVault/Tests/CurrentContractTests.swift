@@ -261,6 +261,61 @@ struct CurrentContractTests {
 		) == payload)
 	}
 
+	@Test("protected-only cutover requires a shared-Keychain-compatible CLI")
+	func protectedOnlyCutoverVersionGate() {
+		#expect(LPMCLICompatibility.isCompatible(versionOutput: "lpm 0.76.0\n"))
+		#expect(LPMCLICompatibility.isCompatible(versionOutput: "lpm 0.76.5"))
+		#expect(!LPMCLICompatibility.isCompatible(versionOutput: "lpm 0.75.99"))
+		#expect(!LPMCLICompatibility.isCompatible(versionOutput: "lpm 0.76.0-beta.1"))
+		#expect(!LPMCLICompatibility.isCompatible(versionOutput: "unknown"))
+		#expect(LPMCLICompatibility.allInstalledVersionsAreCompatible([
+			"lpm 0.76.5",
+			"lpm 0.77.0",
+		]))
+		#expect(!LPMCLICompatibility.allInstalledVersionsAreCompatible([
+			"lpm 0.75.99",
+			"lpm 0.76.5",
+		]))
+		#expect(!LPMCLICompatibility.allInstalledVersionsAreCompatible([
+			"lpm 0.76.5",
+			nil,
+		]))
+		#expect(!LPMCLICompatibility.allInstalledVersionsAreCompatible([]))
+	}
+
+	@Test("wrapping-key file cutover deletes only the exact verified regular file")
+	func exactWrappingKeyFileCutover() throws {
+		let directory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("lpm-wrapping-key-cutover-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: directory) }
+		let key = Data(repeating: 0x5a, count: 32)
+		let encoded = key.map { String(format: "%02x", $0) }.joined()
+		let file = directory.appendingPathComponent(".vault-key")
+		try Data(encoded.utf8).write(to: file)
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o600],
+			ofItemAtPath: file.path
+		)
+
+		try VaultCrypto.deleteLegacyWrappingKeyFile(at: file, expectedKey: key)
+
+		#expect(!FileManager.default.fileExists(atPath: file.path))
+
+		let target = directory.appendingPathComponent("target")
+		try Data(encoded.utf8).write(to: target)
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o600],
+			ofItemAtPath: target.path
+		)
+		try FileManager.default.createSymbolicLink(at: file, withDestinationURL: target)
+		#expect(throws: VaultCrypto.CryptoError.self) {
+			try VaultCrypto.deleteLegacyWrappingKeyFile(at: file, expectedKey: key)
+		}
+		#expect(try Data(contentsOf: target) == Data(encoded.utf8))
+		#expect(try file.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true)
+	}
+
 	@Test("public key fingerprint is SHA-256 over raw X25519 bytes")
 	func publicKeyFingerprint() {
 		let key = Data(repeating: 0x42, count: 32)
@@ -434,6 +489,176 @@ struct CurrentContractTests {
 
 		#expect(pushed == nil)
 		#expect(pulled == nil)
+	}
+
+	@Test("authenticated sync envelope binds a personal payload to its request")
+	func authenticatedPersonalSyncEnvelope() async throws {
+		let recorder = RequestRecorder()
+		let service = makeSyncService(recorder: recorder) { request in
+			let nonce = try #require(
+				request.value(forHTTPHeaderField: "X-LPM-Vault-Request-Nonce")
+			)
+			#expect(nonce.count == 43)
+			#expect(nonce.utf8.allSatisfy {
+				($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90)
+					|| ($0 >= 97 && $0 <= 122) || $0 == 45 || $0 == 95
+			})
+			return try signedSyncResponse(
+				[
+					"vaultId": "vault-1",
+					"version": 7,
+					"serverVersion": 7,
+					"cryptoVersion": 2,
+					"envelopeVersion": 2,
+					"scope": "personal",
+					"requestNonce": nonce,
+					"encryptedBlob": "ciphertext",
+					"wrappedKey": "wrapped",
+					"payloadDigest":
+						"129f6d5175b7c0875d84918c4cbf6a12a4843cea2167345b932568c94fb0dc8f",
+				],
+				token: "session-token"
+			)
+		}
+
+		let response = await service.pull(
+			authToken: "session-token",
+			vaultId: "vault-1"
+		)
+
+		#expect(response?.vaultId == "vault-1")
+		#expect(response?.version == 7)
+		#expect(recorder.requests.count == 1)
+	}
+
+	@Test("authenticated sync envelope rejects substitution replay downgrade and missing bindings")
+	func authenticatedSyncEnvelopeRejectsInvalidBindings() async throws {
+		let invalidEnvelopes = [
+			"cross-vault",
+			"replay",
+			"scope-substitution",
+			"downgrade",
+			"missing-envelope-version",
+			"missing-server-version",
+			"server-version-substitution",
+			"payload-substitution",
+		]
+
+		for name in invalidEnvelopes {
+			let service = makeSyncService { request in
+				let nonce = try #require(
+					request.value(forHTTPHeaderField: "X-LPM-Vault-Request-Nonce")
+				)
+				var envelope: [String: Any] = [
+					"vaultId": "vault-1",
+					"version": 7,
+					"serverVersion": 7,
+					"cryptoVersion": 2,
+					"envelopeVersion": 2,
+					"scope": "personal",
+					"requestNonce": nonce,
+					"encryptedBlob": "ciphertext",
+					"wrappedKey": "wrapped",
+					"payloadDigest": syncPayloadDigest(
+						encryptedBlob: "ciphertext",
+						wrappedKey: "wrapped"
+					),
+				]
+				switch name {
+				case "cross-vault": envelope["vaultId"] = "vault-2"
+				case "replay": envelope["requestNonce"] = String(repeating: "A", count: 43)
+				case "scope-substitution": envelope["scope"] = "organization"
+				case "downgrade": envelope["cryptoVersion"] = 1
+				case "missing-envelope-version": envelope.removeValue(forKey: "envelopeVersion")
+				case "missing-server-version": envelope.removeValue(forKey: "serverVersion")
+				case "server-version-substitution": envelope["serverVersion"] = 6
+				case "payload-substitution": envelope["encryptedBlob"] = "other-ciphertext"
+				default: Issue.record("Unknown invalid-envelope vector: \(name)")
+				}
+				return try signedSyncResponse(envelope, token: "session-token")
+			}
+
+			let response = await service.pull(
+				authToken: "session-token",
+				vaultId: "vault-1"
+			)
+			#expect(response == nil, "Accepted invalid sync envelope: \(name)")
+		}
+	}
+
+	@Test("authenticated organization envelope binds the canonical organization slug")
+	func authenticatedOrganizationSyncEnvelope() async throws {
+		let service = makeSyncService { request in
+			let nonce = try #require(
+				request.value(forHTTPHeaderField: "X-LPM-Vault-Request-Nonce")
+			)
+			return try signedSyncResponse(
+				[
+					"vaultId": "vault-1",
+					"version": 4,
+					"serverVersion": 4,
+					"cryptoVersion": 2,
+					"envelopeVersion": 2,
+					"scope": "organization",
+					"organizationSlug": "other-org",
+					"requestNonce": nonce,
+					"encryptedBlob": "ciphertext",
+					"wrappedKey": "wrapped",
+					"payloadDigest": syncPayloadDigest(
+						encryptedBlob: "ciphertext",
+						wrappedKey: "wrapped"
+					),
+				],
+				token: "session-token"
+			)
+		}
+
+		let response = await service.pullOrg(
+			authToken: "session-token",
+			orgSlug: "acme",
+			vaultId: "vault-1"
+		)
+
+		#expect(response == nil)
+	}
+
+	private func signedSyncResponse(
+		_ object: [String: Any],
+		token: String
+	) throws -> MockResponse {
+		let body = try JSONSerialization.data(
+			withJSONObject: object,
+			options: [.sortedKeys]
+		)
+		let key = SHA256.hash(data: Data(token.utf8))
+		let mac = HMAC<SHA256>.authenticationCode(
+			for: body,
+			using: SymmetricKey(data: Data(key))
+		)
+		return MockResponse(
+			statusCode: 200,
+			body: body,
+			headers: [
+				"Content-Type": "application/json",
+				"X-LPM-Signature": Data(mac).base64EncodedString(),
+			]
+		)
+	}
+
+	private func syncPayloadDigest(
+		encryptedBlob: String,
+		wrappedKey: String
+	) -> String {
+		var input = Data("lpm-vault-payload\0".utf8)
+		for value in [encryptedBlob, wrappedKey] {
+			let bytes = Data(value.utf8)
+			var length = UInt32(bytes.count).bigEndian
+			withUnsafeBytes(of: &length) { input.append(contentsOf: $0) }
+			input.append(bytes)
+		}
+		return SHA256.hash(data: input)
+			.map { String(format: "%02x", $0) }
+			.joined()
 	}
 
 	private func makeAPIService(
