@@ -29,11 +29,18 @@ final class UpdateChecker {
 		return url
 	}
 
+	nonisolated static func isNewerVersion(_ candidate: String, than current: String) -> Bool {
+		guard let candidate = NumericVersion(candidate), let current = NumericVersion(current) else {
+			return false
+		}
+		return candidate > current
+	}
+
 	func checkForUpdate() async {
 		// Check cache first
 		if let cached = loadCache(), !cached.isExpired {
 			latestVersion = cached.version
-			updateAvailable = cached.version != currentVersion && cached.version > currentVersion
+			updateAvailable = Self.isNewerVersion(cached.version, than: currentVersion)
 			releaseURL = URL(string: "https://github.com/\(repo)/releases/latest")
 			return
 		}
@@ -74,7 +81,7 @@ final class UpdateChecker {
 			saveCache(CachedVersion(version: version, checkedAt: Date()))
 
 			latestVersion = version
-			updateAvailable = version != currentVersion && version > currentVersion
+			updateAvailable = Self.isNewerVersion(version, than: currentVersion)
 			releaseURL = validatedReleaseURL
 		} catch {
 			// Silently fail — update check is not critical
@@ -100,5 +107,24 @@ final class UpdateChecker {
 	private func saveCache(_ cache: CachedVersion) {
 		guard let data = try? JSONEncoder().encode(cache) else { return }
 		UserDefaults.standard.set(data, forKey: cacheKey)
+	}
+}
+
+private struct NumericVersion: Comparable {
+	private let components: [Int]
+
+	init?(_ value: String) {
+		let fields = value.split(separator: ".", omittingEmptySubsequences: false)
+		guard (2...3).contains(fields.count),
+			fields.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }),
+			fields.allSatisfy({ Int($0) != nil })
+		else { return nil }
+		var components = fields.compactMap { Int($0) }
+		while components.count < 3 { components.append(0) }
+		self.components = components
+	}
+
+	static func < (lhs: Self, rhs: Self) -> Bool {
+		lhs.components.lexicographicallyPrecedes(rhs.components)
 	}
 }

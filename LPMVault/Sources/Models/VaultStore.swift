@@ -6,7 +6,7 @@ import Foundation
 /// A member key that requires explicit user approval before the vault
 /// is encrypted for them. Covers both new members (never seen) and
 /// existing members whose key changed (rotation or compromise).
-struct PendingKeyApproval: Identifiable {
+struct PendingKeyApproval: Identifiable, Equatable, Sendable {
 	let id = UUID()
 	let memberId: String
 	let fingerprint: String
@@ -14,6 +14,21 @@ struct PendingKeyApproval: Identifiable {
 	let isNewMember: Bool
 	/// Previous fingerprint (nil for new members)
 	let oldFingerprint: String?
+
+	static func == (lhs: Self, rhs: Self) -> Bool {
+		lhs.memberId == rhs.memberId
+			&& lhs.fingerprint == rhs.fingerprint
+			&& lhs.isNewMember == rhs.isNewMember
+			&& lhs.oldFingerprint == rhs.oldFingerprint
+	}
+
+	static func exactlyMatches(_ approved: [Self], pending: [Self]) -> Bool {
+		guard approved.count == pending.count else { return false }
+		let order: (Self, Self) -> Bool = {
+			($0.memberId, $0.fingerprint) < ($1.memberId, $1.fingerprint)
+		}
+		return approved.sorted(by: order) == pending.sorted(by: order)
+	}
 }
 
 /// Holds all context needed to resume an org push after the user
@@ -21,6 +36,7 @@ struct PendingKeyApproval: Identifiable {
 struct PendingOrgPush {
 	let orgSlug: String
 	let projectId: String
+	let ownPublicKey: SyncService.PublicKeyRecord?
 	let allMembers: [SyncService.MemberPublicKey]
 	let pendingApprovals: [PendingKeyApproval]
 	var orgTrust: OrgKeyTrust
@@ -437,7 +453,17 @@ enum AddSecretResult: Sendable, Equatable {
 final class VaultStore {
 	// MARK: - State
 
-	var projects: [VaultProject] = []
+	var projects: [VaultProject] = [] {
+		didSet {
+			var snapshots: [String: VaultWorkspaceSnapshot] = [:]
+			snapshots.reserveCapacity(projects.count)
+			for project in projects {
+				snapshots[project.id] = VaultWorkspaceSnapshot(project: project)
+			}
+			workspaceSnapshots = snapshots
+		}
+	}
+	private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
 	var selectedProjectId: String? {
 		didSet {
 			guard oldValue != selectedProjectId else { return }
@@ -504,7 +530,7 @@ final class VaultStore {
 	private let sharingKeypairProvider: @Sendable () throws -> (privateKey: Data, publicKey: Data)
 	private let stableSyncEncryptor:
 		@Sendable (
-			_ secretsJSON: String,
+			_ plaintext: Data,
 			_ vaultId: String
 		) throws -> (encryptedBlob: String, wrappedKey: String)
 	private let authTokenProvider: @Sendable (String, URL) async throws -> String?
@@ -518,6 +544,7 @@ final class VaultStore {
 	private var autoLockTaskGeneration = 0
 	private var projectLoadTask: Task<Void, Never>?
 	private var projectLoadGeneration = 0
+	private var lastSuccessfulProjectLoadGeneration = -1
 	private var projectMutationTask: Task<Void, Never>?
 	private var projectMutationRequestId: UUID?
 	private var tokenLoadTask: Task<Void, Never>?
@@ -713,10 +740,10 @@ final class VaultStore {
 			EnvProjectImportService(baseURL: $0)
 		},
 		orgSyncServiceFactory: @escaping @Sendable (URL) -> any OrgSyncServiceProtocol = {
-			SyncService(baseURL: $0)
+			SyncService.shared(baseURL: $0)
 		},
 		personalSyncServiceFactory: @escaping @Sendable (URL) -> any PersonalSyncServiceProtocol = {
-			SyncService(baseURL: $0)
+			SyncService.shared(baseURL: $0)
 		},
 		envFileImportService: any EnvFileImportServiceProtocol = EnvFileImportService.shared,
 		sharingKeypairProvider:
@@ -725,10 +752,10 @@ final class VaultStore {
 			},
 		stableSyncEncryptor:
 			@escaping @Sendable (
-				_ secretsJSON: String,
+				_ plaintext: Data,
 				_ vaultId: String
 			) throws -> (encryptedBlob: String, wrappedKey: String) = {
-				try VaultCrypto.encryptForStableSync(secretsJSON: $0, vaultId: $1)
+				try VaultCrypto.encryptForStableSync(plaintext: $0, vaultId: $1)
 			},
 		authTokenProvider: @escaping @Sendable (String, URL) async throws -> String? = {
 			registryURL, baseURL in
@@ -801,7 +828,7 @@ final class VaultStore {
 			personalTokens = []
 			orgTokens = [:]
 			// Reload tokens from the new environment's keychain entry
-			Task { await loadTokens() }
+			Task { await loadAccount() }
 		}
 	#endif
 
@@ -817,14 +844,23 @@ final class VaultStore {
 		isLoadingProjects = true
 
 		let task = Task { [weak self, persistence] in
-			let snapshot = await persistence.loadSnapshot()
+			let result = await persistence.loadSnapshot()
 			guard !Task.isCancelled, let self,
 				generation == self.projectLoadGeneration
 			else { return }
+			guard case .success(let snapshot) = result else {
+				if case .failure(let failure) = result {
+					self.error = "Could not load the protected vault state. \(failure.description)"
+				}
+				self.isLoadingProjects = false
+				self.projectLoadTask = nil
+				return
+			}
 			self.projects = snapshot.projects
 			self.syncMetadata = snapshot.syncMetadata
 			self.vaultOrgAssociations = snapshot.orgAssociations
 			self.error = nil
+			self.lastSuccessfulProjectLoadGeneration = generation
 			self.loadEnvironmentOrders()
 			self.reconcileNavigationState()
 			self.isLoadingProjects = false
@@ -832,7 +868,7 @@ final class VaultStore {
 		}
 		projectLoadTask = task
 		await task.value
-		return generation == projectLoadGeneration && !isLoadingProjects
+		return generation == lastSuccessfulProjectLoadGeneration && !isLoadingProjects
 	}
 
 	// MARK: - Transactional Cloud Imports
@@ -864,13 +900,19 @@ final class VaultStore {
 			return .failure(
 				.invalidPayload("The server returned an unsafe env project identifier."))
 		}
+		guard let listedVersion = remote.version, listedVersion > 0 else {
+			return .failure(.invalidPayload("The env project listing has an invalid version."))
+		}
 		guard !projects.contains(where: { $0.id == remote.vaultId }),
 			activeImportIds.insert(remote.vaultId).inserted
 		else { return .failure(.duplicate) }
 		defer { activeImportIds.remove(remote.vaultId) }
 
-		guard !(await persistence.containsProject(vaultId: remote.vaultId)) else {
-			return .failure(.duplicate)
+		switch await persistence.containsProject(vaultId: remote.vaultId) {
+		case .success(true): return .failure(.duplicate)
+		case .success(false): break
+		case .failure(let persistenceError):
+			return .failure(.persistence(persistenceError.description))
 		}
 		let authResolution = await resolveAuthToken(environment.registryURL, baseURL)
 		guard let authToken = authResolution.token else {
@@ -899,6 +941,13 @@ final class VaultStore {
 				)
 			}
 			try Task.checkCancellation()
+			guard payload.vaultId == remote.vaultId else {
+				return .failure(.invalidPayload("The cloud response is for a different env project."))
+			}
+			guard payload.version > 0, payload.version >= listedVersion else {
+				return .failure(
+					.invalidPayload("The cloud response has an invalid or downgraded version."))
+			}
 
 			let project = VaultProject(
 				id: remote.vaultId,
@@ -1657,7 +1706,15 @@ final class VaultStore {
 
 	// MARK: - Token Operations
 
+	func loadAccount() async {
+		await loadIdentity(includeTokenInventory: false)
+	}
+
 	func loadTokens() async {
+		await loadIdentity(includeTokenInventory: true)
+	}
+
+	private func loadIdentity(includeTokenInventory: Bool) async {
 		tokenLoadGeneration &+= 1
 		let generation = tokenLoadGeneration
 		let environment = appEnvironment
@@ -1696,8 +1753,16 @@ final class VaultStore {
 			let inventoryResult: LPMAPIResult<TokenInventory>
 			switch userResult {
 			case .success(let user):
-				inventoryResult = await TokenInventoryLoader.load(
-					user: user, authToken: authToken, service: service)
+				if includeTokenInventory {
+					inventoryResult = await TokenInventoryLoader.load(
+						user: user, authToken: authToken, service: service)
+				} else {
+					inventoryResult = .success(TokenInventory(
+						user: user,
+						personalTokens: [],
+						organizationTokens: [:]
+					))
+				}
 			case .failure(let loadError):
 				inventoryResult = .failure(loadError)
 			}
@@ -1848,7 +1913,7 @@ final class VaultStore {
 			try await authSessionWriter(credentials, environment.registryURL)
 
 			// Load full user info + tokens
-			await loadTokens()
+			await loadAccount()
 
 			guard generation == authOperationGeneration, environment == appEnvironment else {
 				return false
@@ -2081,39 +2146,47 @@ final class VaultStore {
 				finishSyncIfOwned(authority)
 				return
 			}
-			// Push ALL non-empty environments
+			// Push ALL non-empty environments. Serialization and crypto stay off
+			// MainActor so a large env project cannot stall interaction.
 			let nonEmptyEnvs = pushedProject.environments.filter { !$0.value.isEmpty }
-			let payload = ["environments": nonEmptyEnvs]
-			let secretsJSON = try JSONEncoder().encode(payload)
-			guard let jsonString = String(data: secretsJSON, encoding: .utf8) else {
-				throw VaultCrypto.CryptoError.invalidUTF8
+			let encryptor = stableSyncEncryptor
+			let projectID = pushedProject.id
+			let encryptionTask = Task.detached(priority: .userInitiated) {
+				() throws -> (encryptedBlob: String, wrappedKey: String) in
+				let payload = ["environments": nonEmptyEnvs]
+				let secretsJSON = try JSONEncoder().encode(payload)
+				return try encryptor(secretsJSON, projectID)
 			}
-
-			let (blob, wrapped) = try stableSyncEncryptor(jsonString, pushedProject.id)
+			let encrypted = try await encryptionTask.value
+			let schema = await syncSchema(for: pushedProject)
 
 			let syncService = personalSyncServiceFactory(environment.baseURL)
 			let result = await syncService.push(
 				authToken: authToken,
 				vaultId: pushedProject.id,
-				encryptedBlob: blob,
-				wrappedKey: wrapped,
+				encryptedBlob: encrypted.encryptedBlob,
+				wrappedKey: encrypted.wrappedKey,
 				expectedVersion: expectedVersion,
 				force: force,
 				name: pushedProject.name,
-				schema: syncSchema(for: pushedProject)
+				schema: schema
 			)
 			guard await hasCurrentSyncAuth(authority) else {
 				finishSyncIfOwned(authority)
 				return
 			}
 
-			if let result, result.error == nil {
+			if let pushedVersion = Self.acceptedPushVersion(
+				result,
+				vaultId: pushedProject.id,
+				greaterThan: expectedVersion ?? 0
+			) {
 				await waitForProjectMutations()
 				guard
 					let commit = await persistence.finishPush(
 						pushedProject: pushedProject,
 						action: "push",
-						version: result.version
+						version: pushedVersion
 					)
 				else {
 					error = "The push succeeded, but local sync state could not be saved."
@@ -2129,10 +2202,15 @@ final class VaultStore {
 				syncMetadata = commit.syncMetadata
 				lastSyncStatus =
 					commit.isDirty
-					? "Pushed (v\(result.version ?? 0)); local changes pending"
-					: "Pushed (v\(result.version ?? 0))"
+						? "Pushed (v\(pushedVersion)); local changes pending"
+						: "Pushed (v\(pushedVersion))"
 			} else {
-				let message = result?.displayError ?? "Push failed"
+				let message: String
+				if let result, result.error == nil {
+					message = "The push response did not match this env project or contain a valid version."
+				} else {
+					message = result?.displayError ?? "Push failed"
+				}
 				if message.contains("version conflict") || message.contains("conflict") {
 					lastSyncStatus = "conflict"
 				} else {
@@ -2212,6 +2290,15 @@ final class VaultStore {
 			lastSyncStatus = "failed"
 			return
 		}
+		guard result.vaultId == baselineProject.id,
+			let version = result.version,
+			version > 0
+		else {
+			error = "The pull response did not match this env project or contain a valid version."
+			finishSyncIfOwned(authority)
+			lastSyncStatus = "failed"
+			return
+		}
 
 		guard let blob = result.encryptedBlob, let wrapped = result.wrappedKey else {
 			error = result.error ?? "No env project data on cloud. Push first."
@@ -2223,36 +2310,43 @@ final class VaultStore {
 		do {
 			// Replay protection: reject version downgrades
 			if let localVersion = pullSnapshot.metadata?.lastVersion,
-				let serverVersion = result.version,
-				serverVersion < localVersion
+				version < localVersion
 			{
 				error =
-					"Version downgrade rejected (local: v\(localVersion), server: v\(serverVersion))"
+					"Version downgrade rejected (local: v\(localVersion), server: v\(version))"
 				finishSyncIfOwned(authority)
 				lastSyncStatus = "failed"
 				return
 			}
 
-			let decrypted = try VaultCrypto.decryptStableSync(
+			let decryptArguments = (
 				authToken: authToken,
-				encryptedBlob: blob,
-				wrappedKey: wrapped,
-				vaultId: baselineProject.id,
+				blob: blob,
+				wrapped: wrapped,
+				vaultID: baselineProject.id,
 				cryptoVersion: result.cryptoVersion ?? 1
 			)
-			let jsonString = decrypted.plaintext
+			let decrypted = try await Task.detached(priority: .userInitiated) {
+				try VaultCrypto.decryptStableSyncData(
+					authToken: decryptArguments.authToken,
+					encryptedBlob: decryptArguments.blob,
+					wrappedKey: decryptArguments.wrapped,
+					vaultId: decryptArguments.vaultID,
+					cryptoVersion: decryptArguments.cryptoVersion
+				)
+			}.value
+			let jsonData = decrypted.plaintext
 
-			guard let jsonData = jsonString.data(using: .utf8) else {
-				throw VaultCrypto.CryptoError.invalidUTF8
-			}
-
-			let version = result.version ?? 0
 			var syncedVersion = version
 			if decrypted.needsReencrypt {
-				let (migratedBlob, migratedWrapped) = try stableSyncEncryptor(
-					jsonString,
-					baselineProject.id
-				)
+				let encryptor = stableSyncEncryptor
+				let projectID = baselineProject.id
+				let (migratedBlob, migratedWrapped) = try await Task.detached(
+					priority: .userInitiated
+				) {
+					try encryptor(jsonData, projectID)
+				}.value
+				let migrationSchema = await syncSchema(for: baselineProject)
 				let migration = await syncService.push(
 					authToken: authToken,
 					vaultId: baselineProject.id,
@@ -2261,13 +2355,17 @@ final class VaultStore {
 					expectedVersion: version,
 					force: false,
 					name: baselineProject.name,
-					schema: syncSchema(for: baselineProject)
+					schema: migrationSchema
 				)
 				guard await hasCurrentSyncAuth(authority) else {
 					finishSyncIfOwned(authority)
 					return
 				}
-				if migration?.error == nil, let migratedVersion = migration?.version {
+				if let migratedVersion = Self.acceptedPushVersion(
+					migration,
+					vaultId: baselineProject.id,
+					greaterThan: version
+				) {
 					syncedVersion = migratedVersion
 				}
 			}
@@ -2389,9 +2487,13 @@ final class VaultStore {
 					"Your sharing key is not registered yet. Run `lpm env share --org \(orgSlug)` once to complete secure step-up registration, then retry."
 				)
 			}
-			guard registeredKey == pubB64 else {
+			guard registeredKey == pubB64,
+				let registeredVersion = serverKey.publicKeyVersion,
+				registeredVersion > 0,
+				serverKey.publicKeyFingerprint == VaultCrypto.publicKeyFingerprint(pubKey)
+			else {
 				throw VaultSyncError(
-					"This device's sharing key differs from the account key. Run `lpm env rotate-sharing-key` or restore the matching key before sharing."
+					"This device's sharing-key binding differs from the account record. Run `lpm env rotate-sharing-key` or restore the matching key before sharing."
 				)
 			}
 
@@ -2438,6 +2540,7 @@ final class VaultStore {
 				pendingOrgPush = PendingOrgPush(
 					orgSlug: orgSlug,
 					projectId: project.id,
+					ownPublicKey: serverKey,
 					allMembers: membersWithKeys,
 					pendingApprovals: pendingApprovals,
 					orgTrust: orgTrust,
@@ -2480,6 +2583,15 @@ final class VaultStore {
 	/// Called from KeyApprovalSheet when user accepts all pending keys.
 	func approveAndContinueOrgPush(approved: [PendingKeyApproval]) async {
 		guard let pending = pendingOrgPush else { return }
+		guard PendingKeyApproval.exactlyMatches(
+			approved,
+			pending: pending.pendingApprovals
+		) else {
+			invalidatePendingOrgPush()
+			error = "The sharing-key approval set changed. Review the organization members and retry."
+			lastSyncStatus = "failed"
+			return
+		}
 		guard pending.environment == appEnvironment,
 			pending.authGeneration == authOperationGeneration,
 			pending.sessionGeneration == vaultSessionGeneration,
@@ -2523,24 +2635,65 @@ final class VaultStore {
 		isSyncing = true
 		lastSyncStatus = nil
 
-		// Persist the approved fingerprints
-		var orgTrust = pending.orgTrust
-		orgTrust.approve(approved)
-		orgTrust.save(orgSlug: pending.orgSlug)
-
-		// Only wrap keys for members that are now trusted
-		let approvedMemberIds = Set(approved.map(\.memberId))
-		let trustedMemberIds = Set(orgTrust.trustedFingerprints.keys)
-		let allTrustedIds = trustedMemberIds.union(approvedMemberIds)
-		let trustedMembers = pending.allMembers.filter { allTrustedIds.contains($0.userId) }
-
 		do {
 			let syncService = orgSyncServiceFactory(pending.environment.baseURL)
+			let (_, localPublicKey) = try sharingKeypairProvider()
+			let serverKey = await syncService.getMyPublicKey(authToken: pending.authToken)
+			guard await hasCurrentSyncAuth(authority) else {
+				finishSyncIfOwned(authority)
+				return
+			}
+			guard serverKey == pending.ownPublicKey,
+				serverKey?.publicKey == localPublicKey.base64EncodedString(),
+				let registeredVersion = serverKey?.publicKeyVersion,
+				registeredVersion > 0,
+				serverKey?.publicKeyFingerprint == VaultCrypto.publicKeyFingerprint(localPublicKey)
+			else {
+				throw VaultSyncError("Your registered sharing key changed while approval was open. Retry the share.")
+			}
+
+			let refreshedAccess = await syncService.getOrgMemberKeyAccess(
+				authToken: pending.authToken,
+				orgSlug: pending.orgSlug
+			)
+			guard await hasCurrentSyncAuth(authority) else {
+				finishSyncIfOwned(authority)
+				return
+			}
+			guard let refreshedAccess else {
+				throw VaultSyncError("Could not refresh organization member keys.")
+			}
+			let refreshedMembers = refreshedAccess.members.filter {
+				$0.hasPublicKey && $0.publicKey != nil
+			}
+			guard refreshedAccess.canReplaceWrappedKeys == pending.canReplaceWrappedKeys,
+				Self.sameMemberAuthorization(refreshedMembers, pending.allMembers)
+			else {
+				throw VaultSyncError(
+					"Organization membership or sharing keys changed while approval was open. Review and retry."
+				)
+			}
+
+			var orgTrust = pending.orgTrust
+			orgTrust.approve(approved)
+			let refreshedBindings: [(id: String, publicKey: Data)] = refreshedMembers.compactMap {
+				guard let encoded = $0.publicKey, let key = Data(base64Encoded: encoded) else {
+					return nil
+				}
+				return ($0.userId, key)
+			}
+			guard refreshedBindings.count == refreshedMembers.count,
+				orgTrust.verify(members: refreshedBindings).isEmpty
+			else {
+				throw VaultSyncError("Organization sharing-key approval is no longer complete. Review and retry.")
+			}
+			orgTrust.save(orgSlug: pending.orgSlug)
+
 			_ = try await executeOrgPush(
 				project: project,
-				membersWithKeys: trustedMembers,
+				membersWithKeys: refreshedMembers,
 				syncService: syncService,
-				canReplaceWrappedKeys: pending.canReplaceWrappedKeys,
+				canReplaceWrappedKeys: refreshedAccess.canReplaceWrappedKeys,
 				authority: authority
 			)
 		} catch {
@@ -2554,6 +2707,23 @@ final class VaultStore {
 		}
 
 		if isCurrentSync(authority) { pendingOrgPush = nil }
+	}
+
+	private static func sameMemberAuthorization(
+		_ lhs: [SyncService.MemberPublicKey],
+		_ rhs: [SyncService.MemberPublicKey]
+	) -> Bool {
+		guard lhs.count == rhs.count else { return false }
+		let left = lhs.sorted { $0.userId < $1.userId }
+		let right = rhs.sorted { $0.userId < $1.userId }
+		return zip(left, right).allSatisfy { current, approved in
+			current.userId == approved.userId
+				&& current.role == approved.role
+				&& current.publicKey == approved.publicKey
+				&& current.publicKeyVersion == approved.publicKeyVersion
+				&& current.publicKeyFingerprint == approved.publicKeyFingerprint
+				&& current.hasPublicKey == approved.hasPublicKey
+		}
 	}
 
 	/// Called from KeyApprovalSheet when user rejects pending keys.
@@ -2584,27 +2754,35 @@ final class VaultStore {
 			return false
 		}
 		let pushedProject = pushSnapshot.project
-		// Encrypt secrets with random AES key
 		let nonEmptyEnvs = pushedProject.environments.filter { !$0.value.isEmpty }
-		let payload = ["environments": nonEmptyEnvs]
-		let secretsJSON = try JSONEncoder().encode(payload)
-		guard let jsonString = String(data: secretsJSON, encoding: .utf8) else {
-			throw VaultCrypto.CryptoError.invalidUTF8
-		}
-
-		let aesKey: SymmetricKey
-		let wrappedKeys: [SyncService.WrappedMemberKey]?
+		let scopeSlug = orgSlug(for: authority)
+		let encrypted: (blob: String, wrappedKeys: [SyncService.WrappedMemberKey]?)
 		let expectedVersion = pushSnapshot.metadata?.lastVersion
 		if canReplaceWrappedKeys {
-			aesKey = VaultCrypto.generateAESKey()
-			wrappedKeys = try wrapContentKey(aesKey, for: membersWithKeys)
+			let projectID = pushedProject.id
+			encrypted = try await Task.detached(priority: .userInitiated) {
+				let payload = ["environments": nonEmptyEnvs]
+				let secretsJSON = try JSONEncoder().encode(payload)
+				let aesKey = VaultCrypto.generateAESKey()
+				let wrappedKeys = try Self.wrapContentKey(aesKey, for: membersWithKeys)
+				let blob = try VaultCrypto.encryptPayload(
+					key: aesKey,
+					plaintext: secretsJSON,
+					scope: .organization(slug: scopeSlug),
+					vaultId: projectID
+				)
+				return (blob, wrappedKeys)
+			}.value
 		} else {
 			guard let expectedVersion else {
 				throw VaultSyncError(
 					"Organization maintainers must pull the current env project before updating it."
 				)
 			}
-			let (privateKey, publicKey) = try sharingKeypairProvider()
+			let keypairProvider = sharingKeypairProvider
+			let (privateKey, publicKey) = try await Task.detached(priority: .userInitiated) {
+				try keypairProvider()
+			}.value
 			guard await hasCurrentSyncAuth(authority) else {
 				finishSyncIfOwned(authority)
 				return false
@@ -2619,50 +2797,63 @@ final class VaultStore {
 				return false
 			}
 			guard let current,
+				current.vaultId == pushedProject.id,
 				current.version == expectedVersion,
 				let wrappedKey = current.wrappedKey,
 				current.recipientPublicKeyFingerprint == VaultCrypto.publicKeyFingerprint(publicKey)
 			else {
 				throw VaultSyncError("The organization env project changed. Pull it and retry.")
 			}
-			aesKey = try VaultCrypto.unwrapKeyFromSender(
-				wrapped: wrappedKey, privateKey: privateKey)
-			wrappedKeys = nil
+			let projectID = pushedProject.id
+			encrypted = try await Task.detached(priority: .userInitiated) {
+				let payload = ["environments": nonEmptyEnvs]
+				let secretsJSON = try JSONEncoder().encode(payload)
+				let aesKey = try VaultCrypto.unwrapKeyFromSender(
+					wrapped: wrappedKey,
+					privateKey: privateKey
+				)
+				let blob = try VaultCrypto.encryptPayload(
+					key: aesKey,
+					plaintext: secretsJSON,
+					scope: .organization(slug: scopeSlug),
+					vaultId: projectID
+				)
+				return (blob, nil)
+			}.value
 		}
-		let blob = try VaultCrypto.encryptPayload(
-			key: aesKey,
-			plaintext: Data(jsonString.utf8),
-			scope: .organization(slug: orgSlug(for: authority)),
-			vaultId: pushedProject.id
-		)
 
 		// Push to org
 		guard await hasCurrentSyncAuth(authority) else {
 			finishSyncIfOwned(authority)
 			return false
 		}
+		let schema = await syncSchema(for: pushedProject)
 		let result = await syncService.pushOrg(
 			authToken: authority.authToken,
-			orgSlug: orgSlug(for: authority),
+			orgSlug: scopeSlug,
 			vaultId: pushedProject.id,
-			encryptedBlob: blob,
-			wrappedKeys: wrappedKeys,
+			encryptedBlob: encrypted.blob,
+			wrappedKeys: encrypted.wrappedKeys,
 			expectedVersion: expectedVersion,
 			name: pushedProject.name,
-			schema: syncSchema(for: pushedProject)
+			schema: schema
 		)
 
 		guard await hasCurrentSyncAuth(authority) else {
 			finishSyncIfOwned(authority)
 			return false
 		}
-		if let r = result, r.error == nil {
+		if let pushedVersion = Self.acceptedPushVersion(
+			result,
+			vaultId: pushedProject.id,
+			greaterThan: expectedVersion ?? 0
+		) {
 			await waitForProjectMutations()
 			guard
 				let commit = await persistence.finishPush(
 					pushedProject: pushedProject,
 					action: "push",
-					version: r.version
+					version: pushedVersion
 				)
 			else {
 				self.error = "The push succeeded, but local sync state could not be saved."
@@ -2678,10 +2869,14 @@ final class VaultStore {
 			syncMetadata = commit.syncMetadata
 			lastSyncStatus =
 				commit.isDirty
-				? "Shared with \(orgSlug(for: authority)) (v\(r.version ?? 0)); local changes pending"
-				: "Shared with \(orgSlug(for: authority)) (v\(r.version ?? 0))"
+					? "Shared with \(orgSlug(for: authority)) (v\(pushedVersion)); local changes pending"
+					: "Shared with \(orgSlug(for: authority)) (v\(pushedVersion))"
 		} else {
-			self.error = result?.displayError ?? "Org push failed"
+			if let result, result.error == nil {
+				self.error = "The organization push response did not match this env project or contain a valid version."
+			} else {
+				self.error = result?.displayError ?? "Org push failed"
+			}
 			lastSyncStatus = "failed"
 		}
 		finishSyncIfOwned(authority)
@@ -2696,6 +2891,20 @@ final class VaultStore {
 			&& isUnlocked
 			&& selectedAccount == authority.account
 			&& selectedProject?.id == authority.projectId
+	}
+
+	nonisolated static func acceptedPushVersion(
+		_ result: SyncService.SyncStatus?,
+		vaultId: String,
+		greaterThan minimumVersion: Int = 0
+	) -> Int? {
+		guard let result,
+			result.error == nil,
+			result.vaultId == vaultId,
+			let version = result.version,
+			version > minimumVersion
+		else { return nil }
+		return version
 	}
 
 	private func hasCurrentSyncAuth(_ authority: SyncAuthority) async -> Bool {
@@ -2718,7 +2927,7 @@ final class VaultStore {
 		return slug
 	}
 
-	private func wrapContentKey(
+	nonisolated private static func wrapContentKey(
 		_ aesKey: SymmetricKey,
 		for members: [SyncService.MemberPublicKey]
 	) throws -> [SyncService.WrappedMemberKey] {
@@ -2805,7 +3014,10 @@ final class VaultStore {
 			let syncService = orgSyncServiceFactory(environment.baseURL)
 
 			// Ensure the local keypair matches the server before requesting a wrap.
-			let (privKey, pubKey) = try sharingKeypairProvider()
+			let keypairProvider = sharingKeypairProvider
+			let (privKey, pubKey) = try await Task.detached(priority: .userInitiated) {
+				try keypairProvider()
+			}.value
 			let pubB64 = pubKey.base64EncodedString()
 			let serverKey = await syncService.getMyPublicKey(authToken: authToken)
 			guard await hasCurrentSyncAuth(authority) else {
@@ -2839,6 +3051,14 @@ final class VaultStore {
 				lastSyncStatus = "failed"
 				return
 			}
+			guard result.vaultId == baselineProject.id,
+				let version = result.version,
+				version > 0
+			else {
+				throw VaultSyncError(
+					"The organization pull response did not match this env project or contain a valid version."
+				)
+			}
 
 			guard let blob = result.encryptedBlob else {
 				error = result.error ?? "No env project data in this organization."
@@ -2867,33 +3087,32 @@ final class VaultStore {
 
 			// Replay protection: reject version downgrades
 			if let localVersion = pullSnapshot.metadata?.lastVersion,
-				let serverVersion = result.version,
-				serverVersion < localVersion
+				version < localVersion
 			{
 				error =
-					"Version downgrade rejected (local: v\(localVersion), server: v\(serverVersion))"
+					"Version downgrade rejected (local: v\(localVersion), server: v\(version))"
 				finishSyncIfOwned(authority)
 				lastSyncStatus = "failed"
 				return
 			}
 
-			// Unwrap AES key with our X25519 private key
-			let aesKey = try VaultCrypto.unwrapKeyFromSender(wrapped: wrapped, privateKey: privKey)
-			let plaintext = try VaultCrypto.decryptPayload(
-				key: aesKey,
-				encoded: blob,
-				scope: .organization(slug: orgSlug),
-				vaultId: baselineProject.id,
-				cryptoVersion: result.cryptoVersion ?? 1
-			)
+			// Unwrap and decrypt away from MainActor.
+			let projectID = baselineProject.id
+			let cryptoVersion = result.cryptoVersion ?? 1
+			let plaintext = try await Task.detached(priority: .userInitiated) {
+				let aesKey = try VaultCrypto.unwrapKeyFromSender(
+					wrapped: wrapped,
+					privateKey: privKey
+				)
+				return try VaultCrypto.decryptPayload(
+					key: aesKey,
+					encoded: blob,
+					scope: .organization(slug: orgSlug),
+					vaultId: projectID,
+					cryptoVersion: cryptoVersion
+				)
+			}.value
 
-			guard let jsonString = String(data: plaintext, encoding: .utf8),
-				let jsonData = jsonString.data(using: .utf8)
-			else {
-				throw VaultCrypto.CryptoError.invalidUTF8
-			}
-
-			let version = result.version ?? 0
 			guard await hasCurrentSyncAuth(authority) else {
 				finishSyncIfOwned(authority)
 				return
@@ -2905,7 +3124,7 @@ final class VaultStore {
 			}
 			let commit = await persistence.commitPull(
 				baseline: baselineProject,
-				remotePayload: jsonData,
+				remotePayload: plaintext,
 				action: "pull",
 				version: version
 			)
@@ -2971,30 +3190,35 @@ final class VaultStore {
 		}
 	}
 
-	private func syncSchema(for project: VaultProject) -> Data? {
-		guard !project.path.isEmpty else { return nil }
-		let configURL = URL(fileURLWithPath: project.path).appendingPathComponent("lpm.json")
-		guard let root = ProjectConfigFile.readObject(at: configURL) else { return nil }
+	private func syncSchema(for project: VaultProject) async -> Data? {
+		let path = project.path
+		guard !path.isEmpty else { return nil }
+		return await Task.detached(priority: .userInitiated) {
+			let configURL = URL(fileURLWithPath: path).appendingPathComponent("lpm.json")
+			guard let root = ProjectConfigFile.readObject(at: configURL) else { return nil }
 
-		var schema: [String: Any] = ["version": 2]
-		if let envSchema = root["envSchema"] as? [String: Any] {
-			schema["envSchema"] = envSchema["vars"] ?? envSchema
-		}
-		if let environments = root["environments"] as? [String: Any] {
-			schema["environments"] = environments
-		}
-		if let env = root["env"] as? [String: String] {
-			var envConfig: [String: [String: String]] = [:]
-			for (alias, path) in env {
-				guard path.hasPrefix(".env."), path.count > ".env.".count else { continue }
-				envConfig[alias] = [
-					"canonical": String(path.dropFirst(".env.".count)),
-					"file": path,
-				]
+			var schema: [String: Any] = ["version": 2]
+			if let envSchema = root["envSchema"] as? [String: Any] {
+				schema["envSchema"] = envSchema["vars"] ?? envSchema
 			}
-			if !envConfig.isEmpty { schema["envConfig"] = envConfig }
-		}
-		return try? JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])
+			if let environments = root["environments"] as? [String: Any] {
+				schema["environments"] = environments
+			}
+			if let env = root["env"] as? [String: String] {
+				var envConfig: [String: [String: String]] = [:]
+				for (alias, envPath) in env {
+					guard envPath.hasPrefix(".env."), envPath.count > ".env.".count else {
+						continue
+					}
+					envConfig[alias] = [
+						"canonical": String(envPath.dropFirst(".env.".count)),
+						"file": envPath,
+					]
+				}
+				if !envConfig.isEmpty { schema["envConfig"] = envConfig }
+			}
+			return try? JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])
+		}.value
 	}
 
 	// MARK: - Private

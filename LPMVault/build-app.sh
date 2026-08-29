@@ -7,6 +7,10 @@ set -euo pipefail
 # Produces: build/LPM Vault.app
 
 CONFIG="${1:-release}"
+if [ "$CONFIG" != "release" ] && [ "$CONFIG" != "debug" ]; then
+	echo "Usage: $0 [release|debug]" >&2
+	exit 2
+fi
 APP_NAME="LPM Vault"
 TEAM_ID="${LPM_TEAM_ID:-823S8YKMRW}"
 SIGNING_IDENTITY="${LPM_SIGNING_IDENTITY:-Developer ID Application: Tolga Ergin (823S8YKMRW)}"

@@ -241,7 +241,18 @@ enum VaultCrypto {
 		vaultId: String
 	) throws -> (encryptedBlob: String, wrappedKey: String) {
 		try encryptForStableSync(
-			secretsJSON: secretsJSON,
+			plaintext: Data(secretsJSON.utf8),
+			vaultId: vaultId,
+			wrappingKey: stableWrappingKey()
+		)
+	}
+
+	static func encryptForStableSync(
+		plaintext: Data,
+		vaultId: String
+	) throws -> (encryptedBlob: String, wrappedKey: String) {
+		try encryptForStableSync(
+			plaintext: plaintext,
 			vaultId: vaultId,
 			wrappingKey: stableWrappingKey()
 		)
@@ -252,11 +263,23 @@ enum VaultCrypto {
 		vaultId: String,
 		wrappingKey: SymmetricKey
 	) throws -> (encryptedBlob: String, wrappedKey: String) {
+		try encryptForStableSync(
+			plaintext: Data(secretsJSON.utf8),
+			vaultId: vaultId,
+			wrappingKey: wrappingKey
+		)
+	}
+
+	static func encryptForStableSync(
+		plaintext: Data,
+		vaultId: String,
+		wrappingKey: SymmetricKey
+	) throws -> (encryptedBlob: String, wrappedKey: String) {
 		let aesKey = generateAESKey()
 		return (
 			try encryptPayload(
 				key: aesKey,
-				plaintext: Data(secretsJSON.utf8),
+				plaintext: plaintext,
 				scope: .personal,
 				vaultId: vaultId
 			),
@@ -272,6 +295,26 @@ enum VaultCrypto {
 		vaultId: String,
 		cryptoVersion: Int
 	) throws -> (plaintext: String, needsReencrypt: Bool) {
+		let decrypted = try decryptStableSyncData(
+			authToken: authToken,
+			encryptedBlob: encryptedBlob,
+			wrappedKey: wrappedKey,
+			vaultId: vaultId,
+			cryptoVersion: cryptoVersion
+		)
+		guard let json = String(data: decrypted.plaintext, encoding: .utf8) else {
+			throw CryptoError.invalidUTF8
+		}
+		return (json, decrypted.needsReencrypt)
+	}
+
+	static func decryptStableSyncData(
+		authToken: String,
+		encryptedBlob: String,
+		wrappedKey: String,
+		vaultId: String,
+		cryptoVersion: Int
+	) throws -> (plaintext: Data, needsReencrypt: Bool) {
 		guard cryptoVersion == 1 || cryptoVersion == currentCryptoVersion else {
 			throw CryptoError.unsupportedCryptoVersion(cryptoVersion)
 		}
@@ -285,10 +328,7 @@ enum VaultCrypto {
 				vaultId: vaultId,
 				cryptoVersion: cryptoVersion
 			)
-			guard let json = String(data: plaintext, encoding: .utf8) else {
-				throw CryptoError.invalidUTF8
-			}
-			return (json, cryptoVersion == 1)
+			return (plaintext, cryptoVersion == 1)
 		}
 
 		let legacyKey = deriveWrappingKey(authToken: authToken)
@@ -300,10 +340,7 @@ enum VaultCrypto {
 			vaultId: vaultId,
 			cryptoVersion: cryptoVersion
 		)
-		guard let json = String(data: plaintext, encoding: .utf8) else {
-			throw CryptoError.invalidUTF8
-		}
-		return (json, true)
+		return (plaintext, true)
 	}
 
 	static func decryptStableSync(
@@ -424,6 +461,12 @@ enum VaultCrypto {
 	private static let x25519KeyStore = SharedKeychainStore(service: x25519Service)
 	private static let wrappingKeyStore = SharedKeychainStore(service: wrappingKeyService)
 
+	enum StableWrappingKeyFileState: Equatable {
+		case absent
+		case valid(Data)
+		case unsafe
+	}
+
 	private static func stableWrappingKey() throws -> SymmetricKey {
 		try VaultKeychainTransactionLock.withLock {
 			try stableWrappingKeyUnlocked()
@@ -431,38 +474,45 @@ enum VaultCrypto {
 	}
 
 	private static func stableWrappingKeyUnlocked() throws -> SymmetricKey {
-			if let key = try readStableWrappingKeyFromKeychain() {
-				let legacyURL = wrappingKeyFileURL()
-				if FileManager.default.fileExists(atPath: legacyURL.path) {
-					guard let legacy = readStableWrappingKeyFromFile() else {
-						throw CryptoError.invalidStoredKey(
-							"A legacy vault wrapping-key file exists but is not a secure valid key; it was preserved."
-						)
-					}
-					guard legacy == key else {
-						throw CryptoError.invalidStoredKey(
-							"The protected and legacy-file vault wrapping keys conflict; both were preserved."
-						)
-					}
-				}
-				return SymmetricKey(data: key)
-			}
-			if let key = readStableWrappingKeyFromFile() {
-				let stored = try addOrReadStableWrappingKey(key)
-				guard stored == key else {
+		let fileState = inspectStableWrappingKeyFile(at: wrappingKeyFileURL())
+		if let key = try readStableWrappingKeyFromKeychain() {
+			switch fileState {
+			case .absent:
+				break
+			case .unsafe:
+				throw CryptoError.invalidStoredKey(
+					"A legacy vault wrapping-key file exists but is not a secure valid key; it was preserved."
+				)
+			case .valid(let legacy):
+				guard legacy == key else {
 					throw CryptoError.invalidStoredKey(
 						"The protected and legacy-file vault wrapping keys conflict; both were preserved."
 					)
 				}
-				return SymmetricKey(data: key)
 			}
+			return SymmetricKey(data: key)
+		}
+		if case .valid(let key) = fileState {
+			let stored = try addOrReadStableWrappingKey(key)
+			guard stored == key else {
+				throw CryptoError.invalidStoredKey(
+					"The protected and legacy-file vault wrapping keys conflict; both were preserved."
+				)
+			}
+			return SymmetricKey(data: key)
+		}
+		if case .unsafe = fileState {
+			throw CryptoError.invalidStoredKey(
+				"A legacy vault wrapping-key file exists but is not a secure valid key; it was preserved."
+			)
+		}
 
 		var bytes = [UInt8](repeating: 0, count: 32)
 		guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
 			throw CryptoError.encryptionFailed
-			}
-			let key = Data(bytes)
-			return SymmetricKey(data: try addOrReadStableWrappingKey(key))
+		}
+		let key = Data(bytes)
+		return SymmetricKey(data: try addOrReadStableWrappingKey(key))
 	}
 
 	private static func readStableWrappingKeyFromKeychain() throws -> Data? {
@@ -496,11 +546,29 @@ enum VaultCrypto {
 	/// Reads the legacy file fallback without following links or accepting
 	/// permissions that expose the wrapping key to another local user.
 	static func readStableWrappingKeyFile(at url: URL) -> Data? {
+		guard case .valid(let key) = inspectStableWrappingKeyFile(at: url) else { return nil }
+		return key
+	}
+
+	static func inspectStableWrappingKeyFile(at url: URL) -> StableWrappingKeyFileState {
+		guard url.isFileURL else { return .unsafe }
+		var pathMetadata = stat()
+		let pathStatus = url.withUnsafeFileSystemRepresentation { path in
+			guard let path else { return Int32(-1) }
+			return Darwin.lstat(path, &pathMetadata)
+		}
+		if pathStatus != 0 {
+			return errno == ENOENT ? .absent : .unsafe
+		}
+		guard (pathMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+			return .unsafe
+		}
+
 		let descriptor = url.withUnsafeFileSystemRepresentation { path in
 			guard let path else { return Int32(-1) }
 			return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW)
 		}
-		guard descriptor >= 0 else { return nil }
+		guard descriptor >= 0 else { return .unsafe }
 		defer { _ = Darwin.close(descriptor) }
 
 		var metadata = stat()
@@ -510,7 +578,7 @@ enum VaultCrypto {
 			(metadata.st_mode & 0o077) == 0,
 			metadata.st_size >= 0,
 			metadata.st_size <= Int64(maximumWrappingKeyFileBytes)
-		else { return nil }
+		else { return .unsafe }
 
 		var data = Data()
 		data.reserveCapacity(Int(metadata.st_size))
@@ -522,13 +590,15 @@ enum VaultCrypto {
 			if count == 0 { break }
 			if count < 0 {
 				if errno == EINTR { continue }
-				return nil
+				return .unsafe
 			}
-			guard data.count + count <= maximumWrappingKeyFileBytes else { return nil }
+			guard data.count + count <= maximumWrappingKeyFileBytes else { return .unsafe }
 			data.append(buffer, count: count)
 		}
-		guard let hex = String(data: data, encoding: .utf8) else { return nil }
-		return decodeWrappingKey(hex.trimmingCharacters(in: .whitespacesAndNewlines))
+		guard let hex = String(data: data, encoding: .utf8),
+			let key = decodeWrappingKey(hex.trimmingCharacters(in: .whitespacesAndNewlines))
+		else { return .unsafe }
+		return .valid(key)
 	}
 
 	private static func wrappingKeyFileURL() -> URL {

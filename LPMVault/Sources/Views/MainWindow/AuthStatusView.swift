@@ -135,11 +135,10 @@ struct AuthStatusView: View {
 
 	@ViewBuilder
 	private func profileAvatar(_ user: LPMUser) -> some View {
-		if let avatarUrl = user.avatarUrl, let url = URL(string: avatarUrl) {
-			AsyncImage(url: url) { image in
-				image.resizable().scaledToFill()
-			} placeholder: {
-				VaultInitialsAvatar(initials: String(user.username.prefix(1)).uppercased(), size: 42)
+		if AvatarURLPolicy.validatedURL(user.avatarUrl) != nil {
+			SecureAvatarImage(urlString: user.avatarUrl) {
+				VaultInitialsAvatar(
+					initials: String(user.username.prefix(1)).uppercased(), size: 42)
 			}
 			.frame(width: 42, height: 42)
 			.clipShape(Circle())

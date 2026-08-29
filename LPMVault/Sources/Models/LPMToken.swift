@@ -18,16 +18,28 @@ struct LPMToken: Codable, Identifiable, Sendable {
 
 	var expiresDate: Date? {
 		guard let expiresAt else { return nil }
-		return ISO8601DateFormatter().date(from: expiresAt)
+		return AuthSessionTimestamp.parse(expiresAt)
 	}
 
 	var daysUntilExpiry: Int? {
+		daysUntilExpiry(at: Date())
+	}
+
+	func daysUntilExpiry(at now: Date) -> Int? {
 		guard let date = expiresDate else { return nil }
-		return Calendar.current.dateComponents([.day], from: Date(), to: date).day
+		let interval = date.timeIntervalSince(now)
+		if interval < 0 { return -1 }
+		return Int(ceil(interval / 86_400))
 	}
 
 	var expiryStatus: ExpiryStatus {
-		guard let days = daysUntilExpiry else { return .noExpiry }
+		expiryStatus(at: Date())
+	}
+
+	func expiryStatus(at now: Date) -> ExpiryStatus {
+		guard let date = expiresDate else { return .noExpiry }
+		if date <= now { return .expired }
+		guard let days = daysUntilExpiry(at: now) else { return .noExpiry }
 		if days < 0 { return .expired }
 		if days <= 7 { return .critical }
 		if days <= 30 { return .warning }

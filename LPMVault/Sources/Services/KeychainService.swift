@@ -120,7 +120,12 @@ enum VaultKeychainTransactionLock {
 protocol KeychainServiceProtocol: Sendable {
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError>
 	func listProjects() -> [VaultProject]
+	func listProjectsResult() -> Result<[VaultProject], KeychainError>
+	func getProjectResult(vaultId: String) -> Result<VaultProject?, KeychainError>
 	func getEnvironments(vaultId: String) -> [String: [String: String]]?
+	func getEnvironmentsResult(
+		vaultId: String
+	) -> Result<[String: [String: String]]?, KeychainError>
 	func saveEnvironments(
 		vaultId: String,
 		projectName: String,
@@ -357,7 +362,37 @@ final class SharedKeychainStore: @unchecked Sendable {
 			if mode == .legacyTesting {
 				return try backend.read(service: service, account: account, location: .legacy)
 			}
-			return try readReconciled(account: account)
+			return try readReconciled(
+				account: account,
+				compatibilityActive: legacyCompatibilityActive()
+			)
+		}
+	}
+
+	func read(accounts: [String]) throws -> [String: Data?] {
+		try VaultKeychainTransactionLock.withLock {
+			var values: [String: Data?] = [:]
+			values.reserveCapacity(accounts.count)
+			if mode == .legacyTesting {
+				for account in accounts {
+					values.updateValue(
+						try backend.read(service: service, account: account, location: .legacy),
+						forKey: account
+					)
+				}
+				return values
+			}
+			let compatibilityActive = try legacyCompatibilityActive()
+			for account in accounts {
+				values.updateValue(
+					try readReconciled(
+						account: account,
+						compatibilityActive: compatibilityActive
+					),
+					forKey: account
+				)
+			}
+			return values
 		}
 	}
 
@@ -368,8 +403,9 @@ final class SharedKeychainStore: @unchecked Sendable {
 				return
 			}
 
-			let previous = try readReconciled(account: account)
 			let compatibilityActive = try legacyCompatibilityActive()
+			let previous = try readReconciled(
+				account: account, compatibilityActive: compatibilityActive)
 			if compatibilityActive {
 				try backend.write(service: service, account: account, data: data, location: .legacy)
 				guard
@@ -418,8 +454,9 @@ final class SharedKeychainStore: @unchecked Sendable {
 				return
 			}
 
-			let existing = try readReconciled(account: account)
 			let compatibilityActive = try legacyCompatibilityActive()
+			let existing = try readReconciled(
+				account: account, compatibilityActive: compatibilityActive)
 			if let existing {
 				if compatibilityActive, existing == data { return }
 				throw KeychainStoreError.status(operation: "add", code: errSecDuplicateItem)
@@ -428,7 +465,8 @@ final class SharedKeychainStore: @unchecked Sendable {
 				do {
 					try backend.add(service: service, account: account, data: data, location: .legacy)
 				} catch let error as KeychainStoreError where error.statusCode == errSecDuplicateItem {
-					_ = try readReconciled(account: account)
+					_ = try readReconciled(
+						account: account, compatibilityActive: compatibilityActive)
 					throw error
 				}
 				guard try backend.read(service: service, account: account, location: .legacy) == data
@@ -505,7 +543,10 @@ final class SharedKeychainStore: @unchecked Sendable {
 			if mode == .legacyTesting {
 				return try backend.delete(service: service, account: account, location: .legacy)
 			}
-			guard try readReconciled(account: account) != nil else { return false }
+			let compatibilityActive = try legacyCompatibilityActive()
+			guard try readReconciled(
+				account: account, compatibilityActive: compatibilityActive) != nil
+			else { return false }
 			let deletedLegacy = try backend.delete(
 				service: service, account: account, location: .legacy)
 			let deletedShared = try backend.delete(
@@ -514,8 +555,11 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
-	private func readReconciled(account: String) throws -> Data? {
-		guard try legacyCompatibilityActive() else {
+	private func readReconciled(
+		account: String,
+		compatibilityActive: Bool
+	) throws -> Data? {
+		guard compatibilityActive else {
 			return try backend.read(service: service, account: account, location: .shared)
 		}
 
@@ -637,15 +681,61 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	}
 
 	func listProjects() -> [VaultProject] {
-		let index = readIndex()
-		return index.map { entry in
-			let environments = getEnvironments(vaultId: entry.id) ?? ["default": [:]]
-			return VaultProject(
-				id: entry.id,
-				name: entry.name,
-				path: entry.path,
-				environments: environments
-			)
+		switch listProjectsResult() {
+		case .success(let projects): return projects
+		case .failure(let error):
+			keychainLogger.error("Keychain project listing failed: \(error.description, privacy: .public)")
+			return []
+		}
+	}
+
+	func listProjectsResult() -> Result<[VaultProject], KeychainError> {
+		do {
+			return try VaultKeychainTransactionLock.withLock {
+				let index = try readIndexThrowing()
+				let stored = try store.read(accounts: index.map(\.id))
+				let projects = try index.map { entry in
+					guard let data = stored[entry.id] ?? nil else {
+						throw KeychainStoreError.status(
+							operation: "read indexed vault data", code: errSecItemNotFound)
+					}
+					return VaultProject(
+						id: entry.id,
+						name: entry.name,
+						path: entry.path,
+						environments: try decodeEnvironments(data)
+					)
+				}
+				return .success(projects)
+			}
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
+	func getProjectResult(vaultId: String) -> Result<VaultProject?, KeychainError> {
+		do {
+			return try VaultKeychainTransactionLock.withLock {
+				let index = try readIndexThrowing()
+				guard let entry = index.first(where: { $0.id == vaultId }) else {
+					return .success(nil)
+				}
+				guard let data = try store.read(account: vaultId) else {
+					return .failure(.itemNotFound)
+				}
+				return .success(VaultProject(
+					id: entry.id,
+					name: entry.name,
+					path: entry.path,
+					environments: try decodeEnvironments(data)
+				))
+			}
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
 		}
 	}
 
@@ -653,19 +743,20 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	/// - New format: `{"environments": {"local": {...}, "live": {...}}}`
 	/// - Old format: `{"KEY": "VALUE"}` → migrated to `{"default": {"KEY": "VALUE"}}`
 	func getEnvironments(vaultId: String) -> [String: [String: String]]? {
-		guard let data = readItem(account: vaultId) else { return nil }
+		try? getEnvironmentsResult(vaultId: vaultId).get()
+	}
 
-		// Try new format first
-		if let wrapper = try? JSONDecoder().decode(EnvironmentsWrapper.self, from: data) {
-			return wrapper.environments
+	func getEnvironmentsResult(
+		vaultId: String
+	) -> Result<[String: [String: String]]?, KeychainError> {
+		do {
+			guard let data = try readItemThrowing(account: vaultId) else { return .success(nil) }
+			return .success(try decodeEnvironments(data))
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
 		}
-
-		// Fall back to old flat format → wrap in "default"
-		if let flat = try? JSONDecoder().decode([String: String].self, from: data) {
-			return ["default": flat]
-		}
-
-		return nil
 	}
 
 	func saveEnvironments(
@@ -955,7 +1046,14 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	private func readIndexThrowing() throws -> [VaultIndexEntry] {
 		guard let data = try readItemThrowing(account: indexAccount) else { return [] }
-		return try JSONDecoder().decode([VaultIndexEntry].self, from: data)
+		let entries = try JSONDecoder().decode([VaultIndexEntry].self, from: data)
+		let identifiers = entries.map(\.id)
+		guard Set(identifiers).count == identifiers.count,
+			identifiers.allSatisfy(EnvValidation.isSafeVaultId)
+		else {
+			throw KeychainStoreError.status(operation: "decode vault index", code: errSecDecode)
+		}
+		return entries
 	}
 
 	private func writeIndexThrowing(_ entries: [VaultIndexEntry]) throws {
@@ -965,6 +1063,10 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	private func getEnvironmentsThrowing(vaultId: String) throws -> [String: [String: String]]? {
 		guard let data = try readItemThrowing(account: vaultId) else { return nil }
+		return try decodeEnvironments(data)
+	}
+
+	private func decodeEnvironments(_ data: Data) throws -> [String: [String: String]] {
 		if let wrapper = try? JSONDecoder().decode(EnvironmentsWrapper.self, from: data) {
 			return wrapper.environments
 		}

@@ -24,17 +24,25 @@ enum BoundedHTTPResponse {
 		}
 
 		var data = Data()
+		let appendChunkSize = 64 * 1024
+		var chunk = [UInt8]()
+		chunk.reserveCapacity(appendChunkSize)
 		let expected = response.expectedContentLength
 		if expected > 0 {
 			data.reserveCapacity(Int(min(expected, Int64(maximumBytes))))
 		}
 
 		for try await byte in bytes {
-			guard data.count < maximumBytes else {
+			guard data.count + chunk.count < maximumBytes else {
 				throw LoadError.responseTooLarge(limit: maximumBytes)
 			}
-			data.append(byte)
+			chunk.append(byte)
+			if chunk.count == appendChunkSize {
+				data.append(contentsOf: chunk)
+				chunk.removeAll(keepingCapacity: true)
+			}
 		}
+		data.append(contentsOf: chunk)
 		return (data, response)
 	}
 }

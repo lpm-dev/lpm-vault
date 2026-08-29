@@ -109,7 +109,10 @@ enum EnvValidation {
 		if let wrapper = try? JSONDecoder().decode(
 			[String: [String: [String: String]]].self,
 			from: data
-		), let remoteEnvironments = wrapper["environments"] {
+		), let decodedEnvironments = wrapper["environments"] {
+			let remoteEnvironments = decodedEnvironments.isEmpty
+				? ["default": [:]]
+				: decodedEnvironments
 			guard areValidEnvironments(remoteEnvironments) else { throw PayloadError.invalidNames }
 			return remoteEnvironments
 		}
@@ -128,8 +131,16 @@ enum EnvValidation {
 		_ data: Data,
 		into localEnvironments: [String: [String: String]]
 	) throws -> MergeResult {
-		guard areValidEnvironments(localEnvironments) else { throw PayloadError.invalidNames }
 		let remoteEnvironments = try decodeRemoteEnvironments(data)
+		return try mergeRemoteEnvironments(remoteEnvironments, into: localEnvironments)
+	}
+
+	static func mergeRemoteEnvironments(
+		_ remoteEnvironments: [String: [String: String]],
+		into localEnvironments: [String: [String: String]]
+	) throws -> MergeResult {
+		guard areValidEnvironments(localEnvironments), areValidEnvironments(remoteEnvironments)
+		else { throw PayloadError.invalidNames }
 		var mergedEnvironments = localEnvironments
 		var keyCount = 0
 		for (environment, remoteSecrets) in remoteEnvironments {

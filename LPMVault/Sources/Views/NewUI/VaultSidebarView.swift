@@ -32,6 +32,7 @@ struct VaultSidebarView: View {
 	}
 
 	var body: some View {
+		let derivedProjects = visibleProjects
 		VStack(spacing: 0) {
 			searchField
 				.padding(.horizontal, 14)
@@ -42,14 +43,14 @@ struct VaultSidebarView: View {
 				LazyVStack(alignment: .leading, spacing: 0) {
 					projectHeader
 
-					if visibleProjects.isEmpty {
+					if derivedProjects.isEmpty {
 						Text(searchText.isEmpty ? "No env projects" : "No matching projects or keys")
 							.font(.system(size: 12))
 							.foregroundStyle(VaultPalette.textTertiary)
 							.padding(.horizontal, 16)
 							.padding(.vertical, 12)
 					} else {
-						ForEach(visibleProjects) { project in
+						ForEach(derivedProjects) { project in
 							projectRow(project)
 							if store.selectedProjectId == project.id,
 								!collapsedProjectIds.contains(project.id)
@@ -280,9 +281,8 @@ struct VaultSidebarView: View {
 	}
 
 	private func smartViews(_ project: VaultProject) -> some View {
-		let snapshot = snapshots[project.id] ?? VaultWorkspaceSnapshot(project: project)
-		let drift = snapshot.driftingKeyCount
-		let missing = snapshot.missingKeyCount
+		let drift = snapshots[project.id]?.driftingKeyCount ?? 0
+		let missing = snapshots[project.id]?.missingKeyCount ?? 0
 		return VStack(alignment: .leading, spacing: 1) {
 			Text("SMART VIEWS")
 				.vaultSectionLabel()
