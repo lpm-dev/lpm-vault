@@ -23,6 +23,16 @@ enum ImportPersistenceResult: Sendable {
 	case failure(KeychainError)
 }
 
+struct ProjectCreationPersistenceCommit: Sendable {
+	let orgAssociations: [String: String]
+	let warning: String?
+}
+
+enum ProjectCreationPersistenceResult: Sendable {
+	case success(ProjectCreationPersistenceCommit)
+	case failure(KeychainError)
+}
+
 struct LocalEnvImportPersistenceCommit: Sendable {
 	let project: VaultProject
 	let syncMetadata: [String: SyncMetadata]
@@ -143,6 +153,82 @@ actor VaultPersistenceCoordinator {
 
 	func containsProject(vaultId: String) -> Result<Bool, KeychainError> {
 		service.getProjectResult(vaultId: vaultId).map { $0 != nil }
+	}
+
+	func loadOrgTrust(orgSlug: String) -> Result<OrgKeyTrust, KeychainError> {
+		guard EnvValidation.isSafeOrgSlug(orgSlug) else { return .failure(.accessDenied) }
+		switch service.readDataResult(account: "__org_keys__\(orgSlug)") {
+		case .success(nil): return .success(OrgKeyTrust())
+		case .success(let data?):
+			guard let trust = try? JSONDecoder().decode(OrgKeyTrust.self, from: data) else {
+				return .failure(.encodingFailed)
+			}
+			return .success(trust)
+		case .failure(let error): return .failure(error)
+		}
+	}
+
+	func saveOrgTrust(_ trust: OrgKeyTrust, orgSlug: String) -> Bool {
+		guard EnvValidation.isSafeOrgSlug(orgSlug),
+			let data = try? JSONEncoder().encode(trust)
+		else { return false }
+		return service.writeData(account: "__org_keys__\(orgSlug)", data: data)
+	}
+
+	func createProject(
+		_ project: VaultProject,
+		orgSlug: String?
+	) -> ProjectCreationPersistenceResult {
+		switch service.withKeychainTransaction({
+			createProjectUnlocked(project, orgSlug: orgSlug)
+		}) {
+		case .success(let result): result
+		case .failure(let error): .failure(error)
+		}
+	}
+
+	private func createProjectUnlocked(
+		_ project: VaultProject,
+		orgSlug: String?
+	) -> ProjectCreationPersistenceResult {
+		let previousAssociations: Data?
+		switch service.readDataResult(account: "__org_associations__") {
+		case .success(let data): previousAssociations = data
+		case .failure(let error): return .failure(error)
+		}
+		guard case .success(var associations) = decodeDataResult(
+			.success(previousAssociations), as: [String: String].self
+		) else { return .failure(.encodingFailed) }
+		if let orgSlug { associations[project.id] = orgSlug }
+
+		let saveResult = service.createEnvironments(
+			vaultId: project.id,
+			projectName: project.name,
+			projectPath: project.path,
+			environments: project.environments
+		)
+		let warning: String?
+		switch saveResult {
+		case .success: warning = nil
+		case .successWithWarning(let message): warning = message
+		case .failure(let error): return .failure(error)
+		}
+
+		if orgSlug != nil {
+			guard let data = try? JSONEncoder().encode(associations),
+				service.writeData(account: "__org_associations__", data: data)
+			else {
+				guard service.deleteProject(vaultId: project.id),
+					restoreData(account: "__org_associations__", snapshot: previousAssociations)
+				else { return .failure(.unexpectedStatus(-2)) }
+				return .failure(.unexpectedStatus(-1))
+			}
+		}
+
+		return .success(ProjectCreationPersistenceCommit(
+			orgAssociations: associations,
+			warning: warning
+		))
 	}
 
 	func saveProject(_ project: VaultProject, markDirty: Bool) -> (
@@ -405,7 +491,7 @@ actor VaultPersistenceCoordinator {
 			return .failure(.encodingFailed)
 		}
 
-		let saveResult = save(project)
+		let saveResult = saveMutationProject(project, previousProject: previousProject)
 		let warning: String?
 		switch saveResult {
 		case .success:
@@ -417,7 +503,10 @@ actor VaultPersistenceCoordinator {
 		}
 
 		guard service.writeData(account: "__sync_metadata__", data: metadataData) else {
-			let restoredProject = save(previousProject)
+			let restoredProject = saveMutationProject(
+				previousProject,
+				previousProject: project
+			)
 			let restoredMetadata = restoreData(
 				account: "__sync_metadata__",
 				snapshot: previousMetadataData
@@ -628,11 +717,13 @@ actor VaultPersistenceCoordinator {
 	}
 
 	private func deleteProjectAndMetadataUnlocked(vaultId: String) -> DeleteProjectPersistenceResult {
-		let project: VaultProject
-		switch service.getProjectResult(vaultId: vaultId) {
-		case .success(let stored?): project = stored
-		case .success(nil): return .failure(.itemNotFound)
+		let projects: [VaultProject]
+		switch service.listProjectsResult() {
+		case .success(let stored): projects = stored
 		case .failure(let error): return .failure(error)
+		}
+		guard let project = projects.first(where: { $0.id == vaultId }) else {
+			return .failure(.itemNotFound)
 		}
 		let previousMetadataData: Data?
 		switch service.readDataResult(account: "__sync_metadata__") {
@@ -671,11 +762,7 @@ actor VaultPersistenceCoordinator {
 				originalError: .unexpectedStatus(-1)
 			)
 		}
-		let remainingProjects: [VaultProject]
-		switch service.listProjectsResult() {
-		case .success(let projects): remainingProjects = projects
-		case .failure(let error): return .failure(error)
-		}
+		let remainingProjects = projects.filter { $0.id != vaultId }
 		return .success(
 			VaultPersistenceSnapshot(
 				projects: remainingProjects.sorted {
@@ -1032,6 +1119,19 @@ actor VaultPersistenceCoordinator {
 		)
 	}
 
+	private func saveMutationProject(
+		_ project: VaultProject,
+		previousProject: VaultProject
+	) -> KeychainResult {
+		guard project.name == previousProject.name,
+			project.path == previousProject.path
+		else { return save(project) }
+		return service.updateEnvironments(
+			vaultId: project.id,
+			environments: project.environments
+		)
+	}
+
 	func save(
 		vaultId: String,
 		name: String,
@@ -1093,8 +1193,8 @@ actor VaultPersistenceCoordinator {
 		return (project, save(project))
 	}
 
-	func removeFromSidebar(vaultId: String) {
-		_ = service.removeFromSidebar(vaultId: vaultId)
+	func removeFromSidebar(vaultId: String) -> Bool {
+		service.removeFromSidebar(vaultId: vaultId)
 	}
 
 	func deleteProject(vaultId: String) -> Bool {

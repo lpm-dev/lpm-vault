@@ -168,10 +168,17 @@ struct AuthSessionCoordinatorTests {
 		let subject = makeCoordinator(
 			home: home,
 			backend: backend,
-			refresh: { _, _, _ in
-				self.session(
-					access: "access-rotated",
-					refresh: "refresh-rotated",
+			refresh: { refreshToken, _, _ in
+				if refreshToken == "refresh-old" {
+					return self.session(
+						access: "access-rotated",
+						refresh: "refresh-rotated",
+						expiresAt: self.fixedNow.addingTimeInterval(3_600)
+					)
+				}
+				return self.session(
+					access: "access-recovered",
+					refresh: "refresh-recovered",
 					expiresAt: self.fixedNow.addingTimeInterval(3_600)
 				)
 			}
@@ -188,6 +195,15 @@ struct AuthSessionCoordinatorTests {
 				for: AuthSessionStore.scopedRefreshAccount(registryURL: registryURL)
 			) == "refresh-rotated"
 		)
+
+		backend.allowWrites(
+			to: AuthSessionStore.scopedAccessAccount(registryURL: registryURL)
+		)
+		let recovered = try await subject.currentAccessToken(
+			registryURL: registryURL,
+			baseURL: baseURL
+		)
+		#expect(recovered == "access-recovered")
 	}
 
 	@Test("a refresh response cannot reuse the consumed refresh credential")
@@ -851,12 +867,23 @@ struct AuthSessionCoordinatorTests {
 		let first = makeCoordinator(home: home, backend: backend)
 		let second = makeCoordinator(home: home, backend: backend)
 
-		async let firstID = Task.detached { first.deviceFingerprint() }.value
-		async let secondID = Task.detached { second.deviceFingerprint() }.value
-		let values = await [firstID, secondID]
+		async let firstID = Task.detached { try first.deviceFingerprint() }.value
+		async let secondID = Task.detached { try second.deviceFingerprint() }.value
+		let values = try await [firstID, secondID]
 
 		#expect(values[0] == values[1])
 		#expect(values[0].count == 64)
+	}
+
+	@Test("device identity storage failures are explicit and never mint transient identities")
+	func deviceIdentityStorageFailureIsExplicit() throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		try Data("not-a-directory".utf8).write(to: home.appendingPathComponent(".lpm"))
+		let coordinator = makeCoordinator(home: home, backend: MemoryAuthCredentialBackend())
+
+		#expect(throws: Error.self) { try coordinator.deviceFingerprint() }
+		#expect(throws: Error.self) { try coordinator.deviceFingerprint() }
 	}
 
 	private func makeCoordinator(
@@ -955,6 +982,10 @@ private final class MemoryAuthCredentialBackend: AuthCredentialBackend, @uncheck
 
 	func failWrites(to account: String) {
 		_ = lock.withLock { failingWriteAccounts.insert(account) }
+	}
+
+	func allowWrites(to account: String) {
+		_ = lock.withLock { failingWriteAccounts.remove(account) }
 	}
 }
 
