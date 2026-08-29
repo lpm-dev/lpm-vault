@@ -5,6 +5,7 @@ struct NewVaultSheet: View {
 	@Bindable var store: VaultStore
 	@Environment(\.dismiss) private var dismiss
 	@State private var name = ""
+	@State private var isCreating = false
 	@FocusState private var isFocused: Bool
 
 	private var isOrg: Bool {
@@ -64,7 +65,7 @@ struct NewVaultSheet: View {
 				VaultBarButton(
 					title: "Create project",
 					filled: true,
-					disabled: name.trimmingCharacters(in: .whitespaces).isEmpty,
+					disabled: name.trimmingCharacters(in: .whitespaces).isEmpty || isCreating,
 					action: create
 				)
 				.keyboardShortcut(.defaultAction)
@@ -78,8 +79,14 @@ struct NewVaultSheet: View {
 
 	private func create() {
 		let trimmed = name.trimmingCharacters(in: .whitespaces)
-		guard !trimmed.isEmpty else { return }
-		store.createVault(name: trimmed, orgSlug: orgSlug)
-		dismiss()
+		guard !trimmed.isEmpty, !isCreating else { return }
+		isCreating = true
+		Task {
+			if await store.createVault(name: trimmed, orgSlug: orgSlug) {
+				dismiss()
+			} else {
+				isCreating = false
+			}
+		}
 	}
 }

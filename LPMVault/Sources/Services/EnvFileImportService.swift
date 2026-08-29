@@ -193,7 +193,12 @@ enum EnvFileImportWorker {
 		var parser = StreamingEnvFileParser(limits: limits)
 		try BoundedEnvFileReader.forEachLine(
 			at: url,
-			maximumBytes: limits.maximumInputBytes
+			maximumBytes: limits.maximumInputBytes,
+			parsedDataLimit: limits.maximumParsedBytes,
+			maximumRetainedLineBytes: min(
+				limits.maximumInputBytes,
+				limits.maximumParsedBytes * 2 + 1_024
+			)
 		) { line, lineNumber in
 			try parser.consume(line, lineNumber: lineNumber)
 		}
@@ -372,6 +377,8 @@ enum BoundedEnvFileReader {
 	static func forEachLine(
 		at url: URL,
 		maximumBytes: Int,
+		parsedDataLimit: Int? = nil,
+		maximumRetainedLineBytes: Int? = nil,
 		_ body: (String, Int) throws -> Void
 	) throws {
 		guard url.isFileURL, maximumBytes >= 0, maximumBytes < Int.max else {
@@ -399,44 +406,83 @@ enum BoundedEnvFileReader {
 			throw EnvFileImportError.tooLarge(limit: maximumBytes)
 		}
 
+		let retainedLimit = max(0, min(maximumRetainedLineBytes ?? maximumBytes, maximumBytes))
+		let reportedParsedDataLimit = parsedDataLimit ?? retainedLimit
 		var totalBytes = 0
 		var lineNumber = 0
 		var line = Data()
-		line.reserveCapacity(256)
-		var ignoredLines = Data()
-		ignoredLines.reserveCapacity(chunkSize)
+		line.reserveCapacity(min(256, retainedLimit))
 		var buffer = [UInt8](repeating: 0, count: chunkSize)
+		var validator = StreamingUTF8Validator()
+		var classification = ASCIILineClassification.undecided
+		var hasPhysicalBytes = false
+		var lineWasTruncated = false
+		var sawEquals = false
 
-		func validateIgnoredLines() throws {
-			guard !ignoredLines.isEmpty else { return }
-			guard String(data: ignoredLines, encoding: .utf8) != nil else {
-				throw EnvFileImportError.invalidUTF8
-			}
-			ignoredLines.removeAll(keepingCapacity: true)
-		}
-
-		func emit(_ bytes: Data, terminatedByNewline: Bool) throws {
+		func finishLine(terminatedByNewline: Bool) throws {
 			lineNumber += 1
-			var bytes = bytes
-			if terminatedByNewline, bytes.last == 0x0D { bytes.removeLast() }
-			if isIgnorableASCIILine(bytes) {
-				if bytes.count >= chunkSize {
-					try validateIgnoredLines()
-					guard String(data: bytes, encoding: .utf8) != nil else {
-						throw EnvFileImportError.invalidUTF8
-					}
-					return
+			defer {
+				line.removeAll(keepingCapacity: true)
+				classification = .undecided
+				hasPhysicalBytes = false
+				lineWasTruncated = false
+				sawEquals = false
+			}
+			guard classification == .significant else { return }
+			if lineWasTruncated {
+				// A newline-free non-assignment is ignored by the dotenv grammar.
+				// It does not need a second full-size Data/String representation.
+				guard !sawEquals else {
+					throw EnvFileImportError.parsedDataTooLarge(
+						limit: reportedParsedDataLimit
+					)
 				}
-				ignoredLines.append(bytes)
-				if terminatedByNewline { ignoredLines.append(0x0A) }
-				if ignoredLines.count >= chunkSize { try validateIgnoredLines() }
 				return
 			}
-			try validateIgnoredLines()
-			guard let decoded = String(data: bytes, encoding: .utf8) else {
+			if terminatedByNewline, line.last == 0x0D { line.removeLast() }
+			guard let decoded = String(data: line, encoding: .utf8) else {
 				throw EnvFileImportError.invalidUTF8
 			}
 			try body(decoded, lineNumber)
+		}
+
+		func consume(_ byte: UInt8) throws {
+			guard validator.consume(byte) else { throw EnvFileImportError.invalidUTF8 }
+			if byte == 0x0A {
+				try finishLine(terminatedByNewline: true)
+				return
+			}
+			hasPhysicalBytes = true
+			switch classification {
+			case .undecided:
+				if isASCIIWhitespace(byte) { return }
+				if byte == 0x23 {
+					classification = .ignored
+					return
+				}
+				classification = .significant
+			case .ignored:
+				return
+			case .significant:
+				break
+			}
+
+			if byte == 0x3D {
+				sawEquals = true
+				if lineWasTruncated {
+					throw EnvFileImportError.invalidVariableName(line: lineNumber + 1)
+				}
+			}
+			guard line.count < retainedLimit else {
+				lineWasTruncated = true
+				if sawEquals {
+					throw EnvFileImportError.parsedDataTooLarge(
+						limit: reportedParsedDataLimit
+					)
+				}
+				return
+			}
+			line.append(byte)
 		}
 
 		while true {
@@ -454,33 +500,66 @@ enum BoundedEnvFileReader {
 				throw EnvFileImportError.tooLarge(limit: maximumBytes)
 			}
 
-			var start = 0
-			for index in 0..<count where buffer[index] == 0x0A {
-				line.append(contentsOf: buffer[start..<index])
-				try emit(line, terminatedByNewline: true)
-				line.removeAll(keepingCapacity: true)
-				start = index + 1
-			}
-			if start < count { line.append(contentsOf: buffer[start..<count]) }
+			for byte in buffer.prefix(count) { try consume(byte) }
 		}
-		if !line.isEmpty {
-			try emit(line, terminatedByNewline: false)
-		}
-		try validateIgnoredLines()
+		guard validator.isComplete else { throw EnvFileImportError.invalidUTF8 }
+		if hasPhysicalBytes { try finishLine(terminatedByNewline: false) }
 	}
 
-	private static func isIgnorableASCIILine(_ line: Data) -> Bool {
-		for byte in line {
-			switch byte {
-			case 0x20, 0x09, 0x0B, 0x0C, 0x0D:
-				continue
-			case 0x23:
+	private enum ASCIILineClassification {
+		case undecided
+		case ignored
+		case significant
+	}
+
+	private static func isASCIIWhitespace(_ byte: UInt8) -> Bool {
+		switch byte {
+		case 0x20, 0x09, 0x0B, 0x0C, 0x0D: true
+		default: false
+		}
+	}
+
+	private struct StreamingUTF8Validator {
+		private var remaining = 0
+		private var nextMinimum: UInt8 = 0x80
+		private var nextMaximum: UInt8 = 0xBF
+
+		var isComplete: Bool { remaining == 0 }
+
+		mutating func consume(_ byte: UInt8) -> Bool {
+			if remaining > 0 {
+				guard byte >= nextMinimum, byte <= nextMaximum else { return false }
+				remaining -= 1
+				nextMinimum = 0x80
+				nextMaximum = 0xBF
 				return true
+			}
+			switch byte {
+			case 0x00...0x7F:
+				return true
+			case 0xC2...0xDF:
+				remaining = 1
+			case 0xE0:
+				remaining = 2
+				nextMinimum = 0xA0
+			case 0xE1...0xEC, 0xEE...0xEF:
+				remaining = 2
+			case 0xED:
+				remaining = 2
+				nextMaximum = 0x9F
+			case 0xF0:
+				remaining = 3
+				nextMinimum = 0x90
+			case 0xF1...0xF3:
+				remaining = 3
+			case 0xF4:
+				remaining = 3
+				nextMaximum = 0x8F
 			default:
 				return false
 			}
+			return true
 		}
-		return true
 	}
 }
 

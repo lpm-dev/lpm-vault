@@ -58,6 +58,8 @@ struct VaultWorkspaceSnapshot: Equatable {
 	}
 
 	let allSecretKeys: [String]
+	let sortedKeysByEnvironment: [String: [String]]
+	let normalizedSearchIndex: String
 	let summaries: [String: KeySummary]
 	let environmentCount: Int
 	let driftingKeyCount: Int
@@ -66,18 +68,23 @@ struct VaultWorkspaceSnapshot: Equatable {
 	init(project: VaultProject) {
 		var valuesByKey: [String: Set<String>] = [:]
 		var countsByKey: [String: Int] = [:]
-		for secrets in project.environments.values {
+		var sortedKeysByEnvironment: [String: [String]] = [:]
+		sortedKeysByEnvironment.reserveCapacity(project.environments.count)
+		for (environment, secrets) in project.environments {
 			for (key, value) in secrets {
 				valuesByKey[key, default: []].insert(value)
 				countsByKey[key, default: 0] += 1
 			}
+			sortedKeysByEnvironment[environment] = Self.sortedKeys(secrets.keys)
 		}
+		self.sortedKeysByEnvironment = sortedKeysByEnvironment
 
 		environmentCount = project.environments.count
 		allSecretKeys = valuesByKey.keys.sorted {
 			let comparison = $0.localizedCaseInsensitiveCompare($1)
 			return comparison == .orderedSame ? $0 < $1 : comparison == .orderedAscending
 		}
+		normalizedSearchIndex = allSecretKeys.lazy.map { $0.lowercased() }.joined(separator: "\0")
 
 		var summaries: [String: KeySummary] = [:]
 		summaries.reserveCapacity(allSecretKeys.count)
@@ -93,6 +100,18 @@ struct VaultWorkspaceSnapshot: Equatable {
 		self.summaries = summaries
 		driftingKeyCount = drifting
 		missingKeyCount = missing
+	}
+
+	func sortedKeys(for environment: String) -> [String] {
+		sortedKeysByEnvironment[environment] ?? []
+	}
+
+	private static func sortedKeys<S: Sequence>(_ keys: S) -> [String]
+	where S.Element == String {
+		keys.sorted {
+			let comparison = $0.localizedCaseInsensitiveCompare($1)
+			return comparison == .orderedSame ? $0 < $1 : comparison == .orderedAscending
+		}
 	}
 
 	func hasDrift(for key: String) -> Bool {
@@ -127,23 +146,29 @@ struct VaultContentDerivation: Equatable {
 	) {
 		let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 		allKeys = snapshot.allSecretKeys
-		filteredKeys = allKeys.filter { key in
-			let matchesFilter: Bool
-			switch filter {
-			case .all: matchesFilter = true
-			case .drift: matchesFilter = snapshot.hasDrift(for: key)
-			case .missing: matchesFilter = snapshot.isMissingSomewhere(key)
+		switch mode {
+		case .matrix:
+			filteredKeys = allKeys.filter { key in
+				let matchesFilter: Bool
+				switch filter {
+				case .all: matchesFilter = true
+				case .drift: matchesFilter = snapshot.hasDrift(for: key)
+				case .missing: matchesFilter = snapshot.isMissingSomewhere(key)
+				}
+				return matchesFilter && (query.isEmpty || key.lowercased().contains(query))
 			}
-			return matchesFilter && (query.isEmpty || key.lowercased().contains(query))
-		}
-		environmentKeys = project.sortedSecrets(for: selectedEnvironment)
-			.map(\.key)
-			.filter { query.isEmpty || $0.lowercased().contains(query) }
-		environmentDriftingKeyCount = environmentKeys.reduce(into: 0) { count, key in
-			if snapshot.hasDrift(for: key) { count += 1 }
+			environmentKeys = []
+			environmentDriftingKeyCount = 0
+		case .environment:
+			filteredKeys = []
+			environmentKeys = snapshot.sortedKeys(for: selectedEnvironment)
+				.filter { query.isEmpty || $0.lowercased().contains(query) }
+			environmentDriftingKeyCount = environmentKeys.reduce(into: 0) { count, key in
+				if snapshot.hasDrift(for: key) { count += 1 }
+			}
 		}
 		let visibleKeys = mode == .matrix ? filteredKeys : environmentKeys
-		allVisibleRevealed = !visibleKeys.isEmpty && Set(visibleKeys).isSubset(of: revealedKeys)
+		allVisibleRevealed = !visibleKeys.isEmpty && visibleKeys.allSatisfy(revealedKeys.contains)
 	}
 }
 

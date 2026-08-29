@@ -6,6 +6,58 @@ import Testing
 
 @Suite("End-to-end audit regressions", .serialized)
 struct AuditRegressionTests {
+	@Test("biometric cache does not survive a clock rollback")
+	func biometricCacheRejectsClockRollback() async {
+		let clock = LockedTestClock(100)
+		let prompts = LockedTestCounter()
+		let service = BiometricService(
+			cacheDuration: 300,
+			now: { clock.value },
+			authentication: { _ in
+				prompts.increment()
+				return true
+			}
+		)
+
+		#expect(await service.authenticate(reason: "first"))
+		clock.value = 50
+		#expect(await service.authenticate(reason: "after rollback"))
+
+		#expect(prompts.value == 2)
+	}
+
+	@Test("login attempt throttling does not persist across a monotonic clock reset")
+	func loginAttemptClockReset() {
+		let limiter = LoginAttemptLimiter()
+		#expect(limiter.reserve(now: 100))
+		#expect(limiter.reserve(now: 50))
+	}
+
+	@Test("future-dated update cache entries expire immediately")
+	func futureUpdateCacheExpires() {
+		let now = Date(timeIntervalSince1970: 1_000)
+		#expect(UpdateChecker.cacheIsExpired(
+			checkedAt: now.addingTimeInterval(60),
+			now: now
+		))
+	}
+
+	@Test("shared RFC 3339 relative timestamps cover fractional, whole, and future values")
+	func sharedRelativeTimestampFormatting() {
+		let now = Date(timeIntervalSince1970: 2_000)
+		#expect(RelativeTimestampFormatter.string(
+			fromRFC3339: "1970-01-01T00:32:50.000Z", now: now
+		) == "just now")
+		#expect(RelativeTimestampFormatter.string(
+			fromRFC3339: "1970-01-01T00:31:40Z", now: now
+		) == "1m ago")
+		#expect(RelativeTimestampFormatter.string(
+			fromRFC3339: "1970-01-01T00:34:00Z", now: now
+		) == "just now")
+		#expect(RelativeTimestampFormatter.string(
+			fromRFC3339: "invalid", now: now
+		) == "invalid")
+	}
 	@Test("dotenv export remains literal when sourced and preserves edge tabs")
 	func shellSafeLosslessDotenvExport() throws {
 		let directory = FileManager.default.temporaryDirectory
@@ -208,6 +260,94 @@ struct AuditRegressionTests {
 		#expect(keychain.environmentReadCount == 0)
 	}
 
+	@Test("content-only mutation does not rewrite project index metadata")
+	func contentOnlyMutationUsesPayloadUpdate() async {
+		let keychain = MockKeychainService()
+		keychain.envStorage["project"] = (
+			name: "Project", path: "", environments: ["default": ["TOKEN": "old"]]
+		)
+		let persistence = VaultPersistenceCoordinator(service: keychain)
+
+		let result = await persistence.mutateProject(
+			projectId: "project",
+			expectedName: "Project",
+			expectedPath: "",
+			mutation: .updateSecret(
+				environment: "default",
+				key: "TOKEN",
+				expectedValue: "old",
+				replacement: "new"
+			)
+		)
+
+		guard case .success = result else {
+			Issue.record("Content-only mutation failed: \(result)")
+			return
+		}
+		#expect(keychain.updateEnvironmentsCallCount == 1)
+		#expect(keychain.envStorage["project"]?.environments["default"]?["TOKEN"] == "new")
+	}
+
+	@Test("one-project changes rebuild only one workspace snapshot")
+	@MainActor
+	func incrementalWorkspaceSnapshotCache() {
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService()
+		)
+		store.projects = (0..<100).map { index in
+			VaultProject(
+				id: "project-\(index)",
+				name: "Project \(index)",
+				path: "",
+				environments: ["default": ["KEY": "\(index)"]]
+			)
+		}
+		let baseline = store.workspaceSnapshotBuildCount
+
+		store.projects[42].environments["default"]?["KEY"] = "changed"
+
+		#expect(store.workspaceSnapshotBuildCount - baseline == 1)
+	}
+
+	@Test("workspace derivation computes only the active presentation mode")
+	func workspaceDerivationIsModeSpecific() {
+		let project = VaultProject(
+			id: "project",
+			name: "Project",
+			path: "",
+			environments: [
+				"default": ["A": "1"],
+				"production": ["B": "2"],
+			]
+		)
+		let snapshot = VaultWorkspaceSnapshot(project: project)
+		let matrix = VaultContentDerivation(
+			project: project,
+			snapshot: snapshot,
+			selectedEnvironment: "default",
+			mode: .matrix,
+			filter: .all,
+			searchText: "",
+			revealedKeys: []
+		)
+		let environment = VaultContentDerivation(
+			project: project,
+			snapshot: snapshot,
+			selectedEnvironment: "default",
+			mode: .environment("default"),
+			filter: .all,
+			searchText: "",
+			revealedKeys: []
+		)
+
+		#expect(matrix.filteredKeys == ["A", "B"])
+		#expect(matrix.environmentKeys.isEmpty)
+		#expect(environment.filteredKeys.isEmpty)
+		#expect(environment.environmentKeys == ["A"])
+	}
+
 	@Test("single-project writes propagate protected read failures without saving")
 	func directProjectReadFailureDoesNotWrite() async {
 		let keychain = MockKeychainService()
@@ -320,6 +460,25 @@ struct AuditRegressionTests {
 		#expect(!SecureAvatarLoader.isSafeImageData(
 			Data(repeating: 0, count: SecureAvatarLoader.maximumResponseBytes + 1)
 		))
+	}
+
+	@Test("avatar image cache coalesces concurrent loads and reuses the decoded image")
+	@MainActor
+	func avatarCacheCoalescesRequests() async throws {
+		let requests = LockedTestCounter()
+		let cache = SecureAvatarImageCache(maximumCost: 1_024, maximumCount: 2) { _ in
+			requests.increment()
+			try await Task.sleep(for: .milliseconds(20))
+			return NSImage(size: NSSize(width: 1, height: 1))
+		}
+		let url = URL(string: "https://lpm.dev/avatar/test")!
+
+		async let first = cache.image(for: url)
+		async let second = cache.image(for: url)
+		_ = try await [first, second]
+		_ = try await cache.image(for: url)
+
+		#expect(requests.value == 1)
 	}
 
 	@Test("organization approval arrays must exactly match the displayed bindings")
@@ -731,4 +890,25 @@ private final class AuditThreadRecorder: @unchecked Sendable {
 	func captureCurrentThread() {
 		lock.withLock { storage = Thread.isMainThread }
 	}
+}
+
+private final class LockedTestClock: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage: TimeInterval
+
+	init(_ value: TimeInterval) { storage = value }
+
+	var value: TimeInterval {
+		get { lock.withLock { storage } }
+		set { lock.withLock { storage = newValue } }
+	}
+}
+
+private final class LockedTestCounter: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage = 0
+
+	var value: Int { lock.withLock { storage } }
+
+	func increment() { lock.withLock { storage += 1 } }
 }

@@ -223,6 +223,69 @@ struct KeychainServiceTests {
 		let retrieved = service.getSecrets(vaultId: vaultId)
 		#expect(retrieved == secrets)
 	}
+
+	@Test("invalid decoded environment maps fail closed")
+	func invalidDecodedEnvironmentMapFailsClosed() throws {
+		let service = makeService()
+		let vaultId = "test-\(UUID().uuidString.prefix(8))"
+		defer { cleanup(service: service, vaultIds: [vaultId]) }
+		guard case .success = service.createEnvironments(
+			vaultId: vaultId,
+			projectName: "invalid",
+			projectPath: "",
+			environments: ["default": [:]]
+		) else {
+			Issue.record("Could not create the indexed test project")
+			return
+		}
+		let invalid = try JSONSerialization.data(withJSONObject: [
+			"environments": ["../unsafe": ["VALID_KEY": "value"]]
+		])
+		#expect(service.writeData(account: vaultId, data: invalid))
+
+		guard case .failure = service.getProjectResult(vaultId: vaultId) else {
+			Issue.record("Invalid decoded environments were accepted")
+			return
+		}
+	}
+
+	@Test("invalid environment maps are rejected before writes")
+	func invalidEnvironmentMapWriteIsRejected() {
+		let service = makeService()
+		let vaultId = "test-\(UUID().uuidString.prefix(8))"
+		defer { cleanup(service: service, vaultIds: [vaultId]) }
+
+		guard case .failure = service.saveEnvironments(
+			vaultId: vaultId,
+			projectName: "invalid",
+			projectPath: "",
+			environments: ["default": ["BAD-KEY": "value"]]
+		) else {
+			Issue.record("Invalid environment data was written")
+			return
+		}
+		#expect(service.getEnvironments(vaultId: vaultId) == nil)
+	}
+
+	@Test("an empty environment wrapper normalizes to the default environment")
+	func emptyEnvironmentWrapperNormalizesToDefault() throws {
+		let service = makeService()
+		let vaultId = "test-\(UUID().uuidString.prefix(8))"
+		defer { cleanup(service: service, vaultIds: [vaultId]) }
+		guard case .success = service.createEnvironments(
+			vaultId: vaultId,
+			projectName: "empty",
+			projectPath: "",
+			environments: ["default": [:]]
+		) else {
+			Issue.record("Could not create the indexed test project")
+			return
+		}
+		let empty = try JSONSerialization.data(withJSONObject: ["environments": [:]])
+		#expect(service.writeData(account: vaultId, data: empty))
+
+		#expect(service.getEnvironments(vaultId: vaultId) == ["default": [:]])
+	}
 }
 
 @Suite("Shared Keychain migration")

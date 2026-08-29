@@ -395,24 +395,25 @@ struct AuthSessionCoordinator: Sendable {
 		}
 	}
 
-	func deviceFingerprint() -> String {
+	func deviceFingerprint() throws -> String {
 		if let existing = try? readDeviceIdentifier() { return existing }
 
-		do {
-			try ensurePrivateDirectory(lpmDirectory)
-			return try CrossProcessFileLock.withSingleExclusive(
-				at: lpmDirectory.appendingPathComponent("device-id.lock")
-			) {
-				if let existing = try readDeviceIdentifier() { return existing }
-				let identifier = Self.randomIdentifier()
-				try SecureStateFile.write(
-					Data(identifier.utf8),
-					to: deviceIdentifierURL
+		try ensurePrivateDirectory(lpmDirectory)
+		return try CrossProcessFileLock.withSingleExclusive(
+			at: lpmDirectory.appendingPathComponent("device-id.lock")
+		) {
+			if let existing = try readDeviceIdentifier() { return existing }
+			let identifier = Self.randomIdentifier()
+			try SecureStateFile.write(
+				Data(identifier.utf8),
+				to: deviceIdentifierURL
+			)
+			guard let persisted = try readDeviceIdentifier() else {
+				throw AuthSessionCoordinatorError.stateFile(
+					"The device identifier could not be verified after writing."
 				)
-				return (try readDeviceIdentifier()) ?? identifier
 			}
-		} catch {
-			return Self.randomIdentifier()
+			return persisted
 		}
 	}
 
@@ -527,6 +528,11 @@ struct AuthSessionCoordinator: Sendable {
 				authority.credentialDigest
 					== SHA256.hash(data: Data(credential.utf8)).hexString
 			else {
+				// An authority record with cleanup pending is also the durable
+				// crash marker for an interrupted backend commit. Treat it as an
+				// unavailable access credential so the rotated refresh credential
+				// can repair the session instead of stranding it.
+				if authority.staleFileCleanupPending == true { return nil }
 				throw AuthSessionCoordinatorError.credentialStorage(
 					"The Keychain credential does not match its authority record."
 				)
@@ -552,12 +558,12 @@ struct AuthSessionCoordinator: Sendable {
 		if kind == .access {
 			let legacyAccount = "auth-token:\(registryURL)"
 			if let credential = try credentialBackend.read(account: legacyAccount) {
+				try credentialBackend.write(credential, account: account)
 				store.credentials[authorityID] = .activeKeychain(
 					credential,
 					cleanupPending: false
 				)
 				try writeAuthorityStore(store)
-				try credentialBackend.write(credential, account: account)
 				try credentialBackend.delete(account: legacyAccount)
 				return credential
 			}
