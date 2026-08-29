@@ -1,8 +1,11 @@
 # End-to-end audit round 2 ledger
 
-Concept branch: `codex/end-to-end-audit-round-2`  
-Base commit: `6751d691138e0dddc8a3eb2fa648055c60e8e43e`  
-Implementation commit: `76110e8`  
+Concept branch: `codex/end-to-end-audit-round-2`
+
+Base commit: `6751d691138e0dddc8a3eb2fa648055c60e8e43e`
+
+Implementation commit: `76110e8`
+
 Concept pull request: [#16](https://github.com/lpm-dev/lpm-vault/pull/16)
 
 This ledger covers the correctness, security, and performance audit after pull request #15.
