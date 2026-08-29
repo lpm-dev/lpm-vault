@@ -231,6 +231,7 @@ enum KeychainStoreError: Error, LocalizedError, Equatable, Sendable {
 }
 
 protocol KeychainStoreBackend {
+	func accounts(service: String, location: KeychainStoreLocation) throws -> [String]
 	func read(service: String, account: String, location: KeychainStoreLocation) throws -> Data?
 	func write(service: String, account: String, data: Data, location: KeychainStoreLocation) throws
 	func add(service: String, account: String, data: Data, location: KeychainStoreLocation) throws
@@ -239,15 +240,13 @@ protocol KeychainStoreBackend {
 }
 
 struct SecurityKeychainStoreBackend: KeychainStoreBackend {
-	static func identityQuery(
+	private static func scopedQuery(
 		service: String,
-		account: String,
 		location: KeychainStoreLocation
 	) throws -> [String: Any] {
 		var query: [String: Any] = [
 			kSecClass as String: kSecClassGenericPassword,
 			kSecAttrService as String: service,
-			kSecAttrAccount as String: account,
 		]
 		switch location {
 		case .shared:
@@ -257,11 +256,52 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend {
 			var defaultKeychain: SecKeychain?
 			let status = SecKeychainCopyDefault(&defaultKeychain)
 			guard status == errSecSuccess, let defaultKeychain else {
-				throw KeychainStoreError.status(operation: "locate legacy keychain", code: status)
+				throw KeychainStoreError.status(
+					operation: "locate legacy keychain", code: status)
 			}
 			query[kSecUseKeychain as String] = defaultKeychain
 		}
 		return query
+	}
+
+	static func identityQuery(
+		service: String,
+		account: String,
+		location: KeychainStoreLocation
+	) throws -> [String: Any] {
+		var query = try scopedQuery(service: service, location: location)
+		query[kSecAttrAccount as String] = account
+		return query
+	}
+
+	func accounts(
+		service: String,
+		location: KeychainStoreLocation
+	) throws -> [String] {
+		var query = try Self.scopedQuery(service: service, location: location)
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitAll
+
+		var result: AnyObject?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		if status == errSecItemNotFound { return [] }
+		guard status == errSecSuccess else {
+			throw KeychainStoreError.status(operation: "list accounts", code: status)
+		}
+		let records: [[String: Any]]
+		if let many = result as? [[String: Any]] {
+			records = many
+		} else if let one = result as? [String: Any] {
+			records = [one]
+		} else {
+			throw KeychainStoreError.status(
+				operation: "list accounts",
+				code: errSecInternalComponent
+			)
+		}
+		return Array(Set(records.compactMap {
+			$0[kSecAttrAccount as String] as? String
+		})).sorted()
 	}
 
 	func read(service: String, account: String, location: KeychainStoreLocation) throws -> Data? {
@@ -523,6 +563,148 @@ final class SharedKeychainStore: @unchecked Sendable {
 				let operationError = error
 				if compatibilityActive {
 					try restoreLegacy(account: account, attempted: data, previous: nil)
+				}
+				throw operationError
+			}
+		}
+	}
+
+	/// Irreversibly makes the protected Data Protection Keychain authoritative
+	/// for this service. Every legacy copy is reconciled and verified before
+	/// deletion; the durable marker is committed only after all deletions pass.
+	func cutOverToProtectedOnly() throws {
+		try VaultKeychainTransactionLock.withLock {
+			guard mode == .shared else { return }
+			let initialMarker = try backend.read(
+				service: service,
+				account: Self.legacyCutoverAccount,
+				location: .shared
+			)
+			guard initialMarker == nil || initialMarker == Self.legacyCutoverValue else {
+				throw KeychainStoreError.migrationConflict
+			}
+
+			var accountSet = Set(
+				try backend.accounts(service: service, location: .shared)
+			)
+			accountSet.formUnion(
+				try backend.accounts(service: service, location: .legacy)
+			)
+			accountSet.remove(Self.legacyCutoverAccount)
+			let accounts = accountSet.sorted()
+			var verified: [String: Data] = [:]
+			verified.reserveCapacity(accounts.count)
+
+			for account in accounts {
+				if initialMarker == nil {
+					let preflightShared = try backend.read(
+						service: service,
+						account: account,
+						location: .shared
+					)
+					let preflightLegacy = try backend.read(
+						service: service,
+						account: account,
+						location: .legacy
+					)
+					guard preflightShared == nil || preflightLegacy == nil
+						|| preflightShared == preflightLegacy
+					else { throw KeychainStoreError.migrationConflict }
+					_ = try readReconciled(
+						account: account,
+						compatibilityActive: true
+					)
+				}
+				let shared = try backend.read(
+					service: service,
+					account: account,
+					location: .shared
+				)
+				let legacy = try backend.read(
+					service: service,
+					account: account,
+					location: .legacy
+				)
+				guard let shared else {
+					if legacy == nil { continue }
+					throw KeychainStoreError.migrationConflict
+				}
+				guard legacy == nil || legacy == shared else {
+					throw KeychainStoreError.migrationConflict
+				}
+				verified[account] = shared
+			}
+
+			var deletedAccounts: [String] = []
+			var markerAdded = false
+			do {
+				for account in accounts where verified[account] != nil {
+					if try backend.delete(
+						service: service,
+						account: account,
+						location: .legacy
+					) {
+						deletedAccounts.append(account)
+					}
+					guard try backend.read(
+						service: service,
+						account: account,
+						location: .legacy
+					) == nil,
+						try backend.read(
+							service: service,
+							account: account,
+							location: .shared
+						) == verified[account]
+					else { throw KeychainStoreError.migrationVerificationFailed }
+				}
+
+				if initialMarker == nil {
+					try backend.add(
+						service: service,
+						account: Self.legacyCutoverAccount,
+						data: Self.legacyCutoverValue,
+						location: .shared
+					)
+					markerAdded = true
+				}
+				guard try backend.read(
+					service: service,
+					account: Self.legacyCutoverAccount,
+					location: .shared
+				) == Self.legacyCutoverValue else {
+					throw KeychainStoreError.migrationVerificationFailed
+				}
+			} catch {
+				let operationError = error
+				if markerAdded {
+					_ = try backend.delete(
+						service: service,
+						account: Self.legacyCutoverAccount,
+						location: .shared
+					)
+				}
+				for account in deletedAccounts {
+					guard let value = verified[account],
+						try backend.read(
+							service: service,
+							account: account,
+							location: .legacy
+						) == nil
+					else { throw KeychainStoreError.migrationConflict }
+					try backend.add(
+						service: service,
+						account: account,
+						data: value,
+						location: .legacy
+					)
+					guard try backend.read(
+						service: service,
+						account: account,
+						location: .legacy
+					) == value else {
+						throw KeychainStoreError.migrationVerificationFailed
+					}
 				}
 				throw operationError
 			}

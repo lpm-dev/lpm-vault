@@ -67,6 +67,22 @@ enum AuthSessionStore {
 		try await live.currentAccessToken(registryURL: registryURL, baseURL: baseURL)
 	}
 
+	static func currentAccessAuthorization(
+		registryURL: String,
+		baseURL: URL
+	) async throws -> AuthSessionAuthorization? {
+		try await live.currentAccessAuthorization(
+			registryURL: registryURL,
+			baseURL: baseURL
+		)
+	}
+
+	static func isAuthorityGenerationCurrent(
+		_ generation: AuthSessionAuthorityGeneration
+	) -> Bool {
+		live.isAuthorityGenerationCurrent(generation)
+	}
+
 	static func persist(
 		_ credentials: AuthSessionCredentials,
 		registryURL: String

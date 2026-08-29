@@ -234,6 +234,11 @@ private struct GeneratedProjectKeychainBackend: KeychainStoreBackend {
 		])
 	}
 
+	func accounts(
+		service: String,
+		location: KeychainStoreLocation
+	) throws -> [String] { [] }
+
 	func read(
 		service: String,
 		account: String,
