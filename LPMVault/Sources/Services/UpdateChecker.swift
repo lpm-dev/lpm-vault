@@ -36,6 +36,11 @@ final class UpdateChecker {
 		return candidate > current
 	}
 
+	nonisolated static func cacheIsExpired(checkedAt: Date, now: Date) -> Bool {
+		let age = now.timeIntervalSince(checkedAt)
+		return age < 0 || age > 86_400
+	}
+
 	func checkForUpdate() async {
 		// Check cache first
 		if let cached = loadCache(), !cached.isExpired {
@@ -95,7 +100,7 @@ final class UpdateChecker {
 		let checkedAt: Date
 
 		var isExpired: Bool {
-			Date().timeIntervalSince(checkedAt) > 86400 // 24 hours
+			UpdateChecker.cacheIsExpired(checkedAt: checkedAt, now: Date())
 		}
 	}
 

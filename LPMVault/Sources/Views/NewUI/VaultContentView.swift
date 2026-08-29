@@ -139,7 +139,7 @@ struct VaultContentView: View {
 				title: compact ? nil : "Reveal",
 				help: derived.allVisibleRevealed ? "Hide all values" : "Reveal all values",
 				active: derived.allVisibleRevealed
-			) { toggleRevealAll() }
+			) { toggleRevealAll(derived) }
 			.accessibilityLabel(derived.allVisibleRevealed ? "Hide all values" : "Reveal all values")
 
 			VaultOutlineButton(
@@ -304,18 +304,9 @@ struct VaultContentView: View {
 		.background(VaultPalette.headerRow)
 	}
 
-	private func toggleRevealAll() {
-		let derived = VaultContentDerivation(
-			project: project,
-			snapshot: snapshot,
-			selectedEnvironment: selectedEnvironment,
-			mode: mode,
-			filter: filter,
-			searchText: searchText,
-			revealedKeys: revealedKeys
-		)
+	private func toggleRevealAll(_ derived: VaultContentDerivation) {
 		let keys = mode == .matrix ? derived.filteredKeys : derived.environmentKeys
-		if Set(keys).isSubset(of: revealedKeys) {
+		if keys.allSatisfy(revealedKeys.contains) {
 			revealedKeys.subtract(keys)
 		} else {
 			revealedKeys.formUnion(keys)

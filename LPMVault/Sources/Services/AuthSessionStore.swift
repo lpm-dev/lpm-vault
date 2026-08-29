@@ -78,8 +78,8 @@ enum AuthSessionStore {
 		try await live.clear(registryURL: registryURL)
 	}
 
-	static func deviceFingerprint() -> String {
-		live.deviceFingerprint()
+	static func deviceFingerprint() throws -> String {
+		try live.deviceFingerprint()
 	}
 
 	private static func performRefresh(
@@ -96,7 +96,7 @@ enum AuthSessionStore {
 		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 		request.httpBody = try JSONSerialization.data(withJSONObject: [
 			"refreshToken": refreshToken,
-			"deviceFingerprint": deviceFingerprint(),
+			"deviceFingerprint": try deviceFingerprint(),
 		])
 
 		let bytes: URLSession.AsyncBytes

@@ -396,7 +396,8 @@ final class SyncService: @unchecked Sendable {
 			)
 			guard let http = response as? HTTPURLResponse
 			else { return nil }
-			if (200..<300).contains(http.statusCode), signedSuccess {
+			guard (200..<300).contains(http.statusCode) else { return nil }
+			if signedSuccess {
 				guard PinnedSessionDelegate.verifyResponseSignature(
 					http,
 					body: data,

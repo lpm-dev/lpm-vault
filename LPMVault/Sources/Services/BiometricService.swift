@@ -20,37 +20,48 @@ protocol BiometricServiceProtocol: Sendable {
 
 final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 	private let lock = NSLock()
-	private var lastAuthTime: Date?
+	private var lastAuthTime: TimeInterval?
 	private let cacheDuration: TimeInterval
+	private let now: @Sendable () -> TimeInterval
+	private let authentication: @Sendable (String) async -> Bool
 
-	init(cacheDuration: TimeInterval = VaultConstants.biometricCacheDuration) {
+	init(
+		cacheDuration: TimeInterval = VaultConstants.biometricCacheDuration,
+		now: @escaping @Sendable () -> TimeInterval = {
+			ProcessInfo.processInfo.systemUptime
+		},
+		authentication: @escaping @Sendable (String) async -> Bool = { reason in
+			let context = LAContext()
+			context.localizedFallbackTitle = "Use Password"
+			do {
+				return try await context.evaluatePolicy(
+					.deviceOwnerAuthentication,
+					localizedReason: reason
+				)
+			} catch {
+				return false
+			}
+		}
+	) {
 		self.cacheDuration = cacheDuration
+		self.now = now
+		self.authentication = authentication
 	}
 
 	func authenticate(reason: String) async -> Bool {
 		// Check cache — avoid repeated prompts during edit sessions
 		let cachedAuthTime = lock.withLock { lastAuthTime }
-		if let lastAuth = cachedAuthTime,
-			Date().timeIntervalSince(lastAuth) < cacheDuration
-		{
+		let elapsed = cachedAuthTime.map { now() - $0 }
+		if let elapsed, elapsed >= 0, elapsed < cacheDuration {
 			return true
 		}
 
-		let context = LAContext()
-		context.localizedFallbackTitle = "Use Password"
-
-		do {
-			let success = try await context.evaluatePolicy(
-				.deviceOwnerAuthentication,  // Biometric + password fallback
-				localizedReason: reason
-			)
-			if success {
-				lock.withLock { lastAuthTime = Date() }
-			}
-			return success
-		} catch {
-			return false
+		let success = await authentication(reason)
+		if success {
+			let authenticatedAt = now()
+			lock.withLock { lastAuthTime = authenticatedAt }
 		}
+		return success
 	}
 
 	func isBiometricAvailable() -> Bool {

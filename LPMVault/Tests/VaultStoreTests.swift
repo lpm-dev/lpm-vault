@@ -167,13 +167,14 @@ struct VaultStoreTests {
 	// MARK: - Delete Project
 
 	@Test("delete project removes from list")
-	func deleteProject() {
+	func deleteProject() async {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: [:])
 		])
 		store.selectedProjectId = "id-1"
 
 		store.deleteProject(store.projects[0])
+		await waitUntil { store.projects.isEmpty }
 
 		#expect(store.projects.isEmpty)
 		#expect(store.selectedProjectId == nil)
@@ -236,6 +237,22 @@ struct VaultStoreTests {
 		#expect(keychain.dataStorage["__sync_metadata__"] == metadataData)
 		#expect(keychain.dataStorage["__org_associations__"] == associationData)
 		#expect(store.projects[0].secrets["TOKEN"] == "secret")
+	}
+
+	@Test("a read failure after the deletion commit cannot report a false failure")
+	func committedLocalDeletionDoesNotDependOnFinalReload() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project-a", path: "", secrets: ["TOKEN": "secret"]),
+			(id: "id-2", name: "project-b", path: "", secrets: ["OTHER": "value"]),
+		])
+		store.isUnlocked = true
+		keychain.blockNextDeleteProject = { keychain.failProjectReads = true }
+
+		let deleted = await store.deleteLocalVault(store.projects[0])
+
+		#expect(deleted)
+		#expect(keychain.storage["id-1"] == nil)
+		#expect(store.projects.map(\.id) == ["id-2"])
 	}
 
 	@Test("uncertain local deletion rollback locks and clears plaintext")
@@ -373,7 +390,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("removing an active project never selects another account")
-	func removalFallbackIsAccountScoped() {
+	func removalFallbackIsAccountScoped() async {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "personal", name: "a-personal", path: "", secrets: [:]),
 			(id: "org-one", name: "b-org", path: "", secrets: [:]),
@@ -384,6 +401,7 @@ struct VaultStoreTests {
 		store.openProject(id: "org-one")
 
 		store.removeFromSidebar(store.projects.first { $0.id == "org-one" }!)
+		await waitUntil { store.projects.allSatisfy { $0.id != "org-one" } }
 
 		#expect(store.selectedAccount == .org("acme"))
 		#expect(store.selectedProjectId == "org-two")
@@ -1327,6 +1345,21 @@ struct VaultStoreTests {
 		#expect(keychain.envStorage["id-1"]?.environments["staging"] == ["PREVIEW": "secret"])
 	}
 
+	@Test("sidebar removal publishes only after the index update succeeds")
+	func failedSidebarRemovalKeepsProjectVisible() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "", secrets: ["TOKEN": "secret"])
+		])
+		store.selectedProjectId = "id-1"
+		keychain.shouldFail = true
+
+		store.removeFromSidebar(store.projects[0])
+		await waitUntil { store.error != nil }
+
+		#expect(store.projects.map(\.id) == ["id-1"])
+		#expect(store.selectedProjectId == "id-1")
+	}
+
 	@Test("project switches cancel a pending new-environment preview")
 	func projectSwitchCancelsEnvFilePreview() async {
 		let importer = MockEnvFileImportService()
@@ -1616,6 +1649,25 @@ struct VaultStoreTests {
 		#expect(store.filteredVaults[0].name == "project-a")
 	}
 
+	@Test("search includes keys from every environment")
+	func searchAcrossAllEnvironments() {
+		let (store, _, _, _) = makeStore()
+		store.projects = [
+			VaultProject(
+				id: "id-1",
+				name: "project",
+				path: "",
+				environments: [
+					"default": ["API_KEY": "value"],
+					"production": ["DATABASE_URL": "secret"],
+				]
+			)
+		]
+		store.searchQuery = "database"
+
+		#expect(store.filteredVaults.map(\.id) == ["id-1"])
+	}
+
 	@Test("empty search shows all projects")
 	func emptySearch() {
 		let (store, _, _, _) = makeStore(projects: [
@@ -1798,6 +1850,33 @@ struct VaultStoreTests {
 
 		#expect(store.isLoggedIn == false)
 		#expect(store.personalTokens.isEmpty)
+	}
+
+	@Test("an unauthorized identity response clears stale authenticated state")
+	func unauthorizedIdentityClearsPriorState() async {
+		let api = MockAPIService()
+		let (store, _, _, _) = makeStore(apiService: api)
+		store.currentUser = testUser(id: "old", username: "old")
+		store.personalTokens = [testToken(id: "old-token")]
+
+		await store.loadTokens()
+
+		#expect(store.currentUser == nil)
+		#expect(store.personalTokens.isEmpty)
+		#expect(store.orgTokens.isEmpty)
+	}
+
+	@Test("organization vault creation rolls back if association persistence fails")
+	func organizationVaultCreationIsTransactional() async {
+		let (store, keychain, _, _) = makeStore()
+		keychain.failWriteDataAccounts.insert("__org_associations__")
+
+		let created = await store.createVault(name: "org-vault", orgSlug: "acme")
+
+		#expect(!created)
+		#expect(keychain.envStorage.isEmpty)
+		#expect(store.projects.isEmpty)
+		#expect(store.vaultOrgAssociations.isEmpty)
 	}
 
 	@Test("token inventory captures one bearer for every request")
@@ -2302,6 +2381,43 @@ struct VaultStoreTests {
 		#expect(store.showKeyApprovalSheet == false)
 		#expect(store.lastSyncStatus == "rejected")
 		#expect(store.error != nil)
+	}
+
+	@Test("organization trust read failures stop sharing instead of appearing untrusted")
+	func organizationTrustReadFailureStopsPush() async {
+		let fixture = makeOrgTrustFixture()
+		fixture.keychain.failDataAccounts.insert(fixture.trustAccount)
+
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+
+		#expect(fixture.store.pendingOrgPush == nil)
+		#expect(!fixture.store.showKeyApprovalSheet)
+		#expect(fixture.sync.pushCallCount == 0)
+		#expect(fixture.store.lastSyncStatus == "failed")
+	}
+
+	@Test("organization approval never pushes before trust is durable")
+	func organizationTrustWriteFailureStopsApprovedPush() async throws {
+		let fixture = makeOrgTrustFixture()
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+		let approvals = try #require(fixture.store.pendingOrgPush?.pendingApprovals)
+		fixture.keychain.failWriteDataAccounts.insert(fixture.trustAccount)
+
+		await fixture.store.approveAndContinueOrgPush(approved: approvals)
+
+		#expect(fixture.sync.pushCallCount == 0)
+		#expect(fixture.store.lastSyncStatus == "failed")
+		#expect(fixture.store.error?.contains("trust") == true)
+	}
+
+	@Test("organization sharing key lookup executes away from the main thread")
+	func organizationKeypairLookupIsBackground() async {
+		let recorder = MainThreadRecorder()
+		let fixture = makeOrgTrustFixture { recorder.capture() }
+
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+
+		#expect(recorder.value == false)
 	}
 
 	@Test("security transitions discard pending organization authorization")
@@ -3007,6 +3123,33 @@ struct VaultStoreTests {
 		#expect(store.selectedProjectId == "org-1")
 	}
 
+	@Test("cancellation after a durable cloud import still publishes the committed snapshot")
+	func postCommitImportCancellationAcknowledgesCommit() async {
+		let importService = MockEnvProjectImportService()
+		importService.personalResult = .success(
+			RemoteEnvProjectPayload(
+				vaultId: "committed",
+				environments: ["default": ["TOKEN": "secret"]],
+				version: 2,
+				keyCount: 1
+			)
+		)
+		let (store, keychain) = makeImportStore(importService: importService)
+		var operation: Task<Result<ImportedEnvProject, EnvProjectImportError>, Never>?
+		keychain.onCreateEnvironments = { operation?.cancel() }
+		operation = Task {
+			await store.importCloudProject(remoteProject(id: "committed", name: "remote"))
+		}
+
+		let result = await operation?.value
+
+		#expect(result == .success(
+			ImportedEnvProject(projectId: "committed", version: 2, keyCount: 1)
+		))
+		#expect(keychain.storage["committed"]?.secrets["TOKEN"] == "secret")
+		#expect(store.projects.first?.id == "committed")
+	}
+
 	@Test("organization association failure rolls back the project")
 	func organizationAssociationFailureRollsBack() async {
 		let importService = MockEnvProjectImportService()
@@ -3172,6 +3315,65 @@ struct VaultStoreTests {
 		)
 	}
 
+	private func makeOrgTrustFixture(
+		onKeypair: @escaping @Sendable () -> Void = {}
+	) -> (
+		store: VaultStore,
+		keychain: MockKeychainService,
+		sync: MockOrgSyncService,
+		slug: String,
+		trustAccount: String
+	) {
+		let slug = "trust-\(UUID().uuidString.lowercased())"
+		let projectId = "project-\(UUID().uuidString.lowercased())"
+		let localKeypair = VaultCrypto.generateX25519Keypair()
+		let memberKeypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: localKeypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey)
+		)
+		sync.memberKeyAccess = SyncService.MemberKeyAccess(
+			members: [SyncService.MemberPublicKey(
+				userId: "member",
+				role: "admin",
+				publicKey: memberKeypair.publicKey.base64EncodedString(),
+				publicKeyVersion: 1,
+				publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(memberKeypair.publicKey),
+				hasPublicKey: true
+			)],
+			canReplaceWrappedKeys: true
+		)
+		let keychain = MockKeychainService()
+		keychain.envStorage[projectId] = (
+			name: "Project", path: "", environments: ["default": ["TOKEN": "secret"]]
+		)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			orgSyncServiceFactory: { _ in sync },
+			sharingKeypairProvider: {
+				onKeypair()
+				return localKeypair
+			},
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.currentUser = userWithOrganization(slug: slug)
+		store.projects = [VaultProject(
+			id: projectId,
+			name: "Project",
+			path: "",
+			environments: ["default": ["TOKEN": "secret"]]
+		)]
+		store.vaultOrgAssociations[projectId] = slug
+		store.isUnlocked = true
+		store.selectAccount(.org(slug))
+		store.selectProject(projectId)
+		return (store, keychain, sync, slug, "__org_keys__\(slug)")
+	}
+
 	private enum OrgPushInvalidation {
 		case lock
 		case logout
@@ -3280,6 +3482,15 @@ private final class LockedCounter: @unchecked Sendable {
 	func increment() {
 		lock.withLock { storage += 1 }
 	}
+}
+
+private final class MainThreadRecorder: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage: Bool?
+
+	var value: Bool? { lock.withLock { storage } }
+
+	func capture() { lock.withLock { storage = Thread.isMainThread } }
 }
 
 private actor AutoLockSleeper {

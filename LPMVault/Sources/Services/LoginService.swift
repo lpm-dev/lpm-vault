@@ -4,6 +4,22 @@ import Foundation
 import Network
 import Security
 
+final class LoginAttemptLimiter: @unchecked Sendable {
+	private let lock = NSLock()
+	private var lastAttempt: TimeInterval?
+
+	func reserve(now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+		lock.lock()
+		defer { lock.unlock() }
+		if let lastAttempt {
+			let elapsed = now - lastAttempt
+			if elapsed >= 0, elapsed < 5 { return false }
+		}
+		lastAttempt = now
+		return true
+	}
+}
+
 enum LoginService {
 	private final class CallbackState: @unchecked Sendable {
 		private let lock = NSLock()
@@ -29,19 +45,6 @@ enum LoginService {
 			defer { lock.unlock() }
 			guard !completed else { return false }
 			completed = true
-			return true
-		}
-	}
-
-	private final class LoginAttemptState: @unchecked Sendable {
-		private let lock = NSLock()
-		private var lastAttempt: Date?
-
-		func reserve(now: Date = Date()) -> Bool {
-			lock.lock()
-			defer { lock.unlock() }
-			if let lastAttempt, now.timeIntervalSince(lastAttempt) < 5 { return false }
-			lastAttempt = now
 			return true
 		}
 	}
@@ -92,7 +95,7 @@ enum LoginService {
 	private static let maximumExchangeResponseBytes = 64 * 1024
 	private static let maximumConcurrentCallbacks = 16
 	private static let callbackReadTimeout: TimeInterval = 10
-	private static let loginAttempts = LoginAttemptState()
+	private static let loginAttempts = LoginAttemptLimiter()
 
 	static func login(
 		registryURL: String = "https://lpm.dev",
@@ -105,6 +108,7 @@ enum LoginService {
 		let state = randomHex(byteCount: 16)
 		let verifier = randomBase64URL(byteCount: 32)
 		let challenge = base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))
+		let deviceFingerprint = try AuthSessionStore.deviceFingerprint()
 		let parameters = NWParameters.tcp
 		parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
 		let listener = try NWListener(using: parameters, on: .any)
@@ -112,7 +116,8 @@ enum LoginService {
 			listener: listener,
 			registryURL: registryURL,
 			state: state,
-			codeChallenge: challenge
+			codeChallenge: challenge,
+			deviceFingerprint: deviceFingerprint
 		)
 		let resolvedBaseURL = baseURL ?? URL(string: registryURL)!
 		return try await exchange(
@@ -175,7 +180,8 @@ enum LoginService {
 		listener: NWListener,
 		registryURL: String,
 		state: String,
-		codeChallenge: String
+		codeChallenge: String,
+		deviceFingerprint: String
 	) async throws -> String {
 		let callbackState = CallbackState()
 
@@ -194,7 +200,8 @@ enum LoginService {
 							registryURL: registryURL,
 							port: port,
 							state: state,
-							codeChallenge: codeChallenge
+							codeChallenge: codeChallenge,
+							deviceFingerprint: deviceFingerprint
 						)
 					else {
 						finish(.failure(LoginError.listenerFailed("no callback port assigned")))
@@ -342,7 +349,8 @@ enum LoginService {
 		registryURL: String,
 		port: UInt16,
 		state: String,
-		codeChallenge: String
+		codeChallenge: String,
+		deviceFingerprint: String
 	) -> URL? {
 		guard var components = URLComponents(string: registryURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) else {
 			return nil
@@ -351,7 +359,7 @@ enum LoginService {
 		components.queryItems = [
 			URLQueryItem(name: "port", value: String(port)),
 			URLQueryItem(name: "state", value: state),
-			URLQueryItem(name: "fp", value: AuthSessionStore.deviceFingerprint()),
+			URLQueryItem(name: "fp", value: deviceFingerprint),
 			URLQueryItem(name: "dn", value: Host.current().localizedName ?? "LPM Vault"),
 			URLQueryItem(name: "code_challenge", value: codeChallenge),
 			URLQueryItem(name: "code_challenge_method", value: "S256"),

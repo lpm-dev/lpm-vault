@@ -122,6 +122,26 @@ struct EnvFileImportTests {
 		}
 	}
 
+	@Test("streaming oversized assignments report the configured parsed-data limit")
+	func streamingWorkerReportsParsedDataLimit() async throws {
+		let limits = EnvFileImportLimits(
+			maximumInputBytes: 4_096,
+			maximumAssignments: 10,
+			maximumParsedBytes: 4
+		)
+		let url = try temporaryFile(
+			Data(("KEY=" + String(repeating: "x", count: 2_000)).utf8),
+			name: "stream-parsed-limit.env"
+		)
+
+		do {
+			_ = try await EnvFileImportService(limits: limits).load(at: url)
+			Issue.record("The streaming worker accepted an oversized parsed assignment")
+		} catch let error as EnvFileImportError {
+			#expect(error == .parsedDataTooLarge(limit: limits.maximumParsedBytes))
+		}
+	}
+
 	@Test("FIFOs are rejected without occupying the import pool")
 	func fifoDoesNotBlockImportPool() async throws {
 		let directory = FileManager.default.temporaryDirectory

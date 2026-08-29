@@ -18,6 +18,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var failNextReadDataAccounts: Set<String> = []
 	var failNextWriteDataAccounts: Set<String> = []
 	var saveEnvironmentsCallCount = 0
+	var updateEnvironmentsCallCount = 0
 	var onGetEnvironments: (() -> Void)?
 	var onCreateEnvironments: (() -> Void)?
 	var blockNextSaveEnvironments: (() -> Void)?
@@ -189,6 +190,20 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			vaultId: vaultId,
 			projectName: projectName,
 			projectPath: projectPath,
+			environments: environments
+		)
+	}
+
+	func updateEnvironments(
+		vaultId: String,
+		environments: [String: [String: String]]
+	) -> KeychainResult {
+		updateEnvironmentsCallCount += 1
+		guard let existing = envStorage[vaultId] else { return .failure(.itemNotFound) }
+		return saveEnvironments(
+			vaultId: vaultId,
+			projectName: existing.name,
+			projectPath: existing.path,
 			environments: environments
 		)
 	}
