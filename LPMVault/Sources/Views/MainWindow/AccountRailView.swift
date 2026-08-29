@@ -89,10 +89,8 @@ struct AccountRailView: View {
 		let shape = isOrg ? AnyShape(RoundedRectangle(cornerRadius: 10)) : AnyShape(Circle())
 
 		Group {
-			if let avatarUrl = url, let imageURL = URL(string: avatarUrl) {
-				AsyncImage(url: imageURL) { image in
-					image.resizable().scaledToFill()
-				} placeholder: {
+			if AvatarURLPolicy.validatedURL(url) != nil {
+				SecureAvatarImage(urlString: url) {
 					textAvatar(fallback, isOrg: isOrg)
 				}
 			} else {

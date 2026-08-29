@@ -178,7 +178,7 @@ struct CloudVaultsSheet: View {
 			return
 		}
 
-		let syncService = SyncService(baseURL: store.appEnvironment.baseURL)
+		let syncService = SyncService.shared(baseURL: store.appEnvironment.baseURL)
 		let result = await syncService.listPersonalProjects(authToken: authToken)
 		switch result {
 		case .success(let projects):

@@ -7,6 +7,7 @@ final class ClipboardManager {
 
 	private var clearTask: Task<Void, Never>?
 	private let clearDelay: TimeInterval
+	private var ownedChangeCount: Int?
 
 	init(clearDelay: TimeInterval = VaultConstants.clipboardClearDelay) {
 		self.clearDelay = clearDelay
@@ -18,7 +19,13 @@ final class ClipboardManager {
 
 		let pasteboard = NSPasteboard.general
 		pasteboard.clearContents()
-		pasteboard.setString(value, forType: .string)
+		guard pasteboard.setString(value, forType: .string) else {
+			ownedChangeCount = nil
+			clearTask?.cancel()
+			clearTask = nil
+			return
+		}
+		ownedChangeCount = pasteboard.changeCount
 
 		// Cancel any existing clear timer
 		clearTask?.cancel()
@@ -27,15 +34,28 @@ final class ClipboardManager {
 		clearTask = Task {
 			try? await Task.sleep(for: .seconds(delay))
 			if !Task.isCancelled {
-				clearClipboard()
+				clearClipboardIfOwned()
 			}
 		}
+	}
+
+	private func clearClipboardIfOwned() {
+		let pasteboard = NSPasteboard.general
+		guard pasteboard.changeCount == ownedChangeCount else {
+			ownedChangeCount = nil
+			clearTask = nil
+			return
+		}
+		clearClipboard()
 	}
 
 	/// Clear clipboard immediately
 	func clearClipboard() {
 		let pasteboard = NSPasteboard.general
-		pasteboard.clearContents()
+		if let ownedChangeCount, pasteboard.changeCount == ownedChangeCount {
+			pasteboard.clearContents()
+		}
+		ownedChangeCount = nil
 		clearTask?.cancel()
 		clearTask = nil
 	}

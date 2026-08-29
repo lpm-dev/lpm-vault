@@ -72,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 	}
 
 	func applicationWillTerminate(_ notification: Notification) {
+		lockVault?()
 		if let localEventMonitor { NSEvent.removeMonitor(localEventMonitor) }
 		localEventMonitor = nil
 		NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -112,7 +113,7 @@ struct LPMVaultApp: App {
 					isObscured = false
 				}
 				.task {
-					await store.loadTokens()
+					await store.loadAccount()
 				}
 				.onAppear {
 					appDelegate.openWindow = { [openWindow] in

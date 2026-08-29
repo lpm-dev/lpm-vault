@@ -11,6 +11,9 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var shouldFail = false
 	var failureError: KeychainError = .accessDenied
 	var listProjectsDelay: Duration?
+	var failProjectReads = false
+	var projectReadCount = 0
+	var environmentReadCount = 0
 	var failDataAccounts: Set<String> = []
 	var failNextReadDataAccounts: Set<String> = []
 	var failNextWriteDataAccounts: Set<String> = []
@@ -66,6 +69,41 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
+	func listProjectsResult() -> Result<[VaultProject], KeychainError> {
+		let failure = lock.withLock { () -> KeychainError? in
+			guard failProjectReads else { return nil }
+			return failureError
+		}
+		if let failure { return .failure(failure) }
+		lock.withLock { projectReadCount += envStorage.count }
+		return .success(listProjects())
+	}
+
+	func getProjectResult(vaultId: String) -> Result<VaultProject?, KeychainError> {
+		let blocker = lock.withLock { () -> (() -> Void)? in
+			let blocker = blockNextListProjects
+			blockNextListProjects = nil
+			return blocker
+		}
+		blocker?()
+		if let listProjectsDelay { Thread.sleep(forTimeInterval: listProjectsDelay.timeInterval) }
+
+		return lock.withLock {
+			if failProjectReads { return .failure(failureError) }
+			projectReadCount += 1
+			let hook = onGetEnvironments
+			onGetEnvironments = nil
+			hook?()
+			guard let data = envStorage[vaultId] else { return .success(nil) }
+			return .success(VaultProject(
+				id: vaultId,
+				name: data.name,
+				path: data.path,
+				environments: data.environments
+			))
+		}
+	}
+
 	func getEnvironments(vaultId: String) -> [String: [String: String]]? {
 		lock.withLock {
 			let hook = onGetEnvironments
@@ -73,6 +111,18 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			hook?()
 			return envStorage[vaultId]?.environments
 		}
+	}
+
+	func getEnvironmentsResult(
+		vaultId: String
+	) -> Result<[String: [String: String]]?, KeychainError> {
+		let failure = lock.withLock { () -> KeychainError? in
+			guard failProjectReads else { return nil }
+			return failureError
+		}
+		if let failure { return .failure(failure) }
+		lock.withLock { environmentReadCount += 1 }
+		return .success(getEnvironments(vaultId: vaultId))
 	}
 
 	func simulateCLISet(
@@ -262,6 +312,9 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	var orgRevokeDelay: Duration?
 	var requestedOrgSlugs: [String] = []
 	var receivedAuthTokens: [String] = []
+	var currentUserFetchCount = 0
+	var personalTokenFetchCount = 0
+	var orgTokenFetchCount = 0
 	var activeOrgRequests = 0
 	var maximumActiveOrgRequests = 0
 	var blockNextCurrentUserFetch: (@Sendable () async -> Void)?
@@ -274,6 +327,7 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 			(@Sendable () async -> Void)?
 		) = lock.withLock {
 			receivedAuthTokens.append(authToken)
+			currentUserFetchCount += 1
 			let response = !userResponses.isEmpty ? userResponses.removeFirst() : (delay, user)
 			let blocker = blockNextCurrentUserFetch
 			blockNextCurrentUserFetch = nil
@@ -288,6 +342,7 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	func fetchPersonalTokens(authToken: String) async -> LPMAPIResult<[LPMToken]> {
 		let response: (delay: Duration?, tokens: [LPMToken]) = lock.withLock {
 			receivedAuthTokens.append(authToken)
+			personalTokenFetchCount += 1
 			if !personalTokenResponses.isEmpty { return personalTokenResponses.removeFirst() }
 			return (personalTokensDelay, personalTokens)
 		}
@@ -311,6 +366,7 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	func fetchOrgTokens(orgSlug: String, authToken: String) async -> LPMAPIResult<[LPMToken]> {
 		let response: (delay: Duration?, result: LPMAPIResult<[LPMToken]>) = lock.withLock {
 			receivedAuthTokens.append(authToken)
+			orgTokenFetchCount += 1
 			requestedOrgSlugs.append(orgSlug)
 			activeOrgRequests += 1
 			maximumActiveOrgRequests = max(maximumActiveOrgRequests, activeOrgRequests)

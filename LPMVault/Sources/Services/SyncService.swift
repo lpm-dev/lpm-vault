@@ -1,6 +1,22 @@
 import Foundation
 
 final class SyncService: @unchecked Sendable {
+	private final class RetainedServices: @unchecked Sendable {
+		let lock = NSLock()
+		var values: [URL: SyncService] = [:]
+	}
+
+	private static let retainedServices = RetainedServices()
+
+	static func shared(baseURL: URL = VaultConstants.apiBaseURL) -> SyncService {
+		retainedServices.lock.withLock {
+			if let retained = retainedServices.values[baseURL] { return retained }
+			let service = SyncService(baseURL: baseURL)
+			retainedServices.values[baseURL] = service
+			return service
+		}
+	}
+
 	private let apiBaseURL: URL
 	private let session: URLSession
 	private let maximumResponseBytes = 10 * 1024 * 1024
@@ -103,7 +119,7 @@ final class SyncService: @unchecked Sendable {
 		let canReplaceWrappedKeys: Bool
 	}
 
-	struct PublicKeyRecord: Decodable, Sendable {
+	struct PublicKeyRecord: Decodable, Sendable, Equatable {
 		let publicKey: String?
 		let publicKeyVersion: Int?
 		let publicKeyFingerprint: String?

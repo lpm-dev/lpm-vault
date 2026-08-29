@@ -15,11 +15,11 @@ struct AuthSessionCredentials: Decodable, Sendable {
 }
 
 enum AuthSessionTimestamp {
+	private static let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+	private static let wholeSeconds = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
+
 	static func parse(_ value: String) -> Date? {
-		let fractionalFormatter = ISO8601DateFormatter()
-		fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-		return fractionalFormatter.date(from: value)
-			?? ISO8601DateFormatter().date(from: value)
+		(try? fractional.parse(value)) ?? (try? wholeSeconds.parse(value))
 	}
 }
 

@@ -21,59 +21,41 @@ struct VaultContentView: View {
 	let onCopySecret: (String, String) -> Void
 	let onDeleteSecret: (String, String) -> Void
 
-	private var allKeys: [String] { snapshot.allSecretKeys }
-
-	private var filteredKeys: [String] {
-		let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-		return allKeys.filter { key in
-			let matchesFilter: Bool
-			switch filter {
-			case .all: matchesFilter = true
-			case .drift: matchesFilter = snapshot.hasDrift(for: key)
-			case .missing: matchesFilter = snapshot.isMissingSomewhere(key)
-			}
-			return matchesFilter && (query.isEmpty || key.lowercased().contains(query))
-		}
-	}
-
-	private var environmentKeys: [String] {
-		let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-		return project.sortedSecrets(for: selectedEnvironment)
-			.map(\.key)
-			.filter { query.isEmpty || $0.lowercased().contains(query) }
-	}
-
-	private var allVisibleRevealed: Bool {
-		let keys = mode == .matrix ? filteredKeys : environmentKeys
-		return !keys.isEmpty && Set(keys).isSubset(of: revealedKeys)
-	}
-
 	var body: some View {
+		let derived = VaultContentDerivation(
+			project: project,
+			snapshot: snapshot,
+			selectedEnvironment: selectedEnvironment,
+			mode: mode,
+			filter: filter,
+			searchText: searchText,
+			revealedKeys: revealedKeys
+		)
 		VStack(spacing: 0) {
-			header
+			header(derived)
 			VaultHairline()
 
 			switch mode {
 			case .matrix:
-				matrix
+				matrix(derived)
 			case .environment:
-				environmentDetail
+				environmentDetail(derived)
 			}
 
 			VaultHairline()
-			statusBar
+			statusBar(derived)
 		}
 		.background(VaultPalette.content)
 	}
 
-	private var header: some View {
+	private func header(_ derived: VaultContentDerivation) -> some View {
 		VStack(alignment: .leading, spacing: 12) {
 			ViewThatFits(in: .horizontal) {
-				headerPrimaryRow(compactToolbar: false)
-				headerPrimaryRow(compactToolbar: true)
+				headerPrimaryRow(compactToolbar: false, derived: derived)
+				headerPrimaryRow(compactToolbar: true, derived: derived)
 				VStack(alignment: .leading, spacing: 10) {
 					headerIdentity
-					toolbar(compact: true)
+					toolbar(compact: true, derived: derived)
 						.frame(maxWidth: .infinity, alignment: .trailing)
 				}
 			}
@@ -109,12 +91,15 @@ struct VaultContentView: View {
 		.padding(.bottom, 12)
 	}
 
-	private func headerPrimaryRow(compactToolbar: Bool) -> some View {
+	private func headerPrimaryRow(
+		compactToolbar: Bool,
+		derived: VaultContentDerivation
+	) -> some View {
 		HStack(spacing: 10) {
 			headerIdentity
 
 			Spacer(minLength: 8)
-			toolbar(compact: compactToolbar)
+			toolbar(compact: compactToolbar, derived: derived)
 		}
 	}
 
@@ -126,7 +111,7 @@ struct VaultContentView: View {
 					.font(.system(size: 19, weight: .bold))
 					.tracking(-0.28)
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("\(allKeys.count) keys · \(environments.count) envs")
+				Text("\(snapshot.allSecretKeys.count) keys · \(environments.count) envs")
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			} else {
@@ -147,15 +132,15 @@ struct VaultContentView: View {
 		.fixedSize(horizontal: true, vertical: false)
 	}
 
-	private func toolbar(compact: Bool) -> some View {
+	private func toolbar(compact: Bool, derived: VaultContentDerivation) -> some View {
 		HStack(spacing: 6) {
 			VaultOutlineButton(
-				systemImage: allVisibleRevealed ? "eye.slash" : "eye",
+				systemImage: derived.allVisibleRevealed ? "eye.slash" : "eye",
 				title: compact ? nil : "Reveal",
-				help: allVisibleRevealed ? "Hide all values" : "Reveal all values",
-				active: allVisibleRevealed
+				help: derived.allVisibleRevealed ? "Hide all values" : "Reveal all values",
+				active: derived.allVisibleRevealed
 			) { toggleRevealAll() }
-			.accessibilityLabel(allVisibleRevealed ? "Hide all values" : "Reveal all values")
+			.accessibilityLabel(derived.allVisibleRevealed ? "Hide all values" : "Reveal all values")
 
 			VaultOutlineButton(
 				systemImage: "doc.on.doc",
@@ -188,7 +173,7 @@ struct VaultContentView: View {
 		}
 	}
 
-	private var matrix: some View {
+	private func matrix(_ derived: VaultContentDerivation) -> some View {
 		GeometryReader { geometry in
 			let columnCount = CGFloat(max(environments.count, 1))
 			let minimumWidth = VaultMetrics.keyColumn + columnCount * VaultMetrics.environmentColumn
@@ -198,13 +183,13 @@ struct VaultContentView: View {
 			ScrollView([.horizontal, .vertical]) {
 				LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
 					Section {
-						if filteredKeys.isEmpty {
+						if derived.filteredKeys.isEmpty {
 							VaultTableEmptyRow(
 								message: searchText.isEmpty ? "No keys in this view" : "No keys match your search",
 								width: tableWidth
 							)
 						} else {
-							ForEach(filteredKeys, id: \.self) { key in
+							ForEach(derived.filteredKeys, id: \.self) { key in
 								VaultMatrixRow(
 									key: key,
 									project: project,
@@ -238,20 +223,20 @@ struct VaultContentView: View {
 	}
 
 	@ViewBuilder
-	private var environmentDetail: some View {
+	private func environmentDetail(_ derived: VaultContentDerivation) -> some View {
 		if environmentViewMode == .raw {
-			rawEnvironment
+			rawEnvironment(derived)
 		} else {
 			ScrollView {
 				LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
 					Section {
-						if environmentKeys.isEmpty {
+						if derived.environmentKeys.isEmpty {
 							VaultTableEmptyRow(
 								message: searchText.isEmpty ? "No secrets in this environment" : "No keys match your search",
 								width: 760
 							)
 						} else {
-							ForEach(environmentKeys, id: \.self) { key in
+							ForEach(derived.environmentKeys, id: \.self) { key in
 								VaultEnvironmentRow(
 									key: key,
 									value: project.value(for: key, in: selectedEnvironment) ?? "",
@@ -277,10 +262,10 @@ struct VaultContentView: View {
 		}
 	}
 
-	private var rawEnvironment: some View {
+	private func rawEnvironment(_ derived: VaultContentDerivation) -> some View {
 		ScrollView {
 			LazyVStack(alignment: .leading, spacing: 7) {
-				ForEach(environmentKeys, id: \.self) { key in
+				ForEach(derived.environmentKeys, id: \.self) { key in
 					let isRevealed = revealedKeys.contains(key)
 					let rendered = isRevealed ? (project.value(for: key, in: selectedEnvironment) ?? "") : "••••••••••••"
 					Text("\(key)=\(rendered)")
@@ -294,18 +279,18 @@ struct VaultContentView: View {
 		}
 	}
 
-	private var statusBar: some View {
+	private func statusBar(_ derived: VaultContentDerivation) -> some View {
 		HStack(spacing: 12) {
 			if case .matrix = mode {
-				Text("\(filteredKeys.count) of \(allKeys.count) keys shown")
+				Text("\(derived.filteredKeys.count) of \(derived.allKeys.count) keys shown")
 				Text("·")
 				Text("\(snapshot.driftingKeyCount) drifting")
 				Text("·")
 				Text("\(snapshot.missingKeyCount) missing")
 			} else {
-				Text("\(environmentKeys.count) keys")
+				Text("\(derived.environmentKeys.count) keys")
 				Text("·")
-				Text("\(environmentKeys.filter(snapshot.hasDrift(for:)).count) differ across environments")
+				Text("\(derived.environmentDriftingKeyCount) differ across environments")
 				Text("·")
 				Text("encrypted locally")
 			}
@@ -320,7 +305,16 @@ struct VaultContentView: View {
 	}
 
 	private func toggleRevealAll() {
-		let keys = mode == .matrix ? filteredKeys : environmentKeys
+		let derived = VaultContentDerivation(
+			project: project,
+			snapshot: snapshot,
+			selectedEnvironment: selectedEnvironment,
+			mode: mode,
+			filter: filter,
+			searchText: searchText,
+			revealedKeys: revealedKeys
+		)
+		let keys = mode == .matrix ? derived.filteredKeys : derived.environmentKeys
 		if Set(keys).isSubset(of: revealedKeys) {
 			revealedKeys.subtract(keys)
 		} else {

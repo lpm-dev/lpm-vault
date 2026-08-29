@@ -50,6 +50,76 @@ struct EnvFileImportTests {
 		} catch let error as EnvFileImportError {
 			#expect(error == .invalidUTF8)
 		}
+
+		let invalidCommentURL = try temporaryFile(
+			Data([0x23, 0x20, 0xFF, 0x0A]),
+			name: "invalid-comment.env"
+		)
+		do {
+			_ = try await service.load(at: invalidCommentURL)
+			Issue.record("Invalid UTF-8 hidden in a comment was accepted")
+		} catch let error as EnvFileImportError {
+			#expect(error == .invalidUTF8)
+		}
+	}
+
+	@Test("streaming worker preserves physical line numbers and CRLF multiline values")
+	func streamingWorkerParserCompatibility() async throws {
+		let compatible = Data(
+			"# comment\r\nDOUBLE=\"first\r\nsecond\"\r\nPLAIN=value\r\n".utf8
+		)
+		let compatibleURL = try temporaryFile(compatible, name: "compatible.env")
+		let service = EnvFileImportService()
+		let imported = try await service.load(at: compatibleURL)
+		#expect(imported.secrets["DOUBLE"] == "first\nsecond")
+		#expect(imported.secrets["PLAIN"] == "value")
+
+		let invalidURL = try temporaryFile(
+			Data("# comment\n\nBAD-NAME=value\n".utf8),
+			name: "invalid-line.env"
+		)
+		do {
+			_ = try await service.load(at: invalidURL)
+			Issue.record("The streaming worker accepted an invalid key")
+		} catch let error as EnvFileImportError {
+			#expect(error == .invalidVariableName(line: 3))
+		}
+
+		let collisionURL = try temporaryFile(
+			Data("# comment\nUPPER=one\nUpper=two\n".utf8),
+			name: "collision-line.env"
+		)
+		do {
+			_ = try await service.load(at: collisionURL)
+			Issue.record("The streaming worker accepted a case-only collision")
+		} catch let error as EnvFileImportError {
+			#expect(error == .caseInsensitiveCollision(
+				line: 3,
+				existingKey: "UPPER",
+				incomingKey: "Upper"
+			))
+		}
+	}
+
+	@Test("streaming worker enforces the exact input limit")
+	func streamingWorkerInputLimit() async throws {
+		let content = Data("KEY=value\n#padding".utf8)
+		let limits = EnvFileImportLimits(
+			maximumInputBytes: content.count,
+			maximumAssignments: 10,
+			maximumParsedBytes: 128
+		)
+		let service = EnvFileImportService(limits: limits)
+		let exactURL = try temporaryFile(content, name: "stream-exact.env")
+		let oversizedURL = try temporaryFile(content + Data("x".utf8), name: "stream-large.env")
+
+		#expect(try await service.load(at: exactURL).secrets == ["KEY": "value"])
+		do {
+			_ = try await service.load(at: oversizedURL)
+			Issue.record("The streaming worker accepted a file above its exact limit")
+		} catch let error as EnvFileImportError {
+			#expect(error == .tooLarge(limit: content.count))
+		}
 	}
 
 	@Test("FIFOs are rejected without occupying the import pool")

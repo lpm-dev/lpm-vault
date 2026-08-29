@@ -183,7 +183,7 @@ private struct VaultSecretEditor: View {
 	let value: String?
 	let isRevealed: Bool
 
-	@State private var draft: String
+	@State private var editDraft: VaultSecretEditDraft
 	@FocusState private var focused: Bool
 
 	init(
@@ -200,10 +200,12 @@ private struct VaultSecretEditor: View {
 		self.key = key
 		self.value = value
 		self.isRevealed = isRevealed
-		_draft = State(initialValue: value ?? "")
+		_editDraft = State(initialValue: VaultSecretEditDraft(value: value ?? ""))
 	}
 
-	private var isDirty: Bool { value != nil && draft != value }
+	private var draftBinding: Binding<String> {
+		Binding(get: { editDraft.draft }, set: { editDraft.draft = $0 })
+	}
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 10) {
@@ -216,10 +218,10 @@ private struct VaultSecretEditor: View {
 			} else {
 				Group {
 					if isRevealed {
-						TextField("Value", text: $draft, axis: .vertical)
+						TextField("Value", text: draftBinding, axis: .vertical)
 							.lineLimit(1...4)
 					} else {
-						SecureField("Value", text: $draft)
+						SecureField("Value", text: draftBinding)
 					}
 				}
 				.textFieldStyle(.plain)
@@ -233,10 +235,20 @@ private struct VaultSecretEditor: View {
 				.onSubmit { save() }
 
 				HStack(spacing: 6) {
-					VaultInspectorButton(title: "Save", filled: true, disabled: !isDirty, action: save)
-					VaultInspectorButton(title: "Revert", disabled: !isDirty) { draft = value ?? "" }
+					VaultInspectorButton(
+						title: "Save", filled: true,
+						disabled: !editDraft.canSave,
+						action: save
+					)
+					VaultInspectorButton(title: "Revert", disabled: !editDraft.canRevert) {
+						editDraft.revert()
+					}
 				}
-				if isDirty {
+				if editDraft.hasExternalConflict {
+					Text("This value changed outside the editor. Revert, then apply your edit again.")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.redText)
+				} else if editDraft.isDirty {
 					Text("Unsaved change in \(VaultProject.displayName(for: environment))")
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.orangeTintText)
@@ -245,15 +257,18 @@ private struct VaultSecretEditor: View {
 		}
 		.padding(.horizontal, 18)
 		.padding(.vertical, 14)
+		.onChange(of: value) { _, updated in
+			editDraft.receiveExternalValue(updated ?? "")
+		}
 	}
 
 	private func save() {
-		guard isDirty else { return }
+		guard editDraft.canSave else { return }
 		store.updateSecret(
 			in: projectID,
 			environment: environment,
 			key: key,
-			newValue: draft
+			newValue: editDraft.draft
 		)
 	}
 }

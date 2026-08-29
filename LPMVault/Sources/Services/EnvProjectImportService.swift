@@ -1,6 +1,7 @@
 import Foundation
 
 struct RemoteEnvProjectPayload: Sendable {
+	let vaultId: String
 	let environments: [String: [String: String]]
 	let version: Int
 	let keyCount: Int
@@ -19,7 +20,7 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 	private let syncService: SyncService
 
 	init(baseURL: URL) {
-		syncService = SyncService(baseURL: baseURL)
+		syncService = SyncService.shared(baseURL: baseURL)
 	}
 
 	func loadPersonal(authToken: String, vaultId: String) async throws -> RemoteEnvProjectPayload {
@@ -37,9 +38,12 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 		guard let version = result.version, version > 0 else {
 			throw EnvProjectImportError.invalidPayload("The cloud response has an invalid version.")
 		}
+		guard result.vaultId == vaultId else {
+			throw EnvProjectImportError.invalidPayload("The cloud response is for a different env project.")
+		}
 
 		do {
-			let decrypted = try VaultCrypto.decryptStableSync(
+			let decrypted = try VaultCrypto.decryptStableSyncData(
 				authToken: authToken,
 				encryptedBlob: blob,
 				wrappedKey: wrapped,
@@ -47,11 +51,9 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 				cryptoVersion: result.cryptoVersion ?? 1
 			)
 			try Task.checkCancellation()
-			guard let data = decrypted.plaintext.data(using: .utf8) else {
-				throw VaultCrypto.CryptoError.invalidUTF8
-			}
-			let merge = try EnvValidation.mergeRemotePayload(data, into: [:])
+			let merge = try EnvValidation.mergeRemotePayload(decrypted.plaintext, into: [:])
 			return RemoteEnvProjectPayload(
+				vaultId: vaultId,
 				environments: merge.environments,
 				version: version,
 				keyCount: merge.keyCount
@@ -110,7 +112,8 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 					"Your sharing key does not have access to this env project yet. Ask an organization admin to share it again."
 				)
 			}
-			guard let version = result.version,
+			guard result.vaultId == vaultId,
+				let version = result.version,
 				version > 0,
 				let contentKeyVersion = result.contentKeyVersion,
 				contentKeyVersion > 0,
@@ -137,6 +140,7 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 			try Task.checkCancellation()
 			let merge = try EnvValidation.mergeRemotePayload(data, into: [:])
 			return RemoteEnvProjectPayload(
+				vaultId: vaultId,
 				environments: merge.environments,
 				version: version,
 				keyCount: merge.keyCount

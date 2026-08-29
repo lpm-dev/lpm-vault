@@ -190,17 +190,115 @@ private actor EnvFileImportAdmission {
 
 enum EnvFileImportWorker {
 	static func load(at url: URL, limits: EnvFileImportLimits) throws -> ImportedEnvFile {
-		let data = try BoundedEnvFileReader.read(
+		var parser = StreamingEnvFileParser(limits: limits)
+		try BoundedEnvFileReader.forEachLine(
 			at: url,
 			maximumBytes: limits.maximumInputBytes
-		)
-		try Task.checkCancellation()
-		guard let content = String(data: data, encoding: .utf8) else {
-			throw EnvFileImportError.invalidUTF8
+		) { line, lineNumber in
+			try parser.consume(line, lineNumber: lineNumber)
 		}
-		let secrets = try EnvFileCodec.parse(content, limits: limits)
+		let secrets = try parser.finish()
 		guard !secrets.isEmpty else { throw EnvFileImportError.noValidSecrets }
 		return ImportedEnvFile(secrets: secrets)
+	}
+}
+
+private struct StreamingEnvFileParser {
+	let limits: EnvFileImportLimits
+	private var result: [String: String] = [:]
+	private var keysByFoldedName: [String: String] = [:]
+	private var parsedBytes = 0
+	private var assignmentCount = 0
+	private var pendingQuotedAssignment: String?
+	private var pendingAssignmentLine: Int?
+
+	init(limits: EnvFileImportLimits) {
+		self.limits = limits
+	}
+
+	mutating func consume(_ line: String, lineNumber: Int) throws {
+		try Task.checkCancellation()
+		if pendingQuotedAssignment != nil {
+			pendingQuotedAssignment?.append("\n")
+			pendingQuotedAssignment?.append(line)
+			guard let pendingQuotedAssignment,
+				!EnvFileCodec.hasUnterminatedQuotedValue(pendingQuotedAssignment)
+			else {
+				guard (pendingQuotedAssignment?.utf8.count ?? 0) <= limits.maximumParsedBytes else {
+					throw EnvFileImportError.parsedDataTooLarge(limit: limits.maximumParsedBytes)
+				}
+				return
+			}
+			let sourceLine = pendingAssignmentLine ?? lineNumber
+			self.pendingQuotedAssignment = nil
+			pendingAssignmentLine = nil
+			try merge(pendingQuotedAssignment, sourceLine: sourceLine)
+			return
+		}
+
+		if EnvFileCodec.hasUnterminatedQuotedValue(line) {
+			guard line.utf8.count <= limits.maximumParsedBytes else {
+				throw EnvFileImportError.parsedDataTooLarge(limit: limits.maximumParsedBytes)
+			}
+			pendingQuotedAssignment = line
+			pendingAssignmentLine = lineNumber
+			return
+		}
+		try merge(line, sourceLine: lineNumber)
+	}
+
+	mutating func finish() throws -> [String: String] {
+		if let pendingQuotedAssignment {
+			let sourceLine = pendingAssignmentLine ?? 1
+			self.pendingQuotedAssignment = nil
+			pendingAssignmentLine = nil
+			try merge(pendingQuotedAssignment, sourceLine: sourceLine)
+		}
+		return result
+	}
+
+	private mutating func merge(_ assignment: String, sourceLine: Int) throws {
+		let singleLineLimits = EnvFileImportLimits(
+			maximumInputBytes: limits.maximumInputBytes,
+			maximumAssignments: 1,
+			maximumParsedBytes: limits.maximumParsedBytes
+		)
+		let parsed: [String: String]
+		do {
+			parsed = try EnvFileCodec.parse(assignment, limits: singleLineLimits)
+		} catch EnvFileImportError.invalidVariableName(let relativeLine) {
+			throw EnvFileImportError.invalidVariableName(
+				line: sourceLine + max(0, relativeLine - 1)
+			)
+		} catch EnvFileImportError.caseInsensitiveCollision(
+			let relativeLine, let existingKey, let incomingKey
+		) {
+			throw EnvFileImportError.caseInsensitiveCollision(
+				line: sourceLine + max(0, relativeLine - 1),
+				existingKey: existingKey,
+				incomingKey: incomingKey
+			)
+		}
+		guard let (key, value) = parsed.first else { return }
+		assignmentCount += 1
+		guard assignmentCount <= limits.maximumAssignments else {
+			throw EnvFileImportError.tooManyAssignments(limit: limits.maximumAssignments)
+		}
+		let foldedKey = key.lowercased()
+		if let existingKey = keysByFoldedName[foldedKey], existingKey != key {
+			throw EnvFileImportError.caseInsensitiveCollision(
+				line: sourceLine,
+				existingKey: existingKey,
+				incomingKey: key
+			)
+		}
+		keysByFoldedName[foldedKey] = key
+		let oldBytes = result[key].map { key.utf8.count + $0.utf8.count } ?? 0
+		parsedBytes = parsedBytes - oldBytes + key.utf8.count + value.utf8.count
+		guard parsedBytes <= limits.maximumParsedBytes else {
+			throw EnvFileImportError.parsedDataTooLarge(limit: limits.maximumParsedBytes)
+		}
+		result[key] = value
 	}
 }
 
@@ -270,9 +368,136 @@ enum BoundedEnvFileReader {
 		}
 		return data
 	}
+
+	static func forEachLine(
+		at url: URL,
+		maximumBytes: Int,
+		_ body: (String, Int) throws -> Void
+	) throws {
+		guard url.isFileURL, maximumBytes >= 0, maximumBytes < Int.max else {
+			throw EnvFileImportError.readFailed
+		}
+		try Task.checkCancellation()
+		let descriptor = url.withUnsafeFileSystemRepresentation { path in
+			guard let path else { return Int32(-1) }
+			return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK)
+		}
+		guard descriptor >= 0 else {
+			if errno == ENOENT { throw EnvFileImportError.fileNotFound }
+			throw EnvFileImportError.readFailed
+		}
+		defer { _ = Darwin.close(descriptor) }
+
+		var metadata = stat()
+		guard Darwin.fstat(descriptor, &metadata) == 0 else {
+			throw EnvFileImportError.readFailed
+		}
+		guard (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+			throw EnvFileImportError.notRegularFile
+		}
+		guard metadata.st_size >= 0, metadata.st_size <= Int64(maximumBytes) else {
+			throw EnvFileImportError.tooLarge(limit: maximumBytes)
+		}
+
+		var totalBytes = 0
+		var lineNumber = 0
+		var line = Data()
+		line.reserveCapacity(256)
+		var ignoredLines = Data()
+		ignoredLines.reserveCapacity(chunkSize)
+		var buffer = [UInt8](repeating: 0, count: chunkSize)
+
+		func validateIgnoredLines() throws {
+			guard !ignoredLines.isEmpty else { return }
+			guard String(data: ignoredLines, encoding: .utf8) != nil else {
+				throw EnvFileImportError.invalidUTF8
+			}
+			ignoredLines.removeAll(keepingCapacity: true)
+		}
+
+		func emit(_ bytes: Data, terminatedByNewline: Bool) throws {
+			lineNumber += 1
+			var bytes = bytes
+			if terminatedByNewline, bytes.last == 0x0D { bytes.removeLast() }
+			if isIgnorableASCIILine(bytes) {
+				if bytes.count >= chunkSize {
+					try validateIgnoredLines()
+					guard String(data: bytes, encoding: .utf8) != nil else {
+						throw EnvFileImportError.invalidUTF8
+					}
+					return
+				}
+				ignoredLines.append(bytes)
+				if terminatedByNewline { ignoredLines.append(0x0A) }
+				if ignoredLines.count >= chunkSize { try validateIgnoredLines() }
+				return
+			}
+			try validateIgnoredLines()
+			guard let decoded = String(data: bytes, encoding: .utf8) else {
+				throw EnvFileImportError.invalidUTF8
+			}
+			try body(decoded, lineNumber)
+		}
+
+		while true {
+			try Task.checkCancellation()
+			let count = buffer.withUnsafeMutableBytes { bytes in
+				Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+			}
+			if count == 0 { break }
+			if count < 0 {
+				if errno == EINTR { continue }
+				throw EnvFileImportError.readFailed
+			}
+			totalBytes += count
+			guard totalBytes <= maximumBytes else {
+				throw EnvFileImportError.tooLarge(limit: maximumBytes)
+			}
+
+			var start = 0
+			for index in 0..<count where buffer[index] == 0x0A {
+				line.append(contentsOf: buffer[start..<index])
+				try emit(line, terminatedByNewline: true)
+				line.removeAll(keepingCapacity: true)
+				start = index + 1
+			}
+			if start < count { line.append(contentsOf: buffer[start..<count]) }
+		}
+		if !line.isEmpty {
+			try emit(line, terminatedByNewline: false)
+		}
+		try validateIgnoredLines()
+	}
+
+	private static func isIgnorableASCIILine(_ line: Data) -> Bool {
+		for byte in line {
+			switch byte {
+			case 0x20, 0x09, 0x0B, 0x0C, 0x0D:
+				continue
+			case 0x23:
+				return true
+			default:
+				return false
+			}
+		}
+		return true
+	}
 }
 
 enum EnvFileCodec {
+	static func hasUnterminatedQuotedValue(_ line: String) -> Bool {
+		let trimmed = line.trimmingCharacters(in: .whitespaces)
+		if trimmed.isEmpty || trimmed.hasPrefix("#") { return false }
+		let assignment = trimmed.hasPrefix("export ")
+			? String(trimmed.dropFirst("export ".count))
+			: trimmed
+		guard let equals = assignment.firstIndex(of: "=") else { return false }
+		let value = String(assignment[assignment.index(after: equals)...])
+			.trimmingLeadingWhitespace()
+		guard let quote = value.first, quote == "\"" || quote == "'" else { return false }
+		return closingQuote(in: String(value.dropFirst()), quote: quote) == nil
+	}
+
 	static func parse(
 		_ content: String,
 		limits: EnvFileImportLimits = .standard
@@ -335,22 +560,20 @@ enum EnvFileCodec {
 		return result
 	}
 
-	/// Matches the Rust vault exporter. Backslashes must be escaped before
-	/// quotes so the Rust-compatible importer preserves literal escape text.
+	/// Produces a lossless dotenv file whose values remain literal when sourced
+	/// by a POSIX shell. Double-quoted shell expansion characters are escaped.
 	static func format(_ secrets: [String: String]) -> String {
 		secrets.sorted { $0.key < $1.key }
 			.map { key, value in
-				if value.contains(" ") || value.contains("\"") || value.contains("'")
-					|| value.contains("#") || value.contains("\n") || value.contains("\r")
-				{
-					let escaped = value
-						.replacingOccurrences(of: "\\", with: "\\\\")
-						.replacingOccurrences(of: "\"", with: "\\\"")
-						.replacingOccurrences(of: "\n", with: "\\n")
-						.replacingOccurrences(of: "\r", with: "\\r")
-					return "\(key)=\"\(escaped)\""
-				}
-				return "\(key)=\(value)"
+				let escaped = value
+					.replacingOccurrences(of: "\\", with: "\\\\")
+					.replacingOccurrences(of: "\"", with: "\\\"")
+					.replacingOccurrences(of: "$", with: "\\$")
+					.replacingOccurrences(of: "`", with: "\\`")
+					.replacingOccurrences(of: "\n", with: "\\n")
+					.replacingOccurrences(of: "\r", with: "\\r")
+					.replacingOccurrences(of: "\t", with: "\\t")
+				return "\(key)=\"\(escaped)\""
 			}
 			.joined(separator: "\n") + "\n"
 	}
@@ -427,6 +650,8 @@ enum EnvFileCodec {
 			case "t": result.append("\t")
 			case "\"": result.append("\"")
 			case "\\": result.append("\\")
+			case "$": result.append("$")
+			case "`": result.append("`")
 			default:
 				result.append("\\")
 				result.append(escaped)
