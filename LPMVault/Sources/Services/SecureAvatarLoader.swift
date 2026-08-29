@@ -118,6 +118,63 @@ enum SecureAvatarLoader {
 	}
 }
 
+@MainActor
+final class SecureAvatarImageCache {
+	typealias Loader = @Sendable (URL) async throws -> NSImage
+
+	static let shared = SecureAvatarImageCache(loader: loadValidatedImage)
+
+	private let cache = NSCache<NSURL, NSImage>()
+	private let loader: Loader
+	private var inFlight: [URL: (id: UUID, task: Task<NSImage, Error>)] = [:]
+
+	init(
+		maximumCost: Int = 16 * 1024 * 1024,
+		maximumCount: Int = 64,
+		loader: @escaping Loader
+	) {
+		self.loader = loader
+		cache.totalCostLimit = maximumCost
+		cache.countLimit = maximumCount
+	}
+
+	func image(for url: URL) async throws -> NSImage {
+		if let cached = cache.object(forKey: url as NSURL) { return cached }
+		if let pending = inFlight[url] { return try await pending.task.value }
+
+		let id = UUID()
+		let loader = self.loader
+		let task = Task { try await loader(url) }
+		inFlight[url] = (id, task)
+		do {
+			let image = try await task.value
+			if inFlight[url]?.id == id { inFlight.removeValue(forKey: url) }
+			cache.setObject(image, forKey: url as NSURL, cost: Self.pixelCost(image))
+			return image
+		} catch {
+			if inFlight[url]?.id == id { inFlight.removeValue(forKey: url) }
+			throw error
+		}
+	}
+
+	private static func loadValidatedImage(_ url: URL) async throws -> NSImage {
+		let data = try await SecureAvatarLoader.load(url)
+		return try await Task.detached(priority: .utility) {
+			guard let image = NSImage(data: data) else {
+				throw URLError(.cannotDecodeContentData)
+			}
+			return image
+		}.value
+	}
+
+	private static func pixelCost(_ image: NSImage) -> Int {
+		let pixels = image.representations.reduce(0) { current, representation in
+			max(current, representation.pixelsWide * representation.pixelsHigh)
+		}
+		return max(1, pixels) * 4
+	}
+}
+
 struct SecureAvatarImage<Placeholder: View>: View {
 	let urlString: String?
 	@ViewBuilder let placeholder: () -> Placeholder
@@ -135,9 +192,9 @@ struct SecureAvatarImage<Placeholder: View>: View {
 			image = nil
 			guard let url = AvatarURLPolicy.validatedURL(urlString) else { return }
 			do {
-				let data = try await SecureAvatarLoader.load(url)
+				let loaded = try await SecureAvatarImageCache.shared.image(for: url)
 				try Task.checkCancellation()
-				image = NSImage(data: data)
+				image = loaded
 			} catch {
 				image = nil
 			}

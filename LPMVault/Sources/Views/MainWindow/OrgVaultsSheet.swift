@@ -231,24 +231,6 @@ struct OrgVaultsSheet: View {
 	}
 
 	private func formatTimeAgo(_ iso: String) -> String {
-		let formatters: [ISO8601DateFormatter] = {
-			let withFrac = ISO8601DateFormatter()
-			withFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-			let plain = ISO8601DateFormatter()
-			return [withFrac, plain]
-		}()
-
-		for fmt in formatters {
-			if let date = fmt.date(from: iso) {
-				let seconds = Int(-date.timeIntervalSinceNow)
-				if seconds < 60 { return "just now" }
-				let minutes = seconds / 60
-				if minutes < 60 { return "\(minutes)m ago" }
-				let hours = minutes / 60
-				if hours < 24 { return "\(hours)h ago" }
-				return "\(hours / 24)d ago"
-			}
-		}
-		return iso
+		RelativeTimestampFormatter.string(fromRFC3339: iso)
 	}
 }

@@ -315,60 +315,6 @@ struct OrgKeyTrust: Codable {
 		}
 	}
 
-	// MARK: - Keychain Persistence
-
-	private static let service = VaultConstants.keychainService
-
-	/// Load trusted fingerprints for an org from Keychain.
-	static func load(orgSlug: String) -> OrgKeyTrust {
-		let account = "__org_keys__\(orgSlug)"
-		let query: [String: Any] = [
-			kSecClass as String: kSecClassGenericPassword,
-			kSecAttrService as String: service,
-			kSecAttrAccount as String: account,
-			kSecReturnData as String: true,
-			kSecMatchLimit as String: kSecMatchLimitOne,
-		]
-
-		var result: AnyObject?
-		let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-		guard status == errSecSuccess,
-			let data = result as? Data,
-			let trust = try? JSONDecoder().decode(OrgKeyTrust.self, from: data)
-		else {
-			return OrgKeyTrust()
-		}
-		return trust
-	}
-
-	/// Save trusted fingerprints for an org to Keychain.
-	func save(orgSlug: String) {
-		let account = "__org_keys__\(orgSlug)"
-		guard let data = try? JSONEncoder().encode(self) else { return }
-
-		let searchQuery: [String: Any] = [
-			kSecClass as String: kSecClassGenericPassword,
-			kSecAttrService as String: Self.service,
-			kSecAttrAccount as String: account,
-		]
-
-		let updateAttrs: [String: Any] = [
-			kSecValueData as String: data
-		]
-
-		let updateStatus = SecItemUpdate(searchQuery as CFDictionary, updateAttrs as CFDictionary)
-		if updateStatus == errSecItemNotFound {
-			let addQuery: [String: Any] = [
-				kSecClass as String: kSecClassGenericPassword,
-				kSecAttrService as String: Self.service,
-				kSecAttrAccount as String: account,
-				kSecValueData as String: data,
-				kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-			]
-			SecItemAdd(addQuery as CFDictionary, nil)
-		}
-	}
 }
 
 // MARK: - App Environment
@@ -455,15 +401,19 @@ final class VaultStore {
 
 	var projects: [VaultProject] = [] {
 		didSet {
-			var snapshots: [String: VaultWorkspaceSnapshot] = [:]
+			let previous = Dictionary(uniqueKeysWithValues: oldValue.map { ($0.id, $0) })
+			let currentIDs = Set(projects.map(\.id))
+			var snapshots = workspaceSnapshots.filter { currentIDs.contains($0.key) }
 			snapshots.reserveCapacity(projects.count)
-			for project in projects {
+			for project in projects where previous[project.id] != project {
 				snapshots[project.id] = VaultWorkspaceSnapshot(project: project)
+				workspaceSnapshotBuildCount += 1
 			}
 			workspaceSnapshots = snapshots
 		}
 	}
 	private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
+	private(set) var workspaceSnapshotBuildCount = 0
 	var selectedProjectId: String? {
 		didSet {
 			guard oldValue != selectedProjectId else { return }
@@ -606,11 +556,15 @@ final class VaultStore {
 
 	/// Filtered vaults for search.
 	var filteredVaults: [VaultProject] {
-		guard !searchQuery.isEmpty else { return activeVaults }
-		let query = searchQuery.lowercased()
+		visibleVaults(matching: searchQuery)
+	}
+
+	func visibleVaults(matching search: String) -> [VaultProject] {
+		let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		guard !query.isEmpty else { return activeVaults }
 		return activeVaults.filter { project in
 			project.name.lowercased().contains(query)
-				|| project.secrets.keys.contains { $0.lowercased().contains(query) }
+				|| workspaceSnapshots[project.id]?.normalizedSearchIndex.contains(query) == true
 		}
 	}
 
@@ -976,9 +930,6 @@ final class VaultStore {
 
 			switch commit {
 			case .success(let committed):
-				if Task.isCancelled {
-					return .failure(.cancelled)
-				}
 				// A lock that raced the non-cancellable commit must not put
 				// decrypted values back into memory. Unlock will reload them.
 				guard sessionGeneration == vaultSessionGeneration else {
@@ -1052,26 +1003,24 @@ final class VaultStore {
 
 	/// Create a new vault with just a name (no folder needed).
 	/// If orgSlug is provided, immediately shares with that org.
-	func createVault(name: String, orgSlug: String? = nil) {
+	@discardableResult
+	func createVault(name: String, orgSlug: String? = nil) async -> Bool {
 		let vaultId = UUID().uuidString.lowercased()
 		let environments: [String: [String: String]] = ["default": [:]]
 
-		Task { [weak self] in
-			guard let self,
-				await addProjectWithVaultId(
-					vaultId: vaultId,
-					name: name,
-					path: "",
-					environments: environments
-				)
-			else { return }
+		guard await addProjectWithVaultId(
+			vaultId: vaultId,
+			name: name,
+			path: "",
+			environments: environments,
+			orgSlug: orgSlug
+		) else { return false }
 
-			if let slug = orgSlug {
-				guard await associateVaultWithOrg(vaultId: vaultId, orgSlug: slug) else { return }
-				openProject(id: vaultId)
-				await pushToOrg(orgSlug: slug)
-			}
+		if let slug = orgSlug {
+			openProject(id: vaultId)
+			await pushToOrg(orgSlug: slug)
 		}
+		return true
 	}
 
 	/// Associate a vault with an org (for column 2 filtering).
@@ -1094,7 +1043,8 @@ final class VaultStore {
 		vaultId: String,
 		name: String,
 		path: String,
-		environments: [String: [String: String]]
+		environments: [String: [String: String]],
+		orgSlug: String? = nil
 	) async -> Bool {
 		invalidateProjectLoad()
 		guard EnvValidation.isSafeVaultId(vaultId) else {
@@ -1108,15 +1058,17 @@ final class VaultStore {
 		let project = VaultProject(id: vaultId, name: name, path: path, environments: environments)
 
 		// Run Keychain write off main thread to prevent UI freeze
-		let result = await persistence.save(project)
+		let result = await persistence.createProject(project, orgSlug: orgSlug)
 		switch result {
-		case .success, .successWithWarning:
+		case .success(let committed):
 			projects.append(project)
 			projects.sort {
 				$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
 			}
+			vaultOrgAssociations = committed.orgAssociations
 			openProject(id: vaultId)
 			writeLpmJson(vaultId: vaultId, projectPath: path)
+			error = committed.warning
 			return true
 		case .failure(let err):
 			error = err.description
@@ -1202,15 +1154,17 @@ final class VaultStore {
 	func removeFromSidebar(_ project: VaultProject) {
 		cancelLocalEnvImports(projectId: project.id)
 		invalidateProjectLoad()
-		// Update UI immediately
-		projects.removeAll { $0.id == project.id }
-		if selectedProjectId == project.id {
-			selectedProjectId = activeVaults.first?.id
-			normalizeSelectedEnvironment()
-		}
-		// Keychain update off main thread
-		Task { [persistence] in
-			await persistence.removeFromSidebar(vaultId: project.id)
+		Task { [weak self, persistence] in
+			guard await persistence.removeFromSidebar(vaultId: project.id) else {
+				self?.error = "Could not remove the env project from the protected sidebar index."
+				return
+			}
+			guard let self else { return }
+			projects.removeAll { $0.id == project.id }
+			if selectedProjectId == project.id {
+				selectedProjectId = activeVaults.first?.id
+				normalizeSelectedEnvironment()
+			}
 		}
 	}
 
@@ -1796,6 +1750,11 @@ final class VaultStore {
 				self.error = nil
 			case .failure(.cancelled):
 				break
+			case .failure(.unauthorized):
+				self.currentUser = nil
+				self.personalTokens = []
+				self.orgTokens = [:]
+				self.error = LPMAPIError.unauthorized.localizedDescription
 			case .failure(let loadError):
 				// Keep the prior coherent inventory visible on transient or
 				// per-organization failure; never publish a partial snapshot.
@@ -2000,8 +1959,10 @@ final class VaultStore {
 		biometricService.resetCache()
 		ClipboardManager.shared.clearClipboard()
 		// Clear decrypted secrets from memory to reduce exposure window
-		for i in projects.indices {
-			projects[i].environments = projects[i].environments.mapValues { _ in [:] }
+		projects = projects.map { project in
+			var cleared = project
+			cleared.environments = cleared.environments.mapValues { _ in [:] }
+			return cleared
 		}
 	}
 
@@ -2472,7 +2433,10 @@ final class VaultStore {
 			}
 
 			// 1. Require the server's registered sharing key to match this device.
-			let (_, pubKey) = try sharingKeypairProvider()
+			let keypairProvider = sharingKeypairProvider
+			let (_, pubKey) = try await Task.detached(priority: .userInitiated) {
+				try keypairProvider()
+			}.value
 			let pubB64 = pubKey.base64EncodedString()
 			let serverKey = await syncService.getMyPublicKey(authToken: authToken)
 			guard await hasCurrentSyncAuth(authority) else {
@@ -2520,7 +2484,14 @@ final class VaultStore {
 			}
 
 			// 2b. Strict key verification — block on new or changed keys
-			let orgTrust = OrgKeyTrust.load(orgSlug: orgSlug)
+			let orgTrust: OrgKeyTrust
+			switch await persistence.loadOrgTrust(orgSlug: orgSlug) {
+			case .success(let loaded): orgTrust = loaded
+			case .failure(let trustError):
+				throw VaultSyncError(
+					"Could not load organization key trust. \(trustError.description)"
+				)
+			}
 			let membersForVerification: [(id: String, publicKey: Data)] = membersWithKeys.compactMap
 			{
 				member in
@@ -2637,7 +2608,10 @@ final class VaultStore {
 
 		do {
 			let syncService = orgSyncServiceFactory(pending.environment.baseURL)
-			let (_, localPublicKey) = try sharingKeypairProvider()
+			let keypairProvider = sharingKeypairProvider
+			let (_, localPublicKey) = try await Task.detached(priority: .userInitiated) {
+				try keypairProvider()
+			}.value
 			let serverKey = await syncService.getMyPublicKey(authToken: pending.authToken)
 			guard await hasCurrentSyncAuth(authority) else {
 				finishSyncIfOwned(authority)
@@ -2687,7 +2661,15 @@ final class VaultStore {
 			else {
 				throw VaultSyncError("Organization sharing-key approval is no longer complete. Review and retry.")
 			}
-			orgTrust.save(orgSlug: pending.orgSlug)
+			guard await persistence.saveOrgTrust(orgTrust, orgSlug: pending.orgSlug) else {
+				throw VaultSyncError(
+					"Could not save organization key trust; the approved push was not started."
+				)
+			}
+			guard await hasCurrentSyncAuth(authority) else {
+				finishSyncIfOwned(authority)
+				return
+			}
 
 			_ = try await executeOrgPush(
 				project: project,

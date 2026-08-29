@@ -412,6 +412,30 @@ struct CurrentContractTests {
 		#expect(error == .invalidResponse)
 	}
 
+	@Test("sync push and pull reject unsigned non-success responses with success-shaped JSON")
+	func syncRejectsNonSuccessPayloads() async {
+		let body = #"{"version":7,"encryptedBlob":"ciphertext","wrappedKey":"wrapped"}"#
+		let service = makeSyncService { _ in
+			MockResponse(
+				statusCode: 409,
+				body: Data(body.utf8),
+				headers: ["Content-Type": "application/json"]
+			)
+		}
+
+		let pushed = await service.push(
+			authToken: "session-token",
+			vaultId: "vault-1",
+			encryptedBlob: "request-ciphertext",
+			wrappedKey: "request-wrapped",
+			expectedVersion: 6
+		)
+		let pulled = await service.pull(authToken: "session-token", vaultId: "vault-1")
+
+		#expect(pushed == nil)
+		#expect(pulled == nil)
+	}
+
 	private func makeAPIService(
 		recorder: RequestRecorder = RequestRecorder(),
 		handler: @escaping MockURLProtocol.Handler

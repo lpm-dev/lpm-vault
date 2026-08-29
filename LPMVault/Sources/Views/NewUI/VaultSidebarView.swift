@@ -23,12 +23,7 @@ struct VaultSidebarView: View {
 	@State private var collapsedProjectIds: Set<String> = []
 
 	private var visibleProjects: [VaultProject] {
-		let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-		guard !query.isEmpty else { return store.activeVaults }
-		return store.activeVaults.filter { project in
-			project.name.lowercased().contains(query)
-				|| (snapshots[project.id]?.allSecretKeys ?? []).contains { $0.lowercased().contains(query) }
-		}
+		store.visibleVaults(matching: searchText)
 	}
 
 	var body: some View {

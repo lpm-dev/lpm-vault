@@ -132,6 +132,10 @@ protocol KeychainServiceProtocol: Sendable {
 		projectPath: String,
 		environments: [String: [String: String]]
 	) -> KeychainResult
+	func updateEnvironments(
+		vaultId: String,
+		environments: [String: [String: String]]
+	) -> KeychainResult
 	func createEnvironments(
 		vaultId: String,
 		projectName: String,
@@ -393,6 +397,33 @@ final class SharedKeychainStore: @unchecked Sendable {
 				)
 			}
 			return values
+		}
+	}
+
+	func map<T>(
+		accounts: [String],
+		_ transform: (String, Data?) throws -> T
+	) throws -> [T] {
+		try VaultKeychainTransactionLock.withLock {
+			var results: [T] = []
+			results.reserveCapacity(accounts.count)
+			if mode == .legacyTesting {
+				for account in accounts {
+					let data = try backend.read(
+						service: service, account: account, location: .legacy)
+					results.append(try transform(account, data))
+				}
+				return results
+			}
+			let compatibilityActive = try legacyCompatibilityActive()
+			for account in accounts {
+				let data = try readReconciled(
+					account: account,
+					compatibilityActive: compatibilityActive
+				)
+				results.append(try transform(account, data))
+			}
+			return results
 		}
 	}
 
@@ -663,8 +694,15 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	}
 
 	#if DEBUG
-		init(legacyTestingService: String) {
-			self.store = SharedKeychainStore(service: legacyTestingService, mode: .legacyTesting)
+		init(
+			legacyTestingService: String,
+			backend: any KeychainStoreBackend = SecurityKeychainStoreBackend()
+		) {
+			self.store = SharedKeychainStore(
+				service: legacyTestingService,
+				backend: backend,
+				mode: .legacyTesting
+			)
 		}
 	#endif
 
@@ -693,9 +731,9 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		do {
 			return try VaultKeychainTransactionLock.withLock {
 				let index = try readIndexThrowing()
-				let stored = try store.read(accounts: index.map(\.id))
-				let projects = try index.map { entry in
-					guard let data = stored[entry.id] ?? nil else {
+				let entries = Dictionary(uniqueKeysWithValues: index.map { ($0.id, $0) })
+				let projects = try store.map(accounts: index.map(\.id)) { account, data in
+					guard let entry = entries[account], let data else {
 						throw KeychainStoreError.status(
 							operation: "read indexed vault data", code: errSecItemNotFound)
 					}
@@ -768,12 +806,44 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		guard EnvValidation.isSafeVaultId(vaultId) else {
 			return .failure(.accessDenied)
 		}
+		let environments = normalizedEnvironments(environments)
+		guard EnvValidation.areValidEnvironments(environments) else {
+			return .failure(.encodingFailed)
+		}
 		let wrapper = EnvironmentsWrapper(environments: environments)
 		guard let data = try? JSONEncoder().encode(wrapper) else {
 			return .failure(.encodingFailed)
 		}
 		return saveData(
 			vaultId: vaultId, projectName: projectName, projectPath: projectPath, data: data)
+	}
+
+	/// Updates only the protected vault payload. Callers must already have
+	/// verified that the indexed name and path are unchanged.
+	func updateEnvironments(
+		vaultId: String,
+		environments: [String: [String: String]]
+	) -> KeychainResult {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		let environments = normalizedEnvironments(environments)
+		guard EnvValidation.areValidEnvironments(environments),
+			let data = try? JSONEncoder().encode(EnvironmentsWrapper(environments: environments))
+		else { return .failure(.encodingFailed) }
+		guard data.count <= VaultConstants.maxVaultSizeWarning else {
+			return .failure(.dataTooLarge(data.count))
+		}
+		do {
+			try writeItemThrowing(account: vaultId, data: data)
+			if data.count > VaultConstants.maxVaultSizeWarning * 9 / 10 {
+				return .successWithWarning(
+					"Env project is approaching size limit (\(data.count) bytes)")
+			}
+			return .success
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
 	}
 
 	/// Creates a new env project without ever updating an existing Keychain
@@ -785,6 +855,10 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		environments: [String: [String: String]]
 	) -> KeychainResult {
 		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		let environments = normalizedEnvironments(environments)
+		guard EnvValidation.areValidEnvironments(environments) else {
+			return .failure(.encodingFailed)
+		}
 		let wrapper = EnvironmentsWrapper(environments: environments)
 		guard let data = try? JSONEncoder().encode(wrapper) else {
 			return .failure(.encodingFailed)
@@ -1068,11 +1142,27 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	private func decodeEnvironments(_ data: Data) throws -> [String: [String: String]] {
 		if let wrapper = try? JSONDecoder().decode(EnvironmentsWrapper.self, from: data) {
-			return wrapper.environments
+			let environments = normalizedEnvironments(wrapper.environments)
+			guard EnvValidation.areValidEnvironments(environments) else {
+				throw KeychainStoreError.status(
+					operation: "validate vault data", code: errSecDecode)
+			}
+			return environments
 		}
 		if let flat = try? JSONDecoder().decode([String: String].self, from: data) {
-			return ["default": flat]
+			let environments = ["default": flat]
+			guard EnvValidation.areValidEnvironments(environments) else {
+				throw KeychainStoreError.status(
+					operation: "validate legacy vault data", code: errSecDecode)
+			}
+			return environments
 		}
 		throw KeychainStoreError.status(operation: "decode vault data", code: errSecDecode)
+	}
+
+	private func normalizedEnvironments(
+		_ environments: [String: [String: String]]
+	) -> [String: [String: String]] {
+		environments.isEmpty ? ["default": [:]] : environments
 	}
 }
