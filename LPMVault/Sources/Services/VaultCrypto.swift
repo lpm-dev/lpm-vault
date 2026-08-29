@@ -460,6 +460,8 @@ enum VaultCrypto {
 	private static let maximumWrappingKeyFileBytes = 4 * 1024
 	private static let x25519KeyStore = SharedKeychainStore(service: x25519Service)
 	private static let wrappingKeyStore = SharedKeychainStore(service: wrappingKeyService)
+	private static let cliSupportsProtectedOnlyCutover =
+		LPMCLICompatibility.installedCLIIsCompatible()
 
 	enum StableWrappingKeyFileState: Equatable {
 		case absent
@@ -490,6 +492,10 @@ enum VaultCrypto {
 					)
 				}
 			}
+			try completeProtectedOnlyCutover(
+				key: key,
+				fileState: fileState
+			)
 			return SymmetricKey(data: key)
 		}
 		if case .valid(let key) = fileState {
@@ -499,6 +505,10 @@ enum VaultCrypto {
 					"The protected and legacy-file vault wrapping keys conflict; both were preserved."
 				)
 			}
+			try completeProtectedOnlyCutover(
+				key: stored,
+				fileState: fileState
+			)
 			return SymmetricKey(data: key)
 		}
 		if case .unsafe = fileState {
@@ -512,7 +522,31 @@ enum VaultCrypto {
 			throw CryptoError.encryptionFailed
 		}
 		let key = Data(bytes)
-		return SymmetricKey(data: try addOrReadStableWrappingKey(key))
+		let stored = try addOrReadStableWrappingKey(key)
+		try completeProtectedOnlyCutover(key: stored, fileState: fileState)
+		return SymmetricKey(data: stored)
+	}
+
+	private static func completeProtectedOnlyCutover(
+		key: Data,
+		fileState: StableWrappingKeyFileState
+	) throws {
+		guard cliSupportsProtectedOnlyCutover else { return }
+		switch fileState {
+		case .absent:
+			break
+		case .valid:
+			try deleteLegacyWrappingKeyFile(
+				at: wrappingKeyFileURL(),
+				expectedKey: key
+			)
+		case .unsafe:
+			throw CryptoError.invalidStoredKey(
+				"A legacy vault wrapping-key file exists but is not a secure valid key; it was preserved."
+			)
+		}
+		try wrappingKeyStore.cutOverToProtectedOnly()
+		try x25519KeyStore.cutOverToProtectedOnly()
 	}
 
 	private static func readStableWrappingKeyFromKeychain() throws -> Data? {
@@ -599,6 +633,108 @@ enum VaultCrypto {
 			let key = decodeWrappingKey(hex.trimmingCharacters(in: .whitespacesAndNewlines))
 		else { return .unsafe }
 		return .valid(key)
+	}
+
+	static func deleteLegacyWrappingKeyFile(
+		at url: URL,
+		expectedKey: Data
+	) throws {
+		guard url.isFileURL, expectedKey.count == 32 else {
+			throw CryptoError.invalidStoredKey(
+				"The legacy vault wrapping-key file could not be verified."
+			)
+		}
+		let directoryURL = url.deletingLastPathComponent()
+		let directory = directoryURL.withUnsafeFileSystemRepresentation { path in
+			guard let path else { return Int32(-1) }
+			return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+		}
+		guard directory >= 0 else {
+			throw CryptoError.invalidStoredKey(
+				"The legacy vault wrapping-key directory could not be opened safely."
+			)
+		}
+		defer { _ = Darwin.close(directory) }
+
+		let name = url.lastPathComponent
+		let descriptor = name.withCString {
+			Darwin.openat(
+				directory,
+				$0,
+				O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW
+			)
+		}
+		guard descriptor >= 0 else {
+			throw CryptoError.invalidStoredKey(
+				"The legacy vault wrapping-key file changed before deletion and was preserved."
+			)
+		}
+		defer { _ = Darwin.close(descriptor) }
+
+		var openedMetadata = stat()
+		guard Darwin.fstat(descriptor, &openedMetadata) == 0,
+			(openedMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+			openedMetadata.st_uid == Darwin.geteuid(),
+			(openedMetadata.st_mode & 0o077) == 0,
+			openedMetadata.st_size >= 0,
+			openedMetadata.st_size <= Int64(maximumWrappingKeyFileBytes)
+		else {
+			throw CryptoError.invalidStoredKey(
+				"The legacy vault wrapping-key file is unsafe and was preserved."
+			)
+		}
+
+		var encoded = Data()
+		encoded.reserveCapacity(Int(openedMetadata.st_size))
+		var buffer = [UInt8](repeating: 0, count: 512)
+		while true {
+			let count = buffer.withUnsafeMutableBytes { bytes in
+				Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+			}
+			if count == 0 { break }
+			if count < 0 {
+				if errno == EINTR { continue }
+				throw CryptoError.invalidStoredKey(
+					"The legacy vault wrapping-key file could not be verified and was preserved."
+				)
+			}
+			guard encoded.count + count <= maximumWrappingKeyFileBytes else {
+				throw CryptoError.invalidStoredKey(
+					"The legacy vault wrapping-key file is oversized and was preserved."
+				)
+			}
+			encoded.append(buffer, count: count)
+		}
+		guard let hex = String(data: encoded, encoding: .utf8),
+			decodeWrappingKey(
+				hex.trimmingCharacters(in: .whitespacesAndNewlines)
+			) == expectedKey
+		else {
+			throw CryptoError.invalidStoredKey(
+				"The protected and legacy-file vault wrapping keys conflict; both were preserved."
+			)
+		}
+
+		var pathMetadata = stat()
+		let pathStatus = name.withCString {
+			Darwin.fstatat(directory, $0, &pathMetadata, AT_SYMLINK_NOFOLLOW)
+		}
+		guard pathStatus == 0,
+			(pathMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+			pathMetadata.st_dev == openedMetadata.st_dev,
+			pathMetadata.st_ino == openedMetadata.st_ino
+		else {
+			throw CryptoError.invalidStoredKey(
+				"The legacy vault wrapping-key file changed before deletion and was preserved."
+			)
+		}
+		guard name.withCString({ Darwin.unlinkat(directory, $0, 0) }) == 0,
+			Darwin.fsync(directory) == 0
+		else {
+			throw CryptoError.invalidStoredKey(
+				"The legacy vault wrapping-key file could not be deleted durably."
+			)
+		}
 	}
 
 	private static func wrappingKeyFileURL() -> URL {

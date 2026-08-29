@@ -50,6 +50,21 @@ enum AuthSessionRefreshError: Error, LocalizedError, Sendable {
 	}
 }
 
+struct AuthSessionAuthorityGeneration: Equatable, Sendable {
+	let device: UInt64
+	let inode: UInt64
+	let size: Int64
+	let modifiedSeconds: Int64
+	let modifiedNanoseconds: Int64
+	let changedSeconds: Int64
+	let changedNanoseconds: Int64
+}
+
+struct AuthSessionAuthorization: Sendable {
+	let token: String
+	let authorityGeneration: AuthSessionAuthorityGeneration
+}
+
 protocol AuthCredentialBackend: Sendable {
 	func read(account: String) throws -> String?
 	func write(_ credential: String, account: String) throws
@@ -353,6 +368,34 @@ struct AuthSessionCoordinator: Sendable {
 		}
 		try Task.checkCancellation()
 		return token
+	}
+
+	/// Returns one validated access credential bound to the atomic authority
+	/// file generation that authorized it. Later suspension checks can compare
+	/// this identity with one lstat(2), without reopening Keychain or parsing
+	/// the complete authority map.
+	func currentAccessAuthorization(
+		registryURL: String,
+		baseURL: URL
+	) async throws -> AuthSessionAuthorization? {
+		_ = try await currentAccessToken(registryURL: registryURL, baseURL: baseURL)
+		return try await withCredentialStoreLock {
+			guard let token = try readCredentialUnlocked(
+				.access,
+				registryURL: registryURL
+			) else { return nil }
+			return AuthSessionAuthorization(
+				token: token,
+				authorityGeneration: try authorityGeneration()
+			)
+		}
+	}
+
+	func isAuthorityGenerationCurrent(
+		_ generation: AuthSessionAuthorityGeneration
+	) -> Bool {
+		guard let current = try? authorityGeneration() else { return false }
+		return current == generation
 	}
 
 	func persist(_ credentials: AuthSessionCredentials, registryURL: String) async throws {
@@ -732,6 +775,35 @@ struct AuthSessionCoordinator: Sendable {
 				"Credential-authority metadata could not be committed."
 			)
 		}
+	}
+
+	private func authorityGeneration() throws -> AuthSessionAuthorityGeneration {
+		var metadata = stat()
+		guard Darwin.lstat(authorityURL.path, &metadata) == 0 else {
+			throw AuthSessionCoordinatorError.stateFile(
+				"Credential-authority metadata is unavailable."
+			)
+		}
+		guard (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+			metadata.st_uid == Darwin.geteuid(),
+			metadata.st_nlink == 1,
+			(metadata.st_mode & 0o077) == 0,
+			metadata.st_size > 0,
+			metadata.st_size <= Self.stateFileSizeLimit
+		else {
+			throw AuthSessionCoordinatorError.stateFile(
+				"Credential-authority metadata is not a secure bounded regular file."
+			)
+		}
+		return AuthSessionAuthorityGeneration(
+			device: UInt64(metadata.st_dev),
+			inode: UInt64(metadata.st_ino),
+			size: metadata.st_size,
+			modifiedSeconds: Int64(metadata.st_mtimespec.tv_sec),
+			modifiedNanoseconds: Int64(metadata.st_mtimespec.tv_nsec),
+			changedSeconds: Int64(metadata.st_ctimespec.tv_sec),
+			changedNanoseconds: Int64(metadata.st_ctimespec.tv_nsec)
+		)
 	}
 
 	private func readExpiryRecordsChecked() throws -> [String: [String: Any]] {

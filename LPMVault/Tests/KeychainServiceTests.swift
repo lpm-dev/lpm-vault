@@ -295,8 +295,10 @@ struct SharedKeychainMigrationTests {
 		var legacy: [String: Data] = [:]
 		var corruptSharedWrites = false
 		var rejectLegacyDelete = false
+		var rejectLegacyDeleteAccount: String?
 		var rejectSharedDelete = false
 		var rejectSharedReads = false
+		var rejectCutoverMarkerWrite = false
 		var sharedWriteFailuresRemaining = 0
 		var sharedValueInsertedBeforeAdd: Data?
 		var sharedValueUpdatedAfterAdd: Data?
@@ -304,12 +306,20 @@ struct SharedKeychainMigrationTests {
 		var legacyValueUpdatedOnSharedFailure: Data?
 		var sharedReadCounts: [String: Int] = [:]
 		var legacyReadCounts: [String: Int] = [:]
+		var events: [String] = []
 
 		func readCount(account: String, location: KeychainStoreLocation) -> Int {
 			switch location {
 			case .shared: sharedReadCounts[account, default: 0]
 			case .legacy: legacyReadCounts[account, default: 0]
 			}
+		}
+
+		func accounts(
+			service: String,
+			location: KeychainStoreLocation
+		) throws -> [String] {
+			Array(location == .shared ? shared.keys : legacy.keys).sorted()
 		}
 
 		func read(service: String, account: String, location: KeychainStoreLocation) throws -> Data?
@@ -330,6 +340,13 @@ struct SharedKeychainMigrationTests {
 			data: Data,
 			location: KeychainStoreLocation
 		) throws {
+			if location == .shared,
+				account == "__legacy_keychain_cutover_v1__",
+				rejectCutoverMarkerWrite
+			{
+				throw KeychainStoreError.status(operation: "write", code: errSecNotAvailable)
+			}
+			events.append("write:\(location):\(account)")
 			if location == .shared {
 				if sharedWriteFailuresRemaining > 0 {
 					sharedWriteFailuresRemaining -= 1
@@ -355,6 +372,13 @@ struct SharedKeychainMigrationTests {
 			data: Data,
 			location: KeychainStoreLocation
 		) throws {
+			if location == .shared,
+				account == "__legacy_keychain_cutover_v1__",
+				rejectCutoverMarkerWrite
+			{
+				throw KeychainStoreError.status(operation: "add", code: errSecNotAvailable)
+			}
+			events.append("add:\(location):\(account)")
 			if location == .shared, let concurrent = sharedValueInsertedBeforeAdd {
 				sharedValueInsertedBeforeAdd = nil
 				shared[account] = concurrent
@@ -376,15 +400,19 @@ struct SharedKeychainMigrationTests {
 			account: String,
 			location: KeychainStoreLocation
 		) throws -> Bool {
-			if location == .legacy, rejectLegacyDelete {
+			if location == .legacy,
+				rejectLegacyDelete || rejectLegacyDeleteAccount == account
+			{
 				throw KeychainStoreError.status(operation: "delete", code: errSecAuthFailed)
 			}
 			if location == .shared, rejectSharedDelete {
 				throw KeychainStoreError.status(operation: "delete", code: errSecNotAvailable)
 			}
 			if location == .shared {
+				events.append("delete:shared:\(account)")
 				return shared.removeValue(forKey: account) != nil
 			}
+			events.append("delete:legacy:\(account)")
 			return legacy.removeValue(forKey: account) != nil
 		}
 	}
@@ -676,6 +704,86 @@ struct SharedKeychainMigrationTests {
 
 		#expect(try store.read(account: "account") == Data("protected".utf8))
 		#expect(backend.legacy["account"] == Data("legacy".utf8))
+	}
+
+	@Test("coordinated cutover verifies every copy deletes legacy data and persists the marker last")
+	func coordinatedProtectedOnlyCutover() throws {
+		let backend = FakeBackend()
+		for account in ["one", "two"] {
+			let value = Data(account.utf8)
+			backend.shared[account] = value
+			backend.legacy[account] = value
+		}
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		try store.cutOverToProtectedOnly()
+
+		#expect(backend.legacy.isEmpty)
+		#expect(
+			backend.shared["__legacy_keychain_cutover_v1__"]
+				== Data("protected-only-v1".utf8)
+		)
+		let markerEvent = try #require(
+			backend.events.lastIndex(of: "add:shared:__legacy_keychain_cutover_v1__")
+		)
+		for account in ["one", "two"] {
+			let deletion = try #require(
+				backend.events.lastIndex(of: "delete:legacy:\(account)")
+			)
+			#expect(deletion < markerEvent)
+		}
+	}
+
+	@Test("coordinated cutover preserves divergent copies without setting the marker")
+	func coordinatedCutoverRejectsDivergence() {
+		let backend = FakeBackend()
+		backend.shared["account"] = Data("protected".utf8)
+		backend.legacy["account"] = Data("legacy".utf8)
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(throws: KeychainStoreError.migrationConflict) {
+			try store.cutOverToProtectedOnly()
+		}
+
+		#expect(backend.shared["account"] == Data("protected".utf8))
+		#expect(backend.legacy["account"] == Data("legacy".utf8))
+		#expect(backend.shared["__legacy_keychain_cutover_v1__"] == nil)
+	}
+
+	@Test("failed cutover deletion restores every removed legacy copy")
+	func coordinatedCutoverRollsBackDeletionFailure() {
+		let backend = FakeBackend()
+		for account in ["one", "two"] {
+			let value = Data(account.utf8)
+			backend.shared[account] = value
+			backend.legacy[account] = value
+		}
+		backend.rejectLegacyDeleteAccount = "two"
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.cutOverToProtectedOnly()
+		}
+
+		#expect(backend.legacy["one"] == Data("one".utf8))
+		#expect(backend.legacy["two"] == Data("two".utf8))
+		#expect(backend.shared["__legacy_keychain_cutover_v1__"] == nil)
+	}
+
+	@Test("failed marker commit restores deleted legacy copies")
+	func coordinatedCutoverRollsBackMarkerFailure() {
+		let backend = FakeBackend()
+		backend.shared["account"] = Data("value".utf8)
+		backend.legacy["account"] = Data("value".utf8)
+		backend.rejectCutoverMarkerWrite = true
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.cutOverToProtectedOnly()
+		}
+
+		#expect(backend.legacy["account"] == Data("value".utf8))
+		#expect(backend.shared["__legacy_keychain_cutover_v1__"] == nil)
 	}
 
 	@Test("persistent cutover disables compatibility dual writes")
