@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import Security
 
 final class SyncService: @unchecked Sendable {
 	private final class RetainedServices: @unchecked Sendable {
@@ -20,6 +22,9 @@ final class SyncService: @unchecked Sendable {
 	private let apiBaseURL: URL
 	private let session: URLSession
 	private let maximumResponseBytes = 10 * 1024 * 1024
+	private static let envelopeVersion = 2
+	private static let requestNonceHeader = "X-LPM-Vault-Request-Nonce"
+	private static let payloadDigestDomain = Data("lpm-vault-payload\0".utf8)
 
 	init(baseURL: URL = VaultConstants.apiBaseURL, session: URLSession? = nil) {
 		apiBaseURL = baseURL
@@ -34,6 +39,11 @@ final class SyncService: @unchecked Sendable {
 		let vaultId: String?
 		let version: Int?
 		let cryptoVersion: Int?
+		let envelopeVersion: Int?
+		let scope: String?
+		let organizationSlug: String?
+		let requestNonce: String?
+		let payloadDigest: String?
 		let contentKeyVersion: Int?
 		let recipientPublicKeyVersion: Int?
 		let recipientPublicKeyFingerprint: String?
@@ -45,6 +55,48 @@ final class SyncService: @unchecked Sendable {
 		let encryptedBlob: String?
 		let wrappedKey: String?
 		let updatedAt: String?
+
+		init(
+			vaultId: String?,
+			version: Int?,
+			cryptoVersion: Int?,
+			contentKeyVersion: Int?,
+			recipientPublicKeyVersion: Int?,
+			recipientPublicKeyFingerprint: String?,
+			status: String?,
+			error: String?,
+			code: String?,
+			serverVersion: Int?,
+			hint: String?,
+			encryptedBlob: String?,
+			wrappedKey: String?,
+			updatedAt: String?,
+			envelopeVersion: Int? = nil,
+			scope: String? = nil,
+			organizationSlug: String? = nil,
+			requestNonce: String? = nil,
+			payloadDigest: String? = nil
+		) {
+			self.vaultId = vaultId
+			self.version = version
+			self.cryptoVersion = cryptoVersion
+			self.envelopeVersion = envelopeVersion
+			self.scope = scope
+			self.organizationSlug = organizationSlug
+			self.requestNonce = requestNonce
+			self.payloadDigest = payloadDigest
+			self.contentKeyVersion = contentKeyVersion
+			self.recipientPublicKeyVersion = recipientPublicKeyVersion
+			self.recipientPublicKeyFingerprint = recipientPublicKeyFingerprint
+			self.status = status
+			self.error = error
+			self.code = code
+			self.serverVersion = serverVersion
+			self.hint = hint
+			self.encryptedBlob = encryptedBlob
+			self.wrappedKey = wrappedKey
+			self.updatedAt = updatedAt
+		}
 
 		var displayError: String? {
 			guard let error else { return nil }
@@ -166,12 +218,25 @@ final class SyncService: @unchecked Sendable {
 		{
 			body["schema"] = object
 		}
-		return await request(url: url, method: "POST", token: authToken, body: body, signedSuccess: true)
+		return await syncRequest(
+			url: url,
+			method: "POST",
+			token: authToken,
+			body: body,
+			vaultId: vaultId,
+			scope: .personal
+		)
 	}
 
 	func pull(authToken: String, vaultId: String) async -> SyncStatus? {
 		guard let url = endpoint(["api", "vaults", vaultId, "sync"]) else { return nil }
-		return await request(url: url, method: "GET", token: authToken, signedSuccess: true)
+		return await syncRequest(
+			url: url,
+			method: "GET",
+			token: authToken,
+			vaultId: vaultId,
+			scope: .personal
+		)
 	}
 
 	func pushOrg(
@@ -202,12 +267,25 @@ final class SyncService: @unchecked Sendable {
 		{
 			body["schema"] = object
 		}
-		return await request(url: url, method: "POST", token: authToken, body: body, signedSuccess: true)
+		return await syncRequest(
+			url: url,
+			method: "POST",
+			token: authToken,
+			body: body,
+			vaultId: vaultId,
+			scope: .organization(slug: orgSlug)
+		)
 	}
 
 	func pullOrg(authToken: String, orgSlug: String, vaultId: String) async -> SyncStatus? {
 		guard let url = endpoint(["api", "orgs", orgSlug, "vaults", vaultId]) else { return nil }
-		return await request(url: url, method: "GET", token: authToken, signedSuccess: true)
+		return await syncRequest(
+			url: url,
+			method: "GET",
+			token: authToken,
+			vaultId: vaultId,
+			scope: .organization(slug: orgSlug)
+		)
 	}
 
 	func getOrgMemberKeyAccess(authToken: String, orgSlug: String) async -> MemberKeyAccess? {
@@ -371,13 +449,113 @@ final class SyncService: @unchecked Sendable {
 		return components?.url
 	}
 
+	private enum EnvelopeScope {
+		case personal
+		case organization(slug: String)
+	}
+
+	private func syncRequest(
+		url: URL,
+		method: String,
+		token: String,
+		body: [String: Any]? = nil,
+		vaultId: String,
+		scope: EnvelopeScope
+	) async -> SyncStatus? {
+		guard let nonce = Self.requestNonce() else { return nil }
+		return await request(
+			url: url,
+			method: method,
+			token: token,
+			body: body,
+			signedSuccess: true,
+			headers: [Self.requestNonceHeader: nonce],
+			validate: { status in
+				Self.validateSyncEnvelope(
+					status,
+					vaultId: vaultId,
+					scope: scope,
+					requestNonce: nonce
+				)
+			}
+		)
+	}
+
+	private static func requestNonce() -> String? {
+		var bytes = [UInt8](repeating: 0, count: 32)
+		guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess
+		else { return nil }
+		return Data(bytes)
+			.base64EncodedString()
+			.replacingOccurrences(of: "+", with: "-")
+			.replacingOccurrences(of: "/", with: "_")
+			.replacingOccurrences(of: "=", with: "")
+	}
+
+	private static func validateSyncEnvelope(
+		_ status: SyncStatus,
+		vaultId: String,
+		scope: EnvelopeScope,
+		requestNonce: String
+	) -> Bool {
+		guard status.envelopeVersion == envelopeVersion,
+			status.vaultId == vaultId,
+			status.cryptoVersion == VaultCrypto.currentCryptoVersion,
+			status.requestNonce == requestNonce,
+			let version = status.version,
+			version > 0,
+			status.serverVersion == version
+		else { return false }
+
+		switch scope {
+		case .personal:
+			guard status.scope == "personal", status.organizationSlug == nil else {
+				return false
+			}
+		case .organization(let slug):
+			guard status.scope == "organization", status.organizationSlug == slug else {
+				return false
+			}
+		}
+
+		switch (status.encryptedBlob, status.wrappedKey, status.payloadDigest) {
+		case (nil, nil, nil):
+			return true
+		case (.some(let encryptedBlob), .some(let wrappedKey), .some(let digest)):
+			return digest == payloadDigest(
+				encryptedBlob: encryptedBlob,
+				wrappedKey: wrappedKey
+			)
+		default:
+			return false
+		}
+	}
+
+	private static func payloadDigest(
+		encryptedBlob: String,
+		wrappedKey: String
+	) -> String {
+		var input = payloadDigestDomain
+		for value in [encryptedBlob, wrappedKey] {
+			let bytes = Data(value.utf8)
+			guard let count = UInt32(exactly: bytes.count) else { return "" }
+			var length = count.bigEndian
+			Swift.withUnsafeBytes(of: &length) { input.append(contentsOf: $0) }
+			input.append(bytes)
+		}
+		return SHA256.hash(data: input)
+			.map { String(format: "%02x", $0) }
+			.joined()
+	}
+
 	private func request<T: Decodable>(
 		url: URL,
 		method: String,
 		token: String,
 		body: [String: Any]? = nil,
 		signedSuccess: Bool,
-		headers: [String: String] = [:]
+		headers: [String: String] = [:],
+		validate: ((T) -> Bool)? = nil
 	) async -> T? {
 		var request = URLRequest(url: url)
 		request.httpMethod = method
@@ -405,7 +583,9 @@ final class SyncService: @unchecked Sendable {
 					requireSignature: true
 				) else { return nil }
 			}
-			return try JSONDecoder().decode(T.self, from: data)
+			let decoded = try JSONDecoder().decode(T.self, from: data)
+			guard validate?(decoded) != false else { return nil }
+			return decoded
 		} catch {
 			return nil
 		}

@@ -46,6 +46,7 @@ struct PendingOrgPush {
 	var authGeneration: Int = 0
 	var sessionGeneration: Int = 0
 	var operationGeneration: Int = 0
+	var authorityGeneration: AuthSessionAuthorityGeneration?
 }
 
 struct VaultSyncError: LocalizedError {
@@ -66,11 +67,13 @@ private struct SyncAuthority: Sendable {
 	let sessionGeneration: Int
 	let operationGeneration: Int
 	let authToken: String
+	let authorityGeneration: AuthSessionAuthorityGeneration?
 }
 
 private struct AuthTokenResolution: Sendable {
 	let token: String?
 	let failure: String?
+	let authorityGeneration: AuthSessionAuthorityGeneration?
 }
 
 struct ImportedEnvProject: Sendable, Equatable {
@@ -483,7 +486,11 @@ final class VaultStore {
 			_ plaintext: Data,
 			_ vaultId: String
 		) throws -> (encryptedBlob: String, wrappedKey: String)
-	private let authTokenProvider: @Sendable (String, URL) async throws -> String?
+	private let authTokenProvider: (@Sendable (String, URL) async throws -> String?)?
+	private let authAuthorizationProvider:
+		@Sendable (String, URL) async throws -> AuthSessionAuthorization?
+	private let authAuthorityValidator:
+		@Sendable (AuthSessionAuthorityGeneration) -> Bool
 	private let loginProvider: @Sendable (String, URL) async throws -> AuthSessionCredentials
 	private let authSessionWriter: @Sendable (AuthSessionCredentials, String) async throws -> Void
 	private let authSessionClearer: @Sendable (String) async throws -> Void
@@ -711,13 +718,19 @@ final class VaultStore {
 			) throws -> (encryptedBlob: String, wrappedKey: String) = {
 				try VaultCrypto.encryptForStableSync(plaintext: $0, vaultId: $1)
 			},
-		authTokenProvider: @escaping @Sendable (String, URL) async throws -> String? = {
-			registryURL, baseURL in
-			try await AuthSessionStore.currentAccessToken(
+		authTokenProvider: (@Sendable (String, URL) async throws -> String?)? = nil,
+		authAuthorizationProvider:
+			@escaping @Sendable (String, URL) async throws -> AuthSessionAuthorization? = {
+				registryURL, baseURL in
+			try await AuthSessionStore.currentAccessAuthorization(
 				registryURL: registryURL,
 				baseURL: baseURL
 			)
 		},
+		authAuthorityValidator:
+			@escaping @Sendable (AuthSessionAuthorityGeneration) -> Bool = {
+				AuthSessionStore.isAuthorityGenerationCurrent($0)
+			},
 		loginProvider: @escaping @Sendable (String, URL) async throws -> AuthSessionCredentials = {
 			try await LoginService.login(registryURL: $0, baseURL: $1)
 		},
@@ -748,6 +761,8 @@ final class VaultStore {
 		self.sharingKeypairProvider = sharingKeypairProvider
 		self.stableSyncEncryptor = stableSyncEncryptor
 		self.authTokenProvider = authTokenProvider
+		self.authAuthorizationProvider = authAuthorizationProvider
+		self.authAuthorityValidator = authAuthorityValidator
 		self.loginProvider = loginProvider
 		self.authSessionWriter = authSessionWriter
 		self.authSessionClearer = authSessionClearer
@@ -2083,7 +2098,8 @@ final class VaultStore {
 			authGeneration: authGeneration,
 			sessionGeneration: sessionGeneration,
 			operationGeneration: operationGeneration,
-			authToken: authToken
+			authToken: authToken,
+			authorityGeneration: authResolution.authorityGeneration
 		)
 		guard isCurrentSync(authority) else { return }
 
@@ -2220,7 +2236,8 @@ final class VaultStore {
 			authGeneration: authGeneration,
 			sessionGeneration: sessionGeneration,
 			operationGeneration: operationGeneration,
-			authToken: authToken
+			authToken: authToken,
+			authorityGeneration: authResolution.authorityGeneration
 		)
 		guard isCurrentSync(authority) else { return }
 
@@ -2418,7 +2435,8 @@ final class VaultStore {
 			authGeneration: authGeneration,
 			sessionGeneration: sessionGeneration,
 			operationGeneration: operationGeneration,
-			authToken: authToken
+			authToken: authToken,
+			authorityGeneration: authResolution.authorityGeneration
 		)
 		guard isCurrentSync(authority) else { return }
 
@@ -2520,7 +2538,8 @@ final class VaultStore {
 					environment: environment,
 					authGeneration: authGeneration,
 					sessionGeneration: sessionGeneration,
-					operationGeneration: operationGeneration
+					operationGeneration: operationGeneration,
+					authorityGeneration: authResolution.authorityGeneration
 				)
 				showKeyApprovalSheet = true
 				finishSyncIfOwned(authority)
@@ -2580,6 +2599,7 @@ final class VaultStore {
 			pending.environment.baseURL
 		)
 		guard currentAuthResolution.token == pending.authToken,
+			currentAuthResolution.authorityGeneration == pending.authorityGeneration,
 			pending.environment == appEnvironment,
 			pending.authGeneration == authOperationGeneration,
 			pending.sessionGeneration == vaultSessionGeneration,
@@ -2600,7 +2620,8 @@ final class VaultStore {
 			authGeneration: pending.authGeneration,
 			sessionGeneration: pending.sessionGeneration,
 			operationGeneration: syncOperationGeneration,
-			authToken: pending.authToken
+			authToken: pending.authToken,
+			authorityGeneration: pending.authorityGeneration
 		)
 		showKeyApprovalSheet = false
 		isSyncing = true
@@ -2891,6 +2912,10 @@ final class VaultStore {
 
 	private func hasCurrentSyncAuth(_ authority: SyncAuthority) async -> Bool {
 		guard isCurrentSync(authority) else { return false }
+		if let authorityGeneration = authority.authorityGeneration {
+			return authAuthorityValidator(authorityGeneration)
+				&& isCurrentSync(authority)
+		}
 		let currentAuthResolution = await resolveAuthToken(
 			authority.environment.registryURL,
 			authority.environment.baseURL
@@ -2973,7 +2998,8 @@ final class VaultStore {
 			authGeneration: authGeneration,
 			sessionGeneration: sessionGeneration,
 			operationGeneration: operationGeneration,
-			authToken: authToken
+			authToken: authToken,
+			authorityGeneration: authResolution.authorityGeneration
 		)
 		guard isCurrentSync(authority) else { return }
 
@@ -3162,13 +3188,36 @@ final class VaultStore {
 		_ baseURL: URL
 	) async -> AuthTokenResolution {
 		do {
-			let token = try await authTokenProvider(registryURL, baseURL)
-			return AuthTokenResolution(token: token, failure: nil)
+			if let authTokenProvider {
+				let token = try await authTokenProvider(registryURL, baseURL)
+				return AuthTokenResolution(
+					token: token,
+					failure: nil,
+					authorityGeneration: nil
+				)
+			}
+			let authorization = try await authAuthorizationProvider(
+				registryURL,
+				baseURL
+			)
+			return AuthTokenResolution(
+				token: authorization?.token,
+				failure: nil,
+				authorityGeneration: authorization?.authorityGeneration
+			)
 		} catch is CancellationError {
-			return AuthTokenResolution(token: nil, failure: nil)
+			return AuthTokenResolution(
+				token: nil,
+				failure: nil,
+				authorityGeneration: nil
+			)
 		} catch {
 			let message = "Could not access the shared LPM session. \(error.localizedDescription)"
-			return AuthTokenResolution(token: nil, failure: message)
+			return AuthTokenResolution(
+				token: nil,
+				failure: message,
+				authorityGeneration: nil
+			)
 		}
 	}
 
