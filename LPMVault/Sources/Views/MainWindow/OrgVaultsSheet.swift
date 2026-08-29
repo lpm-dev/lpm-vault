@@ -188,7 +188,7 @@ struct OrgVaultsSheet: View {
 		guard !orgSlug.isEmpty else { return }
 		isLoading = true
 		loadError = nil
-		let syncService = SyncService(baseURL: store.appEnvironment.baseURL)
+		let syncService = SyncService.shared(baseURL: store.appEnvironment.baseURL)
 		guard let authToken = await store.currentAuthToken() else {
 			guard !Task.isCancelled else { return }
 			isLoading = false

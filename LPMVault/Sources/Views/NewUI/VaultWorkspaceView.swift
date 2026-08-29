@@ -47,12 +47,6 @@ struct VaultWorkspaceView: View {
 		return false
 	}
 
-	private var workspaceSnapshots: [String: VaultWorkspaceSnapshot] {
-		Dictionary(uniqueKeysWithValues: store.activeVaults.map { project in
-			(project.id, VaultWorkspaceSnapshot(project: project))
-		})
-	}
-
 	var body: some View {
 		VStack(spacing: 0) {
 			VaultTitleBarView(
@@ -74,7 +68,7 @@ struct VaultWorkspaceView: View {
 			HStack(spacing: 0) {
 				VaultSidebarView(
 					store: store,
-					snapshots: workspaceSnapshots,
+					snapshots: store.workspaceSnapshots,
 					mode: $mode,
 					filter: $filter,
 					searchText: $searchText,
@@ -98,10 +92,12 @@ struct VaultWorkspaceView: View {
 						AuthStatusView(store: store)
 							.frame(maxWidth: .infinity, maxHeight: .infinity)
 							.background(VaultPalette.content)
-					} else if let project {
+					} else if let project,
+						let snapshot = store.workspaceSnapshots[project.id]
+					{
 						VaultContentView(
 							project: project,
-							snapshot: VaultWorkspaceSnapshot(project: project),
+							snapshot: snapshot,
 							environments: store.orderedEnvironmentNames(for: project),
 							selectedEnvironment: store.selectedEnvironment,
 							mode: $mode,
@@ -131,11 +127,13 @@ struct VaultWorkspaceView: View {
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 
-				if showsInspector, !store.showAuthStatus, let project {
+				if showsInspector, !store.showAuthStatus, let project,
+					let snapshot = store.workspaceSnapshots[project.id]
+				{
 					VaultInspectorPane(
 						store: store,
 						project: project,
-						snapshot: VaultWorkspaceSnapshot(project: project),
+						snapshot: snapshot,
 						environments: store.orderedEnvironmentNames(for: project),
 						mode: mode,
 						selectedKey: selectedKey,

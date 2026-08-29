@@ -109,6 +109,82 @@ struct VaultWorkspaceSnapshot: Equatable {
 	}
 }
 
+struct VaultContentDerivation: Equatable {
+	let allKeys: [String]
+	let filteredKeys: [String]
+	let environmentKeys: [String]
+	let environmentDriftingKeyCount: Int
+	let allVisibleRevealed: Bool
+
+	init(
+		project: VaultProject,
+		snapshot: VaultWorkspaceSnapshot,
+		selectedEnvironment: String,
+		mode: VaultWorkspaceMode,
+		filter: VaultWorkspaceFilter,
+		searchText: String,
+		revealedKeys: Set<String>
+	) {
+		let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		allKeys = snapshot.allSecretKeys
+		filteredKeys = allKeys.filter { key in
+			let matchesFilter: Bool
+			switch filter {
+			case .all: matchesFilter = true
+			case .drift: matchesFilter = snapshot.hasDrift(for: key)
+			case .missing: matchesFilter = snapshot.isMissingSomewhere(key)
+			}
+			return matchesFilter && (query.isEmpty || key.lowercased().contains(query))
+		}
+		environmentKeys = project.sortedSecrets(for: selectedEnvironment)
+			.map(\.key)
+			.filter { query.isEmpty || $0.lowercased().contains(query) }
+		environmentDriftingKeyCount = environmentKeys.reduce(into: 0) { count, key in
+			if snapshot.hasDrift(for: key) { count += 1 }
+		}
+		let visibleKeys = mode == .matrix ? filteredKeys : environmentKeys
+		allVisibleRevealed = !visibleKeys.isEmpty && Set(visibleKeys).isSubset(of: revealedKeys)
+	}
+}
+
+struct VaultSecretEditDraft: Equatable {
+	private(set) var baseline: String
+	var draft: String
+	private(set) var hasExternalConflict = false
+
+	init(value: String) {
+		baseline = value
+		draft = value
+	}
+
+	var isDirty: Bool { draft != baseline }
+	var canSave: Bool { isDirty && !hasExternalConflict }
+	var canRevert: Bool { isDirty || hasExternalConflict }
+
+	mutating func receiveExternalValue(_ value: String) {
+		if value == draft {
+			baseline = value
+			hasExternalConflict = false
+			return
+		}
+		guard value != baseline else { return }
+		if !isDirty {
+			baseline = value
+			draft = value
+			hasExternalConflict = false
+		} else {
+			baseline = value
+			hasExternalConflict = true
+		}
+	}
+
+	mutating func revert() {
+		draft = baseline
+		hasExternalConflict = false
+	}
+
+}
+
 extension VaultProject {
 	var allSecretKeys: [String] {
 		VaultWorkspaceSnapshot(project: self).allSecretKeys

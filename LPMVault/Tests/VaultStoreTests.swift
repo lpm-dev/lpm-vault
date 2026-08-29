@@ -1685,6 +1685,31 @@ struct VaultStoreTests {
 
 	// MARK: - Token Operations
 
+	@Test("startup identity load performs one user request and no token inventory requests")
+	func startupIdentityLoadSkipsTokenInventory() async {
+		let api = MockAPIService()
+		api.user = testUserWithOrganizations(count: 8)
+		let authReads = LockedCounter()
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: api,
+			authTokenProvider: { _, _ in
+				authReads.increment()
+				return "startup-session"
+			}
+		)
+
+		await store.loadAccount()
+
+		#expect(authReads.value == 2)
+		#expect(api.currentUserFetchCount == 1)
+		#expect(api.personalTokenFetchCount == 0)
+		#expect(api.orgTokenFetchCount == 0)
+		#expect(api.requestedOrgSlugs.isEmpty)
+		#expect(store.currentUser?.id == api.user?.id)
+	}
+
 	@Test("a newer token load wins and owns the loading flag")
 	func newerTokenLoadWins() async throws {
 		let api = MockAPIService()
@@ -2262,6 +2287,7 @@ struct VaultStoreTests {
 		store.pendingOrgPush = PendingOrgPush(
 			orgSlug: "acme",
 			projectId: "p1",
+			ownPublicKey: nil,
 			allMembers: [],
 			pendingApprovals: [],
 			orgTrust: OrgKeyTrust(),
@@ -2285,6 +2311,7 @@ struct VaultStoreTests {
 			store.pendingOrgPush = PendingOrgPush(
 				orgSlug: "acme",
 				projectId: "p1",
+				ownPublicKey: nil,
 				allMembers: [],
 				pendingApprovals: [],
 				orgTrust: OrgKeyTrust(),
@@ -2311,6 +2338,121 @@ struct VaultStoreTests {
 			#expect(store.pendingOrgPush == nil)
 			#expect(!store.showKeyApprovalSheet)
 		#endif
+	}
+
+	@Test("organization approval refetch rejects every changed authorization binding")
+	func organizationApprovalRefetchRejectsChangedAuthorization() async throws {
+		for change in [
+			"member removal", "member key", "member role", "capability", "own key", "own version",
+		] {
+			let slug = "approval-\(UUID().uuidString.lowercased())"
+			let projectID = "project-\(UUID().uuidString.lowercased())"
+			let localKeypair = VaultCrypto.generateX25519Keypair()
+			let memberKeypair = VaultCrypto.generateX25519Keypair()
+			let member = SyncService.MemberPublicKey(
+				userId: "member",
+				role: "admin",
+				publicKey: memberKeypair.publicKey.base64EncodedString(),
+				publicKeyVersion: 1,
+				publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(memberKeypair.publicKey),
+				hasPublicKey: true
+			)
+			let sync = MockOrgSyncService()
+			sync.publicKeyRecord = SyncService.PublicKeyRecord(
+				publicKey: localKeypair.publicKey.base64EncodedString(),
+				publicKeyVersion: 1,
+				publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey)
+			)
+			sync.memberKeyAccess = SyncService.MemberKeyAccess(
+				members: [member],
+				canReplaceWrappedKeys: true
+			)
+			let keychain = MockKeychainService()
+			keychain.envStorage[projectID] = (
+				name: "Project", path: "", environments: ["default": ["TOKEN": "secret"]]
+			)
+			let store = VaultStore(
+				keychainService: keychain,
+				biometricService: MockBiometricService(),
+				apiService: MockAPIService(),
+				orgSyncServiceFactory: { _ in sync },
+				sharingKeypairProvider: { localKeypair },
+				authTokenProvider: { _, _ in "session-token" }
+			)
+			store.currentUser = userWithOrganization(slug: slug)
+			store.projects = [
+				VaultProject(
+					id: projectID,
+					name: "Project",
+					path: "",
+					environments: ["default": ["TOKEN": "secret"]]
+				)
+			]
+			store.vaultOrgAssociations[projectID] = slug
+			store.isUnlocked = true
+			store.selectAccount(.org(slug))
+			store.selectProject(projectID)
+
+			await store.pushToOrg(orgSlug: slug)
+			let approval = try #require(store.pendingOrgPush?.pendingApprovals)
+			#expect(approval.count == 1)
+
+			switch change {
+			case "member removal":
+				sync.memberKeyAccess = SyncService.MemberKeyAccess(
+					members: [], canReplaceWrappedKeys: true)
+			case "member key":
+				let rotated = VaultCrypto.generateX25519Keypair().publicKey
+				sync.memberKeyAccess = SyncService.MemberKeyAccess(
+					members: [SyncService.MemberPublicKey(
+						userId: member.userId,
+						role: member.role,
+						publicKey: rotated.base64EncodedString(),
+						publicKeyVersion: 2,
+						publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(rotated),
+						hasPublicKey: true
+					)],
+					canReplaceWrappedKeys: true
+				)
+			case "member role":
+				sync.memberKeyAccess = SyncService.MemberKeyAccess(
+					members: [SyncService.MemberPublicKey(
+						userId: member.userId,
+						role: "member",
+						publicKey: member.publicKey,
+						publicKeyVersion: member.publicKeyVersion,
+						publicKeyFingerprint: member.publicKeyFingerprint,
+						hasPublicKey: true
+					)],
+					canReplaceWrappedKeys: true
+				)
+			case "capability":
+				sync.memberKeyAccess = SyncService.MemberKeyAccess(
+					members: [member], canReplaceWrappedKeys: false)
+			case "own key":
+				let rotated = VaultCrypto.generateX25519Keypair().publicKey
+				sync.publicKeyRecord = SyncService.PublicKeyRecord(
+					publicKey: rotated.base64EncodedString(),
+					publicKeyVersion: 2,
+					publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(rotated)
+				)
+			case "own version":
+				sync.publicKeyRecord = SyncService.PublicKeyRecord(
+					publicKey: localKeypair.publicKey.base64EncodedString(),
+					publicKeyVersion: 2,
+					publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey)
+				)
+			default:
+				Issue.record("Unknown authorization-change fixture")
+			}
+
+			await store.approveAndContinueOrgPush(approved: approval)
+
+			#expect(sync.pushCallCount == 0, "Unexpected push after \(change)")
+			#expect(store.lastSyncStatus == "failed", "Unexpected status after \(change)")
+			#expect(store.error != nil, "Missing error after \(change)")
+			#expect(store.pendingOrgPush == nil)
+		}
 	}
 
 	@Test("lock invalidates organization sharing during member-key lookup")
@@ -2781,11 +2923,69 @@ struct VaultStoreTests {
 		#expect(store.projects.isEmpty)
 	}
 
+	@Test("cloud imports reject invalid listings, downgraded payloads, and mismatched identities")
+	func cloudImportVersionAndIdentityBinding() async {
+		for listedVersion in [nil, 0, -1] as [Int?] {
+			let importService = MockEnvProjectImportService()
+			importService.personalResult = .success(RemoteEnvProjectPayload(
+				vaultId: "invalid-listing",
+				environments: ["default": ["TOKEN": "remote"]],
+				version: 2,
+				keyCount: 1
+			))
+			let (store, keychain) = makeImportStore(importService: importService)
+			let result = await store.importCloudProject(
+				remoteProject(id: "invalid-listing", name: "remote", version: listedVersion)
+			)
+			guard case .failure(.invalidPayload(let message)) = result else {
+				Issue.record("Accepted invalid listing version \(String(describing: listedVersion))")
+				continue
+			}
+			#expect(message.contains("listing") && message.contains("version"))
+			#expect(keychain.saveEnvironmentsCallCount == 0)
+		}
+
+		for payload in [
+			RemoteEnvProjectPayload(
+				vaultId: "other",
+				environments: ["default": ["TOKEN": "remote"]],
+				version: 5,
+				keyCount: 1
+			),
+			RemoteEnvProjectPayload(
+				vaultId: "bound",
+				environments: ["default": ["TOKEN": "remote"]],
+				version: 0,
+				keyCount: 1
+			),
+			RemoteEnvProjectPayload(
+				vaultId: "bound",
+				environments: ["default": ["TOKEN": "remote"]],
+				version: 4,
+				keyCount: 1
+			),
+		] {
+			let importService = MockEnvProjectImportService()
+			importService.personalResult = .success(payload)
+			let (store, keychain) = makeImportStore(importService: importService)
+			let result = await store.importCloudProject(
+				remoteProject(id: "bound", name: "remote", version: 5)
+			)
+			guard case .failure(.invalidPayload) = result else {
+				Issue.record("Accepted invalid payload binding: \(payload)")
+				continue
+			}
+			#expect(keychain.saveEnvironmentsCallCount == 0)
+			#expect(store.projects.isEmpty)
+		}
+	}
+
 	@Test("successful organization import publishes the final project once")
 	func successfulOrganizationImportIsAtomic() async throws {
 		let importService = MockEnvProjectImportService()
 		importService.organizationResult = .success(
 			RemoteEnvProjectPayload(
+				vaultId: "org-1",
 				environments: ["production": ["TOKEN": "secret"]],
 				version: 7,
 				keyCount: 1
@@ -2812,6 +3012,7 @@ struct VaultStoreTests {
 		let importService = MockEnvProjectImportService()
 		importService.organizationResult = .success(
 			RemoteEnvProjectPayload(
+				vaultId: "org-fail",
 				environments: ["default": ["TOKEN": "secret"]],
 				version: 3,
 				keyCount: 1
@@ -2839,6 +3040,7 @@ struct VaultStoreTests {
 		let importService = MockEnvProjectImportService()
 		importService.personalResult = .success(
 			RemoteEnvProjectPayload(
+				vaultId: "duplicate",
 				environments: ["default": ["TOKEN": "remote"]],
 				version: 2,
 				keyCount: 1
@@ -2858,6 +3060,7 @@ struct VaultStoreTests {
 		let importService = MockEnvProjectImportService()
 		importService.personalResult = .success(
 			RemoteEnvProjectPayload(
+				vaultId: "raced",
 				environments: ["default": ["TOKEN": "remote"]],
 				version: 2,
 				keyCount: 1
@@ -2893,11 +3096,15 @@ struct VaultStoreTests {
 		return (store, keychain)
 	}
 
-	private func remoteProject(id: String, name: String?) -> SyncService.RemoteProject {
+	private func remoteProject(
+		id: String,
+		name: String?,
+		version: Int? = 1
+	) -> SyncService.RemoteProject {
 		SyncService.RemoteProject(
 			vaultId: id,
 			name: name,
-			version: 1,
+			version: version,
 			updatedAt: nil,
 			updatedBy: nil
 		)

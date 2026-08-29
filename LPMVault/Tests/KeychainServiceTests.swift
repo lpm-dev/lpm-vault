@@ -162,6 +162,20 @@ struct KeychainServiceTests {
 		#expect(projects.isEmpty)
 	}
 
+	@Test("a corrupt duplicate project index fails instead of trapping or fabricating projects")
+	func duplicateIndexFailsClosed() {
+		let service = makeService()
+		let duplicateIndex = Data(
+			#"[{"id":"duplicate","name":"One","path":""},{"id":"duplicate","name":"Two","path":""}]"#.utf8
+		)
+		#expect(service.writeData(account: "__index__", data: duplicateIndex))
+
+		guard case .failure(.unexpectedStatus(errSecDecode)) = service.listProjectsResult() else {
+			Issue.record("The duplicate Keychain index did not fail closed")
+			return
+		}
+	}
+
 	// MARK: - Edge Cases
 
 	@Test("empty secrets dictionary is valid")
@@ -225,9 +239,22 @@ struct SharedKeychainMigrationTests {
 		var sharedValueUpdatedAfterAdd: Data?
 		var sharedValueUpdatedAfterWrite: Data?
 		var legacyValueUpdatedOnSharedFailure: Data?
+		var sharedReadCounts: [String: Int] = [:]
+		var legacyReadCounts: [String: Int] = [:]
+
+		func readCount(account: String, location: KeychainStoreLocation) -> Int {
+			switch location {
+			case .shared: sharedReadCounts[account, default: 0]
+			case .legacy: legacyReadCounts[account, default: 0]
+			}
+		}
 
 		func read(service: String, account: String, location: KeychainStoreLocation) throws -> Data?
 		{
+			switch location {
+			case .shared: sharedReadCounts[account, default: 0] += 1
+			case .legacy: legacyReadCounts[account, default: 0] += 1
+			}
 			if location == .shared, rejectSharedReads {
 				throw KeychainStoreError.status(operation: "read", code: errSecMissingEntitlement)
 			}
@@ -318,6 +345,66 @@ struct SharedKeychainMigrationTests {
 		#expect(legacy[kSecAttrAccessGroup as String] == nil)
 		#expect(legacy[kSecUseDataProtectionKeychain as String] == nil)
 		#expect(legacy[kSecUseKeychain as String] != nil)
+	}
+
+	@Test("batched compatibility reads evaluate cutover once and reconcile each account once")
+	func batchedCompatibilityReadCounts() throws {
+		let backend = FakeBackend()
+		for account in ["one", "two", "three"] {
+			let value = Data(account.utf8)
+			backend.shared[account] = value
+			backend.legacy[account] = value
+		}
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		let values = try store.read(accounts: ["one", "two", "three"])
+
+		#expect(values.compactMapValues { $0 }.count == 3)
+		#expect(backend.readCount(
+			account: "__legacy_keychain_cutover_v1__", location: .shared
+		) == 1)
+		for account in ["one", "two", "three"] {
+			#expect(backend.readCount(account: account, location: .legacy) == 2)
+			#expect(backend.readCount(account: account, location: .shared) == 2)
+		}
+	}
+
+	@Test("batched reads tolerate repeated account requests without a dictionary trap")
+	func batchedDuplicateAccountRead() throws {
+		let backend = FakeBackend()
+		let value = Data("value".utf8)
+		backend.shared["same"] = value
+		backend.legacy["same"] = value
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		let values = try store.read(accounts: ["same", "same"])
+
+		#expect(values["same"] == value)
+		#expect(backend.readCount(
+			account: "__legacy_keychain_cutover_v1__", location: .shared
+		) == 1)
+	}
+
+	@Test("batched protected-only reads avoid every legacy backend call")
+	func batchedProtectedOnlyReadCounts() throws {
+		let backend = FakeBackend()
+		backend.shared["__legacy_keychain_cutover_v1__"] = Data("protected-only-v1".utf8)
+		for account in ["one", "two", "three"] {
+			backend.shared[account] = Data(account.utf8)
+			backend.legacy[account] = Data("stale-\(account)".utf8)
+		}
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		let values = try store.read(accounts: ["one", "two", "three"])
+
+		#expect(values.compactMapValues { $0 }.count == 3)
+		#expect(backend.readCount(
+			account: "__legacy_keychain_cutover_v1__", location: .shared
+		) == 1)
+		for account in ["one", "two", "three"] {
+			#expect(backend.readCount(account: account, location: .legacy) == 0)
+			#expect(backend.readCount(account: account, location: .shared) == 1)
+		}
 	}
 
 	@Test("legacy-only values are copied, verified, and preserved")
