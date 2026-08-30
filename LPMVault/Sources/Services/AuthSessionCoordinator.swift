@@ -10,6 +10,7 @@ enum AuthSessionCoordinatorError: Error, LocalizedError, Sendable {
 	case reusedRefreshToken
 	case credentialStorage(String)
 	case stateFile(String)
+	case sessionRevokedWithCleanupFailure(String)
 	case unsupportedCredentialBackend
 
 	var errorDescription: String? {
@@ -24,6 +25,8 @@ enum AuthSessionCoordinatorError: Error, LocalizedError, Sendable {
 			"Credential storage failed: \(message)"
 		case .stateFile(let message):
 			"Session metadata failed: \(message)"
+		case .sessionRevokedWithCleanupFailure(let message):
+			"The shared session was revoked, but metadata cleanup failed: \(message)"
 		case .unsupportedCredentialBackend:
 			"This session is stored in the Rust client's encrypted fallback. Sign in from LPM Vault to move it to Keychain."
 		}
@@ -72,6 +75,8 @@ protocol AuthCredentialBackend: Sendable {
 }
 
 struct KeychainAuthCredentialBackend: AuthCredentialBackend {
+	static let accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+
 	let service: String
 
 	func read(account: String) throws -> String? {
@@ -99,7 +104,7 @@ struct KeychainAuthCredentialBackend: AuthCredentialBackend {
 		let query = baseQuery(account: account)
 		let attributes: [String: Any] = [
 			kSecValueData as String: Data(credential.utf8),
-			kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+			kSecAttrAccessible as String: Self.accessibility,
 		]
 		let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 		if updateStatus == errSecSuccess { return }
@@ -111,7 +116,7 @@ struct KeychainAuthCredentialBackend: AuthCredentialBackend {
 
 		var add = query
 		add[kSecValueData as String] = Data(credential.utf8)
-		add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+		add[kSecAttrAccessible as String] = Self.accessibility
 		let addStatus = SecItemAdd(add as CFDictionary, nil)
 		guard addStatus == errSecSuccess else {
 			throw AuthSessionCoordinatorError.credentialStorage(
@@ -414,7 +419,7 @@ struct AuthSessionCoordinator: Sendable {
 			_ = Darwin.unlink(
 				lpmDirectory.appendingPathComponent(".token-check").path
 			)
-			var errors: [Error] = []
+			var credentialError: Error?
 			do {
 				try await withCredentialStoreLock {
 					try revokeAndDeleteCredentialsUnlocked(
@@ -423,16 +428,24 @@ struct AuthSessionCoordinator: Sendable {
 					)
 				}
 			} catch {
-				errors.append(error)
+				credentialError = error
 			}
+			var cleanupError: Error?
 			do {
 				try await removeExpiry(registryURL: registryURL)
 			} catch {
-				errors.append(error)
+				cleanupError = error
 			}
-			guard errors.isEmpty else {
+			if let credentialError {
 				throw AuthSessionCoordinatorError.credentialStorage(
-					errors.map(\.localizedDescription).joined(separator: "; ")
+					[credentialError, cleanupError]
+						.compactMap { $0?.localizedDescription }
+						.joined(separator: "; ")
+				)
+			}
+			if let cleanupError {
+				throw AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure(
+					cleanupError.localizedDescription
 				)
 			}
 		}
@@ -920,14 +933,8 @@ struct AuthSessionCoordinator: Sendable {
 	}
 
 	private func ensurePrivateDirectory(_ directory: URL) throws {
-		try FileManager.default.createDirectory(
-			at: directory,
-			withIntermediateDirectories: true
-		)
-		try FileManager.default.setAttributes(
-			[.posixPermissions: 0o700],
-			ofItemAtPath: directory.path
-		)
+		let descriptor = try SecureDirectory.openOrCreate(directory)
+		_ = Darwin.close(descriptor)
 	}
 
 	private static func randomIdentifier() -> String {
@@ -936,6 +943,115 @@ struct AuthSessionCoordinator: Sendable {
 			return bytes.map { String(format: "%02x", $0) }.joined()
 		}
 		return SHA256.hash(data: Data(UUID().uuidString.utf8)).hexString
+	}
+}
+
+private enum SecureDirectory {
+	static func openExisting(_ directory: URL) throws -> Int32 {
+		guard directory.isFileURL else { throw unsafe(directory) }
+		var pathMetadata = stat()
+		let pathStatus = directory.withUnsafeFileSystemRepresentation { path in
+			guard let path else { return Int32(-1) }
+			return Darwin.lstat(path, &pathMetadata)
+		}
+		guard pathStatus == 0,
+			(pathMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+		else { throw unsafe(directory) }
+
+		let descriptor = directory.withUnsafeFileSystemRepresentation { path in
+			guard let path else { return Int32(-1) }
+			return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+		}
+		guard descriptor >= 0 else { throw unsafe(directory) }
+		do {
+			try validate(
+				descriptor,
+				pathMetadata: pathMetadata,
+				directory: directory,
+				requirePrivateMode: true
+			)
+			return descriptor
+		} catch {
+			_ = Darwin.close(descriptor)
+			throw error
+		}
+	}
+
+	static func openOrCreate(_ directory: URL) throws -> Int32 {
+		guard directory.isFileURL, !directory.lastPathComponent.isEmpty else {
+			throw unsafe(directory)
+		}
+		let parentURL = directory.deletingLastPathComponent()
+		var parentDescriptor = parentURL.withUnsafeFileSystemRepresentation { path in
+			guard let path else { return Int32(-1) }
+			return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+		}
+		if parentDescriptor < 0, errno == ENOENT {
+			parentDescriptor = try openOrCreate(parentURL)
+		}
+		guard parentDescriptor >= 0 else { throw unsafe(parentURL) }
+		defer { _ = Darwin.close(parentDescriptor) }
+
+		var parentMetadata = stat()
+		guard Darwin.fstat(parentDescriptor, &parentMetadata) == 0,
+			(parentMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+			parentMetadata.st_uid == Darwin.geteuid()
+		else { throw unsafe(parentURL) }
+
+		let name = directory.lastPathComponent
+		if name.withCString({ Darwin.mkdirat(parentDescriptor, $0, 0o700) }) != 0,
+			errno != EEXIST
+		{
+			throw unsafe(directory)
+		}
+		let descriptor = name.withCString {
+			Darwin.openat(
+				parentDescriptor,
+				$0,
+				O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+			)
+		}
+		guard descriptor >= 0 else { throw unsafe(directory) }
+
+		var metadata = stat()
+		var pathMetadata = stat()
+		let pathStatus = name.withCString {
+			Darwin.fstatat(parentDescriptor, $0, &pathMetadata, AT_SYMLINK_NOFOLLOW)
+		}
+		guard Darwin.fstat(descriptor, &metadata) == 0,
+			pathStatus == 0,
+			(metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+			(pathMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+			metadata.st_uid == Darwin.geteuid(),
+			pathMetadata.st_uid == Darwin.geteuid(),
+			metadata.st_dev == pathMetadata.st_dev,
+			metadata.st_ino == pathMetadata.st_ino,
+			Darwin.fchmod(descriptor, 0o700) == 0
+		else {
+			_ = Darwin.close(descriptor)
+			throw unsafe(directory)
+		}
+		return descriptor
+	}
+
+	private static func validate(
+		_ descriptor: Int32,
+		pathMetadata: stat,
+		directory: URL,
+		requirePrivateMode: Bool
+	) throws {
+		var metadata = stat()
+		guard Darwin.fstat(descriptor, &metadata) == 0,
+			(metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+			metadata.st_uid == Darwin.geteuid(),
+			metadata.st_dev == pathMetadata.st_dev,
+			metadata.st_ino == pathMetadata.st_ino,
+			!requirePrivateMode || (metadata.st_mode & 0o077) == 0
+		else { throw unsafe(directory) }
+	}
+
+	private static func unsafe(_ directory: URL) -> AuthSessionCoordinatorError {
+		.stateFile("Directory \(directory.lastPathComponent) is not private and link-safe.")
 	}
 }
 
@@ -1086,20 +1202,12 @@ enum CrossProcessFileLock {
 	}
 
 	private static func ensureLockDirectory(_ directory: URL) throws {
-		try FileManager.default.createDirectory(
-			at: directory,
-			withIntermediateDirectories: true
-		)
-		try FileManager.default.setAttributes(
-			[.posixPermissions: 0o700],
-			ofItemAtPath: directory.path
-		)
 		if directory.lastPathComponent == "locks" {
-			try FileManager.default.setAttributes(
-				[.posixPermissions: 0o700],
-				ofItemAtPath: directory.deletingLastPathComponent().path
-			)
+			let parent = try SecureDirectory.openOrCreate(directory.deletingLastPathComponent())
+			_ = Darwin.close(parent)
 		}
+		let descriptor = try SecureDirectory.openOrCreate(directory)
+		_ = Darwin.close(descriptor)
 	}
 
 	private static func openAndLock(
@@ -1107,19 +1215,7 @@ enum CrossProcessFileLock {
 		operation: Int32,
 		cancellation: LockAcquisitionCancellation? = nil
 	) throws -> Int32 {
-		let descriptor = Darwin.open(path.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
-		guard descriptor >= 0 else {
-			throw AuthSessionCoordinatorError.stateFile(
-				"Could not open lock \(path.lastPathComponent): \(errnoDescription())."
-			)
-		}
-		guard Darwin.fchmod(descriptor, 0o600) == 0 else {
-			let message = errnoDescription()
-			_ = Darwin.close(descriptor)
-			throw AuthSessionCoordinatorError.stateFile(
-				"Could not secure lock \(path.lastPathComponent): \(message)."
-			)
-		}
+		let descriptor = try openValidatedLockFile(at: path)
 		if let cancellation {
 			while true {
 				if cancellation.isCancelled {
@@ -1145,6 +1241,59 @@ enum CrossProcessFileLock {
 			)
 		}
 		return descriptor
+	}
+
+	private static func openValidatedLockFile(at path: URL) throws -> Int32 {
+		let name = path.lastPathComponent
+		for attempt in 0..<2 {
+			let directory = try SecureDirectory.openOrCreate(path.deletingLastPathComponent())
+			let descriptor = name.withCString {
+				Darwin.openat(
+					directory,
+					$0,
+					O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+					0o600
+				)
+			}
+			let openError = errno
+			if descriptor < 0 {
+				_ = Darwin.close(directory)
+				if openError == ENOENT, attempt == 0 { continue }
+				throw AuthSessionCoordinatorError.stateFile(
+					"Could not open lock \(path.lastPathComponent): "
+						+ "\(String(cString: strerror(openError)))."
+				)
+			}
+
+			var metadata = stat()
+			var pathMetadata = stat()
+			let pathStatus = name.withCString {
+				Darwin.fstatat(directory, $0, &pathMetadata, AT_SYMLINK_NOFOLLOW)
+			}
+			let isValid = Darwin.fstat(descriptor, &metadata) == 0
+				&& pathStatus == 0
+				&& (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+				&& (pathMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+				&& metadata.st_uid == Darwin.geteuid()
+				&& pathMetadata.st_uid == Darwin.geteuid()
+				&& metadata.st_nlink == 1
+				&& pathMetadata.st_nlink == 1
+				&& (metadata.st_mode & 0o077) == 0
+				&& metadata.st_dev == pathMetadata.st_dev
+				&& metadata.st_ino == pathMetadata.st_ino
+				&& Darwin.fchmod(descriptor, 0o600) == 0
+			_ = Darwin.close(directory)
+			guard isValid else {
+				_ = Darwin.close(descriptor)
+				throw AuthSessionCoordinatorError.stateFile(
+					"Lock \(path.lastPathComponent) is not a private single-link regular file."
+				)
+			}
+			return descriptor
+		}
+		throw AuthSessionCoordinatorError.stateFile(
+			"Could not open lock \(path.lastPathComponent)."
+		)
 	}
 
 	private static func errnoDescription() -> String {
@@ -1244,7 +1393,16 @@ private actor ProcessExclusiveGate {
 
 private enum SecureStateFile {
 	static func read(from url: URL, maximumBytes: Int) throws -> Data? {
-		let descriptor = Darwin.open(url.path, O_RDONLY | O_CLOEXEC)
+		let directory = try SecureDirectory.openExisting(url.deletingLastPathComponent())
+		defer { _ = Darwin.close(directory) }
+		let name = url.lastPathComponent
+		let descriptor = name.withCString {
+			Darwin.openat(
+				directory,
+				$0,
+				O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW
+			)
+		}
 		if descriptor < 0 {
 			if errno == ENOENT { return nil }
 			throw AuthSessionCoordinatorError.stateFile(
@@ -1254,12 +1412,24 @@ private enum SecureStateFile {
 		defer { _ = Darwin.close(descriptor) }
 
 		var metadata = stat()
-		guard Darwin.fstat(descriptor, &metadata) == 0 else {
+		var pathMetadata = stat()
+		let pathStatus = name.withCString {
+			Darwin.fstatat(directory, $0, &pathMetadata, AT_SYMLINK_NOFOLLOW)
+		}
+		guard Darwin.fstat(descriptor, &metadata) == 0, pathStatus == 0 else {
 			throw AuthSessionCoordinatorError.stateFile(
 				"Could not inspect \(url.lastPathComponent)."
 			)
 		}
 		guard (metadata.st_mode & S_IFMT) == S_IFREG,
+			(pathMetadata.st_mode & S_IFMT) == S_IFREG,
+			metadata.st_uid == Darwin.geteuid(),
+			pathMetadata.st_uid == Darwin.geteuid(),
+			metadata.st_nlink == 1,
+			pathMetadata.st_nlink == 1,
+			(metadata.st_mode & 0o077) == 0,
+			metadata.st_dev == pathMetadata.st_dev,
+			metadata.st_ino == pathMetadata.st_ino,
 			metadata.st_size >= 0,
 			metadata.st_size <= maximumBytes
 		else {
@@ -1294,32 +1464,32 @@ private enum SecureStateFile {
 
 	static func write(_ data: Data, to url: URL) throws {
 		let directory = url.deletingLastPathComponent()
-		try FileManager.default.createDirectory(
-			at: directory,
-			withIntermediateDirectories: true
-		)
-		try FileManager.default.setAttributes(
-			[.posixPermissions: 0o700],
-			ofItemAtPath: directory.path
-		)
-
-		let temporary = directory.appendingPathComponent(
-			".\(url.lastPathComponent).tmp.\(UUID().uuidString)"
-		)
-		let descriptor = Darwin.open(
-			temporary.path,
-			O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-			0o600
-		)
+		let directoryDescriptor = try SecureDirectory.openOrCreate(directory)
+		defer { _ = Darwin.close(directoryDescriptor) }
+		let temporaryName = ".\(url.lastPathComponent).tmp.\(UUID().uuidString)"
+		let descriptor = temporaryName.withCString {
+			Darwin.openat(
+				directoryDescriptor,
+				$0,
+				O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+				0o600
+			)
+		}
 		guard descriptor >= 0 else {
 			throw AuthSessionCoordinatorError.stateFile(
 				"Could not create temporary metadata: \(errnoDescription())."
 			)
 		}
-		guard Darwin.fchmod(descriptor, 0o600) == 0 else {
+		var temporaryMetadata = stat()
+		guard Darwin.fstat(descriptor, &temporaryMetadata) == 0,
+			(temporaryMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+			temporaryMetadata.st_uid == Darwin.geteuid(),
+			temporaryMetadata.st_nlink == 1,
+			Darwin.fchmod(descriptor, 0o600) == 0
+		else {
 			let message = errnoDescription()
 			_ = Darwin.close(descriptor)
-			_ = Darwin.unlink(temporary.path)
+			_ = temporaryName.withCString { Darwin.unlinkat(directoryDescriptor, $0, 0) }
 			throw AuthSessionCoordinatorError.stateFile(
 				"Could not secure temporary metadata: \(message)."
 			)
@@ -1328,7 +1498,9 @@ private enum SecureStateFile {
 		var shouldRemoveTemporary = true
 		defer {
 			_ = Darwin.close(descriptor)
-			if shouldRemoveTemporary { _ = Darwin.unlink(temporary.path) }
+			if shouldRemoveTemporary {
+				_ = temporaryName.withCString { Darwin.unlinkat(directoryDescriptor, $0, 0) }
+			}
 		}
 
 		try data.withUnsafeBytes { rawBuffer in
@@ -1353,19 +1525,37 @@ private enum SecureStateFile {
 				"Could not sync metadata: \(errnoDescription())."
 			)
 		}
-		guard Darwin.rename(temporary.path, url.path) == 0 else {
+		let destinationName = url.lastPathComponent
+		var existingMetadata = stat()
+		let existingStatus = destinationName.withCString {
+			Darwin.fstatat(directoryDescriptor, $0, &existingMetadata, AT_SYMLINK_NOFOLLOW)
+		}
+		guard existingStatus != 0 || (
+			(existingMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+				&& existingMetadata.st_uid == Darwin.geteuid()
+				&& existingMetadata.st_nlink == 1
+				&& (existingMetadata.st_mode & 0o077) == 0
+		) else {
+			throw AuthSessionCoordinatorError.stateFile(
+				"The existing metadata path is unsafe and was preserved."
+			)
+		}
+		guard existingStatus == 0 || errno == ENOENT else {
+			throw AuthSessionCoordinatorError.stateFile(
+				"Could not inspect existing metadata: \(errnoDescription())."
+			)
+		}
+		let renameStatus = temporaryName.withCString { source in
+			destinationName.withCString { destination in
+				Darwin.renameat(directoryDescriptor, source, directoryDescriptor, destination)
+			}
+		}
+		guard renameStatus == 0 else {
 			throw AuthSessionCoordinatorError.stateFile(
 				"Could not commit metadata: \(errnoDescription())."
 			)
 		}
 		shouldRemoveTemporary = false
-		let directoryDescriptor = Darwin.open(directory.path, O_RDONLY | O_CLOEXEC)
-		guard directoryDescriptor >= 0 else {
-			throw AuthSessionCoordinatorError.stateFile(
-				"Could not open the metadata directory: \(errnoDescription())."
-			)
-		}
-		defer { _ = Darwin.close(directoryDescriptor) }
 		guard Darwin.fsync(directoryDescriptor) == 0 else {
 			throw AuthSessionCoordinatorError.stateFile(
 				"Could not sync the metadata directory: \(errnoDescription())."

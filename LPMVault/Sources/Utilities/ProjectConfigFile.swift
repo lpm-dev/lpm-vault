@@ -20,6 +20,11 @@ enum ProjectConfigFile {
 		return object
 	}
 
+	static func readJSON(at url: URL) -> LPMJSONValue? {
+		guard let data = try? readRegularFile(at: url) else { return nil }
+		return try? JSONDecoder().decode(LPMJSONValue.self, from: data)
+	}
+
 	/// Adds or replaces the vault ID without following an existing symlink.
 	/// Existing malformed or oversized files are left untouched.
 	static func writeVaultID(_ vaultId: String, to url: URL) throws {

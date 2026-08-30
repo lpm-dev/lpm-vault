@@ -70,7 +70,9 @@ struct SecretRowView: View {
 
 						// Copy
 						Button {
-							ClipboardManager.shared.copy("\(secret.key)=\(secret.value)")
+							ClipboardManager.shared.copy(
+								ClipboardManager.dotenvText(for: [secret.key: secret.value])
+							)
 							withAnimation {
 								copyFeedback = true
 							}
