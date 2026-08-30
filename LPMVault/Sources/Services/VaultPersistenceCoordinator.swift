@@ -346,10 +346,8 @@ actor VaultPersistenceCoordinator {
 			return .failure(.encodingFailed)
 		}
 
-		let saveResult = service.saveEnvironments(
+		let saveResult = service.updateEnvironments(
 			vaultId: projectId,
-			projectName: projectName,
-			projectPath: projectPath,
 			environments: environments
 		)
 		let warning: String?
@@ -363,10 +361,8 @@ actor VaultPersistenceCoordinator {
 		}
 
 		guard service.writeData(account: "__sync_metadata__", data: metadataData) else {
-			let restoredVault = service.saveEnvironments(
+			let restoredVault = service.updateEnvironments(
 				vaultId: projectId,
-				projectName: projectName,
-				projectPath: projectPath,
 				environments: previousEnvironments
 			)
 			let restoredMetadata = restoreData(
@@ -657,7 +653,10 @@ actor VaultPersistenceCoordinator {
 			return .failure(.encodingFailed)
 		}
 
-		let saveResult = save(mergedProject)
+		let saveResult = service.updateEnvironments(
+			vaultId: mergedProject.id,
+			environments: mergedProject.environments
+		)
 		let warning: String?
 		switch saveResult {
 		case .success:
@@ -668,7 +667,10 @@ actor VaultPersistenceCoordinator {
 			return .failure(error)
 		}
 		guard service.writeData(account: "__sync_metadata__", data: metadataData) else {
-			let restoredProject = save(durableProject)
+			let restoredProject = service.updateEnvironments(
+				vaultId: durableProject.id,
+				environments: durableProject.environments
+			)
 			let restoredMetadata = restoreData(
 				account: "__sync_metadata__",
 				snapshot: previousMetadataData
@@ -1069,10 +1071,8 @@ actor VaultPersistenceCoordinator {
 
 		// No suspension follows this atomic commit point. Cancellation after it
 		// observes durable success and only suppresses stale UI publication.
-		let saveResult = service.saveEnvironments(
+		let saveResult = service.updateEnvironments(
 			vaultId: projectId,
-			projectName: project.name,
-			projectPath: project.path,
 			environments: project.environments
 		)
 		let warning: String?
@@ -1086,10 +1086,8 @@ actor VaultPersistenceCoordinator {
 		}
 
 		guard service.writeData(account: "__sync_metadata__", data: metadataData) else {
-			let restoredVault = service.saveEnvironments(
+			let restoredVault = service.updateEnvironments(
 				vaultId: projectId,
-				projectName: project.name,
-				projectPath: project.path,
 				environments: previousEnvironments
 			)
 			let restoredMetadata = restoreData(

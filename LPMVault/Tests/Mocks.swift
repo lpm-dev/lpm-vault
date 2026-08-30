@@ -466,7 +466,7 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 		wrappedKeys: [SyncService.WrappedMemberKey]?,
 		expectedVersion: Int?,
 		name: String?,
-		schema: Data?
+		schema: LPMJSONValue?
 	) async -> SyncService.SyncStatus? {
 		_ = authToken
 		_ = orgSlug
@@ -504,7 +504,7 @@ final class MockPersonalSyncService: PersonalSyncServiceProtocol, @unchecked Sen
 		expectedVersion: Int?,
 		force: Bool,
 		name: String?,
-		schema: Data?
+		schema: LPMJSONValue?
 	) async -> SyncService.SyncStatus? {
 		_ = authToken
 		_ = vaultId

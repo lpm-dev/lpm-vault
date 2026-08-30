@@ -318,6 +318,18 @@ enum VaultCrypto {
 		guard cryptoVersion == 1 || cryptoVersion == currentCryptoVersion else {
 			throw CryptoError.unsupportedCryptoVersion(cryptoVersion)
 		}
+		if cryptoVersion == currentCryptoVersion {
+			let stableKey = try stableWrappingKey()
+			let aesKey = try unwrapKey(wrappingKey: stableKey, wrapped: wrappedKey)
+			let plaintext = try decryptPayload(
+				key: aesKey,
+				encoded: encryptedBlob,
+				scope: .personal,
+				vaultId: vaultId,
+				cryptoVersion: cryptoVersion
+			)
+			return (plaintext, false)
+		}
 		if let stableKey = try? stableWrappingKey(),
 			let aesKey = try? unwrapKey(wrappingKey: stableKey, wrapped: wrappedKey)
 		{
@@ -475,6 +487,11 @@ enum VaultCrypto {
 		}
 	}
 
+	static func ensureProtectedOnlyCutover() throws {
+		guard cliSupportsProtectedOnlyCutover else { return }
+		_ = try stableWrappingKey()
+	}
+
 	private static func stableWrappingKeyUnlocked() throws -> SymmetricKey {
 		let fileState = inspectStableWrappingKeyFile(at: wrappingKeyFileURL())
 		if let key = try readStableWrappingKeyFromKeychain() {
@@ -609,6 +626,7 @@ enum VaultCrypto {
 		guard Darwin.fstat(descriptor, &metadata) == 0,
 			(metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
 			metadata.st_uid == Darwin.geteuid(),
+			metadata.st_nlink == 1,
 			(metadata.st_mode & 0o077) == 0,
 			metadata.st_size >= 0,
 			metadata.st_size <= Int64(maximumWrappingKeyFileBytes)
@@ -675,6 +693,7 @@ enum VaultCrypto {
 		guard Darwin.fstat(descriptor, &openedMetadata) == 0,
 			(openedMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
 			openedMetadata.st_uid == Darwin.geteuid(),
+			openedMetadata.st_nlink == 1,
 			(openedMetadata.st_mode & 0o077) == 0,
 			openedMetadata.st_size >= 0,
 			openedMetadata.st_size <= Int64(maximumWrappingKeyFileBytes)
@@ -721,6 +740,7 @@ enum VaultCrypto {
 		}
 		guard pathStatus == 0,
 			(pathMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+			pathMetadata.st_nlink == 1,
 			pathMetadata.st_dev == openedMetadata.st_dev,
 			pathMetadata.st_ino == openedMetadata.st_ino
 		else {

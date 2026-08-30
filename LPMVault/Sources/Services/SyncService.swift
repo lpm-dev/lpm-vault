@@ -2,6 +2,48 @@ import CryptoKit
 import Foundation
 import Security
 
+indirect enum LPMJSONValue: Codable, Equatable, Sendable {
+	case object([String: LPMJSONValue])
+	case array([LPMJSONValue])
+	case string(String)
+	case integer(Int64)
+	case number(Decimal)
+	case bool(Bool)
+	case null
+
+	init(from decoder: Decoder) throws {
+		let container = try decoder.singleValueContainer()
+		if container.decodeNil() { self = .null }
+		else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+		else if let value = try? container.decode(Int64.self) { self = .integer(value) }
+		else if let value = try? container.decode(Decimal.self) { self = .number(value) }
+		else if let value = try? container.decode(String.self) { self = .string(value) }
+		else if let value = try? container.decode([String: LPMJSONValue].self) {
+			self = .object(value)
+		} else if let value = try? container.decode([LPMJSONValue].self) {
+			self = .array(value)
+		} else {
+			throw DecodingError.dataCorruptedError(
+				in: container,
+				debugDescription: "Unsupported JSON value."
+			)
+		}
+	}
+
+	func encode(to encoder: Encoder) throws {
+		var container = encoder.singleValueContainer()
+		switch self {
+		case .object(let value): try container.encode(value)
+		case .array(let value): try container.encode(value)
+		case .string(let value): try container.encode(value)
+		case .integer(let value): try container.encode(value)
+		case .number(let value): try container.encode(value)
+		case .bool(let value): try container.encode(value)
+		case .null: try container.encodeNil()
+		}
+	}
+}
+
 final class SyncService: @unchecked Sendable {
 	private final class RetainedServices: @unchecked Sendable {
 		let lock = NSLock()
@@ -202,27 +244,23 @@ final class SyncService: @unchecked Sendable {
 		expectedVersion: Int? = nil,
 		force: Bool = false,
 		name: String? = nil,
-		schema: Data? = nil
+		schema: LPMJSONValue? = nil
 	) async -> SyncStatus? {
 		guard let url = endpoint(["api", "vaults", vaultId, "sync"]) else { return nil }
-		var body: [String: Any] = [
-			"encryptedBlob": encryptedBlob,
-			"wrappedKey": wrappedKey,
-			"cryptoVersion": VaultCrypto.currentCryptoVersion,
+		var body: [String: LPMJSONValue] = [
+			"encryptedBlob": .string(encryptedBlob),
+			"wrappedKey": .string(wrappedKey),
+			"cryptoVersion": .integer(Int64(VaultCrypto.currentCryptoVersion)),
 		]
-		if let expectedVersion { body["expectedVersion"] = expectedVersion }
-		if force { body["force"] = true }
-		if let name, !name.isEmpty { body["name"] = name }
-		if let schema,
-			let object = try? JSONSerialization.jsonObject(with: schema)
-		{
-			body["schema"] = object
-		}
+		if let expectedVersion { body["expectedVersion"] = .integer(Int64(expectedVersion)) }
+		if force { body["force"] = .bool(true) }
+		if let name, !name.isEmpty { body["name"] = .string(name) }
+		if let schema { body["schema"] = schema }
 		return await syncRequest(
 			url: url,
 			method: "POST",
 			token: authToken,
-			body: body,
+			body: .object(body),
 			vaultId: vaultId,
 			scope: .personal
 		)
@@ -247,31 +285,31 @@ final class SyncService: @unchecked Sendable {
 		wrappedKeys: [WrappedMemberKey]?,
 		expectedVersion: Int?,
 		name: String? = nil,
-		schema: Data? = nil
+		schema: LPMJSONValue? = nil
 	) async -> SyncStatus? {
 		guard let url = endpoint(["api", "orgs", orgSlug, "vaults", vaultId]) else { return nil }
-		var body: [String: Any] = [
-			"encryptedBlob": encryptedBlob,
-			"cryptoVersion": VaultCrypto.currentCryptoVersion,
+		var body: [String: LPMJSONValue] = [
+			"encryptedBlob": .string(encryptedBlob),
+			"cryptoVersion": .integer(Int64(VaultCrypto.currentCryptoVersion)),
 		]
-		if let wrappedKeys,
-			let encoded = try? JSONEncoder().encode(wrappedKeys),
-			let array = try? JSONSerialization.jsonObject(with: encoded)
-		{
-			body["wrappedKeys"] = array
+		if let wrappedKeys {
+			body["wrappedKeys"] = .array(wrappedKeys.map { key in
+				.object([
+					"userId": .string(key.userId),
+					"wrappedKey": .string(key.wrappedKey),
+					"publicKeyVersion": .integer(Int64(key.publicKeyVersion)),
+					"publicKeyFingerprint": .string(key.publicKeyFingerprint),
+				])
+			})
 		}
-		if let expectedVersion { body["expectedVersion"] = expectedVersion }
-		if let name, !name.isEmpty { body["name"] = name }
-		if let schema,
-			let object = try? JSONSerialization.jsonObject(with: schema)
-		{
-			body["schema"] = object
-		}
+		if let expectedVersion { body["expectedVersion"] = .integer(Int64(expectedVersion)) }
+		if let name, !name.isEmpty { body["name"] = .string(name) }
+		if let schema { body["schema"] = schema }
 		return await syncRequest(
 			url: url,
 			method: "POST",
 			token: authToken,
-			body: body,
+			body: .object(body),
 			vaultId: vaultId,
 			scope: .organization(slug: orgSlug)
 		)
@@ -330,7 +368,7 @@ final class SyncService: @unchecked Sendable {
 			url: url,
 			method: "POST",
 			token: authToken,
-			body: ["publicKey": publicKey],
+			body: .object(["publicKey": .string(publicKey)]),
 			signedSuccess: false,
 			headers: headers
 		)
@@ -458,7 +496,7 @@ final class SyncService: @unchecked Sendable {
 		url: URL,
 		method: String,
 		token: String,
-		body: [String: Any]? = nil,
+		body: LPMJSONValue? = nil,
 		vaultId: String,
 		scope: EnvelopeScope
 	) async -> SyncStatus? {
@@ -477,6 +515,9 @@ final class SyncService: @unchecked Sendable {
 					scope: scope,
 					requestNonce: nonce
 				)
+			},
+			validateNonSuccess: { statusCode, status in
+				Self.validateSyncConflict(status, statusCode: statusCode)
 			}
 		)
 	}
@@ -531,19 +572,55 @@ final class SyncService: @unchecked Sendable {
 		}
 	}
 
+	private static func validateSyncConflict(
+		_ status: SyncStatus,
+		statusCode: Int
+	) -> Bool {
+		guard statusCode == 409,
+			status.code == "vault_version_conflict",
+			status.error?.caseInsensitiveCompare("Version conflict") == .orderedSame,
+			let serverVersion = status.serverVersion,
+			serverVersion > 0,
+			status.vaultId == nil,
+			status.version == nil,
+			status.cryptoVersion == nil,
+			status.envelopeVersion == nil,
+			status.scope == nil,
+			status.organizationSlug == nil,
+			status.requestNonce == nil,
+			status.payloadDigest == nil,
+			status.encryptedBlob == nil,
+			status.wrappedKey == nil
+		else { return false }
+		return true
+	}
+
+	#if DEBUG
+		static func payloadDigestForTesting(
+			encryptedBlob: String,
+			wrappedKey: String
+		) -> String {
+			payloadDigest(encryptedBlob: encryptedBlob, wrappedKey: wrappedKey)
+		}
+	#endif
+
 	private static func payloadDigest(
 		encryptedBlob: String,
 		wrappedKey: String
 	) -> String {
-		var input = payloadDigestDomain
+		var hasher = SHA256()
+		hasher.update(data: payloadDigestDomain)
 		for value in [encryptedBlob, wrappedKey] {
-			let bytes = Data(value.utf8)
-			guard let count = UInt32(exactly: bytes.count) else { return "" }
+			guard let count = UInt32(exactly: value.utf8.count) else { return "" }
 			var length = count.bigEndian
-			Swift.withUnsafeBytes(of: &length) { input.append(contentsOf: $0) }
-			input.append(bytes)
+			Swift.withUnsafeBytes(of: &length) { hasher.update(bufferPointer: $0) }
+			if value.utf8.withContiguousStorageIfAvailable({ bytes in
+				hasher.update(bufferPointer: UnsafeRawBufferPointer(bytes))
+			}) == nil {
+				hasher.update(data: Data(value.utf8))
+			}
 		}
-		return SHA256.hash(data: input)
+		return hasher.finalize()
 			.map { String(format: "%02x", $0) }
 			.joined()
 	}
@@ -552,10 +629,11 @@ final class SyncService: @unchecked Sendable {
 		url: URL,
 		method: String,
 		token: String,
-		body: [String: Any]? = nil,
+		body: LPMJSONValue? = nil,
 		signedSuccess: Bool,
 		headers: [String: String] = [:],
-		validate: ((T) -> Bool)? = nil
+		validate: ((T) -> Bool)? = nil,
+		validateNonSuccess: ((Int, T) -> Bool)? = nil
 	) async -> T? {
 		var request = URLRequest(url: url)
 		request.httpMethod = method
@@ -563,7 +641,7 @@ final class SyncService: @unchecked Sendable {
 		for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
 		if let body {
 			request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-			request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+			request.httpBody = try? JSONEncoder().encode(body)
 		}
 
 		do {
@@ -574,7 +652,11 @@ final class SyncService: @unchecked Sendable {
 			)
 			guard let http = response as? HTTPURLResponse
 			else { return nil }
-			guard (200..<300).contains(http.statusCode) else { return nil }
+			let decoded = try JSONDecoder().decode(T.self, from: data)
+			guard (200..<300).contains(http.statusCode) else {
+				guard validateNonSuccess?(http.statusCode, decoded) == true else { return nil }
+				return decoded
+			}
 			if signedSuccess {
 				guard PinnedSessionDelegate.verifyResponseSignature(
 					http,
@@ -583,7 +665,6 @@ final class SyncService: @unchecked Sendable {
 					requireSignature: true
 				) else { return nil }
 			}
-			let decoded = try JSONDecoder().decode(T.self, from: data)
 			guard validate?(decoded) != false else { return nil }
 			return decoded
 		} catch {
@@ -603,7 +684,7 @@ protocol OrgSyncServiceProtocol: Sendable {
 		wrappedKeys: [SyncService.WrappedMemberKey]?,
 		expectedVersion: Int?,
 		name: String?,
-		schema: Data?
+		schema: LPMJSONValue?
 	) async -> SyncService.SyncStatus?
 
 	func pullOrg(
@@ -631,7 +712,7 @@ protocol PersonalSyncServiceProtocol: Sendable {
 		expectedVersion: Int?,
 		force: Bool,
 		name: String?,
-		schema: Data?
+		schema: LPMJSONValue?
 	) async -> SyncService.SyncStatus?
 
 	func pull(authToken: String, vaultId: String) async -> SyncService.SyncStatus?

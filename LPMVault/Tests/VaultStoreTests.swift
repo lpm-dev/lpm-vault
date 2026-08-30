@@ -81,7 +81,12 @@ struct VaultStoreTests {
 	func lockCancelsProjectLoad() async throws {
 		let keychain = MockKeychainService()
 		keychain.storage["id-1"] = (name: "project", path: "", secrets: ["TOKEN": "secret"])
-		keychain.listProjectsDelay = .milliseconds(150)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextListProjects = {
+			entered.signal()
+			release.wait()
+		}
 		let store = VaultStore(
 			keychainService: keychain,
 			biometricService: MockBiometricService(),
@@ -89,8 +94,14 @@ struct VaultStoreTests {
 		)
 
 		let load = Task { await store.loadProjects() }
-		try await Task.sleep(for: .milliseconds(20))
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
 		store.lock()
+		release.signal()
 		_ = await load.value
 
 		#expect(store.projects.isEmpty)
@@ -603,6 +614,7 @@ struct VaultStoreTests {
 		#expect(result == .success)
 		#expect(store.projects[0].secrets["DB_HOST"] == "localhost")
 		#expect(keychain.storage["id-1"]?.secrets["DB_HOST"] == "localhost")
+		#expect(keychain.updateEnvironmentsCallCount == 1)
 	}
 
 	@Test("add secret with empty key is rejected")
@@ -977,6 +989,7 @@ struct VaultStoreTests {
 		#expect(result == .success(ImportedEnvFile(secrets: ["IMPORTED": "value"])))
 		#expect(store.projects[0].secrets == ["OLD": "value", "IMPORTED": "value"])
 		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value", "IMPORTED": "value"])
+		#expect(keychain.updateEnvironmentsCallCount == 1)
 	}
 
 	@Test("tab changes cancel a pending dotenv import instead of redirecting it")
@@ -1692,6 +1705,23 @@ struct VaultStoreTests {
 		#expect(biometric.authenticateCallCount == 1)
 	}
 
+	@Test("local-only unlock attempts protected-only Keychain cutover")
+	func localUnlockAttemptsProtectedOnlyCutover() async {
+		let calls = LockedCounter()
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			protectedOnlyCutover: { calls.increment() },
+			authSessionClearer: { _ in }
+		)
+
+		await store.unlock()
+
+		#expect(calls.value == 1)
+		#expect(store.isUnlocked)
+	}
+
 	@Test("unlock stays locked on cancel")
 	func unlockCancel() async {
 		let (store, _, biometric, _) = makeStore(biometricShouldSucceed: false)
@@ -2086,6 +2116,79 @@ struct VaultStoreTests {
 			#expect(!store.isLoggingIn)
 		}
 
+		@Test("logout cannot be overtaken by a suspended login session write")
+		func logoutWinsAgainstSuspendedLoginWrite() async {
+			let api = MockAPIService()
+			api.user = testUserWithOrganizations(count: 0)
+			let writerGate = AsyncGate()
+			let session = MutableOptionalString()
+			let store = VaultStore(
+				keychainService: MockKeychainService(),
+				biometricService: MockBiometricService(),
+				apiService: api,
+				authTokenProvider: { _, _ in session.value },
+				loginProvider: { _, _ in testAuthCredentials(token: "stale-login-token") },
+				authSessionWriter: { credentials, _ in
+					await writerGate.arriveAndWait()
+					session.value = credentials.token
+				},
+				authSessionClearer: { _ in session.value = nil }
+			)
+			store.appEnvironment = .production
+
+			let login = Task { await store.login() }
+			await writerGate.waitUntilArrived()
+			let logout = Task { await store.logout() }
+			await waitUntil { !store.isLoggingIn }
+			await writerGate.release()
+			await logout.value
+			let succeeded = await login.value
+
+			#expect(!succeeded)
+			#expect(session.value == nil)
+			#expect(store.currentUser == nil)
+			#expect(store.personalTokens.isEmpty)
+			#expect(store.orgTokens.isEmpty)
+			#expect(!store.isLoggingIn)
+		}
+
+		#if DEBUG
+			@Test("an old-environment logout cannot clear the new environment identity")
+			func environmentSwitchWinsAgainstSuspendedLogout() async {
+				let clearerGate = AsyncGate()
+				let api = MockAPIService()
+				api.user = LPMUser(
+					id: "development-user",
+					username: "development-user",
+					name: nil,
+					email: nil,
+					avatarUrl: nil,
+					plan: nil,
+					createdAt: nil,
+					orgs: nil
+				)
+				let store = VaultStore(
+					keychainService: MockKeychainService(),
+					biometricService: MockBiometricService(),
+					apiService: api,
+					authTokenProvider: { _, _ in "development-session" },
+					authSessionClearer: { _ in await clearerGate.arriveAndWait() }
+				)
+				store.appEnvironment = .production
+				store.currentUser = testUserWithOrganizations(count: 0)
+
+				let logout = Task { await store.logout() }
+				await clearerGate.waitUntilArrived()
+				store.switchEnvironment(to: .development)
+				await waitUntil { store.currentUser?.id == "development-user" }
+				await clearerGate.release()
+				await logout.value
+
+				#expect(store.appEnvironment == .development)
+				#expect(store.currentUser?.id == "development-user")
+			}
+		#endif
+
 		@Test("environment switches discard personal and organization revocations")
 		func environmentSwitchInvalidatesRevocations() async throws {
 			let api = MockAPIService()
@@ -2146,6 +2249,31 @@ struct VaultStoreTests {
 		await store.logout()
 
 		#expect(cleared.values == [VaultConstants.apiBaseURL.absoluteString])
+	}
+
+	@Test("push confirmation counts keys in every environment")
+	func pushConfirmationCountsAllEnvironments() throws {
+		let (store, _, _, _) = makeStore()
+		store.projects = [VaultProject(
+			id: "multi-environment",
+			name: "Multi-environment",
+			path: "",
+			environments: [
+				"default": ["DEFAULT_KEY": "one"],
+				"production": [
+					"API_KEY": "two",
+					"DATABASE_URL": "three",
+					"REDIS_URL": "four",
+					"SIGNING_KEY": "five",
+				],
+			]
+		)]
+		store.selectProject("multi-environment")
+
+		let confirmation = try #require(store.preparePushConfirmation())
+
+		#expect(confirmation.localKeyCount == 5)
+		#expect(confirmation.localKeyCount == store.selectedProject?.secretCount)
 	}
 
 	@Test("logout keeps the visible session when shared storage cannot be cleared")
@@ -2923,6 +3051,7 @@ struct VaultStoreTests {
 			])
 		#expect(commit.isDirty)
 		#expect(keychain.storage["project"]?.secrets == commit.project.secrets)
+		#expect(keychain.updateEnvironmentsCallCount == 1)
 	}
 
 	@Test("pull rejects an overlapping CLI change without overwriting it")
@@ -3549,6 +3678,20 @@ private final class MutableString: @unchecked Sendable {
 	}
 
 	var value: String {
+		get { lock.withLock { storage } }
+		set { lock.withLock { storage = newValue } }
+	}
+}
+
+private final class MutableOptionalString: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage: String?
+
+	init(_ value: String? = nil) {
+		storage = value
+	}
+
+	var value: String? {
 		get { lock.withLock { storage } }
 		set { lock.withLock { storage = newValue } }
 	}
