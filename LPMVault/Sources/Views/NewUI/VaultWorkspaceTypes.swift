@@ -51,8 +51,8 @@ struct VaultSyncTarget: Identifiable, Equatable {
 	}
 }
 
-struct VaultWorkspaceSnapshot: Equatable {
-	struct KeySummary: Equatable {
+struct VaultWorkspaceSnapshot: Equatable, Sendable {
+	struct KeySummary: Equatable, Sendable {
 		let environmentCount: Int
 		let hasDrift: Bool
 	}

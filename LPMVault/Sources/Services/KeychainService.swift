@@ -390,6 +390,8 @@ final class SharedKeychainStore: @unchecked Sendable {
 	private let service: String
 	private let backend: any KeychainStoreBackend
 	private let mode: Mode
+	private let protectedOnlyLock = NSLock()
+	private var protectedOnlyObserved = false
 
 	init(
 		service: String,
@@ -583,6 +585,10 @@ final class SharedKeychainStore: @unchecked Sendable {
 			guard initialMarker == nil || initialMarker == Self.legacyCutoverValue else {
 				throw KeychainStoreError.migrationConflict
 			}
+			guard initialMarker == nil else {
+				cacheProtectedOnlyState()
+				return
+			}
 
 			var accountSet = Set(
 				try backend.accounts(service: service, location: .shared)
@@ -675,6 +681,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 				) == Self.legacyCutoverValue else {
 					throw KeychainStoreError.migrationVerificationFailed
 				}
+				cacheProtectedOnlyState()
 			} catch {
 				let operationError = error
 				if markerAdded {
@@ -827,6 +834,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 	}
 
 	private func legacyCompatibilityActive() throws -> Bool {
+		if protectedOnlyLock.withLock({ protectedOnlyObserved }) { return false }
 		switch try backend.read(
 			service: service,
 			account: Self.legacyCutoverAccount,
@@ -835,10 +843,15 @@ final class SharedKeychainStore: @unchecked Sendable {
 		case nil:
 			return true
 		case Self.legacyCutoverValue:
+			cacheProtectedOnlyState()
 			return false
 		case .some:
 			throw KeychainStoreError.migrationConflict
 		}
+	}
+
+	private func cacheProtectedOnlyState() {
+		protectedOnlyLock.withLock { protectedOnlyObserved = true }
 	}
 
 }

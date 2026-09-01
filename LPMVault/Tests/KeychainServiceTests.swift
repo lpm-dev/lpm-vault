@@ -306,6 +306,8 @@ struct SharedKeychainMigrationTests {
 		var legacyValueUpdatedOnSharedFailure: Data?
 		var sharedReadCounts: [String: Int] = [:]
 		var legacyReadCounts: [String: Int] = [:]
+		var sharedAccountListCount = 0
+		var legacyAccountListCount = 0
 		var events: [String] = []
 
 		func readCount(account: String, location: KeychainStoreLocation) -> Int {
@@ -319,7 +321,11 @@ struct SharedKeychainMigrationTests {
 			service: String,
 			location: KeychainStoreLocation
 		) throws -> [String] {
-			Array(location == .shared ? shared.keys : legacy.keys).sorted()
+			switch location {
+			case .shared: sharedAccountListCount += 1
+			case .legacy: legacyAccountListCount += 1
+			}
+			return Array(location == .shared ? shared.keys : legacy.keys).sorted()
 		}
 
 		func read(service: String, account: String, location: KeychainStoreLocation) throws -> Data?
@@ -496,6 +502,21 @@ struct SharedKeychainMigrationTests {
 			#expect(backend.readCount(account: account, location: .legacy) == 0)
 			#expect(backend.readCount(account: account, location: .shared) == 1)
 		}
+	}
+
+	@Test("protected-only state is cached after one durable marker read")
+	func protectedOnlyMarkerIsCached() throws {
+		let backend = FakeBackend()
+		backend.shared["__legacy_keychain_cutover_v1__"] = Data("protected-only-v1".utf8)
+		backend.shared["first"] = Data("one".utf8)
+		backend.shared["second"] = Data("two".utf8)
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(try store.read(account: "first") == Data("one".utf8))
+		#expect(try store.read(account: "second") == Data("two".utf8))
+		#expect(backend.readCount(
+			account: "__legacy_keychain_cutover_v1__", location: .shared
+		) == 1)
 	}
 
 	@Test("legacy-only values are copied, verified, and preserved")
@@ -732,6 +753,24 @@ struct SharedKeychainMigrationTests {
 			)
 			#expect(deletion < markerEvent)
 		}
+	}
+
+	@Test("a completed cutover does not enumerate protected vault accounts again")
+	func completedCutoverIsConstantWork() throws {
+		let backend = FakeBackend()
+		backend.shared["__legacy_keychain_cutover_v1__"] = Data("protected-only-v1".utf8)
+		for index in 0..<100 {
+			backend.shared["vault-\(index)"] = Data("value-\(index)".utf8)
+		}
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		try store.cutOverToProtectedOnly()
+
+		#expect(backend.sharedAccountListCount == 0)
+		#expect(backend.legacyAccountListCount == 0)
+		#expect(backend.sharedReadCounts.values.reduce(0, +) == 1)
+		#expect(backend.legacyReadCounts.isEmpty)
+		#expect(backend.events.isEmpty)
 	}
 
 	@Test("coordinated cutover preserves divergent copies without setting the marker")

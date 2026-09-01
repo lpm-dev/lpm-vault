@@ -76,6 +76,22 @@ private struct AuthTokenResolution: Sendable {
 	let authorityGeneration: AuthSessionAuthorityGeneration?
 }
 
+private actor AuthSessionMutationQueue {
+	private var tail: Task<Void, Never>?
+
+	func run(
+		_ operation: @escaping @Sendable () async throws -> Void
+	) async throws {
+		let previous = tail
+		let current = Task {
+			await previous?.value
+			try await operation()
+		}
+		tail = Task { _ = try? await current.value }
+		try await current.value
+	}
+}
+
 struct ImportedEnvProject: Sendable, Equatable {
 	let projectId: String
 	let version: Int
@@ -404,8 +420,17 @@ final class VaultStore {
 
 	var projects: [VaultProject] = [] {
 		didSet {
-			let previous = Dictionary(uniqueKeysWithValues: oldValue.map { ($0.id, $0) })
 			let currentIDs = Set(projects.map(\.id))
+			if let pendingWorkspaceSnapshots,
+				Set(pendingWorkspaceSnapshots.keys) == currentIDs
+			{
+				workspaceSnapshots = pendingWorkspaceSnapshots
+				workspaceSnapshotBuildCount += pendingWorkspaceSnapshots.count
+				self.pendingWorkspaceSnapshots = nil
+				return
+			}
+			pendingWorkspaceSnapshots = nil
+			let previous = Dictionary(uniqueKeysWithValues: oldValue.map { ($0.id, $0) })
 			var snapshots = workspaceSnapshots.filter { currentIDs.contains($0.key) }
 			snapshots.reserveCapacity(projects.count)
 			for project in projects where previous[project.id] != project {
@@ -417,6 +442,7 @@ final class VaultStore {
 	}
 	private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
 	private(set) var workspaceSnapshotBuildCount = 0
+	private var pendingWorkspaceSnapshots: [String: VaultWorkspaceSnapshot]?
 	var selectedProjectId: String? {
 		didSet {
 			guard oldValue != selectedProjectId else { return }
@@ -486,6 +512,7 @@ final class VaultStore {
 			_ plaintext: Data,
 			_ vaultId: String
 		) throws -> (encryptedBlob: String, wrappedKey: String)
+	private let protectedOnlyCutover: @Sendable () throws -> Void
 	private let authTokenProvider: (@Sendable (String, URL) async throws -> String?)?
 	private let authAuthorizationProvider:
 		@Sendable (String, URL) async throws -> AuthSessionAuthorization?
@@ -494,6 +521,7 @@ final class VaultStore {
 	private let loginProvider: @Sendable (String, URL) async throws -> AuthSessionCredentials
 	private let authSessionWriter: @Sendable (AuthSessionCredentials, String) async throws -> Void
 	private let authSessionClearer: @Sendable (String) async throws -> Void
+	private let authSessionMutationQueue = AuthSessionMutationQueue()
 	private let autoLockSleep: @Sendable (Duration) async throws -> Void
 	private let autoLockNow: @Sendable () -> TimeInterval
 	private var autoLockTask: Task<Void, Never>?
@@ -718,6 +746,7 @@ final class VaultStore {
 			) throws -> (encryptedBlob: String, wrappedKey: String) = {
 				try VaultCrypto.encryptForStableSync(plaintext: $0, vaultId: $1)
 			},
+		protectedOnlyCutover: (@Sendable () throws -> Void)? = nil,
 		authTokenProvider: (@Sendable (String, URL) async throws -> String?)? = nil,
 		authAuthorizationProvider:
 			@escaping @Sendable (String, URL) async throws -> AuthSessionAuthorization? = {
@@ -760,6 +789,13 @@ final class VaultStore {
 		self.envFileImportService = envFileImportService
 		self.sharingKeypairProvider = sharingKeypairProvider
 		self.stableSyncEncryptor = stableSyncEncryptor
+		if let protectedOnlyCutover {
+			self.protectedOnlyCutover = protectedOnlyCutover
+		} else if keychainService is KeychainService {
+			self.protectedOnlyCutover = { try VaultCrypto.ensureProtectedOnlyCutover() }
+		} else {
+			self.protectedOnlyCutover = {}
+		}
 		self.authTokenProvider = authTokenProvider
 		self.authAuthorizationProvider = authAuthorizationProvider
 		self.authAuthorityValidator = authAuthorityValidator
@@ -825,6 +861,17 @@ final class VaultStore {
 				self.projectLoadTask = nil
 				return
 			}
+			let projects = snapshot.projects
+			let workspaceSnapshots = await Task.detached(priority: .userInitiated) {
+				var derived: [String: VaultWorkspaceSnapshot] = [:]
+				derived.reserveCapacity(projects.count)
+				for project in projects {
+					derived[project.id] = VaultWorkspaceSnapshot(project: project)
+				}
+				return derived
+			}.value
+			guard !Task.isCancelled, generation == self.projectLoadGeneration else { return }
+			self.pendingWorkspaceSnapshots = workspaceSnapshots
 			self.projects = snapshot.projects
 			self.syncMetadata = snapshot.syncMetadata
 			self.vaultOrgAssociations = snapshot.orgAssociations
@@ -1884,7 +1931,12 @@ final class VaultStore {
 			}
 
 			// Token is valid — persist to Keychain (shared with CLI)
-			try await authSessionWriter(credentials, environment.registryURL)
+			try await authSessionMutationQueue.run { [authSessionWriter] in
+				try await authSessionWriter(credentials, environment.registryURL)
+			}
+			guard generation == authOperationGeneration, environment == appEnvironment else {
+				return false
+			}
 
 			// Load full user info + tokens
 			await loadAccount()
@@ -1907,15 +1959,33 @@ final class VaultStore {
 	/// Sign out — clear token from Keychain and reset state.
 	func logout() async {
 		authOperationGeneration &+= 1
+		let generation = authOperationGeneration
+		let environment = appEnvironment
 		isLoggingIn = false
 		invalidateTokenLoad()
 		invalidatePendingOrgPush()
 		do {
-			try await authSessionClearer(appEnvironment.registryURL)
+			try await authSessionMutationQueue.run { [authSessionClearer] in
+				try await authSessionClearer(environment.registryURL)
+			}
+		} catch AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure(let message) {
+			guard generation == authOperationGeneration, environment == appEnvironment else {
+				return
+			}
+			currentUser = nil
+			personalTokens = []
+			orgTokens = [:]
+			lastSyncStatus = nil
+			self.error = "The shared LPM session was cleared, but cleanup failed. \(message)"
+			return
 		} catch {
+			guard generation == authOperationGeneration, environment == appEnvironment else {
+				return
+			}
 			self.error = "Could not clear the shared LPM session. \(error.localizedDescription)"
 			return
 		}
+		guard generation == authOperationGeneration, environment == appEnvironment else { return }
 		currentUser = nil
 		personalTokens = []
 		orgTokens = [:]
@@ -1934,6 +2004,13 @@ final class VaultStore {
 			reason: "Unlock LPM Vault to view secrets"
 		)
 		guard success, generation == unlockGeneration else {
+			isUnlocking = false
+			return
+		}
+		do {
+			try protectedOnlyCutover()
+		} catch {
+			self.error = error.localizedDescription
 			isUnlocking = false
 			return
 		}
@@ -2060,7 +2137,7 @@ final class VaultStore {
 		return SyncConfirmation(
 			action: "push",
 			projectName: project.name,
-			localKeyCount: project.secrets.count,
+			localKeyCount: project.secretCount,
 			cloudVersion: nil
 		)
 	}
@@ -2188,7 +2265,9 @@ final class VaultStore {
 				} else {
 					message = result?.displayError ?? "Push failed"
 				}
-				if message.contains("version conflict") || message.contains("conflict") {
+				if result?.code == "vault_version_conflict"
+					|| message.localizedCaseInsensitiveContains("conflict")
+				{
 					lastSyncStatus = "conflict"
 				} else {
 					error = message
@@ -3221,34 +3300,37 @@ final class VaultStore {
 		}
 	}
 
-	private func syncSchema(for project: VaultProject) async -> Data? {
+	private func syncSchema(for project: VaultProject) async -> LPMJSONValue? {
 		let path = project.path
 		guard !path.isEmpty else { return nil }
 		return await Task.detached(priority: .userInitiated) {
 			let configURL = URL(fileURLWithPath: path).appendingPathComponent("lpm.json")
-			guard let root = ProjectConfigFile.readObject(at: configURL) else { return nil }
+			guard case .object(let root) = ProjectConfigFile.readJSON(at: configURL) else {
+				return nil
+			}
 
-			var schema: [String: Any] = ["version": 2]
-			if let envSchema = root["envSchema"] as? [String: Any] {
-				schema["envSchema"] = envSchema["vars"] ?? envSchema
+			var schema: [String: LPMJSONValue] = ["version": .integer(2)]
+			if case .object(let envSchema) = root["envSchema"] {
+				schema["envSchema"] = envSchema["vars"] ?? .object(envSchema)
 			}
-			if let environments = root["environments"] as? [String: Any] {
-				schema["environments"] = environments
+			if case .object(let environments) = root["environments"] {
+				schema["environments"] = .object(environments)
 			}
-			if let env = root["env"] as? [String: String] {
-				var envConfig: [String: [String: String]] = [:]
-				for (alias, envPath) in env {
+			if case .object(let env) = root["env"] {
+				var envConfig: [String: LPMJSONValue] = [:]
+				for (alias, value) in env {
+					guard case .string(let envPath) = value else { continue }
 					guard envPath.hasPrefix(".env."), envPath.count > ".env.".count else {
 						continue
 					}
-					envConfig[alias] = [
-						"canonical": String(envPath.dropFirst(".env.".count)),
-						"file": envPath,
-					]
+					envConfig[alias] = .object([
+						"canonical": .string(String(envPath.dropFirst(".env.".count))),
+						"file": .string(envPath),
+					])
 				}
-				if !envConfig.isEmpty { schema["envConfig"] = envConfig }
+				if !envConfig.isEmpty { schema["envConfig"] = .object(envConfig) }
 			}
-			return try? JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])
+			return .object(schema)
 		}.value
 	}
 
