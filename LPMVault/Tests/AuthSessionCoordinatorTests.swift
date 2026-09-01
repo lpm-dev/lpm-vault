@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 
@@ -683,6 +684,76 @@ struct AuthSessionCoordinatorTests {
 		)
 	}
 
+	@Test("a revoked session clears the visible account even when expiry cleanup fails")
+	@MainActor
+	func revokedLogoutClearsVisibleAccountAfterCleanupFailure() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await coordinator.persist(
+			session(
+				access: "access-one",
+				refresh: "refresh-one",
+				expiresAt: fixedNow.addingTimeInterval(3_600)
+			),
+			registryURL: registryURL
+		)
+		try Data("not-json".utf8).write(
+			to: home.appendingPathComponent(".lpm/.token-expiry.json")
+		)
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { registryURL, baseURL in
+				try await coordinator.currentAccessToken(
+					registryURL: registryURL,
+					baseURL: baseURL
+				)
+			},
+			authSessionClearer: { registryURL in
+				try await coordinator.clear(registryURL: registryURL)
+			}
+		)
+		store.appEnvironment = .production
+		store.currentUser = LPMUser(
+			id: "current",
+			username: "current",
+			name: nil,
+			email: nil,
+			avatarUrl: nil,
+			plan: nil,
+			createdAt: nil,
+			orgs: nil
+		)
+		store.personalTokens = [LPMToken(
+			id: "personal",
+			name: "personal",
+			scope: nil,
+			expiresAt: nil,
+			lastUsedAt: nil,
+			downloadCount: nil,
+			createdAt: nil
+		)]
+
+		await store.logout()
+
+		#expect(
+			backend.value(
+				for: AuthSessionStore.scopedAccessAccount(registryURL: registryURL)
+			) == nil
+		)
+		#expect(
+			backend.value(
+				for: AuthSessionStore.scopedRefreshAccount(registryURL: registryURL)
+			) == nil
+		)
+		#expect(store.currentUser == nil)
+		#expect(store.personalTokens.isEmpty)
+		#expect(store.error?.localizedCaseInsensitiveContains("cleanup") == true)
+	}
+
 	@Test("a refresh-only partial peer commit is recovered without using the predecessor")
 	func refreshOnlyPartialCommitRecovers() async throws {
 		let home = try temporaryHome()
@@ -1096,15 +1167,20 @@ struct AuthSessionCoordinatorTests {
 		let home = try temporaryHome()
 		defer { try? FileManager.default.removeItem(at: home) }
 		let backend = MemoryAuthCredentialBackend()
-		let first = makeCoordinator(home: home, backend: backend)
-		let second = makeCoordinator(home: home, backend: backend)
+		let coordinators = (0..<32).map { _ in
+			makeCoordinator(home: home, backend: backend)
+		}
+		let values = try await withThrowingTaskGroup(of: String.self) { group in
+			for coordinator in coordinators {
+				group.addTask { try coordinator.deviceFingerprint() }
+			}
+			var values: [String] = []
+			for try await value in group { values.append(value) }
+			return values
+		}
 
-		async let firstID = Task.detached { try first.deviceFingerprint() }.value
-		async let secondID = Task.detached { try second.deviceFingerprint() }.value
-		let values = try await [firstID, secondID]
-
-		#expect(values[0] == values[1])
-		#expect(values[0].count == 64)
+		#expect(Set(values).count == 1)
+		#expect(values.first?.count == 64)
 	}
 
 	@Test("device identity storage failures are explicit and never mint transient identities")
@@ -1116,6 +1192,108 @@ struct AuthSessionCoordinatorTests {
 
 		#expect(throws: Error.self) { try coordinator.deviceFingerprint() }
 		#expect(throws: Error.self) { try coordinator.deviceFingerprint() }
+	}
+
+	@Test("device identity rejects linked and exposed state files")
+	func deviceIdentityRejectsUnsafeStateFiles() throws {
+		for variant in ["symlink", "hardlink", "exposed"] {
+			let home = try temporaryHome()
+			defer { try? FileManager.default.removeItem(at: home) }
+			let lpmDirectory = home.appendingPathComponent(".lpm", isDirectory: true)
+			try FileManager.default.createDirectory(at: lpmDirectory, withIntermediateDirectories: true)
+			try FileManager.default.setAttributes(
+				[.posixPermissions: 0o700],
+				ofItemAtPath: lpmDirectory.path
+			)
+			let target = home.appendingPathComponent("identity-target")
+			try Data(String(repeating: "a", count: 64).utf8).write(to: target)
+			try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+			let identity = lpmDirectory.appendingPathComponent("device-id")
+			switch variant {
+			case "symlink":
+				try FileManager.default.createSymbolicLink(at: identity, withDestinationURL: target)
+			case "hardlink":
+				try FileManager.default.linkItem(at: target, to: identity)
+			case "exposed":
+				try Data(String(repeating: "a", count: 64).utf8).write(to: identity)
+				try FileManager.default.setAttributes(
+					[.posixPermissions: 0o644],
+					ofItemAtPath: identity.path
+				)
+			default:
+				Issue.record("Unknown state-file variant")
+			}
+			let coordinator = makeCoordinator(
+				home: home,
+				backend: MemoryAuthCredentialBackend()
+			)
+
+			#expect(throws: Error.self, "Accepted unsafe variant: \(variant)") {
+				try coordinator.deviceFingerprint()
+			}
+		}
+	}
+
+	@Test("lock acquisition rejects hard links without changing their target")
+	func lockRejectsHardLinks() throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let locks = home.appendingPathComponent("locks", isDirectory: true)
+		try FileManager.default.createDirectory(at: locks, withIntermediateDirectories: true)
+		try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locks.path)
+		let target = home.appendingPathComponent("target")
+		try Data("do-not-mutate".utf8).write(to: target)
+		try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: target.path)
+		let lock = locks.appendingPathComponent("session.lock")
+		try FileManager.default.linkItem(at: target, to: lock)
+
+		#expect(throws: Error.self) {
+			try CrossProcessFileLock.withSingleExclusive(at: lock) {}
+		}
+		let permissions = try #require(
+			FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber
+		)
+		#expect(permissions.intValue == 0o640)
+		#expect(try Data(contentsOf: target) == Data("do-not-mutate".utf8))
+	}
+
+	@Test("auth state rejects FIFOs and substituted metadata directories")
+	func authStateRejectsFIFOAndDirectorySubstitution() throws {
+		let fifoHome = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: fifoHome) }
+		let lpmDirectory = fifoHome.appendingPathComponent(".lpm", isDirectory: true)
+		try FileManager.default.createDirectory(at: lpmDirectory, withIntermediateDirectories: true)
+		try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: lpmDirectory.path)
+		let fifo = lpmDirectory.appendingPathComponent("device-id")
+		try #require(Darwin.mkfifo(fifo.path, 0o600) == 0)
+		let fifoStart = ProcessInfo.processInfo.systemUptime
+		#expect(throws: Error.self) {
+			try makeCoordinator(
+				home: fifoHome,
+				backend: MemoryAuthCredentialBackend()
+			).deviceFingerprint()
+		}
+		#expect(ProcessInfo.processInfo.systemUptime - fifoStart < 0.5)
+
+		let linkedHome = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: linkedHome) }
+		let target = linkedHome.appendingPathComponent("redirected", isDirectory: true)
+		try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+		try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
+		try FileManager.default.createSymbolicLink(
+			at: linkedHome.appendingPathComponent(".lpm"),
+			withDestinationURL: target
+		)
+		#expect(throws: Error.self) {
+			try makeCoordinator(
+				home: linkedHome,
+				backend: MemoryAuthCredentialBackend()
+			).deviceFingerprint()
+		}
+		let permissions = try #require(
+			FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber
+		)
+		#expect(permissions.intValue == 0o755)
 	}
 
 	private func makeCoordinator(

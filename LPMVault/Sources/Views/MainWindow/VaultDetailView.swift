@@ -418,9 +418,9 @@ struct VaultDetailView: View {
 							reason: "Copy all secrets to clipboard"
 						)
 						guard success else { return }
-						let envString = project.sortedSecrets(for: store.selectedEnvironment)
-							.map { "\($0.key)=\($0.value)" }
-							.joined(separator: "\n")
+						let envString = ClipboardManager.dotenvText(
+							for: project.secrets(for: store.selectedEnvironment)
+						)
 						ClipboardManager.shared.copy(envString, clearAfter: 15)
 					}
 				}

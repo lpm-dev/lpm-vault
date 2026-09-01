@@ -4,6 +4,8 @@ import Foundation
 @MainActor
 final class ClipboardManager {
 	static let shared = ClipboardManager()
+	static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+	static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
 	private var clearTask: Task<Void, Never>?
 	private let clearDelay: TimeInterval
@@ -11,6 +13,10 @@ final class ClipboardManager {
 
 	init(clearDelay: TimeInterval = VaultConstants.clipboardClearDelay) {
 		self.clearDelay = clearDelay
+	}
+
+	nonisolated static func dotenvText(for secrets: [String: String]) -> String {
+		EnvFileCodec.format(secrets)
 	}
 
 	/// Copy a value to clipboard and schedule auto-clear
@@ -25,6 +31,8 @@ final class ClipboardManager {
 			clearTask = nil
 			return
 		}
+		pasteboard.setData(Data(), forType: Self.concealedType)
+		pasteboard.setData(Data(), forType: Self.transientType)
 		ownedChangeCount = pasteboard.changeCount
 
 		// Cancel any existing clear timer

@@ -478,7 +478,7 @@ struct VaultWorkspaceView: View {
 
 	private func copySecret(_ key: String, _ environment: String) {
 		guard let value = project?.value(for: key, in: environment) else { return }
-		ClipboardManager.shared.copy("\(key)=\(value)")
+		ClipboardManager.shared.copy(ClipboardManager.dotenvText(for: [key: value]))
 	}
 
 	private func copyAll() {
@@ -504,9 +504,9 @@ struct VaultWorkspaceView: View {
 				store.selectedEnvironment == environment,
 				let current = store.selectedProject
 			else { return }
-			let contents = current.sortedSecrets(for: environment)
-				.map { "\($0.key)=\($0.value)" }
-				.joined(separator: "\n")
+			let contents = ClipboardManager.dotenvText(
+				for: current.secrets(for: environment)
+			)
 			ClipboardManager.shared.copy(contents, clearAfter: 15)
 		}
 	}

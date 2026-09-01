@@ -162,6 +162,32 @@ struct CryptoInteropTests {
 		}
 	}
 
+	@Test("Protocol v2 rejects token-wrapped personal payloads")
+	func protocolV2RejectsTokenWrappedPayloads() throws {
+		let token = "server-visible-token"
+		let aesKey = VaultCrypto.generateAESKey()
+		let encrypted = try VaultCrypto.encryptPayload(
+			key: aesKey,
+			plaintext: Data(#"{"TOKEN":"attacker-controlled"}"#.utf8),
+			scope: .personal,
+			vaultId: "vault-a"
+		)
+		let wrapped = try VaultCrypto.wrapKey(
+			wrappingKey: VaultCrypto.deriveWrappingKey(authToken: token),
+			aesKey: aesKey
+		)
+
+		#expect(throws: (any Error).self) {
+			_ = try VaultCrypto.decryptStableSyncData(
+				authToken: token,
+				encryptedBlob: encrypted,
+				wrappedKey: wrapped,
+				vaultId: "vault-a",
+				cryptoVersion: VaultCrypto.currentCryptoVersion
+			)
+		}
+	}
+
 	@Test("Unsupported payload versions fail closed")
 	func unsupportedPayloadVersionFailsClosed() throws {
 		let key = VaultCrypto.generateAESKey()

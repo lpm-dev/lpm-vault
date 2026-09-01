@@ -58,7 +58,7 @@ struct AuditRegressionTests {
 			fromRFC3339: "invalid", now: now
 		) == "invalid")
 	}
-	@Test("dotenv export remains literal when sourced and preserves edge tabs")
+	@Test("dotenv export and clipboard text remain literal when sourced")
 	func shellSafeLosslessDotenvExport() throws {
 		let directory = FileManager.default.temporaryDirectory
 			.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -71,7 +71,7 @@ struct AuditRegressionTests {
 			"VARIABLE": "$HOME",
 			"TABS": "\tkeep\t",
 		]
-		let formatted = EnvFileCodec.format(source)
+		let formatted = ClipboardManager.dotenvText(for: source)
 		#expect(try EnvFileCodec.parse(formatted) == source)
 
 		let file = directory.appendingPathComponent("export.env")
@@ -814,6 +814,8 @@ struct AuditRegressionTests {
 		#expect(pasteboard.string(forType: .string) == "unrelated")
 
 		manager.copy("owned")
+		#expect(pasteboard.types?.contains(ClipboardManager.concealedType) == true)
+		#expect(pasteboard.types?.contains(ClipboardManager.transientType) == true)
 		manager.clearClipboard()
 		#expect(pasteboard.string(forType: .string) == nil)
 	}

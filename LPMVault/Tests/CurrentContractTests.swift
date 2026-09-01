@@ -1,11 +1,34 @@
 import CryptoKit
+import Darwin
 import Foundation
+import Security
 import Testing
 
 @testable import LPMVault
 
 @Suite("Current Rust client and server contracts")
 struct CurrentContractTests {
+	@Test("schema JSON keeps numeric precision during request encoding")
+	func schemaJSONKeepsNumericPrecision() throws {
+		let input = Data(
+			#"{"fractional":1.234567890123456789,"large":99999999999999999999999999999999999999}"#.utf8
+		)
+		let value = try JSONDecoder().decode(LPMJSONValue.self, from: input)
+		let encoded = try JSONEncoder().encode(value)
+		let decoded = try JSONDecoder().decode(PreciseSchemaNumbers.self, from: encoded)
+
+		#expect(decoded.fractional == Decimal(string: "1.234567890123456789"))
+		#expect(decoded.large == Decimal(string: "99999999999999999999999999999999999999"))
+	}
+
+	@Test("auth credentials are device-bound on add and update")
+	func authCredentialsAreDeviceBound() {
+		#expect(
+			KeychainAuthCredentialBackend.accessibility
+				== kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+		)
+	}
+
 	@Test("hashed access account matches the Rust client")
 	func hashedAccessAccount() {
 		#expect(
@@ -283,6 +306,86 @@ struct CurrentContractTests {
 		#expect(!LPMCLICompatibility.allInstalledVersionsAreCompatible([]))
 	}
 
+	@Test("CLI compatibility stops after the first incompatible trusted candidate")
+	func protectedOnlyCutoverVersionGateIsLazy() {
+		let first = URL(fileURLWithPath: "/trusted/first")
+		let second = URL(fileURLWithPath: "/trusted/second")
+		var executed: [URL] = []
+
+		let compatible = LPMCLICompatibility.installedCLIIsCompatible(
+			candidates: [first, second],
+			versionReader: { candidate in
+				executed.append(candidate)
+				return candidate == first ? "lpm 0.75.0" : "lpm 0.76.0"
+			}
+		)
+
+		#expect(!compatible)
+		#expect(executed == [first])
+	}
+
+	@Test("CLI compatibility ignores ambient PATH entries")
+	func protectedOnlyCutoverIgnoresAmbientPath() {
+		let home = URL(fileURLWithPath: "/Users/tester")
+		let locations = LPMCLICompatibility.candidateLocations(home: home)
+
+		#expect(!locations.contains(URL(fileURLWithPath: "/tmp/project/lpm")))
+		#expect(locations == [
+			URL(fileURLWithPath: "/opt/homebrew/bin/lpm"),
+			URL(fileURLWithPath: "/usr/local/bin/lpm"),
+			home.appendingPathComponent(".local/bin/lpm"),
+			home.appendingPathComponent(".n/bin/lpm"),
+		])
+	}
+
+	@Test("CLI version probing bounds output, time, and descendant lifetime")
+	func protectedOnlyCutoverProbeIsBounded() throws {
+		let directory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("lpm-cli-probe-\(UUID().uuidString)", isDirectory: true)
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: directory) }
+
+		let oversized = directory.appendingPathComponent("oversized")
+		try Data("#!/bin/sh\nyes x | head -c 8192\n".utf8).write(to: oversized)
+		try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: oversized.path)
+		#expect(LPMCLICompatibility.versionOutput(
+			executable: oversized,
+			timeout: 0.5,
+			maximumBytes: 4 * 1024
+		) == nil)
+
+		let childPIDFile = directory.appendingPathComponent("child.pid")
+		let inheritedOutput = directory.appendingPathComponent("inherited-output")
+		let script = """
+			#!/bin/sh
+			sleep 0.05
+			/bin/sh -c 'trap "" TERM; echo $$ > "\(childPIDFile.path)"; sleep 10' &
+			while [ ! -s "\(childPIDFile.path)" ]; do sleep 0.01; done
+			printf 'lpm 0.76.0\\n'
+			"""
+		try Data(script.utf8).write(to: inheritedOutput)
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o700],
+			ofItemAtPath: inheritedOutput.path
+		)
+		let start = ProcessInfo.processInfo.systemUptime
+		let output = LPMCLICompatibility.versionOutput(
+			executable: inheritedOutput,
+			timeout: 0.5
+		)
+		let elapsed = ProcessInfo.processInfo.systemUptime - start
+		#expect(output == "lpm 0.76.0\n")
+		#expect(elapsed < 0.5)
+		let childPID = try #require(
+			Int32(String(contentsOf: childPIDFile, encoding: .utf8)
+				.trimmingCharacters(in: .whitespacesAndNewlines))
+		)
+		for _ in 0..<100 where Darwin.kill(childPID, 0) == 0 {
+			Thread.sleep(forTimeInterval: 0.005)
+		}
+		#expect(Darwin.kill(childPID, 0) != 0)
+	}
+
 	@Test("wrapping-key file cutover deletes only the exact verified regular file")
 	func exactWrappingKeyFileCutover() throws {
 		let directory = FileManager.default.temporaryDirectory
@@ -314,6 +417,16 @@ struct CurrentContractTests {
 		}
 		#expect(try Data(contentsOf: target) == Data(encoded.utf8))
 		#expect(try file.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true)
+
+		try FileManager.default.removeItem(at: file)
+		let linkedFile = directory.appendingPathComponent(".vault-key.link")
+		try FileManager.default.linkItem(at: target, to: file)
+		try FileManager.default.linkItem(at: target, to: linkedFile)
+		#expect(VaultCrypto.inspectStableWrappingKeyFile(at: file) == .unsafe)
+		#expect(throws: VaultCrypto.CryptoError.self) {
+			try VaultCrypto.deleteLegacyWrappingKeyFile(at: file, expectedKey: key)
+		}
+		#expect(try Data(contentsOf: linkedFile) == Data(encoded.utf8))
 	}
 
 	@Test("public key fingerprint is SHA-256 over raw X25519 bytes")
@@ -489,6 +602,53 @@ struct CurrentContractTests {
 
 		#expect(pushed == nil)
 		#expect(pulled == nil)
+	}
+
+	@Test("live personal 409 conflict reaches the conflict-resolution state")
+	@MainActor
+	func personalConflictPropagation() async {
+		let service = makeSyncService { _ in
+			MockResponse(
+				statusCode: 409,
+				body: Data(
+					#"{"error":"Version conflict","code":"vault_version_conflict","serverVersion":9,"expectedVersion":7,"hint":"Use --force to overwrite, or pull first"}"#.utf8
+				),
+				headers: ["Content-Type": "application/json"]
+			)
+		}
+		let keychain = MockKeychainService()
+		keychain.envStorage["vault-1"] = (
+			name: "Conflict",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			personalSyncServiceFactory: { _ in service },
+			stableSyncEncryptor: { _, _ in ("request-ciphertext", "request-wrapped") },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.projects = [VaultProject(
+			id: "vault-1",
+			name: "Conflict",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)]
+		store.syncMetadata["vault-1"] = SyncMetadata(
+			lastSyncedAt: Date(),
+			lastAction: "pull",
+			lastVersion: 7,
+			isDirty: false
+		)
+		store.isUnlocked = true
+		store.selectProject("vault-1")
+
+		await store.pushToCloud()
+
+		#expect(store.lastSyncStatus == "conflict")
+		#expect(store.error == nil)
 	}
 
 	@Test("authenticated sync envelope binds a personal payload to its request")
@@ -694,6 +854,11 @@ struct CurrentContractTests {
 			session: URLSession(configuration: configuration)
 		)
 	}
+}
+
+private struct PreciseSchemaNumbers: Decodable {
+	let fractional: Decimal
+	let large: Decimal
 }
 
 private struct MockResponse {
