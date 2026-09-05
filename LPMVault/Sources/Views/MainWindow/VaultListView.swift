@@ -153,12 +153,13 @@ struct VaultListView: View {
 			TextField("Project name", text: $renameValue)
 			Button("Cancel", role: .cancel) { projectToRename = nil }
 			Button("Rename") {
-				if let projectToRename {
-					store.renameProject(projectToRename, to: renameValue)
-				}
+				guard let project = projectToRename,
+					let normalizedName = VaultProjectRenamePolicy.normalizedName(renameValue)
+				else { return }
+				store.renameProject(project, to: normalizedName)
 				projectToRename = nil
 			}
-			.disabled(renameValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+			.disabled(VaultProjectRenamePolicy.normalizedName(renameValue) == nil)
 		} message: {
 			Text("This changes the local name and includes it in the next sync.")
 		}

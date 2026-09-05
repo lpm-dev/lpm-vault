@@ -1,6 +1,57 @@
 import Testing
+import SwiftUI
+import Vision
 
 @testable import LPMVault
+
+@Suite("Account settings presentation")
+@MainActor
+struct AuthStatusViewTests {
+	@Test("signed-out settings offer local server selection only in debug builds")
+	func signedOutSettingsOfferLocalServerSelection() throws {
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in nil }
+		)
+		store.appEnvironment = .production
+		let renderer = ImageRenderer(content: AuthStatusView(store: store).frame(width: 700, height: 700))
+		renderer.scale = 3
+		let image = try #require(renderer.cgImage)
+		let request = VNRecognizeTextRequest()
+		request.recognitionLevel = .accurate
+		try VNImageRequestHandler(cgImage: image).perform([request])
+		let labels = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+		#expect(labels.contains("Not logged in"))
+		#if DEBUG
+		#expect(labels.contains("Use local"))
+		#else
+		#expect(!labels.contains("Use local"))
+		#endif
+	}
+}
+
+@Suite("Sync conflict presentation")
+@MainActor
+struct ConflictResolutionSheetTests {
+	@Test("personal conflict recovery explains which values survive before confirmation")
+	func personalConflictExplainsMergePrecedence() throws {
+		let renderer = ImageRenderer(content: ConflictResolutionSheet(
+			projectName: "test-project", account: .personal,
+			onPullAndMerge: {}, onForcePush: {}, onCancel: {}
+		).frame(width: 400, height: 450).background(Color.white).environment(\.colorScheme, .light))
+		renderer.scale = 3
+		let image = try #require(renderer.cgImage)
+		let request = VNRecognizeTextRequest()
+		request.recognitionLevel = .accurate
+		try VNImageRequestHandler(cgImage: image).perform([request])
+		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		#expect(text.contains("Version Conflict"))
+		#expect(text.contains("Cloud values replace conflicting local values."))
+		#expect(text.contains("Force Push replaces cloud values with local values."))
+	}
+}
 
 @Suite("VaultProject Model")
 struct VaultProjectTests {
@@ -30,7 +81,7 @@ struct VaultProjectTests {
 			environments: ["default": ["Hey": "mixed", "HEY": "upper"]]
 		)
 
-		#expect(project.sortedSecrets.map(\.key) == ["HEY", "Hey"])
+		#expect(project.sortedSecrets(for: "default").map(\.key) == ["HEY", "Hey"])
 	}
 
 	@Test("empty secrets returns empty array")
@@ -72,21 +123,6 @@ struct VaultProjectTests {
 		)
 
 		#expect(project.environmentNames == ["ci", "live", "local"])
-	}
-
-	@Test("backwards compatible secrets property uses default env")
-	func backwardsCompatSecrets() {
-		var project = VaultProject(
-			id: "test-id",
-			name: "test",
-			path: "/tmp/test",
-			environments: ["default": ["KEY": "val"]]
-		)
-
-		#expect(project.secrets["KEY"] == "val")
-
-		project.secrets["NEW"] = "added"
-		#expect(project.environments["default"]?["NEW"] == "added")
 	}
 
 	@Test("identifiable: same vault ID means same identity")

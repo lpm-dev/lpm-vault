@@ -4,6 +4,57 @@ import Testing
 
 @testable import LPMVault
 
+@Suite("Scoped Organization Sharing Keys")
+struct ScopedOrganizationSharingKeyTests {
+	@Test("sharing-key accounts match the CLI scope derivation")
+	func accountDerivationMatchesCLI() throws {
+		let account = try VaultCrypto.x25519KeychainAccount(
+			registryURL: "https://registry.example/",
+			callerUserID: "user-1"
+		)
+
+		#expect(
+			account
+				== "__x25519_private_key__.5a12911fb761923d976c0aa9f51355a7a8b1c31b06d152393eec5ab45357e666"
+		)
+	}
+
+	@Test("sharing-key accounts isolate Registry authorities and callers")
+	func accountsIsolateTrustDomains() throws {
+		let first = try VaultCrypto.x25519KeychainAccount(
+			registryURL: "https://registry.example",
+			callerUserID: "user-1"
+		)
+		let same = try VaultCrypto.x25519KeychainAccount(
+			registryURL: "HTTPS://REGISTRY.EXAMPLE:443///",
+			callerUserID: "user-1"
+		)
+		let otherRegistry = try VaultCrypto.x25519KeychainAccount(
+			registryURL: "https://other.example",
+			callerUserID: "user-1"
+		)
+		let otherCaller = try VaultCrypto.x25519KeychainAccount(
+			registryURL: "https://registry.example",
+			callerUserID: "user-2"
+		)
+
+		#expect(first == same)
+		#expect(first != otherRegistry)
+		#expect(first != otherCaller)
+	}
+
+	@Test("malformed authenticated caller identities cannot select a key account")
+	func malformedCallerIsRejected() {
+		#expect(throws: (any Error).self) {
+			_ = try VaultCrypto.x25519KeychainAccount(
+				registryURL: "https://registry.example",
+				callerUserID: "caller\nsubstitution"
+			)
+		}
+	}
+
+}
+
 // MARK: - OrgKeyTrust (Strict Mode)
 
 @Suite("OrgKeyTrust — Strict Key Verification")
@@ -151,6 +202,29 @@ struct OrgKeyTrustTests {
 
 @Suite("PinnedSessionDelegate — Response Signature Verification")
 struct PinnedSessionDelegateTests {
+	@Test("development response signatures follow the build trust policy")
+	func localDevelopmentSignatureIsAccepted() throws {
+		let response = try #require(HTTPURLResponse(
+			url: URL(string: "http://localhost:3000/api/test")!,
+			statusCode: 200,
+			httpVersion: "HTTP/1.1",
+			headerFields: [
+				"X-LPM-Response-Key-ID": "vault-test-rfc8032",
+				"X-LPM-Response-Signature":
+					"ABiBKJ3ihBNVXfSmsCZEK_YdQa1Y2VQm8w3uU9apguJ3j4G1FhiHrLVjPQDLiqQUHJV_H6OIqrGWCpaRNAJ0CQ",
+			]
+		))
+		let verified = PinnedSessionDelegate.verifyResponseSignature(
+			response, body: Data(#"{"vaultId":"v1","version":3}"#.utf8),
+			requireSignature: true
+		)
+		#if DEBUG
+		#expect(verified)
+		#else
+		#expect(!verified)
+		#endif
+	}
+
 	@Test("redirect policy is installed as a URL session task delegate")
 	func redirectPolicyIsInstalled() {
 		let delegate: AnyObject = PinnedSessionDelegate()
@@ -179,10 +253,13 @@ struct PinnedSessionDelegateTests {
 	}
 
 	/// Helper: create a minimal HTTPURLResponse with optional headers.
-	private func makeResponse(headers: [String: String] = [:]) -> HTTPURLResponse {
+	private func makeResponse(
+		statusCode: Int = 200,
+		headers: [String: String] = [:]
+	) -> HTTPURLResponse {
 		HTTPURLResponse(
 			url: URL(string: "https://lpm.dev/api/test")!,
-			statusCode: 200,
+			statusCode: statusCode,
 			httpVersion: "HTTP/1.1",
 			headerFields: headers
 		)!
@@ -196,7 +273,6 @@ struct PinnedSessionDelegateTests {
 		let result = PinnedSessionDelegate.verifyResponseSignature(
 			response,
 			body: body,
-			authToken: "token",
 			requireSignature: true
 		)
 
@@ -209,76 +285,99 @@ struct PinnedSessionDelegateTests {
 		#expect(PinnedSessionDelegate.verifyResponseSignature(response, body: Data()) == true)
 	}
 
-	@Test("response with signature header but no auth token rejects")
-	func signatureHeaderNoTokenRejects() {
+	@Test("current Ed25519 response signature matches the cross-language fixture")
+	func currentEd25519FixtureIsAccepted() {
+		let body = Data(#"{"vaultId":"v1","version":3}"#.utf8)
+		let response = makeResponse(headers: [
+			"X-LPM-Response-Key-ID": "vault-test-rfc8032",
+			"X-LPM-Response-Signature":
+				"ABiBKJ3ihBNVXfSmsCZEK_YdQa1Y2VQm8w3uU9apguJ3j4G1FhiHrLVjPQDLiqQUHJV_H6OIqrGWCpaRNAJ0CQ",
+		])
+		let testPublicKey = Data([
+			0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7,
+			0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
+			0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25,
+			0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a,
+		])
+
+		#expect(PinnedSessionDelegate.verifyResponseSignatureForTesting(
+			response,
+			body: body,
+			requireSignature: true,
+			trustedSigningKeys: ["vault-test-rfc8032": testPublicKey]
+		))
+	}
+
+	@Test("response signatures require canonical base64url encoding")
+	func noncanonicalResponseSignatureRejects() {
+		let body = Data(#"{"vaultId":"v1","version":3}"#.utf8)
+		let response = makeResponse(headers: [
+			"X-LPM-Response-Key-ID": "vault-test-rfc8032",
+			"X-LPM-Response-Signature":
+				"HifVVd93oNDzrSakA0UZeMUczKwmQbH8GeYWfw19Hj9nLuqmSS6PfQV0FIreI4KKFGz2lIrELoZlSUrLDm2nAh",
+		])
+		let testPublicKey = Data([
+			0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7,
+			0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
+			0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25,
+			0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a,
+		])
+
+		#expect(!PinnedSessionDelegate.verifyResponseSignatureForTesting(
+			response,
+			body: body,
+			requireSignature: true,
+			trustedSigningKeys: ["vault-test-rfc8032": testPublicKey]
+		))
+	}
+
+	@Test("production trust anchor rejects the published RFC test key")
+	func productionTrustAnchorRejectsRFCFixture() {
+		let body = Data(#"{"vaultId":"v1","version":3}"#.utf8)
+		let response = makeResponse(headers: [
+			"X-LPM-Response-Key-ID": "vault-2026-09",
+			"X-LPM-Response-Signature":
+				"-4Wt-YkQkGV8-nlni_U_m58rtZ-Bs_FhH-ZR7qPxPkuUAI4YKToV0rvn-qgwZscJ_ml3-1yp3YfhDvFYX1rwAQ",
+		])
+
+		#expect(!PinnedSessionDelegate.verifyResponseSignature(
+			response, body: body, requireSignature: true))
+	}
+
+	@Test("response signature binds the actual HTTP status")
+	func responseSignatureBindsStatus() {
+		let body = Data(#"{"vaultId":"v1","version":3}"#.utf8)
+		let response = makeResponse(statusCode: 404, headers: [
+			"X-LPM-Response-Key-ID": "vault-2026-09",
+			"X-LPM-Response-Signature":
+				"-4Wt-YkQkGV8-nlni_U_m58rtZ-Bs_FhH-ZR7qPxPkuUAI4YKToV0rvn-qgwZscJ_ml3-1yp3YfhDvFYX1rwAQ",
+		])
+
+		#expect(!PinnedSessionDelegate.verifyResponseSignature(
+			response, body: body, requireSignature: true))
+	}
+
+	@Test("unknown response signing keys fail closed")
+	func unknownResponseSigningKeyRejects() {
+		let response = makeResponse(headers: [
+			"X-LPM-Response-Key-ID": "unknown",
+			"X-LPM-Response-Signature":
+				"-4Wt-YkQkGV8-nlni_U_m58rtZ-Bs_FhH-ZR7qPxPkuUAI4YKToV0rvn-qgwZscJ_ml3-1yp3YfhDvFYX1rwAQ",
+		])
+
+		#expect(!PinnedSessionDelegate.verifyResponseSignature(
+			response,
+			body: Data(#"{"vaultId":"v1","version":3}"#.utf8),
+			requireSignature: true
+		))
+	}
+
+	@Test("retired bearer HMAC response header fails closed")
+	func retiredBearerHmacHeaderRejects() {
 		let response = makeResponse(headers: ["X-LPM-Signature": "some-signature-value"])
-		let body = Data("test".utf8)
 
-		// No auth token → can't verify → reject
-		let result = PinnedSessionDelegate.verifyResponseSignature(response, body: body)
-		#expect(result == false)
-
-		// Empty auth token → reject
-		let result2 = PinnedSessionDelegate.verifyResponseSignature(response, body: body, authToken: "")
-		#expect(result2 == false)
-	}
-
-	@Test("valid HMAC signature is accepted")
-	func validHmacAccepted() {
-		let token = "test-auth-token-12345"
-		let body = Data(#"{"vaultId":"abc","version":1}"#.utf8)
-
-		// Compute expected signature the same way the server does:
-		// HMAC-SHA256(body, SHA256(token))
-		let hmacKey = SHA256.hash(data: Data(token.utf8))
-		let mac = HMAC<SHA256>.authenticationCode(
-			for: body, using: SymmetricKey(data: Data(hmacKey))
-		)
-		let signature = Data(mac).base64EncodedString()
-
-		let response = makeResponse(headers: ["X-LPM-Signature": signature])
-		let result = PinnedSessionDelegate.verifyResponseSignature(response, body: body, authToken: token)
-
-		#expect(result == true)
-	}
-
-	@Test("tampered body with valid-looking signature is rejected")
-	func tamperedBodyRejects() {
-		let token = "test-auth-token-12345"
-		let originalBody = Data(#"{"vaultId":"abc","version":1}"#.utf8)
-
-		// Sign the original body
-		let hmacKey = SHA256.hash(data: Data(token.utf8))
-		let mac = HMAC<SHA256>.authenticationCode(
-			for: originalBody, using: SymmetricKey(data: Data(hmacKey))
-		)
-		let signature = Data(mac).base64EncodedString()
-
-		// Tamper with the body
-		let tamperedBody = Data(#"{"vaultId":"abc","version":999}"#.utf8)
-		let response = makeResponse(headers: ["X-LPM-Signature": signature])
-		let result = PinnedSessionDelegate.verifyResponseSignature(response, body: tamperedBody, authToken: token)
-
-		#expect(result == false)
-	}
-
-	@Test("wrong auth token produces different HMAC and is rejected")
-	func wrongTokenRejects() {
-		let realToken = "real-token"
-		let body = Data(#"{"status":"ok"}"#.utf8)
-
-		// Sign with real token
-		let hmacKey = SHA256.hash(data: Data(realToken.utf8))
-		let mac = HMAC<SHA256>.authenticationCode(
-			for: body, using: SymmetricKey(data: Data(hmacKey))
-		)
-		let signature = Data(mac).base64EncodedString()
-
-		// Verify with wrong token
-		let response = makeResponse(headers: ["X-LPM-Signature": signature])
-		let result = PinnedSessionDelegate.verifyResponseSignature(response, body: body, authToken: "wrong-token")
-
-		#expect(result == false)
+		#expect(!PinnedSessionDelegate.verifyResponseSignature(
+			response, body: Data("test".utf8), requireSignature: true))
 	}
 
 	@Test("pinned hashes do not contain placeholder")
@@ -366,6 +465,11 @@ struct LoginServiceErrorTests {
 
 @Suite("Bounded HTTP Responses")
 struct BoundedHTTPResponseTests {
+	@Test("vault sync response cap covers every Registry-accepted request body")
+	func vaultSyncResponseCapCoversRegistryRequestLimit() {
+		#expect(SyncService.maximumVaultResponseBytes == 16 * 1024 * 1024)
+	}
+
 	@Test("streaming limit rejects a body without a Content-Length")
 	func rejectsChunkedOversize() async throws {
 		let host = "\(UUID().uuidString.lowercased()).example"
@@ -374,7 +478,11 @@ struct BoundedHTTPResponseTests {
 
 		let configuration = URLSessionConfiguration.ephemeral
 		configuration.protocolClasses = [BoundedResponseURLProtocol.self]
-		let session = URLSession(configuration: configuration)
+		let session = URLSession(
+			configuration: configuration,
+			delegate: BoundedHTTPResponseDelegate(),
+			delegateQueue: nil
+		)
 		let request = URLRequest(url: URL(string: "https://\(host)/body")!)
 
 		let exact = try await BoundedHTTPResponse.load(
@@ -395,37 +503,163 @@ struct BoundedHTTPResponseTests {
 			#expect(error == .responseTooLarge(limit: body.count - 1))
 		}
 	}
-}
 
-@Suite("Stable Wrapping Key File")
-struct StableWrappingKeyFileTests {
-	@Test("legacy key fallback rejects exposed permissions and symbolic links")
-	func rejectsUnsafeFiles() throws {
-		let directory = FileManager.default.temporaryDirectory
-			.appendingPathComponent("lpm-vault-key-\(UUID().uuidString)", isDirectory: true)
-		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-		defer { try? FileManager.default.removeItem(at: directory) }
+	@Test("resumed delegate collection preserves the streaming limit")
+	func delegateCollectorRejectsChunkedOversize() async throws {
+		let host = "\(UUID().uuidString.lowercased()).example"
+		let body = Data("delegate-body".utf8)
+		BoundedResponseRoutes.shared.register(host: host, body: body)
 
-		let key = Data(repeating: 0x5a, count: 32)
-		let encoded = key.map { String(format: "%02x", $0) }.joined()
-		let target = directory.appendingPathComponent("key-target")
-		try Data(encoded.utf8).write(to: target)
-
-		try FileManager.default.setAttributes(
-			[.posixPermissions: 0o604],
-			ofItemAtPath: target.path
+		let configuration = URLSessionConfiguration.ephemeral
+		configuration.protocolClasses = [BoundedResponseURLProtocol.self]
+		let session = URLSession(
+			configuration: configuration,
+			delegate: PinnedSessionDelegate(),
+			delegateQueue: nil
 		)
-		#expect(VaultCrypto.readStableWrappingKeyFile(at: target) == nil)
+		let request = URLRequest(url: URL(string: "https://\(host)/body")!)
 
-		try FileManager.default.setAttributes(
-			[.posixPermissions: 0o600],
-			ofItemAtPath: target.path
+		let exact = try await BoundedHTTPResponse.start(
+			for: request,
+			using: session,
+			maximumBytes: body.count
+		).value()
+		#expect(exact.data == body)
+
+		do {
+			_ = try await BoundedHTTPResponse.start(
+				for: request,
+				using: session,
+				maximumBytes: body.count - 1
+			).value()
+			Issue.record("Oversized delegated response was accepted")
+		} catch let error as BoundedHTTPResponse.LoadError {
+			#expect(error == .responseTooLarge(limit: body.count - 1))
+		}
+	}
+
+	@Test("auth refresh responses use the bounded delegate collector")
+	func authRefreshUsesBoundedDelegateCollector() async throws {
+		let validHost = "\(UUID().uuidString.lowercased()).example"
+		let validBody = Data(
+			#"{"token":"access","refreshToken":"refresh","expiresIn":3600,"expiresAt":"2030-08-22T12:00:00.000Z"}"#.utf8
 		)
-		#expect(VaultCrypto.readStableWrappingKeyFile(at: target) == key)
+		BoundedResponseRoutes.shared.register(host: validHost, body: validBody)
 
-		let link = directory.appendingPathComponent("key-link")
-		try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
-		#expect(VaultCrypto.readStableWrappingKeyFile(at: link) == nil)
+		let configuration = URLSessionConfiguration.ephemeral
+		configuration.protocolClasses = [BoundedResponseURLProtocol.self]
+		let session = URLSession(
+			configuration: configuration,
+			delegate: PinnedSessionDelegate(),
+			delegateQueue: nil
+		)
+		let request = URLRequest(url: URL(string: "https://\(validHost)/refresh")!)
+		let credentials = try await AuthSessionStore.loadRefreshCredentials(
+			for: request,
+			using: session
+		)
+		#expect(credentials.token == "access")
+
+		let oversizedHost = "\(UUID().uuidString.lowercased()).example"
+		BoundedResponseRoutes.shared.register(
+			host: oversizedHost,
+			body: Data(repeating: 0x61, count: 64 * 1024 + 1)
+		)
+		let oversized = URLRequest(
+			url: URL(string: "https://\(oversizedHost)/refresh")!)
+		do {
+			_ = try await AuthSessionStore.loadRefreshCredentials(
+				for: oversized,
+				using: session
+			)
+			Issue.record("Oversized auth refresh response was accepted")
+		} catch AuthSessionRefreshError.invalidResponse {
+		} catch {
+			Issue.record("Unexpected auth refresh error: \(error)")
+		}
+	}
+
+	@Test("avatar and updater downloads use chunked data delegates")
+	@MainActor
+	func highVolumeConsumersUseChunkedDelegates() {
+		let avatarDelegate: AnyObject = AvatarSessionDelegate()
+		#expect(avatarDelegate is BoundedHTTPResponseStarting)
+		#expect(UpdateChecker.session.delegate is BoundedHTTPResponseStarting)
+
+		let expected = URLSessionConfiguration.default
+		let actual = UpdateChecker.session.configuration
+		#expect(actual.httpShouldSetCookies == expected.httpShouldSetCookies)
+		#expect(actual.requestCachePolicy == expected.requestCachePolicy)
+		#expect(actual.urlCache === expected.urlCache)
+		#expect(actual.httpCookieStorage === expected.httpCookieStorage)
+		#expect(actual.urlCredentialStorage === expected.urlCredentialStorage)
+	}
+
+	@Test("cancelling a bounded response cancels its underlying operation")
+	func cancellationPropagates() async {
+		let probe = BoundedCancellationProbe()
+		let accumulator = BoundedHTTPResponse.Accumulator(maximumBytes: 1)
+		let started = BoundedHTTPResponse.Started(
+			cancel: {
+				probe.markCancelled()
+				accumulator.complete(error: CancellationError())
+			},
+			result: { try await accumulator.value() }
+		)
+		let task = Task { try await started.value() }
+		task.cancel()
+
+		do {
+			_ = try await task.value
+			Issue.record("Cancelled bounded response completed successfully")
+		} catch is CancellationError {
+			#expect(probe.wasCancelled)
+		} catch {
+			Issue.record("Unexpected cancellation error: \(error)")
+		}
+	}
+
+	@Test("avatar redirects stay on the approved origin")
+	func avatarRedirectPolicyIsPreserved() throws {
+		let delegate = AvatarSessionDelegate()
+		let session = URLSession(
+			configuration: .ephemeral,
+			delegate: delegate,
+			delegateQueue: nil
+		)
+		defer { session.invalidateAndCancel() }
+		let source = try #require(URL(string: "https://avatars.githubusercontent.com/u/1"))
+		let task = session.dataTask(with: source)
+		let response = try #require(HTTPURLResponse(
+			url: source,
+			statusCode: 302,
+			httpVersion: "HTTP/1.1",
+			headerFields: nil
+		))
+
+		let sameOrigin = try #require(
+			URL(string: "https://avatars.githubusercontent.com/u/2")
+		)
+		var accepted: URLRequest?
+		delegate.urlSession(
+			session,
+			task: task,
+			willPerformHTTPRedirection: response,
+			newRequest: URLRequest(url: sameOrigin),
+			completionHandler: { accepted = $0 }
+		)
+		#expect(accepted?.url == sameOrigin)
+
+		let differentOrigin = try #require(URL(string: "https://lpm.dev/avatar"))
+		var rejected: URLRequest?
+		delegate.urlSession(
+			session,
+			task: task,
+			willPerformHTTPRedirection: response,
+			newRequest: URLRequest(url: differentOrigin),
+			completionHandler: { rejected = $0 }
+		)
+		#expect(rejected == nil)
 	}
 }
 
@@ -486,4 +720,17 @@ private final class BoundedResponseURLProtocol: URLProtocol {
 	}
 
 	override func stopLoading() {}
+}
+
+private final class BoundedCancellationProbe: @unchecked Sendable {
+	private let lock = NSLock()
+	private var cancelled = false
+
+	var wasCancelled: Bool {
+		lock.withLock { cancelled }
+	}
+
+	func markCancelled() {
+		lock.withLock { cancelled = true }
+	}
 }

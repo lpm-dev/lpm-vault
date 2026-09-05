@@ -1,11 +1,20 @@
+import CryptoKit
 import Foundation
 import Testing
 
 @testable import LPMVault
 
-@Suite("VaultStore")
+private struct PersistedOrgKeyTrustFixture: Codable {
+	let schemaVersion: Int
+	let scope: OrgTrustScope
+	let trust: OrgKeyTrust
+}
+
+@Suite("VaultStore", .serialized)
 @MainActor
 struct VaultStoreTests {
+	private let organizationID = "00000000-0000-4000-8000-000000000001"
+
 	/// Create a VaultStore with mock dependencies.
 	/// Projects are loaded synchronously into `store.projects` so tests
 	/// don't need to await the async `loadProjects()` / `Task.detached` path.
@@ -83,7 +92,7 @@ struct VaultStoreTests {
 		keychain.storage["id-1"] = (name: "project", path: "", secrets: ["TOKEN": "secret"])
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		keychain.blockNextListProjects = {
+		keychain.blockNextListProjectMetadata = {
 			entered.signal()
 			release.wait()
 		}
@@ -126,36 +135,9 @@ struct VaultStoreTests {
 		await unlock.value
 
 		#expect(store.isUnlocked)
-		#expect(store.projects.first?.secrets["TOKEN"] == "secret")
-	}
-
-	// MARK: - Add Project
-
-	@Test("add project creates in keychain and selects it")
-	func addProject() async throws {
-		let (store, keychain, _, _) = makeStore()
-
-		store.addProject(name: "new-project", path: "/tmp/new")
-		await waitUntil { !store.projects.isEmpty }
-
-		#expect(store.projects.count == 1)
-		#expect(store.projects.first?.name == "new-project")
-		#expect(store.projects.first?.path == "/tmp/new")
-		#expect(store.projects.first?.secrets.isEmpty == true)
-		#expect(store.selectedProjectId == store.projects.first?.id)
-		#expect(keychain.storage.count == 1)
-	}
-
-	@Test("add project failure sets error")
-	func addProjectFailure() async throws {
-		let (store, keychain, _, _) = makeStore()
-		keychain.shouldFail = true
-
-		store.addProject(name: "failing-project", path: "/tmp/fail")
-		await waitUntil { store.error != nil }
-
-		#expect(store.projects.isEmpty)
-		#expect(store.error != nil)
+		#expect(store.projects.first?.id == "id-1")
+		#expect(store.projects.first?.hasLoadedEnvironments == false)
+		#expect(store.projects.first?.secretCount(for: "default") == 1)
 	}
 
 	@Test("reserved Keychain accounts cannot be env project IDs")
@@ -177,14 +159,14 @@ struct VaultStoreTests {
 
 	// MARK: - Delete Project
 
-	@Test("delete project removes from list")
-	func deleteProject() async {
+	@Test("remove from sidebar removes the project from the list")
+	func removeFromSidebar() async {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: [:])
 		])
 		store.selectedProjectId = "id-1"
 
-		store.deleteProject(store.projects[0])
+		store.removeFromSidebar(store.projects[0])
 		await waitUntil { store.projects.isEmpty }
 
 		#expect(store.projects.isEmpty)
@@ -211,11 +193,12 @@ struct VaultStoreTests {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: ["TOKEN": "secret"])
 		])
-		let metadataData = try JSONEncoder().encode([
-			"id-1": SyncMetadata(lastAction: "push", isDirty: true)
-		])
+		#expect(keychain.seedSyncMetadata([
+			"id-1": SyncMetadata(isDirty: true)
+		]))
+		let metadataAccount = mockSyncMetadataAccount(vaultId: "id-1")
+		let metadataData = try #require(keychain.dataStorage[metadataAccount])
 		let associationData = try JSONEncoder().encode(["id-1": "example-org"])
-		keychain.dataStorage["__sync_metadata__"] = metadataData
 		keychain.dataStorage["__org_associations__"] = associationData
 		keychain.failNextWriteDataAccounts.insert("__org_associations__")
 
@@ -223,9 +206,10 @@ struct VaultStoreTests {
 
 		#expect(!deleted)
 		#expect(keychain.storage["id-1"]?.secrets["TOKEN"] == "secret")
-		#expect(keychain.dataStorage["__sync_metadata__"] == metadataData)
+		#expect(keychain.dataStorage[metadataAccount] == metadataData)
 		#expect(keychain.dataStorage["__org_associations__"] == associationData)
-		#expect(store.projects[0].secrets["TOKEN"] == "secret")
+		#expect(store.projects[0].secrets(for: "default")["TOKEN"] == "secret")
+		#expect(keychain.applyVaultTransactionCallCount == 1)
 	}
 
 	@Test("metadata failure restores the deleted vault and exact metadata snapshots")
@@ -233,21 +217,22 @@ struct VaultStoreTests {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: ["TOKEN": "secret"])
 		])
-		let metadataData = try JSONEncoder().encode([
-			"id-1": SyncMetadata(lastAction: "push", isDirty: true)
-		])
+		#expect(keychain.seedSyncMetadata([
+			"id-1": SyncMetadata(isDirty: true)
+		]))
+		let metadataAccount = mockSyncMetadataAccount(vaultId: "id-1")
+		let metadataData = try #require(keychain.dataStorage[metadataAccount])
 		let associationData = try JSONEncoder().encode(["id-1": "example-org"])
-		keychain.dataStorage["__sync_metadata__"] = metadataData
 		keychain.dataStorage["__org_associations__"] = associationData
-		keychain.failNextWriteDataAccounts.insert("__sync_metadata__")
+		keychain.failNextDeleteDataAccounts.insert(metadataAccount)
 
 		let deleted = await store.deleteLocalVault(store.projects[0])
 
 		#expect(!deleted)
 		#expect(keychain.storage["id-1"]?.secrets["TOKEN"] == "secret")
-		#expect(keychain.dataStorage["__sync_metadata__"] == metadataData)
+		#expect(keychain.dataStorage[metadataAccount] == metadataData)
 		#expect(keychain.dataStorage["__org_associations__"] == associationData)
-		#expect(store.projects[0].secrets["TOKEN"] == "secret")
+		#expect(store.projects[0].secrets(for: "default")["TOKEN"] == "secret")
 	}
 
 	@Test("a read failure after the deletion commit cannot report a false failure")
@@ -264,30 +249,6 @@ struct VaultStoreTests {
 		#expect(deleted)
 		#expect(keychain.storage["id-1"] == nil)
 		#expect(store.projects.map(\.id) == ["id-2"])
-	}
-
-	@Test("uncertain local deletion rollback locks and clears plaintext")
-	func localDeletionRollbackFailureLocksVault() async throws {
-		let (store, keychain, _, _) = makeStore(projects: [
-			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: ["TOKEN": "secret"])
-		])
-		keychain.dataStorage["__sync_metadata__"] = try JSONEncoder().encode([
-			"id-1": SyncMetadata(lastAction: "push", isDirty: true)
-		])
-		keychain.dataStorage["__org_associations__"] = try JSONEncoder().encode([
-			"id-1": "example-org"
-		])
-		keychain.failNextWriteDataAccounts.insert("__org_associations__")
-		keychain.failNextSaveEnvironments = true
-		store.isUnlocked = true
-
-		let deleted = await store.deleteLocalVault(store.projects[0])
-
-		#expect(!deleted)
-		#expect(!store.isUnlocked)
-		#expect(keychain.storage["id-1"] == nil)
-		#expect(store.projects[0].environments.values.allSatisfy { $0.isEmpty })
-		#expect(store.error?.contains("could not be rolled back completely") == true)
 	}
 
 	@Test("locking during local deletion never republishes decrypted secrets")
@@ -323,6 +284,44 @@ struct VaultStoreTests {
 			})
 		#expect(keychain.storage["id-1"] == nil)
 		#expect(keychain.storage["id-2"]?.secrets["TWO"] == "secret")
+	}
+
+	@Test("deleting another project reloads the selected survivor")
+	func localDeletionPreservesNewerSelection() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "alpha", path: "", secrets: ["ONE": "secret"]),
+			(id: "id-2", name: "bravo", path: "", secrets: ["TWO": "secret"]),
+			(id: "id-3", name: "charlie", path: "", secrets: ["THREE": "secret"]),
+		])
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextDeleteProject = {
+			entered.signal()
+			release.wait()
+		}
+		store.isUnlocked = true
+		store.selectProject("id-3")
+		let deletedProject = store.projects.first { $0.id == "id-1" }!
+
+		let deletion = Task { await store.deleteLocalVault(deletedProject) }
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		release.signal()
+
+		#expect(await deletion.value)
+		#expect(store.selectedProjectId == "id-3")
+		await waitUntil {
+			store.projects.first(where: { $0.id == "id-3" })?
+				.secrets(for: "default")["THREE"] == "secret"
+		}
+		#expect(
+			store.projects.first(where: { $0.id == "id-3" })?
+				.secrets(for: "default")["THREE"] == "secret"
+		)
 	}
 
 	// MARK: - Navigation
@@ -451,7 +450,10 @@ struct VaultStoreTests {
 
 		#expect(await importTask.value == .failure(.cancelled))
 		#expect(store.selectedProjectId == nil)
-		#expect(store.projects.first { $0.id == "personal" }?.secrets.isEmpty == true)
+		#expect(
+			store.projects.first(where: { $0.id == "personal" })?
+				.secrets(for: "default").isEmpty == true
+		)
 	}
 
 	@Test("logout removes an invalid organization route")
@@ -612,7 +614,7 @@ struct VaultStoreTests {
 		)
 
 		#expect(result == .success)
-		#expect(store.projects[0].secrets["DB_HOST"] == "localhost")
+		#expect(store.projects[0].secrets(for: "default")["DB_HOST"] == "localhost")
 		#expect(keychain.storage["id-1"]?.secrets["DB_HOST"] == "localhost")
 		#expect(keychain.updateEnvironmentsCallCount == 1)
 	}
@@ -632,7 +634,7 @@ struct VaultStoreTests {
 		)
 
 		#expect(result == .failure(.invalidName))
-		#expect(store.projects[0].secrets.isEmpty)
+		#expect(store.projects[0].secrets(for: "default").isEmpty)
 	}
 
 	@Test("a CLI mutation cannot interleave between coordinator read and write")
@@ -696,7 +698,7 @@ struct VaultStoreTests {
 			#expect(result == .failure(.invalidName))
 		}
 
-		#expect(store.projects[0].secrets.isEmpty)
+		#expect(store.projects[0].secrets(for: "default").isEmpty)
 	}
 
 	@Test("add secret rejects exact and case-only duplicates")
@@ -715,7 +717,7 @@ struct VaultStoreTests {
 
 		#expect(duplicate == .failure(.duplicate))
 		#expect(collision == .failure(.caseInsensitiveCollision(existingKey: "HEY")))
-		#expect(store.projects[0].secrets == ["HEY": "value"])
+		#expect(store.projects[0].secrets(for: "default") == ["HEY": "value"])
 	}
 
 	@Test("add secret ignores unrelated global errors")
@@ -731,7 +733,7 @@ struct VaultStoreTests {
 		)
 
 		#expect(result == .success)
-		#expect(store.projects[0].secrets["TOKEN"] == "secret")
+		#expect(store.projects[0].secrets(for: "default")["TOKEN"] == "secret")
 	}
 
 	@Test("add secret does not publish when persistence fails")
@@ -747,7 +749,7 @@ struct VaultStoreTests {
 		)
 
 		#expect(result == .failure(.persistence(KeychainError.accessDenied.description)))
-		#expect(store.projects[0].secrets.isEmpty)
+		#expect(store.projects[0].secrets(for: "default").isEmpty)
 		#expect(keychain.storage["id-1"]?.secrets.isEmpty == true)
 	}
 
@@ -785,9 +787,7 @@ struct VaultStoreTests {
 		#expect(!store.isUnlocked)
 		#expect(store.projects[0].environments.values.allSatisfy { $0.isEmpty })
 		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value", "TOKEN": "secret"])
-		let metadata = keychain.dataStorage["__sync_metadata__"]
-			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) }
-		#expect(metadata?["id-1"]?.isDirty == true)
+		#expect(keychain.storedSyncMetadata(vaultId: "id-1")?.isDirty == true)
 	}
 
 	@Test("metadata failure restores add secret vault and metadata snapshots")
@@ -796,16 +796,18 @@ struct VaultStoreTests {
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["OLD": "value"])
 		])
 		let previousMetadata = [
-			"id-1": SyncMetadata(
-				lastSyncedAt: Date(timeIntervalSince1970: 1_700_000_000),
-				lastAction: "pull",
-				lastVersion: 7,
+			"id-1": mockCurrentSyncMetadata(
+				version: 7,
+				principalID: "user-1",
+				scope: "personal",
 				isDirty: false
 			)
 		]
-		let previousMetadataData = try JSONEncoder().encode(previousMetadata)
-		keychain.dataStorage["__sync_metadata__"] = previousMetadataData
-		keychain.failNextWriteDataAccounts = ["__sync_metadata__"]
+		#expect(keychain.seedSyncMetadata(previousMetadata))
+		let metadataAccount = mockSyncMetadataAccount(vaultId: "id-1")
+		let previousMetadataData = try #require(keychain.dataStorage[metadataAccount])
+		keychain.failNextWriteDataAccounts = [metadataAccount]
+		keychain.failureError = .unexpectedStatus(-1)
 		store.syncMetadata = previousMetadata
 		store.isUnlocked = true
 
@@ -817,11 +819,11 @@ struct VaultStoreTests {
 		)
 
 		#expect(result == .failure(.persistence(KeychainError.unexpectedStatus(-1).description)))
-		#expect(store.projects[0].secrets == ["OLD": "value"])
+		#expect(store.projects[0].secrets(for: "default") == ["OLD": "value"])
 		#expect(store.syncMetadata["id-1"]?.lastVersion == 7)
 		#expect(store.syncMetadata["id-1"]?.isDirty == false)
 		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value"])
-		#expect(keychain.dataStorage["__sync_metadata__"] == previousMetadataData)
+		#expect(keychain.dataStorage[metadataAccount] == previousMetadataData)
 	}
 
 	@Test("one-shot metadata read failure cannot overwrite the durable snapshot")
@@ -829,18 +831,12 @@ struct VaultStoreTests {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["OLD": "value"])
 		])
-		let previousMetadata = [
-			"existing-project": SyncMetadata(
-				lastSyncedAt: Date(timeIntervalSince1970: 1_700_000_000),
-				lastAction: "pull",
-				lastVersion: 7,
-				isDirty: false
-			)
-		]
-		let previousMetadataData = try JSONEncoder().encode(previousMetadata)
-		keychain.dataStorage["__sync_metadata__"] = previousMetadataData
-		keychain.failNextReadDataAccounts = ["__sync_metadata__"]
-		store.syncMetadata = previousMetadata
+		let previousMetadata = SyncMetadata(isDirty: true)
+		#expect(keychain.seedSyncMetadata(["id-1": previousMetadata]))
+		let metadataAccount = mockSyncMetadataAccount(vaultId: "id-1")
+		let previousMetadataData = try #require(keychain.dataStorage[metadataAccount])
+		keychain.failNextReadDataAccounts = [metadataAccount]
+		store.syncMetadata = ["id-1": previousMetadata]
 		store.isUnlocked = true
 
 		let result = await store.addSecret(
@@ -851,52 +847,10 @@ struct VaultStoreTests {
 		)
 
 		#expect(result == .failure(.persistence(KeychainError.accessDenied.description)))
-		#expect(store.projects[0].secrets == ["OLD": "value"])
-		#expect(store.syncMetadata["existing-project"]?.lastVersion == 7)
+		#expect(store.projects[0].secrets(for: "default") == ["OLD": "value"])
+		#expect(store.syncMetadata["id-1"]?.isDirty == true)
 		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value"])
-		#expect(keychain.dataStorage["__sync_metadata__"] == previousMetadataData)
-	}
-
-	@Test("add secret rollback failure after lock never reloads plaintext")
-	func addSecretRollbackFailureAfterLockKeepsMemoryCleared() async {
-		let (store, keychain, _, _) = makeStore(projects: [
-			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["OLD": "value"])
-		])
-		let entered = DispatchSemaphore(value: 0)
-		let release = DispatchSemaphore(value: 0)
-		keychain.blockNextSaveEnvironments = {
-			entered.signal()
-			release.wait()
-		}
-		keychain.failNextWriteDataAccounts = ["__sync_metadata__"]
-		keychain.failRestoreSaveEnvironments = true
-		store.isUnlocked = true
-
-		let task = Task {
-			await store.addSecret(
-				to: "id-1",
-				environment: "default",
-				key: "TOKEN",
-				value: "secret"
-			)
-		}
-		await withCheckedContinuation { continuation in
-			DispatchQueue.global().async {
-				entered.wait()
-				continuation.resume()
-			}
-		}
-		store.lock()
-		release.signal()
-
-		#expect(
-			await task.value
-				== .failure(
-					.persistence(KeychainError.unexpectedStatus(-2).description)
-				))
-		#expect(!store.isUnlocked)
-		#expect(store.projects[0].environments.values.allSatisfy { $0.isEmpty })
-		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value", "TOKEN": "secret"])
+		#expect(keychain.dataStorage[metadataAccount] == previousMetadataData)
 	}
 
 	@Test("environment writes reject the reserved index name")
@@ -976,9 +930,9 @@ struct VaultStoreTests {
 			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
 			envFileImportService: importer
 		)
-		store.selectedProjectId = "id-1"
-		store.selectedEnvironment = "default"
 		store.isUnlocked = true
+		store.selectProject("id-1")
+		store.selectedEnvironment = "default"
 
 		let result = await store.importEnvFile(
 			at: URL(fileURLWithPath: "/tmp/import.env"),
@@ -987,7 +941,11 @@ struct VaultStoreTests {
 		)
 
 		#expect(result == .success(ImportedEnvFile(secrets: ["IMPORTED": "value"])))
-		#expect(store.projects[0].secrets == ["OLD": "value", "IMPORTED": "value"])
+		#expect(
+			store.projects[0].secrets(for: "default") == [
+				"OLD": "value", "IMPORTED": "value",
+			]
+		)
 		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value", "IMPORTED": "value"])
 		#expect(keychain.updateEnvironmentsCallCount == 1)
 	}
@@ -1002,9 +960,9 @@ struct VaultStoreTests {
 		)
 		store.projects[0].environments["staging"] = [:]
 		keychain.envStorage["id-1"]?.environments["staging"] = [:]
-		store.selectedProjectId = "id-1"
-		store.selectedEnvironment = "default"
 		store.isUnlocked = true
+		store.selectProject("id-1")
+		store.selectedEnvironment = "default"
 
 		let task = Task {
 			await store.importEnvFile(
@@ -1032,8 +990,8 @@ struct VaultStoreTests {
 			projects: [(id: "id-1", name: "project", path: "", secrets: [:])],
 			envFileImportService: importer
 		)
-		store.selectedProjectId = "id-1"
 		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		let older = Task {
 			await store.importEnvFile(
@@ -1057,7 +1015,7 @@ struct VaultStoreTests {
 
 		#expect(await newer.value == .success(ImportedEnvFile(secrets: ["KEY": "new"])))
 		#expect(await older.value == .failure(.cancelled))
-		#expect(store.projects[0].secrets["KEY"] == "new")
+		#expect(store.projects[0].secrets(for: "default")["KEY"] == "new")
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
 	}
 
@@ -1068,8 +1026,8 @@ struct VaultStoreTests {
 			projects: [(id: "id-1", name: "project", path: "", secrets: ["HEY": "upper"])],
 			envFileImportService: importer
 		)
-		store.selectedProjectId = "id-1"
 		store.isUnlocked = true
+		store.selectProject("id-1")
 		await importer.setImmediateResult(
 			.success(ImportedEnvFile(secrets: ["Hey": "mixed"]))
 		)
@@ -1081,7 +1039,7 @@ struct VaultStoreTests {
 		)
 
 		#expect(result == .failure(.caseInsensitiveCollisionWithExisting))
-		#expect(store.projects[0].secrets == ["HEY": "upper"])
+		#expect(store.projects[0].secrets(for: "default") == ["HEY": "upper"])
 		#expect(keychain.storage["id-1"]?.secrets == ["HEY": "upper"])
 	}
 
@@ -1099,8 +1057,8 @@ struct VaultStoreTests {
 			entered.signal()
 			release.wait()
 		}
-		store.selectedProjectId = "id-1"
 		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		let older = Task {
 			await store.importEnvFile(
@@ -1139,7 +1097,7 @@ struct VaultStoreTests {
 				== .success(
 					ImportedEnvFile(secrets: ["FRESH_ONLY": "new"])
 				))
-		#expect(store.projects[0].secrets == ["FRESH_ONLY": "new"])
+		#expect(store.projects[0].secrets(for: "default") == ["FRESH_ONLY": "new"])
 		#expect(keychain.storage["id-1"]?.secrets == ["FRESH_ONLY": "new"])
 	}
 
@@ -1151,8 +1109,8 @@ struct VaultStoreTests {
 			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
 			envFileImportService: importer
 		)
-		store.selectedProjectId = "id-1"
 		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		let task = Task {
 			await store.importEnvFile(
@@ -1166,49 +1124,8 @@ struct VaultStoreTests {
 			"locked.env", with: .success(ImportedEnvFile(secrets: ["STALE": "secret"])))
 
 		#expect(await task.value == .failure(.cancelled))
-		#expect(store.projects[0].secrets.isEmpty)
+		#expect(store.projects[0].secrets(for: "default").isEmpty)
 		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value"])
-	}
-
-	@Test("rollback failure after lock never reloads plaintext into memory")
-	func rollbackFailureAfterLockKeepsMemoryCleared() async {
-		let importer = MockEnvFileImportService()
-		let (store, keychain, _, _) = makeStore(
-			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
-			envFileImportService: importer
-		)
-		let entered = DispatchSemaphore(value: 0)
-		let release = DispatchSemaphore(value: 0)
-		keychain.blockNextSaveEnvironments = {
-			entered.signal()
-			release.wait()
-		}
-		keychain.failWriteDataAccounts = ["__sync_metadata__"]
-		keychain.failRestoreSaveEnvironments = true
-		store.selectedProjectId = "id-1"
-		store.isUnlocked = true
-
-		let task = Task {
-			await store.importEnvFile(
-				at: URL(fileURLWithPath: "/tmp/rollback.env"),
-				to: "id-1", environment: "default"
-			)
-		}
-		await withCheckedContinuation { continuation in
-			DispatchQueue.global().async {
-				entered.wait()
-				continuation.resume()
-			}
-		}
-		store.lock()
-		release.signal()
-
-		guard case .failure(.persistence) = await task.value else {
-			Issue.record("Expected rollback persistence failure")
-			return
-		}
-		#expect(!store.isUnlocked)
-		#expect(store.projects[0].environments.values.allSatisfy { $0.isEmpty })
 	}
 
 	@Test("dotenv persistence failure preserves memory and Keychain snapshots")
@@ -1218,8 +1135,8 @@ struct VaultStoreTests {
 			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
 			envFileImportService: importer
 		)
-		store.selectedProjectId = "id-1"
 		store.isUnlocked = true
+		store.selectProject("id-1")
 		keychain.shouldFail = true
 
 		let result = await store.importEnvFile(
@@ -1231,8 +1148,34 @@ struct VaultStoreTests {
 			Issue.record("Expected persistence failure")
 			return
 		}
-		#expect(store.projects[0].secrets == ["OLD": "value"])
+		#expect(store.projects[0].secrets(for: "default") == ["OLD": "value"])
 		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value"])
+	}
+
+	@Test("dotenv vault and dirty metadata persist in one atomic transaction")
+	func localEnvImportUsesOneAtomicTransaction() async {
+		let importer = MockEnvFileImportService()
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
+			envFileImportService: importer
+		)
+		keychain.failNextWriteDataAccounts = [mockSyncMetadataAccount(vaultId: "id-1")]
+		store.isUnlocked = true
+		store.selectProject("id-1")
+
+		let result = await store.importEnvFile(
+			at: URL(fileURLWithPath: "/tmp/atomic.env"),
+			to: "id-1",
+			environment: "default"
+		)
+
+		guard case .failure(.persistence) = result else {
+			Issue.record("Expected persistence failure")
+			return
+		}
+		#expect(keychain.applyVaultTransactionCallCount == 1)
+		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value"])
+		#expect(keychain.storedSyncMetadata(vaultId: "id-1") == nil)
 	}
 
 	@Test("new-environment import rejects encoded Keychain overflow without publishing")
@@ -1265,8 +1208,8 @@ struct VaultStoreTests {
 			entered.signal()
 			release.wait()
 		}
-		store.selectedProjectId = "id-1"
 		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		let creation = Task {
 			await store.addEnvironment(
@@ -1285,7 +1228,7 @@ struct VaultStoreTests {
 		#expect(await creation.value)
 		#expect(!store.isUnlocked)
 		#expect(store.projects[0].environments["staging"] == nil)
-		#expect(store.projects[0].secrets.isEmpty)
+		#expect(store.projects[0].secrets(for: "default").isEmpty)
 		#expect(keychain.envStorage["id-1"]?.environments["staging"] == ["PREVIEW": "secret"])
 	}
 
@@ -1301,8 +1244,8 @@ struct VaultStoreTests {
 			entered.signal()
 			release.wait()
 		}
-		store.selectedProjectId = "id-1"
 		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		let creation = Task {
 			await store.addEnvironment(
@@ -1321,8 +1264,59 @@ struct VaultStoreTests {
 		#expect(await creation.value)
 		#expect(store.selectedProjectId == "id-2")
 		#expect(store.selectedEnvironment == "default")
-		#expect(store.projects.first(where: { $0.id == "id-1" })?.environments["staging"] == nil)
+		#expect(
+			store.projects.first(where: { $0.id == "id-1" })?.environments["staging"]
+				== ["PREVIEW": "secret"]
+		)
 		#expect(keychain.envStorage["id-1"]?.environments["staging"] == ["PREVIEW": "secret"])
+	}
+
+	@Test("project switch after dotenv commit preserves the durable project in memory")
+	func selectionChangeAfterDotenvCommitPublishesProject() async {
+		let importer = MockEnvFileImportService()
+		let (store, keychain, _, _) = makeStore(
+			projects: [
+				(id: "id-1", name: "one", path: "", secrets: [:]),
+				(id: "id-2", name: "two", path: "", secrets: [:]),
+			],
+			envFileImportService: importer
+		)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextSaveEnvironments = {
+			entered.signal()
+			release.wait()
+		}
+		store.isUnlocked = true
+		store.selectProject("id-1")
+
+		let importOperation = Task {
+			await store.importEnvFile(
+				at: URL(fileURLWithPath: "/tmp/committed.env"),
+				to: "id-1",
+				environment: "default"
+			)
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.selectedProjectId = "id-2"
+		release.signal()
+
+		guard case .success = await importOperation.value else {
+			Issue.record("The committed dotenv import did not report success.")
+			return
+		}
+		#expect(store.selectedProjectId == "id-2")
+		#expect(
+			store.projects.first(where: { $0.id == "id-1" })?
+				.secrets(for: "default")["IMPORTED"]
+				== "value"
+		)
+		#expect(keychain.storage["id-1"]?.secrets["IMPORTED"] == "value")
 	}
 
 	@Test("sidebar removal during new-environment persistence does not reinsert the project")
@@ -1336,8 +1330,8 @@ struct VaultStoreTests {
 			entered.signal()
 			release.wait()
 		}
-		store.selectedProjectId = "id-1"
 		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		let creation = Task {
 			await store.addEnvironment(
@@ -1384,8 +1378,8 @@ struct VaultStoreTests {
 			],
 			envFileImportService: importer
 		)
-		store.selectedProjectId = "id-1"
 		store.isUnlocked = true
+		store.selectProject("id-1")
 
 		let preview = Task {
 			await store.loadEnvFilePreview(
@@ -1432,9 +1426,83 @@ struct VaultStoreTests {
 
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
-		await waitUntil { store.projects[0].secrets["KEY"] == "new" }
-		#expect(store.projects[0].secrets["KEY"] == "new")
+		await waitUntil { store.projects[0].secrets(for: "default")["KEY"] == "new" }
+		#expect(store.projects[0].secrets(for: "default")["KEY"] == "new")
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
+	}
+
+	@Test("duplicate editor save activation persists once without a false conflict")
+	func duplicateEditorSaveActivationIsSingleFlight() async throws {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
+		])
+		store.isUnlocked = true
+		store.selectProject("id-1")
+		var editor = VaultSecretEditDraft(value: "old")
+		editor.draft = "new"
+
+		guard let first = editor.beginSave() else {
+			Issue.record("The edited draft did not start its first save")
+			return
+		}
+		let duplicate = editor.beginSave()
+		let succeeded = await store.updateSecretAndWait(
+			in: "id-1",
+			environment: "default",
+			key: "KEY",
+			expectedValue: "old",
+			newValue: first
+		)
+		editor.finishSave(succeeded: succeeded)
+
+		#expect(duplicate == nil)
+		#expect(succeeded)
+		#expect(keychain.saveEnvironmentsCallCount == 1)
+		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
+		#expect(store.projects[0].secrets(for: "default")["KEY"] == "new")
+		#expect(store.syncMetadata["id-1"]?.isDirty == true)
+		#expect(store.error == nil)
+		#expect(!editor.isDirty)
+		#expect(!editor.hasExternalConflict)
+	}
+
+	@Test("editor save remains bound to the submitted baseline")
+	func editorSaveRejectsAnUpdatePublishedBeforeItsTaskRuns() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
+		])
+		store.isUnlocked = true
+		store.selectProject("id-1")
+		var editor = VaultSecretEditDraft(value: "old")
+		editor.draft = "submitted"
+		guard let submitted = editor.beginSave() else {
+			Issue.record("The edited draft did not start its save")
+			return
+		}
+		let expectedValue = editor.baseline
+
+		keychain.simulateCLISet(
+			vaultId: "id-1",
+			environment: "default",
+			key: "KEY",
+			value: "external"
+		)
+		store.projects[0].environments["default"]?["KEY"] = "external"
+		editor.receiveExternalValue("external")
+		let succeeded = await store.updateSecretAndWait(
+			in: "id-1",
+			environment: "default",
+			key: "KEY",
+			expectedValue: expectedValue,
+			newValue: submitted
+		)
+		editor.finishSave(succeeded: succeeded)
+
+		#expect(!succeeded)
+		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "external")
+		#expect(store.projects[0].secrets(for: "default")["KEY"] == "external")
+		#expect(editor.hasExternalConflict)
+		#expect(editor.isDirty)
 	}
 
 	@Test("update non-existent key is no-op")
@@ -1447,8 +1515,8 @@ struct VaultStoreTests {
 
 		store.updateSecret(in: "id-1", key: "MISSING", newValue: "new")
 
-		#expect(store.projects[0].secrets["KEY"] == "val")
-		#expect(store.projects[0].secrets["MISSING"] == nil)
+		#expect(store.projects[0].secrets(for: "default")["KEY"] == "val")
+		#expect(store.projects[0].secrets(for: "default")["MISSING"] == nil)
 	}
 
 	@Test("update uses the captured environment instead of current navigation")
@@ -1497,14 +1565,14 @@ struct VaultStoreTests {
 
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
-		await waitUntil { store.projects[0].secrets["KEY"] == "new" }
+		await waitUntil { store.projects[0].secrets(for: "default")["KEY"] == "new" }
 		#expect(
 			keychain.storage["id-1"]?.secrets == [
 				"KEY": "new",
 				"CLI_KEY": "cli-value",
 			])
 		#expect(
-			store.projects[0].secrets == [
+			store.projects[0].secrets(for: "default") == [
 				"KEY": "new",
 				"CLI_KEY": "cli-value",
 			])
@@ -1528,7 +1596,7 @@ struct VaultStoreTests {
 
 		await waitUntil { store.error?.contains("changed in another LPM process") == true }
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "cli-value")
-		#expect(store.projects[0].secrets["KEY"] == "cli-value")
+		#expect(store.projects[0].secrets(for: "default")["KEY"] == "cli-value")
 	}
 
 	@Test("failed update persistence leaves UI and Keychain unchanged")
@@ -1543,7 +1611,7 @@ struct VaultStoreTests {
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
 		await waitUntil { store.error != nil }
-		#expect(store.projects[0].secrets["KEY"] == "old")
+		#expect(store.projects[0].secrets(for: "default")["KEY"] == "old")
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "old")
 	}
 
@@ -1552,14 +1620,14 @@ struct VaultStoreTests {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
-		keychain.failNextWriteDataAccounts = ["__sync_metadata__"]
+		keychain.failNextWriteDataAccounts = [mockSyncMetadataAccount(vaultId: "id-1")]
 		store.isUnlocked = true
 		store.selectProject("id-1")
 
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
 		await waitUntil { store.error != nil }
-		#expect(store.projects[0].secrets["KEY"] == "old")
+		#expect(store.projects[0].secrets(for: "default")["KEY"] == "old")
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "old")
 		#expect(keychain.dataStorage["__sync_metadata__"] == nil)
 	}
@@ -1576,9 +1644,9 @@ struct VaultStoreTests {
 
 		store.deleteSecret(from: "id-1", key: "A")
 
-		await waitUntil { store.projects[0].secrets["A"] == nil }
-		#expect(store.projects[0].secrets["A"] == nil)
-		#expect(store.projects[0].secrets["B"] == "2")
+		await waitUntil { store.projects[0].secrets(for: "default")["A"] == nil }
+		#expect(store.projects[0].secrets(for: "default")["A"] == nil)
+		#expect(store.projects[0].secrets(for: "default")["B"] == "2")
 		#expect(keychain.storage["id-1"]?.secrets["A"] == nil)
 	}
 
@@ -1614,7 +1682,11 @@ struct VaultStoreTests {
 
 	@Test("captured secret mutations reject stale project navigation")
 	func capturedMutationsRejectStaleProject() {
-		let (store, _, _, _) = makeStore()
+		let (store, keychain, _, _) = makeStore()
+		keychain.envStorage = [
+			"project-a": (name: "A", path: "", environments: ["default": ["KEY": "a"]]),
+			"project-b": (name: "B", path: "", environments: ["default": ["KEY": "b"]]),
+		]
 		store.projects = [
 			VaultProject(
 				id: "project-a", name: "A", path: "", environments: ["default": ["KEY": "a"]]),
@@ -1627,8 +1699,15 @@ struct VaultStoreTests {
 		store.updateSecret(in: "project-a", environment: "default", key: "KEY", newValue: "changed")
 		store.deleteSecret(from: "project-a", environment: "default", key: "KEY")
 
-		#expect(store.projects.first(where: { $0.id == "project-a" })?.secrets["KEY"] == "a")
-		#expect(store.projects.first(where: { $0.id == "project-b" })?.secrets["KEY"] == "b")
+		#expect(keychain.envStorage["project-a"]?.environments["default"]?["KEY"] == "a")
+		#expect(
+			store.projects.first(where: { $0.id == "project-a" })?.hasLoadedEnvironments == false
+		)
+		#expect(store.projects.first(where: { $0.id == "project-a" })?.secretCount == 1)
+		#expect(
+			store.projects.first(where: { $0.id == "project-b" })?
+				.secrets(for: "default")["KEY"] == "b"
+		)
 	}
 
 	// MARK: - Search
@@ -1647,7 +1726,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("search filters by secret key name")
-	func searchBySecretKey() {
+	func searchBySecretKey() async {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: ["DATABASE_URL": "pg://..."]),
 			(
@@ -1655,6 +1734,7 @@ struct VaultStoreTests {
 				secrets: ["API_KEY": "sk-123"]
 			),
 		])
+		await waitForWorkspaceSnapshots(store, count: 2)
 
 		store.searchQuery = "database"
 
@@ -1663,7 +1743,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("search includes keys from every environment")
-	func searchAcrossAllEnvironments() {
+	func searchAcrossAllEnvironments() async {
 		let (store, _, _, _) = makeStore()
 		store.projects = [
 			VaultProject(
@@ -1676,6 +1756,7 @@ struct VaultStoreTests {
 				]
 			)
 		]
+		await waitForWorkspaceSnapshots(store, count: 1)
 		store.searchQuery = "database"
 
 		#expect(store.filteredVaults.map(\.id) == ["id-1"])
@@ -1703,23 +1784,6 @@ struct VaultStoreTests {
 
 		#expect(store.isUnlocked == true)
 		#expect(biometric.authenticateCallCount == 1)
-	}
-
-	@Test("local-only unlock attempts protected-only Keychain cutover")
-	func localUnlockAttemptsProtectedOnlyCutover() async {
-		let calls = LockedCounter()
-		let store = VaultStore(
-			keychainService: MockKeychainService(),
-			biometricService: MockBiometricService(),
-			apiService: MockAPIService(),
-			protectedOnlyCutover: { calls.increment() },
-			authSessionClearer: { _ in }
-		)
-
-		await store.unlock()
-
-		#expect(calls.value == 1)
-		#expect(store.isUnlocked)
 	}
 
 	@Test("unlock stays locked on cancel")
@@ -1900,13 +1964,188 @@ struct VaultStoreTests {
 	func organizationVaultCreationIsTransactional() async {
 		let (store, keychain, _, _) = makeStore()
 		keychain.failWriteDataAccounts.insert("__org_associations__")
+		store.isUnlocked = true
+		store.selectedAccount = .org("acme")
 
 		let created = await store.createVault(name: "org-vault", orgSlug: "acme")
 
-		#expect(!created)
+		#expect(created == .failed)
 		#expect(keychain.envStorage.isEmpty)
 		#expect(store.projects.isEmpty)
 		#expect(store.vaultOrgAssociations.isEmpty)
+	}
+
+	@Test("organization creation reports sharing failure and retries the same project")
+	func organizationVaultCreationReusesProjectAfterSharingFailure() async throws {
+		let (store, _, _, _) = makeStore()
+		store.isUnlocked = true
+		store.selectedAccount = .org("acme")
+		let creationVaultId = "11111111-1111-4111-8111-111111111111"
+
+		let created = await store.createVault(
+			name: "org-vault", orgSlug: "acme", vaultId: creationVaultId
+		)
+		let original = try #require(store.projects.first)
+		let retried = await store.createVault(
+			name: "org-vault", orgSlug: "acme", vaultId: creationVaultId
+		)
+
+		#expect(created == .failed)
+		#expect(retried == .failed)
+		#expect(store.projects.count == 1)
+		#expect(store.projects.first?.id == original.id)
+	}
+
+	@Test("organization creation recovers a durable project missing from memory")
+	func organizationVaultCreationRecoversPersistedProjectBeforeRetry() async throws {
+		let vaultId = "22222222-2222-4222-8222-222222222222"
+		let keychain = MockKeychainService()
+		keychain.envStorage[vaultId] = (
+			name: "org-vault", path: "", environments: ["default": [:]]
+		)
+		keychain.dataStorage["__org_associations__"] = try JSONEncoder().encode([
+			vaultId: "acme"
+		])
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in "session-token" },
+			authSessionClearer: { _ in }
+		)
+		store.isUnlocked = true
+		store.selectedAccount = .org("acme")
+
+		let result = await store.createVault(
+			name: "org-vault", orgSlug: "acme", vaultId: vaultId
+		)
+
+		#expect(result == .failed)
+		#expect(store.projects.map(\.id) == [vaultId])
+		#expect(keychain.saveEnvironmentsCallCount == 0)
+	}
+
+	@Test("superseded organization creation does not publish durable recovery")
+	func supersededOrganizationVaultCreationDoesNotChangeNavigation() async throws {
+		let vaultId = "33333333-3333-4333-8333-333333333333"
+		let keychain = MockKeychainService()
+		keychain.envStorage[vaultId] = (
+			name: "org-vault", path: "", environments: ["default": [:]]
+		)
+		keychain.dataStorage["__org_associations__"] = try JSONEncoder().encode([
+			vaultId: "acme"
+		])
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextListProjects = {
+			entered.signal()
+			release.wait()
+		}
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in "session-token" },
+			authSessionClearer: { _ in }
+		)
+		store.isUnlocked = true
+		store.selectedAccount = .org("acme")
+		let creation = Task {
+			await store.createVault(name: "org-vault", orgSlug: "acme", vaultId: vaultId)
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.selectedAccount = .personal
+		release.signal()
+
+		let result = await creation.value
+
+		#expect(result == .failed)
+		#expect(store.projects.isEmpty)
+		#expect(store.selectedAccount == .personal)
+		#expect(store.selectedProjectId == nil)
+	}
+
+	@Test("superseded first organization creation does not change navigation")
+	func supersededFirstOrganizationVaultCreationDoesNotChangeNavigation() async {
+		let vaultId = "44444444-4444-4444-8444-444444444444"
+		let keychain = MockKeychainService()
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextSaveEnvironments = {
+			entered.signal()
+			release.wait()
+		}
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in "session-token" },
+			authSessionClearer: { _ in }
+		)
+		store.isUnlocked = true
+		store.selectedAccount = .org("acme")
+		let creation = Task {
+			await store.createVault(name: "org-vault", orgSlug: "acme", vaultId: vaultId)
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.selectAccount(.personal)
+		release.signal()
+
+		let result = await creation.value
+
+		#expect(result == .failed)
+		#expect(keychain.envStorage[vaultId] != nil)
+		#expect(store.projects.isEmpty)
+		#expect(store.selectedAccount == .personal)
+		#expect(store.selectedProjectId == nil)
+	}
+
+	@Test("superseded organization creation record failure does not publish an error")
+	func supersededOrganizationVaultCreationRecordFailureDoesNotPublishError() async {
+		let keychain = MockKeychainService()
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextListProjects = {
+			entered.signal()
+			release.wait()
+		}
+		keychain.failProjectReads = true
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authTokenProvider: { _, _ in "session-token" },
+			authSessionClearer: { _ in }
+		)
+		store.isUnlocked = true
+		store.selectedAccount = .org("acme")
+		let creation = Task {
+			await store.createVault(name: "org-vault", orgSlug: "acme")
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				entered.wait()
+				continuation.resume()
+			}
+		}
+		store.selectAccount(.personal)
+		release.signal()
+
+		let result = await creation.value
+
+		#expect(result == .failed)
+		#expect(store.error == nil)
+		#expect(store.selectedAccount == .personal)
 	}
 
 	@Test("token inventory captures one bearer for every request")
@@ -1952,8 +2191,64 @@ struct VaultStoreTests {
 		await store.loadTokens()
 
 		#expect(Set(api.receivedAuthTokens) == ["old-bearer"])
-		#expect(store.currentUser?.username == "previous")
+		#expect(store.currentUser == nil)
+		#expect(store.personalTokens.isEmpty)
+		#expect(store.orgTokens.isEmpty)
 		#expect(store.error?.contains("session changed") == true)
+	}
+
+	@Test("a revoked session with cleanup failure clears stale identity and org routing")
+	func revokedSessionCleanupFailureClearsIdentity() async {
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			authAuthorizationProvider: { _, _ in
+				throw AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure(
+					"Keychain cleanup failed."
+				)
+			},
+			authSessionClearer: { _ in }
+		)
+		store.currentUser = userWithOrganization(slug: "old-org")
+		store.personalTokens = [testToken(id: "old-personal")]
+		store.orgTokens = ["old-org": [testToken(id: "old-org-token")]]
+		store.selectedAccount = .org("old-org")
+
+		await store.loadAccount()
+
+		#expect(store.currentUser == nil)
+		#expect(store.personalTokens.isEmpty)
+		#expect(store.orgTokens.isEmpty)
+		#expect(store.selectedAccount == .personal)
+		#expect(store.error?.contains("cleanup failed") == true)
+	}
+
+	@Test("aggregate token inventory rejects excessive organization payloads")
+	func aggregateOrganizationTokenInventoryIsBounded() async {
+		let api = MockAPIService()
+		api.user = testUserWithOrganizations(count: 12)
+		let largeName = String(repeating: "x", count: 1_500_000)
+		for index in 0..<12 {
+			api.orgTokensMap["org-\(index)"] = [LPMToken(
+				id: "token-\(index)",
+				name: largeName,
+				scope: nil,
+				expiresAt: nil,
+				lastUsedAt: nil,
+				downloadCount: nil,
+				createdAt: nil,
+				orgSlug: "org-\(index)"
+			)]
+		}
+		let (store, _, _, _) = makeStore(apiService: api)
+
+		await store.loadTokens()
+
+		#expect(store.orgTokens.isEmpty)
+		#expect(store.error == LPMAPIError.invalidResponse.localizedDescription)
+		#expect(api.maximumActiveOrgRequests <= 4)
+		#expect(api.requestedOrgSlugs.count < 12)
 	}
 
 	@Test("organization token inventory uses a four-request sliding window")
@@ -1973,6 +2268,90 @@ struct VaultStoreTests {
 		#expect(store.orgTokens.count == 12)
 		for index in 0..<12 {
 			#expect(store.orgTokens["org-\(index)"]?.first?.id == "token-\(index)")
+		}
+	}
+
+	@Test("oversized organization inventory is rejected before token requests")
+	func oversizedOrganizationInventoryIsRejectedBeforeFetch() async {
+		let api = MockAPIService()
+		api.user = testUserWithOrganizations(count: 257)
+		let (store, _, _, _) = makeStore(apiService: api)
+
+		await store.loadTokens()
+
+		#expect(api.requestedOrgSlugs.isEmpty)
+		#expect(store.orgTokens.isEmpty)
+		#expect(store.error == LPMAPIError.invalidResponse.localizedDescription)
+	}
+
+	@Test("malformed identity responses do not replace a coherent account")
+	func malformedIdentityResponsesAreRejectedBeforePublication() async {
+		let coherent = userWithOrganization(slug: "retained")
+		let invalidOrganizations: [[LPMOrg]] = [
+			[
+				LPMOrg(id: "same", slug: "first", name: "First", avatarUrl: nil, role: "admin"),
+				LPMOrg(id: "same", slug: "second", name: "Second", avatarUrl: nil, role: "admin"),
+			],
+			[
+				LPMOrg(id: "first", slug: "same", name: "First", avatarUrl: nil, role: "admin"),
+				LPMOrg(id: "second", slug: "same", name: "Second", avatarUrl: nil, role: "admin"),
+			],
+			[
+				LPMOrg(id: "unsafe", slug: "../unsafe", name: "Unsafe", avatarUrl: nil, role: "admin")
+			],
+			[
+				LPMOrg(id: "", slug: "empty-id", name: "Empty", avatarUrl: nil, role: "admin")
+			],
+			[
+				LPMOrg(id: "   ", slug: "blank-id", name: "Blank", avatarUrl: nil, role: "admin")
+			],
+		]
+
+		for organizations in invalidOrganizations {
+			let api = MockAPIService()
+			api.user = LPMUser(
+				id: "new-user",
+				username: "new-user",
+				name: nil,
+				email: nil,
+				avatarUrl: nil,
+				plan: nil,
+				createdAt: nil,
+				orgs: organizations
+			)
+			let (store, _, _, _) = makeStore(apiService: api)
+			store.currentUser = coherent
+			store.selectedAccount = .org("retained")
+
+			await store.loadAccount()
+
+			#expect(store.currentUser?.id == coherent.id)
+			#expect(store.currentUser?.orgs?.first?.slug == "retained")
+			#expect(store.selectedAccount == .org("retained"))
+			#expect(store.error == LPMAPIError.invalidResponse.localizedDescription)
+		}
+
+		for (id, username) in [("   ", "new-user"), ("new-user", "\t\n")] {
+			let api = MockAPIService()
+			api.user = LPMUser(
+				id: id,
+				username: username,
+				name: nil,
+				email: nil,
+				avatarUrl: nil,
+				plan: nil,
+				createdAt: nil,
+				orgs: []
+			)
+			let (store, _, _, _) = makeStore(apiService: api)
+			store.currentUser = coherent
+			store.selectedAccount = .org("retained")
+
+			await store.loadAccount()
+
+			#expect(store.currentUser?.id == coherent.id)
+			#expect(store.selectedAccount == .org("retained"))
+			#expect(store.error == LPMAPIError.invalidResponse.localizedDescription)
 		}
 	}
 
@@ -2498,7 +2877,13 @@ struct VaultStoreTests {
 			allMembers: [],
 			pendingApprovals: [],
 			orgTrust: OrgKeyTrust(),
+			trustScope: OrgTrustScope(
+				registryURL: "https://lpm.dev",
+				organizationID: organizationID,
+				organizationSlug: "acme"
+			)!,
 			authToken: "tok",
+			callerUserID: "user-1",
 			canReplaceWrappedKeys: true
 		)
 		store.showKeyApprovalSheet = true
@@ -2524,6 +2909,36 @@ struct VaultStoreTests {
 		#expect(fixture.store.lastSyncStatus == "failed")
 	}
 
+	@Test("protocol revision ceiling stops organization encryption and push")
+	func protocolRevisionCeilingStopsOrganizationPush() async throws {
+		let fixture = makeOrgTrustFixture()
+		let projectID = try #require(fixture.store.selectedProjectId)
+		let metadata = mockCurrentSyncMetadata(
+			version: Int(Int32.max),
+			principalID: organizationID,
+			scope: "organization"
+		)
+		fixture.store.syncMetadata = [projectID: metadata]
+		#expect(fixture.keychain.seedSyncMetadata([projectID: metadata]))
+		let binding = SyncPrincipalBinding(
+			registryURL: fixture.store.appEnvironment.registryURL,
+			principalID: organizationID,
+			scope: "organization"
+		)
+		#expect(fixture.keychain.storedSyncMetadata(vaultId: projectID)?.binding == binding)
+		let snapshot = await VaultPersistenceCoordinator(service: fixture.keychain)
+			.syncSnapshot(vaultId: projectID, binding: binding)
+		#expect(snapshot?.metadata?.version(boundTo: binding) == Int(Int32.max))
+
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+		let approvals = try #require(fixture.store.pendingOrgPush?.pendingApprovals)
+		await fixture.store.approveAndContinueOrgPush(approved: approvals)
+
+		#expect(fixture.sync.pushCallCount == 0)
+		#expect(fixture.store.lastSyncStatus == "failed")
+		#expect(fixture.store.syncMetadata[projectID]?.lastVersion == Int(Int32.max))
+	}
+
 	@Test("organization approval never pushes before trust is durable")
 	func organizationTrustWriteFailureStopsApprovedPush() async throws {
 		let fixture = makeOrgTrustFixture()
@@ -2536,6 +2951,85 @@ struct VaultStoreTests {
 		#expect(fixture.sync.pushCallCount == 0)
 		#expect(fixture.store.lastSyncStatus == "failed")
 		#expect(fixture.store.error?.contains("trust") == true)
+	}
+
+	@Test("duplicate organization approval activation cannot cancel the claimed push")
+	func duplicateOrganizationApprovalActivationIsIgnored() async throws {
+		let fixture = makeOrgTrustFixture()
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+		let approvals = try #require(fixture.store.pendingOrgPush?.pendingApprovals)
+		let gate = AsyncGate()
+		fixture.sync.blockNextMemberKeyAccess = { await gate.arriveAndWait() }
+		let projectID = try #require(fixture.store.selectedProjectId)
+		fixture.sync.pushResult = SyncService.SyncStatus(
+			vaultId: projectID,
+			version: 1,
+			cryptoVersion: VaultCrypto.currentCryptoVersion,
+			contentKeyVersion: 1,
+			recipientPublicKeyVersion: nil,
+			recipientPublicKeyFingerprint: nil,
+			status: "ok",
+			error: nil,
+			code: nil,
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: nil,
+			wrappedKey: nil,
+			updatedAt: nil,
+			principalId: organizationID
+		)
+
+		let claimedPush = Task {
+			await fixture.store.approveAndContinueOrgPush(approved: approvals)
+		}
+		await gate.waitUntilArrived()
+		await fixture.store.approveAndContinueOrgPush(approved: approvals)
+		await gate.release()
+		await claimedPush.value
+
+		#expect(fixture.sync.pushCallCount == 1)
+		#expect(fixture.store.syncMetadata[projectID]?.lastVersion == 1)
+		#expect(fixture.store.pendingOrgPush == nil)
+		#expect(!fixture.store.isSyncing)
+	}
+
+	@Test("transient auth failure after organization approval is actionable")
+	func organizationApprovalReportsTransientAuthFailure() async throws {
+		let tokenProvider = FailableAuthTokenProvider()
+		let fixture = makeOrgTrustFixture(authTokenResolver: {
+			try tokenProvider.resolve()
+		})
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+		let approvals = try #require(fixture.store.pendingOrgPush?.pendingApprovals)
+		tokenProvider.shouldFail = true
+
+		await fixture.store.approveAndContinueOrgPush(approved: approvals)
+
+		#expect(fixture.sync.memberKeyAccessCallCount == 1)
+		#expect(fixture.sync.pushCallCount == 0)
+		#expect(fixture.store.pendingOrgPush == nil)
+		#expect(!fixture.store.showKeyApprovalSheet)
+		#expect(!fixture.store.isSyncing)
+		#expect(fixture.store.lastSyncStatus == "failed")
+		#expect(fixture.store.error?.contains("Could not access the shared LPM session") == true)
+	}
+
+	@Test("definitive credential loss during organization approval clears account state")
+	func organizationApprovalCredentialLossClearsAccountState() async throws {
+		let token = MutableOptionalString("session-token")
+		let fixture = makeOrgTrustFixture(authToken: token)
+		fixture.store.personalTokens = [testToken(id: "personal-token")]
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+		let approvals = try #require(fixture.store.pendingOrgPush?.pendingApprovals)
+
+		token.value = nil
+		await fixture.store.approveAndContinueOrgPush(approved: approvals)
+
+		#expect(fixture.sync.pushCallCount == 0)
+		#expect(fixture.store.pendingOrgPush == nil)
+		#expect(fixture.store.currentUser == nil)
+		#expect(fixture.store.personalTokens.isEmpty)
+		#expect(fixture.store.selectedAccount == .personal)
 	}
 
 	@Test("organization sharing key lookup executes away from the main thread")
@@ -2559,7 +3053,13 @@ struct VaultStoreTests {
 				allMembers: [],
 				pendingApprovals: [],
 				orgTrust: OrgKeyTrust(),
+				trustScope: OrgTrustScope(
+					registryURL: "https://lpm.dev",
+					organizationID: organizationID,
+					organizationSlug: "acme"
+				)!,
 				authToken: "retained-token",
+				callerUserID: "user-1",
 				canReplaceWrappedKeys: true
 			)
 			store.showKeyApprovalSheet = true
@@ -2587,12 +3087,21 @@ struct VaultStoreTests {
 	@Test("organization approval refetch rejects every changed authorization binding")
 	func organizationApprovalRefetchRejectsChangedAuthorization() async throws {
 		for change in [
-			"member removal", "member key", "member role", "capability", "own key", "own version",
+			"caller", "member removal", "member key", "member role", "capability", "own key",
+			"own version",
 		] {
 			let slug = "approval-\(UUID().uuidString.lowercased())"
 			let projectID = "project-\(UUID().uuidString.lowercased())"
 			let localKeypair = VaultCrypto.generateX25519Keypair()
 			let memberKeypair = VaultCrypto.generateX25519Keypair()
+			let currentMember = SyncService.MemberPublicKey(
+				userId: "u1",
+				role: "admin",
+				publicKey: localKeypair.publicKey.base64EncodedString(),
+				publicKeyVersion: 1,
+				publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey),
+				hasPublicKey: true
+			)
 			let member = SyncService.MemberPublicKey(
 				userId: "member",
 				role: "admin",
@@ -2608,7 +3117,9 @@ struct VaultStoreTests {
 				publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey)
 			)
 			sync.memberKeyAccess = SyncService.MemberKeyAccess(
-				members: [member],
+				organizationID: organizationID,
+				callerUserID: "u1",
+				members: [currentMember, member],
 				canReplaceWrappedKeys: true
 			)
 			let keychain = MockKeychainService()
@@ -2639,52 +3150,95 @@ struct VaultStoreTests {
 
 			await store.pushToOrg(orgSlug: slug)
 			let approval = try #require(store.pendingOrgPush?.pendingApprovals)
-			#expect(approval.count == 1)
+			#expect(approval.count == 2)
 
 			switch change {
+			case "caller":
+				sync.memberKeyAccess = SyncService.MemberKeyAccess(
+					organizationID: organizationID,
+					callerUserID: "u2",
+					members: [currentMember, member],
+					canReplaceWrappedKeys: true
+				)
 			case "member removal":
 				sync.memberKeyAccess = SyncService.MemberKeyAccess(
-					members: [], canReplaceWrappedKeys: true)
+					organizationID: organizationID,
+					callerUserID: "u1",
+					members: [currentMember], canReplaceWrappedKeys: true)
 			case "member key":
 				let rotated = VaultCrypto.generateX25519Keypair().publicKey
 				sync.memberKeyAccess = SyncService.MemberKeyAccess(
-					members: [SyncService.MemberPublicKey(
-						userId: member.userId,
-						role: member.role,
-						publicKey: rotated.base64EncodedString(),
-						publicKeyVersion: 2,
-						publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(rotated),
-						hasPublicKey: true
-					)],
+					organizationID: organizationID,
+					callerUserID: "u1",
+					members: [
+						currentMember,
+						SyncService.MemberPublicKey(
+							userId: member.userId,
+							role: member.role,
+							publicKey: rotated.base64EncodedString(),
+							publicKeyVersion: 2,
+							publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(rotated),
+							hasPublicKey: true
+						),
+					],
 					canReplaceWrappedKeys: true
 				)
 			case "member role":
 				sync.memberKeyAccess = SyncService.MemberKeyAccess(
-					members: [SyncService.MemberPublicKey(
-						userId: member.userId,
-						role: "member",
-						publicKey: member.publicKey,
-						publicKeyVersion: member.publicKeyVersion,
-						publicKeyFingerprint: member.publicKeyFingerprint,
-						hasPublicKey: true
-					)],
+					organizationID: organizationID,
+					callerUserID: "u1",
+					members: [
+						currentMember,
+						SyncService.MemberPublicKey(
+							userId: member.userId,
+							role: "member",
+							publicKey: member.publicKey,
+							publicKeyVersion: member.publicKeyVersion,
+							publicKeyFingerprint: member.publicKeyFingerprint,
+							hasPublicKey: true
+						),
+					],
 					canReplaceWrappedKeys: true
 				)
 			case "capability":
 				sync.memberKeyAccess = SyncService.MemberKeyAccess(
-					members: [member], canReplaceWrappedKeys: false)
+					organizationID: organizationID,
+					callerUserID: "u1",
+					members: [currentMember, member], canReplaceWrappedKeys: false)
 			case "own key":
 				let rotated = VaultCrypto.generateX25519Keypair().publicKey
-				sync.publicKeyRecord = SyncService.PublicKeyRecord(
-					publicKey: rotated.base64EncodedString(),
-					publicKeyVersion: 2,
-					publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(rotated)
+				sync.memberKeyAccess = SyncService.MemberKeyAccess(
+					organizationID: organizationID,
+					callerUserID: "u1",
+					members: [
+						SyncService.MemberPublicKey(
+							userId: currentMember.userId,
+							role: currentMember.role,
+							publicKey: rotated.base64EncodedString(),
+							publicKeyVersion: 2,
+							publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(rotated),
+							hasPublicKey: true
+						),
+						member,
+					],
+					canReplaceWrappedKeys: true
 				)
 			case "own version":
-				sync.publicKeyRecord = SyncService.PublicKeyRecord(
-					publicKey: localKeypair.publicKey.base64EncodedString(),
-					publicKeyVersion: 2,
-					publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey)
+				sync.memberKeyAccess = SyncService.MemberKeyAccess(
+					organizationID: organizationID,
+					callerUserID: "u1",
+					members: [
+						SyncService.MemberPublicKey(
+							userId: currentMember.userId,
+							role: currentMember.role,
+							publicKey: currentMember.publicKey,
+							publicKeyVersion: 2,
+							publicKeyFingerprint: currentMember.publicKeyFingerprint,
+							hasPublicKey: true
+						),
+						member,
+					],
+					canReplaceWrappedKeys: true
 				)
 			default:
 				Issue.record("Unknown authorization-change fixture")
@@ -2696,7 +3250,215 @@ struct VaultStoreTests {
 			#expect(store.lastSyncStatus == "failed", "Unexpected status after \(change)")
 			#expect(store.error != nil, "Missing error after \(change)")
 			#expect(store.pendingOrgPush == nil)
+			#expect(sync.publicKeyCallCount == 0)
 		}
+	}
+
+	@Test("maintainer push rejects an unbound sharing-key response")
+	func maintainerPushRejectsUnboundSharingKeyResponse() async throws {
+		let projectID = "maintainer-project"
+		let slug = "acme"
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let contentKey = VaultCrypto.generateAESKey()
+		let wrappedKey = try VaultCrypto.wrapKeyForRecipient(
+			aesKey: contentKey,
+			recipientPublicKey: keypair.publicKey
+		)
+		let fingerprint = VaultCrypto.publicKeyFingerprint(keypair.publicKey)
+		let member = SyncService.MemberPublicKey(
+			userId: "u1",
+			role: "admin",
+			publicKey: keypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: fingerprint,
+			hasPublicKey: true
+		)
+		let sync = MockOrgSyncService()
+		sync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: keypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: fingerprint
+		)
+		sync.memberKeyAccess = SyncService.MemberKeyAccess(
+			organizationID: organizationID,
+			callerUserID: "u1",
+			members: [member],
+			canReplaceWrappedKeys: false
+		)
+		sync.pullResult = SyncService.SyncStatus(
+			vaultId: projectID,
+			version: 4,
+			cryptoVersion: nil,
+			contentKeyVersion: nil,
+			recipientPublicKeyVersion: nil,
+			recipientPublicKeyFingerprint: fingerprint,
+			status: "ok",
+			error: nil,
+			code: nil,
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: "ciphertext",
+			wrappedKey: wrappedKey,
+			updatedAt: nil,
+			principalId: organizationID,
+			callerUserId: "u1",
+			organizationId: organizationID
+		)
+		sync.pushResult = SyncService.SyncStatus(
+			vaultId: projectID,
+			version: 5,
+			cryptoVersion: VaultCrypto.currentCryptoVersion,
+			contentKeyVersion: 1,
+			recipientPublicKeyVersion: 1,
+			recipientPublicKeyFingerprint: fingerprint,
+			status: "ok",
+			error: nil,
+			code: nil,
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: nil,
+			wrappedKey: nil,
+			updatedAt: nil,
+			principalId: organizationID
+		)
+		let keychain = MockKeychainService()
+		keychain.envStorage[projectID] = (
+			name: "Maintainer",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)
+		let metadata = mockCurrentSyncMetadata(
+			version: 4,
+			principalID: organizationID,
+			scope: "organization"
+		)
+		#expect(keychain.seedSyncMetadata([projectID: metadata]))
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			orgSyncServiceFactory: { _ in sync },
+			sharingKeypairProvider: { keypair },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.appEnvironment = .production
+		store.currentUser = userWithOrganization(slug: slug)
+		let trustScope = try #require(
+			OrgTrustScope(
+				registryURL: store.appEnvironment.registryURL,
+				organizationID: organizationID,
+				organizationSlug: slug
+			)
+		)
+		let persistedTrust = PersistedOrgKeyTrustFixture(
+			schemaVersion: 3,
+			scope: trustScope,
+			trust: OrgKeyTrust(trustedFingerprints: [member.userId: fingerprint])
+		)
+		keychain.dataStorage[trustScope.storageAccount] = try JSONEncoder().encode(persistedTrust)
+		store.projects = [VaultProject(
+			id: projectID,
+			name: "Maintainer",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)]
+		store.syncMetadata = [projectID: metadata]
+		store.vaultOrgAssociations = [projectID: slug]
+		store.isUnlocked = true
+		store.selectAccount(.org(slug))
+		store.selectProject(projectID)
+
+		await store.pushToOrg(orgSlug: slug)
+
+		#expect(sync.pushCallCount == 0)
+		#expect(store.lastSyncStatus == "failed")
+		#expect(store.error?.contains("invalid sharing-key binding") == true)
+	}
+
+	@Test("maintainer push authenticates the current ciphertext before reusing its key")
+	func maintainerPushAuthenticatesCurrentCiphertextBeforeKeyReuse() async throws {
+		let fixture = makeOrgTrustFixture()
+		let store = fixture.store
+		let sync = fixture.sync
+		let projectID = try #require(store.selectedProject?.id)
+		let member = try #require(sync.memberKeyAccess?.members.first)
+		let memberPublicKeyBase64 = try #require(member.publicKey)
+		let memberPublicKey = try #require(Data(base64Encoded: memberPublicKeyBase64))
+		let memberFingerprint = try #require(member.publicKeyFingerprint)
+		let contentKey = VaultCrypto.generateAESKey()
+		let wrappedKey = try VaultCrypto.wrapKeyForRecipient(
+			aesKey: contentKey,
+			recipientPublicKey: memberPublicKey
+		)
+		sync.memberKeyAccess = SyncService.MemberKeyAccess(
+			organizationID: organizationID,
+			callerUserID: "u1",
+			members: [member],
+			canReplaceWrappedKeys: false
+		)
+		let metadata = mockCurrentSyncMetadata(
+			version: 4,
+			principalID: organizationID,
+			scope: "organization"
+		)
+		#expect(fixture.keychain.seedSyncMetadata([projectID: metadata]))
+		store.syncMetadata = [projectID: metadata]
+		let trustScope = try #require(
+			OrgTrustScope(
+				registryURL: store.appEnvironment.registryURL,
+				organizationID: organizationID,
+				organizationSlug: fixture.slug
+			)
+		)
+		fixture.keychain.dataStorage[fixture.trustAccount] = try JSONEncoder().encode(
+			PersistedOrgKeyTrustFixture(
+				schemaVersion: 3,
+				scope: trustScope,
+				trust: OrgKeyTrust(trustedFingerprints: [member.userId: memberFingerprint])
+			)
+		)
+		sync.pullResult = SyncService.SyncStatus(
+			vaultId: projectID,
+			version: 4,
+			cryptoVersion: VaultCrypto.currentCryptoVersion,
+			contentKeyVersion: 1,
+			recipientPublicKeyVersion: member.publicKeyVersion,
+			recipientPublicKeyFingerprint: memberFingerprint,
+			status: "ok",
+			error: nil,
+			code: nil,
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: "invalid-current-ciphertext",
+			wrappedKey: wrappedKey,
+			updatedAt: nil,
+			principalId: organizationID,
+			callerUserId: "u1",
+			organizationId: organizationID
+		)
+		sync.pushResult = SyncService.SyncStatus(
+			vaultId: projectID,
+			version: 5,
+			cryptoVersion: VaultCrypto.currentCryptoVersion,
+			contentKeyVersion: 1,
+			recipientPublicKeyVersion: member.publicKeyVersion,
+			recipientPublicKeyFingerprint: memberFingerprint,
+			status: "ok",
+			error: nil,
+			code: nil,
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: nil,
+			wrappedKey: nil,
+			updatedAt: nil,
+			principalId: organizationID
+		)
+
+		await store.pushToOrg(orgSlug: fixture.slug)
+
+		#expect(sync.pushCallCount == 0)
+		#expect(store.lastSyncStatus == "failed")
+		#expect(store.error?.contains("current organization env project") == true)
 	}
 
 	@Test("lock invalidates organization sharing during member-key lookup")
@@ -2751,6 +3513,7 @@ struct VaultStoreTests {
 			personalSyncServiceFactory: { _ in sync },
 			authTokenProvider: { _, _ in token.value }
 		)
+		store.currentUser = testUser(id: "account-1", username: "user")
 		store.projects = [
 			VaultProject(
 				id: projectId,
@@ -2766,9 +3529,9 @@ struct VaultStoreTests {
 		await gate.waitUntilArrived()
 		token.value = "replacement-token"
 		await gate.release()
-		await pull.value
+		_ = await pull.value
 
-		#expect(store.projects.first?.secrets["TOKEN"] == "local")
+		#expect(store.projects.first?.secrets(for: "default")["TOKEN"] == "local")
 		#expect(store.syncMetadata[projectId] == nil)
 		#expect(store.lastSyncStatus == nil)
 		#expect(!store.isSyncing)
@@ -2811,9 +3574,10 @@ struct VaultStoreTests {
 			biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			personalSyncServiceFactory: { _ in sync },
-			stableSyncEncryptor: { _, _ in ("test-blob", "test-wrapped-key") },
+			stableSyncEncryptor: { _, _, _, _ in ("test-blob", "test-wrapped-key") },
 			authTokenProvider: { _, _ in "session-token" }
 		)
+		store.currentUser = testUser(id: "account-1", username: "user")
 		store.projects = [
 			VaultProject(
 				id: "project-a", name: "A", path: "", environments: ["default": ["TOKEN": "a"]]),
@@ -2827,12 +3591,896 @@ struct VaultStoreTests {
 		await gate.waitUntilArrived()
 		store.selectProject("project-b")
 		await gate.release()
-		await push.value
+		_ = await push.value
 
 		#expect(store.selectedProjectId == "project-b")
 		#expect(store.lastSyncStatus == nil)
 		#expect(store.syncMetadata["project-a"] == nil)
 		#expect(!store.isSyncing)
+	}
+
+	@Test("project navigation preserves a successful remote push acknowledgement")
+	func projectNavigationPreservesPersonalPushAcknowledgement() async {
+		let gate = AsyncGate()
+		let sync = MockPersonalSyncService()
+		sync.pushHandlers = [
+			{
+				await gate.arriveAndWait()
+				return SyncService.SyncStatus(
+					vaultId: "project-a",
+					version: 1,
+					cryptoVersion: VaultCrypto.currentCryptoVersion,
+					contentKeyVersion: nil,
+					recipientPublicKeyVersion: nil,
+					recipientPublicKeyFingerprint: nil,
+					status: "ok",
+					error: nil,
+					code: nil,
+					serverVersion: nil,
+					hint: nil,
+					encryptedBlob: nil,
+					wrappedKey: nil,
+					updatedAt: nil,
+					principalId: "account-1"
+				)
+			}
+		]
+		let keychain = MockKeychainService()
+		keychain.envStorage["project-a"] = (
+			name: "A", path: "", environments: ["default": ["TOKEN": "a"]]
+		)
+		keychain.envStorage["project-b"] = (
+			name: "B", path: "", environments: ["default": ["TOKEN": "b"]]
+		)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			personalSyncServiceFactory: { _ in sync },
+			stableSyncEncryptor: { _, _, _, _ in ("test-blob", "test-wrapped-key") },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.currentUser = testUser(id: "account-1", username: "user")
+		store.projects = [
+			VaultProject(
+				id: "project-a", name: "A", path: "",
+				environments: ["default": ["TOKEN": "a"]]),
+			VaultProject(
+				id: "project-b", name: "B", path: "",
+				environments: ["default": ["TOKEN": "b"]]),
+		]
+		store.isUnlocked = true
+		store.selectProject("project-a")
+
+		let push = Task { await store.pushToCloud() }
+		await gate.waitUntilArrived()
+		store.selectProject("project-b")
+		await gate.release()
+		await push.value
+
+		#expect(store.selectedProjectId == "project-b")
+		#expect(store.syncMetadata["project-a"]?.lastVersion == 1)
+		#expect(store.lastSyncStatus == nil)
+		#expect(keychain.storedSyncMetadata(vaultId: "project-a")?.lastVersion == 1)
+	}
+
+	@Test("a stale approval continuation preserves a newer pending organization push")
+	func staleApprovalPreservesNewerPendingPush() async throws {
+		let slug = "approval-race"
+		let localKeypair = VaultCrypto.generateX25519Keypair()
+		let memberKeypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: localKeypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey)
+		)
+		sync.memberKeyAccess = SyncService.MemberKeyAccess(
+			organizationID: organizationID,
+			callerUserID: "u1",
+			members: [
+				SyncService.MemberPublicKey(
+					userId: "u1",
+					role: "admin",
+					publicKey: localKeypair.publicKey.base64EncodedString(),
+					publicKeyVersion: 1,
+					publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey),
+					hasPublicKey: true
+				),
+				SyncService.MemberPublicKey(
+					userId: "member",
+					role: "admin",
+					publicKey: memberKeypair.publicKey.base64EncodedString(),
+					publicKeyVersion: 1,
+					publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(memberKeypair.publicKey),
+					hasPublicKey: true
+				),
+			],
+			canReplaceWrappedKeys: true
+		)
+		let staleResolutionGate = AsyncGate()
+		let tokenProvider = GatedTokenProvider(token: "session-token")
+		let keychain = MockKeychainService()
+		for projectID in ["project-a", "project-b"] {
+			keychain.envStorage[projectID] = (
+				name: projectID,
+				path: "",
+				environments: ["default": ["TOKEN": projectID]]
+			)
+		}
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			orgSyncServiceFactory: { _ in sync },
+			sharingKeypairProvider: { localKeypair },
+			authTokenProvider: { _, _ in await tokenProvider.resolve() }
+		)
+		store.currentUser = userWithOrganization(slug: slug)
+		store.projects = [
+			VaultProject(
+				id: "project-a",
+				name: "A",
+				path: "",
+				environments: ["default": ["TOKEN": "a"]]
+			),
+			VaultProject(
+				id: "project-b",
+				name: "B",
+				path: "",
+				environments: ["default": ["TOKEN": "b"]]
+			),
+		]
+		store.vaultOrgAssociations = ["project-a": slug, "project-b": slug]
+		store.isUnlocked = true
+		store.selectAccount(.org(slug))
+		store.selectProject("project-a")
+
+		await store.pushToOrg(orgSlug: slug)
+		let staleApprovals = try #require(store.pendingOrgPush?.pendingApprovals)
+		await tokenProvider.setGate(staleResolutionGate)
+		let staleApproval = Task {
+			await store.approveAndContinueOrgPush(approved: staleApprovals)
+		}
+		await staleResolutionGate.waitUntilArrived()
+
+		await tokenProvider.setGate(nil)
+		store.selectProject("project-b")
+		await store.pushToOrg(orgSlug: slug)
+		let newerApprovals = try #require(store.pendingOrgPush?.pendingApprovals)
+		#expect(store.pendingOrgPush?.projectId == "project-b")
+		#expect(!newerApprovals.isEmpty)
+
+		await staleResolutionGate.release()
+		await staleApproval.value
+
+		#expect(store.pendingOrgPush?.projectId == "project-b")
+		#expect(PendingKeyApproval.exactlyMatches(
+			store.pendingOrgPush?.pendingApprovals ?? [],
+			pending: newerApprovals
+		))
+		#expect(store.showKeyApprovalSheet)
+	}
+
+	@Test("project navigation preserves a successful organization push acknowledgement")
+	func projectNavigationPreservesOrganizationPushAcknowledgement() async throws {
+		let slug = "acme"
+		let gate = AsyncGate()
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: keypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey)
+		)
+		sync.memberKeyAccess = SyncService.MemberKeyAccess(
+			organizationID: organizationID,
+			callerUserID: "u1",
+			members: [
+				SyncService.MemberPublicKey(
+					userId: "u1",
+					role: "owner",
+					publicKey: keypair.publicKey.base64EncodedString(),
+					publicKeyVersion: 1,
+					publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey),
+					hasPublicKey: true
+				)
+			],
+			canReplaceWrappedKeys: true
+		)
+		sync.pushResult = SyncService.SyncStatus(
+			vaultId: "project-a",
+			version: 1,
+			cryptoVersion: VaultCrypto.currentCryptoVersion,
+			contentKeyVersion: 1,
+			recipientPublicKeyVersion: nil,
+			recipientPublicKeyFingerprint: nil,
+			status: "ok",
+			error: nil,
+			code: nil,
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: nil,
+			wrappedKey: nil,
+			updatedAt: nil,
+			principalId: organizationID
+		)
+		sync.blockNextPush = { await gate.arriveAndWait() }
+		let keychain = MockKeychainService()
+		keychain.envStorage["project-a"] = (
+			name: "A", path: "", environments: ["default": ["TOKEN": "a"]]
+		)
+		keychain.envStorage["project-b"] = (
+			name: "B", path: "", environments: ["default": ["TOKEN": "b"]]
+		)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			orgSyncServiceFactory: { _ in sync },
+			sharingKeypairProvider: { keypair },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.currentUser = userWithOrganization(slug: slug)
+		store.projects = [
+			VaultProject(
+				id: "project-a", name: "A", path: "",
+				environments: ["default": ["TOKEN": "a"]]),
+			VaultProject(
+				id: "project-b", name: "B", path: "",
+				environments: ["default": ["TOKEN": "b"]]),
+		]
+		store.vaultOrgAssociations = ["project-a": slug, "project-b": slug]
+		store.isUnlocked = true
+		store.selectAccount(.org(slug))
+		store.selectProject("project-a")
+
+		await store.pushToOrg(orgSlug: slug)
+		let approvals = try #require(store.pendingOrgPush?.pendingApprovals)
+		let push = Task { await store.approveAndContinueOrgPush(approved: approvals) }
+		await gate.waitUntilArrived()
+		store.selectProject("project-b")
+		await gate.release()
+		await push.value
+
+		#expect(store.selectedProjectId == "project-b")
+		#expect(store.syncMetadata["project-a"]?.lastVersion == 1)
+		#expect(store.lastSyncStatus == nil)
+		#expect(store.pendingOrgPush == nil)
+		#expect(keychain.storedSyncMetadata(vaultId: "project-a")?.lastVersion == 1)
+	}
+
+	@Test("network protocol v1 personal pulls are rejected without migration")
+	func networkProtocolV1PersonalPullIsRejectedWithoutMigration() async throws {
+		let token = "legacy-session-token"
+		let payload = try JSONEncoder().encode([
+			"environments": ["default": ["TOKEN": "remote"]]
+		])
+		let contentKey = VaultCrypto.generateAESKey()
+		let encryptedBlob = try VaultCrypto.encrypt(key: contentKey, plaintext: payload)
+		let wrappedKey = try VaultCrypto.wrapKey(
+			wrappingKey: VaultCrypto.generateAESKey(),
+			aesKey: contentKey
+		)
+		let sync = MockPersonalSyncService()
+		sync.pullHandlers = [{
+			SyncService.SyncStatus(
+				vaultId: "project-a",
+				version: 1,
+				cryptoVersion: 1,
+				contentKeyVersion: nil,
+				recipientPublicKeyVersion: nil,
+				recipientPublicKeyFingerprint: nil,
+				status: "ok",
+				error: nil,
+				code: nil,
+				serverVersion: nil,
+				hint: nil,
+				encryptedBlob: encryptedBlob,
+				wrappedKey: wrappedKey,
+				updatedAt: nil,
+				principalId: "account-1"
+			)
+		}]
+		sync.pushHandlers = [{
+			SyncService.SyncStatus(
+				vaultId: "project-a",
+				version: 2,
+				cryptoVersion: VaultCrypto.currentCryptoVersion,
+				contentKeyVersion: nil,
+				recipientPublicKeyVersion: nil,
+				recipientPublicKeyFingerprint: nil,
+				status: "ok",
+				error: nil,
+				code: nil,
+				serverVersion: nil,
+				hint: nil,
+				encryptedBlob: nil,
+				wrappedKey: nil,
+				updatedAt: nil,
+				principalId: "account-1"
+			)
+		}]
+		let migratedRevisionMatches = LockedCounter()
+		let decryptions = LockedCounter()
+		let keychain = MockKeychainService()
+		keychain.envStorage["project-a"] = (
+			name: "A",
+			path: "",
+			environments: ["default": ["TOKEN": "local", "LOCAL_ONLY": "pending"]]
+		)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			personalSyncServiceFactory: { _ in sync },
+			stableSyncEncryptor: { _, _, _, revision in
+				if revision == 2 { migratedRevisionMatches.increment() }
+				return ("v3-ciphertext", "stable-wrapped-key")
+			},
+			stableSyncDecryptor: { blob, wrapped, principalID, vaultID, revision, version in
+				decryptions.increment()
+				return Data(try VaultCrypto.decryptStableSync(
+					encryptedBlob: blob,
+					wrappedKey: wrapped,
+					principalId: principalID,
+					vaultId: vaultID,
+					revision: revision,
+					cryptoVersion: version,
+					wrappingKey: VaultCrypto.generateAESKey()
+				).utf8)
+			},
+			authTokenProvider: { _, _ in token }
+		)
+		store.currentUser = testUser(id: "account-1", username: "user")
+		store.projects = [VaultProject(
+			id: "project-a", name: "A", path: "",
+			environments: ["default": ["TOKEN": "local", "LOCAL_ONLY": "pending"]]
+		)]
+		store.isUnlocked = true
+		store.selectProject("project-a")
+
+		await store.pullFromCloud()
+
+		#expect(keychain.envStorage["project-a"]?.environments["default"]?["TOKEN"] == "local")
+		#expect(keychain.envStorage["project-a"]?.environments["default"]?["LOCAL_ONLY"] == "pending")
+		#expect(store.projects[0].secrets(for: "default")["TOKEN"] == "local")
+		#expect(store.syncMetadata["project-a"] == nil)
+		#expect(sync.pushCallCount == 0)
+		#expect(sync.pushedExpectedVersions.isEmpty)
+		#expect(migratedRevisionMatches.value == 0)
+		#expect(decryptions.value == 0)
+		#expect(store.lastSyncStatus == "failed")
+		#expect(store.error == "The cloud response uses an unsupported encryption version.")
+	}
+
+	@Test("network protocol v2 personal pulls are rejected without migration")
+	func networkProtocolV2PersonalPullIsRejectedWithoutMigration() async throws {
+		let projectID = "vault-v2"
+		let wrappingKey = VaultCrypto.generateAESKey()
+		let contentKey = SymmetricKey(data: Data(repeating: 0x07, count: 32))
+		let wrappedKey = try VaultCrypto.wrapKey(
+			wrappingKey: wrappingKey,
+			aesKey: contentKey
+		)
+		let sync = MockPersonalSyncService()
+		sync.pullHandlers = [{
+			SyncService.SyncStatus(
+				vaultId: projectID,
+				version: 42,
+				cryptoVersion: 2,
+				contentKeyVersion: nil,
+				recipientPublicKeyVersion: nil,
+				recipientPublicKeyFingerprint: nil,
+				status: "ok",
+				error: nil,
+				code: nil,
+				serverVersion: nil,
+				hint: nil,
+				encryptedBlob: "AAECAwQFBgcICQoL:Y6OMHmtgqyYZ34DylitOwJoe0ut+AwJdYuxZwayDIk6bIWTYtaNUmpWGupsqxZdOiU3roLYywwVsmTsvH1+umdml",
+				wrappedKey: wrappedKey,
+				updatedAt: nil,
+				principalId: "account-1"
+			)
+		}]
+		sync.pushHandlers = [{
+			SyncService.SyncStatus(
+				vaultId: projectID,
+				version: 43,
+				cryptoVersion: VaultCrypto.currentCryptoVersion,
+				contentKeyVersion: nil,
+				recipientPublicKeyVersion: nil,
+				recipientPublicKeyFingerprint: nil,
+				status: "ok",
+				error: nil,
+				code: nil,
+				serverVersion: nil,
+				hint: nil,
+				encryptedBlob: nil,
+				wrappedKey: nil,
+				updatedAt: nil,
+				principalId: "account-1"
+			)
+		}]
+		let keychain = MockKeychainService()
+		let decryptions = LockedCounter()
+		keychain.envStorage[projectID] = (
+			name: "V2",
+			path: "",
+			environments: ["default": [:]]
+		)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			personalSyncServiceFactory: { _ in sync },
+			stableSyncEncryptor: { _, _, _, _ in ("v3-ciphertext", "v3-wrapped") },
+			stableSyncDecryptor: { blob, wrapped, principalID, vaultID, revision, version in
+				decryptions.increment()
+				return Data(try VaultCrypto.decryptStableSync(
+					encryptedBlob: blob,
+					wrappedKey: wrapped,
+					principalId: principalID,
+					vaultId: vaultID,
+					revision: revision,
+					cryptoVersion: version,
+					wrappingKey: wrappingKey
+				).utf8)
+			},
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.currentUser = testUser(id: "account-1", username: "user")
+		store.projects = [VaultProject(
+			id: projectID,
+			name: "V2",
+			path: "",
+			environments: ["default": [:]]
+		)]
+		store.isUnlocked = true
+		store.selectProject(projectID)
+
+		await store.pullFromCloud()
+
+		#expect(store.projects[0].secrets(for: "default")["TOKEN"] == nil)
+		#expect(store.syncMetadata[projectID] == nil)
+		#expect(sync.pushedExpectedVersions.isEmpty)
+		#expect(decryptions.value == 0)
+		#expect(store.lastSyncStatus == "failed")
+		#expect(store.error == "The cloud response uses an unsupported encryption version.")
+	}
+
+	@Test("network protocol v2 organization pulls are rejected atomically")
+	func networkProtocolV2OrganizationPullIsRejectedAtomically() async throws {
+		let projectID = "vault-v2"
+		let slug = "acme"
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let contentKey = SymmetricKey(data: Data(repeating: 0x07, count: 32))
+		let wrappedKey = try VaultCrypto.wrapKeyForRecipient(
+			aesKey: contentKey,
+			recipientPublicKey: keypair.publicKey
+		)
+		let sync = MockOrgSyncService()
+		sync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: keypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey)
+		)
+		sync.pullResult = SyncService.SyncStatus(
+			vaultId: projectID,
+			version: 42,
+			cryptoVersion: 2,
+			contentKeyVersion: 1,
+			recipientPublicKeyVersion: 1,
+			recipientPublicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey),
+			status: "ok",
+			error: nil,
+			code: nil,
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: "AAECAwQFBgcICQoL:Y6OMHmtgqyYZ34DylitOwJoe0ut+AwJdYuxZwayDIk6bIWTYtaNUmpWGupsqxZdOiU3ZMTOOaeQzofBq2J70KYi7",
+			wrappedKey: wrappedKey,
+			updatedAt: nil,
+			principalId: "org-1",
+			callerUserId: "user-1",
+			organizationId: "org-1"
+		)
+		let keychain = MockKeychainService()
+		keychain.envStorage[projectID] = (
+			name: "V2 Org",
+			path: "",
+			environments: ["default": [:]]
+		)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			orgSyncServiceFactory: { _ in sync },
+			sharingKeypairProvider: { keypair },
+			authTokenProvider: { _, _ in "session-token" }
+		)
+		store.currentUser = LPMUser(
+			id: "user-1",
+			username: "user",
+			name: nil,
+			email: nil,
+			avatarUrl: nil,
+			plan: nil,
+			createdAt: nil,
+			orgs: [LPMOrg(
+				id: "org-1",
+				slug: slug,
+				name: "Acme",
+				avatarUrl: nil,
+				role: "owner"
+			)]
+		)
+		store.projects = [VaultProject(
+			id: projectID,
+			name: "V2 Org",
+			path: "",
+			environments: ["default": [:]]
+		)]
+		store.vaultOrgAssociations = [projectID: slug]
+		store.isUnlocked = true
+		store.selectAccount(.org(slug))
+		store.selectProject(projectID)
+
+		await store.pullFromOrg(orgSlug: slug)
+
+		#expect(store.projects[0].secrets(for: "default")["TOKEN"] == nil)
+		#expect(store.syncMetadata[projectID] == nil)
+		#expect(store.lastSyncStatus == "failed")
+		#expect(
+			store.error
+				== "Org pull failed: The organization response has an invalid sharing-key binding."
+		)
+		#expect(sync.pullCallCount == 1)
+		#expect(sync.publicKeyCallCount == 0)
+	}
+
+	@Test("member rewrap with the registered local key asks an administrator to share again")
+	func memberRewrapWithRegisteredLocalKeyAsksAdministratorToShareAgain() async {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.pullResult = memberRewrapStatus(vaultId: "rewrap")
+		sync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: keypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey),
+			principalId: "user-1"
+		)
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(
+			store.error
+				== "Org pull failed: Your registered sharing key does not have access to this env project yet. Ask an organization admin to share it again."
+		)
+		#expect(sync.publicKeyCallCount == 1)
+	}
+
+	@Test("member rewrap without a registered key keeps the registration guidance")
+	func memberRewrapWithoutRegisteredKeyKeepsRegistrationGuidance() async {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.pullResult = memberRewrapStatus(vaultId: "rewrap")
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(
+			store.error
+				== "Org pull failed: Your sharing key is not registered. Run `lpm env share --org acme` once, then retry."
+		)
+		#expect(sync.publicKeyCallCount == 1)
+	}
+
+	@Test("member rewrap with a different registered key keeps the device rejection")
+	func memberRewrapWithDifferentRegisteredKeyKeepsDeviceRejection() async {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let registered = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.pullResult = memberRewrapStatus(vaultId: "rewrap")
+		sync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: registered.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(registered.publicKey),
+			principalId: "user-1"
+		)
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(
+			store.error
+				== "Org pull failed: This device does not hold the sharing key registered for your account."
+		)
+		#expect(sync.publicKeyCallCount == 1)
+	}
+
+	@Test("organization pull rejects a substituted authenticated caller before key lookup")
+	func organizationPullRejectsSubstitutedCallerBeforeKeyLookup() async {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.pullResult = SyncService.SyncStatus(
+			vaultId: "rewrap",
+			version: 1,
+			cryptoVersion: VaultCrypto.currentCryptoVersion,
+			contentKeyVersion: 1,
+			recipientPublicKeyVersion: 1,
+			recipientPublicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey),
+			status: "ok",
+			error: nil,
+			code: nil,
+			serverVersion: 1,
+			hint: nil,
+			encryptedBlob: "ciphertext",
+			wrappedKey: "wrapped",
+			updatedAt: nil,
+			principalId: organizationID,
+			callerUserId: "other-user",
+			organizationId: organizationID
+		)
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(
+			store.error
+				== "Org pull failed: The organization pull response did not match this env project or contain a valid version."
+		)
+		#expect(sync.publicKeyCallCount == 0)
+	}
+
+	@Test("member rewrap rejects a substituted authenticated caller before key lookup")
+	func memberRewrapRejectsSubstitutedCallerBeforeKeyLookup() async {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.pullResult = memberRewrapStatus(vaultId: "rewrap", callerUserID: "other-user")
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(
+			store.error
+				== "Org pull failed: The organization access response did not match the authenticated account."
+		)
+		#expect(sync.publicKeyCallCount == 0)
+	}
+
+	@Test("other organization pull errors do not fetch the public key")
+	func otherOrganizationPullErrorsDoNotFetchPublicKey() async {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.pullResult = SyncService.SyncStatus(
+			vaultId: "rewrap",
+			version: 1,
+			cryptoVersion: VaultCrypto.currentCryptoVersion,
+			contentKeyVersion: nil,
+			recipientPublicKeyVersion: nil,
+			recipientPublicKeyFingerprint: nil,
+			status: "error",
+			error: "Access denied",
+			code: "vault_access_denied",
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: nil,
+			wrappedKey: nil,
+			updatedAt: nil,
+			principalId: organizationID,
+			callerUserId: "user-1",
+			organizationId: organizationID
+		)
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(store.error == "Access denied")
+		#expect(sync.publicKeyCallCount == 0)
+	}
+
+	@Test("unauthorized organization pulls do not fetch the public key")
+	func unauthorizedOrganizationPullsDoNotFetchPublicKey() async {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.authenticatedPullResponses = [.unauthorized]
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(sync.publicKeyCallCount == 0)
+	}
+
+	@Test("malformed organization pull responses do not fetch the public key")
+	func malformedOrganizationPullResponsesDoNotFetchPublicKey() async {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.authenticatedPullResponses = [.response(nil)]
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(sync.publicKeyCallCount == 0)
+	}
+
+	@Test("network protocol v2 imports are rejected before decryption")
+	func networkProtocolV2ImportsAreRejectedBeforeDecryption() async throws {
+		let projectID = "vault-v2"
+		let wrappingKey = VaultCrypto.generateAESKey()
+		let contentKey = SymmetricKey(data: Data(repeating: 0x07, count: 32))
+		let personalWrappedKey = try VaultCrypto.wrapKey(
+			wrappingKey: wrappingKey,
+			aesKey: contentKey
+		)
+		let personalSync = MockPersonalSyncService()
+		let personalDecryptions = LockedCounter()
+		personalSync.pullHandlers = [{
+			SyncService.SyncStatus(
+				vaultId: projectID,
+				version: 42,
+				cryptoVersion: 2,
+				contentKeyVersion: nil,
+				recipientPublicKeyVersion: nil,
+				recipientPublicKeyFingerprint: nil,
+				status: "ok",
+				error: nil,
+				code: nil,
+				serverVersion: nil,
+				hint: nil,
+				encryptedBlob: "AAECAwQFBgcICQoL:Y6OMHmtgqyYZ34DylitOwJoe0ut+AwJdYuxZwayDIk6bIWTYtaNUmpWGupsqxZdOiU3roLYywwVsmTsvH1+umdml",
+				wrappedKey: personalWrappedKey,
+				updatedAt: nil
+			)
+		}]
+		let personalImporter = EnvProjectImportService(
+			personalSyncService: personalSync,
+			organizationSyncService: MockOrgSyncService(),
+			sharingKeypairProvider: VaultCrypto.generateX25519Keypair,
+			personalDecryptor: { blob, wrapped, principalID, vaultID, revision, version in
+				personalDecryptions.increment()
+				return Data(try VaultCrypto.decryptStableSync(
+					encryptedBlob: blob,
+					wrappedKey: wrapped,
+					principalId: principalID,
+					vaultId: vaultID,
+					revision: revision,
+					cryptoVersion: version,
+					wrappingKey: wrappingKey
+				).utf8)
+			}
+		)
+		await #expect(throws: EnvProjectImportError.invalidPayload(
+			"The cloud response uses an unsupported encryption version."
+		)) {
+			try await personalImporter.loadPersonal(
+				authToken: "session-token",
+				vaultId: projectID
+			)
+		}
+		#expect(personalDecryptions.value == 0)
+
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let organizationWrappedKey = try VaultCrypto.wrapKeyForRecipient(
+			aesKey: contentKey,
+			recipientPublicKey: keypair.publicKey
+		)
+		let organizationSync = MockOrgSyncService()
+		organizationSync.publicKeyRecord = SyncService.PublicKeyRecord(
+			publicKey: keypair.publicKey.base64EncodedString(),
+			publicKeyVersion: 1,
+			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey)
+		)
+		organizationSync.pullResult = SyncService.SyncStatus(
+			vaultId: projectID,
+			version: 42,
+			cryptoVersion: 2,
+			contentKeyVersion: 1,
+			recipientPublicKeyVersion: 1,
+			recipientPublicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey),
+			status: "ok",
+			error: nil,
+			code: nil,
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: "AAECAwQFBgcICQoL:Y6OMHmtgqyYZ34DylitOwJoe0ut+AwJdYuxZwayDIk6bIWTYtaNUmpWGupsqxZdOiU3ZMTOOaeQzofBq2J70KYi7",
+			wrappedKey: organizationWrappedKey,
+			updatedAt: nil,
+			callerUserId: "user-1"
+		)
+		let organizationImporter = EnvProjectImportService(
+			personalSyncService: MockPersonalSyncService(),
+			organizationSyncService: organizationSync,
+			sharingKeypairProvider: { keypair }
+		)
+		await #expect(throws: EnvProjectImportError.invalidPayload(
+			"The organization response uses an unsupported encryption version."
+		)) {
+			try await organizationImporter.loadOrganization(
+				authToken: "session-token",
+				orgSlug: "acme",
+				vaultId: projectID,
+				expectedCallerUserID: "user-1"
+			)
+		}
+		#expect(organizationSync.pullCallCount == 1)
+		#expect(organizationSync.publicKeyCallCount == 0)
+	}
+
+	@Test("protocol revision ceiling stops personal encryption and push")
+	func protocolRevisionCeilingStopsPersonalPush() async throws {
+		for force in [false, true] {
+			let projectID = "personal-revision-limit-\(force)"
+			let sync = MockPersonalSyncService()
+			let preflight = SyncService.SyncStatus(
+				vaultId: projectID,
+				version: Int(Int32.max),
+				cryptoVersion: VaultCrypto.currentCryptoVersion,
+				contentKeyVersion: nil,
+				recipientPublicKeyVersion: nil,
+				recipientPublicKeyFingerprint: nil,
+				status: "ok",
+				error: nil,
+				code: nil,
+				serverVersion: nil,
+				hint: nil,
+				encryptedBlob: nil,
+				wrappedKey: nil,
+				updatedAt: nil,
+				principalId: "account-1"
+			)
+			sync.versionPreflightHandlers = [{ .response(.found(preflight)) }]
+			let encryptionCalls = LockedCounter()
+			let keychain = MockKeychainService()
+			keychain.envStorage[projectID] = (
+				name: "Limit",
+				path: "",
+				environments: ["default": ["TOKEN": "local"]]
+			)
+			let metadata = mockCurrentSyncMetadata(
+				version: Int(Int32.max),
+				principalID: "account-1",
+				scope: "personal"
+			)
+			#expect(keychain.seedSyncMetadata([projectID: metadata]))
+			let store = VaultStore(
+				keychainService: keychain,
+				biometricService: MockBiometricService(),
+				apiService: MockAPIService(),
+				personalSyncServiceFactory: { _ in sync },
+				stableSyncEncryptor: { _, _, _, _ in
+					encryptionCalls.increment()
+					return ("ciphertext", "wrapped")
+				},
+				authTokenProvider: { _, _ in "session-token" }
+			)
+			store.appEnvironment = .production
+			store.currentUser = testUser(id: "account-1", username: "user")
+			store.projects = [VaultProject(
+				id: projectID,
+				name: "Limit",
+				path: "",
+				environments: ["default": ["TOKEN": "local"]]
+			)]
+			store.syncMetadata = [projectID: metadata]
+			store.isUnlocked = true
+			store.selectProject(projectID)
+			let binding = SyncPrincipalBinding(
+				registryURL: store.appEnvironment.registryURL,
+				principalID: "account-1",
+				scope: "personal"
+			)
+			#expect(keychain.storedSyncMetadata(vaultId: projectID)?.binding == binding)
+			let snapshot = await VaultPersistenceCoordinator(service: keychain)
+				.syncSnapshot(vaultId: projectID, binding: binding)
+			#expect(snapshot?.metadata?.version(boundTo: binding) == Int(Int32.max))
+
+			await store.pushToCloud(force: force)
+
+			#expect(encryptionCalls.value == 0)
+			#expect(sync.pushCallCount == 0)
+			#expect(store.lastSyncStatus == "failed")
+		}
 	}
 
 	@Test("a CLI mutation during push remains dirty after server success")
@@ -2844,8 +4492,8 @@ struct VaultStoreTests {
 				await gate.arriveAndWait()
 				return SyncService.SyncStatus(
 					vaultId: "project-a",
-					version: 2,
-					cryptoVersion: 2,
+					version: 1,
+					cryptoVersion: VaultCrypto.currentCryptoVersion,
 					contentKeyVersion: nil,
 					recipientPublicKeyVersion: nil,
 					recipientPublicKeyFingerprint: nil,
@@ -2856,7 +4504,8 @@ struct VaultStoreTests {
 					hint: nil,
 					encryptedBlob: nil,
 					wrappedKey: nil,
-					updatedAt: nil
+					updatedAt: nil,
+					principalId: "account-1"
 				)
 			}
 		]
@@ -2871,9 +4520,10 @@ struct VaultStoreTests {
 			biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			personalSyncServiceFactory: { _ in sync },
-			stableSyncEncryptor: { _, _ in ("test-blob", "test-wrapped-key") },
+			stableSyncEncryptor: { _, _, _, _ in ("test-blob", "test-wrapped-key") },
 			authTokenProvider: { _, _ in "session-token" }
 		)
+		store.currentUser = testUser(id: "account-1", username: "user")
 		store.projects = [
 			VaultProject(
 				id: "project-a",
@@ -2897,11 +4547,9 @@ struct VaultStoreTests {
 		await push.value
 
 		#expect(store.syncMetadata["project-a"]?.isDirty == true)
-		#expect(store.projects[0].secrets["CLI_KEY"] == "cli-value")
+		#expect(store.projects[0].secrets(for: "default")["CLI_KEY"] == "cli-value")
 		#expect(store.lastSyncStatus?.contains("local changes pending") == true)
-		let storedMetadata = keychain.dataStorage["__sync_metadata__"]
-			.flatMap { try? JSONDecoder().decode([String: SyncMetadata].self, from: $0) }
-		#expect(storedMetadata?["project-a"]?.isDirty == true)
+		#expect(keychain.storedSyncMetadata(vaultId: "project-a")?.isDirty == true)
 	}
 
 	@Test("account changes suppress a stale organization pull")
@@ -2951,7 +4599,9 @@ struct VaultStoreTests {
 		await gate.release()
 		await pull.value
 
-		#expect(store.projects.first?.secrets["TOKEN"] == "local")
+		#expect(keychain.envStorage[projectId]?.environments["default"]?["TOKEN"] == "local")
+		#expect(store.projects.first?.hasLoadedEnvironments == false)
+		#expect(store.projects.first?.secretCount == 1)
 		#expect(store.syncMetadata[projectId] == nil)
 		#expect(store.lastSyncStatus == nil)
 		#expect(!store.isSyncing)
@@ -2986,6 +4636,7 @@ struct VaultStoreTests {
 			personalSyncServiceFactory: { _ in sync },
 			authTokenProvider: { _, _ in "session-token" }
 		)
+		store.currentUser = testUser(id: "account-1", username: "user")
 		store.projects = [
 			VaultProject(
 				id: projectId,
@@ -3002,13 +4653,13 @@ struct VaultStoreTests {
 		let newPull = Task { await store.pullFromCloud() }
 		await newGate.waitUntilArrived()
 		await oldGate.release()
-		await oldPull.value
+		_ = await oldPull.value
 
 		#expect(store.isSyncing)
 		#expect(store.lastSyncStatus == nil)
 
 		await newGate.release()
-		await newPull.value
+		_ = await newPull.value
 		#expect(!store.isSyncing)
 		#expect(store.lastSyncStatus == "failed")
 	}
@@ -3036,7 +4687,12 @@ struct VaultStoreTests {
 			baseline: baseline,
 			remotePayload: remotePayload,
 			action: "pull",
-			version: 3
+			version: 3,
+			binding: SyncPrincipalBinding(
+				registryURL: "https://lpm.dev",
+				principalID: "user-1",
+				scope: "personal"
+			)
 		)
 
 		guard case .success(let commit) = result else {
@@ -3044,14 +4700,127 @@ struct VaultStoreTests {
 			return
 		}
 		#expect(
-			commit.project.secrets == [
+			commit.project.secrets(for: "default") == [
 				"TOKEN": "cloud",
 				"CLI_KEY": "cli-value",
 				"CLOUD_KEY": "cloud-value",
 			])
 		#expect(commit.isDirty)
-		#expect(keychain.storage["project"]?.secrets == commit.project.secrets)
+		#expect(
+			keychain.storage["project"]?.secrets
+				== commit.project.secrets(for: "default")
+		)
 		#expect(keychain.updateEnvironmentsCallCount == 1)
+	}
+
+	@Test("pull keeps a local-only empty environment dirty")
+	func pullKeepsLocalOnlyEmptyEnvironmentDirty() async throws {
+		let environments: [String: [String: String]] = [
+			"default": [:],
+			"staging": [:],
+		]
+		let keychain = MockKeychainService()
+		keychain.envStorage["project"] = (
+			name: "Project",
+			path: "",
+			environments: environments
+		)
+		let result = await VaultPersistenceCoordinator(service: keychain).commitPull(
+			baseline: VaultProject(
+				id: "project",
+				name: "Project",
+				path: "",
+				environments: environments
+			),
+			remotePayload: Data(#"{"environments":{"default":{}}}"#.utf8),
+			action: "pull",
+			version: 1,
+			binding: SyncPrincipalBinding(
+				registryURL: "https://lpm.dev",
+				principalID: "user-1",
+				scope: "personal"
+			)
+		)
+
+		guard case .success(let commit) = result else {
+			Issue.record("Expected a successful pull commit, got \(result)")
+			return
+		}
+		#expect(commit.project.environments == environments)
+		#expect(commit.isDirty)
+	}
+
+	@Test("pull keeps identical named empty environments clean")
+	func pullKeepsIdenticalNamedEmptyEnvironmentsClean() async throws {
+		let environments: [String: [String: String]] = [
+			"default": [:],
+			"staging": [:],
+		]
+		let keychain = MockKeychainService()
+		keychain.envStorage["project"] = (
+			name: "Project",
+			path: "",
+			environments: environments
+		)
+		let result = await VaultPersistenceCoordinator(service: keychain).commitPull(
+			baseline: VaultProject(
+				id: "project",
+				name: "Project",
+				path: "",
+				environments: environments
+			),
+			remotePayload: Data(
+				#"{"environments":{"default":{},"staging":{}}}"#.utf8
+			),
+			action: "pull",
+			version: 1,
+			binding: SyncPrincipalBinding(
+				registryURL: "https://lpm.dev",
+				principalID: "user-1",
+				scope: "personal"
+			)
+		)
+
+		guard case .success(let commit) = result else {
+			Issue.record("Expected a successful pull commit, got \(result)")
+			return
+		}
+		#expect(commit.project.environments == environments)
+		#expect(!commit.isDirty)
+	}
+
+	@Test("pull normalizes a completely empty current wrapper")
+	func pullNormalizesEmptyCurrentWrapper() async throws {
+		let environments: [String: [String: String]] = ["default": [:]]
+		let keychain = MockKeychainService()
+		keychain.envStorage["project"] = (
+			name: "Project",
+			path: "",
+			environments: environments
+		)
+		let result = await VaultPersistenceCoordinator(service: keychain).commitPull(
+			baseline: VaultProject(
+				id: "project",
+				name: "Project",
+				path: "",
+				environments: environments
+			),
+			remotePayload: Data(#"{"environments":{}}"#.utf8),
+			action: "pull",
+			version: 1,
+			binding: SyncPrincipalBinding(
+				registryURL: "https://lpm.dev",
+				principalID: "user-1",
+				scope: "personal"
+			)
+		)
+
+		guard case .success(let commit) = result else {
+			Issue.record("Expected a successful pull commit, got \(result)")
+			return
+		}
+		#expect(commit.project.environments == environments)
+		#expect(!commit.isDirty)
 	}
 
 	@Test("pull rejects an overlapping CLI change without overwriting it")
@@ -3077,15 +4846,63 @@ struct VaultStoreTests {
 			baseline: baseline,
 			remotePayload: remotePayload,
 			action: "pull",
-			version: 3
+			version: 3,
+			binding: SyncPrincipalBinding(
+				registryURL: "https://lpm.dev",
+				principalID: "user-1",
+				scope: "personal"
+			)
 		)
 
 		guard case .conflict(let latest, _) = result else {
 			Issue.record("Expected a pull conflict, got \(result)")
 			return
 		}
-		#expect(latest.secrets["TOKEN"] == "cli-value")
+		#expect(latest.secrets(for: "default")["TOKEN"] == "cli-value")
 		#expect(keychain.storage["project"]?.secrets["TOKEN"] == "cli-value")
+		#expect(keychain.dataStorage["__sync_metadata__"] == nil)
+	}
+
+	@Test("pull rejects resurrection of an empty environment deleted locally")
+	func pullRejectsDeletedEmptyEnvironmentResurrection() async throws {
+		let keychain = MockKeychainService()
+		keychain.envStorage["project"] = (
+			name: "Project",
+			path: "",
+			environments: ["default": [:]]
+		)
+		let baseline = VaultProject(
+			id: "project",
+			name: "Project",
+			path: "",
+			environments: ["default": [:], "staging": [:]]
+		)
+		let remoteEnvironments: [String: [String: String]] = [
+			"default": [:], "staging": [:],
+		]
+		let remotePayload = try JSONEncoder().encode([
+			"environments": remoteEnvironments
+		])
+		let coordinator = VaultPersistenceCoordinator(service: keychain)
+
+		let result = await coordinator.commitPull(
+			baseline: baseline,
+			remotePayload: remotePayload,
+			action: "pull",
+			version: 3,
+			binding: SyncPrincipalBinding(
+				registryURL: "https://lpm.dev",
+				principalID: "user-1",
+				scope: "personal"
+			)
+		)
+
+		guard case .conflict(let latest, _) = result else {
+			Issue.record("Expected an environment-level pull conflict, got \(result)")
+			return
+		}
+		#expect(latest.environments["staging"] == nil)
+		#expect(keychain.envStorage["project"]?.environments["staging"] == nil)
 		#expect(keychain.dataStorage["__sync_metadata__"] == nil)
 	}
 
@@ -3097,7 +4914,8 @@ struct VaultStoreTests {
 			path: "",
 			environments: ["default": ["TOKEN": "local"]]
 		)
-		keychain.failNextWriteDataAccounts = ["__sync_metadata__"]
+		keychain.failNextWriteDataAccounts = [mockSyncMetadataAccount(vaultId: "project")]
+		keychain.failureError = .unexpectedStatus(-1)
 		let baseline = VaultProject(
 			id: "project",
 			name: "Project",
@@ -3113,7 +4931,12 @@ struct VaultStoreTests {
 			baseline: baseline,
 			remotePayload: remotePayload,
 			action: "pull",
-			version: 3
+			version: 3,
+			binding: SyncPrincipalBinding(
+				registryURL: "https://lpm.dev",
+				principalID: "user-1",
+				scope: "personal"
+			)
 		)
 
 		guard case .failure(.unexpectedStatus(-1)) = result else {
@@ -3176,7 +4999,8 @@ struct VaultStoreTests {
 				vaultId: "invalid-listing",
 				environments: ["default": ["TOKEN": "remote"]],
 				version: 2,
-				keyCount: 1
+				keyCount: 1,
+				principalID: "user-1"
 			))
 			let (store, keychain) = makeImportStore(importService: importService)
 			let result = await store.importCloudProject(
@@ -3195,19 +5019,22 @@ struct VaultStoreTests {
 				vaultId: "other",
 				environments: ["default": ["TOKEN": "remote"]],
 				version: 5,
-				keyCount: 1
+				keyCount: 1,
+				principalID: "user-1"
 			),
 			RemoteEnvProjectPayload(
 				vaultId: "bound",
 				environments: ["default": ["TOKEN": "remote"]],
 				version: 0,
-				keyCount: 1
+				keyCount: 1,
+				principalID: "user-1"
 			),
 			RemoteEnvProjectPayload(
 				vaultId: "bound",
 				environments: ["default": ["TOKEN": "remote"]],
 				version: 4,
-				keyCount: 1
+				keyCount: 1,
+				principalID: "user-1"
 			),
 		] {
 			let importService = MockEnvProjectImportService()
@@ -3223,6 +5050,104 @@ struct VaultStoreTests {
 			#expect(keychain.saveEnvironmentsCallCount == 0)
 			#expect(store.projects.isEmpty)
 		}
+
+		let importService = MockEnvProjectImportService()
+		importService.personalResult = .success(RemoteEnvProjectPayload(
+			vaultId: "bound",
+			environments: ["default": ["TOKEN": "remote"]],
+			version: 5,
+			keyCount: 1,
+			principalID: "other-user"
+		))
+		let (store, keychain) = makeImportStore(importService: importService)
+		let result = await store.importCloudProject(
+			remoteProject(id: "bound", name: "remote", version: 5)
+		)
+		guard case .failure(.invalidPayload(let message)) = result else {
+			Issue.record("Accepted a payload bound to another account")
+			return
+		}
+		#expect(message.contains("different account"))
+		#expect(keychain.saveEnvironmentsCallCount == 0)
+		#expect(store.projects.isEmpty)
+	}
+
+	@Test("cloud imports reject project names outside the canonical contract")
+	func cloudImportRejectsInvalidProjectNames() async {
+		let invalidNames = [
+			"release\u{0085}secrets",
+			String(repeating: "😀", count: 101),
+		]
+
+		for (index, name) in invalidNames.enumerated() {
+			let projectID = "invalid-name-\(index)"
+			let importService = MockEnvProjectImportService()
+			importService.personalResult = .success(RemoteEnvProjectPayload(
+				vaultId: projectID,
+				environments: ["default": ["TOKEN": "remote"]],
+				version: 1,
+				keyCount: 1,
+				principalID: "user-1"
+			))
+			let (store, keychain) = makeImportStore(importService: importService)
+
+			let result = await store.importCloudProject(
+				remoteProject(id: projectID, name: name)
+			)
+
+			guard case .failure(.invalidPayload(let message)) = result else {
+				Issue.record("Accepted invalid cloud project name at index \(index)")
+				continue
+			}
+			#expect(message.contains("name"))
+			#expect(keychain.saveEnvironmentsCallCount == 0)
+			#expect(keychain.envStorage[projectID] == nil)
+			#expect(store.projects.isEmpty)
+		}
+	}
+
+	@Test("organization import reuses a personal project and preserves local values and checkpoints")
+	func organizationImportReusesPersonalProjectWithoutLosingLocalState() async throws {
+		let importService = MockEnvProjectImportService()
+		importService.organizationResult = .success(RemoteEnvProjectPayload(
+			vaultId: "shared-existing",
+			environments: ["default": ["TOKEN": "cloud"]],
+			version: 2,
+			keyCount: 1,
+			principalID: organizationID
+		))
+		let (store, keychain) = makeImportStore(importService: importService)
+		let local = VaultProject(
+			id: "shared-existing", name: "Local name", path: "/tmp/local-project",
+			environments: ["default": ["TOKEN": "local", "LOCAL_ONLY": "keep"]]
+		)
+		let coordinator = VaultPersistenceCoordinator(service: keychain)
+		_ = await coordinator.createProject(local, orgSlug: nil)
+		let personalBinding = SyncPrincipalBinding(
+			registryURL: "https://lpm.dev", principalID: "user-1", scope: "personal"
+		)
+		_ = await coordinator.finishPush(
+			pushedProject: local, action: "push", version: 9, binding: personalBinding
+		)
+		store.currentUser = userWithOrganization(slug: "acme")
+		store.isUnlocked = true
+		_ = await store.loadProjects()
+		store.selectAccount(.org("acme"))
+
+		let result = await store.importOrganizationProject(
+			remoteProject(id: local.id, name: "Cloud name", version: 2), orgSlug: "acme"
+		)
+
+		#expect(result == .success(ImportedEnvProject(projectId: local.id, version: 2, keyCount: 2)))
+		#expect(store.projects.count == 1)
+		#expect(store.selectedProjectId == local.id)
+		#expect(store.vaultOrgAssociations[local.id] == "acme")
+		let snapshot = try #require(await coordinator.syncSnapshot(vaultId: local.id, binding: personalBinding))
+		#expect(snapshot.project.name == local.name)
+		#expect(snapshot.project.path == local.path)
+		#expect(snapshot.project.environments == ["default": ["TOKEN": "cloud", "LOCAL_ONLY": "keep"]])
+		#expect(snapshot.metadata?.lastVersion == 9)
+		#expect(store.syncMetadata[local.id]?.isDirty == true)
 	}
 
 	@Test("successful organization import publishes the final project once")
@@ -3233,10 +5158,13 @@ struct VaultStoreTests {
 				vaultId: "org-1",
 				environments: ["production": ["TOKEN": "secret"]],
 				version: 7,
-				keyCount: 1
+				keyCount: 1,
+				principalID: organizationID
 			))
 		let (store, keychain) = makeImportStore(importService: importService)
 		store.currentUser = userWithOrganization(slug: "acme")
+		store.isUnlocked = true
+		store.selectAccount(.org("acme"))
 
 		let result = await store.importOrganizationProject(
 			remoteProject(id: "org-1", name: "production"),
@@ -3260,7 +5188,8 @@ struct VaultStoreTests {
 				vaultId: "committed",
 				environments: ["default": ["TOKEN": "secret"]],
 				version: 2,
-				keyCount: 1
+				keyCount: 1,
+				principalID: "user-1"
 			)
 		)
 		let (store, keychain) = makeImportStore(importService: importService)
@@ -3287,10 +5216,13 @@ struct VaultStoreTests {
 				vaultId: "org-fail",
 				environments: ["default": ["TOKEN": "secret"]],
 				version: 3,
-				keyCount: 1
+				keyCount: 1,
+				principalID: organizationID
 			))
 		let (store, keychain) = makeImportStore(importService: importService)
-		keychain.failDataAccounts = ["__org_associations__"]
+		store.currentUser = userWithOrganization(slug: "acme")
+		store.selectAccount(.org("acme"))
+		keychain.failNextWriteDataAccounts = ["__org_associations__"]
 
 		let result = await store.importOrganizationProject(
 			remoteProject(id: "org-fail", name: "failed"),
@@ -3305,6 +5237,7 @@ struct VaultStoreTests {
 		#expect(store.projects.isEmpty)
 		#expect(store.vaultOrgAssociations["org-fail"] == nil)
 		#expect(store.syncMetadata["org-fail"] == nil)
+		#expect(keychain.applyVaultTransactionCallCount == 1)
 	}
 
 	@Test("duplicate cloud import never overwrites local secrets")
@@ -3315,7 +5248,8 @@ struct VaultStoreTests {
 				vaultId: "duplicate",
 				environments: ["default": ["TOKEN": "remote"]],
 				version: 2,
-				keyCount: 1
+				keyCount: 1,
+				principalID: "user-1"
 			))
 		let (store, keychain) = makeImportStore(importService: importService)
 		keychain.storage["duplicate"] = (name: "local", path: "", secrets: ["TOKEN": "local"])
@@ -3335,7 +5269,8 @@ struct VaultStoreTests {
 				vaultId: "raced",
 				environments: ["default": ["TOKEN": "remote"]],
 				version: 2,
-				keyCount: 1
+				keyCount: 1,
+				principalID: "user-1"
 			))
 		let (store, keychain) = makeImportStore(importService: importService)
 		keychain.onCreateEnvironments = {
@@ -3365,6 +5300,7 @@ struct VaultStoreTests {
 			importServiceFactory: { _ in importService },
 			authTokenProvider: { _, _ in "session-token" }
 		)
+		store.currentUser = testUser(id: "user-1", username: "user")
 		return (store, keychain)
 	}
 
@@ -3395,6 +5331,91 @@ struct VaultStoreTests {
 		)
 	}
 
+	private func memberRewrapStatus(
+		vaultId: String,
+		callerUserID: String = "user-1"
+	) -> SyncService.SyncStatus {
+		SyncService.SyncStatus(
+			vaultId: vaultId,
+			version: nil,
+			cryptoVersion: nil,
+			contentKeyVersion: nil,
+			recipientPublicKeyVersion: nil,
+			recipientPublicKeyFingerprint: nil,
+			status: "error",
+			error: "You do not have a wrapped key for this organization env project",
+			code: "vault_member_needs_rewrap",
+			serverVersion: nil,
+			hint: nil,
+			encryptedBlob: nil,
+			wrappedKey: nil,
+			updatedAt: nil,
+			principalId: nil,
+			callerUserId: callerUserID,
+			organizationId: organizationID
+		)
+	}
+
+	private func makeOrganizationPullStore(
+		sync: MockOrgSyncService,
+		keypair: (privateKey: Data, publicKey: Data)
+	) -> VaultStore {
+		let keychain = MockKeychainService()
+		keychain.envStorage["rewrap"] = (
+			name: "Rewrap",
+			path: "",
+			environments: ["default": ["TOKEN": "local"]]
+		)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			orgSyncServiceFactory: { _ in sync },
+			sharingKeypairProvider: { keypair },
+			authTokenProvider: { _, _ in "session-token" },
+			authSessionClearer: { _ in }
+		)
+		store.currentUser = LPMUser(
+			id: "user-1",
+			username: "user",
+			name: nil,
+			email: nil,
+			avatarUrl: nil,
+			plan: nil,
+			createdAt: nil,
+			orgs: [
+				LPMOrg(
+					id: organizationID,
+					slug: "acme",
+					name: "Acme",
+					avatarUrl: nil,
+					role: "owner"
+				)
+			]
+		)
+		store.projects = [
+			VaultProject(
+				id: "rewrap",
+				name: "Rewrap",
+				path: "",
+				environments: ["default": ["TOKEN": "local"]]
+			)
+		]
+		store.vaultOrgAssociations = ["rewrap": "acme"]
+		store.isUnlocked = true
+		store.selectAccount(.org("acme"))
+		store.selectProject("rewrap")
+		return store
+	}
+
+	private func waitForWorkspaceSnapshots(_ store: VaultStore, count: Int) async {
+		for _ in 0..<1_000 {
+			if store.workspaceSnapshots.count == count { return }
+			try? await Task.sleep(for: .milliseconds(10))
+		}
+		Issue.record("Workspace snapshots did not reach count \(count)")
+	}
+
 	private func userWithOrganization(slug: String) -> LPMUser {
 		LPMUser(
 			id: "u1",
@@ -3406,7 +5427,7 @@ struct VaultStoreTests {
 			createdAt: nil,
 			orgs: [
 				LPMOrg(
-					id: "organization-\(slug)",
+					id: organizationID,
 					slug: slug,
 					name: slug.capitalized,
 					avatarUrl: nil,
@@ -3445,7 +5466,9 @@ struct VaultStoreTests {
 	}
 
 	private func makeOrgTrustFixture(
-		onKeypair: @escaping @Sendable () -> Void = {}
+		onKeypair: @escaping @Sendable () -> Void = {},
+		authToken: MutableOptionalString? = nil,
+		authTokenResolver: (@Sendable () async throws -> String?)? = nil
 	) -> (
 		store: VaultStore,
 		keychain: MockKeychainService,
@@ -3464,14 +5487,26 @@ struct VaultStoreTests {
 			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey)
 		)
 		sync.memberKeyAccess = SyncService.MemberKeyAccess(
-			members: [SyncService.MemberPublicKey(
-				userId: "member",
-				role: "admin",
-				publicKey: memberKeypair.publicKey.base64EncodedString(),
-				publicKeyVersion: 1,
-				publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(memberKeypair.publicKey),
-				hasPublicKey: true
-			)],
+			organizationID: organizationID,
+			callerUserID: "u1",
+			members: [
+				SyncService.MemberPublicKey(
+					userId: "u1",
+					role: "admin",
+					publicKey: localKeypair.publicKey.base64EncodedString(),
+					publicKeyVersion: 1,
+					publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(localKeypair.publicKey),
+					hasPublicKey: true
+				),
+				SyncService.MemberPublicKey(
+					userId: "member",
+					role: "admin",
+					publicKey: memberKeypair.publicKey.base64EncodedString(),
+					publicKeyVersion: 1,
+					publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(memberKeypair.publicKey),
+					hasPublicKey: true
+				),
+			],
 			canReplaceWrappedKeys: true
 		)
 		let keychain = MockKeychainService()
@@ -3487,8 +5522,13 @@ struct VaultStoreTests {
 				onKeypair()
 				return localKeypair
 			},
-			authTokenProvider: { _, _ in "session-token" }
+			authTokenProvider: { _, _ in
+				if let authTokenResolver { return try await authTokenResolver() }
+				if let authToken { return authToken.value }
+				return "session-token"
+			}
 		)
+		store.appEnvironment = .production
 		store.currentUser = userWithOrganization(slug: slug)
 		store.projects = [VaultProject(
 			id: projectId,
@@ -3500,7 +5540,12 @@ struct VaultStoreTests {
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
 		store.selectProject(projectId)
-		return (store, keychain, sync, slug, "__org_keys__\(slug)")
+		let trustScope = OrgTrustScope(
+			registryURL: store.appEnvironment.registryURL,
+			organizationID: organizationID,
+			organizationSlug: slug
+		)!
+		return (store, keychain, sync, slug, trustScope.storageAccount)
 	}
 
 	private enum OrgPushInvalidation {
@@ -3526,9 +5571,11 @@ struct VaultStoreTests {
 			publicKeyFingerprint: VaultCrypto.publicKeyFingerprint(keypair.publicKey)
 		)
 		sync.memberKeyAccess = SyncService.MemberKeyAccess(
+			organizationID: organizationID,
+			callerUserID: "u1",
 			members: [
 				SyncService.MemberPublicKey(
-					userId: "member",
+					userId: "u1",
 					role: "admin",
 					publicKey: keypair.publicKey.base64EncodedString(),
 					publicKeyVersion: 1,
@@ -3581,7 +5628,7 @@ struct VaultStoreTests {
 			token.value = "replacement-token"
 		}
 		await gate.release()
-		await push.value
+		_ = await push.value
 
 		#expect(store.pendingOrgPush == nil)
 		#expect(!store.showKeyApprovalSheet)
@@ -3620,6 +5667,25 @@ private final class MainThreadRecorder: @unchecked Sendable {
 	var value: Bool? { lock.withLock { storage } }
 
 	func capture() { lock.withLock { storage = Thread.isMainThread } }
+}
+
+private actor GatedTokenProvider {
+	private let token: String
+	private var gate: AsyncGate?
+
+	init(token: String) {
+		self.token = token
+	}
+
+	func setGate(_ gate: AsyncGate?) {
+		self.gate = gate
+	}
+
+	func resolve() async -> String? {
+		let currentGate = gate
+		await currentGate?.arriveAndWait()
+		return token
+	}
 }
 
 private actor AutoLockSleeper {
@@ -3694,6 +5760,21 @@ private final class MutableOptionalString: @unchecked Sendable {
 	var value: String? {
 		get { lock.withLock { storage } }
 		set { lock.withLock { storage = newValue } }
+	}
+}
+
+private final class FailableAuthTokenProvider: @unchecked Sendable {
+	private let lock = NSLock()
+	private var failureEnabled = false
+
+	var shouldFail: Bool {
+		get { lock.withLock { failureEnabled } }
+		set { lock.withLock { failureEnabled = newValue } }
+	}
+
+	func resolve() throws -> String? {
+		if shouldFail { throw TestAuthClearError.failed }
+		return "session-token"
 	}
 }
 

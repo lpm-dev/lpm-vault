@@ -1,5 +1,4 @@
 import CryptoKit
-import Darwin
 import Foundation
 import Security
 
@@ -15,25 +14,14 @@ import Security
 /// ## Personal key wrapping
 /// - Stable wrapping key = system Keychain item `dev.lpm.vault-key` / `wrapping-key`
 /// - Per-vault AES key = random 32 bytes
-/// - Token-derived wrapping remains available only for legacy migration
 enum VaultCrypto {
-	static let currentCryptoVersion = 2
+	static let currentCryptoVersion = 3
 	private static let syncAADDomain = Data("lpm-vault-sync".utf8)
+	private static let lowercaseHexAlphabet = Array("0123456789abcdef".utf8)
 
 	enum SyncScope: Equatable {
 		case personal
 		case organization(slug: String)
-	}
-
-	// MARK: - Key Derivation
-
-	/// Derive a wrapping key from the auth token.
-	/// Must match Rust: `SHA256("lpm-vault-wrap:" + token)`
-	static func deriveWrappingKey(authToken: String) -> SymmetricKey {
-		let prefix = "lpm-vault-wrap:"
-		let input = Data((prefix + authToken).utf8)
-		let hash = SHA256.hash(data: input)
-		return SymmetricKey(data: hash)
 	}
 
 	/// Generate a random 256-bit AES key.
@@ -62,16 +50,13 @@ enum VaultCrypto {
 			authenticating: associatedData
 		)
 
-		let ivData = Data(nonce)
-		// combined = ciphertext + tag (AES.GCM.SealedBox stores them together)
 		guard let combined = sealed.combined else {
 			throw CryptoError.encryptionFailed
 		}
-		// combined is: nonce (12) + ciphertext + tag (16)
-		// We need just ciphertext + tag (skip the 12-byte nonce prefix)
-		let ciphertextAndTag = combined.dropFirst(12)
-
-		return ivData.base64EncodedString() + ":" + ciphertextAndTag.base64EncodedString()
+		var encoded = combined.base64EncodedString()
+		let nonceBoundary = encoded.index(encoded.startIndex, offsetBy: 16)
+		encoded.insert(":", at: nonceBoundary)
+		return encoded
 	}
 
 	/// Decrypt data produced by `encrypt()`.
@@ -99,23 +84,39 @@ enum VaultCrypto {
 		guard ivData.count == 12 else {
 			throw CryptoError.invalidIVSize(ivData.count)
 		}
+		guard ciphertextAndTag.count >= 16 else {
+			throw CryptoError.invalidFormat
+		}
 
-		// Reconstruct the combined box: nonce + ciphertext + tag
-		let combined = ivData + ciphertextAndTag
-		let sealedBox = try AES.GCM.SealedBox(combined: combined)
+		let nonce = try AES.GCM.Nonce(data: ivData)
+		let tagStart = ciphertextAndTag.index(
+			ciphertextAndTag.endIndex,
+			offsetBy: -16
+		)
+		let sealedBox = try AES.GCM.SealedBox(
+			nonce: nonce,
+			ciphertext: ciphertextAndTag[..<tagStart],
+			tag: ciphertextAndTag[tagStart...]
+		)
 
 		return try AES.GCM.open(sealedBox, using: key, authenticating: associatedData)
 	}
 
 	static func syncAssociatedData(
 		scope: SyncScope,
+		principalId: String,
 		vaultId: String,
+		revision: Int,
 		cryptoVersion: Int
 	) throws -> Data {
 		guard cryptoVersion == currentCryptoVersion else {
 			throw CryptoError.unsupportedCryptoVersion(cryptoVersion)
 		}
-
+		guard let revision = UInt64(exactly: revision), revision > 0 else {
+			throw CryptoError.invalidRevision
+		}
+		guard !principalId.isEmpty else { throw CryptoError.invalidFormat }
+		let principalIdData = Data(principalId.utf8)
 		let vaultIdData = Data(vaultId.utf8)
 		let scopeByte: UInt8
 		let orgSlugData: Data
@@ -127,7 +128,8 @@ enum VaultCrypto {
 			scopeByte = 2
 			orgSlugData = Data(slug.utf8)
 		}
-		guard let vaultIdLength = UInt32(exactly: vaultIdData.count),
+		guard let principalIdLength = UInt32(exactly: principalIdData.count),
+			let vaultIdLength = UInt32(exactly: vaultIdData.count),
 			let orgSlugLength = UInt32(exactly: orgSlugData.count)
 		else {
 			throw CryptoError.contextTooLarge
@@ -137,10 +139,13 @@ enum VaultCrypto {
 		aad.append(0)
 		appendUInt32(UInt32(cryptoVersion), to: &aad)
 		aad.append(scopeByte)
+		appendUInt32(principalIdLength, to: &aad)
+		aad.append(principalIdData)
 		appendUInt32(vaultIdLength, to: &aad)
 		aad.append(vaultIdData)
 		appendUInt32(orgSlugLength, to: &aad)
 		aad.append(orgSlugData)
+		appendUInt64(revision, to: &aad)
 		return aad
 	}
 
@@ -149,15 +154,24 @@ enum VaultCrypto {
 		Swift.withUnsafeBytes(of: &bigEndian) { data.append(contentsOf: $0) }
 	}
 
+	private static func appendUInt64(_ value: UInt64, to data: inout Data) {
+		var bigEndian = value.bigEndian
+		Swift.withUnsafeBytes(of: &bigEndian) { data.append(contentsOf: $0) }
+	}
+
 	static func encryptPayload(
 		key: SymmetricKey,
 		plaintext: Data,
 		scope: SyncScope,
-		vaultId: String
+		principalId: String,
+		vaultId: String,
+		revision: Int
 	) throws -> String {
 		let aad = try syncAssociatedData(
 			scope: scope,
+			principalId: principalId,
 			vaultId: vaultId,
+			revision: revision,
 			cryptoVersion: currentCryptoVersion
 		)
 		return try encrypt(key: key, plaintext: plaintext, associatedData: aad)
@@ -167,22 +181,19 @@ enum VaultCrypto {
 		key: SymmetricKey,
 		encoded: String,
 		scope: SyncScope,
+		principalId: String,
 		vaultId: String,
+		revision: Int,
 		cryptoVersion: Int
 	) throws -> Data {
-		switch cryptoVersion {
-		case 1:
-			return try decrypt(key: key, encoded: encoded)
-		case currentCryptoVersion:
-			let aad = try syncAssociatedData(
-				scope: scope,
-				vaultId: vaultId,
-				cryptoVersion: cryptoVersion
-			)
-			return try decrypt(key: key, encoded: encoded, associatedData: aad)
-		default:
-			throw CryptoError.unsupportedCryptoVersion(cryptoVersion)
-		}
+		let aad = try syncAssociatedData(
+			scope: scope,
+			principalId: principalId,
+			vaultId: vaultId,
+			revision: revision,
+			cryptoVersion: cryptoVersion
+		)
+		return try decrypt(key: key, encoded: encoded, associatedData: aad)
 	}
 
 	// MARK: - Key Wrapping
@@ -202,77 +213,58 @@ enum VaultCrypto {
 		return SymmetricKey(data: keyData)
 	}
 
-	// MARK: - High-Level Sync API
-
-	/// Encrypt vault secrets for cloud sync.
-	/// Returns `(encryptedBlob, wrappedKey)` — both base64-encoded strings.
-	static func encryptForSync(
-		authToken: String,
-		secretsJSON: String
-	) throws -> (encryptedBlob: String, wrappedKey: String) {
-		let aesKey = generateAESKey()
-		let wrappingKey = deriveWrappingKey(authToken: authToken)
-
-		let blob = try encrypt(key: aesKey, plaintext: Data(secretsJSON.utf8))
-		let wrapped = try wrapKey(wrappingKey: wrappingKey, aesKey: aesKey)
-
-		return (blob, wrapped)
-	}
-
-	/// Decrypt vault secrets from cloud sync.
-	static func decryptFromSync(
-		authToken: String,
-		encryptedBlob: String,
-		wrappedKey: String
-	) throws -> String {
-		let wrappingKey = deriveWrappingKey(authToken: authToken)
-		let aesKey = try unwrapKey(wrappingKey: wrappingKey, wrapped: wrappedKey)
-		let plaintext = try decrypt(key: aesKey, encoded: encryptedBlob)
-
-		guard let json = String(data: plaintext, encoding: .utf8) else {
-			throw CryptoError.invalidUTF8
-		}
-		return json
-	}
-
 	/// Encrypt personal sync data with the stable wrapping key shared with the Rust client.
 	static func encryptForStableSync(
 		secretsJSON: String,
-		vaultId: String
+		principalId: String,
+		vaultId: String,
+		revision: Int
 	) throws -> (encryptedBlob: String, wrappedKey: String) {
 		try encryptForStableSync(
 			plaintext: Data(secretsJSON.utf8),
+			principalId: principalId,
 			vaultId: vaultId,
+			revision: revision,
 			wrappingKey: stableWrappingKey()
 		)
 	}
 
 	static func encryptForStableSync(
 		plaintext: Data,
-		vaultId: String
+		principalId: String,
+		vaultId: String,
+		revision: Int
 	) throws -> (encryptedBlob: String, wrappedKey: String) {
 		try encryptForStableSync(
 			plaintext: plaintext,
+			principalId: principalId,
 			vaultId: vaultId,
+			revision: revision,
 			wrappingKey: stableWrappingKey()
 		)
 	}
 
 	static func encryptForStableSync(
 		secretsJSON: String,
+		principalId: String,
 		vaultId: String,
+		revision: Int,
 		wrappingKey: SymmetricKey
 	) throws -> (encryptedBlob: String, wrappedKey: String) {
 		try encryptForStableSync(
 			plaintext: Data(secretsJSON.utf8),
+			principalId: principalId,
 			vaultId: vaultId,
+			revision: revision,
 			wrappingKey: wrappingKey
 		)
 	}
 
 	static func encryptForStableSync(
 		plaintext: Data,
+		principalId: String,
 		vaultId: String,
+		revision: Int,
 		wrappingKey: SymmetricKey
 	) throws -> (encryptedBlob: String, wrappedKey: String) {
 		let aesKey = generateAESKey()
@@ -281,84 +273,63 @@ enum VaultCrypto {
 				key: aesKey,
 				plaintext: plaintext,
 				scope: .personal,
-				vaultId: vaultId
+				principalId: principalId,
+				vaultId: vaultId,
+				revision: revision
 			),
 			try wrapKey(wrappingKey: wrappingKey, aesKey: aesKey)
 		)
 	}
 
-	/// Decrypt stable-key sync data, falling back to legacy token-derived wraps.
-	static func decryptStableSync(
-		authToken: String,
+	static func decryptStableSyncData(
 		encryptedBlob: String,
 		wrappedKey: String,
+		principalId: String,
 		vaultId: String,
+		revision: Int,
 		cryptoVersion: Int
-	) throws -> (plaintext: String, needsReencrypt: Bool) {
-		let decrypted = try decryptStableSyncData(
-			authToken: authToken,
+	) throws -> Data {
+		try decryptStableSyncData(
 			encryptedBlob: encryptedBlob,
 			wrappedKey: wrappedKey,
+			principalId: principalId,
 			vaultId: vaultId,
-			cryptoVersion: cryptoVersion
+			revision: revision,
+			cryptoVersion: cryptoVersion,
+			stableWrappingKey: stableWrappingKey()
 		)
-		guard let json = String(data: decrypted.plaintext, encoding: .utf8) else {
-			throw CryptoError.invalidUTF8
-		}
-		return (json, decrypted.needsReencrypt)
 	}
 
 	static func decryptStableSyncData(
-		authToken: String,
 		encryptedBlob: String,
 		wrappedKey: String,
+		principalId: String,
 		vaultId: String,
-		cryptoVersion: Int
-	) throws -> (plaintext: Data, needsReencrypt: Bool) {
-		guard cryptoVersion == 1 || cryptoVersion == currentCryptoVersion else {
+		revision: Int,
+		cryptoVersion: Int,
+		stableWrappingKey: SymmetricKey
+	) throws -> Data {
+		guard cryptoVersion == currentCryptoVersion else {
 			throw CryptoError.unsupportedCryptoVersion(cryptoVersion)
 		}
-		if cryptoVersion == currentCryptoVersion {
-			let stableKey = try stableWrappingKey()
-			let aesKey = try unwrapKey(wrappingKey: stableKey, wrapped: wrappedKey)
-			let plaintext = try decryptPayload(
-				key: aesKey,
-				encoded: encryptedBlob,
-				scope: .personal,
-				vaultId: vaultId,
-				cryptoVersion: cryptoVersion
-			)
-			return (plaintext, false)
-		}
-		if let stableKey = try? stableWrappingKey(),
-			let aesKey = try? unwrapKey(wrappingKey: stableKey, wrapped: wrappedKey)
-		{
-			let plaintext = try decryptPayload(
-				key: aesKey,
-				encoded: encryptedBlob,
-				scope: .personal,
-				vaultId: vaultId,
-				cryptoVersion: cryptoVersion
-			)
-			return (plaintext, cryptoVersion == 1)
-		}
-
-		let legacyKey = deriveWrappingKey(authToken: authToken)
-		let aesKey = try unwrapKey(wrappingKey: legacyKey, wrapped: wrappedKey)
-		let plaintext = try decryptPayload(
+		let aesKey = try unwrapKey(wrappingKey: stableWrappingKey, wrapped: wrappedKey)
+		return try decryptPayload(
 			key: aesKey,
 			encoded: encryptedBlob,
 			scope: .personal,
+			principalId: principalId,
 			vaultId: vaultId,
+			revision: revision,
 			cryptoVersion: cryptoVersion
 		)
-		return (plaintext, true)
 	}
 
 	static func decryptStableSync(
 		encryptedBlob: String,
 		wrappedKey: String,
+		principalId: String,
 		vaultId: String,
+		revision: Int,
 		cryptoVersion: Int,
 		wrappingKey: SymmetricKey
 	) throws -> String {
@@ -367,7 +338,9 @@ enum VaultCrypto {
 			key: aesKey,
 			encoded: encryptedBlob,
 			scope: .personal,
+			principalId: principalId,
 			vaultId: vaultId,
+			revision: revision,
 			cryptoVersion: cryptoVersion
 		)
 		guard let json = String(data: plaintext, encoding: .utf8) else {
@@ -377,7 +350,13 @@ enum VaultCrypto {
 	}
 
 	static func publicKeyFingerprint(_ publicKey: Data) -> String {
-		SHA256.hash(data: publicKey).map { String(format: "%02x", $0) }.joined()
+		let digest = SHA256.hash(data: publicKey)
+		var encoded = [UInt8](repeating: 0, count: SHA256.Digest.byteCount * 2)
+		for (index, byte) in digest.enumerated() {
+			encoded[index * 2] = lowercaseHexAlphabet[Int(byte >> 4)]
+			encoded[index * 2 + 1] = lowercaseHexAlphabet[Int(byte & 0x0F)]
+		}
+		return String(decoding: encoded, as: UTF8.self)
 	}
 
 	// MARK: - X25519 Org Sync (ECIES-like)
@@ -392,6 +371,21 @@ enum VaultCrypto {
 	static func x25519PublicFromPrivate(_ privateKeyData: Data) throws -> Data {
 		let privateKey = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
 		return privateKey.publicKey.rawRepresentation
+	}
+
+	static func validateContributoryX25519PublicKey(_ publicKey: Data) throws {
+		guard publicKey.count == 32 else {
+			throw CryptoError.invalidKeySize(publicKey.count)
+		}
+		let validationPrivateKey = try Curve25519.KeyAgreement.PrivateKey(
+			rawRepresentation: Data(repeating: 0x42, count: 32)
+		)
+		let candidate = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: publicKey)
+		do {
+			_ = try validationPrivateKey.sharedSecretFromKeyAgreement(with: candidate)
+		} catch {
+			throw CryptoError.nonContributoryPublicKey
+		}
 	}
 
 	/// Wrap an AES-256 key for a recipient using ECIES-like X25519 + HKDF + AES-GCM.
@@ -465,21 +459,12 @@ enum VaultCrypto {
 
 	// MARK: - X25519 Key Storage (Keychain via Security.framework)
 
-	private static let x25519Account = "__x25519_private_key__"
+	private static let scopedX25519AccountPrefix = "__x25519_private_key__."
 	private static let x25519Service = VaultConstants.keychainService
 	private static let wrappingKeyService = "dev.lpm.vault-key"
 	private static let wrappingKeyAccount = "wrapping-key"
-	private static let maximumWrappingKeyFileBytes = 4 * 1024
 	private static let x25519KeyStore = SharedKeychainStore(service: x25519Service)
 	private static let wrappingKeyStore = SharedKeychainStore(service: wrappingKeyService)
-	private static let cliSupportsProtectedOnlyCutover =
-		LPMCLICompatibility.installedCLIIsCompatible()
-
-	enum StableWrappingKeyFileState: Equatable {
-		case absent
-		case valid(Data)
-		case unsafe
-	}
 
 	private static func stableWrappingKey() throws -> SymmetricKey {
 		try VaultKeychainTransactionLock.withLock {
@@ -487,51 +472,9 @@ enum VaultCrypto {
 		}
 	}
 
-	static func ensureProtectedOnlyCutover() throws {
-		guard cliSupportsProtectedOnlyCutover else { return }
-		_ = try stableWrappingKey()
-	}
-
 	private static func stableWrappingKeyUnlocked() throws -> SymmetricKey {
-		let fileState = inspectStableWrappingKeyFile(at: wrappingKeyFileURL())
 		if let key = try readStableWrappingKeyFromKeychain() {
-			switch fileState {
-			case .absent:
-				break
-			case .unsafe:
-				throw CryptoError.invalidStoredKey(
-					"A legacy vault wrapping-key file exists but is not a secure valid key; it was preserved."
-				)
-			case .valid(let legacy):
-				guard legacy == key else {
-					throw CryptoError.invalidStoredKey(
-						"The protected and legacy-file vault wrapping keys conflict; both were preserved."
-					)
-				}
-			}
-			try completeProtectedOnlyCutover(
-				key: key,
-				fileState: fileState
-			)
 			return SymmetricKey(data: key)
-		}
-		if case .valid(let key) = fileState {
-			let stored = try addOrReadStableWrappingKey(key)
-			guard stored == key else {
-				throw CryptoError.invalidStoredKey(
-					"The protected and legacy-file vault wrapping keys conflict; both were preserved."
-				)
-			}
-			try completeProtectedOnlyCutover(
-				key: stored,
-				fileState: fileState
-			)
-			return SymmetricKey(data: key)
-		}
-		if case .unsafe = fileState {
-			throw CryptoError.invalidStoredKey(
-				"A legacy vault wrapping-key file exists but is not a secure valid key; it was preserved."
-			)
 		}
 
 		var bytes = [UInt8](repeating: 0, count: 32)
@@ -540,30 +483,7 @@ enum VaultCrypto {
 		}
 		let key = Data(bytes)
 		let stored = try addOrReadStableWrappingKey(key)
-		try completeProtectedOnlyCutover(key: stored, fileState: fileState)
 		return SymmetricKey(data: stored)
-	}
-
-	private static func completeProtectedOnlyCutover(
-		key: Data,
-		fileState: StableWrappingKeyFileState
-	) throws {
-		guard cliSupportsProtectedOnlyCutover else { return }
-		switch fileState {
-		case .absent:
-			break
-		case .valid:
-			try deleteLegacyWrappingKeyFile(
-				at: wrappingKeyFileURL(),
-				expectedKey: key
-			)
-		case .unsafe:
-			throw CryptoError.invalidStoredKey(
-				"A legacy vault wrapping-key file exists but is not a secure valid key; it was preserved."
-			)
-		}
-		try wrappingKeyStore.cutOverToProtectedOnly()
-		try x25519KeyStore.cutOverToProtectedOnly()
 	}
 
 	private static func readStableWrappingKeyFromKeychain() throws -> Data? {
@@ -584,183 +504,10 @@ enum VaultCrypto {
 				return candidate
 			} catch let error as KeychainStoreError where error.statusCode == errSecDuplicateItem {
 				guard let stored = try readStableWrappingKeyFromKeychain() else {
-					throw KeychainStoreError.migrationConflict
+					throw KeychainStoreError.concurrentModification
 				}
 				return stored
 			}
-		}
-
-	private static func readStableWrappingKeyFromFile() -> Data? {
-		readStableWrappingKeyFile(at: wrappingKeyFileURL())
-	}
-
-	/// Reads the legacy file fallback without following links or accepting
-	/// permissions that expose the wrapping key to another local user.
-	static func readStableWrappingKeyFile(at url: URL) -> Data? {
-		guard case .valid(let key) = inspectStableWrappingKeyFile(at: url) else { return nil }
-		return key
-	}
-
-	static func inspectStableWrappingKeyFile(at url: URL) -> StableWrappingKeyFileState {
-		guard url.isFileURL else { return .unsafe }
-		var pathMetadata = stat()
-		let pathStatus = url.withUnsafeFileSystemRepresentation { path in
-			guard let path else { return Int32(-1) }
-			return Darwin.lstat(path, &pathMetadata)
-		}
-		if pathStatus != 0 {
-			return errno == ENOENT ? .absent : .unsafe
-		}
-		guard (pathMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
-			return .unsafe
-		}
-
-		let descriptor = url.withUnsafeFileSystemRepresentation { path in
-			guard let path else { return Int32(-1) }
-			return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW)
-		}
-		guard descriptor >= 0 else { return .unsafe }
-		defer { _ = Darwin.close(descriptor) }
-
-		var metadata = stat()
-		guard Darwin.fstat(descriptor, &metadata) == 0,
-			(metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
-			metadata.st_uid == Darwin.geteuid(),
-			metadata.st_nlink == 1,
-			(metadata.st_mode & 0o077) == 0,
-			metadata.st_size >= 0,
-			metadata.st_size <= Int64(maximumWrappingKeyFileBytes)
-		else { return .unsafe }
-
-		var data = Data()
-		data.reserveCapacity(Int(metadata.st_size))
-		var buffer = [UInt8](repeating: 0, count: 512)
-		while true {
-			let count = buffer.withUnsafeMutableBytes { bytes in
-				Darwin.read(descriptor, bytes.baseAddress, bytes.count)
-			}
-			if count == 0 { break }
-			if count < 0 {
-				if errno == EINTR { continue }
-				return .unsafe
-			}
-			guard data.count + count <= maximumWrappingKeyFileBytes else { return .unsafe }
-			data.append(buffer, count: count)
-		}
-		guard let hex = String(data: data, encoding: .utf8),
-			let key = decodeWrappingKey(hex.trimmingCharacters(in: .whitespacesAndNewlines))
-		else { return .unsafe }
-		return .valid(key)
-	}
-
-	static func deleteLegacyWrappingKeyFile(
-		at url: URL,
-		expectedKey: Data
-	) throws {
-		guard url.isFileURL, expectedKey.count == 32 else {
-			throw CryptoError.invalidStoredKey(
-				"The legacy vault wrapping-key file could not be verified."
-			)
-		}
-		let directoryURL = url.deletingLastPathComponent()
-		let directory = directoryURL.withUnsafeFileSystemRepresentation { path in
-			guard let path else { return Int32(-1) }
-			return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
-		}
-		guard directory >= 0 else {
-			throw CryptoError.invalidStoredKey(
-				"The legacy vault wrapping-key directory could not be opened safely."
-			)
-		}
-		defer { _ = Darwin.close(directory) }
-
-		let name = url.lastPathComponent
-		let descriptor = name.withCString {
-			Darwin.openat(
-				directory,
-				$0,
-				O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW
-			)
-		}
-		guard descriptor >= 0 else {
-			throw CryptoError.invalidStoredKey(
-				"The legacy vault wrapping-key file changed before deletion and was preserved."
-			)
-		}
-		defer { _ = Darwin.close(descriptor) }
-
-		var openedMetadata = stat()
-		guard Darwin.fstat(descriptor, &openedMetadata) == 0,
-			(openedMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
-			openedMetadata.st_uid == Darwin.geteuid(),
-			openedMetadata.st_nlink == 1,
-			(openedMetadata.st_mode & 0o077) == 0,
-			openedMetadata.st_size >= 0,
-			openedMetadata.st_size <= Int64(maximumWrappingKeyFileBytes)
-		else {
-			throw CryptoError.invalidStoredKey(
-				"The legacy vault wrapping-key file is unsafe and was preserved."
-			)
-		}
-
-		var encoded = Data()
-		encoded.reserveCapacity(Int(openedMetadata.st_size))
-		var buffer = [UInt8](repeating: 0, count: 512)
-		while true {
-			let count = buffer.withUnsafeMutableBytes { bytes in
-				Darwin.read(descriptor, bytes.baseAddress, bytes.count)
-			}
-			if count == 0 { break }
-			if count < 0 {
-				if errno == EINTR { continue }
-				throw CryptoError.invalidStoredKey(
-					"The legacy vault wrapping-key file could not be verified and was preserved."
-				)
-			}
-			guard encoded.count + count <= maximumWrappingKeyFileBytes else {
-				throw CryptoError.invalidStoredKey(
-					"The legacy vault wrapping-key file is oversized and was preserved."
-				)
-			}
-			encoded.append(buffer, count: count)
-		}
-		guard let hex = String(data: encoded, encoding: .utf8),
-			decodeWrappingKey(
-				hex.trimmingCharacters(in: .whitespacesAndNewlines)
-			) == expectedKey
-		else {
-			throw CryptoError.invalidStoredKey(
-				"The protected and legacy-file vault wrapping keys conflict; both were preserved."
-			)
-		}
-
-		var pathMetadata = stat()
-		let pathStatus = name.withCString {
-			Darwin.fstatat(directory, $0, &pathMetadata, AT_SYMLINK_NOFOLLOW)
-		}
-		guard pathStatus == 0,
-			(pathMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
-			pathMetadata.st_nlink == 1,
-			pathMetadata.st_dev == openedMetadata.st_dev,
-			pathMetadata.st_ino == openedMetadata.st_ino
-		else {
-			throw CryptoError.invalidStoredKey(
-				"The legacy vault wrapping-key file changed before deletion and was preserved."
-			)
-		}
-		guard name.withCString({ Darwin.unlinkat(directory, $0, 0) }) == 0,
-			Darwin.fsync(directory) == 0
-		else {
-			throw CryptoError.invalidStoredKey(
-				"The legacy vault wrapping-key file could not be deleted durably."
-			)
-		}
-	}
-
-	private static func wrappingKeyFileURL() -> URL {
-			FileManager.default.homeDirectoryForCurrentUser
-				.appendingPathComponent(".lpm", isDirectory: true)
-				.appendingPathComponent(".vault-key")
 		}
 
 	private static func decodeWrappingKey(_ hex: String) -> Data? {
@@ -777,14 +524,64 @@ enum VaultCrypto {
 			return Data(bytes)
 		}
 
-	private static func storeX25519Key(_ keyData: Data, account: String) throws {
-		guard keyData.count == 32 else { throw CryptoError.invalidKeySize(keyData.count) }
-		let encoded = Data(keyData.base64EncodedString().utf8)
-		try x25519KeyStore.write(account: account, data: encoded)
+	static func x25519KeychainAccount(
+		registryURL: String,
+		callerUserID: String
+	) throws -> String {
+		guard !callerUserID.isEmpty,
+			callerUserID.utf8.count <= 256,
+			!callerUserID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+		else {
+			throw CryptoError.invalidStoredKey("The authenticated caller identity is invalid.")
+		}
+		let canonicalRegistryURL = try canonicalRegistryURL(registryURL)
+		var hasher = SHA256()
+		for component in [canonicalRegistryURL, callerUserID] {
+			var length = UInt64(component.utf8.count).bigEndian
+			Swift.withUnsafeBytes(of: &length) { hasher.update(bufferPointer: $0) }
+			if component.utf8.withContiguousStorageIfAvailable({ bytes in
+				hasher.update(bufferPointer: UnsafeRawBufferPointer(bytes))
+			}) == nil {
+				hasher.update(data: Data(component.utf8))
+			}
+		}
+		let digest = hasher.finalize()
+			.map { String(format: "%02x", $0) }
+			.joined()
+		return scopedX25519AccountPrefix + digest
 	}
 
-	static func readX25519PrivateKey() throws -> Data? {
-		guard let encoded = try x25519KeyStore.read(account: x25519Account) else { return nil }
+	private static func canonicalRegistryURL(_ value: String) throws -> String {
+		guard var components = URLComponents(string: value),
+			let scheme = components.scheme?.lowercased(),
+			let host = components.host?.lowercased(),
+			["http", "https"].contains(scheme),
+			!host.isEmpty,
+			components.user == nil,
+			components.password == nil,
+			components.query == nil,
+			components.fragment == nil
+		else {
+			throw CryptoError.invalidStoredKey("The Registry URL for the sharing key is invalid.")
+		}
+		components.scheme = scheme
+		components.host = host
+		if (scheme == "https" && components.port == 443)
+			|| (scheme == "http" && components.port == 80)
+		{
+			components.port = nil
+		}
+		var path = components.percentEncodedPath
+		while path.last == "/" { path.removeLast() }
+		components.percentEncodedPath = path
+		guard let canonical = components.url?.absoluteString else {
+			throw CryptoError.invalidStoredKey("The Registry URL for the sharing key is invalid.")
+		}
+		return canonical
+	}
+
+	private static func readX25519PrivateKey(account: String) throws -> Data? {
+		guard let encoded = try x25519KeyStore.read(account: account) else { return nil }
 		guard let base64 = String(data: encoded, encoding: .utf8),
 			let key = Data(base64Encoded: base64)
 		else {
@@ -794,28 +591,44 @@ enum VaultCrypto {
 		return key
 	}
 
-	static func writeX25519PrivateKey(_ privateKey: Data) throws {
-		try storeX25519Key(privateKey, account: x25519Account)
-	}
-
-	/// Get or create the X25519 keypair. Returns (privateKeyData, publicKeyData).
-		static func getOrCreateX25519Keypair() throws -> (privateKey: Data, publicKey: Data) {
-		if let existing = try readX25519PrivateKey() {
+	static func getOrCreateX25519Keypair(
+		registryURL: String,
+		callerUserID: String
+	) throws -> (privateKey: Data, publicKey: Data) {
+		let account = try x25519KeychainAccount(
+			registryURL: registryURL,
+			callerUserID: callerUserID
+		)
+		if let existing = try readX25519PrivateKey(account: account) {
 			return (existing, try x25519PublicFromPrivate(existing))
 		}
+		return try getOrCreateX25519Keypair(account: account)
+	}
 
-			let (candidate, _) = generateX25519Keypair()
-			let encoded = Data(candidate.base64EncodedString().utf8)
-			do {
-				try x25519KeyStore.add(account: x25519Account, data: encoded)
-				return (candidate, try x25519PublicFromPrivate(candidate))
-			} catch let error as KeychainStoreError where error.statusCode == errSecDuplicateItem {
-				guard let winner = try readX25519PrivateKey() else {
-					throw KeychainStoreError.migrationConflict
-				}
-				return (winner, try x25519PublicFromPrivate(winner))
-			}
+	private static func getOrCreateX25519Keypair(
+		account: String
+	) throws -> (privateKey: Data, publicKey: Data) {
+		if let existing = try readX25519PrivateKey(account: account) {
+			return (existing, try x25519PublicFromPrivate(existing))
 		}
+		return try addOrReadX25519Keypair(generateX25519Keypair().privateKey, account: account)
+	}
+
+	private static func addOrReadX25519Keypair(
+		_ candidate: Data,
+		account: String
+	) throws -> (privateKey: Data, publicKey: Data) {
+		let encoded = Data(candidate.base64EncodedString().utf8)
+		do {
+			try x25519KeyStore.add(account: account, data: encoded)
+			return (candidate, try x25519PublicFromPrivate(candidate))
+		} catch let error as KeychainStoreError where error.statusCode == errSecDuplicateItem {
+			guard let winner = try readX25519PrivateKey(account: account) else {
+				throw KeychainStoreError.concurrentModification
+			}
+			return (winner, try x25519PublicFromPrivate(winner))
+		}
+	}
 
 	// MARK: - Errors
 
@@ -827,7 +640,9 @@ enum VaultCrypto {
 		case invalidKeySize(Int)
 		case invalidUTF8
 		case unsupportedCryptoVersion(Int)
+		case invalidRevision
 		case contextTooLarge
+		case nonContributoryPublicKey
 		case invalidStoredKey(String)
 
 		var errorDescription: String? {
@@ -846,8 +661,12 @@ enum VaultCrypto {
 				"Decrypted data is not valid UTF-8"
 			case .unsupportedCryptoVersion(let version):
 				"Unsupported vault crypto version: \(version)"
+			case .invalidRevision:
+				"Vault revision must be positive"
 			case .contextTooLarge:
 				"Vault encryption context is too large"
+			case .nonContributoryPublicKey:
+				"X25519 public key is non-contributory"
 			case .invalidStoredKey(let message):
 				message
 			}

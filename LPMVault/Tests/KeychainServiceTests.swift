@@ -1,26 +1,69 @@
+import CryptoKit
 import Foundation
 import Security
 import Testing
 
 @testable import LPMVault
 
-/// These tests use a unique service name to avoid polluting the real Keychain.
-/// Each test creates and cleans up its own Keychain items.
-@Suite("KeychainService — Real Keychain Integration", .serialized)
+private final class KeychainServiceTestBackend: KeychainStoreBackend, @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage: [String: Data] = [:]
+
+	private func key(service: String, account: String) -> String {
+		"\(service)\u{0}\(account)"
+	}
+
+	func read(service: String, account: String) throws -> Data? {
+		lock.withLock { storage[key(service: service, account: account)] }
+	}
+
+	func write(service: String, account: String, data: Data) throws {
+		lock.withLock { storage[key(service: service, account: account)] = data }
+	}
+
+	func add(service: String, account: String, data: Data) throws {
+		try lock.withLock {
+			let storageKey = key(service: service, account: account)
+			guard storage[storageKey] == nil else {
+				throw KeychainStoreError.status(operation: "add", code: errSecDuplicateItem)
+			}
+			storage[storageKey] = data
+		}
+	}
+
+	func delete(service: String, account: String) throws -> Bool {
+		lock.withLock { storage.removeValue(forKey: key(service: service, account: account)) != nil }
+	}
+}
+
+@Suite("KeychainService", .serialized)
 struct KeychainServiceTests {
 	private func makeService() -> KeychainService {
-		KeychainService(legacyTestingService: "dev.lpm.vault.test.\(UUID().uuidString)")
+		KeychainService(
+			testingService: "dev.lpm.vault.test.\(UUID().uuidString)",
+			backend: KeychainServiceTestBackend()
+		)
 	}
 
 	private func cleanup(service: KeychainService, vaultIds: [String]) {
 		for id in vaultIds {
-			_ = service.deleteProject(vaultId: id)
+			_ = service.applyVaultTransaction(
+				project: .delete(vaultId: id, deletePayload: true),
+				data: []
+			)
+		}
+	}
+
+	private func succeeded(_ result: KeychainResult) -> Bool {
+		switch result {
+		case .success, .successWithWarning: true
+		case .failure: false
 		}
 	}
 
 	// MARK: - CRUD
 
-	@Test("round-trip: save then read returns same secrets")
+	@Test("round-trip: create then read returns the same environments")
 	func roundTrip() {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
@@ -28,11 +71,12 @@ struct KeychainServiceTests {
 
 		let secrets = ["DB_HOST": "localhost", "API_KEY": "sk-123", "PORT": "3000"]
 
-		let result = service.saveSecrets(
+		let environments = ["default": secrets]
+		let result = service.createEnvironments(
 			vaultId: vaultId,
 			projectName: "test-project",
 			projectPath: "/tmp/test-project",
-			secrets: secrets
+			environments: environments
 		)
 
 		guard case .success = result else {
@@ -40,8 +84,8 @@ struct KeychainServiceTests {
 			return
 		}
 
-		let retrieved = service.getSecrets(vaultId: vaultId)
-		#expect(retrieved == secrets)
+		let retrieved = service.getEnvironments(vaultId: vaultId)
+		#expect(retrieved == environments)
 	}
 
 	@Test("update overwrites existing secrets")
@@ -51,19 +95,19 @@ struct KeychainServiceTests {
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
 
 		// Create
-		_ = service.saveSecrets(
+		_ = service.createEnvironments(
 			vaultId: vaultId,
 			projectName: "project",
 			projectPath: "/tmp/p",
-			secrets: ["KEY": "old-value"]
+			environments: ["default": ["KEY": "old-value"]]
 		)
 
 		// Update
-		let result = service.saveSecrets(
+		let result = service.saveEnvironments(
 			vaultId: vaultId,
 			projectName: "project-renamed",
 			projectPath: "/tmp/p-new",
-			secrets: ["KEY": "new-value", "NEW_KEY": "added"]
+			environments: ["default": ["KEY": "new-value", "NEW_KEY": "added"]]
 		)
 
 		guard case .success = result else {
@@ -71,9 +115,9 @@ struct KeychainServiceTests {
 			return
 		}
 
-		let retrieved = service.getSecrets(vaultId: vaultId)
-		#expect(retrieved?["KEY"] == "new-value")
-		#expect(retrieved?["NEW_KEY"] == "added")
+		let retrieved = service.getEnvironments(vaultId: vaultId)
+		#expect(retrieved?["default"]?["KEY"] == "new-value")
+		#expect(retrieved?["default"]?["NEW_KEY"] == "added")
 	}
 
 	@Test("delete removes item")
@@ -82,33 +126,42 @@ struct KeychainServiceTests {
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 
 		// Create
-		_ = service.saveSecrets(
+		_ = service.createEnvironments(
 			vaultId: vaultId,
 			projectName: "to-delete",
 			projectPath: "/tmp/d",
-			secrets: ["KEY": "val"]
+			environments: ["default": ["KEY": "val"]]
 		)
 
 		// Delete
-		let deleted = service.deleteProject(vaultId: vaultId)
-		#expect(deleted == true)
+		let deleted = service.applyVaultTransaction(
+			project: .delete(vaultId: vaultId, deletePayload: true),
+			data: []
+		)
+		#expect(succeeded(deleted))
 
 		// Verify gone
-		let retrieved = service.getSecrets(vaultId: vaultId)
+		let retrieved = service.getEnvironments(vaultId: vaultId)
 		#expect(retrieved == nil)
 	}
 
 	@Test("delete non-existent item returns true (idempotent)")
 	func deleteNonExistent() {
 		let service = makeService()
-		let deleted = service.deleteProject(vaultId: "nonexistent-\(UUID().uuidString)")
-		#expect(deleted == true)
+		let deleted = service.applyVaultTransaction(
+			project: .delete(
+				vaultId: "nonexistent-\(UUID().uuidString)",
+				deletePayload: true
+			),
+			data: []
+		)
+		#expect(succeeded(deleted))
 	}
 
-	@Test("get non-existent vault returns nil")
+	@Test("get non-existent environment map returns nil")
 	func getNonExistent() {
 		let service = makeService()
-		let result = service.getSecrets(vaultId: "nonexistent-\(UUID().uuidString)")
+		let result = service.getEnvironments(vaultId: "nonexistent-\(UUID().uuidString)")
 		#expect(result == nil)
 	}
 
@@ -118,25 +171,26 @@ struct KeychainServiceTests {
 	func listProjects() {
 		// Isolated service to avoid race conditions with parallel tests sharing the index
 		let isolatedService = KeychainService(
-			legacyTestingService: "dev.lpm.vault.list.\(UUID().uuidString.prefix(8))")
+			testingService: "dev.lpm.vault.list.\(UUID().uuidString.prefix(8))",
+			backend: KeychainServiceTestBackend()
+		)
 		let id1 = "list-\(UUID().uuidString.prefix(8))"
 		let id2 = "list-\(UUID().uuidString.prefix(8))"
 		defer {
-			_ = isolatedService.deleteProject(vaultId: id1)
-			_ = isolatedService.deleteProject(vaultId: id2)
+			cleanup(service: isolatedService, vaultIds: [id1, id2])
 		}
 
-		_ = isolatedService.saveSecrets(
+		_ = isolatedService.createEnvironments(
 			vaultId: id1,
 			projectName: "project-alpha",
 			projectPath: "/tmp/alpha",
-			secrets: ["A": "1"]
+			environments: ["default": ["A": "1"]]
 		)
-		_ = isolatedService.saveSecrets(
+		_ = isolatedService.createEnvironments(
 			vaultId: id2,
 			projectName: "project-beta",
 			projectPath: "/tmp/beta",
-			secrets: ["B": "2"]
+			environments: ["default": ["B": "2"]]
 		)
 
 		let projects = isolatedService.listProjects()
@@ -146,49 +200,37 @@ struct KeychainServiceTests {
 		let alpha = projects.first { $0.id == id1 }
 		#expect(alpha?.name == "project-alpha")
 		#expect(alpha?.path == "/tmp/alpha")
-		#expect(alpha?.secrets == ["A": "1"])
+		#expect(alpha?.secrets(for: "default") == ["A": "1"])
 
 		let beta = projects.first { $0.id == id2 }
 		#expect(beta?.name == "project-beta")
-		#expect(beta?.secrets == ["B": "2"])
+		#expect(beta?.secrets(for: "default") == ["B": "2"])
 	}
 
 	@Test("list projects when empty returns empty array")
 	func listEmpty() {
 		// Use a unique service that definitely has no items
 		let service = KeychainService(
-			legacyTestingService: "dev.lpm.vault.empty.\(UUID().uuidString.prefix(8))")
+			testingService: "dev.lpm.vault.empty.\(UUID().uuidString.prefix(8))",
+			backend: KeychainServiceTestBackend()
+		)
 		let projects = service.listProjects()
 		#expect(projects.isEmpty)
 	}
 
-	@Test("a corrupt duplicate project index fails instead of trapping or fabricating projects")
-	func duplicateIndexFailsClosed() {
-		let service = makeService()
-		let duplicateIndex = Data(
-			#"[{"id":"duplicate","name":"One","path":""},{"id":"duplicate","name":"Two","path":""}]"#.utf8
-		)
-		#expect(service.writeData(account: "__index__", data: duplicateIndex))
-
-		guard case .failure(.unexpectedStatus(errSecDecode)) = service.listProjectsResult() else {
-			Issue.record("The duplicate Keychain index did not fail closed")
-			return
-		}
-	}
-
 	// MARK: - Edge Cases
 
-	@Test("empty secrets dictionary is valid")
+	@Test("empty default environment is valid")
 	func emptySecrets() {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
 
-		let result = service.saveSecrets(
+		let result = service.createEnvironments(
 			vaultId: vaultId,
 			projectName: "empty-project",
 			projectPath: "/tmp/empty",
-			secrets: [:]
+			environments: ["default": [:]]
 		)
 
 		guard case .success = result else {
@@ -196,8 +238,8 @@ struct KeychainServiceTests {
 			return
 		}
 
-		let retrieved = service.getSecrets(vaultId: vaultId)
-		#expect(retrieved == [:])
+		let retrieved = service.getEnvironments(vaultId: vaultId)
+		#expect(retrieved == ["default": [:]])
 	}
 
 	@Test("secrets with special characters preserved")
@@ -213,15 +255,15 @@ struct KeychainServiceTests {
 			"UNICODE": "hello \u{1F512} world \u{00E9}\u{00E8}\u{00EA}",
 		]
 
-		_ = service.saveSecrets(
+		_ = service.createEnvironments(
 			vaultId: vaultId,
 			projectName: "special",
 			projectPath: "/tmp/special",
-			secrets: secrets
+			environments: ["default": secrets]
 		)
 
-		let retrieved = service.getSecrets(vaultId: vaultId)
-		#expect(retrieved == secrets)
+		let retrieved = service.getEnvironments(vaultId: vaultId)
+		#expect(retrieved == ["default": secrets])
 	}
 
 	@Test("invalid decoded environment maps fail closed")
@@ -290,566 +332,635 @@ struct KeychainServiceTests {
 
 @Suite("Shared Keychain migration")
 struct SharedKeychainMigrationTests {
+	@Test("transaction locks reject hard-linked files without changing their target")
+	func transactionLockRejectsHardLinks() throws {
+		let home = FileManager.default.temporaryDirectory
+			.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		let directory = home.appendingPathComponent(".lpm", isDirectory: true)
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: home) }
+		let target = home.appendingPathComponent("target")
+		let lock = directory.appendingPathComponent(".vault-keychain.lock")
+		try Data("target".utf8).write(to: target)
+		try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: target.path)
+		#expect(Darwin.link(target.path, lock.path) == 0)
+
+		#expect(throws: KeychainStoreError.self) {
+			let descriptor = try VaultKeychainTransactionLock.openLockFile(homeURL: home)
+			_ = Darwin.close(descriptor)
+		}
+		let permissions = try #require(
+			FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber
+		)
+		#expect(permissions.intValue & 0o777 == 0o640)
+	}
+
+	@Test("transaction locks reject pathname replacement before admission")
+	func transactionLockRejectsPathReplacement() throws {
+		let home = FileManager.default.temporaryDirectory
+			.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		let directory = home.appendingPathComponent(".lpm", isDirectory: true)
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: home) }
+		let lock = directory.appendingPathComponent(".vault-keychain.lock")
+		let displaced = directory.appendingPathComponent("displaced.lock")
+		try Data("original".utf8).write(to: lock)
+		try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lock.path)
+
+		#expect(throws: KeychainStoreError.self) {
+			let descriptor = try VaultKeychainTransactionLock.openLockFile(
+				homeURL: home,
+				beforeLock: {
+					try FileManager.default.moveItem(at: lock, to: displaced)
+					try Data("replacement".utf8).write(to: lock)
+					try FileManager.default.setAttributes(
+						[.posixPermissions: 0o600],
+						ofItemAtPath: lock.path
+					)
+				}
+			)
+			_ = Darwin.close(descriptor)
+		}
+		#expect(try Data(contentsOf: lock) == Data("replacement".utf8))
+	}
+
+	@Test("transaction locks reject directory replacement before admission")
+	func transactionLockRejectsDirectoryReplacement() throws {
+		let home = FileManager.default.temporaryDirectory
+			.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		let directory = home.appendingPathComponent(".lpm", isDirectory: true)
+		let displaced = home.appendingPathComponent("displaced.lpm", isDirectory: true)
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: home) }
+		let lock = directory.appendingPathComponent(".vault-keychain.lock")
+		try Data("original".utf8).write(to: lock)
+		try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lock.path)
+
+		#expect(throws: KeychainStoreError.self) {
+			let descriptor = try VaultKeychainTransactionLock.openLockFile(
+				homeURL: home,
+				beforeLock: {
+					try FileManager.default.moveItem(at: directory, to: displaced)
+					try FileManager.default.createDirectory(
+						at: directory,
+						withIntermediateDirectories: false
+					)
+					let replacement = directory.appendingPathComponent(".vault-keychain.lock")
+					try Data("replacement".utf8).write(to: replacement)
+					try FileManager.default.setAttributes(
+						[.posixPermissions: 0o600],
+						ofItemAtPath: replacement.path
+					)
+				}
+			)
+			_ = Darwin.close(descriptor)
+		}
+	}
+
 	private final class FakeBackend: KeychainStoreBackend {
 		var shared: [String: Data] = [:]
-		var legacy: [String: Data] = [:]
 		var corruptSharedWrites = false
-		var rejectLegacyDelete = false
-		var rejectLegacyDeleteAccount: String?
 		var rejectSharedDelete = false
 		var rejectSharedReads = false
-		var rejectCutoverMarkerWrite = false
 		var sharedWriteFailuresRemaining = 0
 		var sharedValueInsertedBeforeAdd: Data?
 		var sharedValueUpdatedAfterAdd: Data?
 		var sharedValueUpdatedAfterWrite: Data?
-		var legacyValueUpdatedOnSharedFailure: Data?
 		var sharedReadCounts: [String: Int] = [:]
-		var legacyReadCounts: [String: Int] = [:]
-		var sharedAccountListCount = 0
-		var legacyAccountListCount = 0
 		var events: [String] = []
+		var failCommittedMarkerVerificationOnce = false
+		var failFinalMarkerDeletionVerificationOnce = false
+		var finalMarkerWasDeleted = false
+		var rejectReadsAfterCommittedMarker = false
 
-		func readCount(account: String, location: KeychainStoreLocation) -> Int {
-			switch location {
-			case .shared: sharedReadCounts[account, default: 0]
-			case .legacy: legacyReadCounts[account, default: 0]
-			}
+		func readCount(account: String) -> Int {
+			sharedReadCounts[account, default: 0]
 		}
 
-		func accounts(
-			service: String,
-			location: KeychainStoreLocation
-		) throws -> [String] {
-			switch location {
-			case .shared: sharedAccountListCount += 1
-			case .legacy: legacyAccountListCount += 1
+		func read(service: String, account: String) throws -> Data? {
+			sharedReadCounts[account, default: 0] += 1
+			if rejectReadsAfterCommittedMarker,
+				shared["__vault_transaction_v3__"].map({
+					String(decoding: $0, as: UTF8.self).contains(#""state":"committed""#)
+				}) == true
+			{
+				throw KeychainStoreError.status(operation: "read", code: errSecNotAvailable)
 			}
-			return Array(location == .shared ? shared.keys : legacy.keys).sorted()
-		}
-
-		func read(service: String, account: String, location: KeychainStoreLocation) throws -> Data?
-		{
-			switch location {
-			case .shared: sharedReadCounts[account, default: 0] += 1
-			case .legacy: legacyReadCounts[account, default: 0] += 1
-			}
-			if location == .shared, rejectSharedReads {
+			if rejectSharedReads {
 				throw KeychainStoreError.status(operation: "read", code: errSecMissingEntitlement)
 			}
-			return location == .shared ? shared[account] : legacy[account]
+			if account == "__vault_transaction_v3__",
+				failCommittedMarkerVerificationOnce,
+				let marker = shared[account],
+				String(decoding: marker, as: UTF8.self).contains(#""state":"committed""#)
+			{
+				failCommittedMarkerVerificationOnce = false
+				throw KeychainStoreError.status(operation: "read", code: errSecNotAvailable)
+			}
+			if account == "__vault_transaction_v3__",
+				failFinalMarkerDeletionVerificationOnce,
+				finalMarkerWasDeleted,
+				shared[account] == nil
+			{
+				failFinalMarkerDeletionVerificationOnce = false
+				throw KeychainStoreError.status(operation: "read", code: errSecNotAvailable)
+			}
+			return shared[account]
 		}
 
-		func write(
-			service: String,
-			account: String,
-			data: Data,
-			location: KeychainStoreLocation
-		) throws {
-			if location == .shared,
-				account == "__legacy_keychain_cutover_v1__",
-				rejectCutoverMarkerWrite
-			{
+		func write(service: String, account: String, data: Data) throws {
+			events.append("write:\(account)")
+			if sharedWriteFailuresRemaining > 0 {
+				sharedWriteFailuresRemaining -= 1
 				throw KeychainStoreError.status(operation: "write", code: errSecNotAvailable)
 			}
-			events.append("write:\(location):\(account)")
-			if location == .shared {
-				if sharedWriteFailuresRemaining > 0 {
-					sharedWriteFailuresRemaining -= 1
-					if let concurrent = legacyValueUpdatedOnSharedFailure {
-						legacyValueUpdatedOnSharedFailure = nil
-						legacy[account] = concurrent
-					}
-					throw KeychainStoreError.status(operation: "write", code: errSecNotAvailable)
-				}
-				shared[account] = corruptSharedWrites ? Data("corrupt".utf8) : data
-				if let concurrent = sharedValueUpdatedAfterWrite {
-					sharedValueUpdatedAfterWrite = nil
-					shared[account] = concurrent
-				}
-			} else {
-				legacy[account] = data
+			shared[account] = corruptSharedWrites ? Data("corrupt".utf8) : data
+			if let concurrent = sharedValueUpdatedAfterWrite {
+				sharedValueUpdatedAfterWrite = nil
+				shared[account] = concurrent
 			}
 		}
 
-		func add(
-			service: String,
-			account: String,
-			data: Data,
-			location: KeychainStoreLocation
-		) throws {
-			if location == .shared,
-				account == "__legacy_keychain_cutover_v1__",
-				rejectCutoverMarkerWrite
-			{
-				throw KeychainStoreError.status(operation: "add", code: errSecNotAvailable)
-			}
-			events.append("add:\(location):\(account)")
-			if location == .shared, let concurrent = sharedValueInsertedBeforeAdd {
+		func add(service: String, account: String, data: Data) throws {
+			events.append("add:\(account)")
+			if let concurrent = sharedValueInsertedBeforeAdd {
 				sharedValueInsertedBeforeAdd = nil
 				shared[account] = concurrent
 				throw KeychainStoreError.status(operation: "add", code: errSecDuplicateItem)
 			}
-			let exists = location == .shared ? shared[account] != nil : legacy[account] != nil
-			guard !exists else {
+			guard shared[account] == nil else {
 				throw KeychainStoreError.status(operation: "add", code: errSecDuplicateItem)
 			}
-			try write(service: service, account: account, data: data, location: location)
-			if location == .shared, let concurrent = sharedValueUpdatedAfterAdd {
+			try write(service: service, account: account, data: data)
+			if let concurrent = sharedValueUpdatedAfterAdd {
 				sharedValueUpdatedAfterAdd = nil
 				shared[account] = concurrent
 			}
 		}
 
-		func delete(
-			service: String,
-			account: String,
-			location: KeychainStoreLocation
-		) throws -> Bool {
-			if location == .legacy,
-				rejectLegacyDelete || rejectLegacyDeleteAccount == account
-			{
-				throw KeychainStoreError.status(operation: "delete", code: errSecAuthFailed)
-			}
-			if location == .shared, rejectSharedDelete {
+		func delete(service: String, account: String) throws -> Bool {
+			if rejectSharedDelete {
 				throw KeychainStoreError.status(operation: "delete", code: errSecNotAvailable)
 			}
-			if location == .shared {
-				events.append("delete:shared:\(account)")
-				return shared.removeValue(forKey: account) != nil
+			events.append("delete:\(account)")
+			let markerWasCommitted = account == "__vault_transaction_v3__"
+				&& shared[account].map {
+					String(decoding: $0, as: UTF8.self).contains(#""state":"committed""#)
+				} == true
+			let deleted = shared.removeValue(forKey: account) != nil
+			if markerWasCommitted, deleted { finalMarkerWasDeleted = true }
+			return deleted
+		}
+	}
+
+	@Test("committed journal recovery acknowledges transaction success")
+	func committedJournalRecoveryAcknowledgesSuccess() throws {
+		let backend = FakeBackend()
+		backend.failCommittedMarkerVerificationOnce = true
+		let store = SharedKeychainStore(service: "service", backend: backend)
+		let payload = Data(#"{"environments":{"default":{"TOKEN":"secret"}}}"#.utf8)
+
+		try store.applyVaultTransaction([
+			.write(account: "vault-id", data: payload)
+		])
+
+		#expect(backend.shared["vault-id"] == payload)
+		#expect(backend.shared["__vault_transaction_v3__"] == nil)
+	}
+
+	@Test("one outer transaction performs one recovery check per store")
+	func outerTransactionRecoversEachStoreOnce() throws {
+		let backend = FakeBackend()
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		try VaultKeychainTransactionLock.withLock {
+			let first = try store.read(account: "first")
+			let second = try store.read(account: "second")
+			let third = try store.read(account: "third")
+			#expect(first == nil)
+			#expect(second == nil)
+			#expect(third == nil)
+		}
+
+		#expect(backend.readCount(account: "__vault_transaction_v3__") == 1)
+		let fourth = try store.read(account: "fourth")
+		#expect(fourth == nil)
+		#expect(backend.readCount(account: "__vault_transaction_v3__") == 2)
+	}
+
+	@Test("an unverifiable committed transaction reports an indeterminate outcome")
+	func committedJournalVerificationFailureIsIndeterminate() throws {
+		let backend = FakeBackend()
+		backend.rejectReadsAfterCommittedMarker = true
+		let store = SharedKeychainStore(service: "service", backend: backend)
+		let payload = Data(#"{"environments":{"default":{"TOKEN":"secret"}}}"#.utf8)
+
+		#expect(throws: KeychainStoreError.transactionOutcomeIndeterminate) {
+			try store.applyVaultTransaction([
+				.write(account: "vault-id", data: payload)
+			])
+		}
+		#expect(backend.shared["__vault_transaction_v3__"] != nil)
+		#expect(backend.shared["vault-id"] == nil)
+
+		backend.rejectReadsAfterCommittedMarker = false
+		try store.recoverVaultTransaction()
+
+		#expect(backend.shared["vault-id"] == payload)
+		#expect(backend.shared["__vault_transaction_v3__"] == nil)
+	}
+
+	@Test("a final marker verification read failure acknowledges durable commit")
+	func finalMarkerVerificationFailureAcknowledgesSuccess() throws {
+		let backend = FakeBackend()
+		backend.failFinalMarkerDeletionVerificationOnce = true
+		let store = SharedKeychainStore(service: "service", backend: backend)
+		let payload = Data(#"{"environments":{"default":{"TOKEN":"secret"}}}"#.utf8)
+
+		try store.applyVaultTransaction([
+			.write(account: "vault-id", data: payload)
+		])
+
+		#expect(backend.shared["vault-id"] == payload)
+		#expect(backend.shared["__vault_transaction_v3__"] == nil)
+	}
+
+	@Test("journal updates remain authoritative on subsequent reads")
+	func journalUpdateIsAuthoritativeOnRead() throws {
+		let backend = FakeBackend()
+		let oldPayload = Data(#"{"environments":{"default":{"TOKEN":"old"}}}"#.utf8)
+		let newPayload = Data(#"{"environments":{"default":{"TOKEN":"new"}}}"#.utf8)
+		backend.shared["vault-id"] = oldPayload
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		try store.applyVaultTransaction([
+			.write(account: "vault-id", data: newPayload)
+		])
+
+		#expect(try store.read(account: "vault-id") == newPayload)
+		#expect(backend.shared["vault-id"] == newPayload)
+	}
+
+	@Test("live transaction roll-forward reuses staged source bytes")
+	func liveTransactionRollForwardDoesNotRereadTheStage() throws {
+		let backend = FakeBackend()
+		let store = SharedKeychainStore(service: "service", backend: backend)
+		let payload = Data(#"{"environments":{"default":{"TOKEN":"secret"}}}"#.utf8)
+
+		try store.applyVaultTransaction([.write(account: "vault-id", data: payload)])
+
+		let stageReadCounts = backend.sharedReadCounts.filter {
+			$0.key.hasPrefix("__vault_transaction_stage_v3__:")
+		}
+		#expect(stageReadCounts.count == 1)
+		#expect(stageReadCounts.values.first == 2)
+	}
+
+	@Test("typed project payloads are summarized without reparsing and hashed once")
+	func preparedProjectPayloadAvoidsLiveReparsingAndRehashing() {
+		let backend = FakeBackend()
+		let counters = VaultKeychainPerformanceCounters()
+		let service = KeychainService(
+			testingService: "service",
+			backend: backend,
+			performanceCounters: counters
+		)
+		let result = service.createEnvironments(
+			vaultId: "vault-id",
+			projectName: "Project",
+			projectPath: "",
+			environments: ["default": ["TOKEN": "secret"]]
+		)
+
+		guard case .success = result else {
+			Issue.record("Expected the project transaction to succeed.")
+			return
+		}
+		let snapshot = counters.snapshot
+		#expect(snapshot.projectPayloadParseCount == 0)
+		#expect(snapshot.projectPayloadHashCount == 1)
+		#expect(snapshot.livePayloadReuseCount > 0)
+	}
+
+	@Test("committed journals reject redirected write targets")
+	func committedJournalRejectsRedirectedWriteTarget() throws {
+		let backend = FakeBackend()
+		let transactionId = "00000000-0000-4000-8000-000000000001"
+		let stage = "__vault_transaction_stage_v3__:\(transactionId):0"
+		let payload = Data(#"{"environments":{"default":{"TOKEN":"secret"}}}"#.utf8)
+		backend.shared[stage] = payload
+		backend.shared["__vault_transaction_v3__"] = try JSONSerialization.data(
+			withJSONObject: [
+				"schemaVersion": 3,
+				"transactionId": transactionId,
+				"state": "committed",
+				"operations": [[
+					"action": "write",
+					"targetAccount": "redirected-vault",
+					"stagedAccount": stage,
+					"operationSha256": operationDigest(
+						action: "write", target: "original-vault", data: payload),
+				]],
+			]
+		)
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.recoverVaultTransaction()
+		}
+
+		#expect(backend.shared["redirected-vault"] == nil)
+	}
+
+	@Test("persisted recovery independently validates and hashes staged project bytes")
+	func persistedRecoveryDoesNotTrustLiveValidationProofs() throws {
+		let backend = FakeBackend()
+		let counters = VaultKeychainPerformanceCounters()
+		let transactionId = "00000000-0000-4000-8000-000000000001"
+		let target = "vault-id"
+		let stage = "__vault_transaction_stage_v3__:\(transactionId):0"
+		let payload = Data(#"{"environments":{"default":{"TOKEN":"secret"}}}"#.utf8)
+		backend.shared[stage] = payload
+		backend.shared["__vault_transaction_v3__"] = try JSONSerialization.data(
+			withJSONObject: [
+				"schemaVersion": 3,
+				"transactionId": transactionId,
+				"state": "committed",
+				"operations": [[
+					"action": "write",
+					"targetAccount": target,
+					"stagedAccount": stage,
+					"operationSha256": operationDigest(
+						action: "write", target: target, data: payload),
+				]],
+			]
+		)
+		let store = SharedKeychainStore(
+			service: "service",
+			backend: backend,
+			performanceCounters: counters
+		)
+
+		try store.recoverVaultTransaction()
+
+		#expect(backend.shared[target] == payload)
+		#expect(counters.snapshot.projectPayloadParseCount == 1)
+		#expect(counters.snapshot.projectPayloadHashCount == 1)
+	}
+
+	@Test("committed journals reject redirected delete targets")
+	func committedJournalRejectsRedirectedDeleteTarget() throws {
+		let backend = FakeBackend()
+		let transactionId = "00000000-0000-4000-8000-000000000001"
+		let payload = Data(#"{"environments":{"default":{}}}"#.utf8)
+		backend.shared["redirected-vault"] = payload
+		backend.shared["__vault_transaction_v3__"] = try JSONSerialization.data(
+			withJSONObject: [
+				"schemaVersion": 3,
+				"transactionId": transactionId,
+				"state": "committed",
+				"operations": [[
+					"action": "delete",
+					"targetAccount": "redirected-vault",
+					"operationSha256": operationDigest(
+						action: "delete", target: "original-vault", data: nil),
+				]],
+			]
+		)
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.recoverVaultTransaction()
+		}
+
+		#expect(backend.shared["redirected-vault"] == payload)
+	}
+
+	@Test("journal decoding rejects unknown marker fields")
+	func journalRejectsUnknownMarkerFields() throws {
+		let backend = FakeBackend()
+		backend.shared["__vault_transaction_v3__"] = Data(#"""
+		{
+			"schemaVersion":3,
+			"transactionId":"00000000-0000-4000-8000-000000000001",
+			"state":"committed",
+			"operations":[],
+			"unknown":true
+		}
+		"""#.utf8)
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.recoverVaultTransaction()
+		}
+	}
+
+	@Test("journal decoding rejects duplicate marker keys")
+	func journalRejectsDuplicateMarkerKeys() throws {
+		let backend = FakeBackend()
+		let transactionId = "00000000-0000-4000-8000-000000000001"
+		let target = "vault-id"
+		let payload = Data(#"{"environments":{"default":{"TOKEN":"secret"}}}"#.utf8)
+		let stage = "__vault_transaction_stage_v3__:\(transactionId):0"
+		backend.shared[stage] = payload
+		let digest = operationDigest(action: "write", target: target, data: payload)
+		backend.shared["__vault_transaction_v3__"] = Data(#"""
+		{"schemaVersion":3,"schemaVersion":3,"transactionId":"\#(transactionId)","state":"committed","operations":[{"action":"write","targetAccount":"\#(target)","stagedAccount":"\#(stage)","operationSha256":"\#(digest)"}]}
+		"""#.utf8)
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.recoverVaultTransaction()
+		}
+		#expect(backend.shared[target] == nil)
+	}
+
+	@Test("strict JSON validation accepts its maximum nesting depth")
+	func strictJSONValidationAcceptsMaximumDepth() throws {
+		let depth = 128
+		let json = String(repeating: "[", count: depth)
+			+ "0"
+			+ String(repeating: "]", count: depth)
+
+		try StrictJSONKeyValidator.validate(Data(json.utf8))
+	}
+
+	@Test("strict JSON validation rejects excessive nesting")
+	func strictJSONValidationRejectsExcessiveDepth() {
+		let depth = 129
+		let json = String(repeating: "[", count: depth)
+			+ "0"
+			+ String(repeating: "]", count: depth)
+
+		#expect(throws: KeychainStoreError.integrityValidationFailed) {
+			try StrictJSONKeyValidator.validate(Data(json.utf8))
+		}
+	}
+
+	@Test("strict JSON validation materializes only object keys without copying input")
+	func strictJSONValidationAvoidsWholeInputAndValueCopies() throws {
+		let value = String(repeating: "payload", count: 10_000)
+		let data = Data(#"{"outer":{"key":"\#(value)"},"escaped\u004bey":"value"}"#.utf8)
+
+		let profile = try StrictJSONKeyValidator.validationProfile(data)
+
+		#expect(profile.materializedStringCount == 3)
+		#expect(profile.copiedInputByteCount == 0)
+	}
+
+	@Test("strict JSON validation enforces scalar-valid UTF-8 and surrogate pairs")
+	func strictJSONValidationEnforcesUnicodeScalarSemantics() throws {
+		try StrictJSONKeyValidator.validate(Data(#"{"😀":"\uD83D\uDE00"}"#.utf8))
+
+		let invalidRawSequences: [[UInt8]] = [
+			[0xC0, 0x80],
+			[0xE0, 0x80, 0x80],
+			[0xED, 0xA0, 0x80],
+			[0xF4, 0x90, 0x80, 0x80],
+			[0x80],
+			[0xF0, 0x9F, 0x98],
+		]
+		for sequence in invalidRawSequences {
+			var bytes = Array(#"{"key":""#.utf8)
+			bytes.append(contentsOf: sequence)
+			bytes.append(contentsOf: Array(#""}"#.utf8))
+			#expect(throws: KeychainStoreError.integrityValidationFailed) {
+				try StrictJSONKeyValidator.validate(Data(bytes))
 			}
-			events.append("delete:legacy:\(account)")
-			return legacy.removeValue(forKey: account) != nil
+		}
+
+		for json in [
+			#"{"\uD800":"value"}"#,
+			#"{"\uDC00":"value"}"#,
+			#"{"\uD800\u0041":"value"}"#,
+		] {
+			#expect(throws: KeychainStoreError.integrityValidationFailed) {
+				try StrictJSONKeyValidator.validate(Data(json.utf8))
+			}
 		}
 	}
 
-	@Test("shared queries require the Team-scoped Data Protection Keychain")
+	@Test("journal decoding rejects escaped duplicate operation keys")
+	func journalRejectsDuplicateOperationKeys() throws {
+		let backend = FakeBackend()
+		let transactionId = "00000000-0000-4000-8000-000000000001"
+		let target = "vault-id"
+		let payload = Data(#"{"environments":{"default":{"TOKEN":"secret"}}}"#.utf8)
+		let stage = "__vault_transaction_stage_v3__:\(transactionId):0"
+		backend.shared[stage] = payload
+		let digest = operationDigest(action: "write", target: target, data: payload)
+		backend.shared["__vault_transaction_v3__"] = Data(#"""
+		{"schemaVersion":3,"transactionId":"\#(transactionId)","state":"committed","operations":[{"action":"write","targetAccount":"\#(target)","target\u0041ccount":"\#(target)","stagedAccount":"\#(stage)","operationSha256":"\#(digest)"}]}
+		"""#.utf8)
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.recoverVaultTransaction()
+		}
+		#expect(backend.shared[target] == nil)
+	}
+
+	@Test("journal recovery rejects duplicate keys in a staged target")
+	func journalRejectsDuplicateStagedTargetKeys() throws {
+		let backend = FakeBackend()
+		let transactionId = "00000000-0000-4000-8000-000000000001"
+		let target = "vault-id"
+		let payload = Data(
+			#"{"environments":{"default":{"TOKEN":"one","TOKEN":"two"}}}"#.utf8)
+		let stage = "__vault_transaction_stage_v3__:\(transactionId):0"
+		backend.shared[stage] = payload
+		let digest = operationDigest(action: "write", target: target, data: payload)
+		backend.shared["__vault_transaction_v3__"] = Data(#"""
+		{"schemaVersion":3,"transactionId":"\#(transactionId)","state":"committed","operations":[{"action":"write","targetAccount":"\#(target)","stagedAccount":"\#(stage)","operationSha256":"\#(digest)"}]}
+		"""#.utf8)
+		let store = SharedKeychainStore(service: "service", backend: backend)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.recoverVaultTransaction()
+		}
+		#expect(backend.shared[target] == nil)
+	}
+
+	@Test("sync metadata transaction targets require canonical vault ID encoding")
+	func syncMetadataTargetRejectsBase64Alias() {
+		let backend = FakeBackend()
+		let store = SharedKeychainStore(service: "service", backend: backend)
+		let record = Data(#"{"schemaVersion":3,"vaultId":"vault","metadata":{"isDirty":false,"checkpoints":[]}}"#.utf8)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.applyVaultTransaction([
+				.write(account: "__sync_metadata__:dmF1bHQ=", data: record)
+			])
+		}
+	}
+
+	@Test("journal recovery rejects retired sync metadata targets")
+	func journalRejectsRetiredSyncMetadataTargets() {
+		let backend = FakeBackend()
+		let store = SharedKeychainStore(service: "service", backend: backend)
+		let record = Data(#"{"schemaVersion":2,"vaultId":"vault","metadata":{"isDirty":false,"checkpoints":[]}}"#.utf8)
+
+		#expect(throws: KeychainStoreError.self) {
+			try store.applyVaultTransaction([
+				.write(account: "__sync_metadata_v2__:dmF1bHQ", data: record)
+			])
+		}
+		#expect(throws: KeychainStoreError.self) {
+			try store.applyVaultTransaction([
+				.delete(account: "__sync_metadata_v2_marker__")
+			])
+		}
+	}
+
+	private func operationDigest(action: String, target: String, data: Data?) -> String {
+		var input = Data("lpm-vault-transaction-operation\0".utf8)
+		input.append(contentsOf: action.utf8)
+		input.append(0)
+		input.append(contentsOf: target.utf8)
+		input.append(0)
+		if let data { input.append(data) }
+		return SHA256.hash(data: input).map { String(format: "%02x", $0) }.joined()
+	}
+
+	@Test("journal project mutations preserve exact oversized-payload errors")
+	func journalProjectMutationPreservesOversizedPayloadError() {
+		let backend = FakeBackend()
+		let service = KeychainService(
+			testingService: "oversized-project",
+			backend: backend
+		)
+		let project = VaultProject(
+			id: "vault-id",
+			name: "Project",
+			path: "",
+			environments: ["default": ["TOKEN": String(repeating: "x", count: 100_000)]]
+		)
+
+		guard case .failure(.dataTooLarge(let byteCount)) = service.applyVaultTransaction(
+			project: .create(project),
+			data: []
+		) else {
+			Issue.record("Expected the exact oversized-payload error.")
+			return
+		}
+
+		#expect(byteCount > VaultConstants.maxVaultSizeWarning)
+		#expect(backend.shared.isEmpty)
+	}
+
+	@Test("queries require the Team-scoped Data Protection Keychain")
 	func protectedQueryContract() throws {
-		let shared = try SecurityKeychainStoreBackend.identityQuery(
+		let query = SecurityKeychainStoreBackend.identityQuery(
 			service: "service",
-			account: "account",
-			location: .shared
-		)
-		let legacy = try SecurityKeychainStoreBackend.identityQuery(
-			service: "service",
-			account: "account",
-			location: .legacy
+			account: "account"
 		)
 
 		#expect(
-			shared[kSecAttrAccessGroup as String] as? String == VaultConstants.keychainAccessGroup)
-		#expect(shared[kSecUseDataProtectionKeychain as String] as? Bool == true)
-		#expect(legacy[kSecAttrAccessGroup as String] == nil)
-		#expect(legacy[kSecUseDataProtectionKeychain as String] == nil)
-		#expect(legacy[kSecUseKeychain as String] != nil)
+			query[kSecAttrAccessGroup as String] as? String == VaultConstants.keychainAccessGroup)
+		#expect(query[kSecUseDataProtectionKeychain as String] as? Bool == true)
+		#expect(query[kSecUseKeychain as String] == nil)
 	}
 
-	@Test("batched compatibility reads evaluate cutover once and reconcile each account once")
-	func batchedCompatibilityReadCounts() throws {
-		let backend = FakeBackend()
-		for account in ["one", "two", "three"] {
-			let value = Data(account.utf8)
-			backend.shared[account] = value
-			backend.legacy[account] = value
-		}
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		let values = try store.read(accounts: ["one", "two", "three"])
-
-		#expect(values.compactMapValues { $0 }.count == 3)
-		#expect(backend.readCount(
-			account: "__legacy_keychain_cutover_v1__", location: .shared
-		) == 1)
-		for account in ["one", "two", "three"] {
-			#expect(backend.readCount(account: account, location: .legacy) == 2)
-			#expect(backend.readCount(account: account, location: .shared) == 2)
-		}
-	}
-
-	@Test("batched reads tolerate repeated account requests without a dictionary trap")
-	func batchedDuplicateAccountRead() throws {
-		let backend = FakeBackend()
-		let value = Data("value".utf8)
-		backend.shared["same"] = value
-		backend.legacy["same"] = value
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		let values = try store.read(accounts: ["same", "same"])
-
-		#expect(values["same"] == value)
-		#expect(backend.readCount(
-			account: "__legacy_keychain_cutover_v1__", location: .shared
-		) == 1)
-	}
-
-	@Test("batched protected-only reads avoid every legacy backend call")
-	func batchedProtectedOnlyReadCounts() throws {
-		let backend = FakeBackend()
-		backend.shared["__legacy_keychain_cutover_v1__"] = Data("protected-only-v1".utf8)
-		for account in ["one", "two", "three"] {
-			backend.shared[account] = Data(account.utf8)
-			backend.legacy[account] = Data("stale-\(account)".utf8)
-		}
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		let values = try store.read(accounts: ["one", "two", "three"])
-
-		#expect(values.compactMapValues { $0 }.count == 3)
-		#expect(backend.readCount(
-			account: "__legacy_keychain_cutover_v1__", location: .shared
-		) == 1)
-		for account in ["one", "two", "three"] {
-			#expect(backend.readCount(account: account, location: .legacy) == 0)
-			#expect(backend.readCount(account: account, location: .shared) == 1)
-		}
-	}
-
-	@Test("protected-only state is cached after one durable marker read")
-	func protectedOnlyMarkerIsCached() throws {
-		let backend = FakeBackend()
-		backend.shared["__legacy_keychain_cutover_v1__"] = Data("protected-only-v1".utf8)
-		backend.shared["first"] = Data("one".utf8)
-		backend.shared["second"] = Data("two".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(try store.read(account: "first") == Data("one".utf8))
-		#expect(try store.read(account: "second") == Data("two".utf8))
-		#expect(backend.readCount(
-			account: "__legacy_keychain_cutover_v1__", location: .shared
-		) == 1)
-	}
-
-	@Test("legacy-only values are copied, verified, and preserved")
-	func legacyMigration() throws {
-		let backend = FakeBackend()
-		let value = Data("secret".utf8)
-		backend.legacy["account"] = value
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(try store.read(account: "account") == value)
-		#expect(backend.shared["account"] == value)
-		#expect(backend.legacy["account"] == value)
-	}
-
-	@Test("a current CLI legacy update repairs the protected copy")
-	func legacyUpdateWinsDuringCompatibility() throws {
-		let backend = FakeBackend()
-		backend.shared["account"] = Data("protected".utf8)
-		backend.legacy["account"] = Data("legacy".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(try store.read(account: "account") == Data("legacy".utf8))
-		#expect(backend.shared["account"] == Data("legacy".utf8))
-		#expect(backend.legacy["account"] == Data("legacy".utf8))
-	}
-
-	@Test("a shared-only value is copied to the legacy store during compatibility")
-	func sharedOnlyCompatibilityBackfill() throws {
-		let backend = FakeBackend()
-		let value = Data("protected".utf8)
-		backend.shared["account"] = value
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(try store.read(account: "account") == value)
-		#expect(backend.shared["account"] == value)
-		#expect(backend.legacy["account"] == value)
-	}
-
-	@Test("an identical protected copy created during migration is accepted")
-	func concurrentIdenticalMigration() throws {
-		let backend = FakeBackend()
-		let value = Data("secret".utf8)
-		backend.legacy["account"] = value
-		backend.shared["account"] = value
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(try store.read(account: "account") == value)
-		#expect(backend.shared["account"] == value)
-		#expect(backend.legacy["account"] == value)
-	}
-
-	@Test("a protected update during compatibility repair fails verification")
-	func concurrentDivergentRepair() {
-		let backend = FakeBackend()
-		backend.legacy["account"] = Data("legacy".utf8)
-		backend.sharedValueUpdatedAfterWrite = Data("protected".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(throws: KeychainStoreError.migrationVerificationFailed) {
-			_ = try store.read(account: "account")
-		}
-		#expect(backend.shared["account"] == Data("protected".utf8))
-		#expect(backend.legacy["account"] == Data("legacy".utf8))
-	}
-
-	@Test("failed migration verification preserves the legacy value")
-	func migrationVerificationFailure() {
-		let backend = FakeBackend()
-		let value = Data("secret".utf8)
-		backend.legacy["account"] = value
-		backend.corruptSharedWrites = true
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(throws: KeychainStoreError.migrationVerificationFailed) {
-			_ = try store.read(account: "account")
-		}
-		#expect(backend.shared["account"] == Data("corrupt".utf8))
-		#expect(backend.legacy["account"] == value)
-	}
-
-	@Test("reads never attempt automatic legacy deletion")
-	func migrationPreservesCompatibilityCopy() throws {
-		let backend = FakeBackend()
-		let value = Data("secret".utf8)
-		backend.legacy["account"] = value
-		backend.rejectLegacyDelete = true
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(try store.read(account: "account") == value)
-		#expect(backend.shared["account"] == value)
-		#expect(backend.legacy["account"] == value)
-	}
-
-	@Test("writes update an existing legacy compatibility copy")
-	func compatibilityWrite() throws {
-		let backend = FakeBackend()
-		let previous = Data("previous".utf8)
-		let updated = Data("updated".utf8)
-		backend.shared["account"] = previous
-		backend.legacy["account"] = previous
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		try store.write(account: "account", data: updated)
-
-		#expect(backend.shared["account"] == updated)
-		#expect(backend.legacy["account"] == updated)
-	}
-
-	@Test("brand-new writes create both compatibility copies")
-	func compatibilityWriteCreatesLegacyCopy() throws {
-		let backend = FakeBackend()
-		let value = Data("new".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		try store.write(account: "account", data: value)
-
-		#expect(backend.shared["account"] == value)
-		#expect(backend.legacy["account"] == value)
-	}
-
-	@Test("brand-new add creates both compatibility copies")
-	func compatibilityAddCreatesLegacyCopy() throws {
-		let backend = FakeBackend()
-		let value = Data("new".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		try store.add(account: "account", data: value)
-
-		#expect(backend.shared["account"] == value)
-		#expect(backend.legacy["account"] == value)
-	}
-
-	@Test("a transient protected-write failure is recovered from the legacy copy")
-	func compatibilityWriteRecoversSecondStoreFailure() throws {
-		let backend = FakeBackend()
-		backend.sharedWriteFailuresRemaining = 1
-		let value = Data("new".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		try store.write(account: "account", data: value)
-
-		#expect(backend.shared["account"] == value)
-		#expect(backend.legacy["account"] == value)
-	}
-
-	@Test("a persistent protected add failure rolls back its legacy copy")
-	func compatibilityAddRollsBackPersistentSecondStoreFailure() throws {
-		let backend = FakeBackend()
-		backend.sharedWriteFailuresRemaining = 2
-		let value = Data("new".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(throws: KeychainStoreError.self) {
-			try store.add(account: "account", data: value)
-		}
-		#expect(backend.shared["account"] == nil)
-		#expect(backend.legacy["account"] == nil)
-
-		try store.add(account: "account", data: value)
-
-		#expect(backend.shared["account"] == value)
-		#expect(backend.legacy["account"] == value)
-	}
-
-	@Test("a persistent protected write failure restores its legacy snapshot")
-	func compatibilityWriteRollsBackPersistentSecondStoreFailure() {
-		let backend = FakeBackend()
-		let previous = Data("previous".utf8)
-		backend.shared["account"] = previous
-		backend.legacy["account"] = previous
-		backend.sharedWriteFailuresRemaining = 2
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(throws: KeychainStoreError.self) {
-			try store.write(account: "account", data: Data("updated".utf8))
-		}
-		#expect(backend.shared["account"] == previous)
-		#expect(backend.legacy["account"] == previous)
-	}
-
-	@Test("compatibility rollback never overwrites a concurrent legacy update")
-	func compatibilityRollbackPreservesConcurrentLegacyUpdate() {
-		let backend = FakeBackend()
-		let previous = Data("previous".utf8)
-		let concurrent = Data("concurrent".utf8)
-		backend.shared["account"] = previous
-		backend.legacy["account"] = previous
-		backend.sharedWriteFailuresRemaining = 2
-		backend.legacyValueUpdatedOnSharedFailure = concurrent
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(throws: KeychainStoreError.migrationConflict) {
-			try store.write(account: "account", data: Data("attempted".utf8))
-		}
-		#expect(backend.shared["account"] == previous)
-		#expect(backend.legacy["account"] == concurrent)
-	}
-
-	@Test("persistent cutover ignores divergent legacy data")
-	func protectedOnlyReadAfterCutover() throws {
-		let backend = FakeBackend()
-		backend.shared["__legacy_keychain_cutover_v1__"] = Data("protected-only-v1".utf8)
-		backend.shared["account"] = Data("protected".utf8)
-		backend.legacy["account"] = Data("legacy".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(try store.read(account: "account") == Data("protected".utf8))
-		#expect(backend.legacy["account"] == Data("legacy".utf8))
-	}
-
-	@Test("coordinated cutover verifies every copy deletes legacy data and persists the marker last")
-	func coordinatedProtectedOnlyCutover() throws {
-		let backend = FakeBackend()
-		for account in ["one", "two"] {
-			let value = Data(account.utf8)
-			backend.shared[account] = value
-			backend.legacy[account] = value
-		}
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		try store.cutOverToProtectedOnly()
-
-		#expect(backend.legacy.isEmpty)
-		#expect(
-			backend.shared["__legacy_keychain_cutover_v1__"]
-				== Data("protected-only-v1".utf8)
-		)
-		let markerEvent = try #require(
-			backend.events.lastIndex(of: "add:shared:__legacy_keychain_cutover_v1__")
-		)
-		for account in ["one", "two"] {
-			let deletion = try #require(
-				backend.events.lastIndex(of: "delete:legacy:\(account)")
-			)
-			#expect(deletion < markerEvent)
-		}
-	}
-
-	@Test("a completed cutover does not enumerate protected vault accounts again")
-	func completedCutoverIsConstantWork() throws {
-		let backend = FakeBackend()
-		backend.shared["__legacy_keychain_cutover_v1__"] = Data("protected-only-v1".utf8)
-		for index in 0..<100 {
-			backend.shared["vault-\(index)"] = Data("value-\(index)".utf8)
-		}
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		try store.cutOverToProtectedOnly()
-
-		#expect(backend.sharedAccountListCount == 0)
-		#expect(backend.legacyAccountListCount == 0)
-		#expect(backend.sharedReadCounts.values.reduce(0, +) == 1)
-		#expect(backend.legacyReadCounts.isEmpty)
-		#expect(backend.events.isEmpty)
-	}
-
-	@Test("coordinated cutover preserves divergent copies without setting the marker")
-	func coordinatedCutoverRejectsDivergence() {
-		let backend = FakeBackend()
-		backend.shared["account"] = Data("protected".utf8)
-		backend.legacy["account"] = Data("legacy".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(throws: KeychainStoreError.migrationConflict) {
-			try store.cutOverToProtectedOnly()
-		}
-
-		#expect(backend.shared["account"] == Data("protected".utf8))
-		#expect(backend.legacy["account"] == Data("legacy".utf8))
-		#expect(backend.shared["__legacy_keychain_cutover_v1__"] == nil)
-	}
-
-	@Test("failed cutover deletion restores every removed legacy copy")
-	func coordinatedCutoverRollsBackDeletionFailure() {
-		let backend = FakeBackend()
-		for account in ["one", "two"] {
-			let value = Data(account.utf8)
-			backend.shared[account] = value
-			backend.legacy[account] = value
-		}
-		backend.rejectLegacyDeleteAccount = "two"
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(throws: KeychainStoreError.self) {
-			try store.cutOverToProtectedOnly()
-		}
-
-		#expect(backend.legacy["one"] == Data("one".utf8))
-		#expect(backend.legacy["two"] == Data("two".utf8))
-		#expect(backend.shared["__legacy_keychain_cutover_v1__"] == nil)
-	}
-
-	@Test("failed marker commit restores deleted legacy copies")
-	func coordinatedCutoverRollsBackMarkerFailure() {
-		let backend = FakeBackend()
-		backend.shared["account"] = Data("value".utf8)
-		backend.legacy["account"] = Data("value".utf8)
-		backend.rejectCutoverMarkerWrite = true
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		#expect(throws: KeychainStoreError.self) {
-			try store.cutOverToProtectedOnly()
-		}
-
-		#expect(backend.legacy["account"] == Data("value".utf8))
-		#expect(backend.shared["__legacy_keychain_cutover_v1__"] == nil)
-	}
-
-	@Test("persistent cutover disables compatibility dual writes")
-	func protectedOnlyWriteAfterCutover() throws {
-		let backend = FakeBackend()
-		backend.shared["__legacy_keychain_cutover_v1__"] = Data("protected-only-v1".utf8)
-		backend.shared["account"] = Data("protected".utf8)
-		backend.legacy["account"] = Data("legacy".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		try store.write(account: "account", data: Data("updated".utf8))
-
-		#expect(backend.shared["account"] == Data("updated".utf8))
-		#expect(backend.legacy["account"] == Data("legacy".utf8))
-	}
-
-	@Test("persistent cutover makes brand-new adds protected-only")
-	func protectedOnlyAddAfterCutover() throws {
-		let backend = FakeBackend()
-		backend.shared["__legacy_keychain_cutover_v1__"] = Data("protected-only-v1".utf8)
-		let store = SharedKeychainStore(service: "service", backend: backend)
-
-		try store.add(account: "account", data: Data("new".utf8))
-
-		#expect(backend.shared["account"] == Data("new".utf8))
-		#expect(backend.legacy["account"] == nil)
-	}
 
 	@Test("write verification never rolls back a concurrent protected update")
 	func concurrentUpdateAfterWrite() {
@@ -858,11 +969,10 @@ struct SharedKeychainMigrationTests {
 		backend.sharedValueUpdatedAfterWrite = Data("concurrent".utf8)
 		let store = SharedKeychainStore(service: "service", backend: backend)
 
-		#expect(throws: KeychainStoreError.migrationConflict) {
+		#expect(throws: KeychainStoreError.concurrentModification) {
 			try store.write(account: "account", data: Data("requested".utf8))
 		}
 		#expect(backend.shared["account"] == Data("concurrent".utf8))
-		#expect(backend.legacy["account"] == Data("previous".utf8))
 	}
 
 	@Test("add verification never deletes a concurrent protected update")
@@ -871,36 +981,32 @@ struct SharedKeychainMigrationTests {
 		backend.sharedValueUpdatedAfterAdd = Data("concurrent".utf8)
 		let store = SharedKeychainStore(service: "service", backend: backend)
 
-		#expect(throws: KeychainStoreError.migrationConflict) {
+		#expect(throws: KeychainStoreError.concurrentModification) {
 			try store.add(account: "account", data: Data("requested".utf8))
 		}
 		#expect(backend.shared["account"] == Data("concurrent".utf8))
 	}
 
-	@Test("a protected delete failure is repaired from the preserved protected copy")
+	@Test("a protected delete failure preserves the protected copy")
 	func sharedDeleteFailureIsRecoverable() throws {
 		let backend = FakeBackend()
 		let value = Data("secret".utf8)
 		backend.shared["account"] = value
-		backend.legacy["account"] = value
 		backend.rejectSharedDelete = true
 		let store = SharedKeychainStore(service: "service", backend: backend)
 
 		#expect(throws: KeychainStoreError.status(operation: "delete", code: errSecNotAvailable)) {
 			_ = try store.delete(account: "account")
 		}
-		#expect(backend.legacy["account"] == nil)
 		#expect(backend.shared["account"] == value)
 
 		backend.rejectSharedDelete = false
 		#expect(try store.read(account: "account") == value)
-		#expect(backend.legacy["account"] == value)
 	}
 
 	@Test("a protected read error never creates or replaces key material")
 	func readFailureDoesNotWrite() {
 		let backend = FakeBackend()
-		backend.legacy["account"] = Data("legacy".utf8)
 		backend.rejectSharedReads = true
 		let store = SharedKeychainStore(service: "service", backend: backend)
 
@@ -910,7 +1016,6 @@ struct SharedKeychainMigrationTests {
 			try store.write(account: "account", data: Data("new".utf8))
 		}
 		#expect(backend.shared["account"] == nil)
-		#expect(backend.legacy["account"] == Data("legacy".utf8))
 	}
 }
 

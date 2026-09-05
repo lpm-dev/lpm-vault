@@ -13,21 +13,27 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var listProjectsDelay: Duration?
 	var failProjectReads = false
 	var projectReadCount = 0
+	var projectMetadataReadCount = 0
 	var environmentReadCount = 0
 	var failDataAccounts: Set<String> = []
 	var failNextReadDataAccounts: Set<String> = []
+	var dataReadCounts: [String: Int] = [:]
+	var dataWriteCounts: [String: Int] = [:]
+	var dataDeleteCounts: [String: Int] = [:]
 	var failNextWriteDataAccounts: Set<String> = []
+	var failNextDeleteDataAccounts: Set<String> = []
+	var failDeleteDataAccounts: Set<String> = []
 	var saveEnvironmentsCallCount = 0
 	var updateEnvironmentsCallCount = 0
+	var applyVaultTransactionCallCount = 0
 	var onGetEnvironments: (() -> Void)?
 	var onCreateEnvironments: (() -> Void)?
 	var blockNextSaveEnvironments: (() -> Void)?
 	var blockNextListProjects: (() -> Void)?
+	var blockNextListProjectMetadata: (() -> Void)?
 	var blockNextDeleteProject: (() -> Void)?
 	var failWriteDataAccounts: Set<String> = []
-	var failRestoreSaveEnvironments = false
 	var failNextSaveEnvironments = false
-	private var successfulSaveEnvironmentsCallCount = 0
 
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError> {
 		.success(lock.withLock(operation))
@@ -78,6 +84,34 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		if let failure { return .failure(failure) }
 		lock.withLock { projectReadCount += envStorage.count }
 		return .success(listProjects())
+	}
+
+	func listProjectMetadataResult() -> Result<[VaultProjectMetadata], KeychainError> {
+		let failure = lock.withLock { () -> KeychainError? in
+			guard failProjectReads else { return nil }
+			return failureError
+		}
+		if let failure { return .failure(failure) }
+		let blocker = lock.withLock { () -> (() -> Void)? in
+			let blocker = blockNextListProjectMetadata
+			blockNextListProjectMetadata = nil
+			return blocker
+		}
+		blocker?()
+		if let listProjectsDelay { Thread.sleep(forTimeInterval: listProjectsDelay.timeInterval) }
+		return .success(lock.withLock {
+			projectMetadataReadCount += envStorage.count
+			return envStorage.map { vaultId, data in
+				VaultProjectMetadata(
+					id: vaultId,
+					name: data.name,
+					path: data.path,
+					environmentSummaries: data.environments.map { name, secrets in
+						VaultProjectEnvironmentSummary(name: name, keyCount: secrets.count)
+					}.sorted { $0.name < $1.name }
+				)
+			}
+		})
 	}
 
 	func getProjectResult(vaultId: String) -> Result<VaultProject?, KeychainError> {
@@ -158,9 +192,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			failNextSaveEnvironments = false
 			return .failure(.unexpectedStatus(-98))
 		}
-		if failRestoreSaveEnvironments, successfulSaveEnvironmentsCallCount > 0 {
-			return .failure(.unexpectedStatus(-99))
-		}
 		guard let encodedSize = EnvValidation.encodedVaultSize(environments) else {
 			return .failure(.encodingFailed)
 		}
@@ -173,7 +204,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				path: projectPath,
 				environments: environments
 			)
-			successfulSaveEnvironmentsCallCount += 1
 		}
 		return .success
 	}
@@ -208,24 +238,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		)
 	}
 
-	func getSecrets(vaultId: String) -> [String: String]? {
-		envStorage[vaultId]?.environments["default"]
-	}
-
-	func saveSecrets(
-		vaultId: String,
-		projectName: String,
-		projectPath: String,
-		secrets: [String: String]
-	) -> KeychainResult {
-		if shouldFail { return .failure(failureError) }
-		var envs = envStorage[vaultId]?.environments ?? [:]
-		envs["default"] = secrets
-		envStorage[vaultId] = (name: projectName, path: projectPath, environments: envs)
-		return .success
-	}
-
-	func deleteProject(vaultId: String) -> Bool {
+	private func deleteProjectStorage(vaultId: String) -> Bool {
 		lock.lock()
 		let blocker = blockNextDeleteProject
 		blockNextDeleteProject = nil
@@ -242,11 +255,67 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		return true
 	}
 
+	func applyVaultTransaction(
+		project: VaultProjectKeychainMutation?,
+		data mutations: [VaultKeychainMutation]
+	) -> KeychainResult {
+		lock.lock()
+		defer { lock.unlock() }
+		applyVaultTransactionCallCount += 1
+		let previousEnvironments = envStorage
+		let previousData = dataStorage
+		let projectResult: KeychainResult
+		switch project {
+		case .create(let project):
+			projectResult = createEnvironments(
+				vaultId: project.id,
+				projectName: project.name,
+				projectPath: project.path,
+				environments: project.environments
+			)
+		case .upsert(let project):
+			projectResult = saveEnvironments(
+				vaultId: project.id,
+				projectName: project.name,
+				projectPath: project.path,
+				environments: project.environments
+			)
+		case .update(let vaultId, let environments):
+			projectResult = updateEnvironments(vaultId: vaultId, environments: environments)
+		case .delete(let vaultId, _):
+			projectResult = deleteProjectStorage(vaultId: vaultId)
+				? .success : .failure(failureError)
+		case nil:
+			projectResult = .success
+		}
+		let projectSucceeded = switch projectResult {
+		case .success, .successWithWarning: true
+		case .failure: false
+		}
+		guard projectSucceeded else {
+			return projectResult
+		}
+		for mutation in mutations {
+			let succeeded = if let mutationData = mutation.data {
+				writeData(account: mutation.account, data: mutationData)
+			} else {
+				deleteData(account: mutation.account)
+			}
+			guard succeeded else {
+				envStorage = previousEnvironments
+				dataStorage = previousData
+				return .failure(failureError)
+			}
+		}
+		return projectResult
+	}
+
 	func readData(account: String) -> Data? {
 		dataStorage[account]
 	}
 
 	func readDataResult(account: String) -> Result<Data?, KeychainError> {
+		dataReadCounts[account, default: 0] += 1
 		if failNextReadDataAccounts.remove(account) != nil {
 			return .failure(failureError)
 		}
@@ -258,6 +327,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	@discardableResult
 	func writeData(account: String, data: Data) -> Bool {
+		dataWriteCounts[account, default: 0] += 1
 		if failNextWriteDataAccounts.remove(account) != nil {
 			return false
 		}
@@ -270,9 +340,70 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	@discardableResult
 	func deleteData(account: String) -> Bool {
-		if shouldFail { return false }
+		dataDeleteCounts[account, default: 0] += 1
+		if failNextDeleteDataAccounts.remove(account) != nil { return false }
+		if shouldFail || failDeleteDataAccounts.contains(account) { return false }
 		dataStorage.removeValue(forKey: account)
 		return true
+	}
+}
+
+private struct MockPersistedSyncMetadataRecord: Codable {
+	let schemaVersion: Int
+	let vaultId: String
+	let metadata: SyncMetadata
+}
+
+func mockSyncMetadataAccount(vaultId: String) -> String {
+	let encoded = Data(vaultId.utf8).base64EncodedString()
+		.replacingOccurrences(of: "+", with: "-")
+		.replacingOccurrences(of: "/", with: "_")
+		.replacingOccurrences(of: "=", with: "")
+	return VaultKeychainRecordContract.syncMetadataRecordPrefix + encoded
+}
+
+func mockCurrentSyncMetadata(
+	version: Int,
+	principalID: String,
+	scope: String,
+	registryURL: String = "https://lpm.dev",
+	action: String = "pull",
+	isDirty: Bool = true
+) -> SyncMetadata {
+	SyncMetadata(
+		lastSyncedAt: Date(timeIntervalSince1970: 1),
+		lastAction: action,
+		lastVersion: version,
+		isDirty: isDirty,
+		binding: SyncPrincipalBinding(
+			registryURL: registryURL,
+			principalID: principalID,
+			scope: scope
+		)
+	)
+}
+
+extension MockKeychainService {
+	@discardableResult
+	func seedSyncMetadata(_ metadata: [String: SyncMetadata]) -> Bool {
+		for (vaultId, item) in metadata {
+			guard let data = try? JSONEncoder().encode(MockPersistedSyncMetadataRecord(
+				schemaVersion: VaultKeychainRecordContract.syncMetadataSchemaVersion,
+				vaultId: vaultId,
+				metadata: item
+			)) else { return false }
+			dataStorage[mockSyncMetadataAccount(vaultId: vaultId)] = data
+		}
+		return true
+	}
+
+	func storedSyncMetadata(vaultId: String) -> SyncMetadata? {
+		guard let data = dataStorage[mockSyncMetadataAccount(vaultId: vaultId)],
+			let record = try? JSONDecoder().decode(MockPersistedSyncMetadataRecord.self, from: data),
+			record.schemaVersion == VaultKeychainRecordContract.syncMetadataSchemaVersion,
+			record.vaultId == vaultId
+		else { return nil }
+		return record.metadata
 	}
 }
 
@@ -287,14 +418,23 @@ private extension Duration {
 // MARK: - Mock Biometric Service
 
 final class MockBiometricService: BiometricServiceProtocol, @unchecked Sendable {
+	private let lock = NSLock()
 	var shouldSucceed = true
 	var isAvailable = true
 	var type: BiometricType = .touchID
-	var authenticateCallCount = 0
+	var authenticateHandlers: [@Sendable () async -> Bool] = []
+	private var authenticationCalls = 0
+
+	var authenticateCallCount: Int { lock.withLock { authenticationCalls } }
 
 	func authenticate(reason: String) async -> Bool {
-		authenticateCallCount += 1
-		return shouldSucceed
+		_ = reason
+		let response: ((@Sendable () async -> Bool)?, Bool) = lock.withLock {
+			authenticationCalls += 1
+			let handler = authenticateHandlers.isEmpty ? nil : authenticateHandlers.removeFirst()
+			return (handler, shouldSucceed)
+		}
+		return await response.0?() ?? response.1
 	}
 
 	func isBiometricAvailable() -> Bool {
@@ -325,6 +465,8 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	var personalTokensError: LPMAPIError?
 	var personalRevokeDelay: Duration?
 	var orgRevokeDelay: Duration?
+	var personalRevokeError: LPMAPIError?
+	var orgRevokeError: LPMAPIError?
 	var requestedOrgSlugs: [String] = []
 	var receivedAuthTokens: [String] = []
 	var currentUserFetchCount = 0
@@ -333,6 +475,9 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	var activeOrgRequests = 0
 	var maximumActiveOrgRequests = 0
 	var blockNextCurrentUserFetch: (@Sendable () async -> Void)?
+	var blockNextPersonalTokenFetch: (@Sendable () async -> Void)?
+	var blockNextPersonalRevoke: (@Sendable () async -> Void)?
+	var blockNextOrgRevoke: (@Sendable () async -> Void)?
 	var onPersonalRevokeStart: (() -> Void)?
 	var onOrgRevokeStart: (() -> Void)?
 
@@ -355,12 +500,20 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	}
 
 	func fetchPersonalTokens(authToken: String) async -> LPMAPIResult<[LPMToken]> {
-		let response: (delay: Duration?, tokens: [LPMToken]) = lock.withLock {
+		let (response, blocker): (
+			(delay: Duration?, tokens: [LPMToken]),
+			(@Sendable () async -> Void)?
+		) = lock.withLock {
 			receivedAuthTokens.append(authToken)
 			personalTokenFetchCount += 1
-			if !personalTokenResponses.isEmpty { return personalTokenResponses.removeFirst() }
-			return (personalTokensDelay, personalTokens)
+			let response = !personalTokenResponses.isEmpty
+				? personalTokenResponses.removeFirst()
+				: (personalTokensDelay, personalTokens)
+			let blocker = blockNextPersonalTokenFetch
+			blockNextPersonalTokenFetch = nil
+			return (response, blocker)
 		}
+		await blocker?()
 		if let delay = response.delay { try? await Task.sleep(for: delay) }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
 		if let personalTokensError { return .failure(personalTokensError) }
@@ -368,13 +521,18 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	}
 
 	func revokePersonalToken(id: String, authToken: String) async -> LPMAPIResult<Void> {
-		lock.withLock {
+		let blocker = lock.withLock {
 			receivedAuthTokens.append(authToken)
 			revokedTokenIds.append(id)
+			let blocker = blockNextPersonalRevoke
+			blockNextPersonalRevoke = nil
+			return blocker
 		}
 		onPersonalRevokeStart?()
+		await blocker?()
 		if let personalRevokeDelay { try? await Task.sleep(for: personalRevokeDelay) }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
+		if let personalRevokeError { return .failure(personalRevokeError) }
 		return .success(())
 	}
 
@@ -396,13 +554,18 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	}
 
 	func revokeOrgToken(orgSlug: String, id: String, authToken: String) async -> LPMAPIResult<Void> {
-		lock.withLock {
+		let blocker = lock.withLock {
 			receivedAuthTokens.append(authToken)
 			revokedTokenIds.append(id)
+			let blocker = blockNextOrgRevoke
+			blockNextOrgRevoke = nil
+			return blocker
 		}
 		onOrgRevokeStart?()
+		await blocker?()
 		if let orgRevokeDelay { try? await Task.sleep(for: orgRevokeDelay) }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
+		if let orgRevokeError { return .failure(orgRevokeError) }
 		return .success(())
 	}
 }
@@ -415,24 +578,60 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 	var memberKeyAccess: SyncService.MemberKeyAccess?
 	var pullResult: SyncService.SyncStatus?
 	var pushResult: SyncService.SyncStatus?
+	var authenticatedPublicKeyResponses: [
+		SyncService.AuthenticatedResponse<SyncService.PublicKeyRecord>
+	] = []
+	var authenticatedPullResponses: [
+		SyncService.AuthenticatedResponse<SyncService.SyncStatus>
+	] = []
 	var blockNextMemberKeyAccess: (@Sendable () async -> Void)?
 	var blockNextPull: (@Sendable () async -> Void)?
+	var blockNextPush: (@Sendable () async -> Void)?
+	private var publicKeyCalls = 0
+	private var memberKeyAccessCalls = 0
+	private var pullCalls = 0
 	private var pushCalls = 0
 
+	var publicKeyCallCount: Int { lock.withLock { publicKeyCalls } }
+	var memberKeyAccessCallCount: Int { lock.withLock { memberKeyAccessCalls } }
+	var pullCallCount: Int { lock.withLock { pullCalls } }
 	var pushCallCount: Int { lock.withLock { pushCalls } }
 
-	func getMyPublicKey(authToken: String) async -> SyncService.PublicKeyRecord? {
+	func getMyPublicKey(
+		authToken: String,
+		expectedPrincipalId: String
+	) async -> SyncService.PublicKeyRecord? {
 		_ = authToken
+		_ = expectedPrincipalId
+		lock.withLock { publicKeyCalls += 1 }
 		return publicKeyRecord
+	}
+
+	func getMyPublicKeyAuthenticated(
+		authToken: String,
+		expectedPrincipalId: String
+	) async -> SyncService.AuthenticatedResponse<SyncService.PublicKeyRecord> {
+		_ = authToken
+		_ = expectedPrincipalId
+		return lock.withLock {
+			publicKeyCalls += 1
+			guard !authenticatedPublicKeyResponses.isEmpty else {
+				return .response(publicKeyRecord)
+			}
+			return authenticatedPublicKeyResponses.removeFirst()
+		}
 	}
 
 	func getOrgMemberKeyAccess(
 		authToken: String,
+		expectedCallerUserID: String,
 		orgSlug: String
 	) async -> SyncService.MemberKeyAccess? {
 		_ = authToken
+		_ = expectedCallerUserID
 		_ = orgSlug
 		let blocker: (@Sendable () async -> Void)? = lock.withLock {
+			memberKeyAccessCalls += 1
 			let blocker = blockNextMemberKeyAccess
 			blockNextMemberKeyAccess = nil
 			return blocker
@@ -450,6 +649,7 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 		_ = orgSlug
 		_ = vaultId
 		let blocker: (@Sendable () async -> Void)? = lock.withLock {
+			pullCalls += 1
 			let blocker = blockNextPull
 			blockNextPull = nil
 			return blocker
@@ -458,9 +658,35 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 		return pullResult
 	}
 
+	func pullOrgAuthenticated(
+		authToken: String,
+		orgSlug: String,
+		vaultId: String
+	) async -> SyncService.AuthenticatedResponse<SyncService.SyncStatus> {
+		_ = authToken
+		_ = orgSlug
+		_ = vaultId
+		let result: SyncService.AuthenticatedResponse<SyncService.SyncStatus> = lock.withLock {
+			pullCalls += 1
+			guard !authenticatedPullResponses.isEmpty else {
+				return .response(pullResult)
+			}
+			return authenticatedPullResponses.removeFirst()
+		}
+		let blocker: (@Sendable () async -> Void)? = lock.withLock {
+			let blocker = blockNextPull
+			blockNextPull = nil
+			return blocker
+		}
+		await blocker?()
+		return result
+	}
+
 	func pushOrg(
 		authToken: String,
 		orgSlug: String,
+		expectedOrganizationID: String,
+		expectedCallerUserID: String,
 		vaultId: String,
 		encryptedBlob: String,
 		wrappedKeys: [SyncService.WrappedMemberKey]?,
@@ -470,13 +696,21 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 	) async -> SyncService.SyncStatus? {
 		_ = authToken
 		_ = orgSlug
+		_ = expectedOrganizationID
+		_ = expectedCallerUserID
 		_ = vaultId
 		_ = encryptedBlob
 		_ = wrappedKeys
 		_ = expectedVersion
 		_ = name
 		_ = schema
-		lock.withLock { pushCalls += 1 }
+		let blocker: (@Sendable () async -> Void)? = lock.withLock {
+			pushCalls += 1
+			let blocker = blockNextPush
+			blockNextPush = nil
+			return blocker
+		}
+		await blocker?()
 		return pushResult
 	}
 }
@@ -485,36 +719,75 @@ final class MockPersonalSyncService: PersonalSyncServiceProtocol, @unchecked Sen
 	private let lock = NSLock()
 	var pullHandlers: [@Sendable () async -> SyncService.SyncStatus?] = []
 	var pushHandlers: [@Sendable () async -> SyncService.SyncStatus?] = []
+	var versionPreflightHandlers: [
+		@Sendable () async -> SyncService.AuthenticatedResponse<SyncService.VersionPreflight>
+	] = []
+	private var pullCalls = 0
+	private var pushCalls = 0
+	private var versionPreflightCalls = 0
+	private var expectedVersions: [Int?] = []
+	private var forceValues: [Bool] = []
+	private var recreateMissingValues: [Bool] = []
+
+	var pullCallCount: Int { lock.withLock { pullCalls } }
+	var pushCallCount: Int { lock.withLock { pushCalls } }
+	var versionPreflightCallCount: Int { lock.withLock { versionPreflightCalls } }
+	var pushedExpectedVersions: [Int?] { lock.withLock { expectedVersions } }
+	var pushedForceValues: [Bool] { lock.withLock { forceValues } }
+	var pushedRecreateMissingValues: [Bool] { lock.withLock { recreateMissingValues } }
 
 	func pull(authToken: String, vaultId: String) async -> SyncService.SyncStatus? {
 		_ = authToken
 		_ = vaultId
 		let handler: (@Sendable () async -> SyncService.SyncStatus?)? = lock.withLock {
+			pullCalls += 1
 			guard !pullHandlers.isEmpty else { return nil }
 			return pullHandlers.removeFirst()
 		}
 		return await handler?()
 	}
 
+	func versionPreflightAuthenticated(
+		authToken: String,
+		vaultId: String
+	) async -> SyncService.AuthenticatedResponse<SyncService.VersionPreflight> {
+		_ = authToken
+		_ = vaultId
+		let handler: (
+			@Sendable () async -> SyncService.AuthenticatedResponse<SyncService.VersionPreflight>
+		)? = lock.withLock {
+			versionPreflightCalls += 1
+			guard !versionPreflightHandlers.isEmpty else { return nil }
+			return versionPreflightHandlers.removeFirst()
+		}
+		return await handler?() ?? .response(.notFound)
+	}
+
 	func push(
 		authToken: String,
+		expectedPrincipalId: String,
 		vaultId: String,
 		encryptedBlob: String,
 		wrappedKey: String,
 		expectedVersion: Int?,
 		force: Bool,
+		recreateMissing: Bool,
 		name: String?,
 		schema: LPMJSONValue?
 	) async -> SyncService.SyncStatus? {
 		_ = authToken
+		_ = expectedPrincipalId
 		_ = vaultId
 		_ = encryptedBlob
 		_ = wrappedKey
 		_ = expectedVersion
-		_ = force
 		_ = name
 		_ = schema
 		let handler: (@Sendable () async -> SyncService.SyncStatus?)? = lock.withLock {
+			pushCalls += 1
+			expectedVersions.append(expectedVersion)
+			forceValues.append(force)
+			recreateMissingValues.append(recreateMissing)
 			guard !pushHandlers.isEmpty else { return nil }
 			return pushHandlers.removeFirst()
 		}
@@ -535,9 +808,11 @@ final class MockEnvProjectImportService: EnvProjectImportServiceProtocol, @unche
 	func loadOrganization(
 		authToken: String,
 		orgSlug: String,
-		vaultId: String
+		vaultId: String,
+		expectedCallerUserID: String
 	) async throws -> RemoteEnvProjectPayload {
-		try organizationResult.get()
+		_ = expectedCallerUserID
+		return try organizationResult.get()
 	}
 }
 

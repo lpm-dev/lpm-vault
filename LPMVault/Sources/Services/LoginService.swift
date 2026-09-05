@@ -309,7 +309,10 @@ enum LoginService {
 		request.httpBody = try exchangeRequestBody(code: code, codeVerifier: codeVerifier)
 
 		let session = URLSession(
-			configuration: .ephemeral,
+			configuration: BoundedHTTPResponse.ephemeralConfiguration(
+				requestTimeout: 15,
+				resourceTimeout: 30
+			),
 			delegate: PinnedSessionDelegate(),
 			delegateQueue: nil
 		)

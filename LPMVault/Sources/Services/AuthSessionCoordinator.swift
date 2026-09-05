@@ -128,14 +128,6 @@ struct KeychainAuthCredentialBackend: AuthCredentialBackend {
 	func delete(account: String) throws {
 		let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
 		if status == errSecSuccess || status == errSecItemNotFound { return }
-
-		// Keychain items created by an older `security` CLI path can reject
-		// query-based deletion. The CLI can remove those items without reading
-		// their value, which is the same compatibility fallback used by Rust.
-		if status == errSecInvalidOwnerEdit {
-			let result = runSecurityDelete(account: account)
-			if result == 0 || result == 44 { return }
-		}
 		throw AuthSessionCoordinatorError.credentialStorage(
 			"Keychain delete returned status \(status)."
 		)
@@ -149,23 +141,6 @@ struct KeychainAuthCredentialBackend: AuthCredentialBackend {
 		]
 	}
 
-	private func runSecurityDelete(account: String) -> Int32 {
-		let process = Process()
-		process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-		process.arguments = [
-			"delete-generic-password", "-s", service, "-a", account,
-		]
-		process.standardInput = FileHandle.nullDevice
-		process.standardOutput = FileHandle.nullDevice
-		process.standardError = FileHandle.nullDevice
-		do {
-			try process.run()
-			process.waitUntilExit()
-			return process.terminationStatus
-		} catch {
-			return -1
-		}
-	}
 }
 
 /// The cross-process refresh transaction shared with `lpm-auth`.
@@ -207,6 +182,41 @@ struct AuthSessionCoordinator: Sendable {
 		var credentials: [String: CredentialAuthorityRecord]
 
 		static let empty = CredentialAuthorityStore(version: 1, credentials: [:])
+
+		private enum CodingKeys: String, CodingKey {
+			case version
+			case credentials
+		}
+
+		init(version: Int, credentials: [String: CredentialAuthorityRecord]) {
+			self.version = version
+			self.credentials = credentials
+		}
+
+		init(from decoder: Decoder) throws {
+			let container = try decoder.container(keyedBy: CodingKeys.self)
+			guard container.allKeys.count == 2,
+				container.contains(.version),
+				container.contains(.credentials)
+			else {
+				throw DecodingError.dataCorrupted(
+					DecodingError.Context(
+						codingPath: decoder.codingPath,
+						debugDescription: "Credential-authority JSON has an invalid shape."
+					)
+				)
+			}
+			version = try container.decode(Int.self, forKey: .version)
+			credentials = try container.decode(
+				[String: CredentialAuthorityRecord].self,
+				forKey: .credentials
+			)
+		}
+	}
+
+	private struct CredentialSnapshot {
+		let access: String?
+		let refresh: String?
 	}
 
 	private struct CredentialAuthorityRecord: Codable, Sendable {
@@ -310,12 +320,13 @@ struct AuthSessionCoordinator: Sendable {
 	}
 
 	func currentAccessToken(registryURL: String, baseURL: URL) async throws -> String? {
-		let initialAccess = try await readCredential(.access, registryURL: registryURL)
+		let initial = try await readCredentials(registryURL: registryURL)
+		let initialAccess = initial.access
 		try Task.checkCancellation()
 		let initialShouldRefresh = try shouldRefresh(registryURL: registryURL)
 		guard initialAccess == nil || initialShouldRefresh else { return initialAccess }
 
-		let initialRefresh = try await readCredential(.refresh, registryURL: registryURL)
+		let initialRefresh = initial.refresh
 		try Task.checkCancellation()
 		guard initialRefresh != nil else { return initialAccess }
 
@@ -326,8 +337,9 @@ struct AuthSessionCoordinator: Sendable {
 			// reconstruction. Rust applies the same fail-closed rule.
 			_ = try readExpiryRecordsChecked()
 
-			let currentRefresh = try await readCredential(.refresh, registryURL: registryURL)
-			let currentAccess = try await readCredential(.access, registryURL: registryURL)
+			let current = try await readCredentials(registryURL: registryURL)
+			let currentRefresh = current.refresh
+			let currentAccess = current.access
 
 			if currentRefresh != initialRefresh,
 				currentAccess != initialAccess,
@@ -385,9 +397,11 @@ struct AuthSessionCoordinator: Sendable {
 	) async throws -> AuthSessionAuthorization? {
 		_ = try await currentAccessToken(registryURL: registryURL, baseURL: baseURL)
 		return try await withCredentialStoreLock {
+			var store = try readAuthorityStoreChecked()
 			guard let token = try readCredentialUnlocked(
 				.access,
-				registryURL: registryURL
+				registryURL: registryURL,
+				store: &store
 			) else { return nil }
 			return AuthSessionAuthorization(
 				token: token,
@@ -401,6 +415,26 @@ struct AuthSessionCoordinator: Sendable {
 	) -> Bool {
 		guard let current = try? authorityGeneration() else { return false }
 		return current == generation
+	}
+
+	func withCurrentAuthority<T: Sendable>(
+		_ generation: AuthSessionAuthorityGeneration,
+		operation: @escaping @Sendable () async -> T
+	) async throws -> T? {
+		try await withCredentialStoreLock {
+			guard self.isAuthorityGenerationCurrent(generation) else { return nil }
+			return await operation()
+		}
+	}
+
+	func startWithCurrentAuthority<T: Sendable>(
+		_ generation: AuthSessionAuthorityGeneration,
+		operation: @escaping @Sendable () -> T
+	) async throws -> T? {
+		try await withCredentialStoreLock {
+			guard self.isAuthorityGenerationCurrent(generation) else { return nil }
+			return operation()
+		}
 	}
 
 	func persist(_ credentials: AuthSessionCredentials, registryURL: String) async throws {
@@ -422,9 +456,11 @@ struct AuthSessionCoordinator: Sendable {
 			var credentialError: Error?
 			do {
 				try await withCredentialStoreLock {
+					var store = try readAuthorityStoreChecked()
 					try revokeAndDeleteCredentialsUnlocked(
 						kinds: [.access, .refresh],
-						registryURL: registryURL
+						registryURL: registryURL,
+						store: &store
 					)
 				}
 			} catch {
@@ -437,11 +473,15 @@ struct AuthSessionCoordinator: Sendable {
 				cleanupError = error
 			}
 			if let credentialError {
-				throw AuthSessionCoordinatorError.credentialStorage(
-					[credentialError, cleanupError]
-						.compactMap { $0?.localizedDescription }
-						.joined(separator: "; ")
-				)
+				let message = [credentialError, cleanupError]
+					.compactMap { $0?.localizedDescription }
+					.joined(separator: "; ")
+				if case AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure =
+					credentialError
+				{
+					throw AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure(message)
+				}
+				throw AuthSessionCoordinatorError.credentialStorage(message)
 			}
 			if let cleanupError {
 				throw AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure(
@@ -473,8 +513,7 @@ struct AuthSessionCoordinator: Sendable {
 		}
 	}
 
-	#if DEBUG
-	// Test support for simulating a legacy/non-conforming peer that changes
+	// Test support for simulating a non-conforming peer that changes
 	// credentials without the per-registry session lock while a request is in
 	// flight. Credential and expiry locks are still honored.
 	func persistWithoutSessionLockForTesting(
@@ -499,8 +538,6 @@ struct AuthSessionCoordinator: Sendable {
 			registryURL: registryURL
 		)
 	}
-	#endif
-
 	private var lpmDirectory: URL {
 		homeDirectory.appendingPathComponent(".lpm", isDirectory: true)
 	}
@@ -557,20 +594,40 @@ struct AuthSessionCoordinator: Sendable {
 		try await writeExpiry(credentials.expiresAt, registryURL: registryURL)
 	}
 
-	private func readCredential(
-		_ kind: CredentialKind,
+	private func readCredentials(
 		registryURL: String
-	) async throws -> String? {
+	) async throws -> CredentialSnapshot {
 		try await withCredentialStoreLock {
-			try readCredentialUnlocked(kind, registryURL: registryURL)
+			var store = try readAuthorityStoreChecked()
+			return try readCredentialsUnlocked(
+				registryURL: registryURL,
+				store: &store
+			)
 		}
+	}
+
+	private func readCredentialsUnlocked(
+		registryURL: String,
+		store: inout CredentialAuthorityStore
+	) throws -> CredentialSnapshot {
+		let access = try readCredentialUnlocked(
+			.access,
+			registryURL: registryURL,
+			store: &store
+		)
+		let refresh = try readCredentialUnlocked(
+			.refresh,
+			registryURL: registryURL,
+			store: &store
+		)
+		return CredentialSnapshot(access: access, refresh: refresh)
 	}
 
 	private func readCredentialUnlocked(
 		_ kind: CredentialKind,
-		registryURL: String
+		registryURL: String,
+		store: inout CredentialAuthorityStore
 	) throws -> String? {
-		var store = try readAuthorityStoreChecked()
 		let authorityID = kind.authorityID(registryURL: registryURL)
 		let account = kind.account(registryURL: registryURL)
 
@@ -598,31 +655,6 @@ struct AuthSessionCoordinator: Sendable {
 
 		guard !encryptedFallbackMayExist else {
 			throw AuthSessionCoordinatorError.unsupportedCredentialBackend
-		}
-
-		if let credential = try credentialBackend.read(account: account) {
-			store.credentials[authorityID] = .activeKeychain(
-				credential,
-				cleanupPending: false
-			)
-			try writeAuthorityStore(store)
-			return credential
-		}
-
-		// Migrate the pre-hash access-token account while holding the same
-		// global store lock used by Rust credential readers.
-		if kind == .access {
-			let legacyAccount = "auth-token:\(registryURL)"
-			if let credential = try credentialBackend.read(account: legacyAccount) {
-				try credentialBackend.write(credential, account: account)
-				store.credentials[authorityID] = .activeKeychain(
-					credential,
-					cleanupPending: false
-				)
-				try writeAuthorityStore(store)
-				try credentialBackend.delete(account: legacyAccount)
-				return credential
-			}
 		}
 		return nil
 	}
@@ -663,14 +695,13 @@ struct AuthSessionCoordinator: Sendable {
 		registryURL: String
 	) async throws {
 		try await withCredentialStoreLock {
-			let currentAccess = try readCredentialUnlocked(
-				.access,
-				registryURL: registryURL
+			var store = try readAuthorityStoreChecked()
+			let current = try readCredentialsUnlocked(
+				registryURL: registryURL,
+				store: &store
 			)
-			let currentRefresh = try readCredentialUnlocked(
-				.refresh,
-				registryURL: registryURL
-			)
+			let currentAccess = current.access
+			let currentRefresh = current.refresh
 
 			var kinds: [CredentialKind] = []
 			if currentAccess == rejectedAccess {
@@ -678,6 +709,7 @@ struct AuthSessionCoordinator: Sendable {
 			}
 			if currentRefresh == rejectedRefresh { kinds.append(.refresh) }
 			var errors: [Error] = []
+			var authorityRevoked = false
 			if currentAccess == rejectedAccess {
 				do {
 					try await removeExpiry(registryURL: registryURL)
@@ -688,25 +720,34 @@ struct AuthSessionCoordinator: Sendable {
 			do {
 				try revokeAndDeleteCredentialsUnlocked(
 					kinds: kinds,
-					registryURL: registryURL
+					registryURL: registryURL,
+					store: &store
+				)
+				authorityRevoked = !kinds.isEmpty
+			} catch let AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure(message) {
+				authorityRevoked = true
+				errors.append(
+					AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure(message)
 				)
 			} catch {
 				errors.append(error)
 			}
 			guard errors.isEmpty else {
-				throw AuthSessionCoordinatorError.credentialStorage(
-					errors.map(\.localizedDescription).joined(separator: "; ")
-				)
+				let message = errors.map(\.localizedDescription).joined(separator: "; ")
+				if authorityRevoked {
+					throw AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure(message)
+				}
+				throw AuthSessionCoordinatorError.credentialStorage(message)
 			}
 		}
 	}
 
 	private func revokeAndDeleteCredentialsUnlocked(
 		kinds: [CredentialKind],
-		registryURL: String
+		registryURL: String,
+		store: inout CredentialAuthorityStore
 	) throws {
 		guard !kinds.isEmpty else { return }
-		var store = try readAuthorityStoreChecked()
 		for kind in kinds {
 			store.credentials[kind.authorityID(registryURL: registryURL)] = .revoked
 		}
@@ -721,16 +762,9 @@ struct AuthSessionCoordinator: Sendable {
 			} catch {
 				errors.append(error)
 			}
-			if kind == .access {
-				do {
-					try credentialBackend.delete(account: "auth-token:\(registryURL)")
-				} catch {
-					errors.append(error)
-				}
-			}
 		}
 		guard errors.isEmpty else {
-			throw AuthSessionCoordinatorError.credentialStorage(
+			throw AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure(
 				errors.map(\.localizedDescription).joined(separator: "; ")
 			)
 		}
@@ -751,14 +785,6 @@ struct AuthSessionCoordinator: Sendable {
 			maximumBytes: Self.stateFileSizeLimit
 		) else { return .empty }
 		do {
-			guard let rawStore = try JSONSerialization.jsonObject(with: data)
-				as? [String: Any],
-				Set(rawStore.keys) == ["version", "credentials"]
-			else {
-				throw AuthSessionCoordinatorError.stateFile(
-					"Credential-authority JSON has an invalid shape."
-				)
-			}
 			let store = try JSONDecoder().decode(CredentialAuthorityStore.self, from: data)
 			guard store.version == 1 else {
 				throw AuthSessionCoordinatorError.stateFile(
@@ -897,7 +923,7 @@ struct AuthSessionCoordinator: Sendable {
 	}
 
 	private func isExpired(registryURL: String) throws -> Bool {
-		guard let expiry = try accessExpiry(registryURL: registryURL) else { return false }
+		guard let expiry = try accessExpiry(registryURL: registryURL) else { return true }
 		return expiry <= now()
 	}
 
@@ -1301,7 +1327,7 @@ enum CrossProcessFileLock {
 	}
 }
 
-private final class LockAcquisitionCancellation: @unchecked Sendable {
+final class LockAcquisitionCancellation: @unchecked Sendable {
 	private let lock = NSLock()
 	private var cancelled = false
 
@@ -1314,32 +1340,33 @@ private final class LockAcquisitionCancellation: @unchecked Sendable {
 	}
 }
 
-private actor ProcessExclusiveGate {
+actor ProcessExclusiveGate {
 	private struct WaitQueue {
-		var ids: [UUID] = []
-		var head = 0
+		var head: UUID?
+		var tail: UUID?
+	}
 
-		mutating func append(_ id: UUID) {
-			ids.append(id)
-		}
-
-		mutating func popFirst() -> UUID? {
-			guard head < ids.count else { return nil }
-			defer {
-				head += 1
-				if head >= 64, head * 2 >= ids.count {
-					ids.removeFirst(head)
-					head = 0
-				}
-			}
-			return ids[head]
-		}
+	private struct Waiter {
+		let continuation: CheckedContinuation<Void, any Error>
+		let path: String
+		var previous: UUID?
+		var next: UUID?
 	}
 
 	private var ownerByPath: [String: UUID] = [:]
 	private var grantedPaths: [UUID: String] = [:]
-	private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
+	private var waiters: [UUID: Waiter] = [:]
 	private var queues: [String: WaitQueue] = [:]
+
+	func queuedNodeCount(path: String) -> Int {
+		var count = 0
+		var id = queues[path]?.head
+		while let current = id {
+			count += 1
+			id = waiters[current]?.next
+		}
+		return count
+	}
 
 	func acquire(
 		path: String,
@@ -1361,13 +1388,12 @@ private actor ProcessExclusiveGate {
 				continuation.resume(throwing: CancellationError())
 				return
 			}
-			waiters[id] = continuation
-			queues[path, default: WaitQueue()].append(id)
+			enqueue(id: id, path: path, continuation: continuation)
 		}
 	}
 
 	func cancel(id: UUID) {
-		if let continuation = waiters.removeValue(forKey: id) {
+		if let continuation = remove(id: id) {
 			continuation.resume(throwing: CancellationError())
 		}
 	}
@@ -1376,18 +1402,68 @@ private actor ProcessExclusiveGate {
 		guard ownerByPath[path] == id else { return }
 		grantedPaths.removeValue(forKey: id)
 
-		while var queue = queues[path], let nextID = queue.popFirst() {
-			queues[path] = queue
-			guard let continuation = waiters.removeValue(forKey: nextID) else {
-				continue
-			}
+		if let (nextID, continuation) = removeFirst(path: path) {
 			ownerByPath[path] = nextID
 			grantedPaths[nextID] = path
 			continuation.resume()
 			return
 		}
-		queues.removeValue(forKey: path)
 		ownerByPath.removeValue(forKey: path)
+	}
+
+	private func enqueue(
+		id: UUID,
+		path: String,
+		continuation: CheckedContinuation<Void, any Error>
+	) {
+		var queue = queues[path, default: WaitQueue()]
+		let previous = queue.tail
+		waiters[id] = Waiter(
+			continuation: continuation,
+			path: path,
+			previous: previous,
+			next: nil
+		)
+		if let previous, var waiter = waiters[previous] {
+			waiter.next = id
+			waiters[previous] = waiter
+		} else {
+			queue.head = id
+		}
+		queue.tail = id
+		queues[path] = queue
+	}
+
+	private func removeFirst(
+		path: String
+	) -> (UUID, CheckedContinuation<Void, any Error>)? {
+		guard let id = queues[path]?.head, let continuation = remove(id: id) else {
+			return nil
+		}
+		return (id, continuation)
+	}
+
+	private func remove(id: UUID) -> CheckedContinuation<Void, any Error>? {
+		guard let waiter = waiters.removeValue(forKey: id) else { return nil }
+		var queue = queues[waiter.path] ?? WaitQueue()
+		if let previous = waiter.previous, var previousWaiter = waiters[previous] {
+			previousWaiter.next = waiter.next
+			waiters[previous] = previousWaiter
+		} else {
+			queue.head = waiter.next
+		}
+		if let next = waiter.next, var nextWaiter = waiters[next] {
+			nextWaiter.previous = waiter.previous
+			waiters[next] = nextWaiter
+		} else {
+			queue.tail = waiter.previous
+		}
+		if queue.head == nil {
+			queues.removeValue(forKey: waiter.path)
+		} else {
+			queues[waiter.path] = queue
+		}
+		return waiter.continuation
 	}
 }
 

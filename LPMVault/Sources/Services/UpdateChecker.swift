@@ -12,6 +12,11 @@ final class UpdateChecker {
 	private let repo = "lpm-dev/lpm-vault"
 	private let cacheKey = "lpm-vault-update-check"
 	private let maximumResponseBytes = 1024 * 1024
+	static let session = URLSession(
+		configuration: .default,
+		delegate: BoundedHTTPResponseDelegate(),
+		delegateQueue: nil
+	)
 
 	var currentVersion: String {
 		Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
@@ -62,7 +67,7 @@ final class UpdateChecker {
 		do {
 			let (data, response) = try await BoundedHTTPResponse.load(
 				for: request,
-				using: URLSession.shared,
+				using: Self.session,
 				maximumBytes: maximumResponseBytes
 			)
 			guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
