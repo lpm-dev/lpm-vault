@@ -8,15 +8,21 @@ struct KeyApprovalSheet: View {
 	private var pending: PendingOrgPush? { store.pendingOrgPush }
 	private var approvals: [PendingKeyApproval] { pending?.pendingApprovals ?? [] }
 
-	private var newMembers: [PendingKeyApproval] {
-		approvals.filter(\.isNewMember)
-	}
-
-	private var changedKeys: [PendingKeyApproval] {
-		approvals.filter { !$0.isNewMember }
+	private var approvalSections: (
+		newMembers: [PendingKeyApproval],
+		changedKeys: [PendingKeyApproval]
+	) {
+		approvals.reduce(into: ([], [])) { sections, approval in
+			if approval.isNewMember {
+				sections.0.append(approval)
+			} else {
+				sections.1.append(approval)
+			}
+		}
 	}
 
 	var body: some View {
+		let sections = approvalSections
 		VStack(alignment: .leading, spacing: 16) {
 			// Header
 			HStack(spacing: 10) {
@@ -40,9 +46,9 @@ struct KeyApprovalSheet: View {
 			Divider()
 
 			ScrollView {
-				VStack(alignment: .leading, spacing: 12) {
+				LazyVStack(alignment: .leading, spacing: 12) {
 					// Changed keys (higher severity)
-					if !changedKeys.isEmpty {
+					if !sections.changedKeys.isEmpty {
 						Label("Changed Keys", systemImage: "exclamationmark.triangle.fill")
 							.font(.subheadline.bold())
 							.foregroundStyle(.red)
@@ -51,14 +57,14 @@ struct KeyApprovalSheet: View {
 							.font(.caption)
 							.foregroundStyle(.secondary)
 
-						ForEach(changedKeys) { approval in
+						ForEach(sections.changedKeys) { approval in
 							keyRow(approval)
 						}
 					}
 
 					// New members
-					if !newMembers.isEmpty {
-						if !changedKeys.isEmpty { Divider() }
+					if !sections.newMembers.isEmpty {
+						if !sections.changedKeys.isEmpty { Divider() }
 
 						Label("New Members", systemImage: "person.badge.plus")
 							.font(.subheadline.bold())
@@ -68,7 +74,7 @@ struct KeyApprovalSheet: View {
 							.font(.caption)
 							.foregroundStyle(.secondary)
 
-						ForEach(newMembers) { approval in
+						ForEach(sections.newMembers) { approval in
 							keyRow(approval)
 						}
 					}
@@ -99,6 +105,7 @@ struct KeyApprovalSheet: View {
 				.keyboardShortcut(.return, modifiers: [])
 				.buttonStyle(.borderedProminent)
 				.tint(.green)
+				.disabled(pending == nil || store.isSyncing)
 			}
 		}
 		.padding(20)

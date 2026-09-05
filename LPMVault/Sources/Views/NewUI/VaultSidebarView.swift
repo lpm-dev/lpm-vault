@@ -269,7 +269,7 @@ struct VaultSidebarView: View {
 			Divider()
 			Button("Clear All Secrets", role: .destructive) { onClearEnvironment(target) }
 				.disabled(project.secretCount(for: environment) == 0)
-			if project.environments.count > 1 {
+			if project.environmentNames.count > 1 {
 				Button("Delete Environment", role: .destructive) { onDeleteEnvironment(target) }
 			}
 		}

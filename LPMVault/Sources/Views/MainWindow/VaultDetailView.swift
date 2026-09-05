@@ -22,6 +22,10 @@ struct VaultDetailView: View {
 	@State private var newEnvSecrets: [String: String] = [:]
 	@State private var currentEnvImportTask: Task<Void, Never>?
 	@State private var currentEnvImportId: UUID?
+	@State private var exportTask: Task<Void, Never>?
+	@State private var exportID: UUID?
+	@State private var copyAllTask: Task<Void, Never>?
+	@State private var copyAllID: UUID?
 	@State private var previewImportTask: Task<Void, Never>?
 	@State private var previewImportId: UUID?
 	@State private var newEnvCreationTask: Task<Void, Never>?
@@ -116,15 +120,24 @@ struct VaultDetailView: View {
 		}
 		.sheet(isPresented: $showConflictResolution) {
 			if let project {
+				let target = VaultSyncTarget(
+					projectId: project.id,
+					account: store.selectedAccount
+				)
 				ConflictResolutionSheet(
 					projectName: project.name,
+					account: target.account,
 					onPullAndMerge: { [store] in
 						showConflictResolution = false
-						Task { await store.pullFromCloud(); await store.pushToCloud() }
+						Task {
+							await store.recoverFromConflict(.pullAndMerge, target: target)
+						}
 					},
 					onForcePush: { [store] in
 						showConflictResolution = false
-						Task { await store.pushToCloud(force: true) }
+						Task {
+							await store.recoverFromConflict(.forcePush, target: target)
+						}
 					},
 					onCancel: { showConflictResolution = false }
 				)
@@ -148,19 +161,34 @@ struct VaultDetailView: View {
 			if !isPresented { cancelNewEnvironmentWork() }
 		}
 		.onChange(of: store.selectedProjectId) { _, _ in
+			cancelCopyAll()
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
 			currentEnvImportTask?.cancel()
 			currentEnvImportTask = nil
 			currentEnvImportId = nil
 			cancelNewEnvironmentWork()
 			showAddEnvironment = false
 		}
+		.onChange(of: store.selectedEnvironment) { _, _ in
+			cancelCopyAll()
+		}
 		.onChange(of: store.isUnlocked) { _, isUnlocked in
 			guard !isUnlocked else { return }
+			cancelCopyAll()
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
 			cancelNewEnvironmentWork()
 			newEnvSecrets = [:]
 			showAddEnvironment = false
 		}
 		.onDisappear {
+			cancelCopyAll()
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
 			currentEnvImportTask?.cancel()
 			currentEnvImportTask = nil
 			currentEnvImportId = nil
@@ -412,18 +440,10 @@ struct VaultDetailView: View {
 	private func envToolbar(_ project: VaultProject) -> some View {
 		HStack(spacing: 4) {
 			Group {
-				Button("Copy All") {
-					Task {
-						let success = await BiometricService().authenticate(
-							reason: "Copy all secrets to clipboard"
-						)
-						guard success else { return }
-						let envString = ClipboardManager.dotenvText(
-							for: project.secrets(for: store.selectedEnvironment)
-						)
-						ClipboardManager.shared.copy(envString, clearAfter: 15)
-					}
+				Button(copyAllTask == nil ? "Copy All" : "Copying…") {
+					copyAll(project)
 				}
+				.disabled(copyAllTask != nil)
 				Button(currentEnvImportTask == nil ? "Import" : "Importing…") {
 					importIntoCurrentEnvironment(project)
 				}
@@ -538,21 +558,81 @@ struct VaultDetailView: View {
 
 	// MARK: - File Operations
 
+	private func copyAll(_ project: VaultProject) {
+		guard VaultTaskOwnership.canStart(current: copyAllID), copyAllTask == nil else { return }
+		let context = VaultSensitiveActionContext(
+			projectID: project.id,
+			environment: store.selectedEnvironment
+		)
+		let requestID = UUID()
+		copyAllID = requestID
+		copyAllTask = Task { @MainActor in
+			defer {
+				if VaultTaskOwnership.owns(current: copyAllID, request: requestID) {
+					copyAllTask = nil
+					copyAllID = nil
+				}
+			}
+			let success = await store.authenticateForSensitiveAction(
+				reason: "Copy all secrets to clipboard"
+			)
+			guard success,
+				VaultTaskOwnership.owns(current: copyAllID, request: requestID),
+				context.isCurrent(
+					isUnlocked: store.isUnlocked,
+					selectedProjectID: store.selectedProjectId,
+					selectedEnvironment: store.selectedEnvironment
+				),
+				let currentProject = store.selectedProject
+			else { return }
+			let envString = ClipboardManager.dotenvText(
+				for: currentProject.secrets(for: context.environment)
+			)
+			ClipboardManager.shared.copy(envString, clearAfter: 15)
+		}
+	}
+
+	private func cancelCopyAll() {
+		copyAllTask?.cancel()
+		copyAllTask = nil
+		copyAllID = nil
+	}
+
 	private func exportToFile() {
-		guard let project else { return }
+		guard let project, exportTask == nil else { return }
+		let projectId = project.id
+		let environment = store.selectedEnvironment
 		let panel = NSSavePanel()
-		let envSuffix = store.selectedEnvironment == "default" ? "" : ".\(store.selectedEnvironment)"
+		let envSuffix = environment == "default" ? "" : ".\(environment)"
 		panel.nameFieldStringValue = ".env\(envSuffix)"
 		panel.message = "Export \(store.selectedEnvironment) secrets to .env file"
 
 		if panel.runModal() == .OK, let url = panel.url {
-			let content = EnvFileCodec.format(
-				project.secrets(for: store.selectedEnvironment)
-			)
-			do {
-				try SecureFileWriter.write(Data(content.utf8), to: url)
-			} catch {
-				store.error = "Export failed. \(error.localizedDescription)"
+			let requestID = UUID()
+			exportID = requestID
+			exportTask = Task { @MainActor in
+				defer {
+					if VaultTaskOwnership.owns(current: exportID, request: requestID) {
+						exportTask = nil
+						exportID = nil
+					}
+				}
+				do {
+					try await store.exportEnvironment(
+						projectId: projectId,
+						environment: environment,
+						to: url
+					)
+				} catch is CancellationError {
+					return
+				} catch {
+					guard VaultTaskOwnership.owns(current: exportID, request: requestID),
+						store.isUnlocked,
+						store.selectedProjectId == projectId,
+						store.selectedEnvironment == environment
+					else { return }
+					store.error = "Export failed. \(error.localizedDescription)"
+				}
 			}
 		}
 	}

@@ -39,27 +39,7 @@ struct AuthStatusView: View {
 							}
 						}
 
-						settingsSection("SERVER") {
-							HStack(spacing: 10) {
-								Image(systemName: store.appEnvironment == .production ? "globe" : "laptopcomputer")
-									.foregroundStyle(VaultPalette.accent)
-								VStack(alignment: .leading, spacing: 2) {
-									Text(store.appEnvironment == .production ? "Production" : "Local development")
-										.font(.system(size: 13, weight: .semibold))
-									Text(store.appEnvironment == .production ? "lpm.dev" : "localhost:3000")
-										.font(VaultTypography.mono(11))
-										.foregroundStyle(VaultPalette.textTertiary)
-								}
-								Spacer()
-								#if DEBUG
-								VaultBarButton(
-									title: store.appEnvironment == .production ? "Use local" : "Use production"
-								) {
-									store.switchEnvironment(to: store.appEnvironment == .production ? .development : .production)
-								}
-								#endif
-							}
-						}
+						serverSettings
 
 						settingsSection("ACTIONS") {
 							HStack(spacing: 8) {
@@ -86,6 +66,9 @@ struct AuthStatusView: View {
 					Text("Sign in to sync personal and organization env projects.")
 						.font(.system(size: 12.5))
 						.foregroundStyle(VaultPalette.textTertiary)
+
+					serverSettings
+						.frame(maxWidth: 360)
 
 					VaultBarButton(systemImage: "globe", title: store.isLoggingIn ? "Waiting for browser…" : "Sign in with browser", filled: true, disabled: store.isLoggingIn) {
 						Task { await store.login() }
@@ -116,6 +99,30 @@ struct AuthStatusView: View {
 		}
 		.onChange(of: isObscured) { _, obscured in
 			if obscured { showLogoutConfirmation = false }
+		}
+	}
+
+	private var serverSettings: some View {
+		settingsSection("SERVER") {
+			HStack(spacing: 10) {
+				Image(systemName: store.appEnvironment == .production ? "globe" : "laptopcomputer")
+					.foregroundStyle(VaultPalette.accent)
+				VStack(alignment: .leading, spacing: 2) {
+					Text(store.appEnvironment == .production ? "Production" : "Local development")
+						.font(.system(size: 13, weight: .semibold))
+					Text(store.appEnvironment == .production ? "lpm.dev" : "localhost:3000")
+						.font(VaultTypography.mono(11))
+						.foregroundStyle(VaultPalette.textTertiary)
+				}
+				Spacer()
+				#if DEBUG
+				VaultBarButton(
+					title: store.appEnvironment == .production ? "Use local" : "Use production"
+				) {
+					store.switchEnvironment(to: store.appEnvironment == .production ? .development : .production)
+				}
+				#endif
+			}
 		}
 	}
 

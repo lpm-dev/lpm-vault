@@ -168,6 +168,80 @@ struct AuthSessionCoordinatorTests {
 		)
 	}
 
+	@Test("authority-bound remote responses do not retain the credential lock")
+	@MainActor
+	func remoteResponseDoesNotRetainCredentialLock() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await coordinator.persist(
+			session(
+				access: "access-one",
+				refresh: "refresh-one",
+				expiresAt: fixedNow.addingTimeInterval(3_600)
+			),
+			registryURL: registryURL
+		)
+		let authorization = try #require(
+			try await coordinator.currentAccessAuthorization(
+				registryURL: registryURL,
+				baseURL: baseURL
+			)
+		)
+		let responseGate = AuthTestGate()
+		let api = MockAPIService()
+		api.user = LPMUser(
+			id: "user-one",
+			username: "user-one",
+			name: nil,
+			email: nil,
+			avatarUrl: nil,
+			plan: nil,
+			createdAt: nil,
+			orgs: []
+		)
+		api.personalTokens = [LPMToken(
+			id: "token-one",
+			name: "token-one",
+			scope: nil,
+			expiresAt: nil,
+			lastUsedAt: nil,
+			downloadCount: nil,
+			createdAt: nil,
+			orgSlug: nil
+		)]
+		api.blockNextPersonalRevoke = { await responseGate.arriveAndWait() }
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: api,
+			authAuthorizationProvider: { _, _ in authorization },
+			authAuthorityValidator: {
+				coordinator.isAuthorityGenerationCurrent($0)
+			},
+			authorizedRemoteMutationExecutor: { generation, operation in
+				try await coordinator.startWithCurrentAuthority(
+					generation,
+					operation: operation
+				)
+			}
+		)
+		await store.loadTokens()
+		let token = try #require(store.personalTokens.first)
+
+		let revocation = Task { await store.revokePersonalToken(token) }
+		await responseGate.waitUntilArrived()
+		let lockURL = coordinator.sessionLockURL(
+			registryURL: "lpm-auth://credential-store"
+		)
+
+		#expect(try independentExclusiveLockStatus(at: lockURL) == 0)
+
+		await responseGate.release()
+		await revocation.value
+	}
+
 	@Test("vault sync captures authorization once and uses generation checks thereafter")
 	@MainActor
 	func vaultSyncAuthorizationCaptureIsAmortized() async throws {
@@ -189,6 +263,17 @@ struct AuthSessionCoordinatorTests {
 		sync.pullHandlers = [{ nil }]
 		let projectID = "amortized-authorization"
 		let keychain = MockKeychainService()
+		let api = MockAPIService()
+		api.user = LPMUser(
+			id: "account-one",
+			username: "account-one",
+			name: nil,
+			email: nil,
+			avatarUrl: nil,
+			plan: nil,
+			createdAt: nil,
+			orgs: []
+		)
 		keychain.envStorage[projectID] = (
 			name: "Authorization",
 			path: "",
@@ -197,7 +282,7 @@ struct AuthSessionCoordinatorTests {
 		let store = VaultStore(
 			keychainService: keychain,
 			biometricService: MockBiometricService(),
-			apiService: MockAPIService(),
+			apiService: api,
 			personalSyncServiceFactory: { _ in sync },
 			authAuthorizationProvider: { registryURL, baseURL in
 				authorizationCaptures.increment()
@@ -220,11 +305,14 @@ struct AuthSessionCoordinatorTests {
 		)]
 		store.isUnlocked = true
 		store.selectProject(projectID)
+		await store.loadAccount()
+		let capturesBeforeSync = authorizationCaptures.value
+		let checksBeforeSync = generationChecks.value
 
 		await store.pullFromCloud()
 
-		#expect(authorizationCaptures.value == 1)
-		#expect(generationChecks.value >= 3)
+		#expect(authorizationCaptures.value - capturesBeforeSync == 1)
+		#expect(generationChecks.value - checksBeforeSync >= 3)
 		#expect(store.lastSyncStatus == "failed")
 	}
 
@@ -252,6 +340,17 @@ struct AuthSessionCoordinatorTests {
 			}]
 			let projectID = "peer-mutation-\(mutation.rawValue)"
 			let keychain = MockKeychainService()
+			let api = MockAPIService()
+			api.user = LPMUser(
+				id: "account-one",
+				username: "account-one",
+				name: nil,
+				email: nil,
+				avatarUrl: nil,
+				plan: nil,
+				createdAt: nil,
+				orgs: []
+			)
 			keychain.envStorage[projectID] = (
 				name: "Peer mutation",
 				path: "",
@@ -260,7 +359,7 @@ struct AuthSessionCoordinatorTests {
 			let store = VaultStore(
 				keychainService: keychain,
 				biometricService: MockBiometricService(),
-				apiService: MockAPIService(),
+				apiService: api,
 				personalSyncServiceFactory: { _ in sync },
 				authAuthorizationProvider: { registryURL, baseURL in
 					try await coordinator.currentAccessAuthorization(
@@ -281,6 +380,7 @@ struct AuthSessionCoordinatorTests {
 			)]
 			store.isUnlocked = true
 			store.selectProject(projectID)
+			await store.loadAccount()
 
 			let pull = Task { await store.pullFromCloud() }
 			await gate.waitUntilArrived()
@@ -298,11 +398,11 @@ struct AuthSessionCoordinatorTests {
 				try await coordinator.clear(registryURL: registryURL)
 			}
 			await gate.release()
-			await pull.value
+			_ = await pull.value
 
 			#expect(store.lastSyncStatus == nil, "Accepted stale \(mutation.rawValue)")
 			#expect(!store.isSyncing)
-			#expect(store.projects[0].secrets["TOKEN"] == "local")
+			#expect(store.projects[0].secrets(for: "default")["TOKEN"] == "local")
 		}
 	}
 
@@ -942,6 +1042,68 @@ struct AuthSessionCoordinatorTests {
 		)
 	}
 
+	@Test("credential deletion failure after authority revocation reports a revoked session")
+	func postRevocationDeleteFailureIsDistinguished() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await coordinator.persist(
+			session(
+				access: "access-old",
+				refresh: "refresh-old",
+				expiresAt: fixedNow.addingTimeInterval(3_600)
+			),
+			registryURL: registryURL
+		)
+		backend.failDeletes(of: AuthSessionStore.scopedAccessAccount(registryURL: registryURL))
+
+		do {
+			try await coordinator.clear(registryURL: registryURL)
+			Issue.record("Expected post-revocation cleanup failure")
+		} catch AuthSessionCoordinatorError.sessionRevokedWithCleanupFailure {
+		} catch {
+			Issue.record("Expected revoked-session cleanup failure, received \(error)")
+		}
+		#expect(
+			try await coordinator.currentAccessToken(
+				registryURL: registryURL,
+				baseURL: baseURL
+			) == nil
+		)
+	}
+
+	@Test("missing expiry metadata cannot authorize access after refresh failure")
+	func unknownAccessExpiryDoesNotFallBack() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let bootstrap = makeCoordinator(home: home, backend: backend)
+		try await bootstrap.persist(
+			session(
+				access: "access-old",
+				refresh: "refresh-old",
+				expiresAt: fixedNow.addingTimeInterval(3_600)
+			),
+			registryURL: registryURL
+		)
+		try FileManager.default.removeItem(
+			at: home.appendingPathComponent(".lpm/.token-expiry.json")
+		)
+		let subject = makeCoordinator(
+			home: home,
+			backend: backend,
+			refresh: { _, _, _ in throw AuthSessionRefreshError.transport }
+		)
+
+		await #expect(throws: AuthSessionRefreshError.self) {
+			try await subject.currentAccessToken(
+				registryURL: registryURL,
+				baseURL: baseURL
+			)
+		}
+	}
+
 	@Test("logout revokes authority so an opaque Rust fallback cannot resurrect")
 	func logoutRevokesOpaqueFallback() async throws {
 		let home = try temporaryHome()
@@ -1038,8 +1200,60 @@ struct AuthSessionCoordinatorTests {
 		)
 	}
 
-	@Test("an unclassified legacy Keychain credential is not promoted over an opaque fallback")
-	func opaqueFallbackBlocksLegacyCredentialPromotion() async throws {
+	@Test("an unclassified scoped Keychain credential is never promoted")
+	func unclassifiedScopedCredentialIsNotPromoted() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		try backend.write(
+			"unclassified-access",
+			account: AuthSessionStore.scopedAccessAccount(registryURL: registryURL)
+		)
+		let coordinator = makeCoordinator(home: home, backend: backend)
+
+		#expect(
+			try await coordinator.currentAccessToken(
+				registryURL: registryURL,
+				baseURL: baseURL
+			) == nil
+		)
+		#expect(
+			!FileManager.default.fileExists(
+				atPath: home.appendingPathComponent(
+					".lpm/.credential-authority.json"
+				).path
+			)
+		)
+	}
+
+	@Test("a pre-hash Keychain credential is never promoted")
+	func preHashCredentialIsNotPromoted() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		try backend.write(
+			"pre-hash-access",
+			account: "auth-token:\(registryURL)"
+		)
+		let coordinator = makeCoordinator(home: home, backend: backend)
+
+		#expect(
+			try await coordinator.currentAccessToken(
+				registryURL: registryURL,
+				baseURL: baseURL
+			) == nil
+		)
+		#expect(
+			!FileManager.default.fileExists(
+				atPath: home.appendingPathComponent(
+					".lpm/.credential-authority.json"
+				).path
+			)
+		)
+	}
+
+	@Test("an unclassified Keychain credential is not promoted over an opaque fallback")
+	func opaqueFallbackBlocksUnclassifiedCredentialPromotion() async throws {
 		let home = try temporaryHome()
 		defer { try? FileManager.default.removeItem(at: home) }
 		let lpmDirectory = home.appendingPathComponent(".lpm")
@@ -1052,7 +1266,7 @@ struct AuthSessionCoordinatorTests {
 		)
 		let backend = MemoryAuthCredentialBackend()
 		try backend.write(
-			"legacy-access",
+			"unclassified-access",
 			account: "auth-token:\(registryURL)"
 		)
 		let coordinator = makeCoordinator(home: home, backend: backend)
@@ -1359,6 +1573,7 @@ private final class MemoryAuthCredentialBackend: AuthCredentialBackend, @uncheck
 	private var credentials: [String: String] = [:]
 	private var writes: [String] = []
 	private var failingWriteAccounts: Set<String> = []
+	private var failingDeleteAccounts: Set<String> = []
 
 	var writeAccounts: [String] {
 		lock.withLock { writes }
@@ -1379,7 +1594,12 @@ private final class MemoryAuthCredentialBackend: AuthCredentialBackend, @uncheck
 	}
 
 	func delete(account: String) throws {
-		_ = lock.withLock { credentials.removeValue(forKey: account) }
+		try lock.withLock {
+			if failingDeleteAccounts.contains(account) {
+				throw TestCredentialBackendError.deleteFailed
+			}
+			credentials.removeValue(forKey: account)
+		}
 	}
 
 	func value(for account: String) -> String? {
@@ -1397,10 +1617,15 @@ private final class MemoryAuthCredentialBackend: AuthCredentialBackend, @uncheck
 	func allowWrites(to account: String) {
 		_ = lock.withLock { failingWriteAccounts.remove(account) }
 	}
+
+	func failDeletes(of account: String) {
+		_ = lock.withLock { failingDeleteAccounts.insert(account) }
+	}
 }
 
 private enum TestCredentialBackendError: Error {
 	case writeFailed
+	case deleteFailed
 }
 
 private enum AuthTestMutation: String, CaseIterable {

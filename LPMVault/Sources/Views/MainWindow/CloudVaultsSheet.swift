@@ -8,6 +8,7 @@ struct CloudVaultsSheet: View {
 	@State private var isLoading = false
 	@State private var isPulling: String?
 	@State private var importTask: Task<Void, Never>?
+	@State private var importID: UUID?
 	@State private var importResult: ImportResult?
 	@State private var loadError: String?
 	@State private var loadErrorRequiresSignIn = false
@@ -39,7 +40,7 @@ struct CloudVaultsSheet: View {
 					.font(.headline)
 				Spacer()
 				Button {
-					importTask?.cancel()
+					cancelImport()
 					dismiss()
 				} label: {
 					Image(systemName: "xmark.circle.fill")
@@ -114,8 +115,11 @@ struct CloudVaultsSheet: View {
 			}
 		}
 		.frame(minWidth: 500, minHeight: 400)
-		.task(id: reloadID) { await loadVaults() }
-		.onDisappear { importTask?.cancel() }
+		.task(id: "\(store.authContextGeneration):\(reloadID)") {
+			cancelImport()
+			await loadVaults()
+		}
+		.onDisappear { cancelImport() }
 	}
 
 	@ViewBuilder
@@ -157,7 +161,7 @@ struct CloudVaultsSheet: View {
 					.controlSize(.small)
 			} else {
 				Button("Import") {
-					importTask = Task { await importVault(vault) }
+					startImport(vault)
 				}
 				.buttonStyle(.borderedProminent)
 				.controlSize(.small)
@@ -168,18 +172,11 @@ struct CloudVaultsSheet: View {
 	}
 
 	private func loadVaults() async {
+		vaults = []
 		isLoading = true
 		loadError = nil
 		loadErrorRequiresSignIn = false
-		guard let authToken = await store.currentAuthToken() else {
-			guard !Task.isCancelled else { return }
-			isLoading = false
-			loadError = "Sign in to lpm.dev, then retry."
-			return
-		}
-
-		let syncService = SyncService.shared(baseURL: store.appEnvironment.baseURL)
-		let result = await syncService.listPersonalProjects(authToken: authToken)
+		let result = await store.listPersonalCloudProjects()
 		switch result {
 		case .success(let projects):
 			guard !Task.isCancelled else { return }
@@ -195,13 +192,23 @@ struct CloudVaultsSheet: View {
 		}
 	}
 
-	private func importVault(_ vault: CloudVaultEntry) async {
+	private func startImport(_ vault: CloudVaultEntry) {
+		guard VaultTaskOwnership.canStart(current: importID), importTask == nil else { return }
+		let requestID = UUID()
 		isPulling = vault.vaultId
 		importResult = nil
+		importID = requestID
+		importTask = Task { await importVault(vault, requestID: requestID) }
+	}
+
+	private func importVault(_ vault: CloudVaultEntry, requestID: UUID) async {
 		let result = await store.importCloudProject(vault)
-		guard !Task.isCancelled else { return }
+		guard !Task.isCancelled,
+			VaultTaskOwnership.owns(current: importID, request: requestID)
+		else { return }
 		isPulling = nil
 		importTask = nil
+		importID = nil
 		switch result {
 		case .success(let imported):
 			importResult = .success(
@@ -216,6 +223,13 @@ struct CloudVaultsSheet: View {
 				message: error.localizedDescription
 			)
 		}
+	}
+
+	private func cancelImport() {
+		importTask?.cancel()
+		importTask = nil
+		importID = nil
+		isPulling = nil
 	}
 
 	private func formatTimeAgo(_ iso: String) -> String {

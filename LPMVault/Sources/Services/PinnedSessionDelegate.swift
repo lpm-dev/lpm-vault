@@ -14,7 +14,7 @@ import Foundation
 ///   | openssl pkey -pubin -outform der \
 ///   | openssl dgst -sha256 -binary | base64
 /// ```
-final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+final class PinnedSessionDelegate: BoundedHTTPResponseDelegate, @unchecked Sendable {
 	// SHA-256 of lpm.dev's SubjectPublicKeyInfo (SPKI) — base64-encoded.
 	// Includes the active leaf and intermediate plus the alternate Let's Encrypt
 	// intermediate used by the previous chain. This permits an intentional
@@ -158,40 +158,146 @@ final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked 
 		}
 	}
 
-	/// Verify the server response signature.
-	///
-	/// Scheme: `X-LPM-Signature: base64(HMAC-SHA256(body, SHA256(auth_token)))`
-	/// Both client and server know the auth token, so no extra shared secrets needed.
-	///
-	/// Behavior:
-	/// - No signature header → accept (non-vault endpoints don't sign responses)
-	/// - Signature present + valid → accept
-	/// - Signature present + invalid → reject (tampered response or wrong key)
-	/// - Signature present + no auth token provided → reject
+	private static let responseSigningKeys: [String: Data] = [
+		"vault-2026-09": Data([
+			0xbc, 0x44, 0xf7, 0x37, 0xb6, 0x25, 0x34, 0x24,
+			0x47, 0x46, 0x16, 0xd6, 0xab, 0x6e, 0x03, 0x12,
+			0x77, 0x02, 0xd8, 0x06, 0x96, 0x4e, 0x96, 0x79,
+			0x11, 0x54, 0xf3, 0x21, 0x4f, 0x90, 0xc9, 0x1f,
+		])
+	]
+	private static let responseSignatureDomain = Data("lpm-authenticated-response\0".utf8)
+	#if DEBUG
+	private static let localResponseSigningKeys: [String: Data] = {
+		var keys = responseSigningKeys
+		keys["vault-test-rfc8032"] = Data([
+			0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7,
+			0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
+			0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25,
+			0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a,
+		])
+		return keys
+	}()
+	#endif
+
 	static func verifyResponseSignature(
 		_ response: HTTPURLResponse,
 		body: Data,
-		authToken: String? = nil,
 		requireSignature: Bool = false
 	) -> Bool {
-		guard let signature = response.value(forHTTPHeaderField: "X-LPM-Signature") else {
+		#if DEBUG
+		if let url = response.url, url.scheme == "http",
+			let host = url.host, ["localhost", "127.0.0.1", "[::1]"].contains(host)
+		{
+			return verifyResponseSignature(
+				response, body: body, requireSignature: requireSignature,
+				trustedSigningKeys: localResponseSigningKeys
+			)
+		}
+		#endif
+		return verifyResponseSignature(
+			response,
+			body: body,
+			requireSignature: requireSignature,
+			trustedSigningKeys: responseSigningKeys
+		)
+	}
+
+	#if DEBUG
+	static func verifyResponseSignatureForTesting(
+		_ response: HTTPURLResponse,
+		body: Data,
+		requireSignature: Bool = false,
+		trustedSigningKeys: [String: Data]
+	) -> Bool {
+		verifyResponseSignature(
+			response,
+			body: body,
+			requireSignature: requireSignature,
+			trustedSigningKeys: trustedSigningKeys
+		)
+	}
+	#endif
+
+	private static func verifyResponseSignature(
+		_ response: HTTPURLResponse,
+		body: Data,
+		requireSignature: Bool,
+		trustedSigningKeys: [String: Data]
+	) -> Bool {
+		let keyID = response.value(forHTTPHeaderField: "X-LPM-Response-Key-ID")
+		let encodedSignature = response.value(
+			forHTTPHeaderField: "X-LPM-Response-Signature")
+		guard keyID != nil || encodedSignature != nil else {
 			return !requireSignature
 		}
-
-		guard let token = authToken, !token.isEmpty else {
-			// Signature present but no auth token to verify against — reject.
+		guard let keyID, let encodedSignature,
+			keyID.utf8.count <= UInt8.max,
+			keyID.utf8.allSatisfy({ byte in
+				(65...90).contains(byte) || (97...122).contains(byte)
+					|| (48...57).contains(byte) || byte == 45 || byte == 95
+			}),
+			let rawPublicKey = trustedSigningKeys[keyID],
+			let publicKey = try? Curve25519.Signing.PublicKey(
+				rawRepresentation: rawPublicKey),
+			let signature = decodeCanonicalBase64URL(
+				encodedSignature, expectedByteCount: 64)
+		else {
 			return false
 		}
+		guard let frame = responseSignatureFrame(
+			statusCode: response.statusCode,
+			keyID: keyID,
+			body: body
+		) else { return false }
+		return publicKey.isValidSignature(signature, for: frame)
+	}
 
-		// Compute HMAC-SHA256(body, SHA256(auth_token)) and compare
-		let hmacKey = SHA256.hash(data: Data(token.utf8))
-		guard let received = Data(base64Encoded: signature.trimmingCharacters(in: .whitespaces)) else {
-			return false
-		}
-		return HMAC<SHA256>.isValidAuthenticationCode(
-			received,
-			authenticating: body,
-			using: SymmetricKey(data: Data(hmacKey))
-		)
+	private static func responseSignatureFrame(
+		statusCode: Int,
+		keyID: String,
+		body: Data
+	) -> Data? {
+		var frame = Data(capacity:
+			responseSignatureDomain.count + 12 + keyID.utf8.count + 32)
+		frame.append(responseSignatureDomain)
+		frame.append(4)
+		guard let status = UInt16(exactly: statusCode),
+			100...599 ~= status,
+			let keyIDLength = UInt8(exactly: keyID.utf8.count),
+			let bodyLength = UInt64(exactly: body.count)
+		else { return nil }
+		var bigEndianStatus = status.bigEndian
+		Swift.withUnsafeBytes(of: &bigEndianStatus) { frame.append(contentsOf: $0) }
+		frame.append(keyIDLength)
+		frame.append(contentsOf: keyID.utf8)
+		var bigEndianBodyLength = bodyLength.bigEndian
+		Swift.withUnsafeBytes(of: &bigEndianBodyLength) { frame.append(contentsOf: $0) }
+		frame.append(contentsOf: SHA256.hash(data: body))
+		return frame
+	}
+
+	private static func decodeCanonicalBase64URL(
+		_ encoded: String,
+		expectedByteCount: Int
+	) -> Data? {
+		guard encoded.utf8.count == 86,
+			encoded.utf8.allSatisfy({ byte in
+				(65...90).contains(byte) || (97...122).contains(byte)
+					|| (48...57).contains(byte) || byte == 45 || byte == 95
+			})
+		else { return nil }
+		let standard = encoded
+			.replacingOccurrences(of: "-", with: "+")
+			.replacingOccurrences(of: "_", with: "/")
+			+ "=="
+		guard let decoded = Data(base64Encoded: standard),
+			decoded.count == expectedByteCount,
+			decoded.base64EncodedString()
+				.replacingOccurrences(of: "+", with: "-")
+				.replacingOccurrences(of: "/", with: "_")
+				.replacingOccurrences(of: "=", with: "") == encoded
+		else { return nil }
+		return decoded
 	}
 }

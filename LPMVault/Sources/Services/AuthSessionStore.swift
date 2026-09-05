@@ -83,6 +83,20 @@ enum AuthSessionStore {
 		live.isAuthorityGenerationCurrent(generation)
 	}
 
+	static func withCurrentAuthority<T: Sendable>(
+		_ generation: AuthSessionAuthorityGeneration,
+		operation: @escaping @Sendable () async -> T
+	) async throws -> T? {
+		try await live.withCurrentAuthority(generation, operation: operation)
+	}
+
+	static func startWithCurrentAuthority<T: Sendable>(
+		_ generation: AuthSessionAuthorityGeneration,
+		operation: @escaping @Sendable () -> T
+	) async throws -> T? {
+		try await live.startWithCurrentAuthority(generation, operation: operation)
+	}
+
 	static func persist(
 		_ credentials: AuthSessionCredentials,
 		registryURL: String
@@ -115,12 +129,25 @@ enum AuthSessionStore {
 			"deviceFingerprint": try deviceFingerprint(),
 		])
 
-		let bytes: URLSession.AsyncBytes
+		return try await loadRefreshCredentials(for: request, using: refreshSession)
+	}
+
+	static func loadRefreshCredentials(
+		for request: URLRequest,
+		using session: URLSession
+	) async throws -> AuthSessionCredentials {
+		let data: Data
 		let response: URLResponse
 		do {
-			(bytes, response) = try await refreshSession.bytes(for: request)
+			(data, response) = try await BoundedHTTPResponse.load(
+				for: request,
+				using: session,
+				maximumBytes: maximumAuthResponseBytes
+			)
 		} catch is CancellationError {
 			throw CancellationError()
+		} catch is BoundedHTTPResponse.LoadError {
+			throw AuthSessionRefreshError.invalidResponse
 		} catch {
 			throw AuthSessionRefreshError.transport
 		}
@@ -131,29 +158,6 @@ enum AuthSessionStore {
 		guard (200..<300).contains(http.statusCode) else {
 			throw AuthSessionRefreshError.server(http.statusCode)
 		}
-		if response.expectedContentLength > maximumAuthResponseBytes {
-			throw AuthSessionRefreshError.invalidResponse
-		}
-
-		var data = Data()
-		data.reserveCapacity(
-			Int(max(0, min(response.expectedContentLength, Int64(maximumAuthResponseBytes))))
-		)
-		do {
-			for try await byte in bytes {
-				guard data.count < maximumAuthResponseBytes else {
-					throw AuthSessionRefreshError.invalidResponse
-				}
-				data.append(byte)
-			}
-		} catch let error as AuthSessionRefreshError {
-			throw error
-		} catch is CancellationError {
-			throw CancellationError()
-		} catch {
-			throw AuthSessionRefreshError.transport
-		}
-
 		do {
 			return try JSONDecoder().decode(AuthSessionCredentials.self, from: data)
 		} catch {
