@@ -114,7 +114,6 @@ Never replay old migrations below an existing database's migration watermark.
 After preparing the baseline, run `npm run db:push`, then `npm run db:audit-migrations`.
 All three blocking audit counts must be zero.
 
-
 The registry's vendor acceptance suite needs its external development Supabase, Stripe, Cloudflare, R2, and Worker configuration.
 Local sync checks do not validate those deployments.
 Organization browser decryption and organization OIDC access are unavailable in the current product contract.

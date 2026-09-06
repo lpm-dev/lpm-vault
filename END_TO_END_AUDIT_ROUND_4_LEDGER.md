@@ -4,9 +4,9 @@ Concept branch: `codex/end-to-end-vault-audit-round-4`
 
 Base commit: `7abb251`
 
-Implementation commits: Swift `d5590d7`; CLI `05f3270e` (plus prerequisite `f645948a`); Registry `e1c668be`; documentation `52f6b08` and date snapshot `5a6e401`.
+Implementation commits: Swift `d5590d7`; CLI `05f3270e` and `45f6f36b` (plus prerequisite `f645948a`); Registry `e1c668be`; documentation `52f6b08` and date snapshot `5a6e401`.
 
-Concept pull request: https://github.com/lpm-dev/lpm-vault/pull/19
+Coordinated pull requests: [Swift](https://github.com/lpm-dev/lpm-vault/pull/19), [CLI](https://github.com/lpm-dev/rust-client/pull/689), [Registry](https://github.com/tolgaergin/a-package-manager/pull/157), and [documentation](https://github.com/lpm-dev/rust-client-docs/pull/194).
 
 The inherited audit used three read-only subagents to audit the complete version-controlled production and test surface for correctness, security, and performance. The primary agent independently reproduced those reports before changing production code. The local integration continuation used no subagents.
 
@@ -66,7 +66,7 @@ The inherited audit used three read-only subagents to audit the complete version
 | COR-CLEAN-001 | correctness_clean | Correctness | Vault queued cloud import commit admission | A cloud import queued before an account switch or task cancellation could persist into the replacement account after its original authority stopped being current. | Both account-switch and cancellation regressions persisted the imported project before the fix. Commit admission now rejects cancelled tasks and requires the captured account and principal in addition to the existing session, environment, and authorization generations. | Verified | `account switch before cloud import commit prevents persistence`; `task cancellation before cloud import commit prevents persistence`; post-durable cancellation/navigation regression | Implementation commits above | Review in concept PRs |
 | COR-CLEAN-002 | correctness_clean | Correctness | Vault `SyncService` organization push failure decoding | Current Registry remediation envelopes were collapsed to `nil`, discarding actionable re-wrap, rotation, recipient-key, identity, slug, crypto, and role failures. | A response table reproduced `nil` for every current Registry failure. Strict status/code/error/field validation now preserves only the supported envelopes; malformed status, errors, versions, fields, hints, recipient IDs, and unknown codes fail closed. | Verified | `organization push preserves exact actionable Registry failures`; `organization push rejects malformed Registry failure envelopes` | Implementation commits above | Review in concept PRs |
 | COR-CLEAN-003 | correctness_clean | Correctness | Registry approved pairing consumption and expiry cleanup | An approved pairing could release wrapping material after its TTL because consumption did not include expiry in its compare-and-swap predicate, and cleanup excluded expired approved rows. | Approved consumption after expiry succeeded before the fix. Consumption now requires `expires_at > clock_timestamp()`, diagnoses expired approved rows as `PairingSessionExpiredError`, maps them to `status: expired`, and cleanup includes expired approved sessions. | Verified | `reports an expired approved session when consumption loses the expiry CAS`; expired approved GET and cleanup regressions | Implementation commits above | Review in concept PRs |
-| COR-CLEAN-R01 | correctness_clean | Correctness | CLI personal push principal precondition and Registry tenant scope | A reported lead claimed a principal could be substituted between personal push preparation and commit. | Rejected after tracing the captured bearer token through the request and the Registry's exact token user, expected-principal, and transaction-time mutation authorization predicates; no attacker-controlled principal substitution path exists. Existing token/principal race regressions cover the claimed transition. | Rejected | Existing personal mutation principal-precondition and exact bearer-token authorization suites | Not applicable | Pending |
+| COR-CLEAN-R01 | correctness_clean | Correctness | CLI personal push principal precondition and Registry tenant scope | A reported lead claimed a principal could be substituted between personal push preparation and commit. | Rejected after tracing the captured bearer token through the request and the Registry's exact token user, expected-principal, and transaction-time mutation authorization predicates; no attacker-controlled principal substitution path exists. Existing token/principal race regressions cover the claimed transition. | Rejected | Existing personal mutation principal-precondition and exact bearer-token authorization suites | Not applicable | Not applicable |
 | P-RESUME-001 | performance_final | Performance | Vault bounded HTTP response collection for avatar and updater downloads | The fallback collector advanced `URLSession.AsyncBytes` once per byte and copied bytes through an intermediate array, imposing one async-sequence transition per response byte. | The fallback loop was directly traceable in `BoundedHTTPResponse.loadStreaming`. Every production consumer and test fixture now installs a shared `URLSessionDataDelegate` collector, reducing dispatch from O(bytes) async element transitions to O(Foundation data chunks) callbacks while retaining the hard cap and direct `Data` append. | Verified | Exact-cap and over-limit chunked response tests; delegated avatar/updater configuration, cancellation propagation, and avatar redirect-policy tests | Implementation commits above | Review in concept PRs |
 | P-RESUME-002 | performance_final | Performance | Registry organization vault POST authorization preflight | Organization writes queried membership/access and then issued a second vault write-state query before entering the authoritative transaction. | The focused regression failed when the second query was forced to throw. Authorization now returns membership and write state from one indexed joined projection, and the route consumes that projection. | Verified | `uses the authorization projection instead of a second pre-transaction write-state query` | Implementation commits above | Review in concept PRs |
 | P-RESUME-003 | performance_final | Performance | Registry dashboard personal vault save preflight | Dashboard saves fetched ownership and then fetched the same vault again for crypto and wrapped-key state. | The focused regression failed when the redundant personal write-state query was forced to throw. One primary-key projection now supplies ownership, wrapped key, version, and crypto state. | Verified | `authorizes and prepares a dashboard save with one projected row lookup` | Implementation commits above | Review in concept PRs |
@@ -195,6 +195,8 @@ The signed Developer ID app and CLI used the shared macOS Keychain, a local regi
 | E2E-014 | primary local validation | Correctness | CLI GitHub Actions oversized-value fixture | The test omitted the concurrent successful secret-list response. | The targeted test could report the missing list response instead of the intended value-size error. The complete mock response and diagnostic assertion pass. | Verified | github_actions platform tests | 05f3270e | Review in concept PRs |
 | E2E-015 | primary local validation | Correctness | Registry local database bootstrap | The local fixture changed historical migration files and omitted the legacy manual search-vector setup. | Original-history validation now installs the existing db/sql/0002 and 0005 setup before migration 0158, uses the required Supabase extensions, and preserves exact migration hashes. On a separate fresh database, db:push applied 0169–0177 and db:audit-migrations reported zero pending migrations, zero historical gaps and zero schema issues. The earlier claim that the function definitions were absent was disproved by those SQL files. | Verified | Original-history baseline replay followed by db:push and db:audit-migrations; no edits to applied historical files | Validation evidence and DEVELOPMENT.md | Review in concept PRs |
 
+| E2E-016 | primary CI validation | Correctness | CLI sharing-key account helper compilation | macOS-only account helpers were compiled into non-macOS production libraries without callers. | The current-head Linux Clippy job failed with dead-code errors before the fix. The helpers now compile only on macOS or in unit tests, where both live and pending names are checked against the Swift contract. | Verified | Existing Linux workspace Clippy gate; sharing_key_rotation_account_matches_the_swift_client; local workspace Clippy | 45f6f36b | Review in concept PRs |
+
 ### Real client evidence
 
 - Personal CLI → app → CLI sync passed in default and production environments.
@@ -212,10 +214,14 @@ The signed Developer ID app and CLI used the shared macOS Keychain, a local regi
 The Swift suite passed 593 tests and both signed macOS builds passed.
 The CLI fast gates passed 6,234 library/integration tests, 5,087 serial CLI unit tests, and 97 CLI binary-surface tests.
 The affected workflow targets passed 783 tests before the additional full-workspace check.
-The first full-workspace run passed 14,052 tests and exposed E2E-012; its targeted rerun passed after correction.
+The final current-head full-workspace run passed all 14,053 tests, with 21 ignored tests.
+The separate audit profile passed its Next.js installation fixture, with no skipped tests.
+Workspace build, Clippy, and formatting passed on Rust 1.94.0 with zero warnings.
+An earlier unchanged Bun converter test returned macOS EPERM once. It then passed 30 exact reruns and both later full-workspace runs.
+A diagnostic rerun also exposed an incorrect schema-directory environment setting; the final run used the correct public/schemas directory.
 The updated registry branch passed 7,312 unit tests, lint, revalidate-tag checks, and its production build.
 The updated docs branch passed 78 unit tests, 15 component tests, types, lint, content-date validation and its production build.
-Final CLI branch gate results are recorded in the linked pull requests.
+Current-head CI results are available in the linked pull requests. The Swift and documentation repositories have no configured PR checks; their complete local suites passed.
 
 Platform adapters have mock workflow coverage. External Stripe, Cloudflare, R2 and Worker deployments were not exercised.
 The vendor acceptance harness requires its external development environment and was not bypassed.
@@ -224,8 +230,8 @@ Historical bootstrap edits and unrelated AI-test timeout changes remain outside 
 
 ## Cumulative totals
 
-- Findings received: 171 (156 inherited and 15 local validation findings).
-- Findings verified and fixed: 167.
+- Findings received: 172 (156 inherited and 16 local and CI validation findings).
+- Findings verified and fixed: 168.
 - Findings rejected with evidence: 4.
 - Findings externally blocked: 0.
 - Findings pending: 0.
