@@ -101,6 +101,7 @@ struct SyncConfirmationSheet: View {
 /// Conflict resolution sheet shown when push fails due to version conflict.
 struct ConflictResolutionSheet: View {
 	let projectName: String
+	let account: SelectedAccount
 	let onPullAndMerge: () -> Void
 	let onForcePush: () -> Void
 	let onCancel: () -> Void
@@ -120,6 +121,12 @@ struct ConflictResolutionSheet: View {
 				.font(.subheadline)
 				.foregroundStyle(.secondary)
 
+			if account == .personal {
+				Text("Cloud values replace conflicting local values. Local-only keys remain. The app then pushes the merged result. Force Push replaces cloud values with local values.")
+					.font(.subheadline)
+					.foregroundStyle(.secondary)
+			}
+
 			LabeledContent("Project", value: projectName)
 				.font(.subheadline)
 
@@ -133,16 +140,18 @@ struct ConflictResolutionSheet: View {
 				}
 				.keyboardShortcut(.escape, modifiers: [])
 
-				Button("Pull & Merge") {
+				Button(VaultConflictRecoveryPolicy.primaryActionLabel(for: account)) {
 					onPullAndMerge()
 				}
 				.buttonStyle(.bordered)
 
-				Button("Force Push") {
-					onForcePush()
+				if VaultConflictRecoveryPolicy.allowsForcePush(for: account) {
+					Button("Force Push") {
+						onForcePush()
+					}
+					.buttonStyle(.borderedProminent)
+					.tint(.orange)
 				}
-				.buttonStyle(.borderedProminent)
-				.tint(.orange)
 			}
 		}
 		.padding(20)

@@ -19,7 +19,8 @@ let package = Package(
 		.testTarget(
 			name: "LPMVaultTests",
 			dependencies: ["LPMVault"],
-			path: "Tests"
+			path: "Tests",
+			exclude: ["Fixtures"]
 		),
 	]
 )

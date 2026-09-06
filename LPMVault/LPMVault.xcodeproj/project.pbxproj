@@ -31,7 +31,6 @@
 		4B88CD1D911996C20CEEBAC0 /* VaultWindowSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5DF41B6F41349F6482E5225 /* VaultWindowSupport.swift */; };
 		4C60693621D2C5D37FF804A5 /* LPMUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BCB466A07FD38A73347A910 /* LPMUser.swift */; };
 		4F2594937CC0514ABE83290E /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 176F614BCA46D100B0DFE439 /* KeychainService.swift */; };
-		50A4A9367DC34950A13DDA6A /* LPMCLICompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A58FE7D99F249B6BB59AF88 /* LPMCLICompatibility.swift */; };
 		51653AA77C984767A6F5763B /* SecureAvatarLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8A7438AC254CB3BB0F18C0 /* SecureAvatarLoader.swift */; };
 		53BEA16BDEA8F0F8EACD5BB1 /* LoginService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCFFA64462F1369E71D85556 /* LoginService.swift */; };
 		5537F30818AE6D9798D8E644 /* CryptoInteropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */; };
@@ -40,6 +39,7 @@
 		624242199ADD00465D0F54A5 /* VaultContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEDE6264C2563EEC4611935A /* VaultContentView.swift */; };
 		63C732A48A3E261D34478D11 /* CloudVaultsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEED9FDAD7841AA6C9A04B84 /* CloudVaultsSheet.swift */; };
 		683ACA166A8ACAD4FEBE60B8 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */; };
+		A17E00000000000000000001 /* AuthenticatedVaultEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17E00000000000000000002 /* AuthenticatedVaultEnvelope.swift */; };
 		68D7FC410DFECC514DDF3EDF /* VaultIDSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 407254B9ECE06F58A47AE1E8 /* VaultIDSheet.swift */; };
 		70ED10E6A8102DE374267B56 /* ToolbarButtonGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F19439D47245FF226585465 /* ToolbarButtonGroup.swift */; };
 		79239F41A5347411FC68689B /* Mocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63C91F636E4DF09BA177F24F /* Mocks.swift */; };
@@ -51,6 +51,9 @@
 		8B2777BE3740C9B343834C89 /* SecretRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E6BE2E9151A66D75D9576BD /* SecretRowView.swift */; };
 		8CDB854CC6FDB5D81FA4A298 /* LPMOrg.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CEFDB752A8CA0EF3E0007CF /* LPMOrg.swift */; };
 		A249419F8F7C90D7FCC2C04D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8F5EBA8FE3F0077FCAA53B63 /* Assets.xcassets */; };
+		A31D51A3B70C4C59A97C8F01 /* Round3BenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B31D51A3B70C4C59A97C8F01 /* Round3BenchmarkTests.swift */; };
+		A41D51A3B70C4C59A97C8F01 /* Round4AuditRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B41D51A3B70C4C59A97C8F01 /* Round4AuditRegressionTests.swift */; };
+		A51D51A3B70C4C59A97C8F01 /* Round4BenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B51D51A3B70C4C59A97C8F01 /* Round4BenchmarkTests.swift */; };
 		B18AB2542827B31B262B7B9A /* SecurityHardeningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 080B6FDC9A11DF58CBDE4C6C /* SecurityHardeningTests.swift */; };
 		B2A852F546218B41B5CEA658 /* LPMAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */; };
 		B47DF5E0B8720BF7BCA80E43 /* VaultTitleBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E9F20B5CB6FFB4B7CBFD25A /* VaultTitleBarView.swift */; };
@@ -115,7 +118,6 @@
 		4CD5E1BFFFE44C134A0DAD2E /* OrgVaultsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrgVaultsSheet.swift; sourceTree = "<group>"; };
 		547D88A2D08665F045A7D27C /* EnvProjectImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvProjectImportService.swift; sourceTree = "<group>"; };
 		53EB8393FD0E4BBF84685DC5 /* Round2BenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round2BenchmarkTests.swift; sourceTree = "<group>"; };
-		5A58FE7D99F249B6BB59AF88 /* LPMCLICompatibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LPMCLICompatibility.swift; sourceTree = "<group>"; };
 		5DFE634C548F48A8964CD772 /* AuditRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditRegressionTests.swift; sourceTree = "<group>"; };
 		58E4E4C897F8E4401D882AF6 /* SecureFileWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureFileWriter.swift; sourceTree = "<group>"; };
 		5D6CBBC8709449B5DA33D8DD /* LPMVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LPMVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -139,8 +141,12 @@
 		AA17FB26EDFE51906892C132 /* ClipboardManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardManager.swift; sourceTree = "<group>"; };
 		AD952D6C2614FAF3EF8B184F /* NewEnvironmentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewEnvironmentSheet.swift; sourceTree = "<group>"; };
 		ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncService.swift; sourceTree = "<group>"; };
+		A17E00000000000000000002 /* AuthenticatedVaultEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticatedVaultEnvelope.swift; sourceTree = "<group>"; };
 		B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainServiceTests.swift; sourceTree = "<group>"; };
 		B1CF37F3E1D21EFC23D1163B /* AuthSessionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionCoordinatorTests.swift; sourceTree = "<group>"; };
+		B31D51A3B70C4C59A97C8F01 /* Round3BenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round3BenchmarkTests.swift; sourceTree = "<group>"; };
+		B41D51A3B70C4C59A97C8F01 /* Round4AuditRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round4AuditRegressionTests.swift; sourceTree = "<group>"; };
+		B51D51A3B70C4C59A97C8F01 /* Round4BenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round4BenchmarkTests.swift; sourceTree = "<group>"; };
 		BCFFA64462F1369E71D85556 /* LoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginService.swift; sourceTree = "<group>"; };
 		BE075C602D66BE2D2585F9A4 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		C3AEEC3080528D1137551395 /* VaultSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSidebarView.swift; sourceTree = "<group>"; };
@@ -236,6 +242,9 @@
 				10F9038EDB0DF8525A388573 /* ModelTests.swift */,
 				080B6FDC9A11DF58CBDE4C6C /* SecurityHardeningTests.swift */,
 				53EB8393FD0E4BBF84685DC5 /* Round2BenchmarkTests.swift */,
+				B31D51A3B70C4C59A97C8F01 /* Round3BenchmarkTests.swift */,
+				B41D51A3B70C4C59A97C8F01 /* Round4AuditRegressionTests.swift */,
+				B51D51A3B70C4C59A97C8F01 /* Round4BenchmarkTests.swift */,
 				7132CB4C93FB5453AD934A4F /* VaultStoreTests.swift */,
 			);
 			path = Tests;
@@ -304,11 +313,11 @@
 				0D0B2CD3E26188E14F6418FB /* EnvFileImportService.swift */,
 				547D88A2D08665F045A7D27C /* EnvProjectImportService.swift */,
 				176F614BCA46D100B0DFE439 /* KeychainService.swift */,
-				5A58FE7D99F249B6BB59AF88 /* LPMCLICompatibility.swift */,
 				BCFFA64462F1369E71D85556 /* LoginService.swift */,
 				CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */,
 				69E5C843D5E284E813E58B4F /* PinnedSessionDelegate.swift */,
 				9B8A7438AC254CB3BB0F18C0 /* SecureAvatarLoader.swift */,
+				A17E00000000000000000002 /* AuthenticatedVaultEnvelope.swift */,
 				ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */,
 				36365D62B5851474D2DC178D /* UpdateChecker.swift */,
 				EBF8259DCF0973664EDEE6EA /* VaultCrypto.swift */,
@@ -413,6 +422,9 @@
 				79239F41A5347411FC68689B /* Mocks.swift in Sources */,
 				22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */,
 				FC3BF050B1B74725AF3E8C86 /* Round2BenchmarkTests.swift in Sources */,
+				A31D51A3B70C4C59A97C8F01 /* Round3BenchmarkTests.swift in Sources */,
+				A41D51A3B70C4C59A97C8F01 /* Round4AuditRegressionTests.swift in Sources */,
+				A51D51A3B70C4C59A97C8F01 /* Round4BenchmarkTests.swift in Sources */,
 				B18AB2542827B31B262B7B9A /* SecurityHardeningTests.swift in Sources */,
 				D0D7DD9246C17D99EC747F74 /* VaultStoreTests.swift in Sources */,
 			);
@@ -439,7 +451,6 @@
 				3866F82E3E1C3D5EA8C33910 /* EnvValidation.swift in Sources */,
 				311573303AC72C28104FA9F2 /* KeyApprovalSheet.swift in Sources */,
 				4F2594937CC0514ABE83290E /* KeychainService.swift in Sources */,
-				50A4A9367DC34950A13DDA6A /* LPMCLICompatibility.swift in Sources */,
 				B2A852F546218B41B5CEA658 /* LPMAPIService.swift in Sources */,
 				8CDB854CC6FDB5D81FA4A298 /* LPMOrg.swift in Sources */,
 				5CFF8C9C3F7163E4F9EB4625 /* LPMToken.swift in Sources */,
@@ -458,6 +469,7 @@
 				51653AA77C984767A6F5763B /* SecureAvatarLoader.swift in Sources */,
 				4183C63D9ECD97870BB9BAE4 /* SidebarItem.swift in Sources */,
 				807FC1E43E1B2323EF15E42B /* SyncConfirmationSheet.swift in Sources */,
+				A17E00000000000000000001 /* AuthenticatedVaultEnvelope.swift in Sources */,
 				683ACA166A8ACAD4FEBE60B8 /* SyncService.swift in Sources */,
 				70ED10E6A8102DE374267B56 /* ToolbarButtonGroup.swift in Sources */,
 				DF99157CC6CB92499358AC6E /* UpdateChecker.swift in Sources */,

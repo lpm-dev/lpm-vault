@@ -21,6 +21,7 @@ protocol BiometricServiceProtocol: Sendable {
 final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 	private let lock = NSLock()
 	private var lastAuthTime: TimeInterval?
+	private var cacheEpoch: UInt64 = 0
 	private let cacheDuration: TimeInterval
 	private let now: @Sendable () -> TimeInterval
 	private let authentication: @Sendable (String) async -> Bool
@@ -49,8 +50,9 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 	}
 
 	func authenticate(reason: String) async -> Bool {
-		// Check cache — avoid repeated prompts during edit sessions
-		let cachedAuthTime = lock.withLock { lastAuthTime }
+		let (cachedAuthTime, authenticationEpoch) = lock.withLock {
+			(lastAuthTime, cacheEpoch)
+		}
 		let elapsed = cachedAuthTime.map { now() - $0 }
 		if let elapsed, elapsed >= 0, elapsed < cacheDuration {
 			return true
@@ -59,7 +61,10 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 		let success = await authentication(reason)
 		if success {
 			let authenticatedAt = now()
-			lock.withLock { lastAuthTime = authenticatedAt }
+			lock.withLock {
+				guard cacheEpoch == authenticationEpoch else { return }
+				lastAuthTime = authenticatedAt
+			}
 		}
 		return success
 	}
@@ -90,6 +95,9 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 
 	/// Reset the auth cache (e.g., when user locks manually)
 	func resetCache() {
-		lock.withLock { lastAuthTime = nil }
+		lock.withLock {
+			cacheEpoch &+= 1
+			lastAuthTime = nil
+		}
 	}
 }

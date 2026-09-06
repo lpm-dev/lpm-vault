@@ -2,10 +2,17 @@ import Foundation
 
 /// Shared write-boundary validation matching the Rust client contracts.
 enum EnvValidation {
-	private struct EnvironmentsWrapper: Encodable {
+	static let maximumProjectNameLength = 120
+	static let maximumProjectNameUTF16Length = 200
+
+	private struct EnvironmentsWrapper: Codable {
 		let environments: [String: [String: String]]
 	}
 	struct MergeResult {
+		let environments: [String: [String: String]]
+		let keyCount: Int
+	}
+	struct ValidatedRemoteEnvironments {
 		let environments: [String: [String: String]]
 		let keyCount: Int
 	}
@@ -73,6 +80,22 @@ enum EnvValidation {
 		}
 	}
 
+	static func normalizedProjectName(_ name: String) -> String? {
+		let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !normalized.isEmpty,
+			normalized.count <= maximumProjectNameLength,
+			normalized.utf16.count <= maximumProjectNameUTF16Length,
+			!normalized.unicodeScalars.contains(where: isRegistryForbiddenControl)
+		else {
+			return nil
+		}
+		return normalized
+	}
+
+	private static func isRegistryForbiddenControl(_ scalar: Unicode.Scalar) -> Bool {
+		scalar.value <= 0x1F || (0x7F ... 0x9F).contains(scalar.value)
+	}
+
 	/// Mirrors the Rust client's portable vault ID boundary.
 	static func isSafeVaultId(_ id: String) -> Bool {
 		guard !id.isEmpty, id.utf8.count <= 128,
@@ -105,26 +128,28 @@ enum EnvValidation {
 		try? JSONEncoder().encode(EnvironmentsWrapper(environments: environments)).count
 	}
 
-	static func decodeRemoteEnvironments(_ data: Data) throws -> [String: [String: String]] {
-		if let wrapper = try? JSONDecoder().decode(
-			[String: [String: [String: String]]].self,
-			from: data
-		), let decodedEnvironments = wrapper["environments"] {
-			let remoteEnvironments = decodedEnvironments.isEmpty
+	static func decodeRemoteEnvironments(_ data: Data) throws -> ValidatedRemoteEnvironments {
+		do {
+			try StrictJSONKeyValidator.validate(data)
+			guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+				Set(object.keys) == ["environments"]
+			else { throw PayloadError.invalidFormat }
+			let decoded = try JSONDecoder().decode(EnvironmentsWrapper.self, from: data)
+			let remoteEnvironments = decoded.environments.isEmpty
 				? ["default": [:]]
-				: decodedEnvironments
-			guard areValidEnvironments(remoteEnvironments) else { throw PayloadError.invalidNames }
-			return remoteEnvironments
-		}
-
-		if let remoteSecrets = try? JSONDecoder().decode([String: String].self, from: data) {
-			guard remoteSecrets.keys.allSatisfy(isValidVariableName) else {
+				: decoded.environments
+			guard areValidEnvironments(remoteEnvironments) else {
 				throw PayloadError.invalidNames
 			}
-			return ["default": remoteSecrets]
+			return ValidatedRemoteEnvironments(
+				environments: remoteEnvironments,
+				keyCount: remoteEnvironments.values.reduce(0) { $0 + $1.count }
+			)
+		} catch let error as PayloadError {
+			throw error
+		} catch {
+			throw PayloadError.invalidFormat
 		}
-
-		throw PayloadError.invalidFormat
 	}
 
 	static func mergeRemotePayload(
@@ -136,21 +161,23 @@ enum EnvValidation {
 	}
 
 	static func mergeRemoteEnvironments(
-		_ remoteEnvironments: [String: [String: String]],
+		_ remote: ValidatedRemoteEnvironments,
 		into localEnvironments: [String: [String: String]]
 	) throws -> MergeResult {
-		guard areValidEnvironments(localEnvironments), areValidEnvironments(remoteEnvironments)
-		else { throw PayloadError.invalidNames }
+		guard areValidEnvironments(localEnvironments) else { throw PayloadError.invalidNames }
+		guard !localEnvironments.isEmpty else {
+			return MergeResult(
+				environments: remote.environments,
+				keyCount: remote.keyCount
+			)
+		}
 		var mergedEnvironments = localEnvironments
-		var keyCount = 0
-		for (environment, remoteSecrets) in remoteEnvironments {
+		for (environment, remoteSecrets) in remote.environments {
 			var mergedSecrets = mergedEnvironments[environment] ?? [:]
 			mergedSecrets.merge(remoteSecrets) { _, remote in remote }
 			mergedEnvironments[environment] = mergedSecrets
-			keyCount += mergedSecrets.count
 		}
-		guard areValidEnvironments(mergedEnvironments) else { throw PayloadError.invalidNames }
-		return MergeResult(environments: mergedEnvironments, keyCount: keyCount)
+		return MergeResult(environments: mergedEnvironments, keyCount: remote.keyCount)
 	}
 
 	private static func isASCIIAlpha(_ byte: UInt8) -> Bool {
@@ -159,5 +186,11 @@ enum EnvValidation {
 
 	private static func isASCIIDigit(_ byte: UInt8) -> Bool {
 		byte >= 48 && byte <= 57
+	}
+}
+
+enum VaultProjectRenamePolicy {
+	static func normalizedName(_ draft: String) -> String? {
+		EnvValidation.normalizedProjectName(draft)
 	}
 }

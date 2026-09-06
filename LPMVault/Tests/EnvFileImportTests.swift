@@ -101,6 +101,19 @@ struct EnvFileImportTests {
 		}
 	}
 
+	@Test("streaming worker preserves comment blank and indented quoted continuations")
+	func streamingWorkerPreservesQuotedContinuationLines() async throws {
+		let content = Data(
+			"KEY=\"first\n#\n\n  indented\nlast\"\nNEXT=value\n".utf8
+		)
+		let url = try temporaryFile(content, name: "multiline-continuations.env")
+
+		let imported = try await EnvFileImportService().load(at: url)
+
+		#expect(imported.secrets["KEY"] == "first\n#\n\n  indented\nlast")
+		#expect(imported.secrets["NEXT"] == "value")
+	}
+
 	@Test("streaming worker enforces the exact input limit")
 	func streamingWorkerInputLimit() async throws {
 		let content = Data("KEY=value\n#padding".utf8)
@@ -137,6 +150,48 @@ struct EnvFileImportTests {
 		do {
 			_ = try await EnvFileImportService(limits: limits).load(at: url)
 			Issue.record("The streaming worker accepted an oversized parsed assignment")
+		} catch let error as EnvFileImportError {
+			#expect(error == .parsedDataTooLarge(limit: limits.maximumParsedBytes))
+		}
+	}
+
+	@Test("streaming worker rejects an oversized quoted continuation")
+	func streamingWorkerRejectsOversizedQuotedContinuation() async throws {
+		let limits = EnvFileImportLimits(
+			maximumInputBytes: 4_096,
+			maximumAssignments: 10,
+			maximumParsedBytes: 100
+		)
+		let content = "KEY=\"a\n" + String(repeating: "x", count: 1_300) + "\nb\"\n"
+		let url = try temporaryFile(
+			Data(content.utf8),
+			name: "oversized-quoted-continuation.env"
+		)
+
+		do {
+			_ = try await EnvFileImportService(limits: limits).load(at: url)
+			Issue.record("The streaming worker discarded an oversized quoted continuation.")
+		} catch let error as EnvFileImportError {
+			#expect(error == .parsedDataTooLarge(limit: limits.maximumParsedBytes))
+		}
+	}
+
+	@Test("oversized quoted continuations keep the parsed-size error after a late equals sign")
+	func oversizedQuotedContinuationWithLateEquals() async throws {
+		let limits = EnvFileImportLimits(
+			maximumInputBytes: 4_096,
+			maximumAssignments: 10,
+			maximumParsedBytes: 100
+		)
+		let content = "KEY=\"a\n" + String(repeating: "x", count: 1_300) + "=tail\nb\"\n"
+		let url = try temporaryFile(
+			Data(content.utf8),
+			name: "oversized-quoted-late-equals.env"
+		)
+
+		do {
+			_ = try await EnvFileImportService(limits: limits).load(at: url)
+			Issue.record("The streaming worker accepted an oversized quoted continuation.")
 		} catch let error as EnvFileImportError {
 			#expect(error == .parsedDataTooLarge(limit: limits.maximumParsedBytes))
 		}
@@ -293,13 +348,17 @@ struct EnvFileImportTests {
 			"PLAIN": "value",
 			"ESCAPED": "literal \\n and \\\\ path with \\\"quote\\\"",
 			"MULTILINE": "first\nINJECTED=second\rthird",
+			"CRLF": "before\r\nafter",
 			"HASH": "value # not a comment",
 		]
 		let formatted = EnvFileCodec.format(source)
+		let formattedData = EnvFileCodec.formatData(source)
 		#expect(formatted.components(separatedBy: "\n").count == source.count + 1)
 		#expect(!formatted.contains("\nINJECTED=second"))
 		#expect(formatted.contains("\\nINJECTED=second\\rthird"))
+		#expect(formatted.contains("CRLF=\"before\\r\\nafter\""))
 		#expect(try EnvFileCodec.parse(formatted) == source)
+		#expect(formattedData == Data(formatted.utf8))
 	}
 
 	@Test("a failed replacement preview clears previously imported secrets")
