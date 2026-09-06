@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -38,7 +37,7 @@ struct Round3BenchmarkTests {
 			biometricService: MockBiometricService(),
 			apiService: MockAPIService(),
 			personalSyncServiceFactory: { _ in service },
-			stableSyncEncryptor: { _, _ in ("ciphertext", "wrapped") },
+			stableSyncEncryptor: { _, _, _, _ in ("ciphertext", "wrapped") },
 			authTokenProvider: { _, _ in "session-token" },
 			authSessionClearer: { _ in }
 		)
@@ -55,30 +54,6 @@ struct Round3BenchmarkTests {
 		await store.pushToCloud()
 		print(
 			"ROUND3_BENCH schema_push_ms=\(milliseconds(start.duration(to: .now))) "
-				+ "peak_rss_bytes=\(peakRSSBytes())"
-		)
-	}
-
-	@Test("large payload digest peak-RSS benchmark")
-	func largePayloadDigest() {
-		let encryptedBlob = String(repeating: "a", count: 8 * 1024 * 1024)
-		let wrappedKey = String(repeating: "b", count: 1024 * 1024)
-		let expectedDigest = incrementalPayloadDigest(
-			encryptedBlob: encryptedBlob,
-			wrappedKey: wrappedKey
-		)
-
-		let start = ContinuousClock.now
-		var digest = ""
-		for _ in 0..<10 {
-			digest = SyncService.payloadDigestForTesting(
-				encryptedBlob: encryptedBlob,
-				wrappedKey: wrappedKey
-			)
-		}
-		#expect(digest == expectedDigest)
-		print(
-			"ROUND3_BENCH digest_ms=\(milliseconds(start.duration(to: .now))) "
 				+ "peak_rss_bytes=\(peakRSSBytes())"
 		)
 	}
@@ -134,24 +109,12 @@ struct Round3BenchmarkTests {
 		configuration.protocolClasses = [Round3URLProtocol.self]
 		return SyncService(
 			baseURL: URL(string: "https://\(host)")!,
-			session: URLSession(configuration: configuration)
+			session: URLSession(
+				configuration: configuration,
+				delegate: BoundedHTTPResponseDelegate(),
+				delegateQueue: nil
+			)
 		)
-	}
-
-	private func incrementalPayloadDigest(
-		encryptedBlob: String,
-		wrappedKey: String
-	) -> String {
-		var hasher = SHA256()
-		hasher.update(data: Data("lpm-vault-payload\0".utf8))
-		for value in [encryptedBlob, wrappedKey] {
-			var length = UInt32(value.utf8.count).bigEndian
-			withUnsafeBytes(of: &length) { hasher.update(bufferPointer: $0) }
-			value.utf8.withContiguousStorageIfAvailable {
-				hasher.update(bufferPointer: UnsafeRawBufferPointer($0))
-			}
-		}
-		return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 	}
 
 	private func milliseconds(_ duration: Duration) -> Double {

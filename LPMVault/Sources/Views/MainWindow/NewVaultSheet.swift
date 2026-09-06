@@ -6,6 +6,8 @@ struct NewVaultSheet: View {
 	@Environment(\.dismiss) private var dismiss
 	@State private var name = ""
 	@State private var isCreating = false
+	@State private var creationVaultId = UUID().uuidString.lowercased()
+	@State private var awaitingApproval = false
 	@FocusState private var isFocused: Bool
 
 	private var isOrg: Bool {
@@ -16,6 +18,14 @@ struct NewVaultSheet: View {
 	private var orgSlug: String? {
 		if case .org(let slug) = store.selectedAccount { return slug }
 		return nil
+	}
+
+	private var normalizedName: String? {
+		EnvValidation.normalizedProjectName(name)
+	}
+
+	private var canDismiss: Bool {
+		VaultCreationDismissalPolicy.canDismiss(isCreating: isCreating)
 	}
 
 	var body: some View {
@@ -60,12 +70,12 @@ struct NewVaultSheet: View {
 
 			HStack(spacing: 8) {
 				Spacer()
-				VaultBarButton(title: "Cancel") { dismiss() }
+				VaultBarButton(title: "Cancel", disabled: !canDismiss) { dismiss() }
 					.keyboardShortcut(.escape, modifiers: [])
 				VaultBarButton(
 					title: "Create project",
 					filled: true,
-					disabled: name.trimmingCharacters(in: .whitespaces).isEmpty || isCreating,
+					disabled: normalizedName == nil || isCreating,
 					action: create
 				)
 				.keyboardShortcut(.defaultAction)
@@ -74,17 +84,37 @@ struct NewVaultSheet: View {
 		}
 		.frame(width: 420)
 		.background(VaultPalette.content)
+		.interactiveDismissDisabled(!canDismiss)
 		.onAppear { isFocused = true }
+		.onChange(of: store.lastSyncStatus) { _, status in
+			guard awaitingApproval else { return }
+			switch VaultCreationDismissalPolicy.approvalAction(for: status) {
+			case .dismiss:
+				awaitingApproval = false
+				dismiss()
+			case .retry:
+				awaitingApproval = false
+				isCreating = false
+			case .wait:
+				break
+			}
+		}
 	}
 
 	private func create() {
-		let trimmed = name.trimmingCharacters(in: .whitespaces)
-		guard !trimmed.isEmpty, !isCreating else { return }
+		guard let normalizedName, !isCreating else { return }
 		isCreating = true
 		Task {
-			if await store.createVault(name: trimmed, orgSlug: orgSlug) {
+			switch await store.createVault(
+				name: normalizedName,
+				orgSlug: orgSlug,
+				vaultId: creationVaultId
+			) {
+			case .completed:
 				dismiss()
-			} else {
+			case .approvalRequired:
+				awaitingApproval = true
+			case .failed:
 				isCreating = false
 			}
 		}

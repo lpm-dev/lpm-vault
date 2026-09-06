@@ -136,9 +136,8 @@ struct VaultInspectorView: View {
 	}
 
 	private var comparison: some View {
-		let keys = snapshot.allSecretKeys
 		let drifting = snapshot.driftingKeyCount
-		let missing = keys.filter { project.value(for: $0, in: environment) == nil }.count
+		let missing = snapshot.missingKeyCount(for: environment)
 		return VStack(alignment: .leading, spacing: 9) {
 			Text("ENVIRONMENT STATUS").vaultSectionLabel()
 			HStack(spacing: 8) {
@@ -263,13 +262,18 @@ private struct VaultSecretEditor: View {
 	}
 
 	private func save() {
-		guard editDraft.canSave else { return }
-		store.updateSecret(
-			in: projectID,
-			environment: environment,
-			key: key,
-			newValue: editDraft.draft
-		)
+		let expectedValue = editDraft.baseline
+		guard let submittedValue = editDraft.beginSave() else { return }
+		Task { @MainActor in
+			let succeeded = await store.updateSecretAndWait(
+				in: projectID,
+				environment: environment,
+				key: key,
+				expectedValue: expectedValue,
+				newValue: submittedValue
+			)
+			editDraft.finishSave(succeeded: succeeded)
+		}
 	}
 }
 

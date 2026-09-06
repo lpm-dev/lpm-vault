@@ -32,8 +32,36 @@ protocol LPMAPIServiceProtocol: Sendable {
 	func fetchCurrentUser(authToken: String) async -> LPMAPIResult<LPMUser>
 	func fetchPersonalTokens(authToken: String) async -> LPMAPIResult<[LPMToken]>
 	func revokePersonalToken(id: String, authToken: String) async -> LPMAPIResult<Void>
+	func startRevokePersonalToken(
+		id: String,
+		authToken: String
+	) -> StartedRemoteOperation<LPMAPIResult<Void>>
 	func fetchOrgTokens(orgSlug: String, authToken: String) async -> LPMAPIResult<[LPMToken]>
 	func revokeOrgToken(orgSlug: String, id: String, authToken: String) async -> LPMAPIResult<Void>
+	func startRevokeOrgToken(
+		orgSlug: String,
+		id: String,
+		authToken: String
+	) -> StartedRemoteOperation<LPMAPIResult<Void>>
+}
+
+extension LPMAPIServiceProtocol {
+	func startRevokePersonalToken(
+		id: String,
+		authToken: String
+	) -> StartedRemoteOperation<LPMAPIResult<Void>> {
+		.run { await revokePersonalToken(id: id, authToken: authToken) }
+	}
+
+	func startRevokeOrgToken(
+		orgSlug: String,
+		id: String,
+		authToken: String
+	) -> StartedRemoteOperation<LPMAPIResult<Void>> {
+		.run {
+			await revokeOrgToken(orgSlug: orgSlug, id: id, authToken: authToken)
+		}
+	}
 }
 
 // MARK: - Implementation
@@ -50,14 +78,11 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 		if let session {
 			self.session = session
 		} else {
-			let configuration = URLSessionConfiguration.ephemeral
-			configuration.httpShouldSetCookies = false
-			configuration.httpCookieStorage = nil
-			configuration.urlCredentialStorage = nil
-			configuration.urlCache = nil
-			configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
 			self.session = URLSession(
-				configuration: configuration,
+				configuration: BoundedHTTPResponse.ephemeralConfiguration(
+					requestTimeout: 15,
+					resourceTimeout: 60
+				),
 				delegate: PinnedSessionDelegate(),
 				delegateQueue: nil
 			)
@@ -69,7 +94,10 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	/// Validate a specific token against the server (used during login
 	/// to verify the token works before persisting it to Keychain).
 	func fetchCurrentUser(authToken: String) async -> LPMAPIResult<LPMUser> {
-		await get(path: "/api/user/me", token: authToken)
+		let result: LPMAPIResult<LPMUser> = await get(path: "/api/user/me", token: authToken)
+		return result.flatMap { user in
+			user.hasValidRoutingIdentity ? .success(user) : .failure(.invalidResponse)
+		}
 	}
 
 	// MARK: - Personal Tokens
@@ -79,8 +107,17 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	}
 
 	func revokePersonalToken(id: String, authToken: String) async -> LPMAPIResult<Void> {
-		guard let url = endpoint(["api", "tokens", id]) else { return .failure(.invalidRequest) }
-		return await delete(url: url, token: authToken)
+		await startRevokePersonalToken(id: id, authToken: authToken).value()
+	}
+
+	func startRevokePersonalToken(
+		id: String,
+		authToken: String
+	) -> StartedRemoteOperation<LPMAPIResult<Void>> {
+		guard let url = endpoint(["api", "tokens", id]) else {
+			return .completed(.failure(.invalidRequest))
+		}
+		return startDelete(url: url, token: authToken)
 	}
 
 	// MARK: - Org Tokens
@@ -100,10 +137,22 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	}
 
 	func revokeOrgToken(orgSlug: String, id: String, authToken: String) async -> LPMAPIResult<Void> {
+		await startRevokeOrgToken(
+			orgSlug: orgSlug,
+			id: id,
+			authToken: authToken
+		).value()
+	}
+
+	func startRevokeOrgToken(
+		orgSlug: String,
+		id: String,
+		authToken: String
+	) -> StartedRemoteOperation<LPMAPIResult<Void>> {
 		guard let url = endpoint(["api", "orgs", orgSlug, "tokens", id]) else {
-			return .failure(.invalidRequest)
+			return .completed(.failure(.invalidRequest))
 		}
-		return await delete(url: url, token: authToken)
+		return startDelete(url: url, token: authToken)
 	}
 
 	// MARK: - HTTP Helpers
@@ -113,6 +162,7 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 		var tokens: [LPMToken] = []
 		var cursor: String?
 		var seenCursors: Set<String> = []
+		var responseBytes = 0
 
 		for _ in 0..<maximumTokenPages {
 			guard !Task.isCancelled else { return .failure(.cancelled) }
@@ -128,16 +178,19 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 			var request = URLRequest(url: url)
 			request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 			do {
+				let remainingBytes = maximumResponseBytes - responseBytes
+				guard remainingBytes > 0 else { return .failure(.invalidResponse) }
 				let (data, response) = try await BoundedHTTPResponse.load(
 					for: request,
 					using: session,
-					maximumBytes: maximumResponseBytes
+					maximumBytes: remainingBytes
 				)
+				responseBytes += data.count
 				guard let http = response as? HTTPURLResponse,
 					tokens.count <= maximumTokens
 				else { return .failure(.invalidResponse) }
 				guard http.statusCode == 200 else { return .failure(error(for: http.statusCode)) }
-				guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token) else {
+					guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
 					return .failure(.invalidSignature)
 				}
 
@@ -182,7 +235,7 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 			guard let http = response as? HTTPURLResponse
 			else { return .failure(.invalidResponse) }
 			guard http.statusCode == 200 else { return .failure(error(for: http.statusCode)) }
-			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token) else {
+			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data) else {
 				return .failure(.invalidSignature)
 			}
 			guard let value = try? JSONDecoder().decode(T.self, from: data) else {
@@ -198,30 +251,47 @@ final class LPMAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 		}
 	}
 
-	private func delete(url: URL, token: String) async -> LPMAPIResult<Void> {
+	private func startDelete(
+		url: URL,
+		token: String
+	) -> StartedRemoteOperation<LPMAPIResult<Void>> {
 		var request = URLRequest(url: url)
 		request.httpMethod = "DELETE"
 		request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
 		do {
-			let (data, response) = try await BoundedHTTPResponse.load(
+			let response = try BoundedHTTPResponse.start(
 				for: request,
 				using: session,
 				maximumBytes: maximumResponseBytes
 			)
-			guard let http = response as? HTTPURLResponse
-			else { return .failure(.invalidResponse) }
-			guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, authToken: token) else {
-				return .failure(.invalidSignature)
+			return response.map { [self] result in
+				switch result {
+				case .success(let loaded):
+					guard let http = loaded.response as? HTTPURLResponse
+					else { return .failure(.invalidResponse) }
+						guard PinnedSessionDelegate.verifyResponseSignature(
+							http,
+							body: loaded.data
+					) else { return .failure(.invalidSignature) }
+					guard http.statusCode == 200 else {
+						return .failure(error(for: http.statusCode))
+					}
+					return .success(())
+				case .failure(let error):
+					if error is BoundedHTTPResponse.LoadError {
+						return .failure(.invalidResponse)
+					}
+					if error is CancellationError
+						|| (error as? URLError)?.code == .cancelled
+					{
+						return .failure(.cancelled)
+					}
+					return .failure(.transport)
+				}
 			}
-			guard http.statusCode == 200 else { return .failure(error(for: http.statusCode)) }
-			return .success(())
-		} catch is BoundedHTTPResponse.LoadError {
-			return .failure(.invalidResponse)
-		} catch is CancellationError {
-			return .failure(.cancelled)
 		} catch {
-			return .failure(.transport)
+			return .completed(.failure(.invalidRequest))
 		}
 	}
 

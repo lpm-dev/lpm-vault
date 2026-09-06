@@ -24,7 +24,7 @@ enum AvatarURLPolicy {
 	}
 }
 
-private final class AvatarSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+final class AvatarSessionDelegate: BoundedHTTPResponseDelegate, @unchecked Sendable {
 	private let pinnedDelegate = PinnedSessionDelegate()
 
 	func urlSession(

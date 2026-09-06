@@ -125,11 +125,16 @@ struct Round2BenchmarkTests {
 	@Test("batched project unlock benchmark")
 	func projectUnlock() {
 		let service = KeychainService(
-			legacyTestingService: "dev.lpm.vault.round2-bench.\(UUID().uuidString)"
+			testingService: "dev.lpm.vault.round2-bench.\(UUID().uuidString)"
 		)
 		let projectIDs = (0..<40).map { "bench-project-\($0)" }
 		defer {
-			for projectID in projectIDs { _ = service.deleteProject(vaultId: projectID) }
+			for projectID in projectIDs {
+				_ = service.applyVaultTransaction(
+					project: .delete(vaultId: projectID, deletePayload: true),
+					data: []
+				)
+			}
 		}
 		let value = String(repeating: "x", count: 75_000)
 		for projectID in projectIDs {
@@ -162,7 +167,7 @@ struct Round2BenchmarkTests {
 	func generatedProjectUnlockRSS() {
 		let projectCount = 500
 		let service = KeychainService(
-			legacyTestingService: "dev.lpm.vault.round2-generated-bench",
+			testingService: "dev.lpm.vault.round2-generated-bench",
 			backend: GeneratedProjectKeychainBackend(
 				projectCount: projectCount,
 				valueBytes: 75_000
@@ -234,15 +239,9 @@ private struct GeneratedProjectKeychainBackend: KeychainStoreBackend {
 		])
 	}
 
-	func accounts(
-		service: String,
-		location: KeychainStoreLocation
-	) throws -> [String] { [] }
-
 	func read(
 		service: String,
-		account: String,
-		location: KeychainStoreLocation
+		account: String
 	) throws -> Data? {
 		let source = account == "__index__" ? indexData : payloadData
 		return source.withUnsafeBytes { Data(bytes: $0.baseAddress!, count: $0.count) }
@@ -251,21 +250,18 @@ private struct GeneratedProjectKeychainBackend: KeychainStoreBackend {
 	func write(
 		service: String,
 		account: String,
-		data: Data,
-		location: KeychainStoreLocation
+		data: Data
 	) throws {}
 
 	func add(
 		service: String,
 		account: String,
-		data: Data,
-		location: KeychainStoreLocation
+		data: Data
 	) throws {}
 
 	func delete(
 		service: String,
-		account: String,
-		location: KeychainStoreLocation
+		account: String
 	) throws -> Bool { false }
 }
 

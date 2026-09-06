@@ -37,6 +37,8 @@ struct VaultWorkspaceView: View {
 	@State private var showVaultIDSheet = false
 	@State private var currentImportTask: Task<Void, Never>?
 	@State private var currentImportID: UUID?
+	@State private var exportTask: Task<Void, Never>?
+	@State private var exportID: UUID?
 	@State private var copyAllTask: Task<Void, Never>?
 	@State private var copyAllID: UUID?
 
@@ -88,11 +90,20 @@ struct VaultWorkspaceView: View {
 				sidebarDivider
 
 				Group {
-					if store.showAuthStatus {
-						AuthStatusView(store: store)
+						if store.showAuthStatus {
+							AuthStatusView(store: store)
+								.frame(maxWidth: .infinity, maxHeight: .infinity)
+								.background(VaultPalette.content)
+						} else if store.isLoadingSelectedProject, let project {
+							VStack(spacing: 10) {
+								ProgressView()
+								Text("Loading \(project.name)…")
+									.font(.system(size: 12))
+									.foregroundStyle(VaultPalette.textTertiary)
+							}
 							.frame(maxWidth: .infinity, maxHeight: .infinity)
 							.background(VaultPalette.content)
-					} else if let project,
+						} else if let project,
 						let snapshot = store.workspaceSnapshots[project.id]
 					{
 						VaultContentView(
@@ -208,7 +219,7 @@ struct VaultWorkspaceView: View {
 			TextField("Project name", text: $projectNameDraft)
 			Button("Cancel", role: .cancel) { projectToRename = nil }
 			Button("Rename", action: renameProject)
-				.disabled(projectNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+				.disabled(VaultProjectRenamePolicy.normalizedName(projectNameDraft) == nil)
 		}
 		.alert("Rename Environment", isPresented: Binding(
 			get: { renameEnvironmentTarget != nil },
@@ -295,7 +306,13 @@ struct VaultWorkspaceView: View {
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
-		.onChange(of: store.selectedEnvironment) { _, _ in revealedKeys.removeAll() }
+		.onChange(of: store.selectedEnvironment) { _, environment in
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
+			mode = mode.synchronized(to: environment)
+			revealedKeys.removeAll()
+		}
 		.onChange(of: mode) { _, _ in revealedKeys.removeAll() }
 		.onChange(of: store.selectedAccount) { _, _ in
 			conflictTarget = nil
@@ -313,6 +330,9 @@ struct VaultWorkspaceView: View {
 			currentImportTask?.cancel()
 			currentImportTask = nil
 			currentImportID = nil
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
 			copyAllTask?.cancel()
 			copyAllTask = nil
 			copyAllID = nil
@@ -375,20 +395,17 @@ struct VaultWorkspaceView: View {
 		if let project = store.projects.first(where: { $0.id == target.projectId }) {
 			ConflictResolutionSheet(
 				projectName: project.name,
+				account: target.account,
 				onPullAndMerge: {
 					conflictTarget = nil
 					Task {
-						guard isCurrentSyncTarget(target) else { return }
-						await store.pullFromCloud()
-						guard isCurrentSyncTarget(target) else { return }
-						await store.pushToCloud()
+						await store.recoverFromConflict(.pullAndMerge, target: target)
 					}
 				},
 				onForcePush: {
 					conflictTarget = nil
 					Task {
-						guard isCurrentSyncTarget(target) else { return }
-						await store.pushToCloud(force: true)
+						await store.recoverFromConflict(.forcePush, target: target)
 					}
 				},
 				onCancel: { conflictTarget = nil }
@@ -535,7 +552,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func exportCurrentEnvironment() {
-		guard let project else { return }
+		guard let project, exportTask == nil else { return }
 		let projectID = project.id
 		let environment = store.selectedEnvironment
 		let panel = NSSavePanel()
@@ -543,16 +560,31 @@ struct VaultWorkspaceView: View {
 		panel.nameFieldStringValue = ".env\(suffix)"
 		panel.message = "Export \(VaultProject.displayName(for: environment))"
 		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
-		guard store.isUnlocked,
-			store.selectedProjectId == projectID,
-			store.selectedEnvironment == environment,
-			let current = store.selectedProject
-		else { return }
-		do {
-			let content = EnvFileCodec.format(current.secrets(for: environment))
-			try SecureFileWriter.write(Data(content.utf8), to: url)
-		} catch {
-			store.error = "Export failed. \(error.localizedDescription)"
+		let requestID = UUID()
+		exportID = requestID
+		exportTask = Task { @MainActor in
+			defer {
+				if VaultTaskOwnership.owns(current: exportID, request: requestID) {
+					exportTask = nil
+					exportID = nil
+				}
+			}
+			do {
+				try await store.exportEnvironment(
+					projectId: projectID,
+					environment: environment,
+					to: url
+				)
+			} catch is CancellationError {
+				return
+			} catch {
+				guard VaultTaskOwnership.owns(current: exportID, request: requestID),
+					store.isUnlocked,
+					store.selectedProjectId == projectID,
+					store.selectedEnvironment == environment
+				else { return }
+				store.error = "Export failed. \(error.localizedDescription)"
+			}
 		}
 	}
 
@@ -562,7 +594,10 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func renameProject() {
-		if let projectToRename { store.renameProject(projectToRename, to: projectNameDraft) }
+		guard let project = projectToRename,
+			let normalizedName = VaultProjectRenamePolicy.normalizedName(projectNameDraft)
+		else { return }
+		store.renameProject(project, to: normalizedName)
 		projectToRename = nil
 	}
 
@@ -607,16 +642,14 @@ struct VaultWorkspaceView: View {
 		currentImportTask?.cancel()
 		currentImportTask = nil
 		currentImportID = nil
+		exportTask?.cancel()
+		exportTask = nil
+		exportID = nil
 		copyAllTask?.cancel()
 		copyAllTask = nil
 		copyAllID = nil
 	}
 
-	private func isCurrentSyncTarget(_ target: VaultSyncTarget) -> Bool {
-		store.isUnlocked
-			&& store.selectedAccount == target.account
-			&& store.selectedProjectId == target.projectId
-	}
 }
 
 private struct VaultInspectorPane: View {

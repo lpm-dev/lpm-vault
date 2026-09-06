@@ -132,14 +132,23 @@ final class EnvFileImportService: EnvFileImportServiceProtocol, @unchecked Senda
 }
 
 private actor EnvFileImportAdmission {
-	private struct Waiter {
+	private final class Waiter {
 		let id: UUID
 		let continuation: CheckedContinuation<Bool, Never>
+		weak var previous: Waiter?
+		var next: Waiter?
+
+		init(id: UUID, continuation: CheckedContinuation<Bool, Never>) {
+			self.id = id
+			self.continuation = continuation
+		}
 	}
 
 	private let limit: Int
 	private var active = 0
-	private var waiters: [Waiter] = []
+	private var firstWaiter: Waiter?
+	private var lastWaiter: Waiter?
+	private var waitersByID: [UUID: Waiter] = [:]
 
 	init(limit: Int) {
 		self.limit = max(1, limit)
@@ -158,7 +167,7 @@ private actor EnvFileImportAdmission {
 				if Task.isCancelled {
 					continuation.resume(returning: false)
 				} else {
-					waiters.append(Waiter(id: id, continuation: continuation))
+					appendWaiter(Waiter(id: id, continuation: continuation))
 				}
 			}
 		} onCancel: {
@@ -173,8 +182,7 @@ private actor EnvFileImportAdmission {
 	}
 
 	func release() {
-		while !waiters.isEmpty {
-			let waiter = waiters.removeFirst()
+		if let waiter = popFirstWaiter() {
 			waiter.continuation.resume(returning: true)
 			return
 		}
@@ -182,9 +190,35 @@ private actor EnvFileImportAdmission {
 	}
 
 	private func cancelWaiter(id: UUID) {
-		guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
-		let waiter = waiters.remove(at: index)
+		guard let waiter = waitersByID[id] else { return }
+		removeWaiter(waiter)
 		waiter.continuation.resume(returning: false)
+	}
+
+	private func appendWaiter(_ waiter: Waiter) {
+		waiter.previous = lastWaiter
+		lastWaiter?.next = waiter
+		if firstWaiter == nil { firstWaiter = waiter }
+		lastWaiter = waiter
+		waitersByID[waiter.id] = waiter
+	}
+
+	private func popFirstWaiter() -> Waiter? {
+		guard let waiter = firstWaiter else { return nil }
+		removeWaiter(waiter)
+		return waiter
+	}
+
+	private func removeWaiter(_ waiter: Waiter) {
+		let previous = waiter.previous
+		let next = waiter.next
+		previous?.next = next
+		next?.previous = previous
+		if firstWaiter === waiter { firstWaiter = next }
+		if lastWaiter === waiter { lastWaiter = previous }
+		waiter.previous = nil
+		waiter.next = nil
+		waitersByID.removeValue(forKey: waiter.id)
 	}
 }
 
@@ -198,7 +232,8 @@ enum EnvFileImportWorker {
 			maximumRetainedLineBytes: min(
 				limits.maximumInputBytes,
 				limits.maximumParsedBytes * 2 + 1_024
-			)
+			),
+			preservePhysicalLine: { parser.hasPendingQuotedAssignment }
 		) { line, lineNumber in
 			try parser.consume(line, lineNumber: lineNumber)
 		}
@@ -215,38 +250,57 @@ private struct StreamingEnvFileParser {
 	private var parsedBytes = 0
 	private var assignmentCount = 0
 	private var pendingQuotedAssignment: String?
+	private var pendingQuotedAssignmentBytes = 0
 	private var pendingAssignmentLine: Int?
+	private var pendingQuote: Character?
 
 	init(limits: EnvFileImportLimits) {
 		self.limits = limits
 	}
 
+	var hasPendingQuotedAssignment: Bool {
+		pendingQuotedAssignment != nil
+	}
+
 	mutating func consume(_ line: String, lineNumber: Int) throws {
 		try Task.checkCancellation()
 		if pendingQuotedAssignment != nil {
+			let lineBytes = line.utf8.count
+			let (withNewline, newlineOverflow) =
+				pendingQuotedAssignmentBytes.addingReportingOverflow(1)
+			let (retainedBytes, lineOverflow) = withNewline.addingReportingOverflow(lineBytes)
+			guard !newlineOverflow, !lineOverflow,
+				retainedBytes <= limits.maximumParsedBytes
+			else {
+				throw EnvFileImportError.parsedDataTooLarge(limit: limits.maximumParsedBytes)
+			}
+			pendingQuotedAssignmentBytes = retainedBytes
 			pendingQuotedAssignment?.append("\n")
 			pendingQuotedAssignment?.append(line)
-			guard let pendingQuotedAssignment,
-				!EnvFileCodec.hasUnterminatedQuotedValue(pendingQuotedAssignment)
+			guard let quote = pendingQuote,
+				EnvFileCodec.containsClosingQuote(in: line, quote: quote),
+				let pendingQuotedAssignment
 			else {
-				guard (pendingQuotedAssignment?.utf8.count ?? 0) <= limits.maximumParsedBytes else {
-					throw EnvFileImportError.parsedDataTooLarge(limit: limits.maximumParsedBytes)
-				}
 				return
 			}
 			let sourceLine = pendingAssignmentLine ?? lineNumber
 			self.pendingQuotedAssignment = nil
+			pendingQuotedAssignmentBytes = 0
 			pendingAssignmentLine = nil
+			pendingQuote = nil
 			try merge(pendingQuotedAssignment, sourceLine: sourceLine)
 			return
 		}
 
-		if EnvFileCodec.hasUnterminatedQuotedValue(line) {
-			guard line.utf8.count <= limits.maximumParsedBytes else {
+		if let quote = EnvFileCodec.unterminatedQuote(in: line) {
+			let lineBytes = line.utf8.count
+			guard lineBytes <= limits.maximumParsedBytes else {
 				throw EnvFileImportError.parsedDataTooLarge(limit: limits.maximumParsedBytes)
 			}
 			pendingQuotedAssignment = line
+			pendingQuotedAssignmentBytes = lineBytes
 			pendingAssignmentLine = lineNumber
+			pendingQuote = quote
 			return
 		}
 		try merge(line, sourceLine: lineNumber)
@@ -257,6 +311,7 @@ private struct StreamingEnvFileParser {
 			let sourceLine = pendingAssignmentLine ?? 1
 			self.pendingQuotedAssignment = nil
 			pendingAssignmentLine = nil
+			pendingQuote = nil
 			try merge(pendingQuotedAssignment, sourceLine: sourceLine)
 		}
 		return result
@@ -328,10 +383,11 @@ enum BoundedEnvFileReader {
 
 		let descriptor = url.withUnsafeFileSystemRepresentation { path in
 			guard let path else { return Int32(-1) }
-			return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK)
+			return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW)
 		}
 		guard descriptor >= 0 else {
 			if errno == ENOENT { throw EnvFileImportError.fileNotFound }
+			if errno == ELOOP { throw EnvFileImportError.notRegularFile }
 			throw EnvFileImportError.readFailed
 		}
 		defer { Darwin.close(descriptor) }
@@ -379,6 +435,7 @@ enum BoundedEnvFileReader {
 		maximumBytes: Int,
 		parsedDataLimit: Int? = nil,
 		maximumRetainedLineBytes: Int? = nil,
+		preservePhysicalLine: () -> Bool = { false },
 		_ body: (String, Int) throws -> Void
 	) throws {
 		guard url.isFileURL, maximumBytes >= 0, maximumBytes < Int.max else {
@@ -387,10 +444,11 @@ enum BoundedEnvFileReader {
 		try Task.checkCancellation()
 		let descriptor = url.withUnsafeFileSystemRepresentation { path in
 			guard let path else { return Int32(-1) }
-			return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK)
+			return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW)
 		}
 		guard descriptor >= 0 else {
 			if errno == ENOENT { throw EnvFileImportError.fileNotFound }
+			if errno == ELOOP { throw EnvFileImportError.notRegularFile }
 			throw EnvFileImportError.readFailed
 		}
 		defer { _ = Darwin.close(descriptor) }
@@ -418,6 +476,7 @@ enum BoundedEnvFileReader {
 		var hasPhysicalBytes = false
 		var lineWasTruncated = false
 		var sawEquals = false
+		var preservesCurrentLine = preservePhysicalLine()
 
 		func finishLine(terminatedByNewline: Bool) throws {
 			lineNumber += 1
@@ -427,12 +486,13 @@ enum BoundedEnvFileReader {
 				hasPhysicalBytes = false
 				lineWasTruncated = false
 				sawEquals = false
+				preservesCurrentLine = preservePhysicalLine()
 			}
-			guard classification == .significant else { return }
+			guard classification == .significant || preservesCurrentLine else { return }
 			if lineWasTruncated {
 				// A newline-free non-assignment is ignored by the dotenv grammar.
 				// It does not need a second full-size Data/String representation.
-				guard !sawEquals else {
+				guard !sawEquals, !preservesCurrentLine else {
 					throw EnvFileImportError.parsedDataTooLarge(
 						limit: reportedParsedDataLimit
 					)
@@ -455,12 +515,16 @@ enum BoundedEnvFileReader {
 			hasPhysicalBytes = true
 			switch classification {
 			case .undecided:
-				if isASCIIWhitespace(byte) { return }
-				if byte == 0x23 {
+				if preservesCurrentLine {
+					classification = .significant
+				} else if isASCIIWhitespace(byte) {
+					return
+				} else if byte == 0x23 {
 					classification = .ignored
 					return
+				} else {
+					classification = .significant
 				}
-				classification = .significant
 			case .ignored:
 				return
 			case .significant:
@@ -470,6 +534,11 @@ enum BoundedEnvFileReader {
 			if byte == 0x3D {
 				sawEquals = true
 				if lineWasTruncated {
+					if preservesCurrentLine {
+						throw EnvFileImportError.parsedDataTooLarge(
+							limit: reportedParsedDataLimit
+						)
+					}
 					throw EnvFileImportError.invalidVariableName(line: lineNumber + 1)
 				}
 			}
@@ -565,16 +634,24 @@ enum BoundedEnvFileReader {
 
 enum EnvFileCodec {
 	static func hasUnterminatedQuotedValue(_ line: String) -> Bool {
+		unterminatedQuote(in: line) != nil
+	}
+
+	static func unterminatedQuote(in line: String) -> Character? {
 		let trimmed = line.trimmingCharacters(in: .whitespaces)
-		if trimmed.isEmpty || trimmed.hasPrefix("#") { return false }
+		if trimmed.isEmpty || trimmed.hasPrefix("#") { return nil }
 		let assignment = trimmed.hasPrefix("export ")
 			? String(trimmed.dropFirst("export ".count))
 			: trimmed
-		guard let equals = assignment.firstIndex(of: "=") else { return false }
+		guard let equals = assignment.firstIndex(of: "=") else { return nil }
 		let value = String(assignment[assignment.index(after: equals)...])
 			.trimmingLeadingWhitespace()
-		guard let quote = value.first, quote == "\"" || quote == "'" else { return false }
-		return closingQuote(in: String(value.dropFirst()), quote: quote) == nil
+		guard let quote = value.first, quote == "\"" || quote == "'" else { return nil }
+		return closingQuote(in: String(value.dropFirst()), quote: quote) == nil ? quote : nil
+	}
+
+	static func containsClosingQuote(in value: String, quote: Character) -> Bool {
+		closingQuote(in: value, quote: quote) != nil
 	}
 
 	static func parse(
@@ -642,19 +719,102 @@ enum EnvFileCodec {
 	/// Produces a lossless dotenv file whose values remain literal when sourced
 	/// by a POSIX shell. Double-quoted shell expansion characters are escaped.
 	static func format(_ secrets: [String: String]) -> String {
-		secrets.sorted { $0.key < $1.key }
-			.map { key, value in
-				let escaped = value
-					.replacingOccurrences(of: "\\", with: "\\\\")
-					.replacingOccurrences(of: "\"", with: "\\\"")
-					.replacingOccurrences(of: "$", with: "\\$")
-					.replacingOccurrences(of: "`", with: "\\`")
-					.replacingOccurrences(of: "\n", with: "\\n")
-					.replacingOccurrences(of: "\r", with: "\\r")
-					.replacingOccurrences(of: "\t", with: "\\t")
-				return "\(key)=\"\(escaped)\""
+		let entries = secrets.sorted { $0.key < $1.key }
+		var output = ""
+		output.reserveCapacity(formattedCapacity(entries))
+		for (key, value) in entries {
+			output.append(key)
+			output.append("=\"")
+			appendEscaped(value, to: &output)
+			output.append("\"\n")
+		}
+		return output
+	}
+
+	static func formatData(_ secrets: [String: String]) -> Data {
+		let entries = secrets.sorted { $0.key < $1.key }
+		var output = Data(count: formattedDataCapacity(entries))
+		output.withUnsafeMutableBytes { rawOutput in
+			let outputBytes = rawOutput.bindMemory(to: UInt8.self)
+			var offset = 0
+			for (key, value) in entries {
+				for byte in key.utf8 {
+					outputBytes[offset] = byte
+					offset += 1
+				}
+				outputBytes[offset] = 0x3D
+				outputBytes[offset + 1] = 0x22
+				offset += 2
+				for byte in value.utf8 {
+					if let escaped = escapedByte(for: byte) {
+						outputBytes[offset] = 0x5C
+						outputBytes[offset + 1] = escaped
+						offset += 2
+					} else {
+						outputBytes[offset] = byte
+						offset += 1
+					}
+				}
+				outputBytes[offset] = 0x22
+				outputBytes[offset + 1] = 0x0A
+				offset += 2
 			}
-			.joined(separator: "\n") + "\n"
+			precondition(offset == outputBytes.count)
+		}
+		return output
+	}
+
+	private static func formattedCapacity(
+		_ entries: [(key: String, value: String)]
+	) -> Int {
+		formattedDataCapacity(entries)
+	}
+
+	private static func formattedDataCapacity(
+		_ entries: [(key: String, value: String)]
+	) -> Int {
+		entries.reduce(into: 0) { size, entry in
+			size += entry.key.utf8.count + entry.value.utf8.count + 4
+			for byte in entry.value.utf8 where escapedByte(for: byte) != nil {
+				size += 1
+			}
+		}
+	}
+
+	private static func appendEscaped(_ value: String, to output: inout String) {
+		let scalars = value.unicodeScalars
+		var start = scalars.startIndex
+		for index in scalars.indices {
+			guard let escaped = escapedScalar(for: scalars[index]) else { continue }
+			output.unicodeScalars.append(contentsOf: scalars[start..<index])
+			output.append("\\")
+			output.unicodeScalars.append(escaped)
+			start = scalars.index(after: index)
+		}
+		output.unicodeScalars.append(contentsOf: scalars[start...])
+	}
+
+	private static func escapedScalar(for scalar: Unicode.Scalar) -> Unicode.Scalar? {
+		switch scalar.value {
+		case 0x5C: "\\"
+		case 0x22: "\""
+		case 0x24: "$"
+		case 0x60: "`"
+		case 0x0A: "n"
+		case 0x0D: "r"
+		case 0x09: "t"
+		default: nil
+		}
+	}
+
+	private static func escapedByte(for byte: UInt8) -> UInt8? {
+		switch byte {
+		case 0x5C, 0x22, 0x24, 0x60: byte
+		case 0x0A: 0x6E
+		case 0x0D: 0x72
+		case 0x09: 0x74
+		default: nil
+		}
 	}
 
 	private static func parseValue(

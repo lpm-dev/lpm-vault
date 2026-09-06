@@ -1,5 +1,26 @@
 import SwiftUI
 
+struct OrgVaultSheetLoadIdentity: Hashable {
+	let authGeneration: Int
+	let fixedOrgSlug: String?
+	let selectedOrg: String?
+	let reloadID: Int
+
+	init(
+		authGeneration: Int,
+		fixedOrgSlug: String?,
+		selectedOrg: String?,
+		reloadID: Int
+	) {
+		self.authGeneration = authGeneration
+		self.fixedOrgSlug = fixedOrgSlug
+		self.selectedOrg = fixedOrgSlug == nil ? selectedOrg : nil
+		self.reloadID = reloadID
+	}
+
+	var effectiveOrgSlug: String? { fixedOrgSlug ?? selectedOrg }
+}
+
 /// Sheet that lists shared org vaults for discovery and import.
 /// Allows users to pull org vaults without needing lpm.json.
 struct OrgVaultsSheet: View {
@@ -11,9 +32,26 @@ struct OrgVaultsSheet: View {
 	@State private var isLoading = false
 	@State private var isPulling: String?  // vault ID being pulled
 	@State private var importTask: Task<Void, Never>?
+	@State private var importID: UUID?
 	@State private var importResult: ImportResult?
 	@State private var loadError: String?
 	@State private var reloadID = 0
+	@State private var pendingMove: ExistingProjectMove?
+
+	private struct ExistingProjectMove: Identifiable {
+		let id = UUID()
+		let project: SyncService.RemoteProject
+		let identity: OrgVaultSheetLoadIdentity
+	}
+
+	private var loadIdentity: OrgVaultSheetLoadIdentity {
+		OrgVaultSheetLoadIdentity(
+			authGeneration: store.authContextGeneration,
+			fixedOrgSlug: fixedOrgSlug,
+			selectedOrg: selectedOrg,
+			reloadID: reloadID
+		)
+	}
 
 	private enum ImportResult {
 		case success(String)
@@ -39,7 +77,7 @@ struct OrgVaultsSheet: View {
 					.font(.headline)
 				Spacer()
 				Button {
-					importTask?.cancel()
+					cancelImport()
 					dismiss()
 				} label: {
 					Image(systemName: "xmark.circle.fill")
@@ -127,17 +165,33 @@ struct OrgVaultsSheet: View {
 			}
 		}
 		.frame(minWidth: 500, minHeight: 400)
-		.task(id: "\(selectedOrg ?? ""):\(reloadID)") {
-			let org = fixedOrgSlug ?? selectedOrg ?? store.userOrgs.first?.slug ?? ""
-			if selectedOrg == nil { selectedOrg = org }
+		.task(id: loadIdentity) {
+			cancelImport()
+			pendingMove = nil
+			importResult = nil
+			let org = loadIdentity.effectiveOrgSlug ?? store.userOrgs.first?.slug ?? ""
+			if fixedOrgSlug != nil || selectedOrg == nil { selectedOrg = org }
 			await loadVaults(for: org)
 		}
-		.onDisappear { importTask?.cancel() }
+		.onDisappear { cancelImport() }
+		.sheet(item: $pendingMove) { move in
+			OrgProjectMoveConfirmation(
+				projectName: move.project.name ?? move.project.vaultId,
+				onConfirm: {
+					pendingMove = nil
+					guard loadIdentity == move.identity else { return }
+					startImport(move.project)
+				},
+				onCancel: { pendingMove = nil }
+			)
+		}
 	}
 
 	@ViewBuilder
 	private func vaultRow(_ vault: SyncService.RemoteProject) -> some View {
-		let alreadyAdded = store.projects.contains { $0.id == vault.vaultId }
+		let existsLocally = store.projects.contains { $0.id == vault.vaultId }
+		let alreadyAdded = existsLocally
+			&& store.vaultOrgAssociations[vault.vaultId] == loadIdentity.effectiveOrgSlug
 
 		HStack(spacing: 12) {
 			Image(systemName: "lock.shield")
@@ -173,8 +227,12 @@ struct OrgVaultsSheet: View {
 				ProgressView("Importing")
 					.controlSize(.small)
 			} else {
-				Button("Import") {
-					importTask = Task { await importVault(vault) }
+				Button(existsLocally ? "Move here" : "Import") {
+					if existsLocally {
+						pendingMove = ExistingProjectMove(project: vault, identity: loadIdentity)
+					} else {
+						startImport(vault)
+					}
 				}
 				.buttonStyle(.borderedProminent)
 				.controlSize(.small)
@@ -186,16 +244,10 @@ struct OrgVaultsSheet: View {
 
 	private func loadVaults(for orgSlug: String) async {
 		guard !orgSlug.isEmpty else { return }
+		orgVaults = []
 		isLoading = true
 		loadError = nil
-		let syncService = SyncService.shared(baseURL: store.appEnvironment.baseURL)
-		guard let authToken = await store.currentAuthToken() else {
-			guard !Task.isCancelled else { return }
-			isLoading = false
-			loadError = "Sign in to lpm.dev, then retry."
-			return
-		}
-		let result = await syncService.listOrgProjects(authToken: authToken, orgSlug: orgSlug)
+		let result = await store.listOrganizationCloudProjects(orgSlug: orgSlug)
 		switch result {
 		case .success(let projects):
 			guard !Task.isCancelled else { return }
@@ -210,14 +262,32 @@ struct OrgVaultsSheet: View {
 		}
 	}
 
-	private func importVault(_ vault: SyncService.RemoteProject) async {
-		guard let orgSlug = selectedOrg else { return }
+	private func startImport(_ vault: SyncService.RemoteProject) {
+		guard VaultTaskOwnership.canStart(current: importID),
+			importTask == nil,
+			let orgSlug = loadIdentity.effectiveOrgSlug
+		else { return }
+		let requestID = UUID()
 		isPulling = vault.vaultId
 		importResult = nil
+		importID = requestID
+		importTask = Task {
+			await importVault(vault, orgSlug: orgSlug, requestID: requestID)
+		}
+	}
+
+	private func importVault(
+		_ vault: SyncService.RemoteProject,
+		orgSlug: String,
+		requestID: UUID
+	) async {
 		let result = await store.importOrganizationProject(vault, orgSlug: orgSlug)
-		guard !Task.isCancelled else { return }
+		guard !Task.isCancelled,
+			VaultTaskOwnership.owns(current: importID, request: requestID)
+		else { return }
 		isPulling = nil
 		importTask = nil
+		importID = nil
 		switch result {
 		case .success(let imported):
 			importResult = .success(
@@ -230,7 +300,35 @@ struct OrgVaultsSheet: View {
 		}
 	}
 
+	private func cancelImport() {
+		importTask?.cancel()
+		importTask = nil
+		importID = nil
+		isPulling = nil
+	}
+
 	private func formatTimeAgo(_ iso: String) -> String {
 		RelativeTimestampFormatter.string(fromRFC3339: iso)
+	}
+}
+
+struct OrgProjectMoveConfirmation: View {
+	let projectName: String
+	let onConfirm: () -> Void
+	let onCancel: () -> Void
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 16) {
+			Text("Move and merge \(projectName)?").font(.headline)
+			Text("This local project will move to this organization in the sidebar.")
+			Text("Cloud values replace conflicting local values. Local-only keys and previous sync history remain. Nothing is uploaded.")
+			HStack {
+				Spacer()
+				Button("Cancel", action: onCancel).keyboardShortcut(.cancelAction)
+				Button("Move and merge", action: onConfirm).buttonStyle(.borderedProminent)
+			}
+		}
+		.padding(24)
+		.frame(width: 440)
 	}
 }
