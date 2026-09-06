@@ -308,6 +308,25 @@ struct PinnedSessionDelegateTests {
 		))
 	}
 
+	@Test("production signing key authenticates only the original status, body, and key ID")
+	func productionSigningKeyAuthenticatesExactResponse() {
+		let body = Data(#"{"vaultId":"v1","version":3}"#.utf8)
+		let signature = "qHV0sHXlvnDewhvNfLUGNR09T96GC2YqkYxhy8K6JGPEOh0KOZB94jmdLodFv3WZb62yDBcExziVXge_dpuGDA"
+		for (status, responseBody, keyID, expected) in [
+			(200, body, "vault-2026-09-06", true),
+			(404, body, "vault-2026-09-06", false),
+			(200, Data("changed".utf8), "vault-2026-09-06", false),
+			(200, body, "vault-2026-09", false),
+		] {
+			let response = makeResponse(statusCode: status, headers: [
+				"X-LPM-Response-Key-ID": keyID,
+				"X-LPM-Response-Signature": signature,
+			])
+			#expect(PinnedSessionDelegate.verifyResponseSignature(
+				response, body: responseBody, requireSignature: true) == expected)
+		}
+	}
+
 	@Test("response signatures require canonical base64url encoding")
 	func noncanonicalResponseSignatureRejects() {
 		let body = Data(#"{"vaultId":"v1","version":3}"#.utf8)
