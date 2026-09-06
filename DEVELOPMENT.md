@@ -102,6 +102,19 @@ Local checks cover the signed app, signed CLI, dashboard, local registry, and lo
 Use a database with the registry's current base schema before applying the env migrations.
 Historical bootstrap problems must not be repaired by editing applied migration files.
 
+The historical baseline also includes manual SQL outside `db/migrations`:
+
+- Install `pgcrypto`, `pg_trgm`, and `vector` in the `extensions` schema.
+- Apply `db/sql/0002_ai-search-columns.sql`, then `db/sql/0005_search-vector-use-settings-tags.sql`, before original migration 0158.
+- Use the registry auditor's existing list of acknowledged duplicate historical migrations.
+- On an empty baseline, validate the ZIP metadata constraint after creating its table.
+
+Use a separate empty database for original-history verification.
+Never replay old migrations below an existing database's migration watermark.
+After preparing the baseline, run `npm run db:push`, then `npm run db:audit-migrations`.
+All three blocking audit counts must be zero.
+
+
 The registry's vendor acceptance suite needs its external development Supabase, Stripe, Cloudflare, R2, and Worker configuration.
 Local sync checks do not validate those deployments.
 Organization browser decryption and organization OIDC access are unavailable in the current product contract.
