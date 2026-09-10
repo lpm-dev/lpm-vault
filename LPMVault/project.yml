@@ -23,6 +23,7 @@ settings:
     CODE_SIGNING_ALLOWED: YES
     CODE_SIGNING_REQUIRED: YES
     ENABLE_HARDENED_RUNTIME: YES
+    LM_SKIP_METADATA_EXTRACTION: YES
   configs:
     Release:
       CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
@@ -35,9 +36,9 @@ targets:
       - path: Sources
         excludes:
           - "Resources/**"
-    resources:
-      - path: Sources/Assets.xcassets
       - path: Sources/Resources
+        type: folder
+        buildPhase: resources
     settings:
       base:
         CODE_SIGN_ENTITLEMENTS: LPMVault.entitlements
