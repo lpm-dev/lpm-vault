@@ -79,9 +79,10 @@ struct VaultTitleBarView: View {
 	private var breadcrumb: some View {
 		HStack(spacing: 8) {
 			VaultAppMark()
-			Text("Vault")
+			Text("LPM Vault")
 				.font(.system(size: 13, weight: .semibold))
 				.foregroundStyle(VaultPalette.textPrimary)
+				.fixedSize()
 
 			if let project {
 				Text("— \(project.name)")
