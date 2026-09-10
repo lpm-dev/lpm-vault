@@ -55,8 +55,8 @@ struct MenuBarView: View {
 				showMainWindow()
 			} label: {
 				HStack {
-					Image(systemName: "macwindow")
-					Text("Open Vault")
+					VaultAppMark(size: 16)
+					Text("Open LPM Vault")
 				}
 			}
 

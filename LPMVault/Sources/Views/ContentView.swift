@@ -39,14 +39,7 @@ struct ContentView: View {
 			}
 
 			VStack(spacing: 16) {
-				ZStack {
-					RoundedRectangle(cornerRadius: 15, style: .continuous)
-						.fill(VaultPalette.appIconGradient)
-						.frame(width: 56, height: 56)
-					Image(systemName: "touchid")
-						.font(.system(size: 29, weight: .medium))
-						.foregroundStyle(.white)
-				}
+				VaultAppMark(size: 56)
 
 				VStack(spacing: 5) {
 					Text("LPM Vault is Locked")

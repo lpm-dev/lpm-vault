@@ -17,8 +17,7 @@ struct VaultPrivacyCurtain: View {
 		ZStack {
 			Color(hex: 0x1C1C1E)
 			VStack(spacing: 12) {
-				Image(systemName: "lock.shield")
-					.font(.system(size: 40))
+				VaultAppMark(size: 56)
 				Text("LPM Vault")
 					.font(.headline)
 			}
