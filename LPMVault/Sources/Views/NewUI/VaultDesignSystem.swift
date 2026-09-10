@@ -51,12 +51,6 @@ enum VaultPalette {
 	static let terminal = Color(hex: 0x1C1C1E)
 	static let terminalText = Color(hex: 0xE8E8ED)
 
-	static let appIconGradient = LinearGradient(
-		colors: [Color(hex: 0x7A78F0), Color(hex: 0x4B48D6)],
-		startPoint: .top,
-		endPoint: .bottom
-	)
-
 	static func environment(_ index: Int) -> Color {
 		let colors = [green, orange, red, accent, Color(hex: 0x0A84FF), Color(hex: 0xAF52DE)]
 		return colors[index % colors.count]
@@ -125,13 +119,37 @@ struct VaultHairline: View {
 	}
 }
 
+@MainActor
+enum VaultBranding {
+	#if SWIFT_PACKAGE
+	private static let bundle = Bundle.module
+	#else
+	private static let bundle = Bundle.main
+	#endif
+
+	static let logo = loadImage(name: "lpm-vault", extension: "svg")
+	static let appIcon = loadImage(name: "LPMVault", extension: "icns")
+
+	private static func loadImage(name: String, extension fileExtension: String) -> NSImage {
+		guard let url = bundle.url(forResource: name, withExtension: fileExtension, subdirectory: "Resources"),
+			let image = NSImage(contentsOf: url)
+		else {
+			preconditionFailure("Missing bundled LPM Vault artwork: \(name).\(fileExtension)")
+		}
+		return image
+	}
+}
+
 struct VaultAppMark: View {
 	var size: CGFloat = 20
 
 	var body: some View {
-		RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-			.fill(VaultPalette.appIconGradient)
+		Image(nsImage: VaultBranding.logo)
+			.resizable()
+			.renderingMode(.original)
+			.scaledToFit()
 			.frame(width: size, height: size)
+			.accessibilityHidden(true)
 	}
 }
 

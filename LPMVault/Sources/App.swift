@@ -28,14 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 	private var hasPendingSecurityLock = false
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
-		// When launched from Xcode (bare executable, no .app bundle),
-		// the asset catalog icon isn't available. Set it programmatically.
-		if NSApplication.shared.applicationIconImage == nil || Bundle.main.url(forResource: "AppIcon", withExtension: "icns") == nil {
-			if let iconURL = Bundle.main.url(forResource: "LPMVault", withExtension: "icns"),
-				let icon = NSImage(contentsOf: iconURL)
-			{
-				NSApplication.shared.applicationIconImage = icon
-			}
+		// Swift Package launches have no app bundle for macOS to discover the icon.
+		if Bundle.main.url(forResource: "AppIcon", withExtension: "icns") == nil {
+			NSApplication.shared.applicationIconImage = VaultBranding.appIcon
 		}
 
 		localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.userActivityEvents) {
