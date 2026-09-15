@@ -40,3 +40,6 @@ CLAUDE.md
 __pycache__/
 release-output/
 build-check/
+
+# Private
+/private/
