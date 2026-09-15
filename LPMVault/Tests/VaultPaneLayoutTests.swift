@@ -80,6 +80,7 @@ struct VaultPaneLayoutTests {
 		}
 		_ = try #require(store.workspaceSnapshots[project.id])
 		let host = NSHostingView(rootView: VaultWorkspaceView(store: store)
+			.environment(UpdateChecker())
 			.environment(\.colorScheme, .light))
 		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 800),
 			styleMask: [.titled], backing: .buffered, defer: false)

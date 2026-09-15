@@ -40,6 +40,8 @@ The app requires a signed feed and verifies each archive before extraction. The 
 
 Sparkle asks the user whether to enable background update checks. Automatic downloads start disabled. The application menu provides **Check for Updates…**. Debug builds disable production updates.
 
+When Sparkle offers a new version, **Update available** appears beside **Lock**. The button opens the current update window. The reminder clears when the update session ends, including after **Skip This Version** or **Remind Me Later**.
+
 ## Existing credential gap and migration
 
 Earlier auth queries used the `lpm-cli` service without selecting the shared Data Protection Keychain group. Matching service names did not provide the intended access boundary.

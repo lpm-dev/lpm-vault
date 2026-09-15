@@ -4,7 +4,9 @@ import Sparkle
 @MainActor
 protocol VaultUpdateDriver: AnyObject {
 	var canCheckForUpdates: Bool { get }
+	var availableUpdateVersion: String? { get }
 	var availabilityChanged: ((Bool) -> Void)? { get set }
+	var updateChanged: ((String?) -> Void)? { get set }
 	func start()
 	func checkForUpdates()
 }
@@ -13,6 +15,7 @@ protocol VaultUpdateDriver: AnyObject {
 @MainActor
 final class UpdateChecker {
 	private(set) var canCheckForUpdates = false
+	private(set) var availableUpdateVersion: String?
 	@ObservationIgnored private let driver: (any VaultUpdateDriver)?
 	@ObservationIgnored private var started = false
 
@@ -34,8 +37,12 @@ final class UpdateChecker {
 		driver.availabilityChanged = { [weak self] available in
 			self?.canCheckForUpdates = available
 		}
+		driver.updateChanged = { [weak self] version in
+			self?.availableUpdateVersion = version
+		}
 		driver.start()
 		canCheckForUpdates = driver.canCheckForUpdates
+		availableUpdateVersion = driver.availableUpdateVersion
 	}
 
 	func checkForUpdates() {
@@ -45,10 +52,14 @@ final class UpdateChecker {
 }
 
 @MainActor
-private final class SparkleUpdateDriver: VaultUpdateDriver {
+private final class SparkleUpdateDriver: NSObject, VaultUpdateDriver, @preconcurrency SPUStandardUserDriverDelegate {
 	var availabilityChanged: ((Bool) -> Void)?
-	private let controller = SPUStandardUpdaterController(
-		startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+	var updateChanged: ((String?) -> Void)?
+	private(set) var availableUpdateVersion: String? {
+		didSet { updateChanged?(availableUpdateVersion) }
+	}
+	private lazy var controller = SPUStandardUpdaterController(
+		startingUpdater: false, updaterDelegate: nil, userDriverDelegate: self
 	)
 	private var observation: NSKeyValueObservation?
 
@@ -67,5 +78,17 @@ private final class SparkleUpdateDriver: VaultUpdateDriver {
 
 	func checkForUpdates() {
 		controller.checkForUpdates(nil)
+	}
+
+	var supportsGentleScheduledUpdateReminders: Bool { true }
+
+	func standardUserDriverWillHandleShowingUpdate(
+		_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState
+	) {
+		availableUpdateVersion = update.displayVersionString
+	}
+
+	func standardUserDriverWillFinishUpdateSession() {
+		availableUpdateVersion = nil
 	}
 }

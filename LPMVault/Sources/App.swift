@@ -99,6 +99,7 @@ struct LPMVaultApp: App {
 		// Main window — opens automatically on launch
 		Window("LPM Vault", id: "main") {
 			ContentView(store: store)
+				.environment(updateChecker)
 				.environment(\.vaultContentObscured, isObscured)
 				.preferredColorScheme(.light)
 				.vaultPrivacyProtected(isObscured)
