@@ -382,7 +382,7 @@ struct VaultAccountSwitcher: View {
 				store.showSettings()
 				isPresented = false
 			}
-			menuRow(icon: "lock", title: "Lock vault", shortcut: "⌃⌘L") {
+			menuRow(icon: "lock", title: "Lock vault", shortcut: "⌘L") {
 				store.lock()
 				isPresented = false
 			}
