@@ -194,7 +194,7 @@ validate_arguments() {
 
 require_tools() {
 	local tool
-	for tool in xcodebuild xcrun security codesign spctl lipo hdiutil ditto shasum stat jq; do
+	for tool in xcodebuild xcrun security codesign spctl lipo hdiutil ditto shasum stat jq python3; do
 		command -v "$tool" >/dev/null 2>&1 || fail "required tool is unavailable: $tool"
 	done
 	[ -x /usr/libexec/PlistBuddy ] || fail "required tool is unavailable: /usr/libexec/PlistBuddy"
@@ -297,8 +297,12 @@ build_signed_app() {
 		fail "xcodebuild failed; see $build_log"
 	fi
 	[ -d "$built_app" ] || fail "xcodebuild completed without producing $built_app"
+	if grep -Eq '(^|[[:space:]])warning:' "$build_log"; then
+		fail "release build contains warnings; see $build_log"
+	fi
 	ditto "$built_app" "$staged_app"
 	cp "$PROVISIONING_PROFILE" "$staged_app/Contents/embedded.provisionprofile"
+	bash "$SCRIPT_DIR/Scripts/sign-sparkle.sh" "$staged_app" "$SIGNING_IDENTITY" --timestamp
 	codesign --force --timestamp --options runtime \
 		--entitlements "$SCRIPT_DIR/LPMVault.entitlements" \
 		--sign "$SIGNING_IDENTITY" \
@@ -335,6 +339,17 @@ verify_signed_app() {
 	[ "$(plist_value "$app_path" CFBundleShortVersionString)" = "$VERSION" ] || fail "Info.plist has the wrong version"
 	[ "$(plist_value "$app_path" CFBundleVersion)" = "$BUILD_NUMBER" ] || fail "Info.plist has the wrong build number"
 	[ "$(plist_value "$app_path" LSMinimumSystemVersion)" = "$MINIMUM_SYSTEM_VERSION" ] || fail "Info.plist has the wrong minimum macOS version"
+	python3 "$SCRIPT_DIR/Scripts/verify-update-config.py" "$app_path/Contents/Info.plist"
+	local component component_entitlements
+	for component in \
+		"Versions/B/XPCServices/Downloader.xpc" \
+		"Versions/B/XPCServices/Installer.xpc" \
+		"Versions/B/Autoupdate" "Versions/B/Updater.app" "."; do
+		component_entitlements="$(codesign -d --entitlements - "$app_path/Contents/Frameworks/Sparkle.framework/$component" 2>/dev/null)"
+		if grep -Eq 'keychain-access-groups|com.apple.security.get-task-allow' <<<"$component_entitlements"; then
+			fail "Sparkle component has prohibited entitlements: $component"
+		fi
+	done
 
 	architectures="$(lipo -archs "$app_path/Contents/MacOS/$APP_NAME")"
 	normalized_architectures="$(printf '%s\n' "$architectures" | tr ' ' '\n' | LC_ALL=C sort | paste -sd ' ' -)"

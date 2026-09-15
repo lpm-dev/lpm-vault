@@ -23,7 +23,7 @@ release/
 # Swift Package Manager
 .build/
 .swiftpm/
-Package.resolved
+!LPMVault/Package.resolved
 
 # macOS
 .DS_Store
@@ -35,3 +35,8 @@ Package.resolved
 
 AGENTS.md
 CLAUDE.md
+
+# Python release tooling
+__pycache__/
+release-output/
+build-check/

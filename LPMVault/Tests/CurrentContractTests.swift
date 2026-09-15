@@ -141,6 +141,13 @@ struct CurrentContractTests {
     )
   }
 
+  @Test("login credentials use the shared Data Protection Keychain group")
+  func authCredentialsUseSharedKeychain() {
+    let query = KeychainAuthCredentialBackend(service: "lpm-cli").baseQuery(account: "test")
+    #expect(query[kSecAttrAccessGroup as String] as? String == VaultConstants.keychainAccessGroup)
+    #expect(query[kSecUseDataProtectionKeychain as String] as? Bool == true)
+  }
+
   @Test("hashed access account matches the Rust client")
   func hashedAccessAccount() {
     #expect(

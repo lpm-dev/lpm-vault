@@ -40,7 +40,7 @@ struct AuthSessionCoordinatorTests {
 			AuthSessionStore.authorityID(kind: "access", registryURL: registryURL)
 		)
 		#expect(records[refreshID]?["state"] as? String == "active")
-		#expect(records[refreshID]?["backend"] as? String == "keychain")
+		#expect(records[refreshID]?["backend"] as? String == "shared_keychain")
 		#expect(records[refreshID]?["stale_file_cleanup_pending"] as? Bool == false)
 		#expect(records[accessID]?["state"] as? String == "active")
 
@@ -1510,6 +1510,101 @@ struct AuthSessionCoordinatorTests {
 		#expect(permissions.intValue == 0o755)
 	}
 
+	@Test("legacy credentials migrate only after matching their authority digest")
+	func legacyCredentialsMigrate() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await seedLegacySession(home: home, backend: backend, coordinator: coordinator)
+		let value = try await coordinator.currentAccessToken(registryURL: "https://lpm.dev", baseURL: URL(string: "https://lpm.dev")!)
+		#expect(value == "legacy-access")
+		let account = AuthSessionCoordinator.accessAccount(registryURL: "https://lpm.dev")
+		#expect(backend.value(for: account) == "legacy-access")
+		#expect(try backend.readLegacy(account: account) == nil)
+		let records = try authorityRecords(home: home)
+		#expect(records.values.allSatisfy { $0["backend"] as? String == "shared_keychain" })
+		#expect(records.values.allSatisfy { $0["legacy_keychain_cleanup_pending"] as? Bool == false })
+	}
+
+	@Test("a substituted legacy credential is never copied into the shared group")
+	func rejectsSubstitutedLegacyCredential() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await seedLegacySession(home: home, backend: backend, coordinator: coordinator)
+		let account = AuthSessionCoordinator.accessAccount(registryURL: "https://lpm.dev")
+		backend.setLegacy("substituted", account: account)
+		await #expect(throws: (any Error).self) {
+			try await coordinator.currentAccessToken(registryURL: "https://lpm.dev", baseURL: URL(string: "https://lpm.dev")!)
+		}
+		#expect(backend.value(for: account) == nil)
+		#expect(backend.writeAccounts.isEmpty)
+	}
+
+	@Test("failed shared writes preserve the legacy credential and authority for retry")
+	func migrationWriteFailurePreservesLegacy() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await seedLegacySession(home: home, backend: backend, coordinator: coordinator)
+		let account = AuthSessionCoordinator.accessAccount(registryURL: "https://lpm.dev")
+		backend.failWrites(to: account)
+		await #expect(throws: (any Error).self) {
+			try await coordinator.currentAccessToken(registryURL: "https://lpm.dev", baseURL: URL(string: "https://lpm.dev")!)
+		}
+		#expect(try backend.readLegacy(account: account) == "legacy-access")
+		#expect(try authorityRecords(home: home).values.allSatisfy { $0["backend"] as? String == "keychain" })
+		backend.allowWrites(to: account)
+		#expect(try await coordinator.currentAccessToken(registryURL: "https://lpm.dev", baseURL: URL(string: "https://lpm.dev")!) == "legacy-access")
+	}
+
+	@Test("interrupted legacy cleanup resumes from shared credentials without reimporting stale data")
+	func migrationCleanupResumes() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await seedLegacySession(home: home, backend: backend, coordinator: coordinator)
+		let account = AuthSessionCoordinator.accessAccount(registryURL: "https://lpm.dev")
+		backend.failLegacyCleanup = true
+		await #expect(throws: (any Error).self) {
+			try await coordinator.currentAccessToken(registryURL: "https://lpm.dev", baseURL: URL(string: "https://lpm.dev")!)
+		}
+		#expect(backend.value(for: account) == "legacy-access")
+		let records = try authorityRecords(home: home)
+		#expect(records.values.contains { $0["backend"] as? String == "shared_keychain" && $0["legacy_keychain_cleanup_pending"] as? Bool == true })
+		backend.setLegacy("stale-replacement", account: account)
+		backend.failLegacyCleanup = false
+		#expect(try await coordinator.currentAccessToken(registryURL: "https://lpm.dev", baseURL: URL(string: "https://lpm.dev")!) == "legacy-access")
+		#expect(try backend.readLegacy(account: account) == nil)
+	}
+
+	private func authorityRecords(home: URL) throws -> [String: [String: Any]] {
+		let object = try jsonObject(at: home.appendingPathComponent(".lpm/.credential-authority.json"))
+		return try #require(object["credentials"] as? [String: [String: Any]])
+	}
+
+	private func seedLegacySession(home: URL, backend: MemoryAuthCredentialBackend, coordinator: AuthSessionCoordinator) async throws {
+		try await coordinator.persist(session(access: "legacy-access", refresh: "legacy-refresh", expiresAt: fixedNow.addingTimeInterval(3600)), registryURL: "https://lpm.dev")
+		for account in [AuthSessionCoordinator.accessAccount(registryURL: "https://lpm.dev"), AuthSessionCoordinator.refreshAccount(registryURL: "https://lpm.dev")] {
+			backend.setLegacy(try #require(backend.value(for: account)), account: account)
+			try backend.delete(account: account)
+		}
+		let path = home.appendingPathComponent(".lpm/.credential-authority.json")
+		var object = try jsonObject(at: path)
+		var records = try #require(object["credentials"] as? [String: [String: Any]])
+		for key in records.keys {
+			records[key]?["backend"] = "keychain"
+			records[key]?.removeValue(forKey: "legacy_keychain_cleanup_pending")
+		}
+		object["credentials"] = records
+		try JSONSerialization.data(withJSONObject: object).write(to: path)
+		backend.resetWriteLog()
+	}
+
 	private func makeCoordinator(
 		home: URL,
 		backend: MemoryAuthCredentialBackend,
@@ -1571,6 +1666,8 @@ struct AuthSessionCoordinatorTests {
 private final class MemoryAuthCredentialBackend: AuthCredentialBackend, @unchecked Sendable {
 	private let lock = NSLock()
 	private var credentials: [String: String] = [:]
+	private var legacyCredentials: [String: String] = [:]
+	var failLegacyCleanup = false
 	private var writes: [String] = []
 	private var failingWriteAccounts: Set<String> = []
 	private var failingDeleteAccounts: Set<String> = []
@@ -1581,6 +1678,17 @@ private final class MemoryAuthCredentialBackend: AuthCredentialBackend, @uncheck
 
 	func read(account: String) throws -> String? {
 		lock.withLock { credentials[account] }
+	}
+
+	func readLegacy(account: String) throws -> String? { lock.withLock { legacyCredentials[account] } }
+
+	func setLegacy(_ value: String, account: String) { lock.withLock { legacyCredentials[account] = value } }
+
+	func deleteLegacy(account: String) throws {
+		try lock.withLock {
+			if failLegacyCleanup { throw TestCredentialBackendError.deleteFailed }
+			legacyCredentials.removeValue(forKey: account)
+		}
 	}
 
 	func write(_ credential: String, account: String) throws {
