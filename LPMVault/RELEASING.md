@@ -13,6 +13,8 @@ LPM Vault uses Sparkle 2.10.0 for direct macOS updates. The app supports macOS 1
 
 Coolify serves the website from `web/Dockerfile`, with the repository root as the build context. The container listens on port 8080. Its health endpoint is `/health`.
 
+For an initial website deployment from an open pull request, disable automatic deployment and pin a commit that passed CI. After the approved merge, select `main`, clear the commit pin, and enable automatic deployment.
+
 Cloudflare routes `vault.lpm.dev` to the Coolify server. Coolify must have the domain `https://vault.lpm.dev` and a valid origin certificate.
 
 The download routes redirect to public GitHub release assets. The repository must be public before downloads can work without authentication. No GitHub token belongs in the app or website.
