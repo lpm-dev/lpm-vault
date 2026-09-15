@@ -1160,6 +1160,7 @@ final class VaultStore {
   var error: String?
   var isLoadingProjects: Bool = false
   var isUnlocking: Bool = false
+  private(set) var autoLockCountdownSeconds: Int?
 
   // Auth state
   var currentUser: LPMUser? {
@@ -3472,6 +3473,7 @@ final class VaultStore {
     autoLockTask?.cancel()
     autoLockTask = nil
     autoLockDeadline = nil
+    autoLockCountdownSeconds = nil
     autoLockTaskGeneration &+= 1
     isUnlocked = false
     biometricService.resetCache()
@@ -3498,6 +3500,7 @@ final class VaultStore {
       return
     }
     autoLockDeadline = now + autoLockDuration
+    autoLockCountdownSeconds = nil
     guard autoLockTask == nil else { return }
     autoLockTaskGeneration &+= 1
     let generation = autoLockTaskGeneration
@@ -3512,7 +3515,12 @@ final class VaultStore {
             lock()
             return
           }
-          try await autoLockSleep(.seconds(remaining))
+          let countdownDuration = VaultConstants.vaultAutoLockCountdownDuration
+          autoLockCountdownSeconds = remaining <= countdownDuration ? Int(ceil(remaining)) : nil
+          let sleepDuration = remaining > countdownDuration
+            ? remaining - countdownDuration
+            : min(1, remaining)
+          try await autoLockSleep(.seconds(sleepDuration))
         }
       } catch {}
       if generation == autoLockTaskGeneration {
