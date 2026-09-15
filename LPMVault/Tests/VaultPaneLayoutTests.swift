@@ -153,7 +153,8 @@ struct VaultPaneLayoutTests {
 	private func recordWorkspace<V: View>(_ host: NSHostingView<V>, named name: String) throws {
 		let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
 		host.cacheDisplay(in: host.bounds, to: bitmap)
-		Attachment.record(try #require(bitmap.cgImage), named: name, as: .png)
+		let data = try #require(bitmap.representation(using: .png, properties: [:]))
+		Attachment.record(data, named: name + ".png")
 
 	}
 

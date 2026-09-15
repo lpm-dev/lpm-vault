@@ -775,7 +775,8 @@ struct VaultStoreTests {
 		let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
 		view.cacheDisplay(in: view.bounds, to: bitmap)
 		let image = try #require(bitmap.cgImage)
-		Attachment.record(image, named: "lock-countdown-\(seconds)", as: .png)
+		let data = try #require(bitmap.representation(using: .png, properties: [:]))
+		Attachment.record(data, named: "lock-countdown-\(seconds).png")
 		let request = VNRecognizeTextRequest()
 		request.recognitionLevel = .accurate
 		try VNImageRequestHandler(cgImage: image).perform([request])
