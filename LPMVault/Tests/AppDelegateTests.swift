@@ -130,7 +130,7 @@ struct AppBrandingTests {
 		let image = try renderNative(VaultTitleBarView(
 			store: store, mode: .matrix, onShowVaultID: {}, onPull: {}, onPush: {}
 		).environment(\.colorScheme, .light), size: CGSize(width: 1100, height: VaultMetrics.titleBar))
-		Attachment.record(image, named: "title-bar", as: .png)
+		try recordPNG(image, named: "title-bar.png")
 		let request = VNRecognizeTextRequest()
 		request.recognitionLevel = .accurate
 		try VNImageRequestHandler(cgImage: image).perform([request])
@@ -147,7 +147,7 @@ struct AppBrandingTests {
 		)
 		let image = try renderNative(ContentView(store: store)
 			.environment(\.colorScheme, .light), size: CGSize(width: 1040, height: 640))
-		Attachment.record(image, named: "lock-screen", as: .png)
+		try recordPNG(image, named: "lock-screen.png")
 		let request = VNRecognizeTextRequest()
 		request.recognitionLevel = .accurate
 		try VNImageRequestHandler(cgImage: image).perform([request])
@@ -164,6 +164,11 @@ struct AppBrandingTests {
 		#expect(bitmap.pixelsWide == Int(size * 2))
 		#expect(bitmap.pixelsHigh == Int(size * 2))
 		try expectLogo(in: bitmap)
+	}
+
+	private func recordPNG(_ image: CGImage, named name: String) throws {
+		let data = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+		Attachment.record(data, named: name)
 	}
 
 	private func renderNative<V: View>(_ view: V, size: CGSize) throws -> CGImage {
