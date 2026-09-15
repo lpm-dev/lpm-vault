@@ -79,6 +79,25 @@ The build runner imports the Developer ID export into a temporary Keychain. Clea
 
 ## Publish a release
 
+### Verify credentials before publication
+
+The **Verify signed release** workflow uses the repository secrets to build and notarize test installers. It works while the repository is private.
+
+Run it manually with a test version and build number. Before the workflow reaches `main`, push a `release-check-*` tag on the reviewed branch:
+
+```bash
+git tag release-check-1.0.0-build3
+git push origin release-check-1.0.0-build3
+```
+
+This tag runs the full CI gates before signing. It does not start the production release workflow or create a GitHub release.
+
+Download the `vault-verified-installers` workflow artifact for local testing. GitHub retains it for seven days. It contains installers, checksums, the signed feed, and the release manifest. Signing credentials and diagnostic logs are excluded.
+
+GitHub cannot return saved secret values to a local build. A local build uses an installed Developer ID identity and a valid local notarization profile or API key.
+
+### Publish verified artifacts
+
 1. Update `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `project.yml`.
 2. Increase both values beyond the latest published release.
 3. Run `xcodegen generate --spec LPMVault/project.yml` from the repository root.
@@ -138,6 +157,6 @@ Local scripts submit artifacts to Apple for notarization. They do not publish a 
 
 ## First public release dependencies
 
-The initial rollout requires the export password, Apple issuer UUID, public repository visibility, and the first notarized release. A product-page deployment alone does not make an installer available.
+The initial rollout requires verified signing credentials, public repository visibility, and the first notarized release. A product-page deployment alone does not make an installer available.
 
 Before public launch, install the DMG on a clean Mac and verify Keychain access with the matching signed CLI. Then verify an update between two notarized builds through the public feed. This final end-to-end check needs two published release artifacts.

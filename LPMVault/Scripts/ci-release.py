@@ -1,3 +1,4 @@
+import argparse
 import base64
 import json
 import os
@@ -25,7 +26,22 @@ def release_version(tag):
     return tag[1:]
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Build a signed release or verify signing without publication")
+    parser.add_argument('--verify-only', action='store_true')
+    parser.add_argument('--version')
+    parser.add_argument('--build')
+    args = parser.parse_args(argv)
+    if args.verify_only:
+        if not args.version or not args.build:
+            parser.error('--verify-only requires --version and --build')
+        version = release_version('v' + args.version)
+        if not re.fullmatch(r'[1-9][0-9]{0,3}(\.(0|[1-9][0-9]?)){0,2}', args.build):
+            raise ValueError('Invalid verification build number')
+        sign_release(version, args.build)
+        return
+    if args.version or args.build:
+        parser.error('--version and --build are only available with --verify-only')
     version = release_version(os.environ["GITHUB_REF_NAME"])
     repository = os.environ["GITHUB_REPOSITORY"]
     run("git", "fetch", "origin", "main")
@@ -55,6 +71,16 @@ def main():
         numeric = lambda value: tuple(int(part) for part in value.split("."))
         if numeric(version) <= numeric(manifest["version"]) or numeric(build) <= numeric(manifest["build"]):
             raise ValueError("Release version and build must both increase")
+    sign_release(version, build)
+    artifacts = [f"LPM-Vault-{version}.dmg", f"LPM-Vault-{version}-macos-universal.zip",
+                 "LPM-Vault.dmg", "appcast.xml", "checksums.txt", "release-manifest.json"]
+    run("gh", "release", "create", f"v{version}", "--repo", repository, "--verify-tag",
+        "--draft", "--title", f"LPM Vault {version}", "--generate-notes",
+        *(str(Path("release-output") / name) for name in artifacts))
+    run("gh", "release", "edit", f"v{version}", "--repo", repository, "--draft=false", "--latest")
+
+
+def sign_release(version, build):
     required = ["APPLE_DEVELOPER_ID_P12_BASE64", "APPLE_DEVELOPER_ID_P12_PASSWORD",
                 "APPLE_VAULT_PROVISIONING_PROFILE_BASE64", "APPLE_NOTARY_KEY_BASE64",
                 "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID", "SPARKLE_PRIVATE_KEY"]
@@ -94,12 +120,6 @@ def main():
         for path in directory.glob("*"):
             if path.is_file():
                 path.unlink()
-    artifacts = [f"LPM-Vault-{version}.dmg", f"LPM-Vault-{version}-macos-universal.zip",
-                 "LPM-Vault.dmg", "appcast.xml", "checksums.txt", "release-manifest.json"]
-    run("gh", "release", "create", f"v{version}", "--repo", repository, "--verify-tag",
-        "--draft", "--title", f"LPM Vault {version}", "--generate-notes",
-        *(str(Path("release-output") / name) for name in artifacts))
-    run("gh", "release", "edit", f"v{version}", "--repo", repository, "--draft=false", "--latest")
 
 
 if __name__ == "__main__":
