@@ -33,16 +33,6 @@ struct AuditRegressionTests {
     #expect(limiter.reserve(now: 50))
   }
 
-  @Test("future-dated update cache entries expire immediately")
-  func futureUpdateCacheExpires() {
-    let now = Date(timeIntervalSince1970: 1_000)
-    #expect(
-      UpdateChecker.cacheIsExpired(
-        checkedAt: now.addingTimeInterval(60),
-        now: now
-      ))
-  }
-
   @Test("shared RFC 3339 relative timestamps cover fractional, whole, and future values")
   func sharedRelativeTimestampFormatting() {
     let now = Date(timeIntervalSince1970: 2_000)
@@ -118,41 +108,6 @@ struct AuditRegressionTests {
       lastUsedAt: nil, downloadCount: nil, createdAt: nil
     )
     #expect(expired.expiryStatus == .expired)
-  }
-
-  @Test("semantically equal release versions do not produce an update")
-  @MainActor
-  func numericReleaseComparison() async throws {
-    #expect(UpdateChecker.isNewerVersion("1.10.0", than: "1.9.0"))
-    #expect(!UpdateChecker.isNewerVersion("1.9.0", than: "1.10.0"))
-    #expect(!UpdateChecker.isNewerVersion("2.0", than: "2.0.0"))
-
-    struct Cache: Encodable {
-      let version: String
-      let checkedAt: Date
-    }
-    let defaults = UserDefaults.standard
-    let key = "lpm-vault-update-check"
-    let previous = defaults.data(forKey: key)
-    defer {
-      if let previous {
-        defaults.set(previous, forKey: key)
-      } else {
-        defaults.removeObject(forKey: key)
-      }
-    }
-    let checker = UpdateChecker()
-    var equivalentFields = checker.currentVersion.split(separator: ".").map(String.init)
-    #expect(equivalentFields.count == 3)
-    equivalentFields[1] = "0" + equivalentFields[1]
-    let equivalent = equivalentFields.joined(separator: ".")
-    defaults.set(
-      try JSONEncoder().encode(Cache(version: equivalent, checkedAt: Date())),
-      forKey: key
-    )
-    await checker.checkForUpdate()
-    #expect(checker.latestVersion == equivalent)
-    #expect(!checker.updateAvailable)
   }
 
   @Test("a wholly empty cloud payload has a durable default environment")

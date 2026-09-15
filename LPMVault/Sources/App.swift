@@ -92,6 +92,7 @@ struct LPMVaultApp: App {
 	@NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 	@Environment(\.openWindow) private var openWindow
 	@State private var store = VaultStore()
+	@State private var updateChecker = UpdateChecker()
 	@State private var isObscured = false
 
 	var body: some Scene {
@@ -108,6 +109,7 @@ struct LPMVaultApp: App {
 					isObscured = false
 				}
 				.task {
+					updateChecker.start()
 					await store.loadAccount()
 				}
 				.onAppear {
@@ -126,6 +128,10 @@ struct LPMVaultApp: App {
 		.windowStyle(.hiddenTitleBar)
 		.commands {
 			CommandGroup(replacing: .newItem) {}
+			CommandGroup(after: .appInfo) {
+				Button("Check for Updates…") { updateChecker.checkForUpdates() }
+					.disabled(!updateChecker.canCheckForUpdates)
+			}
 			CommandMenu("Env Project") {
 				Button("New Secret") {
 					NotificationCenter.default.post(name: .newSecret, object: nil)

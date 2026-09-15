@@ -3,7 +3,6 @@ import SwiftUI
 
 struct VaultWorkspaceView: View {
 	@Bindable var store: VaultStore
-	@Bindable var updateChecker: UpdateChecker
 	@Environment(\.vaultContentObscured) private var isObscured
 
 	@State private var mode: VaultWorkspaceMode = .matrix
@@ -65,12 +64,6 @@ struct VaultWorkspaceView: View {
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
-
-			if updateChecker.updateAvailable, let latest = updateChecker.latestVersion {
-				updateBanner(latest: latest)
-					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
-				VaultHairline()
-			}
 
 			GeometryReader { geometry in
 				let budget = VaultPaneBudget(
@@ -447,22 +440,6 @@ struct VaultWorkspaceView: View {
 				onCancel: { conflictTarget = nil }
 			)
 		}
-	}
-
-	private func updateBanner(latest: String) -> some View {
-		HStack(spacing: 8) {
-			Image(systemName: "arrow.up.circle.fill").foregroundStyle(VaultPalette.accent)
-			Text("Update available: \(updateChecker.currentVersion) → \(latest)")
-				.font(.system(size: 12.5))
-			Spacer()
-			if let url = updateChecker.releaseURL { Link("Download", destination: url).font(.system(size: 12.5, weight: .semibold)) }
-			Button { updateChecker.updateAvailable = false } label: { Image(systemName: "xmark") }
-				.buttonStyle(.plain)
-				.accessibilityLabel("Dismiss update notification")
-		}
-		.padding(.horizontal, 16)
-		.frame(height: 34)
-		.background(VaultPalette.accentTint)
 	}
 
 	private func presentAddSecret() {

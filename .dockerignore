@@ -1,0 +1,6 @@
+*
+!web/
+!web/Dockerfile
+!web/nginx.conf
+!web/public/
+!web/public/**

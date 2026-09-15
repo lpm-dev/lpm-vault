@@ -68,81 +68,6 @@ struct AuthSessionAuthorization: Sendable {
 	let authorityGeneration: AuthSessionAuthorityGeneration
 }
 
-protocol AuthCredentialBackend: Sendable {
-	func read(account: String) throws -> String?
-	func write(_ credential: String, account: String) throws
-	func delete(account: String) throws
-}
-
-struct KeychainAuthCredentialBackend: AuthCredentialBackend {
-	static let accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
-
-	let service: String
-
-	func read(account: String) throws -> String? {
-		var query = baseQuery(account: account)
-		query[kSecMatchLimit as String] = kSecMatchLimitOne
-		query[kSecReturnData as String] = true
-
-		var result: CFTypeRef?
-		let status = SecItemCopyMatching(query as CFDictionary, &result)
-		if status == errSecItemNotFound { return nil }
-		guard status == errSecSuccess else {
-			throw AuthSessionCoordinatorError.credentialStorage(
-				"Keychain read returned status \(status)."
-			)
-		}
-		guard let data = result as? Data,
-			let value = String(data: data, encoding: .utf8)?
-				.trimmingCharacters(in: .whitespacesAndNewlines),
-			!value.isEmpty
-		else { return nil }
-		return value
-	}
-
-	func write(_ credential: String, account: String) throws {
-		let query = baseQuery(account: account)
-		let attributes: [String: Any] = [
-			kSecValueData as String: Data(credential.utf8),
-			kSecAttrAccessible as String: Self.accessibility,
-		]
-		let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-		if updateStatus == errSecSuccess { return }
-		guard updateStatus == errSecItemNotFound else {
-			throw AuthSessionCoordinatorError.credentialStorage(
-				"Keychain update returned status \(updateStatus)."
-			)
-		}
-
-		var add = query
-		add[kSecValueData as String] = Data(credential.utf8)
-		add[kSecAttrAccessible as String] = Self.accessibility
-		let addStatus = SecItemAdd(add as CFDictionary, nil)
-		guard addStatus == errSecSuccess else {
-			throw AuthSessionCoordinatorError.credentialStorage(
-				"Keychain write returned status \(addStatus)."
-			)
-		}
-	}
-
-	func delete(account: String) throws {
-		let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
-		if status == errSecSuccess || status == errSecItemNotFound { return }
-		throw AuthSessionCoordinatorError.credentialStorage(
-			"Keychain delete returned status \(status)."
-		)
-	}
-
-	private func baseQuery(account: String) -> [String: Any] {
-		[
-			kSecClass as String: kSecClassGenericPassword,
-			kSecAttrService as String: service,
-			kSecAttrAccount as String: account,
-		]
-	}
-
-}
-
 /// The cross-process refresh transaction shared with `lpm-auth`.
 ///
 /// Lock paths, credential identifiers, authority JSON, and commit ordering
@@ -224,20 +149,25 @@ struct AuthSessionCoordinator: Sendable {
 		let backend: String?
 		let credentialDigest: String?
 		let staleFileCleanupPending: Bool?
+		let legacyKeychainCleanupPending: Bool?
 
 		enum CodingKeys: String, CodingKey {
 			case state
 			case backend
 			case credentialDigest = "credential_digest"
 			case staleFileCleanupPending = "stale_file_cleanup_pending"
+			case legacyKeychainCleanupPending = "legacy_keychain_cleanup_pending"
 		}
 
-		static func activeKeychain(_ credential: String, cleanupPending: Bool) -> Self {
+		static func activeKeychain(
+			_ credential: String, cleanupPending: Bool, legacyCleanupPending: Bool = false
+		) -> Self {
 			Self(
 				state: "active",
-				backend: "keychain",
+				backend: "shared_keychain",
 				credentialDigest: SHA256.hash(data: Data(credential.utf8)).hexString,
-				staleFileCleanupPending: cleanupPending
+				staleFileCleanupPending: cleanupPending,
+				legacyKeychainCleanupPending: legacyCleanupPending
 			)
 		}
 
@@ -245,7 +175,8 @@ struct AuthSessionCoordinator: Sendable {
 			state: "revoked",
 			backend: nil,
 			credentialDigest: nil,
-			staleFileCleanupPending: nil
+			staleFileCleanupPending: nil,
+			legacyKeychainCleanupPending: nil
 		)
 
 		func validate() throws {
@@ -257,7 +188,7 @@ struct AuthSessionCoordinator: Sendable {
 					)
 				}
 			case "active":
-				guard backend == "keychain" || backend == "encrypted_file_fallback",
+				guard ["keychain", "shared_keychain", "encrypted_file_fallback"].contains(backend ?? ""),
 					let credentialDigest,
 					credentialDigest.count == 64,
 					credentialDigest.utf8.allSatisfy(\.isLowercaseHexDigit)
@@ -634,10 +565,13 @@ struct AuthSessionCoordinator: Sendable {
 		if let authority = store.credentials[authorityID] {
 			try authority.validate()
 			if authority.state == "revoked" { return nil }
-			guard authority.backend == "keychain" else {
+			guard authority.backend == "keychain" || authority.backend == "shared_keychain" else {
 				throw AuthSessionCoordinatorError.unsupportedCredentialBackend
 			}
-			guard let credential = try credentialBackend.read(account: account),
+			let stored = try authority.backend == "keychain"
+				? credentialBackend.readLegacy(account: account)
+				: credentialBackend.read(account: account)
+			guard let credential = stored,
 				authority.credentialDigest
 					== SHA256.hash(data: Data(credential.utf8)).hexString
 			else {
@@ -649,6 +583,24 @@ struct AuthSessionCoordinator: Sendable {
 				throw AuthSessionCoordinatorError.credentialStorage(
 					"The Keychain credential does not match its authority record."
 				)
+			}
+			if authority.backend == "keychain" {
+				try credentialBackend.write(credential, account: account)
+				guard try credentialBackend.read(account: account) == credential else {
+					throw AuthSessionCoordinatorError.credentialStorage("Shared Keychain migration verification failed.")
+				}
+				store.credentials[authorityID] = .activeKeychain(
+					credential, cleanupPending: authority.staleFileCleanupPending == true,
+					legacyCleanupPending: true
+				)
+				try writeAuthorityStore(store)
+			}
+			if authority.backend == "keychain" || authority.legacyKeychainCleanupPending == true {
+				try credentialBackend.deleteLegacy(account: account)
+				store.credentials[authorityID] = .activeKeychain(
+					credential, cleanupPending: authority.staleFileCleanupPending == true
+				)
+				try writeAuthorityStore(store)
 			}
 			return credential
 		}
@@ -669,7 +621,7 @@ struct AuthSessionCoordinator: Sendable {
 			let authorityID = kind.authorityID(registryURL: registryURL)
 			store.credentials[authorityID] = .activeKeychain(
 				credential,
-				cleanupPending: true
+				cleanupPending: true, legacyCleanupPending: true
 			)
 			// Publish intent before touching the backend. A crash can hide an old
 			// token, but can never make it authoritative again.
@@ -678,6 +630,7 @@ struct AuthSessionCoordinator: Sendable {
 				credential,
 				account: kind.account(registryURL: registryURL)
 			)
+			try credentialBackend.deleteLegacy(account: kind.account(registryURL: registryURL))
 
 			if !encryptedFallbackMayExist {
 				store.credentials[authorityID] = .activeKeychain(
