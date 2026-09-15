@@ -87,67 +87,79 @@ struct VaultPaneLayoutTests {
 		window.contentView = host
 		defer { window.close() }
 		window.orderBack(nil)
-		try await Task.sleep(for: .milliseconds(50))
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { resizeViews(in: host).count == 1 }
 		let sidebar = try #require(resizeViews(in: host).first)
 		#expect(sidebar.accessibilityLabel() == "Resize sidebar")
 		#expect(sidebar.accessibilityRole() == .splitter)
 		#expect(sidebar.accessibilityValue() as? String == "280 points")
 		#expect(sidebar.accessibilityPerformIncrement())
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "300 points" }
 		#expect(sidebar.accessibilityValue() as? String == "300 points")
 		sidebar.onDragChanged?(50)
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "350 points" }
 		#expect(sidebar.accessibilityValue() as? String == "350 points")
 		sidebar.onDragChanged?(100)
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "400 points" }
 		sidebar.onDragEnded?(100)
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "400 points" }
 		#expect(sidebar.accessibilityValue() as? String == "400 points")
 		sidebar.onDragEnded?(-100)
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "300 points" }
 		#expect(sidebar.accessibilityValue() as? String == "300 points")
 		try clickInspectorToggle(in: window, contentRightEdge: 1400)
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { resizeViews(in: host).count == 2 }
 		#expect(resizeViews(in: host).count == 2)
 		let inspector = try #require(resizeViews(in: host).first { $0.accessibilityLabel() == "Resize inspector" })
 		#expect(inspector.accessibilityValue() as? String == "300 points")
 		#expect(inspector.accessibilityPerformIncrement())
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { inspector.accessibilityValue() as? String == "320 points" }
 		#expect(inspector.accessibilityValue() as? String == "320 points")
 		inspector.onDragChanged?(-40)
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { inspector.accessibilityValue() as? String == "360 points" }
 		inspector.onDragEnded?(-40)
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { inspector.accessibilityValue() as? String == "360 points" }
 		#expect(inspector.accessibilityValue() as? String == "360 points")
-		for _ in 0..<2 {
+		for expectedWidth in [340, 320] {
 			#expect(inspector.accessibilityPerformDecrement())
-			host.layoutSubtreeIfNeeded()
+			try await waitForLayout(host) { inspector.accessibilityValue() as? String == "\(expectedWidth) points" }
 		}
 		#expect(inspector.accessibilityValue() as? String == "320 points")
 		try clickInspectorToggle(in: window, contentRightEdge: 1075)
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { resizeViews(in: host).count == 1 && inspector.onAdjust == nil }
 		#expect(resizeViews(in: host).count == 1)
 		#expect(!inspector.accessibilityPerformIncrement())
 		#expect(inspector.onDragChanged == nil)
 		#expect(inspector.onDragEnded == nil)
 		try clickInspectorToggle(in: window, contentRightEdge: 1400)
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { resizeViews(in: host).count == 2 }
 		let reopened = try #require(resizeViews(in: host).first { $0.accessibilityLabel() == "Resize inspector" })
 		#expect(reopened.accessibilityValue() as? String == "320 points")
 
 		try recordWorkspace(host, named: "workspace-restored-panes")
 		window.setContentSize(NSSize(width: 1040, height: 800))
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) {
+			let sidebarFrame = host.convert(sidebar.bounds, from: sidebar)
+			let inspectorFrame = host.convert(reopened.bounds, from: reopened)
+			return abs(inspectorFrame.minX - sidebarFrame.maxX - 420) < 0.01
+		}
 		let sidebarFrame = host.convert(sidebar.bounds, from: sidebar)
 		let inspectorFrame = host.convert(reopened.bounds, from: reopened)
 		#expect(abs(inspectorFrame.minX - sidebarFrame.maxX - 420) < 0.01)
 		#expect(inspectorFrame.maxX < host.bounds.width)
 		try recordWorkspace(host, named: "workspace-minimum-width")
 		window.setContentSize(NSSize(width: 1400, height: 800))
-		host.layoutSubtreeIfNeeded()
+		try await waitForLayout(host) { reopened.accessibilityValue() as? String == "320 points" }
 		#expect(sidebar.accessibilityValue() as? String == "300 points")
 		#expect(reopened.accessibilityValue() as? String == "320 points")
+	}
+
+	private func waitForLayout<V: View>(_ host: NSHostingView<V>, until condition: () -> Bool) async throws {
+		let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+		repeat {
+			host.layoutSubtreeIfNeeded()
+			if condition() { return }
+			try await Task.sleep(for: .milliseconds(10))
+		} while ContinuousClock.now < deadline
 	}
 
 	private func recordWorkspace<V: View>(_ host: NSHostingView<V>, named name: String) throws {
