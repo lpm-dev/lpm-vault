@@ -3,7 +3,6 @@ import SwiftUI
 
 struct VaultWorkspaceView: View {
 	@Bindable var store: VaultStore
-	@Bindable var updateChecker: UpdateChecker
 	@Environment(\.vaultContentObscured) private var isObscured
 
 	@State private var mode: VaultWorkspaceMode = .matrix
@@ -55,6 +54,45 @@ struct VaultWorkspaceView: View {
 	}
 
 	var body: some View {
+		workspaceDialogs
+		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
+		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
+		.onChange(of: store.selectedEnvironment) { _, environment in
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
+			mode = mode.synchronized(to: environment)
+			revealedKeys.removeAll()
+		}
+		.onChange(of: mode) { _, _ in revealedKeys.removeAll() }
+		.onChange(of: store.selectedAccount) { _, _ in
+			conflictTarget = nil
+			showsAccountSwitcher = false
+		}
+		.onChange(of: store.lastSyncStatus) { _, value in
+			if value == "conflict", let project = store.selectedProject {
+				conflictTarget = VaultSyncTarget(projectId: project.id, account: store.selectedAccount)
+			}
+		}
+		.onChange(of: isObscured) { _, obscured in
+			if obscured { dismissNativeDialogsForPrivacy() }
+		}
+		.onDisappear {
+			currentImportTask?.cancel()
+			currentImportTask = nil
+			currentImportID = nil
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
+			copyAllTask?.cancel()
+			copyAllTask = nil
+			copyAllID = nil
+			revealedKeys.removeAll()
+			selectedKey = nil
+		}
+	}
+
+	private var workspaceLayout: some View {
 		VStack(spacing: 0) {
 			VaultTitleBarView(
 				store: store,
@@ -65,12 +103,6 @@ struct VaultWorkspaceView: View {
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
-
-			if updateChecker.updateAvailable, let latest = updateChecker.latestVersion {
-				updateBanner(latest: latest)
-					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
-				VaultHairline()
-			}
 
 			GeometryReader { geometry in
 				let budget = VaultPaneBudget(
@@ -217,6 +249,10 @@ struct VaultWorkspaceView: View {
 		}
 		.ignoresSafeArea(.container, edges: .top)
 		.animation(.easeOut(duration: 0.14), value: showsAccountSwitcher)
+	}
+
+	private var workspaceSheets: some View {
+		workspaceLayout
 		.sheet(isPresented: $showNewProject) {
 			NewVaultSheet(store: store).vaultPrivacyProtected(isObscured)
 		}
@@ -248,6 +284,10 @@ struct VaultWorkspaceView: View {
 					.vaultPrivacyProtected(isObscured)
 			}
 		}
+	}
+
+	private var workspaceDialogs: some View {
+		workspaceSheets
 		.alert("Rename Env Project", isPresented: Binding(
 			get: { projectToRename != nil },
 			set: { if !$0 { projectToRename = nil } }
@@ -340,41 +380,6 @@ struct VaultWorkspaceView: View {
 		} message: {
 			Text(store.error ?? "An unexpected error occurred.")
 		}
-		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
-		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
-		.onChange(of: store.selectedEnvironment) { _, environment in
-			exportTask?.cancel()
-			exportTask = nil
-			exportID = nil
-			mode = mode.synchronized(to: environment)
-			revealedKeys.removeAll()
-		}
-		.onChange(of: mode) { _, _ in revealedKeys.removeAll() }
-		.onChange(of: store.selectedAccount) { _, _ in
-			conflictTarget = nil
-			showsAccountSwitcher = false
-		}
-		.onChange(of: store.lastSyncStatus) { _, value in
-			if value == "conflict", let project = store.selectedProject {
-				conflictTarget = VaultSyncTarget(projectId: project.id, account: store.selectedAccount)
-			}
-		}
-		.onChange(of: isObscured) { _, obscured in
-			if obscured { dismissNativeDialogsForPrivacy() }
-		}
-		.onDisappear {
-			currentImportTask?.cancel()
-			currentImportTask = nil
-			currentImportID = nil
-			exportTask?.cancel()
-			exportTask = nil
-			exportID = nil
-			copyAllTask?.cancel()
-			copyAllTask = nil
-			copyAllID = nil
-			revealedKeys.removeAll()
-			selectedKey = nil
-		}
 	}
 
 	@ViewBuilder
@@ -447,22 +452,6 @@ struct VaultWorkspaceView: View {
 				onCancel: { conflictTarget = nil }
 			)
 		}
-	}
-
-	private func updateBanner(latest: String) -> some View {
-		HStack(spacing: 8) {
-			Image(systemName: "arrow.up.circle.fill").foregroundStyle(VaultPalette.accent)
-			Text("Update available: \(updateChecker.currentVersion) → \(latest)")
-				.font(.system(size: 12.5))
-			Spacer()
-			if let url = updateChecker.releaseURL { Link("Download", destination: url).font(.system(size: 12.5, weight: .semibold)) }
-			Button { updateChecker.updateAvailable = false } label: { Image(systemName: "xmark") }
-				.buttonStyle(.plain)
-				.accessibilityLabel("Dismiss update notification")
-		}
-		.padding(.horizontal, 16)
-		.frame(height: 34)
-		.background(VaultPalette.accentTint)
 	}
 
 	private func presentAddSecret() {

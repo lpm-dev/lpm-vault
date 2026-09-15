@@ -94,6 +94,7 @@ fi
 rm -rf "$BUILD_DIR/$APP_NAME.app"
 cp -R "$DERIVED_APP" "$BUILD_DIR/$APP_NAME.app"
 cp "$PROVISIONING_PROFILE" "$BUILD_DIR/$APP_NAME.app/Contents/embedded.provisionprofile"
+bash "$SCRIPT_DIR/Scripts/sign-sparkle.sh" "$BUILD_DIR/$APP_NAME.app" "$SIGNING_IDENTITY" --timestamp=none
 DEBUG_DYLIB="$BUILD_DIR/$APP_NAME.app/Contents/MacOS/$APP_NAME.debug.dylib"
 if [ -f "$DEBUG_DYLIB" ]; then
 	codesign --force --options runtime --timestamp=none \

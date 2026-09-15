@@ -598,20 +598,10 @@ struct BoundedHTTPResponseTests {
 		}
 	}
 
-	@Test("avatar and updater downloads use chunked data delegates")
-	@MainActor
-	func highVolumeConsumersUseChunkedDelegates() {
+	@Test("avatar downloads use a chunked data delegate")
+	func avatarDownloadsUseChunkedDelegate() {
 		let avatarDelegate: AnyObject = AvatarSessionDelegate()
 		#expect(avatarDelegate is BoundedHTTPResponseStarting)
-		#expect(UpdateChecker.session.delegate is BoundedHTTPResponseStarting)
-
-		let expected = URLSessionConfiguration.default
-		let actual = UpdateChecker.session.configuration
-		#expect(actual.httpShouldSetCookies == expected.httpShouldSetCookies)
-		#expect(actual.requestCachePolicy == expected.requestCachePolicy)
-		#expect(actual.urlCache === expected.urlCache)
-		#expect(actual.httpCookieStorage === expected.httpCookieStorage)
-		#expect(actual.urlCredentialStorage === expected.urlCredentialStorage)
 	}
 
 	@Test("cancelling a bounded response cancels its underlying operation")
@@ -679,25 +669,6 @@ struct BoundedHTTPResponseTests {
 			completionHandler: { rejected = $0 }
 		)
 		#expect(rejected == nil)
-	}
-}
-
-@Suite("Update Link Validation")
-struct UpdateLinkValidationTests {
-	@Test("only this project's GitHub release pages are accepted")
-	func validatesReleaseOriginAndPath() {
-		#expect(UpdateChecker.validatedReleaseURL(
-			"https://github.com/lpm-dev/lpm-vault/releases/tag/v1.2.3"
-		) != nil)
-		#expect(UpdateChecker.validatedReleaseURL(
-			"https://example.com/lpm-dev/lpm-vault/releases/tag/v1.2.3"
-		) == nil)
-		#expect(UpdateChecker.validatedReleaseURL(
-			"file:///tmp/fake-release"
-		) == nil)
-		#expect(UpdateChecker.validatedReleaseURL(
-			"https://github.com/attacker/project/releases/tag/v1.2.3"
-		) == nil)
 	}
 }
 
