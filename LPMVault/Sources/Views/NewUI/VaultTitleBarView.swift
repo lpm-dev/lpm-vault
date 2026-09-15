@@ -2,6 +2,7 @@ import SwiftUI
 
 struct VaultTitleBarView: View {
 	@Bindable var store: VaultStore
+	@Environment(UpdateChecker.self) private var updateChecker
 	let mode: VaultWorkspaceMode
 	let onShowVaultID: () -> Void
 	let onPull: () -> Void
@@ -67,6 +68,19 @@ struct VaultTitleBarView: View {
 			Spacer(minLength: 8)
 
 			syncMenu
+
+			if let version = updateChecker.availableUpdateVersion {
+				VaultBarButton(
+					systemImage: "arrow.down.circle",
+					title: "Update available",
+					disabled: !updateChecker.canCheckForUpdates
+				) {
+					updateChecker.checkForUpdates()
+				}
+				.help("LPM Vault \(version) is available. Show update details.")
+				.accessibilityIdentifier("vault-update-available")
+				.accessibilityLabel("Update available: LPM Vault \(version)")
+			}
 
 			VaultBarButton(
 				systemImage: "lock.fill",
