@@ -21,6 +21,7 @@ enum VaultConstants {
 
 	/// Idle time before an unlocked vault locks itself (2 minutes)
 	static let vaultAutoLockDuration: TimeInterval = 2 * 60
+	static let vaultAutoLockCountdownDuration: TimeInterval = 30
 
 	/// LPM API base URL
 	static let apiBaseURL = URL(string: "https://lpm.dev")!

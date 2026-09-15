@@ -1,6 +1,8 @@
 import CryptoKit
 import Foundation
+import SwiftUI
 import Testing
+import Vision
 
 @testable import LPMVault
 
@@ -495,6 +497,26 @@ struct VaultStoreTests {
 		#expect(store.selectedProject?.id == "org-two")
 	}
 
+	@Test("idle timer wakes when the final thirty seconds begin")
+	func autoLockSchedulesCountdownWakeup() async {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let store = VaultStore(
+			keychainService: MockKeychainService(),
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now },
+			autoLockDuration: 120
+		)
+
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		#expect(await sleeper.durations == [.seconds(90)])
+		store.lock()
+		await sleeper.resume(at: 0)
+	}
+
 	@Test("local user activity restarts the auto-lock timer")
 	func userActivityRestartsAutoLock() async {
 		let sleeper = AutoLockSleeper()
@@ -595,6 +617,170 @@ struct VaultStoreTests {
 		await sleeper.resume(at: 1)
 		while store.isUnlocked { await Task.yield() }
 		#expect(!store.isUnlocked)
+	}
+
+	@Test("auto-lock counts down every final second and locks at the deadline")
+	func autoLockCountdownTracksFinalThirtySeconds() async throws {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let store = VaultStore(
+			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now }, autoLockDuration: 120
+		)
+		defer { store.lock() }
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == nil)
+
+		for seconds in stride(from: 30, through: 1, by: -1) {
+			clock.now = Double(120 - seconds)
+			await sleeper.resume(at: 30 - seconds)
+			while await sleeper.count < 32 - seconds { await Task.yield() }
+			#expect(store.isUnlocked)
+			#expect(store.autoLockCountdownSeconds == seconds)
+			if seconds == 30 || seconds == 1 {
+				try expectRenderedLockTitle(store: store, seconds: seconds)
+			}
+		}
+		#expect(await sleeper.durations == [.seconds(90)] + Array(repeating: .seconds(1), count: 30))
+		clock.now = 120
+		await sleeper.resume(at: 30)
+		while store.isUnlocked { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == nil)
+	}
+
+	@Test("user activity clears and postpones the auto-lock countdown")
+	func autoLockCountdownResetsWithActivity() async {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let store = VaultStore(
+			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now }, autoLockDuration: 120
+		)
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		clock.now = 90
+		await sleeper.resume(at: 0)
+		while await sleeper.count < 2 { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == 30)
+
+		clock.now = 90.25
+		for _ in 0..<100 { store.recordUserActivity() }
+		#expect(store.autoLockCountdownSeconds == nil)
+		#expect(await sleeper.count == 2)
+		clock.now = 91
+		await sleeper.resume(at: 1)
+		while await sleeper.count < 3 { await Task.yield() }
+		#expect(store.isUnlocked)
+		#expect(store.autoLockCountdownSeconds == nil)
+		#expect(await sleeper.durations.last == .seconds(89.25))
+
+		clock.now = 180.25
+		await sleeper.resume(at: 2)
+		while await sleeper.count < 4 { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == 30)
+		store.lock()
+		#expect(store.autoLockCountdownSeconds == nil)
+		await sleeper.resume(at: 3)
+	}
+
+	@Test("late countdown ticks round up without extending the lock deadline")
+	func autoLockCountdownUsesRemainingDeadline() async {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let store = VaultStore(
+			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now }, autoLockDuration: 120
+		)
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		clock.now = 91.25
+		await sleeper.resume(at: 0)
+		while await sleeper.count < 2 { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == 29)
+		clock.now = 119.75
+		await sleeper.resume(at: 1)
+		while await sleeper.count < 3 { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == 1)
+		#expect(await sleeper.durations.last == .seconds(0.25))
+		clock.now = 121
+		await sleeper.resume(at: 2)
+		while store.isUnlocked { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == nil)
+	}
+
+	@Test("short idle intervals show a countdown immediately")
+	func autoLockCountdownSupportsShortIdleIntervals() async {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let store = VaultStore(
+			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now }, autoLockDuration: 20
+		)
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == 20)
+		#expect(await sleeper.durations == [.seconds(1)])
+		clock.now = 20
+		store.recordUserActivity()
+		#expect(!store.isUnlocked)
+		#expect(store.autoLockCountdownSeconds == nil)
+		await sleeper.resume(at: 0)
+	}
+
+	@Test("a cancelled idle task cannot clear a new session's countdown")
+	func staleAutoLockTaskPreservesNewCountdown() async {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let store = VaultStore(
+			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) },
+			autoLockNow: { clock.now }, autoLockDuration: 120
+		)
+		await store.unlock()
+		while await sleeper.count < 1 { await Task.yield() }
+		store.lock()
+		clock.now = 10
+		await store.unlock()
+		while await sleeper.count < 2 { await Task.yield() }
+		clock.now = 100
+		await sleeper.resume(at: 1)
+		while await sleeper.count < 3 { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == 30)
+
+		await sleeper.resume(at: 0)
+		for _ in 0..<10 { await Task.yield() }
+		#expect(store.isUnlocked)
+		#expect(store.autoLockCountdownSeconds == 30)
+		#expect(await sleeper.count == 3)
+		store.lock()
+		await sleeper.resume(at: 2)
+	}
+
+	private func expectRenderedLockTitle(store: VaultStore, seconds: Int) throws {
+		let view = NSHostingView(rootView: VaultTitleBarView(
+			store: store, mode: .matrix, onShowVaultID: {}, onPull: {}, onPush: {}
+		).environment(\.colorScheme, .light))
+		view.frame = NSRect(x: 0, y: 0, width: 1040, height: VaultMetrics.titleBar)
+		view.layoutSubtreeIfNeeded()
+		let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+		view.cacheDisplay(in: view.bounds, to: bitmap)
+		let image = try #require(bitmap.cgImage)
+		Attachment.record(image, named: "lock-countdown-\(seconds)", as: .png)
+		let request = VNRecognizeTextRequest()
+		request.recognitionLevel = .accurate
+		try VNImageRequestHandler(cgImage: image).perform([request])
+		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		#expect(text.contains("Lock \(seconds)s"))
 	}
 
 	// MARK: - Add Secret
@@ -5690,11 +5876,12 @@ private actor GatedTokenProvider {
 
 private actor AutoLockSleeper {
 	private var continuations: [CheckedContinuation<Void, any Error>?] = []
+	private(set) var durations: [Duration] = []
 
 	var count: Int { continuations.count }
 
 	func sleep(_ duration: Duration) async throws {
-		_ = duration
+		durations.append(duration)
 		try await withCheckedThrowingContinuation { continuation in
 			continuations.append(continuation)
 		}
