@@ -28,6 +28,16 @@ struct VaultTitleBarView: View {
 		}
 	}
 
+	private var lockTitle: String {
+		guard let seconds = store.autoLockCountdownSeconds else { return "Lock" }
+		return "Lock \(seconds)s"
+	}
+
+	private var lockAccessibilityLabel: String {
+		guard let seconds = store.autoLockCountdownSeconds else { return "Lock LPM Vault" }
+		return "Lock LPM Vault, auto-lock in \(seconds) \(seconds == 1 ? "second" : "seconds")"
+	}
+
 	var body: some View {
 		HStack(spacing: 10) {
 			VaultTrafficLights()
@@ -60,13 +70,13 @@ struct VaultTitleBarView: View {
 
 			VaultBarButton(
 				systemImage: "lock.fill",
-				title: "Lock",
-				shortcut: "⌃⌘L",
+				title: lockTitle,
+				shortcut: "⌘L",
 				invertsOnHover: true
 			) {
 				store.lock()
 			}
-			.accessibilityLabel("Lock LPM Vault")
+			.accessibilityLabel(lockAccessibilityLabel)
 		}
 		.padding(.horizontal, 14)
 		.frame(height: VaultMetrics.titleBar)

@@ -142,7 +142,7 @@ struct LPMVaultApp: App {
 				Divider()
 
 				Button("Lock LPM Vault") { store.lock() }
-					.keyboardShortcut("l", modifiers: [.command, .control])
+					.keyboardShortcut("l", modifiers: .command)
 					.disabled(!store.isUnlocked)
 			}
 		}

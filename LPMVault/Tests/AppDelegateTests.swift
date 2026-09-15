@@ -8,6 +8,23 @@ import Vision
 @Suite("App lifecycle security")
 @MainActor
 struct AppDelegateTests {
+	#if !SWIFT_PACKAGE
+	@Test("the native Lock command uses Command-L without extra modifiers")
+	func lockCommandUsesCommandL() throws {
+		func findLock(in menu: NSMenu) -> NSMenuItem? {
+			for item in menu.items {
+				if item.title == "Lock LPM Vault" { return item }
+				if let submenu = item.submenu, let lockItem = findLock(in: submenu) { return lockItem }
+			}
+			return nil
+		}
+		let menu = try #require(NSApp.mainMenu)
+		let item = try #require(findLock(in: menu))
+		#expect(item.keyEquivalent == "l")
+		#expect(item.keyEquivalentModifierMask == .command)
+	}
+	#endif
+
 	@Test("activity mask includes active input and excludes passive movement")
 	func activityEventClassification() {
 		let mask = AppDelegate.userActivityEvents
