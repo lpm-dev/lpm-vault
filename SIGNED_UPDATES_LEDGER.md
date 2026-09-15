@@ -4,10 +4,13 @@ The primary agent verified both credential findings before changing the implemen
 
 | ID | Source | Category | Location | Claim and evidence | Disposition | Coverage | Commit | PR status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| AUTH-SWIFT | Primary agent | Security | `AuthCredentialBackend.swift`, extracted from `AuthSessionCoordinator.swift` | The auth query omitted the access group and Data Protection selection. The query regression failed before the change. | Verified | Query scope, migration failure/recovery, signed Rust-to-Swift-to-Rust test | `b427b51` | Concept PR |
-| AUTH-RUST | Primary agent | Security | CLI `lpm-auth` macOS credential queries | The native auth query omitted the same access boundary. The query regression failed before the change. | Verified | Native query scope, six migration tests, signed cross-language test | Linked CLI concept branch | Linked concept PR |
+| AUTH-SWIFT | Primary agent | Security | `AuthCredentialBackend.swift`, extracted from `AuthSessionCoordinator.swift` | The auth query omitted the access group and Data Protection selection. The query regression failed before the change. | Verified | Query scope, migration failure/recovery, signed Rust-to-Swift-to-Rust test | `b427b51` | [Vault #24](https://github.com/lpm-dev/lpm-vault/pull/24) |
+| AUTH-RUST | Primary agent | Security | CLI `lpm-auth` macOS credential queries | The native auth query omitted the same access boundary. The query regression failed before the change. | Verified | Native query scope, six migration tests, signed cross-language test | CLI `c98b86eb` | [CLI #736](https://github.com/lpm-dev/rust-client/pull/736) |
+| CI-SWIFT | Primary agent | Correctness | `VaultWorkspaceView.swift` | Xcode 26.2 failed to type-check the large body expression in CI run 35018096807. Separate layout, sheets, dialogs, and event expressions preserve behavior. | Verified | Full Swift test and universal build jobs on the pinned compiler | `04e9320` | [Vault #24](https://github.com/lpm-dev/lpm-vault/pull/24) |
 
-Totals: two directly identified findings, two verified and fixed, zero rejected, zero externally blocked findings, zero pending findings. Subagent findings received: zero.
+Totals: three directly identified findings, three verified and fixed, zero rejected, zero externally blocked findings, zero pending findings. Subagent findings received: zero.
+
+The documentation companion is [docs #226](https://github.com/lpm-dev/rust-client-docs/pull/226).
 
 ## Release validation
 
