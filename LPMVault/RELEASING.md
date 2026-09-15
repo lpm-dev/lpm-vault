@@ -146,14 +146,18 @@ Rust writes a temporary credential. Swift reads and replaces it. Rust reads the 
 For local release artifacts, configure notarization and run:
 
 ```bash
+xcrun notarytool store-credentials lpm-vault-notary \
+  --key /path/to/AuthKey.p8 --key-id YOUR_KEY_ID --issuer YOUR_ISSUER_UUID
 export LPM_VAULT_PROVISIONING_PROFILE=/path/to/Vault.provisionprofile
-export NOTARYTOOL_PROFILE=lpm-notary
+export NOTARYTOOL_PROFILE=lpm-vault-notary
 bash LPMVault/release-app.sh --version 1.0.0 --build 1
 bash LPMVault/Scripts/fetch-sparkle-tools.sh /tmp/vault-sparkle-tools
 bash LPMVault/Scripts/generate-appcast.sh LPMVault/release/LPM-Vault-1.0.0+1 /tmp/vault-sparkle-tools
 ```
 
 Local scripts submit artifacts to Apple for notarization. They do not publish a GitHub release.
+
+If an older profile fails authentication after an update, use a distinct profile name and verify it with `notarytool history`.
 
 ## First public release dependencies
 

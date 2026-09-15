@@ -20,6 +20,7 @@ The documentation companion is [docs #226](https://github.com/lpm-dev/rust-clien
 - Website: container build and four HTTP test groups, including malformed routes and cache headers.
 - Sparkle: real DMG and feed signatures verified. A modified feed failed verification.
 - Local release 1.0.0, build 3: Apple accepted the app and DMG. Stapled tickets and Gatekeeper checks passed for both.
+- Private CI verification run [35024915948](https://github.com/lpm-dev/lpm-vault/actions/runs/35024915948): the GitHub signing export and password, API key and issuer, notarization, and Sparkle signatures passed. Downloaded CI installer checksums, ticket, and Gatekeeper checks also passed locally.
 - Keychain: signed Rust and Swift test bundles exchanged a synthetic credential in both directions and deleted their test items.
 
 ## External rollout dependencies
