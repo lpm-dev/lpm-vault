@@ -15,7 +15,7 @@ struct VaultWorkspaceView: View {
 	@State private var showsInspector = false
 	@State private var showsAccountSwitcher = false
 	@State private var sidebarWidth = VaultMetrics.sidebar
-	@State private var sidebarDragStartWidth: CGFloat?
+	@State private var inspectorWidth = VaultMetrics.inspector
 
 	@State private var showNewProject = false
 	@State private var showCloudProjects = false
@@ -44,6 +44,11 @@ struct VaultWorkspaceView: View {
 
 	private var project: VaultProject? { store.selectedProject }
 
+	private var inspectorVisible: Bool {
+		guard showsInspector, !store.showAuthStatus, let project else { return false }
+		return store.workspaceSnapshots[project.id] != nil
+	}
+
 	private var isOrganization: Bool {
 		if case .org = store.selectedAccount { return true }
 		return false
@@ -67,29 +72,43 @@ struct VaultWorkspaceView: View {
 				VaultHairline()
 			}
 
-			HStack(spacing: 0) {
-				VaultSidebarView(
-					store: store,
-					snapshots: store.workspaceSnapshots,
-					mode: $mode,
-					filter: $filter,
-					searchText: $searchText,
-					showsAccountSwitcher: $showsAccountSwitcher,
-					onNewProject: { showNewProject = true },
-					onCloudProjects: { showCloudProjects = true },
-					onNewEnvironment: { showNewEnvironment = true },
-					onRenameProject: beginRenameProject,
-					onDeleteProject: { projectToDelete = $0 },
-					onRenameEnvironment: beginRenameEnvironment,
-					onDuplicateEnvironment: beginDuplicateEnvironment,
-					onClearEnvironment: { clearEnvironmentTarget = $0 },
-					onDeleteEnvironment: { deleteEnvironmentTarget = $0 }
+			GeometryReader { geometry in
+				let budget = VaultPaneBudget(
+					available: geometry.size.width,
+					requestedSidebar: sidebarWidth,
+					requestedInspector: inspectorWidth,
+					showsInspector: inspectorVisible
 				)
-				.frame(width: sidebarWidth)
 
-				sidebarDivider
+				HStack(spacing: 0) {
+					VaultResizablePane(
+						width: $sidebarWidth,
+						bounds: budget.sidebar,
+						edge: .trailing,
+						dividerWidth: VaultMetrics.sidebarDivider,
+						accessibilityLabel: "Resize sidebar",
+						onResize: { store.recordUserActivity() }
+					) {
+						VaultSidebarView(
+							store: store,
+							snapshots: store.workspaceSnapshots,
+							mode: $mode,
+							filter: $filter,
+							searchText: $searchText,
+							showsAccountSwitcher: $showsAccountSwitcher,
+							onNewProject: { showNewProject = true },
+							onCloudProjects: { showCloudProjects = true },
+							onNewEnvironment: { showNewEnvironment = true },
+							onRenameProject: beginRenameProject,
+							onDeleteProject: { projectToDelete = $0 },
+							onRenameEnvironment: beginRenameEnvironment,
+							onDuplicateEnvironment: beginDuplicateEnvironment,
+							onClearEnvironment: { clearEnvironmentTarget = $0 },
+							onDeleteEnvironment: { deleteEnvironmentTarget = $0 }
+						)
+					}
 
-				Group {
+					Group {
 						if store.showAuthStatus {
 							AuthStatusView(store: store)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -105,56 +124,69 @@ struct VaultWorkspaceView: View {
 							.background(VaultPalette.content)
 						} else if let project,
 						let snapshot = store.workspaceSnapshots[project.id]
+						{
+							VaultContentView(
+								project: project,
+								snapshot: snapshot,
+								environments: store.orderedEnvironmentNames(for: project),
+								selectedEnvironment: store.selectedEnvironment,
+								mode: $mode,
+								filter: $filter,
+								environmentViewMode: $environmentViewMode,
+								searchText: searchText,
+								selectedKey: $selectedKey,
+								revealedKeys: $revealedKeys,
+								showsInspector: $showsInspector,
+								isImporting: currentImportTask != nil,
+								isCopyingAll: copyAllTask != nil,
+								onCopyAll: copyAll,
+								onImport: importCurrentEnvironment,
+								onExport: exportCurrentEnvironment,
+								onAddSecret: presentAddSecret,
+								onCopySecret: copySecret,
+								onDeleteSecret: requestDeleteSecret
+							)
+						} else {
+							VaultWorkspaceEmptyView(
+								isSearching: !searchText.isEmpty,
+								onCreate: { showNewProject = true },
+								onImport: { showCloudProjects = true }
+							)
+						}
+					}
+					.frame(width: budget.content, height: geometry.size.height)
+					.clipped()
+					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
+
+					if inspectorVisible, let project,
+						let snapshot = store.workspaceSnapshots[project.id]
 					{
-						VaultContentView(
-							project: project,
-							snapshot: snapshot,
-							environments: store.orderedEnvironmentNames(for: project),
-							selectedEnvironment: store.selectedEnvironment,
-							mode: $mode,
-							filter: $filter,
-							environmentViewMode: $environmentViewMode,
-							searchText: searchText,
-							selectedKey: $selectedKey,
-							revealedKeys: $revealedKeys,
-							showsInspector: $showsInspector,
-							isImporting: currentImportTask != nil,
-							isCopyingAll: copyAllTask != nil,
-							onCopyAll: copyAll,
-							onImport: importCurrentEnvironment,
-							onExport: exportCurrentEnvironment,
-							onAddSecret: presentAddSecret,
-							onCopySecret: copySecret,
-							onDeleteSecret: requestDeleteSecret
-						)
-					} else {
-						VaultWorkspaceEmptyView(
-							isSearching: !searchText.isEmpty,
-							onCreate: { showNewProject = true },
-							onImport: { showCloudProjects = true }
-						)
+						VaultResizablePane(
+							width: $inspectorWidth,
+							bounds: budget.inspector,
+							edge: .leading,
+							dividerWidth: VaultMetrics.inspectorDivider,
+							accessibilityLabel: "Resize inspector",
+							onResize: { store.recordUserActivity() }
+						) {
+							VaultInspectorView(
+								store: store,
+								project: project,
+								snapshot: snapshot,
+								environments: store.orderedEnvironmentNames(for: project),
+								mode: mode,
+								selectedKey: selectedKey,
+								revealedKeys: $revealedKeys,
+								onClose: { showsInspector = false },
+								onCopySecret: copySecret,
+								onDeleteSecret: requestDeleteSecret
+							)
+						}
+						.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 					}
 				}
-				.frame(maxWidth: .infinity, maxHeight: .infinity)
-				.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
-
-				if showsInspector, !store.showAuthStatus, let project,
-					let snapshot = store.workspaceSnapshots[project.id]
-				{
-					VaultInspectorPane(
-						store: store,
-						project: project,
-						snapshot: snapshot,
-						environments: store.orderedEnvironmentNames(for: project),
-						mode: mode,
-						selectedKey: selectedKey,
-						revealedKeys: $revealedKeys,
-						onClose: { showsInspector = false },
-						onCopySecret: copySecret,
-						onDeleteSecret: requestDeleteSecret
-					)
-					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
-				}
+				.frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+				.clipped()
 			}
 		}
 		.background(VaultPalette.content)
@@ -172,7 +204,11 @@ struct VaultWorkspaceView: View {
 						store: store,
 						isPresented: $showsAccountSwitcher
 					)
-					.frame(width: sidebarWidth - 16)
+					.frame(width: VaultPaneBudget.clamp(
+						sidebarWidth,
+						minimum: VaultMetrics.sidebarMinimum,
+						maximum: VaultMetrics.sidebarMaximum
+					) - 16)
 					.padding(.leading, 8)
 					.padding(.bottom, 56)
 					.transition(.opacity.combined(with: .offset(y: 6)))
@@ -435,42 +471,6 @@ struct VaultWorkspaceView: View {
 		addSecretTarget = VaultSecretTarget(projectId: project.id, environment: store.selectedEnvironment)
 	}
 
-	private var sidebarDivider: some View {
-		Rectangle()
-			.fill(.clear)
-			.frame(width: 7)
-			.overlay {
-				VaultHairline(color: VaultPalette.sidebarBorder, axis: .vertical)
-			}
-			.contentShape(Rectangle())
-			.gesture(
-				DragGesture(minimumDistance: 0)
-					.onChanged { value in
-						if sidebarDragStartWidth == nil { sidebarDragStartWidth = sidebarWidth }
-						let start = sidebarDragStartWidth ?? sidebarWidth
-						sidebarWidth = min(
-							VaultMetrics.sidebarMaximum,
-							max(VaultMetrics.sidebarMinimum, start + value.translation.width)
-						)
-						store.recordUserActivity()
-					}
-					.onEnded { _ in sidebarDragStartWidth = nil }
-			)
-			.onHover { hovering in
-				if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-			}
-			.accessibilityLabel("Resize sidebar")
-			.accessibilityValue("\(Int(sidebarWidth)) points")
-			.accessibilityAdjustableAction { direction in
-				let adjustment: CGFloat = direction == .increment ? 20 : -20
-				sidebarWidth = min(
-					VaultMetrics.sidebarMaximum,
-					max(VaultMetrics.sidebarMinimum, sidebarWidth + adjustment)
-				)
-				store.recordUserActivity()
-			}
-	}
-
 	private func dismissSearchFocus() {
 		NotificationCenter.default.post(name: .dismissVaultSearch, object: nil)
 	}
@@ -650,61 +650,4 @@ struct VaultWorkspaceView: View {
 		copyAllID = nil
 	}
 
-}
-
-private struct VaultInspectorPane: View {
-	@Bindable var store: VaultStore
-	let project: VaultProject
-	let snapshot: VaultWorkspaceSnapshot
-	let environments: [String]
-	let mode: VaultWorkspaceMode
-	let selectedKey: String?
-	@Binding var revealedKeys: Set<String>
-	let onClose: () -> Void
-	let onCopySecret: (String, String) -> Void
-	let onDeleteSecret: (String, String) -> Void
-	@State private var width = VaultMetrics.inspector
-
-	var body: some View {
-		HStack(spacing: 0) {
-			VaultInspectorDivider(width: $width)
-			VaultInspectorView(
-				store: store,
-				project: project,
-				snapshot: snapshot,
-				environments: environments,
-				mode: mode,
-				selectedKey: selectedKey,
-				revealedKeys: $revealedKeys,
-				onClose: onClose,
-				onCopySecret: onCopySecret,
-				onDeleteSecret: onDeleteSecret
-			)
-			.frame(width: width)
-		}
-	}
-}
-
-private struct VaultInspectorDivider: View {
-	@Binding var width: CGFloat
-	@State private var startWidth: CGFloat?
-
-	var body: some View {
-		Rectangle()
-			.fill(VaultPalette.sidebarBorder)
-			.frame(width: 5)
-			.contentShape(Rectangle())
-			.onHover { inside in
-				if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-			}
-			.gesture(
-				DragGesture(minimumDistance: 1)
-					.onChanged { value in
-						let origin = startWidth ?? width
-						startWidth = origin
-						width = min(max(origin - value.translation.width, 260), 460)
-					}
-					.onEnded { _ in startWidth = nil }
-			)
-	}
 }
