@@ -1,0 +1,43 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  macos:
+    name: macOS tests and release bundle
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Swift tests
+        run: swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
+      - name: Release tooling tests
+        run: |
+          bash LPMVault/Scripts/Tests/release-tooling-tests.sh
+          python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
+      - name: Build universal release bundle
+        run: |
+          xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build-check CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES build
+          python3 LPMVault/Scripts/verify-update-config.py 'build-check/Build/Products/Release/LPM Vault.app/Contents/Info.plist'
+      - name: Verify nested signing
+        run: |
+          bash LPMVault/Scripts/sign-sparkle.sh 'build-check/Build/Products/Release/LPM Vault.app' - --timestamp=none
+          codesign --force --sign - 'build-check/Build/Products/Release/LPM Vault.app'
+          codesign --verify --deep --strict 'build-check/Build/Products/Release/LPM Vault.app'
+  web:
+    name: Public update routes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - run: python3 web/tests/test_routes.py

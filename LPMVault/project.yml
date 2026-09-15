@@ -6,6 +6,11 @@ options:
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
 
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: "2.10.0"
+
 settings:
   base:
     PRODUCT_NAME: LPM Vault
@@ -32,6 +37,15 @@ targets:
   LPMVault:
     type: application
     platform: macOS
+    info:
+      path: Info.plist
+      properties:
+        SUFeedURL: https://vault.lpm.dev/updates/appcast.xml
+        SUPublicEDKey: "g8YlEsyut4fJ+dnO/FdFrD/AicRACq9FjZbHm8PClUs="
+        SURequireSignedFeed: true
+        SUVerifyUpdateBeforeExtraction: true
+        SUAutomaticallyUpdate: false
+        SUSendProfileInfo: false
     sources:
       - path: Sources
         excludes:
@@ -39,6 +53,8 @@ targets:
       - path: Sources/Resources
         type: folder
         buildPhase: resources
+    dependencies:
+      - package: Sparkle
     settings:
       base:
         CODE_SIGN_ENTITLEMENTS: LPMVault.entitlements
@@ -48,6 +64,7 @@ targets:
         INFOPLIST_KEY_LSUIElement: NO
         INFOPLIST_KEY_NSSupportsAutomaticTermination: NO
         COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
 
   LPMVaultTests:
     type: bundle.unit-test
