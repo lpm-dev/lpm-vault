@@ -25,7 +25,7 @@ The documentation companion is [docs #226](https://github.com/lpm-dev/rust-clien
 
 These dependencies concern publication, rather than unresolved code findings:
 
-- The Vault GitHub secrets need the Developer ID export password and Apple issuer UUID.
+- All Vault GitHub signing secrets are configured. The private release-verification workflow validates them before publication.
 - Anonymous GitHub downloads need a public repository and a published release.
 - A full installed-app update test needs two notarized release artifacts and the public feed.
 

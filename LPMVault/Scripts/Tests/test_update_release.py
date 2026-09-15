@@ -1,10 +1,12 @@
 import base64
 import copy
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -65,6 +67,41 @@ class ReleaseSecurity(unittest.TestCase):
             result = subprocess.run(['bash', str(SCRIPTS / 'sign-sparkle.sh'), directory, '-', '--timestamp=none'], capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b'Missing Sparkle component', result.stderr)
+
+    def test_verification_signs_without_publication_or_repository_checks(self):
+        with mock.patch.object(release, 'sign_release') as sign, \
+             mock.patch.object(release, 'run') as command, \
+             mock.patch.object(release, 'output') as output:
+            release.main(['--verify-only', '--version', '1.0.0', '--build', '3'])
+        sign.assert_called_once_with('1.0.0', '3')
+        command.assert_not_called()
+        output.assert_not_called()
+
+    def test_verification_rejects_invalid_metadata_before_signing(self):
+        with mock.patch.object(release, 'sign_release') as sign:
+            for arguments in [
+                ['--verify-only'],
+                ['--verify-only', '--version', '1.0.0'],
+                ['--verify-only', '--version', 'v1.0.0', '--build', '3'],
+                ['--verify-only', '--version', '1.0.0', '--build', '0'],
+                ['--verify-only', '--version', '1.0.0', '--build', '3;echo unsafe'],
+            ]:
+                with self.subTest(arguments=arguments), self.assertRaises((ValueError, SystemExit)):
+                    release.main(arguments)
+        sign.assert_not_called()
+
+    def test_production_rejects_test_version_overrides(self):
+        with self.assertRaises(SystemExit):
+            release.main(['--version', '1.0.0', '--build', '3'])
+
+    def test_production_still_refuses_a_private_repository_before_signing(self):
+        with mock.patch.dict(os.environ, GITHUB_REF_NAME='v1.0.0', GITHUB_REPOSITORY='example/vault'), \
+             mock.patch.object(release, 'run'), \
+             mock.patch.object(release, 'output', return_value='{"private": true}'), \
+             mock.patch.object(release, 'sign_release') as sign:
+            with self.assertRaisesRegex(ValueError, 'public repository'):
+                release.main([])
+        sign.assert_not_called()
 
     def test_subprocess_failure_does_not_expose_arguments(self):
         with self.assertRaises(RuntimeError) as result:
