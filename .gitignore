@@ -32,3 +32,6 @@ Package.resolved
 
 # Archives
 *.xcarchive
+
+AGENTS.md
+CLAUDE.md
