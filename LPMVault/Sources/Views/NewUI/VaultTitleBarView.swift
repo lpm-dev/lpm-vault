@@ -49,7 +49,7 @@ struct VaultTitleBarView: View {
 					HStack(spacing: 6) {
 						Image(systemName: "link")
 							.font(.system(size: 9, weight: .bold))
-							.foregroundStyle(VaultPalette.accent)
+							.foregroundStyle(VaultPalette.accentForeground)
 						Text("vault \(shortVaultID(project.id))")
 							.font(VaultTypography.mono(10.5))
 							.foregroundStyle(VaultPalette.vaultChipText)
@@ -156,7 +156,7 @@ struct VaultTitleBarView: View {
 			.foregroundStyle(VaultPalette.textSecondary)
 			.padding(.horizontal, 10)
 			.frame(height: 26)
-			.background(RoundedRectangle(cornerRadius: 7).fill(.white))
+			.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
 			.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
 		}
 		.menuStyle(.borderlessButton)

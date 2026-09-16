@@ -50,14 +50,14 @@ struct NewVaultSheet: View {
 						.onSubmit { create() }
 						.padding(.horizontal, 11)
 						.frame(height: 34)
-						.background(RoundedRectangle(cornerRadius: 8).fill(.white))
+						.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 						.overlay { RoundedRectangle(cornerRadius: 8).stroke(isFocused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
 				}
 
 				if isOrg {
 					HStack(spacing: 6) {
 						Image(systemName: "building.2")
-							.foregroundStyle(VaultPalette.accent)
+							.foregroundStyle(VaultPalette.accentForeground)
 						Text("Will be shared with \(orgSlug ?? "org")")
 							.font(.system(size: 11.5))
 							.foregroundStyle(VaultPalette.textTertiary)
