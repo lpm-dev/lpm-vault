@@ -119,7 +119,7 @@ struct VaultSidebarView: View {
 		}
 		.padding(.horizontal, 10)
 		.frame(height: 30)
-		.background(RoundedRectangle(cornerRadius: 8).fill(.white))
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 		.overlay {
 			RoundedRectangle(cornerRadius: 8)
 				.stroke(searchFocused ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1)
@@ -134,7 +134,7 @@ struct VaultSidebarView: View {
 			Button(action: onCloudProjects) {
 				Image(systemName: "cloud")
 					.font(.system(size: 10, weight: .semibold))
-					.foregroundStyle(VaultPalette.accent)
+					.foregroundStyle(VaultPalette.accentForeground)
 					.frame(width: 20, height: 20)
 			}
 			.buttonStyle(.plain)
@@ -147,7 +147,7 @@ struct VaultSidebarView: View {
 					Image(systemName: "plus").font(.system(size: 8.5, weight: .bold))
 					Text("New Project").font(.system(size: 10.5, weight: .semibold))
 				}
-				.foregroundStyle(VaultPalette.accent)
+				.foregroundStyle(VaultPalette.accentForeground)
 			}
 			.buttonStyle(.plain)
 			.accessibilityLabel("Create env project")
@@ -175,7 +175,7 @@ struct VaultSidebarView: View {
 			HStack(spacing: 9) {
 				Image(systemName: "folder")
 					.font(.system(size: 11, weight: .medium))
-					.foregroundStyle(selected ? VaultPalette.accent : VaultPalette.textTertiary)
+					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 					.frame(width: 14)
 				Text(project.name)
 					.font(.system(size: 13, weight: selected ? .semibold : .regular))
@@ -214,7 +214,7 @@ struct VaultSidebarView: View {
 					Text("New environment").font(.system(size: 10.5, weight: .semibold))
 					Spacer()
 				}
-				.foregroundStyle(VaultPalette.accent)
+				.foregroundStyle(VaultPalette.accentForeground)
 				.padding(.horizontal, 9)
 				.padding(.vertical, 5)
 				.contentShape(Rectangle())
@@ -249,7 +249,7 @@ struct VaultSidebarView: View {
 				Spacer(minLength: 4)
 				Text("\(project.secretCount(for: environment))")
 					.font(VaultTypography.mono(10.5))
-					.foregroundStyle(selected ? VaultPalette.accent : VaultPalette.textTertiary)
+					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 			}
 			.padding(.horizontal, 9)
 			.padding(.vertical, 5)
@@ -334,7 +334,7 @@ struct VaultSidebarView: View {
 				Spacer(minLength: 4)
 				Image(systemName: showsAccountSwitcher ? "chevron.up" : "chevron.down")
 					.font(.system(size: 10, weight: .bold))
-					.foregroundStyle(showsAccountSwitcher ? VaultPalette.accent : VaultPalette.textTertiary)
+					.foregroundStyle(showsAccountSwitcher ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 			}
 			.padding(.horizontal, 14)
 			.padding(.vertical, 12)
@@ -390,8 +390,8 @@ struct VaultAccountSwitcher: View {
 		.padding(6)
 		.background {
 			RoundedRectangle(cornerRadius: 10)
-				.fill(.white)
-				.shadow(color: VaultPalette.textPrimary.opacity(0.18), radius: 17, y: 14)
+				.fill(VaultPalette.control)
+				.shadow(color: VaultPalette.shadow.opacity(0.18), radius: 17, y: 14)
 		}
 		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
 		.onExitCommand { isPresented = false }
@@ -412,7 +412,7 @@ struct VaultAccountSwitcher: View {
 				if selected {
 					Image(systemName: "checkmark")
 						.font(.system(size: 10, weight: .bold))
-						.foregroundStyle(VaultPalette.accent)
+						.foregroundStyle(VaultPalette.accentForeground)
 				}
 			}
 			.padding(.horizontal, 8)

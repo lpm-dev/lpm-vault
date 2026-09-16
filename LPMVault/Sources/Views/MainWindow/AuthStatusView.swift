@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AuthStatusView: View {
 	@Bindable var store: VaultStore
+	@Environment(VaultAppearanceSettings.self) private var appearanceSettings
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var showLogoutConfirmation = false
 
@@ -34,12 +35,13 @@ struct AuthStatusView: View {
 								}
 								Spacer()
 								if let plan = user.plan {
-									VaultTagBadge(text: plan.uppercased(), foreground: VaultPalette.accent, background: VaultPalette.accentTint)
+									VaultTagBadge(text: plan.uppercased(), foreground: VaultPalette.accentForeground, background: VaultPalette.accentTint)
 								}
 							}
 						}
 
 						serverSettings
+						appearanceSection
 
 						settingsSection("ACTIONS") {
 							HStack(spacing: 8) {
@@ -68,6 +70,8 @@ struct AuthStatusView: View {
 						.foregroundStyle(VaultPalette.textTertiary)
 
 					serverSettings
+						.frame(maxWidth: 360)
+					appearanceSection
 						.frame(maxWidth: 360)
 
 					VaultBarButton(systemImage: "globe", title: store.isLoggingIn ? "Waiting for browser…" : "Sign in with browser", filled: true, disabled: store.isLoggingIn) {
@@ -102,11 +106,31 @@ struct AuthStatusView: View {
 		}
 	}
 
+	private var appearanceSection: some View {
+		@Bindable var settings = appearanceSettings
+		return settingsSection("APPEARANCE") {
+			VStack(alignment: .leading, spacing: 10) {
+				Picker("Appearance", selection: $settings.selection) {
+					ForEach(VaultAppearance.allCases) { appearance in
+						Text(appearance.title).tag(appearance)
+					}
+				}
+				.pickerStyle(.segmented)
+				.labelsHidden()
+				.accessibilityLabel("Appearance")
+				Text("System follows macOS. Light and Dark apply only to Vault.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+		}
+	}
+
 	private var serverSettings: some View {
 		settingsSection("SERVER") {
 			HStack(spacing: 10) {
 				Image(systemName: store.appEnvironment == .production ? "globe" : "laptopcomputer")
-					.foregroundStyle(VaultPalette.accent)
+					.foregroundStyle(VaultPalette.accentForeground)
 				VStack(alignment: .leading, spacing: 2) {
 					Text(store.appEnvironment == .production ? "Production" : "Local development")
 						.font(.system(size: 13, weight: .semibold))

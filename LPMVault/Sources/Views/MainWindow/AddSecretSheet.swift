@@ -102,7 +102,7 @@ struct AddSecretSheet: View {
 							HStack(spacing: 5) {
 								VaultTagBadge(
 									text: VaultProject.displayName(for: selectedEnvironment),
-									foreground: VaultPalette.accent,
+									foreground: VaultPalette.accentForeground,
 									background: VaultPalette.accentTint
 								)
 								Image(systemName: "chevron.up.chevron.down")
@@ -116,7 +116,7 @@ struct AddSecretSheet: View {
 					} else {
 						VaultTagBadge(
 							text: VaultProject.displayName(for: selectedEnvironment),
-							foreground: VaultPalette.accent,
+							foreground: VaultPalette.accentForeground,
 							background: VaultPalette.accentTint
 						)
 					}
@@ -171,7 +171,7 @@ struct AddSecretSheet: View {
 			content()
 				.padding(.horizontal, 11)
 				.frame(height: 34)
-				.background(RoundedRectangle(cornerRadius: 8).fill(.white))
+				.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 				.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
 			if let error {
 				Text(error)

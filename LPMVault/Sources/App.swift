@@ -93,6 +93,7 @@ struct LPMVaultApp: App {
 	@Environment(\.openWindow) private var openWindow
 	@State private var store = VaultStore()
 	@State private var updateChecker = UpdateChecker()
+	@State private var appearanceSettings = VaultAppearanceSettings()
 	@State private var isObscured = false
 
 	var body: some Scene {
@@ -100,8 +101,13 @@ struct LPMVaultApp: App {
 		Window("LPM Vault", id: "main") {
 			ContentView(store: store)
 				.environment(updateChecker)
+				.environment(appearanceSettings)
 				.environment(\.vaultContentObscured, isObscured)
-				.preferredColorScheme(.light)
+				.preferredColorScheme(appearanceSettings.selection.colorScheme)
+				.tint(VaultPalette.accent)
+				.onChange(of: appearanceSettings.selection, initial: true) { _, selection in
+					NSApp.appearance = selection.nativeAppearance
+				}
 				.vaultPrivacyProtected(isObscured)
 				.onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
 					isObscured = true

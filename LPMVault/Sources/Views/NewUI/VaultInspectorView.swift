@@ -68,7 +68,7 @@ struct VaultInspectorView: View {
 				.fixedSize(horizontal: false, vertical: true)
 
 			HStack(spacing: 6) {
-				VaultTagBadge(text: "ENCRYPTED", foreground: VaultPalette.accent, background: VaultPalette.accentTint)
+				VaultTagBadge(text: "ENCRYPTED", foreground: VaultPalette.accentForeground, background: VaultPalette.accentTint)
 				Text("used in \(snapshot.environmentCount(for: key)) envs")
 					.font(.system(size: 11))
 					.foregroundStyle(VaultPalette.textTertiary)
@@ -93,7 +93,7 @@ struct VaultInspectorView: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.padding(.horizontal, 11)
 			.padding(.vertical, 10)
-			.background(RoundedRectangle(cornerRadius: 8).fill(.white))
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
 			.accessibilityLabel(value == nil ? "Value not set" : (revealed ? "Value revealed visually" : "Value hidden"))
 
@@ -127,7 +127,7 @@ struct VaultInspectorView: View {
 					Spacer(minLength: 4)
 					Text(candidate == environment ? "editing" : (project.value(for: key, in: candidate) == nil ? "not set" : "set"))
 						.font(.system(size: 11, weight: candidate == environment ? .semibold : .regular))
-						.foregroundStyle(candidate == environment ? VaultPalette.accent : VaultPalette.textTertiary)
+						.foregroundStyle(candidate == environment ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 				}
 			}
 		}
@@ -229,7 +229,7 @@ private struct VaultSecretEditor: View {
 				.focused($focused)
 				.padding(.horizontal, 11)
 				.padding(.vertical, 9)
-				.background(RoundedRectangle(cornerRadius: 8).fill(.white))
+				.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 				.overlay { RoundedRectangle(cornerRadius: 8).stroke(focused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
 				.onSubmit { save() }
 
@@ -294,7 +294,7 @@ private struct VaultInspectorButton: View {
 			.foregroundStyle(foreground)
 			.frame(maxWidth: title == nil ? 28 : .infinity)
 			.frame(height: 28)
-			.background(RoundedRectangle(cornerRadius: 7).fill(filled ? VaultPalette.accent : .white))
+			.background(RoundedRectangle(cornerRadius: 7).fill(filled ? VaultPalette.accent : VaultPalette.control))
 			.overlay { RoundedRectangle(cornerRadius: 7).stroke(filled ? .clear : (destructive ? VaultPalette.red.opacity(0.5) : VaultPalette.border), lineWidth: 1) }
 		}
 		.buttonStyle(.plain)

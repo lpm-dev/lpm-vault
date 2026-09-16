@@ -16,7 +16,7 @@ struct AuthStatusViewTests {
 			authTokenProvider: { _, _ in nil }
 		)
 		store.appEnvironment = .production
-		let renderer = ImageRenderer(content: AuthStatusView(store: store).frame(width: 700, height: 700))
+		let renderer = ImageRenderer(content: AuthStatusView(store: store).environment(VaultAppearanceSettings()).frame(width: 700, height: 700))
 		renderer.scale = 3
 		let image = try #require(renderer.cgImage)
 		let request = VNRecognizeTextRequest()

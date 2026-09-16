@@ -15,7 +15,7 @@ extension EnvironmentValues {
 struct VaultPrivacyCurtain: View {
 	var body: some View {
 		ZStack {
-			Color(hex: 0x1C1C1E)
+			VaultPalette.terminal
 			VStack(spacing: 12) {
 				VaultAppMark(size: 56)
 				Text("LPM Vault")
@@ -94,7 +94,7 @@ struct VaultWindowConfigurator: NSViewRepresentable {
 		guard let window else { return }
 		window.titlebarAppearsTransparent = true
 		window.titleVisibility = .hidden
-		window.backgroundColor = .white
+		window.backgroundColor = NSColor(VaultPalette.content)
 		window.styleMask.insert(.fullSizeContentView)
 		window.isMovableByWindowBackground = false
 		for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {

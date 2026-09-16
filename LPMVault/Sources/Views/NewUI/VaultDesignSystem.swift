@@ -2,54 +2,71 @@ import AppKit
 import SwiftUI
 
 enum VaultPalette {
-	static let titleBar = Color(hex: 0xF2F1F5)
-	static let titleBarBorder = Color(hex: 0xDEDDE3)
-	static let sidebar = Color(hex: 0xF7F7FA)
-	static let sidebarBorder = Color(hex: 0xE4E3E9)
-	static let content = Color.white
-	static let inspector = Color(hex: 0xFAFAFC)
+	static let titleBar = adaptive(light: 0xF2F1F5, dark: 0x181818)
+	static let titleBarBorder = adaptive(light: 0xDEDDE3, dark: 0x2B2B2B)
+	static let sidebar = adaptive(light: 0xF7F7FA, dark: 0x232323)
+	static let sidebarBorder = adaptive(light: 0xE4E3E9, dark: 0x2B2B2B)
+	static let content = adaptive(light: 0xFFFFFF, dark: 0x181818)
+	static let control = adaptive(light: 0xFFFFFF, dark: 0x292929)
+	static let inspector = adaptive(light: 0xFAFAFC, dark: 0x232323)
 
-	static let textPrimary = Color(hex: 0x1C1C1E)
-	static let textSecondary = Color(hex: 0x3C3C43)
-	static let textTertiary = Color(hex: 0x6F6F75)
-	static let textQuaternary = Color(hex: 0x717178)
-	static let textFaint = Color(hex: 0x73737A)
-	static let masked = Color(hex: 0x6B6B72)
+	static let textPrimary = adaptive(light: 0x1C1C1E, dark: 0xFFFFFF)
+	static let textSecondary = adaptive(light: 0x3C3C43, dark: 0xA3A3A3)
+	static let textTertiary = adaptive(light: 0x6F6F75, dark: 0xA3A3A3)
+	static let textQuaternary = adaptive(light: 0x717178, dark: 0xA3A3A3)
+	static let textFaint = adaptive(light: 0x73737A, dark: 0xA3A3A3)
+	static let masked = adaptive(light: 0x6B6B72, dark: 0xA3A3A3)
 
-	static let border = Color(hex: 0xDCDBE2)
-	static let divider = Color(hex: 0xECEAF0)
-	static let rowDivider = Color(hex: 0xF0EFF4)
+	static let border = adaptive(light: 0xDCDBE2, dark: 0x2B2B2B)
+	static let divider = adaptive(light: 0xECEAF0, dark: 0x2B2B2B)
+	static let rowDivider = adaptive(light: 0xF0EFF4, dark: 0x2B2B2B)
 
 	static let accent = Color(hex: 0x5E5CE6)
-	static let accentHover = Color(hex: 0x7A78F0)
-	static let accentTint = Color(hex: 0xECEAFC)
-	static let accentText = Color(hex: 0x2C2B4A)
-	static let accentDeep = Color(hex: 0x4B48D6)
-	static let vaultChip = Color(hex: 0xE7E6EE)
-	static let vaultChipText = Color(hex: 0x5B5A6E)
+	static let accentForeground = adaptive(light: 0x5E5CE6, dark: 0xB9B8FF)
+	static let accentHover = adaptive(light: 0x7A78F0, dark: 0x6664E8)
+	static let accentTint = adaptive(light: 0xECEAFC, dark: 0x29263D)
+	static let accentText = adaptive(light: 0x2C2B4A, dark: 0xD5D4FF)
+	static let accentDeep = adaptive(light: 0x4B48D6, dark: 0xB9B8FF)
+	static let vaultChip = adaptive(light: 0xE7E6EE, dark: 0x292929)
+	static let vaultChipText = adaptive(light: 0x5B5A6E, dark: 0xA3A3A3)
 
 	static let green = Color(hex: 0x34C759)
 	static let orange = Color(hex: 0xFF9F0A)
 	static let red = Color(hex: 0xFF3B30)
-	static let redText = Color(hex: 0xC8342B)
-	static let greenTint = Color(hex: 0xE4F7E8)
-	static let greenTintText = Color(hex: 0x1A7F37)
-	static let orangeTint = Color(hex: 0xFFF1DE)
-	static let orangeTintText = Color(hex: 0xA05A12)
-	static let redTint = Color(hex: 0xFFE9E7)
-	static let neutralTint = Color(hex: 0xECEAF0)
+	static let redText = adaptive(light: 0xC8342B, dark: 0xFF847D)
+	static let greenTint = adaptive(light: 0xE4F7E8, dark: 0x233528)
+	static let greenTintText = adaptive(light: 0x1A7F37, dark: 0x75DB94)
+	static let orangeTint = adaptive(light: 0xFFF1DE, dark: 0x3B3020)
+	static let orangeTintText = adaptive(light: 0xA05A12, dark: 0xFFC06A)
+	static let redTint = adaptive(light: 0xFFE9E7, dark: 0x3D2423)
+	static let neutralTint = adaptive(light: 0xECEAF0, dark: 0x292929)
 
-	static let rowSelected = Color(hex: 0xF6F5FD)
-	static let rowHover = Color(hex: 0xFAFAFC)
-	static let headerRow = Color(hex: 0xFAFAFC)
-	static let sidebarHover = Color(hex: 0xEEEDF3)
-	static let selectedEnvHeader = Color(hex: 0xF3F1FF)
-	static let selectedEnvCell = Color(hex: 0xFAF9FF)
+	static let rowSelected = adaptive(light: 0xF6F5FD, dark: 0x292929)
+	static let rowHover = adaptive(light: 0xFAFAFC, dark: 0x232323)
+	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x232323)
+	static let sidebarHover = adaptive(light: 0xEEEDF3, dark: 0x292929)
+	static let selectedEnvHeader = adaptive(light: 0xF3F1FF, dark: 0x29263D)
+	static let selectedEnvCell = adaptive(light: 0xFAF9FF, dark: 0x211F2E)
 
-	static let avatarNeutral = Color(hex: 0xD9D8E4)
-	static let avatarNeutralForeground = Color(hex: 0x5B5A6E)
-	static let terminal = Color(hex: 0x1C1C1E)
+	static let strongFill = adaptive(light: 0x1C1C1E, dark: 0x5E5CE6)
+	static let shadow = adaptive(light: 0x1C1C1E, dark: 0x000000)
+
+	static let avatarNeutral = adaptive(light: 0xD9D8E4, dark: 0x292929)
+	static let avatarNeutralForeground = adaptive(light: 0x5B5A6E, dark: 0xA3A3A3)
+	static let terminal = adaptive(light: 0x1C1C1E, dark: 0x181818)
 	static let terminalText = Color(hex: 0xE8E8ED)
+
+	private static func adaptive(light: UInt, dark: UInt) -> Color {
+		func color(_ hex: UInt) -> NSColor {
+			NSColor(srgbRed: Double((hex >> 16) & 0xFF) / 255,
+				green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255, alpha: 1)
+		}
+		let lightColor = color(light)
+		let darkColor = color(dark)
+		return Color(nsColor: NSColor(name: nil) { appearance in
+			appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
+		})
+	}
 
 	static func environment(_ index: Int) -> Color {
 		let colors = [green, orange, red, accent, Color(hex: 0x0A84FF), Color(hex: 0xAF52DE)]
@@ -229,10 +246,10 @@ struct VaultBarButton: View {
 	}
 
 	private var background: Color {
-		if disabled { return filled ? VaultPalette.accent.opacity(0.35) : .white.opacity(0.7) }
+		if disabled { return filled ? VaultPalette.accent.opacity(0.35) : VaultPalette.control.opacity(0.7) }
 		if filled { return hovering ? VaultPalette.accentHover : VaultPalette.accent }
-		if invertsOnHover && hovering { return VaultPalette.textPrimary }
-		return hovering ? VaultPalette.sidebar : .white
+		if invertsOnHover && hovering { return VaultPalette.strongFill }
+		return hovering ? VaultPalette.sidebar : VaultPalette.control
 	}
 
 	var body: some View {
@@ -248,7 +265,7 @@ struct VaultBarButton: View {
 				if let shortcut {
 					Text(shortcut)
 						.font(VaultTypography.mono(10))
-						.foregroundStyle(foreground == .white ? .white.opacity(0.7) : VaultPalette.textFaint)
+						.foregroundStyle(!disabled && (filled || (invertsOnHover && hovering)) ? .white.opacity(0.7) : VaultPalette.textFaint)
 				}
 			}
 			.foregroundStyle(foreground)
@@ -284,7 +301,7 @@ struct VaultOutlineButton: View {
 				if let systemImage { Image(systemName: systemImage).font(.system(size: 11, weight: .medium)) }
 				if let title { Text(title).font(.system(size: 12)) }
 			}
-			.foregroundStyle(disabled ? VaultPalette.textFaint : (active ? VaultPalette.accent : VaultPalette.textSecondary))
+			.foregroundStyle(disabled ? VaultPalette.textFaint : (active ? VaultPalette.accentForeground : VaultPalette.textSecondary))
 			.padding(.horizontal, title == nil ? 0 : 10)
 			.frame(width: title == nil ? 27 : nil, height: 27)
 			.background {
@@ -354,7 +371,7 @@ struct VaultFilterChip: View {
 			.foregroundStyle(selected ? .white : VaultPalette.textSecondary)
 			.padding(.horizontal, 11)
 			.frame(height: 26)
-			.background(Capsule().fill(selected ? VaultPalette.textPrimary : (hovering ? VaultPalette.sidebar : .clear)))
+			.background(Capsule().fill(selected ? VaultPalette.strongFill : (hovering ? VaultPalette.sidebar : .clear)))
 			.overlay { Capsule().stroke(selected ? .clear : VaultPalette.border, lineWidth: 1) }
 			.fixedSize()
 		}

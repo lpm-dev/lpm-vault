@@ -340,7 +340,7 @@ private struct VaultMatrixHeader: View {
 						.lineLimit(1)
 					Spacer(minLength: 2)
 					if environment == selectedEnvironment {
-						Image(systemName: "pencil").font(.system(size: 9, weight: .semibold)).foregroundStyle(VaultPalette.accent)
+						Image(systemName: "pencil").font(.system(size: 9, weight: .semibold)).foregroundStyle(VaultPalette.accentForeground)
 					}
 				}
 				.padding(.horizontal, 12)

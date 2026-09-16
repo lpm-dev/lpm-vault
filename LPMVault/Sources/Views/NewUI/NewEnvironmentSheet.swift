@@ -51,7 +51,7 @@ struct NewEnvironmentSheet: View {
 					}
 					.padding(.horizontal, 11)
 					.frame(height: 34)
-					.background(RoundedRectangle(cornerRadius: 8).fill(.white))
+					.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 					.overlay { RoundedRectangle(cornerRadius: 8).stroke(nameFocused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
 
 					if !candidate.isEmpty, !EnvValidation.isValidEnvironmentName(candidate) {
