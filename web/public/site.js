@@ -5,41 +5,8 @@ const FLIGHT_QUERY = "(prefers-reduced-motion: no-preference) and (min-width: 12
 const FLIGHT_SCROLL_DISTANCE = 420
 const FLOAT_PAUSE_PROGRESS = 0.02
 const LANDED_PROGRESS = 0.96
-const COPY_FEEDBACK_MS = 1600
 
-setUpCopyButtons()
 setUpHeroFlight()
-
-function setUpCopyButtons() {
-	if (!navigator.clipboard?.writeText) return
-	const status = document.querySelector("[data-copy-status]")
-
-	for (const button of document.querySelectorAll("[data-copy]")) {
-		const source = document.getElementById(button.dataset.copy)
-		if (!source) continue
-		let resetTimer = 0
-		button.hidden = false
-		button.addEventListener("click", async () => {
-			clearTimeout(resetTimer)
-			try {
-				await navigator.clipboard.writeText(source.textContent.trim())
-			} catch {
-				announce(status, "Copy failed. Select the command to copy it.")
-				return
-			}
-			button.dataset.copied = ""
-			announce(status, "Copied to clipboard")
-			resetTimer = setTimeout(() => {
-				delete button.dataset.copied
-				announce(status, "")
-			}, COPY_FEEDBACK_MS)
-		})
-	}
-}
-
-function announce(status, message) {
-	if (status) status.textContent = message
-}
 
 function setUpHeroFlight() {
 	const hero = document.querySelector("[data-hero]")

@@ -419,73 +419,6 @@ h3 code {
 	margin-top: 4px;
 }
 
-.cmd {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	height: 46px;
-	padding: 0 16px;
-	border: 1px solid var(--line);
-	border-radius: 23px;
-	background: var(--surface);
-	color: var(--ink-2);
-	font-family: var(--mono);
-	font-size: 13px;
-	transition: border-color 0.15s ease;
-}
-
-.cmd:hover,
-.cmd:focus-within {
-	border-color: var(--accent);
-}
-
-.cmd-prompt {
-	color: var(--faint);
-}
-
-.cmd-text {
-	font-size: inherit;
-	white-space: nowrap;
-}
-
-.cmd-copy {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	width: 28px;
-	height: 28px;
-	margin-right: -8px;
-	padding: 0;
-	border: 0;
-	border-radius: 50%;
-	background: transparent;
-	color: var(--faint);
-	cursor: pointer;
-	transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.cmd-copy:hover {
-	background: var(--accent-soft);
-	color: var(--accent);
-}
-
-.cmd-copy .i {
-	width: 13px;
-	height: 13px;
-	stroke-width: 1.9;
-}
-
-.cmd-copy .i-copy-done,
-.cmd-copy[data-copied] .i-copy-idle {
-	display: none;
-}
-
-.cmd-copy[data-copied] .i-copy-done {
-	display: block;
-	color: var(--green);
-	stroke-width: 2.4;
-}
-
 /* Hero: floating environment chips */
 
 .flyers {
@@ -2105,10 +2038,6 @@ h2 {
 		align-items: stretch;
 		width: 100%;
 		max-width: 340px;
-	}
-
-	.cmd {
-		justify-content: center;
 	}
 
 	.app {

@@ -34,7 +34,6 @@ class PageInventory(HTMLParser):
         self.event_handlers = []
         self.flyers = set()
         self.flyer_targets = set()
-        self.copy_sources = set()
         self._in_inline_script = False
 
     def handle_starttag(self, tag, attrs):
@@ -63,8 +62,6 @@ class PageInventory(HTMLParser):
             self.flyers.add(attributes['data-flyer'])
         if 'data-flyer-target' in attributes:
             self.flyer_targets.add(attributes['data-flyer-target'])
-        if 'data-copy' in attributes:
-            self.copy_sources.add(attributes['data-copy'])
 
     def handle_data(self, data):
         if self._in_inline_script and data.strip():
@@ -142,7 +139,6 @@ class Routes(unittest.TestCase):
         page = PageInventory()
         page.feed(body.decode())
         self.assertEqual(page.fragment_links - page.ids, set())
-        self.assertEqual(page.copy_sources - page.ids, set())
         self.assertTrue(page.flyers)
         self.assertEqual(page.flyers, page.flyer_targets)
         for path in sorted(page.local_references - {'/download'}):
