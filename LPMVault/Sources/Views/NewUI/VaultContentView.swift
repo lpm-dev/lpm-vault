@@ -14,6 +14,9 @@ struct VaultContentView: View {
 	@Binding var showsInspector: Bool
 	let isImporting: Bool
 	let isCopyingAll: Bool
+	let cliAccess: VaultCliAccess?
+	let isChangingCliAccess: Bool
+	let onChangeCliAccess: (VaultCliAccess) -> Void
 	let onCopyAll: () -> Void
 	let onImport: () -> Void
 	let onExport: () -> Void
@@ -127,6 +130,19 @@ struct VaultContentView: View {
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
+			Toggle("CLI approval", isOn: Binding(
+				get: { cliAccess == .requireApproval },
+				set: { onChangeCliAccess($0 ? .requireApproval : .automatic) }
+			))
+			.toggleStyle(.switch)
+			.controlSize(.mini)
+			.font(.system(size: 11.5))
+			.disabled(cliAccess == nil || isChangingCliAccess)
+			.help(cliAccess == .requireApproval
+				? "CLI access requires Touch ID or your Mac login password."
+				: "CLI access automatically injects env values.")
+			.accessibilityLabel("Require approval for CLI env access")
+			.accessibilityValue(cliAccess == nil ? "Loading" : (cliAccess == .requireApproval ? "Required" : "Automatic"))
 		}
 		.lineLimit(1)
 		.fixedSize(horizontal: true, vertical: false)

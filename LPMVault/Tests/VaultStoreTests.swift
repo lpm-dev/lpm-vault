@@ -60,6 +60,133 @@ struct VaultStoreTests {
 
 	// MARK: - Load
 
+	@Test("CLI approval changes require authentication and do not affect another project")
+	func cliApprovalChangesAuthenticateAndStayProjectScoped() async throws {
+		let (store, keychain, biometric, _) = makeStore(projects: [
+			(id: "first", name: "First", path: "", secrets: [:]),
+			(id: "second", name: "Second", path: "", secrets: [:]),
+		])
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		await store.refreshCliAccess()
+		await waitForCliApprovalLoad(store)
+		await store.changeCliAccess(to: .requireApproval)
+		#expect(store.selectedProjectCliAccess == .requireApproval)
+		#expect(keychain.cliAccessPolicies["first"] == .requireApproval)
+		#expect(keychain.cliAccessPolicies["second"] == nil)
+		let count = biometric.authenticateCallCount
+		await store.changeCliAccess(to: .automatic)
+		#expect(store.selectedProjectCliAccess == .automatic)
+		#expect(biometric.authenticateCallCount == count + 1)
+	}
+
+	@Test("cancelled authentication preserves automatic CLI access")
+	func cancelledCliApprovalChangePreservesPolicy() async {
+		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: [:])], biometricShouldSucceed: false)
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		await store.refreshCliAccess()
+		await waitForCliApprovalLoad(store)
+		await store.changeCliAccess(to: .requireApproval)
+		#expect(store.selectedProjectCliAccess == .automatic)
+		#expect(keychain.cliAccessChangeCount == 0)
+		#expect(store.error?.contains("cancelled or failed") == true)
+		#expect(!store.isChangingCliAccess)
+	}
+
+	@Test("locking the UI preserves the persisted CLI approval policy")
+	func uiLockDoesNotChangeCliApprovalPolicy() async {
+		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: [:])])
+		keychain.cliAccessPolicies["first"] = .requireApproval
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		await store.refreshCliAccess()
+		await waitForCliApprovalLoad(store)
+		store.lock()
+		#expect(keychain.cliAccessPolicies["first"] == .requireApproval)
+		#expect(store.selectedProjectCliAccess == nil)
+	}
+
+	@Test("persistence cannot commit an invalidated CLI approval change")
+	func invalidatedCliApprovalChangeCannotPersist() async {
+		let keychain = MockKeychainService()
+		keychain.storage["first"] = ("First", "", [:])
+		let persistence = VaultPersistenceCoordinator(service: keychain)
+		let authorization = CliAccessChangeAuthorization()
+		authorization.invalidate()
+		let result = await persistence.setCliAccess(vaultId: "first", access: .requireApproval, authorization: authorization)
+		guard case .failure(.accessDenied) = result else {
+			Issue.record("Cancelled CLI approval change must not commit")
+			return
+		}
+		#expect(keychain.cliAccessChangeCount == 0)
+	}
+
+	@Test("a project switch during approval prevents the old project policy change")
+	func switchingProjectsDuringCliApprovalCannotPersist() async {
+		let (store, keychain, biometric, _) = makeStore(projects: [
+			(id: "first", name: "First", path: "", secrets: [:]),
+			(id: "second", name: "Second", path: "", secrets: [:]),
+		])
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		await store.refreshCliAccess()
+		await waitForCliApprovalLoad(store)
+		let gate = AsyncGate()
+		biometric.authenticateHandlers = [{ await gate.arriveAndWait(); return true }]
+		let change = Task { await store.changeCliAccess(to: .requireApproval) }
+		await gate.waitUntilArrived()
+		store.selectedProjectId = "second"
+		await gate.release()
+		await change.value
+		await waitForCliApprovalLoad(store)
+		#expect(keychain.cliAccessChangeCount == 0)
+		#expect(store.selectedProjectCliAccess == .automatic)
+		#expect(!store.isChangingCliAccess)
+	}
+
+	@Test("locking during approval prevents a policy change")
+	func lockingDuringCliApprovalCannotPersist() async {
+		let (store, keychain, biometric, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: [:])])
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		await store.refreshCliAccess()
+		await waitForCliApprovalLoad(store)
+		let gate = AsyncGate()
+		biometric.authenticateHandlers = [{ await gate.arriveAndWait(); return true }]
+		let change = Task { await store.changeCliAccess(to: .requireApproval) }
+		await gate.waitUntilArrived()
+		store.lock()
+		await gate.release()
+		await change.value
+		#expect(keychain.cliAccessChangeCount == 0)
+		#expect(store.selectedProjectCliAccess == nil)
+		#expect(!store.isChangingCliAccess)
+	}
+
+	@Test("invalidating approval while waiting for the transaction lock prevents commit")
+	func cliApprovalInvalidationBeforeTransactionLockPreventsCommit() async {
+		let keychain = MockKeychainService()
+		keychain.storage["first"] = ("First", "", [:])
+		let persistence = VaultPersistenceCoordinator(service: keychain)
+		let authorization = CliAccessChangeAuthorization()
+		keychain.beforeKeychainTransaction = { authorization.invalidate() }
+		let result = await persistence.setCliAccess(vaultId: "first", access: .requireApproval, authorization: authorization)
+		#expect(keychain.cliAccessChangeCount == 0)
+		guard case .failure(.accessDenied) = result else {
+			Issue.record("Invalidated approval must not commit after waiting for the transaction lock")
+			return
+		}
+	}
+
+	private func waitForCliApprovalLoad(_ store: VaultStore) async {
+		let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+		while store.selectedProjectCliAccess == nil, ContinuousClock.now < deadline {
+			await Task.yield()
+		}
+		#expect(store.selectedProjectCliAccess != nil)
+	}
+
 	@Test("load projects from keychain")
 	func loadProjects() async throws {
 		let keychain = MockKeychainService()

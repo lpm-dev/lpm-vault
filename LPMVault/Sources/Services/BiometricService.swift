@@ -10,10 +10,15 @@ enum BiometricType {
 }
 
 protocol BiometricServiceProtocol: Sendable {
+	var keychainAuthenticationContext: LAContext? { get }
 	func authenticate(reason: String) async -> Bool
 	func isBiometricAvailable() -> Bool
 	func biometricType() -> BiometricType
 	func resetCache()
+}
+
+extension BiometricServiceProtocol {
+	var keychainAuthenticationContext: LAContext? { nil }
 }
 
 // MARK: - Implementation
@@ -24,25 +29,19 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 	private var cacheEpoch: UInt64 = 0
 	private let cacheDuration: TimeInterval
 	private let now: @Sendable () -> TimeInterval
-	private let authentication: @Sendable (String) async -> Bool
+	private let authentication: (@Sendable (String) async -> Bool)?
+	private var authenticatedContext: LAContext?
+
+	var keychainAuthenticationContext: LAContext? {
+		lock.withLock { authenticatedContext }
+	}
 
 	init(
 		cacheDuration: TimeInterval = VaultConstants.biometricCacheDuration,
 		now: @escaping @Sendable () -> TimeInterval = {
 			ProcessInfo.processInfo.systemUptime
 		},
-		authentication: @escaping @Sendable (String) async -> Bool = { reason in
-			let context = LAContext()
-			context.localizedFallbackTitle = "Use Password"
-			do {
-				return try await context.evaluatePolicy(
-					.deviceOwnerAuthentication,
-					localizedReason: reason
-				)
-			} catch {
-				return false
-			}
-		}
+		authentication: (@Sendable (String) async -> Bool)? = nil
 	) {
 		self.cacheDuration = cacheDuration
 		self.now = now
@@ -58,12 +57,25 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 			return true
 		}
 
-		let success = await authentication(reason)
+		let context: LAContext?
+		let success: Bool
+		if let authentication {
+			context = nil
+			success = await authentication(reason)
+		} else {
+			let nativeContext = LAContext()
+			nativeContext.localizedFallbackTitle = "Use Password"
+			context = nativeContext
+			do {
+				success = try await nativeContext.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+			} catch { success = false }
+		}
 		if success {
 			let authenticatedAt = now()
 			lock.withLock {
 				guard cacheEpoch == authenticationEpoch else { return }
 				lastAuthTime = authenticatedAt
+				authenticatedContext = context
 			}
 		}
 		return success
@@ -95,9 +107,13 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 
 	/// Reset the auth cache (e.g., when user locks manually)
 	func resetCache() {
-		lock.withLock {
+		let context = lock.withLock {
 			cacheEpoch &+= 1
 			lastAuthTime = nil
+			let context = authenticatedContext
+			authenticatedContext = nil
+			return context
 		}
+		context?.invalidate()
 	}
 }

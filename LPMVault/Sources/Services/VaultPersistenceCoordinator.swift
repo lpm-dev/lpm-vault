@@ -188,6 +188,17 @@ actor VaultPersistenceCoordinator {
 		service.getProjectResult(vaultId: vaultId)
 	}
 
+	func cliAccess(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
+		service.cliAccessResult(vaultId: vaultId)
+	}
+
+	func setCliAccess(vaultId: String, access: VaultCliAccess, authorization: CliAccessChangeAuthorization) -> Result<VaultCliAccess, KeychainError> {
+		service.withKeychainTransaction {
+			guard !Task.isCancelled, authorization.beginCommit() else { return .failure(.accessDenied) }
+			return service.setCliAccess(vaultId: vaultId, access: access)
+		}.flatMap { $0 }
+	}
+
 	func loadProjectCreationRecord(
 		vaultId: String
 	) -> Result<ProjectCreationRecord, KeychainError> {

@@ -241,6 +241,21 @@ struct LocalEnvImportTarget: Hashable, Sendable {
   let environment: String
 }
 
+final class CliAccessChangeAuthorization: @unchecked Sendable {
+  private let lock = NSLock()
+  private var pending = true
+
+  func beginCommit() -> Bool {
+    lock.withLock {
+      guard pending else { return false }
+      pending = false
+      return true
+    }
+  }
+
+  func invalidate() { lock.withLock { pending = false } }
+}
+
 /// Synchronous commit authority shared with the persistence actor. A UI
 /// invalidation that wins this lock prevents a queued transaction from
 /// crossing its durable commit point.
@@ -1161,6 +1176,12 @@ final class VaultStore {
   var isLoadingProjects: Bool = false
   var isUnlocking: Bool = false
   private(set) var autoLockCountdownSeconds: Int?
+  private(set) var selectedProjectCliAccess: VaultCliAccess?
+  private var cliAccessLoadTask: Task<Void, Never>?
+  private var cliAccessLoadGeneration = 0
+  private var cliAccessChangeID: UUID?
+  private var cliAccessChangeAuthorization: CliAccessChangeAuthorization?
+  var isChangingCliAccess: Bool { cliAccessChangeID != nil }
 
   // Auth state
   var currentUser: LPMUser? {
@@ -1659,6 +1680,10 @@ final class VaultStore {
   // MARK: - Load
 
   private func beginSelectedProjectLoadIfNeeded() {
+    cancelCliAccessChange()
+    selectedProjectCliAccess = nil
+    cliAccessLoadTask?.cancel()
+    cliAccessLoadTask = Task { [weak self] in await self?.refreshCliAccess() }
     selectedProjectLoadGeneration &+= 1
     let generation = selectedProjectLoadGeneration
     selectedProjectLoadTask?.cancel()
@@ -1713,6 +1738,81 @@ final class VaultStore {
       }
     }
     selectedProjectLoadTask = task
+  }
+
+  func refreshCliAccess() async {
+    guard !Task.isCancelled else { return }
+    cliAccessLoadGeneration &+= 1
+    let generation = cliAccessLoadGeneration
+    selectedProjectCliAccess = nil
+    guard isUnlocked, let projectID = selectedProjectId,
+      projectBelongsToSelectedAccount(projectID)
+    else { return }
+    let session = vaultSessionGeneration
+    let result = await persistence.cliAccess(vaultId: projectID)
+    guard !Task.isCancelled, generation == cliAccessLoadGeneration,
+      session == vaultSessionGeneration, isUnlocked, selectedProjectId == projectID
+    else { return }
+    switch result {
+    case .success(let access): selectedProjectCliAccess = access
+    case .failure(let failure): error = "Could not load CLI approval. \(failure.description)"
+    }
+  }
+
+  func changeCliAccess(to access: VaultCliAccess) async {
+    guard isUnlocked, let projectID = selectedProjectId,
+      projectBelongsToSelectedAccount(projectID), selectedProjectCliAccess != nil,
+      selectedProjectCliAccess != access, !isChangingCliAccess
+    else { return }
+    let requestID = UUID()
+    let authorization = CliAccessChangeAuthorization()
+    let session = vaultSessionGeneration
+    cliAccessChangeID = requestID
+    cliAccessChangeAuthorization = authorization
+    cliAccessLoadTask?.cancel()
+    cliAccessLoadGeneration &+= 1
+    defer {
+      if cliAccessChangeID == requestID {
+        cliAccessChangeID = nil
+        cliAccessChangeAuthorization = nil
+      }
+    }
+    biometricService.resetCache()
+    keychainService.setAuthenticationContext(nil)
+    let approved = await authenticateForSensitiveAction(
+      reason: access == .requireApproval
+        ? "Require approval when the CLI accesses this env project"
+        : "Allow automatic CLI access to this env project"
+    )
+    guard !Task.isCancelled, session == vaultSessionGeneration, isUnlocked,
+      selectedProjectId == projectID, cliAccessChangeID == requestID
+    else { return }
+    guard approved else {
+      error = "CLI approval was not changed because authentication was cancelled or failed."
+      return
+    }
+    await waitForProjectMutations()
+    guard !Task.isCancelled, session == vaultSessionGeneration, isUnlocked,
+      selectedProjectId == projectID, cliAccessChangeID == requestID
+    else { return }
+    let result = await persistence.setCliAccess(vaultId: projectID, access: access, authorization: authorization)
+    guard !Task.isCancelled, session == vaultSessionGeneration, isUnlocked,
+      selectedProjectId == projectID, cliAccessChangeID == requestID
+    else { return }
+    switch result {
+    case .success(let saved):
+      selectedProjectCliAccess = saved
+      error = nil
+    case .failure(let failure):
+      await refreshCliAccess()
+      error = "Could not change CLI approval. \(failure.description)"
+    }
+  }
+
+  private func cancelCliAccessChange() {
+    cliAccessChangeAuthorization?.invalidate()
+    cliAccessChangeAuthorization = nil
+    cliAccessChangeID = nil
   }
 
   private func invalidateSelectedProjectLoad() {
@@ -3392,6 +3492,7 @@ final class VaultStore {
       isUnlocking = false
       return
     }
+    keychainService.setAuthenticationContext(biometricService.keychainAuthenticationContext)
     guard generation == unlockGeneration else { return }
     await waitForProjectMutations()
     guard generation == unlockGeneration else { return }
@@ -3412,10 +3513,14 @@ final class VaultStore {
     guard isUnlocked else { return false }
     let sessionGeneration = vaultSessionGeneration
     let success = await biometricService.authenticate(reason: reason)
-    return !Task.isCancelled
+    let approved = !Task.isCancelled
       && success
       && isUnlocked
       && sessionGeneration == vaultSessionGeneration
+    if approved {
+      keychainService.setAuthenticationContext(biometricService.keychainAuthenticationContext)
+    }
+    return approved
   }
 
   func exportEnvironment(
@@ -3461,6 +3566,11 @@ final class VaultStore {
   }
 
   func lock() {
+    cancelCliAccessChange()
+    cliAccessLoadTask?.cancel()
+    cliAccessLoadGeneration &+= 1
+    selectedProjectCliAccess = nil
+    keychainService.setAuthenticationContext(nil)
     unlockGeneration &+= 1
     vaultSessionGeneration &+= 1
     cancelExports()

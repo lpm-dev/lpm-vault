@@ -8,6 +8,33 @@ import Testing
 private final class KeychainServiceTestBackend: KeychainStoreBackend, @unchecked Sendable {
 	private let lock = NSLock()
 	private var storage: [String: Data] = [:]
+	private var policies: [String: VaultCliAccess] = [:]
+	private var accessWrites: [(String, VaultCliAccess)] = []
+
+	var recordedAccessWrites: [(String, VaultCliAccess)] { lock.withLock { accessWrites } }
+
+	func cliAccess(service: String, account: String) throws -> VaultCliAccess {
+		lock.withLock { policies[key(service: service, account: account)] ?? .automatic }
+	}
+
+	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws {
+		try lock.withLock {
+			let storageKey = key(service: service, account: account)
+			guard storage[storageKey] != nil else {
+				throw KeychainStoreError.status(operation: "change CLI approval", code: errSecItemNotFound)
+			}
+			policies[storageKey] = access
+		}
+	}
+
+	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws {
+		lock.withLock {
+			let storageKey = key(service: service, account: account)
+			storage[storageKey] = data
+			if access == .requireApproval { policies[storageKey] = access }
+			accessWrites.append((account, access))
+		}
+	}
 
 	private func key(service: String, account: String) -> String {
 		"\(service)\u{0}\(account)"
@@ -62,6 +89,71 @@ struct KeychainServiceTests {
 	}
 
 	// MARK: - CRUD
+
+	@Test("CLI approval defaults to automatic and changes only the selected project")
+	func cliApprovalIsLocalToOneProject() throws {
+		let service = makeService()
+		let first = "approval-first"
+		let second = "approval-second"
+		let environments = ["default": ["TOKEN": "synthetic-fixture"]]
+		for id in [first, second] {
+			#expect(succeeded(service.createEnvironments(vaultId: id, projectName: id, projectPath: "", environments: environments)))
+		}
+		#expect(try service.cliAccessResult(vaultId: first).get() == .automatic)
+		#expect(try service.setCliAccess(vaultId: first, access: .requireApproval).get() == .requireApproval)
+		#expect(try service.cliAccessResult(vaultId: second).get() == .automatic)
+		#expect(service.getEnvironments(vaultId: first) == environments)
+		#expect(try service.setCliAccess(vaultId: first, access: .automatic).get() == .automatic)
+		#expect(service.getEnvironments(vaultId: first) == environments)
+	}
+
+	@Test("secret updates protect the staged copy and preserve CLI approval")
+	func updatesPreserveCliApprovalOnStagingAndLiveData() throws {
+		let backend = KeychainServiceTestBackend()
+		let service = KeychainService(testingService: "fixture", backend: backend)
+		let id = "approval-update"
+		#expect(succeeded(service.createEnvironments(vaultId: id, projectName: id, projectPath: "", environments: ["default": ["TOKEN": "original"]])))
+		_ = try service.setCliAccess(vaultId: id, access: .requireApproval).get()
+		#expect(succeeded(service.updateEnvironments(vaultId: id, environments: ["default": ["TOKEN": "replacement"]])))
+		#expect(try service.cliAccessResult(vaultId: id).get() == .requireApproval)
+		let protectedWrites = backend.recordedAccessWrites.filter { $0.1 == .requireApproval }
+		#expect(protectedWrites.count == 2)
+		#expect(protectedWrites[0].0.hasPrefix("__vault_transaction_stage_v3__:"))
+		#expect(protectedWrites[1].0 == id)
+	}
+
+	@Test("CLI approval cannot target internal Keychain records")
+	func cliApprovalRejectsInternalRecordNames() {
+		let service = makeService()
+		guard case .failure(.accessDenied) = service.setCliAccess(vaultId: "__vault_transaction_v3__", access: .automatic) else {
+			Issue.record("Internal records must not be valid project IDs")
+			return
+		}
+	}
+
+	@Test("an unknown CLI approval marker fails closed")
+	func unknownCliApprovalMarkerIsRejected() {
+		#expect(throws: KeychainStoreError.integrityValidationFailed) {
+			try SecurityKeychainStoreBackend.cliAccess(attributes: [kSecAttrGeneric as String: Data("unknown-policy".utf8)])
+		}
+	}
+
+	@Test("an approval marker without native access control fails closed")
+	func cliApprovalRequiresNativeAccessControl() {
+		#expect(throws: KeychainStoreError.integrityValidationFailed) {
+			try SecurityKeychainStoreBackend.cliAccess(attributes: [kSecAttrGeneric as String: VaultCliAccess.approvalMarker])
+		}
+	}
+
+	@Test("approval uses user presence with password fallback and automatic access does not")
+	func cliApprovalUsesNativeUserPresence() throws {
+		#expect(VaultCliAccess.requireApproval.keychainFlags == .userPresence)
+		#expect(VaultCliAccess.automatic.keychainFlags.isEmpty)
+		let attributes = try SecurityKeychainStoreBackend.approvalAttributes(.requireApproval)
+		#expect(attributes[kSecAttrAccessible as String] == nil)
+		#expect(try SecurityKeychainStoreBackend.cliAccess(attributes: attributes) == .requireApproval)
+		#expect(try SecurityKeychainStoreBackend.cliAccess(attributes: SecurityKeychainStoreBackend.approvalAttributes(.automatic)) == .automatic)
+	}
 
 	@Test("round-trip: create then read returns the same environments")
 	func roundTrip() {
