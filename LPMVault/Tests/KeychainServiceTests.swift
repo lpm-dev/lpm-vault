@@ -9,15 +9,20 @@ private final class KeychainServiceTestBackend: KeychainStoreBackend, @unchecked
 	private let lock = NSLock()
 	private var storage: [String: Data] = [:]
 	private var policies: [String: VaultCliAccess] = [:]
+	private var accessReadCount = 0
 	private var accessWrites: [(String, VaultCliAccess)] = []
 
+	var recordedAccessReadCount: Int { lock.withLock { accessReadCount } }
 	var recordedAccessWrites: [(String, VaultCliAccess)] { lock.withLock { accessWrites } }
 
 	func cliAccess(service: String, account: String) throws -> VaultCliAccess {
-		lock.withLock { policies[key(service: service, account: account)] ?? .automatic }
+		lock.withLock {
+			accessReadCount += 1
+			return policies[key(service: service, account: account)] ?? .automatic
+		}
 	}
 
-	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws {
+	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess {
 		try lock.withLock {
 			let storageKey = key(service: service, account: account)
 			guard storage[storageKey] != nil else {
@@ -25,6 +30,9 @@ private final class KeychainServiceTestBackend: KeychainStoreBackend, @unchecked
 			}
 			policies[storageKey] = access
 		}
+		let saved = try cliAccess(service: service, account: account)
+		guard saved == access else { throw KeychainStoreError.integrityValidationFailed }
+		return saved
 	}
 
 	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws {
@@ -89,6 +97,16 @@ struct KeychainServiceTests {
 	}
 
 	// MARK: - CRUD
+
+	@Test("CLI approval returns one verified readback without querying it again")
+	func cliApprovalChangeReadsBackOnlyOnce() throws {
+		let backend = KeychainServiceTestBackend()
+		let service = KeychainService(testingService: "readback-fixture", backend: backend)
+		#expect(succeeded(service.createEnvironments(vaultId: "first", projectName: "First", projectPath: "", environments: ["default": [:]])))
+		let before = backend.recordedAccessReadCount
+		#expect(try service.setCliAccess(vaultId: "first", access: .requireApproval).get() == .requireApproval)
+		#expect(backend.recordedAccessReadCount - before == 1)
+	}
 
 	@Test("CLI approval defaults to automatic and changes only the selected project")
 	func cliApprovalIsLocalToOneProject() throws {

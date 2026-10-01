@@ -1,5 +1,23 @@
 import SwiftUI
 
+struct VaultCliAccessPresentation {
+	let access: VaultCliAccess?
+	var help: String {
+		switch access {
+		case .requireApproval: "CLI access requires Touch ID or your Mac login password."
+		case .automatic: "CLI access automatically injects env values."
+		case nil: "CLI approval is unavailable until its policy can be read."
+		}
+	}
+	var accessibilityValue: String {
+		switch access {
+		case .requireApproval: "Required"
+		case .automatic: "Automatic"
+		case nil: "Unavailable"
+		}
+	}
+}
+
 struct VaultContentView: View {
 	let project: VaultProject
 	let snapshot: VaultWorkspaceSnapshot
@@ -138,11 +156,9 @@ struct VaultContentView: View {
 			.controlSize(.mini)
 			.font(.system(size: 11.5))
 			.disabled(cliAccess == nil || isChangingCliAccess)
-			.help(cliAccess == .requireApproval
-				? "CLI access requires Touch ID or your Mac login password."
-				: "CLI access automatically injects env values.")
+			.help(VaultCliAccessPresentation(access: cliAccess).help)
 			.accessibilityLabel("Require approval for CLI env access")
-			.accessibilityValue(cliAccess == nil ? "Loading" : (cliAccess == .requireApproval ? "Required" : "Automatic"))
+			.accessibilityValue(VaultCliAccessPresentation(access: cliAccess).accessibilityValue)
 		}
 		.lineLimit(1)
 		.fixedSize(horizontal: true, vertical: false)

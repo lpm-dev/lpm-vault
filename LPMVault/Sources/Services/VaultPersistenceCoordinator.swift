@@ -26,6 +26,7 @@ struct VaultPersistenceSnapshot: Sendable {
 }
 
 struct ProjectCreationRecord: Sendable {
+	let cliAccess: VaultCliAccess?
 	let project: VaultProject?
 	let orgAssociations: [String: String]
 }
@@ -36,6 +37,7 @@ enum DeleteProjectPersistenceResult: Sendable {
 }
 
 struct ImportPersistenceCommit: Sendable {
+	let cliAccess: VaultCliAccess?
 	let project: VaultProject
 	let syncMetadata: SyncMetadata?
 	let orgAssociations: [String: String]
@@ -52,6 +54,7 @@ enum ImportPersistenceResult: Sendable {
 }
 
 struct ProjectCreationPersistenceCommit: Sendable {
+	let cliAccess: VaultCliAccess?
 	let orgAssociations: [String: String]
 	let warning: String?
 }
@@ -216,6 +219,7 @@ actor VaultPersistenceCoordinator {
 			case .failure(let error): return .failure(error)
 			}
 			return .success(ProjectCreationRecord(
+				cliAccess: project == nil ? nil : try? service.cliAccessResult(vaultId: vaultId).get(),
 				project: project,
 				orgAssociations: associations
 			))
@@ -290,6 +294,7 @@ actor VaultPersistenceCoordinator {
 		}
 
 		return .success(ProjectCreationPersistenceCommit(
+			cliAccess: try? service.cliAccessResult(vaultId: project.id).get(),
 			orgAssociations: associations,
 			warning: warning
 		))
@@ -937,6 +942,7 @@ actor VaultPersistenceCoordinator {
 
 		return .success(
 			ImportPersistenceCommit(
+				cliAccess: try? service.cliAccessResult(vaultId: importedProject.id).get(),
 				project: importedProject,
 				syncMetadata: metadata,
 				orgAssociations: associations,

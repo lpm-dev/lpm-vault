@@ -217,3 +217,10 @@ struct VaultAppearanceTests {
 		}
 	}
 }
+
+@Test("unknown CLI approval never advertises automatic access")
+func unknownCliApprovalPresentationIsTruthful() {
+	let presentation = VaultCliAccessPresentation(access: nil)
+	#expect(presentation.help == "CLI approval is unavailable until its policy can be read.")
+	#expect(presentation.accessibilityValue == "Unavailable")
+}

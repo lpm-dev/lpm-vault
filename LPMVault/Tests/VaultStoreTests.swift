@@ -221,6 +221,101 @@ struct VaultStoreTests {
 		}
 	}
 
+	@Test("committed CLI approval changes update unselected sidebar policies", arguments: [VaultCliAccess.automatic, .requireApproval], [false, true])
+	func committedCliApprovalChangeSurvivesNavigation(initial: VaultCliAccess, revisit: Bool) async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "first", name: "First", path: "", secrets: [:]),
+			(id: "second", name: "Second", path: "", secrets: [:]),
+		])
+		keychain.cliAccessPolicies["first"] = initial
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		await waitForCliApprovalLoad(store)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.afterCliAccessCommit = { entered.signal(); release.wait() }
+		let replacement: VaultCliAccess = initial == .automatic ? .requireApproval : .automatic
+		let change = Task { await store.changeCliAccess(to: replacement) }
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async { entered.wait(); continuation.resume() }
+		}
+		store.selectedProjectId = "second"
+		var refresh: Task<Void, Never>?
+		if revisit {
+			store.selectedProjectId = "first"
+			await withCheckedContinuation { continuation in
+				refresh = Task {
+					continuation.resume()
+					await store.refreshCliAccess()
+				}
+			}
+			store.selectedProjectId = "second"
+		}
+		keychain.afterCliAccessCommit = nil
+		release.signal()
+		await change.value
+		await refresh?.value
+		await waitForCliApprovalLoad(store)
+		#expect(keychain.cliAccessPolicies["first"] == replacement)
+		#expect(store.projectCliAccess["first"] == replacement)
+		#expect(store.selectedProjectCliAccess == .automatic)
+	}
+
+	@Test("CLI approval failure recovery cannot publish errors after invalidation", arguments: [false, true])
+	func cliApprovalRecoveryDoesNotPublishObsoleteError(lockSession: Bool) async {
+		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: [:])])
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		await waitForCliApprovalLoad(store)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.failCliAccessChange = true
+		keychain.beforeCliAccessRead = { entered.signal(); release.wait() }
+		let change = Task { await store.changeCliAccess(to: .requireApproval) }
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async { entered.wait(); continuation.resume() }
+		}
+		if lockSession { store.lock() } else { store.selectedProjectId = nil }
+		keychain.beforeCliAccessRead = nil
+		release.signal()
+		await change.value
+		#expect(store.error == nil)
+	}
+
+	@Test("new project policy is available even if selection is cleared immediately")
+	func createdProjectPolicySurvivesImmediateNavigation() async {
+		let (store, _, _, _) = makeStore()
+		store.isUnlocked = true
+		#expect(await store.addProjectWithVaultId(vaultId: "created", name: "Created", path: "", environments: ["default": [:]]))
+		store.selectedProjectId = nil
+		#expect(store.projectCliAccess["created"] == .automatic)
+	}
+
+	@Test("restoring an existing protected project retains its actual sidebar policy")
+	func restoredProtectedProjectPolicySurvivesImmediateNavigation() async {
+		let (store, keychain, _, _) = makeStore()
+		keychain.storage["restored"] = ("Restored", "", [:])
+		keychain.cliAccessPolicies["restored"] = .requireApproval
+		store.isUnlocked = true
+		#expect(await store.createVault(name: "Restored", vaultId: "restored") == .completed)
+		store.selectedProjectId = nil
+		#expect(store.projectCliAccess["restored"] == .requireApproval)
+	}
+
+	@Test("project value changes preserve every cached policy and deletion prunes only removed projects")
+	func policyCacheSurvivesValueEditsAndPrunesDeletedProjects() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "first", name: "First", path: "", secrets: [:]),
+			(id: "second", name: "Second", path: "", secrets: [:]),
+		])
+		keychain.cliAccessPolicies["first"] = .requireApproval
+		#expect(await store.loadProjects())
+		store.projects[0].name = "Renamed"
+		#expect(store.projectCliAccess == ["first": .requireApproval, "second": .automatic])
+		store.projects.removeAll { $0.id == "first" }
+		#expect(store.projectCliAccess == ["second": .automatic])
+	}
+
 	private func waitForCliApprovalLoad(_ store: VaultStore) async {
 		let deadline = ContinuousClock.now.advanced(by: .seconds(2))
 		while store.selectedProjectCliAccess == nil, ContinuousClock.now < deadline {
@@ -5562,6 +5657,7 @@ struct VaultStoreTests {
 		))
 		#expect(keychain.storage["committed"]?.secrets["TOKEN"] == "secret")
 		#expect(store.projects.first?.id == "committed")
+		#expect(store.projectCliAccess["committed"] == .automatic)
 	}
 
 	@Test("organization association failure rolls back the project")

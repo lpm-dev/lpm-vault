@@ -2949,6 +2949,15 @@ extension VaultStoreTests {
 		let operation = Task { await store.importCloudProject(round4RemoteProject()) }
 		await gate.waitUntilArrived()
 		#expect(keychain.envStorage["remote"] != nil)
+		#expect(await store.loadProjects())
+		store.selectProject("remote")
+		await store.refreshCliAccess()
+		let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+		while store.selectedProjectCliAccess == nil, ContinuousClock.now < deadline {
+			await Task.yield()
+		}
+		await store.changeCliAccess(to: .requireApproval)
+		#expect(keychain.cliAccessPolicies["remote"] == .requireApproval)
 		operation.cancel()
 		store.selectProject("project-b")
 		await gate.release()
@@ -2959,6 +2968,7 @@ extension VaultStoreTests {
 
 		#expect(store.projects.contains { $0.id == "remote" })
 		#expect(store.selectedProjectId == "project-b")
+		#expect(store.projectCliAccess["remote"] == .requireApproval)
 	}
 
 	@Test("a partially failed login cannot retain an invalidated identity")

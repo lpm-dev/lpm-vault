@@ -388,7 +388,7 @@ enum KeychainStoreError: Error, LocalizedError, Equatable, Sendable {
 protocol KeychainStoreBackend {
 	func cliAccess(service: String, account: String) throws -> VaultCliAccess
 	func cliAccess(service: String, accounts: [String]) throws -> [String: VaultCliAccess]
-	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws
+	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess
 	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws
 	func setAuthenticationContext(_ context: LAContext?)
 	func read(service: String, account: String) throws -> Data?
@@ -406,7 +406,7 @@ extension KeychainStoreBackend {
 		return values
 	}
 	func setAuthenticationContext(_ context: LAContext?) {}
-	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws {
+	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess {
 		throw KeychainStoreError.status(operation: "change CLI approval", code: errSecUnimplemented)
 	}
 	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws {
@@ -490,7 +490,7 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend {
 		return try Self.cliAccess(attributes: attributes)
 	}
 
-	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws {
+	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess {
 		var query = Self.identityQuery(service: service, account: account)
 		let context = authentication.current()
 		context.interactionNotAllowed = true
@@ -500,9 +500,11 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend {
 		guard status == errSecSuccess else {
 			throw KeychainStoreError.status(operation: "change CLI approval", code: status)
 		}
-		guard try cliAccess(service: service, account: account) == access else {
+		let saved = try cliAccess(service: service, account: account)
+		guard saved == access else {
 			throw KeychainStoreError.integrityValidationFailed
 		}
+		return saved
 	}
 
 	func cliAccess(service: String, accounts: [String]) throws -> [String: VaultCliAccess] {
@@ -1647,10 +1649,10 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
-	func setCliAccess(account: String, access: VaultCliAccess) throws {
+	func setCliAccess(account: String, access: VaultCliAccess) throws -> VaultCliAccess {
 		try VaultKeychainTransactionLock.withLock {
 			try ensureRecoveredUnlocked()
-			try backend.setCliAccess(service: service, account: account, access: access)
+			return try backend.setCliAccess(service: service, account: account, access: access)
 		}
 	}
 
@@ -1904,8 +1906,9 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
 		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
 		do {
-			try store.setCliAccess(account: vaultId, access: access)
-			return .success(try store.cliAccess(account: vaultId))
+			let saved = try store.setCliAccess(account: vaultId, access: access)
+			guard saved == access else { throw KeychainStoreError.integrityValidationFailed }
+			return .success(saved)
 		} catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
 		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
 	}

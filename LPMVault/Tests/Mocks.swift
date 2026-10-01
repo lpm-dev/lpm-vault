@@ -8,10 +8,14 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var cliAccessPolicies: [String: VaultCliAccess] = [:]
 	var cliAccessChangeCount = 0
 	var failCliAccess = false
+	var afterCliAccessCommit: (@Sendable () -> Void)?
+	var beforeCliAccessRead: (@Sendable () -> Void)?
+	var failCliAccessChange = false
 	var beforeKeychainTransaction: (@Sendable () -> Void)?
 
 	func cliAccessResult(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
-		lock.withLock {
+		beforeCliAccessRead?()
+		return lock.withLock {
 			if shouldFail || failCliAccess { return .failure(failureError) }
 			return .success(cliAccessPolicies[vaultId] ?? .automatic)
 		}
@@ -19,10 +23,11 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
 		lock.withLock {
-			if shouldFail { return .failure(failureError) }
+			if shouldFail || failCliAccessChange { return .failure(failureError) }
 			guard envStorage[vaultId] != nil else { return .failure(.itemNotFound) }
 			cliAccessPolicies[vaultId] = access
 			cliAccessChangeCount += 1
+			afterCliAccessCommit?()
 			return .success(access)
 		}
 	}
