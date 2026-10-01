@@ -22,6 +22,7 @@ struct VaultPersistenceSnapshot: Sendable {
 	let projects: [VaultProject]
 	let syncMetadata: [String: SyncMetadata]
 	let orgAssociations: [String: String]
+	let cliAccess: [String: VaultCliAccess]
 }
 
 struct ProjectCreationRecord: Sendable {
@@ -178,7 +179,8 @@ actor VaultPersistenceCoordinator {
 			return .success(VaultPersistenceSnapshot(
 				projects: projects,
 				syncMetadata: metadata,
-				orgAssociations: associations
+				orgAssociations: associations,
+				cliAccess: (try? service.cliAccessResults(vaultIds: projects.map(\.id)).get()) ?? [:]
 			))
 		}
 		.flatMap { $0 }
@@ -826,7 +828,8 @@ actor VaultPersistenceCoordinator {
 					$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
 				},
 				syncMetadata: remainingMetadata,
-				orgAssociations: associations
+				orgAssociations: associations,
+				cliAccess: (try? service.cliAccessResults(vaultIds: remainingProjects.map(\.id)).get()) ?? [:]
 			)
 		)
 	}

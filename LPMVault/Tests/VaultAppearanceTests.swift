@@ -149,10 +149,13 @@ struct VaultAppearanceTests {
 			environments: ["development": ["API_URL": "https://example.test", "PORT": "3000"],
 				"production": ["API_URL": "https://example.test", "PORT": "8080"]])
 		keychain.envStorage[project.id] = (project.name, project.path, project.environments)
+		keychain.envStorage["protected-preview"] = ("protected-api", "", ["default": [:]])
+		keychain.cliAccessPolicies["protected-preview"] = .requireApproval
 		store.isUnlocked = true
 		store.projects = [project]
 		store.selectedProjectId = project.id
 		store.selectedEnvironment = "development"
+		#expect(await store.loadProjects())
 		defer { store.lock() }
 		for _ in 0..<500 {
 			if store.workspaceSnapshots[project.id] != nil { break }
@@ -164,7 +167,7 @@ struct VaultAppearanceTests {
 		let suffix = scheme == .dark ? "dark" : "light"
 		try render(ContentView(store: store).environment(UpdateChecker()).environment(settings),
 			size: CGSize(width: 1200, height: 760), scheme: scheme, name: "workspace-\(suffix)",
-			expectedText: ["All variables", "CLI", "API_URL", "PORT"])
+			expectedText: ["All variables", "CLI", "API_URL", "PORT", "protected-api"])
 		try render(AuthStatusView(store: store).environment(settings),
 			size: CGSize(width: 700, height: 700), scheme: scheme, name: "settings-\(suffix)",
 			expectedText: ["APPEARANCE", "System", "Light", "Dark"])

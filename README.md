@@ -11,7 +11,7 @@ Select a project. Use **CLI approval** beside **All variables** to control CLI a
 
 If authentication fails or you cancel it, LPM stops before it runs lifecycle hooks or the main script.
 
-The app requires authentication to change CLI approval. The setting applies to every environment in the selected project on this Mac.
+The sidebar shows a folder for automatic CLI access and a lock when CLI approval is required. Change the setting while the app is unlocked; no extra authentication prompt appears. The setting applies to every environment in the selected project on this Mac.
 
 The app's **Lock** button hides secrets and clears the app's authentication context. It does not change CLI approval.
 

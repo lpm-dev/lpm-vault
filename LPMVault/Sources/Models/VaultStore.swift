@@ -1114,6 +1114,8 @@ final class VaultStore {
 
   var projects: [VaultProject] = [] {
     didSet {
+      let projectIDs = Set(projects.lazy.map(\.id))
+      projectCliAccess = projectCliAccess.filter { projectIDs.contains($0.key) }
       workspaceSnapshotGeneration &+= 1
       let generation = workspaceSnapshotGeneration
       workspaceSnapshotBuildTask?.cancel()
@@ -1177,6 +1179,7 @@ final class VaultStore {
   var isUnlocking: Bool = false
   private(set) var autoLockCountdownSeconds: Int?
   private(set) var selectedProjectCliAccess: VaultCliAccess?
+  private(set) var projectCliAccess: [String: VaultCliAccess] = [:]
   private var cliAccessLoadTask: Task<Void, Never>?
   private var cliAccessLoadGeneration = 0
   private var cliAccessChangeID: UUID?
@@ -1754,8 +1757,12 @@ final class VaultStore {
       session == vaultSessionGeneration, isUnlocked, selectedProjectId == projectID
     else { return }
     switch result {
-    case .success(let access): selectedProjectCliAccess = access
-    case .failure(let failure): error = "Could not load CLI approval. \(failure.description)"
+    case .success(let access):
+      selectedProjectCliAccess = access
+      projectCliAccess[projectID] = access
+    case .failure(let failure):
+      projectCliAccess.removeValue(forKey: projectID)
+      error = "Could not load CLI approval. \(failure.description)"
     }
   }
 
@@ -1777,20 +1784,6 @@ final class VaultStore {
         cliAccessChangeAuthorization = nil
       }
     }
-    biometricService.resetCache()
-    keychainService.setAuthenticationContext(nil)
-    let approved = await authenticateForSensitiveAction(
-      reason: access == .requireApproval
-        ? "Require approval when the CLI accesses this env project"
-        : "Allow automatic CLI access to this env project"
-    )
-    guard !Task.isCancelled, session == vaultSessionGeneration, isUnlocked,
-      selectedProjectId == projectID, cliAccessChangeID == requestID
-    else { return }
-    guard approved else {
-      error = "CLI approval was not changed because authentication was cancelled or failed."
-      return
-    }
     await waitForProjectMutations()
     guard !Task.isCancelled, session == vaultSessionGeneration, isUnlocked,
       selectedProjectId == projectID, cliAccessChangeID == requestID
@@ -1802,6 +1795,7 @@ final class VaultStore {
     switch result {
     case .success(let saved):
       selectedProjectCliAccess = saved
+      projectCliAccess[projectID] = saved
       error = nil
     case .failure(let failure):
       await refreshCliAccess()
@@ -1849,6 +1843,7 @@ final class VaultStore {
       self.workspaceSnapshots = [:]
       self.pendingWorkspaceSnapshots = [:]
       self.projects = snapshot.projects
+      self.projectCliAccess = snapshot.cliAccess
       self.syncMetadata = snapshot.syncMetadata
       self.vaultOrgAssociations = snapshot.orgAssociations
       self.error = nil
@@ -2421,6 +2416,7 @@ final class VaultStore {
     guard sessionGeneration == vaultSessionGeneration, isUnlocked else { return true }
     let shouldSelectFallback = wasSelected && selectedProjectId == project.id
     projects = snapshot.projects
+    projectCliAccess = snapshot.cliAccess
     syncMetadata = snapshot.syncMetadata
     vaultOrgAssociations = snapshot.orgAssociations
     if shouldSelectFallback {
@@ -3570,6 +3566,7 @@ final class VaultStore {
     cliAccessLoadTask?.cancel()
     cliAccessLoadGeneration &+= 1
     selectedProjectCliAccess = nil
+    projectCliAccess.removeAll(keepingCapacity: true)
     keychainService.setAuthenticationContext(nil)
     unlockGeneration &+= 1
     vaultSessionGeneration &+= 1

@@ -7,11 +7,12 @@ import Foundation
 final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var cliAccessPolicies: [String: VaultCliAccess] = [:]
 	var cliAccessChangeCount = 0
+	var failCliAccess = false
 	var beforeKeychainTransaction: (@Sendable () -> Void)?
 
 	func cliAccessResult(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
 		lock.withLock {
-			if shouldFail { return .failure(failureError) }
+			if shouldFail || failCliAccess { return .failure(failureError) }
 			return .success(cliAccessPolicies[vaultId] ?? .automatic)
 		}
 	}

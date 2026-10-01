@@ -155,6 +155,33 @@ struct KeychainServiceTests {
 		#expect(try SecurityKeychainStoreBackend.cliAccess(attributes: SecurityKeychainStoreBackend.approvalAttributes(.automatic)) == .automatic)
 	}
 
+	@Test("batch approval metadata includes requested projects and ignores internal records")
+	func batchCliApprovalFiltersAccounts() throws {
+		var required = try SecurityKeychainStoreBackend.approvalAttributes(.requireApproval)
+		required[kSecAttrAccount as String] = "protected"
+		let values = try SecurityKeychainStoreBackend.cliAccess(
+			accounts: ["protected", "automatic", "missing"],
+			records: [required,
+				[kSecAttrAccount as String: "automatic"],
+				[kSecAttrAccount as String: "__internal__", kSecAttrGeneric as String: Data("unknown".utf8)]]
+		)
+		#expect(values == ["protected": .requireApproval, "automatic": .automatic])
+	}
+
+	@Test("batch approval metadata rejects unknown policy markers and duplicate identities")
+	func batchCliApprovalRejectsInvalidMetadata() {
+		let automatic: [String: Any] = [kSecAttrAccount as String: "project"]
+		let unknown: [String: Any] = [
+			kSecAttrAccount as String: "project", kSecAttrGeneric as String: Data("unknown".utf8)
+		]
+		#expect(throws: KeychainStoreError.self) {
+			try SecurityKeychainStoreBackend.cliAccess(accounts: ["project"], records: [unknown])
+		}
+		#expect(throws: KeychainStoreError.self) {
+			try SecurityKeychainStoreBackend.cliAccess(accounts: ["project"], records: [automatic, automatic])
+		}
+	}
+
 	@Test("round-trip: create then read returns the same environments")
 	func roundTrip() {
 		let service = makeService()
