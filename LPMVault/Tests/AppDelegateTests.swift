@@ -9,11 +9,11 @@ import Vision
 @MainActor
 struct AppDelegateTests {
 	#if !SWIFT_PACKAGE
-	@Test("the native Lock command uses Command-L without extra modifiers")
-	func lockCommandUsesCommandL() throws {
+	@Test("the native lock-state command uses Command-L without extra modifiers")
+	func lockStateCommandUsesCommandL() throws {
 		func findLock(in menu: NSMenu) -> NSMenuItem? {
 			for item in menu.items {
-				if item.title == "Lock LPM Vault" { return item }
+				if item.title == "Lock LPM Vault" || item.title == "Unlock LPM Vault" { return item }
 				if let submenu = item.submenu, let lockItem = findLock(in: submenu) { return lockItem }
 			}
 			return nil
@@ -22,6 +22,21 @@ struct AppDelegateTests {
 		let item = try #require(findLock(in: menu))
 		#expect(item.keyEquivalent == "l")
 		#expect(item.keyEquivalentModifierMask == .command)
+	}
+
+	@Test("the locked app offers an enabled native Unlock command")
+	func lockedAppOffersEnabledUnlockCommand() throws {
+		func findUnlock(in menu: NSMenu) -> NSMenuItem? {
+			for item in menu.items {
+				if item.title == "Unlock LPM Vault" { return item }
+				if let submenu = item.submenu, let unlockItem = findUnlock(in: submenu) { return unlockItem }
+			}
+			return nil
+		}
+		let menu = try #require(NSApp.mainMenu)
+		menu.update()
+		let item = try #require(findUnlock(in: menu))
+		#expect(item.isEnabled)
 	}
 	#endif
 

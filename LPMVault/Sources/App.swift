@@ -154,9 +154,15 @@ struct LPMVaultApp: App {
 
 				Divider()
 
-				Button("Lock LPM Vault") { store.lock() }
+				Button(store.isUnlocked ? "Lock LPM Vault" : "Unlock LPM Vault") {
+					if store.isUnlocked {
+						store.lock()
+					} else {
+						Task { await store.unlock() }
+					}
+				}
 					.keyboardShortcut("l", modifiers: .command)
-					.disabled(!store.isUnlocked)
+					.disabled(store.isUnlocking)
 			}
 		}
 	}
