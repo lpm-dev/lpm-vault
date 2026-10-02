@@ -2181,3 +2181,24 @@ h2 {
 		font-size: 12px;
 	}
 }
+.website-privacy {
+  max-width: 820px;
+  margin-top: 24px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.website-privacy p { margin: 0 0 8px; }
+.analytics-choice {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.analytics-choice:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
+.analytics-choice:disabled { cursor: default; text-decoration: none; }

@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LPM Vault — Every .env, one vault</title>
+  <title>LPM Vault — macOS environment variable manager</title>
   <meta name="description" content="LPM Vault is a free, open-source Mac app for project environment variables. Edit every environment in one matrix, catch drift before it ships, and use the same values from the LPM CLI.">
   <meta name="theme-color" content="#e9e9f4">
   <meta name="color-scheme" content="light">
   <link rel="canonical" href="https://vault.lpm.dev/">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://vault.lpm.dev/">
-  <meta property="og:title" content="LPM Vault — Every .env, one vault">
+  <meta property="og:title" content="LPM Vault — macOS environment variable manager">
   <meta property="og:description" content="A free, open-source Mac app for project environment variables. Secrets stay in your macOS Keychain and work with the LPM CLI.">
   <meta property="og:image" content="https://vault.lpm.dev/lpm-vault-512.png">
   <meta name="twitter:card" content="summary">
@@ -21,6 +21,8 @@
   <link rel="preload" href="/fonts/jetbrains-mono-5.3.0-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js" defer></script>
+  <script src="/vendor/posthog-1.435.7.js" defer></script>
+  <script src="/analytics.js" defer></script>
 </head>
 <body>
   <svg class="sprite" aria-hidden="true" focusable="false">
@@ -325,7 +327,7 @@
               <li class="fact"><span class="fact-tag">AES-256-GCM</span><span>Optional sync is end-to-end encrypted before upload.</span></li>
               <li class="fact"><span class="fact-tag">Touch ID</span><span>Unlock with Touch ID or your Mac password. Locks after two idle minutes.</span></li>
               <li class="fact"><span class="fact-tag">Signed updates</span><span>Notarized releases. Updates are signature-checked before install.</span></li>
-              <li class="fact"><span class="fact-tag">0 telemetry</span><span>No analytics. Update checks ask first and send no system profile.</span></li>
+              <li class="fact"><span class="fact-tag">0 app telemetry</span><span>The Mac app sends no analytics. Update checks ask first and send no system profile.</span></li>
               <li class="fact"><span class="fact-tag">MIT / Apache-2.0</span><span>Open source. Read every line that touches your secrets.</span></li>
             </ul>
           </div>
@@ -382,6 +384,10 @@
         <div class="footer-bottom">
           <span>© 2026 LPM</span>
           <span>Every .env, one vault.</span>
+        </div>
+        <div class="website-privacy">
+          <p>Website privacy: PostHog counts pageviews and download, documentation, and GitHub clicks without analytics cookies or session recordings. Browser privacy signals turn off tracking. Only an opt-out preference is saved on this device.</p>
+          <button class="analytics-choice" id="analytics-optout" type="button" hidden>Turn off website analytics</button>
         </div>
       </footer>
     </div>

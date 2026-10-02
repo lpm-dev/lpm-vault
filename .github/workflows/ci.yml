@@ -40,4 +40,5 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - run: node --test web/tests/test_analytics.cjs
       - run: python3 web/tests/test_routes.py
