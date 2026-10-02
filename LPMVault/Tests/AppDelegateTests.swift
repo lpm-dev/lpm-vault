@@ -143,13 +143,13 @@ struct AppBrandingTests {
 		store.projects = [project]
 		store.selectedProjectId = project.id
 		let image = try renderNative(VaultTitleBarView(
-			store: store, mode: .matrix, onShowVaultID: {}, onPull: {}, onPush: {}
+			store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
 		).environment(UpdateChecker()).environment(\.colorScheme, .light), size: CGSize(width: 1100, height: VaultMetrics.titleBar))
 		try recordPNG(image, named: "title-bar.png")
 		let request = VNRecognizeTextRequest()
 		request.recognitionLevel = .accurate
 		try VNImageRequestHandler(cgImage: image).perform([request])
-		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		let text = OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " "))
 		#expect(text.contains("LPM Vault"))
 		#expect(text.contains("project-source"))
 	}

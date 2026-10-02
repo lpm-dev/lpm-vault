@@ -215,7 +215,7 @@ struct AuditRegressionTests {
       projectId: "project-42",
       projectName: "Project 42",
       projectPath: "",
-      environment: "default",
+      environments: ["default"],
       key: "NEW",
       value: "value"
     )
@@ -286,7 +286,7 @@ struct AuditRegressionTests {
       projectId: "project-500",
       projectName: "Project 500",
       projectPath: "",
-      environment: "default",
+      environments: ["default"],
       key: "NEW",
       value: "value"
     )
@@ -328,7 +328,7 @@ struct AuditRegressionTests {
       projectId: "project",
       projectName: "Project",
       projectPath: "",
-      environment: "default",
+      environments: ["default"],
       key: "TOKEN",
       value: "secret"
     )
@@ -507,7 +507,7 @@ struct AuditRegressionTests {
       projectId: "project",
       projectName: "Project",
       projectPath: "",
-      environment: "default",
+      environments: ["default"],
       key: "NEW",
       value: "value"
     )

@@ -336,11 +336,13 @@ actor VaultPersistenceCoordinator {
 	/// Adds one secret to the latest durable snapshot. The in-memory store only
 	/// publishes the returned project after both the vault and dirty metadata
 	/// are durable. If metadata persistence fails, the prior vault is restored.
+	/// Adds `key` with the same `value` to every environment in one transaction.
+	/// Any missing environment or existing key leaves every environment unchanged.
 	func addSecret(
 		projectId: String,
 		projectName: String,
 		projectPath: String,
-		environment: String,
+		environments targetEnvironments: Set<String>,
 		key: String,
 		value: String
 	) -> SecretPersistenceResult {
@@ -349,7 +351,7 @@ actor VaultPersistenceCoordinator {
 				projectId: projectId,
 				projectName: projectName,
 				projectPath: projectPath,
-				environment: environment,
+				environments: targetEnvironments,
 				key: key,
 				value: value
 			)
@@ -363,7 +365,7 @@ actor VaultPersistenceCoordinator {
 		projectId: String,
 		projectName: String,
 		projectPath: String,
-		environment: String,
+		environments targetEnvironments: Set<String>,
 		key: String,
 		value: String
 	) -> SecretPersistenceResult {
@@ -374,13 +376,20 @@ actor VaultPersistenceCoordinator {
 		case .failure(let error): return .failure(error)
 		}
 		guard
+			!targetEnvironments.isEmpty,
 			storedProject.name == projectName,
-			storedProject.path == projectPath,
-			var environments = Optional(storedProject.environments),
-			var secrets = environments[environment],
-			secrets[key] == nil,
-			EnvValidation.caseInsensitiveCollision(for: key, in: secrets.keys) == nil
+			storedProject.path == projectPath
 		else { return .targetUnavailable }
+		var environments = storedProject.environments
+		for environment in targetEnvironments {
+			guard
+				var secrets = environments[environment],
+				secrets[key] == nil,
+				EnvValidation.caseInsensitiveCollision(for: key, in: secrets.keys) == nil
+			else { return .targetUnavailable }
+			secrets[key] = value
+			environments[environment] = secrets
+		}
 
 		let previousMetadata: SyncMetadataRecordSnapshot
 		switch loadSyncMetadataRecordSnapshotResult(vaultId: projectId) {
@@ -389,8 +398,6 @@ actor VaultPersistenceCoordinator {
 		case .failure(let error):
 			return .failure(error)
 		}
-		secrets[key] = value
-		environments[environment] = secrets
 		let project = VaultProject(
 			id: projectId,
 			name: projectName,

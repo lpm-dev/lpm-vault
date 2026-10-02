@@ -211,6 +211,8 @@ enum SecureFileWriter {
 		to destination: URL,
 		permissions: mode_t = mode_t(S_IRUSR | S_IWUSR),
 		authorization: EnvFileExportAuthorization? = nil,
+		replaceExisting: Bool = true,
+		beforeReplacement: @escaping () throws -> Void = {},
 		directorySynchronizer: (URL) -> Int32? = synchronizeDirectory
 	) throws {
 		try authorization?.check()
@@ -274,10 +276,13 @@ enum SecureFileWriter {
 
 		var renameStatus: Int32 = -1
 		let replace = {
+			try beforeReplacement()
 			renameStatus = temporary.withUnsafeFileSystemRepresentation { sourcePath in
 				destination.withUnsafeFileSystemRepresentation { destinationPath in
 					guard let sourcePath, let destinationPath else { return -1 }
-					return Darwin.rename(sourcePath, destinationPath)
+					return replaceExisting
+						? Darwin.rename(sourcePath, destinationPath)
+						: Darwin.renamex_np(sourcePath, destinationPath, UInt32(RENAME_EXCL))
 				}
 			}
 		}
@@ -285,7 +290,7 @@ enum SecureFileWriter {
 			try authorization.commit(replace)
 		} else {
 			try Task.checkCancellation()
-			replace()
+			try replace()
 		}
 		guard renameStatus == 0 else { throw WriteError.replaceFailed(errno) }
 		shouldRemoveTemporary = false

@@ -33,7 +33,7 @@ struct VaultWorkspaceView: View {
 	@State private var showPushConfirmation = false
 	@State private var showPullConfirmation = false
 	@State private var conflictTarget: VaultSyncTarget?
-	@State private var showVaultIDSheet = false
+	@State private var showConnectCLISheet = false
 	@State private var currentImportTask: Task<Void, Never>?
 	@State private var currentImportID: UUID?
 	@State private var exportTask: Task<Void, Never>?
@@ -97,9 +97,10 @@ struct VaultWorkspaceView: View {
 			VaultTitleBarView(
 				store: store,
 				mode: mode,
-				onShowVaultID: { showVaultIDSheet = true },
+				onConnectCLI: { showConnectCLISheet = true },
 				onPull: { showPullConfirmation = true },
-				onPush: { showPushConfirmation = true }
+				onPush: { showPushConfirmation = true },
+				isConnectSheetPresented: showConnectCLISheet
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
@@ -269,7 +270,7 @@ struct VaultWorkspaceView: View {
 			}
 		}
 		.sheet(item: $addSecretTarget) { target in
-			AddSecretSheet(store: store, projectId: target.projectId, environment: target.environment)
+			AddVariableSheet(store: store, projectId: target.projectId, environment: target.environment)
 				.vaultPrivacyProtected(isObscured)
 		}
 		.sheet(isPresented: $showPushConfirmation) {
@@ -281,9 +282,9 @@ struct VaultWorkspaceView: View {
 		.sheet(item: $conflictTarget) { target in
 			conflictResolutionSheet(target).vaultPrivacyProtected(isObscured)
 		}
-		.sheet(isPresented: $showVaultIDSheet) {
+		.sheet(isPresented: $showConnectCLISheet) {
 			if let project {
-				VaultIDSheet(vaultId: project.id)
+				ConnectCLISheet(store: store, projectId: project.id)
 					.vaultPrivacyProtected(isObscured)
 			}
 		}
