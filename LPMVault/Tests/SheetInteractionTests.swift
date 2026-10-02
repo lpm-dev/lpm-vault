@@ -55,7 +55,9 @@ enum RenderedText {
 final class SheetTestHost<V: View> {
 	let view: NSView
 	let window: NSWindow
-	private static var timeout: Duration { .seconds(3) }
+	/// Generous because one recognition pass can take seconds on CPU-only CI runners;
+	/// successful waits return as soon as their condition holds.
+	private static var timeout: Duration { .seconds(10) }
 
 	/// `keepsRequestedSize` stops the hosting view from shrinking to the content's minimum size.
 	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false) {
