@@ -159,6 +159,10 @@ struct VaultSidebarView: View {
 	}
 
 	private func projectRow(_ project: VaultProject) -> some View {
+		let cliAccess = store.projectCliAccess[project.id]
+		let approvalDescription = cliAccess.map {
+			$0 == .requireApproval ? "CLI approval required" : "CLI access automatic"
+		} ?? "CLI approval unavailable"
 		let selected = store.selectedProjectId == project.id && mode == .matrix
 		let expanded = store.selectedProjectId == project.id
 			&& !collapsedProjectIds.contains(project.id)
@@ -173,7 +177,7 @@ struct VaultSidebarView: View {
 			filter = .all
 		} label: {
 			HStack(spacing: 9) {
-				Image(systemName: "folder")
+				Image(systemName: cliAccess.map { $0 == .requireApproval ? "lock" : "folder" } ?? "questionmark.folder")
 					.font(.system(size: 11, weight: .medium))
 					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 					.frame(width: 14)
@@ -193,7 +197,8 @@ struct VaultSidebarView: View {
 		}
 		.buttonStyle(.plain)
 		.padding(.horizontal, 8)
-		.accessibilityLabel("\(project.name), \(project.secretCount) secrets")
+		.help(approvalDescription)
+		.accessibilityLabel("\(project.name), \(project.secretCount) secrets, \(approvalDescription)")
 		.accessibilityValue(expanded ? "Expanded" : "Collapsed")
 		.accessibilityAddTraits(selected ? .isSelected : [])
 		.contextMenu {

@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import OSLog
 import Security
+import LocalAuthentication
 
 private let keychainLogger = Logger(subsystem: "dev.lpm.vault", category: "Keychain")
 
@@ -227,6 +228,10 @@ enum VaultKeychainTransactionLock {
 // MARK: - Protocol
 
 protocol KeychainServiceProtocol: Sendable {
+	func cliAccessResult(vaultId: String) -> Result<VaultCliAccess, KeychainError>
+	func cliAccessResults(vaultIds: [String]) -> Result<[String: VaultCliAccess], KeychainError>
+	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError>
+	func setAuthenticationContext(_ context: LAContext?)
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError>
 	func listProjects() -> [VaultProject]
 	func listProjectsResult() -> Result<[VaultProject], KeychainError>
@@ -264,6 +269,31 @@ protocol KeychainServiceProtocol: Sendable {
 	@discardableResult func writeData(account: String, data: Data) -> Bool
 	@discardableResult func deleteData(account: String) -> Bool
 
+}
+
+extension KeychainServiceProtocol {
+	func setAuthenticationContext(_ context: LAContext?) {}
+	func cliAccessResults(vaultIds: [String]) -> Result<[String: VaultCliAccess], KeychainError> {
+		var values = [String: VaultCliAccess](minimumCapacity: vaultIds.count)
+		for id in vaultIds {
+			switch cliAccessResult(vaultId: id) {
+			case .success(let access): values[id] = access
+			case .failure(let error): return .failure(error)
+			}
+		}
+		return .success(values)
+	}
+}
+
+enum VaultCliAccess: Sendable, Equatable {
+	case automatic
+	case requireApproval
+
+	static let approvalMarker = Data("lpm-cli-access:require-approval:v1".utf8)
+
+	var keychainFlags: SecAccessControlCreateFlags {
+		self == .requireApproval ? .userPresence : []
+	}
 }
 
 enum VaultProjectKeychainMutation: Sendable {
@@ -356,6 +386,11 @@ enum KeychainStoreError: Error, LocalizedError, Equatable, Sendable {
 }
 
 protocol KeychainStoreBackend {
+	func cliAccess(service: String, account: String) throws -> VaultCliAccess
+	func cliAccess(service: String, accounts: [String]) throws -> [String: VaultCliAccess]
+	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess
+	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws
+	func setAuthenticationContext(_ context: LAContext?)
 	func read(service: String, account: String) throws -> Data?
 	func write(service: String, account: String, data: Data) throws
 	func add(service: String, account: String, data: Data) throws
@@ -363,7 +398,145 @@ protocol KeychainStoreBackend {
 	func delete(service: String, account: String) throws -> Bool
 }
 
+extension KeychainStoreBackend {
+	func cliAccess(service: String, account: String) throws -> VaultCliAccess { .automatic }
+	func cliAccess(service: String, accounts: [String]) throws -> [String: VaultCliAccess] {
+		var values = [String: VaultCliAccess](minimumCapacity: accounts.count)
+		for account in accounts { values[account] = try cliAccess(service: service, account: account) }
+		return values
+	}
+	func setAuthenticationContext(_ context: LAContext?) {}
+	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess {
+		throw KeychainStoreError.status(operation: "change CLI approval", code: errSecUnimplemented)
+	}
+	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws {
+		guard access == .automatic else {
+			throw KeychainStoreError.status(operation: "preserve CLI approval", code: errSecUnimplemented)
+		}
+		try write(service: service, account: account, data: data)
+	}
+}
+
+private final class KeychainAuthenticationContext: @unchecked Sendable {
+	private let lock = NSLock()
+	private var stored: LAContext?
+
+	func current() -> LAContext {
+		lock.withLock {
+			if let stored { return stored }
+			let context = LAContext()
+			context.localizedFallbackTitle = "Use Password"
+			stored = context
+			return context
+		}
+	}
+
+	func replace(with context: LAContext?) {
+		let previous = lock.withLock {
+			let previous = stored
+			stored = context
+			return previous
+		}
+		if previous !== context { previous?.invalidate() }
+	}
+}
+
 struct SecurityKeychainStoreBackend: KeychainStoreBackend {
+	private let authentication = KeychainAuthenticationContext()
+
+	func setAuthenticationContext(_ context: LAContext?) {
+		authentication.replace(with: context)
+	}
+
+	static func approvalAttributes(_ access: VaultCliAccess) throws -> [String: Any] {
+		var error: Unmanaged<CFError>?
+		guard let control = SecAccessControlCreateWithFlags(
+			nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, access.keychainFlags, &error
+		) else {
+			_ = error?.takeRetainedValue()
+			throw KeychainStoreError.status(operation: "create CLI approval", code: errSecParam)
+		}
+		return [
+			kSecAttrAccessControl as String: control,
+			kSecAttrGeneric as String: access == .requireApproval ? VaultCliAccess.approvalMarker : Data(),
+		]
+	}
+
+	static func cliAccess(attributes: [String: Any]) throws -> VaultCliAccess {
+		guard let value = attributes[kSecAttrGeneric as String] else { return .automatic }
+		guard let marker = value as? Data else { throw KeychainStoreError.integrityValidationFailed }
+		if marker.isEmpty { return .automatic }
+		guard marker == VaultCliAccess.approvalMarker,
+			let control = attributes[kSecAttrAccessControl as String],
+			CFGetTypeID(control as CFTypeRef) == SecAccessControlGetTypeID()
+		else { throw KeychainStoreError.integrityValidationFailed }
+		return .requireApproval
+	}
+
+	func cliAccess(service: String, account: String) throws -> VaultCliAccess {
+		var query = Self.identityQuery(service: service, account: account)
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitOne
+		query[kSecUseAuthenticationContext as String] = authentication.current()
+		var result: CFTypeRef?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		if status == errSecItemNotFound { return .automatic }
+		guard status == errSecSuccess else {
+			throw KeychainStoreError.status(operation: "read CLI approval", code: status)
+		}
+		guard let attributes = result as? [String: Any] else {
+			throw KeychainStoreError.integrityValidationFailed
+		}
+		return try Self.cliAccess(attributes: attributes)
+	}
+
+	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess {
+		var query = Self.identityQuery(service: service, account: account)
+		let context = authentication.current()
+		context.interactionNotAllowed = true
+		query[kSecUseAuthenticationContext as String] = context
+		let attributes = try Self.approvalAttributes(access)
+		let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+		guard status == errSecSuccess else {
+			throw KeychainStoreError.status(operation: "change CLI approval", code: status)
+		}
+		let saved = try cliAccess(service: service, account: account)
+		guard saved == access else {
+			throw KeychainStoreError.integrityValidationFailed
+		}
+		return saved
+	}
+
+	func cliAccess(service: String, accounts: [String]) throws -> [String: VaultCliAccess] {
+		guard !accounts.isEmpty else { return [:] }
+		var query = Self.scopedQuery(service: service)
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitAll
+		query[kSecUseAuthenticationContext as String] = authentication.current()
+		var result: CFTypeRef?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		if status == errSecItemNotFound { return [:] }
+		guard status == errSecSuccess else {
+			throw KeychainStoreError.status(operation: "read project CLI approval", code: status)
+		}
+		guard let records = result as? [[String: Any]] else {
+			throw KeychainStoreError.integrityValidationFailed
+		}
+		return try Self.cliAccess(accounts: accounts, records: records)
+	}
+
+	static func cliAccess(accounts: [String], records: [[String: Any]]) throws -> [String: VaultCliAccess] {
+		let requested = Set(accounts)
+		var values = [String: VaultCliAccess](minimumCapacity: requested.count)
+		for attributes in records {
+			guard let account = attributes[kSecAttrAccount as String] as? String,
+				requested.contains(account)
+			else { continue }
+			guard values[account] == nil else { throw KeychainStoreError.integrityValidationFailed }
+			values[account] = try cliAccess(attributes: attributes)
+		}
+		return values
+	}
 	private static func scopedQuery(service: String) -> [String: Any] {
 		[
 			kSecClass as String: kSecClassGenericPassword,
@@ -384,6 +557,7 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend {
 
 	func read(service: String, account: String) throws -> Data? {
 		var query = Self.identityQuery(service: service, account: account)
+		query[kSecUseAuthenticationContext as String] = authentication.current()
 		query[kSecReturnData as String] = true
 		query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -404,14 +578,14 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend {
 		account: String,
 		data: Data
 	) throws {
-		let query = Self.identityQuery(service: service, account: account)
+		var query = Self.identityQuery(service: service, account: account)
+		query[kSecUseAuthenticationContext as String] = authentication.current()
 		let attributes: [String: Any] = [kSecValueData as String: data]
 		let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 		if updateStatus == errSecSuccess { return }
 		guard updateStatus == errSecItemNotFound else {
 			throw KeychainStoreError.status(operation: "write", code: updateStatus)
-		}
-
+	}
 		do {
 			try add(service: service, account: account, data: data)
 		} catch KeychainStoreError.status(_, errSecDuplicateItem) {
@@ -422,6 +596,27 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend {
 		}
 	}
 
+	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws {
+		guard access == .requireApproval else {
+			try write(service: service, account: account, data: data)
+			return
+		}
+		var query = Self.identityQuery(service: service, account: account)
+		query[kSecUseAuthenticationContext as String] = authentication.current()
+		var attributes = try Self.approvalAttributes(access)
+		attributes[kSecValueData as String] = data
+		let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+		if status == errSecSuccess { return }
+		guard status == errSecItemNotFound else {
+			throw KeychainStoreError.status(operation: "write approved env", code: status)
+		}
+		var add = Self.identityQuery(service: service, account: account)
+		add.merge(attributes) { _, replacement in replacement }
+		let addStatus = SecItemAdd(add as CFDictionary, nil)
+		guard addStatus == errSecSuccess else {
+			throw KeychainStoreError.status(operation: "add approved env", code: addStatus)
+		}
+	}
 	func add(
 		service: String,
 		account: String,
@@ -926,7 +1121,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 				try writeJournalUnlocked(journal)
 				for (mutation, operation) in zip(mutations, operations) {
 					if let data = mutation.data, let stage = operation.stagedAccount {
-						try writeVerifiedUnlocked(account: stage, data: data)
+						try writeVerifiedUnlocked(account: stage, data: data, accessSource: operation.targetAccount)
 					}
 				}
 				journal.state = .committed
@@ -1006,7 +1201,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 					let data = liveMutation.data
 				{
 					performanceCounters?.recordLivePayloadReuse()
-					try writeVerifiedUnlocked(account: operation.targetAccount, data: data)
+					try writeVerifiedUnlocked(account: operation.targetAccount, data: data, accessSource: stage)
 				} else if let data = try backend.read(
 					service: service, account: stage)
 				{
@@ -1018,7 +1213,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 						) == operation.operationSha256
 					else { throw KeychainStoreError.integrityValidationFailed }
 					try validateTransactionTarget(account: operation.targetAccount, data: data)
-					try writeVerifiedUnlocked(account: operation.targetAccount, data: data)
+					try writeVerifiedUnlocked(account: operation.targetAccount, data: data, accessSource: stage)
 				} else {
 					guard let target = try backend.read(
 						service: service,
@@ -1166,8 +1361,13 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
-	private func writeVerifiedUnlocked(account: String, data: Data) throws {
-		try backend.write(service: service, account: account, data: data)
+	private func writeVerifiedUnlocked(account: String, data: Data, accessSource: String? = nil) throws {
+		if let accessSource, EnvValidation.isSafeVaultId(account) || EnvValidation.isSafeVaultId(accessSource) {
+			let access = try backend.cliAccess(service: service, account: accessSource)
+			try backend.write(service: service, account: account, data: data, access: access)
+		} else {
+			try backend.write(service: service, account: account, data: data)
+		}
 		guard try backend.read(service: service, account: account) == data
 		else { throw KeychainStoreError.integrityValidationFailed }
 	}
@@ -1435,6 +1635,31 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
+	func cliAccess(account: String) throws -> VaultCliAccess {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			return try backend.cliAccess(service: service, account: account)
+		}
+	}
+
+	func cliAccess(accounts: [String]) throws -> [String: VaultCliAccess] {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			return try backend.cliAccess(service: service, accounts: accounts)
+		}
+	}
+
+	func setCliAccess(account: String, access: VaultCliAccess) throws -> VaultCliAccess {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			return try backend.setCliAccess(service: service, account: account, access: access)
+		}
+	}
+
+	func setAuthenticationContext(_ context: LAContext?) {
+		backend.setAuthenticationContext(context)
+	}
+
 	func read(accounts: [String]) throws -> [String: Data?] {
 		try VaultKeychainTransactionLock.withLock {
 			try ensureRecoveredUnlocked()
@@ -1659,6 +1884,34 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	}
 
 	// MARK: - Public API
+
+	func setAuthenticationContext(_ context: LAContext?) {
+		store.setAuthenticationContext(context)
+	}
+
+	func cliAccessResult(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		do { return .success(try store.cliAccess(account: vaultId)) }
+		catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
+		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
+	}
+
+	func cliAccessResults(vaultIds: [String]) -> Result<[String: VaultCliAccess], KeychainError> {
+		guard vaultIds.allSatisfy(EnvValidation.isSafeVaultId) else { return .failure(.accessDenied) }
+		do { return .success(try store.cliAccess(accounts: vaultIds)) }
+		catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
+		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
+	}
+
+	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		do {
+			let saved = try store.setCliAccess(account: vaultId, access: access)
+			guard saved == access else { throw KeychainStoreError.integrityValidationFailed }
+			return .success(saved)
+		} catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
+		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
+	}
 
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError> {
 		do {

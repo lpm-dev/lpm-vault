@@ -22,9 +22,11 @@ struct VaultPersistenceSnapshot: Sendable {
 	let projects: [VaultProject]
 	let syncMetadata: [String: SyncMetadata]
 	let orgAssociations: [String: String]
+	let cliAccess: [String: VaultCliAccess]
 }
 
 struct ProjectCreationRecord: Sendable {
+	let cliAccess: VaultCliAccess?
 	let project: VaultProject?
 	let orgAssociations: [String: String]
 }
@@ -35,6 +37,7 @@ enum DeleteProjectPersistenceResult: Sendable {
 }
 
 struct ImportPersistenceCommit: Sendable {
+	let cliAccess: VaultCliAccess?
 	let project: VaultProject
 	let syncMetadata: SyncMetadata?
 	let orgAssociations: [String: String]
@@ -51,6 +54,7 @@ enum ImportPersistenceResult: Sendable {
 }
 
 struct ProjectCreationPersistenceCommit: Sendable {
+	let cliAccess: VaultCliAccess?
 	let orgAssociations: [String: String]
 	let warning: String?
 }
@@ -178,7 +182,8 @@ actor VaultPersistenceCoordinator {
 			return .success(VaultPersistenceSnapshot(
 				projects: projects,
 				syncMetadata: metadata,
-				orgAssociations: associations
+				orgAssociations: associations,
+				cliAccess: (try? service.cliAccessResults(vaultIds: projects.map(\.id)).get()) ?? [:]
 			))
 		}
 		.flatMap { $0 }
@@ -186,6 +191,17 @@ actor VaultPersistenceCoordinator {
 
 	func loadProject(vaultId: String) -> Result<VaultProject?, KeychainError> {
 		service.getProjectResult(vaultId: vaultId)
+	}
+
+	func cliAccess(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
+		service.cliAccessResult(vaultId: vaultId)
+	}
+
+	func setCliAccess(vaultId: String, access: VaultCliAccess, authorization: CliAccessChangeAuthorization) -> Result<VaultCliAccess, KeychainError> {
+		service.withKeychainTransaction {
+			guard !Task.isCancelled, authorization.beginCommit() else { return .failure(.accessDenied) }
+			return service.setCliAccess(vaultId: vaultId, access: access)
+		}.flatMap { $0 }
 	}
 
 	func loadProjectCreationRecord(
@@ -203,6 +219,7 @@ actor VaultPersistenceCoordinator {
 			case .failure(let error): return .failure(error)
 			}
 			return .success(ProjectCreationRecord(
+				cliAccess: project == nil ? nil : try? service.cliAccessResult(vaultId: vaultId).get(),
 				project: project,
 				orgAssociations: associations
 			))
@@ -277,6 +294,7 @@ actor VaultPersistenceCoordinator {
 		}
 
 		return .success(ProjectCreationPersistenceCommit(
+			cliAccess: try? service.cliAccessResult(vaultId: project.id).get(),
 			orgAssociations: associations,
 			warning: warning
 		))
@@ -815,7 +833,8 @@ actor VaultPersistenceCoordinator {
 					$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
 				},
 				syncMetadata: remainingMetadata,
-				orgAssociations: associations
+				orgAssociations: associations,
+				cliAccess: (try? service.cliAccessResults(vaultIds: remainingProjects.map(\.id)).get()) ?? [:]
 			)
 		)
 	}
@@ -923,6 +942,7 @@ actor VaultPersistenceCoordinator {
 
 		return .success(
 			ImportPersistenceCommit(
+				cliAccess: try? service.cliAccessResult(vaultId: importedProject.id).get(),
 				project: importedProject,
 				syncMetadata: metadata,
 				orgAssociations: associations,

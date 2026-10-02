@@ -142,24 +142,32 @@ struct VaultAppearanceTests {
 		defer { defaults.removePersistentDomain(forName: domain) }
 		let settings = VaultAppearanceSettings(defaults: defaults)
 		settings.selection = scheme == .dark ? .dark : .light
-		let store = makeStore()
+		let keychain = MockKeychainService()
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
+			apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
 		let project = VaultProject(id: "theme-preview-project", name: "demo-api", path: "/tmp/demo-api",
 			environments: ["development": ["API_URL": "https://example.test", "PORT": "3000"],
 				"production": ["API_URL": "https://example.test", "PORT": "8080"]])
+		keychain.envStorage[project.id] = (project.name, project.path, project.environments)
+		keychain.envStorage["protected-preview"] = ("protected-api", "", ["default": [:]])
+		keychain.cliAccessPolicies["protected-preview"] = .requireApproval
 		store.isUnlocked = true
 		store.projects = [project]
 		store.selectedProjectId = project.id
 		store.selectedEnvironment = "development"
+		#expect(await store.loadProjects())
 		defer { store.lock() }
 		for _ in 0..<500 {
 			if store.workspaceSnapshots[project.id] != nil { break }
 			try await Task.sleep(for: .milliseconds(10))
 		}
 		_ = try #require(store.workspaceSnapshots[project.id])
+		await store.refreshCliAccess()
+		#expect(store.selectedProjectCliAccess == .automatic)
 		let suffix = scheme == .dark ? "dark" : "light"
 		try render(ContentView(store: store).environment(UpdateChecker()).environment(settings),
 			size: CGSize(width: 1200, height: 760), scheme: scheme, name: "workspace-\(suffix)",
-			expectedText: ["All variables", "API_URL", "PORT"])
+			expectedText: ["All variables", "CLI", "API_URL", "PORT", "protected-api"])
 		try render(AuthStatusView(store: store).environment(settings),
 			size: CGSize(width: 700, height: 700), scheme: scheme, name: "settings-\(suffix)",
 			expectedText: ["APPEARANCE", "System", "Light", "Dark"])
@@ -208,4 +216,11 @@ struct VaultAppearanceTests {
 			#expect(text.contains(label), "Missing \(label) in \(name): \(text)")
 		}
 	}
+}
+
+@Test("unknown CLI approval never advertises automatic access")
+func unknownCliApprovalPresentationIsTruthful() {
+	let presentation = VaultCliAccessPresentation(access: nil)
+	#expect(presentation.help == "CLI approval is unavailable until its policy can be read.")
+	#expect(presentation.accessibilityValue == "Unavailable")
 }

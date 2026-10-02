@@ -5,6 +5,32 @@ import Foundation
 // MARK: - Mock Keychain Service
 
 final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
+	var cliAccessPolicies: [String: VaultCliAccess] = [:]
+	var cliAccessChangeCount = 0
+	var failCliAccess = false
+	var afterCliAccessCommit: (@Sendable () -> Void)?
+	var beforeCliAccessRead: (@Sendable () -> Void)?
+	var failCliAccessChange = false
+	var beforeKeychainTransaction: (@Sendable () -> Void)?
+
+	func cliAccessResult(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
+		beforeCliAccessRead?()
+		return lock.withLock {
+			if shouldFail || failCliAccess { return .failure(failureError) }
+			return .success(cliAccessPolicies[vaultId] ?? .automatic)
+		}
+	}
+
+	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
+		lock.withLock {
+			if shouldFail || failCliAccessChange { return .failure(failureError) }
+			guard envStorage[vaultId] != nil else { return .failure(.itemNotFound) }
+			cliAccessPolicies[vaultId] = access
+			cliAccessChangeCount += 1
+			afterCliAccessCommit?()
+			return .success(access)
+		}
+	}
 	private let lock = NSRecursiveLock()
 	var envStorage: [String: (name: String, path: String, environments: [String: [String: String]])] = [:]
 	var dataStorage: [String: Data] = [:]
@@ -36,7 +62,8 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var failNextSaveEnvironments = false
 
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError> {
-		.success(lock.withLock(operation))
+		beforeKeychainTransaction?()
+		return .success(lock.withLock(operation))
 	}
 
 	// Convenience for old tests that use flat secrets

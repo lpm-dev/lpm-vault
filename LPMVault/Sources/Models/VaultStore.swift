@@ -241,6 +241,21 @@ struct LocalEnvImportTarget: Hashable, Sendable {
   let environment: String
 }
 
+final class CliAccessChangeAuthorization: @unchecked Sendable {
+  private let lock = NSLock()
+  private var pending = true
+
+  func beginCommit() -> Bool {
+    lock.withLock {
+      guard pending else { return false }
+      pending = false
+      return true
+    }
+  }
+
+  func invalidate() { lock.withLock { pending = false } }
+}
+
 /// Synchronous commit authority shared with the persistence actor. A UI
 /// invalidation that wins this lock prevents a queued transaction from
 /// crossing its durable commit point.
@@ -1099,6 +1114,11 @@ final class VaultStore {
 
   var projects: [VaultProject] = [] {
     didSet {
+      if !projects.elementsEqual(oldValue, by: { $0.id == $1.id }) {
+        let projectIDs = Set(projects.lazy.map(\.id))
+        projectCliAccess = projectCliAccess.filter { projectIDs.contains($0.key) }
+        cliAccessProjectRevisions = cliAccessProjectRevisions.filter { projectIDs.contains($0.key) }
+      }
       workspaceSnapshotGeneration &+= 1
       let generation = workspaceSnapshotGeneration
       workspaceSnapshotBuildTask?.cancel()
@@ -1161,6 +1181,14 @@ final class VaultStore {
   var isLoadingProjects: Bool = false
   var isUnlocking: Bool = false
   private(set) var autoLockCountdownSeconds: Int?
+  private(set) var selectedProjectCliAccess: VaultCliAccess?
+  private(set) var projectCliAccess: [String: VaultCliAccess] = [:]
+  private var cliAccessLoadTask: Task<Void, Never>?
+  private var cliAccessLoadGeneration = 0
+  private var cliAccessProjectRevisions: [String: UUID] = [:]
+  private var cliAccessChangeID: UUID?
+  private var cliAccessChangeAuthorization: CliAccessChangeAuthorization?
+  var isChangingCliAccess: Bool { cliAccessChangeID != nil }
 
   // Auth state
   var currentUser: LPMUser? {
@@ -1659,6 +1687,10 @@ final class VaultStore {
   // MARK: - Load
 
   private func beginSelectedProjectLoadIfNeeded() {
+    cancelCliAccessChange()
+    selectedProjectCliAccess = nil
+    cliAccessLoadTask?.cancel()
+    cliAccessLoadTask = Task { [weak self] in await self?.refreshCliAccess() }
     selectedProjectLoadGeneration &+= 1
     let generation = selectedProjectLoadGeneration
     selectedProjectLoadTask?.cancel()
@@ -1715,6 +1747,98 @@ final class VaultStore {
     selectedProjectLoadTask = task
   }
 
+  func refreshCliAccess() async {
+    guard !Task.isCancelled else { return }
+    cliAccessLoadGeneration &+= 1
+    let generation = cliAccessLoadGeneration
+    selectedProjectCliAccess = nil
+    guard isUnlocked, let projectID = selectedProjectId,
+      projectBelongsToSelectedAccount(projectID)
+    else { return }
+    let session = vaultSessionGeneration
+    let revision = cliAccessProjectRevisions[projectID]
+    let result = await persistence.cliAccess(vaultId: projectID)
+    guard !Task.isCancelled, generation == cliAccessLoadGeneration,
+      session == vaultSessionGeneration, isUnlocked, selectedProjectId == projectID,
+      cliAccessProjectRevisions[projectID] == revision
+    else { return }
+    switch result {
+    case .success(let access):
+      selectedProjectCliAccess = access
+      projectCliAccess[projectID] = access
+    case .failure(let failure):
+      projectCliAccess.removeValue(forKey: projectID)
+      error = "Could not load CLI approval. \(failure.description)"
+    }
+  }
+
+  func changeCliAccess(to access: VaultCliAccess) async {
+    guard isUnlocked, let projectID = selectedProjectId,
+      projectBelongsToSelectedAccount(projectID), selectedProjectCliAccess != nil,
+      selectedProjectCliAccess != access, !isChangingCliAccess
+    else { return }
+    invalidateProjectLoad()
+    let requestID = UUID()
+    let authorization = CliAccessChangeAuthorization()
+    let session = vaultSessionGeneration
+    cliAccessChangeID = requestID
+    cliAccessProjectRevisions[projectID] = requestID
+    cliAccessChangeAuthorization = authorization
+    cliAccessLoadTask?.cancel()
+    cliAccessLoadGeneration &+= 1
+    defer {
+      if cliAccessChangeID == requestID {
+        cliAccessChangeID = nil
+        cliAccessChangeAuthorization = nil
+      }
+    }
+    await waitForProjectMutations()
+    guard !Task.isCancelled, session == vaultSessionGeneration, isUnlocked,
+      selectedProjectId == projectID, cliAccessChangeID == requestID
+    else { return }
+    let result = await persistence.setCliAccess(vaultId: projectID, access: access, authorization: authorization)
+    guard session == vaultSessionGeneration, isUnlocked,
+      cliAccessProjectRevisions[projectID] == requestID,
+      projects.contains(where: { $0.id == projectID })
+    else { return }
+    switch result {
+    case .success(let saved):
+      projectCliAccess[projectID] = saved
+      guard !Task.isCancelled, selectedProjectId == projectID,
+        cliAccessChangeID == requestID
+      else { return }
+      selectedProjectCliAccess = saved
+      error = nil
+    case .failure(let failure):
+      guard !Task.isCancelled, selectedProjectId == projectID,
+        cliAccessChangeID == requestID
+      else { return }
+      await refreshCliAccess()
+      guard !Task.isCancelled, session == vaultSessionGeneration, isUnlocked,
+        selectedProjectId == projectID, cliAccessChangeID == requestID
+      else { return }
+      error = "Could not change CLI approval. \(failure.description)"
+    }
+  }
+
+  private func publishCliAccessSnapshot(
+    _ policies: [String: VaultCliAccess],
+    previousRevisions: [String: UUID]
+  ) {
+    var merged = policies
+    for (projectID, revision) in cliAccessProjectRevisions
+      where previousRevisions[projectID] != revision {
+      merged[projectID] = projectCliAccess[projectID]
+    }
+    projectCliAccess = merged
+  }
+
+  private func cancelCliAccessChange() {
+    cliAccessChangeAuthorization?.invalidate()
+    cliAccessChangeAuthorization = nil
+    cliAccessChangeID = nil
+  }
+
   private func invalidateSelectedProjectLoad() {
     selectedProjectLoadGeneration &+= 1
     selectedProjectLoadTask?.cancel()
@@ -1732,6 +1856,7 @@ final class VaultStore {
     projectLoadTask?.cancel()
     isLoadingProjects = true
 
+    let policyRevisions = cliAccessProjectRevisions
     let task = Task { [weak self, persistence] in
       let result = await persistence.loadSnapshot()
       guard !Task.isCancelled, let self,
@@ -1749,6 +1874,7 @@ final class VaultStore {
       self.workspaceSnapshots = [:]
       self.pendingWorkspaceSnapshots = [:]
       self.projects = snapshot.projects
+      self.publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
       self.syncMetadata = snapshot.syncMetadata
       self.vaultOrgAssociations = snapshot.orgAssociations
       self.error = nil
@@ -1978,6 +2104,7 @@ final class VaultStore {
       }
       invalidateProjectLoad()
       try Task.checkCancellation()
+      let policyRevision = cliAccessProjectRevisions[project.id]
       let persistence = persistence
       let commitOperation: @Sendable () async -> ImportPersistenceResult = { [weak self] in
         guard let self,
@@ -2038,6 +2165,9 @@ final class VaultStore {
         }
         projects.sort {
           $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        if cliAccessProjectRevisions[project.id] == policyRevision {
+          projectCliAccess[project.id] = committed.cliAccess
         }
         applySyncMetadata(committed.syncMetadata, for: project.id)
         vaultOrgAssociations = committed.orgAssociations
@@ -2128,6 +2258,7 @@ final class VaultStore {
     }
     let environments: [String: [String: String]] = ["default": [:]]
 
+    let policyRevision = cliAccessProjectRevisions[vaultId]
     let creationRecord: ProjectCreationRecord
     switch await persistence.loadProjectCreationRecord(vaultId: vaultId) {
     case .success(let loaded): creationRecord = loaded
@@ -2155,6 +2286,9 @@ final class VaultStore {
         projects.sort {
           $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+      }
+      if cliAccessProjectRevisions[vaultId] == policyRevision {
+        projectCliAccess[vaultId] = creationRecord.cliAccess
       }
       vaultOrgAssociations = creationRecord.orgAssociations
       openProject(id: vaultId)
@@ -2228,6 +2362,7 @@ final class VaultStore {
     )
 
     // Run Keychain write off main thread to prevent UI freeze
+    let policyRevision = cliAccessProjectRevisions[vaultId]
     let result = await persistence.createProject(project, orgSlug: orgSlug)
     switch result {
     case .success(let committed):
@@ -2237,6 +2372,9 @@ final class VaultStore {
       projects.append(project)
       projects.sort {
         $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+      }
+      if cliAccessProjectRevisions[vaultId] == policyRevision {
+        projectCliAccess[vaultId] = committed.cliAccess
       }
       vaultOrgAssociations = committed.orgAssociations
       openProject(id: vaultId)
@@ -2298,6 +2436,7 @@ final class VaultStore {
     cancelLocalEnvImports(projectId: project.id)
     invalidateProjectLoad()
     let sessionGeneration = vaultSessionGeneration
+    let policyRevisions = cliAccessProjectRevisions
     let wasSelected = selectedProjectId == project.id
     let snapshot: VaultPersistenceSnapshot
     switch await persistence.deleteProjectAndMetadata(vaultId: project.id) {
@@ -2321,6 +2460,7 @@ final class VaultStore {
     guard sessionGeneration == vaultSessionGeneration, isUnlocked else { return true }
     let shouldSelectFallback = wasSelected && selectedProjectId == project.id
     projects = snapshot.projects
+    publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
     syncMetadata = snapshot.syncMetadata
     vaultOrgAssociations = snapshot.orgAssociations
     if shouldSelectFallback {
@@ -3392,6 +3532,7 @@ final class VaultStore {
       isUnlocking = false
       return
     }
+    keychainService.setAuthenticationContext(biometricService.keychainAuthenticationContext)
     guard generation == unlockGeneration else { return }
     await waitForProjectMutations()
     guard generation == unlockGeneration else { return }
@@ -3412,10 +3553,14 @@ final class VaultStore {
     guard isUnlocked else { return false }
     let sessionGeneration = vaultSessionGeneration
     let success = await biometricService.authenticate(reason: reason)
-    return !Task.isCancelled
+    let approved = !Task.isCancelled
       && success
       && isUnlocked
       && sessionGeneration == vaultSessionGeneration
+    if approved {
+      keychainService.setAuthenticationContext(biometricService.keychainAuthenticationContext)
+    }
+    return approved
   }
 
   func exportEnvironment(
@@ -3461,6 +3606,13 @@ final class VaultStore {
   }
 
   func lock() {
+    cancelCliAccessChange()
+    cliAccessLoadTask?.cancel()
+    cliAccessLoadGeneration &+= 1
+    selectedProjectCliAccess = nil
+    projectCliAccess.removeAll(keepingCapacity: true)
+    cliAccessProjectRevisions.removeAll(keepingCapacity: true)
+    keychainService.setAuthenticationContext(nil)
     unlockGeneration &+= 1
     vaultSessionGeneration &+= 1
     cancelExports()
