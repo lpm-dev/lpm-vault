@@ -96,10 +96,10 @@ struct ConnectCLISheet: View {
 				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.accentTint))
 				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 3) {
-				Text("Connect to the lpm CLI")
+				Text("Connect to the LPM CLI")
 					.font(.system(size: 17, weight: .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("Link \(Text(project?.name ?? "this project").fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) so the lpm CLI can use this vault.")
+				Text("Link \(Text(project?.name ?? "this project").fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) so the LPM CLI can use this vault.")
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
@@ -280,7 +280,7 @@ struct ConnectCLISheet: View {
 					.truncationMode(.tail)
 				if status == .notLinked || status == .noFolder {
 					Text("·").foregroundStyle(VaultPalette.textTertiary)
-					Button("Install lpm") { openURL(Self.installURL) }
+					Button("Install LPM CLI") { openURL(Self.installURL) }
 						.buttonStyle(.plain)
 						.font(.system(size: 11.5, weight: .semibold))
 						.foregroundStyle(VaultPalette.accentForeground)

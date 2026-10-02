@@ -35,7 +35,7 @@ struct OCRTextTests {
 		let titleBar = OCRText("• • LPM Vault — proiect-sourcel • Connect ci ii v Locall • Lock *L")
 		#expect(titleBar.contains("LPM Vault"))
 		#expect(titleBar.contains("project-source"))
-		#expect(OCRText("Connect to the Ipm CLI").contains("Connect to the lpm CLI"))
+		#expect(OCRText("Connect to the Ipm CLI").contains("Connect to the LPM CLI"))
 		#expect(OCRText("1pm  env   list").contains("lpm env list"))
 		#expect(OCRText("UUID V4").contains("UUID v4"))
 	}

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Formats that the add-variable sheet can generate locally.
+/// Formats that the secret editors can generate locally.
 enum SecretValueKind: String, CaseIterable, Identifiable, Sendable {
 	case base64
 	case hex

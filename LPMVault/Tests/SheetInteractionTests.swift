@@ -40,8 +40,10 @@ final class SheetTestHost<V: View> {
 		return rendered
 	}
 
-	func click(_ label: String) throws {
-		let observations = try observations()
+	func click(_ label: String, in targetWindow: NSWindow? = nil) throws {
+		let window = targetWindow ?? self.window
+		let view = try #require(window.contentView)
+		let observations = try observations(in: view)
 		let observation = try #require(observations.first { $0.topCandidates(1).first?.string.contains(label) == true }, "Missing button \(label)")
 		let candidate = try #require(observation.topCandidates(1).first)
 		let range = try #require(candidate.string.range(of: label))
@@ -70,12 +72,6 @@ final class SheetTestHost<V: View> {
 		window.makeFirstResponder(nil)
 	}
 
-	func shiftReturn() throws {
-		window.makeFirstResponder(nil)
-		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .shift, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
-		#expect(window.performKeyEquivalent(with: event))
-	}
-
 	func returnWhileEditing(_ target: String, modifiers: NSEvent.ModifierFlags = .shift) throws {
 		let fields = textFields(in: view)
 		let field = try #require(target == "key" ? fields.first { !($0 is NSSecureTextField) } : fields.last)
@@ -95,12 +91,40 @@ final class SheetTestHost<V: View> {
 
 	var isKeyFieldEnabled: Bool { textFields(in: view).first { !($0 is NSSecureTextField) }?.isEnabled ?? false }
 
+	func bounds(of label: String) throws -> CGRect {
+		let observation = try #require(try observations().first { OCRText($0.topCandidates(1).first?.string ?? "").contains(label) })
+		return observation.boundingBox
+	}
+
+	func line(containing label: String) throws -> String {
+		try #require(try observations().compactMap { $0.topCandidates(1).first?.string }.first { $0.contains(label) })
+	}
+
+	func generatorWindow() async throws -> NSWindow {
+		let deadline = Date().addingTimeInterval(3)
+		repeat {
+			if let panel = try visibleGeneratorWindow() { return panel }
+			try await settle()
+		} while Date() < deadline
+		throw CocoaError(.coderValueNotFound)
+	}
+
+	func visibleGeneratorWindow() throws -> NSWindow? {
+		for candidate in NSApp.windows where candidate !== window && candidate.isVisible {
+			guard let content = candidate.contentView, !content.bounds.isEmpty else { continue }
+			let text = OCRText(try observations(in: content).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " "))
+			if text.contains("GENERATE VALUE") { return candidate }
+		}
+		return nil
+	}
+
 	private func textFields(in view: NSView) -> [NSTextField] {
 		if let field = view as? NSTextField { return [field] }
 		return view.subviews.flatMap { textFields(in: $0) }
 	}
 
-	private func observations() throws -> [VNRecognizedTextObservation] {
+	private func observations(in target: NSView? = nil) throws -> [VNRecognizedTextObservation] {
+		let view = target ?? self.view
 		view.layoutSubtreeIfNeeded()
 		let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
 		view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -124,6 +148,88 @@ struct SheetInteractionTests {
 		store.projects = [VaultProject(id: "sheet-regression", name: "Sheet regression", path: path, environments: environments)]
 		store.isUnlocked = true
 		return (store, keychain)
+	}
+
+	@Test("lock-screen encryption note stays centered above the bottom", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
+	func lockScreenFooter(size: NSSize, scheme: ColorScheme) async throws {
+		let (store, _) = makeStore()
+		store.lock()
+		let host = SheetTestHost(ContentView(store: store).environment(\.colorScheme, scheme), size: size)
+		defer { host.window.close() }
+		try await host.settle()
+		let bounds = try host.bounds(of: "Values stay encrypted")
+		#expect(abs(bounds.midX - 0.5) * host.view.bounds.width < 3)
+		#expect((15...28).contains(bounds.minY * host.view.bounds.height))
+		#expect(try host.line(containing: "Unlock").range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
+	}
+
+	@Test("inspector generation changes only the draft until saved", arguments: [ColorScheme.light, .dark])
+	func inspectorGeneratorDraft(scheme: ColorScheme) async throws {
+		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": "old"], "production": ["TOKEN": "production-old"]])
+		store.selectedEnvironment = "default"
+		let host = SheetTestHost(InspectorInteractionFixture(store: store).environment(\.colorScheme, scheme), size: NSSize(width: 300, height: 640))
+		defer { host.window.close() }
+		try await host.settle()
+		try host.click("Generate")
+		let panel = try await host.generatorWindow()
+		try host.click("Password", in: panel)
+		try await host.settle()
+		let generated = host.value
+		#expect(generated.count == SecretValueGenerator.defaultLength)
+		#expect(generated != "old")
+		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] == "old")
+		try host.click("Revert")
+		try await host.settle()
+		#expect(host.value == "old")
+		try host.click("Generate")
+		let secondPanel = try await host.generatorWindow()
+		try host.click("UUID v4", in: secondPanel)
+		try await host.settle()
+		let second = host.value
+		#expect(UUID(uuidString: second) != nil)
+		try host.click("Save")
+		try await host.settle()
+		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] == second)
+		#expect(keychain.envStorage["sheet-regression"]?.environments["production"]?["TOKEN"] == "production-old")
+	}
+
+	@Test("inspector generation cannot replace a pending save or conflicting draft", arguments: ["save", "conflict"])
+	func inspectorGeneratorUnavailable(reason: String) async throws {
+		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": "old"]])
+		let host = SheetTestHost(InspectorInteractionFixture(store: store), size: NSSize(width: 300, height: 640))
+		defer { host.window.close() }
+		try await host.settle()
+		try host.click("Generate")
+		let panel = try await host.generatorWindow()
+		try host.click("Hexadecimal", in: panel)
+		try await host.settle()
+		let generated = host.value
+		let release = DispatchSemaphore(value: 0)
+		defer { release.signal() }
+		if reason == "save" {
+			let entered = DispatchSemaphore(value: 0)
+			keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
+			try host.click("Save")
+			let didEnter = await withCheckedContinuation { continuation in
+				DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 3) == .success) }
+			}
+			try #require(didEnter)
+		} else {
+			store.projects[0].environments["default"]?["TOKEN"] = "external"
+		}
+		try await host.settle()
+		#expect(try host.visibleGeneratorWindow() == nil)
+		try host.click("Generate")
+		try await host.settle()
+		#expect(try host.visibleGeneratorWindow() == nil)
+		#expect(host.value == generated)
+		if reason == "conflict" {
+			try host.click("Revert")
+			try await host.settle()
+			#expect(host.value == "external")
+			try host.click("Generate")
+			_ = try await host.generatorWindow()
+		}
 	}
 
 	@Test("cancel is unavailable while an add transaction is committing")
@@ -200,6 +306,16 @@ struct SheetInteractionTests {
 		#expect(try host.text().contains("Replace vault ID"))
 	}
 
+	@Test("the connect sheet names LPM CLI after checking its link status")
+	func connectProductNames() async throws {
+		let (store, _) = makeStore()
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression"), size: NSSize(width: 600, height: 560))
+		defer { host.window.close() }
+		let text = try await host.waitForText("Install LPM CLI")
+		#expect(text.contains("Connect to the LPM CLI"))
+		#expect(text.contains("Install LPM CLI"))
+	}
+
 	@Test("a chosen local folder remains associated when the connect sheet is reopened")
 	func chosenFolderSurvivesReopening() async throws {
 		let domain = "lpm-sheet-test-" + UUID().uuidString
@@ -232,7 +348,7 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "TOKEN"), size: NSSize(width: 560, height: 520))
 		defer { host.window.close() }
 		try await host.settle()
-		try host.shiftReturn()
+		try host.returnWhileEditing("key")
 		try await host.settle()
 		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] == "")
 		let confirmationText = try await host.waitForText("Added TOKEN")
@@ -278,5 +394,19 @@ struct SheetInteractionTests {
 		#expect(host.view.fittingSize.height <= 640)
 		#expect(try host.text().contains("Add variable"))
 		#expect(try host.text().contains("Cancel"))
+	}
+}
+
+private struct InspectorInteractionFixture: View {
+	@Bindable var store: VaultStore
+	@State private var revealedKeys: Set<String> = []
+
+	var body: some View {
+		if let project = store.selectedProject {
+			VaultInspectorView(store: store, project: project, snapshot: VaultWorkspaceSnapshot(project: project),
+				environments: ["default", "production"], mode: .matrix, selectedKey: "TOKEN", revealedKeys: $revealedKeys,
+				onClose: {}, onCopySecret: { _, _ in }, onDeleteSecret: { _, _ in })
+				.frame(width: 300, height: 640)
+		}
 	}
 }

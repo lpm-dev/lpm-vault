@@ -53,6 +53,7 @@ struct ContentView: View {
 				VaultBarButton(
 					systemImage: store.isUnlocking ? nil : "touchid",
 					title: store.isUnlocking ? "Unlocking…" : "Unlock",
+					shortcut: store.isUnlocking ? nil : "⌘L",
 					filled: true,
 					disabled: store.isUnlocking,
 					height: 32
@@ -61,16 +62,17 @@ struct ContentView: View {
 				}
 				.keyboardShortcut(.return, modifiers: [])
 				.accessibilityHint("Shows the macOS authentication prompt")
-
-				Text("Values stay encrypted on this Mac until you unlock.")
-					.font(VaultTypography.mono(10.5))
-					.foregroundStyle(VaultPalette.textFaint)
-					.padding(.top, 4)
 			}
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		}
 		.background(VaultPalette.titleBar)
 		.frame(minWidth: 1040, minHeight: 640)
+		.overlay(alignment: .bottom) {
+			Text("Values stay encrypted on this Mac until you unlock.")
+				.font(VaultTypography.mono(10.5))
+				.foregroundStyle(VaultPalette.textFaint)
+				.padding(.bottom, 18)
+		}
 		.ignoresSafeArea(.container, edges: .top)
 	}
 }

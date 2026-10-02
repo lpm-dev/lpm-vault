@@ -206,6 +206,11 @@ private struct VaultSecretEditor: View {
 		Binding(get: { editDraft.draft }, set: { editDraft.draft = $0 })
 	}
 
+	private var canGenerate: Bool {
+		store.isUnlocked && store.selectedProjectId == projectID && store.selectedEnvironment == environment
+			&& !editDraft.isSaveInFlight && !editDraft.hasExternalConflict
+	}
+
 	var body: some View {
 		VStack(alignment: .leading, spacing: 10) {
 			Text("EDIT VALUE").vaultSectionLabel()
@@ -215,23 +220,31 @@ private struct VaultSecretEditor: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
 			} else {
-				Group {
-					if isRevealed {
-						TextField("Value", text: draftBinding, axis: .vertical)
-							.lineLimit(1...4)
-					} else {
-						SecureField("Value", text: draftBinding)
+				HStack(spacing: 6) {
+					Group {
+						if isRevealed {
+							TextField("Value", text: draftBinding, axis: .vertical)
+								.lineLimit(1...4)
+						} else {
+							SecureField("Value", text: draftBinding)
+						}
+					}
+					.textFieldStyle(.plain)
+					.font(VaultTypography.mono(11.5))
+					.foregroundStyle(VaultPalette.textPrimary)
+					.focused($focused)
+					.onSubmit { save() }
+					.padding(.vertical, 9)
+
+					SecretGeneratorButton(disabled: !canGenerate) { generated in
+						guard canGenerate else { return }
+						editDraft.draft = generated
 					}
 				}
-				.textFieldStyle(.plain)
-				.font(VaultTypography.mono(11.5))
-				.foregroundStyle(VaultPalette.textPrimary)
-				.focused($focused)
-				.padding(.horizontal, 11)
-				.padding(.vertical, 9)
+				.padding(.leading, 11)
+				.padding(.trailing, 4)
 				.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 				.overlay { RoundedRectangle(cornerRadius: 8).stroke(focused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
-				.onSubmit { save() }
 
 				HStack(spacing: 6) {
 					VaultInspectorButton(

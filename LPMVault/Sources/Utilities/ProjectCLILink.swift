@@ -1,6 +1,6 @@
 import Foundation
 
-/// Whether a project folder's `lpm.json` points the lpm CLI at a vault.
+/// Whether a project folder's `lpm.json` points the LPM CLI at a vault.
 enum ProjectCLILinkStatus: Equatable, Sendable {
 	case linked
 	case notLinked

@@ -69,8 +69,8 @@ struct VaultTitleBarView: View {
 				}
 				.buttonStyle(.plain)
 				.onHover { connectChipHovering = $0 }
-				.help("Connect \(project.name) to the lpm CLI")
-				.accessibilityLabel("Connect \(project.name) to the lpm CLI")
+				.help("Connect \(project.name) to the LPM CLI")
+				.accessibilityLabel("Connect \(project.name) to the LPM CLI")
 				.vaultPointingHand()
 			}
 

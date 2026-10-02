@@ -226,7 +226,7 @@ struct ConnectCLIRenderingTests {
 		)
 
 		for expected in [
-			"Connect to the lpm CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
+			"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
 			"lpm.json", "Copy JSON", "vault", "lpm env list", "lpm dev", "lpm run", "Docs", "Done",
 		] {
 			#expect(text.contains(expected), "missing \(expected)")

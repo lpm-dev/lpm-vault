@@ -90,6 +90,7 @@
 		E2C5F6C51F13DD357B21740F /* Round3BenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4087411C6D51EB8AFBC77E53 /* Round3BenchmarkTests.swift */; };
 		E678A38B2928662F13B3E3D3 /* AccountRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C64B98FB47B4B40EB4D55EB0 /* AccountRailView.swift */; };
 		E86F773021FC6A17A1E1467B /* ProjectConfigFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */; };
+		EE7CE280B060E9EAF0449829 /* SecretGeneratorButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0B4A1CD668920BA64DC898F /* SecretGeneratorButton.swift */; };
 		EFC134143FB11B4F121ABE2C /* VaultPersistenceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA185E326FAD6E725BDC009E /* VaultPersistenceCoordinator.swift */; };
 		F0556219DD70A4FFC552E176 /* AddVariableDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C9EE22CF4981C65729D0AA7 /* AddVariableDraft.swift */; };
 		F199462174412DD3BCE43883 /* VaultDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FEA1200FEEE801C4081E8DA /* VaultDetailView.swift */; };
@@ -174,6 +175,7 @@
 		ABA50696ECCA4608639D0C28 /* AuditRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditRegressionTests.swift; sourceTree = "<group>"; };
 		AD952D6C2614FAF3EF8B184F /* NewEnvironmentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewEnvironmentSheet.swift; sourceTree = "<group>"; };
 		ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncService.swift; sourceTree = "<group>"; };
+		B0B4A1CD668920BA64DC898F /* SecretGeneratorButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretGeneratorButton.swift; sourceTree = "<group>"; };
 		B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainServiceTests.swift; sourceTree = "<group>"; };
 		B1CF37F3E1D21EFC23D1163B /* AuthSessionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionCoordinatorTests.swift; sourceTree = "<group>"; };
 		B525DD1074B0316F4375CFB8 /* OrganizationProjectImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganizationProjectImportTests.swift; sourceTree = "<group>"; };
@@ -231,6 +233,7 @@
 				465AD9498C88039BB74D5D40 /* AddVariableSheet.swift */,
 				3D68AD6FA56F164F0BD68DAC /* ConnectCLISheet.swift */,
 				AD952D6C2614FAF3EF8B184F /* NewEnvironmentSheet.swift */,
+				B0B4A1CD668920BA64DC898F /* SecretGeneratorButton.swift */,
 				CEDE6264C2563EEC4611935A /* VaultContentView.swift */,
 				18DEAAFEE6A92D4350A97363 /* VaultDesignSystem.swift */,
 				17BF48E7FA6D4713B74FA496 /* VaultInspectorView.swift */,
@@ -567,6 +570,7 @@
 				8317184044046DED39284AA1 /* ProjectCLILink.swift in Sources */,
 				E86F773021FC6A17A1E1467B /* ProjectConfigFile.swift in Sources */,
 				FF555B1BC9D2473E43906281 /* RelativeTimestampFormatter.swift in Sources */,
+				EE7CE280B060E9EAF0449829 /* SecretGeneratorButton.swift in Sources */,
 				8B2777BE3740C9B343834C89 /* SecretRowView.swift in Sources */,
 				0B706B272BB6DACD131FF6CD /* SecretValueGenerator.swift in Sources */,
 				3AB3C5C198979ABF75813E66 /* SecureAvatarLoader.swift in Sources */,
