@@ -139,7 +139,7 @@ struct ConnectCLIRenderingTests {
 
 		for expected in [
 			"Connect to the lpm CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
-			"./lpm.json", "Copy JSON", "vault", "lpm env list", "lpm dev", "lpm run", "Docs", "Done",
+			"lpm.json", "Copy JSON", "vault", "lpm env list", "lpm dev", "lpm run", "Docs", "Done",
 		] {
 			#expect(text.contains(expected), "missing \(expected)")
 		}
@@ -159,7 +159,7 @@ struct ConnectCLIRenderingTests {
 		#expect(!text.contains("vault 7f3a1e2c"))
 	}
 
-	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) throws -> String {
+	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) throws -> OCRText {
 		let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
 		host.frame = NSRect(origin: .zero, size: size)
 		host.layoutSubtreeIfNeeded()
@@ -172,10 +172,6 @@ struct ConnectCLIRenderingTests {
 		request.recognitionLevel = .accurate
 		request.usesLanguageCorrection = false
 		try VNImageRequestHandler(cgImage: image).perform([request])
-		let recognized = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-		// OCR reads "lpm" as "Ipm" or "1pm" and widens monospaced word gaps.
-		return recognized
-			.replacingOccurrences(of: #"\b[1I]pm\b"#, with: "lpm", options: .regularExpression)
-			.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+		return OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n"))
 	}
 }

@@ -309,7 +309,7 @@ struct AddVariableSheetRenderingTests {
 		}
 	}
 
-	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) throws -> String {
+	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) throws -> OCRText {
 		let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
 		host.frame = NSRect(origin: .zero, size: size)
 		host.layoutSubtreeIfNeeded()
@@ -322,6 +322,6 @@ struct AddVariableSheetRenderingTests {
 		request.recognitionLevel = .accurate
 		request.usesLanguageCorrection = false
 		try VNImageRequestHandler(cgImage: image).perform([request])
-		return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+		return OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n"))
 	}
 }

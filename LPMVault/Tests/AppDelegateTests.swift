@@ -149,7 +149,7 @@ struct AppBrandingTests {
 		let request = VNRecognizeTextRequest()
 		request.recognitionLevel = .accurate
 		try VNImageRequestHandler(cgImage: image).perform([request])
-		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		let text = OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " "))
 		#expect(text.contains("LPM Vault"))
 		#expect(text.contains("project-source"))
 	}
