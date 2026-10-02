@@ -425,6 +425,33 @@ struct SheetInteractionTests {
 		#expect(try host.text().contains("Add variable"))
 		#expect(try host.text().contains("Cancel"))
 	}
+
+	@Test("ordinary Return closes the presented sheet after control focus changes", arguments: ["generator", "tab"], [0, 1, 2, 3])
+	func ordinaryReturnAfterControlFocus(transition: String, sample: Int) async throws {
+		let (store, keychain) = makeStore()
+		let key = "CONTROL_\(sample)"
+		let host = SheetTestHost(AddVariablePresentedFixture(store: store, key: key), size: NSSize(width: 800, height: 650))
+		defer {
+			for sheet in host.window.sheets { host.window.endSheet(sheet); sheet.orderOut(nil) }
+			host.window.close()
+		}
+		try await host.settle()
+		let sheet = try #require(host.window.sheets.first)
+		if transition == "generator" {
+			try host.click("Generate", in: sheet)
+			_ = try await host.generatorWindow()
+			try host.click("Add variable", in: sheet)
+		} else {
+			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
+		}
+		try await host.settle()
+		try host.key("\r", code: 36, in: sheet)
+		let deadline = Date().addingTimeInterval(3)
+		repeat { try await host.settle() } while !host.window.sheets.isEmpty && Date() < deadline
+		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?[key] == "")
+		#expect(keychain.updateEnvironmentsCallCount == 1)
+		#expect(host.window.sheets.isEmpty)
+	}
 }
 
 private struct InspectorInteractionFixture: View {
@@ -443,12 +470,13 @@ private struct InspectorInteractionFixture: View {
 
 private struct AddVariablePresentedFixture: View {
 	let store: VaultStore
+	var key = "CONTROL"
 	@State private var shown = true
 
 	var body: some View {
 		Color.clear.frame(width: 800, height: 650)
 			.sheet(isPresented: $shown) {
-				AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "CONTROL")
+				AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: key)
 			}
 	}
 }

@@ -61,13 +61,6 @@ struct AddVariableSheet: View {
 		}
 		.frame(width: 560)
 		.background(VaultPalette.content)
-		.background {
-			Button("Add and keep open") { submit(keepOpen: true) }
-				.keyboardShortcut(.return, modifiers: .shift)
-				.opacity(0)
-				.allowsHitTesting(false)
-				.accessibilityHidden(true)
-		}
 		.interactiveDismissDisabled(isSubmitting)
 		.onKeyPress(.return, phases: .down, action: handleReturn)
 		.onAppear { focusedField = .key }
