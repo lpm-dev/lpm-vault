@@ -26,6 +26,7 @@ jobs:
       - name: Sign, notarize, verify, and publish
         env:
           GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_RELEASES_READ_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_READ_TOKEN }}
           APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
           APPLE_VAULT_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_VAULT_PROVISIONING_PROFILE_BASE64 }}
