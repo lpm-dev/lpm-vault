@@ -18,8 +18,7 @@ struct VaultPaneBudget {
 		requestedInspector: CGFloat,
 		showsInspector: Bool
 	) {
-		let dividers = VaultMetrics.sidebarDivider
-			+ (showsInspector ? VaultMetrics.inspectorDivider : 0)
+		let dividers = VaultMetrics.paneDivider * (showsInspector ? 2 : 1)
 		let usable = max(0, available - dividers)
 		let minimums = VaultMetrics.sidebarMinimum
 			+ (showsInspector ? VaultMetrics.inspectorMinimum : 0)
@@ -80,98 +79,98 @@ struct VaultPaneBudget {
 		content = max(0, usable - sidebarBounds.width - inspectorBounds.width)
 	}
 
+	/// Center of the hairline on the sidebar's trailing edge.
+	var sidebarDividerCenter: CGFloat {
+		sidebar.width + VaultMetrics.paneDivider / 2
+	}
+
+	/// Center of the hairline on the inspector's leading edge.
+	var inspectorDividerCenter: CGFloat {
+		sidebar.width + VaultMetrics.paneDivider + content + VaultMetrics.paneDivider / 2
+	}
+
 	static func clamp(_ candidate: CGFloat, minimum: CGFloat, maximum: CGFloat) -> CGFloat {
 		min(max(minimum, maximum), max(minimum, candidate))
 	}
 }
 
-struct VaultResizablePane<Content: View>: View {
-	enum Edge {
-		case leading
-		case trailing
+enum VaultPaneEdge {
+	case leading
+	case trailing
 
-		var dragDirection: CGFloat {
-			switch self {
-			case .leading: -1
-			case .trailing: 1
-			}
+	var dragDirection: CGFloat {
+		switch self {
+		case .leading: -1
+		case .trailing: 1
 		}
 	}
+}
 
-	@Binding var width: CGFloat
-	let bounds: VaultPaneBounds
-	let edge: Edge
-	let dividerWidth: CGFloat
-	let accessibilityLabel: String
-	let onResize: () -> Void
+/// A side pane with its hairline on the edge facing the content. Resizing is
+/// handled by a ``VaultPaneResizeHandle`` drawn above the whole workspace.
+struct VaultResizablePane<Content: View>: View {
+	let width: CGFloat
+	let edge: VaultPaneEdge
 	let content: Content
 
-	@State private var dragStartWidth: CGFloat?
-
-	init(
-		width: Binding<CGFloat>,
-		bounds: VaultPaneBounds,
-		edge: Edge,
-		dividerWidth: CGFloat,
-		accessibilityLabel: String,
-		onResize: @escaping () -> Void,
-		@ViewBuilder content: () -> Content
-	) {
-		_width = width
-		self.bounds = bounds
+	init(width: CGFloat, edge: VaultPaneEdge, @ViewBuilder content: () -> Content) {
+		self.width = width
 		self.edge = edge
-		self.dividerWidth = dividerWidth
-		self.accessibilityLabel = accessibilityLabel
-		self.onResize = onResize
 		self.content = content()
-	}
-
-	private var liveWidth: CGFloat {
-		clamp(bounds.width)
 	}
 
 	var body: some View {
 		HStack(spacing: 0) {
-			if edge == .leading { divider }
+			if edge == .leading { hairline }
 			content
-				.frame(width: liveWidth)
+				.frame(width: width)
 				.clipped()
-			if edge == .trailing { divider }
+			if edge == .trailing { hairline }
 		}
-		.frame(width: liveWidth + dividerWidth)
+		.frame(width: width + VaultMetrics.paneDivider)
 	}
 
-	private var divider: some View {
-		ZStack {
-			VaultHairline(color: VaultPalette.sidebarBorder, axis: .vertical)
+	private var hairline: some View {
+		VaultHairline(color: VaultPalette.sidebarBorder, axis: .vertical)
+			.frame(width: VaultMetrics.paneDivider)
+	}
+}
 
-			VaultResizeTrackingArea(
-				label: accessibilityLabel,
-				width: liveWidth,
-				onAdjust: { adjustment in
-					commit(clamp(bounds.width + adjustment))
-					onResize()
-				},
-				onDragChanged: { translation in
-					let start = dragStartWidth ?? bounds.width
-					dragStartWidth = start
-					commit(clamp(start + edge.dragDirection * translation))
-					onResize()
-				},
-				onDragEnded: { translation in
-					let start = dragStartWidth ?? bounds.width
-					dragStartWidth = nil
-					commit(clamp(start + edge.dragDirection * translation))
-					onResize()
-				}
-			)
-			.frame(maxWidth: .infinity, maxHeight: .infinity)
-		}
-		.frame(width: dividerWidth)
-		.contentShape(Rectangle())
+/// Pointer and accessibility target for resizing a pane. It must be laid out
+/// above every pane: AppKit only routes clicks to it where no later sibling
+/// view covers it, and its target reaches into both neighbors of the hairline.
+struct VaultPaneResizeHandle: View {
+	@Binding var width: CGFloat
+	let bounds: VaultPaneBounds
+	let edge: VaultPaneEdge
+	let accessibilityLabel: String
+	let onResize: () -> Void
+
+	@State private var dragStartWidth: CGFloat?
+
+	var body: some View {
+		VaultResizeTrackingArea(
+			label: accessibilityLabel,
+			width: bounds.width,
+			onAdjust: { adjustment in
+				commit(clamp(bounds.width + adjustment))
+			},
+			onDragChanged: { translation in
+				let start = dragStartWidth ?? bounds.width
+				dragStartWidth = start
+				commit(clamp(start + edge.dragDirection * translation))
+			},
+			onDragEnded: { translation in
+				let start = dragStartWidth ?? bounds.width
+				dragStartWidth = nil
+				commit(clamp(start + edge.dragDirection * translation))
+			}
+		)
+		.frame(width: VaultMetrics.paneDividerHitWidth)
 	}
 
 	private func commit(_ candidate: CGFloat) {
+		defer { onResize() }
 		guard candidate != width else { return }
 		var transaction = Transaction()
 		transaction.animation = nil

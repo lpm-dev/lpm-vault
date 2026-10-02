@@ -82,8 +82,11 @@ enum VaultMetrics {
 	static let inspector: CGFloat = 300
 	static let inspectorMinimum: CGFloat = 280
 	static let inspectorMaximum: CGFloat = 460
-	static let sidebarDivider: CGFloat = 7
-	static let inspectorDivider: CGFloat = 5
+	/// Layout width of a pane divider: the hairline itself, flush with the pane.
+	static let paneDivider: CGFloat = 1
+	/// Pointer target for resizing, centered on the hairline and overlapping both neighbors.
+	/// Odd, so its edges land on whole points around a 1pt hairline at any backing scale.
+	static let paneDividerHitWidth: CGFloat = 9
 	static let contentMinimum: CGFloat = 420
 	static let tableHeader: CGFloat = 34
 	static let matrixRow: CGFloat = 44

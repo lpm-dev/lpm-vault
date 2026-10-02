@@ -21,7 +21,7 @@ struct VaultPaneLayoutTests {
 					for inspector in [-100.0, 280, 300, 460, 900] {
 						let budget = VaultPaneBudget(available: available, requestedSidebar: sidebar,
 							requestedInspector: inspector, showsInspector: showsInspector)
-						let dividers = showsInspector ? 12.0 : 7.0
+						let dividers = VaultMetrics.paneDivider * (showsInspector ? 2 : 1)
 						let usable = max(0, available - dividers)
 						#expect(abs(budget.sidebar.width + budget.inspector.width + budget.content - usable) < 0.0001)
 						#expect(budget.content >= 0)
@@ -31,7 +31,8 @@ struct VaultPaneLayoutTests {
 							#expect(pane.width <= pane.maximum)
 							#expect(pane.maximum <= 460)
 						}
-						if available >= (showsInspector ? 992 : 707) {
+						let minimums = VaultMetrics.sidebarMinimum + (showsInspector ? VaultMetrics.inspectorMinimum : 0)
+						if available >= minimums + VaultMetrics.contentMinimum + dividers {
 							#expect(budget.content >= 420)
 						}
 					}
@@ -125,7 +126,7 @@ struct VaultPaneLayoutTests {
 			try await waitForLayout(host) { inspector.accessibilityValue() as? String == "\(expectedWidth) points" }
 		}
 		#expect(inspector.accessibilityValue() as? String == "320 points")
-		try clickInspectorToggle(in: window, contentRightEdge: 1075)
+		try clickInspectorToggle(in: window, contentRightEdge: 1400 - 320 - VaultMetrics.paneDivider)
 		try await waitForLayout(host) { resizeViews(in: host).count == 1 && inspector.onAdjust == nil }
 		#expect(resizeViews(in: host).count == 1)
 		#expect(!inspector.accessibilityPerformIncrement())
@@ -138,14 +139,15 @@ struct VaultPaneLayoutTests {
 
 		try recordWorkspace(host, named: "workspace-restored-panes")
 		window.setContentSize(NSSize(width: 1040, height: 800))
+		// Divider targets are centered on their hairlines; the content sits between the lines.
 		try await waitForLayout(host) {
 			let sidebarFrame = host.convert(sidebar.bounds, from: sidebar)
 			let inspectorFrame = host.convert(reopened.bounds, from: reopened)
-			return abs(inspectorFrame.minX - sidebarFrame.maxX - 420) < 0.01
+			return abs(inspectorFrame.midX - sidebarFrame.midX - VaultMetrics.paneDivider - 420) < 0.01
 		}
 		let sidebarFrame = host.convert(sidebar.bounds, from: sidebar)
 		let inspectorFrame = host.convert(reopened.bounds, from: reopened)
-		#expect(abs(inspectorFrame.minX - sidebarFrame.maxX - 420) < 0.01)
+		#expect(abs(inspectorFrame.midX - sidebarFrame.midX - VaultMetrics.paneDivider - 420) < 0.01)
 		#expect(inspectorFrame.maxX < host.bounds.width)
 		try recordWorkspace(host, named: "workspace-minimum-width")
 		window.setContentSize(NSSize(width: 1400, height: 800))
@@ -154,10 +156,71 @@ struct VaultPaneLayoutTests {
 		#expect(reopened.accessibilityValue() as? String == "320 points")
 	}
 
+	@Test("pane hairlines sit flush against their panes and stay easy to grab")
+	func dividersAreFlushHairlines() async throws {
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+		let project = VaultProject(id: "divider-test", name: "Divider Preview", path: "/tmp/divider-preview",
+			environments: ["default": ["EXAMPLE_KEY": "example-value"]])
+		store.isUnlocked = true
+		defer { store.lock() }
+		store.projects = [project]
+		store.selectedProjectId = project.id
+		for _ in 0..<1000 {
+			if store.workspaceSnapshots[project.id] != nil { break }
+			try await Task.sleep(for: .milliseconds(10))
+		}
+		let host = NSHostingView(rootView: VaultWorkspaceView(store: store)
+			.environment(UpdateChecker())
+			.environment(\.colorScheme, .light))
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 800),
+			styleMask: [.titled], backing: .buffered, defer: false)
+		window.isReleasedWhenClosed = false
+		window.contentView = host
+		defer { window.close() }
+		window.orderBack(nil)
+		try clickInspectorToggle(in: window, contentRightEdge: 1400)
+		let lineCenters = [
+			"Resize sidebar": VaultMetrics.sidebar + VaultMetrics.paneDivider / 2,
+			"Resize inspector": host.bounds.width - VaultMetrics.inspector - VaultMetrics.paneDivider / 2,
+		]
+		// macOS 15 routes clicks to a newly inserted platform view only after
+		// the window has displayed it; a person can only click what is on screen.
+		try await waitForLayout(host) {
+			let dividers = resizeViews(in: host)
+			return dividers.count == 2 && dividers.allSatisfy { divider in
+				let center = lineCenters[divider.accessibilityLabel() ?? ""] ?? -1
+				return host.hitTest(NSPoint(x: center, y: host.bounds.midY)) === divider
+			}
+		}
+
+		let dividers = resizeViews(in: host)
+		#expect(dividers.count == 2)
+		for divider in dividers {
+			let label = divider.accessibilityLabel() ?? ""
+			let lineCenter = try #require(lineCenters[label])
+			let frame = host.convert(divider.bounds, from: divider)
+			#expect(abs(frame.width - VaultMetrics.paneDividerHitWidth) < 0.01)
+			#expect(abs(frame.midX - lineCenter) < 0.01, "\(label) is off its hairline")
+
+			let reach = VaultMetrics.paneDividerHitWidth / 2
+			for offset in [-(reach - 0.5), -2, 0, 2, reach - 0.5] {
+				let point = NSPoint(x: lineCenter + offset, y: host.bounds.midY)
+				#expect(host.hitTest(point) === divider, "\(label): \(offset) pt from the hairline misses the resize target")
+			}
+			for offset in [-(reach + 1), reach + 1] {
+				let point = NSPoint(x: lineCenter + offset, y: host.bounds.midY)
+				#expect(host.hitTest(point) !== divider, "\(label): \(offset) pt from the hairline still resizes the pane")
+			}
+		}
+		try recordWorkspace(host, named: "workspace-flush-dividers")
+	}
+
 	private func waitForLayout<V: View>(_ host: NSHostingView<V>, until condition: () -> Bool) async throws {
 		let deadline = ContinuousClock.now.advanced(by: .seconds(5))
 		repeat {
 			host.layoutSubtreeIfNeeded()
+			host.displayIfNeeded()
 			if condition() { return }
 			try await Task.sleep(for: .milliseconds(10))
 		} while ContinuousClock.now < deadline
