@@ -76,6 +76,16 @@ final class SheetTestHost<V: View> {
 		#expect(window.performKeyEquivalent(with: event))
 	}
 
+	func returnWhileEditing(_ target: String, modifiers: NSEvent.ModifierFlags = .shift) throws {
+		let fields = textFields(in: view)
+		let field = try #require(target == "key" ? fields.first { !($0 is NSSecureTextField) } : fields.last)
+		window.makeFirstResponder(field)
+		let editor = try #require(field.currentEditor())
+		try #require(window.firstResponder === editor)
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+		window.sendEvent(event)
+	}
+
 	func escape() throws -> Bool {
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
 		return window.performKeyEquivalent(with: event)
@@ -230,6 +240,33 @@ struct SheetInteractionTests {
 		try host.enterKey("NEXT")
 		try await host.settle()
 		#expect(try !host.text().contains("Added TOKEN"))
+	}
+
+	@Test("Shift Return keeps the sheet open from every focused field", arguments: ["key", "secure value", "revealed value"], [false, true])
+	func focusedKeepOpen(target: String, capsLock: Bool) async throws {
+		let (store, keychain) = makeStore()
+		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "FOCUSED", initialValueRevealed: target == "revealed value"), size: NSSize(width: 560, height: 520))
+		defer { host.window.close() }
+		try await host.settle()
+		try host.returnWhileEditing(target, modifiers: capsLock ? [.shift, .capsLock] : .shift)
+		let rendered = try await host.waitForText("Added FOCUSED")
+		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["FOCUSED"] != nil)
+		#expect(rendered.contains("Added FOCUSED"))
+	}
+
+	@Test("ordinary Return advances from the key and submits from the value")
+	func ordinaryReturnPreservesFieldActions() async throws {
+		let (store, keychain) = makeStore()
+		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "ORDINARY"), size: NSSize(width: 560, height: 520))
+		defer { host.window.close() }
+		try await host.settle()
+		try host.returnWhileEditing("key", modifiers: [])
+		try await host.settle()
+		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["ORDINARY"] == nil)
+		try host.returnWhileEditing("secure value", modifiers: [])
+		try await host.settle()
+		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["ORDINARY"] == "")
+		#expect(try !host.text().contains("Added ORDINARY"))
 	}
 
 	@Test("many environments keep the variable fields and actions inside a bounded sheet")

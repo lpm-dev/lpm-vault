@@ -20,9 +20,10 @@ struct AddVariableSheet: View {
 		case key, value
 	}
 
-	init(store: VaultStore, projectId: String, environment: String, initialKey: String = "") {
+	init(store: VaultStore, projectId: String, environment: String, initialKey: String = "", initialValueRevealed: Bool = false) {
 		self.store = store
 		self.projectId = projectId
+		_isValueRevealed = State(initialValue: initialValueRevealed)
 		let project = store.projects.first { $0.id == projectId }
 		let environments = project.map(store.orderedEnvironmentNames(for:)) ?? []
 		let initialEnvironment = environments.contains(environment) ? environment : environments.first
@@ -125,6 +126,7 @@ struct AddVariableSheet: View {
 				.autocorrectionDisabled()
 				.focused($focusedField, equals: .key)
 				.disabled(isSubmitting)
+				.onKeyPress(.return, phases: .down, action: handleReturn)
 				.onSubmit { focusedField = .value }
 				.padding(.horizontal, 12)
 				.frame(height: 36)
@@ -172,6 +174,7 @@ struct AddVariableSheet: View {
 				.autocorrectionDisabled()
 				.focused($focusedField, equals: .value)
 				.disabled(isSubmitting)
+				.onKeyPress(.return, phases: .down, action: handleReturn)
 				.onSubmit { submit(keepOpen: false) }
 				.accessibilityLabel("Value")
 
@@ -299,6 +302,12 @@ struct AddVariableSheet: View {
 	private func generateValue() {
 		value = SecretValueGenerator.generate(generatorKind, length: generatorLength)
 		isValueRevealed = true
+	}
+
+	private func handleReturn(_ press: KeyPress) -> KeyPress.Result {
+		guard press.modifiers.intersection([.shift, .control, .option, .command]) == .shift else { return .ignored }
+		submit(keepOpen: true)
+		return .handled
 	}
 
 	private func submit(keepOpen: Bool) {
