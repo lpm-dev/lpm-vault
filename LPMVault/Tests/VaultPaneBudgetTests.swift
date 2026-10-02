@@ -6,7 +6,7 @@ import Testing
 
 @Suite("Workspace pane budget")
 struct VaultPaneBudgetTests {
-	private let dividers = VaultMetrics.sidebarDivider + VaultMetrics.inspectorDivider
+	private let dividers = VaultMetrics.paneDivider * 2
 
 	@Test("Requested widths survive when the window is wide enough")
 	func honoursRequestedWidths() {
@@ -37,8 +37,7 @@ struct VaultPaneBudgetTests {
 						let used = budget.sidebar.width
 							+ budget.inspector.width
 							+ budget.content
-							+ VaultMetrics.sidebarDivider
-							+ (showsInspector ? VaultMetrics.inspectorDivider : 0)
+							+ VaultMetrics.paneDivider * (showsInspector ? 2 : 1)
 
 						#expect(used <= CGFloat(available) + 0.001)
 						#expect(budget.content >= 0)
@@ -145,6 +144,6 @@ struct VaultPaneBudgetTests {
 		)
 
 		#expect(budget.inspector.width == 0)
-		#expect(budget.content == 1200 - VaultMetrics.sidebarDivider - 300)
+		#expect(budget.content == 1200 - VaultMetrics.paneDivider - 300)
 	}
 }

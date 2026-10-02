@@ -18,8 +18,7 @@ struct VaultPaneBudget {
 		requestedInspector: CGFloat,
 		showsInspector: Bool
 	) {
-		let dividers = VaultMetrics.sidebarDivider
-			+ (showsInspector ? VaultMetrics.inspectorDivider : 0)
+		let dividers = VaultMetrics.paneDivider * (showsInspector ? 2 : 1)
 		let usable = max(0, available - dividers)
 		let minimums = VaultMetrics.sidebarMinimum
 			+ (showsInspector ? VaultMetrics.inspectorMinimum : 0)
@@ -101,7 +100,6 @@ struct VaultResizablePane<Content: View>: View {
 	@Binding var width: CGFloat
 	let bounds: VaultPaneBounds
 	let edge: Edge
-	let dividerWidth: CGFloat
 	let accessibilityLabel: String
 	let onResize: () -> Void
 	let content: Content
@@ -112,7 +110,6 @@ struct VaultResizablePane<Content: View>: View {
 		width: Binding<CGFloat>,
 		bounds: VaultPaneBounds,
 		edge: Edge,
-		dividerWidth: CGFloat,
 		accessibilityLabel: String,
 		onResize: @escaping () -> Void,
 		@ViewBuilder content: () -> Content
@@ -120,7 +117,6 @@ struct VaultResizablePane<Content: View>: View {
 		_width = width
 		self.bounds = bounds
 		self.edge = edge
-		self.dividerWidth = dividerWidth
 		self.accessibilityLabel = accessibilityLabel
 		self.onResize = onResize
 		self.content = content()
@@ -138,37 +134,39 @@ struct VaultResizablePane<Content: View>: View {
 				.clipped()
 			if edge == .trailing { divider }
 		}
-		.frame(width: liveWidth + dividerWidth)
+		.frame(width: liveWidth + VaultMetrics.paneDivider)
+		// The divider's pointer target overlaps the neighboring pane, so this
+		// pane and its divider must draw above that neighbor to win hit-testing.
+		.zIndex(1)
 	}
 
 	private var divider: some View {
-		ZStack {
-			VaultHairline(color: VaultPalette.sidebarBorder, axis: .vertical)
-
-			VaultResizeTrackingArea(
-				label: accessibilityLabel,
-				width: liveWidth,
-				onAdjust: { adjustment in
-					commit(clamp(bounds.width + adjustment))
-					onResize()
-				},
-				onDragChanged: { translation in
-					let start = dragStartWidth ?? bounds.width
-					dragStartWidth = start
-					commit(clamp(start + edge.dragDirection * translation))
-					onResize()
-				},
-				onDragEnded: { translation in
-					let start = dragStartWidth ?? bounds.width
-					dragStartWidth = nil
-					commit(clamp(start + edge.dragDirection * translation))
-					onResize()
-				}
-			)
-			.frame(maxWidth: .infinity, maxHeight: .infinity)
-		}
-		.frame(width: dividerWidth)
-		.contentShape(Rectangle())
+		VaultHairline(color: VaultPalette.sidebarBorder, axis: .vertical)
+			.frame(width: VaultMetrics.paneDivider)
+			.overlay {
+				VaultResizeTrackingArea(
+					label: accessibilityLabel,
+					width: liveWidth,
+					onAdjust: { adjustment in
+						commit(clamp(bounds.width + adjustment))
+						onResize()
+					},
+					onDragChanged: { translation in
+						let start = dragStartWidth ?? bounds.width
+						dragStartWidth = start
+						commit(clamp(start + edge.dragDirection * translation))
+						onResize()
+					},
+					onDragEnded: { translation in
+						let start = dragStartWidth ?? bounds.width
+						dragStartWidth = nil
+						commit(clamp(start + edge.dragDirection * translation))
+						onResize()
+					}
+				)
+				.frame(width: VaultMetrics.paneDividerHitWidth)
+			}
+			.zIndex(1)
 	}
 
 	private func commit(_ candidate: CGFloat) {

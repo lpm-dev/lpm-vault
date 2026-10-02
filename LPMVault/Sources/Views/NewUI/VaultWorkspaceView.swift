@@ -118,7 +118,6 @@ struct VaultWorkspaceView: View {
 						width: $sidebarWidth,
 						bounds: budget.sidebar,
 						edge: .trailing,
-						dividerWidth: VaultMetrics.sidebarDivider,
 						accessibilityLabel: "Resize sidebar",
 						onResize: { store.recordUserActivity() }
 					) {
@@ -201,7 +200,6 @@ struct VaultWorkspaceView: View {
 							width: $inspectorWidth,
 							bounds: budget.inspector,
 							edge: .leading,
-							dividerWidth: VaultMetrics.inspectorDivider,
 							accessibilityLabel: "Resize inspector",
 							onResize: { store.recordUserActivity() }
 						) {

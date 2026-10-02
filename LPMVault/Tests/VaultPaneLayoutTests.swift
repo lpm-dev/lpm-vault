@@ -21,7 +21,7 @@ struct VaultPaneLayoutTests {
 					for inspector in [-100.0, 280, 300, 460, 900] {
 						let budget = VaultPaneBudget(available: available, requestedSidebar: sidebar,
 							requestedInspector: inspector, showsInspector: showsInspector)
-						let dividers = showsInspector ? 12.0 : 7.0
+						let dividers = VaultMetrics.paneDivider * (showsInspector ? 2 : 1)
 						let usable = max(0, available - dividers)
 						#expect(abs(budget.sidebar.width + budget.inspector.width + budget.content - usable) < 0.0001)
 						#expect(budget.content >= 0)
@@ -31,7 +31,8 @@ struct VaultPaneLayoutTests {
 							#expect(pane.width <= pane.maximum)
 							#expect(pane.maximum <= 460)
 						}
-						if available >= (showsInspector ? 992 : 707) {
+						let minimums = VaultMetrics.sidebarMinimum + (showsInspector ? VaultMetrics.inspectorMinimum : 0)
+						if available >= minimums + VaultMetrics.contentMinimum + dividers {
 							#expect(budget.content >= 420)
 						}
 					}
@@ -138,20 +139,64 @@ struct VaultPaneLayoutTests {
 
 		try recordWorkspace(host, named: "workspace-restored-panes")
 		window.setContentSize(NSSize(width: 1040, height: 800))
+		// Divider targets are centered on their hairlines; the content sits between the lines.
 		try await waitForLayout(host) {
 			let sidebarFrame = host.convert(sidebar.bounds, from: sidebar)
 			let inspectorFrame = host.convert(reopened.bounds, from: reopened)
-			return abs(inspectorFrame.minX - sidebarFrame.maxX - 420) < 0.01
+			return abs(inspectorFrame.midX - sidebarFrame.midX - VaultMetrics.paneDivider - 420) < 0.01
 		}
 		let sidebarFrame = host.convert(sidebar.bounds, from: sidebar)
 		let inspectorFrame = host.convert(reopened.bounds, from: reopened)
-		#expect(abs(inspectorFrame.minX - sidebarFrame.maxX - 420) < 0.01)
+		#expect(abs(inspectorFrame.midX - sidebarFrame.midX - VaultMetrics.paneDivider - 420) < 0.01)
 		#expect(inspectorFrame.maxX < host.bounds.width)
 		try recordWorkspace(host, named: "workspace-minimum-width")
 		window.setContentSize(NSSize(width: 1400, height: 800))
 		try await waitForLayout(host) { reopened.accessibilityValue() as? String == "320 points" }
 		#expect(sidebar.accessibilityValue() as? String == "300 points")
 		#expect(reopened.accessibilityValue() as? String == "320 points")
+	}
+
+	@Test("pane hairlines sit flush against their panes and stay easy to grab")
+	func dividersAreFlushHairlines() async throws {
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+		let project = VaultProject(id: "divider-test", name: "Divider Preview", path: "/tmp/divider-preview",
+			environments: ["default": ["EXAMPLE_KEY": "example-value"]])
+		store.isUnlocked = true
+		defer { store.lock() }
+		store.projects = [project]
+		store.selectedProjectId = project.id
+		for _ in 0..<1000 {
+			if store.workspaceSnapshots[project.id] != nil { break }
+			try await Task.sleep(for: .milliseconds(10))
+		}
+		let host = NSHostingView(rootView: VaultWorkspaceView(store: store)
+			.environment(UpdateChecker())
+			.environment(\.colorScheme, .light))
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 800),
+			styleMask: [.titled], backing: .buffered, defer: false)
+		window.isReleasedWhenClosed = false
+		window.contentView = host
+		defer { window.close() }
+		window.orderBack(nil)
+		try clickInspectorToggle(in: window, contentRightEdge: 1400)
+		try await waitForLayout(host) { resizeViews(in: host).count == 2 }
+
+		let sidebarWidth = VaultMetrics.sidebar
+		for divider in resizeViews(in: host) {
+			let frame = host.convert(divider.bounds, from: divider)
+			#expect(abs(frame.width - VaultMetrics.paneDividerHitWidth) < 0.01)
+			let lineCenter = divider.accessibilityLabel() == "Resize sidebar"
+				? sidebarWidth + VaultMetrics.paneDivider / 2
+				: host.bounds.width - 300 - VaultMetrics.paneDivider / 2
+			#expect(abs(frame.midX - lineCenter) < 0.01, "\(divider.accessibilityLabel() ?? "") is off its hairline")
+
+			for offset in [-2.0, 2.0] {
+				let point = NSPoint(x: lineCenter + offset, y: host.bounds.midY)
+				#expect(host.hitTest(point) === divider, "\(offset) pt from the hairline misses the resize target")
+			}
+		}
+		try recordWorkspace(host, named: "workspace-flush-dividers")
 	}
 
 	private func waitForLayout<V: View>(_ host: NSHostingView<V>, until condition: () -> Bool) async throws {
