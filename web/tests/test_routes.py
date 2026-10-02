@@ -199,6 +199,7 @@ class Routes(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn('X-Robots-Tag', headers)
         self.assertIn('<link rel="canonical" href="https://vault.lpm.dev/">', page)
+        self.assertIn('<meta name="msvalidate.01" content="15A27CC3490BC984B8BE766FE51A4E02">', page.split('</head>')[0])
         self.assertEqual(len(re.findall(r'<h1(?:\s|>)', page)), 1)
         sdk = '<script src="/vendor/posthog-1.435.7.js" defer></script>'
         analytics = '<script src="/analytics.js" defer></script>'
