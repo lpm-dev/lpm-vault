@@ -8,6 +8,9 @@ Only the website sends analytics. The Mac app sends no analytics.
 PostHog uses `cookieless_mode: "always"` and memory persistence.
 The SDK creates no analytics cookies or persistent browser identity.
 Cookieless identities represent visitor-days, not permanent visitors.
+Events retain the SDK's `$raw_user_agent` value during delivery because PostHog needs this value for its daily identity hash.
+PostHog removes the raw user agent and connection IP before it stores cookieless events.
+The website does not collect or send an IP property.
 Person profiles, replay, automatic capture, exceptions, performance capture, and remote feature configuration are disabled.
 The website respects Global Privacy Control and Do Not Track.
 The footer offers an opt-out button.
@@ -43,6 +46,7 @@ The source is the official npm package, `posthog-js@1.435.7`, file `dist/array.n
 The original package license is in `public/vendor/LICENSE-PostHog.txt`.
 The route test checks the SDK's SHA-256 digest.
 The versioned SDK is immutable. Custom analytics code revalidates.
+The page includes a content hash in the analytics script URL to prevent stale code after deployment.
 The content security policy permits same-origin code and connections to `https://eu.i.posthog.com` only.
 Remote SDK extensions, scripts, and feature configuration are disabled.
 

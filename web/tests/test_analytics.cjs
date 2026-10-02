@@ -5,6 +5,7 @@ const vm = require('node:vm')
 const { test } = require('node:test')
 
 const sourcePath = path.join(__dirname, '../public/analytics.js')
+const sdkUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36'
 
 function boot({ href = 'https://vault.lpm.dev/', referrer = '', stored = null, navigator = {}, storageThrows = false, sdkMissing = false } = {}) {
   const events = []
@@ -17,7 +18,7 @@ function boot({ href = 'https://vault.lpm.dev/', referrer = '', stored = null, n
     init: (key, options) => { config = options; options.loaded(sdk) },
     register: (value) => { properties = value },
     capture: (event, value, options) => {
-      const raw = { event, properties: { token: 'public-token', distinct_id: '$posthog_cookieless', $cookieless_mode: true, ...properties, ...value } }
+      const raw = { event, properties: { token: 'public-token', distinct_id: '$posthog_cookieless', $cookieless_mode: true, $raw_user_agent: sdkUserAgent, ...properties, ...value } }
       const result = config.before_send(raw)
       if (result) events.push({ ...result, options })
     },
@@ -72,6 +73,23 @@ test('records explicit intents without claiming installation or activation', () 
   assert.equal(state.events[2].properties.link_location, 'footer')
   assert.equal(state.events[3].properties.destination, 'security_model')
   assert.ok(state.events.every(value => value.options.send_instantly))
+})
+
+test('preserves the SDK user agent required for cookieless ingestion on every approved event', () => {
+  const state = boot({ href: 'https://vault.lpm.dev/?utm_source=codex-seo-verification&token=secret#private' })
+  click(state, '/download')
+  click(state, 'https://cli.lpm.dev/docs/dev/lpm-vault')
+  click(state, 'https://github.com/lpm-dev/lpm-vault')
+  assert.equal(state.events.length, 4)
+  for (const { properties } of state.events) {
+    assert.equal(properties.$raw_user_agent, sdkUserAgent)
+    assert.equal(properties.$host, 'vault.lpm.dev')
+    assert.equal(properties.$cookieless_mode, true)
+    assert.equal(properties.distinct_id, '$posthog_cookieless')
+    assert.equal(properties.$process_person_profile, false)
+    assert.equal(properties.$current_url, 'https://vault.lpm.dev/')
+    assert.equal(properties.is_test_traffic, true)
+  }
 })
 
 test('keeps the initial organic source on each intent', () => {
