@@ -202,7 +202,8 @@ class Routes(unittest.TestCase):
         self.assertIn('<meta name="msvalidate.01" content="15A27CC3490BC984B8BE766FE51A4E02">', page.split('</head>')[0])
         self.assertEqual(len(re.findall(r'<h1(?:\s|>)', page)), 1)
         sdk = '<script src="/vendor/posthog-1.435.7.js" defer></script>'
-        analytics = '<script src="/analytics.js" defer></script>'
+        analytics_version = hashlib.sha256((ROOT / 'web/public/analytics.js').read_bytes()).hexdigest()[:12]
+        analytics = f'<script src="/analytics.js?v={analytics_version}" defer></script>'
         self.assertIn(sdk, page)
         self.assertIn(analytics, page)
         self.assertLess(page.index(sdk), page.index(analytics))

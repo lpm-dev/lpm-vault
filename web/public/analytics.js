@@ -5,7 +5,7 @@
 	const ROOT = `https://${HOST}/`
 	const OPTOUT_KEY = "vault_website_analytics_optout"
 	const EVENTS = new Set(["$pageview", "vault_download_clicked", "vault_docs_clicked", "vault_github_clicked"])
-	const SDK_PROPERTIES = new Set(["token", "distinct_id", "$cookieless_mode", "$insert_id", "$lib", "$lib_version", "$browser", "$os", "$device_type", "$process_person_profile"])
+	const SDK_PROPERTIES = new Set(["token", "distinct_id", "$cookieless_mode", "$raw_user_agent", "$insert_id", "$lib", "$lib_version", "$browser", "$os", "$device_type", "$process_person_profile"])
 	const LOCATIONS = new Set(["header", "hero", "body", "footer"])
 	const DESTINATIONS = new Set(["download", "documentation", "security_model", "repository", "changelog"])
 	const choice = document.getElementById("analytics-optout")
