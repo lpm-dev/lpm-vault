@@ -28,14 +28,14 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
-	func text() throws -> OCRText { OCRText(try observations().map { $0.topCandidates(1).first?.string ?? "" }.joined(separator: "\n")) }
+	func text(in targetWindow: NSWindow? = nil) throws -> OCRText { OCRText(try observations(in: targetWindow?.contentView).map { $0.topCandidates(1).first?.string ?? "" }.joined(separator: "\n")) }
 
-	func waitForText(_ expected: String) async throws -> OCRText {
+	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil) async throws -> OCRText {
 		let deadline = Date().addingTimeInterval(3)
-		var rendered = try text()
+		var rendered = try text(in: targetWindow)
 		while !rendered.contains(expected), Date() < deadline {
 			try await settle()
-			rendered = try text()
+			rendered = try text(in: targetWindow)
 		}
 		return rendered
 	}
@@ -80,6 +80,11 @@ final class SheetTestHost<V: View> {
 		try #require(window.firstResponder === editor)
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
 		window.sendEvent(event)
+	}
+
+	func key(_ character: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], in targetWindow: NSWindow) throws {
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: targetWindow.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
+		targetWindow.sendEvent(event)
 	}
 
 	func escape() throws -> Bool {
@@ -385,6 +390,31 @@ struct SheetInteractionTests {
 		#expect(try !host.text().contains("Added ORDINARY"))
 	}
 
+	@Test("Shift Return keeps a presented sheet open after focus leaves a text field", arguments: ["generator", "tab"], [false, true])
+	func keepOpenAfterControlFocus(transition: String, capsLock: Bool) async throws {
+		let (store, keychain) = makeStore()
+		let host = SheetTestHost(AddVariablePresentedFixture(store: store), size: NSSize(width: 800, height: 650))
+		defer {
+			for sheet in host.window.sheets { host.window.endSheet(sheet); sheet.orderOut(nil) }
+			host.window.close()
+		}
+		try await host.settle()
+		let sheet = try #require(host.window.sheets.first)
+		if transition == "generator" {
+			try host.click("Generate", in: sheet)
+			_ = try await host.generatorWindow()
+			try host.click("Add variable", in: sheet)
+		} else {
+			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
+		}
+		try await host.settle()
+		try host.key("\r", code: 36, modifiers: capsLock ? [.shift, .capsLock] : .shift, in: sheet)
+		let text = try await host.waitForText("Added CONTROL", in: sheet)
+		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["CONTROL"] == "")
+		#expect(host.window.sheets.count == 1)
+		#expect(text.contains("Added CONTROL"))
+	}
+
 	@Test("many environments keep the variable fields and actions inside a bounded sheet")
 	func manyEnvironmentsFit() throws {
 		let environments = Dictionary(uniqueKeysWithValues: (0..<90).map { (String(format: "env%03d", $0), [String: String]()) })
@@ -408,5 +438,17 @@ private struct InspectorInteractionFixture: View {
 				onClose: {}, onCopySecret: { _, _ in }, onDeleteSecret: { _, _ in })
 				.frame(width: 300, height: 640)
 		}
+	}
+}
+
+private struct AddVariablePresentedFixture: View {
+	let store: VaultStore
+	@State private var shown = true
+
+	var body: some View {
+		Color.clear.frame(width: 800, height: 650)
+			.sheet(isPresented: $shown) {
+				AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "CONTROL")
+			}
 	}
 }

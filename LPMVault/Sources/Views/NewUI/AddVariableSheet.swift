@@ -69,6 +69,7 @@ struct AddVariableSheet: View {
 				.accessibilityHidden(true)
 		}
 		.interactiveDismissDisabled(isSubmitting)
+		.onKeyPress(.return, phases: .down, action: handleReturn)
 		.onAppear { focusedField = .key }
 		.onChange(of: draft.key) { _, key in
 			submitError = nil
