@@ -143,7 +143,7 @@ struct AppBrandingTests {
 		store.projects = [project]
 		store.selectedProjectId = project.id
 		let image = try renderNative(VaultTitleBarView(
-			store: store, mode: .matrix, onShowVaultID: {}, onPull: {}, onPush: {}
+			store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
 		).environment(UpdateChecker()).environment(\.colorScheme, .light), size: CGSize(width: 1100, height: VaultMetrics.titleBar))
 		try recordPNG(image, named: "title-bar.png")
 		let request = VNRecognizeTextRequest()

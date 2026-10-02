@@ -93,7 +93,7 @@ struct UpdateCheckerTests {
 		store.projects = [project]
 		store.selectedProjectId = project.id
 		let view = NSHostingView(rootView: VaultTitleBarView(
-			store: store, mode: .matrix, onShowVaultID: {}, onPull: {}, onPush: {}
+			store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
 		).environment(checker).environment(\.colorScheme, .light))
 		let window = NSWindow(
 			contentRect: NSRect(x: 0, y: 0, width: width, height: VaultMetrics.titleBar),

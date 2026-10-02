@@ -25,13 +25,25 @@ enum ProjectConfigFile {
 		return try? JSONDecoder().decode(LPMJSONValue.self, from: data)
 	}
 
+	/// Returns the `vault` field, or `nil` when the file has no vault ID.
+	/// Throws `FileError.notFound` when the file does not exist.
+	static func vaultID(at url: URL) throws -> String? {
+		let data = try readRegularFile(at: url)
+		guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+			throw FileError.invalidJSON
+		}
+		guard let vault = object["vault"] else { return nil }
+		guard let vaultId = vault as? String else { throw FileError.invalidJSON }
+		return vaultId
+	}
+
 	/// Adds or replaces the vault ID without following an existing symlink.
 	/// Existing malformed or oversized files are left untouched.
 	static func writeVaultID(_ vaultId: String, to url: URL) throws {
 		let object: [String: Any]
 		do {
 			let data = try readRegularFile(at: url)
-			guard let existing = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+			guard let existing = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
 			else { throw FileError.invalidJSON }
 			object = existing
 		} catch FileError.notFound {

@@ -144,7 +144,7 @@ struct VaultDetailView: View {
 			}
 		}
 		.sheet(isPresented: $showVaultIDSheet) {
-			if let project { VaultIDSheet(vaultId: project.id) }
+			if let project { ConnectCLISheet(store: store, projectId: project.id) }
 		}
 		.onChange(of: store.lastSyncStatus) { _, newValue in
 			if newValue == "conflict" { showConflictResolution = true }

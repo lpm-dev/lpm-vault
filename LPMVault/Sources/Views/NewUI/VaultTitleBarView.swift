@@ -4,9 +4,12 @@ struct VaultTitleBarView: View {
 	@Bindable var store: VaultStore
 	@Environment(UpdateChecker.self) private var updateChecker
 	let mode: VaultWorkspaceMode
-	let onShowVaultID: () -> Void
+	let onConnectCLI: () -> Void
 	let onPull: () -> Void
 	let onPush: () -> Void
+	var isConnectSheetPresented = false
+
+	@State private var connectChipHovering = false
 
 	private var project: VaultProject? { store.selectedProject }
 
@@ -45,23 +48,29 @@ struct VaultTitleBarView: View {
 			breadcrumb.padding(.leading, 8)
 
 			if let project {
-				Button(action: onShowVaultID) {
+				let highlighted = connectChipHovering || isConnectSheetPresented
+				Button(action: onConnectCLI) {
 					HStack(spacing: 6) {
 						Image(systemName: "link")
 							.font(.system(size: 9, weight: .bold))
 							.foregroundStyle(VaultPalette.accentForeground)
-						Text("vault \(shortVaultID(project.id))")
-							.font(VaultTypography.mono(10.5))
-							.foregroundStyle(VaultPalette.vaultChipText)
+						Text("Connect CLI")
+							.font(.system(size: 11, weight: .semibold))
+							.foregroundStyle(isConnectSheetPresented ? VaultPalette.accentDeep : VaultPalette.vaultChipText)
+							.fixedSize()
 					}
 					.padding(.horizontal, 8)
 					.frame(height: 22)
-					.background(RoundedRectangle(cornerRadius: 6).fill(VaultPalette.vaultChip))
-					.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
+					.background(RoundedRectangle(cornerRadius: 6).fill(highlighted ? VaultPalette.accentTint : VaultPalette.vaultChip))
+					.overlay {
+						RoundedRectangle(cornerRadius: 6)
+							.stroke(highlighted ? VaultPalette.accent.opacity(0.35) : VaultPalette.border, lineWidth: 1)
+					}
 				}
 				.buttonStyle(.plain)
-				.help("Show env project configuration")
-				.accessibilityLabel("Show env project configuration for \(project.name)")
+				.onHover { connectChipHovering = $0 }
+				.help("Connect \(project.name) to the lpm CLI")
+				.accessibilityLabel("Connect \(project.name) to the lpm CLI")
 				.vaultPointingHand()
 			}
 
@@ -169,10 +178,5 @@ struct VaultTitleBarView: View {
 	private var isOrganization: Bool {
 		if case .org = store.selectedAccount { return true }
 		return false
-	}
-
-	private func shortVaultID(_ id: String) -> String {
-		guard id.count > 16 else { return id }
-		return "\(id.prefix(8))…\(id.suffix(6))"
 	}
 }

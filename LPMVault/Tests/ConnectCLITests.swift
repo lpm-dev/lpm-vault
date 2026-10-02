@@ -1,0 +1,181 @@
+import AppKit
+import Foundation
+import SwiftUI
+import Testing
+import Vision
+
+@testable import LPMVault
+
+@Suite("Project CLI link")
+struct ProjectCLILinkTests {
+	private let vaultId = "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"
+
+	private func makeFolder() throws -> URL {
+		let folder = FileManager.default.temporaryDirectory
+			.appendingPathComponent("lpm-vault-link-\(UUID().uuidString)", isDirectory: true)
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		return folder
+	}
+
+	private func writeConfig(_ contents: String, in folder: URL) throws {
+		try Data(contents.utf8).write(to: folder.appendingPathComponent("lpm.json"))
+	}
+
+	private func readConfig(in folder: URL) throws -> [String: Any] {
+		let data = try Data(contentsOf: folder.appendingPathComponent("lpm.json"))
+		return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+	}
+
+	@Test("a project without a folder on this Mac has no link")
+	func noFolder() {
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: "") == .noFolder)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: "/nonexistent/\(UUID().uuidString)") == .noFolder)
+		#expect(throws: ProjectCLILinkError.noFolder) { try ProjectCLILink.link(vaultId: vaultId, folder: "") }
+	}
+
+	@Test("a folder without lpm.json or without a vault field is not linked")
+	func notLinked() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .notLinked)
+		try writeConfig(#"{ "tasks": {} }"#, in: folder)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .notLinked)
+	}
+
+	@Test("matching and different vault IDs are reported")
+	func linkedStates() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig(#"{ "vault": "\#(vaultId)" }"#, in: folder)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .linked)
+		try writeConfig(#"{ "vault": "other-vault" }"#, in: folder)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .linkedToOtherVault("other-vault"))
+	}
+
+	@Test("malformed lpm.json and symbolic links are unreadable")
+	func unreadable() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig("{ not json", in: folder)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .unreadable)
+		try writeConfig(#"{ "vault": 42 }"#, in: folder)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .unreadable)
+
+		let target = folder.appendingPathComponent("real.json")
+		try Data(#"{ "vault": "\#(vaultId)" }"#.utf8).write(to: target)
+		try FileManager.default.removeItem(at: folder.appendingPathComponent("lpm.json"))
+		try FileManager.default.createSymbolicLink(
+			at: folder.appendingPathComponent("lpm.json"), withDestinationURL: target
+		)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .unreadable)
+		#expect(throws: ProjectCLILinkError.unsafeFile) { try ProjectCLILink.link(vaultId: vaultId, folder: folder.path) }
+	}
+
+	@Test("linking creates lpm.json when the folder has none")
+	func linkCreatesConfig() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path)
+		#expect(try readConfig(in: folder)["vault"] as? String == vaultId)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .linked)
+	}
+
+	@Test("linking replaces only the vault field and keeps other settings")
+	func linkPreservesSettings() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig(#"{ "vault": "other-vault", "tasks": { "dev": { "env": "development" } } }"#, in: folder)
+
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path)
+		let config = try readConfig(in: folder)
+		#expect(config["vault"] as? String == vaultId)
+		#expect((config["tasks"] as? [String: Any])?["dev"] != nil)
+	}
+
+	@Test("linking leaves malformed lpm.json untouched")
+	func linkRefusesMalformedConfig() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig("{ not json", in: folder)
+
+		#expect(throws: ProjectCLILinkError.invalidJSON) { try ProjectCLILink.link(vaultId: vaultId, folder: folder.path) }
+		let contents = try String(contentsOf: folder.appendingPathComponent("lpm.json"), encoding: .utf8)
+		#expect(contents == "{ not json")
+	}
+}
+
+@Suite("Connect CLI rendering", .serialized)
+@MainActor
+struct ConnectCLIRenderingTests {
+	private func makeStore(path: String) -> VaultStore {
+		let environments: [String: [String: String]] = ["default": [:]]
+		let keychain = MockKeychainService()
+		keychain.envStorage["7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"] = (name: "my-api-server", path: path, environments: environments)
+		let store = VaultStore(
+			keychainService: keychain,
+			biometricService: MockBiometricService(),
+			apiService: MockAPIService()
+		)
+		store.projects = [VaultProject(
+			id: "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b",
+			name: "my-api-server",
+			path: path,
+			environments: environments
+		)]
+		store.selectedProjectId = "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"
+		store.isUnlocked = true
+		return store
+	}
+
+	@Test("the sheet shows the vault ID, lpm.json snippet, and terminal commands")
+	func rendersSheet() throws {
+		let store = makeStore(path: "")
+		let text = try renderedText(
+			of: ConnectCLISheet(store: store, projectId: "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"),
+			size: NSSize(width: 600, height: 560),
+			named: "connect-cli-sheet.png"
+		)
+
+		for expected in [
+			"Connect to the lpm CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
+			"./lpm.json", "Copy JSON", "vault", "lpm env list", "lpm dev", "lpm run", "Docs", "Done",
+		] {
+			#expect(text.contains(expected), "missing \(expected)")
+		}
+	}
+
+	@Test("the title bar chip reads Connect CLI")
+	func rendersTitleBarChip() throws {
+		let store = makeStore(path: "")
+		let text = try renderedText(
+			of: VaultTitleBarView(store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {})
+				.environment(UpdateChecker()),
+			size: NSSize(width: 1040, height: VaultMetrics.titleBar),
+			named: "title-bar-connect-cli.png"
+		)
+
+		#expect(text.contains("Connect CLI"))
+		#expect(!text.contains("vault 7f3a1e2c"))
+	}
+
+	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) throws -> String {
+		let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
+		host.frame = NSRect(origin: .zero, size: size)
+		host.layoutSubtreeIfNeeded()
+		let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+		host.cacheDisplay(in: host.bounds, to: bitmap)
+		let image = try #require(bitmap.cgImage)
+		let data = try #require(bitmap.representation(using: .png, properties: [:]))
+		Attachment.record(data, named: name)
+		let request = VNRecognizeTextRequest()
+		request.recognitionLevel = .accurate
+		request.usesLanguageCorrection = false
+		try VNImageRequestHandler(cgImage: image).perform([request])
+		let recognized = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+		// OCR reads "lpm" as "Ipm" or "1pm" and widens monospaced word gaps.
+		return recognized
+			.replacingOccurrences(of: #"\b[1I]pm\b"#, with: "lpm", options: .regularExpression)
+			.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+	}
+}

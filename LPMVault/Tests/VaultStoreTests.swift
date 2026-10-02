@@ -1032,7 +1032,7 @@ struct VaultStoreTests {
 
 	private func expectRenderedLockTitle(store: VaultStore, seconds: Int) throws {
 		let view = NSHostingView(rootView: VaultTitleBarView(
-			store: store, mode: .matrix, onShowVaultID: {}, onPull: {}, onPush: {}
+			store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
 		).environment(UpdateChecker()).environment(\.colorScheme, .light))
 		view.frame = NSRect(x: 0, y: 0, width: 1040, height: VaultMetrics.titleBar)
 		view.layoutSubtreeIfNeeded()
