@@ -115,6 +115,14 @@ final class SheetTestHost<V: View> {
 		throw CocoaError(.coderValueNotFound)
 	}
 
+	func waitForGeneratorDismissal(_ panel: NSWindow) async throws -> Bool {
+		let deadline = Date().addingTimeInterval(3)
+		while panel.isVisible, Date() < deadline {
+			try await settle()
+		}
+		return !panel.isVisible
+	}
+
 	func visibleGeneratorWindow() throws -> NSWindow? {
 		for candidate in NSApp.windows where candidate !== window && candidate.isVisible {
 			guard let content = candidate.contentView, !content.bounds.isEmpty else { continue }
@@ -228,8 +236,9 @@ struct SheetInteractionTests {
 			try #require(didEnter)
 		} else {
 			store.projects[0].environments["default"]?["TOKEN"] = "external"
+			#expect(try await host.waitForText("This value changed outside the editor.").contains("This value changed outside the editor."))
 		}
-		try await host.settle()
+		#expect(try await host.waitForGeneratorDismissal(panel))
 		#expect(try host.visibleGeneratorWindow() == nil)
 		try host.click("Generate")
 		try await host.settle()
@@ -240,7 +249,9 @@ struct SheetInteractionTests {
 			try await host.settle()
 			#expect(host.value == "external")
 			try host.click("Generate")
-			_ = try await host.generatorWindow()
+			let recoveredPanel = try await host.generatorWindow()
+			try host.click("Generate")
+			#expect(try await host.waitForGeneratorDismissal(recoveredPanel))
 		}
 	}
 
