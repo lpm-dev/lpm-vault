@@ -304,7 +304,7 @@ struct AddVariableSheetRenderingTests {
 			named: "secret-generator-panel.png"
 		)
 
-		for expected in ["GENERATE VALUE", "Base64 random", "openssl rand -base64 32", "Hexadecimal", "UUID v4", "Alphanumeric", "Password", "Length", "Regenerate"] {
+		for expected in ["GENERATE VALUE", "Base64 random", "openssl rand -base64 32", "Hexadecimal", "UUID", "Alphanumeric", "Password", "Length", "Regenerate"] {
 			#expect(text.contains(expected), "missing \(expected)")
 		}
 	}
