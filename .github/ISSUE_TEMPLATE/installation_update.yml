@@ -1,0 +1,62 @@
+name: Installation or update problem
+description: Report installer, Gatekeeper, or Sparkle update failures
+title: 'Installation: '
+labels: [bug, installation]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use the [official download](https://vault.lpm.dev/download).
+        Do not disable Gatekeeper or bypass signature checks.
+        Report suspected integrity or signature bypasses [privately](https://github.com/lpm-dev/lpm-vault/security/advisories/new).
+        Remove secrets, account details, and private paths from evidence.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: This is not a security vulnerability, and the report contains no secrets or private project data.
+          required: true
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Operation
+      options: [First installation, Manual replacement, Sparkle update, Built from source]
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Current and target versions, including build numbers
+      description: Use N/A if there is no installed app. Include the installer filename if the build number is unknown.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: macOS version and architecture
+      placeholder: macOS 15.6, Apple silicon
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Download or installation source
+      description: Include the public URL or method. Remove private URL parameters.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps and expected result
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Exact error and actual result
+      description: Include sanitized text or screenshots. Do not attach credentials or signing material.
+    validations:
+      required: true

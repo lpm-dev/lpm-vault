@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose an improvement to a Vault workflow
+title: 'Feature: '
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Describe the user problem first. Use dummy examples and omit private project data.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this request.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: Who encounters the problem, and what are they trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed behavior
+      description: Describe the outcome from the user's perspective.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or current workaround
+  - type: textarea
+    id: impact
+    attributes:
+      label: Expected impact
+      description: Describe any implications for privacy, secret handling, accessibility, CLI integration, or compatibility.

@@ -103,10 +103,13 @@ GitHub cannot return saved secret values to a local build. A local build uses an
 1. Update `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `project.yml`.
 2. Increase both values beyond the latest published release.
 3. Run `xcodegen generate --spec LPMVault/project.yml` from the repository root.
-4. Submit the change through a pull request.
+4. Submit the change through a pull request. Include user-facing highlights and any upgrade instructions in its description.
 5. After the pull request passes CI and receives merge approval, merge it.
 6. Tag the merged commit with `vMAJOR.MINOR.PATCH`.
 7. Push that tag.
+8. Wait for the release workflow to publish all verified artifacts successfully.
+9. Edit the GitHub release description. Add reviewed highlights and upgrade instructions above the generated pull request list.
+10. Verify that the published description contains the guidance and retains the generated list.
 
 The tag starts the CI gates again. The release job requires a commit from `main`, a public repository, and immutable releases.
 
@@ -121,6 +124,14 @@ The workflow publishes these assets together:
 - `checksums.txt`
 - `release-manifest.json`
 
+GitHub generates release notes from merged pull requests.
+The categories in [`.github/release.yml`](../.github/release.yml) use the primary labels described in [CONTRIBUTING.md](../CONTRIBUTING.md).
+Before tagging, verify that merged pull requests have the correct labels and that their titles describe the changes.
+Prepare migration requirements in the release preparation pull request before publication.
+Generated notes include pull request titles and links, but not their descriptions.
+Copy the reviewed guidance into the published release description through **Releases → Edit**.
+Immutable releases protect published assets. Their descriptions remain editable.
+
 If publication stops with a draft release, inspect its assets before recovery. The workflow refuses to replace an existing release. Published immutable assets cannot be replaced.
 
 ## Local verification
@@ -131,8 +142,12 @@ From the repository root:
 swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
 bash LPMVault/Scripts/Tests/release-tooling-tests.sh
 python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
+node --test web/tests/test_analytics.cjs
 python3 web/tests/test_routes.py
 ```
+
+Run the universal bundle and nested-signing checks in [CONTRIBUTING.md](../CONTRIBUTING.md) before a release.
+The [CI workflow](../.github/workflows/ci.yml) defines the complete required gate.
 
 The signed interoperability test uses temporary accounts and the production Swift and Rust Keychain implementations:
 

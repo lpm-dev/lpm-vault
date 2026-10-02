@@ -1,0 +1,82 @@
+name: CLI integration
+description: Report a difference between Vault and the signed LPM CLI
+title: 'CLI integration: '
+labels: [bug, cli-integration]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for app/CLI value, linkage, and approval problems.
+        Report vulnerabilities [privately](https://github.com/lpm-dev/lpm-vault/security/advisories/new).
+        Use dummy values and sanitized commands. Never attach real .env files or unmasked secret output.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: This is not a security vulnerability, and I removed secrets and private project data.
+          required: true
+  - type: input
+    id: app_version
+    attributes:
+      label: Vault version and build number
+      description: Read About LPM Vault.
+    validations:
+      required: true
+  - type: input
+    id: cli_version
+    attributes:
+      label: LPM CLI version
+      description: Paste the output of lpm --version.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: macOS version and architecture
+      placeholder: macOS 15.6, Intel
+    validations:
+      required: true
+  - type: input
+    id: installation
+    attributes:
+      label: App and CLI installation methods
+      placeholder: Official Vault DMG; CLI standalone installer
+    validations:
+      required: true
+  - type: dropdown
+    id: approval
+    attributes:
+      label: Project CLI approval setting
+      options: ['On', 'Off', Unknown]
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Sanitized command and environment selection
+      description: Use a dummy project. Omit real secret values and private paths.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Describe the Connect CLI setup and the selected environment with dummy names.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized error
+    validations:
+      required: true
