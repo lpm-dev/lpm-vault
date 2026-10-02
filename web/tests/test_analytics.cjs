@@ -38,8 +38,9 @@ function boot({ href = 'https://vault.lpm.dev/', referrer = '', stored = null, n
 }
 
 function click(state, href, section = 'hero', overrides = {}) {
-  const anchor = { getAttribute: () => href, closest: (selector) => selector === 'header' && section === 'header' ? {} : selector === 'footer' && section === 'footer' ? {} : selector === '[data-hero]' && section === 'hero' ? {} : null }
+  const anchor = { href, getAttribute: () => href, setAttribute: (name, value) => { anchor.href = value }, closest: (selector) => selector === 'header' && section === 'header' ? {} : selector === 'footer' && section === 'footer' ? {} : selector === '[data-hero]' && section === 'hero' ? {} : null }
   state.listeners.click?.({ button: 0, defaultPrevented: false, target: { closest: () => anchor }, ...overrides })
+  return anchor
 }
 
 test('uses cookieless analytics without profiles, replay, autocapture, or external code', () => {
@@ -109,6 +110,16 @@ test('marks verification traffic and never sends raw landing queries', () => {
   assert.equal(state.events[0].properties.attribution_version, 2)
   assert.equal(JSON.stringify(state.events).includes('private@example.com'), false)
   assert.equal(JSON.stringify(state.events).includes('secret'), false)
+})
+
+test('keeps cross-site verification out of CLI customer reports', () => {
+  const state = boot({ href: 'https://vault.lpm.dev/?utm_source=codex-seo-verification&token=secret' })
+  const anchor = click(state, 'https://cli.lpm.dev/docs/dev/lpm-vault')
+  const destination = new URL(anchor.href)
+  assert.equal(destination.searchParams.get('utm_source'), 'codex-seo-verification')
+  assert.equal(destination.searchParams.get('utm_medium'), 'test')
+  assert.equal(destination.searchParams.has('token'), false)
+  assert.equal(click(boot(), 'https://cli.lpm.dev/docs/dev/lpm-vault').href, 'https://cli.lpm.dev/docs/dev/lpm-vault')
 })
 
 test('drops unsolicited events and properties including person updates', () => {

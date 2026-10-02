@@ -155,5 +155,10 @@
 		} else { return }
 		const link_location = anchor.closest("header") ? "header" : anchor.closest("footer") ? "footer" : anchor.closest("[data-hero]") ? "hero" : "body"
 		capture(name, { destination, link_location })
+		if (attribution.is_test_traffic && url.origin === "https://cli.lpm.dev") {
+			url.searchParams.set("utm_source", "codex-seo-verification")
+			url.searchParams.set("utm_medium", "test")
+			anchor.setAttribute("href", url.href)
+		}
 	}
 })()

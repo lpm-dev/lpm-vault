@@ -21,6 +21,7 @@ It does not read app secrets or `.env` files.
 Campaign source and medium accept bounded tokens. Other campaign data is discarded.
 Verification visits use `utm_source=codex-seo-verification` and `is_test_traffic: true`.
 Customer reports and intent actions exclude these visits.
+Verification clicks keep the test source on links to CLI documentation.
 
 ## Events
 
