@@ -1132,7 +1132,7 @@ struct AuditRegressionTests {
     manager.clearClipboard()
     #expect(pasteboard.string(forType: .string) == "unrelated")
 
-    manager.copy("owned")
+    #expect(manager.copy("owned"))
     #expect(pasteboard.types?.contains(ClipboardManager.concealedType) == true)
     #expect(pasteboard.types?.contains(ClipboardManager.transientType) == true)
     manager.clearClipboard()

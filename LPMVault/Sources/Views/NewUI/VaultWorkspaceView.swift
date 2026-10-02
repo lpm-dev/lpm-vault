@@ -40,6 +40,7 @@ struct VaultWorkspaceView: View {
 	@State private var exportID: UUID?
 	@State private var copyAllTask: Task<Void, Never>?
 	@State private var copyAllID: UUID?
+	@State private var copyFeedback: VaultCopyFeedback?
 
 	private var project: VaultProject? { store.selectedProject }
 
@@ -58,6 +59,7 @@ struct VaultWorkspaceView: View {
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.onChange(of: store.selectedEnvironment) { _, environment in
+			resetCopyPresentation()
 			exportTask?.cancel()
 			exportTask = nil
 			exportID = nil
@@ -65,6 +67,15 @@ struct VaultWorkspaceView: View {
 			revealedKeys.removeAll()
 		}
 		.onChange(of: mode) { _, _ in revealedKeys.removeAll() }
+		.onChange(of: store.showAuthStatus) { _, showingSettings in
+			if showingSettings { resetCopyPresentation() }
+		}
+		.task(id: copyFeedback?.id) {
+			guard let feedbackID = copyFeedback?.id else { return }
+			do { try await Task.sleep(for: .seconds(2)) } catch { return }
+			guard !Task.isCancelled, copyFeedback?.id == feedbackID else { return }
+			copyFeedback = nil
+		}
 		.onChange(of: store.selectedAccount) { _, _ in
 			conflictTarget = nil
 			showsAccountSwitcher = false
@@ -84,9 +95,7 @@ struct VaultWorkspaceView: View {
 			exportTask?.cancel()
 			exportTask = nil
 			exportID = nil
-			copyAllTask?.cancel()
-			copyAllTask = nil
-			copyAllID = nil
+			resetCopyPresentation()
 			revealedKeys.removeAll()
 			selectedKey = nil
 		}
@@ -139,7 +148,9 @@ struct VaultWorkspaceView: View {
 							AuthStatusView(store: store)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
-						} else if store.isLoadingSelectedProject, let project {
+						} else if let project,
+							store.isLoadingSelectedProject || (project.hasLoadedEnvironments && store.workspaceSnapshots[project.id] == nil)
+						{
 							VStack(spacing: 10) {
 								ProgressView()
 								Text("Loading \(project.name)…")
@@ -165,6 +176,9 @@ struct VaultWorkspaceView: View {
 								showsInspector: $showsInspector,
 								isImporting: currentImportTask != nil,
 								isCopyingAll: copyAllTask != nil,
+								isCopiedAll: copyFeedback?.target == .all(VaultSensitiveActionContext(
+									projectID: project.id, environment: store.selectedEnvironment
+								)),
 								cliAccess: store.selectedProjectCliAccess,
 								isChangingCliAccess: store.isChangingCliAccess,
 								onChangeCliAccess: { access in Task { await store.changeCliAccess(to: access) } },
@@ -198,6 +212,9 @@ struct VaultWorkspaceView: View {
 								environments: store.orderedEnvironmentNames(for: project),
 								mode: mode,
 								selectedKey: selectedKey,
+								isCopied: selectedKey.map {
+									copyFeedback?.target == .secret(projectID: project.id, environment: store.selectedEnvironment, key: $0)
+								} ?? false,
 								revealedKeys: $revealedKeys,
 								onClose: { showsInspector = false },
 								onCopySecret: copySecret,
@@ -496,15 +513,19 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func copySecret(_ key: String, _ environment: String) {
-		guard let value = project?.value(for: key, in: environment) else { return }
-		ClipboardManager.shared.copy(ClipboardManager.dotenvText(for: [key: value]))
+		guard store.isUnlocked, !store.showAuthStatus, let project,
+			let value = project.value(for: key, in: environment),
+			ClipboardManager.shared.copy(ClipboardManager.dotenvText(for: [key: value]))
+		else { return }
+		copyFeedback = VaultCopyFeedback(target: .secret(projectID: project.id, environment: environment, key: key))
 	}
 
 	private func copyAll() {
-		guard copyAllTask == nil, let project else { return }
+		guard store.isUnlocked, !store.showAuthStatus, copyAllTask == nil, let project else { return }
 		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
 		let requestID = UUID()
 		copyAllID = requestID
+		copyFeedback = nil
 		copyAllTask = Task { @MainActor in
 			defer {
 				if copyAllID == requestID {
@@ -516,6 +537,7 @@ struct VaultWorkspaceView: View {
 				reason: "Copy all secrets to clipboard"
 			)
 			guard success,
+				!store.showAuthStatus,
 				copyAllID == requestID,
 				context.isCurrent(in: store),
 				let current = store.selectedProject
@@ -523,7 +545,9 @@ struct VaultWorkspaceView: View {
 			let contents = ClipboardManager.dotenvText(
 				for: current.secrets(for: context.environment)
 			)
-			ClipboardManager.shared.copy(contents, clearAfter: 15)
+			if ClipboardManager.shared.copy(contents, clearAfter: 15) {
+				copyFeedback = VaultCopyFeedback(target: .all(context))
+			}
 		}
 	}
 
@@ -642,9 +666,14 @@ struct VaultWorkspaceView: View {
 		exportTask?.cancel()
 		exportTask = nil
 		exportID = nil
+		resetCopyPresentation()
+	}
+
+	private func resetCopyPresentation() {
 		copyAllTask?.cancel()
 		copyAllTask = nil
 		copyAllID = nil
+		copyFeedback = nil
 	}
 
 }

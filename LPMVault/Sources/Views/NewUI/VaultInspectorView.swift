@@ -7,6 +7,7 @@ struct VaultInspectorView: View {
 	let environments: [String]
 	let mode: VaultWorkspaceMode
 	let selectedKey: String?
+	var isCopied = false
 	@Binding var revealedKeys: Set<String>
 	let onClose: () -> Void
 	let onCopySecret: (String, String) -> Void
@@ -99,9 +100,10 @@ struct VaultInspectorView: View {
 
 			if value != nil {
 				HStack(spacing: 6) {
-					VaultInspectorButton(title: "Copy", systemImage: "doc.on.doc", filled: true) {
+					VaultInspectorButton(title: isCopied ? "Copied" : "Copy", systemImage: isCopied ? "checkmark" : "doc.on.doc", filled: true) {
 						onCopySecret(key, environment)
 					}
+					.help(isCopied ? "Copied to the clipboard" : "Copy this value")
 					VaultInspectorButton(title: revealed ? "Hide" : "Reveal") {
 						toggleReveal(key)
 					}

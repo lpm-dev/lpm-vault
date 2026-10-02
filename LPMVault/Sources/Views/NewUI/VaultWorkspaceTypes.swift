@@ -110,6 +110,16 @@ struct VaultSensitiveActionContext: Equatable {
   }
 }
 
+struct VaultCopyFeedback: Equatable {
+  enum Target: Equatable {
+    case all(VaultSensitiveActionContext)
+    case secret(projectID: String, environment: String, key: String)
+  }
+
+  let id = UUID()
+  let target: Target
+}
+
 enum VaultCreationDismissalPolicy {
 	enum ApprovalAction: Equatable {
 		case wait
