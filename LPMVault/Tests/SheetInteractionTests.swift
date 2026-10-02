@@ -5,13 +5,64 @@ import Vision
 
 @testable import LPMVault
 
+/// Text recognition for window tests. Recognition runs off the main actor so
+/// other main-actor suites keep running while Vision works.
+enum RenderedText {
+	struct Line: Sendable {
+		let text: String
+		/// Normalized Vision bounds of the whole line.
+		let bounds: CGRect
+		/// Normalized Vision bounds of the searched label within the line.
+		let labelBounds: CGRect?
+	}
+
+	static func lines(
+		in image: CGImage,
+		level: VNRequestTextRecognitionLevel,
+		label: String? = nil,
+		options: String.CompareOptions = [],
+		region: CGRect? = nil
+	) async throws -> [Line] {
+		try await Task.detached(priority: .userInitiated) {
+			let request = VNRecognizeTextRequest()
+			request.recognitionLevel = level
+			request.usesLanguageCorrection = false
+			if let region { request.regionOfInterest = region }
+			try VNImageRequestHandler(cgImage: image).perform([request])
+			return (request.results ?? []).compactMap { observation -> Line? in
+				guard let candidate = observation.topCandidates(1).first else { return nil }
+				var labelBounds: CGRect?
+				if let label, let range = candidate.string.range(of: label, options: options) {
+					labelBounds = try? candidate.boundingBox(for: range)?.boundingBox
+				}
+				// Results inside a region of interest are relative to that region.
+				let map: (CGRect) -> CGRect = { box in
+					guard let region else { return box }
+					return CGRect(
+						x: region.minX + box.minX * region.width,
+						y: region.minY + box.minY * region.height,
+						width: box.width * region.width,
+						height: box.height * region.height
+					)
+				}
+				return Line(text: candidate.string, bounds: map(observation.boundingBox), labelBounds: labelBounds.map(map))
+			}
+		}.value
+	}
+}
+
 @MainActor
 final class SheetTestHost<V: View> {
 	let view: NSView
 	let window: NSWindow
+	/// Generous because one recognition pass can take seconds on CPU-only CI runners;
+	/// successful waits return as soon as their condition holds.
+	private static var timeout: Duration { .seconds(10) }
 
-	init(_ root: V, size: NSSize) {
+	/// `keepsRequestedSize` stops the hosting view from shrinking to the content's minimum size.
+	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false) {
 		let controller = NSHostingController(rootView: root)
+		if keepsRequestedSize { controller.sizingOptions = [] }
 		view = controller.view
 		window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
@@ -21,6 +72,7 @@ final class SheetTestHost<V: View> {
 		view.layoutSubtreeIfNeeded()
 	}
 
+	/// Fixed pause before asserting that something did not happen.
 	func settle() async throws {
 		for _ in 0..<8 {
 			view.layoutSubtreeIfNeeded()
@@ -28,28 +80,57 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
-	func text(in targetWindow: NSWindow? = nil) throws -> OCRText { OCRText(try observations(in: targetWindow?.contentView).map { $0.topCandidates(1).first?.string ?? "" }.joined(separator: "\n")) }
-
-	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil) async throws -> OCRText {
-		let deadline = Date().addingTimeInterval(3)
-		var rendered = try text(in: targetWindow)
-		while !rendered.contains(expected), Date() < deadline {
-			try await settle()
-			rendered = try text(in: targetWindow)
-		}
-		return rendered
+	/// Returns as soon as `condition` holds, or `false` after the timeout.
+	@discardableResult
+	func waitUntil(_ condition: () throws -> Bool) async throws -> Bool {
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		repeat {
+			view.layoutSubtreeIfNeeded()
+			if try condition() { return true }
+			try await Task.sleep(for: .milliseconds(5))
+		} while ContinuousClock.now < deadline
+		return try condition()
 	}
 
-	func click(_ label: String, in targetWindow: NSWindow? = nil, caseInsensitive: Bool = false) throws {
+	/// Definitive recognition, for assertions that text is absent or present right now.
+	func text(in targetWindow: NSWindow? = nil) async throws -> OCRText {
+		let lines = try await RenderedText.lines(in: snapshot(targetWindow?.contentView ?? view), level: .accurate)
+		return OCRText(lines.map(\.text).joined(separator: "\n"))
+	}
+
+	/// Tries fast recognition, then accurate recognition for small text, on each pass.
+	/// `footer` limits rendering and recognition to the bottom points of the window.
+	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil, footer: CGFloat? = nil) async throws -> Bool {
+		let target = try #require(targetWindow?.contentView ?? view)
+		let area = footer.map { bottomBand(of: target, height: $0) }
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		repeat {
+			let image = try snapshot(target, rect: area)
+			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
+				let lines = try await RenderedText.lines(in: image, level: level)
+				if OCRText(lines.map(\.text).joined(separator: "\n")).contains(expected) { return true }
+			}
+			try await Task.sleep(for: .milliseconds(20))
+		} while ContinuousClock.now < deadline
+		return false
+	}
+
+	/// Clicks the rendered label once it appears, using real mouse events.
+	func click(_ label: String, in targetWindow: NSWindow? = nil, caseInsensitive: Bool = false) async throws {
 		let window = targetWindow ?? self.window
-		let view = try #require(window.contentView)
-		let observations = try observations(in: view)
+		let target = try #require(window.contentView)
 		let options: String.CompareOptions = caseInsensitive ? .caseInsensitive : []
-		let observation = try #require(observations.first { $0.topCandidates(1).first?.string.range(of: label, options: options) != nil }, "Missing button \(label)")
-		let candidate = try #require(observation.topCandidates(1).first)
-		let range = try #require(candidate.string.range(of: label, options: options))
-		let bounds = try #require(try candidate.boundingBox(for: range)?.boundingBox)
-		let point = view.convert(NSPoint(x: bounds.midX * view.bounds.width, y: (view.isFlipped ? 1 - bounds.midY : bounds.midY) * view.bounds.height), to: nil)
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		var bounds: CGRect?
+		repeat {
+			bounds = try await labelBounds(label, in: target, options: options)
+			if bounds == nil { try await Task.sleep(for: .milliseconds(20)) }
+		} while bounds == nil && ContinuousClock.now < deadline
+		let box = try #require(bounds, "Missing button \(label)")
+		let point = target.convert(
+			NSPoint(x: box.midX * target.bounds.width, y: (target.isFlipped ? 1 - box.midY : box.midY) * target.bounds.height),
+			to: nil
+		)
 		for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
 			let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
 			window.sendEvent(event)
@@ -97,39 +178,98 @@ final class SheetTestHost<V: View> {
 
 	var isKeyFieldEnabled: Bool { textFields(in: view).first { !($0 is NSSecureTextField) }?.isEnabled ?? false }
 
-	func bounds(of label: String) throws -> CGRect {
-		let observation = try #require(try observations(scale: 3).first { OCRText($0.topCandidates(1).first?.string ?? "").contains(label) })
-		return observation.boundingBox
+	/// Bounds, in points from the bottom-left, of everything drawn over the solid
+	/// background within the bottom `band` points, plus the text recognized there.
+	func bottomInk(band: CGFloat) async throws -> (bounds: CGRect, text: OCRText) {
+		let image = try snapshot(view, rect: bottomBand(of: view, height: band))
+		let scale = CGFloat(image.width) / view.bounds.width
+		let width = image.width, height = image.height
+		let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+		context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+		// Bitmap memory starts with the top row. Sample the background mid-band and
+		// skip the window's rounded corners.
+		let margin = Int(12 * scale)
+		let sample = ((height / 2) * width + margin) * 4
+		let red = Int(pixels[sample]), green = Int(pixels[sample + 1]), blue = Int(pixels[sample + 2])
+		var minX = Int.max, maxX = Int.min, minTop = Int.max, maxTop = Int.min
+		for top in 0..<height {
+			var pixel = (top * width + margin) * 4
+			for column in margin..<(width - margin) {
+				let difference = abs(Int(pixels[pixel]) - red) + abs(Int(pixels[pixel + 1]) - green) + abs(Int(pixels[pixel + 2]) - blue)
+				if difference > 24 {
+					if column < minX { minX = column }
+					if column > maxX { maxX = column }
+					if top < minTop { minTop = top }
+					if top > maxTop { maxTop = top }
+				}
+				pixel += 4
+			}
+		}
+		try #require(minX <= maxX, "Nothing drawn in the bottom \(band) points")
+		let bounds = CGRect(
+			x: CGFloat(minX) / scale,
+			y: CGFloat(height - 1 - maxTop) / scale,
+			width: CGFloat(maxX - minX + 1) / scale,
+			height: CGFloat(maxTop - minTop + 1) / scale
+		)
+		let region = CGRect(
+			x: bounds.minX / view.bounds.width,
+			y: bounds.minY / band,
+			width: bounds.width / view.bounds.width,
+			height: bounds.height / band
+		).insetBy(dx: -0.01, dy: -0.1).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+		let lines = try await RenderedText.lines(in: image, level: .accurate, region: region)
+		return (bounds, OCRText(lines.map(\.text).joined(separator: " ")))
 	}
 
-	func line(containing label: String) throws -> String {
-		try #require(try observations().compactMap { $0.topCandidates(1).first?.string }.first { $0.contains(label) })
+	/// Recognizes the line containing `label` within `rect` (view coordinates).
+	func line(containing label: String, rect: NSRect) async throws -> String {
+		let lines = try await RenderedText.lines(in: snapshot(view, rect: rect), level: .accurate)
+		return try #require(lines.map(\.text).first { $0.contains(label) })
 	}
 
 	func generatorWindow() async throws -> NSWindow {
-		let deadline = Date().addingTimeInterval(3)
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		repeat {
-			if let panel = try visibleGeneratorWindow() { return panel }
-			try await settle()
-		} while Date() < deadline
+			if let panel = try await visibleGeneratorWindow() {
+				try await settle()
+				return panel
+			}
+			try await Task.sleep(for: .milliseconds(10))
+		} while ContinuousClock.now < deadline
 		throw CocoaError(.coderValueNotFound)
 	}
 
 	func waitForGeneratorDismissal(_ panel: NSWindow) async throws -> Bool {
-		let deadline = Date().addingTimeInterval(3)
-		while panel.isVisible, Date() < deadline {
-			try await settle()
-		}
-		return !panel.isVisible
+		try await waitUntil { !panel.isVisible }
 	}
 
-	func visibleGeneratorWindow() throws -> NSWindow? {
-		for candidate in NSApp.windows where candidate !== window && candidate.isVisible {
-			guard let content = candidate.contentView, !content.bounds.isEmpty else { continue }
-			let text = OCRText(try observations(in: content).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " "))
-			if text.contains("GENERATE VALUE") { return candidate }
+	/// The generator is the only popover these fixtures present. Fall back to its
+	/// rendered heading in case a future macOS hosts popovers in another window class.
+	func visibleGeneratorWindow() async throws -> NSWindow? {
+		let candidates = NSApp.windows.filter { $0 !== window && $0.isVisible && !($0.contentView?.bounds.isEmpty ?? true) }
+		if let popover = candidates.first(where: { $0.className.contains("Popover") }) { return popover }
+		for candidate in candidates where !window.sheets.contains(candidate) {
+			guard let content = candidate.contentView else { continue }
+			let lines = try await RenderedText.lines(in: snapshot(content), level: .fast)
+			if OCRText(lines.map(\.text).joined(separator: " ")).contains("GENERATE VALUE") { return candidate }
 		}
 		return nil
+	}
+
+	/// Fast mode finds the line cheaply but reports whole-line boxes for substrings, which
+	/// can land a click between neighboring buttons. Accurate mode then reads only that line.
+	private func labelBounds(_ label: String, in target: NSView, options: String.CompareOptions) async throws -> CGRect? {
+		let image = try snapshot(target)
+		let fast = try await RenderedText.lines(in: image, level: .fast, label: label, options: options)
+		if let line = fast.first(where: { $0.labelBounds != nil }) {
+			let strip = line.bounds.insetBy(dx: -0.02, dy: -line.bounds.height).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+			let refined = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: strip)
+			if let bounds = refined.lazy.compactMap(\.labelBounds).first { return bounds }
+		}
+		let accurate = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options)
+		return accurate.lazy.compactMap(\.labelBounds).first
 	}
 
 	private func textFields(in view: NSView) -> [NSTextField] {
@@ -137,23 +277,18 @@ final class SheetTestHost<V: View> {
 		return view.subviews.flatMap { textFields(in: $0) }
 	}
 
-	private func observations(in target: NSView? = nil, scale: Int? = nil) throws -> [VNRecognizedTextObservation] {
-		let view = target ?? self.view
-		view.layoutSubtreeIfNeeded()
-		let bitmap: NSBitmapImageRep
-		if let scale {
-			bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width) * scale, pixelsHigh: Int(view.bounds.height) * scale, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-			bitmap.size = view.bounds.size
-		} else {
-			bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-		}
-		view.cacheDisplay(in: view.bounds, to: bitmap)
-		let image = try #require(bitmap.cgImage)
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		request.usesLanguageCorrection = false
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		return request.results ?? []
+	/// Renders `rect` (view coordinates, whole view by default) at the backing scale.
+	private func snapshot(_ target: NSView, rect: NSRect? = nil) throws -> CGImage {
+		target.layoutSubtreeIfNeeded()
+		let area = rect ?? target.bounds
+		let bitmap = try #require(target.bitmapImageRepForCachingDisplay(in: area))
+		target.cacheDisplay(in: area, to: bitmap)
+		return try #require(bitmap.cgImage)
+	}
+
+	/// The bottom `height` points of `target`, in its own coordinates.
+	private func bottomBand(of target: NSView, height: CGFloat) -> NSRect {
+		NSRect(x: 0, y: target.isFlipped ? target.bounds.height - height : 0, width: target.bounds.width, height: height)
 	}
 }
 
@@ -170,17 +305,24 @@ struct SheetInteractionTests {
 		return (store, keychain)
 	}
 
+	private func stored(_ keychain: MockKeychainService, _ environment: String, _ key: String) -> String? {
+		keychain.envStorage["sheet-regression"]?.environments[environment]?[key]
+	}
+
 	@Test("lock-screen encryption note stays centered above the bottom", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
 	func lockScreenFooter(size: NSSize, scheme: ColorScheme) async throws {
 		let (store, _) = makeStore()
 		store.lock()
-		let host = SheetTestHost(ContentView(store: store).environment(\.colorScheme, scheme), size: size)
+		let host = SheetTestHost(ContentView(store: store).environment(\.colorScheme, scheme), size: size, keepsRequestedSize: true)
 		defer { host.window.close() }
 		try await host.settle()
-		let bounds = try host.bounds(of: "Values stay encrypted")
-		#expect(abs(bounds.midX - 0.5) * host.view.bounds.width < 3)
-		#expect((15...28).contains(bounds.minY * host.view.bounds.height))
-		#expect(try host.line(containing: "Unlock").range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
+		let note = try await host.bottomInk(band: 60)
+		#expect(host.view.bounds.size == size)
+		#expect(note.text.contains("Values stay encrypted"))
+		#expect(abs(note.bounds.midX - host.view.bounds.width / 2) < 3)
+		#expect((15...28).contains(note.bounds.minY))
+		let center = host.view.bounds.insetBy(dx: host.view.bounds.width * 0.25, dy: host.view.bounds.height * 0.25)
+		#expect(try await host.line(containing: "Unlock", rect: center).range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
 	}
 
 	@Test("inspector generation changes only the draft until saved", arguments: [ColorScheme.light, .dark])
@@ -190,27 +332,30 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(InspectorInteractionFixture(store: store).environment(\.colorScheme, scheme), size: NSSize(width: 300, height: 640))
 		defer { host.window.close() }
 		try await host.settle()
-		try host.click("Generate")
+		try await host.click("Generate")
 		let panel = try await host.generatorWindow()
-		try host.click("Password", in: panel)
-		try await host.settle()
+		try await host.click("Password", in: panel)
+		try await host.waitUntil { host.value != "old" }
 		let generated = host.value
 		#expect(generated.count == SecretValueGenerator.defaultLength)
 		#expect(generated != "old")
-		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] == "old")
-		try host.click("Revert")
-		try await host.settle()
+		#expect(stored(keychain, "default", "TOKEN") == "old")
+		// Synthetic clicks bypass the popover's outside-click monitor, so close it with its button.
+		try await host.click("Generate")
+		#expect(try await host.waitForGeneratorDismissal(panel))
+		try await host.click("Revert")
+		try await host.waitUntil { host.value == "old" }
 		#expect(host.value == "old")
-		try host.click("Generate")
+		try await host.click("Generate")
 		let secondPanel = try await host.generatorWindow()
-		try host.click("UUID v4", in: secondPanel, caseInsensitive: true)
-		try await host.settle()
+		try await host.click("UUID v4", in: secondPanel, caseInsensitive: true)
+		try await host.waitUntil { UUID(uuidString: host.value) != nil }
 		let second = host.value
 		#expect(UUID(uuidString: second) != nil)
-		try host.click("Save")
-		try await host.settle()
-		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] == second)
-		#expect(keychain.envStorage["sheet-regression"]?.environments["production"]?["TOKEN"] == "production-old")
+		try await host.click("Save")
+		try await host.waitUntil { stored(keychain, "default", "TOKEN") == second }
+		#expect(stored(keychain, "default", "TOKEN") == second)
+		#expect(stored(keychain, "production", "TOKEN") == "production-old")
 	}
 
 	@Test("inspector generation cannot replace a pending save or conflicting draft", arguments: ["save", "conflict"])
@@ -219,38 +364,38 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(InspectorInteractionFixture(store: store), size: NSSize(width: 300, height: 640))
 		defer { host.window.close() }
 		try await host.settle()
-		try host.click("Generate")
+		try await host.click("Generate")
 		let panel = try await host.generatorWindow()
-		try host.click("Hexadecimal", in: panel)
-		try await host.settle()
+		try await host.click("Hexadecimal", in: panel)
+		try await host.waitUntil { host.value != "old" }
 		let generated = host.value
 		let release = DispatchSemaphore(value: 0)
 		defer { release.signal() }
 		if reason == "save" {
 			let entered = DispatchSemaphore(value: 0)
 			keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
-			try host.click("Save")
+			try await host.click("Save")
 			let didEnter = await withCheckedContinuation { continuation in
 				DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 3) == .success) }
 			}
 			try #require(didEnter)
 		} else {
 			store.projects[0].environments["default"]?["TOKEN"] = "external"
-			#expect(try await host.waitForText("This value changed outside the editor.").contains("This value changed outside the editor."))
+			#expect(try await host.waitForText("This value changed outside the editor."))
 		}
 		#expect(try await host.waitForGeneratorDismissal(panel))
-		#expect(try host.visibleGeneratorWindow() == nil)
-		try host.click("Generate")
+		#expect(try await host.visibleGeneratorWindow() == nil)
+		try await host.click("Generate")
 		try await host.settle()
-		#expect(try host.visibleGeneratorWindow() == nil)
+		#expect(try await host.visibleGeneratorWindow() == nil)
 		#expect(host.value == generated)
 		if reason == "conflict" {
-			try host.click("Revert")
-			try await host.settle()
+			try await host.click("Revert")
+			try await host.waitUntil { host.value == "external" }
 			#expect(host.value == "external")
-			try host.click("Generate")
+			try await host.click("Generate")
 			let recoveredPanel = try await host.generatorWindow()
-			try host.click("Generate")
+			try await host.click("Generate")
 			#expect(try await host.waitForGeneratorDismissal(recoveredPanel))
 		}
 	}
@@ -260,24 +405,24 @@ struct SheetInteractionTests {
 		let (store, keychain) = makeStore()
 		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "COMMITTING"), size: NSSize(width: 560, height: 520))
 		defer { host.window.close() }
-		try await host.settle()
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
 		defer { release.signal() }
-		try host.click("Add to")
+		try await host.settle()
+		try await host.click("Add to")
 		let didEnter = await withCheckedContinuation { continuation in
 			DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 3) == .success) }
 		}
 		try #require(didEnter)
 		try await host.settle()
-		try host.click("Cancel")
+		try await host.click("Cancel")
 		try await host.settle()
 		#expect(try host.escape() == false)
 		#expect(host.isKeyFieldEnabled == false)
 		release.signal()
-		try await host.settle()
-		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["COMMITTING"] == "")
+		try await host.waitUntil { stored(keychain, "default", "COMMITTING") == "" }
+		#expect(stored(keychain, "default", "COMMITTING") == "")
 	}
 
 	@Test("privacy changes clear a draft even while a transaction is committing", arguments: [false, true])
@@ -287,19 +432,19 @@ struct SheetInteractionTests {
 		defer { host.window.close() }
 		try await host.settle()
 		try host.enterValue("synthetic-value")
-		try await host.settle()
+		try await host.waitUntil { host.value == "synthetic-value" }
 		try #require(host.value == "synthetic-value")
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
 		defer { release.signal() }
-		try host.click("Add to")
+		try await host.click("Add to")
 		let didEnter = await withCheckedContinuation { continuation in
 			DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 3) == .success) }
 		}
 		try #require(didEnter)
 		if changeProject { store.selectedProjectId = nil } else { store.lock() }
-		try await host.settle()
+		try await host.waitUntil { host.value.isEmpty }
 		#expect(host.value.isEmpty)
 		release.signal()
 		try await host.settle()
@@ -321,12 +466,11 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }, localFolderDefaults: defaults), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
-		try host.click("write file")
-		try await host.settle()
-		try host.click("Choose folder")
+		try await host.click("write file")
+		try await host.click("Choose folder")
+		#expect(try await host.waitForText("Replace vault ID"))
 		try await host.settle()
 		#expect(try Data(contentsOf: config) == original)
-		#expect(try host.text().contains("Replace vault ID"))
 	}
 
 	@Test("the connect sheet names LPM CLI after checking its link status")
@@ -334,9 +478,8 @@ struct SheetInteractionTests {
 		let (store, _) = makeStore()
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression"), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
-		let text = try await host.waitForText("Install LPM CLI")
-		#expect(text.contains("Connect to the LPM CLI"))
-		#expect(text.contains("Install LPM CLI"))
+		#expect(try await host.waitForText("Install LPM CLI"))
+		#expect(try await host.text().contains("Connect to the LPM CLI"))
 	}
 
 	@Test("a chosen local folder remains associated when the connect sheet is reopened")
@@ -350,19 +493,15 @@ struct SheetInteractionTests {
 		let (store, _) = makeStore()
 		let first = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }, localFolderDefaults: defaults), size: NSSize(width: 600, height: 560))
 		try await first.settle()
-		try first.click("write file")
-		try await first.settle()
-		try first.click("Choose folder")
-		let ready = try await first.waitForText("Write lpm.json")
-		try #require(ready.contains("Write lpm.json"))
-		try first.click("Write")
-		let linked = try await first.waitForText("Linked in lpm.json")
-		try #require(linked.contains("Linked in lpm.json"))
+		try await first.click("write file")
+		try await first.click("Choose folder")
+		try #require(try await first.waitForText("Write lpm.json"))
+		try await first.click("Write")
+		try #require(try await first.waitForText("Linked in lpm.json"))
 		first.window.close()
 		let second = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", localFolderDefaults: defaults), size: NSSize(width: 600, height: 560))
 		defer { second.window.close() }
-		let rendered = try await second.waitForText("Linked in lpm.json")
-		#expect(rendered.contains("Linked in lpm.json"))
+		#expect(try await second.waitForText("Linked in lpm.json"))
 	}
 
 	@Test("adding and keeping open preserves the success confirmation through UI updates")
@@ -372,13 +511,12 @@ struct SheetInteractionTests {
 		defer { host.window.close() }
 		try await host.settle()
 		try host.returnWhileEditing("key")
-		try await host.settle()
-		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] == "")
-		let confirmationText = try await host.waitForText("Added TOKEN")
-		#expect(confirmationText.contains("Added TOKEN"))
+		try await host.waitUntil { stored(keychain, "default", "TOKEN") == "" }
+		#expect(stored(keychain, "default", "TOKEN") == "")
+		#expect(try await host.waitForText("Added TOKEN", footer: 80))
 		try host.enterKey("NEXT")
 		try await host.settle()
-		#expect(try !host.text().contains("Added TOKEN"))
+		#expect(try await !host.text().contains("Added TOKEN"))
 	}
 
 	@Test("Shift Return keeps the sheet open from every focused field", arguments: ["key", "secure value", "revealed value"], [false, true])
@@ -388,9 +526,8 @@ struct SheetInteractionTests {
 		defer { host.window.close() }
 		try await host.settle()
 		try host.returnWhileEditing(target, modifiers: capsLock ? [.shift, .capsLock] : .shift)
-		let rendered = try await host.waitForText("Added FOCUSED")
-		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["FOCUSED"] != nil)
-		#expect(rendered.contains("Added FOCUSED"))
+		#expect(try await host.waitForText("Added FOCUSED", footer: 80))
+		#expect(stored(keychain, "default", "FOCUSED") != nil)
 	}
 
 	@Test("ordinary Return advances from the key and submits from the value")
@@ -401,11 +538,12 @@ struct SheetInteractionTests {
 		try await host.settle()
 		try host.returnWhileEditing("key", modifiers: [])
 		try await host.settle()
-		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["ORDINARY"] == nil)
+		#expect(stored(keychain, "default", "ORDINARY") == nil)
 		try host.returnWhileEditing("secure value", modifiers: [])
+		try await host.waitUntil { stored(keychain, "default", "ORDINARY") == "" }
+		#expect(stored(keychain, "default", "ORDINARY") == "")
 		try await host.settle()
-		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["ORDINARY"] == "")
-		#expect(try !host.text().contains("Added ORDINARY"))
+		#expect(try await !host.text().contains("Added ORDINARY"))
 	}
 
 	@Test("Shift Return keeps a presented sheet open after focus leaves a text field", arguments: ["generator", "tab"], [false, true])
@@ -416,32 +554,25 @@ struct SheetInteractionTests {
 			for sheet in host.window.sheets { host.window.endSheet(sheet); sheet.orderOut(nil) }
 			host.window.close()
 		}
-		try await host.settle()
+		try await host.waitUntil { host.window.sheets.first != nil }
 		let sheet = try #require(host.window.sheets.first)
-		if transition == "generator" {
-			try host.click("Generate", in: sheet)
-			_ = try await host.generatorWindow()
-			try host.click("Add variable", in: sheet)
-		} else {
-			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
-		}
-		try await host.settle()
+		try await focusControl(transition, in: sheet, host: host)
 		try host.key("\r", code: 36, modifiers: capsLock ? [.shift, .capsLock] : .shift, in: sheet)
-		let text = try await host.waitForText("Added CONTROL", in: sheet)
-		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?["CONTROL"] == "")
+		#expect(try await host.waitForText("Added CONTROL", in: sheet, footer: 80))
+		#expect(stored(keychain, "default", "CONTROL") == "")
 		#expect(host.window.sheets.count == 1)
-		#expect(text.contains("Added CONTROL"))
 	}
 
 	@Test("many environments keep the variable fields and actions inside a bounded sheet")
-	func manyEnvironmentsFit() throws {
+	func manyEnvironmentsFit() async throws {
 		let environments = Dictionary(uniqueKeysWithValues: (0..<90).map { (String(format: "env%03d", $0), [String: String]()) })
 		let (store, _) = makeStore(environments: environments)
 		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "env000"), size: NSSize(width: 560, height: 640))
 		defer { host.window.close() }
 		#expect(host.view.fittingSize.height <= 640)
-		#expect(try host.text().contains("Add variable"))
-		#expect(try host.text().contains("Cancel"))
+		let rendered = try await host.text()
+		#expect(rendered.contains("Add variable"))
+		#expect(rendered.contains("Cancel"))
 	}
 
 	@Test("ordinary Return closes the presented sheet after returning focus from controls", arguments: ["generator", "tab"], [0, 1, 2, 3])
@@ -453,25 +584,29 @@ struct SheetInteractionTests {
 			for sheet in host.window.sheets { host.window.endSheet(sheet); sheet.orderOut(nil) }
 			host.window.close()
 		}
-		try await host.settle()
+		try await host.waitUntil { host.window.sheets.first != nil }
 		let sheet = try #require(host.window.sheets.first)
-		if transition == "generator" {
-			try host.click("Generate", in: sheet)
-			_ = try await host.generatorWindow()
-			try host.click("Add variable", in: sheet)
-		} else {
-			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
-		}
-		try await host.settle()
+		try await focusControl(transition, in: sheet, host: host)
 		// A focused button can suppress AppKit's default Return action.
 		try #require(sheet.makeFirstResponder(nil))
 		try #require(sheet.firstResponder === sheet)
 		try host.key("\r", code: 36, in: sheet)
-		let deadline = Date().addingTimeInterval(3)
-		repeat { try await host.settle() } while !host.window.sheets.isEmpty && Date() < deadline
-		#expect(keychain.envStorage["sheet-regression"]?.environments["default"]?[key] == "")
+		try await host.waitUntil { host.window.sheets.isEmpty }
+		#expect(stored(keychain, "default", key) == "")
 		#expect(keychain.updateEnvironmentsCallCount == 1)
 		#expect(host.window.sheets.isEmpty)
+	}
+
+	/// Moves focus off the sheet's text fields: through the generator popover, or by tabbing to a control.
+	private func focusControl(_ transition: String, in sheet: NSWindow, host: SheetTestHost<AddVariablePresentedFixture>) async throws {
+		if transition == "generator" {
+			try await host.click("Generate", in: sheet)
+			_ = try await host.generatorWindow()
+			try await host.click("Add variable", in: sheet)
+		} else {
+			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
+		}
+		try await host.settle()
 	}
 }
 
