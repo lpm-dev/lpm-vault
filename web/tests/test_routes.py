@@ -3,6 +3,8 @@ import re
 import subprocess
 import time
 import unittest
+import xml.etree.ElementTree as ET
+import hashlib
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -19,6 +21,10 @@ ASSET_TYPES = {
     '/fonts/OFL-Geist.txt': 'text/plain',
     '/fonts/OFL-JetBrains-Mono.txt': 'text/plain',
     '/robots.txt': 'text/plain',
+    '/analytics.js': 'javascript',
+    '/vendor/posthog-1.435.7.js': 'javascript',
+    '/vendor/LICENSE-PostHog.txt': 'text/plain',
+    '/sitemap.xml': 'xml',
 }
 
 
@@ -124,6 +130,7 @@ class Routes(unittest.TestCase):
         for directive in ['script-src', 'style-src', 'font-src', 'img-src']:
             with self.subTest(directive=directive):
                 self.assertEqual(directives[directive], ["'self'"])
+        self.assertEqual(directives['connect-src'], ['https://eu.i.posthog.com'])
 
     def test_page_is_compatible_with_content_security_policy(self):
         _, _, body = self.request('/')
@@ -176,6 +183,37 @@ class Routes(unittest.TestCase):
             self.assertEqual(headers['Location'], f'https://github.com/lpm-dev/lpm-vault/releases/latest/download/{asset}')
             self.assertEqual(headers['Cache-Control'], 'no-store')
             self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
+
+    def test_sitemap_contains_only_the_canonical_landing_page(self):
+        status, headers, body = self.request('/sitemap.xml')
+        self.assertEqual(status, 200)
+        self.assertIn('xml', headers['Content-Type'])
+        root = ET.fromstring(body)
+        self.assertEqual(root.tag, '{http://www.sitemaps.org/schemas/sitemap/0.9}urlset')
+        self.assertEqual([item.text for item in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc')], ['https://vault.lpm.dev/'])
+        self.assertIn('Sitemap: https://vault.lpm.dev/sitemap.xml', self.request('/robots.txt')[2].decode())
+
+    def test_indexable_page_loads_the_pinned_local_sdk_before_analytics(self):
+        status, headers, body = self.request('/')
+        page = body.decode()
+        self.assertEqual(status, 200)
+        self.assertNotIn('X-Robots-Tag', headers)
+        self.assertIn('<link rel="canonical" href="https://vault.lpm.dev/">', page)
+        self.assertIn('<meta name="msvalidate.01" content="15A27CC3490BC984B8BE766FE51A4E02">', page.split('</head>')[0])
+        self.assertEqual(len(re.findall(r'<h1(?:\s|>)', page)), 1)
+        sdk = '<script src="/vendor/posthog-1.435.7.js" defer></script>'
+        analytics = '<script src="/analytics.js" defer></script>'
+        self.assertIn(sdk, page)
+        self.assertIn(analytics, page)
+        self.assertLess(page.index(sdk), page.index(analytics))
+        self.assertIn('The Mac app sends no analytics.', page)
+        self.assertIn('id="analytics-optout"', page)
+
+    def test_pinned_sdk_is_immutable_and_analytics_code_revalidates(self):
+        _, headers, body = self.request('/vendor/posthog-1.435.7.js')
+        self.assertIn('immutable', headers['Cache-Control'])
+        self.assertEqual(hashlib.sha256(body).hexdigest(), '672d82c313b6fc67164dd64763995da534eabddc1f1843fca68bffb838deec7c')
+        self.assertEqual(self.request('/analytics.js')[1]['Cache-Control'], 'no-cache')
 
     def test_versioned_artifacts_are_immutable(self):
         path = '/releases/v1.2.3/LPM-Vault-1.2.3.dmg'
