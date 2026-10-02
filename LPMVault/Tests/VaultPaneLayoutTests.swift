@@ -126,7 +126,7 @@ struct VaultPaneLayoutTests {
 			try await waitForLayout(host) { inspector.accessibilityValue() as? String == "\(expectedWidth) points" }
 		}
 		#expect(inspector.accessibilityValue() as? String == "320 points")
-		try clickInspectorToggle(in: window, contentRightEdge: 1075)
+		try clickInspectorToggle(in: window, contentRightEdge: 1400 - 320 - VaultMetrics.paneDivider)
 		try await waitForLayout(host) { resizeViews(in: host).count == 1 && inspector.onAdjust == nil }
 		#expect(resizeViews(in: host).count == 1)
 		#expect(!inspector.accessibilityPerformIncrement())
@@ -191,9 +191,14 @@ struct VaultPaneLayoutTests {
 				: host.bounds.width - 300 - VaultMetrics.paneDivider / 2
 			#expect(abs(frame.midX - lineCenter) < 0.01, "\(divider.accessibilityLabel() ?? "") is off its hairline")
 
-			for offset in [-2.0, 2.0] {
+			let reach = VaultMetrics.paneDividerHitWidth / 2
+			for offset in [-(reach - 0.5), -2, 0, 2, reach - 0.5] {
 				let point = NSPoint(x: lineCenter + offset, y: host.bounds.midY)
 				#expect(host.hitTest(point) === divider, "\(offset) pt from the hairline misses the resize target")
+			}
+			for offset in [-(reach + 1), reach + 1] {
+				let point = NSPoint(x: lineCenter + offset, y: host.bounds.midY)
+				#expect(host.hitTest(point) !== divider, "\(offset) pt from the hairline still resizes the pane")
 			}
 		}
 		try recordWorkspace(host, named: "workspace-flush-dividers")

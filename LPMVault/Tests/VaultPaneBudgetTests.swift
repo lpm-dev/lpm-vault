@@ -134,6 +134,28 @@ struct VaultPaneBudgetTests {
 		#expect(wide.inspector.width == 440)
 	}
 
+	@Test("Divider centers sit on the hairlines between the panes")
+	func dividerCentersFollowLayout() {
+		let budget = VaultPaneBudget(
+			available: 1400,
+			requestedSidebar: 320,
+			requestedInspector: 340,
+			showsInspector: true
+		)
+
+		#expect(budget.sidebarDividerCenter == 320 + VaultMetrics.paneDivider / 2)
+		#expect(budget.inspectorDividerCenter == 1400 - 340 - VaultMetrics.paneDivider / 2)
+
+		let narrow = VaultPaneBudget(
+			available: 1040,
+			requestedSidebar: 460,
+			requestedInspector: 460,
+			showsInspector: true
+		)
+		#expect(abs(narrow.inspectorDividerCenter - narrow.sidebarDividerCenter - narrow.content - VaultMetrics.paneDivider) < 0.0001)
+		#expect(abs(narrow.inspectorDividerCenter + VaultMetrics.paneDivider / 2 + narrow.inspector.width - 1040) < 0.0001)
+	}
+
 	@Test("Hiding the inspector returns its width to the content pane")
 	func hiddenInspectorFreesSpace() {
 		let budget = VaultPaneBudget(

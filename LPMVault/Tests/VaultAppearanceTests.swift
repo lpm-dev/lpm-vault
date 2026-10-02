@@ -212,8 +212,9 @@ struct VaultAppearanceTests {
 		request.recognitionLevel = .accurate
 		try VNImageRequestHandler(cgImage: image).perform([request])
 		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		let recognized = OCRText(text)
 		for label in expectedText {
-			#expect(text.contains(label), "Missing \(label) in \(name): \(text)")
+			#expect(recognized.contains(label), "Missing \(label) in \(name): \(text)")
 		}
 	}
 }

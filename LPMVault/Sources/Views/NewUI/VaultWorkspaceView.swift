@@ -114,13 +114,7 @@ struct VaultWorkspaceView: View {
 				)
 
 				HStack(spacing: 0) {
-					VaultResizablePane(
-						width: $sidebarWidth,
-						bounds: budget.sidebar,
-						edge: .trailing,
-						accessibilityLabel: "Resize sidebar",
-						onResize: { store.recordUserActivity() }
-					) {
+					VaultResizablePane(width: budget.sidebar.width, edge: .trailing) {
 						VaultSidebarView(
 							store: store,
 							snapshots: store.workspaceSnapshots,
@@ -196,13 +190,7 @@ struct VaultWorkspaceView: View {
 					if inspectorVisible, let project,
 						let snapshot = store.workspaceSnapshots[project.id]
 					{
-						VaultResizablePane(
-							width: $inspectorWidth,
-							bounds: budget.inspector,
-							edge: .leading,
-							accessibilityLabel: "Resize inspector",
-							onResize: { store.recordUserActivity() }
-						) {
+						VaultResizablePane(width: budget.inspector.width, edge: .leading) {
 							VaultInspectorView(
 								store: store,
 								project: project,
@@ -221,6 +209,29 @@ struct VaultWorkspaceView: View {
 				}
 				.frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
 				.clipped()
+				.overlay(alignment: .topLeading) {
+					ZStack(alignment: .topLeading) {
+						VaultPaneResizeHandle(
+							width: $sidebarWidth,
+							bounds: budget.sidebar,
+							edge: .trailing,
+							accessibilityLabel: "Resize sidebar",
+							onResize: { store.recordUserActivity() }
+						)
+						.padding(.leading, budget.sidebarDividerCenter - VaultMetrics.paneDividerHitWidth / 2)
+
+						if inspectorVisible {
+							VaultPaneResizeHandle(
+								width: $inspectorWidth,
+								bounds: budget.inspector,
+								edge: .leading,
+								accessibilityLabel: "Resize inspector",
+								onResize: { store.recordUserActivity() }
+							)
+							.padding(.leading, budget.inspectorDividerCenter - VaultMetrics.paneDividerHitWidth / 2)
+						}
+					}
+				}
 			}
 		}
 		.background(VaultPalette.content)
