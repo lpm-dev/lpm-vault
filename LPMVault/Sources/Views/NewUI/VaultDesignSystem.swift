@@ -291,6 +291,7 @@ struct VaultBarButton: View {
 struct VaultOutlineButton: View {
 	var systemImage: String?
 	var title: String?
+	var reservedTitles: [String] = []
 	var help: String?
 	var active = false
 	var disabled = false
@@ -301,8 +302,18 @@ struct VaultOutlineButton: View {
 	var body: some View {
 		Button(action: action) {
 			HStack(spacing: 6) {
-				if let systemImage { Image(systemName: systemImage).font(.system(size: 11, weight: .medium)) }
-				if let title { Text(title).font(.system(size: 12)) }
+				if let systemImage {
+					Image(systemName: systemImage)
+						.font(.system(size: 11, weight: .medium))
+						.frame(width: 12)
+				}
+				if let title {
+					ZStack {
+						ForEach(reservedTitles, id: \.self) { Text($0).hidden().accessibilityHidden(true) }
+						Text(title)
+					}
+					.font(.system(size: 12))
+				}
 			}
 			.foregroundStyle(disabled ? VaultPalette.textFaint : (active ? VaultPalette.accentForeground : VaultPalette.textSecondary))
 			.padding(.horizontal, title == nil ? 0 : 10)

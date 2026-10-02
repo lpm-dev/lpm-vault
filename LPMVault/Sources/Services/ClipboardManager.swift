@@ -19,8 +19,9 @@ final class ClipboardManager {
 		EnvFileCodec.format(secrets)
 	}
 
-	/// Copy a value to clipboard and schedule auto-clear
-	func copy(_ value: String, clearAfter: TimeInterval? = nil) {
+	/// Copies a value and schedules auto-clear. Returns whether the clipboard accepted the value.
+	@discardableResult
+	func copy(_ value: String, clearAfter: TimeInterval? = nil) -> Bool {
 		let delay = clearAfter ?? clearDelay
 
 		let pasteboard = NSPasteboard.general
@@ -29,7 +30,7 @@ final class ClipboardManager {
 			ownedChangeCount = nil
 			clearTask?.cancel()
 			clearTask = nil
-			return
+			return false
 		}
 		pasteboard.setData(Data(), forType: Self.concealedType)
 		pasteboard.setData(Data(), forType: Self.transientType)
@@ -45,6 +46,7 @@ final class ClipboardManager {
 				clearClipboardIfOwned()
 			}
 		}
+		return true
 	}
 
 	private func clearClipboardIfOwned() {

@@ -60,13 +60,20 @@ final class SheetTestHost<V: View> {
 	private static var timeout: Duration { .seconds(10) }
 
 	/// `keepsRequestedSize` stops the hosting view from shrinking to the content's minimum size.
-	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false) {
-		let controller = NSHostingController(rootView: root)
-		if keepsRequestedSize { controller.sizingOptions = [] }
-		view = controller.view
+	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false, usesHostingView: Bool = false) {
 		window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
-		window.contentViewController = controller
+		if usesHostingView {
+			let host = NSHostingView(rootView: root)
+			if keepsRequestedSize { host.sizingOptions = [] }
+			view = host
+			window.contentView = host
+		} else {
+			let controller = NSHostingController(rootView: root)
+			if keepsRequestedSize { controller.sizingOptions = [] }
+			view = controller.view
+			window.contentViewController = controller
+		}
 		view.frame = NSRect(origin: .zero, size: size)
 		window.orderBack(nil)
 		view.layoutSubtreeIfNeeded()
@@ -260,8 +267,12 @@ final class SheetTestHost<V: View> {
 
 	/// Fast mode finds the line cheaply but reports whole-line boxes for substrings, which
 	/// can land a click between neighboring buttons. Accurate mode then reads only that line.
-	private func labelBounds(_ label: String, in target: NSView, options: String.CompareOptions) async throws -> CGRect? {
+	private func labelBounds(_ label: String, in target: NSView, options: String.CompareOptions, region: CGRect? = nil) async throws -> CGRect? {
 		let image = try snapshot(target)
+		if let region {
+			let lines = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: region)
+			return lines.lazy.compactMap(\.labelBounds).first
+		}
 		let fast = try await RenderedText.lines(in: image, level: .fast, label: label, options: options)
 		if let line = fast.first(where: { $0.labelBounds != nil }) {
 			let strip = line.bounds.insetBy(dx: -0.02, dy: -line.bounds.height).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
@@ -278,12 +289,33 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Renders `rect` (view coordinates, whole view by default) at the backing scale.
-	private func snapshot(_ target: NSView, rect: NSRect? = nil) throws -> CGImage {
+	func snapshot(_ target: NSView, rect: NSRect? = nil) throws -> CGImage {
 		target.layoutSubtreeIfNeeded()
 		let area = rect ?? target.bounds
 		let bitmap = try #require(target.bitmapImageRepForCachingDisplay(in: area))
 		target.cacheDisplay(in: area, to: bitmap)
 		return try #require(bitmap.cgImage)
+	}
+
+	func labelFrame(_ label: String, region: CGRect? = nil) async throws -> CGRect {
+		let box = try #require(try await labelBounds(label, in: view, options: [], region: region), "Missing label \(label)")
+		return CGRect(x: box.minX * view.bounds.width, y: box.minY * view.bounds.height,
+			width: box.width * view.bounds.width, height: box.height * view.bounds.height)
+	}
+
+	func rowIsHighlighted(inset: CGFloat, rowMidY: CGFloat) throws -> Bool {
+		let image = try snapshot(view)
+		let context = try #require(CGContext(data: nil, width: image.width, height: image.height,
+			bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+			bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+		context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+		let scale = CGFloat(image.width) / view.bounds.width
+		let row = Int((view.bounds.height - rowMidY) * scale)
+		let inside = (row * image.width + Int(inset * scale)) * 4
+		let outside = (row * image.width + Int(3 * scale)) * 4
+		let difference = (0..<3).reduce(0) { $0 + abs(Int(pixels[inside + $1]) - Int(pixels[outside + $1])) }
+		return difference > 24
 	}
 
 	/// The bottom `height` points of `target`, in its own coordinates.

@@ -163,7 +163,7 @@ struct VaultSidebarView: View {
 		let approvalDescription = cliAccess.map {
 			$0 == .requireApproval ? "CLI approval required" : "CLI access automatic"
 		} ?? "CLI approval unavailable"
-		let selected = store.selectedProjectId == project.id && mode == .matrix
+		let selected = !store.showAuthStatus && store.selectedProjectId == project.id && mode == .matrix
 		let expanded = store.selectedProjectId == project.id
 			&& !collapsedProjectIds.contains(project.id)
 		return Button {
@@ -238,7 +238,7 @@ struct VaultSidebarView: View {
 	}
 
 	private func environmentRow(_ project: VaultProject, environment: String, color: Color) -> some View {
-		let selected = mode == .environment(environment)
+		let selected = !store.showAuthStatus && mode == .environment(environment)
 		let target = VaultEnvironmentTarget(projectId: project.id, environment: environment)
 		return Button {
 			store.openProject(id: project.id)

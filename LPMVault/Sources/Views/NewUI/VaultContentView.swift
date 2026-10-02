@@ -32,6 +32,7 @@ struct VaultContentView: View {
 	@Binding var showsInspector: Bool
 	let isImporting: Bool
 	let isCopyingAll: Bool
+	var isCopiedAll = false
 	let cliAccess: VaultCliAccess?
 	let isChangingCliAccess: Bool
 	let onChangeCliAccess: (VaultCliAccess) -> Void
@@ -165,7 +166,9 @@ struct VaultContentView: View {
 	}
 
 	private func toolbar(compact: Bool, derived: VaultContentDerivation) -> some View {
-		HStack(spacing: 6) {
+		let copyTitle = isCopyingAll ? "Copying…" : (isCopiedAll ? "Copied" : "Copy all")
+		let copyHelp = isCopyingAll ? "Authenticating to copy all values" : (isCopiedAll ? "All values copied" : "Copy all values")
+		return HStack(spacing: 6) {
 			VaultOutlineButton(
 				systemImage: derived.allVisibleRevealed ? "eye.slash" : "eye",
 				title: compact ? nil : "Reveal",
@@ -175,13 +178,15 @@ struct VaultContentView: View {
 			.accessibilityLabel(derived.allVisibleRevealed ? "Hide all values" : "Reveal all values")
 
 			VaultOutlineButton(
-				systemImage: "doc.on.doc",
-				title: compact ? nil : (isCopyingAll ? "Authenticating…" : "Copy all"),
-				help: isCopyingAll ? "Authenticating to copy all values" : "Copy all values",
+				systemImage: isCopiedAll && !isCopyingAll ? "checkmark" : "doc.on.doc",
+				title: compact ? nil : copyTitle,
+				reservedTitles: compact ? [] : ["Copy all", "Copying…", "Copied"],
+				help: copyHelp,
+				active: isCopiedAll && !isCopyingAll,
 				disabled: isCopyingAll,
 				action: onCopyAll
 			)
-			.accessibilityLabel(isCopyingAll ? "Authenticating to copy all values" : "Copy all values")
+			.accessibilityLabel(copyHelp)
 			VaultOutlineButton(
 				systemImage: "square.and.arrow.down",
 				help: isImporting ? "Importing .env" : "Import .env",
