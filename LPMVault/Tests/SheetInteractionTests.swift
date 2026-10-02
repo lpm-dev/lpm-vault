@@ -40,13 +40,14 @@ final class SheetTestHost<V: View> {
 		return rendered
 	}
 
-	func click(_ label: String, in targetWindow: NSWindow? = nil) throws {
+	func click(_ label: String, in targetWindow: NSWindow? = nil, caseInsensitive: Bool = false) throws {
 		let window = targetWindow ?? self.window
 		let view = try #require(window.contentView)
 		let observations = try observations(in: view)
-		let observation = try #require(observations.first { $0.topCandidates(1).first?.string.contains(label) == true }, "Missing button \(label)")
+		let options: String.CompareOptions = caseInsensitive ? .caseInsensitive : []
+		let observation = try #require(observations.first { $0.topCandidates(1).first?.string.range(of: label, options: options) != nil }, "Missing button \(label)")
 		let candidate = try #require(observation.topCandidates(1).first)
-		let range = try #require(candidate.string.range(of: label))
+		let range = try #require(candidate.string.range(of: label, options: options))
 		let bounds = try #require(try candidate.boundingBox(for: range)?.boundingBox)
 		let point = view.convert(NSPoint(x: bounds.midX * view.bounds.width, y: (view.isFlipped ? 1 - bounds.midY : bounds.midY) * view.bounds.height), to: nil)
 		for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
@@ -84,7 +85,7 @@ final class SheetTestHost<V: View> {
 
 	func key(_ character: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], in targetWindow: NSWindow) throws {
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: targetWindow.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
-		targetWindow.sendEvent(event)
+		NSApplication.shared.sendEvent(event)
 	}
 
 	func escape() throws -> Bool {
@@ -97,7 +98,7 @@ final class SheetTestHost<V: View> {
 	var isKeyFieldEnabled: Bool { textFields(in: view).first { !($0 is NSSecureTextField) }?.isEnabled ?? false }
 
 	func bounds(of label: String) throws -> CGRect {
-		let observation = try #require(try observations().first { OCRText($0.topCandidates(1).first?.string ?? "").contains(label) })
+		let observation = try #require(try observations(scale: 3).first { OCRText($0.topCandidates(1).first?.string ?? "").contains(label) })
 		return observation.boundingBox
 	}
 
@@ -128,10 +129,16 @@ final class SheetTestHost<V: View> {
 		return view.subviews.flatMap { textFields(in: $0) }
 	}
 
-	private func observations(in target: NSView? = nil) throws -> [VNRecognizedTextObservation] {
+	private func observations(in target: NSView? = nil, scale: Int? = nil) throws -> [VNRecognizedTextObservation] {
 		let view = target ?? self.view
 		view.layoutSubtreeIfNeeded()
-		let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+		let bitmap: NSBitmapImageRep
+		if let scale {
+			bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width) * scale, pixelsHigh: Int(view.bounds.height) * scale, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+			bitmap.size = view.bounds.size
+		} else {
+			bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+		}
 		view.cacheDisplay(in: view.bounds, to: bitmap)
 		let image = try #require(bitmap.cgImage)
 		let request = VNRecognizeTextRequest()
@@ -188,7 +195,7 @@ struct SheetInteractionTests {
 		#expect(host.value == "old")
 		try host.click("Generate")
 		let secondPanel = try await host.generatorWindow()
-		try host.click("UUID v4", in: secondPanel)
+		try host.click("UUID v4", in: secondPanel, caseInsensitive: true)
 		try await host.settle()
 		let second = host.value
 		#expect(UUID(uuidString: second) != nil)
@@ -335,16 +342,16 @@ struct SheetInteractionTests {
 		try first.click("write file")
 		try await first.settle()
 		try first.click("Choose folder")
-		try await first.settle()
-		if try first.text().contains("Write lpm.json") {
-			try first.click("Write")
-			try await first.settle()
-		}
+		let ready = try await first.waitForText("Write lpm.json")
+		try #require(ready.contains("Write lpm.json"))
+		try first.click("Write")
+		let linked = try await first.waitForText("Linked in lpm.json")
+		try #require(linked.contains("Linked in lpm.json"))
 		first.window.close()
 		let second = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", localFolderDefaults: defaults), size: NSSize(width: 600, height: 560))
 		defer { second.window.close() }
-		try await second.settle()
-		#expect(try second.text().contains("Linked in lpm.json"))
+		let rendered = try await second.waitForText("Linked in lpm.json")
+		#expect(rendered.contains("Linked in lpm.json"))
 	}
 
 	@Test("adding and keeping open preserves the success confirmation through UI updates")
