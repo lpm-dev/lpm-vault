@@ -1,5 +1,6 @@
 import http.client
 import re
+import struct
 import subprocess
 import time
 import unittest
@@ -15,6 +16,7 @@ ASSET_TYPES = {
     '/lpm-vault.svg': 'image/svg+xml',
     '/lpm-vault-32.png': 'image/png',
     '/lpm-vault-512.png': 'image/png',
+    '/og-image.png': 'image/png',
     '/apple-touch-icon.png': 'image/png',
     '/fonts/geist-5.3.0-latin.woff2': 'font/woff2',
     '/fonts/jetbrains-mono-5.3.0-latin.woff2': 'font/woff2',
@@ -40,10 +42,15 @@ class PageInventory(HTMLParser):
         self.event_handlers = []
         self.flyers = set()
         self.flyer_targets = set()
+        self.metadata = {}
         self._in_inline_script = False
 
     def handle_starttag(self, tag, attrs):
         attributes = dict(attrs)
+        if tag == 'meta':
+            key = attributes.get('property') or attributes.get('name')
+            if key:
+                self.metadata.setdefault(key, []).append(attributes.get('content'))
         if 'id' in attributes:
             self.ids.add(attributes['id'])
         if 'style' in attributes or tag == 'style':
@@ -118,6 +125,35 @@ class Routes(unittest.TestCase):
                 self.assertIn("frame-ancestors 'none'", headers['Content-Security-Policy'])
                 if path in ASSET_TYPES:
                     self.assertIn(ASSET_TYPES[path], headers['Content-Type'])
+
+    def test_social_preview_metadata_matches_served_image(self):
+        _, _, body = self.request('/')
+        page = PageInventory()
+        page.feed(body.decode())
+        image_url = 'https://vault.lpm.dev/og-image.png'
+        for key, value in {
+            'og:image': image_url,
+            'og:image:type': 'image/png',
+            'twitter:card': 'summary_large_image',
+            'twitter:image': image_url,
+        }.items():
+            with self.subTest(metadata=key):
+                self.assertEqual(page.metadata.get(key), [value])
+        self.assertEqual(len(page.metadata.get('og:image:alt', [])), 1)
+        self.assertTrue(page.metadata['og:image:alt'][0].strip())
+        self.assertEqual(page.metadata.get('twitter:image:alt'), page.metadata['og:image:alt'])
+
+        status, headers, image = self.request('/og-image.png')
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Content-Type'], 'image/png')
+        self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
+        self.assertEqual(image[:8], b'\x89PNG\r\n\x1a\n')
+        self.assertEqual(image[12:16], b'IHDR')
+        width, height = struct.unpack('>II', image[16:24])
+        self.assertGreaterEqual(width, 1200)
+        self.assertGreaterEqual(height, 630)
+        self.assertEqual(page.metadata.get('og:image:width'), [str(width)])
+        self.assertEqual(page.metadata.get('og:image:height'), [str(height)])
 
     def test_content_security_policy_allows_only_same_origin_code(self):
         _, headers, _ = self.request('/')
