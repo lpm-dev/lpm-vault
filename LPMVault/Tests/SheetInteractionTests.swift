@@ -97,11 +97,13 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Tries fast recognition, then accurate recognition for small text, on each pass.
-	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil) async throws -> Bool {
-		let target = targetWindow?.contentView ?? view
+	/// `footer` limits rendering and recognition to the bottom points of the window.
+	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil, footer: CGFloat? = nil) async throws -> Bool {
+		let target = try #require(targetWindow?.contentView ?? view)
+		let area = footer.map { bottomBand(of: target, height: $0) }
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		repeat {
-			let image = try snapshot(target)
+			let image = try snapshot(target, rect: area)
 			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
 				let lines = try await RenderedText.lines(in: image, level: level)
 				if OCRText(lines.map(\.text).joined(separator: "\n")).contains(expected) { return true }
@@ -177,39 +179,51 @@ final class SheetTestHost<V: View> {
 	/// Bounds, in points from the bottom-left, of everything drawn over the solid
 	/// background within the bottom `band` points, plus the text recognized there.
 	func bottomInk(band: CGFloat) async throws -> (bounds: CGRect, text: OCRText) {
-		let image = try snapshot(view, scale: 3)
+		let image = try snapshot(view, rect: bottomBand(of: view, height: band))
 		let scale = CGFloat(image.width) / view.bounds.width
-		let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-		context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+		let width = image.width, height = image.height
+		let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+		context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
-		// Bitmap memory starts with the top row; `row` here counts up from the bottom edge.
-		// Sample the background inside the band and skip the window's rounded corners.
-		let rows = Int(band * scale)
+		// Bitmap memory starts with the top row. Sample the background mid-band and
+		// skip the window's rounded corners.
 		let margin = Int(12 * scale)
-		let offset = { (row: Int, column: Int) in ((image.height - 1 - row) * image.width + column) * 4 }
-		let sample = offset(rows / 2, margin)
-		let background = (0..<3).map { Int(pixels[sample + $0]) }
-		var minX = Int.max, maxX = Int.min, minRow = Int.max, maxRow = Int.min
-		for row in 0..<rows {
-			for column in margin..<(image.width - margin) {
-				let pixel = offset(row, column)
-				let difference = (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - background[$1]) }
-				guard difference > 24 else { continue }
-				minX = min(minX, column); maxX = max(maxX, column)
-				minRow = min(minRow, row); maxRow = max(maxRow, row)
+		let sample = ((height / 2) * width + margin) * 4
+		let red = Int(pixels[sample]), green = Int(pixels[sample + 1]), blue = Int(pixels[sample + 2])
+		var minX = Int.max, maxX = Int.min, minTop = Int.max, maxTop = Int.min
+		for top in 0..<height {
+			var pixel = (top * width + margin) * 4
+			for column in margin..<(width - margin) {
+				let difference = abs(Int(pixels[pixel]) - red) + abs(Int(pixels[pixel + 1]) - green) + abs(Int(pixels[pixel + 2]) - blue)
+				if difference > 24 {
+					if column < minX { minX = column }
+					if column > maxX { maxX = column }
+					if top < minTop { minTop = top }
+					if top > maxTop { maxTop = top }
+				}
+				pixel += 4
 			}
 		}
 		try #require(minX <= maxX, "Nothing drawn in the bottom \(band) points")
-		let bounds = CGRect(x: CGFloat(minX) / scale, y: CGFloat(minRow) / scale, width: CGFloat(maxX - minX + 1) / scale, height: CGFloat(maxRow - minRow + 1) / scale)
-		let normalized = CGRect(x: bounds.minX / view.bounds.width, y: bounds.minY / view.bounds.height, width: bounds.width / view.bounds.width, height: bounds.height / view.bounds.height)
-			.insetBy(dx: -0.01, dy: -0.01).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-		let lines = try await RenderedText.lines(in: image, level: .accurate, region: normalized)
+		let bounds = CGRect(
+			x: CGFloat(minX) / scale,
+			y: CGFloat(height - 1 - maxTop) / scale,
+			width: CGFloat(maxX - minX + 1) / scale,
+			height: CGFloat(maxTop - minTop + 1) / scale
+		)
+		let region = CGRect(
+			x: bounds.minX / view.bounds.width,
+			y: bounds.minY / band,
+			width: bounds.width / view.bounds.width,
+			height: bounds.height / band
+		).insetBy(dx: -0.01, dy: -0.1).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+		let lines = try await RenderedText.lines(in: image, level: .accurate, region: region)
 		return (bounds, OCRText(lines.map(\.text).joined(separator: " ")))
 	}
 
-	/// Recognizes only the normalized `region` (origin at the bottom-left).
-	func line(containing label: String, region: CGRect) async throws -> String {
-		let lines = try await RenderedText.lines(in: snapshot(view), level: .accurate, region: region)
+	/// Recognizes the line containing `label` within `rect` (view coordinates).
+	func line(containing label: String, rect: NSRect) async throws -> String {
+		let lines = try await RenderedText.lines(in: snapshot(view, rect: rect), level: .accurate)
 		return try #require(lines.map(\.text).first { $0.contains(label) })
 	}
 
@@ -261,17 +275,18 @@ final class SheetTestHost<V: View> {
 		return view.subviews.flatMap { textFields(in: $0) }
 	}
 
-	private func snapshot(_ target: NSView, scale: Int? = nil) throws -> CGImage {
+	/// Renders `rect` (view coordinates, whole view by default) at the backing scale.
+	private func snapshot(_ target: NSView, rect: NSRect? = nil) throws -> CGImage {
 		target.layoutSubtreeIfNeeded()
-		let bitmap: NSBitmapImageRep
-		if let scale {
-			bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(target.bounds.width) * scale, pixelsHigh: Int(target.bounds.height) * scale, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-			bitmap.size = target.bounds.size
-		} else {
-			bitmap = try #require(target.bitmapImageRepForCachingDisplay(in: target.bounds))
-		}
-		target.cacheDisplay(in: target.bounds, to: bitmap)
+		let area = rect ?? target.bounds
+		let bitmap = try #require(target.bitmapImageRepForCachingDisplay(in: area))
+		target.cacheDisplay(in: area, to: bitmap)
 		return try #require(bitmap.cgImage)
+	}
+
+	/// The bottom `height` points of `target`, in its own coordinates.
+	private func bottomBand(of target: NSView, height: CGFloat) -> NSRect {
+		NSRect(x: 0, y: target.isFlipped ? target.bounds.height - height : 0, width: target.bounds.width, height: height)
 	}
 }
 
@@ -304,8 +319,8 @@ struct SheetInteractionTests {
 		#expect(note.text.contains("Values stay encrypted"))
 		#expect(abs(note.bounds.midX - host.view.bounds.width / 2) < 3)
 		#expect((15...28).contains(note.bounds.minY))
-		let center = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
-		#expect(try await host.line(containing: "Unlock", region: center).range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
+		let center = host.view.bounds.insetBy(dx: host.view.bounds.width * 0.25, dy: host.view.bounds.height * 0.25)
+		#expect(try await host.line(containing: "Unlock", rect: center).range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
 	}
 
 	@Test("inspector generation changes only the draft until saved", arguments: [ColorScheme.light, .dark])
@@ -496,7 +511,7 @@ struct SheetInteractionTests {
 		try host.returnWhileEditing("key")
 		try await host.waitUntil { stored(keychain, "default", "TOKEN") == "" }
 		#expect(stored(keychain, "default", "TOKEN") == "")
-		#expect(try await host.waitForText("Added TOKEN"))
+		#expect(try await host.waitForText("Added TOKEN", footer: 80))
 		try host.enterKey("NEXT")
 		try await host.settle()
 		#expect(try await !host.text().contains("Added TOKEN"))
@@ -509,7 +524,7 @@ struct SheetInteractionTests {
 		defer { host.window.close() }
 		try await host.settle()
 		try host.returnWhileEditing(target, modifiers: capsLock ? [.shift, .capsLock] : .shift)
-		#expect(try await host.waitForText("Added FOCUSED"))
+		#expect(try await host.waitForText("Added FOCUSED", footer: 80))
 		#expect(stored(keychain, "default", "FOCUSED") != nil)
 	}
 
@@ -541,7 +556,7 @@ struct SheetInteractionTests {
 		let sheet = try #require(host.window.sheets.first)
 		try await focusControl(transition, in: sheet, host: host)
 		try host.key("\r", code: 36, modifiers: capsLock ? [.shift, .capsLock] : .shift, in: sheet)
-		#expect(try await host.waitForText("Added CONTROL", in: sheet))
+		#expect(try await host.waitForText("Added CONTROL", in: sheet, footer: 80))
 		#expect(stored(keychain, "default", "CONTROL") == "")
 		#expect(host.window.sheets.count == 1)
 	}
