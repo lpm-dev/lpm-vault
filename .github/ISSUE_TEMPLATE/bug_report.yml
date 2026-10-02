@@ -1,0 +1,74 @@
+name: Bug report
+description: Report an app, website, or documentation problem
+title: 'Bug: '
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report vulnerabilities through [private security reporting](https://github.com/lpm-dev/lpm-vault/security/advisories/new).
+        Use dummy values. Remove secret values, tokens, account details, private paths, and private URLs from logs and screenshots.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: This is not a security vulnerability, and the report contains no secrets or private project data.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options: [App, Website, Documentation]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version and build number
+      description: Read About LPM Vault. Use N/A for website or documentation reports.
+      placeholder: '1.0.0 (build 5)'
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: macOS version and architecture
+      description: Include Apple silicon or Intel. For website reports, include the browser and OS.
+      placeholder: macOS 15.6, Apple silicon
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options: [Official DMG, Sparkle update, Built from source, Not applicable]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide exact steps with a small dummy project.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the exact error text after redaction.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Optional sanitized logs or screenshots
+      description: Do not attach real .env files, Keychain exports, or signing material.

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/lpm-dev/lpm-vault/security/advisories/new
+    about: Do not publish vulnerabilities, secret values, or live credentials in an issue.
+  - name: App documentation and troubleshooting
+    url: https://cli.lpm.dev/docs/dev/lpm-vault
+    about: Read the app guide before you report a usage problem.
+  - name: CLI-only issues
+    url: https://github.com/lpm-dev/rust-client/issues
+    about: Report CLI problems here if they do not involve the Vault app.
