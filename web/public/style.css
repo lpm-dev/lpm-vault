@@ -1194,10 +1194,6 @@ h2 {
 	min-height: 0;
 }
 
-.tile-art-lock {
-	overflow: hidden;
-}
-
 .tile-copy {
 	position: relative;
 	z-index: 1;
@@ -1560,20 +1556,9 @@ h2 {
 }
 
 .step h3 {
-	display: flex;
-	align-items: baseline;
-	gap: 10px;
 	font-size: 19px;
 	font-weight: 600;
 	letter-spacing: -0.02em;
-}
-
-.step-num {
-	color: var(--accent);
-	font-family: var(--mono);
-	font-size: 12px;
-	font-weight: 700;
-	letter-spacing: 0;
 }
 
 .step p {
