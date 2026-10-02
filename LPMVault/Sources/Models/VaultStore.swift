@@ -1078,6 +1078,7 @@ enum ProjectSyncStatus {
 
 enum AddSecretError: LocalizedError, Sendable, Equatable {
   case vaultLocked
+  case noEnvironments
   case targetUnavailable
   case invalidName
   case duplicate
@@ -1088,6 +1089,8 @@ enum AddSecretError: LocalizedError, Sendable, Equatable {
     switch self {
     case .vaultLocked:
       "Unlock LPM Vault before adding a secret."
+    case .noEnvironments:
+      "Choose at least one environment."
     case .targetUnavailable:
       "The target env project or environment changed before the secret was saved."
     case .invalidName:
@@ -2829,15 +2832,31 @@ final class VaultStore {
     key: String,
     value: String
   ) async -> AddSecretResult {
+    await addSecret(to: projectId, environments: [environment], key: key, value: value)
+  }
+
+  /// Adds the same value to every environment in `environments`, or to none of them.
+  func addSecret(
+    to projectId: String,
+    environments: Set<String>,
+    key: String,
+    value: String
+  ) async -> AddSecretResult {
     guard isUnlocked else { return .failure(.vaultLocked) }
+    guard !environments.isEmpty else { return .failure(.noEnvironments) }
     guard EnvValidation.isValidVariableName(key) else { return .failure(.invalidName) }
     let sessionGeneration = vaultSessionGeneration
-    guard let project = projects.first(where: { $0.id == projectId }),
-      let secrets = project.environments[environment]
-    else { return .failure(.targetUnavailable) }
-    guard secrets[key] == nil else { return .failure(.duplicate) }
-    if let existingKey = EnvValidation.caseInsensitiveCollision(for: key, in: secrets.keys) {
-      return .failure(.caseInsensitiveCollision(existingKey: existingKey))
+    guard let project = projects.first(where: { $0.id == projectId }) else {
+      return .failure(.targetUnavailable)
+    }
+    for environment in environments.sorted() {
+      guard let secrets = project.environments[environment] else {
+        return .failure(.targetUnavailable)
+      }
+      guard secrets[key] == nil else { return .failure(.duplicate) }
+      if let existingKey = EnvValidation.caseInsensitiveCollision(for: key, in: secrets.keys) {
+        return .failure(.caseInsensitiveCollision(existingKey: existingKey))
+      }
     }
 
     invalidateProjectLoad()
@@ -2845,7 +2864,7 @@ final class VaultStore {
       projectId: projectId,
       projectName: project.name,
       projectPath: project.path,
-      environment: environment,
+      environments: environments,
       key: key,
       value: value
     )

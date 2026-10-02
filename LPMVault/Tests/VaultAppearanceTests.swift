@@ -171,9 +171,9 @@ struct VaultAppearanceTests {
 		try render(AuthStatusView(store: store).environment(settings),
 			size: CGSize(width: 700, height: 700), scheme: scheme, name: "settings-\(suffix)",
 			expectedText: ["APPEARANCE", "System", "Light", "Dark"])
-		try render(AddSecretSheet(store: store, projectId: project.id, environment: "development"),
-			size: CGSize(width: 420, height: 390), scheme: scheme, name: "new-key-\(suffix)",
-			expectedText: ["New key", "KEY", "VALUE", "Cancel"])
+		try render(AddVariableSheet(store: store, projectId: project.id, environment: "development"),
+			size: CGSize(width: 560, height: 520), scheme: scheme, name: "add-variable-\(suffix)",
+			expectedText: ["Add variable", "Key", "Value", "Environments", "Cancel"])
 		store.lock()
 		try render(ContentView(store: store).environment(settings),
 			size: CGSize(width: 1040, height: 640), scheme: scheme, name: "locked-\(suffix)",

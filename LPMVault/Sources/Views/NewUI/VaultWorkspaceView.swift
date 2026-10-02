@@ -269,7 +269,7 @@ struct VaultWorkspaceView: View {
 			}
 		}
 		.sheet(item: $addSecretTarget) { target in
-			AddSecretSheet(store: store, projectId: target.projectId, environment: target.environment)
+			AddVariableSheet(store: store, projectId: target.projectId, environment: target.environment)
 				.vaultPrivacyProtected(isObscured)
 		}
 		.sheet(isPresented: $showPushConfirmation) {

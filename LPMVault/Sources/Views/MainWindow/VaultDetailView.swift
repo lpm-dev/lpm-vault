@@ -76,7 +76,7 @@ struct VaultDetailView: View {
 			}
 		}
 		.sheet(item: $addSecretTarget) { target in
-			AddSecretSheet(
+			AddVariableSheet(
 				store: store,
 				projectId: target.projectId,
 				environment: target.environment
