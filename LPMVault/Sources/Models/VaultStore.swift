@@ -1385,8 +1385,8 @@ final class VaultStore {
     resetAutoLock()
   }
 
-  /// Routes menu-bar and other global navigation to the project's owning
-  /// account before selecting it, and always leaves Settings.
+  /// Selects a project after switching to its owning account, and always
+  /// leaves Settings.
   func openProject(id projectId: String) {
     guard projects.contains(where: { $0.id == projectId }) else {
       reconcileNavigationState()
