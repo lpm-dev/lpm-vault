@@ -45,6 +45,7 @@
 		5537F30818AE6D9798D8E644 /* CryptoInteropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */; };
 		57A001303744444FA2C886F0 /* VaultSecret.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19D08703D037783F67B61C56 /* VaultSecret.swift */; };
 		5CFF8C9C3F7163E4F9EB4625 /* LPMToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178A6AD4D7254CB4955C912E /* LPMToken.swift */; };
+		5FF5B4064E8EAF4BCE4B8755 /* SheetInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E75A2A8B354D17791E2390F /* SheetInteractionTests.swift */; };
 		624242199ADD00465D0F54A5 /* VaultContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEDE6264C2563EEC4611935A /* VaultContentView.swift */; };
 		63C732A48A3E261D34478D11 /* CloudVaultsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEED9FDAD7841AA6C9A04B84 /* CloudVaultsSheet.swift */; };
 		683ACA166A8ACAD4FEBE60B8 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */; };
@@ -130,6 +131,7 @@
 		1F50F4FAADAD699043BBD5D0 /* VaultWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultWorkspaceView.swift; sourceTree = "<group>"; };
 		2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectConfigFile.swift; sourceTree = "<group>"; };
 		2CF8F96F4A89D571DCC742B9 /* SecureAvatarLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureAvatarLoader.swift; sourceTree = "<group>"; };
+		2E75A2A8B354D17791E2390F /* SheetInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetInteractionTests.swift; sourceTree = "<group>"; };
 		35D4657C31CF1A081D03F682 /* BoundedHTTPResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoundedHTTPResponse.swift; sourceTree = "<group>"; };
 		36365D62B5851474D2DC178D /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
 		38D52677CF431D36EA77FD7C /* MaskedValueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaskedValueView.swift; sourceTree = "<group>"; };
@@ -304,6 +306,7 @@
 				7DD9BE611F1BB7A4B5E38DE1 /* Round4AuditRegressionTests.swift */,
 				C9C4F938186221E2BF4E04C9 /* Round4BenchmarkTests.swift */,
 				080B6FDC9A11DF58CBDE4C6C /* SecurityHardeningTests.swift */,
+				2E75A2A8B354D17791E2390F /* SheetInteractionTests.swift */,
 				7A8500EA1B90B673155FDB5A /* UpdateCheckerTests.swift */,
 				CC906597DAFEA713D347A59B /* VaultAppearanceTests.swift */,
 				61F6C9EE8B916ECE78400C09 /* VaultPaneBudgetTests.swift */,
@@ -516,6 +519,7 @@
 				19D89CB98C5DBE28ECF56875 /* Round4AuditRegressionTests.swift in Sources */,
 				BEF85A56494EDD99C9365E0C /* Round4BenchmarkTests.swift in Sources */,
 				B18AB2542827B31B262B7B9A /* SecurityHardeningTests.swift in Sources */,
+				5FF5B4064E8EAF4BCE4B8755 /* SheetInteractionTests.swift in Sources */,
 				8DFD27CCCCEAAA3605397A7D /* UpdateCheckerTests.swift in Sources */,
 				9C4C6AC00EADDAFC7F798046 /* VaultAppearanceTests.swift in Sources */,
 				860FD73B8CD4AF75C68D0268 /* VaultPaneBudgetTests.swift in Sources */,

@@ -20,7 +20,7 @@ struct AddVariableSheet: View {
 		case key, value
 	}
 
-	init(store: VaultStore, projectId: String, environment: String) {
+	init(store: VaultStore, projectId: String, environment: String, initialKey: String = "") {
 		self.store = store
 		self.projectId = projectId
 		let project = store.projects.first { $0.id == projectId }
@@ -29,7 +29,7 @@ struct AddVariableSheet: View {
 		_draft = State(initialValue: Self.makeDraft(
 			store: store,
 			project: project,
-			key: "",
+			key: initialKey,
 			selection: initialEnvironment.map { [$0] } ?? []
 		))
 	}
@@ -52,6 +52,8 @@ struct AddVariableSheet: View {
 					Text(submitError)
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.redText)
+						.lineLimit(3)
+						.help(submitError)
 						.fixedSize(horizontal: false, vertical: true)
 				}
 			}
@@ -68,16 +70,17 @@ struct AddVariableSheet: View {
 				.allowsHitTesting(false)
 				.accessibilityHidden(true)
 		}
+		.interactiveDismissDisabled(isSubmitting)
 		.onAppear { focusedField = .key }
-		.onChange(of: draft.key) { _, _ in
+		.onChange(of: draft.key) { _, key in
 			submitError = nil
-			lastAddedKey = nil
+			if !key.isEmpty { lastAddedKey = nil }
 		}
 		.onChange(of: draft.selection) { _, _ in submitError = nil }
 		.onChange(of: value) { _, _ in submitError = nil }
 		.onChange(of: project?.workspaceSnapshotIdentity) { _, _ in refreshDraft() }
-		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { close() } }
-		.onChange(of: store.selectedProjectId) { _, id in if id != projectId { close() } }
+		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { dismissAndClear() } }
+		.onChange(of: store.selectedProjectId) { _, id in if id != projectId { dismissAndClear() } }
 		.onDisappear {
 			submitTask?.cancel()
 			value = ""
@@ -99,6 +102,7 @@ struct AddVariableSheet: View {
 			}
 			Spacer(minLength: 12)
 			VaultSheetCloseButton(action: close)
+				.disabled(isSubmitting)
 		}
 		.padding(.horizontal, 24)
 		.padding(.top, 20)
@@ -130,6 +134,8 @@ struct AddVariableSheet: View {
 				Text(issue.message)
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.redText)
+					.lineLimit(3)
+					.help(issue.message)
 					.fixedSize(horizontal: false, vertical: true)
 			}
 		}
@@ -224,23 +230,26 @@ struct AddVariableSheet: View {
 						.vaultPointingHand()
 				}
 			}
-			LazyVGrid(
-				columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
-				alignment: .leading,
-				spacing: 8
-			) {
-				ForEach(Array(draft.environments.enumerated()), id: \.element) { index, environment in
-					Toggle(isOn: selectionBinding(for: environment)) {
-						Text(VaultProject.displayName(for: environment))
+			ScrollView(.vertical) {
+				LazyVGrid(
+					columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
+					alignment: .leading,
+					spacing: 8
+				) {
+					ForEach(Array(draft.environments.enumerated()), id: \.element) { index, environment in
+						Toggle(isOn: selectionBinding(for: environment)) {
+							Text(VaultProject.displayName(for: environment))
+						}
+						.toggleStyle(EnvironmentChipToggleStyle(
+							color: VaultPalette.environment(index),
+							hasConflict: draft.selection.contains(environment) && draft.conflicts(in: environment)
+						))
+						.disabled(isSubmitting)
+						.help(VaultProject.displayName(for: environment))
 					}
-					.toggleStyle(EnvironmentChipToggleStyle(
-						color: VaultPalette.environment(index),
-						hasConflict: draft.selection.contains(environment) && draft.conflicts(in: environment)
-					))
-					.disabled(isSubmitting)
-					.help(VaultProject.displayName(for: environment))
 				}
 			}
+			.frame(height: min(156, max(33, CGFloat((draft.environments.count + 2) / 3) * 41 - 8)))
 			Text("Same value in each selected file. You can change them per environment later.")
 				.font(.system(size: 11))
 				.foregroundStyle(VaultPalette.textFaint)
@@ -263,7 +272,7 @@ struct AddVariableSheet: View {
 					.lineLimit(1)
 			}
 		} actions: {
-			VaultBarButton(title: "Cancel", height: 30, action: close)
+			VaultBarButton(title: "Cancel", disabled: isSubmitting, height: 30, action: close)
 				.keyboardShortcut(.cancelAction)
 			VaultBarButton(
 				title: isSubmitting ? "Adding…" : draft.submitTitle,
@@ -328,6 +337,11 @@ struct AddVariableSheet: View {
 	}
 
 	private func close() {
+		guard !isSubmitting else { return }
+		dismissAndClear()
+	}
+
+	private func dismissAndClear() {
 		submitTask?.cancel()
 		submitTask = nil
 		value = ""

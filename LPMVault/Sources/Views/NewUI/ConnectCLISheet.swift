@@ -7,6 +7,8 @@ struct ConnectCLISheet: View {
 
 	@Bindable var store: VaultStore
 	let projectId: String
+	var folderPicker: @MainActor () -> URL? = Self.pickFolder
+	var localFolderDefaults: UserDefaults = .standard
 	@Environment(\.dismiss) private var dismiss
 	@Environment(\.openURL) private var openURL
 
@@ -17,6 +19,8 @@ struct ConnectCLISheet: View {
 	@State private var isLinking = false
 	@State private var copiedItem: String?
 	@State private var copyResetTask: Task<Void, Never>?
+	@State private var statusTask: Task<Void, Never>?
+	@State private var statusGeneration = 0
 
 	private enum SetupMode: CaseIterable {
 		case copyJSON, writeFile
@@ -48,7 +52,7 @@ struct ConnectCLISheet: View {
 	}
 
 	private var folder: String {
-		chosenFolder ?? project?.path ?? ""
+		chosenFolder ?? ProjectCLILink.folder(vaultId: projectId, projectPath: project?.path ?? "", defaults: localFolderDefaults)
 	}
 
 	private var configJSON: String {
@@ -78,7 +82,7 @@ struct ConnectCLISheet: View {
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { dismiss() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != projectId { dismiss() } }
 		.onExitCommand { dismiss() }
-		.onDisappear { copyResetTask?.cancel() }
+		.onDisappear { copyResetTask?.cancel(); statusTask?.cancel() }
 	}
 
 	// MARK: - Sections
@@ -195,24 +199,27 @@ struct ConnectCLISheet: View {
 
 	@ViewBuilder
 	private var writeFileAction: some View {
-		switch status {
-		case .linked:
-			Label("Linked", systemImage: "checkmark")
-				.font(.system(size: 11, weight: .semibold))
-				.foregroundStyle(Color(hex: 0x75DB94))
-		case .noFolder:
-			TerminalBarButton(title: "Choose folder…", systemImage: "folder") { chooseFolderAndLink() }
+		HStack(spacing: 12) {
+			TerminalBarButton(title: "Choose folder…", systemImage: "folder") { chooseFolder() }
 				.disabled(isLinking)
-		case .linkedToOtherVault:
-			TerminalBarButton(title: "Replace vault ID", systemImage: "square.and.pencil") { link(folder: folder) }
+			switch status {
+			case .linked:
+				Label("Linked", systemImage: "checkmark")
+					.font(.system(size: 11, weight: .semibold))
+					.foregroundStyle(Color(hex: 0x75DB94))
+			case .noFolder:
+				EmptyView()
+			case .linkedToOtherVault(let other):
+				TerminalBarButton(title: "Replace vault ID", systemImage: "square.and.pencil") { link(folder: folder, replacingVaultId: other) }
+					.disabled(isLinking)
+			case .notLinked:
+				TerminalBarButton(title: isLinking ? "Writing…" : "Write lpm.json", systemImage: "square.and.pencil") {
+					link(folder: folder)
+				}
 				.disabled(isLinking)
-		case .notLinked:
-			TerminalBarButton(title: isLinking ? "Writing…" : "Write lpm.json", systemImage: "square.and.pencil") {
-				link(folder: folder)
+			case .unreadable, nil:
+				EmptyView()
 			}
-			.disabled(isLinking)
-		case .unreadable, nil:
-			EmptyView()
 		}
 	}
 
@@ -323,18 +330,22 @@ struct ConnectCLISheet: View {
 	}
 
 	private func refreshStatus() {
+		statusTask?.cancel()
+		statusGeneration += 1
+		let generation = statusGeneration
+		status = nil
 		let vaultId = projectId
 		let folder = folder
-		Task {
+		statusTask = Task {
 			let resolved = await Task.detached(priority: .userInitiated) {
 				ProjectCLILink.status(vaultId: vaultId, folder: folder)
 			}.value
-			guard folder == self.folder else { return }
+			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
 			status = resolved
 		}
 	}
 
-	private func link(folder target: String) {
+	private func link(folder target: String, replacingVaultId: String? = nil) {
 		guard !isLinking else { return }
 		isLinking = true
 		linkError = nil
@@ -342,7 +353,7 @@ struct ConnectCLISheet: View {
 		Task {
 			let failure = await Task.detached(priority: .userInitiated) { () -> ProjectCLILinkError? in
 				do throws(ProjectCLILinkError) {
-					try ProjectCLILink.link(vaultId: vaultId, folder: target)
+					try ProjectCLILink.link(vaultId: vaultId, folder: target, replacingVaultId: replacingVaultId)
 					return nil
 				} catch {
 					return error
@@ -354,16 +365,24 @@ struct ConnectCLISheet: View {
 		}
 	}
 
-	private func chooseFolderAndLink() {
+	private func chooseFolder() {
+		guard let url = folderPicker() else { return }
+		guard store.isUnlocked, store.selectedProjectId == projectId else { return }
+		chosenFolder = url.path
+		ProjectCLILink.rememberFolder(url.path, vaultId: projectId, defaults: localFolderDefaults)
+		linkError = nil
+		refreshStatus()
+	}
+
+	private static func pickFolder() -> URL? {
 		let panel = NSOpenPanel()
 		panel.canChooseFiles = false
 		panel.canChooseDirectories = true
 		panel.allowsMultipleSelection = false
-		panel.prompt = "Link Folder"
+		panel.prompt = "Choose Folder"
 		panel.message = "Choose the folder that contains your project's package.json"
-		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
-		chosenFolder = url.path
-		link(folder: url.path)
+		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
+		return panel.url
 	}
 
 	private func copy(_ text: String, as item: String) {

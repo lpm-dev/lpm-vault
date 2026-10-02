@@ -15,6 +15,7 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 	case unsafeFile
 	case tooLarge
 	case writeFailed
+	case vaultChanged
 
 	var errorDescription: String? {
 		switch self {
@@ -28,11 +29,23 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 			"lpm.json is too large to update safely."
 		case .writeFailed:
 			"Could not write lpm.json."
+		case .vaultChanged:
+			"lpm.json changed. Check the link and try again."
 		}
 	}
 }
 
 enum ProjectCLILink {
+	static func folder(vaultId: String, projectPath: String, defaults: UserDefaults = .standard) -> String {
+		defaults.string(forKey: folderKey(vaultId)) ?? projectPath
+	}
+
+	static func rememberFolder(_ folder: String, vaultId: String, defaults: UserDefaults = .standard) {
+		defaults.set(folder, forKey: folderKey(vaultId))
+	}
+
+	private static func folderKey(_ vaultId: String) -> String { "lpm-vault-cli-folder-" + vaultId }
+
 	static func configURL(inFolder folder: String) -> URL {
 		URL(fileURLWithPath: folder, isDirectory: true).appendingPathComponent("lpm.json")
 	}
@@ -53,16 +66,20 @@ enum ProjectCLILink {
 	}
 
 	/// Adds or replaces the `vault` field in the folder's `lpm.json`, keeping other settings.
-	static func link(vaultId: String, folder: String) throws(ProjectCLILinkError) {
+	static func link(vaultId: String, folder: String, replacingVaultId: String? = nil) throws(ProjectCLILinkError) {
 		guard folderExists(folder) else { throw .noFolder }
 		do {
-			try ProjectConfigFile.writeVaultID(vaultId, to: configURL(inFolder: folder))
+			try ProjectConfigFile.writeVaultID(
+				vaultId, to: configURL(inFolder: folder),
+				policy: replacingVaultId.map(ProjectConfigFile.VaultWritePolicy.replacing) ?? .unlinked
+			)
 		} catch let error as ProjectConfigFile.FileError {
 			switch error {
 			case .invalidJSON: throw .invalidJSON
 			case .unsafeFile: throw .unsafeFile
 			case .tooLarge: throw .tooLarge
 			case .notFound, .readFailed: throw .writeFailed
+			case .vaultChanged: throw .vaultChanged
 			}
 		} catch {
 			throw .writeFailed

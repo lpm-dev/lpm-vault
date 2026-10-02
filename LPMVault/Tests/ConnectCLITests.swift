@@ -52,6 +52,94 @@ struct ProjectCLILinkTests {
 		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .linkedToOtherVault("other-vault"))
 	}
 
+	@Test("a null vault field is unset and can be linked without losing settings")
+	func nullVaultCanBeLinked() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig(#"{"vault":null,"custom":true}"#, in: folder)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .notLinked)
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path)
+		#expect(ProjectCLILink.status(vaultId: vaultId, folder: folder.path) == .linked)
+		#expect(try readConfig(in: folder)["custom"] as? Bool == true)
+	}
+
+	@Test("linking requires explicit replacement when the folder already links another vault")
+	func existingLinkRequiresReplacement() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let original = #"{"vault":"other-vault","custom":true}"#
+		try writeConfig(original, in: folder)
+		#expect(throws: ProjectCLILinkError.vaultChanged) { try ProjectCLILink.link(vaultId: vaultId, folder: folder.path) }
+		#expect(try String(contentsOf: folder.appendingPathComponent("lpm.json"), encoding: .utf8) == original)
+	}
+
+	@Test("a replacement refuses a vault ID changed since inspection")
+	func staleReplacementPreservesConfig() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let original = #"{"vault":"newer-vault","custom":true}"#
+		try writeConfig(original, in: folder)
+		#expect(throws: ProjectCLILinkError.vaultChanged) {
+			try ProjectCLILink.link(vaultId: vaultId, folder: folder.path, replacingVaultId: "previous-vault")
+		}
+		#expect(try String(contentsOf: folder.appendingPathComponent("lpm.json"), encoding: .utf8) == original)
+	}
+
+	@Test("an explicit replacement leaves an invalid vault field untouched")
+	func invalidReplacementPreservesConfig() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let original = #"{"vault":42,"custom":true}"#
+		try writeConfig(original, in: folder)
+		#expect(throws: ProjectCLILinkError.invalidJSON) {
+			try ProjectCLILink.link(vaultId: vaultId, folder: folder.path, replacingVaultId: "previous-vault")
+		}
+		#expect(try String(contentsOf: folder.appendingPathComponent("lpm.json"), encoding: .utf8) == original)
+	}
+
+	@Test("a configuration changed while staging a replacement is preserved", arguments: [false, true])
+	func concurrentReplacementPreservesConfig(initiallyPresent: Bool) throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let config = folder.appendingPathComponent("lpm.json")
+		if initiallyPresent { try writeConfig(#"{"vault":"inspected-vault"}"#, in: folder) }
+		let newer = Data(#"{"vault":"concurrent-vault","concurrentSetting":true}"#.utf8)
+		#expect(throws: ProjectConfigFile.FileError.vaultChanged) {
+			try ProjectConfigFile.writeVaultID(
+				vaultId, to: config,
+				policy: initiallyPresent ? .replacing("inspected-vault") : .unlinked,
+				fileWriter: { data, destination, replaceExisting, validation in
+					try SecureFileWriter.write(
+						data, to: destination, permissions: 0o644, replaceExisting: replaceExisting,
+						beforeReplacement: {
+							try newer.write(to: destination, options: .atomic)
+							try validation()
+						}
+					)
+				}
+			)
+		}
+		#expect(try Data(contentsOf: config) == newer)
+		#expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["lpm.json"])
+	}
+
+	@Test("a new destination created at replacement time is never overwritten")
+	func newlyCreatedConfigIsPreserved() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let config = folder.appendingPathComponent("lpm.json")
+		let newer = Data(#"{"vault":"concurrent-vault"}"#.utf8)
+		#expect(throws: SecureFileWriter.WriteError.replaceFailed(EEXIST)) {
+			try SecureFileWriter.write(
+				Data(#"{"vault":"app-vault"}"#.utf8), to: config,
+				replaceExisting: false,
+				beforeReplacement: { try newer.write(to: config) }
+			)
+		}
+		#expect(try Data(contentsOf: config) == newer)
+		#expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["lpm.json"])
+	}
+
 	@Test("malformed lpm.json and symbolic links are unreadable")
 	func unreadable() throws {
 		let folder = try makeFolder()
@@ -87,7 +175,7 @@ struct ProjectCLILinkTests {
 		defer { try? FileManager.default.removeItem(at: folder) }
 		try writeConfig(#"{ "vault": "other-vault", "tasks": { "dev": { "env": "development" } } }"#, in: folder)
 
-		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path)
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path, replacingVaultId: "other-vault")
 		let config = try readConfig(in: folder)
 		#expect(config["vault"] as? String == vaultId)
 		#expect((config["tasks"] as? [String: Any])?["dev"] != nil)

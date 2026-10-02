@@ -11,6 +11,13 @@ enum ProjectConfigFile {
 		case tooLarge
 		case readFailed
 		case invalidJSON
+		case vaultChanged
+	}
+
+	enum VaultWritePolicy {
+		case replaceAny
+		case unlinked
+		case replacing(String)
 	}
 
 	static func readObject(at url: URL) -> [String: Any]? {
@@ -32,22 +39,48 @@ enum ProjectConfigFile {
 		guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
 			throw FileError.invalidJSON
 		}
-		guard let vault = object["vault"] else { return nil }
+		guard let vault = object["vault"], !(vault is NSNull) else { return nil }
 		guard let vaultId = vault as? String else { throw FileError.invalidJSON }
 		return vaultId
 	}
 
 	/// Adds or replaces the vault ID without following an existing symlink.
 	/// Existing malformed or oversized files are left untouched.
-	static func writeVaultID(_ vaultId: String, to url: URL) throws {
+	static func writeVaultID(
+		_ vaultId: String,
+		to url: URL,
+		policy: VaultWritePolicy = .replaceAny,
+		fileWriter: (Data, URL, Bool, @escaping () throws -> Void) throws -> Void = { data, url, replaceExisting, validation in
+			try SecureFileWriter.write(data, to: url, permissions: 0o644, replaceExisting: replaceExisting, beforeReplacement: validation)
+		}
+	) throws {
 		let object: [String: Any]
+		let originalData: Data?
 		do {
 			let data = try readRegularFile(at: url)
 			guard let existing = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
 			else { throw FileError.invalidJSON }
 			object = existing
+			originalData = data
 		} catch FileError.notFound {
 			object = [:]
+			originalData = nil
+		}
+		switch policy {
+		case .replaceAny: break
+		case .unlinked, .replacing:
+			let existing = object["vault"]
+			guard existing == nil || existing is NSNull || existing is String else {
+				throw FileError.invalidJSON
+			}
+			let existingID = existing as? String
+			switch policy {
+			case .replaceAny: break
+			case .unlinked:
+				guard existingID == nil || existingID == vaultId else { throw FileError.vaultChanged }
+			case .replacing(let expectedID):
+				guard existingID == expectedID || existingID == vaultId else { throw FileError.vaultChanged }
+			}
 		}
 
 		if object["vault"] as? String == vaultId { return }
@@ -60,7 +93,18 @@ enum ProjectConfigFile {
 			withJSONObject: updated,
 			options: [.prettyPrinted, .sortedKeys]
 		)
-		try SecureFileWriter.write(data, to: url, permissions: 0o644)
+		do {
+			try fileWriter(
+				data, url, originalData != nil, {
+					let current: Data?
+					do { current = try readRegularFile(at: url) }
+					catch FileError.notFound { current = nil }
+					guard current == originalData else { throw FileError.vaultChanged }
+				}
+			)
+		} catch SecureFileWriter.WriteError.replaceFailed(let code) where code == EEXIST {
+			throw FileError.vaultChanged
+		}
 	}
 
 	private static func readRegularFile(at url: URL) throws -> Data {
