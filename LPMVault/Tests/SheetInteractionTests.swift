@@ -20,12 +20,14 @@ enum RenderedText {
 		in image: CGImage,
 		level: VNRequestTextRecognitionLevel,
 		label: String? = nil,
-		options: String.CompareOptions = []
+		options: String.CompareOptions = [],
+		region: CGRect? = nil
 	) async throws -> [Line] {
 		try await Task.detached(priority: .userInitiated) {
 			let request = VNRecognizeTextRequest()
 			request.recognitionLevel = level
 			request.usesLanguageCorrection = false
+			if let region { request.regionOfInterest = region }
 			try VNImageRequestHandler(cgImage: image).perform([request])
 			return (request.results ?? []).compactMap { observation -> Line? in
 				guard let candidate = observation.topCandidates(1).first else { return nil }
@@ -33,7 +35,17 @@ enum RenderedText {
 				if let label, let range = candidate.string.range(of: label, options: options) {
 					labelBounds = try? candidate.boundingBox(for: range)?.boundingBox
 				}
-				return Line(text: candidate.string, bounds: observation.boundingBox, labelBounds: labelBounds)
+				// Results inside a region of interest are relative to that region.
+				let map: (CGRect) -> CGRect = { box in
+					guard let region else { return box }
+					return CGRect(
+						x: region.minX + box.minX * region.width,
+						y: region.minY + box.minY * region.height,
+						width: box.width * region.width,
+						height: box.height * region.height
+					)
+				}
+				return Line(text: candidate.string, bounds: map(observation.boundingBox), labelBounds: labelBounds.map(map))
 			}
 		}.value
 	}
@@ -45,8 +57,10 @@ final class SheetTestHost<V: View> {
 	let window: NSWindow
 	private static var timeout: Duration { .seconds(3) }
 
-	init(_ root: V, size: NSSize) {
+	/// `keepsRequestedSize` stops the hosting view from shrinking to the content's minimum size.
+	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false) {
 		let controller = NSHostingController(rootView: root)
+		if keepsRequestedSize { controller.sizingOptions = [] }
 		view = controller.view
 		window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
@@ -82,17 +96,19 @@ final class SheetTestHost<V: View> {
 		return OCRText(lines.map(\.text).joined(separator: "\n"))
 	}
 
-	/// Polls with fast recognition and confirms with accurate recognition before giving up.
+	/// Tries fast recognition, then accurate recognition for small text, on each pass.
 	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil) async throws -> Bool {
 		let target = targetWindow?.contentView ?? view
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		repeat {
-			target.layoutSubtreeIfNeeded()
-			let lines = try await RenderedText.lines(in: snapshot(target), level: .fast)
-			if OCRText(lines.map(\.text).joined(separator: "\n")).contains(expected) { return true }
+			let image = try snapshot(target)
+			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
+				let lines = try await RenderedText.lines(in: image, level: level)
+				if OCRText(lines.map(\.text).joined(separator: "\n")).contains(expected) { return true }
+			}
 			try await Task.sleep(for: .milliseconds(20))
 		} while ContinuousClock.now < deadline
-		return try await text(in: targetWindow).contains(expected)
+		return false
 	}
 
 	/// Clicks the rendered label once it appears, using real mouse events.
@@ -100,13 +116,10 @@ final class SheetTestHost<V: View> {
 		let window = targetWindow ?? self.window
 		let target = try #require(window.contentView)
 		let options: String.CompareOptions = caseInsensitive ? .caseInsensitive : []
-		// Accurate recognition: fast mode returns whole-line boxes for substrings,
-		// which can place the click between neighboring buttons.
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		var bounds: CGRect?
 		repeat {
-			target.layoutSubtreeIfNeeded()
-			bounds = try await labelBounds(label, in: target, level: .accurate, options: options)
+			bounds = try await labelBounds(label, in: target, options: options)
 			if bounds == nil { try await Task.sleep(for: .milliseconds(20)) }
 		} while bounds == nil && ContinuousClock.now < deadline
 		let box = try #require(bounds, "Missing button \(label)")
@@ -161,14 +174,42 @@ final class SheetTestHost<V: View> {
 
 	var isKeyFieldEnabled: Bool { textFields(in: view).first { !($0 is NSSecureTextField) }?.isEnabled ?? false }
 
-	/// Normalized bounds of the line containing `label`.
-	func bounds(of label: String) async throws -> CGRect {
-		let lines = try await RenderedText.lines(in: snapshot(view, scale: 3), level: .accurate)
-		return try #require(lines.first { OCRText($0.text).contains(label) }?.bounds)
+	/// Bounds, in points from the bottom-left, of everything drawn over the solid
+	/// background within the bottom `band` points, plus the text recognized there.
+	func bottomInk(band: CGFloat) async throws -> (bounds: CGRect, text: OCRText) {
+		let image = try snapshot(view, scale: 3)
+		let scale = CGFloat(image.width) / view.bounds.width
+		let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+		context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+		// Bitmap memory starts with the top row; `row` here counts up from the bottom edge.
+		// Sample the background inside the band and skip the window's rounded corners.
+		let rows = Int(band * scale)
+		let margin = Int(12 * scale)
+		let offset = { (row: Int, column: Int) in ((image.height - 1 - row) * image.width + column) * 4 }
+		let sample = offset(rows / 2, margin)
+		let background = (0..<3).map { Int(pixels[sample + $0]) }
+		var minX = Int.max, maxX = Int.min, minRow = Int.max, maxRow = Int.min
+		for row in 0..<rows {
+			for column in margin..<(image.width - margin) {
+				let pixel = offset(row, column)
+				let difference = (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - background[$1]) }
+				guard difference > 24 else { continue }
+				minX = min(minX, column); maxX = max(maxX, column)
+				minRow = min(minRow, row); maxRow = max(maxRow, row)
+			}
+		}
+		try #require(minX <= maxX, "Nothing drawn in the bottom \(band) points")
+		let bounds = CGRect(x: CGFloat(minX) / scale, y: CGFloat(minRow) / scale, width: CGFloat(maxX - minX + 1) / scale, height: CGFloat(maxRow - minRow + 1) / scale)
+		let normalized = CGRect(x: bounds.minX / view.bounds.width, y: bounds.minY / view.bounds.height, width: bounds.width / view.bounds.width, height: bounds.height / view.bounds.height)
+			.insetBy(dx: -0.01, dy: -0.01).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+		let lines = try await RenderedText.lines(in: image, level: .accurate, region: normalized)
+		return (bounds, OCRText(lines.map(\.text).joined(separator: " ")))
 	}
 
-	func line(containing label: String) async throws -> String {
-		let lines = try await RenderedText.lines(in: snapshot(view), level: .accurate)
+	/// Recognizes only the normalized `region` (origin at the bottom-left).
+	func line(containing label: String, region: CGRect) async throws -> String {
+		let lines = try await RenderedText.lines(in: snapshot(view), level: .accurate, region: region)
 		return try #require(lines.map(\.text).first { $0.contains(label) })
 	}
 
@@ -201,9 +242,18 @@ final class SheetTestHost<V: View> {
 		return nil
 	}
 
-	private func labelBounds(_ label: String, in target: NSView, level: VNRequestTextRecognitionLevel, options: String.CompareOptions) async throws -> CGRect? {
-		let lines = try await RenderedText.lines(in: snapshot(target), level: level, label: label, options: options)
-		return lines.lazy.compactMap(\.labelBounds).first
+	/// Fast mode finds the line cheaply but reports whole-line boxes for substrings, which
+	/// can land a click between neighboring buttons. Accurate mode then reads only that line.
+	private func labelBounds(_ label: String, in target: NSView, options: String.CompareOptions) async throws -> CGRect? {
+		let image = try snapshot(target)
+		let fast = try await RenderedText.lines(in: image, level: .fast, label: label, options: options)
+		if let line = fast.first(where: { $0.labelBounds != nil }) {
+			let strip = line.bounds.insetBy(dx: -0.02, dy: -line.bounds.height).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+			let refined = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: strip)
+			if let bounds = refined.lazy.compactMap(\.labelBounds).first { return bounds }
+		}
+		let accurate = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options)
+		return accurate.lazy.compactMap(\.labelBounds).first
 	}
 
 	private func textFields(in view: NSView) -> [NSTextField] {
@@ -246,13 +296,16 @@ struct SheetInteractionTests {
 	func lockScreenFooter(size: NSSize, scheme: ColorScheme) async throws {
 		let (store, _) = makeStore()
 		store.lock()
-		let host = SheetTestHost(ContentView(store: store).environment(\.colorScheme, scheme), size: size)
+		let host = SheetTestHost(ContentView(store: store).environment(\.colorScheme, scheme), size: size, keepsRequestedSize: true)
 		defer { host.window.close() }
 		try await host.settle()
-		let bounds = try await host.bounds(of: "Values stay encrypted")
-		#expect(abs(bounds.midX - 0.5) * host.view.bounds.width < 3)
-		#expect((15...28).contains(bounds.minY * host.view.bounds.height))
-		#expect(try await host.line(containing: "Unlock").range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
+		let note = try await host.bottomInk(band: 60)
+		#expect(host.view.bounds.size == size)
+		#expect(note.text.contains("Values stay encrypted"))
+		#expect(abs(note.bounds.midX - host.view.bounds.width / 2) < 3)
+		#expect((15...28).contains(note.bounds.minY))
+		let center = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+		#expect(try await host.line(containing: "Unlock", region: center).range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
 	}
 
 	@Test("inspector generation changes only the draft until saved", arguments: [ColorScheme.light, .dark])
