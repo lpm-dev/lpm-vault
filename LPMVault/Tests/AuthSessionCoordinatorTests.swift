@@ -304,7 +304,7 @@ struct AuthSessionCoordinatorTests {
 			environments: ["default": ["TOKEN": "local"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 		await store.loadAccount()
 		let capturesBeforeSync = authorizationCaptures.value
 		let checksBeforeSync = generationChecks.value
@@ -379,7 +379,7 @@ struct AuthSessionCoordinatorTests {
 				environments: ["default": ["TOKEN": "local"]]
 			)]
 			store.isUnlocked = true
-			store.selectProject(projectID)
+			store.openProject(id: projectID)
 			await store.loadAccount()
 
 			let pull = Task { await store.pullFromCloud() }

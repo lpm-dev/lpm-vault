@@ -1179,7 +1179,6 @@ final class VaultStore {
     }
   }
   var isUnlocked: Bool = false
-  var searchQuery: String = ""
   var error: String?
   var isLoadingProjects: Bool = false
   var isUnlocking: Bool = false
@@ -1349,10 +1348,6 @@ final class VaultStore {
   }
 
   /// Filtered vaults for search.
-  var filteredVaults: [VaultProject] {
-    visibleVaults(matching: searchQuery)
-  }
-
   func visibleVaults(matching search: String) -> [VaultProject] {
     let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard !query.isEmpty else { return activeVaults }
@@ -1373,34 +1368,11 @@ final class VaultStore {
       cancelExports()
       selectedProjectId = nil
       selectedEnvironment = "default"
-      searchQuery = ""
       selectedAccount = resolvedAccount
     } else {
       reconcileNavigationState()
     }
     showAuthStatus = false
-    resetAutoLock()
-  }
-
-  /// Selects only a project visible in the current account and repairs the
-  /// shared environment selection for the persistent detail column.
-  func selectProject(_ projectId: String?) {
-    guard let projectId else {
-      if selectedProjectId != nil { cancelExports() }
-      selectedProjectId = nil
-      selectedEnvironment = "default"
-      resetAutoLock()
-      return
-    }
-    guard projectBelongsToSelectedAccount(projectId),
-      projects.contains(where: { $0.id == projectId })
-    else {
-      reconcileNavigationState()
-      return
-    }
-    if selectedProjectId != projectId { cancelExports() }
-    selectedProjectId = projectId
-    normalizeSelectedEnvironment()
     resetAutoLock()
   }
 
@@ -5897,14 +5869,6 @@ final class VaultStore {
       return .neverSynced
     }
     return .synced
-  }
-
-  func lastSyncInfo(for vaultId: String) -> (date: Date, action: String, version: Int?)? {
-    guard let meta = syncMetadata[vaultId],
-      let binding = currentSyncBinding(),
-      let info = meta.syncInfo(boundTo: binding)
-    else { return nil }
-    return (info.date, info.action, info.version)
   }
 
   private func currentSyncBinding() -> SyncPrincipalBinding? {

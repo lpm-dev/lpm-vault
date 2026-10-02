@@ -55,8 +55,8 @@ struct ConflictResolutionSheetTests {
 
 @Suite("VaultProject Model")
 struct VaultProjectTests {
-	@Test("sorted secrets returns alphabetical order")
-	func sortedSecrets() {
+	@Test("environment keys sort alphabetically regardless of case")
+	func sortedKeys() {
 		let project = VaultProject(
 			id: "test-id",
 			name: "test",
@@ -64,16 +64,11 @@ struct VaultProjectTests {
 			environments: ["default": ["ZEBRA": "z", "APPLE": "a", "MANGO": "m", "banana": "b"]]
 		)
 
-		let sorted = project.sortedSecrets(for: "default")
-		#expect(sorted.count == 4)
-		#expect(sorted[0].key == "APPLE")
-		#expect(sorted[1].key == "banana")
-		#expect(sorted[2].key == "MANGO")
-		#expect(sorted[3].key == "ZEBRA")
+		#expect(VaultWorkspaceSnapshot(project: project).sortedKeys(for: "default") == ["APPLE", "banana", "MANGO", "ZEBRA"])
 	}
 
-	@Test("sorted secrets use an exact-case tie breaker")
-	func sortedSecretsCaseTieBreaker() {
+	@Test("environment keys use an exact-case tie breaker")
+	func sortedKeysCaseTieBreaker() {
 		let project = VaultProject(
 			id: "test-id",
 			name: "test",
@@ -81,11 +76,11 @@ struct VaultProjectTests {
 			environments: ["default": ["Hey": "mixed", "HEY": "upper"]]
 		)
 
-		#expect(project.sortedSecrets(for: "default").map(\.key) == ["HEY", "Hey"])
+		#expect(VaultWorkspaceSnapshot(project: project).sortedKeys(for: "default") == ["HEY", "Hey"])
 	}
 
-	@Test("empty secrets returns empty array")
-	func emptySortedSecrets() {
+	@Test("an empty environment has no sorted keys")
+	func emptySortedKeys() {
 		let project = VaultProject(
 			id: "test-id",
 			name: "test",
@@ -93,7 +88,7 @@ struct VaultProjectTests {
 			environments: ["default": [:]]
 		)
 
-		#expect(project.sortedSecrets(for: "default").isEmpty)
+		#expect(VaultWorkspaceSnapshot(project: project).sortedKeys(for: "default").isEmpty)
 	}
 
 	@Test("secret count across environments")
@@ -208,31 +203,5 @@ struct VaultProjectTests {
 		#expect(snapshot.driftingKeyCount == 1)
 		#expect(snapshot.missingKeyCount == 1)
 		#expect(snapshot.environmentCount(for: "MISSING") == 1)
-	}
-}
-
-@Suite("VaultSecret Model")
-struct VaultSecretTests {
-	@Test("id is the key")
-	func idIsKey() {
-		let secret = VaultSecret(key: "API_KEY", value: "sk-123")
-		#expect(secret.id == "API_KEY")
-	}
-
-	@Test("hashable: same key and value = equal")
-	func hashable() {
-		let a = VaultSecret(key: "KEY", value: "same")
-		let b = VaultSecret(key: "KEY", value: "same")
-
-		#expect(a == b)
-		#expect(a.hashValue == b.hashValue)
-	}
-
-	@Test("hashable: different values = not equal")
-	func hashableDifferentValues() {
-		let a = VaultSecret(key: "KEY", value: "value1")
-		let b = VaultSecret(key: "KEY", value: "value2")
-
-		#expect(a != b)
 	}
 }

@@ -846,7 +846,7 @@ struct AuditRegressionTests {
         )
       ]
       store.isUnlocked = true
-      store.selectProject("project")
+      store.openProject(id: "project")
       await store.pushToCloud()
       return store
     }
@@ -916,7 +916,7 @@ struct AuditRegressionTests {
         )
       ]
       store.isUnlocked = true
-      store.selectProject("project")
+      store.openProject(id: "project")
       await store.pullFromCloud()
       return store
     }
@@ -1006,7 +1006,7 @@ struct AuditRegressionTests {
       store.vaultOrgAssociations["project"] = slug
       store.isUnlocked = true
       store.selectAccount(.org(slug))
-      store.selectProject("project")
+      store.openProject(id: "project")
       await store.pullFromOrg(orgSlug: slug)
       return store
     }
@@ -1096,7 +1096,7 @@ struct AuditRegressionTests {
       )
     ]
     store.isUnlocked = true
-    store.selectProject("project")
+    store.openProject(id: "project")
 
     await store.pushToCloud()
 

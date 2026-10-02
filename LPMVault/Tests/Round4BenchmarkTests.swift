@@ -559,7 +559,7 @@ struct Round4BenchmarkTests {
 				environments: keychain.envStorage["project"]!.environments
 			)]
 			store.isUnlocked = true
-			store.selectProject("project")
+			store.openProject(id: "project")
 			let start = ContinuousClock.now
 			#expect(await store.addEnvironment(to: "project", name: "staging"))
 			if iteration > 0 {

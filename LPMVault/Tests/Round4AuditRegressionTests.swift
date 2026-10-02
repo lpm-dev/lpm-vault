@@ -347,11 +347,11 @@ extension VaultStoreTests {
 		]
 		store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		let push = Task { await store.pushToCloud() }
 		await waitForSemaphore(entered)
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		release.signal()
 		await push.value
 
@@ -423,11 +423,11 @@ extension VaultStoreTests {
 			),
 		]
 		store.isUnlocked = true
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		store.duplicateEnvironment(in: "project-a", from: "default", to: "staging")
 		await waitForSemaphore(entered)
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		release.signal()
 		await waitUntil {
 			store.projects.first(where: { $0.id == "project-a" })?
@@ -693,7 +693,7 @@ extension VaultStoreTests {
 			environments: ["default": ["TOKEN": "account-a-secret"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject("account-a-project")
+		store.openProject(id: "account-a-project")
 		await store.loadTokens()
 		let stalePersonal = store.personalTokens[0]
 		let staleOrganization = store.orgTokens["acme"]![0]
@@ -909,7 +909,7 @@ extension VaultStoreTests {
 		store.vaultOrgAssociations = ["organization-project": "acme"]
 		store.isUnlocked = true
 		store.selectAccount(.org("acme"))
-		store.selectProject("organization-project")
+		store.openProject(id: "organization-project")
 		store.lastSyncStatus = "Pulled from acme"
 
 		await store.loadAccount()
@@ -998,7 +998,7 @@ extension VaultStoreTests {
 		store.isUnlocked = true
 		await store.loadAccount()
 		store.selectAccount(.org(slug))
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		let pull = Task { await store.pullFromOrg(orgSlug: slug) }
 		await waitForSemaphore(entered)
@@ -1086,14 +1086,14 @@ extension VaultStoreTests {
 		let personalPush = round4SignedInStoreWithMissingAuthority()
 		personalPush.vaultOrgAssociations = [:]
 		personalPush.selectAccount(.personal)
-		personalPush.selectProject("account-project")
+		personalPush.openProject(id: "account-project")
 		await personalPush.pushToCloud()
 		round4ExpectSignedOut(personalPush)
 
 		let personalPull = round4SignedInStoreWithMissingAuthority()
 		personalPull.vaultOrgAssociations = [:]
 		personalPull.selectAccount(.personal)
-		personalPull.selectProject("account-project")
+		personalPull.openProject(id: "account-project")
 		await personalPull.pullFromCloud()
 		round4ExpectSignedOut(personalPull)
 
@@ -1221,11 +1221,11 @@ extension VaultStoreTests {
 		}
 		store.isUnlocked = true
 		await store.loadAccount()
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		let pull = Task { await store.pullFromCloud() }
 		await gate.waitUntilArrived()
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		await gate.release()
 		_ = await pull.value
 
@@ -1308,11 +1308,11 @@ extension VaultStoreTests {
 		store.isUnlocked = true
 		await store.loadAccount()
 		store.selectAccount(.org(slug))
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		let pull = Task { await store.pullFromOrg(orgSlug: slug) }
 		await gate.waitUntilArrived()
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		await gate.release()
 		await pull.value
 
@@ -1387,7 +1387,7 @@ extension VaultStoreTests {
 			)]
 			if let metadata { store.syncMetadata = [projectID: metadata] }
 			store.isUnlocked = true
-			store.selectProject(projectID)
+			store.openProject(id: projectID)
 			let binding = SyncPrincipalBinding(
 				registryURL: "https://lpm.dev",
 				principalID: "account-a",
@@ -1458,7 +1458,7 @@ extension VaultStoreTests {
 		store.vaultOrgAssociations = [projectID: slug]
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToOrg(orgSlug: slug)
 
@@ -1603,7 +1603,7 @@ extension VaultStoreTests {
 		store.vaultOrgAssociations = [projectID: slug]
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToOrg(orgSlug: slug)
 
@@ -1653,7 +1653,7 @@ extension VaultStoreTests {
 		store.vaultOrgAssociations = [projectID: slug]
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 		let target = VaultSyncTarget(projectId: projectID, account: .org(slug))
 
 		await store.recoverFromConflict(.pullAndMerge, target: target)
@@ -1691,7 +1691,7 @@ extension VaultStoreTests {
 		)]
 		store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.recoverFromConflict(
 			.pullAndMerge,
@@ -1772,7 +1772,7 @@ extension VaultStoreTests {
 		)]
 		store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.recoverFromConflict(
 			.pullAndMerge,
@@ -1973,7 +1973,7 @@ extension VaultStoreTests {
 			environments: keychain.envStorage[projectID]!.environments
 		)]
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		store.updateSecret(
 			in: projectID,
@@ -2162,7 +2162,7 @@ extension VaultStoreTests {
 		store.isUnlocked = true
 		await store.loadAccount()
 		store.selectAccount(.org(slug))
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pullFromOrg(orgSlug: slug)
 
@@ -2378,7 +2378,7 @@ extension VaultStoreTests {
 			environments: ["default": ["TOKEN": "secret"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject("project")
+		store.openProject(id: "project")
 
 		let operation = Task {
 			try await store.exportEnvironment(
@@ -2430,7 +2430,7 @@ extension VaultStoreTests {
 			]
 		)]
 		store.isUnlocked = true
-		store.selectProject("project")
+		store.openProject(id: "project")
 
 		let operation = Task {
 			try await store.exportEnvironment(
@@ -2523,7 +2523,7 @@ extension VaultStoreTests {
 		)
 		store.projects = [projectA, projectB]
 		store.isUnlocked = true
-		store.selectProject(projectA.id)
+		store.openProject(id: projectA.id)
 
 		let operation = Task {
 			try await store.exportEnvironment(
@@ -2623,13 +2623,13 @@ extension VaultStoreTests {
 			),
 		]
 		store.isUnlocked = true
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 		await store.loadAccount()
 		await provider.set(token: nil, gate: authGate)
 
 		let push = Task { await store.pushToCloud() }
 		await authGate.waitUntilArrived()
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		await authGate.release()
 		await push.value
 
@@ -2708,7 +2708,7 @@ extension VaultStoreTests {
 			environments: ["default": ["TOKEN": "local"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject("project")
+		store.openProject(id: "project")
 		await store.loadAccount()
 		authorization.gateNextResolution(on: gate)
 
@@ -2943,14 +2943,14 @@ extension VaultStoreTests {
 			environments: ["default": ["TOKEN": "b"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		await store.loadAccount()
 
 		let operation = Task { await store.importCloudProject(round4RemoteProject()) }
 		await gate.waitUntilArrived()
 		#expect(keychain.envStorage["remote"] != nil)
 		#expect(await store.loadProjects())
-		store.selectProject("remote")
+		store.openProject(id: "remote")
 		await store.refreshCliAccess()
 		let deadline = ContinuousClock.now.advanced(by: .seconds(2))
 		while store.selectedProjectCliAccess == nil, ContinuousClock.now < deadline {
@@ -2959,7 +2959,7 @@ extension VaultStoreTests {
 		await store.changeCliAccess(to: .requireApproval)
 		#expect(keychain.cliAccessPolicies["remote"] == .requireApproval)
 		operation.cancel()
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		await gate.release()
 		guard case .success = await operation.value else {
 			Issue.record("The committed import did not report durable success.")
@@ -3112,7 +3112,7 @@ extension VaultStoreTests {
 			environments: ["default": ["TOKEN": "local"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject("project")
+		store.openProject(id: "project")
 		await store.loadAccount()
 
 		await store.pushToCloud()
@@ -3163,7 +3163,7 @@ extension VaultStoreTests {
 			environments: ["default": ["TOKEN": "local"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject("project")
+		store.openProject(id: "project")
 		await store.loadAccount()
 		store.personalTokens = [token]
 
@@ -3258,7 +3258,7 @@ extension VaultStoreTests {
 			environments: ["default": ["TOKEN": "local"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject("project")
+		store.openProject(id: "project")
 		await store.loadAccount()
 
 		let push = Task { await store.pushToCloud() }
@@ -3326,7 +3326,7 @@ extension VaultStoreTests {
 		store.vaultOrgAssociations = [projectID: slug]
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToOrg(orgSlug: slug)
 
@@ -3388,7 +3388,7 @@ extension VaultStoreTests {
 		store.vaultOrgAssociations = [projectID: slug]
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToOrg(orgSlug: slug)
 
@@ -3478,7 +3478,7 @@ extension VaultStoreTests {
 			store.syncMetadata = [projectID: metadata]
 			store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 			store.isUnlocked = true
-			store.selectProject(projectID)
+			store.openProject(id: projectID)
 
 			await store.pullFromCloud()
 
@@ -3544,7 +3544,7 @@ extension VaultStoreTests {
 		)]
 		store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToCloud()
 
@@ -3833,7 +3833,7 @@ extension VaultStoreTests {
 		store.syncMetadata = [projectID: metadata]
 		store.currentUser = round4User(id: "account-b", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pullFromCloud()
 
@@ -3998,7 +3998,7 @@ extension VaultStoreTests {
 		store.syncMetadata = [projectID: metadata]
 		store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToCloud(force: true)
 
@@ -4100,7 +4100,7 @@ extension VaultStoreTests {
 		store.syncMetadata = [projectID: metadata]
 		store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToCloud(force: true)
 
@@ -4179,7 +4179,7 @@ extension VaultStoreTests {
 		store.syncMetadata = [projectID: metadata]
 		store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToCloud(force: true)
 
@@ -4299,7 +4299,7 @@ extension VaultStoreTests {
 		)]
 		store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToCloud(force: true)
 
@@ -4344,7 +4344,7 @@ extension VaultStoreTests {
 		)]
 		store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToCloud(force: true)
 
@@ -4438,7 +4438,7 @@ extension VaultStoreTests {
 			store.vaultOrgAssociations = [projectID: slug]
 			store.isUnlocked = true
 			store.selectAccount(.org(slug))
-			store.selectProject(projectID)
+			store.openProject(id: projectID)
 
 			await store.pullFromOrg(orgSlug: slug)
 
@@ -4966,7 +4966,7 @@ struct LazyLocalProjectLoadingRegressionTests {
 		store.isUnlocked = true
 		keychain.projectReadCount = 0
 
-		store.selectProject("second")
+		store.openProject(id: "second")
 		await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "second-secret"
 		}
@@ -4998,11 +4998,11 @@ struct LazyLocalProjectLoadingRegressionTests {
 		#expect(await store.loadProjects())
 		store.isUnlocked = true
 
-		store.selectProject("first")
+		store.openProject(id: "first")
 		await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "first-secret"
 		}
-		store.selectProject("second")
+		store.openProject(id: "second")
 		await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "second-secret"
 		}
@@ -5040,9 +5040,9 @@ struct LazyLocalProjectLoadingRegressionTests {
 			releaseFirstLoad.wait()
 		}
 
-		store.selectProject("first")
+		store.openProject(id: "first")
 		await waitForSemaphore(firstLoadStarted)
-		store.selectProject("second")
+		store.openProject(id: "second")
 		releaseFirstLoad.signal()
 		await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "second-secret"
@@ -5069,7 +5069,7 @@ struct LazyLocalProjectLoadingRegressionTests {
 		)
 		#expect(await store.loadProjects())
 		store.isUnlocked = true
-		store.selectProject("project")
+		store.openProject(id: "project")
 		await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "secret"
 		}
@@ -5134,7 +5134,7 @@ private func round4SignedInStoreWithMissingAuthority() -> VaultStore {
 	store.vaultOrgAssociations = ["account-project": "acme"]
 	store.isUnlocked = true
 	store.selectAccount(.org("acme"))
-	store.selectProject("account-project")
+	store.openProject(id: "account-project")
 	store.lastSyncStatus = "previous"
 	return store
 }
@@ -5993,7 +5993,7 @@ private func round4PersonalConflictFixture(
 	store.syncMetadata = [projectID: metadata]
 	store.currentUser = round4User(id: "account-a", orgSlug: "acme")
 	store.isUnlocked = true
-	store.selectProject(projectID)
+	store.openProject(id: projectID)
 	return (store, sync, encryptionCalls)
 }
 
