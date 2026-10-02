@@ -79,17 +79,17 @@ final class SheetTestHost<V: View> {
 		window.makeFirstResponder(field)
 		let editor = try #require(field.currentEditor())
 		try #require(window.firstResponder === editor)
-		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
 		window.sendEvent(event)
 	}
 
 	func key(_ character: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], in targetWindow: NSWindow) throws {
-		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: targetWindow.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: targetWindow.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
 		NSApplication.shared.sendEvent(event)
 	}
 
 	func escape() throws -> Bool {
-		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
 		return window.performKeyEquivalent(with: event)
 	}
 
@@ -433,7 +433,7 @@ struct SheetInteractionTests {
 		#expect(try host.text().contains("Cancel"))
 	}
 
-	@Test("ordinary Return closes the presented sheet after control focus changes", arguments: ["generator", "tab"], [0, 1, 2, 3])
+	@Test("ordinary Return closes the presented sheet after returning focus from controls", arguments: ["generator", "tab"], [0, 1, 2, 3])
 	func ordinaryReturnAfterControlFocus(transition: String, sample: Int) async throws {
 		let (store, keychain) = makeStore()
 		let key = "CONTROL_\(sample)"
@@ -452,6 +452,9 @@ struct SheetInteractionTests {
 			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
 		}
 		try await host.settle()
+		// A focused button can suppress AppKit's default Return action.
+		try #require(sheet.makeFirstResponder(nil))
+		try #require(sheet.firstResponder === sheet)
 		try host.key("\r", code: 36, in: sheet)
 		let deadline = Date().addingTimeInterval(3)
 		repeat { try await host.settle() } while !host.window.sheets.isEmpty && Date() < deadline
