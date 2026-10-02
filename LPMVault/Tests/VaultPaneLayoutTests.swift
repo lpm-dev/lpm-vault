@@ -180,25 +180,37 @@ struct VaultPaneLayoutTests {
 		defer { window.close() }
 		window.orderBack(nil)
 		try clickInspectorToggle(in: window, contentRightEdge: 1400)
-		try await waitForLayout(host) { resizeViews(in: host).count == 2 }
+		let lineCenters = [
+			"Resize sidebar": VaultMetrics.sidebar + VaultMetrics.paneDivider / 2,
+			"Resize inspector": host.bounds.width - VaultMetrics.inspector - VaultMetrics.paneDivider / 2,
+		]
+		// macOS 15 routes clicks to a newly inserted platform view only after
+		// the window has displayed it; a person can only click what is on screen.
+		try await waitForLayout(host) {
+			let dividers = resizeViews(in: host)
+			return dividers.count == 2 && dividers.allSatisfy { divider in
+				let center = lineCenters[divider.accessibilityLabel() ?? ""] ?? -1
+				return host.hitTest(NSPoint(x: center, y: host.bounds.midY)) === divider
+			}
+		}
 
-		let sidebarWidth = VaultMetrics.sidebar
-		for divider in resizeViews(in: host) {
+		let dividers = resizeViews(in: host)
+		#expect(dividers.count == 2)
+		for divider in dividers {
+			let label = divider.accessibilityLabel() ?? ""
+			let lineCenter = try #require(lineCenters[label])
 			let frame = host.convert(divider.bounds, from: divider)
 			#expect(abs(frame.width - VaultMetrics.paneDividerHitWidth) < 0.01)
-			let lineCenter = divider.accessibilityLabel() == "Resize sidebar"
-				? sidebarWidth + VaultMetrics.paneDivider / 2
-				: host.bounds.width - 300 - VaultMetrics.paneDivider / 2
-			#expect(abs(frame.midX - lineCenter) < 0.01, "\(divider.accessibilityLabel() ?? "") is off its hairline")
+			#expect(abs(frame.midX - lineCenter) < 0.01, "\(label) is off its hairline")
 
 			let reach = VaultMetrics.paneDividerHitWidth / 2
 			for offset in [-(reach - 0.5), -2, 0, 2, reach - 0.5] {
 				let point = NSPoint(x: lineCenter + offset, y: host.bounds.midY)
-				#expect(host.hitTest(point) === divider, "\(offset) pt from the hairline misses the resize target")
+				#expect(host.hitTest(point) === divider, "\(label): \(offset) pt from the hairline misses the resize target")
 			}
 			for offset in [-(reach + 1), reach + 1] {
 				let point = NSPoint(x: lineCenter + offset, y: host.bounds.midY)
-				#expect(host.hitTest(point) !== divider, "\(offset) pt from the hairline still resizes the pane")
+				#expect(host.hitTest(point) !== divider, "\(label): \(offset) pt from the hairline still resizes the pane")
 			}
 		}
 		try recordWorkspace(host, named: "workspace-flush-dividers")
@@ -208,6 +220,7 @@ struct VaultPaneLayoutTests {
 		let deadline = ContinuousClock.now.advanced(by: .seconds(5))
 		repeat {
 			host.layoutSubtreeIfNeeded()
+			host.displayIfNeeded()
 			if condition() { return }
 			try await Task.sleep(for: .milliseconds(10))
 		} while ContinuousClock.now < deadline
