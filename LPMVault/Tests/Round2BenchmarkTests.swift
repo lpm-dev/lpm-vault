@@ -55,12 +55,11 @@ struct Round2BenchmarkTests {
 			apiService: MockAPIService()
 		)
 		store.projects = makeProjects(projectCount: 100, keysPerProject: 1_000)
-		store.searchQuery = "absent-query"
-		_ = store.filteredVaults
+		_ = store.visibleVaults(matching: "absent-query")
 
 		let samples = (0..<15).map { _ -> Double in
 			let start = ContinuousClock.now
-			_ = store.filteredVaults
+			_ = store.visibleVaults(matching: "absent-query")
 			return milliseconds(start.duration(to: .now))
 		}
 		print("ROUND2_BENCH search_ms median=\(median(samples)) samples=\(samples)")

@@ -165,10 +165,9 @@ struct NewEnvironmentSheet: View {
 			else { return }
 			previewTask = nil
 			previewID = nil
-			switch result {
-			case .success(let imported): importedSecrets = imported.secrets
-			case .failure(let error) where error != .cancelled: store.error = error.localizedDescription
-			case .failure: break
+			importedSecrets = EnvFilePreviewPresentation.replacementSecrets(for: result)
+			if case .failure(let error) = result, error != .cancelled {
+				store.error = error.localizedDescription
 			}
 		}
 	}
@@ -185,5 +184,15 @@ struct NewEnvironmentSheet: View {
 		creationID = nil
 		cancelPreview()
 		importedSecrets = [:]
+	}
+}
+
+enum EnvFilePreviewPresentation {
+	/// A failed preview clears earlier values so a stale file is never imported.
+	static func replacementSecrets(
+		for result: Result<ImportedEnvFile, EnvFileImportError>
+	) -> [String: String] {
+		guard case .success(let imported) = result else { return [:] }
+		return imported.secrets
 	}
 }

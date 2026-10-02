@@ -96,18 +96,6 @@ struct VaultProject: Identifiable, Hashable, Sendable {
 		environments[env] ?? [:]
 	}
 
-	/// Get sorted secrets for a specific environment.
-	func sortedSecrets(for env: String) -> [VaultSecret] {
-		secrets(for: env)
-			.sorted {
-				let comparison = $0.key.localizedCaseInsensitiveCompare($1.key)
-				return comparison == .orderedSame
-					? $0.key < $1.key
-					: comparison == .orderedAscending
-			}
-			.map { VaultSecret(key: $0.key, value: $0.value) }
-	}
-
 	/// Total secret count across all environments.
 	var secretCount: Int {
 		hasLoadedEnvironments

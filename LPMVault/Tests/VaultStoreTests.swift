@@ -530,7 +530,7 @@ struct VaultStoreTests {
 			release.wait()
 		}
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let deletion = Task { await store.deleteLocalVault(store.projects[0]) }
 		await withCheckedContinuation { continuation in
@@ -566,7 +566,7 @@ struct VaultStoreTests {
 			release.wait()
 		}
 		store.isUnlocked = true
-		store.selectProject("id-3")
+		store.openProject(id: "id-3")
 		let deletedProject = store.projects.first { $0.id == "id-1" }!
 
 		let deletion = Task { await store.deleteLocalVault(deletedProject) }
@@ -600,7 +600,7 @@ struct VaultStoreTests {
 		])
 		store.currentUser = userWithOrganization(slug: "acme")
 		store.vaultOrgAssociations = ["org": "acme"]
-		store.selectProject("personal")
+		store.openProject(id: "personal")
 		store.showSettings()
 
 		store.selectAccount(.personal)
@@ -655,13 +655,13 @@ struct VaultStoreTests {
 		store.projects[0].environments = ["default": [:], "staging": [:]]
 		store.projects[1].environments = ["production": [:], "staging": [:]]
 
-		store.selectProject("one")
+		store.openProject(id: "one")
 		store.selectEnvironment("staging")
-		store.selectProject("two")
+		store.openProject(id: "two")
 		#expect(store.selectedEnvironment == "staging")
 
 		store.selectEnvironment("production")
-		store.selectProject("one")
+		store.openProject(id: "one")
 		#expect(store.selectedEnvironment == "default")
 	}
 
@@ -698,7 +698,7 @@ struct VaultStoreTests {
 		store.currentUser = userWithOrganization(slug: "acme")
 		store.vaultOrgAssociations = ["org": "acme"]
 		store.isUnlocked = true
-		store.selectProject("personal")
+		store.openProject(id: "personal")
 
 		let importTask = Task {
 			await store.importEnvFile(
@@ -1382,7 +1382,7 @@ struct VaultStoreTests {
 			envFileImportService: importer
 		)
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		store.selectedEnvironment = "default"
 
 		let result = await store.importEnvFile(
@@ -1412,7 +1412,7 @@ struct VaultStoreTests {
 		store.projects[0].environments["staging"] = [:]
 		keychain.envStorage["id-1"]?.environments["staging"] = [:]
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		store.selectedEnvironment = "default"
 
 		let task = Task {
@@ -1442,7 +1442,7 @@ struct VaultStoreTests {
 			envFileImportService: importer
 		)
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let older = Task {
 			await store.importEnvFile(
@@ -1478,7 +1478,7 @@ struct VaultStoreTests {
 			envFileImportService: importer
 		)
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		await importer.setImmediateResult(
 			.success(ImportedEnvFile(secrets: ["Hey": "mixed"]))
 		)
@@ -1509,7 +1509,7 @@ struct VaultStoreTests {
 			release.wait()
 		}
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let older = Task {
 			await store.importEnvFile(
@@ -1561,7 +1561,7 @@ struct VaultStoreTests {
 			envFileImportService: importer
 		)
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let task = Task {
 			await store.importEnvFile(
@@ -1587,7 +1587,7 @@ struct VaultStoreTests {
 			envFileImportService: importer
 		)
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		keychain.shouldFail = true
 
 		let result = await store.importEnvFile(
@@ -1612,7 +1612,7 @@ struct VaultStoreTests {
 		)
 		keychain.failNextWriteDataAccounts = [mockSyncMetadataAccount(vaultId: "id-1")]
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let result = await store.importEnvFile(
 			at: URL(fileURLWithPath: "/tmp/atomic.env"),
@@ -1660,7 +1660,7 @@ struct VaultStoreTests {
 			release.wait()
 		}
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let creation = Task {
 			await store.addEnvironment(
@@ -1696,7 +1696,7 @@ struct VaultStoreTests {
 			release.wait()
 		}
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let creation = Task {
 			await store.addEnvironment(
@@ -1739,7 +1739,7 @@ struct VaultStoreTests {
 			release.wait()
 		}
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let importOperation = Task {
 			await store.importEnvFile(
@@ -1782,7 +1782,7 @@ struct VaultStoreTests {
 			release.wait()
 		}
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let creation = Task {
 			await store.addEnvironment(
@@ -1830,7 +1830,7 @@ struct VaultStoreTests {
 			envFileImportService: importer
 		)
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		let preview = Task {
 			await store.loadEnvFilePreview(
@@ -1873,7 +1873,7 @@ struct VaultStoreTests {
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
@@ -1888,7 +1888,7 @@ struct VaultStoreTests {
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		var editor = VaultSecretEditDraft(value: "old")
 		editor.draft = "new"
 
@@ -1923,7 +1923,7 @@ struct VaultStoreTests {
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		var editor = VaultSecretEditDraft(value: "old")
 		editor.draft = "submitted"
 		guard let submitted = editor.beginSave() else {
@@ -1962,7 +1962,7 @@ struct VaultStoreTests {
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "val"])
 		])
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		store.updateSecret(in: "id-1", key: "MISSING", newValue: "new")
 
@@ -1990,7 +1990,7 @@ struct VaultStoreTests {
 			environments: store.projects[0].environments
 		)
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		store.selectedEnvironment = "default"
 
 		store.updateSecret(in: "id-1", environment: "staging", key: "KEY", newValue: "updated")
@@ -2006,7 +2006,7 @@ struct VaultStoreTests {
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		keychain.simulateCLISet(
 			vaultId: "id-1",
 			environment: "default",
@@ -2035,7 +2035,7 @@ struct VaultStoreTests {
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		keychain.simulateCLISet(
 			vaultId: "id-1",
 			environment: "default",
@@ -2057,7 +2057,7 @@ struct VaultStoreTests {
 		])
 		keychain.shouldFail = true
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
@@ -2073,7 +2073,7 @@ struct VaultStoreTests {
 		])
 		keychain.failNextWriteDataAccounts = [mockSyncMetadataAccount(vaultId: "id-1")]
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
 
@@ -2091,7 +2091,7 @@ struct VaultStoreTests {
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["A": "1", "B": "2"])
 		])
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 
 		store.deleteSecret(from: "id-1", key: "A")
 
@@ -2121,7 +2121,7 @@ struct VaultStoreTests {
 			environments: store.projects[0].environments
 		)
 		store.isUnlocked = true
-		store.selectProject("id-1")
+		store.openProject(id: "id-1")
 		store.selectedEnvironment = "default"
 
 		store.deleteSecret(from: "id-1", environment: "staging", key: "KEY")
@@ -2145,7 +2145,7 @@ struct VaultStoreTests {
 				id: "project-b", name: "B", path: "", environments: ["default": ["KEY": "b"]]),
 		]
 		store.isUnlocked = true
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 
 		store.updateSecret(in: "project-a", environment: "default", key: "KEY", newValue: "changed")
 		store.deleteSecret(from: "project-a", environment: "default", key: "KEY")
@@ -2170,10 +2170,10 @@ struct VaultStoreTests {
 			(id: "id-2", name: "web-app", path: "/tmp/web", secrets: [:]),
 		])
 
-		store.searchQuery = "api"
+		let visible = store.visibleVaults(matching: "api")
 
-		#expect(store.filteredVaults.count == 1)
-		#expect(store.filteredVaults[0].name == "api-server")
+		#expect(visible.count == 1)
+		#expect(visible[0].name == "api-server")
 	}
 
 	@Test("search filters by secret key name")
@@ -2187,10 +2187,10 @@ struct VaultStoreTests {
 		])
 		await waitForWorkspaceSnapshots(store, count: 2)
 
-		store.searchQuery = "database"
+		let visible = store.visibleVaults(matching: "database")
 
-		#expect(store.filteredVaults.count == 1)
-		#expect(store.filteredVaults[0].name == "project-a")
+		#expect(visible.count == 1)
+		#expect(visible[0].name == "project-a")
 	}
 
 	@Test("search includes keys from every environment")
@@ -2208,9 +2208,7 @@ struct VaultStoreTests {
 			)
 		]
 		await waitForWorkspaceSnapshots(store, count: 1)
-		store.searchQuery = "database"
-
-		#expect(store.filteredVaults.map(\.id) == ["id-1"])
+		#expect(store.visibleVaults(matching: "database").map(\.id) == ["id-1"])
 	}
 
 	@Test("empty search shows all projects")
@@ -2220,9 +2218,7 @@ struct VaultStoreTests {
 			(id: "id-2", name: "b", path: "/tmp/b", secrets: [:]),
 		])
 
-		store.searchQuery = ""
-
-		#expect(store.filteredVaults.count == 2)
+		#expect(store.visibleVaults(matching: "").count == 2)
 	}
 
 	// MARK: - Auth
@@ -3098,7 +3094,7 @@ struct VaultStoreTests {
 				],
 			]
 		)]
-		store.selectProject("multi-environment")
+		store.openProject(id: "multi-environment")
 
 		let confirmation = try #require(store.preparePushConfirmation())
 
@@ -3597,7 +3593,7 @@ struct VaultStoreTests {
 			store.vaultOrgAssociations[projectID] = slug
 			store.isUnlocked = true
 			store.selectAccount(.org(slug))
-			store.selectProject(projectID)
+			store.openProject(id: projectID)
 
 			await store.pushToOrg(orgSlug: slug)
 			let approval = try #require(store.pendingOrgPush?.pendingApprovals)
@@ -3817,7 +3813,7 @@ struct VaultStoreTests {
 		store.vaultOrgAssociations = [projectID: slug]
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pushToOrg(orgSlug: slug)
 
@@ -3974,7 +3970,7 @@ struct VaultStoreTests {
 			)
 		]
 		store.isUnlocked = true
-		store.selectProject(projectId)
+		store.openProject(id: projectId)
 
 		let pull = Task { await store.pullFromCloud() }
 		await gate.waitUntilArrived()
@@ -4036,11 +4032,11 @@ struct VaultStoreTests {
 				id: "project-b", name: "B", path: "", environments: ["default": ["TOKEN": "b"]]),
 		]
 		store.isUnlocked = true
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		let push = Task { await store.pushToCloud() }
 		await gate.waitUntilArrived()
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		await gate.release()
 		_ = await push.value
 
@@ -4101,11 +4097,11 @@ struct VaultStoreTests {
 				environments: ["default": ["TOKEN": "b"]]),
 		]
 		store.isUnlocked = true
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		let push = Task { await store.pushToCloud() }
 		await gate.waitUntilArrived()
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		await gate.release()
 		await push.value
 
@@ -4185,7 +4181,7 @@ struct VaultStoreTests {
 		store.vaultOrgAssociations = ["project-a": slug, "project-b": slug]
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		await store.pushToOrg(orgSlug: slug)
 		let staleApprovals = try #require(store.pendingOrgPush?.pendingApprovals)
@@ -4196,7 +4192,7 @@ struct VaultStoreTests {
 		await staleResolutionGate.waitUntilArrived()
 
 		await tokenProvider.setGate(nil)
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		await store.pushToOrg(orgSlug: slug)
 		let newerApprovals = try #require(store.pendingOrgPush?.pendingApprovals)
 		#expect(store.pendingOrgPush?.projectId == "project-b")
@@ -4284,13 +4280,13 @@ struct VaultStoreTests {
 		store.vaultOrgAssociations = ["project-a": slug, "project-b": slug]
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		await store.pushToOrg(orgSlug: slug)
 		let approvals = try #require(store.pendingOrgPush?.pendingApprovals)
 		let push = Task { await store.approveAndContinueOrgPush(approved: approvals) }
 		await gate.waitUntilArrived()
-		store.selectProject("project-b")
+		store.openProject(id: "project-b")
 		await gate.release()
 		await push.value
 
@@ -4389,7 +4385,7 @@ struct VaultStoreTests {
 			environments: ["default": ["TOKEN": "local", "LOCAL_ONLY": "pending"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		await store.pullFromCloud()
 
@@ -4488,7 +4484,7 @@ struct VaultStoreTests {
 			environments: ["default": [:]]
 		)]
 		store.isUnlocked = true
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pullFromCloud()
 
@@ -4574,7 +4570,7 @@ struct VaultStoreTests {
 		store.vaultOrgAssociations = [projectID: slug]
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectID)
+		store.openProject(id: projectID)
 
 		await store.pullFromOrg(orgSlug: slug)
 
@@ -4915,7 +4911,7 @@ struct VaultStoreTests {
 			)]
 			store.syncMetadata = [projectID: metadata]
 			store.isUnlocked = true
-			store.selectProject(projectID)
+			store.openProject(id: projectID)
 			let binding = SyncPrincipalBinding(
 				registryURL: store.appEnvironment.registryURL,
 				principalID: "account-1",
@@ -4984,7 +4980,7 @@ struct VaultStoreTests {
 			)
 		]
 		store.isUnlocked = true
-		store.selectProject("project-a")
+		store.openProject(id: "project-a")
 
 		let push = Task { await store.pushToCloud() }
 		await gate.waitUntilArrived()
@@ -5042,7 +5038,7 @@ struct VaultStoreTests {
 		store.vaultOrgAssociations[projectId] = slug
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectId)
+		store.openProject(id: projectId)
 
 		let pull = Task { await store.pullFromOrg(orgSlug: slug) }
 		await gate.waitUntilArrived()
@@ -5097,7 +5093,7 @@ struct VaultStoreTests {
 			)
 		]
 		store.isUnlocked = true
-		store.selectProject(projectId)
+		store.openProject(id: projectId)
 
 		let oldPull = Task { await store.pullFromCloud() }
 		await oldGate.waitUntilArrived()
@@ -5856,7 +5852,7 @@ struct VaultStoreTests {
 		store.vaultOrgAssociations = ["rewrap": "acme"]
 		store.isUnlocked = true
 		store.selectAccount(.org("acme"))
-		store.selectProject("rewrap")
+		store.openProject(id: "rewrap")
 		return store
 	}
 
@@ -5991,7 +5987,7 @@ struct VaultStoreTests {
 		store.vaultOrgAssociations[projectId] = slug
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectId)
+		store.openProject(id: projectId)
 		let trustScope = OrgTrustScope(
 			registryURL: store.appEnvironment.registryURL,
 			organizationID: organizationID,
@@ -6061,7 +6057,7 @@ struct VaultStoreTests {
 		store.vaultOrgAssociations[projectId] = slug
 		store.isUnlocked = true
 		store.selectAccount(.org(slug))
-		store.selectProject(projectId)
+		store.openProject(id: projectId)
 
 		let push = Task { await store.pushToOrg(orgSlug: slug) }
 		await gate.waitUntilArrived()

@@ -48,7 +48,7 @@ struct Round3BenchmarkTests {
 			environments: ["default": ["TOKEN": "secret"]]
 		)]
 		store.isUnlocked = true
-		store.selectProject("schema-project")
+		store.openProject(id: "schema-project")
 
 		let start = ContinuousClock.now
 		await store.pushToCloud()

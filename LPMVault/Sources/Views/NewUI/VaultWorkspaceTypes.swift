@@ -99,6 +99,15 @@ struct VaultSensitiveActionContext: Equatable {
       && selectedProjectID == projectID
       && selectedEnvironment == environment
   }
+
+  @MainActor
+  func isCurrent(in store: VaultStore) -> Bool {
+    isCurrent(
+      isUnlocked: store.isUnlocked,
+      selectedProjectID: store.selectedProjectId,
+      selectedEnvironment: store.selectedEnvironment
+    )
+  }
 }
 
 enum VaultCreationDismissalPolicy {

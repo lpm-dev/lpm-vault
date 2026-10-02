@@ -207,7 +207,7 @@ private struct VaultSecretEditor: View {
 	}
 
 	private var canGenerate: Bool {
-		store.isUnlocked && store.selectedProjectId == projectID && store.selectedEnvironment == environment
+		VaultSensitiveActionContext(projectID: projectID, environment: environment).isCurrent(in: store)
 			&& !editDraft.isSaveInFlight && !editDraft.hasExternalConflict
 	}
 

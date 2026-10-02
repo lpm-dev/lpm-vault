@@ -493,8 +493,7 @@ struct VaultWorkspaceView: View {
 
 	private func copyAll() {
 		guard copyAllTask == nil, let project else { return }
-		let projectID = project.id
-		let environment = store.selectedEnvironment
+		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
 		let requestID = UUID()
 		copyAllID = requestID
 		copyAllTask = Task { @MainActor in
@@ -509,13 +508,11 @@ struct VaultWorkspaceView: View {
 			)
 			guard success,
 				copyAllID == requestID,
-				store.isUnlocked,
-				store.selectedProjectId == projectID,
-				store.selectedEnvironment == environment,
+				context.isCurrent(in: store),
 				let current = store.selectedProject
 			else { return }
 			let contents = ClipboardManager.dotenvText(
-				for: current.secrets(for: environment)
+				for: current.secrets(for: context.environment)
 			)
 			ClipboardManager.shared.copy(contents, clearAfter: 15)
 		}
@@ -546,8 +543,8 @@ struct VaultWorkspaceView: View {
 
 	private func exportCurrentEnvironment() {
 		guard let project, exportTask == nil else { return }
-		let projectID = project.id
-		let environment = store.selectedEnvironment
+		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
+		let environment = context.environment
 		let panel = NSSavePanel()
 		let suffix = environment == "default" ? "" : ".\(environment)"
 		panel.nameFieldStringValue = ".env\(suffix)"
@@ -564,7 +561,7 @@ struct VaultWorkspaceView: View {
 			}
 			do {
 				try await store.exportEnvironment(
-					projectId: projectID,
+					projectId: context.projectID,
 					environment: environment,
 					to: url
 				)
@@ -572,9 +569,7 @@ struct VaultWorkspaceView: View {
 				return
 			} catch {
 				guard VaultTaskOwnership.owns(current: exportID, request: requestID),
-					store.isUnlocked,
-					store.selectedProjectId == projectID,
-					store.selectedEnvironment == environment
+					context.isCurrent(in: store)
 				else { return }
 				store.error = "Export failed. \(error.localizedDescription)"
 			}

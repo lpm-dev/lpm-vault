@@ -1278,7 +1278,7 @@ struct CurrentContractTests {
       )
     ]
     store.isUnlocked = true
-    store.selectProject("unauthorized")
+    store.openProject(id: "unauthorized")
 
     await store.pullFromCloud()
 
@@ -1379,7 +1379,7 @@ struct CurrentContractTests {
     store.syncMetadata["vault-1"] = metadata
     #expect(keychain.seedSyncMetadata(["vault-1": metadata]))
     store.isUnlocked = true
-    store.selectProject("vault-1")
+    store.openProject(id: "vault-1")
 
     await store.pushToCloud()
 
