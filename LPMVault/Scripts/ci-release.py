@@ -9,15 +9,43 @@ import subprocess
 from pathlib import Path
 
 
+def subprocess_environment(environment=None):
+    result = dict(os.environ if environment is None else environment)
+    result.pop("IMMUTABLE_RELEASES_READ_TOKEN", None)
+    return result
+
+
 def run(*args, **kwargs):
+    kwargs["env"] = subprocess_environment(kwargs.get("env"))
     result = subprocess.run(args, check=False, **kwargs)
     if result.returncode:
         raise RuntimeError(f"{args[0]} failed with status {result.returncode}")
     return result
 
 
-def output(*args):
-    return subprocess.check_output(args, text=True).strip()
+def output(*args, env=None):
+    try:
+        return subprocess.check_output(args, text=True, env=subprocess_environment(env)).strip()
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"{args[0]} failed with status {error.returncode}") from None
+
+
+def repository_preflight(repository):
+    repo = json.loads(output("gh", "api", f"repos/{repository}"))
+    if repo.get("private") is not False:
+        raise ValueError("Public update downloads require a public repository")
+    token = os.environ.get("IMMUTABLE_RELEASES_READ_TOKEN", "").strip()
+    if not token:
+        raise ValueError("Missing IMMUTABLE_RELEASES_READ_TOKEN; configure a repository-scoped Administration: read credential")
+    environment = subprocess_environment()
+    environment["GH_TOKEN"] = token
+    try:
+        settings = json.loads(output("gh", "api", f"repos/{repository}/immutable-releases", env=environment))
+    except RuntimeError:
+        raise RuntimeError("Immutable-release preflight failed; check IMMUTABLE_RELEASES_READ_TOKEN access, expiry, and Administration: read permission") from None
+    if settings.get("enabled") is not True:
+        raise ValueError("Enable immutable releases before publishing")
+    print(f"Publication preflight passed for {repository}")
 
 
 def release_version(tag):
@@ -28,29 +56,35 @@ def release_version(tag):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Build a signed release or verify signing without publication")
-    parser.add_argument('--verify-only', action='store_true')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--verify-only', action='store_true')
+    modes.add_argument('--preflight-only', action='store_true')
+    parser.add_argument('--signing-only', action='store_true')
     parser.add_argument('--version')
     parser.add_argument('--build')
     args = parser.parse_args(argv)
+    if args.signing_only and not args.verify_only:
+        parser.error('--signing-only requires --verify-only')
     if args.verify_only:
         if not args.version or not args.build:
             parser.error('--verify-only requires --version and --build')
         version = release_version('v' + args.version)
         if not re.fullmatch(r'[1-9][0-9]{0,3}(\.(0|[1-9][0-9]?)){0,2}', args.build):
             raise ValueError('Invalid verification build number')
+        if not args.signing_only:
+            repository_preflight(os.environ["GITHUB_REPOSITORY"])
         sign_release(version, args.build)
         return
     if args.version or args.build:
         parser.error('--version and --build are only available with --verify-only')
+    if args.preflight_only:
+        repository_preflight(os.environ["GITHUB_REPOSITORY"])
+        return
     version = release_version(os.environ["GITHUB_REF_NAME"])
     repository = os.environ["GITHUB_REPOSITORY"]
     run("git", "fetch", "origin", "main")
     run("git", "merge-base", "--is-ancestor", "HEAD", "origin/main")
-    repo = json.loads(output("gh", "api", f"repos/{repository}"))
-    if repo["private"]:
-        raise ValueError("Public update downloads require a public repository")
-    if not json.loads(output("gh", "api", f"repos/{repository}/immutable-releases"))["enabled"]:
-        raise ValueError("Enable immutable releases before publishing")
+    repository_preflight(repository)
     # Xcode substitutes this value from the committed project settings.
     project = Path("LPMVault/LPMVault.xcodeproj/project.pbxproj").read_text()
     builds = set(re.findall(r"CURRENT_PROJECT_VERSION = ([0-9.]+);", project))
@@ -78,6 +112,10 @@ def main(argv=None):
         "--draft", "--title", f"LPM Vault {version}", "--generate-notes",
         *(str(Path("release-output") / name) for name in artifacts))
     run("gh", "release", "edit", f"v{version}", "--repo", repository, "--draft=false", "--latest")
+    published = json.loads(output("gh", "api", f"repos/{repository}/releases/tags/v{version}"))
+    if (published.get("tag_name") != f"v{version}" or published.get("draft") is not False
+            or published.get("immutable") is not True):
+        raise RuntimeError("Release publication did not confirm immutable protection; inspect the release before recovery")
 
 
 def sign_release(version, build):
@@ -116,7 +154,7 @@ def sign_release(version, build):
         run("bash", "LPMVault/Scripts/generate-appcast.sh", "release-output", str(directory / "sparkle"))
     finally:
         run("security", "list-keychains", "-d", "user", "-s", *original_search)
-        subprocess.run(["security", "delete-keychain", str(keychain)], check=False)
+        subprocess.run(["security", "delete-keychain", str(keychain)], check=False, env=subprocess_environment())
         for path in directory.glob("*"):
             if path.is_file():
                 path.unlink()

@@ -74,6 +74,31 @@ The release workflow requires these repository Actions secrets:
 | `APPLE_NOTARY_KEY_ID` | Apple API key identifier |
 | `APPLE_NOTARY_ISSUER_ID` | App Store Connect issuer UUID |
 | `SPARKLE_PRIVATE_KEY` | Dedicated Sparkle EdDSA private key |
+| `IMMUTABLE_RELEASES_READ_TOKEN` | Fine-grained token for `lpm-dev/lpm-vault`, with repository **Administration: read** permission |
+
+The immutable-release settings API requires **Administration: read** permission.
+The built-in `GITHUB_TOKEN` cannot receive this permission.
+Publication uses `GITHUB_TOKEN` with **Contents: write** permission.
+The script passes the separate read credential only to the settings request.
+Other subprocesses do not receive that credential.
+
+### Configure the settings credential
+
+1. Open [fine-grained token creation](https://github.com/settings/personal-access-tokens/new) with the `tolgaergin` account.
+2. Set the resource owner to `lpm-dev`.
+3. Select **Only select repositories** and choose `lpm-vault`.
+4. Add repository **Administration: read** permission.
+5. Leave other permissions disabled, except the automatic **Metadata: read** permission.
+6. Select an expiration that complies with the organization policy.
+7. Create the token and complete any required organization approval.
+8. Save the token as the repository Actions secret `IMMUTABLE_RELEASES_READ_TOKEN`.
+9. Record the expiration and replace the secret before that date.
+
+The account that creates the token must have repository administration access.
+A pending, expired, or incorrectly scoped token stops the preflight before signing.
+Keep the token out of issue reports, pull requests, and diagnostic logs.
+
+### Signing credentials
 
 Keep a secure backup of the signing keys. The local Sparkle account is `dev.lpm.vault.sparkle`. The public key is committed in `Info.plist` and verified during packaging.
 
@@ -83,7 +108,23 @@ The build runner imports the Developer ID export into a temporary Keychain. Clea
 
 ### Verify credentials before publication
 
-The **Verify signed release** workflow uses the repository secrets to build and notarize test installers. It works while the repository is private.
+The **Verify signed release** workflow first verifies publication readiness with the same settings request as production.
+It requires a public repository, enabled immutable releases, and the read credential.
+It then uses the signing secrets to build and notarize test installers without publication.
+
+For private repository setup, select the workflow's **signing_only** input.
+This mode verifies signing without the publication preflight.
+It does not prove that production publication can succeed.
+The `release-check-*` tag path always includes the publication preflight.
+
+For a settings check without signing, use the preflight command:
+
+```bash
+python3 LPMVault/Scripts/ci-release.py --preflight-only
+```
+
+This command requires `GITHUB_REPOSITORY`, `GH_TOKEN`, and `IMMUTABLE_RELEASES_READ_TOKEN` in the environment.
+It does not create a release or use the Apple signing secrets.
 
 Run it manually with a test version and build number. Before the workflow reaches `main`, push a `release-check-*` tag on the reviewed branch:
 
@@ -112,6 +153,8 @@ GitHub cannot return saved secret values to a local build. A local build uses an
 10. Verify that the published description contains the guidance and retains the generated list.
 
 The tag starts the CI gates again. The release job requires a commit from `main`, a public repository, and immutable releases.
+After publication, the job verifies the tag, published state, and immutable protection through the release API.
+If this verification fails, inspect the published release before recovery.
 
 The job signs every Sparkle component, signs Vault, notarizes the app, staples its ticket, and verifies Gatekeeper acceptance. It repeats notarization for the DMG. It then generates and verifies the signed feed and archive signatures.
 

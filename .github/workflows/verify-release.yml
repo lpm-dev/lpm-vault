@@ -12,6 +12,11 @@ on:
         description: Test app build number
         required: true
         default: '3'
+      signing_only:
+        description: Skip publication preflight for private-repository bootstrap only
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -32,6 +37,9 @@ jobs:
           persist-credentials: false
       - name: Sign, notarize, and verify without publication
         env:
+          GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_RELEASES_READ_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_READ_TOKEN }}
+          SIGNING_ONLY: ${{ inputs.signing_only }}
           TEST_VERSION: ${{ inputs.version || '1.0.0' }}
           TEST_BUILD: ${{ inputs.build || '3' }}
           APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
@@ -41,9 +49,14 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: python3 LPMVault/Scripts/ci-release.py --verify-only --version "$TEST_VERSION" --build "$TEST_BUILD"
+        run: |
+          args=(--verify-only --version "$TEST_VERSION" --build "$TEST_BUILD")
+          if [[ "$SIGNING_ONLY" == "true" ]]; then
+            args+=(--signing-only)
+          fi
+          python3 LPMVault/Scripts/ci-release.py "${args[@]}"
       - name: Save verified installers
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vault-verified-installers
           path: |
