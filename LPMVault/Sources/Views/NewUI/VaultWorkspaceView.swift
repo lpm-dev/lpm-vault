@@ -34,6 +34,7 @@ struct VaultWorkspaceView: View {
 	@State private var showPullConfirmation = false
 	@State private var conflictTarget: VaultSyncTarget?
 	@State private var showConnectCLISheet = false
+	@State private var importReview: EnvFileImportReview?
 	@State private var currentImportTask: Task<Void, Never>?
 	@State private var currentImportID: UUID?
 	@State private var exportTask: Task<Void, Never>?
@@ -60,6 +61,10 @@ struct VaultWorkspaceView: View {
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.onChange(of: store.selectedEnvironment) { _, environment in
 			resetCopyPresentation()
+			importReview = nil
+			currentImportTask?.cancel()
+			currentImportTask = nil
+			currentImportID = nil
 			exportTask?.cancel()
 			exportTask = nil
 			exportID = nil
@@ -283,6 +288,9 @@ struct VaultWorkspaceView: View {
 
 	private var workspaceSheets: some View {
 		workspaceLayout
+		.sheet(item: $importReview) { review in
+			EnvFileImportReviewSheet(store: store, review: review).vaultPrivacyProtected(isObscured)
+		}
 		.sheet(isPresented: $showNewProject) {
 			NewVaultSheet(store: store).vaultPrivacyProtected(isObscured)
 		}
@@ -495,6 +503,10 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func dismissNativeDialogsForPrivacy() {
+		importReview = nil
+		currentImportTask?.cancel()
+		currentImportTask = nil
+		currentImportID = nil
 		projectToRename = nil
 		projectNameDraft = ""
 		renameEnvironmentTarget = nil
@@ -552,7 +564,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func importCurrentEnvironment() {
-		guard let project, currentImportTask == nil else { return }
+		guard let project, currentImportTask == nil, importReview == nil else { return }
 		let environment = store.selectedEnvironment
 		let panel = NSOpenPanel()
 		panel.canChooseFiles = true
@@ -564,12 +576,14 @@ struct VaultWorkspaceView: View {
 		let requestID = UUID()
 		currentImportID = requestID
 		currentImportTask = Task {
-			let result = await store.importEnvFile(at: url, to: project.id, environment: environment)
+			let result = await store.prepareEnvFileImport(at: url, to: project.id, environment: environment)
 			guard currentImportID == requestID else { return }
 			currentImportTask = nil
 			currentImportID = nil
-			if case .failure(let error) = result, error != .cancelled {
-				store.error = error.localizedDescription
+			switch result {
+			case .success(let review): importReview = review
+			case .failure(.cancelled): break
+			case .failure(let error): store.error = error.localizedDescription
 			}
 		}
 	}
@@ -653,6 +667,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func resetProjectPresentation() {
+		importReview = nil
 		mode = .matrix
 		filter = .all
 		environmentViewMode = .table

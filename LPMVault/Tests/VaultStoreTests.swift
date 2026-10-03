@@ -1401,6 +1401,23 @@ struct VaultStoreTests {
 		#expect(keychain.updateEnvironmentsCallCount == 1)
 	}
 
+	@Test("dotenv import keeps differing existing values without replacement approval")
+	func localEnvImportKeepsExistingValuesByDefault() async {
+		let importer = MockEnvFileImportService()
+		await importer.setImmediateResult(.success(ImportedEnvFile(secrets: ["TOKEN": "incoming", "NEW": "added"])))
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["TOKEN": "existing"])],
+			envFileImportService: importer
+		)
+		store.isUnlocked = true
+		store.openProject(id: "id-1")
+		let result = await store.importEnvFile(at: URL(fileURLWithPath: "/tmp/import.env"), to: "id-1", environment: "default")
+		#expect(result == .success(ImportedEnvFile(secrets: ["TOKEN": "incoming", "NEW": "added"])))
+		#expect(keychain.storage["id-1"]?.secrets == ["TOKEN": "existing", "NEW": "added"])
+		#expect(store.projects[0].secrets(for: "default") == ["TOKEN": "existing", "NEW": "added"])
+		store.lock()
+	}
+
 	@Test("tab changes cancel a pending dotenv import instead of redirecting it")
 	func localEnvImportCannotFollowTabSelection() async {
 		let importer = MockEnvFileImportService()

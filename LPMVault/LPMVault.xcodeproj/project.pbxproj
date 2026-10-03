@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		ED3B5BC3045740528E63C67A /* EnvFileImportReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47097B91E25D46F39814F716 /* EnvFileImportReviewTests.swift */; };
+		0057CF8FCAA4437F89D97624 /* EnvFileImportReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E92BB9F0B2064DF783E259F5 /* EnvFileImportReviewSheet.swift */; };
+		A42C380EC05A413288773ABC /* EnvFileImportReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63B259C7D1514D03A701A236 /* EnvFileImportReview.swift */; };
 		04C520D3876DE81AFCE34669 /* VaultAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71D148247E7A2F250DA161CD /* VaultAppearance.swift */; };
 		05F8B08121A9FDBB332690DC /* EnvFileImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E7E17CFD8A20E12558CD8E0 /* EnvFileImportTests.swift */; };
 		06F2A10ECDC146991E96109E /* VaultDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18DEAAFEE6A92D4350A97363 /* VaultDesignSystem.swift */; };
@@ -104,6 +107,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		47097B91E25D46F39814F716 /* EnvFileImportReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReviewTests.swift; sourceTree = "<group>"; };
+		E92BB9F0B2064DF783E259F5 /* EnvFileImportReviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReviewSheet.swift; sourceTree = "<group>"; };
+		63B259C7D1514D03A701A236 /* EnvFileImportReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReview.swift; sourceTree = "<group>"; };
 		031C570F6BF94FC959CB4D89 /* AuthSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionCoordinator.swift; sourceTree = "<group>"; };
 		06490EEFC05413818E516BC3 /* AppDelegateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegateTests.swift; sourceTree = "<group>"; };
 		065A04BEECB8985219C44409 /* AuthenticatedVaultEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticatedVaultEnvelope.swift; sourceTree = "<group>"; };
@@ -216,6 +222,7 @@
 		2D7DAB2A98F2314EBAB7A08A /* NewUI */ = {
 			isa = PBXGroup;
 			children = (
+				E92BB9F0B2064DF783E259F5 /* EnvFileImportReviewSheet.swift */,
 				465AD9498C88039BB74D5D40 /* AddVariableSheet.swift */,
 				CC1771B869D4D9BEDE704A04 /* AuthStatusView.swift */,
 				2C8C7039C4F82A75ABAFDBB9 /* CloudVaultsSheet.swift */,
@@ -243,6 +250,7 @@
 		453FD7BD13189F3380DAE14B /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				63B259C7D1514D03A701A236 /* EnvFileImportReview.swift */,
 				6C9EE22CF4981C65729D0AA7 /* AddVariableDraft.swift */,
 				7CEFDB752A8CA0EF3E0007CF /* LPMOrg.swift */,
 				178A6AD4D7254CB4955C912E /* LPMToken.swift */,
@@ -273,6 +281,7 @@
 		6746521328BAA2FF63764522 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				47097B91E25D46F39814F716 /* EnvFileImportReviewTests.swift */,
 				E8091A4EC6CAC5A1F8E43BAE /* AddVariableTests.swift */,
 				06490EEFC05413818E516BC3 /* AppDelegateTests.swift */,
 				ABA50696ECCA4608639D0C28 /* AuditRegressionTests.swift */,
@@ -476,6 +485,7 @@
 				1B65DFA8F8C5EE52C99C8D2D /* CurrentContractTests.swift in Sources */,
 				05F8B08121A9FDBB332690DC /* EnvFileImportTests.swift in Sources */,
 				89A4B6EF8C27BB520DC3C148 /* KeychainServiceTests.swift in Sources */,
+				ED3B5BC3045740528E63C67A /* EnvFileImportReviewTests.swift in Sources */,
 				79239F41A5347411FC68689B /* Mocks.swift in Sources */,
 				22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */,
 				35AAAC807BBE6E0D97B42E51 /* OCRText.swift in Sources */,
@@ -501,6 +511,8 @@
 			files = (
 				F0556219DD70A4FFC552E176 /* AddVariableDraft.swift in Sources */,
 				4CFBF730D3404F13A4751FAB /* AddVariableSheet.swift in Sources */,
+				A42C380EC05A413288773ABC /* EnvFileImportReview.swift in Sources */,
+				0057CF8FCAA4437F89D97624 /* EnvFileImportReviewSheet.swift in Sources */,
 				3E44FF35159354A1B0047F69 /* App.swift in Sources */,
 				E0FA7F9CDA4FEBE4B53D13B0 /* AuthCredentialBackend.swift in Sources */,
 				34DEFD39A6B2DDEA18AAD05D /* AuthSessionCoordinator.swift in Sources */,
