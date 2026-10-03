@@ -25,7 +25,8 @@ jobs:
             for vault_sample_number in 1 2 3 4 5 6; do
               sleep 60
               kill -0 "$vault_test_pid" 2>/dev/null || exit 0
-              for vault_sample_pid in $(pgrep -x swiftpm-testing || true); do
+              ps -axo pid=,comm= | awk '$2 ~ /(swiftpm.*testing|LPMVaultTests)/ { print }'
+              for vault_sample_pid in $(ps -axo pid=,comm= | awk '$2 ~ /(swiftpm.*testing|LPMVaultTests)/ { print $1 }'); do
                 vault_sample_path="$RUNNER_TEMP/vault-test-sample-$vault_sample_number.txt"
                 sample "$vault_sample_pid" 2 -file "$vault_sample_path" || true
                 cat "$vault_sample_path" || true
