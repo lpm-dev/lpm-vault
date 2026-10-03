@@ -63,6 +63,7 @@ final class SheetTestHost<V: View> {
 	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false, usesHostingView: Bool = false) {
 		window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
+		window.animationBehavior = .none
 		if usesHostingView {
 			let host = NSHostingView(rootView: root)
 			if keepsRequestedSize { host.sizingOptions = [] }
