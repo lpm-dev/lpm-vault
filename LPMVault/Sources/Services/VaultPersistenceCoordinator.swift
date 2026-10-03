@@ -161,32 +161,61 @@ actor VaultPersistenceCoordinator {
 
 	func loadSnapshot() -> Result<VaultPersistenceSnapshot, KeychainError> {
 		service.withKeychainTransaction {
-			let loadedMetadata: [VaultProjectMetadata]
-			switch service.listProjectMetadataResult() {
-			case .success(let metadata): loadedMetadata = metadata
-			case .failure(let error): return .failure(error)
-			}
-			let projects = loadedMetadata.map(VaultProject.init(metadata:)).sorted {
-				$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-			}
-			let metadata: [String: SyncMetadata]
-			switch loadSyncMetadataResult(projectIds: projects.map(\.id)) {
-			case .success(let value): metadata = value
-			case .failure(let error): return .failure(error)
-			}
-			let associations: [String: String]
-			switch loadOrgAssociationsResult() {
-			case .success(let value): associations = value
-			case .failure(let error): return .failure(error)
-			}
-			return .success(VaultPersistenceSnapshot(
-				projects: projects,
-				syncMetadata: metadata,
-				orgAssociations: associations,
-				cliAccess: (try? service.cliAccessResults(vaultIds: projects.map(\.id)).get()) ?? [:]
-			))
+			loadSnapshotUnlocked(selectedProjectID: nil, strictPolicies: false)
+		}.flatMap { $0 }
+	}
+
+	func refreshSnapshot(selectedProjectID: String?) -> Result<VaultPersistenceSnapshot, KeychainError> {
+		service.withKeychainTransaction {
+			guard !Task.isCancelled else { return .failure(.accessDenied) }
+			return loadSnapshotUnlocked(selectedProjectID: selectedProjectID, strictPolicies: true)
+		}.flatMap { $0 }
+	}
+
+	private func loadSnapshotUnlocked(
+		selectedProjectID: String?,
+		strictPolicies: Bool
+	) -> Result<VaultPersistenceSnapshot, KeychainError> {
+		let loadedMetadata: [VaultProjectMetadata]
+		switch service.listProjectMetadataResult() {
+		case .success(let metadata): loadedMetadata = metadata
+		case .failure(let error): return .failure(error)
 		}
-		.flatMap { $0 }
+		var projects = loadedMetadata.map(VaultProject.init(metadata:)).sorted {
+			$0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+		}
+		let metadata: [String: SyncMetadata]
+		switch loadSyncMetadataResult(projectIds: projects.map(\.id)) {
+		case .success(let value): metadata = value
+		case .failure(let error): return .failure(error)
+		}
+		let associations: [String: String]
+		switch loadOrgAssociationsResult() {
+		case .success(let value): associations = value
+		case .failure(let error): return .failure(error)
+		}
+		if strictPolicies && Task.isCancelled { return .failure(.accessDenied) }
+		let policies: [String: VaultCliAccess]
+		switch service.cliAccessResults(vaultIds: projects.map(\.id)) {
+		case .success(let loaded): policies = loaded
+		case .failure(let error):
+			if strictPolicies { return .failure(error) }
+			policies = [:]
+		}
+		if strictPolicies && Task.isCancelled { return .failure(.accessDenied) }
+		if let selectedProjectID, let index = projects.firstIndex(where: { $0.id == selectedProjectID }) {
+			switch service.getProjectResult(vaultId: selectedProjectID) {
+			case .success(let project?): projects[index] = project
+			case .success(nil): return .failure(.itemNotFound)
+			case .failure(let error): return .failure(error)
+			}
+		}
+		return .success(VaultPersistenceSnapshot(
+			projects: projects,
+			syncMetadata: metadata,
+			orgAssociations: associations,
+			cliAccess: policies
+		))
 	}
 
 	func loadProject(vaultId: String) -> Result<VaultProject?, KeychainError> {

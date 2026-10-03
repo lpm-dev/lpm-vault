@@ -1117,6 +1117,7 @@ final class VaultStore {
 
   var projects: [VaultProject] = [] {
     didSet {
+      invalidateLocalStateRefresh()
       if !projects.elementsEqual(oldValue, by: { $0.id == $1.id }) {
         let projectIDs = Set(projects.lazy.map(\.id))
         projectCliAccess = projectCliAccess.filter { projectIDs.contains($0.key) }
@@ -1161,6 +1162,7 @@ final class VaultStore {
       workspaceSnapshotPublishTask = publishTask
     }
   }
+  @ObservationIgnored weak var activeSecretEditingSession: VaultSecretEditingSession?
   private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
   private(set) var workspaceSnapshotBuildCount = 0
   private let workspaceSnapshotBuilder = VaultWorkspaceSnapshotBuilder()
@@ -1171,6 +1173,7 @@ final class VaultStore {
   var selectedProjectId: String? {
     didSet {
       guard oldValue != selectedProjectId else { return }
+      invalidateLocalStateRefresh()
       cancelExports()
       if let oldValue { cancelLocalEnvImports(projectId: oldValue) }
       cancelLocalEnvPreviews()
@@ -1194,7 +1197,10 @@ final class VaultStore {
 
   // Auth state
   var currentUser: LPMUser? {
-    didSet { reconcileNavigationState() }
+    didSet {
+      invalidateLocalStateRefresh()
+      reconcileNavigationState()
+    }
   }
   var personalTokens: [LPMToken] = []
   var orgTokens: [String: [LPMToken]] = [:]  // orgSlug → tokens
@@ -1202,7 +1208,11 @@ final class VaultStore {
   var isLoggingIn: Bool = false
 
   // Navigation state
-  var selectedAccount: SelectedAccount = .personal
+  var selectedAccount: SelectedAccount = .personal {
+    didSet {
+      if oldValue != selectedAccount { invalidateLocalStateRefresh() }
+    }
+  }
   var showAuthStatus: Bool = false
 
   // Sync state
@@ -1661,6 +1671,96 @@ final class VaultStore {
 
   // MARK: - Load
 
+  private(set) var isRefreshingLocalState = false
+  private(set) var localStateRefreshError: String?
+  private(set) var needsLocalStateRefresh = false
+  private(set) var localStateRevision = 0
+  private var localStateRefreshTask: Task<Void, Never>?
+  private var localStateRefreshGeneration = 0
+
+  var canUseLocalSecrets: Bool {
+    isUnlocked && !isRefreshingLocalState && !needsLocalStateRefresh
+      && !isLoadingProjects && !isLoadingSelectedProject
+  }
+
+  /// Refreshes shared local state without extending the idle deadline.
+  func refreshLocalState() async {
+    guard !Task.isCancelled, isUnlocked, !isLoadingProjects else { return }
+    if let task = localStateRefreshTask {
+      await task.value
+      return
+    }
+    needsLocalStateRefresh = true
+    guard !isChangingCliAccess else { return }
+    invalidateSelectedProjectLoad()
+    cliAccessLoadTask?.cancel()
+    cliAccessLoadGeneration &+= 1
+    cancelExports()
+    localStateRevision &+= 1
+    localStateRefreshGeneration &+= 1
+    let generation = localStateRefreshGeneration
+    let session = vaultSessionGeneration
+    let projectID = selectedProjectId
+    let account = selectedAccount
+    let policyRevisions = cliAccessProjectRevisions
+    isRefreshingLocalState = true
+    localStateRefreshError = nil
+    let task = Task { [weak self, persistence, workspaceSnapshotBuilder] in
+      guard let self else { return }
+      await self.waitForProjectMutations()
+      guard !Task.isCancelled, generation == self.localStateRefreshGeneration else { return }
+      let result = await persistence.refreshSnapshot(selectedProjectID: projectID)
+      guard !Task.isCancelled, generation == self.localStateRefreshGeneration,
+        session == self.vaultSessionGeneration, self.isUnlocked,
+        self.selectedProjectId == projectID, self.selectedAccount == account
+      else { return }
+      switch result {
+      case .failure:
+        self.localStateRefreshError = "Could not refresh local vault state. Retry before copying or exporting secrets."
+        self.isRefreshingLocalState = false
+        self.localStateRefreshTask = nil
+      case .success(let snapshot):
+        guard let update = await workspaceSnapshotBuilder.buildIncremental(
+          currentProjects: snapshot.projects,
+          existingSnapshots: self.workspaceSnapshots.filter { $0.key == projectID }
+        ), !Task.isCancelled, generation == self.localStateRefreshGeneration,
+          session == self.vaultSessionGeneration, self.isUnlocked
+        else { return }
+        self.localStateRefreshTask = nil
+        if self.activeSecretEditingSession?.account == account {
+          self.activeSecretEditingSession?.receiveRefreshedProjects(snapshot.projects)
+        }
+        self.pendingWorkspaceSnapshots = update.snapshots
+        self.projects = snapshot.projects
+        self.syncMetadata = snapshot.syncMetadata
+        self.vaultOrgAssociations = snapshot.orgAssociations
+        self.publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
+        self.loadEnvironmentOrders()
+        self.reconcileNavigationState()
+        self.selectedProjectCliAccess = self.selectedProjectId.flatMap { self.projectCliAccess[$0] }
+        self.localStateRefreshError = nil
+        self.needsLocalStateRefresh = false
+        self.isRefreshingLocalState = false
+      }
+    }
+    localStateRefreshTask = task
+    await task.value
+    if !Task.isCancelled, isUnlocked, session == vaultSessionGeneration,
+      selectedProjectId == projectID, selectedAccount == account,
+      needsLocalStateRefresh, localStateRefreshError == nil, !isChangingCliAccess
+    {
+      await refreshLocalState()
+    }
+  }
+
+  private func invalidateLocalStateRefresh() {
+    guard localStateRefreshTask != nil else { return }
+    localStateRefreshGeneration &+= 1
+    localStateRefreshTask?.cancel()
+    localStateRefreshTask = nil
+    isRefreshingLocalState = false
+  }
+
   private func beginSelectedProjectLoadIfNeeded() {
     cancelCliAccessChange()
     selectedProjectCliAccess = nil
@@ -1825,6 +1925,7 @@ final class VaultStore {
   /// invalidates this generation before it can publish decrypted state.
   @discardableResult
   func loadProjects() async -> Bool {
+    invalidateLocalStateRefresh()
     invalidateSelectedProjectLoad()
     projectLoadGeneration &+= 1
     let generation = projectLoadGeneration
@@ -1853,6 +1954,8 @@ final class VaultStore {
       self.syncMetadata = snapshot.syncMetadata
       self.vaultOrgAssociations = snapshot.orgAssociations
       self.error = nil
+      self.needsLocalStateRefresh = false
+      self.localStateRefreshError = nil
       self.lastSuccessfulProjectLoadGeneration = generation
       self.loadEnvironmentOrders()
       self.reconcileNavigationState()
@@ -3559,7 +3662,7 @@ final class VaultStore {
     environment: String,
     to destination: URL
   ) async throws {
-    guard isUnlocked,
+    guard canUseLocalSecrets,
       selectedProjectId == projectId,
       selectedEnvironment == environment,
       let project = selectedProject
@@ -3597,6 +3700,7 @@ final class VaultStore {
   }
 
   func lock() {
+    activeSecretEditingSession = nil
     cancelCliAccessChange()
     cliAccessLoadTask?.cancel()
     cliAccessLoadGeneration &+= 1
@@ -3619,6 +3723,8 @@ final class VaultStore {
     autoLockCountdownSeconds = nil
     autoLockTaskGeneration &+= 1
     isUnlocked = false
+    needsLocalStateRefresh = false
+    localStateRefreshError = nil
     biometricService.resetCache()
     ClipboardManager.shared.clearClipboard()
     projects = projects.map { VaultProject(metadata: $0.metadata) }
@@ -3686,6 +3792,7 @@ final class VaultStore {
   }
 
   private func invalidateProjectLoad() {
+    invalidateLocalStateRefresh()
     projectLoadGeneration &+= 1
     projectLoadTask?.cancel()
     projectLoadTask = nil

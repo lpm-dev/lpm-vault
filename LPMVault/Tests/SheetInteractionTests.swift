@@ -341,6 +341,47 @@ struct SheetInteractionTests {
 		keychain.envStorage["sheet-regression"]?.environments[environment]?[key]
 	}
 
+	@Test("foreground activation and Refresh reload secrets changed by the CLI", arguments: ["foreground", "button"])
+	func foregroundReloadsCLIChanges(trigger: String) async throws {
+		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": "old"]])
+		let host = SheetTestHost(ContentView(store: store).environment(UpdateChecker())
+			.environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "refresh-regression")!)),
+			size: NSSize(width: 1100, height: 700), keepsRequestedSize: true)
+		defer { host.window.close() }
+		try await host.settle()
+		keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] = "cli-new"
+		if trigger == "foreground" {
+			NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+		} else {
+			try await host.click("Refresh")
+		}
+		#expect(try await host.waitUntil { store.selectedProject?.value(for: "TOKEN", in: "default") == "cli-new" })
+	}
+
+	@Test("local refresh keeps inspector drafts after CLI edits or deletion", arguments: ["changed", "deleted", "empty-deleted"])
+	func localRefreshKeepsInspectorDrafts(change: String) async throws {
+		let original = change == "empty-deleted" ? "" : "old"
+		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": original]])
+		let host = SheetTestHost(InspectorInteractionFixture(store: store), size: NSSize(width: 300, height: 640))
+		defer { host.window.close() }
+		try await host.settle()
+		try host.enterValue("unsaved-draft")
+		try await host.settle()
+		if change == "changed" {
+			keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] = "cli-new"
+		} else {
+			keychain.envStorage["sheet-regression"]?.environments["default"]?.removeValue(forKey: "TOKEN")
+		}
+		await store.refreshLocalState()
+		try await host.settle()
+		#expect(host.value == "unsaved-draft")
+		#expect(try await host.waitForText(change == "changed" ? "changed outside" : "deleted outside"))
+		try host.returnWhileEditing("value", modifiers: [])
+		try await host.settle()
+		#expect(stored(keychain, "default", "TOKEN") == (change == "changed" ? "cli-new" : nil))
+		#expect(keychain.saveEnvironmentsCallCount == 0)
+	}
+
 	@Test("lock-screen encryption note stays centered above the bottom", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
 	func lockScreenFooter(size: NSSize, scheme: ColorScheme) async throws {
 		let (store, _) = makeStore()
