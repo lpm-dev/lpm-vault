@@ -131,3 +131,26 @@ struct ProjectCLICommands: Equatable, Sendable {
 		commands = ["lpm env list \(flag)", "lpm dev \(flag)", "lpm run \(flag) <script>"]
 	}
 }
+
+struct ProjectCLITaskExample: Equatable, Sendable {
+	let json: String
+	let warning: String?
+
+	init?(vaultId: String, environments: [String], selectedEnvironment: String, configuration: LPMJSONValue? = nil) {
+		let names = Set(environments.filter {
+			!ProjectCLICommands(environment: $0, configuration: configuration).commands.isEmpty
+		})
+		guard let first = names.sorted().first else { return nil }
+		let dev = names.contains("development") ? "development" : names.contains("default") ? "default" : first
+		let start = names.contains("staging") ? "staging" : names.contains(selectedEnvironment) ? selectedEnvironment : dev
+		let object: [String: Any] = [
+			"vault": vaultId,
+			"tasks": ["dev": ["env": dev], "start": ["env": start]],
+		]
+		guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+			let json = String(data: data, encoding: .utf8)
+		else { return nil }
+		self.json = json
+		warning = configuration == nil ? "Check lpm.json aliases before using the example. The project configuration has not been verified." : nil
+	}
+}

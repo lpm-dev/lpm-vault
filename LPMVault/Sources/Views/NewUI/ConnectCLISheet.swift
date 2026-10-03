@@ -22,6 +22,7 @@ struct ConnectCLISheet: View {
 	@State private var statusTask: Task<Void, Never>?
 	@State private var statusGeneration = 0
 	@State private var configuration: LPMJSONValue?
+	@State private var showsTaskExample = false
 
 	private enum SetupMode: CaseIterable {
 		case copyJSON, writeFile
@@ -54,6 +55,7 @@ struct ConnectCLISheet: View {
 		VStack(alignment: .leading, spacing: 0) {
 			header
 			VaultHairline()
+			ScrollView {
 			VStack(alignment: .leading, spacing: 20) {
 				vaultIDSection
 				projectSection
@@ -62,6 +64,7 @@ struct ConnectCLISheet: View {
 			.padding(.horizontal, 24)
 			.padding(.top, 20)
 			.padding(.bottom, 20)
+			}.frame(maxHeight: 620)
 			footer
 		}
 		.frame(width: 600)
@@ -171,6 +174,7 @@ struct ConnectCLISheet: View {
 			}
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.terminal))
 			.clipShape(RoundedRectangle(cornerRadius: 8))
+			taskExample
 		}
 	}
 
@@ -186,6 +190,43 @@ struct ConnectCLISheet: View {
 		.foregroundStyle(VaultPalette.terminalText)
 		.lineSpacing(4)
 		.textSelection(.enabled)
+	}
+
+	@ViewBuilder
+	private var taskExample: some View {
+		if let example = ProjectCLITaskExample(vaultId: projectId, environments: project?.environmentNames ?? [], selectedEnvironment: store.selectedEnvironment, configuration: configuration) {
+			VStack(alignment: .leading, spacing: 0) {
+				Button { showsTaskExample.toggle() } label: {
+					Label("Optional task environments", systemImage: showsTaskExample ? "chevron.down" : "chevron.right")
+						.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+				}.buttonStyle(.plain).foregroundStyle(VaultPalette.accentForeground)
+					.accessibilityValue(showsTaskExample ? "Expanded" : "Collapsed")
+				if showsTaskExample {
+				VStack(alignment: .leading, spacing: 10) {
+					Text("Example using this vault's environments. Merge the env fields into your existing tasks and keep their other settings.")
+						.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textSecondary)
+					VStack(alignment: .leading, spacing: 8) {
+						HStack {
+							Text("Example · lpm.json").font(VaultTypography.mono(11))
+							Spacer()
+							TerminalBarButton(title: copiedItem == "task-example" ? "Copied" : "Copy example", systemImage: "doc.on.doc") {
+								copy(example.json, as: "task-example")
+							}
+						}
+						Text(example.json).font(VaultTypography.mono(12)).textSelection(.enabled)
+					}
+					.padding(12).foregroundStyle(VaultPalette.terminalText)
+					.frame(maxWidth: .infinity, alignment: .leading)
+					.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.terminal))
+					if let warning = example.warning {
+						Text(warning).font(.system(size: 11)).foregroundStyle(VaultPalette.orange)
+					}
+					Text("Write file only updates the vault ID. An explicit --env overrides a task's environment.")
+						.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+				}.padding(.top, 8)
+				}
+			}.font(.system(size: 12, weight: .medium))
+		}
 	}
 
 	@ViewBuilder
@@ -340,7 +381,12 @@ struct ConnectCLISheet: View {
 		statusTask = Task {
 			let (resolved, config) = await Task.detached(priority: .userInitiated) {
 				let status = ProjectCLILink.status(vaultId: vaultId, folder: folder)
-				let config = status == .linked ? ProjectConfigFile.readJSON(at: ProjectCLILink.configURL(inFolder: folder)) : nil
+				let config: LPMJSONValue?
+				switch status {
+				case .linked, .notLinked, .linkedToOtherVault:
+					config = ProjectConfigFile.readJSON(at: ProjectCLILink.configURL(inFolder: folder))
+				case .noFolder, .unreadable: config = nil
+				}
 				return (status, config)
 			}.value
 			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
