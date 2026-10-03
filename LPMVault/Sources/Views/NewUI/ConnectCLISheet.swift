@@ -22,7 +22,7 @@ struct ConnectCLISheet: View {
 	@State private var statusTask: Task<Void, Never>?
 	@State private var statusGeneration = 0
 	@State private var configuration: LPMJSONValue?
-	@State private var showsTaskExample = false
+	@State var showsTaskExample = false
 
 	private enum SetupMode: CaseIterable {
 		case copyJSON, writeFile
@@ -47,6 +47,12 @@ struct ConnectCLISheet: View {
 		chosenFolder ?? ProjectCLILink.folder(vaultId: projectId, projectPath: project?.path ?? "", defaults: localFolderDefaults)
 	}
 
+	private var availableHeight: CGFloat {
+		max(1, ((NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.height ?? 800) - 80)
+	}
+
+	private var preferredHeight: CGFloat { min(showsTaskExample ? 720 : 560, availableHeight) }
+
 	private var configJSON: String {
 		"{\n  \"vault\": \"\(projectId)\"\n}"
 	}
@@ -56,18 +62,19 @@ struct ConnectCLISheet: View {
 			header
 			VaultHairline()
 			ScrollView {
-			VStack(alignment: .leading, spacing: 20) {
-				vaultIDSection
-				projectSection
-				terminalSection
-			}
-			.padding(.horizontal, 24)
-			.padding(.top, 20)
-			.padding(.bottom, 20)
+				VStack(alignment: .leading, spacing: 20) {
+					vaultIDSection
+					projectSection
+					terminalSection
+				}
+				.padding(.horizontal, 24)
+				.padding(.top, 20)
+				.padding(.bottom, 20)
 			}.frame(maxHeight: 620)
 			footer
 		}
 		.frame(width: 600)
+		.frame(minHeight: min(560, availableHeight), idealHeight: preferredHeight, maxHeight: preferredHeight)
 		.background(VaultPalette.content)
 		.onAppear(perform: refreshStatus)
 		.onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -202,28 +209,28 @@ struct ConnectCLISheet: View {
 				}.buttonStyle(.plain).foregroundStyle(VaultPalette.accentForeground)
 					.accessibilityValue(showsTaskExample ? "Expanded" : "Collapsed")
 				if showsTaskExample {
-				VStack(alignment: .leading, spacing: 10) {
-					Text("Example using this vault's environments. Merge the env fields into your existing tasks and keep their other settings.")
-						.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textSecondary)
-					VStack(alignment: .leading, spacing: 8) {
-						HStack {
-							Text("Example · lpm.json").font(VaultTypography.mono(11))
-							Spacer()
-							TerminalBarButton(title: copiedItem == "task-example" ? "Copied" : "Copy example", systemImage: "doc.on.doc") {
-								copy(example.json, as: "task-example")
+					VStack(alignment: .leading, spacing: 10) {
+						Text("Example using this vault's environments. Merge the env fields into your existing tasks and keep their other settings.")
+							.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textSecondary)
+						VStack(alignment: .leading, spacing: 8) {
+							HStack {
+								Text("Example · lpm.json").font(VaultTypography.mono(11))
+								Spacer()
+								TerminalBarButton(title: copiedItem == "task-example" ? "Copied" : "Copy example", systemImage: "doc.on.doc") {
+									copy(example.json, as: "task-example")
+								}
 							}
+							Text(example.json).font(VaultTypography.mono(12)).textSelection(.enabled)
 						}
-						Text(example.json).font(VaultTypography.mono(12)).textSelection(.enabled)
-					}
-					.padding(12).foregroundStyle(VaultPalette.terminalText)
-					.frame(maxWidth: .infinity, alignment: .leading)
-					.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.terminal))
-					if let warning = example.warning {
-						Text(warning).font(.system(size: 11)).foregroundStyle(VaultPalette.orange)
-					}
-					Text("Write file only updates the vault ID. An explicit --env overrides a task's environment.")
-						.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
-				}.padding(.top, 8)
+						.padding(12).foregroundStyle(VaultPalette.terminalText)
+						.frame(maxWidth: .infinity, alignment: .leading)
+						.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.terminal))
+						if let warning = example.warning {
+							Text(warning).font(.system(size: 11)).foregroundStyle(VaultPalette.orange)
+						}
+						Text("Write file only updates the vault ID. An explicit --env overrides a task's environment.")
+							.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+					}.padding(.top, 8)
 				}
 			}.font(.system(size: 12, weight: .medium))
 		}

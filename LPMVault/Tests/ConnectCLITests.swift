@@ -376,7 +376,6 @@ extension SheetInteractionTests {
 		defer { store.lock() }
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "example").environment(\.colorScheme, .light), size: NSSize(width: 600, height: 780), keepsRequestedSize: true, usesHostingView: true)
 		defer { host.window.close() }
-		host.window.makeKeyAndOrderFront(nil)
 		#expect(try await !host.text().contains("Copy example"))
 		try await host.click("Optional task environments")
 		#expect(try await host.waitForText("Copy example"))
@@ -387,5 +386,23 @@ extension SheetInteractionTests {
 		try ProjectCLILink.link(vaultId: "example", folder: folder.path)
 		let linked = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
 		#expect(linked["tasks"] as? [String: [String: String]] == ["dev": ["command": "npm run dev", "env": "qa"]])
+	}
+}
+
+extension SheetInteractionTests {
+	@Test("an expanded task example fits a constrained sheet with visible footer actions")
+	@MainActor
+	func expandedExampleFitsShortWindow() async throws {
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService())
+		store.projects = [VaultProject(id: "example", name: "Example", path: "", environments: ["development": [:], "staging": [:]])]
+		store.isUnlocked = true
+		store.selectedProjectId = "example"
+		defer { store.lock() }
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "example", showsTaskExample: true).environment(\.colorScheme, .light), size: NSSize(width: 600, height: 620), keepsRequestedSize: true, usesHostingView: true)
+		defer { host.window.close() }
+		#expect(try await host.waitForText("Done", footer: 70))
+		#expect(try await host.waitForText("Docs", footer: 70))
+		try await host.click("Copy example")
+		#expect(NSPasteboard.general.string(forType: .string)?.contains("tasks") == true)
 	}
 }
