@@ -407,7 +407,7 @@ struct VaultWorkspaceView: View {
 			Text("Only the selected environment is changed.")
 		}
 		.alert("LPM Vault", isPresented: Binding(
-				get: { store.error != nil && store.selectedProjectLoadFailure == nil },
+				get: { store.error != nil },
 			set: { if !$0 { store.error = nil } }
 		)) {
 			Button("OK", role: .cancel) { store.error = nil }

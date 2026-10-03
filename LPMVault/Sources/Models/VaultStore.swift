@@ -1734,14 +1734,12 @@ final class VaultStore {
           return
         }
         self.projects[index] = loadedProject
-        self.error = nil
         self.normalizeSelectedEnvironment()
       case .success(nil):
         self.error = "The selected env project no longer exists in Keychain."
         self.selectedProjectId = nil
       case .failure(let failure):
         self.selectedProjectLoadFailure = VaultLoadFailure(failure)
-        self.error = "Could not load the selected env project. \(failure.description)"
       }
       if generation == self.selectedProjectLoadGeneration {
         self.isLoadingSelectedProject = false
@@ -1778,7 +1776,6 @@ final class VaultStore {
 
   func retrySelectedProjectLoad() {
     guard isUnlocked, !isLoadingSelectedProject, selectedProjectLoadFailure != nil else { return }
-    error = nil
     beginSelectedProjectLoadIfNeeded()
   }
 

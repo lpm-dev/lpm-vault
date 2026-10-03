@@ -6,6 +6,7 @@ import Vision
 
 @testable import LPMVault
 
+extension SheetInteractionTests {
 @Suite("Vault load recovery", .serialized)
 @MainActor
 struct VaultLoadRecoveryTests {
@@ -17,7 +18,7 @@ struct VaultLoadRecoveryTests {
 		let store = makeStore(keychain)
 		await store.unlock()
 		#expect(!store.isUnlocked)
-		let text = try renderedText(ContentView(store: store))
+		let text = try await renderedText(ContentView(store: store))
 		#expect(text.contains("Keychain is locked"))
 		#expect(text.contains("Support"))
 		keychain.failProjectReads = false
@@ -38,7 +39,7 @@ struct VaultLoadRecoveryTests {
 		store.isUnlocked = true
 		store.openProject(id: "project")
 		while store.isLoadingSelectedProject { await Task.yield() }
-		let text = try renderedText(ContentView(store: store).environment(UpdateChecker()))
+		let text = try await renderedText(ContentView(store: store).environment(UpdateChecker()))
 		#expect(text.contains("Retry"))
 		#expect(text.contains("Keychain is locked"))
 		#expect(!text.contains("dummy-secret"))
@@ -50,6 +51,45 @@ struct VaultLoadRecoveryTests {
 		store.lock()
 		#expect(store.selectedProjectLoadFailure == nil)
 		#expect(store.selectedProject?.hasLoadedEnvironments == false)
+	}
+
+	@Test("project load failures do not become obsolete general alerts after navigation")
+	func projectFailureOwnsItsPresentation() async {
+		let keychain = MockKeychainService()
+		keychain.failProjectReads = true
+		keychain.failureError = .unexpectedStatus(-12345)
+		keychain.envStorage["project"] = (name: "Dummy", path: "", environments: ["default": [:]])
+		let store = makeStore(keychain)
+		store.projects = [VaultProject(metadata: VaultProject(id: "project", name: "Dummy", path: "", environments: ["default": [:]]).metadata)]
+		store.isUnlocked = true
+		store.openProject(id: "project")
+		while store.isLoadingSelectedProject { await Task.yield() }
+		#expect(store.selectedProjectLoadFailure == .unavailable)
+		#expect(store.error == nil)
+		store.selectedProjectId = nil
+		#expect(store.selectedProjectLoadFailure == nil)
+		#expect(store.error == nil)
+		store.lock()
+	}
+
+	@Test("retry preserves an independent operation error")
+	func retryPreservesIndependentError() async {
+		let keychain = MockKeychainService()
+		keychain.failProjectReads = true
+		keychain.envStorage["project"] = (name: "Dummy", path: "", environments: ["default": [:]])
+		let store = makeStore(keychain)
+		store.projects = [VaultProject(metadata: VaultProject(id: "project", name: "Dummy", path: "", environments: ["default": [:]]).metadata)]
+		store.isUnlocked = true
+		store.openProject(id: "project")
+		while store.isLoadingSelectedProject { await Task.yield() }
+		store.error = "Could not clear the shared LPM session."
+		keychain.failProjectReads = false
+		store.retrySelectedProjectLoad()
+		#expect(store.error == "Could not clear the shared LPM session.")
+		while store.isLoadingSelectedProject { await Task.yield() }
+		#expect(store.selectedProjectLoadFailure == nil)
+		#expect(store.error == "Could not clear the shared LPM session.")
+		store.lock()
 	}
 
 	@Test("authentication cancellation clears a previous failure without reporting another")
@@ -84,17 +124,15 @@ struct VaultLoadRecoveryTests {
 		VaultStore(keychainService: keychain, biometricService: biometric, apiService: MockAPIService())
 	}
 
-	private func renderedText<V: View>(_ view: V) throws -> OCRText {
+	private func renderedText<V: View>(_ view: V) async throws -> OCRText {
 		let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
 		host.frame = NSRect(x: 0, y: 0, width: 1040, height: 640)
 		host.layoutSubtreeIfNeeded()
 		let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
 		host.cacheDisplay(in: host.bounds, to: bitmap)
 		let image = try #require(bitmap.cgImage)
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		request.usesLanguageCorrection = false
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		return OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n"))
+		let lines = try await RenderedText.lines(in: image, level: .accurate)
+		return OCRText(lines.map(\.text).joined(separator: "\n"))
 	}
+}
 }
