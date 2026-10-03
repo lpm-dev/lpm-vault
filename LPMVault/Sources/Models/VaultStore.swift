@@ -2670,6 +2670,15 @@ final class VaultStore {
     }
   }
 
+  func isCurrentEnvFileImportReview(_ review: EnvFileImportReview) -> Bool {
+    let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
+    return isUnlocked && !showAuthStatus
+      && review.sessionGeneration == vaultSessionGeneration
+      && localEnvReviewIDs[target] == review.id
+      && selectedProjectId == review.projectId && selectedEnvironment == review.environment
+      && projects.contains { $0.id == review.projectId && $0.environments[review.environment] != nil }
+  }
+
   func applyEnvFileImport(
     _ review: EnvFileImportReview, replacingKeys: Set<String>
   ) async -> Result<ImportedEnvFile, EnvFileImportError> {
