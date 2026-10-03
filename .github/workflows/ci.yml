@@ -18,7 +18,25 @@ jobs:
         with:
           persist-credentials: false
       - name: Swift tests
-        run: swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
+        run: |
+          swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors &
+          vault_test_pid=$!
+          (
+            for vault_sample_number in 1 2 3 4 5 6; do
+              sleep 60
+              kill -0 "$vault_test_pid" 2>/dev/null || exit 0
+              for vault_sample_pid in $(pgrep -x swiftpm-testing || true); do
+                vault_sample_path="$RUNNER_TEMP/vault-test-sample-$vault_sample_number.txt"
+                sample "$vault_sample_pid" 2 -file "$vault_sample_path" || true
+                cat "$vault_sample_path" || true
+              done
+            done
+          ) &
+          vault_diagnostic_pid=$!
+          vault_test_status=0
+          wait "$vault_test_pid" || vault_test_status=$?
+          kill "$vault_diagnostic_pid" 2>/dev/null || true
+          exit "$vault_test_status"
       - name: Release tooling tests
         run: |
           bash LPMVault/Scripts/Tests/release-tooling-tests.sh
