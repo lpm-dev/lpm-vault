@@ -1302,6 +1302,7 @@ final class VaultStore {
   private var localEnvImportTasks: [LocalEnvImportTarget: Task<ImportedEnvFile, Error>] = [:]
   private var localEnvImportRequests: [LocalEnvImportTarget: UUID] = [:]
   private var localEnvCreationRequests: [LocalEnvImportTarget: UUID] = [:]
+  private var localEnvReviewIDs: [LocalEnvImportTarget: UUID] = [:]
   private var localEnvPreviewTasks: [UUID: Task<ImportedEnvFile, Error>] = [:]
   private var exportTasks: [UUID: Task<Void, Error>] = [:]
   private var exportAuthorizations: [UUID: EnvFileExportAuthorization] = [:]
@@ -2471,6 +2472,7 @@ final class VaultStore {
     defer {
       if localEnvCreationRequests[target] == requestId {
         localEnvCreationRequests.removeValue(forKey: target)
+      localEnvReviewIDs.removeValue(forKey: target)
       }
       localEnvImportAuthority.complete(target, requestId: requestId)
     }
@@ -2496,7 +2498,7 @@ final class VaultStore {
       switch commit {
       case .failure(let persistenceError):
         error = persistenceError.description
-      case .targetUnavailable:
+      case .targetUnavailable, .reviewChanged:
         error = EnvFileImportError.targetUnavailable.localizedDescription
       case .caseInsensitiveCollision:
         error = EnvFileImportError.caseInsensitiveCollisionWithExisting.localizedDescription
@@ -2623,13 +2625,77 @@ final class VaultStore {
 
   // MARK: - Bounded Local Dotenv Imports
 
-  /// Reads and parses off the main actor, then persists the exact captured
-  /// destination before publishing. A newer import to the same destination
-  /// cancels and supersedes the older request.
-  func importEnvFile(
-    at url: URL,
-    to projectId: String,
-    environment: String
+  func prepareEnvFileImport(
+    at url: URL, to projectId: String, environment: String
+  ) async -> Result<EnvFileImportReview, EnvFileImportError> {
+    guard isUnlocked else { return .failure(.vaultLocked) }
+    guard selectedProjectId == projectId, selectedEnvironment == environment,
+      let project = projects.first(where: { $0.id == projectId }),
+      project.environments[environment] != nil
+    else { return .failure(.targetUnavailable) }
+    let target = LocalEnvImportTarget(projectId: projectId, environment: environment)
+    let reviewID = UUID()
+    let session = vaultSessionGeneration
+    cancelLocalEnvImport(projectId: projectId, environment: environment)
+    localEnvReviewIDs[target] = reviewID
+    let imported: ImportedEnvFile
+    switch await loadEnvFilePreview(at: url, for: projectId) {
+    case .success(let file): imported = file
+    case .failure(let failure): return .failure(failure)
+    }
+    let durable = await persistence.loadProject(vaultId: projectId)
+    guard isUnlocked, session == vaultSessionGeneration,
+      localEnvReviewIDs[target] == reviewID, selectedProjectId == projectId,
+      selectedEnvironment == environment, !Task.isCancelled
+    else { return .failure(.cancelled) }
+    switch durable {
+    case .success(let current?):
+      guard current.name == project.name, current.path == project.path else {
+        return .failure(.targetUnavailable)
+      }
+      do {
+        let review = try await Task.detached(priority: .userInitiated) {
+          try EnvFileImportReview(id: reviewID, project: current, environment: environment,
+            sourceURL: url, sessionGeneration: session, imported: imported)
+        }.value
+        guard isUnlocked, session == vaultSessionGeneration,
+          localEnvReviewIDs[target] == reviewID, selectedProjectId == projectId,
+          selectedEnvironment == environment, !Task.isCancelled
+        else { return .failure(.cancelled) }
+        return .success(review)
+      } catch let failure as EnvFileImportError { return .failure(failure) }
+      catch { return .failure(.readFailed) }
+    case .success(nil): return .failure(.targetUnavailable)
+    case .failure(let failure): return .failure(.persistence(failure.description))
+    }
+  }
+
+  func applyEnvFileImport(
+    _ review: EnvFileImportReview, replacingKeys: Set<String>
+  ) async -> Result<ImportedEnvFile, EnvFileImportError> {
+    let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
+    guard isUnlocked else { return .failure(.vaultLocked) }
+    guard review.sessionGeneration == vaultSessionGeneration,
+      localEnvReviewIDs[target] == review.id,
+      replacingKeys.isSubset(of: review.changedKeys)
+    else { return .failure(.cancelled) }
+    let result = await importEnvFile(at: review.sourceURL, to: review.projectId,
+      environment: review.environment, review: review, replacingKeys: replacingKeys)
+    if case .success = result, localEnvReviewIDs[target] == review.id {
+      localEnvReviewIDs.removeValue(forKey: target)
+    }
+    return result
+  }
+
+  func importEnvFile(at url: URL, to projectId: String, environment: String)
+    async -> Result<ImportedEnvFile, EnvFileImportError>
+  {
+    await importEnvFile(at: url, to: projectId, environment: environment, review: nil, replacingKeys: [])
+  }
+
+  private func importEnvFile(
+    at url: URL, to projectId: String, environment: String,
+    review: EnvFileImportReview?, replacingKeys: Set<String>
   ) async -> Result<ImportedEnvFile, EnvFileImportError> {
     guard isUnlocked else { return .failure(.vaultLocked) }
     guard selectedProjectId == projectId, selectedEnvironment == environment,
@@ -2645,7 +2711,8 @@ final class VaultStore {
     localEnvImportAuthority.begin(target, requestId: requestId)
 
     let task = Task { [envFileImportService] in
-      try await envFileImportService.load(at: url)
+      if let review { return review.imported }
+      return try await envFileImportService.load(at: url)
     }
     localEnvImportTasks[target] = task
     defer {
@@ -2676,10 +2743,12 @@ final class VaultStore {
       let commit = await withTaskCancellationHandler {
         await persistence.importSecrets(
           projectId: projectId,
-          projectName: currentProject.name,
-          projectPath: currentProject.path,
+          projectName: review?.projectName ?? currentProject.name,
+          projectPath: review?.projectPath ?? currentProject.path,
           environment: environment,
           secrets: imported.secrets,
+          expectedSecrets: review?.baseline,
+          replacingKeys: replacingKeys,
           requestId: requestId,
           authority: localEnvImportAuthority
         )
@@ -2709,6 +2778,8 @@ final class VaultStore {
         return .success(imported)
       case .targetUnavailable:
         return .failure(.targetUnavailable)
+      case .reviewChanged:
+        return .failure(.reviewChanged)
       case .caseInsensitiveCollision:
         return .failure(.caseInsensitiveCollisionWithExisting)
       case .cancelled:
@@ -2777,6 +2848,7 @@ final class VaultStore {
     localEnvImportTasks.removeValue(forKey: target)?.cancel()
     localEnvImportRequests.removeValue(forKey: target)
     localEnvCreationRequests.removeValue(forKey: target)
+    localEnvReviewIDs.removeValue(forKey: target)
     localEnvImportAuthority.cancel(target)
   }
 
@@ -2784,11 +2856,13 @@ final class VaultStore {
     let targets = Set(localEnvImportTasks.keys)
       .union(localEnvImportRequests.keys)
       .union(localEnvCreationRequests.keys)
+      .union(localEnvReviewIDs.keys)
       .filter { projectId == nil || $0.projectId == projectId }
     for target in targets {
       localEnvImportTasks.removeValue(forKey: target)?.cancel()
       localEnvImportRequests.removeValue(forKey: target)
       localEnvCreationRequests.removeValue(forKey: target)
+      localEnvReviewIDs.removeValue(forKey: target)
       localEnvImportAuthority.cancel(target)
     }
   }
