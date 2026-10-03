@@ -1091,12 +1091,12 @@ enum VaultLoadFailure: Equatable, Sendable {
 
   var message: String {
     switch self {
-    case .keychainLocked: "The Keychain is locked. Unlock your login Keychain, then retry."
+    case .keychainLocked: "macOS did not allow Keychain access. Unlock your Mac and retry. If access still fails, check your login Keychain."
     case .accessDenied: "Keychain access was denied. Allow LPM Vault in Keychain Access, then retry."
     case .unsupportedBuild: "This build cannot access the shared Keychain. Install an official LPM Vault build."
     case .invalidState: "Protected vault state could not be read. Retry after other LPM operations finish. If the error continues, contact support."
     case .unavailable: "Protected vault state is unavailable. Retry. If the error continues, contact support."
-    case .authentication: "Authentication failed. Retry with Touch ID or your Mac login password."
+    case .authentication: "Could not authenticate with macOS. Try Touch ID or your Mac login password again."
     }
   }
 }

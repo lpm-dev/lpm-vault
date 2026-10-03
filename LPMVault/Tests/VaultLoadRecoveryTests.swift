@@ -19,7 +19,7 @@ struct VaultLoadRecoveryTests {
 		await store.unlock()
 		#expect(!store.isUnlocked)
 		let text = try await renderedText(ContentView(store: store))
-		#expect(text.contains("Keychain is locked"))
+		#expect(text.contains("macOS did not allow Keychain access"))
 		#expect(text.contains("Support"))
 		keychain.failProjectReads = false
 		await store.unlock()
@@ -41,7 +41,7 @@ struct VaultLoadRecoveryTests {
 		while store.isLoadingSelectedProject { await Task.yield() }
 		let text = try await renderedText(ContentView(store: store).environment(UpdateChecker()))
 		#expect(text.contains("Retry"))
-		#expect(text.contains("Keychain is locked"))
+		#expect(text.contains("macOS did not allow Keychain access"))
 		#expect(!text.contains("dummy-secret"))
 		keychain.failProjectReads = false
 		store.retrySelectedProjectLoad()
@@ -110,6 +110,12 @@ struct VaultLoadRecoveryTests {
 	@Test("native authentication cancellations stay quiet", arguments: [LAError.Code.userCancel, .appCancel, .systemCancel, .userFallback])
 	func nativeCancellationIsQuiet(code: LAError.Code) {
 		#expect(BiometricService.failure(for: NSError(domain: LAError.errorDomain, code: code.rawValue)) == nil)
+	}
+
+	@Test("recovery messages distinguish macOS authentication from Keychain access")
+	func recoveryMessagesNameTheSystem() {
+		#expect(VaultLoadFailure.keychainLocked.message == "macOS did not allow Keychain access. Unlock your Mac and retry. If access still fails, check your login Keychain.")
+		#expect(VaultLoadFailure.authentication.message == "Could not authenticate with macOS. Try Touch ID or your Mac login password again.")
 	}
 
 	@Test("native authentication failure is actionable without exposing native details")
