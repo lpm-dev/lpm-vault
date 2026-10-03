@@ -1741,6 +1741,12 @@ final class VaultStore {
     }
     localStateRefreshTask = task
     await task.value
+    if !Task.isCancelled, isUnlocked, session == vaultSessionGeneration,
+      selectedProjectId == projectID, selectedAccount == account,
+      needsLocalStateRefresh, localStateRefreshError == nil, !isChangingCliAccess
+    {
+      await refreshLocalState()
+    }
   }
 
   private func invalidateLocalStateRefresh() {

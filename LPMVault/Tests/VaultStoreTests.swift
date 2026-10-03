@@ -90,6 +90,30 @@ struct VaultStoreTests {
 		#expect(store.canUseLocalSecrets)
 	}
 
+	@Test("local refresh waits for a queued app edit and then reloads shared state")
+	func localRefreshFollowsQueuedMutation() async {
+		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: ["TOKEN": "old"])])
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextSaveEnvironments = { entered.signal(); release.wait() }
+		let mutation = Task {
+			await store.updateSecretAndWait(in: "first", environment: "default", key: "TOKEN", expectedValue: "old", newValue: "local")
+		}
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async { entered.wait(); continuation.resume() }
+		}
+		let refresh = Task { await store.refreshLocalState() }
+		while !store.isRefreshingLocalState { await Task.yield() }
+		release.signal()
+		#expect(await mutation.value)
+		await refresh.value
+		#expect(store.canUseLocalSecrets)
+		#expect(!store.needsLocalStateRefresh)
+		#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "local")
+	}
+
 	@Test("local refresh coalesces requests and blocks stale exports until completion")
 	func localRefreshCoalescesRequests() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: ["TOKEN": "old"])])
@@ -181,12 +205,12 @@ struct VaultStoreTests {
 			#expect(store.projects.allSatisfy { !$0.hasLoadedEnvironments })
 			#expect(store.workspaceSnapshots.isEmpty)
 			#expect(keychain.projectReadCount == 0)
+		} else if reason == "mutation" {
+			#expect(store.canUseLocalSecrets)
+			#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "local")
 		} else {
 			#expect(store.needsLocalStateRefresh)
 			#expect(!store.canUseLocalSecrets)
-			if reason == "mutation" {
-				#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "local")
-			}
 		}
 	}
 
