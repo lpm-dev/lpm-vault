@@ -129,14 +129,7 @@ struct UpdateCheckerTests {
 					y: (view.isFlipped ? 1 - updateBounds.midY : updateBounds.midY) * view.bounds.height
 				), to: nil)
 				let previousChecks = driver.checks
-				for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-					let event = try #require(NSEvent.mouseEvent(
-						with: type, location: location, modifierFlags: [],
-						timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-						context: nil, eventNumber: 0, clickCount: 1, pressure: 1
-					))
-					window.sendEvent(event)
-				}
+				try NativeTestClick.send(to: window, at: location)
 				#expect(driver.checks == previousChecks + (canCheck ? 1 : 0))
 			}
 		}

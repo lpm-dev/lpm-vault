@@ -7,6 +7,62 @@ import Vision
 @testable import LPMVault
 
 extension SheetInteractionTests {
+	@Test("native buttons invoke their action without entering mouse tracking", arguments: [false, true])
+	@MainActor
+	func nativeClickAvoidsTracking(flipped: Bool) async throws {
+		let action = NativeClickProbeAction()
+		let button = NativeClickProbeButton(title: "Tracking probe", target: action, action: #selector(NativeClickProbeAction.clicked))
+		button.bezelStyle = .rounded
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
+		window.isReleasedWhenClosed = false
+		window.animationBehavior = .none
+		defer { window.close() }
+		let content = NativeClickProbeRoot(frame: NSRect(x: 0, y: 0, width: 300, height: 180), flipped: flipped)
+		window.contentView = content
+		button.frame = NSRect(x: 20, y: 20, width: 160, height: 32)
+		content.addSubview(button)
+		let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+		try NativeTestClick.send(to: window, at: point)
+		#expect(action.clickCount == 1)
+		#expect(button.mouseDownCount == 0)
+		button.isEnabled = false
+		try NativeTestClick.send(to: window, at: point)
+		#expect(action.clickCount == 1)
+		#expect(button.mouseDownCount == 0)
+		button.isEnabled = true
+		button.setButtonType(.switch)
+		button.state = .off
+		try NativeTestClick.send(to: window, at: point)
+		#expect(button.state == .on)
+		#expect(action.clickCount == 2)
+		try NativeTestClick.send(to: window, at: point)
+		#expect(button.state == .off)
+		#expect(action.clickCount == 3)
+		#expect(button.mouseDownCount == 0)
+	}
+}
+
+@MainActor
+private final class NativeClickProbeRoot: NSView {
+	private let usesFlippedCoordinates: Bool
+	override var isFlipped: Bool { usesFlippedCoordinates }
+	init(frame: NSRect, flipped: Bool) { self.usesFlippedCoordinates = flipped; super.init(frame: frame) }
+	required init?(coder: NSCoder) { nil }
+}
+
+@MainActor
+private final class NativeClickProbeButton: NSButton {
+	var mouseDownCount = 0
+	override func mouseDown(with event: NSEvent) { mouseDownCount += 1 }
+}
+
+@MainActor
+private final class NativeClickProbeAction: NSObject {
+	var clickCount = 0
+	@objc func clicked() { clickCount += 1 }
+}
+
+extension SheetInteractionTests {
 	@Suite("Env file import review", .serialized) @MainActor struct EnvFileImportReviewTests {
 		private func fixture(
 			existing: [String: String] = ["TOKEN": "existing", "SAME": "same"],
