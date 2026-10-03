@@ -103,7 +103,7 @@ struct VaultSensitiveActionContext: Equatable {
   @MainActor
   func isCurrent(in store: VaultStore) -> Bool {
     isCurrent(
-      isUnlocked: store.isUnlocked,
+      isUnlocked: store.canUseLocalSecrets,
       selectedProjectID: store.selectedProjectId,
       selectedEnvironment: store.selectedEnvironment
     )

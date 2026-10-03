@@ -66,6 +66,13 @@ struct VaultWorkspaceView: View {
 			mode = mode.synchronized(to: environment)
 			revealedKeys.removeAll()
 		}
+		.onChange(of: store.localStateRevision) { _, _ in
+			resetCopyPresentation()
+			revealedKeys.removeAll()
+			exportTask?.cancel()
+			exportTask = nil
+			exportID = nil
+		}
 		.onChange(of: mode) { _, _ in revealedKeys.removeAll() }
 		.onChange(of: store.showAuthStatus) { _, showingSettings in
 			if showingSettings { resetCopyPresentation() }
@@ -113,6 +120,13 @@ struct VaultWorkspaceView: View {
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
+			if store.needsLocalStateRefresh && !store.isRefreshingLocalState {
+				Text(store.localStateRefreshError ?? "Local state needs a refresh. Use Retry refresh before copying or exporting secrets.")
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.redText)
+					.frame(maxWidth: .infinity, alignment: .leading)
+					.padding(12)
+			}
 
 			GeometryReader { geometry in
 				let budget = VaultPaneBudget(
@@ -179,6 +193,7 @@ struct VaultWorkspaceView: View {
 								isCopiedAll: copyFeedback?.target == .all(VaultSensitiveActionContext(
 									projectID: project.id, environment: store.selectedEnvironment
 								)),
+								canUseSecrets: store.canUseLocalSecrets,
 								cliAccess: store.selectedProjectCliAccess,
 								isChangingCliAccess: store.isChangingCliAccess,
 								onChangeCliAccess: { access in Task { await store.changeCliAccess(to: access) } },
@@ -513,7 +528,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func copySecret(_ key: String, _ environment: String) {
-		guard store.isUnlocked, !store.showAuthStatus, let project,
+		guard store.canUseLocalSecrets, !store.showAuthStatus, let project,
 			let value = project.value(for: key, in: environment),
 			ClipboardManager.shared.copy(ClipboardManager.dotenvText(for: [key: value]))
 		else { return }
@@ -521,9 +536,10 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func copyAll() {
-		guard store.isUnlocked, !store.showAuthStatus, copyAllTask == nil, let project else { return }
+		guard store.canUseLocalSecrets, !store.showAuthStatus, copyAllTask == nil, let project else { return }
 		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
 		let requestID = UUID()
+		let localRevision = store.localStateRevision
 		copyAllID = requestID
 		copyFeedback = nil
 		copyAllTask = Task { @MainActor in
@@ -539,6 +555,7 @@ struct VaultWorkspaceView: View {
 			guard success,
 				!store.showAuthStatus,
 				copyAllID == requestID,
+				localRevision == store.localStateRevision,
 				context.isCurrent(in: store),
 				let current = store.selectedProject
 			else { return }
@@ -575,7 +592,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func exportCurrentEnvironment() {
-		guard let project, exportTask == nil else { return }
+		guard store.canUseLocalSecrets, let project, exportTask == nil else { return }
 		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
 		let environment = context.environment
 		let panel = NSSavePanel()

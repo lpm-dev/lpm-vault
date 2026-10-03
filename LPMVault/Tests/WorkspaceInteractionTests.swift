@@ -8,6 +8,45 @@ extension SheetInteractionTests {
 	@Suite("Workspace interaction regressions", .serialized)
 	@MainActor
 	struct WorkspaceInteractionTests {
+		@Test("refresh keeps the mounted workspace draft and copies current CLI values")
+		func refreshPreservesWorkspaceDraftAndCopiesCurrentValues() async throws {
+			let keychain = MockKeychainService()
+			let (store, _) = makeStore(keychain: keychain)
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try clickInspectorToggle(in: host)
+			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try await host.settle()
+			try host.enterValue("unsaved-workspace-draft")
+			keychain.simulateCLISet(vaultId: "workspace", environment: "default", key: "TOKEN", value: "current-cli-value")
+			await store.refreshLocalState()
+			try await host.settle()
+			#expect(host.value == "unsaved-workspace-draft")
+			#expect(try await host.waitForText("changed outside"))
+			try clickAt(NSPoint(x: 1375, y: 553), in: host)
+			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "TOKEN=\"current-cli-value\"\n" })
+		}
+
+		@Test("refresh cancels copy all while authentication is pending")
+		func refreshCancelsPendingCopyAll() async throws {
+			let (store, biometric) = makeStore()
+			let gate = AsyncStream<Void>.makeStream()
+			biometric.authenticateHandlers = [{
+				for await _ in gate.stream { return true }
+				return false
+			}]
+			defer { gate.continuation.finish(); store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try clickAt(NSPoint(x: 1352, y: 723.5), in: host)
+			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
+			await store.refreshLocalState()
+			gate.continuation.yield(())
+			try await host.settle()
+			#expect(try await !host.text().contains("Copied"))
+		}
+
 		@Test("copy all keeps the toolbar stationary and confirms success")
 		func copyAllFeedbackAndLayout() async throws {
 			let (store, biometric) = makeStore()
@@ -136,8 +175,7 @@ extension SheetInteractionTests {
 			#expect(!store.showAuthStatus)
 		}
 
-		private func makeStore(environments: [String: [String: String]] = ["default": ["TOKEN": "fixture-value"]], additionalProject: Bool = false) -> (VaultStore, MockBiometricService) {
-			let keychain = MockKeychainService()
+		private func makeStore(environments: [String: [String: String]] = ["default": ["TOKEN": "fixture-value"]], additionalProject: Bool = false, keychain: MockKeychainService = MockKeychainService()) -> (VaultStore, MockBiometricService) {
 			let biometric = MockBiometricService()
 			let project = VaultProject(id: "workspace", name: "Workspace", path: "",
 				environments: environments)

@@ -85,6 +85,16 @@ It does not change CLI approval.
 CLI approval protects secret reads and temporary records used during updates.
 It does not revoke values that a process already received.
 
+## Changes from the CLI
+
+When you return to the unlocked app, it reloads local changes from the LPM CLI.
+Use **Refresh** to reload changes while the app stays active.
+This reads project metadata, CLI approval, and secrets for the selected project. It does not contact the cloud.
+
+Unsaved editor values remain in the editor. A changed or deleted secret shows a conflict and blocks Save.
+If a refresh fails, use **Retry refresh** before copying, revealing, or exporting secrets.
+Automatic refresh does not extend the idle-lock timer. The locked app does not read secret values.
+
 ## Security and privacy
 
 Local secrets use the Data Protection Keychain on this Mac. They do not sync through iCloud Keychain.

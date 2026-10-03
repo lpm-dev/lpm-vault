@@ -29,7 +29,7 @@ struct VaultInspectorView: View {
 						environment: environment,
 						key: key,
 						value: project.value(for: key, in: environment),
-						isRevealed: revealedKeys.contains(key)
+						isRevealed: store.canUseLocalSecrets && revealedKeys.contains(key)
 					)
 					.id("\(project.id)-\(environment)-\(key)")
 					VaultHairline()
@@ -82,7 +82,7 @@ struct VaultInspectorView: View {
 
 	private func valueSection(_ key: String) -> some View {
 		let value = project.value(for: key, in: environment)
-		let revealed = revealedKeys.contains(key)
+		let revealed = store.canUseLocalSecrets && revealedKeys.contains(key)
 		return VStack(alignment: .leading, spacing: 12) {
 			Text("VALUE IN \(VaultProject.displayName(for: environment).uppercased())").vaultSectionLabel()
 
@@ -100,11 +100,11 @@ struct VaultInspectorView: View {
 
 			if value != nil {
 				HStack(spacing: 6) {
-					VaultInspectorButton(title: isCopied ? "Copied" : "Copy", systemImage: isCopied ? "checkmark" : "doc.on.doc", filled: true) {
+					VaultInspectorButton(title: isCopied ? "Copied" : "Copy", systemImage: isCopied ? "checkmark" : "doc.on.doc", filled: true, disabled: !store.canUseLocalSecrets) {
 						onCopySecret(key, environment)
 					}
 					.help(isCopied ? "Copied to the clipboard" : "Copy this value")
-					VaultInspectorButton(title: revealed ? "Hide" : "Reveal") {
+					VaultInspectorButton(title: revealed ? "Hide" : "Reveal", disabled: !store.canUseLocalSecrets) {
 						toggleReveal(key)
 					}
 					VaultInspectorButton(systemImage: "trash", destructive: true) {
@@ -172,6 +172,7 @@ struct VaultInspectorView: View {
 	}
 
 	private func toggleReveal(_ key: String) {
+		guard store.canUseLocalSecrets else { return }
 		if revealedKeys.contains(key) { revealedKeys.remove(key) } else { revealedKeys.insert(key) }
 	}
 }
@@ -210,13 +211,13 @@ private struct VaultSecretEditor: View {
 
 	private var canGenerate: Bool {
 		VaultSensitiveActionContext(projectID: projectID, environment: environment).isCurrent(in: store)
-			&& !editDraft.isSaveInFlight && !editDraft.hasExternalConflict
+			&& value != nil && !editDraft.isSaveInFlight && !editDraft.hasExternalConflict
 	}
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 10) {
 			Text("EDIT VALUE").vaultSectionLabel()
-			if value == nil {
+			if value == nil && !editDraft.isDirty {
 				Text("This key is not set in \(VaultProject.displayName(for: environment)). Use New key to add it.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
@@ -251,14 +252,18 @@ private struct VaultSecretEditor: View {
 				HStack(spacing: 6) {
 					VaultInspectorButton(
 						title: "Save", filled: true,
-						disabled: !editDraft.canSave,
+						disabled: !editDraft.canSave || value == nil || !store.canUseLocalSecrets,
 						action: save
 					)
 					VaultInspectorButton(title: "Revert", disabled: !editDraft.canRevert) {
 						editDraft.revert()
 					}
 				}
-				if editDraft.hasExternalConflict {
+				if value == nil {
+					Text("This key was deleted outside the editor. Your unsaved value is kept here. Use New key to add it again.")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.redText)
+				} else if editDraft.hasExternalConflict {
 					Text("This value changed outside the editor. Revert, then apply your edit again.")
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.redText)
@@ -277,6 +282,7 @@ private struct VaultSecretEditor: View {
 	}
 
 	private func save() {
+		guard value != nil, store.canUseLocalSecrets else { return }
 		let expectedValue = editDraft.baseline
 		guard let submittedValue = editDraft.beginSave() else { return }
 		Task { @MainActor in
