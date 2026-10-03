@@ -143,14 +143,19 @@ struct ProjectCLITaskExample: Equatable, Sendable {
 		guard let first = names.sorted().first else { return nil }
 		let dev = names.contains("development") ? "development" : names.contains("default") ? "default" : first
 		let start = names.contains("staging") ? "staging" : names.contains(selectedEnvironment) ? selectedEnvironment : dev
-		let object: [String: Any] = [
-			"vault": vaultId,
-			"tasks": ["dev": ["env": dev], "start": ["env": start]],
-		]
-		guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
-			let json = String(data: data, encoding: .utf8)
+		let encoder = JSONEncoder()
+		guard let vaultJSON = try? encoder.encode(vaultId),
+			let devJSON = try? encoder.encode(dev), let startJSON = try? encoder.encode(start)
 		else { return nil }
-		self.json = json
+		json = """
+		{
+		  "vault": \(String(decoding: vaultJSON, as: UTF8.self)),
+		  "tasks": {
+		    "dev": { "env": \(String(decoding: devJSON, as: UTF8.self)) },
+		    "start": { "env": \(String(decoding: startJSON, as: UTF8.self)) }
+		  }
+		}
+		"""
 		warning = configuration == nil ? "Check lpm.json aliases before using the example. The project configuration has not been verified." : nil
 	}
 }

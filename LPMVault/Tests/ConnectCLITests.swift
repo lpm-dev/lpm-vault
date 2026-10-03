@@ -331,6 +331,7 @@ struct ProjectCLITaskExampleTests {
 		let tasks = try #require(object["tasks"] as? [String: [String: String]])
 		#expect(object["vault"] as? String == "vault-id")
 		#expect(tasks == ["dev": ["env": "development"], "start": ["env": "staging"]])
+		#expect(example.json.split(separator: "\n").count == 7)
 	}
 
 	@Test("examples exclude environment names redirected by project aliases")
