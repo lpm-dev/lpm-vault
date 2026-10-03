@@ -160,7 +160,6 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try #require(store.isCurrentEnvFileImportReview(preview))
 			#expect(biometric.authenticateCallCount == 0)
-			host.window.makeKeyAndOrderFront(nil)
 			try await host.settle()
 			try await host.click("Reveal")
 			try #require(try await host.waitUntil { biometric.authenticateCallCount == 1 })
@@ -327,12 +326,8 @@ extension SheetInteractionTests {
 			let view = host.view
 			let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
 			view.cacheDisplay(in: view.bounds, to: bitmap)
-			let request = VNRecognizeTextRequest()
-			request.recognitionLevel = .accurate
-			request.usesLanguageCorrection = false
-			try VNImageRequestHandler(cgImage: #require(bitmap.cgImage)).perform([request])
-			let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(
-				separator: "\n")
+			let lines = try await RenderedText.lines(in: #require(bitmap.cgImage), level: .accurate)
+			let text = OCRText(lines.map(\.text).joined(separator: "\n"))
 			#expect(text.contains("Dummy Project"))
 			#expect(text.contains("Different value"))
 			#expect(text.contains("Replace"))
