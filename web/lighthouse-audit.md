@@ -1,7 +1,7 @@
 # Vault Lighthouse audit
 
 The supplied Lighthouse report paths were absent from the workspace.
-Fresh audits used Lighthouse 13.5.1 against the live site and local Docker images.
+Fresh audits used Lighthouse 13.5.0 against the live site and local Docker images.
 The live mobile scores were 96 performance, 96 accessibility, 100 best practices, and 92 SEO.
 The live desktop scores were 100 performance, 100 accessibility, 100 best practices, and 92 SEO.
 
