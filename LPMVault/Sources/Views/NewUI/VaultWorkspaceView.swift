@@ -148,7 +148,11 @@ struct VaultWorkspaceView: View {
 							AuthStatusView(store: store)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
-						} else if let project,
+							} else if let failure = store.selectedProjectLoadFailure {
+								VaultLoadErrorView(failure: failure, retry: store.retrySelectedProjectLoad)
+									.frame(maxWidth: .infinity, maxHeight: .infinity)
+									.background(VaultPalette.content)
+							} else if let project,
 							store.isLoadingSelectedProject || (project.hasLoadedEnvironments && store.workspaceSnapshots[project.id] == nil)
 						{
 							VStack(spacing: 10) {
@@ -403,7 +407,7 @@ struct VaultWorkspaceView: View {
 			Text("Only the selected environment is changed.")
 		}
 		.alert("LPM Vault", isPresented: Binding(
-			get: { store.error != nil },
+				get: { store.error != nil },
 			set: { if !$0 { store.error = nil } }
 		)) {
 			Button("OK", role: .cancel) { store.error = nil }

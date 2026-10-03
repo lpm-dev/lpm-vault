@@ -9,8 +9,13 @@ enum BiometricType {
 	case none
 }
 
+enum AuthenticationFailure: Equatable, Sendable {
+	case failed
+}
+
 protocol BiometricServiceProtocol: Sendable {
 	var keychainAuthenticationContext: LAContext? { get }
+	var lastAuthenticationFailure: AuthenticationFailure? { get }
 	func authenticate(reason: String) async -> Bool
 	func isBiometricAvailable() -> Bool
 	func biometricType() -> BiometricType
@@ -19,6 +24,7 @@ protocol BiometricServiceProtocol: Sendable {
 
 extension BiometricServiceProtocol {
 	var keychainAuthenticationContext: LAContext? { nil }
+	var lastAuthenticationFailure: AuthenticationFailure? { nil }
 }
 
 // MARK: - Implementation
@@ -31,6 +37,8 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 	private let now: @Sendable () -> TimeInterval
 	private let authentication: (@Sendable (String) async -> Bool)?
 	private var authenticatedContext: LAContext?
+	private var authenticationFailure: AuthenticationFailure?
+	var lastAuthenticationFailure: AuthenticationFailure? { lock.withLock { authenticationFailure } }
 
 	var keychainAuthenticationContext: LAContext? {
 		lock.withLock { authenticatedContext }
@@ -50,7 +58,8 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 
 	func authenticate(reason: String) async -> Bool {
 		let (cachedAuthTime, authenticationEpoch) = lock.withLock {
-			(lastAuthTime, cacheEpoch)
+			authenticationFailure = nil
+			return (lastAuthTime, cacheEpoch)
 		}
 		let elapsed = cachedAuthTime.map { now() - $0 }
 		if let elapsed, elapsed >= 0, elapsed < cacheDuration {
@@ -68,7 +77,13 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 			context = nativeContext
 			do {
 				success = try await nativeContext.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
-			} catch { success = false }
+			} catch {
+				success = false
+				let failure = Self.failure(for: error)
+				lock.withLock {
+					if cacheEpoch == authenticationEpoch { authenticationFailure = failure }
+				}
+			}
 		}
 		if success {
 			let authenticatedAt = now()
@@ -79,6 +94,16 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 			}
 		}
 		return success
+	}
+
+	static func failure(for error: Error) -> AuthenticationFailure? {
+		if let error = error as? LAError {
+			switch error.code {
+			case .userCancel, .appCancel, .systemCancel, .userFallback: return nil
+			default: break
+			}
+		}
+		return .failed
 	}
 
 	func isBiometricAvailable() -> Bool {
@@ -110,6 +135,7 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 		let context = lock.withLock {
 			cacheEpoch &+= 1
 			lastAuthTime = nil
+			authenticationFailure = nil
 			let context = authenticatedContext
 			authenticatedContext = nil
 			return context
