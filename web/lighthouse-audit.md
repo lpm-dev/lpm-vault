@@ -32,6 +32,9 @@ Both images scored 99 performance and 100 best practices.
 Accessibility increased from 96 to 100. SEO increased from 92 to 100.
 Median simulated LCP stayed approximately 2.25 seconds. This change does not claim a cold-load speed increase.
 Content-based asset names improve repeat visits and preserve freshness after deployment.
+Three desktop samples used the same alternating order and separate cold Chrome profiles.
+Desktop performance, accessibility, and best practices stayed at 100. Desktop SEO increased from 92 to 100.
+Median desktop LCP stayed approximately 0.48 seconds.
 
 The small stylesheet remains render-blocking to prevent an unstyled first paint.
 Lighthouse's dependency-tree diagnostic identifies that stylesheet and recommends no additional preconnect origins.
