@@ -12,6 +12,7 @@ struct VaultInspectorView: View {
 	let onClose: () -> Void
 	let onCopySecret: (String, String) -> Void
 	let onDeleteSecret: (String, String) -> Void
+	var onEditSessionCreated: (VaultSecretEditingSession) -> Void = { _ in }
 
 	private var environment: String { store.selectedEnvironment }
 
@@ -26,10 +27,12 @@ struct VaultInspectorView: View {
 					VaultSecretEditor(
 						store: store,
 						projectID: project.id,
+						projectName: project.name,
 						environment: environment,
 						key: key,
 						value: project.value(for: key, in: environment),
-						isRevealed: store.canUseLocalSecrets && revealedKeys.contains(key)
+						isRevealed: store.canUseLocalSecrets && revealedKeys.contains(key),
+						onSessionCreated: onEditSessionCreated
 					)
 					.id("\(project.id)-\(environment)-\(key)")
 					VaultHairline()
@@ -185,16 +188,23 @@ private struct VaultSecretEditor: View {
 	let value: String?
 	let isRevealed: Bool
 
-	@State private var editDraft: VaultSecretEditDraft
+	@State private var editingSession: VaultSecretEditingSession
+	private var editDraft: VaultSecretEditDraft {
+		get { editingSession.editDraft }
+		nonmutating set { editingSession.editDraft = newValue }
+	}
+	let onSessionCreated: (VaultSecretEditingSession) -> Void
 	@FocusState private var focused: Bool
 
 	init(
 		store: VaultStore,
 		projectID: String,
+		projectName: String,
 		environment: String,
 		key: String,
 		value: String?,
-		isRevealed: Bool
+		isRevealed: Bool,
+		onSessionCreated: @escaping (VaultSecretEditingSession) -> Void
 	) {
 		self.store = store
 		self.projectID = projectID
@@ -202,7 +212,8 @@ private struct VaultSecretEditor: View {
 		self.key = key
 		self.value = value
 		self.isRevealed = isRevealed
-		_editDraft = State(initialValue: VaultSecretEditDraft(value: value ?? ""))
+		self.onSessionCreated = onSessionCreated
+		_editingSession = State(initialValue: VaultSecretEditingSession(projectID: projectID, projectName: projectName, environment: environment, key: key, account: store.selectedAccount, value: value ?? ""))
 	}
 
 	private var draftBinding: Binding<String> {
@@ -276,6 +287,7 @@ private struct VaultSecretEditor: View {
 		}
 		.padding(.horizontal, 18)
 		.padding(.vertical, 14)
+		.onAppear { onSessionCreated(editingSession) }
 		.onChange(of: value) { _, updated in
 			editDraft.receiveExternalValue(updated ?? "")
 		}
@@ -327,5 +339,30 @@ private struct VaultInspectorButton: View {
 	private var foreground: Color {
 		if destructive { return VaultPalette.red }
 		return filled ? .white : VaultPalette.textSecondary
+	}
+}
+
+struct VaultRemovedDraftView: View {
+	@Bindable var session: VaultSecretEditingSession
+	let onCopy: () -> Void
+	let onDiscard: () -> Void
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 14) {
+			Text("UNSAVED VALUE").vaultSectionLabel()
+			Text(session.key).font(VaultTypography.mono(15, .bold))
+			Text("\(session.projectName) · \(VaultProject.displayName(for: session.environment))")
+				.font(.system(size: 12)).foregroundStyle(VaultPalette.textSecondary)
+			Text("The original project or environment disappeared. Your unsaved value is kept here. Copy it before you discard it.")
+				.font(.system(size: 12)).foregroundStyle(VaultPalette.redText)
+			SecureField("Unsaved value", text: $session.editDraft.draft)
+				.textFieldStyle(.roundedBorder)
+				.font(VaultTypography.mono(11.5))
+			HStack {
+				VaultInspectorButton(title: "Copy draft", filled: true, action: onCopy)
+				VaultInspectorButton(title: "Discard", action: onDiscard)
+			}
+			Spacer()
+		}.padding(18).background(VaultPalette.inspector)
 	}
 }
