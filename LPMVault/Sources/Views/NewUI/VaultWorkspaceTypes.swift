@@ -466,7 +466,15 @@ final class VaultSecretEditingSession {
   }
 
   func targetExists(in store: VaultStore) -> Bool {
-    store.projects.contains { $0.id == projectID && $0.environmentNames.contains(environment) }
+    targetExists(in: store.projects)
+  }
+
+  private func targetExists(in projects: [VaultProject]) -> Bool {
+    projects.contains { $0.id == projectID && $0.environmentKeyCounts[environment] != nil }
+  }
+
+  func receiveRefreshedProjects(_ projects: [VaultProject]) {
+    if editDraft.isDirty && !targetExists(in: projects) { requiresRecovery = true }
   }
 }
 

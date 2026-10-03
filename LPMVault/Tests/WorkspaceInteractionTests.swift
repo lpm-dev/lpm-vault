@@ -68,8 +68,8 @@ extension SheetInteractionTests {
 			#expect(host.value != "unsaved-removed-target")
 		}
 
-		@Test("removed draft recovery survives target recreation and baseline edits")
-		func removedDraftSurvivesTargetReturnAndBaselineEdit() async throws {
+		@Test("removed draft recovery survives target recreation and baseline edits", arguments: [false, true])
+		func removedDraftSurvivesTargetReturnAndBaselineEdit(hiddenInSettings: Bool) async throws {
 			let keychain = MockKeychainService()
 			let (store, _) = makeStore(environments: ["default": ["TOKEN": "default-value"], "staging": ["TOKEN": "staging-value"]], keychain: keychain)
 			defer { store.lock() }
@@ -81,8 +81,16 @@ extension SheetInteractionTests {
 			try await host.settle()
 			try host.enterValue("unsaved-removed-target")
 			try await host.settle()
+			if hiddenInSettings { store.showSettings(); try await host.settle() }
 			keychain.envStorage["workspace"]?.environments.removeValue(forKey: "staging")
 			await store.refreshLocalState()
+			try await host.settle()
+			if hiddenInSettings {
+				keychain.envStorage["workspace"]?.environments["staging"] = ["TOKEN": "recreated-value"]
+				await store.refreshLocalState()
+				store.openProject(id: "workspace")
+				try await host.settle()
+			}
 			#expect(try await host.waitForText("disappeared"))
 			try host.enterValue("staging-value")
 			try await host.settle()

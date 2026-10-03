@@ -235,7 +235,6 @@ struct VaultWorkspaceView: View {
 					if inspectorVisible, let removedDraft {
 						VaultResizablePane(width: budget.inspector.width, edge: .leading) {
 							VaultRemovedDraftView(session: removedDraft, onCopy: { copyRemovedDraft(removedDraft) }, onDiscard: { editingSession = nil; resetCopyPresentation() })
-								.onAppear { removedDraft.requiresRecovery = true }
 						}
 					} else if inspectorVisible, let project,
 						let snapshot = store.workspaceSnapshots[project.id]
@@ -261,6 +260,7 @@ struct VaultWorkspaceView: View {
 									session.environment == store.selectedEnvironment
 								else { return }
 								editingSession = session
+								store.activeSecretEditingSession = session
 							}
 							)
 						}

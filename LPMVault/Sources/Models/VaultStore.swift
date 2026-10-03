@@ -1162,6 +1162,7 @@ final class VaultStore {
       workspaceSnapshotPublishTask = publishTask
     }
   }
+  @ObservationIgnored weak var activeSecretEditingSession: VaultSecretEditingSession?
   private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
   private(set) var workspaceSnapshotBuildCount = 0
   private let workspaceSnapshotBuilder = VaultWorkspaceSnapshotBuilder()
@@ -1726,6 +1727,9 @@ final class VaultStore {
           session == self.vaultSessionGeneration, self.isUnlocked
         else { return }
         self.localStateRefreshTask = nil
+        if self.activeSecretEditingSession?.account == account {
+          self.activeSecretEditingSession?.receiveRefreshedProjects(snapshot.projects)
+        }
         self.pendingWorkspaceSnapshots = update.snapshots
         self.projects = snapshot.projects
         self.syncMetadata = snapshot.syncMetadata
@@ -3696,6 +3700,7 @@ final class VaultStore {
   }
 
   func lock() {
+    activeSecretEditingSession = nil
     cancelCliAccessChange()
     cliAccessLoadTask?.cancel()
     cliAccessLoadGeneration &+= 1
