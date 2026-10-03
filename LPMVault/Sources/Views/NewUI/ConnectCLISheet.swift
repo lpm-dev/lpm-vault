@@ -21,6 +21,7 @@ struct ConnectCLISheet: View {
 	@State private var copyResetTask: Task<Void, Never>?
 	@State private var statusTask: Task<Void, Never>?
 	@State private var statusGeneration = 0
+	@State private var configuration: LPMJSONValue?
 
 	private enum SetupMode: CaseIterable {
 		case copyJSON, writeFile
@@ -33,19 +34,9 @@ struct ConnectCLISheet: View {
 		}
 	}
 
-	private struct TerminalCommand: Identifiable {
-		let command: String
-		let placeholder: String?
-		let detail: String
-		var id: String { command }
-		var copyText: String { placeholder.map { "\(command) \($0)" } ?? command }
+	private var guidance: ProjectCLICommands {
+		ProjectCLICommands(environment: store.selectedEnvironment, configuration: configuration)
 	}
-
-	private static let commands = [
-		TerminalCommand(command: "lpm env list", placeholder: nil, detail: "List this project's keys with values masked"),
-		TerminalCommand(command: "lpm dev", placeholder: nil, detail: "Start your dev script with these values"),
-		TerminalCommand(command: "lpm run", placeholder: "<script>", detail: "Run any package.json script with them"),
-	]
 
 	private var project: VaultProject? {
 		store.projects.first { $0.id == projectId }
@@ -257,15 +248,24 @@ struct ConnectCLISheet: View {
 	private var terminalSection: some View {
 		VStack(alignment: .leading, spacing: 8) {
 			sectionTitle("Use it from the terminal")
+			Text("Run from the linked project folder · \(VaultProject.displayName(for: guidance.environment))")
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textSecondary)
 			HStack(alignment: .top, spacing: 8) {
-				ForEach(Self.commands) { command in
+				ForEach(guidance.commands, id: \.self) { command in
 					CommandCard(
-						command: command.command,
-						placeholder: command.placeholder,
-						detail: copiedItem == command.id ? "Copied to the clipboard" : command.detail
-					) { copy(command.copyText, as: command.id) }
+						command: command,
+						detail: copiedItem == command ? "Copied to the clipboard" : "Copy command"
+					) { copy(command, as: command) }
 				}
 			}
+			if let warning = guidance.warning {
+				Text(warning).font(.system(size: 11)).foregroundStyle(VaultPalette.orange)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			Text("Explicit selection overrides script settings. An empty environment falls back to default when running scripts. Linking does not install the CLI.")
+				.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+				.fixedSize(horizontal: false, vertical: true)
 		}
 	}
 
@@ -334,14 +334,18 @@ struct ConnectCLISheet: View {
 		statusGeneration += 1
 		let generation = statusGeneration
 		status = nil
+		configuration = nil
 		let vaultId = projectId
 		let folder = folder
 		statusTask = Task {
-			let resolved = await Task.detached(priority: .userInitiated) {
-				ProjectCLILink.status(vaultId: vaultId, folder: folder)
+			let (resolved, config) = await Task.detached(priority: .userInitiated) {
+				let status = ProjectCLILink.status(vaultId: vaultId, folder: folder)
+				let config = status == .linked ? ProjectConfigFile.readJSON(at: ProjectCLILink.configURL(inFolder: folder)) : nil
+				return (status, config)
 			}.value
 			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
 			status = resolved
+			configuration = config
 		}
 	}
 
@@ -457,7 +461,6 @@ private struct TerminalBarButton: View {
 
 private struct CommandCard: View {
 	let command: String
-	let placeholder: String?
 	let detail: String
 	let action: () -> Void
 
@@ -466,10 +469,10 @@ private struct CommandCard: View {
 	var body: some View {
 		Button(action: action) {
 			VStack(alignment: .leading, spacing: 6) {
-				Text("\(command)\(placeholder.map { Text(" \($0)").foregroundStyle(VaultPalette.textTertiary) } ?? Text(""))")
+				Text(command)
 					.font(VaultTypography.mono(12, .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
-					.lineLimit(1)
+					.fixedSize(horizontal: false, vertical: true)
 				Text(detail)
 					.font(.system(size: 11))
 					.foregroundStyle(VaultPalette.textTertiary)
@@ -490,7 +493,7 @@ private struct CommandCard: View {
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
 		.help("Copy \(command)")
-		.accessibilityLabel("Copy \(command)\(placeholder.map { " \($0)" } ?? "")")
+		.accessibilityLabel("Copy \(command)")
 	}
 }
 

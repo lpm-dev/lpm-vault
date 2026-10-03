@@ -233,6 +233,20 @@ struct ConnectCLIRenderingTests {
 		}
 	}
 
+	@Test("the connection sheet explicitly selects the named environment")
+	func rendersSelectedEnvironment() throws {
+		let store = makeStore(path: "")
+		store.projects[0].environments["staging"] = ["TOKEN": "dummy"]
+		store.selectedEnvironment = "staging"
+		let text = try renderedText(
+			of: ConnectCLISheet(store: store, projectId: store.projects[0].id),
+			size: NSSize(width: 600, height: 620),
+			named: "connect-cli-staging.png"
+		)
+		#expect(text.contains("--env=staging"))
+		#expect(text.contains("Run from the linked project folder"))
+	}
+
 	@Test("the title bar chip reads Connect CLI")
 	func rendersTitleBarChip() throws {
 		let store = makeStore(path: "")
@@ -261,5 +275,49 @@ struct ConnectCLIRenderingTests {
 		request.usesLanguageCorrection = false
 		try VNImageRequestHandler(cgImage: image).perform([request])
 		return OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n"))
+	}
+}
+
+@Suite("CLI environment commands")
+struct ProjectCLICommandTests {
+	@Test("commands explicitly select default instead of a script task mapping")
+	func selectsDefault() {
+		let guidance = ProjectCLICommands(environment: "default", configuration: .object([
+			"tasks": .object(["dev": .object(["env": .string("production")])])
+		]))
+		#expect(guidance.commands == ["lpm env list --env=default", "lpm dev --env=default", "lpm run --env=default <script>"])
+		#expect(guidance.warning == nil)
+	}
+
+	@Test("a redirecting alias withholds commands unless the canonical name is declared")
+	func rejectsRedirectingAlias() {
+		let alias = LPMJSONValue.object(["staging": .string(".env.production")])
+		let redirected = ProjectCLICommands(environment: "staging", configuration: .object(["env": alias]))
+		#expect(redirected.commands.isEmpty)
+		#expect(redirected.warning?.contains("production") == true)
+		let declared = ProjectCLICommands(environment: "staging", configuration: .object([
+			"env": alias, "environments": .object(["staging": .object([:])])
+		]))
+		#expect(declared.commands.count == 3)
+		#expect(declared.warning == nil)
+	}
+
+	@Test("unverified configuration warns without pretending the CLI is installed")
+	func warnsWithoutConfiguration() {
+		let guidance = ProjectCLICommands(environment: "staging", configuration: nil)
+		#expect(guidance.commands.first == "lpm env list --env=staging")
+		#expect(guidance.warning != nil)
+	}
+
+	@Test("invalid environment names never enter copied commands", arguments: ["a b", "a;echo", "$(id)", "../prod", "__index__", ""])
+	func rejectsUnsafeCommands(environment: String) {
+		#expect(ProjectCLICommands(environment: environment, configuration: nil).commands.isEmpty)
+	}
+
+	@Test("long and leading-hyphen names remain one flag value")
+	func supportsPortableNames() {
+		for name in [String(repeating: "a", count: 64), "-staging", "dev.local"] {
+			#expect(ProjectCLICommands(environment: name, configuration: .object([:])).commands.first == "lpm env list --env=\(name)")
+		}
 	}
 }

@@ -93,3 +93,41 @@ enum ProjectCLILink {
 			&& isDirectory.boolValue
 	}
 }
+
+struct ProjectCLICommands: Equatable, Sendable {
+	let environment: String
+	let commands: [String]
+	let warning: String?
+
+	init(environment: String, configuration: LPMJSONValue?) {
+		self.environment = environment
+		guard EnvValidation.isValidEnvironmentName(environment) else {
+			commands = []
+			warning = "This environment name cannot be used by the CLI."
+			return
+		}
+		if case .object(let config) = configuration {
+			let declared: Bool
+			if case .object(let environments) = config["environments"] {
+				declared = environments[environment] != nil
+			} else {
+				declared = false
+			}
+			if !declared, case .object(let aliases) = config["env"],
+				case .string(let path) = aliases[environment], path.hasPrefix(".env.")
+			{
+				let resolved = String(path.dropFirst(5))
+				if resolved != environment {
+					commands = []
+					warning = "lpm.json maps \(environment) to \(resolved). Declare \(environment) in its environments settings before using these values."
+					return
+				}
+			}
+			warning = nil
+		} else {
+			warning = "Check lpm.json aliases before running. The project configuration has not been verified."
+		}
+		let flag = "--env=\(environment)"
+		commands = ["lpm env list \(flag)", "lpm dev \(flag)", "lpm run \(flag) <script>"]
+	}
+}
