@@ -582,7 +582,9 @@ struct VaultStoreTests {
 	func unlockWaitsForProjectLoad() async throws {
 		let keychain = MockKeychainService()
 		keychain.storage["id-1"] = (name: "project", path: "", secrets: ["TOKEN": "secret"])
-		keychain.listProjectsDelay = .milliseconds(100)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextListProjectMetadata = { entered.signal(); release.wait() }
 		let store = VaultStore(
 			keychainService: keychain,
 			biometricService: MockBiometricService(),
@@ -590,9 +592,12 @@ struct VaultStoreTests {
 		)
 
 		let unlock = Task { await store.unlock() }
-		try await Task.sleep(for: .milliseconds(20))
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async { entered.wait(); continuation.resume() }
+		}
 		#expect(!store.isUnlocked)
 		#expect(store.isUnlocking)
+		release.signal()
 		await unlock.value
 
 		#expect(store.isUnlocked)

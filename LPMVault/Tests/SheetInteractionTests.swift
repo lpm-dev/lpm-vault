@@ -376,9 +376,10 @@ struct SheetInteractionTests {
 		try await host.settle()
 		#expect(host.value == "unsaved-draft")
 		#expect(try await host.waitForText(change == "changed" ? "changed outside" : "deleted outside"))
-		try await host.click("Save")
+		try host.returnWhileEditing("value", modifiers: [])
 		try await host.settle()
 		#expect(stored(keychain, "default", "TOKEN") == (change == "changed" ? "cli-new" : nil))
+		#expect(keychain.saveEnvironmentsCallCount == 0)
 	}
 
 	@Test("lock-screen encryption note stays centered above the bottom", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
