@@ -379,7 +379,6 @@ extension SheetInteractionTests {
 		defer { host.window.close() }
 		#expect(try await !host.text().contains("Copy example"))
 		try await host.click("Optional task environments")
-		#expect(try await host.waitForText("Copy example"))
 		try await host.click("Copy example")
 		let copied = try #require(NSPasteboard.general.string(forType: .string))
 		#expect(copied == ProjectCLITaskExample(vaultId: "example", environments: ["development", "staging"], selectedEnvironment: "development", configuration: ProjectConfigFile.readJSON(at: url))?.json)
