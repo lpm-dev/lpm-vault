@@ -62,6 +62,9 @@ struct ContentView: View {
 				}
 				.keyboardShortcut(.return, modifiers: [])
 				.accessibilityHint("Shows the macOS authentication prompt")
+				if let failure = store.unlockFailure {
+					VaultLoadErrorView(failure: failure)
+				}
 			}
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		}
@@ -74,5 +77,27 @@ struct ContentView: View {
 				.padding(.bottom, 18)
 		}
 		.ignoresSafeArea(.container, edges: .top)
+	}
+}
+
+struct VaultLoadErrorView: View {
+	let failure: VaultLoadFailure
+	var retry: (() -> Void)?
+
+	var body: some View {
+		VStack(spacing: 12) {
+			Text(failure.message)
+				.font(.system(size: 12.5))
+				.foregroundStyle(VaultPalette.textSecondary)
+				.multilineTextAlignment(.center)
+				.fixedSize(horizontal: false, vertical: true)
+			HStack(spacing: 16) {
+				if let retry { VaultBarButton(title: "Retry", filled: true, height: 30, action: retry) }
+				Link("Support", destination: URL(string: "https://github.com/lpm-dev/lpm-vault/blob/main/SUPPORT.md")!)
+			}
+		}
+		.frame(maxWidth: 420)
+		.padding(20)
+		.accessibilityElement(children: .contain)
 	}
 }

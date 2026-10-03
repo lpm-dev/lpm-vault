@@ -447,6 +447,7 @@ private extension Duration {
 final class MockBiometricService: BiometricServiceProtocol, @unchecked Sendable {
 	private let lock = NSLock()
 	var shouldSucceed = true
+	var lastAuthenticationFailure: AuthenticationFailure?
 	var isAvailable = true
 	var type: BiometricType = .touchID
 	var authenticateHandlers: [@Sendable () async -> Bool] = []
