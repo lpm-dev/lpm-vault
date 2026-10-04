@@ -57,7 +57,9 @@ Before you open a pull request, run the current CI checks from the repository ro
 swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
 bash LPMVault/Scripts/Tests/release-tooling-tests.sh
 python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
-node --test web/tests/test_analytics.cjs
+npm ci --prefix web --ignore-scripts
+npx --prefix web playwright install chromium
+node --test web/tests/test_*.cjs
 python3 web/tests/test_routes.py
 
 xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault \

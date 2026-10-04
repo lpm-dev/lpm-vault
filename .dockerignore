@@ -1,6 +1,7 @@
 *
 !web/
 !web/Dockerfile
+!web/prepare-assets.sh
 !web/nginx.conf
 !web/public/
 !web/public/**
