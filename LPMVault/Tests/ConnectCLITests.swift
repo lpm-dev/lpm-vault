@@ -433,7 +433,8 @@ extension SheetInteractionTests {
 		defer { host.window.close() }
 		#expect(try await host.waitForText("Not linked to a project folder yet"))
 		let text = try await host.text()
-		#expect(text.contains("--env=staging"))
+		// CI's Vision can split the flag's dashes from its value at 1x.
+		#expect(text.contains("env=staging"))
 		#expect(!text.contains("has not been verified"))
 	}
 }
