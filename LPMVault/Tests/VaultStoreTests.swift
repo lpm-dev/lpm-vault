@@ -5906,6 +5906,85 @@ struct VaultStoreTests {
 		)
 	}
 
+	@Test(
+		"organization uploads preserve named empty environments for each key-management role",
+		arguments: [true, false], [true, false])
+	func organizationPushPreservesEmptyEnvironments(canReplaceKeys: Bool, allEmpty: Bool)
+		async throws
+	{
+		let fixture = makeOrgTrustFixture()
+		let store = fixture.store
+		let sync = fixture.sync
+		let projectID = try #require(store.selectedProjectId)
+		let environments: [String: [String: String]] = [
+			"default": allEmpty ? [:] : ["TOKEN": "dummy"], "staging": [:],
+		]
+		store.projects[0].environments = environments
+		fixture.keychain.envStorage[projectID] = (
+			name: "Project", path: "", environments: environments
+		)
+		let member = try #require(sync.memberKeyAccess?.members.first)
+		let fingerprint = try #require(member.publicKeyFingerprint)
+		sync.memberKeyAccess = SyncService.MemberKeyAccess(
+			organizationID: organizationID, callerUserID: "u1", members: [member],
+			canReplaceWrappedKeys: canReplaceKeys)
+		let scope = try #require(
+			OrgTrustScope(
+				registryURL: store.appEnvironment.registryURL,
+				organizationID: organizationID, organizationSlug: fixture.slug))
+		fixture.keychain.dataStorage[fixture.trustAccount] = try JSONEncoder().encode(
+			PersistedOrgKeyTrustFixture(
+				schemaVersion: 3, scope: scope,
+				trust: OrgKeyTrust(trustedFingerprints: [member.userId: fingerprint]
+				)))
+		let metadata = mockCurrentSyncMetadata(
+			version: 4, principalID: organizationID, scope: "organization")
+		#expect(fixture.keychain.seedSyncMetadata([projectID: metadata]))
+		store.syncMetadata = [projectID: metadata]
+		let key = VaultCrypto.generateAESKey()
+		let publicKey = try #require(member.publicKey)
+		let recipientPublicKey = try #require(Data(base64Encoded: publicKey))
+		let wrapped = try VaultCrypto.wrapKeyForRecipient(
+			aesKey: key, recipientPublicKey: recipientPublicKey)
+		let previous = try VaultCrypto.encryptPayload(
+			key: key, plaintext: JSONEncoder().encode(["environments": environments]),
+			scope: .organization(slug: fixture.slug), principalId: organizationID,
+			vaultId: projectID, revision: 4)
+		sync.pullResult = SyncService.SyncStatus(
+			vaultId: projectID, version: 4,
+			cryptoVersion: VaultCrypto.currentCryptoVersion, contentKeyVersion: 1,
+			recipientPublicKeyVersion: 1, recipientPublicKeyFingerprint: fingerprint,
+			status: "ok", error: nil, code: nil, serverVersion: nil, hint: nil,
+			encryptedBlob: previous, wrappedKey: wrapped, updatedAt: nil,
+			principalId: organizationID, callerUserId: "u1",
+			organizationId: organizationID)
+		sync.pushResult = SyncService.SyncStatus(
+			vaultId: projectID, version: 5,
+			cryptoVersion: VaultCrypto.currentCryptoVersion, contentKeyVersion: 1,
+			recipientPublicKeyVersion: 1, recipientPublicKeyFingerprint: fingerprint,
+			status: "ok", error: nil, code: nil, serverVersion: nil, hint: nil,
+			encryptedBlob: nil, wrappedKey: nil, updatedAt: nil,
+			principalId: organizationID)
+		await store.pushToOrg(orgSlug: fixture.slug)
+		let pushed = try #require(sync.capturedPush)
+		let pushedKey =
+			canReplaceKeys
+			? try VaultCrypto.unwrapKeyFromSender(
+				wrapped: #require(pushed.wrappedKeys?.first?.wrappedKey),
+				privateKey: fixture.privateKey)
+			: key
+		let plaintext = try VaultCrypto.decryptPayload(
+			key: pushedKey, encoded: pushed.blob,
+			scope: .organization(slug: fixture.slug), principalId: organizationID,
+			vaultId: projectID, revision: 5,
+			cryptoVersion: VaultCrypto.currentCryptoVersion)
+		#expect(
+			try EnvValidation.decodeRemoteEnvironments(plaintext).environments
+				== environments)
+		#expect(store.syncMetadata[projectID]?.isDirty == false)
+		store.lock()
+	}
+
 	private func makeOrgTrustFixture(
 		onKeypair: @escaping @Sendable () -> Void = {},
 		authToken: MutableOptionalString? = nil,
@@ -5915,7 +5994,8 @@ struct VaultStoreTests {
 		keychain: MockKeychainService,
 		sync: MockOrgSyncService,
 		slug: String,
-		trustAccount: String
+		trustAccount: String,
+		privateKey: Data
 	) {
 		let slug = "trust-\(UUID().uuidString.lowercased())"
 		let projectId = "project-\(UUID().uuidString.lowercased())"
@@ -5986,7 +6066,7 @@ struct VaultStoreTests {
 			organizationID: organizationID,
 			organizationSlug: slug
 		)!
-		return (store, keychain, sync, slug, trustScope.storageAccount)
+		return (store, keychain, sync, slug, trustScope.storageAccount, localKeypair.privateKey)
 	}
 
 	private enum OrgPushInvalidation {

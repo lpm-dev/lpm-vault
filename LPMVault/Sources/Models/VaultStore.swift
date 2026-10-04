@@ -1076,6 +1076,31 @@ enum ProjectSyncStatus {
   case localChanges
 }
 
+enum VaultLoadFailure: Equatable, Sendable {
+  case keychainLocked, accessDenied, unsupportedBuild, invalidState, unavailable, authentication
+
+  init(_ error: KeychainError) {
+    switch error {
+    case .keychainLocked: self = .keychainLocked
+    case .accessDenied: self = .accessDenied
+    case .missingEntitlement: self = .unsupportedBuild
+    case .encodingFailed, .transactionOutcomeIndeterminate: self = .invalidState
+    default: self = .unavailable
+    }
+  }
+
+  var message: String {
+    switch self {
+    case .keychainLocked: "macOS did not allow Keychain access. Unlock your Mac and retry. If access still fails, check your login Keychain."
+    case .accessDenied: "Keychain access was denied. Allow LPM Vault in Keychain Access, then retry."
+    case .unsupportedBuild: "This build cannot access the shared Keychain. Install an official LPM Vault build."
+    case .invalidState: "Protected vault state could not be read. Retry after other LPM operations finish. If the error continues, contact support."
+    case .unavailable: "Protected vault state is unavailable. Retry. If the error continues, contact support."
+    case .authentication: "Could not authenticate with macOS. Try Touch ID or your Mac login password again."
+    }
+  }
+}
+
 enum AddSecretError: LocalizedError, Sendable, Equatable {
   case vaultLocked
   case noEnvironments
@@ -1182,6 +1207,8 @@ final class VaultStore {
   var error: String?
   var isLoadingProjects: Bool = false
   var isUnlocking: Bool = false
+  private(set) var unlockFailure: VaultLoadFailure?
+  private(set) var selectedProjectLoadFailure: VaultLoadFailure?
   private(set) var autoLockCountdownSeconds: Int?
   private(set) var selectedProjectCliAccess: VaultCliAccess?
   private(set) var projectCliAccess: [String: VaultCliAccess] = [:]
@@ -1662,6 +1689,7 @@ final class VaultStore {
   // MARK: - Load
 
   private func beginSelectedProjectLoadIfNeeded() {
+    selectedProjectLoadFailure = nil
     cancelCliAccessChange()
     selectedProjectCliAccess = nil
     cliAccessLoadTask?.cancel()
@@ -1706,13 +1734,12 @@ final class VaultStore {
           return
         }
         self.projects[index] = loadedProject
-        self.error = nil
         self.normalizeSelectedEnvironment()
       case .success(nil):
         self.error = "The selected env project no longer exists in Keychain."
         self.selectedProjectId = nil
       case .failure(let failure):
-        self.error = "Could not load the selected env project. \(failure.description)"
+        self.selectedProjectLoadFailure = VaultLoadFailure(failure)
       }
       if generation == self.selectedProjectLoadGeneration {
         self.isLoadingSelectedProject = false
@@ -1745,6 +1772,11 @@ final class VaultStore {
       projectCliAccess.removeValue(forKey: projectID)
       error = "Could not load CLI approval. \(failure.description)"
     }
+  }
+
+  func retrySelectedProjectLoad() {
+    guard isUnlocked, !isLoadingSelectedProject, selectedProjectLoadFailure != nil else { return }
+    beginSelectedProjectLoadIfNeeded()
   }
 
   func changeCliAccess(to access: VaultCliAccess) async {
@@ -1815,6 +1847,7 @@ final class VaultStore {
   }
 
   private func invalidateSelectedProjectLoad() {
+    selectedProjectLoadFailure = nil
     selectedProjectLoadGeneration &+= 1
     selectedProjectLoadTask?.cancel()
     selectedProjectLoadTask = nil
@@ -1840,6 +1873,7 @@ final class VaultStore {
       guard case .success(let snapshot) = result else {
         if case .failure(let failure) = result {
           self.error = "Could not load the protected vault state. \(failure.description)"
+          if !self.isUnlocked { self.unlockFailure = VaultLoadFailure(failure) }
         }
         self.isLoadingProjects = false
         self.projectLoadTask = nil
@@ -3557,14 +3591,16 @@ final class VaultStore {
 
   func unlock() async {
     guard !isUnlocking else { return }
+    unlockFailure = nil
     unlockGeneration &+= 1
     let generation = unlockGeneration
     isUnlocking = true
-    let success = await biometricService.authenticate(
+    let outcome = await biometricService.authenticate(
       reason: "Unlock LPM Vault to view secrets"
     )
     guard generation == unlockGeneration else { return }
-    guard success else {
+    guard outcome == .authenticated else {
+      if outcome == .failed { unlockFailure = .authentication }
       isUnlocking = false
       return
     }
@@ -3580,6 +3616,7 @@ final class VaultStore {
       return
     }
     isUnlocked = true
+    unlockFailure = nil
     beginSelectedProjectLoadIfNeeded()
     isUnlocking = false
     scheduleAutoLock()
@@ -3588,9 +3625,9 @@ final class VaultStore {
   func authenticateForSensitiveAction(reason: String) async -> Bool {
     guard isUnlocked else { return false }
     let sessionGeneration = vaultSessionGeneration
-    let success = await biometricService.authenticate(reason: reason)
+    let outcome = await biometricService.authenticate(reason: reason)
     let approved = !Task.isCancelled
-      && success
+      && outcome == .authenticated
       && isUnlocked
       && sessionGeneration == vaultSessionGeneration
     if approved {
@@ -3642,6 +3679,7 @@ final class VaultStore {
   }
 
   func lock() {
+    unlockFailure = nil
     cancelCliAccessChange()
     cliAccessLoadTask?.cancel()
     cliAccessLoadGeneration &+= 1
@@ -3850,7 +3888,7 @@ final class VaultStore {
     let syncService = personalSyncServiceFactory(environment.baseURL)
     let localExpectedVersion = pushSnapshot.metadata?.lastVersion
     let attemptLimit = force ? 3 : 1
-    let nonEmptyEnvs = pushedProject.environments.filter { !$0.value.isEmpty }
+    let environments = pushedProject.environments
     let encryptor = stableSyncEncryptor
     let projectID = pushedProject.id
     var plaintext: Data?
@@ -3922,7 +3960,7 @@ final class VaultStore {
 
         if !preparedPayload {
           let serializationTask = Task.detached(priority: .userInitiated) {
-            try JSONEncoder().encode(["environments": nonEmptyEnvs])
+            try JSONEncoder().encode(["environments": environments])
           }
           plaintext = try await serializationTask.value
           guard await hasCurrentSyncAuth(authority) else {
@@ -4811,7 +4849,7 @@ final class VaultStore {
       return .failed
     }
     let pushedProject = pushSnapshot.project
-    let nonEmptyEnvs = pushedProject.environments.filter { !$0.value.isEmpty }
+    let environments = pushedProject.environments
     let scopeSlug = orgSlug(for: authority)
     let encrypted: (blob: String, wrappedKeys: [SyncService.WrappedMemberKey]?)
     let expectedVersion = pushSnapshot.metadata?.lastVersion
@@ -4819,7 +4857,7 @@ final class VaultStore {
     if canReplaceWrappedKeys {
       let projectID = pushedProject.id
       encrypted = try await Task.detached(priority: .userInitiated) {
-        let payload = ["environments": nonEmptyEnvs]
+        let payload = ["environments": environments]
         let secretsJSON = try JSONEncoder().encode(payload)
         let aesKey = VaultCrypto.generateAESKey()
         let wrappedKeys = try Self.wrapContentKey(aesKey, for: validatedRecipients)
@@ -4900,7 +4938,7 @@ final class VaultStore {
       let projectID = pushedProject.id
       encrypted = try await Task.detached(priority: .userInitiated) {
         let syncScope = VaultCrypto.SyncScope.organization(slug: scopeSlug)
-        let payload = ["environments": nonEmptyEnvs]
+        let payload = ["environments": environments]
         let secretsJSON = try JSONEncoder().encode(payload)
         let aesKey = try VaultCrypto.unwrapKeyFromSender(
           wrapped: wrappedKey,
