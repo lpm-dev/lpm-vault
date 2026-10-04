@@ -13,8 +13,9 @@ Both branches include the same browser-test infrastructure commit. Neither featu
 | PH-3 | Correctness | SDK source-map directive | Chrome attempted an absent source map and reported CSP errors. The new production bundle has no source-map directive. | Verified | Served bundle route test | `eafc34c` | Ready for review |
 | PH-4 | Correctness | SDK loading and privacy choice | A privacy change during asynchronous SDK loading left the choice enabled. A new regression failed before correction. | Verified | Privacy transition, opt-out race, failed load, and bounded queue tests | `eafc34c` | Ready for review |
 | PH-5 | Correctness | PostHog activity view | The live integration appeared inactive. Existing marked visits appeared after the view included internal and test users. | Rejected | Authenticated activity view showed cookieless Vault pageviews. The new proxy also delivered a pageview and GitHub intent. | Not applicable | Documented |
+| PH-6 | Correctness | `tests/test_delivery.cjs` | Bundled Chromium advertised a headless brand and PostHog dropped the fixture's events. CI and a local bundled-browser run reproduced this. | Verified | Normal visitor client hints in bundled Chromium and installed Chrome | `5b3b5ec` | Ready for review |
 
-Totals: 5 received, 4 verified and fixed, 1 rejected with evidence, 0 externally blocked, 0 pending.
+Totals: 6 received, 5 verified and fixed, 1 rejected with evidence, 0 externally blocked, 0 pending.
 The Lighthouse unused-JavaScript diagnostic maps to PH-2.
 
 ## Delivery and privacy evidence
@@ -41,6 +42,7 @@ All 19 JavaScript/browser tests, 14 Docker route tests, and 3 TLS proxy tests pa
 The 714 Swift tests, 40 shell release tests, and 21 Python release tests passed.
 The warning-as-error release build and nested signature checks passed.
 The pinned SDK rebuild produced the same SHA-256 digest.
+The setup action now uses Node 24 and removes the deprecated action-runtime warning.
 
 The original bundle contains 362,709 bytes. The slim bundle contains 164,110 bytes, a 55% reduction.
 Gzip level 1 matches Nginx's default compression level.
