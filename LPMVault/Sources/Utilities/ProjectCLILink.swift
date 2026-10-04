@@ -46,6 +46,16 @@ enum ProjectCLILink {
 
 	private static func folderKey(_ vaultId: String) -> String { "lpm-vault-cli-folder-" + vaultId }
 
+	/// Reads the folder's `lpm.json` the way the CLI does before it resolves environment names.
+	static func configuration(inFolder folder: String) -> ProjectCLIConfiguration {
+		guard folderExists(folder) else { return .unverified }
+		do {
+			return try ProjectConfigFile.readJSONIfPresent(at: configURL(inFolder: folder)).map(ProjectCLIConfiguration.loaded) ?? .absent
+		} catch {
+			return .unverified
+		}
+	}
+
 	static func configURL(inFolder folder: String) -> URL {
 		URL(fileURLWithPath: folder, isDirectory: true).appendingPathComponent("lpm.json")
 	}
@@ -94,19 +104,40 @@ enum ProjectCLILink {
 	}
 }
 
+/// What the CLI reads from the linked folder's `lpm.json` when it resolves environment names.
+enum ProjectCLIConfiguration: Equatable, Sendable {
+	/// The folder has not been read yet.
+	case pending
+	/// The folder has no `lpm.json`, so no aliases apply.
+	case absent
+	case loaded(LPMJSONValue)
+	/// The folder or its `lpm.json` could not be read, so aliases are unknown.
+	case unverified
+
+	/// Whether `lpm.json` may define aliases that could not be checked.
+	fileprivate var mayHideAliases: Bool {
+		switch self {
+		case .pending, .absent: false
+		case .loaded(let value):
+			if case .object = value { false } else { true }
+		case .unverified: true
+		}
+	}
+}
+
 struct ProjectCLICommands: Equatable, Sendable {
 	let environment: String
 	let commands: [String]
 	let warning: String?
 
-	init(environment: String, configuration: LPMJSONValue?) {
+	init(environment: String, configuration: ProjectCLIConfiguration) {
 		self.environment = environment
 		guard EnvValidation.isValidEnvironmentName(environment) else {
 			commands = []
 			warning = "This environment name cannot be used by the CLI."
 			return
 		}
-		if case .object(let config) = configuration {
+		if case .loaded(.object(let config)) = configuration {
 			let declared: Bool
 			if case .object(let environments) = config["environments"] {
 				declared = environments[environment] != nil
@@ -123,10 +154,10 @@ struct ProjectCLICommands: Equatable, Sendable {
 					return
 				}
 			}
-			warning = nil
-		} else {
-			warning = "Check lpm.json aliases before running. The project configuration has not been verified."
 		}
+		warning = configuration.mayHideAliases
+			? "Check lpm.json aliases before running. The project configuration has not been verified."
+			: nil
 		let flag = "--env=\(environment)"
 		commands = ["lpm env list \(flag)", "lpm dev \(flag)", "lpm run \(flag) <script>"]
 	}
@@ -136,7 +167,7 @@ struct ProjectCLITaskExample: Equatable, Sendable {
 	let json: String
 	let warning: String?
 
-	init?(vaultId: String, environments: [String], selectedEnvironment: String, configuration: LPMJSONValue? = nil) {
+	init?(vaultId: String, environments: [String], selectedEnvironment: String, configuration: ProjectCLIConfiguration) {
 		let names = Set(environments.filter {
 			!ProjectCLICommands(environment: $0, configuration: configuration).commands.isEmpty
 		})
@@ -156,6 +187,8 @@ struct ProjectCLITaskExample: Equatable, Sendable {
 		  }
 		}
 		"""
-		warning = configuration == nil ? "Check lpm.json aliases before using the example. The project configuration has not been verified." : nil
+		warning = configuration.mayHideAliases
+			? "Check lpm.json aliases before using the example. The project configuration has not been verified."
+			: nil
 	}
 }

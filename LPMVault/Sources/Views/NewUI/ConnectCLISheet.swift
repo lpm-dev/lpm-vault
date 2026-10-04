@@ -21,7 +21,7 @@ struct ConnectCLISheet: View {
 	@State private var copyResetTask: Task<Void, Never>?
 	@State private var statusTask: Task<Void, Never>?
 	@State private var statusGeneration = 0
-	@State private var configuration: LPMJSONValue?
+	@State private var configuration = ProjectCLIConfiguration.pending
 	@State var showsTaskExample = false
 
 	private enum SetupMode: CaseIterable {
@@ -382,17 +382,16 @@ struct ConnectCLISheet: View {
 		statusGeneration += 1
 		let generation = statusGeneration
 		status = nil
-		configuration = nil
+		configuration = .pending
 		let vaultId = projectId
 		let folder = folder
 		statusTask = Task {
 			let (resolved, config) = await Task.detached(priority: .userInitiated) {
 				let status = ProjectCLILink.status(vaultId: vaultId, folder: folder)
-				let config: LPMJSONValue?
+				let config: ProjectCLIConfiguration
 				switch status {
-				case .linked, .notLinked, .linkedToOtherVault:
-					config = ProjectConfigFile.readJSON(at: ProjectCLILink.configURL(inFolder: folder))
-				case .noFolder, .unreadable: config = nil
+				case .linked, .notLinked, .linkedToOtherVault: config = ProjectCLILink.configuration(inFolder: folder)
+				case .noFolder, .unreadable: config = .unverified
 				}
 				return (status, config)
 			}.value
