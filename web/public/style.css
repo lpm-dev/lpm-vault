@@ -995,7 +995,7 @@ h3 code {
 }
 
 .mx-head .mx-key {
-	color: var(--faint);
+	color: var(--quiet);
 	font-size: 10.5px;
 	font-weight: 700;
 	letter-spacing: 0.09em;
