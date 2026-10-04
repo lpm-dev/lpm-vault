@@ -1076,6 +1076,31 @@ enum ProjectSyncStatus {
   case localChanges
 }
 
+enum VaultLoadFailure: Equatable, Sendable {
+  case keychainLocked, accessDenied, unsupportedBuild, invalidState, unavailable, authentication
+
+  init(_ error: KeychainError) {
+    switch error {
+    case .keychainLocked: self = .keychainLocked
+    case .accessDenied: self = .accessDenied
+    case .missingEntitlement: self = .unsupportedBuild
+    case .encodingFailed, .transactionOutcomeIndeterminate: self = .invalidState
+    default: self = .unavailable
+    }
+  }
+
+  var message: String {
+    switch self {
+    case .keychainLocked: "macOS did not allow Keychain access. Unlock your Mac and retry. If access still fails, check your login Keychain."
+    case .accessDenied: "Keychain access was denied. Allow LPM Vault in Keychain Access, then retry."
+    case .unsupportedBuild: "This build cannot access the shared Keychain. Install an official LPM Vault build."
+    case .invalidState: "Protected vault state could not be read. Retry after other LPM operations finish. If the error continues, contact support."
+    case .unavailable: "Protected vault state is unavailable. Retry. If the error continues, contact support."
+    case .authentication: "Could not authenticate with macOS. Try Touch ID or your Mac login password again."
+    }
+  }
+}
+
 enum AddSecretError: LocalizedError, Sendable, Equatable {
   case vaultLocked
   case noEnvironments
@@ -1185,6 +1210,8 @@ final class VaultStore {
   var error: String?
   var isLoadingProjects: Bool = false
   var isUnlocking: Bool = false
+  private(set) var unlockFailure: VaultLoadFailure?
+  private(set) var selectedProjectLoadFailure: VaultLoadFailure?
   private(set) var autoLockCountdownSeconds: Int?
   private(set) var selectedProjectCliAccess: VaultCliAccess?
   private(set) var projectCliAccess: [String: VaultCliAccess] = [:]
@@ -1309,9 +1336,9 @@ final class VaultStore {
   private var unlockGeneration = 0
   private var vaultSessionGeneration = 0
   private var activeImportIds: Set<String> = []
-  private var localEnvImportTasks: [LocalEnvImportTarget: Task<ImportedEnvFile, Error>] = [:]
   private var localEnvImportRequests: [LocalEnvImportTarget: UUID] = [:]
   private var localEnvCreationRequests: [LocalEnvImportTarget: UUID] = [:]
+  private var localEnvReviewIDs: [LocalEnvImportTarget: UUID] = [:]
   private var localEnvPreviewTasks: [UUID: Task<ImportedEnvFile, Error>] = [:]
   private var exportTasks: [UUID: Task<Void, Error>] = [:]
   private var exportAuthorizations: [UUID: EnvFileExportAuthorization] = [:]
@@ -1797,6 +1824,7 @@ final class VaultStore {
   }
 
   private func beginSelectedProjectLoadIfNeeded() {
+    selectedProjectLoadFailure = nil
     cancelCliAccessChange()
     selectedProjectCliAccess = nil
     cliAccessLoadTask?.cancel()
@@ -1841,13 +1869,12 @@ final class VaultStore {
           return
         }
         self.projects[index] = loadedProject
-        self.error = nil
         self.normalizeSelectedEnvironment()
       case .success(nil):
         self.error = "The selected env project no longer exists in Keychain."
         self.selectedProjectId = nil
       case .failure(let failure):
-        self.error = "Could not load the selected env project. \(failure.description)"
+        self.selectedProjectLoadFailure = VaultLoadFailure(failure)
       }
       if generation == self.selectedProjectLoadGeneration {
         self.isLoadingSelectedProject = false
@@ -1880,6 +1907,11 @@ final class VaultStore {
       projectCliAccess.removeValue(forKey: projectID)
       error = "Could not load CLI approval. \(failure.description)"
     }
+  }
+
+  func retrySelectedProjectLoad() {
+    guard isUnlocked, !isLoadingSelectedProject, selectedProjectLoadFailure != nil else { return }
+    beginSelectedProjectLoadIfNeeded()
   }
 
   func changeCliAccess(to access: VaultCliAccess) async {
@@ -1951,6 +1983,7 @@ final class VaultStore {
   }
 
   private func invalidateSelectedProjectLoad() {
+    selectedProjectLoadFailure = nil
     selectedProjectLoadGeneration &+= 1
     selectedProjectLoadTask?.cancel()
     selectedProjectLoadTask = nil
@@ -1977,6 +2010,7 @@ final class VaultStore {
       guard case .success(let snapshot) = result else {
         if case .failure(let failure) = result {
           self.error = "Could not load the protected vault state. \(failure.description)"
+          if !self.isUnlocked { self.unlockFailure = VaultLoadFailure(failure) }
         }
         self.isLoadingProjects = false
         self.projectLoadTask = nil
@@ -2609,6 +2643,7 @@ final class VaultStore {
     defer {
       if localEnvCreationRequests[target] == requestId {
         localEnvCreationRequests.removeValue(forKey: target)
+        localEnvReviewIDs.removeValue(forKey: target)
       }
       localEnvImportAuthority.complete(target, requestId: requestId)
     }
@@ -2634,7 +2669,7 @@ final class VaultStore {
       switch commit {
       case .failure(let persistenceError):
         error = persistenceError.description
-      case .targetUnavailable:
+      case .targetUnavailable, .reviewChanged:
         error = EnvFileImportError.targetUnavailable.localizedDescription
       case .caseInsensitiveCollision:
         error = EnvFileImportError.caseInsensitiveCollisionWithExisting.localizedDescription
@@ -2761,113 +2796,157 @@ final class VaultStore {
 
   // MARK: - Bounded Local Dotenv Imports
 
-  /// Reads and parses off the main actor, then persists the exact captured
-  /// destination before publishing. A newer import to the same destination
-  /// cancels and supersedes the older request.
-  func importEnvFile(
-    at url: URL,
-    to projectId: String,
-    environment: String
-  ) async -> Result<ImportedEnvFile, EnvFileImportError> {
+  func prepareEnvFileImport(
+    at url: URL, to projectId: String, environment: String
+  ) async -> Result<EnvFileImportReview, EnvFileImportError> {
     guard isUnlocked else { return .failure(.vaultLocked) }
     guard selectedProjectId == projectId, selectedEnvironment == environment,
       let project = projects.first(where: { $0.id == projectId }),
       project.environments[environment] != nil
     else { return .failure(.targetUnavailable) }
+    let target = LocalEnvImportTarget(projectId: projectId, environment: environment)
+    let reviewID = UUID()
+    let session = vaultSessionGeneration
+    cancelLocalEnvImport(projectId: projectId, environment: environment)
+    localEnvReviewIDs[target] = reviewID
+    let imported: ImportedEnvFile
+    switch await loadEnvFilePreview(at: url, for: projectId) {
+    case .success(let file): imported = file
+    case .failure(let failure): return .failure(failure)
+    }
+    let durable = await persistence.loadProject(vaultId: projectId)
+    guard isUnlocked, session == vaultSessionGeneration,
+      localEnvReviewIDs[target] == reviewID, selectedProjectId == projectId,
+      selectedEnvironment == environment, !Task.isCancelled
+    else { return .failure(.cancelled) }
+    switch durable {
+    case .success(let current?):
+      guard current.name == project.name, current.path == project.path else {
+        return .failure(.targetUnavailable)
+      }
+      do {
+        let review = try await Task.detached(priority: .userInitiated) {
+          try EnvFileImportReview(id: reviewID, project: current, environment: environment,
+            sourceURL: url, sessionGeneration: session, imported: imported)
+        }.value
+        guard isUnlocked, session == vaultSessionGeneration,
+          localEnvReviewIDs[target] == reviewID, selectedProjectId == projectId,
+          selectedEnvironment == environment, !Task.isCancelled
+        else { return .failure(.cancelled) }
+        return .success(review)
+      } catch let failure as EnvFileImportError { return .failure(failure) }
+      catch { return .failure(.readFailed) }
+    case .success(nil): return .failure(.targetUnavailable)
+    case .failure(let failure): return .failure(.persistence(failure.description))
+    }
+  }
+
+  func isCurrentEnvFileImportReview(_ review: EnvFileImportReview) -> Bool {
+    let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
+    return isUnlocked && !showAuthStatus
+      && review.sessionGeneration == vaultSessionGeneration
+      && localEnvReviewIDs[target] == review.id
+      && selectedProjectId == review.projectId && selectedEnvironment == review.environment
+      && projects.contains { $0.id == review.projectId && $0.environments[review.environment] != nil }
+  }
+
+  func applyEnvFileImport(
+    _ review: EnvFileImportReview, replacingKeys: Set<String>
+  ) async -> Result<ImportedEnvFile, EnvFileImportError> {
+    let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
+    guard isUnlocked else { return .failure(.vaultLocked) }
+    guard review.sessionGeneration == vaultSessionGeneration,
+      localEnvReviewIDs[target] == review.id,
+      replacingKeys.isSubset(of: review.changedKeys)
+    else { return .failure(.cancelled) }
+    let result = await commitEnvFileImport(review, replacingKeys: replacingKeys)
+    if case .success = result, localEnvReviewIDs[target] == review.id {
+      localEnvReviewIDs.removeValue(forKey: target)
+    }
+    return result
+  }
+
+  /// Persists the reviewed file into its captured destination, keeping existing
+  /// values except approved replacements, then publishes the durable project.
+  /// The commit fails with `reviewChanged` when the destination no longer
+  /// matches the reviewed baseline, so concurrent CLI edits are never replaced.
+  private func commitEnvFileImport(
+    _ review: EnvFileImportReview, replacingKeys: Set<String>
+  ) async -> Result<ImportedEnvFile, EnvFileImportError> {
+    let projectId = review.projectId
+    let environment = review.environment
+    guard selectedProjectId == projectId, selectedEnvironment == environment,
+      projects.contains(where: { $0.id == projectId && $0.environments[environment] != nil })
+    else { return .failure(.targetUnavailable) }
+    guard !Task.isCancelled else { return .failure(.cancelled) }
 
     let target = LocalEnvImportTarget(projectId: projectId, environment: environment)
     let requestId = UUID()
     let sessionGeneration = vaultSessionGeneration
-    localEnvImportTasks[target]?.cancel()
     localEnvImportRequests[target] = requestId
     localEnvImportAuthority.begin(target, requestId: requestId)
-
-    let task = Task { [envFileImportService] in
-      try await envFileImportService.load(at: url)
-    }
-    localEnvImportTasks[target] = task
     defer {
       if localEnvImportRequests[target] == requestId {
-        localEnvImportTasks.removeValue(forKey: target)
         localEnvImportRequests.removeValue(forKey: target)
       }
       localEnvImportAuthority.complete(target, requestId: requestId)
     }
 
-    do {
-      let imported = try await withTaskCancellationHandler {
-        try await task.value
-      } onCancel: {
-        task.cancel()
-      }
-      try Task.checkCancellation()
-      guard localEnvImportRequests[target] == requestId,
-        sessionGeneration == vaultSessionGeneration,
+    invalidateProjectLoad()
+    let commit = await withTaskCancellationHandler {
+      await persistence.importSecrets(
+        projectId: projectId,
+        projectName: review.projectName,
+        projectPath: review.projectPath,
+        environment: environment,
+        secrets: review.imported.secrets,
+        expectedSecrets: review.baseline,
+        replacingKeys: replacingKeys,
+        requestId: requestId,
+        authority: localEnvImportAuthority
+      )
+    } onCancel: { [localEnvImportAuthority] in
+      localEnvImportAuthority.cancel(target, requestId: requestId)
+    }
+
+    switch commit {
+    case .success(let persisted):
+      guard sessionGeneration == vaultSessionGeneration,
         isUnlocked,
+        projects.contains(where: { $0.id == projectId })
+      else {
+        // The transaction crossed its synchronous commit point. Keep
+        // locked/stale UI clear, but report the durable success.
+        return .success(review.imported)
+      }
+      updateProjectInPlace(persisted.project)
+      applySyncMetadata(persisted.syncMetadata, for: persisted.project.id)
+      if localEnvImportRequests[target] == requestId,
         selectedProjectId == projectId,
         selectedEnvironment == environment,
-        let currentProject = projects.first(where: { $0.id == projectId }),
-        currentProject.environments[environment] != nil
-      else { return .failure(.cancelled) }
-
-      invalidateProjectLoad()
-      let commit = await withTaskCancellationHandler {
-        await persistence.importSecrets(
-          projectId: projectId,
-          projectName: currentProject.name,
-          projectPath: currentProject.path,
-          environment: environment,
-          secrets: imported.secrets,
-          requestId: requestId,
-          authority: localEnvImportAuthority
-        )
-      } onCancel: { [localEnvImportAuthority] in
-        localEnvImportAuthority.cancel(target, requestId: requestId)
+        !Task.isCancelled
+      {
+        error = persisted.warning
       }
-
-      switch commit {
-      case .success(let persisted):
-        guard sessionGeneration == vaultSessionGeneration,
-          isUnlocked,
-          projects.contains(where: { $0.id == projectId })
-        else {
-          // The transaction crossed its synchronous commit point. Keep
-          // locked/stale UI clear, but report the durable success.
-          return .success(imported)
-        }
-        updateProjectInPlace(persisted.project)
-        applySyncMetadata(persisted.syncMetadata, for: persisted.project.id)
-        if localEnvImportRequests[target] == requestId,
-          selectedProjectId == projectId,
-          selectedEnvironment == environment,
-          !Task.isCancelled
-        {
-          error = persisted.warning
-        }
-        return .success(imported)
-      case .targetUnavailable:
-        return .failure(.targetUnavailable)
-      case .caseInsensitiveCollision:
-        return .failure(.caseInsensitiveCollisionWithExisting)
-      case .cancelled:
-        return .failure(.cancelled)
-      case .failure(let persistenceError):
-		if case .transactionOutcomeIndeterminate = persistenceError {
-          if sessionGeneration == vaultSessionGeneration, isUnlocked,
-            selectedProjectId == projectId,
-            selectedEnvironment == environment
-          {
-            _ = await loadProjects()
-          }
-        }
-        return .failure(.persistence(persistenceError.description))
-      }
-    } catch is CancellationError {
+      return .success(review.imported)
+    case .targetUnavailable:
+      return .failure(.targetUnavailable)
+    case .reviewChanged:
+      return .failure(.reviewChanged)
+    case .caseInsensitiveCollision:
+      return .failure(.caseInsensitiveCollisionWithExisting)
+    case .cancelled:
       return .failure(.cancelled)
-    } catch let importError as EnvFileImportError {
-      return .failure(importError)
-    } catch {
-      return .failure(.readFailed)
+    case .failure(let persistenceError):
+      if case .transactionOutcomeIndeterminate = persistenceError {
+        if sessionGeneration == vaultSessionGeneration, isUnlocked,
+          selectedProjectId == projectId,
+          selectedEnvironment == environment
+        {
+          _ = await loadProjects()
+        }
+      }
+      return .failure(.persistence(persistenceError.description))
     }
   }
 
@@ -2912,21 +2991,21 @@ final class VaultStore {
 
   private func cancelLocalEnvImport(projectId: String, environment: String) {
     let target = LocalEnvImportTarget(projectId: projectId, environment: environment)
-    localEnvImportTasks.removeValue(forKey: target)?.cancel()
     localEnvImportRequests.removeValue(forKey: target)
     localEnvCreationRequests.removeValue(forKey: target)
+    localEnvReviewIDs.removeValue(forKey: target)
     localEnvImportAuthority.cancel(target)
   }
 
   private func cancelLocalEnvImports(projectId: String? = nil) {
-    let targets = Set(localEnvImportTasks.keys)
-      .union(localEnvImportRequests.keys)
+    let targets = Set(localEnvImportRequests.keys)
       .union(localEnvCreationRequests.keys)
+      .union(localEnvReviewIDs.keys)
       .filter { projectId == nil || $0.projectId == projectId }
     for target in targets {
-      localEnvImportTasks.removeValue(forKey: target)?.cancel()
       localEnvImportRequests.removeValue(forKey: target)
       localEnvCreationRequests.removeValue(forKey: target)
+      localEnvReviewIDs.removeValue(forKey: target)
       localEnvImportAuthority.cancel(target)
     }
   }
@@ -3650,14 +3729,16 @@ final class VaultStore {
 
   func unlock() async {
     guard !isUnlocking else { return }
+    unlockFailure = nil
     unlockGeneration &+= 1
     let generation = unlockGeneration
     isUnlocking = true
-    let success = await biometricService.authenticate(
+    let outcome = await biometricService.authenticate(
       reason: "Unlock LPM Vault to view secrets"
     )
     guard generation == unlockGeneration else { return }
-    guard success else {
+    guard outcome == .authenticated else {
+      if outcome == .failed { unlockFailure = .authentication }
       isUnlocking = false
       return
     }
@@ -3673,6 +3754,7 @@ final class VaultStore {
       return
     }
     isUnlocked = true
+    unlockFailure = nil
     beginSelectedProjectLoadIfNeeded()
     isUnlocking = false
     scheduleAutoLock()
@@ -3681,9 +3763,9 @@ final class VaultStore {
   func authenticateForSensitiveAction(reason: String) async -> Bool {
     guard isUnlocked else { return false }
     let sessionGeneration = vaultSessionGeneration
-    let success = await biometricService.authenticate(reason: reason)
+    let outcome = await biometricService.authenticate(reason: reason)
     let approved = !Task.isCancelled
-      && success
+      && outcome == .authenticated
       && isUnlocked
       && sessionGeneration == vaultSessionGeneration
     if approved {
@@ -3736,6 +3818,7 @@ final class VaultStore {
   }
 
   func lock() {
+    unlockFailure = nil
     activeSecretEditingSession = nil
     cancelCliAccessChange()
     cliAccessLoadTask?.cancel()
@@ -3948,7 +4031,7 @@ final class VaultStore {
     let syncService = personalSyncServiceFactory(environment.baseURL)
     let localExpectedVersion = pushSnapshot.metadata?.lastVersion
     let attemptLimit = force ? 3 : 1
-    let nonEmptyEnvs = pushedProject.environments.filter { !$0.value.isEmpty }
+    let environments = pushedProject.environments
     let encryptor = stableSyncEncryptor
     let projectID = pushedProject.id
     var plaintext: Data?
@@ -4020,7 +4103,7 @@ final class VaultStore {
 
         if !preparedPayload {
           let serializationTask = Task.detached(priority: .userInitiated) {
-            try JSONEncoder().encode(["environments": nonEmptyEnvs])
+            try JSONEncoder().encode(["environments": environments])
           }
           plaintext = try await serializationTask.value
           guard await hasCurrentSyncAuth(authority) else {
@@ -4909,7 +4992,7 @@ final class VaultStore {
       return .failed
     }
     let pushedProject = pushSnapshot.project
-    let nonEmptyEnvs = pushedProject.environments.filter { !$0.value.isEmpty }
+    let environments = pushedProject.environments
     let scopeSlug = orgSlug(for: authority)
     let encrypted: (blob: String, wrappedKeys: [SyncService.WrappedMemberKey]?)
     let expectedVersion = pushSnapshot.metadata?.lastVersion
@@ -4917,7 +5000,7 @@ final class VaultStore {
     if canReplaceWrappedKeys {
       let projectID = pushedProject.id
       encrypted = try await Task.detached(priority: .userInitiated) {
-        let payload = ["environments": nonEmptyEnvs]
+        let payload = ["environments": environments]
         let secretsJSON = try JSONEncoder().encode(payload)
         let aesKey = VaultCrypto.generateAESKey()
         let wrappedKeys = try Self.wrapContentKey(aesKey, for: validatedRecipients)
@@ -4998,7 +5081,7 @@ final class VaultStore {
       let projectID = pushedProject.id
       encrypted = try await Task.detached(priority: .userInitiated) {
         let syncScope = VaultCrypto.SyncScope.organization(slug: scopeSlug)
-        let payload = ["environments": nonEmptyEnvs]
+        let payload = ["environments": environments]
         let secretsJSON = try JSONEncoder().encode(payload)
         let aesKey = try VaultCrypto.unwrapKeyFromSender(
           wrapped: wrappedKey,

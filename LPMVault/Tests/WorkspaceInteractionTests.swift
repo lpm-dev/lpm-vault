@@ -358,12 +358,7 @@ extension SheetInteractionTests {
 		}
 
 		private func clickAt<V: View>(_ point: NSPoint, in host: SheetTestHost<V>) throws {
-			for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-				let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
-					timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber,
-					context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
-				host.window.sendEvent(event)
-			}
+			try NativeTestClick.send(to: host.window, at: point)
 		}
 	}
 }

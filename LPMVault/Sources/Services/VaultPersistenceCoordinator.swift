@@ -74,6 +74,7 @@ enum LocalEnvImportPersistenceResult: Sendable {
 	case success(LocalEnvImportPersistenceCommit)
 	case targetUnavailable
 	case caseInsensitiveCollision
+	case reviewChanged
 	case cancelled
 	case failure(KeychainError)
 }
@@ -995,6 +996,8 @@ actor VaultPersistenceCoordinator {
 		projectPath: String,
 		environment: String,
 		secrets: [String: String],
+		expectedSecrets: [String: String]?,
+		replacingKeys: Set<String>,
 		requestId: UUID,
 		authority: LocalEnvImportAuthority
 	) -> LocalEnvImportPersistenceResult {
@@ -1005,6 +1008,8 @@ actor VaultPersistenceCoordinator {
 				projectPath: projectPath,
 				environment: environment,
 				secrets: secrets,
+				expectedSecrets: expectedSecrets,
+				replacingKeys: replacingKeys,
 				requestId: requestId,
 				authority: authority
 			)
@@ -1020,6 +1025,8 @@ actor VaultPersistenceCoordinator {
 		projectPath: String,
 		environment: String,
 		secrets: [String: String],
+		expectedSecrets: [String: String]?,
+		replacingKeys: Set<String>,
 		requestId: UUID,
 		authority: LocalEnvImportAuthority
 	) -> LocalEnvImportPersistenceResult {
@@ -1037,6 +1044,9 @@ actor VaultPersistenceCoordinator {
 		else { return .targetUnavailable }
 
 		var importedEnvironment = environments[environment] ?? [:]
+		if let expectedSecrets, importedEnvironment != expectedSecrets {
+			return .reviewChanged
+		}
 		var exactKeys = Set(importedEnvironment.keys)
 		var foldedKeys = Set(importedEnvironment.keys.map { $0.lowercased() })
 		for key in secrets.keys {
@@ -1047,7 +1057,17 @@ actor VaultPersistenceCoordinator {
 			}
 			exactKeys.insert(key)
 		}
-		importedEnvironment.merge(secrets) { _, imported in imported }
+		for (key, value) in secrets where importedEnvironment[key] == nil || replacingKeys.contains(key) {
+			importedEnvironment[key] = value
+		}
+		if importedEnvironment == environments[environment] {
+			switch readSyncMetadataRecordSnapshotResult(vaultId: projectId) {
+			case .success(let record):
+				guard authority.beginCommit(LocalEnvImportTarget(projectId: projectId, environment: environment), requestId: requestId) else { return .cancelled }
+				return .success(LocalEnvImportPersistenceCommit(project: storedProject, syncMetadata: record.metadata, warning: nil))
+			case .failure(let error): return .failure(error)
+			}
+		}
 		environments[environment] = importedEnvironment
 
 		let project = VaultProject(

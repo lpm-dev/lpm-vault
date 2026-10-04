@@ -33,6 +33,7 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 	case noValidSecrets
 	case vaultLocked
 	case targetUnavailable
+	case reviewChanged
 	case caseInsensitiveCollisionWithExisting
 	case persistence(String)
 
@@ -64,6 +65,8 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 			"Unlock LPM Vault before importing secrets."
 		case .targetUnavailable:
 			"The target env project or environment changed before the import completed."
+		case .reviewChanged:
+			"The environment changed after this review. Review the file again before importing."
 		case .caseInsensitiveCollisionWithExisting:
 			"A key in this file differs only by letter case from an existing key. Rename one key for Windows compatibility."
 		case .persistence(let message):

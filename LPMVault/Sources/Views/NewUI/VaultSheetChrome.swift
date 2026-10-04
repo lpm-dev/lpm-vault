@@ -35,6 +35,7 @@ struct VaultSheetFooter<Leading: View, Actions: View>: View {
 					.frame(maxWidth: .infinity, alignment: .leading)
 				actions
 			}
+			.frame(maxWidth: .infinity, alignment: .trailing)
 			.padding(.horizontal, 24)
 			.padding(.top, 14)
 			.padding(.bottom, 18)

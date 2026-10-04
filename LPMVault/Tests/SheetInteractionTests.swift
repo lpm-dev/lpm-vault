@@ -52,6 +52,27 @@ enum RenderedText {
 }
 
 @MainActor
+enum NativeTestClick {
+	static func send(to window: NSWindow, at point: NSPoint) throws {
+		let content = try #require(window.contentView)
+		let hitPoint = content.superview?.convert(point, from: nil) ?? point
+		var hit = content.hitTest(hitPoint)
+		while let view = hit {
+			if let button = view as? NSButton {
+				// AppKit mouse-down tracking requires a running event loop.
+				button.performClick(nil)
+				return
+			}
+			hit = view.superview
+		}
+		for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+			let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+			window.sendEvent(event)
+		}
+	}
+}
+
+@MainActor
 final class SheetTestHost<V: View> {
 	let view: NSView
 	let window: NSWindow
@@ -63,6 +84,7 @@ final class SheetTestHost<V: View> {
 	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false, usesHostingView: Bool = false) {
 		window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
+		window.animationBehavior = .none
 		if usesHostingView {
 			let host = NSHostingView(rootView: root)
 			if keepsRequestedSize { host.sizingOptions = [] }
@@ -122,7 +144,7 @@ final class SheetTestHost<V: View> {
 		return false
 	}
 
-	/// Clicks the rendered label once it appears, using real mouse events.
+	/// Clicks the rendered target after it appears.
 	func click(_ label: String, in targetWindow: NSWindow? = nil, caseInsensitive: Bool = false) async throws {
 		let window = targetWindow ?? self.window
 		let target = try #require(window.contentView)
@@ -138,10 +160,7 @@ final class SheetTestHost<V: View> {
 			NSPoint(x: box.midX * target.bounds.width, y: (target.isFlipped ? 1 - box.midY : box.midY) * target.bounds.height),
 			to: nil
 		)
-		for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-			let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
-			window.sendEvent(event)
-		}
+		try NativeTestClick.send(to: window, at: point)
 	}
 
 	func enterKey(_ key: String) throws {

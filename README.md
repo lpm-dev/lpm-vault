@@ -26,6 +26,9 @@ The screenshot uses dummy project data. It contains no real credentials.
 LPM Vault supports **macOS 14 or later**, on **Apple silicon and Intel**.
 Touch ID is optional. You can unlock the app with your Mac login password.
 
+If protected state cannot load, the locked screen explains the recovery action.
+Failed project loads show **Retry** and a support link. The app keeps unreadable state protected.
+
 1. [Download the current installer](https://vault.lpm.dev/download).
 2. Open the DMG.
 3. Drag **LPM Vault** into **Applications**.
@@ -39,7 +42,8 @@ Sparkle asks before it enables background update checks.
 
 - Manage project variables across multiple environments.
 - Compare values and find missing keys in the environment matrix.
-- Import and export `.env` files.
+- Review `.env` imports with values hidden. Keep existing values or select individual replacements.
+- Export `.env` files.
 - Unlock with Touch ID or your Mac login password.
 - Use local values from `lpm env`, `lpm dev`, and `lpm run`.
 - Sync encrypted data to personal or organization env projects.
@@ -63,6 +67,13 @@ Then run a project script:
 ```sh
 lpm run dev
 ```
+
+Connect CLI shows commands for the selected environment, with an explicit `--env` flag.
+Run these commands from the linked project folder.
+The flag overrides script environment settings. Existing `lpm.json` aliases still apply.
+If an alias selects another environment, the sheet explains the configuration change required before it shows commands.
+An empty environment uses default vault values when a script runs.
+Linking a folder does not install the CLI.
 
 See the [app guide](https://cli.lpm.dev/docs/dev/lpm-vault) and [env guide](https://cli.lpm.dev/docs/dev/env) for environment selection.
 
@@ -99,7 +110,7 @@ Automatic refresh does not extend the idle-lock timer. The locked app does not r
 ## Security and privacy
 
 Local secrets use the Data Protection Keychain on this Mac. They do not sync through iCloud Keychain.
-Cloud sync encrypts values on your Mac before upload.
+Cloud sync encrypts values on your Mac before upload. It preserves named empty environments, including projects with no keys.
 Exported `.env` files and copied values require separate protection.
 
 The Mac app sends no analytics.

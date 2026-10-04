@@ -241,12 +241,7 @@ struct VaultPaneLayoutTests {
 
 	private func clickInspectorToggle(in window: NSWindow, contentRightEdge: CGFloat) throws {
 		let location = NSPoint(x: contentRightEdge - 129.5, y: 723.5)
-		for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-			let event = try #require(NSEvent.mouseEvent(with: type, location: location,
-				modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-				windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
-			window.sendEvent(event)
-		}
+		try NativeTestClick.send(to: window, at: location)
 	}
 
 	private func event(_ type: NSEvent.EventType, x: CGFloat) throws -> NSEvent {

@@ -11,6 +11,7 @@ function boot({ href = 'https://vault.lpm.dev/', referrer = '', stored = null, n
   const events = []
   const listeners = {}
   const writes = []
+  const scripts = []
   const button = { hidden: true, disabled: false, textContent: '', addEventListener: (name, callback) => { listeners[`button:${name}`] = callback } }
   let config
   let properties = {}
@@ -27,7 +28,7 @@ function boot({ href = 'https://vault.lpm.dev/', referrer = '', stored = null, n
   const context = {
     URL, URLSearchParams, Set, Object,
     window: { posthog: sdkMissing ? undefined : sdk, location, addEventListener: (name, callback) => { listeners[`window:${name}`] = callback } },
-    document: { referrer, getElementById: () => button, addEventListener: (name, callback) => { listeners[name] = callback } },
+    document: { referrer, getElementById: () => button, addEventListener: (name, callback) => { listeners[name] = callback }, createElement: () => ({}), head: { append: script => scripts.push(script) } },
     navigator,
     localStorage: {
       getItem: () => { if (storageThrows) throw Error('blocked'); return stored },
@@ -35,8 +36,57 @@ function boot({ href = 'https://vault.lpm.dev/', referrer = '', stored = null, n
     },
   }
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context)
-  return { events, listeners, writes, button, config, properties }
+  return { events, listeners, writes, button, config, properties, scripts, context, sdk }
 }
+
+test('delivers through the same origin when PostHog domains are blocked', () => {
+  assert.equal(boot().config.api_host, '/ingest')
+})
+
+test('loads the SDK only for eligible visits and preserves early clicks', () => {
+  const state = boot({ sdkMissing: true })
+  assert.equal(state.scripts.length, 1)
+  click(state, '/download')
+  state.context.window.posthog = state.sdk
+  state.scripts[0].onload()
+  assert.deepEqual(state.events.map(e => e.event), ['$pageview', 'vault_download_clicked'])
+  for (const options of [{ sdkMissing: true, stored: 'true' }, { sdkMissing: true, navigator: { globalPrivacyControl: true } }, { sdkMissing: true, navigator: { doNotTrack: '1' } }, { sdkMissing: true, href: 'http://localhost:8080/' }]) {
+    assert.equal(boot(options).scripts.length, 0)
+  }
+})
+
+test('opt-out during SDK loading prevents initialization and queued delivery', () => {
+  const state = boot({ sdkMissing: true })
+  click(state, '/download')
+  state.listeners['button:click']()
+  state.context.window.posthog = state.sdk
+  state.scripts[0].onload()
+  assert.equal(state.events.length, 0)
+})
+
+test('privacy changes during SDK loading disable capture and update the choice', () => {
+  const state = boot({ sdkMissing: true })
+  state.context.navigator.globalPrivacyControl = true
+  state.context.window.posthog = state.sdk
+  state.scripts[0].onload()
+  assert.equal(state.events.length, 0)
+  assert.equal(state.button.disabled, true)
+})
+
+test('early intents use a bounded queue and SDK load failures discard it', () => {
+  const state = boot({ sdkMissing: true })
+  for (let index = 0; index < 25; index++) click(state, '/download')
+  state.context.window.posthog = state.sdk
+  state.scripts[0].onload()
+  assert.equal(state.events.length, 21)
+  const failed = boot({ sdkMissing: true })
+  click(failed, '/download')
+  failed.scripts[0].onerror()
+  failed.context.window.posthog = failed.sdk
+  failed.scripts[0].onload()
+  assert.equal(failed.events.length, 0)
+  assert.equal(failed.button.disabled, true)
+})
 
 function click(state, href, section = 'hero', overrides = {}) {
   const anchor = { href, getAttribute: () => href, setAttribute: (name, value) => { anchor.href = value }, closest: (selector) => selector === 'header' && section === 'header' ? {} : selector === 'footer' && section === 'footer' ? {} : selector === '[data-hero]' && section === 'hero' ? {} : null }
