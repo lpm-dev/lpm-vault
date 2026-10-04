@@ -3550,12 +3550,12 @@ final class VaultStore {
     unlockGeneration &+= 1
     let generation = unlockGeneration
     isUnlocking = true
-    let success = await biometricService.authenticate(
+    let outcome = await biometricService.authenticate(
       reason: "Unlock LPM Vault to view secrets"
     )
     guard generation == unlockGeneration else { return }
-    guard success else {
-      if biometricService.lastAuthenticationFailure != nil { unlockFailure = .authentication }
+    guard outcome == .authenticated else {
+      if outcome == .failed { unlockFailure = .authentication }
       isUnlocking = false
       return
     }
@@ -3580,9 +3580,9 @@ final class VaultStore {
   func authenticateForSensitiveAction(reason: String) async -> Bool {
     guard isUnlocked else { return false }
     let sessionGeneration = vaultSessionGeneration
-    let success = await biometricService.authenticate(reason: reason)
+    let outcome = await biometricService.authenticate(reason: reason)
     let approved = !Task.isCancelled
-      && success
+      && outcome == .authenticated
       && isUnlocked
       && sessionGeneration == vaultSessionGeneration
     if approved {

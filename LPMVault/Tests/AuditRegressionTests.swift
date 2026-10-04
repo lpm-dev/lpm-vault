@@ -15,13 +15,13 @@ struct AuditRegressionTests {
       now: { clock.value },
       authentication: { _ in
         prompts.increment()
-        return true
+        return .authenticated
       }
     )
 
-    #expect(await service.authenticate(reason: "first"))
+    #expect(await service.authenticate(reason: "first") == .authenticated)
     clock.value = 50
-    #expect(await service.authenticate(reason: "after rollback"))
+    #expect(await service.authenticate(reason: "after rollback") == .authenticated)
 
     #expect(prompts.value == 2)
   }

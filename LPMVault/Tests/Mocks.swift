@@ -447,7 +447,8 @@ private extension Duration {
 final class MockBiometricService: BiometricServiceProtocol, @unchecked Sendable {
 	private let lock = NSLock()
 	var shouldSucceed = true
-	var lastAuthenticationFailure: AuthenticationFailure?
+	/// What an unsuccessful attempt reports; a dismissed prompt by default.
+	var failureOutcome: AuthenticationOutcome = .cancelled
 	var isAvailable = true
 	var type: BiometricType = .touchID
 	var authenticateHandlers: [@Sendable () async -> Bool] = []
@@ -455,14 +456,15 @@ final class MockBiometricService: BiometricServiceProtocol, @unchecked Sendable 
 
 	var authenticateCallCount: Int { lock.withLock { authenticationCalls } }
 
-	func authenticate(reason: String) async -> Bool {
+	func authenticate(reason: String) async -> AuthenticationOutcome {
 		_ = reason
-		let response: ((@Sendable () async -> Bool)?, Bool) = lock.withLock {
+		let response: ((@Sendable () async -> Bool)?, Bool, AuthenticationOutcome) = lock.withLock {
 			authenticationCalls += 1
 			let handler = authenticateHandlers.isEmpty ? nil : authenticateHandlers.removeFirst()
-			return (handler, shouldSucceed)
+			return (handler, shouldSucceed, failureOutcome)
 		}
-		return await response.0?() ?? response.1
+		let succeeded = await response.0?() ?? response.1
+		return succeeded ? .authenticated : response.2
 	}
 
 	func isBiometricAvailable() -> Bool {
