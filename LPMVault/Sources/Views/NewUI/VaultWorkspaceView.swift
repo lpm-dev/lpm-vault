@@ -148,6 +148,10 @@ struct VaultWorkspaceView: View {
 							AuthStatusView(store: store)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
+						} else if let failure = store.selectedProjectLoadFailure {
+							VaultLoadErrorView(failure: failure, retry: store.retrySelectedProjectLoad)
+								.frame(maxWidth: .infinity, maxHeight: .infinity)
+								.background(VaultPalette.content)
 						} else if let project,
 							store.isLoadingSelectedProject || (project.hasLoadedEnvironments && store.workspaceSnapshots[project.id] == nil)
 						{

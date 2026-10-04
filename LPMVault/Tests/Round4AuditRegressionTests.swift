@@ -446,16 +446,16 @@ extension VaultStoreTests {
 			authentication: { _ in
 				calls.increment()
 				await gate.arriveAndWait()
-				return true
+				return .authenticated
 			}
 		)
 		let first = Task { await service.authenticate(reason: "Unlock") }
 		await gate.waitUntilArrived()
 		service.resetCache()
 		await gate.release()
-		#expect(await first.value)
+		#expect(await first.value == .authenticated)
 
-		#expect(await service.authenticate(reason: "Unlock again"))
+		#expect(await service.authenticate(reason: "Unlock again") == .authenticated)
 		#expect(calls.value == 2)
 	}
 

@@ -26,6 +26,9 @@ The screenshot uses dummy project data. It contains no real credentials.
 LPM Vault supports **macOS 14 or later**, on **Apple silicon and Intel**.
 Touch ID is optional. You can unlock the app with your Mac login password.
 
+If protected state cannot load, the locked screen explains the recovery action.
+Failed project loads show **Retry** and a support link. The app keeps unreadable state protected.
+
 1. [Download the current installer](https://vault.lpm.dev/download).
 2. Open the DMG.
 3. Drag **LPM Vault** into **Applications**.
