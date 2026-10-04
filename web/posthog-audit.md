@@ -1,8 +1,8 @@
 # Vault PostHog delivery audit
 
 The primary agent inspected the live site, the real SDK, and the authenticated Teamfox PostHog activity view.
-No subagents participated. The code commit is `eafc34c`. The PR targets `main` independently of the Lighthouse PR.
-Both branches include the same browser-test infrastructure commit. Neither feature requires the other feature's code.
+No subagents participated. The implementation commit is `eafc34c`. The PR targets `main`.
+The branch includes the merged Lighthouse fixes. The combined tree retains content-addressed assets and same-origin analytics delivery.
 
 ## Finding ledger
 
@@ -38,7 +38,7 @@ Same-origin delivery avoids domain-based blockers. It retains DNT, GPC, and manu
 
 ## Validation and performance
 
-All 19 JavaScript/browser tests, 14 Docker route tests, and 3 TLS proxy tests passed.
+All 21 JavaScript/browser tests, 16 Docker route tests, and 3 TLS proxy tests passed on the combined tree.
 The 714 Swift tests, 40 shell release tests, and 21 Python release tests passed.
 The warning-as-error release build and nested signature checks passed.
 The pinned SDK rebuild produced the same SHA-256 digest.

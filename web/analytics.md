@@ -48,7 +48,7 @@ CI rebuilds the bundle and rejects a changed output. The route test also verifie
 The slim build excludes optional extension classes. The loader runs only after the hostname and privacy checks pass.
 At most 20 early intent events wait in memory for the SDK. Opt-out and load failures discard this queue.
 The original package license is in `public/vendor/LICENSE-PostHog.txt`.
-The versioned SDK is immutable. Custom analytics code revalidates.
+The versioned SDK and content-addressed assets are immutable. Unversioned custom code revalidates.
 The page includes a content hash in the analytics script URL to prevent stale code after deployment.
 The content security policy permits same-origin code and connections only.
 Remote SDK extensions, scripts, and feature configuration are disabled.

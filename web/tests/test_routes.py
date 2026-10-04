@@ -23,6 +23,7 @@ ASSET_TYPES = {
     '/fonts/OFL-Geist.txt': 'text/plain',
     '/fonts/OFL-JetBrains-Mono.txt': 'text/plain',
     '/robots.txt': 'text/plain',
+    '/llms.txt': 'text/plain',
     '/analytics.js': 'javascript',
     '/vendor/metrics-core-1.435.7.js': 'javascript',
     '/vendor/LICENSE-PostHog.txt': 'text/plain',
@@ -168,6 +169,25 @@ class Routes(unittest.TestCase):
                 self.assertEqual(directives[directive], ["'self'"])
         self.assertEqual(directives['connect-src'], ["'self'"])
 
+    def test_content_addressed_assets_are_immutable_and_match_their_digest(self):
+        page = self.request('/')[2].decode()
+        assets = re.findall(r'(?:href|src)="(/assets/(?:style|site|analytics)\.([a-f0-9]{64})\.(?:css|js))"', page)
+        self.assertEqual(len(assets), 3)
+        for path, digest in assets:
+            with self.subTest(path=path):
+                status, headers, body = self.request(path)
+                self.assertEqual(status, 200)
+                self.assertEqual(hashlib.sha256(body).hexdigest(), digest)
+                self.assertEqual(headers['Cache-Control'], 'public, max-age=31536000, immutable')
+        self.assertEqual(self.request('/assets/style.' + '0' * 64 + '.css')[0], 404)
+
+    def test_agent_metadata_describes_the_public_product(self):
+        status, headers, body = self.request('/llms.txt')
+        self.assertEqual(status, 200)
+        self.assertIn('text/plain', headers['Content-Type'])
+        self.assertTrue(body.startswith(b'# LPM Vault\n'))
+        self.assertIn(b'https://cli.lpm.dev/docs/dev/lpm-vault', body)
+
     def test_page_is_compatible_with_content_security_policy(self):
         _, _, body = self.request('/')
         page = PageInventory()
@@ -237,8 +257,8 @@ class Routes(unittest.TestCase):
         self.assertIn('<link rel="canonical" href="https://vault.lpm.dev/">', page)
         self.assertIn('<meta name="msvalidate.01" content="15A27CC3490BC984B8BE766FE51A4E02">', page.split('</head>')[0])
         self.assertEqual(len(re.findall(r'<h1(?:\s|>)', page)), 1)
-        analytics_version = hashlib.sha256((ROOT / 'web/public/analytics.js').read_bytes()).hexdigest()[:12]
-        analytics = f'<script src="/analytics.js?v={analytics_version}" defer></script>'
+        analytics_digest = hashlib.sha256((ROOT / 'web/public/analytics.js').read_bytes()).hexdigest()
+        analytics = f'<script src="/assets/analytics.{analytics_digest}.js" defer></script>'
         self.assertNotIn('/vendor/', page)
         self.assertIn(analytics, page)
         self.assertIn('The Mac app sends no analytics.', page)
