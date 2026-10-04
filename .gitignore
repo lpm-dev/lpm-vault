@@ -43,3 +43,6 @@ build-check/
 
 # Private
 /private/
+
+# Website test dependencies
+node_modules/

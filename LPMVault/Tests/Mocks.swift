@@ -621,6 +621,8 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 	private var memberKeyAccessCalls = 0
 	private var pullCalls = 0
 	private var pushCalls = 0
+	private var lastPush: (blob: String, wrappedKeys: [SyncService.WrappedMemberKey]?)?
+	var capturedPush: (blob: String, wrappedKeys: [SyncService.WrappedMemberKey]?)? { lock.withLock { lastPush } }
 
 	var publicKeyCallCount: Int { lock.withLock { publicKeyCalls } }
 	var memberKeyAccessCallCount: Int { lock.withLock { memberKeyAccessCalls } }
@@ -736,6 +738,7 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 		_ = schema
 		let blocker: (@Sendable () async -> Void)? = lock.withLock {
 			pushCalls += 1
+			lastPush = (encryptedBlob, wrappedKeys)
 			let blocker = blockNextPush
 			blockNextPush = nil
 			return blocker

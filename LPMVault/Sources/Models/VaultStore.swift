@@ -3843,7 +3843,7 @@ final class VaultStore {
     let syncService = personalSyncServiceFactory(environment.baseURL)
     let localExpectedVersion = pushSnapshot.metadata?.lastVersion
     let attemptLimit = force ? 3 : 1
-    let nonEmptyEnvs = pushedProject.environments.filter { !$0.value.isEmpty }
+    let environments = pushedProject.environments
     let encryptor = stableSyncEncryptor
     let projectID = pushedProject.id
     var plaintext: Data?
@@ -3915,7 +3915,7 @@ final class VaultStore {
 
         if !preparedPayload {
           let serializationTask = Task.detached(priority: .userInitiated) {
-            try JSONEncoder().encode(["environments": nonEmptyEnvs])
+            try JSONEncoder().encode(["environments": environments])
           }
           plaintext = try await serializationTask.value
           guard await hasCurrentSyncAuth(authority) else {
@@ -4804,7 +4804,7 @@ final class VaultStore {
       return .failed
     }
     let pushedProject = pushSnapshot.project
-    let nonEmptyEnvs = pushedProject.environments.filter { !$0.value.isEmpty }
+    let environments = pushedProject.environments
     let scopeSlug = orgSlug(for: authority)
     let encrypted: (blob: String, wrappedKeys: [SyncService.WrappedMemberKey]?)
     let expectedVersion = pushSnapshot.metadata?.lastVersion
@@ -4812,7 +4812,7 @@ final class VaultStore {
     if canReplaceWrappedKeys {
       let projectID = pushedProject.id
       encrypted = try await Task.detached(priority: .userInitiated) {
-        let payload = ["environments": nonEmptyEnvs]
+        let payload = ["environments": environments]
         let secretsJSON = try JSONEncoder().encode(payload)
         let aesKey = VaultCrypto.generateAESKey()
         let wrappedKeys = try Self.wrapContentKey(aesKey, for: validatedRecipients)
@@ -4893,7 +4893,7 @@ final class VaultStore {
       let projectID = pushedProject.id
       encrypted = try await Task.detached(priority: .userInitiated) {
         let syncScope = VaultCrypto.SyncScope.organization(slug: scopeSlug)
-        let payload = ["environments": nonEmptyEnvs]
+        let payload = ["environments": environments]
         let secretsJSON = try JSONEncoder().encode(payload)
         let aesKey = try VaultCrypto.unwrapKeyFromSender(
           wrapped: wrappedKey,

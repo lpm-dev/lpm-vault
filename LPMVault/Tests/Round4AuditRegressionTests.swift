@@ -5759,10 +5759,13 @@ private final class Round4ExportTracker: @unchecked Sendable {
 		for _ in 0..<count { releaseGate.signal() }
 	}
 
+	/// Bounded by elapsed time: workers wait for free cooperative threads,
+	/// which parallel suites can hold far longer than a fixed count of yields.
 	func waitUntilStarted(_ count: Int) async {
-		for _ in 0..<100_000 {
+		let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+		while ContinuousClock.now < deadline {
 			if lock.withLock({ started >= count }) { return }
-			await Task.yield()
+			try? await Task.sleep(for: .milliseconds(1))
 		}
 		Issue.record("Timed out waiting for export workers.")
 	}

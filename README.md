@@ -67,6 +67,13 @@ Then run a project script:
 lpm run dev
 ```
 
+Connect CLI shows commands for the selected environment, with an explicit `--env` flag.
+Run these commands from the linked project folder.
+The flag overrides script environment settings. Existing `lpm.json` aliases still apply.
+If an alias selects another environment, the sheet explains the configuration change required before it shows commands.
+An empty environment uses default vault values when a script runs.
+Linking a folder does not install the CLI.
+
 See the [app guide](https://cli.lpm.dev/docs/dev/lpm-vault) and [env guide](https://cli.lpm.dev/docs/dev/env) for environment selection.
 
 ## CLI approval
@@ -91,7 +98,7 @@ It does not revoke values that a process already received.
 ## Security and privacy
 
 Local secrets use the Data Protection Keychain on this Mac. They do not sync through iCloud Keychain.
-Cloud sync encrypts values on your Mac before upload.
+Cloud sync encrypts values on your Mac before upload. It preserves named empty environments, including projects with no keys.
 Exported `.env` files and copied values require separate protection.
 
 The Mac app sends no analytics.

@@ -227,10 +227,24 @@ struct ConnectCLIRenderingTests {
 
 		for expected in [
 			"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
-			"lpm.json", "Copy JSON", "vault", "lpm env list", "lpm dev", "lpm run", "Docs", "Done",
+			"Optional task environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "lpm dev", "lpm run", "Docs", "Done",
 		] {
 			#expect(text.contains(expected), "missing \(expected)")
 		}
+	}
+
+	@Test("the connection sheet explicitly selects the named environment")
+	func rendersSelectedEnvironment() throws {
+		let store = makeStore(path: "")
+		store.projects[0].environments["staging"] = ["TOKEN": "dummy"]
+		store.selectedEnvironment = "staging"
+		let text = try renderedText(
+			of: ConnectCLISheet(store: store, projectId: store.projects[0].id),
+			size: NSSize(width: 600, height: 620),
+			named: "connect-cli-staging.png"
+		)
+		#expect(text.contains("--env=staging"))
+		#expect(text.contains("Run from the linked project folder"))
 	}
 
 	@Test("the title bar chip reads Connect CLI")
@@ -261,5 +275,184 @@ struct ConnectCLIRenderingTests {
 		request.usesLanguageCorrection = false
 		try VNImageRequestHandler(cgImage: image).perform([request])
 		return OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n"))
+	}
+}
+
+@Suite("CLI environment commands")
+struct ProjectCLICommandTests {
+	@Test("commands explicitly select default instead of a script task mapping")
+	func selectsDefault() {
+		let guidance = ProjectCLICommands(environment: "default", configuration: .loaded(.object([
+			"tasks": .object(["dev": .object(["env": .string("production")])])
+		])))
+		#expect(guidance.commands == ["lpm env list --env=default", "lpm dev --env=default", "lpm run --env=default <script>"])
+		#expect(guidance.warning == nil)
+	}
+
+	@Test("a redirecting alias withholds commands unless the canonical name is declared")
+	func rejectsRedirectingAlias() {
+		let alias = LPMJSONValue.object(["staging": .string(".env.production")])
+		let redirected = ProjectCLICommands(environment: "staging", configuration: .loaded(.object(["env": alias])))
+		#expect(redirected.commands.isEmpty)
+		#expect(redirected.warning?.contains("production") == true)
+		let declared = ProjectCLICommands(environment: "staging", configuration: .loaded(.object([
+			"env": alias, "environments": .object(["staging": .object([:])])
+		])))
+		#expect(declared.commands.count == 3)
+		#expect(declared.warning == nil)
+	}
+
+	@Test("unreadable configuration warns that aliases could not be checked", arguments: [
+		ProjectCLIConfiguration.unverified, .loaded(.array([])),
+	])
+	func warnsWithoutConfiguration(configuration: ProjectCLIConfiguration) {
+		let guidance = ProjectCLICommands(environment: "staging", configuration: configuration)
+		#expect(guidance.commands.first == "lpm env list --env=staging")
+		#expect(guidance.warning != nil)
+	}
+
+	@Test("a folder without lpm.json has no aliases, and a pending read shows no warning", arguments: [
+		ProjectCLIConfiguration.absent, .pending,
+	])
+	func absentConfigurationNeedsNoWarning(configuration: ProjectCLIConfiguration) {
+		let guidance = ProjectCLICommands(environment: "staging", configuration: configuration)
+		#expect(guidance.commands.first == "lpm env list --env=staging")
+		#expect(guidance.warning == nil)
+	}
+
+	@Test("reading a folder distinguishes a missing lpm.json from an unreadable one")
+	func readsFolderConfiguration() throws {
+		let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cli-config-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		#expect(ProjectCLILink.configuration(inFolder: folder.path) == .absent)
+		let url = ProjectCLILink.configURL(inFolder: folder.path)
+		try Data(#"{"env":{"dev":".env.development"}}"#.utf8).write(to: url)
+		#expect(ProjectCLILink.configuration(inFolder: folder.path) == .loaded(.object(["env": .object(["dev": .string(".env.development")])])))
+		try Data("{".utf8).write(to: url)
+		#expect(ProjectCLILink.configuration(inFolder: folder.path) == .unverified)
+		#expect(ProjectCLILink.configuration(inFolder: folder.appendingPathComponent("missing").path) == .unverified)
+	}
+
+	@Test("invalid environment names never enter copied commands", arguments: ["a b", "a;echo", "$(id)", "../prod", "__index__", ""])
+	func rejectsUnsafeCommands(environment: String) {
+		#expect(ProjectCLICommands(environment: environment, configuration: .unverified).commands.isEmpty)
+	}
+
+	@Test("long and leading-hyphen names remain one flag value")
+	func supportsPortableNames() {
+		for name in [String(repeating: "a", count: 64), "-staging", "dev.local"] {
+			#expect(ProjectCLICommands(environment: name, configuration: .absent).commands.first == "lpm env list --env=\(name)")
+		}
+	}
+}
+
+@Suite("CLI task environment examples")
+struct ProjectCLITaskExampleTests {
+	@Test("the optional example uses the vault's development and staging environments")
+	func usesExistingEnvironments() throws {
+		let example = try #require(ProjectCLITaskExample(vaultId: "vault-id", environments: ["default", "staging", "development"], selectedEnvironment: "default", configuration: .absent))
+		let object = try #require(try JSONSerialization.jsonObject(with: Data(example.json.utf8)) as? [String: Any])
+		let tasks = try #require(object["tasks"] as? [String: [String: String]])
+		#expect(object["vault"] as? String == "vault-id")
+		#expect(tasks == ["dev": ["env": "development"], "start": ["env": "staging"]])
+		#expect(example.json.split(separator: "\n").count == 7)
+	}
+
+	@Test("examples exclude environment names redirected by project aliases")
+	func excludesRedirectingAliases() throws {
+		let config = ProjectCLIConfiguration.loaded(.object(["env": .object(["development": .string(".env.production")])]))
+		let example = try #require(ProjectCLITaskExample(vaultId: "id", environments: ["development", "staging"], selectedEnvironment: "development", configuration: config))
+		let object = try #require(try JSONSerialization.jsonObject(with: Data(example.json.utf8)) as? [String: Any])
+		#expect(object["tasks"] as? [String: [String: String]] == ["dev": ["env": "staging"], "start": ["env": "staging"]])
+		#expect(example.warning == nil)
+		let declared = ProjectCLIConfiguration.loaded(.object(["env": .object(["development": .string(".env.production")]), "environments": .object(["development": .object([:])])]))
+		let canonical = try #require(ProjectCLITaskExample(vaultId: "id", environments: ["development"], selectedEnvironment: "development", configuration: declared))
+		#expect(canonical.json.contains("development"))
+		#expect(ProjectCLITaskExample(vaultId: "id", environments: ["development"], selectedEnvironment: "development", configuration: config) == nil)
+		#expect(ProjectCLITaskExample(vaultId: "id", environments: ["default"], selectedEnvironment: "default", configuration: .unverified)?.warning != nil)
+		#expect(ProjectCLITaskExample(vaultId: "id", environments: ["default"], selectedEnvironment: "default", configuration: .absent)?.warning == nil)
+	}
+
+	@Test("the example never invents missing environments and escapes vault identifiers")
+	func usesAvailableNames() throws {
+		let example = try #require(ProjectCLITaskExample(vaultId: "a\"b", environments: ["qa", "default", "bad name"], selectedEnvironment: "qa", configuration: .absent))
+		let object = try #require(try JSONSerialization.jsonObject(with: Data(example.json.utf8)) as? [String: Any])
+		#expect(object["vault"] as? String == "a\"b")
+		#expect(object["tasks"] as? [String: [String: String]] == ["dev": ["env": "default"], "start": ["env": "qa"]])
+		#expect(ProjectCLITaskExample(vaultId: "id", environments: ["bad name"], selectedEnvironment: "default", configuration: .absent) == nil)
+		#expect(ProjectCLITaskExample(vaultId: "id", environments: ["qa", "alpha"], selectedEnvironment: "missing", configuration: .absent) == ProjectCLITaskExample(vaultId: "id", environments: ["alpha", "qa"], selectedEnvironment: "missing", configuration: .absent))
+	}
+}
+
+extension SheetInteractionTests {
+	@Test("expanding and copying the optional task example does not write project settings")
+	@MainActor
+	func taskExampleIsOptional() async throws {
+		let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cli-example-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let original = Data(#"{"tasks":{"dev":{"command":"npm run dev","env":"qa"}},"custom":true}"#.utf8)
+		let url = folder.appendingPathComponent("lpm.json")
+		try original.write(to: url)
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService())
+		store.projects = [VaultProject(id: "example", name: "Example", path: folder.path, environments: ["development": [:], "staging": [:]])]
+		store.isUnlocked = true
+		store.selectedProjectId = "example"
+		store.selectedEnvironment = "development"
+		defer { store.lock() }
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "example").environment(\.colorScheme, .light), size: NSSize(width: 600, height: 780), keepsRequestedSize: true, usesHostingView: true)
+		defer { host.window.close() }
+		#expect(try await !host.text().contains("Copy example"))
+		try await host.click("Optional task environments")
+		try await host.settle()
+		try await host.click("Copy example")
+		let copied = try #require(NSPasteboard.general.string(forType: .string))
+		#expect(copied == ProjectCLITaskExample(vaultId: "example", environments: ["development", "staging"], selectedEnvironment: "development", configuration: ProjectCLILink.configuration(inFolder: folder.path))?.json)
+		#expect(try Data(contentsOf: url) == original)
+		try ProjectCLILink.link(vaultId: "example", folder: folder.path)
+		let linked = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+		#expect(linked["tasks"] as? [String: [String: String]] == ["dev": ["command": "npm run dev", "env": "qa"]])
+	}
+}
+
+extension SheetInteractionTests {
+	@Test("a project folder without lpm.json shows commands without an unverified-configuration warning")
+	@MainActor
+	func folderWithoutConfigurationIsVerified() async throws {
+		let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cli-no-config-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService())
+		store.projects = [VaultProject(id: "fresh", name: "Fresh", path: folder.path, environments: ["staging": [:]])]
+		store.isUnlocked = true
+		store.selectedProjectId = "fresh"
+		store.selectedEnvironment = "staging"
+		defer { store.lock() }
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "fresh").environment(\.colorScheme, .light), size: NSSize(width: 600, height: 780), keepsRequestedSize: true, usesHostingView: true)
+		defer { host.window.close() }
+		#expect(try await host.waitForText("Not linked to a project folder yet"))
+		let text = try await host.text()
+		// CI's Vision can split the flag's dashes from its value at 1x.
+		#expect(text.contains("env=staging"))
+		#expect(!text.contains("has not been verified"))
+	}
+}
+
+extension SheetInteractionTests {
+	@Test("an expanded task example fits a constrained sheet with visible footer actions")
+	@MainActor
+	func expandedExampleFitsShortWindow() async throws {
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService())
+		store.projects = [VaultProject(id: "example", name: "Example", path: "", environments: ["development": [:], "staging": [:]])]
+		store.isUnlocked = true
+		store.selectedProjectId = "example"
+		defer { store.lock() }
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "example", showsTaskExample: true).environment(\.colorScheme, .light), size: NSSize(width: 600, height: 620), keepsRequestedSize: true, usesHostingView: true)
+		defer { host.window.close() }
+		#expect(try await host.waitForText("Done", footer: 70))
+		#expect(try await host.waitForText("Docs", footer: 70))
+		try await host.click("Copy example")
+		#expect(NSPasteboard.general.string(forType: .string)?.contains("tasks") == true)
 	}
 }
