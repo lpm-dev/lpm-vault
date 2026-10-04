@@ -46,6 +46,16 @@ enum ProjectCLILink {
 
 	private static func folderKey(_ vaultId: String) -> String { "lpm-vault-cli-folder-" + vaultId }
 
+	/// Reads the folder's `lpm.json` the way the CLI does before it resolves environment names.
+	static func configuration(inFolder folder: String) -> ProjectCLIConfiguration {
+		guard folderExists(folder) else { return .unverified }
+		do {
+			return try ProjectConfigFile.readJSONIfPresent(at: configURL(inFolder: folder)).map(ProjectCLIConfiguration.loaded) ?? .absent
+		} catch {
+			return .unverified
+		}
+	}
+
 	static func configURL(inFolder folder: String) -> URL {
 		URL(fileURLWithPath: folder, isDirectory: true).appendingPathComponent("lpm.json")
 	}
@@ -91,5 +101,94 @@ enum ProjectCLILink {
 		return !folder.isEmpty
 			&& FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory)
 			&& isDirectory.boolValue
+	}
+}
+
+/// What the CLI reads from the linked folder's `lpm.json` when it resolves environment names.
+enum ProjectCLIConfiguration: Equatable, Sendable {
+	/// The folder has not been read yet.
+	case pending
+	/// The folder has no `lpm.json`, so no aliases apply.
+	case absent
+	case loaded(LPMJSONValue)
+	/// The folder or its `lpm.json` could not be read, so aliases are unknown.
+	case unverified
+
+	/// Whether `lpm.json` may define aliases that could not be checked.
+	fileprivate var mayHideAliases: Bool {
+		switch self {
+		case .pending, .absent: false
+		case .loaded(let value):
+			if case .object = value { false } else { true }
+		case .unverified: true
+		}
+	}
+}
+
+struct ProjectCLICommands: Equatable, Sendable {
+	let environment: String
+	let commands: [String]
+	let warning: String?
+
+	init(environment: String, configuration: ProjectCLIConfiguration) {
+		self.environment = environment
+		guard EnvValidation.isValidEnvironmentName(environment) else {
+			commands = []
+			warning = "This environment name cannot be used by the CLI."
+			return
+		}
+		if case .loaded(.object(let config)) = configuration {
+			let declared: Bool
+			if case .object(let environments) = config["environments"] {
+				declared = environments[environment] != nil
+			} else {
+				declared = false
+			}
+			if !declared, case .object(let aliases) = config["env"],
+				case .string(let path) = aliases[environment], path.hasPrefix(".env.")
+			{
+				let resolved = String(path.dropFirst(5))
+				if resolved != environment {
+					commands = []
+					warning = "lpm.json maps \(environment) to \(resolved). Declare \(environment) in its environments settings before using these values."
+					return
+				}
+			}
+		}
+		warning = configuration.mayHideAliases
+			? "Check lpm.json aliases before running. The project configuration has not been verified."
+			: nil
+		let flag = "--env=\(environment)"
+		commands = ["lpm env list \(flag)", "lpm dev \(flag)", "lpm run \(flag) <script>"]
+	}
+}
+
+struct ProjectCLITaskExample: Equatable, Sendable {
+	let json: String
+	let warning: String?
+
+	init?(vaultId: String, environments: [String], selectedEnvironment: String, configuration: ProjectCLIConfiguration) {
+		let names = Set(environments.filter {
+			!ProjectCLICommands(environment: $0, configuration: configuration).commands.isEmpty
+		})
+		guard let first = names.sorted().first else { return nil }
+		let dev = names.contains("development") ? "development" : names.contains("default") ? "default" : first
+		let start = names.contains("staging") ? "staging" : names.contains(selectedEnvironment) ? selectedEnvironment : dev
+		let encoder = JSONEncoder()
+		guard let vaultJSON = try? encoder.encode(vaultId),
+			let devJSON = try? encoder.encode(dev), let startJSON = try? encoder.encode(start)
+		else { return nil }
+		json = """
+		{
+		  "vault": \(String(decoding: vaultJSON, as: UTF8.self)),
+		  "tasks": {
+		    "dev": { "env": \(String(decoding: devJSON, as: UTF8.self)) },
+		    "start": { "env": \(String(decoding: startJSON, as: UTF8.self)) }
+		  }
+		}
+		"""
+		warning = configuration.mayHideAliases
+			? "Check lpm.json aliases before using the example. The project configuration has not been verified."
+			: nil
 	}
 }

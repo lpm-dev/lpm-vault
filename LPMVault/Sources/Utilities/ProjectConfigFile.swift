@@ -32,6 +32,25 @@ enum ProjectConfigFile {
 		return try? JSONDecoder().decode(LPMJSONValue.self, from: data)
 	}
 
+	/// Returns the parsed file, or `nil` when it does not exist.
+	static func readJSONIfPresent(at url: URL) throws(FileError) -> LPMJSONValue? {
+		let data: Data
+		do {
+			data = try readRegularFile(at: url)
+		} catch FileError.notFound {
+			return nil
+		} catch let error as FileError {
+			throw error
+		} catch {
+			throw .readFailed
+		}
+		do {
+			return try JSONDecoder().decode(LPMJSONValue.self, from: data)
+		} catch {
+			throw .invalidJSON
+		}
+	}
+
 	/// Returns the `vault` field, or `nil` when the file has no vault ID.
 	/// Throws `FileError.notFound` when the file does not exist.
 	static func vaultID(at url: URL) throws -> String? {
