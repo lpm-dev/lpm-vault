@@ -95,7 +95,7 @@ It does not revoke values that a process already received.
 ## Security and privacy
 
 Local secrets use the Data Protection Keychain on this Mac. They do not sync through iCloud Keychain.
-Cloud sync encrypts values on your Mac before upload.
+Cloud sync encrypts values on your Mac before upload. It preserves named empty environments, including projects with no keys.
 Exported `.env` files and copied values require separate protection.
 
 The Mac app sends no analytics.

@@ -40,5 +40,14 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - run: node --test web/tests/test_analytics.cjs
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web --ignore-scripts
+      - run: npm run build:sdk --prefix web && git diff --exit-code -- web/public/vendor
+      - run: npx --prefix web playwright install --with-deps chromium
+      - run: node --test web/tests/test_*.cjs
       - run: python3 web/tests/test_routes.py
+      - run: python3 web/tests/test_proxy.py

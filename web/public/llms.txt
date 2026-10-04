@@ -1,0 +1,17 @@
+# LPM Vault
+
+> A free, open-source macOS app for project environment variables.
+
+LPM Vault stores secrets in the macOS Keychain. The app shows keys across environments in one matrix.
+It flags missing keys and values that differ between environments. The signed LPM CLI reads the same vault.
+Optional sync encrypts values on the Mac before upload. The Mac app sends no analytics.
+The app requires macOS 14 or later and supports Apple silicon and Intel Macs.
+
+## Product resources
+
+- [Website](https://vault.lpm.dev/): Features, setup, and security overview.
+- [Documentation](https://cli.lpm.dev/docs/dev/lpm-vault): Setup and CLI integration.
+- [Security model](https://cli.lpm.dev/docs/infra/secrets-vault): Keychain storage and encrypted sync.
+- [Source](https://github.com/lpm-dev/lpm-vault): Code and contribution information.
+- [Releases](https://github.com/lpm-dev/lpm-vault/releases): Release notes and signed downloads.
+- [Download](https://vault.lpm.dev/download): The latest Mac installer.

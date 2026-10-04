@@ -1,6 +1,8 @@
 *
 !web/
 !web/Dockerfile
+!web/prepare-assets.sh
 !web/nginx.conf
+!web/15-vault-dns.envsh
 !web/public/
 !web/public/**
