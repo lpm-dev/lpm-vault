@@ -1,0 +1,5 @@
+#!/bin/sh
+if [ -z "${VAULT_DNS_RESOLVERS:-}" ]; then
+    VAULT_DNS_RESOLVERS=$(awk '/^nameserver / { if ($2 ~ /:/) printf "[%s] ", $2; else printf "%s ", $2 }' /etc/resolv.conf)
+fi
+export VAULT_DNS_RESOLVERS

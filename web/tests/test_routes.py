@@ -24,7 +24,7 @@ ASSET_TYPES = {
     '/fonts/OFL-JetBrains-Mono.txt': 'text/plain',
     '/robots.txt': 'text/plain',
     '/analytics.js': 'javascript',
-    '/vendor/posthog-1.435.7.js': 'javascript',
+    '/vendor/metrics-core-1.435.7.js': 'javascript',
     '/vendor/LICENSE-PostHog.txt': 'text/plain',
     '/sitemap.xml': 'xml',
 }
@@ -166,7 +166,7 @@ class Routes(unittest.TestCase):
         for directive in ['script-src', 'style-src', 'font-src', 'img-src']:
             with self.subTest(directive=directive):
                 self.assertEqual(directives[directive], ["'self'"])
-        self.assertEqual(directives['connect-src'], ['https://eu.i.posthog.com'])
+        self.assertEqual(directives['connect-src'], ["'self'"])
 
     def test_page_is_compatible_with_content_security_policy(self):
         _, _, body = self.request('/')
@@ -229,7 +229,7 @@ class Routes(unittest.TestCase):
         self.assertEqual([item.text for item in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc')], ['https://vault.lpm.dev/'])
         self.assertIn('Sitemap: https://vault.lpm.dev/sitemap.xml', self.request('/robots.txt')[2].decode())
 
-    def test_indexable_page_loads_the_pinned_local_sdk_before_analytics(self):
+    def test_indexable_page_loads_analytics_without_an_eager_sdk(self):
         status, headers, body = self.request('/')
         page = body.decode()
         self.assertEqual(status, 200)
@@ -237,19 +237,19 @@ class Routes(unittest.TestCase):
         self.assertIn('<link rel="canonical" href="https://vault.lpm.dev/">', page)
         self.assertIn('<meta name="msvalidate.01" content="15A27CC3490BC984B8BE766FE51A4E02">', page.split('</head>')[0])
         self.assertEqual(len(re.findall(r'<h1(?:\s|>)', page)), 1)
-        sdk = '<script src="/vendor/posthog-1.435.7.js" defer></script>'
         analytics_version = hashlib.sha256((ROOT / 'web/public/analytics.js').read_bytes()).hexdigest()[:12]
         analytics = f'<script src="/analytics.js?v={analytics_version}" defer></script>'
-        self.assertIn(sdk, page)
+        self.assertNotIn('/vendor/', page)
         self.assertIn(analytics, page)
-        self.assertLess(page.index(sdk), page.index(analytics))
         self.assertIn('The Mac app sends no analytics.', page)
         self.assertIn('id="analytics-optout"', page)
 
     def test_pinned_sdk_is_immutable_and_analytics_code_revalidates(self):
-        _, headers, body = self.request('/vendor/posthog-1.435.7.js')
+        _, headers, body = self.request('/vendor/metrics-core-1.435.7.js')
         self.assertIn('immutable', headers['Cache-Control'])
-        self.assertEqual(hashlib.sha256(body).hexdigest(), '672d82c313b6fc67164dd64763995da534eabddc1f1843fca68bffb838deec7c')
+        self.assertEqual(hashlib.sha256(body).hexdigest(), '6b370fab3c22035b51692b42de71857d33c9087e2a6ce6956b7c78aeb28a0b65')
+        self.assertLess(len(body), 170_000)
+        self.assertNotIn(b'sourceMappingURL=', body)
         self.assertEqual(self.request('/analytics.js')[1]['Cache-Control'], 'no-cache')
 
     def test_versioned_artifacts_are_immutable(self):

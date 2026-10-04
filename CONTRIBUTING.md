@@ -61,6 +61,7 @@ npm ci --prefix web --ignore-scripts
 npx --prefix web playwright install chromium
 node --test web/tests/test_*.cjs
 python3 web/tests/test_routes.py
+python3 web/tests/test_proxy.py
 
 xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault \
   -configuration Release -destination 'generic/platform=macOS' \
