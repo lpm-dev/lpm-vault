@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 enum VaultWorkspaceMode: Equatable {
   case matrix
@@ -103,7 +104,7 @@ struct VaultSensitiveActionContext: Equatable {
   @MainActor
   func isCurrent(in store: VaultStore) -> Bool {
     isCurrent(
-      isUnlocked: store.isUnlocked,
+      isUnlocked: store.canUseLocalSecrets,
       selectedProjectID: store.selectedProjectId,
       selectedEnvironment: store.selectedEnvironment
     )
@@ -440,6 +441,40 @@ struct VaultContentDerivation: Equatable {
     }
     let visibleKeys = mode == .matrix ? filteredKeys : environmentKeys
     allVisibleRevealed = !visibleKeys.isEmpty && visibleKeys.allSatisfy(revealedKeys.contains)
+  }
+}
+
+@Observable
+@MainActor
+final class VaultSecretEditingSession {
+  let id = UUID()
+  let projectID: String
+  let projectName: String
+  let environment: String
+  let key: String
+  let account: SelectedAccount
+  var editDraft: VaultSecretEditDraft
+  var requiresRecovery = false
+
+  init(projectID: String, projectName: String, environment: String, key: String, account: SelectedAccount, value: String) {
+    self.projectID = projectID
+    self.projectName = projectName
+    self.environment = environment
+    self.key = key
+    self.account = account
+    editDraft = VaultSecretEditDraft(value: value)
+  }
+
+  func targetExists(in store: VaultStore) -> Bool {
+    targetExists(in: store.projects)
+  }
+
+  private func targetExists(in projects: [VaultProject]) -> Bool {
+    projects.contains { $0.id == projectID && $0.environmentKeyCounts[environment] != nil }
+  }
+
+  func receiveRefreshedProjects(_ projects: [VaultProject]) {
+    if editDraft.isDirty && !targetExists(in: projects) { requiresRecovery = true }
   }
 }
 

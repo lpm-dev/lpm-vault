@@ -16,6 +16,9 @@ struct ContentView: View {
 			TapGesture().onEnded { store.recordUserActivity() },
 			including: .all
 		)
+		.onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+			Task { await store.refreshLocalState() }
+		}
 		.background(VaultWindowConfigurator())
 		.sheet(isPresented: $store.showKeyApprovalSheet) {
 			KeyApprovalSheet(store: store)

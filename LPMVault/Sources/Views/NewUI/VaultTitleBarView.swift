@@ -76,6 +76,14 @@ struct VaultTitleBarView: View {
 
 			Spacer(minLength: 8)
 
+			VaultBarButton(
+				systemImage: "arrow.clockwise",
+				title: "Refresh",
+				disabled: store.isRefreshingLocalState || store.isChangingCliAccess
+			) { Task { await store.refreshLocalState() } }
+			.help("Reload local changes from the LPM CLI")
+			.accessibilityIdentifier("vault-refresh-local-state")
+
 			syncMenu
 
 			if let version = updateChecker.availableUpdateVersion {

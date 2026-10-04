@@ -8,6 +8,196 @@ extension SheetInteractionTests {
 	@Suite("Workspace interaction regressions", .serialized)
 	@MainActor
 	struct WorkspaceInteractionTests {
+		@Test("refresh keeps the mounted workspace draft and copies current CLI values")
+		func refreshPreservesWorkspaceDraftAndCopiesCurrentValues() async throws {
+			let keychain = MockKeychainService()
+			let (store, _) = makeStore(keychain: keychain)
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try clickInspectorToggle(in: host)
+			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try await host.settle()
+			try host.enterValue("unsaved-workspace-draft")
+			keychain.simulateCLISet(vaultId: "workspace", environment: "default", key: "TOKEN", value: "current-cli-value")
+			await store.refreshLocalState()
+			try await host.settle()
+			#expect(host.value == "unsaved-workspace-draft")
+			#expect(try await host.waitForText("changed outside"))
+			try clickAt(NSPoint(x: 1375, y: 553), in: host)
+			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "TOKEN=\"current-cli-value\"\n" })
+		}
+
+		@Test("refresh keeps a recoverable draft when its environment or project disappears", arguments: ["environment", "rename", "project"])
+		func refreshPreservesRemovedTargetDraft(removal: String) async throws {
+			let keychain = MockKeychainService()
+			let (store, _) = makeStore(environments: ["default": ["TOKEN": "default-value"], "staging": ["TOKEN": "staging-value"]], keychain: keychain)
+			defer { store.lock() }
+			store.selectEnvironment("staging")
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try clickInspectorToggle(in: host)
+			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try await host.settle()
+			try host.enterValue("unsaved-removed-target")
+			try await host.settle()
+			#expect(try await host.waitForText("Unsaved change"))
+			if removal == "environment" {
+				keychain.envStorage["workspace"]?.environments.removeValue(forKey: "staging")
+			} else if removal == "rename" {
+				let values = keychain.envStorage["workspace"]?.environments.removeValue(forKey: "staging")
+				keychain.envStorage["workspace"]?.environments["renamed"] = values
+			} else {
+				keychain.envStorage.removeValue(forKey: "workspace")
+			}
+			await store.refreshLocalState()
+			try await host.settle()
+			#expect(host.value == "unsaved-removed-target")
+			#expect(try await host.waitForText("disappeared"))
+			try host.returnWhileEditing("value", modifiers: [])
+			try await host.settle()
+			#expect(keychain.envStorage["workspace"]?.environments["staging"] == nil)
+			if removal != "project" {
+				#expect(keychain.envStorage["workspace"]?.environments["default"]?["TOKEN"] == "default-value")
+			}
+			try await host.click("Copy draft")
+			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "unsaved-removed-target" })
+			try await host.click("Discard")
+			try await host.settle()
+			#expect(try await !host.text().contains("disappeared"))
+			#expect(host.value != "unsaved-removed-target")
+		}
+
+		@Test("removed draft recovery survives target recreation and baseline edits", arguments: [false, true])
+		func removedDraftSurvivesTargetReturnAndBaselineEdit(hiddenInSettings: Bool) async throws {
+			let keychain = MockKeychainService()
+			let (store, _) = makeStore(environments: ["default": ["TOKEN": "default-value"], "staging": ["TOKEN": "staging-value"]], keychain: keychain)
+			defer { store.lock() }
+			store.selectEnvironment("staging")
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try clickInspectorToggle(in: host)
+			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try await host.settle()
+			try host.enterValue("unsaved-removed-target")
+			try await host.settle()
+			if hiddenInSettings { store.showSettings(); try await host.settle() }
+			keychain.envStorage["workspace"]?.environments.removeValue(forKey: "staging")
+			await store.refreshLocalState()
+			try await host.settle()
+			if hiddenInSettings {
+				keychain.envStorage["workspace"]?.environments["staging"] = ["TOKEN": "recreated-value"]
+				await store.refreshLocalState()
+				store.openProject(id: "workspace")
+				try await host.settle()
+			}
+			#expect(try await host.waitForText("disappeared"))
+			try host.enterValue("staging-value")
+			try await host.settle()
+			#expect(try await host.waitForText("disappeared"))
+			#expect(store.activeSecretEditingSession?.requiresRecovery == true)
+			keychain.envStorage["workspace"]?.environments["staging"] = ["TOKEN": "recreated-value"]
+			await store.refreshLocalState()
+			try await host.settle()
+			#expect(host.value == "staging-value")
+			#expect(try await host.waitForText("disappeared"))
+			#expect(store.activeSecretEditingSession?.requiresRecovery == true)
+			store.lock()
+			try await host.settle()
+			#expect(host.value != "staging-value")
+		}
+
+		@Test("removed draft copy cancels when its context disappears", arguments: ["settings", "discard", "account", "lock"])
+		func removedDraftCopyCancelsOnContextChange(transition: String) async throws {
+			let keychain = MockKeychainService()
+			let (store, biometric) = makeStore(keychain: keychain)
+			let gate = AsyncStream<Void>.makeStream()
+			biometric.authenticateHandlers = [{
+				for await _ in gate.stream { return true }
+				return false
+			}]
+			defer { gate.continuation.finish(); store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try clickInspectorToggle(in: host)
+			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try await host.settle()
+			try host.enterValue("draft-must-not-copy")
+			try await host.settle()
+			keychain.envStorage.removeValue(forKey: "workspace")
+			await store.refreshLocalState()
+			#expect(try await host.waitForText("Copy draft"))
+			try await host.click("Copy draft")
+			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
+			switch transition {
+			case "settings": store.showSettings()
+			case "discard": try await host.click("Discard")
+			case "account": store.selectedAccount = .org("other")
+			default: store.lock()
+			}
+			gate.continuation.yield(())
+			try await host.settle()
+			#expect(NSPasteboard.general.string(forType: .string) != "draft-must-not-copy")
+		}
+
+		@Test("copy all copies refreshed values when authentication reactivates the app")
+		func copyAllWaitsForRefreshDuringAuthentication() async throws {
+			let keychain = MockKeychainService()
+			let (store, biometric) = makeStore(keychain: keychain)
+			let gate = AsyncStream<Void>.makeStream()
+			biometric.authenticateHandlers = [{
+				for await _ in gate.stream { return true }
+				return false
+			}]
+			defer { gate.continuation.finish(); store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try clickAt(NSPoint(x: 1352, y: 723.5), in: host)
+			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
+			// The macOS prompt can deactivate the app; returning from it refreshes local state.
+			keychain.simulateCLISet(vaultId: "workspace", environment: "default", key: "TOKEN", value: "cli-updated")
+			let refresh = Task { await store.refreshLocalState() }
+			gate.continuation.yield(())
+			await refresh.value
+			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "TOKEN=\"cli-updated\"\n" })
+			#expect(try await host.waitForText("Copied"))
+		}
+
+		@Test("a failed refresh pauses secret actions behind a retry banner")
+		func failedRefreshShowsRetryBanner() async throws {
+			let keychain = MockKeychainService()
+			let (store, _) = makeStore(keychain: keychain)
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			keychain.failProjectReads = true
+			await store.refreshLocalState()
+			#expect(try await host.waitForText("Couldn't reload changes from the LPM CLI"))
+			#expect(!store.canUseLocalSecrets)
+			let view = host.view
+			let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+			view.cacheDisplay(in: view.bounds, to: bitmap)
+			Attachment.record(try #require(bitmap.representation(using: .png, properties: [:])), named: "workspace-refresh-failed.png")
+			keychain.failProjectReads = false
+			try await host.click("Retry")
+			#expect(try await host.waitUntil { store.canUseLocalSecrets })
+			try await host.settle()
+			#expect(try await !host.text().contains("Couldn't reload changes"))
+		}
+
+		@Test("revealed values stay revealed across a refresh")
+		func revealedValuesSurviveRefresh() async throws {
+			let (store, _) = makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try await host.click("Reveal")
+			#expect(try await host.waitForText("fixture-value"))
+			await store.refreshLocalState()
+			try await host.settle()
+			#expect(try await host.text().contains("fixture-value"))
+		}
+
 		@Test("copy all keeps the toolbar stationary and confirms success")
 		func copyAllFeedbackAndLayout() async throws {
 			let (store, biometric) = makeStore()
@@ -136,8 +326,7 @@ extension SheetInteractionTests {
 			#expect(!store.showAuthStatus)
 		}
 
-		private func makeStore(environments: [String: [String: String]] = ["default": ["TOKEN": "fixture-value"]], additionalProject: Bool = false) -> (VaultStore, MockBiometricService) {
-			let keychain = MockKeychainService()
+		private func makeStore(environments: [String: [String: String]] = ["default": ["TOKEN": "fixture-value"]], additionalProject: Bool = false, keychain: MockKeychainService = MockKeychainService()) -> (VaultStore, MockBiometricService) {
 			let biometric = MockBiometricService()
 			let project = VaultProject(id: "workspace", name: "Workspace", path: "",
 				environments: environments)

@@ -33,6 +33,7 @@ struct VaultContentView: View {
 	let isImporting: Bool
 	let isCopyingAll: Bool
 	var isCopiedAll = false
+	var canUseSecrets = true
 	let cliAccess: VaultCliAccess?
 	let isChangingCliAccess: Bool
 	let onChangeCliAccess: (VaultCliAccess) -> Void
@@ -51,7 +52,7 @@ struct VaultContentView: View {
 			mode: mode,
 			filter: filter,
 			searchText: searchText,
-			revealedKeys: revealedKeys
+			revealedKeys: canUseSecrets ? revealedKeys : []
 		)
 		VStack(spacing: 0) {
 			header(derived)
@@ -156,7 +157,7 @@ struct VaultContentView: View {
 			.toggleStyle(.switch)
 			.controlSize(.mini)
 			.font(.system(size: 11.5))
-			.disabled(cliAccess == nil || isChangingCliAccess)
+			.disabled(cliAccess == nil || isChangingCliAccess || !canUseSecrets)
 			.help(VaultCliAccessPresentation(access: cliAccess).help)
 			.accessibilityLabel("Require approval for CLI env access")
 			.accessibilityValue(VaultCliAccessPresentation(access: cliAccess).accessibilityValue)
@@ -173,7 +174,8 @@ struct VaultContentView: View {
 				systemImage: derived.allVisibleRevealed ? "eye.slash" : "eye",
 				title: compact ? nil : "Reveal",
 				help: derived.allVisibleRevealed ? "Hide all values" : "Reveal all values",
-				active: derived.allVisibleRevealed
+				active: derived.allVisibleRevealed,
+				disabled: !canUseSecrets
 			) { toggleRevealAll(derived) }
 			.accessibilityLabel(derived.allVisibleRevealed ? "Hide all values" : "Reveal all values")
 
@@ -183,7 +185,7 @@ struct VaultContentView: View {
 				reservedTitles: compact ? [] : ["Copy all", "Copying…", "Copied"],
 				help: copyHelp,
 				active: isCopiedAll && !isCopyingAll,
-				disabled: isCopyingAll,
+				disabled: isCopyingAll || !canUseSecrets,
 				action: onCopyAll
 			)
 			.accessibilityLabel(copyHelp)
@@ -193,7 +195,7 @@ struct VaultContentView: View {
 				disabled: isImporting,
 				action: onImport
 			)
-			VaultOutlineButton(systemImage: "square.and.arrow.up", help: "Export .env", action: onExport)
+			VaultOutlineButton(systemImage: "square.and.arrow.up", help: "Export .env", disabled: !canUseSecrets, action: onExport)
 			VaultOutlineButton(
 				systemImage: "sidebar.right",
 				help: showsInspector ? "Hide inspector" : "Show inspector",
@@ -235,7 +237,7 @@ struct VaultContentView: View {
 									selectedEnvironment: selectedEnvironment,
 									environmentColumnWidth: environmentColumnWidth,
 									isSelected: selectedKey == key,
-									isRevealed: revealedKeys.contains(key),
+									isRevealed: canUseSecrets && revealedKeys.contains(key),
 									onSelect: { selectedKey = key; showsInspector = true },
 									onReveal: { toggleReveal(key) }
 								)
@@ -278,7 +280,7 @@ struct VaultContentView: View {
 									key: key,
 									value: project.value(for: key, in: selectedEnvironment) ?? "",
 									isSelected: selectedKey == key,
-									isRevealed: revealedKeys.contains(key),
+									isRevealed: canUseSecrets && revealedKeys.contains(key),
 									hasDrift: snapshot.hasDrift(for: key),
 									onSelect: { selectedKey = key; showsInspector = true },
 									onReveal: { toggleReveal(key) },
@@ -303,7 +305,7 @@ struct VaultContentView: View {
 		ScrollView {
 			LazyVStack(alignment: .leading, spacing: 7) {
 				ForEach(derived.environmentKeys, id: \.self) { key in
-					let isRevealed = revealedKeys.contains(key)
+					let isRevealed = canUseSecrets && revealedKeys.contains(key)
 					let rendered = isRevealed ? (project.value(for: key, in: selectedEnvironment) ?? "") : "••••••••••••"
 					Text("\(key)=\(rendered)")
 						.font(VaultTypography.mono(12))
@@ -342,6 +344,7 @@ struct VaultContentView: View {
 	}
 
 	private func toggleRevealAll(_ derived: VaultContentDerivation) {
+		guard canUseSecrets else { return }
 		let keys = mode == .matrix ? derived.filteredKeys : derived.environmentKeys
 		if keys.allSatisfy(revealedKeys.contains) {
 			revealedKeys.subtract(keys)
@@ -351,6 +354,7 @@ struct VaultContentView: View {
 	}
 
 	private func toggleReveal(_ key: String) {
+		guard canUseSecrets else { return }
 		if revealedKeys.contains(key) { revealedKeys.remove(key) } else { revealedKeys.insert(key) }
 	}
 }
