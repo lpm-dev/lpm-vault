@@ -26,6 +26,7 @@ Browser tests cover the real page and CSP. Route tests build the production Dock
 All 15 JavaScript tests and 16 route tests passed.
 The 714 Swift tests, 40 shell release tests, and 21 Python release tests passed.
 The release build and nested signature checks passed with warnings treated as errors.
+The setup action uses Node 24 and removes the deprecated action-runtime warning.
 
 Three cold mobile samples alternated the original and modified Docker images on the same host.
 Both images scored 99 performance and 100 best practices.
