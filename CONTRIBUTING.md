@@ -58,9 +58,12 @@ swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warn
 bash LPMVault/Scripts/Tests/release-tooling-tests.sh
 python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
 npm ci --prefix web --ignore-scripts
+npm run build:sdk --prefix web
+git diff --exit-code -- web/public/vendor
 npx --prefix web playwright install chromium
 node --test web/tests/test_*.cjs
 python3 web/tests/test_routes.py
+python3 web/tests/test_proxy.py
 
 xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault \
   -configuration Release -destination 'generic/platform=macOS' \

@@ -11,58 +11,80 @@
 	const choice = document.getElementById("analytics-optout")
 	let trackingEnabled = window.location.hostname === HOST && !browserOptOut() && !savedOptOut()
 	let client = null
+	const pending = []
 	const attribution = landingAttribution()
 	updateChoice()
 
 	choice?.addEventListener("click", () => {
 		trackingEnabled = false
+		pending.length = 0
 		try { localStorage.setItem(OPTOUT_KEY, "true") } catch {}
 		updateChoice()
 	})
 	window.addEventListener("storage", event => {
 		if ((event.key === OPTOUT_KEY && event.newValue === "true") || event.key === null) {
 			trackingEnabled = false
+			pending.length = 0
 			updateChoice()
 		}
 	})
 
-	if (!trackingEnabled || !window.posthog?.init) {
-		trackingEnabled = false
-		updateChoice()
-		return
-	}
-
-	window.posthog.init("phc_Igvvu8TSxTnXG6miVGgRaHT54Fd2A9mpzgnON5V3Vjt", {
-		api_host: "https://eu.i.posthog.com",
-		ui_host: "https://eu.posthog.com",
-		persistence: "memory",
-		cookieless_mode: "always",
-		person_profiles: "never",
-		autocapture: false,
-		capture_pageview: false,
-		capture_pageleave: false,
-		capture_exceptions: false,
-		capture_performance: false,
-		disable_session_recording: true,
-		disable_surveys: true,
-		disable_conversations: true,
-		disable_product_tours: true,
-		disable_web_experiments: true,
-		disable_external_dependency_loading: true,
-		advanced_disable_flags: true,
-		save_campaign_params: false,
-		save_referrer: false,
-		request_batching: false,
-		respect_dnt: true,
-		before_send: sanitizeEvent,
-		loaded: posthog => {
-			client = posthog
-			client.register({ ...attribution, app: "vault", attribution_version: 2, analytics_mode: "cookieless" })
-			capture("$pageview")
-		},
-	})
+	if (!trackingEnabled) return
 	document.addEventListener("click", captureLink)
 	document.addEventListener("auxclick", captureLink)
+	if (window.posthog?.init) initialize()
+	else {
+		const script = document.createElement("script")
+		script.src = "/vendor/metrics-core-1.435.7.js"
+		script.async = true
+		script.onload = initialize
+		script.onerror = () => {
+			trackingEnabled = false
+			pending.length = 0
+			updateChoice()
+		}
+		document.head.append(script)
+	}
+
+	function initialize() {
+		if (!trackingEnabled) return
+		if (browserOptOut() || !window.posthog?.init) {
+			trackingEnabled = false
+			pending.length = 0
+			updateChoice()
+			return
+		}
+		window.posthog.init("phc_Igvvu8TSxTnXG6miVGgRaHT54Fd2A9mpzgnON5V3Vjt", {
+			api_host: "/ingest",
+			ui_host: "https://eu.posthog.com",
+			persistence: "memory",
+			cookieless_mode: "always",
+			person_profiles: "never",
+			autocapture: false,
+			capture_pageview: false,
+			capture_pageleave: false,
+			capture_exceptions: false,
+			capture_performance: false,
+			disable_session_recording: true,
+			disable_surveys: true,
+			disable_conversations: true,
+			disable_product_tours: true,
+			disable_web_experiments: true,
+			disable_external_dependency_loading: true,
+			advanced_disable_flags: true,
+			save_campaign_params: false,
+			save_referrer: false,
+			request_batching: false,
+			respect_dnt: true,
+			before_send: sanitizeEvent,
+			loaded: posthog => {
+				client = posthog
+				client.register({ ...attribution, app: "vault", attribution_version: 2, analytics_mode: "cookieless" })
+				capture("$pageview")
+				for (const { event, properties } of pending.splice(0)) capture(event, properties)
+			},
+		})
+	}
 
 	function browserOptOut() {
 		return navigator.globalPrivacyControl === true || [navigator.doNotTrack, window.doNotTrack].some(value => value === "1" || value === "yes")
@@ -135,7 +157,9 @@
 	}
 
 	function capture(event, properties = {}) {
-		if (trackingEnabled && !browserOptOut()) client?.capture(event, properties, { send_instantly: true, transport: "sendBeacon" })
+		if (!trackingEnabled || browserOptOut()) return
+		if (client) client.capture(event, properties, { send_instantly: true, transport: event === "$pageview" ? "fetch" : "sendBeacon" })
+		else if (pending.length < 20) pending.push({ event, properties })
 	}
 
 	function captureLink(event) {

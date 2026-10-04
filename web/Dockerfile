@@ -1,5 +1,7 @@
 FROM nginxinc/nginx-unprivileged:1.28-alpine@sha256:7377697a821c131a924a7105fafbe7414db4e9fcc77a6f08f776f33f141ec3f8
-COPY web/nginx.conf /etc/nginx/conf.d/default.conf
+ENV NGINX_ENVSUBST_FILTER=^VAULT_DNS_RESOLVERS$
+COPY web/nginx.conf /etc/nginx/templates/default.conf.template
+COPY --chmod=755 web/15-vault-dns.envsh /docker-entrypoint.d/15-vault-dns.envsh
 COPY web/public/ /usr/share/nginx/html/
 COPY web/prepare-assets.sh /tmp/prepare-assets.sh
 USER root
