@@ -11,130 +11,248 @@ struct EnvFileImportReviewSheet: View {
 	@State private var replacingKeys: Set<String> = []
 	@State private var task: Task<Void, Never>?
 	@State private var failure: String?
-	@State private var summary: String?
+	@State private var completedReplacements: Set<String>?
+
+	private var isWorking: Bool { task != nil }
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 16) {
-			Text(summary == nil ? "Review .env Import" : "Import Complete").font(.title2.weight(.semibold))
-			Text("\(review.projectName) · \(VaultProject.displayName(for: review.environment))").font(
-				.headline)
-			Text(review.sourceURL.lastPathComponent).foregroundStyle(VaultPalette.textSecondary)
-			if let summary {
-				Text(summary).textSelection(.enabled)
-				Spacer()
+		let isCurrent = store.isCurrentEnvFileImportReview(review)
+		VStack(alignment: .leading, spacing: 0) {
+			header
+			VaultHairline()
+			if let completedReplacements {
+				completion(replacing: completedReplacements)
 			} else {
-				Text(
-					"\(review.addedCount) new · \(review.changedKeys.count) different · \(review.unchangedCount) unchanged"
-				)
-				Text("Existing values stay unless you select a replacement. Use the eye to compare values.").font(
-					.callout
-				).foregroundStyle(VaultPalette.textSecondary)
-				ScrollView {
-					LazyVStack(spacing: 0) {
-						ForEach(review.rows) { row in reviewRow(row) }
-					}
-				}.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(
-					VaultPalette.sidebar
-				).clipShape(RoundedRectangle(cornerRadius: 8)).disabled(task != nil)
+				reviewBody(isCurrent: isCurrent)
 			}
-			if let failure { Text(failure).foregroundStyle(VaultPalette.redText).font(.callout) }
-			HStack {
-				if summary == nil {
-					Button("Cancel") {
-						task?.cancel()
-						hideValues()
-						dismiss()
-					}.keyboardShortcut(.cancelAction)
-					if failure != nil { Button("Review Again", action: reload).disabled(task != nil) }
-				}
-				Spacer()
-				if summary == nil {
-					Text(
-						"\(replacingKeys.count) \(replacingKeys.count == 1 ? "replacement" : "replacements") selected"
-					).font(.caption).foregroundStyle(VaultPalette.textSecondary)
-				}
-				if task != nil { ProgressView().controlSize(.small) }
-				if summary != nil {
-					Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
-				} else {
-					Button("Import", action: apply).keyboardShortcut(.defaultAction).disabled(
-						task != nil || failure != nil)
-				}
-			}
-		}.padding(24).frame(width: 600, height: 510).foregroundStyle(VaultPalette.textPrimary).background(
-			VaultPalette.content
-		).onDisappear {
+			footer
+		}
+		.frame(width: 600)
+		.frame(height: completedReplacements == nil ? 510 : nil)
+		.background(VaultPalette.content)
+		.onDisappear {
 			task?.cancel()
 			task = nil
 			replacingKeys.removeAll()
 			hideValues()
-		}.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { hideValues(); dismiss() } }.onChange(
-			of: store.selectedProjectId
-		) { _, id in if id != review.projectId { hideValues(); dismiss() } }.onChange(of: store.selectedEnvironment) {
-			_, name in if name != review.environment { hideValues(); dismiss() }
-		}.onChange(of: store.selectedAccount) { _, _ in hideValues(); dismiss() }
-		.onChange(of: store.showAuthStatus) { _, showing in if showing { hideValues(); dismiss() } }
-		.onChange(of: isObscured) { _, obscured in if obscured { hideValues() } }
-		.onChange(of: review.id) { _, _ in hideValues()
 		}
+		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { close() } }
+		.onChange(of: store.selectedProjectId) { _, id in if id != review.projectId { close() } }
+		.onChange(of: store.selectedEnvironment) { _, name in if name != review.environment { close() } }
+		.onChange(of: store.selectedAccount) { _, _ in close() }
+		.onChange(of: store.showAuthStatus) { _, showing in if showing { close() } }
+		.onChange(of: isObscured) { _, obscured in if obscured { hideValues() } }
+		.onChange(of: review.id) { _, _ in hideValues() }
 	}
 
-	@ViewBuilder
-	private func reviewRow(_ row: EnvFileImportReview.Row) -> some View {
-		let revealed = revealedKeys.contains(row.key) && !isObscured && store.isCurrentEnvFileImportReview(review)
-		VStack(alignment: .leading, spacing: 10) {
-			HStack {
-				VStack(alignment: .leading, spacing: 4) {
-					Text(row.key).font(.system(.body, design: .monospaced)).lineLimit(1).truncationMode(.middle)
-					Text(row.change.rawValue).font(.caption).foregroundStyle(VaultPalette.textSecondary)
+	// MARK: - Sections
+
+	private var header: some View {
+		HStack(alignment: .top, spacing: 12) {
+			VStack(alignment: .leading, spacing: 3) {
+				Text(completedReplacements == nil ? "Review import" : "Import complete")
+					.font(.system(size: 17, weight: .bold))
+					.foregroundStyle(VaultPalette.textPrimary)
+				Text("\(Text(review.sourceURL.lastPathComponent).font(VaultTypography.mono(12)).foregroundStyle(VaultPalette.textSecondary)) into \(Text(review.projectName).fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) · \(VaultProject.displayName(for: review.environment))")
+					.font(.system(size: 12.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+					.truncationMode(.middle)
+			}
+			Spacer(minLength: 12)
+			VaultSheetCloseButton(action: cancel)
+		}
+		.padding(.horizontal, 24)
+		.padding(.top, 20)
+		.padding(.bottom, 16)
+	}
+
+	private func reviewBody(isCurrent: Bool) -> some View {
+		VStack(alignment: .leading, spacing: 12) {
+			HStack(spacing: 6) {
+				VaultTagBadge(text: "\(review.addedCount) new", foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint, size: 11)
+				VaultTagBadge(text: "\(review.changedKeys.count) different", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 11)
+				VaultTagBadge(text: "\(review.unchangedCount) unchanged", foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint, size: 11)
+			}
+			Text("Existing values stay unless you choose a replacement. Comparing values asks for macOS authentication.")
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.fixedSize(horizontal: false, vertical: true)
+			ScrollView {
+				LazyVStack(spacing: 0) {
+					ForEach(review.rows) { row in
+						reviewRow(row, isCurrent: isCurrent)
+						if row.id != review.rows.last?.id {
+							VaultHairline(color: VaultPalette.rowDivider)
+						}
+					}
 				}
-				Spacer()
-				Button { toggleReveal(row.key) } label: {
-					Label(revealed ? "Hide" : "Reveal", systemImage: revealed ? "eye.slash" : "eye")
-				}.buttonStyle(.plain).foregroundStyle(VaultPalette.accentForeground)
-					.accessibilityLabel("\(revealed ? "Hide" : "Reveal") values for \(row.key)")
-					.disabled((!revealed && revealTask != nil) || failure != nil || isObscured || !store.isCurrentEnvFileImportReview(review))
+			}
+			.frame(maxHeight: .infinity, alignment: .top)
+			.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
+			.clipShape(RoundedRectangle(cornerRadius: 10))
+			.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+			.disabled(isWorking)
+			if let failure {
+				Text(failure)
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.redText)
+					.lineLimit(3)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+		}
+		.padding(.horizontal, 24)
+		.padding(.vertical, 18)
+		.frame(maxHeight: .infinity, alignment: .top)
+	}
+
+	private func reviewRow(_ row: EnvFileImportReview.Row, isCurrent: Bool) -> some View {
+		let revealed = isCurrent && !isObscured && revealedKeys.contains(row.key)
+		let replacing = replacingKeys.contains(row.key)
+		return VStack(alignment: .leading, spacing: 8) {
+			HStack(spacing: 10) {
+				Text(row.key)
+					.font(VaultTypography.mono(12.5, .semibold))
+					.foregroundStyle(VaultPalette.textPrimary)
+					.lineLimit(1)
+					.truncationMode(.middle)
+				changeBadge(row.change)
+				Spacer(minLength: 8)
+				VaultOutlineButton(
+					systemImage: revealed ? "eye.slash" : "eye",
+					title: revealed ? "Hide" : "Reveal",
+					reservedTitles: ["Reveal", "Hide"],
+					help: revealed ? "Hide values for \(row.key)" : "Compare values for \(row.key)",
+					disabled: (!revealed && revealTask != nil) || failure != nil || isObscured || !isCurrent
+				) { toggleReveal(row.key) }
+				.accessibilityLabel("\(revealed ? "Hide" : "Reveal") values for \(row.key)")
 				if row.change == .changed {
-					Toggle("Replace", isOn: Binding(
-						get: { replacingKeys.contains(row.key) },
-						set: { if $0 { replacingKeys.insert(row.key) } else { replacingKeys.remove(row.key) } }
-					)).toggleStyle(.checkbox)
+					Toggle("Replace", isOn: replacementBinding(for: row.key))
+						.toggleStyle(ReplaceToggleStyle())
 						.accessibilityLabel("Replace existing value for \(row.key)")
 				}
 			}
-			if row.change == .changed {
-				valueLine("Current", value: review.baseline[row.key] ?? "", revealed: revealed)
+			VStack(alignment: .leading, spacing: 4) {
+				if row.change == .changed {
+					valueLine("Current", value: review.baseline[row.key] ?? "", revealed: revealed, superseded: replacing)
+				}
+				valueLine(
+					"Incoming",
+					value: review.imported.secrets[row.key] ?? "",
+					revealed: revealed,
+					superseded: row.change == .changed && !replacing
+				)
 			}
-			valueLine("Incoming", value: review.imported.secrets[row.key] ?? "", revealed: revealed)
-		}.padding(12)
-		VaultHairline()
+		}
+		.padding(.horizontal, 14)
+		.padding(.vertical, 12)
+		.background(replacing ? VaultPalette.rowSelected : .clear)
 	}
 
-	private func valueLine(_ label: String, value: String, revealed: Bool) -> some View {
-		HStack(alignment: .top, spacing: 12) {
-			Text(label).font(.caption).foregroundStyle(VaultPalette.textSecondary).frame(width: 58, alignment: .leading)
+	private func changeBadge(_ change: EnvFileImportReview.Change) -> some View {
+		switch change {
+		case .added:
+			VaultTagBadge(text: change.rawValue, foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint)
+		case .changed:
+			VaultTagBadge(text: change.rawValue, foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint)
+		case .unchanged:
+			VaultTagBadge(text: change.rawValue, foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint)
+		}
+	}
+
+	/// One labeled value. A superseded value is the one the import will not keep.
+	private func valueLine(_ label: String, value: String, revealed: Bool, superseded: Bool) -> some View {
+		HStack(alignment: .firstTextBaseline, spacing: 12) {
+			Text(label)
+				.font(.system(size: 11, weight: .medium))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.frame(width: 60, alignment: .leading)
 			Text(revealed ? (value.isEmpty ? "(empty)" : value) : "••••••••")
-				.font(.system(.callout, design: .monospaced))
+				.font(VaultTypography.mono(12))
+				.foregroundStyle(superseded ? VaultPalette.textFaint : (revealed ? VaultPalette.textPrimary : VaultPalette.masked))
 				.frame(maxWidth: .infinity, alignment: .leading)
 				.fixedSize(horizontal: false, vertical: true)
 				.accessibilityLabel(revealed ? "\(label) value revealed visually" : "\(label) value hidden")
 		}
 	}
 
+	private func completion(replacing keys: Set<String>) -> some View {
+		let replaced = review.changedKeys.intersection(keys).count
+		let wroteChanges = review.addedCount + replaced > 0
+		return VStack(alignment: .leading, spacing: 12) {
+			Label {
+				Text(wroteChanges ? "Imported into \(review.projectName) · \(VaultProject.displayName(for: review.environment))" : "Nothing needed to change")
+					.font(.system(size: 13, weight: .semibold))
+					.foregroundStyle(VaultPalette.textPrimary)
+			} icon: {
+				Image(systemName: "checkmark.circle.fill")
+					.foregroundStyle(VaultPalette.green)
+			}
+			Text(review.summary(replacing: keys))
+				.font(.system(size: 12.5))
+				.foregroundStyle(VaultPalette.textSecondary)
+				.textSelection(.enabled)
+		}
+		.padding(.horizontal, 24)
+		.padding(.vertical, 20)
+		.frame(maxWidth: .infinity, alignment: .leading)
+	}
+
+	private var footer: some View {
+		VaultSheetFooter {
+			if completedReplacements == nil {
+				Text("\(replacingKeys.count) \(replacingKeys.count == 1 ? "replacement" : "replacements") selected")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+			}
+		} actions: {
+			if completedReplacements != nil {
+				VaultBarButton(title: "Done", filled: true, height: 30) { dismiss() }
+					.keyboardShortcut(.defaultAction)
+			} else {
+				VaultBarButton(title: "Cancel", height: 30, action: cancel)
+					.keyboardShortcut(.cancelAction)
+				if failure != nil {
+					VaultBarButton(title: isWorking ? "Reviewing…" : "Review again", filled: true, disabled: isWorking, height: 30, action: reload)
+						.keyboardShortcut(.defaultAction)
+				} else {
+					VaultBarButton(title: isWorking ? "Importing…" : "Import", shortcut: "⏎", filled: true, disabled: isWorking, height: 30, action: apply)
+						.keyboardShortcut(.defaultAction)
+				}
+			}
+		}
+	}
+
+	// MARK: - Actions
+
+	private func replacementBinding(for key: String) -> Binding<Bool> {
+		Binding(
+			get: { replacingKeys.contains(key) },
+			set: { replacing in
+				if replacing { replacingKeys.insert(key) } else { replacingKeys.remove(key) }
+			}
+		)
+	}
+
 	private func toggleReveal(_ key: String) {
 		if revealedKeys.remove(key) != nil { return }
-		guard revealTask == nil, task == nil, summary == nil, failure == nil, !isObscured,
-			store.isCurrentEnvFileImportReview(review) else { return }
+		guard revealTask == nil, task == nil, completedReplacements == nil, failure == nil, !isObscured,
+			store.isCurrentEnvFileImportReview(review)
+		else { return }
 		let requestID = UUID()
 		let reviewID = review.id
 		revealRequestID = requestID
 		revealTask = Task {
 			defer {
-				if revealRequestID == requestID { revealTask = nil; revealRequestID = nil }
+				if revealRequestID == requestID {
+					revealTask = nil
+					revealRequestID = nil
+				}
 			}
 			let approved = await store.authenticateForSensitiveAction(reason: "Compare imported secret values")
 			guard approved, !Task.isCancelled, revealRequestID == requestID, review.id == reviewID,
-				!isObscured, task == nil, summary == nil, store.isCurrentEnvFileImportReview(review)
+				!isObscured, task == nil, completedReplacements == nil, store.isCurrentEnvFileImportReview(review)
 			else { return }
 			revealedKeys.insert(key)
 		}
@@ -147,6 +265,17 @@ struct EnvFileImportReviewSheet: View {
 		revealedKeys.removeAll()
 	}
 
+	private func cancel() {
+		task?.cancel()
+		hideValues()
+		dismiss()
+	}
+
+	private func close() {
+		hideValues()
+		dismiss()
+	}
+
 	private func apply() {
 		hideValues()
 		let keys = replacingKeys
@@ -155,7 +284,7 @@ struct EnvFileImportReviewSheet: View {
 			guard !Task.isCancelled else { return }
 			task = nil
 			switch result {
-			case .success: summary = review.summary(replacing: keys)
+			case .success: completedReplacements = keys
 			case .failure(.cancelled), .failure(.vaultLocked): dismiss()
 			case .failure(let error): failure = error.localizedDescription
 			}
@@ -178,5 +307,37 @@ struct EnvFileImportReviewSheet: View {
 			case .failure(let error): failure = error.localizedDescription
 			}
 		}
+	}
+}
+
+/// Checkbox matching the environment chips in the add-variable sheet.
+private struct ReplaceToggleStyle: ToggleStyle {
+	func makeBody(configuration: Configuration) -> some View {
+		let selected = configuration.isOn
+		return Button { configuration.isOn.toggle() } label: {
+			HStack(spacing: 6) {
+				ZStack {
+					RoundedRectangle(cornerRadius: 4)
+						.fill(selected ? VaultPalette.accent : VaultPalette.control)
+					RoundedRectangle(cornerRadius: 4)
+						.stroke(selected ? VaultPalette.accent : VaultPalette.textFaint.opacity(0.6), lineWidth: 1.5)
+					if selected {
+						Image(systemName: "checkmark")
+							.font(.system(size: 8, weight: .heavy))
+							.foregroundStyle(.white)
+					}
+				}
+				.frame(width: 15, height: 15)
+				configuration.label
+					.font(.system(size: 12, weight: .medium))
+					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textSecondary)
+			}
+			.padding(.horizontal, 4)
+			.frame(height: 27)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.vaultPointingHand()
+		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 }

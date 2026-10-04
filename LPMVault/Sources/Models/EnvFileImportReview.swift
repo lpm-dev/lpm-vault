@@ -2,7 +2,7 @@ import Foundation
 
 struct EnvFileImportReview: Identifiable, Sendable {
 	enum Change: String, Sendable {
-		case added = "Add"
+		case added = "New"
 		case changed = "Different value"
 		case unchanged = "Unchanged"
 	}

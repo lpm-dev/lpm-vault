@@ -201,7 +201,7 @@ extension SheetInteractionTests {
 					context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false,
 					keyCode: 36))
 			#expect(host.window.performKeyEquivalent(with: event))
-			#expect(try await host.waitForText("Import Complete"))
+			#expect(try await host.waitForText("Import complete"))
 			#expect(keychain.envStorage["project"]?.environments["default"]?["TOKEN"] == "existing")
 			#expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == "added")
 		}
@@ -232,8 +232,9 @@ extension SheetInteractionTests {
 			try await host.click("Reveal")
 			#expect(try await host.waitForText("IncomingValue"))
 			try submitImport(in: host)
-			#expect(try await host.waitForText("Import Complete"))
+			#expect(try await host.waitForText("Import complete"))
 			#expect(try await !host.text().contains("IncomingValue"))
+			try record(host, named: "import-review-complete")
 			#expect(keychain.envStorage["project"]?.environments["default"]?["TOKEN"] == "ExistingValue")
 		}
 
@@ -351,13 +352,15 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("IncomingValue"))
 			try await host.click("Replace")
 			#expect(try await host.waitForText("1 replacement selected"))
+			try record(host, named: "import-review-replacing")
 			keychain.envStorage["project"]?.environments["default"]?["TOKEN"] = "NewerValue"
 			try submitImport(in: host)
-			#expect(try await host.waitForText("Review Again"))
+			#expect(try await host.waitForText("Review again"))
+			try record(host, named: "import-review-changed")
 			try await host.click("Reveal")
 			try await host.settle()
 			#expect(try await !host.text().contains("ExistingValue"))
-			try await host.click("Review Again")
+			try await host.click("Review again")
 			#expect(try await host.waitForText("replacements selected"))
 			#expect(try await !host.text().contains("1 replacement selected"))
 			#expect(try await !host.text().contains("IncomingValue"))
@@ -393,6 +396,14 @@ extension SheetInteractionTests {
 				try #require(bitmap.representation(using: .png, properties: [:])), named: "masked-import-review")
 		}
 	}
+}
+
+@MainActor
+private func record<V: View>(_ host: SheetTestHost<V>, named name: String) throws {
+	let view = host.view
+	let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+	view.cacheDisplay(in: view.bounds, to: bitmap)
+	Attachment.record(try #require(bitmap.representation(using: .png, properties: [:])), named: name + ".png")
 }
 
 @Observable @MainActor
