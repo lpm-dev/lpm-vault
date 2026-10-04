@@ -78,7 +78,7 @@ struct VaultTitleBarView: View {
 
 			VaultBarButton(
 				systemImage: "arrow.clockwise",
-				title: store.isRefreshingLocalState ? "Refreshing…" : (store.needsLocalStateRefresh ? "Retry refresh" : "Refresh"),
+				title: "Refresh",
 				disabled: store.isRefreshingLocalState || store.isChangingCliAccess
 			) { Task { await store.refreshLocalState() } }
 			.help("Reload local changes from the LPM CLI")

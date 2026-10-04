@@ -90,6 +90,58 @@ struct VaultStoreTests {
 		#expect(store.canUseLocalSecrets)
 	}
 
+	@Test("selecting another project during a refresh reloads for the new selection")
+	func refreshInterruptedByNavigationReloadsNewSelection() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "first", name: "First", path: "", secrets: ["TOKEN": "old"]),
+			(id: "second", name: "Second", path: "", secrets: ["OTHER": "value"]),
+		])
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.blockNextListProjectMetadata = { entered.signal(); release.wait() }
+		let refresh = Task { await store.refreshLocalState() }
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async { entered.wait(); continuation.resume() }
+		}
+		store.selectedProjectId = "second"
+		keychain.envStorage["second"]?.environments["default"]?["OTHER"] = "cli-new"
+		release.signal()
+		await refresh.value
+		#expect(!store.isRefreshingLocalState)
+		#expect(store.localStateRefreshError == nil)
+		#expect(store.selectedProject?.value(for: "OTHER", in: "default") == "cli-new")
+		#expect(store.canUseLocalSecrets)
+		store.lock()
+	}
+
+	@Test("a refresh requested during a CLI approval change runs once the change finishes")
+	func refreshDuringCliApprovalChangeRunsAfterIt() async {
+		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: ["TOKEN": "old"])])
+		store.isUnlocked = true
+		store.selectedProjectId = "first"
+		await store.refreshCliAccess()
+		await waitForCliApprovalLoad(store)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
+		let change = Task { await store.changeCliAccess(to: .requireApproval) }
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async { entered.wait(); continuation.resume() }
+		}
+		keychain.beforeKeychainTransaction = nil
+		keychain.envStorage["first"]?.environments["default"]?["TOKEN"] = "cli-new"
+		await store.refreshLocalState()
+		release.signal()
+		await change.value
+		await store.waitForLocalStateRefresh()
+		#expect(store.selectedProjectCliAccess == .requireApproval)
+		#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "cli-new")
+		#expect(store.canUseLocalSecrets)
+		store.lock()
+	}
+
 	@Test("local refresh waits for a queued app edit and then reloads shared state")
 	func localRefreshFollowsQueuedMutation() async {
 		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: ["TOKEN": "old"])])
@@ -110,11 +162,11 @@ struct VaultStoreTests {
 		#expect(await mutation.value)
 		await refresh.value
 		#expect(store.canUseLocalSecrets)
-		#expect(!store.needsLocalStateRefresh)
+		#expect(store.localStateRefreshError == nil)
 		#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "local")
 	}
 
-	@Test("local refresh coalesces requests and blocks stale exports until completion")
+	@Test("local refresh coalesces requests and exports wait for the refreshed values")
 	func localRefreshCoalescesRequests() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: ["TOKEN": "old"])])
 		store.isUnlocked = true
@@ -128,26 +180,27 @@ struct VaultStoreTests {
 			DispatchQueue.global().async { entered.wait(); continuation.resume() }
 		}
 		#expect(store.isRefreshingLocalState)
-		#expect(!store.canUseLocalSecrets)
-		#expect(!VaultSensitiveActionContext(projectID: "first", environment: "default").isCurrent(in: store))
+		#expect(store.canUseLocalSecrets)
 		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 		defer { try? FileManager.default.removeItem(at: directory) }
 		let destination = directory.appendingPathComponent(".env")
-		await #expect(throws: CancellationError.self) {
+		let export = Task {
 			try await store.exportEnvironment(projectId: "first", environment: "default", to: destination)
 		}
-		#expect(!FileManager.default.fileExists(atPath: destination.path))
 		let second = Task { await store.refreshLocalState() }
 		await Task.yield()
+		#expect(!FileManager.default.fileExists(atPath: destination.path))
 		keychain.envStorage["first"]?.environments["default"]?["TOKEN"] = "fresh"
 		release.signal()
 		await first.value
 		await second.value
+		try await export.value
 		#expect(keychain.projectReadCount == 1)
 		#expect(!store.isRefreshingLocalState)
-		try await store.exportEnvironment(projectId: "first", environment: "default", to: destination)
-		#expect(try String(contentsOf: destination, encoding: .utf8).contains("fresh"))
+		let exported = try String(contentsOf: destination, encoding: .utf8)
+		#expect(exported.contains("fresh"))
+		#expect(!exported.contains("old"))
 	}
 
 	@Test("local refresh failure keeps the cache and requires a successful retry", arguments: ["project", "policy"])
@@ -171,7 +224,7 @@ struct VaultStoreTests {
 		#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "new")
 	}
 
-	@Test("local refresh cannot publish after lock, navigation, or a local mutation", arguments: ["lock", "project", "account", "mutation"])
+	@Test("local refresh rereads after navigation or a local mutation and stops after lock", arguments: ["lock", "project", "account", "mutation"])
 	func localRefreshInvalidation(reason: String) async {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "first", name: "First", path: "", secrets: ["TOKEN": "old"]),
@@ -192,10 +245,14 @@ struct VaultStoreTests {
 		case "project": store.selectedProjectId = "second"
 		case "account": store.selectedAccount = .org("different")
 		default:
+			let (started, didStart) = AsyncStream<Void>.makeStream()
 			mutation = Task {
-				await store.updateSecretAndWait(in: "first", environment: "default", key: "TOKEN", expectedValue: "old", newValue: "local")
+				didStart.yield()
+				return await store.updateSecretAndWait(in: "first", environment: "default", key: "TOKEN", expectedValue: "old", newValue: "local")
 			}
-			while store.isRefreshingLocalState { await Task.yield() }
+			// The mutation enqueues synchronously before this task resumes.
+			var startedIterator = started.makeAsyncIterator()
+			_ = await startedIterator.next()
 		}
 		release.signal()
 		await refresh.value
@@ -205,12 +262,15 @@ struct VaultStoreTests {
 			#expect(store.projects.allSatisfy { !$0.hasLoadedEnvironments })
 			#expect(store.workspaceSnapshots.isEmpty)
 			#expect(keychain.projectReadCount == 0)
-		} else if reason == "mutation" {
-			#expect(store.canUseLocalSecrets)
-			#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "local")
 		} else {
-			#expect(store.needsLocalStateRefresh)
-			#expect(!store.canUseLocalSecrets)
+			#expect(store.localStateRefreshError == nil)
+			#expect(store.canUseLocalSecrets)
+			if reason == "mutation" {
+				#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "local")
+			} else if reason == "project" {
+				#expect(store.selectedProjectId == "second")
+				#expect(store.selectedProject?.hasLoadedEnvironments == true)
+			}
 		}
 	}
 

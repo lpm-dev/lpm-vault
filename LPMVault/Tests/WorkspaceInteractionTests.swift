@@ -140,9 +140,10 @@ extension SheetInteractionTests {
 			#expect(NSPasteboard.general.string(forType: .string) != "draft-must-not-copy")
 		}
 
-		@Test("refresh cancels copy all while authentication is pending")
-		func refreshCancelsPendingCopyAll() async throws {
-			let (store, biometric) = makeStore()
+		@Test("copy all copies refreshed values when authentication reactivates the app")
+		func copyAllWaitsForRefreshDuringAuthentication() async throws {
+			let keychain = MockKeychainService()
+			let (store, biometric) = makeStore(keychain: keychain)
 			let gate = AsyncStream<Void>.makeStream()
 			biometric.authenticateHandlers = [{
 				for await _ in gate.stream { return true }
@@ -153,10 +154,48 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try clickAt(NSPoint(x: 1352, y: 723.5), in: host)
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
-			await store.refreshLocalState()
+			// The macOS prompt can deactivate the app; returning from it refreshes local state.
+			keychain.simulateCLISet(vaultId: "workspace", environment: "default", key: "TOKEN", value: "cli-updated")
+			let refresh = Task { await store.refreshLocalState() }
 			gate.continuation.yield(())
+			await refresh.value
+			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "TOKEN=\"cli-updated\"\n" })
+			#expect(try await host.waitForText("Copied"))
+		}
+
+		@Test("a failed refresh pauses secret actions behind a retry banner")
+		func failedRefreshShowsRetryBanner() async throws {
+			let keychain = MockKeychainService()
+			let (store, _) = makeStore(keychain: keychain)
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			keychain.failProjectReads = true
+			await store.refreshLocalState()
+			#expect(try await host.waitForText("Couldn't reload changes from the LPM CLI"))
+			#expect(!store.canUseLocalSecrets)
+			let view = host.view
+			let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+			view.cacheDisplay(in: view.bounds, to: bitmap)
+			Attachment.record(try #require(bitmap.representation(using: .png, properties: [:])), named: "workspace-refresh-failed.png")
+			keychain.failProjectReads = false
+			try await host.click("Retry")
+			#expect(try await host.waitUntil { store.canUseLocalSecrets })
 			try await host.settle()
-			#expect(try await !host.text().contains("Copied"))
+			#expect(try await !host.text().contains("Couldn't reload changes"))
+		}
+
+		@Test("revealed values stay revealed across a refresh")
+		func revealedValuesSurviveRefresh() async throws {
+			let (store, _) = makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try await host.click("Reveal")
+			#expect(try await host.waitForText("fixture-value"))
+			await store.refreshLocalState()
+			try await host.settle()
+			#expect(try await host.text().contains("fixture-value"))
 		}
 
 		@Test("copy all keeps the toolbar stationary and confirms success")

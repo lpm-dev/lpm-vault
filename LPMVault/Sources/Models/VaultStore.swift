@@ -1672,92 +1672,127 @@ final class VaultStore {
   // MARK: - Load
 
   private(set) var isRefreshingLocalState = false
+  /// Set when a refresh fails. Cached values may be stale, so copying,
+  /// revealing, and exporting pause until a refresh succeeds.
   private(set) var localStateRefreshError: String?
-  private(set) var needsLocalStateRefresh = false
-  private(set) var localStateRevision = 0
   private var localStateRefreshTask: Task<Void, Never>?
+  private var localStateRefreshID: UUID?
   private var localStateRefreshGeneration = 0
+  private var localStateRefreshDeferred = false
+  private static let localStateRefreshPassLimit = 8
 
   var canUseLocalSecrets: Bool {
-    isUnlocked && !isRefreshingLocalState && !needsLocalStateRefresh
-      && !isLoadingProjects && !isLoadingSelectedProject
+    isUnlocked && localStateRefreshError == nil && !isLoadingProjects && !isLoadingSelectedProject
   }
 
-  /// Refreshes shared local state without extending the idle deadline.
+  /// Reloads local state that the LPM CLI may have changed, without extending
+  /// the idle deadline. Concurrent requests share one refresh, and a request
+  /// made during a CLI approval change runs when that change finishes.
   func refreshLocalState() async {
-    guard !Task.isCancelled, isUnlocked, !isLoadingProjects else { return }
-    if let task = localStateRefreshTask {
-      await task.value
-      return
+    await startLocalStateRefresh()?.value
+  }
+
+  /// Returns once no refresh is running, so reads see refreshed values.
+  func waitForLocalStateRefresh() async {
+    while let task = localStateRefreshTask { await task.value }
+  }
+
+  @discardableResult
+  private func startLocalStateRefresh() -> Task<Void, Never>? {
+    guard isUnlocked, !isLoadingProjects else { return nil }
+    if let task = localStateRefreshTask { return task }
+    guard !isChangingCliAccess else {
+      localStateRefreshDeferred = true
+      return nil
     }
-    needsLocalStateRefresh = true
-    guard !isChangingCliAccess else { return }
-    invalidateSelectedProjectLoad()
-    cliAccessLoadTask?.cancel()
-    cliAccessLoadGeneration &+= 1
-    cancelExports()
-    localStateRevision &+= 1
-    localStateRefreshGeneration &+= 1
-    let generation = localStateRefreshGeneration
-    let session = vaultSessionGeneration
-    let projectID = selectedProjectId
-    let account = selectedAccount
-    let policyRevisions = cliAccessProjectRevisions
+    localStateRefreshDeferred = false
+    let id = UUID()
+    localStateRefreshID = id
     isRefreshingLocalState = true
     localStateRefreshError = nil
-    let task = Task { [weak self, persistence, workspaceSnapshotBuilder] in
+    let task = Task { [weak self] in
       guard let self else { return }
-      await self.waitForProjectMutations()
-      guard !Task.isCancelled, generation == self.localStateRefreshGeneration else { return }
-      let result = await persistence.refreshSnapshot(selectedProjectID: projectID)
-      guard !Task.isCancelled, generation == self.localStateRefreshGeneration,
-        session == self.vaultSessionGeneration, self.isUnlocked,
-        self.selectedProjectId == projectID, self.selectedAccount == account
-      else { return }
-      switch result {
-      case .failure:
-        self.localStateRefreshError = "Could not refresh local vault state. Retry before copying or exporting secrets."
-        self.isRefreshingLocalState = false
-        self.localStateRefreshTask = nil
-      case .success(let snapshot):
-        guard let update = await workspaceSnapshotBuilder.buildIncremental(
-          currentProjects: snapshot.projects,
-          existingSnapshots: self.workspaceSnapshots.filter { $0.key == projectID }
-        ), !Task.isCancelled, generation == self.localStateRefreshGeneration,
-          session == self.vaultSessionGeneration, self.isUnlocked
-        else { return }
-        self.localStateRefreshTask = nil
-        if self.activeSecretEditingSession?.account == account {
-          self.activeSecretEditingSession?.receiveRefreshedProjects(snapshot.projects)
-        }
-        self.pendingWorkspaceSnapshots = update.snapshots
-        self.projects = snapshot.projects
-        self.syncMetadata = snapshot.syncMetadata
-        self.vaultOrgAssociations = snapshot.orgAssociations
-        self.publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
-        self.loadEnvironmentOrders()
-        self.reconcileNavigationState()
-        self.selectedProjectCliAccess = self.selectedProjectId.flatMap { self.projectCliAccess[$0] }
-        self.localStateRefreshError = nil
-        self.needsLocalStateRefresh = false
-        self.isRefreshingLocalState = false
-      }
+      await self.runLocalStateRefresh(id: id)
     }
     localStateRefreshTask = task
-    await task.value
-    if !Task.isCancelled, isUnlocked, session == vaultSessionGeneration,
-      selectedProjectId == projectID, selectedAccount == account,
-      needsLocalStateRefresh, localStateRefreshError == nil, !isChangingCliAccess
-    {
-      await refreshLocalState()
-    }
+    return task
   }
 
+  /// Reads a snapshot and publishes it unless a newer local change, project
+  /// selection, or account switch superseded it; then it reads again.
+  private func runLocalStateRefresh(id: UUID) async {
+    defer {
+      if localStateRefreshID == id {
+        localStateRefreshID = nil
+        localStateRefreshTask = nil
+        isRefreshingLocalState = false
+      }
+    }
+    let session = vaultSessionGeneration
+    for _ in 0..<Self.localStateRefreshPassLimit {
+      guard !Task.isCancelled, isUnlocked, session == vaultSessionGeneration else { return }
+      localStateRefreshGeneration &+= 1
+      let generation = localStateRefreshGeneration
+      let projectID = selectedProjectId
+      let account = selectedAccount
+      let policyRevisions = cliAccessProjectRevisions
+      invalidateSelectedProjectLoad()
+      cliAccessLoadTask?.cancel()
+      cliAccessLoadGeneration &+= 1
+      await waitForProjectMutations()
+      guard generation == localStateRefreshGeneration else { continue }
+      let result = await persistence.refreshSnapshot(selectedProjectID: projectID)
+      guard !Task.isCancelled, isUnlocked, session == vaultSessionGeneration else { return }
+      guard generation == localStateRefreshGeneration, selectedProjectId == projectID,
+        selectedAccount == account
+      else { continue }
+      guard case .success(let snapshot) = result else {
+        localStateRefreshError = Self.localStateRefreshFailure
+        return
+      }
+      let update = await workspaceSnapshotBuilder.buildIncremental(
+        currentProjects: snapshot.projects,
+        existingSnapshots: workspaceSnapshots.filter { $0.key == projectID }
+      )
+      guard !Task.isCancelled, isUnlocked, session == vaultSessionGeneration else { return }
+      guard let update else {
+        localStateRefreshError = Self.localStateRefreshFailure
+        return
+      }
+      guard generation == localStateRefreshGeneration, selectedProjectId == projectID,
+        selectedAccount == account
+      else { continue }
+      if activeSecretEditingSession?.account == account {
+        activeSecretEditingSession?.receiveRefreshedProjects(snapshot.projects)
+      }
+      pendingWorkspaceSnapshots = update.snapshots
+      projects = snapshot.projects
+      syncMetadata = snapshot.syncMetadata
+      vaultOrgAssociations = snapshot.orgAssociations
+      publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
+      loadEnvironmentOrders()
+      reconcileNavigationState()
+      selectedProjectCliAccess = selectedProjectId.flatMap { projectCliAccess[$0] }
+      return
+    }
+    localStateRefreshError = Self.localStateRefreshFailure
+  }
+
+  private static let localStateRefreshFailure =
+    "Couldn't reload changes from the LPM CLI. Copying, revealing, and exporting are paused until a refresh succeeds."
+
+  /// Makes an in-flight refresh read again instead of publishing a snapshot
+  /// that a newer local change or selection has superseded.
   private func invalidateLocalStateRefresh() {
     guard localStateRefreshTask != nil else { return }
     localStateRefreshGeneration &+= 1
+  }
+
+  private func cancelLocalStateRefresh() {
     localStateRefreshTask?.cancel()
     localStateRefreshTask = nil
+    localStateRefreshID = nil
+    localStateRefreshDeferred = false
     isRefreshingLocalState = false
   }
 
@@ -1866,6 +1901,7 @@ final class VaultStore {
         cliAccessChangeID = nil
         cliAccessChangeAuthorization = nil
       }
+      if localStateRefreshDeferred, !isChangingCliAccess { startLocalStateRefresh() }
     }
     await waitForProjectMutations()
     guard !Task.isCancelled, session == vaultSessionGeneration, isUnlocked,
@@ -1925,7 +1961,7 @@ final class VaultStore {
   /// invalidates this generation before it can publish decrypted state.
   @discardableResult
   func loadProjects() async -> Bool {
-    invalidateLocalStateRefresh()
+    cancelLocalStateRefresh()
     invalidateSelectedProjectLoad()
     projectLoadGeneration &+= 1
     let generation = projectLoadGeneration
@@ -1954,7 +1990,6 @@ final class VaultStore {
       self.syncMetadata = snapshot.syncMetadata
       self.vaultOrgAssociations = snapshot.orgAssociations
       self.error = nil
-      self.needsLocalStateRefresh = false
       self.localStateRefreshError = nil
       self.lastSuccessfulProjectLoadGeneration = generation
       self.loadEnvironmentOrders()
@@ -3662,6 +3697,7 @@ final class VaultStore {
     environment: String,
     to destination: URL
   ) async throws {
+    await waitForLocalStateRefresh()
     guard canUseLocalSecrets,
       selectedProjectId == projectId,
       selectedEnvironment == environment,
@@ -3723,7 +3759,7 @@ final class VaultStore {
     autoLockCountdownSeconds = nil
     autoLockTaskGeneration &+= 1
     isUnlocked = false
-    needsLocalStateRefresh = false
+    cancelLocalStateRefresh()
     localStateRefreshError = nil
     biometricService.resetCache()
     ClipboardManager.shared.clearClipboard()
