@@ -23,7 +23,10 @@ after(async () => {
 
 test('real SDK delivers sanitized cookieless events when third-party analytics domains are blocked', async () => {
   const context = await browser.newContext({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' })
-  await context.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { get: () => false }))
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false })
+    Object.defineProperty(navigator, 'userAgentData', { get: () => ({ brands: [{ brand: 'Google Chrome', version: '146' }], mobile: false, platform: 'macOS' }) })
+  })
   const page = await context.newPage()
   const requests = []
   const paths = []

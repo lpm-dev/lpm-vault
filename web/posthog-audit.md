@@ -23,7 +23,7 @@ The browser test uses the actual pinned SDK and production page in a temporary b
 It blocks every third-party domain. The original Docker image fails because its pageview targets `eu.i.posthog.com`.
 The modified image sends the pageview and GitHub intent to the website origin.
 The test verifies cookieless fields, absent persistent identity, sanitized queries, and manual opt-out.
-The test models a normal visitor because PostHog deliberately drops automated browsers with `navigator.webdriver` enabled.
+The test models a normal visitor because PostHog drops browsers with `navigator.webdriver` enabled or a headless browser brand.
 
 The isolated TLS fixture verifies allowed methods, origins, body size, fixed upstream routing, and header removal.
 It also verifies that an untrusted upstream certificate produces HTTP 502.
