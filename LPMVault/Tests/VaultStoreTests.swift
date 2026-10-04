@@ -58,6 +58,18 @@ struct VaultStoreTests {
 		return (store, keychain, biometric, api)
 	}
 
+	/// Reviews a dotenv file for the selected destination, then imports it
+	/// keeping existing values except `replacing`.
+	private func reviewAndImport(
+		_ store: VaultStore, _ url: URL, to projectId: String, environment: String,
+		replacing: Set<String> = []
+	) async -> Result<ImportedEnvFile, EnvFileImportError> {
+		switch await store.prepareEnvFileImport(at: url, to: projectId, environment: environment) {
+		case .success(let review): await store.applyEnvFileImport(review, replacingKeys: replacing)
+		case .failure(let error): .failure(error)
+		}
+	}
+
 	// MARK: - Load
 
 	@Test("CLI approval changes reuse the unlocked session and do not affect another project")
@@ -701,11 +713,7 @@ struct VaultStoreTests {
 		store.openProject(id: "personal")
 
 		let importTask = Task {
-			await store.importEnvFile(
-				at: URL(fileURLWithPath: "/tmp/account-switch.env"),
-				to: "personal",
-				environment: "default"
-			)
+			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/account-switch.env"), to: "personal", environment: "default")
 		}
 		while !(await importer.hasStarted("account-switch.env")) { await Task.yield() }
 		store.selectAccount(.org("acme"))
@@ -1385,11 +1393,7 @@ struct VaultStoreTests {
 		store.openProject(id: "id-1")
 		store.selectedEnvironment = "default"
 
-		let result = await store.importEnvFile(
-			at: URL(fileURLWithPath: "/tmp/import.env"),
-			to: "id-1",
-			environment: "default"
-		)
+		let result = await reviewAndImport(store, URL(fileURLWithPath: "/tmp/import.env"), to: "id-1", environment: "default")
 
 		#expect(result == .success(ImportedEnvFile(secrets: ["IMPORTED": "value"])))
 		#expect(
@@ -1399,6 +1403,23 @@ struct VaultStoreTests {
 		)
 		#expect(keychain.storage["id-1"]?.secrets == ["OLD": "value", "IMPORTED": "value"])
 		#expect(keychain.updateEnvironmentsCallCount == 1)
+	}
+
+	@Test("dotenv import keeps differing existing values without replacement approval")
+	func localEnvImportKeepsExistingValuesByDefault() async {
+		let importer = MockEnvFileImportService()
+		await importer.setImmediateResult(.success(ImportedEnvFile(secrets: ["TOKEN": "incoming", "NEW": "added"])))
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["TOKEN": "existing"])],
+			envFileImportService: importer
+		)
+		store.isUnlocked = true
+		store.openProject(id: "id-1")
+		let result = await reviewAndImport(store, URL(fileURLWithPath: "/tmp/import.env"), to: "id-1", environment: "default")
+		#expect(result == .success(ImportedEnvFile(secrets: ["TOKEN": "incoming", "NEW": "added"])))
+		#expect(keychain.storage["id-1"]?.secrets == ["TOKEN": "existing", "NEW": "added"])
+		#expect(store.projects[0].secrets(for: "default") == ["TOKEN": "existing", "NEW": "added"])
+		store.lock()
 	}
 
 	@Test("tab changes cancel a pending dotenv import instead of redirecting it")
@@ -1416,11 +1437,7 @@ struct VaultStoreTests {
 		store.selectedEnvironment = "default"
 
 		let task = Task {
-			await store.importEnvFile(
-				at: URL(fileURLWithPath: "/tmp/slow.env"),
-				to: "id-1",
-				environment: "default"
-			)
+			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/slow.env"), to: "id-1", environment: "default")
 		}
 		while !(await importer.hasStarted("slow.env")) { await Task.yield() }
 		store.selectedEnvironment = "staging"
@@ -1445,17 +1462,11 @@ struct VaultStoreTests {
 		store.openProject(id: "id-1")
 
 		let older = Task {
-			await store.importEnvFile(
-				at: URL(fileURLWithPath: "/tmp/older.env"),
-				to: "id-1", environment: "default"
-			)
+			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/older.env"), to: "id-1", environment: "default")
 		}
 		while !(await importer.hasStarted("older.env")) { await Task.yield() }
 		let newer = Task {
-			await store.importEnvFile(
-				at: URL(fileURLWithPath: "/tmp/newer.env"),
-				to: "id-1", environment: "default"
-			)
+			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/newer.env"), to: "id-1", environment: "default")
 		}
 		while !(await importer.hasStarted("newer.env")) { await Task.yield() }
 
@@ -1483,11 +1494,7 @@ struct VaultStoreTests {
 			.success(ImportedEnvFile(secrets: ["Hey": "mixed"]))
 		)
 
-		let result = await store.importEnvFile(
-			at: URL(fileURLWithPath: "/tmp/collision.env"),
-			to: "id-1",
-			environment: "default"
-		)
+		let result = await reviewAndImport(store, URL(fileURLWithPath: "/tmp/collision.env"), to: "id-1", environment: "default")
 
 		#expect(result == .failure(.caseInsensitiveCollisionWithExisting))
 		#expect(store.projects[0].secrets(for: "default") == ["HEY": "upper"])
@@ -1512,10 +1519,7 @@ struct VaultStoreTests {
 		store.openProject(id: "id-1")
 
 		let older = Task {
-			await store.importEnvFile(
-				at: URL(fileURLWithPath: "/tmp/stale.env"),
-				to: "id-1", environment: "default"
-			)
+			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/stale.env"), to: "id-1", environment: "default")
 		}
 		while !(await importer.hasStarted("stale.env")) { await Task.yield() }
 		await importer.resolve(
@@ -1530,10 +1534,7 @@ struct VaultStoreTests {
 		}
 
 		let newer = Task {
-			await store.importEnvFile(
-				at: URL(fileURLWithPath: "/tmp/fresh.env"),
-				to: "id-1", environment: "default"
-			)
+			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/fresh.env"), to: "id-1", environment: "default")
 		}
 		while !(await importer.hasStarted("fresh.env")) { await Task.yield() }
 		await importer.resolve(
@@ -1564,10 +1565,7 @@ struct VaultStoreTests {
 		store.openProject(id: "id-1")
 
 		let task = Task {
-			await store.importEnvFile(
-				at: URL(fileURLWithPath: "/tmp/locked.env"),
-				to: "id-1", environment: "default"
-			)
+			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/locked.env"), to: "id-1", environment: "default")
 		}
 		while !(await importer.hasStarted("locked.env")) { await Task.yield() }
 		store.lock()
@@ -1588,12 +1586,15 @@ struct VaultStoreTests {
 		)
 		store.isUnlocked = true
 		store.openProject(id: "id-1")
+		guard case .success(let review) = await store.prepareEnvFileImport(
+			at: URL(fileURLWithPath: "/tmp/failure.env"), to: "id-1", environment: "default"
+		) else {
+			Issue.record("Expected a review before the failing commit")
+			return
+		}
 		keychain.shouldFail = true
 
-		let result = await store.importEnvFile(
-			at: URL(fileURLWithPath: "/tmp/failure.env"),
-			to: "id-1", environment: "default"
-		)
+		let result = await store.applyEnvFileImport(review, replacingKeys: [])
 
 		guard case .failure(.persistence) = result else {
 			Issue.record("Expected persistence failure")
@@ -1614,11 +1615,7 @@ struct VaultStoreTests {
 		store.isUnlocked = true
 		store.openProject(id: "id-1")
 
-		let result = await store.importEnvFile(
-			at: URL(fileURLWithPath: "/tmp/atomic.env"),
-			to: "id-1",
-			environment: "default"
-		)
+		let result = await reviewAndImport(store, URL(fileURLWithPath: "/tmp/atomic.env"), to: "id-1", environment: "default")
 
 		guard case .failure(.persistence) = result else {
 			Issue.record("Expected persistence failure")
@@ -1742,11 +1739,7 @@ struct VaultStoreTests {
 		store.openProject(id: "id-1")
 
 		let importOperation = Task {
-			await store.importEnvFile(
-				at: URL(fileURLWithPath: "/tmp/committed.env"),
-				to: "id-1",
-				environment: "default"
-			)
+			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/committed.env"), to: "id-1", environment: "default")
 		}
 		await withCheckedContinuation { continuation in
 			DispatchQueue.global().async {

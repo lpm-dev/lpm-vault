@@ -42,7 +42,8 @@ Sparkle asks before it enables background update checks.
 
 - Manage project variables across multiple environments.
 - Compare values and find missing keys in the environment matrix.
-- Import and export `.env` files.
+- Review `.env` imports with values hidden. Keep existing values or select individual replacements.
+- Export `.env` files.
 - Unlock with Touch ID or your Mac login password.
 - Use local values from `lpm env`, `lpm dev`, and `lpm run`.
 - Sync encrypted data to personal or organization env projects.
