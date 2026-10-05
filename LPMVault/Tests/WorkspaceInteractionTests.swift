@@ -43,6 +43,27 @@ extension SheetInteractionTests {
 			#expect(try await host.text().contains("VALUES"))
 		}
 
+		@Test("the table's key column lines up with the header when a narrow window opens the inspector", arguments: [false, true])
+		func narrowTableAlignment(inspectorOpen: Bool) async throws {
+			let (store, _) = makeStore(environments: [
+				"default": ["TOKEN": "a", "DATABASE_URL": "b"], "staging": ["TOKEN": "c"], "production": ["DATABASE_URL": "d"],
+			])
+			defer { store.lock() }
+			await store.refreshCliAccess()
+			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!)),
+				size: NSSize(width: 1040, height: 700), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			#expect(try await host.waitUntil { store.workspaceSnapshots["workspace"] != nil })
+			try await host.settle()
+			if inspectorOpen {
+				try clickAt(NSPoint(x: 330, y: 700 - 197), in: host)
+				#expect(try await host.waitForText("VALUES"))
+			}
+			let title = try await host.labelFrame("All variables")
+			let keyColumn = try await host.labelFrame("KEY", region: CGRect(x: 0.25, y: 0.6, width: 0.4, height: 0.25))
+			#expect(abs(keyColumn.minX - title.minX) < 3, "KEY starts at \(keyColumn.minX), the title at \(title.minX)")
+		}
+
 		@Test("unsaved edits stay with their key while the person selects other keys")
 		func draftsFollowTheirKey() async throws {
 			let (store, _) = makeStore(environments: ["default": ["TOKEN": "fixture-value", "ZETA": "zeta-value"]])
