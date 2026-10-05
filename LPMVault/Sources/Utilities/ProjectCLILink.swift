@@ -44,7 +44,13 @@ enum ProjectCLILink {
 		defaults.set(folder, forKey: folderKey(vaultId))
 	}
 
-	private static func folderKey(_ vaultId: String) -> String { "lpm-vault-cli-folder-" + vaultId }
+	static func forgetFolder(vaultId: String, defaults: UserDefaults = .standard) {
+		defaults.removeObject(forKey: folderKey(vaultId))
+	}
+
+	static let folderKeyPrefix = "lpm-vault-cli-folder-"
+
+	private static func folderKey(_ vaultId: String) -> String { folderKeyPrefix + vaultId }
 
 	/// Reads the folder's `lpm.json` the way the CLI does before it resolves environment names.
 	static func configuration(inFolder folder: String) -> ProjectCLIConfiguration {

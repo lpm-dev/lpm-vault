@@ -1254,6 +1254,10 @@ final class VaultStore {
     didSet { reconcileNavigationState() }
   }
 
+  /// Per-vault display preferences: environment tab order and the folder linked
+  /// for the CLI. They follow the vault and are removed with it.
+  let preferences: UserDefaults
+
   // SECURITY NOTE: Environment tab ordering is stored in UserDefaults (not Keychain).
   // This is intentional — it contains only the display order of environment names
   // (e.g., ["default", "staging", "production"]), not secret values.
@@ -1540,6 +1544,7 @@ final class VaultStore {
     },
     envFileImportService: any EnvFileImportServiceProtocol = EnvFileImportService.shared,
     envFileExportService: EnvFileExportService = .shared,
+    preferences: UserDefaults = .standard,
     sharingKeypairProvider:
       (@Sendable () throws -> (privateKey: Data, publicKey: Data))? = nil,
     stableSyncEncryptor:
@@ -1637,6 +1642,7 @@ final class VaultStore {
     self.personalSyncServiceFactory = personalSyncServiceFactory
     self.envFileImportService = envFileImportService
     self.envFileExportService = envFileExportService
+    self.preferences = preferences
     if let sharingKeypairProvider {
       self.sharingKeypairProvider = { _, _, _, _ in
         try sharingKeypairProvider()
@@ -2026,6 +2032,7 @@ final class VaultStore {
       self.error = nil
       self.localStateRefreshError = nil
       self.lastSuccessfulProjectLoadGeneration = generation
+      self.forgetPreferences(ofVaultsOutside: Set(snapshot.projects.lazy.map(\.id)))
       self.loadEnvironmentOrders()
       self.reconcileNavigationState()
       self.beginSelectedProjectLoadIfNeeded()
@@ -2568,6 +2575,7 @@ final class VaultStore {
         return
       }
       guard let self else { return }
+      forgetPreferences(ofVault: project.id)
       projects.removeAll { $0.id == project.id }
       if selectedProjectId == project.id {
         selectedProjectId = firstActiveProjectId
@@ -2600,8 +2608,7 @@ final class VaultStore {
       return false
     }
 
-    environmentOrders.removeValue(forKey: project.id)
-    UserDefaults.standard.removeObject(forKey: Self.envOrderPrefix + project.id)
+    forgetPreferences(ofVault: project.id)
     // Durable deletion remains successful if locking won the race. Unlocking
     // will load the new snapshot; never republish its plaintext while locked.
     guard sessionGeneration == vaultSessionGeneration, isUnlocked else { return true }
@@ -6131,13 +6138,31 @@ final class VaultStore {
     var seen: Set<String> = []
     let normalized = order.filter { seen.insert($0).inserted }
     environmentOrders[projectId] = normalized
-    UserDefaults.standard.set(normalized, forKey: Self.envOrderPrefix + projectId)
+    preferences.set(normalized, forKey: Self.envOrderPrefix + projectId)
+  }
+
+  private func forgetPreferences(ofVault vaultId: String) {
+    environmentOrders.removeValue(forKey: vaultId)
+    preferences.removeObject(forKey: Self.envOrderPrefix + vaultId)
+    ProjectCLILink.forgetFolder(vaultId: vaultId, defaults: preferences)
+  }
+
+  /// Removes preferences of vaults that are no longer on this Mac, such as
+  /// vaults the CLI deleted while the app was closed.
+  private func forgetPreferences(ofVaultsOutside vaultIds: Set<String>) {
+    let prefixes = [Self.envOrderPrefix, ProjectCLILink.folderKeyPrefix]
+    for key in preferences.dictionaryRepresentation().keys {
+      guard let prefix = prefixes.first(where: key.hasPrefix),
+        !vaultIds.contains(String(key.dropFirst(prefix.count)))
+      else { continue }
+      preferences.removeObject(forKey: key)
+    }
   }
 
   private func loadEnvironmentOrders() {
     for project in projects {
       let key = Self.envOrderPrefix + project.id
-      if let saved = UserDefaults.standard.stringArray(forKey: key) {
+      if let saved = preferences.stringArray(forKey: key) {
         environmentOrders[project.id] = saved
       }
     }

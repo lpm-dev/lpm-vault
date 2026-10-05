@@ -8,7 +8,6 @@ struct ConnectCLISheet: View {
 	@Bindable var store: VaultStore
 	let projectId: String
 	var folderPicker: @MainActor () -> URL? = Self.pickFolder
-	var localFolderDefaults: UserDefaults = .standard
 	@Environment(\.dismiss) private var dismiss
 	@Environment(\.openURL) private var openURL
 
@@ -44,7 +43,7 @@ struct ConnectCLISheet: View {
 	}
 
 	private var folder: String {
-		chosenFolder ?? ProjectCLILink.folder(vaultId: projectId, projectPath: project?.path ?? "", defaults: localFolderDefaults)
+		chosenFolder ?? ProjectCLILink.folder(vaultId: projectId, projectPath: project?.path ?? "", defaults: store.preferences)
 	}
 
 	private var availableHeight: CGFloat {
@@ -425,7 +424,7 @@ struct ConnectCLISheet: View {
 		guard let url = folderPicker() else { return }
 		guard store.isUnlocked, store.selectedProjectId == projectId else { return }
 		chosenFolder = url.path
-		ProjectCLILink.rememberFolder(url.path, vaultId: projectId, defaults: localFolderDefaults)
+		ProjectCLILink.rememberFolder(url.path, vaultId: projectId, defaults: store.preferences)
 		linkError = nil
 		refreshStatus()
 	}
