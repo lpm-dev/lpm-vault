@@ -1710,9 +1710,11 @@ final class VaultStore {
       currentIdentityAuthorityGeneration = nil
       personalTokens = []
       orgTokens = [:]
-      // Reload tokens from the new environment's keychain entry
-      Task { await loadAccount() }
+      environmentLoadTask = Task { await loadAccount() }
     }
+
+    /// The account load the latest environment switch started.
+    @ObservationIgnored private(set) var environmentLoadTask: Task<Void, Never>?
   #endif
 
   // MARK: - Load

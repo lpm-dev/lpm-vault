@@ -3031,7 +3031,7 @@ struct VaultStoreTests {
 
 		#if DEBUG
 			store.switchEnvironment(to: .development)
-			try? await Task.sleep(for: .milliseconds(20))
+			await store.environmentLoadTask?.value
 			await store.loadTokens()
 			#expect(factory.count(for: VaultConstants.localAPIBaseURL) == 1)
 			#expect(factory.count(for: VaultConstants.apiBaseURL) == 1)
@@ -3193,20 +3193,20 @@ struct VaultStoreTests {
 			let personalRevoke = Task { await store.revokePersonalToken(personal) }
 			await personalStarted.wait()
 			store.switchEnvironment(to: .development)
-			try await Task.sleep(for: .milliseconds(20))
+			await store.environmentLoadTask?.value
 			store.personalTokens = [personal]
 			await personalRevoke.value
 			#expect(store.personalTokens.map(\.id) == [personal.id])
 
 			store.switchEnvironment(to: .production)
-			try await Task.sleep(for: .milliseconds(20))
+			await store.environmentLoadTask?.value
 			store.orgTokens = ["acme": [organization]]
 			let organizationRevoke = Task {
 				await store.revokeOrgToken(organization, orgSlug: "acme")
 			}
 			await organizationStarted.wait()
 			store.switchEnvironment(to: .development)
-			try await Task.sleep(for: .milliseconds(20))
+			await store.environmentLoadTask?.value
 			store.orgTokens = ["acme": [organization]]
 			await organizationRevoke.value
 			#expect(store.orgTokens["acme"]?.map(\.id) == [organization.id])
