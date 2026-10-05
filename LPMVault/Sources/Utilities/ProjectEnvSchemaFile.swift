@@ -23,6 +23,7 @@ enum ProjectEnvSchemaFile {
 			let key: String
 			/// The new description; empty removes it.
 			let text: String
+			var expectedText: String?
 		}
 
 		/// Moves the rule of a renamed key, unless the new name already has one.
@@ -126,6 +127,12 @@ enum ProjectEnvSchemaFile {
 		if let description = change.description {
 			var rule = vars[description.key] ?? .object([])
 			guard case .object = rule else { throw .invalidSchema }
+			if let expected = description.expectedText {
+				let current: String
+				if case .string(let text)? = rule["description"] { current = text } else { current = "" }
+				guard current.utf8.elementsEqual(expected.utf8) || current.utf8.elementsEqual(description.text.utf8)
+				else { throw .changed }
+			}
 			if description.text.isEmpty {
 				rule.removeValue(forKey: "description")
 			} else {
@@ -209,8 +216,8 @@ enum ProjectEnvSchemaFile {
 	}
 
 	private static func write(_ document: LPMConfigJSON, to url: URL, replacing original: Data?) throws(FileError) {
-		let data = Data((document.rendered() + "\n").utf8)
-		guard data.count <= maximumBytes else { throw .tooLarge }
+		let data: Data
+		do { data = try document.renderedData(maximumBytes: maximumBytes) } catch { throw .tooLarge }
 		var permissions = mode_t(0o644)
 		var metadata = stat()
 		if original != nil, lstat(url.path, &metadata) == 0 { permissions = metadata.st_mode & 0o777 }

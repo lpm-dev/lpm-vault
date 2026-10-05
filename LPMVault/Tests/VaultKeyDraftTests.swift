@@ -6,6 +6,27 @@ import Testing
 
 @Suite("Key drafts")
 struct VaultKeyDraftTests {
+	@Test("description reconciliation keeps every edit and publishes conflict summaries", arguments: [100, 1_000])
+	@MainActor
+	func descriptionReconciliation(count: Int) {
+		let drafts = VaultKeyDrafts()
+		let keys = (0..<count).map { "KEY_\($0)" }
+		let project = VaultProject(id: "project", name: "Project", path: "", environments: ["default": Dictionary(uniqueKeysWithValues: keys.map { ($0, "value") })])
+		for key in keys { drafts.edit(project, key: key) { $0.setKeyDescription("Mine", saved: "Old") } }
+		let latest = Dictionary(uniqueKeysWithValues: keys.map { ($0, "Theirs") })
+		let started = ContinuousClock.now
+		drafts.receiveKeyDescriptions(latest, in: "project")
+		print("Description reconciliation \(count): \(started.duration(to: .now))")
+		#expect(drafts.drafts.count == count)
+		#expect(drafts.drafts.values.allSatisfy { $0.keyDescriptionChange == "Mine" && $0.hasConflict })
+		#expect(drafts.editedKeys(in: "project") == Set(keys))
+		var resolved = latest
+		resolved[keys[0]] = "Mine"
+		drafts.receiveKeyDescriptions(resolved, in: "project")
+		#expect(drafts.drafts.count == count - 1)
+		#expect(drafts.editedKeys(in: "project") == Set(keys.dropFirst()))
+	}
+
 	private let environments: [String: [String: String]] = [
 		"default": ["TOKEN": "dev"],
 		"staging": ["TOKEN": "stg"],

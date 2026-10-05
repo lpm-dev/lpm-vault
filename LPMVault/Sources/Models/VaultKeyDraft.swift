@@ -29,6 +29,12 @@ struct VaultKeyDraft: Equatable, Sendable {
 	private(set) var isSaveInFlight = false
 	/// The key's description in `lpm.json`, once the person edits it.
 	private(set) var keyDescription: VaultSecretEditDraft?
+	struct PendingSchemaRename: Equatable, Sendable {
+		let folder: String
+		let from: String
+	}
+	var pendingSchemaRename: PendingSchemaRename?
+	var saveError: VaultKeyEditError?
 
 	init(projectID: String, projectName: String, key: String, environments: [String: [String: String]]) {
 		id = ID(projectID: projectID, key: key)
@@ -49,7 +55,7 @@ struct VaultKeyDraft: Equatable, Sendable {
 	}
 
 	var unsavedChangeCount: Int {
-		(isRenamed ? 1 : 0) + changedEnvironments.count + (keyDescription?.isDirty == true ? 1 : 0)
+		(isRenamed || pendingSchemaRename != nil ? 1 : 0) + changedEnvironments.count + (keyDescription?.isDirty == true ? 1 : 0)
 	}
 	var isDirty: Bool { unsavedChangeCount > 0 }
 	var hasConflict: Bool {
@@ -148,6 +154,8 @@ struct VaultKeyDraft: Equatable, Sendable {
 		guard !isSaveInFlight else { return }
 		name = key
 		keyDescription = nil
+		pendingSchemaRename = nil
+		saveError = nil
 		for environment in additions.union(orphanedEnvironments) {
 			values.removeValue(forKey: environment)
 		}
@@ -201,6 +209,8 @@ struct VaultKeyDraft: Equatable, Sendable {
 		if changedEnvironments.isEmpty {
 			name = key
 			keyDescription = nil
+			pendingSchemaRename = nil
+			saveError = nil
 		} else {
 			isOrphaned = true
 		}
@@ -220,6 +230,7 @@ struct VaultKeyDraft: Equatable, Sendable {
 	mutating func beginSave() -> VaultKeyEdit? {
 		guard canSave else { return nil }
 		isSaveInFlight = true
+		saveError = nil
 		return keyEdit()
 	}
 
@@ -234,6 +245,7 @@ struct VaultKeyDraft: Equatable, Sendable {
 @Observable
 @MainActor
 final class VaultKeyDrafts {
+	private(set) var generation = 0
 	private(set) var drafts: [VaultKeyDraft.ID: VaultKeyDraft] = [:]
 	/// Keys with unsaved edits, by project. Unlike `drafts`, this changes only when
 	/// a key gains or loses edits, so views that show it skip keystroke updates.
@@ -252,6 +264,7 @@ final class VaultKeyDrafts {
 	func edit(_ project: VaultProject, key: String, _ change: (inout VaultKeyDraft) -> Void) {
 		let id = VaultKeyDraft.ID(projectID: project.id, key: key)
 		var draft = drafts[id] ?? VaultKeyDraft(projectID: project.id, projectName: project.name, key: key, environments: project.environments)
+		draft.saveError = nil
 		change(&draft)
 		store(draft)
 	}
@@ -274,6 +287,7 @@ final class VaultKeyDrafts {
 	}
 
 	func discardAll() {
+		generation += 1
 		guard !drafts.isEmpty else { return }
 		drafts.removeAll()
 		publishSummaries()
@@ -299,11 +313,15 @@ final class VaultKeyDrafts {
 	}
 
 	/// Applies the descriptions now saved in a project's `lpm.json`.
-	func receiveKeyDescriptions(_ descriptions: [String: String], in projectID: String) {
+	func receiveKeyDescriptions(_ descriptions: [String: String], ruleKeys: Set<String>? = nil, folder: String? = nil, in projectID: String) {
 		for var draft in drafts.values where draft.id.projectID == projectID && draft.keyDescription != nil {
-			draft.receiveKeyDescription(descriptions[draft.key] ?? "")
-			store(draft)
+			if let pending = draft.pendingSchemaRename, let folder, pending.folder != folder { continue }
+			let sourceKey = draft.pendingSchemaRename?.from ?? draft.key
+			let saved = ruleKeys?.contains(draft.key) == true ? descriptions[draft.key] ?? "" : descriptions[draft.key] ?? descriptions[sourceKey] ?? ""
+			draft.receiveKeyDescription(saved)
+			store(draft, publishesSummaries: false)
 		}
+		publishSummaries()
 	}
 
 	/// Applies the latest saved projects. Projects whose values are not loaded
@@ -324,13 +342,13 @@ final class VaultKeyDrafts {
 		}
 	}
 
-	private func store(_ draft: VaultKeyDraft) {
+	private func store(_ draft: VaultKeyDraft, publishesSummaries: Bool = true) {
 		if draft.isDirty || draft.isSaveInFlight || draft.isOrphaned || draft.hasConflict {
 			drafts[draft.id] = draft
 		} else {
 			drafts.removeValue(forKey: draft.id)
 		}
-		publishSummaries()
+		if publishesSummaries { publishSummaries() }
 	}
 
 	private func publishSummaries() {

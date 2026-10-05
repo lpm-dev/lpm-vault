@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 
@@ -334,6 +335,147 @@ struct VaultKeyDescriptionStoreTests {
 		#expect(draft.keyDescription?.hasExternalConflict == true)
 		#expect(draft.keyDescriptionChange == "Mine")
 		#expect(!draft.canSave)
+	}
+
+	@Test("saving detects an external description edit without a refresh")
+	func saveDetectsUnseenDescriptionChange() async throws {
+		let (store, _, folder) = try await makeStore(#"{"envSchema":{"vars":{"STRIPE_KEY":{"description":"Old"}}}}"#)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		let project = try #require(store.selectedProject)
+		store.keyDrafts.edit(project, key: id.key) { $0.setKeyDescription("Mine", saved: "Old") }
+		try #"{"envSchema":{"vars":{"STRIPE_KEY":{"description":"Theirs"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		do { try await store.saveKeyDraft(id); Issue.record("An unseen edit must conflict") } catch {}
+		#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "project").descriptions[id.key] == "Theirs")
+		#expect(store.keyDrafts.draft(id)?.keyDescription?.hasExternalConflict == true)
+		#expect(store.keyDrafts.draft(id)?.keyDescriptionChange == "Mine")
+		store.keyDrafts.edit(project, key: id.key) { $0.keepKeyDescription() }
+		try await store.saveKeyDraft(id)
+		#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "project").descriptions[id.key] == "Mine")
+	}
+
+	@Test("retrying a partial rename moves its complete schema rule", arguments: [false, true])
+	func retrySchemaRename(withDescription: Bool) async throws {
+		let original = #"{"envSchema":{"vars":{"STRIPE_KEY":{"required":true,"description":"Old","format":"url"}}}}"#
+		let (store, keychain, folder) = try await makeStore(original)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		let project = try #require(store.selectedProject)
+		store.keyDrafts.edit(project, key: id.key) {
+			$0.name = "NEW"
+			if withDescription { $0.setKeyDescription("Mine", saved: "Old") }
+		}
+		try "{".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		do { try await store.saveKeyDraft(id); Issue.record("Schema update must fail") } catch {}
+		let moved = VaultKeyDraft.ID(projectID: "project", key: "NEW")
+		#expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == "sk_dev")
+		#expect(store.keyDrafts.draft(moved)?.canSave == true)
+		try original.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		try await store.saveKeyDraft(moved)
+		let document = try LPMConfigJSON(parsing: Data(contentsOf: URL(fileURLWithPath: folder + "/lpm.json")))
+		#expect(document["envSchema"]?["vars"]?["STRIPE_KEY"] == nil)
+		#expect(document["envSchema"]?["vars"]?["NEW"]?["required"] == .bool(true))
+		#expect(document["envSchema"]?["vars"]?["NEW"]?["format"] == .string("url"))
+		#expect(document["envSchema"]?["vars"]?["NEW"]?["description"] == .string(withDescription ? "Mine" : "Old"))
+		#expect(store.keyDrafts.draft(moved) == nil)
+	}
+
+	@Test("a rename checks current rules even when the cached file had none", arguments: [false, true])
+	func renameChecksCurrentSchema(beforeFirstLoad: Bool) async throws {
+		let (store, _, folder) = try await makeStore(#"{"vault":"project"}"#)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		if beforeFirstLoad { store.selectedAccount = .org("other"); store.selectedAccount = .personal }
+		try #"{"vault":"project","envSchema":{"vars":{"STRIPE_KEY":{"required":true}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEW" }
+		try await store.saveKeyDraft(id)
+		let rules = try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "project")
+		#expect(rules.keys == ["NEW"])
+	}
+
+	@Test("old schema save completions preserve later session drafts and caches", arguments: ["account", "lock"], [false, true])
+	func schemaSaveSessionLifetime(transition: String, fails: Bool) async throws {
+		let (store, keychain, folder) = try await makeStore(#"{"vault":"project"}"#)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		try FileManager.default.createDirectory(atPath: folder + "/.lpm", withIntermediateDirectories: true)
+		let descriptor = open(folder + "/.lpm/.config.lock", O_RDWR | O_CREAT, 0o644)
+		try #require(descriptor >= 0)
+		defer { flock(descriptor, LOCK_UN); close(descriptor) }
+		#expect(flock(descriptor, LOCK_EX) == 0)
+		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) {
+			$0.setValue("committed", in: "default")
+			$0.setKeyDescription("Old session", saved: "")
+		}
+		let save = Task { try? await store.saveKeyDraft(id) }
+		try await waitUntil { keychain.envStorage["project"]?.environments["default"]?[id.key] == "committed" }
+		if transition == "lock" { store.lock(); store.isUnlocked = true } else {
+			store.selectedAccount = .org("other"); store.selectedAccount = .personal
+		}
+		let current = VaultProject(id: "project", name: "Project", path: folder, environments: environments)
+		store.projects = [current]
+		store.selectedProjectId = "project"
+		store.keyDrafts.edit(current, key: id.key) { $0.setValue("Fresh session", in: "default") }
+		let fresh = store.keyDrafts.draft(id)
+		if fails { try "{".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8) }
+		flock(descriptor, LOCK_UN)
+		await save.value
+		#expect(store.keyDrafts.draft(id) == fresh)
+		#expect(store.keyDescriptions.isEmpty)
+	}
+
+	@Test("retrying a schema rename respects an existing descriptionless destination")
+	func retrySchemaRenameWithExistingTarget() async throws {
+		let original = #"{"envSchema":{"vars":{"STRIPE_KEY":{"required":true,"description":"Old"},"NEW":{"required":true}}}}"#
+		let (store, _, folder) = try await makeStore(original)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) {
+			$0.name = "NEW"
+			$0.setKeyDescription("Mine", saved: "Old")
+		}
+		try "{".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		do { try await store.saveKeyDraft(id) } catch {}
+		let refreshed = original.replacingOccurrences(of: #""NEW":{"required":true}"#, with: #""NEW":{"required":true},"MARK":{}"#)
+		try refreshed.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		store.reloadKeyDescriptions()
+		try await waitUntil { store.keyDescriptions["project"]?.rules == .success(.init(keys: [id.key, "NEW", "MARK"], descriptions: [id.key: "Old"])) }
+		let moved = VaultKeyDraft.ID(projectID: "project", key: "NEW")
+		#expect(store.keyDrafts.draft(moved)?.hasConflict == false)
+		try await store.saveKeyDraft(moved)
+		#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "project").descriptions["NEW"] == "Mine")
+	}
+
+	@Test("a folder change prevents saves and completions from using the old cache", arguments: [false, true])
+	func schemaFolderChange(inFlight: Bool) async throws {
+		let (store, keychain, folder) = try await makeStore(#"{"envSchema":{"vars":{"STRIPE_KEY":{"description":"Old"}}}}"#)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		let other = folder + "/other"
+		try FileManager.default.createDirectory(atPath: other, withIntermediateDirectories: true)
+		let otherContents = #"{"envSchema":{"vars":{"STRIPE_KEY":{"description":"Other"}}}}"#
+		try otherContents.write(toFile: other + "/lpm.json", atomically: true, encoding: .utf8)
+		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) {
+			$0.setKeyDescription("Mine", saved: "Old")
+			if inFlight { $0.setValue("committed", in: "default") }
+		}
+		try FileManager.default.createDirectory(atPath: folder + "/.lpm", withIntermediateDirectories: true)
+		let descriptor = open(folder + "/.lpm/.config.lock", O_RDWR | O_CREAT, 0o644)
+		try #require(descriptor >= 0)
+		defer { flock(descriptor, LOCK_UN); close(descriptor) }
+		var save: Task<Void, Never>?
+		if inFlight {
+			#expect(flock(descriptor, LOCK_EX) == 0)
+			try #"{"envSchema":{"vars":{"STRIPE_KEY":{"description":"Theirs"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+			save = Task { try? await store.saveKeyDraft(id) }
+			try await waitUntil { keychain.envStorage["project"]?.environments["default"]?[id.key] == "committed" }
+		}
+		ProjectCLILink.rememberFolder(other, vaultId: "project", defaults: store.preferences)
+		if inFlight {
+			store.reloadKeyDescriptions()
+			try await waitUntil { store.keyDescriptions["project"]?.folder == other }
+			flock(descriptor, LOCK_UN)
+			await save?.value
+			#expect(store.keyDescriptions["project"]?.folder == other)
+		} else {
+			do { try await store.saveKeyDraft(id); Issue.record("Stale folder metadata must not save") } catch {}
+			#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "project").descriptions[id.key] == "Old")
+		}
+		#expect(try String(contentsOfFile: other + "/lpm.json", encoding: .utf8) == otherContents)
 	}
 
 	private func makeStore(_ lpmJSON: String) async throws -> (VaultStore, MockKeychainService, String) {

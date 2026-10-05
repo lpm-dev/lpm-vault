@@ -31,6 +31,24 @@ struct LPMConfigJSONTests {
 		#expect(document == .object([.init(key: "a", value: .number("3")), .init(key: "b", value: .number("2"))]))
 	}
 
+	@Test("distinct Unicode spellings survive unrelated JSON edits")
+	func distinctUnicodeKeys() throws {
+		var document = try LPMConfigJSON(parsing: Data(#"{"é":"first","e\u0301":"second","vault":"old"}"#.utf8))
+		document.set(.string("new"), forKey: "vault")
+		guard case .object(let members) = document else { Issue.record("Expected an object"); return }
+		#expect(members.count == 3)
+		#expect(document["é"] == .string("first"))
+		#expect(document["e\u{0301}"] == .string("second"))
+		document.set(.string("changed"), forKey: "e\u{0301}")
+		#expect(document["é"] == .string("first"))
+		document.renameKey("e\u{0301}", to: "decomposed")
+		#expect(document["é"] == .string("first"))
+		#expect(document.removeValue(forKey: "decomposed") == .string("changed"))
+		#expect(document["é"] == .string("first"))
+		#expect(LPMConfigJSON.string("é") != .string("e\u{0301}"))
+		#expect(LPMConfigJSON.object([.init(key: "é", value: .null)]) != .object([.init(key: "e\u{0301}", value: .null)]))
+	}
+
 	@Test("strict JSON only, like the CLI", arguments: [
 		#"{"a": 1,}"#, #"{"a": 1} // note"#, "{'a': 1}", #"{"a": 01}"#, #"{"a": "\ud800"}"#,
 		"{\"a\": \"line\nbreak\"}", #"{"a": "open"#, #"{"a": 1} {}"#, #"{"a": NaN}"#, #"{"a": 1.}"#, "",
@@ -45,6 +63,15 @@ struct LPMConfigJSONTests {
 		_ = try LPMConfigJSON(parsing: Data(accepted.utf8))
 		let rejected = String(repeating: "[", count: 129) + String(repeating: "]", count: 129)
 		#expect(throws: LPMConfigJSON.ParseError.tooDeep) { try LPMConfigJSON(parsing: Data(rejected.utf8)) }
+	}
+
+	@Test("rendering bounds escaped UTF-8 output and its trailing newline")
+	func boundedRendering() throws {
+		let document = LPMConfigJSON.object([.init(key: "unicode", value: .string("é🎉\n\u{1F}"))])
+		let expected = Data((document.rendered() + "\n").utf8)
+		#expect(try document.renderedData(maximumBytes: expected.count) == expected)
+		#expect(throws: LPMConfigJSON.RenderError.tooLarge) { try document.renderedData(maximumBytes: expected.count - 1) }
+		#expect(throws: LPMConfigJSON.RenderError.tooLarge) { try document.renderedData(maximumBytes: -1) }
 	}
 }
 
@@ -182,6 +209,17 @@ struct ProjectEnvSchemaFileTests {
 		flock(lock, LOCK_UN)
 		close(lock)
 		#expect(try await edit.value.get().descriptions == ["A": "Locked"])
+	}
+
+	@Test("expanded JSON is rejected without changing the original file")
+	func rejectsOversizedRendering() throws {
+		let original = "{\"extra\":" + String(repeating: "[", count: 126) + Array(repeating: "0", count: 100_000).joined(separator: ",") + String(repeating: "]", count: 126) + "}"
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: ProjectEnvSchemaFile.FileError.tooLarge) {
+			try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "New")), inFolder: folder, vaultID: vaultID)
+		}
+		#expect(try contents(folder) == original)
 	}
 
 	private func makeFolder(_ lpmJSON: String?) throws -> String {

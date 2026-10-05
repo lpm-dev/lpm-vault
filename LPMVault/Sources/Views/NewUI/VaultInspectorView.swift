@@ -530,7 +530,7 @@ private struct VaultKeyEditor: View {
 		let isSaving = draft?.isSaveInFlight == true
 		let canSave = draft?.canSave == true && issue == nil && store.canUseLocalSecrets
 		return VStack(alignment: .leading, spacing: 8) {
-			if let saveError {
+			if let saveError = draft?.saveError ?? saveError {
 				Text(saveError.localizedDescription)
 					.font(.system(size: 11))
 					.foregroundStyle(VaultPalette.redText)
@@ -669,12 +669,16 @@ private struct VaultKeyEditor: View {
 			Self.issue(for: draft, in: project) == nil, store.canUseLocalSecrets
 		else { return }
 		let renamedTo = draft.isRenamed ? draft.name : nil
+		let generation = store.keyDrafts.generation
 		saveError = nil
 		Task { @MainActor in
+			guard generation == store.keyDrafts.generation else { return }
 			do throws(VaultKeyEditError) {
 				try await store.saveKeyDraft(id)
+				guard generation == store.keyDrafts.generation else { return }
 				if let renamedTo { onRenamed(key, renamedTo) }
 			} catch {
+				guard generation == store.keyDrafts.generation else { return }
 				if case .description(_, keySaved: true) = error, let renamedTo { onRenamed(key, renamedTo) }
 				saveError = error
 			}

@@ -226,6 +226,47 @@ extension SheetInteractionTests {
 			#expect(keychain.applyVaultTransactionCallCount == 0)
 		}
 
+		@Test("a partial schema rename keeps its error visible under the saved name")
+		func partialRenameErrorStaysVisible() async throws {
+			let folder = FileManager.default.temporaryDirectory.appending(path: "inspector-partial-rename-\(UUID().uuidString)").path
+			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			try #"{"envSchema":{"vars":{"TOKEN":{"required":true}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+			let (store, _) = makeStore(["default": ["TOKEN": "dev"]], path: folder)
+			defer { store.lock() }
+			store.reloadKeyDescriptions()
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			#expect(try await host.waitUntil { store.keyDescriptions["inspector"] != nil })
+			try await host.settle()
+			try host.enterKey("NEW")
+			try "{".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+			try await host.click("Save")
+			#expect(try await host.waitForText("The key was saved"))
+			#expect(try await host.text().contains("lpm.json was not updated"))
+			#expect(try await host.text().contains("1 unsaved change"))
+		}
+
+		@Test("a deferred Save action cannot save a later account's draft")
+		func deferredSaveSessionLifetime() async throws {
+			let (store, keychain) = makeStore(["default": ["TOKEN": "dev"]])
+			defer { store.lock() }
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			try await host.settle()
+			try host.enterValue("Old session")
+			try await host.settle()
+			try host.returnWhileEditing("value", modifiers: [])
+			store.selectedAccount = .org("other")
+			store.selectedAccount = .personal
+			let id = VaultKeyDraft.ID(projectID: "inspector", key: "TOKEN")
+			store.keyDrafts.edit(try #require(store.selectedProject), key: "TOKEN") { $0.setValue("Fresh session", in: "default") }
+			let fresh = store.keyDrafts.draft(id)
+			try await host.settle()
+			#expect(store.keyDrafts.draft(id) == fresh)
+			#expect(keychain.applyVaultTransactionCallCount == 0)
+		}
+
 		private func makeStore(_ environments: [String: [String: String]], path: String = "") -> (VaultStore, MockKeychainService) {
 			let keychain = MockKeychainService()
 			keychain.envStorage["inspector"] = (name: "Inspector", path: path, environments: environments)

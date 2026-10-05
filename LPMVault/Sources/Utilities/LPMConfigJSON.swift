@@ -15,6 +15,22 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 	struct Member: Equatable, Sendable {
 		var key: String
 		var value: LPMConfigJSON
+
+		static func == (lhs: Self, rhs: Self) -> Bool {
+			lhs.key.utf8.elementsEqual(rhs.key.utf8) && lhs.value == rhs.value
+		}
+	}
+
+	static func == (lhs: Self, rhs: Self) -> Bool {
+		switch (lhs, rhs) {
+		case (.object(let a), .object(let b)): a == b
+		case (.array(let a), .array(let b)): a == b
+		case (.string(let a), .string(let b)): a.utf8.elementsEqual(b.utf8)
+		case (.number(let a), .number(let b)): a == b
+		case (.bool(let a), .bool(let b)): a == b
+		case (.null, .null): true
+		default: false
+		}
 	}
 
 	enum ParseError: Error, Equatable, Sendable {
@@ -33,20 +49,50 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 
 	/// The document as `serde_json::to_string_pretty` renders it, without a trailing newline.
 	func rendered() -> String {
-		var output = ""
-		render(into: &output, level: 0)
-		return output
+		var output = Output(maximumBytes: .max)
+		try! render(into: &output, level: 0)
+		return output.text
+	}
+
+	enum RenderError: Error, Equatable { case tooLarge }
+
+	/// UTF-8 JSON with a trailing newline, stopping before output exceeds the limit.
+	func renderedData(maximumBytes: Int) throws(RenderError) -> Data {
+		var output = Output(maximumBytes: maximumBytes)
+		try render(into: &output, level: 0)
+		try output.append("\n")
+		return Data(output.text.utf8)
+	}
+
+	private struct Output {
+		var text = ""
+		var byteCount = 0
+		let maximumBytes: Int
+
+		mutating func append(_ value: String) throws(RenderError) {
+			let count = value.utf8.count
+			guard count <= maximumBytes, byteCount <= maximumBytes - count else { throw .tooLarge }
+			byteCount += count
+			text += value
+		}
+
+		mutating func append(_ scalar: Unicode.Scalar) throws(RenderError) {
+			let count = scalar.value <= 0x7F ? 1 : scalar.value <= 0x7FF ? 2 : scalar.value <= 0xFFFF ? 3 : 4
+			guard count <= maximumBytes, byteCount <= maximumBytes - count else { throw .tooLarge }
+			byteCount += count
+			text.unicodeScalars.append(scalar)
+		}
 	}
 
 	subscript(key: String) -> LPMConfigJSON? {
 		guard case .object(let members) = self else { return nil }
-		return members.first { $0.key == key }?.value
+		return members.first { $0.key.utf8.elementsEqual(key.utf8) }?.value
 	}
 
 	/// Sets a member of an object, in place when the key exists and last otherwise.
 	mutating func set(_ value: LPMConfigJSON, forKey key: String) {
 		guard case .object(var members) = self else { return }
-		if let index = members.firstIndex(where: { $0.key == key }) {
+		if let index = members.firstIndex(where: { $0.key.utf8.elementsEqual(key.utf8) }) {
 			members[index].value = value
 		} else {
 			members.append(Member(key: key, value: value))
@@ -56,7 +102,7 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 
 	@discardableResult
 	mutating func removeValue(forKey key: String) -> LPMConfigJSON? {
-		guard case .object(var members) = self, let index = members.firstIndex(where: { $0.key == key }) else { return nil }
+		guard case .object(var members) = self, let index = members.firstIndex(where: { $0.key.utf8.elementsEqual(key.utf8) }) else { return nil }
 		let removed = members.remove(at: index).value
 		self = .object(members)
 		return removed
@@ -64,7 +110,7 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 
 	/// Renames an object member in place, keeping its position.
 	mutating func renameKey(_ key: String, to newKey: String) {
-		guard case .object(var members) = self, let index = members.firstIndex(where: { $0.key == key }) else { return }
+		guard case .object(var members) = self, let index = members.firstIndex(where: { $0.key.utf8.elementsEqual(key.utf8) }) else { return }
 		members[index].key = newKey
 		self = .object(members)
 	}
@@ -76,68 +122,67 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 
 	// MARK: - Rendering
 
-	private func render(into output: inout String, level: Int) {
+	private func render(into output: inout Output, level: Int) throws(RenderError) {
 		switch self {
 		case .object(let members):
 			guard !members.isEmpty else {
-				output += "{}"
+				try output.append("{}")
 				return
 			}
-			output += "{\n"
+			try output.append("{\n")
 			for (index, member) in members.enumerated() {
-				Self.indent(&output, level + 1)
-				Self.appendQuoted(member.key, to: &output)
-				output += ": "
-				member.value.render(into: &output, level: level + 1)
-				output += index == members.count - 1 ? "\n" : ",\n"
+				try Self.indent(&output, level + 1)
+				try Self.appendQuoted(member.key, to: &output)
+				try output.append(": ")
+				try member.value.render(into: &output, level: level + 1)
+				try output.append(index == members.count - 1 ? "\n" : ",\n")
 			}
-			Self.indent(&output, level)
-			output += "}"
+			try Self.indent(&output, level)
+			try output.append("}")
 		case .array(let elements):
 			guard !elements.isEmpty else {
-				output += "[]"
+				try output.append("[]")
 				return
 			}
-			output += "[\n"
+			try output.append("[\n")
 			for (index, element) in elements.enumerated() {
-				Self.indent(&output, level + 1)
-				element.render(into: &output, level: level + 1)
-				output += index == elements.count - 1 ? "\n" : ",\n"
+				try Self.indent(&output, level + 1)
+				try element.render(into: &output, level: level + 1)
+				try output.append(index == elements.count - 1 ? "\n" : ",\n")
 			}
-			Self.indent(&output, level)
-			output += "]"
-		case .string(let value): Self.appendQuoted(value, to: &output)
-		case .number(let raw): output += raw
-		case .bool(let value): output += value ? "true" : "false"
-		case .null: output += "null"
+			try Self.indent(&output, level)
+			try output.append("]")
+		case .string(let value): try Self.appendQuoted(value, to: &output)
+		case .number(let raw): try output.append(raw)
+		case .bool(let value): try output.append(value ? "true" : "false")
+		case .null: try output.append("null")
 		}
 	}
 
-	private static func indent(_ output: inout String, _ level: Int) {
-		output += String(repeating: "  ", count: level)
+	private static func indent(_ output: inout Output, _ level: Int) throws(RenderError) {
+		try output.append(String(repeating: "  ", count: level))
 	}
 
 	/// Escapes exactly what serde_json escapes: quotes, backslashes, and control characters.
-	private static func appendQuoted(_ value: String, to output: inout String) {
-		output += "\""
+	private static func appendQuoted(_ value: String, to output: inout Output) throws(RenderError) {
+		try output.append("\"")
 		for scalar in value.unicodeScalars {
 			switch scalar {
-			case "\"": output += "\\\""
-			case "\\": output += "\\\\"
-			case "\u{08}": output += "\\b"
-			case "\u{0C}": output += "\\f"
-			case "\n": output += "\\n"
-			case "\r": output += "\\r"
-			case "\t": output += "\\t"
+			case "\"": try output.append("\\\"")
+			case "\\": try output.append("\\\\")
+			case "\u{08}": try output.append("\\b")
+			case "\u{0C}": try output.append("\\f")
+			case "\n": try output.append("\\n")
+			case "\r": try output.append("\\r")
+			case "\t": try output.append("\\t")
 			case "\u{00}"..."\u{1F}":
 				let hex = String(scalar.value, radix: 16)
-				output += "\\u" + String(repeating: "0", count: 4 - hex.count) + hex
-			default: output.unicodeScalars.append(scalar)
+				try output.append("\\u" + String(repeating: "0", count: 4 - hex.count) + hex)
+			default: try output.append(scalar)
 			}
 		}
-		output += "\""
+		try output.append("\"")
 	}
-
 	// MARK: - Parsing
 
 	private struct Parser {
@@ -176,7 +221,7 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 			defer { depth -= 1 }
 			index += 1
 			var members: [Member] = []
-			var positions: [String: Int] = [:]
+			var positions: [Data: Int] = [:]
 			skipWhitespace()
 			if peek(UInt8(ascii: "}")) {
 				index += 1
@@ -190,10 +235,11 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 				try expect(UInt8(ascii: ":"))
 				let value = try self.value()
 				// Like serde_json's ordered map, a repeated key keeps its first position and its last value.
-				if let position = positions[key] {
+				let identity = Data(key.utf8)
+				if let position = positions[identity] {
 					members[position].value = value
 				} else {
-					positions[key] = members.count
+					positions[identity] = members.count
 					members.append(Member(key: key, value: value))
 				}
 				skipWhitespace()
