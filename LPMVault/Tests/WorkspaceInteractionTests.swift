@@ -154,7 +154,7 @@ extension SheetInteractionTests {
 			let headerRegion = CGRect(x: 0.27, y: 0.7, width: 0.43, height: 0.13)
 			let keyHeader = try await host.labelFrame("KEY", region: headerRegion)
 			let valueHeader = try await host.labelFrame("VALUE", region: headerRegion)
-			let keyRegion = CGRect(x: 0.27, y: 0.35, width: 0.22, height: 0.35)
+			let keyRegion = keyColumnRegion(header: keyHeader, size: host.view.bounds.size)
 			#expect(try await waitForKeyOrder(["ALPHA", "ZULU"], in: host, region: keyRegion))
 			let firstKey = try await keyFrame("ALPHA", in: host, region: keyRegion)
 			#expect(abs(keyHeader.minX - firstKey.minX) < 3)
@@ -188,6 +188,18 @@ extension SheetInteractionTests {
 				]
 			#expect(keysFromTop(["ALPHA", "ZULU"], lines: lines).isEmpty)
 			#expect(keysFromTop(["ZULU", "ALPHA"], lines: lines).isEmpty)
+		}
+
+		@Test("key recognition covers rows below the rendered header and excludes the footer", arguments: [NSSize(width: 1040, height: 700), NSSize(width: 1600, height: 800)])
+		func keyRecognitionFollowsHeader(size: NSSize) {
+			let header = CGRect(x: 301, y: size.height - 150, width: 30, height: 12)
+			let region = keyColumnRegion(header: header, size: size)
+			for rowY in [header.minY - 42, CGFloat(44)] {
+				let row = CGRect(x: 301 / size.width, y: rowY / size.height, width: 45 / size.width, height: 13 / size.height)
+				#expect(region.contains(row))
+			}
+			#expect(!region.contains(CGPoint(x: header.midX / size.width, y: header.midY / size.height)))
+			#expect(!region.contains(CGPoint(x: header.midX / size.width, y: 15 / size.height)))
 		}
 
 		@Test("an edit whose environment disappears stays in its card until discarded", arguments: ["environment", "rename"])
@@ -528,15 +540,18 @@ extension SheetInteractionTests {
 			}
 		}
 
+		private func keyColumnRegion(header: CGRect, size: NSSize) -> CGRect {
+			CGRect(x: (header.minX - 4) / size.width, y: VaultMetrics.statusBar / size.height,
+				width: (VaultMetrics.keyColumn - 20) / size.width, height: (header.minY - VaultMetrics.statusBar) / size.height)
+		}
+
 		private func waitForKeyOrder<V: View>(_ expected: [String], in host: SheetTestHost<V>, region: CGRect? = nil) async throws -> Bool {
 			let keyRegion: CGRect
 			if let region {
 				keyRegion = region
 			} else {
 				let header = try await host.labelFrame("KEY", region: CGRect(x: 0.15, y: 0.75, width: 0.5, height: 0.1))
-				let size = host.view.bounds.size
-				keyRegion = CGRect(x: (header.minX - 4) / size.width, y: VaultMetrics.statusBar / size.height,
-					width: (VaultMetrics.keyColumn - 20) / size.width, height: (header.minY - VaultMetrics.statusBar) / size.height)
+				keyRegion = keyColumnRegion(header: header, size: host.view.bounds.size)
 			}
 			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
 			while true {
