@@ -4280,7 +4280,7 @@ final class VaultStore {
             finishSyncIfOwned(authority)
             return
           }
-          schema = await syncSchema(for: pushedProject)
+          schema = try await syncSchema(for: pushedProject)
           preparedPayload = true
         }
         guard let plaintext else {
@@ -5289,7 +5289,7 @@ final class VaultStore {
       finishSyncIfOwned(authority)
       return .failed
     }
-    let schema = await syncSchema(for: pushedProject)
+    let schema = try await syncSchema(for: pushedProject)
     guard await hasCurrentSyncAuth(authority) else {
       finishSyncIfOwned(authority)
       return .failed
@@ -6139,12 +6139,12 @@ final class VaultStore {
     }
   }
 
-  private func syncSchema(for project: VaultProject) async -> LPMJSONValue? {
+  private func syncSchema(for project: VaultProject) async throws -> LPMJSONValue? {
     let path = project.path
     guard !path.isEmpty else { return nil }
-    return await Task.detached(priority: .userInitiated) {
-      let configURL = URL(fileURLWithPath: path).appendingPathComponent("lpm.json")
-      guard case .object(let root) = ProjectConfigFile.readJSON(at: configURL) else {
+    let projectID = project.id
+    return try await Task.detached(priority: .userInitiated) {
+      guard case .object(let root)? = try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: path, vaultID: projectID) else {
         return nil
       }
 

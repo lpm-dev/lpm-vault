@@ -17,7 +17,7 @@ struct LPMConfigJSONTests {
 		let document = try LPMConfigJSON(parsing: fixture("lpm-json-edit-input.json"))
 		let change = ProjectEnvSchemaFile.Change(
 			rename: .init(from: "OLD_NAME", to: "NEW_NAME"),
-			description: .init(key: "API_KEY", text: "Stripe key \"live\"\\n\u{1F}é 🎉 </x>")
+			description: .init(key: "API_KEY", text: "Stripe key \"live\"\\n\té 🎉 </x>")
 		)
 		let updated = try ProjectEnvSchemaFile.applying(change, to: document)
 		let expected = try #require(String(data: fixture("lpm-json-edit-expected.json"), encoding: .utf8))
@@ -78,6 +78,70 @@ struct LPMConfigJSONTests {
 @Suite("lpm.json key descriptions", .serialized)
 struct ProjectEnvSchemaFileTests {
 	private let vaultID = "3f2b8c1e-4d5a-4f6b-9c7d-8e9f0a1b2c3d"
+
+	@Test("description edits reject duplicate declarations without changing the file")
+	func duplicateDeclarationsAreNotNormalized() throws {
+		let original = #"{"envSchema":{"vars":{"A":{"required":true},"A":{"description":"old"}}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: (any Error).self) {
+			try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "new")), inFolder: folder, vaultID: vaultID)
+		}
+		#expect(try contents(folder) == original)
+	}
+
+	@Test("forbidden secret literals cannot pass through description edits", arguments: ["default", "enum"])
+	func secretLiteralsRejectEdits(field: String) throws {
+		let value = field == "enum" ? #"["private-fixture-value"]"# : #""private-fixture-value""#
+		let original = #"{"envSchema":{"vars":{"A":{"secret":true,"\#(field)":\#(value)}}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) {
+			try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "new")), inFolder: folder, vaultID: vaultID)
+		}
+		#expect(try contents(folder) == original)
+	}
+
+	@Test("description edits reject unsafe controls without changing the file", arguments: ["\u{0}", "\u{1F}", "\u{7F}", "\u{85}"])
+	func unsafeDescriptionControlsRejectEdits(control: String) throws {
+		let original = #"{"envSchema":{"vars":{"A":{}}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) {
+			try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "before" + control + "after")), inFolder: folder, vaultID: vaultID)
+		}
+		#expect(try contents(folder) == original)
+	}
+
+	@Test("sync rejects forbidden secret literals before constructing plaintext metadata")
+	func syncConfigRejectsSecretLiterals() throws {
+		let folder = try makeFolder(#"{"envSchema":{"vars":{"TOKEN":{"secret":true,"default":"private-fixture-value"}}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) {
+			try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder, vaultID: vaultID)
+		}
+	}
+
+	@Test("sync projects metadata without decoding unrelated manifest numbers")
+	func syncConfigProjectsMetadata() throws {
+		let original = #"{"unrelated":{"number":1e400},"envSchema":{"vars":{"MESSAGE":{"description":"public"}}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let config = try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder, vaultID: vaultID)
+		#expect(config == .object(["envSchema": .object(["vars": .object(["MESSAGE": .object(["description": .string("public")])])])]))
+		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8) == original)
+	}
+
+	@Test("sync retains supported public metadata and rejects a changed project binding")
+	func syncConfigChecksBindingAndRetainsPublicFields() throws {
+		let folder = try makeFolder(#"{"vault":"\#(vaultID)","envSchema":{"vars":{"MESSAGE":{"default":"first\nsecond","description":"a\tb"}}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let config = try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder, vaultID: vaultID)
+		#expect(config != nil)
+		#expect(throws: ProjectEnvSchemaFile.FileError.linkedToOtherVault) {
+			try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder, vaultID: "another-project")
+		}
+	}
 
 	@Test("reads each key's rule and description")
 	func readsRules() throws {

@@ -108,6 +108,7 @@ enum ProjectConfigFile {
 	static func update<T>(
 		at url: URL,
 		fileWriter: FileWriter = writeSecurely,
+		rejectDuplicateKeys: Bool = false,
 		_ change: (inout LPMConfigJSON) throws -> T
 	) throws -> T {
 		try withConfigLock(in: url.deletingLastPathComponent()) {
@@ -119,7 +120,7 @@ enum ProjectConfigFile {
 			}
 			var document = LPMConfigJSON.object([])
 			if let original {
-				guard let parsed = try? LPMConfigJSON(parsing: original), case .object = parsed else {
+				guard let parsed = try? LPMConfigJSON(parsing: original, rejectDuplicateKeys: rejectDuplicateKeys), case .object = parsed else {
 					throw FileError.invalidJSON
 				}
 				document = parsed

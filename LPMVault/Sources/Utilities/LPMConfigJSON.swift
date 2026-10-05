@@ -42,8 +42,8 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 	/// serde_json's default recursion limit.
 	private static let maximumDepth = 128
 
-	init(parsing data: Data) throws(ParseError) {
-		var parser = Parser(bytes: [UInt8](data))
+	init(parsing data: Data, rejectDuplicateKeys: Bool = false) throws(ParseError) {
+		var parser = Parser(bytes: [UInt8](data), rejectDuplicateKeys: rejectDuplicateKeys)
 		self = try parser.document()
 	}
 
@@ -187,11 +187,13 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 
 	private struct Parser {
 		let bytes: [UInt8]
+		let rejectDuplicateKeys: Bool
 		var index = 0
 		var depth = 0
 
-		init(bytes: [UInt8]) {
+		init(bytes: [UInt8], rejectDuplicateKeys: Bool) {
 			self.bytes = bytes
+			self.rejectDuplicateKeys = rejectDuplicateKeys
 			if bytes.starts(with: [0xEF, 0xBB, 0xBF]) { index = 3 }
 		}
 
@@ -237,6 +239,7 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 				// Like serde_json's ordered map, a repeated key keeps its first position and its last value.
 				let identity = Data(key.utf8)
 				if let position = positions[identity] {
+					if rejectDuplicateKeys { throw .invalid(offset: index) }
 					members[position].value = value
 				} else {
 					positions[identity] = members.count
