@@ -4,6 +4,7 @@ import SwiftUI
 struct VaultWorkspaceView: View {
 	@Bindable var store: VaultStore
 	@Environment(\.vaultContentObscured) private var isObscured
+	@Environment(\.vaultCopyFeedbackTimer) private var copyFeedbackTimer
 
 	@State private var mode: VaultWorkspaceMode = .matrix
 	@State private var filter: VaultWorkspaceFilter = .all
@@ -83,7 +84,7 @@ struct VaultWorkspaceView: View {
 		}
 		.task(id: copyFeedback?.id) {
 			guard let feedbackID = copyFeedback?.id else { return }
-			do { try await Task.sleep(for: .seconds(2)) } catch { return }
+			do { try await copyFeedbackTimer.wait() } catch { return }
 			guard !Task.isCancelled, copyFeedback?.id == feedbackID else { return }
 			copyFeedback = nil
 		}
