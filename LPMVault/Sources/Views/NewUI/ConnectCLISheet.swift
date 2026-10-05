@@ -265,6 +265,13 @@ struct ConnectCLISheet: View {
 		VStack(alignment: .leading, spacing: 6) {
 			Text(writeFileExplanation)
 				.foregroundStyle(VaultPalette.terminalText)
+			if case .linkedToOtherVault(let other) = status, let linked = store.openableProject(id: other) {
+				TerminalBarButton(title: "Open \(linked.name)", systemImage: "arrow.right.circle") {
+					store.openProject(id: linked.id)
+					dismiss()
+				}
+				.disabled(isLinking)
+			}
 			if let linkError {
 				Text(linkError.localizedDescription)
 					.foregroundStyle(Color(hex: 0xFF847D))
@@ -280,7 +287,11 @@ struct ConnectCLISheet: View {
 		case .linked:
 			"lpm.json in this folder already links this vault."
 		case .linkedToOtherVault(let other):
-			"lpm.json links vault \(Self.shortID(other)). Replacing it points the CLI at this vault instead."
+			if let linked = store.openableProject(id: other) {
+				"lpm.json links \(linked.name) (vault \(Self.shortID(other))). Open it, or replace the link to point the CLI at this vault instead."
+			} else {
+				"lpm.json links vault \(Self.shortID(other)), which is not on this Mac. Replacing it points the CLI at this vault instead."
+			}
 		case .notLinked:
 			"Adds \"vault\" to lpm.json and keeps your other settings. Creates the file if it does not exist."
 		case .unreadable:

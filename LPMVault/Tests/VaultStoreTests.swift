@@ -553,7 +553,7 @@ struct VaultStoreTests {
 	func createdProjectPolicySurvivesImmediateNavigation() async {
 		let (store, _, _, _) = makeStore()
 		store.isUnlocked = true
-		#expect(await store.addProjectWithVaultId(vaultId: "created", name: "Created", path: "", environments: ["default": [:]]))
+		#expect(await store.addProjectWithVaultId(vaultId: "created", name: "Created", environments: ["default": [:]]))
 		store.selectedProjectId = nil
 		#expect(store.projectCliAccess["created"] == .automatic)
 	}
@@ -687,7 +687,6 @@ struct VaultStoreTests {
 			let added = await store.addProjectWithVaultId(
 				vaultId: id,
 				name: "reserved",
-				path: "",
 				environments: ["default": [:]]
 			)
 			#expect(!added)
