@@ -3159,12 +3159,7 @@ final class VaultStore {
     }
 
     let projectID = id.projectID
-    let change = schemaChange
-    let result = await Task.detached(priority: .userInitiated) {
-      Result { () throws(ProjectEnvSchemaFile.FileError) in
-        try ProjectEnvSchemaFile.apply(change, inFolder: schemaFolder, vaultID: projectID)
-      }
-    }.value
+    let result = await ProjectEnvSchemaFile.save(schemaChange, inFolder: schemaFolder, vaultID: projectID)
     switch result {
     case .success(let rules):
       keyDrafts.finishSave(id, succeeded: true, projects: projects)
@@ -3203,11 +3198,7 @@ final class VaultStore {
     let session = vaultSessionGeneration
     let account = selectedAccount
     keyDescriptionsTask = Task { [weak self] in
-      let rules = await Task.detached(priority: .userInitiated) {
-        Result { () throws(ProjectEnvSchemaFile.FileError) in
-          try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: projectID)
-        }
-      }.value
+      let rules = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: projectID)
       guard let self, !Task.isCancelled, isUnlocked, session == vaultSessionGeneration, selectedAccount == account
       else { return }
       publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, rules: rules), for: projectID)

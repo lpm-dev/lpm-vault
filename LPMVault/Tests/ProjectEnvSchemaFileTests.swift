@@ -174,14 +174,14 @@ struct ProjectEnvSchemaFileTests {
 		try #require(lock >= 0)
 		#expect(flock(lock, LOCK_EX) == 0)
 		let vaultID = vaultID
-		let edit = Task.detached {
-			try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "Locked")), inFolder: folder, vaultID: vaultID)
+		let edit = Task {
+			await ProjectEnvSchemaFile.save(.init(description: .init(key: "A", text: "Locked")), inFolder: folder, vaultID: vaultID)
 		}
 		try await Task.sleep(for: .milliseconds(200))
 		#expect(try contents(folder) == #"{"vault": "\#(vaultID)"}"#)
 		flock(lock, LOCK_UN)
 		close(lock)
-		#expect(try await edit.value.descriptions == ["A": "Locked"])
+		#expect(try await edit.value.get().descriptions == ["A": "Locked"])
 	}
 
 	private func makeFolder(_ lpmJSON: String?) throws -> String {
