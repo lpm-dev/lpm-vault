@@ -26,6 +26,23 @@ struct ProjectCLILinkTests {
 		return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
 	}
 
+	@Test("one CLI snapshot ignores unrelated extreme numbers")
+	func inspectionProjectsOnlyEnvironmentConfiguration() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig(
+			#"{"vault":"\#(vaultId)","custom":1e4000,"env":{"build":".env.production"},"environments":{"production":{"file":".env.production"}}}"#,
+			in: folder)
+		let snapshot = ProjectCLILink.inspect(vaultId: vaultId, folder: folder.path)
+		#expect(snapshot.status == .linked)
+		guard case .loaded(.object(let document)) = snapshot.configuration else {
+			Issue.record("snapshot configuration missing"); return
+		}
+		#expect(document["custom"] == nil)
+		#expect(document["env"] != nil)
+		#expect(document["environments"] != nil)
+	}
+
 	@Test("a project without a folder on this Mac has no link")
 	func noFolder() {
 		#expect(ProjectCLILink.status(vaultId: vaultId, folder: "") == .noFolder)

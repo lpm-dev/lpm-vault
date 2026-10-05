@@ -124,6 +124,82 @@ struct ProjectEnvSchemaFileTests {
 		}
 	}
 
+	@Test("scope metadata survives description edits and sync")
+	func scopeMetadataSurvivesEditsAndSync() throws {
+		let original =
+			#"{"envSchema":{"vars":{"COUNT":{"format":"integer","requiredIn":[{"environment":["production"],"stage":["build"],"service":["api"]}],"defaultsIn":[{"when":{"stage":["test"]},"value":"2"}]}}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		_ = try ProjectEnvSchemaFile.apply(
+			.init(description: .init(key: "COUNT", text: "Count")), inFolder: folder, vaultID: vaultID)
+		let config = try #require(
+			try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder, vaultID: vaultID))
+		guard case .object(let root) = config,
+			case .object(let wire) = ProjectEnvSchemaFile.pushMetadata(from: root),
+			case .object(let rules)? = wire["envSchema"], case .object(let rule)? = rules["COUNT"]
+		else { Issue.record("scope metadata missing"); return }
+		#expect(rule["requiredIn"] != nil)
+		#expect(rule["defaultsIn"] != nil)
+		#expect(rule["description"] == .string("Count"))
+		let document = try LPMConfigJSON(parsing: Data(original.utf8))
+		let edited = try LPMConfigJSON(parsing: Data(contents(folder).utf8))
+		#expect(
+			edited["envSchema"]?["vars"]?["COUNT"]?["requiredIn"]
+				== document["envSchema"]?["vars"]?["COUNT"]?["requiredIn"])
+		#expect(
+			edited["envSchema"]?["vars"]?["COUNT"]?["defaultsIn"]
+				== document["envSchema"]?["vars"]?["COUNT"]?["defaultsIn"])
+	}
+
+	@Test(
+		"malformed or ambiguous scopes reject edits without writing",
+		arguments: [
+			#"{"requiredIn":null}"#, #"{"requiredIn":[{}]}"#, #"{"requiredIn":[{"stage":[]}]}"#,
+			#"{"requiredIn":[{"stage":["unknown"]}]}"#, #"{"requiredIn":[{"environment":["../outside"]}]}"#,
+			#"{"requiredIn":[{"service":["api\u001f"]}]}"#,
+			#"{"defaultsIn":[{"when":{"stage":["build"]},"value":"1"},{"when":{"environment":["production"]},"value":"2"}]}"#,
+			#"{"secret":true,"defaultsIn":[{"when":{"stage":["build"]},"value":"private-fixture"}]}"#,
+		])
+	func malformedScopesPreserveFile(rule: String) throws {
+		let original = #"{"envSchema":{"vars":{"VALUE":\#(rule)}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) {
+			try ProjectEnvSchemaFile.apply(
+				.init(description: .init(key: "VALUE", text: "Changed")), inFolder: folder,
+				vaultID: vaultID)
+		}
+		#expect(try contents(folder) == original)
+	}
+
+	@Test("global scope budgets reject valid individual rules", arguments: [false, true])
+	func aggregateScopeLimitsRejectBeforeSync(atoms: Bool) throws {
+		let count = atoms ? 257 : 129
+		let names = (0..<32).map { "\"name\($0)\"" }.joined(separator: ",")
+		let selectors =
+			atoms
+			? #"{"environment":[\#(names)],"service":[\#(names)],"stage":["development","build","runtime","ci","test"]}"#
+			: (0..<32).map { #"{"environment":["name\#($0)"]}"# }.joined(separator: ",")
+		let rules = (0..<count).map { #""VALUE_\#($0)":{"requiredIn":[\#(selectors)]}"# }.joined(separator: ",")
+		let original = #"{"envSchema":{"vars":{\#(rules)}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) {
+			try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder, vaultID: vaultID)
+		}
+	}
+
+	@Test("scope identity treats omitted stage as all stages")
+	func omittedStageMatchesAllStages() throws {
+		let original =
+			#"{"envSchema":{"vars":{"VALUE":{"requiredIn":[{"environment":["production"]},{"environment":["production"],"stage":["development","build","runtime","ci","test"]}]}}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) {
+			try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder, vaultID: vaultID)
+		}
+	}
+
 	@Test("description edits reject duplicate declarations without changing the file")
 	func duplicateDeclarationsAreNotNormalized() throws {
 		let original = #"{"envSchema":{"vars":{"A":{"required":true},"A":{"description":"old"}}}}"#
@@ -462,6 +538,23 @@ struct ProjectEnvSchemaFileTests {
 	func exactConstraintEndpointsAndMultilineEqualityAreSupported() throws {
 		let document = try LPMConfigJSON(parsing: Data(#"{"envSchema":{"vars":{"N":{"format":"integer","min":-9223372036854775808,"max":9223372036854775807},"SOURCE":{"default":"first\nsecond"},"TARGET":{"requiredWhen":{"variable":"SOURCE","equals":"first\nsecond"}}}}}"#.utf8))
 		#expect(try ProjectEnvSchemaFile.rules(of: document).keys == ["N", "SOURCE", "TARGET"])
+	}
+
+	@Test("sync aliases retain nested paths and declared environment precedence")
+	func syncAliasesRetainNestedPathsAndPrecedence() throws {
+		let folder = try makeFolder(
+			#"{"env":{"show":"config/show.env","staging":".env.production"},"environments":{"staging":{"file":"config/staging.env"}}}"#
+		)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		guard
+			case .object(let root)? = try ProjectEnvSchemaFile.validatedSyncConfig(
+				inFolder: folder, vaultID: vaultID)
+		else { Issue.record("Missing metadata"); return }
+		let wire = try LPMConfigJSON(
+			parsing: JSONEncoder().encode(ProjectEnvSchemaFile.pushMetadata(from: root)))
+		#expect(wire["envConfig"]?["show"]?["canonical"] == .string("show"))
+		#expect(wire["envConfig"]?["show"]?["file"] == .string("config/show.env"))
+		#expect(wire["envConfig"]?["staging"]?["canonical"] == .string("staging"))
 	}
 
 }

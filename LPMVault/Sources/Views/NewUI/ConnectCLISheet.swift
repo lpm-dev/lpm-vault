@@ -321,7 +321,9 @@ struct ConnectCLISheet: View {
 				Text(warning).font(.system(size: 11)).foregroundStyle(VaultPalette.orange)
 					.fixedSize(horizontal: false, vertical: true)
 			}
-			Text("Explicit selection overrides script settings. An empty environment falls back to default when running scripts. Linking does not install the CLI.")
+			Text(
+				"Explicit selection overrides script settings. Choose a configured environment or its script alias when running commands. Linking does not install the CLI."
+			)
 				.font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
 		}
@@ -397,13 +399,8 @@ struct ConnectCLISheet: View {
 		let folder = folder
 		statusTask = Task {
 			let (resolved, config) = await Task.detached(priority: .userInitiated) {
-				let status = ProjectCLILink.status(vaultId: vaultId, folder: folder)
-				let config: ProjectCLIConfiguration
-				switch status {
-				case .linked, .notLinked, .linkedToOtherVault: config = ProjectCLILink.configuration(inFolder: folder)
-				case .noFolder, .unreadable: config = .unverified
-				}
-				return (status, config)
+				let snapshot = ProjectCLILink.inspect(vaultId: vaultId, folder: folder)
+				return (snapshot.status, snapshot.configuration)
 			}.value
 			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
 			status = resolved

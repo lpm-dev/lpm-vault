@@ -240,6 +240,24 @@ enum ProjectEnvSchemaFile {
 		}
 		let vars = schema["vars"] ?? .object([])
 		guard case .object(let members) = vars, members.count <= 4096 else { throw .invalidSchema }
+		var selectors = 0
+		var atoms = 0
+		for member in members {
+			for field in ["requiredIn", "defaultsIn"] {
+				guard case .array(let values)? = member.value[field] else { continue }
+				selectors += values.count
+				guard selectors <= 4096 else { throw .invalidSchema }
+				for value in values {
+					let selector = field == "defaultsIn" ? value["when"] : value
+					for dimension in ["environment", "stage", "service"] {
+						if case .array(let values)? = selector?[dimension] {
+							atoms += values.count
+						}
+					}
+					guard atoms <= 16384 else { throw .invalidSchema }
+				}
+			}
+		}
 		var rules = Rules()
 		for member in members {
 			try validateRule(member.value, name: member.key)
@@ -266,7 +284,10 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
-	private static let allowedRuleFields: Set<String> = ["required", "format", "pattern", "enum", "default", "secret", "client", "description", "empty", "ci", "min", "max", "minLength", "maxLength", "protocols", "requiredWhen"]
+	private static let allowedRuleFields: Set<String> = [
+		"required", "format", "pattern", "enum", "default", "secret", "client", "description", "empty", "ci",
+		"min", "max", "minLength", "maxLength", "protocols", "requiredWhen", "requiredIn", "defaultsIn",
+	]
 
 	private static func portableName(_ name: String) -> Bool {
 		let bytes = name.utf8
@@ -303,7 +324,81 @@ enum ProjectEnvSchemaFile {
 			}) else { throw .invalidSchema }
 		}
 		try validateConstraints(rule)
+		try validateScopes(rule)
 		if rule["secret"] == .bool(true), ["default", "enum"].contains(where: { rule[$0] != nil && rule[$0] != .null }) { throw .invalidSchema }
+	}
+
+	private struct Selector: Equatable {
+		var environment: Set<String>?
+		var stage: Set<String>? = ["development", "build", "runtime", "ci", "test"]
+		var service: Set<String>?
+		func overlaps(_ other: Self) -> Bool {
+			for (first, second) in [
+				(environment, other.environment), (stage, other.stage), (service, other.service),
+			] {
+				if let first, let second, first.isDisjoint(with: second) { return false }
+			}
+			return true
+		}
+	}
+	private static func selector(_ value: LPMConfigJSON) throws(FileError) -> Selector {
+		guard case .object(let fields) = value, !fields.isEmpty,
+			fields.allSatisfy({ ["environment", "stage", "service"].contains($0.key) })
+		else { throw .invalidSchema }
+		var selector = Selector()
+		for field in fields {
+			guard case .array(let values) = field.value, !values.isEmpty,
+				values.count <= (field.key == "stage" ? 5 : 32)
+			else { throw .invalidSchema }
+			var names = Set<String>(minimumCapacity: values.count)
+			for value in values {
+				guard case .string(let name) = value, names.insert(name).inserted else {
+					throw .invalidSchema
+				}
+				if field.key == "stage" {
+					guard ["development", "build", "runtime", "ci", "test"].contains(name) else {
+						throw .invalidSchema
+					}
+				} else {
+					guard EnvValidation.isValidEnvironmentName(name) else { throw .invalidSchema }
+				}
+			}
+			switch field.key {
+			case "environment": selector.environment = names;
+			case "stage": selector.stage = names;
+			default: selector.service = names
+			}
+		}
+		return selector
+	}
+	private static func validateScopes(_ rule: LPMConfigJSON) throws(FileError) {
+		if let required = rule["requiredIn"] {
+			guard case .array(let values) = required, values.count <= 32 else { throw .invalidSchema }
+			var selectors: [Selector] = []
+			selectors.reserveCapacity(values.count)
+			for value in values {
+				let value = try selector(value);
+				guard !selectors.contains(value) else { throw .invalidSchema }; selectors.append(value)
+			}
+		}
+		if let defaults = rule["defaultsIn"] {
+			guard case .array(let values) = defaults, values.count <= 32 else { throw .invalidSchema }
+			guard rule["secret"] != .bool(true) || values.isEmpty else { throw .invalidSchema }
+			var selectors: [Selector] = []
+			selectors.reserveCapacity(values.count)
+			for value in values {
+				guard case .object(let fields) = value, fields.count == 2,
+					fields.allSatisfy({ ["when", "value"].contains($0.key) }),
+					let when = value["when"], case .string(let text)? = value["value"],
+					safeMetadataText(text)
+				else { throw .invalidSchema }
+				let parsedSelector = try selector(when)
+				guard !selectors.contains(where: { $0.overlaps(parsedSelector) }) else {
+					throw .invalidSchema
+				}
+				selectors.append(parsedSelector)
+			}
+		}
 	}
 
 	private static func integerBound(_ value: LPMConfigJSON?) throws(FileError) -> Int64? {
@@ -437,13 +532,20 @@ enum ProjectEnvSchemaFile {
       }
       if case .object(let env) = root["env"] {
         var envConfig: [String: LPMJSONValue] = [:]
+			let declared: [String: LPMJSONValue]
+			if case .object(let values)? = root["environments"] {
+				declared = values
+			} else {
+				declared = [:]
+			}
         for (alias, value) in env {
           guard case .string(let envPath) = value else { continue }
-          guard envPath.hasPrefix(".env."), envPath.count > ".env.".count else {
-            continue
-          }
+				let canonical =
+					declared[alias] != nil
+					? alias
+					: envPath.hasPrefix(".env.") ? String(envPath.dropFirst(".env.".count)) : alias
           envConfig[alias] = .object([
-            "canonical": .string(String(envPath.dropFirst(".env.".count))),
+					"canonical": .string(canonical),
             "file": .string(envPath),
           ])
         }

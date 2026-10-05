@@ -6177,8 +6177,8 @@ final class VaultStore {
     }
   }
 
-  private func syncSchema(for project: VaultProject) async throws -> LPMJSONValue? {
-    let path = project.path
+	func syncSchema(for project: VaultProject) async throws -> LPMJSONValue? {
+		let path = keyDescriptionFolder(for: project)
     guard !path.isEmpty else { return nil }
     let projectID = project.id
     return try await Task.detached(priority: .userInitiated) {
