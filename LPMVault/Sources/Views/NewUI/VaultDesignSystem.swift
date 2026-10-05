@@ -44,6 +44,7 @@ enum VaultPalette {
 	static let rowSelected = adaptive(light: 0xF6F5FD, dark: 0x292929)
 	static let rowHover = adaptive(light: 0xFAFAFC, dark: 0x232323)
 	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x232323)
+	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x292929)
 	static let sidebarHover = adaptive(light: 0xEEEDF3, dark: 0x292929)
 	static let selectedEnvHeader = adaptive(light: 0xF3F1FF, dark: 0x29263D)
 	static let selectedEnvCell = adaptive(light: 0xFAF9FF, dark: 0x211F2E)

@@ -26,6 +26,7 @@ struct VaultContentView: View {
 	@Binding var mode: VaultWorkspaceMode
 	@Binding var filter: VaultWorkspaceFilter
 	@Binding var environmentViewMode: VaultEnvironmentViewMode
+	@Binding var sortOrder: VaultKeySortOrder
 	let searchText: String
 	@Binding var selectedKey: String?
 	@Binding var revealedKeys: Set<String>
@@ -54,6 +55,7 @@ struct VaultContentView: View {
 			mode: mode,
 			filter: filter,
 			searchText: searchText,
+			sortOrder: sortOrder,
 			revealedKeys: canUseSecrets ? revealedKeys : []
 		)
 		VStack(spacing: 0) {
@@ -269,7 +271,8 @@ struct VaultContentView: View {
 						VaultMatrixHeader(
 							environments: environments,
 							selectedEnvironment: selectedEnvironment,
-							environmentColumnWidth: environmentColumnWidth
+							environmentColumnWidth: environmentColumnWidth,
+							sortOrder: $sortOrder
 						)
 						.background(VaultPalette.headerRow)
 						.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
@@ -314,7 +317,7 @@ struct VaultContentView: View {
 							}
 						}
 					} header: {
-						VaultEnvironmentHeader()
+						VaultEnvironmentHeader(sortOrder: $sortOrder)
 							.background(VaultPalette.headerRow)
 							.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
 					}
@@ -340,27 +343,24 @@ struct VaultContentView: View {
 		}
 	}
 
+	/// A narrow bar drops the sort order first, which the KEY header also shows,
+	/// then the details the filter chips and row badges also show. The key count
+	/// and unsaved changes always stay.
 	private func statusBar(_ derived: VaultContentDerivation) -> some View {
-		HStack(spacing: 12) {
-			if case .matrix = mode {
-				Text("\(derived.filteredKeys.count) of \(Self.count(derived.allKeys.count, "key")) shown")
-				Text("·")
-				Text("\(snapshot.driftingKeyCount) drifting")
-				Text("·")
-				Text("\(snapshot.missingKeyCount) missing")
-			} else {
-				Text(Self.count(derived.environmentKeys.count, "key"))
-				Text("·")
-				Text("\(derived.environmentDriftingKeyCount) differ across environments")
-				Text("·")
-				Text("encrypted locally")
-			}
-			if !editedKeys.isEmpty {
-				Text("·")
-				Text(editedKeys.count == 1 ? "1 key with unsaved changes" : "\(editedKeys.count) keys with unsaved changes")
-					.foregroundStyle(VaultPalette.orangeTintText)
-			}
-			Spacer(minLength: 0)
+		let count = Text(mode == .matrix
+			? "\(derived.filteredKeys.count) of \(Self.count(derived.allKeys.count, "key")) shown"
+			: Self.count(derived.environmentKeys.count, "key"))
+		let sort = Text("sorted \(sortOrder.title)").accessibilityLabel("sorted \(sortOrder.spokenTitle)")
+		let details = mode == .matrix
+			? [Text("\(snapshot.driftingKeyCount) drifting"), Text("\(snapshot.missingKeyCount) missing")]
+			: [Text("\(derived.environmentDriftingKeyCount) differ across environments"), Text("encrypted locally")]
+		let unsaved = editedKeys.isEmpty
+			? nil
+			: (editedKeys.count == 1 ? "1 key with unsaved changes" : "\(editedKeys.count) keys with unsaved changes")
+		return ViewThatFits(in: .horizontal) {
+			statusLine([count, sort] + details, unsaved: unsaved)
+			statusLine([count] + details, unsaved: unsaved)
+			statusLine([count], unsaved: unsaved)
 		}
 		.font(.system(size: 11))
 		.foregroundStyle(VaultPalette.textTertiary)
@@ -368,6 +368,20 @@ struct VaultContentView: View {
 		.padding(.horizontal, 20)
 		.frame(height: VaultMetrics.statusBar)
 		.background(VaultPalette.headerRow)
+	}
+
+	private func statusLine(_ items: [Text], unsaved: String?) -> some View {
+		HStack(spacing: 12) {
+			ForEach(items.indices, id: \.self) { index in
+				if index > 0 { Text("·") }
+				items[index]
+			}
+			if let unsaved {
+				Text("·")
+				Text(unsaved).foregroundStyle(VaultPalette.orangeTintText)
+			}
+			Spacer(minLength: 0)
+		}
 	}
 
 	private static func count(_ value: Int, _ noun: String) -> String {
@@ -394,13 +408,12 @@ private struct VaultMatrixHeader: View {
 	let environments: [String]
 	let selectedEnvironment: String
 	let environmentColumnWidth: CGFloat
+	@Binding var sortOrder: VaultKeySortOrder
 
 	var body: some View {
 		HStack(spacing: 0) {
-			Text("KEY")
-				.vaultSectionLabel()
-				.padding(.horizontal, 20)
-				.frame(width: VaultMetrics.keyColumn, height: VaultMetrics.tableHeader, alignment: .leading)
+			VaultKeySortHeader(order: $sortOrder)
+				.frame(width: VaultMetrics.keyColumn, height: VaultMetrics.tableHeader)
 
 			ForEach(Array(environments.enumerated()), id: \.element) { index, environment in
 				VaultHairline(axis: .vertical)
@@ -483,9 +496,11 @@ private struct VaultMatrixRow: View {
 }
 
 private struct VaultEnvironmentHeader: View {
+	@Binding var sortOrder: VaultKeySortOrder
+
 	var body: some View {
 		HStack(spacing: 0) {
-			Text("KEY").vaultSectionLabel().padding(.leading, 20).frame(maxWidth: .infinity, alignment: .leading)
+			VaultKeySortHeader(order: $sortOrder).frame(maxWidth: .infinity)
 			Text("VALUE").vaultSectionLabel().frame(width: 280, alignment: .leading)
 			Text("ACTIONS").vaultSectionLabel().padding(.trailing, 20).frame(width: 132, alignment: .trailing)
 		}
@@ -544,6 +559,38 @@ private struct VaultEnvironmentRow: View {
 		.accessibilityElement(children: .contain)
 		.accessibilityLabel("\(key), value hidden\(isEdited ? ", unsaved changes" : "")")
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
+	}
+}
+
+/// The KEY column header. Clicking it reverses the key order, like a Finder
+/// column header.
+private struct VaultKeySortHeader: View {
+	@Binding var order: VaultKeySortOrder
+	@State private var hovering = false
+
+	var body: some View {
+		Button { order = order.reversed } label: {
+			HStack(spacing: 6) {
+				Text("KEY").vaultSectionLabel(VaultPalette.textPrimary)
+				Image(systemName: order == .ascending ? "arrow.up" : "arrow.down")
+					.font(.system(size: 9, weight: .bold))
+					.foregroundStyle(VaultPalette.accentForeground)
+				Text(order.title)
+					.font(.system(size: 10.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+				Spacer(minLength: 0)
+			}
+			.padding(.leading, 20)
+			.padding(.trailing, 12)
+			.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+			.background(hovering ? VaultPalette.headerHover : .clear)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.onHover { hovering = $0 }
+		.help("Sort keys \(order.reversed.spokenTitle)")
+		.accessibilityLabel("Key")
+		.accessibilityValue("Sorted \(order.spokenTitle)")
 	}
 }
 

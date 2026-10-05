@@ -486,6 +486,7 @@ struct AuditRegressionTests {
       mode: .matrix,
       filter: .all,
       searchText: "",
+      sortOrder: .ascending,
       revealedKeys: []
     )
     let environment = VaultContentDerivation(
@@ -495,6 +496,7 @@ struct AuditRegressionTests {
       mode: .environment("default"),
       filter: .all,
       searchText: "",
+      sortOrder: .ascending,
       revealedKeys: []
     )
 

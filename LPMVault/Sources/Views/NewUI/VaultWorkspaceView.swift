@@ -9,6 +9,7 @@ struct VaultWorkspaceView: View {
 	@State private var mode: VaultWorkspaceMode = .matrix
 	@State private var filter: VaultWorkspaceFilter = .all
 	@State private var environmentViewMode: VaultEnvironmentViewMode = .table
+	@AppStorage(VaultKeySortOrder.defaultsKey) private var keySortOrder = VaultKeySortOrder.ascending
 	@State private var searchText = ""
 	@State private var selectedKey: String?
 	@State private var revealedKeys: Set<String> = []
@@ -190,6 +191,7 @@ struct VaultWorkspaceView: View {
 								mode: $mode,
 								filter: $filter,
 								environmentViewMode: $environmentViewMode,
+								sortOrder: $keySortOrder,
 								searchText: searchText,
 								selectedKey: $selectedKey,
 								revealedKeys: $revealedKeys,

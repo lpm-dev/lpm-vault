@@ -62,6 +62,7 @@ extension VaultStoreTests {
 			mode: .matrix,
 			filter: .all,
 			searchText: "",
+			sortOrder: .ascending,
 			revealedKeys: []
 		)
 		let environment = VaultContentDerivation(
@@ -71,6 +72,7 @@ extension VaultStoreTests {
 			mode: .environment("default"),
 			filter: .all,
 			searchText: "",
+			sortOrder: .ascending,
 			revealedKeys: []
 		)
 

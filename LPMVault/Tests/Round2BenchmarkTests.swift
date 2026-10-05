@@ -76,6 +76,7 @@ struct Round2BenchmarkTests {
 			mode: .matrix,
 			filter: .all,
 			searchText: "",
+			sortOrder: .ascending,
 			revealedKeys: []
 		)
 		let samples = (0..<15).map { _ -> Double in
@@ -87,6 +88,7 @@ struct Round2BenchmarkTests {
 				mode: .matrix,
 				filter: .all,
 				searchText: "",
+				sortOrder: .ascending,
 				revealedKeys: []
 			)
 			return milliseconds(start.duration(to: .now))

@@ -64,6 +64,19 @@ extension SheetInteractionTests {
 			#expect(abs(keyColumn.minX - title.minX) < 3, "KEY starts at \(keyColumn.minX), the title at \(title.minX)")
 		}
 
+		@Test("a narrow window with the inspector open keeps the key count and unsaved changes whole in the status bar")
+		func narrowStatusBarKeepsEssentials() async throws {
+			let (store, _) = makeStore(environments: ["default": ["TOKEN": "a", "DATABASE_URL": "b"], "production": ["TOKEN": "c"]])
+			defer { store.lock() }
+			let host = try await workspace(store, size: NSSize(width: 1040, height: 700))
+			defer { host.window.close() }
+			try clickAt(NSPoint(x: 330, y: 700 - 197), in: host)
+			#expect(try await host.waitForText("VALUES"))
+			try host.enterValue("unsaved-narrow-draft")
+			#expect(try await host.waitForText("1 key with unsaved changes", footer: VaultMetrics.statusBar))
+			#expect(try await host.waitForText("2 of 2 keys shown", footer: VaultMetrics.statusBar))
+		}
+
 		@Test("unsaved edits stay with their key while the person selects other keys")
 		func draftsFollowTheirKey() async throws {
 			let (store, _) = makeStore(environments: ["default": ["TOKEN": "fixture-value", "ZETA": "zeta-value"]])
@@ -81,6 +94,39 @@ extension SheetInteractionTests {
 			try selectRow(0, in: host)
 			#expect(try await host.waitUntil { host.value == "draft-for-token" })
 			#expect(try await host.waitForText("1 unsaved change"))
+		}
+
+		@Test("the KEY header reverses the key order in both tables, and the order is remembered")
+		func keyHeaderReversesOrder() async throws {
+			let domain = "lpm-key-sort-test-" + UUID().uuidString
+			let defaults = try #require(UserDefaults(suiteName: domain))
+			defer { defaults.removePersistentDomain(forName: domain) }
+			let (store, _) = makeStore(environments: ["default": ["ALPHA": "a", "ZULU": "z"]])
+			defer { store.lock() }
+			let host = try await workspace(store, defaults: defaults)
+			#expect(try await keysFromTop(in: host) == ["ALPHA", "ZULU"])
+
+			try await clickKeyHeader(in: host)
+			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "descending" })
+			try await host.settle()
+			#expect(try await keysFromTop(in: host) == ["ZULU", "ALPHA"])
+			#expect(try await host.waitForText("sorted Z"))
+
+			// The environment's own table uses the same order and its header reverses it too.
+			try clickAt(NSPoint(x: 70, y: 603), in: host)
+			#expect(try await host.waitForText("ACTIONS"))
+			#expect(try await keysFromTop(in: host) == ["ZULU", "ALPHA"])
+			try await clickKeyHeader(in: host)
+			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "ascending" })
+			try await host.settle()
+			#expect(try await keysFromTop(in: host) == ["ALPHA", "ZULU"])
+			try await clickKeyHeader(in: host)
+			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "descending" })
+			host.window.close()
+
+			let reopened = try await workspace(store, defaults: defaults)
+			defer { reopened.window.close() }
+			#expect(try await keysFromTop(in: reopened) == ["ZULU", "ALPHA"])
 		}
 
 		@Test("an edit whose environment disappears stays in its card until discarded", arguments: ["environment", "rename"])
@@ -383,15 +429,32 @@ extension SheetInteractionTests {
 			return (store, biometric)
 		}
 
-		/// Copy confirmations stay until `copyFeedback` ends them.
-		private func workspace(_ store: VaultStore, copyFeedback: ManualCopyFeedbackTimer = ManualCopyFeedbackTimer()) async throws -> SheetTestHost<some View> {
+		/// Copy confirmations stay until `copyFeedback` ends them. Preferences such
+		/// as the key order are read from and saved to `defaults`.
+		private func workspace(_ store: VaultStore, size: NSSize = NSSize(width: 1600, height: 800), copyFeedback: ManualCopyFeedbackTimer = ManualCopyFeedbackTimer(), defaults: UserDefaults? = nil) async throws -> SheetTestHost<some View> {
 			await store.refreshCliAccess()
-			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!))
-				.environment(\.vaultCopyFeedbackTimer, copyFeedback.timer),
-				size: NSSize(width: 1600, height: 800), keepsRequestedSize: true, usesHostingView: true)
+			let defaults = try defaults ?? #require(UserDefaults(suiteName: "workspace-interaction"))
+			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: defaults))
+				.environment(\.vaultCopyFeedbackTimer, copyFeedback.timer)
+				.defaultAppStorage(defaults),
+				size: size, keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.workspaceSnapshots["workspace"] != nil })
 			try await host.settle()
 			return host
+		}
+
+		/// Clicks the KEY column header, which sits between the content header and the first row.
+		private func clickKeyHeader<V: View>(in host: SheetTestHost<V>) async throws {
+			let label = try await host.labelFrame("KEY", region: CGRect(x: 0.15, y: 0.75, width: 0.5, height: 0.1))
+			try clickAt(NSPoint(x: label.midX, y: label.midY), in: host)
+		}
+
+		/// The rendered keys among `keys`, from the top of the table down.
+		private func keysFromTop<V: View>(_ keys: [String] = ["ALPHA", "ZULU"], in host: SheetTestHost<V>) async throws -> [String] {
+			let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate)
+			return keys.compactMap { key in lines.first { $0.text.contains(key) }.map { (key, $0.bounds.midY) } }
+				.sorted { $0.1 > $1.1 }
+				.map(\.0)
 		}
 
 		/// Selects the key in the matrix row at `index`, which opens the inspector.

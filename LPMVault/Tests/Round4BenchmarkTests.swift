@@ -482,6 +482,7 @@ struct Round4BenchmarkTests {
 				mode: mode,
 				filter: .all,
 				searchText: query,
+				sortOrder: .ascending,
 				revealedKeys: []
 			)
 		}
@@ -497,6 +498,7 @@ struct Round4BenchmarkTests {
 						mode: mode,
 						filter: .all,
 						searchText: query,
+						sortOrder: .ascending,
 						revealedKeys: []
 					)
 					checksum &+= derivation.filteredKeys.count
