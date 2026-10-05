@@ -544,23 +544,43 @@ struct VaultKeyDescriptionStoreTests {
 		let original = #"{"envSchema":{"vars":{"STRIPE_KEY":{"secret":true}}}}"#
 		let (store, keychain, folder) = try await makeStore(original)
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		let project = try #require(store.selectedProject)
+		let otherFolder: String?
+		if folderChanged {
+			let other = folder + "/other"
+			try FileManager.default.createDirectory(atPath: other, withIntermediateDirectories: true)
+			try original.write(toFile: other + "/lpm.json", atomically: true, encoding: .utf8)
+			otherFolder = other
+		} else { otherFolder = nil }
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		keychain.blockNextSaveEnvironments = { entered.signal(); release.wait() }
 		defer { release.signal() }
 		let earlier = Task { try? await store.saveKeyEdit(.init(key: "OTHER", environments: environments, values: ["default": "later"]), in: "project") }
-		await withCheckedContinuation { continuation in DispatchQueue.global().async { entered.wait(); continuation.resume() } }
-		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEW" }
-		let rename = Task { try? await store.saveKeyDraft(id) }
-		try await waitUntil { store.keyDrafts.draft(id)?.isSaveInFlight == true }
-		if folderChanged {
-			let other = folder + "/other"
-			try FileManager.default.createDirectory(atPath: other, withIntermediateDirectories: true)
-			try original.write(toFile: other + "/lpm.json", atomically: true, encoding: .utf8)
-			ProjectCLILink.rememberFolder(other, vaultId: "project", defaults: store.preferences)
-		} else { store.selectedProjectId = nil }
-		release.signal()
+		let rename: Task<Void?, Never>? = await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				let didEnter = entered.wait(timeout: .now() + 5) == .success
+				DispatchQueue.main.async {
+					guard didEnter else {
+						Issue.record("Earlier mutation did not enter its save")
+						release.signal()
+						continuation.resume(returning: nil)
+						return
+					}
+					store.keyDrafts.edit(project, key: id.key) { $0.name = "NEW" }
+					let rename = Task { try? await store.saveKeyDraft(id) }
+					observeOnMainQueue(until: { store.keyDrafts.draft(id)?.isSaveInFlight == true }) {
+						if let otherFolder {
+							ProjectCLILink.rememberFolder(otherFolder, vaultId: "project", defaults: store.preferences)
+						} else { store.selectedProjectId = nil }
+						release.signal()
+						continuation.resume(returning: rename)
+					}
+				}
+			}
+		}
 		await earlier.value
+		guard let rename else { return }
 		await rename.value
 		#expect(store.keyDrafts.draft(id)?.isSaveInFlight == false)
 		#expect(keychain.envStorage["project"]?.environments["default"]?[id.key] == "sk_dev")
@@ -755,5 +775,22 @@ struct VaultKeyDescriptionStoreTests {
 			try await Task.sleep(for: .milliseconds(5))
 		}
 		try #require(condition(), "Timed out")
+	}
+}
+
+@MainActor
+private func observeOnMainQueue(
+	until condition: @escaping @MainActor @Sendable () -> Bool,
+	deadline: ContinuousClock.Instant = .now + .seconds(5),
+	completion: @escaping @MainActor @Sendable () -> Void
+) {
+	if condition() { completion(); return }
+	guard ContinuousClock.now < deadline else {
+		Issue.record("Queued rename did not enter its save")
+		completion()
+		return
+	}
+	DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(5)) {
+		observeOnMainQueue(until: condition, deadline: deadline, completion: completion)
 	}
 }

@@ -2299,9 +2299,10 @@ extension VaultStoreTests {
 		let operation = Task {
 			try await service.export(secrets: ["TOKEN": "secret"], to: destination)
 		}
-		await waitForSemaphore(entered)
-		operation.cancel()
-		release.signal()
+		await performAfterSemaphore(entered) {
+			operation.cancel()
+			release.signal()
+		}
 
 		await #expect(throws: CancellationError.self) { try await operation.value }
 		#expect(!FileManager.default.fileExists(atPath: destination.path))
