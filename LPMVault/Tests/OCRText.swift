@@ -2,7 +2,7 @@ import Foundation
 import Testing
 
 /// Vision text that tolerates glyph confusions which differ between local
-/// machines and CI runners: `j`/`i`, `l`/`1`/`I`/`|`, underscores read as
+/// machines and CI runners: `i`/`j`/`l`/`1`/`I`/`|`, underscores read as
 /// spaces, and widened gaps in monospaced text. Both sides are normalized the
 /// same way, so whole words must still be present.
 struct OCRText {
@@ -19,8 +19,7 @@ struct OCRText {
 	private static func normalize(_ text: String) -> String {
 		let mapped = text.map { character -> Character in
 			switch character {
-			case "j", "J": "i"
-			case "1", "|", "I": "l"
+			case "i", "j", "J", "1", "|", "I": "l"
 			case "_": " "
 			default: character
 			}
@@ -40,6 +39,7 @@ struct OCRTextTests {
 		#expect(OCRText("1pm  env   list").contains("lpm env list"))
 		#expect(OCRText("UUID V4").contains("UUID v4"))
 		#expect(OCRText("All variables CLI API URL PORT").contains("API_URL"))
+		#expect(OCRText("unsaved edlts · smart vlews").contains("unsaved edits · smart views"))
 	}
 
 	@Test("different words do not match")

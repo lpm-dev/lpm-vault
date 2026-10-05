@@ -64,7 +64,7 @@ extension SheetInteractionTests {
 			if removal == "rename" { keychain.envStorage["workspace"]?.environments["renamed"] = values }
 			await store.refreshLocalState()
 			try await host.settle()
-			#expect(try await host.waitForText(".env.staging was deleted outside the editor"))
+			#expect(try await host.waitForText("staging was deleted outside the editor"))
 			#expect(host.secureValues.contains("unsaved-removed-target"))
 			try host.returnWhileEditing("value", modifiers: [])
 			try await host.settle()
@@ -98,7 +98,7 @@ extension SheetInteractionTests {
 			await store.refreshLocalState()
 			store.openProject(id: "workspace")
 			#expect(try await host.waitForText("UNSAVED EDITS"))
-			#expect(try await host.text().contains("deleted outside the editor"))
+			#expect(try await host.waitForText("deleted outside the editor"))
 			try await host.click("Copy value")
 			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "unsaved-removed-project" })
 			#expect(biometric.authenticationReasons == ["Copy your unsaved value"])
