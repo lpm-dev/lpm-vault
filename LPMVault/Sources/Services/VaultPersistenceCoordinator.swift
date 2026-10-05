@@ -116,6 +116,19 @@ enum ProjectMutationPersistenceResult: Sendable {
 	case failure(KeychainError)
 }
 
+enum SchemaKeyRenameResult: Sendable {
+	case success(SecretPersistenceCommit, ProjectEnvSchemaFile.Rules)
+	case failure(VaultKeyEditError)
+	case indeterminate
+	case conflict(latest: VaultProject, metadata: SyncMetadata?, failure: VaultKeyEditError)
+	case schemaChanged
+
+	static func keychainFailure(_ error: KeychainError) -> Self {
+		if case .transactionOutcomeIndeterminate = error { return .indeterminate }
+		return .failure(.persistence(error.description))
+	}
+}
+
 struct SyncPersistenceSnapshot: Sendable {
 	let project: VaultProject
 	let metadata: SyncMetadata?
@@ -457,6 +470,79 @@ actor VaultPersistenceCoordinator {
 			))
 	}
 
+	func renameKeyWithSchema(project: VaultProject, edit: VaultKeyEdit, change: ProjectEnvSchemaFile.Change, folder: String) async -> SchemaKeyRenameResult {
+		await withCheckedContinuation { continuation in
+			ProjectConfigFile.editQueue.async {
+				continuation.resume(returning: self.coordinatedKeyRename(project: project, edit: edit, change: change, folder: folder))
+			}
+		}
+	}
+
+	nonisolated func coordinatedKeyRename(project expected: VaultProject, edit: VaultKeyEdit, change: ProjectEnvSchemaFile.Change, folder: String, fileWriter: ProjectConfigFile.FileWriter = ProjectConfigFile.writeSecurely) -> SchemaKeyRenameResult {
+		// Match the CLI's Keychain-before-config lock order; compensate before either lock is released.
+		let transaction = service.withKeychainTransaction { () -> SchemaKeyRenameResult in
+			let previous: VaultProject
+			switch service.getProjectResult(vaultId: expected.id) {
+			case .success(let project?): previous = project
+			case .success(nil): return .failure(.targetUnavailable)
+			case .failure(let error): return .keychainFailure(error)
+			}
+			let metadata: SyncMetadataRecordSnapshot
+			switch loadSyncMetadataRecordSnapshotResult(vaultId: previous.id) {
+			case .success(let snapshot): metadata = snapshot
+			case .failure(let error): return .keychainFailure(error)
+			}
+			guard previous.name == expected.name, previous.path == expected.path else { return .conflict(latest: previous, metadata: metadata.metadata, failure: .changed) }
+			let environments: [String: [String: String]]
+			switch edit.applied(to: previous.environments) {
+			case .success(let result): environments = result
+			case .failure(let failure): return .conflict(latest: previous, metadata: metadata.metadata, failure: VaultKeyEditError(failure, newKey: edit.newKey))
+			}
+			var next = previous
+			next.environments = environments
+			var persisted: SecretPersistenceCommit?
+			var rollbackFailed = false
+			var outcomeIndeterminate = false
+			var updatedRules: ProjectEnvSchemaFile.Rules?
+			do {
+				let rules = try ProjectConfigFile.update(at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), fileWriter: fileWriter, rejectDuplicateKeys: true, beforeWrite: {
+					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
+					case .success(let commit): persisted = commit
+					case .failure(let error):
+						if case .transactionOutcomeIndeterminate = error { outcomeIndeterminate = true }
+						throw VaultKeyEditError.persistence(error.description)
+					default: throw VaultKeyEditError.changed
+					}
+				}, onWriteFailure: {
+					let restore: VaultKeychainMutation = metadata.data.map { .write(account: metadata.account, data: $0) } ?? .delete(account: metadata.account)
+					rollbackFailed = !self.service.applyVaultTransaction(project: .upsert(previous), data: [restore]).succeeded
+				}) { document in
+					let (updated, rules) = try ProjectEnvSchemaFile.validatedRename(change, in: document, vaultID: previous.id)
+					document = updated
+					updatedRules = rules
+					return rules
+				}
+				guard let persisted else { return .indeterminate }
+				return .success(persisted, rules)
+			} catch {
+				if rollbackFailed || outcomeIndeterminate { return .indeterminate }
+				if case SecureFileWriter.WriteError.directorySyncFailed = error, let persisted, let updatedRules {
+					let warning = "The rename was saved, but crash durability of lpm.json is unconfirmed. " + error.localizedDescription
+					return .success(SecretPersistenceCommit(project: persisted.project, syncMetadata: persisted.syncMetadata, warning: [persisted.warning, warning].compactMap { $0 }.joined(separator: " ")), updatedRules)
+				}
+				if let failure = error as? VaultKeyEditError { return .failure(failure) }
+				let failure = (error as? ProjectEnvSchemaFile.FileError) ?? (error as? ProjectConfigFile.FileError).map(ProjectEnvSchemaFile.FileError.init) ?? .writeFailed(error.localizedDescription)
+				if failure == .changed { return .schemaChanged }
+				return .failure(.description(failure.localizedDescription, keySaved: false))
+			}
+		}
+		switch transaction {
+		case .success(let result): return result
+		case .failure(.transactionOutcomeIndeterminate): return .indeterminate
+		case .failure(let error): return .keychainFailure(error)
+		}
+	}
+
 	func mutateProject(
 		projectId: String,
 		expectedName: String,
@@ -547,7 +633,7 @@ actor VaultPersistenceCoordinator {
 		)
 	}
 
-	private func persistMutation(
+	nonisolated private func persistMutation(
 		_ project: VaultProject,
 		previousProject: VaultProject,
 		previousMetadata: SyncMetadataRecordSnapshot
@@ -1218,7 +1304,7 @@ actor VaultPersistenceCoordinator {
 		service.writeData(account: account, data: data)
 	}
 
-	private func syncMetadataAccount(vaultId: String) -> String {
+	nonisolated private func syncMetadataAccount(vaultId: String) -> String {
 		let encoded = Data(vaultId.utf8).base64EncodedString()
 			.replacingOccurrences(of: "+", with: "-")
 			.replacingOccurrences(of: "/", with: "_")
@@ -1241,13 +1327,13 @@ actor VaultPersistenceCoordinator {
 		return .success(metadata)
 	}
 
-	private func loadSyncMetadataRecordSnapshotResult(
+	nonisolated private func loadSyncMetadataRecordSnapshotResult(
 		vaultId: String
 	) -> Result<SyncMetadataRecordSnapshot, KeychainError> {
 		readSyncMetadataRecordSnapshotResult(vaultId: vaultId)
 	}
 
-	private func readSyncMetadataRecordSnapshotResult(
+	nonisolated private func readSyncMetadataRecordSnapshotResult(
 		vaultId: String
 	) -> Result<SyncMetadataRecordSnapshot, KeychainError> {
 		let account = syncMetadataAccount(vaultId: vaultId)
@@ -1283,7 +1369,7 @@ actor VaultPersistenceCoordinator {
 		)
 	}
 
-	private func syncMetadataMutation(
+	nonisolated private func syncMetadataMutation(
 		_ metadata: SyncMetadata,
 		vaultId: String
 	) -> VaultKeychainMutation? {

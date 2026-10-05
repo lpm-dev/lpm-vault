@@ -110,6 +110,8 @@ enum ProjectConfigFile {
 		at url: URL,
 		fileWriter: FileWriter = writeSecurely,
 		rejectDuplicateKeys: Bool = false,
+		beforeWrite: (() throws -> Void)? = nil,
+		onWriteFailure: (() throws -> Void)? = nil,
 		_ change: (inout LPMConfigJSON) throws -> T
 	) throws -> T {
 		try withConfigLock(in: url.deletingLastPathComponent()) {
@@ -133,13 +135,14 @@ enum ProjectConfigFile {
 			}
 			let unchanged = document
 			let result = try change(&document)
-			guard document != unchanged else { return result }
+			guard document != unchanged else { try beforeWrite?(); return result }
 
 			let data: Data
 			do { data = try document.renderedData(maximumBytes: maximumBytes) } catch { throw FileError.tooLarge }
 			var permissions = mode_t(0o644)
 			var metadata = stat()
 			if original != nil, lstat(url.path, &metadata) == 0 { permissions = metadata.st_mode & 0o777 }
+			try beforeWrite?()
 			do {
 				try fileWriter(data, url, permissions, original != nil) {
 					// The lock orders CLI edits; an editor saving meanwhile does not take it.
@@ -147,8 +150,12 @@ enum ProjectConfigFile {
 					do { current = try readRegularFile(at: url) } catch FileError.notFound { current = nil }
 					guard current == original else { throw FileError.changed }
 				}
-			} catch SecureFileWriter.WriteError.replaceFailed(let code) where code == EEXIST {
-				throw FileError.changed
+			} catch {
+				// Directory sync follows replacement; reverting only external state would break alignment.
+				if case SecureFileWriter.WriteError.directorySyncFailed = error { throw error }
+				try onWriteFailure?()
+				if case SecureFileWriter.WriteError.replaceFailed(let code) = error, code == EEXIST { throw FileError.changed }
+				throw error
 			}
 			return result
 		}

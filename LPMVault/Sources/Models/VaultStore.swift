@@ -2046,8 +2046,9 @@ final class VaultStore {
 
   /// Load a coherent Keychain snapshot. A newer load, lock, or mutation
   /// invalidates this generation before it can publish decrypted state.
+  /// A draft-owned recovery also requires its original account session.
   @discardableResult
-  func loadProjects() async -> Bool {
+  func loadProjects(ownedByKeyDraftGeneration: Int? = nil) async -> Bool {
     cancelLocalStateRefresh()
     invalidateSelectedProjectLoad()
     projectLoadGeneration &+= 1
@@ -2061,6 +2062,11 @@ final class VaultStore {
       guard !Task.isCancelled, let self,
         generation == self.projectLoadGeneration
       else { return }
+      guard ownedByKeyDraftGeneration == nil || (ownedByKeyDraftGeneration == self.keyDrafts.generation && self.isUnlocked) else {
+        self.isLoadingProjects = false
+        self.projectLoadTask = nil
+        return
+      }
       guard case .success(let snapshot) = result else {
         if case .failure(let failure) = result {
           self.error = "Could not load the protected vault state. \(failure.description)"
@@ -3123,7 +3129,8 @@ final class VaultStore {
   }
 
   /// Saves a key's draft: its rename and values to the Keychain in one
-  /// transaction, then its description, and a renamed key's rule, to `lpm.json`.
+  /// transaction. A rename coordinates its schema edit under both storage locks.
+  /// Description-only edits follow the value save.
   /// A successful save ends the draft; a failed one keeps it, updated to the
   /// latest saved state, and throws the reason.
   func saveKeyDraft(_ id: VaultKeyDraft.ID) async throws(VaultKeyEditError) {
@@ -3170,6 +3177,29 @@ final class VaultStore {
         expected = rules.descriptions[edit.newKey] ?? ""
       }
       schemaChange.description = .init(key: edit.newKey, text: description, expectedText: expected)
+    }
+
+    if edit.isRename, let schemaFolder, !schemaFolder.isEmpty {
+      guard isUnlocked, let project = selectedProject, project.id == id.projectID else {
+        keyDrafts.finishSave(id, succeeded: false, projects: projects)
+        throw .targetUnavailable
+      }
+      let result = await withCheckedContinuation { continuation in
+        enqueueSchemaKeyRename(base: project, edit: edit, change: schemaChange, folder: schemaFolder) { continuation.resume(returning: $0) }
+      }
+      guard generation == keyDrafts.generation, isUnlocked else { throw .targetUnavailable }
+      switch result {
+      case .success:
+        keyDrafts.finishSave(id, succeeded: true, projects: projects)
+        return
+      case .failure(let failure):
+        keyDrafts.finishSave(id, succeeded: false, projects: projects)
+        if let cached = keyDescriptions[id.projectID], case .success(let rules) = cached.rules {
+          keyDrafts.receiveKeyDescriptions(rules.descriptions, ruleKeys: rules.keys, folder: cached.folder, in: id.projectID)
+        }
+        if let latest = projects.first(where: { $0.id == id.projectID }) { keyDrafts.edit(latest, key: id.key) { $0.saveError = failure } }
+        throw failure
+      }
     }
 
     do {
@@ -6156,32 +6186,68 @@ final class VaultStore {
         return nil
       }
 
-      var schema: [String: LPMJSONValue] = ["version": .integer(2)]
-      if case .object(let envSchema) = root["envSchema"] {
-        schema["envSchema"] = envSchema["vars"] ?? .object(envSchema)
-      }
-      if case .object(let environments) = root["environments"] {
-        schema["environments"] = .object(environments)
-      }
-      if case .object(let env) = root["env"] {
-        var envConfig: [String: LPMJSONValue] = [:]
-        for (alias, value) in env {
-          guard case .string(let envPath) = value else { continue }
-          guard envPath.hasPrefix(".env."), envPath.count > ".env.".count else {
-            continue
-          }
-          envConfig[alias] = .object([
-            "canonical": .string(String(envPath.dropFirst(".env.".count))),
-            "file": .string(envPath),
-          ])
-        }
-        if !envConfig.isEmpty { schema["envConfig"] = .object(envConfig) }
-      }
-      return .object(schema)
+      return ProjectEnvSchemaFile.pushMetadata(from: root)
     }.value
   }
 
   // MARK: - Private
+
+  private func enqueueSchemaKeyRename(
+    base project: VaultProject,
+    edit: VaultKeyEdit,
+    change: ProjectEnvSchemaFile.Change,
+    folder: String,
+    afterCompletion: @escaping @MainActor (Result<Void, VaultKeyEditError>) -> Void
+  ) {
+    cancelLocalEnvImports(projectId: project.id)
+    invalidateProjectLoad()
+    let predecessor = projectMutationTask
+    let requestId = UUID()
+    let sessionGeneration = vaultSessionGeneration
+    let draftGeneration = keyDrafts.generation
+    projectMutationRequestId = requestId
+    projectMutationTask = Task { @MainActor [weak self, persistence] in
+      await predecessor?.value
+      guard let self, sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked,
+        selectedProjectId == project.id
+      else { afterCompletion(.failure(.targetUnavailable)); return }
+      guard keyDescriptionFolder(for: project) == folder else {
+        reloadKeyDescriptions()
+        afterCompletion(.failure(.description("The project folder changed. Review its descriptions, then save again.", keySaved: false)))
+        return
+      }
+      let result = await persistence.renameKeyWithSchema(project: project, edit: edit, change: change, folder: folder)
+      guard sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked else {
+        afterCompletion(.failure(.targetUnavailable)); return
+      }
+      switch result {
+      case .success(let commit, let rules):
+        updateProjectInPlace(commit.project)
+        applySyncMetadata(commit.syncMetadata, for: commit.project.id)
+        error = commit.warning
+        if keyDescriptionFolder(for: commit.project) == folder {
+          publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, rules: .success(rules)), for: project.id)
+        }
+        afterCompletion(.success(()))
+      case .conflict(let latest, let metadata, let failure):
+        updateProjectInPlace(latest)
+        applySyncMetadata(metadata, for: latest.id)
+        afterCompletion(.failure(failure))
+      case .schemaChanged:
+        let rules = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: project.id)
+        guard sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked else { afterCompletion(.failure(.targetUnavailable)); return }
+        if let latest = projects.first(where: { $0.id == project.id }), keyDescriptionFolder(for: latest) == folder {
+          publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, rules: rules), for: project.id)
+        }
+        afterCompletion(.failure(.description(ProjectEnvSchemaFile.FileError.changed.localizedDescription, keySaved: false)))
+      case .failure(let failure):
+        afterCompletion(.failure(failure))
+      case .indeterminate:
+        _ = await loadProjects(ownedByKeyDraftGeneration: draftGeneration)
+        afterCompletion(.failure(.persistence(KeychainError.transactionOutcomeIndeterminate.description)))
+      }
+    }
+  }
 
   private func enqueueProjectMutation(
     base project: VaultProject,

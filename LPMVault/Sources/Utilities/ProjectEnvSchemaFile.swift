@@ -123,6 +123,16 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
+	static func validatedRename(_ change: Change, in document: LPMConfigJSON, vaultID: String) throws(FileError) -> (LPMConfigJSON, Rules) {
+		try checkVault(of: document, is: vaultID)
+		_ = try rules(of: document)
+		if let rename = change.rename, rename.from != rename.to,
+			document["envSchema"]?["vars"]?[rename.from] != nil,
+			document["envSchema"]?["vars"]?[rename.to] != nil { throw .invalidSchema }
+		let updated = try applying(change, to: document)
+		return (updated, try rules(of: updated))
+	}
+
 	static func applying(_ change: Change, to document: LPMConfigJSON) throws(FileError) -> LPMConfigJSON {
 		let schemaBefore = document["envSchema"]
 		var schema = schemaBefore == .null ? .object([]) : schemaBefore ?? .object([])
@@ -173,12 +183,24 @@ enum ProjectEnvSchemaFile {
 
 	static func rules(of document: LPMConfigJSON) throws(FileError) -> Rules {
 		guard let schema = document["envSchema"], schema != .null else { return Rules() }
-		guard case .object(let fields) = schema, fields.allSatisfy({ $0.key == "vars" }) else { throw .invalidSchema }
+		guard case .object(let fields) = schema, fields.allSatisfy({ ["vars", "clientPrefixes"].contains($0.key) }) else { throw .invalidSchema }
+		var prefixes: [String] = ["NEXT_PUBLIC_", "VITE_", "PUBLIC_"]
+		if let value = schema["clientPrefixes"] {
+			guard case .array(let values) = value, values.count <= 32 else { throw .invalidSchema }
+			var unique: Set<String> = []
+			for value in values {
+				guard case .string(let prefix) = value, portableName(prefix), prefix.hasSuffix("_"), unique.insert(prefix).inserted else { throw .invalidSchema }
+				prefixes.append(prefix)
+			}
+		}
 		guard let vars = schema["vars"] else { return Rules() }
 		guard case .object(let members) = vars, members.count <= 4096 else { throw .invalidSchema }
 		var rules = Rules()
 		for member in members {
 			try validateRule(member.value, name: member.key)
+			let cra = member.key.utf8.prefix(10).elementsEqual("REACT_APP_".utf8, by: { ($0 >= 97 && $0 <= 122 ? $0 - 32 : $0) == $1 })
+			let isPublic = cra || prefixes.contains(where: member.key.hasPrefix)
+			guard isPublic == (member.value["client"] == .bool(true)) else { throw .invalidSchema }
 			rules.keys.insert(member.key)
 			switch member.value["description"] {
 			case .string(let text)?: rules.descriptions[member.key] = text
@@ -198,15 +220,17 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
-	private static let allowedRuleFields: Set<String> = ["required", "format", "pattern", "enum", "default", "secret", "client", "description", "empty"]
+	private static let allowedRuleFields: Set<String> = ["required", "format", "pattern", "enum", "default", "secret", "client", "description", "empty", "ci"]
 
-	private static func validateRule(_ rule: LPMConfigJSON, name: String) throws(FileError) {
+	private static func portableName(_ name: String) -> Bool {
 		let bytes = name.utf8
 		guard let first = bytes.first, bytes.count <= 256,
-			first == 95 || (65...90).contains(first) || (97...122).contains(first),
-			bytes.allSatisfy({ $0 == 95 || (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) }),
-			case .object(let fields) = rule
-		else { throw .invalidSchema }
+			first == 95 || (65...90).contains(first) || (97...122).contains(first) else { return false }
+		return bytes.allSatisfy({ $0 == 95 || (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) })
+	}
+
+	private static func validateRule(_ rule: LPMConfigJSON, name: String) throws(FileError) {
+		guard portableName(name), case .object(let fields) = rule else { throw .invalidSchema }
 		guard fields.allSatisfy({ allowedRuleFields.contains($0.key) }) else { throw .invalidSchema }
 		for field in ["required", "secret", "client"] {
 			if let value = rule[field], case .bool = value {} else if rule[field] != nil { throw .invalidSchema }
@@ -219,6 +243,10 @@ enum ProjectEnvSchemaFile {
 			}
 		}
 		if case .string(let format)? = rule["format"], !["url", "port", "email", "boolean", "integer", "hostname", "ip"].contains(format) { throw .invalidSchema }
+		if let ci = rule["ci"], ci != .null {
+			guard case .string(let text) = ci, ["secret", "variable"].contains(text) else { throw .invalidSchema }
+		}
+		if rule["secret"] == .bool(true), rule["client"] == .bool(true) || rule["ci"] == .string("variable") { throw .invalidSchema }
 		if let empty = rule["empty"] {
 			guard case .string(let text) = empty, ["missing", "allow", "reject"].contains(text) else { throw .invalidSchema }
 		}
@@ -245,6 +273,32 @@ enum ProjectEnvSchemaFile {
 			if let value = document[key], value != .null { metadata[key] = try syncValue(value) }
 		}
 		return .object(metadata)
+	}
+
+	static func pushMetadata(from root: [String: LPMJSONValue]) -> LPMJSONValue {
+      var schema: [String: LPMJSONValue] = ["version": .integer(2)]
+      if case .object(let envSchema) = root["envSchema"] {
+        schema["envSchema"] = envSchema["vars"] ?? .object([:])
+        if let prefixes = envSchema["clientPrefixes"] { schema["envSchemaConfig"] = .object(["clientPrefixes": prefixes]) }
+      }
+      if case .object(let environments) = root["environments"] {
+        schema["environments"] = .object(environments)
+      }
+      if case .object(let env) = root["env"] {
+        var envConfig: [String: LPMJSONValue] = [:]
+        for (alias, value) in env {
+          guard case .string(let envPath) = value else { continue }
+          guard envPath.hasPrefix(".env."), envPath.count > ".env.".count else {
+            continue
+          }
+          envConfig[alias] = .object([
+            "canonical": .string(String(envPath.dropFirst(".env.".count))),
+            "file": .string(envPath),
+          ])
+        }
+        if !envConfig.isEmpty { schema["envConfig"] = .object(envConfig) }
+      }
+      return .object(schema)
 	}
 
 	private static func syncValue(_ value: LPMConfigJSON) throws(FileError) -> LPMJSONValue {

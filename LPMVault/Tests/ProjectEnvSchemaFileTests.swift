@@ -150,6 +150,32 @@ struct ProjectEnvSchemaFileTests {
 		}
 	}
 
+	@Test("description edits preserve independent exposure and CI storage policy")
+	func editsPreserveExposurePolicy() throws {
+		let folder = try makeFolder(#"{"envSchema":{"clientPrefixes":["APP_"],"vars":{"APP_API":{"client":true,"ci":"secret"},"BUILD_MODE":{"ci":"variable"}}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		_ = try ProjectEnvSchemaFile.apply(.init(description: .init(key: "APP_API", text: "Public endpoint")), inFolder: folder, vaultID: vaultID)
+		let config = try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder, vaultID: vaultID)
+		guard case .object(let root)? = config else { Issue.record("metadata missing"); return }
+		guard case .object(let wire) = ProjectEnvSchemaFile.pushMetadata(from: root) else { Issue.record("wire missing"); return }
+		#expect(wire["envSchemaConfig"] == .object(["clientPrefixes": .array([.string("APP_")])]))
+		guard case .object(let vars)? = wire["envSchema"], case .object(let rule)? = vars["APP_API"] else { Issue.record("rule missing"); return }
+		#expect(rule["ci"] == .string("secret"))
+		#expect(rule["description"] == .string("Public endpoint"))
+	}
+
+	@Test("native exposure rules reject browser secrets and readable secret storage", arguments: [
+		#"{"vars":{"PUBLIC_TOKEN":{"secret":true,"client":true}}}"#,
+		#"{"vars":{"react_app_token":{"secret":true}}}"#,
+		#"{"vars":{"TOKEN":{"secret":true,"ci":"variable"}}}"#,
+		#"{"clientPrefixes":["APP_","APP_"],"vars":{}}"#,
+		#"{"vars":{"VITE_TOKEN":{}}}"#
+	])
+	func exposureRejectsUnsafePolicy(_ schema: String) throws {
+		let document = try LPMConfigJSON(parsing: Data("{\"envSchema\":\(schema)}".utf8))
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) { try ProjectEnvSchemaFile.rules(of: document) }
+	}
+
 	@Test("sync projects metadata without decoding unrelated manifest numbers")
 	func syncConfigProjectsMetadata() throws {
 		let original = #"{"unrelated":{"number":1e400},"envSchema":{"vars":{"MESSAGE":{"description":"public"}}}}"#

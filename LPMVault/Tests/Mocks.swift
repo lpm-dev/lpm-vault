@@ -52,6 +52,8 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var saveEnvironmentsCallCount = 0
 	var updateEnvironmentsCallCount = 0
 	var applyVaultTransactionCallCount = 0
+	var nextVaultTransactionError: KeychainError?
+	var nextKeychainTransactionError: KeychainError?
 	var onGetEnvironments: (() -> Void)?
 	var onCreateEnvironments: (() -> Void)?
 	var blockNextSaveEnvironments: (() -> Void)?
@@ -63,6 +65,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError> {
 		beforeKeychainTransaction?()
+		if let error = nextKeychainTransactionError { nextKeychainTransactionError = nil; return .failure(error) }
 		return .success(lock.withLock(operation))
 	}
 
@@ -289,6 +292,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		lock.lock()
 		defer { lock.unlock() }
 		applyVaultTransactionCallCount += 1
+		if let error = nextVaultTransactionError { nextVaultTransactionError = nil; return .failure(error) }
 		let previousEnvironments = envStorage
 		let previousData = dataStorage
 		let projectResult: KeychainResult

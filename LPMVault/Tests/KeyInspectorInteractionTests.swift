@@ -226,8 +226,8 @@ extension SheetInteractionTests {
 			#expect(keychain.applyVaultTransactionCallCount == 0)
 		}
 
-		@Test("a partial schema rename keeps its error visible under the saved name")
-		func partialRenameErrorStaysVisible() async throws {
+		@Test("a rejected schema rename keeps its error and draft visible")
+		func rejectedRenameErrorStaysVisible() async throws {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "inspector-partial-rename-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
 			defer { try? FileManager.default.removeItem(atPath: folder) }
@@ -242,8 +242,8 @@ extension SheetInteractionTests {
 			try host.enterKey("NEW")
 			try "{".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 			try await host.click("Save")
-			#expect(try await host.waitForText("The key was saved"))
-			#expect(try await host.text().contains("lpm.json was not updated"))
+			#expect(try await host.waitForText("Could not save the description"))
+			#expect(try await host.text().contains("lpm.json is not valid JSON"))
 			#expect(try await host.text().contains("1 unsaved change"))
 		}
 
