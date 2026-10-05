@@ -16,7 +16,6 @@ struct VaultAppearanceTests {
 			defaults.set(rawValue, forKey: VaultAppearanceSettings.defaultsKey)
 			let settings = VaultAppearanceSettings(defaults: defaults)
 			#expect(settings.selection == .system)
-			#expect(settings.selection.colorScheme == nil)
 			#expect(settings.selection.nativeAppearance == nil)
 		}
 	}
@@ -35,13 +34,9 @@ struct VaultAppearanceTests {
 		#expect(VaultAppearanceSettings(defaults: defaults).selection == .system)
 	}
 
-	@Test("explicit choices override either system appearance")
+	@Test("explicit choices override either system appearance, and System leaves it to macOS")
 	func overrideMapping() {
-		for systemScheme in [ColorScheme.light, .dark] {
-			#expect((VaultAppearance.system.colorScheme ?? systemScheme) == systemScheme)
-			#expect((VaultAppearance.light.colorScheme ?? systemScheme) == .light)
-			#expect((VaultAppearance.dark.colorScheme ?? systemScheme) == .dark)
-		}
+		#expect(VaultAppearance.system.nativeAppearance == nil)
 		#expect(VaultAppearance.light.nativeAppearance?.name == .aqua)
 		#expect(VaultAppearance.dark.nativeAppearance?.name == .darkAqua)
 	}
@@ -221,4 +216,48 @@ func unknownCliApprovalPresentationIsTruthful() {
 	let presentation = VaultCliAccessPresentation(access: nil)
 	#expect(presentation.help == "CLI approval is unavailable until its policy can be read.")
 	#expect(presentation.accessibilityValue == "Unavailable")
+}
+
+extension SheetInteractionTests {
+	/// Serialized with the other window tests because it changes the app's appearance.
+	@Suite("App appearance", .serialized)
+	@MainActor
+	struct AppAppearanceTests {
+		/// SwiftUI's `preferredColorScheme` pins the scene's window to the explicit
+		/// choice and does not unpin it for System, so the window kept Light or Dark.
+		/// The choice is applied app-wide instead, and windows inherit it.
+		@Test("choosing System after Light or Dark follows the system appearance again", arguments: [VaultAppearance.light, .dark])
+		func systemAfterExplicitChoice(explicit: VaultAppearance) async throws {
+			let app = NSApplication.shared
+			let previous = app.appearance
+			defer { app.appearance = previous }
+			app.appearance = nil
+			let system = app.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+			let domain = "dev.lpm.vault.app-appearance-tests.\(UUID().uuidString)"
+			let defaults = try #require(UserDefaults(suiteName: domain))
+			defer { defaults.removePersistentDomain(forName: domain) }
+			let settings = VaultAppearanceSettings(defaults: defaults)
+			let host = SheetTestHost(AppearanceFixture(settings: settings), size: NSSize(width: 200, height: 100))
+			defer { host.window.close() }
+			try await host.settle()
+
+			settings.selection = explicit
+			try await host.settle()
+			#expect(host.window.appearance == nil)
+			#expect(host.window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == explicit.nativeAppearance?.name)
+
+			settings.selection = .system
+			try await host.settle()
+			#expect(host.window.appearance == nil)
+			#expect(host.window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == system)
+		}
+	}
+}
+
+private struct AppearanceFixture: View {
+	let settings: VaultAppearanceSettings
+
+	var body: some View {
+		Color.clear.frame(width: 200, height: 100).vaultAppearance(settings.selection)
+	}
 }

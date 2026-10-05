@@ -14,14 +14,6 @@ enum VaultAppearance: String, CaseIterable, Identifiable {
 		}
 	}
 
-	var colorScheme: ColorScheme? {
-		switch self {
-		case .system: nil
-		case .light: .light
-		case .dark: .dark
-		}
-	}
-
 	var nativeAppearance: NSAppearance? {
 		switch self {
 		case .system: nil
@@ -44,5 +36,17 @@ final class VaultAppearanceSettings {
 	init(defaults: UserDefaults = .standard) {
 		self.defaults = defaults
 		selection = defaults.string(forKey: Self.defaultsKey).flatMap(VaultAppearance.init(rawValue:)) ?? .system
+	}
+}
+
+extension View {
+	/// Applies the person's appearance choice to the whole app; windows, sheets,
+	/// and popovers inherit it. `preferredColorScheme` is not used because it pins
+	/// a scene's window to Light or Dark and leaves it there when the choice
+	/// returns to System.
+	func vaultAppearance(_ selection: VaultAppearance) -> some View {
+		onChange(of: selection, initial: true) { _, selection in
+			NSApplication.shared.appearance = selection.nativeAppearance
+		}
 	}
 }
