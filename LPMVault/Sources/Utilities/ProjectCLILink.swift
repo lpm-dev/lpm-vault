@@ -94,11 +94,26 @@ enum ProjectCLILink {
 			case .invalidJSON: throw .invalidJSON
 			case .unsafeFile: throw .unsafeFile
 			case .tooLarge: throw .tooLarge
-			case .notFound, .readFailed: throw .writeFailed
-			case .vaultChanged: throw .vaultChanged
+			case .notFound, .readFailed, .writeFailed: throw .writeFailed
+			case .changed: throw .vaultChanged
 			}
 		} catch {
 			throw .writeFailed
+		}
+	}
+
+	/// `link(vaultId:folder:replacingVaultId:)` on the queue that orders the app's
+	/// `lpm.json` edits, returning why it failed.
+	static func linkInBackground(vaultId: String, folder: String, replacingVaultId: String? = nil) async -> ProjectCLILinkError? {
+		await withCheckedContinuation { continuation in
+			ProjectConfigFile.editQueue.async {
+				do throws(ProjectCLILinkError) {
+					try link(vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId)
+					continuation.resume(returning: nil)
+				} catch {
+					continuation.resume(returning: error)
+				}
+			}
 		}
 	}
 

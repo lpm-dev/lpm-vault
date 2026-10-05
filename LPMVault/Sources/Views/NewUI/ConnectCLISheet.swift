@@ -406,14 +406,7 @@ struct ConnectCLISheet: View {
 		linkError = nil
 		let vaultId = projectId
 		Task {
-			let failure = await Task.detached(priority: .userInitiated) { () -> ProjectCLILinkError? in
-				do throws(ProjectCLILinkError) {
-					try ProjectCLILink.link(vaultId: vaultId, folder: target, replacingVaultId: replacingVaultId)
-					return nil
-				} catch {
-					return error
-				}
-			}.value
+			let failure = await ProjectCLILink.linkInBackground(vaultId: vaultId, folder: target, replacingVaultId: replacingVaultId)
 			isLinking = false
 			linkError = failure
 			refreshStatus()
