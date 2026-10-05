@@ -12,7 +12,6 @@ struct VaultWorkspaceView: View {
 	@State private var selectedKey: String?
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
-	@State private var editingSession: VaultSecretEditingSession?
 	@State private var showsAccountSwitcher = false
 	@State private var sidebarWidth = VaultMetrics.sidebar
 	@State private var inspectorWidth = VaultMetrics.inspector
@@ -42,22 +41,18 @@ struct VaultWorkspaceView: View {
 	@State private var exportID: UUID?
 	@State private var copyAllTask: Task<Void, Never>?
 	@State private var copyAllID: UUID?
-	@State private var copyDraftTask: Task<Void, Never>?
-	@State private var copyDraftID: UUID?
+	@State private var copyUnsavedTask: Task<Void, Never>?
+	@State private var copyUnsavedID: UUID?
 	@State private var copyFeedback: VaultCopyFeedback?
 
 	private var project: VaultProject? { store.selectedProject }
 
-	private var removedDraft: VaultSecretEditingSession? {
-		guard let editingSession, editingSession.account == store.selectedAccount,
-			editingSession.requiresRecovery || (editingSession.editDraft.isDirty && !editingSession.targetExists(in: store)) else { return nil }
-		return editingSession
-	}
+	private var hasUnsavedRecovery: Bool { !store.keyDrafts.orphanIDs.isEmpty }
 
 	private var inspectorVisible: Bool {
 		guard !store.showAuthStatus else { return false }
-		if removedDraft != nil { return true }
-		guard showsInspector, !store.showAuthStatus, let project else { return false }
+		if hasUnsavedRecovery { return true }
+		guard showsInspector, let project else { return false }
 		return store.workspaceSnapshots[project.id] != nil
 	}
 
@@ -69,9 +64,6 @@ struct VaultWorkspaceView: View {
 	var body: some View {
 		workspaceDialogs
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
-		.onChange(of: store.isUnlocked) { _, unlocked in
-			if !unlocked { editingSession = nil }
-		}
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.onChange(of: store.selectedEnvironment) { _, environment in
 			resetCopyPresentation()
@@ -96,7 +88,6 @@ struct VaultWorkspaceView: View {
 			copyFeedback = nil
 		}
 		.onChange(of: store.selectedAccount) { _, _ in
-			editingSession = nil
 			conflictTarget = nil
 			showsAccountSwitcher = false
 		}
@@ -109,7 +100,6 @@ struct VaultWorkspaceView: View {
 			if obscured { dismissNativeDialogsForPrivacy() }
 		}
 		.onDisappear {
-			editingSession = nil
 			currentImportTask?.cancel()
 			currentImportTask = nil
 			currentImportID = nil
@@ -214,6 +204,7 @@ struct VaultWorkspaceView: View {
 								onCopyAll: copyAll,
 								onImport: importCurrentEnvironment,
 								onExport: exportCurrentEnvironment,
+								editedKeys: store.keyDrafts.editedKeys(in: project.id),
 								onAddSecret: presentAddSecret,
 								onCopySecret: copySecret,
 								onDeleteSecret: requestDeleteSecret
@@ -230,36 +221,32 @@ struct VaultWorkspaceView: View {
 					.clipped()
 					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 
-					if inspectorVisible, let removedDraft {
+					if inspectorVisible, hasUnsavedRecovery {
 						VaultResizablePane(width: budget.inspector.width, edge: .leading) {
-							VaultRemovedDraftView(session: removedDraft, onCopy: { copyRemovedDraft(removedDraft) }, onDiscard: { editingSession = nil; resetCopyPresentation() })
+							VaultKeyRecoveryView(
+								store: store,
+								copied: copyFeedback?.target,
+								onCopy: copyUnsavedValue,
+								onDiscard: discardUnsaved
+							)
 						}
-					} else if inspectorVisible, let project,
-						let snapshot = store.workspaceSnapshots[project.id]
-					{
+					} else if inspectorVisible, let project {
 						VaultResizablePane(width: budget.inspector.width, edge: .leading) {
 							VaultInspectorView(
 								store: store,
 								project: project,
-								snapshot: snapshot,
 								environments: store.orderedEnvironmentNames(for: project),
 								mode: mode,
 								selectedKey: selectedKey,
-								isCopied: selectedKey.map {
-									copyFeedback?.target == .secret(projectID: project.id, environment: store.selectedEnvironment, key: $0)
-								} ?? false,
+								copiedEnvironment: copiedEnvironment(in: project),
 								revealedKeys: $revealedKeys,
 								onClose: { showsInspector = false },
-								onCopySecret: copySecret,
-								onDeleteSecret: requestDeleteSecret,
-								onEditSessionCreated: { session in
-									guard removedDraft == nil,
-										session.projectID == store.selectedProjectId,
-										session.environment == store.selectedEnvironment
-									else { return }
-									editingSession = session
-									store.activeSecretEditingSession = session
-								}
+								onCopy: copyValue,
+								onDelete: requestDeleteSecret,
+								onAddElsewhere: { key, environment in
+									presentAddSecret(key: key, environment: environment)
+								},
+								onRenamed: followRename
 							)
 						}
 						.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
@@ -340,7 +327,7 @@ struct VaultWorkspaceView: View {
 			}
 		}
 		.sheet(item: $addSecretTarget) { target in
-			AddVariableSheet(store: store, projectId: target.projectId, environment: target.environment)
+			AddVariableSheet(store: store, projectId: target.projectId, environment: target.environment, initialKey: target.initialKey)
 				.vaultPrivacyProtected(isObscured)
 		}
 		.sheet(isPresented: $showPushConfirmation) {
@@ -432,19 +419,15 @@ struct VaultWorkspaceView: View {
 		), titleVisibility: .visible) {
 			if let target = deleteSecretTarget {
 				Button("Delete \"\(target.key)\" from \(VaultProject.displayName(for: target.environment))", role: .destructive) {
-					store.deleteSecret(
-						from: target.projectId,
-						environment: target.environment,
-						key: target.key
-					)
-					revealedKeys.remove(target.key)
-					if selectedKey == target.key { selectedKey = nil }
+					deleteSecret(target)
 					deleteSecretTarget = nil
 				}
 			}
 			Button("Cancel", role: .cancel) { deleteSecretTarget = nil }
 		} message: {
-			Text("Only the selected environment is changed.")
+			if let target = deleteSecretTarget {
+				Text("Only \(VaultProject.displayName(for: target.environment)) is changed.")
+			}
 		}
 		.alert("LPM Vault", isPresented: Binding(
 			get: { store.error != nil },
@@ -529,9 +512,13 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func presentAddSecret() {
+		presentAddSecret(key: "", environment: store.selectedEnvironment)
+	}
+
+	private func presentAddSecret(key: String, environment: String) {
 		guard addSecretTarget == nil, let project else { return }
 		store.recordUserActivity()
-		addSecretTarget = VaultSecretTarget(projectId: project.id, environment: store.selectedEnvironment)
+		addSecretTarget = VaultSecretTarget(projectId: project.id, environment: environment, initialKey: key)
 	}
 
 	private func dismissSearchFocus() {
@@ -558,6 +545,23 @@ struct VaultWorkspaceView: View {
 	private func requestDeleteSecret(_ key: String, _ environment: String) {
 		guard let project else { return }
 		deleteSecretTarget = VaultSecretDeleteTarget(projectId: project.id, environment: environment, key: key)
+	}
+
+	/// Deletes one environment's value along with any unsaved edit of it. The key
+	/// stays selected while other environments still have it.
+	private func deleteSecret(_ target: VaultSecretDeleteTarget) {
+		guard let project = store.projects.first(where: { $0.id == target.projectId }) else { return }
+		store.keyDrafts.discardEdits(deleting: target.key, from: target.environment, in: project)
+		store.deleteSecret(from: target.projectId, environment: target.environment, key: target.key)
+		if !project.environments.contains(where: { $0.key != target.environment && $0.value[target.key] != nil }) {
+			revealedKeys.remove(target.key)
+			if selectedKey == target.key { selectedKey = nil }
+		}
+	}
+
+	private func followRename(_ key: String, to newKey: String) {
+		if selectedKey == key { selectedKey = newKey }
+		if revealedKeys.remove(key) != nil { revealedKeys.insert(newKey) }
 	}
 
 	private func localStateRefreshBanner(_ message: String) -> some View {
@@ -604,6 +608,43 @@ struct VaultWorkspaceView: View {
 			ClipboardManager.shared.copy(ClipboardManager.dotenvText(for: [key: value]))
 		else { return }
 		copyFeedback = VaultCopyFeedback(target: .secret(projectID: projectID, environment: environment, key: key))
+	}
+
+	/// Copies what an inspector value field shows, after a refresh in progress
+	/// publishes current values.
+	private func copyValue(_ request: VaultValueCopy) {
+		guard store.canUseLocalSecrets, !store.showAuthStatus, project?.id == request.projectID else { return }
+		guard store.isRefreshingLocalState else {
+			copyCurrentValue(request)
+			return
+		}
+		Task { @MainActor in
+			await store.waitForLocalStateRefresh()
+			copyCurrentValue(request)
+		}
+	}
+
+	private func copyCurrentValue(_ request: VaultValueCopy) {
+		guard store.canUseLocalSecrets, !store.showAuthStatus,
+			let current = store.selectedProject, current.id == request.projectID
+		else { return }
+		let draft = store.keyDrafts.draft(VaultKeyDraft.ID(projectID: request.projectID, key: request.key))
+		let name = draft.map { EnvValidation.isValidVariableName($0.name) ? $0.name : $0.key } ?? request.key
+		var value = ""
+		if request.format.includesValue {
+			guard let shown = draft?.value(in: request.environment) ?? current.value(for: request.key, in: request.environment)
+			else { return }
+			value = shown
+		}
+		guard ClipboardManager.shared.copy(request.format.text(key: name, value: value)) else { return }
+		copyFeedback = VaultCopyFeedback(target: .secret(projectID: request.projectID, environment: request.environment, key: request.key))
+	}
+
+	private func copiedEnvironment(in project: VaultProject) -> String? {
+		guard case .secret(let projectID, let environment, let key) = copyFeedback?.target,
+			projectID == project.id, key == selectedKey
+		else { return nil }
+		return environment
 	}
 
 	private func copyAll() {
@@ -744,7 +785,6 @@ struct VaultWorkspaceView: View {
 
 	private func resetProjectPresentation() {
 		importReview = nil
-		if removedDraft == nil { editingSession = nil }
 		mode = .matrix
 		filter = .all
 		environmentViewMode = .table
@@ -761,30 +801,40 @@ struct VaultWorkspaceView: View {
 		resetCopyPresentation()
 	}
 
-	private func copyRemovedDraft(_ session: VaultSecretEditingSession) {
-		guard store.isUnlocked, !store.showAuthStatus,
-			copyDraftTask == nil, removedDraft?.id == session.id else { return }
+	/// Copies a value of an unsaved edit whose project or key is gone, after the
+	/// person authenticates, as long as that edit is still shown.
+	private func copyUnsavedValue(_ id: VaultKeyDraft.ID, _ environment: String) {
+		guard store.isUnlocked, !store.showAuthStatus, copyUnsavedTask == nil,
+			store.keyDrafts.orphanIDs.contains(id) else { return }
 		let requestID = UUID()
-		copyDraftID = requestID
-		copyDraftTask = Task { @MainActor in
+		copyUnsavedID = requestID
+		copyFeedback = nil
+		copyUnsavedTask = Task { @MainActor in
 			defer {
-				if copyDraftID == requestID {
-					copyDraftTask = nil
-					copyDraftID = nil
+				if copyUnsavedID == requestID {
+					copyUnsavedTask = nil
+					copyUnsavedID = nil
 				}
 			}
 			guard await store.authenticateForSensitiveAction(reason: "Copy your unsaved value"),
-				!Task.isCancelled, copyDraftID == requestID,
-				store.isUnlocked, !store.showAuthStatus, removedDraft?.id == session.id
+				!Task.isCancelled, copyUnsavedID == requestID,
+				store.isUnlocked, !store.showAuthStatus, store.keyDrafts.orphanIDs.contains(id),
+				let value = store.keyDrafts.draft(id)?.value(in: environment),
+				ClipboardManager.shared.copy(value)
 			else { return }
-			ClipboardManager.shared.copy(session.editDraft.draft)
+			copyFeedback = VaultCopyFeedback(target: .unsaved(id, environment: environment))
 		}
 	}
 
+	private func discardUnsaved(_ id: VaultKeyDraft.ID) {
+		resetCopyPresentation()
+		store.keyDrafts.discard(id)
+	}
+
 	private func resetCopyPresentation() {
-		copyDraftTask?.cancel()
-		copyDraftTask = nil
-		copyDraftID = nil
+		copyUnsavedTask?.cancel()
+		copyUnsavedTask = nil
+		copyUnsavedID = nil
 		copyAllTask?.cancel()
 		copyAllTask = nil
 		copyAllID = nil

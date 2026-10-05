@@ -1152,6 +1152,7 @@ final class VaultStore {
   var projects: [VaultProject] = [] {
     didSet {
       invalidateLocalStateRefresh()
+      keyDrafts.receive(projects)
       if !projects.elementsEqual(oldValue, by: { $0.id == $1.id }) {
         let projectIDs = Set(projects.lazy.map(\.id))
         projectCliAccess = projectCliAccess.filter { projectIDs.contains($0.key) }
@@ -1196,7 +1197,8 @@ final class VaultStore {
       workspaceSnapshotPublishTask = publishTask
     }
   }
-  @ObservationIgnored weak var activeSecretEditingSession: VaultSecretEditingSession?
+  /// Unsaved key edits of this session; cleared on lock and account changes.
+  let keyDrafts = VaultKeyDrafts()
   private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
   private(set) var workspaceSnapshotBuildCount = 0
   private let workspaceSnapshotBuilder = VaultWorkspaceSnapshotBuilder()
@@ -1246,7 +1248,9 @@ final class VaultStore {
   // Navigation state
   var selectedAccount: SelectedAccount = .personal {
     didSet {
-      if oldValue != selectedAccount { invalidateLocalStateRefresh() }
+      guard oldValue != selectedAccount else { return }
+      invalidateLocalStateRefresh()
+      keyDrafts.discardAll()
     }
   }
   var showAuthStatus: Bool = false
@@ -1807,9 +1811,6 @@ final class VaultStore {
       guard generation == localStateRefreshGeneration, selectedProjectId == projectID,
         selectedAccount == account
       else { continue }
-      if activeSecretEditingSession?.account == account {
-        activeSecretEditingSession?.receiveRefreshedProjects(snapshot.projects)
-      }
       pendingWorkspaceSnapshots = update.snapshots
       projects = snapshot.projects
       syncMetadata = snapshot.syncMetadata
@@ -3139,30 +3140,16 @@ final class VaultStore {
     )
   }
 
-  func updateSecretAndWait(
-    in projectId: String,
-    environment: String,
-    key: String,
-    expectedValue: String,
-    newValue: String
-  ) async -> Bool {
-    guard isUnlocked,
-      selectedProjectId == projectId,
-      let project = selectedProject
-    else { return false }
-    return await withCheckedContinuation { continuation in
-      enqueueProjectMutation(
-        base: project,
-        mutation: .updateSecret(
-          environment: environment,
-          key: key,
-          expectedValue: expectedValue,
-          replacement: newValue
-        ),
-        afterCompletion: { outcome in
-          continuation.resume(returning: outcome == .saved)
-        }
-      )
+  /// Saves a key's draft. A successful save ends the draft; a failed one keeps
+  /// it, updated to the latest saved state, and throws the reason.
+  func saveKeyDraft(_ id: VaultKeyDraft.ID) async throws(VaultKeyEditError) {
+    guard let edit = keyDrafts.beginSave(id) else { return }
+    do {
+      try await saveKeyEdit(edit, in: id.projectID)
+      keyDrafts.finishSave(id, succeeded: true, projects: projects)
+    } catch {
+      keyDrafts.finishSave(id, succeeded: false, projects: projects)
+      throw error
     }
   }
 
@@ -3895,7 +3882,7 @@ final class VaultStore {
 
   func lock() {
     unlockFailure = nil
-    activeSecretEditingSession = nil
+    keyDrafts.discardAll()
     cancelCliAccessChange()
     cliAccessLoadTask?.cancel()
     cliAccessLoadGeneration &+= 1

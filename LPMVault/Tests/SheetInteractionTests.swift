@@ -238,12 +238,15 @@ final class SheetTestHost<V: View> {
 		try enter(key, secure: false)
 	}
 
-	func enterValue(_ value: String) throws {
-		try enter(value, secure: true)
+	/// Types into the secure field at `index`, counting from the top.
+	func enterValue(_ value: String, at index: Int = 0) throws {
+		try enter(value, secure: true, index: index)
 	}
 
-	private func enter(_ text: String, secure: Bool) throws {
-		let field = try #require(textFields(in: view).first { ($0 is NSSecureTextField) == secure })
+	private func enter(_ text: String, secure: Bool, index: Int = 0) throws {
+		let fields = textFields(in: view).filter { ($0 is NSSecureTextField) == secure }
+		try #require(fields.indices.contains(index), "Missing text field \(index)")
+		let field = fields[index]
 		window.makeFirstResponder(field)
 		let editor = try #require(field.currentEditor() as? NSTextView)
 		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
@@ -273,7 +276,29 @@ final class SheetTestHost<V: View> {
 
 	var value: String { textFields(in: view).first { $0 is NSSecureTextField }?.stringValue ?? "" }
 
+	var secureValues: [String] { textFields(in: view).compactMap { ($0 as? NSSecureTextField)?.stringValue } }
+
 	var isKeyFieldEnabled: Bool { textFields(in: view).first { !($0 is NSSecureTextField) }?.isEnabled ?? false }
+
+	/// Icon controls that follow a value field in the key inspector, by the
+	/// distance from the field's trailing edge to the control's center.
+	enum ValueFieldControl: CGFloat {
+		case reveal = 13
+		case copy = 39
+		case generate = 77
+	}
+
+	/// Clicks an icon control of the secure value field at `index`, counting from
+	/// the top. Text recognition cannot find icons, and SwiftUI exposes no
+	/// accessibility tree without an assistive client, so the click is placed
+	/// from the field's AppKit frame.
+	func click(_ control: ValueFieldControl, ofValueAt index: Int = 0) throws {
+		view.layoutSubtreeIfNeeded()
+		let fields = textFields(in: view).filter { $0 is NSSecureTextField }
+		try #require(fields.indices.contains(index), "Missing value field \(index)")
+		let frame = fields[index].convert(fields[index].bounds, to: nil)
+		try NativeTestClick.send(to: window, at: NSPoint(x: frame.maxX + control.rawValue, y: frame.midY))
+	}
 
 	/// Bounds, in points from the bottom-left, of everything drawn over the solid
 	/// background within the bottom `band` points, plus the text recognized there.
@@ -452,30 +477,6 @@ struct SheetInteractionTests {
 		#expect(try await host.waitUntil { store.selectedProject?.value(for: "TOKEN", in: "default") == "cli-new" })
 	}
 
-	@Test("local refresh keeps inspector drafts after CLI edits or deletion", arguments: ["changed", "deleted", "empty-deleted"])
-	func localRefreshKeepsInspectorDrafts(change: String) async throws {
-		let original = change == "empty-deleted" ? "" : "old"
-		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": original]])
-		let host = SheetTestHost(InspectorInteractionFixture(store: store), size: NSSize(width: 300, height: 640))
-		defer { host.window.close() }
-		try await host.settle()
-		try host.enterValue("unsaved-draft")
-		try await host.settle()
-		if change == "changed" {
-			keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] = "cli-new"
-		} else {
-			keychain.envStorage["sheet-regression"]?.environments["default"]?.removeValue(forKey: "TOKEN")
-		}
-		await store.refreshLocalState()
-		try await host.settle()
-		#expect(host.value == "unsaved-draft")
-		#expect(try await host.waitForText(change == "changed" ? "changed outside" : "deleted outside"))
-		try host.returnWhileEditing("value", modifiers: [])
-		try await host.settle()
-		#expect(stored(keychain, "default", "TOKEN") == (change == "changed" ? "cli-new" : nil))
-		#expect(keychain.saveEnvironmentsCallCount == 0)
-	}
-
 	@Test("lock-screen encryption note stays centered above the bottom", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
 	func lockScreenFooter(size: NSSize, scheme: ColorScheme) async throws {
 		let (store, _) = makeStore()
@@ -490,81 +491,6 @@ struct SheetInteractionTests {
 		#expect((15...28).contains(note.bounds.minY))
 		let center = host.view.bounds.insetBy(dx: host.view.bounds.width * 0.25, dy: host.view.bounds.height * 0.25)
 		#expect(try await host.line(containing: "Unlock", rect: center).range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
-	}
-
-	@Test("inspector generation changes only the draft until saved", arguments: [ColorScheme.light, .dark])
-	func inspectorGeneratorDraft(scheme: ColorScheme) async throws {
-		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": "old"], "production": ["TOKEN": "production-old"]])
-		store.selectedEnvironment = "default"
-		let host = SheetTestHost(InspectorInteractionFixture(store: store).environment(\.colorScheme, scheme), size: NSSize(width: 300, height: 640))
-		defer { host.window.close() }
-		try await host.settle()
-		try await host.click("Generate")
-		let panel = try await host.generatorWindow()
-		try await host.click("Password", in: panel)
-		try await host.waitUntil { host.value != "old" }
-		let generated = host.value
-		#expect(generated.count == SecretValueGenerator.defaultLength)
-		#expect(generated != "old")
-		#expect(stored(keychain, "default", "TOKEN") == "old")
-		// Synthetic clicks bypass the popover's outside-click monitor, so close it with its button.
-		try await host.click("Generate")
-		#expect(try await host.waitForGeneratorDismissal(panel))
-		try await host.click("Revert")
-		try await host.waitUntil { host.value == "old" }
-		#expect(host.value == "old")
-		try await host.click("Generate")
-		let secondPanel = try await host.generatorWindow()
-		try await host.click("UUID v4", in: secondPanel, caseInsensitive: true)
-		try await host.waitUntil { UUID(uuidString: host.value) != nil }
-		let second = host.value
-		#expect(UUID(uuidString: second) != nil)
-		try await host.click("Save")
-		try await host.waitUntil { stored(keychain, "default", "TOKEN") == second }
-		#expect(stored(keychain, "default", "TOKEN") == second)
-		#expect(stored(keychain, "production", "TOKEN") == "production-old")
-	}
-
-	@Test("inspector generation cannot replace a pending save or conflicting draft", arguments: ["save", "conflict"])
-	func inspectorGeneratorUnavailable(reason: String) async throws {
-		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": "old"]])
-		let host = SheetTestHost(InspectorInteractionFixture(store: store), size: NSSize(width: 300, height: 640))
-		defer { host.window.close() }
-		try await host.settle()
-		try await host.click("Generate")
-		let panel = try await host.generatorWindow()
-		try await host.click("Hexadecimal", in: panel)
-		try await host.waitUntil { host.value != "old" }
-		let generated = host.value
-		let release = DispatchSemaphore(value: 0)
-		defer { release.signal() }
-		if reason == "save" {
-			let entered = DispatchSemaphore(value: 0)
-			keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
-			try await host.click("Save")
-			let didEnter = await withCheckedContinuation { continuation in
-				DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 3) == .success) }
-			}
-			try #require(didEnter)
-		} else {
-			store.projects[0].environments["default"]?["TOKEN"] = "external"
-			#expect(try await host.waitForText("This value changed outside the editor."))
-		}
-		#expect(try await host.waitForGeneratorDismissal(panel))
-		#expect(try await host.visibleGeneratorWindow() == nil)
-		try await host.click("Generate")
-		try await host.settle()
-		#expect(try await host.visibleGeneratorWindow() == nil)
-		#expect(host.value == generated)
-		if reason == "conflict" {
-			try await host.click("Revert")
-			try await host.waitUntil { host.value == "external" }
-			#expect(host.value == "external")
-			try await host.click("Generate")
-			let recoveredPanel = try await host.generatorWindow()
-			try await host.click("Generate")
-			#expect(try await host.waitForGeneratorDismissal(recoveredPanel))
-		}
 	}
 
 	@Test("cancel is unavailable while an add transaction is committing")
@@ -774,20 +700,6 @@ struct SheetInteractionTests {
 			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
 		}
 		try await host.settle()
-	}
-}
-
-private struct InspectorInteractionFixture: View {
-	@Bindable var store: VaultStore
-	@State private var revealedKeys: Set<String> = []
-
-	var body: some View {
-		if let project = store.selectedProject {
-			VaultInspectorView(store: store, project: project, snapshot: VaultWorkspaceSnapshot(project: project),
-				environments: ["default", "production"], mode: .matrix, selectedKey: "TOKEN", revealedKeys: $revealedKeys,
-				onClose: {}, onCopySecret: { _, _ in }, onDeleteSecret: { _, _ in })
-				.frame(width: 300, height: 640)
-		}
 	}
 }
 

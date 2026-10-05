@@ -611,7 +611,7 @@ struct AuditRegressionTests {
     #expect(!PendingKeyApproval.exactlyMatches([first, forged], pending: [first, second]))
   }
 
-  @Test("secret drafts refresh when clean and block stale saves after a conflict")
+  @Test("secret drafts refresh when clean and flag edits that changed elsewhere")
   func secretDraftConflictHandling() {
     var clean = VaultSecretEditDraft(value: "old")
     clean.receiveExternalValue("external")
@@ -624,82 +624,26 @@ struct AuditRegressionTests {
     edited.receiveExternalValue("external")
     #expect(edited.draft == "local-edit")
     #expect(edited.hasExternalConflict)
-    #expect(!edited.canSave)
-    #expect(edited.canRevert)
     edited.revert()
     #expect(edited.draft == "external")
     #expect(!edited.hasExternalConflict)
 
+    var kept = VaultSecretEditDraft(value: "old")
+    kept.draft = "local-edit"
+    kept.receiveExternalValue("external")
+    kept.keepDraft()
+    #expect(!kept.hasExternalConflict)
+    #expect(kept.isDirty)
+    #expect(kept.baseline == "external")
+
     var pendingSave = VaultSecretEditDraft(value: "old")
     pendingSave.draft = "requested"
-    #expect(pendingSave.canSave)
     pendingSave.receiveExternalValue("old")
-    #expect(pendingSave.canSave)
+    #expect(pendingSave.isDirty)
+    #expect(!pendingSave.hasExternalConflict)
     pendingSave.receiveExternalValue("requested")
     #expect(!pendingSave.isDirty)
     #expect(!pendingSave.hasExternalConflict)
-  }
-
-  @Test("secret editor admits only one save activation until durable completion")
-  func secretDraftSaveIsSingleFlight() {
-    var editor = VaultSecretEditDraft(value: "old")
-    editor.draft = "requested"
-
-    #expect(editor.beginSave() == "requested")
-    #expect(editor.isSaveInFlight)
-    #expect(editor.beginSave() == nil)
-    #expect(!editor.canSave)
-
-    editor.receiveExternalValue("requested")
-    #expect(editor.isSaveInFlight)
-    editor.finishSave(succeeded: true)
-
-    #expect(!editor.isSaveInFlight)
-    #expect(!editor.isDirty)
-    #expect(!editor.hasExternalConflict)
-  }
-
-  @Test("delayed save completion preserves newer external state")
-  func secretDraftCompletionDoesNotEraseNewerExternalState() {
-    var clean = VaultSecretEditDraft(value: "old")
-    clean.draft = "submitted"
-    #expect(clean.beginSave() != nil)
-    clean.receiveExternalValue("submitted")
-    clean.receiveExternalValue("newer")
-    clean.finishSave(succeeded: true)
-    #expect(clean.baseline == "newer")
-    #expect(clean.draft == "newer")
-    #expect(!clean.hasExternalConflict)
-
-    var edited = VaultSecretEditDraft(value: "old")
-    edited.draft = "submitted"
-    #expect(edited.beginSave() != nil)
-    edited.receiveExternalValue("submitted")
-    edited.draft = "next-edit"
-    edited.receiveExternalValue("newer")
-    edited.finishSave(succeeded: true)
-    #expect(edited.baseline == "newer")
-    #expect(edited.draft == "next-edit")
-    #expect(edited.hasExternalConflict)
-
-    var coalesced = VaultSecretEditDraft(value: "old")
-    coalesced.draft = "submitted"
-    #expect(coalesced.beginSave() != nil)
-    coalesced.receiveExternalValue("newer")
-    coalesced.finishSave(succeeded: true)
-    #expect(coalesced.baseline == "newer")
-    #expect(coalesced.draft == "submitted")
-    #expect(coalesced.hasExternalConflict)
-
-    var coalescedEdit = VaultSecretEditDraft(value: "old")
-    coalescedEdit.draft = "submitted"
-    #expect(coalescedEdit.beginSave() != nil)
-    coalescedEdit.draft = "next-edit"
-    coalescedEdit.receiveExternalValue("newer")
-    coalescedEdit.finishSave(succeeded: true)
-    #expect(coalescedEdit.baseline == "newer")
-    #expect(coalescedEdit.draft == "next-edit")
-    #expect(coalescedEdit.hasExternalConflict)
   }
 
   @Test("project rename controls use the canonical name contract")
