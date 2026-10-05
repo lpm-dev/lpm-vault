@@ -79,6 +79,7 @@ private struct VaultKeyEditor: View {
 	private enum Field: Hashable {
 		case name
 		case value(String)
+		case description
 	}
 
 	@Bindable var store: VaultStore
@@ -106,13 +107,16 @@ private struct VaultKeyEditor: View {
 		let issue = Self.issue(for: draft, in: project)
 		let saved = environments.filter { project.value(for: key, in: $0) != nil }
 		let cards = cardEnvironments(draft)
+		let descriptions = store.keyDescriptions[project.id]
 		VStack(spacing: 0) {
 			ScrollView {
 				VStack(alignment: .leading, spacing: 0) {
 					header(saved: saved, cards: cards)
-					nameSection(draft, issue: issue, saved: saved)
+					nameSection(draft, issue: issue, saved: saved, descriptions: descriptions)
 					VaultHairline()
 					valuesSection(draft, cards: cards)
+					VaultHairline()
+					descriptionSection(draft, descriptions: descriptions)
 				}
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
@@ -178,7 +182,9 @@ private struct VaultKeyEditor: View {
 		}
 	}
 
-	private func nameSection(_ draft: VaultKeyDraft?, issue: VaultKeyEditError?, saved: [String]) -> some View {
+	private func nameSection(
+		_ draft: VaultKeyDraft?, issue: VaultKeyEditError?, saved: [String], descriptions: ProjectKeyDescriptions?
+	) -> some View {
 		let name = draft?.name ?? key
 		let renamed = name != key
 		let focused = focus == .name
@@ -228,6 +234,14 @@ private struct VaultKeyEditor: View {
 					Text(scope)
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textTertiary)
+				}
+				if case .success(let rules)? = descriptions?.rules, rules.keys.contains(key) {
+					Text(rules.keys.contains(name)
+						? "lpm.json already has a rule for \(name), so the rule for \(key) stays."
+						: "Also moves its rule in lpm.json.")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.fixedSize(horizontal: false, vertical: true)
 				}
 			}
 			if let issue {
@@ -450,12 +464,73 @@ private struct VaultKeyEditor: View {
 			.vaultPointingHand()
 	}
 
+	private func descriptionSection(_ draft: VaultKeyDraft?, descriptions: ProjectKeyDescriptions?) -> some View {
+		let entry = draft?.keyDescription
+		let hasConflict = entry?.hasExternalConflict == true
+		return VStack(alignment: .leading, spacing: 8) {
+			HStack(spacing: 6) {
+				Text("DESCRIPTION").vaultSectionLabel()
+				if entry?.isDirty == true, !hasConflict {
+					VaultTagBadge(text: "CHANGED", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 9)
+				}
+				Spacer(minLength: 0)
+			}
+			switch descriptions?.rules {
+			case nil:
+				Text("Reading lpm.json…")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+			case .failure(let failure)?:
+				Text(failure.localizedDescription)
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			case .success(let rules)?:
+				if EnvValidation.isValidVariableName(draft?.name ?? key) {
+					TextField(
+						"Description",
+						text: descriptionBinding(saved: rules.descriptions[key] ?? ""),
+						prompt: Text("What it is for, who owns it, when to rotate it"),
+						axis: .vertical
+					)
+					.lineLimit(2...6)
+					.textFieldStyle(.plain)
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textPrimary)
+					.focused($focus, equals: .description)
+					.disabled(draft?.isSaveInFlight == true)
+					.padding(.horizontal, 10)
+					.padding(.vertical, 8)
+					.vaultInputField(focused: focus == .description, invalid: hasConflict)
+					if hasConflict {
+						cardMessage("Changed in lpm.json.") {
+							cardAction("Use latest") { edit { $0.revertKeyDescription() } }
+							cardAction("Keep mine") { edit { $0.keepKeyDescription() } }
+						}
+					} else {
+						Text("Stored in lpm.json, not encrypted")
+							.font(.system(size: 10.5))
+							.foregroundStyle(VaultPalette.textFaint)
+							.help(descriptions.map { "\($0.folder)/lpm.json, which the LPM CLI reads" } ?? "")
+					}
+				} else {
+					Text("Descriptions need a key name of letters, numbers, and underscores.")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.fixedSize(horizontal: false, vertical: true)
+				}
+			}
+		}
+		.padding(.horizontal, 18)
+		.padding(.vertical, 14)
+	}
+
 	private func footer(_ draft: VaultKeyDraft?, issue: VaultKeyEditError?) -> some View {
 		let changes = draft?.unsavedChangeCount ?? 0
 		let isSaving = draft?.isSaveInFlight == true
 		let canSave = draft?.canSave == true && issue == nil && store.canUseLocalSecrets
 		return VStack(alignment: .leading, spacing: 8) {
-			if let saveError {
+			if let saveError = draft?.saveError ?? saveError {
 				Text(saveError.localizedDescription)
 					.font(.system(size: 11))
 					.foregroundStyle(VaultPalette.redText)
@@ -489,6 +564,13 @@ private struct VaultKeyEditor: View {
 		Binding(
 			get: { store.keyDrafts.draft(id)?.name ?? key },
 			set: { name in edit { $0.name = name } }
+		)
+	}
+
+	private func descriptionBinding(saved: String) -> Binding<String> {
+		Binding(
+			get: { store.keyDrafts.draft(id)?.keyDescription?.draft ?? saved },
+			set: { text in edit { $0.setKeyDescription(text, saved: saved) } }
 		)
 	}
 
@@ -587,12 +669,17 @@ private struct VaultKeyEditor: View {
 			Self.issue(for: draft, in: project) == nil, store.canUseLocalSecrets
 		else { return }
 		let renamedTo = draft.isRenamed ? draft.name : nil
+		let generation = store.keyDrafts.generation
 		saveError = nil
 		Task { @MainActor in
+			guard generation == store.keyDrafts.generation else { return }
 			do throws(VaultKeyEditError) {
 				try await store.saveKeyDraft(id)
+				guard generation == store.keyDrafts.generation else { return }
 				if let renamedTo { onRenamed(key, renamedTo) }
 			} catch {
+				guard generation == store.keyDrafts.generation else { return }
+				if case .description(_, keySaved: true) = error, let renamedTo { onRenamed(key, renamedTo) }
 				saveError = error
 			}
 		}

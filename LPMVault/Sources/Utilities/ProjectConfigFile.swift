@@ -126,7 +126,7 @@ enum ProjectConfigFile {
 		}
 	}
 
-	private static func readRegularFile(at url: URL) throws -> Data {
+	static func readRegularFile(at url: URL) throws -> Data {
 		guard url.isFileURL else { throw FileError.unsafeFile }
 		let descriptor = url.withUnsafeFileSystemRepresentation { path in
 			guard let path else { return Int32(-1) }

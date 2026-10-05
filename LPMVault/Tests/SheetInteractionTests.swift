@@ -298,6 +298,11 @@ final class SheetTestHost<V: View> {
 		try enter(key, secure: false)
 	}
 
+	/// Types into the plain text field at `index`, counting from the top.
+	func enterText(_ text: String, at index: Int) throws {
+		try enter(text, secure: false, index: index)
+	}
+
 	/// Types into the secure field at `index`, counting from the top.
 	func enterValue(_ value: String, at index: Int = 0) throws {
 		try enter(value, secure: true, index: index)

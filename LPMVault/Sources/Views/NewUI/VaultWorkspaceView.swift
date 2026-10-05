@@ -66,6 +66,7 @@ struct VaultWorkspaceView: View {
 		workspaceDialogs
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
+		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
 		.onChange(of: store.selectedEnvironment) { _, environment in
 			resetCopyPresentation()
 			importReview = nil

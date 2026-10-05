@@ -6,6 +6,27 @@ import Testing
 
 @Suite("Key drafts")
 struct VaultKeyDraftTests {
+	@Test("description reconciliation keeps every edit and publishes conflict summaries", arguments: [100, 1_000])
+	@MainActor
+	func descriptionReconciliation(count: Int) {
+		let drafts = VaultKeyDrafts()
+		let keys = (0..<count).map { "KEY_\($0)" }
+		let project = VaultProject(id: "project", name: "Project", path: "", environments: ["default": Dictionary(uniqueKeysWithValues: keys.map { ($0, "value") })])
+		for key in keys { drafts.edit(project, key: key) { $0.setKeyDescription("Mine", saved: "Old") } }
+		let latest = Dictionary(uniqueKeysWithValues: keys.map { ($0, "Theirs") })
+		let started = ContinuousClock.now
+		drafts.receiveKeyDescriptions(latest, in: "project")
+		print("Description reconciliation \(count): \(started.duration(to: .now))")
+		#expect(drafts.drafts.count == count)
+		#expect(drafts.drafts.values.allSatisfy { $0.keyDescriptionChange == "Mine" && $0.hasConflict })
+		#expect(drafts.editedKeys(in: "project") == Set(keys))
+		var resolved = latest
+		resolved[keys[0]] = "Mine"
+		drafts.receiveKeyDescriptions(resolved, in: "project")
+		#expect(drafts.drafts.count == count - 1)
+		#expect(drafts.editedKeys(in: "project") == Set(keys.dropFirst()))
+	}
+
 	private let environments: [String: [String: String]] = [
 		"default": ["TOKEN": "dev"],
 		"staging": ["TOKEN": "stg"],
@@ -315,4 +336,50 @@ private final class ObservationFlag: @unchecked Sendable {
 	private var value = false
 	var isSet: Bool { lock.withLock { value } }
 	func set() { lock.withLock { value = true } }
+}
+
+@Suite("Key draft descriptions")
+struct VaultKeyDraftDescriptionTests {
+	private func makeDraft() -> VaultKeyDraft {
+		VaultKeyDraft(projectID: "project", projectName: "Project", key: "TOKEN", environments: ["default": ["TOKEN": "dev"]])
+	}
+
+	@Test("a description edit counts as a change and follows the saved one until edited")
+	func descriptionDraft() {
+		var draft = makeDraft()
+		draft.setKeyDescription("Old", saved: "Old")
+		#expect(!draft.isDirty)
+		draft.setKeyDescription("New", saved: "Old")
+		#expect(draft.unsavedChangeCount == 1)
+		#expect(draft.keyDescriptionChange == "New")
+		draft.receiveKeyDescription("New")
+		#expect(draft.keyDescription == nil)
+		#expect(!draft.isDirty)
+	}
+
+	@Test("an edited description that changed in lpm.json is a conflict until resolved", arguments: [true, false])
+	func descriptionConflict(keepMine: Bool) {
+		var draft = makeDraft()
+		draft.setKeyDescription("Mine", saved: "Old")
+		draft.receiveKeyDescription("Theirs")
+		#expect(draft.hasConflict)
+		if keepMine {
+			draft.keepKeyDescription()
+			#expect(draft.canSave)
+			#expect(draft.keyDescriptionChange == "Mine")
+		} else {
+			draft.revertKeyDescription()
+			#expect(!draft.isDirty)
+		}
+	}
+
+	@Test("revert drops the description edit with the rest")
+	func revertAll() {
+		var draft = makeDraft()
+		draft.name = "API_TOKEN"
+		draft.setKeyDescription("New", saved: "")
+		draft.revert()
+		#expect(!draft.isDirty)
+		#expect(draft.keyDescription == nil)
+	}
 }

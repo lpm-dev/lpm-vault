@@ -1199,6 +1199,9 @@ final class VaultStore {
   }
   /// Unsaved key edits of this session; cleared on lock and account changes.
   let keyDrafts = VaultKeyDrafts()
+  /// Key descriptions from each project's `lpm.json`, by project ID.
+  private(set) var keyDescriptions: [String: ProjectKeyDescriptions] = [:]
+  @ObservationIgnored private var keyDescriptionsTask: Task<Void, Never>?
   private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
   private(set) var workspaceSnapshotBuildCount = 0
   private let workspaceSnapshotBuilder = VaultWorkspaceSnapshotBuilder()
@@ -1251,6 +1254,7 @@ final class VaultStore {
       guard oldValue != selectedAccount else { return }
       invalidateLocalStateRefresh()
       keyDrafts.discardAll()
+      clearKeyDescriptions()
     }
   }
   var showAuthStatus: Bool = false
@@ -1821,6 +1825,7 @@ final class VaultStore {
       loadEnvironmentOrders()
       reconcileNavigationState()
       selectedProjectCliAccess = selectedProjectId.flatMap { projectCliAccess[$0] }
+      reloadKeyDescriptions()
       return
     }
     failLocalStateRefresh(.unavailable)
@@ -3116,17 +3121,146 @@ final class VaultStore {
     }
   }
 
-  /// Saves a key's draft. A successful save ends the draft; a failed one keeps
-  /// it, updated to the latest saved state, and throws the reason.
+  /// Saves a key's draft: its rename and values to the Keychain in one
+  /// transaction, then its description, and a renamed key's rule, to `lpm.json`.
+  /// A successful save ends the draft; a failed one keeps it, updated to the
+  /// latest saved state, and throws the reason.
   func saveKeyDraft(_ id: VaultKeyDraft.ID) async throws(VaultKeyEditError) {
-    guard let edit = keyDrafts.beginSave(id) else { return }
+    guard let draft = keyDrafts.draft(id), let edit = keyDrafts.beginSave(id) else { return }
+    let generation = keyDrafts.generation
+    let description = draft.keyDescriptionChange
+    var schemaChange = ProjectEnvSchemaFile.Change()
+    var schemaFolder: String?
+    if let pending = draft.pendingSchemaRename {
+      schemaFolder = pending.folder
+      schemaChange.rename = .init(from: pending.from, to: edit.newKey)
+    } else {
+      if let cached = keyDescriptions[id.projectID], let project = selectedProject,
+        cached.folder != keyDescriptionFolder(for: project)
+      {
+        keyDrafts.finishSave(id, succeeded: false, projects: projects)
+        reloadKeyDescriptions()
+        throw .description("The project folder changed. Review its descriptions, then save again.", keySaved: false)
+      }
+      switch keyDescriptions[id.projectID]?.rules {
+      case .success?:
+        schemaFolder = keyDescriptions[id.projectID]?.folder
+      case .failure(let failure)? where description != nil:
+        keyDrafts.finishSave(id, succeeded: false, projects: projects)
+        throw .description(failure.localizedDescription, keySaved: false)
+      case nil where description != nil:
+        keyDrafts.finishSave(id, succeeded: false, projects: projects)
+        throw .description("lpm.json has not been read yet.", keySaved: false)
+      default:
+        if edit.isRename, let project = selectedProject {
+          let folder = keyDescriptionFolder(for: project)
+          if !folder.isEmpty { schemaFolder = folder }
+        }
+      }
+      if edit.isRename, schemaFolder != nil {
+        schemaChange.rename = .init(from: id.key, to: edit.newKey)
+      }
+    }
+    if let description {
+      var expected = draft.keyDescription?.baseline
+      if edit.isRename, let descriptions = keyDescriptions[id.projectID],
+        case .success(let rules) = descriptions.rules, rules.keys.contains(edit.newKey)
+      {
+        expected = rules.descriptions[edit.newKey] ?? ""
+      }
+      schemaChange.description = .init(key: edit.newKey, text: description, expectedText: expected)
+    }
+
     do {
       try await saveKeyEdit(edit, in: id.projectID)
-      keyDrafts.finishSave(id, succeeded: true, projects: projects)
     } catch {
-      keyDrafts.finishSave(id, succeeded: false, projects: projects)
+      if generation == keyDrafts.generation { keyDrafts.finishSave(id, succeeded: false, projects: projects) }
       throw error
     }
+    guard generation == keyDrafts.generation, isUnlocked else { throw .targetUnavailable }
+    guard let schemaFolder, !schemaFolder.isEmpty, !schemaChange.isEmpty else {
+      keyDrafts.finishSave(id, succeeded: true, projects: projects)
+      return
+    }
+
+    let projectID = id.projectID
+    let result = await ProjectEnvSchemaFile.save(schemaChange, inFolder: schemaFolder, vaultID: projectID)
+    guard generation == keyDrafts.generation, isUnlocked else { throw .targetUnavailable }
+    switch result {
+    case .success(let rules):
+      keyDrafts.finishSave(id, succeeded: true, projects: projects)
+      if let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == schemaFolder {
+        publishKeyDescriptions(ProjectKeyDescriptions(folder: schemaFolder, rules: .success(rules)), for: projectID)
+      }
+    case .failure(let failure):
+      let keySaved = edit.isRename || !edit.values.isEmpty || draft.pendingSchemaRename != nil
+      let saveError = VaultKeyEditError.description(failure.localizedDescription, keySaved: keySaved)
+      if keySaved {
+        keyDrafts.finishSave(id, succeeded: true, projects: projects)
+        if let project = projects.first(where: { $0.id == projectID }), project.hasLoadedEnvironments {
+          keyDrafts.edit(project, key: edit.newKey) { retained in
+            if let description {
+              retained.setKeyDescription(description, saved: schemaChange.description?.expectedText ?? "")
+            }
+            if let rename = schemaChange.rename {
+              retained.pendingSchemaRename = .init(folder: schemaFolder, from: rename.from)
+            }
+            retained.saveError = saveError
+          }
+        }
+      } else {
+        keyDrafts.finishSave(id, succeeded: false, projects: projects)
+        if let project = projects.first(where: { $0.id == projectID }) {
+          keyDrafts.edit(project, key: id.key) { $0.saveError = saveError }
+        }
+      }
+      if failure == .changed {
+        let rules = await ProjectEnvSchemaFile.loadRules(inFolder: schemaFolder, vaultID: projectID)
+        guard generation == keyDrafts.generation, isUnlocked else { throw .targetUnavailable }
+        if let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == schemaFolder {
+          publishKeyDescriptions(ProjectKeyDescriptions(folder: schemaFolder, rules: rules), for: projectID)
+        }
+      }
+      throw saveError
+    }
+  }
+
+  // MARK: - Key descriptions
+
+  /// The folder whose `lpm.json` holds a project's key descriptions: the one the
+  /// CLI was connected in, or else the project's own folder.
+  func keyDescriptionFolder(for project: VaultProject) -> String {
+    ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
+  }
+
+  /// Rereads the selected project's key descriptions from its `lpm.json`.
+  func reloadKeyDescriptions() {
+    keyDescriptionsTask?.cancel()
+    guard isUnlocked, let project = selectedProject else { return }
+    let projectID = project.id
+    let folder = keyDescriptionFolder(for: project)
+    let session = vaultSessionGeneration
+    let account = selectedAccount
+    keyDescriptionsTask = Task { [weak self] in
+      let rules = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: projectID)
+      guard let self, !Task.isCancelled, isUnlocked, session == vaultSessionGeneration, selectedAccount == account
+      else { return }
+      publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, rules: rules), for: projectID)
+    }
+  }
+
+  private func publishKeyDescriptions(_ descriptions: ProjectKeyDescriptions, for projectID: String) {
+    guard keyDescriptions[projectID] != descriptions else { return }
+    keyDescriptions[projectID] = descriptions
+    if case .success(let rules) = descriptions.rules {
+      keyDrafts.receiveKeyDescriptions(rules.descriptions, ruleKeys: rules.keys, folder: descriptions.folder, in: projectID)
+    }
+  }
+
+  private func clearKeyDescriptions() {
+    keyDescriptionsTask?.cancel()
+    keyDescriptionsTask = nil
+    keyDescriptions = [:]
   }
 
   /// Saves an inspector edit of one key — a rename, new values, or both — in a
@@ -3859,6 +3993,7 @@ final class VaultStore {
   func lock() {
     unlockFailure = nil
     keyDrafts.discardAll()
+    clearKeyDescriptions()
     cancelCliAccessChange()
     cliAccessLoadTask?.cancel()
     cliAccessLoadGeneration &+= 1
