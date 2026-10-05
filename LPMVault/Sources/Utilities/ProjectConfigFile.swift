@@ -5,13 +5,15 @@ import Foundation
 enum ProjectConfigFile {
 	private static let maximumBytes = 16 * 1024 * 1024
 
-	enum FileError: Error {
+	enum FileError: Error, Equatable {
 		case notFound
 		case unsafeFile
 		case tooLarge
 		case readFailed
 		case invalidJSON
-		case vaultChanged
+		/// The file changed while it was being updated, or no longer matches what the edit expects.
+		case changed
+		case writeFailed(String)
 	}
 
 	enum VaultWritePolicy {
@@ -19,6 +21,14 @@ enum ProjectConfigFile {
 		case unlinked
 		case replacing(String)
 	}
+
+	/// Writes `data` over `url` with `permissions`, running the check right before the replacement.
+	typealias FileWriter = (_ data: Data, _ url: URL, _ permissions: mode_t, _ replaceExisting: Bool, _ check: @escaping () throws -> Void) throws -> Void
+
+	/// The app's `lpm.json` edits run in order here, off the main thread and
+	/// Swift's cooperative pool, because each waits for the CLI's config lock for
+	/// as long as the CLI holds it.
+	static let editQueue = DispatchQueue(label: "dev.lpm.vault.lpm-json", qos: .userInitiated)
 
 	static func readObject(at url: URL) -> [String: Any]? {
 		guard let data = try? readRegularFile(at: url),
@@ -63,67 +73,103 @@ enum ProjectConfigFile {
 		return vaultId
 	}
 
-	/// Adds or replaces the vault ID without following an existing symlink.
-	/// Existing malformed or oversized files are left untouched.
+	/// Adds or replaces the vault ID, keeping the rest of the file. Like the CLI,
+	/// a new `vault` field goes last and an existing one keeps its place.
 	static func writeVaultID(
 		_ vaultId: String,
 		to url: URL,
 		policy: VaultWritePolicy = .replaceAny,
-		fileWriter: (Data, URL, Bool, @escaping () throws -> Void) throws -> Void = { data, url, replaceExisting, validation in
-			try SecureFileWriter.write(data, to: url, permissions: 0o644, replaceExisting: replaceExisting, beforeReplacement: validation)
-		}
+		fileWriter: FileWriter = writeSecurely
 	) throws {
-		let object: [String: Any]
-		let originalData: Data?
-		do {
-			let data = try readRegularFile(at: url)
-			guard let existing = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-			else { throw FileError.invalidJSON }
-			object = existing
-			originalData = data
-		} catch FileError.notFound {
-			object = [:]
-			originalData = nil
-		}
-		switch policy {
-		case .replaceAny: break
-		case .unlinked, .replacing:
-			let existing = object["vault"]
-			guard existing == nil || existing is NSNull || existing is String else {
-				throw FileError.invalidJSON
-			}
-			let existingID = existing as? String
-			switch policy {
-			case .replaceAny: break
-			case .unlinked:
-				guard existingID == nil || existingID == vaultId else { throw FileError.vaultChanged }
-			case .replacing(let expectedID):
-				guard existingID == expectedID || existingID == vaultId else { throw FileError.vaultChanged }
-			}
-		}
-
-		if object["vault"] as? String == vaultId { return }
-		var updated = object
-		updated["vault"] = vaultId
-		guard JSONSerialization.isValidJSONObject(updated) else {
-			throw FileError.invalidJSON
-		}
-		let data = try JSONSerialization.data(
-			withJSONObject: updated,
-			options: [.prettyPrinted, .sortedKeys]
-		)
-		do {
-			try fileWriter(
-				data, url, originalData != nil, {
-					let current: Data?
-					do { current = try readRegularFile(at: url) }
-					catch FileError.notFound { current = nil }
-					guard current == originalData else { throw FileError.vaultChanged }
+		try update(at: url, fileWriter: fileWriter) { document in
+			if case .replaceAny = policy {} else {
+				let linked: String?
+				switch document["vault"] {
+				case nil, .null?: linked = nil
+				case .string(let id)?: linked = id
+				case _?: throw FileError.invalidJSON
 				}
-			)
-		} catch SecureFileWriter.WriteError.replaceFailed(let code) where code == EEXIST {
-			throw FileError.vaultChanged
+				switch policy {
+				case .replaceAny: break
+				case .unlinked:
+					guard linked == nil || linked == vaultId else { throw FileError.changed }
+				case .replacing(let expected):
+					guard linked == expected || linked == vaultId else { throw FileError.changed }
+				}
+			}
+			document.set(.string(vaultId), forKey: "vault")
 		}
+	}
+
+	/// Changes the `lpm.json` at `url` the way the CLI does: under its config
+	/// lock, keeping member order, rendered like serde_json, and written only
+	/// when the content changes. `change` gets the document, or an empty object
+	/// when the file is missing; its errors pass through.
+	static func update<T>(
+		at url: URL,
+		fileWriter: FileWriter = writeSecurely,
+		_ change: (inout LPMConfigJSON) throws -> T
+	) throws -> T {
+		try withConfigLock(in: url.deletingLastPathComponent()) {
+			let original: Data?
+			do {
+				original = try readRegularFile(at: url)
+			} catch FileError.notFound {
+				original = nil
+			}
+			var document = LPMConfigJSON.object([])
+			if let original {
+				guard let parsed = try? LPMConfigJSON(parsing: original), case .object = parsed else {
+					throw FileError.invalidJSON
+				}
+				document = parsed
+			}
+			let unchanged = document
+			let result = try change(&document)
+			guard document != unchanged else { return result }
+
+			let data: Data
+			do { data = try document.renderedData(maximumBytes: maximumBytes) } catch { throw FileError.tooLarge }
+			var permissions = mode_t(0o644)
+			var metadata = stat()
+			if original != nil, lstat(url.path, &metadata) == 0 { permissions = metadata.st_mode & 0o777 }
+			do {
+				try fileWriter(data, url, permissions, original != nil) {
+					// The lock orders CLI edits; an editor saving meanwhile does not take it.
+					let current: Data?
+					do { current = try readRegularFile(at: url) } catch FileError.notFound { current = nil }
+					guard current == original else { throw FileError.changed }
+				}
+			} catch SecureFileWriter.WriteError.replaceFailed(let code) where code == EEXIST {
+				throw FileError.changed
+			}
+			return result
+		}
+	}
+
+	static func writeSecurely(_ data: Data, to url: URL, permissions: mode_t, replaceExisting: Bool, check: @escaping () throws -> Void) throws {
+		try SecureFileWriter.write(data, to: url, permissions: permissions, replaceExisting: replaceExisting, beforeReplacement: check)
+	}
+
+	/// Runs `body` holding the exclusive `flock` the CLI takes on `.lpm/.config.lock`.
+	private static func withConfigLock<T>(in folder: URL, _ body: () throws -> T) throws -> T {
+		let stateDirectory = folder.appendingPathComponent(".lpm", isDirectory: true)
+		if mkdir(stateDirectory.path, 0o755) != 0, errno != EEXIST {
+			throw FileError.writeFailed(String(cString: strerror(errno)))
+		}
+		var metadata = stat()
+		guard lstat(stateDirectory.path, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFDIR else { throw FileError.unsafeFile }
+		let lockPath = stateDirectory.appendingPathComponent(".config.lock").path
+		let descriptor = open(lockPath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
+		guard descriptor >= 0 else {
+			throw errno == ELOOP ? FileError.unsafeFile : FileError.writeFailed(String(cString: strerror(errno)))
+		}
+		defer { close(descriptor) }
+		guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG else { throw FileError.unsafeFile }
+		while flock(descriptor, LOCK_EX) != 0 {
+			guard errno == EINTR else { throw FileError.writeFailed(String(cString: strerror(errno))) }
+		}
+		return try body()
 	}
 
 	static func readRegularFile(at url: URL) throws -> Data {

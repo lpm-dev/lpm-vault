@@ -2591,12 +2591,12 @@ final class VaultStore {
 
   // MARK: - lpm.json Integration
 
-  /// Write or update vault ID in lpm.json.
-  /// Preserves existing keys (runtime, env, tasks, tools, services).
+  /// Writes the vault ID into the project folder's lpm.json, keeping its other
+  /// settings, without waiting on the main thread for the CLI's config lock.
   private func writeLpmJson(vaultId: String, projectPath: String) {
     guard !projectPath.isEmpty else { return }
     let url = URL(fileURLWithPath: projectPath).appendingPathComponent("lpm.json")
-    try? ProjectConfigFile.writeVaultID(vaultId, to: url)
+    ProjectConfigFile.editQueue.async { try? ProjectConfigFile.writeVaultID(vaultId, to: url) }
   }
 
   /// Remove from sidebar only — Keychain data stays.
