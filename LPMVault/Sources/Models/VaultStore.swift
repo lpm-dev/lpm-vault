@@ -1130,6 +1130,15 @@ enum AddSecretError: LocalizedError, Sendable, Equatable {
   }
 }
 
+/// How a queued project mutation ended.
+enum ProjectMutationOutcome: Equatable, Sendable {
+  case saved
+  /// Another process changed the project first; its latest state is published.
+  case changed
+  case unavailable
+  case failed(String)
+}
+
 enum AddSecretResult: Sendable, Equatable {
   case success
   case failure(AddSecretError)
@@ -3150,10 +3159,52 @@ final class VaultStore {
           expectedValue: expectedValue,
           replacement: newValue
         ),
-        afterCompletion: { succeeded in
-          continuation.resume(returning: succeeded)
+        afterCompletion: { outcome in
+          continuation.resume(returning: outcome == .saved)
         }
       )
+    }
+  }
+
+  /// Saves an inspector edit of one key — a rename, new values, or both — in a
+  /// single transaction. Conflicts are thrown for the editor to show next to the
+  /// values rather than raised as an alert.
+  func saveKeyEdit(_ edit: VaultKeyEdit, in projectId: String) async throws(VaultKeyEditError) {
+    guard isUnlocked else { throw .vaultLocked }
+    guard selectedProjectId == projectId, let project = selectedProject, project.hasLoadedEnvironments else {
+      throw .targetUnavailable
+    }
+    switch edit.applied(to: project.environments) {
+    case .failure(let failure):
+      throw VaultKeyEditError(failure, newKey: edit.newKey)
+    case .success(let environments) where environments == project.environments:
+      return
+    case .success:
+      break
+    }
+    let outcome = await withCheckedContinuation { continuation in
+      enqueueProjectMutation(
+        base: project,
+        mutation: .editKey(edit),
+        reportsFailures: false,
+        afterCompletion: { continuation.resume(returning: $0) }
+      )
+    }
+    switch outcome {
+    case .saved:
+      return
+    case .changed:
+      // The latest project is published; say why the edit no longer applies to it.
+      if let latest = projects.first(where: { $0.id == projectId }),
+        case .failure(let failure) = edit.applied(to: latest.environments)
+      {
+        throw VaultKeyEditError(failure, newKey: edit.newKey)
+      }
+      throw .changed
+    case .unavailable:
+      throw .targetUnavailable
+    case .failed(let message):
+      throw .persistence(message)
     }
   }
 
@@ -6034,7 +6085,8 @@ final class VaultStore {
     base project: VaultProject,
     mutation: VaultProjectMutation,
     afterCommit: @escaping @MainActor (VaultProject) -> Void = { _ in },
-    afterCompletion: @escaping @MainActor (Bool) -> Void = { _ in }
+    reportsFailures: Bool = true,
+    afterCompletion: @escaping @MainActor (ProjectMutationOutcome) -> Void = { _ in }
   ) {
     cancelLocalEnvImports(projectId: project.id)
     invalidateProjectLoad()
@@ -6051,11 +6103,11 @@ final class VaultStore {
         mutation: mutation
       )
       guard let self else {
-        afterCompletion(false)
+        afterCompletion(.unavailable)
         return
       }
       guard sessionGeneration == vaultSessionGeneration, isUnlocked else {
-        afterCompletion(false)
+        afterCompletion(.unavailable)
         return
       }
       switch result {
@@ -6064,22 +6116,26 @@ final class VaultStore {
         applySyncMetadata(persisted.syncMetadata, for: persisted.project.id)
         error = persisted.warning
         afterCommit(persisted.project)
-        afterCompletion(true)
+        afterCompletion(.saved)
       case .conflict(let latest, let metadata):
         updateProjectInPlace(latest)
         applySyncMetadata(metadata, for: latest.id)
-        error =
-          "This env project changed in another LPM process. Review the latest values and retry."
-        afterCompletion(false)
+        if reportsFailures {
+          error =
+            "This env project changed in another LPM process. Review the latest values and retry."
+        }
+        afterCompletion(.changed)
       case .targetUnavailable:
-        error = "The target env project changed before the update was saved."
-        afterCompletion(false)
+        if reportsFailures {
+          error = "The target env project changed before the update was saved."
+        }
+        afterCompletion(.unavailable)
       case .failure(let persistenceError):
-        error = persistenceError.description
-		if case .transactionOutcomeIndeterminate = persistenceError {
+        if reportsFailures { error = persistenceError.description }
+        if case .transactionOutcomeIndeterminate = persistenceError {
           _ = await loadProjects()
         }
-        afterCompletion(false)
+        afterCompletion(.failed(persistenceError.description))
       }
     }
     projectMutationTask = task

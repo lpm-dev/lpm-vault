@@ -1,0 +1,196 @@
+import Foundation
+import Testing
+
+@testable import LPMVault
+
+@Suite("Key edits")
+struct VaultKeyEditTests {
+	private let environments: [String: [String: String]] = [
+		"default": ["STRIPE_KEY": "sk_dev", "OTHER": "other"],
+		"staging": ["STRIPE_KEY": "sk_staging"],
+		"production": ["DATABASE_URL": "postgres://prod"],
+	]
+
+	@Test("a rename moves the key in every environment that has it")
+	func renameMovesKeyEverywhere() throws {
+		let edit = VaultKeyEdit(key: "STRIPE_KEY", environments: environments, newKey: "STRIPE_SECRET_KEY")
+		let result = try edit.applied(to: environments).get()
+		#expect(result["default"] == ["STRIPE_SECRET_KEY": "sk_dev", "OTHER": "other"])
+		#expect(result["staging"] == ["STRIPE_SECRET_KEY": "sk_staging"])
+		#expect(result["production"] == environments["production"])
+		#expect(VaultKeyEdit.environments(containing: "STRIPE_KEY", in: environments) == ["default", "staging"])
+	}
+
+	@Test("renaming a key that exists in one environment aligns it with the others")
+	func renameFixesDrift() throws {
+		let drifted: [String: [String: String]] = [
+			"default": ["STRIPE_SECRET_KEY": "sk_dev"],
+			"staging": ["STRIPE_SECRET": "sk_staging"],
+		]
+		let edit = VaultKeyEdit(key: "STRIPE_SECRET", environments: drifted, newKey: "STRIPE_SECRET_KEY")
+		let result = try edit.applied(to: drifted).get()
+		#expect(result == ["default": ["STRIPE_SECRET_KEY": "sk_dev"], "staging": ["STRIPE_SECRET_KEY": "sk_staging"]])
+	}
+
+	@Test("values update existing entries and add the key where it was missing")
+	func valuesUpdateAndAdd() throws {
+		let edit = VaultKeyEdit(
+			key: "STRIPE_KEY", environments: environments, newKey: "STRIPE_SECRET_KEY",
+			values: ["default": "sk_dev_2", "production": "sk_live"])
+		let result = try edit.applied(to: environments).get()
+		#expect(result["default"] == ["STRIPE_SECRET_KEY": "sk_dev_2", "OTHER": "other"])
+		#expect(result["staging"] == ["STRIPE_SECRET_KEY": "sk_staging"])
+		#expect(result["production"] == ["DATABASE_URL": "postgres://prod", "STRIPE_SECRET_KEY": "sk_live"])
+	}
+
+	@Test("a rename or addition never merges two keys", arguments: [
+		("OTHER", nil as String?, "default", "OTHER"),
+		("other", nil, "default", "OTHER"),
+		("DATABASE_URL", "production", "production", "DATABASE_URL"),
+		("database_url", "production", "production", "DATABASE_URL"),
+	])
+	func collisions(newKey: String, addedTo: String?, environment: String, existing: String) {
+		let edit = VaultKeyEdit(
+			key: "STRIPE_KEY", environments: environments, newKey: newKey,
+			values: addedTo.map { [$0: "value"] } ?? [:])
+		#expect(edit.applied(to: environments) == .failure(.collision(environment: environment, existingKey: existing)))
+	}
+
+	@Test("changing only the letter case of the key is a rename, not a collision")
+	func caseOnlyRename() throws {
+		let lower: [String: [String: String]] = ["default": ["stripe_key": "sk"]]
+		let edit = VaultKeyEdit(key: "stripe_key", environments: lower, newKey: "STRIPE_KEY")
+		#expect(try edit.applied(to: lower).get() == ["default": ["STRIPE_KEY": "sk"]])
+	}
+
+	@Test("a new name outside the CLI's variable rules is rejected", arguments: ["1STRIPE", "STRIPE-KEY", "", "STRIPE KEY"])
+	func invalidNames(newKey: String) {
+		let edit = VaultKeyEdit(key: "STRIPE_KEY", environments: environments, newKey: newKey)
+		#expect(edit.applied(to: environments) == .failure(.invalidName))
+	}
+
+	@Test("a value-only edit does not re-validate an existing key name")
+	func valueEditKeepsLegacyName() throws {
+		let legacy: [String: [String: String]] = ["default": ["legacy-name": "old"]]
+		let edit = VaultKeyEdit(key: "legacy-name", environments: legacy, values: ["default": "new"])
+		#expect(try edit.applied(to: legacy).get() == ["default": ["legacy-name": "new"]])
+	}
+
+	@Test("changes made elsewhere after the edit began stop it", arguments: ["value", "added", "removed", "environment", "target"])
+	func changedElsewhere(change: String) {
+		let edit = VaultKeyEdit(
+			key: "STRIPE_KEY", environments: environments, newKey: "STRIPE_SECRET_KEY",
+			values: ["production": "sk_live"])
+		var latest = environments
+		switch change {
+		case "value": latest["staging"]?["STRIPE_KEY"] = "rotated"
+		case "added": latest["production"]?["STRIPE_KEY"] = "from-cli"
+		case "removed": latest["default"]?.removeValue(forKey: "STRIPE_KEY")
+		case "environment": latest.removeValue(forKey: "staging")
+		default: latest.removeValue(forKey: "production")
+		}
+		#expect(edit.applied(to: latest) == .failure(.changed))
+	}
+
+	@Test("an edit that changes nothing leaves the environments as they are")
+	func noChange() throws {
+		let edit = VaultKeyEdit(key: "STRIPE_KEY", environments: environments, values: ["default": "sk_dev"])
+		#expect(try edit.applied(to: environments).get() == environments)
+	}
+}
+
+@Suite("Saving key edits", .serialized)
+@MainActor
+struct VaultKeyEditStoreTests {
+	private let environments: [String: [String: String]] = [
+		"default": ["STRIPE_KEY": "sk_dev"],
+		"staging": ["STRIPE_KEY": "sk_staging"],
+		"production": [:],
+	]
+
+	@Test("a rename with new values is written in one transaction and marked for sync")
+	func savesAtomically() async throws {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		let edit = VaultKeyEdit(
+			key: "STRIPE_KEY", environments: environments, newKey: "STRIPE_SECRET_KEY",
+			values: ["default": "sk_dev_2", "production": "sk_live"])
+		try await store.saveKeyEdit(edit, in: "project")
+		let expected: [String: [String: String]] = [
+			"default": ["STRIPE_SECRET_KEY": "sk_dev_2"],
+			"staging": ["STRIPE_SECRET_KEY": "sk_staging"],
+			"production": ["STRIPE_SECRET_KEY": "sk_live"],
+		]
+		#expect(keychain.envStorage["project"]?.environments == expected)
+		#expect(store.selectedProject?.environments == expected)
+		#expect(keychain.applyVaultTransactionCallCount == 1)
+		#expect(keychain.storedSyncMetadata(vaultId: "project")?.isDirty == true)
+		#expect(store.error == nil)
+	}
+
+	@Test("a CLI change after the edit began is reported to the editor, not raised as an alert")
+	func cliChangeIsAConflict() async throws {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		let edit = VaultKeyEdit(key: "STRIPE_KEY", environments: environments, newKey: "STRIPE_SECRET_KEY")
+		keychain.simulateCLISet(vaultId: "project", environment: "staging", key: "STRIPE_KEY", value: "rotated")
+		await #expect(throws: VaultKeyEditError.changed) {
+			try await store.saveKeyEdit(edit, in: "project")
+		}
+		#expect(store.error == nil)
+		#expect(store.selectedProject?.environments["staging"] == ["STRIPE_KEY": "rotated"])
+		#expect(keychain.envStorage["project"]?.environments["default"] == ["STRIPE_KEY": "sk_dev"])
+	}
+
+	@Test("a key the CLI added under the new name is reported as a collision")
+	func cliCollisionIsReported() async throws {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		let edit = VaultKeyEdit(key: "STRIPE_KEY", environments: environments, newKey: "STRIPE_SECRET_KEY")
+		keychain.simulateCLISet(vaultId: "project", environment: "staging", key: "STRIPE_SECRET_KEY", value: "cli")
+		await #expect(throws: VaultKeyEditError.collision(environment: "staging", existingKey: "STRIPE_SECRET_KEY", newKey: "STRIPE_SECRET_KEY")) {
+			try await store.saveKeyEdit(edit, in: "project")
+		}
+		#expect(keychain.envStorage["project"]?.environments["default"] == ["STRIPE_KEY": "sk_dev"])
+	}
+
+	@Test("a locked vault or an unselected project saves nothing", arguments: [true, false])
+	func unavailableTargets(locked: Bool) async {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		if locked { store.lock() } else { store.selectedProjectId = nil }
+		let edit = VaultKeyEdit(key: "STRIPE_KEY", environments: environments, newKey: "STRIPE_SECRET_KEY")
+		await #expect(throws: locked ? VaultKeyEditError.vaultLocked : .targetUnavailable) {
+			try await store.saveKeyEdit(edit, in: "project")
+		}
+		#expect(keychain.envStorage["project"]?.environments == environments)
+	}
+
+	@Test("a Keychain failure leaves every environment unchanged")
+	func persistenceFailure() async {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		keychain.failProjectReads = true
+		let edit = VaultKeyEdit(key: "STRIPE_KEY", environments: environments, newKey: "STRIPE_SECRET_KEY")
+		do {
+			try await store.saveKeyEdit(edit, in: "project")
+			Issue.record("The save should fail")
+		} catch {
+			if case .persistence = error {} else { Issue.record("Unexpected error \(error)") }
+		}
+		keychain.failProjectReads = false
+		#expect(keychain.envStorage["project"]?.environments == environments)
+		#expect(store.selectedProject?.environments == environments)
+		#expect(store.error == nil)
+	}
+
+	private func makeStore() -> (VaultStore, MockKeychainService) {
+		let keychain = MockKeychainService()
+		keychain.envStorage["project"] = (name: "Project", path: "", environments: environments)
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService())
+		store.projects = [VaultProject(id: "project", name: "Project", path: "", environments: environments)]
+		store.isUnlocked = true
+		store.selectedProjectId = "project"
+		return (store, keychain)
+	}
+}
