@@ -73,38 +73,37 @@ struct VaultContentView: View {
 		.background(VaultPalette.content)
 	}
 
+	/// The first row is about the project: what it is, its CLI approval, the
+	/// inspector, and a new key. The second is about what is on screen: how it is
+	/// filtered or shown, and the actions on those values.
 	private func header(_ derived: VaultContentDerivation) -> some View {
 		VStack(alignment: .leading, spacing: 12) {
 			ViewThatFits(in: .horizontal) {
-				headerPrimaryRow(compactToolbar: false, derived: derived)
-				headerPrimaryRow(compactToolbar: true, derived: derived)
+				HStack(spacing: 10) {
+					headerIdentity
+					Spacer(minLength: 8)
+					projectActions
+				}
 				VStack(alignment: .leading, spacing: 10) {
 					headerIdentity
-					toolbar(compact: true, derived: derived)
-						.frame(maxWidth: .infinity, alignment: .trailing)
+					projectActions.frame(maxWidth: .infinity, alignment: .trailing)
 				}
 			}
 
-			HStack(spacing: 6) {
-				if case .matrix = mode {
-					ForEach(VaultWorkspaceFilter.allCases) { candidate in
-						VaultFilterChip(
-							title: candidate.rawValue,
-							dot: candidate == .drift ? VaultPalette.orange : (candidate == .missing ? VaultPalette.red : nil),
-							trailing: candidate == .drift
-								? "\(snapshot.driftingKeyCount)"
-								: (candidate == .missing ? "\(snapshot.missingKeyCount)" : nil),
-							selected: filter == candidate
-						) { filter = candidate }
-					}
-					Spacer(minLength: 0)
-				} else {
-					ForEach(VaultEnvironmentViewMode.allCases) { candidate in
-						VaultFilterChip(title: candidate.rawValue, selected: environmentViewMode == candidate) {
-							environmentViewMode = candidate
-						}
-					}
-					Spacer(minLength: 0)
+			ViewThatFits(in: .horizontal) {
+				HStack(spacing: 6) {
+					viewControls
+					Spacer(minLength: 8)
+					valueActions(compact: false, derived: derived)
+				}
+				HStack(spacing: 6) {
+					viewControls
+					Spacer(minLength: 8)
+					valueActions(compact: true, derived: derived)
+				}
+				VStack(alignment: .leading, spacing: 10) {
+					HStack(spacing: 6) { viewControls }
+					valueActions(compact: true, derived: derived).frame(maxWidth: .infinity, alignment: .trailing)
 				}
 			}
 		}
@@ -113,15 +112,25 @@ struct VaultContentView: View {
 		.padding(.bottom, 12)
 	}
 
-	private func headerPrimaryRow(
-		compactToolbar: Bool,
-		derived: VaultContentDerivation
-	) -> some View {
-		HStack(spacing: 10) {
-			headerIdentity
-
-			Spacer(minLength: 8)
-			toolbar(compact: compactToolbar, derived: derived)
+	@ViewBuilder
+	private var viewControls: some View {
+		if case .matrix = mode {
+			ForEach(VaultWorkspaceFilter.allCases) { candidate in
+				VaultFilterChip(
+					title: candidate.rawValue,
+					dot: candidate == .drift ? VaultPalette.orange : (candidate == .missing ? VaultPalette.red : nil),
+					trailing: candidate == .drift
+						? "\(snapshot.driftingKeyCount)"
+						: (candidate == .missing ? "\(snapshot.missingKeyCount)" : nil),
+					selected: filter == candidate
+				) { filter = candidate }
+			}
+		} else {
+			ForEach(VaultEnvironmentViewMode.allCases) { candidate in
+				VaultFilterChip(title: candidate.rawValue, selected: environmentViewMode == candidate) {
+					environmentViewMode = candidate
+				}
+			}
 		}
 	}
 
@@ -133,7 +142,7 @@ struct VaultContentView: View {
 					.font(.system(size: 19, weight: .bold))
 					.tracking(-0.28)
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("\(snapshot.allSecretKeys.count) keys · \(environments.count) envs")
+				Text("\(Self.count(snapshot.allSecretKeys.count, "key")) · \(Self.count(environments.count, "env"))")
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			} else {
@@ -145,7 +154,7 @@ struct VaultContentView: View {
 					foreground: VaultPalette.orangeTintText,
 					background: VaultPalette.orangeTint
 				)
-				Text("\(project.secretCount(for: selectedEnvironment)) keys")
+				Text(Self.count(project.secretCount(for: selectedEnvironment), "key"))
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
@@ -165,9 +174,33 @@ struct VaultContentView: View {
 		.fixedSize(horizontal: true, vertical: false)
 	}
 
-	private func toolbar(compact: Bool, derived: VaultContentDerivation) -> some View {
+	private var projectActions: some View {
+		HStack(spacing: 6) {
+			VaultOutlineButton(
+				systemImage: "sidebar.right",
+				help: showsInspector ? "Hide inspector" : "Show inspector",
+				active: showsInspector
+			) { showsInspector.toggle() }
+			VaultBarButton(
+				systemImage: "plus",
+				title: "New key",
+				filled: true,
+				height: 27,
+				action: onAddSecret
+			)
+			.accessibilityLabel("New secret")
+		}
+		.fixedSize()
+	}
+
+	/// Reveal acts on the keys in view; copying, importing, and exporting act on
+	/// the selected environment, which their help names.
+	private func valueActions(compact: Bool, derived: VaultContentDerivation) -> some View {
+		let environmentName = VaultProject.displayName(for: selectedEnvironment)
 		let copyTitle = isCopyingAll ? "Copying…" : (isCopiedAll ? "Copied" : "Copy all")
-		let copyHelp = isCopyingAll ? "Authenticating to copy all values" : (isCopiedAll ? "All values copied" : "Copy all values")
+		let copyHelp = isCopyingAll
+			? "Authenticating to copy all \(environmentName) values"
+			: (isCopiedAll ? "All \(environmentName) values copied" : "Copy all \(environmentName) values")
 		return HStack(spacing: 6) {
 			VaultOutlineButton(
 				systemImage: derived.allVisibleRevealed ? "eye.slash" : "eye",
@@ -190,25 +223,13 @@ struct VaultContentView: View {
 			.accessibilityLabel(copyHelp)
 			VaultOutlineButton(
 				systemImage: "square.and.arrow.down",
-				help: isImporting ? "Importing .env" : "Import .env",
+				help: isImporting ? "Importing into \(environmentName)" : "Import a .env file into \(environmentName)",
 				disabled: isImporting,
 				action: onImport
 			)
-			VaultOutlineButton(systemImage: "square.and.arrow.up", help: "Export .env", disabled: !canUseSecrets, action: onExport)
-			VaultOutlineButton(
-				systemImage: "sidebar.right",
-				help: showsInspector ? "Hide inspector" : "Show inspector",
-				active: showsInspector
-			) { showsInspector.toggle() }
-			VaultBarButton(
-				systemImage: "plus",
-				title: "New key",
-				filled: true,
-				height: 27,
-				action: onAddSecret
-			)
-			.accessibilityLabel("New secret")
+			VaultOutlineButton(systemImage: "square.and.arrow.up", help: "Export \(environmentName)", disabled: !canUseSecrets, action: onExport)
 		}
+		.fixedSize()
 	}
 
 	private func matrix(_ derived: VaultContentDerivation) -> some View {
@@ -322,13 +343,13 @@ struct VaultContentView: View {
 	private func statusBar(_ derived: VaultContentDerivation) -> some View {
 		HStack(spacing: 12) {
 			if case .matrix = mode {
-				Text("\(derived.filteredKeys.count) of \(derived.allKeys.count) keys shown")
+				Text("\(derived.filteredKeys.count) of \(Self.count(derived.allKeys.count, "key")) shown")
 				Text("·")
 				Text("\(snapshot.driftingKeyCount) drifting")
 				Text("·")
 				Text("\(snapshot.missingKeyCount) missing")
 			} else {
-				Text("\(derived.environmentKeys.count) keys")
+				Text(Self.count(derived.environmentKeys.count, "key"))
 				Text("·")
 				Text("\(derived.environmentDriftingKeyCount) differ across environments")
 				Text("·")
@@ -347,6 +368,10 @@ struct VaultContentView: View {
 		.padding(.horizontal, 20)
 		.frame(height: VaultMetrics.statusBar)
 		.background(VaultPalette.headerRow)
+	}
+
+	private static func count(_ value: Int, _ noun: String) -> String {
+		"\(value) \(noun)\(value == 1 ? "" : "s")"
 	}
 
 	private func toggleRevealAll(_ derived: VaultContentDerivation) {
