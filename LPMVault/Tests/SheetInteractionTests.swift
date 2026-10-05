@@ -675,6 +675,38 @@ struct SheetInteractionTests {
 		#expect(try Data(contentsOf: config) == original)
 	}
 
+	@Test("a folder that links another vault on this Mac names it and offers to open it", arguments: [true, false])
+	func chosenFolderLinkingAnotherVault(onThisMac: Bool) async throws {
+		let domain = "lpm-sheet-test-" + UUID().uuidString
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let config = folder.appendingPathComponent("lpm.json")
+		let original = Data(#"{"vault":"billing-vault","custom":true}"#.utf8)
+		try original.write(to: config)
+		let (store, _) = makeStore(preferences: defaults)
+		if onThisMac {
+			store.projects.append(VaultProject(id: "billing-vault", name: "Billing API", path: "", environments: ["default": [:]]))
+		}
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }), size: NSSize(width: 600, height: 560))
+		defer { host.window.close() }
+		try await host.settle()
+		try await host.click("write file")
+		try await host.click("Choose folder")
+		#expect(try await host.waitForText("Replace vault ID"))
+		if onThisMac {
+			#expect(try await host.text().contains("lpm.json links Billing API"))
+			try await host.click("Open Billing API")
+			#expect(try await host.waitUntil { store.selectedProjectId == "billing-vault" })
+		} else {
+			#expect(try await host.text().contains("which is not on this Mac"))
+			#expect(try await !host.text().contains("Open "))
+		}
+		#expect(try Data(contentsOf: config) == original)
+	}
+
 	@Test("the connect sheet names LPM CLI after checking its link status")
 	func connectProductNames() async throws {
 		let (store, _) = makeStore()

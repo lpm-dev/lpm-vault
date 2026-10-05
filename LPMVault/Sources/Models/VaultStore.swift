@@ -1513,6 +1513,14 @@ final class VaultStore {
     return userOrgs.contains(where: { $0.slug == slug }) ? account : .personal
   }
 
+  /// A project on this Mac that `openProject(id:)` can open: a personal one, or
+  /// one of an organization the person belongs to.
+  func openableProject(id projectId: String) -> VaultProject? {
+    guard let project = projects.first(where: { $0.id == projectId }) else { return nil }
+    if let slug = vaultOrgAssociations[projectId], !userOrgs.contains(where: { $0.slug == slug }) { return nil }
+    return project
+  }
+
   private func projectBelongsToSelectedAccount(_ projectId: String) -> Bool {
     switch selectedAccount {
     case .personal:
@@ -2486,7 +2494,6 @@ final class VaultStore {
         await addProjectWithVaultId(
           vaultId: vaultId,
           name: normalizedName,
-          path: "",
           environments: environments,
           orgSlug: orgSlug
         )
@@ -2516,13 +2523,13 @@ final class VaultStore {
     return true
   }
 
-  /// Add a project with a specific vault ID (for re-adding existing vaults).
-  /// Returns only after the Keychain write and in-memory selection are complete.
+  /// Adds a project without a folder under a specific vault ID. Returns only
+  /// after the Keychain write and in-memory selection are complete; a folder is
+  /// linked later through Connect CLI.
   @discardableResult
   func addProjectWithVaultId(
     vaultId: String,
     name: String,
-    path: String,
     environments: [String: [String: String]],
     orgSlug: String? = nil
   ) async -> Bool {
@@ -2546,7 +2553,7 @@ final class VaultStore {
     let project = VaultProject(
       id: vaultId,
       name: normalizedName,
-      path: path,
+      path: "",
       environments: environments
     )
 
@@ -2567,7 +2574,6 @@ final class VaultStore {
       }
       vaultOrgAssociations = committed.orgAssociations
       openProject(id: vaultId)
-      writeLpmJson(vaultId: vaultId, projectPath: path)
       error = committed.warning
       return true
     case .failure(let err):
@@ -2587,16 +2593,6 @@ final class VaultStore {
       base: current,
       mutation: .renameProject(expectedName: current.name, replacement: normalizedName)
     )
-  }
-
-  // MARK: - lpm.json Integration
-
-  /// Writes the vault ID into the project folder's lpm.json, keeping its other
-  /// settings, without waiting on the main thread for the CLI's config lock.
-  private func writeLpmJson(vaultId: String, projectPath: String) {
-    guard !projectPath.isEmpty else { return }
-    let url = URL(fileURLWithPath: projectPath).appendingPathComponent("lpm.json")
-    ProjectConfigFile.editQueue.async { try? ProjectConfigFile.writeVaultID(vaultId, to: url) }
   }
 
   /// Remove from sidebar only — Keychain data stays.
