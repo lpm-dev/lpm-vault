@@ -1773,8 +1773,11 @@ final class VaultStore {
       guard generation == localStateRefreshGeneration, selectedProjectId == projectID,
         selectedAccount == account
       else { continue }
-      guard case .success(let snapshot) = result else {
-        localStateRefreshError = Self.localStateRefreshFailure
+      let snapshot: VaultPersistenceSnapshot
+      switch result {
+      case .success(let loaded): snapshot = loaded
+      case .failure(let failure):
+        failLocalStateRefresh(VaultLoadFailure(failure))
         return
       }
       let update = await workspaceSnapshotBuilder.buildIncremental(
@@ -1783,7 +1786,7 @@ final class VaultStore {
       )
       guard !Task.isCancelled, isUnlocked, session == vaultSessionGeneration else { return }
       guard let update else {
-        localStateRefreshError = Self.localStateRefreshFailure
+        failLocalStateRefresh(.unavailable)
         return
       }
       guard generation == localStateRefreshGeneration, selectedProjectId == projectID,
@@ -1802,7 +1805,16 @@ final class VaultStore {
       selectedProjectCliAccess = selectedProjectId.flatMap { projectCliAccess[$0] }
       return
     }
+    failLocalStateRefresh(.unavailable)
+  }
+
+  /// Pauses secret actions after a failed refresh. A selected project without
+  /// loaded values shows why it could not load instead of an empty workspace.
+  private func failLocalStateRefresh(_ failure: VaultLoadFailure) {
     localStateRefreshError = Self.localStateRefreshFailure
+    if let selectedProject, !selectedProject.hasLoadedEnvironments {
+      selectedProjectLoadFailure = failure
+    }
   }
 
   private static let localStateRefreshFailure =
@@ -1911,7 +1923,13 @@ final class VaultStore {
 
   func retrySelectedProjectLoad() {
     guard isUnlocked, !isLoadingSelectedProject, selectedProjectLoadFailure != nil else { return }
-    beginSelectedProjectLoadIfNeeded()
+    // After a failed refresh the shared state is stale too, so retry the refresh,
+    // which also reloads the selected project.
+    if localStateRefreshError != nil {
+      startLocalStateRefresh()
+    } else {
+      beginSelectedProjectLoadIfNeeded()
+    }
   }
 
   func changeCliAccess(to access: VaultCliAccess) async {
