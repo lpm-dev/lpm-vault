@@ -23,32 +23,90 @@ enum RenderedText {
 		options: String.CompareOptions = [],
 		region: CGRect? = nil
 	) async throws -> [Line] {
-		try await Task.detached(priority: .userInitiated) {
-			let request = VNRecognizeTextRequest()
-			request.recognitionLevel = level
-			request.usesLanguageCorrection = false
-			if let region { request.regionOfInterest = region }
-			try VNImageRequestHandler(cgImage: image).perform([request])
-			return (request.results ?? []).compactMap { observation -> Line? in
-				guard let candidate = observation.topCandidates(1).first else { return nil }
-				var labelBounds: CGRect?
-				if let label, let range = candidate.string.range(of: label, options: options) {
-					labelBounds = try? candidate.boundingBox(for: range)?.boundingBox
-				}
-				// Results inside a region of interest are relative to that region.
-				let map: (CGRect) -> CGRect = { box in
-					guard let region else { return box }
-					return CGRect(
-						x: region.minX + box.minX * region.width,
-						y: region.minY + box.minY * region.height,
-						width: box.width * region.width,
-						height: box.height * region.height
-					)
-				}
-				return Line(text: candidate.string, bounds: map(observation.boundingBox), labelBounds: labelBounds.map(map))
+		let observations: [VNRecognizedTextObservation]
+		if let cached = RecognitionCache.shared.observations(for: image, level: level, region: region) {
+			observations = cached
+		} else {
+			observations = try await Task.detached(priority: .userInitiated) {
+				let request = VNRecognizeTextRequest()
+				request.recognitionLevel = level
+				request.usesLanguageCorrection = false
+				if let region { request.regionOfInterest = region }
+				try VNImageRequestHandler(cgImage: image).perform([request])
+				return RecognitionCache.Observations(values: request.results ?? [])
+			}.value.values
+			RecognitionCache.shared.store(observations, for: image, level: level, region: region)
+		}
+		return observations.compactMap { observation -> Line? in
+			guard let candidate = observation.topCandidates(1).first else { return nil }
+			var labelBounds: CGRect?
+			if let label, let range = candidate.string.range(of: label, options: options) {
+				labelBounds = try? candidate.boundingBox(for: range)?.boundingBox
 			}
-		}.value
+			// Results inside a region of interest are relative to that region.
+			let map: (CGRect) -> CGRect = { box in
+				guard let region else { return box }
+				return CGRect(
+					x: region.minX + box.minX * region.width,
+					y: region.minY + box.minY * region.height,
+					width: box.width * region.width,
+					height: box.height * region.height
+				)
+			}
+			return Line(text: candidate.string, bounds: map(observation.boundingBox), labelBounds: labelBounds.map(map))
+		}
 	}
+}
+
+/// Recognition results for recently read frames. Polling helpers read the same
+/// frame repeatedly while they wait, and identical pixels always recognize the
+/// same way, so each frame is read once per level and region.
+private final class RecognitionCache: @unchecked Sendable {
+	/// Vision returns immutable observations; the box only carries them out of the recognition task.
+	struct Observations: @unchecked Sendable {
+		let values: [VNRecognizedTextObservation]
+	}
+
+	private struct Entry {
+		let width: Int
+		let height: Int
+		let level: VNRequestTextRecognitionLevel
+		let region: CGRect?
+		let pixels: CFData
+		let observations: [VNRecognizedTextObservation]
+	}
+
+	static let shared = RecognitionCache()
+	private static let capacity = 8
+	private let lock = NSLock()
+	private var entries: [Entry] = []
+
+	func observations(for image: CGImage, level: VNRequestTextRecognitionLevel, region: CGRect?) -> [VNRecognizedTextObservation]? {
+		guard let pixels = image.dataProvider?.data else { return nil }
+		return lock.withLock {
+			guard let index = entries.firstIndex(where: {
+				$0.width == image.width && $0.height == image.height && $0.level == level
+					&& $0.region == region && samePixels($0.pixels, pixels)
+			}) else { return nil }
+			let entry = entries.remove(at: index)
+			entries.append(entry)
+			return entry.observations
+		}
+	}
+
+	func store(_ observations: [VNRecognizedTextObservation], for image: CGImage, level: VNRequestTextRecognitionLevel, region: CGRect?) {
+		guard let pixels = image.dataProvider?.data else { return }
+		lock.withLock {
+			entries.append(Entry(width: image.width, height: image.height, level: level, region: region, pixels: pixels, observations: observations))
+			if entries.count > Self.capacity { entries.removeFirst() }
+		}
+	}
+}
+
+private func samePixels(_ lhs: CFData, _ rhs: CFData) -> Bool {
+	let count = CFDataGetLength(lhs)
+	guard count == CFDataGetLength(rhs), let left = CFDataGetBytePtr(lhs), let right = CFDataGetBytePtr(rhs) else { return false }
+	return memcmp(left, right, count) == 0
 }
 
 @MainActor
@@ -101,11 +159,24 @@ final class SheetTestHost<V: View> {
 		view.layoutSubtreeIfNeeded()
 	}
 
-	/// Fixed pause before asserting that something did not happen.
+	/// Lets SwiftUI apply pending updates, for example before asserting that
+	/// something did not happen. Each turn runs layout and gives the run loop a
+	/// chance to commit a frame. Settling ends once the rendered frame stays the
+	/// same for two turns, or after eight turns for animated content.
 	func settle() async throws {
-		for _ in 0..<8 {
+		var previous: CFData?
+		var unchangedTurns = 0
+		for _ in 1...8 {
 			view.layoutSubtreeIfNeeded()
 			try await Task.sleep(for: .milliseconds(10))
+			let frame = try snapshot(view).dataProvider?.data
+			if let frame, let previous, samePixels(frame, previous) {
+				unchangedTurns += 1
+				if unchangedTurns >= 2 { return }
+			} else {
+				unchangedTurns = 0
+			}
+			previous = frame
 		}
 	}
 
@@ -294,6 +365,10 @@ final class SheetTestHost<V: View> {
 		}
 		let fast = try await RenderedText.lines(in: image, level: .fast, label: label, options: options)
 		if let line = fast.first(where: { $0.labelBounds != nil }) {
+			// A line that reads exactly as the label is the label, so its box needs no refinement.
+			if line.text.trimmingCharacters(in: .whitespaces).compare(label, options: options) == .orderedSame {
+				return line.bounds
+			}
 			let strip = line.bounds.insetBy(dx: -0.02, dy: -line.bounds.height).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
 			let refined = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: strip)
 			if let bounds = refined.lazy.compactMap(\.labelBounds).first { return bounds }
