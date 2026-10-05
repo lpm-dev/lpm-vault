@@ -206,11 +206,17 @@ final class SheetTestHost<V: View> {
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		while true {
 			let image = try snapshot(target, rect: area)
+			var read = ""
 			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
 				let lines = try await RenderedText.lines(in: image, level: level)
-				if OCRText(lines.map(\.text).joined(separator: "\n")).contains(expected) { return true }
+				read = lines.map(\.text).joined(separator: "\n")
+				if OCRText(read).contains(expected) { return true }
 			}
-			guard ContinuousClock.now < deadline else { return false }
+			guard ContinuousClock.now < deadline else {
+				// Runners read glyphs differently; the log shows what this one read.
+				print("waitForText did not find \"\(expected)\". Last accurate reading:\n\(read)")
+				return false
+			}
 			try await Task.sleep(for: .milliseconds(20))
 		}
 	}

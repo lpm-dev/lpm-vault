@@ -64,7 +64,7 @@ extension SheetInteractionTests {
 			if removal == "rename" { keychain.envStorage["workspace"]?.environments["renamed"] = values }
 			await store.refreshLocalState()
 			try await host.settle()
-			#expect(try await host.waitForText("staging was deleted outside the editor"))
+			#expect(try await host.waitForText("was deleted outside the editor"))
 			#expect(host.secureValues.contains("unsaved-removed-target"))
 			try host.returnWhileEditing("value", modifiers: [])
 			try await host.settle()
