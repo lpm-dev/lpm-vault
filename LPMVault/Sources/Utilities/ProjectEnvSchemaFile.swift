@@ -61,6 +61,29 @@ enum ProjectEnvSchemaFile {
 	/// The CLI's limit for configuration files.
 	private static let maximumBytes = 16 * 1024 * 1024
 
+	/// Edits wait here, not on Swift's cooperative pool, because one waits for
+	/// the CLI's lock for as long as the CLI holds it. The queue also keeps the
+	/// app's own edits in order.
+	private static let editQueue = DispatchQueue(label: "dev.lpm.vault.lpm-json", qos: .userInitiated)
+
+	/// `rules(inFolder:vaultID:)` off the main thread and the cooperative pool.
+	static func loadRules(inFolder folder: String, vaultID: String) async -> Result<Rules, FileError> {
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global(qos: .userInitiated).async {
+				continuation.resume(returning: Result { () throws(FileError) in try rules(inFolder: folder, vaultID: vaultID) })
+			}
+		}
+	}
+
+	/// `apply(_:inFolder:vaultID:)` on the edit queue.
+	static func save(_ change: Change, inFolder folder: String, vaultID: String) async -> Result<Rules, FileError> {
+		await withCheckedContinuation { continuation in
+			editQueue.async {
+				continuation.resume(returning: Result { () throws(FileError) in try apply(change, inFolder: folder, vaultID: vaultID) })
+			}
+		}
+	}
+
 	/// The folder's rules, or none when it has no `lpm.json`.
 	static func rules(inFolder folder: String, vaultID: String) throws(FileError) -> Rules {
 		let folderURL = try existingFolder(folder)
