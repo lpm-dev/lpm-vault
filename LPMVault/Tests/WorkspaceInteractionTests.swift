@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
+import Vision
 
 @testable import LPMVault
 
@@ -153,11 +154,11 @@ extension SheetInteractionTests {
 			let headerRegion = CGRect(x: 0.27, y: 0.7, width: 0.43, height: 0.13)
 			let keyHeader = try await host.labelFrame("KEY", region: headerRegion)
 			let valueHeader = try await host.labelFrame("VALUE", region: headerRegion)
-			let firstKey = try await host.labelFrame("ALPHA", region: CGRect(x: 0.27, y: 0.55, width: 0.22, height: 0.15))
 			let keyRegion = CGRect(x: 0.27, y: 0.35, width: 0.22, height: 0.35)
+			#expect(try await waitForKeyOrder(["ALPHA", "ZULU"], in: host, region: keyRegion))
+			let firstKey = try await keyFrame("ALPHA", in: host, region: keyRegion)
 			#expect(abs(keyHeader.minX - firstKey.minX) < 3)
 			#expect(valueHeader.minX - keyHeader.minX >= 150)
-			#expect(try await waitForKeyOrder(["ALPHA", "ZULU"], in: host, region: keyRegion))
 			try clickAt(NSPoint(x: keyHeader.midX, y: keyHeader.midY), in: host)
 			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "descending" })
 			try await host.settle()
@@ -171,6 +172,22 @@ extension SheetInteractionTests {
 				RenderedText.Line(text: "alpha", bounds: CGRect(x: 0.3, y: 0.6, width: 0.1, height: 0.02), labelBounds: nil),
 			]
 			#expect(keysFromTop(["ALPHA", "ZULU"], lines: lines) == ["ALPHA", "ZULU"])
+			#expect(keysFromTop(["ZULU", "ALPHA"], lines: lines) == ["ALPHA", "ZULU"])
+			#expect(keysFromTop(["ALPHA", "ZULU"], lines: Array(lines.prefix(1))) == ["ZULU"])
+			#expect(keyLine("ALPHA", lines: lines)?.bounds == lines[1].bounds)
+		}
+
+		@Test("overlapping recognition cannot establish the order of two table rows", arguments: ["merged", "same height", "overlapping"])
+		func combinedKeyLineCannotProveOrder(reading: String) {
+			let bounds = CGRect(x: 0.3, y: 0.5, width: 0.2, height: 0.02)
+			let lines = reading == "merged"
+				? [RenderedText.Line(text: "ZULU ALPHA", bounds: bounds, labelBounds: nil)]
+				: [
+					RenderedText.Line(text: "ZULU", bounds: bounds.offsetBy(dx: 0.1, dy: reading == "overlapping" ? 0.000001 : 0), labelBounds: nil),
+					RenderedText.Line(text: "ALPHA", bounds: bounds, labelBounds: nil),
+				]
+			#expect(keysFromTop(["ALPHA", "ZULU"], lines: lines).isEmpty)
+			#expect(keysFromTop(["ZULU", "ALPHA"], lines: lines).isEmpty)
 		}
 
 		@Test("an edit whose environment disappears stays in its card until discarded", arguments: ["environment", "rename"])
@@ -497,29 +514,58 @@ extension SheetInteractionTests {
 			try clickAt(NSPoint(x: label.midX, y: label.midY), in: host)
 		}
 
-		/// The rendered keys among `keys`, from the top of the table down.
-		private func keysFromTop<V: View>(_ keys: [String] = ["ALPHA", "ZULU"], in host: SheetTestHost<V>, region: CGRect? = nil) async throws -> [String] {
-			let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: region)
-			return keysFromTop(keys, lines: lines)
+		private func keysFromTop(_ keys: [String], lines: [RenderedText.Line]) -> [String] {
+			let matches = keys.compactMap { key in keyLine(key, lines: lines).map { (key: key, bounds: $0.bounds) } }
+				.sorted { $0.bounds.midY > $1.bounds.midY }
+			guard zip(matches, matches.dropFirst()).allSatisfy({ upper, lower in upper.bounds.minY > lower.bounds.maxY }) else { return [] }
+			return matches.map(\.key)
 		}
 
-		private func keysFromTop(_ keys: [String], lines: [RenderedText.Line]) -> [String] {
-			return keys.compactMap { key in lines.first { OCRText($0.text).contains(key) }.map { (key, $0.bounds.midY) } }
-				.sorted { $0.1 > $1.1 }
-				.map(\.0)
+		private func keyLine(_ key: String, lines: [RenderedText.Line]) -> RenderedText.Line? {
+			lines.first {
+				let text = $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
+				return OCRText(text).contains(key) && OCRText(key).contains(text)
+			}
 		}
 
 		private func waitForKeyOrder<V: View>(_ expected: [String], in host: SheetTestHost<V>, region: CGRect? = nil) async throws -> Bool {
+			let keyRegion: CGRect
+			if let region {
+				keyRegion = region
+			} else {
+				let header = try await host.labelFrame("KEY", region: CGRect(x: 0.15, y: 0.75, width: 0.5, height: 0.1))
+				let size = host.view.bounds.size
+				keyRegion = CGRect(x: (header.minX - 4) / size.width, y: VaultMetrics.statusBar / size.height,
+					width: (VaultMetrics.keyColumn - 20) / size.width, height: (header.minY - VaultMetrics.statusBar) / size.height)
+			}
 			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
 			while true {
-				let keys = try await keysFromTop(expected, in: host, region: region)
-				if keys == expected { return true }
+				let image = try host.snapshot(host.view)
+				var readings: [String] = []
+				for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
+					let lines = try await RenderedText.lines(in: image, level: level, region: keyRegion)
+					if keysFromTop(expected, lines: lines) == expected { return true }
+					readings.append("\(level): " + lines.map { "\($0.text) at \($0.bounds)" }.joined(separator: " | "))
+				}
 				guard ContinuousClock.now < deadline else {
-					print("Expected rendered keys \(expected), read \(keys)")
+					print("Expected rendered keys \(expected) in \(keyRegion). Readings: \(readings)")
 					return false
 				}
 				try await Task.sleep(for: .milliseconds(20))
 			}
+		}
+
+		private func keyFrame<V: View>(_ key: String, in host: SheetTestHost<V>, region: CGRect) async throws -> CGRect {
+			let image = try host.snapshot(host.view)
+			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
+				let lines = try await RenderedText.lines(in: image, level: level, region: region)
+				if let box = keyLine(key, lines: lines)?.bounds {
+					return CGRect(x: box.minX * host.view.bounds.width, y: box.minY * host.view.bounds.height,
+						width: box.width * host.view.bounds.width, height: box.height * host.view.bounds.height)
+				}
+				print("Missing key \(key) in \(region), \(level): " + lines.map { "\($0.text) at \($0.bounds)" }.joined(separator: " | "))
+			}
+			throw CocoaError(.coderValueNotFound)
 		}
 
 		private func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {
