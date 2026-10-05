@@ -53,6 +53,35 @@ extension SheetInteractionTests {
 			#expect(store.selectedProject?.hasLoadedEnvironments == false)
 		}
 
+		@Test("a failed refresh keeps showing why the selected project could not load", arguments: [true, false])
+		func refreshFailureKeepsProjectRecovery(afterLoadFailure: Bool) async throws {
+			let keychain = MockKeychainService()
+			keychain.failProjectReads = true
+			keychain.failureError = .keychainLocked
+			let store = makeStore(keychain)
+			let project = VaultProject(id: "project", name: "Dummy", path: "", environments: ["default": ["TOKEN": "dummy-secret"]])
+			keychain.envStorage["project"] = (name: project.name, path: project.path, environments: project.environments)
+			store.projects = [VaultProject(metadata: project.metadata)]
+			store.isUnlocked = true
+			store.openProject(id: "project")
+			if afterLoadFailure {
+				while store.isLoadingSelectedProject { await Task.yield() }
+			}
+			await store.refreshLocalState()
+			#expect(store.localStateRefreshError != nil)
+			let text = try await renderedText(ContentView(store: store).environment(UpdateChecker()))
+			#expect(text.contains("macOS did not allow Keychain access"))
+			#expect(!text.contains("Select an env project"))
+			keychain.failProjectReads = false
+			store.retrySelectedProjectLoad()
+			await store.waitForLocalStateRefresh()
+			while store.isLoadingSelectedProject { await Task.yield() }
+			#expect(store.selectedProjectLoadFailure == nil)
+			#expect(store.localStateRefreshError == nil)
+			#expect(store.selectedProject?.secrets(for: "default")["TOKEN"] == "dummy-secret")
+			store.lock()
+		}
+
 		@Test("project load failures do not become obsolete general alerts after navigation")
 		func projectFailureOwnsItsPresentation() async {
 			let keychain = MockKeychainService()
