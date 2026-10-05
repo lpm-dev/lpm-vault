@@ -19,6 +19,16 @@ struct LPMConfigJSONTests {
 
 	/// The expected file was rendered by serde_json with the CLI's features after
 	/// the same edit, so the app writes `lpm.json` exactly as the CLI would.
+	@Test("direct sync projection canonicalizes exact integer bounds")
+	func directSyncProjectionUsesDecimalBounds() {
+		let root: [String: LPMJSONValue] = ["envSchema": .object(["vars": .object(["COUNT": .object(["format": .string("integer"), "min": .integer(1), "max": .integer(Int64.max), "minLength": .integer(1), "maxLength": .integer(4294967295)])])])]
+		guard case .object(let wire) = ProjectEnvSchemaFile.pushMetadata(from: root), case .object(let vars)? = wire["envSchema"], case .object(let rule)? = vars["COUNT"] else { Issue.record("wire missing"); return }
+		#expect(rule["min"] == .string("1"))
+		#expect(rule["minLength"] == .string("1"))
+		#expect(rule["maxLength"] == .string("4294967295"))
+		#expect(rule["max"] == .string("9223372036854775807"))
+	}
+
 	@Test("an edit renders the file as the CLI's serde_json does")
 	func matchesSerdeJSON() throws {
 		let document = try LPMConfigJSON(parsing: fixture("lpm-json-edit-input.json"))
@@ -391,4 +401,58 @@ struct ProjectEnvSchemaFileTests {
 	private func contents(_ folder: String) throws -> String {
 		try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8)
 	}
+	@Test("constraint edits and sync preserve exact integer bounds and root groups")
+	func constraintsPreserveExactMetadata() throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "env-constraints-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let input = #"{"envSchema":{"vars":{"COUNT":{"format":"integer","min":9007199254740993,"max":"9223372036854775807","minLength":1,"maxLength":20,"requiredWhen":{"variable":"MODE","present":false}},"URL":{"format":"url","protocols":["https"]},"MODE":{}},"groups":{"auth":{"mode":"atLeastOne","vars":["COUNT","URL"]}}}}"#
+		try input.write(to: folder.appendingPathComponent("lpm.json"), atomically: true, encoding: .utf8)
+		_ = try ProjectEnvSchemaFile.apply(.init(description: .init(key: "COUNT", text: "Count")), inFolder: folder.path, vaultID: "project")
+		guard case .object(let config)? = try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder.path, vaultID: "project") else { Issue.record("Metadata must be retained"); return }
+		let metadata = try LPMConfigJSON(parsing: JSONEncoder().encode(ProjectEnvSchemaFile.pushMetadata(from: config)))
+		#expect(metadata["envSchema"]?["COUNT"]?["min"] == .string("9007199254740993"))
+		#expect(metadata["envSchema"]?["COUNT"]?["max"] == .string("9223372036854775807"))
+		#expect(metadata["envSchema"]?["COUNT"]?["minLength"] == .string("1"))
+		#expect(metadata["envSchema"]?["COUNT"]?["maxLength"] == .string("20"))
+		#expect(metadata["envSchema"]?["COUNT"]?["requiredWhen"]?["present"] == .bool(false))
+		#expect(metadata["envSchemaConfig"]?["groups"]?["auth"]?["mode"] == .string("atLeastOne"))
+	}
+
+	@Test("renames update conditions and group members and clearing descriptions retains referenced declarations")
+	func constraintReferencesFollowRenamesAndDescriptionEdits() throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "env-references-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try #"{"envSchema":{"vars":{"SOURCE":{"description":"Source"},"TARGET":{"requiredWhen":{"variable":"SOURCE","present":true}}},"groups":{"g":{"mode":"allOrNone","vars":["SOURCE","TARGET"]}}}}"#.write(to: folder.appendingPathComponent("lpm.json"), atomically: true, encoding: .utf8)
+		_ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: "SOURCE", to: "NEW"), description: .init(key: "NEW", text: "")), inFolder: folder.path, vaultID: "project")
+		let data = try Data(contentsOf: folder.appendingPathComponent("lpm.json"))
+		let document = try LPMConfigJSON(parsing: data)
+		#expect(document["envSchema"]?["vars"]?["NEW"] == .object([]))
+		#expect(document["envSchema"]?["vars"]?["TARGET"]?["requiredWhen"]?["variable"] == .string("NEW"))
+		#expect(document["envSchema"]?["groups"]?["g"]?["vars"] == .array([.string("NEW"), .string("TARGET")]))
+	}
+
+	@Test("native metadata rejects unsafe or contradictory constraints", arguments: [
+		#"{"vars":{"N":{"format":"integer","min":"9223372036854775808"}}}"#,
+		#"{"vars":{"N":{"format":"integer","min":1.5}}}"#,
+		#"{"vars":{"N":{"format":"integer","min":2,"max":1}}}"#,
+		#"{"vars":{"N":{"minLength":2,"maxLength":1}}}"#,
+		#"{"vars":{"N":{"maxLength":1.5}}}"#,
+		#"{"vars":{"N":{"format":"url","protocols":["HTTPS"]}}}"#,
+		#"{"vars":{"N":{"requiredWhen":{"variable":"UNKNOWN","present":true}}}}"#,
+		#"{"vars":{"TOKEN":{"secret":true},"TARGET":{"requiredWhen":{"variable":"TOKEN","equals":"private-condition"}}}}"#,
+		#"{"vars":{"N":{}},"groups":{"g":{"mode":"exactlyOne","vars":["N","N"]}}}"#,
+	])
+	func invalidConstraintMetadataFails(schema: String) throws {
+		let document = try LPMConfigJSON(parsing: Data(("{\"envSchema\":" + schema + "}").utf8))
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) { _ = try ProjectEnvSchemaFile.rules(of: document) }
+	}
+
+	@Test("native metadata accepts exact endpoints and multiline nonsecret equality")
+	func exactConstraintEndpointsAndMultilineEqualityAreSupported() throws {
+		let document = try LPMConfigJSON(parsing: Data(#"{"envSchema":{"vars":{"N":{"format":"integer","min":-9223372036854775808,"max":9223372036854775807},"SOURCE":{"default":"first\nsecond"},"TARGET":{"requiredWhen":{"variable":"SOURCE","equals":"first\nsecond"}}}}}"#.utf8))
+		#expect(try ProjectEnvSchemaFile.rules(of: document).keys == ["N", "SOURCE", "TARGET"])
+	}
+
 }
