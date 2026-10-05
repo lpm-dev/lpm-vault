@@ -95,6 +95,8 @@ enum VaultMetrics {
 	static let statusBar: CGFloat = 30
 	static let keyColumn: CGFloat = 230
 	static let environmentColumn: CGFloat = 190
+	static let environmentValueColumn: CGFloat = 280
+	static let environmentActionsColumn: CGFloat = 132
 }
 
 enum VaultTypography {

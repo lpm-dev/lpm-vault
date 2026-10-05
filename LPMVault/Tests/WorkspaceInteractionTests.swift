@@ -90,7 +90,7 @@ extension SheetInteractionTests {
 			try selectRow(1, in: host)
 			#expect(try await host.waitUntil { host.value == "zeta-value" })
 			#expect(try await host.waitForText("UNSAVED"))
-			#expect(try await host.text().contains("1 key with unsaved changes"))
+			#expect(try await host.waitForText("1 key with unsaved changes", footer: VaultMetrics.statusBar))
 			try selectRow(0, in: host)
 			#expect(try await host.waitUntil { host.value == "draft-for-token" })
 			#expect(try await host.waitForText("1 unsaved change"))
@@ -104,29 +104,73 @@ extension SheetInteractionTests {
 			let (store, _) = makeStore(environments: ["default": ["ALPHA": "a", "ZULU": "z"]])
 			defer { store.lock() }
 			let host = try await workspace(store, defaults: defaults)
-			#expect(try await keysFromTop(in: host) == ["ALPHA", "ZULU"])
+			#expect(try await waitForKeyOrder(["ALPHA", "ZULU"], in: host))
 
 			try await clickKeyHeader(in: host)
 			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "descending" })
 			try await host.settle()
-			#expect(try await keysFromTop(in: host) == ["ZULU", "ALPHA"])
+			#expect(try await waitForKeyOrder(["ZULU", "ALPHA"], in: host))
 			#expect(try await host.waitForText("sorted Z"))
 
 			// The environment's own table uses the same order and its header reverses it too.
 			try clickAt(NSPoint(x: 70, y: 603), in: host)
 			#expect(try await host.waitForText("ACTIONS"))
-			#expect(try await keysFromTop(in: host) == ["ZULU", "ALPHA"])
+			#expect(try await waitForKeyOrder(["ZULU", "ALPHA"], in: host))
 			try await clickKeyHeader(in: host)
 			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "ascending" })
 			try await host.settle()
-			#expect(try await keysFromTop(in: host) == ["ALPHA", "ZULU"])
+			#expect(try await waitForKeyOrder(["ALPHA", "ZULU"], in: host))
 			try await clickKeyHeader(in: host)
 			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "descending" })
 			host.window.close()
 
 			let reopened = try await workspace(store, defaults: defaults)
 			defer { reopened.window.close() }
-			#expect(try await keysFromTop(in: reopened) == ["ZULU", "ALPHA"])
+			#expect(try await waitForKeyOrder(["ZULU", "ALPHA"], in: reopened))
+		}
+
+		@Test("a narrow environment table keeps its sort header legible and aligned", arguments: [false, true])
+		func narrowEnvironmentSortHeader(minimumContentWidth: Bool) async throws {
+			let domain = "lpm-narrow-sort-test-" + UUID().uuidString
+			let defaults = try #require(UserDefaults(suiteName: domain))
+			defer { defaults.removePersistentDomain(forName: domain) }
+			let (store, _) = makeStore(environments: ["default": ["ALPHA": "a", "ZULU": "z"]])
+			defer { store.lock() }
+			let host = try await workspace(store, size: NSSize(width: 1040, height: 700), defaults: defaults)
+			defer { host.window.close() }
+			try clickAt(NSPoint(x: 330, y: 503), in: host)
+			#expect(try await host.waitForText("VALUES"))
+			if minimumContentWidth {
+				let inspector = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize inspector" })
+				#expect(inspector.accessibilityPerformIncrement())
+				try await host.settle()
+				#expect(inspector.accessibilityPerformIncrement())
+				#expect(try await host.waitUntil { inspector.accessibilityValue() as? String == "338 points" })
+				try await host.settle()
+			}
+			try clickAt(NSPoint(x: 70, y: 503), in: host)
+			try await host.settle()
+			let headerRegion = CGRect(x: 0.27, y: 0.7, width: 0.43, height: 0.13)
+			let keyHeader = try await host.labelFrame("KEY", region: headerRegion)
+			let valueHeader = try await host.labelFrame("VALUE", region: headerRegion)
+			let firstKey = try await host.labelFrame("ALPHA", region: CGRect(x: 0.27, y: 0.55, width: 0.22, height: 0.15))
+			let keyRegion = CGRect(x: 0.27, y: 0.35, width: 0.22, height: 0.35)
+			#expect(abs(keyHeader.minX - firstKey.minX) < 3)
+			#expect(valueHeader.minX - keyHeader.minX >= 150)
+			#expect(try await waitForKeyOrder(["ALPHA", "ZULU"], in: host, region: keyRegion))
+			try clickAt(NSPoint(x: keyHeader.midX, y: keyHeader.midY), in: host)
+			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "descending" })
+			try await host.settle()
+			#expect(try await waitForKeyOrder(["ZULU", "ALPHA"], in: host, region: keyRegion))
+		}
+
+		@Test("rendered key order tolerates text recognition's case and glyph differences")
+		func recognizedKeyOrder() {
+			let lines = [
+				RenderedText.Line(text: "ZuIu", bounds: CGRect(x: 0.3, y: 0.5, width: 0.1, height: 0.02), labelBounds: nil),
+				RenderedText.Line(text: "alpha", bounds: CGRect(x: 0.3, y: 0.6, width: 0.1, height: 0.02), labelBounds: nil),
+			]
+			#expect(keysFromTop(["ALPHA", "ZULU"], lines: lines) == ["ALPHA", "ZULU"])
 		}
 
 		@Test("an edit whose environment disappears stays in its card until discarded", arguments: ["environment", "rename"])
@@ -181,9 +225,13 @@ extension SheetInteractionTests {
 			store.openProject(id: "workspace")
 			#expect(try await host.waitForText("UNSAVED EDITS"))
 			#expect(try await host.waitForText("deleted outside the editor"))
+			NSPasteboard.general.clearContents()
+			NSPasteboard.general.setString("unsaved-removed-project", forType: .string)
 			try await host.click("Copy value")
-			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "unsaved-removed-project" })
-			#expect(biometric.authenticationReasons == ["Copy your unsaved value"])
+			#expect(try await host.waitUntil {
+				biometric.authenticationReasons == ["Copy your unsaved value"]
+					&& NSPasteboard.general.string(forType: .string) == "unsaved-removed-project"
+			})
 			#expect(try await host.waitForText("Copied"))
 			#expect(keychain.envStorage["workspace"]?.environments["default"]?["TOKEN"] == "fixture-value")
 			try await host.click("Discard")
@@ -450,11 +498,33 @@ extension SheetInteractionTests {
 		}
 
 		/// The rendered keys among `keys`, from the top of the table down.
-		private func keysFromTop<V: View>(_ keys: [String] = ["ALPHA", "ZULU"], in host: SheetTestHost<V>) async throws -> [String] {
-			let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate)
-			return keys.compactMap { key in lines.first { $0.text.contains(key) }.map { (key, $0.bounds.midY) } }
+		private func keysFromTop<V: View>(_ keys: [String] = ["ALPHA", "ZULU"], in host: SheetTestHost<V>, region: CGRect? = nil) async throws -> [String] {
+			let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: region)
+			return keysFromTop(keys, lines: lines)
+		}
+
+		private func keysFromTop(_ keys: [String], lines: [RenderedText.Line]) -> [String] {
+			return keys.compactMap { key in lines.first { OCRText($0.text).contains(key) }.map { (key, $0.bounds.midY) } }
 				.sorted { $0.1 > $1.1 }
 				.map(\.0)
+		}
+
+		private func waitForKeyOrder<V: View>(_ expected: [String], in host: SheetTestHost<V>, region: CGRect? = nil) async throws -> Bool {
+			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+			while true {
+				let keys = try await keysFromTop(expected, in: host, region: region)
+				if keys == expected { return true }
+				guard ContinuousClock.now < deadline else {
+					print("Expected rendered keys \(expected), read \(keys)")
+					return false
+				}
+				try await Task.sleep(for: .milliseconds(20))
+			}
+		}
+
+		private func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {
+			if let divider = view as? VaultResizeTrackingView { return [divider] }
+			return view.subviews.flatMap { resizeViews(in: $0) }
 		}
 
 		/// Selects the key in the matrix row at `index`, which opens the inspector.

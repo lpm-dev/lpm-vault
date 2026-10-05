@@ -290,38 +290,45 @@ struct VaultContentView: View {
 		if environmentViewMode == .raw {
 			rawEnvironment(derived)
 		} else {
-			ScrollView {
-				LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-					Section {
-						if derived.environmentKeys.isEmpty {
-							VaultTableEmptyRow(
-								message: searchText.isEmpty ? "No secrets in this environment" : "No keys match your search",
-								width: 760
-							)
-						} else {
-							ForEach(derived.environmentKeys, id: \.self) { key in
-								VaultEnvironmentRow(
-									key: key,
-									value: project.value(for: key, in: selectedEnvironment) ?? "",
-									isSelected: selectedKey == key,
-									isRevealed: canUseSecrets && revealedKeys.contains(key),
-									hasDrift: snapshot.hasDrift(for: key),
-									isEdited: editedKeys.contains(key),
-									onSelect: { selectedKey = key; showsInspector = true },
-									onReveal: { toggleReveal(key) },
-									onCopy: { onCopySecret(key, selectedEnvironment) },
-									onEdit: { selectedKey = key; showsInspector = true },
-									onDelete: { onDeleteSecret(key, selectedEnvironment) }
+			GeometryReader { geometry in
+				let minimumWidth = VaultMetrics.keyColumn + VaultMetrics.environmentValueColumn + VaultMetrics.environmentActionsColumn
+				let tableWidth = max(geometry.size.width, minimumWidth)
+				ScrollView([.horizontal, .vertical]) {
+					LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+						Section {
+							if derived.environmentKeys.isEmpty {
+								VaultTableEmptyRow(
+									message: searchText.isEmpty ? "No secrets in this environment" : "No keys match your search",
+									width: tableWidth
 								)
-								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+							} else {
+								ForEach(derived.environmentKeys, id: \.self) { key in
+									VaultEnvironmentRow(
+										key: key,
+										value: project.value(for: key, in: selectedEnvironment) ?? "",
+										isSelected: selectedKey == key,
+										isRevealed: canUseSecrets && revealedKeys.contains(key),
+										hasDrift: snapshot.hasDrift(for: key),
+										isEdited: editedKeys.contains(key),
+										onSelect: { selectedKey = key; showsInspector = true },
+										onReveal: { toggleReveal(key) },
+										onCopy: { onCopySecret(key, selectedEnvironment) },
+										onEdit: { selectedKey = key; showsInspector = true },
+										onDelete: { onDeleteSecret(key, selectedEnvironment) }
+									)
+									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+								}
 							}
+						} header: {
+							VaultEnvironmentHeader(sortOrder: $sortOrder)
+								.background(VaultPalette.headerRow)
+								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
 						}
-					} header: {
-						VaultEnvironmentHeader(sortOrder: $sortOrder)
-							.background(VaultPalette.headerRow)
-							.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
 					}
+					.frame(width: tableWidth, alignment: .leading)
+					.frame(minHeight: geometry.size.height, alignment: .top)
 				}
+				.defaultScrollAnchor(.topLeading)
 			}
 		}
 	}
@@ -501,8 +508,8 @@ private struct VaultEnvironmentHeader: View {
 	var body: some View {
 		HStack(spacing: 0) {
 			VaultKeySortHeader(order: $sortOrder).frame(maxWidth: .infinity)
-			Text("VALUE").vaultSectionLabel().frame(width: 280, alignment: .leading)
-			Text("ACTIONS").vaultSectionLabel().padding(.trailing, 20).frame(width: 132, alignment: .trailing)
+			Text("VALUE").vaultSectionLabel().frame(width: VaultMetrics.environmentValueColumn, alignment: .leading)
+			Text("ACTIONS").vaultSectionLabel().padding(.trailing, 20).frame(width: VaultMetrics.environmentActionsColumn, alignment: .trailing)
 		}
 		.frame(height: VaultMetrics.tableHeader)
 	}
@@ -540,7 +547,7 @@ private struct VaultEnvironmentRow: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 
 			VaultValueText(text: isRevealed ? value : "••••••••••••", masked: !isRevealed)
-				.frame(width: 280, alignment: .leading)
+				.frame(width: VaultMetrics.environmentValueColumn, alignment: .leading)
 
 			HStack(spacing: 2) {
 				VaultRowIconButton(systemImage: isRevealed ? "eye.slash" : "eye", help: isRevealed ? "Hide value" : "Reveal value", action: onReveal)
@@ -549,7 +556,7 @@ private struct VaultEnvironmentRow: View {
 				VaultRowIconButton(systemImage: "trash", help: "Delete from this environment", destructive: true, action: onDelete)
 			}
 			.padding(.trailing, 16)
-			.frame(width: 132, alignment: .trailing)
+			.frame(width: VaultMetrics.environmentActionsColumn, alignment: .trailing)
 		}
 		.frame(height: VaultMetrics.fileRow)
 		.background(isSelected ? VaultPalette.rowSelected : (hovering ? VaultPalette.rowHover : .clear))
