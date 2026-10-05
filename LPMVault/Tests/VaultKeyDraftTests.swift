@@ -316,3 +316,49 @@ private final class ObservationFlag: @unchecked Sendable {
 	var isSet: Bool { lock.withLock { value } }
 	func set() { lock.withLock { value = true } }
 }
+
+@Suite("Key draft descriptions")
+struct VaultKeyDraftDescriptionTests {
+	private func makeDraft() -> VaultKeyDraft {
+		VaultKeyDraft(projectID: "project", projectName: "Project", key: "TOKEN", environments: ["default": ["TOKEN": "dev"]])
+	}
+
+	@Test("a description edit counts as a change and follows the saved one until edited")
+	func descriptionDraft() {
+		var draft = makeDraft()
+		draft.setKeyDescription("Old", saved: "Old")
+		#expect(!draft.isDirty)
+		draft.setKeyDescription("New", saved: "Old")
+		#expect(draft.unsavedChangeCount == 1)
+		#expect(draft.keyDescriptionChange == "New")
+		draft.receiveKeyDescription("New")
+		#expect(draft.keyDescription == nil)
+		#expect(!draft.isDirty)
+	}
+
+	@Test("an edited description that changed in lpm.json is a conflict until resolved", arguments: [true, false])
+	func descriptionConflict(keepMine: Bool) {
+		var draft = makeDraft()
+		draft.setKeyDescription("Mine", saved: "Old")
+		draft.receiveKeyDescription("Theirs")
+		#expect(draft.hasConflict)
+		if keepMine {
+			draft.keepKeyDescription()
+			#expect(draft.canSave)
+			#expect(draft.keyDescriptionChange == "Mine")
+		} else {
+			draft.revertKeyDescription()
+			#expect(!draft.isDirty)
+		}
+	}
+
+	@Test("revert drops the description edit with the rest")
+	func revertAll() {
+		var draft = makeDraft()
+		draft.name = "API_TOKEN"
+		draft.setKeyDescription("New", saved: "")
+		draft.revert()
+		#expect(!draft.isDirty)
+		#expect(draft.keyDescription == nil)
+	}
+}

@@ -1,0 +1,197 @@
+import Darwin
+import Foundation
+import Testing
+
+@testable import LPMVault
+
+@Suite("lpm.json documents")
+struct LPMConfigJSONTests {
+	private func fixture(_ name: String) throws -> Data {
+		try Data(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "Fixtures/\(name)"))
+	}
+
+	/// The expected file was rendered by serde_json with the CLI's features after
+	/// the same edit, so the app writes `lpm.json` exactly as the CLI would.
+	@Test("an edit renders the file as the CLI's serde_json does")
+	func matchesSerdeJSON() throws {
+		let document = try LPMConfigJSON(parsing: fixture("lpm-json-edit-input.json"))
+		let change = ProjectEnvSchemaFile.Change(
+			rename: .init(from: "OLD_NAME", to: "NEW_NAME"),
+			description: .init(key: "API_KEY", text: "Stripe key \"live\"\\n\u{1F}é 🎉 </x>")
+		)
+		let updated = try ProjectEnvSchemaFile.applying(change, to: document)
+		let expected = try #require(String(data: fixture("lpm-json-edit-expected.json"), encoding: .utf8))
+		#expect(updated.rendered() + "\n" == expected)
+		#expect(try LPMConfigJSON(parsing: Data(expected.utf8)).rendered() + "\n" == expected)
+	}
+
+	@Test("a repeated key keeps its first position and its last value")
+	func duplicateKeys() throws {
+		let document = try LPMConfigJSON(parsing: Data(#"{"a": 1, "b": 2, "a": 3}"#.utf8))
+		#expect(document == .object([.init(key: "a", value: .number("3")), .init(key: "b", value: .number("2"))]))
+	}
+
+	@Test("strict JSON only, like the CLI", arguments: [
+		#"{"a": 1,}"#, #"{"a": 1} // note"#, "{'a': 1}", #"{"a": 01}"#, #"{"a": "\ud800"}"#,
+		"{\"a\": \"line\nbreak\"}", #"{"a": "open"#, #"{"a": 1} {}"#, #"{"a": NaN}"#, #"{"a": 1.}"#, "",
+	])
+	func rejectsInvalidJSON(text: String) {
+		#expect(throws: LPMConfigJSON.ParseError.self) { try LPMConfigJSON(parsing: Data(text.utf8)) }
+	}
+
+	@Test("nesting stops at serde_json's recursion limit")
+	func recursionLimit() throws {
+		let accepted = String(repeating: "[", count: 128) + String(repeating: "]", count: 128)
+		_ = try LPMConfigJSON(parsing: Data(accepted.utf8))
+		let rejected = String(repeating: "[", count: 129) + String(repeating: "]", count: 129)
+		#expect(throws: LPMConfigJSON.ParseError.tooDeep) { try LPMConfigJSON(parsing: Data(rejected.utf8)) }
+	}
+}
+
+@Suite("lpm.json key descriptions", .serialized)
+struct ProjectEnvSchemaFileTests {
+	private let vaultID = "3f2b8c1e-4d5a-4f6b-9c7d-8e9f0a1b2c3d"
+
+	@Test("reads each key's rule and description")
+	func readsRules() throws {
+		let folder = try makeFolder(#"{"vault": "\#(vaultID)", "envSchema": {"vars": {"A": {"required": true}, "B": {"description": "Bee"}}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let rules = try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: vaultID)
+		#expect(rules == .init(keys: ["A", "B"], descriptions: ["B": "Bee"]))
+	}
+
+	@Test("a folder without lpm.json has no rules, and a missing folder has none to offer")
+	func missingFiles() throws {
+		let folder = try makeFolder(nil)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: vaultID) == .init())
+		#expect(throws: ProjectEnvSchemaFile.FileError.noFolder) {
+			try ProjectEnvSchemaFile.rules(inFolder: folder + "/missing", vaultID: vaultID)
+		}
+	}
+
+	@Test("refuses files the CLI would not use for this vault", arguments: [
+		(#"{"vault": "another-vault"}"#, ProjectEnvSchemaFile.FileError.linkedToOtherVault),
+		(#"{"envSchema": []}"#, .invalidSchema),
+		(#"{"envSchema": {"vars": {"A": {"description": 1}}}}"#, .invalidSchema),
+		("{", .invalidJSON),
+		("[]", .invalidJSON),
+	])
+	func refusesUnusableFiles(contents: String, error: ProjectEnvSchemaFile.FileError) throws {
+		let folder = try makeFolder(contents)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: error) { try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: vaultID) }
+		#expect(throws: error) {
+			try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "x")), inFolder: folder, vaultID: vaultID)
+		}
+		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8) == contents)
+	}
+
+	@Test("never follows a symbolic link to lpm.json")
+	func rejectsSymlink() throws {
+		let folder = try makeFolder(nil)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		try #"{"vault": "\#(vaultID)"}"#.write(toFile: folder + "/elsewhere.json", atomically: true, encoding: .utf8)
+		try FileManager.default.createSymbolicLink(atPath: folder + "/lpm.json", withDestinationPath: folder + "/elsewhere.json")
+		#expect(throws: ProjectEnvSchemaFile.FileError.unsafeFile) {
+			try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "x")), inFolder: folder, vaultID: vaultID)
+		}
+		#expect(try String(contentsOfFile: folder + "/elsewhere.json", encoding: .utf8) == #"{"vault": "\#(vaultID)"}"#)
+	}
+
+	@Test("adding and then clearing a description leaves no empty rule behind")
+	func addAndClear() throws {
+		let folder = try makeFolder(#"{"vault": "\#(vaultID)", "tasks": {}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let added = try ProjectEnvSchemaFile.apply(.init(description: .init(key: "API_KEY", text: "Billing")), inFolder: folder, vaultID: vaultID)
+		#expect(added.descriptions == ["API_KEY": "Billing"])
+		#expect(try contents(folder) == """
+			{
+			  "vault": "\(vaultID)",
+			  "tasks": {},
+			  "envSchema": {
+			    "vars": {
+			      "API_KEY": {
+			        "description": "Billing"
+			      }
+			    }
+			  }
+			}
+
+			""")
+		_ = try ProjectEnvSchemaFile.apply(.init(description: .init(key: "API_KEY", text: "")), inFolder: folder, vaultID: vaultID)
+		#expect(try contents(folder) == "{\n  \"vault\": \"\(vaultID)\",\n  \"tasks\": {}\n}\n")
+	}
+
+	@Test("clearing a description keeps the key's other rules")
+	func clearKeepsRules() throws {
+		let folder = try makeFolder(#"{"envSchema": {"vars": {"A": {"required": true, "description": "Old"}}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let rules = try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "")), inFolder: folder, vaultID: vaultID)
+		#expect(rules == .init(keys: ["A"], descriptions: [:]))
+	}
+
+	@Test("a rename moves the rule in place unless the new name already has one", arguments: [false, true])
+	func renameRule(targetExists: Bool) throws {
+		let target = targetExists ? #", "NEW": {"required": true}"# : ""
+		let folder = try makeFolder(#"{"envSchema": {"vars": {"FIRST": {}, "OLD": {"description": "Old"}, "LAST": {}\#(target)}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let rules = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: "OLD", to: "NEW")), inFolder: folder, vaultID: vaultID)
+		let document = try LPMConfigJSON(parsing: Data(contents(folder).utf8))
+		guard case .object(let vars)? = document["envSchema"]?["vars"] else {
+			Issue.record("Missing vars")
+			return
+		}
+		if targetExists {
+			#expect(vars.map(\.key) == ["FIRST", "OLD", "LAST", "NEW"])
+			#expect(rules.descriptions == ["OLD": "Old"])
+		} else {
+			#expect(vars.map(\.key) == ["FIRST", "NEW", "LAST"])
+			#expect(rules.descriptions == ["NEW": "Old"])
+		}
+	}
+
+	@Test("a change with no effect leaves the file untouched, and a write keeps its permissions")
+	func writesOnlyChanges() throws {
+		let original = #"{"envSchema":{"vars":{"A":{"description":"Same"}}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		chmod(folder + "/lpm.json", 0o600)
+		_ = try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "Same")), inFolder: folder, vaultID: vaultID)
+		#expect(try contents(folder) == original)
+		_ = try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "New")), inFolder: folder, vaultID: vaultID)
+		var metadata = stat()
+		#expect(stat(folder + "/lpm.json", &metadata) == 0)
+		#expect(metadata.st_mode & 0o777 == 0o600)
+	}
+
+	@Test("an edit waits for the CLI's config lock")
+	func waitsForCLILock() async throws {
+		let folder = try makeFolder(#"{"vault": "\#(vaultID)"}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		mkdir(folder + "/.lpm", 0o755)
+		let lock = open(folder + "/.lpm/.config.lock", O_RDWR | O_CREAT, 0o644)
+		try #require(lock >= 0)
+		#expect(flock(lock, LOCK_EX) == 0)
+		let vaultID = vaultID
+		let edit = Task.detached {
+			try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: "Locked")), inFolder: folder, vaultID: vaultID)
+		}
+		try await Task.sleep(for: .milliseconds(200))
+		#expect(try contents(folder) == #"{"vault": "\#(vaultID)"}"#)
+		flock(lock, LOCK_UN)
+		close(lock)
+		#expect(try await edit.value.descriptions == ["A": "Locked"])
+	}
+
+	private func makeFolder(_ lpmJSON: String?) throws -> String {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-schema-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		if let lpmJSON { try lpmJSON.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8) }
+		return folder
+	}
+
+	private func contents(_ folder: String) throws -> String {
+		try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8)
+	}
+}

@@ -1,0 +1,52 @@
+{
+  "vault": "3f2b8c1e-4d5a-4f6b-9c7d-8e9f0a1b2c3d",
+  "runtime": {
+    "node": "22",
+    "flags": [
+      "--enable-source-maps",
+      "--inspect"
+    ],
+    "empty": {},
+    "none": []
+  },
+  "dup": 2,
+  "tasks": {
+    "build": {
+      "command": "tsc -p .",
+      "cache": true,
+      "outputs": [
+        "dist/**"
+      ],
+      "timeout": 3000,
+      "ratio": 1.5,
+      "share": 0.25,
+      "offset": -1,
+      "parent": null
+    }
+  },
+  "envSchema": {
+    "vars": {
+      "DATABASE_URL": {
+        "required": true,
+        "format": "url",
+        "description": "Primary é database 🎉 / path"
+      },
+      "NEW_NAME": {
+        "pattern": "^sk_\\w+$",
+        "secret": true
+      },
+      "API_KEY": {
+        "required": true,
+        "enum": [
+          "a\tb",
+          "q\"uote",
+          "ctl\u001f"
+        ],
+        "description": "Stripe key \"live\"\\n\u001fé 🎉 </x>"
+      }
+    }
+  },
+  "env": {
+    "staging": ".env.staging"
+  }
+}
