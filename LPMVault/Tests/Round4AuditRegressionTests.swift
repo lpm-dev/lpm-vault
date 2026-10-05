@@ -3206,7 +3206,6 @@ extension VaultStoreTests {
 			await store.addProjectWithVaultId(
 				vaultId: "locked-create",
 				name: "Locked Create",
-				path: "",
 				environments: ["default": ["TOKEN": "secret"]]
 			)
 		}
