@@ -103,11 +103,8 @@ struct LPMVaultApp: App {
 				.environment(updateChecker)
 				.environment(appearanceSettings)
 				.environment(\.vaultContentObscured, isObscured)
-				.preferredColorScheme(appearanceSettings.selection.colorScheme)
+				.vaultAppearance(appearanceSettings.selection)
 				.tint(VaultPalette.accent)
-				.onChange(of: appearanceSettings.selection, initial: true) { _, selection in
-					NSApp.appearance = selection.nativeAppearance
-				}
 				.vaultPrivacyProtected(isObscured)
 				.onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
 					isObscured = true
