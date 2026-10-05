@@ -396,7 +396,7 @@ private struct VaultMatrixHeader: View {
 	let environmentColumnWidth: CGFloat
 
 	var body: some View {
-		LazyHStack(spacing: 0) {
+		HStack(spacing: 0) {
 			Text("KEY")
 				.vaultSectionLabel()
 				.padding(.horizontal, 20)
@@ -438,7 +438,7 @@ private struct VaultMatrixRow: View {
 
 	var body: some View {
 		Button(action: onSelect) {
-			LazyHStack(spacing: 0) {
+			HStack(spacing: 0) {
 				HStack(spacing: 8) {
 					Text(key)
 						.font(VaultTypography.mono(13, isSelected ? .bold : .regular))
