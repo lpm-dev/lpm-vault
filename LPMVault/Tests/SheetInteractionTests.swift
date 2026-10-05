@@ -184,12 +184,12 @@ final class SheetTestHost<V: View> {
 	@discardableResult
 	func waitUntil(_ condition: () throws -> Bool) async throws -> Bool {
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		repeat {
+		while true {
 			view.layoutSubtreeIfNeeded()
 			if try condition() { return true }
+			guard ContinuousClock.now < deadline else { return false }
 			try await Task.sleep(for: .milliseconds(5))
-		} while ContinuousClock.now < deadline
-		return try condition()
+		}
 	}
 
 	/// Definitive recognition, for assertions that text is absent or present right now.
@@ -204,15 +204,15 @@ final class SheetTestHost<V: View> {
 		let target = try #require(targetWindow?.contentView ?? view)
 		let area = footer.map { bottomBand(of: target, height: $0) }
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		repeat {
+		while true {
 			let image = try snapshot(target, rect: area)
 			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
 				let lines = try await RenderedText.lines(in: image, level: level)
 				if OCRText(lines.map(\.text).joined(separator: "\n")).contains(expected) { return true }
 			}
+			guard ContinuousClock.now < deadline else { return false }
 			try await Task.sleep(for: .milliseconds(20))
-		} while ContinuousClock.now < deadline
-		return false
+		}
 	}
 
 	/// Clicks the rendered target after it appears.
@@ -221,11 +221,11 @@ final class SheetTestHost<V: View> {
 		let target = try #require(window.contentView)
 		let options: String.CompareOptions = caseInsensitive ? .caseInsensitive : []
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		var bounds: CGRect?
-		repeat {
+		var bounds = try await labelBounds(label, in: target, options: options)
+		while bounds == nil, ContinuousClock.now < deadline {
+			try await Task.sleep(for: .milliseconds(20))
 			bounds = try await labelBounds(label, in: target, options: options)
-			if bounds == nil { try await Task.sleep(for: .milliseconds(20)) }
-		} while bounds == nil && ContinuousClock.now < deadline
+		}
 		let box = try #require(bounds, "Missing button \(label)")
 		let point = target.convert(
 			NSPoint(x: box.midX * target.bounds.width, y: (target.isFlipped ? 1 - box.midY : box.midY) * target.bounds.height),
@@ -328,14 +328,14 @@ final class SheetTestHost<V: View> {
 
 	func generatorWindow() async throws -> NSWindow {
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		repeat {
+		while true {
 			if let panel = try await visibleGeneratorWindow() {
 				try await settle()
 				return panel
 			}
+			guard ContinuousClock.now < deadline else { throw CocoaError(.coderValueNotFound) }
 			try await Task.sleep(for: .milliseconds(10))
-		} while ContinuousClock.now < deadline
-		throw CocoaError(.coderValueNotFound)
+		}
 	}
 
 	func waitForGeneratorDismissal(_ panel: NSWindow) async throws -> Bool {

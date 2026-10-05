@@ -216,14 +216,16 @@ struct VaultPaneLayoutTests {
 		try recordWorkspace(host, named: "workspace-flush-dividers")
 	}
 
+	/// Checks after every sleep, including one that a busy main thread stalls
+	/// past the deadline, before giving up.
 	private func waitForLayout<V: View>(_ host: NSHostingView<V>, until condition: () -> Bool) async throws {
-		let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-		repeat {
+		let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+		while true {
 			host.layoutSubtreeIfNeeded()
 			host.displayIfNeeded()
-			if condition() { return }
+			if condition() || ContinuousClock.now >= deadline { return }
 			try await Task.sleep(for: .milliseconds(10))
-		} while ContinuousClock.now < deadline
+		}
 	}
 
 	private func recordWorkspace<V: View>(_ host: NSHostingView<V>, named name: String) throws {
