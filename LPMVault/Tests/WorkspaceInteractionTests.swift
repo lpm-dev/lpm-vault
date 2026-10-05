@@ -175,6 +175,36 @@ extension SheetInteractionTests {
 			#expect(keysFromTop(["ZULU", "ALPHA"], lines: lines) == ["ALPHA", "ZULU"])
 			#expect(keysFromTop(["ALPHA", "ZULU"], lines: Array(lines.prefix(1))) == ["ZULU"])
 			#expect(keyLine("ALPHA", lines: lines)?.bounds == lines[1].bounds)
+			let noisyLines = [
+				RenderedText.Line(text: "ALPHA", bounds: CGRect(x: 0.2853, y: 0.6569, width: 0.0438, height: 0.0171), labelBounds: nil),
+				RenderedText.Line(text: "ZULUI", bounds: CGRect(x: 0.2891, y: 0.5940, width: 0.0343, height: 0.0144), labelBounds: nil),
+			]
+			#expect(keysFromTop(["ALPHA", "ZULU"], lines: noisyLines) == ["ALPHA", "ZULU"])
+		}
+
+		@Test("key alignment measures visible pixels independently of OCR padding", arguments: [1, 2])
+		func keyAlignmentUsesInk(scale: Int) throws {
+			let width = 200 * scale, height = 100 * scale
+			let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+				bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+			for offset in [0, 9] {
+				context.setFillColor(CGColor(gray: 0.1, alpha: 1))
+				context.fill(CGRect(x: 0, y: 0, width: 200, height: 100))
+				context.setFillColor(CGColor(gray: 0.2, alpha: 1))
+				context.fill(CGRect(x: 0, y: 55, width: 200, height: 25))
+				context.setFillColor(CGColor(gray: 0.9, alpha: 1))
+				let ink = CGRect(x: 34 + offset, y: 61, width: 23, height: 9)
+				context.fill(ink)
+				context.fill(CGRect(x: 150, y: 61, width: 20, height: 9))
+				context.fill(CGRect(x: 11, y: 12, width: 23, height: 9))
+				let image = try #require(context.makeImage())
+				let bounds = try inkBounds(in: image, region: CGRect(x: 0.15, y: 0.55, width: 0.5, height: 0.25))
+				#expect(abs(bounds.minX * 200 - ink.minX) < 0.001)
+				#expect(abs(bounds.minY * 100 - ink.minY) < 0.001)
+				#expect(abs(bounds.width * 200 - ink.width) < 0.001)
+				#expect(abs(bounds.height * 100 - ink.height) < 0.001)
+			}
 		}
 
 		@Test("overlapping recognition cannot establish the order of two table rows", arguments: ["merged", "same height", "overlapping"])
@@ -534,10 +564,7 @@ extension SheetInteractionTests {
 		}
 
 		private func keyLine(_ key: String, lines: [RenderedText.Line]) -> RenderedText.Line? {
-			lines.first {
-				let text = $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
-				return OCRText(text).contains(key) && OCRText(key).contains(text)
-			}
+			lines.first { OCRText($0.text).contains(key) }
 		}
 
 		private func keyColumnRegion(header: CGRect, size: NSSize) -> CGRect {
@@ -574,13 +601,49 @@ extension SheetInteractionTests {
 			let image = try host.snapshot(host.view)
 			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
 				let lines = try await RenderedText.lines(in: image, level: level, region: region)
-				if let box = keyLine(key, lines: lines)?.bounds {
+				if let line = keyLine(key, lines: lines) {
+					// Vision can pad a whole word to the crop edge; measure its visible ink.
+					let band = CGRect(x: region.minX, y: line.bounds.minY, width: region.width, height: line.bounds.height)
+						.insetBy(dx: 0, dy: -2 / CGFloat(image.height)).intersection(region)
+					let box = try inkBounds(in: image, region: band)
 					return CGRect(x: box.minX * host.view.bounds.width, y: box.minY * host.view.bounds.height,
 						width: box.width * host.view.bounds.width, height: box.height * host.view.bounds.height)
 				}
 				print("Missing key \(key) in \(region), \(level): " + lines.map { "\($0.text) at \($0.bounds)" }.joined(separator: " | "))
 			}
 			throw CocoaError(.coderValueNotFound)
+		}
+
+		private func inkBounds(in image: CGImage, region: CGRect) throws -> CGRect {
+			let imageWidth = CGFloat(image.width), imageHeight = CGFloat(image.height)
+			let crop = CGRect(x: region.minX * imageWidth, y: (1 - region.maxY) * imageHeight,
+				width: region.width * imageWidth, height: region.height * imageHeight).integral
+				.intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+			let strip = try #require(image.cropping(to: crop))
+			let width = strip.width, height = strip.height
+			let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+				bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(strip, in: CGRect(x: 0, y: 0, width: width, height: height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			var minX = width, maxX = -1, minTop = height, maxTop = -1
+			for top in 0..<height {
+				// The key-column strip ends in blank row background, before the value column.
+				let sample = (top * width + width - 1) * 4
+				for column in 0..<(width - 1) {
+					let pixel = (top * width + column) * 4
+					let difference = (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[sample + $1])) }
+					if difference > 24 {
+						minX = min(minX, column)
+						maxX = max(maxX, column)
+						minTop = min(minTop, top)
+						maxTop = max(maxTop, top)
+					}
+				}
+			}
+			try #require(minX <= maxX, "No visible key ink in \(region)")
+			return CGRect(x: (crop.minX + CGFloat(minX)) / imageWidth,
+				y: (imageHeight - crop.minY - CGFloat(maxTop + 1)) / imageHeight,
+				width: CGFloat(maxX - minX + 1) / imageWidth, height: CGFloat(maxTop - minTop + 1) / imageHeight)
 		}
 
 		private func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {
