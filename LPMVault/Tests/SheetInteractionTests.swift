@@ -140,6 +140,10 @@ private func samePixels(_ lhs: CFData, _ rhs: CFData) -> Bool {
 enum NativeTestClick {
 	static func send(to window: NSWindow, at point: NSPoint) throws {
 		let content = try #require(window.contentView)
+		// SwiftUI updates hit-testing for newly shown controls on a display pass,
+		// which a slow runner may not have made yet.
+		content.layoutSubtreeIfNeeded()
+		window.displayIfNeeded()
 		let hitPoint = content.superview?.convert(point, from: nil) ?? point
 		var hit = content.hitTest(hitPoint)
 		while let view = hit {

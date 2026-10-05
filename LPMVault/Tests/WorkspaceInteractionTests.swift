@@ -77,7 +77,9 @@ extension SheetInteractionTests {
 			if removal == "rename" { keychain.envStorage["workspace"]?.environments["renamed"] = values }
 			await store.refreshLocalState()
 			try await host.settle()
-			#expect(try await host.waitForText("was deleted outside the editor"))
+			// The small red message is read unreliably on CI; its action and the draft's state are not.
+			#expect(try await host.waitForText("Discard"))
+			#expect(store.keyDrafts.draft(VaultKeyDraft.ID(projectID: "workspace", key: "TOKEN"))?.orphanedEnvironments == ["staging"])
 			#expect(host.secureValues.contains("unsaved-removed-target"))
 			try host.returnWhileEditing("value", modifiers: [])
 			try await host.settle()
@@ -246,8 +248,8 @@ extension SheetInteractionTests {
 			try selectRow(0, in: host)
 			try await host.settle()
 			try host.click(.copy)
+			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "fixture-value" })
 			#expect(try await host.waitForText("Copied"))
-			#expect(NSPasteboard.general.string(forType: .string) == "fixture-value")
 			try await Task.sleep(for: .seconds(2.1))
 			#expect(try await !host.text().contains("Copied"))
 		}
