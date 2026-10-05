@@ -240,12 +240,11 @@ struct AuditRegressionTests {
       projectId: "project",
       expectedName: "Project",
       expectedPath: "",
-      mutation: .updateSecret(
-        environment: "default",
+      mutation: .editKey(VaultKeyEdit(
         key: "TOKEN",
-        expectedValue: "old",
-        replacement: "new"
-      )
+        environments: ["default": ["TOKEN": "old"]],
+        values: ["default": "new"]
+      ))
     )
 
     guard case .success = result else {

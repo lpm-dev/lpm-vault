@@ -1944,6 +1944,10 @@ extension VaultStoreTests {
 	@MainActor
 	func unlockIncludesQueuedPreLockProjectMutations() async {
 		let projectID = "queued-pre-lock-mutations"
+		let original = ["FIRST": "old-first", "SECOND": "old-second"]
+		func edit(_ key: String) -> VaultKeyEdit {
+			VaultKeyEdit(key: key, newKey: key, baseline: ["default": original[key]], values: ["default": "new-\(key.lowercased())"])
+		}
 		let firstMutationEntered = DispatchSemaphore(value: 0)
 		let firstMutationRelease = DispatchSemaphore(value: 0)
 		let keychain = MockKeychainService()
@@ -1975,24 +1979,22 @@ extension VaultStoreTests {
 		store.isUnlocked = true
 		store.openProject(id: projectID)
 
-		store.updateSecret(
-			in: projectID,
-			environment: "default",
-			key: "FIRST",
-			newValue: "new-first"
-		)
+		let first = Task { try? await store.saveKeyEdit(edit("FIRST"), in: projectID) }
 		await waitForSemaphore(firstMutationEntered)
-		store.updateSecret(
-			in: projectID,
-			environment: "default",
-			key: "SECOND",
-			newValue: "new-second"
-		)
+		let (started, didStart) = AsyncStream<Void>.makeStream()
+		let second = Task {
+			didStart.yield()
+			try? await store.saveKeyEdit(edit("SECOND"), in: projectID)
+		}
+		// The second edit enqueues synchronously before this test resumes.
+		var startedIterator = started.makeAsyncIterator()
+		_ = await startedIterator.next()
 		store.lock()
 		let unlock = Task { await store.unlock() }
 		await waitUntil { store.isUnlocking }
 		firstMutationRelease.signal()
 		await unlock.value
+		_ = await (first.value, second.value)
 		await waitUntil {
 			keychain.envStorage[projectID]?.environments["default"]?["SECOND"]
 				== "new-second"

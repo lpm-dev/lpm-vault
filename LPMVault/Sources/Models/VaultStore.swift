@@ -3114,32 +3114,6 @@ final class VaultStore {
     }
   }
 
-  func updateSecret(in projectId: String, key: String, newValue: String) {
-    updateSecret(
-      in: projectId,
-      environment: selectedEnvironment,
-      key: key,
-      newValue: newValue
-    )
-  }
-
-  func updateSecret(in projectId: String, environment: String, key: String, newValue: String) {
-    guard isUnlocked,
-      selectedProjectId == projectId,
-      let project = selectedProject,
-      let expectedValue = project.environments[environment]?[key]
-    else { return }
-    enqueueProjectMutation(
-      base: project,
-      mutation: .updateSecret(
-        environment: environment,
-        key: key,
-        expectedValue: expectedValue,
-        replacement: newValue
-      )
-    )
-  }
-
   /// Saves a key's draft. A successful save ends the draft; a failed one keeps
   /// it, updated to the latest saved state, and throws the reason.
   func saveKeyDraft(_ id: VaultKeyDraft.ID) async throws(VaultKeyEditError) {
