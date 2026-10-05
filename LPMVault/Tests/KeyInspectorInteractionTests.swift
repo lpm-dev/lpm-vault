@@ -202,12 +202,37 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { try host.isEditing(fieldAt: 0, secure: false) })
 		}
 
-		private func makeStore(_ environments: [String: [String: String]]) -> (VaultStore, MockKeychainService) {
+		@Test("a description typed in the inspector is saved to lpm.json with the rest of the key")
+		func descriptionSave() async throws {
+			let folder = FileManager.default.temporaryDirectory.appending(path: "inspector-description-\(UUID().uuidString)").path
+			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			try #"{"vault": "inspector"}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+			let (store, keychain) = makeStore(["default": ["TOKEN": "dev"]], path: folder)
+			defer { store.lock() }
+			store.reloadKeyDescriptions()
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			#expect(try await host.waitUntil { store.keyDescriptions["inspector"] != nil })
+			#expect(try await host.waitForText("DESCRIPTION"))
+			#expect(try await host.text().contains("Stored in lpm.json, not encrypted"))
+			try host.enterText("Rotated monthly by the billing team", at: 1)
+			#expect(try await host.waitForText("1 unsaved change"))
+			try await host.click("Save")
+			#expect(try await host.waitUntil {
+				(try? ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "inspector").descriptions) == ["TOKEN": "Rotated monthly by the billing team"]
+			})
+			#expect(try await host.waitForText("No unsaved changes"))
+			#expect(keychain.applyVaultTransactionCallCount == 0)
+		}
+
+		private func makeStore(_ environments: [String: [String: String]], path: String = "") -> (VaultStore, MockKeychainService) {
 			let keychain = MockKeychainService()
-			keychain.envStorage["inspector"] = (name: "Inspector", path: "", environments: environments)
-			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService())
+			keychain.envStorage["inspector"] = (name: "Inspector", path: path, environments: environments)
+			let preferences = UserDefaults(suiteName: "key-inspector-\(UUID().uuidString)")!
+			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(), preferences: preferences)
 			store.selectedProjectId = "inspector"
-			store.projects = [VaultProject(id: "inspector", name: "Inspector", path: "", environments: environments)]
+			store.projects = [VaultProject(id: "inspector", name: "Inspector", path: path, environments: environments)]
 			store.isUnlocked = true
 			return (store, keychain)
 		}

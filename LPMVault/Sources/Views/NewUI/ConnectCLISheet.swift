@@ -417,6 +417,7 @@ struct ConnectCLISheet: View {
 			isLinking = false
 			linkError = failure
 			refreshStatus()
+			store.reloadKeyDescriptions()
 		}
 	}
 
@@ -425,6 +426,7 @@ struct ConnectCLISheet: View {
 		guard store.isUnlocked, store.selectedProjectId == projectId else { return }
 		chosenFolder = url.path
 		ProjectCLILink.rememberFolder(url.path, vaultId: projectId, defaults: store.preferences)
+		store.reloadKeyDescriptions()
 		linkError = nil
 		refreshStatus()
 	}

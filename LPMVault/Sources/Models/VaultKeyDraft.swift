@@ -27,6 +27,8 @@ struct VaultKeyDraft: Equatable, Sendable {
 	/// value edits, which are kept so they can be copied.
 	private(set) var isOrphaned = false
 	private(set) var isSaveInFlight = false
+	/// The key's description in `lpm.json`, once the person edits it.
+	private(set) var keyDescription: VaultSecretEditDraft?
 
 	init(projectID: String, projectName: String, key: String, environments: [String: [String: String]]) {
 		id = ID(projectID: projectID, key: key)
@@ -46,10 +48,18 @@ struct VaultKeyDraft: Equatable, Sendable {
 		.sorted()
 	}
 
-	var unsavedChangeCount: Int { (isRenamed ? 1 : 0) + changedEnvironments.count }
+	var unsavedChangeCount: Int {
+		(isRenamed ? 1 : 0) + changedEnvironments.count + (keyDescription?.isDirty == true ? 1 : 0)
+	}
 	var isDirty: Bool { unsavedChangeCount > 0 }
 	var hasConflict: Bool {
 		isOrphaned || !orphanedEnvironments.isEmpty || values.values.contains(where: \.hasExternalConflict)
+			|| keyDescription?.hasExternalConflict == true
+	}
+	/// The description to save, when the person changed it.
+	var keyDescriptionChange: String? {
+		guard let keyDescription, keyDescription.isDirty else { return nil }
+		return keyDescription.draft
 	}
 	var canSave: Bool { isDirty && !hasConflict && !isSaveInFlight }
 
@@ -96,6 +106,33 @@ struct VaultKeyDraft: Equatable, Sendable {
 		values[environment]?.keepDraft()
 	}
 
+	/// Edits the description, starting from `saved`, the one in `lpm.json`.
+	mutating func setKeyDescription(_ text: String, saved: String) {
+		guard !isSaveInFlight else { return }
+		if keyDescription == nil { keyDescription = VaultSecretEditDraft(value: saved) }
+		keyDescription?.draft = text
+	}
+
+	/// Drops the description edit, so the one in `lpm.json` shows again.
+	mutating func revertKeyDescription() {
+		guard !isSaveInFlight else { return }
+		keyDescription = nil
+	}
+
+	/// Resolves a description conflict in favor of the person's edit.
+	mutating func keepKeyDescription() {
+		guard !isSaveInFlight else { return }
+		keyDescription?.keepDraft()
+	}
+
+	/// Applies the description now saved in `lpm.json`: an untouched one follows
+	/// it, and an edited one that changed there becomes a conflict.
+	mutating func receiveKeyDescription(_ saved: String) {
+		guard !isSaveInFlight, !isOrphaned, keyDescription != nil else { return }
+		keyDescription?.receiveExternalValue(saved)
+		if keyDescription?.isDirty == false, keyDescription?.hasExternalConflict == false { keyDescription = nil }
+	}
+
 	/// Keeps an orphaned value by adding the key to that environment again.
 	mutating func readd(_ environment: String, environments: [String: [String: String]]) {
 		guard !isSaveInFlight, orphanedEnvironments.contains(environment), environments[environment] != nil,
@@ -110,6 +147,7 @@ struct VaultKeyDraft: Equatable, Sendable {
 	mutating func revert() {
 		guard !isSaveInFlight else { return }
 		name = key
+		keyDescription = nil
 		for environment in additions.union(orphanedEnvironments) {
 			values.removeValue(forKey: environment)
 		}
@@ -158,10 +196,11 @@ struct VaultKeyDraft: Equatable, Sendable {
 	}
 
 	/// Ends a draft whose key is gone: edited values are kept as an orphan, and a
-	/// draft with nothing else to keep, such as a rename alone, becomes clean.
+	/// draft with nothing else to keep, such as a rename or a description, becomes clean.
 	private mutating func abandon() {
 		if changedEnvironments.isEmpty {
 			name = key
+			keyDescription = nil
 		} else {
 			isOrphaned = true
 		}
@@ -257,6 +296,14 @@ final class VaultKeyDrafts {
 		draft.finishSave()
 		receive(into: &draft, from: projects)
 		store(draft)
+	}
+
+	/// Applies the descriptions now saved in a project's `lpm.json`.
+	func receiveKeyDescriptions(_ descriptions: [String: String], in projectID: String) {
+		for var draft in drafts.values where draft.id.projectID == projectID && draft.keyDescription != nil {
+			draft.receiveKeyDescription(descriptions[draft.key] ?? "")
+			store(draft)
+		}
 	}
 
 	/// Applies the latest saved projects. Projects whose values are not loaded

@@ -248,3 +248,115 @@ struct VaultKeyEditStoreTests {
 		return (store, keychain)
 	}
 }
+
+@Suite("Saving key descriptions", .serialized)
+@MainActor
+struct VaultKeyDescriptionStoreTests {
+	private let environments: [String: [String: String]] = ["default": ["STRIPE_KEY": "sk_dev", "OTHER": "other"]]
+	private let id = VaultKeyDraft.ID(projectID: "project", key: "STRIPE_KEY")
+
+	@Test("a description edit is written to lpm.json without touching the Keychain")
+	func descriptionOnly() async throws {
+		let (store, keychain, folder) = try await makeStore(#"{"vault": "project"}"#)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		let project = try #require(store.selectedProject)
+		store.keyDrafts.edit(project, key: "STRIPE_KEY") { $0.setKeyDescription("Billing", saved: "") }
+		#expect(store.keyDrafts.editedKeys(in: "project") == ["STRIPE_KEY"])
+		try await store.saveKeyDraft(id)
+		#expect(keychain.applyVaultTransactionCallCount == 0)
+		#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "project").descriptions == ["STRIPE_KEY": "Billing"])
+		#expect(store.keyDescriptions["project"]?.description(of: "STRIPE_KEY") == "Billing")
+		#expect(store.keyDrafts.draft(id) == nil)
+	}
+
+	@Test("a rename moves the key's rule and saves its new description in the same save")
+	func renameWithDescription() async throws {
+		let (store, keychain, folder) = try await makeStore(#"{"envSchema": {"vars": {"STRIPE_KEY": {"required": true, "description": "Old"}}}}"#)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		let project = try #require(store.selectedProject)
+		store.keyDrafts.edit(project, key: "STRIPE_KEY") {
+			$0.name = "STRIPE_SECRET_KEY"
+			$0.setKeyDescription("Live billing key", saved: "Old")
+		}
+		try await store.saveKeyDraft(id)
+		#expect(keychain.envStorage["project"]?.environments["default"] == ["STRIPE_SECRET_KEY": "sk_dev", "OTHER": "other"])
+		let rules = try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "project")
+		#expect(rules == .init(keys: ["STRIPE_SECRET_KEY"], descriptions: ["STRIPE_SECRET_KEY": "Live billing key"]))
+	}
+
+	@Test("a description that cannot be read stops the save before anything is written")
+	func unreadableDescriptions() async throws {
+		let (store, keychain, folder) = try await makeStore(#"{"vault": "another-vault"}"#)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		let project = try #require(store.selectedProject)
+		store.keyDrafts.edit(project, key: "STRIPE_KEY") {
+			$0.name = "STRIPE_SECRET_KEY"
+			$0.setKeyDescription("Billing", saved: "")
+		}
+		await #expect(throws: VaultKeyEditError.description(ProjectEnvSchemaFile.FileError.linkedToOtherVault.localizedDescription, keySaved: false)) {
+			try await store.saveKeyDraft(id)
+		}
+		#expect(keychain.applyVaultTransactionCallCount == 0)
+		#expect(store.keyDrafts.draft(id)?.keyDescriptionChange == "Billing")
+		#expect(store.keyDrafts.draft(id)?.isSaveInFlight == false)
+	}
+
+	@Test("when lpm.json cannot be written after the Keychain save, the description edit moves to the new name")
+	func descriptionWriteFailsAfterRename() async throws {
+		let (store, keychain, folder) = try await makeStore(#"{"vault": "project"}"#)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		let project = try #require(store.selectedProject)
+		store.keyDrafts.edit(project, key: "STRIPE_KEY") {
+			$0.name = "STRIPE_SECRET_KEY"
+			$0.setKeyDescription("Billing", saved: "")
+		}
+		try "{".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		await #expect(throws: VaultKeyEditError.description(ProjectEnvSchemaFile.FileError.invalidJSON.localizedDescription, keySaved: true)) {
+			try await store.saveKeyDraft(id)
+		}
+		#expect(keychain.envStorage["project"]?.environments["default"]?["STRIPE_SECRET_KEY"] == "sk_dev")
+		#expect(store.keyDrafts.draft(id) == nil)
+		let moved = VaultKeyDraft.ID(projectID: "project", key: "STRIPE_SECRET_KEY")
+		#expect(store.keyDrafts.draft(moved)?.keyDescriptionChange == "Billing")
+		#expect(store.keyDrafts.draft(moved)?.isRenamed == false)
+	}
+
+	@Test("a description changed in lpm.json while it is edited becomes a conflict")
+	func externalDescriptionChange() async throws {
+		let (store, _, folder) = try await makeStore(#"{"envSchema": {"vars": {"STRIPE_KEY": {"description": "Old"}}}}"#)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		let project = try #require(store.selectedProject)
+		store.keyDrafts.edit(project, key: "STRIPE_KEY") { $0.setKeyDescription("Mine", saved: "Old") }
+		try #"{"envSchema": {"vars": {"STRIPE_KEY": {"description": "Theirs"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		store.reloadKeyDescriptions()
+		try await waitUntil { store.keyDescriptions["project"]?.description(of: "STRIPE_KEY") == "Theirs" }
+		let draft = try #require(store.keyDrafts.draft(id))
+		#expect(draft.keyDescription?.hasExternalConflict == true)
+		#expect(draft.keyDescriptionChange == "Mine")
+		#expect(!draft.canSave)
+	}
+
+	private func makeStore(_ lpmJSON: String) async throws -> (VaultStore, MockKeychainService, String) {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-descriptions-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		try lpmJSON.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		let keychain = MockKeychainService()
+		keychain.envStorage["project"] = (name: "Project", path: folder, environments: environments)
+		let preferences = try #require(UserDefaults(suiteName: "key-descriptions-\(UUID().uuidString)"))
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(), preferences: preferences)
+		store.projects = [VaultProject(id: "project", name: "Project", path: folder, environments: environments)]
+		store.isUnlocked = true
+		store.selectedProjectId = "project"
+		store.reloadKeyDescriptions()
+		try await waitUntil { store.keyDescriptions["project"] != nil }
+		return (store, keychain, folder)
+	}
+
+	private func waitUntil(_ condition: () -> Bool) async throws {
+		let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+		while !condition() {
+			try #require(ContinuousClock.now < deadline, "Timed out")
+			try await Task.sleep(for: .milliseconds(5))
+		}
+	}
+}

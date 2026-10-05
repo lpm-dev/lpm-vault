@@ -94,6 +94,8 @@ enum VaultKeyEditError: LocalizedError, Equatable, Sendable {
 	case changed
 	case collision(environment: String, existingKey: String, newKey: String)
 	case persistence(String)
+	/// `lpm.json` could not be updated; `keySaved` tells whether the Keychain part was.
+	case description(String, keySaved: Bool)
 
 	init(_ failure: VaultKeyEdit.Failure, newKey: String) {
 		switch failure {
@@ -120,6 +122,10 @@ enum VaultKeyEditError: LocalizedError, Equatable, Sendable {
 			"\(existingKey) already exists in \(VaultProject.displayName(for: environment)). Keys that differ only in letter case conflict on Windows."
 		case .persistence(let message):
 			"Could not save the key. \(message)"
+		case .description(let reason, keySaved: false):
+			"Could not save the description. \(reason)"
+		case .description(let reason, keySaved: true):
+			"The key was saved, but lpm.json was not updated. \(reason)"
 		}
 	}
 }
