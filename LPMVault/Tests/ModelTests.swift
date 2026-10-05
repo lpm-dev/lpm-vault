@@ -61,16 +61,28 @@ struct VaultProjectTests {
 		#expect(VaultWorkspaceSnapshot(project: project).sortedKeys(for: "default") == ["APPLE", "banana", "MANGO", "ZEBRA"])
 	}
 
-	@Test("environment keys use an exact-case tie breaker")
-	func sortedKeysCaseTieBreaker() {
+	@Test("keys that differ only in case keep Finder's order, lowercase first")
+	func sortedKeysCaseOrder() {
 		let project = VaultProject(
 			id: "test-id",
 			name: "test",
 			path: "",
-			environments: ["default": ["Hey": "mixed", "HEY": "upper"]]
+			environments: ["default": ["HEY": "upper", "hey": "lower", "Hey": "mixed"]]
 		)
 
-		#expect(VaultWorkspaceSnapshot(project: project).sortedKeys(for: "default") == ["HEY", "Hey"])
+		#expect(VaultWorkspaceSnapshot(project: project).sortedKeys(for: "default") == ["hey", "Hey", "HEY"])
+	}
+
+	@Test("numbers in keys sort by value, as in Finder")
+	func sortedKeysCompareNumbersByValue() {
+		let project = VaultProject(
+			id: "test-id",
+			name: "test",
+			path: "",
+			environments: ["default": ["DATABASE_URL_10": "c", "DATABASE_URL_2": "b", "DATABASE_URL": "a", "api_key": "k"]]
+		)
+
+		#expect(VaultWorkspaceSnapshot(project: project).sortedKeys(for: "default") == ["api_key", "DATABASE_URL", "DATABASE_URL_2", "DATABASE_URL_10"])
 	}
 
 	@Test("an empty environment has no sorted keys")

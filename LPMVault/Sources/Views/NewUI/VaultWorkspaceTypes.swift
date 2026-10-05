@@ -28,6 +28,20 @@ enum VaultEnvironmentViewMode: String, CaseIterable, Identifiable {
   var id: String { rawValue }
 }
 
+/// The order the workspace lists keys in, kept across launches.
+enum VaultKeySortOrder: String, Sendable {
+  case ascending
+  case descending
+
+  static let defaultsKey = "lpm-vault-key-sort"
+
+  var reversed: Self { self == .ascending ? .descending : .ascending }
+
+  var title: String { self == .ascending ? "A→Z" : "Z→A" }
+
+  var spokenTitle: String { self == .ascending ? "A to Z" : "Z to A" }
+}
+
 struct VaultSecretTarget: Identifiable {
   let id = UUID()
   let projectId: String
@@ -246,9 +260,14 @@ struct VaultWorkspaceSnapshot: Equatable, Sendable {
     }
   }
 
+  /// Every key, A to Z.
   let allSecretKeys: [String]
+  /// `allSecretKeys` from Z to A, built once so either order is shown without copying.
+  private let allSecretKeysDescending: [String]
+  /// Lowercased keys, in the order of `allSecretKeys`.
   let normalizedSecretKeys: [String]
-  let sortedKeysByEnvironment: [String: [String]]
+  private let sortedKeysByEnvironment: [String: [String]]
+  private let descendingKeysByEnvironment: [String: [String]]
   let normalizedSearchIndex: String
   let summaries: [String: KeySummary]
   let environmentCount: Int
@@ -272,7 +291,9 @@ struct VaultWorkspaceSnapshot: Equatable, Sendable {
     sourceIdentity = project.workspaceSnapshotIdentity
     var accumulators: [String: KeyAccumulator] = [:]
     var sortedKeysByEnvironment: [String: [String]] = [:]
+    var descendingKeysByEnvironment: [String: [String]] = [:]
     sortedKeysByEnvironment.reserveCapacity(project.environments.count)
+    descendingKeysByEnvironment.reserveCapacity(project.environments.count)
     for (environment, secrets) in project.environments {
       guard !cancellationCheck() else { return nil }
       for (index, element) in secrets.enumerated() {
@@ -290,21 +311,27 @@ struct VaultWorkspaceSnapshot: Equatable, Sendable {
         }
       }
       guard !cancellationCheck() else { return nil }
-      sortedKeysByEnvironment[environment] = Self.sortedKeys(secrets.keys)
+      let sortedKeys = Self.sortedKeys(secrets.keys)
+      sortedKeysByEnvironment[environment] = sortedKeys
+      descendingKeysByEnvironment[environment] = sortedKeys.reversed()
       guard !cancellationCheck() else { return nil }
     }
     self.sortedKeysByEnvironment = sortedKeysByEnvironment
+    self.descendingKeysByEnvironment = descendingKeysByEnvironment
 
     environmentCount = project.environments.count
     if project.environments.count == 1,
       let environment = project.environments.keys.first,
-      let sortedKeys = sortedKeysByEnvironment[environment]
+      let sortedKeys = sortedKeysByEnvironment[environment],
+      let descendingKeys = descendingKeysByEnvironment[environment]
     {
       allSecretKeys = sortedKeys
+      allSecretKeysDescending = descendingKeys
     } else {
       guard !cancellationCheck() else { return nil }
       allSecretKeys = Self.sortedKeys(accumulators.keys)
       guard !cancellationCheck() else { return nil }
+      allSecretKeysDescending = allSecretKeys.reversed()
     }
     var normalizedSecretKeys: [String] = []
     normalizedSecretKeys.reserveCapacity(allSecretKeys.count)
@@ -340,18 +367,24 @@ struct VaultWorkspaceSnapshot: Equatable, Sendable {
     missingKeyCount = missing
   }
 
-  func sortedKeys(for environment: String) -> [String] {
-    sortedKeysByEnvironment[environment] ?? []
+  func keys(_ order: VaultKeySortOrder) -> [String] {
+    order == .ascending ? allSecretKeys : allSecretKeysDescending
+  }
+
+  func sortedKeys(for environment: String, _ order: VaultKeySortOrder = .ascending) -> [String] {
+    (order == .ascending ? sortedKeysByEnvironment : descendingKeysByEnvironment)[environment] ?? []
   }
 
   func missingKeyCount(for environment: String) -> Int {
     allSecretKeys.count - (sortedKeysByEnvironment[environment]?.count ?? 0)
   }
 
+  /// Finder's order: case-insensitive, with numbers compared by value, so
+  /// `KEY_2` comes before `KEY_10`.
   private static func sortedKeys<S: Sequence>(_ keys: S) -> [String]
   where S.Element == String {
     keys.sorted {
-      let comparison = $0.localizedCaseInsensitiveCompare($1)
+      let comparison = $0.localizedStandardCompare($1)
       return comparison == .orderedSame ? $0 < $1 : comparison == .orderedAscending
     }
   }
@@ -446,19 +479,23 @@ struct VaultContentDerivation: Equatable {
     mode: VaultWorkspaceMode,
     filter: VaultWorkspaceFilter,
     searchText: String,
+    sortOrder: VaultKeySortOrder,
     revealedKeys: Set<String>
   ) {
     let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    allKeys = snapshot.allSecretKeys
+    // Matching walks the A-to-Z keys alongside their lowercased forms, then
+    // reverses the matches in place for Z to A.
+    let ascendingKeys = snapshot.allSecretKeys
+    allKeys = snapshot.keys(sortOrder)
     switch mode {
     case .matrix:
       if filter == .all, query.isEmpty {
         filteredKeys = allKeys
       } else {
         var matchingKeys: [String] = []
-        matchingKeys.reserveCapacity(allKeys.count)
-        for index in allKeys.indices {
-          let key = allKeys[index]
+        matchingKeys.reserveCapacity(ascendingKeys.count)
+        for index in ascendingKeys.indices {
+          let key = ascendingKeys[index]
           let matchesFilter: Bool
           switch filter {
           case .all: matchesFilter = true
@@ -471,24 +508,26 @@ struct VaultContentDerivation: Equatable {
             matchingKeys.append(key)
           }
         }
+        if sortOrder == .descending { matchingKeys.reverse() }
         filteredKeys = matchingKeys
       }
       environmentKeys = []
       environmentDriftingKeyCount = 0
     case .environment:
       filteredKeys = []
-      let sortedEnvironmentKeys = snapshot.sortedKeys(for: selectedEnvironment)
+      let sortedEnvironmentKeys = snapshot.sortedKeys(for: selectedEnvironment, sortOrder)
       if query.isEmpty {
         environmentKeys = sortedEnvironmentKeys
       } else if snapshot.environmentCount == 1,
-        sortedEnvironmentKeys.count == snapshot.allSecretKeys.count
+        sortedEnvironmentKeys.count == ascendingKeys.count
       {
         var matchingKeys: [String] = []
         matchingKeys.reserveCapacity(sortedEnvironmentKeys.count)
-        for index in snapshot.allSecretKeys.indices
+        for index in ascendingKeys.indices
         where snapshot.normalizedSecretKeys[index].contains(query) {
-          matchingKeys.append(snapshot.allSecretKeys[index])
+          matchingKeys.append(ascendingKeys[index])
         }
+        if sortOrder == .descending { matchingKeys.reverse() }
         environmentKeys = matchingKeys
       } else {
         environmentKeys = sortedEnvironmentKeys.filter {
