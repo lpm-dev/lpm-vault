@@ -273,7 +273,7 @@ struct AddVariableStoreTests {
 @MainActor
 struct AddVariableSheetRenderingTests {
 	@Test("the sheet renders its fields, environments, and submit action")
-	func rendersSheet() throws {
+	func rendersSheet() async throws {
 		let environments: [String: [String: String]] = ["default": [:], "staging": [:], "production": [:]]
 		let keychain = MockKeychainService()
 		keychain.envStorage["id-1"] = (name: "my-api-server", path: "/tmp/api", environments: environments)
@@ -285,7 +285,7 @@ struct AddVariableSheetRenderingTests {
 		store.projects = [VaultProject(id: "id-1", name: "my-api-server", path: "/tmp/api", environments: environments)]
 		store.isUnlocked = true
 
-		let text = try renderedText(
+		let text = try await renderedText(
 			of: AddVariableSheet(store: store, projectId: "id-1", environment: "staging"),
 			size: NSSize(width: 560, height: 520),
 			named: "add-variable-sheet.png"
@@ -297,8 +297,8 @@ struct AddVariableSheetRenderingTests {
 	}
 
 	@Test("the generator panel lists every value kind")
-	func rendersGeneratorPanel() throws {
-		let text = try renderedText(
+	func rendersGeneratorPanel() async throws {
+		let text = try await renderedText(
 			of: SecretGeneratorPanel(kind: .constant(.base64), length: .constant(32), onGenerate: {}),
 			size: NSSize(width: 300, height: 330),
 			named: "secret-generator-panel.png"
@@ -309,7 +309,7 @@ struct AddVariableSheetRenderingTests {
 		}
 	}
 
-	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) throws -> OCRText {
+	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> OCRText {
 		let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
 		host.frame = NSRect(origin: .zero, size: size)
 		host.layoutSubtreeIfNeeded()
@@ -318,10 +318,6 @@ struct AddVariableSheetRenderingTests {
 		let image = try #require(bitmap.cgImage)
 		let data = try #require(bitmap.representation(using: .png, properties: [:]))
 		Attachment.record(data, named: name)
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		request.usesLanguageCorrection = false
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		return OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n"))
+		return OCRText(try await RenderedText.strings(in: image, usesLanguageCorrection: false).joined(separator: "\n"))
 	}
 }

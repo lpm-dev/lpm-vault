@@ -58,6 +58,20 @@ enum RenderedText {
 	}
 }
 
+extension RenderedText {
+	/// The text of every recognized line. Recognition runs off the main thread
+	/// because Vision can wait on work that needs it.
+	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true) async throws -> [String] {
+		try await Task.detached(priority: .userInitiated) {
+			let request = VNRecognizeTextRequest()
+			request.recognitionLevel = .accurate
+			request.usesLanguageCorrection = usesLanguageCorrection
+			try VNImageRequestHandler(cgImage: image).perform([request])
+			return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+		}.value
+	}
+}
+
 /// Recognition results for recently read frames. Polling helpers read the same
 /// frame repeatedly while they wait, and identical pixels always recognize the
 /// same way, so each frame is read once per level and region.

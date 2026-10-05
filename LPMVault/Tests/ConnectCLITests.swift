@@ -217,9 +217,9 @@ struct ConnectCLIRenderingTests {
 	}
 
 	@Test("the sheet shows the vault ID, lpm.json snippet, and terminal commands")
-	func rendersSheet() throws {
+	func rendersSheet() async throws {
 		let store = makeStore(path: "")
-		let text = try renderedText(
+		let text = try await renderedText(
 			of: ConnectCLISheet(store: store, projectId: "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"),
 			size: NSSize(width: 600, height: 560),
 			named: "connect-cli-sheet.png"
@@ -234,11 +234,11 @@ struct ConnectCLIRenderingTests {
 	}
 
 	@Test("the connection sheet explicitly selects the named environment")
-	func rendersSelectedEnvironment() throws {
+	func rendersSelectedEnvironment() async throws {
 		let store = makeStore(path: "")
 		store.projects[0].environments["staging"] = ["TOKEN": "dummy"]
 		store.selectedEnvironment = "staging"
-		let text = try renderedText(
+		let text = try await renderedText(
 			of: ConnectCLISheet(store: store, projectId: store.projects[0].id),
 			size: NSSize(width: 600, height: 620),
 			named: "connect-cli-staging.png"
@@ -248,9 +248,9 @@ struct ConnectCLIRenderingTests {
 	}
 
 	@Test("the title bar chip reads Connect CLI")
-	func rendersTitleBarChip() throws {
+	func rendersTitleBarChip() async throws {
 		let store = makeStore(path: "")
-		let text = try renderedText(
+		let text = try await renderedText(
 			of: VaultTitleBarView(store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {})
 				.environment(UpdateChecker()),
 			size: NSSize(width: 1040, height: VaultMetrics.titleBar),
@@ -261,7 +261,7 @@ struct ConnectCLIRenderingTests {
 		#expect(!text.contains("vault 7f3a1e2c"))
 	}
 
-	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) throws -> OCRText {
+	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> OCRText {
 		let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
 		host.frame = NSRect(origin: .zero, size: size)
 		host.layoutSubtreeIfNeeded()
@@ -270,11 +270,7 @@ struct ConnectCLIRenderingTests {
 		let image = try #require(bitmap.cgImage)
 		let data = try #require(bitmap.representation(using: .png, properties: [:]))
 		Attachment.record(data, named: name)
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		request.usesLanguageCorrection = false
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		return OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n"))
+		return OCRText(try await RenderedText.strings(in: image, usesLanguageCorrection: false).joined(separator: "\n"))
 	}
 }
 

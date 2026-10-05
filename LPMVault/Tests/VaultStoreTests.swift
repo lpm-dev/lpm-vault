@@ -1173,7 +1173,7 @@ struct VaultStoreTests {
 			#expect(store.isUnlocked)
 			#expect(store.autoLockCountdownSeconds == seconds)
 			if seconds == 30 || seconds == 1 {
-				try expectRenderedLockTitle(store: store, seconds: seconds)
+				try await expectRenderedLockTitle(store: store, seconds: seconds)
 			}
 		}
 		#expect(await sleeper.durations == [.seconds(90)] + Array(repeating: .seconds(1), count: 30))
@@ -1298,7 +1298,7 @@ struct VaultStoreTests {
 		await sleeper.resume(at: 2)
 	}
 
-	private func expectRenderedLockTitle(store: VaultStore, seconds: Int) throws {
+	private func expectRenderedLockTitle(store: VaultStore, seconds: Int) async throws {
 		let view = NSHostingView(rootView: VaultTitleBarView(
 			store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
 		).environment(UpdateChecker()).environment(\.colorScheme, .light))
@@ -1309,10 +1309,7 @@ struct VaultStoreTests {
 		let image = try #require(bitmap.cgImage)
 		let data = try #require(bitmap.representation(using: .png, properties: [:]))
 		Attachment.record(data, named: "lock-countdown-\(seconds).png")
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		let text = try await RenderedText.strings(in: image).joined(separator: " ")
 		#expect(text.contains("Lock \(seconds)s"))
 	}
 
