@@ -24,7 +24,8 @@ struct VaultStoreTests {
 		projects: [(id: String, name: String, path: String, secrets: [String: String])] = [],
 		biometricShouldSucceed: Bool = true,
 		apiService: MockAPIService? = nil,
-		envFileImportService: any EnvFileImportServiceProtocol = MockEnvFileImportService()
+		envFileImportService: any EnvFileImportServiceProtocol = MockEnvFileImportService(),
+		preferences: UserDefaults = .standard
 	) -> (VaultStore, MockKeychainService, MockBiometricService, MockAPIService) {
 		let keychain = MockKeychainService()
 		for p in projects {
@@ -38,6 +39,7 @@ struct VaultStoreTests {
 			biometricService: biometric,
 			apiService: api,
 			envFileImportService: envFileImportService,
+			preferences: preferences,
 			authTokenProvider: { _, _ in "session-token" },
 			authSessionClearer: { _ in }
 		)
@@ -1602,6 +1604,60 @@ struct VaultStoreTests {
 		#expect(added)
 		#expect(store.environmentOrders[projectId] == ["default", "local"])
 		#expect(store.orderedEnvironmentNames(for: store.projects[0]) == ["default", "local"])
+	}
+
+	@Test("removing a vault forgets its environment order and CLI folder", arguments: ["delete", "sidebar"])
+	func removingVaultForgetsPreferences(removal: String) async throws {
+		let (defaults, domain) = try isolatedPreferences()
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let (store, _, _, _) = makeStore(projects: [
+			(id: "removed", name: "Removed", path: "", secrets: [:]),
+			(id: "kept", name: "Kept", path: "", secrets: [:]),
+		], preferences: defaults)
+		store.isUnlocked = true
+		for id in ["removed", "kept"] {
+			store.saveEnvironmentOrder(for: id, order: ["default"])
+			ProjectCLILink.rememberFolder("/tmp/\(id)", vaultId: id, defaults: defaults)
+		}
+		let removed = try #require(store.projects.first { $0.id == "removed" })
+		if removal == "delete" {
+			#expect(await store.deleteLocalVault(removed))
+		} else {
+			store.removeFromSidebar(removed)
+			await waitUntil { !store.projects.contains { $0.id == "removed" } }
+		}
+		#expect(defaults.object(forKey: "lpm-vault-env-order-removed") == nil)
+		#expect(ProjectCLILink.folder(vaultId: "removed", projectPath: "", defaults: defaults) == "")
+		#expect(defaults.stringArray(forKey: "lpm-vault-env-order-kept") == ["default"])
+		#expect(ProjectCLILink.folder(vaultId: "kept", projectPath: "", defaults: defaults) == "/tmp/kept")
+		store.lock()
+	}
+
+	@Test("unlocking forgets preferences of vaults removed while the app was closed")
+	func unlockForgetsRemovedVaultPreferences() async throws {
+		let (defaults, domain) = try isolatedPreferences()
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let (store, _, _, _) = makeStore(
+			projects: [(id: "kept", name: "Kept", path: "", secrets: [:])], preferences: defaults)
+		for id in ["kept", "removed-by-cli"] {
+			defaults.set(["default"], forKey: "lpm-vault-env-order-\(id)")
+			ProjectCLILink.rememberFolder("/tmp/\(id)", vaultId: id, defaults: defaults)
+		}
+		defaults.set("unrelated", forKey: "lpm-vault-environment")
+		await store.unlock()
+		#expect(store.isUnlocked)
+		#expect(defaults.object(forKey: "lpm-vault-env-order-removed-by-cli") == nil)
+		#expect(ProjectCLILink.folder(vaultId: "removed-by-cli", projectPath: "", defaults: defaults) == "")
+		#expect(defaults.stringArray(forKey: "lpm-vault-env-order-kept") == ["default"])
+		#expect(store.environmentOrders["kept"] == ["default"])
+		#expect(ProjectCLILink.folder(vaultId: "kept", projectPath: "", defaults: defaults) == "/tmp/kept")
+		#expect(defaults.string(forKey: "lpm-vault-environment") == "unrelated")
+		store.lock()
+	}
+
+	private func isolatedPreferences() throws -> (UserDefaults, String) {
+		let domain = "lpm-vault-store-tests-" + UUID().uuidString
+		return (try #require(UserDefaults(suiteName: domain)), domain)
 	}
 
 	@Test("environment order ignores duplicate saved names")

@@ -421,10 +421,10 @@ final class SheetTestHost<V: View> {
 @Suite("Sheet interaction regressions", .serialized)
 @MainActor
 struct SheetInteractionTests {
-	private func makeStore(path: String = "", environments: [String: [String: String]] = ["default": [:]]) -> (VaultStore, MockKeychainService) {
+	private func makeStore(path: String = "", environments: [String: [String: String]] = ["default": [:]], preferences: UserDefaults = .standard) -> (VaultStore, MockKeychainService) {
 		let keychain = MockKeychainService()
 		keychain.envStorage["sheet-regression"] = (name: "Sheet regression", path: path, environments: environments)
-		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService())
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(), preferences: preferences)
 		store.selectedProjectId = "sheet-regression"
 		store.projects = [VaultProject(id: "sheet-regression", name: "Sheet regression", path: path, environments: environments)]
 		store.isUnlocked = true
@@ -629,8 +629,8 @@ struct SheetInteractionTests {
 		let config = folder.appendingPathComponent("lpm.json")
 		let original = Data(#"{"vault":"other-vault","custom":true}"#.utf8)
 		try original.write(to: config)
-		let (store, _) = makeStore()
-		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }, localFolderDefaults: defaults), size: NSSize(width: 600, height: 560))
+		let (store, _) = makeStore(preferences: defaults)
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
 		try await host.click("write file")
@@ -657,8 +657,8 @@ struct SheetInteractionTests {
 		let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 		defer { try? FileManager.default.removeItem(at: folder) }
-		let (store, _) = makeStore()
-		let first = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }, localFolderDefaults: defaults), size: NSSize(width: 600, height: 560))
+		let (store, _) = makeStore(preferences: defaults)
+		let first = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }), size: NSSize(width: 600, height: 560))
 		try await first.settle()
 		try await first.click("write file")
 		try await first.click("Choose folder")
@@ -666,7 +666,7 @@ struct SheetInteractionTests {
 		try await first.click("Write")
 		try #require(try await first.waitForText("Linked in lpm.json"))
 		first.window.close()
-		let second = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", localFolderDefaults: defaults), size: NSSize(width: 600, height: 560))
+		let second = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression"), size: NSSize(width: 600, height: 560))
 		defer { second.window.close() }
 		#expect(try await second.waitForText("Linked in lpm.json"))
 	}
