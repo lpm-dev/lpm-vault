@@ -104,13 +104,13 @@ struct ProjectCLILinkTests {
 		let config = folder.appendingPathComponent("lpm.json")
 		if initiallyPresent { try writeConfig(#"{"vault":"inspected-vault"}"#, in: folder) }
 		let newer = Data(#"{"vault":"concurrent-vault","concurrentSetting":true}"#.utf8)
-		#expect(throws: ProjectConfigFile.FileError.vaultChanged) {
+		#expect(throws: ProjectConfigFile.FileError.changed) {
 			try ProjectConfigFile.writeVaultID(
 				vaultId, to: config,
 				policy: initiallyPresent ? .replacing("inspected-vault") : .unlinked,
-				fileWriter: { data, destination, replaceExisting, validation in
+				fileWriter: { data, destination, permissions, replaceExisting, validation in
 					try SecureFileWriter.write(
-						data, to: destination, permissions: 0o644, replaceExisting: replaceExisting,
+						data, to: destination, permissions: permissions, replaceExisting: replaceExisting,
 						beforeReplacement: {
 							try newer.write(to: destination, options: .atomic)
 							try validation()
@@ -120,7 +120,7 @@ struct ProjectCLILinkTests {
 			)
 		}
 		#expect(try Data(contentsOf: config) == newer)
-		#expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["lpm.json"])
+		#expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted() == [".lpm", "lpm.json"])
 	}
 
 	@Test("a new destination created at replacement time is never overwritten")
@@ -179,6 +179,52 @@ struct ProjectCLILinkTests {
 		let config = try readConfig(in: folder)
 		#expect(config["vault"] as? String == vaultId)
 		#expect((config["tasks"] as? [String: Any])?["dev"] != nil)
+	}
+
+	@Test("linking keeps lpm.json's member order and writes it the way the CLI does")
+	func linkKeepsCLIFormatting() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig(#"{"tasks": {"dev": {"env": "development"}}, "env": {"staging": ".env.staging"}, "runtime": {"node": "22"}}"#, in: folder)
+
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path)
+		let contents = try String(contentsOf: folder.appendingPathComponent("lpm.json"), encoding: .utf8)
+		#expect(contents == """
+			{
+			  "tasks": {
+			    "dev": {
+			      "env": "development"
+			    }
+			  },
+			  "env": {
+			    "staging": ".env.staging"
+			  },
+			  "runtime": {
+			    "node": "22"
+			  },
+			  "vault": "\(vaultId)"
+			}
+
+			""")
+	}
+
+	@Test("linking waits for the CLI's config lock")
+	func linkWaitsForCLILock() async throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig(#"{"runtime": {"node": "22"}}"#, in: folder)
+		try FileManager.default.createDirectory(at: folder.appendingPathComponent(".lpm"), withIntermediateDirectories: true)
+		let lock = open(folder.appendingPathComponent(".lpm/.config.lock").path, O_RDWR | O_CREAT, 0o644)
+		try #require(lock >= 0)
+		#expect(flock(lock, LOCK_EX) == 0)
+		let vaultId = vaultId
+		let link = Task { await ProjectCLILink.linkInBackground(vaultId: vaultId, folder: folder.path) }
+		try await Task.sleep(for: .milliseconds(200))
+		#expect(try readConfig(in: folder)["vault"] == nil)
+		flock(lock, LOCK_UN)
+		close(lock)
+		#expect(await link.value == nil)
+		#expect(try readConfig(in: folder)["vault"] as? String == vaultId)
 	}
 
 	@Test("linking leaves malformed lpm.json untouched")

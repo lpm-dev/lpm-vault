@@ -4,8 +4,8 @@ import Foundation
 /// The `envSchema` rules in a project folder's `lpm.json`, where the LPM CLI
 /// keeps each key's validation rules and description.
 ///
-/// Reads take no lock. Edits take the CLI's config lock, `.lpm/.config.lock`,
-/// and render the file as the CLI does, so neither side loses the other's edit.
+/// Reads take no lock. Edits go through `ProjectConfigFile.update`, which takes
+/// the CLI's config lock and renders the file as the CLI does.
 enum ProjectEnvSchemaFile {
 	struct Rules: Equatable, Sendable {
 		/// Keys that have a rule.
@@ -43,6 +43,17 @@ enum ProjectEnvSchemaFile {
 		case changed
 		case writeFailed(String)
 
+		init(_ error: ProjectConfigFile.FileError) {
+			switch error {
+			case .notFound, .readFailed: self = .readFailed
+			case .unsafeFile: self = .unsafeFile
+			case .tooLarge: self = .tooLarge
+			case .invalidJSON: self = .invalidJSON
+			case .changed: self = .changed
+			case .writeFailed(let reason): self = .writeFailed(reason)
+			}
+		}
+
 		var errorDescription: String? {
 			switch self {
 			case .noFolder: "Connect a project folder to keep descriptions in its lpm.json."
@@ -58,14 +69,6 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
-	/// The CLI's limit for configuration files.
-	private static let maximumBytes = 16 * 1024 * 1024
-
-	/// Edits wait here, not on Swift's cooperative pool, because one waits for
-	/// the CLI's lock for as long as the CLI holds it. The queue also keeps the
-	/// app's own edits in order.
-	private static let editQueue = DispatchQueue(label: "dev.lpm.vault.lpm-json", qos: .userInitiated)
-
 	/// `rules(inFolder:vaultID:)` off the main thread and the cooperative pool.
 	static func loadRules(inFolder folder: String, vaultID: String) async -> Result<Rules, FileError> {
 		await withCheckedContinuation { continuation in
@@ -75,10 +78,10 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
-	/// `apply(_:inFolder:vaultID:)` on the edit queue.
+	/// `apply(_:inFolder:vaultID:)` on the queue that orders the app's `lpm.json` edits.
 	static func save(_ change: Change, inFolder folder: String, vaultID: String) async -> Result<Rules, FileError> {
 		await withCheckedContinuation { continuation in
-			editQueue.async {
+			ProjectConfigFile.editQueue.async {
 				continuation.resume(returning: Result { () throws(FileError) in try apply(change, inFolder: folder, vaultID: vaultID) })
 			}
 		}
@@ -96,19 +99,23 @@ enum ProjectEnvSchemaFile {
 	/// Applies `change` under the CLI's config lock and returns the resulting
 	/// rules. The file is written only when its contents change.
 	static func apply(_ change: Change, inFolder folder: String, vaultID: String) throws(FileError) -> Rules {
-		let folderURL = try existingFolder(folder)
-		return try withConfigLock(in: folderURL) { () throws(FileError) -> Rules in
-			let url = folderURL.appendingPathComponent("lpm.json")
-			let original = try read(url)
-			let document = try original.map(parse) ?? .object([])
-			guard case .object = document else { throw .invalidJSON }
-			try checkVault(of: document, is: vaultID)
-			// A schema the CLI cannot read is left for the person to fix.
-			let current = try rules(of: document)
-			let updated = try applying(change, to: document)
-			guard updated != document else { return current }
-			try write(updated, to: url, replacing: original)
-			return try rules(of: updated)
+		let url = try existingFolder(folder).appendingPathComponent("lpm.json")
+		do {
+			return try ProjectConfigFile.update(at: url) { document in
+				try checkVault(of: document, is: vaultID)
+				// A schema the CLI cannot read is left for the person to fix.
+				let current = try rules(of: document)
+				let updated = try applying(change, to: document)
+				guard updated != document else { return current }
+				document = updated
+				return try rules(of: updated)
+			}
+		} catch let error as FileError {
+			throw error
+		} catch let error as ProjectConfigFile.FileError {
+			throw FileError(error)
+		} catch {
+			throw .writeFailed(error.localizedDescription)
 		}
 	}
 
@@ -206,49 +213,6 @@ enum ProjectEnvSchemaFile {
 
 	private static func checkVault(of document: LPMConfigJSON, is vaultID: String) throws(FileError) {
 		if case .string(let linked)? = document["vault"], linked != vaultID { throw .linkedToOtherVault }
-	}
-
-	private static func write(_ document: LPMConfigJSON, to url: URL, replacing original: Data?) throws(FileError) {
-		let data = Data((document.rendered() + "\n").utf8)
-		guard data.count <= maximumBytes else { throw .tooLarge }
-		var permissions = mode_t(0o644)
-		var metadata = stat()
-		if original != nil, lstat(url.path, &metadata) == 0 { permissions = metadata.st_mode & 0o777 }
-		do {
-			try SecureFileWriter.write(data, to: url, permissions: permissions, replaceExisting: original != nil) {
-				// The lock orders CLI writes; an editor saving meanwhile does not take it.
-				let current: Data?
-				do { current = try ProjectConfigFile.readRegularFile(at: url) } catch ProjectConfigFile.FileError.notFound { current = nil }
-				guard current == original else { throw FileError.changed }
-			}
-		} catch let error as FileError {
-			throw error
-		} catch SecureFileWriter.WriteError.replaceFailed(let code) where code == EEXIST {
-			throw .changed
-		} catch {
-			throw .writeFailed(error.localizedDescription)
-		}
-	}
-
-	/// Runs `body` holding the exclusive `flock` the CLI takes on `.lpm/.config.lock`.
-	private static func withConfigLock<T>(in folder: URL, _ body: () throws(FileError) -> T) throws(FileError) -> T {
-		let stateDirectory = folder.appendingPathComponent(".lpm", isDirectory: true)
-		if mkdir(stateDirectory.path, 0o755) != 0, errno != EEXIST {
-			throw .writeFailed(String(cString: strerror(errno)))
-		}
-		var metadata = stat()
-		guard lstat(stateDirectory.path, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFDIR else { throw .unsafeFile }
-		let lockPath = stateDirectory.appendingPathComponent(".config.lock").path
-		let descriptor = open(lockPath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
-		guard descriptor >= 0 else {
-			throw errno == ELOOP ? .unsafeFile : .writeFailed(String(cString: strerror(errno)))
-		}
-		defer { close(descriptor) }
-		guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG else { throw .unsafeFile }
-		while flock(descriptor, LOCK_EX) != 0 {
-			guard errno == EINTR else { throw .writeFailed(String(cString: strerror(errno))) }
-		}
-		return try body()
 	}
 }
 
