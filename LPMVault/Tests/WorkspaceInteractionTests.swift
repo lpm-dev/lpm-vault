@@ -225,7 +225,8 @@ extension SheetInteractionTests {
 				return false
 			}]
 			defer { gate.continuation.finish(); store.lock() }
-			let host = try await workspace(store)
+			let copyFeedback = ManualCopyFeedbackTimer()
+			let host = try await workspace(store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
 			let revealFrame = try await host.labelFrame("Reveal")
 			try clickAt(NSPoint(x: 1352, y: 723.5), in: host)
@@ -234,24 +235,26 @@ extension SheetInteractionTests {
 			#expect(abs(try await host.labelFrame("Reveal").minX - revealFrame.minX) < 0.75)
 			gate.continuation.yield(())
 			try await host.settle()
-			#expect(try await host.text().contains("Copied"))
+			#expect(try await host.waitForText("Copied"))
 			#expect(abs(try await host.labelFrame("Reveal").minX - revealFrame.minX) < 0.75)
+			copyFeedback.expire()
 			#expect(try await host.waitForText("Copy all"))
 		}
 
-		@Test("inspector copy confirms success in its value card for two seconds")
+		@Test("inspector copy confirms success in its value card until the confirmation ends")
 		func inspectorCopyFeedback() async throws {
 			let (store, _) = makeStore()
 			defer { store.lock() }
-			let host = try await workspace(store)
+			let copyFeedback = ManualCopyFeedbackTimer()
+			let host = try await workspace(store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
 			try selectRow(0, in: host)
 			try await host.settle()
 			try host.click(.copy)
 			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "fixture-value" })
 			#expect(try await host.waitForText("Copied"))
-			try await Task.sleep(for: .seconds(2.1))
-			#expect(try await !host.text().contains("Copied"))
+			copyFeedback.expire()
+			#expect(try await host.waitForTextToDisappear("Copied"))
 		}
 
 		@Test("denied or cancelled copy all never confirms success", arguments: ["denied", "settings", "environment", "project", "lock"])
@@ -289,17 +292,18 @@ extension SheetInteractionTests {
 		func repeatedCopyRestartsFeedback() async throws {
 			let (store, _) = makeStore()
 			defer { store.lock() }
-			let host = try await workspace(store)
+			let copyFeedback = ManualCopyFeedbackTimer()
+			let host = try await workspace(store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
 			try selectRow(0, in: host)
 			try await host.settle()
 			try host.click(.copy)
-			try await Task.sleep(for: .seconds(1.2))
+			#expect(try await host.waitUntil { copyFeedback.started == 1 })
 			try host.click(.copy)
-			try await Task.sleep(for: .seconds(1.2))
-			#expect(try await host.text().contains("Copied"))
-			try await Task.sleep(for: .seconds(1))
-			#expect(try await !host.text().contains("Copied"))
+			#expect(try await host.waitUntil { copyFeedback.started == 2 })
+			#expect(try await host.waitForText("Copied"))
+			copyFeedback.expire()
+			#expect(try await host.waitForTextToDisappear("Copied"))
 		}
 
 		@Test("a selected project never shows the selection prompt while its snapshot is pending")
@@ -358,9 +362,11 @@ extension SheetInteractionTests {
 			return (store, biometric)
 		}
 
-		private func workspace(_ store: VaultStore) async throws -> SheetTestHost<some View> {
+		/// Copy confirmations stay until `copyFeedback` ends them.
+		private func workspace(_ store: VaultStore, copyFeedback: ManualCopyFeedbackTimer = ManualCopyFeedbackTimer()) async throws -> SheetTestHost<some View> {
 			await store.refreshCliAccess()
-			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!)),
+			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!))
+				.environment(\.vaultCopyFeedbackTimer, copyFeedback.timer),
 				size: NSSize(width: 1600, height: 800), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.workspaceSnapshots["workspace"] != nil })
 			try await host.settle()

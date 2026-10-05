@@ -105,12 +105,6 @@ enum VaultProjectMutation: Sendable {
 		destination: String
 	)
 	case clearEnvironment(name: String, expectedSecrets: [String: String])
-	case updateSecret(
-		environment: String,
-		key: String,
-		expectedValue: String,
-		replacement: String
-	)
 	case deleteSecret(environment: String, key: String, expectedValue: String)
 	case editKey(VaultKeyEdit)
 }
@@ -531,9 +525,6 @@ actor VaultPersistenceCoordinator {
 		case .clearEnvironment(let name, let expectedSecrets):
 			mutationApplies = project.environments[name] == expectedSecrets
 			if mutationApplies { project.environments[name] = [:] }
-		case .updateSecret(let environment, let key, let expectedValue, let replacement):
-			mutationApplies = project.environments[environment]?[key] == expectedValue
-			if mutationApplies { project.environments[environment]?[key] = replacement }
 		case .deleteSecret(let environment, let key, let expectedValue):
 			mutationApplies = project.environments[environment]?[key] == expectedValue
 			if mutationApplies { project.environments[environment]?.removeValue(forKey: key) }

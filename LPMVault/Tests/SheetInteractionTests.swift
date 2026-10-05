@@ -265,6 +265,16 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
+	/// Returns as soon as `unexpected` is no longer rendered, or `false` after the timeout.
+	func waitForTextToDisappear(_ unexpected: String) async throws -> Bool {
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		while true {
+			if try await !text().contains(unexpected) { return true }
+			guard ContinuousClock.now < deadline else { return false }
+			try await Task.sleep(for: .milliseconds(20))
+		}
+	}
+
 	/// Clicks the rendered target after it appears.
 	func click(_ label: String, in targetWindow: NSWindow? = nil, caseInsensitive: Bool = false) async throws {
 		let window = targetWindow ?? self.window
@@ -807,5 +817,59 @@ private struct AddVariablePresentedFixture: View {
 			.sheet(isPresented: $shown) {
 				AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: key)
 			}
+	}
+}
+
+/// Copy confirmations that end when a test says, so assertions about them do
+/// not race a two-second timer against slow text recognition.
+final class ManualCopyFeedbackTimer: @unchecked Sendable {
+	private final class Wait: @unchecked Sendable {
+		var continuation: CheckedContinuation<Void, Error>?
+		var isCancelled = false
+	}
+
+	private let lock = NSLock()
+	private var waiting: [ObjectIdentifier: Wait] = [:]
+	private var startedCount = 0
+
+	/// How many confirmations have started waiting.
+	var started: Int { lock.withLock { startedCount } }
+
+	var timer: VaultCopyFeedbackTimer {
+		VaultCopyFeedbackTimer { [self] in
+			let wait = Wait()
+			try await withTaskCancellationHandler {
+				try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+					let cancelled = lock.withLock {
+						startedCount += 1
+						if wait.isCancelled { return true }
+						wait.continuation = continuation
+						waiting[ObjectIdentifier(wait)] = wait
+						return false
+					}
+					if cancelled { continuation.resume(throwing: CancellationError()) }
+				}
+			} onCancel: {
+				let continuation = lock.withLock { () -> CheckedContinuation<Void, Error>? in
+					wait.isCancelled = true
+					waiting.removeValue(forKey: ObjectIdentifier(wait))
+					defer { wait.continuation = nil }
+					return wait.continuation
+				}
+				continuation?.resume(throwing: CancellationError())
+			}
+		}
+	}
+
+	/// Ends every confirmation still waiting.
+	func expire() {
+		let continuations = lock.withLock { () -> [CheckedContinuation<Void, Error>] in
+			defer { waiting.removeAll() }
+			return waiting.values.compactMap { wait in
+				defer { wait.continuation = nil }
+				return wait.continuation
+			}
+		}
+		for continuation in continuations { continuation.resume() }
 	}
 }

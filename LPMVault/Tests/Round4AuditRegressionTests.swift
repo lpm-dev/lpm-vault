@@ -426,9 +426,10 @@ extension VaultStoreTests {
 		store.openProject(id: "project-a")
 
 		store.duplicateEnvironment(in: "project-a", from: "default", to: "staging")
-		await waitForSemaphore(entered)
-		store.openProject(id: "project-b")
-		release.signal()
+		await performAfterSemaphore(entered) {
+			store.openProject(id: "project-b")
+			release.signal()
+		}
 		await waitUntil {
 			store.projects.first(where: { $0.id == "project-a" })?
 				.environments["staging"] != nil
@@ -1944,6 +1945,10 @@ extension VaultStoreTests {
 	@MainActor
 	func unlockIncludesQueuedPreLockProjectMutations() async {
 		let projectID = "queued-pre-lock-mutations"
+		let original = ["FIRST": "old-first", "SECOND": "old-second"]
+		func edit(_ key: String) -> VaultKeyEdit {
+			VaultKeyEdit(key: key, newKey: key, baseline: ["default": original[key]], values: ["default": "new-\(key.lowercased())"])
+		}
 		let firstMutationEntered = DispatchSemaphore(value: 0)
 		let firstMutationRelease = DispatchSemaphore(value: 0)
 		let keychain = MockKeychainService()
@@ -1975,24 +1980,22 @@ extension VaultStoreTests {
 		store.isUnlocked = true
 		store.openProject(id: projectID)
 
-		store.updateSecret(
-			in: projectID,
-			environment: "default",
-			key: "FIRST",
-			newValue: "new-first"
-		)
+		let first = Task { try? await store.saveKeyEdit(edit("FIRST"), in: projectID) }
 		await waitForSemaphore(firstMutationEntered)
-		store.updateSecret(
-			in: projectID,
-			environment: "default",
-			key: "SECOND",
-			newValue: "new-second"
-		)
+		let (started, didStart) = AsyncStream<Void>.makeStream()
+		let second = Task {
+			didStart.yield()
+			try? await store.saveKeyEdit(edit("SECOND"), in: projectID)
+		}
+		// The second edit enqueues synchronously before this test resumes.
+		var startedIterator = started.makeAsyncIterator()
+		_ = await startedIterator.next()
 		store.lock()
 		let unlock = Task { await store.unlock() }
 		await waitUntil { store.isUnlocking }
 		firstMutationRelease.signal()
 		await unlock.value
+		_ = await (first.value, second.value)
 		await waitUntil {
 			keychain.envStorage[projectID]?.environments["default"]?["SECOND"]
 				== "new-second"
@@ -5041,9 +5044,10 @@ struct LazyLocalProjectLoadingRegressionTests {
 		}
 
 		store.openProject(id: "first")
-		await waitForSemaphore(firstLoadStarted)
-		store.openProject(id: "second")
-		releaseFirstLoad.signal()
+		await performAfterSemaphore(firstLoadStarted) {
+			store.openProject(id: "second")
+			releaseFirstLoad.signal()
+		}
 		await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "second-secret"
 		}
@@ -5103,6 +5107,24 @@ private func waitUntilAsync(
 		await Task.yield()
 	}
 	Issue.record("Timed out while waiting for an asynchronous test condition.")
+}
+
+@MainActor
+private func performAfterSemaphore(
+	_ semaphore: DispatchSemaphore,
+	action: @escaping @MainActor @Sendable () -> Void
+) async {
+	let didEnter = await withCheckedContinuation { continuation in
+		DispatchQueue.global().async {
+			let didEnter = semaphore.wait(timeout: .now() + 5) == .success
+			DispatchQueue.main.async {
+				// Release blocked work before resuming, which can require a cooperative worker.
+				action()
+				continuation.resume(returning: didEnter)
+			}
+		}
+	}
+	#expect(didEnter)
 }
 
 private func waitForSemaphore(_ semaphore: DispatchSemaphore) async {

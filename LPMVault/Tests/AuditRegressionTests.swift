@@ -240,12 +240,11 @@ struct AuditRegressionTests {
       projectId: "project",
       expectedName: "Project",
       expectedPath: "",
-      mutation: .updateSecret(
-        environment: "default",
+      mutation: .editKey(VaultKeyEdit(
         key: "TOKEN",
-        expectedValue: "old",
-        replacement: "new"
-      )
+        environments: ["default": ["TOKEN": "old"]],
+        values: ["default": "new"]
+      ))
     )
 
     guard case .success = result else {
@@ -414,12 +413,15 @@ struct AuditRegressionTests {
   }
 
   @Test("superseded workspace snapshot builds stop without overlapping replacements")
+  @MainActor
   func supersededWorkspaceSnapshotBuildStopsSerially() async {
     let tracker = SnapshotBuildTracker()
+    let started = DispatchSemaphore(value: 0)
     let builder = VaultWorkspaceSnapshotBuilder { project in
       tracker.begin()
       defer { tracker.end() }
       if project.id == "superseded" {
+        started.signal()
         while !Task.isCancelled {
           Thread.sleep(forTimeInterval: 0.001)
         }
@@ -442,11 +444,20 @@ struct AuditRegressionTests {
     )
 
     let first = Task { await builder.buildAll([superseded]) }
-    for _ in 0..<1_000 where tracker.startedBuildCount == 0 {
-      await Task.yield()
+    defer { first.cancel() }
+    let second = await withCheckedContinuation { continuation in
+      DispatchQueue.global().async {
+        let didStart = started.wait(timeout: .now() + 5) == .success
+        let replacementBuild = didStart ? Task { await builder.buildAll([replacement]) } : nil
+        first.cancel()
+        continuation.resume(returning: replacementBuild)
+      }
     }
-    let second = Task { await builder.buildAll([replacement]) }
-    first.cancel()
+    #expect(second != nil)
+    guard let second else {
+      _ = await first.value
+      return
+    }
 
     let firstResult = await first.value
     let secondResult = await second.value
@@ -1189,16 +1200,13 @@ private final class SnapshotBuildTracker: @unchecked Sendable {
   private var activeBuildCount = 0
   private var cancellations = 0
   private var maximumConcurrentBuilds = 0
-  private var starts = 0
 
   var cancelledBuildCount: Int { lock.withLock { cancellations } }
   var maximumConcurrentBuildCount: Int { lock.withLock { maximumConcurrentBuilds } }
-  var startedBuildCount: Int { lock.withLock { starts } }
 
   func begin() {
     lock.withLock {
       activeBuildCount += 1
-      starts += 1
       maximumConcurrentBuilds = max(maximumConcurrentBuilds, activeBuildCount)
     }
   }

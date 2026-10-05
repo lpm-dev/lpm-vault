@@ -2169,148 +2169,66 @@ struct VaultStoreTests {
 		#expect(store.projects.isEmpty)
 	}
 
-	// MARK: - Update Secret
+	// MARK: - Key Edits
 
-	@Test("update existing secret")
-	func updateSecret() async throws {
-		let (store, keychain, _, _) = makeStore(projects: [
-			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
-		])
-		store.isUnlocked = true
-		store.openProject(id: "id-1")
-
-		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
-
-		await waitUntil { store.projects[0].secrets(for: "default")["KEY"] == "new" }
-		#expect(store.projects[0].secrets(for: "default")["KEY"] == "new")
-		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
-	}
-
-	@Test("update non-existent key is no-op")
-	func updateNonExistentKey() {
-		let (store, _, _, _) = makeStore(projects: [
-			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "val"])
-		])
-		store.isUnlocked = true
-		store.openProject(id: "id-1")
-
-		store.updateSecret(in: "id-1", key: "MISSING", newValue: "new")
-
-		#expect(store.projects[0].secrets(for: "default")["KEY"] == "val")
-		#expect(store.projects[0].secrets(for: "default")["MISSING"] == nil)
-	}
-
-	@Test("update uses the captured environment instead of current navigation")
-	func updateCapturedEnvironment() async {
+	@Test("a value edit saves to the environment it names, not the one in view")
+	func keyEditUsesItsEnvironment() async throws {
 		let (store, keychain, _, _) = makeStore()
-		store.projects = [
-			VaultProject(
-				id: "id-1",
-				name: "project",
-				path: "/tmp/p",
-				environments: [
-					"default": ["KEY": "default"],
-					"staging": ["KEY": "staging"],
-				]
-			)
-		]
-		keychain.envStorage["id-1"] = (
-			name: "project",
-			path: "/tmp/p",
-			environments: store.projects[0].environments
-		)
+		let environments: [String: [String: String]] = ["default": ["KEY": "default"], "staging": ["KEY": "staging"]]
+		store.projects = [VaultProject(id: "id-1", name: "project", path: "/tmp/p", environments: environments)]
+		keychain.envStorage["id-1"] = (name: "project", path: "/tmp/p", environments: environments)
 		store.isUnlocked = true
 		store.openProject(id: "id-1")
 		store.selectedEnvironment = "default"
 
-		store.updateSecret(in: "id-1", environment: "staging", key: "KEY", newValue: "updated")
+		try await store.saveKeyEdit(VaultKeyEdit(key: "KEY", environments: environments, values: ["staging": "updated"]), in: "id-1")
 
-		await waitUntil { store.projects[0].environments["staging"]?["KEY"] == "updated" }
-		#expect(store.projects[0].environments["default"]?["KEY"] == "default")
-		#expect(store.projects[0].environments["staging"]?["KEY"] == "updated")
+		#expect(store.projects[0].environments == ["default": ["KEY": "default"], "staging": ["KEY": "updated"]])
+		#expect(keychain.envStorage["id-1"]?.environments == store.projects[0].environments)
 	}
 
-	@Test("a stale Vault update preserves a disjoint CLI key")
-	func updateSecretPreservesConcurrentCLIKey() async {
+	@Test("a key edit keeps a key the CLI added meanwhile")
+	func keyEditPreservesConcurrentCLIKey() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
 		store.isUnlocked = true
 		store.openProject(id: "id-1")
-		keychain.simulateCLISet(
-			vaultId: "id-1",
-			environment: "default",
-			key: "CLI_KEY",
-			value: "cli-value"
-		)
+		keychain.simulateCLISet(vaultId: "id-1", environment: "default", key: "CLI_KEY", value: "cli-value")
 
-		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
+		try await store.saveKeyEdit(oldKeyEdit(newValue: "new"), in: "id-1")
 
-		await waitUntil { store.projects[0].secrets(for: "default")["KEY"] == "new" }
-		#expect(
-			keychain.storage["id-1"]?.secrets == [
-				"KEY": "new",
-				"CLI_KEY": "cli-value",
-			])
-		#expect(
-			store.projects[0].secrets(for: "default") == [
-				"KEY": "new",
-				"CLI_KEY": "cli-value",
-			])
+		#expect(keychain.storage["id-1"]?.secrets == ["KEY": "new", "CLI_KEY": "cli-value"])
+		#expect(store.projects[0].secrets(for: "default") == ["KEY": "new", "CLI_KEY": "cli-value"])
 	}
 
-	@Test("an overlapping CLI update fails without overwriting either snapshot")
-	func updateSecretRejectsConcurrentCLIConflict() async {
+	@Test("a failed key edit leaves the UI, the Keychain, and sync metadata unchanged", arguments: ["write", "metadata"])
+	func keyEditFailureDoesNotPublish(failure: String) async {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
 		])
-		store.isUnlocked = true
-		store.openProject(id: "id-1")
-		keychain.simulateCLISet(
-			vaultId: "id-1",
-			environment: "default",
-			key: "KEY",
-			value: "cli-value"
-		)
-
-		store.updateSecret(in: "id-1", key: "KEY", newValue: "vault-value")
-
-		await waitUntil { store.error?.contains("changed in another LPM process") == true }
-		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "cli-value")
-		#expect(store.projects[0].secrets(for: "default")["KEY"] == "cli-value")
-	}
-
-	@Test("failed update persistence leaves UI and Keychain unchanged")
-	func updateSecretFailureDoesNotPublish() async {
-		let (store, keychain, _, _) = makeStore(projects: [
-			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
-		])
-		keychain.shouldFail = true
+		if failure == "write" {
+			keychain.failNextSaveEnvironments = true
+		} else {
+			keychain.failNextWriteDataAccounts = [mockSyncMetadataAccount(vaultId: "id-1")]
+		}
 		store.isUnlocked = true
 		store.openProject(id: "id-1")
 
-		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
-
-		await waitUntil { store.error != nil }
-		#expect(store.projects[0].secrets(for: "default")["KEY"] == "old")
-		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "old")
-	}
-
-	@Test("metadata failure rolls back a durable update before UI publication")
-	func updateSecretMetadataFailureRollsBack() async {
-		let (store, keychain, _, _) = makeStore(projects: [
-			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
-		])
-		keychain.failNextWriteDataAccounts = [mockSyncMetadataAccount(vaultId: "id-1")]
-		store.isUnlocked = true
-		store.openProject(id: "id-1")
-
-		store.updateSecret(in: "id-1", key: "KEY", newValue: "new")
-
-		await waitUntil { store.error != nil }
+		do {
+			try await store.saveKeyEdit(oldKeyEdit(newValue: "new"), in: "id-1")
+			Issue.record("The save should fail")
+		} catch {
+			if case .persistence = error {} else { Issue.record("Unexpected error \(error)") }
+		}
 		#expect(store.projects[0].secrets(for: "default")["KEY"] == "old")
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "old")
 		#expect(keychain.dataStorage["__sync_metadata__"] == nil)
+		#expect(store.error == nil)
+	}
+
+	private func oldKeyEdit(newValue: String) -> VaultKeyEdit {
+		VaultKeyEdit(key: "KEY", newKey: "KEY", baseline: ["default": "old"], values: ["default": newValue])
 	}
 
 	// MARK: - Delete Secret
@@ -2362,7 +2280,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("captured secret mutations reject stale project navigation")
-	func capturedMutationsRejectStaleProject() {
+	func capturedMutationsRejectStaleProject() async {
 		let (store, keychain, _, _) = makeStore()
 		keychain.envStorage = [
 			"project-a": (name: "A", path: "", environments: ["default": ["KEY": "a"]]),
@@ -2377,7 +2295,12 @@ struct VaultStoreTests {
 		store.isUnlocked = true
 		store.openProject(id: "project-b")
 
-		store.updateSecret(in: "project-a", environment: "default", key: "KEY", newValue: "changed")
+		await #expect(throws: VaultKeyEditError.targetUnavailable) {
+			try await store.saveKeyEdit(
+				VaultKeyEdit(key: "KEY", newKey: "KEY", baseline: ["default": "a"], values: ["default": "changed"]),
+				in: "project-a"
+			)
+		}
 		store.deleteSecret(from: "project-a", environment: "default", key: "KEY")
 
 		#expect(keychain.envStorage["project-a"]?.environments["default"]?["KEY"] == "a")
@@ -3108,7 +3031,7 @@ struct VaultStoreTests {
 
 		#if DEBUG
 			store.switchEnvironment(to: .development)
-			try? await Task.sleep(for: .milliseconds(20))
+			await store.environmentLoadTask?.value
 			await store.loadTokens()
 			#expect(factory.count(for: VaultConstants.localAPIBaseURL) == 1)
 			#expect(factory.count(for: VaultConstants.apiBaseURL) == 1)
@@ -3270,20 +3193,20 @@ struct VaultStoreTests {
 			let personalRevoke = Task { await store.revokePersonalToken(personal) }
 			await personalStarted.wait()
 			store.switchEnvironment(to: .development)
-			try await Task.sleep(for: .milliseconds(20))
+			await store.environmentLoadTask?.value
 			store.personalTokens = [personal]
 			await personalRevoke.value
 			#expect(store.personalTokens.map(\.id) == [personal.id])
 
 			store.switchEnvironment(to: .production)
-			try await Task.sleep(for: .milliseconds(20))
+			await store.environmentLoadTask?.value
 			store.orgTokens = ["acme": [organization]]
 			let organizationRevoke = Task {
 				await store.revokeOrgToken(organization, orgSlug: "acme")
 			}
 			await organizationStarted.wait()
 			store.switchEnvironment(to: .development)
-			try await Task.sleep(for: .milliseconds(20))
+			await store.environmentLoadTask?.value
 			store.orgTokens = ["acme": [organization]]
 			await organizationRevoke.value
 			#expect(store.orgTokens["acme"]?.map(\.id) == [organization.id])
