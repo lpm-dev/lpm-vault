@@ -5,9 +5,35 @@ import Vision
 
 @testable import LPMVault
 
-/// Text recognition for window tests. Recognition runs off the main actor so
-/// other main-actor suites keep running while Vision works.
+/// Text recognition for tests. Requests run one at a time on their own queue:
+/// off the main thread, because Vision can wait on work that needs it, and never
+/// concurrently, because CI's CPU-only recognizer can deadlock on overlapping
+/// requests from suites running in parallel.
 enum RenderedText {
+	private static let queue = DispatchQueue(label: "dev.lpm.vault.tests.text-recognition", qos: .userInitiated)
+
+	private static func recognize(
+		_ image: CGImage,
+		level: VNRequestTextRecognitionLevel,
+		usesLanguageCorrection: Bool,
+		region: CGRect? = nil
+	) async throws -> [VNRecognizedTextObservation] {
+		try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RecognitionCache.Observations, Error>) in
+			queue.async {
+				let request = VNRecognizeTextRequest()
+				request.recognitionLevel = level
+				request.usesLanguageCorrection = usesLanguageCorrection
+				if let region { request.regionOfInterest = region }
+				do {
+					try VNImageRequestHandler(cgImage: image).perform([request])
+					continuation.resume(returning: RecognitionCache.Observations(values: request.results ?? []))
+				} catch {
+					continuation.resume(throwing: error)
+				}
+			}
+		}.values
+	}
+
 	struct Line: Sendable {
 		let text: String
 		/// Normalized Vision bounds of the whole line.
@@ -27,14 +53,7 @@ enum RenderedText {
 		if let cached = RecognitionCache.shared.observations(for: image, level: level, region: region) {
 			observations = cached
 		} else {
-			observations = try await Task.detached(priority: .userInitiated) {
-				let request = VNRecognizeTextRequest()
-				request.recognitionLevel = level
-				request.usesLanguageCorrection = false
-				if let region { request.regionOfInterest = region }
-				try VNImageRequestHandler(cgImage: image).perform([request])
-				return RecognitionCache.Observations(values: request.results ?? [])
-			}.value.values
+			observations = try await recognize(image, level: level, usesLanguageCorrection: false, region: region)
 			RecognitionCache.shared.store(observations, for: image, level: level, region: region)
 		}
 		return observations.compactMap { observation -> Line? in
@@ -59,16 +78,10 @@ enum RenderedText {
 }
 
 extension RenderedText {
-	/// The text of every recognized line. Recognition runs off the main thread
-	/// because Vision can wait on work that needs it.
+	/// The text of every recognized line.
 	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true) async throws -> [String] {
-		try await Task.detached(priority: .userInitiated) {
-			let request = VNRecognizeTextRequest()
-			request.recognitionLevel = .accurate
-			request.usesLanguageCorrection = usesLanguageCorrection
-			try VNImageRequestHandler(cgImage: image).perform([request])
-			return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
-		}.value
+		try await recognize(image, level: .accurate, usesLanguageCorrection: usesLanguageCorrection)
+			.compactMap { $0.topCandidates(1).first?.string }
 	}
 }
 
