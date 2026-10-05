@@ -170,7 +170,7 @@ extension SheetInteractionTests {
 			defer { gate.continuation.finish(); store.lock() }
 			let host = try await workspace(store)
 			defer { host.window.close() }
-			try clickAt(NSPoint(x: 1352, y: 723.5), in: host)
+			try await host.click("Copy all")
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			// The macOS prompt can deactivate the app; returning from it refreshes local state.
 			keychain.simulateCLISet(vaultId: "workspace", environment: "default", key: "TOKEN", value: "cli-updated")
@@ -229,7 +229,7 @@ extension SheetInteractionTests {
 			let host = try await workspace(store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
 			let revealFrame = try await host.labelFrame("Reveal")
-			try clickAt(NSPoint(x: 1352, y: 723.5), in: host)
+			try await host.click("Copy all")
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			try await host.settle()
 			#expect(abs(try await host.labelFrame("Reveal").minX - revealFrame.minX) < 0.75)
@@ -268,7 +268,7 @@ extension SheetInteractionTests {
 			defer { gate.continuation.finish(); store.lock() }
 			let host = try await workspace(store)
 			defer { host.window.close() }
-			try clickAt(NSPoint(x: 1352, y: 723.5), in: host)
+			try await host.click("Copy all")
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			switch transition {
 			case "settings": store.showSettings()
