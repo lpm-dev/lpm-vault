@@ -1104,40 +1104,6 @@ struct AuditRegressionTests {
     #expect(store.lastSyncStatus == "Pushed (v1)")
   }
 
-  @Test("clipboard timeout never clears a newer pasteboard owner")
-  @MainActor
-  func clipboardOwnership() async throws {
-    let pasteboard = NSPasteboard.general
-    pasteboard.clearContents()
-    let manager = ClipboardManager(clearDelay: 0.02)
-    manager.copy("lpm-secret")
-    pasteboard.clearContents()
-    pasteboard.setString("newer-owner", forType: .string)
-
-    try await Task.sleep(for: .milliseconds(80))
-
-    #expect(pasteboard.string(forType: .string) == "newer-owner")
-    manager.clearClipboard()
-    #expect(pasteboard.string(forType: .string) == "newer-owner")
-  }
-
-  @Test("an immediate clear removes only a clipboard value owned by the vault")
-  @MainActor
-  func immediateClipboardOwnership() {
-    let pasteboard = NSPasteboard.general
-    pasteboard.clearContents()
-    pasteboard.setString("unrelated", forType: .string)
-    let manager = ClipboardManager(clearDelay: 60)
-
-    manager.clearClipboard()
-    #expect(pasteboard.string(forType: .string) == "unrelated")
-
-    #expect(manager.copy("owned"))
-    #expect(pasteboard.types?.contains(ClipboardManager.concealedType) == true)
-    #expect(pasteboard.types?.contains(ClipboardManager.transientType) == true)
-    manager.clearClipboard()
-    #expect(pasteboard.string(forType: .string) == nil)
-  }
 
   @Test("application termination synchronously locks and clears sensitive state")
   @MainActor
@@ -1300,4 +1266,43 @@ private final class SnapshotBuildTracker: @unchecked Sendable {
   func recordCancellation() {
     lock.withLock { cancellations += 1 }
   }
+}
+
+/// These tests own the system pasteboard while they run. The native UI tests
+/// also read it, so both belong to the same serialized suite.
+extension SheetInteractionTests {
+	@Test("clipboard timeout never clears a newer pasteboard owner")
+	@MainActor
+	func clipboardOwnership() async throws {
+		let pasteboard = NSPasteboard.general
+		pasteboard.clearContents()
+		let manager = ClipboardManager(clearDelay: 0.02)
+		manager.copy("lpm-secret")
+		pasteboard.clearContents()
+		pasteboard.setString("newer-owner", forType: .string)
+
+		try await Task.sleep(for: .milliseconds(80))
+
+		#expect(pasteboard.string(forType: .string) == "newer-owner")
+		manager.clearClipboard()
+		#expect(pasteboard.string(forType: .string) == "newer-owner")
+	}
+
+	@Test("an immediate clear removes only a clipboard value owned by the vault")
+	@MainActor
+	func immediateClipboardOwnership() {
+		let pasteboard = NSPasteboard.general
+		pasteboard.clearContents()
+		pasteboard.setString("unrelated", forType: .string)
+		let manager = ClipboardManager(clearDelay: 60)
+
+		manager.clearClipboard()
+		#expect(pasteboard.string(forType: .string) == "unrelated")
+
+		#expect(manager.copy("owned"))
+		#expect(pasteboard.types?.contains(ClipboardManager.concealedType) == true)
+		#expect(pasteboard.types?.contains(ClipboardManager.transientType) == true)
+		manager.clearClipboard()
+		#expect(pasteboard.string(forType: .string) == nil)
+	}
 }
