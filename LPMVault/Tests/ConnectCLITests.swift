@@ -181,6 +181,31 @@ struct ProjectCLILinkTests {
 		#expect((config["tasks"] as? [String: Any])?["dev"] != nil)
 	}
 
+	@Test("linking preserves distinct Unicode task names")
+	func linkPreservesUnicodeNames() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig(#"{"tasks":{"é":{"command":"first"},"e\u0301":{"command":"second"}}}"#, in: folder)
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path)
+		let document = try LPMConfigJSON(parsing: Data(contentsOf: folder.appendingPathComponent("lpm.json")))
+		#expect(document["tasks"]?["é"]?["command"] == .string("first"))
+		#expect(document["tasks"]?["e\u{0301}"]?["command"] == .string("second"))
+		#expect(document["vault"] == .string(vaultId))
+	}
+
+	@Test("oversized rendered configs never reach the file writer")
+	func linkRejectsOversizedRendering() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let original = "{\"extra\":" + String(repeating: "[", count: 126) + Array(repeating: "0", count: 100_000).joined(separator: ",") + String(repeating: "]", count: 126) + "}"
+		try writeConfig(original, in: folder)
+		let url = folder.appendingPathComponent("lpm.json")
+		#expect(throws: ProjectConfigFile.FileError.tooLarge) {
+			try ProjectConfigFile.writeVaultID(vaultId, to: url, fileWriter: { _, _, _, _, _ in Issue.record("Oversized output must not reach the writer") })
+		}
+		#expect(try String(contentsOf: url, encoding: .utf8) == original)
+	}
+
 	@Test("linking keeps lpm.json's member order and writes it the way the CLI does")
 	func linkKeepsCLIFormatting() throws {
 		let folder = try makeFolder()
