@@ -546,7 +546,7 @@ struct VaultKeyDescriptionStoreTests {
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		keychain.blockNextSaveEnvironments = { entered.signal(); _ = release.wait(timeout: .now() + 10) }
+		keychain.blockNextSaveEnvironments = { entered.signal(); release.wait() }
 		defer { release.signal() }
 		let earlier = Task { try? await store.saveKeyEdit(.init(key: "OTHER", environments: environments, values: ["default": "later"]), in: "project") }
 		await withCheckedContinuation { continuation in DispatchQueue.global().async { entered.wait(); continuation.resume() } }
@@ -750,10 +750,10 @@ struct VaultKeyDescriptionStoreTests {
 	}
 
 	private func waitUntil(_ condition: () -> Bool) async throws {
-		let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-		while !condition() {
-			try #require(ContinuousClock.now < deadline, "Timed out")
+		for _ in 0..<1000 {
+			if condition() { return }
 			try await Task.sleep(for: .milliseconds(5))
 		}
+		try #require(condition(), "Timed out")
 	}
 }
