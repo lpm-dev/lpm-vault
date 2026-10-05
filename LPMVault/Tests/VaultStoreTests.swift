@@ -164,9 +164,7 @@ struct VaultStoreTests {
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		keychain.blockNextSaveEnvironments = { entered.signal(); release.wait() }
-		let mutation = Task {
-			await store.updateSecretAndWait(in: "first", environment: "default", key: "TOKEN", expectedValue: "old", newValue: "local")
-		}
+		let mutation = Task { await saveLocalValue(in: store) }
 		await withCheckedContinuation { continuation in
 			DispatchQueue.global().async { entered.wait(); continuation.resume() }
 		}
@@ -262,7 +260,7 @@ struct VaultStoreTests {
 			let (started, didStart) = AsyncStream<Void>.makeStream()
 			mutation = Task {
 				didStart.yield()
-				return await store.updateSecretAndWait(in: "first", environment: "default", key: "TOKEN", expectedValue: "old", newValue: "local")
+				return await saveLocalValue(in: store)
 			}
 			// The mutation enqueues synchronously before this task resumes.
 			var startedIterator = started.makeAsyncIterator()
@@ -1175,7 +1173,7 @@ struct VaultStoreTests {
 			#expect(store.isUnlocked)
 			#expect(store.autoLockCountdownSeconds == seconds)
 			if seconds == 30 || seconds == 1 {
-				try expectRenderedLockTitle(store: store, seconds: seconds)
+				try await expectRenderedLockTitle(store: store, seconds: seconds)
 			}
 		}
 		#expect(await sleeper.durations == [.seconds(90)] + Array(repeating: .seconds(1), count: 30))
@@ -1300,7 +1298,7 @@ struct VaultStoreTests {
 		await sleeper.resume(at: 2)
 	}
 
-	private func expectRenderedLockTitle(store: VaultStore, seconds: Int) throws {
+	private func expectRenderedLockTitle(store: VaultStore, seconds: Int) async throws {
 		let view = NSHostingView(rootView: VaultTitleBarView(
 			store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
 		).environment(UpdateChecker()).environment(\.colorScheme, .light))
@@ -1311,10 +1309,7 @@ struct VaultStoreTests {
 		let image = try #require(bitmap.cgImage)
 		let data = try #require(bitmap.representation(using: .png, properties: [:]))
 		Attachment.record(data, named: "lock-countdown-\(seconds).png")
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		let text = try await RenderedText.strings(in: image).joined(separator: " ")
 		#expect(text.contains("Lock \(seconds)s"))
 	}
 
@@ -2189,80 +2184,6 @@ struct VaultStoreTests {
 		await waitUntil { store.projects[0].secrets(for: "default")["KEY"] == "new" }
 		#expect(store.projects[0].secrets(for: "default")["KEY"] == "new")
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
-	}
-
-	@Test("duplicate editor save activation persists once without a false conflict")
-	func duplicateEditorSaveActivationIsSingleFlight() async throws {
-		let (store, keychain, _, _) = makeStore(projects: [
-			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
-		])
-		store.isUnlocked = true
-		store.openProject(id: "id-1")
-		var editor = VaultSecretEditDraft(value: "old")
-		editor.draft = "new"
-
-		guard let first = editor.beginSave() else {
-			Issue.record("The edited draft did not start its first save")
-			return
-		}
-		let duplicate = editor.beginSave()
-		let succeeded = await store.updateSecretAndWait(
-			in: "id-1",
-			environment: "default",
-			key: "KEY",
-			expectedValue: "old",
-			newValue: first
-		)
-		editor.finishSave(succeeded: succeeded)
-
-		#expect(duplicate == nil)
-		#expect(succeeded)
-		#expect(keychain.saveEnvironmentsCallCount == 1)
-		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
-		#expect(store.projects[0].secrets(for: "default")["KEY"] == "new")
-		#expect(store.syncMetadata["id-1"]?.isDirty == true)
-		#expect(store.error == nil)
-		#expect(!editor.isDirty)
-		#expect(!editor.hasExternalConflict)
-	}
-
-	@Test("editor save remains bound to the submitted baseline")
-	func editorSaveRejectsAnUpdatePublishedBeforeItsTaskRuns() async {
-		let (store, keychain, _, _) = makeStore(projects: [
-			(id: "id-1", name: "project", path: "/tmp/p", secrets: ["KEY": "old"])
-		])
-		store.isUnlocked = true
-		store.openProject(id: "id-1")
-		var editor = VaultSecretEditDraft(value: "old")
-		editor.draft = "submitted"
-		guard let submitted = editor.beginSave() else {
-			Issue.record("The edited draft did not start its save")
-			return
-		}
-		let expectedValue = editor.baseline
-
-		keychain.simulateCLISet(
-			vaultId: "id-1",
-			environment: "default",
-			key: "KEY",
-			value: "external"
-		)
-		store.projects[0].environments["default"]?["KEY"] = "external"
-		editor.receiveExternalValue("external")
-		let succeeded = await store.updateSecretAndWait(
-			in: "id-1",
-			environment: "default",
-			key: "KEY",
-			expectedValue: expectedValue,
-			newValue: submitted
-		)
-		editor.finishSave(succeeded: succeeded)
-
-		#expect(!succeeded)
-		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "external")
-		#expect(store.projects[0].secrets(for: "default")["KEY"] == "external")
-		#expect(editor.hasExternalConflict)
-		#expect(editor.isDirty)
 	}
 
 	@Test("update non-existent key is no-op")
@@ -6737,4 +6658,18 @@ private func testAuthCredentials(token: String = "login-access") -> AuthSessionC
 		expiresIn: 3_600,
 		expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(3_600))
 	)
+}
+
+/// Saves "local" over the "old" TOKEN value of the "first" project's default environment.
+@MainActor
+private func saveLocalValue(in store: VaultStore) async -> Bool {
+	do {
+		try await store.saveKeyEdit(
+			VaultKeyEdit(key: "TOKEN", newKey: "TOKEN", baseline: ["default": "old"], values: ["default": "local"]),
+			in: "first"
+		)
+		return true
+	} catch {
+		return false
+	}
 }

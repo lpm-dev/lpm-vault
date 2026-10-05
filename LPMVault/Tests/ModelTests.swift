@@ -8,7 +8,7 @@ import Vision
 @MainActor
 struct AuthStatusViewTests {
 	@Test("signed-out settings offer local server selection only in debug builds")
-	func signedOutSettingsOfferLocalServerSelection() throws {
+	func signedOutSettingsOfferLocalServerSelection() async throws {
 		let store = VaultStore(
 			keychainService: MockKeychainService(),
 			biometricService: MockBiometricService(),
@@ -19,10 +19,7 @@ struct AuthStatusViewTests {
 		let renderer = ImageRenderer(content: AuthStatusView(store: store).environment(VaultAppearanceSettings()).frame(width: 700, height: 700))
 		renderer.scale = 3
 		let image = try #require(renderer.cgImage)
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		let labels = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+		let labels = try await RenderedText.strings(in: image)
 		#expect(labels.contains("Not logged in"))
 		#if DEBUG
 		#expect(labels.contains("Use local"))
@@ -36,17 +33,14 @@ struct AuthStatusViewTests {
 @MainActor
 struct ConflictResolutionSheetTests {
 	@Test("personal conflict recovery explains which values survive before confirmation")
-	func personalConflictExplainsMergePrecedence() throws {
+	func personalConflictExplainsMergePrecedence() async throws {
 		let renderer = ImageRenderer(content: ConflictResolutionSheet(
 			projectName: "test-project", account: .personal,
 			onPullAndMerge: {}, onForcePush: {}, onCancel: {}
 		).frame(width: 400, height: 450).background(Color.white).environment(\.colorScheme, .light))
 		renderer.scale = 3
 		let image = try #require(renderer.cgImage)
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		let text = try await RenderedText.strings(in: image).joined(separator: " ")
 		#expect(text.contains("Version Conflict"))
 		#expect(text.contains("Cloud values replace conflicting local values."))
 		#expect(text.contains("Force Push replaces cloud values with local values."))

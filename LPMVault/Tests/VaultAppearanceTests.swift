@@ -165,17 +165,17 @@ struct VaultAppearanceTests {
 		await store.refreshCliAccess()
 		#expect(store.selectedProjectCliAccess == .automatic)
 		let suffix = scheme == .dark ? "dark" : "light"
-		try render(ContentView(store: store).environment(UpdateChecker()).environment(settings),
+		try await render(ContentView(store: store).environment(UpdateChecker()).environment(settings),
 			size: CGSize(width: 1200, height: 760), scheme: scheme, name: "workspace-\(suffix)",
 			expectedText: ["All variables", "CLI", "API_URL", "PORT", "protected-api"])
-		try render(AuthStatusView(store: store).environment(settings),
+		try await render(AuthStatusView(store: store).environment(settings),
 			size: CGSize(width: 700, height: 700), scheme: scheme, name: "settings-\(suffix)",
 			expectedText: ["APPEARANCE", "System", "Light", "Dark"])
-		try render(AddVariableSheet(store: store, projectId: project.id, environment: "development"),
+		try await render(AddVariableSheet(store: store, projectId: project.id, environment: "development"),
 			size: CGSize(width: 560, height: 520), scheme: scheme, name: "add-variable-\(suffix)",
 			expectedText: ["Add variable", "Key", "Value", "Environments", "Cancel"])
 		store.lock()
-		try render(ContentView(store: store).environment(settings),
+		try await render(ContentView(store: store).environment(settings),
 			size: CGSize(width: 1040, height: 640), scheme: scheme, name: "locked-\(suffix)",
 			expectedText: ["LPM Vault is Locked", "Unlock"])
 	}
@@ -198,7 +198,7 @@ struct VaultAppearanceTests {
 		return nil
 	}
 
-	private func render<V: View>(_ view: V, size: CGSize, scheme: ColorScheme, name: String, expectedText: [String]) throws {
+	private func render<V: View>(_ view: V, size: CGSize, scheme: ColorScheme, name: String, expectedText: [String]) async throws {
 		let host = NSHostingView(rootView: view.environment(\.colorScheme, scheme).tint(VaultPalette.accent))
 		host.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
 		host.frame = NSRect(origin: .zero, size: size)
@@ -208,10 +208,7 @@ struct VaultAppearanceTests {
 		let data = try #require(bitmap.representation(using: .png, properties: [:]))
 		Attachment.record(data, named: name + ".png")
 		let image = try #require(bitmap.cgImage)
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		let text = try await RenderedText.strings(in: image).joined(separator: " ")
 		let recognized = OCRText(text)
 		for label in expectedText {
 			#expect(recognized.contains(label), "Missing \(label) in \(name): \(text)")

@@ -2,31 +2,45 @@ import SwiftUI
 
 struct SecretGeneratorButton: View {
 	var disabled = false
+	/// Shows only the icon, for fields that also hold other controls.
+	var compact = false
 	let onGenerate: (String) -> Void
 
 	@State private var showsGenerator = false
+	@State private var hovering = false
 	@State private var kind: SecretValueKind = .base64
 	@State private var length = SecretValueGenerator.defaultLength
 
 	var body: some View {
 		Button { showsGenerator.toggle() } label: {
-			HStack(spacing: 5) {
+			if compact {
 				Image(systemName: "sparkles")
 					.font(.system(size: 11, weight: .semibold))
-				Text("Generate")
-					.font(.system(size: 12, weight: .semibold))
-				Image(systemName: "chevron.down")
-					.font(.system(size: 8, weight: .bold))
+					.foregroundStyle(hovering || showsGenerator ? VaultPalette.accentDeep : VaultPalette.textTertiary)
+					.frame(width: 26, height: 26)
+					.background(RoundedRectangle(cornerRadius: 6).fill(hovering || showsGenerator ? VaultPalette.accentTint : .clear))
+			} else {
+				HStack(spacing: 5) {
+					Image(systemName: "sparkles")
+						.font(.system(size: 11, weight: .semibold))
+					Text("Generate")
+						.font(.system(size: 12, weight: .semibold))
+					Image(systemName: "chevron.down")
+						.font(.system(size: 8, weight: .bold))
+				}
+				.foregroundStyle(VaultPalette.accentDeep)
+				.padding(.horizontal, 9)
+				.frame(height: 28)
+				.background(RoundedRectangle(cornerRadius: 6).fill(VaultPalette.accentTint))
+				.fixedSize()
 			}
-			.foregroundStyle(VaultPalette.accentDeep)
-			.padding(.horizontal, 9)
-			.frame(height: 28)
-			.background(RoundedRectangle(cornerRadius: 6).fill(VaultPalette.accentTint))
-			.fixedSize()
 		}
 		.buttonStyle(.plain)
 		.disabled(disabled)
+		.opacity(compact && disabled ? 0.45 : 1)
+		.onHover { hovering = $0 }
 		.vaultPointingHand()
+		.help("Generate value")
 		.accessibilityLabel("Generate value")
 		.popover(isPresented: $showsGenerator, arrowEdge: .trailing) {
 			SecretGeneratorPanel(kind: $kind, length: $length) {

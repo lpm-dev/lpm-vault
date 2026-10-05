@@ -109,18 +109,18 @@ struct UpdateCheckerTests {
 			driver.availableUpdateVersion = version
 			driver.canCheckForUpdates = canCheck
 			let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-			var rendered: (bitmap: NSBitmapImageRep, text: [VNRecognizedTextObservation])
+			var bitmap: NSBitmapImageRep
 			var updateBounds: CGRect?
 			repeat {
 				try await Task.sleep(for: .milliseconds(10))
-				rendered = try renderTitleBar(view)
-				updateBounds = try bounds(of: "Update available", in: rendered.text)
+				bitmap = try renderTitleBar(view)
+				updateBounds = try await bounds(of: "Update available", in: bitmap)
 				if (updateBounds != nil) == (version != nil) { break }
 			} while ContinuousClock.now < deadline
-			let data = try #require(rendered.bitmap.representation(using: .png, properties: [:]))
+			let data = try #require(bitmap.representation(using: .png, properties: [:]))
 			Attachment.record(data, named: "update-reminder-\(Int(width))-\(version ?? "none")-\(canCheck).png")
 			#expect((updateBounds != nil) == (version != nil))
-			let lockBounds = try #require(try bounds(of: "Lock", in: rendered.text))
+			let lockBounds = try #require(try await bounds(of: "Lock", in: bitmap))
 			if version != nil {
 				let updateBounds = try #require(updateBounds)
 				#expect(updateBounds.maxX < lockBounds.minX)
@@ -135,24 +135,17 @@ struct UpdateCheckerTests {
 		}
 	}
 
-	private func renderTitleBar(_ view: NSView) throws -> (bitmap: NSBitmapImageRep, text: [VNRecognizedTextObservation]) {
+	private func renderTitleBar(_ view: NSView) throws -> NSBitmapImageRep {
 		view.layoutSubtreeIfNeeded()
 		let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
 		view.cacheDisplay(in: view.bounds, to: bitmap)
-		let image = try #require(bitmap.cgImage)
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		return (bitmap, request.results ?? [])
+		return bitmap
 	}
 
-	private func bounds(of text: String, in observations: [VNRecognizedTextObservation]) throws -> CGRect? {
-		for observation in observations {
-			guard let candidate = observation.topCandidates(1).first,
-				let range = candidate.string.range(of: text) else { continue }
-			return try candidate.boundingBox(for: range)?.boundingBox
-		}
-		return nil
+	/// Recognition runs off the main thread: Vision can wait on work that needs it.
+	private func bounds(of text: String, in bitmap: NSBitmapImageRep) async throws -> CGRect? {
+		let image = try #require(bitmap.cgImage)
+		return try await RenderedText.lines(in: image, level: .accurate, label: text).lazy.compactMap(\.labelBounds).first
 	}
 
 	@Test("development builds cannot replace themselves with public releases")

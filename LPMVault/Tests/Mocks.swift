@@ -453,13 +453,16 @@ final class MockBiometricService: BiometricServiceProtocol, @unchecked Sendable 
 	var type: BiometricType = .touchID
 	var authenticateHandlers: [@Sendable () async -> Bool] = []
 	private var authenticationCalls = 0
+	private var reasons: [String] = []
 
 	var authenticateCallCount: Int { lock.withLock { authenticationCalls } }
+	/// The prompt reason of each authentication request, in order.
+	var authenticationReasons: [String] { lock.withLock { reasons } }
 
 	func authenticate(reason: String) async -> AuthenticationOutcome {
-		_ = reason
 		let response: ((@Sendable () async -> Bool)?, Bool, AuthenticationOutcome) = lock.withLock {
 			authenticationCalls += 1
+			reasons.append(reason)
 			let handler = authenticateHandlers.isEmpty ? nil : authenticateHandlers.removeFirst()
 			return (handler, shouldSucceed, failureOutcome)
 		}

@@ -1,5 +1,4 @@
 import Foundation
-import Observation
 
 enum VaultWorkspaceMode: Equatable {
   case matrix
@@ -32,6 +31,7 @@ struct VaultSecretTarget: Identifiable {
   let id = UUID()
   let projectId: String
   let environment: String
+  var initialKey = ""
 }
 
 struct VaultSecretDeleteTarget: Identifiable {
@@ -111,10 +111,57 @@ struct VaultSensitiveActionContext: Equatable {
   }
 }
 
+/// What one copy action in the key inspector puts on the clipboard.
+enum VaultCopyFormat: CaseIterable, Identifiable, Sendable {
+  case value
+  case dotenv
+  case export
+  case reference
+
+  var id: Self { self }
+
+  var title: String {
+    switch self {
+    case .value: "Copy value"
+    case .dotenv: "Copy as KEY=value"
+    case .export: "Copy as export KEY=value"
+    case .reference: "Copy process.env.KEY"
+    }
+  }
+
+  /// Whether the copied text contains the secret value.
+  var includesValue: Bool { self != .reference }
+
+  func text(key: String, value: String) -> String {
+    switch self {
+    case .value: value
+    case .dotenv: ClipboardManager.dotenvText(for: [key: value])
+    case .export: "export " + ClipboardManager.dotenvText(for: [key: value])
+    case .reference: Self.reference(to: key)
+    }
+  }
+
+  private static func reference(to key: String) -> String {
+    if EnvValidation.isValidVariableName(key) { return "process.env.\(key)" }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .withoutEscapingSlashes
+    let quoted = (try? encoder.encode(key)).flatMap { String(data: $0, encoding: .utf8) } ?? "\"\(key)\""
+    return "process.env[\(quoted)]"
+  }
+}
+
+struct VaultValueCopy: Equatable, Sendable {
+  let projectID: String
+  let key: String
+  let environment: String
+  let format: VaultCopyFormat
+}
+
 struct VaultCopyFeedback: Equatable {
   enum Target: Equatable {
     case all(VaultSensitiveActionContext)
     case secret(projectID: String, environment: String, key: String)
+    case unsaved(VaultKeyDraft.ID, environment: String)
   }
 
   let id = UUID()
@@ -444,46 +491,13 @@ struct VaultContentDerivation: Equatable {
   }
 }
 
-@Observable
-@MainActor
-final class VaultSecretEditingSession {
-  let id = UUID()
-  let projectID: String
-  let projectName: String
-  let environment: String
-  let key: String
-  let account: SelectedAccount
-  var editDraft: VaultSecretEditDraft
-  var requiresRecovery = false
-
-  init(projectID: String, projectName: String, environment: String, key: String, account: SelectedAccount, value: String) {
-    self.projectID = projectID
-    self.projectName = projectName
-    self.environment = environment
-    self.key = key
-    self.account = account
-    editDraft = VaultSecretEditDraft(value: value)
-  }
-
-  func targetExists(in store: VaultStore) -> Bool {
-    targetExists(in: store.projects)
-  }
-
-  private func targetExists(in projects: [VaultProject]) -> Bool {
-    projects.contains { $0.id == projectID && $0.environmentKeyCounts[environment] != nil }
-  }
-
-  func receiveRefreshedProjects(_ projects: [VaultProject]) {
-    if editDraft.isDirty && !targetExists(in: projects) { requiresRecovery = true }
-  }
-}
-
-struct VaultSecretEditDraft: Equatable {
+/// One environment's value in a key draft: the latest saved value and the
+/// person's edit of it.
+struct VaultSecretEditDraft: Equatable, Sendable {
   private(set) var baseline: String
   var draft: String
+  /// The saved value changed elsewhere after the person edited it.
   private(set) var hasExternalConflict = false
-  private var pendingSaveValue: String?
-  private var pendingSaveBaseline: String?
 
   init(value: String) {
     baseline = value
@@ -491,16 +505,8 @@ struct VaultSecretEditDraft: Equatable {
   }
 
   var isDirty: Bool { draft != baseline }
-  var isSaveInFlight: Bool { pendingSaveValue != nil }
-  var canSave: Bool { isDirty && !hasExternalConflict && !isSaveInFlight }
-  var canRevert: Bool { isDirty || hasExternalConflict }
 
   mutating func receiveExternalValue(_ value: String) {
-    if value == pendingSaveValue {
-      baseline = value
-      hasExternalConflict = false
-      return
-    }
     if value == draft {
       baseline = value
       hasExternalConflict = false
@@ -517,29 +523,15 @@ struct VaultSecretEditDraft: Equatable {
     }
   }
 
-  mutating func beginSave() -> String? {
-    guard canSave else { return nil }
-    pendingSaveValue = draft
-    pendingSaveBaseline = baseline
-    return draft
-  }
-
-  mutating func finishSave(succeeded: Bool) {
-    guard let submittedValue = pendingSaveValue,
-      let submittedBaseline = pendingSaveBaseline
-    else { return }
-    pendingSaveValue = nil
-    pendingSaveBaseline = nil
-    guard succeeded, baseline == submittedBaseline, !hasExternalConflict else { return }
-    baseline = submittedValue
-    hasExternalConflict = false
-  }
-
   mutating func revert() {
     draft = baseline
     hasExternalConflict = false
   }
 
+  /// Keeps the edit over the value saved elsewhere.
+  mutating func keepDraft() {
+    hasExternalConflict = false
+  }
 }
 
 extension VaultProject {

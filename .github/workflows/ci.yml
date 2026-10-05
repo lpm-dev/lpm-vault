@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Swift tests
-        run: swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
+        run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Release tooling tests
         run: |
           bash LPMVault/Scripts/Tests/release-tooling-tests.sh

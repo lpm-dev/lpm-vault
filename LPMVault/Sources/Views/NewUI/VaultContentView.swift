@@ -40,6 +40,8 @@ struct VaultContentView: View {
 	let onCopyAll: () -> Void
 	let onImport: () -> Void
 	let onExport: () -> Void
+	/// Keys with unsaved edits in this project.
+	var editedKeys: Set<String> = []
 	let onAddSecret: () -> Void
 	let onCopySecret: (String, String) -> Void
 	let onDeleteSecret: (String, String) -> Void
@@ -95,10 +97,7 @@ struct VaultContentView: View {
 							selected: filter == candidate
 						) { filter = candidate }
 					}
-					Spacer(minLength: 8)
-					Text("Edits apply to \(VaultProject.displayName(for: selectedEnvironment))")
-						.font(.system(size: 11.5))
-						.foregroundStyle(VaultPalette.textTertiary)
+					Spacer(minLength: 0)
 				} else {
 					ForEach(VaultEnvironmentViewMode.allCases) { candidate in
 						VaultFilterChip(title: candidate.rawValue, selected: environmentViewMode == candidate) {
@@ -238,6 +237,7 @@ struct VaultContentView: View {
 									environmentColumnWidth: environmentColumnWidth,
 									isSelected: selectedKey == key,
 									isRevealed: canUseSecrets && revealedKeys.contains(key),
+									isEdited: editedKeys.contains(key),
 									onSelect: { selectedKey = key; showsInspector = true },
 									onReveal: { toggleReveal(key) }
 								)
@@ -282,6 +282,7 @@ struct VaultContentView: View {
 									isSelected: selectedKey == key,
 									isRevealed: canUseSecrets && revealedKeys.contains(key),
 									hasDrift: snapshot.hasDrift(for: key),
+									isEdited: editedKeys.contains(key),
 									onSelect: { selectedKey = key; showsInspector = true },
 									onReveal: { toggleReveal(key) },
 									onCopy: { onCopySecret(key, selectedEnvironment) },
@@ -333,6 +334,11 @@ struct VaultContentView: View {
 				Text("·")
 				Text("encrypted locally")
 			}
+			if !editedKeys.isEmpty {
+				Text("·")
+				Text(editedKeys.count == 1 ? "1 key with unsaved changes" : "\(editedKeys.count) keys with unsaved changes")
+					.foregroundStyle(VaultPalette.orangeTintText)
+			}
 			Spacer(minLength: 0)
 		}
 		.font(.system(size: 11))
@@ -380,14 +386,11 @@ private struct VaultMatrixHeader: View {
 						.foregroundStyle(VaultPalette.textSecondary)
 						.lineLimit(1)
 					Spacer(minLength: 2)
-					if environment == selectedEnvironment {
-						Image(systemName: "pencil").font(.system(size: 9, weight: .semibold)).foregroundStyle(VaultPalette.accentForeground)
-					}
 				}
 				.padding(.horizontal, 12)
 				.frame(width: environmentColumnWidth - 1, height: VaultMetrics.tableHeader)
 				.background(environment == selectedEnvironment ? VaultPalette.selectedEnvHeader : .clear)
-				.accessibilityLabel("\(VaultProject.displayName(for: environment))\(environment == selectedEnvironment ? ", editing environment" : "")")
+				.accessibilityLabel("\(VaultProject.displayName(for: environment))\(environment == selectedEnvironment ? ", current environment" : "")")
 			}
 		}
 	}
@@ -402,6 +405,7 @@ private struct VaultMatrixRow: View {
 	let environmentColumnWidth: CGFloat
 	let isSelected: Bool
 	let isRevealed: Bool
+	let isEdited: Bool
 	let onSelect: () -> Void
 	let onReveal: () -> Void
 
@@ -415,6 +419,7 @@ private struct VaultMatrixRow: View {
 						.font(VaultTypography.mono(13, isSelected ? .bold : .regular))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.lineLimit(1)
+					if isEdited { VaultUnsavedBadge() }
 					if snapshot.hasDrift(for: key) { VaultStatusDot(color: VaultPalette.orange).help("Values differ") }
 					if snapshot.isMissingSomewhere(key) { VaultStatusDot(color: VaultPalette.red).help("Missing in an environment") }
 					Spacer(minLength: 0)
@@ -445,7 +450,7 @@ private struct VaultMatrixRow: View {
 		.simultaneousGesture(TapGesture(count: 2).onEnded { onReveal() })
 		.onHover { hovering = $0 }
 		.accessibilityElement(children: .ignore)
-		.accessibilityLabel("\(key), set in \(snapshot.environmentCount(for: key)) of \(environments.count) environments")
+		.accessibilityLabel("\(key), set in \(snapshot.environmentCount(for: key)) of \(environments.count) environments\(isEdited ? ", unsaved changes" : "")")
 		.accessibilityValue(snapshot.hasDrift(for: key) ? "Values differ" : "Values consistent")
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
 		.accessibilityAction(named: isRevealed ? "Hide values" : "Reveal values", onReveal)
@@ -469,6 +474,7 @@ private struct VaultEnvironmentRow: View {
 	let isSelected: Bool
 	let isRevealed: Bool
 	let hasDrift: Bool
+	let isEdited: Bool
 	let onSelect: () -> Void
 	let onReveal: () -> Void
 	let onCopy: () -> Void
@@ -484,6 +490,7 @@ private struct VaultEnvironmentRow: View {
 					.font(VaultTypography.mono(13, isSelected ? .bold : .regular))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
+				if isEdited { VaultUnsavedBadge() }
 				if hasDrift {
 					VaultTagBadge(text: "DIFFERS", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint)
 				}
@@ -498,7 +505,7 @@ private struct VaultEnvironmentRow: View {
 			HStack(spacing: 2) {
 				VaultRowIconButton(systemImage: isRevealed ? "eye.slash" : "eye", help: isRevealed ? "Hide value" : "Reveal value", action: onReveal)
 				VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy key and value", action: onCopy)
-				VaultRowIconButton(systemImage: "pencil", help: "Edit value", action: onEdit)
+				VaultRowIconButton(systemImage: "pencil", help: "Edit key and value", action: onEdit)
 				VaultRowIconButton(systemImage: "trash", help: "Delete from this environment", destructive: true, action: onDelete)
 			}
 			.padding(.trailing, 16)
@@ -510,8 +517,15 @@ private struct VaultEnvironmentRow: View {
 		.onTapGesture(perform: onSelect)
 		.onHover { hovering = $0 }
 		.accessibilityElement(children: .contain)
-		.accessibilityLabel("\(key), value hidden")
+		.accessibilityLabel("\(key), value hidden\(isEdited ? ", unsaved changes" : "")")
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
+	}
+}
+
+private struct VaultUnsavedBadge: View {
+	var body: some View {
+		VaultTagBadge(text: "UNSAVED", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 9)
+			.help("This key has unsaved changes in the inspector")
 	}
 }
 

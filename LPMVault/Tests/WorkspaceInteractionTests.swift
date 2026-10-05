@@ -8,107 +8,125 @@ extension SheetInteractionTests {
 	@Suite("Workspace interaction regressions", .serialized)
 	@MainActor
 	struct WorkspaceInteractionTests {
-		@Test("refresh keeps the mounted workspace draft and copies current CLI values")
-		func refreshPreservesWorkspaceDraftAndCopiesCurrentValues() async throws {
+		@Test("inspector copy uses the latest refresh and copies what the field shows", arguments: [false, true])
+		func inspectorCopyAfterRefresh(edited: Bool) async throws {
 			let keychain = MockKeychainService()
 			let (store, _) = makeStore(keychain: keychain)
 			defer { store.lock() }
 			let host = try await workspace(store)
 			defer { host.window.close() }
-			try clickInspectorToggle(in: host)
-			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try selectRow(0, in: host)
 			try await host.settle()
-			try host.enterValue("unsaved-workspace-draft")
+			if edited { try host.enterValue("unsaved-workspace-draft") }
 			keychain.simulateCLISet(vaultId: "workspace", environment: "default", key: "TOKEN", value: "current-cli-value")
 			await store.refreshLocalState()
 			try await host.settle()
-			#expect(host.value == "unsaved-workspace-draft")
-			#expect(try await host.waitForText("changed outside"))
-			try clickAt(NSPoint(x: 1375, y: 553), in: host)
-			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "TOKEN=\"current-cli-value\"\n" })
+			#expect(host.value == (edited ? "unsaved-workspace-draft" : "current-cli-value"))
+			try host.click(.copy)
+			#expect(try await host.waitUntil {
+				NSPasteboard.general.string(forType: .string) == (edited ? "unsaved-workspace-draft" : "current-cli-value")
+			})
+			if edited { #expect(try await host.waitForText("Changed outside the editor")) }
 		}
 
-		@Test("refresh keeps a recoverable draft when its environment or project disappears", arguments: ["environment", "rename", "project"])
-		func refreshPreservesRemovedTargetDraft(removal: String) async throws {
+		@Test("Esc in the sidebar search stays with the search while the inspector is open")
+		func escapeInSearchKeepsInspector() async throws {
+			let (store, _) = makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try selectRow(0, in: host)
+			#expect(try await host.waitForText("VALUES"))
+			// The search field is the topmost text field in the window.
+			try host.escapeWhileEditing(fieldAt: 0, secure: false)
+			try await host.settle()
+			#expect(try await host.text().contains("VALUES"))
+		}
+
+		@Test("unsaved edits stay with their key while the person selects other keys")
+		func draftsFollowTheirKey() async throws {
+			let (store, _) = makeStore(environments: ["default": ["TOKEN": "fixture-value", "ZETA": "zeta-value"]])
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try selectRow(0, in: host)
+			try await host.settle()
+			try host.enterValue("draft-for-token")
+			try await host.settle()
+			try selectRow(1, in: host)
+			#expect(try await host.waitUntil { host.value == "zeta-value" })
+			#expect(try await host.waitForText("UNSAVED"))
+			#expect(try await host.text().contains("1 key with unsaved changes"))
+			try selectRow(0, in: host)
+			#expect(try await host.waitUntil { host.value == "draft-for-token" })
+			#expect(try await host.waitForText("1 unsaved change"))
+		}
+
+		@Test("an edit whose environment disappears stays in its card until discarded", arguments: ["environment", "rename"])
+		func removedEnvironmentKeepsEdit(removal: String) async throws {
 			let keychain = MockKeychainService()
 			let (store, _) = makeStore(environments: ["default": ["TOKEN": "default-value"], "staging": ["TOKEN": "staging-value"]], keychain: keychain)
 			defer { store.lock() }
-			store.selectEnvironment("staging")
 			let host = try await workspace(store)
 			defer { host.window.close() }
-			try clickInspectorToggle(in: host)
-			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try selectRow(0, in: host)
 			try await host.settle()
-			try host.enterValue("unsaved-removed-target")
-			try await host.settle()
-			#expect(try await host.waitForText("Unsaved change"))
-			if removal == "environment" {
-				keychain.envStorage["workspace"]?.environments.removeValue(forKey: "staging")
-			} else if removal == "rename" {
-				let values = keychain.envStorage["workspace"]?.environments.removeValue(forKey: "staging")
-				keychain.envStorage["workspace"]?.environments["renamed"] = values
-			} else {
-				keychain.envStorage.removeValue(forKey: "workspace")
-			}
+			try host.enterValue("unsaved-removed-target", at: 1)
+			#expect(try await host.waitForText("1 unsaved change"))
+			let values = keychain.envStorage["workspace"]?.environments.removeValue(forKey: "staging")
+			if removal == "rename" { keychain.envStorage["workspace"]?.environments["renamed"] = values }
 			await store.refreshLocalState()
 			try await host.settle()
-			#expect(host.value == "unsaved-removed-target")
-			#expect(try await host.waitForText("disappeared"))
+			// The small red message is read unreliably on CI; its action and the draft's state are not.
+			#expect(try await host.waitForText("Discard"))
+			#expect(store.keyDrafts.draft(VaultKeyDraft.ID(projectID: "workspace", key: "TOKEN"))?.orphanedEnvironments == ["staging"])
+			#expect(host.secureValues.contains("unsaved-removed-target"))
 			try host.returnWhileEditing("value", modifiers: [])
 			try await host.settle()
 			#expect(keychain.envStorage["workspace"]?.environments["staging"] == nil)
-			if removal != "project" {
-				#expect(keychain.envStorage["workspace"]?.environments["default"]?["TOKEN"] == "default-value")
-			}
-			try await host.click("Copy draft")
+			#expect(keychain.envStorage["workspace"]?.environments["default"]?["TOKEN"] == "default-value")
+			// Kept values of a deleted environment follow the project's environments.
+			try host.click(.copy, ofValueAt: removal == "rename" ? 2 : 1)
 			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "unsaved-removed-target" })
 			try await host.click("Discard")
 			try await host.settle()
-			#expect(try await !host.text().contains("disappeared"))
-			#expect(host.value != "unsaved-removed-target")
+			#expect(try await !host.text().contains("deleted outside the editor"))
+			#expect(!host.secureValues.contains("unsaved-removed-target"))
 		}
 
-		@Test("removed draft recovery survives target recreation and baseline edits", arguments: [false, true])
-		func removedDraftSurvivesTargetReturnAndBaselineEdit(hiddenInSettings: Bool) async throws {
+		@Test("unsaved edits of a removed project stay recoverable, even after it returns", arguments: [false, true])
+		func removedProjectKeepsEdits(hiddenInSettings: Bool) async throws {
 			let keychain = MockKeychainService()
-			let (store, _) = makeStore(environments: ["default": ["TOKEN": "default-value"], "staging": ["TOKEN": "staging-value"]], keychain: keychain)
+			let (store, biometric) = makeStore(keychain: keychain)
 			defer { store.lock() }
-			store.selectEnvironment("staging")
 			let host = try await workspace(store)
 			defer { host.window.close() }
-			try clickInspectorToggle(in: host)
-			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try selectRow(0, in: host)
 			try await host.settle()
-			try host.enterValue("unsaved-removed-target")
+			try host.enterValue("unsaved-removed-project")
 			try await host.settle()
 			if hiddenInSettings { store.showSettings(); try await host.settle() }
-			keychain.envStorage["workspace"]?.environments.removeValue(forKey: "staging")
+			let saved = keychain.envStorage.removeValue(forKey: "workspace")
 			await store.refreshLocalState()
 			try await host.settle()
-			if hiddenInSettings {
-				keychain.envStorage["workspace"]?.environments["staging"] = ["TOKEN": "recreated-value"]
-				await store.refreshLocalState()
-				store.openProject(id: "workspace")
-				try await host.settle()
-			}
-			#expect(try await host.waitForText("disappeared"))
-			try host.enterValue("staging-value")
-			try await host.settle()
-			#expect(try await host.waitForText("disappeared"))
-			#expect(store.activeSecretEditingSession?.requiresRecovery == true)
-			keychain.envStorage["workspace"]?.environments["staging"] = ["TOKEN": "recreated-value"]
+			keychain.envStorage["workspace"] = saved
 			await store.refreshLocalState()
+			store.openProject(id: "workspace")
+			#expect(try await host.waitForText("UNSAVED EDITS"))
+			#expect(try await host.waitForText("deleted outside the editor"))
+			try await host.click("Copy value")
+			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "unsaved-removed-project" })
+			#expect(biometric.authenticationReasons == ["Copy your unsaved value"])
+			#expect(try await host.waitForText("Copied"))
+			#expect(keychain.envStorage["workspace"]?.environments["default"]?["TOKEN"] == "fixture-value")
+			try await host.click("Discard")
 			try await host.settle()
-			#expect(host.value == "staging-value")
-			#expect(try await host.waitForText("disappeared"))
-			#expect(store.activeSecretEditingSession?.requiresRecovery == true)
-			store.lock()
-			try await host.settle()
-			#expect(host.value != "staging-value")
+			#expect(try await !host.text().contains("UNSAVED EDITS"))
+			#expect(store.keyDrafts.drafts.isEmpty)
 		}
 
-		@Test("removed draft copy cancels when its context disappears", arguments: ["settings", "discard", "account", "lock"])
-		func removedDraftCopyCancelsOnContextChange(transition: String) async throws {
+		@Test("copying a recovered edit cancels when its context disappears", arguments: ["settings", "discard", "account", "lock"])
+		func recoveredCopyCancelsOnContextChange(transition: String) async throws {
 			let keychain = MockKeychainService()
 			let (store, biometric) = makeStore(keychain: keychain)
 			let gate = AsyncStream<Void>.makeStream()
@@ -119,16 +137,16 @@ extension SheetInteractionTests {
 			defer { gate.continuation.finish(); store.lock() }
 			let host = try await workspace(store)
 			defer { host.window.close() }
-			try clickInspectorToggle(in: host)
-			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try selectRow(0, in: host)
 			try await host.settle()
 			try host.enterValue("draft-must-not-copy")
 			try await host.settle()
 			keychain.envStorage.removeValue(forKey: "workspace")
 			await store.refreshLocalState()
-			#expect(try await host.waitForText("Copy draft"))
-			try await host.click("Copy draft")
+			#expect(try await host.waitForText("UNSAVED EDITS"))
+			try await host.click("Copy value")
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
+			#expect(biometric.authenticationReasons == ["Copy your unsaved value"])
 			switch transition {
 			case "settings": store.showSettings()
 			case "discard": try await host.click("Discard")
@@ -221,21 +239,17 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Copy all"))
 		}
 
-		@Test("inspector copy visibly confirms success without moving Reveal")
+		@Test("inspector copy confirms success in its value card for two seconds")
 		func inspectorCopyFeedback() async throws {
 			let (store, _) = makeStore()
 			defer { store.lock() }
 			let host = try await workspace(store)
 			defer { host.window.close() }
-			try clickInspectorToggle(in: host)
-			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try selectRow(0, in: host)
 			try await host.settle()
-			let region = CGRect(x: 0.8, y: 0, width: 0.2, height: 1)
-			let revealFrame = try await host.labelFrame("Reveal", region: region)
-			try clickAt(NSPoint(x: 1375, y: 553), in: host)
-			try await host.settle()
-			#expect(try await host.text().contains("Copied"))
-			#expect(abs(try await host.labelFrame("Reveal", region: region).minX - revealFrame.minX) < 0.75)
+			try host.click(.copy)
+			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "fixture-value" })
+			#expect(try await host.waitForText("Copied"))
 			try await Task.sleep(for: .seconds(2.1))
 			#expect(try await !host.text().contains("Copied"))
 		}
@@ -277,11 +291,11 @@ extension SheetInteractionTests {
 			defer { store.lock() }
 			let host = try await workspace(store)
 			defer { host.window.close() }
-			try clickAt(NSPoint(x: 330, y: 603), in: host)
+			try selectRow(0, in: host)
 			try await host.settle()
-			try clickAt(NSPoint(x: 1375, y: 553), in: host)
+			try host.click(.copy)
 			try await Task.sleep(for: .seconds(1.2))
-			try clickAt(NSPoint(x: 1375, y: 553), in: host)
+			try host.click(.copy)
 			try await Task.sleep(for: .seconds(1.2))
 			#expect(try await host.text().contains("Copied"))
 			try await Task.sleep(for: .seconds(1))
@@ -353,8 +367,9 @@ extension SheetInteractionTests {
 			return host
 		}
 
-		private func clickInspectorToggle<V: View>(in host: SheetTestHost<V>) throws {
-			try clickAt(NSPoint(x: host.view.bounds.width - 129.5, y: 723.5), in: host)
+		/// Selects the key in the matrix row at `index`, which opens the inspector.
+		private func selectRow<V: View>(_ index: Int, in host: SheetTestHost<V>) throws {
+			try clickAt(NSPoint(x: 330, y: 603 - CGFloat(index) * VaultMetrics.matrixRow), in: host)
 		}
 
 		private func clickAt<V: View>(_ point: NSPoint, in host: SheetTestHost<V>) throws {

@@ -72,15 +72,12 @@ struct OrganizationProjectImportTests {
 	}
 
 	@Test("organization move confirmation explains local relocation and cloud merge precedence")
-	func moveConfirmationExplainsConsequences() throws {
+	func moveConfirmationExplainsConsequences() async throws {
 		let renderer = ImageRenderer(content: OrgProjectMoveConfirmation(
 			projectName: "test-project", onConfirm: {}, onCancel: {}
 		).background(Color.white).environment(\.colorScheme, .light))
 		renderer.scale = 3
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		try VNImageRequestHandler(cgImage: #require(renderer.cgImage)).perform([request])
-		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		let text = try await RenderedText.strings(in: #require(renderer.cgImage)).joined(separator: " ")
 		#expect(text.contains("Cloud values replace conflicting local values."))
 		#expect(text.contains("Nothing is uploaded."))
 		#expect(text.contains("Move and merge"))

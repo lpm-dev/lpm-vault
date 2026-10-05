@@ -5,9 +5,35 @@ import Vision
 
 @testable import LPMVault
 
-/// Text recognition for window tests. Recognition runs off the main actor so
-/// other main-actor suites keep running while Vision works.
+/// Text recognition for tests. Requests run one at a time on their own queue:
+/// off the main thread, because Vision can wait on work that needs it, and never
+/// concurrently, because CI's CPU-only recognizer can deadlock on overlapping
+/// requests from suites running in parallel.
 enum RenderedText {
+	private static let queue = DispatchQueue(label: "dev.lpm.vault.tests.text-recognition", qos: .userInitiated)
+
+	private static func recognize(
+		_ image: CGImage,
+		level: VNRequestTextRecognitionLevel,
+		usesLanguageCorrection: Bool,
+		region: CGRect? = nil
+	) async throws -> [VNRecognizedTextObservation] {
+		try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RecognitionCache.Observations, Error>) in
+			queue.async {
+				let request = VNRecognizeTextRequest()
+				request.recognitionLevel = level
+				request.usesLanguageCorrection = usesLanguageCorrection
+				if let region { request.regionOfInterest = region }
+				do {
+					try VNImageRequestHandler(cgImage: image).perform([request])
+					continuation.resume(returning: RecognitionCache.Observations(values: request.results ?? []))
+				} catch {
+					continuation.resume(throwing: error)
+				}
+			}
+		}.values
+	}
+
 	struct Line: Sendable {
 		let text: String
 		/// Normalized Vision bounds of the whole line.
@@ -27,14 +53,7 @@ enum RenderedText {
 		if let cached = RecognitionCache.shared.observations(for: image, level: level, region: region) {
 			observations = cached
 		} else {
-			observations = try await Task.detached(priority: .userInitiated) {
-				let request = VNRecognizeTextRequest()
-				request.recognitionLevel = level
-				request.usesLanguageCorrection = false
-				if let region { request.regionOfInterest = region }
-				try VNImageRequestHandler(cgImage: image).perform([request])
-				return RecognitionCache.Observations(values: request.results ?? [])
-			}.value.values
+			observations = try await recognize(image, level: level, usesLanguageCorrection: false, region: region)
 			RecognitionCache.shared.store(observations, for: image, level: level, region: region)
 		}
 		return observations.compactMap { observation -> Line? in
@@ -55,6 +74,14 @@ enum RenderedText {
 			}
 			return Line(text: candidate.string, bounds: map(observation.boundingBox), labelBounds: labelBounds.map(map))
 		}
+	}
+}
+
+extension RenderedText {
+	/// The text of every recognized line.
+	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true) async throws -> [String] {
+		try await recognize(image, level: .accurate, usesLanguageCorrection: usesLanguageCorrection)
+			.compactMap { $0.topCandidates(1).first?.string }
 	}
 }
 
@@ -113,6 +140,10 @@ private func samePixels(_ lhs: CFData, _ rhs: CFData) -> Bool {
 enum NativeTestClick {
 	static func send(to window: NSWindow, at point: NSPoint) throws {
 		let content = try #require(window.contentView)
+		// SwiftUI updates hit-testing for newly shown controls on a display pass,
+		// which a slow runner may not have made yet.
+		content.layoutSubtreeIfNeeded()
+		window.displayIfNeeded()
 		let hitPoint = content.superview?.convert(point, from: nil) ?? point
 		var hit = content.hitTest(hitPoint)
 		while let view = hit {
@@ -192,6 +223,19 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
+	/// Like `waitUntil`, but renders a frame before each check: SwiftUI delivers
+	/// some event actions, such as a field's Esc, only on a display pass.
+	@discardableResult
+	func waitUntilRendered(_ condition: () throws -> Bool) async throws -> Bool {
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		while true {
+			_ = try snapshot(view)
+			if try condition() { return true }
+			guard ContinuousClock.now < deadline else { return false }
+			try await Task.sleep(for: .milliseconds(10))
+		}
+	}
+
 	/// Definitive recognition, for assertions that text is absent or present right now.
 	func text(in targetWindow: NSWindow? = nil) async throws -> OCRText {
 		let lines = try await RenderedText.lines(in: snapshot(targetWindow?.contentView ?? view), level: .accurate)
@@ -206,11 +250,17 @@ final class SheetTestHost<V: View> {
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		while true {
 			let image = try snapshot(target, rect: area)
+			var read = ""
 			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
 				let lines = try await RenderedText.lines(in: image, level: level)
-				if OCRText(lines.map(\.text).joined(separator: "\n")).contains(expected) { return true }
+				read = lines.map(\.text).joined(separator: "\n")
+				if OCRText(read).contains(expected) { return true }
 			}
-			guard ContinuousClock.now < deadline else { return false }
+			guard ContinuousClock.now < deadline else {
+				// Runners read glyphs differently; the log shows what this one read.
+				print("waitForText did not find \"\(expected)\". Last accurate reading:\n\(read)")
+				return false
+			}
 			try await Task.sleep(for: .milliseconds(20))
 		}
 	}
@@ -238,12 +288,15 @@ final class SheetTestHost<V: View> {
 		try enter(key, secure: false)
 	}
 
-	func enterValue(_ value: String) throws {
-		try enter(value, secure: true)
+	/// Types into the secure field at `index`, counting from the top.
+	func enterValue(_ value: String, at index: Int = 0) throws {
+		try enter(value, secure: true, index: index)
 	}
 
-	private func enter(_ text: String, secure: Bool) throws {
-		let field = try #require(textFields(in: view).first { ($0 is NSSecureTextField) == secure })
+	private func enter(_ text: String, secure: Bool, index: Int = 0) throws {
+		let fields = textFields(in: view).filter { ($0 is NSSecureTextField) == secure }
+		try #require(fields.indices.contains(index), "Missing text field \(index)")
+		let field = fields[index]
 		window.makeFirstResponder(field)
 		let editor = try #require(field.currentEditor() as? NSTextView)
 		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
@@ -266,6 +319,41 @@ final class SheetTestHost<V: View> {
 		NSApplication.shared.sendEvent(event)
 	}
 
+	/// Starts editing the text field at `index` in reading order and presses Esc in it.
+	func escapeWhileEditing(fieldAt index: Int, secure: Bool) throws {
+		let field = try field(at: index, secure: secure)
+		window.makeFirstResponder(field)
+		try #require(field.currentEditor() != nil)
+		try sendEscape()
+	}
+
+	/// Presses Esc in the window, wherever focus is, through the application so
+	/// event monitors see it as they would a real key press.
+	func sendEscape() throws {
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+		NSApplication.shared.sendEvent(event)
+	}
+
+	/// Whether the text field at `index` in reading order is being edited.
+	func isEditing(fieldAt index: Int, secure: Bool) throws -> Bool {
+		// SwiftUI keeps a field editor attached after editing ends, so check who has focus.
+		guard let editor = try field(at: index, secure: secure).currentEditor() else { return false }
+		return window.firstResponder === editor
+	}
+
+	private func field(at index: Int, secure: Bool) throws -> NSTextField {
+		let fields = textFields(in: view).filter { ($0 is NSSecureTextField) == secure }
+		try #require(fields.indices.contains(index), "Missing text field \(index)")
+		return fields[index]
+	}
+
+	/// Clicks `offset` points after the trailing edge of the plain text field at `index`.
+	func click(afterPlainFieldAt index: Int, offset: CGFloat) throws {
+		let field = try field(at: index, secure: false)
+		let frame = field.convert(field.bounds, to: nil)
+		try NativeTestClick.send(to: window, at: NSPoint(x: frame.maxX + offset, y: frame.midY))
+	}
+
 	func escape() throws -> Bool {
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
 		return window.performKeyEquivalent(with: event)
@@ -273,7 +361,29 @@ final class SheetTestHost<V: View> {
 
 	var value: String { textFields(in: view).first { $0 is NSSecureTextField }?.stringValue ?? "" }
 
+	var secureValues: [String] { textFields(in: view).compactMap { ($0 as? NSSecureTextField)?.stringValue } }
+
 	var isKeyFieldEnabled: Bool { textFields(in: view).first { !($0 is NSSecureTextField) }?.isEnabled ?? false }
+
+	/// Icon controls that follow a value field in the key inspector, by the
+	/// distance from the field's trailing edge to the control's center.
+	enum ValueFieldControl: CGFloat {
+		case reveal = 13
+		case copy = 39
+		case generate = 77
+	}
+
+	/// Clicks an icon control of the secure value field at `index`, counting from
+	/// the top. Text recognition cannot find icons, and SwiftUI exposes no
+	/// accessibility tree without an assistive client, so the click is placed
+	/// from the field's AppKit frame.
+	func click(_ control: ValueFieldControl, ofValueAt index: Int = 0) throws {
+		view.layoutSubtreeIfNeeded()
+		let fields = textFields(in: view).filter { $0 is NSSecureTextField }
+		try #require(fields.indices.contains(index), "Missing value field \(index)")
+		let frame = fields[index].convert(fields[index].bounds, to: nil)
+		try NativeTestClick.send(to: window, at: NSPoint(x: frame.maxX + control.rawValue, y: frame.midY))
+	}
 
 	/// Bounds, in points from the bottom-left, of everything drawn over the solid
 	/// background within the bottom `band` points, plus the text recognized there.
@@ -377,9 +487,18 @@ final class SheetTestHost<V: View> {
 		return accurate.lazy.compactMap(\.labelBounds).first
 	}
 
+	/// Editable text fields in reading order: top to bottom, then left to right.
+	/// Labels inside AppKit controls are text fields too, so they are skipped.
 	private func textFields(in view: NSView) -> [NSTextField] {
+		collectTextFields(in: view).filter(\.isEditable).sorted { first, second in
+			let a = first.convert(first.bounds, to: nil), b = second.convert(second.bounds, to: nil)
+			return a.maxY != b.maxY ? a.maxY > b.maxY : a.minX < b.minX
+		}
+	}
+
+	private func collectTextFields(in view: NSView) -> [NSTextField] {
 		if let field = view as? NSTextField { return [field] }
-		return view.subviews.flatMap { textFields(in: $0) }
+		return view.subviews.flatMap { collectTextFields(in: $0) }
 	}
 
 	/// Renders `rect` (view coordinates, whole view by default) at the backing scale.
@@ -452,30 +571,6 @@ struct SheetInteractionTests {
 		#expect(try await host.waitUntil { store.selectedProject?.value(for: "TOKEN", in: "default") == "cli-new" })
 	}
 
-	@Test("local refresh keeps inspector drafts after CLI edits or deletion", arguments: ["changed", "deleted", "empty-deleted"])
-	func localRefreshKeepsInspectorDrafts(change: String) async throws {
-		let original = change == "empty-deleted" ? "" : "old"
-		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": original]])
-		let host = SheetTestHost(InspectorInteractionFixture(store: store), size: NSSize(width: 300, height: 640))
-		defer { host.window.close() }
-		try await host.settle()
-		try host.enterValue("unsaved-draft")
-		try await host.settle()
-		if change == "changed" {
-			keychain.envStorage["sheet-regression"]?.environments["default"]?["TOKEN"] = "cli-new"
-		} else {
-			keychain.envStorage["sheet-regression"]?.environments["default"]?.removeValue(forKey: "TOKEN")
-		}
-		await store.refreshLocalState()
-		try await host.settle()
-		#expect(host.value == "unsaved-draft")
-		#expect(try await host.waitForText(change == "changed" ? "changed outside" : "deleted outside"))
-		try host.returnWhileEditing("value", modifiers: [])
-		try await host.settle()
-		#expect(stored(keychain, "default", "TOKEN") == (change == "changed" ? "cli-new" : nil))
-		#expect(keychain.saveEnvironmentsCallCount == 0)
-	}
-
 	@Test("lock-screen encryption note stays centered above the bottom", arguments: [NSSize(width: 1040, height: 640), NSSize(width: 1400, height: 900)], [ColorScheme.light, .dark])
 	func lockScreenFooter(size: NSSize, scheme: ColorScheme) async throws {
 		let (store, _) = makeStore()
@@ -490,81 +585,6 @@ struct SheetInteractionTests {
 		#expect((15...28).contains(note.bounds.minY))
 		let center = host.view.bounds.insetBy(dx: host.view.bounds.width * 0.25, dy: host.view.bounds.height * 0.25)
 		#expect(try await host.line(containing: "Unlock", rect: center).range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
-	}
-
-	@Test("inspector generation changes only the draft until saved", arguments: [ColorScheme.light, .dark])
-	func inspectorGeneratorDraft(scheme: ColorScheme) async throws {
-		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": "old"], "production": ["TOKEN": "production-old"]])
-		store.selectedEnvironment = "default"
-		let host = SheetTestHost(InspectorInteractionFixture(store: store).environment(\.colorScheme, scheme), size: NSSize(width: 300, height: 640))
-		defer { host.window.close() }
-		try await host.settle()
-		try await host.click("Generate")
-		let panel = try await host.generatorWindow()
-		try await host.click("Password", in: panel)
-		try await host.waitUntil { host.value != "old" }
-		let generated = host.value
-		#expect(generated.count == SecretValueGenerator.defaultLength)
-		#expect(generated != "old")
-		#expect(stored(keychain, "default", "TOKEN") == "old")
-		// Synthetic clicks bypass the popover's outside-click monitor, so close it with its button.
-		try await host.click("Generate")
-		#expect(try await host.waitForGeneratorDismissal(panel))
-		try await host.click("Revert")
-		try await host.waitUntil { host.value == "old" }
-		#expect(host.value == "old")
-		try await host.click("Generate")
-		let secondPanel = try await host.generatorWindow()
-		try await host.click("UUID v4", in: secondPanel, caseInsensitive: true)
-		try await host.waitUntil { UUID(uuidString: host.value) != nil }
-		let second = host.value
-		#expect(UUID(uuidString: second) != nil)
-		try await host.click("Save")
-		try await host.waitUntil { stored(keychain, "default", "TOKEN") == second }
-		#expect(stored(keychain, "default", "TOKEN") == second)
-		#expect(stored(keychain, "production", "TOKEN") == "production-old")
-	}
-
-	@Test("inspector generation cannot replace a pending save or conflicting draft", arguments: ["save", "conflict"])
-	func inspectorGeneratorUnavailable(reason: String) async throws {
-		let (store, keychain) = makeStore(environments: ["default": ["TOKEN": "old"]])
-		let host = SheetTestHost(InspectorInteractionFixture(store: store), size: NSSize(width: 300, height: 640))
-		defer { host.window.close() }
-		try await host.settle()
-		try await host.click("Generate")
-		let panel = try await host.generatorWindow()
-		try await host.click("Hexadecimal", in: panel)
-		try await host.waitUntil { host.value != "old" }
-		let generated = host.value
-		let release = DispatchSemaphore(value: 0)
-		defer { release.signal() }
-		if reason == "save" {
-			let entered = DispatchSemaphore(value: 0)
-			keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
-			try await host.click("Save")
-			let didEnter = await withCheckedContinuation { continuation in
-				DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 3) == .success) }
-			}
-			try #require(didEnter)
-		} else {
-			store.projects[0].environments["default"]?["TOKEN"] = "external"
-			#expect(try await host.waitForText("This value changed outside the editor."))
-		}
-		#expect(try await host.waitForGeneratorDismissal(panel))
-		#expect(try await host.visibleGeneratorWindow() == nil)
-		try await host.click("Generate")
-		try await host.settle()
-		#expect(try await host.visibleGeneratorWindow() == nil)
-		#expect(host.value == generated)
-		if reason == "conflict" {
-			try await host.click("Revert")
-			try await host.waitUntil { host.value == "external" }
-			#expect(host.value == "external")
-			try await host.click("Generate")
-			let recoveredPanel = try await host.generatorWindow()
-			try await host.click("Generate")
-			#expect(try await host.waitForGeneratorDismissal(recoveredPanel))
-		}
 	}
 
 	@Test("cancel is unavailable while an add transaction is committing")
@@ -774,20 +794,6 @@ struct SheetInteractionTests {
 			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
 		}
 		try await host.settle()
-	}
-}
-
-private struct InspectorInteractionFixture: View {
-	@Bindable var store: VaultStore
-	@State private var revealedKeys: Set<String> = []
-
-	var body: some View {
-		if let project = store.selectedProject {
-			VaultInspectorView(store: store, project: project, snapshot: VaultWorkspaceSnapshot(project: project),
-				environments: ["default", "production"], mode: .matrix, selectedKey: "TOKEN", revealedKeys: $revealedKeys,
-				onClose: {}, onCopySecret: { _, _ in }, onDeleteSecret: { _, _ in })
-				.frame(width: 300, height: 640)
-		}
 	}
 }
 

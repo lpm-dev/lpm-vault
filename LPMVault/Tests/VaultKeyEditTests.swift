@@ -184,6 +184,60 @@ struct VaultKeyEditStoreTests {
 		#expect(store.error == nil)
 	}
 
+	@Test("a key draft saves once, even when saving is requested twice, and then ends")
+	func draftSavesOnce() async throws {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		let project = try #require(store.selectedProject)
+		let id = VaultKeyDraft.ID(projectID: "project", key: "STRIPE_KEY")
+		store.keyDrafts.edit(project, key: "STRIPE_KEY") {
+			$0.name = "STRIPE_SECRET_KEY"
+			$0.setValue("sk_live", in: "production")
+		}
+		async let first: Void = store.saveKeyDraft(id)
+		async let second: Void = store.saveKeyDraft(id)
+		_ = try await (first, second)
+		#expect(keychain.applyVaultTransactionCallCount == 1)
+		#expect(keychain.envStorage["project"]?.environments["production"] == ["STRIPE_SECRET_KEY": "sk_live"])
+		#expect(keychain.envStorage["project"]?.environments["staging"] == ["STRIPE_SECRET_KEY": "sk_staging"])
+		#expect(store.keyDrafts.draft(id) == nil)
+		#expect(store.keyDrafts.editedKeys(in: "project").isEmpty)
+	}
+
+	@Test("a value saved elsewhere before the draft's save runs keeps the edit as a conflict")
+	func draftSaveConflict() async throws {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		let project = try #require(store.selectedProject)
+		let id = VaultKeyDraft.ID(projectID: "project", key: "STRIPE_KEY")
+		store.keyDrafts.edit(project, key: "STRIPE_KEY") { $0.setValue("sk_dev_2", in: "default") }
+		keychain.simulateCLISet(vaultId: "project", environment: "default", key: "STRIPE_KEY", value: "sk_cli")
+		await #expect(throws: VaultKeyEditError.changed) {
+			try await store.saveKeyDraft(id)
+		}
+		let draft = try #require(store.keyDrafts.draft(id))
+		#expect(draft.value(in: "default") == "sk_dev_2")
+		#expect(draft.values["default"]?.hasExternalConflict == true)
+		#expect(!draft.isSaveInFlight)
+		#expect(keychain.envStorage["project"]?.environments["default"] == ["STRIPE_KEY": "sk_cli"])
+		#expect(store.error == nil)
+	}
+
+	@Test("drafts follow a refresh and end when the vault locks or the account changes", arguments: ["lock", "account"])
+	func draftLifecycle(ending: String) async throws {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		let project = try #require(store.selectedProject)
+		let id = VaultKeyDraft.ID(projectID: "project", key: "STRIPE_KEY")
+		store.keyDrafts.edit(project, key: "STRIPE_KEY") { $0.setValue("sk_dev_2", in: "default") }
+		keychain.simulateCLISet(vaultId: "project", environment: "staging", key: "STRIPE_KEY", value: "sk_staging_cli")
+		await store.refreshLocalState()
+		#expect(store.keyDrafts.draft(id)?.value(in: "staging") == "sk_staging_cli")
+		#expect(store.keyDrafts.draft(id)?.value(in: "default") == "sk_dev_2")
+		if ending == "lock" { store.lock() } else { store.selectedAccount = .org("other") }
+		#expect(store.keyDrafts.drafts.isEmpty)
+	}
+
 	private func makeStore() -> (VaultStore, MockKeychainService) {
 		let keychain = MockKeychainService()
 		keychain.envStorage["project"] = (name: "Project", path: "", environments: environments)

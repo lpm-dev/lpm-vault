@@ -134,7 +134,7 @@ struct AppBrandingTests {
 	}
 
 	@Test("title bar shows the full app name alongside the selected project")
-	func titleBarShowsFullAppName() throws {
+	func titleBarShowsFullAppName() async throws {
 		let store = VaultStore(
 			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
 			apiService: MockAPIService(), authTokenProvider: { _, _ in nil }
@@ -146,16 +146,13 @@ struct AppBrandingTests {
 			store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
 		).environment(UpdateChecker()).environment(\.colorScheme, .light), size: CGSize(width: 1100, height: VaultMetrics.titleBar))
 		try recordPNG(image, named: "title-bar.png")
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		let text = OCRText((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " "))
+		let text = OCRText(try await RenderedText.strings(in: image).joined(separator: " "))
 		#expect(text.contains("LPM Vault"))
 		#expect(text.contains("project-source"))
 	}
 
 	@Test("branded lock screen retains the authentication instructions")
-	func lockScreenRetainsAuthenticationInstructions() throws {
+	func lockScreenRetainsAuthenticationInstructions() async throws {
 		let store = VaultStore(
 			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
 			apiService: MockAPIService(), authTokenProvider: { _, _ in nil }
@@ -163,10 +160,7 @@ struct AppBrandingTests {
 		let image = try renderNative(ContentView(store: store)
 			.environment(\.colorScheme, .light), size: CGSize(width: 1040, height: 640))
 		try recordPNG(image, named: "lock-screen.png")
-		let request = VNRecognizeTextRequest()
-		request.recognitionLevel = .accurate
-		try VNImageRequestHandler(cgImage: image).perform([request])
-		let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+		let text = try await RenderedText.strings(in: image).joined(separator: " ")
 		#expect(text.contains("LPM Vault is Locked"))
 		#expect(text.contains("Authenticate with Touch ID or your Mac password to unlock."))
 	}
