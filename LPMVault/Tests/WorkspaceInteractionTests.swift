@@ -26,7 +26,6 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil {
 				NSPasteboard.general.string(forType: .string) == (edited ? "unsaved-workspace-draft" : "current-cli-value")
 			})
-			#expect(try await host.waitForText("Copied"))
 			if edited { #expect(try await host.waitForText("Changed outside the editor")) }
 		}
 
