@@ -16,9 +16,6 @@ enum VaultKeychainRecordContract {
 	static let syncMetadataSchemaVersion = 3
 }
 
-@_silgen_name("flock")
-private func lpmFileLock(_ descriptor: Int32, _ operation: Int32) -> Int32
-
 enum VaultKeychainTransactionLock {
 	private final class State: @unchecked Sendable {
 		let processLock = NSRecursiveLock()
@@ -108,7 +105,7 @@ enum VaultKeychainTransactionLock {
 			state.depth -= 1
 			if state.depth == 0 {
 				state.recoveredStores.removeAll(keepingCapacity: true)
-				_ = lpmFileLock(state.descriptor, LOCK_UN)
+				_ = flock(state.descriptor, LOCK_UN)
 				_ = Darwin.close(state.descriptor)
 				state.descriptor = -1
 			}
@@ -204,7 +201,7 @@ enum VaultKeychainTransactionLock {
 				in: directoryDescriptor,
 				requireSecurePermissions: true
 			)
-			while lpmFileLock(descriptor, LOCK_EX) != 0 {
+			while flock(descriptor, LOCK_EX) != 0 {
 				if errno == EINTR { continue }
 				throw KeychainStoreError.status(
 					operation: "acquire transaction lock", code: OSStatus(errno))
@@ -218,7 +215,7 @@ enum VaultKeychainTransactionLock {
 			)
 			return descriptor
 		} catch {
-			if isLocked { _ = lpmFileLock(descriptor, LOCK_UN) }
+			if isLocked { _ = flock(descriptor, LOCK_UN) }
 			_ = Darwin.close(descriptor)
 			throw error
 		}
