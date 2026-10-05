@@ -426,9 +426,10 @@ extension VaultStoreTests {
 		store.openProject(id: "project-a")
 
 		store.duplicateEnvironment(in: "project-a", from: "default", to: "staging")
-		await waitForSemaphore(entered)
-		store.openProject(id: "project-b")
-		release.signal()
+		await performAfterSemaphore(entered) {
+			store.openProject(id: "project-b")
+			release.signal()
+		}
 		await waitUntil {
 			store.projects.first(where: { $0.id == "project-a" })?
 				.environments["staging"] != nil
@@ -5043,9 +5044,10 @@ struct LazyLocalProjectLoadingRegressionTests {
 		}
 
 		store.openProject(id: "first")
-		await waitForSemaphore(firstLoadStarted)
-		store.openProject(id: "second")
-		releaseFirstLoad.signal()
+		await performAfterSemaphore(firstLoadStarted) {
+			store.openProject(id: "second")
+			releaseFirstLoad.signal()
+		}
 		await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "second-secret"
 		}
@@ -5105,6 +5107,24 @@ private func waitUntilAsync(
 		await Task.yield()
 	}
 	Issue.record("Timed out while waiting for an asynchronous test condition.")
+}
+
+@MainActor
+private func performAfterSemaphore(
+	_ semaphore: DispatchSemaphore,
+	action: @escaping @MainActor @Sendable () -> Void
+) async {
+	let didEnter = await withCheckedContinuation { continuation in
+		DispatchQueue.global().async {
+			let didEnter = semaphore.wait(timeout: .now() + 5) == .success
+			DispatchQueue.main.async {
+				// Release blocked work before resuming, which can require a cooperative worker.
+				action()
+				continuation.resume(returning: didEnter)
+			}
+		}
+	}
+	#expect(didEnter)
 }
 
 private func waitForSemaphore(_ semaphore: DispatchSemaphore) async {
