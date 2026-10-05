@@ -168,6 +168,40 @@ extension SheetInteractionTests {
 			}
 		}
 
+		@Test("Esc first leaves a field and keeps its edit, then a second Esc closes the inspector", arguments: ["key", "value"])
+		func escapeLeavesFieldThenCloses(field: String) async throws {
+			let (store, _) = makeStore(["default": ["TOKEN": "dev"]])
+			defer { store.lock() }
+			let closes = CloseCounter()
+			let host = SheetTestHost(KeyInspectorFixture(store: store, onClose: { closes.count += 1 }), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			try await host.settle()
+			let secure = field == "value"
+			if secure { try host.enterValue("dev-2") } else { try host.enterKey("API_TOKEN") }
+			try await host.settle()
+			try host.escapeWhileEditing(fieldAt: 0, secure: secure)
+			#expect(try await host.waitUntilRendered { try !host.isEditing(fieldAt: 0, secure: secure) })
+			#expect(closes.count == 0)
+			#expect(try await host.waitForText("1 unsaved change"))
+			try host.sendEscape()
+			#expect(try await host.waitUntilRendered { closes.count == 1 })
+			let id = VaultKeyDraft.ID(projectID: "inspector", key: "TOKEN")
+			#expect(secure ? store.keyDrafts.draft(id)?.value(in: "default") == "dev-2" : store.keyDrafts.draft(id)?.name == "API_TOKEN")
+		}
+
+		@Test("the pencil next to the key name starts editing it")
+		func pencilEditsKeyName() async throws {
+			let (store, _) = makeStore(["default": ["TOKEN": "dev"]])
+			defer { store.lock() }
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			try await host.settle()
+			#expect(try !host.isEditing(fieldAt: 0, secure: false))
+			// The pencil sits after the name field, past the row's spacing.
+			try host.click(afterPlainFieldAt: 0, offset: 12)
+			#expect(try await host.waitUntil { try host.isEditing(fieldAt: 0, secure: false) })
+		}
+
 		private func makeStore(_ environments: [String: [String: String]]) -> (VaultStore, MockKeychainService) {
 			let keychain = MockKeychainService()
 			keychain.envStorage["inspector"] = (name: "Inspector", path: "", environments: environments)
@@ -184,9 +218,15 @@ extension SheetInteractionTests {
 	}
 }
 
+@MainActor
+private final class CloseCounter {
+	var count = 0
+}
+
 private struct KeyInspectorFixture: View {
 	@Bindable var store: VaultStore
 	var mode: VaultWorkspaceMode = .matrix
+	var onClose: () -> Void = {}
 	@State private var selectedKey: String? = "TOKEN"
 	@State private var revealedKeys: Set<String> = []
 
@@ -199,7 +239,7 @@ private struct KeyInspectorFixture: View {
 				mode: mode,
 				selectedKey: selectedKey,
 				revealedKeys: $revealedKeys,
-				onClose: {},
+				onClose: onClose,
 				onCopy: { _ in },
 				onDelete: { _, _ in },
 				onAddElsewhere: { _, _ in },

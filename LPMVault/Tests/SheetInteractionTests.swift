@@ -192,6 +192,19 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
+	/// Like `waitUntil`, but renders a frame before each check: SwiftUI delivers
+	/// some event actions, such as a field's Esc, only on a display pass.
+	@discardableResult
+	func waitUntilRendered(_ condition: () throws -> Bool) async throws -> Bool {
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		while true {
+			_ = try snapshot(view)
+			if try condition() { return true }
+			guard ContinuousClock.now < deadline else { return false }
+			try await Task.sleep(for: .milliseconds(10))
+		}
+	}
+
 	/// Definitive recognition, for assertions that text is absent or present right now.
 	func text(in targetWindow: NSWindow? = nil) async throws -> OCRText {
 		let lines = try await RenderedText.lines(in: snapshot(targetWindow?.contentView ?? view), level: .accurate)
@@ -273,6 +286,41 @@ final class SheetTestHost<V: View> {
 	func key(_ character: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], in targetWindow: NSWindow) throws {
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: targetWindow.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
 		NSApplication.shared.sendEvent(event)
+	}
+
+	/// Starts editing the text field at `index` in reading order and presses Esc in it.
+	func escapeWhileEditing(fieldAt index: Int, secure: Bool) throws {
+		let field = try field(at: index, secure: secure)
+		window.makeFirstResponder(field)
+		try #require(field.currentEditor() != nil)
+		try sendEscape()
+	}
+
+	/// Presses Esc in the window, wherever focus is, through the application so
+	/// event monitors see it as they would a real key press.
+	func sendEscape() throws {
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+		NSApplication.shared.sendEvent(event)
+	}
+
+	/// Whether the text field at `index` in reading order is being edited.
+	func isEditing(fieldAt index: Int, secure: Bool) throws -> Bool {
+		// SwiftUI keeps a field editor attached after editing ends, so check who has focus.
+		guard let editor = try field(at: index, secure: secure).currentEditor() else { return false }
+		return window.firstResponder === editor
+	}
+
+	private func field(at index: Int, secure: Bool) throws -> NSTextField {
+		let fields = textFields(in: view).filter { ($0 is NSSecureTextField) == secure }
+		try #require(fields.indices.contains(index), "Missing text field \(index)")
+		return fields[index]
+	}
+
+	/// Clicks `offset` points after the trailing edge of the plain text field at `index`.
+	func click(afterPlainFieldAt index: Int, offset: CGFloat) throws {
+		let field = try field(at: index, secure: false)
+		let frame = field.convert(field.bounds, to: nil)
+		try NativeTestClick.send(to: window, at: NSPoint(x: frame.maxX + offset, y: frame.midY))
 	}
 
 	func escape() throws -> Bool {
@@ -408,9 +456,18 @@ final class SheetTestHost<V: View> {
 		return accurate.lazy.compactMap(\.labelBounds).first
 	}
 
+	/// Editable text fields in reading order: top to bottom, then left to right.
+	/// Labels inside AppKit controls are text fields too, so they are skipped.
 	private func textFields(in view: NSView) -> [NSTextField] {
+		collectTextFields(in: view).filter(\.isEditable).sorted { first, second in
+			let a = first.convert(first.bounds, to: nil), b = second.convert(second.bounds, to: nil)
+			return a.maxY != b.maxY ? a.maxY > b.maxY : a.minX < b.minX
+		}
+	}
+
+	private func collectTextFields(in view: NSView) -> [NSTextField] {
 		if let field = view as? NSTextField { return [field] }
-		return view.subviews.flatMap { textFields(in: $0) }
+		return view.subviews.flatMap { collectTextFields(in: $0) }
 	}
 
 	/// Renders `rect` (view coordinates, whole view by default) at the backing scale.

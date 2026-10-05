@@ -119,6 +119,7 @@ private struct VaultKeyEditor: View {
 			VaultHairline()
 			footer(draft, issue: issue)
 		}
+		.background(VaultEscapeResponder(onEscape: onClose))
 	}
 
 	// MARK: - Sections
@@ -192,17 +193,20 @@ private struct VaultKeyEditor: View {
 					.focused($focus, equals: .name)
 					.disabled(draft?.isSaveInFlight == true)
 					.onSubmit(save)
-					.onKeyPress(.escape) {
-						guard renamed else { return .ignored }
-						edit { $0.name = key }
-						return .handled
-					}
 					.accessibilityLabel("Key name")
 				if !focused && !renamed {
-					Image(systemName: "pencil")
-						.font(.system(size: 10, weight: .semibold))
-						.foregroundStyle(VaultPalette.textFaint)
-						.accessibilityHidden(true)
+					Button { focus = .name } label: {
+						Image(systemName: "pencil")
+							.font(.system(size: 10, weight: .semibold))
+							.foregroundStyle(VaultPalette.textFaint)
+							.frame(width: 20, height: 20)
+							.contentShape(Rectangle())
+					}
+					.buttonStyle(.plain)
+					.disabled(draft?.isSaveInFlight == true)
+					.help("Rename key")
+					.accessibilityLabel("Rename key")
+					.vaultPointingHand()
 				}
 			}
 			.padding(.horizontal, 9)
@@ -652,5 +656,59 @@ struct VaultKeyRecoveryView: View {
 			VaultBarButton(title: "Discard", height: 28) { onDiscard(draft.id) }
 		}
 		.padding(18)
+	}
+}
+
+/// Esc in the key inspector: the first leaves the field being edited and keeps
+/// its edit as a draft, and the next closes the inspector. An AppKit responder
+/// handles it because SwiftUI can only focus a container while system keyboard
+/// navigation is on. Esc anywhere else, such as in the sidebar search, is left alone.
+private struct VaultEscapeResponder: NSViewRepresentable {
+	let onEscape: () -> Void
+
+	func makeNSView(context: Context) -> ResponderView { ResponderView() }
+
+	func updateNSView(_ view: ResponderView, context: Context) {
+		view.onEscape = onEscape
+	}
+
+	final class ResponderView: NSView {
+		var onEscape: () -> Void = {}
+		private var monitor: Any?
+
+		override var acceptsFirstResponder: Bool { true }
+
+		override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+		override func viewDidMoveToWindow() {
+			super.viewDidMoveToWindow()
+			if let monitor {
+				NSEvent.removeMonitor(monitor)
+				self.monitor = nil
+			}
+			guard window != nil else { return }
+			monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+				guard event.keyCode == 53,
+					event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
+				else { return event }
+				let windowNumber = event.windowNumber
+				let handled = MainActor.assumeIsolated { self?.handleEscape(inWindow: windowNumber) ?? false }
+				return handled ? nil : event
+			}
+		}
+
+		private func handleEscape(inWindow windowNumber: Int) -> Bool {
+			guard let window, window.windowNumber == windowNumber, window.attachedSheet == nil else { return false }
+			if window.firstResponder === self {
+				onEscape()
+				return true
+			}
+			// The field editor's delegate is the field being edited; only fields inside the inspector count.
+			guard let editor = window.firstResponder as? NSText, let field = editor.delegate as? NSView,
+				convert(bounds, to: nil).contains(field.convert(field.bounds, to: nil))
+			else { return false }
+			window.makeFirstResponder(self)
+			return true
+		}
 	}
 }

@@ -29,6 +29,20 @@ extension SheetInteractionTests {
 			if edited { #expect(try await host.waitForText("Changed outside the editor")) }
 		}
 
+		@Test("Esc in the sidebar search stays with the search while the inspector is open")
+		func escapeInSearchKeepsInspector() async throws {
+			let (store, _) = makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try selectRow(0, in: host)
+			#expect(try await host.waitForText("VALUES"))
+			// The search field is the topmost text field in the window.
+			try host.escapeWhileEditing(fieldAt: 0, secure: false)
+			try await host.settle()
+			#expect(try await host.text().contains("VALUES"))
+		}
+
 		@Test("unsaved edits stay with their key while the person selects other keys")
 		func draftsFollowTheirKey() async throws {
 			let (store, _) = makeStore(environments: ["default": ["TOKEN": "fixture-value", "ZETA": "zeta-value"]])
