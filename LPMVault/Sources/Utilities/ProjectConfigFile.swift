@@ -135,20 +135,32 @@ enum ProjectConfigFile {
 			}
 			let unchanged = document
 			let result = try change(&document)
-			guard document != unchanged else { try beforeWrite?(); return result }
+			let checkSnapshot = {
+				let current: Data?
+				do { current = try readRegularFile(at: url) } catch FileError.notFound { current = nil }
+				guard current == original else { throw FileError.changed }
+			}
+			guard document != unchanged else {
+				try checkSnapshot()
+				try beforeWrite?()
+				do { try checkSnapshot() } catch {
+					try onWriteFailure?()
+					throw error
+				}
+				return result
+			}
 
 			let data: Data
 			do { data = try document.renderedData(maximumBytes: maximumBytes) } catch { throw FileError.tooLarge }
 			var permissions = mode_t(0o644)
 			var metadata = stat()
 			if original != nil, lstat(url.path, &metadata) == 0 { permissions = metadata.st_mode & 0o777 }
+			try checkSnapshot()
 			try beforeWrite?()
 			do {
 				try fileWriter(data, url, permissions, original != nil) {
 					// The lock orders CLI edits; an editor saving meanwhile does not take it.
-					let current: Data?
-					do { current = try readRegularFile(at: url) } catch FileError.notFound { current = nil }
-					guard current == original else { throw FileError.changed }
+					try checkSnapshot()
 				}
 			} catch {
 				// Directory sync follows replacement; reverting only external state would break alignment.

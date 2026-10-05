@@ -2288,7 +2288,7 @@ extension VaultStoreTests {
 		let release = DispatchSemaphore(value: 0)
 		let service = EnvFileExportService { secrets, destination, authorization in
 			entered.signal()
-			release.wait()
+			#expect(release.wait(timeout: .now() + 5) == .success)
 			let content = EnvFileCodec.format(secrets)
 			try SecureFileWriter.write(
 				Data(content.utf8),
@@ -5117,7 +5117,7 @@ private func performAfterSemaphore(
 	action: @escaping @MainActor @Sendable () -> Void
 ) async {
 	let didEnter = await withCheckedContinuation { continuation in
-		DispatchQueue.global().async {
+		Thread.detachNewThread {
 			let didEnter = semaphore.wait(timeout: .now() + 5) == .success
 			DispatchQueue.main.async {
 				// Release blocked work before resuming, which can require a cooperative worker.

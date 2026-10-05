@@ -513,7 +513,7 @@ struct VaultKeyDescriptionStoreTests {
 		}
 		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEW" }
 		let rename = Task { try await store.saveKeyDraft(id) }
-		await withCheckedContinuation { continuation in DispatchQueue.global().async { entered.wait(); continuation.resume() } }
+		await withCheckedContinuation { continuation in Thread.detachNewThread { entered.wait(); continuation.resume() } }
 		let edit = VaultKeyEdit(key: id.key, environments: environments, values: ["default": "later"])
 		let later = Task { try? await store.saveKeyEdit(edit, in: "project") }
 		DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) {
@@ -554,11 +554,11 @@ struct VaultKeyDescriptionStoreTests {
 		} else { otherFolder = nil }
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		keychain.blockNextSaveEnvironments = { entered.signal(); release.wait() }
+		keychain.blockNextSaveEnvironments = { entered.signal(); #expect(release.wait(timeout: .now() + 5) == .success) }
 		defer { release.signal() }
-		let earlier = Task { try? await store.saveKeyEdit(.init(key: "OTHER", environments: environments, values: ["default": "later"]), in: "project") }
-		let rename: Task<Void?, Never>? = await withCheckedContinuation { continuation in
-			DispatchQueue.global().async {
+		let earlier = Task { try await store.saveKeyEdit(.init(key: "OTHER", environments: environments, values: ["default": "later"]), in: "project") }
+		let rename: Task<Void, Error>? = await withCheckedContinuation { continuation in
+			Thread.detachNewThread {
 				let didEnter = entered.wait(timeout: .now() + 5) == .success
 				DispatchQueue.main.async {
 					guard didEnter else {
@@ -568,7 +568,7 @@ struct VaultKeyDescriptionStoreTests {
 						return
 					}
 					store.keyDrafts.edit(project, key: id.key) { $0.name = "NEW" }
-					let rename = Task { try? await store.saveKeyDraft(id) }
+					let rename = Task { try await store.saveKeyDraft(id) }
 					observeOnMainQueue(until: { store.keyDrafts.draft(id)?.isSaveInFlight == true }) {
 						if let otherFolder {
 							ProjectCLILink.rememberFolder(otherFolder, vaultId: "project", defaults: store.preferences)
@@ -579,9 +579,13 @@ struct VaultKeyDescriptionStoreTests {
 				}
 			}
 		}
-		await earlier.value
+		try await earlier.value
 		guard let rename else { return }
-		await rename.value
+		let expected: VaultKeyEditError = folderChanged
+			? .description("The project folder changed. Review its descriptions, then save again.", keySaved: false)
+			: .targetUnavailable
+		await #expect(throws: expected) { try await rename.value }
+		#expect(keychain.envStorage["project"]?.environments["default"]?["OTHER"] == "later")
 		#expect(store.keyDrafts.draft(id)?.isSaveInFlight == false)
 		#expect(keychain.envStorage["project"]?.environments["default"]?[id.key] == "sk_dev")
 		#expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == nil)
@@ -602,7 +606,7 @@ struct VaultKeyDescriptionStoreTests {
 		keychain.nextVaultTransactionError = .transactionOutcomeIndeterminate
 		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEW" }
 		let rename = Task { try? await store.saveKeyDraft(id) }
-		await withCheckedContinuation { continuation in DispatchQueue.global().async { entered.wait(); continuation.resume() } }
+		await withCheckedContinuation { continuation in Thread.detachNewThread { entered.wait(); continuation.resume() } }
 		store.lock()
 		let reads = keychain.projectMetadataReadCount
 		flock(descriptor, LOCK_UN)
@@ -627,7 +631,7 @@ struct VaultKeyDescriptionStoreTests {
 		if outcome == "indeterminate" { keychain.nextVaultTransactionError = .transactionOutcomeIndeterminate }
 		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEW"; $0.setKeyDescription("Mine", saved: "Old") }
 		let rename = Task { try? await store.saveKeyDraft(id) }
-		await withCheckedContinuation { continuation in DispatchQueue.global().async { entered.wait(); continuation.resume() } }
+		await withCheckedContinuation { continuation in Thread.detachNewThread { entered.wait(); continuation.resume() } }
 		store.selectedAccount = .org("other")
 		store.selectedAccount = .personal
 		let current = VaultProject(id: "project", name: "Project", path: folder, environments: environments)
@@ -673,7 +677,7 @@ struct VaultKeyDescriptionStoreTests {
 		keychain.nextVaultTransactionError = .transactionOutcomeIndeterminate
 		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEW" }
 		let rename = Task { try? await store.saveKeyDraft(id) }
-		await withCheckedContinuation { continuation in DispatchQueue.global().async { entered.wait(); continuation.resume() } }
+		await withCheckedContinuation { continuation in Thread.detachNewThread { entered.wait(); continuation.resume() } }
 		store.selectedAccount = .org("other"); store.selectedAccount = .personal
 		let current = VaultProject(id: "project", name: "Project", path: folder, environments: environments)
 		store.projects = [current]
