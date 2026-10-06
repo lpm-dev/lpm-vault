@@ -352,6 +352,19 @@ struct EnvSchemaCompositionTests {
 		} catch { #expect(error.localizedDescription.contains("preset:node")) }
 	}
 
+	@Test("rename collisions retain declaration origins when overrides resolve inherited conflicts")
+	func overriddenConflictsRetainRenameDeclarationOrigins() throws {
+		let root = try folder(#"{"extends":["base.json","other.json"],"vars":{"LOCAL":{}},"overrides":{"INHERITED":{"description":"local"}}}"#, fragment: #"{"vars":{"INHERITED":{}}}"#)
+		defer { try? FileManager.default.removeItem(at: root) }
+		try Data(#"{"vars":{"INHERITED":{"required":true}}}"#.utf8).write(to: root.appendingPathComponent("other.json"))
+		do {
+			_ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: "LOCAL", to: "INHERITED")), inFolder: root.path, vaultID: "project")
+			Issue.record("Collision must reject")
+		} catch {
+			#expect(error.localizedDescription == "The target key INHERITED is declared in base.json. Choose a different key name.")
+		}
+	}
+
 	@Test("inherited collision diagnostics report the declaring fragment despite root overrides")
 	func overriddenTargetCollisionsIdentifyTheDeclaringFragment() throws {
 		let root = try folder(#"{"extends":["base.json"],"vars":{"LOCAL":{}},"overrides":{"INHERITED":{"description":"local"}}}"#, fragment: #"{"vars":{"INHERITED":{}}}"#)

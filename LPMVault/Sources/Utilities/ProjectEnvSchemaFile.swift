@@ -231,20 +231,14 @@ enum ProjectEnvSchemaFile {
 		var prepared = document
 		if let rename = change.rename, rename.from != rename.to {
 			let source = document["envSchema"]
-			var declaringOrigins = original.origins
-			if source?["overrides"]?[rename.from] != nil || source?["overrides"]?[rename.to] != nil,
-				var declarations = source {
-				declarations.removeValue(forKey: "overrides")
-				declaringOrigins = try RustSchemaEngine.resolve(declarations, inFolder: folder).origins
-			}
 			if original.effective["vars"]?[rename.from] != nil {
-				if source?["vars"]?[rename.from] == nil, let origin = declaringOrigins[rename.from] {
+				if source?["vars"]?[rename.from] == nil, let origin = original.declaringOrigins[rename.from] ?? original.origins[rename.from] {
 					if origin.source.hasPrefix("preset:") { throw .presetRename(origin.source) }
 					if source?["overrides"]?[rename.from] != nil { throw .overriddenRename }
 					throw .inheritedRename(origin.source)
 				}
 				if original.effective["vars"]?[rename.to] != nil, source?["vars"]?[rename.to] == nil,
-					let origin = declaringOrigins[rename.to] { throw .renameCollision(rename.to, origin.source) }
+					let origin = original.declaringOrigins[rename.to] ?? original.origins[rename.to] { throw .renameCollision(rename.to, origin.source) }
 				if case .object(let vars)? = original.effective["vars"] {
 					for member in vars where member.value["requiredWhen"]?["variable"] == .string(rename.from) {
 						if let origin = original.origins[member.key], origin.source != "lpm.json" { throw .fragmentReference(origin.source) }
