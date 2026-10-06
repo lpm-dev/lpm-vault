@@ -52,6 +52,10 @@ Sparkle asks before it enables background update checks.
 Local project storage does not require an LPM.dev account.
 Cloud sync requires an account and the permissions for the selected project.
 
+Use **Settings → Sign in with browser** to connect your account.
+After browser verification, return to the app to check the connection status.
+The local callback page provides retry instructions if verification fails. It loads no external resources.
+
 ## Start with a project
 
 1. Unlock the app.
