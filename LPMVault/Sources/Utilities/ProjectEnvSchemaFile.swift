@@ -123,6 +123,20 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
+	static func requiresSchemaEdit(_ change: Change, inFolder folder: String, vaultID: String) throws(FileError) -> Bool {
+		if change.description != nil { return true }
+		let folderURL: URL
+		do { folderURL = try existingFolder(folder) } catch .noFolder { return false }
+		guard let data = try read(folderURL.appendingPathComponent("lpm.json")) else { return false }
+		let document = try parse(data)
+		try checkVault(of: document, is: vaultID)
+		guard let schema = document["envSchema"], schema != .null else { return false }
+		guard case .object = schema else { throw .invalidSchema }
+		guard let rename = change.rename else { return false }
+		if let vars = schema["vars"], case .object = vars {} else if schema["vars"] != nil { throw .invalidSchema }
+		return schema["vars"]?[rename.from] != nil || schema["vars"]?[rename.to] != nil
+	}
+
 	static func validatedRename(_ change: Change, in document: LPMConfigJSON, vaultID: String) throws(FileError) -> (LPMConfigJSON, Rules) {
 		try checkVault(of: document, is: vaultID)
 		_ = try rules(of: document)
@@ -141,7 +155,9 @@ enum ProjectEnvSchemaFile {
 		var vars = varsBefore ?? .object([])
 		guard case .object = vars else { throw .invalidSchema }
 
-		if let rename = change.rename, vars[rename.from] != nil, vars[rename.to] == nil {
+		if let rename = change.rename, var rule = vars[rename.from], vars[rename.to] == nil {
+			try classify(&rule, name: rename.to, schema: schema)
+			vars.set(rule, forKey: rename.from)
 			vars.renameKey(rename.from, to: rename.to)
 		}
 		if let description = change.description {
@@ -159,6 +175,7 @@ enum ProjectEnvSchemaFile {
 			} else {
 				rule.set(.string(description.text), forKey: "description")
 			}
+			try classify(&rule, name: description.key, schema: schema)
 			if rule.isEmptyObject {
 				vars.removeValue(forKey: description.key)
 			} else {
@@ -181,10 +198,24 @@ enum ProjectEnvSchemaFile {
 		return updated
 	}
 
+	private static func isPublic(_ name: String, schema: LPMConfigJSON) -> Bool {
+		let cra = name.utf8.prefix(10).elementsEqual("REACT_APP_".utf8, by: { ($0 >= 97 && $0 <= 122 ? $0 - 32 : $0) == $1 })
+		if cra || ["NEXT_PUBLIC_", "VITE_", "PUBLIC_", "EXPO_PUBLIC_", "GATSBY_", "NUXT_PUBLIC_"].contains(where: name.hasPrefix) { return true }
+		guard case .array(let prefixes)? = schema["clientPrefixes"] else { return false }
+		return prefixes.contains { if case .string(let prefix) = $0 { return name.hasPrefix(prefix) }; return false }
+	}
+
+	private static func classify(_ rule: inout LPMConfigJSON, name: String, schema: LPMConfigJSON) throws(FileError) {
+		if isPublic(name, schema: schema) {
+			guard rule["secret"] != .bool(true) else { throw .invalidSchema }
+			rule.set(.bool(true), forKey: "client")
+		} else { rule.removeValue(forKey: "client") }
+	}
+
 	static func rules(of document: LPMConfigJSON) throws(FileError) -> Rules {
 		guard let schema = document["envSchema"], schema != .null else { return Rules() }
 		guard case .object(let fields) = schema, fields.allSatisfy({ ["vars", "clientPrefixes"].contains($0.key) }) else { throw .invalidSchema }
-		var prefixes: [String] = ["NEXT_PUBLIC_", "VITE_", "PUBLIC_"]
+		var prefixes: [String] = ["NEXT_PUBLIC_", "VITE_", "PUBLIC_", "EXPO_PUBLIC_", "GATSBY_", "NUXT_PUBLIC_"]
 		if let value = schema["clientPrefixes"] {
 			guard case .array(let values) = value, values.count <= 32 else { throw .invalidSchema }
 			var unique: Set<String> = []

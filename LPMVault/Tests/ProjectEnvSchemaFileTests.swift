@@ -340,6 +340,28 @@ struct ProjectEnvSchemaFileTests {
 		#expect(try contents(folder) == original)
 	}
 
+	@Test("descriptions classify public names", arguments: ["NEXT_PUBLIC_API", "EXPO_PUBLIC_API", "GATSBY_API", "NUXT_PUBLIC_API", "APP_API"])
+	func descriptionsClassifyPublicNames(key: String) throws {
+		let folder = try makeFolder(#"{"envSchema":{"clientPrefixes":["APP_"]}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		_ = try ProjectEnvSchemaFile.apply(.init(description: .init(key: key, text: "Endpoint")), inFolder: folder, vaultID: vaultID)
+		let document = try LPMConfigJSON(parsing: Data(contents(folder).utf8))
+		#expect(document["envSchema"]?["vars"]?[key]?["client"] == .bool(true))
+	}
+
+	@Test("renames reclassify public rules", arguments: [false, true])
+	func renamesReclassifyPublicRules(fromPublic: Bool) throws {
+		let old = fromPublic ? "APP_API" : "API"
+		let new = fromPublic ? "API" : "APP_API"
+		let client = fromPublic ? #", "client":true"# : ""
+		let folder = try makeFolder(#"{"envSchema":{"clientPrefixes":["APP_"],"vars":{"\#(old)":{"required":true\#(client)}}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		_ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: old, to: new)), inFolder: folder, vaultID: vaultID)
+		let document = try LPMConfigJSON(parsing: Data(contents(folder).utf8))
+		#expect(document["envSchema"]?["vars"]?[new]?["client"] == (fromPublic ? nil : .bool(true)))
+		#expect(document["envSchema"]?["vars"]?[new]?["required"] == .bool(true))
+	}
+
 	private func makeFolder(_ lpmJSON: String?) throws -> String {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-schema-\(UUID().uuidString)").path
 		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)

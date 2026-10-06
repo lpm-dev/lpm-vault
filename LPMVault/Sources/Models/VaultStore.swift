@@ -6225,7 +6225,7 @@ final class VaultStore {
         updateProjectInPlace(commit.project)
         applySyncMetadata(commit.syncMetadata, for: commit.project.id)
         error = commit.warning
-        if keyDescriptionFolder(for: commit.project) == folder {
+        if let rules, keyDescriptionFolder(for: commit.project) == folder {
           publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, rules: .success(rules)), for: project.id)
         }
         afterCompletion(.success(()))

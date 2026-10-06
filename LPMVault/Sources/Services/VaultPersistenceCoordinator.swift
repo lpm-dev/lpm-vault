@@ -117,7 +117,7 @@ enum ProjectMutationPersistenceResult: Sendable {
 }
 
 enum SchemaKeyRenameResult: Sendable {
-	case success(SecretPersistenceCommit, ProjectEnvSchemaFile.Rules)
+	case success(SecretPersistenceCommit, ProjectEnvSchemaFile.Rules?)
 	case failure(VaultKeyEditError)
 	case indeterminate
 	case conflict(latest: VaultProject, metadata: SyncMetadata?, failure: VaultKeyEditError)
@@ -505,6 +505,13 @@ actor VaultPersistenceCoordinator {
 			var outcomeIndeterminate = false
 			var updatedRules: ProjectEnvSchemaFile.Rules?
 			do {
+				if try !ProjectEnvSchemaFile.requiresSchemaEdit(change, inFolder: folder, vaultID: previous.id) {
+					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
+					case .success(let commit): return .success(commit, nil)
+					case .failure(let error): return .keychainFailure(error)
+					default: return .failure(.changed)
+					}
+				}
 				let rules = try ProjectConfigFile.update(at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), fileWriter: fileWriter, rejectDuplicateKeys: true, beforeWrite: {
 					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
 					case .success(let commit): persisted = commit

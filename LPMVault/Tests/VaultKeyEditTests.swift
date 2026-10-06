@@ -476,7 +476,7 @@ struct VaultKeyDescriptionStoreTests {
 		})
 		guard case .success(let commit, let rules) = result else { Issue.record("Replacement committed; report the durability warning without reverting keys"); return }
 		#expect(commit.warning != nil)
-		#expect(rules.keys.contains("NEW"))
+		#expect(rules?.keys.contains("NEW") == true)
 		#expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == "sk_dev")
 		#expect(keychain.envStorage["project"]?.environments["default"]?[id.key] == nil)
 		#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "project").keys.contains("NEW"))
@@ -755,6 +755,20 @@ struct VaultKeyDescriptionStoreTests {
 			#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: "project").descriptions[id.key] == "Old")
 		}
 		#expect(try String(contentsOfFile: other + "/lpm.json", encoding: .utf8) == otherContents)
+	}
+
+	@Test("unrelated key renames do not require valid schema metadata", arguments: ["missing-folder", "missing-manifest", "unrelated-invalid"])
+	func unrelatedRenamesDoNotRequireSchema(state: String) async throws {
+		let original = #"{"envSchema":{"vars":{"VITE_X":{}}}}"#
+		let (store, keychain, folder) = try await makeStore(original)
+		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+		if state == "missing-folder" { try FileManager.default.removeItem(atPath: folder) }
+		if state == "missing-manifest" { try FileManager.default.removeItem(atPath: folder + "/lpm.json") }
+		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEW" }
+		try await store.saveKeyDraft(id)
+		#expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == "sk_dev")
+		#expect(keychain.envStorage["project"]?.environments["default"]?[id.key] == nil)
+		if state == "unrelated-invalid" { #expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8) == original) }
 	}
 
 	private func makeStore(_ lpmJSON: String) async throws -> (VaultStore, MockKeychainService, String) {
