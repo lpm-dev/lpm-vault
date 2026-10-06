@@ -1212,6 +1212,7 @@ final class VaultStore {
   var selectedProjectId: String? {
     didSet {
       guard oldValue != selectedProjectId else { return }
+      lastSyncWarnings = []
       invalidateLocalStateRefresh()
       cancelExports()
       if let oldValue { cancelLocalEnvImports(projectId: oldValue) }
@@ -1252,6 +1253,7 @@ final class VaultStore {
   var selectedAccount: SelectedAccount = .personal {
     didSet {
       guard oldValue != selectedAccount else { return }
+      lastSyncWarnings = []
       invalidateLocalStateRefresh()
       keyDrafts.discardAll()
       clearKeyDescriptions()
@@ -1261,7 +1263,10 @@ final class VaultStore {
 
   // Sync state
   var isSyncing: Bool = false
-  var lastSyncStatus: String?
+  var lastSyncStatus: String? {
+    didSet { if lastSyncStatus == nil { lastSyncWarnings = [] } }
+  }
+  var lastSyncWarnings: [SyncMetadataWarning] = []
 
   // Sync metadata (persisted across launches)
   var syncMetadata: [String: SyncMetadata] = [:]
@@ -3987,6 +3992,7 @@ final class VaultStore {
   }
 
   func lock() {
+    lastSyncWarnings = []
     unlockFailure = nil
     keyDrafts.discardAll()
     clearKeyDescriptions()
@@ -4376,6 +4382,7 @@ final class VaultStore {
           updateProjectInPlace(commit.project)
           applySyncMetadata(commit.syncMetadata, for: commit.project.id)
           if ownsPresentation {
+            lastSyncWarnings = result?.warnings ?? []
             lastSyncStatus =
               commit.isDirty
               ? "Pushed (v\(pushedVersion)); local changes pending"
@@ -5383,6 +5390,7 @@ final class VaultStore {
     updateProjectInPlace(commit.project)
     applySyncMetadata(commit.syncMetadata, for: commit.project.id)
     if ownsPresentation {
+      lastSyncWarnings = result?.warnings ?? []
       lastSyncStatus =
         commit.isDirty
         ? "Shared with \(orgSlug(for: authority)) (v\(pushedVersion)); local changes pending"

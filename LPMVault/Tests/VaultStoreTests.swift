@@ -3495,6 +3495,24 @@ struct VaultStoreTests {
 		#expect(store.error != nil)
 	}
 
+	@Test("organization push exposes metadata warnings after its durable success")
+	func organizationPushPresentsMetadataWarnings() async throws {
+		let fixture = makeOrgTrustFixture()
+		let projectID = try #require(fixture.store.selectedProjectId)
+		let warning = SyncMetadataWarning(code: "env_metadata_dropped", message: "Values synced. Invalid metadata was not stored.", hint: "Upgrade the client.")
+		fixture.sync.pushResult = SyncService.SyncStatus(vaultId: projectID, version: 1, cryptoVersion: VaultCrypto.currentCryptoVersion, contentKeyVersion: 1, recipientPublicKeyVersion: nil, recipientPublicKeyFingerprint: nil, status: "shared", error: nil, code: nil, serverVersion: nil, hint: nil, encryptedBlob: nil, wrappedKey: nil, updatedAt: nil, principalId: organizationID, callerUserId: "u1", organizationId: organizationID, warnings: [warning])
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+		let approvals = try #require(fixture.store.pendingOrgPush?.pendingApprovals)
+		await fixture.store.approveAndContinueOrgPush(approved: approvals)
+		#expect(fixture.sync.pushCallCount == 1)
+		#expect(fixture.store.lastSyncStatus == "Shared with \(fixture.slug) (v1)")
+		#expect(fixture.store.lastSyncWarnings == [warning])
+		#expect(fixture.store.syncMetadata[projectID]?.isDirty == false)
+		fixture.store.selectedProjectId = nil
+		#expect(fixture.store.lastSyncWarnings.isEmpty)
+		fixture.store.lock()
+	}
+
 	@Test("organization trust read failures stop sharing instead of appearing untrusted")
 	func organizationTrustReadFailureStopsPush() async {
 		let fixture = makeOrgTrustFixture()

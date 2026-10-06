@@ -135,6 +135,7 @@ final class SyncService: @unchecked Sendable {
     let encryptedBlob: String?
     let wrappedKey: String?
     let updatedAt: String?
+    let warnings: [SyncMetadataWarning]
 
     init(
       vaultId: String?,
@@ -160,10 +161,12 @@ final class SyncService: @unchecked Sendable {
       organizationId: String? = nil,
       userId: String? = nil,
       operation: String? = nil,
-      outcome: String? = nil
+      outcome: String? = nil,
+      warnings: [SyncMetadataWarning] = []
 	) {
       self.operation = operation
       self.outcome = outcome
+      self.warnings = warnings
       self.vaultId = vaultId
       self.version = version
       self.cryptoVersion = cryptoVersion
@@ -1041,6 +1044,12 @@ final class SyncService: @unchecked Sendable {
     guard let nonce = Self.requestNonce() else {
       return .completed(.response(nil))
     }
+    var headers = [Self.requestNonceHeader: nonce]
+    if policy == .write {
+      headers["X-LPM-Env-Metadata-Warnings"] = "1"
+      headers["X-LPM-Client-Version"] =
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+    }
     return prepareRequest(
       url: url,
       method: method,
@@ -1058,7 +1067,7 @@ final class SyncService: @unchecked Sendable {
         )
       },
       maximumBytes: Self.maximumVaultResponseBytes,
-      headers: [Self.requestNonceHeader: nonce],
+      headers: headers,
       validateNonSuccess: { _, _ in true }
     )
   }

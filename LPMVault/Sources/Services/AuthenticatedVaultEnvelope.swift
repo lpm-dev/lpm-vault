@@ -49,6 +49,8 @@ enum AuthenticatedVaultEnvelopeParser {
       requestNonce: envelope.requestNonce
     )
 
+    fields.warnings = envelope.warnings
+
     switch (operation, envelope.outcome) {
     case (.pull, "current"):
       let organizationFields = organizationSlug == nil
@@ -480,6 +482,18 @@ enum AuthenticatedVaultEnvelopeParser {
     else {
       throw EnvelopeError.invalid("The authenticated response does not match the request.")
     }
+    if !envelope.warnings.isEmpty {
+      guard envelope.operation == "vault.write", envelope.outcome == "committed",
+        envelope.warnings.count == 1,
+        envelope.warnings.allSatisfy({
+          $0.code == "env_metadata_dropped"
+            && isValidString($0.message, maximumBytes: 1_024)
+            && isValidString($0.hint, maximumBytes: 1_024)
+        })
+      else {
+        throw EnvelopeError.invalid("The authenticated metadata warning is invalid.")
+      }
+    }
     return envelope
   }
 
@@ -677,6 +691,26 @@ enum AuthenticatedVaultEnvelopeParser {
   }
 }
 
+struct SyncMetadataWarning: Decodable, Equatable, Sendable {
+  let code: String
+  let message: String
+  let hint: String
+
+  init(code: String, message: String, hint: String) {
+    self.code = code
+    self.message = message
+    self.hint = hint
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+    try container.requireExactKeys(["code", "message", "hint"])
+    code = try container.decode(String.self, forKey: "code")
+    message = try container.decode(String.self, forKey: "message")
+    hint = try container.decode(String.self, forKey: "hint")
+  }
+}
+
 private struct WireEnvelope: Decodable {
   let envelopeVersion: Int
   let operation: String
@@ -684,18 +718,21 @@ private struct WireEnvelope: Decodable {
   let requestNonce: String
   let binding: WireBinding
   let data: [String: LPMJSONValue]
+  let warnings: [SyncMetadataWarning]
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: DynamicCodingKey.self)
     try container.requireExactKeys([
       "envelopeVersion", "operation", "outcome", "requestNonce", "binding", "data",
-    ])
+    ], optional: ["warnings"])
     envelopeVersion = try container.decode(Int.self, forKey: "envelopeVersion")
     operation = try container.decode(String.self, forKey: "operation")
     outcome = try container.decode(String.self, forKey: "outcome")
     requestNonce = try container.decode(String.self, forKey: "requestNonce")
     binding = try container.decode(WireBinding.self, forKey: "binding")
     data = try container.decode([String: LPMJSONValue].self, forKey: "data")
+    warnings = container.contains(DynamicCodingKey(stringValue: "warnings"))
+      ? try container.decode([SyncMetadataWarning].self, forKey: "warnings") : []
   }
 }
 
@@ -778,6 +815,7 @@ private struct SyncFields {
   var encryptedBlob: String?
   var wrappedKey: String?
   var updatedAt: String?
+  var warnings: [SyncMetadataWarning] = []
 
   init(
     vaultID: String,
@@ -827,7 +865,8 @@ private struct SyncFields {
       callerUserId: callerUserID,
       organizationId: organizationID,
       operation: operation,
-      outcome: outcome
+      outcome: outcome,
+      warnings: warnings
     )
   }
 }
