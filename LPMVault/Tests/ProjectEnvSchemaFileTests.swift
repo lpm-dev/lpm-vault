@@ -570,6 +570,24 @@ struct ProjectEnvSchemaFileTests {
 		#expect(wire["envConfig"]?["staging"]?["canonical"] == .string("staging"))
 	}
 
+    @Test("sync omits nonobject definitions and control characters in environment file paths")
+    func syncOmitsMalformedEnvironmentDefinitionsAndPaths() throws {
+        let root: [String: LPMJSONValue] = [
+            "environments": .object([
+                "null": .null, "number": .integer(1), "flag": .bool(true), "array": .array([]),
+                "bad": .string("config/bad\n.env"),
+                "structured": .object(["file": .string("config/bad\u{85}.env")]),
+                "good": .string("config/good.env")
+            ]),
+            "env": .object(["bad": .string("config/bad\u{7f}.env"), "good": .string("config/good.env")])
+        ]
+        guard case .object(let wire) = ProjectEnvSchemaFile.pushMetadata(from: root),
+              case .object(let environments)? = wire["environments"],
+              case .object(let aliases)? = wire["envConfig"] else { Issue.record("Missing metadata"); return }
+        #expect(Set(environments.keys) == ["good"])
+        #expect(Set(aliases.keys) == ["good"])
+    }
+
     @Test("sync omits invalid environment definitions and parents while retaining file shorthand")
     func syncOmitsInvalidEnvironmentDefinitions() throws {
         let root: [String: LPMJSONValue] = ["environments": .object([

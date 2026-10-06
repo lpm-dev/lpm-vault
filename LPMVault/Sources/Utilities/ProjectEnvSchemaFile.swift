@@ -530,6 +530,14 @@ enum ProjectEnvSchemaFile {
       if case .object(let environments) = root["environments"] {
         schema["environments"] = .object(environments.filter { name, definition in
           guard EnvValidation.isValidEnvironmentName(name) else { return false }
+          switch definition {
+          case .string(let path): return isPortableEnvironmentPath(path)
+          case .object(let fields):
+            if let file = fields["file"], file != .null {
+              guard case .string(let path) = file, isPortableEnvironmentPath(path) else { return false }
+            }
+          default: return false
+          }
           if case .object(let fields) = definition, let parent = fields["extends"], parent != .null {
             guard case .string(let name) = parent else { return false }
             return EnvValidation.isValidEnvironmentName(name)
@@ -546,7 +554,7 @@ enum ProjectEnvSchemaFile {
 				declared = [:]
 			}
         for (alias, value) in env {
-          guard case .string(let envPath) = value else { continue }
+          guard case .string(let envPath) = value, isPortableEnvironmentPath(envPath) else { continue }
 				let canonical =
 					declared[alias] != nil
 					? alias
@@ -561,6 +569,10 @@ enum ProjectEnvSchemaFile {
       }
       return .object(schema)
 	}
+
+    private static func isPortableEnvironmentPath(_ path: String) -> Bool {
+        !path.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+    }
 
 	private static func syncValue(_ value: LPMConfigJSON) throws(FileError) -> LPMJSONValue {
 		switch value {
