@@ -528,7 +528,14 @@ enum ProjectEnvSchemaFile {
         if !policy.isEmpty { schema["envSchemaConfig"] = .object(policy) }
       }
       if case .object(let environments) = root["environments"] {
-        schema["environments"] = .object(environments)
+        schema["environments"] = .object(environments.filter { name, definition in
+          guard EnvValidation.isValidEnvironmentName(name) else { return false }
+          if case .object(let fields) = definition, let parent = fields["extends"], parent != .null {
+            guard case .string(let name) = parent else { return false }
+            return EnvValidation.isValidEnvironmentName(name)
+          }
+          return true
+        })
       }
       if case .object(let env) = root["env"] {
         var envConfig: [String: LPMJSONValue] = [:]

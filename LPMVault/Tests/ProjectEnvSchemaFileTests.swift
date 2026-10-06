@@ -570,4 +570,20 @@ struct ProjectEnvSchemaFileTests {
 		#expect(wire["envConfig"]?["staging"]?["canonical"] == .string("staging"))
 	}
 
+    @Test("sync omits invalid environment definitions and parents while retaining file shorthand")
+    func syncOmitsInvalidEnvironmentDefinitions() throws {
+        let root: [String: LPMJSONValue] = ["environments": .object([
+            "test:unit": .string(".env.test"),
+            "unit": .object(["file": .string("config/unit.env")]),
+            "bad": .object(["extends": .string("test:unit")]),
+            "base": .string(".env")
+        ])]
+        guard case .object(let metadata) = ProjectEnvSchemaFile.pushMetadata(from: root),
+              case .object(let environments)? = metadata["environments"] else { Issue.record("Expected environments"); return }
+        #expect(environments["test:unit"] == nil)
+        #expect(environments["bad"] == nil)
+        #expect(environments["unit"] == .object(["file": .string("config/unit.env")]))
+        #expect(environments["base"] == .string(".env"))
+    }
+
 }
