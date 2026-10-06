@@ -771,6 +771,19 @@ struct VaultKeyDescriptionStoreTests {
 		if state == "unrelated-invalid" { #expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8) == original) }
 	}
 
+    @Test("irrelevant rename rolls back if a declaration is added during persistence")
+    func irrelevantRenameChecksManifestFreshness() async throws {
+        let (store, keychain, folder) = try await makeStore(#"{"envSchema":{"vars":{}}}"#)
+        defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+        keychain.blockNextSaveEnvironments = {
+            try! #"{"envSchema":{"vars":{"STRIPE_KEY":{"required":true}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+        }
+        store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEW" }
+        do { try await store.saveKeyDraft(id); Issue.record("Stale admission must fail") } catch {}
+        #expect(keychain.envStorage["project"]?.environments["default"]?[id.key] == "sk_dev")
+        #expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == nil)
+    }
+
 	private func makeStore(_ lpmJSON: String) async throws -> (VaultStore, MockKeychainService, String) {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-descriptions-\(UUID().uuidString)").path
 		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)

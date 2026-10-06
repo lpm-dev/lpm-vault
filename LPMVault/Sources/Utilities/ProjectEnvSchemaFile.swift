@@ -123,19 +123,15 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
-	static func requiresSchemaEdit(_ change: Change, inFolder folder: String, vaultID: String) throws(FileError) -> Bool {
-		if change.description != nil { return true }
-		let folderURL: URL
-		do { folderURL = try existingFolder(folder) } catch .noFolder { return false }
-		guard let data = try read(folderURL.appendingPathComponent("lpm.json")) else { return false }
-		let document = try parse(data)
-		try checkVault(of: document, is: vaultID)
-		guard let schema = document["envSchema"], schema != .null else { return false }
-		guard case .object = schema else { throw .invalidSchema }
-		guard let rename = change.rename else { return false }
-		if let vars = schema["vars"], case .object = vars {} else if schema["vars"] != nil { throw .invalidSchema }
-		return schema["vars"]?[rename.from] != nil || schema["vars"]?[rename.to] != nil
-	}
+	static func requiresSchemaEdit(_ change: Change, in document: LPMConfigJSON, vaultID: String) throws(FileError) -> Bool {
+        if change.description != nil { return true }
+        try checkVault(of: document, is: vaultID)
+        guard let schema = document["envSchema"], schema != .null else { return false }
+        guard case .object = schema else { throw .invalidSchema }
+        guard let rename = change.rename else { return false }
+        if let vars = schema["vars"], case .object = vars {} else if schema["vars"] != nil { throw .invalidSchema }
+        return schema["vars"]?[rename.from] != nil || schema["vars"]?[rename.to] != nil
+    }
 
 	static func validatedRename(_ change: Change, in document: LPMConfigJSON, vaultID: String) throws(FileError) -> (LPMConfigJSON, Rules) {
 		try checkVault(of: document, is: vaultID)
@@ -175,7 +171,7 @@ enum ProjectEnvSchemaFile {
 			} else {
 				rule.set(.string(description.text), forKey: "description")
 			}
-			try classify(&rule, name: description.key, schema: schema)
+			if vars[description.key] == nil { try classify(&rule, name: description.key, schema: schema) }
 			if rule.isEmptyObject {
 				vars.removeValue(forKey: description.key)
 			} else {

@@ -6,6 +6,13 @@ import Testing
 
 @Suite("lpm.json documents")
 struct LPMConfigJSONTests {
+    @Test("description edits preserve explicit private classification")
+    func descriptionPreservesPrivateClassification() throws {
+        let document = try LPMConfigJSON(parsing: Data(#"{"envSchema":{"vars":{"A":{"client":false,"description":"Old"}}}}"#.utf8))
+        let edited = try ProjectEnvSchemaFile.applying(.init(description:.init(key:"A",text:"New")), to:document)
+        #expect(edited["envSchema"]?["vars"]?["A"]?["client"] == .bool(false))
+    }
+
 	private func fixture(_ name: String) throws -> Data {
 		try Data(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "Fixtures/\(name)"))
 	}

@@ -505,14 +505,15 @@ actor VaultPersistenceCoordinator {
 			var outcomeIndeterminate = false
 			var updatedRules: ProjectEnvSchemaFile.Rules?
 			do {
-				if try !ProjectEnvSchemaFile.requiresSchemaEdit(change, inFolder: folder, vaultID: previous.id) {
+				var isDirectory: ObjCBool = false
+                if !FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory) || !isDirectory.boolValue {
 					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
 					case .success(let commit): return .success(commit, nil)
 					case .failure(let error): return .keychainFailure(error)
 					default: return .failure(.changed)
 					}
 				}
-				let rules = try ProjectConfigFile.update(at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), fileWriter: fileWriter, rejectDuplicateKeys: true, beforeWrite: {
+				let rules: ProjectEnvSchemaFile.Rules? = try ProjectConfigFile.update(at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), fileWriter: fileWriter, rejectDuplicateKeys: true, beforeWrite: {
 					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
 					case .success(let commit): persisted = commit
 					case .failure(let error):
@@ -524,6 +525,7 @@ actor VaultPersistenceCoordinator {
 					let restore: VaultKeychainMutation = metadata.data.map { .write(account: metadata.account, data: $0) } ?? .delete(account: metadata.account)
 					rollbackFailed = !self.service.applyVaultTransaction(project: .upsert(previous), data: [restore]).succeeded
 				}) { document in
+                    guard try ProjectEnvSchemaFile.requiresSchemaEdit(change, in: document, vaultID: previous.id) else { return nil }
 					let (updated, rules) = try ProjectEnvSchemaFile.validatedRename(change, in: document, vaultID: previous.id)
 					document = updated
 					updatedRules = rules
