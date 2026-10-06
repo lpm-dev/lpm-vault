@@ -343,6 +343,29 @@ struct EnvSchemaCompositionTests {
 	}
 
 	@Test("preset renames identify the read-only declaration and a usable recovery")
+	func overriddenPresetRenamesIdentifyThePresetDeclaration() throws {
+		let root = try folder(#"{"extends":["preset:node"],"overrides":{"NODE_ENV":{"description":"local"}}}"#, fragment: #"{}"#)
+		defer { try? FileManager.default.removeItem(at: root) }
+		do {
+			_ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: "NODE_ENV", to: "MODE")), inFolder: root.path, vaultID: "project")
+			Issue.record("Preset rename must reject")
+		} catch { #expect(error.localizedDescription.contains("preset:node")) }
+	}
+
+	@Test("inherited collision diagnostics report the declaring fragment despite root overrides")
+	func overriddenTargetCollisionsIdentifyTheDeclaringFragment() throws {
+		let root = try folder(#"{"extends":["base.json"],"vars":{"LOCAL":{}},"overrides":{"INHERITED":{"description":"local"}}}"#, fragment: #"{"vars":{"INHERITED":{}}}"#)
+		defer { try? FileManager.default.removeItem(at: root) }
+		do {
+			_ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: "LOCAL", to: "INHERITED")), inFolder: root.path, vaultID: "project")
+			Issue.record("Collision must reject")
+		} catch {
+			#expect(error.localizedDescription.contains("base.json"))
+			#expect(!error.localizedDescription.contains("lpm.json"))
+		}
+	}
+
+	@Test("preset renames identify the read-only declaration and a usable recovery")
 	func presetRenamesExplainReadOnlyDeclaration() throws {
 		let root = try folder(#"{"extends":["preset:node"]}"#, fragment: #"{}"#)
 		defer { try? FileManager.default.removeItem(at: root) }
