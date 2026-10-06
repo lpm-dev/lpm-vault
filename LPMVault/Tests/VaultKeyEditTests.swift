@@ -278,7 +278,8 @@ struct VaultKeyDescriptionStoreTests {
 		let (store, keychain, folder) = try await makeStore(original)
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEXT_PUBLIC_TOKEN" }
-		await #expect(throws: VaultKeyEditError.description(ProjectEnvSchemaFile.FileError.invalidSchema.localizedDescription, keySaved: false)) { try await store.saveKeyDraft(id) }
+		let error: ProjectEnvSchemaFile.FileError = targetDeclared ? .invalidSchema : .secretPublicPrefix("NEXT_PUBLIC_")
+		await #expect(throws: VaultKeyEditError.description(error.localizedDescription, keySaved: false)) { try await store.saveKeyDraft(id) }
 		#expect(keychain.applyVaultTransactionCallCount == 0)
 		#expect(keychain.envStorage["project"]?.environments == environments)
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8) == original)
