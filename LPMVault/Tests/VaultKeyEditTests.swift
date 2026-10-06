@@ -757,9 +757,9 @@ struct VaultKeyDescriptionStoreTests {
 		#expect(try String(contentsOfFile: other + "/lpm.json", encoding: .utf8) == otherContents)
 	}
 
-	@Test("unrelated key renames do not require valid schema metadata", arguments: ["missing-folder", "missing-manifest", "unrelated-invalid"])
+	@Test("unrelated key renames do not require valid schema metadata", arguments: ["missing-folder", "missing-manifest", "unrelated-invalid", "duplicate-json", "other-project"])
 	func unrelatedRenamesDoNotRequireSchema(state: String) async throws {
-		let original = #"{"envSchema":{"vars":{"VITE_X":{}}}}"#
+		let original = state == "duplicate-json" ? #"{"envSchema":{"vars":{"VITE_X":{}}},"tasks":{"x":1,"x":2}}"# : state == "other-project" ? #"{"vault":"another-project","envSchema":{"vars":{}}}"# : #"{"envSchema":{"vars":{"VITE_X":{}}}}"#
 		let (store, keychain, folder) = try await makeStore(original)
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		if state == "missing-folder" { try FileManager.default.removeItem(atPath: folder) }
@@ -768,7 +768,7 @@ struct VaultKeyDescriptionStoreTests {
 		try await store.saveKeyDraft(id)
 		#expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == "sk_dev")
 		#expect(keychain.envStorage["project"]?.environments["default"]?[id.key] == nil)
-		if state == "unrelated-invalid" { #expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8) == original) }
+		if !["missing-folder", "missing-manifest"].contains(state) { #expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8) == original) }
 	}
 
     @Test("irrelevant rename rolls back if a declaration is added during persistence")

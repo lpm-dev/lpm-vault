@@ -110,6 +110,7 @@ enum ProjectConfigFile {
 		at url: URL,
 		fileWriter: FileWriter = writeSecurely,
 		rejectDuplicateKeys: Bool = false,
+		requiresUniqueKeys: ((LPMConfigJSON) throws -> Bool)? = nil,
 		beforeWrite: (() throws -> Void)? = nil,
 		onWriteFailure: (() throws -> Void)? = nil,
 		_ change: (inout LPMConfigJSON) throws -> T
@@ -127,6 +128,9 @@ enum ProjectConfigFile {
 					let parsed = try LPMConfigJSON(parsing: original, rejectDuplicateKeys: rejectDuplicateKeys)
 					guard case .object = parsed else { throw FileError.invalidJSON }
 					document = parsed
+					if let requiresUniqueKeys, try requiresUniqueKeys(document) {
+						_ = try LPMConfigJSON(parsing: original, rejectDuplicateKeys: true)
+					}
 				} catch LPMConfigJSON.ParseError.duplicateKey {
 					throw FileError.duplicateJSONKey
 				} catch {

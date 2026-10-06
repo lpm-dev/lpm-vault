@@ -356,6 +356,18 @@ struct ProjectEnvSchemaFileTests {
 		#expect(document["envSchema"]?["vars"]?[key]?["client"] == .bool(true))
 	}
 
+	@Test("secret rename errors identify the public prefix", arguments: ["VITE_TOKEN", "APP_TOKEN", "react_app_token"])
+	func secretRenameIdentifiesPublicPrefix(target: String) throws {
+		let document = try LPMConfigJSON(parsing: Data(#"{"envSchema":{"clientPrefixes":["APP_"],"vars":{"TOKEN":{"secret":true}}}}"#.utf8))
+		do {
+			_ = try ProjectEnvSchemaFile.applying(.init(rename: .init(from: "TOKEN", to: target)), to: document)
+			Issue.record("Expected secret rename rejection")
+		} catch {
+			#expect(error.localizedDescription.contains("Secret"))
+			#expect(error.localizedDescription.contains(target == "APP_TOKEN" ? "APP_" : target == "VITE_TOKEN" ? "VITE_" : "REACT_APP_"))
+		}
+	}
+
 	@Test("renames reclassify public rules", arguments: [false, true])
 	func renamesReclassifyPublicRules(fromPublic: Bool) throws {
 		let old = fromPublic ? "APP_API" : "API"

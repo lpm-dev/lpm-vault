@@ -41,6 +41,7 @@ enum ProjectEnvSchemaFile {
 		case invalidJSON
 		case duplicateJSONKey
 		case invalidSchema
+		case secretPublicPrefix(String)
 		case readFailed
 		case changed
 		case writeFailed(String)
@@ -66,6 +67,7 @@ enum ProjectEnvSchemaFile {
 			case .invalidJSON: "lpm.json is not valid JSON."
 			case .duplicateJSONKey: "lpm.json contains duplicate object keys. Remove the duplicate declaration."
 			case .invalidSchema: "lpm.json has an invalid envSchema declaration."
+			case .secretPublicPrefix(let prefix): "Secret keys cannot use the public prefix \(prefix). Rename the key with a private name."
 			case .readFailed: "Could not read lpm.json."
 			case .changed: "lpm.json changed while it was being saved. Save again."
 			case .writeFailed(let reason): "Could not write lpm.json. \(reason)"
@@ -125,7 +127,6 @@ enum ProjectEnvSchemaFile {
 
 	static func requiresSchemaEdit(_ change: Change, in document: LPMConfigJSON, vaultID: String) throws(FileError) -> Bool {
         if change.description != nil { return true }
-        try checkVault(of: document, is: vaultID)
         guard let schema = document["envSchema"], schema != .null else { return false }
         guard case .object = schema else { throw .invalidSchema }
         guard let rename = change.rename else { return false }
@@ -194,16 +195,18 @@ enum ProjectEnvSchemaFile {
 		return updated
 	}
 
-	private static func isPublic(_ name: String, schema: LPMConfigJSON) -> Bool {
+	private static func publicPrefix(_ name: String, schema: LPMConfigJSON) -> String? {
 		let cra = name.utf8.prefix(10).elementsEqual("REACT_APP_".utf8, by: { ($0 >= 97 && $0 <= 122 ? $0 - 32 : $0) == $1 })
-		if cra || ["NEXT_PUBLIC_", "VITE_", "PUBLIC_", "EXPO_PUBLIC_", "GATSBY_", "NUXT_PUBLIC_"].contains(where: name.hasPrefix) { return true }
-		guard case .array(let prefixes)? = schema["clientPrefixes"] else { return false }
-		return prefixes.contains { if case .string(let prefix) = $0 { return name.hasPrefix(prefix) }; return false }
+		if cra { return "REACT_APP_" }
+		if let prefix = ["NEXT_PUBLIC_", "VITE_", "PUBLIC_", "EXPO_PUBLIC_", "GATSBY_", "NUXT_PUBLIC_"].first(where: name.hasPrefix) { return prefix }
+		guard case .array(let prefixes)? = schema["clientPrefixes"] else { return nil }
+		for value in prefixes { if case .string(let prefix) = value, name.hasPrefix(prefix) { return prefix } }
+		return nil
 	}
 
 	private static func classify(_ rule: inout LPMConfigJSON, name: String, schema: LPMConfigJSON) throws(FileError) {
-		if isPublic(name, schema: schema) {
-			guard rule["secret"] != .bool(true) else { throw .invalidSchema }
+		if let prefix = publicPrefix(name, schema: schema) {
+			guard rule["secret"] != .bool(true) else { throw .secretPublicPrefix(prefix) }
 			rule.set(.bool(true), forKey: "client")
 		} else { rule.removeValue(forKey: "client") }
 	}

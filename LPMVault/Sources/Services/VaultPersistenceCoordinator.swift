@@ -514,7 +514,9 @@ actor VaultPersistenceCoordinator {
 					default: return .failure(.changed)
 					}
 				}
-				let rules: ProjectEnvSchemaFile.Rules? = try ProjectConfigFile.update(at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), fileWriter: fileWriter, rejectDuplicateKeys: true, beforeWrite: {
+				let rules: ProjectEnvSchemaFile.Rules? = try ProjectConfigFile.update(at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), fileWriter: fileWriter, requiresUniqueKeys: { document in
+					try ProjectEnvSchemaFile.requiresSchemaEdit(change, in: document, vaultID: previous.id)
+				}, beforeWrite: {
 					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
 					case .success(let commit): persisted = commit
 					case .failure(let error):
