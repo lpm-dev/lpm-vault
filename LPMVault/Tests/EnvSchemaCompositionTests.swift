@@ -6,7 +6,7 @@ import os
 
 @Suite("Composed env schema", .serialized)
 struct EnvSchemaCompositionTests {
-    @Test("installed package fragments refuse edits and explain root overrides", arguments: ["node_modules", "NODE_MODULES"])
+    @Test("installed package fragments refuse edits and explain root overrides", arguments: ["node_modules", "NODE_MODULES", "node_moduleſ"])
     func installedFragmentsAreReadOnly(component: String) throws {
         let root = try folder("{\"extends\":[\"\(component)/acme/base.json\"]}", fragment:"{}")
         defer { try? FileManager.default.removeItem(at:root) }
@@ -342,6 +342,22 @@ struct EnvSchemaCompositionTests {
 		#expect(try Data(contentsOf: root.appendingPathComponent("lpm.json")) == original)
 	}
 
+	@Test("preset renames identify the read-only declaration and a usable recovery")
+	func presetRenamesExplainReadOnlyDeclaration() throws {
+		let root = try folder(#"{"extends":["preset:node"]}"#, fragment: #"{}"#)
+		defer { try? FileManager.default.removeItem(at: root) }
+		let original = try Data(contentsOf: root.appendingPathComponent("lpm.json"))
+		do {
+			_ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: "NODE_ENV", to: "MODE")), inFolder: root.path, vaultID: "project")
+			Issue.record("Preset rename must reject")
+		} catch {
+			#expect(error.localizedDescription.contains("preset:node"))
+			#expect(error.localizedDescription.contains("separate local key"))
+			#expect(!error.localizedDescription.contains("declaring file"))
+		}
+		#expect(try Data(contentsOf: root.appendingPathComponent("lpm.json")) == original)
+	}
+
 	@Test("renames rewrite conditions and members in authored overrides")
 	func renamesRewriteOverrideReferences() throws {
 		let root = try folder(#"{"extends":["base.json"],"vars":{"OLD":{}},"overrides":{"TARGET":{"requiredWhen":{"variable":"OLD","present":true}}},"groupOverrides":{"pair":{"mode":"allOrNone","vars":["OLD","TARGET"]}}}"#, fragment: #"{"vars":{"TARGET":{}},"groups":{"pair":{"mode":"allOrNone","vars":["TARGET"]}}}"#)
@@ -375,8 +391,18 @@ struct EnvSchemaCompositionTests {
 		let root = try folder(schema, fragment: #"{"vars":{"INHERITED":{}}}"#)
 		defer { try? FileManager.default.removeItem(at: root) }
 		let original = try Data(contentsOf: root.appendingPathComponent("lpm.json"))
-		#expect(throws: from == "INHERITED" ? ProjectEnvSchemaFile.FileError.inheritedRename(schema.contains("overrides") ? "lpm.json" : "base.json") : .invalidSchema) {
-			try ProjectEnvSchemaFile.apply(.init(rename: .init(from: from, to: to)), inFolder: root.path, vaultID: "project")
+		do {
+			_ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: from, to: to)), inFolder: root.path, vaultID: "project")
+			Issue.record("Inherited declarations and target collisions must reject")
+		} catch {
+			let message = error.localizedDescription
+			if schema.contains("overrides") {
+				#expect(message.contains("imported schema"))
+				#expect(message.contains("root override"))
+			} else if from == "LOCAL" {
+				#expect(message.contains("target key INHERITED"))
+				#expect(message.contains("base.json"))
+			} else { #expect(message.contains("base.json")) }
 		}
 		#expect(try Data(contentsOf: root.appendingPathComponent("lpm.json")) == original)
 	}

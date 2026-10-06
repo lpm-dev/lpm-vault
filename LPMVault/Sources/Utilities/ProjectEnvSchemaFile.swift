@@ -51,6 +51,9 @@ enum ProjectEnvSchemaFile {
 		case multipleSourceEdit
 		case readOnlyInstalled(String)
 		case inheritedRename(String)
+		case overriddenRename
+		case presetRename(String)
+		case renameCollision(String, String)
 		case fragmentReference(String)
 
 		init(_ error: ProjectConfigFile.FileError) {
@@ -82,6 +85,9 @@ enum ProjectEnvSchemaFile {
             case .readOnlyPreset: "Preset declarations are read-only. Add a root envSchema.overrides entry."
 			case .readOnlyInstalled(let source): "Installed schema \(source) is read-only. Add a root envSchema.overrides entry."
 			case .inheritedRename(let source): "This key is declared in \(source). Rename it in the declaring file."
+			case .overriddenRename: "This key is inherited and overridden in lpm.json. Rename its declaration in the imported schema, then update or remove the root override."
+			case .presetRename(let source): "Keys from \(source) cannot be renamed. Declare a separate local key and update its uses."
+			case .renameCollision(let key, let source): "The target key \(key) is declared in \(source). Choose a different key name."
 			case .fragmentReference(let source): "This key is referenced in \(source). Update that declaration before a rename."
 			case .multipleSourceEdit: "This rename and description change multiple schema files. Save the rename and description separately."
 			}
@@ -154,7 +160,7 @@ enum ProjectEnvSchemaFile {
 			if let description = change.description, let origin = original.origins[description.key],
 				origin.source != "lpm.json" {
 				guard !origin.source.hasPrefix("preset:") else { throw FileError.readOnlyPreset }
-				guard !origin.source.split(separator: "/").contains(where: { $0.lowercased() == "node_modules" }) else { throw FileError.readOnlyInstalled(origin.source) }
+				guard !origin.source.split(separator: "/").contains(where: { $0.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX")) == "node_modules" }) else { throw FileError.readOnlyInstalled(origin.source) }
 				if let rename = change.rename {
 					let (renamed, _, _) = try validatedChange(.init(rename: rename), in: root, vaultID: vaultID, folder: url.deletingLastPathComponent().path, strictRename: strictRename)
 					guard renamed == root else { throw FileError.multipleSourceEdit }
@@ -226,7 +232,13 @@ enum ProjectEnvSchemaFile {
 		if let rename = change.rename, rename.from != rename.to {
 			let source = document["envSchema"]
 			if original.effective["vars"]?[rename.from] != nil {
-				if source?["vars"]?[rename.from] == nil, let origin = original.origins[rename.from] { throw .inheritedRename(origin.source) }
+				if source?["vars"]?[rename.from] == nil, let origin = original.origins[rename.from] {
+					if source?["overrides"]?[rename.from] != nil { throw .overriddenRename }
+					if origin.source.hasPrefix("preset:") { throw .presetRename(origin.source) }
+					throw .inheritedRename(origin.source)
+				}
+				if original.effective["vars"]?[rename.to] != nil, source?["vars"]?[rename.to] == nil,
+					let origin = original.origins[rename.to] { throw .renameCollision(rename.to, origin.source) }
 				if case .object(let vars)? = original.effective["vars"] {
 					for member in vars where member.value["requiredWhen"]?["variable"] == .string(rename.from) {
 						if let origin = original.origins[member.key], origin.source != "lpm.json" { throw .fragmentReference(origin.source) }
