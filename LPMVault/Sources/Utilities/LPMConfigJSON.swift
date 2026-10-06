@@ -72,6 +72,42 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 		return Data(output.text.utf8)
 	}
 
+	/// Changes one object member without rewriting unrelated source bytes.
+	static func editingMember(in data: Data, path: [String], key: String, value: LPMConfigJSON?, maximumBytes: Int) throws -> Data {
+		var parser = Parser(bytes: Array(data), rejectDuplicateKeys: true)
+		_ = try parser.document()
+		parser.index = data.starts(with: [0xEF, 0xBB, 0xBF]) ? 3 : 0
+		let object = try parser.memberLocations(at: path[...])
+		let replacement = try value?.compactData(maximumBytes: maximumBytes) ?? Data()
+		var result = data
+		if let position = object.members.firstIndex(where: { $0.key.utf8.elementsEqual(key.utf8) }) {
+			let member = object.members[position]
+			if value != nil { result.replaceSubrange(member.value, with: replacement) }
+			else {
+				let range: Range<Int>
+				if position + 1 < object.members.count { range = member.start..<object.members[position + 1].start }
+				else if position > 0 { range = object.members[position - 1].value.upperBound..<member.value.upperBound }
+				else { range = member.start..<member.value.upperBound }
+				result.removeSubrange(range)
+			}
+		} else if value != nil {
+			var insertion = Data()
+			let offset: Int
+			if let last = object.members.last {
+				offset = last.value.upperBound
+				insertion.append(UInt8(ascii: ","))
+				let prefix = data[object.start + 1..<object.members[0].start]
+				insertion.append(contentsOf: prefix.isEmpty ? Data(" ".utf8) : Data(prefix))
+			} else { offset = object.start + 1 }
+			insertion.append(try LPMConfigJSON.string(key).compactData(maximumBytes: maximumBytes))
+			insertion.append(contentsOf: Data(": ".utf8))
+			insertion.append(replacement)
+			result.insert(contentsOf: insertion, at: offset)
+		}
+		guard result.count <= maximumBytes else { throw RenderError.tooLarge }
+		return result
+	}
+
 	private struct Output {
 		var text = ""
 		var byteCount = 0
@@ -212,6 +248,38 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 			skipWhitespace()
 			guard index == bytes.count else { throw .invalid(offset: index) }
 			return value
+		}
+
+		struct MemberLocation {
+			let key: String
+			let start: Int
+			let value: Range<Int>
+		}
+
+		mutating func memberLocations(at path: ArraySlice<String>) throws(ParseError) -> (start: Int, members: [MemberLocation]) {
+			skipWhitespace()
+			let start = index
+			try expect(UInt8(ascii: "{"))
+			var members: [MemberLocation] = []
+			skipWhitespace()
+			if peek(UInt8(ascii: "}")), path.isEmpty { return (start, members) }
+			while index < bytes.count {
+				skipWhitespace()
+				let memberStart = index
+				guard peek(UInt8(ascii: "\"")) else { throw .invalid(offset: index) }
+				let key = try string()
+				skipWhitespace(); try expect(UInt8(ascii: ":")); skipWhitespace()
+				if let component = path.first, key.utf8.elementsEqual(component.utf8) { return try memberLocations(at: path.dropFirst()) }
+				let valueStart = index
+				_ = try value()
+				members.append(MemberLocation(key: key, start: memberStart, value: valueStart..<index))
+				skipWhitespace()
+				if peek(UInt8(ascii: ",")) { index += 1; continue }
+				try expect(UInt8(ascii: "}"))
+				guard path.isEmpty else { throw .invalid(offset: index) }
+				return (start, members)
+			}
+			throw .invalid(offset: index)
 		}
 
 		private mutating func value() throws(ParseError) -> LPMConfigJSON {

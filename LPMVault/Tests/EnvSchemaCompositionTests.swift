@@ -6,6 +6,95 @@ import os
 
 @Suite("Composed env schema", .serialized)
 struct EnvSchemaCompositionTests {
+    @Test("installed package fragments refuse edits and explain root overrides", arguments: ["node_modules", "NODE_MODULES"])
+    func installedFragmentsAreReadOnly(component: String) throws {
+        let root = try folder("{\"extends\":[\"\(component)/acme/base.json\"]}", fragment:"{}")
+        defer { try? FileManager.default.removeItem(at:root) }
+        let source = root.appendingPathComponent("\(component)/acme/base.json")
+        try FileManager.default.createDirectory(at:source.deletingLastPathComponent(),withIntermediateDirectories:true)
+        let bytes = Data(#"{"vars":{"A":{"description":"Old"}}}"#.utf8)
+        try bytes.write(to:source)
+        do {
+            _ = try ProjectEnvSchemaFile.apply(.init(description:.init(key:"A",text:"New")),inFolder:root.path,vaultID:"project")
+            Issue.record("Installed fragment must reject edits")
+        } catch { #expect(error.localizedDescription.contains("overrides")) }
+        #expect(try Data(contentsOf:source) == bytes)
+        #expect(!FileManager.default.fileExists(atPath:source.deletingLastPathComponent().appendingPathComponent(".lpm").path))
+    }
+
+    @Test("fragment description edits preserve BOM indentation and escaped slash bytes")
+    func fragmentDescriptionPreservesAuthoredBytes() throws {
+        let text = "\u{FEFF}{\n    \"vars\": {\n        \"A\": {\n            \"description\": \"Old\",\n            \"default\": \"https:\\/\\/host\"\n        }\n    }\n}\n"
+        let root = try folder(#"{"extends":["base.json"]}"#,fragment:text)
+        defer { try? FileManager.default.removeItem(at:root) }
+        _ = try ProjectEnvSchemaFile.apply(.init(description:.init(key:"A",text:"New")),inFolder:root.path,vaultID:"project")
+        #expect(try Data(contentsOf:root.appendingPathComponent("base.json")) == Data(text.replacingOccurrences(of:"Old",with:"New").utf8))
+    }
+
+    @Test("fragment description insertion and removal preserve authored bytes", arguments: [#"{"default":"https:\/\/host"}"#, #"{}"#, #"{"description":"Old","default":"https:\/\/host"}"#, #"{"default":"https:\/\/host","description":"Old"}"#])
+    func descriptionInsertionAndRemovalPreserveOtherTokens(rule: String) throws {
+        let text = "\u{FEFF}{\n    \"vars\": {\n        \"A\": " + rule + "\n    }\n}\n"
+        let root = try folder(#"{"extends":["base.json"]}"#, fragment: text)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("base.json")
+        for description in ["New \"quoted\" é", ""] {
+            _ = try ProjectEnvSchemaFile.apply(.init(description: .init(key: "A", text: description)), inFolder: root.path, vaultID: "project")
+            let bytes = try Data(contentsOf: source)
+            #expect(bytes.starts(with: [0xEF, 0xBB, 0xBF]))
+            let value = try LPMConfigJSON(parsing: bytes)
+            #expect(value["vars"]?["A"]?["description"] == (description.isEmpty ? nil : .string(description)))
+            let authored = try String(contentsOf: source, encoding: .utf8)
+            #expect(authored.contains("\n    \"vars\": {\n        \"A\":"))
+            if rule.contains("default") { #expect(authored.contains(#"https:\/\/host"#)) }
+        }
+    }
+
+    @Test("authored fragment directories do not receive project locks")
+    func fragmentDirectoriesStayFreeOfProjectLocks() throws {
+        let root = try folder(#"{"extends":["schemas/base.json"]}"#,fragment:"{}")
+        defer { try? FileManager.default.removeItem(at:root) }
+        let directory = root.appendingPathComponent("schemas")
+        try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+        try #"{"vars":{"A":{}}}"#.write(to:directory.appendingPathComponent("base.json"),atomically:true,encoding:.utf8)
+        _ = try ProjectEnvSchemaFile.apply(.init(description:.init(key:"A",text:"New")),inFolder:root.path,vaultID:"project")
+        #expect(!FileManager.default.fileExists(atPath:directory.appendingPathComponent(".lpm").path))
+    }
+
+    @Test("slash metadata size matches unescaped cloud JSON")
+    func slashMetadataFitsCloudLimit() throws {
+        let base = LPMJSONValue.object(["value":.string("")])
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.withoutEscapingSlashes]
+        let count = ProjectEnvSchemaFile.maximumMetadataBytes - (try encoder.encode(base).count)
+        try ProjectEnvSchemaFile.validateMetadataSize(.object(["value":.string(String(repeating:"/",count:count))]))
+        #expect(throws:ProjectEnvSchemaFile.FileError.metadataTooLarge) {
+            try ProjectEnvSchemaFile.validateMetadataSize(.object(["value":.string(String(repeating:"/",count:count+1))]))
+        }
+    }
+
+    @Test("inherited rename errors identify the declaring file")
+    func inheritedRenameNamesDeclaringFile() throws {
+        let root = try folder(#"{"extends":["base.json"]}"#,fragment:#"{"vars":{"A":{}}}"#)
+        defer { try? FileManager.default.removeItem(at:root) }
+        do {
+            _ = try ProjectEnvSchemaFile.apply(.init(rename:.init(from:"A",to:"B")),inFolder:root.path,vaultID:"project")
+            Issue.record("Inherited rename must fail")
+        } catch { #expect(error.localizedDescription.contains("base.json")) }
+    }
+
+    @Test("fragment references prevent root renames with the declaring source", arguments: [false, true])
+    func fragmentReferenceNamesDeclaringFile(group: Bool) throws {
+        let fragment = group ? #"{"groups":{"pair":{"mode":"allOrNone","vars":["A","B"]}}}"# : #"{"vars":{"B":{"requiredWhen":{"variable":"A","equals":"yes"}}}}"#
+        let schema = group ? #"{"extends":["base.json"],"vars":{"A":{},"B":{}}}"# : #"{"extends":["base.json"],"vars":{"A":{}}}"#
+        let root = try folder(schema, fragment: fragment)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = try Data(contentsOf: root.appendingPathComponent("lpm.json"))
+        do {
+            _ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: "A", to: "NEW")), inFolder: root.path, vaultID: "project")
+            Issue.record("Referenced root key must reject renames")
+        } catch { #expect(error.localizedDescription.contains("base.json")) }
+        #expect(try Data(contentsOf: root.appendingPathComponent("lpm.json")) == bytes)
+    }
+
 	private func folder(_ schema: String, fragment: String) throws -> URL {
 		let root = FileManager.default.temporaryDirectory.appending(path: "env-composition-\(UUID().uuidString)")
 		try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -85,13 +174,16 @@ struct EnvSchemaCompositionTests {
         }
     }
 
-    @Test("nested fragment edits wait on their parent lock while holding the root lock")
-    func nestedFragmentLockOrdering() async throws {
-        let root = try folder(#"{"extends":["schemas/base.json"]}"#,fragment:"{}")
+    @Test("nested fragment edits wait on the nearest project lock while holding the root lock", arguments: [false, true])
+    func nestedFragmentLockOrdering(deeper: Bool) async throws {
+        let root = try folder(deeper ? #"{"extends":["schemas/deeper/base.json"]}"# : #"{"extends":["schemas/base.json"]}"#,fragment:"{}")
         defer { try? FileManager.default.removeItem(at:root) }
         let parent = root.appendingPathComponent("schemas")
         try FileManager.default.createDirectory(at:parent.appendingPathComponent(".lpm"),withIntermediateDirectories:true)
-        try #"{"vars":{"A":{}}}"#.write(to:parent.appendingPathComponent("base.json"),atomically:true,encoding:.utf8)
+        let target = deeper ? parent.appendingPathComponent("deeper") : parent
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try #"{"vars":{"A":{}}}"#.write(to:target.appendingPathComponent("base.json"),atomically:true,encoding:.utf8)
+        try "{}".write(to:parent.appendingPathComponent("lpm.json"),atomically:true,encoding:.utf8)
         let lock = open(parent.appendingPathComponent(".lpm/.config.lock").path,O_RDWR|O_CREAT,0o644)
         defer { flock(lock,LOCK_UN); close(lock) }
         #expect(flock(lock,LOCK_EX) == 0)
@@ -123,6 +215,7 @@ struct EnvSchemaCompositionTests {
         }
         #expect(completed)
         #expect(completion.withLock { $0.succeeded })
+        if deeper { #expect(!FileManager.default.fileExists(atPath: target.appendingPathComponent(".lpm").path)) }
     }
 
     @Test("fragment output size is bounded before persistence")
@@ -282,7 +375,7 @@ struct EnvSchemaCompositionTests {
 		let root = try folder(schema, fragment: #"{"vars":{"INHERITED":{}}}"#)
 		defer { try? FileManager.default.removeItem(at: root) }
 		let original = try Data(contentsOf: root.appendingPathComponent("lpm.json"))
-		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) {
+		#expect(throws: from == "INHERITED" ? ProjectEnvSchemaFile.FileError.inheritedRename(schema.contains("overrides") ? "lpm.json" : "base.json") : .invalidSchema) {
 			try ProjectEnvSchemaFile.apply(.init(rename: .init(from: from, to: to)), inFolder: root.path, vaultID: "project")
 		}
 		#expect(try Data(contentsOf: root.appendingPathComponent("lpm.json")) == original)

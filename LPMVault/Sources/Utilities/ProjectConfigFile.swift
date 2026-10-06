@@ -125,7 +125,7 @@ enum ProjectConfigFile {
 	private static func updateInDirectory<T>(
 		at url: URL, directory: DirectorySnapshot, fileWriter: FileWriter,
 		rejectDuplicateKeys: Bool, requiresUniqueKeys: ((LPMConfigJSON) throws -> Bool)? = nil, maximumOutputBytes: Int = maximumBytes,
-		additionalCheck: (() throws -> Void)? = nil,
+		additionalCheck: (() throws -> Void)? = nil, preservingMemberAt: [String]? = nil,
 		validateSources: (() throws -> Void)? = nil,
 		beforeWrite: (() throws -> Void)? = nil, onWriteFailure: (() throws -> Void)? = nil,
 		_ change: (inout LPMConfigJSON) throws -> T
@@ -171,7 +171,14 @@ enum ProjectConfigFile {
 		}
 
 		let data: Data
-		do { data = try document.renderedData(maximumBytes: maximumOutputBytes) } catch { throw FileError.tooLarge }
+		do {
+			if let original, let path = preservingMemberAt {
+				var rule: LPMConfigJSON? = document
+				for part in path { rule = rule?[part] }
+				data = try LPMConfigJSON.editingMember(in: original, path: path, key: "description", value: rule?["description"], maximumBytes: maximumOutputBytes)
+				guard try LPMConfigJSON(parsing: data, rejectDuplicateKeys: true) == document else { throw FileError.invalidJSON }
+			} else { data = try document.renderedData(maximumBytes: maximumOutputBytes) }
+		} catch LPMConfigJSON.RenderError.tooLarge { throw FileError.tooLarge }
 		var permissions = mode_t(0o644)
 		var metadata = stat()
 		if original != nil, fstatat(directory.descriptor, url.lastPathComponent, &metadata, AT_SYMLINK_NOFOLLOW) == 0 { permissions = metadata.st_mode & 0o777 }
@@ -202,11 +209,18 @@ enum ProjectConfigFile {
 			do { original = try readRegularFile(in: directory, name: "lpm.json") } catch FileError.notFound { original = nil }
 			if let original {
 				do {
-					document = try LPMConfigJSON(parsing: original, rejectDuplicateKeys: true)
+					document = try LPMConfigJSON(parsing: original)
 					guard case .object = document else { throw FileError.invalidJSON }
 				} catch LPMConfigJSON.ParseError.duplicateKey { throw FileError.duplicateJSONKey }
                 catch is LPMConfigJSON.ParseError { throw FileError.invalidJSON }
 			} else { document = .object([]) }
+		}
+
+		func requireUniqueKeys() throws {
+			guard let original else { return }
+			do { _ = try LPMConfigJSON(parsing: original, rejectDuplicateKeys: true) }
+			catch LPMConfigJSON.ParseError.duplicateKey { throw FileError.duplicateJSONKey }
+			catch { throw FileError.invalidJSON }
 		}
 
 		func verify() throws {
@@ -217,7 +231,7 @@ enum ProjectConfigFile {
 		}
 
 		func update<T>(
-			relativePath: String, fileWriter: FileWriter = writeSecurely,
+			relativePath: String, fileWriter: FileWriter = writeSecurely, rejectDuplicateKeys: Bool = true, preservingMemberAt: [String]? = nil,
 			validateSources: (() throws -> Void)? = nil,
 			beforeWrite: (() throws -> Void)? = nil, onWriteFailure: (() throws -> Void)? = nil,
 			_ change: (inout LPMConfigJSON) throws -> T
@@ -225,18 +239,23 @@ enum ProjectConfigFile {
 			let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
 			guard let filename = parts.last, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("\\") && !$0.contains("\0") }) else { throw FileError.unsafeFile }
 			var target = directory
-			for part in parts.dropLast() { target = try DirectorySnapshot(parent: target, name: String(part)) }
+			var project = directory
+			for part in parts.dropLast() {
+				target = try DirectorySnapshot(parent: target, name: String(part))
+				var metadata = stat()
+				if fstatat(target.descriptor, "lpm.json", &metadata, AT_SYMLINK_NOFOLLOW) == 0, metadata.st_mode & S_IFMT == S_IFREG { project = target }
+			}
 			let url = target.url.appendingPathComponent(String(filename))
-			if target.sameIdentity(as: directory) {
-				return try updateInDirectory(at: url, directory: target, fileWriter: fileWriter, rejectDuplicateKeys: true,
+			if project.sameIdentity(as: directory) {
+				return try updateInDirectory(at: url, directory: target, fileWriter: fileWriter, rejectDuplicateKeys: rejectDuplicateKeys,
 					maximumOutputBytes: relativePath == "lpm.json" ? maximumBytes : 2 * 1024 * 1024,
-					additionalCheck: { try self.verify() }, validateSources: validateSources,
+					additionalCheck: { try self.verify() }, preservingMemberAt: preservingMemberAt, validateSources: validateSources,
 					beforeWrite: beforeWrite, onWriteFailure: onWriteFailure, change)
 			}
-			return try withConfigLock(in: target) {
-				return try updateInDirectory(at: url, directory: target, fileWriter: fileWriter, rejectDuplicateKeys: true,
+			return try withConfigLock(in: project) {
+				return try updateInDirectory(at: url, directory: target, fileWriter: fileWriter, rejectDuplicateKeys: rejectDuplicateKeys,
 					maximumOutputBytes: relativePath == "lpm.json" ? maximumBytes : 2 * 1024 * 1024,
-					additionalCheck: { try self.verify() }, validateSources: validateSources,
+					additionalCheck: { try self.verify() }, preservingMemberAt: preservingMemberAt, validateSources: validateSources,
 					beforeWrite: beforeWrite, onWriteFailure: onWriteFailure, change)
 			}
 		}

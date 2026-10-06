@@ -28,6 +28,7 @@ enum RustSchemaEngine {
 	struct Resolution: Sendable {
 		let effective: LPMConfigJSON
 		let origins: [String: Origin]
+		let groupOrigins: [String: Origin]
 		let dependencies: [Dependency]
 		let snapshot: Snapshot
 		func verify() throws(ProjectEnvSchemaFile.FileError) { try snapshot.verify() }
@@ -79,6 +80,12 @@ enum RustSchemaEngine {
 			guard case .string(let source)? = member.value["source"], case .string(let pointer)? = member.value["pointer"] else { throw .invalidSchema }
 			origins[member.key] = Origin(source: source, pointer: pointer)
 		}
+		guard case .object(let rawGroupOrigins)? = output["groupOrigins"] else { throw .invalidSchema }
+		var groupOrigins = Dictionary<String, Origin>(minimumCapacity: rawGroupOrigins.count)
+		for member in rawGroupOrigins {
+			guard case .string(let source)? = member.value["source"], case .string(let pointer)? = member.value["pointer"] else { throw .invalidSchema }
+			groupOrigins[member.key] = Origin(source: source, pointer: pointer)
+		}
 		var dependencies: [Dependency] = []
         dependencies.reserveCapacity(rawDependencies.count)
 		for dependency in rawDependencies {
@@ -88,7 +95,7 @@ enum RustSchemaEngine {
 			guard digest.count == 32 else { throw .invalidSchema }
 			dependencies.append(Dependency(path: path, digest: digest, bytes: bytes))
 		}
-		return Resolution(effective: effective, origins: origins, dependencies: dependencies, snapshot: Snapshot(owned: owned))
+		return Resolution(effective: effective, origins: origins, groupOrigins: groupOrigins, dependencies: dependencies, snapshot: Snapshot(owned: owned))
 	}
 	private static func byteArray(_ value: LPMConfigJSON?) throws(ProjectEnvSchemaFile.FileError) -> Data {
 		guard case .array(let values)? = value else { throw .invalidSchema }

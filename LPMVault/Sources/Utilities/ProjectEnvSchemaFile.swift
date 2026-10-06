@@ -49,6 +49,9 @@ enum ProjectEnvSchemaFile {
 		case metadataTooLarge
         case readOnlyPreset
 		case multipleSourceEdit
+		case readOnlyInstalled(String)
+		case inheritedRename(String)
+		case fragmentReference(String)
 
 		init(_ error: ProjectConfigFile.FileError) {
 			switch error {
@@ -76,7 +79,10 @@ enum ProjectEnvSchemaFile {
 			case .changed: "A project schema file changed while it was being saved. Save again."
 			case .writeFailed(let reason): "Could not write the schema file. \(reason)"
 			case .metadataTooLarge: "Env metadata exceeds the cloud limit of 256 KiB."
-            case .readOnlyPreset: "Preset declarations are read-only. Descriptions must be edited in an authored schema rule."
+            case .readOnlyPreset: "Preset declarations are read-only. Add a root envSchema.overrides entry."
+			case .readOnlyInstalled(let source): "Installed schema \(source) is read-only. Add a root envSchema.overrides entry."
+			case .inheritedRename(let source): "This key is declared in \(source). Rename it in the declaring file."
+			case .fragmentReference(let source): "This key is referenced in \(source). Update that declaration before a rename."
 			case .multipleSourceEdit: "This rename and description change multiple schema files. Save the rename and description separately."
 			}
 		}
@@ -136,22 +142,24 @@ enum ProjectEnvSchemaFile {
 	) throws -> Rules? {
 		try ProjectConfigFile.withRootTransaction(at: url) { transaction in
 			let root = transaction.document
-			try checkVault(of: root, is: vaultID)
 			if try !requiresSchemaEdit(change, in: root, vaultID: vaultID) {
-                return try transaction.update(relativePath: "lpm.json", fileWriter: fileWriter, beforeWrite: beforeWrite, onWriteFailure: onWriteFailure) { _ in
+                return try transaction.update(relativePath: "lpm.json", fileWriter: fileWriter, rejectDuplicateKeys: false, beforeWrite: beforeWrite, onWriteFailure: onWriteFailure) { _ in
                     onPrepared?(nil, "lpm.json")
                     return nil
                 }
             }
+			try transaction.requireUniqueKeys()
+			try checkVault(of: root, is: vaultID)
             let original = try RustSchemaEngine.resolve(root["envSchema"] ?? .object([]), inFolder: url.deletingLastPathComponent().path)
 			if let description = change.description, let origin = original.origins[description.key],
 				origin.source != "lpm.json" {
 				guard !origin.source.hasPrefix("preset:") else { throw FileError.readOnlyPreset }
+				guard !origin.source.split(separator: "/").contains(where: { $0.lowercased() == "node_modules" }) else { throw FileError.readOnlyInstalled(origin.source) }
 				if let rename = change.rename {
 					let (renamed, _, _) = try validatedChange(.init(rename: rename), in: root, vaultID: vaultID, folder: url.deletingLastPathComponent().path, strictRename: strictRename)
 					guard renamed == root else { throw FileError.multipleSourceEdit }
 				}
-				return try transaction.update(relativePath: origin.source, fileWriter: fileWriter,
+				return try transaction.update(relativePath: origin.source, fileWriter: fileWriter, preservingMemberAt: pointerParts(origin.pointer),
 					validateSources: { try original.verify() }, beforeWrite: beforeWrite, onWriteFailure: onWriteFailure) { source in
 					try original.verify()
 					try changeDescription(description, in: &source, pointer: origin.pointer)
@@ -174,9 +182,13 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
+	private static func pointerParts(_ pointer: String) -> [String] {
+		pointer.dropFirst().split(separator: "/").map { $0.replacingOccurrences(of: "~1", with: "/").replacingOccurrences(of: "~0", with: "~") }
+	}
+
 	private static func changeDescription(_ description: Change.Description, in document: inout LPMConfigJSON, pointer: String) throws(FileError) {
 		guard safeMetadataText(description.text), pointer.hasPrefix("/") else { throw .invalidSchema }
-		let parts = pointer.dropFirst().split(separator: "/").map { $0.replacingOccurrences(of: "~1", with: "/").replacingOccurrences(of: "~0", with: "~") }
+		let parts = pointerParts(pointer)
 		func update(_ node: inout LPMConfigJSON, parts: ArraySlice<String>) throws(FileError) {
 			guard let key = parts.first, var child = node[key] else { throw .changed }
 			if parts.count > 1 { try update(&child, parts: parts.dropFirst()) }
@@ -214,6 +226,18 @@ enum ProjectEnvSchemaFile {
 		if let rename = change.rename, rename.from != rename.to {
 			let source = document["envSchema"]
 			if original.effective["vars"]?[rename.from] != nil {
+				if source?["vars"]?[rename.from] == nil, let origin = original.origins[rename.from] { throw .inheritedRename(origin.source) }
+				if case .object(let vars)? = original.effective["vars"] {
+					for member in vars where member.value["requiredWhen"]?["variable"] == .string(rename.from) {
+						if let origin = original.origins[member.key], origin.source != "lpm.json" { throw .fragmentReference(origin.source) }
+					}
+				}
+				if case .object(let groups)? = original.effective["groups"] {
+					for member in groups {
+						if case .array(let vars)? = member.value["vars"], vars.contains(.string(rename.from)),
+							let origin = original.groupOrigins[member.key], origin.source != "lpm.json" { throw .fragmentReference(origin.source) }
+					}
+				}
 				guard source?["vars"]?[rename.from] != nil, source?["overrides"]?[rename.from] == nil,
 					original.effective["vars"]?[rename.to] == nil || (!strictRename && source?["vars"]?[rename.to] != nil) else { throw .invalidSchema }
 			}
@@ -438,7 +462,9 @@ enum ProjectEnvSchemaFile {
 
     static let maximumMetadataBytes = 256 * 1024
     static func validateMetadataSize(_ value: LPMJSONValue) throws(FileError) {
-        guard let data = try? JSONEncoder().encode(value) else { throw .invalidSchema }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        guard let data = try? encoder.encode(value) else { throw .invalidSchema }
         guard data.count <= maximumMetadataBytes else { throw .metadataTooLarge }
     }
 
