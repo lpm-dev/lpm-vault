@@ -504,6 +504,7 @@ actor VaultPersistenceCoordinator {
 			var rollbackFailed = false
 			var outcomeIndeterminate = false
 			var updatedRules: ProjectEnvSchemaFile.Rules?
+			var selectedSource = "lpm.json"
 			do {
 				var isDirectory: ObjCBool = false
                 if !FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory) || !isDirectory.boolValue {
@@ -514,9 +515,8 @@ actor VaultPersistenceCoordinator {
 					default: return .failure(.changed)
 					}
 				}
-				let rules: ProjectEnvSchemaFile.Rules? = try ProjectConfigFile.update(at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), fileWriter: fileWriter, requiresUniqueKeys: { document in
-					try ProjectEnvSchemaFile.requiresSchemaEdit(change, in: document, vaultID: previous.id)
-				}, beforeWrite: {
+				let rules = try ProjectEnvSchemaFile.edit(change, at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), vaultID: previous.id, fileWriter: fileWriter, beforeWrite: {
+
 					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
 					case .success(let commit): persisted = commit
 					case .failure(let error):
@@ -527,19 +527,14 @@ actor VaultPersistenceCoordinator {
 				}, onWriteFailure: {
 					let restore: VaultKeychainMutation = metadata.data.map { .write(account: metadata.account, data: $0) } ?? .delete(account: metadata.account)
 					rollbackFailed = !self.service.applyVaultTransaction(project: .upsert(previous), data: [restore]).succeeded
-				}) { document in
-                    guard try ProjectEnvSchemaFile.requiresSchemaEdit(change, in: document, vaultID: previous.id) else { return nil }
-					let (updated, rules) = try ProjectEnvSchemaFile.validatedRename(change, in: document, vaultID: previous.id)
-					document = updated
-					updatedRules = rules
-					return rules
-				}
+				}, onPrepared: { rules, source in updatedRules = rules; selectedSource = source }, strictRename: true)
+
 				guard let persisted else { return .indeterminate }
 				return .success(persisted, rules)
 			} catch {
 				if rollbackFailed || outcomeIndeterminate { return .indeterminate }
 				if case SecureFileWriter.WriteError.directorySyncFailed = error, let persisted, let updatedRules {
-					let warning = "The rename was saved, but crash durability of lpm.json is unconfirmed. " + error.localizedDescription
+					let warning = "The rename was saved, but crash durability of \(selectedSource) is unconfirmed. " + error.localizedDescription
 					return .success(SecretPersistenceCommit(project: persisted.project, syncMetadata: persisted.syncMetadata, warning: [persisted.warning, warning].compactMap { $0 }.joined(separator: " ")), updatedRules)
 				}
 				if let failure = error as? VaultKeyEditError { return .failure(failure) }

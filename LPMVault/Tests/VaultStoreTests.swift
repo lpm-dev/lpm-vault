@@ -17,6 +17,36 @@ private struct PersistedOrgKeyTrustFixture: Codable {
 struct VaultStoreTests {
 	private let organizationID = "00000000-0000-4000-8000-000000000001"
 
+	@Test("personal push rejects imported schema changes made during encryption")
+	func personalPushRejectsSchemaChangeDuringEncryption() async throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "push-schema-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let projectID = "push-source-freshness"
+		try #"{"vault":"push-source-freshness","envSchema":{"extends":["base.json"]}}"#.write(to: folder.appendingPathComponent("lpm.json"), atomically: true, encoding: .utf8)
+		let fragment = folder.appendingPathComponent("base.json")
+		try #"{"vars":{"VALUE":{"default":"first"}}}"#.write(to: fragment, atomically: true, encoding: .utf8)
+		let sync = MockPersonalSyncService()
+		let keychain = MockKeychainService()
+		keychain.envStorage[projectID] = (name: "Schema", path: folder.path, environments: ["default": ["TOKEN": "local"]])
+		let encryptionCalls = LockedCounter()
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(), personalSyncServiceFactory: { _ in sync }, stableSyncEncryptor: { _, _, _, _ in
+			encryptionCalls.increment()
+			try #"{"vars":{"VALUE":{"default":"second"}}}"#.write(to: fragment, atomically: true, encoding: .utf8)
+			return ("ciphertext", "wrapped")
+		}, authTokenProvider: { _, _ in "session-token" })
+		store.appEnvironment = .production
+		store.currentUser = testUser(id: "account-1", username: "user")
+		store.projects = [VaultProject(id: projectID, name: "Schema", path: folder.path, environments: ["default": ["TOKEN": "local"]])]
+		store.isUnlocked = true
+		store.openProject(id: projectID)
+		await store.pushToCloud()
+		#expect(encryptionCalls.value == 1)
+		#expect(sync.pushCallCount == 0)
+		#expect(store.error?.contains("changed") == true)
+		#expect(!store.isSyncing)
+	}
+
 	/// Create a VaultStore with mock dependencies.
 	/// Projects are loaded synchronously into `store.projects` so tests
 	/// don't need to await the async `loadProjects()` / `Task.detached` path.
@@ -6081,6 +6111,39 @@ struct VaultStoreTests {
 			id: id, name: id, scope: nil, expiresAt: nil,
 			lastUsedAt: nil, downloadCount: nil, createdAt: nil
 		)
+	}
+
+	@Test("organization pushes reject imported source changes during request preparation")
+	func organizationPushRejectsSchemaChangeDuringPreparation() async throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "org-source-admission-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try #"{"envSchema":{"extends":["base.json"]}}"#.write(to: folder.appendingPathComponent("lpm.json"), atomically: true, encoding: .utf8)
+		let fragment = folder.appendingPathComponent("base.json")
+		try #"{"vars":{"VALUE":{"default":"before"}}}"#.write(to: fragment, atomically: true, encoding: .utf8)
+		let fixture = makeOrgTrustFixture()
+		let projectID = try #require(fixture.store.selectedProjectId)
+		let environments = ["default": ["TOKEN": "secret"]]
+		fixture.keychain.envStorage[projectID] = (name: "Project", path: folder.path, environments: environments)
+		fixture.store.projects = [VaultProject(id: projectID, name: "Project", path: folder.path, environments: environments)]
+		let members = try #require(fixture.sync.memberKeyAccess?.members)
+		let fingerprints = try Dictionary(uniqueKeysWithValues: members.map { member in
+			(member.userId, try #require(member.publicKeyFingerprint))
+		})
+		let scope = try #require(OrgTrustScope(registryURL: fixture.store.appEnvironment.registryURL, organizationID: organizationID, organizationSlug: fixture.slug))
+		fixture.keychain.dataStorage[fixture.trustAccount] = try JSONEncoder().encode(PersistedOrgKeyTrustFixture(schemaVersion: 3, scope: scope, trust: OrgKeyTrust(trustedFingerprints: fingerprints)))
+		let gate = AsyncGate()
+		fixture.sync.blockNextPushPreparation = { await gate.arriveAndWait() }
+		let push = Task { await fixture.store.pushToOrg(orgSlug: fixture.slug) }
+		await gate.waitUntilArrived()
+		try #"{"vars":{"VALUE":{"default":"after"}}}"#.write(to: fragment, atomically: true, encoding: .utf8)
+		await gate.release()
+		_ = await push.value
+		#expect(fixture.sync.pushCallCount == 0)
+		#expect(fixture.store.error?.contains("changed") == true)
+		#expect(fixture.store.lastSyncStatus == "failed")
+		#expect(!fixture.store.isSyncing)
+		fixture.store.lock()
 	}
 
 	@Test(

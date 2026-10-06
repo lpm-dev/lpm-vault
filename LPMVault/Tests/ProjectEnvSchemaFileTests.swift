@@ -124,6 +124,24 @@ struct ProjectEnvSchemaFileTests {
 		}
 	}
 
+	@Test("native edits and sync reject Rust-invalid pattern and default semantics", arguments: [
+		#"{"pattern":"["}"#,
+		#"{"pattern":"^live$","default":"dev"}"#,
+		#"{"format":"port","default":"0"}"#,
+	])
+	func semanticInvalidSchemaPreservesFile(rule: String) throws {
+		let original = #"{"envSchema":{"vars":{"VALUE":\#(rule)}}}"#
+		let folder = try makeFolder(original)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) {
+			try ProjectEnvSchemaFile.apply(.init(description: .init(key: "VALUE", text: "Changed")), inFolder: folder, vaultID: vaultID)
+		}
+		#expect(try contents(folder) == original)
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) {
+			try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder, vaultID: vaultID)
+		}
+	}
+
 	@Test("scope metadata survives description edits and sync")
 	func scopeMetadataSurvivesEditsAndSync() throws {
 		let original =

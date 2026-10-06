@@ -11,9 +11,10 @@ let package = Package(
 		.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
 	],
 	targets: [
+		.binaryTarget(name: "LPMEnv", path: "Vendor/EnvEngine/LPMEnv.xcframework"),
 		.executableTarget(
 			name: "LPMVault",
-			dependencies: [.product(name: "Sparkle", package: "Sparkle")],
+			dependencies: [.product(name: "Sparkle", package: "Sparkle"), "LPMEnv"],
 			path: "Sources",
 			resources: [
 				.process("Assets.xcassets"),

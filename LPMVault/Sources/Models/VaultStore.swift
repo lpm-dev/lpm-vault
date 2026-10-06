@@ -3629,15 +3629,22 @@ final class VaultStore {
 
   private func executeAuthorizedRemoteMutation<Value: Sendable>(
     authority: AuthSessionAuthorityGeneration?,
-    prepared: PreparedRemoteOperation<Value>
+    prepared: PreparedRemoteOperation<Value>,
+    beforeStart: @escaping @Sendable () throws -> Void = {}
   ) async throws -> Value? {
-    guard let authority else { return await prepared.start().value() }
-    let result = try await authorizedRemoteMutationExecutor(authority) {
-      AuthorizedMutationBox(value: prepared.start())
+    guard let authority else {
+      try beforeStart()
+      return await prepared.start().value()
     }
-    guard let request = result as? AuthorizedMutationBox<StartedRemoteOperation<Value>>
+    let result = try await authorizedRemoteMutationExecutor(authority) {
+      AuthorizedMutationBox(value: Result {
+        try beforeStart()
+        return prepared.start()
+      })
+    }
+    guard let request = result as? AuthorizedMutationBox<Result<StartedRemoteOperation<Value>, any Error>>
     else { return nil }
-    return await request.value.value()
+    return await (try request.value.get()).value()
   }
 
   func revokePersonalToken(_ token: LPMToken) async {
@@ -4242,6 +4249,7 @@ final class VaultStore {
     let projectID = pushedProject.id
     var plaintext: Data?
     var schema: LPMJSONValue?
+    var schemaSources: CapturedSyncSchema?
     var preparedPayload = false
     var forcedRecreationFloor = localExpectedVersion
     do {
@@ -4316,7 +4324,9 @@ final class VaultStore {
             finishSyncIfOwned(authority)
             return
           }
-          schema = try await syncSchema(for: pushedProject)
+          let captured = try await capturedSyncSchema(for: pushedProject)
+          schema = captured.value
+          schemaSources = captured
           preparedPayload = true
         }
         guard let plaintext else {
@@ -4353,10 +4363,12 @@ final class VaultStore {
           finishSyncIfOwned(authority)
           return
         }
+        let currentSchemaSources = schemaSources
         guard
           let response = try await executeAuthorizedRemoteMutation(
             authority: authority.authorityGeneration,
-            prepared: preparedPush
+            prepared: preparedPush,
+            beforeStart: { try currentSchemaSources?.verify() }
           )
         else {
           _ = await hasCurrentSyncAuth(authority)
@@ -5326,7 +5338,7 @@ final class VaultStore {
       finishSyncIfOwned(authority)
       return .failed
     }
-    let schema = try await syncSchema(for: pushedProject)
+    let schema = try await capturedSyncSchema(for: pushedProject)
     guard await hasCurrentSyncAuth(authority) else {
       finishSyncIfOwned(authority)
       return .failed
@@ -5341,7 +5353,7 @@ final class VaultStore {
       wrappedKeys: encrypted.wrappedKeys,
       expectedVersion: expectedVersion,
       name: pushedProject.name,
-      schema: schema
+      schema: schema.value
     )
     guard await hasCurrentSyncAuth(authority) else {
       finishSyncIfOwned(authority)
@@ -5350,7 +5362,8 @@ final class VaultStore {
     guard
       let response = try await executeAuthorizedRemoteMutation(
         authority: authority.authorityGeneration,
-        prepared: preparedPush
+        prepared: preparedPush,
+        beforeStart: { try schema.verify() }
       )
     else {
       _ = await hasCurrentSyncAuth(authority)
@@ -6178,15 +6191,28 @@ final class VaultStore {
   }
 
 	func syncSchema(for project: VaultProject) async throws -> LPMJSONValue? {
+		try await capturedSyncSchema(for: project).value
+	}
+
+	private struct CapturedSyncSchema: Sendable {
+		let value: LPMJSONValue?
+		let sources: ProjectEnvSchemaFile.SyncSnapshot?
+		func verify() throws { try sources?.verify() }
+	}
+
+	private func capturedSyncSchema(for project: VaultProject) async throws -> CapturedSyncSchema {
 		let path = keyDescriptionFolder(for: project)
-    guard !path.isEmpty else { return nil }
+    guard !path.isEmpty else { return CapturedSyncSchema(value: nil, sources: nil) }
     let projectID = project.id
     return try await Task.detached(priority: .userInitiated) {
-      guard case .object(let root)? = try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: path, vaultID: projectID) else {
-        return nil
+      let captured: ProjectEnvSchemaFile.SyncSnapshot
+      do { captured = try ProjectEnvSchemaFile.validatedSyncSnapshot(inFolder: path, vaultID: projectID) }
+      catch ProjectEnvSchemaFile.FileError.noFolder { return CapturedSyncSchema(value: nil, sources: nil) }
+      guard case .object(let root)? = captured.config else {
+        return CapturedSyncSchema(value: nil, sources: captured)
       }
 
-      return ProjectEnvSchemaFile.pushMetadata(from: root)
+      return CapturedSyncSchema(value: ProjectEnvSchemaFile.pushMetadata(from: root), sources: captured)
     }.value
   }
 

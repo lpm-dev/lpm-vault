@@ -213,20 +213,25 @@ enum SecureFileWriter {
 		authorization: EnvFileExportAuthorization? = nil,
 		replaceExisting: Bool = true,
 		beforeReplacement: @escaping () throws -> Void = {},
-		directorySynchronizer: (URL) -> Int32? = synchronizeDirectory
+		directorySynchronizer: ((URL) -> Int32?)? = nil,
+		directoryDescriptor: Int32? = nil
 	) throws {
 		try authorization?.check()
 		let directory = destination.deletingLastPathComponent()
 		let temporary = directory.appendingPathComponent(".lpm-vault-\(UUID().uuidString).tmp")
 		let descriptor: Int32 = temporary.withUnsafeFileSystemRepresentation { path in
 			guard let path else { return -1 }
+			if let directoryDescriptor {
+				return openat(directoryDescriptor, temporary.lastPathComponent, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, permissions)
+			}
 			return Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, permissions)
 		}
 		guard descriptor >= 0 else { throw WriteError.createFailed(errno) }
 		if let code = removeExtendedACL(from: descriptor) {
 			_ = Darwin.close(descriptor)
 			temporary.withUnsafeFileSystemRepresentation { path in
-				if let path { _ = Darwin.unlink(path) }
+				if let directoryDescriptor { _ = unlinkat(directoryDescriptor, temporary.lastPathComponent, 0) }
+				else if let path { _ = Darwin.unlink(path) }
 			}
 			throw WriteError.createFailed(code)
 		}
@@ -234,7 +239,8 @@ enum SecureFileWriter {
 			let code = errno
 			_ = Darwin.close(descriptor)
 			temporary.withUnsafeFileSystemRepresentation { path in
-				if let path { _ = Darwin.unlink(path) }
+				if let directoryDescriptor { _ = unlinkat(directoryDescriptor, temporary.lastPathComponent, 0) }
+				else if let path { _ = Darwin.unlink(path) }
 			}
 			throw WriteError.createFailed(code)
 		}
@@ -245,7 +251,8 @@ enum SecureFileWriter {
 			if descriptorIsOpen { _ = Darwin.close(descriptor) }
 			if shouldRemoveTemporary {
 				temporary.withUnsafeFileSystemRepresentation { path in
-					if let path { _ = Darwin.unlink(path) }
+					if let directoryDescriptor { _ = unlinkat(directoryDescriptor, temporary.lastPathComponent, 0) }
+				else if let path { _ = Darwin.unlink(path) }
 				}
 			}
 		}
@@ -277,6 +284,12 @@ enum SecureFileWriter {
 		var renameStatus: Int32 = -1
 		let replace = {
 			try beforeReplacement()
+			if let directoryDescriptor {
+				renameStatus = replaceExisting
+					? renameat(directoryDescriptor, temporary.lastPathComponent, directoryDescriptor, destination.lastPathComponent)
+					: renameatx_np(directoryDescriptor, temporary.lastPathComponent, directoryDescriptor, destination.lastPathComponent, UInt32(RENAME_EXCL))
+				return
+			}
 			renameStatus = temporary.withUnsafeFileSystemRepresentation { sourcePath in
 				destination.withUnsafeFileSystemRepresentation { destinationPath in
 					guard let sourcePath, let destinationPath else { return -1 }
@@ -294,7 +307,11 @@ enum SecureFileWriter {
 		}
 		guard renameStatus == 0 else { throw WriteError.replaceFailed(errno) }
 		shouldRemoveTemporary = false
-		if let code = directorySynchronizer(directory) {
+		let syncFailure: Int32?
+		if let directorySynchronizer { syncFailure = directorySynchronizer(directory) }
+		else if let directoryDescriptor { syncFailure = fsync(directoryDescriptor) == 0 ? nil : errno }
+		else { syncFailure = synchronizeDirectory(directory) }
+		if let code = syncFailure {
 			throw WriteError.directorySyncFailed(code)
 		}
 	}

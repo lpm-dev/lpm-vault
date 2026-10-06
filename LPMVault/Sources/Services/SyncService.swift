@@ -417,6 +417,10 @@ final class SyncService: @unchecked Sendable {
     name: String?,
     schema: LPMJSONValue?
   ) -> PreparedRemoteOperation<AuthenticatedResponse<SyncStatus>> {
+    if let schema {
+      do { try ProjectEnvSchemaFile.validateMetadataSize(schema) }
+      catch { return .completed(.response(nil)) }
+    }
     guard let url = endpoint(["api", "vaults", vaultId, "sync"]) else {
       return .completed(.response(nil))
     }
@@ -632,6 +636,10 @@ final class SyncService: @unchecked Sendable {
     name: String?,
     schema: LPMJSONValue?
   ) -> PreparedRemoteOperation<AuthenticatedResponse<SyncStatus>> {
+    if let schema {
+      do { try ProjectEnvSchemaFile.validateMetadataSize(schema) }
+      catch { return .completed(.response(nil)) }
+    }
     guard let url = endpoint(["api", "orgs", orgSlug, "vaults", vaultId]) else {
       return .completed(.response(nil))
     }

@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -45,6 +46,9 @@ enum ProjectEnvSchemaFile {
 		case readFailed
 		case changed
 		case writeFailed(String)
+		case metadataTooLarge
+        case readOnlyPreset
+		case multipleSourceEdit
 
 		init(_ error: ProjectConfigFile.FileError) {
 			switch error {
@@ -62,15 +66,18 @@ enum ProjectEnvSchemaFile {
 			switch self {
 			case .noFolder: "Connect a project folder to keep descriptions in its lpm.json."
 			case .linkedToOtherVault: "lpm.json in the project folder links another env project."
-			case .unsafeFile: "lpm.json is a symbolic link or not a regular file."
-			case .tooLarge: "lpm.json is too large to update safely."
+			case .unsafeFile: "The schema file is a symbolic link or not a regular file."
+			case .tooLarge: "The schema file is too large to update safely."
 			case .invalidJSON: "lpm.json is not valid JSON."
 			case .duplicateJSONKey: "lpm.json contains duplicate object keys. Remove the duplicate declaration."
 			case .invalidSchema: "lpm.json has an invalid envSchema declaration."
 			case .secretPublicPrefix(let prefix): "Secret keys cannot use the public prefix \(prefix). Rename the key with a private name."
-			case .readFailed: "Could not read lpm.json."
-			case .changed: "lpm.json changed while it was being saved. Save again."
-			case .writeFailed(let reason): "Could not write lpm.json. \(reason)"
+			case .readFailed: "Could not read the schema file."
+			case .changed: "A project schema file changed while it was being saved. Save again."
+			case .writeFailed(let reason): "Could not write the schema file. \(reason)"
+			case .metadataTooLarge: "Env metadata exceeds the cloud limit of 256 KiB."
+            case .readOnlyPreset: "Preset declarations are read-only. Descriptions must be edited in an authored schema rule."
+			case .multipleSourceEdit: "This rename and description change multiple schema files. Save the rename and description separately."
 			}
 		}
 	}
@@ -99,7 +106,10 @@ enum ProjectEnvSchemaFile {
 		guard let data = try read(folderURL.appendingPathComponent("lpm.json")) else { return Rules() }
 		let document = try parse(data)
 		try checkVault(of: document, is: vaultID)
-		return try rules(of: document)
+		let resolved = try RustSchemaEngine.resolve(document["envSchema"] ?? .object([]), inFolder: folder)
+		guard try read(folderURL.appendingPathComponent("lpm.json")) == data else { throw .changed }
+		try resolved.verify()
+		return rules(fromEffective: resolved.effective)
 	}
 
 	/// Applies `change` under the CLI's config lock and returns the resulting
@@ -107,15 +117,8 @@ enum ProjectEnvSchemaFile {
 	static func apply(_ change: Change, inFolder folder: String, vaultID: String) throws(FileError) -> Rules {
 		let url = try existingFolder(folder).appendingPathComponent("lpm.json")
 		do {
-			return try ProjectConfigFile.update(at: url, rejectDuplicateKeys: true) { document in
-				try checkVault(of: document, is: vaultID)
-				// A schema the CLI cannot read is left for the person to fix.
-				let current = try rules(of: document)
-				let updated = try applying(change, to: document)
-				guard updated != document else { return current }
-				document = updated
-				return try rules(of: updated)
-			}
+			return try edit(change, at: url, vaultID: vaultID) ?? Rules()
+
 		} catch let error as FileError {
 			throw error
 		} catch let error as ProjectConfigFile.FileError {
@@ -125,26 +128,110 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
+	static func edit(
+		_ change: Change, at url: URL, vaultID: String,
+		fileWriter: ProjectConfigFile.FileWriter = ProjectConfigFile.writeSecurely,
+		beforeWrite: (() throws -> Void)? = nil, onWriteFailure: (() throws -> Void)? = nil,
+		onPrepared: ((Rules?, String) -> Void)? = nil, strictRename: Bool = false
+	) throws -> Rules? {
+		try ProjectConfigFile.withRootTransaction(at: url) { transaction in
+			let root = transaction.document
+			try checkVault(of: root, is: vaultID)
+			if try !requiresSchemaEdit(change, in: root, vaultID: vaultID) {
+                return try transaction.update(relativePath: "lpm.json", fileWriter: fileWriter, beforeWrite: beforeWrite, onWriteFailure: onWriteFailure) { _ in
+                    onPrepared?(nil, "lpm.json")
+                    return nil
+                }
+            }
+            let original = try RustSchemaEngine.resolve(root["envSchema"] ?? .object([]), inFolder: url.deletingLastPathComponent().path)
+			if let description = change.description, let origin = original.origins[description.key],
+				origin.source != "lpm.json" {
+				guard !origin.source.hasPrefix("preset:") else { throw FileError.readOnlyPreset }
+				if let rename = change.rename {
+					let (renamed, _, _) = try validatedChange(.init(rename: rename), in: root, vaultID: vaultID, folder: url.deletingLastPathComponent().path, strictRename: strictRename)
+					guard renamed == root else { throw FileError.multipleSourceEdit }
+				}
+				return try transaction.update(relativePath: origin.source, fileWriter: fileWriter,
+					validateSources: { try original.verify() }, beforeWrite: beforeWrite, onWriteFailure: onWriteFailure) { source in
+					try original.verify()
+					try changeDescription(description, in: &source, pointer: origin.pointer)
+					var effective = original.effective
+					try changeDescription(description, in: &effective, pointer: "/vars/" + description.key)
+					let rules = rules(fromEffective: try RustSchemaEngine.validate(effective))
+					onPrepared?(rules, origin.source)
+					return rules
+				}
+			}
+			var snapshots: [RustSchemaEngine.Snapshot] = []
+			return try transaction.update(relativePath: "lpm.json", fileWriter: fileWriter,
+				validateSources: { for snapshot in snapshots { try snapshot.verify() } },
+				beforeWrite: beforeWrite, onWriteFailure: onWriteFailure) { document in
+				let (updated, rules, sources) = try validatedChange(change, in: document, vaultID: vaultID, folder: url.deletingLastPathComponent().path, strictRename: strictRename)
+				snapshots = sources; document = updated
+				onPrepared?(rules, "lpm.json")
+				return rules
+			}
+		}
+	}
+
+	private static func changeDescription(_ description: Change.Description, in document: inout LPMConfigJSON, pointer: String) throws(FileError) {
+		guard safeMetadataText(description.text), pointer.hasPrefix("/") else { throw .invalidSchema }
+		let parts = pointer.dropFirst().split(separator: "/").map { $0.replacingOccurrences(of: "~1", with: "/").replacingOccurrences(of: "~0", with: "~") }
+		func update(_ node: inout LPMConfigJSON, parts: ArraySlice<String>) throws(FileError) {
+			guard let key = parts.first, var child = node[key] else { throw .changed }
+			if parts.count > 1 { try update(&child, parts: parts.dropFirst()) }
+			else {
+				guard case .object = child else { throw .invalidSchema }
+				let current: String
+				if case .string(let text)? = child["description"] { current = text } else { current = "" }
+				if let expected = description.expectedText, !current.utf8.elementsEqual(expected.utf8) && !current.utf8.elementsEqual(description.text.utf8) { throw .changed }
+				if description.text.isEmpty { child.removeValue(forKey: "description") }
+				else { child.set(.string(description.text), forKey: "description") }
+			}
+			node.set(child, forKey: key)
+		}
+		try update(&document, parts: parts[...])
+	}
+
 	static func requiresSchemaEdit(_ change: Change, in document: LPMConfigJSON, vaultID: String) throws(FileError) -> Bool {
         if change.description != nil { return true }
         guard let schema = document["envSchema"], schema != .null else { return false }
         guard case .object = schema else { throw .invalidSchema }
         guard let rename = change.rename else { return false }
+        if schema["extends"] != nil || schema["overrides"] != nil || schema["groupOverrides"] != nil { return true }
+        let vars = schema["vars"] ?? .object([])
+        if isReferenced(rename.from, schema: schema, vars: vars) || isReferenced(rename.to, schema: schema, vars: vars) { return true }
         if let vars = schema["vars"], case .object = vars {} else if schema["vars"] != nil { throw .invalidSchema }
         return schema["vars"]?[rename.from] != nil || schema["vars"]?[rename.to] != nil
     }
 
-	static func validatedRename(_ change: Change, in document: LPMConfigJSON, vaultID: String) throws(FileError) -> (LPMConfigJSON, Rules) {
+
+
+	static func validatedChange(_ change: Change, in document: LPMConfigJSON, vaultID: String, folder: String, strictRename: Bool = false) throws(FileError) -> (LPMConfigJSON, Rules, [RustSchemaEngine.Snapshot]) {
 		try checkVault(of: document, is: vaultID)
-		_ = try rules(of: document)
-		if let rename = change.rename, rename.from != rename.to,
-			document["envSchema"]?["vars"]?[rename.from] != nil,
-			document["envSchema"]?["vars"]?[rename.to] != nil { throw .invalidSchema }
-		let updated = try applying(change, to: document)
-		return (updated, try rules(of: updated))
+		let original = try RustSchemaEngine.resolve(document["envSchema"] ?? .object([]), inFolder: folder)
+		var prepared = document
+		if let rename = change.rename, rename.from != rename.to {
+			let source = document["envSchema"]
+			if original.effective["vars"]?[rename.from] != nil {
+				guard source?["vars"]?[rename.from] != nil, source?["overrides"]?[rename.from] == nil,
+					original.effective["vars"]?[rename.to] == nil || (!strictRename && source?["vars"]?[rename.to] != nil) else { throw .invalidSchema }
+			}
+		}
+		var edit = change
+		if let description = change.description, let origin = original.origins[description.key],
+			origin.pointer.contains("/overrides/") || origin.source != "lpm.json" {
+			guard origin.source == "lpm.json" else { throw .invalidSchema }
+			try changeDescription(description, in: &prepared, pointer: origin.pointer)
+			edit.description = nil
+		}
+		let updated = edit.isEmpty ? prepared : try applying(edit, to: prepared, referenceSchema: original.effective)
+		if updated == document { return (document, rules(fromEffective: original.effective), [original.snapshot]) }
+		let candidate = try RustSchemaEngine.resolve(updated["envSchema"] ?? .object([]), inFolder: folder)
+		return (updated, rules(fromEffective: candidate.effective), [original.snapshot, candidate.snapshot])
 	}
 
-	static func applying(_ change: Change, to document: LPMConfigJSON) throws(FileError) -> LPMConfigJSON {
+	static func applying(_ change: Change, to document: LPMConfigJSON, referenceSchema: LPMConfigJSON? = nil) throws(FileError) -> LPMConfigJSON {
 		let schemaBefore = document["envSchema"]
 		var schema = schemaBefore == .null ? .object([]) : schemaBefore ?? .object([])
 		guard case .object = schema else { throw .invalidSchema }
@@ -153,7 +240,7 @@ enum ProjectEnvSchemaFile {
 		guard case .object = vars else { throw .invalidSchema }
 
 		if let rename = change.rename, var rule = vars[rename.from], vars[rename.to] == nil {
-			try classify(&rule, name: rename.to, schema: schema)
+			try classify(&rule, name: rename.to, schema: referenceSchema ?? schema)
 			vars.set(rule, forKey: rename.from)
 			vars.renameKey(rename.from, to: rename.to)
 			if case .object(var members) = vars {
@@ -164,12 +251,22 @@ enum ProjectEnvSchemaFile {
 				}
 				vars = .object(members)
 			}
-			if case .object(var groups)? = schema["groups"] {
+			if case .object(var overrides)? = schema["overrides"] {
+				for index in overrides.indices {
+					guard var condition = overrides[index].value["requiredWhen"], condition["variable"] == .string(rename.from) else { continue }
+					condition.set(.string(rename.to), forKey: "variable")
+					overrides[index].value.set(condition, forKey: "requiredWhen")
+				}
+				schema.set(.object(overrides), forKey: "overrides")
+			}
+			for field in ["groups", "groupOverrides"] {
+			if case .object(var groups)? = schema[field] {
 				for index in groups.indices {
 					guard case .array(let members)? = groups[index].value["vars"] else { continue }
 					groups[index].value.set(.array(members.map { $0 == .string(rename.from) ? .string(rename.to) : $0 }), forKey: "vars")
 				}
-				schema.set(.object(groups), forKey: "groups")
+				schema.set(.object(groups), forKey: field)
+			}
 			}
 		}
 		if let description = change.description {
@@ -187,8 +284,9 @@ enum ProjectEnvSchemaFile {
 			} else {
 				rule.set(.string(description.text), forKey: "description")
 			}
-			if vars[description.key] == nil { try classify(&rule, name: description.key, schema: schema) }
-            if rule.isEmptyObject && !isReferenced(description.key, schema: schema, vars: vars) {
+			if vars[description.key] == nil { if vars[description.key] == nil { try classify(&rule, name: description.key, schema: referenceSchema ?? schema) } }
+			if rule.isEmptyObject && !isReferenced(description.key, schema: schema, vars: vars) && !isReferenced(description.key, schema: referenceSchema ?? schema, vars: referenceSchema?["vars"] ?? vars) {
+
 				vars.removeValue(forKey: description.key)
 			} else {
 				vars.set(rule, forKey: description.key)
@@ -226,52 +324,20 @@ enum ProjectEnvSchemaFile {
 		} else { rule.removeValue(forKey: "client") }
 	}
 
+	#if DEBUG
 	static func rules(of document: LPMConfigJSON) throws(FileError) -> Rules {
 		guard let schema = document["envSchema"], schema != .null else { return Rules() }
-		guard case .object(let fields) = schema, fields.allSatisfy({ ["vars", "clientPrefixes", "groups"].contains($0.key) }) else { throw .invalidSchema }
-		var prefixes: [String] = ["NEXT_PUBLIC_", "VITE_", "PUBLIC_", "EXPO_PUBLIC_", "GATSBY_", "NUXT_PUBLIC_"]
-		if let value = schema["clientPrefixes"] {
-			guard case .array(let values) = value, values.count <= 32 else { throw .invalidSchema }
-			var unique: Set<String> = []
-			for value in values {
-				guard case .string(let prefix) = value, portableName(prefix), prefix.hasSuffix("_"), unique.insert(prefix).inserted else { throw .invalidSchema }
-				prefixes.append(prefix)
-			}
-		}
-		let vars = schema["vars"] ?? .object([])
-		guard case .object(let members) = vars, members.count <= 4096 else { throw .invalidSchema }
-		var selectors = 0
-		var atoms = 0
-		for member in members {
-			for field in ["requiredIn", "defaultsIn"] {
-				guard case .array(let values)? = member.value[field] else { continue }
-				selectors += values.count
-				guard selectors <= 4096 else { throw .invalidSchema }
-				for value in values {
-					let selector = field == "defaultsIn" ? value["when"] : value
-					for dimension in ["environment", "stage", "service"] {
-						if case .array(let values)? = selector?[dimension] {
-							atoms += values.count
-						}
-					}
-					guard atoms <= 16384 else { throw .invalidSchema }
-				}
-			}
-		}
+		return rules(fromEffective: try RustSchemaEngine.validate(schema))
+	}
+
+	#endif
+	private static func rules(fromEffective schema: LPMConfigJSON) -> Rules {
+		guard case .object(let declarations)? = schema["vars"] else { return Rules() }
 		var rules = Rules()
-		for member in members {
-			try validateRule(member.value, name: member.key)
-			let cra = member.key.utf8.prefix(10).elementsEqual("REACT_APP_".utf8, by: { ($0 >= 97 && $0 <= 122 ? $0 - 32 : $0) == $1 })
-			let isPublic = cra || prefixes.contains(where: member.key.hasPrefix)
-			guard isPublic == (member.value["client"] == .bool(true)) else { throw .invalidSchema }
-			rules.keys.insert(member.key)
-			switch member.value["description"] {
-			case .string(let text)?: rules.descriptions[member.key] = text
-			case nil, .null?: break
-			case _?: throw .invalidSchema
-			}
+		for declaration in declarations {
+			rules.keys.insert(declaration.key)
+			if case .string(let text)? = declaration.value["description"] { rules.descriptions[declaration.key] = text }
 		}
-		try validateRelations(schema: schema, vars: vars)
 		return rules
 	}
 
@@ -280,123 +346,6 @@ enum ProjectEnvSchemaFile {
 			switch scalar.value {
 			case 0...8, 11...12, 14...31, 127...159: true
 			default: false
-			}
-		}
-	}
-
-	private static let allowedRuleFields: Set<String> = [
-		"required", "format", "pattern", "enum", "default", "secret", "client", "description", "empty", "ci",
-		"min", "max", "minLength", "maxLength", "protocols", "requiredWhen", "requiredIn", "defaultsIn",
-	]
-
-	private static func portableName(_ name: String) -> Bool {
-		let bytes = name.utf8
-		guard let first = bytes.first, bytes.count <= 256,
-			first == 95 || (65...90).contains(first) || (97...122).contains(first) else { return false }
-		return bytes.allSatisfy({ $0 == 95 || (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) })
-	}
-
-	private static func validateRule(_ rule: LPMConfigJSON, name: String) throws(FileError) {
-		guard portableName(name), case .object(let fields) = rule else { throw .invalidSchema }
-		guard fields.allSatisfy({ allowedRuleFields.contains($0.key) }) else { throw .invalidSchema }
-		for field in ["required", "secret", "client"] {
-			if let value = rule[field], case .bool = value {} else if rule[field] != nil { throw .invalidSchema }
-		}
-		for field in ["description", "pattern", "default", "format"] {
-			switch rule[field] {
-			case .string(let text)?: guard safeMetadataText(text) else { throw .invalidSchema }
-			case nil, .null?: break
-			default: throw .invalidSchema
-			}
-		}
-		if case .string(let format)? = rule["format"], !["url", "port", "email", "boolean", "integer", "hostname", "ip"].contains(format) { throw .invalidSchema }
-		if let ci = rule["ci"], ci != .null {
-			guard case .string(let text) = ci, ["secret", "variable"].contains(text) else { throw .invalidSchema }
-		}
-		if rule["secret"] == .bool(true), rule["client"] == .bool(true) || rule["ci"] == .string("variable") { throw .invalidSchema }
-		if let empty = rule["empty"] {
-			guard case .string(let text) = empty, ["missing", "allow", "reject"].contains(text) else { throw .invalidSchema }
-		}
-		if let values = rule["enum"], values != .null {
-			guard case .array(let items) = values, !items.isEmpty, items.allSatisfy({
-				if case .string(let text) = $0 { return safeMetadataText(text) }
-				return false
-			}) else { throw .invalidSchema }
-		}
-		try validateConstraints(rule)
-		try validateScopes(rule)
-		if rule["secret"] == .bool(true), ["default", "enum"].contains(where: { rule[$0] != nil && rule[$0] != .null }) { throw .invalidSchema }
-	}
-
-	private struct Selector: Equatable {
-		var environment: Set<String>?
-		var stage: Set<String>? = ["development", "build", "runtime", "ci", "test"]
-		var service: Set<String>?
-		func overlaps(_ other: Self) -> Bool {
-			for (first, second) in [
-				(environment, other.environment), (stage, other.stage), (service, other.service),
-			] {
-				if let first, let second, first.isDisjoint(with: second) { return false }
-			}
-			return true
-		}
-	}
-	private static func selector(_ value: LPMConfigJSON) throws(FileError) -> Selector {
-		guard case .object(let fields) = value, !fields.isEmpty,
-			fields.allSatisfy({ ["environment", "stage", "service"].contains($0.key) })
-		else { throw .invalidSchema }
-		var selector = Selector()
-		for field in fields {
-			guard case .array(let values) = field.value, !values.isEmpty,
-				values.count <= (field.key == "stage" ? 5 : 32)
-			else { throw .invalidSchema }
-			var names = Set<String>(minimumCapacity: values.count)
-			for value in values {
-				guard case .string(let name) = value, names.insert(name).inserted else {
-					throw .invalidSchema
-				}
-				if field.key == "stage" {
-					guard ["development", "build", "runtime", "ci", "test"].contains(name) else {
-						throw .invalidSchema
-					}
-				} else {
-					guard EnvValidation.isValidEnvironmentName(name) else { throw .invalidSchema }
-				}
-			}
-			switch field.key {
-			case "environment": selector.environment = names;
-			case "stage": selector.stage = names;
-			default: selector.service = names
-			}
-		}
-		return selector
-	}
-	private static func validateScopes(_ rule: LPMConfigJSON) throws(FileError) {
-		if let required = rule["requiredIn"] {
-			guard case .array(let values) = required, values.count <= 32 else { throw .invalidSchema }
-			var selectors: [Selector] = []
-			selectors.reserveCapacity(values.count)
-			for value in values {
-				let value = try selector(value);
-				guard !selectors.contains(value) else { throw .invalidSchema }; selectors.append(value)
-			}
-		}
-		if let defaults = rule["defaultsIn"] {
-			guard case .array(let values) = defaults, values.count <= 32 else { throw .invalidSchema }
-			guard rule["secret"] != .bool(true) || values.isEmpty else { throw .invalidSchema }
-			var selectors: [Selector] = []
-			selectors.reserveCapacity(values.count)
-			for value in values {
-				guard case .object(let fields) = value, fields.count == 2,
-					fields.allSatisfy({ ["when", "value"].contains($0.key) }),
-					let when = value["when"], case .string(let text)? = value["value"],
-					safeMetadataText(text)
-				else { throw .invalidSchema }
-				let parsedSelector = try selector(when)
-				guard !selectors.contains(where: { $0.overlaps(parsedSelector) }) else {
-					throw .invalidSchema
-				}
-				selectors.append(parsedSelector)
 			}
 		}
 	}
@@ -422,52 +371,6 @@ enum ProjectEnvSchemaFile {
 		return integer
 	}
 
-	private static func validateConstraints(_ rule: LPMConfigJSON) throws(FileError) {
-		let min = try integerBound(rule["min"])
-		let max = try integerBound(rule["max"])
-		if min != nil || max != nil {
-			guard rule["format"] == .string("integer") || rule["format"] == .string("port") else { throw .invalidSchema }
-			if let min, let max, min > max { throw .invalidSchema }
-			if rule["format"] == .string("port"), (min ?? 1) > 65535 || (max ?? 65535) < 1 { throw .invalidSchema }
-		}
-		let minLength = try lengthBound(rule["minLength"])
-		let maxLength = try lengthBound(rule["maxLength"])
-		if let minLength, let maxLength, minLength > maxLength { throw .invalidSchema }
-		if let protocols = rule["protocols"], protocols != .null {
-			guard rule["format"] == .string("url"), case .array(let values) = protocols, !values.isEmpty, values.count <= 32 else { throw .invalidSchema }
-			var unique = Set<String>(minimumCapacity: values.count)
-			for value in values {
-				guard case .string(let scheme) = value, scheme.utf8.count <= 256, let first = scheme.utf8.first, (97...122).contains(first), scheme.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || [43,45,46].contains($0) }), unique.insert(scheme).inserted else { throw .invalidSchema }
-			}
-		}
-	}
-
-	private static func validateRelations(schema: LPMConfigJSON, vars: LPMConfigJSON) throws(FileError) {
-		guard case .object(let declarations) = vars else { throw .invalidSchema }
-		let names = Set(declarations.map(\.key))
-		let secretNames = Set(declarations.lazy.filter { $0.value["secret"] == .bool(true) }.map(\.key))
-		for declaration in declarations {
-			guard let condition = declaration.value["requiredWhen"], condition != .null else { continue }
-			guard case .object(let fields) = condition, fields.count == 2, case .string(let variable)? = condition["variable"], portableName(variable), names.contains(variable) else { throw .invalidSchema }
-			if let equals = condition["equals"], condition["present"] == nil {
-				guard case .string(let text) = equals, safeMetadataText(text), !secretNames.contains(variable) else { throw .invalidSchema }
-			} else if case .bool? = condition["present"], condition["equals"] == nil {} else { throw .invalidSchema }
-		}
-		guard let groups = schema["groups"] else { return }
-		guard case .object(let definitions) = groups, definitions.count <= 128 else { throw .invalidSchema }
-		var totalMembers = 0
-		for definition in definitions {
-			guard portableName(definition.key), case .object(let fields) = definition.value, fields.count == 2,
-				case .string(let mode)? = definition.value["mode"], ["allOrNone", "exactlyOne", "atLeastOne"].contains(mode),
-				case .array(let members)? = definition.value["vars"], !members.isEmpty, members.count <= 4096 - totalMembers else { throw .invalidSchema }
-			totalMembers += members.count
-			var unique = Set<String>(minimumCapacity: members.count)
-			for member in members {
-				guard case .string(let name) = member, names.contains(name), unique.insert(name).inserted else { throw .invalidSchema }
-			}
-		}
-	}
-
 	private static func isReferenced(_ key: String, schema: LPMConfigJSON, vars: LPMConfigJSON) -> Bool {
 		if case .object(let declarations) = vars, declarations.contains(where: { $0.value["requiredWhen"]?["variable"] == .string(key) }) { return true }
 		if case .object(let groups)? = schema["groups"] {
@@ -483,6 +386,9 @@ enum ProjectEnvSchemaFile {
 		guard case .object(var declarations)? = schema["vars"] else { return schema }
 		var result = schema
 		for index in declarations.indices {
+			for field in ["required", "secret", "client"] where declarations[index].value[field] == .bool(false) { declarations[index].value.removeValue(forKey: field) }
+			for field in ["description", "format", "pattern", "enum", "default"] where declarations[index].value[field] == .null { declarations[index].value.removeValue(forKey: field) }
+			if declarations[index].value["empty"] == .string("missing") { declarations[index].value.removeValue(forKey: "empty") }
 			for field in ["min", "max"] {
 				if let integer = try integerBound(declarations[index].value[field]) { declarations[index].value.set(.string(String(integer)), forKey: field) }
 			}
@@ -494,21 +400,47 @@ enum ProjectEnvSchemaFile {
 		return result
 	}
 
-	static func validatedSyncConfig(inFolder folder: String, vaultID: String) throws(FileError) -> LPMJSONValue? {
-		let folderURL: URL
-		do { folderURL = try existingFolder(folder) }
+	static func validatedSyncConfig(inFolder folder: String, vaultID: String, beforeVerification: (() -> Void)? = nil) throws(FileError) -> LPMJSONValue? {
+		do { return try validatedSyncSnapshot(inFolder: folder, vaultID: vaultID, beforeVerification: beforeVerification).config }
 		catch .noFolder { return nil }
-		let url = folderURL.appendingPathComponent("lpm.json")
-		guard let data = try read(url) else { return nil }
-		let document = try parse(data)
+	}
+
+	struct SyncSnapshot: Sendable {
+		let config: LPMJSONValue?
+		fileprivate let url: URL
+		fileprivate let rootDigest: Data?
+		fileprivate let sources: RustSchemaEngine.Snapshot
+
+		func verify() throws(FileError) {
+			let current = try ProjectEnvSchemaFile.read(url).map { Data(SHA256.hash(data: $0)) }
+			guard current == rootDigest else { throw .changed }
+			try sources.verify()
+		}
+	}
+
+	static func validatedSyncSnapshot(inFolder folder: String, vaultID: String, beforeVerification: (() -> Void)? = nil) throws(FileError) -> SyncSnapshot {
+		let url = try existingFolder(folder).appendingPathComponent("lpm.json")
+		let data = try read(url)
+		let document = try data.map(parse) ?? .object([])
 		try checkVault(of: document, is: vaultID)
-		_ = try rules(of: document)
+		let resolved = try RustSchemaEngine.resolve(document["envSchema"] ?? .object([]), inFolder: folder)
+		try resolved.verify()
 		var metadata: [String: LPMJSONValue] = [:]
 		for key in ["envSchema", "environments", "env"] {
-			if let value = document[key], value != .null { metadata[key] = try syncValue(key == "envSchema" ? canonicalBoundsForSync(value) : value) }
+			if let value = document[key], value != .null { metadata[key] = try syncValue(key == "envSchema" ? canonicalBoundsForSync(resolved.effective) : value) }
 		}
-		return .object(metadata)
+        try validateMetadataSize(pushMetadata(from: metadata))
+		beforeVerification?()
+		let captured = SyncSnapshot(config: data == nil ? nil : .object(metadata), url: url, rootDigest: data.map { Data(SHA256.hash(data: $0)) }, sources: resolved.snapshot)
+		try captured.verify()
+		return captured
 	}
+
+    static let maximumMetadataBytes = 256 * 1024
+    static func validateMetadataSize(_ value: LPMJSONValue) throws(FileError) {
+        guard let data = try? JSONEncoder().encode(value) else { throw .invalidSchema }
+        guard data.count <= maximumMetadataBytes else { throw .metadataTooLarge }
+    }
 
 	static func pushMetadata(from root: [String: LPMJSONValue]) -> LPMJSONValue {
       var schema: [String: LPMJSONValue] = ["version": .integer(2)]
@@ -524,7 +456,9 @@ enum ProjectEnvSchemaFile {
           schema["envSchema"] = .object(vars)
         } else { schema["envSchema"] = .object([:]) }
         var policy: [String: LPMJSONValue] = [:]
-        for field in ["clientPrefixes", "groups"] { if let value = envSchema[field] { policy[field] = value } }
+        for field in ["clientPrefixes", "groups"] {
+          if let value = envSchema[field], value != .object([:]), value != .array([]) { policy[field] = value }
+        }
         if !policy.isEmpty { schema["envSchemaConfig"] = .object(policy) }
       }
       if case .object(let environments) = root["environments"] {

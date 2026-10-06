@@ -454,7 +454,7 @@ struct VaultKeyDescriptionStoreTests {
 		let project = try #require(store.selectedProject)
 		let metadata = keychain.dataStorage
 		let coordinator = VaultPersistenceCoordinator(service: keychain)
-		let result = coordinator.coordinatedKeyRename(project: project, edit: .init(key: id.key, environments: environments, newKey: "NEW"), change: .init(rename: .init(from: id.key, to: "NEW")), folder: folder, fileWriter: { _, url, _, _, check in
+		let result = coordinator.coordinatedKeyRename(project: project, edit: .init(key: id.key, environments: environments, newKey: "NEW"), change: .init(rename: .init(from: id.key, to: "NEW")), folder: folder, fileWriter: { _, url, _, _, _, check in
 			if editorRace { try #"{"edited":true}"#.write(to: url, atomically: true, encoding: .utf8); try check() }
 			throw ProjectConfigFile.FileError.writeFailed("fixture replacement failure")
 		})
@@ -472,8 +472,8 @@ struct VaultKeyDescriptionStoreTests {
 	func schemaRenameDirectorySyncFailureKeepsAlignment() async throws {
 		let (store, keychain, folder) = try await makeStore(#"{"envSchema":{"vars":{"STRIPE_KEY":{"secret":true}}}}"#)
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-		let result = VaultPersistenceCoordinator(service: keychain).coordinatedKeyRename(project: try #require(store.selectedProject), edit: .init(key: id.key, environments: environments, newKey: "NEW"), change: .init(rename: .init(from: id.key, to: "NEW")), folder: folder, fileWriter: { data, url, permissions, replace, check in
-			try SecureFileWriter.write(data, to: url, permissions: permissions, replaceExisting: replace, beforeReplacement: check, directorySynchronizer: { _ in EIO })
+		let result = VaultPersistenceCoordinator(service: keychain).coordinatedKeyRename(project: try #require(store.selectedProject), edit: .init(key: id.key, environments: environments, newKey: "NEW"), change: .init(rename: .init(from: id.key, to: "NEW")), folder: folder, fileWriter: { data, url, permissions, replace, directoryDescriptor, check in
+			try SecureFileWriter.write(data, to: url, permissions: permissions, replaceExisting: replace, beforeReplacement: check, directorySynchronizer: { _ in EIO }, directoryDescriptor: directoryDescriptor)
 		})
 		guard case .success(let commit, let rules) = result else { Issue.record("Replacement committed; report the durability warning without reverting keys"); return }
 		#expect(commit.warning != nil)
@@ -714,7 +714,7 @@ struct VaultKeyDescriptionStoreTests {
 	func failedRenameCompensationIsIndeterminate() async throws {
 		let (store, keychain, folder) = try await makeStore(#"{"envSchema":{"vars":{"STRIPE_KEY":{"secret":true}}}}"#)
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-		let result = VaultPersistenceCoordinator(service: keychain).coordinatedKeyRename(project: try #require(store.selectedProject), edit: .init(key: id.key, environments: environments, newKey: "NEW"), change: .init(rename: .init(from: id.key, to: "NEW")), folder: folder, fileWriter: { _, _, _, _, _ in
+		let result = VaultPersistenceCoordinator(service: keychain).coordinatedKeyRename(project: try #require(store.selectedProject), edit: .init(key: id.key, environments: environments, newKey: "NEW"), change: .init(rename: .init(from: id.key, to: "NEW")), folder: folder, fileWriter: { _, _, _, _, _, _ in
 			keychain.failNextSaveEnvironments = true
 			throw ProjectConfigFile.FileError.writeFailed("fixture replacement failure")
 		})
@@ -799,6 +799,32 @@ struct VaultKeyDescriptionStoreTests {
         #expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == nil)
         #expect(store.keyDrafts.draft(id)?.keyDescriptionChange == "Requested")
         #expect(keychain.applyVaultTransactionCallCount == 0)
+    }
+
+    @Test("fragment rename failures compensate keys and committed writes retain source-specific warnings", arguments:[false,true])
+    func fragmentRenameKeepsPersistenceAligned(durabilityFailure:Bool) async throws {
+        let (store,keychain,folder) = try await makeStore(#"{"envSchema":{"extends":["base.json"]}}"#)
+        defer { store.lock(); try? FileManager.default.removeItem(atPath:folder) }
+        let fragment = #"{"vars":{"TOKEN":{"description":"Old"}}}"#
+        try fragment.write(toFile:folder+"/base.json",atomically:true,encoding:.utf8)
+        let previousMetadata = keychain.dataStorage
+        let result = VaultPersistenceCoordinator(service:keychain).coordinatedKeyRename(project:try #require(store.selectedProject),edit:.init(key:id.key,environments:environments,newKey:"TOKEN"),change:.init(rename:.init(from:id.key,to:"TOKEN"),description:.init(key:"TOKEN",text:"New")),folder:folder,fileWriter:{ data,url,permissions,replace,descriptor,check in
+            #expect(url.lastPathComponent == "base.json")
+            if durabilityFailure { try SecureFileWriter.write(data,to:url,permissions:permissions,replaceExisting:replace,beforeReplacement:check,directorySynchronizer:{_ in EIO},directoryDescriptor:descriptor) }
+            else { throw ProjectConfigFile.FileError.writeFailed("fixture failure") }
+        })
+        if durabilityFailure {
+            guard case .success(let commit,_) = result else { Issue.record("Committed fragment must retain renamed keys"); return }
+            #expect(commit.warning?.contains("base.json") == true)
+            #expect(keychain.envStorage["project"]?.environments["default"]?["TOKEN"] == "sk_dev")
+            #expect(try String(contentsOfFile:folder+"/base.json",encoding:.utf8).contains("New"))
+        } else {
+            guard case .failure(let failure) = result else { Issue.record("Fragment failure must fail rename"); return }
+            #expect(!failure.localizedDescription.contains("Could not write lpm.json"))
+            #expect(keychain.envStorage["project"]?.environments == environments)
+            #expect(keychain.dataStorage == previousMetadata)
+            #expect(try String(contentsOfFile:folder+"/base.json",encoding:.utf8) == fragment)
+        }
     }
 
 	private func makeStore(_ lpmJSON: String) async throws -> (VaultStore, MockKeychainService, String) {

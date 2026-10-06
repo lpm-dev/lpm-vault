@@ -125,13 +125,13 @@ struct ProjectCLILinkTests {
 			try ProjectConfigFile.writeVaultID(
 				vaultId, to: config,
 				policy: initiallyPresent ? .replacing("inspected-vault") : .unlinked,
-				fileWriter: { data, destination, permissions, replaceExisting, validation in
+				fileWriter: { data, destination, permissions, replaceExisting, directoryDescriptor, validation in
 					try SecureFileWriter.write(
 						data, to: destination, permissions: permissions, replaceExisting: replaceExisting,
 						beforeReplacement: {
 							try newer.write(to: destination, options: .atomic)
 							try validation()
-						}
+						}, directoryDescriptor: directoryDescriptor
 					)
 				}
 			)
@@ -152,7 +152,7 @@ struct ProjectCLILinkTests {
 		#expect(throws: ProjectConfigFile.FileError.changed) {
 			try ProjectConfigFile.update(
 				at: config,
-				fileWriter: { _, _, _, _, _ in written = true },
+				fileWriter: { _, _, _, _, _, _ in written = true },
 				beforeWrite: { persisted = true }
 			) { document in
 				_ = try ProjectEnvSchemaFile.rules(of: document)
@@ -261,7 +261,7 @@ struct ProjectCLILinkTests {
 		try writeConfig(original, in: folder)
 		let url = folder.appendingPathComponent("lpm.json")
 		#expect(throws: ProjectConfigFile.FileError.tooLarge) {
-			try ProjectConfigFile.writeVaultID(vaultId, to: url, fileWriter: { _, _, _, _, _ in Issue.record("Oversized output must not reach the writer") })
+			try ProjectConfigFile.writeVaultID(vaultId, to: url, fileWriter: { _, _, _, _, _, _ in Issue.record("Oversized output must not reach the writer") })
 		}
 		#expect(try String(contentsOf: url, encoding: .utf8) == original)
 	}

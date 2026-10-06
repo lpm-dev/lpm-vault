@@ -65,10 +65,18 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 		return Data(output.text.utf8)
 	}
 
+	/// Compact JSON for the bounded Rust ABI, preserving exact numeric tokens.
+	func compactData(maximumBytes: Int) throws(RenderError) -> Data {
+		var output = Output(maximumBytes: maximumBytes, pretty: false)
+		try render(into: &output, level: 0)
+		return Data(output.text.utf8)
+	}
+
 	private struct Output {
 		var text = ""
 		var byteCount = 0
 		let maximumBytes: Int
+		var pretty = true
 
 		mutating func append(_ value: String) throws(RenderError) {
 			let count = value.utf8.count
@@ -130,13 +138,13 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 				try output.append("{}")
 				return
 			}
-			try output.append("{\n")
+			try output.append(output.pretty ? "{\n" : "{")
 			for (index, member) in members.enumerated() {
 				try Self.indent(&output, level + 1)
 				try Self.appendQuoted(member.key, to: &output)
-				try output.append(": ")
+				try output.append(output.pretty ? ": " : ":")
 				try member.value.render(into: &output, level: level + 1)
-				try output.append(index == members.count - 1 ? "\n" : ",\n")
+				try output.append(index == members.count - 1 ? (output.pretty ? "\n" : "") : (output.pretty ? ",\n" : ","))
 			}
 			try Self.indent(&output, level)
 			try output.append("}")
@@ -145,11 +153,11 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 				try output.append("[]")
 				return
 			}
-			try output.append("[\n")
+			try output.append(output.pretty ? "[\n" : "[")
 			for (index, element) in elements.enumerated() {
 				try Self.indent(&output, level + 1)
 				try element.render(into: &output, level: level + 1)
-				try output.append(index == elements.count - 1 ? "\n" : ",\n")
+				try output.append(index == elements.count - 1 ? (output.pretty ? "\n" : "") : (output.pretty ? ",\n" : ","))
 			}
 			try Self.indent(&output, level)
 			try output.append("]")
@@ -161,6 +169,7 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 	}
 
 	private static func indent(_ output: inout Output, _ level: Int) throws(RenderError) {
+		guard output.pretty else { return }
 		try output.append(String(repeating: "  ", count: level))
 	}
 
