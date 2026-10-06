@@ -6,23 +6,27 @@ struct RemoteEnvProjectPayload: Sendable {
 	let version: Int
 	let keyCount: Int
 	let principalID: String?
+	let personalKeys: PersonalKeyEnvelope?
 
 	init(
 		vaultId: String,
 		environments: [String: [String: String]],
 		version: Int,
 		keyCount: Int,
-		principalID: String? = nil
+		principalID: String? = nil,
+		personalKeys: PersonalKeyEnvelope? = nil
 	) {
 		self.vaultId = vaultId
 		self.environments = environments
 		self.version = version
 		self.keyCount = keyCount
 		self.principalID = principalID
+		self.personalKeys = personalKeys
 	}
 }
 
 protocol EnvProjectImportServiceProtocol: Sendable {
+	func rememberPersonalKeys(_ payload: RemoteEnvProjectPayload) async throws
 	func loadPersonal(authToken: String, vaultId: String) async throws -> RemoteEnvProjectPayload
 	func loadOrganization(
 		authToken: String,
@@ -30,6 +34,12 @@ protocol EnvProjectImportServiceProtocol: Sendable {
 		vaultId: String,
 		expectedCallerUserID: String
 	) async throws -> RemoteEnvProjectPayload
+}
+
+extension EnvProjectImportServiceProtocol {
+  func rememberPersonalKeys(_ payload: RemoteEnvProjectPayload) async throws {
+    guard payload.personalKeys == nil else { throw PersonalProjectCrypto.KeyError.invalidContext }
+  }
 }
 
 final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked Sendable {
@@ -123,7 +133,7 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 			throw EnvProjectImportError.noResponse
 		}
 		try Task.checkCancellation()
-		guard let blob = result.encryptedBlob, let wrapped = result.wrappedKey else {
+		guard result.encryptedBlob != nil, result.wrappedKey != nil else {
 			throw EnvProjectImportError.noData(
 				result.displayError ?? "No env project data is available in the cloud."
 			)
@@ -145,14 +155,7 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 		}
 
 		do {
-			let decrypted = try personalDecryptor(
-				blob,
-				wrapped,
-				principalID,
-				vaultId,
-				version,
-				cryptoVersion
-			)
+			let decrypted = try await personalSyncService.decryptPersonalPayload(result, legacyDecryptor: personalDecryptor)
 			try Task.checkCancellation()
 			let merge = try EnvValidation.mergeRemotePayload(decrypted, into: [:])
 			return RemoteEnvProjectPayload(
@@ -160,7 +163,8 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 				environments: merge.environments,
 				version: version,
 				keyCount: merge.keyCount,
-				principalID: principalID
+				principalID: principalID,
+				personalKeys: result.personalKeys
 			)
 		} catch is CancellationError {
 			throw CancellationError()
@@ -172,6 +176,13 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 			)
 		}
 	}
+
+  func rememberPersonalKeys(_ payload: RemoteEnvProjectPayload) async throws {
+    if let envelope = payload.personalKeys {
+      guard let principal = payload.principalID else { throw PersonalProjectCrypto.KeyError.invalidContext }
+      try await personalSyncService.rememberPersonalKeys(envelope, principalID: principal, vaultID: payload.vaultId)
+    }
+  }
 
 	func loadOrganization(
 		authToken: String,

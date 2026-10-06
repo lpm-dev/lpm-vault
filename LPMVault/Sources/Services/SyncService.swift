@@ -77,6 +77,8 @@ final class SyncService: @unchecked Sendable {
     }
   }
 
+  private let legacyPersonalDecryptor: PersonalPayloadDecryptor
+  private let personalProjectKeys: PersonalProjectKeyStore
   private let apiBaseURL: URL
   private let session: URLSession
   private let responseSignatureVerifier: ResponseSignatureVerifier
@@ -88,6 +90,11 @@ final class SyncService: @unchecked Sendable {
   init(
     baseURL: URL = VaultConstants.apiBaseURL,
     session: URLSession? = nil,
+    personalProjectKeys: PersonalProjectKeyStore = .live,
+    legacyPersonalDecryptor: @escaping PersonalPayloadDecryptor = {
+      try VaultCrypto.decryptStableSyncData(encryptedBlob: $0, wrappedKey: $1,
+        principalId: $2, vaultId: $3, revision: $4, cryptoVersion: $5)
+    },
     responseSignatureVerifier: @escaping ResponseSignatureVerifier = { response, body, required in
       PinnedSessionDelegate.verifyResponseSignature(
         response,
@@ -96,6 +103,8 @@ final class SyncService: @unchecked Sendable {
       )
     }
   ) {
+    self.legacyPersonalDecryptor = legacyPersonalDecryptor
+    self.personalProjectKeys = personalProjectKeys
     apiBaseURL = baseURL
     self.responseSignatureVerifier = responseSignatureVerifier
     self.session =
@@ -136,6 +145,7 @@ final class SyncService: @unchecked Sendable {
     let wrappedKey: String?
     let updatedAt: String?
     let warnings: [SyncMetadataWarning]
+    let personalKeys: PersonalKeyEnvelope?
 
     init(
       vaultId: String?,
@@ -162,11 +172,13 @@ final class SyncService: @unchecked Sendable {
       userId: String? = nil,
       operation: String? = nil,
       outcome: String? = nil,
-      warnings: [SyncMetadataWarning] = []
+      warnings: [SyncMetadataWarning] = [],
+      personalKeys: PersonalKeyEnvelope? = nil
 	) {
       self.operation = operation
       self.outcome = outcome
       self.warnings = warnings
+      self.personalKeys = personalKeys
       self.vaultId = vaultId
       self.version = version
       self.cryptoVersion = cryptoVersion
@@ -350,6 +362,118 @@ final class SyncService: @unchecked Sendable {
     let schema: LPMJSONValue?
   }
 
+  func decryptPersonalPayload(
+    _ result: SyncStatus, legacyDecryptor: @escaping PersonalPayloadDecryptor
+  ) async throws -> Data {
+    guard let principal = result.principalId, let vault = result.vaultId,
+      let blob = result.encryptedBlob, let wrapped = result.wrappedKey,
+      let revision = result.version, let cryptoVersion = result.cryptoVersion else {
+      throw PersonalProjectCrypto.KeyError.invalidContext
+    }
+    let origin = try PersonalProjectCrypto.registryOrigin(apiBaseURL.absoluteString)
+    let keys = personalProjectKeys
+    return try await Task.detached(priority: .userInitiated) {
+      try keys.validate(envelope: result.personalKeys, registryURL: origin, principalID: principal, vaultID: vault)
+      if let envelope = result.personalKeys {
+        let project = try PersonalProjectCrypto.open(root: keys.root(origin, principal, false),
+          envelope: envelope, registryURL: origin, principalID: principal, vaultID: vault)
+        return try PersonalProjectCrypto.decrypt(project: project, encryptedBlob: blob, wrappedKey: wrapped,
+          principalID: principal, vaultID: vault, revision: revision, cryptoVersion: cryptoVersion)
+      }
+      return try legacyDecryptor(blob, wrapped, principal, vault, revision, cryptoVersion)
+    }.value
+  }
+
+  func rememberPersonalKeys(_ envelope: PersonalKeyEnvelope, principalID: String, vaultID: String) async throws {
+    guard try PersonalProjectCrypto.registryOrigin(apiBaseURL.absoluteString) == envelope.personalRegistryOrigin else {
+      throw PersonalProjectCrypto.KeyError.invalidContext
+    }
+    let keys = personalProjectKeys
+    try await Task.detached(priority: .userInitiated) {
+      try keys.remember(envelope: envelope, principalID: principalID, vaultID: vaultID)
+    }.value
+  }
+
+  func preparePersonalPush(
+    authToken: String, expectedPrincipalId: String, vaultId: String, plaintext: Data,
+    expectedVersion: Int?, force: Bool, recreateMissing: Bool, name: String?, schema: LPMJSONValue?,
+    legacyEncryptor: @escaping @Sendable (Data, String, String, Int) throws -> (encryptedBlob: String, wrappedKey: String)
+  ) async throws -> PreparedRemoteOperation<AuthenticatedResponse<SyncStatus>> {
+    if let schema { try ProjectEnvSchemaFile.validateMetadataSize(schema) }
+    guard (expectedVersion ?? 0) >= 0, (expectedVersion ?? 0) < Int32.max else {
+      throw PersonalProjectCrypto.KeyError.invalidContext
+    }
+    let keys = personalProjectKeys
+    let legacyDecryptor = legacyPersonalDecryptor
+    let remoteResponse = await pullAuthenticated(authToken: authToken, vaultId: vaultId)
+    guard case .response(let remote) = remoteResponse else { return .completed(.unauthorized) }
+    guard let remote else { throw VaultSyncError("Could not authenticate the personal env project key.") }
+    guard remote.principalId == expectedPrincipalId, remote.vaultId == vaultId else {
+      throw PersonalProjectCrypto.KeyError.invalidContext
+    }
+    func conflict(_ code: String, _ revision: Int) -> PreparedRemoteOperation<AuthenticatedResponse<SyncStatus>> {
+      .completed(.response(SyncStatus(vaultId: vaultId, version: nil, cryptoVersion: nil,
+        contentKeyVersion: nil, recipientPublicKeyVersion: nil, recipientPublicKeyFingerprint: nil,
+        status: nil, error: "The cloud env project changed. Review the latest revision before pushing.",
+        code: code, serverVersion: revision, hint: nil, encryptedBlob: nil, wrappedKey: nil,
+        updatedAt: nil, principalId: expectedPrincipalId)))
+    }
+    let origin = try PersonalProjectCrypto.registryOrigin(apiBaseURL.absoluteString)
+    let project: PersonalProjectCrypto.Project
+    if remote.outcome == "current" {
+      guard let remoteVersion = remote.version else { throw PersonalProjectCrypto.KeyError.invalidContext }
+      guard remoteVersion == expectedVersion else {
+        return conflict(expectedVersion == nil ? "vault_expected_version_required" : "vault_version_conflict", remoteVersion)
+      }
+      try await Task.detached(priority: .userInitiated) {
+        try keys.validate(envelope: remote.personalKeys, registryURL: origin,
+          principalID: expectedPrincipalId, vaultID: vaultId)
+      }.value
+      if let envelope = remote.personalKeys {
+        project = try await Task.detached(priority: .userInitiated) {
+          try PersonalProjectCrypto.open(root: keys.root(origin, expectedPrincipalId, false),
+            envelope: envelope, registryURL: origin,
+            principalID: expectedPrincipalId, vaultID: vaultId)
+        }.value
+      } else {
+        guard let blob = remote.encryptedBlob, let wrapped = remote.wrappedKey,
+          let revision = remote.version, let cryptoVersion = remote.cryptoVersion else {
+          throw PersonalProjectCrypto.KeyError.invalidContext
+        }
+        project = try await Task.detached(priority: .userInitiated) {
+          let previous = try legacyDecryptor(blob, wrapped, expectedPrincipalId, vaultId, revision, cryptoVersion)
+          _ = try EnvValidation.mergeRemotePayload(previous, into: [:])
+          return try PersonalProjectCrypto.create(root: keys.root(origin, expectedPrincipalId, true), registryOrigin: origin,
+            principalID: expectedPrincipalId, vaultID: vaultId, version: 1)
+        }.value
+      }
+    } else if remote.outcome == "missing" {
+      let retained = remote.serverVersion ?? 0
+      guard retained == (expectedVersion ?? 0) else {
+        return conflict("vault_ciphertext_revision_mismatch", retained)
+      }
+      guard retained == 0 || recreateMissing else {
+        return conflict("vault_recreation_intent_required", retained)
+      }
+      project = try await Task.detached(priority: .userInitiated) {
+        let floor = try keys.checkpoint(origin, expectedPrincipalId, vaultId, nil)
+        guard floor < Int32.max else { throw PersonalProjectCrypto.KeyError.invalidContext }
+        return try PersonalProjectCrypto.create(root: keys.root(origin, expectedPrincipalId, true), registryOrigin: origin,
+          principalID: expectedPrincipalId, vaultID: vaultId, version: floor + 1)
+      }.value
+    } else { throw VaultSyncError(remote.displayError ?? "Could not authenticate the personal env project key.") }
+    let revision = (expectedVersion ?? 0) + 1
+    guard revision > 0, revision <= Int32.max else { throw PersonalProjectCrypto.KeyError.invalidContext }
+    let encrypted = try await Task.detached(priority: .userInitiated) {
+      try PersonalProjectCrypto.encrypt(project: project, plaintext: plaintext,
+        principalID: expectedPrincipalId, vaultID: vaultId, revision: revision)
+    }.value
+    return preparedPushAuthenticated(authToken: authToken, expectedPrincipalId: expectedPrincipalId,
+      vaultId: vaultId, encryptedBlob: encrypted.encryptedBlob, wrappedKey: encrypted.wrappedKey,
+      expectedVersion: expectedVersion, force: force, recreateMissing: recreateMissing,
+      name: name, schema: schema, personalKeys: project.envelope)
+  }
+
   func pushAuthenticated(
     authToken: String,
     expectedPrincipalId: String,
@@ -400,7 +524,8 @@ final class SyncService: @unchecked Sendable {
         force: force,
         recreateMissing: recreateMissing,
         name: name,
-        schema: schema
+        schema: schema,
+        personalKeys: nil
       )
     }.value
   }
@@ -415,7 +540,8 @@ final class SyncService: @unchecked Sendable {
     force: Bool,
     recreateMissing: Bool,
     name: String?,
-    schema: LPMJSONValue?
+    schema: LPMJSONValue?,
+    personalKeys: PersonalKeyEnvelope?
   ) -> PreparedRemoteOperation<AuthenticatedResponse<SyncStatus>> {
     if let schema {
       do { try ProjectEnvSchemaFile.validateMetadataSize(schema) }
@@ -440,6 +566,12 @@ final class SyncService: @unchecked Sendable {
     if recreateMissing { body["recreateMissing"] = .bool(true) }
     if let name, !name.isEmpty { body["name"] = .string(name) }
     if let schema { body["schema"] = schema }
+    if let personalKeys {
+      body["personalKeyScheme"] = .integer(Int64(personalKeys.personalKeyScheme))
+      body["personalRegistryOrigin"] = .string(personalKeys.personalRegistryOrigin)
+      body["projectKeyVersion"] = .integer(Int64(personalKeys.projectKeyVersion))
+      body["wrappedProjectKey"] = .string(personalKeys.wrappedProjectKey)
+    }
     return prepareSyncRequest(
       url: url,
       method: "POST",
@@ -447,7 +579,8 @@ final class SyncService: @unchecked Sendable {
       body: LPMJSONValue.object(body),
       vaultId: vaultId,
       scope: .personal,
-      policy: .write
+      policy: .write,
+      expectedPersonalKeys: personalKeys
     )
   }
 
@@ -1047,7 +1180,8 @@ final class SyncService: @unchecked Sendable {
     body: Body?,
     vaultId: String,
     scope: EnvelopeScope,
-    policy: EnvelopePolicy
+    policy: EnvelopePolicy,
+    expectedPersonalKeys: PersonalKeyEnvelope? = nil
   ) -> PreparedRemoteOperation<AuthenticatedResponse<SyncStatus>> {
     guard let nonce = Self.requestNonce() else {
       return .completed(.response(nil))
@@ -1065,7 +1199,7 @@ final class SyncService: @unchecked Sendable {
       body: body,
       signedSuccess: true,
       decode: { data, statusCode in
-        try AuthenticatedVaultEnvelopeParser.decodeVaultResponse(
+        let response = try AuthenticatedVaultEnvelopeParser.decodeVaultResponse(
           data,
           statusCode: statusCode,
           operation: policy.vaultOperation,
@@ -1073,6 +1207,11 @@ final class SyncService: @unchecked Sendable {
           vaultID: vaultId,
           organizationSlug: scope.organizationSlug
         )
+        if policy == .write, response.outcome == "committed",
+          response.personalKeys != expectedPersonalKeys {
+          throw PersonalProjectCrypto.KeyError.invalidContext
+        }
+        return response
       },
       maximumBytes: Self.maximumVaultResponseBytes,
       headers: headers,
@@ -1492,6 +1631,8 @@ extension OrgSyncServiceProtocol {
 
 extension SyncService: OrgSyncServiceProtocol {}
 
+typealias PersonalPayloadDecryptor = @Sendable (String, String, String, String, Int, Int) throws -> Data
+
 protocol PersonalSyncServiceProtocol: Sendable {
   func push(
     authToken: String,
@@ -1507,6 +1648,15 @@ protocol PersonalSyncServiceProtocol: Sendable {
   ) async -> SyncService.SyncStatus?
 
   func pull(authToken: String, vaultId: String) async -> SyncService.SyncStatus?
+
+  func decryptPersonalPayload(_ result: SyncService.SyncStatus, legacyDecryptor: @escaping PersonalPayloadDecryptor) async throws -> Data
+  func rememberPersonalKeys(_ envelope: PersonalKeyEnvelope, principalID: String, vaultID: String) async throws
+
+  func preparePersonalPush(
+    authToken: String, expectedPrincipalId: String, vaultId: String, plaintext: Data,
+    expectedVersion: Int?, force: Bool, recreateMissing: Bool, name: String?, schema: LPMJSONValue?,
+    legacyEncryptor: @escaping @Sendable (Data, String, String, Int) throws -> (encryptedBlob: String, wrappedKey: String)
+  ) async throws -> PreparedRemoteOperation<SyncService.AuthenticatedResponse<SyncService.SyncStatus>>
 
   func pushAuthenticated(
     authToken: String,
@@ -1548,6 +1698,34 @@ protocol PersonalSyncServiceProtocol: Sendable {
 }
 
 extension PersonalSyncServiceProtocol {
+  func decryptPersonalPayload(_ result: SyncService.SyncStatus, legacyDecryptor: @escaping PersonalPayloadDecryptor) async throws -> Data {
+    guard result.personalKeys == nil, let principal = result.principalId, let vault = result.vaultId,
+      let blob = result.encryptedBlob, let wrapped = result.wrappedKey,
+      let revision = result.version, let cryptoVersion = result.cryptoVersion else {
+      throw PersonalProjectCrypto.KeyError.invalidContext
+    }
+    return try await Task.detached(priority: .userInitiated) {
+      try legacyDecryptor(blob, wrapped, principal, vault, revision, cryptoVersion)
+    }.value
+  }
+
+  func rememberPersonalKeys(_ envelope: PersonalKeyEnvelope, principalID: String, vaultID: String) async throws {
+    throw PersonalProjectCrypto.KeyError.invalidContext
+  }
+
+  func preparePersonalPush(
+    authToken: String, expectedPrincipalId: String, vaultId: String, plaintext: Data,
+    expectedVersion: Int?, force: Bool, recreateMissing: Bool, name: String?, schema: LPMJSONValue?,
+    legacyEncryptor: @escaping @Sendable (Data, String, String, Int) throws -> (encryptedBlob: String, wrappedKey: String)
+  ) async throws -> PreparedRemoteOperation<SyncService.AuthenticatedResponse<SyncService.SyncStatus>> {
+    let encrypted = try await Task.detached(priority: .userInitiated) {
+      try legacyEncryptor(plaintext, expectedPrincipalId, vaultId, (expectedVersion ?? 0) + 1)
+    }.value
+    return await preparePushAuthenticated(authToken: authToken, expectedPrincipalId: expectedPrincipalId,
+      vaultId: vaultId, encryptedBlob: encrypted.encryptedBlob, wrappedKey: encrypted.wrappedKey,
+      expectedVersion: expectedVersion, force: force, recreateMissing: recreateMissing, name: name, schema: schema)
+  }
+
   func preparePushAuthenticated(
     authToken: String,
     expectedPrincipalId: String,
