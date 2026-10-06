@@ -391,6 +391,15 @@ struct ProjectEnvSchemaFileTests {
 		#expect(document["envSchema"]?["vars"]?[new]?["required"] == .bool(true))
 	}
 
+	@Test("integer bounds distinguish numeric negative zero from an exact string")
+	func integerBoundsRejectNumericNegativeZero() throws {
+		let folder = try makeFolder(#"{"envSchema":{"vars":{"COUNT":{"format":"integer","min":-0}}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(throws: ProjectEnvSchemaFile.FileError.invalidSchema) { try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: vaultID) }
+		try #"{"envSchema":{"vars":{"COUNT":{"format":"integer","min":"-0"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: vaultID).keys == ["COUNT"])
+	}
+
 	private func makeFolder(_ lpmJSON: String?) throws -> String {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-schema-\(UUID().uuidString)").path
 		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)

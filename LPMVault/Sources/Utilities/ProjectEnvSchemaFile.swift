@@ -309,7 +309,11 @@ enum ProjectEnvSchemaFile {
 	private static func integerBound(_ value: LPMConfigJSON?) throws(FileError) -> Int64? {
 		guard let value, value != .null else { return nil }
 		let text: String
-		switch value { case .number(let raw), .string(let raw): text = raw; default: throw .invalidSchema }
+		switch value {
+		case .number(let raw): guard raw != "-0" else { throw .invalidSchema }; text = raw
+		case .string(let raw): text = raw
+		default: throw .invalidSchema
+		}
 		let digits = text.utf8.drop(while: { $0 == 43 || $0 == 45 })
 		guard !digits.isEmpty, digits.count <= 19, digits.allSatisfy({ (48...57).contains($0) }), let integer = Int64(text) else { throw .invalidSchema }
 		return integer
