@@ -11,6 +11,7 @@ enum ProjectConfigFile {
 		case tooLarge
 		case readFailed
 		case invalidJSON
+		case duplicateJSONKey
 		/// The file changed while it was being updated, or no longer matches what the edit expects.
 		case changed
 		case writeFailed(String)
@@ -120,10 +121,15 @@ enum ProjectConfigFile {
 			}
 			var document = LPMConfigJSON.object([])
 			if let original {
-				guard let parsed = try? LPMConfigJSON(parsing: original, rejectDuplicateKeys: rejectDuplicateKeys), case .object = parsed else {
+				do {
+					let parsed = try LPMConfigJSON(parsing: original, rejectDuplicateKeys: rejectDuplicateKeys)
+					guard case .object = parsed else { throw FileError.invalidJSON }
+					document = parsed
+				} catch LPMConfigJSON.ParseError.duplicateKey {
+					throw FileError.duplicateJSONKey
+				} catch {
 					throw FileError.invalidJSON
 				}
-				document = parsed
 			}
 			let unchanged = document
 			let result = try change(&document)

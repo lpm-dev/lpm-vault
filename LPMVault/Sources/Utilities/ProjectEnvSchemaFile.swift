@@ -39,6 +39,7 @@ enum ProjectEnvSchemaFile {
 		case unsafeFile
 		case tooLarge
 		case invalidJSON
+		case duplicateJSONKey
 		case invalidSchema
 		case readFailed
 		case changed
@@ -50,6 +51,7 @@ enum ProjectEnvSchemaFile {
 			case .unsafeFile: self = .unsafeFile
 			case .tooLarge: self = .tooLarge
 			case .invalidJSON: self = .invalidJSON
+			case .duplicateJSONKey: self = .duplicateJSONKey
 			case .changed: self = .changed
 			case .writeFailed(let reason): self = .writeFailed(reason)
 			}
@@ -62,6 +64,7 @@ enum ProjectEnvSchemaFile {
 			case .unsafeFile: "lpm.json is a symbolic link or not a regular file."
 			case .tooLarge: "lpm.json is too large to update safely."
 			case .invalidJSON: "lpm.json is not valid JSON."
+			case .duplicateJSONKey: "lpm.json contains duplicate object keys. Remove the duplicate declaration."
 			case .invalidSchema: "lpm.json has an invalid envSchema declaration."
 			case .readFailed: "Could not read lpm.json."
 			case .changed: "lpm.json changed while it was being saved. Save again."
@@ -122,7 +125,7 @@ enum ProjectEnvSchemaFile {
 
 	static func applying(_ change: Change, to document: LPMConfigJSON) throws(FileError) -> LPMConfigJSON {
 		let schemaBefore = document["envSchema"]
-		var schema = schemaBefore ?? .object([])
+		var schema = schemaBefore == .null ? .object([]) : schemaBefore ?? .object([])
 		guard case .object = schema else { throw .invalidSchema }
 		let varsBefore = schema["vars"]
 		var vars = varsBefore ?? .object([])
@@ -169,7 +172,7 @@ enum ProjectEnvSchemaFile {
 	}
 
 	static func rules(of document: LPMConfigJSON) throws(FileError) -> Rules {
-		guard let schema = document["envSchema"] else { return Rules() }
+		guard let schema = document["envSchema"], schema != .null else { return Rules() }
 		guard case .object(let fields) = schema, fields.allSatisfy({ $0.key == "vars" }) else { throw .invalidSchema }
 		guard let vars = schema["vars"] else { return Rules() }
 		guard case .object(let members) = vars, members.count <= 4096 else { throw .invalidSchema }
@@ -229,14 +232,17 @@ enum ProjectEnvSchemaFile {
 	}
 
 	static func validatedSyncConfig(inFolder folder: String, vaultID: String) throws(FileError) -> LPMJSONValue? {
-		let url = try existingFolder(folder).appendingPathComponent("lpm.json")
+		let folderURL: URL
+		do { folderURL = try existingFolder(folder) }
+		catch .noFolder { return nil }
+		let url = folderURL.appendingPathComponent("lpm.json")
 		guard let data = try read(url) else { return nil }
 		let document = try parse(data)
 		try checkVault(of: document, is: vaultID)
 		_ = try rules(of: document)
 		var metadata: [String: LPMJSONValue] = [:]
 		for key in ["envSchema", "environments", "env"] {
-			if let value = document[key] { metadata[key] = try syncValue(value) }
+			if let value = document[key], value != .null { metadata[key] = try syncValue(value) }
 		}
 		return .object(metadata)
 	}
@@ -286,6 +292,8 @@ enum ProjectEnvSchemaFile {
 			let document = try LPMConfigJSON(parsing: data, rejectDuplicateKeys: true)
 			guard case .object = document else { throw FileError.invalidJSON }
 			return document
+		} catch LPMConfigJSON.ParseError.duplicateKey {
+			throw .duplicateJSONKey
 		} catch {
 			throw .invalidJSON
 		}

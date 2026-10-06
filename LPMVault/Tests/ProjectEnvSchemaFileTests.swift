@@ -79,6 +79,34 @@ struct LPMConfigJSONTests {
 struct ProjectEnvSchemaFileTests {
 	private let vaultID = "3f2b8c1e-4d5a-4f6b-9c7d-8e9f0a1b2c3d"
 
+	@Test("sync omits metadata when the connected folder is missing")
+	func syncOmitsMissingFolderMetadata() throws {
+		let folder = try makeFolder(nil)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(try ProjectEnvSchemaFile.validatedSyncConfig(inFolder: folder + "/missing", vaultID: vaultID) == nil)
+	}
+
+	@Test("a null env schema has no rules and accepts description edits")
+	func nullSchemaHasNoRules() throws {
+		let folder = try makeFolder(#"{"envSchema":null}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		#expect(try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: vaultID) == .init())
+		let rules = try ProjectEnvSchemaFile.apply(.init(description: .init(key: "TOKEN", text: "token")), inFolder: folder, vaultID: vaultID)
+		#expect(rules.descriptions["TOKEN"] == "token")
+	}
+
+	@Test("duplicate JSON keys have a specific diagnostic")
+	func duplicateKeysHaveSpecificDiagnostic() throws {
+		let folder = try makeFolder(#"{"unrelated":1,"unrelated":2}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		do {
+			_ = try ProjectEnvSchemaFile.rules(inFolder: folder, vaultID: vaultID)
+			Issue.record("Expected duplicate-key rejection")
+		} catch {
+			#expect(error.localizedDescription.contains("duplicate"))
+		}
+	}
+
 	@Test("description edits reject duplicate declarations without changing the file")
 	func duplicateDeclarationsAreNotNormalized() throws {
 		let original = #"{"envSchema":{"vars":{"A":{"required":true},"A":{"description":"old"}}}}"#

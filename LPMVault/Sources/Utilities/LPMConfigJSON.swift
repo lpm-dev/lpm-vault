@@ -35,6 +35,7 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 
 	enum ParseError: Error, Equatable, Sendable {
 		case invalid(offset: Int)
+		case duplicateKey
 		/// Nesting beyond serde_json's recursion limit.
 		case tooDeep
 	}
@@ -239,7 +240,7 @@ indirect enum LPMConfigJSON: Equatable, Sendable {
 				// Like serde_json's ordered map, a repeated key keeps its first position and its last value.
 				let identity = Data(key.utf8)
 				if let position = positions[identity] {
-					if rejectDuplicateKeys { throw .invalid(offset: index) }
+					if rejectDuplicateKeys { throw .duplicateKey }
 					members[position].value = value
 				} else {
 					positions[identity] = members.count

@@ -91,7 +91,7 @@ enum ProjectCLILink {
 			)
 		} catch let error as ProjectConfigFile.FileError {
 			switch error {
-			case .invalidJSON: throw .invalidJSON
+			case .invalidJSON, .duplicateJSONKey: throw .invalidJSON
 			case .unsafeFile: throw .unsafeFile
 			case .tooLarge: throw .tooLarge
 			case .notFound, .readFailed, .writeFailed: throw .writeFailed
