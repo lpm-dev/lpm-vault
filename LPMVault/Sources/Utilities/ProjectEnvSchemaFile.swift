@@ -544,6 +544,7 @@ enum ProjectEnvSchemaFile {
 					declared[alias] != nil
 					? alias
 					: envPath.hasPrefix(".env.") ? String(envPath.dropFirst(".env.".count)) : alias
+				guard EnvValidation.isValidEnvironmentName(alias), EnvValidation.isValidEnvironmentName(canonical) else { continue }
           envConfig[alias] = .object([
 					"canonical": .string(canonical),
             "file": .string(envPath),

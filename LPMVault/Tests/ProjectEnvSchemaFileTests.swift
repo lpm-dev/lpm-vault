@@ -540,6 +540,19 @@ struct ProjectEnvSchemaFileTests {
 		#expect(try ProjectEnvSchemaFile.rules(of: document).keys == ["N", "SOURCE", "TARGET"])
 	}
 
+	@Test("sync omits invalid alias and canonical environment names")
+	func syncSkipsInvalidEnvironmentAliases() throws {
+		let root: [String: LPMJSONValue] = ["env": .object([
+			"test:unit": .string("config/unit.env"), "": .string(".env."),
+			"bad": .string(".env.test:unit"), "unit": .string("config/unit.env")
+		])]
+		let metadata = try LPMConfigJSON(parsing: JSONEncoder().encode(ProjectEnvSchemaFile.pushMetadata(from: root)))
+		#expect(metadata["envConfig"]?["test:unit"] == nil)
+		#expect(metadata["envConfig"]?[""] == nil)
+		#expect(metadata["envConfig"]?["bad"] == nil)
+		#expect(metadata["envConfig"]?["unit"]?["canonical"] == .string("unit"))
+	}
+
 	@Test("sync aliases retain nested paths and declared environment precedence")
 	func syncAliasesRetainNestedPathsAndPrecedence() throws {
 		let folder = try makeFolder(
