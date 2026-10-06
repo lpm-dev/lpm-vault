@@ -31,4 +31,4 @@ SWIFT_TEST_TIME_LIMIT=60 \
   bash "$package_dir/Scripts/swift-test-watchdog.sh" \
   --package-path "$package_dir" --skip-build --disable-xctest --enable-swift-testing \
   --disable-automatic-resolution --toolset "$runner_dir/toolset.json" \
-  --filter 'supersededWorkspaceSnapshotBuildStopsSerially|staleEnvironmentMutationPreservesCurrentSelection|navigationRejectsAStaleProjectLoad|cancelledDotenvExportDoesNotCommit'
+  --filter 'supersededWorkspaceSnapshotBuildStopsSerially|staleEnvironmentMutationPreservesCurrentSelection|navigationRejectsAStaleProjectLoad|cancelledDotenvExportDoesNotCommit|schemaRenameSerializesLaterMutations|queuedSchemaRenameRejectsChangedTarget'

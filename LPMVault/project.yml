@@ -55,6 +55,8 @@ targets:
         buildPhase: resources
     dependencies:
       - package: Sparkle
+      - framework: Vendor/EnvEngine/LPMEnv.xcframework
+        embed: false
     settings:
       base:
         CODE_SIGN_ENTITLEMENTS: LPMVault.entitlements

@@ -40,9 +40,9 @@
         "enum": [
           "a\tb",
           "q\"uote",
-          "ctl\u001f"
+          "ctl\n"
         ],
-        "description": "Stripe key \"live\"\\n\u001fé 🎉 </x>"
+        "description": "Stripe key \"live\"\\n\té 🎉 </x>"
       }
     }
   },

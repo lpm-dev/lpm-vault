@@ -6,7 +6,7 @@
     "vars": {
       "DATABASE_URL": {"required": true, "format": "url", "description": "Primary é database 🎉 \/ path"},
       "OLD_NAME": {"pattern": "^sk_\\w+$", "secret": true},
-      "API_KEY": {"required": true, "enum": ["a\tb", "q\"uote", "ctl\u001F"]}
+      "API_KEY": {"required": true, "enum": ["a\tb", "q\"uote", "ctl\n"]}
     }
   },
   "dup": 2,

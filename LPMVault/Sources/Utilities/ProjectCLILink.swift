@@ -52,33 +52,43 @@ enum ProjectCLILink {
 
 	private static func folderKey(_ vaultId: String) -> String { folderKeyPrefix + vaultId }
 
-	/// Reads the folder's `lpm.json` the way the CLI does before it resolves environment names.
-	static func configuration(inFolder folder: String) -> ProjectCLIConfiguration {
-		guard folderExists(folder) else { return .unverified }
-		do {
-			return try ProjectConfigFile.readJSONIfPresent(at: configURL(inFolder: folder)).map(ProjectCLIConfiguration.loaded) ?? .absent
-		} catch {
-			return .unverified
-		}
+	struct Snapshot: Equatable, Sendable {
+		let status: ProjectCLILinkStatus
+		let configuration: ProjectCLIConfiguration
 	}
-
+	static func inspect(vaultId: String, folder: String) -> Snapshot {
+		guard folderExists(folder) else { return Snapshot(status: .noFolder, configuration: .unverified) }
+		do {
+			let data = try ProjectConfigFile.readRegularFile(at: configURL(inFolder: folder))
+			let document = try LPMConfigJSON(parsing: data, rejectDuplicateKeys: true)
+			guard case .object = document else {
+				return Snapshot(status: .unreadable, configuration: .unverified)
+			}
+			let status: ProjectCLILinkStatus
+			switch document["vault"] {
+			case nil, .null?: status = .notLinked
+			case .string(let id)?: status = id == vaultId ? .linked : .linkedToOtherVault(id)
+			default: return Snapshot(status: .unreadable, configuration: .unverified)
+			}
+			var projection = LPMConfigJSON.object([])
+			for field in ["env", "environments"] {
+				if let value = document[field] { projection.set(value, forKey: field) }
+			}
+			let bytes = try projection.renderedData(maximumBytes: 16 * 1024 * 1024)
+			let configuration = try JSONDecoder().decode(LPMJSONValue.self, from: bytes)
+			return Snapshot(status: status, configuration: .loaded(configuration))
+		} catch ProjectConfigFile.FileError.notFound {
+			return Snapshot(status: .notLinked, configuration: .absent)
+		} catch { return Snapshot(status: .unreadable, configuration: .unverified) }
+	}
+	static func configuration(inFolder folder: String) -> ProjectCLIConfiguration {
+		inspect(vaultId: "", folder: folder).configuration
+	}
 	static func configURL(inFolder folder: String) -> URL {
 		URL(fileURLWithPath: folder, isDirectory: true).appendingPathComponent("lpm.json")
 	}
-
 	static func status(vaultId: String, folder: String) -> ProjectCLILinkStatus {
-		guard folderExists(folder) else { return .noFolder }
-		do {
-			switch try ProjectConfigFile.vaultID(at: configURL(inFolder: folder)) {
-			case vaultId?: return .linked
-			case let other?: return .linkedToOtherVault(other)
-			case nil: return .notLinked
-			}
-		} catch ProjectConfigFile.FileError.notFound {
-			return .notLinked
-		} catch {
-			return .unreadable
-		}
+		inspect(vaultId: vaultId, folder: folder).status
 	}
 
 	/// Adds or replaces the `vault` field in the folder's `lpm.json`, keeping other settings.
@@ -91,7 +101,7 @@ enum ProjectCLILink {
 			)
 		} catch let error as ProjectConfigFile.FileError {
 			switch error {
-			case .invalidJSON: throw .invalidJSON
+			case .invalidJSON, .duplicateJSONKey: throw .invalidJSON
 			case .unsafeFile: throw .unsafeFile
 			case .tooLarge: throw .tooLarge
 			case .notFound, .readFailed, .writeFailed: throw .writeFailed

@@ -422,9 +422,11 @@ struct AuditRegressionTests {
       defer { tracker.end() }
       if project.id == "superseded" {
         started.signal()
-        while !Task.isCancelled {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !Task.isCancelled && ContinuousClock.now < deadline {
           Thread.sleep(forTimeInterval: 0.001)
         }
+        #expect(Task.isCancelled, "The fixture observer did not cancel the blocked build")
         tracker.recordCancellation()
         return nil
       }
@@ -446,7 +448,7 @@ struct AuditRegressionTests {
     let first = Task { await builder.buildAll([superseded]) }
     defer { first.cancel() }
     let second = await withCheckedContinuation { continuation in
-      DispatchQueue.global().async {
+      Thread.detachNewThread {
         let didStart = started.wait(timeout: .now() + 5) == .success
         let replacementBuild = didStart ? Task { await builder.buildAll([replacement]) } : nil
         first.cancel()

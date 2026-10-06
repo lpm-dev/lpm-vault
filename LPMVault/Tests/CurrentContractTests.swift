@@ -1291,6 +1291,7 @@ struct CurrentContractTests {
   func personalConflictPropagation() async throws {
     let service = makeSyncService { request in
       if request.url?.query == "versionOnly=true" {
+        #expect(request.value(forHTTPHeaderField: "X-LPM-Env-Metadata-Warnings") == nil)
         let nonce = try #require(
           request.value(forHTTPHeaderField: "X-LPM-Vault-Request-Nonce")
         )
@@ -1313,6 +1314,8 @@ struct CurrentContractTests {
           token: "session-token"
         )
       }
+      #expect(request.value(forHTTPHeaderField: "X-LPM-Env-Metadata-Warnings") == "1")
+      #expect(request.value(forHTTPHeaderField: "X-LPM-Client-Version") != nil)
       let nonce = try #require(
         request.value(forHTTPHeaderField: "X-LPM-Vault-Request-Nonce")
       )

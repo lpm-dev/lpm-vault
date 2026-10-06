@@ -17,6 +17,10 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - name: Install pinned env engine toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal --component llvm-tools-preview --target aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Reproduce bundled env engine
+        run: python3 LPMVault/Scripts/verify-env-engine.py --rebuild --target-dir "$RUNNER_TEMP/env-engine-target"
       - name: Swift tests
         run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Cooperative executor regressions

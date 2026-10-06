@@ -52,6 +52,8 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var saveEnvironmentsCallCount = 0
 	var updateEnvironmentsCallCount = 0
 	var applyVaultTransactionCallCount = 0
+	var nextVaultTransactionError: KeychainError?
+	var nextKeychainTransactionError: KeychainError?
 	var onGetEnvironments: (() -> Void)?
 	var onCreateEnvironments: (() -> Void)?
 	var blockNextSaveEnvironments: (() -> Void)?
@@ -63,6 +65,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError> {
 		beforeKeychainTransaction?()
+		if let error = nextKeychainTransactionError { nextKeychainTransactionError = nil; return .failure(error) }
 		return .success(lock.withLock(operation))
 	}
 
@@ -289,6 +292,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		lock.lock()
 		defer { lock.unlock() }
 		applyVaultTransactionCallCount += 1
+		if let error = nextVaultTransactionError { nextVaultTransactionError = nil; return .failure(error) }
 		let previousEnvironments = envStorage
 		let previousData = dataStorage
 		let projectResult: KeychainResult
@@ -619,6 +623,7 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 	] = []
 	var blockNextMemberKeyAccess: (@Sendable () async -> Void)?
 	var blockNextPull: (@Sendable () async -> Void)?
+	var blockNextPushPreparation: (@Sendable () async -> Void)?
 	var blockNextPush: (@Sendable () async -> Void)?
 	private var publicKeyCalls = 0
 	private var memberKeyAccessCalls = 0
@@ -715,6 +720,28 @@ final class MockOrgSyncService: OrgSyncServiceProtocol, @unchecked Sendable {
 		}
 		await blocker?()
 		return result
+	}
+
+	func preparePushOrgAuthenticated(
+		authToken: String, orgSlug: String, expectedOrganizationID: String,
+		expectedCallerUserID: String, vaultId: String, encryptedBlob: String,
+		wrappedKeys: [SyncService.WrappedMemberKey]?, expectedVersion: Int?,
+		name: String?, schema: LPMJSONValue?
+	) async -> PreparedRemoteOperation<SyncService.AuthenticatedResponse<SyncService.SyncStatus>> {
+		let blocker = lock.withLock {
+			let blocker = blockNextPushPreparation
+			blockNextPushPreparation = nil
+			return blocker
+		}
+		await blocker?()
+		return PreparedRemoteOperation {
+			.run {
+				await self.pushOrgAuthenticated(authToken: authToken, orgSlug: orgSlug,
+					expectedOrganizationID: expectedOrganizationID, expectedCallerUserID: expectedCallerUserID,
+					vaultId: vaultId, encryptedBlob: encryptedBlob, wrappedKeys: wrappedKeys,
+					expectedVersion: expectedVersion, name: name, schema: schema)
+			}
+		}
 	}
 
 	func pushOrg(

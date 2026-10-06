@@ -26,6 +26,23 @@ struct ProjectCLILinkTests {
 		return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
 	}
 
+	@Test("one CLI snapshot ignores unrelated extreme numbers")
+	func inspectionProjectsOnlyEnvironmentConfiguration() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig(
+			#"{"vault":"\#(vaultId)","custom":1e4000,"env":{"build":".env.production"},"environments":{"production":{"file":".env.production"}}}"#,
+			in: folder)
+		let snapshot = ProjectCLILink.inspect(vaultId: vaultId, folder: folder.path)
+		#expect(snapshot.status == .linked)
+		guard case .loaded(.object(let document)) = snapshot.configuration else {
+			Issue.record("snapshot configuration missing"); return
+		}
+		#expect(document["custom"] == nil)
+		#expect(document["env"] != nil)
+		#expect(document["environments"] != nil)
+	}
+
 	@Test("a project without a folder on this Mac has no link")
 	func noFolder() {
 		#expect(ProjectCLILink.status(vaultId: vaultId, folder: "") == .noFolder)
@@ -108,19 +125,62 @@ struct ProjectCLILinkTests {
 			try ProjectConfigFile.writeVaultID(
 				vaultId, to: config,
 				policy: initiallyPresent ? .replacing("inspected-vault") : .unlinked,
-				fileWriter: { data, destination, permissions, replaceExisting, validation in
+				fileWriter: { data, destination, permissions, replaceExisting, directoryDescriptor, validation in
 					try SecureFileWriter.write(
 						data, to: destination, permissions: permissions, replaceExisting: replaceExisting,
 						beforeReplacement: {
 							try newer.write(to: destination, options: .atomic)
 							try validation()
-						}
+						}, directoryDescriptor: directoryDescriptor
 					)
 				}
 			)
 		}
 		#expect(try Data(contentsOf: config) == newer)
 		#expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted() == [".lpm", "lpm.json"])
+	}
+
+	@Test("an unchanged candidate checks the root snapshot before external persistence", arguments: [false, true])
+	func unchangedCandidateRejectsConcurrentConfig(initiallyPresent: Bool) throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let config = folder.appendingPathComponent("lpm.json")
+		if initiallyPresent { try writeConfig(#"{"vault":"project"}"#, in: folder) }
+		let newer = Data(#"{"vault":"other","concurrentSetting":true}"#.utf8)
+		var persisted = false
+		var written = false
+		#expect(throws: ProjectConfigFile.FileError.changed) {
+			try ProjectConfigFile.update(
+				at: config,
+				fileWriter: { _, _, _, _, _, _ in written = true },
+				beforeWrite: { persisted = true }
+			) { document in
+				_ = try ProjectEnvSchemaFile.rules(of: document)
+				try newer.write(to: config, options: .atomic)
+			}
+		}
+		#expect(!persisted)
+		#expect(!written)
+		#expect(try Data(contentsOf: config) == newer)
+	}
+
+	@Test("unchanged candidates compensate persistence when the root changes during persistence")
+	func unchangedCandidateCompensatesConcurrentPersistence() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let config = folder.appendingPathComponent("lpm.json")
+		try writeConfig(#"{"vault":"project"}"#, in: folder)
+		let newer = Data(#"{"vault":"other"}"#.utf8)
+		var persisted = false
+		#expect(throws: ProjectConfigFile.FileError.changed) {
+			try ProjectConfigFile.update(
+				at: config,
+				beforeWrite: { persisted = true; try newer.write(to: config, options: .atomic) },
+				onWriteFailure: { persisted = false }
+			) { _ in }
+		}
+		#expect(!persisted)
+		#expect(try Data(contentsOf: config) == newer)
 	}
 
 	@Test("a new destination created at replacement time is never overwritten")
@@ -201,7 +261,7 @@ struct ProjectCLILinkTests {
 		try writeConfig(original, in: folder)
 		let url = folder.appendingPathComponent("lpm.json")
 		#expect(throws: ProjectConfigFile.FileError.tooLarge) {
-			try ProjectConfigFile.writeVaultID(vaultId, to: url, fileWriter: { _, _, _, _, _ in Issue.record("Oversized output must not reach the writer") })
+			try ProjectConfigFile.writeVaultID(vaultId, to: url, fileWriter: { _, _, _, _, _, _ in Issue.record("Oversized output must not reach the writer") })
 		}
 		#expect(try String(contentsOf: url, encoding: .utf8) == original)
 	}

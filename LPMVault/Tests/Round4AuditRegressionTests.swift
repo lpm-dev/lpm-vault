@@ -2288,7 +2288,7 @@ extension VaultStoreTests {
 		let release = DispatchSemaphore(value: 0)
 		let service = EnvFileExportService { secrets, destination, authorization in
 			entered.signal()
-			release.wait()
+			#expect(release.wait(timeout: .now() + 5) == .success)
 			let content = EnvFileCodec.format(secrets)
 			try SecureFileWriter.write(
 				Data(content.utf8),
@@ -2299,9 +2299,10 @@ extension VaultStoreTests {
 		let operation = Task {
 			try await service.export(secrets: ["TOKEN": "secret"], to: destination)
 		}
-		await waitForSemaphore(entered)
-		operation.cancel()
-		release.signal()
+		await performAfterSemaphore(entered) {
+			operation.cancel()
+			release.signal()
+		}
 
 		await #expect(throws: CancellationError.self) { try await operation.value }
 		#expect(!FileManager.default.fileExists(atPath: destination.path))
@@ -3076,6 +3077,57 @@ extension VaultStoreTests {
 		store.personalTokens = [round4Token(id: "generationless")]
 		await store.revokePersonalToken(round4Token(id: "generationless"))
 		#expect(captures.value == 2)
+	}
+
+	@Test("personal pushes recheck sources after preparation and authorization waits", arguments: ["preparation", "authorization", "missing-root"])
+	@MainActor
+	func personalPushRechecksSourcesAtRequestAdmission(scenario: String) async throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "source-admission-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let root = folder.appendingPathComponent("lpm.json")
+		let fragment = folder.appendingPathComponent("base.json")
+		if scenario != "missing-root" {
+			try #"{"envSchema":{"extends":["base.json"]}}"#.write(to: root, atomically: true, encoding: .utf8)
+			try #"{"vars":{"VALUE":{"default":"before"}}}"#.write(to: fragment, atomically: true, encoding: .utf8)
+		}
+		let authority = round4AuthorityGeneration(seed: 71)
+		let preparation = Round4AsyncGate()
+		let admission = Round4AsyncGate()
+		let executorCalls = Round4Counter()
+		let sync = Round5GatedPreparationPersonalSyncService(gate: preparation)
+		let keychain = MockKeychainService()
+		keychain.envStorage["project"] = (name: "Project", path: folder.path, environments: ["default": ["TOKEN": "local"]])
+		let api = MockAPIService()
+		api.user = round4User(orgSlug: "acme")
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: api, personalSyncServiceFactory: { _ in sync }, stableSyncEncryptor: { _, _, _, _ in ("blob", "wrapped") }, authAuthorizationProvider: { _, _ in AuthSessionAuthorization(token: "account-a", authorityGeneration: authority) }, authAuthorityValidator: { $0 == authority }, authorizedRemoteMutationExecutor: { _, operation in
+			executorCalls.increment()
+			await admission.arriveAndWait()
+			return operation()
+		})
+		store.appEnvironment = .production
+		await store.loadAccount()
+		store.projects = [VaultProject(id: "project", name: "Project", path: folder.path, environments: ["default": ["TOKEN": "local"]])]
+		store.isUnlocked = true
+		store.openProject(id: "project")
+		let push = Task { await store.pushToCloud() }
+		await preparation.waitUntilArrived()
+		if scenario != "preparation" {
+			await preparation.release()
+			await admission.waitUntilArrived()
+		}
+		if scenario == "missing-root" {
+			try #"{"envSchema":{"vars":{}}}"#.write(to: root, atomically: true, encoding: .utf8)
+		} else {
+			try #"{"vars":{"VALUE":{"default":"after"}}}"#.write(to: fragment, atomically: true, encoding: .utf8)
+		}
+		await preparation.release()
+		await admission.release()
+		await push.value
+		#expect(sync.preparedStartCallCount == 0)
+		#expect(executorCalls.value == 1)
+		#expect(store.error?.contains("changed") == true)
+		#expect(!store.isSyncing)
 	}
 
 	@Test("personal push preparation occurs before credential-lock admission")
@@ -5116,7 +5168,7 @@ private func performAfterSemaphore(
 	action: @escaping @MainActor @Sendable () -> Void
 ) async {
 	let didEnter = await withCheckedContinuation { continuation in
-		DispatchQueue.global().async {
+		Thread.detachNewThread {
 			let didEnter = semaphore.wait(timeout: .now() + 5) == .success
 			DispatchQueue.main.async {
 				// Release blocked work before resuming, which can require a cooperative worker.

@@ -11,6 +11,7 @@ enum ProjectConfigFile {
 		case tooLarge
 		case readFailed
 		case invalidJSON
+		case duplicateJSONKey
 		/// The file changed while it was being updated, or no longer matches what the edit expects.
 		case changed
 		case writeFailed(String)
@@ -23,7 +24,7 @@ enum ProjectConfigFile {
 	}
 
 	/// Writes `data` over `url` with `permissions`, running the check right before the replacement.
-	typealias FileWriter = (_ data: Data, _ url: URL, _ permissions: mode_t, _ replaceExisting: Bool, _ check: @escaping () throws -> Void) throws -> Void
+	typealias FileWriter = (_ data: Data, _ url: URL, _ permissions: mode_t, _ replaceExisting: Bool, _ directoryDescriptor: Int32, _ check: @escaping () throws -> Void) throws -> Void
 
 	/// The app's `lpm.json` edits run in order here, off the main thread and
 	/// Swift's cooperative pool, because each waits for the CLI's config lock for
@@ -108,68 +109,238 @@ enum ProjectConfigFile {
 	static func update<T>(
 		at url: URL,
 		fileWriter: FileWriter = writeSecurely,
+		rejectDuplicateKeys: Bool = false,
+		requiresUniqueKeys: ((LPMConfigJSON) throws -> Bool)? = nil,
+		validateSources: (() throws -> Void)? = nil,
+		beforeWrite: (() throws -> Void)? = nil,
+		onWriteFailure: (() throws -> Void)? = nil,
 		_ change: (inout LPMConfigJSON) throws -> T
 	) throws -> T {
-		try withConfigLock(in: url.deletingLastPathComponent()) {
-			let original: Data?
-			do {
-				original = try readRegularFile(at: url)
-			} catch FileError.notFound {
-				original = nil
-			}
-			var document = LPMConfigJSON.object([])
-			if let original {
-				guard let parsed = try? LPMConfigJSON(parsing: original), case .object = parsed else {
-					throw FileError.invalidJSON
-				}
-				document = parsed
-			}
-			let unchanged = document
-			let result = try change(&document)
-			guard document != unchanged else { return result }
+		let directory = try DirectorySnapshot(url.deletingLastPathComponent())
+		return try withConfigLock(in: directory) {
+			try updateInDirectory(at: url, directory: directory, fileWriter: fileWriter, rejectDuplicateKeys: rejectDuplicateKeys, requiresUniqueKeys: requiresUniqueKeys, validateSources: validateSources, beforeWrite: beforeWrite, onWriteFailure: onWriteFailure, change)
+		}
+	}
 
-			let data: Data
-			do { data = try document.renderedData(maximumBytes: maximumBytes) } catch { throw FileError.tooLarge }
-			var permissions = mode_t(0o644)
-			var metadata = stat()
-			if original != nil, lstat(url.path, &metadata) == 0 { permissions = metadata.st_mode & 0o777 }
+	private static func updateInDirectory<T>(
+		at url: URL, directory: DirectorySnapshot, fileWriter: FileWriter,
+		rejectDuplicateKeys: Bool, requiresUniqueKeys: ((LPMConfigJSON) throws -> Bool)? = nil, maximumOutputBytes: Int = maximumBytes,
+		additionalCheck: (() throws -> Void)? = nil, preservingMemberAt: [String]? = nil,
+		validateSources: (() throws -> Void)? = nil,
+		beforeWrite: (() throws -> Void)? = nil, onWriteFailure: (() throws -> Void)? = nil,
+		_ change: (inout LPMConfigJSON) throws -> T
+	) throws -> T {
+		try directory.verifySelection()
+		let original: Data?
+		do {
+			original = try readRegularFile(in: directory, name: url.lastPathComponent)
+		} catch FileError.notFound {
+			original = nil
+		}
+		var document = LPMConfigJSON.object([])
+		if let original {
 			do {
-				try fileWriter(data, url, permissions, original != nil) {
-					// The lock orders CLI edits; an editor saving meanwhile does not take it.
-					let current: Data?
-					do { current = try readRegularFile(at: url) } catch FileError.notFound { current = nil }
-					guard current == original else { throw FileError.changed }
-				}
-			} catch SecureFileWriter.WriteError.replaceFailed(let code) where code == EEXIST {
-				throw FileError.changed
+				let parsed = try LPMConfigJSON(parsing: original, rejectDuplicateKeys: rejectDuplicateKeys)
+				guard case .object = parsed else { throw FileError.invalidJSON }
+				document = parsed
+				if let requiresUniqueKeys, try requiresUniqueKeys(document) { _ = try LPMConfigJSON(parsing: original, rejectDuplicateKeys: true) }
+			} catch LPMConfigJSON.ParseError.duplicateKey {
+				throw FileError.duplicateJSONKey
+			} catch {
+				throw FileError.invalidJSON
+			}
+		}
+		let unchanged = document
+		let result = try change(&document)
+		let checkSnapshot = {
+			let current: Data?
+			try directory.verifySelection()
+			do { current = try readRegularFile(in: directory, name: url.lastPathComponent) } catch FileError.notFound { current = nil }
+			guard current == original else { throw FileError.changed }
+			try additionalCheck?()
+			try validateSources?()
+		}
+		guard document != unchanged else {
+			try checkSnapshot()
+			try beforeWrite?()
+			do { try checkSnapshot() } catch {
+				try onWriteFailure?()
+				throw error
 			}
 			return result
 		}
+
+		let data: Data
+		do {
+			if let original, let path = preservingMemberAt {
+				var rule: LPMConfigJSON? = document
+				for part in path { rule = rule?[part] }
+				data = try LPMConfigJSON.editingMember(in: original, path: path, key: "description", value: rule?["description"], maximumBytes: maximumOutputBytes)
+				guard try LPMConfigJSON(parsing: data, rejectDuplicateKeys: true) == document else { throw FileError.invalidJSON }
+			} else { data = try document.renderedData(maximumBytes: maximumOutputBytes) }
+		} catch LPMConfigJSON.RenderError.tooLarge { throw FileError.tooLarge }
+		var permissions = mode_t(0o644)
+		var metadata = stat()
+		if original != nil, fstatat(directory.descriptor, url.lastPathComponent, &metadata, AT_SYMLINK_NOFOLLOW) == 0 { permissions = metadata.st_mode & 0o777 }
+		try checkSnapshot()
+		try beforeWrite?()
+		do {
+			try fileWriter(data, url, permissions, original != nil, directory.descriptor) {
+				// The lock orders CLI edits; an editor saving meanwhile does not take it.
+				try checkSnapshot()
+			}
+		} catch {
+			// Directory sync follows replacement; reverting only external state would break alignment.
+			if case SecureFileWriter.WriteError.directorySyncFailed = error { throw error }
+			try onWriteFailure?()
+			if case SecureFileWriter.WriteError.replaceFailed(let code) = error, code == EEXIST { throw FileError.changed }
+			throw error
+		}
+		return result
 	}
 
-	static func writeSecurely(_ data: Data, to url: URL, permissions: mode_t, replaceExisting: Bool, check: @escaping () throws -> Void) throws {
-		try SecureFileWriter.write(data, to: url, permissions: permissions, replaceExisting: replaceExisting, beforeReplacement: check)
+	final class RootTransaction {
+		fileprivate let directory: DirectorySnapshot
+		let document: LPMConfigJSON
+		private let original: Data?
+
+		fileprivate init(directory: DirectorySnapshot) throws {
+			self.directory = directory
+			do { original = try readRegularFile(in: directory, name: "lpm.json") } catch FileError.notFound { original = nil }
+			if let original {
+				do {
+					document = try LPMConfigJSON(parsing: original)
+					guard case .object = document else { throw FileError.invalidJSON }
+				} catch LPMConfigJSON.ParseError.duplicateKey { throw FileError.duplicateJSONKey }
+                catch is LPMConfigJSON.ParseError { throw FileError.invalidJSON }
+			} else { document = .object([]) }
+		}
+
+		func requireUniqueKeys() throws {
+			guard let original else { return }
+			do { _ = try LPMConfigJSON(parsing: original, rejectDuplicateKeys: true) }
+			catch LPMConfigJSON.ParseError.duplicateKey { throw FileError.duplicateJSONKey }
+			catch { throw FileError.invalidJSON }
+		}
+
+		func verify() throws {
+			try directory.verifySelection()
+			let current: Data?
+			do { current = try readRegularFile(in: directory, name: "lpm.json") } catch FileError.notFound { current = nil }
+			guard current == original else { throw FileError.changed }
+		}
+
+		func update<T>(
+			relativePath: String, fileWriter: FileWriter = writeSecurely, rejectDuplicateKeys: Bool = true, preservingMemberAt: [String]? = nil,
+			validateSources: (() throws -> Void)? = nil,
+			beforeWrite: (() throws -> Void)? = nil, onWriteFailure: (() throws -> Void)? = nil,
+			_ change: (inout LPMConfigJSON) throws -> T
+		) throws -> T {
+			let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+			guard let filename = parts.last, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("\\") && !$0.contains("\0") }) else { throw FileError.unsafeFile }
+			var target = directory
+			var project = directory
+			for part in parts.dropLast() {
+				target = try DirectorySnapshot(parent: target, name: String(part))
+				var metadata = stat()
+				if fstatat(target.descriptor, "lpm.json", &metadata, AT_SYMLINK_NOFOLLOW) == 0, metadata.st_mode & S_IFMT == S_IFREG { project = target }
+			}
+			let url = target.url.appendingPathComponent(String(filename))
+			if project.sameIdentity(as: directory) {
+				return try updateInDirectory(at: url, directory: target, fileWriter: fileWriter, rejectDuplicateKeys: rejectDuplicateKeys,
+					maximumOutputBytes: relativePath == "lpm.json" ? maximumBytes : 2 * 1024 * 1024,
+					additionalCheck: { try self.verify() }, preservingMemberAt: preservingMemberAt, validateSources: validateSources,
+					beforeWrite: beforeWrite, onWriteFailure: onWriteFailure, change)
+			}
+			return try withConfigLock(in: project) {
+				return try updateInDirectory(at: url, directory: target, fileWriter: fileWriter, rejectDuplicateKeys: rejectDuplicateKeys,
+					maximumOutputBytes: relativePath == "lpm.json" ? maximumBytes : 2 * 1024 * 1024,
+					additionalCheck: { try self.verify() }, preservingMemberAt: preservingMemberAt, validateSources: validateSources,
+					beforeWrite: beforeWrite, onWriteFailure: onWriteFailure, change)
+			}
+		}
 	}
 
-	/// Runs `body` holding the exclusive `flock` the CLI takes on `.lpm/.config.lock`.
-	private static func withConfigLock<T>(in folder: URL, _ body: () throws -> T) throws -> T {
-		let stateDirectory = folder.appendingPathComponent(".lpm", isDirectory: true)
-		if mkdir(stateDirectory.path, 0o755) != 0, errno != EEXIST {
+	static func withRootTransaction<T>(at url: URL, _ body: (RootTransaction) throws -> T) throws -> T {
+		let directory = try DirectorySnapshot(url.deletingLastPathComponent())
+		return try withConfigLock(in: directory) {
+			try directory.verifySelection()
+			return try body(RootTransaction(directory: directory))
+		}
+	}
+
+	static func writeSecurely(_ data: Data, to url: URL, permissions: mode_t, replaceExisting: Bool, directoryDescriptor: Int32, check: @escaping () throws -> Void) throws {
+		try SecureFileWriter.write(data, to: url, permissions: permissions, replaceExisting: replaceExisting, beforeReplacement: check, directoryDescriptor: directoryDescriptor)
+	}
+
+	fileprivate final class DirectorySnapshot {
+		let descriptor: Int32
+		let url: URL
+		private let device: dev_t
+		private let inode: ino_t
+		private var parent: DirectorySnapshot?
+		private var component: String?
+
+		init(_ url: URL) throws {
+			guard url.isFileURL else { throw FileError.unsafeFile }
+			let descriptor = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+			guard descriptor >= 0 else { throw FileError.readFailed }
+			var metadata = stat()
+			guard fstat(descriptor, &metadata) == 0 else { close(descriptor); throw FileError.readFailed }
+			self.descriptor = descriptor
+			self.url = url
+			device = metadata.st_dev
+			inode = metadata.st_ino
+		}
+
+		init(parent: DirectorySnapshot, name: String) throws {
+			let descriptor = openat(parent.descriptor, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+			guard descriptor >= 0 else { throw FileError.unsafeFile }
+			var metadata = stat()
+			guard fstat(descriptor, &metadata) == 0 else { close(descriptor); throw FileError.readFailed }
+			self.descriptor = descriptor; url = parent.url.appendingPathComponent(name, isDirectory: true)
+			device = metadata.st_dev; inode = metadata.st_ino
+			self.parent = parent; component = name
+		}
+
+		func sameIdentity(as other: DirectorySnapshot) -> Bool { device == other.device && inode == other.inode }
+
+		deinit { close(descriptor) }
+
+		func verifySelection() throws {
+			try parent?.verifySelection()
+			let current: Int32
+			if let parent, let component { current = openat(parent.descriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+			else { current = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC) }
+			guard current >= 0 else { throw FileError.changed }
+			defer { close(current) }
+			var metadata = stat()
+			guard fstat(current, &metadata) == 0, metadata.st_dev == device, metadata.st_ino == inode else { throw FileError.changed }
+		}
+	}
+
+	private static func withConfigLock<T>(in directory: DirectorySnapshot, _ body: () throws -> T) throws -> T {
+		if mkdirat(directory.descriptor, ".lpm", 0o755) != 0, errno != EEXIST {
 			throw FileError.writeFailed(String(cString: strerror(errno)))
 		}
-		var metadata = stat()
-		guard lstat(stateDirectory.path, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFDIR else { throw FileError.unsafeFile }
-		let lockPath = stateDirectory.appendingPathComponent(".config.lock").path
-		let descriptor = open(lockPath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
+		let state = openat(directory.descriptor, ".lpm", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+		guard state >= 0 else { throw FileError.unsafeFile }
+		defer { close(state) }
+		let descriptor = openat(state, ".config.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
 		guard descriptor >= 0 else {
 			throw errno == ELOOP ? FileError.unsafeFile : FileError.writeFailed(String(cString: strerror(errno)))
 		}
 		defer { close(descriptor) }
+		var metadata = stat()
 		guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG else { throw FileError.unsafeFile }
 		while flock(descriptor, LOCK_EX) != 0 {
 			guard errno == EINTR else { throw FileError.writeFailed(String(cString: strerror(errno))) }
 		}
 		return try body()
+	}
+
+	private static func readRegularFile(in directory: DirectorySnapshot, name: String) throws -> Data {
+		try readRegularFile(descriptor: openat(directory.descriptor, name, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW))
 	}
 
 	static func readRegularFile(at url: URL) throws -> Data {
@@ -178,6 +349,10 @@ enum ProjectConfigFile {
 			guard let path else { return Int32(-1) }
 			return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW)
 		}
+		return try readRegularFile(descriptor: descriptor)
+	}
+
+	private static func readRegularFile(descriptor: Int32) throws -> Data {
 		guard descriptor >= 0 else {
 			if errno == ENOENT { throw FileError.notFound }
 			if errno == ELOOP { throw FileError.unsafeFile }

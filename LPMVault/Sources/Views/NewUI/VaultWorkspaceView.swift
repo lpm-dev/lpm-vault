@@ -127,6 +127,9 @@ struct VaultWorkspaceView: View {
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
+			if !isObscured, !store.showAuthStatus, let warning = store.lastSyncWarnings.first {
+				metadataWarningBanner(warning)
+			}
 			if let refreshError = store.localStateRefreshError {
 				localStateRefreshBanner(refreshError)
 			}
@@ -566,6 +569,22 @@ struct VaultWorkspaceView: View {
 	private func followRename(_ key: String, to newKey: String) {
 		if selectedKey == key { selectedKey = newKey }
 		if revealedKeys.remove(key) != nil { revealedKeys.insert(newKey) }
+	}
+
+	private func metadataWarningBanner(_ warning: SyncMetadataWarning) -> some View {
+		HStack(spacing: 10) {
+			Image(systemName: "exclamationmark.triangle.fill")
+			VStack(alignment: .leading, spacing: 4) {
+				Text(warning.message)
+				Text(warning.hint)
+			}
+			.font(.system(size: 12))
+			Spacer(minLength: 12)
+			Link("Upgrade and repair", destination: URL(string: "https://lpm.dev/docs/env/local#upgrade-existing-env-schemas")!)
+		}
+		.padding(.horizontal, 16)
+		.padding(.vertical, 8)
+		.background(VaultPalette.redTint)
 	}
 
 	private func localStateRefreshBanner(_ message: String) -> some View {
