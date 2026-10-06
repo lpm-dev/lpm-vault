@@ -86,7 +86,7 @@ struct EnvSchemaCompositionTests {
     }
 
     @Test("nested fragment edits wait on their parent lock while holding the root lock")
-    func nestedFragmentLockOrdering() throws {
+    func nestedFragmentLockOrdering() async throws {
         let root = try folder(#"{"extends":["schemas/base.json"]}"#,fragment:"{}")
         defer { try? FileManager.default.removeItem(at:root) }
         let parent = root.appendingPathComponent("schemas")
@@ -95,20 +95,34 @@ struct EnvSchemaCompositionTests {
         let lock = open(parent.appendingPathComponent(".lpm/.config.lock").path,O_RDWR|O_CREAT,0o644)
         defer { flock(lock,LOCK_UN); close(lock) }
         #expect(flock(lock,LOCK_EX) == 0)
-        let done = DispatchSemaphore(value:0)
-        let succeeded = OSAllocatedUnfairLock(initialState:false)
-        DispatchQueue.global().async {
-            do { _ = try ProjectEnvSchemaFile.apply(.init(description:.init(key:"A",text:"New")),inFolder:root.path,vaultID:"project"); succeeded.withLock { $0 = true } } catch {}
-            done.signal()
+        let completion = OSAllocatedUnfairLock(initialState:(finished:false,succeeded:false))
+        Thread {
+            do { _ = try ProjectEnvSchemaFile.apply(.init(description:.init(key:"A",text:"New")),inFolder:root.path,vaultID:"project"); completion.withLock { $0.succeeded = true } } catch {}
+            completion.withLock { $0.finished = true }
+        }.start()
+        let deadline = ContinuousClock.now + .seconds(10)
+        var rootIsLocked = false
+        while ContinuousClock.now < deadline {
+            let rootLock = open(root.appendingPathComponent(".lpm/.config.lock").path,O_RDWR)
+            if rootLock >= 0 {
+                if flock(rootLock,LOCK_EX|LOCK_NB) == 0 { flock(rootLock,LOCK_UN) }
+                else { rootIsLocked = errno == EWOULDBLOCK }
+                close(rootLock)
+            }
+            if rootIsLocked { break }
+            try await Task.sleep(for:.milliseconds(10))
         }
-        #expect(done.wait(timeout:.now()+0.1) == .timedOut)
-        let rootLock = open(root.appendingPathComponent(".lpm/.config.lock").path,O_RDWR)
-        defer { close(rootLock) }
-        #expect(rootLock >= 0)
-        #expect(flock(rootLock,LOCK_EX|LOCK_NB) != 0)
+        #expect(rootIsLocked)
+        #expect(!completion.withLock { $0.finished })
         flock(lock,LOCK_UN)
-        #expect(done.wait(timeout:.now()+5) == .success)
-        #expect(succeeded.withLock { $0 })
+        let completionDeadline = ContinuousClock.now + .seconds(10)
+        var completed = false
+        while ContinuousClock.now < completionDeadline {
+            if completion.withLock({ $0.finished }) { completed = true; break }
+            try await Task.sleep(for:.milliseconds(10))
+        }
+        #expect(completed)
+        #expect(completion.withLock { $0.succeeded })
     }
 
     @Test("fragment output size is bounded before persistence")
