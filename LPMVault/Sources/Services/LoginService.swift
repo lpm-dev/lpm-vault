@@ -408,15 +408,89 @@ enum LoginService {
 		}
 	}
 
-	private static func sendResponse(_ connection: NWConnection, success: Bool) {
+	static func callbackResponse(success: Bool) -> String {
 		let status = success ? "200 OK" : "400 Bad Request"
-		let title = success ? "Access Granted" : "Login Failed"
+		let title = success ? "Return to LPM Vault" : "Sign-in could not continue"
+		let label = success ? "Authorization received" : "Verification unsuccessful"
 		let detail = success
-			? "Return to LPM Vault to continue."
-			: "Return to LPM Vault and try again."
-		let body = "<!doctype html><html><body><h1>\(title)</h1><p>\(detail)</p></body></html>"
-		let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)"
-		connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+			? "LPM Vault will finish signing in on this Mac. Check the app for your connection status."
+			: "This browser response could not be verified. Return to LPM Vault and start sign-in again."
+		let symbol = success ? "M6 12l4 4 8-8" : "M7 7l10 10M17 7L7 17"
+		let state = success ? "success" : "failure"
+		let body = """
+		<!doctype html>
+		<html lang="en">
+		<head>
+		  <meta charset="utf-8">
+		  <meta name="viewport" content="width=device-width, initial-scale=1">
+		  <meta name="color-scheme" content="light dark">
+		  <title>\(title) | LPM Vault</title>
+		  <style>
+		    :root {
+		      color-scheme: light dark;
+		      --background: #f7f7f5; --surface: #fff; --text: #1b1b1d;
+		      --muted: #626269; --border: #e4e4e7; --accent: #167345; --tint: #edf8f1;
+		    }
+		    * { box-sizing: border-box; }
+		    body {
+		      margin: 0; min-height: 100vh; min-height: 100svh;
+		      display: grid; place-items: center; padding: 32px 20px;
+		      background: var(--background); color: var(--text);
+		      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+		      -webkit-font-smoothing: antialiased;
+		    }
+		    main { width: 100%; max-width: 460px; }
+		    .brand { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 24px; }
+		    .wordmark { font-size: 20px; font-weight: 750; letter-spacing: -.8px; }
+		    .product { border-left: 1px solid var(--border); padding-left: 12px; font-size: 14px; color: var(--muted); }
+		    .card {
+		      padding: 40px 32px 28px; border: 1px solid var(--border); border-radius: 20px;
+		      background: var(--surface); text-align: center; box-shadow: 0 8px 40px rgb(0 0 0 / 3%);
+		    }
+		    .failure { --accent: #b53631; --tint: #fff0ee; }
+		    .status-icon {
+		      display: grid; place-items: center; width: 64px; height: 64px; margin: 0 auto 22px;
+		      border: 1px solid var(--border); border-radius: 50%; background: var(--tint); color: var(--accent);
+		    }
+		    .status { margin: 0 0 12px; font-size: 12px; font-weight: 650; letter-spacing: .04em; color: var(--accent); }
+		    h1 { margin: 0 0 14px; font-size: clamp(23px, 5vw, 28px); line-height: 1.2; letter-spacing: -.8px; }
+		    .detail { margin: 0; font-size: 15px; line-height: 1.65; color: var(--muted); text-wrap: pretty; }
+		    .next-step { border-top: 1px solid var(--border); padding-top: 22px; margin: 26px 0 0; font-size: 13px; color: var(--muted); }
+		    .footer { margin: 22px 0 0; text-align: center; font-size: 12px; color: var(--muted); }
+		    @media (prefers-color-scheme: dark) {
+		      :root {
+		        --background: #101012; --surface: #18181b; --text: #fafafa;
+		        --muted: #a6a6af; --border: #303036; --accent: #66d99b; --tint: #173125;
+		      }
+		      .failure { --accent: #ff9e98; --tint: #3b211f; }
+		    }
+		    @media (max-width: 380px) { .card { padding: 32px 22px 24px; } }
+		  </style>
+		</head>
+		<body>
+		  <main aria-labelledby="title">
+		    <div class="brand"><span class="wordmark">LPM</span><span class="product">LPM Vault</span></div>
+		    <section class="card \(state)">
+		      <div class="status-icon" aria-hidden="true">
+		        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		          <path d="\(symbol)"></path>
+		        </svg>
+		      </div>
+		      <p class="status">\(label)</p>
+		      <h1 id="title">\(title)</h1>
+		      <p class="detail">\(detail)</p>
+		      <p class="next-step">You can close this tab.</p>
+		    </section>
+		    <p class="footer">LPM &middot; Environment variables, kept private.</p>
+		  </main>
+		</body>
+		</html>
+		"""
+		return "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nConnection: close\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)"
+	}
+
+	private static func sendResponse(_ connection: NWConnection, success: Bool) {
+		connection.send(content: Data(callbackResponse(success: success).utf8), completion: .contentProcessed { _ in
 			connection.cancel()
 		})
 	}
