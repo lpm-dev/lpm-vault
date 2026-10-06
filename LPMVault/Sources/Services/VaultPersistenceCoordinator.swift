@@ -507,6 +507,7 @@ actor VaultPersistenceCoordinator {
 			do {
 				var isDirectory: ObjCBool = false
                 if !FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory) || !isDirectory.boolValue {
+                    if change.description != nil { throw ProjectEnvSchemaFile.FileError.noFolder }
 					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
 					case .success(let commit): return .success(commit, nil)
 					case .failure(let error): return .keychainFailure(error)

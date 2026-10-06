@@ -784,6 +784,22 @@ struct VaultKeyDescriptionStoreTests {
         #expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == nil)
     }
 
+    @Test("a vanished folder refuses a combined rename and description without losing the draft")
+    func missingFolderDoesNotDiscardRequestedDescription() async throws {
+        let (store, keychain, folder) = try await makeStore(#"{"envSchema":{"vars":{"STRIPE_KEY":{"description":"Old"}}}}"#)
+        defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+        store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) {
+            $0.name = "NEW"
+            $0.setKeyDescription("Requested", saved: "Old")
+        }
+        try FileManager.default.removeItem(atPath: folder)
+        do { try await store.saveKeyDraft(id); Issue.record("A description cannot be saved without its folder") } catch {}
+        #expect(keychain.envStorage["project"]?.environments["default"]?[id.key] == "sk_dev")
+        #expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == nil)
+        #expect(store.keyDrafts.draft(id)?.keyDescriptionChange == "Requested")
+        #expect(keychain.applyVaultTransactionCallCount == 0)
+    }
+
 	private func makeStore(_ lpmJSON: String) async throws -> (VaultStore, MockKeychainService, String) {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-descriptions-\(UUID().uuidString)").path
 		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
