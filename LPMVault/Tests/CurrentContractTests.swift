@@ -1289,7 +1289,15 @@ struct CurrentContractTests {
   @Test("live personal 409 conflict reaches the conflict-resolution state")
   @MainActor
   func personalConflictPropagation() async throws {
-    let service = makeSyncService { request in
+    let keys = PersonalProjectKeyStore(
+      root: { _, _, _ in SymmetricKey(data: Data(repeating: 7, count: 32)) },
+      checkpoint: { _, _, _, _ in 0 }
+    )
+    let service = makeSyncService(personalProjectKeys: keys,
+      legacyPersonalDecryptor: { _, _, _, _, _, _ in
+        Data(#"{"environments":{"default":{"TOKEN":"synthetic"}}}"#.utf8)
+      }
+    ) { request in
       if request.url?.query == "versionOnly=true" {
         #expect(request.value(forHTTPHeaderField: "X-LPM-Env-Metadata-Warnings") == nil)
         let nonce = try #require(
@@ -1311,6 +1319,16 @@ struct CurrentContractTests {
               "cryptoVersion": VaultCrypto.currentCryptoVersion,
             ]
           ),
+          token: "session-token"
+        )
+      }
+      if request.httpMethod == "GET" {
+        #expect(request.value(forHTTPHeaderField: "X-LPM-Env-Metadata-Warnings") == nil)
+        let nonce = try #require(request.value(forHTTPHeaderField: "X-LPM-Vault-Request-Nonce"))
+        return try signedSyncResponse(
+          vaultEnvelope(operation: "vault.pull", outcome: "current", requestNonce: nonce,
+            binding: ["scope": "personal", "principalId": "account-1", "callerUserId": "account-1", "vaultId": "vault-1"],
+            data: ["revision": 7, "cryptoVersion": 3, "encryptedBlob": "legacy", "wrappedKey": "legacy-key", "updatedAt": "2026-10-06T20:00:00Z"]),
           token: "session-token"
         )
       }
@@ -2185,6 +2203,11 @@ struct CurrentContractTests {
 
   private func makeSyncService(
     recorder: RequestRecorder = RequestRecorder(),
+    personalProjectKeys: PersonalProjectKeyStore = .live,
+    legacyPersonalDecryptor: @escaping PersonalPayloadDecryptor = {
+      try VaultCrypto.decryptStableSyncData(encryptedBlob: $0, wrappedKey: $1,
+        principalId: $2, vaultId: $3, revision: $4, cryptoVersion: $5)
+    },
     handler: @escaping MockURLProtocol.Handler
   ) -> SyncService {
     let host = "\(UUID().uuidString.lowercased()).example"
@@ -2201,6 +2224,8 @@ struct CurrentContractTests {
         delegate: BoundedHTTPResponseDelegate(),
         delegateQueue: nil
       ),
+      personalProjectKeys: personalProjectKeys,
+      legacyPersonalDecryptor: legacyPersonalDecryptor,
       responseSignatureVerifier: { response, body, required in
         PinnedSessionDelegate.verifyResponseSignatureForTesting(
           response,

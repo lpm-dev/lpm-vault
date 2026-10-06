@@ -63,8 +63,10 @@ enum AuthenticatedVaultEnvelopeParser {
       try envelope.data.requireExactKeys(
         [
           "encryptedBlob", "wrappedKey", "revision", "cryptoVersion", "updatedAt",
-        ] + organizationFields
+        ] + organizationFields,
+        optional: organizationSlug == nil ? Array(personalKeyFields) : []
       )
+      fields.personalKeys = try personalKeys(envelope.data, principalID: binding.principalID, vaultID: vaultID)
       let encryptedBlob = try envelope.data.validString(
         "encryptedBlob",
         maximumBytes: 16 * 1024 * 1024
@@ -112,7 +114,8 @@ enum AuthenticatedVaultEnvelopeParser {
       let required = organizationSlug == nil
         ? ["revision", "cryptoVersion", "action"]
         : ["revision", "contentKeyVersion", "cryptoVersion", "action"]
-      try envelope.data.requireExactKeys(required)
+      try envelope.data.requireExactKeys(required, optional: organizationSlug == nil ? Array(personalKeyFields) : [])
+      fields.personalKeys = try personalKeys(envelope.data, principalID: binding.principalID, vaultID: vaultID)
       let revision = try envelope.data.revision("revision")
       fields.version = revision
       fields.serverVersion = revision
@@ -203,6 +206,26 @@ enum AuthenticatedVaultEnvelopeParser {
     }
 
     return fields.statusValue
+  }
+
+  private static let personalKeyFields: Set<String> = [
+    "personalKeyScheme", "personalRegistryOrigin", "projectKeyVersion", "wrappedProjectKey",
+  ]
+
+  private static func personalKeys(
+    _ data: [String: LPMJSONValue], principalID: String, vaultID: String
+  ) throws -> PersonalKeyEnvelope? {
+    let present = personalKeyFields.intersection(data.keys)
+    guard !present.isEmpty else { return nil }
+    guard present == personalKeyFields, try data.revision("personalKeyScheme") == 2 else {
+      throw EnvelopeError.invalid("The authenticated personal env key envelope is invalid.")
+    }
+    let value = PersonalKeyEnvelope(personalKeyScheme: 2,
+      personalRegistryOrigin: try data.validString("personalRegistryOrigin", maximumBytes: 2_048),
+      projectKeyVersion: try data.revision("projectKeyVersion"),
+      wrappedProjectKey: try data.validString("wrappedProjectKey", maximumBytes: 4_096))
+    _ = try PersonalProjectCrypto.associatedData(envelope: value, principalID: principalID, vaultID: vaultID)
+    return value
   }
 
   static func decodeMemberInventory(
@@ -816,6 +839,7 @@ private struct SyncFields {
   var wrappedKey: String?
   var updatedAt: String?
   var warnings: [SyncMetadataWarning] = []
+  var personalKeys: PersonalKeyEnvelope?
 
   init(
     vaultID: String,
@@ -866,7 +890,8 @@ private struct SyncFields {
       organizationId: organizationID,
       operation: operation,
       outcome: outcome,
-      warnings: warnings
+      warnings: warnings,
+      personalKeys: personalKeys
     )
   }
 }

@@ -37,7 +37,7 @@ enum VaultCrypto {
 		try encrypt(key: key, plaintext: plaintext, associatedData: Data())
 	}
 
-	private static func encrypt(
+	static func encrypt(
 		key: SymmetricKey,
 		plaintext: Data,
 		associatedData: Data
@@ -64,7 +64,7 @@ enum VaultCrypto {
 		try decrypt(key: key, encoded: encoded, associatedData: Data())
 	}
 
-	private static func decrypt(
+	static func decrypt(
 		key: SymmetricKey,
 		encoded: String,
 		associatedData: Data

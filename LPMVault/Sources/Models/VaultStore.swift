@@ -2353,6 +2353,11 @@ final class VaultStore {
       case .success(let committed):
         let project = committed.project
         let keyCount = project.environments.values.reduce(0) { $0 + $1.count }
+        var checkpointWarning: String?
+        if await hasCurrentCloudAuthorization(authority), orgSlug == nil {
+          do { try await service.rememberPersonalKeys(payload) }
+          catch { checkpointWarning = "The import succeeded, but the local key checkpoint could not be saved: \(error.localizedDescription)" }
+        }
         let authorizationIsCurrent = await hasCurrentCloudAuthorization(authority)
         let ownsPresentation = authorizationIsCurrent && !Task.isCancelled
         if !authorizationIsCurrent {
@@ -2380,7 +2385,7 @@ final class VaultStore {
         applySyncMetadata(committed.syncMetadata, for: project.id)
         vaultOrgAssociations = committed.orgAssociations
         if ownsPresentation { openProject(id: project.id) }
-        if ownsPresentation { error = committed.warning }
+        if ownsPresentation { error = checkpointWarning ?? committed.warning }
         return .success(
           ImportedEnvProject(
             projectId: project.id,
@@ -4246,7 +4251,6 @@ final class VaultStore {
     let attemptLimit = force ? 3 : 1
     let environments = pushedProject.environments
     let encryptor = stableSyncEncryptor
-    let projectID = pushedProject.id
     var plaintext: Data?
     var schema: LPMJSONValue?
     var schemaSources: CapturedSyncSchema?
@@ -4333,31 +4337,17 @@ final class VaultStore {
           throw VaultSyncError("Could not serialize the env project for sync.")
         }
         let targetRevision = try Self.nextSyncRevision(after: expectedVersion)
-        let encryptionTask = Task.detached(priority: .userInitiated) {
-          try encryptor(
-            plaintext,
-            authority.principalID,
-            projectID,
-            targetRevision
-          )
-        }
-        let encrypted = try await encryptionTask.value
-        guard await hasCurrentSyncAuth(authority) else {
-          finishSyncIfOwned(authority)
-          return
-        }
-
-        let preparedPush = await syncService.preparePushAuthenticated(
+        let preparedPush = try await syncService.preparePersonalPush(
           authToken: authToken,
           expectedPrincipalId: authority.principalID,
           vaultId: pushedProject.id,
-          encryptedBlob: encrypted.encryptedBlob,
-          wrappedKey: encrypted.wrappedKey,
+          plaintext: plaintext,
           expectedVersion: expectedVersion,
           force: force,
           recreateMissing: recreateMissing,
           name: pushedProject.name,
-          schema: schema
+          schema: schema,
+          legacyEncryptor: encryptor
         )
         guard await hasCurrentSyncAuth(authority) else {
           finishSyncIfOwned(authority)
@@ -4408,6 +4398,11 @@ final class VaultStore {
             version: pushedVersion,
             binding: binding
           )
+          var checkpointWarning: String?
+          if persistedCommit != nil, let envelope = result?.personalKeys, await hasCurrentDurableSyncAuth(authority) {
+            do { try await syncService.rememberPersonalKeys(envelope, principalID: authority.principalID, vaultID: pushedProject.id) }
+            catch { checkpointWarning = "The push succeeded, but the local key checkpoint could not be saved: \(error.localizedDescription)" }
+          }
           let ownsPresentation = await hasCurrentSyncAuth(authority)
           guard canPublishDurableSyncCommit(authority) else {
             finishSyncIfOwned(authority)
@@ -4424,6 +4419,7 @@ final class VaultStore {
           updateProjectInPlace(commit.project)
           applySyncMetadata(commit.syncMetadata, for: commit.project.id)
           if ownsPresentation {
+            error = checkpointWarning
             lastSyncWarnings = result?.warnings ?? []
             lastSyncStatus =
               commit.isDirty
@@ -4599,7 +4595,7 @@ final class VaultStore {
       return false
     }
 
-    guard let blob = result.encryptedBlob, let wrapped = result.wrappedKey else {
+    guard result.encryptedBlob != nil, result.wrappedKey != nil else {
       error = result.error ?? "No env project data on cloud. Push first."
       finishSyncIfOwned(authority)
       lastSyncStatus = "empty"
@@ -4626,22 +4622,7 @@ final class VaultStore {
         return false
       }
 
-      let decryptArguments = (
-        blob: blob,
-        wrapped: wrapped,
-        vaultID: baselineProject.id
-      )
-      let decryptor = stableSyncDecryptor
-      let jsonData = try await Task.detached(priority: .userInitiated) {
-        try decryptor(
-          decryptArguments.blob,
-          decryptArguments.wrapped,
-          authority.principalID,
-          decryptArguments.vaultID,
-          version,
-          cryptoVersion
-        )
-      }.value
+      let jsonData = try await syncService.decryptPersonalPayload(result, legacyDecryptor: stableSyncDecryptor)
       guard await hasCurrentSyncAuth(authority) else {
         finishSyncIfOwned(authority)
         return false
@@ -4681,6 +4662,14 @@ final class VaultStore {
             persisted.isDirty
             ? "Pulled (v\(version), \(keyCount)); local changes pending"
             : "Pulled (v\(version), \(keyCount))"
+        }
+        if let envelope = result.personalKeys, await hasCurrentDurableSyncAuth(authority) {
+          do { try await syncService.rememberPersonalKeys(envelope, principalID: authority.principalID, vaultID: baselineProject.id) }
+          catch {
+            if await hasCurrentSyncAuth(authority) {
+              self.error = "The pull succeeded, but the local key checkpoint could not be saved: \(error.localizedDescription)"
+            }
+          }
         }
         committedSuccessfully = true
       case .conflict(let latest, let metadata):
