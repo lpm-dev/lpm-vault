@@ -1154,6 +1154,7 @@ final class VaultStore {
       invalidateLocalStateRefresh()
       keyDrafts.receive(projects)
       if !projects.elementsEqual(oldValue, by: { $0.id == $1.id }) {
+        reconcileProjectOrder()
         let projectIDs = Set(projects.lazy.map(\.id))
         projectCliAccess = projectCliAccess.filter { projectIDs.contains($0.key) }
         cliAccessProjectRevisions = cliAccessProjectRevisions.filter { projectIDs.contains($0.key) }
@@ -1253,6 +1254,7 @@ final class VaultStore {
   var selectedAccount: SelectedAccount = .personal {
     didSet {
       guard oldValue != selectedAccount else { return }
+      sidebarDragSessionId = UUID()
       lastSyncWarnings = []
       invalidateLocalStateRefresh()
       keyDrafts.discardAll()
@@ -1276,9 +1278,11 @@ final class VaultStore {
     didSet { reconcileNavigationState() }
   }
 
-  /// Per-vault display preferences: environment tab order and the folder linked
-  /// for the CLI. They follow the vault and are removed with it.
+  /// Local display preferences and folders linked for the CLI.
   let preferences: UserDefaults
+  static let projectOrderKey = "lpm-vault-project-order"
+  private var projectOrder: [String]
+  private(set) var sidebarDragSessionId = UUID()
 
   // SECURITY NOTE: Environment tab ordering is stored in UserDefaults (not Keychain).
   // This is intentional — it contains only the display order of environment names
@@ -1407,18 +1411,62 @@ final class VaultStore {
 
   /// Vaults for the currently selected account context.
   var activeVaults: [VaultProject] {
-    projects.filter { projectBelongsToSelectedAccount($0.id) }
+    orderedProjects.filter { projectBelongsToSelectedAccount($0.id) }
+  }
+
+  private var orderedProjects: [VaultProject] {
+    guard !projectOrder.isEmpty else { return projects }
+    var remaining = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0) })
+    var ordered = projectOrder.compactMap { remaining.removeValue(forKey: $0) }
+    ordered.append(contentsOf: projects.filter { remaining[$0.id] != nil })
+    return ordered
+  }
+
+  private func reconcileProjectOrder() {
+    let currentIds = Set(projects.lazy.map(\.id))
+    var seen: Set<String> = []
+    let retained = projectOrder.filter { currentIds.contains($0) && seen.insert($0).inserted }
+    let added = projects.compactMap { seen.insert($0.id).inserted ? $0.id : nil }
+    let order = added + retained
+    guard order != projectOrder else { return }
+    projectOrder = order
+    preferences.set(order, forKey: Self.projectOrderKey)
   }
 
   /// Filtered vaults for search.
   func visibleVaults(matching search: String) -> [VaultProject] {
     let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard !query.isEmpty else { return activeVaults }
-    return projects.filter { project in
+    return orderedProjects.filter { project in
       projectBelongsToSelectedAccount(project.id)
         && (project.name.lowercased().contains(query)
           || workspaceSnapshots[project.id]?.normalizedSearchIndex.contains(query) == true)
     }
+  }
+
+  @discardableResult
+  func moveProject(id: String, relativeTo targetId: String, placement: VaultProjectPlacement) -> Bool {
+    guard isUnlocked, id != targetId,
+      projectBelongsToSelectedAccount(id), projectBelongsToSelectedAccount(targetId)
+    else { return false }
+    let currentOrder = orderedProjects.map(\.id)
+    guard let source = currentOrder.firstIndex(of: id), currentOrder.contains(targetId) else { return false }
+    var order = currentOrder
+    order.remove(at: source)
+    guard let target = order.firstIndex(of: targetId) else { return false }
+    order.insert(id, at: target + (placement == .after ? 1 : 0))
+    guard order != currentOrder else { return false }
+    projectOrder = order
+    preferences.set(order, forKey: Self.projectOrderKey)
+    resetAutoLock()
+    return true
+  }
+
+  @discardableResult
+  func dropSidebarProject(_ drag: VaultSidebarProjectDrag, relativeTo targetId: String,
+    placement: VaultProjectPlacement) -> Bool {
+    guard drag.sessionId == sidebarDragSessionId else { return false }
+    return moveProject(id: drag.projectId, relativeTo: targetId, placement: placement)
   }
 
   // MARK: - Navigation
@@ -1536,7 +1584,7 @@ final class VaultStore {
   }
 
   private var firstActiveProjectId: String? {
-    projects.lazy.first { projectBelongsToSelectedAccount($0.id) }?.id
+    activeVaults.first?.id
   }
 
   private func normalizeSelectedEnvironment() {
@@ -1673,6 +1721,7 @@ final class VaultStore {
     self.envFileImportService = envFileImportService
     self.envFileExportService = envFileExportService
     self.preferences = preferences
+    self.projectOrder = preferences.stringArray(forKey: Self.projectOrderKey) ?? []
     if let sharingKeypairProvider {
       self.sharingKeypairProvider = { _, _, _, _ in
         try sharingKeypairProvider()
@@ -4034,6 +4083,7 @@ final class VaultStore {
   }
 
   func lock() {
+    sidebarDragSessionId = UUID()
     lastSyncWarnings = []
     unlockFailure = nil
     keyDrafts.discardAll()
@@ -6433,6 +6483,10 @@ final class VaultStore {
   }
 
   private func forgetPreferences(ofVault vaultId: String) {
+    if projectOrder.contains(vaultId) {
+      projectOrder.removeAll { $0 == vaultId }
+      preferences.set(projectOrder, forKey: Self.projectOrderKey)
+    }
     environmentOrders.removeValue(forKey: vaultId)
     preferences.removeObject(forKey: Self.envOrderPrefix + vaultId)
     ProjectCLILink.forgetFolder(vaultId: vaultId, defaults: preferences)
@@ -6441,6 +6495,12 @@ final class VaultStore {
   /// Removes preferences of vaults that are no longer on this Mac, such as
   /// vaults the CLI deleted while the app was closed.
   private func forgetPreferences(ofVaultsOutside vaultIds: Set<String>) {
+    var seen: Set<String> = []
+    let normalized = projectOrder.filter { vaultIds.contains($0) && seen.insert($0).inserted }
+    if normalized != projectOrder {
+      projectOrder = normalized
+      preferences.set(normalized, forKey: Self.projectOrderKey)
+    }
     let prefixes = [Self.envOrderPrefix, ProjectCLILink.folderKeyPrefix]
     for key in preferences.dictionaryRepresentation().keys {
       guard let prefix = prefixes.first(where: key.hasPrefix),
