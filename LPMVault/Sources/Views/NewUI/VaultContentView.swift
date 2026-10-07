@@ -619,7 +619,7 @@ private struct VaultEnvironmentRow: View {
 				.font(VaultTypography.mono(13, isSelected ? .bold : .regular))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.lineLimit(1)
-				.frame(minWidth: 56, alignment: .leading)
+				.layoutPriority(1)
 			if isEdited {
 				if compact {
 					VaultStatusDot(color: VaultPalette.orange).help("Unsaved changes").accessibilityLabel("Unsaved changes")

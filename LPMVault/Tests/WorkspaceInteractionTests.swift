@@ -143,6 +143,20 @@ extension SheetInteractionTests {
 				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
 			}
 
+			@Test("a short key's badge sits right after the key")
+			func shortKeyBadgeFollowsKey() async throws {
+				let (store, _) = makeStore(environments: ["default": ["PORT": "1"], "production": ["PORT": "2"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				#expect(try await host.waitForText("ACTIONS"))
+				try await host.settle()
+				let key = try await host.labelFrame("PORT")
+				let badge = try await host.labelFrame("DIFFERS")
+				#expect(badge.minX - key.maxX < 20, "The badge starts \(badge.minX - key.maxX) points after the key")
+			}
+
 			@Test("the final column resize target stays clear of the inspector divider", arguments: [false, true])
 			func finalColumnResizeTarget(singleEnvironment: Bool) async throws {
 				let (store, _) = makeStore(environments: ["default": ["TOKEN": "a"], "production": ["TOKEN": "b"]])
