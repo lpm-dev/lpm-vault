@@ -8,7 +8,272 @@ import Vision
 extension SheetInteractionTests {
 	@Suite("Workspace interaction regressions", .serialized)
 	@MainActor
-	struct WorkspaceInteractionTests {
+		struct WorkspaceInteractionTests {
+			@Test("table backgrounds and dividers fill the trailing gutter and space after shrinking", arguments: [false, true])
+			func tableTrailingFiller(singleEnvironment: Bool) async throws {
+				let (store, _) = makeStore(environments: ["default": ["ALPHA": "a", "ZULU": "z"], "production": ["ALPHA": "b", "ZULU": "z"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				try selectRow(0, in: host)
+				#expect(try await host.waitForText("VALUES"))
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				let finalLabel = singleEnvironment ? "Resize Actions column" : "Resize .env.production column"
+				let last = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == finalLabel })
+				let rowHeight = singleEnvironment ? VaultMetrics.fileRow : VaultMetrics.matrixRow
+				try await host.settle()
+				let original = last.convert(last.bounds, to: nil)
+				let referenceX = VaultMetrics.sidebar + VaultMetrics.paneDivider + 5
+				for shrunken in [false, true] {
+					if shrunken {
+						for divider in resizeViews(in: host.view) where divider.accessibilityLabel()?.hasSuffix(" column") == true {
+							divider.onDragEnded?(-2000)
+							try await host.settle()
+						}
+					}
+					let frame = last.convert(last.bounds, to: nil)
+					let targetX = original.midX + 6
+					let image = try host.snapshot(host.view)
+					let samples = Int((VaultMetrics.tableHeader + 2 * rowHeight) * CGFloat(image.height) / host.view.bounds.height)
+					let reference = try verticalPixels(in: image, size: host.view.bounds.size, x: referenceX,
+						from: frame.maxY, count: samples)
+					let trailing = try verticalPixels(in: image, size: host.view.bounds.size, x: targetX,
+						from: frame.maxY, count: samples)
+					let fillsTrailing = reference == trailing
+					#expect(fillsTrailing, "Header, selected row, and row dividers must reach the trailing edge (shrunken: \(shrunken))")
+					Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])),
+						named: "trailing-\(singleEnvironment ? "environment" : "matrix")-\(shrunken).png")
+				}
+			}
+
+			@Test("column widths survive Settings and a project reload", arguments: [false, true])
+			func tableWidthsSurviveContentReplacement(singleEnvironment: Bool) async throws {
+				let keychain = MockKeychainService()
+				let (store, _) = makeStore(keychain: keychain)
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				divider.onDragEnded?(-2000)
+				try await host.settle()
+				#expect(divider.accessibilityValue() as? String == "160 points")
+				store.showSettings()
+				#expect(try await host.waitUntil { !resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
+				store.openProject(id: "workspace")
+				try await host.settle()
+				let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(restored.accessibilityValue() as? String == "160 points")
+				let gate = DispatchSemaphore(value: 0)
+				defer { gate.signal() }
+				store.selectedProjectId = nil
+				keychain.blockNextListProjects = { _ = gate.wait(timeout: .now() + 15) }
+				store.openProject(id: "workspace")
+				#expect(try await host.waitForText("Loading Workspace"))
+				gate.signal()
+				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				try await host.settle()
+				let reloaded = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(reloaded.accessibilityValue() as? String == "160 points")
+			}
+
+			@Test("each project retains its own matrix column widths")
+			func tableWidthsAreProjectSpecific() async throws {
+				let (store, _) = makeStore(additionalProject: true)
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				divider.onDragEnded?(-2000)
+				try await host.settle()
+				store.openProject(id: "other")
+				#expect(try await host.waitForText("SECOND"))
+				let other = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(other.accessibilityValue() as? String == "\(Int(VaultMetrics.keyColumn)) points")
+				other.onDragEnded?(80)
+				try await host.settle()
+				store.openProject(id: "workspace")
+				#expect(try await host.waitForText("TOKEN"))
+				let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(restored.accessibilityValue() as? String == "160 points")
+				store.openProject(id: "other")
+				#expect(try await host.waitForText("SECOND"))
+				let otherRestored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(otherRestored.accessibilityValue() as? String == "\(Int(VaultMetrics.keyColumn) + 80) points")
+			}
+
+			@Test("a narrow key column keeps an edited drifting key visible")
+			func narrowKeyWithBothBadges() async throws {
+				let key = "LONG_DATABASE_AUTHENTICATION_TOKEN"
+				let (store, _) = makeStore(environments: ["default": [key: "a"], "production": [key: "b"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				try selectRow(0, in: host)
+				try await host.settle()
+				try host.enterValue("unsaved-value")
+				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				#expect(try await host.waitForText("ACTIONS"))
+				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				divider.onDragEnded?(-2000)
+				try await host.settle()
+				let frame = divider.convert(divider.bounds, to: nil)
+				let size = host.view.bounds.size
+				let region = CGRect(x: (frame.midX - VaultTableColumn.key.minimumWidth) / size.width, y: 0.05,
+					width: VaultTableColumn.key.minimumWidth / size.width, height: 0.8)
+				let image = try host.snapshot(host.view)
+				let indicators = try compactIndicatorProfiles(in: image, size: size,
+					region: CGRect(x: frame.midX - 50, y: frame.minY - VaultMetrics.fileRow, width: 38, height: VaultMetrics.fileRow))
+				#expect(indicators.count == 2, "Expected both unsaved and drift indicators: \(indicators)")
+				if indicators.count == 2 {
+					#expect(indicators[0] != indicators[1], "Unsaved changes and differing values need distinct shapes")
+				}
+				let lines = try await RenderedText.lines(in: image, level: .accurate, region: region)
+				#expect(lines.contains { OCRText($0.text).contains("LONG") }, "Key column contains: \(lines.map(\.text))")
+				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
+			}
+
+			@Test("the final column resize target stays clear of the inspector divider", arguments: [false, true])
+			func finalColumnResizeTarget(singleEnvironment: Bool) async throws {
+				let (store, _) = makeStore(environments: ["default": ["TOKEN": "a"], "production": ["TOKEN": "b"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				try clickAt(NSPoint(x: host.view.bounds.width - 129.5, y: 723.5), in: host)
+				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize inspector" } })
+				try await host.settle()
+				let lastLabel = singleEnvironment ? "Resize Actions column" : "Resize .env.production column"
+				let last = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == lastLabel })
+				let inspector = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize inspector" })
+				let frame = host.view.convert(last.bounds, from: last)
+				let inspectorFrame = host.view.convert(inspector.bounds, from: inspector)
+				#expect(frame.maxX <= inspectorFrame.minX)
+				let point = host.view.convert(NSPoint(x: frame.midX - 2, y: frame.midY), to: nil)
+				let hitPoint = host.view.superview?.convert(point, from: nil) ?? point
+				#expect(host.view.hitTest(hitPoint) === last)
+				last.onDragEnded?(150)
+				try await host.settle()
+				let scrollView = try #require(last.enclosingScrollView)
+				let clip = scrollView.contentView
+				clip.scroll(to: NSPoint(x: clip.documentRect.maxX - clip.bounds.width, y: clip.bounds.minY))
+				scrollView.reflectScrolledClipView(clip)
+				try await host.settle()
+				let scrolledFrame = host.view.convert(last.bounds, from: last)
+				#expect(scrolledFrame.maxX <= inspectorFrame.minX)
+				let scrolledPoint = host.view.convert(NSPoint(x: scrolledFrame.midX, y: scrolledFrame.midY), to: nil)
+				let scrolledHit = host.view.superview?.convert(scrolledPoint, from: nil) ?? scrolledPoint
+				#expect(host.view.hitTest(scrolledHit) === last)
+			}
+
+			@Test("shrinking all columns keeps the table aligned with its title", arguments: [false, true])
+			func shrunkenTableAlignment(singleEnvironment: Bool) async throws {
+				let (store, _) = makeStore(environments: ["default": ["TOKEN": "a"], "production": ["TOKEN": "b"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				for divider in resizeViews(in: host.view) where divider.accessibilityLabel()?.hasSuffix(" column") == true {
+					divider.onDragEnded?(-2000)
+					try await host.settle()
+				}
+				let header = try await host.labelFrame("KEY", region: CGRect(x: 0.18, y: 0.75, width: 0.8, height: 0.1))
+				#expect(abs(header.minX - VaultMetrics.sidebar - VaultMetrics.paneDivider - 20) < 3)
+			}
+
+		@Test("blank space across a matrix key cell opens its inspector", arguments: [CGFloat(5), 205])
+		func matrixKeyCellBlankSpace(offset: CGFloat) async throws {
+			let (store, _) = makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try clickAt(NSPoint(x: VaultMetrics.sidebar + VaultMetrics.paneDivider + offset, y: 603), in: host)
+			#expect(try await host.waitForText("VALUES"))
+			#expect(try await host.waitUntil { host.value == "fixture-value" })
+		}
+
+		@Test("both tables expose draggable column boundaries without changing key order", arguments: [false, true])
+		func tableColumnResize(singleEnvironment: Bool) async throws {
+			let domain = "lpm-column-resize-test-" + UUID().uuidString
+			let defaults = try #require(UserDefaults(suiteName: domain))
+			defer { defaults.removePersistentDomain(forName: domain) }
+			let (store, _) = makeStore(environments: [
+				"default": ["ALPHA": "a", "ZULU": "z"], "production": ["ALPHA": "b", "ZULU": "z"],
+			])
+			defer { store.lock() }
+			let host = try await workspace(store, defaults: defaults)
+			defer { host.window.close() }
+			if singleEnvironment {
+				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				#expect(try await host.waitForText("ACTIONS"))
+			}
+			let label = "Resize Key column"
+			let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == label })
+			let original = host.view.convert(divider.bounds, from: divider)
+			let startWidth = try #require(Int((divider.accessibilityValue() as? String ?? "").split(separator: " ").first ?? ""))
+			#expect(divider.accessibilityRole() == .splitter)
+			let point = NSPoint(x: original.midX, y: original.midY)
+			let hitPoint = host.view.superview?.convert(host.view.convert(point, to: nil), from: nil) ?? point
+			#expect(host.view.hitTest(hitPoint) === divider)
+			divider.onDragChanged?(40)
+			#expect(try await host.waitUntil { divider.accessibilityValue() as? String == "\(startWidth + 40) points" })
+			divider.onDragChanged?(80)
+			divider.onDragEnded?(80)
+			#expect(try await host.waitUntil { divider.accessibilityValue() as? String == "\(startWidth + 80) points" })
+			try await host.settle()
+			let resized = host.view.convert(divider.bounds, from: divider)
+			#expect(abs(resized.midX - original.midX - 80) < 1)
+			#expect(defaults.string(forKey: VaultKeySortOrder.defaultsKey) != "descending")
+			#expect(try await waitForKeyOrder(["ALPHA", "ZULU"], in: host))
+			let nextLabel = singleEnvironment ? "Resize Value column" : "Resize .env column"
+			let next = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == nextLabel })
+			#expect(next.accessibilityPerformIncrement())
+			try await host.settle()
+			#expect(divider.accessibilityValue() as? String == "\(startWidth + 80) points")
+			try clickAt(NSPoint(x: host.view.bounds.width - 129.5, y: 723.5), in: host)
+			#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize inspector" } })
+			host.window.setContentSize(NSSize(width: 1040, height: 800))
+			try await host.settle()
+			#expect(divider.accessibilityValue() as? String == "\(startWidth + 80) points")
+			if singleEnvironment {
+				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.75, width: 0.17, height: 0.15))
+				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
+				#expect(try await host.waitForText("All variables"))
+				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
+				try await host.settle()
+				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Value column" } })
+			} else {
+				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Value column" } })
+				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.75, width: 0.17, height: 0.15))
+				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
+				#expect(try await host.waitForText("All variables"))
+			}
+			try await host.settle()
+			let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == label })
+			#expect(restored.accessibilityValue() as? String == "\(startWidth + 80) points")
+			let image = try host.snapshot(host.view)
+			let bitmap = NSBitmapImageRep(cgImage: image)
+			Attachment.record(try #require(bitmap.representation(using: .png, properties: [:])), named: singleEnvironment ? "resized-environment.png" : "resized-matrix.png")
+		}
+
 		@Test("inspector copy uses the latest refresh and copies what the field shows", arguments: [false, true])
 		func inspectorCopyAfterRefresh(edited: Bool) async throws {
 			let keychain = MockKeychainService()
@@ -163,6 +428,17 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "descending" })
 			try await host.settle()
 			#expect(try await waitForKeyOrder(["ZULU", "ALPHA"], in: host, region: keyRegion))
+		}
+
+		@Test("key order combines complementary recognition of the same frame")
+		func complementaryKeyRecognition() {
+			let fast = [RenderedText.Line(text: "ZULU", bounds: CGRect(x: 0.291, y: 0.661, width: 0.03, height: 0.014), labelBounds: nil)]
+			let accurate = [RenderedText.Line(text: "ALPHA", bounds: CGRect(x: 0.283, y: 0.588, width: 0.048, height: 0.023), labelBounds: nil)]
+			#expect(keyOrderIsVisible(["ZULU", "ALPHA"], readings: [fast, accurate]))
+			#expect(!keyOrderIsVisible(["ALPHA", "ZULU"], readings: [fast, accurate]))
+			#expect(!keyOrderIsVisible(["ZULU", "ALPHA"], readings: [fast, fast]))
+			let merged = [RenderedText.Line(text: "ZULU ALPHA", bounds: CGRect(x: 0.28, y: 0.66, width: 0.1, height: 0.02), labelBounds: nil)]
+			#expect(!keyOrderIsVisible(["ZULU", "ALPHA"], readings: [merged, fast]))
 		}
 
 		@Test("rendered key order tolerates text recognition's case and glyph differences")
@@ -572,6 +848,11 @@ extension SheetInteractionTests {
 				width: (VaultMetrics.keyColumn - 20) / size.width, height: (header.minY - VaultMetrics.statusBar) / size.height)
 		}
 
+		private func keyOrderIsVisible(_ expected: [String], readings: [[RenderedText.Line]]) -> Bool {
+			readings.contains { keysFromTop(expected, lines: $0) == expected }
+				|| keysFromTop(expected, lines: readings.flatMap { $0 }) == expected
+		}
+
 		private func waitForKeyOrder<V: View>(_ expected: [String], in host: SheetTestHost<V>, region: CGRect? = nil) async throws -> Bool {
 			let keyRegion: CGRect
 			if let region {
@@ -584,9 +865,11 @@ extension SheetInteractionTests {
 			while true {
 				let image = try host.snapshot(host.view)
 				var readings: [String] = []
+				var recognized: [[RenderedText.Line]] = []
 				for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
 					let lines = try await RenderedText.lines(in: image, level: level, region: keyRegion)
-					if keysFromTop(expected, lines: lines) == expected { return true }
+					recognized.append(lines)
+					if keyOrderIsVisible(expected, readings: recognized) { return true }
 					readings.append("\(level): " + lines.map { "\($0.text) at \($0.bounds)" }.joined(separator: " | "))
 				}
 				guard ContinuousClock.now < deadline else {
@@ -644,6 +927,43 @@ extension SheetInteractionTests {
 			return CGRect(x: (crop.minX + CGFloat(minX)) / imageWidth,
 				y: (imageHeight - crop.minY - CGFloat(maxTop + 1)) / imageHeight,
 				width: CGFloat(maxX - minX + 1) / imageWidth, height: CGFloat(maxTop - minTop + 1) / imageHeight)
+		}
+
+		private func verticalPixels(in image: CGImage, size: NSSize, x: CGFloat, from y: CGFloat, count: Int) throws -> [[UInt8]] {
+			let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+				bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let column = Int(x * CGFloat(image.width) / size.width)
+			let top = Int((size.height - y) * CGFloat(image.height) / size.height)
+			try #require(column >= 0 && column < image.width && top >= 0 && top + count <= image.height)
+			return (top..<(top + count)).map { row in
+				let offset = (row * image.width + column) * 4
+				return Array(UnsafeBufferPointer(start: pixels + offset, count: 3))
+			}
+		}
+
+		private func compactIndicatorProfiles(in image: CGImage, size: NSSize, region: CGRect) throws -> [[Int]] {
+			let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+				bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / size.width
+			let crop = CGRect(x: region.minX * scale, y: (size.height - region.maxY) * scale,
+				width: region.width * scale, height: region.height * scale).integral
+			var profiles: [[Int]] = []
+			var current: [Int] = []
+			for column in Int(crop.minX)..<Int(crop.maxX) {
+				var count = 0
+				for row in Int(crop.minY)..<Int(crop.maxY) {
+					let offset = (row * image.width + column) * 4
+					if Int(pixels[offset]) > Int(pixels[offset + 1]) + 40 && Int(pixels[offset + 1]) > Int(pixels[offset + 2]) + 40 { count += 1 }
+				}
+				if count > 0 { current.append(count) }
+				else if !current.isEmpty { profiles.append(current); current = [] }
+			}
+			if !current.isEmpty { profiles.append(current) }
+			return profiles
 		}
 
 		private func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {

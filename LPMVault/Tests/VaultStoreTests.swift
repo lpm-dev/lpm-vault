@@ -1212,6 +1212,48 @@ struct VaultStoreTests {
 		#expect(store.autoLockCountdownSeconds == nil)
 	}
 
+	@Test("accessibility column resizing clears and postpones the auto-lock countdown", arguments: [false, true])
+	func columnAccessibilityResetsAutoLock(singleEnvironment: Bool) async throws {
+		let sleeper = AutoLockSleeper()
+		let clock = AutoLockClock()
+		let keychain = MockKeychainService()
+		keychain.envStorage["column-activity"] = (name: "Columns", path: "", environments: ["default": ["TOKEN": "fixture-value"]])
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
+			autoLockSleep: { duration in try await sleeper.sleep(duration) }, autoLockNow: { clock.now }, autoLockDuration: 120)
+		await store.unlock()
+		defer { store.lock() }
+		store.openProject(id: "column-activity")
+		let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "column-activity-test")!)),
+			size: NSSize(width: 1400, height: 800), keepsRequestedSize: true, usesHostingView: true)
+		defer { host.window.close() }
+		#expect(try await host.waitUntil { store.workspaceSnapshots["column-activity"] != nil })
+		try await host.settle()
+		if singleEnvironment {
+			try NativeTestClick.send(to: host.window, at: NSPoint(x: 70, y: 603))
+			try await host.settle()
+		}
+		func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {
+			if let divider = view as? VaultResizeTrackingView { return [divider] }
+			return view.subviews.flatMap { resizeViews(in: $0) }
+		}
+		let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+		while await sleeper.count < 1 { await Task.yield() }
+		clock.now = 90
+		await sleeper.resume(at: 0)
+		while await sleeper.count < 2 { await Task.yield() }
+		#expect(store.autoLockCountdownSeconds == 30)
+		clock.now = 90.25
+		#expect(divider.accessibilityPerformIncrement())
+		#expect(store.autoLockCountdownSeconds == nil)
+		clock.now = 120
+		await sleeper.resume(at: 1)
+		while await sleeper.count < 3, store.isUnlocked { await Task.yield() }
+		#expect(store.isUnlocked)
+		#expect(await sleeper.durations.last == .seconds(60.25))
+		store.lock()
+		for index in 0..<(await sleeper.count) { await sleeper.resume(at: index) }
+	}
+
 	@Test("user activity clears and postpones the auto-lock countdown")
 	func autoLockCountdownResetsWithActivity() async {
 		let sleeper = AutoLockSleeper()

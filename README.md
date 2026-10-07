@@ -84,6 +84,11 @@ The local callback page provides retry instructions if verification fails. It lo
 4. Use **All variables** to compare environments.
 5. To connect the CLI, use **Connect CLI** for the selected project.
 
+Click anywhere in a key cell to open its inspector.
+Drag a column boundary in the table header to resize the column.
+Both **All variables** and each environment table support this gesture.
+Each project keeps its column widths during the session, including visits to Settings and project reloads.
+
 The connection sheet links a project directory through `lpm.json`.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.
 Then run a project script:

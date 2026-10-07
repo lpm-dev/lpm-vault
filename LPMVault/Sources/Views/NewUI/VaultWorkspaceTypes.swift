@@ -28,6 +28,92 @@ enum VaultEnvironmentViewMode: String, CaseIterable, Identifiable {
   var id: String { rawValue }
 }
 
+enum VaultTableColumn: Hashable {
+  case key
+  case value
+  case actions
+  case environment(String)
+
+  var title: String {
+    switch self {
+    case .key: "Key"
+    case .value: "Value"
+    case .actions: "Actions"
+    case .environment(let name): VaultProject.displayName(for: name)
+    }
+  }
+
+  var minimumWidth: CGFloat {
+    switch self {
+    case .key: 160
+    case .value, .environment: 120
+    case .actions: VaultMetrics.environmentActionsColumn
+    }
+  }
+
+  var defaultWidth: CGFloat {
+    switch self {
+    case .key: VaultMetrics.keyColumn
+    case .value: VaultMetrics.environmentValueColumn
+    case .actions: VaultMetrics.environmentActionsColumn
+    case .environment: VaultMetrics.environmentColumn
+    }
+  }
+}
+
+struct VaultTableColumnLayout {
+  struct Boundary: Identifiable {
+    let id: VaultTableColumn
+    let position: CGFloat
+  }
+
+  let widths: [VaultTableColumn: CGFloat]
+  let boundaries: [Boundary]
+  let totalWidth: CGFloat
+
+  init(columns: [VaultTableColumn], available: CGFloat, requested: [VaultTableColumn: CGFloat] = [:]) {
+    let defaultTotal = columns.reduce(CGFloat.zero) { $0 + $1.defaultWidth }
+    let environmentCount = columns.reduce(0) { count, column in
+      if case .environment = column { count + 1 } else { count }
+    }
+    let extra = requested.isEmpty ? max(0, available - defaultTotal) : 0
+    var widths: [VaultTableColumn: CGFloat] = [:]
+    var boundaries: [Boundary] = []
+    var position: CGFloat = 0
+    for column in columns {
+      let share: CGFloat
+      if case .environment = column {
+        share = extra / CGFloat(environmentCount)
+      } else {
+        share = environmentCount == 0 && column == .key ? extra : 0
+      }
+      let width = max(column.minimumWidth, requested[column] ?? (column.defaultWidth + share))
+      widths[column] = width
+      position += width
+      boundaries.append(Boundary(id: column, position: position))
+    }
+    self.widths = widths
+    self.boundaries = boundaries
+    totalWidth = position
+  }
+
+  subscript(column: VaultTableColumn) -> CGFloat { widths[column] ?? column.defaultWidth }
+}
+
+struct VaultTableColumnWidths {
+  private(set) var requested: [VaultTableColumn: CGFloat] = [:]
+
+  mutating func resize(_ column: VaultTableColumn, to width: CGFloat, in layout: VaultTableColumnLayout) {
+    if requested.isEmpty { requested = layout.widths }
+    requested[column] = max(column.minimumWidth, width)
+  }
+}
+
+struct VaultProjectTableColumnWidths {
+  var matrix = VaultTableColumnWidths()
+  var environment = VaultTableColumnWidths()
+}
+
 /// The order the workspace lists keys in, kept across launches.
 enum VaultKeySortOrder: String, Sendable {
   case ascending
