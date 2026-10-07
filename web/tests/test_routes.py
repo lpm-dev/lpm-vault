@@ -240,6 +240,20 @@ class Routes(unittest.TestCase):
             self.assertEqual(headers['Cache-Control'], 'no-store')
             self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
 
+    def test_channel_feed_is_separate_from_the_legacy_stable_route(self):
+        status, headers, _ = self.request('/updates/channels.xml')
+        self.assertEqual(status, 302)
+        self.assertEqual(headers['Location'], 'https://raw.githubusercontent.com/lpm-dev/lpm-vault/updates/appcast.xml')
+        self.assertEqual(headers['Cache-Control'], 'no-store')
+
+    def test_nightly_artifacts_use_immutable_versioned_routes(self):
+        version = '1.1.0-nightly.20261007.42.abcdef0'
+        path = f'/releases/v{version}/LPM-Vault-{version}.dmg'
+        status, headers, _ = self.request(path)
+        self.assertEqual(status, 308)
+        self.assertEqual(headers['Location'], f'https://github.com/lpm-dev/lpm-vault/releases/download/v{version}/LPM-Vault-{version}.dmg')
+        self.assertIn('immutable', headers['Cache-Control'])
+
     def test_sitemap_contains_only_the_canonical_landing_page(self):
         status, headers, body = self.request('/sitemap.xml')
         self.assertEqual(status, 200)

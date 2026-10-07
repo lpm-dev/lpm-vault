@@ -21,7 +21,7 @@
 	<key>SUAutomaticallyUpdate</key>
 	<false/>
 	<key>SUFeedURL</key>
-	<string>https://vault.lpm.dev/updates/appcast.xml</string>
+	<string>https://vault.lpm.dev/updates/channels.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>g8YlEsyut4fJ+dnO/FdFrD/AicRACq9FjZbHm8PClUs=</string>
 	<key>SURequireSignedFeed</key>

@@ -38,6 +38,26 @@ Official releases include Developer ID signatures and Apple notarization.
 The application menu provides **Check for Updates…**.
 Sparkle asks before it enables background update checks.
 
+## Updates
+
+**Settings → Updates** shows the installed version and the update channel.
+Stable installations use **Stable** by default. Direct nightly installations use **Nightly** by default.
+Vault keeps your channel choice across app updates and account changes.
+
+**Stable** offers stable releases. **Nightly** also offers development releases and newer stable releases.
+Nightly releases can contain bugs. Both channels use signed, notarized installers and signed update feeds.
+Changing the channel does not install an update or change your stored secrets.
+The channel picker waits until the current update session ends.
+If Sparkle keeps a downloaded or prepared update, install or skip it before changing channels.
+Use **Check for Updates…** to reopen that update.
+
+If you switch from Nightly to Stable, Vault keeps the installed nightly until a newer stable build is available.
+The settings explain this state. Vault does not downgrade your app automatically.
+
+The release workflow runs nightly at **03:37 UTC**. It publishes only when `main` advances beyond the published nightly.
+Release maintainers can also run the workflow manually from `main`.
+See [Release channels](docs/release-channels.md) for the publishing and recovery procedures.
+
 ## What you can do
 
 - Manage project variables across multiple environments.

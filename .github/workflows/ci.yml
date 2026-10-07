@@ -23,12 +23,21 @@ jobs:
         run: python3 LPMVault/Scripts/verify-env-engine.py --rebuild --target-dir "$RUNNER_TEMP/env-engine-target"
       - name: Swift tests
         run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
+      - name: Preserve failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-test-diagnostics
+          path: ~/Library/Logs/DiagnosticReports/*
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Cooperative executor regressions
         run: bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh
       - name: Release tooling tests
         run: |
           bash LPMVault/Scripts/Tests/release-tooling-tests.sh
-          python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
+          bash LPMVault/Scripts/fetch-sparkle-tools.sh "$RUNNER_TEMP/sparkle-test-tools"
+          SPARKLE_TEST_TOOLS="$RUNNER_TEMP/sparkle-test-tools" python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
       - name: Build universal release bundle
         run: |
           xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build-check CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES build

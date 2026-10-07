@@ -7,6 +7,7 @@ import secrets
 import shlex
 import subprocess
 from pathlib import Path
+import release_channels
 
 
 def subprocess_environment(environment=None):
@@ -62,7 +63,10 @@ def main(argv=None):
     parser.add_argument('--signing-only', action='store_true')
     parser.add_argument('--version')
     parser.add_argument('--build')
+    parser.add_argument('--channel', choices=['stable', 'nightly'], default='stable')
     args = parser.parse_args(argv)
+    if args.channel == 'nightly' and (args.verify_only or args.preflight_only or args.signing_only):
+        parser.error('Verification modes use the stable channel')
     if args.signing_only and not args.verify_only:
         parser.error('--signing-only requires --verify-only')
     if args.verify_only:
@@ -80,45 +84,18 @@ def main(argv=None):
     if args.preflight_only:
         repository_preflight(os.environ["GITHUB_REPOSITORY"])
         return
-    version = release_version(os.environ["GITHUB_REF_NAME"])
+    tag = os.environ["GITHUB_REF_NAME"]
+    if args.channel == 'stable':
+        release_version(tag)
     repository = os.environ["GITHUB_REPOSITORY"]
     run("git", "fetch", "origin", "main")
     run("git", "merge-base", "--is-ancestor", "HEAD", "origin/main")
     repository_preflight(repository)
-    # Xcode substitutes this value from the committed project settings.
     project = Path("LPMVault/LPMVault.xcodeproj/project.pbxproj").read_text()
-    builds = set(re.findall(r"CURRENT_PROJECT_VERSION = ([0-9.]+);", project))
-    if len(builds) != 1:
-        raise ValueError("The project must declare one release build number")
-    build = builds.pop()
-    releases = json.loads(output("gh", "api", f"repos/{repository}/releases?per_page=100"))
-    if any(release["tag_name"] == f"v{version}" for release in releases):
-        raise ValueError("A release already exists for this tag")
-    published = [release for release in releases if not release["draft"] and not release["prerelease"]]
-    if published:
-        latest = json.loads(output("gh", "api", f"repos/{repository}/releases/latest"))
-        previous = Path(os.environ["RUNNER_TEMP"]) / "previous-vault-release"
-        previous.mkdir()
-        run("gh", "release", "download", latest["tag_name"], "--repo", repository,
-            "--pattern", "release-manifest.json", "--dir", str(previous))
-        manifest = json.loads((previous / "release-manifest.json").read_text())
-        numeric = lambda value: tuple(int(part) for part in value.split("."))
-        if numeric(version) <= numeric(manifest["version"]) or numeric(build) <= numeric(manifest["build"]):
-            raise ValueError("Release version and build must both increase")
-    sign_release(version, build)
-    artifacts = [f"LPM-Vault-{version}.dmg", f"LPM-Vault-{version}-macos-universal.zip",
-                 "LPM-Vault.dmg", "appcast.xml", "checksums.txt", "release-manifest.json"]
-    run("gh", "release", "create", f"v{version}", "--repo", repository, "--verify-tag",
-        "--draft", "--title", f"LPM Vault {version}", "--generate-notes",
-        *(str(Path("release-output") / name) for name in artifacts))
-    run("gh", "release", "edit", f"v{version}", "--repo", repository, "--draft=false", "--latest")
-    published = json.loads(output("gh", "api", f"repos/{repository}/releases/tags/v{version}"))
-    if (published.get("tag_name") != f"v{version}" or published.get("draft") is not False
-            or published.get("immutable") is not True):
-        raise RuntimeError("Release publication did not confirm immutable protection; inspect the release before recovery")
+    release_channels.publish(repository, args.channel, tag, project, run, output, sign_release, subprocess_environment())
 
 
-def sign_release(version, build):
+def sign_release(version, build, metadata=None):
     required = ["APPLE_DEVELOPER_ID_P12_BASE64", "APPLE_DEVELOPER_ID_P12_PASSWORD",
                 "APPLE_VAULT_PROVISIONING_PROFILE_BASE64", "APPLE_NOTARY_KEY_BASE64",
                 "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID", "SPARKLE_PRIVATE_KEY"]
@@ -146,6 +123,10 @@ def sign_release(version, build):
         run("security", "list-keychains", "-d", "user", "-s", str(keychain), *original_search)
         run("security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", password, str(keychain), stdout=subprocess.DEVNULL)
         environment = os.environ.copy()
+        metadata = metadata or dict(channel='stable', releaseVersion=version, releaseDate='', sourceCommit='')
+        for key, field in [('LPM_VAULT_RELEASE_CHANNEL', 'channel'), ('LPM_VAULT_RELEASE_VERSION', 'releaseVersion'),
+                           ('LPM_VAULT_RELEASE_DATE', 'releaseDate'), ('LPM_VAULT_RELEASE_COMMIT', 'sourceCommit')]:
+            environment[key] = metadata[field]
         environment["LPM_VAULT_PROVISIONING_PROFILE"] = str(paths["APPLE_VAULT_PROVISIONING_PROFILE_BASE64"])
         environment["APPLE_NOTARY_KEY_PATH"] = str(paths["APPLE_NOTARY_KEY_BASE64"])
         run("bash", "LPMVault/release-app.sh", "--version", version, "--build", build,

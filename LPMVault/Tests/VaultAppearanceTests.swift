@@ -105,7 +105,7 @@ struct VaultAppearanceTests {
 			store.currentUser = LPMUser(id: "theme-test", username: "demo", name: nil, email: nil,
 				avatarUrl: nil, plan: "free", createdAt: nil, orgs: nil)
 		}
-		let host = NSHostingView(rootView: AuthStatusView(store: store).environment(settings))
+		let host = NSHostingView(rootView: AuthStatusView(store: store).environment(settings).environment(UpdateChecker()))
 		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
 			styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
@@ -163,9 +163,9 @@ struct VaultAppearanceTests {
 		try await render(ContentView(store: store).environment(UpdateChecker()).environment(settings),
 			size: CGSize(width: 1200, height: 760), scheme: scheme, name: "workspace-\(suffix)",
 			expectedText: ["All variables", "CLI", "API_URL", "PORT", "protected-api"])
-		try await render(AuthStatusView(store: store).environment(settings),
+		try await render(AuthStatusView(store: store).environment(settings).environment(UpdateChecker()),
 			size: CGSize(width: 700, height: 700), scheme: scheme, name: "settings-\(suffix)",
-			expectedText: ["APPEARANCE", "System", "Light", "Dark"])
+			expectedText: ["APPEARANCE", "System", "Light", "Dark", "UPDATES", "Stable", "Nightly", "Installed version"])
 		try await render(AddVariableSheet(store: store, projectId: project.id, environment: "development"),
 			size: CGSize(width: 560, height: 520), scheme: scheme, name: "add-variable-\(suffix)",
 			expectedText: ["Add variable", "Key", "Value", "Environments", "Cancel"])
