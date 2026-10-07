@@ -517,10 +517,15 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Renders `rect` (view coordinates, whole view by default) at the backing scale.
+	/// Renders at 2× whatever the display's scale. Recognition misreads small text
+	/// at the 1× scale of CI runners, which have no Retina display.
 	func snapshot(_ target: NSView, rect: NSRect? = nil) throws -> CGImage {
 		target.layoutSubtreeIfNeeded()
 		let area = rect ?? target.bounds
-		let bitmap = try #require(target.bitmapImageRepForCachingDisplay(in: area))
+		let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int((area.width * 2).rounded(.up)),
+			pixelsHigh: Int((area.height * 2).rounded(.up)), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+			isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+		bitmap.size = area.size
 		target.cacheDisplay(in: area, to: bitmap)
 		return try #require(bitmap.cgImage)
 	}
