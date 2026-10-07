@@ -16,11 +16,23 @@ struct AuthStatusViewTests {
 			authTokenProvider: { _, _ in nil }
 		)
 		store.appEnvironment = .production
-		let renderer = ImageRenderer(content: AuthStatusView(store: store).environment(VaultAppearanceSettings()).frame(width: 700, height: 700))
-		renderer.scale = 3
-		let image = try #require(renderer.cgImage)
+		let host = NSHostingView(rootView: AuthStatusView(store: store).environment(VaultAppearanceSettings())
+			.environment(UpdateChecker()).environment(\.colorScheme, .light))
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
+			styleMask: [.titled], backing: .buffered, defer: false)
+		window.isReleasedWhenClosed = false
+		window.contentView = host
+		window.orderBack(nil)
+		defer { window.close() }
+		try await Task.sleep(for: .milliseconds(50))
+		host.layoutSubtreeIfNeeded()
+		let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+		host.cacheDisplay(in: host.bounds, to: bitmap)
+		let image = try #require(bitmap.cgImage)
 		let labels = try await RenderedText.strings(in: image)
 		#expect(labels.contains("Not logged in"))
+		#expect(labels.contains("UPDATES"))
+		#expect(labels.contains("Installed version"))
 		#if DEBUG
 		#expect(labels.contains("Use local"))
 		#else

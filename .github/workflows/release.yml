@@ -1,7 +1,10 @@
 name: Signed release
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', '!v*-nightly.*']
+  schedule:
+    - cron: '37 3 * * *'
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -34,7 +37,12 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: python3 LPMVault/Scripts/ci-release.py
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            python3 LPMVault/Scripts/ci-release.py
+          else
+            python3 LPMVault/Scripts/ci-release.py --channel nightly
+          fi
       - name: Delete signing material
         if: always()
         run: |

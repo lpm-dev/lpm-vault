@@ -8,6 +8,112 @@ import Vision
 @Suite("Signed application updates")
 @MainActor
 struct UpdateCheckerTests {
+	@Test("release channels keep nightly updates opt in and include stable releases")
+	func nativeChannels() {
+		#expect(VaultReleaseChannel.stable.sparkleChannels.isEmpty)
+		#expect(VaultReleaseChannel.nightly.sparkleChannels == ["nightly"])
+	}
+
+	@Test("a direct nightly installation keeps its channel when a newer stable build replaces it")
+	func nightlyDefaultSurvivesStableReplacement() throws {
+		let domain = "nightly-default-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let nightly = UpdateChecker(defaults: defaults, buildInfo: VaultBuildInfo(info: ["LPMReleaseChannel": "nightly"]))
+		#expect(nightly.channel == .nightly)
+		#expect(UpdateChecker(defaults: defaults, buildInfo: VaultBuildInfo(info: [:])).channel == .nightly)
+	}
+
+	@Test("the installed build supplies the initial channel but saved choices survive replacement")
+	func channelPersistence() throws {
+		let domain = "update-channel-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let nightly = VaultBuildInfo(info: ["CFBundleShortVersionString": "1.1.0", "CFBundleVersion": "6.0.1",
+			"LPMReleaseChannel": "nightly", "LPMReleaseDate": "2026-10-07", "LPMReleaseCommit": "abcdef0123456789"])
+		let driver = TestUpdateDriver()
+		let checker = UpdateChecker(driver: driver, defaults: defaults, buildInfo: nightly)
+		#expect(checker.channel == .nightly)
+		#expect(driver.channels == [.nightly])
+		#expect(nightly.displayVersion == "1.1.0 Nightly · 2026-10-07 · abcdef0")
+		checker.start()
+		driver.availableUpdateVersion = "Another nightly"
+		checker.channel = .stable
+		#expect(checker.availableUpdateVersion == nil)
+		#expect(checker.buildInfo.channel == .nightly)
+		#expect(checker.channelDescription.contains("until a newer stable"))
+		#expect(driver.channels == [.nightly, .stable])
+		#expect(driver.checks == 0)
+		#expect(UpdateChecker(defaults: defaults, buildInfo: nightly).channel == .stable)
+		defaults.set("unexpected", forKey: UpdateChecker.channelDefaultsKey)
+		#expect(UpdateChecker(defaults: defaults, buildInfo: nightly).channel == .stable)
+		defaults.removeObject(forKey: UpdateChecker.channelDefaultsKey)
+		#expect(UpdateChecker(defaults: defaults, buildInfo: VaultBuildInfo(info: [:])).channel == .stable)
+	}
+
+	@Test("stable versions show the installed build and incomplete metadata has an honest fallback")
+	func versionMetadata() {
+		#expect(VaultBuildInfo(info: ["CFBundleShortVersionString": "1.0.1", "CFBundleVersion": "6"]).displayVersion == "1.0.1 (build 6)")
+		#expect(VaultBuildInfo(info: [:]).displayVersion == "Development build")
+	}
+
+	@Test("settings expose a working channel picker before and after sign-in", arguments: [false, true])
+	func settingsChannelPicker(signedIn: Bool) async throws {
+		let domain = "update-settings-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let driver = TestUpdateDriver()
+		let checker = UpdateChecker(driver: driver, defaults: defaults,
+			buildInfo: VaultBuildInfo(info: ["CFBundleShortVersionString": "1.0.1", "CFBundleVersion": "6"]))
+		checker.start()
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+		if signedIn {
+			store.currentUser = LPMUser(id: "updates-test", username: "demo", name: nil, email: nil,
+				avatarUrl: nil, plan: "free", createdAt: nil, orgs: nil)
+		}
+		let host = NSHostingView(rootView: AuthStatusView(store: store).environment(checker)
+			.environment(VaultAppearanceSettings(defaults: defaults)).environment(\.colorScheme, .light))
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
+			styleMask: [.titled], backing: .buffered, defer: false)
+		window.isReleasedWhenClosed = false
+		window.contentView = host
+		window.orderBack(nil)
+		defer { window.close() }
+		func channelPicker(_ view: NSView) -> NSSegmentedControl? {
+			if let picker = view as? NSSegmentedControl, picker.segmentCount == 2 { return picker }
+			return view.subviews.lazy.compactMap { channelPicker($0) }.first
+		}
+		for _ in 0..<100 {
+			host.layoutSubtreeIfNeeded()
+			if channelPicker(host) != nil { break }
+			try await Task.sleep(for: .milliseconds(10))
+		}
+		let picker = try #require(channelPicker(host))
+		#expect(picker.label(forSegment: 0) == "Stable")
+		#expect(picker.label(forSegment: 1) == "Nightly")
+		picker.selectedSegment = 1
+		#expect(picker.sendAction(picker.action, to: picker.target))
+		#expect(checker.channel == .nightly)
+		#expect(UpdateChecker(defaults: defaults).channel == .nightly)
+		#expect(driver.checks == 0)
+		let bitmap = try renderTitleBar(host)
+		let data = try #require(bitmap.representation(using: .png, properties: [:]))
+		Attachment.record(data, named: "updates-settings-\(signedIn).png")
+		try data.write(to: URL(fileURLWithPath: "/tmp/vault-nightly-settings-\(signedIn).png"))
+		if !signedIn {
+			let image = try #require(bitmap.cgImage)
+			let lines = try await RenderedText.lines(in: image, level: .accurate)
+			let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
+			let signIn = try #require(lines.first { $0.text.contains("Sign in with browser") })
+			let server = try #require(lines.first { $0.text == "SERVER" })
+			#expect(explanation.bounds.minY > signIn.bounds.maxY)
+			#expect(signIn.bounds.minY > server.bounds.maxY)
+		}
+		driver.canCheckForUpdates = false
+		try await Task.sleep(for: .milliseconds(20))
+		#expect(!picker.isEnabled)
+	}
 	@Test("starting the updater more than once starts only one scheduler")
 	func startsOnce() {
 		let driver = TestUpdateDriver()
@@ -171,6 +277,8 @@ private final class TestUpdateDriver: VaultUpdateDriver {
 	var updateChanged: ((String?) -> Void)?
 	var starts = 0
 	var checks = 0
+	var channels: [VaultReleaseChannel] = []
+	func setChannel(_ channel: VaultReleaseChannel) { channels.append(channel) }
 	func start() {
 		starts += 1
 		canCheckForUpdates = true

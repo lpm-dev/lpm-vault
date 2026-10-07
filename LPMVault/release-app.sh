@@ -15,6 +15,10 @@ EXPECTED_ACCESS_GROUP="$DEFAULT_TEAM_ID.dev.lpm.vault.shared"
 EXPECTED_PROFILE_ACCESS_GROUP="$DEFAULT_TEAM_ID.*"
 
 VERSION=""
+RELEASE_CHANNEL="${LPM_VAULT_RELEASE_CHANNEL:-stable}"
+RELEASE_VERSION="${LPM_VAULT_RELEASE_VERSION:-}"
+RELEASE_DATE="${LPM_VAULT_RELEASE_DATE:-}"
+RELEASE_COMMIT="${LPM_VAULT_RELEASE_COMMIT:-}"
 BUILD_NUMBER=""
 TEAM_ID="${LPM_TEAM_ID:-$DEFAULT_TEAM_ID}"
 SIGNING_IDENTITY="${LPM_SIGNING_IDENTITY:-$DEFAULT_SIGNING_IDENTITY}"
@@ -185,6 +189,8 @@ validate_arguments() {
 	[ -n "$BUILD_NUMBER" ] || fail "--build is required"
 	validate_marketing_version "$VERSION" || fail "invalid version '$VERSION' (use two or three numeric components)"
 	validate_build_number "$BUILD_NUMBER" || fail "invalid build '$BUILD_NUMBER' (use one to three numeric components)"
+	RELEASE_VERSION="${RELEASE_VERSION:-$VERSION}"
+	python3 "$SCRIPT_DIR/Scripts/validate-release-metadata.py" "$VERSION" "$BUILD_NUMBER" "$RELEASE_CHANNEL" "$RELEASE_VERSION" "$RELEASE_DATE" "$RELEASE_COMMIT"
 	validate_team_id "$TEAM_ID" || fail "invalid team ID '$TEAM_ID'"
 	[ "$TEAM_ID" = "$DEFAULT_TEAM_ID" ] || fail "the shared Keychain group requires Apple team $DEFAULT_TEAM_ID"
 	[ -n "$SIGNING_IDENTITY" ] || fail "the signing identity cannot be empty"
@@ -301,6 +307,7 @@ build_signed_app() {
 		fail "release build contains warnings; see $build_log"
 	fi
 	ditto "$built_app" "$staged_app"
+	python3 "$SCRIPT_DIR/Scripts/validate-release-metadata.py" "$VERSION" "$BUILD_NUMBER" "$RELEASE_CHANNEL" "$RELEASE_VERSION" "$RELEASE_DATE" "$RELEASE_COMMIT" "$staged_app/Contents/Info.plist"
 	cp "$PROVISIONING_PROFILE" "$staged_app/Contents/embedded.provisionprofile"
 	bash "$SCRIPT_DIR/Scripts/sign-sparkle.sh" "$staged_app" "$SIGNING_IDENTITY" --timestamp
 	codesign --force --timestamp --options runtime \
@@ -528,6 +535,10 @@ write_release_manifest() {
   "product": "$APP_NAME",
   "bundleIdentifier": "$BUNDLE_ID",
   "version": "$VERSION",
+  "releaseVersion": "${RELEASE_VERSION:-$VERSION}",
+  "channel": "$RELEASE_CHANNEL",
+  "releaseDate": "$RELEASE_DATE",
+  "sourceCommit": "$RELEASE_COMMIT",
   "build": "$BUILD_NUMBER",
   "minimumSystemVersion": "$MINIMUM_SYSTEM_VERSION",
   "architectures": [
@@ -585,7 +596,7 @@ main() {
 	parse_arguments "$@"
 	validate_arguments
 	require_tools
-	artifact_names "$VERSION"
+	artifact_names "$RELEASE_VERSION"
 	prepare_output_directory
 	trap cleanup EXIT
 	check_signing_identity

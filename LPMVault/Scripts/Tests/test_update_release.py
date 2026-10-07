@@ -5,12 +5,14 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 import xml.etree.ElementTree as ET
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS))
 
 
 def module(filename):
@@ -101,11 +103,13 @@ class ReleaseSecurity(unittest.TestCase):
              mock.patch.object(release, 'run') as command, \
              mock.patch.object(release, 'output', side_effect=self.repository_response), \
              mock.patch.object(release.Path, 'read_text', return_value='CURRENT_PROJECT_VERSION = 7;'), \
-             mock.patch.object(release, 'sign_release') as sign:
+             mock.patch.object(release.release_channels, 'publish') as publish:
             release.main([])
             self.assertEqual(os.environ['GH_TOKEN'], 'publisher-token')
-        sign.assert_called_once_with('1.0.2', '7')
-        self.assertTrue(any(call.args[:3] == ('gh', 'release', 'create') for call in command.call_args_list))
+        publish.assert_called_once()
+        self.assertEqual(publish.call_args.args[:3], ('example/vault', 'stable', 'v1.0.2'))
+        self.assertEqual(publish.call_args.args[-1]['GH_TOKEN'], 'publisher-token')
+        self.assertNotIn('IMMUTABLE_RELEASES_READ_TOKEN', publish.call_args.args[-1])
 
     def test_verification_checks_publication_before_signing(self):
         environment = dict(GITHUB_REPOSITORY='example/vault', GH_TOKEN='publisher-token',
@@ -172,26 +176,19 @@ class ReleaseSecurity(unittest.TestCase):
                     release.main(['--verify-only', '--version', '1.0.2', '--build', '7'])
                 sign.assert_not_called()
 
-    def test_published_release_requires_immutable_protection(self):
+    def test_publication_failure_propagates_without_retrying_signing(self):
         environment = dict(GITHUB_REF_NAME='v1.0.2', GITHUB_REPOSITORY='example/vault',
                            IMMUTABLE_RELEASES_READ_TOKEN='settings-read-token')
-        for result in [{'tag_name': 'v1.0.2', 'draft': False, 'immutable': False},
-                       {'tag_name': 'v1.0.2', 'draft': False},
-                       {'tag_name': 'v1.0.2', 'draft': True, 'immutable': True},
-                       {'tag_name': 'v1.0.1', 'draft': False, 'immutable': True}]:
-            def respond(*arguments, **kwargs):
-                if arguments[-1].endswith('/immutable-releases'):
-                    return '{"enabled": true}'
-                if '/releases/tags/' in arguments[-1]:
-                    return json.dumps(result)
-                return self.repository_response(*arguments, **kwargs)
-            with self.subTest(result=result), mock.patch.dict(os.environ, environment), \
-                 mock.patch.object(release, 'run'), \
-                 mock.patch.object(release, 'output', side_effect=respond), \
-                 mock.patch.object(release.Path, 'read_text', return_value='CURRENT_PROJECT_VERSION = 7;'), \
-                 mock.patch.object(release, 'sign_release'):
-                with self.assertRaisesRegex(RuntimeError, 'immutable'):
-                    release.main([])
+        with mock.patch.dict(os.environ, environment), \
+             mock.patch.object(release, 'run'), \
+             mock.patch.object(release, 'output', side_effect=self.repository_response), \
+             mock.patch.object(release.Path, 'read_text', return_value='CURRENT_PROJECT_VERSION = 7;'), \
+             mock.patch.object(release.release_channels, 'publish', side_effect=RuntimeError('immutable')) as publish, \
+             mock.patch.object(release, 'sign_release') as sign:
+            with self.assertRaisesRegex(RuntimeError, 'immutable'):
+                release.main([])
+        publish.assert_called_once()
+        sign.assert_not_called()
 
     def test_settings_credential_is_excluded_from_other_subprocesses(self):
         environment = dict(GH_TOKEN='publisher-token', IMMUTABLE_RELEASES_READ_TOKEN='settings-read-token')

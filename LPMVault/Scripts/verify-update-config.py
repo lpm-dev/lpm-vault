@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 PUBLIC_KEY = "g8YlEsyut4fJ+dnO/FdFrD/AicRACq9FjZbHm8PClUs="
-FEED_URL = "https://vault.lpm.dev/updates/appcast.xml"
+FEED_URL = "https://vault.lpm.dev/updates/channels.xml"
 
 
 def verify(config):

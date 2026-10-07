@@ -3,6 +3,7 @@ import SwiftUI
 struct AuthStatusView: View {
 	@Bindable var store: VaultStore
 	@Environment(VaultAppearanceSettings.self) private var appearanceSettings
+	@Environment(UpdateChecker.self) private var updateChecker
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var showLogoutConfirmation = false
 
@@ -42,6 +43,7 @@ struct AuthStatusView: View {
 
 						serverSettings
 						appearanceSection
+						updatesSection
 
 						settingsSection("ACTIONS") {
 							HStack(spacing: 8) {
@@ -59,37 +61,43 @@ struct AuthStatusView: View {
 					.padding(20)
 				}
 			} else {
-				VStack(spacing: 16) {
-					VaultAppMark(size: 42)
+				ScrollView {
+					VStack(spacing: 16) {
+						VaultAppMark(size: 42)
 
-					Text("Not logged in")
-						.font(.system(size: 18, weight: .bold))
-						.foregroundStyle(VaultPalette.textPrimary)
-					Text("Sign in to sync personal and organization env projects.")
-						.font(.system(size: 12.5))
-						.foregroundStyle(VaultPalette.textTertiary)
+						Text("Not logged in")
+							.font(.system(size: 18, weight: .bold))
+							.foregroundStyle(VaultPalette.textPrimary)
+						Text("Sign in to sync personal and organization env projects.")
+							.font(.system(size: 12.5))
+							.foregroundStyle(VaultPalette.textTertiary)
 
-					serverSettings
-						.frame(maxWidth: 360)
-					appearanceSection
-						.frame(maxWidth: 360)
+						VaultBarButton(systemImage: "globe", title: store.isLoggingIn ? "Waiting for browser…" : "Sign in with browser", filled: true, disabled: store.isLoggingIn) {
+							Task { await store.login() }
+						}
 
-					VaultBarButton(systemImage: "globe", title: store.isLoggingIn ? "Waiting for browser…" : "Sign in with browser", filled: true, disabled: store.isLoggingIn) {
-						Task { await store.login() }
+						if store.isLoggingIn {
+							ProgressView().controlSize(.small)
+						}
+
+						if let error = store.error {
+							Text(error)
+								.font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
+								.multilineTextAlignment(.center)
+								.frame(maxWidth: 320)
+						}
+
+						serverSettings
+							.frame(maxWidth: 360)
+						appearanceSection
+							.frame(maxWidth: 360)
+						updatesSection
+							.frame(maxWidth: 360)
+
 					}
-
-					if store.isLoggingIn {
-						ProgressView().controlSize(.small)
-					}
-
-					if let error = store.error {
-						Text(error)
-							.font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
-							.multilineTextAlignment(.center)
-							.frame(maxWidth: 320)
-					}
+					.frame(maxWidth: .infinity, maxHeight: .infinity)
+					.padding(20)
 				}
-				.frame(maxWidth: .infinity, maxHeight: .infinity)
 			}
 		}
 		.background(VaultPalette.content)
@@ -122,6 +130,29 @@ struct AuthStatusView: View {
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
+			}
+		}
+	}
+
+	private var updatesSection: some View {
+		@Bindable var updates = updateChecker
+		return settingsSection("UPDATES") {
+			VStack(alignment: .leading, spacing: 10) {
+				Text("Installed version").font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
+				Text(updates.buildInfo.displayVersion).font(VaultTypography.mono(11)).textSelection(.enabled)
+				Picker("Update channel", selection: $updates.channel) {
+					ForEach(VaultReleaseChannel.allCases) { channel in
+						Text(channel.title).tag(channel)
+					}
+				}
+				.pickerStyle(.segmented)
+				.disabled(!updates.canCheckForUpdates)
+				Text(updates.channelDescription)
+					.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+				VaultBarButton(title: "Check for Updates…", disabled: !updates.canCheckForUpdates) {
+					updates.checkForUpdates()
+				}
 			}
 		}
 	}
