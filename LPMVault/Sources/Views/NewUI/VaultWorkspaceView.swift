@@ -17,6 +17,7 @@ struct VaultWorkspaceView: View {
 	@State private var showsAccountSwitcher = false
 	@State private var sidebarWidth = VaultMetrics.sidebar
 	@State private var inspectorWidth = VaultMetrics.inspector
+	@State private var tableColumnWidths: [String: VaultProjectTableColumnWidths] = [:]
 
 	@State private var showNewProject = false
 	@State private var showCloudProjects = false
@@ -199,6 +200,10 @@ struct VaultWorkspaceView: View {
 								selectedKey: $selectedKey,
 								revealedKeys: $revealedKeys,
 								showsInspector: $showsInspector,
+								columnWidths: Binding(
+									get: { tableColumnWidths[project.id] ?? VaultProjectTableColumnWidths() },
+									set: { tableColumnWidths[project.id] = $0 }
+								),
 								isImporting: currentImportTask != nil,
 								isCopyingAll: copyAllTask != nil,
 								isCopiedAll: copyFeedback?.target == .all(VaultSensitiveActionContext(

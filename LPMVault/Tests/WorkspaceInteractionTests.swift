@@ -9,6 +9,109 @@ extension SheetInteractionTests {
 	@Suite("Workspace interaction regressions", .serialized)
 	@MainActor
 		struct WorkspaceInteractionTests {
+			@Test("table backgrounds and dividers fill the trailing gutter and space after shrinking", arguments: [false, true])
+			func tableTrailingFiller(singleEnvironment: Bool) async throws {
+				let (store, _) = makeStore(environments: ["default": ["ALPHA": "a", "ZULU": "z"], "production": ["ALPHA": "b", "ZULU": "z"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				try selectRow(0, in: host)
+				#expect(try await host.waitForText("VALUES"))
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				let finalLabel = singleEnvironment ? "Resize Actions column" : "Resize .env.production column"
+				let last = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == finalLabel })
+				let rowHeight = singleEnvironment ? VaultMetrics.fileRow : VaultMetrics.matrixRow
+				try await host.settle()
+				let original = last.convert(last.bounds, to: nil)
+				let referenceX = VaultMetrics.sidebar + VaultMetrics.paneDivider + 5
+				for shrunken in [false, true] {
+					if shrunken {
+						for divider in resizeViews(in: host.view) where divider.accessibilityLabel()?.hasSuffix(" column") == true {
+							divider.onDragEnded?(-2000)
+							try await host.settle()
+						}
+					}
+					let frame = last.convert(last.bounds, to: nil)
+					let targetX = original.midX + 6
+					let image = try host.snapshot(host.view)
+					let samples = Int((VaultMetrics.tableHeader + 2 * rowHeight) * CGFloat(image.height) / host.view.bounds.height)
+					let reference = try verticalPixels(in: image, size: host.view.bounds.size, x: referenceX,
+						from: frame.maxY, count: samples)
+					let trailing = try verticalPixels(in: image, size: host.view.bounds.size, x: targetX,
+						from: frame.maxY, count: samples)
+					let fillsTrailing = reference == trailing
+					#expect(fillsTrailing, "Header, selected row, and row dividers must reach the trailing edge (shrunken: \(shrunken))")
+					Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])),
+						named: "trailing-\(singleEnvironment ? "environment" : "matrix")-\(shrunken).png")
+				}
+			}
+
+			@Test("column widths survive Settings and a project reload", arguments: [false, true])
+			func tableWidthsSurviveContentReplacement(singleEnvironment: Bool) async throws {
+				let keychain = MockKeychainService()
+				let (store, _) = makeStore(keychain: keychain)
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				divider.onDragEnded?(-2000)
+				try await host.settle()
+				#expect(divider.accessibilityValue() as? String == "160 points")
+				store.showSettings()
+				#expect(try await host.waitUntil { !resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
+				store.openProject(id: "workspace")
+				try await host.settle()
+				let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(restored.accessibilityValue() as? String == "160 points")
+				let gate = DispatchSemaphore(value: 0)
+				defer { gate.signal() }
+				store.selectedProjectId = nil
+				keychain.blockNextListProjects = { _ = gate.wait(timeout: .now() + 15) }
+				store.openProject(id: "workspace")
+				#expect(try await host.waitForText("Loading Workspace"))
+				gate.signal()
+				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				try await host.settle()
+				let reloaded = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(reloaded.accessibilityValue() as? String == "160 points")
+			}
+
+			@Test("each project retains its own matrix column widths")
+			func tableWidthsAreProjectSpecific() async throws {
+				let (store, _) = makeStore(additionalProject: true)
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				divider.onDragEnded?(-2000)
+				try await host.settle()
+				store.openProject(id: "other")
+				#expect(try await host.waitForText("SECOND"))
+				let other = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(other.accessibilityValue() as? String == "\(Int(VaultMetrics.keyColumn)) points")
+				other.onDragEnded?(80)
+				try await host.settle()
+				store.openProject(id: "workspace")
+				#expect(try await host.waitForText("TOKEN"))
+				let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(restored.accessibilityValue() as? String == "160 points")
+				store.openProject(id: "other")
+				#expect(try await host.waitForText("SECOND"))
+				let otherRestored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				#expect(otherRestored.accessibilityValue() as? String == "\(Int(VaultMetrics.keyColumn) + 80) points")
+			}
+
 			@Test("a narrow key column keeps an edited drifting key visible")
 			func narrowKeyWithBothBadges() async throws {
 				let key = "LONG_DATABASE_AUTHENTICATION_TOKEN"
@@ -29,6 +132,12 @@ extension SheetInteractionTests {
 				let region = CGRect(x: (frame.midX - VaultTableColumn.key.minimumWidth) / size.width, y: 0.05,
 					width: VaultTableColumn.key.minimumWidth / size.width, height: 0.8)
 				let image = try host.snapshot(host.view)
+				let indicators = try compactIndicatorProfiles(in: image, size: size,
+					region: CGRect(x: frame.midX - 50, y: frame.minY - VaultMetrics.fileRow, width: 38, height: VaultMetrics.fileRow))
+				#expect(indicators.count == 2, "Expected both unsaved and drift indicators: \(indicators)")
+				if indicators.count == 2 {
+					#expect(indicators[0] != indicators[1], "Unsaved changes and differing values need distinct shapes")
+				}
 				let lines = try await RenderedText.lines(in: image, level: .accurate, region: region)
 				#expect(lines.contains { OCRText($0.text).contains("LONG") }, "Key column contains: \(lines.map(\.text))")
 				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
@@ -818,6 +927,43 @@ extension SheetInteractionTests {
 			return CGRect(x: (crop.minX + CGFloat(minX)) / imageWidth,
 				y: (imageHeight - crop.minY - CGFloat(maxTop + 1)) / imageHeight,
 				width: CGFloat(maxX - minX + 1) / imageWidth, height: CGFloat(maxTop - minTop + 1) / imageHeight)
+		}
+
+		private func verticalPixels(in image: CGImage, size: NSSize, x: CGFloat, from y: CGFloat, count: Int) throws -> [[UInt8]] {
+			let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+				bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let column = Int(x * CGFloat(image.width) / size.width)
+			let top = Int((size.height - y) * CGFloat(image.height) / size.height)
+			try #require(column >= 0 && column < image.width && top >= 0 && top + count <= image.height)
+			return (top..<(top + count)).map { row in
+				let offset = (row * image.width + column) * 4
+				return Array(UnsafeBufferPointer(start: pixels + offset, count: 3))
+			}
+		}
+
+		private func compactIndicatorProfiles(in image: CGImage, size: NSSize, region: CGRect) throws -> [[Int]] {
+			let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+				bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / size.width
+			let crop = CGRect(x: region.minX * scale, y: (size.height - region.maxY) * scale,
+				width: region.width * scale, height: region.height * scale).integral
+			var profiles: [[Int]] = []
+			var current: [Int] = []
+			for column in Int(crop.minX)..<Int(crop.maxX) {
+				var count = 0
+				for row in Int(crop.minY)..<Int(crop.maxY) {
+					let offset = (row * image.width + column) * 4
+					if Int(pixels[offset]) > Int(pixels[offset + 1]) + 40 && Int(pixels[offset + 1]) > Int(pixels[offset + 2]) + 40 { count += 1 }
+				}
+				if count > 0 { current.append(count) }
+				else if !current.isEmpty { profiles.append(current); current = [] }
+			}
+			if !current.isEmpty { profiles.append(current) }
+			return profiles
 		}
 
 		private func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {

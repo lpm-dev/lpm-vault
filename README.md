@@ -87,7 +87,7 @@ The local callback page provides retry instructions if verification fails. It lo
 Click anywhere in a key cell to open its inspector.
 Drag a column boundary in the table header to resize the column.
 Both **All variables** and each environment table support this gesture.
-Column widths stay fixed as you switch views or open the inspector within the selected project.
+Each project keeps its column widths during the session, including visits to Settings and project reloads.
 
 The connection sheet links a project directory through `lpm.json`.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.

@@ -109,6 +109,11 @@ struct VaultTableColumnWidths {
   }
 }
 
+struct VaultProjectTableColumnWidths {
+  var matrix = VaultTableColumnWidths()
+  var environment = VaultTableColumnWidths()
+}
+
 /// The order the workspace lists keys in, kept across launches.
 enum VaultKeySortOrder: String, Sendable {
   case ascending
