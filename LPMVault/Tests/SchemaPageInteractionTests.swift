@@ -32,10 +32,10 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			#expect(try await host.waitUntil { store.keyDescriptions["schema-page"]?.schema?.overview != nil })
 			try await host.click("Schema")
-			#expect(try await host.waitForText("only what differs from the default"))
+			#expect(try await host.waitForText("6 declared keys"))
 			let text = try await host.text()
 			for expected in ["Required in production", "Default: 3000", "https only", "12+ chars", "Public",
-				"Exactly one of PASSWORD, OAUTH_TOKEN", "Bearer token for the admin API.", "6 declared keys", "1 inherited"] {
+				"Exactly one of PASSWORD, OAUTH_TOKEN", "Bearer token for the admin API.", "1 inherited"] {
 				#expect(text.contains(expected), "Missing \(expected)")
 			}
 			// Recognition misreads the small dashed source badge; the page renders the model's source.
@@ -94,7 +94,7 @@ extension SheetInteractionTests {
 			try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
 			try #"{"vars":{}}"#.write(toFile: folder + "/schemas/base.json", atomically: true, encoding: .utf8)
 			try await host.click("Recheck")
-			#expect(try await host.waitForText("only what differs from the default"))
+			#expect(try await host.waitForText("5 declared keys"))
 			#expect(try await !host.text().contains("Schema can't be read"))
 		}
 
