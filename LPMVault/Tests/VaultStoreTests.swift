@@ -1231,7 +1231,7 @@ struct VaultStoreTests {
 		#expect(try await host.waitUntil { store.workspaceSnapshots["column-activity"] != nil })
 		try await host.settle()
 		if singleEnvironment {
-			try NativeTestClick.send(to: host.window, at: NSPoint(x: 70, y: 603))
+			try await host.clickSidebarEnvironment(".env")
 			try await host.settle()
 		}
 		func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {

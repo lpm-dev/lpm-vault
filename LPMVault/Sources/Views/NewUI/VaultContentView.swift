@@ -69,6 +69,9 @@ struct VaultContentView: View {
 				matrix(derived)
 			case .environment:
 				environmentDetail(derived)
+			case .schema:
+				// The workspace shows the Schema page instead of this view.
+				Spacer(minLength: 0)
 			}
 
 			VaultHairline()
@@ -646,7 +649,7 @@ private struct VaultEnvironmentRow: View {
 
 /// The KEY column header. Clicking it reverses the key order, like a Finder
 /// column header.
-private struct VaultKeySortHeader: View {
+struct VaultKeySortHeader: View {
 	@Binding var order: VaultKeySortOrder
 	@State private var hovering = false
 

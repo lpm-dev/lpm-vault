@@ -40,6 +40,8 @@ enum VaultPalette {
 	static let orangeTintText = adaptive(light: 0xA05A12, dark: 0xFFC06A)
 	static let redTint = adaptive(light: 0xFFE9E7, dark: 0x3D2423)
 	static let neutralTint = adaptive(light: 0xECEAF0, dark: 0x292929)
+	static let publicTint = adaptive(light: 0xE3F2FA, dark: 0x173140)
+	static let publicText = adaptive(light: 0x0B6A96, dark: 0x6CCFF6)
 
 	static let rowSelected = adaptive(light: 0xF6F5FD, dark: 0x292929)
 	static let rowHover = adaptive(light: 0xFAFAFC, dark: 0x232323)

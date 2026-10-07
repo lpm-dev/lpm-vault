@@ -18,7 +18,7 @@ extension SheetInteractionTests {
 				try selectRow(0, in: host)
 				#expect(try await host.waitForText("VALUES"))
 				if singleEnvironment {
-					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					try await host.clickSidebarEnvironment(".env")
 					#expect(try await host.waitForText("ACTIONS"))
 				}
 				let finalLabel = singleEnvironment ? "Resize Actions column" : "Resize .env.production column"
@@ -57,7 +57,7 @@ extension SheetInteractionTests {
 				let host = try await workspace(store)
 				defer { host.window.close() }
 				if singleEnvironment {
-					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					try await host.clickSidebarEnvironment(".env")
 					#expect(try await host.waitForText("ACTIONS"))
 				}
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
@@ -79,7 +79,7 @@ extension SheetInteractionTests {
 				gate.signal()
 				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
 				if singleEnvironment {
-					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					try await host.clickSidebarEnvironment(".env")
 					#expect(try await host.waitForText("ACTIONS"))
 				}
 				try await host.settle()
@@ -122,7 +122,7 @@ extension SheetInteractionTests {
 				try selectRow(0, in: host)
 				try await host.settle()
 				try host.enterValue("unsaved-value")
-				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				try await host.clickSidebarEnvironment(".env")
 				#expect(try await host.waitForText("ACTIONS"))
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
 				divider.onDragEnded?(-2000)
@@ -170,7 +170,7 @@ extension SheetInteractionTests {
 				let host = try await workspace(store)
 				defer { host.window.close() }
 				if singleEnvironment {
-					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					try await host.clickSidebarEnvironment(".env")
 					#expect(try await host.waitForText("ACTIONS"))
 				}
 				try clickAt(NSPoint(x: host.view.bounds.width - 129.5, y: 723.5), in: host)
@@ -206,7 +206,7 @@ extension SheetInteractionTests {
 				let host = try await workspace(store)
 				defer { host.window.close() }
 				if singleEnvironment {
-					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					try await host.clickSidebarEnvironment(".env")
 					#expect(try await host.waitForText("ACTIONS"))
 				}
 				for divider in resizeViews(in: host.view) where divider.accessibilityLabel()?.hasSuffix(" column") == true {
@@ -240,7 +240,7 @@ extension SheetInteractionTests {
 			let host = try await workspace(store, defaults: defaults)
 			defer { host.window.close() }
 			if singleEnvironment {
-				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				try await host.clickSidebarEnvironment(".env")
 				#expect(try await host.waitForText("ACTIONS"))
 			}
 			let label = "Resize Key column"
@@ -277,10 +277,10 @@ extension SheetInteractionTests {
 				#expect(try await host.waitForText("All variables"))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
 				try await host.settle()
-				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				try await host.clickSidebarEnvironment(".env")
 				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Value column" } })
 			} else {
-				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				try await host.clickSidebarEnvironment(".env")
 				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Value column" } })
 				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.75, width: 0.17, height: 0.15))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
@@ -399,7 +399,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("sorted Z"))
 
 			// The environment's own table uses the same order and its header reverses it too.
-			try clickAt(NSPoint(x: 70, y: 603), in: host)
+			try await host.clickSidebarEnvironment(".env")
 			#expect(try await host.waitForText("ACTIONS"))
 			#expect(try await waitForKeyOrder(["ZULU", "ALPHA"], in: host))
 			try await clickKeyHeader(in: host)
@@ -434,7 +434,7 @@ extension SheetInteractionTests {
 				#expect(try await host.waitUntil { inspector.accessibilityValue() as? String == "338 points" })
 				try await host.settle()
 			}
-			try clickAt(NSPoint(x: 70, y: 503), in: host)
+			try await host.clickSidebarEnvironment(".env")
 			try await host.settle()
 			let headerRegion = CGRect(x: 0.27, y: 0.7, width: 0.43, height: 0.13)
 			let keyHeader = try await host.labelFrame("KEY", region: headerRegion)
@@ -799,9 +799,9 @@ extension SheetInteractionTests {
 			let host = try await workspace(store)
 			defer { host.window.close() }
 			let inset: CGFloat = environmentSelected ? 29 : 12
-			let rowMidY: CGFloat = environmentSelected ? 603 : 657
+			var rowMidY: CGFloat = 657
 			if environmentSelected {
-				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				rowMidY = try await host.clickSidebarEnvironment(".env").y
 				try await host.settle()
 			}
 			#expect(try host.rowIsHighlighted(inset: inset, rowMidY: rowMidY))

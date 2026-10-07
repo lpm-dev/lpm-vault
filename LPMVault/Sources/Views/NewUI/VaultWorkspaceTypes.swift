@@ -4,11 +4,14 @@ import SwiftUI
 enum VaultWorkspaceMode: Equatable {
   case matrix
   case environment(String)
+  /// The project's env rules from lpm.json.
+  case schema
 
   func synchronized(to selectedEnvironment: String) -> Self {
     switch self {
     case .matrix: .matrix
     case .environment: .environment(selectedEnvironment)
+    case .schema: .schema
     }
   }
 }
@@ -627,6 +630,10 @@ struct VaultContentDerivation: Equatable {
       environmentDriftingKeyCount = environmentKeys.reduce(into: 0) { count, key in
         if snapshot.hasDrift(for: key) { count += 1 }
       }
+    case .schema:
+      filteredKeys = []
+      environmentKeys = []
+      environmentDriftingKeyCount = 0
     }
     let visibleKeys = mode == .matrix ? filteredKeys : environmentKeys
     allVisibleRevealed = !visibleKeys.isEmpty && visibleKeys.allSatisfy(revealedKeys.contains)

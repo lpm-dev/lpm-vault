@@ -232,6 +232,8 @@ struct VaultSidebarView: View {
 	private func environmentRows(_ project: VaultProject) -> some View {
 		let environments = store.orderedEnvironmentNames(for: project)
 		return LazyVStack(spacing: 1) {
+			schemaRow(project)
+
 			Button(action: onNewEnvironment) {
 				HStack(spacing: 7) {
 					Image(systemName: "plus")
@@ -256,6 +258,49 @@ struct VaultSidebarView: View {
 		.padding(.trailing, 8)
 		.padding(.top, 2)
 		.padding(.bottom, 6)
+	}
+
+	private func schemaRow(_ project: VaultProject) -> some View {
+		let selected = !store.showAuthStatus && mode == .schema
+		let state = store.keyDescriptions[project.id]?.schema
+		let count = state?.overview?.rules.count
+		let unreadable = if case .unreadable? = state { true } else { false }
+		return Button {
+			store.openProject(id: project.id)
+			mode = .schema
+		} label: {
+			HStack(spacing: 7) {
+				Image(systemName: "curlybraces")
+					.font(.system(size: 9, weight: .bold))
+					.frame(width: 12)
+					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
+				Text("Schema")
+					.font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
+				Spacer(minLength: 4)
+				if unreadable {
+					Image(systemName: "exclamationmark.triangle.fill")
+						.font(.system(size: 9.5))
+						.foregroundStyle(VaultPalette.orange)
+						.help("lpm.json can't be read")
+				} else if let count, count > 0 {
+					Text("\(count)")
+						.font(VaultTypography.mono(10.5))
+						.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
+				}
+			}
+			.padding(.horizontal, 9)
+			.padding(.vertical, 5)
+			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.accentTint : .clear))
+			.overlay(alignment: .leading) {
+				if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
+			}
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.accessibilityLabel("Schema")
+		.accessibilityValue(unreadable ? "lpm.json can't be read" : count.map { "\($0) declared keys" } ?? "")
+		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 
 	private func environmentRow(_ project: VaultProject, environment: String, color: Color) -> some View {
