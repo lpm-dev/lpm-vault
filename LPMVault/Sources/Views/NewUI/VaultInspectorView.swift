@@ -116,6 +116,7 @@ private struct VaultKeyEditor: View {
 					VaultHairline()
 					valuesSection(draft, cards: cards)
 					VaultHairline()
+					rulesSection
 					descriptionSection(draft, descriptions: descriptions)
 				}
 				.frame(maxWidth: .infinity, alignment: .leading)
@@ -464,6 +465,64 @@ private struct VaultKeyEditor: View {
 			.foregroundStyle(VaultPalette.accentForeground)
 			.fixedSize()
 			.vaultPointingHand()
+	}
+
+	/// The key's rules from lpm.json, read-only; people edit them there.
+	@ViewBuilder
+	private var rulesSection: some View {
+		switch store.keyDescriptions[project.id]?.schema {
+		case .loaded(let overview, _)?:
+			let rule = overview.rule(for: key)
+			let groups = overview.groups.filter { $0.members.contains(key) }
+			VStack(alignment: .leading, spacing: 8) {
+				HStack(spacing: 6) {
+					Text("RULES").vaultSectionLabel()
+					Spacer(minLength: 4)
+					Label("read-only · \(rule?.source ?? "lpm.json")", systemImage: "lock")
+						.font(.system(size: 10.5))
+						.foregroundStyle(VaultPalette.textFaint)
+						.lineLimit(1)
+						.truncationMode(.middle)
+				}
+				if let rule, rule.isPublic || !rule.badges.isEmpty || rule.source != nil {
+					VaultFlowLayout {
+						if rule.isPublic { VaultPublicBadge() }
+						ForEach(rule.badges, id: \.self) { VaultRuleBadge(badge: $0) }
+						if let source = rule.source { VaultSourceBadge(source: source) }
+					}
+				} else {
+					Text("No rules for this key.")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+				}
+				ForEach(groups, id: \.name) { group in
+					Text(group.summary)
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.fixedSize(horizontal: false, vertical: true)
+				}
+				Text("Rules are declared in lpm.json and enforced by the LPM CLI. Edit them there.")
+					.font(.system(size: 10.5))
+					.foregroundStyle(VaultPalette.textFaint)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			.padding(.horizontal, 18)
+			.padding(.vertical, 14)
+			VaultHairline()
+		case .unreadable?:
+			VStack(alignment: .leading, spacing: 6) {
+				Text("RULES").vaultSectionLabel()
+				Text("lpm.json can't be read, so rules aren't checked. Schema shows where.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			.padding(.horizontal, 18)
+			.padding(.vertical, 14)
+			VaultHairline()
+		case .noFolder?, nil:
+			EmptyView()
+		}
 	}
 
 	private func descriptionSection(_ draft: VaultKeyDraft?, descriptions: ProjectKeyDescriptions?) -> some View {
