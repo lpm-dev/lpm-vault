@@ -46,6 +46,11 @@ targets:
         SUVerifyUpdateBeforeExtraction: true
         SUAutomaticallyUpdate: false
         SUSendProfileInfo: false
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: dev.lpm.vault.sidebar-project
+            UTTypeDescription: Vault sidebar project
+            UTTypeConformsTo:
+              - public.data
     sources:
       - path: Sources
         excludes:

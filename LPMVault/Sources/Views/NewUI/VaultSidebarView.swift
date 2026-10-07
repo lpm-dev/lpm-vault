@@ -1,4 +1,5 @@
 import AppKit
+import CoreTransferable
 import SwiftUI
 
 struct VaultSidebarView: View {
@@ -45,12 +46,17 @@ struct VaultSidebarView: View {
 							.padding(.horizontal, 16)
 							.padding(.vertical, 12)
 					} else {
-						ForEach(derivedProjects) { project in
-							projectRow(project)
-							if store.selectedProjectId == project.id,
-								!collapsedProjectIds.contains(project.id)
-							{
-								environmentRows(project)
+						ForEach(Array(derivedProjects.enumerated()), id: \.element.id) { index, project in
+							VaultSidebarProjectGroup(store: store, projectId: project.id) {
+								projectRow(project,
+									previous: index > 0 ? derivedProjects[index - 1].id : nil,
+									next: index + 1 < derivedProjects.count ? derivedProjects[index + 1].id : nil)
+							} environments: {
+								if store.selectedProjectId == project.id,
+									!collapsedProjectIds.contains(project.id)
+								{
+									environmentRows(project)
+								}
 							}
 						}
 					}
@@ -158,7 +164,7 @@ struct VaultSidebarView: View {
 		.padding(.bottom, 6)
 	}
 
-	private func projectRow(_ project: VaultProject) -> some View {
+	private func projectRow(_ project: VaultProject, previous: String?, next: String?) -> some View {
 		let cliAccess = store.projectCliAccess[project.id]
 		let approvalDescription = cliAccess.map {
 			$0 == .requireApproval ? "CLI approval required" : "CLI access automatic"
@@ -201,8 +207,23 @@ struct VaultSidebarView: View {
 		.accessibilityLabel("\(project.name), \(project.secretCount) secrets, \(approvalDescription)")
 		.accessibilityValue(expanded ? "Expanded" : "Collapsed")
 		.accessibilityAddTraits(selected ? .isSelected : [])
+		.accessibilityAction(named: "Move Up") {
+			if let previous { store.moveProject(id: project.id, relativeTo: previous, placement: .before) }
+		}
+		.accessibilityAction(named: "Move Down") {
+			if let next { store.moveProject(id: project.id, relativeTo: next, placement: .after) }
+		}
 		.contextMenu {
 			Button("Rename…") { onRenameProject(project) }
+			Divider()
+			Button("Move Up") {
+				if let previous { store.moveProject(id: project.id, relativeTo: previous, placement: .before) }
+			}
+			.disabled(previous == nil)
+			Button("Move Down") {
+				if let next { store.moveProject(id: project.id, relativeTo: next, placement: .after) }
+			}
+			.disabled(next == nil)
 			Divider()
 			Button("Delete Locally", role: .destructive) { onDeleteProject(project) }
 		}
@@ -361,6 +382,80 @@ struct VaultSidebarView: View {
 		let words = accountName.split(separator: " ")
 		let result = words.prefix(2).compactMap(\.first).map(String.init).joined()
 		return result.isEmpty ? "LP" : result.uppercased()
+	}
+}
+
+private struct VaultSidebarProjectGroup<Row: View, Environments: View>: View {
+	let store: VaultStore
+	let projectId: String
+	let row: Row
+	let environments: Environments
+	@State private var rowHeight: CGFloat = 30
+	@State private var placement: VaultProjectPlacement?
+
+	init(store: VaultStore, projectId: String, @ViewBuilder row: () -> Row, @ViewBuilder environments: () -> Environments) {
+		self.store = store
+		self.projectId = projectId
+		self.row = row()
+		self.environments = environments()
+	}
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 0) {
+			row
+				.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { rowHeight = $0 }
+				.draggable(VaultSidebarProjectDrag(projectId: projectId, sessionId: store.sidebarDragSessionId))
+			environments
+		}
+		.onDrop(of: [VaultSidebarProjectDrag.contentType], delegate: VaultSidebarProjectDropDelegate(
+			store: store, projectId: projectId, rowHeight: rowHeight, placement: $placement))
+		.overlay(alignment: placement == .after ? .bottom : .top) {
+			if placement != nil {
+				Rectangle().fill(VaultPalette.accent).frame(height: 2).padding(.horizontal, 12)
+					.allowsHitTesting(false)
+			}
+		}
+	}
+}
+
+struct VaultSidebarProjectDropDelegate: DropDelegate {
+	let store: VaultStore
+	let projectId: String
+	let rowHeight: CGFloat
+	@Binding var placement: VaultProjectPlacement?
+
+	func validateDrop(info: DropInfo) -> Bool {
+		store.isUnlocked && info.hasItemsConforming(to: [VaultSidebarProjectDrag.contentType])
+	}
+
+	func dropEntered(info: DropInfo) {
+		placement = .at(y: info.location.y, rowHeight: rowHeight)
+	}
+
+	func dropUpdated(info: DropInfo) -> DropProposal? {
+		placement = .at(y: info.location.y, rowHeight: rowHeight)
+		return DropProposal(operation: .move)
+	}
+
+	func dropExited(info: DropInfo) { placement = nil }
+
+	func performDrop(info: DropInfo) -> Bool {
+		placement = nil
+		let providers = info.itemProviders(for: [VaultSidebarProjectDrag.contentType])
+		guard validateDrop(info: info), providers.count == 1, let provider = providers.first else { return false }
+		let destination = VaultProjectPlacement.at(y: info.location.y, rowHeight: rowHeight)
+		Task { await loadDrop(from: provider, placement: destination) }
+		return true
+	}
+
+	func loadDrop(from provider: NSItemProvider, placement: VaultProjectPlacement) async -> Bool {
+		let drag = await withCheckedContinuation { continuation in
+			_ = provider.loadTransferable(type: VaultSidebarProjectDrag.self) { result in
+				continuation.resume(returning: try? result.get())
+			}
+		}
+		guard let drag else { return false }
+		return store.dropSidebarProject(drag, relativeTo: projectId, placement: placement)
 	}
 }
 
