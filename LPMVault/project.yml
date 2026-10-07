@@ -40,7 +40,7 @@ targets:
     info:
       path: Info.plist
       properties:
-        SUFeedURL: https://vault.lpm.dev/updates/appcast.xml
+        SUFeedURL: https://vault.lpm.dev/updates/channels.xml
         SUPublicEDKey: "g8YlEsyut4fJ+dnO/FdFrD/AicRACq9FjZbHm8PClUs="
         SURequireSignedFeed: true
         SUVerifyUpdateBeforeExtraction: true

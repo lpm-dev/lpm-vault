@@ -94,11 +94,17 @@ enum ProjectEnvSchemaFile {
 		}
 	}
 
-	/// `rules(inFolder:vaultID:)` off the main thread and the cooperative pool.
-	static func loadRules(inFolder folder: String, vaultID: String) async -> Result<Rules, FileError> {
+	/// A folder's rules for editing and the same rules for display, from one read.
+	struct Loaded: Sendable {
+		let rules: Result<Rules, FileError>
+		let schema: ProjectEnvSchemaState
+	}
+
+	/// `load(inFolder:vaultID:)` off the main thread and the cooperative pool.
+	static func loadRules(inFolder folder: String, vaultID: String) async -> Loaded {
 		await withCheckedContinuation { continuation in
 			DispatchQueue.global(qos: .userInitiated).async {
-				continuation.resume(returning: Result { () throws(FileError) in try rules(inFolder: folder, vaultID: vaultID) })
+				continuation.resume(returning: load(inFolder: folder, vaultID: vaultID))
 			}
 		}
 	}
@@ -114,14 +120,29 @@ enum ProjectEnvSchemaFile {
 
 	/// The folder's rules, or none when it has no `lpm.json`.
 	static func rules(inFolder folder: String, vaultID: String) throws(FileError) -> Rules {
-		let folderURL = try existingFolder(folder)
-		guard let data = try read(folderURL.appendingPathComponent("lpm.json")) else { return Rules() }
-		let document = try parse(data)
-		try checkVault(of: document, is: vaultID)
-		let resolved = try RustSchemaEngine.resolve(document["envSchema"] ?? .object([]), inFolder: folder)
-		guard try read(folderURL.appendingPathComponent("lpm.json")) == data else { throw .changed }
-		try resolved.verify()
-		return rules(fromEffective: resolved.effective)
+		try load(inFolder: folder, vaultID: vaultID).rules.get()
+	}
+
+	static func load(inFolder folder: String, vaultID: String) -> Loaded {
+		let folderURL: URL
+		do { folderURL = try existingFolder(folder) } catch { return Loaded(rules: .failure(error), schema: .noFolder) }
+		let file = folderURL.appendingPathComponent("lpm.json")
+		var schema: LPMConfigJSON?
+		do throws(FileError) {
+			guard let data = try read(file) else { return Loaded(rules: .success(Rules()), schema: .loaded(.empty, file: nil)) }
+			let document = try parse(data)
+			try checkVault(of: document, is: vaultID)
+			schema = document["envSchema"]
+			let resolved = try RustSchemaEngine.resolve(schema ?? .object([]), inFolder: folder)
+			guard try read(file) == data else { throw .changed }
+			try resolved.verify()
+			return Loaded(rules: .success(rules(fromEffective: resolved.effective)), schema: .loaded(ProjectEnvSchemaOverview(resolution: resolved), file: file))
+		} catch .invalidSchema {
+			let diagnostic = schema.flatMap { RustSchemaEngine.diagnostic(for: $0, inFolder: folder) }
+			return Loaded(rules: .failure(.invalidSchema), schema: .unreadable(ProjectEnvSchemaState.problem(diagnostic)))
+		} catch {
+			return Loaded(rules: .failure(error), schema: .unreadable(.init(location: "lpm.json", reason: error.localizedDescription)))
+		}
 	}
 
 	/// Applies `change` under the CLI's config lock and returns the resulting
@@ -608,6 +629,18 @@ enum ProjectEnvSchemaFile {
 struct ProjectKeyDescriptions: Equatable, Sendable {
 	let folder: String
 	let rules: Result<ProjectEnvSchemaFile.Rules, ProjectEnvSchemaFile.FileError>
+	/// What the Schema page and the tables show; nil until the folder is read.
+	var schema: ProjectEnvSchemaState?
+
+	init(folder: String, rules: Result<ProjectEnvSchemaFile.Rules, ProjectEnvSchemaFile.FileError>, schema: ProjectEnvSchemaState? = nil) {
+		self.folder = folder
+		self.rules = rules
+		self.schema = schema
+	}
+
+	init(folder: String, loaded: ProjectEnvSchemaFile.Loaded) {
+		self.init(folder: folder, rules: loaded.rules, schema: loaded.schema)
+	}
 
 	func description(of key: String) -> String? {
 		if case .success(let rules) = rules { return rules.descriptions[key] }

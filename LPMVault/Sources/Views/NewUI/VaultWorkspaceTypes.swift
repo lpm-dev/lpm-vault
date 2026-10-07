@@ -126,6 +126,15 @@ enum VaultKeySortOrder: String, Sendable {
   var title: String { self == .ascending ? "A→Z" : "Z→A" }
 
   var spokenTitle: String { self == .ascending ? "A to Z" : "Z to A" }
+
+  /// Finder's order: case-insensitive, with numbers compared by value, so
+  /// `KEY_2` comes before `KEY_10`.
+  static func sortedAscending<S: Sequence>(_ keys: S) -> [String] where S.Element == String {
+    keys.sorted {
+      let comparison = $0.localizedStandardCompare($1)
+      return comparison == .orderedSame ? $0 < $1 : comparison == .orderedAscending
+    }
+  }
 }
 
 struct VaultSecretTarget: Identifiable {
@@ -465,14 +474,9 @@ struct VaultWorkspaceSnapshot: Equatable, Sendable {
     allSecretKeys.count - (sortedKeysByEnvironment[environment]?.count ?? 0)
   }
 
-  /// Finder's order: case-insensitive, with numbers compared by value, so
-  /// `KEY_2` comes before `KEY_10`.
   private static func sortedKeys<S: Sequence>(_ keys: S) -> [String]
   where S.Element == String {
-    keys.sorted {
-      let comparison = $0.localizedStandardCompare($1)
-      return comparison == .orderedSame ? $0 < $1 : comparison == .orderedAscending
-    }
+    VaultKeySortOrder.sortedAscending(keys)
   }
 
   func hasDrift(for key: String) -> Bool {

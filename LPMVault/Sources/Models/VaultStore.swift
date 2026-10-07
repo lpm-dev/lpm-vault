@@ -3275,7 +3275,7 @@ final class VaultStore {
     case .success(let rules):
       keyDrafts.finishSave(id, succeeded: true, projects: projects)
       if let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == schemaFolder {
-        publishKeyDescriptions(ProjectKeyDescriptions(folder: schemaFolder, rules: .success(rules)), for: projectID)
+        publishSavedRules(rules, folder: schemaFolder, for: projectID)
       }
     case .failure(let failure):
       let keySaved = edit.isRename || !edit.values.isEmpty || draft.pendingSchemaRename != nil
@@ -3300,10 +3300,10 @@ final class VaultStore {
         }
       }
       if failure == .changed {
-        let rules = await ProjectEnvSchemaFile.loadRules(inFolder: schemaFolder, vaultID: projectID)
+        let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: schemaFolder, vaultID: projectID)
         guard generation == keyDrafts.generation, isUnlocked else { throw .targetUnavailable }
         if let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == schemaFolder {
-          publishKeyDescriptions(ProjectKeyDescriptions(folder: schemaFolder, rules: rules), for: projectID)
+          publishKeyDescriptions(ProjectKeyDescriptions(folder: schemaFolder, loaded: loaded), for: projectID)
         }
       }
       throw saveError
@@ -3327,11 +3327,22 @@ final class VaultStore {
     let session = vaultSessionGeneration
     let account = selectedAccount
     keyDescriptionsTask = Task { [weak self] in
-      let rules = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: projectID)
+      let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: projectID)
       guard let self, !Task.isCancelled, isUnlocked, session == vaultSessionGeneration, selectedAccount == account
       else { return }
-      publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, rules: rules), for: projectID)
+      publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, loaded: loaded), for: projectID)
     }
+  }
+
+  /// Rules an edit just saved. The display keeps the last read schema until the
+  /// selected project's rules are read again, which also picks up new sources.
+  private func publishSavedRules(_ rules: ProjectEnvSchemaFile.Rules, folder: String, for projectID: String) {
+    let previous = keyDescriptions[projectID]
+    publishKeyDescriptions(
+      ProjectKeyDescriptions(folder: folder, rules: .success(rules), schema: previous?.folder == folder ? previous?.schema : nil),
+      for: projectID
+    )
+    if selectedProjectId == projectID { reloadKeyDescriptions() }
   }
 
   private func publishKeyDescriptions(_ descriptions: ProjectKeyDescriptions, for projectID: String) {
@@ -6325,7 +6336,7 @@ final class VaultStore {
         applySyncMetadata(commit.syncMetadata, for: commit.project.id)
         error = commit.warning
         if let rules, keyDescriptionFolder(for: commit.project) == folder {
-          publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, rules: .success(rules)), for: project.id)
+          publishSavedRules(rules, folder: folder, for: project.id)
         }
         afterCompletion(.success(()))
       case .conflict(let latest, let metadata, let failure):
@@ -6333,10 +6344,10 @@ final class VaultStore {
         applySyncMetadata(metadata, for: latest.id)
         afterCompletion(.failure(failure))
       case .schemaChanged:
-        let rules = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: project.id)
+        let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: project.id)
         guard sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked else { afterCompletion(.failure(.targetUnavailable)); return }
         if let latest = projects.first(where: { $0.id == project.id }), keyDescriptionFolder(for: latest) == folder {
-          publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, rules: rules), for: project.id)
+          publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, loaded: loaded), for: project.id)
         }
         afterCompletion(.failure(.description(ProjectEnvSchemaFile.FileError.changed.localizedDescription, keySaved: false)))
       case .failure(let failure):
