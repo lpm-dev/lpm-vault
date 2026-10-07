@@ -5245,6 +5245,17 @@ final class VaultStore {
         finishSyncIfOwned(authority)
         return .failed
       }
+      if let current, let message = current.displayError {
+        guard current.matchesOrganizationErrorContext(
+          vaultID: pushedProject.id, organizationSlug: scopeSlug,
+          callerUserID: callerUserID, organizationID: authority.principalID
+        ) else {
+          throw VaultSyncError(
+            "The organization access response did not match the authenticated account."
+          )
+        }
+        throw VaultSyncError(message)
+      }
       guard let current,
         current.vaultId == pushedProject.id,
         current.principalId == authority.principalID,
@@ -5849,6 +5860,20 @@ final class VaultStore {
         throw VaultSyncError(
           "Your registered sharing key does not have access to this env project yet. Ask an organization admin to share it again."
         )
+      }
+      if let message = result.displayError {
+        guard result.matchesOrganizationErrorContext(
+          vaultID: baselineProject.id, organizationSlug: orgSlug,
+          callerUserID: currentUserID, organizationID: authority.principalID
+        ) else {
+          throw VaultSyncError(
+            "The organization access response did not match the authenticated account."
+          )
+        }
+        error = message
+        finishSyncIfOwned(authority)
+        lastSyncStatus = "failed"
+        return
       }
       guard result.vaultId == baselineProject.id,
         result.principalId == authority.principalID,

@@ -208,6 +208,27 @@ final class SyncService: @unchecked Sendable {
       guard let hint, !hint.isEmpty else { return error }
       return "\(error)\n\nHint: \(hint)"
     }
+
+    func matchesOrganizationErrorContext(
+      vaultID: String,
+      organizationSlug: String,
+      callerUserID: String,
+      organizationID: String? = nil
+    ) -> Bool {
+      guard error != nil, vaultId == vaultID else { return false }
+      if scope == "account" {
+        return outcome == "rejected"
+          && self.organizationSlug == organizationSlug
+          && principalId == callerUserID
+      }
+      guard scope == nil || scope == "organization",
+        callerUserId == callerUserID,
+        self.organizationSlug == nil || self.organizationSlug == organizationSlug
+      else { return false }
+      guard let organizationID else { return true }
+      return principalId == organizationID
+        && (organizationId == nil || organizationId == organizationID)
+    }
   }
 
   enum VersionPreflight: Sendable {

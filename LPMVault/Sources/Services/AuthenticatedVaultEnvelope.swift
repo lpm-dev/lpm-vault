@@ -103,7 +103,7 @@ enum AuthenticatedVaultEnvelopeParser {
         allowZero: true
       )
       fields.code = "vault_missing"
-      fields.error = "Vault not found"
+      fields.error = "Env project not found"
     case (.pull, "memberRewrapRequired"):
       try envelope.data.requireExactKeys(["revision", "contentKeyVersion"])
       fields.serverVersion = try envelope.data.revision("revision")
