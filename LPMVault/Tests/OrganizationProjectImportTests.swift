@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import Testing
 import Vision
@@ -16,6 +17,44 @@ struct OrganizationProjectImportTests {
 	)
 	private var remote: VaultProject {
 		VaultProject(id: local.id, name: "Remote", path: "", environments: ["default": ["TOKEN": "cloud"]])
+	}
+
+	@Test("organization imports preserve authenticated access errors without key lookup", arguments: ["organization", "account"], ["user-1", "other-user"])
+	func organizationImportsPreserveAccessErrors(scope: String, caller: String) async throws {
+		let sync = MockOrgSyncService()
+		let nonce = String(repeating: "A", count: 43)
+		var binding: [String: Any] = [
+			"scope": scope,
+			"principalId": scope == "account" ? caller : "00000000-0000-4000-8000-000000000001",
+			"organizationSlug": "acme", "vaultId": "shared-existing",
+		]
+		if scope == "organization" { binding["callerUserId"] = caller }
+		let body = try JSONSerialization.data(withJSONObject: [
+			"envelopeVersion": 3, "operation": "vault.pull", "outcome": "rejected",
+			"requestNonce": nonce, "binding": binding,
+			"data": ["code": "vault_access_denied", "message": "Access denied"],
+		])
+		sync.pullResult = try AuthenticatedVaultEnvelopeParser.decodeVaultResponse(
+			body, statusCode: 403, operation: .pull, requestNonce: nonce,
+			vaultID: "shared-existing", organizationSlug: "acme"
+		)
+		let importer = EnvProjectImportService(
+			personalSyncService: MockPersonalSyncService(), organizationSyncService: sync,
+			sharingKeypairProvider: {
+				Issue.record("Unexpected sharing-key lookup")
+				return VaultCrypto.generateX25519Keypair()
+			}
+		)
+		let expectedError: EnvProjectImportError = caller == "user-1"
+			? .noData("Access denied")
+			: .invalidPayload("The organization response is bound to a different account.")
+		await #expect(throws: expectedError) {
+			try await importer.loadOrganization(
+				authToken: "session", orgSlug: "acme", vaultId: "shared-existing",
+				expectedCallerUserID: "user-1"
+			)
+		}
+		#expect(sync.publicKeyCallCount == 0)
 	}
 
 	@Test("moving an existing project rejects concurrent value or organization changes")

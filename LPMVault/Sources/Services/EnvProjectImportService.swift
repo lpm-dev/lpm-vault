@@ -202,6 +202,17 @@ final class EnvProjectImportService: EnvProjectImportServiceProtocol, @unchecked
 				throw EnvProjectImportError.noResponse
 			}
 			try Task.checkCancellation()
+			if result.code != "vault_member_needs_rewrap", let message = result.displayError {
+				guard result.matchesOrganizationErrorContext(
+					vaultID: vaultId, organizationSlug: orgSlug,
+					callerUserID: expectedCallerUserID
+				) else {
+					throw EnvProjectImportError.invalidPayload(
+						"The organization response is bound to a different account."
+					)
+				}
+				throw EnvProjectImportError.noData(message)
+			}
 			guard result.callerUserId == expectedCallerUserID else {
 				throw EnvProjectImportError.invalidPayload(
 					"The organization response is bound to a different account."

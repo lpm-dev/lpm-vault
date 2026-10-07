@@ -4965,14 +4965,15 @@ struct VaultStoreTests {
 	}
 
 	private func organizationPullRejection(
-		scope: String, callerUserID: String = "user-1"
+		scope: String, callerUserID: String = "user-1",
+		vaultID: String = "rewrap", slug: String = "acme"
 	) throws -> SyncService.SyncStatus {
 		let nonce = String(repeating: "A", count: 43)
 		var binding: [String: Any] = [
 			"scope": scope,
 			"principalId": scope == "account" ? callerUserID : organizationID,
-			"organizationSlug": "acme",
-			"vaultId": "rewrap",
+			"organizationSlug": slug,
+			"vaultId": vaultID,
 		]
 		if scope == "organization" { binding["callerUserId"] = callerUserID }
 		let body = try JSONSerialization.data(withJSONObject: [
@@ -4982,7 +4983,7 @@ struct VaultStoreTests {
 		])
 		return try AuthenticatedVaultEnvelopeParser.decodeVaultResponse(
 			body, statusCode: 403, operation: .pull, requestNonce: nonce,
-			vaultID: "rewrap", organizationSlug: "acme"
+			vaultID: vaultID, organizationSlug: slug
 		)
 	}
 
@@ -6286,6 +6287,46 @@ struct VaultStoreTests {
 				== environments)
 		#expect(store.syncMetadata[projectID]?.isDirty == false)
 		store.lock()
+	}
+
+	@Test("maintainer uploads preserve bound prerequisite errors and reject substituted callers", arguments: ["organization", "account"], ["u1", "other-user"])
+	func maintainerUploadsPreservePullErrors(scope: String, caller: String) async throws {
+		let fixture = makeOrgTrustFixture()
+		let projectID = try #require(fixture.store.selectedProjectId)
+		let members = try #require(fixture.sync.memberKeyAccess?.members)
+		fixture.sync.memberKeyAccess = SyncService.MemberKeyAccess(
+			organizationID: organizationID, callerUserID: "u1", members: members,
+			canReplaceWrappedKeys: false
+		)
+		let fingerprints = Dictionary(uniqueKeysWithValues: members.compactMap { member in
+			member.publicKeyFingerprint.map { (member.userId, $0) }
+		})
+		let trustScope = try #require(OrgTrustScope(
+			registryURL: fixture.store.appEnvironment.registryURL,
+			organizationID: organizationID, organizationSlug: fixture.slug
+		))
+		fixture.keychain.dataStorage[fixture.trustAccount] = try JSONEncoder().encode(
+			PersistedOrgKeyTrustFixture(schemaVersion: 3, scope: trustScope,
+				trust: OrgKeyTrust(trustedFingerprints: fingerprints))
+		)
+		let metadata = mockCurrentSyncMetadata(version: 4, principalID: organizationID, scope: "organization")
+		#expect(fixture.keychain.seedSyncMetadata([projectID: metadata]))
+		fixture.store.syncMetadata = [projectID: metadata]
+		fixture.sync.pullResult = try organizationPullRejection(
+			scope: scope, callerUserID: caller, vaultID: projectID, slug: fixture.slug
+		)
+
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+
+		let expectedMessage = caller == "u1" ? "Access denied"
+			: "The organization access response did not match the authenticated account."
+		#expect(fixture.store.error?.contains(expectedMessage) == true)
+		#expect(fixture.sync.pullCallCount == 1)
+		#expect(fixture.sync.pushCallCount == 0)
+		#expect(fixture.store.syncMetadata[projectID]?.lastVersion == 4)
+		#expect(fixture.store.syncMetadata[projectID]?.isDirty == true)
+		#expect(fixture.keychain.storedSyncMetadata(vaultId: projectID)?.lastVersion == 4)
+		fixture.store.lock()
 	}
 
 	private func makeOrgTrustFixture(

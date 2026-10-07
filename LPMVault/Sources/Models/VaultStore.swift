@@ -5245,6 +5245,17 @@ final class VaultStore {
         finishSyncIfOwned(authority)
         return .failed
       }
+      if let current, let message = current.displayError {
+        guard current.matchesOrganizationErrorContext(
+          vaultID: pushedProject.id, organizationSlug: scopeSlug,
+          callerUserID: callerUserID, organizationID: authority.principalID
+        ) else {
+          throw VaultSyncError(
+            "The organization access response did not match the authenticated account."
+          )
+        }
+        throw VaultSyncError(message)
+      }
       guard let current,
         current.vaultId == pushedProject.id,
         current.principalId == authority.principalID,
@@ -5851,15 +5862,10 @@ final class VaultStore {
         )
       }
       if let message = result.displayError {
-        let matchesOrganization = result.principalId == authority.principalID
-          && result.callerUserId == currentUserID
-        let matchesRejectedAccount = result.scope == "account"
-          && result.outcome == "rejected"
-          && result.organizationSlug == orgSlug
-          && result.principalId == currentUserID
-        guard result.vaultId == baselineProject.id,
-          matchesOrganization || matchesRejectedAccount
-        else {
+        guard result.matchesOrganizationErrorContext(
+          vaultID: baselineProject.id, organizationSlug: orgSlug,
+          callerUserID: currentUserID, organizationID: authority.principalID
+        ) else {
           throw VaultSyncError(
             "The organization access response did not match the authenticated account."
           )
