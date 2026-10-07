@@ -418,7 +418,9 @@ struct VaultKeyDescriptionStoreTests {
 			$0.setKeyDescription("Old session", saved: "")
 		}
 		let save = Task { try? await store.saveKeyDraft(id) }
-		try await waitUntil { keychain.envStorage["project"]?.environments["default"]?[id.key] == "committed" }
+		// The key write's completion must land before the transition, so only the schema save is old.
+		try await waitUntil { store.selectedProject?.environments["default"]?[id.key] == "committed" }
+		#expect(keychain.envStorage["project"]?.environments["default"]?[id.key] == "committed")
 		if transition == "lock" { store.lock(); store.isUnlocked = true } else {
 			store.selectedAccount = .org("other"); store.selectedAccount = .personal
 		}
