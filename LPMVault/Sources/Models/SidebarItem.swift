@@ -15,6 +15,7 @@ struct VaultSidebarProjectDrag: Codable, Transferable, Sendable {
 
 	static var transferRepresentation: some TransferRepresentation {
 		CodableRepresentation(contentType: contentType)
+			.visibility(.ownProcess)
 	}
 }
 

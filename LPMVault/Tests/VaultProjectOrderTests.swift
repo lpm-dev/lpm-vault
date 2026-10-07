@@ -10,6 +10,66 @@ import UniformTypeIdentifiers
 @Suite("Sidebar project order", .serialized)
 @MainActor
 struct VaultProjectOrderTests {
+	@Test("project drag data is available only inside this process")
+	func projectDragVisibility() {
+		if #available(macOS 15.2, *) {
+			#expect(VaultSidebarProjectDrag.exportedContentTypes(visibility: .all).isEmpty)
+			#expect(VaultSidebarProjectDrag.exportedContentTypes(visibility: .ownProcess) == [VaultSidebarProjectDrag.contentType])
+		}
+	}
+
+	@Test("dropping after an expanded project marks the position below its environments")
+	func expandedProjectInsertionMarker() async throws {
+		let (store, _, preferences, domain) = try fixture()
+		defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+		store.openProject(id: "alpha")
+		let host = SheetTestHost(VaultSidebarView(store: store, snapshots: [:], mode: .constant(.matrix),
+			filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
+			onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onRenameProject: { _ in },
+			onDeleteProject: { _ in }, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
+			onClearEnvironment: { _ in }, onDeleteEnvironment: { _ in }),
+			size: NSSize(width: 280, height: 500), keepsRequestedSize: true, usesHostingView: true)
+		defer { host.window.close() }
+		try await host.settle()
+		let alpha = try await host.labelFrame("Alpha")
+		let staging = try await host.labelFrame(".env.staging")
+		let middle = try await host.labelFrame("Middle")
+		let point = NSPoint(x: alpha.midX, y: alpha.minY + 1)
+		func dropViews(in view: NSView) -> [NSView] {
+			let own = view.registeredDraggedTypes.isEmpty ? [] : [view]
+			return own + view.subviews.flatMap { dropViews(in: $0) }
+		}
+		let target = try #require(dropViews(in: host.view).filter { $0.convert($0.bounds, to: nil).contains(point) }
+			.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height })
+		let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidebar-drop-test-" + UUID().uuidString))
+		defer { pasteboard.releaseGlobally() }
+		let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
+		let item = NSPasteboardItem()
+		#expect(item.setData(try JSONEncoder().encode(drag), forType: NSPasteboard.PasteboardType(VaultSidebarProjectDrag.contentType.identifier)))
+		#expect(pasteboard.writeObjects([item]))
+		let info = SidebarTestDraggingInfo(window: host.window, pasteboard: pasteboard, location: point)
+		#expect(target.draggingEntered(info).contains(.move))
+		#expect(target.draggingUpdated(info).contains(.move))
+		try await host.settle()
+		let image = try host.snapshot(host.view)
+		let width = image.width, height = image.height
+		let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+			bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+		context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+		let lineRows = (0..<height).filter { row in
+			[width / 4, width / 2, 3 * width / 4].allSatisfy { column in
+				let pixel = (row * width + column) * 4
+				return abs(Int(pixels[pixel]) - 94) < 16 && abs(Int(pixels[pixel + 1]) - 92) < 16 && abs(Int(pixels[pixel + 2]) - 230) < 16
+			}
+		}
+		let row = try #require(lineRows.first, "No insertion marker was rendered")
+		let markerY = host.view.bounds.height * (1 - (CGFloat(row) + 0.5) / CGFloat(height))
+		#expect(markerY < staging.minY, "Insertion marker at \(markerY) must be below the last environment at \(staging.minY)")
+		#expect(markerY > middle.maxY)
+		target.draggingExited(info)
+	}
+
 	@Test("new projects appear at the top before and after manual reordering")
 	func createsAtTop() async throws {
 		let (store, _, preferences, domain) = try fixture()
@@ -256,5 +316,39 @@ struct VaultProjectOrderTests {
 		store.projects = projects
 		store.isUnlocked = true
 		return (store, keychain, preferences, domain)
+	}
+}
+
+@MainActor
+private final class SidebarTestDraggingInfo: NSObject, NSDraggingInfo {
+	let draggingDestinationWindow: NSWindow?
+	let draggingPasteboard: NSPasteboard
+	let draggingLocation: NSPoint
+	let draggingSourceOperationMask: NSDragOperation = .move
+	let draggingSequenceNumber = 1
+	var draggingSource: Any? { nil }
+	var draggedImageLocation: NSPoint { draggingLocation }
+	nonisolated var draggedImage: NSImage? { nil }
+	var draggingFormation: NSDraggingFormation = .default
+	var animatesToDestination = false
+	var numberOfValidItemsForDrop = 1
+	var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+
+	init(window: NSWindow, pasteboard: NSPasteboard, location: NSPoint) {
+		draggingDestinationWindow = window
+		draggingPasteboard = pasteboard
+		draggingLocation = location
+	}
+
+	func slideDraggedImage(to screenPoint: NSPoint) {}
+	nonisolated override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+	func resetSpringLoading() {}
+	func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?, classes: [AnyClass],
+		searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {
+		var stop: ObjCBool = false
+		for (index, item) in (draggingPasteboard.pasteboardItems ?? []).enumerated() {
+			block(NSDraggingItem(pasteboardWriter: item), index, &stop)
+			if stop.boolValue { break }
+		}
 	}
 }

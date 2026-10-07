@@ -47,13 +47,16 @@ struct VaultSidebarView: View {
 							.padding(.vertical, 12)
 					} else {
 						ForEach(Array(derivedProjects.enumerated()), id: \.element.id) { index, project in
-							projectRow(project,
-								previous: index > 0 ? derivedProjects[index - 1].id : nil,
-								next: index + 1 < derivedProjects.count ? derivedProjects[index + 1].id : nil)
-							if store.selectedProjectId == project.id,
-								!collapsedProjectIds.contains(project.id)
-							{
-								environmentRows(project)
+							VaultSidebarProjectGroup(store: store, projectId: project.id) {
+								projectRow(project,
+									previous: index > 0 ? derivedProjects[index - 1].id : nil,
+									next: index + 1 < derivedProjects.count ? derivedProjects[index + 1].id : nil)
+							} environments: {
+								if store.selectedProjectId == project.id,
+									!collapsedProjectIds.contains(project.id)
+								{
+									environmentRows(project)
+								}
 							}
 						}
 					}
@@ -210,7 +213,6 @@ struct VaultSidebarView: View {
 		.accessibilityAction(named: "Move Down") {
 			if let next { store.moveProject(id: project.id, relativeTo: next, placement: .after) }
 		}
-		.modifier(VaultSidebarProjectReordering(store: store, projectId: project.id))
 		.contextMenu {
 			Button("Rename…") { onRenameProject(project) }
 			Divider()
@@ -383,24 +385,36 @@ struct VaultSidebarView: View {
 	}
 }
 
-private struct VaultSidebarProjectReordering: ViewModifier {
+private struct VaultSidebarProjectGroup<Row: View, Environments: View>: View {
 	let store: VaultStore
 	let projectId: String
+	let row: Row
+	let environments: Environments
 	@State private var rowHeight: CGFloat = 30
 	@State private var placement: VaultProjectPlacement?
 
-	func body(content: Content) -> some View {
-		content
-			.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { rowHeight = $0 }
-			.draggable(VaultSidebarProjectDrag(projectId: projectId, sessionId: store.sidebarDragSessionId))
-			.onDrop(of: [VaultSidebarProjectDrag.contentType], delegate: VaultSidebarProjectDropDelegate(
-				store: store, projectId: projectId, rowHeight: rowHeight, placement: $placement))
-			.overlay(alignment: placement == .after ? .bottom : .top) {
-				if placement != nil {
-					Rectangle().fill(VaultPalette.accent).frame(height: 2).padding(.horizontal, 12)
-						.allowsHitTesting(false)
-				}
+	init(store: VaultStore, projectId: String, @ViewBuilder row: () -> Row, @ViewBuilder environments: () -> Environments) {
+		self.store = store
+		self.projectId = projectId
+		self.row = row()
+		self.environments = environments()
+	}
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 0) {
+			row
+				.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { rowHeight = $0 }
+				.draggable(VaultSidebarProjectDrag(projectId: projectId, sessionId: store.sidebarDragSessionId))
+			environments
+		}
+		.onDrop(of: [VaultSidebarProjectDrag.contentType], delegate: VaultSidebarProjectDropDelegate(
+			store: store, projectId: projectId, rowHeight: rowHeight, placement: $placement))
+		.overlay(alignment: placement == .after ? .bottom : .top) {
+			if placement != nil {
+				Rectangle().fill(VaultPalette.accent).frame(height: 2).padding(.horizontal, 12)
+					.allowsHitTesting(false)
 			}
+		}
 	}
 }
 
