@@ -23,6 +23,14 @@ jobs:
         run: python3 LPMVault/Scripts/verify-env-engine.py --rebuild --target-dir "$RUNNER_TEMP/env-engine-target"
       - name: Swift tests
         run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
+      - name: Preserve failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-test-diagnostics
+          path: ~/Library/Logs/DiagnosticReports/*
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Cooperative executor regressions
         run: bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh
       - name: Release tooling tests

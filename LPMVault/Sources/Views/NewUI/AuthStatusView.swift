@@ -146,7 +146,12 @@ struct AuthStatusView: View {
 					}
 				}
 				.pickerStyle(.segmented)
-				.disabled(!updates.canCheckForUpdates)
+				.disabled(!updates.canChangeChannel)
+				if updates.hasPendingUpdate {
+					Text("Install or skip the pending update before changing channels. Use Check for Updates to reopen it.")
+						.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
+						.fixedSize(horizontal: false, vertical: true)
+				}
 				Text(updates.channelDescription)
 					.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)

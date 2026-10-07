@@ -158,6 +158,7 @@ class Publication(unittest.TestCase):
         self.commands = []
         self.signed = []
         self.status = 'ahead'
+        self.comparisons = {}
         self.published = None
 
     def previous(self, value, tag=None):
@@ -187,7 +188,8 @@ class Publication(unittest.TestCase):
         if '/actions/runs/' in endpoint:
             return '{"created_at":"2026-10-07T03:37:00Z"}'
         if '/compare/' in endpoint:
-            return json.dumps(dict(status=self.status))
+            previous = endpoint.split('/compare/')[1].split('...')[0]
+            return json.dumps(dict(status=self.comparisons.get(previous, self.status)))
         if '/releases/tags/' in endpoint:
             return json.dumps(self.published or dict(tag_name=endpoint.split('/tags/')[1], draft=False,
                                                     immutable=True, prerelease=True))
@@ -198,7 +200,7 @@ class Publication(unittest.TestCase):
         value = manifest(version, build, metadata['channel'], metadata['releaseVersion'])
         value.update(metadata)
         directory = Path('release-output')
-        directory.mkdir()
+        directory.mkdir(exist_ok=True)
         (directory / 'release-manifest.json').write_text(json.dumps(value))
         (directory / 'appcast.xml').write_bytes(feed(value))
 
@@ -256,6 +258,35 @@ class Publication(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'ancestor'):
             self.publish('stable', 'v1.0.2')
         self.assertEqual(self.signed, [])
+
+    def test_queued_nightly_cannot_replace_a_newer_stable_source(self):
+        for prior_nightly in (False, True):
+            for status in ('behind', 'diverged'):
+                with self.subTest(prior_nightly=prior_nightly, status=status):
+                    self.records.clear()
+                    self.commands.clear()
+                    self.signed.clear()
+                    if prior_nightly:
+                        self.previous(manifest('1.1.0', '6.0.1', 'nightly', '1.1.0-nightly.20261007.41.abcdef0'))
+                    self.previous(manifest('1.0.2', '6.0.2', legacy=True))
+                    self.comparisons['v1.0.2'] = status
+                    with mock.patch.object(channels, 'publish_feed') as publication:
+                        with self.assertRaisesRegex(ValueError, 'ancestor'):
+                            channels.publish('example/vault', 'nightly', 'main', self.project,
+                                             self.command, self.output, self.sign, self.environment)
+                        publication.assert_not_called()
+                    self.assertEqual(self.signed, [])
+                    self.assertFalse(any(command[:3] == ('gh', 'release', 'create') for command in self.commands))
+
+    def test_older_nightly_feed_recovery_remains_possible_after_a_newer_stable(self):
+        self.previous(manifest('1.1.0', '6.0.1', 'nightly', '1.1.0-nightly.20261007.41.abcdef0'))
+        self.previous(manifest('1.0.2', '6.0.2', legacy=True))
+        self.status = 'identical'
+        self.comparisons['v1.0.2'] = 'behind'
+        publication = self.publish()
+        self.assertEqual(self.signed, [])
+        self.assertFalse(any(command[:3] == ('gh', 'release', 'create') for command in self.commands))
+        publication.assert_called_once()
 
     def test_non_main_nightly_draft_and_inconsistent_previous_release_fail_closed(self):
         self.environment['GITHUB_REF'] = 'refs/heads/topic'

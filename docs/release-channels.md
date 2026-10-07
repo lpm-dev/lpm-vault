@@ -62,9 +62,10 @@ If feed publication fails after release publication, rerun that workflow run.
 The publisher reuses the published release and rebuilds the combined signed feed.
 It does not rebuild the app or replace immutable artifacts.
 If `main` still matches the published nightly, a scheduled run also repairs the feed without another release.
-The publisher refuses nightly publication from a commit behind or divergent from the published nightly.
-A new stable release must also contain the published nightly commit.
+Every new release must contain the source of the latest published stable and nightly releases.
+The publisher compares release tags, including stable tags with legacy manifests.
 This rule prevents a higher build number from sending nightly users back to older source code.
+Feed recovery reuses existing artifacts even when another channel has newer source.
 
 If signing credentials expire, replace the affected repository secret before the next run.
 Release failure keeps the previous feed and stable installer available.
@@ -73,6 +74,11 @@ Release failure keeps the previous feed and stable installer available.
 
 The Swift tests cover the installed version, initial channel, saved choice, sign-in states, and channel picker actions.
 They also cover the waiting message after a nightly installation selects Stable.
+Active sessions and retained downloads keep channel selection unavailable while manual checks remain available.
+Prepared installer state survives app launches until installation, Skip, or terminal recovery.
+Native callback tests cover deferred downloads, authorization delays, automatic installation, and installer recovery.
+Each prepared installer has a generation identifier. A cycle resolves only its observed or prepared generation.
+Separate resolution keys prevent stale callbacks from clearing a newer installer record or reopening a resolved record.
 The release tests cover shared build order, tag metadata, legacy manifests, pagination, unchanged commits, and publication failures.
 A real Sparkle signing test checks the combined feed and rejects modified content.
 The nginx tests cover the channel feed, immutable nightly downloads, and the existing stable routes.

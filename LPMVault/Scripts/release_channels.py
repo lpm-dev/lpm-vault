@@ -220,6 +220,7 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
     if len(versions) != 1 or len(builds) != 1:
         raise ValueError("Project must declare one version and build")
     version, floor = versions.pop(), builds.pop()
+    comparisons = {}
     if channel == "nightly":
         if environment.get("GITHUB_REF") != "refs/heads/main":
             raise ValueError("Nightly releases must run from main")
@@ -229,6 +230,7 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
         if "nightly" in latest:
             previous = latest["nightly"][0]["tag_name"]
             comparison = json.loads(output("gh", "api", f"repos/{repository}/compare/{previous}...{commit}"))
+            comparisons[previous] = comparison["status"]
             if comparison["status"] not in ("identical", "ahead"):
                 raise ValueError("Published nightly is not an ancestor of this source commit")
             if comparison["status"] == "identical":
@@ -242,11 +244,13 @@ def publish(repository, channel, tag, project, run, output, sign, environment):
     if existing and existing["draft"]:
         raise ValueError("A release draft already exists; inspect and remove it before retrying")
     if not existing:
-        if channel == "stable" and "nightly" in latest:
-            previous = latest["nightly"][0]["tag_name"]
-            comparison = json.loads(output("gh", "api", f"repos/{repository}/compare/{previous}...{commit}"))
-            if comparison["status"] not in ("identical", "ahead"):
-                raise ValueError("Published nightly must be an ancestor of a new stable release")
+        for previous_channel, (release, _, _) in latest.items():
+            previous = release["tag_name"]
+            status = comparisons.get(previous)
+            if status is None:
+                status = json.loads(output("gh", "api", f"repos/{repository}/compare/{previous}...{commit}"))["status"]
+            if status not in ("identical", "ahead"):
+                raise ValueError(f"Published {previous_channel} must be an ancestor of a new {channel} release")
         if channel == "stable" and "stable" in latest and version_tuple(version) <= version_tuple(latest["stable"][1]["version"]):
             raise ValueError("Stable release version must increase")
         previous_build = max((value[1]["build"] for value in latest.values()), key=build_tuple, default=None)

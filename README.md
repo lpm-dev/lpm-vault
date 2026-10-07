@@ -48,6 +48,8 @@ Vault keeps your channel choice across app updates and account changes.
 Nightly releases can contain bugs. Both channels use signed, notarized installers and signed update feeds.
 Changing the channel does not install an update or change your stored secrets.
 The channel picker waits until the current update session ends.
+If Sparkle keeps a downloaded or prepared update, install or skip it before changing channels.
+Use **Check for Updates…** to reopen that update.
 
 If you switch from Nightly to Stable, Vault keeps the installed nightly until a newer stable build is available.
 The settings explain this state. Vault does not downgrade your app automatically.

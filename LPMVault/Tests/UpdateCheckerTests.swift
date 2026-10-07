@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Sparkle
 import Testing
 import Vision
 
@@ -110,6 +111,29 @@ struct UpdateCheckerTests {
 			#expect(explanation.bounds.minY > signIn.bounds.maxY)
 			#expect(signIn.bounds.minY > server.bounds.maxY)
 		}
+		driver.availableUpdateVersion = "A newer nightly"
+		driver.sessionInProgress = true
+		try await Task.sleep(for: .milliseconds(20))
+		#expect(checker.canCheckForUpdates)
+		#expect(!picker.isEnabled)
+		checker.channel = .stable
+		#expect(checker.channel == .nightly)
+		#expect(checker.availableUpdateVersion == "A newer nightly")
+		#expect(defaults.string(forKey: UpdateChecker.channelDefaultsKey) == "nightly")
+		checker.checkForUpdates()
+		#expect(driver.checks == 1)
+		driver.sessionInProgress = false
+		driver.hasPendingUpdate = true
+		try await Task.sleep(for: .milliseconds(20))
+		#expect(!picker.isEnabled)
+		#expect(checker.canCheckForUpdates)
+		driver.hasPendingUpdate = false
+		try await Task.sleep(for: .milliseconds(20))
+		#expect(picker.isEnabled)
+		checker.channel = .stable
+		checker.checkForUpdates()
+		#expect(driver.channels.last == .stable)
+		#expect(driver.checks == 2)
 		driver.canCheckForUpdates = false
 		try await Task.sleep(for: .milliseconds(20))
 		#expect(!picker.isEnabled)
@@ -122,6 +146,170 @@ struct UpdateCheckerTests {
 		checker.start()
 		#expect(driver.starts == 1)
 		#expect(checker.canCheckForUpdates)
+	}
+
+	@Test("a deferred download keeps its channel until the pending update is resolved")
+	func deferredDownloadKeepsChannel() throws {
+		let domain = "deferred-channel-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let driver = TestUpdateDriver()
+		let checker = UpdateChecker(driver: driver, defaults: defaults,
+			buildInfo: VaultBuildInfo(info: ["LPMReleaseChannel": "nightly"]))
+		checker.start()
+		driver.hasPendingUpdate = true
+		#expect(!driver.sessionInProgress)
+		#expect(checker.canCheckForUpdates)
+		checker.channel = .stable
+		#expect(checker.channel == .nightly)
+		#expect(driver.channels == [.nightly])
+		checker.checkForUpdates()
+		#expect(driver.checks == 1)
+		driver.hasPendingUpdate = false
+		checker.channel = .stable
+		#expect(checker.channel == .stable)
+	}
+
+	@Test("a prepared installer keeps its channel locked across app processes")
+	func pendingInstallerSurvivesRelaunch() throws {
+		let domain = "pending-installer-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let build = VaultBuildInfo(info: ["CFBundleVersion": "6"])
+		let driver = SparkleUpdateDriver(defaults: defaults, buildInfo: build)
+		let item = try appcastItem(build: "6.0.1")
+		driver.standardUserDriverWillHandleShowingUpdate(true, forUpdate: item, state: try updateState(stage: .installing))
+		#expect(driver.hasPendingUpdate)
+		let restarted = SparkleUpdateDriver(defaults: defaults, buildInfo: build)
+		#expect(restarted.hasPendingUpdate)
+		for installedBuild in ["6.0.1", "6.0.2"] {
+			driver.standardUserDriverWillHandleShowingUpdate(true, forUpdate: item, state: try updateState(stage: .installing))
+			let installed = SparkleUpdateDriver(defaults: defaults, buildInfo: VaultBuildInfo(info: ["CFBundleVersion": installedBuild]))
+			#expect(!installed.hasPendingUpdate)
+			#expect(!SparkleUpdateDriver(defaults: defaults, buildInfo: build).hasPendingUpdate)
+		}
+	}
+
+	@Test("native Sparkle callbacks retain deferred downloads and release skipped updates")
+	func nativeDeferredDownloadLifecycle() throws {
+		let domain = "native-deferred-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let driver = SparkleUpdateDriver(defaults: defaults)
+		let native = inertUpdater()
+		let item = try appcastItem(build: "6.0.1")
+		let downloaded = try updateState(stage: .downloaded)
+		#expect(driver.responds(to: NSSelectorFromString("updater:userDidMakeChoice:forUpdate:state:")))
+		driver.updater(native, didDownloadUpdate: item)
+		#expect(driver.hasPendingUpdate)
+		driver.updater(native, userDidMake: .dismiss, forUpdate: item, state: downloaded)
+		driver.standardUserDriverWillFinishUpdateSession()
+		#expect(driver.hasPendingUpdate)
+		#expect(driver.availableUpdateVersion == nil)
+		driver.updater(native, didAbortWithError: NSError(domain: SUSparkleErrorDomain,
+			code: Int(SUError.installationAuthorizeLaterError.rawValue)))
+		#expect(driver.hasPendingUpdate)
+		driver.updater(native, userDidMake: .skip, forUpdate: item, state: downloaded)
+		#expect(!driver.hasPendingUpdate)
+		driver.standardUserDriverWillHandleShowingUpdate(true, forUpdate: item, state: downloaded)
+		#expect(driver.hasPendingUpdate)
+		driver.updater(native, didAbortWithError: NSError(domain: SUSparkleErrorDomain, code: Int(SUError.installationCanceledError.rawValue)))
+		#expect(!driver.hasPendingUpdate)
+	}
+
+	@Test("automatic install on quit remains pending until skipped or a terminal failure")
+	func automaticInstallerLifecycle() throws {
+		let domain = "automatic-installer-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let build = VaultBuildInfo(info: ["CFBundleVersion": "6"])
+		let driver = SparkleUpdateDriver(defaults: defaults, buildInfo: build)
+		let native = inertUpdater()
+		let item = try appcastItem(build: "6.0.1")
+		var installedImmediately = false
+		#expect(!driver.updater(native, willInstallUpdateOnQuit: item, immediateInstallationBlock: { installedImmediately = true }))
+		#expect(!installedImmediately)
+		#expect(SparkleUpdateDriver(defaults: defaults, buildInfo: build).hasPendingUpdate)
+		driver.standardUserDriverWillFinishUpdateSession()
+		#expect(driver.hasPendingUpdate)
+		driver.updater(native, userDidMake: .skip, forUpdate: item, state: try updateState(stage: .installing))
+		#expect(!SparkleUpdateDriver(defaults: defaults, buildInfo: build).hasPendingUpdate)
+		driver.updater(native, didExtractUpdate: item)
+		#expect(SparkleUpdateDriver(defaults: defaults, buildInfo: build).hasPendingUpdate)
+		driver.updater(native, didAbortWithError: NSError(domain: SUSparkleErrorDomain, code: Int(SUError.noUpdateError.rawValue)))
+		#expect(!SparkleUpdateDriver(defaults: defaults, buildInfo: build).hasPendingUpdate)
+	}
+
+	@Test("a stale check cannot resolve an installer prepared by another app instance", arguments: ["abort", "fresh", "skip"])
+	func staleCyclePreservesAnotherInstaller(callback: String) throws {
+		let domain = "installer-owner-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let build = VaultBuildInfo(info: ["CFBundleVersion": "6"])
+		let stale = SparkleUpdateDriver(defaults: defaults, buildInfo: build)
+		let preparing = SparkleUpdateDriver(defaults: defaults, buildInfo: build)
+		let native = inertUpdater()
+		let item = try appcastItem(build: "6.0.1")
+		preparing.standardUserDriverWillHandleShowingUpdate(true, forUpdate: item, state: try updateState(stage: .installing))
+		#expect(stale.hasPendingUpdate)
+		if callback == "abort" {
+			stale.updater(native, didAbortWithError: NSError(domain: SUSparkleErrorDomain, code: Int(SUError.noUpdateError.rawValue)))
+		} else {
+			let fresh = try updateState(stage: .notDownloaded)
+			stale.standardUserDriverWillHandleShowingUpdate(true, forUpdate: item, state: fresh)
+			if callback == "skip" { stale.updater(native, userDidMake: .skip, forUpdate: item, state: fresh) }
+		}
+		#expect(preparing.hasPendingUpdate)
+		#expect(SparkleUpdateDriver(defaults: defaults, buildInfo: build).hasPendingUpdate)
+	}
+
+	@Test("resolving an older generation cannot clear or reopen the same target's new preparation")
+	func preparationGenerationsRemainIndependent() throws {
+		let domain = "installer-generation-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let build = VaultBuildInfo(info: ["CFBundleVersion": "6"])
+		let preparing = SparkleUpdateDriver(defaults: defaults, buildInfo: build)
+		let native = inertUpdater()
+		let item = try appcastItem(build: "6.0.1")
+		preparing.updater(native, didExtractUpdate: item)
+		let stale = SparkleUpdateDriver(defaults: defaults, buildInfo: build)
+		preparing.updater(native, didExtractUpdate: item)
+		let noUpdate = NSError(domain: SUSparkleErrorDomain, code: Int(SUError.noUpdateError.rawValue))
+		stale.updater(native, didAbortWithError: noUpdate)
+		#expect(SparkleUpdateDriver(defaults: defaults, buildInfo: build).hasPendingUpdate)
+		preparing.updater(native, userDidMake: .skip, forUpdate: item, state: try updateState(stage: .installing))
+		#expect(!preparing.hasPendingUpdate)
+		stale.updater(native, didAbortWithError: noUpdate)
+		#expect(!SparkleUpdateDriver(defaults: defaults, buildInfo: build).hasPendingUpdate)
+	}
+
+	private func inertUpdater() -> SPUUpdater {
+		SPUUpdater(hostBundle: Bundle.main, applicationBundle: Bundle.main,
+			userDriver: SPUStandardUserDriver(hostBundle: Bundle.main, delegate: nil), delegate: nil)
+	}
+
+	private func appcastItem(build: String) throws -> SUAppcastItem {
+		let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+		archiver.encode(build, forKey: "versionString")
+		archiver.encode(build, forKey: "displayVersionString")
+		archiver.encode(URL(string: "https://vault.lpm.dev/releases/test.dmg"), forKey: "fileURL")
+		archiver.encode("application", forKey: "SUAppcastItemInstallationType")
+		archiver.encode([String: String](), forKey: "propertiesDictionary")
+		archiver.finishEncoding()
+		let decoder = try NSKeyedUnarchiver(forReadingFrom: archiver.encodedData)
+		decoder.requiresSecureCoding = true
+		decoder.decodingFailurePolicy = .setErrorAndReturn
+		return try #require(SUAppcastItem(coder: decoder))
+	}
+
+	private func updateState(stage: SPUUserUpdateStage) throws -> SPUUserUpdateState {
+		let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+		archiver.encode(stage.rawValue, forKey: "SPUUserUpdateStateStage")
+		archiver.encode(true, forKey: "SPUUserUpdateStateUserInitiated")
+		archiver.finishEncoding()
+		let decoder = try NSKeyedUnarchiver(forReadingFrom: archiver.encodedData)
+		return try #require(SPUUserUpdateState(coder: decoder))
 	}
 
 	@Test("manual checks wait for startup and updater availability")
@@ -267,13 +455,19 @@ struct UpdateCheckerTests {
 
 @MainActor
 private final class TestUpdateDriver: VaultUpdateDriver {
+	var hasPendingUpdate = false {
+		didSet { stateChanged?() }
+	}
+	var sessionInProgress = false {
+		didSet { stateChanged?() }
+	}
 	var canCheckForUpdates = false {
-		didSet { availabilityChanged?(canCheckForUpdates) }
+		didSet { stateChanged?() }
 	}
 	var availableUpdateVersion: String? {
 		didSet { updateChanged?(availableUpdateVersion) }
 	}
-	var availabilityChanged: ((Bool) -> Void)?
+	var stateChanged: (() -> Void)?
 	var updateChanged: ((String?) -> Void)?
 	var starts = 0
 	var checks = 0
