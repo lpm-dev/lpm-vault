@@ -319,6 +319,22 @@ final class SheetTestHost<V: View> {
 		window.makeFirstResponder(nil)
 	}
 
+	/// Types into the first plain text field and leaves it focused, as a person typing does.
+	func typeInFirstField(_ text: String) throws {
+		let field = try #require(textFields(in: view).first { !($0 is NSSecureTextField) }, "Missing text field")
+		window.makeFirstResponder(field)
+		let editor = try #require(field.currentEditor() as? NSTextView)
+		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+		field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+	}
+
+	/// Sends a key to the field being edited, through this window, which need not be key.
+	func pressWhileEditing(_ character: String, code: UInt16) throws {
+		try #require(window.firstResponder is NSTextView, "No field is being edited")
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
+		window.sendEvent(event)
+	}
+
 	func returnWhileEditing(_ target: String, modifiers: NSEvent.ModifierFlags = .shift) throws {
 		let fields = textFields(in: view)
 		let field = try #require(target == "key" ? fields.first { !($0 is NSSecureTextField) } : fields.last)

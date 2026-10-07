@@ -95,6 +95,23 @@ struct ProjectEnvSchemaOverviewTests {
 		#expect(badge.help == options.joined(separator: "\n"))
 	}
 
+	@Test("suggestions list declared keys not set in every selected environment, names that start with the text first")
+	func suggestions() {
+		let rules = ["API_TOKEN", "DATABASE_URL", "OAUTH_TOKEN", "PORT", "APP_NAME"].map {
+			ProjectEnvSchemaOverview.Rule(key: $0, isPublic: false, source: nil, badges: [])
+		}
+		let overview = ProjectEnvSchemaOverview(rules: rules, groups: [])
+		let project = VaultProject(id: "p", name: "p", path: "", environments: [
+			"default": ["PORT": "1", "APP_NAME": "x"], "production": ["APP_NAME": "x"],
+		])
+		#expect(overview.suggestions(matching: "a", unsetIn: ["default"], of: project).map(\.key) == ["API_TOKEN", "DATABASE_URL", "OAUTH_TOKEN"])
+		#expect(overview.suggestions(matching: "p", unsetIn: ["default", "production"], of: project).map(\.key) == ["PORT", "API_TOKEN"])
+		#expect(overview.suggestions(matching: "api_token", unsetIn: ["default"], of: project).isEmpty, "An exact name needs no suggestion")
+		#expect(overview.suggestions(matching: "  ", unsetIn: ["default"], of: project).isEmpty)
+		#expect(overview.suggestions(matching: "a", unsetIn: [], of: project).isEmpty)
+		#expect(overview.suggestions(matching: "t", unsetIn: ["default"], of: project, limit: 2).count == 2)
+	}
+
 	@Test("folders without rules read as empty, and a missing folder asks to connect one")
 	func emptyStates() throws {
 		#expect(ProjectEnvSchemaFile.load(inFolder: "/nonexistent-\(UUID().uuidString)", vaultID: "project").schema == .noFolder)

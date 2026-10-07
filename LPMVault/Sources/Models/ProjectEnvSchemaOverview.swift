@@ -74,6 +74,21 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
 
+	/// Declared keys a new key could be: those not set in every one of
+	/// `environments`, whose names contain `query`, names that start with it first.
+	func suggestions(matching query: String, unsetIn environments: Set<String>, of project: VaultProject, limit: Int = 6) -> [Rule] {
+		let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+		guard !needle.isEmpty, !environments.isEmpty else { return [] }
+		var leading: [Rule] = []
+		var inner: [Rule] = []
+		for rule in rules where environments.contains(where: { project.value(for: rule.key, in: $0) == nil }) {
+			let name = rule.key.lowercased()
+			if name == needle { return [] }
+			if name.hasPrefix(needle) { leading.append(rule) } else if name.contains(needle) { inner.append(rule) }
+		}
+		return Array((leading + inner).prefix(limit))
+	}
+
 	var inheritedCount: Int { rules.lazy.filter { $0.source != nil }.count }
 
 	func rule(for key: String) -> Rule? {

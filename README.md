@@ -94,6 +94,7 @@ Rules are read-only in LPM Vault; edit them in `lpm.json`, and the LPM CLI enfor
 Rules inherited from another schema file or a preset show where they come from.
 The inspector lists the selected key's rules, read-only, between its values and its description.
 Keys whose rules make them public, because frameworks expose them to the browser, show a globe and their values unmasked; every other value stays masked until you reveal it.
+When you add a variable, typing a name suggests declared keys that are not yet set in the selected environments; use the arrow keys and Return, or click one, to pick it and see its rules beside the value.
 
 The connection sheet links a project directory through `lpm.json`.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.
