@@ -8,7 +8,86 @@ import Vision
 extension SheetInteractionTests {
 	@Suite("Workspace interaction regressions", .serialized)
 	@MainActor
-	struct WorkspaceInteractionTests {
+		struct WorkspaceInteractionTests {
+			@Test("a narrow key column keeps an edited drifting key visible")
+			func narrowKeyWithBothBadges() async throws {
+				let key = "LONG_DATABASE_AUTHENTICATION_TOKEN"
+				let (store, _) = makeStore(environments: ["default": [key: "a"], "production": [key: "b"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				try selectRow(0, in: host)
+				try await host.settle()
+				try host.enterValue("unsaved-value")
+				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				#expect(try await host.waitForText("ACTIONS"))
+				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				divider.onDragEnded?(-2000)
+				try await host.settle()
+				let frame = divider.convert(divider.bounds, to: nil)
+				let size = host.view.bounds.size
+				let region = CGRect(x: (frame.midX - VaultTableColumn.key.minimumWidth) / size.width, y: 0.05,
+					width: VaultTableColumn.key.minimumWidth / size.width, height: 0.8)
+				let image = try host.snapshot(host.view)
+				let lines = try await RenderedText.lines(in: image, level: .accurate, region: region)
+				#expect(lines.contains { OCRText($0.text).contains("LONG") }, "Key column contains: \(lines.map(\.text))")
+				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
+			}
+
+			@Test("the final column resize target stays clear of the inspector divider", arguments: [false, true])
+			func finalColumnResizeTarget(singleEnvironment: Bool) async throws {
+				let (store, _) = makeStore(environments: ["default": ["TOKEN": "a"], "production": ["TOKEN": "b"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				try clickAt(NSPoint(x: host.view.bounds.width - 129.5, y: 723.5), in: host)
+				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize inspector" } })
+				try await host.settle()
+				let lastLabel = singleEnvironment ? "Resize Actions column" : "Resize .env.production column"
+				let last = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == lastLabel })
+				let inspector = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize inspector" })
+				let frame = host.view.convert(last.bounds, from: last)
+				let inspectorFrame = host.view.convert(inspector.bounds, from: inspector)
+				#expect(frame.maxX <= inspectorFrame.minX)
+				let point = host.view.convert(NSPoint(x: frame.midX - 2, y: frame.midY), to: nil)
+				let hitPoint = host.view.superview?.convert(point, from: nil) ?? point
+				#expect(host.view.hitTest(hitPoint) === last)
+				last.onDragEnded?(150)
+				try await host.settle()
+				let scrollView = try #require(last.enclosingScrollView)
+				let clip = scrollView.contentView
+				clip.scroll(to: NSPoint(x: clip.documentRect.maxX - clip.bounds.width, y: clip.bounds.minY))
+				scrollView.reflectScrolledClipView(clip)
+				try await host.settle()
+				let scrolledFrame = host.view.convert(last.bounds, from: last)
+				#expect(scrolledFrame.maxX <= inspectorFrame.minX)
+				let scrolledPoint = host.view.convert(NSPoint(x: scrolledFrame.midX, y: scrolledFrame.midY), to: nil)
+				let scrolledHit = host.view.superview?.convert(scrolledPoint, from: nil) ?? scrolledPoint
+				#expect(host.view.hitTest(scrolledHit) === last)
+			}
+
+			@Test("shrinking all columns keeps the table aligned with its title", arguments: [false, true])
+			func shrunkenTableAlignment(singleEnvironment: Bool) async throws {
+				let (store, _) = makeStore(environments: ["default": ["TOKEN": "a"], "production": ["TOKEN": "b"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				if singleEnvironment {
+					try clickAt(NSPoint(x: 70, y: 603), in: host)
+					#expect(try await host.waitForText("ACTIONS"))
+				}
+				for divider in resizeViews(in: host.view) where divider.accessibilityLabel()?.hasSuffix(" column") == true {
+					divider.onDragEnded?(-2000)
+					try await host.settle()
+				}
+				let header = try await host.labelFrame("KEY", region: CGRect(x: 0.18, y: 0.75, width: 0.8, height: 0.1))
+				#expect(abs(header.minX - VaultMetrics.sidebar - VaultMetrics.paneDivider - 20) < 3)
+			}
+
 		@Test("blank space across a matrix key cell opens its inspector", arguments: [CGFloat(5), 205])
 		func matrixKeyCellBlankSpace(offset: CGFloat) async throws {
 			let (store, _) = makeStore()
@@ -240,6 +319,17 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "descending" })
 			try await host.settle()
 			#expect(try await waitForKeyOrder(["ZULU", "ALPHA"], in: host, region: keyRegion))
+		}
+
+		@Test("key order combines complementary recognition of the same frame")
+		func complementaryKeyRecognition() {
+			let fast = [RenderedText.Line(text: "ZULU", bounds: CGRect(x: 0.291, y: 0.661, width: 0.03, height: 0.014), labelBounds: nil)]
+			let accurate = [RenderedText.Line(text: "ALPHA", bounds: CGRect(x: 0.283, y: 0.588, width: 0.048, height: 0.023), labelBounds: nil)]
+			#expect(keyOrderIsVisible(["ZULU", "ALPHA"], readings: [fast, accurate]))
+			#expect(!keyOrderIsVisible(["ALPHA", "ZULU"], readings: [fast, accurate]))
+			#expect(!keyOrderIsVisible(["ZULU", "ALPHA"], readings: [fast, fast]))
+			let merged = [RenderedText.Line(text: "ZULU ALPHA", bounds: CGRect(x: 0.28, y: 0.66, width: 0.1, height: 0.02), labelBounds: nil)]
+			#expect(!keyOrderIsVisible(["ZULU", "ALPHA"], readings: [merged, fast]))
 		}
 
 		@Test("rendered key order tolerates text recognition's case and glyph differences")
@@ -649,6 +739,11 @@ extension SheetInteractionTests {
 				width: (VaultMetrics.keyColumn - 20) / size.width, height: (header.minY - VaultMetrics.statusBar) / size.height)
 		}
 
+		private func keyOrderIsVisible(_ expected: [String], readings: [[RenderedText.Line]]) -> Bool {
+			readings.contains { keysFromTop(expected, lines: $0) == expected }
+				|| keysFromTop(expected, lines: readings.flatMap { $0 }) == expected
+		}
+
 		private func waitForKeyOrder<V: View>(_ expected: [String], in host: SheetTestHost<V>, region: CGRect? = nil) async throws -> Bool {
 			let keyRegion: CGRect
 			if let region {
@@ -661,9 +756,11 @@ extension SheetInteractionTests {
 			while true {
 				let image = try host.snapshot(host.view)
 				var readings: [String] = []
+				var recognized: [[RenderedText.Line]] = []
 				for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
 					let lines = try await RenderedText.lines(in: image, level: level, region: keyRegion)
-					if keysFromTop(expected, lines: lines) == expected { return true }
+					recognized.append(lines)
+					if keyOrderIsVisible(expected, readings: recognized) { return true }
 					readings.append("\(level): " + lines.map { "\($0.text) at \($0.bounds)" }.joined(separator: " | "))
 				}
 				guard ContinuousClock.now < deadline else {

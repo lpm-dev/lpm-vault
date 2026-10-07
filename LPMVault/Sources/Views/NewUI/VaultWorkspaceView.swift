@@ -214,7 +214,8 @@ struct VaultWorkspaceView: View {
 								editedKeys: store.keyDrafts.editedKeys(in: project.id),
 								onAddSecret: presentAddSecret,
 								onCopySecret: copySecret,
-								onDeleteSecret: requestDeleteSecret
+								onDeleteSecret: requestDeleteSecret,
+								onResizeColumns: { store.recordUserActivity() }
 							)
 						} else {
 							VaultWorkspaceEmptyView(

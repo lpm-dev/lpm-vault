@@ -46,6 +46,7 @@ struct VaultContentView: View {
 	let onAddSecret: () -> Void
 	let onCopySecret: (String, String) -> Void
 	let onDeleteSecret: (String, String) -> Void
+	let onResizeColumns: () -> Void
 	@State private var matrixColumnWidths = VaultTableColumnWidths()
 	@State private var environmentColumnWidths = VaultTableColumnWidths()
 
@@ -243,11 +244,11 @@ struct VaultContentView: View {
 	private func matrix(_ derived: VaultContentDerivation) -> some View {
 		GeometryReader { geometry in
 			let layout = VaultTableColumnLayout(columns: [.key] + environments.map(VaultTableColumn.environment),
-				available: geometry.size.width, requested: matrixColumnWidths.requested)
-			let tableWidth = max(geometry.size.width, layout.totalWidth)
+				available: geometry.size.width - VaultMetrics.paneDividerHitWidth, requested: matrixColumnWidths.requested)
+			let tableWidth = max(geometry.size.width, layout.totalWidth + VaultMetrics.paneDividerHitWidth)
 
 			ScrollView([.horizontal, .vertical]) {
-				LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+				LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
 					Section {
 						if derived.filteredKeys.isEmpty {
 							VaultTableEmptyRow(
@@ -278,7 +279,8 @@ struct VaultContentView: View {
 							selectedEnvironment: selectedEnvironment,
 							layout: layout,
 							sortOrder: $sortOrder,
-							onResize: { column, width in matrixColumnWidths.resize(column, to: width, in: layout) }
+							onResize: { column, width in matrixColumnWidths.resize(column, to: width, in: layout) },
+							onResizeActivity: onResizeColumns
 						)
 						.background(VaultPalette.headerRow)
 						.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
@@ -298,10 +300,10 @@ struct VaultContentView: View {
 		} else {
 			GeometryReader { geometry in
 				let layout = VaultTableColumnLayout(columns: [.key, .value, .actions],
-					available: geometry.size.width, requested: environmentColumnWidths.requested)
-				let tableWidth = max(geometry.size.width, layout.totalWidth)
+					available: geometry.size.width - VaultMetrics.paneDividerHitWidth, requested: environmentColumnWidths.requested)
+				let tableWidth = max(geometry.size.width, layout.totalWidth + VaultMetrics.paneDividerHitWidth)
 				ScrollView([.horizontal, .vertical]) {
-					LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+					LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
 						Section {
 							if derived.environmentKeys.isEmpty {
 								VaultTableEmptyRow(
@@ -329,7 +331,8 @@ struct VaultContentView: View {
 							}
 						} header: {
 							VaultEnvironmentHeader(layout: layout, sortOrder: $sortOrder,
-								onResize: { column, width in environmentColumnWidths.resize(column, to: width, in: layout) })
+								onResize: { column, width in environmentColumnWidths.resize(column, to: width, in: layout) },
+								onResizeActivity: onResizeColumns)
 								.background(VaultPalette.headerRow)
 								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
 						}
@@ -426,6 +429,7 @@ private struct VaultMatrixHeader: View {
 	let layout: VaultTableColumnLayout
 	@Binding var sortOrder: VaultKeySortOrder
 	let onResize: (VaultTableColumn, CGFloat) -> Void
+	let onResizeActivity: () -> Void
 
 	var body: some View {
 		HStack(spacing: 0) {
@@ -449,7 +453,7 @@ private struct VaultMatrixHeader: View {
 			}
 		}
 		.frame(width: layout.totalWidth, alignment: .leading)
-		.overlay { VaultTableResizeHandles(layout: layout, onResize: onResize) }
+		.overlay { VaultTableResizeHandles(layout: layout, onResize: onResize, onActivity: onResizeActivity) }
 	}
 }
 
@@ -520,6 +524,7 @@ private struct VaultEnvironmentHeader: View {
 	let layout: VaultTableColumnLayout
 	@Binding var sortOrder: VaultKeySortOrder
 	let onResize: (VaultTableColumn, CGFloat) -> Void
+	let onResizeActivity: () -> Void
 
 	var body: some View {
 		HStack(spacing: 0) {
@@ -528,13 +533,14 @@ private struct VaultEnvironmentHeader: View {
 			Text("ACTIONS").vaultSectionLabel().padding(.trailing, 20).frame(width: layout[.actions], alignment: .trailing)
 		}
 		.frame(width: layout.totalWidth, height: VaultMetrics.tableHeader, alignment: .leading)
-		.overlay { VaultTableResizeHandles(layout: layout, onResize: onResize) }
+		.overlay { VaultTableResizeHandles(layout: layout, onResize: onResize, onActivity: onResizeActivity) }
 	}
 }
 
 private struct VaultTableResizeHandles: View {
 	let layout: VaultTableColumnLayout
 	let onResize: (VaultTableColumn, CGFloat) -> Void
+	let onActivity: () -> Void
 
 	var body: some View {
 		ZStack(alignment: .topLeading) {
@@ -545,7 +551,7 @@ private struct VaultTableResizeHandles: View {
 						maximum: .greatestFiniteMagnitude),
 					edge: .trailing,
 					accessibilityLabel: "Resize \(boundary.id.title) column",
-					onResize: {}
+					onResize: onActivity
 				)
 				.background { VaultHairline(axis: .vertical).allowsHitTesting(false) }
 				.frame(height: VaultMetrics.tableHeader)
@@ -574,16 +580,9 @@ private struct VaultEnvironmentRow: View {
 
 	var body: some View {
 		HStack(spacing: 0) {
-			HStack(spacing: 8) {
-				Text(key)
-					.font(VaultTypography.mono(13, isSelected ? .bold : .regular))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.lineLimit(1)
-				if isEdited { VaultUnsavedBadge() }
-				if hasDrift {
-					VaultTagBadge(text: "DIFFERS", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint)
-				}
-				Spacer(minLength: 0)
+			ViewThatFits(in: .horizontal) {
+				keyLabel(compact: false)
+				keyLabel(compact: true)
 			}
 			.padding(.leading, 20)
 			.padding(.trailing, 12)
@@ -610,6 +609,31 @@ private struct VaultEnvironmentRow: View {
 		.accessibilityElement(children: .contain)
 		.accessibilityLabel("\(key), value hidden\(isEdited ? ", unsaved changes" : "")")
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
+	}
+
+	private func keyLabel(compact: Bool) -> some View {
+		HStack(spacing: 8) {
+			Text(key)
+				.font(VaultTypography.mono(13, isSelected ? .bold : .regular))
+				.foregroundStyle(VaultPalette.textPrimary)
+				.lineLimit(1)
+				.frame(minWidth: 56, alignment: .leading)
+			if isEdited {
+				if compact {
+					VaultStatusDot(color: VaultPalette.orange).help("Unsaved changes").accessibilityLabel("Unsaved changes")
+				} else {
+					VaultUnsavedBadge()
+				}
+			}
+			if hasDrift {
+				if compact {
+					VaultStatusDot(color: VaultPalette.orange).help("Values differ").accessibilityLabel("Values differ")
+				} else {
+					VaultTagBadge(text: "DIFFERS", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint)
+				}
+			}
+			Spacer(minLength: 0)
+		}
 	}
 }
 
