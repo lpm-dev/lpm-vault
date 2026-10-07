@@ -4896,35 +4896,94 @@ struct VaultStoreTests {
 		#expect(sync.publicKeyCallCount == 0)
 	}
 
-	@Test("other organization pull errors do not fetch the public key")
-	func otherOrganizationPullErrorsDoNotFetchPublicKey() async {
+	@Test("organization pull errors without revisions preserve local values and sync state", arguments: ["organization", "account"])
+	func organizationPullErrorsWithoutRevisionsPreserveLocalState(scope: String) async throws {
 		let keypair = VaultCrypto.generateX25519Keypair()
 		let sync = MockOrgSyncService()
-		sync.pullResult = SyncService.SyncStatus(
-			vaultId: "rewrap",
-			version: 1,
-			cryptoVersion: VaultCrypto.currentCryptoVersion,
-			contentKeyVersion: nil,
-			recipientPublicKeyVersion: nil,
-			recipientPublicKeyFingerprint: nil,
-			status: "error",
-			error: "Access denied",
-			code: "vault_access_denied",
-			serverVersion: nil,
-			hint: nil,
-			encryptedBlob: nil,
-			wrappedKey: nil,
-			updatedAt: nil,
-			principalId: organizationID,
-			callerUserId: "user-1",
-			organizationId: organizationID
+		sync.pullResult = try organizationPullRejection(scope: scope)
+		let metadata = mockCurrentSyncMetadata(
+			version: 8, principalID: organizationID, scope: "organization", isDirty: true
 		)
-		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+		let keychain = MockKeychainService()
+		let store = makeOrganizationPullStore(
+			sync: sync, keypair: keypair, keychain: keychain, metadata: metadata
+		)
 
 		await store.pullFromOrg(orgSlug: "acme")
 
 		#expect(store.error == "Access denied")
 		#expect(sync.publicKeyCallCount == 0)
+		#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "local")
+		#expect(store.syncMetadata["rewrap"]?.lastVersion == 8)
+		#expect(store.syncMetadata["rewrap"]?.isDirty == true)
+		#expect(keychain.storedSyncMetadata(vaultId: "rewrap")?.lastVersion == 8)
+		#expect(keychain.storedSyncMetadata(vaultId: "rewrap")?.isDirty == true)
+		#expect(keychain.envStorage["rewrap"]?.environments == ["default": ["TOKEN": "local"]])
+		#expect(keychain.saveEnvironmentsCallCount == 0)
+		#expect(store.lastSyncStatus == "failed")
+		#expect(!store.isSyncing)
+	}
+
+	@Test("organization pull errors reject substituted principals before presenting server messages", arguments: ["organization", "account"])
+	func organizationPullErrorsRejectSubstitutedPrincipals(scope: String) async throws {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		sync.pullResult = try organizationPullRejection(scope: scope, callerUserID: "other-user")
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(store.error == "Org pull failed: The organization access response did not match the authenticated account.")
+		#expect(sync.publicKeyCallCount == 0)
+		#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "local")
+	}
+
+	@Test("missing organization projects report env terminology without changing local state")
+	func missingOrganizationProjectReportsEnvError() async throws {
+		let keypair = VaultCrypto.generateX25519Keypair()
+		let sync = MockOrgSyncService()
+		let nonce = String(repeating: "A", count: 43)
+		let body = try JSONSerialization.data(withJSONObject: [
+			"envelopeVersion": 3, "operation": "vault.pull", "outcome": "missing",
+			"requestNonce": nonce,
+			"binding": ["scope": "organization", "principalId": organizationID,
+				"callerUserId": "user-1", "organizationSlug": "acme", "vaultId": "rewrap"],
+			"data": ["retainedRevision": 0],
+		])
+		sync.pullResult = try AuthenticatedVaultEnvelopeParser.decodeVaultResponse(
+			body, statusCode: 404, operation: .pull, requestNonce: nonce,
+			vaultID: "rewrap", organizationSlug: "acme"
+		)
+		let store = makeOrganizationPullStore(sync: sync, keypair: keypair)
+
+		await store.pullFromOrg(orgSlug: "acme")
+
+		#expect(store.error == "Env project not found")
+		#expect(sync.publicKeyCallCount == 0)
+		#expect(store.selectedProject?.value(for: "TOKEN", in: "default") == "local")
+		#expect(store.lastSyncStatus == "failed")
+	}
+
+	private func organizationPullRejection(
+		scope: String, callerUserID: String = "user-1"
+	) throws -> SyncService.SyncStatus {
+		let nonce = String(repeating: "A", count: 43)
+		var binding: [String: Any] = [
+			"scope": scope,
+			"principalId": scope == "account" ? callerUserID : organizationID,
+			"organizationSlug": "acme",
+			"vaultId": "rewrap",
+		]
+		if scope == "organization" { binding["callerUserId"] = callerUserID }
+		let body = try JSONSerialization.data(withJSONObject: [
+			"envelopeVersion": 3, "operation": "vault.pull", "outcome": "rejected",
+			"requestNonce": nonce, "binding": binding,
+			"data": ["code": "vault_access_denied", "message": "Access denied"],
+		])
+		return try AuthenticatedVaultEnvelopeParser.decodeVaultResponse(
+			body, statusCode: 403, operation: .pull, requestNonce: nonce,
+			vaultID: "rewrap", organizationSlug: "acme"
+		)
 	}
 
 	@Test("unauthorized organization pulls do not fetch the public key")
@@ -6006,9 +6065,10 @@ struct VaultStoreTests {
 
 	private func makeOrganizationPullStore(
 		sync: MockOrgSyncService,
-		keypair: (privateKey: Data, publicKey: Data)
+		keypair: (privateKey: Data, publicKey: Data),
+		keychain: MockKeychainService = MockKeychainService(),
+		metadata: SyncMetadata? = nil
 	) -> VaultStore {
-		let keychain = MockKeychainService()
 		keychain.envStorage["rewrap"] = (
 			name: "Rewrap",
 			path: "",
@@ -6023,6 +6083,8 @@ struct VaultStoreTests {
 			authTokenProvider: { _, _ in "session-token" },
 			authSessionClearer: { _ in }
 		)
+		store.appEnvironment = .production
+		if let metadata { #expect(keychain.seedSyncMetadata(["rewrap": metadata])) }
 		store.currentUser = LPMUser(
 			id: "user-1",
 			username: "user",
@@ -6053,6 +6115,7 @@ struct VaultStoreTests {
 		store.isUnlocked = true
 		store.selectAccount(.org("acme"))
 		store.openProject(id: "rewrap")
+		if let metadata { store.syncMetadata = ["rewrap": metadata] }
 		return store
 	}
 

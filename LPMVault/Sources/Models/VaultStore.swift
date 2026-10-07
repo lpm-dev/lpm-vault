@@ -5850,6 +5850,25 @@ final class VaultStore {
           "Your registered sharing key does not have access to this env project yet. Ask an organization admin to share it again."
         )
       }
+      if let message = result.displayError {
+        let matchesOrganization = result.principalId == authority.principalID
+          && result.callerUserId == currentUserID
+        let matchesRejectedAccount = result.scope == "account"
+          && result.outcome == "rejected"
+          && result.organizationSlug == orgSlug
+          && result.principalId == currentUserID
+        guard result.vaultId == baselineProject.id,
+          matchesOrganization || matchesRejectedAccount
+        else {
+          throw VaultSyncError(
+            "The organization access response did not match the authenticated account."
+          )
+        }
+        error = message
+        finishSyncIfOwned(authority)
+        lastSyncStatus = "failed"
+        return
+      }
       guard result.vaultId == baselineProject.id,
         result.principalId == authority.principalID,
         result.callerUserId == currentUserID,
