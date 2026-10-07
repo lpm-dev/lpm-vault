@@ -237,7 +237,9 @@ struct VaultPaneLayoutTests {
 	}
 
 	private func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {
-		if let divider = view as? VaultResizeTrackingView { return [divider] }
+		if let divider = view as? VaultResizeTrackingView {
+			return ["Resize sidebar", "Resize inspector"].contains(divider.accessibilityLabel()) ? [divider] : []
+		}
 		return view.subviews.flatMap { resizeViews(in: $0) }
 	}
 
@@ -250,5 +252,73 @@ struct VaultPaneLayoutTests {
 		try #require(NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 100),
 			modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
 			eventNumber: 0, clickCount: 1, pressure: 1))
+	}
+}
+
+@Suite("Workspace table column layout")
+@MainActor
+struct VaultTableColumnLayoutTests {
+	@Test("initial columns fill wide viewports and scroll in narrow ones", arguments: [CGFloat(420), 1200])
+	func initialLayout(available: CGFloat) {
+		let matrix = VaultTableColumnLayout(columns: [.key, .environment("default"), .environment("production")], available: available)
+		#expect(matrix[.key] == VaultMetrics.keyColumn)
+		#expect(matrix[.environment("default")] == matrix[.environment("production")])
+		#expect(matrix.totalWidth == max(available, VaultMetrics.keyColumn + 2 * VaultMetrics.environmentColumn))
+		let environment = VaultTableColumnLayout(columns: [.key, .value, .actions], available: available)
+		#expect(environment[.value] == VaultMetrics.environmentValueColumn)
+		#expect(environment[.actions] == VaultMetrics.environmentActionsColumn)
+		#expect(environment.totalWidth == max(available, VaultMetrics.keyColumn + VaultMetrics.environmentValueColumn + VaultMetrics.environmentActionsColumn))
+		for layout in [matrix, environment] {
+			var position: CGFloat = 0
+			for boundary in layout.boundaries {
+				position += layout[boundary.id]
+				#expect(boundary.position == position)
+			}
+			#expect(position == layout.totalWidth)
+		}
+	}
+
+	@Test("resizing preserves neighboring widths and survives viewport changes", arguments: [false, true])
+	func explicitWidths(singleEnvironment: Bool) {
+		let columns: [VaultTableColumn] = singleEnvironment ? [.key, .value, .actions] : [.key, .environment("default"), .environment("production")]
+		let original = VaultTableColumnLayout(columns: columns, available: 1200)
+		var widths = VaultTableColumnWidths()
+		widths.resize(.key, to: 350, in: original)
+		for available in [CGFloat(420), 1600] {
+			let layout = VaultTableColumnLayout(columns: columns, available: available, requested: widths.requested)
+			#expect(layout[.key] == 350)
+			for column in columns.dropFirst() { #expect(layout[column] == original[column]) }
+			#expect(layout.totalWidth == original.totalWidth - original[.key] + 350)
+		}
+		let resized = VaultTableColumnLayout(columns: columns, available: 420, requested: widths.requested)
+		widths.resize(columns[1], to: 500, in: resized)
+		#expect(widths.requested[.key] == 350)
+		#expect(widths.requested[columns[1]] == 500)
+	}
+
+	@Test("every column clamps shrinking at a usable minimum")
+	func minimumWidths() {
+		let columns: [VaultTableColumn] = [.key, .value, .actions, .environment("default")]
+		let original = VaultTableColumnLayout(columns: columns, available: 1200)
+		var widths = VaultTableColumnWidths()
+		for column in columns { widths.resize(column, to: -100, in: original) }
+		let layout = VaultTableColumnLayout(columns: columns, available: 420, requested: widths.requested)
+		for column in columns { #expect(layout[column] == column.minimumWidth) }
+		#expect(layout.totalWidth == columns.reduce(0) { $0 + $1.minimumWidth })
+	}
+
+	@Test("environment widths follow their identities through reorder, removal and insertion")
+	func environmentIdentity() {
+		let original = VaultTableColumnLayout(columns: [.key, .environment("default"), .environment("production")], available: 1200)
+		var widths = VaultTableColumnWidths()
+		widths.resize(.environment("production"), to: 700, in: original)
+		let reordered = VaultTableColumnLayout(columns: [.key, .environment("production"), .environment("default")], available: 420, requested: widths.requested)
+		#expect(reordered[.environment("production")] == 700)
+		#expect(reordered[.environment("default")] == original[.environment("default")])
+		#expect(reordered.boundaries.map(\.id) == [.key, .environment("production"), .environment("default")])
+		let replaced = VaultTableColumnLayout(columns: [.key, .environment("production"), .environment("test")], available: 1600, requested: widths.requested)
+		#expect(replaced[.environment("production")] == 700)
+		#expect(replaced[.environment("test")] == VaultMetrics.environmentColumn)
+		#expect(replaced.widths[.environment("default")] == nil)
 	}
 }

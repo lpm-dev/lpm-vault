@@ -46,6 +46,8 @@ struct VaultContentView: View {
 	let onAddSecret: () -> Void
 	let onCopySecret: (String, String) -> Void
 	let onDeleteSecret: (String, String) -> Void
+	@State private var matrixColumnWidths = VaultTableColumnWidths()
+	@State private var environmentColumnWidths = VaultTableColumnWidths()
 
 	var body: some View {
 		let derived = VaultContentDerivation(
@@ -73,6 +75,10 @@ struct VaultContentView: View {
 			statusBar(derived)
 		}
 		.background(VaultPalette.content)
+		.onChange(of: project.id) { _, _ in
+			matrixColumnWidths = VaultTableColumnWidths()
+			environmentColumnWidths = VaultTableColumnWidths()
+		}
 	}
 
 	/// The first row is about the project: what it is, its CLI approval, the
@@ -236,10 +242,9 @@ struct VaultContentView: View {
 
 	private func matrix(_ derived: VaultContentDerivation) -> some View {
 		GeometryReader { geometry in
-			let columnCount = CGFloat(max(environments.count, 1))
-			let minimumWidth = VaultMetrics.keyColumn + columnCount * VaultMetrics.environmentColumn
-			let tableWidth = max(geometry.size.width, minimumWidth)
-			let environmentColumnWidth = (tableWidth - VaultMetrics.keyColumn) / columnCount
+			let layout = VaultTableColumnLayout(columns: [.key] + environments.map(VaultTableColumn.environment),
+				available: geometry.size.width, requested: matrixColumnWidths.requested)
+			let tableWidth = max(geometry.size.width, layout.totalWidth)
 
 			ScrollView([.horizontal, .vertical]) {
 				LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -257,7 +262,7 @@ struct VaultContentView: View {
 									snapshot: snapshot,
 									environments: environments,
 									selectedEnvironment: selectedEnvironment,
-									environmentColumnWidth: environmentColumnWidth,
+									layout: layout,
 									isSelected: selectedKey == key,
 									isRevealed: canUseSecrets && revealedKeys.contains(key),
 									isEdited: editedKeys.contains(key),
@@ -271,8 +276,9 @@ struct VaultContentView: View {
 						VaultMatrixHeader(
 							environments: environments,
 							selectedEnvironment: selectedEnvironment,
-							environmentColumnWidth: environmentColumnWidth,
-							sortOrder: $sortOrder
+							layout: layout,
+							sortOrder: $sortOrder,
+							onResize: { column, width in matrixColumnWidths.resize(column, to: width, in: layout) }
 						)
 						.background(VaultPalette.headerRow)
 						.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
@@ -291,8 +297,9 @@ struct VaultContentView: View {
 			rawEnvironment(derived)
 		} else {
 			GeometryReader { geometry in
-				let minimumWidth = VaultMetrics.keyColumn + VaultMetrics.environmentValueColumn + VaultMetrics.environmentActionsColumn
-				let tableWidth = max(geometry.size.width, minimumWidth)
+				let layout = VaultTableColumnLayout(columns: [.key, .value, .actions],
+					available: geometry.size.width, requested: environmentColumnWidths.requested)
+				let tableWidth = max(geometry.size.width, layout.totalWidth)
 				ScrollView([.horizontal, .vertical]) {
 					LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
 						Section {
@@ -306,6 +313,7 @@ struct VaultContentView: View {
 									VaultEnvironmentRow(
 										key: key,
 										value: project.value(for: key, in: selectedEnvironment) ?? "",
+										layout: layout,
 										isSelected: selectedKey == key,
 										isRevealed: canUseSecrets && revealedKeys.contains(key),
 										hasDrift: snapshot.hasDrift(for: key),
@@ -320,7 +328,8 @@ struct VaultContentView: View {
 								}
 							}
 						} header: {
-							VaultEnvironmentHeader(sortOrder: $sortOrder)
+							VaultEnvironmentHeader(layout: layout, sortOrder: $sortOrder,
+								onResize: { column, width in environmentColumnWidths.resize(column, to: width, in: layout) })
 								.background(VaultPalette.headerRow)
 								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
 						}
@@ -414,13 +423,14 @@ struct VaultContentView: View {
 private struct VaultMatrixHeader: View {
 	let environments: [String]
 	let selectedEnvironment: String
-	let environmentColumnWidth: CGFloat
+	let layout: VaultTableColumnLayout
 	@Binding var sortOrder: VaultKeySortOrder
+	let onResize: (VaultTableColumn, CGFloat) -> Void
 
 	var body: some View {
 		HStack(spacing: 0) {
 			VaultKeySortHeader(order: $sortOrder)
-				.frame(width: VaultMetrics.keyColumn, height: VaultMetrics.tableHeader)
+				.frame(width: layout[.key], height: VaultMetrics.tableHeader)
 
 			ForEach(Array(environments.enumerated()), id: \.element) { index, environment in
 				VaultHairline(axis: .vertical)
@@ -433,11 +443,13 @@ private struct VaultMatrixHeader: View {
 					Spacer(minLength: 2)
 				}
 				.padding(.horizontal, 12)
-				.frame(width: environmentColumnWidth - 1, height: VaultMetrics.tableHeader)
+				.frame(width: layout[.environment(environment)] - 1, height: VaultMetrics.tableHeader)
 				.background(environment == selectedEnvironment ? VaultPalette.selectedEnvHeader : .clear)
 				.accessibilityLabel("\(VaultProject.displayName(for: environment))\(environment == selectedEnvironment ? ", current environment" : "")")
 			}
 		}
+		.frame(width: layout.totalWidth, alignment: .leading)
+		.overlay { VaultTableResizeHandles(layout: layout, onResize: onResize) }
 	}
 }
 
@@ -447,7 +459,7 @@ private struct VaultMatrixRow: View {
 	let snapshot: VaultWorkspaceSnapshot
 	let environments: [String]
 	let selectedEnvironment: String
-	let environmentColumnWidth: CGFloat
+	let layout: VaultTableColumnLayout
 	let isSelected: Bool
 	let isRevealed: Bool
 	let isEdited: Bool
@@ -470,7 +482,7 @@ private struct VaultMatrixRow: View {
 					Spacer(minLength: 0)
 				}
 				.padding(.horizontal, 20)
-				.frame(width: VaultMetrics.keyColumn)
+				.frame(width: layout[.key])
 
 				ForEach(environments, id: \.self) { environment in
 					VaultHairline(color: VaultPalette.rowDivider, axis: .vertical)
@@ -483,10 +495,12 @@ private struct VaultMatrixRow: View {
 						Spacer(minLength: 0)
 					}
 					.padding(.horizontal, 12)
-					.frame(width: environmentColumnWidth - 1, height: VaultMetrics.matrixRow)
+					.frame(width: layout[.environment(environment)] - 1, height: VaultMetrics.matrixRow)
 					.background(environment == selectedEnvironment ? VaultPalette.selectedEnvCell : .clear)
 				}
 			}
+			.frame(width: layout.totalWidth, height: VaultMetrics.matrixRow)
+			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
 		.frame(height: VaultMetrics.matrixRow)
@@ -503,21 +517,49 @@ private struct VaultMatrixRow: View {
 }
 
 private struct VaultEnvironmentHeader: View {
+	let layout: VaultTableColumnLayout
 	@Binding var sortOrder: VaultKeySortOrder
+	let onResize: (VaultTableColumn, CGFloat) -> Void
 
 	var body: some View {
 		HStack(spacing: 0) {
-			VaultKeySortHeader(order: $sortOrder).frame(maxWidth: .infinity)
-			Text("VALUE").vaultSectionLabel().frame(width: VaultMetrics.environmentValueColumn, alignment: .leading)
-			Text("ACTIONS").vaultSectionLabel().padding(.trailing, 20).frame(width: VaultMetrics.environmentActionsColumn, alignment: .trailing)
+			VaultKeySortHeader(order: $sortOrder).frame(width: layout[.key])
+			Text("VALUE").vaultSectionLabel().padding(.horizontal, 12).frame(width: layout[.value], alignment: .leading)
+			Text("ACTIONS").vaultSectionLabel().padding(.trailing, 20).frame(width: layout[.actions], alignment: .trailing)
 		}
-		.frame(height: VaultMetrics.tableHeader)
+		.frame(width: layout.totalWidth, height: VaultMetrics.tableHeader, alignment: .leading)
+		.overlay { VaultTableResizeHandles(layout: layout, onResize: onResize) }
+	}
+}
+
+private struct VaultTableResizeHandles: View {
+	let layout: VaultTableColumnLayout
+	let onResize: (VaultTableColumn, CGFloat) -> Void
+
+	var body: some View {
+		ZStack(alignment: .topLeading) {
+			ForEach(layout.boundaries) { boundary in
+				VaultPaneResizeHandle(
+					width: Binding(get: { layout[boundary.id] }, set: { onResize(boundary.id, $0) }),
+					bounds: VaultPaneBounds(width: layout[boundary.id], minimum: boundary.id.minimumWidth,
+						maximum: .greatestFiniteMagnitude),
+					edge: .trailing,
+					accessibilityLabel: "Resize \(boundary.id.title) column",
+					onResize: {}
+				)
+				.background { VaultHairline(axis: .vertical).allowsHitTesting(false) }
+				.frame(height: VaultMetrics.tableHeader)
+				.offset(x: boundary.position - VaultMetrics.paneDividerHitWidth / 2)
+			}
+		}
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 	}
 }
 
 private struct VaultEnvironmentRow: View {
 	let key: String
 	let value: String
+	let layout: VaultTableColumnLayout
 	let isSelected: Bool
 	let isRevealed: Bool
 	let hasDrift: Bool
@@ -544,10 +586,12 @@ private struct VaultEnvironmentRow: View {
 				Spacer(minLength: 0)
 			}
 			.padding(.leading, 20)
-			.frame(maxWidth: .infinity, alignment: .leading)
+			.padding(.trailing, 12)
+			.frame(width: layout[.key], alignment: .leading)
 
 			VaultValueText(text: isRevealed ? value : "••••••••••••", masked: !isRevealed)
-				.frame(width: VaultMetrics.environmentValueColumn, alignment: .leading)
+				.padding(.horizontal, 12)
+				.frame(width: layout[.value], alignment: .leading)
 
 			HStack(spacing: 2) {
 				VaultRowIconButton(systemImage: isRevealed ? "eye.slash" : "eye", help: isRevealed ? "Hide value" : "Reveal value", action: onReveal)
@@ -556,9 +600,9 @@ private struct VaultEnvironmentRow: View {
 				VaultRowIconButton(systemImage: "trash", help: "Delete from this environment", destructive: true, action: onDelete)
 			}
 			.padding(.trailing, 16)
-			.frame(width: VaultMetrics.environmentActionsColumn, alignment: .trailing)
+			.frame(width: layout[.actions], alignment: .trailing)
 		}
-		.frame(height: VaultMetrics.fileRow)
+		.frame(width: layout.totalWidth, height: VaultMetrics.fileRow)
 		.background(isSelected ? VaultPalette.rowSelected : (hovering ? VaultPalette.rowHover : .clear))
 		.contentShape(Rectangle())
 		.onTapGesture(perform: onSelect)

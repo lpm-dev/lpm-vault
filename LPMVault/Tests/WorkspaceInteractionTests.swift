@@ -9,6 +9,83 @@ extension SheetInteractionTests {
 	@Suite("Workspace interaction regressions", .serialized)
 	@MainActor
 	struct WorkspaceInteractionTests {
+		@Test("blank space across a matrix key cell opens its inspector", arguments: [CGFloat(5), 205])
+		func matrixKeyCellBlankSpace(offset: CGFloat) async throws {
+			let (store, _) = makeStore()
+			defer { store.lock() }
+			let host = try await workspace(store)
+			defer { host.window.close() }
+			try clickAt(NSPoint(x: VaultMetrics.sidebar + VaultMetrics.paneDivider + offset, y: 603), in: host)
+			#expect(try await host.waitForText("VALUES"))
+			#expect(try await host.waitUntil { host.value == "fixture-value" })
+		}
+
+		@Test("both tables expose draggable column boundaries without changing key order", arguments: [false, true])
+		func tableColumnResize(singleEnvironment: Bool) async throws {
+			let domain = "lpm-column-resize-test-" + UUID().uuidString
+			let defaults = try #require(UserDefaults(suiteName: domain))
+			defer { defaults.removePersistentDomain(forName: domain) }
+			let (store, _) = makeStore(environments: [
+				"default": ["ALPHA": "a", "ZULU": "z"], "production": ["ALPHA": "b", "ZULU": "z"],
+			])
+			defer { store.lock() }
+			let host = try await workspace(store, defaults: defaults)
+			defer { host.window.close() }
+			if singleEnvironment {
+				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				#expect(try await host.waitForText("ACTIONS"))
+			}
+			let label = "Resize Key column"
+			let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == label })
+			let original = host.view.convert(divider.bounds, from: divider)
+			let startWidth = try #require(Int((divider.accessibilityValue() as? String ?? "").split(separator: " ").first ?? ""))
+			#expect(divider.accessibilityRole() == .splitter)
+			let point = NSPoint(x: original.midX, y: original.midY)
+			let hitPoint = host.view.superview?.convert(host.view.convert(point, to: nil), from: nil) ?? point
+			#expect(host.view.hitTest(hitPoint) === divider)
+			divider.onDragChanged?(40)
+			#expect(try await host.waitUntil { divider.accessibilityValue() as? String == "\(startWidth + 40) points" })
+			divider.onDragChanged?(80)
+			divider.onDragEnded?(80)
+			#expect(try await host.waitUntil { divider.accessibilityValue() as? String == "\(startWidth + 80) points" })
+			try await host.settle()
+			let resized = host.view.convert(divider.bounds, from: divider)
+			#expect(abs(resized.midX - original.midX - 80) < 1)
+			#expect(defaults.string(forKey: VaultKeySortOrder.defaultsKey) != "descending")
+			#expect(try await waitForKeyOrder(["ALPHA", "ZULU"], in: host))
+			let nextLabel = singleEnvironment ? "Resize Value column" : "Resize .env column"
+			let next = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == nextLabel })
+			#expect(next.accessibilityPerformIncrement())
+			try await host.settle()
+			#expect(divider.accessibilityValue() as? String == "\(startWidth + 80) points")
+			try clickAt(NSPoint(x: host.view.bounds.width - 129.5, y: 723.5), in: host)
+			#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize inspector" } })
+			host.window.setContentSize(NSSize(width: 1040, height: 800))
+			try await host.settle()
+			#expect(divider.accessibilityValue() as? String == "\(startWidth + 80) points")
+			if singleEnvironment {
+				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.75, width: 0.17, height: 0.15))
+				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
+				#expect(try await host.waitForText("All variables"))
+				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
+				try await host.settle()
+				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Value column" } })
+			} else {
+				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Value column" } })
+				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.75, width: 0.17, height: 0.15))
+				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
+				#expect(try await host.waitForText("All variables"))
+			}
+			try await host.settle()
+			let restored = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == label })
+			#expect(restored.accessibilityValue() as? String == "\(startWidth + 80) points")
+			let image = try host.snapshot(host.view)
+			let bitmap = NSBitmapImageRep(cgImage: image)
+			Attachment.record(try #require(bitmap.representation(using: .png, properties: [:])), named: singleEnvironment ? "resized-environment.png" : "resized-matrix.png")
+		}
+
 		@Test("inspector copy uses the latest refresh and copies what the field shows", arguments: [false, true])
 		func inspectorCopyAfterRefresh(edited: Bool) async throws {
 			let keychain = MockKeychainService()
