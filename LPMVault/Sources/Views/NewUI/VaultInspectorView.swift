@@ -130,7 +130,7 @@ private struct VaultKeyEditor: View {
 
 	private func header(saved: [String], cards: [String]) -> some View {
 		let allRevealed = store.canUseLocalSecrets
-			&& (revealedKeys.contains(key) || (!cards.isEmpty && cards.allSatisfy(revealedEnvironments.contains)))
+			&& (isPublic || revealedKeys.contains(key) || (!cards.isEmpty && cards.allSatisfy(revealedEnvironments.contains)))
 		return HStack(spacing: 6) {
 			Text("KEY").vaultSectionLabel()
 			VaultTagBadge(text: "ENCRYPTED", foreground: VaultPalette.accentForeground, background: VaultPalette.accentTint, size: 9)
@@ -144,6 +144,7 @@ private struct VaultKeyEditor: View {
 			}
 			.disabled(!store.canUseLocalSecrets)
 			.opacity(store.canUseLocalSecrets ? 1 : 0.45)
+			.hidden(isPublic)
 			deleteControl(saved: saved)
 			Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14)
 			VaultRowIconButton(systemImage: "xmark", help: "Hide inspector", action: onClose)
@@ -335,6 +336,7 @@ private struct VaultKeyEditor: View {
 				}
 				.disabled(!store.canUseLocalSecrets)
 				.opacity(store.canUseLocalSecrets ? 1 : 0.45)
+				.hidden(isPublic)
 				copyControl(environment)
 				SecretGeneratorButton(
 					disabled: !store.canUseLocalSecrets || isSaving || hasConflict || isOrphan,
@@ -622,8 +624,11 @@ private struct VaultKeyEditor: View {
 		}
 	}
 
+	/// Public values show unmasked; their rules say frameworks expose them to the browser.
+	private var isPublic: Bool { store.publicKeys(in: project.id).contains(key) }
+
 	private func isRevealed(_ environment: String) -> Bool {
-		store.canUseLocalSecrets && (revealedKeys.contains(key) || revealedEnvironments.contains(environment))
+		store.canUseLocalSecrets && (isPublic || revealedKeys.contains(key) || revealedEnvironments.contains(environment))
 	}
 
 	private func toggleRevealAll(_ allRevealed: Bool) {

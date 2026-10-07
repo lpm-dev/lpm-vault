@@ -3318,6 +3318,12 @@ final class VaultStore {
     ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
   }
 
+  /// Keys whose rules make them public, so their values show unmasked. Empty
+  /// unless the project's rules were read; values stay masked otherwise.
+  func publicKeys(in projectID: String) -> Set<String> {
+    keyDescriptions[projectID]?.schema?.overview?.publicKeys ?? []
+  }
+
   /// Rereads the selected project's key descriptions from its `lpm.json`.
   func reloadKeyDescriptions() {
     keyDescriptionsTask?.cancel()

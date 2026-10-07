@@ -227,6 +227,7 @@ struct VaultWorkspaceView: View {
 								onImport: importCurrentEnvironment,
 								onExport: exportCurrentEnvironment,
 								editedKeys: store.keyDrafts.editedKeys(in: project.id),
+								publicKeys: store.publicKeys(in: project.id),
 								onAddSecret: presentAddSecret,
 								onCopySecret: copySecret,
 								onDeleteSecret: requestDeleteSecret,

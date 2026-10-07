@@ -135,6 +135,15 @@ extension View {
 	}
 }
 
+extension View {
+	/// Hides the view but keeps its space, so neighboring controls don't move.
+	func hidden(_ isHidden: Bool) -> some View {
+		opacity(isHidden ? 0 : 1)
+			.allowsHitTesting(!isHidden)
+			.accessibilityHidden(isHidden)
+	}
+}
+
 struct VaultHairline: View {
 	var color: Color = VaultPalette.divider
 	var axis: Axis = .horizontal

@@ -92,6 +92,7 @@ Each project keeps its column widths during the session, including visits to Set
 Select **Schema** under a project to see the rules its `lpm.json` declares for each key, such as required keys, formats, defaults, and keys exposed to the browser.
 Rules are read-only in LPM Vault; edit them in `lpm.json`, and the LPM CLI enforces them.
 Rules inherited from another schema file or a preset show where they come from.
+Keys whose rules make them public, because frameworks expose them to the browser, show a globe and their values unmasked; every other value stays masked until you reveal it.
 
 The connection sheet links a project directory through `lpm.json`.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.
