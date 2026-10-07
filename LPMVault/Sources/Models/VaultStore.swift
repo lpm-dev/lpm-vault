@@ -4584,6 +4584,15 @@ final class VaultStore {
       lastSyncStatus = "failed"
       return false
     }
+    if let message = result.displayError,
+      result.vaultId == baselineProject.id,
+      result.principalId == authority.principalID
+    {
+      error = message
+      finishSyncIfOwned(authority)
+      lastSyncStatus = "failed"
+      return false
+    }
     guard result.vaultId == baselineProject.id,
       result.principalId == authority.principalID,
       let version = result.version,
