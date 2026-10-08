@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
 IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
 --><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0"><channel><title>LPM Vault updates</title><link>https://vault.lpm.dev/</link><item>
+            <title>1.1.0</title>
+            <pubDate>Thu, 08 Oct 2026 11:14:20 +0000</pubDate>
+            <link>https://vault.lpm.dev/</link>
+            <sparkle:version>7.0.1</sparkle:version>
+            <sparkle:shortVersionString>1.1.0 Nightly · 2026-10-08 · 8ea3627</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://vault.lpm.dev/releases/v1.1.0-nightly.20261008.4.8ea3627/LPM-Vault-1.1.0-nightly.20261008.4.8ea3627.dmg" length="11568193" type="application/octet-stream" sparkle:edSignature="FRu8RWKAaYXTXqtL4NLCyDPU1RtOFgaD8cvB+BEm1hh1/DSCotu3GXwe+UXGB5ZdxrZ3co+NcBurcUU8TZFfDw=="></enclosure>
+        <sparkle:channel>nightly</sparkle:channel></item>
+    <item>
             <title>1.0.2</title>
             <pubDate>Wed, 07 Oct 2026 09:42:19 +0000</pubDate>
             <link>https://vault.lpm.dev/</link>
@@ -10,6 +19,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <enclosure url="https://vault.lpm.dev/releases/v1.0.2/LPM-Vault-1.0.2.dmg" length="10917719" type="application/octet-stream" sparkle:edSignature="ynBkEFvPRq59Fq9qz9ZTyHENWFOBQKLVzDbc0Nv6Mgu309z/aXOxOGGAZGPQVPyDzpsf5KFDXFwLf+abji51CA=="></enclosure>
         </item>
     </channel></rss><!-- sparkle-signatures:
-edSignature: U8AvgCqR7yPDYWcC1Wo9BFuBYFRX6ti5SExBj3Koi31PvooRh6/CGg2+VYLO2pJmTQmUXEOgh1sqIdSg/o76BA==
-length: 1104
+edSignature: 7PiDfxU8r+EhpeY1Z9nTsyRRtymZntgU5dFTJYrMhZZCyUAZrGPqnnyBmRSs7cOSruCiKWiAHo2FKY+9l8fSCg==
+length: 1871
 -->
