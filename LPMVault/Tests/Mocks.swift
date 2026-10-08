@@ -32,8 +32,32 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 	private let lock = NSRecursiveLock()
-	var envStorage: [String: (name: String, path: String, environments: [String: [String: String]])] = [:]
-	var dataStorage: [String: Data] = [:]
+	private var environments: [String: (name: String, path: String, environments: [String: [String: String]])] = [:]
+	var envStorage: [String: (name: String, path: String, environments: [String: [String: String]])] {
+		_read {
+			lock.lock()
+			defer { lock.unlock() }
+			yield environments
+		}
+		_modify {
+			lock.lock()
+			defer { lock.unlock() }
+			yield &environments
+		}
+	}
+	private var records: [String: Data] = [:]
+	var dataStorage: [String: Data] {
+		_read {
+			lock.lock()
+			defer { lock.unlock() }
+			yield records
+		}
+		_modify {
+			lock.lock()
+			defer { lock.unlock() }
+			yield &records
+		}
+	}
 	var shouldFail = false
 	var failureError: KeychainError = .accessDenied
 	var listProjectsDelay: Duration?

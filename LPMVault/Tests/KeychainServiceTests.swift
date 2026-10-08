@@ -5,6 +5,64 @@ import Testing
 
 @testable import LPMVault
 
+@Suite("Mock Keychain concurrent storage")
+struct MockKeychainConcurrencyTests {
+	@Test("direct fixture reads wait for the complete transaction", arguments: ["environments", "data"])
+	func storageReadWaitsForTransaction(storage: String) async {
+		let keychain = MockKeychainService()
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		let readerStarted = DispatchSemaphore(value: 0)
+		let readFinished = DispatchSemaphore(value: 0)
+		let writer = Task.detached {
+			keychain.withKeychainTransaction {
+				keychain.envStorage["project"] = (name: "Project", path: "", environments: ["default": ["KEY": "intermediate"]])
+				keychain.dataStorage["record"] = Data("intermediate".utf8)
+				entered.signal()
+				release.wait()
+				keychain.envStorage["project"]?.environments["default"]?["KEY"] = "committed"
+				keychain.dataStorage["record"] = Data("committed".utf8)
+			}
+		}
+		let didEnter = await wait(entered, seconds: 3)
+		#expect(didEnter)
+		let reader = Task.detached {
+			readerStarted.signal()
+			let value = storage == "environments"
+				? keychain.envStorage["project"]?.environments["default"]?["KEY"]
+				: keychain.dataStorage["record"].map { String(decoding: $0, as: UTF8.self) }
+			readFinished.signal()
+			return value
+		}
+		let didStart = await wait(readerStarted, seconds: 3)
+		#expect(didStart)
+		let prematureRead = await wait(readFinished, seconds: 0.1)
+		release.signal()
+		_ = await writer.value
+		let value = await reader.value
+		#expect(!prematureRead)
+		#expect(value == "committed")
+	}
+
+	private func wait(_ semaphore: DispatchSemaphore, seconds: Double) async -> Bool {
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async {
+				continuation.resume(returning: semaphore.wait(timeout: .now() + seconds) == .success)
+			}
+		}
+	}
+
+	@Test("concurrent direct fixture mutations preserve every key")
+	func storageMutationsAreAtomic() {
+		let keychain = MockKeychainService()
+		keychain.envStorage["project"] = (name: "Project", path: "", environments: ["default": [:]])
+		DispatchQueue.concurrentPerform(iterations: 200) { index in
+			keychain.envStorage["project"]?.environments["default"]?["KEY_\(index)"] = "\(index)"
+		}
+		#expect(keychain.envStorage["project"]?.environments["default"]?.count == 200)
+	}
+}
+
 private final class KeychainServiceTestBackend: KeychainStoreBackend, @unchecked Sendable {
 	private let lock = NSLock()
 	private var storage: [String: Data] = [:]
