@@ -941,8 +941,8 @@ struct AuthSessionCoordinatorTests {
 		#expect(expiries[registryURL] == nil)
 	}
 
-	@Test("rejected-session expiry cleanup remains inside the credential transaction")
-	func rejectedSessionCleanupRetainsCredentialLock() async throws {
+	@Test("rejected-session expiry cleanup remains inside the credential transaction", arguments: [Duration.zero, .milliseconds(150)])
+	func rejectedSessionCleanupRetainsCredentialLock(refreshDelay: Duration) async throws {
 		let home = try temporaryHome()
 		defer { try? FileManager.default.removeItem(at: home) }
 		let backend = MemoryAuthCredentialBackend()
@@ -963,10 +963,15 @@ struct AuthSessionCoordinatorTests {
 			}
 		}
 		await expiryControl.waitUntilEntered()
+		let refreshControl = LockBodyControl()
 		let subject = makeCoordinator(
 			home: home,
 			backend: backend,
-			refresh: { _, _, _ in throw AuthSessionRefreshError.rejected }
+			refresh: { _, _, _ in
+				await refreshControl.hold()
+				try await Task.sleep(for: refreshDelay)
+				throw AuthSessionRefreshError.rejected
+			}
 		)
 		let rejection = Task {
 			try await subject.currentAccessToken(
@@ -977,6 +982,9 @@ struct AuthSessionCoordinatorTests {
 		let credentialLockURL = subject.sessionLockURL(
 			registryURL: "lpm-auth://credential-store"
 		)
+		await refreshControl.waitUntilEntered()
+		#expect(try independentExclusiveLockStatus(at: credentialLockURL) == 0)
+		await refreshControl.release()
 		var observedCredentialLock = false
 		for _ in 0..<100 {
 			if try independentExclusiveLockStatus(at: credentialLockURL) == 42 {
@@ -992,8 +1000,6 @@ struct AuthSessionCoordinatorTests {
 			Issue.record("Rejected-session cleanup never acquired the credential-store lock.")
 			return
 		}
-		try await Task.sleep(for: .milliseconds(30))
-
 		#expect(try independentExclusiveLockStatus(at: credentialLockURL) == 42)
 		await expiryControl.release()
 		try await expiryHolder.value
