@@ -178,3 +178,27 @@ struct ProjectEnvSchemaOverviewTests {
 		return folder
 	}
 }
+
+@Suite("Schema display text")
+struct SchemaDisplayTextTests {
+	@Test("authored text that could hide or reorder what surrounds it shows escaped")
+	func escapesDirectionControls() throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "display-text-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let file = "base\u{202E}nosj.json"
+		try #"{"vars":{"PORT":{"default":"30‮00"}}}"#.write(toFile: folder + "/" + file, atomically: true, encoding: .utf8)
+		try #"{"envSchema":{"extends":["\#(file)"]}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		let rule = try #require(ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project").schema.overview?.rule(for: "PORT"))
+		#expect(rule.source == "base\\u{202e}nosj.json")
+		#expect(rule.badges.map(\.text) == ["Default: 30\\u{202e}00"])
+
+		try #"{"vars":{"PORT":{"rnage":"1"}}}"#.write(toFile: folder + "/" + file, atomically: true, encoding: .utf8)
+		guard case .unreadable(let problem) = ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project").schema else {
+			Issue.record("Expected an unreadable schema")
+			return
+		}
+		#expect(!problem.location.unicodeScalars.contains("\u{202E}"))
+		#expect(problem.location == "base\\u{202e}nosj.json › vars.PORT.rnage")
+	}
+}

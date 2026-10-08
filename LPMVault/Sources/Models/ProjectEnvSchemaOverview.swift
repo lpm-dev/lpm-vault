@@ -55,8 +55,10 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				rules.append(Rule(
 					key: declaration.key,
 					isPublic: declaration.value["client"] == .bool(true),
-					source: source == "lpm.json" ? nil : source,
-					badges: Self.badges(for: declaration.value)
+					source: source == "lpm.json" ? nil : source?.escapingDirectionControls,
+					badges: Self.badges(for: declaration.value).map {
+						Badge(text: $0.text.escapingDirectionControls, help: $0.help?.escapingDirectionControls)
+					}
 				))
 			}
 		}
@@ -272,9 +274,9 @@ enum ProjectEnvSchemaState: Equatable, Sendable {
 		let path = (diagnostic.pointer ?? "").split(separator: "/").map {
 			$0.replacingOccurrences(of: "~1", with: "/").replacingOccurrences(of: "~0", with: "~")
 		}
-		let location = path.isEmpty
+		let location = (path.isEmpty
 			? (diagnostic.source == nil ? "lpm.json › envSchema" : source)
-			: "\(source) › \(path.joined(separator: "."))"
+			: "\(source) › \(path.joined(separator: "."))").escapingDirectionControls
 		let reason = diagnostic.message.map { $0.prefix(1).uppercased() + $0.dropFirst() }
 			?? reasons[diagnostic.code]
 			?? "Invalid declaration (\(diagnostic.code))."
@@ -305,4 +307,32 @@ enum ProjectEnvSchemaState: Equatable, Sendable {
 			"env.merge_budget": limits, "env.output_budget": limits,
 		]
 	}()
+}
+
+extension String {
+	/// This text with each character that could hide or reorder the text
+	/// around it written as an escape, such as \u{202e}, for showing text
+	/// that comes from lpm.json, which an untrusted project can write.
+	var escapingDirectionControls: String {
+		guard unicodeScalars.contains(where: \.hidesOrReordersText) else { return self }
+		var escaped = ""
+		escaped.reserveCapacity(utf8.count + 8)
+		for scalar in unicodeScalars {
+			if scalar.hidesOrReordersText {
+				escaped += "\\u{\(String(scalar.value, radix: 16))}"
+			} else {
+				escaped.unicodeScalars.append(scalar)
+			}
+		}
+		return escaped
+	}
+}
+
+private extension Unicode.Scalar {
+	/// Matches the characters the LPM CLI escapes in its diagnostics.
+	var hidesOrReordersText: Bool {
+		properties.generalCategory == .control
+			|| value == 0x061C || value == 0x200E || value == 0x200F
+			|| (0x202A...0x202E).contains(value) || (0x2066...0x2069).contains(value)
+	}
 }
