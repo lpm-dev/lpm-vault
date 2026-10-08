@@ -76,6 +76,12 @@ private struct VaultKeyEditor: View {
 		let singleEnvironment: String?
 	}
 
+	private struct EditCheckInput: Hashable {
+		let values: [String: String]
+		let effectiveSchema: Data
+		let workspaceSnapshotIdentity: UUID
+	}
+
 	private enum Field: Hashable {
 		case name
 		case value(String)
@@ -98,8 +104,8 @@ private struct VaultKeyEditor: View {
 
 	@State private var revealedEnvironments: Set<String> = []
 	@State private var saveError: VaultKeyEditError?
-	/// The engine's check of the unsaved values, and the values it checked.
-	@State private var editCheck: (values: [String: String], check: ProjectEnvValueCheck?)?
+	/// The engine's check of the unsaved values, and the inputs it checked.
+	@State private var editCheck: (input: EditCheckInput, check: ProjectEnvValueCheck?)?
 	@FocusState private var focus: Field?
 
 	private var id: VaultKeyDraft.ID { VaultKeyDraft.ID(projectID: project.id, key: key) }
@@ -111,7 +117,8 @@ private struct VaultKeyEditor: View {
 		let cards = cardEnvironments(draft)
 		let descriptions = store.keyDescriptions[project.id]
 		let edits = unsavedValues(draft, cards: cards)
-		let checks = valueChecks(edits)
+		let checkInput = editCheckInput(edits)
+		let checks = valueChecks(edits, input: checkInput)
 		VStack(spacing: 0) {
 			ScrollView {
 				VStack(alignment: .leading, spacing: 0) {
@@ -129,7 +136,7 @@ private struct VaultKeyEditor: View {
 			footer(draft, issue: issue)
 		}
 		.background(VaultEscapeResponder(onEscape: onClose))
-		.task(id: edits) { await checkEdits(edits) }
+		.task(id: checkInput) { await checkEdits(checkInput) }
 	}
 
 	// MARK: - Checks
@@ -153,23 +160,45 @@ private struct VaultKeyEditor: View {
 	}
 
 	/// The saved values' check, or the unsaved values' check once the engine has run.
-	private func valueChecks(_ edits: [String: String]) -> VaultValueCheckPresentation {
+	private func editCheckInput(_ edits: [String: String]) -> EditCheckInput? {
+		guard !edits.isEmpty,
+			let effectiveSchema = store.keyDescriptions[project.id]?.schema?.overview?.effectiveSchema,
+			store.valueChecks[project.id] != nil
+		else { return nil }
+		return EditCheckInput(
+			values: edits,
+			effectiveSchema: effectiveSchema,
+			workspaceSnapshotIdentity: project.workspaceSnapshotIdentity
+		)
+	}
+
+	private func valueChecks(_ edits: [String: String], input: EditCheckInput?) -> VaultValueCheckPresentation {
 		let rules = store.keyDescriptions[project.id]?.schema?.overview
 		guard let stored = store.valueChecks[project.id] else { return .none }
 		guard !edits.isEmpty else { return VaultValueCheckPresentation(check: stored, rules: rules, project: project) }
-		guard let editCheck, editCheck.values == edits else { return .none }
+		guard let input, let editCheck, editCheck.input == input else { return .none }
 		return VaultValueCheckPresentation(check: editCheck.check, rules: rules, project: editedProject(edits))
 	}
 
-	private func checkEdits(_ edits: [String: String]) async {
-		guard !edits.isEmpty, let rules = store.keyDescriptions[project.id]?.schema?.overview, store.valueChecks[project.id] != nil else {
+	private func checkEdits(_ input: EditCheckInput?) async {
+		guard let input,
+			let rules = store.keyDescriptions[project.id]?.schema?.overview,
+			rules.effectiveSchema == input.effectiveSchema,
+			project.workspaceSnapshotIdentity == input.workspaceSnapshotIdentity,
+			store.valueChecks[project.id] != nil
+		else {
 			editCheck = nil
 			return
 		}
-		let environments = editedProject(edits).environments
-		let check = await Task.detached(priority: .userInitiated) { rules.check(environments) }.value
+		do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
 		guard !Task.isCancelled else { return }
-		editCheck = (edits, check)
+		let environments = editedProject(input.values).environments
+		let check = await store.valueCheckWorker.check(rules: rules, environments: environments)
+		guard !Task.isCancelled,
+			store.projects.first(where: { $0.id == project.id })?.workspaceSnapshotIdentity == input.workspaceSnapshotIdentity,
+			store.keyDescriptions[project.id]?.schema?.overview?.effectiveSchema == input.effectiveSchema
+		else { return }
+		editCheck = (input, check)
 	}
 
 	// MARK: - Sections

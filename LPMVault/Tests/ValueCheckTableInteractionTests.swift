@@ -232,7 +232,7 @@ extension SheetInteractionTests {
 			#expect(text.contains("(default)"), "A default fills PORT in production")
 		}
 
-		@Test("the inspector lists each environment's problem and checks an unsaved edit before it is saved")
+		@Test("the inspector checks an unsaved edit against the current rules before it is saved")
 		func inspectorChecksEdits() async throws {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "value-check-inspector-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
@@ -276,6 +276,15 @@ extension SheetInteractionTests {
 			}
 			#expect(cleared, "The fixed value passes before it is saved")
 			#expect(store.valueChecks[project.id]?.problems(of: "DATABASE_URL", in: "production").isEmpty == false, "The saved value still fails until it is saved")
+
+			try #"{"envSchema":{"vars":{"DATABASE_URL":{"format":"email"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+			store.reloadKeyDescriptions()
+			var rechecked = false
+			for _ in 0..<100 where !rechecked {
+				rechecked = try await inspectorText().contains("Not a valid email address")
+				if !rechecked { try await Task.sleep(for: .milliseconds(20)) }
+			}
+			#expect(rechecked, "Changing lpm.json rechecks the unchanged unsaved value")
 		}
 	}
 }

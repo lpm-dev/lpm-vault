@@ -164,6 +164,34 @@ struct ProjectEnvValueCheckTests {
 
 		#expect(rules.check(environments) == nil)
 	}
+
+	@Test("a cancelled queued value check never enters the engine")
+	func cancelledQueuedCheckSkipsEngine() async {
+		let calls = OSAllocatedUnfairLock(initialState: 0)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		defer { release.signal() }
+		let worker = ProjectEnvValueCheckWorker { _, _ in
+			let call = calls.withLock { count in count += 1; return count }
+			if call == 1 {
+				entered.signal()
+				_ = release.wait(timeout: .now() + 5)
+			}
+			return nil
+		}
+		let first = Task { await worker.check(rules: .empty, environments: [:]) }
+		let started = await withCheckedContinuation { continuation in
+			Thread.detachNewThread { continuation.resume(returning: entered.wait(timeout: .now() + 5) == .success) }
+		}
+		#expect(started)
+		let cancelled = Task { await worker.check(rules: .empty, environments: [:]) }
+		cancelled.cancel()
+		release.signal()
+		_ = await first.value
+		_ = await cancelled.value
+
+		#expect(calls.withLock { $0 } == 1)
+	}
 }
 
 @Suite("Value checks in the store", .serialized)
