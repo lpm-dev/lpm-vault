@@ -439,7 +439,10 @@ struct UpdateCheckerTests {
 	/// Recognition runs off the main thread: Vision can wait on work that needs it.
 	private func bounds(of text: String, in bitmap: NSBitmapImageRep) async throws -> CGRect? {
 		let image = try #require(bitmap.cgImage)
-		return try await RenderedText.lines(in: image, level: .accurate, label: text).lazy.compactMap(\.labelBounds).first
+		let width = min(1, 340 / bitmap.size.width)
+		let controls = CGRect(x: 1 - width, y: 0, width: width, height: 1)
+		let lines = try await RenderedText.lines(in: image, level: .accurate, label: text, options: .caseInsensitive, region: controls)
+		return lines.lazy.compactMap(\.labelBounds).first
 	}
 
 	@Test("development builds cannot replace themselves with public releases")

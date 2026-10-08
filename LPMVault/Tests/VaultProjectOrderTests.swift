@@ -416,8 +416,9 @@ struct VaultProjectOrderTests {
 		}
 		let types = registeredTypes(in: host.view)
 		#expect(types.contains(NSPasteboard.PasteboardType(UTType.data.identifier)))
-		let alphaBefore = try await host.labelFrame("Alpha")
-		let zuluBefore = try await host.labelFrame("Zulu")
+		let projectRows = CGRect(x: 0, y: 0.5, width: 1, height: 0.5)
+		let alphaBefore = try await host.labelFrame("Alpha", region: projectRows)
+		let zuluBefore = try await host.labelFrame("Zulu", region: projectRows)
 		#expect(alphaBefore.midY > zuluBefore.midY)
 		let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
 		let data = try JSONEncoder().encode(drag)
@@ -429,8 +430,8 @@ struct VaultProjectOrderTests {
 		let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "alpha", rowHeight: 30, dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
 		#expect(await delegate.loadDrop(from: provider, placement: .before))
 		try await host.settle()
-		let alphaAfter = try await host.labelFrame("Alpha")
-		let zuluAfter = try await host.labelFrame("Zulu")
+		let alphaAfter = try await host.labelFrame("Alpha", region: projectRows)
+		let zuluAfter = try await host.labelFrame("Zulu", region: projectRows)
 		#expect(zuluAfter.midY > alphaAfter.midY)
 	}
 

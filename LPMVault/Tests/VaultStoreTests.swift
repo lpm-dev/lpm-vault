@@ -1382,7 +1382,9 @@ struct VaultStoreTests {
 		let image = try #require(bitmap.cgImage)
 		let data = try #require(bitmap.representation(using: .png, properties: [:]))
 		Attachment.record(data, named: "lock-countdown-\(seconds).png")
-		let text = try await RenderedText.strings(in: image).joined(separator: " ")
+		let width = min(1, 180 / view.bounds.width)
+		let controls = CGRect(x: 1 - width, y: 0, width: width, height: 1)
+		let text = try await RenderedText.strings(in: image, region: controls).joined(separator: " ")
 		#expect(text.contains("Lock \(seconds)s"))
 	}
 

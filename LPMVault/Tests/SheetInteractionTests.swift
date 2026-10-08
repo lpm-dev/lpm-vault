@@ -16,17 +16,28 @@ enum RenderedText {
 		_ image: CGImage,
 		level: VNRequestTextRecognitionLevel,
 		usesLanguageCorrection: Bool,
-		region: CGRect? = nil
+		region: CGRect? = nil,
+		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
 	) async throws -> [VNRecognizedTextObservation] {
-		try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RecognitionCache.Observations, Error>) in
+		let frame = RecognitionCache.Frame(image: image)
+		if let cached = RecognitionCache.shared.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
+			return cached
+		}
+		return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RecognitionCache.Observations, Error>) in
 			queue.async {
+				if let cached = RecognitionCache.shared.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
+					continuation.resume(returning: RecognitionCache.Observations(values: cached))
+					return
+				}
+				onRecognition?(image.width, image.height)
 				let request = VNRecognizeTextRequest()
 				request.recognitionLevel = level
 				request.usesLanguageCorrection = usesLanguageCorrection
-				if let region { request.regionOfInterest = region }
 				do {
 					try VNImageRequestHandler(cgImage: image).perform([request])
-					continuation.resume(returning: RecognitionCache.Observations(values: request.results ?? []))
+					let observations = request.results ?? []
+					RecognitionCache.shared.store(observations, for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region)
+					continuation.resume(returning: RecognitionCache.Observations(values: observations))
 				} catch {
 					continuation.resume(throwing: error)
 				}
@@ -47,24 +58,19 @@ enum RenderedText {
 		level: VNRequestTextRecognitionLevel,
 		label: String? = nil,
 		options: String.CompareOptions = [],
-		region: CGRect? = nil
+		region: CGRect? = nil,
+		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
 	) async throws -> [Line] {
-		let observations: [VNRecognizedTextObservation]
-		if let cached = RecognitionCache.shared.observations(for: image, level: level, region: region) {
-			observations = cached
-		} else {
-			observations = try await recognize(image, level: level, usesLanguageCorrection: false, region: region)
-			RecognitionCache.shared.store(observations, for: image, level: level, region: region)
-		}
+		guard let input = recognitionInput(image, region: region) else { return [] }
+		let observations = try await recognize(input.image, level: level, usesLanguageCorrection: false, region: input.region, onRecognition: onRecognition)
 		return observations.compactMap { observation -> Line? in
 			guard let candidate = observation.topCandidates(1).first else { return nil }
 			var labelBounds: CGRect?
 			if let label, let range = candidate.string.range(of: label, options: options) {
 				labelBounds = try? candidate.boundingBox(for: range)?.boundingBox
 			}
-			// Results inside a region of interest are relative to that region.
 			let map: (CGRect) -> CGRect = { box in
-				guard let region else { return box }
+				guard let region = input.region else { return box }
 				return CGRect(
 					x: region.minX + box.minX * region.width,
 					y: region.minY + box.minY * region.height,
@@ -75,12 +81,29 @@ enum RenderedText {
 			return Line(text: candidate.string, bounds: map(observation.boundingBox), labelBounds: labelBounds.map(map))
 		}
 	}
+
+	private static func recognitionInput(_ image: CGImage, region: CGRect?) -> (image: CGImage, region: CGRect?)? {
+		guard let region else { return (image, nil) }
+		guard region.origin.x.isFinite, region.origin.y.isFinite,
+			region.width.isFinite, region.height.isFinite, region.width > 0, region.height > 0 else { return nil }
+		let clipped = region.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+		guard !clipped.isEmpty else { return nil }
+		let width = CGFloat(image.width), height = CGFloat(image.height)
+		let pixels = CGRect(x: clipped.minX * width, y: (1 - clipped.maxY) * height,
+			width: clipped.width * width, height: clipped.height * height).integral
+			.intersection(CGRect(x: 0, y: 0, width: width, height: height))
+		guard let cropped = image.cropping(to: pixels) else { return nil }
+		let actual = CGRect(x: pixels.minX / width, y: 1 - pixels.maxY / height,
+			width: pixels.width / width, height: pixels.height / height)
+		return (cropped, actual)
+	}
 }
 
 extension RenderedText {
-	/// The text of every recognized line.
-	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true) async throws -> [String] {
-		try await recognize(image, level: .accurate, usesLanguageCorrection: usesLanguageCorrection)
+	/// The text of every recognized line within the requested region.
+	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true, region: CGRect? = nil, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [String] {
+		guard let input = recognitionInput(image, region: region) else { return [] }
+		return try await recognize(input.image, level: .accurate, usesLanguageCorrection: usesLanguageCorrection, region: input.region, onRecognition: onRecognition)
 			.compactMap { $0.topCandidates(1).first?.string }
 	}
 }
@@ -89,6 +112,17 @@ extension RenderedText {
 /// frame repeatedly while they wait, and identical pixels always recognize the
 /// same way, so each frame is read once per level and region.
 private final class RecognitionCache: @unchecked Sendable {
+	struct Frame: @unchecked Sendable {
+		let width: Int
+		let height: Int
+		let pixels: CFData?
+		init(image: CGImage) {
+			width = image.width
+			height = image.height
+			pixels = image.dataProvider?.data
+		}
+	}
+
 	/// Vision returns immutable observations; the box only carries them out of the recognition task.
 	struct Observations: @unchecked Sendable {
 		let values: [VNRecognizedTextObservation]
@@ -98,6 +132,7 @@ private final class RecognitionCache: @unchecked Sendable {
 		let width: Int
 		let height: Int
 		let level: VNRequestTextRecognitionLevel
+		let usesLanguageCorrection: Bool
 		let region: CGRect?
 		let pixels: CFData
 		let observations: [VNRecognizedTextObservation]
@@ -108,12 +143,12 @@ private final class RecognitionCache: @unchecked Sendable {
 	private let lock = NSLock()
 	private var entries: [Entry] = []
 
-	func observations(for image: CGImage, level: VNRequestTextRecognitionLevel, region: CGRect?) -> [VNRecognizedTextObservation]? {
-		guard let pixels = image.dataProvider?.data else { return nil }
+	func observations(for frame: Frame, level: VNRequestTextRecognitionLevel, usesLanguageCorrection: Bool, region: CGRect?) -> [VNRecognizedTextObservation]? {
+		guard let pixels = frame.pixels else { return nil }
 		return lock.withLock {
 			guard let index = entries.firstIndex(where: {
-				$0.width == image.width && $0.height == image.height && $0.level == level
-					&& $0.region == region && samePixels($0.pixels, pixels)
+				$0.width == frame.width && $0.height == frame.height && $0.level == level
+					&& $0.usesLanguageCorrection == usesLanguageCorrection && $0.region == region && samePixels($0.pixels, pixels)
 			}) else { return nil }
 			let entry = entries.remove(at: index)
 			entries.append(entry)
@@ -121,10 +156,10 @@ private final class RecognitionCache: @unchecked Sendable {
 		}
 	}
 
-	func store(_ observations: [VNRecognizedTextObservation], for image: CGImage, level: VNRequestTextRecognitionLevel, region: CGRect?) {
-		guard let pixels = image.dataProvider?.data else { return }
+	func store(_ observations: [VNRecognizedTextObservation], for frame: Frame, level: VNRequestTextRecognitionLevel, usesLanguageCorrection: Bool, region: CGRect?) {
+		guard let pixels = frame.pixels else { return }
 		lock.withLock {
-			entries.append(Entry(width: image.width, height: image.height, level: level, region: region, pixels: pixels, observations: observations))
+			entries.append(Entry(width: frame.width, height: frame.height, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region, pixels: pixels, observations: observations))
 			if entries.count > Self.capacity { entries.removeFirst() }
 		}
 	}
@@ -138,6 +173,20 @@ private func samePixels(_ lhs: CFData, _ rhs: CFData) -> Bool {
 
 @MainActor
 enum NativeTestClick {
+	static func isMomentaryAction(_ button: NSButton) -> Bool {
+		type(of: button) == NSButton.self && (button.cell as? NSButtonCell)?.showsStateBy.isEmpty == true && button.action != nil
+	}
+
+	static func send(to button: NSButton) {
+		guard button.isEnabled else { return }
+		if isMomentaryAction(button), let action = button.action {
+			_ = NSApp.sendAction(action, to: button.target, from: button)
+		} else {
+			// AppKit mouse-down tracking requires a running event loop.
+			button.performClick(nil)
+		}
+	}
+
 	static func send(to window: NSWindow, at point: NSPoint) throws {
 		let content = try #require(window.contentView)
 		// SwiftUI updates hit-testing for newly shown controls on a display pass,
@@ -148,8 +197,7 @@ enum NativeTestClick {
 		var hit = content.hitTest(hitPoint)
 		while let view = hit {
 			if let button = view as? NSButton {
-				// AppKit mouse-down tracking requires a running event loop.
-				button.performClick(nil)
+				send(to: button)
 				return
 			}
 			hit = view.superview
@@ -287,15 +335,21 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Clicks the rendered target after it appears.
-	func click(_ label: String, in targetWindow: NSWindow? = nil, caseInsensitive: Bool = false) async throws {
+	func click(_ label: String, in targetWindow: NSWindow? = nil, caseInsensitive: Bool = false, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws {
 		let window = targetWindow ?? self.window
 		let target = try #require(window.contentView)
 		let options: String.CompareOptions = caseInsensitive ? .caseInsensitive : []
+		target.layoutSubtreeIfNeeded()
+		window.displayIfNeeded()
+		if let button = nativeButton(label, in: target, options: options) {
+			NativeTestClick.send(to: button)
+			return
+		}
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		var bounds = try await labelBounds(label, in: target, options: options)
+		var bounds = try await labelBounds(label, in: target, options: options, onRecognition: onRecognition)
 		while bounds == nil, ContinuousClock.now < deadline {
 			try await Task.sleep(for: .milliseconds(20))
-			bounds = try await labelBounds(label, in: target, options: options)
+			bounds = try await labelBounds(label, in: target, options: options, onRecognition: onRecognition)
 		}
 		let box = try #require(bounds, "Missing button \(label)")
 		let point = target.convert(
@@ -303,6 +357,15 @@ final class SheetTestHost<V: View> {
 			to: nil
 		)
 		try NativeTestClick.send(to: window, at: point)
+	}
+
+	private func nativeButton(_ label: String, in view: NSView, options: String.CompareOptions) -> NSButton? {
+		guard !view.isHiddenOrHasHiddenAncestor, !view.visibleRect.isEmpty else { return nil }
+		if let button = view as? NSButton, NativeTestClick.isMomentaryAction(button),
+			button.title.compare(label, options: options) == .orderedSame {
+			return button
+		}
+		return view.subviews.lazy.compactMap { self.nativeButton(label, in: $0, options: options) }.first
 	}
 
 	func enterKey(_ key: String) throws {
@@ -509,23 +572,23 @@ final class SheetTestHost<V: View> {
 
 	/// Fast mode finds the line cheaply but reports whole-line boxes for substrings, which
 	/// can land a click between neighboring buttons. Accurate mode then reads only that line.
-	private func labelBounds(_ label: String, in target: NSView, options: String.CompareOptions, region: CGRect? = nil) async throws -> CGRect? {
+	private func labelBounds(_ label: String, in target: NSView, options: String.CompareOptions, region: CGRect? = nil, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> CGRect? {
 		let image = try snapshot(target)
 		if let region {
-			let lines = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: region)
+			let lines = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: region, onRecognition: onRecognition)
 			return lines.lazy.compactMap(\.labelBounds).first
 		}
-		let fast = try await RenderedText.lines(in: image, level: .fast, label: label, options: options)
+		let fast = try await RenderedText.lines(in: image, level: .fast, label: label, options: options, onRecognition: onRecognition)
 		if let line = fast.first(where: { $0.labelBounds != nil }) {
 			// A line that reads exactly as the label is the label, so its box needs no refinement.
 			if line.text.trimmingCharacters(in: .whitespaces).compare(label, options: options) == .orderedSame {
 				return line.bounds
 			}
 			let strip = line.bounds.insetBy(dx: -0.02, dy: -line.bounds.height).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-			let refined = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: strip)
+			let refined = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: strip, onRecognition: onRecognition)
 			if let bounds = refined.lazy.compactMap(\.labelBounds).first { return bounds }
 		}
-		let accurate = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options)
+		let accurate = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, onRecognition: onRecognition)
 		return accurate.lazy.compactMap(\.labelBounds).first
 	}
 
