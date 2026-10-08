@@ -231,5 +231,51 @@ extension SheetInteractionTests {
 			#expect(text.contains("Required"), "A key required in production shows in its table without a stored value")
 			#expect(text.contains("(default)"), "A default fills PORT in production")
 		}
+
+		@Test("the inspector lists each environment's problem and checks an unsaved edit before it is saved")
+		func inspectorChecksEdits() async throws {
+			let folder = FileManager.default.temporaryDirectory.appending(path: "value-check-inspector-\(UUID().uuidString)").path
+			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			try #"{"envSchema":{"vars":{"DATABASE_URL":{"format":"url"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+			let keychain = MockKeychainService()
+			let project = VaultProject(id: "checked-inspector", name: "billing-api", path: folder, environments: [
+				"default": ["DATABASE_URL": "https://db.example.com"],
+				"production": ["DATABASE_URL": "not a url"],
+			])
+			keychain.envStorage[project.id] = (name: project.name, path: folder, environments: project.environments)
+			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+			store.isUnlocked = true
+			store.projects = [project]
+			store.openProject(id: project.id)
+			defer { store.lock() }
+			await store.refreshCliAccess()
+			let defaults = try #require(UserDefaults(suiteName: "value-check-inspector"))
+			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
+				.environment(VaultAppearanceSettings(defaults: defaults)).defaultAppStorage(defaults),
+				size: NSSize(width: 1400, height: 760), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			#expect(try await host.waitUntil { store.valueChecks[project.id] != nil })
+
+			try await host.click("DATABASE_URL")
+			#expect(try await host.waitForText("RULES"))
+			let inspector = CGRect(x: 0.78, y: 0, width: 0.22, height: 1)
+			func inspectorText() async throws -> OCRText {
+				let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: inspector)
+				return OCRText(lines.map(\.text).joined(separator: "\n"))
+			}
+			#expect(try await inspectorText().contains("Not a valid URL"))
+			#expect(try await inspectorText().contains(".env.production"))
+
+			try host.enterValue("https://db.example.com", at: 1)
+			var cleared = false
+			for _ in 0..<100 where !cleared {
+				cleared = try await !inspectorText().contains("Not a valid URL")
+				if !cleared { try await Task.sleep(for: .milliseconds(20)) }
+			}
+			#expect(cleared, "The fixed value passes before it is saved")
+			#expect(store.valueChecks[project.id]?.problems(of: "DATABASE_URL", in: "production").isEmpty == false, "The saved value still fails until it is saved")
+		}
 	}
 }
