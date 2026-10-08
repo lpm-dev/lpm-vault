@@ -561,9 +561,9 @@ struct VaultSidebarProjectDropDelegate: DropDelegate {
 	}
 
 	func loadDrop(from provider: NSItemProvider, placement: VaultProjectPlacement) async -> Bool {
-		let drag = await withCheckedContinuation { continuation in
-			_ = provider.loadTransferable(type: VaultSidebarProjectDrag.self) { result in
-				continuation.resume(returning: try? result.get())
+		let drag: VaultSidebarProjectDrag? = await withCheckedContinuation { continuation in
+			_ = provider.loadDataRepresentation(forTypeIdentifier: VaultSidebarProjectDrag.contentType.identifier) { data, _ in
+				continuation.resume(returning: data.flatMap { try? JSONDecoder().decode(VaultSidebarProjectDrag.self, from: $0) })
 			}
 		}
 		guard let drag else { return false }

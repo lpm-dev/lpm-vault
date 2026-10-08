@@ -161,16 +161,12 @@ struct VaultProjectOrderTests {
 			size: NSSize(width: 280, height: 500), keepsRequestedSize: true, usesHostingView: true)
 		defer { host.window.close() }
 		try await host.settle()
-		let alpha = try await host.labelFrame("Alpha")
-		let staging = try await host.labelFrame(".env.staging")
-		let middle = try await host.labelFrame("Middle")
-		let point = NSPoint(x: alpha.midX, y: alpha.minY + 1)
-		func dropViews(in view: NSView) -> [NSView] {
-			let own = view.registeredDraggedTypes.isEmpty ? [] : [view]
-			return own + view.subviews.flatMap { dropViews(in: $0) }
-		}
-		let target = try #require(dropViews(in: host.view).filter { $0.convert($0.bounds, to: nil).contains(point) }
-			.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height })
+		let bands = try labelBands(in: host)
+		try #require(bands.count == 5)
+		let staging = bands[4]
+		let target = try #require(dropViews(in: host.view).max { $0.convert($0.bounds, to: nil).maxY < $1.convert($1.bounds, to: nil).maxY })
+		let bounds = target.convert(target.bounds, to: nil)
+		let point = NSPoint(x: bounds.midX, y: bounds.maxY - 24)
 		let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidebar-drop-test-" + UUID().uuidString))
 		defer { pasteboard.releaseGlobally() }
 		let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
@@ -196,7 +192,7 @@ struct VaultProjectOrderTests {
 		let row = try #require(lineRows.first, "No insertion marker was rendered")
 		let markerY = host.view.bounds.height * (1 - (CGFloat(row) + 0.5) / CGFloat(height))
 		#expect(markerY < staging.minY, "Insertion marker at \(markerY) must be below the last environment at \(staging.minY)")
-		#expect(markerY > middle.maxY)
+		#expect(abs(markerY - bounds.minY - 1) <= 1, "Marker at \(markerY) must follow the expanded group's bottom at \(bounds.minY)")
 		target.draggingExited(info)
 	}
 
@@ -326,16 +322,21 @@ struct VaultProjectOrderTests {
 		#expect(store.visibleVaults(matching: "").map(\.id) == ["new", "zulu", "middle"])
 	}
 
-	@Test("the native item provider decodes a project drag and rejects malformed data", arguments: [false, true])
-	func nativeDrop(malformed: Bool) async throws {
+	@Test("the native item provider decodes a project drag and rejects malformed data", arguments: [false, true], ["registered", "raw"])
+	func nativeDrop(malformed: Bool, representation: String) async throws {
 		let (store, _, preferences, domain) = try fixture()
 		defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
 		let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
 		let data = malformed ? Data("invalid".utf8) : try JSONEncoder().encode(drag)
-		let provider = NSItemProvider()
-		provider.registerDataRepresentation(forTypeIdentifier: VaultSidebarProjectDrag.contentType.identifier, visibility: .ownProcess) { completion in
-			completion(data, nil)
-			return nil
+		let provider: NSItemProvider
+		if representation == "raw" {
+			provider = NSItemProvider(item: data as NSData, typeIdentifier: VaultSidebarProjectDrag.contentType.identifier)
+		} else {
+			provider = NSItemProvider()
+			provider.registerDataRepresentation(forTypeIdentifier: VaultSidebarProjectDrag.contentType.identifier, visibility: .ownProcess) { completion in
+				completion(data, nil)
+				return nil
+			}
 		}
 		let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "alpha", rowHeight: 30, dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
 		#expect(await delegate.loadDrop(from: provider, placement: .before) == !malformed)
