@@ -6,6 +6,43 @@ import Testing
 
 @Suite("Value checks")
 struct ProjectEnvValueCheckTests {
+	@Test("group explanations exclude values the CLI ignores")
+	func groupMessagesExcludeIgnoredValues() throws {
+		let rules = try overview(#"{"vars":{"NODE_OPTIONS":{},"TOKEN":{}},"groups":{"auth":{"mode":"exactlyOne","vars":["NODE_OPTIONS","TOKEN"]}}}"#)
+		let project = VaultProject(id: "p", name: "p", path: "",
+			environments: ["default": ["NODE_OPTIONS": "ignored"], "production": [:]])
+		let check = try #require(rules.check(project.environments))
+		let presentation = VaultValueCheckPresentation(check: check, rules: rules, project: project)
+		for environment in ["default", "production"] {
+			#expect(presentation.groupFailures(in: environment).first?.message
+				== "Exactly one of NODE_OPTIONS, TOKEN — none set")
+		}
+	}
+
+	@Test func fallback_preserves_environment_scoped_missing_requirements() throws {
+		let rules = try overview(
+			#"{"vars":{"API_TOKEN":{"requiredIn":[{"environment":["production"]}]},"PORT":{}}}"#)
+		let project = VaultProject(
+			id: "p", name: "p", path: "", environments: ["default": ["PORT": "3000"], "production": [:]])
+		let check = try #require(rules.check(project.environments))
+		#expect(check.problems(of: "API_TOKEN", in: "default").isEmpty)
+		#expect(check.problems(of: "API_TOKEN", in: "production").count == 1)
+		let presentation = VaultValueCheckPresentation(check: check, rules: rules, project: project)
+		#expect(presentation.invalidKeys(in: "production").contains("API_TOKEN"))
+		#expect(presentation.isRequiredAndUnset("API_TOKEN", in: "production"))
+	}
+	@Test func group_message_counts_defaults_replacing_empty_values() throws {
+		let rules = try overview(
+			#"{"vars":{"A":{"default":"x"},"B":{}},"groups":{"pair":{"mode":"exactlyOne","vars":["A","B"]}}}"#
+		)
+		let project = VaultProject(
+			id: "p", name: "p", path: "", environments: ["default": ["A": "", "B": "y"]])
+		let check = try #require(rules.check(project.environments))
+		#expect(check.defaultValue(of: "A", in: "default") == "x")
+		let presentation = VaultValueCheckPresentation(check: check, rules: rules, project: project)
+		#expect(presentation.groupFailures(in: "default").first?.message == "Exactly one of A, B — both set")
+	}
+
 	@Test("a cancelled queued value check never enters the engine")
 	func cancelledQueuedCheckSkipsEngine() async {
 		let calls = OSAllocatedUnfairLock(initialState: 0)
@@ -227,13 +264,13 @@ struct VaultValueCheckPresentationTests {
 		#expect(shown.isRequiredAndUnset("API_TOKEN", in: "production"))
 	}
 
-	@Test("an environment that reads the default environment's values shows no problems or defaults of its own")
+	@Test("fallback environments retain their scoped problems and defaults")
 	func defaultEnvironmentReaders() {
 		let shown = presentation
 		#expect(shown.readsDefaultEnvironment("staging"))
-		#expect(shown.problems(of: "DATABASE_URL", in: "staging").isEmpty)
-		#expect(shown.defaultValue(of: "PORT", in: "staging") == nil)
-		#expect(shown.invalidKeys(in: "staging").isEmpty)
+		#expect(shown.problems(of: "DATABASE_URL", in: "staging") == [.init(key: "DATABASE_URL", kind: .format("url"))])
+		#expect(shown.defaultValue(of: "PORT", in: "staging") == "3000")
+		#expect(shown.invalidKeys(in: "staging") == ["DATABASE_URL"])
 		#expect(shown.invalidKeys == ["DATABASE_URL", "PASSWORD", "OAUTH_TOKEN", "NODE_OPTIONS", "API_TOKEN"])
 	}
 
@@ -251,7 +288,7 @@ struct VaultValueCheckPresentationTests {
 	func unstoredKeys() {
 		let shown = presentation
 		#expect(shown.unstoredKeys(in: "production") == ["API_TOKEN", "PORT"])
-		#expect(shown.unstoredKeys(in: "staging").isEmpty)
+		#expect(shown.unstoredKeys(in: "staging") == ["DATABASE_URL", "PORT"])
 		#expect(shown.unstoredInvalidKeys() == ["API_TOKEN"])
 		#expect(VaultValueCheckPresentation.none.invalidKeys.isEmpty)
 		#expect(!VaultValueCheckPresentation.none.hasCheck)

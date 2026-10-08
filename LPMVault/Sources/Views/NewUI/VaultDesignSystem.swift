@@ -450,7 +450,7 @@ struct VaultCheckedValue: View {
 
 	var body: some View {
 		Group {
-			if let value {
+			if let value, !value.isEmpty || defaultValue == nil {
 				VaultValueText(text: isRevealed ? value : "••••••••••", masked: !isRevealed, size: size)
 					.overlay(alignment: .bottom) { if problem != nil { underline } }
 					.help(problem ?? "")
@@ -465,7 +465,8 @@ struct VaultCheckedValue: View {
 					+ Text("  (default)").font(VaultTypography.mono(size - 1)).foregroundColor(VaultPalette.textFaint))
 					.lineLimit(1)
 					.truncationMode(.middle)
-					.help("The schema default the LPM CLI uses: \(defaultValue)")
+					.overlay(alignment: .bottom) { if problem != nil { underline } }
+					.help(problem ?? "The schema default the LPM CLI uses: \(defaultValue)")
 			} else if showsNotSet {
 				Text("Not set").font(.system(size: size - 1, weight: .semibold)).foregroundStyle(VaultPalette.redText)
 			}

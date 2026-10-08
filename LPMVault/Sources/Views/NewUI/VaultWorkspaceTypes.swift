@@ -135,10 +135,41 @@ enum VaultKeySortOrder: String, Sendable {
   /// Finder's order: case-insensitive, with numbers compared by value, so
   /// `KEY_2` comes before `KEY_10`.
   static func sortedAscending<S: Sequence>(_ keys: S) -> [String] where S.Element == String {
-    keys.sorted {
-      let comparison = $0.localizedStandardCompare($1)
-      return comparison == .orderedSame ? $0 < $1 : comparison == .orderedAscending
+    keys.sorted(by: precedes)
+  }
+
+  static func mergingAscending<S: Sequence>(_ extras: S, into keys: [String]) -> [String]
+  where S.Element == String {
+    let additions = sortedAscending(extras)
+    guard !additions.isEmpty else { return keys }
+    var merged: [String] = []
+    merged.reserveCapacity(keys.count + additions.count)
+    var cursor = 0
+    var previous: String?
+    for addition in additions {
+      guard addition != previous else { continue }
+      previous = addition
+      var lower = cursor
+      var upper = keys.count
+      while lower < upper {
+        let middle = lower + (upper - lower) / 2
+        if precedes(keys[middle], addition) {
+          lower = middle + 1
+        } else {
+          upper = middle
+        }
+      }
+      merged.append(contentsOf: keys[cursor..<lower])
+      if lower == keys.count || keys[lower] != addition { merged.append(addition) }
+      cursor = lower
     }
+    merged.append(contentsOf: keys[cursor...])
+    return merged
+  }
+
+  private static func precedes(_ lhs: String, _ rhs: String) -> Bool {
+    let comparison = lhs.localizedStandardCompare(rhs)
+    return comparison == .orderedSame ? lhs < rhs : comparison == .orderedAscending
   }
 }
 
@@ -590,14 +621,11 @@ struct VaultContentDerivation: Equatable {
       // reverses the matches in place for Z to A.
       let extra = unstoredKeys.filter { snapshot.summaries[$0] == nil }
       let ascendingKeys: [String]
-      let normalizedKeys: [String]
       if extra.isEmpty {
         ascendingKeys = snapshot.allSecretKeys
-        normalizedKeys = snapshot.normalizedSecretKeys
         allKeys = snapshot.keys(sortOrder)
       } else {
-        ascendingKeys = VaultKeySortOrder.sortedAscending(snapshot.allSecretKeys + extra)
-        normalizedKeys = ascendingKeys.map { snapshot.summaries[$0]?.normalizedKey ?? $0.lowercased() }
+        ascendingKeys = VaultKeySortOrder.mergingAscending(extra, into: snapshot.allSecretKeys)
         allKeys = sortOrder == .ascending ? ascendingKeys : ascendingKeys.reversed()
       }
       if filter == .all, query.isEmpty {
@@ -615,7 +643,8 @@ struct VaultContentDerivation: Equatable {
           case .invalid: matchesFilter = invalidKeys.contains(key)
           }
           if matchesFilter,
-            query.isEmpty || normalizedKeys[index].contains(query)
+            query.isEmpty || (extra.isEmpty ? snapshot.normalizedSecretKeys[index]
+              : snapshot.normalizedKey(for: key)).contains(query)
           {
             matchingKeys.append(key)
           }
@@ -651,7 +680,8 @@ struct VaultContentDerivation: Equatable {
           }
         }
       } else {
-        let ascendingKeys = VaultKeySortOrder.sortedAscending(snapshot.sortedKeys(for: selectedEnvironment, .ascending) + extra)
+        let ascendingKeys = VaultKeySortOrder.mergingAscending(extra,
+          into: snapshot.sortedKeys(for: selectedEnvironment, .ascending))
         var matchingKeys = query.isEmpty ? ascendingKeys : ascendingKeys.filter { snapshot.normalizedKey(for: $0).contains(query) }
         if sortOrder == .descending { matchingKeys.reverse() }
         environmentKeys = matchingKeys

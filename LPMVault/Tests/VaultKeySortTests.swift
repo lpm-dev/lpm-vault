@@ -4,6 +4,19 @@ import Testing
 
 @Suite("Key sort order")
 struct VaultKeySortTests {
+	@Test("merging schema keys preserves natural order without duplicates", arguments: [
+		["KEY_1", "KEY_10", "KEY_3", "KEY_3"],
+		["api_url", "API_URL", "É", "e", "Zeta"],
+		[],
+	])
+	func mergedSchemaKeys(extras: [String]) {
+		let cached = VaultKeySortOrder.sortedAscending(["KEY_2", "KEY_10", "api_url", "Zeta"])
+		let expected = VaultKeySortOrder.sortedAscending(Set(cached + extras))
+		#expect(VaultKeySortOrder.mergingAscending(extras, into: cached) == expected)
+		#expect(VaultKeySortOrder.mergingAscending(extras, into: [])
+			== VaultKeySortOrder.sortedAscending(Set(extras)))
+	}
+
 	/// `KEY_10` and `Zeta` differ between environments; `api_url` and `BETA` are missing from production.
 	private let project = VaultProject(
 		id: "project",

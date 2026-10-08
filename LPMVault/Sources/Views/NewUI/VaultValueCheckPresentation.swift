@@ -2,8 +2,8 @@ import Foundation
 
 /// How the tables and the inspector show a project's value check: which keys
 /// have problems, why, and which defaults fill empty values. An environment
-/// without values of its own shows none of these, because the LPM CLI reads
-/// the default environment's values for it.
+/// without values of its own checks the default environment's values against
+/// the requested environment's rules.
 struct VaultValueCheckPresentation {
 	typealias Problem = ProjectEnvValueCheck.Problem
 
@@ -28,7 +28,7 @@ struct VaultValueCheckPresentation {
 		self.rules = rules
 		environments = project?.environments ?? [:]
 		var byEnvironment: [String: Set<String>] = [:]
-		for (name, environment) in check?.environments ?? [:] where !environment.readsDefaultEnvironment {
+		for (name, environment) in check?.environments ?? [:] {
 			var keys = Set(environment.problems.keys)
 			keys.formUnion(environment.ignored)
 			byEnvironment[name] = keys
@@ -50,18 +50,18 @@ struct VaultValueCheckPresentation {
 	}
 
 	func problems(of key: String, in environment: String) -> [Problem] {
-		guard let checked = check?.environments[environment], !checked.readsDefaultEnvironment else { return [] }
+		guard let checked = check?.environments[environment] else { return [] }
 		return checked.problems[key] ?? []
 	}
 
 	/// The schema default the LPM CLI fills `key` with in `environment`.
 	func defaultValue(of key: String, in environment: String) -> String? {
-		guard let checked = check?.environments[environment], !checked.readsDefaultEnvironment else { return nil }
+		guard let checked = check?.environments[environment] else { return nil }
 		return checked.defaults[key]?.escapingDirectionControls
 	}
 
 	func isIgnored(_ key: String, in environment: String) -> Bool {
-		guard let checked = check?.environments[environment], !checked.readsDefaultEnvironment else { return false }
+		guard let checked = check?.environments[environment] else { return false }
 		return checked.ignored.contains(key)
 	}
 
@@ -72,7 +72,7 @@ struct VaultValueCheckPresentation {
 	/// Keys without a stored value in `environment` that it still shows: a
 	/// requirement nothing meets, or a default that fills it.
 	func unstoredKeys(in environment: String) -> Set<String> {
-		guard let checked = check?.environments[environment], !checked.readsDefaultEnvironment else { return [] }
+		guard let checked = check?.environments[environment] else { return [] }
 		let stored = environments[environment] ?? [:]
 		var keys = Set(checked.defaults.keys)
 		keys.formUnion(checked.problems.keys)
@@ -96,7 +96,7 @@ struct VaultValueCheckPresentation {
 	}
 
 	func groupFailures(in environment: String) -> [GroupFailure] {
-		guard let checked = check?.environments[environment], !checked.readsDefaultEnvironment else { return [] }
+		guard let checked = check?.environments[environment] else { return [] }
 		var names = Set<String>()
 		for problems in checked.problems.values {
 			for problem in problems {
@@ -123,8 +123,11 @@ struct VaultValueCheckPresentation {
 
 	private func groupMessage(_ name: String, in environment: String) -> String {
 		guard let group = rules?.groups.first(where: { $0.name == name }) else { return "Group \(name) fails" }
+		let checked = check?.environments[environment]
+		let stored = environments[checked?.readsDefaultEnvironment == true ? "default" : environment]
 		let set = group.members.filter { member in
-			let value = environments[environment]?[member] ?? defaultValue(of: member, in: environment)
+			guard checked?.ignored.contains(member) != true else { return false }
+			let value = checked?.defaults[member] ?? stored?[member]
 			return value.map { !$0.isEmpty } ?? false
 		}.count
 		let state = switch set {

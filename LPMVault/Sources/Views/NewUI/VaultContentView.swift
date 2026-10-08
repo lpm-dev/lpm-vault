@@ -67,7 +67,8 @@ struct VaultContentView: View {
 			revealedKeys: canUseSecrets ? revealedKeys : [],
 			publicKeys: shownPublicKeys,
 			invalidKeys: valueChecks.invalidKeys,
-			unstoredKeys: mode == .matrix ? valueChecks.unstoredInvalidKeys() : valueChecks.unstoredKeys(in: selectedEnvironment)
+			unstoredKeys: mode == .matrix ? valueChecks.unstoredInvalidKeys()
+				: (environmentViewMode == .table ? valueChecks.unstoredKeys(in: selectedEnvironment) : [])
 		)
 		VStack(spacing: 0) {
 			header(derived)
@@ -331,6 +332,13 @@ struct VaultContentView: View {
 				ScrollView([.horizontal, .vertical]) {
 					LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
 						Section {
+							if valueChecks.readsDefaultEnvironment(selectedEnvironment) {
+								Text("The LPM CLI reads values from .env and checks this environment's rules.")
+									.font(.system(size: 12))
+									.foregroundStyle(VaultPalette.textTertiary)
+									.padding(.horizontal, 20)
+									.frame(width: tableWidth, height: 34, alignment: .leading)
+							}
 							ForEach(valueChecks.groupFailures(in: selectedEnvironment)) { failure in
 								VaultGroupFailureBanner(failure: failure, width: tableWidth)
 							}
@@ -357,7 +365,7 @@ struct VaultContentView: View {
 										hasDrift: snapshot.hasDrift(for: key),
 										isEdited: editedKeys.contains(key),
 										problem: valueChecks.reason(for: key, in: selectedEnvironment),
-										defaultValue: stored == nil ? valueChecks.defaultValue(of: key, in: selectedEnvironment) : nil,
+										defaultValue: valueChecks.defaultValue(of: key, in: selectedEnvironment),
 										isRequired: stored == nil && valueChecks.isRequiredAndUnset(key, in: selectedEnvironment),
 										onSelect: {
 											if stored == nil {
@@ -565,7 +573,7 @@ private struct VaultMatrixRow: View {
 							value: stored,
 							isRevealed: isRevealed,
 							problem: checks.reason(for: key, in: environment),
-							defaultValue: stored == nil ? checks.defaultValue(of: key, in: environment) : nil,
+							defaultValue: checks.defaultValue(of: key, in: environment),
 							isRequired: stored == nil && checks.isRequiredAndUnset(key, in: environment),
 							size: 11.5
 						)
@@ -703,8 +711,10 @@ private struct VaultEnvironmentRow: View {
 	private var accessibilityText: String {
 		var parts = [key]
 		if isPublic { parts.append("public") }
-		if value == nil {
-			parts.append(isRequired ? "required, no value" : defaultValue.map { "default \($0)" } ?? "no value")
+		if let defaultValue {
+			parts.append("default \(defaultValue)")
+		} else if value == nil {
+			parts.append(isRequired ? "required, no value" : "no value")
 		} else {
 			parts.append("value \(isRevealed ? "shown" : "hidden")")
 		}
