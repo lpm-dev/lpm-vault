@@ -83,7 +83,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		var inner: [Rule] = []
 		for rule in rules where environments.contains(where: { project.value(for: rule.key, in: $0) == nil }) {
 			let name = rule.key.lowercased()
-			if name == needle { return [] }
+			if rule.key == query { return [] }
 			if name.hasPrefix(needle) { leading.append(rule) } else if name.contains(needle) { inner.append(rule) }
 		}
 		return Array((leading + inner).prefix(limit))

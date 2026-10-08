@@ -35,6 +35,24 @@ extension SheetInteractionTests {
 			#expect(picked.contains("Required"))
 		}
 
+		@Test("full names with different case or whitespace complete to the declared key", arguments: ["api_token", " API_TOKEN "])
+		func completeCanonicalName(typed: String) async throws {
+			let (store, folder) = try await makeStore()
+			defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default"), size: NSSize(width: 560, height: 560))
+			defer { host.window.close() }
+			try await host.settle()
+			try host.typeInFirstField(typed)
+			try #require(try await host.waitForText("DECLARED, NOT SET IN .ENV"))
+			try host.returnWhileEditing("key", modifiers: [])
+			try #require(try await host.waitForText("declared in lpm.json"))
+			try #require(try await host.waitForTextToDisappear("DECLARED, NOT SET"))
+			try host.enterValue("fixture-value")
+			try await host.click("Add to .env")
+			#expect(try await host.waitUntil { store.selectedProject?.value(for: "API_TOKEN", in: "default") == "fixture-value" })
+			#expect(store.selectedProject?.value(for: typed, in: "default") == nil)
+		}
+
 		@Test("Esc closes the suggestions and keeps the sheet open")
 		func escapeClosesSuggestions() async throws {
 			let (store, folder) = try await makeStore()
