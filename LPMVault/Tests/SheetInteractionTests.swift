@@ -161,6 +161,17 @@ enum NativeTestClick {
 	}
 }
 
+enum SidebarEnvironmentLabel {
+	static func matches(_ text: String, displayName: String) -> Bool {
+		func name(_ text: String) -> Substring {
+			let compact = Substring(text.filter { !$0.isWhitespace && $0 != "•" })
+			return compact.drop { $0 == "." }
+		}
+		let recognized = name(text)
+		return recognized == name(displayName) || (displayName == ".env" && recognized == "env.")
+	}
+}
+
 @MainActor
 final class SheetTestHost<V: View> {
 	let view: NSView
@@ -560,12 +571,7 @@ final class SheetTestHost<V: View> {
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		while true {
 			let lines = try await RenderedText.lines(in: snapshot(view), level: .accurate, region: region)
-			// The color swatch and the name's leading dot can read as a bullet.
-			func name(_ text: String) -> Substring {
-				let compact = Substring(text.filter { !$0.isWhitespace && $0 != "•" })
-				return compact.drop { $0 == "." }
-			}
-			if let line = lines.first(where: { name($0.text) == name(displayName) }) {
+			if let line = lines.first(where: { SidebarEnvironmentLabel.matches($0.text, displayName: displayName) }) {
 				let point = NSPoint(x: line.bounds.midX * view.bounds.width, y: line.bounds.midY * view.bounds.height)
 				try NativeTestClick.send(to: window, at: point)
 				return point
