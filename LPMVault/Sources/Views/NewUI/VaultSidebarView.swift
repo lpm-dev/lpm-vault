@@ -9,6 +9,9 @@ private enum VaultSidebarLayout {
 	static let projectIconWidth: CGFloat = 14
 	static let projectSpacing: CGFloat = 9
 	static let childIconWidth: CGFloat = 12
+	static let environmentSwatchSize: CGFloat = 6
+	static let childIconOffset = (environmentSwatchSize - childIconWidth) / 2
+	static let environmentTextOffset: CGFloat = -2
 	static let childSpacing: CGFloat = 7
 	static let childInset: CGFloat = 26
 	static let childRowLeadingInset = projectInset + rowInset + projectIconWidth + projectSpacing - childInset
@@ -253,7 +256,8 @@ struct VaultSidebarView: View {
 				HStack(spacing: VaultSidebarLayout.childSpacing) {
 					Image(systemName: "plus")
 						.font(.system(size: 9, weight: .bold))
-						.frame(width: VaultSidebarLayout.childIconWidth, alignment: .leading)
+						.frame(width: VaultSidebarLayout.childIconWidth)
+						.offset(x: VaultSidebarLayout.childIconOffset)
 					Text("New environment").font(.system(size: 10.5, weight: .semibold))
 					Spacer()
 				}
@@ -288,7 +292,8 @@ struct VaultSidebarView: View {
 			HStack(spacing: VaultSidebarLayout.childSpacing) {
 				Image(systemName: "curlybraces")
 					.font(.system(size: 9, weight: .bold))
-					.frame(width: VaultSidebarLayout.childIconWidth, alignment: .leading)
+					.frame(width: VaultSidebarLayout.childIconWidth)
+					.offset(x: VaultSidebarLayout.childIconOffset)
 					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 				Text("Schema")
 					.font(.system(size: 11.5, weight: selected ? .semibold : .regular))
@@ -329,12 +334,14 @@ struct VaultSidebarView: View {
 			mode = .environment(environment)
 		} label: {
 			HStack(spacing: VaultSidebarLayout.childSpacing) {
-				VaultEnvSwatch(color: color, size: 6)
-					.frame(width: VaultSidebarLayout.childIconWidth, alignment: .leading)
+				VaultEnvSwatch(color: color, size: VaultSidebarLayout.environmentSwatchSize)
+					.frame(width: VaultSidebarLayout.childIconWidth)
+					.offset(x: VaultSidebarLayout.childIconOffset)
 				Text(VaultProject.displayName(for: environment))
 					.font(VaultTypography.mono(11.5, selected ? .bold : .regular))
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
 					.lineLimit(1)
+					.offset(x: VaultSidebarLayout.environmentTextOffset)
 				Spacer(minLength: 4)
 				Text("\(project.secretCount(for: environment))")
 					.font(VaultTypography.mono(10.5))

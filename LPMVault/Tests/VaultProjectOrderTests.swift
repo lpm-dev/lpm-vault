@@ -11,6 +11,14 @@ import UniformTypeIdentifiers
 @Suite("Sidebar project order", .serialized)
 @MainActor
 struct VaultProjectOrderTests {
+	@Test("sidebar recognition tolerates a spurious dot on the default label without confusing named environments",
+		arguments: [("• .env.", ".env", true), (".env", ".env", true), (".env.staging", ".env", false),
+			(".env..", ".env", false), (".env.production.", ".env.production", false),
+			(".env.production.", ".env.production.", true)])
+	func sidebarEnvironmentRecognition(sample: (String, String, Bool)) {
+		#expect(SidebarEnvironmentLabel.matches(sample.0, displayName: sample.1) == sample.2)
+	}
+
 	@Test("late exits leave the active marker intact and unchanged pointer updates do not invalidate it")
 	func markerTransitions() {
 		let state = VaultSidebarProjectDropState()
@@ -37,26 +45,27 @@ struct VaultProjectOrderTests {
 		#expect(second.placement == nil)
 	}
 
-	@Test("child icons start at the project name and child labels share a column", arguments: [CGFloat(280), 400])
-	func childRowAlignment(width: CGFloat) async throws {
+	@Test("child icon centers and visible labels share their columns", arguments: [CGFloat(280), 400],
+		[VaultWorkspaceMode.matrix, .schema, .environment("default")])
+	func childRowAlignment(width: CGFloat, mode: VaultWorkspaceMode) async throws {
 		let (store, _, preferences, domain) = try fixture()
 		defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
 		store.openProject(id: "alpha")
-		let host = sidebarHost(store, width: width)
+		let host = sidebarHost(store, width: width, mode: mode)
 		defer { host.window.close() }
 		try await host.settle()
-		let project = try await host.labelFrame("Alpha")
+		let bands = try labelBands(in: host)
+		try #require(bands.count == 5, "Expected the project label and four child labels, got \(bands)")
+		let project = bands[0]
 		let projectStart = try inkStart(in: host, band: project, columns: 35..<150)
 		var labelStarts: [CGFloat] = []
-		for label in ["Schema", "New environment", ".env", ".env.staging"] {
-			let band = try await host.labelFrame(label)
-			let iconStart = try inkStart(in: host, band: band, columns: 30..<47)
-			#expect(abs(iconStart - projectStart) <= 1, "\(label) icon starts at \(iconStart), project text starts at \(projectStart)")
-			labelStarts.append(try inkStart(in: host, band: band, columns: (Int(band.minX) - 2)..<180))
+		for (label, band) in zip(["Schema", "New environment", ".env", ".env.staging"], bands.dropFirst()) {
+			let icon = try inkBounds(in: host, band: band, columns: 30..<54)
+			#expect(abs(icon.midX - projectStart - 3) <= 0.5, "\(label) icon center is \(icon.midX), expected \(projectStart + 3)")
+			labelStarts.append(try inkStart(in: host, band: band, columns: 54..<180))
 		}
-		// The monospaced leading dot has a wider side bearing than the proportional labels.
 		let spread = try #require(labelStarts.max()) - #require(labelStarts.min())
-		#expect(spread <= 3, "Visible label starts: \(labelStarts)")
+		#expect(spread <= 1, "Visible label starts: \(labelStarts)")
 		let image = NSBitmapImageRep(cgImage: try host.snapshot(host.view))
 		Attachment.record(try #require(image.representation(using: .png, properties: [:])), named: "sidebar-\(Int(width)).png")
 	}
@@ -74,12 +83,12 @@ struct VaultProjectOrderTests {
 		let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
 		#expect(item.setData(try JSONEncoder().encode(drag), forType: NSPasteboard.PasteboardType(VaultSidebarProjectDrag.contentType.identifier)))
 		#expect(pasteboard.writeObjects([item]))
+		let targets = dropViews(in: host.view).sorted { $0.convert($0.bounds, to: nil).maxY > $1.convert($1.bounds, to: nil).maxY }
+		try #require(targets.count == 3, "Expected three collapsed project drop targets, got \(targets.map { $0.convert($0.bounds, to: nil) })")
 		var previous: (NSView, SidebarTestDraggingInfo)?
-		for label in ["Alpha", "Middle"] {
-			let frame = try await host.labelFrame(label)
-			let point = NSPoint(x: frame.midX, y: frame.maxY - 1)
-			let target = try #require(dropViews(in: host.view).filter { $0.convert($0.bounds, to: nil).contains(point) }
-				.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height })
+		for target in targets.prefix(2) {
+			let bounds = target.convert(target.bounds, to: nil)
+			let point = NSPoint(x: bounds.midX, y: bounds.maxY - bounds.height / 4)
 			let info = SidebarTestDraggingInfo(window: host.window, pasteboard: pasteboard, location: point)
 			#expect(target.draggingEntered(info).contains(.move))
 			#expect(target.draggingUpdated(info).contains(.move))
@@ -98,7 +107,8 @@ struct VaultProjectOrderTests {
 		default:
 			#expect(target.prepareForDragOperation(info))
 			#expect(target.performDragOperation(info))
-			#expect(try await host.waitUntil { store.visibleVaults(matching: "").map(\.id) == ["alpha", "zulu", "middle"] })
+			#expect(try await host.waitUntil { store.visibleVaults(matching: "").map(\.id) == ["alpha", "zulu", "middle"] },
+				"Order after native drop: \(store.visibleVaults(matching: "").map(\.id))")
 		}
 		try await host.settle()
 		#expect(try markerRows(in: host).isEmpty)
@@ -110,6 +120,32 @@ struct VaultProjectOrderTests {
 			#expect(VaultSidebarProjectDrag.exportedContentTypes(visibility: .all).isEmpty)
 			#expect(VaultSidebarProjectDrag.exportedContentTypes(visibility: .ownProcess) == [VaultSidebarProjectDrag.contentType])
 		}
+	}
+
+	@Test("native dragging enumeration respects the requested pasteboard classes")
+	func nativeDraggingEnumeration() throws {
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 500),
+			styleMask: [.titled], backing: .buffered, defer: false)
+		window.isReleasedWhenClosed = false
+		defer { window.close() }
+		let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidebar-enumeration-test-" + UUID().uuidString))
+		defer { pasteboard.releaseGlobally() }
+		let item = NSPasteboardItem()
+		let type = NSPasteboard.PasteboardType(VaultSidebarProjectDrag.contentType.identifier)
+		let data = Data("project drag".utf8)
+		#expect(item.setData(data, forType: type))
+		#expect(pasteboard.writeObjects([item]))
+		let info = SidebarTestDraggingInfo(window: window, pasteboard: pasteboard, location: .zero)
+		var stringItems = 0
+		info.enumerateDraggingItems(options: [], for: nil, classes: [NSString.self], searchOptions: [:]) { _, _, _ in
+			stringItems += 1
+		}
+		#expect(stringItems == 0)
+		var payloads: [Data] = []
+		info.enumerateDraggingItems(options: [], for: nil, classes: [NSPasteboardItem.self], searchOptions: [:]) { item, _, _ in
+			if let data = (item.item as? NSPasteboardItem)?.data(forType: type) { payloads.append(data) }
+		}
+		#expect(payloads == [data])
 	}
 
 	@Test("dropping after an expanded project marks the position below its environments")
@@ -395,8 +431,8 @@ struct VaultProjectOrderTests {
 		#expect(declaration["UTTypeConformsTo"] as? [String] == [UTType.data.identifier])
 	}
 
-	private func sidebarHost(_ store: VaultStore, width: CGFloat = 280) -> SheetTestHost<some View> {
-		SheetTestHost(VaultSidebarView(store: store, snapshots: [:], mode: .constant(.matrix),
+	private func sidebarHost(_ store: VaultStore, width: CGFloat = 280, mode: VaultWorkspaceMode = .matrix) -> SheetTestHost<some View> {
+		SheetTestHost(VaultSidebarView(store: store, snapshots: [:], mode: .constant(mode),
 			filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
 			onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onRenameProject: { _ in },
 			onDeleteProject: { _ in }, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
@@ -421,21 +457,56 @@ struct VaultProjectOrderTests {
 	}
 
 	private func inkStart<V: View>(in host: SheetTestHost<V>, band: CGRect, columns: Range<Int>) throws -> CGFloat {
+		try inkBounds(in: host, band: band, columns: columns).minX
+	}
+
+	private func labelBands<V: View>(in host: SheetTestHost<V>) throws -> [CGRect] {
+		let image = try host.snapshot(host.view)
+		let context = try pixelContext(image)
+		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+		let scale = CGFloat(image.width) / host.view.bounds.width
+		var bands: [CGRect] = []
+		var first: Int?
+		for row in Int(80 * scale)..<Int(215 * scale) {
+			let background = (row * image.width + Int(220 * scale)) * 4
+			let hasInk = (Int(55 * scale)..<Int(190 * scale)).contains { column in
+				let pixel = (row * image.width + column) * 4
+				return (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[background + $1])) } > 55
+			}
+			if hasInk {
+				if first == nil { first = row }
+			} else if let start = first {
+				bands.append(CGRect(x: 0, y: host.view.bounds.height - CGFloat(row) / scale,
+					width: host.view.bounds.width, height: CGFloat(row - start) / scale))
+				first = nil
+			}
+		}
+		return bands
+	}
+
+	private func inkBounds<V: View>(in host: SheetTestHost<V>, band: CGRect, columns: Range<Int>) throws -> CGRect {
 		let image = try host.snapshot(host.view)
 		let context = try pixelContext(image)
 		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
 		let scale = CGFloat(image.width) / host.view.bounds.width
 		let top = Int((host.view.bounds.height - band.maxY - 3) * scale)
 		let bottom = Int((host.view.bounds.height - band.minY + 3) * scale)
+		var first: Int?, last: Int?
 		for column in Int(CGFloat(columns.lowerBound) * scale)..<Int(CGFloat(columns.upperBound) * scale) {
 			for row in top..<bottom {
 				let pixel = (row * image.width + column) * 4
 				let background = (row * image.width + Int(220 * scale)) * 4
 				let contrast = (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[background + $1])) }
-				if contrast > 55 { return CGFloat(column) / scale }
+				if contrast > 55 {
+					if first == nil { first = column }
+					last = column
+					break
+				}
 			}
 		}
-		throw CocoaError(.coderValueNotFound)
+		guard let first, let last else { throw CocoaError(.coderValueNotFound) }
+		return CGRect(x: CGFloat(first) / scale, y: band.minY,
+			width: CGFloat(last - first + 1) / scale, height: band.height)
 	}
 
 	private func pixelContext(_ image: CGImage) throws -> CGContext {
@@ -469,13 +540,19 @@ private final class SidebarMarkerChanges {
 }
 
 @MainActor
+private final class SidebarTestDraggingSource: NSObject, NSDraggingSource {
+	func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .move }
+}
+
+@MainActor
 private final class SidebarTestDraggingInfo: NSObject, NSDraggingInfo {
+	private let source = SidebarTestDraggingSource()
 	let draggingDestinationWindow: NSWindow?
 	let draggingPasteboard: NSPasteboard
 	let draggingLocation: NSPoint
 	let draggingSourceOperationMask: NSDragOperation = .move
 	let draggingSequenceNumber = 1
-	var draggingSource: Any? { nil }
+	var draggingSource: Any? { source }
 	var draggedImageLocation: NSPoint { draggingLocation }
 	nonisolated var draggedImage: NSImage? { nil }
 	var draggingFormation: NSDraggingFormation = .default
@@ -495,7 +572,9 @@ private final class SidebarTestDraggingInfo: NSObject, NSDraggingInfo {
 	func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?, classes: [AnyClass],
 		searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {
 		var stop: ObjCBool = false
-		for (index, item) in (draggingPasteboard.pasteboardItems ?? []).enumerated() {
+		let items = draggingPasteboard.readObjects(forClasses: classes, options: searchOptions) ?? []
+		for (index, object) in items.enumerated() {
+			guard let item = object as? NSPasteboardWriting else { continue }
 			block(NSDraggingItem(pasteboardWriter: item), index, &stop)
 			if stop.boolValue { break }
 		}
