@@ -111,6 +111,57 @@ extension SheetInteractionTests {
 			#expect((try await host.text()).contains("NODE_OPTIONS"))
 		}
 
+		@Test(arguments: [false, true]) func inspector_checks_pending_key_rename(editValue: Bool) async throws {
+			let folder = FileManager.default.temporaryDirectory.appending(
+				path: "review-rename-\(UUID().uuidString)")
+			try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+			defer { try? FileManager.default.removeItem(at: folder) }
+			try #"{"envSchema":{"vars":{"PORT":{"format":"port"}}}}"#.write(
+				to: folder.appending(path: "lpm.json"), atomically: true, encoding: .utf8)
+			let keychain = MockKeychainService()
+			let project = VaultProject(
+				id: "p", name: "p", path: folder.path, environments: ["default": ["OLD": "abc"]])
+			keychain.envStorage[project.id] = (
+				name: project.name, path: folder.path, environments: project.environments
+			)
+			let store = VaultStore(
+				keychainService: keychain, biometricService: MockBiometricService(),
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+			store.isUnlocked = true
+			store.projects = [project]
+			store.openProject(id: project.id)
+			defer { store.lock() }
+			store.reloadKeyDescriptions()
+			for _ in 0..<500 {
+				if store.valueChecks[project.id] != nil { break }
+				try await Task.sleep(for: .milliseconds(10))
+			}
+			_ = try #require(store.valueChecks[project.id])
+			let host = SheetTestHost(
+				VaultInspectorView(
+					store: store, project: project, environments: ["default"],
+					mode: .environment("default"), selectedKey: "OLD", revealedKeys: .constant([]),
+					onClose: {}, onCopy: { _ in }, onDelete: { _, _ in },
+					onAddElsewhere: { _, _ in }, onRenamed: { _, _ in }),
+				size: NSSize(width: 440, height: 900), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			store.keyDrafts.edit(project, key: "OLD") {
+				$0.name = "PORT"
+				if editValue { $0.setValue("still-bad", in: "default") }
+			}
+			try await Task.sleep(for: .milliseconds(500))
+			try await host.settle()
+			var draft = try #require(store.keyDrafts.draft(.init(projectID: project.id, key: "OLD")))
+			let pendingEdit = draft.beginSave()
+			let edit = try #require(pendingEdit)
+			let renamed = try edit.applied(to: project.environments).get()
+			let rules = try #require(store.keyDescriptions[project.id]?.schema?.overview)
+			#expect(try #require(rules.check(renamed)).problems(of: "PORT", in: "default").count == 1)
+			let text = try await host.text()
+			#expect(text.contains("Not a valid port"))
+		}
+
 		@Test func tables_show_defaults_that_replace_empty_stored_values() async throws {
 			let project = VaultProject(
 				id: "p", name: "p", path: "", environments: ["default": ["EMPTY": ""]])

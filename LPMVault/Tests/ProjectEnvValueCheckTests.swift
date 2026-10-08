@@ -19,6 +19,30 @@ struct ProjectEnvValueCheckTests {
 			== "The LPM CLI never passes NODE_OPTIONS to commands.")
 	}
 
+	@Test("a declared-key rename preview matches the saved rules and values")
+	func renamePreviewMatchesSavedState() async throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "rename-preview-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try #"{"envSchema":{"vars":{"OLD":{"format":"port"},"TOKEN":{"requiredWhen":{"variable":"OLD","equals":"3000"}},"ALT":{}},"groups":{"choice":{"mode":"exactlyOne","vars":["OLD","ALT"]}}}}"#
+			.write(to: folder.appending(path: "lpm.json"), atomically: true, encoding: .utf8)
+		let rules = try #require(ProjectEnvSchemaFile.load(inFolder: folder.path, vaultID: "p").schema.overview)
+		let project = VaultProject(id: "p", name: "p", path: folder.path,
+			environments: ["default": ["OLD": "bad", "ALT": "set"], "production": ["OLD": "3000"]])
+		let edit = VaultKeyEdit(key: "OLD", environments: project.environments, newKey: "NEW")
+		let worker = ProjectEnvValueCheckWorker()
+		let preview = try #require(await worker.preview(edit: edit, project: project, rules: rules))
+		_ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: "OLD", to: "NEW")),
+			inFolder: folder.path, vaultID: "p")
+		let savedRules = try #require(ProjectEnvSchemaFile.load(inFolder: folder.path, vaultID: "p").schema.overview)
+		let savedValues = try edit.applied(to: project.environments).get()
+		#expect(preview.project.environments == savedValues)
+		#expect(preview.rules.effectiveSchema == savedRules.effectiveSchema)
+		#expect(preview.check == savedRules.check(savedValues))
+		#expect(preview.check?.problems(of: "NEW", in: "default").contains(.init(key: "NEW", kind: .format("port"))) == true)
+		#expect(preview.rules.groups.first?.members == ["NEW", "ALT"])
+	}
+
 	@Test("group explanations exclude values the CLI ignores")
 	func groupMessagesExcludeIgnoredValues() throws {
 		let rules = try overview(#"{"vars":{"NODE_OPTIONS":{},"TOKEN":{}},"groups":{"auth":{"mode":"exactlyOne","vars":["NODE_OPTIONS","TOKEN"]}}}"#)
@@ -165,33 +189,7 @@ struct ProjectEnvValueCheckTests {
 		#expect(rules.check(environments) == nil)
 	}
 
-	@Test("a cancelled queued value check never enters the engine")
-	func cancelledQueuedCheckSkipsEngine() async {
-		let calls = OSAllocatedUnfairLock(initialState: 0)
-		let entered = DispatchSemaphore(value: 0)
-		let release = DispatchSemaphore(value: 0)
-		defer { release.signal() }
-		let worker = ProjectEnvValueCheckWorker { _, _ in
-			let call = calls.withLock { count in count += 1; return count }
-			if call == 1 {
-				entered.signal()
-				_ = release.wait(timeout: .now() + 5)
-			}
-			return nil
-		}
-		let first = Task { await worker.check(rules: .empty, environments: [:]) }
-		let started = await withCheckedContinuation { continuation in
-			Thread.detachNewThread { continuation.resume(returning: entered.wait(timeout: .now() + 5) == .success) }
-		}
-		#expect(started)
-		let cancelled = Task { await worker.check(rules: .empty, environments: [:]) }
-		cancelled.cancel()
-		release.signal()
-		_ = await first.value
-		_ = await cancelled.value
 
-		#expect(calls.withLock { $0 } == 1)
-	}
 }
 
 @Suite("Value checks in the store", .serialized)

@@ -103,7 +103,8 @@ An environment's table shows a banner for each failing group.
 An environment without values of its own uses `.env`'s values in the LPM CLI. The app checks those values against the requested environment's rules and shows any failures.
 Raw text shows stored assignments. Required keys and schema defaults also appear in the table.
 The check covers stored values. The LPM CLI can also read project `.env` files and shell variables when it runs a command.
-The inspector outlines failing values in red and lists problems under RULES. It checks pending value edits before you save.
+The inspector outlines failing values in red and lists problems under RULES.
+It checks pending value edits and key renames before you save.
 
 The connection sheet links a project directory through `lpm.json`.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.

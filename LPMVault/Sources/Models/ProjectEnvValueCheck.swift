@@ -117,6 +117,21 @@ extension ProjectEnvValueCheck.Problem {
 actor ProjectEnvValueCheckWorker {
 	typealias Checker = @Sendable (ProjectEnvSchemaOverview, [String: [String: String]]) -> ProjectEnvValueCheck?
 
+	struct Preview: Sendable {
+		let project: VaultProject
+		let rules: ProjectEnvSchemaOverview
+		let check: ProjectEnvValueCheck?
+	}
+
+	func preview(edit: VaultKeyEdit, project: VaultProject, rules: ProjectEnvSchemaOverview) -> Preview? {
+		guard !Task.isCancelled,
+			case .success(let environments) = edit.applied(to: project.environments),
+			let pendingRules = rules.renamingKey(from: edit.key, to: edit.newKey)
+		else { return nil }
+		let pendingProject = VaultProject(id: project.id, name: project.name, path: project.path, environments: environments)
+		return Preview(project: pendingProject, rules: pendingRules, check: checker(pendingRules, environments))
+	}
+
 	private let checker: Checker
 
 	init(checker: @escaping Checker = { rules, environments in rules.check(environments) }) {

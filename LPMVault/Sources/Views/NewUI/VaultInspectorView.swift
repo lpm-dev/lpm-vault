@@ -77,6 +77,7 @@ private struct VaultKeyEditor: View {
 	}
 
 	private struct EditCheckInput: Hashable {
+		let newKey: String
 		let values: [String: String]
 		let effectiveSchema: Data
 		let workspaceSnapshotIdentity: UUID
@@ -105,8 +106,17 @@ private struct VaultKeyEditor: View {
 	@State private var revealedEnvironments: Set<String> = []
 	@State private var saveError: VaultKeyEditError?
 	/// The engine's check of the unsaved values, and the inputs it checked.
-	@State private var editCheck: (input: EditCheckInput, check: ProjectEnvValueCheck?)?
+	@State private var editCheck: (input: EditCheckInput, preview: ProjectEnvValueCheckWorker.Preview?)?
 	@FocusState private var focus: Field?
+
+	private var checkedKey: String { store.keyDrafts.draft(id)?.name ?? key }
+
+	private var currentPreview: ProjectEnvValueCheckWorker.Preview? {
+		let draft = store.keyDrafts.draft(id)
+		let edits = unsavedValues(draft, cards: cardEnvironments(draft))
+		guard let input = editCheckInput(edits, newKey: checkedKey), editCheck?.input == input else { return nil }
+		return editCheck?.preview
+	}
 
 	private var id: VaultKeyDraft.ID { VaultKeyDraft.ID(projectID: project.id, key: key) }
 
@@ -117,8 +127,9 @@ private struct VaultKeyEditor: View {
 		let cards = cardEnvironments(draft)
 		let descriptions = store.keyDescriptions[project.id]
 		let edits = unsavedValues(draft, cards: cards)
-		let checkInput = editCheckInput(edits)
-		let checks = valueChecks(edits, input: checkInput)
+		let newKey = draft?.name ?? key
+		let checkInput = editCheckInput(edits, newKey: newKey)
+		let checks = valueChecks(edits, newKey: newKey, input: checkInput)
 		VStack(spacing: 0) {
 			ScrollView {
 				VStack(alignment: .leading, spacing: 0) {
@@ -151,33 +162,26 @@ private struct VaultKeyEditor: View {
 		return values
 	}
 
-	/// The project with `edits` applied, as a save would store it.
-	private func editedProject(_ edits: [String: String]) -> VaultProject {
-		guard !edits.isEmpty else { return project }
-		var environments = project.environments
-		for (environment, value) in edits { environments[environment, default: [:]][key] = value }
-		return VaultProject(id: project.id, name: project.name, path: project.path, environments: environments)
-	}
-
-	/// The saved values' check, or the unsaved values' check once the engine has run.
-	private func editCheckInput(_ edits: [String: String]) -> EditCheckInput? {
-		guard !edits.isEmpty,
+	/// The inputs of a pending value edit or rename.
+	private func editCheckInput(_ edits: [String: String], newKey: String) -> EditCheckInput? {
+		guard !edits.isEmpty || newKey != key,
 			let effectiveSchema = store.keyDescriptions[project.id]?.schema?.overview?.effectiveSchema,
 			store.valueChecks[project.id] != nil
 		else { return nil }
 		return EditCheckInput(
+			newKey: newKey,
 			values: edits,
 			effectiveSchema: effectiveSchema,
 			workspaceSnapshotIdentity: project.workspaceSnapshotIdentity
 		)
 	}
 
-	private func valueChecks(_ edits: [String: String], input: EditCheckInput?) -> VaultValueCheckPresentation {
+	private func valueChecks(_ edits: [String: String], newKey: String, input: EditCheckInput?) -> VaultValueCheckPresentation {
 		let rules = store.keyDescriptions[project.id]?.schema?.overview
 		guard let stored = store.valueChecks[project.id] else { return .none }
-		guard !edits.isEmpty else { return VaultValueCheckPresentation(check: stored, rules: rules, project: project) }
-		guard let input, let editCheck, editCheck.input == input else { return .none }
-		return VaultValueCheckPresentation(check: editCheck.check, rules: rules, project: editedProject(edits))
+		guard !edits.isEmpty || newKey != key else { return VaultValueCheckPresentation(check: stored, rules: rules, project: project) }
+		guard let input, let editCheck, editCheck.input == input, let preview = editCheck.preview else { return .none }
+		return VaultValueCheckPresentation(check: preview.check, rules: preview.rules, project: preview.project)
 	}
 
 	private func checkEdits(_ input: EditCheckInput?) async {
@@ -192,13 +196,13 @@ private struct VaultKeyEditor: View {
 		}
 		do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
 		guard !Task.isCancelled else { return }
-		let environments = editedProject(input.values).environments
-		let check = await store.valueCheckWorker.check(rules: rules, environments: environments)
+		let edit = VaultKeyEdit(key: key, environments: project.environments, newKey: input.newKey, values: input.values)
+		let preview = await store.valueCheckWorker.preview(edit: edit, project: project, rules: rules)
 		guard !Task.isCancelled,
 			store.projects.first(where: { $0.id == project.id })?.workspaceSnapshotIdentity == input.workspaceSnapshotIdentity,
 			store.keyDescriptions[project.id]?.schema?.overview?.effectiveSchema == input.effectiveSchema
 		else { return }
-		editCheck = (input, check)
+		editCheck = (input, preview)
 	}
 
 	// MARK: - Sections
@@ -342,7 +346,7 @@ private struct VaultKeyEditor: View {
 				}
 			}
 			ForEach(cards, id: \.self) { environment in
-				card(environment, draft: draft, cards: cards, problem: checks.reason(for: key, in: environment))
+				card(environment, draft: draft, cards: cards, problem: checks.reason(for: checkedKey, in: environment))
 			}
 			addRows(addable, draft: draft, checks: checks)
 		}
@@ -513,8 +517,8 @@ private struct VaultKeyEditor: View {
 
 	/// What the environment uses without a value: nothing a rule accepts, or a default.
 	private func addNote(_ environment: String, checks: VaultValueCheckPresentation) -> (text: String, isProblem: Bool)? {
-		if checks.isRequiredAndUnset(key, in: environment) { return ("Required", true) }
-		if let value = checks.defaultValue(of: key, in: environment) { return ("uses the default \(value)", false) }
+		if checks.isRequiredAndUnset(checkedKey, in: environment) { return ("Required", true) }
+		if let value = checks.defaultValue(of: checkedKey, in: environment) { return ("uses the default \(value)", false) }
 		return nil
 	}
 
@@ -562,9 +566,10 @@ private struct VaultKeyEditor: View {
 	@ViewBuilder
 	private func rulesSection(_ checks: VaultValueCheckPresentation) -> some View {
 		switch store.keyDescriptions[project.id]?.schema {
-		case .loaded(let overview, _)?:
-			let rule = overview.rule(for: key)
-			let groups = overview.groups.filter { $0.members.contains(key) }
+		case .loaded(let savedOverview, _)?:
+			let overview = currentPreview?.rules ?? savedOverview
+			let rule = overview.rule(for: checkedKey)
+			let groups = overview.groups.filter { $0.members.contains(checkedKey) }
 			VStack(alignment: .leading, spacing: 8) {
 				HStack(spacing: 6) {
 					Text("RULES").vaultSectionLabel()
@@ -593,7 +598,7 @@ private struct VaultKeyEditor: View {
 						.fixedSize(horizontal: false, vertical: true)
 				}
 				ForEach(problemEnvironments(checks), id: \.self) { environment in
-					problemLine(environment, reason: checks.reason(for: key, in: environment) ?? "")
+					problemLine(environment, reason: checks.reason(for: checkedKey, in: environment) ?? "")
 				}
 				Text("Rules are declared in lpm.json and enforced by the LPM CLI. Edit them there.")
 					.font(.system(size: 10.5))
@@ -621,7 +626,7 @@ private struct VaultKeyEditor: View {
 
 	/// The environments in view where the key fails its rules.
 	private func problemEnvironments(_ checks: VaultValueCheckPresentation) -> [String] {
-		(singleEnvironment.map { [$0] } ?? environments).filter { checks.reason(for: key, in: $0) != nil }
+		(singleEnvironment.map { [$0] } ?? environments).filter { checks.reason(for: checkedKey, in: $0) != nil }
 	}
 
 	private func problemLine(_ environment: String, reason: String) -> some View {

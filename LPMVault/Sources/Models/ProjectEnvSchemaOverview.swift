@@ -47,11 +47,15 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	}
 
 	init(resolution: RustSchemaEngine.Resolution) {
+		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source))
+	}
+
+	private init(effective: LPMConfigJSON, sources: [String: String]) {
 		var rules: [Rule] = []
-		if case .object(let declarations)? = resolution.effective["vars"] {
+		if case .object(let declarations)? = effective["vars"] {
 			rules.reserveCapacity(declarations.count)
 			for declaration in declarations {
-				let source = resolution.origins[declaration.key]?.source
+				let source = sources[declaration.key]
 				rules.append(Rule(
 					key: declaration.key,
 					isPublic: declaration.value["client"] == .bool(true),
@@ -63,7 +67,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 			}
 		}
 		var groups: [Group] = []
-		if case .object(let declared)? = resolution.effective["groups"] {
+		if case .object(let declared)? = effective["groups"] {
 			for group in declared {
 				guard case .string(let mode)? = group.value["mode"], case .array(let values)? = group.value["vars"] else { continue }
 				let members = values.compactMap { value -> String? in if case .string(let key) = value { key } else { nil } }
@@ -75,7 +79,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				groups.append(Group(name: group.key, summary: "\(lead) \(members.joined(separator: ", "))", members: members))
 			}
 		}
-		self.init(rules: rules, groups: groups, effectiveSchema: try? resolution.effective.compactData(maximumBytes: Self.engineInputLimit))
+		self.init(rules: rules, groups: groups, effectiveSchema: try? effective.compactData(maximumBytes: Self.engineInputLimit))
 	}
 
 	/// The bundled engine's input limit for a schema or a set of values.
@@ -96,6 +100,23 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 			let output = RustSchemaEngine.check(schema: effectiveSchema, values: values)
 		else { return nil }
 		return ProjectEnvValueCheck(output: output)
+	}
+
+	func renamingKey(from: String, to: String) -> ProjectEnvSchemaOverview? {
+		guard from != to else { return self }
+		guard EnvValidation.isValidVariableName(to), let effectiveSchema,
+			let schema = try? LPMConfigJSON(parsing: effectiveSchema, rejectDuplicateKeys: true),
+			let updated = try? ProjectEnvSchemaFile.applying(.init(rename: .init(from: from, to: to)),
+				to: .object([.init(key: "envSchema", value: schema)]), referenceSchema: schema),
+			let effective = try? RustSchemaEngine.validate(updated["envSchema"] ?? .object([]))
+		else { return nil }
+		var sources = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in
+			rule.source.map { (rule.key, $0) }
+		})
+		if schema["vars"]?[from] != nil, schema["vars"]?[to] == nil {
+			sources[to] = sources.removeValue(forKey: from)
+		}
+		return ProjectEnvSchemaOverview(effective: effective, sources: sources)
 	}
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
