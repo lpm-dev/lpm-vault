@@ -118,6 +118,22 @@ enum RustSchemaEngine {
 		return Resolution(effective: effective, origins: origins, groupOrigins: groupOrigins, declaringOrigins: declaringOrigins, dependencies: dependencies, snapshot: Snapshot(owned: owned))
 	}
 
+	/// The engine's evaluation of stored values against a flat schema, such as
+	/// a resolution's `effective` schema; nil when it rejects either input.
+	static func check(schema: Data, values: Data) -> LPMConfigJSON? {
+		guard lpm_env_abi_version() == 1, !schema.isEmpty, !values.isEmpty else { return nil }
+		let owned = schema.withUnsafeBytes { schema in
+			values.withUnsafeBytes { values in
+				OwnedResult(lpm_env_check(
+					schema.bindMemory(to: UInt8.self).baseAddress, schema.count,
+					values.bindMemory(to: UInt8.self).baseAddress, values.count
+				))
+			}
+		}
+		guard let output = try? owned.decode(), output["abiVersion"] == .number("1") else { return nil }
+		return output
+	}
+
 	/// Why `resolve` rejects `schema`, for showing the problem; nil when the
 	/// schema resolves or fails for another reason.
 	static func diagnostic(for schema: LPMConfigJSON, inFolder folder: String) -> Diagnostic? {

@@ -32,13 +32,17 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	let rules: [Rule]
 	let groups: [Group]
 	let publicKeys: Set<String>
+	/// The resolved schema as compact JSON, which the bundled engine checks
+	/// stored values against; nil for rules not built from a resolution.
+	let effectiveSchema: Data?
 	private let index: [String: Int]
 
-	init(rules: [Rule], groups: [Group]) {
+	init(rules: [Rule], groups: [Group], effectiveSchema: Data? = nil) {
 		let order = Dictionary(uniqueKeysWithValues: VaultKeySortOrder.sortedAscending(rules.map(\.key)).enumerated().map { ($1, $0) })
 		self.rules = rules.sorted { order[$0.key, default: 0] < order[$1.key, default: 0] }
 		self.groups = groups.sorted { $0.name < $1.name }
 		publicKeys = Set(rules.lazy.filter(\.isPublic).map(\.key))
+		self.effectiveSchema = effectiveSchema
 		index = Dictionary(uniqueKeysWithValues: self.rules.enumerated().map { ($1.key, $0) })
 	}
 
@@ -69,7 +73,27 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				groups.append(Group(name: group.key, summary: "\(lead) \(members.joined(separator: ", "))", members: members))
 			}
 		}
-		self.init(rules: rules, groups: groups)
+		self.init(rules: rules, groups: groups, effectiveSchema: try? resolution.effective.compactData(maximumBytes: Self.engineInputLimit))
+	}
+
+	/// The bundled engine's input limit for a schema or a set of values.
+	private static let engineInputLimit = 2 * 1024 * 1024
+
+	/// Evaluates the values stored in each environment against these rules
+	/// with the bundled engine, as the LPM CLI does at runtime; nil when the
+	/// rules weren't resolved or the engine can't check the values.
+	func check(_ environments: [String: [String: String]]) -> ProjectEnvValueCheck? {
+		guard let effectiveSchema else { return nil }
+		var members: [LPMConfigJSON.Member] = []
+		members.reserveCapacity(environments.count)
+		for (environment, values) in environments {
+			members.append(.init(key: environment, value: .object(values.map { .init(key: $0.key, value: .string($0.value)) })))
+		}
+		let input = LPMConfigJSON.object([.init(key: "environments", value: .object(members))])
+		guard let values = try? input.compactData(maximumBytes: Self.engineInputLimit),
+			let output = RustSchemaEngine.check(schema: effectiveSchema, values: values)
+		else { return nil }
+		return ProjectEnvValueCheck(output: output)
 	}
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
@@ -96,7 +120,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	}
 
 	static func == (lhs: Self, rhs: Self) -> Bool {
-		lhs.rules == rhs.rules && lhs.groups == rhs.groups
+		lhs.rules == rhs.rules && lhs.groups == rhs.groups && lhs.effectiveSchema == rhs.effectiveSchema
 	}
 
 	// MARK: - Badges

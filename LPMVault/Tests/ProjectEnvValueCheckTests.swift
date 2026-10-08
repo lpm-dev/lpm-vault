@@ -1,0 +1,113 @@
+import Foundation
+import Testing
+
+@testable import LPMVault
+
+@Suite("Value checks")
+struct ProjectEnvValueCheckTests {
+	private typealias Problem = ProjectEnvValueCheck.Problem
+
+	private func overview(_ schema: String) throws -> ProjectEnvSchemaOverview {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "value-check-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		try #"{"envSchema":\#(schema)}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		return try #require(ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project").schema.overview)
+	}
+
+	@Test("the engine reports each environment's problems, defaults, and ignored keys")
+	func checksEachEnvironment() throws {
+		let rules = try overview(#"""
+			{"vars":{
+				"API_TOKEN":{"secret":true,"requiredIn":[{"environment":["production"]}]},
+				"DATABASE_URL":{"format":"url"},
+				"PORT":{"format":"port","default":"3000"},
+				"WORKERS":{"format":"integer","min":"1"},
+				"LEVEL":{"enum":["debug","info"],"defaultsIn":[{"when":{"environment":["production"]},"value":"info"}]},
+				"PASSWORD":{"secret":true},
+				"OAUTH_TOKEN":{"secret":true}
+			},"groups":{"credentials":{"mode":"exactlyOne","vars":["PASSWORD","OAUTH_TOKEN"]}}}
+			"""#)
+		let check = try #require(rules.check([
+			"default": ["DATABASE_URL": "not a url", "WORKERS": "0", "PASSWORD": "a", "OAUTH_TOKEN": "b", "LEVEL": "trace"],
+			"production": ["DATABASE_URL": "https://db.example.com", "PASSWORD": "a", "NODE_OPTIONS": "--inspect"],
+			"staging": [:],
+		]))
+
+		let defaults = try #require(check.environments["default"])
+		#expect(!defaults.readsDefaultEnvironment)
+		#expect(check.problems(of: "DATABASE_URL", in: "default") == [Problem(key: "DATABASE_URL", kind: .format("url"))])
+		#expect(check.problems(of: "WORKERS", in: "default") == [Problem(key: "WORKERS", kind: .constraint("min"))])
+		#expect(check.problems(of: "LEVEL", in: "default") == [Problem(key: "LEVEL", kind: .notAllowed)])
+		#expect(check.problems(of: "PASSWORD", in: "default") == [Problem(key: "PASSWORD", kind: .group(name: "credentials", mode: "exactlyOne"))])
+		#expect(check.problems(of: "API_TOKEN", in: "default").isEmpty, "Required only in production")
+		#expect(defaults.defaults == ["PORT": "3000"])
+
+		let production = try #require(check.environments["production"])
+		#expect(check.problems(of: "API_TOKEN", in: "production") == [Problem(key: "API_TOKEN", kind: .required)])
+		#expect(production.problems.keys.sorted() == ["API_TOKEN"])
+		#expect(production.defaults == ["PORT": "3000", "LEVEL": "info"])
+		#expect(production.ignored == ["NODE_OPTIONS"])
+
+		let staging = try #require(check.environments["staging"])
+		#expect(staging.readsDefaultEnvironment, "An environment without values reads the default environment's")
+		#expect(staging.problems == defaults.problems)
+	}
+
+	@Test("rules without a resolved schema, and unexpected engine output, check nothing")
+	func failsClosed() {
+		let unresolved = ProjectEnvSchemaOverview(rules: [.init(key: "PORT", isPublic: false, source: nil, badges: [])], groups: [])
+		#expect(unresolved.check(["default": ["PORT": "x"]]) == nil)
+		#expect(ProjectEnvValueCheck(output: .object([])) == nil)
+		let malformed = LPMConfigJSON.object([.init(key: "environments", value: .object([
+			.init(key: "default", value: .object([.init(key: "problems", value: .array([]))])),
+		]))])
+		#expect(ProjectEnvValueCheck(output: malformed) == nil)
+	}
+}
+
+@Suite("Value checks in the store", .serialized)
+@MainActor
+struct ValueCheckStoreTests {
+	@Test("the store checks the selected project's values, rechecks after an edit, and drops the check when lpm.json breaks or the vault locks")
+	func storeKeepsChecksCurrent() async throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "value-check-store-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		try #"{"envSchema":{"vars":{"PORT":{"format":"port"},"WORKERS":{"format":"integer"}}}}"#
+			.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		let keychain = MockKeychainService()
+		let project = VaultProject(id: "checked", name: "api", path: folder, environments: ["default": ["PORT": "not-a-port"]])
+		keychain.envStorage[project.id] = (name: project.name, path: folder, environments: project.environments)
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
+			apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+		store.isUnlocked = true
+		store.projects = [project]
+		store.openProject(id: project.id)
+		defer { store.lock() }
+		store.reloadKeyDescriptions()
+
+		func eventually(_ condition: () -> Bool) async throws -> Bool {
+			for _ in 0..<500 {
+				if condition() { return true }
+				try await Task.sleep(for: .milliseconds(10))
+			}
+			return condition()
+		}
+		typealias Problem = ProjectEnvValueCheck.Problem
+		#expect(try await eventually { store.valueChecks[project.id]?.problems(of: "PORT", in: "default") == [Problem(key: "PORT", kind: .format("port"))] })
+
+		#expect(await store.addSecret(to: project.id, environment: "default", key: "WORKERS", value: "many") == .success)
+		#expect(try await eventually { store.valueChecks[project.id]?.problems(of: "WORKERS", in: "default") == [Problem(key: "WORKERS", kind: .format("integer"))] })
+
+		try "{not json".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		store.reloadKeyDescriptions()
+		#expect(try await eventually { store.valueChecks[project.id] == nil }, "Nothing is checked while lpm.json can't be read")
+
+		try #"{"envSchema":{"vars":{"PORT":{"format":"port"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		store.reloadKeyDescriptions()
+		#expect(try await eventually { store.valueChecks[project.id] != nil })
+		store.lock()
+		#expect(store.valueChecks.isEmpty)
+	}
+}

@@ -92,7 +92,7 @@ extension SheetInteractionTests {
 			try await host.click("Schema")
 			#expect(try await host.waitForText("Schema can't be read"))
 			let text = try await host.text()
-			#expect(text.contains("unknown field"))
+			#expect(text.contains("Check the field name"))
 			#expect(text.contains("Checks paused"))
 
 			try Self.sample.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)

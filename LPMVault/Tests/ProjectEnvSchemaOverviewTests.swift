@@ -125,12 +125,17 @@ struct ProjectEnvSchemaOverviewTests {
 		let unruled = try makeFolder(#"{"name":"app"}"#)
 		defer { try? FileManager.default.removeItem(atPath: unruled) }
 		let loaded = ProjectEnvSchemaFile.load(inFolder: unruled, vaultID: "project")
-		#expect(loaded.schema == .loaded(.empty, file: URL(fileURLWithPath: unruled + "/lpm.json")))
+		guard case .loaded(let overview, let file) = loaded.schema else {
+			Issue.record("Expected loaded rules, got \(loaded.schema)")
+			return
+		}
+		#expect(overview.isEmpty)
+		#expect(file == URL(fileURLWithPath: unruled + "/lpm.json"))
 		#expect(try loaded.rules.get() == .init())
 	}
 
 	@Test("unreadable rules name the file and location the engine reports", arguments: [
-		(#"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#, [String: String](), "lpm.json › envSchema", "A declaration has an unknown field or a value of the wrong type."),
+		(#"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#, [String: String](), "lpm.json › envSchema.vars.PORT.rnage", "Invalid schema definition. Check the field name and value type at this location."),
 		(#"{"envSchema":{"extends":["a.json","b.json"]}}"#, ["a.json": #"{"vars":{"X":{}}}"#, "b.json": #"{"vars":{"X":{}}}"#], "b.json › vars.X", "More than one schema declares this key. Add an override in lpm.json to choose one."),
 		(#"{"envSchema":{"extends":["a.json"]}}"#, ["a.json": #"{"extends":["lpm.json"]}"#], "lpm.json › envSchema.extends", "The imports form a cycle."),
 		(#"{"envSchema":{"extends":["preset:nope"]}}"#, [:], "preset:nope", "This preset doesn't exist."),
