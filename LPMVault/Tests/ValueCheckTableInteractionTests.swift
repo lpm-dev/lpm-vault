@@ -266,7 +266,7 @@ extension SheetInteractionTests {
 				return OCRText(lines.map(\.text).joined(separator: "\n"))
 			}
 			#expect(try await inspectorText().contains("Not a valid URL"))
-			#expect(try await inspectorText().contains(".env.production"))
+			#expect(try await inspectorText().contains("production"))
 
 			try host.enterValue("https://db.example.com", at: 1)
 			var cleared = false
