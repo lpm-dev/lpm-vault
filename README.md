@@ -95,6 +95,11 @@ Rules inherited from another schema file or a preset show where they come from.
 The inspector lists the selected key's rules, read-only, between its values and its description.
 Keys whose rules make them public, because frameworks expose them to the browser, show a globe and their values unmasked; every other value stays masked until you reveal it.
 When you add a variable, typing a name suggests declared keys that are not yet set in the selected environments; use the arrow keys and Return, or click one, to pick it and see its rules beside the value.
+LPM Vault checks each environment's stored values against these rules with the same engine the LPM CLI uses.
+A key whose value fails a rule gets a red marker, and the value is underlined with the reason in its tooltip; an empty value a rule requires reads Required, and a value the CLI fills from a schema default reads (default).
+The Invalid chip and the Invalid values smart view list the keys that fail, and an environment's table names a failing group in a banner above its rows.
+An environment without values of its own uses `.env`'s values in the LPM CLI, so it shows no problems of its own.
+The check covers the values LPM Vault stores; when it runs a command, the LPM CLI can also read `.env` files in the project folder and variables from your shell.
 
 The connection sheet links a project directory through `lpm.json`.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.

@@ -185,3 +185,82 @@ struct ValueCheckStoreTests {
 		#expect(store.valueChecks.isEmpty)
 	}
 }
+
+@Suite("Value check presentation")
+struct VaultValueCheckPresentationTests {
+	private typealias Problem = ProjectEnvValueCheck.Problem
+	private typealias Environment = ProjectEnvValueCheck.Environment
+
+	private let project = VaultProject(id: "p", name: "p", path: "", environments: [
+		"default": ["DATABASE_URL": "x", "PASSWORD": "a", "OAUTH_TOKEN": "b", "NODE_OPTIONS": "--inspect"],
+		"production": ["DATABASE_URL": "https://db"],
+		"staging": [:],
+	])
+	private let rules = ProjectEnvSchemaOverview(rules: [
+		.init(key: "API_TOKEN", isPublic: false, source: nil, badges: [.init(text: "Required in production"), .init(text: "Secret")]),
+		.init(key: "DATABASE_URL", isPublic: false, source: nil, badges: [.init(text: "URL")]),
+	], groups: [.init(name: "credentials", summary: "Exactly one of PASSWORD, OAUTH_TOKEN", members: ["PASSWORD", "OAUTH_TOKEN"])])
+
+	private var presentation: VaultValueCheckPresentation {
+		let group = Problem.Kind.group(name: "credentials", mode: "exactlyOne")
+		let check = ProjectEnvValueCheck(environments: [
+			"default": Environment(problems: [
+				"DATABASE_URL": [Problem(key: "DATABASE_URL", kind: .format("url"))],
+				"PASSWORD": [Problem(key: "PASSWORD", kind: group)],
+				"OAUTH_TOKEN": [Problem(key: "OAUTH_TOKEN", kind: group)],
+			], defaults: ["PORT": "3000"], ignored: ["NODE_OPTIONS"]),
+			"production": Environment(problems: ["API_TOKEN": [Problem(key: "API_TOKEN", kind: .required)]], defaults: ["PORT": "3000"]),
+			"staging": Environment(readsDefaultEnvironment: true, problems: ["DATABASE_URL": [Problem(key: "DATABASE_URL", kind: .format("url"))]], defaults: ["PORT": "3000"]),
+		])
+		return VaultValueCheckPresentation(check: check, rules: rules, project: project)
+	}
+
+	@Test("problems read as plain reasons, with the rule's scope and the group's state")
+	func reasons() {
+		let shown = presentation
+		#expect(shown.reason(for: "DATABASE_URL", in: "default") == "Not a valid URL")
+		#expect(shown.reason(for: "API_TOKEN", in: "production") == "Required in production")
+		#expect(shown.reason(for: "PASSWORD", in: "default") == "Exactly one of PASSWORD, OAUTH_TOKEN — both set")
+		#expect(shown.reason(for: "NODE_OPTIONS", in: "default") == "The LPM CLI never passes NODE_OPTIONS to commands.")
+		#expect(shown.reason(for: "DATABASE_URL", in: "production") == nil)
+		#expect(shown.groupFailures(in: "default").map(\.message) == ["Exactly one of PASSWORD, OAUTH_TOKEN — both set"])
+		#expect(shown.isRequiredAndUnset("API_TOKEN", in: "production"))
+	}
+
+	@Test("an environment that reads the default environment's values shows no problems or defaults of its own")
+	func defaultEnvironmentReaders() {
+		let shown = presentation
+		#expect(shown.readsDefaultEnvironment("staging"))
+		#expect(shown.problems(of: "DATABASE_URL", in: "staging").isEmpty)
+		#expect(shown.defaultValue(of: "PORT", in: "staging") == nil)
+		#expect(shown.invalidKeys(in: "staging").isEmpty)
+		#expect(shown.invalidKeys == ["DATABASE_URL", "PASSWORD", "OAUTH_TOKEN", "NODE_OPTIONS", "API_TOKEN"])
+	}
+
+	@Test("declared keys without a stored value show where a rule or a default needs them")
+	func unstoredKeys() {
+		let shown = presentation
+		#expect(shown.unstoredKeys(in: "production") == ["API_TOKEN", "PORT"])
+		#expect(shown.unstoredKeys(in: "staging").isEmpty)
+		#expect(shown.unstoredInvalidKeys() == ["API_TOKEN"])
+		#expect(VaultValueCheckPresentation.none.invalidKeys.isEmpty)
+		#expect(!VaultValueCheckPresentation.none.hasCheck)
+	}
+
+	@Test("tables list declared keys among stored ones in Finder order, and the Invalid filter keeps failing keys")
+	func derivation() {
+		let snapshot = VaultWorkspaceSnapshot(project: project)
+		func derive(_ mode: VaultWorkspaceMode, filter: VaultWorkspaceFilter = .all, search: String = "", order: VaultKeySortOrder = .ascending, unstored: Set<String>) -> VaultContentDerivation {
+			VaultContentDerivation(project: project, snapshot: snapshot, selectedEnvironment: "production", mode: mode,
+				filter: filter, searchText: search, sortOrder: order, revealedKeys: [],
+				invalidKeys: ["API_TOKEN", "DATABASE_URL"], unstoredKeys: unstored)
+		}
+		#expect(derive(.matrix, unstored: ["API_TOKEN"]).filteredKeys == ["API_TOKEN", "DATABASE_URL", "NODE_OPTIONS", "OAUTH_TOKEN", "PASSWORD"])
+		#expect(derive(.matrix, order: .descending, unstored: ["API_TOKEN"]).filteredKeys.first == "PASSWORD")
+		#expect(derive(.matrix, filter: .invalid, unstored: ["API_TOKEN"]).filteredKeys == ["API_TOKEN", "DATABASE_URL"])
+		#expect(derive(.matrix, search: "api", unstored: ["API_TOKEN"]).filteredKeys == ["API_TOKEN"])
+		#expect(derive(.environment("production"), unstored: ["API_TOKEN", "PORT"]).environmentKeys == ["API_TOKEN", "DATABASE_URL", "PORT"])
+		#expect(derive(.environment("production"), order: .descending, unstored: ["API_TOKEN", "PORT"]).environmentKeys == ["PORT", "DATABASE_URL", "API_TOKEN"])
+		#expect(derive(.environment("production"), search: "port", unstored: ["API_TOKEN", "PORT"]).environmentKeys == ["PORT"])
+	}
+}

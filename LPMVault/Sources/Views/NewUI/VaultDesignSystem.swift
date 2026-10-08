@@ -385,7 +385,10 @@ struct VaultRowIconButton: View {
 struct VaultFilterChip: View {
 	let title: String
 	var dot: Color?
+	var symbol: String?
 	var trailing: String?
+	/// Draws the chip in red, for a view of things to fix.
+	var alert = false
 	let selected: Bool
 	let action: () -> Void
 
@@ -395,14 +398,15 @@ struct VaultFilterChip: View {
 		Button(action: action) {
 			HStack(spacing: 6) {
 				if let dot { VaultStatusDot(color: dot) }
-				Text(title).font(.system(size: 12, weight: selected ? .semibold : .regular))
+				if let symbol { Image(systemName: symbol).font(.system(size: 10.5, weight: .semibold)) }
+				Text(title).font(.system(size: 12, weight: selected || alert ? .semibold : .regular))
 				if let trailing { Text(trailing).font(VaultTypography.mono(11)) }
 			}
-			.foregroundStyle(selected ? .white : VaultPalette.textSecondary)
+			.foregroundStyle(selected ? .white : (alert ? VaultPalette.redText : VaultPalette.textSecondary))
 			.padding(.horizontal, 11)
 			.frame(height: 26)
-			.background(Capsule().fill(selected ? VaultPalette.strongFill : (hovering ? VaultPalette.sidebar : .clear)))
-			.overlay { Capsule().stroke(selected ? .clear : VaultPalette.border, lineWidth: 1) }
+			.background(Capsule().fill(selected ? (alert ? VaultPalette.red : VaultPalette.strongFill) : (hovering ? VaultPalette.sidebar : (alert ? VaultPalette.redTint : .clear))))
+			.overlay { Capsule().stroke(selected ? .clear : (alert ? VaultPalette.red.opacity(0.55) : VaultPalette.border), lineWidth: 1) }
 			.fixedSize()
 		}
 		.buttonStyle(.plain)
@@ -428,6 +432,48 @@ struct VaultInitialsAvatar: View {
 					Circle().fill(VaultPalette.avatarNeutral)
 				}
 			}
+	}
+}
+
+/// A table cell's value as the rules see it: the stored value, underlined in
+/// red with the reason as its tooltip when it fails a rule; or, without a
+/// stored value, "Required", the default that fills it, or "Not set".
+struct VaultCheckedValue: View {
+	let value: String?
+	var isRevealed = false
+	/// Why the value fails its rules, one reason per line.
+	var problem: String?
+	var defaultValue: String?
+	var isRequired = false
+	var showsNotSet = true
+	var size: CGFloat = 12
+
+	var body: some View {
+		Group {
+			if let value {
+				VaultValueText(text: isRevealed ? value : "••••••••••", masked: !isRevealed, size: size)
+					.overlay(alignment: .bottom) { if problem != nil { underline } }
+					.help(problem ?? "")
+			} else if isRequired {
+				Text("Required")
+					.font(.system(size: size - 0.5, weight: .semibold))
+					.foregroundStyle(VaultPalette.redText)
+					.overlay(alignment: .bottom) { underline }
+					.help(problem ?? "Required")
+			} else if let defaultValue {
+				(Text(defaultValue).font(VaultTypography.mono(size)).foregroundColor(VaultPalette.textTertiary)
+					+ Text("  (default)").font(VaultTypography.mono(size - 1)).foregroundColor(VaultPalette.textFaint))
+					.lineLimit(1)
+					.truncationMode(.middle)
+					.help("The schema default the LPM CLI uses: \(defaultValue)")
+			} else if showsNotSet {
+				Text("Not set").font(.system(size: size - 1, weight: .semibold)).foregroundStyle(VaultPalette.redText)
+			}
+		}
+	}
+
+	private var underline: some View {
+		Rectangle().fill(VaultPalette.red).frame(height: 1.5).offset(y: 3).accessibilityHidden(true)
 	}
 }
 

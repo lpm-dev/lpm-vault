@@ -360,6 +360,12 @@ struct VaultSidebarView: View {
 				.padding(.horizontal, 8)
 			smartViewRow(title: "Missing in an environment", symbol: "exclamationmark.triangle.fill", count: missing, tint: VaultPalette.red, target: .missing)
 				.padding(.horizontal, 8)
+			if let check = store.valueChecks[project.id] {
+				let invalid = VaultValueCheckPresentation(check: check, rules: nil, project: project).invalidKeys.count
+				smartViewRow(title: "Invalid values", symbol: "xmark.circle.fill", count: invalid, tint: VaultPalette.red, target: .invalid)
+					.padding(.horizontal, 8)
+					.help("Keys whose values fail their lpm.json rules")
+			}
 		}
 	}
 
