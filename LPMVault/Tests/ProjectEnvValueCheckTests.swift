@@ -6,6 +6,19 @@ import Testing
 
 @Suite("Value checks")
 struct ProjectEnvValueCheckTests {
+	@Test("fallback tables include ignored inherited keys")
+	func fallbackTablesIncludeIgnoredInheritedKeys() throws {
+		let rules = try overview(#"{"vars":{"PORT":{}}}"#)
+		let project = VaultProject(id: "p", name: "p", path: "",
+			environments: ["default": ["NODE_OPTIONS": "--inspect"], "production": [:]])
+		let check = try #require(rules.check(project.environments))
+		let presentation = VaultValueCheckPresentation(check: check, rules: rules, project: project)
+		#expect(presentation.invalidKeys(in: "production") == ["NODE_OPTIONS"])
+		#expect(presentation.unstoredKeys(in: "production") == ["NODE_OPTIONS"])
+		#expect(presentation.reason(for: "NODE_OPTIONS", in: "production")
+			== "The LPM CLI never passes NODE_OPTIONS to commands.")
+	}
+
 	@Test("group explanations exclude values the CLI ignores")
 	func groupMessagesExcludeIgnoredValues() throws {
 		let rules = try overview(#"{"vars":{"NODE_OPTIONS":{},"TOKEN":{}},"groups":{"auth":{"mode":"exactlyOne","vars":["NODE_OPTIONS","TOKEN"]}}}"#)

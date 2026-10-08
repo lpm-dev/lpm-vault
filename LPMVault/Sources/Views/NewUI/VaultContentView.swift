@@ -88,9 +88,6 @@ struct VaultContentView: View {
 			statusBar(derived)
 		}
 		.background(VaultPalette.content)
-		.onChange(of: valueChecks.hasCheck) { _, hasCheck in
-			if !hasCheck, filter == .invalid { filter = .all }
-		}
 	}
 
 	/// The first row is about the project: what it is, its CLI approval, the
@@ -293,7 +290,14 @@ struct VaultContentView: View {
 									isPublic: shownPublicKeys.contains(key),
 									isEdited: editedKeys.contains(key),
 									checks: valueChecks,
-									onSelect: { selectedKey = key; showsInspector = true },
+									onSelect: {
+										if snapshot.summaries[key] == nil {
+											onAddKey(key)
+										} else {
+											selectedKey = key
+											showsInspector = true
+										}
+									},
 									onReveal: { toggleReveal(key) }
 								)
 								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }

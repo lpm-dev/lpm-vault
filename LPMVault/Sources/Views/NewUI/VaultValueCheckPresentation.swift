@@ -70,12 +70,13 @@ struct VaultValueCheckPresentation {
 	}
 
 	/// Keys without a stored value in `environment` that it still shows: a
-	/// requirement nothing meets, or a default that fills it.
+	/// failing requirement, a default, or an ignored inherited key.
 	func unstoredKeys(in environment: String) -> Set<String> {
 		guard let checked = check?.environments[environment] else { return [] }
 		let stored = environments[environment] ?? [:]
 		var keys = Set(checked.defaults.keys)
 		keys.formUnion(checked.problems.keys)
+		keys.formUnion(checked.ignored)
 		return keys.filter { stored[$0] == nil }
 	}
 

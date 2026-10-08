@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 import Testing
 
@@ -8,6 +9,108 @@ extension SheetInteractionTests {
 	@Suite("Value checks in the tables", .serialized)
 	@MainActor
 	struct ValueCheckTableInteractionTests {
+		@Observable
+		final class CheckState {
+			let project: VaultProject
+			var check: ProjectEnvValueCheck?
+			var filter = VaultWorkspaceFilter.invalid
+			var addedKey: String?
+			var selectedKey: String?
+			var showsInspector = false
+
+			init(project: VaultProject, check: ProjectEnvValueCheck) {
+				self.project = project
+				self.check = check
+			}
+		}
+
+		struct CheckContent: View {
+			@Bindable var state: CheckState
+			var mode: VaultWorkspaceMode = .matrix
+
+			var body: some View {
+				VaultContentView(
+					project: state.project,
+					snapshot: VaultWorkspaceSnapshot(project: state.project),
+					environments: ["default", "production"], selectedEnvironment: "production",
+					mode: .constant(mode),
+					filter: $state.filter, environmentViewMode: .constant(.table),
+					sortOrder: .constant(.ascending), searchText: "",
+					selectedKey: $state.selectedKey, revealedKeys: .constant([]),
+					showsInspector: $state.showsInspector,
+					columnWidths: .constant(VaultProjectTableColumnWidths()), isImporting: false,
+					isCopyingAll: false,
+					cliAccess: nil, isChangingCliAccess: false, onChangeCliAccess: { _ in },
+					onCopyAll: {}, onImport: {}, onExport: {},
+					valueChecks: VaultValueCheckPresentation(
+						check: state.check, rules: nil, project: state.project),
+					onAddSecret: {}, onAddKey: { state.addedKey = $0 }, onCopySecret: { _, _ in },
+					onDeleteSecret: { _, _ in }, onResizeColumns: {})
+			}
+		}
+
+		@Test("the Invalid filter survives pending checks")
+		func invalidFilterSurvivesPendingChecks() async throws {
+			let checked = ProjectEnvValueCheck(environments: [
+				"default": .init(problems: [
+					"BAD": [.init(key: "BAD", kind: .format("port"))]
+				])
+			])
+			let state = CheckState(
+				project: VaultProject(
+					id: "p", name: "p", path: "",
+					environments: ["default": ["BAD": "bad", "SAVED": "ok"]]), check: checked)
+			let host = SheetTestHost(
+				CheckContent(state: state), size: NSSize(width: 1100, height: 550),
+				keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			state.check = nil
+			try await host.settle()
+			state.check = checked
+			try await host.settle()
+			#expect(state.filter == .invalid)
+			#expect(!(try await host.text()).contains("SAVED"))
+		}
+
+		@Test("clicking a required-only matrix row adds its key")
+		func requiredMatrixRowAddsItsKey() async throws {
+			let state = CheckState(
+				project: VaultProject(id: "p", name: "p", path: "", environments: ["default": [:]]),
+				check: ProjectEnvValueCheck(environments: [
+					"default": .init(problems: [
+						"API_TOKEN": [.init(key: "API_TOKEN", kind: .required)]
+					])
+				]))
+			let host = SheetTestHost(
+				CheckContent(state: state), size: NSSize(width: 1100, height: 550),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			try await host.settle()
+			try await host.click("API_TOKEN")
+			try await host.settle()
+			#expect(state.addedKey == "API_TOKEN")
+			#expect(state.selectedKey == nil)
+			#expect(!state.showsInspector)
+		}
+
+		@Test("fallback tables show ignored keys included in the invalid count")
+		func fallbackTableShowsIgnoredKeys() async throws {
+			let state = CheckState(
+				project: VaultProject(
+					id: "p", name: "p", path: "",
+					environments: ["default": ["NODE_OPTIONS": "--inspect"], "production": [:]]),
+				check: ProjectEnvValueCheck(environments: [
+					"production": .init(readsDefaultEnvironment: true, ignored: ["NODE_OPTIONS"])
+				]))
+			let host = SheetTestHost(
+				CheckContent(state: state, mode: .environment("production")),
+				size: NSSize(width: 1100, height: 550), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			#expect((try await host.text()).contains("NODE_OPTIONS"))
+		}
+
 		@Test func tables_show_defaults_that_replace_empty_stored_values() async throws {
 			let project = VaultProject(
 				id: "p", name: "p", path: "", environments: ["default": ["EMPTY": ""]])
