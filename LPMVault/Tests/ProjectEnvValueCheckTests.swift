@@ -19,6 +19,30 @@ struct ProjectEnvValueCheckTests {
 			== "The LPM CLI never passes NODE_OPTIONS to commands.")
 	}
 
+	@Test("a declared-key rename preview matches the saved rules and values")
+	func renamePreviewMatchesSavedState() async throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "rename-preview-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try #"{"envSchema":{"vars":{"OLD":{"format":"port"},"TOKEN":{"requiredWhen":{"variable":"OLD","equals":"3000"}},"ALT":{}},"groups":{"choice":{"mode":"exactlyOne","vars":["OLD","ALT"]}}}}"#
+			.write(to: folder.appending(path: "lpm.json"), atomically: true, encoding: .utf8)
+		let rules = try #require(ProjectEnvSchemaFile.load(inFolder: folder.path, vaultID: "p").schema.overview)
+		let project = VaultProject(id: "p", name: "p", path: folder.path,
+			environments: ["default": ["OLD": "bad", "ALT": "set"], "production": ["OLD": "3000"]])
+		let edit = VaultKeyEdit(key: "OLD", environments: project.environments, newKey: "NEW")
+		let worker = ProjectEnvValueCheckWorker()
+		let preview = try #require(await worker.preview(edit: edit, project: project, rules: rules))
+		_ = try ProjectEnvSchemaFile.apply(.init(rename: .init(from: "OLD", to: "NEW")),
+			inFolder: folder.path, vaultID: "p")
+		let savedRules = try #require(ProjectEnvSchemaFile.load(inFolder: folder.path, vaultID: "p").schema.overview)
+		let savedValues = try edit.applied(to: project.environments).get()
+		#expect(preview.project.environments == savedValues)
+		#expect(preview.rules.effectiveSchema == savedRules.effectiveSchema)
+		#expect(preview.check == savedRules.check(savedValues))
+		#expect(preview.check?.problems(of: "NEW", in: "default").contains(.init(key: "NEW", kind: .format("port"))) == true)
+		#expect(preview.rules.groups.first?.members == ["NEW", "ALT"])
+	}
+
 	@Test("group explanations exclude values the CLI ignores")
 	func groupMessagesExcludeIgnoredValues() throws {
 		let rules = try overview(#"{"vars":{"NODE_OPTIONS":{},"TOKEN":{}},"groups":{"auth":{"mode":"exactlyOne","vars":["NODE_OPTIONS","TOKEN"]}}}"#)
@@ -164,6 +188,8 @@ struct ProjectEnvValueCheckTests {
 
 		#expect(rules.check(environments) == nil)
 	}
+
+
 }
 
 @Suite("Value checks in the store", .serialized)
