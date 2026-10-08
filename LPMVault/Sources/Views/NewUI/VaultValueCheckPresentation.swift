@@ -57,7 +57,7 @@ struct VaultValueCheckPresentation {
 	/// The schema default the LPM CLI fills `key` with in `environment`.
 	func defaultValue(of key: String, in environment: String) -> String? {
 		guard let checked = check?.environments[environment], !checked.readsDefaultEnvironment else { return nil }
-		return checked.defaults[key]
+		return checked.defaults[key]?.escapingDirectionControls
 	}
 
 	func isIgnored(_ key: String, in environment: String) -> Bool {

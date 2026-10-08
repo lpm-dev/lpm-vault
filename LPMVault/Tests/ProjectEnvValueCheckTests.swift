@@ -237,6 +237,16 @@ struct VaultValueCheckPresentationTests {
 		#expect(shown.invalidKeys == ["DATABASE_URL", "PASSWORD", "OAUTH_TOKEN", "NODE_OPTIONS", "API_TOKEN"])
 	}
 
+	@Test("schema defaults escape controls before display")
+	func defaultsEscapeControls() {
+		let check = ProjectEnvValueCheck(environments: [
+			"production": Environment(defaults: ["MESSAGE": "before\u{2028}middle\u{202E}after"]),
+		])
+		let shown = VaultValueCheckPresentation(check: check, rules: nil, project: project)
+
+		#expect(shown.defaultValue(of: "MESSAGE", in: "production") == "before\\u{2028}middle\\u{202e}after")
+	}
+
 	@Test("declared keys without a stored value show where a rule or a default needs them")
 	func unstoredKeys() {
 		let shown = presentation
