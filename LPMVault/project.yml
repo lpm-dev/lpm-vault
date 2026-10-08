@@ -15,8 +15,8 @@ settings:
   base:
     PRODUCT_NAME: LPM Vault
     PRODUCT_BUNDLE_IDENTIFIER: dev.lpm.vault
-    MARKETING_VERSION: "1.0.1"
-    CURRENT_PROJECT_VERSION: "6"
+    MARKETING_VERSION: "1.0.2"
+    CURRENT_PROJECT_VERSION: "7"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
@@ -40,7 +40,7 @@ targets:
     info:
       path: Info.plist
       properties:
-        SUFeedURL: https://vault.lpm.dev/updates/appcast.xml
+        SUFeedURL: https://vault.lpm.dev/updates/channels.xml
         SUPublicEDKey: "g8YlEsyut4fJ+dnO/FdFrD/AicRACq9FjZbHm8PClUs="
         SURequireSignedFeed: true
         SUVerifyUpdateBeforeExtraction: true

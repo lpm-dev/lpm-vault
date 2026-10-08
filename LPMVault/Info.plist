@@ -33,14 +33,14 @@
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>dev.lpm.vault.sidebar-project</string>
-			<key>UTTypeDescription</key>
-			<string>Vault sidebar project</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
 			</array>
+			<key>UTTypeDescription</key>
+			<string>Vault sidebar project</string>
+			<key>UTTypeIdentifier</key>
+			<string>dev.lpm.vault.sidebar-project</string>
 		</dict>
 	</array>
 </dict>

@@ -14,9 +14,18 @@ enum RustSchemaEngine {
 		}
 	}
 
-	struct Origin: Sendable {
+	struct Origin: Equatable, Sendable {
 		let source: String
 		let pointer: String
+	}
+
+	/// Why the engine rejected a schema: a stable code and, when the engine
+	/// knows it, the declaring file and JSON pointer. Never contains values.
+	struct Diagnostic: Equatable, Sendable {
+		let code: String
+		let source: String?
+		let pointer: String?
+		let message: String?
 	}
 
 	struct Dependency: Sendable {
@@ -49,6 +58,19 @@ enum RustSchemaEngine {
 			do { return try LPMConfigJSON(parsing: Data(bytesNoCopy: data, count: result.length, deallocator: .none), rejectDuplicateKeys: true) }
 			catch { throw .invalidSchema }
 		}
+
+		/// The diagnostic of a rejected schema; nil for any other outcome.
+		func diagnostic() -> Diagnostic? {
+			defer { lpm_env_clear_output(&result) }
+			guard result.status == 1, result.length > 0, result.length <= 64 * 1024, let data = result.data,
+				let output = try? LPMConfigJSON(parsing: Data(bytesNoCopy: data, count: result.length, deallocator: .none)),
+				case .string(let code)? = output["code"]
+			else { return nil }
+			func text(_ field: String) -> String? {
+				if case .string(let value)? = output[field], !value.isEmpty { value } else { nil }
+			}
+			return Diagnostic(code: code, source: text("source"), pointer: text("pointer"), message: text("message"))
+		}
 	}
 
 	static func validate(_ schema: LPMConfigJSON) throws(ProjectEnvSchemaFile.FileError) -> LPMConfigJSON {
@@ -63,16 +85,7 @@ enum RustSchemaEngine {
 	}
 
 	static func resolve(_ schema: LPMConfigJSON, inFolder folder: String) throws(ProjectEnvSchemaFile.FileError) -> Resolution {
-		let schema = schema == .null ? .object([]) : schema
-		guard lpm_env_abi_version() == 1, case .object = schema else { throw .invalidSchema }
-		let input: Data
-		do { input = try schema.compactData(maximumBytes: 2 * 1024 * 1024) } catch { throw .tooLarge }
-		let path = Data(folder.utf8)
-		let owned = input.withUnsafeBytes { bytes in
-			path.withUnsafeBytes { directory in
-				OwnedResult(lpm_env_resolve(bytes.bindMemory(to: UInt8.self).baseAddress, input.count, directory.bindMemory(to: UInt8.self).baseAddress, path.count))
-			}
-		}
+		let owned = try resolution(of: schema, inFolder: folder)
 		let output = try owned.decode()
 		guard output["abiVersion"] == .number("1"), let effective = output["effective"], owned.result.snapshot != nil else { throw .invalidSchema }
 		guard case .object(let rawOrigins)? = output["origins"], case .array(let rawDependencies)? = output["dependencies"] else { throw .invalidSchema }
@@ -103,6 +116,25 @@ enum RustSchemaEngine {
 			dependencies.append(Dependency(path: path, digest: digest, bytes: bytes))
 		}
 		return Resolution(effective: effective, origins: origins, groupOrigins: groupOrigins, declaringOrigins: declaringOrigins, dependencies: dependencies, snapshot: Snapshot(owned: owned))
+	}
+
+	/// Why `resolve` rejects `schema`, for showing the problem; nil when the
+	/// schema resolves or fails for another reason.
+	static func diagnostic(for schema: LPMConfigJSON, inFolder folder: String) -> Diagnostic? {
+		(try? resolution(of: schema, inFolder: folder))?.diagnostic()
+	}
+
+	private static func resolution(of schema: LPMConfigJSON, inFolder folder: String) throws(ProjectEnvSchemaFile.FileError) -> OwnedResult {
+		let schema = schema == .null ? .object([]) : schema
+		guard lpm_env_abi_version() == 1, case .object = schema else { throw .invalidSchema }
+		let input: Data
+		do { input = try schema.compactData(maximumBytes: 2 * 1024 * 1024) } catch { throw .tooLarge }
+		let path = Data(folder.utf8)
+		return input.withUnsafeBytes { bytes in
+			path.withUnsafeBytes { directory in
+				OwnedResult(lpm_env_resolve(bytes.bindMemory(to: UInt8.self).baseAddress, input.count, directory.bindMemory(to: UInt8.self).baseAddress, path.count))
+			}
+		}
 	}
 	private static func byteArray(_ value: LPMConfigJSON?) throws(ProjectEnvSchemaFile.FileError) -> Data {
 		guard case .array(let values)? = value else { throw .invalidSchema }
