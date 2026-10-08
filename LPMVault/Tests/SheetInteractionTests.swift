@@ -517,10 +517,15 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Renders `rect` (view coordinates, whole view by default) at the backing scale.
+	/// Renders at 2× whatever the display's scale. Recognition misreads small text
+	/// at the 1× scale of CI runners, which have no Retina display.
 	func snapshot(_ target: NSView, rect: NSRect? = nil) throws -> CGImage {
 		target.layoutSubtreeIfNeeded()
 		let area = rect ?? target.bounds
-		let bitmap = try #require(target.bitmapImageRepForCachingDisplay(in: area))
+		let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int((area.width * 2).rounded(.up)),
+			pixelsHigh: Int((area.height * 2).rounded(.up)), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+			isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+		bitmap.size = area.size
 		target.cacheDisplay(in: area, to: bitmap)
 		return try #require(bitmap.cgImage)
 	}
@@ -529,6 +534,32 @@ final class SheetTestHost<V: View> {
 		let box = try #require(try await labelBounds(label, in: view, options: [], region: region), "Missing label \(label)")
 		return CGRect(x: box.minX * view.bounds.width, y: box.minY * view.bounds.height,
 			width: box.width * view.bounds.width, height: box.height * view.bounds.height)
+	}
+
+	/// Clicks the sidebar row of an environment, such as ".env", found by its
+	/// rendered name, and returns the clicked point in window coordinates.
+	@discardableResult
+	func clickSidebarEnvironment(_ displayName: String) async throws -> NSPoint {
+		let region = CGRect(x: 0, y: 0, width: min(1, (VaultMetrics.sidebar + 20) / view.bounds.width), height: 1)
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		while true {
+			let lines = try await RenderedText.lines(in: snapshot(view), level: .accurate, region: region)
+			// The color swatch and the name's leading dot can read as a bullet.
+			func name(_ text: String) -> Substring {
+				let compact = Substring(text.filter { !$0.isWhitespace && $0 != "•" })
+				return compact.drop { $0 == "." }
+			}
+			if let line = lines.first(where: { name($0.text) == name(displayName) }) {
+				let point = NSPoint(x: line.bounds.midX * view.bounds.width, y: line.bounds.midY * view.bounds.height)
+				try NativeTestClick.send(to: window, at: point)
+				return point
+			}
+			guard ContinuousClock.now < deadline else {
+				print("Sidebar rows read as: \(lines.map(\.text))")
+				return try #require(nil as NSPoint?, "Missing sidebar row \(displayName)")
+			}
+			try await Task.sleep(for: .milliseconds(20))
+		}
 	}
 
 	func rowIsHighlighted(inset: CGFloat, rowMidY: CGFloat) throws -> Bool {

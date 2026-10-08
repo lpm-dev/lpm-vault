@@ -55,7 +55,7 @@ struct VaultWorkspaceView: View {
 	private var inspectorVisible: Bool {
 		guard !store.showAuthStatus else { return false }
 		if hasUnsavedRecovery { return true }
-		guard showsInspector, let project else { return false }
+		guard showsInspector, mode != .schema, let project else { return false }
 		return store.workspaceSnapshots[project.id] != nil
 	}
 
@@ -173,6 +173,16 @@ struct VaultWorkspaceView: View {
 							VaultLoadErrorView(failure: failure, retry: store.retrySelectedProjectLoad)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
+						} else if let project, mode == .schema {
+							let rules = store.keyDescriptions[project.id]
+							VaultSchemaView(
+								state: rules?.schema,
+								folder: rules?.folder,
+								descriptions: (try? rules?.rules.get())?.descriptions ?? [:],
+								sortOrder: $keySortOrder,
+								onConnectCLI: { showConnectCLISheet = true },
+								onRecheck: store.reloadKeyDescriptions
+							)
 						} else if let project,
 							store.isLoadingSelectedProject || (project.hasLoadedEnvironments && store.workspaceSnapshots[project.id] == nil)
 						{

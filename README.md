@@ -89,6 +89,10 @@ Drag a column boundary in the table header to resize the column.
 Both **All variables** and each environment table support this gesture.
 Each project keeps its column widths during the session, including visits to Settings and project reloads.
 
+Select **Schema** under a project to see the rules its `lpm.json` declares for each key, such as required keys, formats, defaults, and keys exposed to the browser.
+Rules are read-only in LPM Vault; edit them in `lpm.json`, and the LPM CLI enforces them.
+Rules inherited from another schema file or a preset show where they come from.
+
 The connection sheet links a project directory through `lpm.json`.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.
 Then run a project script:
