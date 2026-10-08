@@ -563,7 +563,10 @@ struct VaultContentDerivation: Equatable {
   let filteredKeys: [String]
   let environmentKeys: [String]
   let environmentDriftingKeyCount: Int
+  /// Every visible value that can be masked is revealed.
   let allVisibleRevealed: Bool
+  /// Some visible value can be masked; public values always show.
+  let hasMaskableValues: Bool
 
   init(
     project: VaultProject,
@@ -573,7 +576,8 @@ struct VaultContentDerivation: Equatable {
     filter: VaultWorkspaceFilter,
     searchText: String,
     sortOrder: VaultKeySortOrder,
-    revealedKeys: Set<String>
+    revealedKeys: Set<String>,
+    publicKeys: Set<String> = []
   ) {
     let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     // Matching walks the A-to-Z keys alongside their lowercased forms, then
@@ -636,7 +640,9 @@ struct VaultContentDerivation: Equatable {
       environmentDriftingKeyCount = 0
     }
     let visibleKeys = mode == .matrix ? filteredKeys : environmentKeys
-    allVisibleRevealed = !visibleKeys.isEmpty && visibleKeys.allSatisfy(revealedKeys.contains)
+    hasMaskableValues = visibleKeys.contains { !publicKeys.contains($0) }
+    allVisibleRevealed = hasMaskableValues
+      && visibleKeys.allSatisfy { publicKeys.contains($0) || revealedKeys.contains($0) }
   }
 }
 

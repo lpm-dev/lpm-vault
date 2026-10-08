@@ -1202,6 +1202,7 @@ final class VaultStore {
   let keyDrafts = VaultKeyDrafts()
   /// Key descriptions from each project's `lpm.json`, by project ID.
   private(set) var keyDescriptions: [String: ProjectKeyDescriptions] = [:]
+  private var unverifiedKeyDescriptionProjects: Set<String> = []
   @ObservationIgnored private var keyDescriptionsTask: Task<Void, Never>?
   private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
   private(set) var workspaceSnapshotBuildCount = 0
@@ -1213,6 +1214,7 @@ final class VaultStore {
   var selectedProjectId: String? {
     didSet {
       guard oldValue != selectedProjectId else { return }
+      if let selectedProjectId { unverifiedKeyDescriptionProjects.insert(selectedProjectId) }
       lastSyncWarnings = []
       invalidateLocalStateRefresh()
       cancelExports()
@@ -3318,25 +3320,42 @@ final class VaultStore {
     ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
   }
 
+  /// Keys whose current rules allow automatic reveal. Empty while rules are
+  /// being reread, the folder changed, or secret actions are unavailable.
+  func publicKeys(in projectID: String) -> Set<String> {
+    guard canUseLocalSecrets, !isRefreshingLocalState,
+      !unverifiedKeyDescriptionProjects.contains(projectID),
+      let descriptions = keyDescriptions[projectID],
+      let project = projects.first(where: { $0.id == projectID }),
+      descriptions.folder == keyDescriptionFolder(for: project)
+    else { return [] }
+    return descriptions.schema?.overview?.publicKeys ?? []
+  }
+
   /// Rereads the selected project's key descriptions from its `lpm.json`.
   func reloadKeyDescriptions() {
     keyDescriptionsTask?.cancel()
     guard isUnlocked, let project = selectedProject else { return }
     let projectID = project.id
     let folder = keyDescriptionFolder(for: project)
+    unverifiedKeyDescriptionProjects.insert(projectID)
     let session = vaultSessionGeneration
     let account = selectedAccount
     keyDescriptionsTask = Task { [weak self] in
       let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder, vaultID: projectID)
-      guard let self, !Task.isCancelled, isUnlocked, session == vaultSessionGeneration, selectedAccount == account
+      guard let self, !Task.isCancelled, isUnlocked, session == vaultSessionGeneration, selectedAccount == account,
+        selectedProjectId == projectID, let currentProject = selectedProject,
+        keyDescriptionFolder(for: currentProject) == folder
       else { return }
       publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, loaded: loaded), for: projectID)
+      unverifiedKeyDescriptionProjects.remove(projectID)
     }
   }
 
   /// Rules an edit just saved. The display keeps the last read schema until the
   /// selected project's rules are read again, which also picks up new sources.
   private func publishSavedRules(_ rules: ProjectEnvSchemaFile.Rules, folder: String, for projectID: String) {
+    unverifiedKeyDescriptionProjects.insert(projectID)
     let previous = keyDescriptions[projectID]
     publishKeyDescriptions(
       ProjectKeyDescriptions(folder: folder, rules: .success(rules), schema: previous?.folder == folder ? previous?.schema : nil),
@@ -3357,6 +3376,7 @@ final class VaultStore {
     keyDescriptionsTask?.cancel()
     keyDescriptionsTask = nil
     keyDescriptions = [:]
+    unverifiedKeyDescriptionProjects = []
   }
 
   /// Saves an inspector edit of one key — a rename, new values, or both — in a

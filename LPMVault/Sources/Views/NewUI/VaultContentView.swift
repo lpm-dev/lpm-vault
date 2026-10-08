@@ -44,6 +44,8 @@ struct VaultContentView: View {
 	let onExport: () -> Void
 	/// Keys with unsaved edits in this project.
 	var editedKeys: Set<String> = []
+	/// Keys whose rules make them public; their values show unmasked.
+	var publicKeys: Set<String> = []
 	let onAddSecret: () -> Void
 	let onCopySecret: (String, String) -> Void
 	let onDeleteSecret: (String, String) -> Void
@@ -58,7 +60,8 @@ struct VaultContentView: View {
 			filter: filter,
 			searchText: searchText,
 			sortOrder: sortOrder,
-			revealedKeys: canUseSecrets ? revealedKeys : []
+			revealedKeys: canUseSecrets ? revealedKeys : [],
+			publicKeys: shownPublicKeys
 		)
 		VStack(spacing: 0) {
 			header(derived)
@@ -214,7 +217,7 @@ struct VaultContentView: View {
 				title: compact ? nil : "Reveal",
 				help: derived.allVisibleRevealed ? "Hide all values" : "Reveal all values",
 				active: derived.allVisibleRevealed,
-				disabled: !canUseSecrets
+				disabled: !canUseSecrets || !derived.hasMaskableValues
 			) { toggleRevealAll(derived) }
 			.accessibilityLabel(derived.allVisibleRevealed ? "Hide all values" : "Reveal all values")
 
@@ -264,7 +267,8 @@ struct VaultContentView: View {
 									layout: layout,
 									tableWidth: tableWidth,
 									isSelected: selectedKey == key,
-									isRevealed: canUseSecrets && revealedKeys.contains(key),
+									isRevealed: isShown(key),
+									isPublic: shownPublicKeys.contains(key),
 									isEdited: editedKeys.contains(key),
 									onSelect: { selectedKey = key; showsInspector = true },
 									onReveal: { toggleReveal(key) }
@@ -318,7 +322,8 @@ struct VaultContentView: View {
 										layout: layout,
 										tableWidth: tableWidth,
 										isSelected: selectedKey == key,
-										isRevealed: canUseSecrets && revealedKeys.contains(key),
+										isRevealed: isShown(key),
+										isPublic: shownPublicKeys.contains(key),
 										hasDrift: snapshot.hasDrift(for: key),
 										isEdited: editedKeys.contains(key),
 										onSelect: { selectedKey = key; showsInspector = true },
@@ -350,7 +355,7 @@ struct VaultContentView: View {
 		ScrollView {
 			LazyVStack(alignment: .leading, spacing: 7) {
 				ForEach(derived.environmentKeys, id: \.self) { key in
-					let isRevealed = canUseSecrets && revealedKeys.contains(key)
+					let isRevealed = isShown(key)
 					let rendered = isRevealed ? (project.value(for: key, in: selectedEnvironment) ?? "") : "••••••••••••"
 					Text("\(key)=\(rendered)")
 						.font(VaultTypography.mono(12))
@@ -408,9 +413,16 @@ struct VaultContentView: View {
 		"\(value) \(noun)\(value == 1 ? "" : "s")"
 	}
 
+	/// Public values show unmasked only while secret actions are available.
+	private var shownPublicKeys: Set<String> { canUseSecrets ? publicKeys : [] }
+
+	private func isShown(_ key: String) -> Bool {
+		canUseSecrets && (revealedKeys.contains(key) || publicKeys.contains(key))
+	}
+
 	private func toggleRevealAll(_ derived: VaultContentDerivation) {
 		guard canUseSecrets else { return }
-		let keys = mode == .matrix ? derived.filteredKeys : derived.environmentKeys
+		let keys = (mode == .matrix ? derived.filteredKeys : derived.environmentKeys).filter { !publicKeys.contains($0) }
 		if keys.allSatisfy(revealedKeys.contains) {
 			revealedKeys.subtract(keys)
 		} else {
@@ -419,7 +431,7 @@ struct VaultContentView: View {
 	}
 
 	private func toggleReveal(_ key: String) {
-		guard canUseSecrets else { return }
+		guard canUseSecrets, !publicKeys.contains(key) else { return }
 		if revealedKeys.contains(key) { revealedKeys.remove(key) } else { revealedKeys.insert(key) }
 	}
 }
@@ -469,6 +481,7 @@ private struct VaultMatrixRow: View {
 	let tableWidth: CGFloat
 	let isSelected: Bool
 	let isRevealed: Bool
+	let isPublic: Bool
 	let isEdited: Bool
 	let onSelect: () -> Void
 	let onReveal: () -> Void
@@ -483,6 +496,7 @@ private struct VaultMatrixRow: View {
 						.font(VaultTypography.mono(13, isSelected ? .bold : .regular))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.lineLimit(1)
+					if isPublic { VaultPublicBadge(compact: true) }
 					if isEdited { VaultUnsavedBadge() }
 					if snapshot.hasDrift(for: key) { VaultStatusDot(color: VaultPalette.orange).help("Values differ") }
 					if snapshot.isMissingSomewhere(key) { VaultStatusDot(color: VaultPalette.red).help("Missing in an environment") }
@@ -573,6 +587,7 @@ private struct VaultEnvironmentRow: View {
 	let tableWidth: CGFloat
 	let isSelected: Bool
 	let isRevealed: Bool
+	let isPublic: Bool
 	let hasDrift: Bool
 	let isEdited: Bool
 	let onSelect: () -> Void
@@ -599,6 +614,7 @@ private struct VaultEnvironmentRow: View {
 
 			HStack(spacing: 2) {
 				VaultRowIconButton(systemImage: isRevealed ? "eye.slash" : "eye", help: isRevealed ? "Hide value" : "Reveal value", action: onReveal)
+					.hidden(isPublic)
 				VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy key and value", action: onCopy)
 				VaultRowIconButton(systemImage: "pencil", help: "Edit key and value", action: onEdit)
 				VaultRowIconButton(systemImage: "trash", help: "Delete from this environment", destructive: true, action: onDelete)
@@ -612,7 +628,7 @@ private struct VaultEnvironmentRow: View {
 		.onTapGesture(perform: onSelect)
 		.onHover { hovering = $0 }
 		.accessibilityElement(children: .contain)
-		.accessibilityLabel("\(key), value hidden\(isEdited ? ", unsaved changes" : "")")
+		.accessibilityLabel("\(key)\(isPublic ? ", public" : ""), value \(isRevealed ? "shown" : "hidden")\(isEdited ? ", unsaved changes" : "")")
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
 	}
 
@@ -623,6 +639,7 @@ private struct VaultEnvironmentRow: View {
 				.foregroundStyle(VaultPalette.textPrimary)
 				.lineLimit(1)
 				.layoutPriority(1)
+			if isPublic { VaultPublicBadge(compact: true) }
 			if isEdited {
 				if compact {
 					VaultStatusDot(color: VaultPalette.orange).help("Unsaved changes").accessibilityLabel("Unsaved changes")
