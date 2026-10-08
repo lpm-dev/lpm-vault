@@ -144,11 +144,12 @@ struct VaultStoreTests {
 		store.selectedProjectId = "first"
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		keychain.blockNextListProjectMetadata = { entered.signal(); release.wait() }
+		keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
 		let refresh = Task { await store.refreshLocalState() }
 		await withCheckedContinuation { continuation in
 			DispatchQueue.global().async { entered.wait(); continuation.resume() }
 		}
+		keychain.beforeKeychainTransaction = nil
 		store.selectedProjectId = "second"
 		keychain.envStorage["second"]?.environments["default"]?["OTHER"] = "cli-new"
 		release.signal()
@@ -215,12 +216,13 @@ struct VaultStoreTests {
 		store.selectedProjectId = "first"
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		keychain.blockNextListProjectMetadata = { entered.signal(); release.wait() }
+		keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
 		keychain.projectReadCount = 0
 		let first = Task { await store.refreshLocalState() }
 		await withCheckedContinuation { continuation in
 			DispatchQueue.global().async { entered.wait(); continuation.resume() }
 		}
+		keychain.beforeKeychainTransaction = nil
 		#expect(store.isRefreshingLocalState)
 		#expect(store.canUseLocalSecrets)
 		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
