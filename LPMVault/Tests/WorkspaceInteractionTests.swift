@@ -143,12 +143,16 @@ extension SheetInteractionTests {
 				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
 			}
 
-			@Test("a short key's badge sits right after the key")
-			func shortKeyBadgeFollowsKey() async throws {
+			@Test("a short key's badge sits right after the key", arguments: [VaultAppearance.light, .dark])
+			func shortKeyBadgeFollowsKey(appearance: VaultAppearance) async throws {
 				let (store, _) = makeStore(environments: ["default": ["PORT": "1"], "production": ["PORT": "2"]])
 				defer { store.lock() }
-				let host = try await workspace(store)
+				let suite = "short-key-badge-\(UUID().uuidString)"
+				let defaults = try #require(UserDefaults(suiteName: suite))
+				defer { defaults.removePersistentDomain(forName: suite) }
+				let host = try await workspace(store, defaults: defaults)
 				defer { host.window.close() }
+				host.window.appearance = appearance.nativeAppearance
 				let sidebar = CGRect(x: 0, y: 0, width: VaultMetrics.sidebar / host.view.bounds.width, height: 1)
 				let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: sidebar)
 				let environment = try #require(lines.first {
@@ -158,9 +162,16 @@ extension SheetInteractionTests {
 					y: environment.bounds.midY * host.view.bounds.height), in: host)
 				#expect(try await host.waitForText("ACTIONS"))
 				try await host.settle()
-				let key = try await host.labelFrame("PORT")
-				let badge = try await host.labelFrame("DIFFERS")
-				#expect(badge.minX - key.maxX < 20, "The badge starts \(badge.minX - key.maxX) points after the key")
+				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+				let windowFrame = divider.convert(divider.bounds, to: nil)
+				let left = VaultMetrics.sidebar + VaultMetrics.paneDivider + 10
+				let row = CGRect(x: left, y: windowFrame.minY - VaultMetrics.fileRow + 6,
+					width: windowFrame.midX - left - 10, height: VaultMetrics.fileRow - 12)
+				let image = try host.snapshot(host.view)
+				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])),
+					named: "short-key-badge-\(appearance.rawValue).png")
+				let gap = try keyBadgeGap(in: image, size: host.view.bounds.size, region: row)
+				#expect(gap < 20, "The badge starts \(gap) points after the key")
 			}
 
 			@Test("the final column resize target stays clear of the inspector divider", arguments: [false, true])
@@ -961,6 +972,34 @@ extension SheetInteractionTests {
 				let offset = (row * image.width + column) * 4
 				return Array(UnsafeBufferPointer(start: pixels + offset, count: 3))
 			}
+		}
+
+		private func keyBadgeGap(in image: CGImage, size: NSSize, region: CGRect) throws -> CGFloat {
+			let scale = CGFloat(image.width) / size.width
+			let crop = CGRect(x: region.minX * scale, y: (size.height - region.maxY) * scale,
+				width: region.width * scale, height: region.height * scale).integral
+			let strip = try #require(image.cropping(to: crop))
+			let width = strip.width, height = strip.height
+			let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+				bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(strip, in: CGRect(x: 0, y: 0, width: width, height: height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			var keyMax = -1, badgeMin = width
+			for row in 0..<height {
+				let background = (row * width + width - 1) * 4
+				for column in 0..<(width - 1) {
+					let pixel = (row * width + column) * 4
+					let red = Int(pixels[pixel]), green = Int(pixels[pixel + 1]), blue = Int(pixels[pixel + 2])
+					let contrast = abs(red - Int(pixels[background])) + abs(green - Int(pixels[background + 1]))
+						+ abs(blue - Int(pixels[background + 2]))
+					if contrast > 80 && max(red, green, blue) - min(red, green, blue) < 20 { keyMax = max(keyMax, column) }
+					if red > green + 40 && green > blue + 40 { badgeMin = min(badgeMin, column) }
+				}
+			}
+			try #require(keyMax >= 0, "No visible key text in \(region)")
+			try #require(badgeMin < width, "No visible differing-value badge in \(region)")
+			try #require(badgeMin > keyMax, "Key and badge ink overlap: \(keyMax), \(badgeMin)")
+			return CGFloat(badgeMin - keyMax - 1) / scale
 		}
 
 		private func compactIndicatorProfiles(in image: CGImage, size: NSSize, region: CGRect) throws -> [[Int]] {
