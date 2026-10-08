@@ -1159,6 +1159,7 @@ final class VaultStore {
         projectCliAccess = projectCliAccess.filter { projectIDs.contains($0.key) }
         cliAccessProjectRevisions = cliAccessProjectRevisions.filter { projectIDs.contains($0.key) }
       }
+      refreshValueChecks()
       workspaceSnapshotGeneration &+= 1
       let generation = workspaceSnapshotGeneration
       workspaceSnapshotBuildTask?.cancel()
@@ -1202,6 +1203,12 @@ final class VaultStore {
   let keyDrafts = VaultKeyDrafts()
   /// Key descriptions from each project's `lpm.json`, by project ID.
   private(set) var keyDescriptions: [String: ProjectKeyDescriptions] = [:]
+  /// What the bundled engine finds in each project's stored values, by
+  /// project ID; absent while a project's rules are unknown or unreadable.
+  private(set) var valueChecks: [String: ProjectEnvValueCheck] = [:]
+  @ObservationIgnored let valueCheckWorker = ProjectEnvValueCheckWorker()
+  @ObservationIgnored private var valueCheckInputs: [String: ValueCheckInputs] = [:]
+  @ObservationIgnored private var valueCheckTasks: [String: Task<Void, Never>] = [:]
   private var unverifiedKeyDescriptionProjects: Set<String> = []
   @ObservationIgnored private var keyDescriptionsTask: Task<Void, Never>?
   private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
@@ -3370,6 +3377,56 @@ final class VaultStore {
     if case .success(let rules) = descriptions.rules {
       keyDrafts.receiveKeyDescriptions(rules.descriptions, ruleKeys: rules.keys, folder: descriptions.folder, in: projectID)
     }
+    refreshValueCheck(for: projectID)
+  }
+
+  // MARK: - Value checks
+
+  /// The values and rules a project's value check evaluated.
+  private struct ValueCheckInputs: Equatable {
+    let values: UUID
+    let rules: ProjectEnvSchemaOverview
+  }
+
+  /// Rechecks every project whose values or rules changed since its last check.
+  private func refreshValueChecks() {
+    for projectID in Set(valueChecks.keys).union(valueCheckInputs.keys).union(keyDescriptions.keys) {
+      refreshValueCheck(for: projectID)
+    }
+  }
+
+  /// Checks a project's stored values against its rules with the bundled
+  /// engine, off the main thread. A project whose rules aren't loaded, or
+  /// whose lpm.json can't be read, has no check.
+  private func refreshValueCheck(for projectID: String) {
+    guard let rules = keyDescriptions[projectID]?.schema?.overview, rules.effectiveSchema != nil,
+      let project = projects.first(where: { $0.id == projectID }), project.hasLoadedEnvironments
+    else {
+      valueCheckTasks.removeValue(forKey: projectID)?.cancel()
+      valueCheckInputs[projectID] = nil
+      if valueChecks[projectID] != nil { valueChecks[projectID] = nil }
+      return
+    }
+    let inputs = ValueCheckInputs(values: project.workspaceSnapshotIdentity, rules: rules)
+    guard valueCheckInputs[projectID] != inputs else { return }
+    valueCheckInputs[projectID] = inputs
+    valueChecks[projectID] = nil
+    valueCheckTasks[projectID]?.cancel()
+    let environments = project.environments
+    valueCheckTasks[projectID] = Task { [weak self] in
+      guard let self else { return }
+      let check = await valueCheckWorker.check(rules: rules, environments: environments)
+      guard !Task.isCancelled, self.valueCheckInputs[projectID] == inputs else { return }
+      self.valueCheckTasks[projectID] = nil
+      if self.valueChecks[projectID] != check { self.valueChecks[projectID] = check }
+    }
+  }
+
+  private func clearValueChecks() {
+    for task in valueCheckTasks.values { task.cancel() }
+    valueCheckTasks = [:]
+    valueCheckInputs = [:]
+    valueChecks = [:]
   }
 
   private func clearKeyDescriptions() {
@@ -3377,6 +3434,7 @@ final class VaultStore {
     keyDescriptionsTask = nil
     keyDescriptions = [:]
     unverifiedKeyDescriptionProjects = []
+    clearValueChecks()
   }
 
   /// Saves an inspector edit of one key — a rename, new values, or both — in a

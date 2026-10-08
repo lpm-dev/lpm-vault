@@ -21,8 +21,10 @@ jobs:
         run: rustup toolchain install 1.94.0 --profile minimal --component llvm-tools-preview --target aarch64-apple-darwin,x86_64-apple-darwin
       - name: Reproduce bundled env engine
         run: python3 LPMVault/Scripts/verify-env-engine.py --rebuild --target-dir "$RUNNER_TEMP/env-engine-target"
+      - name: Build Swift tests
+        run: swift build --build-tests --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Swift tests
-        run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
+        run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --skip-build --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Preserve failed test diagnostics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

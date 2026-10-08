@@ -125,12 +125,17 @@ struct ProjectEnvSchemaOverviewTests {
 		let unruled = try makeFolder(#"{"name":"app"}"#)
 		defer { try? FileManager.default.removeItem(atPath: unruled) }
 		let loaded = ProjectEnvSchemaFile.load(inFolder: unruled, vaultID: "project")
-		#expect(loaded.schema == .loaded(.empty, file: URL(fileURLWithPath: unruled + "/lpm.json")))
+		guard case .loaded(let overview, let file) = loaded.schema else {
+			Issue.record("Expected loaded rules, got \(loaded.schema)")
+			return
+		}
+		#expect(overview.isEmpty)
+		#expect(file == URL(fileURLWithPath: unruled + "/lpm.json"))
 		#expect(try loaded.rules.get() == .init())
 	}
 
 	@Test("unreadable rules name the file and location the engine reports", arguments: [
-		(#"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#, [String: String](), "lpm.json › envSchema", "A declaration has an unknown field or a value of the wrong type."),
+		(#"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#, [String: String](), "lpm.json › envSchema.vars.PORT.rnage", "Invalid schema definition. Check the field name and value type at this location."),
 		(#"{"envSchema":{"extends":["a.json","b.json"]}}"#, ["a.json": #"{"vars":{"X":{}}}"#, "b.json": #"{"vars":{"X":{}}}"#], "b.json › vars.X", "More than one schema declares this key. Add an override in lpm.json to choose one."),
 		(#"{"envSchema":{"extends":["a.json"]}}"#, ["a.json": #"{"extends":["lpm.json"]}"#], "lpm.json › envSchema.extends", "The imports form a cycle."),
 		(#"{"envSchema":{"extends":["preset:nope"]}}"#, [:], "preset:nope", "This preset doesn't exist."),
@@ -171,5 +176,35 @@ struct ProjectEnvSchemaOverviewTests {
 			try contents.write(to: url, atomically: true, encoding: .utf8)
 		}
 		return folder
+	}
+}
+
+@Suite("Schema display text")
+struct SchemaDisplayTextTests {
+	@Test("Unicode line and paragraph separators show as escapes")
+	func escapesUnicodeSeparators() {
+		#expect("before\u{2028}after".escapingDirectionControls == "before\\u{2028}after")
+		#expect("before\u{2029}after".escapingDirectionControls == "before\\u{2029}after")
+	}
+
+	@Test("authored text that could hide or reorder what surrounds it shows escaped")
+	func escapesDirectionControls() throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "display-text-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let file = "base\u{202E}nosj.json"
+		try #"{"vars":{"PORT":{"default":"30‮00"}}}"#.write(toFile: folder + "/" + file, atomically: true, encoding: .utf8)
+		try #"{"envSchema":{"extends":["\#(file)"]}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		let rule = try #require(ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project").schema.overview?.rule(for: "PORT"))
+		#expect(rule.source == "base\\u{202e}nosj.json")
+		#expect(rule.badges.map(\.text) == ["Default: 30\\u{202e}00"])
+
+		try #"{"vars":{"PORT":{"rnage":"1"}}}"#.write(toFile: folder + "/" + file, atomically: true, encoding: .utf8)
+		guard case .unreadable(let problem) = ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project").schema else {
+			Issue.record("Expected an unreadable schema")
+			return
+		}
+		#expect(!problem.location.unicodeScalars.contains("\u{202E}"))
+		#expect(problem.location == "base\\u{202e}nosj.json › vars.PORT.rnage")
 	}
 }
