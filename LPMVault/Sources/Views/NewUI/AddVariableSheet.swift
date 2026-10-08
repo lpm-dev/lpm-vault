@@ -15,10 +15,19 @@ struct AddVariableSheet: View {
 	@State private var highlightedSuggestion = 0
 	/// Hides the suggestions until the key changes from `suggestionsHiddenFor`.
 	@State private var suggestionsHiddenFor: String?
+	/// The engine's check of the typed value, and what it checked.
+	@State private var valueCheck: (input: ValueCheckInput, problems: [String])?
 	@FocusState private var focusedField: Field?
 
 	private enum Field: Hashable {
 		case key, value
+	}
+
+	/// A declared key's typed value in the selected environments.
+	private struct ValueCheckInput: Equatable {
+		let key: String
+		let value: String
+		let environments: Set<String>
 	}
 
 	init(store: VaultStore, projectId: String, environment: String, initialKey: String = "", initialValueRevealed: Bool = false) {
@@ -265,7 +274,7 @@ struct AddVariableSheet: View {
 					)
 				}
 				Spacer()
-				if !value.isEmpty {
+				if !value.isEmpty, overview?.rule(for: draft.key)?.hasLengthRule == true {
 					Text(value.count == 1 ? "1 char" : "\(value.count) chars")
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textFaint)
@@ -306,8 +315,64 @@ struct AddVariableSheet: View {
 			.padding(.leading, 12)
 			.padding(.trailing, 4)
 			.frame(height: 36)
-			.vaultInputField(focused: focusedField == .value)
+			.vaultInputField(focused: focusedField == .value, invalid: !valueProblems.isEmpty)
+			if !valueProblems.isEmpty {
+				Label {
+					Text(valueProblems.joined(separator: "; ") + " — you can still add it; the LPM CLI will flag it.")
+						.fixedSize(horizontal: false, vertical: true)
+				} icon: {
+					Image(systemName: "exclamationmark.triangle")
+				}
+				.font(.system(size: 11.5, weight: .medium))
+				.foregroundStyle(VaultPalette.redText)
+				.accessibilityElement(children: .combine)
+			}
 		}
+		.task(id: valueCheckInput) { await checkValue(valueCheckInput) }
+	}
+
+	private var valueCheckInput: ValueCheckInput? {
+		let key = draft.key.trimmingCharacters(in: .whitespaces)
+		guard !value.isEmpty, !draft.selection.isEmpty, overview?.rule(for: key) != nil,
+			store.valueChecks[projectId] != nil
+		else { return nil }
+		return ValueCheckInput(key: key, value: value, environments: draft.selection)
+	}
+
+	/// Why the typed value fails its rules in the selected environments.
+	private var valueProblems: [String] {
+		guard let valueCheck, valueCheck.input == valueCheckInput else { return [] }
+		return valueCheck.problems
+	}
+
+	private func checkValue(_ input: ValueCheckInput?) async {
+		guard let input, let project, let rules = overview else {
+			valueCheck = nil
+			return
+		}
+		var edited = project.environments
+		for environment in input.environments { edited[environment, default: [:]][input.key] = input.value }
+		let environments = edited
+		let check = await Task.detached(priority: .userInitiated) { rules.check(environments) }.value
+		guard !Task.isCancelled else { return }
+		let presentation = VaultValueCheckPresentation(check: check, rules: rules,
+			project: VaultProject(id: project.id, name: project.name, path: project.path, environments: environments))
+		let ordered = store.orderedEnvironmentNames(for: project).filter(input.environments.contains)
+		var reasons: [(text: String, environments: [String])] = []
+		for environment in ordered {
+			for reason in presentation.reason(for: input.key, in: environment)?.split(separator: "\n").map(String.init) ?? [] {
+				if let index = reasons.firstIndex(where: { $0.text == reason }) {
+					reasons[index].environments.append(environment)
+				} else {
+					reasons.append((reason, [environment]))
+				}
+			}
+		}
+		valueCheck = (input, reasons.map { reason in
+			reason.environments.count == ordered.count
+				? reason.text
+				: reason.text + " in " + reason.environments.map(VaultProject.displayName(for:)).joined(separator: ", ")
+		})
 	}
 
 	/// A declared key's rules beside the value: a few badges, the rest in a tooltip.
@@ -391,7 +456,7 @@ struct AddVariableSheet: View {
 			VaultBarButton(title: "Cancel", disabled: isSubmitting, height: 30, action: close)
 				.keyboardShortcut(.cancelAction)
 			VaultBarButton(
-				title: isSubmitting ? "Adding…" : draft.submitTitle,
+				title: isSubmitting ? "Adding…" : (valueProblems.isEmpty ? draft.submitTitle : "Add anyway"),
 				shortcut: "⏎",
 				filled: true,
 				disabled: !draft.canSubmit || isSubmitting,

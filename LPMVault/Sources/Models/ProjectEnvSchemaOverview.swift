@@ -18,6 +18,8 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		let source: String?
 		/// Only what differs from the defaults, in a fixed order.
 		let badges: [Badge]
+		/// The rule bounds the value's length.
+		var hasLengthRule = false
 	}
 
 	struct Group: Equatable, Sendable {
@@ -62,7 +64,8 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 					source: source == "lpm.json" ? nil : source?.escapingDirectionControls,
 					badges: Self.badges(for: declaration.value).map {
 						Badge(text: $0.text.escapingDirectionControls, help: $0.help?.escapingDirectionControls)
-					}
+					},
+					hasLengthRule: declaration.value["minLength"] != nil || declaration.value["maxLength"] != nil
 				))
 			}
 		}

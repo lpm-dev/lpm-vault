@@ -95,6 +95,7 @@ Rules inherited from another schema file or a preset show where they come from.
 The inspector lists the selected key's rules, read-only, between its values and its description.
 Keys whose rules make them public, because frameworks expose them to the browser, show a globe and their values unmasked; every other value stays masked until you reveal it.
 When you add a variable, typing a name suggests declared keys that are not yet set in the selected environments; use the arrow keys and Return, or click one, to pick it and see its rules beside the value.
+A declared key's value is checked as you type: a value that fails a rule is outlined in red with the reason below it, and you can still add it with Add anyway, as `lpm env set` does. A character count appears when the rule limits the value's length.
 LPM Vault checks each environment's stored values against these rules with the same engine the LPM CLI uses.
 A value that fails a rule gets a red marker and an underline. Its tooltip shows the reason.
 A missing required value reads Required. A value that the CLI fills from a schema default reads (default).
