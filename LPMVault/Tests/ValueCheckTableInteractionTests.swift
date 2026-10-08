@@ -43,9 +43,11 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			#expect(try await host.waitUntil { store.valueChecks[project.id] != nil })
 
-			#expect(try await host.waitForText("Required"))
+			// Recognition on CI runners misreads the matrix's 11-point Required;
+			// the environment table below checks it at its larger size.
+			#expect(try await host.waitForText("Invalid values"))
 			var text = try await host.text()
-			for expected in ["API_TOKEN", "(default)", "Invalid values"] {
+			for expected in ["API_TOKEN", "(default)"] {
 				#expect(text.contains(expected), "Missing \(expected)")
 			}
 
