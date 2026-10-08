@@ -333,6 +333,6 @@ private extension Unicode.Scalar {
 	var hidesOrReordersText: Bool {
 		properties.generalCategory == .control
 			|| value == 0x061C || value == 0x200E || value == 0x200F
-			|| (0x202A...0x202E).contains(value) || (0x2066...0x2069).contains(value)
+			|| (0x2028...0x202E).contains(value) || (0x2066...0x2069).contains(value)
 	}
 }

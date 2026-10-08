@@ -181,6 +181,12 @@ struct ProjectEnvSchemaOverviewTests {
 
 @Suite("Schema display text")
 struct SchemaDisplayTextTests {
+	@Test("Unicode line and paragraph separators show as escapes")
+	func escapesUnicodeSeparators() {
+		#expect("before\u{2028}after".escapingDirectionControls == "before\\u{2028}after")
+		#expect("before\u{2029}after".escapingDirectionControls == "before\\u{2029}after")
+	}
+
 	@Test("authored text that could hide or reorder what surrounds it shows escaped")
 	func escapesDirectionControls() throws {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "display-text-\(UUID().uuidString)").path

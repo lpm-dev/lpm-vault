@@ -64,6 +64,27 @@ struct ProjectEnvValueCheckTests {
 		]))])
 		#expect(ProjectEnvValueCheck(output: malformed) == nil)
 	}
+
+	@Test("default-environment fallback values count against the engine work budget")
+	func fallbackValuesRespectWorkBudget() throws {
+		let rules = try overview(#"{"vars":{"A":{}}}"#)
+		let defaults = Dictionary(uniqueKeysWithValues: (0..<1_024).map { ("V\($0)", "x") })
+		var environments = Dictionary(uniqueKeysWithValues: (0..<255).map { ("env\($0)", [String: String]()) })
+		environments["default"] = defaults
+
+		#expect(rules.check(environments) == nil)
+	}
+
+	@Test("every group member counts against the engine work budget")
+	func groupMembersRespectWorkBudget() throws {
+		let variables = (0..<32).map { #""V\#($0)":{}"# }.joined(separator: ",")
+		let members = (0..<32).map { #""V\#($0)""# }.joined(separator: ",")
+		let groups = (0..<128).map { #""G\#($0)":{"mode":"allOrNone","vars":[\#(members)]}"# }.joined(separator: ",")
+		let rules = try overview(#"{"vars":{\#(variables)},"groups":{\#(groups)}}"#)
+		let environments = Dictionary(uniqueKeysWithValues: (0..<64).map { ("env\($0)", [String: String]()) })
+
+		#expect(rules.check(environments) == nil)
+	}
 }
 
 @Suite("Value checks in the store", .serialized)
