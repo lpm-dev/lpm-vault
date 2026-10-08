@@ -12,7 +12,7 @@ struct VaultRuleBadge: View {
 			.padding(.horizontal, 7)
 			.padding(.vertical, 3)
 			.background(RoundedRectangle(cornerRadius: 5).fill(VaultPalette.neutralTint))
-			.help(badge.help ?? "")
+			.help(badge.help ?? badge.text)
 			.accessibilityLabel(badge.help.map { "\(badge.text): \($0)" } ?? badge.text)
 	}
 }
@@ -71,36 +71,41 @@ struct VaultFlowLayout: Layout {
 		var y = bounds.minY
 		for row in rows(for: subviews, width: bounds.width) {
 			var x = bounds.minX
-			for index in row.indices {
-				let size = subviews[index].sizeThatFits(.unspecified)
-				subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: .unspecified)
-				x += size.width + spacing
+			for item in row.items {
+				subviews[item.index].place(at: CGPoint(x: x, y: y + (row.height - item.size.height) / 2),
+					proposal: ProposedViewSize(item.size))
+				x += item.size.width + spacing
 			}
 			y += row.height + lineSpacing
 		}
 	}
 
 	private struct Row {
-		var indices: [Int] = []
+		struct Item {
+			let index: Int
+			let size: CGSize
+		}
+		var items: [Item] = []
 		var width: CGFloat = 0
 		var height: CGFloat = 0
 	}
 
 	private func rows(for subviews: Subviews, width: CGFloat) -> [Row] {
+		let proposal = ProposedViewSize(width: width.isFinite ? max(0, width) : nil, height: nil)
 		var rows: [Row] = []
 		var row = Row()
 		for index in subviews.indices {
-			let size = subviews[index].sizeThatFits(.unspecified)
-			let added = row.indices.isEmpty ? size.width : row.width + spacing + size.width
-			if !row.indices.isEmpty, added > width {
+			let size = subviews[index].sizeThatFits(proposal)
+			let added = row.items.isEmpty ? size.width : row.width + spacing + size.width
+			if !row.items.isEmpty, added > width {
 				rows.append(row)
 				row = Row()
 			}
-			row.width = row.indices.isEmpty ? size.width : row.width + spacing + size.width
+			row.width = row.items.isEmpty ? size.width : row.width + spacing + size.width
 			row.height = max(row.height, size.height)
-			row.indices.append(index)
+			row.items.append(.init(index: index, size: size))
 		}
-		if !row.indices.isEmpty { rows.append(row) }
+		if !row.items.isEmpty { rows.append(row) }
 		return rows
 	}
 }

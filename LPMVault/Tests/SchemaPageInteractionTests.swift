@@ -8,6 +8,11 @@ extension SheetInteractionTests {
 	@Suite("Schema page", .serialized)
 	@MainActor
 	struct SchemaPageInteractionTests {
+		private final class BadgeWidths {
+			var rule: CGFloat = 0
+			var source: CGFloat = 0
+		}
+
 		static let sample = #"""
 			{"envSchema":{
 				"extends":["schemas/base.json"],
@@ -96,6 +101,28 @@ extension SheetInteractionTests {
 			try await host.click("Recheck")
 			#expect(try await host.waitForText("5 declared keys"))
 			#expect(try await !host.text().contains("Schema can't be read"))
+		}
+
+		@Test("long rule and source badges fit the available width", arguments: [CGFloat(140), 264, 400])
+		func longBadgesFit(width: CGFloat) async throws {
+			let measured = BadgeWidths()
+			let badge = ProjectEnvSchemaOverview.Badge(text: "Required when AUTHENTICATION_MODE = production")
+			let source = "schemas/shared/environment/production/long-schema-name.json"
+			let host = SheetTestHost(VaultFlowLayout {
+				VaultRuleBadge(badge: badge)
+					.background(GeometryReader { geometry in
+						Color.clear.onAppear { measured.rule = geometry.size.width }
+					})
+				VaultSourceBadge(source: source)
+					.background(GeometryReader { geometry in
+						Color.clear.onAppear { measured.source = geometry.size.width }
+					})
+			}.frame(width: width, alignment: .leading), size: NSSize(width: width + 200, height: 160),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			#expect(try await host.waitUntil { measured.rule > 0 && measured.source > 0 })
+			#expect(measured.rule <= width)
+			#expect(measured.source <= width)
 		}
 
 		private func makeStore(path: String) -> VaultStore {
