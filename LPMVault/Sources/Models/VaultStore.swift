@@ -1206,6 +1206,7 @@ final class VaultStore {
   /// What the bundled engine finds in each project's stored values, by
   /// project ID; absent while a project's rules are unknown or unreadable.
   private(set) var valueChecks: [String: ProjectEnvValueCheck] = [:]
+  @ObservationIgnored let valueCheckWorker = ProjectEnvValueCheckWorker()
   @ObservationIgnored private var valueCheckInputs: [String: ValueCheckInputs] = [:]
   @ObservationIgnored private var valueCheckTasks: [String: Task<Void, Never>] = [:]
   private var unverifiedKeyDescriptionProjects: Set<String> = []
@@ -3409,11 +3410,13 @@ final class VaultStore {
     let inputs = ValueCheckInputs(values: project.workspaceSnapshotIdentity, rules: rules)
     guard valueCheckInputs[projectID] != inputs else { return }
     valueCheckInputs[projectID] = inputs
+    valueChecks[projectID] = nil
     valueCheckTasks[projectID]?.cancel()
     let environments = project.environments
     valueCheckTasks[projectID] = Task { [weak self] in
-      let check = await Task.detached(priority: .userInitiated) { rules.check(environments) }.value
-      guard !Task.isCancelled, let self, self.valueCheckInputs[projectID] == inputs else { return }
+      guard let self else { return }
+      let check = await valueCheckWorker.check(rules: rules, environments: environments)
+      guard !Task.isCancelled, self.valueCheckInputs[projectID] == inputs else { return }
       self.valueCheckTasks[projectID] = nil
       if self.valueChecks[projectID] != check { self.valueChecks[projectID] = check }
     }

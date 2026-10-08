@@ -113,3 +113,21 @@ extension ProjectEnvValueCheck.Problem {
 		self.init(key: key, kind: kind)
 	}
 }
+
+actor ProjectEnvValueCheckWorker {
+	typealias Checker = @Sendable (ProjectEnvSchemaOverview, [String: [String: String]]) -> ProjectEnvValueCheck?
+
+	private let checker: Checker
+
+	init(checker: @escaping Checker = { rules, environments in rules.check(environments) }) {
+		self.checker = checker
+	}
+
+	func check(
+		rules: ProjectEnvSchemaOverview,
+		environments: [String: [String: String]]
+	) -> ProjectEnvValueCheck? {
+		guard !Task.isCancelled else { return nil }
+		return checker(rules, environments)
+	}
+}

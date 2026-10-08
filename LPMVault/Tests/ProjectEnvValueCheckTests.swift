@@ -1,10 +1,39 @@
 import Foundation
+import os
 import Testing
 
 @testable import LPMVault
 
 @Suite("Value checks")
 struct ProjectEnvValueCheckTests {
+	@Test("a cancelled queued value check never enters the engine")
+	func cancelledQueuedCheckSkipsEngine() async {
+		let calls = OSAllocatedUnfairLock(initialState: 0)
+		let entered = DispatchSemaphore(value: 0)
+		let release = DispatchSemaphore(value: 0)
+		defer { release.signal() }
+		let worker = ProjectEnvValueCheckWorker { _, _ in
+			let call = calls.withLock { count in count += 1; return count }
+			if call == 1 {
+				entered.signal()
+				_ = release.wait(timeout: .now() + 5)
+			}
+			return nil
+		}
+		let first = Task { await worker.check(rules: .empty, environments: [:]) }
+		let started = await withCheckedContinuation { continuation in
+			Thread.detachNewThread { continuation.resume(returning: entered.wait(timeout: .now() + 5) == .success) }
+		}
+		#expect(started)
+		let cancelled = Task { await worker.check(rules: .empty, environments: [:]) }
+		cancelled.cancel()
+		release.signal()
+		_ = await first.value
+		_ = await cancelled.value
+
+		#expect(calls.withLock { $0 } == 1)
+	}
+
 	private typealias Problem = ProjectEnvValueCheck.Problem
 
 	private func overview(_ schema: String) throws -> ProjectEnvSchemaOverview {
@@ -90,6 +119,30 @@ struct ProjectEnvValueCheckTests {
 @Suite("Value checks in the store", .serialized)
 @MainActor
 struct ValueCheckStoreTests {
+    @Test func published_checks_are_invalidated_when_stored_values_change() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path:"review-stale-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        try #"{"envSchema":{"vars":{"PORT":{"format":"port"}}}}"#.write(to:folder.appending(path:"lpm.json"),atomically:true,encoding:.utf8)
+        let keychain = MockKeychainService()
+        let project = VaultProject(id:"p",name:"p",path:folder.path,environments:["default":["PORT":"3000"]])
+        keychain.envStorage[project.id] = (name:project.name,path:folder.path,environments:project.environments)
+        let store = VaultStore(keychainService:keychain,biometricService:MockBiometricService(),apiService:MockAPIService(),authTokenProvider:{_,_ in nil})
+        store.isUnlocked = true
+        store.projects = [project]
+        store.openProject(id:project.id)
+        defer { store.lock() }
+        store.reloadKeyDescriptions()
+        for _ in 0..<500 {
+            if store.valueChecks[project.id] != nil { break }
+            try await Task.sleep(for:.milliseconds(10))
+        }
+        let previous = try #require(store.valueChecks[project.id])
+        #expect(previous.problems(of:"PORT",in:"default").isEmpty)
+        store.projects[0].environments["default"]?["PORT"] = "bad"
+        #expect(store.valueChecks[project.id] == nil)
+    }
+
 	@Test("the store checks the selected project's values, rechecks after an edit, and drops the check when lpm.json breaks or the vault locks")
 	func storeKeepsChecksCurrent() async throws {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "value-check-store-\(UUID().uuidString)").path
