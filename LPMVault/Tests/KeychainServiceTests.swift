@@ -14,25 +14,29 @@ struct MockKeychainConcurrencyTests {
 		let release = DispatchSemaphore(value: 0)
 		let readerStarted = DispatchSemaphore(value: 0)
 		let readFinished = DispatchSemaphore(value: 0)
-		let writer = Task.detached {
-			keychain.withKeychainTransaction {
-				keychain.envStorage["project"] = (name: "Project", path: "", environments: ["default": ["KEY": "intermediate"]])
-				keychain.dataStorage["record"] = Data("intermediate".utf8)
-				entered.signal()
-				release.wait()
-				keychain.envStorage["project"]?.environments["default"]?["KEY"] = "committed"
-				keychain.dataStorage["record"] = Data("committed".utf8)
+		let writer = Task {
+			await runBlocking {
+				keychain.withKeychainTransaction {
+					keychain.envStorage["project"] = (name: "Project", path: "", environments: ["default": ["KEY": "intermediate"]])
+					keychain.dataStorage["record"] = Data("intermediate".utf8)
+					entered.signal()
+					release.wait()
+					keychain.envStorage["project"]?.environments["default"]?["KEY"] = "committed"
+					keychain.dataStorage["record"] = Data("committed".utf8)
+				}
 			}
 		}
 		let didEnter = await wait(entered, seconds: 3)
 		#expect(didEnter)
-		let reader = Task.detached {
-			readerStarted.signal()
-			let value = storage == "environments"
-				? keychain.envStorage["project"]?.environments["default"]?["KEY"]
-				: keychain.dataStorage["record"].map { String(decoding: $0, as: UTF8.self) }
-			readFinished.signal()
-			return value
+		let reader = Task {
+			await runBlocking {
+				readerStarted.signal()
+				let value = storage == "environments"
+					? keychain.envStorage["project"]?.environments["default"]?["KEY"]
+					: keychain.dataStorage["record"].map { String(decoding: $0, as: UTF8.self) }
+				readFinished.signal()
+				return value
+			}
 		}
 		let didStart = await wait(readerStarted, seconds: 3)
 		#expect(didStart)
@@ -45,9 +49,13 @@ struct MockKeychainConcurrencyTests {
 	}
 
 	private func wait(_ semaphore: DispatchSemaphore, seconds: Double) async -> Bool {
+		await runBlocking { semaphore.wait(timeout: .now() + seconds) == .success }
+	}
+
+	private func runBlocking<T: Sendable>(_ operation: @escaping @Sendable () -> T) async -> T {
 		await withCheckedContinuation { continuation in
-			DispatchQueue.global().async {
-				continuation.resume(returning: semaphore.wait(timeout: .now() + seconds) == .success)
+			Thread.detachNewThread {
+				continuation.resume(returning: operation())
 			}
 		}
 	}
