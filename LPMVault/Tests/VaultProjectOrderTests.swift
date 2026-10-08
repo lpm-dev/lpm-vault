@@ -1,6 +1,7 @@
 import AppKit
 import CoreTransferable
 import Foundation
+import Observation
 import SwiftUI
 import Testing
 import UniformTypeIdentifiers
@@ -10,6 +11,99 @@ import UniformTypeIdentifiers
 @Suite("Sidebar project order", .serialized)
 @MainActor
 struct VaultProjectOrderTests {
+	@Test("late exits leave the active marker intact and unchanged pointer updates do not invalidate it")
+	func markerTransitions() {
+		let state = VaultSidebarProjectDropState()
+		let first = VaultSidebarProjectDropMarker()
+		let second = VaultSidebarProjectDropMarker()
+		state.update(first, placement: .before)
+		state.update(second, placement: .after)
+		#expect(first.placement == nil)
+		#expect(second.placement == .after)
+		state.exit(first)
+		#expect(second.placement == .after)
+		let changes = SidebarMarkerChanges()
+		withObservationTracking {
+			_ = second.placement
+		} onChange: {
+			MainActor.assumeIsolated { changes.count += 1 }
+		}
+		for _ in 0..<10_000 { state.update(second, placement: .after) }
+		#expect(changes.count == 0)
+		state.update(second, placement: .before)
+		#expect(changes.count == 1)
+		#expect(second.placement == .before)
+		state.clear()
+		#expect(second.placement == nil)
+	}
+
+	@Test("child icons start at the project name and child labels share a column", arguments: [CGFloat(280), 400])
+	func childRowAlignment(width: CGFloat) async throws {
+		let (store, _, preferences, domain) = try fixture()
+		defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+		store.openProject(id: "alpha")
+		let host = sidebarHost(store, width: width)
+		defer { host.window.close() }
+		try await host.settle()
+		let project = try await host.labelFrame("Alpha")
+		let projectStart = try inkStart(in: host, band: project, columns: 35..<150)
+		var labelStarts: [CGFloat] = []
+		for label in ["Schema", "New environment", ".env", ".env.staging"] {
+			let band = try await host.labelFrame(label)
+			let iconStart = try inkStart(in: host, band: band, columns: 30..<47)
+			#expect(abs(iconStart - projectStart) <= 1, "\(label) icon starts at \(iconStart), project text starts at \(projectStart)")
+			labelStarts.append(try inkStart(in: host, band: band, columns: (Int(band.minX) - 2)..<180))
+		}
+		// The monospaced leading dot has a wider side bearing than the proportional labels.
+		let spread = try #require(labelStarts.max()) - #require(labelStarts.min())
+		#expect(spread <= 3, "Visible label starts: \(labelStarts)")
+		let image = NSBitmapImageRep(cgImage: try host.snapshot(host.view))
+		Attachment.record(try #require(image.representation(using: .png, properties: [:])), named: "sidebar-\(Int(width)).png")
+	}
+
+	@Test("only the current insertion marker is visible and drag completion clears it", arguments: ["drop", "exit", "lock", "account"])
+	func insertionMarkerLifecycle(completion: String) async throws {
+		let (store, _, preferences, domain) = try fixture()
+		defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+		let host = sidebarHost(store)
+		defer { host.window.close() }
+		try await host.settle()
+		let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidebar-marker-test-" + UUID().uuidString))
+		defer { pasteboard.releaseGlobally() }
+		let item = NSPasteboardItem()
+		let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
+		#expect(item.setData(try JSONEncoder().encode(drag), forType: NSPasteboard.PasteboardType(VaultSidebarProjectDrag.contentType.identifier)))
+		#expect(pasteboard.writeObjects([item]))
+		var previous: (NSView, SidebarTestDraggingInfo)?
+		for label in ["Alpha", "Middle"] {
+			let frame = try await host.labelFrame(label)
+			let point = NSPoint(x: frame.midX, y: frame.maxY - 1)
+			let target = try #require(dropViews(in: host.view).filter { $0.convert($0.bounds, to: nil).contains(point) }
+				.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height })
+			let info = SidebarTestDraggingInfo(window: host.window, pasteboard: pasteboard, location: point)
+			#expect(target.draggingEntered(info).contains(.move))
+			#expect(target.draggingUpdated(info).contains(.move))
+			try await host.settle()
+			#expect(try markerRows(in: host).count == 4, "There must be exactly one 2-point insertion marker")
+			previous = (target, info)
+		}
+		let (target, info) = try #require(previous)
+		switch completion {
+		case "exit":
+			target.draggingExited(info)
+		case "lock":
+			store.lock()
+		case "account":
+			store.selectedAccount = .org("team")
+		default:
+			#expect(target.prepareForDragOperation(info))
+			#expect(target.performDragOperation(info))
+			#expect(try await host.waitUntil { store.visibleVaults(matching: "").map(\.id) == ["alpha", "zulu", "middle"] })
+		}
+		try await host.settle()
+		#expect(try markerRows(in: host).isEmpty)
+	}
+
 	@Test("project drag data is available only inside this process")
 	func projectDragVisibility() {
 		if #available(macOS 15.2, *) {
@@ -207,7 +301,7 @@ struct VaultProjectOrderTests {
 			completion(data, nil)
 			return nil
 		}
-		let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "alpha", rowHeight: 30, placement: .constant(nil))
+		let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "alpha", rowHeight: 30, dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
 		#expect(await delegate.loadDrop(from: provider, placement: .before) == !malformed)
 		#expect(store.visibleVaults(matching: "").map(\.id) == (malformed ? ["alpha", "middle", "zulu"] : ["zulu", "alpha", "middle"]))
 	}
@@ -283,7 +377,7 @@ struct VaultProjectOrderTests {
 			completion(data, nil)
 			return nil
 		}
-		let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "alpha", rowHeight: 30, placement: .constant(nil))
+		let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "alpha", rowHeight: 30, dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
 		#expect(await delegate.loadDrop(from: provider, placement: .before))
 		try await host.settle()
 		let alphaAfter = try await host.labelFrame("Alpha")
@@ -299,6 +393,56 @@ struct VaultProjectOrderTests {
 		let declarations = try #require(plist["UTExportedTypeDeclarations"] as? [[String: Any]])
 		let declaration = try #require(declarations.first { $0["UTTypeIdentifier"] as? String == VaultSidebarProjectDrag.contentType.identifier })
 		#expect(declaration["UTTypeConformsTo"] as? [String] == [UTType.data.identifier])
+	}
+
+	private func sidebarHost(_ store: VaultStore, width: CGFloat = 280) -> SheetTestHost<some View> {
+		SheetTestHost(VaultSidebarView(store: store, snapshots: [:], mode: .constant(.matrix),
+			filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
+			onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onRenameProject: { _ in },
+			onDeleteProject: { _ in }, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
+			onClearEnvironment: { _ in }, onDeleteEnvironment: { _ in }),
+			size: NSSize(width: width, height: 500), keepsRequestedSize: true, usesHostingView: true)
+	}
+
+	private func dropViews(in view: NSView) -> [NSView] {
+		(view.registeredDraggedTypes.isEmpty ? [] : [view]) + view.subviews.flatMap { dropViews(in: $0) }
+	}
+
+	private func markerRows<V: View>(in host: SheetTestHost<V>) throws -> [Int] {
+		let image = try host.snapshot(host.view)
+		let context = try pixelContext(image)
+		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+		return (0..<image.height).filter { row in
+			[image.width / 4, image.width / 2, 3 * image.width / 4].allSatisfy { column in
+				let pixel = (row * image.width + column) * 4
+				return abs(Int(pixels[pixel]) - 94) < 16 && abs(Int(pixels[pixel + 1]) - 92) < 16 && abs(Int(pixels[pixel + 2]) - 230) < 16
+			}
+		}
+	}
+
+	private func inkStart<V: View>(in host: SheetTestHost<V>, band: CGRect, columns: Range<Int>) throws -> CGFloat {
+		let image = try host.snapshot(host.view)
+		let context = try pixelContext(image)
+		let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+		let scale = CGFloat(image.width) / host.view.bounds.width
+		let top = Int((host.view.bounds.height - band.maxY - 3) * scale)
+		let bottom = Int((host.view.bounds.height - band.minY + 3) * scale)
+		for column in Int(CGFloat(columns.lowerBound) * scale)..<Int(CGFloat(columns.upperBound) * scale) {
+			for row in top..<bottom {
+				let pixel = (row * image.width + column) * 4
+				let background = (row * image.width + Int(220 * scale)) * 4
+				let contrast = (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[background + $1])) }
+				if contrast > 55 { return CGFloat(column) / scale }
+			}
+		}
+		throw CocoaError(.coderValueNotFound)
+	}
+
+	private func pixelContext(_ image: CGImage) throws -> CGContext {
+		let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+			bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+		context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+		return context
 	}
 
 	private func fixture() throws -> (VaultStore, MockKeychainService, UserDefaults, String) {
@@ -317,6 +461,11 @@ struct VaultProjectOrderTests {
 		store.isUnlocked = true
 		return (store, keychain, preferences, domain)
 	}
+}
+
+@MainActor
+private final class SidebarMarkerChanges {
+	var count = 0
 }
 
 @MainActor

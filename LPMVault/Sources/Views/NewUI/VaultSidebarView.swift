@@ -1,6 +1,18 @@
 import AppKit
 import CoreTransferable
+import Observation
 import SwiftUI
+
+private enum VaultSidebarLayout {
+	static let projectInset: CGFloat = 8
+	static let rowInset: CGFloat = 9
+	static let projectIconWidth: CGFloat = 14
+	static let projectSpacing: CGFloat = 9
+	static let childIconWidth: CGFloat = 12
+	static let childSpacing: CGFloat = 7
+	static let childInset: CGFloat = 26
+	static let childRowLeadingInset = projectInset + rowInset + projectIconWidth + projectSpacing - childInset
+}
 
 struct VaultSidebarView: View {
 	@Bindable var store: VaultStore
@@ -22,6 +34,7 @@ struct VaultSidebarView: View {
 
 	@FocusState private var searchFocused: Bool
 	@State private var collapsedProjectIds: Set<String> = []
+	@State private var dropState = VaultSidebarProjectDropState()
 
 	private var visibleProjects: [VaultProject] {
 		store.visibleVaults(matching: searchText)
@@ -47,7 +60,7 @@ struct VaultSidebarView: View {
 							.padding(.vertical, 12)
 					} else {
 						ForEach(Array(derivedProjects.enumerated()), id: \.element.id) { index, project in
-							VaultSidebarProjectGroup(store: store, projectId: project.id) {
+							VaultSidebarProjectGroup(store: store, projectId: project.id, dropState: dropState) {
 								projectRow(project,
 									previous: index > 0 ? derivedProjects[index - 1].id : nil,
 									next: index + 1 < derivedProjects.count ? derivedProjects[index + 1].id : nil)
@@ -75,6 +88,8 @@ struct VaultSidebarView: View {
 				.simultaneousGesture(TapGesture().onEnded { searchFocused = false })
 		}
 		.background(VaultPalette.sidebar)
+		.onChange(of: store.sidebarDragSessionId) { dropState.clear() }
+		.onDisappear { dropState.clear() }
 		.onReceive(NotificationCenter.default.publisher(for: .findSecrets)) { _ in
 			searchFocused = true
 		}
@@ -182,11 +197,11 @@ struct VaultSidebarView: View {
 			mode = .matrix
 			filter = .all
 		} label: {
-			HStack(spacing: 9) {
+			HStack(spacing: VaultSidebarLayout.projectSpacing) {
 				Image(systemName: cliAccess.map { $0 == .requireApproval ? "lock" : "folder" } ?? "questionmark.folder")
 					.font(.system(size: 11, weight: .medium))
 					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
-					.frame(width: 14)
+					.frame(width: VaultSidebarLayout.projectIconWidth)
 				Text(project.name)
 					.font(.system(size: 13, weight: selected ? .semibold : .regular))
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
@@ -196,13 +211,13 @@ struct VaultSidebarView: View {
 					.font(VaultTypography.mono(10.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
-			.padding(.horizontal, 9)
+			.padding(.horizontal, VaultSidebarLayout.rowInset)
 			.padding(.vertical, 7)
 			.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.accentTint : .clear))
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
-		.padding(.horizontal, 8)
+		.padding(.horizontal, VaultSidebarLayout.projectInset)
 		.help(approvalDescription)
 		.accessibilityLabel("\(project.name), \(project.secretCount) secrets, \(approvalDescription)")
 		.accessibilityValue(expanded ? "Expanded" : "Collapsed")
@@ -235,15 +250,16 @@ struct VaultSidebarView: View {
 			schemaRow(project)
 
 			Button(action: onNewEnvironment) {
-				HStack(spacing: 7) {
+				HStack(spacing: VaultSidebarLayout.childSpacing) {
 					Image(systemName: "plus")
 						.font(.system(size: 9, weight: .bold))
-						.frame(width: 6)
+						.frame(width: VaultSidebarLayout.childIconWidth, alignment: .leading)
 					Text("New environment").font(.system(size: 10.5, weight: .semibold))
 					Spacer()
 				}
 				.foregroundStyle(VaultPalette.accentForeground)
-				.padding(.horizontal, 9)
+				.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
+				.padding(.trailing, VaultSidebarLayout.rowInset)
 				.padding(.vertical, 5)
 				.contentShape(Rectangle())
 			}
@@ -254,7 +270,7 @@ struct VaultSidebarView: View {
 				environmentRow(project, environment: environment, color: VaultPalette.environment(index))
 			}
 		}
-		.padding(.leading, 26)
+		.padding(.leading, VaultSidebarLayout.childInset)
 		.padding(.trailing, 8)
 		.padding(.top, 2)
 		.padding(.bottom, 6)
@@ -269,10 +285,10 @@ struct VaultSidebarView: View {
 			store.openProject(id: project.id)
 			mode = .schema
 		} label: {
-			HStack(spacing: 7) {
+			HStack(spacing: VaultSidebarLayout.childSpacing) {
 				Image(systemName: "curlybraces")
 					.font(.system(size: 9, weight: .bold))
-					.frame(width: 12)
+					.frame(width: VaultSidebarLayout.childIconWidth, alignment: .leading)
 					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 				Text("Schema")
 					.font(.system(size: 11.5, weight: selected ? .semibold : .regular))
@@ -289,7 +305,8 @@ struct VaultSidebarView: View {
 						.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 				}
 			}
-			.padding(.horizontal, 9)
+			.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
+			.padding(.trailing, VaultSidebarLayout.rowInset)
 			.padding(.vertical, 5)
 			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.accentTint : .clear))
 			.overlay(alignment: .leading) {
@@ -311,8 +328,9 @@ struct VaultSidebarView: View {
 			store.selectEnvironment(environment)
 			mode = .environment(environment)
 		} label: {
-			HStack(spacing: 7) {
+			HStack(spacing: VaultSidebarLayout.childSpacing) {
 				VaultEnvSwatch(color: color, size: 6)
+					.frame(width: VaultSidebarLayout.childIconWidth, alignment: .leading)
 				Text(VaultProject.displayName(for: environment))
 					.font(VaultTypography.mono(11.5, selected ? .bold : .regular))
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
@@ -322,7 +340,8 @@ struct VaultSidebarView: View {
 					.font(VaultTypography.mono(10.5))
 					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 			}
-			.padding(.horizontal, 9)
+			.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
+			.padding(.trailing, VaultSidebarLayout.rowInset)
 			.padding(.vertical, 5)
 			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.accentTint : .clear))
 			.overlay(alignment: .leading) {
@@ -439,14 +458,17 @@ struct VaultSidebarView: View {
 private struct VaultSidebarProjectGroup<Row: View, Environments: View>: View {
 	let store: VaultStore
 	let projectId: String
+	let dropState: VaultSidebarProjectDropState
 	let row: Row
 	let environments: Environments
 	@State private var rowHeight: CGFloat = 30
-	@State private var placement: VaultProjectPlacement?
+	@State private var marker = VaultSidebarProjectDropMarker()
 
-	init(store: VaultStore, projectId: String, @ViewBuilder row: () -> Row, @ViewBuilder environments: () -> Environments) {
+	init(store: VaultStore, projectId: String, dropState: VaultSidebarProjectDropState,
+		@ViewBuilder row: () -> Row, @ViewBuilder environments: () -> Environments) {
 		self.store = store
 		self.projectId = projectId
+		self.dropState = dropState
 		self.row = row()
 		self.environments = environments()
 	}
@@ -459,9 +481,10 @@ private struct VaultSidebarProjectGroup<Row: View, Environments: View>: View {
 			environments
 		}
 		.onDrop(of: [VaultSidebarProjectDrag.contentType], delegate: VaultSidebarProjectDropDelegate(
-			store: store, projectId: projectId, rowHeight: rowHeight, placement: $placement))
-		.overlay(alignment: placement == .after ? .bottom : .top) {
-			if placement != nil {
+			store: store, projectId: projectId, rowHeight: rowHeight, dropState: dropState, marker: marker))
+		.onDisappear { dropState.exit(marker) }
+		.overlay(alignment: marker.placement == .after ? .bottom : .top) {
+			if marker.placement != nil {
 				Rectangle().fill(VaultPalette.accent).frame(height: 2).padding(.horizontal, 12)
 					.allowsHitTesting(false)
 			}
@@ -469,29 +492,60 @@ private struct VaultSidebarProjectGroup<Row: View, Environments: View>: View {
 	}
 }
 
+@Observable
+@MainActor
+final class VaultSidebarProjectDropMarker {
+	fileprivate(set) var placement: VaultProjectPlacement?
+}
+
+@MainActor
+final class VaultSidebarProjectDropState {
+	private var activeMarker: VaultSidebarProjectDropMarker?
+
+	func update(_ marker: VaultSidebarProjectDropMarker, placement: VaultProjectPlacement) {
+		if activeMarker !== marker {
+			clear()
+			activeMarker = marker
+		}
+		if marker.placement != placement { marker.placement = placement }
+	}
+
+	func exit(_ marker: VaultSidebarProjectDropMarker) {
+		if activeMarker === marker { clear() }
+	}
+
+	func clear() {
+		activeMarker?.placement = nil
+		activeMarker = nil
+	}
+}
+
 struct VaultSidebarProjectDropDelegate: DropDelegate {
 	let store: VaultStore
 	let projectId: String
 	let rowHeight: CGFloat
-	@Binding var placement: VaultProjectPlacement?
+	let dropState: VaultSidebarProjectDropState
+	let marker: VaultSidebarProjectDropMarker
 
 	func validateDrop(info: DropInfo) -> Bool {
 		store.isUnlocked && info.hasItemsConforming(to: [VaultSidebarProjectDrag.contentType])
 	}
 
 	func dropEntered(info: DropInfo) {
-		placement = .at(y: info.location.y, rowHeight: rowHeight)
+		guard validateDrop(info: info) else { dropState.exit(marker); return }
+		dropState.update(marker, placement: .at(y: info.location.y, rowHeight: rowHeight))
 	}
 
 	func dropUpdated(info: DropInfo) -> DropProposal? {
-		placement = .at(y: info.location.y, rowHeight: rowHeight)
+		guard validateDrop(info: info) else { dropState.exit(marker); return DropProposal(operation: .cancel) }
+		dropState.update(marker, placement: .at(y: info.location.y, rowHeight: rowHeight))
 		return DropProposal(operation: .move)
 	}
 
-	func dropExited(info: DropInfo) { placement = nil }
+	func dropExited(info: DropInfo) { dropState.exit(marker) }
 
 	func performDrop(info: DropInfo) -> Bool {
-		placement = nil
+		dropState.clear()
 		let providers = info.itemProviders(for: [VaultSidebarProjectDrag.contentType])
 		guard validateDrop(info: info), providers.count == 1, let provider = providers.first else { return false }
 		let destination = VaultProjectPlacement.at(y: info.location.y, rowHeight: rowHeight)
