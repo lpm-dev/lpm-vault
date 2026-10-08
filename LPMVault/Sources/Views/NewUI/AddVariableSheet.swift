@@ -28,6 +28,8 @@ struct AddVariableSheet: View {
 		let key: String
 		let value: String
 		let environments: Set<String>
+		let effectiveSchema: Data
+		let workspaceSnapshotIdentity: UUID
 	}
 
 	init(store: VaultStore, projectId: String, environment: String, initialKey: String = "", initialValueRevealed: Bool = false) {
@@ -275,7 +277,8 @@ struct AddVariableSheet: View {
 				}
 				Spacer()
 				if !value.isEmpty, overview?.rule(for: draft.key)?.hasLengthRule == true {
-					Text(value.count == 1 ? "1 char" : "\(value.count) chars")
+					let length = value.unicodeScalars.count
+					Text(length == 1 ? "1 char" : "\(length) chars")
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textFaint)
 						.monospacedDigit()
@@ -333,10 +336,17 @@ struct AddVariableSheet: View {
 
 	private var valueCheckInput: ValueCheckInput? {
 		let key = draft.key.trimmingCharacters(in: .whitespaces)
-		guard !value.isEmpty, !draft.selection.isEmpty, overview?.rule(for: key) != nil,
+		guard !draft.selection.isEmpty, let project, let overview, overview.rule(for: key) != nil,
+			let effectiveSchema = overview.effectiveSchema,
 			store.valueChecks[projectId] != nil
 		else { return nil }
-		return ValueCheckInput(key: key, value: value, environments: draft.selection)
+		return ValueCheckInput(
+			key: key,
+			value: value,
+			environments: draft.selection,
+			effectiveSchema: effectiveSchema,
+			workspaceSnapshotIdentity: project.workspaceSnapshotIdentity
+		)
 	}
 
 	/// Why the typed value fails its rules in the selected environments.
@@ -346,15 +356,20 @@ struct AddVariableSheet: View {
 	}
 
 	private func checkValue(_ input: ValueCheckInput?) async {
-		guard let input, let project, let rules = overview else {
+		guard let input, let project, let rules = overview,
+			rules.effectiveSchema == input.effectiveSchema,
+			project.workspaceSnapshotIdentity == input.workspaceSnapshotIdentity
+		else {
 			valueCheck = nil
 			return
 		}
+		do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+		guard !Task.isCancelled, valueCheckInput == input else { return }
 		var edited = project.environments
 		for environment in input.environments { edited[environment, default: [:]][input.key] = input.value }
 		let environments = edited
-		let check = await Task.detached(priority: .userInitiated) { rules.check(environments) }.value
-		guard !Task.isCancelled else { return }
+		let check = await store.valueCheckWorker.check(rules: rules, environments: environments)
+		guard !Task.isCancelled, valueCheckInput == input else { return }
 		let presentation = VaultValueCheckPresentation(check: check, rules: rules,
 			project: VaultProject(id: project.id, name: project.name, path: project.path, environments: environments))
 		let ordered = store.orderedEnvironmentNames(for: project).filter(input.environments.contains)

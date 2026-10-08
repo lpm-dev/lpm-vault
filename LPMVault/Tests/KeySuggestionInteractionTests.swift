@@ -119,6 +119,50 @@ extension SheetInteractionTests {
 			#expect(try await token.text().contains("5 chars"))
 		}
 
+		@Test("a submit-able empty value is checked against the declared rule")
+		func emptyValueCheck() async throws {
+			let (store, folder) = try await makeStore(lpmJSON: #"{"envSchema":{"vars":{"EMPTY":{"empty":"reject"}}}}"#)
+			defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			for _ in 0..<200 where store.valueChecks["suggestions"] == nil { try await Task.sleep(for: .milliseconds(10)) }
+			try #require(store.valueChecks["suggestions"] != nil)
+			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "EMPTY"), size: NSSize(width: 560, height: 560))
+			defer { host.window.close() }
+
+			#expect(try await host.waitForText("Empty values aren't allowed"))
+			#expect(try await host.text().contains("Add anyway"))
+		}
+
+		@Test("changing lpm.json rechecks an unchanged value in the open sheet")
+		func schemaChangeRechecksValue() async throws {
+			let (store, folder) = try await makeStore(lpmJSON: #"{"envSchema":{"vars":{"DATABASE_URL":{"format":"url"}}}}"#)
+			defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			for _ in 0..<200 where store.valueChecks["suggestions"] == nil { try await Task.sleep(for: .milliseconds(10)) }
+			try #require(store.valueChecks["suggestions"] != nil)
+			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "DATABASE_URL"), size: NSSize(width: 560, height: 560))
+			defer { host.window.close() }
+			try host.enterValue("https://db.example.com")
+			try await host.settle()
+
+			try #"{"envSchema":{"vars":{"DATABASE_URL":{"format":"email"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+			store.reloadKeyDescriptions()
+			#expect(try await host.waitForText("Email"))
+			#expect(try await host.waitForText("Not a valid email address"))
+		}
+
+		@Test("the length counter uses the engine's Unicode scalar count")
+		func lengthCounterUsesUnicodeScalars() async throws {
+			let (store, folder) = try await makeStore(lpmJSON: #"{"envSchema":{"vars":{"TOKEN":{"minLength":3}}}}"#)
+			defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			for _ in 0..<200 where store.valueChecks["suggestions"] == nil { try await Task.sleep(for: .milliseconds(10)) }
+			try #require(store.valueChecks["suggestions"] != nil)
+			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "TOKEN"), size: NSSize(width: 560, height: 560))
+			defer { host.window.close() }
+			try host.enterValue("e\u{301}")
+
+			#expect(try await host.waitForText("Too short"))
+			#expect(try await host.text().contains("2 chars"))
+		}
+
 		private func makeStore(lpmJSON: String = Self.schema) async throws -> (VaultStore, String) {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "key-suggestions-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
