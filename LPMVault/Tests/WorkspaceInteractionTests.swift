@@ -149,7 +149,13 @@ extension SheetInteractionTests {
 				defer { store.lock() }
 				let host = try await workspace(store)
 				defer { host.window.close() }
-				try clickAt(NSPoint(x: 70, y: 603), in: host)
+				let sidebar = CGRect(x: 0, y: 0, width: VaultMetrics.sidebar / host.view.bounds.width, height: 1)
+				let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: sidebar)
+				let environment = try #require(lines.first {
+					$0.text.filter { !$0.isWhitespace && $0 != "•" }.drop { $0 == "." } == "env"
+				})
+				try clickAt(NSPoint(x: environment.bounds.midX * host.view.bounds.width,
+					y: environment.bounds.midY * host.view.bounds.height), in: host)
 				#expect(try await host.waitForText("ACTIONS"))
 				try await host.settle()
 				let key = try await host.labelFrame("PORT")
