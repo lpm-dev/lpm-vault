@@ -554,16 +554,20 @@ struct VaultSidebarProjectDropDelegate: DropDelegate {
 	func performDrop(info: DropInfo) -> Bool {
 		dropState.clear()
 		let providers = info.itemProviders(for: [VaultSidebarProjectDrag.contentType])
-		guard validateDrop(info: info), providers.count == 1, let provider = providers.first else { return false }
+		guard validateDrop(info: info) else { return false }
 		let destination = VaultProjectPlacement.at(y: info.location.y, rowHeight: rowHeight)
-		Task { await loadDrop(from: provider, placement: destination) }
-		return true
+		return enqueueDrop(from: providers, placement: destination) != nil
+	}
+
+	func enqueueDrop(from providers: [NSItemProvider], placement: VaultProjectPlacement) -> Task<Bool, Never>? {
+		guard store.isUnlocked, providers.count == 1, let provider = providers.first else { return nil }
+		return Task { await loadDrop(from: provider, placement: placement) }
 	}
 
 	func loadDrop(from provider: NSItemProvider, placement: VaultProjectPlacement) async -> Bool {
-		let drag: VaultSidebarProjectDrag? = await withCheckedContinuation { continuation in
-			_ = provider.loadDataRepresentation(forTypeIdentifier: VaultSidebarProjectDrag.contentType.identifier) { data, _ in
-				continuation.resume(returning: data.flatMap { try? JSONDecoder().decode(VaultSidebarProjectDrag.self, from: $0) })
+		let drag = await withCheckedContinuation { continuation in
+			_ = provider.loadTransferable(type: VaultSidebarProjectDrag.self) { result in
+				continuation.resume(returning: try? result.get())
 			}
 		}
 		guard let drag else { return false }

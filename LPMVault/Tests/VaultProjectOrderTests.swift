@@ -107,8 +107,6 @@ struct VaultProjectOrderTests {
 		default:
 			#expect(target.prepareForDragOperation(info))
 			#expect(target.performDragOperation(info))
-			#expect(try await host.waitUntil { store.visibleVaults(matching: "").map(\.id) == ["alpha", "zulu", "middle"] },
-				"Order after native drop: \(store.visibleVaults(matching: "").map(\.id))")
 		}
 		try await host.settle()
 		#expect(try markerRows(in: host).isEmpty)
@@ -322,7 +320,7 @@ struct VaultProjectOrderTests {
 		#expect(store.visibleVaults(matching: "").map(\.id) == ["new", "zulu", "middle"])
 	}
 
-	@Test("the native item provider decodes a project drag and rejects malformed data", arguments: [false, true], ["registered", "raw"])
+	@Test("queued native item providers reorder projects and reject malformed data", arguments: [false, true], ["registered", "raw"])
 	func nativeDrop(malformed: Bool, representation: String) async throws {
 		let (store, _, preferences, domain) = try fixture()
 		defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
@@ -338,9 +336,23 @@ struct VaultProjectOrderTests {
 				return nil
 			}
 		}
-		let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "alpha", rowHeight: 30, dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
-		#expect(await delegate.loadDrop(from: provider, placement: .before) == !malformed)
-		#expect(store.visibleVaults(matching: "").map(\.id) == (malformed ? ["alpha", "middle", "zulu"] : ["zulu", "alpha", "middle"]))
+		let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "middle", rowHeight: 30, dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
+		let operation = try #require(delegate.enqueueDrop(from: [provider], placement: .before))
+		#expect(await operation.value == !malformed)
+		#expect(store.visibleVaults(matching: "").map(\.id) == (malformed ? ["alpha", "middle", "zulu"] : ["alpha", "zulu", "middle"]))
+	}
+
+	@Test("empty, multiple-item and locked drops do not enqueue work", arguments: ["empty", "multiple", "locked"])
+	func invalidDropQueue(input: String) throws {
+		let (store, _, preferences, domain) = try fixture()
+		defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+		let originalOrder = preferences.stringArray(forKey: VaultStore.projectOrderKey)
+		if input == "locked" { store.lock() }
+		let providers = input == "empty" ? [] : (0..<(input == "multiple" ? 2 : 1)).map { _ in NSItemProvider() }
+		let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "middle", rowHeight: 30,
+			dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
+		#expect(delegate.enqueueDrop(from: providers, placement: .before) == nil)
+		#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == originalOrder)
 	}
 
 	@Test("the pointer selects an insertion before or after the target row")
