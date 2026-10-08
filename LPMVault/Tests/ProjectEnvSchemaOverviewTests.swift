@@ -84,6 +84,17 @@ struct ProjectEnvSchemaOverviewTests {
 		#expect(try badges(#"{"default":"line one\nline two"}"#) == [Badge(text: "Default: line one line two", help: "line one\nline two")])
 	}
 
+	@Test("enum badges preserve shortened and multiline allowed values", arguments: [
+		[String(repeating: "x", count: 40)],
+		["line one\nline two"],
+		["line one\nline two", "short"],
+	])
+	func enumLiteralTooltips(options: [String]) throws {
+		let rule = try LPMConfigJSON(parsing: JSONSerialization.data(withJSONObject: ["enum": options]))
+		let badge = try #require(ProjectEnvSchemaOverview.badges(for: rule).first)
+		#expect(badge.help == options.joined(separator: "\n"))
+	}
+
 	@Test("folders without rules read as empty, and a missing folder asks to connect one")
 	func emptyStates() throws {
 		#expect(ProjectEnvSchemaFile.load(inFolder: "/nonexistent-\(UUID().uuidString)", vaultID: "project").schema == .noFolder)

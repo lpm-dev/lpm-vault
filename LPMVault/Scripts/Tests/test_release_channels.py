@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import plistlib
+import re
 import subprocess
 from pathlib import Path
 import sys
@@ -49,6 +50,21 @@ def feed(value):
 
 
 class ReleaseMetadata(unittest.TestCase):
+    def test_project_metadata_preserves_released_version_and_matches_generator(self):
+        project = (SCRIPTS.parent / 'LPMVault.xcodeproj/project.pbxproj').read_text()
+        generator = (SCRIPTS.parent / 'project.yml').read_text()
+        fields = [('MARKETING_VERSION', channels.version_tuple, (1, 0, 2)),
+                  ('CURRENT_PROJECT_VERSION', channels.build_tuple, (7, 0, 0))]
+        for field, parse, minimum in fields:
+            with self.subTest(field=field):
+                values = set(re.findall(rf'{field} = ([0-9.]+);', project))
+                self.assertEqual(len(values), 1)
+                value = values.pop()
+                self.assertGreaterEqual(parse(value), minimum)
+                declared = re.search(rf'^    {field}: "([0-9.]+)"$', generator, re.MULTILINE)
+                self.assertIsNotNone(declared)
+                self.assertEqual(declared.group(1), value)
+
     def test_build_ordering_is_shared_and_apple_compatible(self):
         for previous, floor, expected in [('6', '6', '6.0.1'), ('6.0.99', '6', '6.1.0'),
                                           ('6.99.99', '6', '7.0.0'), ('6.0.1', '7', '7')]:

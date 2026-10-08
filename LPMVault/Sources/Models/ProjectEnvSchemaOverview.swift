@@ -171,12 +171,15 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	}
 
 	private static func choices(_ options: [String]) -> Badge {
-		let all = "One of: " + options.map { shortText($0).text }.joined(separator: ", ")
-		guard all.count > shortLimit + 16, options.count > 1 else { return Badge(text: all) }
+		let shortened = options.map(shortText)
+		let all = "One of: " + shortened.map(\.text).joined(separator: ", ")
+		guard all.count > shortLimit + 16, options.count > 1 else {
+			return Badge(text: all, help: shortened.contains { $0.help != nil } ? options.joined(separator: "\n") : nil)
+		}
 		var shown: [String] = []
 		var length = 0
-		for option in options {
-			let text = shortText(option).text
+		for option in shortened {
+			let text = option.text
 			guard shown.isEmpty || length + text.count <= shortLimit else { break }
 			shown.append(text)
 			length += text.count + 2
