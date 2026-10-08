@@ -45,7 +45,8 @@ extension SheetInteractionTests {
 			}
 			// Recognition misreads the small dashed source badge; the page renders the model's source.
 			#expect(store.keyDescriptions["schema-page"]?.schema?.overview?.rule(for: "DATABASE_URL")?.source == "schemas/base.json")
-			#expect(!text.contains("VALUES"), "The inspector stays closed on the Schema page")
+			let inspector = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: CGRect(x: 0.78, y: 0, width: 0.22, height: 1))
+			#expect(!OCRText(inspector.map(\.text).joined(separator: "\n")).contains("VALUES"), "The inspector stays closed on the Schema page")
 		}
 
 		@Test("without a folder, the page explains where rules live and offers Connect CLI")

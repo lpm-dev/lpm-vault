@@ -20,6 +20,8 @@ enum VaultWorkspaceFilter: String, CaseIterable, Identifiable {
   case all = "All keys"
   case drift = "Drift"
   case missing = "Missing"
+  /// Keys whose values fail their lpm.json rules.
+  case invalid = "Invalid"
 
   var id: String { rawValue }
 }
@@ -133,10 +135,41 @@ enum VaultKeySortOrder: String, Sendable {
   /// Finder's order: case-insensitive, with numbers compared by value, so
   /// `KEY_2` comes before `KEY_10`.
   static func sortedAscending<S: Sequence>(_ keys: S) -> [String] where S.Element == String {
-    keys.sorted {
-      let comparison = $0.localizedStandardCompare($1)
-      return comparison == .orderedSame ? $0 < $1 : comparison == .orderedAscending
+    keys.sorted(by: precedes)
+  }
+
+  static func mergingAscending<S: Sequence>(_ extras: S, into keys: [String]) -> [String]
+  where S.Element == String {
+    let additions = sortedAscending(extras)
+    guard !additions.isEmpty else { return keys }
+    var merged: [String] = []
+    merged.reserveCapacity(keys.count + additions.count)
+    var cursor = 0
+    var previous: String?
+    for addition in additions {
+      guard addition != previous else { continue }
+      previous = addition
+      var lower = cursor
+      var upper = keys.count
+      while lower < upper {
+        let middle = lower + (upper - lower) / 2
+        if precedes(keys[middle], addition) {
+          lower = middle + 1
+        } else {
+          upper = middle
+        }
+      }
+      merged.append(contentsOf: keys[cursor..<lower])
+      if lower == keys.count || keys[lower] != addition { merged.append(addition) }
+      cursor = lower
     }
+    merged.append(contentsOf: keys[cursor...])
+    return merged
+  }
+
+  private static func precedes(_ lhs: String, _ rhs: String) -> Bool {
+    let comparison = lhs.localizedStandardCompare(rhs)
+    return comparison == .orderedSame ? lhs < rhs : comparison == .orderedAscending
   }
 }
 
@@ -577,15 +610,24 @@ struct VaultContentDerivation: Equatable {
     searchText: String,
     sortOrder: VaultKeySortOrder,
     revealedKeys: Set<String>,
-    publicKeys: Set<String> = []
+    publicKeys: Set<String> = [],
+    invalidKeys: Set<String> = [],
+    unstoredKeys: Set<String> = []
   ) {
     let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    // Matching walks the A-to-Z keys alongside their lowercased forms, then
-    // reverses the matches in place for Z to A.
-    let ascendingKeys = snapshot.allSecretKeys
-    allKeys = snapshot.keys(sortOrder)
     switch mode {
     case .matrix:
+      // Matching walks the A-to-Z keys alongside their lowercased forms, then
+      // reverses the matches in place for Z to A.
+      let extra = unstoredKeys.filter { snapshot.summaries[$0] == nil }
+      let ascendingKeys: [String]
+      if extra.isEmpty {
+        ascendingKeys = snapshot.allSecretKeys
+        allKeys = snapshot.keys(sortOrder)
+      } else {
+        ascendingKeys = VaultKeySortOrder.mergingAscending(extra, into: snapshot.allSecretKeys)
+        allKeys = sortOrder == .ascending ? ascendingKeys : ascendingKeys.reversed()
+      }
       if filter == .all, query.isEmpty {
         filteredKeys = allKeys
       } else {
@@ -598,9 +640,11 @@ struct VaultContentDerivation: Equatable {
           case .all: matchesFilter = true
           case .drift: matchesFilter = snapshot.hasDrift(for: key)
           case .missing: matchesFilter = snapshot.isMissingSomewhere(key)
+          case .invalid: matchesFilter = invalidKeys.contains(key)
           }
           if matchesFilter,
-            query.isEmpty || snapshot.normalizedSecretKeys[index].contains(query)
+            query.isEmpty || (extra.isEmpty ? snapshot.normalizedSecretKeys[index]
+              : snapshot.normalizedKey(for: key)).contains(query)
           {
             matchingKeys.append(key)
           }
@@ -611,30 +655,42 @@ struct VaultContentDerivation: Equatable {
       environmentKeys = []
       environmentDriftingKeyCount = 0
     case .environment:
+      allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
-      let sortedEnvironmentKeys = snapshot.sortedKeys(for: selectedEnvironment, sortOrder)
-      if query.isEmpty {
-        environmentKeys = sortedEnvironmentKeys
-      } else if snapshot.environmentCount == 1,
-        sortedEnvironmentKeys.count == ascendingKeys.count
-      {
-        var matchingKeys: [String] = []
-        matchingKeys.reserveCapacity(sortedEnvironmentKeys.count)
-        for index in ascendingKeys.indices
-        where snapshot.normalizedSecretKeys[index].contains(query) {
-          matchingKeys.append(ascendingKeys[index])
+      let extra = unstoredKeys.filter { project.value(for: $0, in: selectedEnvironment) == nil }
+      if extra.isEmpty {
+        let ascendingKeys = snapshot.allSecretKeys
+        let sortedEnvironmentKeys = snapshot.sortedKeys(for: selectedEnvironment, sortOrder)
+        if query.isEmpty {
+          environmentKeys = sortedEnvironmentKeys
+        } else if snapshot.environmentCount == 1,
+          sortedEnvironmentKeys.count == ascendingKeys.count
+        {
+          var matchingKeys: [String] = []
+          matchingKeys.reserveCapacity(sortedEnvironmentKeys.count)
+          for index in ascendingKeys.indices
+          where snapshot.normalizedSecretKeys[index].contains(query) {
+            matchingKeys.append(ascendingKeys[index])
+          }
+          if sortOrder == .descending { matchingKeys.reverse() }
+          environmentKeys = matchingKeys
+        } else {
+          environmentKeys = sortedEnvironmentKeys.filter {
+            snapshot.normalizedKey(for: $0).contains(query)
+          }
         }
+      } else {
+        let ascendingKeys = VaultKeySortOrder.mergingAscending(extra,
+          into: snapshot.sortedKeys(for: selectedEnvironment, .ascending))
+        var matchingKeys = query.isEmpty ? ascendingKeys : ascendingKeys.filter { snapshot.normalizedKey(for: $0).contains(query) }
         if sortOrder == .descending { matchingKeys.reverse() }
         environmentKeys = matchingKeys
-      } else {
-        environmentKeys = sortedEnvironmentKeys.filter {
-          snapshot.normalizedKey(for: $0).contains(query)
-        }
       }
       environmentDriftingKeyCount = environmentKeys.reduce(into: 0) { count, key in
         if snapshot.hasDrift(for: key) { count += 1 }
       }
     case .schema:
+      allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
       environmentKeys = []
       environmentDriftingKeyCount = 0

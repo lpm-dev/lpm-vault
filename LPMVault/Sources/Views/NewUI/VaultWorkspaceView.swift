@@ -228,7 +228,13 @@ struct VaultWorkspaceView: View {
 								onExport: exportCurrentEnvironment,
 								editedKeys: store.keyDrafts.editedKeys(in: project.id),
 								publicKeys: store.publicKeys(in: project.id),
+								valueChecks: VaultValueCheckPresentation(
+									check: store.valueChecks[project.id],
+									rules: store.keyDescriptions[project.id]?.schema?.overview,
+									project: project
+								),
 								onAddSecret: presentAddSecret,
+								onAddKey: { presentAddSecret(key: $0, environment: store.selectedEnvironment) },
 								onCopySecret: copySecret,
 								onDeleteSecret: requestDeleteSecret,
 								onResizeColumns: { store.recordUserActivity() }

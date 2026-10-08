@@ -46,7 +46,11 @@ struct VaultContentView: View {
 	var editedKeys: Set<String> = []
 	/// Keys whose rules make them public; their values show unmasked.
 	var publicKeys: Set<String> = []
+	/// What the project's rules find in its values.
+	var valueChecks: VaultValueCheckPresentation = .none
 	let onAddSecret: () -> Void
+	/// Adds a value for a declared key that has none in the selected environment.
+	var onAddKey: (String) -> Void = { _ in }
 	let onCopySecret: (String, String) -> Void
 	let onDeleteSecret: (String, String) -> Void
 	let onResizeColumns: () -> Void
@@ -61,7 +65,10 @@ struct VaultContentView: View {
 			searchText: searchText,
 			sortOrder: sortOrder,
 			revealedKeys: canUseSecrets ? revealedKeys : [],
-			publicKeys: shownPublicKeys
+			publicKeys: shownPublicKeys,
+			invalidKeys: valueChecks.invalidKeys,
+			unstoredKeys: mode == .matrix ? valueChecks.unstoredInvalidKeys()
+				: (environmentViewMode == .table ? valueChecks.unstoredKeys(in: selectedEnvironment) : [])
 		)
 		VStack(spacing: 0) {
 			header(derived)
@@ -90,12 +97,12 @@ struct VaultContentView: View {
 		VStack(alignment: .leading, spacing: 12) {
 			ViewThatFits(in: .horizontal) {
 				HStack(spacing: 10) {
-					headerIdentity
+					headerIdentity(derived)
 					Spacer(minLength: 8)
 					projectActions
 				}
 				VStack(alignment: .leading, spacing: 10) {
-					headerIdentity
+					headerIdentity(derived)
 					projectActions.frame(maxWidth: .infinity, alignment: .trailing)
 				}
 			}
@@ -125,15 +132,27 @@ struct VaultContentView: View {
 	@ViewBuilder
 	private var viewControls: some View {
 		if case .matrix = mode {
-			ForEach(VaultWorkspaceFilter.allCases) { candidate in
-				VaultFilterChip(
-					title: candidate.rawValue,
-					dot: candidate == .drift ? VaultPalette.orange : (candidate == .missing ? VaultPalette.red : nil),
-					trailing: candidate == .drift
-						? "\(snapshot.driftingKeyCount)"
-						: (candidate == .missing ? "\(snapshot.missingKeyCount)" : nil),
-					selected: filter == candidate
-				) { filter = candidate }
+			ForEach(VaultWorkspaceFilter.allCases.filter { $0 != .invalid || valueChecks.hasCheck }) { candidate in
+				switch candidate {
+				case .invalid:
+					VaultFilterChip(
+						title: candidate.rawValue,
+						symbol: "xmark.circle",
+						trailing: "\(valueChecks.invalidKeys.count)",
+						alert: !valueChecks.invalidKeys.isEmpty,
+						selected: filter == candidate
+					) { filter = candidate }
+					.help("Keys whose values fail their lpm.json rules")
+				default:
+					VaultFilterChip(
+						title: candidate.rawValue,
+						dot: candidate == .drift ? VaultPalette.orange : (candidate == .missing ? VaultPalette.red : nil),
+						trailing: candidate == .drift
+							? "\(snapshot.driftingKeyCount)"
+							: (candidate == .missing ? "\(snapshot.missingKeyCount)" : nil),
+						selected: filter == candidate
+					) { filter = candidate }
+				}
 			}
 		} else {
 			ForEach(VaultEnvironmentViewMode.allCases) { candidate in
@@ -145,14 +164,14 @@ struct VaultContentView: View {
 	}
 
 	@ViewBuilder
-	private var headerIdentity: some View {
+	private func headerIdentity(_ derived: VaultContentDerivation) -> some View {
 		HStack(spacing: 10) {
 			if case .matrix = mode {
 				Text("All variables")
 					.font(.system(size: 19, weight: .bold))
 					.tracking(-0.28)
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("\(Self.count(snapshot.allSecretKeys.count, "key")) · \(Self.count(environments.count, "env"))")
+				Text("\(Self.count(derived.allKeys.count, "key")) · \(Self.count(environments.count, "env"))")
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			} else {
@@ -270,7 +289,15 @@ struct VaultContentView: View {
 									isRevealed: isShown(key),
 									isPublic: shownPublicKeys.contains(key),
 									isEdited: editedKeys.contains(key),
-									onSelect: { selectedKey = key; showsInspector = true },
+									checks: valueChecks,
+									onSelect: {
+										if snapshot.summaries[key] == nil {
+											onAddKey(key)
+										} else {
+											selectedKey = key
+											showsInspector = true
+										}
+									},
 									onReveal: { toggleReveal(key) }
 								)
 								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
@@ -309,16 +336,31 @@ struct VaultContentView: View {
 				ScrollView([.horizontal, .vertical]) {
 					LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
 						Section {
+							if valueChecks.readsDefaultEnvironment(selectedEnvironment) {
+								Text("The LPM CLI reads values from .env and checks this environment's rules.")
+									.font(.system(size: 12))
+									.foregroundStyle(VaultPalette.textTertiary)
+									.padding(.horizontal, 20)
+									.frame(width: tableWidth, height: 34, alignment: .leading)
+							}
+							ForEach(valueChecks.groupFailures(in: selectedEnvironment)) { failure in
+								VaultGroupFailureBanner(failure: failure, width: tableWidth)
+							}
 							if derived.environmentKeys.isEmpty {
 								VaultTableEmptyRow(
-									message: searchText.isEmpty ? "No secrets in this environment" : "No keys match your search",
+									message: !searchText.isEmpty
+										? "No keys match your search"
+										: (valueChecks.readsDefaultEnvironment(selectedEnvironment)
+											? "No values here. The LPM CLI uses \(VaultProject.displayName(for: "default"))'s values for this environment."
+											: "No secrets in this environment"),
 									width: tableWidth
 								)
 							} else {
 								ForEach(derived.environmentKeys, id: \.self) { key in
+									let stored = project.value(for: key, in: selectedEnvironment)
 									VaultEnvironmentRow(
 										key: key,
-										value: project.value(for: key, in: selectedEnvironment) ?? "",
+										value: stored,
 										layout: layout,
 										tableWidth: tableWidth,
 										isSelected: selectedKey == key,
@@ -326,11 +368,22 @@ struct VaultContentView: View {
 										isPublic: shownPublicKeys.contains(key),
 										hasDrift: snapshot.hasDrift(for: key),
 										isEdited: editedKeys.contains(key),
-										onSelect: { selectedKey = key; showsInspector = true },
+										problem: valueChecks.reason(for: key, in: selectedEnvironment),
+										defaultValue: valueChecks.defaultValue(of: key, in: selectedEnvironment),
+										isRequired: stored == nil && valueChecks.isRequiredAndUnset(key, in: selectedEnvironment),
+										onSelect: {
+											if stored == nil {
+												onAddKey(key)
+											} else {
+												selectedKey = key
+												showsInspector = true
+											}
+										},
 										onReveal: { toggleReveal(key) },
 										onCopy: { onCopySecret(key, selectedEnvironment) },
 										onEdit: { selectedKey = key; showsInspector = true },
-										onDelete: { onDeleteSecret(key, selectedEnvironment) }
+										onDelete: { onDeleteSecret(key, selectedEnvironment) },
+										onAdd: { onAddKey(key) }
 									)
 									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 								}
@@ -372,13 +425,20 @@ struct VaultContentView: View {
 	/// then the details the filter chips and row badges also show. The key count
 	/// and unsaved changes always stay.
 	private func statusBar(_ derived: VaultContentDerivation) -> some View {
+		let declaredOnly = mode == .matrix ? 0 : derived.environmentKeys.lazy.filter { project.value(for: $0, in: selectedEnvironment) == nil }.count
 		let count = Text(mode == .matrix
 			? "\(derived.filteredKeys.count) of \(Self.count(derived.allKeys.count, "key")) shown"
-			: Self.count(derived.environmentKeys.count, "key"))
+			: Self.count(derived.environmentKeys.count - declaredOnly, "key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) from lpm.json"))
 		let sort = Text("sorted \(sortOrder.title)").accessibilityLabel("sorted \(sortOrder.spokenTitle)")
-		let details = mode == .matrix
+		var details = mode == .matrix
 			? [Text("\(snapshot.driftingKeyCount) drifting"), Text("\(snapshot.missingKeyCount) missing")]
 			: [Text("\(derived.environmentDriftingKeyCount) differ across environments"), Text("encrypted locally")]
+		if valueChecks.hasCheck {
+			let invalid = mode == .matrix ? valueChecks.invalidKeys.count : valueChecks.invalidKeys(in: selectedEnvironment).count
+			let groups = mode == .matrix ? 0 : valueChecks.groupFailures(in: selectedEnvironment).count
+			let text = "\(invalid) invalid" + (groups == 0 ? "" : " · \(Self.count(groups, "group"))")
+			details.insert(Text(text).foregroundStyle(invalid == 0 ? VaultPalette.textTertiary : VaultPalette.redText), at: mode == .matrix ? 2 : 1)
+		}
 		let unsaved = editedKeys.isEmpty
 			? nil
 			: (editedKeys.count == 1 ? "1 key with unsaved changes" : "\(editedKeys.count) keys with unsaved changes")
@@ -483,6 +543,7 @@ private struct VaultMatrixRow: View {
 	let isRevealed: Bool
 	let isPublic: Bool
 	let isEdited: Bool
+	var checks: VaultValueCheckPresentation = .none
 	let onSelect: () -> Void
 	let onReveal: () -> Void
 
@@ -504,15 +565,22 @@ private struct VaultMatrixRow: View {
 				}
 				.padding(.horizontal, 20)
 				.frame(width: layout[.key])
+				.overlay(alignment: .leading) {
+					if checks.invalidKeys.contains(key) { VaultProblemMarker().padding(.leading, 8) }
+				}
 
 				ForEach(environments, id: \.self) { environment in
 					VaultHairline(color: VaultPalette.rowDivider, axis: .vertical)
 					HStack(spacing: 6) {
-						if project.value(for: key, in: environment) != nil {
-							VaultValueText(text: isRevealed ? (project.value(for: key, in: environment) ?? "") : "••••••••••", masked: !isRevealed, size: 11.5)
-						} else {
-							Text("Not set").font(.system(size: 11, weight: .semibold)).foregroundStyle(VaultPalette.redText)
-						}
+						let stored = project.value(for: key, in: environment)
+						VaultCheckedValue(
+							value: stored,
+							isRevealed: isRevealed,
+							problem: checks.reason(for: key, in: environment),
+							defaultValue: checks.defaultValue(of: key, in: environment),
+							isRequired: stored == nil && checks.isRequiredAndUnset(key, in: environment),
+							size: 11.5
+						)
 						Spacer(minLength: 0)
 					}
 					.padding(.horizontal, 12)
@@ -530,7 +598,7 @@ private struct VaultMatrixRow: View {
 		.simultaneousGesture(TapGesture(count: 2).onEnded { onReveal() })
 		.onHover { hovering = $0 }
 		.accessibilityElement(children: .ignore)
-		.accessibilityLabel("\(key), set in \(snapshot.environmentCount(for: key)) of \(environments.count) environments\(isEdited ? ", unsaved changes" : "")")
+		.accessibilityLabel("\(key), set in \(snapshot.environmentCount(for: key)) of \(environments.count) environments\(checks.invalidKeys.contains(key) ? ", fails its rules" : "")\(isEdited ? ", unsaved changes" : "")")
 		.accessibilityValue(snapshot.hasDrift(for: key) ? "Values differ" : "Values consistent")
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
 		.accessibilityAction(named: isRevealed ? "Hide values" : "Reveal values", onReveal)
@@ -582,7 +650,8 @@ private struct VaultTableResizeHandles: View {
 
 private struct VaultEnvironmentRow: View {
 	let key: String
-	let value: String
+	/// The stored value; nil for a declared key that only a rule or a default shows.
+	let value: String?
 	let layout: VaultTableColumnLayout
 	let tableWidth: CGFloat
 	let isSelected: Bool
@@ -590,11 +659,16 @@ private struct VaultEnvironmentRow: View {
 	let isPublic: Bool
 	let hasDrift: Bool
 	let isEdited: Bool
+	/// Why the value fails its rules, one reason per line.
+	var problem: String?
+	var defaultValue: String?
+	var isRequired = false
 	let onSelect: () -> Void
 	let onReveal: () -> Void
 	let onCopy: () -> Void
 	let onEdit: () -> Void
 	let onDelete: () -> Void
+	var onAdd: () -> Void = {}
 
 	@State private var hovering = false
 
@@ -607,17 +681,23 @@ private struct VaultEnvironmentRow: View {
 			.padding(.leading, 20)
 			.padding(.trailing, 12)
 			.frame(width: layout[.key], alignment: .leading)
+			.overlay(alignment: .leading) { if problem != nil { VaultProblemMarker().padding(.leading, 8) } }
 
-			VaultValueText(text: isRevealed ? value : "••••••••••••", masked: !isRevealed)
+			VaultCheckedValue(value: value, isRevealed: isRevealed, problem: problem, defaultValue: defaultValue,
+				isRequired: isRequired, showsNotSet: false, size: 12)
 				.padding(.horizontal, 12)
 				.frame(width: layout[.value], alignment: .leading)
 
 			HStack(spacing: 2) {
-				VaultRowIconButton(systemImage: isRevealed ? "eye.slash" : "eye", help: isRevealed ? "Hide value" : "Reveal value", action: onReveal)
-					.hidden(isPublic)
-				VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy key and value", action: onCopy)
-				VaultRowIconButton(systemImage: "pencil", help: "Edit key and value", action: onEdit)
-				VaultRowIconButton(systemImage: "trash", help: "Delete from this environment", destructive: true, action: onDelete)
+				if value == nil {
+					VaultRowIconButton(systemImage: "plus", help: "Add a value for \(key)", action: onAdd)
+				} else {
+					VaultRowIconButton(systemImage: isRevealed ? "eye.slash" : "eye", help: isRevealed ? "Hide value" : "Reveal value", action: onReveal)
+						.hidden(isPublic)
+					VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy key and value", action: onCopy)
+					VaultRowIconButton(systemImage: "pencil", help: "Edit key and value", action: onEdit)
+					VaultRowIconButton(systemImage: "trash", help: "Delete from this environment", destructive: true, action: onDelete)
+				}
 			}
 			.padding(.trailing, 16)
 			.frame(width: layout[.actions], alignment: .trailing)
@@ -628,8 +708,23 @@ private struct VaultEnvironmentRow: View {
 		.onTapGesture(perform: onSelect)
 		.onHover { hovering = $0 }
 		.accessibilityElement(children: .contain)
-		.accessibilityLabel("\(key)\(isPublic ? ", public" : ""), value \(isRevealed ? "shown" : "hidden")\(isEdited ? ", unsaved changes" : "")")
+		.accessibilityLabel(accessibilityText)
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
+	}
+
+	private var accessibilityText: String {
+		var parts = [key]
+		if isPublic { parts.append("public") }
+		if let defaultValue {
+			parts.append("default \(defaultValue)")
+		} else if value == nil {
+			parts.append(isRequired ? "required, no value" : "no value")
+		} else {
+			parts.append("value \(isRevealed ? "shown" : "hidden")")
+		}
+		if let problem { parts.append(problem.replacingOccurrences(of: "\n", with: ", ")) }
+		if isEdited { parts.append("unsaved changes") }
+		return parts.joined(separator: ", ")
 	}
 
 	private func keyLabel(compact: Bool) -> some View {
@@ -693,6 +788,39 @@ struct VaultKeySortHeader: View {
 		.help("Sort keys \(order.reversed.spokenTitle)")
 		.accessibilityLabel("Key")
 		.accessibilityValue("Sorted \(order.spokenTitle)")
+	}
+}
+
+/// Marks a key whose value fails its rules.
+private struct VaultProblemMarker: View {
+	var body: some View {
+		VaultStatusDot(color: VaultPalette.red).help("Fails its lpm.json rules").accessibilityHidden(true)
+	}
+}
+
+/// A group whose relation fails in the environment, above its members' rows.
+private struct VaultGroupFailureBanner: View {
+	let failure: VaultValueCheckPresentation.GroupFailure
+	let width: CGFloat
+
+	var body: some View {
+		HStack(spacing: 8) {
+			Image(systemName: "xmark.circle")
+				.font(.system(size: 11, weight: .semibold))
+				.foregroundStyle(VaultPalette.redText)
+			Text(failure.message)
+				.font(.system(size: 12))
+				.foregroundStyle(VaultPalette.textSecondary)
+				.lineLimit(1)
+				.truncationMode(.middle)
+			Spacer(minLength: 0)
+		}
+		.padding(.horizontal, 20)
+		.frame(width: width, height: 34, alignment: .leading)
+		.background(VaultPalette.redTint.opacity(0.6))
+		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+		.accessibilityElement(children: .combine)
+		.help(failure.message)
 	}
 }
 
