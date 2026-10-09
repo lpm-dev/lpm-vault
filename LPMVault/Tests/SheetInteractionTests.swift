@@ -579,8 +579,12 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Whether the field showing `placeholder` is being edited.
-	func isEditing(placeholder: String) -> Bool {
-		guard let field = textFields(in: view).first(where: { $0.placeholderString == placeholder }), let editor = field.currentEditor() else { return false }
+	/// Whether the field showing `placeholder` is being edited, in the host's window or `targetWindow`.
+	func isEditing(placeholder: String, in targetWindow: NSWindow? = nil) -> Bool {
+		let window = targetWindow ?? self.window
+		guard let root = window.contentView, let field = textFields(in: root).first(where: { $0.placeholderString == placeholder }),
+			let editor = field.currentEditor()
+		else { return false }
 		return window.firstResponder === editor
 	}
 

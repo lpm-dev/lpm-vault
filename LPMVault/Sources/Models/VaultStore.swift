@@ -3428,16 +3428,20 @@ final class VaultStore {
     if sameFolder, var draft = schemaDrafts[projectID], schemaDraftFolders[projectID]?.path == folder,
       !savingSchemaDrafts.contains(projectID)
     {
+      let merged = draft
       let outcome = draft.rebase(ontoOwnWrite: rootSchema, description: description)
-      if draft.schema != schemaDrafts[projectID]?.schema { schemaDraftHistory[projectID] = nil }
+      if draft.schema != merged.schema {
+        settleSchemaDraft(&draft, since: merged, everyKey: true, for: projectID)
+        schemaDraftHistory[projectID] = nil
+      }
       setSchemaDraft(draft, for: projectID)
       if !outcome.conflicts.isEmpty { noteSchemaDraftRebase(outcome, for: projectID) }
     }
-    publishKeyDescriptions(
-      ProjectKeyDescriptions(folder: folder, rules: .success(rules), schema: sameFolder ? previous?.schema : nil,
-        rootSchema: rootSchema, folderIdentity: sameFolder ? previous?.folderIdentity : nil),
-      for: projectID
-    )
+    var descriptions = ProjectKeyDescriptions(folder: folder, rules: .success(rules), schema: sameFolder ? previous?.schema : nil,
+      rootSchema: rootSchema, folderIdentity: sameFolder ? previous?.folderIdentity : nil,
+      dependencies: sameFolder ? previous?.dependencies : nil)
+    descriptions.schemaPredatesRoot = descriptions.schema != nil
+    publishKeyDescriptions(descriptions, for: projectID)
     if selectedProjectId == projectID { reloadKeyDescriptions() }
   }
 
@@ -3446,6 +3450,12 @@ final class VaultStore {
   /// it's published, so a reread that sees the edit first doesn't take it
   /// for a change on disk.
   private func publishKeyDescriptions(_ descriptions: ProjectKeyDescriptions, for projectID: String, mergingDraft: Bool = true) {
+    var descriptions = descriptions
+    // A read that fails names no imports, so the ones last resolved stay
+    // watched and fixing a broken one is noticed.
+    if case .unreadable? = descriptions.schema, let previous = keyDescriptions[projectID], previous.folder == descriptions.folder {
+      descriptions.importPaths = previous.importPaths
+    }
     guard keyDescriptions[projectID] != descriptions else { return }
     keyDescriptions[projectID] = descriptions
     if case .success(let rules) = descriptions.rules {
@@ -3531,6 +3541,8 @@ final class VaultStore {
   struct EvaluatedSchemaDraft: Equatable {
     let revision: Int
     let values: UUID
+    /// The imports as lpm.json was last read when the draft was evaluated.
+    let imports: [RustSchemaEngine.Dependency]?
     let evaluation: ProjectEnvSchemaDraft.Evaluation
   }
 
@@ -3628,12 +3640,13 @@ final class VaultStore {
     return base
   }
 
-  /// The evaluation of the project's draft as it is now, with the values stored
-  /// now; nil while it's being evaluated.
+  /// The evaluation of the project's draft as it is now, with the values and
+  /// imports as they are now; nil while it's being evaluated.
   func currentSchemaDraftEvaluation(for projectID: String) -> ProjectEnvSchemaDraft.Evaluation? {
     guard schemaDraft(for: projectID) != nil, let evaluated = schemaDraftEvaluations[projectID],
       evaluated.revision == schemaDraftRevisions[projectID],
-      evaluated.values == projects.first(where: { $0.id == projectID })?.workspaceSnapshotIdentity
+      evaluated.values == projects.first(where: { $0.id == projectID })?.workspaceSnapshotIdentity,
+      evaluated.imports == keyDescriptions[projectID]?.dependencies
     else { return nil }
     return evaluated.evaluation
   }
@@ -3645,11 +3658,16 @@ final class VaultStore {
     return schemaDraft(for: projectID) == nil ? saved : latestSchemaDraftEvaluation(for: projectID)?.overview ?? saved
   }
 
-  /// The prefixes lpm.json's imports list. The app doesn't change what
-  /// lpm.json imports, so any resolution of the project's rules names them.
+  /// The prefixes lpm.json's imports list, each with the first schema that
+  /// lists it, as lpm.json's rules were last read. The app doesn't change
+  /// what lpm.json imports, so the draft's evaluation names the same ones.
+  func schemaImportedClientPrefixSources(for projectID: String) -> [String: String] {
+    (keyDescriptions[projectID]?.schema?.overview ?? latestSchemaDraftEvaluation(for: projectID)?.overview)?.importedClientPrefixes ?? [:]
+  }
+
+  /// The prefixes lpm.json's imports list.
   func schemaImportedClientPrefixes(for projectID: String) -> Set<String> {
-    let rules = latestSchemaDraftEvaluation(for: projectID)?.overview ?? keyDescriptions[projectID]?.schema?.overview
-    return rules.map { Set($0.importedClientPrefixes.keys) } ?? []
+    Set(schemaImportedClientPrefixSources(for: projectID).keys)
   }
 
   /// The prefixes that make the project's keys public besides the
@@ -3663,7 +3681,9 @@ final class VaultStore {
   /// with the rules the engine resolved for exactly it, or lpm.json's rules
   /// without a draft. Rules of another version of the draft never stand in.
   func schemaPrefixAvailability(for projectID: String) -> ProjectEnvSchemaClientPrefixes.Availability {
-    guard case .loaded(let saved, _)? = keyDescriptions[projectID]?.schema else { return .unreadable }
+    guard let descriptions = keyDescriptions[projectID], case .loaded(let saved, _)? = descriptions.schema else { return .unreadable }
+    // The rules lag lpm.json's base until the app's own write is read back.
+    guard !descriptions.schemaPredatesRoot else { return .checking }
     guard let draft = schemaDraft(for: projectID) else { return .ready(.init(draft: schemaBase(for: projectID), rules: saved, saved: saved)) }
     guard let evaluation = currentSchemaDraftEvaluation(for: projectID) else { return .checking }
     guard evaluation.rejection == nil, let rules = evaluation.overview else { return .rejected }
@@ -3694,6 +3714,7 @@ final class VaultStore {
     let previous = current ?? schemaBase(for: projectID)
     var draft = previous
     edit(&draft)
+    settleSchemaDraft(&draft, since: previous, for: projectID)
     guard draft != previous else { return }
     if current == nil { schemaDraftHistory[projectID] = nil }
     schemaDraftHistory[projectID, default: SchemaDraftHistory()].record(previous, coalescing: coalescing, at: .now)
@@ -3886,11 +3907,16 @@ final class VaultStore {
     return SchemaDraftFolder(path: descriptions.folder, identity: descriptions.folderIdentity)
   }
 
+  /// Keeps each key lpm.json declares public exactly when a prefix makes it
+  /// so, after an edit from `previous`, or after a merge, of every key. Undo,
+  /// redo and discarding restore drafts that were settled, or lpm.json's
+  /// own rules, so they don't settle again.
+  private func settleSchemaDraft(_ draft: inout ProjectEnvSchemaDraft, since previous: ProjectEnvSchemaDraft, everyKey: Bool = false, for projectID: String) {
+    guard let saved = keyDescriptions[projectID]?.schema?.overview else { return }
+    ProjectEnvSchemaClientPrefixes.settle(&draft, since: previous, everyKey: everyKey, imported: Set(saved.importedClientPrefixes.keys), saved: saved)
+  }
+
   private func setSchemaDraft(_ draft: ProjectEnvSchemaDraft, for projectID: String) {
-    var draft = draft
-    // Whatever the edit, a key lpm.json declares stays public exactly when a prefix makes it so.
-    ProjectEnvSchemaClientPrefixes.settle(
-      &draft, since: schemaDrafts[projectID] ?? schemaBase(for: projectID), imported: schemaImportedClientPrefixes(for: projectID))
     schemaDrafts[projectID] = draft
     schemaDraftRevisions[projectID, default: 0] &+= 1
     if draft.isEmpty { schemaDraftRebases[projectID] = nil }
@@ -3914,7 +3940,9 @@ final class VaultStore {
     }
     let schema = schemaBase(for: projectID).schema
     guard case .loaded? = descriptions.schema, !savingSchemaDrafts.contains(projectID), schema != draft.schema else { return nil }
+    let merged = draft
     let outcome = draft.rebase(onto: schema)
+    settleSchemaDraft(&draft, since: merged, everyKey: true, for: projectID)
     schemaDraftHistory[projectID] = nil
     setSchemaDraft(draft, for: projectID)
     if !draft.isEmpty, !outcome.isEmpty || !outcome.conflicts.isEmpty { noteSchemaDraftRebase(outcome, for: projectID) }
@@ -4033,7 +4061,7 @@ final class VaultStore {
         let self, !Task.isCancelled, self.schemaDraftEvaluationInputs[projectID] == inputs
       else { return }
       self.schemaDraftEvaluationTasks[projectID] = nil
-      let evaluated = EvaluatedSchemaDraft(revision: inputs.revision, values: inputs.values, evaluation: evaluation)
+      let evaluated = EvaluatedSchemaDraft(revision: inputs.revision, values: inputs.values, imports: inputs.imports, evaluation: evaluation)
       if self.schemaDraftEvaluations[projectID] != evaluated { self.schemaDraftEvaluations[projectID] = evaluated }
     }
   }

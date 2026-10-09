@@ -87,7 +87,7 @@ enum ProjectEnvSchemaClientPrefixes {
 			case .redundant(let prefix): "Keys that start with it are already public through \(prefix.escapingDirectionControls)."
 			case .tooMany: "The LPM CLI accepts at most \(maximum) prefixes."
 			case .secret(let key):
-				"\(key.escapingDirectionControls) is Secret. Public keys can't be secret — rename it or turn off Secret first."
+				"\(key.escapingDirectionControls) is Secret, and a public key can't be. Turn off its Secret first, or choose a prefix it doesn't start with."
 			}
 		}
 	}
@@ -104,6 +104,16 @@ enum ProjectEnvSchemaClientPrefixes {
 		/// Of `keys`, those whose override in lpm.json would only repeat the
 		/// imported rule once marked, which goes, so the imported rule applies as it is.
 		let restored: [String]
+		/// Of `keys`, those an import marks Secret whose override in lpm.json
+		/// doesn't, so the change makes their values public.
+		var exposed: [Exposure] = []
+	}
+
+	/// A key whose value becomes public though an import marks it Secret.
+	struct Exposure: Equatable, Sendable {
+		let key: String
+		/// The schema that marks it Secret, escaped.
+		let source: String
 	}
 
 	struct Edit: Equatable, Sendable {
@@ -177,19 +187,28 @@ enum ProjectEnvSchemaClientPrefixes {
 	/// Marks each key lpm.json declares public exactly when a prefix in effect
 	/// starts its name, as the LPM CLI requires, among the keys an edit from
 	/// `previous` could have unsettled: those it changed, and those a prefix
-	/// it added or removed covers. `imported` are the imports' prefixes,
-	/// which stay in effect whatever lpm.json lists.
-	static func settle(_ draft: inout Draft, since previous: Draft, imported: Set<String>) {
+	/// it added or removed covers. After a merge of a change on disk,
+	/// `everyKey` settles them all, since the file's own keys and prefixes
+	/// can disagree with the draft's. `imported` are the imports' prefixes,
+	/// which stay in effect whatever lpm.json lists, and `saved` is
+	/// lpm.json's rules as last read.
+	///
+	/// A Secret key is left unmarked, for the LPM CLI to reject and the user
+	/// to decide. An override the draft adds that, once marked, repeats the
+	/// imported rule goes, so that rule applies as it is.
+	static func settle(_ draft: inout Draft, since previous: Draft, everyKey: Bool = false, imported: Set<String>, saved: Rules) {
 		let own = Self.own(in: draft)
-		let changedPrefixes = Set(own).symmetricDifference(Self.own(in: previous))
 		var keys: Set<String> = []
-		for case .key(let key) in previous.changedItems + draft.changedItems where draft.declaration(of: .key(key)) != previous.declaration(of: .key(key)) {
-			keys.insert(key)
-		}
-		if !changedPrefixes.isEmpty {
-			for entry in draft.currentItems {
-				guard case .key(let key) = entry.item, changedPrefixes.contains(where: key.hasPrefix) else { continue }
+		if everyKey {
+			for case (.key(let key), _) in draft.currentItems { keys.insert(key) }
+		} else {
+			for case .key(let key) in previous.changedItems + draft.changedItems
+			where draft.declaration(of: .key(key)) != previous.declaration(of: .key(key)) {
 				keys.insert(key)
+			}
+			let changedPrefixes = Set(own).symmetricDifference(Self.own(in: previous))
+			if !changedPrefixes.isEmpty {
+				for case (.key(let key), _) in draft.currentItems where changedPrefixes.contains(where: key.hasPrefix) { keys.insert(key) }
 			}
 		}
 		guard !keys.isEmpty else { return }
@@ -199,30 +218,37 @@ enum ProjectEnvSchemaClientPrefixes {
 			let item = Draft.Item.key(key)
 			let declaration = draft.declaration(of: item)
 			guard case .object? = declaration.json else { continue }
-			let marked = declaration.json?["client"] == .bool(true)
 			let wanted = isPublic(key, prefixes)
-			guard marked != wanted else { continue }
-			edits.append((item, declaration.replacingJSON { json in
+			guard (declaration.json?["client"] == .bool(true)) != wanted, !(wanted && declaration.json?["secret"] == .bool(true)) else { continue }
+			let settled = declaration.replacingJSON { json in
 				if wanted { json.set(.bool(true), forKey: "client") } else { json.removeValue(forKey: "client") }
-			}))
+			}
+			if case .overridden(let json) = settled, repeatsImport(key, json, in: draft, saved: saved) {
+				edits.append((item, .absent))
+			} else {
+				edits.append((item, settled))
+			}
 		}
 		if !edits.isEmpty { draft.set(edits) }
 	}
 
 	/// Whether lpm.json's override of `key`, marked public or not as
-	/// `isPublic` says, would be the imported rule it replaces, so it can go
-	/// and leave that rule to apply. Only an override the draft adds is
-	/// known that well: the imported rule is lpm.json's rule for the key as
-	/// last read. The engine never reports an overridden rule's values.
+	/// `isPublic` says, would be the imported rule it replaces, so it can go.
 	static func overrideCanGo(_ key: String, public isPublic: Bool, in context: Context) -> Bool {
-		let item = Draft.Item.key(key)
-		guard case .overridden(let json) = context.draft.declaration(of: item), context.draft.base(of: item) == .absent,
-			context.rules.replacedRules[key]?.count == 1, context.saved.rule(for: key)?.source != nil,
-			let imported = context.saved.declaration(of: key)
-		else { return false }
+		guard case .overridden(let json) = context.draft.declaration(of: .key(key)) else { return false }
 		var rule = ProjectEnvSchemaRule(resolved: json)
 		rule.client = isPublic
-		return rule.json.isEquivalent(to: ProjectEnvSchemaRule(resolved: imported).json)
+		return repeatsImport(key, rule.json, in: context.draft, saved: context.saved)
+	}
+
+	/// Whether `json`, as lpm.json's override of `key`, is the imported rule
+	/// it replaces. Only an override the draft adds is known that well: the
+	/// imported rule is lpm.json's rule for the key as last read, when
+	/// lpm.json doesn't override it, so a single import declares it. The
+	/// engine never reports an overridden rule's values.
+	static func repeatsImport(_ key: String, _ json: LPMConfigJSON, in draft: Draft, saved: Rules) -> Bool {
+		guard draft.base(of: .key(key)) == .absent, saved.rule(for: key)?.source != nil, let imported = saved.declaration(of: key) else { return false }
+		return ProjectEnvSchemaRule(resolved: json).json.isEquivalent(to: ProjectEnvSchemaRule(resolved: imported).json)
 	}
 
 	// MARK: - Private
@@ -244,8 +270,12 @@ enum ProjectEnvSchemaClientPrefixes {
 		var edits = [Edit(item: .clientPrefixes, declaration: list)]
 		var overridden: [String] = []
 		var restored: [String] = []
+		var exposed: [Exposure] = []
 		for key in keys {
 			let item = Draft.Item.key(key)
+			if isPublic, let secret = context.rules.replacedRules[key]?.secret {
+				exposed.append(Exposure(key: key, source: secret.source.escapingDirectionControls))
+			}
 			switch draft.declaration(of: item) {
 			case .overridden where overrideCanGo(key, public: isPublic, in: context):
 				edits.append(Edit(item: item, declaration: .absent))
@@ -262,6 +292,6 @@ enum ProjectEnvSchemaClientPrefixes {
 				overridden.append(key)
 			}
 		}
-		return Change(edits: edits, keys: keys, overridden: overridden, restored: restored)
+		return Change(edits: edits, keys: keys, overridden: overridden, restored: restored, exposed: exposed)
 	}
 }

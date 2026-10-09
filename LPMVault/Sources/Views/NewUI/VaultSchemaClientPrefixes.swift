@@ -11,12 +11,9 @@ struct VaultSchemaClientPrefixesPopover: View {
 	/// Opens a key in the side panel, such as the Secret key that blocks a prefix.
 	let onOpenKey: (String) -> Void
 
-	@Environment(\.dismiss) private var dismiss
-	@State private var entry = ""
 	@State private var showsFrameworks = false
 	/// lpm.json's prefix whose removal waits for confirmation, because keys rely on it.
 	@State private var removing: String?
-	@FocusState private var entryFocused: Bool
 
 	/// Keys a list shows before "and N more".
 	private static let shownKeys = 12
@@ -27,9 +24,10 @@ struct VaultSchemaClientPrefixesPopover: View {
 		let availability = store.schemaPrefixAvailability(for: project.id)
 		let context = availability.context
 		let own = Prefixes.own(in: context?.draft ?? store.schemaDraftOrBase(for: project.id))
-		let importedSources = context?.imported ?? [:]
+		// While the draft is checked, the rules last known stand in, so rows don't come and go.
+		let importedSources = context?.imported ?? store.schemaImportedClientPrefixSources(for: project.id)
 		let imported = VaultKeySortOrder.sortedAscending(Set(importedSources.keys).subtracting(own))
-		let counts = context.map { Prefixes.keyCounts(of: own + imported, rules: $0.rules) } ?? [:]
+		let counts = (context?.rules ?? store.schemaOverview(for: project.id)).map { Prefixes.keyCounts(of: own + imported, rules: $0) } ?? [:]
 		let removal = removing.flatMap { prefix in context.map { Prefixes.removing(prefix, in: $0) } }
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
@@ -55,15 +53,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 				}
 			}
 			if canEdit {
-				if let context {
-					addField(context)
-				} else if let reason = availability.reason {
-					Text(reason)
-						.font(.system(size: 11))
-						.foregroundStyle(VaultPalette.textTertiary)
-						.padding(.horizontal, 14)
-						.padding(.vertical, 10)
-				}
+				VaultSchemaPrefixField(store: store, project: project, availability: availability, onOpenKey: onOpenKey)
 			}
 			VaultHairline()
 			HStack {
@@ -184,8 +174,8 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 			.foregroundStyle(VaultPalette.orangeTintText)
-			keyChips(removal.keys)
-			overrideNotes(removal, public: false)
+			Self.keyChips(removal.keys)
+			Self.overrideNotes(removal, public: false)
 			HStack(spacing: 6) {
 				VaultBarButton(title: "Remove", filled: true, disabled: !canEdit, height: 24) {
 					guard let context = store.schemaPrefixAvailability(for: project.id).context,
@@ -207,13 +197,13 @@ struct VaultSchemaClientPrefixesPopover: View {
 
 	/// What a change does to imported keys: overrides it starts, and ones that go.
 	@ViewBuilder
-	private func overrideNotes(_ change: Prefixes.Change, public isPublic: Bool) -> some View {
+	static func overrideNotes(_ change: ProjectEnvSchemaClientPrefixes.Change, public isPublic: Bool) -> some View {
 		let overridden = change.overridden.count
 		let restored = change.restored.count
 		if overridden > 0 {
 			let them = overridden == 1 ? "it" : "them"
 			Text((overridden == 1 ? "1 of them is declared in an imported schema" : "\(overridden) of them are declared in imported schemas")
-				+ ", so lpm.json overrides \(them) with a copy of the imported rule that marks \(them) \(isPublic ? "Public" : "private"). Later changes to that rule in the imported schema won't apply to \(them).")
+				+ ", so lpm.json overrides \(them) with a copy of the imported rule that marks \(them) \(isPublic ? "public" : "private"). Later changes to that rule in the imported schema won't apply to \(them).")
 				.font(.system(size: 11))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
@@ -230,9 +220,9 @@ struct VaultSchemaClientPrefixesPopover: View {
 		}
 	}
 
-	private func keyChips(_ keys: [String]) -> some View {
+	static func keyChips(_ keys: [String]) -> some View {
 		VaultFlowLayout(spacing: 5, lineSpacing: 5) {
-			ForEach(keys.prefix(Self.shownKeys), id: \.self) { key in
+			ForEach(keys.prefix(shownKeys), id: \.self) { key in
 				Text(key.escapingDirectionControls)
 					.font(VaultTypography.mono(11))
 					.foregroundStyle(VaultPalette.textPrimary)
@@ -241,8 +231,8 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.frame(height: 20)
 					.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, lineWidth: 1) }
 			}
-			if keys.count > Self.shownKeys {
-				Text("and \(keys.count - Self.shownKeys) more").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary).frame(height: 20)
+			if keys.count > shownKeys {
+				Text("and \(keys.count - shownKeys) more").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary).frame(height: 20)
 			}
 		}
 		.padding(.leading, 16)
@@ -257,11 +247,38 @@ struct VaultSchemaClientPrefixesPopover: View {
 		if removal.keys.isEmpty { apply(removal) } else { removing = prefix }
 	}
 
-	private func addField(_ context: Prefixes.Context) -> some View {
+	private func apply(_ change: ProjectEnvSchemaClientPrefixes.Change) {
+		Self.apply(change, in: project.id, store: store)
+	}
+
+	static func apply(_ change: ProjectEnvSchemaClientPrefixes.Change, in projectID: String, store: VaultStore) {
+		store.editSchemaDraft(in: projectID) { draft in
+			draft.set(change.edits.map { (item: $0.item, declaration: $0.declaration) })
+		}
+	}
+}
+
+/// The field that adds a prefix, with what adding it does. Its own view, so
+/// typing redraws only the field and what it shows. It stays in place while
+/// the draft is checked, keeping focus between prefixes.
+private struct VaultSchemaPrefixField: View {
+	private typealias Prefixes = ProjectEnvSchemaClientPrefixes
+
+	@Bindable var store: VaultStore
+	let project: VaultProject
+	let availability: ProjectEnvSchemaClientPrefixes.Availability
+	let onOpenKey: (String) -> Void
+
+	@Environment(\.dismiss) private var dismiss
+	@State private var entry = ""
+	@FocusState private var entryFocused: Bool
+
+	var body: some View {
+		let context = availability.context
 		let prefix = entry.trimmingCharacters(in: .whitespaces)
-		let issue = prefix.isEmpty ? nil : Prefixes.issue(adding: prefix, in: context)
-		let change = prefix.isEmpty || issue != nil ? nil : Prefixes.adding(prefix, in: context)
-		return VStack(alignment: .leading, spacing: 7) {
+		let issue = prefix.isEmpty ? nil : context.flatMap { Prefixes.issue(adding: prefix, in: $0) }
+		let change = prefix.isEmpty || issue != nil ? nil : context.map { Prefixes.adding(prefix, in: $0) }
+		VStack(alignment: .leading, spacing: 7) {
 			HStack(spacing: 6) {
 				TextField("NEW_PREFIX_", text: $entry)
 					.textFieldStyle(.plain)
@@ -279,7 +296,9 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.accessibilityLabel("New client prefix")
 				VaultBarButton(title: "Add", filled: true, disabled: change == nil, height: 28) { if let change { add(prefix, shown: change) } }
 			}
-			if let issue {
+			if availability != .checking, let reason = availability.reason {
+				Text(reason).font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+			} else if let issue {
 				VStack(alignment: .leading, spacing: 4) {
 					HStack(alignment: .top, spacing: 6) {
 						Image(systemName: "xmark.circle").font(.system(size: 10)).padding(.top, 1)
@@ -308,8 +327,17 @@ struct VaultSchemaClientPrefixesPopover: View {
 						.fixedSize(horizontal: false, vertical: true)
 				}
 				.foregroundStyle(VaultPalette.publicText)
-				keyChips(change.keys)
-				overrideNotes(change, public: true)
+				VaultSchemaClientPrefixesPopover.keyChips(change.keys)
+				ForEach(change.exposed, id: \.key) { exposure in
+					HStack(alignment: .top, spacing: 6) {
+						Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).padding(.top, 1)
+						Text("\(exposure.source) marks \(exposure.key.escapingDirectionControls) Secret, and lpm.json's override doesn't, so its value becomes public.")
+							.font(.system(size: 11, weight: .medium))
+							.fixedSize(horizontal: false, vertical: true)
+					}
+					.foregroundStyle(VaultPalette.redText)
+				}
+				VaultSchemaClientPrefixesPopover.overrideNotes(change, public: true)
 			}
 		}
 		.padding(.horizontal, 14)
@@ -321,13 +349,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		guard let context = store.schemaPrefixAvailability(for: project.id).context,
 			let confirmed = Prefixes.confirmed(shown, adding: prefix, entry: entry, in: context)
 		else { return }
-		apply(confirmed)
+		VaultSchemaClientPrefixesPopover.apply(confirmed, in: project.id, store: store)
 		entry = ""
-	}
-
-	private func apply(_ change: ProjectEnvSchemaClientPrefixes.Change) {
-		store.editSchemaDraft(in: project.id) { draft in
-			draft.set(change.edits.map { (item: $0.item, declaration: $0.declaration) })
-		}
 	}
 }

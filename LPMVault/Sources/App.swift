@@ -28,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 	private var hasPendingSecurityLock = false
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
+		ProcessLimits.raiseOpenFiles()
+
 		// Swift Package launches have no app bundle for macOS to discover the icon.
 		if Bundle.main.url(forResource: "AppIcon", withExtension: "icns") == nil {
 			NSApplication.shared.applicationIconImage = VaultBranding.appIcon

@@ -802,6 +802,11 @@ struct ProjectKeyDescriptions: Equatable, Sendable {
 	/// The schemas lpm.json imports, with their digests, when the rules were
 	/// read; nil when the read didn't record them.
 	var dependencies: [RustSchemaEngine.Dependency]?
+	/// The schemas lpm.json imports, as the Schema page watches them.
+	var importPaths: [String]
+	/// `schema` was read before the app's own last edit of lpm.json, which
+	/// `rootSchema` already holds; a reread follows.
+	var schemaPredatesRoot = false
 
 	init(
 		folder: String, rules: Result<ProjectEnvSchemaFile.Rules, ProjectEnvSchemaFile.FileError>, schema: ProjectEnvSchemaState? = nil,
@@ -813,6 +818,7 @@ struct ProjectKeyDescriptions: Equatable, Sendable {
 		self.schema = schema
 		self.folderIdentity = folderIdentity
 		self.dependencies = dependencies
+		importPaths = (dependencies ?? []).map(\.path).sorted()
 		rootSchemaData = try? rootSchema?.compactData(maximumBytes: 16 * 1024 * 1024)
 	}
 
