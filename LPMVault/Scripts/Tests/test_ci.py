@@ -1,5 +1,8 @@
 import importlib.util
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -82,6 +85,82 @@ class CacheIdentityTests(unittest.TestCase):
         self.write('LPMVault/.build/generated.swift', 'generated')
         (self.root / 'LPMVault/Sources/View.swift').touch()
         self.assertEqual(before, self.identity())
+
+    def test_unchanged_checkout_inputs_retain_their_build_timestamps(self):
+        source = self.root / 'LPMVault/Sources/View.swift'
+        os.utime(source, ns=(1_000_000_000, 1_000_000_000))
+        cache.source_times('swift', self.root, restore=False)
+        source.touch()
+        cache.source_times('swift', self.root, restore=True)
+        self.assertEqual(source.stat().st_mtime_ns, 1_000_000_000)
+
+    def test_changed_inputs_keep_a_timestamp_that_invalidates_the_build(self):
+        source = self.root / 'LPMVault/Sources/View.swift'
+        cache.source_times('swift', self.root, restore=False)
+        recorded = source.stat().st_mtime_ns
+        source.write_text('changed')
+        os.utime(source, ns=(recorded, recorded))
+        cache.source_times('swift', self.root, restore=True)
+        self.assertGreater(source.stat().st_mtime_ns, recorded)
+
+    def test_unchanged_engine_headers_retain_their_build_timestamps(self):
+        relative = 'LPMVault/Vendor/EnvEngine/LPMEnv.xcframework/Headers/module.modulemap'
+        self.write(relative, 'module LPMEnv {}')
+        header = self.root / relative
+        previous = header.stat().st_mtime_ns
+        cache.source_times('swift', self.root, restore=False)
+        header.touch()
+        cache.source_times('swift', self.root, restore=True)
+        self.assertEqual(header.stat().st_mtime_ns, previous)
+
+    @unittest.skipUnless(shutil.which('swift'), 'Swift compiler required')
+    def test_changed_source_rebuilds_after_cache_restoration(self):
+        package = self.root / 'LPMVault'
+        self.write('LPMVault/Package.swift', '''// swift-tools-version: 6.0
+import PackageDescription
+let package = Package(name: "TimestampFixture", targets: [.executableTarget(name: "TimestampFixture", path: "Sources")])
+''')
+        self.write('LPMVault/Package.resolved', '{"pins":[],"version":2}')
+        source = package / 'Sources/View.swift'
+        source.write_text('print(1)\n')
+        command = ['swift', 'run', '--package-path', str(package), '--disable-index-store',
+                   '-Xswiftc', '-warnings-as-errors', 'TimestampFixture']
+
+        def output():
+            result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout.strip().splitlines()[-1]
+
+        self.assertEqual(output(), '1')
+        cache.source_times('swift', self.root, restore=False)
+        previous = source.stat().st_mtime_ns
+        source.write_text('print(2)\n')
+        os.utime(source, ns=(previous, previous))
+        cache.source_times('swift', self.root, restore=True)
+        self.assertEqual(output(), '2')
+
+    def test_new_deleted_or_unrelated_files_are_not_restored(self):
+        cache.source_times('release', self.root, restore=False)
+        (self.root / 'LPMVault/Sources/View.swift').unlink()
+        for path in ['LPMVault/Sources/New.swift', 'LPMVault/Tests/ViewTests.swift', 'README.md']:
+            self.write(path, 'new')
+            target = self.root / path
+            previous = target.stat().st_mtime_ns
+            cache.source_times('release', self.root, restore=True)
+            self.assertEqual(target.stat().st_mtime_ns, previous)
+
+    def test_absent_or_invalid_timestamp_metadata_leaves_the_checkout_fresh(self):
+        source = self.root / 'LPMVault/Sources/View.swift'
+        previous = source.stat().st_mtime_ns
+        cache.source_times('swift', self.root, restore=True)
+        self.assertEqual(source.stat().st_mtime_ns, previous)
+        cache.source_times('swift', self.root, restore=False)
+        metadata = self.root / 'LPMVault/.build/ci-source-times.json'
+        for value in ['{', '{}', '{"version":1,"files":{"LPMVault/Sources/View.swift":{"hash":"initial","mtime_ns":-1}}}']:
+            with self.subTest(value=value):
+                metadata.write_text(value)
+                cache.source_times('swift', self.root, restore=True)
+                self.assertEqual(source.stat().st_mtime_ns, previous)
 
 
 class RequiredCheckTests(unittest.TestCase):

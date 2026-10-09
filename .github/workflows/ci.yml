@@ -28,8 +28,12 @@ jobs:
           path: LPMVault/.build
           key: ${{ steps.cache-key.outputs.key }}
           restore-keys: ${{ steps.cache-key.outputs.prefix }}
+      - name: Restore timestamps of unchanged Swift inputs
+        run: python3 LPMVault/Scripts/ci-cache-key.py swift --restore-source-times
       - name: Build Swift tests
         run: swift build --build-tests --package-path LPMVault --disable-index-store --disable-automatic-resolution -Xswiftc -warnings-as-errors
+      - name: Record Swift build input timestamps
+        run: python3 LPMVault/Scripts/ci-cache-key.py swift --record-source-times
       - name: Swift tests
         run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --skip-build --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Preserve failed test diagnostics
@@ -89,6 +93,8 @@ jobs:
           path: build-check
           key: ${{ steps.cache-key.outputs.key }}
           restore-keys: ${{ steps.cache-key.outputs.prefix }}
+      - name: Restore timestamps of unchanged release inputs
+        run: python3 LPMVault/Scripts/ci-cache-key.py release --restore-source-times
       - name: Release tooling tests
         run: |
           bash LPMVault/Scripts/Tests/release-tooling-tests.sh
@@ -103,6 +109,8 @@ jobs:
           bash LPMVault/Scripts/sign-sparkle.sh 'build-check/Build/Products/Release/LPM Vault.app' - --timestamp=none
           codesign --force --sign - 'build-check/Build/Products/Release/LPM Vault.app'
           codesign --verify --deep --strict 'build-check/Build/Products/Release/LPM Vault.app'
+      - name: Record release build input timestamps
+        run: python3 LPMVault/Scripts/ci-cache-key.py release --record-source-times
   macos:
     name: macOS tests and release bundle
     needs: [swift, engine, release]
