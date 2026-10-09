@@ -44,11 +44,29 @@ struct ProjectEnvSchemaReview: Equatable {
 		let effects: [Effect]
 		/// Problems that stay as they are.
 		let unchanged: Int
+		/// What the change gives up that an import asks for, such as Secret,
+		/// when lpm.json's override drops it; escaped.
+		var warning: String?
 
 		var id: ProjectEnvSchemaDraft.Item { item }
 	}
 
 	let items: [Item]
+	/// What the review says first when changes give up Secret an import asks
+	/// for, naming the keys; nil when none does. Escaped.
+	var warningSummary: String? {
+		let keys = items.lazy.filter { $0.warning != nil }.map(\.title)
+		guard let first = keys.first else { return nil }
+		let count = keys.count
+		if count == 1 { return "\(first) loses the Secret an import gives it. Check its change below before saving." }
+		let shown = keys.prefix(Self.summaryKeys).joined(separator: ", ")
+		let more = count > Self.summaryKeys ? " and \(count - Self.summaryKeys) more" : ""
+		return "\(count) keys lose the Secret an import gives them: \(shown)\(more). Check their changes below before saving."
+	}
+
+	/// Keys `warningSummary` names before "and N more".
+	private static let summaryKeys = 5
+
 	/// Effects on keys the draft doesn't change.
 	let others: [Effect]
 	let othersUnchanged: Int
@@ -137,11 +155,24 @@ struct ProjectEnvSchemaReview: Equatable {
 			let isGroup = if case .group = item { true } else { false }
 			return Item(
 				item: item, title: Self.title(of: item), state: Self.state(of: item, in: draft, savedRules: savedRules, draftRules: evaluation.overview),
-				diff: diff, effects: words(summary, naming: isGroup), unchanged: summary.unchanged
+				diff: diff, effects: words(summary, naming: isGroup), unchanged: summary.unchanged,
+				warning: Self.droppedSecret(item, in: draft, rules: rules)
 			)
 		}
 		others = effects.map { words($0.others, naming: true) } ?? []
 		othersUnchanged = effects?.others.unchanged ?? 0
+	}
+
+	/// A key lpm.json's override leaves without Secret though an import it
+	/// replaces marks it so, which a prefix or an edit made from rules read
+	/// before the import changed can do; nil otherwise.
+	private static func droppedSecret(_ item: ProjectEnvSchemaDraft.Item, in draft: ProjectEnvSchemaDraft, rules: ProjectEnvSchemaOverview) -> String? {
+		guard case .key(let key) = item, case .overridden(let json) = draft.declaration(of: item),
+			let secret = rules.replacedRules[key]?.secret, !ProjectEnvSchemaRule(resolved: json).secret
+		else { return nil }
+		let rule = ProjectEnvSchemaRule(resolved: json)
+		return "\(secret.source.escapingDirectionControls) marks \(key.escapingDirectionControls) Secret, and this override doesn't"
+			+ (rule.client ? ", so its value becomes public." : ", so its value is no longer treated as secret.")
 	}
 
 	static func title(of item: ProjectEnvSchemaDraft.Item) -> String {
@@ -151,9 +182,10 @@ struct ProjectEnvSchemaReview: Equatable {
 		}
 	}
 
-	/// How the draft changes `item`. The file an override replaces comes from
-	/// lpm.json's rules; for a group whose override the draft removes, from the
-	/// draft's, since the engine names only the file a group comes from.
+	/// How the draft changes `item`. The file an override replaces, or that
+	/// applies again once it goes, comes from lpm.json's rules, which name
+	/// what each override replaces; the draft's name the file of a group that
+	/// lpm.json's rules don't have.
 	private static func state(
 		of item: ProjectEnvSchemaDraft.Item, in draft: ProjectEnvSchemaDraft, savedRules: ProjectEnvSchemaOverview?, draftRules: ProjectEnvSchemaOverview?
 	) -> State {

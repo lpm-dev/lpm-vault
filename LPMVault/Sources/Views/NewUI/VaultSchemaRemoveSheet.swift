@@ -228,6 +228,8 @@ struct VaultSchemaElsewhere: Hashable, Identifiable {
 	/// Another imported file that overrides it, as shown.
 	var overriddenBy: String?
 	var isGroup = false
+	/// Why lpm.json's override can't be reset here; nil when it can.
+	var resetBlocker: String?
 
 	var id: Self { self }
 
@@ -283,11 +285,14 @@ struct VaultSchemaElsewhereSheet: View {
 					}
 					.help(elsewhere.source)
 				}
-				VaultBarButton(title: elsewhere.isOverridden ? "Reset to original" : (elsewhere.isGroup ? "Override group" : "Override rules"), filled: true, height: 28) {
-					onOverride()
-					dismiss()
+				if elsewhere.resetBlocker == nil {
+					VaultBarButton(title: elsewhere.isOverridden ? "Reset to original" : (elsewhere.isGroup ? "Override group" : "Override rules"), filled: true,
+						height: 28) {
+						onOverride()
+						dismiss()
+					}
+					.keyboardShortcut(.defaultAction)
 				}
-				.keyboardShortcut(.defaultAction)
 			}
 			.padding(.horizontal, 20)
 			.padding(.bottom, 16)
@@ -312,6 +317,11 @@ struct VaultSchemaElsewhereSheet: View {
 		// A key's override replaces its rules; a group's replaces the group.
 		let what = elsewhere.isGroup ? "it" : "its rules"
 		if elsewhere.isOverridden {
+			if let blocker = elsewhere.resetBlocker {
+				return editable
+					? "It's declared in \(source), which lpm.json imports, and lpm.json overrides \(what). To remove it, delete it in \(source). \(blocker)"
+					: "It's declared in \(source), which can't be edited here, and lpm.json overrides \(what). \(blocker)"
+			}
 			let original = elsewhere.isGroup ? "the original group" : "the original rules"
 			return editable
 				? "It's declared in \(source), which lpm.json imports, and lpm.json overrides \(what). To remove it, delete it in \(source) and reset the override here: lpm.json can't override \(elsewhere.isGroup ? "a group" : "a key") its imports don't declare."

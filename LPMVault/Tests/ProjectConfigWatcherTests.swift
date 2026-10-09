@@ -34,6 +34,33 @@ struct ProjectConfigWatcherTests {
 		#expect(try await eventually { changes.count == 3 }, "The watcher follows the replaced file")
 	}
 
+	@Test("a schema lpm.json imports, written in place or replaced, is a change too")
+	func reportsImportChanges() async throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
+		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
+		try "{}".write(toFile: folder + "/schemas/base.json", atomically: false, encoding: .utf8)
+		let changes = ChangeCounter()
+		let watching = Task {
+			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: ["schemas/base.json"], settling: .milliseconds(100),
+				maximumDelay: .milliseconds(600), retryingEvery: .milliseconds(200)) {
+				changes.increment()
+			}
+		}
+		defer { watching.cancel() }
+		try await Task.sleep(for: .milliseconds(100))
+		let handle = try #require(FileHandle(forWritingAtPath: folder + "/schemas/base.json"))
+		handle.write(Data(#"{"vars":{"A":{"secret":true}}}"#.utf8))
+		try handle.close()
+		#expect(try await eventually { changes.count == 1 }, "An import written in place")
+		try "{}".write(toFile: folder + "/schemas/other.json", atomically: true, encoding: .utf8)
+		try await Task.sleep(for: .milliseconds(400))
+		#expect(changes.count == 1, "A file lpm.json doesn't import isn't a change")
+		try #"{"vars":{"A":{}}}"#.write(toFile: folder + "/schemas/base.json", atomically: true, encoding: .utf8)
+		#expect(try await eventually { changes.count == 2 }, "An import replaced, as git does")
+	}
+
 	@Test("other files changing in the folder aren't changes to lpm.json")
 	func ignoresOtherFiles() async throws {
 		let folder = try makeFolder()
@@ -146,6 +173,73 @@ struct ProjectConfigWatcherTests {
 		#expect(changes.count == 0)
 	}
 
+	@Test("imports in one folder share its descriptor: one for each folder and one for each file")
+	func sharesFolderDescriptors() async throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
+		var imports: [String] = []
+		for subfolder in ["schemas", "shared"] {
+			try FileManager.default.createDirectory(atPath: folder + "/" + subfolder, withIntermediateDirectories: true)
+			for index in 0..<20 {
+				let path = "\(subfolder)/schema-\(index).json"
+				try "{}".write(toFile: folder + "/" + path, atomically: false, encoding: .utf8)
+				imports.append(path)
+			}
+		}
+		let changes = ChangeCounter()
+		let watching = Task {
+			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: imports, settling: .milliseconds(100)) { changes.increment() }
+		}
+		defer { watching.cancel() }
+		let files = imports.count + 1
+		#expect(try await eventually { descriptors(in: folder) == files + 3 }, "\(descriptors(in: folder)) descriptors for \(files) files in 3 folders")
+		watching.cancel()
+		#expect(try await eventually { descriptors(in: folder) == 0 })
+	}
+
+	@Test("an import whose folder is a link out of the project isn't watched")
+	func ignoresLinkedFolders() async throws {
+		let folder = try makeFolder()
+		let outside = try makeFolder()
+		defer {
+			try? FileManager.default.removeItem(atPath: folder)
+			try? FileManager.default.removeItem(atPath: outside)
+		}
+		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
+		try "{}".write(toFile: outside + "/base.json", atomically: false, encoding: .utf8)
+		try FileManager.default.createSymbolicLink(atPath: folder + "/schemas", withDestinationPath: outside)
+		let changes = ChangeCounter()
+		let watching = Task {
+			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: ["schemas/base.json"], settling: .milliseconds(100),
+				maximumDelay: .milliseconds(600), retryingEvery: .milliseconds(200)) {
+				changes.increment()
+			}
+		}
+		defer { watching.cancel() }
+		try await Task.sleep(for: .milliseconds(100))
+		for value in 0..<3 {
+			try #"{"v":\#(value)}"#.write(toFile: outside + "/base.json", atomically: true, encoding: .utf8)
+			try await Task.sleep(for: .milliseconds(50))
+		}
+		try await Task.sleep(for: .milliseconds(400))
+		#expect(changes.count == 0)
+	}
+
+	/// The process's descriptors open on `folder` or anything in it.
+	private func descriptors(in folder: String) -> Int {
+		guard let resolved = realpath(folder, nil) else { return 0 }
+		let root = String(cString: resolved)
+		free(resolved)
+		let entries = (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd")) ?? []
+		var buffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN))
+		return entries.lazy.compactMap(Int32.init).filter { descriptor in
+			guard fcntl(descriptor, F_GETPATH, &buffer) != -1 else { return false }
+			let path = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
+			return path == root || path.hasPrefix(root + "/")
+		}.count
+	}
+
 	private func makeFolder() throws -> String {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "config-watch-\(UUID().uuidString)").path
 		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
@@ -229,5 +323,19 @@ struct SecureFileWriteErrorTests {
 	func wording() {
 		#expect(SecureFileWriter.WriteError.createFailed(EACCES).localizedDescription == "Could not create the file: Permission denied")
 		#expect(SecureFileWriter.WriteError.syncFailed(EIO).localizedDescription == "Could not save the file to disk: Input/output error")
+	}
+}
+
+@Suite("Process limits")
+struct ProcessLimitTests {
+	@Test("the open-file limit rises to what the app asks for, up to the hard limit, and a higher one stays")
+	func raisesOpenFiles() {
+		var limit = rlimit()
+		getrlimit(RLIMIT_NOFILE, &limit)
+		let wanted = min(limit.rlim_cur + 64, limit.rlim_max)
+		#expect(ProcessLimits.raiseOpenFiles(to: wanted) == wanted)
+		getrlimit(RLIMIT_NOFILE, &limit)
+		#expect(limit.rlim_cur == wanted)
+		#expect(ProcessLimits.raiseOpenFiles(to: wanted - 32) == wanted, "A lower request leaves the limit as it is")
 	}
 }
