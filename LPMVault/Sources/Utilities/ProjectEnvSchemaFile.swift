@@ -107,6 +107,9 @@ enum ProjectEnvSchemaFile {
 		/// The schemas lpm.json imports, with their digests, when the rules
 		/// resolved; empty when it imports none.
 		var dependencies: [RustSchemaEngine.Dependency] = []
+		/// The client prefixes lpm.json's imports declare, whether or not
+		/// lpm.json lists them too; nil when they can't be told apart.
+		var importedClientPrefixes: [String]? = nil
 	}
 
 	/// `load(inFolder:vaultID:)` off the main thread and the cooperative pool.
@@ -157,13 +160,26 @@ enum ProjectEnvSchemaFile {
 			try resolved.verify()
 			return Loaded(rules: .success(rules(fromEffective: resolved.effective)), schema: .loaded(ProjectEnvSchemaOverview(resolution: resolved), file: file),
 				rootSchema: schema == .null ? nil : schema, folderIdentity: ProjectConfigFile.directoryIdentity(of: folderURL),
-				dependencies: resolved.dependencies)
+				dependencies: resolved.dependencies, importedClientPrefixes: importedClientPrefixes(of: schema, resolved: resolved, inFolder: folder))
 		} catch .invalidSchema {
 			let diagnostic = schema.flatMap { RustSchemaEngine.diagnostic(for: $0, inFolder: folder) }
 			return Loaded(rules: .failure(.invalidSchema), schema: .unreadable(ProjectEnvSchemaState.problem(diagnostic)))
 		} catch {
 			return Loaded(rules: .failure(error), schema: .unreadable(.init(location: "lpm.json", reason: error.localizedDescription)))
 		}
+	}
+
+	/// The client prefixes `schema`'s imports declare. The engine merges them
+	/// with lpm.json's own into one set, so the imports alone are resolved
+	/// when lpm.json lists prefixes too; nil when they don't resolve alone.
+	private static func importedClientPrefixes(of schema: LPMConfigJSON?, resolved: RustSchemaEngine.Resolution, inFolder folder: String) -> [String]? {
+		func prefixes(_ effective: LPMConfigJSON) -> [String] {
+			guard case .array(let values)? = effective["clientPrefixes"] else { return [] }
+			return values.compactMap { if case .string(let prefix) = $0 { prefix } else { nil } }
+		}
+		guard case .array(let own)? = schema?["clientPrefixes"], !own.isEmpty else { return prefixes(resolved.effective) }
+		guard let imports = schema?["extends"] else { return [] }
+		return (try? RustSchemaEngine.resolve(.object([.init(key: "extends", value: imports)]), inFolder: folder)).map { prefixes($0.effective) }
 	}
 
 	/// Applies `change` under the CLI's config lock and returns the resulting
@@ -802,23 +818,26 @@ struct ProjectKeyDescriptions: Equatable, Sendable {
 	/// The schemas lpm.json imports, with their digests, when the rules were
 	/// read; nil when the read didn't record them.
 	var dependencies: [RustSchemaEngine.Dependency]?
+	/// The client prefixes lpm.json's imports declare; nil when not known.
+	var importedClientPrefixes: [String]?
 
 	init(
 		folder: String, rules: Result<ProjectEnvSchemaFile.Rules, ProjectEnvSchemaFile.FileError>, schema: ProjectEnvSchemaState? = nil,
 		rootSchema: LPMConfigJSON? = nil, folderIdentity: ProjectConfigFile.DirectoryIdentity? = nil,
-		dependencies: [RustSchemaEngine.Dependency]? = nil
+		dependencies: [RustSchemaEngine.Dependency]? = nil, importedClientPrefixes: [String]? = nil
 	) {
 		self.folder = folder
 		self.rules = rules
 		self.schema = schema
 		self.folderIdentity = folderIdentity
 		self.dependencies = dependencies
+		self.importedClientPrefixes = importedClientPrefixes
 		rootSchemaData = try? rootSchema?.compactData(maximumBytes: 16 * 1024 * 1024)
 	}
 
 	init(folder: String, loaded: ProjectEnvSchemaFile.Loaded) {
 		self.init(folder: folder, rules: loaded.rules, schema: loaded.schema, rootSchema: loaded.rootSchema, folderIdentity: loaded.folderIdentity,
-			dependencies: loaded.dependencies)
+			dependencies: loaded.dependencies, importedClientPrefixes: loaded.importedClientPrefixes)
 	}
 
 	/// lpm.json's envSchema as last read, when `schema` is loaded; nil when it has none.

@@ -3435,7 +3435,8 @@ final class VaultStore {
     }
     publishKeyDescriptions(
       ProjectKeyDescriptions(folder: folder, rules: .success(rules), schema: sameFolder ? previous?.schema : nil,
-        rootSchema: rootSchema, folderIdentity: sameFolder ? previous?.folderIdentity : nil),
+        rootSchema: rootSchema, folderIdentity: sameFolder ? previous?.folderIdentity : nil,
+        importedClientPrefixes: sameFolder ? previous?.importedClientPrefixes : nil),
       for: projectID
     )
     if selectedProjectId == projectID { reloadKeyDescriptions() }
@@ -3793,8 +3794,10 @@ final class VaultStore {
         setSchemaDraft(ProjectEnvSchemaDraft(schema: saved.schema), for: projectID)
         schemaDraftRebases[projectID] = nil
         publishKeyDescriptions(
+          // The save checked the imports are as reviewed, so the prefixes they declare are too.
           ProjectKeyDescriptions(folder: folder.path, rules: .success(saved.rules), schema: .loaded(saved.overview, file: saved.file),
-            rootSchema: saved.schema, folderIdentity: folder.identity, dependencies: saved.dependencies),
+            rootSchema: saved.schema, folderIdentity: folder.identity, dependencies: saved.dependencies,
+            importedClientPrefixes: keyDescriptions[projectID]?.importedClientPrefixes),
           for: projectID
         )
         unverifiedKeyDescriptionProjects.remove(projectID)

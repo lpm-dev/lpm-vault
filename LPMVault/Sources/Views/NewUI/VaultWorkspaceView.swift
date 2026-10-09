@@ -233,6 +233,9 @@ struct VaultWorkspaceView: View {
 								canEdit: store.canEditSchema(of: project.id),
 								onAddKey: { selectSchema(.newKey) },
 								onAddGroup: { selectSchema(.newGroup) },
+								clientPrefixCount: Set(store.schemaOverview(for: project.id)?.clientPrefixes ?? [])
+									.union(ProjectEnvSchemaClientPrefixes.own(in: store.schemaDraftOrBase(for: project.id))).count,
+								clientPrefixes: AnyView(VaultSchemaClientPrefixesPopover(store: store, project: project) { selectSchema(.key($0)) }),
 								undeclared: store.undeclaredSchemaKeys(for: project.id),
 								onDeclare: { declare($0, in: project) },
 								rebase: store.schemaDraftRebases[project.id],
