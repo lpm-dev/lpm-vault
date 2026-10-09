@@ -652,8 +652,9 @@ actor ProjectEnvSchemaDraftEvaluator {
 	private struct Resolution {
 		let schema: LPMConfigJSON
 		let folder: String
-		/// The resolved rules of lpm.json when these were, which change when an imported schema does.
-		let imports: Data?
+		/// The imported schemas' digests when these were read; nil when unknown,
+		/// which resolves again every time.
+		let imports: [RustSchemaEngine.Dependency]?
 		let resolved: Resolved
 	}
 
@@ -676,15 +677,18 @@ actor ProjectEnvSchemaDraftEvaluator {
 	}
 
 	/// The evaluation of `draft`; nil when the calling task was cancelled.
-	/// `imports` identifies the imported schemas as last read, such as lpm.json's resolved rules.
-	func evaluate(_ draft: ProjectEnvSchemaDraft, inFolder folder: String, imports: Data?, environments: [String: [String: String]]) -> ProjectEnvSchemaDraft.Evaluation? {
+	/// `imports` are the imported schemas' digests as last read; the last
+	/// resolution is reused only while they're known and the same.
+	func evaluate(
+		_ draft: ProjectEnvSchemaDraft, inFolder folder: String, imports: [RustSchemaEngine.Dependency]?, environments: [String: [String: String]]
+	) -> ProjectEnvSchemaDraft.Evaluation? {
 		guard !Task.isCancelled else { return nil }
 		let schema: LPMConfigJSON
 		do { schema = try draft.applied(to: draft.schema) ?? .object([]) } catch {
 			return .init(overview: nil, rejection: ProjectEnvSchemaDraft.Rejection(error).attributed(to: draft), check: nil)
 		}
 		let resolved: Resolved
-		if let last, last.schema == schema, last.folder == folder, last.imports == imports {
+		if let last, let imports, last.schema == schema, last.folder == folder, last.imports == imports {
 			resolved = last.resolved
 		} else {
 			resolved = resolver(schema, folder)

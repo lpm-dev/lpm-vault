@@ -3558,6 +3558,8 @@ final class VaultStore {
   /// a change that only reordered the file saves right away, and any other
   /// fails with `changed` so the merged draft can be reviewed.
   func saveSchemaDraft(in projectID: String) async throws(ProjectEnvSchemaFile.DraftSaveError) {
+    // The imports the evaluation showed, which a retry after a reordering keeps.
+    var reviewed: [RustSchemaEngine.Dependency] = []
     for attempt in 0..<2 {
       guard let draft = schemaDraft(for: projectID) else { return }
       guard !savingSchemaDrafts.contains(projectID) else { throw .inProgress }
@@ -3565,7 +3567,12 @@ final class VaultStore {
         throw .unavailable(schemaUnavailableReason(for: projectID))
       }
       guard draft.conflicts.isEmpty else { throw .conflicts }
-      let reviewed = currentSchemaDraftEvaluation(for: projectID)?.dependencies
+      if attempt == 0 {
+        guard let evaluation = currentSchemaDraftEvaluation(for: projectID) else {
+          throw .unavailable("The rules are still being checked. Save again in a moment.")
+        }
+        reviewed = evaluation.dependencies
+      }
       let generation = schemaDraftGeneration
       savingSchemaDrafts.insert(projectID)
       let result = await ProjectEnvSchemaFile.save(draft, inFolder: folder.path, vaultID: projectID,
@@ -3583,7 +3590,7 @@ final class VaultStore {
         schemaDraftRebases[projectID] = nil
         publishKeyDescriptions(
           ProjectKeyDescriptions(folder: folder.path, rules: .success(saved.rules), schema: .loaded(saved.overview, file: saved.file),
-            rootSchema: saved.schema, folderIdentity: folder.identity),
+            rootSchema: saved.schema, folderIdentity: folder.identity, dependencies: saved.dependencies),
           for: projectID
         )
         unverifiedKeyDescriptionProjects.remove(projectID)
@@ -3596,6 +3603,9 @@ final class VaultStore {
         publishKeyDescriptions(ProjectKeyDescriptions(folder: folder.path, loaded: loaded), for: projectID, mergingDraft: false)
         let outcome = mergeSchemaDraft(for: projectID)
         guard attempt == 0, let outcome, outcome.isEmpty, outcome.conflicts.isEmpty else { throw .file(.changed) }
+      case .failure(.importsChanged):
+        reloadKeyDescriptions()
+        throw .importsChanged
       case .failure(let failure):
         mergeSchemaDraft(for: projectID)
         throw failure
@@ -3665,13 +3675,13 @@ final class VaultStore {
     for projectID in schemaDrafts.keys where !projectIDs.contains(projectID) { endSchemaDraft(for: projectID) }
   }
 
-  /// The draft and stored values a draft's evaluation used, and the rules of
-  /// lpm.json then, which change with the schemas it imports.
+  /// The draft and stored values a draft's evaluation used, and the digests
+  /// of the schemas lpm.json imported when it was last read.
   private struct SchemaDraftEvaluationInputs: Equatable {
     let revision: Int
     let folder: String
     let values: UUID
-    let imports: Data?
+    let imports: [RustSchemaEngine.Dependency]?
   }
 
   /// Evaluates the project's draft with the bundled engine, one evaluation at
@@ -3688,7 +3698,7 @@ final class VaultStore {
       if schemaDraftEvaluations[projectID] != nil { schemaDraftEvaluations[projectID] = nil }
       return
     }
-    let imports = keyDescriptions[projectID]?.schema?.overview?.effectiveSchema
+    let imports = keyDescriptions[projectID]?.dependencies
     let inputs = SchemaDraftEvaluationInputs(revision: revision, folder: folder, values: project.workspaceSnapshotIdentity, imports: imports)
     guard schemaDraftEvaluationInputs[projectID] != inputs else { return }
     schemaDraftEvaluationInputs[projectID] = inputs

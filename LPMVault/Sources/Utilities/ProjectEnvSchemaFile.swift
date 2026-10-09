@@ -104,6 +104,9 @@ enum ProjectEnvSchemaFile {
 		/// when the file has none. A schema draft starts and merges from it.
 		var rootSchema: LPMConfigJSON? = nil
 		var folderIdentity: ProjectConfigFile.DirectoryIdentity? = nil
+		/// The schemas lpm.json imports, with their digests, when the rules
+		/// resolved; empty when it imports none.
+		var dependencies: [RustSchemaEngine.Dependency] = []
 	}
 
 	/// `load(inFolder:vaultID:)` off the main thread and the cooperative pool.
@@ -153,7 +156,8 @@ enum ProjectEnvSchemaFile {
 			guard try read(file) == data else { throw .changed }
 			try resolved.verify()
 			return Loaded(rules: .success(rules(fromEffective: resolved.effective)), schema: .loaded(ProjectEnvSchemaOverview(resolution: resolved), file: file),
-				rootSchema: schema == .null ? nil : schema, folderIdentity: ProjectConfigFile.directoryIdentity(of: folderURL))
+				rootSchema: schema == .null ? nil : schema, folderIdentity: ProjectConfigFile.directoryIdentity(of: folderURL),
+				dependencies: resolved.dependencies)
 		} catch .invalidSchema {
 			let diagnostic = schema.flatMap { RustSchemaEngine.diagnostic(for: $0, inFolder: folder) }
 			return Loaded(rules: .failure(.invalidSchema), schema: .unreadable(ProjectEnvSchemaState.problem(diagnostic)))
@@ -669,6 +673,9 @@ extension ProjectEnvSchemaFile {
 		case unavailable(String)
 		/// A save of the draft is already running.
 		case inProgress
+		/// A schema lpm.json imports changed after the draft was evaluated, so
+		/// what the review showed may no longer hold.
+		case importsChanged
 
 		var message: String {
 			switch self {
@@ -677,6 +684,7 @@ extension ProjectEnvSchemaFile {
 			case .conflicts: "Choose a version for each conflicting change first."
 			case .unavailable(let reason): reason
 			case .inProgress: "Already saving."
+			case .importsChanged: "An imported schema changed after you reviewed the rules. Check the changes again, then save."
 			}
 		}
 	}
@@ -689,6 +697,8 @@ extension ProjectEnvSchemaFile {
 		/// The rules as the engine resolved them under the CLI's lock.
 		let overview: ProjectEnvSchemaOverview
 		let file: URL
+		/// The schemas the saved rules import, with their digests.
+		let dependencies: [RustSchemaEngine.Dependency]
 	}
 
 	/// The rules with `draft` applied, resolved with the folder's imported
@@ -763,14 +773,14 @@ extension ProjectEnvSchemaFile {
 			case .success(let resolved): resolution = resolved
 			case .failure(let rejected): throw DraftSaveError.rejected(ProjectEnvSchemaDraft.Rejection(rejected.diagnostic).attributed(to: draft))
 			}
-			if let reviewed, reviewed != resolution.dependencies { throw FileError.changed }
+			if let reviewed, reviewed != resolution.dependencies { throw DraftSaveError.importsChanged }
 			return try transaction.update(relativePath: "lpm.json", fileWriter: fileWriter,
 				validateSources: { try resolution.verify() }, beforeWrite: beforeWrite) { document in
 				if updated != current {
 					if let updated { document.set(updated, forKey: "envSchema") } else { document.removeValue(forKey: "envSchema") }
 				}
 				return SavedDraft(rules: rules(fromEffective: resolution.effective), schema: updated,
-					overview: ProjectEnvSchemaOverview(resolution: resolution), file: url)
+					overview: ProjectEnvSchemaOverview(resolution: resolution), file: url, dependencies: resolution.dependencies)
 			}
 		}
 	}
@@ -788,19 +798,26 @@ struct ProjectKeyDescriptions: Equatable, Sendable {
 	/// fraction of the parsed tree for each project the app has read.
 	private var rootSchemaData: Data?
 
+	/// The schemas lpm.json imports, with their digests, when the rules were
+	/// read; nil when the read didn't record them.
+	var dependencies: [RustSchemaEngine.Dependency]?
+
 	init(
 		folder: String, rules: Result<ProjectEnvSchemaFile.Rules, ProjectEnvSchemaFile.FileError>, schema: ProjectEnvSchemaState? = nil,
-		rootSchema: LPMConfigJSON? = nil, folderIdentity: ProjectConfigFile.DirectoryIdentity? = nil
+		rootSchema: LPMConfigJSON? = nil, folderIdentity: ProjectConfigFile.DirectoryIdentity? = nil,
+		dependencies: [RustSchemaEngine.Dependency]? = nil
 	) {
 		self.folder = folder
 		self.rules = rules
 		self.schema = schema
 		self.folderIdentity = folderIdentity
+		self.dependencies = dependencies
 		rootSchemaData = try? rootSchema?.compactData(maximumBytes: 16 * 1024 * 1024)
 	}
 
 	init(folder: String, loaded: ProjectEnvSchemaFile.Loaded) {
-		self.init(folder: folder, rules: loaded.rules, schema: loaded.schema, rootSchema: loaded.rootSchema, folderIdentity: loaded.folderIdentity)
+		self.init(folder: folder, rules: loaded.rules, schema: loaded.schema, rootSchema: loaded.rootSchema, folderIdentity: loaded.folderIdentity,
+			dependencies: loaded.dependencies)
 	}
 
 	/// lpm.json's envSchema as last read, when `schema` is loaded; nil when it has none.
