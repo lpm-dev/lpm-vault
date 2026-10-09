@@ -479,11 +479,36 @@ final class SheetTestHost<V: View> {
 		window.makeFirstResponder(nil)
 	}
 
-	/// Sends a Command shortcut, such as ⌘Z, the way the window delivers it.
-	func command(_ character: String, code: UInt16, shift: Bool = false) throws -> Bool {
+	/// Types into the plain text field showing `placeholder` and leaves it being edited.
+	func typeText(_ text: String, placeholder: String) throws {
+		let field = try #require(textFields(in: view).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
+		window.makeFirstResponder(field)
+		let editor = try #require(field.currentEditor() as? NSTextView)
+		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+		field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+	}
+
+	/// Whether a plain text field shows `placeholder`.
+	func hasField(placeholder: String) -> Bool {
+		textFields(in: view).contains { $0.placeholderString == placeholder }
+	}
+
+	/// The popover showing now, once one is.
+	func popoverWindow() async throws -> NSWindow {
+		var found: NSWindow?
+		_ = try await waitUntil {
+			found = NSApp.windows.first { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
+			return found != nil
+		}
+		return try #require(found, "No popover is showing")
+	}
+
+	/// Sends a Command shortcut, such as ⌘Z, through the application, so event
+	/// monitors see it as they would a real key press.
+	func shortcut(_ character: String, code: UInt16, shift: Bool = false) throws {
 		let flags: NSEvent.ModifierFlags = shift ? [.command, .shift] : [.command]
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
-		return window.performKeyEquivalent(with: event)
+		NSApplication.shared.sendEvent(event)
 	}
 
 	func escape() throws -> Bool {

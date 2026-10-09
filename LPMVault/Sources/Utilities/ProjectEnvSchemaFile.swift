@@ -78,18 +78,18 @@ enum ProjectEnvSchemaFile {
 			case .invalidJSON: "lpm.json is not valid JSON."
 			case .duplicateJSONKey: "lpm.json contains duplicate object keys. Remove the duplicate declaration."
 			case .invalidSchema: "lpm.json has an invalid envSchema declaration."
-			case .secretPublicPrefix(let prefix): "Secret keys cannot use the public prefix \(prefix). Rename the key with a private name."
+			case .secretPublicPrefix(let prefix): "Secret keys cannot use the public prefix \(prefix.escapingDirectionControls). Rename the key with a private name."
 			case .readFailed: "Could not read the schema file."
 			case .changed: "A project schema file changed while it was being saved. Save again."
-			case .writeFailed(let reason): "Could not write the schema file. \(reason)"
+			case .writeFailed(let reason): "Could not write the schema file. \(reason.escapingDirectionControls)"
 			case .metadataTooLarge: "Env metadata exceeds the cloud limit of 256 KiB."
             case .readOnlyPreset: "Preset declarations are read-only. Add a root envSchema.overrides entry."
-			case .readOnlyInstalled(let source): "Installed schema \(source) is read-only. Add a root envSchema.overrides entry."
-			case .inheritedRename(let source): "This key is declared in \(source). Rename it in the declaring file."
+			case .readOnlyInstalled(let source): "Installed schema \(source.escapingDirectionControls) is read-only. Add a root envSchema.overrides entry."
+			case .inheritedRename(let source): "This key is declared in \(source.escapingDirectionControls). Rename it in the declaring file."
 			case .overriddenRename: "This key is inherited and overridden in lpm.json. Rename its declaration in the imported schema, then update or remove the root override."
-			case .presetRename(let source): "Keys from \(source) cannot be renamed. Declare a separate local key and update its uses."
-			case .renameCollision(let key, let source): "The target key \(key) is declared in \(source). Choose a different key name."
-			case .fragmentReference(let source): "This key is referenced in \(source). Update that declaration before a rename."
+			case .presetRename(let source): "Keys from \(source.escapingDirectionControls) cannot be renamed. Declare a separate local key and update its uses."
+			case .renameCollision(let key, let source): "The target key \(key.escapingDirectionControls) is declared in \(source.escapingDirectionControls). Choose a different key name."
+			case .fragmentReference(let source): "This key is referenced in \(source.escapingDirectionControls). Update that declaration before a rename."
 			case .multipleSourceEdit: "This rename and description change multiple schema files. Save the rename and description separately."
 			case .invalidVaultLink: "lpm.json has a vault field that isn't a project ID. Fix it, then save again."
 			}
@@ -193,9 +193,10 @@ enum ProjectEnvSchemaFile {
 		fileWriter: ProjectConfigFile.FileWriter = ProjectConfigFile.writeSecurely,
 		beforeWrite: (() throws -> Void)? = nil, onWriteFailure: (() throws -> Void)? = nil,
 		onPrepared: ((Rules?, String) -> Void)? = nil, strictRename: Bool = false,
-		onRootSchema: ((LPMConfigJSON?) -> Void)? = nil
+		onRootSchema: ((LPMConfigJSON?) -> Void)? = nil, folderIdentity: ProjectConfigFile.DirectoryIdentity? = nil
 	) throws -> Rules? {
 		try ProjectConfigFile.withRootTransaction(at: url) { transaction in
+			if let folderIdentity, transaction.directoryIdentity != folderIdentity { throw FileError.changed }
 			let root = transaction.document
 			onRootSchema?(root["envSchema"] == .null ? nil : root["envSchema"])
 			if try !requiresSchemaEdit(change, in: root, vaultID: vaultID) {
