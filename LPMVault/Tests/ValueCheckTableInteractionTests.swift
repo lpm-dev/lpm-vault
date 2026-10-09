@@ -150,16 +150,13 @@ extension SheetInteractionTests {
 				$0.name = "PORT"
 				if editValue { $0.setValue("still-bad", in: "default") }
 			}
-			try await Task.sleep(for: .milliseconds(500))
-			try await host.settle()
+			#expect(try await host.waitForText("Not a valid port"))
 			var draft = try #require(store.keyDrafts.draft(.init(projectID: project.id, key: "OLD")))
 			let pendingEdit = draft.beginSave()
 			let edit = try #require(pendingEdit)
 			let renamed = try edit.applied(to: project.environments).get()
 			let rules = try #require(store.keyDescriptions[project.id]?.schema?.overview)
 			#expect(try #require(rules.check(renamed)).problems(of: "PORT", in: "default").count == 1)
-			let text = try await host.text()
-			#expect(text.contains("Not a valid port"))
 		}
 
 		@Test func tables_show_defaults_that_replace_empty_stored_values() async throws {
