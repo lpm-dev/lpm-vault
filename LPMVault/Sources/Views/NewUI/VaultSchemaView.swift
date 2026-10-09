@@ -384,10 +384,11 @@ struct VaultSchemaView: View {
 				inheritedCount: saved.inheritedCount)
 		}
 		let shown = draftOverview ?? saved
+		let changed = draft.changedItems
 		var rules = shown.rules
 		var added: [ProjectEnvSchemaOverview.Rule] = []
 		var removed = 0
-		for item in draft.changedItems {
+		for item in changed {
 			guard case .key(let key) = item else { continue }
 			let declaration = draft.declaration(of: item)
 			if let json = declaration.json {
@@ -403,7 +404,8 @@ struct VaultSchemaView: View {
 		rules = VaultKeySortOrder.mergingAscending(added, into: rules, by: \.key)
 		var groups = shown.groups
 		var removedGroups = 0
-		for item in draft.changedItems {
+		var appendedGroups = false
+		for item in changed {
 			guard case .group(let name) = item else { continue }
 			let declaration = draft.declaration(of: item)
 			if let json = declaration.json {
@@ -411,13 +413,28 @@ struct VaultSchemaView: View {
 				let isOverride = if case .overridden = declaration { true } else { false }
 				let saved = saved.groups.first { $0.name == name }
 				guard let row = ProjectEnvSchemaOverview.Group(name: name, draft: json, isOverride: isOverride, saved: saved) else { continue }
-				if let index = groups.firstIndex(where: { $0.name == name }) { groups[index] = row } else { groups.append(row) }
+				if let index = groups.firstIndex(where: { $0.name == name }) {
+					groups[index] = row
+				} else {
+					groups.append(row)
+					appendedGroups = true
+				}
 			} else if case .declared = draft.base(of: item) {
 				removedGroups += 1
-				if !groups.contains(where: { $0.name == name }), let row = saved.groups.first(where: { $0.name == name }) { groups.append(row) }
+				if !groups.contains(where: { $0.name == name }), let row = saved.groups.first(where: { $0.name == name }) {
+					groups.append(row)
+					appendedGroups = true
+				}
 			}
 		}
-		groups.sort { $0.name < $1.name }
+		// The evaluated rules can't name the file an override replaces; lpm.json's rules can.
+		for case .group(let name) in changed {
+			guard case .overridden = draft.declaration(of: .group(name)), let source = saved.groups.first(where: { $0.name == name })?.source,
+				let index = groups.firstIndex(where: { $0.name == name })
+			else { continue }
+			groups[index].overrides = source
+		}
+		if appendedGroups { groups.sort { $0.name < $1.name } }
 		return Listed(rules: rules, groups: groups, declaredCount: rules.count - removed, groupCount: groups.count - removedGroups,
 			inheritedCount: shown.inheritedCount)
 	}
@@ -606,6 +623,7 @@ struct VaultSchemaView: View {
 				.lineLimit(1)
 			Spacer(minLength: 8)
 			if canEdit {
+				let full = count >= ProjectEnvSchemaGroup.maximumGroups
 				Button(action: onAddGroup) {
 					HStack(spacing: 4) {
 						Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
@@ -614,8 +632,10 @@ struct VaultSchemaView: View {
 					.foregroundStyle(VaultPalette.accentForeground)
 				}
 				.buttonStyle(.plain)
+				.disabled(full)
+				.opacity(full ? 0.4 : 1)
 				.vaultPointingHand()
-				.help("Declare a group of keys in lpm.json")
+				.help(full ? "The LPM CLI accepts at most \(ProjectEnvSchemaGroup.maximumGroups) groups" : "Declare a group of keys in lpm.json")
 			}
 		}
 		.padding(.horizontal, 20)
@@ -638,12 +658,12 @@ struct VaultSchemaView: View {
 					.lineLimit(1)
 				Text("·").foregroundStyle(VaultPalette.textFaint)
 				(Text(mode?.title ?? group.mode).font(.system(size: 12)).foregroundColor(VaultPalette.textTertiary)
-					+ Text(" " + group.members.map(\.escapingDirectionControls).joined(separator: ", ")).font(VaultTypography.mono(12)).foregroundColor(VaultPalette.textSecondary))
+					+ Text(" " + group.memberPreview).font(VaultTypography.mono(12)).foregroundColor(VaultPalette.textSecondary))
 					.lineLimit(1)
 					.truncationMode(.tail)
 					.opacity(state == .removed ? 0.6 : 1)
-				if let source = group.source { VaultSourceBadge(source: source) }
-				if let source = group.overrides { VaultSourceBadge(source: source, isOverridden: true) }
+				if let source = group.source { VaultSourceBadge(source: source, declares: "the group") }
+				if let source = group.overrides { VaultSourceBadge(source: source, isOverridden: true, declares: "the group") }
 				switch state {
 				case .saved: EmptyView()
 				case .draft: VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)

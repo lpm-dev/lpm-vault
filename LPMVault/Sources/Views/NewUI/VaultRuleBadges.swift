@@ -22,6 +22,8 @@ struct VaultSourceBadge: View {
 	let source: String
 	/// lpm.json overrides the rule `source` declares.
 	var isOverridden = false
+	/// What `source` declares, as the help names it: "the rule" or "the group".
+	var declares = "the rule"
 
 	var body: some View {
 		Text(isOverridden ? "overrides \(source)" : source)
@@ -31,8 +33,8 @@ struct VaultSourceBadge: View {
 			.padding(.horizontal, 6)
 			.padding(.vertical, 2)
 			.overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(VaultPalette.textFaint, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
-			.help(isOverridden ? "lpm.json overrides the rule from \(source)" : "Inherited from \(source)")
-			.accessibilityLabel(isOverridden ? "Overrides the rule from \(source)" : "Inherited from \(source)")
+			.help(isOverridden ? "lpm.json overrides \(declares) from \(source)" : "Inherited from \(source)")
+			.accessibilityLabel(isOverridden ? "Overrides \(declares) from \(source)" : "Inherited from \(source)")
 	}
 }
 

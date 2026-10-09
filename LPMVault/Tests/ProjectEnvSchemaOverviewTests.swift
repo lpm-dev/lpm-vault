@@ -55,7 +55,7 @@ struct ProjectEnvSchemaOverviewTests {
 		#expect(overview.inheritedCount == 2)
 		#expect(overview.publicKeys == ["NEXT_PUBLIC_API_URL"])
 		#expect(overview.rule(for: "NEXT_PUBLIC_API_URL")?.isPublic == true)
-		#expect(overview.groups == [.init(name: "credentials", summary: "Exactly one of PASSWORD, OAUTH_TOKEN", members: ["PASSWORD", "OAUTH_TOKEN"], mode: "exactlyOne")])
+		#expect(overview.groups == [.init(name: "credentials", members: ["PASSWORD", "OAUTH_TOKEN"], mode: "exactlyOne")])
 		#expect(try loaded.rules.get().descriptions == ["API_TOKEN": "Bearer token for the admin API."])
 	}
 

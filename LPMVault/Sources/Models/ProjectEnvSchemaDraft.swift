@@ -90,6 +90,8 @@ struct ProjectEnvSchemaDraft: Sendable {
 	/// Keys the draft removes, with the fixes that came with each, which
 	/// keeping the key takes back. Part of the draft, so undo and redo carry them.
 	private(set) var removals: [String: Removal] = [:]
+	/// Groups of lpm.json the draft renames: each new name, with the name lpm.json has.
+	private(set) var renamedGroups: [String: String] = [:]
 	/// Each item `schema` has, which `base(of:)` reads without searching the JSON.
 	private var baseItems: [Item: Declaration]
 	/// Where each item is in `changes` and `conflicts`, kept as they change.
@@ -193,6 +195,63 @@ struct ProjectEnvSchemaDraft: Sendable {
 		replaceChanges([])
 		replaceConflicts([])
 		removals = [:]
+		renamedGroups = [:]
+	}
+
+	/// Renames a group, keeping the name lpm.json has, so the group keeps its
+	/// place in the file and discarding takes the rename back. Renaming it to
+	/// that name again ends the rename.
+	mutating func renameGroup(_ name: String, to newName: String) {
+		guard name != newName else { return }
+		let original = renamedGroups.removeValue(forKey: name) ?? name
+		set([(.group(name), .absent), (.group(newName), declaration(of: .group(name)))])
+		if newName != original, case .declared = base(of: .group(original)) { renamedGroups[newName] = original }
+	}
+
+	/// The name lpm.json has for a group the draft renames to `name`.
+	func originalName(ofGroup name: String) -> String? {
+		renamedGroups[name]
+	}
+
+	/// The name the draft gives a group lpm.json declares as `name`.
+	func newName(ofGroup name: String) -> String? {
+		renamedGroups.first { $0.value == name }?.key
+	}
+
+	/// Takes back a renamed group's rename and its changes; another group's changes.
+	mutating func discardGroup(_ name: String) {
+		guard let original = renamedGroups.removeValue(forKey: name) else {
+			discard(.group(name))
+			return
+		}
+		discard(.group(name))
+		discard(.group(original))
+	}
+
+	/// Drops what the draft's changed items say about `key`, a key the draft
+	/// no longer adds: a group's member, or the Required when that names it.
+	/// A group the draft adds that's left without members goes too.
+	mutating func dropReferences(to key: String) {
+		var edits: [(item: Item, declaration: Declaration)] = []
+		for item in changedItems {
+			let declaration = declaration(of: item)
+			switch item {
+			case .group:
+				guard case .array(let members)? = declaration.json?["vars"], members.contains(.string(key)) else { continue }
+				let kept = members.filter { $0 != .string(key) }
+				if kept.isEmpty, base(of: item) == .absent {
+					edits.append((item, .absent))
+				} else {
+					edits.append((item, declaration.replacingJSON { $0.set(.array(kept), forKey: "vars") }))
+				}
+			case .key:
+				guard declaration.json?["requiredWhen"]?["variable"] == .string(key) else { continue }
+				edits.append((item, declaration.replacingJSON { $0.removeValue(forKey: "requiredWhen") }))
+			case .clientPrefixes:
+				continue
+			}
+		}
+		set(edits)
 	}
 
 	private mutating func replaceChanges(_ new: [Change]) {
@@ -403,6 +462,15 @@ struct ProjectEnvSchemaDraft: Sendable {
 		let before = schema == .null ? nil : schema
 		var result = before ?? .object([])
 		guard case .object = result else { throw .invalidSchema }
+		// A renamed group takes the place its old name had.
+		for (name, original) in renamedGroups.sorted(by: { $0.key < $1.key }) {
+			guard declaration(of: .group(original)) == .absent, case .declared = declaration(of: .group(name)),
+				var groups = result["groups"], case .object(let members) = groups,
+				members.contains(where: { $0.key == original }), !members.contains(where: { $0.key == name })
+			else { continue }
+			groups.renameKey(original, to: name)
+			result.set(groups, forKey: "groups")
+		}
 		for change in changes { try Self.apply(change.value, for: change.item, to: &result) }
 		for conflict in conflicts { try Self.apply(conflict.mine, for: conflict.item, to: &result) }
 		if result.isEmptyObject, before?.isEmptyObject != true { return nil }
@@ -520,6 +588,7 @@ extension ProjectEnvSchemaDraft: Equatable {
 	/// The indexes follow from the schema and the changes, so they don't take part.
 	static func == (lhs: Self, rhs: Self) -> Bool {
 		lhs.changes == rhs.changes && lhs.conflicts == rhs.conflicts && lhs.schema == rhs.schema && lhs.removals == rhs.removals
+			&& lhs.renamedGroups == rhs.renamedGroups
 	}
 }
 

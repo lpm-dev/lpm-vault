@@ -36,10 +36,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 
 	struct Group: Equatable, Sendable {
 		let name: String
-		let summary: String
 		let members: [String]
 		/// "exactlyOne", "atLeastOne", or "allOrNone".
-		var mode = ""
+		var mode: String
 		/// The file that declares the group when lpm.json doesn't, escaped for showing.
 		var source: String?
 		/// `source` unescaped, for opening it.
@@ -47,6 +46,46 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		/// The imported file whose group lpm.json overrides, escaped for showing;
 		/// nil when lpm.json doesn't override it.
 		var overrides: String?
+		/// The first members as one short line, escaped for showing, such as
+		/// "PASSWORD, TOKEN" or "A, B +4,094 more".
+		let memberPreview: String
+
+		init(name: String, members: [String], mode: String, source: String? = nil, sourcePath: String? = nil, overrides: String? = nil) {
+			self.name = name
+			self.members = members
+			self.mode = mode
+			self.source = source
+			self.sourcePath = sourcePath
+			self.overrides = overrides
+			memberPreview = Self.preview(of: members)
+		}
+
+		/// Such as "Exactly one of PASSWORD, OAUTH_TOKEN", escaped for showing.
+		var summary: String {
+			(ProjectEnvSchemaGroup.Mode(rawValue: mode).map { $0.title + " " } ?? "") + memberPreview
+		}
+
+		/// The members that fit in `limit` characters, then how many more
+		/// there are; a group can have thousands, which no line shows.
+		static func preview(of members: [String], limit: Int = 160) -> String {
+			var text = ""
+			var length = 0
+			var shown = 0
+			for member in members {
+				let escaped = member.escapingDirectionControls
+				let separator = shown == 0 ? 0 : 2
+				guard length + separator + escaped.count <= limit else { break }
+				text += (shown == 0 ? "" : ", ") + escaped
+				length += separator + escaped.count
+				shown += 1
+			}
+			if shown == 0, let first = members.first {
+				text = String(first.escapingDirectionControls.prefix(limit)) + "…"
+				shown = 1
+			}
+			let more = members.count - shown
+			return more > 0 ? "\(text) +\(more.formatted()) more" : text
+		}
 	}
 
 	static let empty = ProjectEnvSchemaOverview(rules: [], groups: [])
@@ -103,13 +142,17 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				declaring[key] = declaringSource
 			}
 		}
+		// The engine names only the file that declares a group, so an override's original is unknown.
+		let overriddenGroups = Dictionary(uniqueKeysWithValues: resolution.groupOrigins.compactMap { name, origin in
+			origin.source == "lpm.json" && origin.pointer.hasPrefix("/envSchema/groupOverrides/") ? (name, "an imported schema") : nil
+		})
 		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source), overridden: overridden,
-			declaring: declaring, groupSources: resolution.groupOrigins.mapValues(\.source))
+			declaring: declaring, groupSources: resolution.groupOrigins.mapValues(\.source), overriddenGroups: overriddenGroups)
 	}
 
 	private init(
 		effective: LPMConfigJSON, sources: [String: String], overridden: [String: String] = [:], declaring: [String: String] = [:],
-		groupSources: [String: String] = [:]
+		groupSources: [String: String] = [:], overriddenGroups: [String: String] = [:]
 	) {
 		var rules: [Rule] = []
 		var declared: [String: LPMConfigJSON] = [:]
@@ -140,8 +183,8 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 			for group in declared {
 				guard let parsed = ProjectEnvSchemaGroup(group.value) else { continue }
 				let source = groupSources[group.key].flatMap { $0 == "lpm.json" ? nil : $0 }
-				groups.append(Group(name: group.key, summary: parsed.summary, members: parsed.members, mode: parsed.mode.rawValue,
-					source: source?.escapingDirectionControls, sourcePath: source))
+				groups.append(Group(name: group.key, members: parsed.members, mode: parsed.mode.rawValue,
+					source: source?.escapingDirectionControls, sourcePath: source, overrides: overriddenGroups[group.key]))
 			}
 		}
 		var prefixes: [String] = []
@@ -191,7 +234,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		var declaring = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.declaringPath.map { (rule.key, $0) } })
 		if let moved = declaring.removeValue(forKey: from) { declaring[to] = moved }
 		let groupSources = Dictionary(uniqueKeysWithValues: groups.compactMap { group in (group.sourcePath ?? group.source).map { (group.name, $0) } })
-		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden, declaring: declaring, groupSources: groupSources)
+		let overriddenGroups = Dictionary(uniqueKeysWithValues: groups.compactMap { group in group.overrides.map { (group.name, $0) } })
+		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden, declaring: declaring, groupSources: groupSources,
+			overriddenGroups: overriddenGroups)
 	}
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
@@ -413,8 +458,7 @@ extension ProjectEnvSchemaOverview.Group {
 	/// override replaces.
 	init?(name: String, draft declaration: LPMConfigJSON, isOverride: Bool, saved: Self?) {
 		guard let group = ProjectEnvSchemaGroup(declaration) else { return nil }
-		self.init(name: name, summary: group.summary, members: group.members, mode: group.mode.rawValue,
-			overrides: isOverride ? saved?.overrides ?? saved?.source : nil)
+		self.init(name: name, members: group.members, mode: group.mode.rawValue, overrides: isOverride ? saved?.overrides ?? saved?.source : nil)
 	}
 }
 
