@@ -176,6 +176,7 @@ struct ProjectEnvSchemaDraft: Sendable {
 		}
 		if !droppedChanges.isEmpty { replaceChanges(changes.indices.filter { !droppedChanges.contains($0) }.map { changes[$0] }) }
 		if !droppedConflicts.isEmpty { replaceConflicts(conflicts.indices.filter { !droppedConflicts.contains($0) }.map { conflicts[$0] }) }
+		pruneRenames()
 	}
 
 	mutating func discard(_ item: Item) {
@@ -188,6 +189,20 @@ struct ProjectEnvSchemaDraft: Sendable {
 			var kept = conflicts
 			kept.remove(at: index)
 			replaceConflicts(kept)
+		}
+		pruneRenames()
+	}
+
+	/// Forgets a rename the draft no longer makes: one lpm.json's group no
+	/// longer leaves for the new name, after an edit, a discard, a merge, or
+	/// a conflict settled either way.
+	private mutating func pruneRenames() {
+		guard !renamedGroups.isEmpty else { return }
+		renamedGroups = renamedGroups.filter { name, original in
+			guard case .declared = base(of: .group(original)), declaration(of: .group(original)) == .absent,
+				base(of: .group(name)) == .absent, case .declared = declaration(of: .group(name))
+			else { return false }
+			return true
 		}
 	}
 
@@ -218,14 +233,16 @@ struct ProjectEnvSchemaDraft: Sendable {
 		renamedGroups.first { $0.value == name }?.key
 	}
 
-	/// Takes back a renamed group's rename and its changes; another group's changes.
+	/// Takes back a renamed group's rename and its changes, by either of its
+	/// names; another group's changes.
 	mutating func discardGroup(_ name: String) {
-		guard let original = renamedGroups.removeValue(forKey: name) else {
+		guard let renamed = renamedGroups[name].map({ (name, $0) }) ?? newName(ofGroup: name).map({ ($0, name) }) else {
 			discard(.group(name))
 			return
 		}
-		discard(.group(name))
-		discard(.group(original))
+		renamedGroups.removeValue(forKey: renamed.0)
+		discard(.group(renamed.0))
+		discard(.group(renamed.1))
 	}
 
 	/// Drops what the draft's changed items say about `key`, a key the draft
@@ -239,7 +256,8 @@ struct ProjectEnvSchemaDraft: Sendable {
 			case .group:
 				guard case .array(let members)? = declaration.json?["vars"], members.contains(.string(key)) else { continue }
 				let kept = members.filter { $0 != .string(key) }
-				if kept.isEmpty, base(of: item) == .absent {
+				// A group lpm.json has, renamed or not, stays without members, which the engine reports.
+				if kept.isEmpty, base(of: item) == .absent, case .group(let name) = item, originalName(ofGroup: name) == nil {
 					edits.append((item, .absent))
 				} else {
 					edits.append((item, declaration.replacingJSON { $0.set(.array(kept), forKey: "vars") }))
@@ -393,6 +411,7 @@ struct ProjectEnvSchemaDraft: Sendable {
 			changePositions[item] = changes.count
 			changes.append(Change(item: item, base: conflict.theirs, value: conflict.mine))
 		}
+		pruneRenames()
 	}
 
 	/// Merges an edit the app itself just saved: `schema` is lpm.json's
@@ -423,14 +442,16 @@ struct ProjectEnvSchemaDraft: Sendable {
 		let schema = schema == .null ? nil : schema
 		guard schema != self.schema else { return Rebase() }
 		let theirs = Self.index(of: schema)
-		defer {
-			self.schema = schema
-			baseItems = theirs
+		let previous = (schema: self.schema, items: baseItems)
+		self.schema = schema
+		baseItems = theirs
+		guard !isEmpty else {
+			pruneRenames()
+			return Rebase()
 		}
-		guard !isEmpty else { return Rebase() }
 		var outcome = Rebase(
-			changedItems: Self.changedItems(from: self.schema, baseItems, to: schema, theirs),
-			changedOtherFields: !Self.otherFields(of: self.schema).isEquivalent(to: Self.otherFields(of: schema))
+			changedItems: Self.changedItems(from: previous.schema, previous.items, to: schema, theirs),
+			changedOtherFields: !Self.otherFields(of: previous.schema).isEquivalent(to: Self.otherFields(of: schema))
 		)
 		var kept: [Change] = []
 		var conflicted: [Conflict] = []
@@ -450,6 +471,7 @@ struct ProjectEnvSchemaDraft: Sendable {
 		}
 		replaceChanges(kept)
 		replaceConflicts(conflicted)
+		pruneRenames()
 		outcome.conflicts = conflicted.map(\.item)
 		return outcome
 	}
