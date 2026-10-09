@@ -3573,6 +3573,15 @@ final class VaultStore {
     var conflict: String?
     /// The LPM CLI never passes the key to a process, so a rule for it has no effect.
     var isIgnored = false
+
+    /// The keys of `keys` declaring them all at once can declare: not ignored,
+    /// not a letter-case variant of a declared key, nor of another of them,
+    /// which is left for the person to choose between.
+    static func declarableTogether(_ keys: [StoredSchemaKey]) -> [String] {
+      var counts: [String: Int] = [:]
+      for stored in keys where !stored.isIgnored && stored.conflict == nil { counts[stored.key.uppercased(), default: 0] += 1 }
+      return keys.compactMap { !$0.isIgnored && $0.conflict == nil && counts[$0.key.uppercased()] == 1 ? $0.key : nil }
+    }
   }
 
   /// Keys the project stores that lpm.json doesn't declare, with the draft
@@ -3601,6 +3610,31 @@ final class VaultStore {
       return StoredSchemaKey(key: key, environments: snapshot.summaries[key]?.environmentCount ?? 0,
         conflict: declared[key.uppercased()], isIgnored: ignored.contains(key))
     }
+  }
+
+  /// `undeclaredSchemaKeys(for:)`'s entry for `key`, without listing the
+  /// project's other keys; nil when it isn't one.
+  func undeclaredSchemaKey(_ key: String, for projectID: String) -> StoredSchemaKey? {
+    guard let project = projects.first(where: { $0.id == projectID }), project.hasLoadedEnvironments,
+      case .loaded(let saved, _)? = keyDescriptions[projectID]?.schema, let summary = workspaceSnapshots[projectID]?.summaries[key]
+    else { return nil }
+    let draft = schemaDraftOrBase(for: projectID)
+    let item = ProjectEnvSchemaDraft.Item.key(key)
+    guard draft.declaration(of: item) == .absent, draft.base(of: item) == .absent, saved.rule(for: key)?.source == nil else { return nil }
+    let name = key.uppercased()
+    var conflict = saved.rules.first { rule in
+      let item = ProjectEnvSchemaDraft.Item.key(rule.key)
+      if case .declared = draft.base(of: item), draft.declaration(of: item) == .absent { return false }
+      return rule.key.uppercased() == name
+    }?.key
+    if conflict == nil {
+      for case .key(let other) in draft.changedItems where other.uppercased() == name && draft.declaration(of: .key(other)) != .absent {
+        conflict = other
+        break
+      }
+    }
+    let ignored = valueChecks[projectID]?.environments.values.contains { $0.ignored.contains(key) } ?? false
+    return StoredSchemaKey(key: key, environments: summary.environmentCount, conflict: conflict, isIgnored: ignored)
   }
 
   /// Keys the project's draft declares whose names differ only in letter

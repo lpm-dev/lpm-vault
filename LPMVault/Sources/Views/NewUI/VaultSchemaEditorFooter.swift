@@ -123,12 +123,17 @@ struct VaultSchemaEditorFooter: View {
 			}
 			HStack(spacing: 8) {
 				if let readOnlyAction {
-					Text("Read-only").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
+					// With a draft, its way to the review takes the label's place.
+					if failure == nil, changes == 0 {
+						Text("Read-only").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
+					}
 					Spacer(minLength: 4)
 					VaultBarButton(systemImage: readOnlyAction.systemImage, title: readOnlyAction.title, height: 26, action: readOnlyAction.run)
 						.disabled(!canEdit)
 					if failure != nil {
 						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)
+					} else if changes > 0 {
+						reviewButton(blocker: blocker)
 					}
 				} else {
 					if failure != nil {
@@ -155,10 +160,7 @@ struct VaultSchemaEditorFooter: View {
 					if failure != nil {
 						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)
 					} else {
-						VaultBarButton(title: "Review & save", filled: true, disabled: changes == 0 || blocker?.blocksReview == true || !canEdit, height: 26,
-							action: onReview)
-							.keyboardShortcut("s", modifiers: .command)
-							.help("Review the changes, then save them to lpm.json (⌘S)")
+						reviewButton(blocker: blocker)
 					}
 				}
 			}
@@ -166,6 +168,24 @@ struct VaultSchemaEditorFooter: View {
 		.padding(.horizontal, 14)
 		.padding(.vertical, 10)
 		.background(VaultPalette.headerRow)
+		// ⌘S opens the review while the panel is open, after a failed save too, where the review saves again.
+		.background(VaultSchemaShortcuts(review: openReview))
+	}
+
+	private func reviewButton(blocker: Blocker?) -> some View {
+		let changes = store.schemaDraft(for: project.id)?.changeCount ?? 0
+		return VaultBarButton(title: "Review & save", filled: true, disabled: changes == 0 || blocker?.blocksReview == true || !canEdit, height: 26,
+			action: onReview)
+			.help("Review the changes, then save them to lpm.json (⌘S)")
+	}
+
+	/// Opens the review when there's a draft to review and nothing blocks it; returns whether it did.
+	private func openReview() -> Bool {
+		guard (store.schemaDraft(for: project.id)?.changeCount ?? 0) > 0, canEdit,
+			Self.blocker(store: store, projectID: project.id, item: item, pending: pending)?.blocksReview != true
+		else { return false }
+		onReview()
+		return true
 	}
 
 	/// Saves the draft the review already showed, after a failure that didn't change it.

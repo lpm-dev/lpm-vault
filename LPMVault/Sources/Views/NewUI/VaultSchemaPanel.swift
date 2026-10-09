@@ -1753,13 +1753,27 @@ private extension ProjectEnvSchemaRule.Field {
 
 // MARK: - Shortcuts
 
+extension EnvironmentValues {
+	/// Something shown over the window, such as the account switcher, has the
+	/// Schema page's keys for itself.
+	var vaultSchemaKeysSuspended: Bool {
+		get { self[VaultSchemaKeysSuspendedKey.self] }
+		set { self[VaultSchemaKeysSuspendedKey.self] = newValue }
+	}
+}
+
+private struct VaultSchemaKeysSuspendedKey: EnvironmentKey {
+	static let defaultValue = false
+}
+
 /// The Schema page's keys. The page takes ⌘Z and ⇧⌘Z to undo and redo rule
 /// changes, Esc to close the side panel, and ↑ and ↓ to move the selection
 /// through the table; a panel takes ⌘⌫ to remove what it shows, as Move to
-/// Trash does in Finder. None applies while a text field is being edited,
-/// where the keys edit the text as everywhere else, and the arrows stay with
-/// a control that has keyboard focus. Each action returns whether it did
-/// anything; when not, the key goes on as usual.
+/// Trash does in Finder; ⌘S opens the review from either. Only ⌘S applies
+/// while a text field is being edited, where the other keys edit the text
+/// as everywhere else, and the arrows stay with a control that has keyboard
+/// focus. None applies while a sheet is attached. Each action returns
+/// whether it did anything; when not, the key goes on as usual.
 struct VaultSchemaShortcuts: NSViewRepresentable {
 	var undo: () -> Bool = { false }
 	var redo: () -> Bool = { false }
@@ -1767,9 +1781,10 @@ struct VaultSchemaShortcuts: NSViewRepresentable {
 	var close: () -> Bool = { false }
 	/// Moves the selection by a row: -1 up, 1 down.
 	var move: (Int) -> Bool = { _ in false }
+	var review: () -> Bool = { false }
 
 	enum Shortcut: Equatable, Sendable {
-		case undo, redo, remove, close
+		case undo, redo, remove, close, review
 		case move(Int)
 	}
 
@@ -1780,6 +1795,7 @@ struct VaultSchemaShortcuts: NSViewRepresentable {
 		case (.command, 51): .remove
 		case (.command, _) where characters?.lowercased() == "z": .undo
 		case ([.command, .shift], _) where characters?.lowercased() == "z": .redo
+		case (.command, _) where characters?.lowercased() == "s": .review
 		case ([], 53): .close
 		case ([], 126): .move(-1)
 		case ([], 125): .move(1)
@@ -1791,10 +1807,12 @@ struct VaultSchemaShortcuts: NSViewRepresentable {
 
 	func updateNSView(_ view: MonitorView, context: Context) {
 		view.shortcuts = self
+		view.suspended = context.environment.vaultSchemaKeysSuspended
 	}
 
 	final class MonitorView: NSView {
 		var shortcuts = VaultSchemaShortcuts()
+		var suspended = false
 		private var monitor: Any?
 
 		override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -1817,12 +1835,15 @@ struct VaultSchemaShortcuts: NSViewRepresentable {
 		}
 
 		private func handle(_ shortcut: Shortcut, inWindow windowNumber: Int) -> Bool {
-			guard let window, window.windowNumber == windowNumber, window.attachedSheet == nil, !(window.firstResponder is NSText) else { return false }
+			guard !suspended, let window, window.windowNumber == windowNumber, window.attachedSheet == nil else { return false }
+			if shortcut == .review { return shortcuts.review() }
+			guard !(window.firstResponder is NSText) else { return false }
 			return switch shortcut {
 			case .undo: shortcuts.undo()
 			case .redo: shortcuts.redo()
 			case .remove: shortcuts.remove()
 			case .close: shortcuts.close()
+			case .review: shortcuts.review()
 			case .move(let offset):
 				window.firstResponder is NSControl || window.firstResponder is NSCollectionView ? false : shortcuts.move(offset)
 			}
