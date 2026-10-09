@@ -731,13 +731,27 @@ struct ProjectEnvSchemaDraftEffects: Equatable, Sendable {
 		let problem: ProjectEnvValueCheck.Problem
 	}
 
+	/// A default the LPM CLI fills an unset key with that the draft adds,
+	/// changes, or removes. Never contains the default.
+	struct DefaultChange: Hashable, Sendable {
+		enum Kind: Hashable, Sendable {
+			case added, changed, removed
+		}
+
+		let environment: String
+		let key: String
+		let kind: Kind
+	}
+
 	struct Summary: Equatable, Sendable {
 		/// By environment in the given order, then failures first, then by key and problem.
 		var effects: [Effect] = []
 		/// Problems that stay as they are.
 		var unchanged = 0
+		/// By environment in the given order, then by key.
+		var defaults: [DefaultChange] = []
 
-		var isEmpty: Bool { effects.isEmpty && unchanged == 0 }
+		var isEmpty: Bool { effects.isEmpty && unchanged == 0 && defaults.isEmpty }
 	}
 
 	private(set) var items: [ProjectEnvSchemaDraft.Item: Summary] = [:]
@@ -765,12 +779,16 @@ struct ProjectEnvSchemaDraftEffects: Equatable, Sendable {
 		var changedKeys = Set<String>()
 		var removedKeys = Set<String>()
 		var changedGroups = Set<String>()
+		var removedGroups = Set<String>()
 		for item in draft.changedItems {
+			let removed = if case .declared = draft.base(of: item), draft.declaration(of: item) == .absent { true } else { false }
 			switch item {
 			case .key(let name):
 				changedKeys.insert(name)
-				if case .declared = draft.base(of: item), draft.declaration(of: item) == .absent { removedKeys.insert(name) }
-			case .group(let name): changedGroups.insert(name)
+				if removed { removedKeys.insert(name) }
+			case .group(let name):
+				changedGroups.insert(name)
+				if removed { removedGroups.insert(name) }
 			case .clientPrefixes: break
 			}
 		}
@@ -796,17 +814,18 @@ struct ProjectEnvSchemaDraftEffects: Equatable, Sendable {
 			return found
 		}
 
-		/// The changed item a problem belongs to, and the problem as that item reports it.
-		func owner(of identity: Identity, _ reports: [Reported]) -> (ProjectEnvSchemaDraft.Item?, ProjectEnvValueCheck.Problem) {
+		/// The changed items a problem belongs to, each with the problem as it
+		/// reports it: a group's goes to the group, or to each changed member.
+		func owners(of identity: Identity, _ reports: [Reported]) -> [(ProjectEnvSchemaDraft.Item?, ProjectEnvValueCheck.Problem)] {
 			let fallback = reports[0].first
 			switch identity {
 			case .key(let key, _):
-				return (changedKeys.contains(key) ? .key(key) : nil, fallback)
+				return [(changedKeys.contains(key) ? .key(key) : nil, fallback)]
 			case .group(let name):
-				if changedGroups.contains(name) { return (.group(name), fallback) }
-				let members = reports.flatMap(\.problems.keys).filter(changedKeys.contains).sorted()
-				guard let member = members.first else { return (nil, fallback) }
-				return (.key(member), reports.lazy.compactMap { $0.problems[member] }.first ?? fallback)
+				if changedGroups.contains(name) { return [(.group(name), fallback)] }
+				let members = Set(reports.flatMap(\.problems.keys)).filter(changedKeys.contains).sorted()
+				guard !members.isEmpty else { return [(nil, fallback)] }
+				return members.map { member in (.key(member), reports.lazy.compactMap { $0.problems[member] }.first ?? fallback) }
 			}
 		}
 
@@ -815,19 +834,36 @@ struct ProjectEnvSchemaDraftEffects: Equatable, Sendable {
 			let new = reported(in: after, environment)
 			var found: [(ProjectEnvSchemaDraft.Item?, Effect)] = []
 			for (identity, reports) in new {
-				let (item, problem) = owner(of: identity, [reports] + (old[identity].map { [$0] } ?? []))
-				if old[identity] == nil {
-					found.append((item, Effect(environment: environment, kind: .newlyFailing, problem: problem)))
-				} else {
-					record(unchangedFor: item)
+				for (item, problem) in owners(of: identity, [reports] + (old[identity].map { [$0] } ?? [])) {
+					if old[identity] == nil {
+						found.append((item, Effect(environment: environment, kind: .newlyFailing, problem: problem)))
+					} else {
+						record(unchangedFor: item)
+					}
 				}
 			}
 			for (identity, reports) in old where new[identity] == nil {
-				let (item, problem) = owner(of: identity, [reports])
-				let removed = if case .key(let key, _) = identity { removedKeys.contains(key) } else { false }
-				found.append((item, Effect(environment: environment, kind: removed ? .noLongerChecked : .nowPasses, problem: problem)))
+				let removed = switch identity {
+				case .key(let key, _): removedKeys.contains(key)
+				case .group(let name): removedGroups.contains(name)
+				}
+				for (item, problem) in owners(of: identity, [reports]) {
+					found.append((item, Effect(environment: environment, kind: removed ? .noLongerChecked : .nowPasses, problem: problem)))
+				}
 			}
 			for (item, effect) in found.sorted(by: { Self.order($0.1, $1.1) }) { record(effect, for: item) }
+
+			let oldDefaults = before.environments[environment]?.defaults ?? [:]
+			let newDefaults = after.environments[environment]?.defaults ?? [:]
+			for key in changedKeys.sorted() {
+				let kind: DefaultChange.Kind? = switch (oldDefaults[key], newDefaults[key]) {
+				case (nil, _?): .added
+				case (_?, nil): .removed
+				case let (old?, new?) where old != new: .changed
+				default: nil
+				}
+				if let kind { items[.key(key), default: Summary()].defaults.append(DefaultChange(environment: environment, key: key, kind: kind)) }
+			}
 		}
 	}
 
