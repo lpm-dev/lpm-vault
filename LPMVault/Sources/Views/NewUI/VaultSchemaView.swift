@@ -15,6 +15,12 @@ struct VaultSchemaView: View {
 	var draftOverview: ProjectEnvSchemaOverview? = nil
 	var selection: VaultSchemaSelection? = nil
 	var onSelect: (VaultSchemaSelection?) -> Void = { _ in }
+	/// The rules can be edited: lpm.json is read from the project's folder.
+	var canEdit = false
+	var onAddKey: () -> Void = {}
+	/// Keys stored in some environment that lpm.json doesn't declare.
+	var undeclared: [VaultStore.StoredSchemaKey] = []
+	var onDeclare: (String) -> Void = { _ in }
 	/// What merging the draft with changes on disk did, until dismissed.
 	var rebase: ProjectEnvSchemaDraft.Rebase? = nil
 	var onDismissRebase: () -> Void = {}
@@ -89,6 +95,10 @@ struct VaultSchemaView: View {
 					ProjectConfigOpener.open(configFile)
 				}
 				.fixedSize()
+			}
+			if canEdit {
+				VaultBarButton(systemImage: "plus", title: "Add key", filled: true, height: 27, action: onAddKey)
+					.help("Declare a new key in lpm.json")
 			}
 		}
 		.padding(.horizontal, 20)
@@ -202,21 +212,29 @@ struct VaultSchemaView: View {
 			emptyState(
 				symbol: "curlybraces",
 				title: "No rules yet",
-				message: "lpm.json has no envSchema. Add one to declare formats, defaults, and required keys; the LPM CLI enforces them and this page shows them."
+				message: "lpm.json declares no env rules. Add keys to declare formats, defaults, and required keys; the LPM CLI enforces them and this page shows them."
 			) {
 				if let configFile {
 					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { ProjectConfigOpener.open(configFile) }
 				}
 				VaultBarButton(title: "Docs: envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
 			} footer: {
-				Text(Self.example)
-					.font(VaultTypography.mono(11.5))
-					.foregroundStyle(VaultPalette.textSecondary)
-					.textSelection(.enabled)
-					.padding(14)
-					.frame(maxWidth: 420, alignment: .leading)
-					.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.inspector))
+				if undeclared.isEmpty {
+					example
+				} else {
+					VStack(spacing: 0) {
+						undeclaredHeader
+						ScrollView {
+							LazyVStack(spacing: 0) {
+								ForEach(sortedUndeclared, id: \.key, content: undeclaredRow)
+							}
+						}
+						.frame(height: min(CGFloat(undeclared.count) * Self.undeclaredRowHeight, 300))
+					}
+					.frame(maxWidth: 640)
+					.clipShape(RoundedRectangle(cornerRadius: 8))
 					.overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border))
+				}
 			}
 		case .loaded(let overview, _)?:
 			rulesTable(listed ?? self.listed(overview), saved: overview)
@@ -227,6 +245,17 @@ struct VaultSchemaView: View {
 			}
 			.padding(20)
 		}
+	}
+
+	private var example: some View {
+		Text(Self.example)
+			.font(VaultTypography.mono(11.5))
+			.foregroundStyle(VaultPalette.textSecondary)
+			.textSelection(.enabled)
+			.padding(14)
+			.frame(maxWidth: 420, alignment: .leading)
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.inspector))
+			.overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border))
 	}
 
 	private func emptyState<Actions: View, Footer: View>(
@@ -296,6 +325,11 @@ struct VaultSchemaView: View {
 					ForEach(rules, id: \.key) { rule in
 						ruleRow(rule, state: rowState(rule.key, in: saved), description: description(of: rule.key))
 							.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+					}
+					// Rows go straight into the lazy stack, so only those on screen are built.
+					if !undeclared.isEmpty {
+						undeclaredHeader
+						ForEach(sortedUndeclared, id: \.key, content: undeclaredRow)
 					}
 					if !listed.groups.isEmpty {
 						groupsRow(listed.groups)
@@ -456,6 +490,76 @@ struct VaultSchemaView: View {
 		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
 	}
+
+	/// Stored keys lpm.json doesn't declare, in the table's order.
+	private var sortedUndeclared: [VaultStore.StoredSchemaKey] {
+		sortOrder == .ascending ? undeclared : undeclared.reversed()
+	}
+
+	private var undeclaredHeader: some View {
+		HStack(spacing: 8) {
+			Text("STORED, NOT DECLARED · \(undeclared.count)").vaultSectionLabel()
+			Text("in the Keychain but not in lpm.json — the LPM CLI doesn't check them")
+				.font(.system(size: 11))
+				.foregroundStyle(VaultPalette.textFaint)
+				.lineLimit(1)
+		}
+		.padding(.horizontal, 20)
+		.padding(.vertical, 8)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(VaultPalette.headerRow)
+		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+	}
+
+	private func undeclaredRow(_ stored: VaultStore.StoredSchemaKey) -> some View {
+		HStack(spacing: 0) {
+			HStack(spacing: 8) {
+				Text(stored.key.escapingDirectionControls)
+					.font(VaultTypography.mono(12.5))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.lineLimit(1)
+					.truncationMode(.middle)
+				Text(stored.environments == 1 ? "set in 1 env" : "set in \(stored.environments) envs")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textFaint)
+					.fixedSize()
+			}
+			.padding(.leading, 20)
+			.padding(.trailing, 12)
+			.frame(width: Self.keyWidth, alignment: .leading)
+			HStack(spacing: 8) {
+				if stored.isIgnored {
+					Text("The LPM CLI never passes it to a process")
+						.font(.system(size: 11.5).italic())
+						.foregroundStyle(VaultPalette.textFaint)
+						.lineLimit(1)
+				} else if let conflict = stored.conflict {
+					Text("Differs from \(conflict.escapingDirectionControls) only in letter case")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.orangeTintText)
+						.lineLimit(1)
+						.help("Windows reads both as one name, so the LPM CLI can't tell them apart there. Rename the stored key to match.")
+				} else {
+					Text("Not in schema")
+						.font(.system(size: 11.5).italic())
+						.foregroundStyle(VaultPalette.textFaint)
+				}
+				Spacer(minLength: 8)
+				if let conflict = stored.conflict, !stored.isIgnored {
+					VaultBarButton(title: "Open \(conflict)", height: 24) { onSelect(.key(conflict)) }
+						.accessibilityLabel("Open \(conflict.escapingDirectionControls)")
+				} else if canEdit, !stored.isIgnored {
+					VaultBarButton(systemImage: "plus", title: "Declare", height: 24) { onDeclare(stored.key) }
+						.accessibilityLabel("Declare \(stored.key.escapingDirectionControls)")
+				}
+			}
+			.padding(.horizontal, 14)
+		}
+		.frame(height: Self.undeclaredRowHeight)
+		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+	}
+
+	private static let undeclaredRowHeight: CGFloat = 42
 
 	private func groupsRow(_ groups: [ProjectEnvSchemaOverview.Group]) -> some View {
 		HStack(alignment: .firstTextBaseline, spacing: 12) {

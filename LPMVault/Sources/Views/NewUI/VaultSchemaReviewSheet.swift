@@ -24,7 +24,8 @@ struct VaultSchemaReviewSheet: View {
 		let draft = store.schemaDraft(for: project.id)
 		let review = store.schemaDraftReview(for: project.id, environments: environments)
 		let changedWhileOpen = shown != nil && review != nil && review != shown
-		let blocked = saving || review == nil || review?.values == .checking || draft?.conflicts.isEmpty == false
+		let clash = store.schemaDraftCaseClash(for: project.id)
+		let blocked = saving || review == nil || review?.values == .checking || draft?.conflicts.isEmpty == false || clash != nil
 		VStack(alignment: .leading, spacing: 0) {
 			HStack(alignment: .top, spacing: 12) {
 				VStack(alignment: .leading, spacing: 4) {
@@ -49,6 +50,9 @@ struct VaultSchemaReviewSheet: View {
 					if let draft, !draft.conflicts.isEmpty {
 						message("Choose a version for each change that conflicts with lpm.json first. The banner on the Schema page lists them.")
 					} else if let review {
+						if let clash {
+							problem("Can't save: \(clash.message)")
+						}
 						if changedWhileOpen {
 							notice("This review changed while it was open, because lpm.json, its imports, or the stored values changed. Check it again before saving.")
 						}
@@ -123,6 +127,17 @@ struct VaultSchemaReviewSheet: View {
 			.font(.system(size: 12.5))
 			.foregroundStyle(VaultPalette.textSecondary)
 			.fixedSize(horizontal: false, vertical: true)
+	}
+
+	private func problem(_ text: String) -> some View {
+		HStack(alignment: .top, spacing: 8) {
+			Image(systemName: "xmark.circle").font(.system(size: 11)).padding(.top, 1)
+			Text(text).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+		}
+		.foregroundStyle(VaultPalette.redText)
+		.padding(10)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.redTint))
 	}
 
 	private func notice(_ text: String) -> some View {

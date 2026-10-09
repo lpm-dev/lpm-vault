@@ -15,6 +15,7 @@ struct VaultWorkspaceView: View {
 	@State private var schemaSelection: VaultSchemaSelection?
 	/// The project whose schema draft the review sheet shows.
 	@State private var schemaReview: SchemaReviewTarget?
+	@State private var schemaPanelSession = UUID()
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
 	@State private var showsAccountSwitcher = false
@@ -57,6 +58,21 @@ struct VaultWorkspaceView: View {
 	private var schemaWatch: String? {
 		guard mode == .schema, !store.showAuthStatus, let folder = project.flatMap({ store.keyDescriptions[$0.id]?.folder }), !folder.isEmpty else { return nil }
 		return folder
+	}
+
+	/// Opens a selection in the Schema page's panel as a new stretch of editing.
+	private func selectSchema(_ selection: VaultSchemaSelection?) {
+		schemaSelection = selection
+		schemaPanelSession = UUID()
+	}
+
+	/// Adds a stored key to the draft with no rules yet, and opens it.
+	private func declare(_ key: String, in project: VaultProject) {
+		let prefixes = store.schemaOverview(for: project.id)?.clientPrefixes ?? []
+		var rule = ProjectEnvSchemaRule()
+		if ProjectEnvSchemaRule.publicPrefix(of: key, clientPrefixes: prefixes) != nil { rule.client = true }
+		store.editSchemaDraft(in: project.id) { $0.set(.declared(rule.json), for: .key(key)) }
+		selectSchema(.key(key))
 	}
 
 	/// Rereads the rules when the Schema page starts showing them, which picks
@@ -213,7 +229,11 @@ struct VaultWorkspaceView: View {
 								draft: draft,
 								draftOverview: draft == nil ? nil : store.latestSchemaDraftEvaluation(for: project.id)?.overview,
 								selection: schemaSelection,
-								onSelect: { schemaSelection = $0 },
+								onSelect: selectSchema,
+								canEdit: store.canEditSchema(of: project.id),
+								onAddKey: { selectSchema(.newKey) },
+								undeclared: store.undeclaredSchemaKeys(for: project.id),
+								onDeclare: { declare($0, in: project) },
 								rebase: store.schemaDraftRebases[project.id],
 								onDismissRebase: { store.dismissSchemaDraftRebase(in: project.id) },
 								onResolveConflict: { item, keepingMine in
@@ -306,7 +326,9 @@ struct VaultWorkspaceView: View {
 								project: project,
 								environments: store.orderedEnvironmentNames(for: project),
 								selection: schemaSelection,
-								onSelect: { self.schemaSelection = $0 },
+								session: schemaPanelSession,
+								onSelect: selectSchema,
+								onFollow: { self.schemaSelection = $0 },
 								onReview: { schemaReview = SchemaReviewTarget(projectID: project.id) },
 								onRenamed: followRename
 							)

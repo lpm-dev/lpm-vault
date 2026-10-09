@@ -152,6 +152,28 @@ struct ProjectEnvSchemaDraft: Sendable {
 		conflicts = []
 	}
 
+	/// Points the draft's references to `key`, in Required when and in group
+	/// members, at `newKey`. lpm.json can't refer to a key it doesn't declare,
+	/// so only items the draft changes can refer to a key the draft adds.
+	mutating func renameReferences(to key: String, as newKey: String) {
+		guard key != newKey else { return }
+		for item in changedItems {
+			let declaration = declaration(of: item)
+			switch item {
+			case .key:
+				guard let condition = declaration.json?["requiredWhen"], condition["variable"] == .string(key) else { continue }
+				var renamed = condition
+				renamed.set(.string(newKey), forKey: "variable")
+				set(declaration.replacingJSON { $0.set(renamed, forKey: "requiredWhen") }, for: item)
+			case .group:
+				guard case .array(let members)? = declaration.json?["vars"], members.contains(.string(key)) else { continue }
+				set(declaration.replacingJSON { $0.set(.array(members.map { $0 == .string(key) ? .string(newKey) : $0 }), forKey: "vars") }, for: item)
+			case .clientPrefixes:
+				continue
+			}
+		}
+	}
+
 	/// Settles a conflict with the draft's version or the one now in lpm.json.
 	mutating func resolveConflict(_ item: Item, keepingMine: Bool) {
 		guard let index = conflictPositions[item] else { return }

@@ -348,13 +348,13 @@ enum ProjectEnvSchemaFile {
 				schema.set(.object(overrides), forKey: "overrides")
 			}
 			for field in ["groups", "groupOverrides"] {
-			if case .object(var groups)? = schema[field] {
-				for index in groups.indices {
-					guard case .array(let members)? = groups[index].value["vars"] else { continue }
-					groups[index].value.set(.array(members.map { $0 == .string(rename.from) ? .string(rename.to) : $0 }), forKey: "vars")
+				if case .object(var groups)? = schema[field] {
+					for index in groups.indices {
+						guard case .array(let members)? = groups[index].value["vars"] else { continue }
+						groups[index].value.set(.array(members.map { $0 == .string(rename.from) ? .string(rename.to) : $0 }), forKey: "vars")
+					}
+					schema.set(.object(groups), forKey: field)
 				}
-				schema.set(.object(groups), forKey: field)
-			}
 			}
 		}
 		if let description = change.description {
@@ -372,7 +372,7 @@ enum ProjectEnvSchemaFile {
 			} else {
 				rule.set(.string(description.text), forKey: "description")
 			}
-			if vars[description.key] == nil { if vars[description.key] == nil { try classify(&rule, name: description.key, schema: referenceSchema ?? schema) } }
+			if vars[description.key] == nil { try classify(&rule, name: description.key, schema: referenceSchema ?? schema) }
 			if rule.isEmptyObject && !isReferenced(description.key, schema: schema, vars: vars) && !isReferenced(description.key, schema: referenceSchema ?? schema, vars: referenceSchema?["vars"] ?? vars) {
 
 				vars.removeValue(forKey: description.key)
