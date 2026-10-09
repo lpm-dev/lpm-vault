@@ -24,12 +24,13 @@ struct VaultSchemaClientPrefixesPopover: View {
 	private var canEdit: Bool { store.canEditSchema(of: project.id) }
 
 	var body: some View {
-		let draft = store.schemaDraftOrBase(for: project.id)
-		let rules = store.schemaOverview(for: project.id)
-		let own = Prefixes.own(in: draft)
-		let importedSet = Prefixes.imported(store.keyDescriptions[project.id]?.importedClientPrefixes, draft: draft, rules: rules)
-		let imported = VaultKeySortOrder.sortedAscending(importedSet.subtracting(own))
-		let count = importedSet.union(own).count
+		let availability = store.schemaPrefixAvailability(for: project.id)
+		let context = availability.context
+		let own = Prefixes.own(in: context?.draft ?? store.schemaDraftOrBase(for: project.id))
+		let importedSources = context?.imported ?? [:]
+		let imported = VaultKeySortOrder.sortedAscending(Set(importedSources.keys).subtracting(own))
+		let counts = context.map { Prefixes.keyCounts(of: own + imported, rules: $0.rules) } ?? [:]
+		let removal = removing.flatMap { prefix in context.map { Prefixes.removing(prefix, in: $0) } }
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Client prefixes").font(.system(size: 13, weight: .semibold)).foregroundStyle(VaultPalette.textPrimary)
@@ -44,25 +45,29 @@ struct VaultSchemaClientPrefixesPopover: View {
 
 			frameworks
 			ForEach(imported, id: \.self) { prefix in
-				row(prefix, keys: Prefixes.keyCount(of: prefix, rules: rules), imported: true)
+				row(prefix, keys: counts[prefix], source: importedSources[prefix], removable: false, unavailable: availability.reason)
 			}
 			ForEach(own, id: \.self) { prefix in
-				if removing == prefix {
-					removalConfirmation(prefix, keys: Prefixes.keys(removing: prefix, imported: importedSet, draft: draft, rules: rules),
-						imported: importedSet)
+				if removing == prefix, let removal, !removal.keys.isEmpty {
+					removalConfirmation(prefix, removal: removal)
 				} else {
-					row(prefix, keys: Prefixes.keyCount(of: prefix, rules: rules), imported: false, alsoImported: importedSet.contains(prefix)) {
-						let keys = Prefixes.keys(removing: prefix, imported: importedSet, draft: draft, rules: rules)
-						if keys.isEmpty { apply(Prefixes.removing(prefix, imported: importedSet, draft: draft, rules: rules)) } else { removing = prefix }
-					}
+					row(prefix, keys: counts[prefix], source: importedSources[prefix], removable: true, unavailable: availability.reason) { remove(prefix) }
 				}
 			}
 			if canEdit {
-				addField(draft: draft, rules: rules)
+				if let context {
+					addField(context)
+				} else if let reason = availability.reason {
+					Text(reason)
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.padding(.horizontal, 14)
+						.padding(.vertical, 10)
+				}
 			}
 			VaultHairline()
 			HStack {
-				Text("\(count) of \(Prefixes.maximum)")
+				Text("\(Set(own).union(importedSources.keys).count) of \(Prefixes.maximum)")
 				Spacer(minLength: 8)
 				Text("Changes join the draft")
 			}
@@ -73,6 +78,8 @@ struct VaultSchemaClientPrefixesPopover: View {
 		}
 		.frame(width: 340)
 		.background(VaultPalette.content)
+		// A removal waiting for confirmation ends when its prefix goes some other way, such as an undo.
+		.onChange(of: own) { _, own in if let removing, !own.contains(removing) { self.removing = nil } }
 	}
 
 	// MARK: - Rows
@@ -111,42 +118,57 @@ struct VaultSchemaClientPrefixesPopover: View {
 		.padding(.bottom, 8)
 	}
 
-	private func row(_ prefix: String, keys: Int, imported: Bool, alsoImported: Bool = false, onRemove: (() -> Void)? = nil) -> some View {
-		HStack(spacing: 7) {
+	/// A prefix's row. `source` is the imported schema that lists it, when
+	/// one does; `keys` is nil while the draft's rules aren't known, and
+	/// `unavailable` says why the prefix can't be removed now.
+	private func row(
+		_ prefix: String, keys: Int?, source: String?, removable: Bool, unavailable: String?, onRemove: (() -> Void)? = nil
+	) -> some View {
+		let shown = prefix.escapingDirectionControls
+		return HStack(spacing: 7) {
 			Image(systemName: "globe").font(.system(size: 10)).foregroundStyle(VaultPalette.publicText).accessibilityHidden(true)
-			Text(prefix.escapingDirectionControls)
+			Text(shown)
 				.font(VaultTypography.mono(12, .semibold))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.lineLimit(1)
 				.truncationMode(.middle)
 			Spacer(minLength: 8)
-			if imported || alsoImported {
-				Text(alsoImported ? "also imported" : "imported")
+			if let source {
+				let file = source.escapingDirectionControls
+				Text(removable ? "also imported" : "imported")
 					.font(VaultTypography.mono(10.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.padding(.horizontal, 5)
 					.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
-					.help(alsoImported
-						? "A schema lpm.json imports declares it too, so it stays in effect without lpm.json's"
-						: "Declared in a schema lpm.json imports, so it can't be removed here")
+					.help(removable
+						? "\(file), which lpm.json imports, lists it too, so it stays in effect if you remove it here"
+						: "Listed in \(file), which lpm.json imports, so it can't be removed here")
+					.accessibilityLabel(removable ? "Also listed in \(file)" : "Listed in \(file)")
 			}
-			Text(keys == 1 ? "1 key" : "\(keys) keys").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
-			if imported {
+			if let keys {
+				Text(keys == 1 ? "1 key" : "\(keys) keys").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+			}
+			if !removable {
 				Image(systemName: "lock").font(.system(size: 9)).foregroundStyle(VaultPalette.textFaint).accessibilityHidden(true)
 			} else if let onRemove {
 				Button(action: onRemove) {
-					Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(VaultPalette.textFaint)
+					Image(systemName: "xmark")
+						.font(.system(size: 9, weight: .bold))
+						.foregroundStyle(VaultPalette.textFaint)
+						.frame(width: 20, height: 20)
+						.contentShape(Rectangle())
 				}
 				.buttonStyle(.plain)
-				.disabled(!canEdit)
-				.accessibilityLabel("Remove \(prefix)")
+				.disabled(!canEdit || unavailable != nil)
+				.help(unavailable ?? "Remove \(shown)")
+				.accessibilityLabel("Remove \(shown)")
 			}
 		}
 		.padding(.horizontal, 14)
 		.frame(height: 30)
 	}
 
-	private func removalConfirmation(_ prefix: String, keys: [String], imported: Set<String>) -> some View {
+	private func removalConfirmation(_ prefix: String, removal: Prefixes.Change) -> some View {
 		VStack(alignment: .leading, spacing: 8) {
 			HStack(spacing: 7) {
 				Image(systemName: "globe").font(.system(size: 10)).foregroundStyle(VaultPalette.publicText).accessibilityHidden(true)
@@ -155,18 +177,21 @@ struct VaultSchemaClientPrefixesPopover: View {
 			}
 			HStack(alignment: .top, spacing: 6) {
 				Image(systemName: "exclamationmark.triangle").font(.system(size: 10)).padding(.top, 1)
-				Text(keys.count == 1
+				Text(removal.keys.count == 1
 					? "1 public key uses it — it'll become private in the same change."
-					: "\(keys.count) public keys use it — they'll become private in the same change.")
+					: "\(removal.keys.count) public keys use it — they'll become private in the same change.")
 					.font(.system(size: 11.5))
 					.fixedSize(horizontal: false, vertical: true)
 			}
 			.foregroundStyle(VaultPalette.orangeTintText)
-			keyChips(keys)
+			keyChips(removal.keys)
+			overrideNotes(removal, public: false)
 			HStack(spacing: 6) {
 				VaultBarButton(title: "Remove", filled: true, disabled: !canEdit, height: 24) {
-					let draft = store.schemaDraftOrBase(for: project.id)
-					apply(Prefixes.removing(prefix, imported: imported, draft: draft, rules: store.schemaOverview(for: project.id)))
+					guard let context = store.schemaPrefixAvailability(for: project.id).context,
+						let confirmed = Prefixes.confirmed(removal, removing: prefix, in: context)
+					else { return }
+					apply(confirmed)
 					removing = nil
 				}
 				VaultBarButton(title: "Cancel", height: 24) { removing = nil }
@@ -178,6 +203,31 @@ struct VaultSchemaClientPrefixesPopover: View {
 		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.orange.opacity(0.6), lineWidth: 1) }
 		.padding(.horizontal, 10)
 		.padding(.vertical, 4)
+	}
+
+	/// What a change does to imported keys: overrides it starts, and ones that go.
+	@ViewBuilder
+	private func overrideNotes(_ change: Prefixes.Change, public isPublic: Bool) -> some View {
+		let overridden = change.overridden.count
+		let restored = change.restored.count
+		if overridden > 0 {
+			let them = overridden == 1 ? "it" : "them"
+			Text((overridden == 1 ? "1 of them is declared in an imported schema" : "\(overridden) of them are declared in imported schemas")
+				+ ", so lpm.json overrides \(them) with a copy of the imported rule that marks \(them) \(isPublic ? "Public" : "private"). Later changes to that rule in the imported schema won't apply to \(them).")
+				.font(.system(size: 11))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.fixedSize(horizontal: false, vertical: true)
+				.padding(.leading, 16)
+		}
+		if restored > 0 {
+			Text(restored == 1
+				? "1 of them goes back to its imported rule: lpm.json's override only marked it."
+				: "\(restored) of them go back to their imported rules: lpm.json's overrides only marked them.")
+				.font(.system(size: 11))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.fixedSize(horizontal: false, vertical: true)
+				.padding(.leading, 16)
+		}
 	}
 
 	private func keyChips(_ keys: [String]) -> some View {
@@ -198,12 +248,19 @@ struct VaultSchemaClientPrefixesPopover: View {
 		.padding(.leading, 16)
 	}
 
-	// MARK: - Adding
+	// MARK: - Changing
 
-	private func addField(draft: ProjectEnvSchemaDraft, rules: ProjectEnvSchemaOverview?) -> some View {
+	private func remove(_ prefix: String) {
+		guard let context = store.schemaPrefixAvailability(for: project.id).context else { return }
+		let removal = Prefixes.removing(prefix, in: context)
+		// Keys that rely on it are named first; a prefix nothing relies on just goes.
+		if removal.keys.isEmpty { apply(removal) } else { removing = prefix }
+	}
+
+	private func addField(_ context: Prefixes.Context) -> some View {
 		let prefix = entry.trimmingCharacters(in: .whitespaces)
-		let issue = prefix.isEmpty ? nil : Prefixes.issue(adding: prefix, draft: draft, rules: rules)
-		let change = prefix.isEmpty || issue != nil ? nil : Prefixes.adding(prefix, draft: draft, rules: rules)
+		let issue = prefix.isEmpty ? nil : Prefixes.issue(adding: prefix, in: context)
+		let change = prefix.isEmpty || issue != nil ? nil : Prefixes.adding(prefix, in: context)
 		return VStack(alignment: .leading, spacing: 7) {
 			HStack(spacing: 6) {
 				TextField("NEW_PREFIX_", text: $entry)
@@ -211,7 +268,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.font(VaultTypography.mono(12))
 					.autocorrectionDisabled()
 					.focused($entryFocused)
-					.onSubmit { if let change { add(change) } }
+					.onSubmit { if let change { add(prefix, shown: change) } }
 					.padding(.horizontal, 8)
 					.frame(height: 28)
 					.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
@@ -220,7 +277,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 							.stroke(issue != nil ? VaultPalette.red : (entryFocused ? VaultPalette.accent : VaultPalette.border), lineWidth: issue != nil || entryFocused ? 1.5 : 1)
 					}
 					.accessibilityLabel("New client prefix")
-				VaultBarButton(title: "Add", filled: true, disabled: change == nil, height: 28) { if let change { add(change) } }
+				VaultBarButton(title: "Add", filled: true, disabled: change == nil, height: 28) { if let change { add(prefix, shown: change) } }
 			}
 			if let issue {
 				VStack(alignment: .leading, spacing: 4) {
@@ -230,37 +287,29 @@ struct VaultSchemaClientPrefixesPopover: View {
 					}
 					.foregroundStyle(VaultPalette.redText)
 					if case .secret(let key) = issue {
-						Button("Open \(key)") {
+						Button("Open \(key.escapingDirectionControls)") {
 							onOpenKey(key)
 							dismiss()
 						}
-							.buttonStyle(.plain)
-							.font(.system(size: 11, weight: .semibold))
-							.foregroundStyle(VaultPalette.accentForeground)
-							.padding(.leading, 16)
-							.vaultPointingHand()
+						.buttonStyle(.plain)
+						.font(.system(size: 11, weight: .semibold))
+						.foregroundStyle(VaultPalette.accentForeground)
+						.padding(.leading, 16)
+						.vaultPointingHand()
 					}
 				}
 			} else if let change, !change.keys.isEmpty {
 				HStack(alignment: .top, spacing: 6) {
 					Image(systemName: "globe").font(.system(size: 10)).padding(.top, 1)
 					Text(change.keys.count == 1
-						? "1 key starts with \(prefix.escapingDirectionControls) — it'll be marked Public in the same change."
-						: "\(change.keys.count) keys start with \(prefix.escapingDirectionControls) — they'll be marked Public in the same change.")
+						? "1 key becomes public with \(prefix.escapingDirectionControls), marked so in the same change."
+						: "\(change.keys.count) keys become public with \(prefix.escapingDirectionControls), marked so in the same change.")
 						.font(.system(size: 11))
 						.fixedSize(horizontal: false, vertical: true)
 				}
 				.foregroundStyle(VaultPalette.publicText)
 				keyChips(change.keys)
-				if !change.overridden.isEmpty {
-					Text(change.overridden.count == 1
-						? "1 of them is declared in an imported schema; lpm.json overrides it to mark it Public."
-						: "\(change.overridden.count) of them are declared in imported schemas; lpm.json overrides them to mark them Public.")
-						.font(.system(size: 11))
-						.foregroundStyle(VaultPalette.textTertiary)
-						.fixedSize(horizontal: false, vertical: true)
-						.padding(.leading, 16)
-				}
+				overrideNotes(change, public: true)
 			}
 		}
 		.padding(.horizontal, 14)
@@ -268,8 +317,11 @@ struct VaultSchemaClientPrefixesPopover: View {
 		.padding(.bottom, 12)
 	}
 
-	private func add(_ change: ProjectEnvSchemaClientPrefixes.Change) {
-		apply(change)
+	private func add(_ prefix: String, shown: Prefixes.Change) {
+		guard let context = store.schemaPrefixAvailability(for: project.id).context,
+			let confirmed = Prefixes.confirmed(shown, adding: prefix, entry: entry, in: context)
+		else { return }
+		apply(confirmed)
 		entry = ""
 	}
 

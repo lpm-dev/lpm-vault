@@ -3435,8 +3435,7 @@ final class VaultStore {
     }
     publishKeyDescriptions(
       ProjectKeyDescriptions(folder: folder, rules: .success(rules), schema: sameFolder ? previous?.schema : nil,
-        rootSchema: rootSchema, folderIdentity: sameFolder ? previous?.folderIdentity : nil,
-        importedClientPrefixes: sameFolder ? previous?.importedClientPrefixes : nil),
+        rootSchema: rootSchema, folderIdentity: sameFolder ? previous?.folderIdentity : nil),
       for: projectID
     )
     if selectedProjectId == projectID { reloadKeyDescriptions() }
@@ -3646,6 +3645,31 @@ final class VaultStore {
     return schemaDraft(for: projectID) == nil ? saved : latestSchemaDraftEvaluation(for: projectID)?.overview ?? saved
   }
 
+  /// The prefixes lpm.json's imports list. The app doesn't change what
+  /// lpm.json imports, so any resolution of the project's rules names them.
+  func schemaImportedClientPrefixes(for projectID: String) -> Set<String> {
+    let rules = latestSchemaDraftEvaluation(for: projectID)?.overview ?? keyDescriptions[projectID]?.schema?.overview
+    return rules.map { Set($0.importedClientPrefixes.keys) } ?? []
+  }
+
+  /// The prefixes that make the project's keys public besides the
+  /// frameworks', with its draft applied: lpm.json's own and its imports',
+  /// sorted, so callers that key work on them see a stable value.
+  func schemaClientPrefixesInEffect(for projectID: String) -> [String] {
+    schemaImportedClientPrefixes(for: projectID).union(ProjectEnvSchemaClientPrefixes.own(in: schemaDraftOrBase(for: projectID))).sorted()
+  }
+
+  /// What the project's client prefixes can be changed from now: its draft
+  /// with the rules the engine resolved for exactly it, or lpm.json's rules
+  /// without a draft. Rules of another version of the draft never stand in.
+  func schemaPrefixAvailability(for projectID: String) -> ProjectEnvSchemaClientPrefixes.Availability {
+    guard case .loaded(let saved, _)? = keyDescriptions[projectID]?.schema else { return .unreadable }
+    guard let draft = schemaDraft(for: projectID) else { return .ready(.init(draft: schemaBase(for: projectID), rules: saved, saved: saved)) }
+    guard let evaluation = currentSchemaDraftEvaluation(for: projectID) else { return .checking }
+    guard evaluation.rejection == nil, let rules = evaluation.overview else { return .rejected }
+    return .ready(.init(draft: draft, rules: rules, saved: saved))
+  }
+
   /// The latest evaluation of the project's draft, which can be of an earlier
   /// version of it; for showing something while the current one is evaluated.
   func latestSchemaDraftEvaluation(for projectID: String) -> ProjectEnvSchemaDraft.Evaluation? {
@@ -3794,10 +3818,8 @@ final class VaultStore {
         setSchemaDraft(ProjectEnvSchemaDraft(schema: saved.schema), for: projectID)
         schemaDraftRebases[projectID] = nil
         publishKeyDescriptions(
-          // The save checked the imports are as reviewed, so the prefixes they declare are too.
           ProjectKeyDescriptions(folder: folder.path, rules: .success(saved.rules), schema: .loaded(saved.overview, file: saved.file),
-            rootSchema: saved.schema, folderIdentity: folder.identity, dependencies: saved.dependencies,
-            importedClientPrefixes: keyDescriptions[projectID]?.importedClientPrefixes),
+            rootSchema: saved.schema, folderIdentity: folder.identity, dependencies: saved.dependencies),
           for: projectID
         )
         unverifiedKeyDescriptionProjects.remove(projectID)
@@ -3865,6 +3887,10 @@ final class VaultStore {
   }
 
   private func setSchemaDraft(_ draft: ProjectEnvSchemaDraft, for projectID: String) {
+    var draft = draft
+    // Whatever the edit, a key lpm.json declares stays public exactly when a prefix makes it so.
+    ProjectEnvSchemaClientPrefixes.settle(
+      &draft, since: schemaDrafts[projectID] ?? schemaBase(for: projectID), imported: schemaImportedClientPrefixes(for: projectID))
     schemaDrafts[projectID] = draft
     schemaDraftRevisions[projectID, default: 0] &+= 1
     if draft.isEmpty { schemaDraftRebases[projectID] = nil }
