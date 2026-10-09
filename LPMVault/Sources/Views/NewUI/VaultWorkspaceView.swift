@@ -13,7 +13,8 @@ struct VaultWorkspaceView: View {
 	@State private var searchText = ""
 	@State private var selectedKey: String?
 	@State private var schemaSelection: VaultSchemaSelection?
-	@State private var showSchemaReview = false
+	/// The project whose schema draft the review sheet shows.
+	@State private var schemaReview: SchemaReviewTarget?
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
 	@State private var showsAccountSwitcher = false
@@ -58,9 +59,11 @@ struct VaultWorkspaceView: View {
 		return folder
 	}
 
-	/// Rereads the rules whenever lpm.json changes while the Schema page shows them.
+	/// Rereads the rules when the Schema page starts showing them, which picks
+	/// up edits made meanwhile, and whenever lpm.json changes while it does.
 	private func watchSchemaFolder() async {
 		guard let folder = schemaWatch else { return }
+		store.reloadKeyDescriptions()
 		for await _ in ProjectConfigWatcher.changes(inFolder: folder) {
 			guard !Task.isCancelled else { return }
 			store.reloadKeyDescriptions()
@@ -304,7 +307,7 @@ struct VaultWorkspaceView: View {
 								environments: store.orderedEnvironmentNames(for: project),
 								selection: schemaSelection,
 								onSelect: { self.schemaSelection = $0 },
-								onReview: { showSchemaReview = true },
+								onReview: { schemaReview = SchemaReviewTarget(projectID: project.id) },
 								onRenamed: followRename
 							)
 						}
@@ -418,8 +421,8 @@ struct VaultWorkspaceView: View {
 		.sheet(item: $conflictTarget) { target in
 			conflictResolutionSheet(target).vaultPrivacyProtected(isObscured)
 		}
-		.sheet(isPresented: $showSchemaReview) {
-			if let project {
+		.sheet(item: $schemaReview) { target in
+			if let project = store.projects.first(where: { $0.id == target.projectID }) {
 				VaultSchemaReviewSheet(store: store, project: project, environments: store.orderedEnvironmentNames(for: project))
 					.vaultPrivacyProtected(isObscured)
 			}
@@ -891,6 +894,7 @@ struct VaultWorkspaceView: View {
 		environmentViewMode = .table
 		selectedKey = nil
 		schemaSelection = nil
+		schemaReview = nil
 		revealedKeys.removeAll()
 		showsInspector = false
 		conflictTarget = nil
@@ -943,4 +947,11 @@ struct VaultWorkspaceView: View {
 		copyFeedback = nil
 	}
 
+}
+
+/// The review sheet of one project's schema draft, which closes when that
+/// project is no longer the one shown.
+private struct SchemaReviewTarget: Identifiable {
+	let projectID: String
+	var id: String { projectID }
 }

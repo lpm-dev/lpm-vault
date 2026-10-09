@@ -123,7 +123,7 @@ struct VaultValueCheckPresentation {
 	}
 
 	private func groupMessage(_ name: String, in environment: String) -> String {
-		guard let group = rules?.groups.first(where: { $0.name == name }) else { return "Group \(name) fails" }
+		guard let group = rules?.groups.first(where: { $0.name == name }) else { return "Group \(name.escapingDirectionControls) fails" }
 		let checked = check?.environments[environment]
 		let stored = environments[checked?.readsDefaultEnvironment == true ? "default" : environment]
 		let set = group.members.filter { member in
@@ -136,7 +136,7 @@ struct VaultValueCheckPresentation {
 		case group.members.count: group.members.count == 2 ? "both set" : "all set"
 		default: "\(set) of \(group.members.count) set"
 		}
-		return "\(group.summary) — \(state)"
+		return "\(group.summary.escapingDirectionControls) — \(state)"
 	}
 
 	private static func formatMessage(_ format: String) -> String {

@@ -85,8 +85,8 @@ struct VaultSchemaView: View {
 			}
 			Spacer(minLength: 8)
 			if let configFile {
-				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in its default editor") {
-					NSWorkspace.shared.open(configFile)
+				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor") {
+					ProjectConfigOpener.open(configFile)
 				}
 				.fixedSize()
 			}
@@ -145,7 +145,7 @@ struct VaultSchemaView: View {
 				}
 				Spacer(minLength: 8)
 				if let configFile {
-					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 26) { NSWorkspace.shared.open(configFile) }
+					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 26) { ProjectConfigOpener.open(configFile) }
 				}
 			}
 			VStack(spacing: 0) {
@@ -205,7 +205,7 @@ struct VaultSchemaView: View {
 				message: "lpm.json has no envSchema. Add one to declare formats, defaults, and required keys; the LPM CLI enforces them and this page shows them."
 			) {
 				if let configFile {
-					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { NSWorkspace.shared.open(configFile) }
+					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { ProjectConfigOpener.open(configFile) }
 				}
 				VaultBarButton(title: "Docs: envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
 			} footer: {
@@ -277,7 +277,7 @@ struct VaultSchemaView: View {
 			}
 			Spacer(minLength: 8)
 			if let configFile {
-				VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { NSWorkspace.shared.open(configFile) }
+				VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { ProjectConfigOpener.open(configFile) }
 			}
 			VaultBarButton(title: "Recheck", filled: true, height: 28, action: onRecheck)
 		}

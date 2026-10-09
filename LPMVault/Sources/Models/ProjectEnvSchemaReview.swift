@@ -15,10 +15,24 @@ struct ProjectEnvSchemaReview: Equatable {
 	}
 
 	struct Effect: Hashable {
-		enum Kind: Hashable { case newlyFailing, nowPasses, noLongerChecked }
+		enum Kind: Hashable {
+			case newlyFailing, nowPasses, noLongerChecked
+			/// An unset key's default, which the LPM CLI fills in, changes.
+			case defaultChanged
+		}
 		let environment: String
 		let kind: Kind
 		let message: String
+	}
+
+	/// Whether the stored values were checked against the draft.
+	enum Values: Equatable {
+		case checked
+		/// The saved rules' check is still running; saving waits for it.
+		case checking
+		/// The project's values aren't loaded, or the engine can't check
+		/// rules this large.
+		case unchecked
 	}
 
 	struct Item: Equatable, Identifiable {
@@ -38,35 +52,84 @@ struct ProjectEnvSchemaReview: Equatable {
 	/// Effects on keys the draft doesn't change.
 	let others: [Effect]
 	let othersUnchanged: Int
-	/// The stored values were checked; false when the project's values aren't loaded.
-	let checkedValues: Bool
+	let values: Values
 
 	/// The review of `draft` with `evaluation`, its current evaluation; nil
-	/// while the engine rejects the draft.
+	/// while the engine rejects the draft. Rules that check nothing, as a
+	/// project without lpm.json has, compare as a check without problems.
 	init?(
 		draft: ProjectEnvSchemaDraft, evaluation: ProjectEnvSchemaDraft.Evaluation, savedRules: ProjectEnvSchemaOverview?,
 		savedCheck: ProjectEnvValueCheck?, project: VaultProject, environments: [String]
 	) {
 		guard evaluation.rejection == nil, let rules = evaluation.overview else { return nil }
+		var savedCheck = savedCheck
+		if savedCheck == nil, savedRules?.isEmpty ?? true { savedCheck = ProjectEnvValueCheck(environments: [:]) }
 		let before = VaultValueCheckPresentation(check: savedCheck, rules: savedRules, project: project)
 		let after = VaultValueCheckPresentation(check: evaluation.check, rules: rules, project: project)
 		var effects: ProjectEnvSchemaDraftEffects?
-		if let savedCheck, let check = evaluation.check {
+		if !project.hasLoadedEnvironments || evaluation.check == nil {
+			values = .unchecked
+		} else if let savedCheck, let check = evaluation.check {
+			values = .checked
 			effects = ProjectEnvSchemaDraftEffects(before: savedCheck, after: check, draft: draft, environmentOrder: environments)
+		} else {
+			values = savedRules?.effectiveSchema == nil ? .unchecked : .checking
 		}
-		func words(_ effect: ProjectEnvSchemaDraftEffects.Effect, naming key: Bool) -> Effect {
-			let presentation = effect.kind == .newlyFailing ? after : before
-			var message = effect.kind == .noLongerChecked
-				? "Stored value kept; no longer checked"
-				: presentation.message(for: effect.problem, in: effect.environment)
-			let isGroupProblem = if case .group = effect.problem.kind { true } else { false }
-			if key, !isGroupProblem { message = "\(effect.problem.key): \(message)" }
-			let kind: Effect.Kind = switch effect.kind {
-			case .newlyFailing: .newlyFailing
-			case .nowPasses: .nowPasses
-			case .noLongerChecked: .noLongerChecked
+		let rank = Dictionary(environments.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+		func words(_ summary: ProjectEnvSchemaDraftEffects.Summary, naming: Bool) -> [Effect] {
+			var problems: [Effect] = []
+			var previous: (environment: String, key: String)?
+			var merged: [String] = []
+			func flush() {
+				guard let last = previous else { return }
+				var message = merged.joined(separator: "; ")
+				if naming { message = "\(last.key.escapingDirectionControls): \(message)" }
+				problems.append(Effect(environment: last.environment, kind: .noLongerChecked, message: message))
+				previous = nil
+				merged = []
 			}
-			return Effect(environment: effect.environment, kind: kind, message: message)
+			for effect in summary.effects {
+				let isGroupProblem = if case .group = effect.problem.kind { true } else { false }
+				if effect.kind == .noLongerChecked, !isGroupProblem {
+					// A key that leaves lpm.json shows once per environment, naming each check that stops.
+					if let last = previous, last.environment != effect.environment || last.key != effect.problem.key { flush() }
+					previous = (effect.environment, effect.problem.key)
+					let message = before.message(for: effect.problem, in: effect.environment).escapingDirectionControls
+					if !merged.contains(message) { merged.append(message) }
+					continue
+				}
+				flush()
+				let presentation = effect.kind == .newlyFailing ? after : before
+				var message = presentation.message(for: effect.problem, in: effect.environment).escapingDirectionControls
+				if naming, !isGroupProblem { message = "\(effect.problem.key.escapingDirectionControls): \(message)" }
+				let kind: Effect.Kind = switch effect.kind {
+				case .newlyFailing: .newlyFailing
+				case .nowPasses: .nowPasses
+				case .noLongerChecked: .noLongerChecked
+				}
+				problems.append(Effect(environment: effect.environment, kind: kind, message: message))
+			}
+			flush()
+			let defaults = summary.defaults.map { change in
+				let message = switch change.kind {
+				case .added: "Now uses the default"
+				case .changed: "Uses the default, which this changes"
+				case .removed: "Used the default, which this removes"
+				}
+				return Effect(environment: change.environment, kind: .defaultChanged, message: message)
+			}
+			guard !defaults.isEmpty else { return problems }
+			// Both lists are in environment order; each environment's defaults follow its problems.
+			let order = { (effect: Effect) in rank[effect.environment] ?? environments.count }
+			return (problems.map { (effect: $0, list: 0) } + defaults.map { (effect: $0, list: 1) })
+				.enumerated()
+				.sorted { a, b in
+					let (x, y) = (order(a.element.effect), order(b.element.effect))
+					if x != y { return x < y }
+					if a.element.list != b.element.list { return a.element.list < b.element.list }
+					return a.offset < b.offset
+				}
+				.map(\.element.effect)
 		}
 		items = draft.changedItems.compactMap { item in
 			guard let diff = draft.diff(for: item) else { return nil }
@@ -74,12 +137,11 @@ struct ProjectEnvSchemaReview: Equatable {
 			let isGroup = if case .group = item { true } else { false }
 			return Item(
 				item: item, title: Self.title(of: item), state: Self.state(of: item, in: draft, savedRules: savedRules),
-				diff: diff, effects: summary.effects.map { words($0, naming: isGroup) }, unchanged: summary.unchanged
+				diff: diff, effects: words(summary, naming: isGroup), unchanged: summary.unchanged
 			)
 		}
-		others = effects?.others.effects.map { words($0, naming: true) } ?? []
+		others = effects.map { words($0.others, naming: true) } ?? []
 		othersUnchanged = effects?.others.unchanged ?? 0
-		checkedValues = effects != nil
 	}
 
 	static func title(of item: ProjectEnvSchemaDraft.Item) -> String {
@@ -118,52 +180,96 @@ extension ProjectEnvSchemaDraft.Conflict {
 		guard case .object(let members) = json else { return text(json, limit: 60) }
 		let others: [LPMConfigJSON.Member]
 		switch other.json {
-		case nil: others = []
+		case nil: return members.isEmpty ? "no rules" : fields(members.prefix(3), total: members.count)
 		case .object(let fields)?: others = fields
-		default: return members.isEmpty ? "no rules" : members.prefix(3).map { "\($0.key.escapingDirectionControls) \(text($0.value, limit: 24))" }.joined(separator: ", ")
+		default: return members.isEmpty ? "no rules" : fields(members.prefix(3), total: members.count)
 		}
 		let differing = members.filter { member in
 			others.first { $0.key.utf8.elementsEqual(member.key.utf8) }.map { !$0.value.isEquivalent(to: member.value) } ?? true
 		}
 		let missing = others.filter { other in !members.contains { $0.key.utf8.elementsEqual(other.key.utf8) } }
-		var parts = differing.prefix(3).map { "\($0.key.escapingDirectionControls) \(text($0.value, limit: 24))" }
-		parts += missing.prefix(max(0, 3 - parts.count)).map { "no \($0.key.escapingDirectionControls)" }
-		let shown = parts.count
+		guard !differing.isEmpty || !missing.isEmpty else {
+			// Equivalent rules conflict only when one is in vars and the other an override.
+			if case .overridden = declaration { return "as an override" }
+			return "in vars"
+		}
+		var parts = differing.prefix(3).map { "\(name($0.key)) \(text($0.value, limit: 24))" }
+		parts += missing.prefix(max(0, 3 - parts.count)).map { "no \(name($0.key))" }
 		let total = differing.count + missing.count
-		if total > shown { parts.append("+\(total - shown) more") }
-		return parts.isEmpty ? "the same rules in another order" : parts.joined(separator: ", ")
+		if total > parts.count { parts.append("+\(total - parts.count) more") }
+		return parts.joined(separator: ", ")
 	}
 
+	private static func fields(_ members: ArraySlice<LPMConfigJSON.Member>, total: Int) -> String {
+		var parts = members.map { "\(name($0.key)) \(text($0.value, limit: 24))" }
+		if total > parts.count { parts.append("+\(total - parts.count) more") }
+		return parts.joined(separator: ", ")
+	}
+
+	private static func name(_ key: String) -> String {
+		bounded(key, limit: 40)
+	}
+
+	/// A value on one short line: at most `limit` characters of it, cut before
+	/// escaping so an escape is never cut in half, and read no further than that.
 	private static func text(_ json: LPMConfigJSON, limit: Int) -> String {
-		let raw: String = switch json {
-		case .string(let value): value
-		case .number(let value): value
-		case .bool(let value): value ? "on" : "off"
-		case .null: "null"
-		case .array(let values): values.map { text($0, limit: limit) }.joined(separator: ", ")
-		case .object: "{…}"
+		var raw = ""
+		var length = 0
+		var truncated = false
+		func append(_ piece: String) {
+			guard !truncated else { return }
+			for character in piece {
+				guard length < limit else {
+					truncated = true
+					return
+				}
+				raw.append(character.isNewline ? " " : character)
+				length += 1
+			}
 		}
-		let line = raw.split(whereSeparator: \.isNewline).joined(separator: " ").escapingDirectionControls
-		return line.count > limit ? String(line.prefix(limit)) + "…" : line
+		func walk(_ value: LPMConfigJSON) {
+			switch value {
+			case .string(let string): append(string)
+			case .number(let number): append(number)
+			case .bool(let flag): append(flag ? "on" : "off")
+			case .null: append("null")
+			case .object: append("{…}")
+			case .array(let values):
+				if values.isEmpty { append("none") }
+				for (index, element) in values.enumerated() {
+					if truncated { return }
+					if index > 0 { append(", ") }
+					walk(element)
+				}
+			}
+		}
+		walk(json)
+		return raw.escapingDirectionControls + (truncated ? "…" : "")
+	}
+
+	private static func bounded(_ text: String, limit: Int) -> String {
+		text.count > limit ? String(text.prefix(limit)).escapingDirectionControls + "…" : text.escapingDirectionControls
 	}
 }
 
 extension ProjectEnvSchemaDraft.Rebase {
 	/// What changed on disk, such as "RETRY_COUNT and the auth group changed outside".
 	var summary: String {
-		var names = changedItems.map { item in
+		var count = changedItems.count + (changedOtherFields ? 1 : 0)
+		var names = changedItems.prefix(4).map { item in
 			switch item {
 			case .key(let name): name.escapingDirectionControls
 			case .group(let name): "the \(name.escapingDirectionControls) group"
 			case .clientPrefixes: "the client prefixes"
 			}
 		}
-		if changedOtherFields { names.append("its imports") }
+		if changedOtherFields, names.count < 4 { names.append("its imports") }
+		count = max(count, names.count)
 		guard let last = names.last else { return "lpm.json changed outside" }
-		let text = switch names.count {
+		let text = switch count {
 		case 1: last
-		case 2, 3: names.dropLast().joined(separator: ", ") + " and " + last
-		default: names.prefix(3).joined(separator: ", ") + " and \(names.count - 3) more"
+		case 2, 3: names.prefix(count - 1).joined(separator: ", ") + " and " + last
+		default: names.prefix(3).joined(separator: ", ") + " and \(count - 3) more"
 		}
 		return "\(text) changed outside"
 	}

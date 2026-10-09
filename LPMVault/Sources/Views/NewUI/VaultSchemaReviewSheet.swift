@@ -8,20 +8,23 @@ struct VaultSchemaReviewSheet: View {
 	let environments: [String]
 	@Environment(\.dismiss) private var dismiss
 
-	@State private var saving = false
+	@State private var submitting = false
 	@State private var error: String?
+	/// The review as first shown, which tells whether it changed while open.
+	@State private var shown: ProjectEnvSchemaReview?
+	/// Lists of effects that show in full: a changed item's, or the other keys'.
+	@State private var expanded: Set<ProjectEnvSchemaDraft.Item?> = []
 
-	private var review: ProjectEnvSchemaReview? {
-		guard let draft = store.schemaDraft(for: project.id), let evaluation = store.currentSchemaDraftEvaluation(for: project.id) else { return nil }
-		return ProjectEnvSchemaReview(
-			draft: draft, evaluation: evaluation, savedRules: store.keyDescriptions[project.id]?.schema?.overview,
-			savedCheck: store.valueChecks[project.id], project: project, environments: environments
-		)
-	}
+	/// Effects an item shows before "Show all".
+	private static let effectLimit = 12
+
+	private var saving: Bool { submitting || store.savingSchemaDrafts.contains(project.id) }
 
 	var body: some View {
 		let draft = store.schemaDraft(for: project.id)
-		let review = review
+		let review = store.schemaDraftReview(for: project.id, environments: environments)
+		let changedWhileOpen = shown != nil && review != nil && review != shown
+		let blocked = saving || review == nil || review?.values == .checking || draft?.conflicts.isEmpty == false
 		VStack(alignment: .leading, spacing: 0) {
 			HStack(alignment: .top, spacing: 12) {
 				VStack(alignment: .leading, spacing: 4) {
@@ -42,21 +45,24 @@ struct VaultSchemaReviewSheet: View {
 			VaultHairline()
 
 			ScrollView {
-				VStack(alignment: .leading, spacing: 18) {
+				LazyVStack(alignment: .leading, spacing: 18) {
 					if let draft, !draft.conflicts.isEmpty {
 						message("Choose a version for each change that conflicts with lpm.json first. The banner on the Schema page lists them.")
 					} else if let review {
+						if changedWhileOpen {
+							notice("This review changed while it was open, because lpm.json, its imports, or the stored values changed. Check it again before saving.")
+						}
 						HStack(spacing: 8) {
 							Text(review.items.count == 1 ? "1 CHANGE" : "\(review.items.count) CHANGES").vaultSectionLabel()
 							Text("effects name problems only — values are never shown")
 								.font(.system(size: 11))
 								.foregroundStyle(VaultPalette.textTertiary)
 						}
-						ForEach(review.items) { itemView($0, checked: review.checkedValues) }
-						if !review.others.isEmpty || review.othersUnchanged > 0 {
+						ForEach(review.items) { itemView($0, values: review.values) }
+						if review.values == .checked, !review.others.isEmpty || review.othersUnchanged > 0 {
 							VStack(alignment: .leading, spacing: 6) {
 								Text("OTHER KEYS").vaultSectionLabel()
-								effectsView(review.others, unchanged: review.othersUnchanged)
+								effectsView(review.others, unchanged: review.othersUnchanged, item: nil)
 							}
 						}
 					} else if let rejection = store.currentSchemaDraftEvaluation(for: project.id)?.rejection {
@@ -79,24 +85,37 @@ struct VaultSchemaReviewSheet: View {
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.redText)
 						.fixedSize(horizontal: false, vertical: true)
+				} else if review?.values == .checking {
+					Text("Checking the stored values…")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
 				} else {
 					Text("Nothing is written until you choose Save.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 				}
 			} actions: {
-				VaultBarButton(title: (draft?.changedItems.count ?? 0) > 1 ? "Discard all" : "Discard", disabled: saving || draft == nil, height: 28) {
+				VaultBarButton(title: (draft?.changeCount ?? 0) > 1 ? "Discard all" : "Discard", disabled: saving || draft == nil, height: 28) {
 					store.discardSchemaDraft(in: project.id)
 					dismiss()
 				}
-				VaultBarButton(title: saving ? "Saving…" : "Save to lpm.json", shortcut: "⏎", filled: true,
-					disabled: saving || review == nil || draft?.conflicts.isEmpty == false, height: 28, action: save)
-					.keyboardShortcut(.defaultAction)
+				// A review that changed while open saves only with a click, not Return.
+				if changedWhileOpen {
+					VaultBarButton(title: saving ? "Saving…" : "Save to lpm.json", filled: true, disabled: blocked, height: 28, action: save)
+				} else {
+					VaultBarButton(title: saving ? "Saving…" : "Save to lpm.json", shortcut: "⏎", filled: true, disabled: blocked, height: 28, action: save)
+						.keyboardShortcut(.defaultAction)
+				}
 			}
 		}
 		.frame(width: 580)
 		.background(VaultPalette.content)
-		.onChange(of: draft == nil) { _, ended in if ended, !saving { dismiss() } }
+		.onAppear { shown = review }
+		.onChange(of: review) { old, new in
+			if shown == nil { shown = new }
+			if old != new, !submitting { error = nil }
+		}
+		.onChange(of: draft == nil) { _, ended in if ended, !submitting { dismiss() } }
 	}
 
 	private func message(_ text: String) -> some View {
@@ -106,22 +125,38 @@ struct VaultSchemaReviewSheet: View {
 			.fixedSize(horizontal: false, vertical: true)
 	}
 
+	private func notice(_ text: String) -> some View {
+		HStack(alignment: .top, spacing: 8) {
+			Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 11)).padding(.top, 1)
+			Text(text).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
+		}
+		.foregroundStyle(VaultPalette.orangeTintText)
+		.padding(10)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.orangeTint))
+	}
+
 	private func save() {
 		error = nil
-		saving = true
+		submitting = true
 		Task {
+			defer {
+				submitting = false
+				if store.schemaDraft(for: project.id) == nil { dismiss() }
+			}
 			do throws(ProjectEnvSchemaFile.DraftSaveError) {
 				try await store.saveSchemaDraft(in: project.id)
-				saving = false
-				dismiss()
 			} catch .file(.changed) {
-				saving = false
-				error = "lpm.json changed on disk. Your changes were merged with it; check them again, then save."
+				// The merge left conflicts; the Schema page's banner settles them.
+				if store.schemaDraft(for: project.id)?.conflicts.isEmpty == false {
+					dismiss()
+				} else {
+					error = "lpm.json changed on disk. Your changes were merged with it; check them again, then save."
+				}
 			} catch .conflicts {
-				saving = false
 				dismiss()
+			} catch .inProgress {
 			} catch {
-				saving = false
 				self.error = error.message
 			}
 		}
@@ -129,7 +164,7 @@ struct VaultSchemaReviewSheet: View {
 
 	// MARK: - Items
 
-	private func itemView(_ item: ProjectEnvSchemaReview.Item, checked: Bool) -> some View {
+	private func itemView(_ item: ProjectEnvSchemaReview.Item, values: ProjectEnvSchemaReview.Values) -> some View {
 		VStack(alignment: .leading, spacing: 7) {
 			HStack(spacing: 7) {
 				switch item.item {
@@ -158,12 +193,18 @@ struct VaultSchemaReviewSheet: View {
 				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.accentTint))
 			}
 			diffView(item.diff)
-			if checked {
-				effectsView(item.effects, unchanged: item.unchanged)
-			} else {
-				Text("Stored values weren't checked.")
+			switch values {
+			case .checked:
+				effectsView(item.effects, unchanged: item.unchanged, item: item.item)
+			case .checking:
+				Text("Checking the stored values…")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
+			case .unchecked:
+				Text("Stored values weren't checked: the project's values aren't loaded, or the rules are too large to check here.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
 			}
 		}
 		.accessibilityElement(children: .contain)
@@ -240,8 +281,9 @@ struct VaultSchemaReviewSheet: View {
 		}
 	}
 
-	private func effectsView(_ effects: [ProjectEnvSchemaReview.Effect], unchanged: Int) -> some View {
-		VStack(alignment: .leading, spacing: 0) {
+	private func effectsView(_ effects: [ProjectEnvSchemaReview.Effect], unchanged: Int, item: ProjectEnvSchemaDraft.Item?) -> some View {
+		let limit = expanded.contains(item) ? effects.count : Self.effectLimit
+		return LazyVStack(alignment: .leading, spacing: 0) {
 			if effects.isEmpty, unchanged == 0 {
 				Text("No change to stored values")
 					.font(.system(size: 11.5))
@@ -249,7 +291,7 @@ struct VaultSchemaReviewSheet: View {
 					.padding(.horizontal, 11)
 					.padding(.vertical, 8)
 			}
-			ForEach(Array(effects.enumerated()), id: \.offset) { index, effect in
+			ForEach(Array(effects.prefix(limit).enumerated()), id: \.offset) { index, effect in
 				HStack(alignment: .top, spacing: 8) {
 					VaultStatusDot(color: environmentColor(effect.environment)).padding(.top, 5)
 					Text(VaultProject.displayName(for: effect.environment))
@@ -274,6 +316,21 @@ struct VaultSchemaReviewSheet: View {
 				.frame(maxWidth: .infinity, alignment: .leading)
 				.overlay(alignment: .top) { if index > 0 { VaultHairline() } }
 				.accessibilityElement(children: .combine)
+			}
+			if effects.count > limit {
+				Button {
+					expanded.insert(item)
+				} label: {
+					Text("Show \(effects.count - limit) more")
+						.font(.system(size: 11.5, weight: .semibold))
+						.foregroundStyle(VaultPalette.accentForeground)
+						.padding(.horizontal, 11)
+						.padding(.vertical, 7)
+						.frame(maxWidth: .infinity, alignment: .leading)
+						.contentShape(Rectangle())
+				}
+				.buttonStyle(.plain)
+				.overlay(alignment: .top) { VaultHairline() }
 			}
 			if unchanged > 0 {
 				HStack(spacing: 6) {
@@ -301,6 +358,7 @@ struct VaultSchemaReviewSheet: View {
 		case .newlyFailing: "xmark.circle"
 		case .nowPasses: "checkmark"
 		case .noLongerChecked: "minus.circle"
+		case .defaultChanged: "arrow.triangle.2.circlepath"
 		}
 	}
 
@@ -309,6 +367,7 @@ struct VaultSchemaReviewSheet: View {
 		case .newlyFailing: "Newly failing"
 		case .nowPasses: "Now passes"
 		case .noLongerChecked: "No longer checked"
+		case .defaultChanged: "Default"
 		}
 	}
 
@@ -316,7 +375,7 @@ struct VaultSchemaReviewSheet: View {
 		switch kind {
 		case .newlyFailing: VaultPalette.redText
 		case .nowPasses: VaultPalette.greenTintText
-		case .noLongerChecked: VaultPalette.textTertiary
+		case .noLongerChecked, .defaultChanged: VaultPalette.textTertiary
 		}
 	}
 }
