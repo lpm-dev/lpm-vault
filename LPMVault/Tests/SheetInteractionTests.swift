@@ -549,9 +549,31 @@ final class SheetTestHost<V: View> {
 		field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
 	}
 
+	/// Types `text` into the field showing `placeholder` one character at a
+	/// time, letting the view update after each, as a person typing does.
+	func typeCharacters(_ text: String, placeholder: String) async throws {
+		var typed = ""
+		for character in text {
+			typed.append(character)
+			try typeText(typed, placeholder: placeholder)
+			try await settle()
+		}
+	}
+
 	/// Whether a plain text field shows `placeholder`.
 	func hasField(placeholder: String) -> Bool {
 		textFields(in: view).contains { $0.placeholderString == placeholder }
+	}
+
+	/// The text of the field showing `placeholder`.
+	func fieldText(placeholder: String) -> String? {
+		textFields(in: view).first { $0.placeholderString == placeholder }?.stringValue
+	}
+
+	/// Whether the field showing `placeholder` is being edited.
+	func isEditing(placeholder: String) -> Bool {
+		guard let field = textFields(in: view).first(where: { $0.placeholderString == placeholder }), let editor = field.currentEditor() else { return false }
+		return window.firstResponder === editor
 	}
 
 	/// The popover showing now, once one is.

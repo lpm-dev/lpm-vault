@@ -68,7 +68,7 @@ struct VaultWorkspaceView: View {
 
 	/// Adds a stored key to the draft with no rules yet, and opens it.
 	private func declare(_ key: String, in project: VaultProject) {
-		let prefixes = store.keyDescriptions[project.id]?.schema?.overview?.clientPrefixes ?? []
+		let prefixes = store.schemaOverview(for: project.id)?.clientPrefixes ?? []
 		var rule = ProjectEnvSchemaRule()
 		if ProjectEnvSchemaRule.publicPrefix(of: key, clientPrefixes: prefixes) != nil { rule.client = true }
 		store.editSchemaDraft(in: project.id) { $0.set(.declared(rule.json), for: .key(key)) }

@@ -4,6 +4,8 @@ import Foundation
 enum EnvValidation {
 	static let maximumProjectNameLength = 120
 	static let maximumProjectNameUTF16Length = 200
+	/// The longest key name the LPM CLI accepts in an env schema.
+	static let maximumSchemaKeyNameBytes = 256
 
 	private struct EnvironmentsWrapper: Codable {
 		let environments: [String: [String: String]]
