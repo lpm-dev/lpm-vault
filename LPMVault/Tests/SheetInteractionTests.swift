@@ -31,17 +31,25 @@ enum RenderedText {
 					return
 				}
 				onRecognition?(image.width, image.height)
-				let request = VNRecognizeTextRequest()
-				request.recognitionLevel = level
-				request.usesLanguageCorrection = usesLanguageCorrection
-				do {
-					try VNImageRequestHandler(cgImage: image).perform([request])
-					let observations = request.results ?? []
-					cache.store(observations, for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region)
-					continuation.resume(returning: RecognitionCache.Observations(values: observations))
-				} catch {
-					continuation.resume(throwing: error)
+				// Vision's neural engine fails now and then when the machine is busy;
+				// a real failure fails every attempt.
+				var failure: Error?
+				for attempt in 0..<3 {
+					if attempt > 0 { Thread.sleep(forTimeInterval: 0.25) }
+					let request = VNRecognizeTextRequest()
+					request.recognitionLevel = level
+					request.usesLanguageCorrection = usesLanguageCorrection
+					do {
+						try VNImageRequestHandler(cgImage: image).perform([request])
+						let observations = request.results ?? []
+						cache.store(observations, for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region)
+						continuation.resume(returning: RecognitionCache.Observations(values: observations))
+						return
+					} catch {
+						failure = error
+					}
 				}
+				continuation.resume(throwing: failure ?? CocoaError(.featureUnsupported))
 			}
 		}.values
 	}
