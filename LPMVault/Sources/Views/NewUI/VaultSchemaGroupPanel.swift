@@ -434,7 +434,12 @@ struct VaultSchemaGroupEditor: View {
 		let draft = draft
 		var names = Set((currentOverview?.groups ?? []).map(\.name))
 		for case .group(let name) in draft.changedItems {
-			if draft.declaration(of: .group(name)) == .absent { names.remove(name) } else { names.insert(name) }
+			// Removing an override leaves the imported group, which still counts.
+			if draft.declaration(of: .group(name)) == .absent {
+				if case .declared = draft.base(of: .group(name)) { names.remove(name) }
+			} else {
+				names.insert(name)
+			}
 		}
 		return names.count >= SchemaGroup.maximumGroups
 	}
@@ -567,7 +572,8 @@ struct VaultSchemaGroupEditor: View {
 			// A removed override leaves the imported key declared; only lpm.json's own removal undeclares it.
 			if draft.declaration(of: .key(key)) == .absent {
 				if case .declared = draft.base(of: .key(key)) { removed.insert(key) }
-			} else {
+			} else if draft.base(of: .key(key)) == .absent {
+				// A key lpm.json has is in the rules already, edited or not.
 				added.append(key)
 			}
 		}
@@ -647,8 +653,15 @@ struct VaultSchemaGroupEditor: View {
 						}
 						.disabled(!canEdit)
 					} else {
+						let leavesEmpty = discardLeavesEmpty
 						VaultBarButton(systemImage: "arrow.uturn.backward", title: "Keep group", height: 24) { discardChanges(of: name) }
-							.disabled(!canEdit)
+							.disabled(!canEdit || leavesEmpty)
+							.help(leavesEmpty ? "Your draft removes every key the group has. Keep one of them first." : "")
+						if leavesEmpty {
+							Text("Keep one of its keys first: your draft removes all of them.")
+								.font(.system(size: 11))
+								.foregroundStyle(VaultPalette.textTertiary)
+						}
 					}
 				}
 			}
@@ -764,8 +777,14 @@ struct VaultSchemaGroupEditor: View {
 				store.editSchemaDraft(in: project.id) { $0.set(.absent, for: item) }
 			}
 		case .inherited(let source):
-			elsewhere = VaultSchemaElsewhere(source: source, path: VaultSchemaElsewhere.editable(savedGroup(name)?.sourcePath), isOverridden: false,
-				isGroup: true)
+			// A group another import overrides is removed from both files, as a key is.
+			if let declaring = savedGroup(name)?.declaringPath {
+				elsewhere = VaultSchemaElsewhere(source: declaring.escapingDirectionControls, path: VaultSchemaElsewhere.editable(declaring),
+					isOverridden: false, overriddenBy: source, isGroup: true)
+			} else {
+				elsewhere = VaultSchemaElsewhere(source: source, path: VaultSchemaElsewhere.editable(savedGroup(name)?.sourcePath), isOverridden: false,
+					isGroup: true)
+			}
 		case .overridden(let source):
 			elsewhere = VaultSchemaElsewhere(source: source, path: VaultSchemaElsewhere.editable(savedGroup(name)?.overridesPath), isOverridden: true,
 				isGroup: true)
@@ -788,7 +807,7 @@ struct VaultSchemaGroupEditor: View {
 		}
 		let discard: (() -> Void)? = if name.isEmpty {
 			{ onSelect(nil) }
-		} else if draft.hasChange(to: item), hasChangesToDiscard {
+		} else if draft.hasChange(to: item), hasChangesToDiscard, !discardLeavesEmpty {
 			{
 				let wasNew = isNew
 				editsOverride = false
@@ -800,7 +819,12 @@ struct VaultSchemaGroupEditor: View {
 		}
 		// Saving now would leave out the group being added, which the draft can't hold yet.
 		let pending: String? = if name.isEmpty, !field.isEmpty || !newGroup.members.isEmpty {
-			nameStatus(field) == .available ? "Add a key to add the group to your draft." : "Name the group and add a key to add it to your draft."
+			switch (nameStatus(field) == .available, !newGroup.members.isEmpty) {
+			case (true, true): atGroupLimit ? "The LPM CLI accepts at most \(SchemaGroup.maximumGroups) groups, and lpm.json and its imports have that many." : nil
+			case (true, false): "Add a key to add the group to your draft."
+			case (false, true): "Name the group to add it to your draft."
+			case (false, false): "Name the group and add a key to add it to your draft."
+			}
 		} else {
 			nil
 		}
@@ -812,6 +836,15 @@ struct VaultSchemaGroupEditor: View {
 
 	/// Whether discarding changes anything: not when the group's only change
 	/// is dropping keys the draft removes, which it has to keep.
+	/// Whether taking the group's changes back would leave it without members:
+	/// the draft removes every key it had, and lpm.json can't list those.
+	private var discardLeavesEmpty: Bool {
+		var discarded = draft
+		let restored = Draft.Item.group(discarded.originalName(ofGroup: name) ?? name)
+		Self.discardChanges(of: name, in: &discarded)
+		return ProjectEnvSchemaGroup(discarded.declaration(of: restored).json)?.members.isEmpty == true
+	}
+
 	private var hasChangesToDiscard: Bool {
 		let draft = draft
 		var discarded = draft

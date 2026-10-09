@@ -33,6 +33,8 @@ struct VaultSchemaView: View {
 	/// How a row differs from lpm.json in the draft.
 	enum RowState: Equatable {
 		case saved, draft, new, removed
+		/// A group of lpm.json's the draft renames, from its name there, escaped.
+		case renamed(from: String)
 	}
 
 	static let docsURL = URL(string: "https://cli.lpm.dev/docs/reference/lpm-json#envschema")!
@@ -419,7 +421,8 @@ struct VaultSchemaView: View {
 					groups.append(row)
 					appendedGroups = true
 				}
-			} else if case .declared = draft.base(of: item) {
+			} else if case .declared = draft.base(of: item), draft.newName(ofGroup: name) == nil {
+				// A renamed group shows once, under its new name.
 				removedGroups += 1
 				if !groups.contains(where: { $0.name == name }), let row = saved.groups.first(where: { $0.name == name }) {
 					groups.append(row)
@@ -434,6 +437,7 @@ struct VaultSchemaView: View {
 
 	private func groupState(_ name: String, in saved: ProjectEnvSchemaOverview) -> RowState {
 		guard let draft, draft.hasChange(to: .group(name)) else { return .saved }
+		if let original = draft.originalName(ofGroup: name) { return .renamed(from: original.escapingDirectionControls) }
 		switch (draft.base(of: .group(name)), draft.declaration(of: .group(name))) {
 		case (.declared, .absent): return .removed
 		case (.absent, .declared) where !saved.groups.contains(where: { $0.name == name }): return .new
@@ -498,6 +502,9 @@ struct VaultSchemaView: View {
 					case .draft: VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 					case .new: VaultTagBadge(text: "New", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 					case .removed: VaultTagBadge(text: "Removed", foreground: VaultPalette.redText, background: VaultPalette.redTint, size: 10)
+					case .renamed(let original):
+						VaultTagBadge(text: "Renamed", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
+							.help("Renamed from \(original) in your draft")
 					}
 				}
 				if let description, !description.isEmpty {
@@ -662,6 +669,9 @@ struct VaultSchemaView: View {
 				case .draft: VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 				case .new: VaultTagBadge(text: "New", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 				case .removed: VaultTagBadge(text: "Removed", foreground: VaultPalette.redText, background: VaultPalette.redTint, size: 10)
+				case .renamed(let original):
+					VaultTagBadge(text: "Renamed", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
+						.help("Renamed from \(original) in your draft")
 				}
 				Spacer(minLength: 0)
 			}

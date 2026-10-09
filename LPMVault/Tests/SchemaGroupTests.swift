@@ -38,6 +38,17 @@ struct SchemaGroupModelTests {
 		#expect(Group(name: "odd", members: ["A\u{202E}B", "C"], mode: "allOrNone").memberPreview == "A\\u{202e}B, C")
 	}
 
+	@Test("removing a key from a group of thousands names the group in a line that stays short")
+	func referenceTitleStaysShort() throws {
+		let keys = (0..<4096).map { String(format: "KEY_%04d", $0) }
+		let vars = keys.map { LPMConfigJSON.Member(key: $0, value: .object([])) }
+		let group = LPMConfigJSON.object([.init(key: "mode", value: .string("allOrNone")), .init(key: "vars", value: .array(keys.map(LPMConfigJSON.string)))])
+		let draft = ProjectEnvSchemaDraft(schema: .object([.init(key: "vars", value: .object(vars)), .init(key: "groups", value: .object([.init(key: "many", value: group)]))]))
+		let title = try #require(ProjectEnvSchemaReference.references(to: "KEY_0000", in: draft, rules: nil).first?.title)
+		#expect(title.hasPrefix("Group many: All or none of KEY_0000, KEY_0001"))
+		#expect(title.utf8.count <= 256)
+	}
+
 	@Test("the key picker lists declared keys from A to Z, with the draft's additions and without the group's members")
 	func pickableKeys() throws {
 		let base = try json(#"{"vars":{"A_KEY":{},"PASSWORD":{},"PORT":{},"TOKEN":{},"Z_KEY":{}}}"#)
@@ -93,6 +104,52 @@ struct SchemaGroupModelTests {
 		#expect(draft.originalName(ofGroup: "signin") == nil)
 	}
 
+	@Test("a rename ends however the draft stops making it: discarding the old name, removing the new one, a conflict, or a merge")
+	func renameEndsWithTheDraft() throws {
+		let schema = try json(#"{"vars":{"A":{},"B":{}},"groups":{"auth":{"mode":"exactlyOne","vars":["A","B"]},"zeta":{"mode":"allOrNone","vars":["A"]}}}"#)
+		var discarded = ProjectEnvSchemaDraft(schema: schema)
+		discarded.renameGroup("auth", to: "signin")
+		discarded.discardGroup("auth")
+		#expect(discarded.isEmpty, "Discarding the old name takes the whole rename back")
+		#expect(discarded.newName(ofGroup: "auth") == nil)
+
+		var removed = ProjectEnvSchemaDraft(schema: schema)
+		removed.renameGroup("auth", to: "signin")
+		removed.set(.absent, for: .group("signin"))
+		#expect(removed.newName(ofGroup: "auth") == nil, "Removing the renamed group is a removal, not a rename")
+		#expect(removed.originalName(ofGroup: "signin") == nil)
+
+		var conflicted = ProjectEnvSchemaDraft(schema: schema)
+		conflicted.renameGroup("auth", to: "signin")
+		let changed = try json(#"{"vars":{"A":{},"B":{}},"groups":{"auth":{"mode":"atLeastOne","vars":["A","B"]},"zeta":{"mode":"allOrNone","vars":["A"]}}}"#)
+		conflicted.rebase(onto: changed)
+		conflicted.resolveConflict(.group("auth"), keepingMine: false)
+		#expect(conflicted.declaration(of: .group("auth")) != .absent)
+		#expect(conflicted.originalName(ofGroup: "signin") == nil, "Taking lpm.json's version keeps the group under its old name")
+
+		var merged = ProjectEnvSchemaDraft(schema: schema)
+		merged.renameGroup("auth", to: "signin")
+		let renamedOnDisk = try json(#"{"vars":{"A":{},"B":{}},"groups":{"signin":{"mode":"exactlyOne","vars":["A","B"]},"zeta":{"mode":"allOrNone","vars":["A"]}}}"#)
+		merged.rebase(onto: renamedOnDisk)
+		#expect(merged.isEmpty)
+		#expect(merged.originalName(ofGroup: "signin") == nil, "lpm.json made the rename itself")
+		merged.renameGroup("signin", to: "login")
+		guard case .object(let groups)? = try merged.applied(to: merged.schema)?["groups"] else { Issue.record("No groups"); return }
+		#expect(groups.map(\.key) == ["login", "zeta"], "A later rename keeps the group's place")
+	}
+
+	@Test("a key the draft no longer adds leaves a renamed group of lpm.json's without members, never removing it")
+	func dropReferencesKeepsRenamedGroups() throws {
+		var draft = ProjectEnvSchemaDraft(schema: try json(#"{"vars":{"A":{}},"groups":{"auth":{"mode":"allOrNone","vars":["A"]}}}"#))
+		draft.set(.declared(.object([])), for: .key("NEW"))
+		draft.set(.declared(try json(#"{"mode":"allOrNone","vars":["NEW"]}"#)), for: .group("auth"))
+		draft.renameGroup("auth", to: "signin")
+		draft.discard(.key("NEW"))
+		draft.dropReferences(to: "NEW")
+		#expect(ProjectEnvSchemaGroup(draft.declaration(of: .group("signin")).json)?.members == [], "The engine reports the empty group")
+		#expect(draft.originalName(ofGroup: "signin") == "auth")
+	}
+
 	@Test("a key the draft no longer adds leaves the draft's groups and conditions, and a group of only it goes")
 	func dropsReferences() throws {
 		var draft = ProjectEnvSchemaDraft(schema: try json(#"{"vars":{"A":{}},"groups":{"pair":{"mode":"allOrNone","vars":["A"]}}}"#))
@@ -103,6 +160,39 @@ struct SchemaGroupModelTests {
 		draft.discard(.key("NEW"))
 		draft.dropReferences(to: "NEW")
 		#expect(draft.isEmpty, "Everything the key brought along goes with it")
+	}
+
+	@Test("with nested imports, an override names the import whose declaration it replaces, before and after it's evaluated")
+	func nestedOverridesNameWhatTheyReplace() throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "nested-overrides-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		try #"{"vars":{"SSO":{},"OTP":{}},"groups":{"login":{"mode":"atLeastOne","vars":["SSO","OTP"]}}}"#
+			.write(toFile: folder + "/base.json", atomically: true, encoding: .utf8)
+		try #"{"extends":["base.json"],"overrides":{"OTP":{"required":true}},"groupOverrides":{"login":{"mode":"allOrNone","vars":["SSO","OTP"]}}}"#
+			.write(toFile: folder + "/middle.json", atomically: true, encoding: .utf8)
+		try #"{"envSchema":{"extends":["middle.json"],"overrides":{"OTP":{}},"groupOverrides":{"login":{"mode":"exactlyOne","vars":["SSO","OTP"]}}}}"#
+			.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		let overridden = try #require(ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project").schema.overview)
+		#expect(overridden.groups.first { $0.name == "login" }?.overrides == "middle.json", "lpm.json replaces middle.json's override")
+		#expect(overridden.rule(for: "OTP")?.overrides == "middle.json")
+
+		// Without lpm.json's overrides, the groups and keys are middle.json's, which overrides base.json's.
+		try #"{"envSchema":{"extends":["middle.json"]}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		let loaded = ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project")
+		let inherited = try #require(loaded.schema.overview)
+		let login = try #require(inherited.groups.first { $0.name == "login" })
+		#expect(login.source == "middle.json")
+		#expect(login.declaringPath == "base.json", "A group another import overrides names where it was declared")
+		#expect(inherited.rule(for: "OTP")?.declaringPath == "base.json")
+
+		var draft = ProjectEnvSchemaDraft(schema: loaded.rootSchema)
+		draft.set(.overridden(ProjectEnvSchemaGroup(mode: .exactlyOne, members: ["SSO", "OTP"]).json()), for: .group("login"))
+		let row = try #require(ProjectEnvSchemaOverview.Group(name: "login", draft: ProjectEnvSchemaGroup(mode: .exactlyOne, members: ["SSO", "OTP"]).json(),
+			isOverride: true, saved: login))
+		let evaluated = try #require(ProjectEnvSchemaFile.evaluate(draft, inFolder: folder, environments: [:]).overview?.groups.first { $0.name == "login" })
+		#expect(row.overrides == "middle.json")
+		#expect(evaluated.overrides == row.overrides, "The row doesn't change file once the draft is evaluated")
 	}
 
 	@Test("lpm.json's override of an imported group names the file whose group it replaces")
@@ -224,6 +314,8 @@ extension SheetInteractionTests {
 			let renamed = try await host.text()
 			#expect(!renamed.contains("already added"), "A renamed group's own name isn't taken")
 			#expect(!renamed.contains("NEW GROUP"), "A renamed group isn't a new one")
+			#expect(renamed.contains("Renamed"), "The table shows the group once, as renamed")
+			#expect(!renamed.contains("Removed"), "The old name isn't listed as removed")
 			try host.enterText("signin2", placeholder: "group_name")
 			try await host.click("Rename")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.originalName(ofGroup: "signin2") == "auth" })
@@ -346,6 +438,21 @@ extension SheetInteractionTests {
 			#expect(median < .milliseconds(30))
 		}
 
+		@Test("removing a group another import overrides names both files, as a key's does")
+		func importOverriddenGroupNamesBothFiles() async throws {
+			let middle = #"{"extends":["base.json"],"groupOverrides":{"login":{"mode":"allOrNone","vars":["SSO","OTP"]}}}"#
+			let (store, host, folder) = try await groupPanel(sample: #"{"envSchema":{"extends":["schemas/middle.json"]}}"#, group: "login",
+				files: ["schemas/middle.json": middle])
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			#expect(try await host.waitForText("Read-only"))
+			try host.shortcut("\u{7f}", code: 51)
+			#expect(try await host.waitUntil { host.window.sheets.first != nil })
+			let sheet = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("declared in schemas/base.json", in: sheet))
+			#expect(try await host.waitForText("schemas/middle.json overrides it", in: sheet))
+			try await host.click("Cancel", in: sheet)
+		}
+
 		@Test("removing a group lpm.json overrides explains where it's declared and offers to open that file")
 		func overriddenGroupOpensItsSource() async throws {
 			let sample = Self.sample.replacingOccurrences(of: #""groups":{"auth""#,
@@ -360,6 +467,47 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Open file", in: sheet))
 			try await host.click("Cancel", in: sheet)
 			#expect(try await host.waitUntil { host.window.sheets.isEmpty })
+		}
+
+		@Test("an imported group whose override the draft resets still counts toward the LPM CLI's 128 groups")
+		func resetOverrideCountsTowardTheLimit() async throws {
+			let groups = (0..<127).map { #""g\#($0)":{"mode":"allOrNone","vars":["PORT"]}"# }.joined(separator: ",")
+			let sample = #"{"envSchema":{"extends":["schemas/base.json"],"vars":{"PORT":{}},"groups":{\#(groups)},"groupOverrides":{"login":{"mode":"exactlyOne","vars":["SSO","OTP"]}}}}"#
+			let (store, host, folder) = try await groupPanel(sample: sample, group: "")
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			#expect(try await host.waitUntil { store.keyDescriptions["schema-groups"]?.schema?.overview?.groups.count == 128 })
+			store.editSchemaDraft(in: "schema-groups") { $0.set(.absent, for: .group("login")) }
+			#expect(try await host.waitForText("at most 128 groups"), "login is imported again, so the limit stays reached")
+		}
+
+		@Test("a new group's footer names what it still needs: a name, a key, or both")
+		func pendingText() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			try await host.click("Add group")
+			#expect(try await host.waitUntil { host.isEditing(placeholder: "group_name") })
+			try await host.click("Add member")
+			try await host.click("PORT", in: try await host.popoverWindow())
+			#expect(try await host.waitForText("Name the group to add it to your draft"))
+			#expect(try await !host.text().contains("add a key"), "The group has a key")
+		}
+
+		@Test("a group whose keys the draft all removes can't be kept without one of them")
+		func keepNeedsAKey() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			// The first key leaves the group; the last takes it along.
+			for (key, fix) in [("TOKEN", ProjectEnvSchemaReference.Fix.dropFromGroup), ("PASSWORD", .removeGroup)] {
+				let references = ProjectEnvSchemaReference.references(to: key, in: store.schemaDraftOrBase(for: "schema-groups"),
+					rules: store.keyDescriptions["schema-groups"]?.schema?.overview)
+				store.removeSchemaKey(key, settling: references.map { ($0, fix) }, in: "schema-groups")
+			}
+			#expect(store.schemaDraft(for: "schema-groups")?.declaration(of: .group("auth")) == .absent, "The group goes with its last key")
+			try await host.click("auth")
+			#expect(try await host.waitForText("Keep one of its keys first"))
+			store.keepSchemaKey("PASSWORD", in: "schema-groups")
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.declaration(of: .group("auth")) != .absent },
+				"Keeping the last key brings the group back with it")
 		}
 
 		@Test("a key whose override the draft resets is still one a group can list")
@@ -405,13 +553,14 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("editing a copy"))
 		}
 
-		/// A store with the project open on `sample` as its lpm.json, and the project's folder.
-		private func store(sample: String) async throws -> (VaultStore, VaultProject) {
+		/// A store with the project open on `sample` as its lpm.json, with `files` beside it, and the project's folder.
+		private func store(sample: String, files: [String: String] = [:]) async throws -> (VaultStore, VaultProject) {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "schema-groups-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
 			try sample.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 			try #"{"vars":{"SSO":{},"OTP":{}},"groups":{"login":{"mode":"atLeastOne","vars":["SSO","OTP"]}}}"#
 				.write(toFile: folder + "/schemas/base.json", atomically: true, encoding: .utf8)
+			for (path, content) in files { try content.write(toFile: folder + "/" + path, atomically: true, encoding: .utf8) }
 			let keychain = MockKeychainService()
 			let project = VaultProject(id: "schema-groups", name: "billing-app", path: folder, environments: [
 				"default": ["PASSWORD": "long-enough-pass", "PORT": "3000", "SSO": "on"],
@@ -448,12 +597,13 @@ extension SheetInteractionTests {
 			return #"{"envSchema":{"vars":{\#(vars)},"groups":{"many":{"mode":"allOrNone","vars":[\#(members)]}}}}"#
 		}
 
-		/// The group's panel on its own, as the Schema page shows it beside the table.
-		private func groupPanel(sample: String, group: String) async throws -> (VaultStore, SheetTestHost<some View>, String) {
-			let (store, project) = try await store(sample: sample)
+		/// The group's panel on its own, as the Schema page shows it beside the table; a new group's for an empty name.
+		private func groupPanel(sample: String, group: String, files: [String: String] = [:]) async throws -> (VaultStore, SheetTestHost<some View>, String) {
+			let (store, project) = try await store(sample: sample, files: files)
 			// The workspace reads lpm.json as it appears; the panel alone doesn't.
 			store.reloadKeyDescriptions()
-			let host = SheetTestHost(VaultSchemaPanel(store: store, project: project, environments: ["default"], selection: .group(group), session: UUID(),
+			let selection: VaultSchemaSelection = group.isEmpty ? .newGroup : .group(group)
+			let host = SheetTestHost(VaultSchemaPanel(store: store, project: project, environments: ["default"], selection: selection, session: UUID(),
 				onSelect: { _ in }, onFollow: { _ in }, onReview: {}), size: NSSize(width: 320, height: 760), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.keyDescriptions[project.id]?.schema?.overview != nil })
 			return (store, host, project.path)
