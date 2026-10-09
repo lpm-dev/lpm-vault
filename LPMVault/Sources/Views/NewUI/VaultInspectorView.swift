@@ -14,6 +14,8 @@ struct VaultInspectorView: View {
 	let onDelete: (_ key: String, _ environment: String) -> Void
 	let onAddElsewhere: (_ key: String, _ environment: String) -> Void
 	let onRenamed: (_ key: String, _ newKey: String) -> Void
+	/// Opens the key's rules on the Schema page, declaring it first when it can be.
+	var onOpenRules: (_ key: String) -> Void = { _ in }
 
 	var body: some View {
 		Group {
@@ -30,7 +32,8 @@ struct VaultInspectorView: View {
 					onCopy: onCopy,
 					onDelete: onDelete,
 					onAddElsewhere: onAddElsewhere,
-					onRenamed: onRenamed
+					onRenamed: onRenamed,
+					onOpenRules: onOpenRules
 				)
 				// Reveal and focus state belong to one key in one view of the project.
 				.id(VaultKeyEditor.Identity(projectID: project.id, key: key, environment: store.selectedEnvironment, singleEnvironment: singleEnvironment))
@@ -102,6 +105,7 @@ private struct VaultKeyEditor: View {
 	let onDelete: (String, String) -> Void
 	let onAddElsewhere: (String, String) -> Void
 	let onRenamed: (String, String) -> Void
+	let onOpenRules: (String) -> Void
 
 	@State private var revealedEnvironments: Set<String> = []
 	@State private var saveError: VaultKeyEditError?
@@ -553,6 +557,16 @@ private struct VaultKeyEditor: View {
 		}
 	}
 
+	/// What the Schema page can do with the key, with the schema draft
+	/// applied: edit its rules, or declare it when it can be declared.
+	private var schemaAction: String? {
+		if store.schemaOverview(for: project.id)?.rule(for: checkedKey) != nil { return "Edit in Schema" }
+		guard store.canEditSchema(of: project.id), store.valueChecks[project.id] != nil, let stored = store.undeclaredSchemaKey(checkedKey, for: project.id),
+			!stored.isIgnored, stored.conflict == nil
+		else { return nil }
+		return "Declare in Schema"
+	}
+
 	private func cardAction(_ title: String, action: @escaping () -> Void) -> some View {
 		Button(title, action: action)
 			.buttonStyle(.plain)
@@ -562,7 +576,7 @@ private struct VaultKeyEditor: View {
 			.vaultPointingHand()
 	}
 
-	/// The key's rules from lpm.json, read-only; people edit them there.
+	/// The key's rules from lpm.json, read-only; the Schema page edits them.
 	@ViewBuilder
 	private func rulesSection(_ checks: VaultValueCheckPresentation) -> some View {
 		switch store.keyDescriptions[project.id]?.schema {
@@ -600,10 +614,13 @@ private struct VaultKeyEditor: View {
 				ForEach(problemEnvironments(checks), id: \.self) { environment in
 					problemLine(environment, reason: checks.reason(for: checkedKey, in: environment) ?? "")
 				}
-				Text("Rules are declared in lpm.json and enforced by the LPM CLI. Edit them there.")
+				Text("Rules are declared in lpm.json and enforced by the LPM CLI.")
 					.font(.system(size: 10.5))
 					.foregroundStyle(VaultPalette.textFaint)
 					.fixedSize(horizontal: false, vertical: true)
+				if let action = schemaAction {
+					cardAction(action) { onOpenRules(checkedKey) }
+				}
 			}
 			.padding(.horizontal, 18)
 			.padding(.vertical, 14)

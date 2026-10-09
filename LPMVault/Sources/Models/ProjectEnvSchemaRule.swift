@@ -439,6 +439,9 @@ struct ProjectEnvSchemaRule: Equatable, Sendable {
 // MARK: - Public prefixes
 
 extension ProjectEnvSchemaRule {
+	/// The most keys lpm.json can declare, as the LPM CLI's schema allows.
+	static let maximumKeys = 4096
+
 	/// Prefixes the frameworks the LPM CLI knows expose to the browser.
 	static let frameworkPrefixes = ["NEXT_PUBLIC_", "VITE_", "PUBLIC_", "EXPO_PUBLIC_", "GATSBY_", "NUXT_PUBLIC_", "REACT_APP_"]
 

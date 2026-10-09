@@ -145,6 +145,7 @@
 		E530B13712481B616390D169 /* KeyApprovalSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAE5A4A3721AD4F9A18CDD9A /* KeyApprovalSheet.swift */; };
 		E550CBF5396F86B284B97B94 /* MetadataWarningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 758E847084D4401033C747AC /* MetadataWarningTests.swift */; };
 		E64821F8E84FBF80C038B7E3 /* VaultRuleBadges.swift in Sources */ = {isa = PBXBuildFile; fileRef = A92B9253F0D8553F9082E72F /* VaultRuleBadges.swift */; };
+		E7FF9D9A820D73D0251F15CB /* SchemaPageStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 262EBDA4D72D70C5E237C904 /* SchemaPageStateTests.swift */; };
 		E85EDB2503341B5328BF927A /* PersonalProjectReadErrorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9581DE9E52A6C30E2F1CE82F /* PersonalProjectReadErrorTests.swift */; };
 		E86F773021FC6A17A1E1467B /* ProjectConfigFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */; };
 		EE7CE280B060E9EAF0449829 /* SecretGeneratorButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0B4A1CD668920BA64DC898F /* SecretGeneratorButton.swift */; };
@@ -197,6 +198,7 @@
 		2322C6F6BF378E0BC44C7042 /* SchemaAddKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaAddKeyTests.swift; sourceTree = "<group>"; };
 		237FE9B740DFACF0D52C8353 /* EnvSchemaScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvSchemaScopeTests.swift; sourceTree = "<group>"; };
 		2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectConfigFile.swift; sourceTree = "<group>"; };
+		262EBDA4D72D70C5E237C904 /* SchemaPageStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaPageStateTests.swift; sourceTree = "<group>"; };
 		2C8C7039C4F82A75ABAFDBB9 /* CloudVaultsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudVaultsSheet.swift; sourceTree = "<group>"; };
 		2CF8F96F4A89D571DCC742B9 /* SecureAvatarLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureAvatarLoader.swift; sourceTree = "<group>"; };
 		2E75A2A8B354D17791E2390F /* SheetInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetInteractionTests.swift; sourceTree = "<group>"; };
@@ -486,6 +488,7 @@
 				611A7B19E28DAEAEE9A0EFD6 /* SchemaGroupTests.swift */,
 				E535CB005325AB70D094961D /* SchemaKeyPanelTests.swift */,
 				C165C06FFE340D607A5C14D5 /* SchemaPageInteractionTests.swift */,
+				262EBDA4D72D70C5E237C904 /* SchemaPageStateTests.swift */,
 				3BC20340022242419C64978F /* SchemaRemoveKeyTests.swift */,
 				05BF0E7D2234A6C4C92BE40F /* SchemaReviewTests.swift */,
 				080B6FDC9A11DF58CBDE4C6C /* SecurityHardeningTests.swift */,
@@ -719,6 +722,7 @@
 				7E94DCCF74319B7C90010E02 /* SchemaGroupTests.swift in Sources */,
 				3B4345E4A70624493BE60F3A /* SchemaKeyPanelTests.swift in Sources */,
 				38C9CEFDFE4A6CA6C249854C /* SchemaPageInteractionTests.swift in Sources */,
+				E7FF9D9A820D73D0251F15CB /* SchemaPageStateTests.swift in Sources */,
 				33926E7BC1FE1717152AB6DF /* SchemaRemoveKeyTests.swift in Sources */,
 				526339DE32350679C14DF34E /* SchemaReviewTests.swift in Sources */,
 				B18AB2542827B31B262B7B9A /* SecurityHardeningTests.swift in Sources */,
