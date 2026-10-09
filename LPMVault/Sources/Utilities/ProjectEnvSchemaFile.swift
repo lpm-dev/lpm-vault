@@ -98,6 +98,9 @@ enum ProjectEnvSchemaFile {
 	struct Loaded: Sendable {
 		let rules: Result<Rules, FileError>
 		let schema: ProjectEnvSchemaState
+		/// lpm.json's envSchema exactly as read, when `schema` is loaded; nil
+		/// when the file has none. A schema draft starts and merges from it.
+		var rootSchema: LPMConfigJSON? = nil
 	}
 
 	/// `load(inFolder:vaultID:)` off the main thread and the cooperative pool.
@@ -136,7 +139,8 @@ enum ProjectEnvSchemaFile {
 			let resolved = try RustSchemaEngine.resolve(schema ?? .object([]), inFolder: folder)
 			guard try read(file) == data else { throw .changed }
 			try resolved.verify()
-			return Loaded(rules: .success(rules(fromEffective: resolved.effective)), schema: .loaded(ProjectEnvSchemaOverview(resolution: resolved), file: file))
+			return Loaded(rules: .success(rules(fromEffective: resolved.effective)), schema: .loaded(ProjectEnvSchemaOverview(resolution: resolved), file: file),
+				rootSchema: schema == .null ? nil : schema)
 		} catch .invalidSchema {
 			let diagnostic = schema.flatMap { RustSchemaEngine.diagnostic(for: $0, inFolder: folder) }
 			return Loaded(rules: .failure(.invalidSchema), schema: .unreadable(ProjectEnvSchemaState.problem(diagnostic)))
@@ -625,21 +629,133 @@ enum ProjectEnvSchemaFile {
 
 }
 
+// MARK: - Schema drafts
+
+extension ProjectEnvSchemaFile {
+	enum DraftSaveError: Error, Equatable, Sendable {
+		case file(FileError)
+		/// The engine rejects the rules with the draft applied.
+		case rejected(ProjectEnvSchemaDraft.Rejection)
+		/// The draft has conflicts with lpm.json to settle first.
+		case conflicts
+
+		var message: String {
+			switch self {
+			case .file(let error): error.localizedDescription
+			case .rejected(let rejection): rejection.reason
+			case .conflicts: "Choose a version for each conflicting change first."
+			}
+		}
+	}
+
+	/// What a saved draft wrote.
+	struct SavedDraft: Sendable {
+		let rules: Rules
+		/// lpm.json's envSchema as written; nil when it has none.
+		let schema: LPMConfigJSON?
+	}
+
+	/// The rules with `draft` applied, resolved with the folder's imported
+	/// schemas, and `environments` checked against them. Reads files; call
+	/// it off the main thread.
+	static func evaluate(_ draft: ProjectEnvSchemaDraft, inFolder folder: String, environments: [String: [String: String]]) -> ProjectEnvSchemaDraft.Evaluation {
+		do throws(FileError) {
+			let schema = try draft.applied(to: draft.schema) ?? .object([])
+			switch try RustSchemaEngine.resolveOrDiagnose(schema, inFolder: folder) {
+			case .success(let resolution):
+				let overview = ProjectEnvSchemaOverview(resolution: resolution)
+				return .init(overview: overview, rejection: nil, check: overview.check(environments))
+			case .failure(let rejected):
+				return .init(overview: nil, rejection: .init(rejected.diagnostic), check: nil)
+			}
+		} catch {
+			return .init(overview: nil, rejection: .init(error), check: nil)
+		}
+	}
+
+	/// `evaluate(_:inFolder:environments:)` off the main thread and the cooperative pool.
+	static func evaluation(of draft: ProjectEnvSchemaDraft, inFolder folder: String, environments: [String: [String: String]]) async -> ProjectEnvSchemaDraft.Evaluation {
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global(qos: .userInitiated).async {
+				continuation.resume(returning: evaluate(draft, inFolder: folder, environments: environments))
+			}
+		}
+	}
+
+	/// `apply(_:inFolder:vaultID:)` on the queue that orders the app's `lpm.json` edits.
+	static func save(_ draft: ProjectEnvSchemaDraft, inFolder folder: String, vaultID: String) async -> Result<SavedDraft, DraftSaveError> {
+		await withCheckedContinuation { continuation in
+			ProjectConfigFile.editQueue.async {
+				continuation.resume(returning: Result { () throws(DraftSaveError) in try apply(draft, inFolder: folder, vaultID: vaultID) })
+			}
+		}
+	}
+
+	/// Writes `draft` into the folder's lpm.json under the CLI's config lock.
+	/// Fails with `changed` when the file's envSchema is no longer the one the
+	/// draft last read, so the draft can merge before it saves.
+	static func apply(_ draft: ProjectEnvSchemaDraft, inFolder folder: String, vaultID: String) throws(DraftSaveError) -> SavedDraft {
+		do {
+			let url = try existingFolder(folder).appendingPathComponent("lpm.json")
+			return try edit(draft, at: url, vaultID: vaultID)
+		} catch let error as DraftSaveError {
+			throw error
+		} catch let error as FileError {
+			throw .file(error)
+		} catch let error as ProjectConfigFile.FileError {
+			throw .file(FileError(error))
+		} catch {
+			throw .file(.writeFailed(error.localizedDescription))
+		}
+	}
+
+	static func edit(
+		_ draft: ProjectEnvSchemaDraft, at url: URL, vaultID: String,
+		fileWriter: ProjectConfigFile.FileWriter = ProjectConfigFile.writeSecurely,
+		beforeWrite: (() throws -> Void)? = nil
+	) throws -> SavedDraft {
+		guard draft.conflicts.isEmpty else { throw DraftSaveError.conflicts }
+		return try ProjectConfigFile.withRootTransaction(at: url) { transaction in
+			try transaction.requireUniqueKeys()
+			let root = transaction.document
+			try checkVault(of: root, is: vaultID)
+			let current = root["envSchema"] == .null ? nil : root["envSchema"]
+			guard current == draft.schema else { throw FileError.changed }
+			let updated = try draft.applied(to: current)
+			let resolution: RustSchemaEngine.Resolution
+			switch try RustSchemaEngine.resolveOrDiagnose(updated ?? .object([]), inFolder: url.deletingLastPathComponent().path) {
+			case .success(let resolved): resolution = resolved
+			case .failure(let rejected): throw DraftSaveError.rejected(.init(rejected.diagnostic))
+			}
+			return try transaction.update(relativePath: "lpm.json", fileWriter: fileWriter,
+				validateSources: { try resolution.verify() }, beforeWrite: beforeWrite) { document in
+				if updated != current {
+					if let updated { document.set(updated, forKey: "envSchema") } else { document.removeValue(forKey: "envSchema") }
+				}
+				return SavedDraft(rules: rules(fromEffective: resolution.effective), schema: updated)
+			}
+		}
+	}
+}
+
 /// A project's key descriptions as last read from its `lpm.json`.
 struct ProjectKeyDescriptions: Equatable, Sendable {
 	let folder: String
 	let rules: Result<ProjectEnvSchemaFile.Rules, ProjectEnvSchemaFile.FileError>
 	/// What the Schema page and the tables show; nil until the folder is read.
 	var schema: ProjectEnvSchemaState?
+	/// lpm.json's envSchema as last read, when `schema` is loaded.
+	var rootSchema: LPMConfigJSON?
 
-	init(folder: String, rules: Result<ProjectEnvSchemaFile.Rules, ProjectEnvSchemaFile.FileError>, schema: ProjectEnvSchemaState? = nil) {
+	init(folder: String, rules: Result<ProjectEnvSchemaFile.Rules, ProjectEnvSchemaFile.FileError>, schema: ProjectEnvSchemaState? = nil, rootSchema: LPMConfigJSON? = nil) {
 		self.folder = folder
 		self.rules = rules
 		self.schema = schema
+		self.rootSchema = rootSchema
 	}
 
 	init(folder: String, loaded: ProjectEnvSchemaFile.Loaded) {
-		self.init(folder: folder, rules: loaded.rules, schema: loaded.schema)
+		self.init(folder: folder, rules: loaded.rules, schema: loaded.schema, rootSchema: loaded.rootSchema)
 	}
 
 	func description(of key: String) -> String? {

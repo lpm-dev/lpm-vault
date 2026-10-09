@@ -85,7 +85,22 @@ enum RustSchemaEngine {
 	}
 
 	static func resolve(_ schema: LPMConfigJSON, inFolder folder: String) throws(ProjectEnvSchemaFile.FileError) -> Resolution {
+		try resolved(try resolution(of: schema, inFolder: folder))
+	}
+
+	/// `resolve`, or why the engine rejects `schema`, from one resolution.
+	static func resolveOrDiagnose(_ schema: LPMConfigJSON, inFolder folder: String) throws(ProjectEnvSchemaFile.FileError) -> Result<Resolution, RejectedSchema> {
 		let owned = try resolution(of: schema, inFolder: folder)
+		guard owned.result.status != 1 else { return .failure(RejectedSchema(diagnostic: owned.diagnostic())) }
+		return .success(try resolved(owned))
+	}
+
+	/// The engine rejected a schema; the diagnostic is nil when it gave none.
+	struct RejectedSchema: Error, Sendable {
+		let diagnostic: Diagnostic?
+	}
+
+	private static func resolved(_ owned: OwnedResult) throws(ProjectEnvSchemaFile.FileError) -> Resolution {
 		let output = try owned.decode()
 		guard output["abiVersion"] == .number("1"), let effective = output["effective"], owned.result.snapshot != nil else { throw .invalidSchema }
 		guard case .object(let rawOrigins)? = output["origins"], case .array(let rawDependencies)? = output["dependencies"] else { throw .invalidSchema }
