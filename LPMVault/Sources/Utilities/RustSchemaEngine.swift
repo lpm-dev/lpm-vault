@@ -34,13 +34,51 @@ enum RustSchemaEngine {
 		let bytes: Int
 	}
 
-	struct Resolution: Sendable {
+	/// The inherited rules one of lpm.json's key overrides replaces, in summary.
+	struct ReplacedRules: Equatable, Sendable {
+		/// More than one when the override settles a conflict between imports.
+		let count: Int
+		/// Where the first one comes from: what lpm.json's imports resolve,
+		/// which is an import's own override when one sits between.
+		let origin: Origin
+		/// Whether every one marks the key public.
+		let client: Bool
+		/// Where the first one that marks the key secret comes from; nil when none does.
+		let secret: Origin?
+	}
+
+	/// The inherited groups one of lpm.json's group overrides replaces, in summary.
+	struct ReplacedGroups: Equatable, Sendable {
+		/// More than one when the override settles a conflict between imports.
+		let count: Int
+		/// Where the first one comes from, as for `ReplacedRules`.
+		let origin: Origin
+	}
+
+	/// What the engine says about a resolved schema, apart from the snapshot it retains.
+	struct Resolved: Equatable, Sendable {
 		let effective: LPMConfigJSON
 		let origins: [String: Origin]
 		let groupOrigins: [String: Origin]
+		/// Where an overridden key was declared before the override replaced it.
 		let declaringOrigins: [String: Origin]
+		/// Where an overridden group was declared before the override replaced it.
+		let groupDeclaringOrigins: [String: Origin]
+		/// Where each client prefix is listed: the first schema to list it, so a
+		/// prefix lpm.json shares with an import names the import.
+		let clientPrefixOrigins: [String: Origin]
+		/// What each of lpm.json's key overrides replaces.
+		let replacedRules: [String: ReplacedRules]
+		/// What each of lpm.json's group overrides replaces.
+		let replacedGroups: [String: ReplacedGroups]
 		let dependencies: [Dependency]
+	}
+
+	@dynamicMemberLookup
+	struct Resolution: Sendable {
+		let resolved: Resolved
 		let snapshot: Snapshot
+		subscript<Value>(dynamicMember path: KeyPath<Resolved, Value>) -> Value { resolved[keyPath: path] }
 		func verify() throws(ProjectEnvSchemaFile.FileError) { try snapshot.verify() }
 	}
 
@@ -102,27 +140,60 @@ enum RustSchemaEngine {
 
 	private static func resolved(_ owned: OwnedResult) throws(ProjectEnvSchemaFile.FileError) -> Resolution {
 		let output = try owned.decode()
-		guard output["abiVersion"] == .number("1"), let effective = output["effective"], owned.result.snapshot != nil else { throw .invalidSchema }
-		guard case .object(let rawOrigins)? = output["origins"], case .array(let rawDependencies)? = output["dependencies"] else { throw .invalidSchema }
-		var origins = Dictionary<String, Origin>(minimumCapacity: rawOrigins.count)
-		for member in rawOrigins {
-			guard case .string(let source)? = member.value["source"], case .string(let pointer)? = member.value["pointer"] else { throw .invalidSchema }
-			origins[member.key] = Origin(source: source, pointer: pointer)
+		guard owned.result.snapshot != nil else { throw .invalidSchema }
+		return Resolution(resolved: try resolved(from: output), snapshot: Snapshot(owned: owned))
+	}
+
+	/// The engine's resolve output, checked field by field: provenance has to
+	/// name what the effective schema declares, so a malformed output is
+	/// rejected rather than shown.
+	static func resolved(from output: LPMConfigJSON) throws(ProjectEnvSchemaFile.FileError) -> Resolved {
+		guard output["abiVersion"] == .number("1"), let effective = output["effective"],
+			case .array(let rawDependencies)? = output["dependencies"], case .object(let rawReplaced)? = output["replacedVars"],
+			case .object(let rawReplacedGroups)? = output["replacedGroups"]
+		else { throw .invalidSchema }
+		func origin(_ value: LPMConfigJSON?) throws(ProjectEnvSchemaFile.FileError) -> Origin {
+			guard case .string(let source)? = value?["source"], case .string(let pointer)? = value?["pointer"] else { throw .invalidSchema }
+			return Origin(source: source, pointer: pointer)
 		}
-		guard case .object(let rawGroupOrigins)? = output["groupOrigins"] else { throw .invalidSchema }
-		var groupOrigins = Dictionary<String, Origin>(minimumCapacity: rawGroupOrigins.count)
-		for member in rawGroupOrigins {
-			guard case .string(let source)? = member.value["source"], case .string(let pointer)? = member.value["pointer"] else { throw .invalidSchema }
-			groupOrigins[member.key] = Origin(source: source, pointer: pointer)
+		func origins(_ field: String) throws(ProjectEnvSchemaFile.FileError) -> [String: Origin] {
+			guard case .object(let members)? = output[field] else { throw .invalidSchema }
+			var origins = Dictionary<String, Origin>(minimumCapacity: members.count)
+			for member in members { origins[member.key] = try origin(member.value) }
+			return origins
 		}
-        guard case .object(let rawDeclaringOrigins)? = output["declaringOrigins"] else { throw .invalidSchema }
-        var declaringOrigins = Dictionary<String, Origin>(minimumCapacity: rawDeclaringOrigins.count)
-        for member in rawDeclaringOrigins {
-            guard case .string(let source)? = member.value["source"], case .string(let pointer)? = member.value["pointer"] else { throw .invalidSchema }
-            declaringOrigins[member.key] = Origin(source: source, pointer: pointer)
-        }
+		let keyOrigins = try origins("origins")
+		let groupOrigins = try origins("groupOrigins")
+		let groupDeclaringOrigins = try origins("groupDeclaringOrigins")
+		let clientPrefixOrigins = try origins("clientPrefixOrigins")
+		guard groupDeclaringOrigins.keys.allSatisfy({ groupOrigins[$0] != nil }) else { throw .invalidSchema }
+		var prefixes: Set<String> = []
+		if case .array(let values)? = effective["clientPrefixes"] {
+			for value in values {
+				guard case .string(let prefix) = value else { throw .invalidSchema }
+				prefixes.insert(prefix)
+			}
+		}
+		guard Set(clientPrefixOrigins.keys) == prefixes else { throw .invalidSchema }
+		var replacedRules = Dictionary<String, ReplacedRules>(minimumCapacity: rawReplaced.count)
+		for member in rawReplaced {
+			// Only lpm.json's own overrides replace anything it shows.
+			guard let override = keyOrigins[member.key], override.source == "lpm.json", override.pointer.hasPrefix("/envSchema/overrides/"),
+				case .number(let rawCount)? = member.value["count"], let count = Int(rawCount), count >= 1,
+				case .bool(let client)? = member.value["client"]
+			else { throw .invalidSchema }
+			let secret: Origin? = if let value = member.value["secret"] { try origin(value) } else { nil }
+			replacedRules[member.key] = ReplacedRules(count: count, origin: try origin(member.value["origin"]), client: client, secret: secret)
+		}
+		var replacedGroups = Dictionary<String, ReplacedGroups>(minimumCapacity: rawReplacedGroups.count)
+		for member in rawReplacedGroups {
+			guard let override = groupOrigins[member.key], override.source == "lpm.json", override.pointer.hasPrefix("/envSchema/groupOverrides/"),
+				case .number(let rawCount)? = member.value["count"], let count = Int(rawCount), count >= 1
+			else { throw .invalidSchema }
+			replacedGroups[member.key] = ReplacedGroups(count: count, origin: try origin(member.value["origin"]))
+		}
 		var dependencies: [Dependency] = []
-        dependencies.reserveCapacity(rawDependencies.count)
+		dependencies.reserveCapacity(rawDependencies.count)
 		for dependency in rawDependencies {
 			guard case .string(let path)? = dependency["path"] else { throw .invalidSchema }
 			guard case .number(let count)? = dependency["bytes"], let bytes = Int(count), bytes >= 0 else { throw .invalidSchema }
@@ -130,7 +201,9 @@ enum RustSchemaEngine {
 			guard digest.count == 32 else { throw .invalidSchema }
 			dependencies.append(Dependency(path: path, digest: digest, bytes: bytes))
 		}
-		return Resolution(effective: effective, origins: origins, groupOrigins: groupOrigins, declaringOrigins: declaringOrigins, dependencies: dependencies, snapshot: Snapshot(owned: owned))
+		return Resolved(effective: effective, origins: keyOrigins, groupOrigins: groupOrigins, declaringOrigins: try origins("declaringOrigins"),
+			groupDeclaringOrigins: groupDeclaringOrigins, clientPrefixOrigins: clientPrefixOrigins, replacedRules: replacedRules,
+			replacedGroups: replacedGroups, dependencies: dependencies)
 	}
 
 	/// The engine's evaluation of stored values against a flat schema, such as

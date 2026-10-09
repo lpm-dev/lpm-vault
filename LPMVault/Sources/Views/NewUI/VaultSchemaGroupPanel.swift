@@ -767,9 +767,11 @@ struct VaultSchemaGroupEditor: View {
 			elsewhere = VaultSchemaElsewhere(source: source, path: VaultSchemaElsewhere.editable(savedGroup(name)?.sourcePath), isOverridden: false,
 				isGroup: true)
 		case .overridden(let source):
-			elsewhere = VaultSchemaElsewhere(source: source, path: nil, isOverridden: true, isGroup: true)
+			elsewhere = VaultSchemaElsewhere(source: source, path: VaultSchemaElsewhere.editable(savedGroup(name)?.overridesPath), isOverridden: true,
+				isGroup: true)
 		case .editing(isOverride: true):
-			elsewhere = VaultSchemaElsewhere(source: importedSource, path: VaultSchemaElsewhere.editable(savedGroup(name)?.sourcePath),
+			let saved = savedGroup(name)
+			elsewhere = VaultSchemaElsewhere(source: importedSource, path: VaultSchemaElsewhere.editable(saved?.overridesPath ?? saved?.sourcePath),
 				isOverridden: true, isGroup: true)
 		case .reset, .removed, .missing:
 			break
