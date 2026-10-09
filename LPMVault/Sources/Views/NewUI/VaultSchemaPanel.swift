@@ -1068,7 +1068,7 @@ private struct VaultSchemaKeyEditor: View {
 	/// A save that failed for a reason the review can't show, such as a file that can't be written.
 	private var saveFailure: ProjectEnvSchemaFile.DraftSaveError? {
 		switch store.schemaDraftSaveFailure(for: project.id) {
-		case nil, .file(.changed)?, .conflicts?, .inProgress?: nil
+		case nil, .file(.changed)?, .conflicts?, .inProgress?, .importsChanged?: nil
 		case let failure?: failure
 		}
 	}
@@ -1111,6 +1111,9 @@ private struct VaultSchemaKeyEditor: View {
 						if mode.isOverridden { editsOverride = true } else { update(declaration: .overridden(rule.json)) }
 					}
 					.disabled(!canEdit)
+					if failure != nil {
+						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)
+					}
 				default:
 					if failure != nil {
 						HStack(spacing: 4) {
