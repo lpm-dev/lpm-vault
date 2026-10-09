@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     timeout-minutes: 30
@@ -42,6 +42,7 @@ jobs:
         env:
           LPM_TEST_SNAPSHOT_DIR: ${{ runner.temp }}/ui-snapshots
           SWIFT_TEST_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          SWIFT_TEST_ISOLATED_SUITE: LPMVaultTests.SheetInteractionTests
         run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --skip-build --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Preserve failed test diagnostics
         if: failure()
