@@ -285,7 +285,7 @@ struct VaultSidebarView: View {
 		let state = store.keyDescriptions[project.id]?.schema
 		let count = state?.overview?.rules.count
 		let unreadable = if case .unreadable? = state { true } else { false }
-		let hasDraft = store.schemaDraft(for: project.id) != nil
+		let hasDraft = store.projectsWithSchemaDrafts.contains(project.id)
 		return Button {
 			store.openProject(id: project.id)
 			mode = .schema

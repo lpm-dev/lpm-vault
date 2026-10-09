@@ -31,7 +31,7 @@ struct ProjectEnvSchemaRuleTests {
 	}
 
 	@Test("bounds are numbers when they're whole numbers and text otherwise, so the LPM CLI names the mistake", arguments: [
-		("10", LPMConfigJSON.number("10")), ("-3", .number("-3")), ("0", .number("0")), ("007", .string("007")), ("1.5", .string("1.5")), ("ten", .string("ten")),
+		("10", LPMConfigJSON.number("10")), ("-3", .number("-3")), ("0", .number("0")), ("-0", .string("-0")), ("007", .string("007")), ("1.5", .string("1.5")), ("ten", .string("ten")),
 	])
 	func bounds(text: String, written: LPMConfigJSON) {
 		var rule = Rule()
@@ -103,27 +103,38 @@ struct ProjectEnvSchemaRuleTests {
 	@Test("the add menu says why a rule can't be added")
 	func availability() throws {
 		let secret = try rule(#"{"secret":true,"format":"url"}"#)
-		#expect(secret.availability(of: .defaultValue, publicPrefix: nil) == .init(isAvailable: false, hint: "not for secret keys"))
-		#expect(secret.availability(of: .bounds, publicPrefix: nil) == .init(isAvailable: false, hint: "needs integer or port format"))
-		#expect(secret.availability(of: .protocols, publicPrefix: nil).isAvailable)
-		#expect(Rule().availability(of: .secret, publicPrefix: "VITE_") == .init(isAvailable: false, hint: "not for public keys"))
-		#expect(Rule().availability(of: .client, publicPrefix: nil) == .init(isAvailable: false, hint: "needs a public prefix"))
+		let key = Rule.Context(key: "KEY")
+		#expect(secret.availability(of: .defaultValue, in: key) == .init(isAvailable: false, hint: "not for secret keys"))
+		#expect(secret.availability(of: .bounds, in: key) == .init(isAvailable: false, hint: "needs integer or port format"))
+		#expect(secret.availability(of: .protocols, in: key).isAvailable)
+		#expect(Rule().availability(of: .secret, in: .init(key: "VITE_KEY", publicPrefix: "VITE_")) == .init(isAvailable: false, hint: "not for public keys"))
+		#expect(Rule().availability(of: .secret, in: .init(key: "MODE", comparedBy: ["X"])) == .init(isAvailable: false, hint: "X compares its value"))
+		#expect(Rule().availability(of: .client, in: key) == .init(isAvailable: false, hint: "needs a public prefix"))
+		#expect(Rule().availability(of: .requiredWhen, in: .init(key: "KEY", declaredKeys: ["KEY"])) == .init(isAvailable: false, hint: "no other keys"))
 	}
 
 	@Test("conflicts the LPM CLI rejects block their row and offer fixes")
 	func conflicts() throws {
 		let conflicted = try rule(#"{"secret":true,"default":"x","enum":["a"],"ci":"variable","min":1,"protocols":["https"],"requiredWhen":{"variable":"TOKEN","equals":"on"}}"#)
-		let found = conflicted.conflicts(key: "API_KEY", publicPrefix: nil, secretKeys: ["TOKEN"])
+		let found = conflicted.conflicts(in: .init(key: "API_KEY", secretKeys: ["TOKEN"]))
 		#expect(found[.defaultValue] == .init(kind: .blocking, message: "Secret keys can't have a default.", fixes: [.turnOffSecret, .remove(.defaultValue)]))
 		#expect(found[.allowedValues]?.fixes == [.turnOffSecret, .remove(.allowedValues)])
 		#expect(found[.ci]?.fixes == [.setCIStorage(.secret)])
 		#expect(found[.bounds]?.fixes == [.setFormat(.integer), .remove(.bounds)])
 		#expect(found[.protocols]?.fixes == [.setFormat(.url), .remove(.protocols)])
-		#expect(found[.requiredWhen]?.kind == .blocking)
+		#expect(found[.requiredWhen] == .init(kind: .blocking, message: "TOKEN is secret, so its value can't be compared.", fixes: [.usePresence, .remove(.requiredWhen)]))
 
 		var fixed = conflicted
 		fixed.apply(.turnOffSecret)
-		#expect(fixed.conflicts(key: "API_KEY", publicPrefix: nil, secretKeys: [])[.defaultValue] == nil)
+		#expect(fixed.conflicts(in: .init(key: "API_KEY"))[.defaultValue] == nil)
+		fixed.apply(.usePresence)
+		#expect(fixed.requiredWhen == .init(variable: "TOKEN", condition: .present(true)))
+	}
+
+	@Test("a key can't be secret while another key compares its value")
+	func secretComparedByAnotherKey() throws {
+		let found = try rule(#"{"secret":true}"#).conflicts(in: .init(key: "MODE", comparedBy: ["X"]))
+		#expect(found[.secret] == .init(kind: .blocking, message: "X compares this key's value in Required when, so it can't be secret.", fixes: [.turnOffSecret]))
 	}
 
 	@Test("ranges, overlapping scoped defaults, and rules Required makes pointless are named", arguments: [
@@ -134,16 +145,68 @@ struct ProjectEnvSchemaRuleTests {
 		(#"{"format":"url","protocols":[]}"#, .protocols, "Add at least one URL scheme."),
 		(#"{"enum":[]}"#, .allowedValues, "Add at least one allowed value."),
 		(#"{"empty":"reject","default":""}"#, .defaultValue, "An empty default can't be used while empty values are rejected."),
+		(#"{"empty":"reject","defaultsIn":[{"when":{"stage":["build"]},"value":""}]}"#, .defaultsIn, "An empty scoped default can't be used while empty values are rejected."),
+		(#"{"required":true,"default":""}"#, .defaultValue, "An empty default can't satisfy Required."),
+		(#"{"format":"port","max":"99999999999999999999"}"#, .bounds, "Use a whole number from -9223372036854775808 to 9223372036854775807."),
+		(#"{"format":"port","min":70000}"#, .bounds, "These bounds leave no valid port, which runs from 1 to 65535."),
+		(#"{"maxLength":"+5"}"#, .length, "Use a whole number of characters."),
+		(#"{"format":"url","protocols":["https:"]}"#, .protocols, "“https:” isn't a URL scheme. Use lowercase letters, digits, “+”, “.” and “-”, starting with a letter, without a colon."),
+		(#"{"format":"url","protocols":["https","https"]}"#, .protocols, "A URL scheme is listed twice."),
+		(#"{"requiredIn":[{"service":["api gateway"]}]}"#, .requiredIn, "“api gateway” isn't a valid name. Use letters, digits, “.”, “_” and “-”, up to 64 characters."),
+		(#"{"requiredIn":[{"environment":["a","b"]},{"environment":["b","a"],"stage":["development","build","runtime","ci","test"]}]}"#, .requiredIn, "Two scopes are the same."),
+		(#"{"requiredWhen":{"variable":"GONE","present":true}}"#, .requiredWhen, "GONE isn't declared."),
 		(#"{"defaultsIn":[{"when":{"environment":["a"]},"value":"1"},{"when":{"stage":["build"]},"value":"2"}]}"#, .defaultsIn, "Scoped defaults overlap, so more than one could apply. Narrow them."),
-		(#"{"requiredWhen":{"variable":"KEY","present":true}}"#, .requiredWhen, "A key can't depend on itself."),
+		(#"{"requiredWhen":{"variable":"KEY","present":true}}"#, .requiredWhen, "No effect: it depends on the key itself."),
 	])
 	func namedConflicts(json: String, field: Rule.Field, message: String) throws {
-		#expect(try rule(json).conflicts(key: "KEY", publicPrefix: nil, secretKeys: [])[field]?.message == message)
+		#expect(try rule(json).conflicts(in: .init(key: "KEY", declaredKeys: ["KEY", "OTHER"]))[field]?.message == message)
+	}
+
+	@Test("a row blocks exactly the rules the LPM CLI rejects", arguments: [
+		#"{"format":"integer","min":"007","max":"+5"}"#,
+		#"{"format":"integer","min":"-0"}"#,
+		#"{"format":"integer","min":-0}"#,
+		#"{"format":"integer","min":"99999999999999999999"}"#,
+		#"{"format":"integer","min":9223372036854775808}"#,
+		#"{"format":"integer","min":1.5}"#,
+		#"{"format":"port","max":0}"#,
+		#"{"min":null}"#,
+		#"{"minLength":"007","maxLength":"+5"}"#,
+		#"{"maxLength":4294967296}"#,
+		#"{"secret":true,"default":null,"enum":null}"#,
+		#"{"requiredWhen":{"variable":"KEY","present":true}}"#,
+		#"{"requiredWhen":{"variable":"OTHER","equals":"on"}}"#,
+		#"{"format":"url","protocols":["https:"]}"#,
+		#"{"format":"url","protocols":["git+ssh","s3"]}"#,
+		#"{"requiredIn":[{"service":["api..v2"]}]}"#,
+		#"{"requiredIn":[{"environment":["__index__"]}]}"#,
+		#"{"requiredIn":[{"environment":["a"]},{"environment":["a"],"stage":["development","build","runtime","ci","test"]}]}"#,
+		#"{"empty":"reject","defaultsIn":[{"when":{"stage":["build"]},"value":""}]}"#,
+		#"{"required":true,"defaultsIn":[{"when":{"stage":["build"]},"value":""}]}"#,
+	])
+	func matchesEngine(json: String) throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "rule-parity-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let schema = try LPMConfigJSON(parsing: Data(#"{"vars":{"KEY":\#(json),"OTHER":{}}}"#.utf8))
+		let rejected = if case .failure = try RustSchemaEngine.resolveOrDiagnose(schema, inFolder: folder) { true } else { false }
+		let blocking = try rule(json).conflicts(in: .init(key: "KEY", declaredKeys: ["KEY", "OTHER"])).values.contains { $0.kind == .blocking }
+		#expect(blocking == rejected, "The panel and the LPM CLI disagree about \(json)")
+	}
+
+	@Test("entries nobody changed keep their form when a list is rewritten")
+	func untouchedEntriesKeepTheirForm() throws {
+		var rule = try rule(#"{"requiredIn":[{"stage":["test","build"],"environment":["production"]},{"service":["api"]}]}"#)
+		rule.requiredIn = rule.requiredIn + [.init(environments: ["staging"])]
+		guard case .array(let entries)? = rule.json["requiredIn"] else { Issue.record("requiredIn isn't a list"); return }
+		#expect(entries.count == 3)
+		#expect(entries.first == (try LPMConfigJSON(parsing: Data(#"{"stage":["test","build"],"environment":["production"]}"#.utf8))))
+		#expect(entries.last == (try LPMConfigJSON(parsing: Data(#"{"environment":["staging"]}"#.utf8))))
 	}
 
 	@Test("Required makes scoped and conditional requirements pointless, without blocking them")
 	func requiredOverlap() throws {
-		let found = try rule(#"{"required":true,"requiredIn":[{"environment":["production"]}]}"#).conflicts(key: "KEY", publicPrefix: nil, secretKeys: [])
+		let found = try rule(#"{"required":true,"requiredIn":[{"environment":["production"]}]}"#).conflicts(in: .init(key: "KEY"))
 		#expect(found[.requiredIn] == .init(kind: .noEffect, message: "No effect while Required is on.", fixes: [.remove(.requiredIn)]))
 	}
 

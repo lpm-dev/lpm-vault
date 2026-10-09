@@ -281,7 +281,8 @@ struct VaultWorkspaceView: View {
 								project: project,
 								environments: store.orderedEnvironmentNames(for: project),
 								selection: schemaSelection,
-								onSelect: { self.schemaSelection = $0 }
+								onSelect: { self.schemaSelection = $0 },
+								onRenamed: followRename
 							)
 						}
 						.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })

@@ -96,6 +96,8 @@ enum VaultKeyEditError: LocalizedError, Equatable, Sendable {
 	case persistence(String)
 	/// `lpm.json` could not be updated; `keySaved` tells whether the Keychain part was.
 	case description(String, keySaved: Bool)
+	/// The edit can't start yet, for the reason given.
+	case refused(String)
 
 	init(_ failure: VaultKeyEdit.Failure, newKey: String) {
 		switch failure {
@@ -123,9 +125,11 @@ enum VaultKeyEditError: LocalizedError, Equatable, Sendable {
 		case .persistence(let message):
 			"Could not save the key. \(message)"
 		case .description(let reason, keySaved: false):
-			"Could not save the description. \(reason)"
+			"Could not update lpm.json. \(reason)"
 		case .description(let reason, keySaved: true):
 			"The key was saved, but lpm.json was not updated. \(reason)"
+		case .refused(let reason):
+			reason
 		}
 	}
 }

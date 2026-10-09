@@ -242,7 +242,7 @@ extension SheetInteractionTests {
 			try host.enterKey("NEW")
 			try "{".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 			try await host.click("Save")
-			#expect(try await host.waitForText("Could not save the description"))
+			#expect(try await host.waitForText("Could not update lpm.json"))
 			#expect(try await host.text().contains("lpm.json is not valid JSON"))
 			#expect(try await host.text().contains("1 unsaved change"))
 		}

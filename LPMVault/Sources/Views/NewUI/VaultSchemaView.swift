@@ -35,13 +35,14 @@ struct VaultSchemaView: View {
 		"""
 
 	var body: some View {
+		let listed = state?.overview.map(listed)
 		VStack(spacing: 0) {
 			header
 			VaultHairline()
-			content
+			content(listed)
 				.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 			VaultHairline()
-			statusBar
+			statusBar(listed)
 		}
 		.background(VaultPalette.content)
 	}
@@ -91,7 +92,7 @@ struct VaultSchemaView: View {
 	// MARK: - Content
 
 	@ViewBuilder
-	private var content: some View {
+	private func content(_ listed: Listed?) -> some View {
 		switch state {
 		case nil:
 			VStack(spacing: 10) {
@@ -129,7 +130,7 @@ struct VaultSchemaView: View {
 					.overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border))
 			}
 		case .loaded(let overview, _)?:
-			rulesTable(overview)
+			rulesTable(listed ?? self.listed(overview), saved: overview)
 		case .unreadable(let problem)?:
 			VStack(alignment: .leading, spacing: 0) {
 				problemBanner(problem)
@@ -198,19 +199,17 @@ struct VaultSchemaView: View {
 
 	// MARK: - Rules
 
-	private func rulesTable(_ saved: ProjectEnvSchemaOverview) -> some View {
-		let listed = listedRules(saved)
-		let overview = listed.overview
+	private func rulesTable(_ listed: Listed, saved: ProjectEnvSchemaOverview) -> some View {
 		let rules = sortOrder == .ascending ? listed.rules : listed.rules.reversed()
 		return ScrollView {
 			LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
 				Section {
 					ForEach(rules, id: \.key) { rule in
-						ruleRow(rule, state: rowState(rule.key, in: saved), description: description(of: rule.key, in: overview))
+						ruleRow(rule, state: rowState(rule.key, in: saved), description: description(of: rule.key))
 							.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 					}
-					if !overview.groups.isEmpty {
-						groupsRow(overview.groups)
+					if !listed.groups.isEmpty {
+						groupsRow(listed.groups)
 					}
 				} header: {
 					HStack(spacing: 0) {
@@ -236,15 +235,41 @@ struct VaultSchemaView: View {
 
 	private static let keyWidth: CGFloat = 260
 
-	/// The rules to list: the draft's when there is one, with the keys it removes kept.
-	private func listedRules(_ saved: ProjectEnvSchemaOverview) -> (overview: ProjectEnvSchemaOverview, rules: [ProjectEnvSchemaOverview.Rule]) {
-		guard draft != nil else { return (saved, saved.rules) }
+	/// What the page lists: the rules with the draft applied, from A to Z.
+	private struct Listed {
+		/// With the keys the draft removes kept, so they show as removed.
+		var rules: [ProjectEnvSchemaOverview.Rule]
+		var groups: [ProjectEnvSchemaOverview.Group]
+		/// Keys declared once the draft is saved.
+		var declaredCount: Int
+		var inheritedCount: Int
+	}
+
+	/// The rules the draft leaves. Until the engine resolves the draft, the
+	/// keys it changes show as it writes them.
+	private func listed(_ saved: ProjectEnvSchemaOverview) -> Listed {
+		guard let draft, !draft.isEmpty else {
+			return Listed(rules: saved.rules, groups: saved.groups, declaredCount: saved.rules.count, inheritedCount: saved.inheritedCount)
+		}
 		let shown = draftOverview ?? saved
 		var rules = shown.rules
-		let listed = Set(rules.map(\.key))
-		for rule in saved.rules where !listed.contains(rule.key) && rowState(rule.key, in: saved) == .removed { rules.append(rule) }
-		let order = Dictionary(uniqueKeysWithValues: VaultKeySortOrder.sortedAscending(rules.map(\.key)).enumerated().map { ($1, $0) })
-		return (shown, rules.sorted { order[$0.key, default: 0] < order[$1.key, default: 0] })
+		var added: [ProjectEnvSchemaOverview.Rule] = []
+		var removed = 0
+		for item in draft.changedItems {
+			guard case .key(let key) = item else { continue }
+			let declaration = draft.declaration(of: item)
+			if let json = declaration.json {
+				guard draftOverview == nil else { continue }
+				let isOverride = if case .overridden = declaration { true } else { false }
+				let rule = ProjectEnvSchemaOverview.Rule(key: key, draft: json, isOverride: isOverride, saved: saved.rule(for: key))
+				if let index = shown.position(of: key) { rules[index] = rule } else { added.append(rule) }
+			} else if case .declared = draft.base(of: item) {
+				removed += 1
+				if shown.rule(for: key) == nil, let rule = saved.rule(for: key) { added.append(rule) }
+			}
+		}
+		rules = VaultKeySortOrder.mergingAscending(added, into: rules, by: \.key)
+		return Listed(rules: rules, groups: shown.groups, declaredCount: rules.count - removed, inheritedCount: shown.inheritedCount)
 	}
 
 	private func rowState(_ key: String, in saved: ProjectEnvSchemaOverview) -> RowState {
@@ -256,11 +281,27 @@ struct VaultSchemaView: View {
 		}
 	}
 
-	/// The draft's description of a key, or lpm.json's.
-	private func description(of key: String, in overview: ProjectEnvSchemaOverview) -> String? {
-		guard draft != nil else { return descriptions[key] }
-		if case .string(let text)? = overview.declaration(of: key)?["description"] { return text.escapingDirectionControls }
-		return overview.rule(for: key) == nil ? descriptions[key] : nil
+	private func description(of key: String) -> String? {
+		Self.rowDescription(of: key, saved: descriptions, draft: draft, draftOverview: draftOverview)
+	}
+
+	/// The description the draft gives a key it changes, or lpm.json's, escaped
+	/// because lpm.json and the schemas it imports are shared files.
+	static func rowDescription(
+		of key: String, saved descriptions: [String: String], draft: ProjectEnvSchemaDraft?, draftOverview: ProjectEnvSchemaOverview?
+	) -> String? {
+		var text = descriptions[key]
+		if let draft, draft.hasChange(to: .key(key)) {
+			switch draft.declaration(of: .key(key)) {
+			case .declared(let json), .overridden(let json):
+				text = if case .string(let described)? = json["description"] { described } else { nil }
+			case .absent:
+				if case .overridden = draft.base(of: .key(key)), let overview = draftOverview {
+					text = if case .string(let described)? = overview.declaration(of: key)?["description"] { described } else { nil }
+				}
+			}
+		}
+		return text?.escapingDirectionControls
 	}
 
 	private func ruleRow(_ rule: ProjectEnvSchemaOverview.Rule, state: RowState, description: String?) -> some View {
@@ -346,28 +387,18 @@ struct VaultSchemaView: View {
 
 	// MARK: - Status bar
 
-	private var statusBar: some View {
+	private func statusBar(_ listed: Listed?) -> some View {
 		HStack(spacing: 12) {
 			switch state {
-			case .loaded(let overview, _)? where !overview.isEmpty:
-				Text(Self.count(overview.rules.count, "declared key"))
-				Text("·")
-				Text(Self.count(overview.groups.count, "group"))
-				Text("·")
-				Text("\(overview.inheritedCount) inherited")
-				if let changes = draft?.changedItems.count, changes > 0 {
-					Text("·")
-					Text(changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes")
-						.fontWeight(.semibold)
-						.foregroundStyle(VaultPalette.orangeTintText)
+			case .loaded?:
+				if let listed, !listed.rules.isEmpty || !listed.groups.isEmpty {
+					loadedStatus(listed)
+				} else {
+					Text("No rules · values stay in the Keychain")
 				}
-				Text("·")
-				Text("enforced by LPM CLI")
 			case .unreadable?:
 				Text("Checks paused: lpm.json can't be read")
 					.foregroundStyle(VaultPalette.redText)
-			case .loaded?:
-				Text("No rules · values stay in the Keychain")
 			case .noFolder?:
 				Text("No project folder · values stay in the Keychain")
 			case nil:
@@ -381,6 +412,23 @@ struct VaultSchemaView: View {
 		.padding(.horizontal, 20)
 		.frame(height: VaultMetrics.statusBar)
 		.background(VaultPalette.headerRow)
+	}
+
+	@ViewBuilder
+	private func loadedStatus(_ listed: Listed) -> some View {
+		Text(Self.count(listed.declaredCount, "declared key"))
+		Text("·")
+		Text(Self.count(listed.groups.count, "group"))
+		Text("·")
+		Text("\(listed.inheritedCount) inherited")
+		if let changes = draft?.changeCount, changes > 0 {
+			Text("·")
+			Text(changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes")
+				.fontWeight(.semibold)
+				.foregroundStyle(VaultPalette.orangeTintText)
+		}
+		Text("·")
+		Text("enforced by LPM CLI")
 	}
 
 	private static func count(_ value: Int, _ noun: String) -> String {

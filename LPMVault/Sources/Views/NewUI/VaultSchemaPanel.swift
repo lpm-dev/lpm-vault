@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// What the Schema page's side panel shows.
@@ -13,12 +14,15 @@ struct VaultSchemaPanel: View {
 	let environments: [String]
 	let selection: VaultSchemaSelection
 	let onSelect: (VaultSchemaSelection?) -> Void
+	/// A key the panel renamed, so pages that show it follow the new name.
+	var onRenamed: (String, String) -> Void = { _, _ in }
 
 	var body: some View {
 		Group {
 			switch selection {
 			case .key(let key):
-				VaultSchemaKeyEditor(store: store, project: project, environments: environments, key: key, onSelect: onSelect)
+				VaultSchemaKeyEditor(store: store, project: project, environments: environments, key: key,
+					onSelect: onSelect, onRenamed: onRenamed)
 					.id("\(project.id)/\(key)")
 			}
 		}
@@ -37,8 +41,9 @@ private struct VaultSchemaKeyEditor: View {
 	let environments: [String]
 	let key: String
 	let onSelect: (VaultSchemaSelection?) -> Void
+	let onRenamed: (String, String) -> Void
 
-	/// Rows opened in this panel, which stay while their value is unset.
+	/// Rows shown in this panel, which stay while their value is cleared.
 	@State private var shownFields: Set<Field> = []
 	/// An override is edited only after "Edit override", unless the draft changed it.
 	@State private var editsOverride = false
@@ -46,13 +51,17 @@ private struct VaultSchemaKeyEditor: View {
 	@State private var renaming = false
 	@State private var renameError: String?
 	@State private var saveError: String?
-	@State private var saving = false
 	@State private var addingRule = false
 	@State private var scopeTarget: ScopeTarget?
+	@State private var pickingKey = false
+	/// Whether the panel still shows this key, which a rename finishing later checks.
+	@State private var isPresented = false
 
 	private struct ScopeTarget: Identifiable, Hashable {
 		let field: Field
-		/// The line being edited; nil adds one.
+		/// The line being edited, as it read when editing began; nil adds one.
+		let original: Rule.ScopedDefault?
+		/// Where the line was, which anchors the editor.
 		let index: Int?
 		var id: String { "\(field)-\(index.map(String.init) ?? "new")" }
 	}
@@ -64,6 +73,8 @@ private struct VaultSchemaKeyEditor: View {
 		case inherited(source: String)
 		/// lpm.json overrides an imported declaration; editing it starts on request.
 		case overridden(source: String)
+		/// The draft removes lpm.json's override, so the imported rule applies again.
+		case reset(source: String)
 		/// The draft removes the key from lpm.json.
 		case removed
 		case missing
@@ -76,31 +87,39 @@ private struct VaultSchemaKeyEditor: View {
 	private var descriptions: ProjectKeyDescriptions? { store.keyDescriptions[project.id] }
 	private var savedOverview: ProjectEnvSchemaOverview? { descriptions?.schema?.overview }
 	private var pendingDraft: Draft? { store.schemaDraft(for: project.id) }
-	private var draft: Draft { pendingDraft ?? Draft(schema: descriptions?.rootSchema) }
+	private var draft: Draft { store.schemaDraftOrBase(for: project.id) }
 	/// The latest evaluation, which can lag the draft while it's evaluated.
 	private var evaluation: Draft.Evaluation? { store.latestSchemaDraftEvaluation(for: project.id) }
 	private var overview: ProjectEnvSchemaOverview? { pendingDraft == nil ? savedOverview : evaluation?.overview ?? savedOverview }
 	private var item: Draft.Item { .key(key) }
 	private var savedRule: ProjectEnvSchemaOverview.Rule? { savedOverview?.rule(for: key) }
+	private var saving: Bool { store.savingSchemaDrafts.contains(project.id) }
+	private var importedSource: String { savedRule?.overrides ?? savedRule?.source ?? "an imported schema" }
 
 	private var mode: Mode {
 		switch draft.declaration(of: item) {
 		case .declared: return .editing(isOverride: false)
 		case .overridden:
-			let source = savedRule?.overrides ?? "an imported schema"
-			if case .overridden = draft.base(of: item), !draft.hasChange(to: item), !editsOverride { return .overridden(source: source) }
+			if case .overridden = draft.base(of: item), !draft.hasChange(to: item), !editsOverride { return .overridden(source: importedSource) }
 			return .editing(isOverride: true)
 		case .absent:
-			if case .declared = draft.base(of: item) { return .removed }
-			if let source = savedRule?.source { return .inherited(source: source) }
-			return .missing
+			switch draft.base(of: item) {
+			case .declared: return .removed
+			case .overridden: return .reset(source: importedSource)
+			case .absent: return savedRule?.source.map { .inherited(source: $0) } ?? .missing
+			}
 		}
 	}
 
 	private var rule: Rule {
 		switch draft.declaration(of: item) {
-		case .declared(let json), .overridden(let json): Rule(json)
-		case .absent: Rule(resolved: savedOverview?.declaration(of: key))
+		case .declared(let json), .overridden(let json): return Rule(json)
+		case .absent:
+			// Only the engine knows the imported rule a removed override leaves.
+			if case .overridden = draft.base(of: item) {
+				return Rule(resolved: store.currentSchemaDraftEvaluation(for: project.id)?.overview?.declaration(of: key))
+			}
+			return Rule(resolved: savedOverview?.declaration(of: key))
 		}
 	}
 
@@ -108,8 +127,15 @@ private struct VaultSchemaKeyEditor: View {
 		Rule.publicPrefix(of: key, clientPrefixes: overview?.clientPrefixes ?? [])
 	}
 
-	private var secretKeys: Set<String> {
-		Set((overview?.rules ?? []).lazy.filter(\.isSecret).map(\.key))
+	private var context: Rule.Context {
+		let overview = overview
+		return Rule.Context(
+			key: key,
+			publicPrefix: Rule.publicPrefix(of: key, clientPrefixes: overview?.clientPrefixes ?? []),
+			secretKeys: overview?.secretKeys ?? [],
+			comparedBy: overview?.keys(comparing: key) ?? [],
+			declaredKeys: overview.map(\.declaredKeys)
+		)
 	}
 
 	private var rejection: Draft.Rejection? {
@@ -117,27 +143,30 @@ private struct VaultSchemaKeyEditor: View {
 		return rejection
 	}
 
-	private var canEdit: Bool { store.canEditSchema(of: project.id) && !saving }
+	private var canEdit: Bool { store.canEditSchema(of: project.id) }
 
 	// MARK: - Body
 
 	var body: some View {
 		let mode = mode
 		let rule = rule
+		let context = context
+		let conflicts = mode == .editing(isOverride: false) || mode == .editing(isOverride: true) ? rule.conflicts(in: context) : [:]
+		let visible = visibleFields(rule)
 		VStack(spacing: 0) {
 			ScrollView {
 				VStack(alignment: .leading, spacing: 0) {
 					header(mode)
-					identity(mode, rule: rule)
+					identity(mode, rule: rule, conflicts: conflicts, visible: visible)
 					VaultHairline()
 					VaultSchemaStoredValues(store: store, project: project, environments: environments, key: key,
 						removed: mode == .removed)
 					VaultHairline()
 					switch mode {
 					case .editing:
-						editingSections(rule)
-					case .inherited, .overridden:
-						readOnlySections(rule)
+						editingSections(rule, context: context, conflicts: conflicts, visible: visible)
+					case .inherited, .overridden, .reset:
+						readOnlySections(rule, mode: mode)
 						sourceNotice(mode)
 					case .removed:
 						removedNotice
@@ -154,23 +183,24 @@ private struct VaultSchemaKeyEditor: View {
 			footer(mode)
 		}
 		.background(VaultEscapeResponder(onEscape: { onSelect(nil) }))
-		.background { undoShortcuts }
-		.onAppear { name = key }
-		.onChange(of: store.savingSchemaDrafts.contains(project.id)) { _, isSaving in saving = isSaving }
+		.background(VaultUndoShortcuts(undo: { undo(redo: false) }, redo: { undo(redo: true) }))
+		.onAppear {
+			name = key
+			isPresented = true
+		}
+		.onDisappear { isPresented = false }
+		.onChange(of: name) { renameError = nil }
 	}
 
-	private var undoShortcuts: some View {
-		ZStack {
-			Button("Undo rule change") { store.undoSchemaDraft(in: project.id) }
-				.keyboardShortcut("z", modifiers: .command)
-				.disabled(!store.canUndoSchemaDraft(in: project.id))
-			Button("Redo rule change") { store.redoSchemaDraft(in: project.id) }
-				.keyboardShortcut("z", modifiers: [.command, .shift])
-				.disabled(!store.canRedoSchemaDraft(in: project.id))
+	private func undo(redo: Bool) -> Bool {
+		if redo {
+			guard store.canRedoSchemaDraft(in: project.id) else { return false }
+			store.redoSchemaDraft(in: project.id)
+		} else {
+			guard store.canUndoSchemaDraft(in: project.id) else { return false }
+			store.undoSchemaDraft(in: project.id)
 		}
-		.opacity(0)
-		.frame(width: 0, height: 0)
-		.accessibilityHidden(true)
+		return true
 	}
 
 	// MARK: - Header and identity
@@ -179,10 +209,10 @@ private struct VaultSchemaKeyEditor: View {
 		HStack(spacing: 6) {
 			Text("KEY").vaultSectionLabel()
 			switch mode {
-			case .inherited(let source), .overridden(let source):
+			case .inherited(let source), .overridden(let source), .reset(let source):
 				VaultSourceBadge(source: source)
 			case .editing(true):
-				VaultSourceBadge(source: savedRule?.overrides ?? savedRule?.source ?? "imported")
+				VaultSourceBadge(source: importedSource)
 			default:
 				HStack(spacing: 4) {
 					Image(systemName: "doc").font(.system(size: 10))
@@ -207,11 +237,12 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	@ViewBuilder
-	private func identity(_ mode: Mode, rule: Rule) -> some View {
+	private func identity(_ mode: Mode, rule: Rule, conflicts: [Field: Rule.Conflict], visible: Set<Field>) -> some View {
 		VStack(alignment: .leading, spacing: 8) {
-			nameField(mode)
+			nameField(mode, rule: rule)
 			if case .editing = mode {
-				descriptionField(rule)
+				descriptionField
+				hiddenCharacters(in: rule.description)
 			} else if let description = rule.description, !description.isEmpty {
 				Text(description.escapingDirectionControls)
 					.font(.system(size: 12))
@@ -220,12 +251,14 @@ private struct VaultSchemaKeyEditor: View {
 			}
 			if case .editing(true) = mode {
 				notice(symbol: "square.stack.3d.up",
-					text: "You're editing a copy of the rule from \(savedRule?.overrides ?? savedRule?.source ?? "an imported schema"). Saving writes an override to lpm.json that replaces the original; it doesn't merge.")
+					text: "You're editing a copy of the rule from \(importedSource). Saving writes an override to lpm.json that replaces the original; it doesn't merge.")
 			}
 			if draft.conflicts.contains(where: { $0.item == item }) {
-				notice(symbol: "exclamationmark.triangle", text: "Conflicts with a change on disk. Choose a version in the banner.", tint: VaultPalette.orangeTintText)
+				conflictNotice
 			}
-			if let rejection, rejection.field.flatMap(Field.init(name:)) == nil, !hasBlockingConflict(rule) {
+			if let rejection, rejectionRow(rejection, mode: mode, visible: visible) == nil,
+				!conflicts.contains(where: { visible.contains($0.key) && $0.value.kind == .blocking })
+			{
 				conflictLine(.init(kind: .blocking, message: rejection.reason, fixes: []))
 			}
 		}
@@ -233,10 +266,44 @@ private struct VaultSchemaKeyEditor: View {
 		.padding(.bottom, 12)
 	}
 
-	private func nameField(_ mode: Mode) -> some View {
+	/// The row that shows the engine's rejection of this key: the first row
+	/// it names that the panel shows. Nil shows it under the name.
+	private func rejectionRow(_ rejection: Draft.Rejection, mode: Mode, visible: Set<Field>) -> Field? {
+		guard case .editing = mode else { return nil }
+		return rejection.fields.lazy.compactMap(Field.init(name:)).first(where: visible.contains)
+	}
+
+	private var conflictNotice: some View {
+		VStack(alignment: .leading, spacing: 8) {
+			HStack(alignment: .top, spacing: 8) {
+				Image(systemName: "exclamationmark.triangle").font(.system(size: 11)).padding(.top, 1)
+				Text("lpm.json changed on disk while you edited this key. Keep your version or take the one on disk.")
+					.font(.system(size: 11.5))
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			HStack(spacing: 6) {
+				VaultBarButton(title: "Keep mine", height: 24) { resolveConflict(keepingMine: true) }
+					.disabled(!canEdit)
+				VaultBarButton(title: "Take theirs", height: 24) { resolveConflict(keepingMine: false) }
+					.disabled(!canEdit)
+			}
+			.padding(.leading, 19)
+		}
+		.foregroundStyle(VaultPalette.orangeTintText)
+		.padding(10)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.orangeTint))
+	}
+
+	private func resolveConflict(keepingMine: Bool) {
+		store.editSchemaDraft(in: project.id) { $0.resolveConflict(item, keepingMine: keepingMine) }
+	}
+
+	private func nameField(_ mode: Mode, rule: Rule) -> some View {
 		let renamable = mode == .editing(isOverride: false) && draft.base(of: item) != .absent
 		let changed = name != key
-		let issue = changed ? nameIssue(name) : nil
+		let issue = changed ? nameIssue(name, rule: rule) : nil
+		let shownPrefix = changed && issue == nil ? Rule.publicPrefix(of: name, clientPrefixes: overview?.clientPrefixes ?? []) : publicPrefix
 		return VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 6) {
 				if renamable {
@@ -245,7 +312,7 @@ private struct VaultSchemaKeyEditor: View {
 						.font(VaultTypography.mono(13.5, .bold))
 						.autocorrectionDisabled()
 						.disabled(!canEdit || renaming)
-						.onSubmit { if changed, issue == nil { rename() } }
+						.onSubmit { if changed, issue == nil, canRename { rename() } }
 						.accessibilityLabel("Key name")
 				} else {
 					Text(key)
@@ -259,7 +326,7 @@ private struct VaultSchemaKeyEditor: View {
 							.help("Declared elsewhere, so it can't be renamed here")
 					}
 				}
-				if publicPrefix != nil, mode != .removed { VaultPublicBadge() }
+				if shownPrefix != nil, mode != .removed { VaultPublicBadge() }
 			}
 			.padding(.horizontal, 9)
 			.frame(height: 32)
@@ -272,20 +339,7 @@ private struct VaultSchemaKeyEditor: View {
 				if let issue {
 					conflictLine(.init(kind: .blocking, message: issue, fixes: []))
 				} else {
-					let stored = environments.filter { project.value(for: key, in: $0) != nil }.count
-					Text(stored == 0 ? "Renames its rule in lpm.json." : "Renames its rule in lpm.json and its values in \(stored == 1 ? "1 environment" : "\(stored) environments").")
-						.font(.system(size: 11))
-						.foregroundStyle(VaultPalette.textTertiary)
-						.fixedSize(horizontal: false, vertical: true)
-					HStack(spacing: 6) {
-						VaultBarButton(title: renaming ? "Renaming…" : "Rename", filled: true, disabled: renaming || pendingDraft != nil, height: 24, action: rename)
-						VaultBarButton(title: "Cancel", height: 24) { name = key; renameError = nil }
-					}
-					if pendingDraft != nil {
-						Text("Save or discard your rule changes before renaming.")
-							.font(.system(size: 11))
-							.foregroundStyle(VaultPalette.textTertiary)
-					}
+					renameDetails
 				}
 			}
 			if let renameError {
@@ -294,17 +348,52 @@ private struct VaultSchemaKeyEditor: View {
 		}
 	}
 
-	/// A reason the panel shows next to a row, which explains the engine's
-	/// rejection better than its own message.
-	private func hasBlockingConflict(_ rule: Rule) -> Bool {
-		rule.conflicts(key: key, publicPrefix: publicPrefix, secretKeys: secretKeys).values.contains { $0.kind == .blocking }
+	@ViewBuilder
+	private var renameDetails: some View {
+		if let note = exposureChange(renamingTo: name) {
+			HStack(alignment: .top, spacing: 6) {
+				Image(systemName: "globe").font(.system(size: 10)).padding(.top, 1)
+				Text(note).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+			}
+			.foregroundStyle(VaultPalette.accentText)
+		}
+		Text(renameSummary)
+			.font(.system(size: 11))
+			.foregroundStyle(VaultPalette.textTertiary)
+			.fixedSize(horizontal: false, vertical: true)
+		HStack(spacing: 6) {
+			VaultBarButton(title: renaming ? "Renaming…" : "Rename", filled: true, disabled: renaming || !canRename, height: 24, action: rename)
+			VaultBarButton(title: "Cancel", height: 24) { name = key }
+		}
 	}
 
-	private func nameIssue(_ name: String) -> String? {
+	private var canRename: Bool { pendingDraft == nil && project.hasLoadedEnvironments && canEdit }
+
+	private var renameSummary: String {
+		if pendingDraft != nil { return "Save or discard your rule changes before renaming." }
+		guard project.hasLoadedEnvironments else { return "Renaming waits until the project's values are loaded." }
+		let stored = environments.filter { project.value(for: key, in: $0) != nil }.count
+		return stored == 0 ? "Renames its rule in lpm.json." : "Renames its rule in lpm.json and its values in \(stored == 1 ? "1 environment" : "\(stored) environments")."
+	}
+
+	/// How renaming changes whether the key reaches the browser, which the
+	/// LPM CLI decides by the name's prefix.
+	private func exposureChange(renamingTo name: String) -> String? {
+		let after = Rule.publicPrefix(of: name, clientPrefixes: overview?.clientPrefixes ?? [])
+		switch (publicPrefix, after) {
+		case (nil, let prefix?): return "Becomes public: \(prefix) exposes its value to the browser."
+		case (let prefix?, nil): return "Becomes private: without \(prefix), its value stays out of the browser."
+		default: return nil
+		}
+	}
+
+	private func nameIssue(_ name: String, rule: Rule) -> String? {
 		guard EnvValidation.isValidVariableName(name) else { return "Use letters, digits and underscores; a name can't start with a digit." }
-		let folded = name.uppercased()
-		if let existing = overview?.rules.first(where: { $0.key != key && $0.key.uppercased() == folded }) {
-			return existing.key == name ? "\(name) is already declared." : "Conflicts with \(existing.key): names can't differ only in capitalisation."
+		if let existing = overview?.keys(named: name, otherThan: key).first {
+			return existing == name ? "\(name) is already declared." : "Conflicts with \(existing): names can't differ only in capitalisation."
+		}
+		if rule.secret, let prefix = Rule.publicPrefix(of: name, clientPrefixes: overview?.clientPrefixes ?? []) {
+			return "Secret keys can't start with \(prefix), which makes a key public."
 		}
 		return nil
 	}
@@ -316,7 +405,8 @@ private struct VaultSchemaKeyEditor: View {
 		Task {
 			do {
 				try await store.renameDeclaredKey(key, to: target, in: project.id)
-				onSelect(.key(target))
+				onRenamed(key, target)
+				if isPresented { onSelect(.key(target)) }
 			} catch {
 				renameError = error.localizedDescription
 			}
@@ -324,7 +414,7 @@ private struct VaultSchemaKeyEditor: View {
 		}
 	}
 
-	private func descriptionField(_ rule: Rule) -> some View {
+	private var descriptionField: some View {
 		TextField("Description — shown in CLI errors and .env.example", text: textBinding(\.description, field: "description"), axis: .vertical)
 			.textFieldStyle(.plain)
 			.font(.system(size: 12))
@@ -350,17 +440,18 @@ private struct VaultSchemaKeyEditor: View {
 
 	// MARK: - Editing
 
-	private func editingSections(_ rule: Rule) -> some View {
-		let conflicts = rule.conflicts(key: key, publicPrefix: publicPrefix, secretKeys: secretKeys)
-		let fields = visibleFields(rule)
+	private func editingSections(_ rule: Rule, context: Rule.Context, conflicts: [Field: Rule.Conflict], visible: Set<Field>) -> some View {
+		let engineRow = rejection.flatMap { rejectionRow($0, mode: mode, visible: visible) }
 		return VStack(alignment: .leading, spacing: 0) {
 			ForEach(ProjectEnvSchemaRule.Section.allCases, id: \.self) { section in
-				let rows = Field.allCases.filter { $0.section == section && fields.contains($0) }
+				let rows = Field.allCases.filter { $0.section == section && visible.contains($0) }
 				if !rows.isEmpty {
 					VStack(alignment: .leading, spacing: 9) {
 						Text(section.title).vaultSectionLabel()
 						ForEach(rows, id: \.self) { field in
-							fieldRow(field, rule: rule, conflict: conflicts[field])
+							let conflict = conflicts[field]
+							fieldRow(field, rule: rule, context: context, conflict: conflict,
+								engineIssue: engineRow == field && conflict?.kind != .blocking ? rejection?.reason : nil)
 						}
 					}
 					.padding(.horizontal, 16)
@@ -368,7 +459,7 @@ private struct VaultSchemaKeyEditor: View {
 					.padding(.bottom, 4)
 				}
 			}
-			addRuleButton(rule, shown: fields)
+			addRuleButton(rule, context: context, shown: visible)
 				.padding(.horizontal, 16)
 				.padding(.vertical, 12)
 		}
@@ -381,8 +472,7 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	@ViewBuilder
-	private func fieldRow(_ field: Field, rule: Rule, conflict: Rule.Conflict?) -> some View {
-		let engineIssue = rejection.flatMap { $0.field.flatMap(Field.init(name:)) == field ? $0.reason : nil }
+	private func fieldRow(_ field: Field, rule: Rule, context: Rule.Context, conflict: Rule.Conflict?, engineIssue: String?) -> some View {
 		VStack(alignment: .leading, spacing: 5) {
 			if field.isStacked {
 				HStack(spacing: 8) {
@@ -390,15 +480,16 @@ private struct VaultSchemaKeyEditor: View {
 					Spacer(minLength: 4)
 					removeButton(field)
 				}
-				control(field, rule: rule)
+				control(field, rule: rule, context: context)
 			} else {
 				HStack(alignment: .center, spacing: 8) {
 					label(field).frame(width: 84, alignment: .leading)
-					control(field, rule: rule)
+					control(field, rule: rule, context: context)
 						.frame(maxWidth: .infinity, alignment: .leading)
 					removeButton(field)
 				}
 			}
+			hiddenCharacters(in: Self.text(of: field, in: rule))
 			if let conflict { conflictLine(conflict) }
 			if let engineIssue { conflictLine(.init(kind: .blocking, message: engineIssue, fixes: [])) }
 		}
@@ -416,8 +507,8 @@ private struct VaultSchemaKeyEditor: View {
 	private func removeButton(_ field: Field) -> some View {
 		if field != .client {
 			Button {
-				shownFields.remove(field)
 				update { $0.remove(field) }
+				shownFields.remove(field)
 			} label: {
 				Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(VaultPalette.textFaint)
 					.frame(width: 18, height: 18).contentShape(Rectangle())
@@ -432,12 +523,12 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	@ViewBuilder
-	private func control(_ field: Field, rule: Rule) -> some View {
+	private func control(_ field: Field, rule: Rule, context: Rule.Context) -> some View {
 		switch field {
 		case .required:
 			toggle(\.required, label: "Required")
 		case .secret:
-			toggle(\.secret, label: "Secret", disabled: publicPrefix != nil && !rule.secret)
+			toggle(\.secret, label: "Secret", disabled: !rule.secret && !rule.availability(of: .secret, in: context).isAvailable)
 		case .client:
 			HStack(spacing: 6) {
 				toggle(\.client, label: "Public", disabled: true)
@@ -463,32 +554,44 @@ private struct VaultSchemaKeyEditor: View {
 			.menuIndicator(.hidden)
 			.disabled(!canEdit)
 			.accessibilityLabel("Format")
+			.accessibilityValue(rule.format?.title ?? "None")
 		case .bounds:
 			HStack(spacing: 6) {
-				numberField("min", text: \.min, field: "min")
-				numberField("max", text: \.max, field: "max")
+				textField("min", label: "Minimum value", text: \.min, field: "min")
+				textField("max", label: "Maximum value", text: \.max, field: "max")
 			}
 		case .length:
 			HStack(spacing: 6) {
-				numberField("min", text: \.minLength, field: "minLength")
-				numberField("max", text: \.maxLength, field: "maxLength")
+				textField("min", label: "Minimum length", text: \.minLength, field: "minLength")
+				textField("max", label: "Maximum length", text: \.maxLength, field: "maxLength")
 			}
 		case .pattern:
-			textField("regular expression", text: \.pattern, field: "pattern")
+			textField("regular expression", label: "Pattern", text: \.pattern, field: "pattern")
 		case .defaultValue:
-			textField("value", text: \.defaultValue, field: "default")
+			textField("value", label: "Default", text: \.defaultValue, field: "default")
 		case .protocols:
-			VaultChipField(values: rule.protocols ?? [], placeholder: "https", disabled: !canEdit,
-				normalize: { $0.lowercased() }) { values in update { $0.protocols = values } }
+			VaultChipField(values: rule.protocols ?? [], placeholder: "https", label: "Protocols", disabled: !canEdit,
+				normalize: VaultChipField.scheme) { values in update { $0.protocols = values } }
 		case .allowedValues:
-			VaultChipField(values: rule.allowedValues ?? [], placeholder: "value", disabled: !canEdit,
-				normalize: { $0 }) { values in update { $0.allowedValues = values } }
+			VaultChipField(values: rule.allowedValues ?? [], placeholder: "value", label: "Allowed values", disabled: !canEdit,
+				normalize: VaultChipField.literal) { values in update { $0.allowedValues = values } }
+				.help("Type \"\" for an empty value, or quote a value to keep its leading or trailing spaces.")
 		case .requiredIn:
-			scopeLines(rule.requiredIn.map { ($0, nil) }, field: .requiredIn)
+			scopeLines(rule.requiredIn.map { .init(scope: $0, value: "") }, field: .requiredIn)
 		case .defaultsIn:
-			scopeLines(rule.defaultsIn.map { ($0.scope, $0.value) }, field: .defaultsIn)
+			scopeLines(rule.defaultsIn, field: .defaultsIn)
 		case .requiredWhen:
-			requiredWhenControl(rule)
+			requiredWhenControl(rule, context: context)
+		}
+	}
+
+	/// The text a row's field edits, if it has one.
+	private static func text(of field: Field, in rule: Rule) -> String? {
+		switch field {
+		case .pattern: rule.pattern
+		case .defaultValue: rule.defaultValue
+		case .requiredWhen: if case .equals(let value)? = rule.requiredWhen?.condition { value } else { nil }
+		default: nil
 		}
 	}
 
@@ -551,7 +654,22 @@ private struct VaultSchemaKeyEditor: View {
 		.contentShape(Rectangle())
 	}
 
-	private func textField(_ placeholder: String, text: WritableKeyPath<Rule, String?>, field: String) -> some View {
+	/// Text from lpm.json with characters that hide or reorder what's shown,
+	/// which an edit field can't escape, written out with them escaped.
+	@ViewBuilder
+	private func hiddenCharacters(in text: String?) -> some View {
+		if let text, text.hasHiddenCharacters {
+			HStack(alignment: .top, spacing: 6) {
+				Image(systemName: "eye.trianglebadge.exclamationmark").font(.system(size: 10)).padding(.top, 1)
+				Text("Has hidden or reordering characters: \(text.escapingDirectionControls)")
+					.font(.system(size: 11))
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			.foregroundStyle(VaultPalette.orangeTintText)
+		}
+	}
+
+	private func textField(_ placeholder: String, label: String, text: WritableKeyPath<Rule, String?>, field: String) -> some View {
 		TextField(placeholder, text: textBinding(text, field: field))
 			.textFieldStyle(.plain)
 			.font(VaultTypography.mono(12))
@@ -561,12 +679,7 @@ private struct VaultSchemaKeyEditor: View {
 			.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
 			.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
 			.disabled(!canEdit)
-			.accessibilityLabel(placeholder)
-	}
-
-	private func numberField(_ placeholder: String, text: WritableKeyPath<Rule, String?>, field: String) -> some View {
-		textField(placeholder, text: text, field: field)
-			.accessibilityLabel("\(field) \(placeholder)")
+			.accessibilityLabel(label)
 	}
 
 	/// Reads the rule as it is when asked, not when the panel last drew, so
@@ -575,28 +688,32 @@ private struct VaultSchemaKeyEditor: View {
 		Binding(get: { rule[keyPath: text] ?? "" }, set: { value in update(coalescing: field) { $0[keyPath: text] = value } })
 	}
 
-	private func requiredWhenControl(_ rule: Rule) -> some View {
+	private func requiredWhenControl(_ rule: Rule, context: Rule.Context) -> some View {
 		let condition = rule.requiredWhen
-		let candidates = (overview?.rules ?? []).map(\.key).filter { $0 != key }
+		let hasCandidates = context.declaredKeys?.contains(where: { $0 != key }) ?? false
 		return VStack(alignment: .leading, spacing: 6) {
-			Menu {
-				ForEach(candidates, id: \.self) { candidate in
-					Button(candidate) {
-						update { $0.requiredWhen = .init(variable: candidate, condition: condition?.condition ?? .present(true)) }
-					}
-				}
-			} label: {
+			Button { pickingKey = true } label: {
 				fieldBox(condition?.variable ?? "Choose a key", placeholder: condition == nil, chevron: true)
 			}
-			.menuStyle(.button)
 			.buttonStyle(.plain)
-			.menuIndicator(.hidden)
-			.disabled(!canEdit || candidates.isEmpty)
+			.disabled(!canEdit || !hasCandidates)
 			.accessibilityLabel("Required when key")
+			.accessibilityValue(condition?.variable ?? "None")
+			.popover(isPresented: $pickingKey, arrowEdge: .leading) {
+				VaultKeyPicker(keys: (overview?.rules ?? []).lazy.map(\.key).filter { $0 != key }, secretKeys: context.secretKeys) { picked in
+					pickingKey = false
+					update { $0.requiredWhen = Self.condition($0.requiredWhen, on: picked, secretKeys: context.secretKeys) }
+				}
+			}
 			if let condition {
 				HStack(spacing: 6) {
 					Menu {
-						Button("equals") { update { $0.requiredWhen = .init(variable: condition.variable, condition: .equals("")) } }
+						if !context.secretKeys.contains(condition.variable) {
+							Button("equals") {
+								if case .equals = condition.condition { return }
+								update { $0.requiredWhen = .init(variable: condition.variable, condition: .equals("")) }
+							}
+						}
 						Button("is set") { update { $0.requiredWhen = .init(variable: condition.variable, condition: .present(true)) } }
 						Button("is not set") { update { $0.requiredWhen = .init(variable: condition.variable, condition: .present(false)) } }
 					} label: {
@@ -608,9 +725,10 @@ private struct VaultSchemaKeyEditor: View {
 					.fixedSize()
 					.disabled(!canEdit)
 					.accessibilityLabel("Required when condition")
+					.accessibilityValue(Self.conditionTitle(condition.condition))
 					if case .equals = condition.condition {
 						TextField("value", text: Binding(
-							get: { if case .equals(let value)? = rule.requiredWhen?.condition { value } else { "" } },
+							get: { if case .equals(let value)? = self.rule.requiredWhen?.condition { value } else { "" } },
 							set: { text in
 								update(coalescing: "requiredWhen") { rule in
 									guard let variable = rule.requiredWhen?.variable else { return }
@@ -632,6 +750,14 @@ private struct VaultSchemaKeyEditor: View {
 		}
 	}
 
+	/// The condition on `variable`, keeping the current one unless it compares
+	/// a secret key's value, which the LPM CLI rejects.
+	private static func condition(_ current: Rule.RequiredWhen?, on variable: String, secretKeys: Set<String>) -> Rule.RequiredWhen {
+		var condition = current?.condition ?? .present(true)
+		if case .equals = condition, secretKeys.contains(variable) { condition = .present(true) }
+		return .init(variable: variable, condition: condition)
+	}
+
 	private static func conditionTitle(_ condition: Rule.RequiredWhen.Condition) -> String {
 		switch condition {
 		case .equals: "equals"
@@ -640,37 +766,39 @@ private struct VaultSchemaKeyEditor: View {
 		}
 	}
 
-	private func scopeLines(_ lines: [(scope: Rule.Scope, value: String?)], field: Field) -> some View {
+	private func scopeLines(_ lines: [Rule.ScopedDefault], field: Field) -> some View {
 		VStack(alignment: .leading, spacing: 5) {
 			ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
 				HStack(alignment: .top, spacing: 4) {
 					VStack(alignment: .leading, spacing: 2) {
-						Text(line.scope.summary)
+						Text(line.scope.summary.escapingDirectionControls)
 							.font(VaultTypography.mono(11.5))
 							.foregroundStyle(VaultPalette.textPrimary)
 							.fixedSize(horizontal: false, vertical: true)
-						if let value = line.value {
-							Text("→ " + (value.isEmpty ? "\"\"" : value.escapingDirectionControls))
+						if field == .defaultsIn {
+							Text("→ " + (line.value.isEmpty ? "\"\"" : line.value.escapingDirectionControls))
 								.font(VaultTypography.mono(11))
 								.foregroundStyle(VaultPalette.textSecondary)
 								.lineLimit(2)
 						}
 					}
 					Spacer(minLength: 4)
-					VaultRowIconButton(systemImage: "pencil", help: "Edit scope") { scopeTarget = .init(field: field, index: index) }
-						.disabled(!canEdit)
-					VaultRowIconButton(systemImage: "xmark", help: "Remove scope") { removeScope(at: index, field: field) }
+					VaultRowIconButton(systemImage: "pencil", help: "Edit scope \(line.scope.summary)") {
+						scopeTarget = .init(field: field, original: line, index: index)
+					}
+					.disabled(!canEdit)
+					VaultRowIconButton(systemImage: "xmark", help: "Remove scope \(line.scope.summary)") { removeScope(line, field: field) }
 						.disabled(!canEdit)
 				}
 				.padding(.leading, 8)
 				.padding(.vertical, 3)
 				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
 				.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
-				.popover(item: popoverBinding(field: field, index: index), arrowEdge: .leading) { _ in
-					scopeEditor(field: field, index: index)
+				.popover(item: popoverBinding(field: field, index: index), arrowEdge: .leading) { target in
+					scopeEditor(target, lines: lines)
 				}
 			}
-			Button { scopeTarget = .init(field: field, index: nil) } label: {
+			Button { scopeTarget = .init(field: field, original: nil, index: nil) } label: {
 				HStack(spacing: 4) {
 					Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
 					Text("Scope").font(.system(size: 11))
@@ -684,8 +812,8 @@ private struct VaultSchemaKeyEditor: View {
 			.buttonStyle(.plain)
 			.disabled(!canEdit)
 			.accessibilityLabel(field == .requiredIn ? "Add a scope where the key is required" : "Add a scoped default")
-			.popover(item: popoverBinding(field: field, index: nil), arrowEdge: .leading) { _ in
-				scopeEditor(field: field, index: nil)
+			.popover(item: popoverBinding(field: field, index: nil), arrowEdge: .leading) { target in
+				scopeEditor(target, lines: lines)
 			}
 		}
 	}
@@ -697,29 +825,22 @@ private struct VaultSchemaKeyEditor: View {
 		)
 	}
 
-	private func scopeEditor(field: Field, index: Int?) -> some View {
-		let rule = rule
-		let current: Rule.ScopedDefault? = switch field {
-		case .requiredIn: index.map { .init(scope: rule.requiredIn[$0], value: "") }
-		default: index.map { rule.defaultsIn[$0] }
-		}
+	private func scopeEditor(_ target: ScopeTarget, lines: [Rule.ScopedDefault]) -> some View {
+		var others = lines.map(\.scope)
+		if let original = target.original, let index = lines.firstIndex(of: original) { others.remove(at: index) }
 		return VaultScopeEditor(
 			environments: environments,
-			initial: current?.scope ?? Rule.Scope(),
-			initialValue: field == .defaultsIn ? (current?.value ?? "") : nil,
-			isNew: index == nil
+			initial: target.original?.scope ?? Rule.Scope(),
+			initialValue: target.field == .defaultsIn ? (target.original?.value ?? "") : nil,
+			isNew: target.original == nil,
+			others: others
 		) { scope, value in
 			update { rule in
-				switch field {
-				case .requiredIn:
-					var scopes = rule.requiredIn
-					if let index { scopes[index] = scope } else { scopes.append(scope) }
-					rule.requiredIn = scopes
-				default:
-					var defaults = rule.defaultsIn
-					let entry = Rule.ScopedDefault(scope: scope, value: value ?? "")
-					if let index { defaults[index] = entry } else { defaults.append(entry) }
-					rule.defaultsIn = defaults
+				let entry = Rule.ScopedDefault(scope: scope, value: value ?? "")
+				if target.field == .requiredIn {
+					rule.requiredIn = rule.requiredIn.replacingEntry(target.original?.scope, with: scope)
+				} else {
+					rule.defaultsIn = rule.defaultsIn.replacingEntry(target.original, with: entry)
 				}
 			}
 			scopeTarget = nil
@@ -728,15 +849,15 @@ private struct VaultSchemaKeyEditor: View {
 		}
 	}
 
-	private func removeScope(at index: Int, field: Field) {
+	private func removeScope(_ line: Rule.ScopedDefault, field: Field) {
 		update { rule in
 			if field == .requiredIn {
 				var scopes = rule.requiredIn
-				scopes.remove(at: index)
+				if let index = scopes.firstIndex(of: line.scope) { scopes.remove(at: index) }
 				rule.requiredIn = scopes
 			} else {
 				var defaults = rule.defaultsIn
-				defaults.remove(at: index)
+				if let index = defaults.firstIndex(of: line) { defaults.remove(at: index) }
 				rule.defaultsIn = defaults
 			}
 		}
@@ -770,13 +891,13 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	private func apply(_ fix: Rule.Fix) {
-		if case .remove(let field) = fix { shownFields.remove(field) }
 		update { $0.apply(fix) }
+		if case .remove(let field) = fix { shownFields.remove(field) }
 	}
 
 	// MARK: - Add rule
 
-	private func addRuleButton(_ rule: Rule, shown: Set<Field>) -> some View {
+	private func addRuleButton(_ rule: Rule, context: Rule.Context, shown: Set<Field>) -> some View {
 		Button { addingRule = true } label: {
 			HStack(spacing: 5) {
 				Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
@@ -794,31 +915,35 @@ private struct VaultSchemaKeyEditor: View {
 		.disabled(!canEdit)
 		.accessibilityLabel("Add rule")
 		.popover(isPresented: $addingRule, arrowEdge: .bottom) {
-			VaultAddRuleMenu(fields: Field.allCases.filter { !shown.contains($0) }.map { ($0, rule.availability(of: $0, publicPrefix: publicPrefix)) }) { field in
+			VaultAddRuleMenu(fields: Field.allCases.filter { !shown.contains($0) }.map { ($0, rule.availability(of: $0, in: context)) }) { field in
 				addingRule = false
 				add(field)
 			}
 		}
 	}
 
+	/// Shows a row. Rows that are a choice wait for it, so adding one writes
+	/// nothing until a value is picked; a switch starts on.
 	private func add(_ field: Field) {
-		shownFields.insert(field)
 		switch field {
 		case .required: update { $0.required = true }
 		case .secret: update { $0.secret = true }
-		case .ci: update { $0.ci = $0.secret ? .secret : .variable }
-		case .requiredWhen:
-			if let candidate = (overview?.rules ?? []).map(\.key).first(where: { $0 != key }) {
-				update { $0.requiredWhen = .init(variable: candidate, condition: .present(true)) }
-			}
-		case .requiredIn, .defaultsIn: scopeTarget = .init(field: field, index: nil)
+		case .requiredIn, .defaultsIn: scopeTarget = .init(field: field, original: nil, index: nil)
 		default: break
 		}
+		shownFields.insert(field)
 	}
 
 	// MARK: - Read-only
 
-	private func readOnlySections(_ rule: Rule) -> some View {
+	@ViewBuilder
+	private func readOnlySections(_ rule: Rule, mode: Mode) -> some View {
+		if case .reset(let source) = mode, store.currentSchemaDraftEvaluation(for: project.id)?.overview == nil {
+			Text(rejection == nil ? "Reading the rule from \(source)…" : "The rule from \(source) can't be shown until the rules are valid.")
+				.font(.system(size: 12))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.padding(16)
+		}
 		VStack(alignment: .leading, spacing: 0) {
 			ForEach(ProjectEnvSchemaRule.Section.allCases, id: \.self) { section in
 				let rows = Field.allCases.filter { $0.section == section && rule.has($0) }
@@ -869,6 +994,15 @@ private struct VaultSchemaKeyEditor: View {
 					.disabled(!canEdit)
 					Text("removes the override").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
 				}
+			case .reset(let source):
+				Text("Saving removes the override from lpm.json, so the rule from \(source) applies again.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.fixedSize(horizontal: false, vertical: true)
+				VaultBarButton(systemImage: "arrow.uturn.backward", title: "Keep override", height: 24) {
+					store.editSchemaDraft(in: project.id) { $0.discard(.key(key)) }
+				}
+				.disabled(!canEdit)
 			case .inherited(let source):
 				HStack(spacing: 5) {
 					Image(systemName: "lock").font(.system(size: 10))
@@ -905,16 +1039,58 @@ private struct VaultSchemaKeyEditor: View {
 
 	// MARK: - Footer
 
+	/// Why Save is off while the draft has changes, and the item to show for it.
+	private struct Blocker {
+		let message: String
+		var key: String?
+	}
+
+	private var blocker: Blocker? {
+		guard let draft = pendingDraft else { return nil }
+		if let conflict = draft.conflicts.first(where: { $0.item == item }) ?? draft.conflicts.first {
+			if conflict.item == item { return Blocker(message: "Choose a version of this key above to save.") }
+			return Blocker(message: "Can't save until you choose a version of \(Self.name(of: conflict.item)), which changed on disk.", key: conflict.item.key)
+		}
+		guard let current = store.currentSchemaDraftEvaluation(for: project.id) else { return Blocker(message: "Checking the rules…") }
+		guard let rejection = current.rejection else { return nil }
+		if rejection.item == item { return Blocker(message: "Fix the problem above to save.") }
+		guard let other = rejection.item else { return Blocker(message: "Can't save: \(rejection.reason)") }
+		return Blocker(message: "Can't save: \(Self.name(of: other)) has a problem. \(rejection.reason)", key: other.key)
+	}
+
+	private static func name(of item: Draft.Item) -> String {
+		switch item {
+		case .key(let key): key
+		case .group(let name): "the group \(name)"
+		case .clientPrefixes: "the client prefixes"
+		}
+	}
+
 	private func footer(_ mode: Mode) -> some View {
-		let changes = pendingDraft?.changedItems.count ?? 0
-		let current = store.currentSchemaDraftEvaluation(for: project.id)
-		let blocked = current == nil || current?.rejection != nil || pendingDraft?.conflicts.isEmpty == false
+		let changes = pendingDraft?.changeCount ?? 0
+		let blocker = blocker
 		return VStack(alignment: .leading, spacing: 6) {
 			if let saveError {
 				Text(saveError)
 					.font(.system(size: 11))
 					.foregroundStyle(VaultPalette.redText)
 					.fixedSize(horizontal: false, vertical: true)
+			}
+			if let blocker {
+				HStack(alignment: .firstTextBaseline, spacing: 6) {
+					Text(blocker.message)
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.fixedSize(horizontal: false, vertical: true)
+					if let other = blocker.key {
+						Button("Show") { onSelect(.key(other)) }
+							.buttonStyle(.plain)
+							.font(.system(size: 11, weight: .semibold))
+							.foregroundStyle(VaultPalette.accentForeground)
+							.vaultPointingHand()
+							.accessibilityLabel("Show \(other)")
+					}
+				}
 			}
 			HStack(spacing: 8) {
 				switch mode {
@@ -940,11 +1116,13 @@ private struct VaultSchemaKeyEditor: View {
 					if draft.hasChange(to: item) {
 						VaultBarButton(title: "Discard", height: 26) {
 							shownFields = []
+							editsOverride = false
+							saveError = nil
 							store.editSchemaDraft(in: project.id) { $0.discard(.key(key)) }
 						}
 						.disabled(!canEdit)
 					}
-					VaultBarButton(title: saving ? "Saving…" : "Save", filled: true, disabled: changes == 0 || blocked || !canEdit, height: 26, action: save)
+					VaultBarButton(title: saving ? "Saving…" : "Save", filled: true, disabled: changes == 0 || blocker != nil || !canEdit, height: 26, action: save)
 				}
 			}
 		}
@@ -959,6 +1137,7 @@ private struct VaultSchemaKeyEditor: View {
 			do throws(ProjectEnvSchemaFile.DraftSaveError) {
 				try await store.saveSchemaDraft(in: project.id)
 				shownFields = []
+				editsOverride = false
 			} catch .file(.changed) {
 				saveError = "lpm.json changed on disk. Your changes were merged into it; check them and save again."
 			} catch {
@@ -969,10 +1148,16 @@ private struct VaultSchemaKeyEditor: View {
 
 	// MARK: - Updates
 
+	/// Changes the rule. Rows shown before the change stay, so clearing a
+	/// field leaves its row to type into.
 	private func update(coalescing field: String? = nil, _ change: (inout Rule) -> Void) {
 		var rule = rule
+		shownFields.formUnion(Field.allCases.filter(rule.has))
 		change(&rule)
-		let isOverride: Bool = if case .editing(true) = mode { true } else if case .overridden = mode { true } else { false }
+		let isOverride: Bool = switch mode {
+		case .editing(true), .overridden: true
+		default: false
+		}
 		update(declaration: isOverride ? .overridden(rule.json) : .declared(rule.json), coalescing: field)
 	}
 
@@ -982,12 +1167,72 @@ private struct VaultSchemaKeyEditor: View {
 	}
 }
 
+extension Array where Element: Equatable {
+	/// The entries with `original` replaced, or `entry` added when it's new or
+	/// no longer there, as when lpm.json changed while it was edited.
+	func replacingEntry(_ original: Element?, with entry: Element) -> [Element] {
+		var entries = self
+		if let original, let index = entries.firstIndex(of: original) { entries[index] = entry } else { entries.append(entry) }
+		return entries
+	}
+}
+
+private extension ProjectEnvSchemaDraft.Item {
+	var key: String? { if case .key(let key) = self { key } else { nil } }
+}
+
 private extension ProjectEnvSchemaRule.Field {
 	/// Rows whose control needs the panel's full width.
 	var isStacked: Bool {
 		switch self {
 		case .requiredIn, .requiredWhen, .defaultsIn, .protocols, .allowedValues: true
 		default: false
+		}
+	}
+}
+
+// MARK: - Undo shortcuts
+
+/// ⌘Z and ⇧⌘Z undo and redo rule changes, except while a text field is
+/// being edited, where they undo typing as everywhere else. Each closure
+/// returns whether it did anything; when not, the keys go on as usual.
+struct VaultUndoShortcuts: NSViewRepresentable {
+	let undo: () -> Bool
+	let redo: () -> Bool
+
+	func makeNSView(context: Context) -> MonitorView { MonitorView() }
+
+	func updateNSView(_ view: MonitorView, context: Context) {
+		view.undo = undo
+		view.redo = redo
+	}
+
+	final class MonitorView: NSView {
+		var undo: () -> Bool = { false }
+		var redo: () -> Bool = { false }
+		private var monitor: Any?
+
+		override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+		override func viewDidMoveToWindow() {
+			super.viewDidMoveToWindow()
+			if let monitor {
+				NSEvent.removeMonitor(monitor)
+				self.monitor = nil
+			}
+			guard window != nil else { return }
+			monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+				let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+				guard modifiers == .command || modifiers == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "z" else { return event }
+				let windowNumber = event.windowNumber
+				let handled = MainActor.assumeIsolated { self?.handle(redo: modifiers.contains(.shift), inWindow: windowNumber) ?? false }
+				return handled ? nil : event
+			}
+		}
+
+		private func handle(redo: Bool, inWindow windowNumber: Int) -> Bool {
+			guard let window, window.windowNumber == windowNumber, window.attachedSheet == nil, !(window.firstResponder is NSText) else { return false }
+			return redo ? self.redo() : undo()
 		}
 	}
 }
@@ -1005,7 +1250,6 @@ struct VaultSchemaStoredValues: View {
 
 	var body: some View {
 		let draft = store.schemaDraft(for: project.id)
-		let evaluation = store.latestSchemaDraftEvaluation(for: project.id)
 		VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 8) {
 				Text("STORED VALUES").vaultSectionLabel()
@@ -1014,33 +1258,69 @@ struct VaultSchemaStoredValues: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
 			}
-			ForEach(Array(environments.enumerated()), id: \.element) { index, environment in
-				let status = status(in: environment, draft: draft, evaluation: evaluation)
-				HStack(alignment: .top, spacing: 7) {
-					VaultStatusDot(color: VaultPalette.environment(index))
-						.padding(.top, 4)
-					Text(VaultProject.displayName(for: environment))
-						.font(VaultTypography.mono(11))
-						.foregroundStyle(VaultPalette.textSecondary)
-						.frame(width: 86, alignment: .leading)
-						.lineLimit(1)
-						.truncationMode(.middle)
-					Image(systemName: status.symbol)
-						.font(.system(size: 10, weight: .semibold))
-						.foregroundStyle(status.tint)
-						.frame(width: 12)
-						.padding(.top, 1)
-						.opacity(status.symbol.isEmpty ? 0 : 1)
-					Text(status.text)
-						.font(.system(size: 11.5, weight: status.emphasized ? .semibold : .regular))
-						.foregroundStyle(status.emphasized ? status.tint : VaultPalette.textTertiary)
-						.fixedSize(horizontal: false, vertical: true)
+			if let unavailable {
+				Text(unavailable)
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+			} else {
+				let presentations = presentations(draft: draft)
+				ForEach(Array(environments.enumerated()), id: \.element) { index, environment in
+					let status = status(in: environment, presentations: presentations)
+					HStack(alignment: .top, spacing: 7) {
+						VaultStatusDot(color: VaultPalette.environment(index))
+							.padding(.top, 4)
+						Text(VaultProject.displayName(for: environment))
+							.font(VaultTypography.mono(11))
+							.foregroundStyle(VaultPalette.textSecondary)
+							.frame(width: 86, alignment: .leading)
+							.lineLimit(1)
+							.truncationMode(.middle)
+						Image(systemName: status.symbol)
+							.font(.system(size: 10, weight: .semibold))
+							.foregroundStyle(status.tint)
+							.frame(width: 12)
+							.padding(.top, 1)
+							.opacity(status.symbol.isEmpty ? 0 : 1)
+						Text(status.text)
+							.font(.system(size: 11.5, weight: status.emphasized ? .semibold : .regular))
+							.foregroundStyle(status.emphasized ? status.tint : VaultPalette.textTertiary)
+							.fixedSize(horizontal: false, vertical: true)
+					}
+					.accessibilityElement(children: .combine)
 				}
-				.accessibilityElement(children: .combine)
 			}
 		}
 		.padding(.horizontal, 16)
 		.padding(.vertical, 10)
+	}
+
+	/// Why the values can't be checked now: they're loading, or the vault
+	/// can't use them, as when it can't reveal them.
+	private var unavailable: String? {
+		if !project.hasLoadedEnvironments || store.isLoadingSelectedProject { return "Loading the project's values…" }
+		return store.canUseLocalSecrets ? nil : "Stored values can't be checked right now."
+	}
+
+	private struct Presentations {
+		let saved: VaultValueCheckPresentation
+		/// With the draft applied; nil without a draft.
+		let draft: VaultValueCheckPresentation?
+		let hasDraft: Bool
+		/// Why the draft's results aren't shown yet.
+		let pending: String?
+	}
+
+	/// The saved rules' and the draft's results, built once for every environment.
+	private func presentations(draft: ProjectEnvSchemaDraft?) -> Presentations {
+		let saved = VaultValueCheckPresentation(check: store.valueChecks[project.id], rules: store.keyDescriptions[project.id]?.schema?.overview, project: project)
+		guard draft != nil else { return Presentations(saved: saved, draft: nil, hasDraft: false, pending: nil) }
+		guard let evaluation = store.latestSchemaDraftEvaluation(for: project.id) else {
+			return Presentations(saved: saved, draft: nil, hasDraft: true, pending: "Checking…")
+		}
+		guard let check = evaluation.check else {
+			return Presentations(saved: saved, draft: nil, hasDraft: true, pending: "Not checked until the rules are valid")
+		}
+		return Presentations(saved: saved, draft: VaultValueCheckPresentation(check: check, rules: evaluation.overview, project: project), hasDraft: true, pending: nil)
 	}
 
 	private struct Status {
@@ -1050,17 +1330,16 @@ struct VaultSchemaStoredValues: View {
 		var emphasized = false
 	}
 
-	private func status(in environment: String, draft: ProjectEnvSchemaDraft?, evaluation: ProjectEnvSchemaDraft.Evaluation?) -> Status {
-		let saved = VaultValueCheckPresentation(check: store.valueChecks[project.id], rules: store.keyDescriptions[project.id]?.schema?.overview, project: project)
+	private func status(in environment: String, presentations: Presentations) -> Status {
+		let saved = presentations.saved
 		let stored = project.value(for: key, in: environment) != nil
 		if removed {
 			return Status(text: stored ? "Kept, no longer checked" : "No value")
 		}
+		if let pending = presentations.pending { return Status(text: pending) }
 		let presentation: VaultValueCheckPresentation
-		if draft != nil {
-			guard let evaluation else { return Status(text: "Checking…") }
-			guard evaluation.check != nil else { return Status(text: "Not checked until the rules are valid") }
-			presentation = VaultValueCheckPresentation(check: evaluation.check, rules: evaluation.overview, project: project)
+		if let draft = presentations.draft {
+			presentation = draft
 		} else {
 			guard saved.hasCheck else { return Status(text: "Not checked") }
 			presentation = saved
@@ -1068,11 +1347,11 @@ struct VaultSchemaStoredValues: View {
 		let problems = presentation.problems(of: key, in: environment)
 		if let problem = problems.first {
 			let message = presentation.message(for: problem, in: environment)
-			let isNew = draft != nil && !saved.problems(of: key, in: environment).contains(problem)
+			let isNew = presentations.hasDraft && !saved.problems(of: key, in: environment).contains(problem)
 			return Status(symbol: "xmark.circle", tint: VaultPalette.redText, text: isNew ? "Would fail: \(message.lowercasedFirst)" : message, emphasized: isNew)
 		}
 		if stored || presentation.readsDefaultEnvironment(environment) && project.value(for: key, in: "default") != nil {
-			let fixed = draft != nil && !saved.problems(of: key, in: environment).isEmpty
+			let fixed = presentations.hasDraft && !saved.problems(of: key, in: environment).isEmpty
 			return Status(symbol: "checkmark", tint: VaultPalette.greenTintText, text: fixed ? "Would pass" : "Passes", emphasized: fixed)
 		}
 		if presentation.defaultValue(of: key, in: environment) != nil {
@@ -1095,26 +1374,43 @@ private struct VaultScopeEditor: View {
 	/// The scoped default's value; nil for a scope without one.
 	let initialValue: String?
 	let isNew: Bool
+	/// The rule's other scopes in the same list, which this one can't repeat or overlap.
+	let others: [ProjectEnvSchemaRule.Scope]
 	let onDone: (ProjectEnvSchemaRule.Scope, String?) -> Void
 	let onCancel: () -> Void
 
 	@State private var scope = ProjectEnvSchemaRule.Scope()
 	@State private var value = ""
-	@State private var service = ""
+
+	/// Why the scope can't be used as it is.
+	private var issue: String? {
+		if scope.isEmpty { return nil }
+		if let issue = scope.issue { return issue }
+		if initialValue != nil {
+			return others.contains(where: scope.overlaps) ? "Overlaps another scoped default, so both could apply. Narrow one of them." : nil
+		}
+		return others.contains(where: scope.isEquivalent) ? "Another scope here is the same." : nil
+	}
 
 	var body: some View {
+		let issue = issue
 		VStack(alignment: .leading, spacing: 10) {
 			Text(isNew ? "Add scope" : "Edit scope").font(.system(size: 12.5, weight: .semibold))
 			dimension("Environment", options: environments + scope.environments.filter { !environments.contains($0) }, selected: scope.environments) {
 				scope.environments = toggled(scope.environments, $0)
 			}
+			VaultChipField(values: [], placeholder: "other environment", label: "Other environment", disabled: false,
+				normalize: VaultChipField.trimmed, issue: Self.nameIssue) { added in
+				scope.environments += added.filter { !scope.environments.contains($0) }
+			}
 			dimension("Stage", options: ProjectEnvSchemaRule.Stage.allCases.map(\.rawValue), selected: scope.stages.map(\.rawValue)) { name in
 				guard let stage = ProjectEnvSchemaRule.Stage(rawValue: name) else { return }
-				scope.stages = ProjectEnvSchemaRule.Stage.allCases.filter { ($0 == stage) != scope.stages.contains($0) }
+				scope.stages = scope.stages.contains(stage) ? scope.stages.filter { $0 != stage } : scope.stages + [stage]
 			}
 			VStack(alignment: .leading, spacing: 5) {
 				Text("Service").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
-				VaultChipField(values: scope.services, placeholder: "any service", disabled: false, normalize: { $0 }) { scope.services = $0 }
+				VaultChipField(values: scope.services, placeholder: "any service", label: "Services", disabled: false,
+					normalize: VaultChipField.trimmed, issue: Self.nameIssue) { scope.services = $0 }
 			}
 			if initialValue != nil {
 				VStack(alignment: .leading, spacing: 5) {
@@ -1123,16 +1419,29 @@ private struct VaultScopeEditor: View {
 						.textFieldStyle(.roundedBorder)
 						.font(VaultTypography.mono(12))
 						.accessibilityLabel("Scoped default value")
+					if value.hasHiddenCharacters {
+						Text("Has hidden or reordering characters: \(value.escapingDirectionControls)")
+							.font(.system(size: 11))
+							.foregroundStyle(VaultPalette.orangeTintText)
+							.fixedSize(horizontal: false, vertical: true)
+					}
 				}
 			}
-			Text("Several values in one dimension mean any of them; dimensions combine with AND.")
-				.font(.system(size: 10.5))
-				.foregroundStyle(VaultPalette.textFaint)
-				.fixedSize(horizontal: false, vertical: true)
+			if let issue {
+				Text(issue)
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.redText)
+					.fixedSize(horizontal: false, vertical: true)
+			} else {
+				Text("Several values in one dimension mean any of them; dimensions combine with AND.")
+					.font(.system(size: 10.5))
+					.foregroundStyle(VaultPalette.textFaint)
+					.fixedSize(horizontal: false, vertical: true)
+			}
 			HStack {
 				Spacer()
 				VaultBarButton(title: "Cancel", height: 24, action: onCancel)
-				VaultBarButton(title: isNew ? "Add" : "Done", filled: true, disabled: scope.isEmpty, height: 24) {
+				VaultBarButton(title: isNew ? "Add" : "Done", filled: true, disabled: scope.isEmpty || issue != nil, height: 24) {
 					onDone(scope, initialValue == nil ? nil : value)
 				}
 			}
@@ -1143,6 +1452,10 @@ private struct VaultScopeEditor: View {
 			scope = initial
 			value = initialValue ?? ""
 		}
+	}
+
+	private static func nameIssue(_ name: String) -> String? {
+		EnvValidation.isValidEnvironmentName(name) ? nil : "Use letters, digits, “.”, “_” and “-”, up to 64 characters."
 	}
 
 	private func toggled(_ values: [String], _ value: String) -> [String] {
@@ -1156,7 +1469,7 @@ private struct VaultScopeEditor: View {
 				ForEach(options, id: \.self) { option in
 					let on = selected.contains(option)
 					Button { toggle(option) } label: {
-						Text(option)
+						Text(option.escapingDirectionControls)
 							.font(VaultTypography.mono(11))
 							.foregroundStyle(on ? VaultPalette.accentText : VaultPalette.textSecondary)
 							.padding(.horizontal, 7)
@@ -1176,54 +1489,168 @@ private struct VaultScopeEditor: View {
 
 // MARK: - Chip field
 
-/// Values as removable chips, with a field that adds one on Return.
+/// Values as removable chips, with a field that adds one on Return or when
+/// it loses focus.
 struct VaultChipField: View {
 	let values: [String]
 	let placeholder: String
+	/// Names the field for VoiceOver.
+	let label: String
 	let disabled: Bool
-	let normalize: (String) -> String
+	/// The value an entry adds, or nil when it adds nothing.
+	let normalize: (String) -> String?
+	/// Why a value can't be added, shown under the field.
+	var issue: (String) -> String? = { _ in nil }
 	let onChange: ([String]) -> Void
 
 	@State private var entry = ""
+	@State private var problem: String?
+	@FocusState private var focused: Bool
+
+	/// An entry without its surrounding spaces.
+	nonisolated static func trimmed(_ entry: String) -> String? {
+		let value = entry.trimmingCharacters(in: .whitespaces)
+		return value.isEmpty ? nil : value
+	}
+
+	/// A URL scheme as typed, such as "HTTPS://", the way lpm.json lists it.
+	nonisolated static func scheme(_ entry: String) -> String? {
+		var scheme = entry.trimmingCharacters(in: .whitespaces).lowercased()
+		if scheme.hasSuffix("://") { scheme.removeLast(3) } else if scheme.hasSuffix(":") { scheme.removeLast() }
+		return scheme.isEmpty ? nil : scheme
+	}
+
+	/// An entry as written, where quotes keep spaces at its ends and "" is
+	/// the empty value.
+	nonisolated static func literal(_ entry: String) -> String? {
+		let value = entry.trimmingCharacters(in: .whitespaces)
+		if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") { return String(value.dropFirst().dropLast()) }
+		return value.isEmpty ? nil : value
+	}
+
+	/// A value as a chip shows it, quoted when its spaces or emptiness would otherwise hide.
+	nonisolated static func display(_ value: String) -> String {
+		let shown = value.isEmpty || value.first?.isWhitespace == true || value.last?.isWhitespace == true ? "\"\(value)\"" : value
+		return shown.escapingDirectionControls
+	}
 
 	var body: some View {
-		VaultFlowLayout(spacing: 5, lineSpacing: 5) {
-			ForEach(Array(values.enumerated()), id: \.offset) { index, value in
-				HStack(spacing: 4) {
-					Text(value.escapingDirectionControls)
-						.font(VaultTypography.mono(11))
-						.foregroundStyle(VaultPalette.textPrimary)
-						.lineLimit(1)
-					Button {
-						var updated = values
-						updated.remove(at: index)
-						onChange(updated)
-					} label: {
-						Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(VaultPalette.textFaint)
+		VStack(alignment: .leading, spacing: 4) {
+			VaultFlowLayout(spacing: 5, lineSpacing: 5) {
+				ForEach(Array(values.enumerated()), id: \.offset) { index, value in
+					HStack(spacing: 4) {
+						Text(Self.display(value))
+							.font(VaultTypography.mono(11))
+							.foregroundStyle(VaultPalette.textPrimary)
+							.lineLimit(1)
+						Button {
+							var updated = values
+							updated.remove(at: index)
+							onChange(updated)
+						} label: {
+							Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(VaultPalette.textFaint)
+						}
+						.buttonStyle(.plain)
+						.disabled(disabled)
+						.accessibilityLabel("Remove \(Self.display(value))")
 					}
-					.buttonStyle(.plain)
+					.padding(.horizontal, 7)
+					.frame(height: 22)
+					.overlay { RoundedRectangle(cornerRadius: 5).stroke(VaultPalette.border, lineWidth: 1) }
+				}
+				TextField(values.isEmpty ? placeholder : "Add", text: $entry)
+					.textFieldStyle(.plain)
+					.font(VaultTypography.mono(11))
+					.frame(width: 110, height: 22)
+					.padding(.horizontal, 6)
+					.overlay { RoundedRectangle(cornerRadius: 5).stroke(problem == nil ? VaultPalette.border : VaultPalette.red, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
 					.disabled(disabled)
-					.accessibilityLabel("Remove \(value)")
-				}
-				.padding(.horizontal, 7)
-				.frame(height: 22)
-				.overlay { RoundedRectangle(cornerRadius: 5).stroke(VaultPalette.border, lineWidth: 1) }
+					.focused($focused)
+					.onSubmit(commit)
+					.onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
+					.onChange(of: entry) { problem = nil }
+					.accessibilityLabel(label)
 			}
-			TextField(values.isEmpty ? placeholder : "Add", text: $entry)
-				.textFieldStyle(.plain)
-				.font(VaultTypography.mono(11))
-				.frame(width: 90, height: 22)
-				.padding(.horizontal, 6)
-				.overlay { RoundedRectangle(cornerRadius: 5).stroke(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
-				.disabled(disabled)
-				.onSubmit {
-					let value = normalize(entry.trimmingCharacters(in: .whitespaces))
-					guard !value.isEmpty, !values.contains(value) else { entry = ""; return }
-					onChange(values + [value])
-					entry = ""
-				}
-				.accessibilityLabel(placeholder)
+			if let problem {
+				Text(problem)
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.redText)
+					.fixedSize(horizontal: false, vertical: true)
+			}
 		}
+	}
+
+	private func commit() {
+		guard let value = normalize(entry) else { entry = ""; return }
+		if let problem = issue(value) {
+			self.problem = problem
+			return
+		}
+		if !values.contains(value) { onChange(values + [value]) }
+		entry = ""
+	}
+}
+
+// MARK: - Key picker
+
+/// Finds a declared key by name: names that start with the search first.
+struct VaultKeyPicker: View {
+	/// From A to Z.
+	let keys: [String]
+	let secretKeys: Set<String>
+	let onPick: (String) -> Void
+
+	@State private var query = ""
+	private static let shownLimit = 50
+
+	nonisolated static func matches(_ query: String, in keys: [String]) -> [String] {
+		let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+		guard !needle.isEmpty else { return keys }
+		var leading: [String] = []
+		var inner: [String] = []
+		for key in keys {
+			let name = key.lowercased()
+			if name.hasPrefix(needle) { leading.append(key) } else if name.contains(needle) { inner.append(key) }
+		}
+		return leading + inner
+	}
+
+	var body: some View {
+		let matches = Self.matches(query, in: keys)
+		VStack(alignment: .leading, spacing: 6) {
+			TextField("Search keys", text: $query)
+				.textFieldStyle(.roundedBorder)
+				.font(VaultTypography.mono(12))
+				.onSubmit { if let first = matches.first { onPick(first) } }
+				.accessibilityLabel("Search keys")
+			ScrollView {
+				LazyVStack(alignment: .leading, spacing: 0) {
+					ForEach(matches.prefix(Self.shownLimit), id: \.self) { key in
+						Button { onPick(key) } label: {
+							HStack(spacing: 6) {
+								Text(key).font(VaultTypography.mono(12)).foregroundStyle(VaultPalette.textPrimary).lineLimit(1).truncationMode(.middle)
+								Spacer(minLength: 4)
+								if secretKeys.contains(key) {
+									Text("secret").font(.system(size: 10.5)).foregroundStyle(VaultPalette.textFaint)
+								}
+							}
+							.padding(.horizontal, 8)
+							.frame(height: 24)
+							.contentShape(Rectangle())
+						}
+						.buttonStyle(.plain)
+					}
+				}
+			}
+			.frame(maxHeight: 260)
+			if matches.isEmpty {
+				Text("No keys match.").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+			} else if matches.count > Self.shownLimit {
+				Text("\(matches.count - Self.shownLimit) more; keep typing to narrow them.").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+			}
+		}
+		.padding(10)
+		.frame(width: 260)
 	}
 }
 
