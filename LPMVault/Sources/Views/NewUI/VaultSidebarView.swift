@@ -285,6 +285,7 @@ struct VaultSidebarView: View {
 		let state = store.keyDescriptions[project.id]?.schema
 		let count = state?.overview?.rules.count
 		let unreadable = if case .unreadable? = state { true } else { false }
+		let hasDraft = store.schemaDraft(for: project.id) != nil
 		return Button {
 			store.openProject(id: project.id)
 			mode = .schema
@@ -298,6 +299,10 @@ struct VaultSidebarView: View {
 				Text("Schema")
 					.font(.system(size: 11.5, weight: selected ? .semibold : .regular))
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
+				if hasDraft {
+					VaultStatusDot(color: VaultPalette.orange)
+						.help("Unsaved rule changes")
+				}
 				Spacer(minLength: 4)
 				if unreadable {
 					Image(systemName: "exclamationmark.triangle.fill")
@@ -321,7 +326,7 @@ struct VaultSidebarView: View {
 		}
 		.buttonStyle(.plain)
 		.accessibilityLabel("Schema")
-		.accessibilityValue(unreadable ? "lpm.json can't be read" : count.map { "\($0) declared keys" } ?? "")
+		.accessibilityValue([unreadable ? "lpm.json can't be read" : count.map { "\($0) declared keys" }, hasDraft ? "unsaved rule changes" : nil].compactMap { $0 }.joined(separator: ", "))
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 
