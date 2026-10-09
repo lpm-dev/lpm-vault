@@ -268,7 +268,8 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.changedItems == [.key("MAIL_HOST")] }, "Renaming a new key moves it in the draft")
 
 			try await host.click("Add key")
-			#expect(try await host.waitUntil { host.hasField(placeholder: "KEY_NAME") })
+			// A new key's panel, not the one it replaces: a click lands on a display pass.
+			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try host.enterText("MAIL_HOST", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Already added in your draft"), "A key the draft adds is taken")
 			#expect(store.schemaDraft(for: "schema-add")?.changedItems == [.key("MAIL_HOST")])
@@ -324,7 +325,8 @@ extension SheetInteractionTests {
 			#expect(store.schemaDraft(for: "schema-add") == nil)
 
 			try await host.click("Add key")
-			#expect(try await host.waitUntil { host.hasField(placeholder: "KEY_NAME") })
+			// A new key's panel, not the one it replaces: a click lands on a display pass.
+			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try await host.typeCharacters("api-token", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Use API_TOKEN"))
 			#expect(store.schemaDraft(for: "schema-add") == nil)
@@ -334,6 +336,7 @@ extension SheetInteractionTests {
 			#expect(store.schemaDraft(for: "schema-add") == nil, "A pasted credential isn't written to lpm.json")
 			try await host.click("Use it as a name")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.changedItems == [.key("ghp_16C7e42F292c6912E7710c838347Ae178B4a")] })
+			try await host.settle()
 
 			try host.enterText(String(repeating: "A", count: 257), placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("at most 256"))
@@ -346,7 +349,8 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			store.editSchemaDraft(in: "schema-add") { $0.set(.absent, for: .key("PORT")) }
 			try await host.click("Add key")
-			#expect(try await host.waitUntil { host.hasField(placeholder: "KEY_NAME") })
+			// A new key's panel, not the one it replaces: a click lands on a display pass.
+			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try await host.typeCharacters("PORT", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Your draft removes this key"))
 			#expect(try await host.waitForText("Name the key to add it"), "Saving now would leave the key out")
@@ -361,7 +365,8 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Add key")
-			#expect(try await host.waitUntil { host.hasField(placeholder: "KEY_NAME") })
+			// A new key's panel, not the one it replaces: a click lands on a display pass.
+			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try await host.typeCharacters("SMTP_HOST", placeholder: "KEY_NAME")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.changedItems == [.key("SMTP_HOST")] })
 			try await Task.sleep(for: .milliseconds(1200))
@@ -381,7 +386,8 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Add key")
-			#expect(try await host.waitUntil { host.hasField(placeholder: "KEY_NAME") })
+			// A new key's panel, not the one it replaces: a click lands on a display pass.
+			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try host.typeText("FOO", placeholder: "KEY_NAME")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.changedItems == [.key("FOO")] })
 			store.editSchemaDraft(in: "schema-add") { draft in
