@@ -610,6 +610,18 @@ final class SheetTestHost<V: View> {
 		NSApplication.shared.sendEvent(event)
 	}
 
+	/// Presses the button titled `title` in an alert shown as a sheet, as a
+	/// confirmation dialog is; its buttons aren't plain NSButtons, which
+	/// `click(_:in:)` takes.
+	func clickAlertButton(_ title: String, in sheet: NSWindow) throws {
+		func button(in view: NSView) -> NSButton? {
+			if let button = view as? NSButton, button.title == title { return button }
+			return view.subviews.lazy.compactMap(button(in:)).first
+		}
+		let content = try #require(sheet.contentView)
+		try #require(button(in: content), "Missing alert button \(title)").performClick(nil)
+	}
+
 	/// Sends a key with no modifiers, such as an arrow, through the
 	/// application, so event monitors see it as they would a real key press.
 	func press(_ key: Key) throws {

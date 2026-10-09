@@ -561,8 +561,7 @@ private struct VaultKeyEditor: View {
 	/// applied: edit its rules, or declare it when it can be declared.
 	private var schemaAction: String? {
 		if store.schemaOverview(for: project.id)?.rule(for: checkedKey) != nil { return "Edit in Schema" }
-		guard store.canEditSchema(of: project.id),
-			let stored = store.undeclaredSchemaKeys(for: project.id).first(where: { $0.key == checkedKey }),
+		guard store.canEditSchema(of: project.id), store.valueChecks[project.id] != nil, let stored = store.undeclaredSchemaKey(checkedKey, for: project.id),
 			!stored.isIgnored, stored.conflict == nil
 		else { return nil }
 		return "Declare in Schema"

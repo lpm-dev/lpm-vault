@@ -41,13 +41,21 @@ struct VaultSchemaView: View {
 	/// whether there was one.
 	var onUndo: (_ redo: Bool) -> Bool = { _ in false }
 	/// Moves the selection `offset` rows through `rows`, the table's order.
-	var onMove: (_ offset: Int, _ rows: [VaultSchemaSelection]) -> Void = { _, _ in }
+	var onMove: (_ offset: Int, _ rows: [VaultSchemaSelection]) -> Bool = { _, _ in false }
 	/// Closes the side panel; returns whether it was open.
 	var onClosePanel: () -> Bool = { false }
+	/// The side panel shows the selection, and offers its own way to the review.
+	var panelOpen = false
+	/// ⌘S: opens the review when the page offers it and saving isn't blocked;
+	/// returns whether it did.
+	var onReviewShortcut: () -> Bool = { false }
 	/// Declares every stored key that can be declared, in one change.
 	var onDeclareAll: () -> Void = {}
 	/// Keys stored in some environment that lpm.json doesn't declare.
 	var undeclared: [VaultStore.StoredSchemaKey] = []
+	/// The stored values were checked, which tells the keys the LPM CLI
+	/// ignores; none is offered for declaring until then.
+	var storedKeysChecked = false
 	var onDeclare: (String) -> Void = { _ in }
 	/// What merging the draft with changes on disk did, until dismissed.
 	var rebase: ProjectEnvSchemaDraft.Rebase? = nil
@@ -58,6 +66,8 @@ struct VaultSchemaView: View {
 	let onRecheck: () -> Void
 
 	@State private var showsClientPrefixes = false
+	/// Discarding while lpm.json can't be read, which can't be undone, waits for confirmation.
+	@State private var confirmsDiscard = false
 
 	/// How a row differs from lpm.json in the draft.
 	enum RowState: Equatable {
@@ -95,14 +105,20 @@ struct VaultSchemaView: View {
 			undo: { onUndo(false) },
 			redo: { onUndo(true) },
 			close: onClosePanel,
-			move: { moveSelection(by: $0, in: listed) }
+			move: { moveSelection(by: $0, in: listed) },
+			review: onReviewShortcut
 		))
 	}
 
-	/// The side panel shows the selection, which it does only while the rules are loaded.
-	private var panelShown: Bool {
-		guard selection != nil, case .loaded? = state else { return false }
-		return true
+	/// Why the rules can't be edited now; nil when they can.
+	private var editingUnavailable: String? {
+		guard !canEdit else { return nil }
+		if saving { return "Saving the rules to lpm.json…" }
+		return switch state {
+		case .noFolder?: "Connect the CLI to link the project's folder first"
+		case .unreadable?: "Rules can be edited once lpm.json can be read"
+		case .loaded?, nil: "Reading lpm.json…"
+		}
 	}
 
 	/// lpm.json, when the page can open it.
@@ -148,7 +164,7 @@ struct VaultSchemaView: View {
 				}
 				.fixedSize()
 				VaultBarButton(systemImage: "plus", title: "Add key", filled: true, disabled: !canEdit, height: 27, action: onAddKey)
-					.help(canEdit ? "Declare a new key in lpm.json" : "Rules can be edited once lpm.json can be read from the project's folder")
+					.help(editingUnavailable ?? "Declare a new key in lpm.json")
 			}
 		}
 		.padding(.horizontal, 20)
@@ -263,13 +279,16 @@ struct VaultSchemaView: View {
 				symbol: "curlybraces",
 				title: "No rules yet",
 				message: declarableCount > 0
-					? "Declare your first key to give the LPM CLI something to enforce. Keys you already store can be declared with suggested rules."
+					? "Declare your first key to give the LPM CLI something to enforce, or declare the keys you already store and give them rules."
 					: "Declare your first key to give the LPM CLI something to enforce: formats, defaults, and required keys."
 			) {
 				if canEdit {
 					VaultBarButton(systemImage: "plus", title: "Add key", filled: true, height: 28, action: onAddKey)
 					if declarableCount > 0 {
-						VaultBarButton(title: declarableCount == 1 ? "Declare 1 stored key" : "Declare \(declarableCount) stored keys", height: 28, action: onDeclareAll)
+						let tooMany = declarableCount > ProjectEnvSchemaRule.maximumKeys
+						VaultBarButton(title: declarableCount == 1 ? "Declare 1 stored key" : "Declare \(declarableCount) stored keys", disabled: tooMany, height: 28,
+							action: onDeclareAll)
+							.help(tooMany ? "lpm.json can declare at most \(ProjectEnvSchemaRule.maximumKeys) keys, so these can't all be declared at once." : "")
 					}
 				}
 				VaultBarButton(title: "Docs: envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
@@ -443,8 +462,7 @@ struct VaultSchemaView: View {
 		guard case .loaded? = state, let listed else { return false }
 		let rows = navigableRows(listed)
 		guard !rows.isEmpty else { return false }
-		onMove(offset, rows)
-		return true
+		return onMove(offset, rows)
 	}
 
 	/// The row `offset` rows from `selection`, stopping at either end, or the
@@ -584,8 +602,8 @@ struct VaultSchemaView: View {
 				HStack(spacing: 7) {
 					if let environments = failures[rule.key], state != .removed {
 						Circle().fill(VaultPalette.red).frame(width: 6, height: 6)
-							.help("Its stored value fails in \(environments.joined(separator: ", "))")
-							.accessibilityLabel("Fails in \(environments.joined(separator: ", "))")
+							.help("Fails its rules in \(environments.joined(separator: ", "))")
+							.accessibilityLabel("Fails its rules in \(environments.joined(separator: ", "))")
 					}
 					Text(rule.key)
 						.font(VaultTypography.mono(12.5, .semibold))
@@ -641,10 +659,9 @@ struct VaultSchemaView: View {
 		.accessibilityElement(children: .combine)
 	}
 
-	/// Stored keys "Declare all" declares: not ignored by the LPM CLI, and
-	/// not a letter-case variant of a declared key.
+	/// How many stored keys "Declare N stored keys" declares.
 	private var declarableCount: Int {
-		undeclared.lazy.filter { !$0.isIgnored && $0.conflict == nil }.count
+		storedKeysChecked ? VaultStore.StoredSchemaKey.declarableTogether(undeclared).count : 0
 	}
 
 	/// Stored keys lpm.json doesn't declare, in the table's order.
@@ -704,7 +721,7 @@ struct VaultSchemaView: View {
 				if let conflict = stored.conflict, !stored.isIgnored {
 					VaultBarButton(title: "Open \(conflict)", height: 24) { onSelect(.key(conflict)) }
 						.accessibilityLabel("Open \(conflict.escapingDirectionControls)")
-				} else if canEdit, !stored.isIgnored {
+				} else if canEdit, storedKeysChecked, !stored.isIgnored {
 					VaultBarButton(systemImage: "plus", title: "Declare", height: 24) { onDeclare(stored.key) }
 						.accessibilityLabel("Declare \(stored.key.escapingDirectionControls)")
 				}
@@ -795,30 +812,32 @@ struct VaultSchemaView: View {
 
 	private func statusBar(_ listed: Listed?) -> some View {
 		HStack(spacing: 12) {
-			switch state {
-			case .loaded?:
-				if let listed, !listed.rules.isEmpty || !listed.groups.isEmpty {
-					loadedStatus(listed)
-				} else {
+			HStack(spacing: 12) {
+				switch state {
+				case .loaded?:
+					if let listed, !listed.rules.isEmpty || !listed.groups.isEmpty {
+						loadedStatus(listed)
+					} else {
+						Text(Self.count(storedKeyCount, "stored key"))
+						Text("·")
+						Text("no rules yet")
+						draftStatus
+					}
+				case .unreadable?:
 					Text(Self.count(storedKeyCount, "stored key"))
 					Text("·")
-					Text("no rules yet")
+					Text("checks paused — lpm.json can't be read")
+						.foregroundStyle(VaultPalette.orangeTintText)
 					draftStatus
+				case .noFolder?:
+					Text(Self.count(storedKeyCount, "stored key"))
+					Text("·")
+					Text("no schema")
+					Text("·")
+					Text("editing unavailable")
+				case nil:
+					EmptyView()
 				}
-			case .unreadable?:
-				Text(Self.count(storedKeyCount, "stored key"))
-				Text("·")
-				Text("checks paused — lpm.json can't be read")
-					.foregroundStyle(VaultPalette.orangeTintText)
-				draftStatus
-			case .noFolder?:
-				Text(Self.count(storedKeyCount, "stored key"))
-				Text("·")
-				Text("no schema")
-				Text("·")
-				Text("editing unavailable")
-			case nil:
-				EmptyView()
 			}
 			Spacer(minLength: 0)
 			draftActions
@@ -829,6 +848,12 @@ struct VaultSchemaView: View {
 		.padding(.horizontal, 20)
 		.frame(height: VaultMetrics.statusBar)
 		.background(VaultPalette.headerRow)
+		.confirmationDialog("Discard your unsaved changes?", isPresented: $confirmsDiscard, titleVisibility: .visible) {
+			Button("Discard", role: .destructive, action: onDiscardAll)
+			Button("Cancel", role: .cancel) {}
+		} message: {
+			Text("lpm.json can't be read, so discarding can't be undone.")
+		}
 	}
 
 	@ViewBuilder
@@ -844,9 +869,12 @@ struct VaultSchemaView: View {
 			Text(failing)
 				.fontWeight(.semibold)
 				.foregroundStyle(VaultPalette.redText)
+				.layoutPriority(1)
 		}
-		Text("·")
-		Text("enforced by LPM CLI")
+		if (draft?.changeCount ?? 0) == 0 {
+			Text("·")
+			Text("enforced by LPM CLI")
+		}
 	}
 
 	@ViewBuilder
@@ -856,33 +884,42 @@ struct VaultSchemaView: View {
 			Text((saveFailed ? "save failed · " : "") + (changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes"))
 				.fontWeight(.semibold)
 				.foregroundStyle(saveFailed ? VaultPalette.redText : VaultPalette.orangeTintText)
+				.layoutPriority(1)
 		}
 	}
 
 	/// Review & save and Discard for the whole draft, while the panel that
-	/// offers them is closed.
+	/// offers its own way to the review is closed. What blocks saving reads
+	/// in full on hover and opens with Show.
 	@ViewBuilder
 	private var draftActions: some View {
-		if let changes = draft?.changeCount, changes > 0, !panelShown {
+		if let changes = draft?.changeCount, changes > 0, !panelOpen {
+			let unreadable = if case .unreadable? = state { true } else { false }
 			if let blocker, blocker.blocksReview {
-				Text(blocker.message)
-					.truncationMode(.tail)
-					.layoutPriority(-1)
+				Text("Can't save")
+					.fontWeight(.semibold)
+					.foregroundStyle(VaultPalette.redText)
+					.fixedSize()
 					.help(blocker.message)
+					.accessibilityLabel(blocker.message)
 				if let show = blocker.show {
 					Button("Show") { onSelect(show) }
 						.buttonStyle(.plain)
 						.fontWeight(.semibold)
 						.foregroundStyle(VaultPalette.accentForeground)
+						.fixedSize()
 						.vaultPointingHand()
 						.accessibilityLabel(VaultSchemaEditorFooter.showLabel(show))
 				}
 			}
-			VaultBarButton(title: changes > 1 ? "Discard all" : "Discard", disabled: saving, height: 22, action: onDiscardAll)
-				.help("Discard your unsaved changes to the schema. ⌘Z brings them back.")
+			VaultBarButton(title: changes > 1 ? "Discard all" : "Discard", disabled: saving, height: 22) {
+				if unreadable { confirmsDiscard = true } else { onDiscardAll() }
+			}
+			.help(unreadable ? "Discard your unsaved changes to the schema. While lpm.json can't be read, this can't be undone."
+				: "Discard your unsaved changes to the schema. ⌘Z brings them back.")
 			VaultBarButton(title: saving ? "Saving…" : "Review & save", shortcut: "⌘S", filled: true, disabled: blocker?.blocksReview == true || !canEdit || saving,
 				height: 22, action: onReview)
-				.keyboardShortcut("s", modifiers: .command)
+				.help(editingUnavailable ?? "Review the changes, then save them to lpm.json")
 		}
 	}
 

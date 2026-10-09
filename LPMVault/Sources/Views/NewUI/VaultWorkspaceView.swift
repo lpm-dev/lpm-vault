@@ -75,12 +75,33 @@ struct VaultWorkspaceView: View {
 		schemaPanelSession = UUID()
 	}
 
-	/// Keys whose stored values fail their rules, by the draft's latest
-	/// evaluation while there's a draft.
+	/// Keys whose stored values fail their rules: by the draft's latest
+	/// evaluation while there's a draft, and by lpm.json's rules while the
+	/// draft has none, such as while the LPM CLI rejects it.
 	private func schemaFailures(in project: VaultProject) -> [String: [String]] {
-		let check = store.schemaDraft(for: project.id) == nil
-			? store.valueChecks[project.id] : store.latestSchemaDraftEvaluation(for: project.id)?.check
+		let draftCheck = store.schemaDraft(for: project.id) == nil ? nil : store.latestSchemaDraftEvaluation(for: project.id)?.check
+		let check = draftCheck ?? store.valueChecks[project.id]
 		return check.map { VaultSchemaView.failures(in: $0, environments: store.orderedEnvironmentNames(for: project)) } ?? [:]
+	}
+
+	/// ⌘S with the side panel closed: opens the review when there's a draft
+	/// and nothing blocks it; returns whether it did.
+	private func reviewSchemaFromPage(in project: VaultProject) -> Bool {
+		guard !schemaPanelVisible, (store.schemaDraft(for: project.id)?.changeCount ?? 0) > 0, store.canEditSchema(of: project.id),
+			VaultSchemaEditorFooter.blocker(store: store, projectID: project.id, item: nil)?.blocksReview != true
+		else { return false }
+		schemaReview = SchemaReviewTarget(projectID: project.id)
+		return true
+	}
+
+	/// Moves the side panel's selection through `rows`, the table's order. A
+	/// key or group being added keeps the panel: what's typed there isn't
+	/// in the draft yet.
+	private func moveSchemaSelection(by offset: Int, through rows: [VaultSchemaSelection]) -> Bool {
+		if schemaSelection == .newKey || schemaSelection == .newGroup { return false }
+		guard let next = VaultSchemaView.row(offset, from: schemaSelection, in: rows) else { return false }
+		if next != schemaSelection { selectSchema(next) }
+		return true
 	}
 
 	private func undoSchemaDraft(in project: VaultProject, redo: Bool) -> Bool {
@@ -97,7 +118,9 @@ struct VaultWorkspaceView: View {
 	/// Declares every stored key that can be declared, in one draft change.
 	/// The store marks each public when a prefix makes it so.
 	private func declareAll(in project: VaultProject) {
-		let keys = store.undeclaredSchemaKeys(for: project.id).filter { !$0.isIgnored && $0.conflict == nil }.map(\.key)
+		guard store.valueChecks[project.id] != nil else { return }
+		let keys = VaultStore.StoredSchemaKey.declarableTogether(store.undeclaredSchemaKeys(for: project.id))
+		guard keys.count <= ProjectEnvSchemaRule.maximumKeys else { return }
 		store.editSchemaDraft(in: project.id) { draft in
 			draft.set(keys.map { (item: .key($0), declaration: .declared(ProjectEnvSchemaRule().json)) })
 		}
@@ -107,8 +130,8 @@ struct VaultWorkspaceView: View {
 	/// declared first when it can be.
 	private func openSchemaRules(of key: String, in project: VaultProject) {
 		mode = .schema
-		let declarable = store.canEditSchema(of: project.id)
-			&& store.undeclaredSchemaKeys(for: project.id).contains { $0.key == key && !$0.isIgnored && $0.conflict == nil }
+		let stored = store.canEditSchema(of: project.id) && store.valueChecks[project.id] != nil ? store.undeclaredSchemaKey(key, for: project.id) : nil
+		let declarable = stored.map { !$0.isIgnored && $0.conflict == nil } ?? false
 		if declarable { declare(key, in: project) } else { selectSchema(.key(key)) }
 	}
 
@@ -143,7 +166,7 @@ struct VaultWorkspaceView: View {
 
 	/// The Schema page's panel shows a selection while the project's rules are loaded.
 	private var schemaPanelVisible: Bool {
-		guard mode == .schema, schemaSelection != nil, let project, store.selectedProjectLoadFailure == nil else { return false }
+		guard mode == .schema, schemaSelection != nil, !hasUnsavedRecovery, let project, store.selectedProjectLoadFailure == nil else { return false }
 		if case .loaded? = store.keyDescriptions[project.id]?.schema { return true }
 		return false
 	}
@@ -282,23 +305,24 @@ struct VaultWorkspaceView: View {
 								clientPrefixes: AnyView(VaultSchemaClientPrefixesPopover(store: store, project: project) { selectSchema(.key($0)) }),
 								storedKeyCount: store.workspaceSnapshots[project.id]?.allSecretKeys.count ?? 0,
 								failures: schemaFailures(in: project),
-								saveFailed: store.schemaDraftSaveFailure(for: project.id) != nil,
+								saveFailed: VaultSchemaEditorFooter.saveFailure(store: store, projectID: project.id) != nil,
 								saving: store.savingSchemaDrafts.contains(project.id),
-								blocker: draft == nil || schemaPanelVisible ? nil : VaultSchemaEditorFooter.blocker(store: store, projectID: project.id, item: nil),
+								blocker: draft == nil || schemaPanelVisible || rules?.schema?.overview == nil ? nil
+									: VaultSchemaEditorFooter.blocker(store: store, projectID: project.id, item: nil),
 								onReview: { schemaReview = SchemaReviewTarget(projectID: project.id) },
 								onDiscardAll: { store.discardSchemaDraft(in: project.id) },
 								onUndo: { undoSchemaDraft(in: project, redo: $0) },
-								onMove: { offset, rows in
-									guard let next = VaultSchemaView.row(offset, from: schemaSelection, in: rows), next != schemaSelection else { return }
-									selectSchema(next)
-								},
+								onMove: moveSchemaSelection,
 								onClosePanel: {
 									guard schemaPanelVisible else { return false }
 									selectSchema(nil)
 									return true
 								},
+								panelOpen: schemaPanelVisible,
+								onReviewShortcut: { reviewSchemaFromPage(in: project) },
 								onDeclareAll: { declareAll(in: project) },
 								undeclared: store.undeclaredSchemaKeys(for: project.id),
+								storedKeysChecked: store.valueChecks[project.id] != nil,
 								onDeclare: { declare($0, in: project) },
 								rebase: store.schemaDraftRebases[project.id],
 								onDismissRebase: { store.dismissSchemaDraftRebase(in: project.id) },
@@ -452,6 +476,7 @@ struct VaultWorkspaceView: View {
 		}
 		.background(VaultPalette.content)
 		.frame(minWidth: 1040, minHeight: 640)
+		.environment(\.vaultSchemaKeysSuspended, showsAccountSwitcher)
 		.overlay {
 			if showsAccountSwitcher {
 				ZStack(alignment: .bottomLeading) {
