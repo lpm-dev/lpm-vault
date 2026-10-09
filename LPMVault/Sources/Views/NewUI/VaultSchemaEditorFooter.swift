@@ -29,24 +29,32 @@ struct VaultSchemaEditorFooter: View {
 	struct Blocker: Equatable {
 		let message: String
 		var show: VaultSchemaSelection?
+		/// Only the check of the latest edit is still running: the review can
+		/// open, and waits for it.
+		var checking = false
+
+		/// Whether it keeps the review from opening.
+		var blocksReview: Bool { !checking }
 	}
 
-	static func blocker(store: VaultStore, projectID: String, item: ProjectEnvSchemaDraft.Item, pending: String? = nil) -> Blocker? {
+	/// Why the draft can't be saved yet, as the panel showing `item` puts it;
+	/// with no item, as the page puts it.
+	static func blocker(store: VaultStore, projectID: String, item: ProjectEnvSchemaDraft.Item?, pending: String? = nil) -> Blocker? {
 		if let pending { return Blocker(message: pending) }
 		guard let draft = store.schemaDraft(for: projectID) else { return nil }
 		if let conflict = draft.conflicts.first(where: { $0.item == item }) ?? draft.conflicts.first {
-			if conflict.item == item { return Blocker(message: "Choose a version of this \(noun(of: item)) above to save.") }
+			if let item, conflict.item == item { return Blocker(message: "Choose a version of this \(noun(of: item)) above to save.") }
 			return Blocker(message: "Can't save until you choose a version of \(name(of: conflict.item)), which changed on disk.", show: selection(of: conflict.item))
 		}
-		guard let current = store.currentSchemaDraftEvaluation(for: projectID) else { return Blocker(message: "Checking the rules…") }
+		guard let current = store.currentSchemaDraftEvaluation(for: projectID) else { return Blocker(message: "Checking the rules…", checking: true) }
 		guard let rejection = current.rejection else {
 			guard let clash = store.schemaDraftCaseClash(for: projectID) else { return nil }
-			let shown: String? = if case .key(let key) = item, clash.keys.contains(key) { nil } else {
+			let shown: String? = if case .key(let key)? = item, clash.keys.contains(key) { nil } else {
 				clash.keys.first { draft.base(of: .key($0)) == .absent && draft.hasChange(to: .key($0)) }
 			}
 			return Blocker(message: "Can't save: \(clash.message)", show: shown.map(VaultSchemaSelection.key))
 		}
-		if rejection.item == item { return Blocker(message: "Fix the problem above to save.") }
+		if let item, rejection.item == item { return Blocker(message: "Fix the problem above to save.") }
 		guard let other = rejection.item else { return Blocker(message: "Can't save: \(rejection.reason)") }
 		return Blocker(message: "Can't save: \(name(of: other)) has a problem. \(rejection.reason)", show: selection(of: other))
 	}
@@ -76,7 +84,7 @@ struct VaultSchemaEditorFooter: View {
 		}
 	}
 
-	private static func showLabel(_ selection: VaultSchemaSelection) -> String {
+	static func showLabel(_ selection: VaultSchemaSelection) -> String {
 		switch selection {
 		case .key(let key): "Show \(key.escapingDirectionControls)"
 		case .group(let name): "Show the group \(name.escapingDirectionControls)"
@@ -147,7 +155,10 @@ struct VaultSchemaEditorFooter: View {
 					if failure != nil {
 						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)
 					} else {
-						VaultBarButton(title: "Review & save", filled: true, disabled: changes == 0 || blocker != nil || !canEdit, height: 26, action: onReview)
+						VaultBarButton(title: "Review & save", filled: true, disabled: changes == 0 || blocker?.blocksReview == true || !canEdit, height: 26,
+							action: onReview)
+							.keyboardShortcut("s", modifiers: .command)
+							.help("Review the changes, then save them to lpm.json (⌘S)")
 					}
 				}
 			}

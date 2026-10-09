@@ -167,7 +167,7 @@ struct VaultSchemaGroupEditor: View {
 			footer(mode, group: group)
 		}
 		.background(VaultEscapeResponder(onEscape: { onSelect(nil) }))
-		.background(VaultSchemaShortcuts(undo: { undo(redo: false) }, redo: { undo(redo: true) }, remove: {
+		.background(VaultSchemaShortcuts(remove: {
 			guard canEdit, removalAvailable(mode) else { return false }
 			remove(mode)
 			return true
@@ -191,17 +191,6 @@ struct VaultSchemaGroupEditor: View {
 			if field != held { field = held }
 			if held != name { onFollow(.group(held)) }
 		}
-	}
-
-	private func undo(redo: Bool) -> Bool {
-		if redo {
-			guard store.canRedoSchemaDraft(in: project.id) else { return false }
-			store.redoSchemaDraft(in: project.id)
-		} else {
-			guard store.canUndoSchemaDraft(in: project.id) else { return false }
-			store.undoSchemaDraft(in: project.id)
-		}
-		return true
 	}
 
 	// MARK: - Header

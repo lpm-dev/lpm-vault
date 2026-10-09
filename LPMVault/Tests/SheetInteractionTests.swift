@@ -408,8 +408,12 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
-	/// Clicks the rendered target after it appears.
-	func click(_ label: String, in targetWindow: NSWindow? = nil, caseInsensitive: Bool = false, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws {
+	/// Clicks the rendered target after it appears, within `region` of the
+	/// view when given, in Vision's normalized coordinates.
+	func click(
+		_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false,
+		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
+	) async throws {
 		let window = targetWindow ?? self.window
 		let target = try #require(window.contentView)
 		let options: String.CompareOptions = caseInsensitive ? .caseInsensitive : []
@@ -420,10 +424,10 @@ final class SheetTestHost<V: View> {
 			return
 		}
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		var bounds = try await labelBounds(label, in: target, options: options, onRecognition: onRecognition)
+		var bounds = try await labelBounds(label, in: target, options: options, region: region, onRecognition: onRecognition)
 		while bounds == nil, ContinuousClock.now < deadline {
 			try await Task.sleep(for: .milliseconds(20))
-			bounds = try await labelBounds(label, in: target, options: options, onRecognition: onRecognition)
+			bounds = try await labelBounds(label, in: target, options: options, region: region, onRecognition: onRecognition)
 		}
 		if bounds == nil { RenderedText.saveDiagnostic(try snapshot(target), named: label) }
 		let box = try #require(bounds, "Missing button \(label)")
@@ -604,6 +608,35 @@ final class SheetTestHost<V: View> {
 		let flags: NSEvent.ModifierFlags = shift ? [.command, .shift] : [.command]
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
 		NSApplication.shared.sendEvent(event)
+	}
+
+	/// Sends a key with no modifiers, such as an arrow, through the
+	/// application, so event monitors see it as they would a real key press.
+	func press(_ key: Key) throws {
+		let flags: NSEvent.ModifierFlags = key == .escape ? [] : [.numericPad, .function]
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: key.characters, charactersIgnoringModifiers: key.characters, isARepeat: false, keyCode: key.rawValue))
+		NSApplication.shared.sendEvent(event)
+	}
+
+	enum Key: UInt16 {
+		case escape = 53
+		case up = 126
+		case down = 125
+
+		var characters: String {
+			switch self {
+			case .escape: "\u{1b}"
+			case .up: "\u{f700}"
+			case .down: "\u{f701}"
+			}
+		}
+	}
+
+	/// Offers a Command shortcut to the window's key equivalents, as a menu
+	/// shortcut or a button's keyboard shortcut sees it; returns whether one took it.
+	func keyEquivalent(_ character: String, code: UInt16) throws -> Bool {
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
+		return window.performKeyEquivalent(with: event)
 	}
 
 	func escape() throws -> Bool {

@@ -61,11 +61,11 @@ extension SheetInteractionTests {
 			#expect(try await host.text().contains("Learn about envSchema"))
 		}
 
-		@Test("lpm.json without rules shows a valid example the LPM CLI accepts")
+		@Test("lpm.json without rules, and no stored keys to declare, shows a valid example the LPM CLI accepts")
 		func noRulesState() async throws {
 			let folder = try makeFolder(#"{"name":"app"}"#)
 			defer { try? FileManager.default.removeItem(atPath: folder) }
-			let store = makeStore(path: folder)
+			let store = makeStore(path: folder, values: [:])
 			defer { store.lock() }
 			let host = try await workspace(store)
 			defer { host.window.close() }
@@ -141,7 +141,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("RULES"))
 			let rules = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: inspector)
 			let text = OCRText(rules.map(\.text).joined(separator: "\n"))
-			for expected in ["12+ chars", "Secret", "Exactly one of PASSWORD, OAUTH_TOKEN", "Edit them there"] {
+			for expected in ["12+ chars", "Secret", "Exactly one of PASSWORD, OAUTH_TOKEN", "Edit in Schema"] {
 				#expect(text.contains(expected), "Missing \(expected) in the inspector")
 			}
 
@@ -149,9 +149,11 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("No rules for this key."))
 		}
 
-		private func makeStore(path: String) -> VaultStore {
+		private func makeStore(
+			path: String, values: [String: String] = ["PORT": "3000", "PASSWORD": "long-enough-password", "UNDECLARED": "x"]
+		) -> VaultStore {
 			let keychain = MockKeychainService()
-			let project = VaultProject(id: "schema-page", name: "billing-app", path: path, environments: ["default": ["PORT": "3000", "PASSWORD": "long-enough-password", "UNDECLARED": "x"]])
+			let project = VaultProject(id: "schema-page", name: "billing-app", path: path, environments: ["default": values])
 			keychain.envStorage[project.id] = (name: project.name, path: path, environments: project.environments)
 			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
 				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
