@@ -3539,6 +3539,19 @@ final class VaultStore {
     schemaDrafts[projectID].flatMap { $0.isEmpty ? nil : $0 }
   }
 
+  /// Removes `key` from lpm.json in the project's draft, with a fix for
+  /// each reference to it, as one change.
+  func removeSchemaKey(
+    _ key: String, settling fixes: [(reference: ProjectEnvSchemaReference, fix: ProjectEnvSchemaReference.Fix)], in projectID: String
+  ) {
+    editSchemaDraft(in: projectID) { $0.remove(key, settling: fixes) }
+  }
+
+  /// Takes a key's removal back, with the fixes that came with it.
+  func keepSchemaKey(_ key: String, in projectID: String) {
+    editSchemaDraft(in: projectID) { $0.keep(key) }
+  }
+
   /// A key some environment stores, and how many do.
   struct StoredSchemaKey: Hashable, Sendable {
     let key: String

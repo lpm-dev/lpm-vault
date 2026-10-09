@@ -200,6 +200,29 @@ struct ProjectConfigOpenerTests {
 	}
 }
 
+@Suite("Opening imported schemas")
+struct ProjectConfigOpenerImportTests {
+	@Test("only a JSON file inside the project opens, not another type or one reached through a link out of the folder")
+	func opensOnlyProjectJSON() throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "import-open-\(UUID().uuidString)").path
+		let outside = FileManager.default.temporaryDirectory.appending(path: "import-outside-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
+		try FileManager.default.createDirectory(atPath: outside, withIntermediateDirectories: true)
+		defer {
+			try? FileManager.default.removeItem(atPath: folder)
+			try? FileManager.default.removeItem(atPath: outside)
+		}
+		try "{}".write(toFile: folder + "/schemas/base.json", atomically: true, encoding: .utf8)
+		try "{}".write(toFile: folder + "/schemas/page.html", atomically: true, encoding: .utf8)
+		try "{}".write(toFile: outside + "/shared.json", atomically: true, encoding: .utf8)
+		try FileManager.default.createSymbolicLink(atPath: folder + "/linked", withDestinationPath: outside)
+		let root = URL(filePath: folder, directoryHint: .isDirectory)
+		#expect(ProjectConfigOpener.opensInEditor(root.appending(path: "schemas/base.json"), within: root))
+		#expect(!ProjectConfigOpener.opensInEditor(root.appending(path: "schemas/page.html"), within: root), "Another type could open in an app that runs it")
+		#expect(!ProjectConfigOpener.opensInEditor(root.appending(path: "linked/shared.json"), within: root), "A linked folder leads outside the project")
+	}
+}
+
 @Suite("Secure file writes")
 struct SecureFileWriteErrorTests {
 	@Test("write errors name the file operation, not an export, since lpm.json is written the same way")

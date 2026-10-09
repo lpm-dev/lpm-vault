@@ -85,10 +85,14 @@ struct ProjectEnvSchemaDraft: Sendable {
 	/// lpm.json's envSchema as the draft last read it; nil when it has none.
 	private(set) var schema: LPMConfigJSON?
 	/// In the order they were first made.
-	private(set) var changes: [Change] = [] { didSet { changePositions = Self.positions(of: changes.map(\.item)) } }
-	private(set) var conflicts: [Conflict] = [] { didSet { conflictPositions = Self.positions(of: conflicts.map(\.item)) } }
+	private(set) var changes: [Change] = []
+	private(set) var conflicts: [Conflict] = []
+	/// Keys the draft removes, with the fixes that came with each, which
+	/// keeping the key takes back. Part of the draft, so undo and redo carry them.
+	private(set) var removals: [String: Removal] = [:]
 	/// Each item `schema` has, which `base(of:)` reads without searching the JSON.
 	private var baseItems: [Item: Declaration]
+	/// Where each item is in `changes` and `conflicts`, kept as they change.
 	private var changePositions: [Item: Int] = [:]
 	private var conflictPositions: [Item: Int] = [:]
 
@@ -99,6 +103,17 @@ struct ProjectEnvSchemaDraft: Sendable {
 	}
 
 	var isEmpty: Bool { changes.isEmpty && conflicts.isEmpty }
+
+	/// Every item with the draft applied, in no particular order: what
+	/// lpm.json has that the draft doesn't change, and what the draft declares.
+	var currentItems: [(item: Item, declaration: Declaration)] {
+		var items = baseItems.compactMap { item, base in hasChange(to: item) ? nil : (item: item, declaration: base) }
+		for item in changedItems {
+			let declaration = declaration(of: item)
+			if declaration != .absent { items.append((item, declaration)) }
+		}
+		return items
+	}
 
 	/// Items with a change or a conflict, in the order they were first changed.
 	var changedItems: [Item] { changes.map(\.item) + conflicts.map(\.item) }
@@ -126,30 +141,68 @@ struct ProjectEnvSchemaDraft: Sendable {
 	/// change, so the file keeps its own member order; for a conflicting item,
 	/// that settles the conflict.
 	mutating func set(_ value: Declaration, for item: Item) {
-		if let index = conflictPositions[item] {
-			if value.isEquivalent(to: conflicts[index].theirs) {
-				conflicts.remove(at: index)
-			} else {
-				conflicts[index] = Conflict(item: item, mine: value, theirs: conflicts[index].theirs)
+		set([(item, value)])
+	}
+
+	/// Sets each item in turn, as `set(_:for:)` does, in time linear in the
+	/// edits and the draft's changes however many items drop out.
+	mutating func set(_ edits: [(item: Item, declaration: Declaration)]) {
+		var droppedChanges = IndexSet()
+		var droppedConflicts = IndexSet()
+		for (item, value) in edits {
+			if let index = conflictPositions[item] {
+				if value.isEquivalent(to: conflicts[index].theirs) {
+					droppedConflicts.insert(index)
+					conflictPositions[item] = nil
+				} else {
+					conflicts[index] = Conflict(item: item, mine: value, theirs: conflicts[index].theirs)
+				}
+				continue
 			}
-			return
+			let base = base(of: item)
+			if let index = changePositions[item] {
+				if value.isEquivalent(to: base) {
+					droppedChanges.insert(index)
+					changePositions[item] = nil
+				} else {
+					changes[index].value = value
+				}
+			} else if !value.isEquivalent(to: base) {
+				changePositions[item] = changes.count
+				changes.append(Change(item: item, base: base, value: value))
+			}
 		}
-		let base = base(of: item)
-		if let index = changePositions[item] {
-			if value.isEquivalent(to: base) { changes.remove(at: index) } else { changes[index].value = value }
-		} else if !value.isEquivalent(to: base) {
-			changes.append(Change(item: item, base: base, value: value))
-		}
+		if !droppedChanges.isEmpty { replaceChanges(changes.indices.filter { !droppedChanges.contains($0) }.map { changes[$0] }) }
+		if !droppedConflicts.isEmpty { replaceConflicts(conflicts.indices.filter { !droppedConflicts.contains($0) }.map { conflicts[$0] }) }
 	}
 
 	mutating func discard(_ item: Item) {
-		if let index = changePositions[item] { changes.remove(at: index) }
-		if let index = conflictPositions[item] { conflicts.remove(at: index) }
+		if let index = changePositions[item] {
+			var kept = changes
+			kept.remove(at: index)
+			replaceChanges(kept)
+		}
+		if let index = conflictPositions[item] {
+			var kept = conflicts
+			kept.remove(at: index)
+			replaceConflicts(kept)
+		}
 	}
 
 	mutating func discardAll() {
-		changes = []
-		conflicts = []
+		replaceChanges([])
+		replaceConflicts([])
+		removals = [:]
+	}
+
+	private mutating func replaceChanges(_ new: [Change]) {
+		changes = new
+		changePositions = Self.positions(of: new.map(\.item))
+	}
+
+	private mutating func replaceConflicts(_ new: [Conflict]) {
+		conflicts = new
+		conflictPositions = Self.positions(of: new.map(\.item))
 	}
 
 	/// Points the draft's references to `key`, in Required when and in group
@@ -157,6 +210,7 @@ struct ProjectEnvSchemaDraft: Sendable {
 	/// so only items the draft changes can refer to a key the draft adds.
 	mutating func renameReferences(to key: String, as newKey: String) {
 		guard key != newKey else { return }
+		var edits: [(item: Item, declaration: Declaration)] = []
 		for item in changedItems {
 			let declaration = declaration(of: item)
 			switch item {
@@ -164,21 +218,120 @@ struct ProjectEnvSchemaDraft: Sendable {
 				guard let condition = declaration.json?["requiredWhen"], condition["variable"] == .string(key) else { continue }
 				var renamed = condition
 				renamed.set(.string(newKey), forKey: "variable")
-				set(declaration.replacingJSON { $0.set(renamed, forKey: "requiredWhen") }, for: item)
+				edits.append((item, declaration.replacingJSON { $0.set(renamed, forKey: "requiredWhen") }))
 			case .group:
 				guard case .array(let members)? = declaration.json?["vars"], members.contains(.string(key)) else { continue }
-				set(declaration.replacingJSON { $0.set(.array(members.map { $0 == .string(key) ? .string(newKey) : $0 }), forKey: "vars") }, for: item)
+				edits.append((item, declaration.replacingJSON { $0.set(.array(members.map { $0 == .string(key) ? .string(newKey) : $0 }), forKey: "vars") }))
 			case .clientPrefixes:
 				continue
 			}
 		}
+		set(edits)
+	}
+
+	/// A key the draft removes, with what removing it changed, which keeping
+	/// the key takes back.
+	struct Removal: Equatable, Sendable {
+		enum Fix: Equatable, Sendable {
+			/// The key left the group, whose members were `members`.
+			case droppedFromGroup(String, members: [String])
+			/// The Required when that named the key left `key`'s rule.
+			case removedCondition(key: String, condition: LPMConfigJSON)
+			/// The item was replaced whole: a removed group, or an override
+			/// lpm.json now has of an imported rule.
+			case replaced(Item, before: Declaration, after: Declaration)
+
+			var item: Item {
+				switch self {
+				case .droppedFromGroup(let name, members: _): .group(name)
+				case .removedCondition(let key, _): .key(key)
+				case .replaced(let item, _, _): item
+				}
+			}
+		}
+
+		/// The key as the draft had changed it; nil when the draft hadn't.
+		let edited: Declaration?
+		let fixes: [Fix]
+		/// What lpm.json had for each item when the key was removed.
+		let bases: [Item: Declaration]
+	}
+
+	/// The removal of `key`, while the draft has one on record.
+	func removal(of key: String) -> Removal? {
+		removals[key]
+	}
+
+	/// Removes `key` from lpm.json, with a fix for each reference to it, as one edit.
+	mutating func remove(_ key: String, settling fixes: [(reference: ProjectEnvSchemaReference, fix: ProjectEnvSchemaReference.Fix)]) {
+		let item = Item.key(key)
+		var edits: [(item: Item, declaration: Declaration)] = []
+		var records: [Removal.Fix] = []
+		var bases: [Item: Declaration] = [item: base(of: item)]
+		for (reference, fix) in fixes {
+			let current = declaration(of: reference.item)
+			let fixed = reference.fixed(by: fix)
+			bases[reference.item] = base(of: reference.item)
+			switch (fix, reference.kind) {
+			case (.dropFromGroup, .group(let name, _, let members)) where reference.source == nil:
+				records.append(.droppedFromGroup(name, members: members))
+			case (.removeCondition, .condition(let other)) where reference.source == nil:
+				if let condition = current.json?["requiredWhen"] { records.append(.removedCondition(key: other, condition: condition)) }
+			default:
+				records.append(.replaced(reference.item, before: current, after: fixed))
+			}
+			edits.append((reference.item, fixed))
+		}
+		edits.append((item, .absent))
+		removals[key] = Removal(edited: hasChange(to: item) ? declaration(of: item) : nil, fixes: records, bases: bases)
+		set(edits)
+	}
+
+	/// Takes back the removal of `key`. The key returns as the draft had it,
+	/// or as lpm.json now has it. Each fix is undone where lpm.json hasn't
+	/// changed its item since, so a change made on disk stands: a group gets
+	/// the key back in its place, a rule its Required when, keeping edits
+	/// made since, and a replaced item its earlier version unless the draft
+	/// changed it again.
+	mutating func keep(_ key: String) {
+		let item = Item.key(key)
+		guard let removal = removals.removeValue(forKey: key) else {
+			discard(item)
+			return
+		}
+		var edits: [(item: Item, declaration: Declaration)] = []
+		for fix in removal.fixes where removal.bases[fix.item].map({ base(of: fix.item).isEquivalent(to: $0) }) == true {
+			let current = declaration(of: fix.item)
+			switch fix {
+			case .droppedFromGroup(_, let original):
+				guard case .array(var members)? = current.json?["vars"], !members.contains(.string(key)) else { continue }
+				// Before the first member that followed it, so keys kept in any order return to their places.
+				let following = Set(original.drop(while: { $0 != key }).dropFirst())
+				let place = members.firstIndex { if case .string(let name) = $0 { following.contains(name) } else { false } }
+				members.insert(.string(key), at: place ?? members.count)
+				edits.append((fix.item, current.replacingJSON { $0.set(.array(members), forKey: "vars") }))
+			case .removedCondition(_, let condition):
+				guard current != .absent, current.json?["requiredWhen"] == nil else { continue }
+				edits.append((fix.item, current.replacingJSON { $0.set(condition, forKey: "requiredWhen") }))
+			case .replaced(_, let before, let after):
+				guard current.isEquivalent(to: after) else { continue }
+				edits.append((fix.item, before))
+			}
+		}
+		set(edits)
+		guard declaration(of: item) == .absent else { return }
+		if let edited = removal.edited { set(edited, for: item) } else { discard(item) }
 	}
 
 	/// Settles a conflict with the draft's version or the one now in lpm.json.
 	mutating func resolveConflict(_ item: Item, keepingMine: Bool) {
 		guard let index = conflictPositions[item] else { return }
-		let conflict = conflicts.remove(at: index)
+		let conflict = conflicts[index]
+		var kept = conflicts
+		kept.remove(at: index)
+		replaceConflicts(kept)
 		if keepingMine, !conflict.mine.isEquivalent(to: conflict.theirs) {
+			changePositions[item] = changes.count
 			changes.append(Change(item: item, base: conflict.theirs, value: conflict.mine))
 		}
 	}
@@ -236,8 +389,8 @@ struct ProjectEnvSchemaDraft: Sendable {
 				conflicted.append(Conflict(item: conflict.item, mine: conflict.mine, theirs: current))
 			}
 		}
-		changes = kept
-		conflicts = conflicted
+		replaceChanges(kept)
+		replaceConflicts(conflicted)
 		outcome.conflicts = conflicted.map(\.item)
 		return outcome
 	}
@@ -366,7 +519,7 @@ struct ProjectEnvSchemaDraft: Sendable {
 extension ProjectEnvSchemaDraft: Equatable {
 	/// The indexes follow from the schema and the changes, so they don't take part.
 	static func == (lhs: Self, rhs: Self) -> Bool {
-		lhs.changes == rhs.changes && lhs.conflicts == rhs.conflicts && lhs.schema == rhs.schema
+		lhs.changes == rhs.changes && lhs.conflicts == rhs.conflicts && lhs.schema == rhs.schema && lhs.removals == rhs.removals
 	}
 }
 
