@@ -43,6 +43,8 @@ struct OCRText {
 		case "i", "j", "J", "1", "|", "I": "l"
 		case "y": "v"
 		case "Y": "V"
+		case "f": "t"
+		case "p": "o"
 		case "_": " "
 		case "’", "‘": "'"
 		default: character
@@ -50,8 +52,9 @@ struct OCRText {
 	}
 
 	private static func normalize(_ text: String) -> String {
-		let mapped = text.compactMap { character -> Character? in character == "." ? nil : confusable(character) }
-		return String(mapped).lowercased().replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+		// Folded after lowercasing, so a letter folds the same in either case.
+		let mapped = text.lowercased().compactMap { character -> Character? in character == "." || character == "," ? nil : confusable(character) }
+		return String(mapped).replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
 	}
 }
 
@@ -69,6 +72,10 @@ struct OCRTextTests {
 		#expect(OCRText("unsaved edlts · smart vlews").contains("unsaved edits · smart views"))
 		#expect(OCRText("2 declared kevs · enforced bv LPM CLII").contains("enforced by LPM CLI"))
 		#expect(OCRText("8 The default doesn’t match the format").contains("The default doesn't match the format."))
+		#expect(OCRText("STORED. NOT DECLARED . 1 in the Kevchain but not in lom.ison").contains("STORED, NOT DECLARED"))
+		#expect(OCRText("Yours: detaut 2080. Theirs: detault 4000").contains("Theirs: default 4000"))
+		#expect(OCRText("url(schemas/baselson url httos onlv").contains("https only"))
+		#expect(!OCRText("Theirs: default 4000").contains("Theirs: default 400 0"))
 		let line = "Cl storage  secret / variable"
 		#expect(OCRText.range(of: "CI storage", in: line).map { String(line[$0]) } == "Cl storage", "A label is found in the line as read")
 	}
