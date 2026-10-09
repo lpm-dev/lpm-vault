@@ -47,7 +47,8 @@ TESTS = [
     'LPMVaultTests.SheetInteractionTests/SchemaGroupInteractionTests/largeGroupFiltered()',
     'LPMVaultTests.SheetInteractionTests/rendersSheet()',
     'LPMVaultTests.unknownCliApprovalPresentationIsTruthful()',
-] + [f'LPMVaultTests.GeneratedTests/test{index}()' for index in range(30)]
+] + [f'LPMVaultTests.GeneratedTests/test{index}()' for index in range(30)] + [
+    f'LPMVaultTests.SheetInteractionTests/Nested/screen{index}()' for index in range(12)]
 
 
 class SwiftWatchdogTests(unittest.TestCase):
@@ -74,6 +75,24 @@ class SwiftWatchdogTests(unittest.TestCase):
                 shards.append(ran.read_text().split() if ran.exists() else [])
             self.assertEqual(sorted(test for shard in shards for test in shard), sorted(TESTS))
             self.assertTrue(all(shards), 'Every shard has tests')
+
+    def test_an_isolated_suite_runs_apart_from_every_other_test(self):
+        suite = 'LPMVaultTests.SheetInteractionTests'
+        inside = sorted(test for test in TESTS if test.startswith(suite + '/'))
+        with tempfile.TemporaryDirectory() as directory:
+            shards = []
+            for shard in range(1, 4):
+                ran = Path(directory) / f'ran-{shard}'
+                result = self.launch(FAKE_SWIFT_TESTS='\n'.join(TESTS), SWIFT_TEST_SHARD=f'{shard}/3',
+                                     SWIFT_TEST_ISOLATED_SUITE=suite, FAKE_SWIFT_RAN=str(ran))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                shards.append(sorted(ran.read_text().split()) if ran.exists() else [])
+            self.assertEqual(shards[0], sorted(set(TESTS) - set(inside)), 'The first shard runs everything outside the suite')
+            self.assertEqual(sorted(shards[1] + shards[2]), inside, 'The other shards split the suite')
+        for shard, isolated in [('1/1', suite), ('1/2', 'LPMVaultTests.MissingTests')]:
+            with self.subTest(shard=shard, isolated=isolated):
+                result = self.launch(FAKE_SWIFT_TESTS='\n'.join(TESTS), SWIFT_TEST_SHARD=shard, SWIFT_TEST_ISOLATED_SUITE=isolated)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_a_shard_that_runs_other_tests_than_its_own_fails(self):
         for extra in [{'FAKE_SWIFT_DROP': '1'}, {'FAKE_SWIFT_EXTRA': 'LPMVaultTests.Elsewhere/stray()'}]:

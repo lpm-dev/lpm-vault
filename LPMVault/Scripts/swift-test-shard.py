@@ -5,8 +5,15 @@ Usage: swift-test-shard.py K/N TESTS_FILE FILTERS_FILE [swift test arguments...]
 
 Writes the identifiers of the Kth of N shards' tests to TESTS_FILE and a
 `swift test --filter` pattern for each to FILTERS_FILE, one per line.
+
+With SWIFT_TEST_ISOLATED_SUITE naming a suite, such as
+`Module.SheetInteractionTests`, shard 1 runs every test outside it and the
+other shards split its tests: a serialized suite whose tests wait on the
+screen then never shares a process with the parallel tests that could
+starve those waits.
 """
 import hashlib
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -51,8 +58,17 @@ def pattern(identifier):
     return ''.join('\\' + character if character in REGEX_SPECIALS else character for character in identifier)
 
 
-def select(tests, shard, count):
-    return [test for test in tests if shard_of(test, count) == shard]
+def select(tests, shard, count, isolated=None):
+    if not isolated:
+        return [test for test in tests if shard_of(test, count) == shard]
+    if count < 2:
+        raise ValueError('An isolated suite needs at least two shards')
+    inside = [test for test in tests if test.startswith(isolated + '/')]
+    if not inside:
+        raise ValueError(f'No tests in the isolated suite {isolated!r}')
+    if shard == 1:
+        return [test for test in tests if not test.startswith(isolated + '/')]
+    return [test for test in inside if shard_of(test, count - 1) + 1 == shard]
 
 
 def main(arguments):
@@ -62,7 +78,7 @@ def main(arguments):
         shard, count = parse_shard(arguments[0])
         listing = subprocess.run(['swift', 'test', 'list', *arguments[3:], '--enable-swift-testing', '--disable-xctest'],
                                  check=True, capture_output=True, text=True).stdout
-        tests = select(identifiers(listing), shard, count)
+        tests = select(identifiers(listing), shard, count, os.environ.get('SWIFT_TEST_ISOLATED_SUITE'))
     except (ValueError, subprocess.CalledProcessError) as error:
         raise SystemExit(f'::error::Could not choose the tests of shard {arguments[0]}: {error}')
     if not tests:
