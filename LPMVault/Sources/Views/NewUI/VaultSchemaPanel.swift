@@ -14,6 +14,8 @@ struct VaultSchemaPanel: View {
 	let environments: [String]
 	let selection: VaultSchemaSelection
 	let onSelect: (VaultSchemaSelection?) -> Void
+	/// Opens the review before saving.
+	let onReview: () -> Void
 	/// A key the panel renamed, so pages that show it follow the new name.
 	var onRenamed: (String, String) -> Void = { _, _ in }
 
@@ -22,7 +24,7 @@ struct VaultSchemaPanel: View {
 			switch selection {
 			case .key(let key):
 				VaultSchemaKeyEditor(store: store, project: project, environments: environments, key: key,
-					onSelect: onSelect, onRenamed: onRenamed)
+					onSelect: onSelect, onReview: onReview, onRenamed: onRenamed)
 					.id("\(project.id)/\(key)")
 			}
 		}
@@ -41,6 +43,7 @@ private struct VaultSchemaKeyEditor: View {
 	let environments: [String]
 	let key: String
 	let onSelect: (VaultSchemaSelection?) -> Void
+	let onReview: () -> Void
 	let onRenamed: (String, String) -> Void
 
 	/// Rows shown in this panel, which stay while their value is cleared.
@@ -50,7 +53,6 @@ private struct VaultSchemaKeyEditor: View {
 	@State private var name = ""
 	@State private var renaming = false
 	@State private var renameError: String?
-	@State private var saveError: String?
 	@State private var addingRule = false
 	@State private var scopeTarget: ScopeTarget?
 	@State private var pickingKey = false
@@ -158,6 +160,11 @@ private struct VaultSchemaKeyEditor: View {
 				VStack(alignment: .leading, spacing: 0) {
 					header(mode)
 					identity(mode, rule: rule, conflicts: conflicts, visible: visible)
+					if saveFailure != nil {
+						saveFailureNotice
+							.padding(.horizontal, 16)
+							.padding(.bottom, 12)
+					}
 					VaultHairline()
 					VaultSchemaStoredValues(store: store, project: project, environments: environments, key: key,
 						removed: mode == .removed)
@@ -1058,6 +1065,14 @@ private struct VaultSchemaKeyEditor: View {
 		return Blocker(message: "Can't save: \(Self.name(of: other)) has a problem. \(rejection.reason)", key: other.key)
 	}
 
+	/// A save that failed for a reason the review can't show, such as a file that can't be written.
+	private var saveFailure: ProjectEnvSchemaFile.DraftSaveError? {
+		switch store.schemaDraftSaveFailure(for: project.id) {
+		case nil, .file(.changed)?, .conflicts?, .inProgress?: nil
+		case let failure?: failure
+		}
+	}
+
 	private static func name(of item: Draft.Item) -> String {
 		switch item {
 		case .key(let key): key
@@ -1069,13 +1084,8 @@ private struct VaultSchemaKeyEditor: View {
 	private func footer(_ mode: Mode) -> some View {
 		let changes = pendingDraft?.changeCount ?? 0
 		let blocker = blocker
+		let failure = saveFailure
 		return VStack(alignment: .leading, spacing: 6) {
-			if let saveError {
-				Text(saveError)
-					.font(.system(size: 11))
-					.foregroundStyle(VaultPalette.redText)
-					.fixedSize(horizontal: false, vertical: true)
-			}
 			if let blocker {
 				HStack(alignment: .firstTextBaseline, spacing: 6) {
 					Text(blocker.message)
@@ -1102,7 +1112,13 @@ private struct VaultSchemaKeyEditor: View {
 					}
 					.disabled(!canEdit)
 				default:
-					if changes > 0 {
+					if failure != nil {
+						HStack(spacing: 4) {
+							Image(systemName: "xmark.circle").font(.system(size: 10, weight: .semibold))
+							Text("Not saved").font(.system(size: 11, weight: .medium))
+						}
+						.foregroundStyle(VaultPalette.redText)
+					} else if changes > 0 {
 						HStack(spacing: 4) {
 							Image(systemName: "arrow.uturn.backward").font(.system(size: 9, weight: .semibold))
 							Text(changes == 1 ? "1 change" : "\(changes) changes").font(.system(size: 11, weight: .medium))
@@ -1117,12 +1133,15 @@ private struct VaultSchemaKeyEditor: View {
 						VaultBarButton(title: "Discard", height: 26) {
 							shownFields = []
 							editsOverride = false
-							saveError = nil
 							store.editSchemaDraft(in: project.id) { $0.discard(.key(key)) }
 						}
 						.disabled(!canEdit)
 					}
-					VaultBarButton(title: saving ? "Saving…" : "Save", filled: true, disabled: changes == 0 || blocker != nil || !canEdit, height: 26, action: save)
+					if failure != nil {
+						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)
+					} else {
+						VaultBarButton(title: "Review & save", filled: true, disabled: changes == 0 || blocker != nil || !canEdit, height: 26, action: onReview)
+					}
 				}
 			}
 		}
@@ -1131,18 +1150,35 @@ private struct VaultSchemaKeyEditor: View {
 		.background(VaultPalette.headerRow)
 	}
 
-	private func save() {
-		saveError = nil
+	/// The failed save, with the draft kept.
+	@ViewBuilder
+	private var saveFailureNotice: some View {
+		if let saveFailure {
+			HStack(alignment: .top, spacing: 8) {
+				Image(systemName: "xmark.circle").font(.system(size: 11)).padding(.top, 1)
+				VStack(alignment: .leading, spacing: 3) {
+					Text("Couldn't save lpm.json").font(.system(size: 12, weight: .semibold))
+					Text(saveFailure.message + " Your draft is kept.")
+						.font(.system(size: 11.5))
+						.fixedSize(horizontal: false, vertical: true)
+				}
+			}
+			.foregroundStyle(VaultPalette.redText)
+			.padding(10)
+			.frame(maxWidth: .infinity, alignment: .leading)
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.redTint))
+			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.red.opacity(0.5), lineWidth: 1) }
+		}
+	}
+
+	/// Saves the draft the review already showed, after a failure that didn't change it.
+	private func retrySave() {
 		Task {
 			do throws(ProjectEnvSchemaFile.DraftSaveError) {
 				try await store.saveSchemaDraft(in: project.id)
 				shownFields = []
 				editsOverride = false
-			} catch .file(.changed) {
-				saveError = "lpm.json changed on disk. Your changes were merged into it; check them and save again."
-			} catch {
-				saveError = error.message
-			}
+			} catch {}
 		}
 	}
 
@@ -1162,7 +1198,6 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	private func update(declaration: Draft.Declaration, coalescing field: String? = nil) {
-		saveError = nil
 		store.editSchemaDraft(in: project.id, coalescing: field.map { "\(key)/\($0)" }) { $0.set(declaration, for: item) }
 	}
 }

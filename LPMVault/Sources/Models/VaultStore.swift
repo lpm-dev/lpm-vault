@@ -1234,6 +1234,8 @@ final class VaultStore {
   /// Projects whose next evaluation waits for typing to pause.
   @ObservationIgnored private var debouncedSchemaDrafts: Set<String> = []
   private(set) var schemaDraftHistory: [String: SchemaDraftHistory] = [:]
+  /// Each project's last failed save, with the draft revision it tried to save.
+  private(set) var schemaDraftSaveFailures: [String: SchemaDraftSaveFailure] = [:]
   @ObservationIgnored private var schemaDraftEvaluationInputs: [String: SchemaDraftEvaluationInputs] = [:]
   @ObservationIgnored private var schemaDraftEvaluationTasks: [String: Task<Void, Never>] = [:]
   @ObservationIgnored var schemaDraftEvaluator = ProjectEnvSchemaDraftEvaluator()
@@ -3611,6 +3613,31 @@ final class VaultStore {
   /// a change that only reordered the file saves right away, and any other
   /// fails with `changed` so the merged draft can be reviewed.
   func saveSchemaDraft(in projectID: String) async throws(ProjectEnvSchemaFile.DraftSaveError) {
+    let revision = schemaDraftRevisions[projectID]
+    do {
+      try await saveSchemaDraftOnce(in: projectID)
+      schemaDraftSaveFailures[projectID] = nil
+    } catch {
+      if error != .inProgress, let revision, schemaDrafts[projectID] != nil {
+        schemaDraftSaveFailures[projectID] = SchemaDraftSaveFailure(revision: revision, error: error)
+      }
+      throw error
+    }
+  }
+
+  /// A failed save, and the draft revision it tried to save.
+  struct SchemaDraftSaveFailure: Equatable {
+    let revision: Int
+    let error: ProjectEnvSchemaFile.DraftSaveError
+  }
+
+  /// Why saving the project's draft as it is now failed; nil once it changes.
+  func schemaDraftSaveFailure(for projectID: String) -> ProjectEnvSchemaFile.DraftSaveError? {
+    guard let failure = schemaDraftSaveFailures[projectID], failure.revision == schemaDraftRevisions[projectID] else { return nil }
+    return failure.error
+  }
+
+  private func saveSchemaDraftOnce(in projectID: String) async throws(ProjectEnvSchemaFile.DraftSaveError) {
     // The imports the evaluation showed, which a retry after a reordering keeps.
     var reviewed: [RustSchemaEngine.Dependency] = []
     for attempt in 0..<2 {
@@ -3748,6 +3775,7 @@ final class VaultStore {
     schemaDraftRevisions[projectID] = nil
     schemaDraftRebases[projectID] = nil
     schemaDraftHistory[projectID] = nil
+    schemaDraftSaveFailures[projectID] = nil
     debouncedSchemaDrafts.remove(projectID)
     refreshSchemaDraftEvaluation(for: projectID)
   }
@@ -3854,6 +3882,7 @@ final class VaultStore {
     schemaDraftHistory = [:]
     savingSchemaDrafts = []
     debouncedSchemaDrafts = []
+    schemaDraftSaveFailures = [:]
     schemaDraftGeneration &+= 1
   }
 
