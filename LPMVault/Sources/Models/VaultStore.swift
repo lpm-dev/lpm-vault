@@ -1159,6 +1159,7 @@ final class VaultStore {
         projectCliAccess = projectCliAccess.filter { projectIDs.contains($0.key) }
         cliAccessProjectRevisions = cliAccessProjectRevisions.filter { projectIDs.contains($0.key) }
       }
+      pruneSchemaDrafts()
       refreshValueChecks()
       workspaceSnapshotGeneration &+= 1
       let generation = workspaceSnapshotGeneration
@@ -1206,6 +1207,24 @@ final class VaultStore {
   /// What the bundled engine finds in each project's stored values, by
   /// project ID; absent while a project's rules are unknown or unreadable.
   private(set) var valueChecks: [String: ProjectEnvValueCheck] = [:]
+  /// Unsaved schema edits by project ID; cleared on lock and account changes.
+  private(set) var schemaDrafts: [String: ProjectEnvSchemaDraft] = [:]
+  /// The folder each draft's rules were read from.
+  @ObservationIgnored private var schemaDraftFolders: [String: SchemaDraftFolder] = [:]
+  /// Counts each project's draft changes, so an evaluation is matched to its draft cheaply.
+  @ObservationIgnored private var schemaDraftRevisions: [String: Int] = [:]
+  /// Each draft's latest evaluation, with the draft revision and values it used.
+  private(set) var schemaDraftEvaluations: [String: EvaluatedSchemaDraft] = [:]
+  /// What merging drafts onto lpm.json's rules as read from disk changed, until dismissed.
+  private(set) var schemaDraftRebases: [String: ProjectEnvSchemaDraft.Rebase] = [:]
+  private(set) var savingSchemaDrafts: Set<String> = []
+  /// Ends saves that started before the drafts were cleared.
+  @ObservationIgnored private var schemaDraftGeneration = 0
+  /// Projects whose next evaluation waits for typing to pause.
+  @ObservationIgnored private var debouncedSchemaDrafts: Set<String> = []
+  @ObservationIgnored private var schemaDraftEvaluationInputs: [String: SchemaDraftEvaluationInputs] = [:]
+  @ObservationIgnored private var schemaDraftEvaluationTasks: [String: Task<Void, Never>] = [:]
+  @ObservationIgnored var schemaDraftEvaluator = ProjectEnvSchemaDraftEvaluator()
   @ObservationIgnored let valueCheckWorker = ProjectEnvValueCheckWorker()
   @ObservationIgnored private var valueCheckInputs: [String: ValueCheckInputs] = [:]
   @ObservationIgnored private var valueCheckTasks: [String: Task<Void, Never>] = [:]
@@ -3281,10 +3300,11 @@ final class VaultStore {
     let result = await ProjectEnvSchemaFile.save(schemaChange, inFolder: schemaFolder, vaultID: projectID)
     guard generation == keyDrafts.generation, isUnlocked else { throw .targetUnavailable }
     switch result {
-    case .success(let rules):
+    case .success(let saved):
       keyDrafts.finishSave(id, succeeded: true, projects: projects)
       if let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == schemaFolder {
-        publishSavedRules(rules, folder: schemaFolder, for: projectID)
+        publishSavedRules(saved.rules, rootSchema: saved.rootSchema, folder: schemaFolder, for: projectID,
+          description: schemaChange.description.map { ($0.key, $0.text) })
       }
     case .failure(let failure):
       let keySaved = edit.isRename || !edit.values.isEmpty || draft.pendingSchemaRename != nil
@@ -3356,28 +3376,47 @@ final class VaultStore {
       else { return }
       publishKeyDescriptions(ProjectKeyDescriptions(folder: folder, loaded: loaded), for: projectID)
       unverifiedKeyDescriptionProjects.remove(projectID)
+      keyDescriptionsTask = nil
     }
   }
 
-  /// Rules an edit just saved. The display keeps the last read schema until the
-  /// selected project's rules are read again, which also picks up new sources.
-  private func publishSavedRules(_ rules: ProjectEnvSchemaFile.Rules, folder: String, for projectID: String) {
+  /// Rules an edit just saved, with lpm.json's envSchema after it. The display
+  /// keeps the last read schema until the selected project's rules are read
+  /// again, which also picks up new sources. A schema draft merges the app's
+  /// own edit right away, taking in a `description` it saved for a key the
+  /// draft changes, and notes only conflicts.
+  private func publishSavedRules(
+    _ rules: ProjectEnvSchemaFile.Rules, rootSchema: LPMConfigJSON?, folder: String, for projectID: String,
+    description: (key: String, text: String)? = nil
+  ) {
     unverifiedKeyDescriptionProjects.insert(projectID)
     let previous = keyDescriptions[projectID]
+    let sameFolder = previous?.folder == folder
+    if sameFolder, var draft = schemaDrafts[projectID], schemaDraftFolders[projectID]?.path == folder,
+      !savingSchemaDrafts.contains(projectID)
+    {
+      let outcome = draft.rebase(ontoOwnWrite: rootSchema, description: description)
+      setSchemaDraft(draft, for: projectID)
+      if !outcome.conflicts.isEmpty { noteSchemaDraftRebase(outcome, for: projectID) }
+    }
     publishKeyDescriptions(
-      ProjectKeyDescriptions(folder: folder, rules: .success(rules), schema: previous?.folder == folder ? previous?.schema : nil),
+      ProjectKeyDescriptions(folder: folder, rules: .success(rules), schema: sameFolder ? previous?.schema : nil,
+        rootSchema: rootSchema, folderIdentity: sameFolder ? previous?.folderIdentity : nil),
       for: projectID
     )
     if selectedProjectId == projectID { reloadKeyDescriptions() }
   }
 
-  private func publishKeyDescriptions(_ descriptions: ProjectKeyDescriptions, for projectID: String) {
+  /// `mergingDraft` false leaves merging the schema draft to the caller.
+  private func publishKeyDescriptions(_ descriptions: ProjectKeyDescriptions, for projectID: String, mergingDraft: Bool = true) {
     guard keyDescriptions[projectID] != descriptions else { return }
     keyDescriptions[projectID] = descriptions
     if case .success(let rules) = descriptions.rules {
       keyDrafts.receiveKeyDescriptions(rules.descriptions, ruleKeys: rules.keys, folder: descriptions.folder, in: projectID)
     }
+    if mergingDraft { mergeSchemaDraft(for: projectID) }
     refreshValueCheck(for: projectID)
+    refreshSchemaDraftEvaluation(for: projectID)
   }
 
   // MARK: - Value checks
@@ -3392,6 +3431,9 @@ final class VaultStore {
   private func refreshValueChecks() {
     for projectID in Set(valueChecks.keys).union(valueCheckInputs.keys).union(keyDescriptions.keys) {
       refreshValueCheck(for: projectID)
+    }
+    for projectID in Set(schemaDrafts.keys).union(schemaDraftEvaluationInputs.keys) {
+      refreshSchemaDraftEvaluation(for: projectID)
     }
   }
 
@@ -3435,6 +3477,260 @@ final class VaultStore {
     keyDescriptions = [:]
     unverifiedKeyDescriptionProjects = []
     clearValueChecks()
+    clearSchemaDrafts()
+  }
+
+  // MARK: - Schema drafts
+
+  /// The folder a draft's rules were read from, and its identity then.
+  private struct SchemaDraftFolder: Equatable {
+    let path: String
+    let identity: ProjectConfigFile.DirectoryIdentity?
+  }
+
+  /// An evaluation and the draft revision and stored values it evaluated.
+  struct EvaluatedSchemaDraft: Equatable {
+    let revision: Int
+    let values: UUID
+    let evaluation: ProjectEnvSchemaDraft.Evaluation
+  }
+
+  /// The project's unsaved schema edits; nil while it has none.
+  func schemaDraft(for projectID: String) -> ProjectEnvSchemaDraft? {
+    schemaDrafts[projectID].flatMap { $0.isEmpty ? nil : $0 }
+  }
+
+  /// The evaluation of the project's draft as it is now, with the values stored
+  /// now; nil while it's being evaluated.
+  func currentSchemaDraftEvaluation(for projectID: String) -> ProjectEnvSchemaDraft.Evaluation? {
+    guard schemaDraft(for: projectID) != nil, let evaluated = schemaDraftEvaluations[projectID],
+      evaluated.revision == schemaDraftRevisions[projectID],
+      evaluated.values == projects.first(where: { $0.id == projectID })?.workspaceSnapshotIdentity
+    else { return nil }
+    return evaluated.evaluation
+  }
+
+  /// The latest evaluation of the project's draft, which can be of an earlier
+  /// version of it; for showing something while the current one is evaluated.
+  func latestSchemaDraftEvaluation(for projectID: String) -> ProjectEnvSchemaDraft.Evaluation? {
+    schemaDraft(for: projectID) == nil ? nil : schemaDraftEvaluations[projectID]?.evaluation
+  }
+
+  /// Whether the selected project's rules are being read.
+  var isReloadingKeyDescriptions: Bool { keyDescriptionsTask != nil }
+
+  /// Whether the project's rules are loaded from its folder, so they can be edited.
+  func canEditSchema(of projectID: String) -> Bool {
+    editableSchemaFolder(for: projectID) != nil && !savingSchemaDrafts.contains(projectID)
+  }
+
+  /// Changes the project's schema draft, starting one from lpm.json's rules as
+  /// last read. Ignored while the rules can't be edited or the draft is saving.
+  /// Edits with a `coalescing` key, such as typing, are evaluated once typing pauses.
+  func editSchemaDraft(in projectID: String, coalescing: String? = nil, _ edit: (inout ProjectEnvSchemaDraft) -> Void) {
+    guard !savingSchemaDrafts.contains(projectID), let folder = editableSchemaFolder(for: projectID),
+      let descriptions = keyDescriptions[projectID]
+    else { return }
+    var draft = schemaDraftFolders[projectID] == folder
+      ? schemaDrafts[projectID] ?? ProjectEnvSchemaDraft(schema: descriptions.rootSchema)
+      : ProjectEnvSchemaDraft(schema: descriptions.rootSchema)
+    edit(&draft)
+    guard draft != schemaDrafts[projectID] else { return }
+    schemaDraftFolders[projectID] = folder
+    if coalescing != nil { debouncedSchemaDrafts.insert(projectID) }
+    setSchemaDraft(draft, for: projectID)
+  }
+
+  /// Ends the project's unsaved schema edits, also while its rules can't be read.
+  func discardSchemaDraft(in projectID: String) {
+    guard var draft = schemaDrafts[projectID], !savingSchemaDrafts.contains(projectID) else { return }
+    draft.discardAll()
+    setSchemaDraft(draft, for: projectID)
+  }
+
+  func dismissSchemaDraftRebase(in projectID: String) {
+    schemaDraftRebases[projectID] = nil
+  }
+
+  /// Writes the project's schema draft into its lpm.json, checked against the
+  /// imported schemas its current evaluation used. When lpm.json changed since
+  /// the draft last read it, the rules are read again and the draft merges;
+  /// a change that only reordered the file saves right away, and any other
+  /// fails with `changed` so the merged draft can be reviewed.
+  func saveSchemaDraft(in projectID: String) async throws(ProjectEnvSchemaFile.DraftSaveError) {
+    // The imports the evaluation showed, which a retry after a reordering keeps.
+    var reviewed: [RustSchemaEngine.Dependency] = []
+    for attempt in 0..<2 {
+      guard let draft = schemaDraft(for: projectID) else { return }
+      guard !savingSchemaDrafts.contains(projectID) else { throw .inProgress }
+      guard let folder = editableSchemaFolder(for: projectID), schemaDraftFolders[projectID]?.path == folder.path else {
+        throw .unavailable(schemaUnavailableReason(for: projectID))
+      }
+      guard draft.conflicts.isEmpty else { throw .conflicts }
+      if attempt == 0 {
+        guard let evaluation = currentSchemaDraftEvaluation(for: projectID) else {
+          throw .unavailable("The rules are still being checked. Save again in a moment.")
+        }
+        reviewed = evaluation.dependencies
+      }
+      let generation = schemaDraftGeneration
+      savingSchemaDrafts.insert(projectID)
+      let result = await ProjectEnvSchemaFile.save(draft, inFolder: folder.path, vaultID: projectID,
+        folderIdentity: folder.identity, reviewed: reviewed)
+      guard generation == schemaDraftGeneration, isUnlocked else {
+        throw .unavailable("The project changed while the rules were saving. Nothing else was changed in the app.")
+      }
+      savingSchemaDrafts.remove(projectID)
+      switch result {
+      case .success(let saved):
+        guard let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == folder.path else {
+          throw .unavailable("The rules were saved, but the project's folder changed meanwhile. Review the rules again.")
+        }
+        setSchemaDraft(ProjectEnvSchemaDraft(schema: saved.schema), for: projectID)
+        schemaDraftRebases[projectID] = nil
+        publishKeyDescriptions(
+          ProjectKeyDescriptions(folder: folder.path, rules: .success(saved.rules), schema: .loaded(saved.overview, file: saved.file),
+            rootSchema: saved.schema, folderIdentity: folder.identity, dependencies: saved.dependencies),
+          for: projectID
+        )
+        unverifiedKeyDescriptionProjects.remove(projectID)
+        return
+      case .failure(.file(.changed)):
+        let loaded = await ProjectEnvSchemaFile.loadRules(inFolder: folder.path, vaultID: projectID)
+        guard generation == schemaDraftGeneration, isUnlocked,
+          let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == folder.path
+        else { throw .file(.changed) }
+        publishKeyDescriptions(ProjectKeyDescriptions(folder: folder.path, loaded: loaded), for: projectID, mergingDraft: false)
+        let outcome = mergeSchemaDraft(for: projectID)
+        guard attempt == 0, let outcome, outcome.isEmpty, outcome.conflicts.isEmpty else { throw .file(.changed) }
+      case .failure(.importsChanged):
+        reloadKeyDescriptions()
+        throw .importsChanged
+      case .failure(let failure):
+        mergeSchemaDraft(for: projectID)
+        throw failure
+      }
+    }
+  }
+
+  private func schemaUnavailableReason(for projectID: String) -> String {
+    switch keyDescriptions[projectID]?.schema {
+    case .unreadable?: "lpm.json can't be read. Fix it, then save."
+    case .noFolder?: "The project's folder isn't available."
+    case nil: "lpm.json hasn't been read yet."
+    case .loaded?: "The project's folder changed. Review the rules, then save again."
+    }
+  }
+
+  /// The folder whose lpm.json holds the project's loaded rules.
+  private func editableSchemaFolder(for projectID: String) -> SchemaDraftFolder? {
+    guard isUnlocked, let descriptions = keyDescriptions[projectID], case .loaded? = descriptions.schema,
+      let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == descriptions.folder,
+      !descriptions.folder.isEmpty
+    else { return nil }
+    return SchemaDraftFolder(path: descriptions.folder, identity: descriptions.folderIdentity)
+  }
+
+  private func setSchemaDraft(_ draft: ProjectEnvSchemaDraft, for projectID: String) {
+    schemaDrafts[projectID] = draft
+    schemaDraftRevisions[projectID, default: 0] &+= 1
+    if draft.isEmpty { schemaDraftRebases[projectID] = nil }
+    refreshSchemaDraftEvaluation(for: projectID)
+  }
+
+  private func noteSchemaDraftRebase(_ outcome: ProjectEnvSchemaDraft.Rebase, for projectID: String) {
+    schemaDraftRebases[projectID] = schemaDraftRebases[projectID].map { $0.merged(with: outcome) } ?? outcome
+  }
+
+  /// Merges the project's draft onto lpm.json's rules as last read, noting
+  /// what changed on disk. A draft from another folder ends. Returns what the
+  /// merge did; nil when there was nothing to merge.
+  @discardableResult
+  private func mergeSchemaDraft(for projectID: String) -> ProjectEnvSchemaDraft.Rebase? {
+    guard var draft = schemaDrafts[projectID], let descriptions = keyDescriptions[projectID] else { return nil }
+    let folder = schemaDraftFolders[projectID]
+    guard folder?.path == descriptions.folder, folder?.identity == nil || descriptions.folderIdentity == nil || folder?.identity == descriptions.folderIdentity else {
+      endSchemaDraft(for: projectID)
+      return nil
+    }
+    guard case .loaded? = descriptions.schema, !savingSchemaDrafts.contains(projectID), descriptions.rootSchema != draft.schema else { return nil }
+    let outcome = draft.rebase(onto: descriptions.rootSchema)
+    setSchemaDraft(draft, for: projectID)
+    if !draft.isEmpty, !outcome.isEmpty || !outcome.conflicts.isEmpty { noteSchemaDraftRebase(outcome, for: projectID) }
+    return outcome
+  }
+
+  private func endSchemaDraft(for projectID: String) {
+    schemaDrafts[projectID] = nil
+    schemaDraftFolders[projectID] = nil
+    schemaDraftRevisions[projectID] = nil
+    schemaDraftRebases[projectID] = nil
+    debouncedSchemaDrafts.remove(projectID)
+    refreshSchemaDraftEvaluation(for: projectID)
+  }
+
+  /// Ends the drafts of projects that are gone.
+  private func pruneSchemaDrafts() {
+    let projectIDs = Set(projects.lazy.map(\.id))
+    for projectID in schemaDrafts.keys where !projectIDs.contains(projectID) { endSchemaDraft(for: projectID) }
+  }
+
+  /// The draft and stored values a draft's evaluation used, and the digests
+  /// of the schemas lpm.json imported when it was last read.
+  private struct SchemaDraftEvaluationInputs: Equatable {
+    let revision: Int
+    let folder: String
+    let values: UUID
+    let imports: [RustSchemaEngine.Dependency]?
+  }
+
+  /// Evaluates the project's draft with the bundled engine, one evaluation at
+  /// a time and off the main thread, when the draft, the rules it builds on,
+  /// or the stored values changed. While typing, it waits for a pause.
+  private func refreshSchemaDraftEvaluation(for projectID: String) {
+    guard let draft = schemaDraft(for: projectID), let folder = schemaDraftFolders[projectID]?.path,
+      let revision = schemaDraftRevisions[projectID],
+      let project = projects.first(where: { $0.id == projectID }), project.hasLoadedEnvironments
+    else {
+      schemaDraftEvaluationTasks.removeValue(forKey: projectID)?.cancel()
+      schemaDraftEvaluationInputs[projectID] = nil
+      debouncedSchemaDrafts.remove(projectID)
+      if schemaDraftEvaluations[projectID] != nil { schemaDraftEvaluations[projectID] = nil }
+      return
+    }
+    let imports = keyDescriptions[projectID]?.dependencies
+    let inputs = SchemaDraftEvaluationInputs(revision: revision, folder: folder, values: project.workspaceSnapshotIdentity, imports: imports)
+    guard schemaDraftEvaluationInputs[projectID] != inputs else { return }
+    schemaDraftEvaluationInputs[projectID] = inputs
+    schemaDraftEvaluationTasks[projectID]?.cancel()
+    let debounced = debouncedSchemaDrafts.remove(projectID) != nil
+    let environments = project.environments
+    let evaluator = schemaDraftEvaluator
+    schemaDraftEvaluationTasks[projectID] = Task { [weak self] in
+      if debounced {
+        do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+      }
+      guard let evaluation = await evaluator.evaluate(draft, inFolder: folder, imports: imports, environments: environments),
+        let self, !Task.isCancelled, self.schemaDraftEvaluationInputs[projectID] == inputs
+      else { return }
+      self.schemaDraftEvaluationTasks[projectID] = nil
+      let evaluated = EvaluatedSchemaDraft(revision: inputs.revision, values: inputs.values, evaluation: evaluation)
+      if self.schemaDraftEvaluations[projectID] != evaluated { self.schemaDraftEvaluations[projectID] = evaluated }
+    }
+  }
+
+  private func clearSchemaDrafts() {
+    for task in schemaDraftEvaluationTasks.values { task.cancel() }
+    schemaDraftEvaluationTasks = [:]
+    schemaDraftEvaluationInputs = [:]
+    schemaDraftEvaluations = [:]
+    schemaDrafts = [:]
+    schemaDraftFolders = [:]
+    schemaDraftRevisions = [:]
+    schemaDraftRebases = [:]
+    savingSchemaDrafts = []
+    debouncedSchemaDrafts = []
+    schemaDraftGeneration &+= 1
   }
 
   /// Saves an inspector edit of one key — a rename, new values, or both — in a
@@ -6409,12 +6705,13 @@ final class VaultStore {
         afterCompletion(.failure(.targetUnavailable)); return
       }
       switch result {
-      case .success(let commit, let rules):
+      case .success(let commit, let rules, let rootSchema):
         updateProjectInPlace(commit.project)
         applySyncMetadata(commit.syncMetadata, for: commit.project.id)
         error = commit.warning
         if let rules, keyDescriptionFolder(for: commit.project) == folder {
-          publishSavedRules(rules, folder: folder, for: project.id)
+          publishSavedRules(rules, rootSchema: rootSchema, folder: folder, for: project.id,
+            description: change.description.map { ($0.key, $0.text) })
         }
         afterCompletion(.success(()))
       case .conflict(let latest, let metadata, let failure):
