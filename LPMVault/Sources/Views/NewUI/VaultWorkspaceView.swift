@@ -66,7 +66,7 @@ struct VaultWorkspaceView: View {
 	private var schemaWatch: SchemaWatch? {
 		guard mode == .schema, !store.showAuthStatus, let descriptions = project.flatMap({ store.keyDescriptions[$0.id] }), !descriptions.folder.isEmpty
 		else { return nil }
-		return SchemaWatch(folder: descriptions.folder, imports: (descriptions.dependencies ?? []).map(\.path).sorted())
+		return SchemaWatch(folder: descriptions.folder, imports: descriptions.importPaths)
 	}
 
 	/// Opens a selection in the Schema page's panel as a new stretch of editing.

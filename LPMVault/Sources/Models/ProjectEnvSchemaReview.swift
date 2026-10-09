@@ -52,6 +52,21 @@ struct ProjectEnvSchemaReview: Equatable {
 	}
 
 	let items: [Item]
+	/// What the review says first when changes give up Secret an import asks
+	/// for, naming the keys; nil when none does. Escaped.
+	var warningSummary: String? {
+		let keys = items.lazy.filter { $0.warning != nil }.map(\.title)
+		guard let first = keys.first else { return nil }
+		let count = keys.count
+		if count == 1 { return "\(first) loses the Secret an import gives it. Check its change below before saving." }
+		let shown = keys.prefix(Self.summaryKeys).joined(separator: ", ")
+		let more = count > Self.summaryKeys ? " and \(count - Self.summaryKeys) more" : ""
+		return "\(count) keys lose the Secret an import gives them: \(shown)\(more). Check their changes below before saving."
+	}
+
+	/// Keys `warningSummary` names before "and N more".
+	private static let summaryKeys = 5
+
 	/// Effects on keys the draft doesn't change.
 	let others: [Effect]
 	let othersUnchanged: Int

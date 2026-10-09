@@ -126,6 +126,7 @@
 		C8E80FE68059A0B62D6C252D /* VaultPaneLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71CA242B35FE5366BF3AAF1B /* VaultPaneLayoutTests.swift */; };
 		C9350649A7097AED2D9830A3 /* PersonalKeyEnvelopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F375377661ADD940B7762CFC /* PersonalKeyEnvelopeTests.swift */; };
 		CA08DB849A3C93E99F58D4C2 /* WorkspaceInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 639C6432C2667DC16F75B730 /* WorkspaceInteractionTests.swift */; };
+		CBBD41BF3BC64015F7580499 /* ProcessLimits.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FA4AF9738D049CABAD6AFA1 /* ProcessLimits.swift */; };
 		CD01522CF4C9150F23565126 /* VaultLoadRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B495305D62923FFDEDE0AE17 /* VaultLoadRecoveryTests.swift */; };
 		CD366278CA66735CA979B005 /* VaultStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFE4B46C5693219A4558C620 /* VaultStore.swift */; };
 		CDE077E3A94AF3438A936E5C /* VaultSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3AEEC3080528D1137551395 /* VaultSidebarView.swift */; };
@@ -251,6 +252,7 @@
 		7DD9BE611F1BB7A4B5E38DE1 /* Round4AuditRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round4AuditRegressionTests.swift; sourceTree = "<group>"; };
 		7E1922750CFA7B974B824160 /* SchemaClientPrefixTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaClientPrefixTests.swift; sourceTree = "<group>"; };
 		7E7E17CFD8A20E12558CD8E0 /* EnvFileImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportTests.swift; sourceTree = "<group>"; };
+		7FA4AF9738D049CABAD6AFA1 /* ProcessLimits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessLimits.swift; sourceTree = "<group>"; };
 		80577EEE6278D3E10CBC8986 /* VaultValueCheckPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultValueCheckPresentation.swift; sourceTree = "<group>"; };
 		82C79372371909ADC82616B7 /* KeySuggestionInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeySuggestionInteractionTests.swift; sourceTree = "<group>"; };
 		83825F3745E80FDAF2139DF1 /* ProjectEnvSchemaClientPrefixes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaClientPrefixes.swift; sourceTree = "<group>"; };
@@ -424,6 +426,7 @@
 				F9FF906993D46DE0663FDBE6 /* Constants.swift */,
 				614C541032B4C27C2966138F /* EnvValidation.swift */,
 				A9F299C0796F0A1335370EBB /* LPMConfigJSON.swift */,
+				7FA4AF9738D049CABAD6AFA1 /* ProcessLimits.swift */,
 				AA15A85B7406128FB479BB79 /* ProjectCLILink.swift */,
 				2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */,
 				623FE311DD484D349571A459 /* ProjectConfigOpener.swift */,
@@ -772,6 +775,7 @@
 				9985BDBA7A430BE63659F484 /* OrgVaultsSheet.swift in Sources */,
 				7A85DBCA964F013DB8583A9A /* PersonalProjectCrypto.swift in Sources */,
 				C5751C2178DD4E40A71D7227 /* PinnedSessionDelegate.swift in Sources */,
+				CBBD41BF3BC64015F7580499 /* ProcessLimits.swift in Sources */,
 				8317184044046DED39284AA1 /* ProjectCLILink.swift in Sources */,
 				E86F773021FC6A17A1E1467B /* ProjectConfigFile.swift in Sources */,
 				BE7E0198873938E0B4EB3EAF /* ProjectConfigOpener.swift in Sources */,
