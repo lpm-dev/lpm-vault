@@ -12,6 +12,17 @@ import Vision
 enum RenderedText {
 	private static let queue = DispatchQueue(label: "dev.lpm.vault.tests.text-recognition", qos: .userInitiated)
 
+	/// The suite native UI tests belong to. It runs them one at a time, and CI
+	/// runs it on runners of its own: beside parallel tests, the load starves
+	/// the waits recognition and windows depend on.
+	static let uiSuite = "SheetInteractionTests"
+
+	/// Records an issue when the running test isn't in `uiSuite` or a suite nested in it.
+	static func requireUISuite(sourceLocation: SourceLocation = #_sourceLocation) {
+		guard let test = Test.current, test.id.nameComponents.first != uiSuite else { return }
+		Issue.record("Native UI tests belong in \(uiSuite) or a suite nested in it, which runs them one at a time", sourceLocation: sourceLocation)
+	}
+
 	private static func recognize(
 		_ image: CGImage,
 		level: VNRequestTextRecognitionLevel,
@@ -20,6 +31,7 @@ enum RenderedText {
 		cache: RecognitionCache = .shared,
 		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
 	) async throws -> [VNRecognizedTextObservation] {
+		requireUISuite()
 		let frame = RecognitionCache.Frame(image: image)
 		if let cached = cache.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
 			return cached
@@ -31,17 +43,25 @@ enum RenderedText {
 					return
 				}
 				onRecognition?(image.width, image.height)
-				let request = VNRecognizeTextRequest()
-				request.recognitionLevel = level
-				request.usesLanguageCorrection = usesLanguageCorrection
-				do {
-					try VNImageRequestHandler(cgImage: image).perform([request])
-					let observations = request.results ?? []
-					cache.store(observations, for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region)
-					continuation.resume(returning: RecognitionCache.Observations(values: observations))
-				} catch {
-					continuation.resume(throwing: error)
+				// Vision's neural engine fails now and then when the machine is busy;
+				// a real failure fails every attempt.
+				var failure: Error?
+				for attempt in 0..<3 {
+					if attempt > 0 { Thread.sleep(forTimeInterval: 0.25) }
+					let request = VNRecognizeTextRequest()
+					request.recognitionLevel = level
+					request.usesLanguageCorrection = usesLanguageCorrection
+					do {
+						try VNImageRequestHandler(cgImage: image).perform([request])
+						let observations = request.results ?? []
+						cache.store(observations, for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region)
+						continuation.resume(returning: RecognitionCache.Observations(values: observations))
+						return
+					} catch {
+						failure = error
+					}
 				}
+				continuation.resume(throwing: failure ?? CocoaError(.featureUnsupported))
 			}
 		}.values
 	}
@@ -65,10 +85,17 @@ enum RenderedText {
 	) async throws -> [Line] {
 		guard let input = recognitionInput(image, region: region) else { return [] }
 		let observations = try await recognize(input.image, level: level, usesLanguageCorrection: false, region: input.region, cache: cache, onRecognition: onRecognition)
+		// A label read exactly anywhere wins over one only found by tolerating misread glyphs.
+		let readsExactly = label.map { label in
+			observations.contains { $0.topCandidates(1).first?.string.range(of: label, options: options) != nil }
+		} ?? true
 		return observations.compactMap { observation -> Line? in
 			guard let candidate = observation.topCandidates(1).first else { return nil }
 			var labelBounds: CGRect?
-			if let label, let range = candidate.string.range(of: label, options: options) {
+			let range = label.flatMap { label in
+				readsExactly ? candidate.string.range(of: label, options: options) : OCRText.range(of: label, in: candidate.string, options: options)
+			}
+			if let range {
 				labelBounds = try? candidate.boundingBox(for: range)?.boundingBox
 			}
 			let map: (CGRect) -> CGRect = { box in
@@ -102,6 +129,28 @@ enum RenderedText {
 }
 
 extension RenderedText {
+	/// The parts of a window with its smallest, faintest text, read on their
+	/// own when the whole window doesn't read clearly: the side panel's top
+	/// and bottom, which overlap, and the status bar. Recognition scales a
+	/// whole window down, which loses such text on CI runners; a region
+	/// keeps it near full size, at a fraction of reading every part.
+	static let detailRegions: [CGRect] = [
+		CGRect(x: 0.70, y: 0.42, width: 0.30, height: 0.58),
+		CGRect(x: 0.70, y: 0, width: 0.30, height: 0.58),
+		CGRect(x: 0, y: 0, width: 1, height: 0.07),
+	]
+
+	/// Keeps a frame recognition couldn't read when LPM_TEST_SNAPSHOT_DIR
+	/// names a folder, as CI does, so a failure there can be looked at.
+	static func saveDiagnostic(_ image: CGImage, named name: String) {
+		guard let folder = ProcessInfo.processInfo.environment["LPM_TEST_SNAPSHOT_DIR"], !folder.isEmpty,
+			let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+		else { return }
+		let label = String(String.UnicodeScalarView(name.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? $0 : "-" }).prefix(60))
+		try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		try? data.write(to: URL(filePath: folder, directoryHint: .isDirectory).appending(path: "\(label)-\(UUID().uuidString.prefix(8)).png"))
+	}
+
 	/// The text of every recognized line within the requested region.
 	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true, region: CGRect? = nil, cache: RecognitionCache = .shared, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [String] {
 		guard let input = recognitionInput(image, region: region) else { return [] }
@@ -232,6 +281,7 @@ final class SheetTestHost<V: View> {
 
 	/// `keepsRequestedSize` stops the hosting view from shrinking to the content's minimum size.
 	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false, usesHostingView: Bool = false) {
+		RenderedText.requireUISuite()
 		window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
 		window.animationBehavior = .none
@@ -303,7 +353,8 @@ final class SheetTestHost<V: View> {
 		return OCRText(lines.map(\.text).joined(separator: "\n"))
 	}
 
-	/// Tries fast recognition, then accurate recognition for small text, on each pass.
+	/// Tries fast recognition, then accurate recognition for small text, on each
+	/// pass, then the regions of the window where the smallest text is.
 	/// `footer` limits rendering and recognition to the bottom points of the window.
 	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil, footer: CGFloat? = nil) async throws -> Bool {
 		let target = try #require(targetWindow?.contentView ?? view)
@@ -317,9 +368,19 @@ final class SheetTestHost<V: View> {
 				read = lines.map(\.text).joined(separator: "\n")
 				if OCRText(read).contains(expected) { return true }
 			}
+			var regions: [String] = []
+			if area == nil, targetWindow == nil {
+				for region in RenderedText.detailRegions {
+					let text = try await RenderedText.lines(in: image, level: .accurate, region: region).map(\.text).joined(separator: "\n")
+					if OCRText(text).contains(expected) { return true }
+					regions.append(text)
+				}
+			}
 			guard ContinuousClock.now < deadline else {
 				// Runners read glyphs differently; the log shows what this one read.
 				print("waitForText did not find \"\(expected)\". Last accurate reading:\n\(read)")
+				if !regions.isEmpty { print("Region by region:\n\(regions.joined(separator: "\n---\n"))") }
+				RenderedText.saveDiagnostic(image, named: expected)
 				return false
 			}
 			try await Task.sleep(for: .milliseconds(20))
@@ -353,6 +414,7 @@ final class SheetTestHost<V: View> {
 			try await Task.sleep(for: .milliseconds(20))
 			bounds = try await labelBounds(label, in: target, options: options, onRecognition: onRecognition)
 		}
+		if bounds == nil { RenderedText.saveDiagnostic(try snapshot(target), named: label) }
 		let box = try #require(bounds, "Missing button \(label)")
 		let point = target.convert(
 			NSPoint(x: box.midX * target.bounds.width, y: (target.isFlipped ? 1 - box.midY : box.midY) * target.bounds.height),
@@ -459,6 +521,48 @@ final class SheetTestHost<V: View> {
 		let field = try field(at: index, secure: false)
 		let frame = field.convert(field.bounds, to: nil)
 		try NativeTestClick.send(to: window, at: NSPoint(x: frame.maxX + offset, y: frame.midY))
+	}
+
+	/// Types into the plain text field showing `placeholder`, replacing its text.
+	func enterText(_ text: String, placeholder: String) throws {
+		let field = try #require(textFields(in: view).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
+		window.makeFirstResponder(field)
+		let editor = try #require(field.currentEditor() as? NSTextView)
+		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+		field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+		window.makeFirstResponder(nil)
+	}
+
+	/// Types into the plain text field showing `placeholder` and leaves it being edited.
+	func typeText(_ text: String, placeholder: String) throws {
+		let field = try #require(textFields(in: view).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
+		window.makeFirstResponder(field)
+		let editor = try #require(field.currentEditor() as? NSTextView)
+		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+		field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+	}
+
+	/// Whether a plain text field shows `placeholder`.
+	func hasField(placeholder: String) -> Bool {
+		textFields(in: view).contains { $0.placeholderString == placeholder }
+	}
+
+	/// The popover showing now, once one is.
+	func popoverWindow() async throws -> NSWindow {
+		var found: NSWindow?
+		_ = try await waitUntil {
+			found = NSApp.windows.first { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
+			return found != nil
+		}
+		return try #require(found, "No popover is showing")
+	}
+
+	/// Sends a Command shortcut, such as ⌘Z, through the application, so event
+	/// monitors see it as they would a real key press.
+	func shortcut(_ character: String, code: UInt16, shift: Bool = false) throws {
+		let flags: NSEvent.ModifierFlags = shift ? [.command, .shift] : [.command]
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
+		NSApplication.shared.sendEvent(event)
 	}
 
 	func escape() throws -> Bool {
@@ -591,7 +695,13 @@ final class SheetTestHost<V: View> {
 			if let bounds = refined.lazy.compactMap(\.labelBounds).first { return bounds }
 		}
 		let accurate = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, onRecognition: onRecognition)
-		return accurate.lazy.compactMap(\.labelBounds).first
+		if let bounds = accurate.lazy.compactMap(\.labelBounds).first { return bounds }
+		guard target === view else { return nil }
+		for region in RenderedText.detailRegions {
+			let lines = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: region, onRecognition: onRecognition)
+			if let bounds = lines.lazy.compactMap(\.labelBounds).first { return bounds }
+		}
+		return nil
 	}
 
 	/// Editable text fields in reading order: top to bottom, then left to right.

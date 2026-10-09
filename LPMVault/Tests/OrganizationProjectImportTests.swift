@@ -110,15 +110,22 @@ struct OrganizationProjectImportTests {
 		#expect(try await coordinator.loadProject(vaultId: local.id).get() == local)
 	}
 
-	@Test("organization move confirmation explains local relocation and cloud merge precedence")
-	func moveConfirmationExplainsConsequences() async throws {
-		let renderer = ImageRenderer(content: OrgProjectMoveConfirmation(
-			projectName: "test-project", onConfirm: {}, onCancel: {}
-		).background(Color.white).environment(\.colorScheme, .light))
-		renderer.scale = 3
-		let text = try await RenderedText.strings(in: #require(renderer.cgImage)).joined(separator: " ")
-		#expect(text.contains("Cloud values replace conflicting local values."))
-		#expect(text.contains("Nothing is uploaded."))
-		#expect(text.contains("Move and merge"))
+}
+
+extension SheetInteractionTests {
+	@Suite("Existing organization project imports, rendered")
+	@MainActor
+	struct OrganizationProjectImportRenderingTests {
+		@Test("organization move confirmation explains local relocation and cloud merge precedence")
+		func moveConfirmationExplainsConsequences() async throws {
+			let renderer = ImageRenderer(content: OrgProjectMoveConfirmation(
+				projectName: "test-project", onConfirm: {}, onCancel: {}
+			).background(Color.white).environment(\.colorScheme, .light))
+			renderer.scale = 3
+			let text = try await RenderedText.strings(in: #require(renderer.cgImage)).joined(separator: " ")
+			#expect(text.contains("Cloud values replace conflicting local values."))
+			#expect(text.contains("Nothing is uploaded."))
+			#expect(text.contains("Move and merge"))
+		}
 	}
 }

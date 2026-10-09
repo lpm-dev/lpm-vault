@@ -241,7 +241,7 @@ struct ProjectEnvSchemaDraftTests {
 	func rejectionLocation(pointer: String, item: Draft.Item?, field: String?) {
 		let rejection = Draft.Rejection(.init(code: "env.invalid_rule", source: "lpm.json", pointer: pointer, message: "invalid"))
 		#expect(rejection.item == item)
-		#expect(rejection.field == field)
+		#expect(rejection.fields == (field.map { [$0] } ?? []))
 		#expect(rejection.reason == "Invalid")
 	}
 
@@ -464,7 +464,8 @@ struct ProjectEnvSchemaDraftTests {
 		#expect(evaluation.check == nil)
 		let rejection = try #require(evaluation.rejection)
 		#expect(rejection.item == .key("TOKEN"))
-		#expect(rejection.reason == "Secret rules cannot contain literal defaults or enum values")
+		#expect(rejection.reason == "Secret keys can't have a default or allowed values.")
+		#expect(rejection.fields == ["default", "enum"], "The panel shows it on the first of these rows it shows")
 	}
 
 	@Test("saving writes only the draft's items, rendered as the LPM CLI does, and keeps the rest of lpm.json")

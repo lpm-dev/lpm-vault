@@ -20,17 +20,19 @@ struct VaultRuleBadge: View {
 /// The file an inherited rule comes from; dashed so it reads as a source, not a rule.
 struct VaultSourceBadge: View {
 	let source: String
+	/// lpm.json overrides the rule `source` declares.
+	var isOverridden = false
 
 	var body: some View {
-		Text(source)
+		Text(isOverridden ? "overrides \(source)" : source)
 			.font(VaultTypography.mono(10.5))
 			.foregroundStyle(VaultPalette.textTertiary)
 			.lineLimit(1)
 			.padding(.horizontal, 6)
 			.padding(.vertical, 2)
 			.overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(VaultPalette.textFaint, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
-			.help("Inherited from \(source)")
-			.accessibilityLabel("Inherited from \(source)")
+			.help(isOverridden ? "lpm.json overrides the rule from \(source)" : "Inherited from \(source)")
+			.accessibilityLabel(isOverridden ? "Overrides the rule from \(source)" : "Inherited from \(source)")
 	}
 }
 

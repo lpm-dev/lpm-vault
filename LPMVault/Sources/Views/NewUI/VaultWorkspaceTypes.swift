@@ -167,6 +167,33 @@ enum VaultKeySortOrder: String, Sendable {
     return merged
   }
 
+  /// `items`, already in this order by `key`, with `extras` merged in at their places.
+  static func mergingAscending<Item>(_ extras: [Item], into items: [Item], by key: (Item) -> String) -> [Item] {
+    guard !extras.isEmpty else { return items }
+    let additions = extras.sorted { precedes(key($0), key($1)) }
+    var merged: [Item] = []
+    merged.reserveCapacity(items.count + additions.count)
+    var cursor = 0
+    for addition in additions {
+      let name = key(addition)
+      var lower = cursor
+      var upper = items.count
+      while lower < upper {
+        let middle = lower + (upper - lower) / 2
+        if precedes(key(items[middle]), name) {
+          lower = middle + 1
+        } else {
+          upper = middle
+        }
+      }
+      merged.append(contentsOf: items[cursor..<lower])
+      merged.append(addition)
+      cursor = lower
+    }
+    merged.append(contentsOf: items[cursor...])
+    return merged
+  }
+
   private static func precedes(_ lhs: String, _ rhs: String) -> Bool {
     let comparison = lhs.localizedStandardCompare(rhs)
     return comparison == .orderedSame ? lhs < rhs : comparison == .orderedAscending

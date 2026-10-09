@@ -103,6 +103,9 @@ struct ProjectEnvSchemaDraft: Sendable {
 	/// Items with a change or a conflict, in the order they were first changed.
 	var changedItems: [Item] { changes.map(\.item) + conflicts.map(\.item) }
 
+	/// How many items have a change or a conflict.
+	var changeCount: Int { changes.count + conflicts.count }
+
 	func hasChange(to item: Item) -> Bool {
 		changePositions[item] != nil || conflictPositions[item] != nil
 	}
@@ -554,18 +557,22 @@ extension ProjectEnvSchemaDraft {
 	/// the item and rule field it names when the problem is in lpm.json.
 	struct Rejection: Equatable, Sendable {
 		let item: Item?
-		/// The rule field, such as "pattern", when the engine names one.
-		let field: String?
+		/// The rule fields, such as "pattern", the problem is in, most likely
+		/// first: the one the engine names, or the ones its reason is about.
+		let fields: [String]
 		/// Where the problem is, such as "lpm.json › envSchema.vars.PORT".
 		let location: String
 		let reason: String
 		let code: String
+		/// The engine's own message, when it gives one.
+		let message: String?
 
 		init(_ diagnostic: RustSchemaEngine.Diagnostic?) {
 			let problem = ProjectEnvSchemaState.problem(diagnostic)
 			location = problem.location
 			reason = problem.reason
 			code = diagnostic?.code ?? "env.invalid_rule"
+			message = diagnostic?.message
 			var item: Item?
 			var field: String?
 			if let diagnostic, diagnostic.source == nil || diagnostic.source == "lpm.json",
@@ -583,24 +590,26 @@ extension ProjectEnvSchemaDraft {
 				if item != nil, item != .clientPrefixes, parts.count > 2 { field = parts[2] }
 			}
 			self.item = item
-			self.field = field
+			fields = if let field { [field] } else if item != nil { ProjectEnvSchemaState.fields(code: code, message: message) } else { [] }
 		}
 
 		/// lpm.json couldn't be read or the rules couldn't be resolved.
 		init(_ error: ProjectEnvSchemaFile.FileError) {
 			item = nil
-			field = nil
+			fields = []
 			location = "lpm.json › envSchema"
 			reason = error.localizedDescription
 			code = "app.unresolved"
+			message = nil
 		}
 
 		private init(_ rejection: Rejection, item: Item) {
 			self.item = item
-			field = nil
+			fields = item == .clientPrefixes ? [] : ProjectEnvSchemaState.fields(code: rejection.code, message: rejection.message)
 			location = rejection.location
 			reason = rejection.reason
 			code = rejection.code
+			message = rejection.message
 		}
 
 		/// This rejection tied to the draft's item that causes it when the engine
@@ -609,7 +618,7 @@ extension ProjectEnvSchemaDraft {
 		func attributed(to draft: ProjectEnvSchemaDraft) -> Rejection {
 			guard item == nil else { return self }
 			let items = draft.changedItems
-			if items.contains(.clientPrefixes), code == "env.invalid_prefixes" || reason.localizedCaseInsensitiveContains("clientPrefixes") {
+			if items.contains(.clientPrefixes), code == "env.invalid_prefixes" || message?.hasPrefix("clientPrefixes ") == true {
 				return Rejection(self, item: .clientPrefixes)
 			}
 			if code == "env.invalid_name", let named = items.first(where: { item in

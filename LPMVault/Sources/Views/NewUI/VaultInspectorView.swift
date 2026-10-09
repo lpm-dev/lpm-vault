@@ -933,7 +933,7 @@ struct VaultKeyRecoveryView: View {
 /// its edit as a draft, and the next closes the inspector. An AppKit responder
 /// handles it because SwiftUI can only focus a container while system keyboard
 /// navigation is on. Esc anywhere else, such as in the sidebar search, is left alone.
-private struct VaultEscapeResponder: NSViewRepresentable {
+struct VaultEscapeResponder: NSViewRepresentable {
 	let onEscape: () -> Void
 
 	func makeNSView(context: Context) -> ResponderView { ResponderView() }
