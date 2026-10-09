@@ -81,15 +81,16 @@ class SwiftWatchdogTests(unittest.TestCase):
         inside = sorted(test for test in TESTS if test.startswith(suite + '/'))
         with tempfile.TemporaryDirectory() as directory:
             shards = []
-            for shard in range(1, 4):
-                ran = Path(directory) / f'ran-{shard}'
-                result = self.launch(FAKE_SWIFT_TESTS='\n'.join(TESTS), SWIFT_TEST_SHARD=f'{shard}/3',
+            for shard in ['rest', '1/2', '2/2']:
+                ran = Path(directory) / f'ran-{shard.replace("/", "-")}'
+                result = self.launch(FAKE_SWIFT_TESTS='\n'.join(TESTS), SWIFT_TEST_SHARD=shard,
                                      SWIFT_TEST_ISOLATED_SUITE=suite, FAKE_SWIFT_RAN=str(ran))
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 shards.append(sorted(ran.read_text().split()) if ran.exists() else [])
-            self.assertEqual(shards[0], sorted(set(TESTS) - set(inside)), 'The first shard runs everything outside the suite')
-            self.assertEqual(sorted(shards[1] + shards[2]), inside, 'The other shards split the suite')
-        for shard, isolated in [('1/1', suite), ('1/2', 'LPMVaultTests.MissingTests')]:
+            self.assertEqual(shards[0], sorted(set(TESTS) - set(inside)), 'rest runs everything outside the suite')
+            self.assertEqual(sorted(shards[1] + shards[2]), inside, 'The shards split the suite')
+            self.assertTrue(shards[1] and shards[2])
+        for shard, isolated in [('rest', ''), ('1/2', 'LPMVaultTests.MissingTests')]:
             with self.subTest(shard=shard, isolated=isolated):
                 result = self.launch(FAKE_SWIFT_TESTS='\n'.join(TESTS), SWIFT_TEST_SHARD=shard, SWIFT_TEST_ISOLATED_SUITE=isolated)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)

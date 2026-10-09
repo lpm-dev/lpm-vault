@@ -87,3 +87,11 @@ struct OCRTextTests {
 		#expect(!OCRText("API KEY").contains("API_URL"))
 	}
 }
+
+@Suite("Native UI test placement")
+struct NativeUITestPlacementTests {
+	@Test("a test outside the UI suite that opens a test window or reads text fails")
+	func uiOutsideTheSuiteFails() {
+		withKnownIssue { RenderedText.requireUISuite() }
+	}
+}

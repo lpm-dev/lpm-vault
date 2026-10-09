@@ -4,127 +4,129 @@ import SwiftUI
 import Testing
 import Vision
 
-@Suite("Rendered text recognition", .serialized)
-struct RenderedTextTests {
-	private let cache = RecognitionCache()
+extension SheetInteractionTests {
+	@Suite("Rendered text recognition", .serialized)
+	struct RenderedTextTests {
+		private let cache = RecognitionCache()
 
-	@Test("recognition caches are isolated from other suites")
-	func otherSuitesCannotEvictOwnedCache() async throws {
-		let image = try fixture(width: 929, label: "ISOLATED CACHE")
-		let calls = RecognitionCalls()
-		_ = try await RenderedText.strings(in: image, cache: cache, onRecognition: calls.record)
-		for width in 980..<990 {
-			let other = try fixture(width: width, label: "OTHER SUITE")
-			RecognitionCache.shared.store([], for: RecognitionCache.Frame(image: other), level: .accurate, usesLanguageCorrection: true, region: nil)
+		@Test("recognition caches are isolated from other suites")
+		func otherSuitesCannotEvictOwnedCache() async throws {
+			let image = try fixture(width: 929, label: "ISOLATED CACHE")
+			let calls = RecognitionCalls()
+			_ = try await RenderedText.strings(in: image, cache: cache, onRecognition: calls.record)
+			for width in 980..<990 {
+				let other = try fixture(width: width, label: "OTHER SUITE")
+				RecognitionCache.shared.store([], for: RecognitionCache.Frame(image: other), level: .accurate, usesLanguageCorrection: true, region: nil)
+			}
+			let text = try await RenderedText.strings(in: image, cache: cache, onRecognition: calls.record)
+			#expect(text.joined(separator: " ").contains("ISOLATED CACHE"))
+			#expect(calls.sizes.count == 1)
 		}
-		let text = try await RenderedText.strings(in: image, cache: cache, onRecognition: calls.record)
-		#expect(text.joined(separator: " ").contains("ISOLATED CACHE"))
-		#expect(calls.sizes.count == 1)
-	}
 
-	@Test("repeated text reads recognize an unchanged frame once")
-	func repeatedReadsShareRecognition() async throws {
-		let image = try fixture(width: 937, label: "REPEATED FRAME")
-		let calls = RecognitionCalls()
-		for _ in 0..<3 {
-			let text = try await RenderedText.strings(in: image, usesLanguageCorrection: false, cache: cache, onRecognition: calls.record)
-			#expect(text.joined(separator: " ").contains("REPEATED FRAME"))
+		@Test("repeated text reads recognize an unchanged frame once")
+		func repeatedReadsShareRecognition() async throws {
+			let image = try fixture(width: 937, label: "REPEATED FRAME")
+			let calls = RecognitionCalls()
+			for _ in 0..<3 {
+				let text = try await RenderedText.strings(in: image, usesLanguageCorrection: false, cache: cache, onRecognition: calls.record)
+				#expect(text.joined(separator: " ").contains("REPEATED FRAME"))
+			}
+			#expect(calls.sizes.count == 1)
 		}
-		#expect(calls.sizes.count == 1)
-	}
 
-	@Test("overlapping text reads share one recognition request")
-	func overlappingReadsShareRecognition() async throws {
-		let image = try fixture(width: 941, label: "OVERLAPPING FRAME")
-		let calls = RecognitionCalls()
-		try await withThrowingTaskGroup(of: [RenderedText.Line].self) { group in
-			for _ in 0..<4 {
-				group.addTask {
-					try await RenderedText.lines(in: image, level: .accurate, cache: cache, onRecognition: calls.record)
+		@Test("overlapping text reads share one recognition request")
+		func overlappingReadsShareRecognition() async throws {
+			let image = try fixture(width: 941, label: "OVERLAPPING FRAME")
+			let calls = RecognitionCalls()
+			try await withThrowingTaskGroup(of: [RenderedText.Line].self) { group in
+				for _ in 0..<4 {
+					group.addTask {
+						try await RenderedText.lines(in: image, level: .accurate, cache: cache, onRecognition: calls.record)
+					}
+				}
+				for try await lines in group {
+					#expect(lines.map(\.text).joined(separator: " ").contains("OVERLAPPING FRAME"))
 				}
 			}
-			for try await lines in group {
-				#expect(lines.map(\.text).joined(separator: " ").contains("OVERLAPPING FRAME"))
+			#expect(calls.sizes.count == 1)
+		}
+
+		@Test("language correction has its own cached recognition results")
+		func languageCorrectionSeparatesCacheEntries() async throws {
+			let image = try fixture(width: 947, label: "LANGUAGE CORRECTION")
+			let calls = RecognitionCalls()
+			for correction in [true, false, true, false] {
+				_ = try await RenderedText.strings(in: image, usesLanguageCorrection: correction, cache: cache, onRecognition: calls.record)
+			}
+			#expect(calls.sizes.count == 2)
+		}
+
+		@Test("recognition processes cropped pixels and retains original-image coordinates")
+		func croppedRecognitionPreservesCoordinates() async throws {
+			let image = try fixture(width: 1200, height: 700, label: "REGION TARGET", at: CGPoint(x: 400, y: 350))
+			let full = try #require(try await RenderedText.lines(in: image, level: .accurate, label: "REGION TARGET", cache: cache).first)
+			let calls = RecognitionCalls()
+			let region = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+			let cropped = try #require(try await RenderedText.lines(in: image, level: .accurate, label: "REGION TARGET", region: region, cache: cache, onRecognition: calls.record).first)
+			#expect(calls.sizes == [CGSize(width: 600, height: 350)])
+			#expect(abs(cropped.bounds.midX - full.bounds.midX) < 0.01)
+			#expect(abs(cropped.bounds.midY - full.bounds.midY) < 0.01)
+			let label = try #require(cropped.labelBounds)
+			#expect(region.contains(label))
+		}
+
+		@Test("an empty recognition region performs no request", arguments: [
+			CGRect.zero, CGRect(x: 2, y: 2, width: 1, height: 1),
+		])
+		func emptyRegionsSkipRecognition(region: CGRect) async throws {
+			let image = try fixture(width: 953, label: "EMPTY REGION")
+			let calls = RecognitionCalls()
+			let lines = try await RenderedText.lines(in: image, level: .accurate, region: region, cache: cache, onRecognition: calls.record)
+			#expect(lines.isEmpty)
+			#expect(calls.sizes.isEmpty)
+		}
+
+		@Test("changed pixels invalidate recognition even at the same dimensions")
+		func changedPixelsInvalidateCache() async throws {
+			let first = try fixture(width: 967, label: "FIRST FRAME")
+			let second = try fixture(width: 967, label: "SECOND FRAME")
+			let calls = RecognitionCalls()
+			for (image, expected) in [(first, "FIRST FRAME"), (second, "SECOND FRAME"), (first, "FIRST FRAME")] {
+				let text = try await RenderedText.strings(in: image, usesLanguageCorrection: false, cache: cache, onRecognition: calls.record)
+				#expect(text.joined(separator: " ").contains(expected))
+			}
+			#expect(calls.sizes.count == 2)
+		}
+
+		@Test("equal-sized crops retain separate text and coordinates")
+		func differentCropsStayDistinct() async throws {
+			let image = try fixture(width: 971, height: 400, label: "BOTTOM REGION", additionalLabel: "TOP REGION")
+			for (y, expected) in [(0.0, "BOTTOM REGION"), (0.5, "TOP REGION"), (0.0, "BOTTOM REGION")] {
+				let region = CGRect(x: 0, y: y, width: 1, height: 0.5)
+				let lines = try await RenderedText.lines(in: image, level: .accurate, region: region, cache: cache)
+				#expect(lines.map(\.text).joined(separator: " ") == expected)
+				#expect(try #require(lines.first).bounds.midY >= y)
+				#expect(try #require(lines.first).bounds.midY <= y + 0.5)
 			}
 		}
-		#expect(calls.sizes.count == 1)
-	}
 
-	@Test("language correction has its own cached recognition results")
-	func languageCorrectionSeparatesCacheEntries() async throws {
-		let image = try fixture(width: 947, label: "LANGUAGE CORRECTION")
-		let calls = RecognitionCalls()
-		for correction in [true, false, true, false] {
-			_ = try await RenderedText.strings(in: image, usesLanguageCorrection: correction, cache: cache, onRecognition: calls.record)
+		private func fixture(width: Int, height: Int = 200, label: String, at point: CGPoint = CGPoint(x: 40, y: 80), additionalLabel: String? = nil) throws -> CGImage {
+			let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+				bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.setFillColor(CGColor(gray: 1, alpha: 1))
+			context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+			let attributes: [NSAttributedString.Key: Any] = [
+				NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica" as CFString, 32, nil),
+				NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1),
+			]
+			context.textPosition = point
+			CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: label, attributes: attributes)), context)
+			if let additionalLabel {
+				context.textPosition = CGPoint(x: point.x, y: point.y + 200)
+				CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: additionalLabel, attributes: attributes)), context)
+			}
+			return try #require(context.makeImage())
 		}
-		#expect(calls.sizes.count == 2)
-	}
-
-	@Test("recognition processes cropped pixels and retains original-image coordinates")
-	func croppedRecognitionPreservesCoordinates() async throws {
-		let image = try fixture(width: 1200, height: 700, label: "REGION TARGET", at: CGPoint(x: 400, y: 350))
-		let full = try #require(try await RenderedText.lines(in: image, level: .accurate, label: "REGION TARGET", cache: cache).first)
-		let calls = RecognitionCalls()
-		let region = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
-		let cropped = try #require(try await RenderedText.lines(in: image, level: .accurate, label: "REGION TARGET", region: region, cache: cache, onRecognition: calls.record).first)
-		#expect(calls.sizes == [CGSize(width: 600, height: 350)])
-		#expect(abs(cropped.bounds.midX - full.bounds.midX) < 0.01)
-		#expect(abs(cropped.bounds.midY - full.bounds.midY) < 0.01)
-		let label = try #require(cropped.labelBounds)
-		#expect(region.contains(label))
-	}
-
-	@Test("an empty recognition region performs no request", arguments: [
-		CGRect.zero, CGRect(x: 2, y: 2, width: 1, height: 1),
-	])
-	func emptyRegionsSkipRecognition(region: CGRect) async throws {
-		let image = try fixture(width: 953, label: "EMPTY REGION")
-		let calls = RecognitionCalls()
-		let lines = try await RenderedText.lines(in: image, level: .accurate, region: region, cache: cache, onRecognition: calls.record)
-		#expect(lines.isEmpty)
-		#expect(calls.sizes.isEmpty)
-	}
-
-	@Test("changed pixels invalidate recognition even at the same dimensions")
-	func changedPixelsInvalidateCache() async throws {
-		let first = try fixture(width: 967, label: "FIRST FRAME")
-		let second = try fixture(width: 967, label: "SECOND FRAME")
-		let calls = RecognitionCalls()
-		for (image, expected) in [(first, "FIRST FRAME"), (second, "SECOND FRAME"), (first, "FIRST FRAME")] {
-			let text = try await RenderedText.strings(in: image, usesLanguageCorrection: false, cache: cache, onRecognition: calls.record)
-			#expect(text.joined(separator: " ").contains(expected))
-		}
-		#expect(calls.sizes.count == 2)
-	}
-
-	@Test("equal-sized crops retain separate text and coordinates")
-	func differentCropsStayDistinct() async throws {
-		let image = try fixture(width: 971, height: 400, label: "BOTTOM REGION", additionalLabel: "TOP REGION")
-		for (y, expected) in [(0.0, "BOTTOM REGION"), (0.5, "TOP REGION"), (0.0, "BOTTOM REGION")] {
-			let region = CGRect(x: 0, y: y, width: 1, height: 0.5)
-			let lines = try await RenderedText.lines(in: image, level: .accurate, region: region, cache: cache)
-			#expect(lines.map(\.text).joined(separator: " ") == expected)
-			#expect(try #require(lines.first).bounds.midY >= y)
-			#expect(try #require(lines.first).bounds.midY <= y + 0.5)
-		}
-	}
-
-	private func fixture(width: Int, height: Int = 200, label: String, at point: CGPoint = CGPoint(x: 40, y: 80), additionalLabel: String? = nil) throws -> CGImage {
-		let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-			bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-		context.setFillColor(CGColor(gray: 1, alpha: 1))
-		context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-		let attributes: [NSAttributedString.Key: Any] = [
-			NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica" as CFString, 32, nil),
-			NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1),
-		]
-		context.textPosition = point
-		CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: label, attributes: attributes)), context)
-		if let additionalLabel {
-			context.textPosition = CGPoint(x: point.x, y: point.y + 200)
-			CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: additionalLabel, attributes: attributes)), context)
-		}
-		return try #require(context.makeImage())
 	}
 }
 

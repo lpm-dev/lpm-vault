@@ -10,7 +10,7 @@ import Vision
 struct VaultAppearanceTests {
 	@Test("new and unknown preferences follow macOS")
 	func defaultFollowsSystem() throws {
-		let (defaults, domain) = try isolatedDefaults()
+		let (defaults, domain) = try Self.isolatedDefaults()
 		defer { defaults.removePersistentDomain(forName: domain) }
 		for rawValue in [nil, "unknown"] as [String?] {
 			defaults.set(rawValue, forKey: VaultAppearanceSettings.defaultsKey)
@@ -22,7 +22,7 @@ struct VaultAppearanceTests {
 
 	@Test("appearance choices survive relaunch without changing other preferences", arguments: VaultAppearance.allCases)
 	func preferencePersists(choice: VaultAppearance) throws {
-		let (defaults, domain) = try isolatedDefaults()
+		let (defaults, domain) = try Self.isolatedDefaults()
 		defer { defaults.removePersistentDomain(forName: domain) }
 		defaults.set("production", forKey: "lpm-vault-environment")
 		let settings = VaultAppearanceSettings(defaults: defaults)
@@ -97,7 +97,7 @@ struct VaultAppearanceTests {
 
 	@Test("settings expose a working appearance picker before and after sign-in", arguments: [false, true])
 	func appearancePicker(signedIn: Bool) async throws {
-		let (defaults, domain) = try isolatedDefaults()
+		let (defaults, domain) = try Self.isolatedDefaults()
 		defer { defaults.removePersistentDomain(forName: domain) }
 		let settings = VaultAppearanceSettings(defaults: defaults)
 		let store = makeStore()
@@ -131,51 +131,7 @@ struct VaultAppearanceTests {
 		}
 	}
 
-	@Test("workspace, settings, lock screen, and sheets render in both appearances", arguments: [ColorScheme.light, .dark])
-	func appearanceRenders(scheme: ColorScheme) async throws {
-		let (defaults, domain) = try isolatedDefaults()
-		defer { defaults.removePersistentDomain(forName: domain) }
-		let settings = VaultAppearanceSettings(defaults: defaults)
-		settings.selection = scheme == .dark ? .dark : .light
-		let keychain = MockKeychainService()
-		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
-			apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
-		let project = VaultProject(id: "theme-preview-project", name: "demo-api", path: "/tmp/demo-api",
-			environments: ["development": ["API_URL": "https://example.test", "PORT": "3000"],
-				"production": ["API_URL": "https://example.test", "PORT": "8080"]])
-		keychain.envStorage[project.id] = (project.name, project.path, project.environments)
-		keychain.envStorage["protected-preview"] = ("protected-api", "", ["default": [:]])
-		keychain.cliAccessPolicies["protected-preview"] = .requireApproval
-		store.isUnlocked = true
-		store.projects = [project]
-		store.selectedProjectId = project.id
-		store.selectedEnvironment = "development"
-		#expect(await store.loadProjects())
-		defer { store.lock() }
-		for _ in 0..<500 {
-			if store.workspaceSnapshots[project.id] != nil { break }
-			try await Task.sleep(for: .milliseconds(10))
-		}
-		_ = try #require(store.workspaceSnapshots[project.id])
-		await store.refreshCliAccess()
-		#expect(store.selectedProjectCliAccess == .automatic)
-		let suffix = scheme == .dark ? "dark" : "light"
-		try await render(ContentView(store: store).environment(UpdateChecker()).environment(settings),
-			size: CGSize(width: 1200, height: 760), scheme: scheme, name: "workspace-\(suffix)",
-			expectedText: ["All variables", "CLI", "API_URL", "PORT", "protected-api"])
-		try await render(AuthStatusView(store: store).environment(settings).environment(UpdateChecker()),
-			size: CGSize(width: 700, height: 700), scheme: scheme, name: "settings-\(suffix)",
-			expectedText: ["APPEARANCE", "System", "Light", "Dark", "UPDATES", "Stable", "Nightly", "Installed version"])
-		try await render(AddVariableSheet(store: store, projectId: project.id, environment: "development"),
-			size: CGSize(width: 560, height: 520), scheme: scheme, name: "add-variable-\(suffix)",
-			expectedText: ["Add variable", "Key", "Value", "Environments", "Cancel"])
-		store.lock()
-		try await render(ContentView(store: store).environment(settings),
-			size: CGSize(width: 1040, height: 640), scheme: scheme, name: "locked-\(suffix)",
-			expectedText: ["LPM Vault is Locked", "Unlock"])
-	}
-
-	private func isolatedDefaults() throws -> (UserDefaults, String) {
+	static func isolatedDefaults() throws -> (UserDefaults, String) {
 		let domain = "dev.lpm.vault.appearance-tests.\(UUID().uuidString)"
 		return (try #require(UserDefaults(suiteName: domain)), domain)
 	}
@@ -193,22 +149,6 @@ struct VaultAppearanceTests {
 		return nil
 	}
 
-	private func render<V: View>(_ view: V, size: CGSize, scheme: ColorScheme, name: String, expectedText: [String]) async throws {
-		let host = NSHostingView(rootView: view.environment(\.colorScheme, scheme).tint(VaultPalette.accent))
-		host.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-		host.frame = NSRect(origin: .zero, size: size)
-		host.layoutSubtreeIfNeeded()
-		let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-		host.cacheDisplay(in: host.bounds, to: bitmap)
-		let data = try #require(bitmap.representation(using: .png, properties: [:]))
-		Attachment.record(data, named: name + ".png")
-		let image = try #require(bitmap.cgImage)
-		let text = try await RenderedText.strings(in: image).joined(separator: " ")
-		let recognized = OCRText(text)
-		for label in expectedText {
-			#expect(recognized.contains(label), "Missing \(label) in \(name): \(text)")
-		}
-	}
 }
 
 @Test("unknown CLI approval never advertises automatic access")
@@ -259,5 +199,72 @@ private struct AppearanceFixture: View {
 
 	var body: some View {
 		Color.clear.frame(width: 200, height: 100).vaultAppearance(settings.selection)
+	}
+}
+
+extension SheetInteractionTests {
+	@Suite("Vault appearance, rendered")
+	@MainActor
+	struct VaultAppearanceRenderingTests {
+		@Test("workspace, settings, lock screen, and sheets render in both appearances", arguments: [ColorScheme.light, .dark])
+		func appearanceRenders(scheme: ColorScheme) async throws {
+			let (defaults, domain) = try VaultAppearanceTests.isolatedDefaults()
+			defer { defaults.removePersistentDomain(forName: domain) }
+			let settings = VaultAppearanceSettings(defaults: defaults)
+			settings.selection = scheme == .dark ? .dark : .light
+			let keychain = MockKeychainService()
+			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+			let project = VaultProject(id: "theme-preview-project", name: "demo-api", path: "/tmp/demo-api",
+				environments: ["development": ["API_URL": "https://example.test", "PORT": "3000"],
+					"production": ["API_URL": "https://example.test", "PORT": "8080"]])
+			keychain.envStorage[project.id] = (project.name, project.path, project.environments)
+			keychain.envStorage["protected-preview"] = ("protected-api", "", ["default": [:]])
+			keychain.cliAccessPolicies["protected-preview"] = .requireApproval
+			store.isUnlocked = true
+			store.projects = [project]
+			store.selectedProjectId = project.id
+			store.selectedEnvironment = "development"
+			#expect(await store.loadProjects())
+			defer { store.lock() }
+			for _ in 0..<500 {
+				if store.workspaceSnapshots[project.id] != nil { break }
+				try await Task.sleep(for: .milliseconds(10))
+			}
+			_ = try #require(store.workspaceSnapshots[project.id])
+			await store.refreshCliAccess()
+			#expect(store.selectedProjectCliAccess == .automatic)
+			let suffix = scheme == .dark ? "dark" : "light"
+			try await render(ContentView(store: store).environment(UpdateChecker()).environment(settings),
+				size: CGSize(width: 1200, height: 760), scheme: scheme, name: "workspace-\(suffix)",
+				expectedText: ["All variables", "CLI", "API_URL", "PORT", "protected-api"])
+			try await render(AuthStatusView(store: store).environment(settings).environment(UpdateChecker()),
+				size: CGSize(width: 700, height: 700), scheme: scheme, name: "settings-\(suffix)",
+				expectedText: ["APPEARANCE", "System", "Light", "Dark", "UPDATES", "Stable", "Nightly", "Installed version"])
+			try await render(AddVariableSheet(store: store, projectId: project.id, environment: "development"),
+				size: CGSize(width: 560, height: 520), scheme: scheme, name: "add-variable-\(suffix)",
+				expectedText: ["Add variable", "Key", "Value", "Environments", "Cancel"])
+			store.lock()
+			try await render(ContentView(store: store).environment(settings),
+				size: CGSize(width: 1040, height: 640), scheme: scheme, name: "locked-\(suffix)",
+				expectedText: ["LPM Vault is Locked", "Unlock"])
+		}
+
+		private func render<V: View>(_ view: V, size: CGSize, scheme: ColorScheme, name: String, expectedText: [String]) async throws {
+			let host = NSHostingView(rootView: view.environment(\.colorScheme, scheme).tint(VaultPalette.accent))
+			host.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+			host.frame = NSRect(origin: .zero, size: size)
+			host.layoutSubtreeIfNeeded()
+			let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+			host.cacheDisplay(in: host.bounds, to: bitmap)
+			let data = try #require(bitmap.representation(using: .png, properties: [:]))
+			Attachment.record(data, named: name + ".png")
+			let image = try #require(bitmap.cgImage)
+			let text = try await RenderedText.strings(in: image).joined(separator: " ")
+			let recognized = OCRText(text)
+			for label in expectedText {
+				#expect(recognized.contains(label), "Missing \(label) in \(name): \(text)")
+			}
+		}
 	}
 }

@@ -51,10 +51,19 @@ Swift Testing accepts a test or suite name through `--filter`:
 swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors --filter ConnectCLITests
 ```
 
-Before you open a pull request, run the current CI checks from the repository root:
+Before you push a branch, run the whole Swift suite locally, native UI tests included; on an Apple silicon Mac it takes about two minutes:
 
 ```sh
 swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
+```
+
+Pull request checks run every Swift test except the native UI suite, `SheetInteractionTests`.
+Its tests read the screen with Vision, which is CPU-only and several times slower on hosted runners, so the [UI regressions workflow](.github/workflows/ui.yml) runs them after every merge to `main`, before every release, on demand from the Actions tab, and for a pull request labeled `ui-tests`.
+Native UI tests belong in `SheetInteractionTests` or a suite nested in it; a test that opens a test window or reads text elsewhere fails.
+
+Before you open a pull request, also run the rest of the CI checks from the repository root:
+
+```sh
 bash LPMVault/Scripts/Tests/release-tooling-tests.sh
 python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
 npm ci --prefix web --ignore-scripts
@@ -77,7 +86,7 @@ codesign --verify --deep --strict 'build-check/Build/Products/Release/LPM Vault.
 ```
 
 The ad-hoc signature checks verify the bundle structure. They do not grant shared Keychain access.
-The [CI workflow](.github/workflows/ci.yml) is authoritative for the toolchain and required checks.
+The [CI workflow](.github/workflows/ci.yml) is authoritative for the toolchain and required checks; the Swift steps live in the [Swift tests workflow](.github/workflows/swift-tests.yml) it shares with the UI regressions.
 Builds must complete with zero warnings.
 
 Keep Swift tests in `LPMVault/Tests`, release-tooling tests in `LPMVault/Scripts/Tests`, and website tests in `web/tests`.

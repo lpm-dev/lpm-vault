@@ -23,7 +23,7 @@ class CacheIdentityTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
-        for path in ['.github/workflows/ci.yml', 'LPMVault/Scripts/ci-cache-key.py',
+        for path in ['.github/workflows/ci.yml', '.github/workflows/swift-tests.yml', 'LPMVault/Scripts/ci-cache-key.py',
                      'LPMVault/Scripts/verify-env-engine.py', 'LPMVault/Vendor/EnvEngine/provenance.json',
                      'LPMVault/Package.swift', 'LPMVault/Package.resolved',
                      'LPMVault/LPMVault.xcodeproj/project.pbxproj', 'LPMVault/Info.plist',
@@ -63,7 +63,7 @@ class CacheIdentityTests(unittest.TestCase):
         before = self.identity()
         self.assertNotEqual(before[0], self.identity(toolchain='other-SDK-build')[0])
         for path in ['LPMVault/Package.swift', 'LPMVault/Package.resolved',
-                     'LPMVault/Vendor/EnvEngine/provenance.json', '.github/workflows/ci.yml']:
+                     'LPMVault/Vendor/EnvEngine/provenance.json', '.github/workflows/ci.yml', '.github/workflows/swift-tests.yml']:
             with self.subTest(path=path):
                 self.write(path, 'changed')
                 self.assertNotEqual(before[0], self.identity()[0])

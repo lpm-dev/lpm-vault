@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs `swift test` with the given arguments under a time limit. A run that
 # hangs prints the stacks of the test process and fails, instead of holding
-# the job until its timeout. With SWIFT_TEST_SHARD=K/N, it runs only the Kth
-# of N shards of the tests, and fails unless exactly those ran.
+# the job until its timeout. With SWIFT_TEST_SHARD set, it runs only that
+# shard of the tests (see swift-test-shard.py), and fails unless exactly those ran.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

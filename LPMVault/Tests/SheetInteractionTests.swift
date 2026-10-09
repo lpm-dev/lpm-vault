@@ -12,6 +12,17 @@ import Vision
 enum RenderedText {
 	private static let queue = DispatchQueue(label: "dev.lpm.vault.tests.text-recognition", qos: .userInitiated)
 
+	/// The suite native UI tests belong to. It runs them one at a time, and CI
+	/// runs it on runners of its own: beside parallel tests, the load starves
+	/// the waits recognition and windows depend on.
+	static let uiSuite = "SheetInteractionTests"
+
+	/// Records an issue when the running test isn't in `uiSuite` or a suite nested in it.
+	static func requireUISuite(sourceLocation: SourceLocation = #_sourceLocation) {
+		guard let test = Test.current, test.id.nameComponents.first != uiSuite else { return }
+		Issue.record("Native UI tests belong in \(uiSuite) or a suite nested in it, which runs them one at a time", sourceLocation: sourceLocation)
+	}
+
 	private static func recognize(
 		_ image: CGImage,
 		level: VNRequestTextRecognitionLevel,
@@ -20,6 +31,7 @@ enum RenderedText {
 		cache: RecognitionCache = .shared,
 		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
 	) async throws -> [VNRecognizedTextObservation] {
+		requireUISuite()
 		let frame = RecognitionCache.Frame(image: image)
 		if let cached = cache.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
 			return cached
@@ -269,6 +281,7 @@ final class SheetTestHost<V: View> {
 
 	/// `keepsRequestedSize` stops the hosting view from shrinking to the content's minimum size.
 	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false, usesHostingView: Bool = false) {
+		RenderedText.requireUISuite()
 		window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
 		window.animationBehavior = .none
