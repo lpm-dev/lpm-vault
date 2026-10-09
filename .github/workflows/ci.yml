@@ -8,8 +8,12 @@ permissions:
   contents: read
 jobs:
   swift:
-    name: Swift tests and UI regressions
+    name: Swift tests and UI regressions (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     timeout-minutes: 30
@@ -37,18 +41,20 @@ jobs:
       - name: Swift tests
         env:
           LPM_TEST_SNAPSHOT_DIR: ${{ runner.temp }}/ui-snapshots
+          SWIFT_TEST_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
         run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --skip-build --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Preserve failed test diagnostics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: macos-test-diagnostics
+          name: macos-test-diagnostics-${{ matrix.shard }}
           path: |
             ~/Library/Logs/DiagnosticReports/*
             ${{ runner.temp }}/ui-snapshots/*
           if-no-files-found: ignore
           retention-days: 7
       - name: Cooperative executor regressions
+        if: matrix.shard == 1
         run: bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh
   engine:
     name: Bundled env engine reproduction
