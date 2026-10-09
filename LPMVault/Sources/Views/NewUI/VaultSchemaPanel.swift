@@ -74,7 +74,7 @@ private struct VaultSchemaKeyEditor: View {
 	/// Removing the key: from lpm.json, or explaining why it can't be here.
 	private enum RemovalPrompt: Identifiable {
 		case remove
-		case elsewhere(source: String, file: URL?, isOverridden: Bool)
+		case elsewhere(VaultSchemaElsewhere)
 
 		var id: String {
 			switch self {
@@ -196,6 +196,8 @@ private struct VaultSchemaKeyEditor: View {
 			if case .overridden = draft.base(of: item) {
 				return Rule(resolved: store.currentSchemaDraftEvaluation(for: project.id)?.overview?.declaration(of: key))
 			}
+			// A removed key shows the rules keeping it brings back, with the draft's earlier edits.
+			if let edited = draft.removal(of: key)?.edited?.json { return Rule(edited) }
 			return Rule(resolved: savedOverview?.declaration(of: key))
 		}
 	}
@@ -260,6 +262,7 @@ private struct VaultSchemaKeyEditor: View {
 					case .removed:
 						readOnlySections(rule, mode: mode)
 							.opacity(0.5)
+							.accessibilityElement(children: .contain)
 							.accessibilityLabel("Rules that leave lpm.json")
 					case .missing:
 						Text("\(key) isn't declared in lpm.json or the schemas it imports.")
@@ -339,7 +342,8 @@ private struct VaultSchemaKeyEditor: View {
 			}
 			Spacer(minLength: 4)
 			if let prompt = removalPrompt(mode) {
-				VaultRowIconButton(systemImage: "trash", help: "Remove \(key) from the schema (⌘⌫)", destructive: true) { removal = prompt }
+				VaultRowIconButton(systemImage: "trash", help: "Remove \(key) from the schema (⌘⌫)", destructive: true,
+					label: "Remove \(key) from the schema") { removal = prompt }
 					.disabled(!canEdit)
 			}
 			Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14)
@@ -353,9 +357,9 @@ private struct VaultSchemaKeyEditor: View {
 			switch prompt {
 			case .remove:
 				VaultSchemaRemoveSheet(store: store, project: project, key: key)
-			case .elsewhere(let source, let file, let isOverridden):
-				VaultSchemaElsewhereSheet(key: key, source: source, file: file, isOverridden: isOverridden) {
-					update(declaration: isOverridden ? .absent : .overridden(rule.json))
+			case .elsewhere(let elsewhere):
+				VaultSchemaElsewhereSheet(key: key, elsewhere: elsewhere, folder: descriptions?.folder) {
+					update(declaration: elsewhere.isOverridden ? .absent : .overridden(rule.json))
 				}
 			}
 		}
@@ -366,22 +370,18 @@ private struct VaultSchemaKeyEditor: View {
 		switch mode {
 		case .editing(false): return isNew ? nil : .remove
 		case .inherited(let source):
-			return .elsewhere(source: source, file: importedFile(savedRule?.sourcePath), isOverridden: false)
+			if let declaring = savedRule?.declaringPath {
+				return .elsewhere(.init(source: declaring.escapingDirectionControls, path: VaultSchemaElsewhere.editable(declaring), isOverridden: false,
+					overriddenBy: source))
+			}
+			return .elsewhere(.init(source: source, path: VaultSchemaElsewhere.editable(savedRule?.sourcePath), isOverridden: false))
 		case .overridden(let source):
-			return .elsewhere(source: source, file: importedFile(savedRule?.overridesPath), isOverridden: true)
+			return .elsewhere(.init(source: source, path: VaultSchemaElsewhere.editable(savedRule?.overridesPath), isOverridden: true))
 		case .editing(true):
-			return .elsewhere(source: importedSource, file: importedFile(savedRule?.overridesPath ?? savedRule?.sourcePath), isOverridden: true)
+			return .elsewhere(.init(source: importedSource, path: VaultSchemaElsewhere.editable(savedRule?.overridesPath ?? savedRule?.sourcePath),
+				isOverridden: true))
 		default: return nil
 		}
-	}
-
-	/// An imported schema in the project's folder that can be edited there:
-	/// not a preset, and not an installed package's.
-	private func importedFile(_ path: String?) -> URL? {
-		guard let path, !path.hasPrefix("preset:"), let folder = descriptions?.folder, !folder.isEmpty,
-			!path.split(separator: "/").contains(where: { $0.lowercased() == "node_modules" })
-		else { return nil }
-		return URL(fileURLWithPath: folder).appendingPathComponent(path)
 	}
 
 	@ViewBuilder
@@ -1645,7 +1645,12 @@ private struct VaultSchemaKeyEditor: View {
 							let wasNew = isNew
 							shownFields = []
 							editsOverride = false
-							store.editSchemaDraft(in: project.id) { $0.discard(.key(key)) }
+							if mode == .removed {
+								// Discarding a removal keeps the key, with the fixes that came with it.
+								store.keepSchemaKey(key, in: project.id)
+							} else {
+								store.editSchemaDraft(in: project.id) { $0.discard(.key(key)) }
+							}
 							if wasNew { onSelect(nil) }
 						}
 						.disabled(!canEdit)

@@ -46,6 +46,24 @@ struct ProjectEnvSchemaDraftTests {
 		#expect(draft.declaration(of: .group("auth")) == .declared(try json(#"{"mode":"atLeastOne","vars":["A","BAR"]}"#)))
 	}
 
+	@Test("setting items one at a time, or dropping many at once, takes time in proportion to how many")
+	func setScalesLinearly() {
+		func time(_ count: Int) -> Duration {
+			let items = (0..<count).map { Draft.Item.key("KEY_\($0)") }
+			return (0..<3).map { _ in
+				ContinuousClock().measure {
+					var draft = Draft(schema: nil)
+					for item in items { draft.set(.declared(.object([])), for: item) }
+					draft.set(items.map { ($0, .absent) })
+				}
+			}.min() ?? .zero
+		}
+		_ = time(500)
+		let small = time(2000)
+		let large = time(8000)
+		#expect(large < small * 10, "8000 items took \(large), 2000 took \(small)")
+	}
+
 	// MARK: - Applying
 
 	@Test("members keep their place, new ones go last, and a moved key leaves its old container")

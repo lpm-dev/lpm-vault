@@ -29,6 +29,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		var sourcePath: String?
 		/// `overrides` unescaped, for opening it.
 		var overridesPath: String?
+		/// The imported file that declares an inherited rule which another
+		/// import, `sourcePath`, overrides; unescaped. Nil otherwise.
+		var declaringPath: String?
 	}
 
 	struct Group: Equatable, Sendable {
@@ -86,14 +89,23 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 
 	init(resolution: RustSchemaEngine.Resolution) {
 		var overridden: [String: String] = [:]
-		for (key, origin) in resolution.origins where origin.source == "lpm.json" && origin.pointer.hasPrefix("/envSchema/overrides/") {
-			if let declaring = resolution.declaringOrigins[key]?.source, declaring != "lpm.json" { overridden[key] = declaring }
+		var declaring: [String: String] = [:]
+		for (key, origin) in resolution.origins {
+			guard let declaringSource = resolution.declaringOrigins[key]?.source, declaringSource != origin.source, declaringSource != "lpm.json" else { continue }
+			if origin.source == "lpm.json" {
+				if origin.pointer.hasPrefix("/envSchema/overrides/") { overridden[key] = declaringSource }
+			} else {
+				declaring[key] = declaringSource
+			}
 		}
 		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source), overridden: overridden,
-			groupSources: resolution.groupOrigins.mapValues(\.source))
+			declaring: declaring, groupSources: resolution.groupOrigins.mapValues(\.source))
 	}
 
-	private init(effective: LPMConfigJSON, sources: [String: String], overridden: [String: String] = [:], groupSources: [String: String] = [:]) {
+	private init(
+		effective: LPMConfigJSON, sources: [String: String], overridden: [String: String] = [:], declaring: [String: String] = [:],
+		groupSources: [String: String] = [:]
+	) {
 		var rules: [Rule] = []
 		var declared: [String: LPMConfigJSON] = [:]
 		if case .object(let declarations)? = effective["vars"] {
@@ -113,7 +125,8 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 					isSecret: declaration.value["secret"] == .bool(true),
 					overrides: overridden[declaration.key]?.escapingDirectionControls,
 					sourcePath: source == "lpm.json" ? nil : source,
-					overridesPath: overridden[declaration.key]
+					overridesPath: overridden[declaration.key],
+					declaringPath: declaring[declaration.key]
 				))
 			}
 		}
@@ -176,8 +189,10 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		}
 		var overridden = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in (rule.overridesPath ?? rule.overrides).map { (rule.key, $0) } })
 		if let moved = overridden.removeValue(forKey: from) { overridden[to] = moved }
+		var declaring = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.declaringPath.map { (rule.key, $0) } })
+		if let moved = declaring.removeValue(forKey: from) { declaring[to] = moved }
 		let groupSources = Dictionary(uniqueKeysWithValues: groups.compactMap { group in group.source.map { (group.name, $0) } })
-		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden, groupSources: groupSources)
+		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden, declaring: declaring, groupSources: groupSources)
 	}
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
