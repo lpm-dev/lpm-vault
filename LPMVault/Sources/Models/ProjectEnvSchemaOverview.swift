@@ -42,6 +42,11 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		var mode = ""
 		/// The file that declares the group when lpm.json doesn't, escaped for showing.
 		var source: String?
+		/// `source` unescaped, for opening it.
+		var sourcePath: String?
+		/// The imported file whose group lpm.json overrides, escaped for showing;
+		/// nil when lpm.json doesn't override it.
+		var overrides: String?
 	}
 
 	static let empty = ProjectEnvSchemaOverview(rules: [], groups: [])
@@ -133,16 +138,10 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		var groups: [Group] = []
 		if case .object(let declared)? = effective["groups"] {
 			for group in declared {
-				guard case .string(let mode)? = group.value["mode"], case .array(let values)? = group.value["vars"] else { continue }
-				let members = values.compactMap { value -> String? in if case .string(let key) = value { key } else { nil } }
-				let lead = switch mode {
-				case "exactlyOne": "Exactly one of"
-				case "atLeastOne": "At least one of"
-				default: "All or none of"
-				}
-				let source = groupSources[group.key]
-				groups.append(Group(name: group.key, summary: "\(lead) \(members.joined(separator: ", "))", members: members, mode: mode,
-					source: source == nil || source == "lpm.json" ? nil : source?.escapingDirectionControls))
+				guard let parsed = ProjectEnvSchemaGroup(group.value) else { continue }
+				let source = groupSources[group.key].flatMap { $0 == "lpm.json" ? nil : $0 }
+				groups.append(Group(name: group.key, summary: parsed.summary, members: parsed.members, mode: parsed.mode.rawValue,
+					source: source?.escapingDirectionControls, sourcePath: source))
 			}
 		}
 		var prefixes: [String] = []
@@ -191,7 +190,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		if let moved = overridden.removeValue(forKey: from) { overridden[to] = moved }
 		var declaring = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.declaringPath.map { (rule.key, $0) } })
 		if let moved = declaring.removeValue(forKey: from) { declaring[to] = moved }
-		let groupSources = Dictionary(uniqueKeysWithValues: groups.compactMap { group in group.source.map { (group.name, $0) } })
+		let groupSources = Dictionary(uniqueKeysWithValues: groups.compactMap { group in (group.sourcePath ?? group.source).map { (group.name, $0) } })
 		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden, declaring: declaring, groupSources: groupSources)
 	}
 
@@ -405,6 +404,17 @@ extension ProjectEnvSchemaOverview.Rule {
 			isSecret: declaration["secret"] == .bool(true),
 			overrides: isOverride ? saved?.overrides ?? saved?.source : nil
 		)
+	}
+}
+
+extension ProjectEnvSchemaOverview.Group {
+	/// A group as a draft writes it, before the engine resolves it. `saved`
+	/// is the group in lpm.json's resolved rules, which names the schema an
+	/// override replaces.
+	init?(name: String, draft declaration: LPMConfigJSON, isOverride: Bool, saved: Self?) {
+		guard let group = ProjectEnvSchemaGroup(declaration) else { return nil }
+		self.init(name: name, summary: group.summary, members: group.members, mode: group.mode.rawValue,
+			overrides: isOverride ? saved?.overrides ?? saved?.source : nil)
 	}
 }
 

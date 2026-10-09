@@ -232,6 +232,7 @@ struct VaultWorkspaceView: View {
 								onSelect: selectSchema,
 								canEdit: store.canEditSchema(of: project.id),
 								onAddKey: { selectSchema(.newKey) },
+								onAddGroup: { selectSchema(.newGroup) },
 								undeclared: store.undeclaredSchemaKeys(for: project.id),
 								onDeclare: { declare($0, in: project) },
 								rebase: store.schemaDraftRebases[project.id],
