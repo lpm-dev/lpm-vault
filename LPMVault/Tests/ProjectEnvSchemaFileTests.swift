@@ -437,7 +437,7 @@ struct ProjectEnvSchemaFileTests {
 		#expect(try contents(folder) == #"{"vault": "\#(vaultID)"}"#)
 		flock(lock, LOCK_UN)
 		close(lock)
-		#expect(try await edit.value.get().descriptions == ["A": "Locked"])
+		#expect(try await edit.value.get().rules.descriptions == ["A": "Locked"])
 	}
 
 	@Test("expanded JSON is rejected without changing the original file")

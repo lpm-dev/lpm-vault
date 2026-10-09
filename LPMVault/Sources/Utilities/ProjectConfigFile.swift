@@ -17,6 +17,13 @@ enum ProjectConfigFile {
 		case writeFailed(String)
 	}
 
+	/// A directory's device and inode, which tell a folder apart from another
+	/// one later at the same path.
+	struct DirectoryIdentity: Equatable, Sendable {
+		let device: UInt64
+		let inode: UInt64
+	}
+
 	enum VaultWritePolicy {
 		case replaceAny
 		case unlinked
@@ -204,12 +211,15 @@ enum ProjectConfigFile {
 		let document: LPMConfigJSON
 		private let original: Data?
 
-		fileprivate init(directory: DirectorySnapshot) throws {
+		/// The project folder the transaction holds the lock in.
+		var directoryIdentity: DirectoryIdentity { directory.identity }
+
+		fileprivate init(directory: DirectorySnapshot, rejectingDuplicateKeys: Bool) throws {
 			self.directory = directory
 			do { original = try readRegularFile(in: directory, name: "lpm.json") } catch FileError.notFound { original = nil }
 			if let original {
 				do {
-					document = try LPMConfigJSON(parsing: original)
+					document = try LPMConfigJSON(parsing: original, rejectDuplicateKeys: rejectingDuplicateKeys)
 					guard case .object = document else { throw FileError.invalidJSON }
 				} catch LPMConfigJSON.ParseError.duplicateKey { throw FileError.duplicateJSONKey }
                 catch is LPMConfigJSON.ParseError { throw FileError.invalidJSON }
@@ -261,12 +271,23 @@ enum ProjectConfigFile {
 		}
 	}
 
-	static func withRootTransaction<T>(at url: URL, _ body: (RootTransaction) throws -> T) throws -> T {
+	/// Runs `body` under the CLI's config lock with lpm.json as read then.
+	/// `rejectingDuplicateKeys` fails on a repeated member as the read parses,
+	/// instead of a later `requireUniqueKeys()`.
+	static func withRootTransaction<T>(at url: URL, rejectingDuplicateKeys: Bool = false, _ body: (RootTransaction) throws -> T) throws -> T {
 		let directory = try DirectorySnapshot(url.deletingLastPathComponent())
 		return try withConfigLock(in: directory) {
 			try directory.verifySelection()
-			return try body(RootTransaction(directory: directory))
+			return try body(RootTransaction(directory: directory, rejectingDuplicateKeys: rejectingDuplicateKeys))
 		}
+	}
+
+	/// The identity of the directory at `url`, following a symbolic link as
+	/// opening the folder for an edit does; nil when it can't be read.
+	static func directoryIdentity(of url: URL) -> DirectoryIdentity? {
+		var metadata = stat()
+		guard url.isFileURL, stat(url.path, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFDIR else { return nil }
+		return DirectoryIdentity(device: UInt64(metadata.st_dev), inode: UInt64(metadata.st_ino))
 	}
 
 	static func writeSecurely(_ data: Data, to url: URL, permissions: mode_t, replaceExisting: Bool, directoryDescriptor: Int32, check: @escaping () throws -> Void) throws {
@@ -304,6 +325,8 @@ enum ProjectConfigFile {
 		}
 
 		func sameIdentity(as other: DirectorySnapshot) -> Bool { device == other.device && inode == other.inode }
+
+		var identity: DirectoryIdentity { DirectoryIdentity(device: UInt64(device), inode: UInt64(inode)) }
 
 		deinit { close(descriptor) }
 

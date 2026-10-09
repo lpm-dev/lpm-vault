@@ -7,7 +7,7 @@ import Foundation
 /// Each change keeps the item as lpm.json had it when the draft last read the
 /// file. When the file changes on disk, the draft merges item by item, and only
 /// an item changed both on disk and in the draft conflicts.
-struct ProjectEnvSchemaDraft: Equatable, Sendable {
+struct ProjectEnvSchemaDraft: Sendable {
 	enum Item: Hashable, Sendable {
 		case key(String)
 		case group(String)
@@ -37,6 +37,15 @@ struct ProjectEnvSchemaDraft: Equatable, Sendable {
 			default: false
 			}
 		}
+
+		/// The same kind of declaration with other JSON; `absent` stays absent.
+		func replacingJSON(_ change: (inout LPMConfigJSON) -> Void) -> Declaration {
+			switch self {
+			case .absent: return .absent
+			case .declared(var json): change(&json); return .declared(json)
+			case .overridden(var json): change(&json); return .overridden(json)
+			}
+		}
 	}
 
 	struct Change: Equatable, Sendable {
@@ -63,16 +72,30 @@ struct ProjectEnvSchemaDraft: Equatable, Sendable {
 		var conflicts: [Item] = []
 
 		var isEmpty: Bool { changedItems.isEmpty && !changedOtherFields }
+
+		/// This merge followed by `later`, as one note.
+		func merged(with later: Rebase) -> Rebase {
+			var items = changedItems
+			var seen = Set(items)
+			for item in later.changedItems where seen.insert(item).inserted { items.append(item) }
+			return Rebase(changedItems: items, changedOtherFields: changedOtherFields || later.changedOtherFields, conflicts: later.conflicts)
+		}
 	}
 
 	/// lpm.json's envSchema as the draft last read it; nil when it has none.
 	private(set) var schema: LPMConfigJSON?
 	/// In the order they were first made.
-	private(set) var changes: [Change] = []
-	private(set) var conflicts: [Conflict] = []
+	private(set) var changes: [Change] = [] { didSet { changePositions = Self.positions(of: changes.map(\.item)) } }
+	private(set) var conflicts: [Conflict] = [] { didSet { conflictPositions = Self.positions(of: conflicts.map(\.item)) } }
+	/// Each item `schema` has, which `base(of:)` reads without searching the JSON.
+	private var baseItems: [Item: Declaration]
+	private var changePositions: [Item: Int] = [:]
+	private var conflictPositions: [Item: Int] = [:]
 
 	init(schema: LPMConfigJSON?) {
-		self.schema = schema == .null ? nil : schema
+		let schema = schema == .null ? nil : schema
+		self.schema = schema
+		baseItems = Self.index(of: schema)
 	}
 
 	var isEmpty: Bool { changes.isEmpty && conflicts.isEmpty }
@@ -81,30 +104,35 @@ struct ProjectEnvSchemaDraft: Equatable, Sendable {
 	var changedItems: [Item] { changes.map(\.item) + conflicts.map(\.item) }
 
 	func hasChange(to item: Item) -> Bool {
-		changes.contains { $0.item == item } || conflicts.contains { $0.item == item }
+		changePositions[item] != nil || conflictPositions[item] != nil
 	}
 
 	/// The item as lpm.json had it when the draft last read the file.
 	func base(of item: Item) -> Declaration {
-		Self.declaration(of: item, in: schema)
+		baseItems[item] ?? .absent
 	}
 
 	/// The item with the draft applied: the draft's version of a conflicting item.
 	func declaration(of item: Item) -> Declaration {
-		if let change = changes.first(where: { $0.item == item }) { return change.value }
-		if let conflict = conflicts.first(where: { $0.item == item }) { return conflict.mine }
+		if let index = changePositions[item] { return changes[index].value }
+		if let index = conflictPositions[item] { return conflicts[index].mine }
 		return base(of: item)
 	}
 
 	/// Sets an item. A value equivalent to what lpm.json has drops the item's
-	/// change, so the file keeps its own member order.
+	/// change, so the file keeps its own member order; for a conflicting item,
+	/// that settles the conflict.
 	mutating func set(_ value: Declaration, for item: Item) {
-		if let index = conflicts.firstIndex(where: { $0.item == item }) {
-			conflicts[index] = Conflict(item: item, mine: value, theirs: conflicts[index].theirs)
+		if let index = conflictPositions[item] {
+			if value.isEquivalent(to: conflicts[index].theirs) {
+				conflicts.remove(at: index)
+			} else {
+				conflicts[index] = Conflict(item: item, mine: value, theirs: conflicts[index].theirs)
+			}
 			return
 		}
 		let base = base(of: item)
-		if let index = changes.firstIndex(where: { $0.item == item }) {
+		if let index = changePositions[item] {
 			if value.isEquivalent(to: base) { changes.remove(at: index) } else { changes[index].value = value }
 		} else if !value.isEquivalent(to: base) {
 			changes.append(Change(item: item, base: base, value: value))
@@ -112,8 +140,8 @@ struct ProjectEnvSchemaDraft: Equatable, Sendable {
 	}
 
 	mutating func discard(_ item: Item) {
-		changes.removeAll { $0.item == item }
-		conflicts.removeAll { $0.item == item }
+		if let index = changePositions[item] { changes.remove(at: index) }
+		if let index = conflictPositions[item] { conflicts.remove(at: index) }
 	}
 
 	mutating func discardAll() {
@@ -123,9 +151,31 @@ struct ProjectEnvSchemaDraft: Equatable, Sendable {
 
 	/// Settles a conflict with the draft's version or the one now in lpm.json.
 	mutating func resolveConflict(_ item: Item, keepingMine: Bool) {
-		guard let index = conflicts.firstIndex(where: { $0.item == item }) else { return }
+		guard let index = conflictPositions[item] else { return }
 		let conflict = conflicts.remove(at: index)
-		if keepingMine { changes.append(Change(item: item, base: conflict.theirs, value: conflict.mine)) }
+		if keepingMine, !conflict.mine.isEquivalent(to: conflict.theirs) {
+			changes.append(Change(item: item, base: conflict.theirs, value: conflict.mine))
+		}
+	}
+
+	/// Merges an edit the app itself just saved: `schema` is lpm.json's
+	/// envSchema after it. A description the app saved for a key the draft
+	/// changes joins the draft's version, so the two edits don't conflict.
+	@discardableResult
+	mutating func rebase(ontoOwnWrite schema: LPMConfigJSON?, description: (key: String, text: String)?) -> Rebase {
+		if let description {
+			let item = Item.key(description.key)
+			let describe: (inout LPMConfigJSON) -> Void = { rule in
+				if description.text.isEmpty { rule.removeValue(forKey: "description") } else { rule.set(.string(description.text), forKey: "description") }
+			}
+			let written = Self.declaration(of: item, in: schema == .null ? nil : schema)
+			if let index = changePositions[item] {
+				changes[index] = Change(item: item, base: written, value: changes[index].value.replacingJSON(describe))
+			} else if let index = conflictPositions[item] {
+				conflicts[index] = Conflict(item: item, mine: conflicts[index].mine.replacingJSON(describe), theirs: conflicts[index].theirs)
+			}
+		}
+		return rebase(onto: schema)
 	}
 
 	/// Merges the draft onto `schema`, the envSchema lpm.json has now. A change
@@ -135,29 +185,34 @@ struct ProjectEnvSchemaDraft: Equatable, Sendable {
 	mutating func rebase(onto schema: LPMConfigJSON?) -> Rebase {
 		let schema = schema == .null ? nil : schema
 		guard schema != self.schema else { return Rebase() }
+		let theirs = Self.index(of: schema)
+		defer {
+			self.schema = schema
+			baseItems = theirs
+		}
+		guard !isEmpty else { return Rebase() }
 		var outcome = Rebase(
-			changedItems: Self.changedItems(from: self.schema, to: schema),
+			changedItems: Self.changedItems(from: self.schema, baseItems, to: schema, theirs),
 			changedOtherFields: !Self.otherFields(of: self.schema).isEquivalent(to: Self.otherFields(of: schema))
 		)
 		var kept: [Change] = []
 		var conflicted: [Conflict] = []
 		for change in changes {
-			let theirs = Self.declaration(of: change.item, in: schema)
-			if theirs.isEquivalent(to: change.base) {
-				kept.append(Change(item: change.item, base: theirs, value: change.value))
-			} else if !theirs.isEquivalent(to: change.value) {
-				conflicted.append(Conflict(item: change.item, mine: change.value, theirs: theirs))
+			let current = theirs[change.item] ?? .absent
+			if current.isEquivalent(to: change.base) {
+				kept.append(Change(item: change.item, base: current, value: change.value))
+			} else if !current.isEquivalent(to: change.value) {
+				conflicted.append(Conflict(item: change.item, mine: change.value, theirs: current))
 			}
 		}
 		for conflict in conflicts {
-			let theirs = Self.declaration(of: conflict.item, in: schema)
-			if !theirs.isEquivalent(to: conflict.mine) {
-				conflicted.append(Conflict(item: conflict.item, mine: conflict.mine, theirs: theirs))
+			let current = theirs[conflict.item] ?? .absent
+			if !current.isEquivalent(to: conflict.mine) {
+				conflicted.append(Conflict(item: conflict.item, mine: conflict.mine, theirs: current))
 			}
 		}
 		changes = kept
 		conflicts = conflicted
-		self.schema = schema
 		outcome.conflicts = conflicted.map(\.item)
 		return outcome
 	}
@@ -207,6 +262,22 @@ struct ProjectEnvSchemaDraft: Equatable, Sendable {
 		return items
 	}
 
+	/// The items of `schema` by item; a key both declared and overridden, which
+	/// the engine rejects, counts as declared, as `declaration(of:in:)` reads it.
+	private static func index(of schema: LPMConfigJSON?) -> [Item: Declaration] {
+		var index: [Item: Declaration] = [:]
+		let items = items(in: schema)
+		index.reserveCapacity(items.count)
+		for (item, declaration) in items where index[item] == nil { index[item] = declaration }
+		return index
+	}
+
+	private static func positions(of items: [Item]) -> [Item: Int] {
+		var positions = [Item: Int](minimumCapacity: items.count)
+		for (index, item) in items.enumerated() { positions[item] = index }
+		return positions
+	}
+
 	private static let itemFields: Set<String> = ["vars", "overrides", "groups", "groupOverrides", "clientPrefixes"]
 
 	private static func otherFields(of schema: LPMConfigJSON?) -> LPMConfigJSON {
@@ -214,17 +285,14 @@ struct ProjectEnvSchemaDraft: Equatable, Sendable {
 		return .object(members.filter { !itemFields.contains($0.key) })
 	}
 
-	private static func changedItems(from old: LPMConfigJSON?, to new: LPMConfigJSON?) -> [Item] {
-		var before = Dictionary(items(in: old).map { ($0.item, $0.declaration) }, uniquingKeysWith: { first, _ in first })
+	private static func changedItems(from old: LPMConfigJSON?, _ oldItems: [Item: Declaration], to new: LPMConfigJSON?, _ newItems: [Item: Declaration]) -> [Item] {
 		var changed: [Item] = []
-		for (item, declaration) in items(in: new) {
-			if let previous = before.removeValue(forKey: item) {
-				if !previous.isEquivalent(to: declaration) { changed.append(item) }
-			} else if !changed.contains(item) {
-				changed.append(item)
-			}
+		var seen = Set<Item>()
+		for (item, _) in items(in: new) where seen.insert(item).inserted {
+			if let previous = oldItems[item], let current = newItems[item], previous.isEquivalent(to: current) { continue }
+			changed.append(item)
 		}
-		for (item, _) in items(in: old) where before[item] != nil && !changed.contains(item) {
+		for (item, _) in items(in: old) where newItems[item] == nil && seen.insert(item).inserted {
 			changed.append(item)
 		}
 		return changed
@@ -270,19 +338,34 @@ struct ProjectEnvSchemaDraft: Equatable, Sendable {
 	}
 }
 
+extension ProjectEnvSchemaDraft: Equatable {
+	/// The indexes follow from the schema and the changes, so they don't take part.
+	static func == (lhs: Self, rhs: Self) -> Bool {
+		lhs.changes == rhs.changes && lhs.conflicts == rhs.conflicts && lhs.schema == rhs.schema
+	}
+}
+
 // MARK: - Diff
 
 extension ProjectEnvSchemaDraft {
-	/// One item's change as lines of lpm.json, the way the LPM CLI renders the file.
+	/// One item's change as lines of lpm.json, the way the LPM CLI renders the
+	/// file. Text that could hide or reorder what surrounds it shows as escapes.
 	struct Diff: Equatable, Sendable {
 		struct Line: Hashable, Sendable {
-			enum Kind: Hashable, Sendable { case unchanged, removed, added }
+			enum Kind: Hashable, Sendable {
+				case unchanged, removed, added
+				/// Lines left out; the text says how many.
+				case omitted
+			}
+
 			let kind: Kind
 			let text: String
 		}
 
 		/// Where the item is in lpm.json, such as "envSchema.vars.PORT".
 		let path: String
+		/// Where the item was, when the draft moves it, such as from `vars` to `overrides`.
+		var previousPath: String? = nil
 		let lines: [Line]
 	}
 
@@ -291,14 +374,16 @@ extension ProjectEnvSchemaDraft {
 		guard hasChange(to: item) else { return nil }
 		let before = base(of: item)
 		let after = declaration(of: item)
-		let shown = after.json == nil ? before : after
-		guard let path = Self.path(of: item, in: shown) else { return nil }
+		let oldPath = Self.path(of: item, in: before)
+		let newPath = Self.path(of: item, in: after)
+		guard let path = newPath ?? oldPath else { return nil }
 		let old = Self.lines(of: item, before)
 		let new = Self.lines(of: item, after)
-		if Self.path(of: item, in: before) != Self.path(of: item, in: after) {
-			return Diff(path: path, lines: old.map { .init(kind: .removed, text: $0) } + new.map { .init(kind: .added, text: $0) })
+		if let oldPath, let newPath, oldPath != newPath {
+			return Diff(path: path.escapingDirectionControls, previousPath: oldPath.escapingDirectionControls,
+				lines: Self.collapsed(old.map { .init(kind: .removed, text: $0) } + new.map { .init(kind: .added, text: $0) }))
 		}
-		return Diff(path: path, lines: Self.lineDiff(from: old, to: new))
+		return Diff(path: path.escapingDirectionControls, lines: Self.lineDiff(from: old, to: new))
 	}
 
 	private static func path(of item: Item, in declaration: Declaration) -> String? {
@@ -320,50 +405,145 @@ extension ProjectEnvSchemaDraft {
 		case .clientPrefixes: "clientPrefixes"
 		}
 		let text = LPMConfigJSON.object([.init(key: name, value: json)]).rendered()
-		let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-		return lines.dropFirst().dropLast().map { String($0.dropFirst(2)) }
+		let lines = text.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
+		return lines.dropFirst().dropLast().map { String(decoding: $0.dropFirst(2), as: UTF8.self) }
 	}
 
-	/// The longest common subsequence of lines, after the shared start and end.
-	/// Beyond `maximumComparisons` the middle shows as removed, then added.
-	static func lineDiff(from old: [String], to new: [String], maximumComparisons: Int = 250_000) -> [Diff.Line] {
+	/// Lines kept around a change, and at most this many lines of a run that
+	/// is entirely removed or added.
+	static let contextLines = 3
+	static let runLines = 100
+
+	/// The shortest edit between two lists of lines, compared by their bytes,
+	/// after the shared start and end, with long unchanged runs collapsed.
+	/// When more than `maximumComparisons` steps would be needed, the middle
+	/// shows as removed, then added.
+	static func lineDiff(from old: [String], to new: [String], maximumComparisons: Int = 4_000_000) -> [Diff.Line] {
+		var identities: [[UInt8]: Int] = [:]
+		func identity(_ line: String) -> Int {
+			let bytes = Array(line.utf8)
+			if let id = identities[bytes] { return id }
+			let id = identities.count
+			identities[bytes] = id
+			return id
+		}
+		let a = old.map(identity)
+		let b = new.map(identity)
 		var prefix = 0
-		while prefix < old.count, prefix < new.count, old[prefix] == new[prefix] { prefix += 1 }
+		while prefix < a.count, prefix < b.count, a[prefix] == b[prefix] { prefix += 1 }
 		var suffix = 0
-		while suffix < old.count - prefix, suffix < new.count - prefix, old[old.count - 1 - suffix] == new[new.count - 1 - suffix] { suffix += 1 }
-		let a = Array(old[prefix..<(old.count - suffix)])
-		let b = Array(new[prefix..<(new.count - suffix)])
+		while suffix < a.count - prefix, suffix < b.count - prefix, a[a.count - 1 - suffix] == b[b.count - 1 - suffix] { suffix += 1 }
+		let middleA = Array(a[prefix..<(a.count - suffix)])
+		let middleB = Array(b[prefix..<(b.count - suffix)])
 		var result = old[..<prefix].map { Diff.Line(kind: .unchanged, text: $0) }
-		result.reserveCapacity(old.count + new.count)
-		if a.isEmpty || b.isEmpty || a.count * b.count > maximumComparisons {
-			result += a.map { .init(kind: .removed, text: $0) }
-			result += b.map { .init(kind: .added, text: $0) }
+		let length = middleA.count + middleB.count
+		let maximumDistance = length == 0 ? 0 : min(1_000, maximumComparisons / length)
+		if let script = editScript(middleA, middleB, maximumDistance: maximumDistance) {
+			for step in script {
+				switch step {
+				case .keep(let index): result.append(.init(kind: .unchanged, text: old[prefix + index]))
+				case .remove(let index): result.append(.init(kind: .removed, text: old[prefix + index]))
+				case .add(let index): result.append(.init(kind: .added, text: new[prefix + index]))
+				}
+			}
 		} else {
-			let width = b.count + 1
-			var lengths = [Int32](repeating: 0, count: (a.count + 1) * width)
-			for i in stride(from: a.count - 1, through: 0, by: -1) {
-				for j in stride(from: b.count - 1, through: 0, by: -1) {
-					lengths[i * width + j] = a[i] == b[j]
-						? lengths[(i + 1) * width + j + 1] + 1
-						: max(lengths[(i + 1) * width + j], lengths[i * width + j + 1])
-				}
-			}
-			var i = 0
-			var j = 0
-			while i < a.count, j < b.count {
-				if a[i] == b[j] {
-					result.append(.init(kind: .unchanged, text: a[i])); i += 1; j += 1
-				} else if lengths[(i + 1) * width + j] >= lengths[i * width + j + 1] {
-					result.append(.init(kind: .removed, text: a[i])); i += 1
-				} else {
-					result.append(.init(kind: .added, text: b[j])); j += 1
-				}
-			}
-			result += a[i...].map { .init(kind: .removed, text: $0) }
-			result += b[j...].map { .init(kind: .added, text: $0) }
+			result += old[prefix..<(old.count - suffix)].map { .init(kind: .removed, text: $0) }
+			result += new[prefix..<(new.count - suffix)].map { .init(kind: .added, text: $0) }
 		}
 		result += old[(old.count - suffix)...].map { .init(kind: .unchanged, text: $0) }
+		return collapsed(result)
+	}
+
+	private enum Step {
+		case keep(Int), remove(Int), add(Int)
+	}
+
+	/// Myers' shortest edit script between `a` and `b`; nil beyond `maximumDistance` edits.
+	/// Keeps each round's frontier to trace the path back, so memory grows with
+	/// the square of the edits, not the lines.
+	private static func editScript(_ a: [Int], _ b: [Int], maximumDistance: Int) -> [Step]? {
+		let n = a.count
+		let m = b.count
+		if n == 0 { return (0..<m).map(Step.add) }
+		if m == 0 { return (0..<n).map(Step.remove) }
+		let limit = min(n + m, maximumDistance)
+		let offset = limit + 1
+		var frontier = [Int](repeating: 0, count: 2 * limit + 3)
+		var trace: [[Int]] = []
+		for distance in 0...limit {
+			trace.append(Array(frontier[(offset - distance - 1)...(offset + distance + 1)]))
+			for diagonal in stride(from: -distance, through: distance, by: 2) {
+				var x = diagonal == -distance || (diagonal != distance && frontier[offset + diagonal - 1] < frontier[offset + diagonal + 1])
+					? frontier[offset + diagonal + 1]
+					: frontier[offset + diagonal - 1] + 1
+				var y = x - diagonal
+				while x < n, y < m, a[x] == b[y] { x += 1; y += 1 }
+				frontier[offset + diagonal] = x
+				if x >= n, y >= m { return backtrack(trace, n: n, m: m) }
+			}
+		}
+		return nil
+	}
+
+	private static func backtrack(_ trace: [[Int]], n: Int, m: Int) -> [Step] {
+		var steps: [Step] = []
+		var x = n
+		var y = m
+		for distance in stride(from: trace.count - 1, through: 0, by: -1) {
+			let frontier = trace[distance]
+			func at(_ diagonal: Int) -> Int { frontier[diagonal + distance + 1] }
+			let diagonal = x - y
+			let previous = diagonal == -distance || (diagonal != distance && at(diagonal - 1) < at(diagonal + 1)) ? diagonal + 1 : diagonal - 1
+			let previousX = distance == 0 ? 0 : at(previous)
+			let previousY = distance == 0 ? 0 : previousX - previous
+			while x > previousX, y > previousY {
+				x -= 1; y -= 1
+				steps.append(.keep(x))
+			}
+			if distance > 0 {
+				if x == previousX { y -= 1; steps.append(.add(y)) } else { x -= 1; steps.append(.remove(x)) }
+			}
+		}
+		return steps.reversed()
+	}
+
+	/// Leaves out the middle of long unchanged runs and long removed or added
+	/// runs, and escapes each line's text for display.
+	private static func collapsed(_ lines: [Diff.Line]) -> [Diff.Line] {
+		var result: [Diff.Line] = []
+		var index = 0
+		while index < lines.count {
+			let kind = lines[index].kind
+			var end = index
+			while end < lines.count, lines[end].kind == kind { end += 1 }
+			let run = lines[index..<end]
+			let atStart = index == 0
+			let atEnd = end == lines.count
+			let keepFront: Int
+			let keepBack: Int
+			switch kind {
+			case .unchanged:
+				keepFront = atStart ? 1 : contextLines
+				keepBack = atEnd ? 1 : contextLines
+			default:
+				keepFront = runLines
+				keepBack = 0
+			}
+			if run.count > keepFront + keepBack + 1 {
+				result += run.prefix(keepFront).map(escaped)
+				let left = run.count - keepFront - keepBack
+				result.append(.init(kind: .omitted, text: kind == .unchanged ? "\(left) unchanged lines" : "\(left) more lines"))
+				result += run.suffix(keepBack).map(escaped)
+			} else {
+				result += run.map(escaped)
+			}
+			index = end
+		}
 		return result
+	}
+
+	private static func escaped(_ line: Diff.Line) -> Diff.Line {
+		.init(kind: line.kind, text: line.text.escapingDirectionControls)
 	}
 }
 
@@ -414,6 +594,34 @@ extension ProjectEnvSchemaDraft {
 			reason = error.localizedDescription
 			code = "app.unresolved"
 		}
+
+		private init(_ rejection: Rejection, item: Item) {
+			self.item = item
+			field = nil
+			location = rejection.location
+			reason = rejection.reason
+			code = rejection.code
+		}
+
+		/// This rejection tied to the draft's item that causes it when the engine
+		/// names none, as it doesn't for client prefixes or a malformed name.
+		/// lpm.json's rules resolved before the draft, so one of its items is the cause.
+		func attributed(to draft: ProjectEnvSchemaDraft) -> Rejection {
+			guard item == nil else { return self }
+			let items = draft.changedItems
+			if items.contains(.clientPrefixes), code == "env.invalid_prefixes" || reason.localizedCaseInsensitiveContains("clientPrefixes") {
+				return Rejection(self, item: .clientPrefixes)
+			}
+			if code == "env.invalid_name", let named = items.first(where: { item in
+				switch item {
+				case .key(let name), .group(let name): !EnvValidation.isValidVariableName(name)
+				case .clientPrefixes: false
+				}
+			}) {
+				return Rejection(self, item: named)
+			}
+			return items.count == 1 ? Rejection(self, item: items[0]) : self
+		}
 	}
 
 	/// The rules with the draft applied, as the engine resolves them, and what
@@ -424,6 +632,71 @@ extension ProjectEnvSchemaDraft {
 		let rejection: Rejection?
 		/// The stored values checked against the resolved rules.
 		let check: ProjectEnvValueCheck?
+		/// The imported schemas the rules were resolved with, which a save
+		/// requires unchanged.
+		var dependencies: [RustSchemaEngine.Dependency] = []
+	}
+}
+
+/// Evaluates schema drafts with the bundled engine, one at a time. An
+/// evaluation whose task was cancelled while it waited doesn't start, and the
+/// rules last resolved are reused when only the stored values changed.
+actor ProjectEnvSchemaDraftEvaluator {
+	enum Resolved: Sendable {
+		case resolved(ProjectEnvSchemaOverview, dependencies: [RustSchemaEngine.Dependency])
+		case rejected(ProjectEnvSchemaDraft.Rejection)
+	}
+
+	typealias Resolve = @Sendable (_ schema: LPMConfigJSON, _ folder: String) -> Resolved
+
+	private struct Resolution {
+		let schema: LPMConfigJSON
+		let folder: String
+		/// The resolved rules of lpm.json when these were, which change when an imported schema does.
+		let imports: Data?
+		let resolved: Resolved
+	}
+
+	private let resolver: Resolve
+	private var last: Resolution?
+
+	init(resolve: @escaping Resolve = ProjectEnvSchemaDraftEvaluator.resolve) {
+		resolver = resolve
+	}
+
+	static func resolve(_ schema: LPMConfigJSON, inFolder folder: String) -> Resolved {
+		do throws(ProjectEnvSchemaFile.FileError) {
+			switch try RustSchemaEngine.resolveOrDiagnose(schema, inFolder: folder) {
+			case .success(let resolution): return .resolved(ProjectEnvSchemaOverview(resolution: resolution), dependencies: resolution.dependencies)
+			case .failure(let rejected): return .rejected(.init(rejected.diagnostic))
+			}
+		} catch {
+			return .rejected(.init(error))
+		}
+	}
+
+	/// The evaluation of `draft`; nil when the calling task was cancelled.
+	/// `imports` identifies the imported schemas as last read, such as lpm.json's resolved rules.
+	func evaluate(_ draft: ProjectEnvSchemaDraft, inFolder folder: String, imports: Data?, environments: [String: [String: String]]) -> ProjectEnvSchemaDraft.Evaluation? {
+		guard !Task.isCancelled else { return nil }
+		let schema: LPMConfigJSON
+		do { schema = try draft.applied(to: draft.schema) ?? .object([]) } catch {
+			return .init(overview: nil, rejection: ProjectEnvSchemaDraft.Rejection(error).attributed(to: draft), check: nil)
+		}
+		let resolved: Resolved
+		if let last, last.schema == schema, last.folder == folder, last.imports == imports {
+			resolved = last.resolved
+		} else {
+			resolved = resolver(schema, folder)
+			last = Resolution(schema: schema, folder: folder, imports: imports, resolved: resolved)
+		}
+		guard !Task.isCancelled else { return nil }
+		switch resolved {
+		case .resolved(let overview, let dependencies):
+			return .init(overview: overview, rejection: nil, check: overview.check(environments), dependencies: dependencies)
+		case .rejected(let rejection):
+			return .init(overview: nil, rejection: rejection.attributed(to: draft), check: nil)
+		}
 	}
 }
 
@@ -433,7 +706,12 @@ extension ProjectEnvSchemaDraft {
 /// attributed to the change that causes it. Never contains values.
 struct ProjectEnvSchemaDraftEffects: Equatable, Sendable {
 	struct Effect: Hashable, Sendable {
-		enum Kind: Hashable, Sendable { case newlyFailing, nowPasses }
+		enum Kind: Hashable, Sendable {
+			case newlyFailing, nowPasses
+			/// The draft removes the key from lpm.json, so the LPM CLI stops checking it.
+			case noLongerChecked
+		}
+
 		let environment: String
 		let kind: Kind
 		/// The problem the draft adds or removes. A group's problem names one member.
@@ -441,7 +719,7 @@ struct ProjectEnvSchemaDraftEffects: Equatable, Sendable {
 	}
 
 	struct Summary: Equatable, Sendable {
-		/// By environment in the given order, failures before passes.
+		/// By environment in the given order, then failures first, then by key and problem.
 		var effects: [Effect] = []
 		/// Problems that stay as they are.
 		var unchanged = 0
@@ -463,12 +741,22 @@ struct ProjectEnvSchemaDraftEffects: Equatable, Sendable {
 		case group(String)
 	}
 
+	/// A problem as one check reports it, with every member that reports a group's.
+	private struct Reported {
+		var problems: [String: ProjectEnvValueCheck.Problem] = [:]
+
+		var first: ProjectEnvValueCheck.Problem { problems[problems.keys.min()!]! }
+	}
+
 	init(before: ProjectEnvValueCheck, after: ProjectEnvValueCheck, draft: ProjectEnvSchemaDraft, environmentOrder: [String] = []) {
 		var changedKeys = Set<String>()
+		var removedKeys = Set<String>()
 		var changedGroups = Set<String>()
 		for item in draft.changedItems {
 			switch item {
-			case .key(let name): changedKeys.insert(name)
+			case .key(let name):
+				changedKeys.insert(name)
+				if case .declared = draft.base(of: item), draft.declaration(of: item) == .absent { removedKeys.insert(name) }
 			case .group(let name): changedGroups.insert(name)
 			case .clientPrefixes: break
 			}
@@ -483,50 +771,79 @@ struct ProjectEnvSchemaDraftEffects: Equatable, Sendable {
 			}
 		}
 
-		func problems(in check: ProjectEnvValueCheck, _ environment: String) -> [Identity: ProjectEnvValueCheck.Problem] {
-			var found: [Identity: ProjectEnvValueCheck.Problem] = [:]
+		func reported(in check: ProjectEnvValueCheck, _ environment: String) -> [Identity: Reported] {
+			var found: [Identity: Reported] = [:]
 			guard let checked = check.environments[environment] else { return found }
-			for key in checked.problems.keys.sorted() {
-				for problem in checked.problems[key] ?? [] {
+			for (key, problems) in checked.problems {
+				for problem in problems {
 					let identity: Identity = if case .group(let name, _) = problem.kind { .group(name) } else { .key(key, problem.kind) }
-					if found[identity] == nil { found[identity] = problem }
+					found[identity, default: Reported()].problems[key] = problem
 				}
 			}
 			return found
 		}
 
-		func owner(of identity: Identity, _ problem: ProjectEnvValueCheck.Problem) -> ProjectEnvSchemaDraft.Item? {
+		/// The changed item a problem belongs to, and the problem as that item reports it.
+		func owner(of identity: Identity, _ reports: [Reported]) -> (ProjectEnvSchemaDraft.Item?, ProjectEnvValueCheck.Problem) {
+			let fallback = reports[0].first
 			switch identity {
-			case .group(let name):
-				if changedGroups.contains(name) { return .group(name) }
-				return changedKeys.contains(problem.key) ? .key(problem.key) : nil
 			case .key(let key, _):
-				return changedKeys.contains(key) ? .key(key) : nil
+				return (changedKeys.contains(key) ? .key(key) : nil, fallback)
+			case .group(let name):
+				if changedGroups.contains(name) { return (.group(name), fallback) }
+				let members = reports.flatMap(\.problems.keys).filter(changedKeys.contains).sorted()
+				guard let member = members.first else { return (nil, fallback) }
+				return (.key(member), reports.lazy.compactMap { $0.problems[member] }.first ?? fallback)
 			}
 		}
 
 		for environment in environments {
-			let old = problems(in: before, environment)
-			let new = problems(in: after, environment)
-			var failing: [(ProjectEnvSchemaDraft.Item?, Effect)] = []
-			var passing: [(ProjectEnvSchemaDraft.Item?, Effect)] = []
-			for (identity, problem) in new {
+			let old = reported(in: before, environment)
+			let new = reported(in: after, environment)
+			var found: [(ProjectEnvSchemaDraft.Item?, Effect)] = []
+			for (identity, reports) in new {
+				let (item, problem) = owner(of: identity, [reports] + (old[identity].map { [$0] } ?? []))
 				if old[identity] == nil {
-					failing.append((owner(of: identity, problem), Effect(environment: environment, kind: .newlyFailing, problem: problem)))
+					found.append((item, Effect(environment: environment, kind: .newlyFailing, problem: problem)))
 				} else {
-					record(unchangedFor: owner(of: identity, problem))
+					record(unchangedFor: item)
 				}
 			}
-			for (identity, problem) in old where new[identity] == nil {
-				passing.append((owner(of: identity, problem), Effect(environment: environment, kind: .nowPasses, problem: problem)))
+			for (identity, reports) in old where new[identity] == nil {
+				let (item, problem) = owner(of: identity, [reports])
+				let removed = if case .key(let key, _) = identity { removedKeys.contains(key) } else { false }
+				found.append((item, Effect(environment: environment, kind: removed ? .noLongerChecked : .nowPasses, problem: problem)))
 			}
-			for (item, effect) in (failing + passing).sorted(by: { Self.order($0.1, $1.1) }) { record(effect, for: item) }
+			for (item, effect) in found.sorted(by: { Self.order($0.1, $1.1) }) { record(effect, for: item) }
 		}
 	}
 
 	private static func order(_ a: Effect, _ b: Effect) -> Bool {
-		if a.kind != b.kind { return a.kind == .newlyFailing }
-		return a.problem.key < b.problem.key
+		if a.kind != b.kind { return rank(a.kind) < rank(b.kind) }
+		if a.problem.key != b.problem.key { return a.problem.key < b.problem.key }
+		return sortKey(a.problem.kind) < sortKey(b.problem.kind)
+	}
+
+	private static func rank(_ kind: Effect.Kind) -> Int {
+		switch kind {
+		case .newlyFailing: 0
+		case .nowPasses: 1
+		case .noLongerChecked: 2
+		}
+	}
+
+	private static func sortKey(_ kind: ProjectEnvValueCheck.Problem.Kind) -> String {
+		switch kind {
+		case .required: "required"
+		case .empty: "empty"
+		case .unusableValue: "unusableValue"
+		case .format(let format): "format:\(format)"
+		case .constraint(let constraint): "constraint:\(constraint)"
+		case .pattern: "pattern"
+		case .notAllowed: "notAllowed"
+		case .group(let name, let mode): "group:\(name):\(mode)"
+		case .other(let code): "other:\(code)"
+		}
 	}
 
 	private mutating func record(_ effect: Effect, for item: ProjectEnvSchemaDraft.Item?) {
@@ -544,8 +861,14 @@ extension LPMConfigJSON {
 		switch (self, other) {
 		case (.object(let a), .object(let b)):
 			guard a.count == b.count else { return false }
+			if a == b { return true }
 			// Keys compare by bytes, as lpm.json members do: Swift's String
 			// equality would merge distinct spellings of the same text.
+			if a.count <= 16 {
+				return a.allSatisfy { member in
+					b.first(where: { $0.key.utf8.elementsEqual(member.key.utf8) }).map { member.value.isEquivalent(to: $0.value) } ?? false
+				}
+			}
 			var members = [[UInt8]: LPMConfigJSON](minimumCapacity: b.count)
 			for member in b { members[Array(member.key.utf8)] = member.value }
 			return a.allSatisfy { member in members[Array(member.key.utf8)].map { member.value.isEquivalent(to: $0) } ?? false }

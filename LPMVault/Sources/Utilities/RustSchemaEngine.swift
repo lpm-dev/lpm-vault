@@ -28,7 +28,7 @@ enum RustSchemaEngine {
 		let message: String?
 	}
 
-	struct Dependency: Sendable {
+	struct Dependency: Equatable, Sendable {
 		let path: String
 		let digest: Data
 		let bytes: Int
