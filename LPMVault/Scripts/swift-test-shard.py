@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Choose one shard of the package's Swift tests, so CI can run them on parallel runners.
 
-Usage: swift-test-shard.py K/N TESTS_FILE FILTERS_FILE [swift test arguments...]
+Usage: swift-test-shard.py SHARD TESTS_FILE FILTERS_FILE [swift test arguments...]
 
-Writes the identifiers of the Kth of N shards' tests to TESTS_FILE and a
+Writes the identifiers of the shard's tests to TESTS_FILE and a
 `swift test --filter` pattern for each to FILTERS_FILE, one per line.
 
-With SWIFT_TEST_ISOLATED_SUITE naming a suite, such as
-`Module.SheetInteractionTests`, shard 1 runs every test outside it and the
-other shards split its tests: a serialized suite whose tests wait on the
-screen then never shares a process with the parallel tests that could
-starve those waits.
+SHARD is K/N, the Kth of N shards of the tests. With SWIFT_TEST_ISOLATED_SUITE
+naming a suite, such as `Module.SheetInteractionTests`, K/N is the Kth of N
+shards of that suite's tests, and `rest` is every test outside it: a
+serialized suite whose tests wait on the screen then never shares a process
+with the parallel tests that could starve those waits.
 """
 import hashlib
 import os
@@ -23,9 +23,12 @@ REGEX_SPECIALS = set('\\.^$|?*+()[]{}')
 
 
 def parse_shard(value):
+    """(K, N) for K/N, or None for `rest`."""
+    if value == 'rest':
+        return None
     match = re.fullmatch(r'([1-9][0-9]*)/([1-9][0-9]*)', value)
     if not match or int(match[1]) > int(match[2]):
-        raise ValueError(f'Invalid shard {value!r}; expected K/N with 1 <= K <= N')
+        raise ValueError(f'Invalid shard {value!r}; expected K/N with 1 <= K <= N, or rest')
     return int(match[1]), int(match[2])
 
 
@@ -58,27 +61,28 @@ def pattern(identifier):
     return ''.join('\\' + character if character in REGEX_SPECIALS else character for character in identifier)
 
 
-def select(tests, shard, count, isolated=None):
+def select(tests, shard, isolated=None):
+    """The tests of `shard`, a (K, N) pair or None for every test outside `isolated`."""
     if not isolated:
-        return [test for test in tests if shard_of(test, count) == shard]
-    if count < 2:
-        raise ValueError('An isolated suite needs at least two shards')
+        if shard is None:
+            raise ValueError('rest names the tests outside an isolated suite, and none is set')
+        return [test for test in tests if shard_of(test, shard[1]) == shard[0]]
     inside = [test for test in tests if test.startswith(isolated + '/')]
     if not inside:
         raise ValueError(f'No tests in the isolated suite {isolated!r}')
-    if shard == 1:
+    if shard is None:
         return [test for test in tests if not test.startswith(isolated + '/')]
-    return [test for test in inside if shard_of(test, count - 1) + 1 == shard]
+    return [test for test in inside if shard_of(test, shard[1]) == shard[0]]
 
 
 def main(arguments):
     if len(arguments) < 3:
         raise SystemExit(__doc__)
     try:
-        shard, count = parse_shard(arguments[0])
+        shard = parse_shard(arguments[0])
         listing = subprocess.run(['swift', 'test', 'list', *arguments[3:], '--enable-swift-testing', '--disable-xctest'],
                                  check=True, capture_output=True, text=True).stdout
-        tests = select(identifiers(listing), shard, count, os.environ.get('SWIFT_TEST_ISOLATED_SUITE'))
+        tests = select(identifiers(listing), shard, os.environ.get('SWIFT_TEST_ISOLATED_SUITE'))
     except (ValueError, subprocess.CalledProcessError) as error:
         raise SystemExit(f'::error::Could not choose the tests of shard {arguments[0]}: {error}')
     if not tests:

@@ -1,0 +1,30 @@
+name: UI regressions
+# The native UI suite reads the screen with Vision, which is CPU-only and
+# several times slower on hosted runners, so it runs here rather than in the
+# pull request checks: after every merge to main, on demand, for a pull
+# request labeled ui-tests, and before every release. Contributors run it
+# locally before pushing.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  ui:
+    name: UI regressions (${{ matrix.shard }}/${{ strategy.job-total }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'ui-tests') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'ui-tests'))
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    uses: ./.github/workflows/swift-tests.yml
+    with:
+      shard: ${{ matrix.shard }}/${{ strategy.job-total }}
+      diagnostics: ui-test-diagnostics-${{ matrix.shard }}

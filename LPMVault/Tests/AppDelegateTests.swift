@@ -133,38 +133,6 @@ struct AppBrandingTests {
 		}
 	}
 
-	@Test("title bar shows the full app name alongside the selected project")
-	func titleBarShowsFullAppName() async throws {
-		let store = VaultStore(
-			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
-			apiService: MockAPIService(), authTokenProvider: { _, _ in nil }
-		)
-		let project = VaultProject(id: "branding-test", name: "project-source", path: "/tmp/project-source", environments: ["default": [:]])
-		store.projects = [project]
-		store.selectedProjectId = project.id
-		let image = try renderNative(VaultTitleBarView(
-			store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
-		).environment(UpdateChecker()).environment(\.colorScheme, .light), size: CGSize(width: 1100, height: VaultMetrics.titleBar))
-		try recordPNG(image, named: "title-bar.png")
-		let text = OCRText(try await RenderedText.strings(in: image).joined(separator: " "))
-		#expect(text.contains("LPM Vault"))
-		#expect(text.contains("project-source"))
-	}
-
-	@Test("branded lock screen retains the authentication instructions")
-	func lockScreenRetainsAuthenticationInstructions() async throws {
-		let store = VaultStore(
-			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
-			apiService: MockAPIService(), authTokenProvider: { _, _ in nil }
-		)
-		let image = try renderNative(ContentView(store: store)
-			.environment(\.colorScheme, .light), size: CGSize(width: 1040, height: 640))
-		try recordPNG(image, named: "lock-screen.png")
-		let text = try await RenderedText.strings(in: image).joined(separator: " ")
-		#expect(text.contains("LPM Vault is Locked"))
-		#expect(text.contains("Authenticate with Touch ID or your Mac password to unlock."))
-	}
-
 	@Test("app marks preserve the logo artwork and colors at every UI size", arguments: [16.0, 20.0, 42.0, 56.0])
 	func appMarkRendersArtwork(size: Double) throws {
 		let renderer = ImageRenderer(content: VaultAppMark(size: size).foregroundStyle(.red))
@@ -173,20 +141,6 @@ struct AppBrandingTests {
 		#expect(bitmap.pixelsWide == Int(size * 2))
 		#expect(bitmap.pixelsHigh == Int(size * 2))
 		try expectLogo(in: bitmap)
-	}
-
-	private func recordPNG(_ image: CGImage, named name: String) throws {
-		let data = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-		Attachment.record(data, named: name)
-	}
-
-	private func renderNative<V: View>(_ view: V, size: CGSize) throws -> CGImage {
-		let hostingView = NSHostingView(rootView: view)
-		hostingView.frame = NSRect(origin: .zero, size: size)
-		hostingView.layoutSubtreeIfNeeded()
-		let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
-		hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
-		return try #require(bitmap.cgImage)
 	}
 
 	private func expectLogo(in bitmap: NSBitmapImageRep) throws {
@@ -200,5 +154,57 @@ struct AppBrandingTests {
 		#expect(frame.blueComponent > 0.95)
 		let corner = try #require(bitmap.colorAt(x: 0, y: 0))
 		#expect(corner.alphaComponent == 0)
+	}
+}
+
+extension SheetInteractionTests {
+	@Suite("App branding rendering")
+	@MainActor
+	struct AppBrandingRenderingTests {
+		@Test("title bar shows the full app name alongside the selected project")
+		func titleBarShowsFullAppName() async throws {
+			let store = VaultStore(
+				keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }
+			)
+			let project = VaultProject(id: "branding-test", name: "project-source", path: "/tmp/project-source", environments: ["default": [:]])
+			store.projects = [project]
+			store.selectedProjectId = project.id
+			let image = try renderNative(VaultTitleBarView(
+				store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
+			).environment(UpdateChecker()).environment(\.colorScheme, .light), size: CGSize(width: 1100, height: VaultMetrics.titleBar))
+			try recordPNG(image, named: "title-bar.png")
+			let text = OCRText(try await RenderedText.strings(in: image).joined(separator: " "))
+			#expect(text.contains("LPM Vault"))
+			#expect(text.contains("project-source"))
+		}
+
+		@Test("branded lock screen retains the authentication instructions")
+		func lockScreenRetainsAuthenticationInstructions() async throws {
+			let store = VaultStore(
+				keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }
+			)
+			let image = try renderNative(ContentView(store: store)
+				.environment(\.colorScheme, .light), size: CGSize(width: 1040, height: 640))
+			try recordPNG(image, named: "lock-screen.png")
+			let text = try await RenderedText.strings(in: image).joined(separator: " ")
+			#expect(text.contains("LPM Vault is Locked"))
+			#expect(text.contains("Authenticate with Touch ID or your Mac password to unlock."))
+		}
+
+		private func recordPNG(_ image: CGImage, named name: String) throws {
+			let data = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+			Attachment.record(data, named: name)
+		}
+
+		private func renderNative<V: View>(_ view: V, size: CGSize) throws -> CGImage {
+			let hostingView = NSHostingView(rootView: view)
+			hostingView.frame = NSRect(origin: .zero, size: size)
+			hostingView.layoutSubtreeIfNeeded()
+			let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
+			hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+			return try #require(bitmap.cgImage)
+		}
 	}
 }
