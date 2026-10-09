@@ -13,6 +13,7 @@ struct VaultWorkspaceView: View {
 	@State private var searchText = ""
 	@State private var selectedKey: String?
 	@State private var schemaSelection: VaultSchemaSelection?
+	@State private var showSchemaReview = false
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
 	@State private var showsAccountSwitcher = false
@@ -51,6 +52,21 @@ struct VaultWorkspaceView: View {
 
 	private var project: VaultProject? { store.selectedProject }
 
+	/// The folder the Schema page watches for changes to lpm.json; nil off the page.
+	private var schemaWatch: String? {
+		guard mode == .schema, !store.showAuthStatus, let folder = project.flatMap({ store.keyDescriptions[$0.id]?.folder }), !folder.isEmpty else { return nil }
+		return folder
+	}
+
+	/// Rereads the rules whenever lpm.json changes while the Schema page shows them.
+	private func watchSchemaFolder() async {
+		guard let folder = schemaWatch else { return }
+		for await _ in ProjectConfigWatcher.changes(inFolder: folder) {
+			guard !Task.isCancelled else { return }
+			store.reloadKeyDescriptions()
+		}
+	}
+
 	private var hasUnsavedRecovery: Bool { !store.keyDrafts.orphanIDs.isEmpty }
 
 	private var inspectorVisible: Bool {
@@ -78,6 +94,7 @@ struct VaultWorkspaceView: View {
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
+		.task(id: schemaWatch) { await watchSchemaFolder() }
 		.onChange(of: store.selectedEnvironment) { _, environment in
 			resetCopyPresentation()
 			importReview = nil
@@ -194,6 +211,11 @@ struct VaultWorkspaceView: View {
 								draftOverview: draft == nil ? nil : store.latestSchemaDraftEvaluation(for: project.id)?.overview,
 								selection: schemaSelection,
 								onSelect: { schemaSelection = $0 },
+								rebase: store.schemaDraftRebases[project.id],
+								onDismissRebase: { store.dismissSchemaDraftRebase(in: project.id) },
+								onResolveConflict: { item, keepingMine in
+									store.editSchemaDraft(in: project.id) { $0.resolveConflict(item, keepingMine: keepingMine) }
+								},
 								onConnectCLI: { showConnectCLISheet = true },
 								onRecheck: store.reloadKeyDescriptions
 							)
@@ -282,6 +304,7 @@ struct VaultWorkspaceView: View {
 								environments: store.orderedEnvironmentNames(for: project),
 								selection: schemaSelection,
 								onSelect: { self.schemaSelection = $0 },
+								onReview: { showSchemaReview = true },
 								onRenamed: followRename
 							)
 						}
@@ -394,6 +417,12 @@ struct VaultWorkspaceView: View {
 		}
 		.sheet(item: $conflictTarget) { target in
 			conflictResolutionSheet(target).vaultPrivacyProtected(isObscured)
+		}
+		.sheet(isPresented: $showSchemaReview) {
+			if let project {
+				VaultSchemaReviewSheet(store: store, project: project, environments: store.orderedEnvironmentNames(for: project))
+					.vaultPrivacyProtected(isObscured)
+			}
 		}
 		.sheet(isPresented: $showConnectCLISheet) {
 			if let project {
