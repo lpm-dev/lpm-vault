@@ -17,15 +17,16 @@ enum RenderedText {
 		level: VNRequestTextRecognitionLevel,
 		usesLanguageCorrection: Bool,
 		region: CGRect? = nil,
+		cache: RecognitionCache = .shared,
 		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
 	) async throws -> [VNRecognizedTextObservation] {
 		let frame = RecognitionCache.Frame(image: image)
-		if let cached = RecognitionCache.shared.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
+		if let cached = cache.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
 			return cached
 		}
 		return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RecognitionCache.Observations, Error>) in
 			queue.async {
-				if let cached = RecognitionCache.shared.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
+				if let cached = cache.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
 					continuation.resume(returning: RecognitionCache.Observations(values: cached))
 					return
 				}
@@ -36,7 +37,7 @@ enum RenderedText {
 				do {
 					try VNImageRequestHandler(cgImage: image).perform([request])
 					let observations = request.results ?? []
-					RecognitionCache.shared.store(observations, for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region)
+					cache.store(observations, for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region)
 					continuation.resume(returning: RecognitionCache.Observations(values: observations))
 				} catch {
 					continuation.resume(throwing: error)
@@ -59,10 +60,11 @@ enum RenderedText {
 		label: String? = nil,
 		options: String.CompareOptions = [],
 		region: CGRect? = nil,
+		cache: RecognitionCache = .shared,
 		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
 	) async throws -> [Line] {
 		guard let input = recognitionInput(image, region: region) else { return [] }
-		let observations = try await recognize(input.image, level: level, usesLanguageCorrection: false, region: input.region, onRecognition: onRecognition)
+		let observations = try await recognize(input.image, level: level, usesLanguageCorrection: false, region: input.region, cache: cache, onRecognition: onRecognition)
 		return observations.compactMap { observation -> Line? in
 			guard let candidate = observation.topCandidates(1).first else { return nil }
 			var labelBounds: CGRect?
@@ -101,9 +103,9 @@ enum RenderedText {
 
 extension RenderedText {
 	/// The text of every recognized line within the requested region.
-	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true, region: CGRect? = nil, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [String] {
+	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true, region: CGRect? = nil, cache: RecognitionCache = .shared, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [String] {
 		guard let input = recognitionInput(image, region: region) else { return [] }
-		return try await recognize(input.image, level: .accurate, usesLanguageCorrection: usesLanguageCorrection, region: input.region, onRecognition: onRecognition)
+		return try await recognize(input.image, level: .accurate, usesLanguageCorrection: usesLanguageCorrection, region: input.region, cache: cache, onRecognition: onRecognition)
 			.compactMap { $0.topCandidates(1).first?.string }
 	}
 }
@@ -111,7 +113,7 @@ extension RenderedText {
 /// Recognition results for recently read frames. Polling helpers read the same
 /// frame repeatedly while they wait, and identical pixels always recognize the
 /// same way, so each frame is read once per level and region.
-private final class RecognitionCache: @unchecked Sendable {
+final class RecognitionCache: @unchecked Sendable {
 	struct Frame: @unchecked Sendable {
 		let width: Int
 		let height: Int

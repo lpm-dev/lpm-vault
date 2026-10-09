@@ -6,12 +6,28 @@ import Vision
 
 @Suite("Rendered text recognition", .serialized)
 struct RenderedTextTests {
+	private let cache = RecognitionCache()
+
+	@Test("recognition caches are isolated from other suites")
+	func otherSuitesCannotEvictOwnedCache() async throws {
+		let image = try fixture(width: 929, label: "ISOLATED CACHE")
+		let calls = RecognitionCalls()
+		_ = try await RenderedText.strings(in: image, cache: cache, onRecognition: calls.record)
+		for width in 980..<990 {
+			let other = try fixture(width: width, label: "OTHER SUITE")
+			RecognitionCache.shared.store([], for: RecognitionCache.Frame(image: other), level: .accurate, usesLanguageCorrection: true, region: nil)
+		}
+		let text = try await RenderedText.strings(in: image, cache: cache, onRecognition: calls.record)
+		#expect(text.joined(separator: " ").contains("ISOLATED CACHE"))
+		#expect(calls.sizes.count == 1)
+	}
+
 	@Test("repeated text reads recognize an unchanged frame once")
 	func repeatedReadsShareRecognition() async throws {
 		let image = try fixture(width: 937, label: "REPEATED FRAME")
 		let calls = RecognitionCalls()
 		for _ in 0..<3 {
-			let text = try await RenderedText.strings(in: image, usesLanguageCorrection: false, onRecognition: calls.record)
+			let text = try await RenderedText.strings(in: image, usesLanguageCorrection: false, cache: cache, onRecognition: calls.record)
 			#expect(text.joined(separator: " ").contains("REPEATED FRAME"))
 		}
 		#expect(calls.sizes.count == 1)
@@ -24,7 +40,7 @@ struct RenderedTextTests {
 		try await withThrowingTaskGroup(of: [RenderedText.Line].self) { group in
 			for _ in 0..<4 {
 				group.addTask {
-					try await RenderedText.lines(in: image, level: .accurate, onRecognition: calls.record)
+					try await RenderedText.lines(in: image, level: .accurate, cache: cache, onRecognition: calls.record)
 				}
 			}
 			for try await lines in group {
@@ -39,7 +55,7 @@ struct RenderedTextTests {
 		let image = try fixture(width: 947, label: "LANGUAGE CORRECTION")
 		let calls = RecognitionCalls()
 		for correction in [true, false, true, false] {
-			_ = try await RenderedText.strings(in: image, usesLanguageCorrection: correction, onRecognition: calls.record)
+			_ = try await RenderedText.strings(in: image, usesLanguageCorrection: correction, cache: cache, onRecognition: calls.record)
 		}
 		#expect(calls.sizes.count == 2)
 	}
@@ -47,10 +63,10 @@ struct RenderedTextTests {
 	@Test("recognition processes cropped pixels and retains original-image coordinates")
 	func croppedRecognitionPreservesCoordinates() async throws {
 		let image = try fixture(width: 1200, height: 700, label: "REGION TARGET", at: CGPoint(x: 400, y: 350))
-		let full = try #require(try await RenderedText.lines(in: image, level: .accurate, label: "REGION TARGET").first)
+		let full = try #require(try await RenderedText.lines(in: image, level: .accurate, label: "REGION TARGET", cache: cache).first)
 		let calls = RecognitionCalls()
 		let region = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
-		let cropped = try #require(try await RenderedText.lines(in: image, level: .accurate, label: "REGION TARGET", region: region, onRecognition: calls.record).first)
+		let cropped = try #require(try await RenderedText.lines(in: image, level: .accurate, label: "REGION TARGET", region: region, cache: cache, onRecognition: calls.record).first)
 		#expect(calls.sizes == [CGSize(width: 600, height: 350)])
 		#expect(abs(cropped.bounds.midX - full.bounds.midX) < 0.01)
 		#expect(abs(cropped.bounds.midY - full.bounds.midY) < 0.01)
@@ -64,7 +80,7 @@ struct RenderedTextTests {
 	func emptyRegionsSkipRecognition(region: CGRect) async throws {
 		let image = try fixture(width: 953, label: "EMPTY REGION")
 		let calls = RecognitionCalls()
-		let lines = try await RenderedText.lines(in: image, level: .accurate, region: region, onRecognition: calls.record)
+		let lines = try await RenderedText.lines(in: image, level: .accurate, region: region, cache: cache, onRecognition: calls.record)
 		#expect(lines.isEmpty)
 		#expect(calls.sizes.isEmpty)
 	}
@@ -75,7 +91,7 @@ struct RenderedTextTests {
 		let second = try fixture(width: 967, label: "SECOND FRAME")
 		let calls = RecognitionCalls()
 		for (image, expected) in [(first, "FIRST FRAME"), (second, "SECOND FRAME"), (first, "FIRST FRAME")] {
-			let text = try await RenderedText.strings(in: image, usesLanguageCorrection: false, onRecognition: calls.record)
+			let text = try await RenderedText.strings(in: image, usesLanguageCorrection: false, cache: cache, onRecognition: calls.record)
 			#expect(text.joined(separator: " ").contains(expected))
 		}
 		#expect(calls.sizes.count == 2)
@@ -86,7 +102,7 @@ struct RenderedTextTests {
 		let image = try fixture(width: 971, height: 400, label: "BOTTOM REGION", additionalLabel: "TOP REGION")
 		for (y, expected) in [(0.0, "BOTTOM REGION"), (0.5, "TOP REGION"), (0.0, "BOTTOM REGION")] {
 			let region = CGRect(x: 0, y: y, width: 1, height: 0.5)
-			let lines = try await RenderedText.lines(in: image, level: .accurate, region: region)
+			let lines = try await RenderedText.lines(in: image, level: .accurate, region: region, cache: cache)
 			#expect(lines.map(\.text).joined(separator: " ") == expected)
 			#expect(try #require(lines.first).bounds.midY >= y)
 			#expect(try #require(lines.first).bounds.midY <= y + 0.5)
