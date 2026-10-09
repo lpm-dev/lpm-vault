@@ -1240,6 +1240,8 @@ final class VaultStore {
   /// Each project's review of its draft, for the environment order it was
   /// built for, until anything it's built from changes.
   @ObservationIgnored private var schemaReviews: [String: (environments: [String], review: ProjectEnvSchemaReview?)] = [:]
+  /// Each project's stored keys from A to Z, for the values they were counted from.
+  @ObservationIgnored private var storedSchemaKeys: [String: (values: UUID, keys: [StoredSchemaKey])] = [:]
   /// What merging drafts onto lpm.json's rules as read from disk changed, until dismissed.
   private(set) var schemaDraftRebases: [String: ProjectEnvSchemaDraft.Rebase] = [:]
   private(set) var savingSchemaDrafts: Set<String> = []
@@ -3539,6 +3541,38 @@ final class VaultStore {
     schemaDrafts[projectID].flatMap { $0.isEmpty ? nil : $0 }
   }
 
+  /// A key some environment stores, and how many do.
+  struct StoredSchemaKey: Hashable, Sendable {
+    let key: String
+    let environments: Int
+  }
+
+  /// Keys the project stores that lpm.json doesn't declare, with the draft
+  /// applied, from A to Z. A key the draft removes isn't one: it's listed as removed.
+  func undeclaredSchemaKeys(for projectID: String) -> [StoredSchemaKey] {
+    guard let project = projects.first(where: { $0.id == projectID }), project.hasLoadedEnvironments,
+      case .loaded(let saved, _)? = keyDescriptions[projectID]?.schema
+    else { return [] }
+    let draft = schemaDraftOrBase(for: projectID)
+    let stored: [StoredSchemaKey]
+    if let cached = storedSchemaKeys[projectID], cached.values == project.workspaceSnapshotIdentity {
+      stored = cached.keys
+    } else {
+      var counts: [String: Int] = [:]
+      for values in project.environments.values {
+        for key in values.keys { counts[key, default: 0] += 1 }
+      }
+      let order = VaultKeySortOrder.sortedAscending(counts.keys)
+      stored = order.map { StoredSchemaKey(key: $0, environments: counts[$0] ?? 0) }
+      storedSchemaKeys[projectID] = (project.workspaceSnapshotIdentity, stored)
+    }
+    return stored.filter { stored in
+      let item = ProjectEnvSchemaDraft.Item.key(stored.key)
+      if draft.declaration(of: item) != .absent || draft.base(of: item) != .absent { return false }
+      return saved.rule(for: stored.key)?.source == nil
+    }
+  }
+
   /// The review of the project's draft as it is now: nil without a draft,
   /// and while it's evaluated or the engine rejects it.
   func schemaDraftReview(for projectID: String, environments: [String]) -> ProjectEnvSchemaReview? {
@@ -3953,6 +3987,7 @@ final class VaultStore {
     debouncedSchemaDrafts = []
     schemaDraftSaveFailures = [:]
     pendingSchemaMerges = []
+    storedSchemaKeys = [:]
     schemaDraftGeneration &+= 1
   }
 
