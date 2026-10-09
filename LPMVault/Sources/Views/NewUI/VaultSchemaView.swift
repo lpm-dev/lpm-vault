@@ -15,6 +15,12 @@ struct VaultSchemaView: View {
 	var draftOverview: ProjectEnvSchemaOverview? = nil
 	var selection: VaultSchemaSelection? = nil
 	var onSelect: (VaultSchemaSelection?) -> Void = { _ in }
+	/// The rules can be edited: lpm.json is read from the project's folder.
+	var canEdit = false
+	var onAddKey: () -> Void = {}
+	/// Keys stored in some environment that lpm.json doesn't declare.
+	var undeclared: [VaultStore.StoredSchemaKey] = []
+	var onDeclare: (String) -> Void = { _ in }
 	/// What merging the draft with changes on disk did, until dismissed.
 	var rebase: ProjectEnvSchemaDraft.Rebase? = nil
 	var onDismissRebase: () -> Void = {}
@@ -89,6 +95,10 @@ struct VaultSchemaView: View {
 					ProjectConfigOpener.open(configFile)
 				}
 				.fixedSize()
+			}
+			if canEdit {
+				VaultBarButton(systemImage: "plus", title: "Add key", filled: true, height: 27, action: onAddKey)
+					.help("Declare a new key in lpm.json")
 			}
 		}
 		.padding(.horizontal, 20)
@@ -297,6 +307,9 @@ struct VaultSchemaView: View {
 						ruleRow(rule, state: rowState(rule.key, in: saved), description: description(of: rule.key))
 							.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 					}
+					if !undeclared.isEmpty {
+						undeclaredSection
+					}
 					if !listed.groups.isEmpty {
 						groupsRow(listed.groups)
 					}
@@ -455,6 +468,54 @@ struct VaultSchemaView: View {
 		}
 		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
+	}
+
+	private var undeclaredSection: some View {
+		VStack(alignment: .leading, spacing: 0) {
+			HStack(spacing: 8) {
+				Text("STORED, NOT DECLARED · \(undeclared.count)").vaultSectionLabel()
+				Text("in the Keychain but not in lpm.json — the LPM CLI doesn't check them")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textFaint)
+					.lineLimit(1)
+			}
+			.padding(.horizontal, 20)
+			.padding(.vertical, 8)
+			.frame(maxWidth: .infinity, alignment: .leading)
+			.background(VaultPalette.headerRow)
+			.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+			ForEach(undeclared, id: \.key) { stored in
+				HStack(spacing: 0) {
+					HStack(spacing: 8) {
+						Text(stored.key.escapingDirectionControls)
+							.font(VaultTypography.mono(12.5))
+							.foregroundStyle(VaultPalette.textSecondary)
+							.lineLimit(1)
+							.truncationMode(.middle)
+						Text(stored.environments == 1 ? "set in 1 env" : "set in \(stored.environments) envs")
+							.font(.system(size: 11))
+							.foregroundStyle(VaultPalette.textFaint)
+							.fixedSize()
+					}
+					.padding(.leading, 20)
+					.padding(.trailing, 12)
+					.frame(width: Self.keyWidth, alignment: .leading)
+					HStack(spacing: 8) {
+						Text("Not in schema")
+							.font(.system(size: 11.5).italic())
+							.foregroundStyle(VaultPalette.textFaint)
+						Spacer(minLength: 8)
+						if canEdit {
+							VaultBarButton(systemImage: "plus", title: "Declare", height: 24) { onDeclare(stored.key) }
+								.accessibilityLabel("Declare \(stored.key)")
+						}
+					}
+					.padding(.horizontal, 14)
+				}
+				.frame(height: 42)
+				.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+			}
+		}
 	}
 
 	private func groupsRow(_ groups: [ProjectEnvSchemaOverview.Group]) -> some View {
