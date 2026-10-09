@@ -47,6 +47,7 @@
 		3C896078D35382DFC9992CF1 /* VaultKeyDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DA2EAC96973746330BF4A14 /* VaultKeyDraft.swift */; };
 		3E44FF35159354A1B0047F69 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15998269700BB6B76AB5F9CD /* App.swift */; };
 		3EE02248C37636DE1D5D546C /* project-index-v3.json in Resources */ = {isa = PBXBuildFile; fileRef = B7818555ADC9CFF5B987A748 /* project-index-v3.json */; };
+		3F1300E6B226E2722AA89160 /* RustSchemaEngineProvenanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CD3C3B276BE5AF1C5E09C40 /* RustSchemaEngineProvenanceTests.swift */; };
 		3FE30DB5733578F8E3E98BFA /* Resources in Resources */ = {isa = PBXBuildFile; fileRef = 408CB91D419B483C1DED72C5 /* Resources */; };
 		409BEB02E667884D93A7D0DB /* VaultSchemaEditorFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 983443571C69A2E11CCEEAFF /* VaultSchemaEditorFooter.swift */; };
 		4183C63D9ECD97870BB9BAE4 /* SidebarItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72C3FAD279B500DCF05CDFC0 /* SidebarItem.swift */; };
@@ -215,6 +216,7 @@
 		537598A780D1FDFFB63DC4BF /* Round2BenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round2BenchmarkTests.swift; sourceTree = "<group>"; };
 		547D88A2D08665F045A7D27C /* EnvProjectImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvProjectImportService.swift; sourceTree = "<group>"; };
 		58E4E4C897F8E4401D882AF6 /* SecureFileWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureFileWriter.swift; sourceTree = "<group>"; };
+		5CD3C3B276BE5AF1C5E09C40 /* RustSchemaEngineProvenanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustSchemaEngineProvenanceTests.swift; sourceTree = "<group>"; };
 		5CFC95BACBC0D111312A0AFB /* ValueCheckTableInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValueCheckTableInteractionTests.swift; sourceTree = "<group>"; };
 		5D6CBBC8709449B5DA33D8DD /* LPMVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LPMVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		606A4D6D619C63A269BDD1D1 /* ProjectEnvSchemaRuleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaRuleTests.swift; sourceTree = "<group>"; };
@@ -466,6 +468,7 @@
 				4087411C6D51EB8AFBC77E53 /* Round3BenchmarkTests.swift */,
 				7DD9BE611F1BB7A4B5E38DE1 /* Round4AuditRegressionTests.swift */,
 				C9C4F938186221E2BF4E04C9 /* Round4BenchmarkTests.swift */,
+				5CD3C3B276BE5AF1C5E09C40 /* RustSchemaEngineProvenanceTests.swift */,
 				2322C6F6BF378E0BC44C7042 /* SchemaAddKeyTests.swift */,
 				A6C87067D273C91F49ACAC02 /* SchemaDraftBenchmarkTests.swift */,
 				611A7B19E28DAEAEE9A0EFD6 /* SchemaGroupTests.swift */,
@@ -697,6 +700,7 @@
 				E2C5F6C51F13DD357B21740F /* Round3BenchmarkTests.swift in Sources */,
 				19D89CB98C5DBE28ECF56875 /* Round4AuditRegressionTests.swift in Sources */,
 				BEF85A56494EDD99C9365E0C /* Round4BenchmarkTests.swift in Sources */,
+				3F1300E6B226E2722AA89160 /* RustSchemaEngineProvenanceTests.swift in Sources */,
 				83A901B1AD2EC57B33570483 /* SchemaAddKeyTests.swift in Sources */,
 				5B691FBC3BF68B58E21B79B5 /* SchemaDraftBenchmarkTests.swift in Sources */,
 				7E94DCCF74319B7C90010E02 /* SchemaGroupTests.swift in Sources */,

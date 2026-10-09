@@ -427,13 +427,6 @@ struct VaultSchemaView: View {
 				}
 			}
 		}
-		// The evaluated rules can't name the file an override replaces; lpm.json's rules can.
-		for case .group(let name) in changed {
-			guard case .overridden = draft.declaration(of: .group(name)), let source = saved.groups.first(where: { $0.name == name })?.source,
-				let index = groups.firstIndex(where: { $0.name == name })
-			else { continue }
-			groups[index].overrides = source
-		}
 		if appendedGroups { groups.sort { $0.name < $1.name } }
 		return Listed(rules: rules, groups: groups, declaredCount: rules.count - removed, groupCount: groups.count - removedGroups,
 			inheritedCount: shown.inheritedCount)

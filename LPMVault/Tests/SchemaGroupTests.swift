@@ -105,7 +105,7 @@ struct SchemaGroupModelTests {
 		#expect(draft.isEmpty, "Everything the key brought along goes with it")
 	}
 
-	@Test("lpm.json's override of an imported group is marked, though the engine can't name the original")
+	@Test("lpm.json's override of an imported group names the file whose group it replaces")
 	func overriddenGroupsMarked() throws {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "group-overrides-\(UUID().uuidString)").path
 		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
@@ -115,7 +115,10 @@ struct SchemaGroupModelTests {
 		try #"{"envSchema":{"extends":["base.json"],"groupOverrides":{"login":{"mode":"exactlyOne","vars":["SSO","OTP"]}}}}"#
 			.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		let overview = try #require(ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project").schema.overview)
-		#expect(overview.groups.first { $0.name == "login" }?.overrides == "an imported schema")
+		let login = try #require(overview.groups.first { $0.name == "login" })
+		#expect(login.overrides == "base.json")
+		#expect(login.overridesPath == "base.json")
+		#expect(login.source == nil, "lpm.json holds the group in effect")
 	}
 
 	@Test("the review names the file a group override replaces, and the one a removed override brings back")
@@ -341,6 +344,22 @@ extension SheetInteractionTests {
 			print("group panel, 4096 members: open \(open), redraw median \(median), max \(redraws.max() ?? .zero)")
 			#expect(open < .milliseconds(400))
 			#expect(median < .milliseconds(30))
+		}
+
+		@Test("removing a group lpm.json overrides explains where it's declared and offers to open that file")
+		func overriddenGroupOpensItsSource() async throws {
+			let sample = Self.sample.replacingOccurrences(of: #""groups":{"auth""#,
+				with: #""groupOverrides":{"login":{"mode":"exactlyOne","vars":["SSO","OTP"]}},"groups":{"auth""#)
+			let (store, host, folder) = try await groupPanel(sample: sample, group: "login")
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			#expect(try await host.waitForText("replaces the group from schemas/base.json"))
+			try host.shortcut("\u{7f}", code: 51)
+			#expect(try await host.waitUntil { host.window.sheets.first != nil })
+			let sheet = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("declared in schemas/base.json", in: sheet))
+			#expect(try await host.waitForText("Open file", in: sheet))
+			try await host.click("Cancel", in: sheet)
+			#expect(try await host.waitUntil { host.window.sheets.isEmpty })
 		}
 
 		@Test("a key whose override the draft resets is still one a group can list")

@@ -161,8 +161,8 @@ struct ProjectEnvSchemaReview: Equatable {
 		let source: String = switch item {
 		case .key(let name): savedRules?.rule(for: name)?.overrides ?? savedRules?.rule(for: name)?.source ?? "an imported schema"
 		case .group(let name):
-			// lpm.json's rules name the file a new override replaces; the draft's, the one a removed override brings back.
-			savedRules?.groups.first { $0.name == name }?.source ?? draftRules?.groups.first { $0.name == name }?.source ?? "an imported schema"
+			savedRules?.groups.first { $0.name == name }.flatMap { $0.overrides ?? $0.source }
+				?? draftRules?.groups.first { $0.name == name }?.source ?? "an imported schema"
 		case .clientPrefixes: "an imported schema"
 		}
 		switch (draft.base(of: item), draft.declaration(of: item)) {

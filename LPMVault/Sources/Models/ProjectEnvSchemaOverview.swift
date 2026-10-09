@@ -46,17 +46,27 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		/// The imported file whose group lpm.json overrides, escaped for showing;
 		/// nil when lpm.json doesn't override it.
 		var overrides: String?
+		/// `overrides` unescaped, for opening it.
+		var overridesPath: String?
+		/// The imported file that declares an inherited group which another
+		/// import, `sourcePath`, overrides; unescaped. Nil otherwise.
+		var declaringPath: String?
 		/// The first members as one short line, escaped for showing, such as
 		/// "PASSWORD, TOKEN" or "A, B +4,094 more".
 		let memberPreview: String
 
-		init(name: String, members: [String], mode: String, source: String? = nil, sourcePath: String? = nil, overrides: String? = nil) {
+		init(
+			name: String, members: [String], mode: String, source: String? = nil, sourcePath: String? = nil, overrides: String? = nil,
+			overridesPath: String? = nil, declaringPath: String? = nil
+		) {
 			self.name = name
 			self.members = members
 			self.mode = mode
 			self.source = source
 			self.sourcePath = sourcePath
 			self.overrides = overrides
+			self.overridesPath = overridesPath
+			self.declaringPath = declaringPath
 			memberPreview = Self.preview(of: members)
 		}
 
@@ -134,25 +144,32 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	init(resolution: RustSchemaEngine.Resolution) {
 		var overridden: [String: String] = [:]
 		var declaring: [String: String] = [:]
+		// lpm.json's override names what it replaces, which can be an import's
+		// own override; a rule an import overrides names where it was declared.
 		for (key, origin) in resolution.origins {
-			guard let declaringSource = resolution.declaringOrigins[key]?.source, declaringSource != origin.source, declaringSource != "lpm.json" else { continue }
 			if origin.source == "lpm.json" {
-				if origin.pointer.hasPrefix("/envSchema/overrides/") { overridden[key] = declaringSource }
-			} else {
+				if origin.pointer.hasPrefix("/envSchema/overrides/"), let replaced = resolution.replacedRules[key]?.origin.source { overridden[key] = replaced }
+			} else if let declaringSource = resolution.declaringOrigins[key]?.source, declaringSource != origin.source, declaringSource != "lpm.json" {
 				declaring[key] = declaringSource
 			}
 		}
-		// The engine names only the file that declares a group, so an override's original is unknown.
-		let overriddenGroups = Dictionary(uniqueKeysWithValues: resolution.groupOrigins.compactMap { name, origin in
-			origin.source == "lpm.json" && origin.pointer.hasPrefix("/envSchema/groupOverrides/") ? (name, "an imported schema") : nil
-		})
+		var overriddenGroups: [String: String] = [:]
+		var declaringGroups: [String: String] = [:]
+		for (name, origin) in resolution.groupOrigins {
+			if origin.source == "lpm.json" {
+				if origin.pointer.hasPrefix("/envSchema/groupOverrides/"), let replaced = resolution.replacedGroups[name]?.origin.source { overriddenGroups[name] = replaced }
+			} else if let declaringSource = resolution.groupDeclaringOrigins[name]?.source, declaringSource != origin.source, declaringSource != "lpm.json" {
+				declaringGroups[name] = declaringSource
+			}
+		}
 		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source), overridden: overridden,
-			declaring: declaring, groupSources: resolution.groupOrigins.mapValues(\.source), overriddenGroups: overriddenGroups)
+			declaring: declaring, groupSources: resolution.groupOrigins.mapValues(\.source), overriddenGroups: overriddenGroups,
+			declaringGroups: declaringGroups)
 	}
 
 	private init(
 		effective: LPMConfigJSON, sources: [String: String], overridden: [String: String] = [:], declaring: [String: String] = [:],
-		groupSources: [String: String] = [:], overriddenGroups: [String: String] = [:]
+		groupSources: [String: String] = [:], overriddenGroups: [String: String] = [:], declaringGroups: [String: String] = [:]
 	) {
 		var rules: [Rule] = []
 		var declared: [String: LPMConfigJSON] = [:]
@@ -184,7 +201,8 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				guard let parsed = ProjectEnvSchemaGroup(group.value) else { continue }
 				let source = groupSources[group.key].flatMap { $0 == "lpm.json" ? nil : $0 }
 				groups.append(Group(name: group.key, members: parsed.members, mode: parsed.mode.rawValue,
-					source: source?.escapingDirectionControls, sourcePath: source, overrides: overriddenGroups[group.key]))
+					source: source?.escapingDirectionControls, sourcePath: source, overrides: overriddenGroups[group.key]?.escapingDirectionControls,
+					overridesPath: overriddenGroups[group.key], declaringPath: declaringGroups[group.key]))
 			}
 		}
 		var prefixes: [String] = []
@@ -234,9 +252,10 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		var declaring = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.declaringPath.map { (rule.key, $0) } })
 		if let moved = declaring.removeValue(forKey: from) { declaring[to] = moved }
 		let groupSources = Dictionary(uniqueKeysWithValues: groups.compactMap { group in (group.sourcePath ?? group.source).map { (group.name, $0) } })
-		let overriddenGroups = Dictionary(uniqueKeysWithValues: groups.compactMap { group in group.overrides.map { (group.name, $0) } })
+		let overriddenGroups = Dictionary(uniqueKeysWithValues: groups.compactMap { group in (group.overridesPath ?? group.overrides).map { (group.name, $0) } })
+		let declaringGroups = Dictionary(uniqueKeysWithValues: groups.compactMap { group in group.declaringPath.map { (group.name, $0) } })
 		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden, declaring: declaring, groupSources: groupSources,
-			overriddenGroups: overriddenGroups)
+			overriddenGroups: overriddenGroups, declaringGroups: declaringGroups)
 	}
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
@@ -458,7 +477,8 @@ extension ProjectEnvSchemaOverview.Group {
 	/// override replaces.
 	init?(name: String, draft declaration: LPMConfigJSON, isOverride: Bool, saved: Self?) {
 		guard let group = ProjectEnvSchemaGroup(declaration) else { return nil }
-		self.init(name: name, members: group.members, mode: group.mode.rawValue, overrides: isOverride ? saved?.overrides ?? saved?.source : nil)
+		self.init(name: name, members: group.members, mode: group.mode.rawValue, overrides: isOverride ? saved?.overrides ?? saved?.source : nil,
+			overridesPath: isOverride ? saved?.overridesPath ?? saved?.sourcePath : nil)
 	}
 }
 
