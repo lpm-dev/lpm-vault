@@ -8,44 +8,50 @@ import Testing
 @Suite("Mock Keychain concurrent storage")
 struct MockKeychainConcurrencyTests {
 	@Test("direct fixture reads wait for the complete transaction", arguments: ["environments", "data"])
-	func storageReadWaitsForTransaction(storage: String) async {
+	func storageReadWaitsForTransaction(storage: String) async throws {
 		let keychain = MockKeychainService()
-		let entered = DispatchSemaphore(value: 0)
+		let entered = AsyncStream<Void>.makeStream()
 		let release = DispatchSemaphore(value: 0)
-		let readerStarted = DispatchSemaphore(value: 0)
+		let readerStarted = AsyncStream<Void>.makeStream()
 		let readFinished = DispatchSemaphore(value: 0)
-		let writer = Task {
-			await runBlocking {
-				keychain.withKeychainTransaction {
-					keychain.envStorage["project"] = (name: "Project", path: "", environments: ["default": ["KEY": "intermediate"]])
-					keychain.dataStorage["record"] = Data("intermediate".utf8)
-					entered.signal()
-					release.wait()
-					keychain.envStorage["project"]?.environments["default"]?["KEY"] = "committed"
-					keychain.dataStorage["record"] = Data("committed".utf8)
-				}
+		defer { release.signal() }
+		let writer = startBlocking {
+			keychain.withKeychainTransaction {
+				keychain.envStorage["project"] = (name: "Project", path: "", environments: ["default": ["KEY": "intermediate"]])
+				keychain.dataStorage["record"] = Data("intermediate".utf8)
+				entered.continuation.yield(())
+				entered.continuation.finish()
+				release.wait()
+				keychain.envStorage["project"]?.environments["default"]?["KEY"] = "committed"
+				keychain.dataStorage["record"] = Data("committed".utf8)
 			}
 		}
-		let didEnter = await wait(entered, seconds: 3)
-		#expect(didEnter)
-		let reader = Task {
-			await runBlocking {
-				readerStarted.signal()
-				let value = storage == "environments"
-					? keychain.envStorage["project"]?.environments["default"]?["KEY"]
-					: keychain.dataStorage["record"].map { String(decoding: $0, as: UTF8.self) }
-				readFinished.signal()
-				return value
-			}
+		try #require(await entered.stream.first { _ in true } != nil)
+		let reader = startBlocking {
+			readerStarted.continuation.yield(())
+			readerStarted.continuation.finish()
+			let value = storage == "environments"
+				? keychain.envStorage["project"]?.environments["default"]?["KEY"]
+				: keychain.dataStorage["record"].map { String(decoding: $0, as: UTF8.self) }
+			readFinished.signal()
+			return value
 		}
-		let didStart = await wait(readerStarted, seconds: 3)
-		#expect(didStart)
+		try #require(await readerStarted.stream.first { _ in true } != nil)
 		let prematureRead = await wait(readFinished, seconds: 0.1)
 		release.signal()
-		_ = await writer.value
-		let value = await reader.value
+		_ = await writer.first { _ in true }
+		let value = try #require(await reader.first { _ in true })
 		#expect(!prematureRead)
 		#expect(value == "committed")
+	}
+
+	private func startBlocking<T: Sendable>(_ operation: @escaping @Sendable () -> T) -> AsyncStream<T> {
+		let result = AsyncStream<T>.makeStream()
+		Thread.detachNewThread {
+			result.continuation.yield(operation())
+			result.continuation.finish()
+		}
+		return result.stream
 	}
 
 	private func wait(_ semaphore: DispatchSemaphore, seconds: Double) async -> Bool {
