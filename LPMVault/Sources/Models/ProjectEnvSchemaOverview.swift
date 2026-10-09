@@ -198,6 +198,30 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		(foldedKeys[name.uppercased()] ?? []).filter { $0 != key }
 	}
 
+	/// Declared keys whose names differ only in letter case.
+	struct CaseClash: Equatable, Sendable {
+		/// From A to Z.
+		let keys: [String]
+
+		var message: String {
+			let names = keys.map(\.escapingDirectionControls)
+			let listed = names.count == 2 ? "\(names[0]) and \(names[1])" : names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+			return "\(listed) differ only in letter case, which Windows reads as one name. \(keys.count == 2 ? "Rename one of them." : "Rename all but one of them.")"
+		}
+	}
+
+	/// The first set of keys that differ only in letter case which `earlier`
+	/// doesn't have, by its first name.
+	func caseClash(since earlier: ProjectEnvSchemaOverview?) -> CaseClash? {
+		var first: [String]?
+		for keys in foldedKeys.values where keys.count > 1 {
+			let sorted = keys.sorted()
+			guard earlier?.foldedKeys[sorted[0].uppercased()].map({ $0.sorted() == sorted }) != true else { continue }
+			if first.map({ sorted[0] < $0[0] }) ?? true { first = sorted }
+		}
+		return first.map(CaseClash.init(keys:))
+	}
+
 	/// The keys whose Required when compares `key`'s value, which keeps it from being secret.
 	func keys(comparing key: String) -> [String] {
 		comparisons[key] ?? []
