@@ -73,10 +73,17 @@ enum RenderedText {
 	) async throws -> [Line] {
 		guard let input = recognitionInput(image, region: region) else { return [] }
 		let observations = try await recognize(input.image, level: level, usesLanguageCorrection: false, region: input.region, cache: cache, onRecognition: onRecognition)
+		// A label read exactly anywhere wins over one only found by tolerating misread glyphs.
+		let readsExactly = label.map { label in
+			observations.contains { $0.topCandidates(1).first?.string.range(of: label, options: options) != nil }
+		} ?? true
 		return observations.compactMap { observation -> Line? in
 			guard let candidate = observation.topCandidates(1).first else { return nil }
 			var labelBounds: CGRect?
-			if let label, let range = candidate.string.range(of: label, options: options) {
+			let range = label.flatMap { label in
+				readsExactly ? candidate.string.range(of: label, options: options) : OCRText.range(of: label, in: candidate.string, options: options)
+			}
+			if let range {
 				labelBounds = try? candidate.boundingBox(for: range)?.boundingBox
 			}
 			let map: (CGRect) -> CGRect = { box in
@@ -110,6 +117,28 @@ enum RenderedText {
 }
 
 extension RenderedText {
+	/// The parts of a window with its smallest, faintest text, read on their
+	/// own when the whole window doesn't read clearly: the side panel's top
+	/// and bottom, which overlap, and the status bar. Recognition scales a
+	/// whole window down, which loses such text on CI runners; a region
+	/// keeps it near full size, at a fraction of reading every part.
+	static let detailRegions: [CGRect] = [
+		CGRect(x: 0.70, y: 0.42, width: 0.30, height: 0.58),
+		CGRect(x: 0.70, y: 0, width: 0.30, height: 0.58),
+		CGRect(x: 0, y: 0, width: 1, height: 0.07),
+	]
+
+	/// Keeps a frame recognition couldn't read when LPM_TEST_SNAPSHOT_DIR
+	/// names a folder, as CI does, so a failure there can be looked at.
+	static func saveDiagnostic(_ image: CGImage, named name: String) {
+		guard let folder = ProcessInfo.processInfo.environment["LPM_TEST_SNAPSHOT_DIR"], !folder.isEmpty,
+			let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+		else { return }
+		let label = String(String.UnicodeScalarView(name.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? $0 : "-" }).prefix(60))
+		try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		try? data.write(to: URL(filePath: folder, directoryHint: .isDirectory).appending(path: "\(label)-\(UUID().uuidString.prefix(8)).png"))
+	}
+
 	/// The text of every recognized line within the requested region.
 	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true, region: CGRect? = nil, cache: RecognitionCache = .shared, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [String] {
 		guard let input = recognitionInput(image, region: region) else { return [] }
@@ -311,7 +340,8 @@ final class SheetTestHost<V: View> {
 		return OCRText(lines.map(\.text).joined(separator: "\n"))
 	}
 
-	/// Tries fast recognition, then accurate recognition for small text, on each pass.
+	/// Tries fast recognition, then accurate recognition for small text, on each
+	/// pass, then the regions of the window where the smallest text is.
 	/// `footer` limits rendering and recognition to the bottom points of the window.
 	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil, footer: CGFloat? = nil) async throws -> Bool {
 		let target = try #require(targetWindow?.contentView ?? view)
@@ -325,9 +355,19 @@ final class SheetTestHost<V: View> {
 				read = lines.map(\.text).joined(separator: "\n")
 				if OCRText(read).contains(expected) { return true }
 			}
+			var regions: [String] = []
+			if area == nil, targetWindow == nil {
+				for region in RenderedText.detailRegions {
+					let text = try await RenderedText.lines(in: image, level: .accurate, region: region).map(\.text).joined(separator: "\n")
+					if OCRText(text).contains(expected) { return true }
+					regions.append(text)
+				}
+			}
 			guard ContinuousClock.now < deadline else {
 				// Runners read glyphs differently; the log shows what this one read.
 				print("waitForText did not find \"\(expected)\". Last accurate reading:\n\(read)")
+				if !regions.isEmpty { print("Region by region:\n\(regions.joined(separator: "\n---\n"))") }
+				RenderedText.saveDiagnostic(image, named: expected)
 				return false
 			}
 			try await Task.sleep(for: .milliseconds(20))
@@ -361,6 +401,7 @@ final class SheetTestHost<V: View> {
 			try await Task.sleep(for: .milliseconds(20))
 			bounds = try await labelBounds(label, in: target, options: options, onRecognition: onRecognition)
 		}
+		if bounds == nil { RenderedText.saveDiagnostic(try snapshot(target), named: label) }
 		let box = try #require(bounds, "Missing button \(label)")
 		let point = target.convert(
 			NSPoint(x: box.midX * target.bounds.width, y: (target.isFlipped ? 1 - box.midY : box.midY) * target.bounds.height),
@@ -641,7 +682,13 @@ final class SheetTestHost<V: View> {
 			if let bounds = refined.lazy.compactMap(\.labelBounds).first { return bounds }
 		}
 		let accurate = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, onRecognition: onRecognition)
-		return accurate.lazy.compactMap(\.labelBounds).first
+		if let bounds = accurate.lazy.compactMap(\.labelBounds).first { return bounds }
+		guard target === view else { return nil }
+		for region in RenderedText.detailRegions {
+			let lines = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: region, onRecognition: onRecognition)
+			if let bounds = lines.lazy.compactMap(\.labelBounds).first { return bounds }
+		}
+		return nil
 	}
 
 	/// Editable text fields in reading order: top to bottom, then left to right.

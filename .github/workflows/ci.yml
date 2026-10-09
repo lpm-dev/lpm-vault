@@ -35,13 +35,17 @@ jobs:
       - name: Record Swift build input timestamps
         run: python3 LPMVault/Scripts/ci-cache-key.py swift --record-source-times
       - name: Swift tests
+        env:
+          LPM_TEST_SNAPSHOT_DIR: ${{ runner.temp }}/ui-snapshots
         run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --skip-build --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Preserve failed test diagnostics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: macos-test-diagnostics
-          path: ~/Library/Logs/DiagnosticReports/*
+          path: |
+            ~/Library/Logs/DiagnosticReports/*
+            ${{ runner.temp }}/ui-snapshots/*
           if-no-files-found: ignore
           retention-days: 7
       - name: Cooperative executor regressions
