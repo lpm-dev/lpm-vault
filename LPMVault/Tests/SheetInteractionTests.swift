@@ -478,7 +478,8 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Sends a key to the field being edited, through this window, which need not be key.
-	func pressWhileEditing(_ character: String, code: UInt16) throws {
+	func pressWhileEditing(_ character: String, code: UInt16, in targetWindow: NSWindow? = nil) throws {
+		let window = targetWindow ?? self.window
 		try #require(window.firstResponder is NSTextView, "No field is being edited")
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
 		window.sendEvent(event)

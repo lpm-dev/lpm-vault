@@ -197,6 +197,17 @@ struct VaultSchemaReviewSheet: View {
 					.lineLimit(1)
 					.truncationMode(.middle)
 			}
+			if let warning = item.warning {
+				HStack(alignment: .top, spacing: 6) {
+					Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).padding(.top, 1)
+					Text(warning).font(.system(size: 11.5, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+				}
+				.foregroundStyle(VaultPalette.redText)
+				.padding(9)
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.redTint))
+				.accessibilityElement(children: .combine)
+			}
 			if let note = note(for: item) {
 				HStack(alignment: .top, spacing: 6) {
 					Image(systemName: "square.stack.3d.up").font(.system(size: 10)).padding(.top, 1)

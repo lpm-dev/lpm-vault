@@ -54,10 +54,19 @@ struct VaultWorkspaceView: View {
 
 	private var project: VaultProject? { store.selectedProject }
 
-	/// The folder the Schema page watches for changes to lpm.json; nil off the page.
-	private var schemaWatch: String? {
-		guard mode == .schema, !store.showAuthStatus, let folder = project.flatMap({ store.keyDescriptions[$0.id]?.folder }), !folder.isEmpty else { return nil }
-		return folder
+	/// What the Schema page watches for changes: lpm.json's folder, and the
+	/// schemas lpm.json imports as last read, so a pull that changes only an
+	/// import still rereads the rules.
+	private struct SchemaWatch: Hashable {
+		let folder: String
+		let imports: [String]
+	}
+
+	/// What the Schema page watches; nil off the page.
+	private var schemaWatch: SchemaWatch? {
+		guard mode == .schema, !store.showAuthStatus, let descriptions = project.flatMap({ store.keyDescriptions[$0.id] }), !descriptions.folder.isEmpty
+		else { return nil }
+		return SchemaWatch(folder: descriptions.folder, imports: (descriptions.dependencies ?? []).map(\.path).sorted())
 	}
 
 	/// Opens a selection in the Schema page's panel as a new stretch of editing.
@@ -66,21 +75,20 @@ struct VaultWorkspaceView: View {
 		schemaPanelSession = UUID()
 	}
 
-	/// Adds a stored key to the draft with no rules yet, and opens it.
+	/// Adds a stored key to the draft with no rules yet, and opens it. The
+	/// store marks it public when a prefix makes it so.
 	private func declare(_ key: String, in project: VaultProject) {
-		let prefixes = store.schemaOverview(for: project.id)?.clientPrefixes ?? []
-		var rule = ProjectEnvSchemaRule()
-		if ProjectEnvSchemaRule.publicPrefix(of: key, clientPrefixes: prefixes) != nil { rule.client = true }
-		store.editSchemaDraft(in: project.id) { $0.set(.declared(rule.json), for: .key(key)) }
+		store.editSchemaDraft(in: project.id) { $0.set(.declared(ProjectEnvSchemaRule().json), for: .key(key)) }
 		selectSchema(.key(key))
 	}
 
 	/// Rereads the rules when the Schema page starts showing them, which picks
-	/// up edits made meanwhile, and whenever lpm.json changes while it does.
+	/// up edits made meanwhile, and whenever lpm.json or a schema it imports
+	/// changes while it does.
 	private func watchSchemaFolder() async {
-		guard let folder = schemaWatch else { return }
+		guard let watch = schemaWatch else { return }
 		store.reloadKeyDescriptions()
-		for await _ in ProjectConfigWatcher.changes(inFolder: folder) {
+		for await _ in ProjectConfigWatcher.changes(inFolder: watch.folder, imports: watch.imports) {
 			guard !Task.isCancelled else { return }
 			store.reloadKeyDescriptions()
 		}
@@ -233,8 +241,7 @@ struct VaultWorkspaceView: View {
 								canEdit: store.canEditSchema(of: project.id),
 								onAddKey: { selectSchema(.newKey) },
 								onAddGroup: { selectSchema(.newGroup) },
-								clientPrefixCount: Set(store.schemaOverview(for: project.id)?.clientPrefixes ?? [])
-									.union(ProjectEnvSchemaClientPrefixes.own(in: store.schemaDraftOrBase(for: project.id))).count,
+								clientPrefixCount: store.schemaClientPrefixesInEffect(for: project.id).count,
 								clientPrefixes: AnyView(VaultSchemaClientPrefixesPopover(store: store, project: project) { selectSchema(.key($0)) }),
 								undeclared: store.undeclaredSchemaKeys(for: project.id),
 								onDeclare: { declare($0, in: project) },

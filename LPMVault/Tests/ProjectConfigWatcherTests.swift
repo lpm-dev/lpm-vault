@@ -34,6 +34,33 @@ struct ProjectConfigWatcherTests {
 		#expect(try await eventually { changes.count == 3 }, "The watcher follows the replaced file")
 	}
 
+	@Test("a schema lpm.json imports, written in place or replaced, is a change too")
+	func reportsImportChanges() async throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
+		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
+		try "{}".write(toFile: folder + "/schemas/base.json", atomically: false, encoding: .utf8)
+		let changes = ChangeCounter()
+		let watching = Task {
+			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: ["schemas/base.json"], settling: .milliseconds(100),
+				maximumDelay: .milliseconds(600), retryingEvery: .milliseconds(200)) {
+				changes.increment()
+			}
+		}
+		defer { watching.cancel() }
+		try await Task.sleep(for: .milliseconds(100))
+		let handle = try #require(FileHandle(forWritingAtPath: folder + "/schemas/base.json"))
+		handle.write(Data(#"{"vars":{"A":{"secret":true}}}"#.utf8))
+		try handle.close()
+		#expect(try await eventually { changes.count == 1 }, "An import written in place")
+		try "{}".write(toFile: folder + "/schemas/other.json", atomically: true, encoding: .utf8)
+		try await Task.sleep(for: .milliseconds(400))
+		#expect(changes.count == 1, "A file lpm.json doesn't import isn't a change")
+		try #"{"vars":{"A":{}}}"#.write(toFile: folder + "/schemas/base.json", atomically: true, encoding: .utf8)
+		#expect(try await eventually { changes.count == 2 }, "An import replaced, as git does")
+	}
+
 	@Test("other files changing in the folder aren't changes to lpm.json")
 	func ignoresOtherFiles() async throws {
 		let folder = try makeFolder()

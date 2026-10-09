@@ -159,9 +159,51 @@ private struct VaultSchemaKeyEditor: View {
 	/// The latest evaluation, which can lag the draft while it's evaluated.
 	private var evaluation: Draft.Evaluation? { store.latestSchemaDraftEvaluation(for: project.id) }
 	private var overview: ProjectEnvSchemaOverview? { store.schemaOverview(for: project.id) }
+	/// The prefixes in effect with the draft applied, which the evaluated rules can lag.
+	private var clientPrefixes: [String] { store.schemaClientPrefixesInEffect(for: project.id) }
 	private var item: Draft.Item { .key(key) }
 	private var savedRule: ProjectEnvSchemaOverview.Rule? { savedOverview?.rule(for: key) }
 	private var importedSource: String { savedRule?.overrides ?? savedRule?.source ?? "an imported schema" }
+
+	/// The prefix in effect that makes the key public; nil when none does.
+	private var publicPrefixInEffect: String? { Rule.publicPrefix(of: key, clientPrefixes: clientPrefixes) }
+
+	/// For an imported key the draft starts overriding, the override it needs
+	/// only to be marked public or private as the prefixes in effect require:
+	/// the imported rule, lpm.json's rule for the key as last read, with that
+	/// mark. nil when the imported rule has the mark already, or for an
+	/// override lpm.json has, whose imported rule the engine doesn't report.
+	private var markingOverride: LPMConfigJSON? {
+		guard draft.base(of: item) == .absent, savedRule?.source != nil, let imported = savedOverview?.declaration(of: key) else { return nil }
+		var rule = Rule(resolved: imported)
+		let wanted = publicPrefixInEffect != nil
+		guard rule.client != wanted else { return nil }
+		rule.client = wanted
+		return rule.json
+	}
+
+	/// Whether removing lpm.json's override would leave the key marked other
+	/// than the prefixes in effect require, which only an override can fix:
+	/// the imported rule lacks the mark, or imports conflict over the key.
+	private var resetBreaksMark: Bool {
+		guard let replaced = evaluation?.overview?.replacedRules[key] ?? savedOverview?.replacedRules[key] else { return false }
+		return replaced.count > 1 || replaced.client != (publicPrefixInEffect != nil)
+	}
+
+	/// Whether lpm.json's override of the key does nothing but mark it as its prefixes require.
+	private var overrideOnlyMarks: Bool {
+		guard case .overridden(let json) = draft.declaration(of: item), let markingOverride else { return false }
+		return Rule(resolved: json).json.isEquivalent(to: markingOverride)
+	}
+
+	/// Why the override can't go, when it only carries the public mark a prefix requires.
+	private var markingNote: String {
+		if let prefix = publicPrefixInEffect {
+			"lpm.json overrides the rule from \(importedSource) only to mark it Public, as \(prefix.escapingDirectionControls) requires. The override goes when that prefix does."
+		} else {
+			"lpm.json overrides the rule from \(importedSource) only to mark it private: no prefix in effect makes it public. The override goes when the imported rule matches."
+		}
+	}
 
 	/// A key the draft adds, or one being added.
 	private var isNew: Bool {
@@ -231,14 +273,14 @@ private struct VaultSchemaKeyEditor: View {
 	private var exposedName: String { key.isEmpty ? name : key }
 
 	private var publicPrefix: String? {
-		Rule.publicPrefix(of: exposedName, clientPrefixes: overview?.clientPrefixes ?? [])
+		Rule.publicPrefix(of: exposedName, clientPrefixes: clientPrefixes)
 	}
 
 	private var context: Rule.Context {
 		let overview = overview
 		return Rule.Context(
 			key: key,
-			publicPrefix: Rule.publicPrefix(of: exposedName, clientPrefixes: overview?.clientPrefixes ?? []),
+			publicPrefix: Rule.publicPrefix(of: exposedName, clientPrefixes: clientPrefixes),
 			secretKeys: overview?.secretKeys ?? [],
 			comparedBy: overview?.keys(comparing: key) ?? [],
 			declaredKeys: overview.map(\.declaredKeys)
@@ -418,8 +460,8 @@ private struct VaultSchemaKeyEditor: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 			if case .editing(true) = mode {
-				notice(symbol: "square.stack.3d.up",
-					text: "You're editing a copy of the rule from \(importedSource). Saving writes an override to lpm.json that replaces the original; it doesn't merge.")
+				notice(symbol: "square.stack.3d.up", text: overrideOnlyMarks ? markingNote
+					: "You're editing a copy of the rule from \(importedSource). Saving writes an override to lpm.json that replaces the original; it doesn't merge.")
 			}
 			if draft.conflicts.contains(where: { $0.item == item }) {
 				conflictNotice
@@ -483,7 +525,7 @@ private struct VaultSchemaKeyEditor: View {
 		let renamable = mode == .editing(isOverride: false) && draft.base(of: item) != .absent
 		let changed = name != key
 		let issue = changed ? nameIssue(name, rule: rule) : nil
-		let shownPrefix = changed && issue == nil ? Rule.publicPrefix(of: name, clientPrefixes: overview?.clientPrefixes ?? []) : publicPrefix
+		let shownPrefix = changed && issue == nil ? Rule.publicPrefix(of: name, clientPrefixes: clientPrefixes) : publicPrefix
 		return VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 6) {
 				if renamable {
@@ -559,7 +601,7 @@ private struct VaultSchemaKeyEditor: View {
 	/// How renaming changes whether the key reaches the browser, which the
 	/// LPM CLI decides by the name's prefix.
 	private func exposureChange(renamingTo name: String) -> String? {
-		let after = Rule.publicPrefix(of: name, clientPrefixes: overview?.clientPrefixes ?? [])
+		let after = Rule.publicPrefix(of: name, clientPrefixes: clientPrefixes)
 		switch (publicPrefix, after) {
 		case (nil, let prefix?): return "Becomes public: \(prefix) exposes its value to the browser."
 		case (let prefix?, nil): return "Becomes private: without \(prefix), its value stays out of the browser."
@@ -572,7 +614,7 @@ private struct VaultSchemaKeyEditor: View {
 		if let existing = overview?.keys(named: name, otherThan: key).first {
 			return existing == name ? "\(name) is already declared." : "Conflicts with \(existing): names can't differ only in capitalisation."
 		}
-		if rule.secret, let prefix = Rule.publicPrefix(of: name, clientPrefixes: overview?.clientPrefixes ?? []) {
+		if rule.secret, let prefix = Rule.publicPrefix(of: name, clientPrefixes: clientPrefixes) {
 			return "Secret keys can't start with \(prefix), which makes a key public."
 		}
 		return nil
@@ -782,7 +824,7 @@ private struct VaultSchemaKeyEditor: View {
 			return
 		}
 		var adopted = held.map { Rule(draft.declaration(of: .key($0)).json ?? .object([])) } ?? newRule
-		if Rule.publicPrefix(of: newName, clientPrefixes: overview?.clientPrefixes ?? []) != nil {
+		if Rule.publicPrefix(of: newName, clientPrefixes: clientPrefixes) != nil {
 			adopted.secret = false
 			adopted.client = true
 		} else {
@@ -846,7 +888,7 @@ private struct VaultSchemaKeyEditor: View {
 	private var suggestionInput: SuggestionInput? {
 		guard isNew, !key.isEmpty, project.hasLoadedEnvironments, store.canUseLocalSecrets else { return nil }
 		return SuggestionInput(key: key, values: project.workspaceSnapshotIdentity, publicPrefix: publicPrefix,
-			clientPrefixes: overview?.clientPrefixes ?? [])
+			clientPrefixes: clientPrefixes)
 	}
 
 	private func suggest() async {
@@ -1498,16 +1540,32 @@ private struct VaultSchemaKeyEditor: View {
 		VStack(alignment: .leading, spacing: 8) {
 			switch mode {
 			case .overridden(let source):
-				Text("This override in lpm.json replaces the rule from \(source).")
-					.font(.system(size: 11.5))
-					.foregroundStyle(VaultPalette.textSecondary)
-					.fixedSize(horizontal: false, vertical: true)
-				HStack(spacing: 6) {
-					VaultBarButton(systemImage: "arrow.uturn.backward", title: "Reset to original", height: 24) {
-						update(declaration: .absent)
+				if overrideOnlyMarks {
+					Text(markingNote)
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.fixedSize(horizontal: false, vertical: true)
+				} else {
+					Text("This override in lpm.json replaces the rule from \(source).")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.fixedSize(horizontal: false, vertical: true)
+					if resetBreaksMark {
+						// lpm.json has the override, so the imported rule to reset to isn't known here.
+						Text(publicPrefixInEffect.map { "Resetting would leave it unmarked, though \($0.escapingDirectionControls) makes it public; only an override can mark it. Edit the override instead." }
+							?? "Resetting would leave it marked public with no prefix in effect to make it so; only an override can unmark it. Edit the override instead.")
+							.font(.system(size: 11))
+							.foregroundStyle(VaultPalette.textTertiary)
+							.fixedSize(horizontal: false, vertical: true)
+					} else {
+						HStack(spacing: 6) {
+							VaultBarButton(systemImage: "arrow.uturn.backward", title: "Reset to original", height: 24) {
+								update(declaration: .absent)
+							}
+							.disabled(!canEdit)
+							Text("removes the override").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
+						}
 					}
-					.disabled(!canEdit)
-					Text("removes the override").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
 				}
 			case .reset(let source):
 				Text("Saving removes the override from lpm.json, so the rule from \(source) applies again.")
@@ -1572,8 +1630,18 @@ private struct VaultSchemaKeyEditor: View {
 		case .overridden: ("pencil", "Edit override", { editsOverride = true })
 		default: nil
 		}
+		// An imported key a prefix needs marked keeps the override that marks it, which only the prefix can take away.
+		let marking: LPMConfigJSON? = draft.base(of: item) == .absent ? markingOverride : nil
 		let discard: (() -> Void)? = if key.isEmpty {
 			{ onSelect(nil) }
+		} else if marking != nil, overrideOnlyMarks {
+			nil
+		} else if let marking, case .overridden = draft.declaration(of: item) {
+			{
+				shownFields = []
+				editsOverride = false
+				store.editSchemaDraft(in: project.id) { $0.set(.overridden(marking), for: .key(key)) }
+			}
 		} else if draft.hasChange(to: item) {
 			{
 				let wasNew = isNew

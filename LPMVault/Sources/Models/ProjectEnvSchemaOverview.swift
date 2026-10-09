@@ -110,6 +110,11 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	/// Prefixes that make a key public besides the frameworks', from lpm.json
 	/// and the schemas it imports.
 	let clientPrefixes: [String]
+	/// The prefixes lpm.json's imports list, whether or not lpm.json lists
+	/// them too, each with the first schema that lists it, unescaped.
+	let importedClientPrefixes: [String: String]
+	/// What each of lpm.json's key overrides replaces, in summary.
+	let replacedRules: [String: RustSchemaEngine.ReplacedRules]
 	/// The resolved schema as compact JSON, which the bundled engine checks
 	/// stored values against; nil for rules not built from a resolution.
 	let effectiveSchema: Data?
@@ -120,7 +125,10 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	/// Declared keys by their name in capitals, which Windows reads as one name.
 	private let foldedKeys: [String: [String]]
 
-	init(rules: [Rule], groups: [Group], effectiveSchema: Data? = nil, clientPrefixes: [String] = [], declarations: [String: LPMConfigJSON] = [:]) {
+	init(
+		rules: [Rule], groups: [Group], effectiveSchema: Data? = nil, clientPrefixes: [String] = [], declarations: [String: LPMConfigJSON] = [:],
+		importedClientPrefixes: [String: String] = [:], replacedRules: [String: RustSchemaEngine.ReplacedRules] = [:]
+	) {
 		let order = Dictionary(uniqueKeysWithValues: VaultKeySortOrder.sortedAscending(rules.map(\.key)).enumerated().map { ($1, $0) })
 		self.rules = rules.sorted { order[$0.key, default: 0] < order[$1.key, default: 0] }
 		self.groups = groups.sorted { $0.name < $1.name }
@@ -129,6 +137,8 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		declaredKeys = Set(rules.lazy.map(\.key))
 		foldedKeys = Dictionary(grouping: self.rules.lazy.map(\.key), by: { $0.uppercased() })
 		self.clientPrefixes = clientPrefixes
+		self.importedClientPrefixes = importedClientPrefixes
+		self.replacedRules = replacedRules
 		self.effectiveSchema = effectiveSchema
 		self.declarations = declarations
 		index = Dictionary(uniqueKeysWithValues: self.rules.enumerated().map { ($1.key, $0) })
@@ -162,14 +172,16 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				declaringGroups[name] = declaringSource
 			}
 		}
+		let imported = resolution.clientPrefixOrigins.compactMapValues { $0.source == "lpm.json" ? nil : $0.source }
 		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source), overridden: overridden,
 			declaring: declaring, groupSources: resolution.groupOrigins.mapValues(\.source), overriddenGroups: overriddenGroups,
-			declaringGroups: declaringGroups)
+			declaringGroups: declaringGroups, importedClientPrefixes: imported, replacedRules: resolution.replacedRules)
 	}
 
 	private init(
 		effective: LPMConfigJSON, sources: [String: String], overridden: [String: String] = [:], declaring: [String: String] = [:],
-		groupSources: [String: String] = [:], overriddenGroups: [String: String] = [:], declaringGroups: [String: String] = [:]
+		groupSources: [String: String] = [:], overriddenGroups: [String: String] = [:], declaringGroups: [String: String] = [:],
+		importedClientPrefixes: [String: String] = [:], replacedRules: [String: RustSchemaEngine.ReplacedRules] = [:]
 	) {
 		var rules: [Rule] = []
 		var declared: [String: LPMConfigJSON] = [:]
@@ -210,7 +222,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 			prefixes = values.compactMap { if case .string(let prefix) = $0 { prefix } else { nil } }
 		}
 		self.init(rules: rules, groups: groups, effectiveSchema: try? effective.compactData(maximumBytes: Self.engineInputLimit),
-			clientPrefixes: prefixes, declarations: declared)
+			clientPrefixes: prefixes, declarations: declared, importedClientPrefixes: importedClientPrefixes, replacedRules: replacedRules)
 	}
 
 	/// The bundled engine's input limit for a schema or a set of values.
@@ -254,8 +266,10 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		let groupSources = Dictionary(uniqueKeysWithValues: groups.compactMap { group in (group.sourcePath ?? group.source).map { (group.name, $0) } })
 		let overriddenGroups = Dictionary(uniqueKeysWithValues: groups.compactMap { group in (group.overridesPath ?? group.overrides).map { (group.name, $0) } })
 		let declaringGroups = Dictionary(uniqueKeysWithValues: groups.compactMap { group in group.declaringPath.map { (group.name, $0) } })
+		var replaced = replacedRules
+		if let moved = replaced.removeValue(forKey: from) { replaced[to] = moved }
 		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden, declaring: declaring, groupSources: groupSources,
-			overriddenGroups: overriddenGroups, declaringGroups: declaringGroups)
+			overriddenGroups: overriddenGroups, declaringGroups: declaringGroups, importedClientPrefixes: importedClientPrefixes, replacedRules: replaced)
 	}
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
@@ -553,7 +567,7 @@ enum ProjectEnvSchemaState: Equatable, Sendable {
 		"client-visible keys must use a framework or declared client prefix; rename the key or add its prefix to clientPrefixes":
 			("Public keys need a public prefix, such as NEXT_PUBLIC_ or one of the project's client prefixes.", ["client"]),
 		"public-prefix keys require client: true; remove secret: true or rename the key to keep it private":
-			("A key with a public prefix is public. Turn off Secret, or rename the key to keep it private.", ["secret", "client"]),
+			("A key with a public prefix has to be marked public: turn off Secret if it's on, or rename the key to keep it private.", ["secret", "client"]),
 		"secret rules cannot contain literal defaults or enum values": ("Secret keys can't have a default or allowed values.", ["default", "enum"]),
 		"secret rules cannot contain literal scoped defaults": ("Secret keys can't have scoped defaults.", ["defaultsIn"]),
 		"enum must contain at least one value": ("Add at least one allowed value.", ["enum"]),
