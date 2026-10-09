@@ -23,6 +23,29 @@ struct VaultSchemaView: View {
 	var clientPrefixCount = 0
 	/// What edits the client prefixes, shown from the header; nil while they can't be shown.
 	var clientPrefixes: AnyView?
+	/// Keys the project stores in any environment.
+	var storedKeyCount = 0
+	/// Keys whose stored values fail their rules, with the environments they fail in, as shown.
+	var failures: [String: [String]] = [:]
+	/// The last save of the draft failed, and the draft is kept.
+	var saveFailed = false
+	/// The draft is being written into lpm.json.
+	var saving = false
+	/// Why the draft can't be saved yet, as the page puts it.
+	var blocker: VaultSchemaEditorFooter.Blocker? = nil
+	/// Opens the review of the draft before it's saved.
+	var onReview: () -> Void = {}
+	/// Ends every unsaved change; undo brings them back.
+	var onDiscardAll: () -> Void = {}
+	/// Undoes the last change to the draft, or redoes it when true; returns
+	/// whether there was one.
+	var onUndo: (_ redo: Bool) -> Bool = { _ in false }
+	/// Moves the selection `offset` rows through `rows`, the table's order.
+	var onMove: (_ offset: Int, _ rows: [VaultSchemaSelection]) -> Void = { _, _ in }
+	/// Closes the side panel; returns whether it was open.
+	var onClosePanel: () -> Bool = { false }
+	/// Declares every stored key that can be declared, in one change.
+	var onDeclareAll: () -> Void = {}
 	/// Keys stored in some environment that lpm.json doesn't declare.
 	var undeclared: [VaultStore.StoredSchemaKey] = []
 	var onDeclare: (String) -> Void = { _ in }
@@ -66,6 +89,20 @@ struct VaultSchemaView: View {
 			statusBar(listed)
 		}
 		.background(VaultPalette.content)
+		// The actions read the selection where it's kept, not as last drawn:
+		// keys pressed in quick succession can arrive before the page redraws.
+		.background(VaultSchemaShortcuts(
+			undo: { onUndo(false) },
+			redo: { onUndo(true) },
+			close: onClosePanel,
+			move: { moveSelection(by: $0, in: listed) }
+		))
+	}
+
+	/// The side panel shows the selection, which it does only while the rules are loaded.
+	private var panelShown: Bool {
+		guard selection != nil, case .loaded? = state else { return false }
+		return true
 	}
 
 	/// lpm.json, when the page can open it.
@@ -99,21 +136,19 @@ struct VaultSchemaView: View {
 				.lineLimit(1)
 			}
 			Spacer(minLength: 8)
-			if case .loaded? = state, let clientPrefixes {
+			if state != nil {
+				// Shown in every state, and off while they can't be used, so the page keeps its shape.
+				let showsPrefixes = if case .loaded? = state { clientPrefixes != nil } else { false }
 				VaultOutlineButton(systemImage: "globe", title: "Client prefixes \(clientPrefixCount)", help: "Prefixes that make keys public",
-					active: showsClientPrefixes) { showsClientPrefixes.toggle() }
+					active: showsClientPrefixes, disabled: !showsPrefixes) { showsClientPrefixes.toggle() }
 					.fixedSize()
 					.popover(isPresented: $showsClientPrefixes, arrowEdge: .bottom) { clientPrefixes }
-			}
-			if let configFile {
-				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor") {
-					ProjectConfigOpener.open(configFile)
+				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor", disabled: configFile == nil) {
+					if let configFile { ProjectConfigOpener.open(configFile) }
 				}
 				.fixedSize()
-			}
-			if canEdit {
-				VaultBarButton(systemImage: "plus", title: "Add key", filled: true, height: 27, action: onAddKey)
-					.help("Declare a new key in lpm.json")
+				VaultBarButton(systemImage: "plus", title: "Add key", filled: true, disabled: !canEdit, height: 27, action: onAddKey)
+					.help(canEdit ? "Declare a new key in lpm.json" : "Rules can be edited once lpm.json can be read from the project's folder")
 			}
 		}
 		.padding(.horizontal, 20)
@@ -218,7 +253,7 @@ struct VaultSchemaView: View {
 			emptyState(
 				symbol: "terminal",
 				title: "Rules live in your project's lpm.json",
-				message: "This project isn't linked to a folder yet, so LPM Vault can't read its rules. Connect the CLI to link the folder; rules appear here read-only."
+				message: "This project isn't linked to a folder yet, so LPM Vault can't read or edit its schema. Connect the CLI to link the folder."
 			) {
 				VaultBarButton(systemImage: "link", title: "Connect CLI", filled: true, height: 28, action: onConnectCLI)
 				VaultBarButton(title: "Learn about envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
@@ -227,10 +262,15 @@ struct VaultSchemaView: View {
 			emptyState(
 				symbol: "curlybraces",
 				title: "No rules yet",
-				message: "lpm.json declares no env rules. Add keys to declare formats, defaults, and required keys; the LPM CLI enforces them and this page shows them."
+				message: declarableCount > 0
+					? "Declare your first key to give the LPM CLI something to enforce. Keys you already store can be declared with suggested rules."
+					: "Declare your first key to give the LPM CLI something to enforce: formats, defaults, and required keys."
 			) {
-				if let configFile {
-					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { ProjectConfigOpener.open(configFile) }
+				if canEdit {
+					VaultBarButton(systemImage: "plus", title: "Add key", filled: true, height: 28, action: onAddKey)
+					if declarableCount > 0 {
+						VaultBarButton(title: declarableCount == 1 ? "Declare 1 stored key" : "Declare \(declarableCount) stored keys", height: 28, action: onDeclareAll)
+					}
 				}
 				VaultBarButton(title: "Docs: envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
 			} footer: {
@@ -321,9 +361,12 @@ struct VaultSchemaView: View {
 			}
 			Spacer(minLength: 8)
 			if let configFile {
-				VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { ProjectConfigOpener.open(configFile) }
+				VaultBarButton(systemImage: "doc", title: "Open lpm.json", filled: true, height: 28) { ProjectConfigOpener.open(configFile) }
 			}
-			VaultBarButton(title: "Recheck", filled: true, height: 28, action: onRecheck)
+			// Imports added while lpm.json can't be read aren't known yet, so they
+			// aren't watched until it resolves.
+			VaultBarButton(title: "Recheck", height: 28, action: onRecheck)
+				.help("Read lpm.json and the schemas it imports again")
 		}
 		.padding(14)
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.redTint))
@@ -334,45 +377,82 @@ struct VaultSchemaView: View {
 
 	private func rulesTable(_ listed: Listed, saved: ProjectEnvSchemaOverview) -> some View {
 		let rules = sortOrder == .ascending ? listed.rules : listed.rules.reversed()
-		return ScrollView {
-			LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-				Section {
-					ForEach(rules, id: \.key) { rule in
-						ruleRow(rule, state: rowState(rule.key, in: saved), description: description(of: rule.key))
-							.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
-					}
-					if !listed.groups.isEmpty || canEdit {
-						groupsHeader(count: listed.groupCount)
-						ForEach(listed.groups, id: \.name) { group in
-							groupRow(group, state: groupState(group.name, in: saved))
+		// The header sits above the scroll view rather than pinned inside it, so
+		// scrolling a row into view never leaves it under the header.
+		return VStack(spacing: 0) {
+			HStack(spacing: 0) {
+				VaultKeySortHeader(order: $sortOrder)
+					.frame(width: Self.keyWidth, height: VaultMetrics.tableHeader)
+				VaultHairline(axis: .vertical)
+				HStack(spacing: 8) {
+					Text("RULES").vaultSectionLabel()
+					Text("only what differs from the default")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textFaint)
+				}
+				.padding(.horizontal, 14)
+				.frame(maxWidth: .infinity, alignment: .leading)
+			}
+			.frame(height: VaultMetrics.tableHeader)
+			.background(VaultPalette.headerRow)
+			.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
+			ScrollViewReader { scroller in
+				ScrollView {
+					LazyVStack(alignment: .leading, spacing: 0) {
+						ForEach(rules, id: \.key) { rule in
+							ruleRow(rule, state: rowState(rule.key, in: saved), description: description(of: rule.key))
 								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+								.id(VaultSchemaSelection.key(rule.key))
+						}
+						if !listed.groups.isEmpty || canEdit {
+							groupsHeader(count: listed.groupCount)
+							ForEach(listed.groups, id: \.name) { group in
+								groupRow(group, state: groupState(group.name, in: saved))
+									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+									.id(VaultSchemaSelection.group(group.name))
+							}
+						}
+						// Rows go straight into the lazy stack, so only those on screen are built.
+						if !undeclared.isEmpty {
+							undeclaredHeader
+							ForEach(sortedUndeclared, id: \.key, content: undeclaredRow)
 						}
 					}
-					// Rows go straight into the lazy stack, so only those on screen are built.
-					if !undeclared.isEmpty {
-						undeclaredHeader
-						ForEach(sortedUndeclared, id: \.key, content: undeclaredRow)
-					}
-				} header: {
-					HStack(spacing: 0) {
-						VaultKeySortHeader(order: $sortOrder)
-							.frame(width: Self.keyWidth, height: VaultMetrics.tableHeader)
-						VaultHairline(axis: .vertical)
-						HStack(spacing: 8) {
-							Text("RULES").vaultSectionLabel()
-							Text("only what differs from the default")
-								.font(.system(size: 11))
-								.foregroundStyle(VaultPalette.textFaint)
-						}
-						.padding(.horizontal, 14)
-						.frame(maxWidth: .infinity, alignment: .leading)
-					}
-					.frame(height: VaultMetrics.tableHeader)
-					.background(VaultPalette.headerRow)
-					.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.sidebarBorder) }
+				}
+				.onChange(of: selection) { _, selection in
+					if let selection { scroller.scrollTo(selection) }
 				}
 			}
 		}
+	}
+
+	/// The rows ↑ and ↓ move through, in the table's order.
+	private func navigableRows(_ listed: Listed) -> [VaultSchemaSelection] {
+		var rows: [VaultSchemaSelection] = []
+		rows.reserveCapacity(listed.rules.count + listed.groups.count)
+		if sortOrder == .ascending {
+			rows.append(contentsOf: listed.rules.lazy.map { .key($0.key) })
+		} else {
+			rows.append(contentsOf: listed.rules.reversed().lazy.map { .key($0.key) })
+		}
+		rows.append(contentsOf: listed.groups.lazy.map { .group($0.name) })
+		return rows
+	}
+
+	private func moveSelection(by offset: Int, in listed: Listed?) -> Bool {
+		guard case .loaded? = state, let listed else { return false }
+		let rows = navigableRows(listed)
+		guard !rows.isEmpty else { return false }
+		onMove(offset, rows)
+		return true
+	}
+
+	/// The row `offset` rows from `selection`, stopping at either end, or the
+	/// first or last row when `selection` isn't one; nil without rows.
+	nonisolated static func row(_ offset: Int, from selection: VaultSchemaSelection?, in rows: [VaultSchemaSelection]) -> VaultSchemaSelection? {
+		guard !rows.isEmpty else { return nil }
+		guard let index = selection.flatMap(rows.firstIndex(of:)) else { return offset > 0 ? rows.first : rows.last }
+		return rows[min(max(index + offset, 0), rows.count - 1)]
 	}
 
 	private static let keyWidth: CGFloat = 260
@@ -502,6 +582,11 @@ struct VaultSchemaView: View {
 		HStack(alignment: .top, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
 				HStack(spacing: 7) {
+					if let environments = failures[rule.key], state != .removed {
+						Circle().fill(VaultPalette.red).frame(width: 6, height: 6)
+							.help("Its stored value fails in \(environments.joined(separator: ", "))")
+							.accessibilityLabel("Fails in \(environments.joined(separator: ", "))")
+					}
 					Text(rule.key)
 						.font(VaultTypography.mono(12.5, .semibold))
 						.foregroundStyle(state == .removed ? VaultPalette.textFaint : VaultPalette.textPrimary)
@@ -554,6 +639,12 @@ struct VaultSchemaView: View {
 		}
 		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
+	}
+
+	/// Stored keys "Declare all" declares: not ignored by the LPM CLI, and
+	/// not a letter-case variant of a declared key.
+	private var declarableCount: Int {
+		undeclared.lazy.filter { !$0.isIgnored && $0.conflict == nil }.count
 	}
 
 	/// Stored keys lpm.json doesn't declare, in the table's order.
@@ -709,17 +800,28 @@ struct VaultSchemaView: View {
 				if let listed, !listed.rules.isEmpty || !listed.groups.isEmpty {
 					loadedStatus(listed)
 				} else {
-					Text("No rules · values stay in the Keychain")
+					Text(Self.count(storedKeyCount, "stored key"))
+					Text("·")
+					Text("no rules yet")
+					draftStatus
 				}
 			case .unreadable?:
-				Text("Checks paused: lpm.json can't be read")
-					.foregroundStyle(VaultPalette.redText)
+				Text(Self.count(storedKeyCount, "stored key"))
+				Text("·")
+				Text("checks paused — lpm.json can't be read")
+					.foregroundStyle(VaultPalette.orangeTintText)
+				draftStatus
 			case .noFolder?:
-				Text("No project folder · values stay in the Keychain")
+				Text(Self.count(storedKeyCount, "stored key"))
+				Text("·")
+				Text("no schema")
+				Text("·")
+				Text("editing unavailable")
 			case nil:
 				EmptyView()
 			}
 			Spacer(minLength: 0)
+			draftActions
 		}
 		.font(.system(size: 11))
 		.foregroundStyle(VaultPalette.textTertiary)
@@ -736,14 +838,72 @@ struct VaultSchemaView: View {
 		Text(Self.count(listed.groupCount, "group"))
 		Text("·")
 		Text("\(listed.inheritedCount) inherited")
-		if let changes = draft?.changeCount, changes > 0 {
+		draftStatus
+		if let failing = failureSummary {
 			Text("·")
-			Text(changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes")
+			Text(failing)
 				.fontWeight(.semibold)
-				.foregroundStyle(VaultPalette.orangeTintText)
+				.foregroundStyle(VaultPalette.redText)
 		}
 		Text("·")
 		Text("enforced by LPM CLI")
+	}
+
+	@ViewBuilder
+	private var draftStatus: some View {
+		if let changes = draft?.changeCount, changes > 0 {
+			Text("·")
+			Text((saveFailed ? "save failed · " : "") + (changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes"))
+				.fontWeight(.semibold)
+				.foregroundStyle(saveFailed ? VaultPalette.redText : VaultPalette.orangeTintText)
+		}
+	}
+
+	/// Review & save and Discard for the whole draft, while the panel that
+	/// offers them is closed.
+	@ViewBuilder
+	private var draftActions: some View {
+		if let changes = draft?.changeCount, changes > 0, !panelShown {
+			if let blocker, blocker.blocksReview {
+				Text(blocker.message)
+					.truncationMode(.tail)
+					.layoutPriority(-1)
+					.help(blocker.message)
+				if let show = blocker.show {
+					Button("Show") { onSelect(show) }
+						.buttonStyle(.plain)
+						.fontWeight(.semibold)
+						.foregroundStyle(VaultPalette.accentForeground)
+						.vaultPointingHand()
+						.accessibilityLabel(VaultSchemaEditorFooter.showLabel(show))
+				}
+			}
+			VaultBarButton(title: changes > 1 ? "Discard all" : "Discard", disabled: saving, height: 22, action: onDiscardAll)
+				.help("Discard your unsaved changes to the schema. ⌘Z brings them back.")
+			VaultBarButton(title: saving ? "Saving…" : "Review & save", shortcut: "⌘S", filled: true, disabled: blocker?.blocksReview == true || !canEdit || saving,
+				height: 22, action: onReview)
+				.keyboardShortcut("s", modifiers: .command)
+		}
+	}
+
+	/// Keys whose stored values fail their rules, with the environments they
+	/// fail in as shown, in the order of `environments`.
+	nonisolated static func failures(in check: ProjectEnvValueCheck, environments: [String]) -> [String: [String]] {
+		var failures: [String: [String]] = [:]
+		for environment in environments {
+			guard let problems = check.environments[environment]?.problems, !problems.isEmpty else { continue }
+			let shown = VaultProject.displayName(for: environment).escapingDirectionControls
+			for key in problems.keys { failures[key, default: []].append(shown) }
+		}
+		return failures
+	}
+
+	/// Such as "1 key fails in .env.production" or "3 keys fail in 2 environments".
+	private var failureSummary: String? {
+		guard !failures.isEmpty else { return nil }
+		let environments = Set(failures.values.joined())
+		let keys = failures.count == 1 ? "1 key fails" : "\(failures.count) keys fail"
+		return environments.count == 1 ? "\(keys) in \(environments.first ?? "")" : "\(keys) in \(environments.count) environments"
 	}
 
 	private static func count(_ value: Int, _ noun: String) -> String {

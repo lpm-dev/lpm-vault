@@ -437,7 +437,8 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			#expect(try await host.waitForText("No rules yet"))
 			#expect(try await host.waitForText("STORED, NOT DECLARED"))
-			try await host.click("Declare")
+			// A row's Declare, at the right end of the list, not the button that declares them all.
+			try await host.click("Declare", region: CGRect(x: 0.72, y: 0, width: 0.14, height: 0.55))
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.changedItems.isEmpty == false })
 		}
 

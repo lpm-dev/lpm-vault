@@ -75,6 +75,43 @@ struct VaultWorkspaceView: View {
 		schemaPanelSession = UUID()
 	}
 
+	/// Keys whose stored values fail their rules, by the draft's latest
+	/// evaluation while there's a draft.
+	private func schemaFailures(in project: VaultProject) -> [String: [String]] {
+		let check = store.schemaDraft(for: project.id) == nil
+			? store.valueChecks[project.id] : store.latestSchemaDraftEvaluation(for: project.id)?.check
+		return check.map { VaultSchemaView.failures(in: $0, environments: store.orderedEnvironmentNames(for: project)) } ?? [:]
+	}
+
+	private func undoSchemaDraft(in project: VaultProject, redo: Bool) -> Bool {
+		if redo {
+			guard store.canRedoSchemaDraft(in: project.id) else { return false }
+			store.redoSchemaDraft(in: project.id)
+		} else {
+			guard store.canUndoSchemaDraft(in: project.id) else { return false }
+			store.undoSchemaDraft(in: project.id)
+		}
+		return true
+	}
+
+	/// Declares every stored key that can be declared, in one draft change.
+	/// The store marks each public when a prefix makes it so.
+	private func declareAll(in project: VaultProject) {
+		let keys = store.undeclaredSchemaKeys(for: project.id).filter { !$0.isIgnored && $0.conflict == nil }.map(\.key)
+		store.editSchemaDraft(in: project.id) { draft in
+			draft.set(keys.map { (item: .key($0), declaration: .declared(ProjectEnvSchemaRule().json)) })
+		}
+	}
+
+	/// Opens a key on the Schema page; one lpm.json doesn't declare is
+	/// declared first when it can be.
+	private func openSchemaRules(of key: String, in project: VaultProject) {
+		mode = .schema
+		let declarable = store.canEditSchema(of: project.id)
+			&& store.undeclaredSchemaKeys(for: project.id).contains { $0.key == key && !$0.isIgnored && $0.conflict == nil }
+		if declarable { declare(key, in: project) } else { selectSchema(.key(key)) }
+	}
+
 	/// Adds a stored key to the draft with no rules yet, and opens it. The
 	/// store marks it public when a prefix makes it so.
 	private func declare(_ key: String, in project: VaultProject) {
@@ -243,6 +280,24 @@ struct VaultWorkspaceView: View {
 								onAddGroup: { selectSchema(.newGroup) },
 								clientPrefixCount: store.schemaClientPrefixesInEffect(for: project.id).count,
 								clientPrefixes: AnyView(VaultSchemaClientPrefixesPopover(store: store, project: project) { selectSchema(.key($0)) }),
+								storedKeyCount: store.workspaceSnapshots[project.id]?.allSecretKeys.count ?? 0,
+								failures: schemaFailures(in: project),
+								saveFailed: store.schemaDraftSaveFailure(for: project.id) != nil,
+								saving: store.savingSchemaDrafts.contains(project.id),
+								blocker: draft == nil || schemaPanelVisible ? nil : VaultSchemaEditorFooter.blocker(store: store, projectID: project.id, item: nil),
+								onReview: { schemaReview = SchemaReviewTarget(projectID: project.id) },
+								onDiscardAll: { store.discardSchemaDraft(in: project.id) },
+								onUndo: { undoSchemaDraft(in: project, redo: $0) },
+								onMove: { offset, rows in
+									guard let next = VaultSchemaView.row(offset, from: schemaSelection, in: rows), next != schemaSelection else { return }
+									selectSchema(next)
+								},
+								onClosePanel: {
+									guard schemaPanelVisible else { return false }
+									selectSchema(nil)
+									return true
+								},
+								onDeclareAll: { declareAll(in: project) },
 								undeclared: store.undeclaredSchemaKeys(for: project.id),
 								onDeclare: { declare($0, in: project) },
 								rebase: store.schemaDraftRebases[project.id],
@@ -361,7 +416,8 @@ struct VaultWorkspaceView: View {
 								onAddElsewhere: { key, environment in
 									presentAddSecret(key: key, environment: environment)
 								},
-								onRenamed: followRename
+								onRenamed: followRename,
+								onOpenRules: { openSchemaRules(of: $0, in: project) }
 							)
 						}
 						.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })

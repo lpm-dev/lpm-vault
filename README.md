@@ -89,10 +89,19 @@ Drag a column boundary in the table header to resize the column.
 Both **All variables** and each environment table support this gesture.
 Each project keeps its column widths during the session, including visits to Settings and project reloads.
 
-Select **Schema** under a project to see the rules its `lpm.json` declares for each key, such as required keys, formats, defaults, and keys exposed to the browser.
-Rules are read-only in LPM Vault; edit them in `lpm.json`, and the LPM CLI enforces them.
+Select **Schema** under a project to see and edit the rules its `lpm.json` declares for each key, such as required keys, formats, defaults, and keys exposed to the browser. The LPM CLI enforces them.
 Rules inherited from another schema file or a preset show where they come from.
-The inspector lists the selected key's rules, read-only, between its values and its description.
+Select a key or a group to edit it in the side panel.
+Edits stay in an unsaved draft: rows show Draft, New, Renamed, or Removed, and ⌘Z and ⇧⌘Z undo and redo.
+**Review & save**, or ⌘S, shows each change as lines of `lpm.json` and what it does to each environment's stored values, naming problems but never values. Nothing is written until you choose **Save to lpm.json**.
+**Add key** declares a new key. Keys you store that `lpm.json` doesn't declare are listed below the rules, each with **Declare**. With no rules yet, one button declares them all at once.
+The trash button, or ⌘⌫, removes a key or group. Removing a key that other rules name offers a fix for each; a key or group declared in an imported schema says where.
+Rules imported from another schema are read-only until **Override rules** or **Override group**, which edits a copy in `lpm.json`; **Reset to original** removes the copy.
+**Client prefixes** lists the prefixes that make keys public. Adding a prefix marks the keys it matches public.
+When `lpm.json` or a schema it imports changes on disk, the draft is re-applied on top. A change that conflicts with your draft asks you to keep yours or take theirs.
+↑ and ↓ move through keys and groups, and Esc closes the panel.
+A key whose stored value fails its rules shows a red dot, and the status bar counts the failures.
+The inspector lists the selected key's rules, read-only, between its values and its description, with a link to edit them on the Schema page.
 Keys whose rules make them public, because frameworks expose them to the browser, show a globe and their values unmasked; every other value stays masked until you reveal it.
 When you add a variable, typing a name suggests declared keys that are not yet set in the selected environments; use the arrow keys and Return, or click one, to pick it and see its rules beside the value.
 A declared key's value is checked as you type: a value that fails a rule is outlined in red with the reason below it, and you can still add it with Add anyway, as `lpm env set` does. A character count appears when the rule limits the value's length.
