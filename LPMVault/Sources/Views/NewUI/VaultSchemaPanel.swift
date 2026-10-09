@@ -69,6 +69,20 @@ private struct VaultSchemaKeyEditor: View {
 	@State private var addingRule = false
 	@State private var scopeTarget: ScopeTarget?
 	@State private var pickingKey = false
+	@State private var removal: RemovalPrompt?
+
+	/// Removing the key: from lpm.json, or explaining why it can't be here.
+	private enum RemovalPrompt: Identifiable {
+		case remove
+		case elsewhere(source: String, file: URL?, isOverridden: Bool)
+
+		var id: String {
+			switch self {
+			case .remove: "remove"
+			case .elsewhere: "elsewhere"
+			}
+		}
+	}
 	/// A key being added keeps its rules here while its name can't be added.
 	@State private var newRule = Rule()
 	/// The panel opened to add a key, whose name stays editable as it's typed.
@@ -230,6 +244,9 @@ private struct VaultSchemaKeyEditor: View {
 							.padding(.horizontal, 16)
 							.padding(.bottom, 12)
 					}
+					if mode == .removed {
+						removedNotice
+					}
 					VaultHairline()
 					VaultSchemaStoredValues(store: store, project: project, environments: environments, key: key,
 						removed: mode == .removed)
@@ -241,7 +258,9 @@ private struct VaultSchemaKeyEditor: View {
 						readOnlySections(rule, mode: mode)
 						sourceNotice(mode)
 					case .removed:
-						removedNotice
+						readOnlySections(rule, mode: mode)
+							.opacity(0.5)
+							.accessibilityLabel("Rules that leave lpm.json")
 					case .missing:
 						Text("\(key) isn't declared in lpm.json or the schemas it imports.")
 							.font(.system(size: 12))
@@ -255,7 +274,11 @@ private struct VaultSchemaKeyEditor: View {
 			footer(mode)
 		}
 		.background(VaultEscapeResponder(onEscape: { onSelect(nil) }))
-		.background(VaultUndoShortcuts(undo: { undo(redo: false) }, redo: { undo(redo: true) }))
+		.background(VaultSchemaShortcuts(undo: { undo(redo: false) }, redo: { undo(redo: true) }, remove: {
+			guard canEdit, let prompt = removalPrompt(mode) else { return false }
+			removal = prompt
+			return true
+		}))
 		.onAppear {
 			name = key
 			isPresented = true
@@ -315,6 +338,10 @@ private struct VaultSchemaKeyEditor: View {
 				VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 			}
 			Spacer(minLength: 4)
+			if let prompt = removalPrompt(mode) {
+				VaultRowIconButton(systemImage: "trash", help: "Remove \(key) from the schema (⌘⌫)", destructive: true) { removal = prompt }
+					.disabled(!canEdit)
+			}
 			Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14)
 			VaultRowIconButton(systemImage: "xmark", help: "Close") { onSelect(nil) }
 		}
@@ -322,6 +349,39 @@ private struct VaultSchemaKeyEditor: View {
 		.padding(.trailing, 10)
 		.padding(.top, 12)
 		.padding(.bottom, 8)
+		.sheet(item: $removal) { prompt in
+			switch prompt {
+			case .remove:
+				VaultSchemaRemoveSheet(store: store, project: project, key: key)
+			case .elsewhere(let source, let file, let isOverridden):
+				VaultSchemaElsewhereSheet(key: key, source: source, file: file, isOverridden: isOverridden) {
+					update(declaration: isOverridden ? .absent : .overridden(rule.json))
+				}
+			}
+		}
+	}
+
+	/// What the trash button does in `mode`; nil when there's nothing to remove.
+	private func removalPrompt(_ mode: Mode) -> RemovalPrompt? {
+		switch mode {
+		case .editing(false): return isNew ? nil : .remove
+		case .inherited(let source):
+			return .elsewhere(source: source, file: importedFile(savedRule?.sourcePath), isOverridden: false)
+		case .overridden(let source):
+			return .elsewhere(source: source, file: importedFile(savedRule?.overridesPath), isOverridden: true)
+		case .editing(true):
+			return .elsewhere(source: importedSource, file: importedFile(savedRule?.overridesPath ?? savedRule?.sourcePath), isOverridden: true)
+		default: return nil
+		}
+	}
+
+	/// An imported schema in the project's folder that can be edited there:
+	/// not a preset, and not an installed package's.
+	private func importedFile(_ path: String?) -> URL? {
+		guard let path, !path.hasPrefix("preset:"), let folder = descriptions?.folder, !folder.isEmpty,
+			!path.split(separator: "/").contains(where: { $0.lowercased() == "node_modules" })
+		else { return nil }
+		return URL(fileURLWithPath: folder).appendingPathComponent(path)
 	}
 
 	@ViewBuilder
@@ -1459,17 +1519,29 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	private var removedNotice: some View {
-		VStack(alignment: .leading, spacing: 8) {
-			Text("Its rules leave lpm.json when you save. Values stay in the Keychain.")
+		let stored = environments.filter { project.value(for: key, in: $0) != nil }.count
+		return VStack(alignment: .leading, spacing: 8) {
+			HStack(spacing: 6) {
+				VaultTagBadge(text: "Removed", foreground: VaultPalette.redText, background: VaultPalette.redTint, size: 10)
+				Text("in your draft").font(.system(size: 12, weight: .semibold)).foregroundStyle(VaultPalette.textPrimary)
+			}
+			Text(stored == 0
+				? "Its rules leave lpm.json when you save."
+				: "Its rules leave lpm.json when you save. Values stay in the Keychain in \(stored == 1 ? "1 env" : "\(stored) envs").")
 				.font(.system(size: 11.5))
 				.foregroundStyle(VaultPalette.textSecondary)
 				.fixedSize(horizontal: false, vertical: true)
 			VaultBarButton(systemImage: "arrow.uturn.backward", title: "Keep in schema", height: 24) {
-				store.editSchemaDraft(in: project.id) { $0.discard(.key(key)) }
+				store.keepSchemaKey(key, in: project.id)
 			}
 			.disabled(!canEdit)
 		}
-		.padding(16)
+		.padding(12)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.redTint.opacity(0.6)))
+		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.red.opacity(0.6), lineWidth: 1) }
+		.padding(.horizontal, 16)
+		.padding(.bottom, 12)
 	}
 
 	// MARK: - Footer
@@ -1671,26 +1743,29 @@ private extension ProjectEnvSchemaRule.Field {
 	}
 }
 
-// MARK: - Undo shortcuts
+// MARK: - Shortcuts
 
-/// ⌘Z and ⇧⌘Z undo and redo rule changes, except while a text field is
-/// being edited, where they undo typing as everywhere else. Each closure
-/// returns whether it did anything; when not, the keys go on as usual.
-struct VaultUndoShortcuts: NSViewRepresentable {
+/// The panel's Command shortcuts: ⌘Z and ⇧⌘Z undo and redo rule changes,
+/// and ⌘⌫ removes the key, as Move to Trash does in Finder. None applies
+/// while a text field is being edited, where the keys edit the text as
+/// everywhere else. Each closure returns whether it did anything; when not,
+/// the keys go on as usual.
+struct VaultSchemaShortcuts: NSViewRepresentable {
 	let undo: () -> Bool
 	let redo: () -> Bool
+	let remove: () -> Bool
 
 	func makeNSView(context: Context) -> MonitorView { MonitorView() }
 
 	func updateNSView(_ view: MonitorView, context: Context) {
-		view.undo = undo
-		view.redo = redo
+		view.actions = (undo, redo, remove)
 	}
 
 	final class MonitorView: NSView {
-		var undo: () -> Bool = { false }
-		var redo: () -> Bool = { false }
+		var actions: (undo: () -> Bool, redo: () -> Bool, remove: () -> Bool) = ({ false }, { false }, { false })
 		private var monitor: Any?
+
+		private enum Shortcut { case undo, redo, remove }
 
 		override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -1703,16 +1778,26 @@ struct VaultUndoShortcuts: NSViewRepresentable {
 			guard window != nil else { return }
 			monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
 				let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
-				guard modifiers == .command || modifiers == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "z" else { return event }
+				let shortcut: Shortcut? = switch (modifiers, event.keyCode) {
+				case (.command, 51): .remove
+				case (.command, _) where event.charactersIgnoringModifiers?.lowercased() == "z": .undo
+				case ([.command, .shift], _) where event.charactersIgnoringModifiers?.lowercased() == "z": .redo
+				default: nil
+				}
+				guard let shortcut else { return event }
 				let windowNumber = event.windowNumber
-				let handled = MainActor.assumeIsolated { self?.handle(redo: modifiers.contains(.shift), inWindow: windowNumber) ?? false }
+				let handled = MainActor.assumeIsolated { self?.handle(shortcut, inWindow: windowNumber) ?? false }
 				return handled ? nil : event
 			}
 		}
 
-		private func handle(redo: Bool, inWindow windowNumber: Int) -> Bool {
+		private func handle(_ shortcut: Shortcut, inWindow windowNumber: Int) -> Bool {
 			guard let window, window.windowNumber == windowNumber, window.attachedSheet == nil, !(window.firstResponder is NSText) else { return false }
-			return redo ? self.redo() : undo()
+			return switch shortcut {
+			case .undo: actions.undo()
+			case .redo: actions.redo()
+			case .remove: actions.remove()
+			}
 		}
 	}
 }
