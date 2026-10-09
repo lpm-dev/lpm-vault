@@ -24,12 +24,21 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		/// The imported file whose declaration lpm.json overrides; nil when
 		/// lpm.json declares the key or doesn't override it.
 		var overrides: String?
+		/// The file that declares an inherited rule as the engine names it,
+		/// unescaped, for opening it; nil when lpm.json declares it.
+		var sourcePath: String?
+		/// `overrides` unescaped, for opening it.
+		var overridesPath: String?
 	}
 
 	struct Group: Equatable, Sendable {
 		let name: String
 		let summary: String
 		let members: [String]
+		/// "exactlyOne", "atLeastOne", or "allOrNone".
+		var mode = ""
+		/// The file that declares the group when lpm.json doesn't, escaped for showing.
+		var source: String?
 	}
 
 	static let empty = ProjectEnvSchemaOverview(rules: [], groups: [])
@@ -80,10 +89,11 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		for (key, origin) in resolution.origins where origin.source == "lpm.json" && origin.pointer.hasPrefix("/envSchema/overrides/") {
 			if let declaring = resolution.declaringOrigins[key]?.source, declaring != "lpm.json" { overridden[key] = declaring }
 		}
-		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source), overridden: overridden)
+		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source), overridden: overridden,
+			groupSources: resolution.groupOrigins.mapValues(\.source))
 	}
 
-	private init(effective: LPMConfigJSON, sources: [String: String], overridden: [String: String] = [:]) {
+	private init(effective: LPMConfigJSON, sources: [String: String], overridden: [String: String] = [:], groupSources: [String: String] = [:]) {
 		var rules: [Rule] = []
 		var declared: [String: LPMConfigJSON] = [:]
 		if case .object(let declarations)? = effective["vars"] {
@@ -101,7 +111,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 					},
 					hasLengthRule: declaration.value["minLength"] != nil || declaration.value["maxLength"] != nil,
 					isSecret: declaration.value["secret"] == .bool(true),
-					overrides: overridden[declaration.key]?.escapingDirectionControls
+					overrides: overridden[declaration.key]?.escapingDirectionControls,
+					sourcePath: source == "lpm.json" ? nil : source,
+					overridesPath: overridden[declaration.key]
 				))
 			}
 		}
@@ -115,7 +127,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				case "atLeastOne": "At least one of"
 				default: "All or none of"
 				}
-				groups.append(Group(name: group.key, summary: "\(lead) \(members.joined(separator: ", "))", members: members))
+				let source = groupSources[group.key]
+				groups.append(Group(name: group.key, summary: "\(lead) \(members.joined(separator: ", "))", members: members, mode: mode,
+					source: source == nil || source == "lpm.json" ? nil : source?.escapingDirectionControls))
 			}
 		}
 		var prefixes: [String] = []
@@ -155,14 +169,15 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 			let effective = try? RustSchemaEngine.validate(updated["envSchema"] ?? .object([]))
 		else { return nil }
 		var sources = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in
-			rule.source.map { (rule.key, $0) }
+			(rule.sourcePath ?? rule.source).map { (rule.key, $0) }
 		})
 		if schema["vars"]?[from] != nil, schema["vars"]?[to] == nil {
 			sources[to] = sources.removeValue(forKey: from)
 		}
-		var overridden = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.overrides.map { (rule.key, $0) } })
+		var overridden = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in (rule.overridesPath ?? rule.overrides).map { (rule.key, $0) } })
 		if let moved = overridden.removeValue(forKey: from) { overridden[to] = moved }
-		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden)
+		let groupSources = Dictionary(uniqueKeysWithValues: groups.compactMap { group in group.source.map { (group.name, $0) } })
+		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden, groupSources: groupSources)
 	}
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
