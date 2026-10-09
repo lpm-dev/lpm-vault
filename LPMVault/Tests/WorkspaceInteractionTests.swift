@@ -709,15 +709,19 @@ extension SheetInteractionTests {
 			let copyFeedback = ManualCopyFeedbackTimer()
 			let host = try await workspace(store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
-			let revealFrame = try await host.labelFrame("Reveal")
+			let revealLabel = try await host.labelFrame("Reveal")
+			let size = host.view.bounds.size
+			let revealRegion = CGRect(x: (revealLabel.minX - 4) / size.width, y: (revealLabel.minY - 2) / size.height,
+				width: (revealLabel.width + 8) / size.width, height: (revealLabel.height + 4) / size.height)
+			let revealFrame = try inkBounds(in: host.snapshot(host.view), region: revealRegion)
 			try await host.click("Copy all")
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			try await host.settle()
-			#expect(abs(try await host.labelFrame("Reveal").minX - revealFrame.minX) < 0.75)
+			#expect(abs(try inkBounds(in: host.snapshot(host.view), region: revealRegion).minX - revealFrame.minX) * size.width < 0.75)
 			gate.continuation.yield(())
 			try await host.settle()
 			#expect(try await host.waitForText("Copied"))
-			#expect(abs(try await host.labelFrame("Reveal").minX - revealFrame.minX) < 0.75)
+			#expect(abs(try inkBounds(in: host.snapshot(host.view), region: revealRegion).minX - revealFrame.minX) * size.width < 0.75)
 			copyFeedback.expire()
 			#expect(try await host.waitForText("Copy all"))
 		}

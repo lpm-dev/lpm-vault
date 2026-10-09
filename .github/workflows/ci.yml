@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 jobs:
-  macos:
-    name: macOS tests and release bundle
+  swift:
+    name: Swift tests and UI regressions
     runs-on: macos-15
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
@@ -17,12 +17,23 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - name: Install pinned env engine toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal --component llvm-tools-preview --target aarch64-apple-darwin,x86_64-apple-darwin
-      - name: Reproduce bundled env engine
-        run: python3 LPMVault/Scripts/verify-env-engine.py --rebuild --target-dir "$RUNNER_TEMP/env-engine-target"
+      - name: Verify bundled env engine integrity
+        run: python3 LPMVault/Scripts/verify-env-engine.py
+      - name: Identify compatible Swift cache
+        id: cache-key
+        run: python3 LPMVault/Scripts/ci-cache-key.py swift --github-output "$GITHUB_OUTPUT"
+      - name: Restore Swift dependencies and intermediates
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: LPMVault/.build
+          key: ${{ steps.cache-key.outputs.key }}
+          restore-keys: ${{ steps.cache-key.outputs.prefix }}
+      - name: Restore timestamps of unchanged Swift inputs
+        run: python3 LPMVault/Scripts/ci-cache-key.py swift --restore-source-times
       - name: Build Swift tests
-        run: swift build --build-tests --package-path LPMVault --disable-automatic-resolution -Xswiftc -warnings-as-errors
+        run: swift build --build-tests --package-path LPMVault --disable-index-store --disable-automatic-resolution -Xswiftc -warnings-as-errors
+      - name: Record Swift build input timestamps
+        run: python3 LPMVault/Scripts/ci-cache-key.py swift --record-source-times
       - name: Swift tests
         run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --skip-build --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Preserve failed test diagnostics
@@ -35,6 +46,55 @@ jobs:
           retention-days: 7
       - name: Cooperative executor regressions
         run: bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh
+  engine:
+    name: Bundled env engine reproduction
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Install pinned env engine toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal --component llvm-tools-preview --target aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Identify compatible engine cache
+        id: cache-key
+        run: python3 LPMVault/Scripts/ci-cache-key.py engine --github-output "$GITHUB_OUTPUT"
+      - name: Restore engine dependencies and intermediates
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/env-engine-target
+          key: ${{ steps.cache-key.outputs.key }}
+          restore-keys: ${{ steps.cache-key.outputs.prefix }}
+      - name: Reproduce bundled env engine
+        run: python3 LPMVault/Scripts/verify-env-engine.py --rebuild --target-dir "$RUNNER_TEMP/env-engine-target"
+  release:
+    name: Universal release bundle verification
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Verify bundled env engine integrity
+        run: python3 LPMVault/Scripts/verify-env-engine.py
+      - name: Identify compatible release cache
+        id: cache-key
+        run: python3 LPMVault/Scripts/ci-cache-key.py release --github-output "$GITHUB_OUTPUT"
+      - name: Restore release dependencies and intermediates
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: build-check
+          key: ${{ steps.cache-key.outputs.key }}
+          restore-keys: ${{ steps.cache-key.outputs.prefix }}
+      - name: Restore timestamps of unchanged release inputs
+        run: python3 LPMVault/Scripts/ci-cache-key.py release --restore-source-times
       - name: Release tooling tests
         run: |
           bash LPMVault/Scripts/Tests/release-tooling-tests.sh
@@ -42,13 +102,29 @@ jobs:
           SPARKLE_TEST_TOOLS="$RUNNER_TEMP/sparkle-test-tools" python3 -m unittest discover -s LPMVault/Scripts/Tests -p 'test_*.py'
       - name: Build universal release bundle
         run: |
-          xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build-check CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES build
+          xcodebuild -project LPMVault/LPMVault.xcodeproj -scheme LPMVault -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build-check CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO COMPILER_INDEX_STORE_ENABLE=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES build
           python3 LPMVault/Scripts/verify-update-config.py 'build-check/Build/Products/Release/LPM Vault.app/Contents/Info.plist'
       - name: Verify nested signing
         run: |
           bash LPMVault/Scripts/sign-sparkle.sh 'build-check/Build/Products/Release/LPM Vault.app' - --timestamp=none
           codesign --force --sign - 'build-check/Build/Products/Release/LPM Vault.app'
           codesign --verify --deep --strict 'build-check/Build/Products/Release/LPM Vault.app'
+      - name: Record release build input timestamps
+        run: python3 LPMVault/Scripts/ci-cache-key.py release --record-source-times
+  macos:
+    name: macOS tests and release bundle
+    needs: [swift, engine, release]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Require every macOS verification job
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 LPMVault/Scripts/ci-results.py
   web:
     name: Public update routes
     runs-on: ubuntu-latest
