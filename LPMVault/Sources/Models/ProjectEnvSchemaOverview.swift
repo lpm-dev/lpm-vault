@@ -3,7 +3,7 @@ import Foundation
 /// A project's env rules as the app shows them: each declared key's rules as
 /// plain-word badges, the file an inherited rule comes from, and the groups.
 /// Built from the engine's resolved schema, so it shows exactly what the LPM
-/// CLI enforces. Rules are read-only in the app; people edit them in lpm.json.
+/// CLI enforces.
 struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	struct Badge: Hashable, Sendable {
 		let text: String
@@ -20,6 +20,10 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		let badges: [Badge]
 		/// The rule bounds the value's length.
 		var hasLengthRule = false
+		var isSecret = false
+		/// The imported file whose declaration lpm.json overrides; nil when
+		/// lpm.json declares the key or doesn't override it.
+		var overrides: String?
 	}
 
 	struct Group: Equatable, Sendable {
@@ -34,30 +38,43 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	let rules: [Rule]
 	let groups: [Group]
 	let publicKeys: Set<String>
+	/// Prefixes that make a key public besides the frameworks', from lpm.json
+	/// and the schemas it imports.
+	let clientPrefixes: [String]
 	/// The resolved schema as compact JSON, which the bundled engine checks
 	/// stored values against; nil for rules not built from a resolution.
 	let effectiveSchema: Data?
 	private let index: [String: Int]
+	private let declarations: [String: LPMConfigJSON]
 
-	init(rules: [Rule], groups: [Group], effectiveSchema: Data? = nil) {
+	init(rules: [Rule], groups: [Group], effectiveSchema: Data? = nil, clientPrefixes: [String] = [], declarations: [String: LPMConfigJSON] = [:]) {
 		let order = Dictionary(uniqueKeysWithValues: VaultKeySortOrder.sortedAscending(rules.map(\.key)).enumerated().map { ($1, $0) })
 		self.rules = rules.sorted { order[$0.key, default: 0] < order[$1.key, default: 0] }
 		self.groups = groups.sorted { $0.name < $1.name }
 		publicKeys = Set(rules.lazy.filter(\.isPublic).map(\.key))
+		self.clientPrefixes = clientPrefixes
 		self.effectiveSchema = effectiveSchema
+		self.declarations = declarations
 		index = Dictionary(uniqueKeysWithValues: self.rules.enumerated().map { ($1.key, $0) })
 	}
 
 	init(resolution: RustSchemaEngine.Resolution) {
-		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source))
+		var overridden: [String: String] = [:]
+		for (key, origin) in resolution.origins where origin.source == "lpm.json" && origin.pointer.hasPrefix("/envSchema/overrides/") {
+			if let declaring = resolution.declaringOrigins[key]?.source, declaring != "lpm.json" { overridden[key] = declaring }
+		}
+		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source), overridden: overridden)
 	}
 
-	private init(effective: LPMConfigJSON, sources: [String: String]) {
+	private init(effective: LPMConfigJSON, sources: [String: String], overridden: [String: String] = [:]) {
 		var rules: [Rule] = []
+		var declared: [String: LPMConfigJSON] = [:]
 		if case .object(let declarations)? = effective["vars"] {
 			rules.reserveCapacity(declarations.count)
+			declared.reserveCapacity(declarations.count)
 			for declaration in declarations {
 				let source = sources[declaration.key]
+				declared[declaration.key] = declaration.value
 				rules.append(Rule(
 					key: declaration.key,
 					isPublic: declaration.value["client"] == .bool(true),
@@ -65,7 +82,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 					badges: Self.badges(for: declaration.value).map {
 						Badge(text: $0.text.escapingDirectionControls, help: $0.help?.escapingDirectionControls)
 					},
-					hasLengthRule: declaration.value["minLength"] != nil || declaration.value["maxLength"] != nil
+					hasLengthRule: declaration.value["minLength"] != nil || declaration.value["maxLength"] != nil,
+					isSecret: declaration.value["secret"] == .bool(true),
+					overrides: overridden[declaration.key]?.escapingDirectionControls
 				))
 			}
 		}
@@ -82,7 +101,12 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				groups.append(Group(name: group.key, summary: "\(lead) \(members.joined(separator: ", "))", members: members))
 			}
 		}
-		self.init(rules: rules, groups: groups, effectiveSchema: try? effective.compactData(maximumBytes: Self.engineInputLimit))
+		var prefixes: [String] = []
+		if case .array(let values)? = effective["clientPrefixes"] {
+			prefixes = values.compactMap { if case .string(let prefix) = $0 { prefix } else { nil } }
+		}
+		self.init(rules: rules, groups: groups, effectiveSchema: try? effective.compactData(maximumBytes: Self.engineInputLimit),
+			clientPrefixes: prefixes, declarations: declared)
 	}
 
 	/// The bundled engine's input limit for a schema or a set of values.
@@ -119,7 +143,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		if schema["vars"]?[from] != nil, schema["vars"]?[to] == nil {
 			sources[to] = sources.removeValue(forKey: from)
 		}
-		return ProjectEnvSchemaOverview(effective: effective, sources: sources)
+		var overridden = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.overrides.map { (rule.key, $0) } })
+		if let moved = overridden.removeValue(forKey: from) { overridden[to] = moved }
+		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden)
 	}
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
@@ -143,6 +169,11 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 
 	func rule(for key: String) -> Rule? {
 		index[key].map { rules[$0] }
+	}
+
+	/// The key's resolved rule as JSON, as the LPM CLI enforces it.
+	func declaration(of key: String) -> LPMConfigJSON? {
+		declarations[key]
 	}
 
 	static func == (lhs: Self, rhs: Self) -> Bool {

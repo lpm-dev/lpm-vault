@@ -12,6 +12,7 @@ struct VaultWorkspaceView: View {
 	@AppStorage(VaultKeySortOrder.defaultsKey) private var keySortOrder = VaultKeySortOrder.ascending
 	@State private var searchText = ""
 	@State private var selectedKey: String?
+	@State private var schemaSelection: VaultSchemaSelection?
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
 	@State private var showsAccountSwitcher = false
@@ -55,8 +56,16 @@ struct VaultWorkspaceView: View {
 	private var inspectorVisible: Bool {
 		guard !store.showAuthStatus else { return false }
 		if hasUnsavedRecovery { return true }
-		guard showsInspector, mode != .schema, let project else { return false }
+		if mode == .schema { return schemaPanelVisible }
+		guard showsInspector, let project else { return false }
 		return store.workspaceSnapshots[project.id] != nil
+	}
+
+	/// The Schema page's panel shows a selection while the project's rules are loaded.
+	private var schemaPanelVisible: Bool {
+		guard mode == .schema, schemaSelection != nil, let project, store.selectedProjectLoadFailure == nil else { return false }
+		if case .loaded? = store.keyDescriptions[project.id]?.schema { return true }
+		return false
 	}
 
 	private var isOrganization: Bool {
@@ -175,11 +184,16 @@ struct VaultWorkspaceView: View {
 								.background(VaultPalette.content)
 						} else if let project, mode == .schema {
 							let rules = store.keyDescriptions[project.id]
+							let draft = store.schemaDraft(for: project.id)
 							VaultSchemaView(
 								state: rules?.schema,
 								folder: rules?.folder,
 								descriptions: (try? rules?.rules.get())?.descriptions ?? [:],
 								sortOrder: $keySortOrder,
+								draft: draft,
+								draftOverview: draft == nil ? nil : store.latestSchemaDraftEvaluation(for: project.id)?.overview,
+								selection: schemaSelection,
+								onSelect: { schemaSelection = $0 },
 								onConnectCLI: { showConnectCLISheet = true },
 								onRecheck: store.reloadKeyDescriptions
 							)
@@ -260,6 +274,17 @@ struct VaultWorkspaceView: View {
 								onDiscard: discardUnsaved
 							)
 						}
+					} else if inspectorVisible, mode == .schema, let project, let schemaSelection {
+						VaultResizablePane(width: budget.inspector.width, edge: .leading) {
+							VaultSchemaPanel(
+								store: store,
+								project: project,
+								environments: store.orderedEnvironmentNames(for: project),
+								selection: schemaSelection,
+								onSelect: { self.schemaSelection = $0 }
+							)
+						}
+						.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 					} else if inspectorVisible, let project {
 						VaultResizablePane(width: budget.inspector.width, edge: .leading) {
 							VaultInspectorView(
@@ -835,6 +860,7 @@ struct VaultWorkspaceView: View {
 		filter = .all
 		environmentViewMode = .table
 		selectedKey = nil
+		schemaSelection = nil
 		revealedKeys.removeAll()
 		showsInspector = false
 		conflictTarget = nil

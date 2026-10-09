@@ -1222,6 +1222,7 @@ final class VaultStore {
   @ObservationIgnored private var schemaDraftGeneration = 0
   /// Projects whose next evaluation waits for typing to pause.
   @ObservationIgnored private var debouncedSchemaDrafts: Set<String> = []
+  private(set) var schemaDraftHistory: [String: SchemaDraftHistory] = [:]
   @ObservationIgnored private var schemaDraftEvaluationInputs: [String: SchemaDraftEvaluationInputs] = [:]
   @ObservationIgnored private var schemaDraftEvaluationTasks: [String: Task<Void, Never>] = [:]
   @ObservationIgnored var schemaDraftEvaluator = ProjectEnvSchemaDraftEvaluator()
@@ -3396,6 +3397,7 @@ final class VaultStore {
       !savingSchemaDrafts.contains(projectID)
     {
       let outcome = draft.rebase(ontoOwnWrite: rootSchema, description: description)
+      if draft.schema != schemaDrafts[projectID]?.schema { schemaDraftHistory[projectID] = nil }
       setSchemaDraft(draft, for: projectID)
       if !outcome.conflicts.isEmpty { noteSchemaDraftRebase(outcome, for: projectID) }
     }
@@ -3526,16 +3528,19 @@ final class VaultStore {
 
   /// Changes the project's schema draft, starting one from lpm.json's rules as
   /// last read. Ignored while the rules can't be edited or the draft is saving.
-  /// Edits with a `coalescing` key, such as typing, are evaluated once typing pauses.
+  /// Edits with a `coalescing` key, such as typing in one field, undo together
+  /// and are evaluated once typing pauses.
   func editSchemaDraft(in projectID: String, coalescing: String? = nil, _ edit: (inout ProjectEnvSchemaDraft) -> Void) {
     guard !savingSchemaDrafts.contains(projectID), let folder = editableSchemaFolder(for: projectID),
       let descriptions = keyDescriptions[projectID]
     else { return }
-    var draft = schemaDraftFolders[projectID] == folder
-      ? schemaDrafts[projectID] ?? ProjectEnvSchemaDraft(schema: descriptions.rootSchema)
-      : ProjectEnvSchemaDraft(schema: descriptions.rootSchema)
+    let current = schemaDraftFolders[projectID] == folder ? schemaDrafts[projectID] : nil
+    let previous = current ?? ProjectEnvSchemaDraft(schema: descriptions.rootSchema)
+    var draft = previous
     edit(&draft)
-    guard draft != schemaDrafts[projectID] else { return }
+    guard draft != previous else { return }
+    if current == nil { schemaDraftHistory[projectID] = nil }
+    schemaDraftHistory[projectID, default: SchemaDraftHistory()].record(previous, coalescing: coalescing, at: .now)
     schemaDraftFolders[projectID] = folder
     if coalescing != nil { debouncedSchemaDrafts.insert(projectID) }
     setSchemaDraft(draft, for: projectID)
@@ -3543,9 +3548,32 @@ final class VaultStore {
 
   /// Ends the project's unsaved schema edits, also while its rules can't be read.
   func discardSchemaDraft(in projectID: String) {
-    guard var draft = schemaDrafts[projectID], !savingSchemaDrafts.contains(projectID) else { return }
+    guard var draft = schemaDrafts[projectID], !draft.isEmpty, !savingSchemaDrafts.contains(projectID) else { return }
+    schemaDraftHistory[projectID, default: SchemaDraftHistory()].record(draft, coalescing: nil, at: .now)
     draft.discardAll()
     setSchemaDraft(draft, for: projectID)
+  }
+
+  func canUndoSchemaDraft(in projectID: String) -> Bool {
+    schemaDraftHistory[projectID]?.undo.isEmpty == false && canEditSchema(of: projectID)
+  }
+
+  func canRedoSchemaDraft(in projectID: String) -> Bool {
+    schemaDraftHistory[projectID]?.redo.isEmpty == false && canEditSchema(of: projectID)
+  }
+
+  func undoSchemaDraft(in projectID: String) {
+    guard canEditSchema(of: projectID), let draft = schemaDrafts[projectID],
+      let restored = schemaDraftHistory[projectID]?.undo(from: draft)
+    else { return }
+    setSchemaDraft(restored, for: projectID)
+  }
+
+  func redoSchemaDraft(in projectID: String) {
+    guard canEditSchema(of: projectID), let draft = schemaDrafts[projectID],
+      let restored = schemaDraftHistory[projectID]?.redo(from: draft)
+    else { return }
+    setSchemaDraft(restored, for: projectID)
   }
 
   func dismissSchemaDraftRebase(in projectID: String) {
@@ -3586,6 +3614,7 @@ final class VaultStore {
         guard let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == folder.path else {
           throw .unavailable("The rules were saved, but the project's folder changed meanwhile. Review the rules again.")
         }
+        schemaDraftHistory[projectID] = nil
         setSchemaDraft(ProjectEnvSchemaDraft(schema: saved.schema), for: projectID)
         schemaDraftRebases[projectID] = nil
         publishKeyDescriptions(
@@ -3622,6 +3651,36 @@ final class VaultStore {
     }
   }
 
+  /// Renames a key lpm.json declares: its stored values and its rule together,
+  /// as the inspector does, or only the rule when no environment stores the key.
+  /// Waits for an empty schema draft, so no unsaved rule refers to the old name.
+  func renameDeclaredKey(_ key: String, to newKey: String, in projectID: String) async throws(VaultKeyEditError) {
+    guard key != newKey else { return }
+    guard schemaDraft(for: projectID) == nil else {
+      throw .description("Save or discard your rule changes before renaming a key.", keySaved: false)
+    }
+    guard EnvValidation.isValidVariableName(newKey) else { throw .invalidName }
+    guard let project = projects.first(where: { $0.id == projectID }), let folder = editableSchemaFolder(for: projectID) else {
+      throw .targetUnavailable
+    }
+    if project.environments.values.contains(where: { $0[key] != nil }) {
+      let id = VaultKeyDraft.ID(projectID: projectID, key: key)
+      guard keyDrafts.draft(id)?.isDirty != true else {
+        throw .description("\(key) has unsaved edits in the table. Save or discard them first.", keySaved: false)
+      }
+      keyDrafts.edit(project, key: key) { $0.name = newKey }
+      try await saveKeyDraft(id)
+      return
+    }
+    let session = vaultSessionGeneration
+    let result = await ProjectEnvSchemaFile.save(.init(rename: .init(from: key, to: newKey)), inFolder: folder.path, vaultID: projectID)
+    guard session == vaultSessionGeneration, isUnlocked else { throw .targetUnavailable }
+    switch result {
+    case .success(let saved): publishSavedRules(saved.rules, rootSchema: saved.rootSchema, folder: folder.path, for: projectID)
+    case .failure(let failure): throw .description(failure.localizedDescription, keySaved: false)
+    }
+  }
+
   /// The folder whose lpm.json holds the project's loaded rules.
   private func editableSchemaFolder(for projectID: String) -> SchemaDraftFolder? {
     guard isUnlocked, let descriptions = keyDescriptions[projectID], case .loaded? = descriptions.schema,
@@ -3655,6 +3714,7 @@ final class VaultStore {
     }
     guard case .loaded? = descriptions.schema, !savingSchemaDrafts.contains(projectID), descriptions.rootSchema != draft.schema else { return nil }
     let outcome = draft.rebase(onto: descriptions.rootSchema)
+    schemaDraftHistory[projectID] = nil
     setSchemaDraft(draft, for: projectID)
     if !draft.isEmpty, !outcome.isEmpty || !outcome.conflicts.isEmpty { noteSchemaDraftRebase(outcome, for: projectID) }
     return outcome
@@ -3665,6 +3725,7 @@ final class VaultStore {
     schemaDraftFolders[projectID] = nil
     schemaDraftRevisions[projectID] = nil
     schemaDraftRebases[projectID] = nil
+    schemaDraftHistory[projectID] = nil
     debouncedSchemaDrafts.remove(projectID)
     refreshSchemaDraftEvaluation(for: projectID)
   }
@@ -3673,6 +3734,46 @@ final class VaultStore {
   private func pruneSchemaDrafts() {
     let projectIDs = Set(projects.lazy.map(\.id))
     for projectID in schemaDrafts.keys where !projectIDs.contains(projectID) { endSchemaDraft(for: projectID) }
+  }
+
+  /// A draft's earlier and undone versions. A merge with lpm.json or a save
+  /// ends the history, because earlier versions were made against the old file.
+  struct SchemaDraftHistory: Equatable {
+    private struct Entry: Equatable {
+      let draft: ProjectEnvSchemaDraft
+      let coalescing: String?
+      let time: ContinuousClock.Instant
+    }
+
+    private static let limit = 200
+    private static let coalescingWindow = Duration.seconds(1)
+    private var undoEntries: [Entry] = []
+    private var redoEntries: [ProjectEnvSchemaDraft] = []
+
+    var undo: [ProjectEnvSchemaDraft] { undoEntries.map(\.draft) }
+    var redo: [ProjectEnvSchemaDraft] { redoEntries }
+
+    mutating func record(_ previous: ProjectEnvSchemaDraft, coalescing: String?, at time: ContinuousClock.Instant) {
+      redoEntries = []
+      if let coalescing, let last = undoEntries.last, last.coalescing == coalescing, time - last.time < Self.coalescingWindow {
+        undoEntries[undoEntries.count - 1] = Entry(draft: last.draft, coalescing: coalescing, time: time)
+        return
+      }
+      undoEntries.append(Entry(draft: previous, coalescing: coalescing, time: time))
+      if undoEntries.count > Self.limit { undoEntries.removeFirst(undoEntries.count - Self.limit) }
+    }
+
+    mutating func undo(from current: ProjectEnvSchemaDraft) -> ProjectEnvSchemaDraft? {
+      guard let entry = undoEntries.popLast() else { return nil }
+      redoEntries.append(current)
+      return entry.draft
+    }
+
+    mutating func redo(from current: ProjectEnvSchemaDraft) -> ProjectEnvSchemaDraft? {
+      guard let draft = redoEntries.popLast() else { return nil }
+      undoEntries.append(Entry(draft: current, coalescing: nil, time: .now))
+      return draft
+    }
   }
 
   /// The draft and stored values a draft's evaluation used, and the digests
@@ -3728,8 +3829,10 @@ final class VaultStore {
     schemaDraftFolders = [:]
     schemaDraftRevisions = [:]
     schemaDraftRebases = [:]
+    schemaDraftHistory = [:]
     savingSchemaDrafts = []
     debouncedSchemaDrafts = []
+    schemaDraftHistory = [:]
     schemaDraftGeneration &+= 1
   }
 

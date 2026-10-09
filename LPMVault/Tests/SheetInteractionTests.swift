@@ -461,6 +461,23 @@ final class SheetTestHost<V: View> {
 		try NativeTestClick.send(to: window, at: NSPoint(x: frame.maxX + offset, y: frame.midY))
 	}
 
+	/// Types into the plain text field showing `placeholder`, replacing its text.
+	func enterText(_ text: String, placeholder: String) throws {
+		let field = try #require(textFields(in: view).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
+		window.makeFirstResponder(field)
+		let editor = try #require(field.currentEditor() as? NSTextView)
+		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+		field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+		window.makeFirstResponder(nil)
+	}
+
+	/// Sends a Command shortcut, such as ⌘Z, the way the window delivers it.
+	func command(_ character: String, code: UInt16, shift: Bool = false) throws -> Bool {
+		let flags: NSEvent.ModifierFlags = shift ? [.command, .shift] : [.command]
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
+		return window.performKeyEquivalent(with: event)
+	}
+
 	func escape() throws -> Bool {
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
 		return window.performKeyEquivalent(with: event)

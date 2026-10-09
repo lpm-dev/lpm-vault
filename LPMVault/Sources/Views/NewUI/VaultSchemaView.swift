@@ -1,17 +1,27 @@
 import AppKit
 import SwiftUI
 
-/// A project's env rules from lpm.json, read-only. People edit rules in
-/// lpm.json; this page shows what the LPM CLI enforces, and what to do when
-/// there are no rules or lpm.json can't be read.
+/// A project's env rules from lpm.json: what the LPM CLI enforces, with the
+/// unsaved schema draft applied, and what to do when there are no rules or
+/// lpm.json can't be read. Selecting a key opens it in the side panel.
 struct VaultSchemaView: View {
 	let state: ProjectEnvSchemaState?
 	/// The folder whose lpm.json holds the rules.
 	let folder: String?
 	let descriptions: [String: String]
 	@Binding var sortOrder: VaultKeySortOrder
+	var draft: ProjectEnvSchemaDraft? = nil
+	/// The rules with the draft applied; nil while they're evaluated or rejected.
+	var draftOverview: ProjectEnvSchemaOverview? = nil
+	var selection: VaultSchemaSelection? = nil
+	var onSelect: (VaultSchemaSelection?) -> Void = { _ in }
 	let onConnectCLI: () -> Void
 	let onRecheck: () -> Void
+
+	/// How a row differs from lpm.json in the draft.
+	enum RowState: Equatable {
+		case saved, draft, new, removed
+	}
 
 	static let docsURL = URL(string: "https://cli.lpm.dev/docs/reference/lpm-json#envschema")!
 	static let example = """
@@ -98,7 +108,7 @@ struct VaultSchemaView: View {
 				VaultBarButton(systemImage: "link", title: "Connect CLI", filled: true, height: 28, action: onConnectCLI)
 				VaultBarButton(title: "Learn about envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
 			}
-		case .loaded(let overview, _)? where overview.isEmpty:
+		case .loaded(let overview, _)? where overview.isEmpty && draft == nil:
 			emptyState(
 				symbol: "curlybraces",
 				title: "No rules yet",
@@ -188,13 +198,15 @@ struct VaultSchemaView: View {
 
 	// MARK: - Rules
 
-	private func rulesTable(_ overview: ProjectEnvSchemaOverview) -> some View {
-		let rules = sortOrder == .ascending ? overview.rules : overview.rules.reversed()
+	private func rulesTable(_ saved: ProjectEnvSchemaOverview) -> some View {
+		let listed = listedRules(saved)
+		let overview = listed.overview
+		let rules = sortOrder == .ascending ? listed.rules : listed.rules.reversed()
 		return ScrollView {
 			LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
 				Section {
 					ForEach(rules, id: \.key) { rule in
-						ruleRow(rule)
+						ruleRow(rule, state: rowState(rule.key, in: saved), description: description(of: rule.key, in: overview))
 							.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 					}
 					if !overview.groups.isEmpty {
@@ -224,18 +236,61 @@ struct VaultSchemaView: View {
 
 	private static let keyWidth: CGFloat = 260
 
-	private func ruleRow(_ rule: ProjectEnvSchemaOverview.Rule) -> some View {
+	/// The rules to list: the draft's when there is one, with the keys it removes kept.
+	private func listedRules(_ saved: ProjectEnvSchemaOverview) -> (overview: ProjectEnvSchemaOverview, rules: [ProjectEnvSchemaOverview.Rule]) {
+		guard draft != nil else { return (saved, saved.rules) }
+		let shown = draftOverview ?? saved
+		var rules = shown.rules
+		let listed = Set(rules.map(\.key))
+		for rule in saved.rules where !listed.contains(rule.key) && rowState(rule.key, in: saved) == .removed { rules.append(rule) }
+		let order = Dictionary(uniqueKeysWithValues: VaultKeySortOrder.sortedAscending(rules.map(\.key)).enumerated().map { ($1, $0) })
+		return (shown, rules.sorted { order[$0.key, default: 0] < order[$1.key, default: 0] })
+	}
+
+	private func rowState(_ key: String, in saved: ProjectEnvSchemaOverview) -> RowState {
+		guard let draft, draft.hasChange(to: .key(key)) else { return .saved }
+		switch (draft.base(of: .key(key)), draft.declaration(of: .key(key))) {
+		case (.declared, .absent): return .removed
+		case (.absent, .declared) where saved.rule(for: key) == nil: return .new
+		default: return .draft
+		}
+	}
+
+	/// The draft's description of a key, or lpm.json's.
+	private func description(of key: String, in overview: ProjectEnvSchemaOverview) -> String? {
+		guard draft != nil else { return descriptions[key] }
+		if case .string(let text)? = overview.declaration(of: key)?["description"] { return text.escapingDirectionControls }
+		return overview.rule(for: key) == nil ? descriptions[key] : nil
+	}
+
+	private func ruleRow(_ rule: ProjectEnvSchemaOverview.Rule, state: RowState, description: String?) -> some View {
+		let selected = selection == .key(rule.key)
+		return Button { onSelect(selected ? nil : .key(rule.key)) } label: {
+			ruleRowContent(rule, state: state, description: description, selected: selected)
+		}
+		.buttonStyle(.plain)
+		.accessibilityAddTraits(selected ? .isSelected : [])
+	}
+
+	private func ruleRowContent(_ rule: ProjectEnvSchemaOverview.Rule, state: RowState, description: String?, selected: Bool) -> some View {
 		HStack(alignment: .top, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
 				HStack(spacing: 7) {
 					Text(rule.key)
 						.font(VaultTypography.mono(12.5, .semibold))
-						.foregroundStyle(VaultPalette.textPrimary)
+						.foregroundStyle(state == .removed ? VaultPalette.textFaint : VaultPalette.textPrimary)
+						.strikethrough(state == .removed)
 						.lineLimit(1)
 						.truncationMode(.middle)
-					if rule.isPublic { VaultPublicBadge() }
+					if rule.isPublic, state != .removed { VaultPublicBadge() }
+					switch state {
+					case .saved: EmptyView()
+					case .draft: VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
+					case .new: VaultTagBadge(text: "New", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
+					case .removed: VaultTagBadge(text: "Removed", foreground: VaultPalette.redText, background: VaultPalette.redTint, size: 10)
+					}
 				}
-				if let description = descriptions[rule.key], !description.isEmpty {
+				if let description, !description.isEmpty {
 					Text(description)
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
@@ -247,7 +302,7 @@ struct VaultSchemaView: View {
 			.frame(width: Self.keyWidth, alignment: .leading)
 
 			Group {
-				if rule.badges.isEmpty, rule.source == nil {
+				if rule.badges.isEmpty, rule.source == nil, rule.overrides == nil {
 					Text("No rules")
 						.font(.system(size: 11.5).italic())
 						.foregroundStyle(VaultPalette.textFaint)
@@ -255,13 +310,20 @@ struct VaultSchemaView: View {
 					VaultFlowLayout {
 						ForEach(rule.badges, id: \.self) { VaultRuleBadge(badge: $0) }
 						if let source = rule.source { VaultSourceBadge(source: source) }
+						if let source = rule.overrides { VaultSourceBadge(source: source, isOverridden: true) }
 					}
 				}
 			}
 			.padding(.horizontal, 14)
 			.frame(maxWidth: .infinity, alignment: .leading)
+			.opacity(state == .removed ? 0.6 : 1)
 		}
 		.padding(.vertical, 10)
+		.background(selected ? VaultPalette.selectedEnvCell : .clear)
+		.overlay(alignment: .leading) {
+			if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
+		}
+		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
 	}
 
@@ -293,6 +355,12 @@ struct VaultSchemaView: View {
 				Text(Self.count(overview.groups.count, "group"))
 				Text("·")
 				Text("\(overview.inheritedCount) inherited")
+				if let changes = draft?.changedItems.count, changes > 0 {
+					Text("·")
+					Text(changes == 1 ? "1 unsaved change" : "\(changes) unsaved changes")
+						.fontWeight(.semibold)
+						.foregroundStyle(VaultPalette.orangeTintText)
+				}
 				Text("·")
 				Text("enforced by LPM CLI")
 			case .unreadable?:
