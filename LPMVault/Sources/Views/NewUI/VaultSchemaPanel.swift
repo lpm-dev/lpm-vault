@@ -1583,7 +1583,12 @@ private struct VaultSchemaKeyEditor: View {
 					// Discarding a removal keeps the key, with the fixes that came with it.
 					store.keepSchemaKey(key, in: project.id)
 				} else {
-					store.editSchemaDraft(in: project.id) { $0.discard(.key(key)) }
+					let removed = key
+					store.editSchemaDraft(in: project.id) { draft in
+						draft.discard(.key(removed))
+						// A key the draft no longer adds can't stay in its groups or conditions.
+						if wasNew { draft.dropReferences(to: removed) }
+					}
 				}
 				if wasNew { onSelect(nil) }
 			}
@@ -1593,7 +1598,7 @@ private struct VaultSchemaKeyEditor: View {
 		// Saving now would leave out the key being added, whose name can't be used yet.
 		let pending: String? = key.isEmpty && (!name.isEmpty || newRule != Rule()) ? "Name the key to add it to your draft." : nil
 		return VaultSchemaEditorFooter(store: store, project: project, item: item, readOnlyAction: readOnlyAction, discard: discard,
-			pending: pending, onSelect: onSelect, onReview: onReview) {
+			discardEdits: !key.isEmpty, pending: pending, onSelect: onSelect, onReview: onReview) {
 			shownFields = []
 			editsOverride = false
 		}

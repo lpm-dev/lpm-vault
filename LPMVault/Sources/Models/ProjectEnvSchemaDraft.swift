@@ -90,6 +90,8 @@ struct ProjectEnvSchemaDraft: Sendable {
 	/// Keys the draft removes, with the fixes that came with each, which
 	/// keeping the key takes back. Part of the draft, so undo and redo carry them.
 	private(set) var removals: [String: Removal] = [:]
+	/// Groups of lpm.json the draft renames: each new name, with the name lpm.json has.
+	private(set) var renamedGroups: [String: String] = [:]
 	/// Each item `schema` has, which `base(of:)` reads without searching the JSON.
 	private var baseItems: [Item: Declaration]
 	/// Where each item is in `changes` and `conflicts`, kept as they change.
@@ -193,6 +195,63 @@ struct ProjectEnvSchemaDraft: Sendable {
 		replaceChanges([])
 		replaceConflicts([])
 		removals = [:]
+		renamedGroups = [:]
+	}
+
+	/// Renames a group, keeping the name lpm.json has, so the group keeps its
+	/// place in the file and discarding takes the rename back. Renaming it to
+	/// that name again ends the rename.
+	mutating func renameGroup(_ name: String, to newName: String) {
+		guard name != newName else { return }
+		let original = renamedGroups.removeValue(forKey: name) ?? name
+		set([(.group(name), .absent), (.group(newName), declaration(of: .group(name)))])
+		if newName != original, case .declared = base(of: .group(original)) { renamedGroups[newName] = original }
+	}
+
+	/// The name lpm.json has for a group the draft renames to `name`.
+	func originalName(ofGroup name: String) -> String? {
+		renamedGroups[name]
+	}
+
+	/// The name the draft gives a group lpm.json declares as `name`.
+	func newName(ofGroup name: String) -> String? {
+		renamedGroups.first { $0.value == name }?.key
+	}
+
+	/// Takes back a renamed group's rename and its changes; another group's changes.
+	mutating func discardGroup(_ name: String) {
+		guard let original = renamedGroups.removeValue(forKey: name) else {
+			discard(.group(name))
+			return
+		}
+		discard(.group(name))
+		discard(.group(original))
+	}
+
+	/// Drops what the draft's changed items say about `key`, a key the draft
+	/// no longer adds: a group's member, or the Required when that names it.
+	/// A group the draft adds that's left without members goes too.
+	mutating func dropReferences(to key: String) {
+		var edits: [(item: Item, declaration: Declaration)] = []
+		for item in changedItems {
+			let declaration = declaration(of: item)
+			switch item {
+			case .group:
+				guard case .array(let members)? = declaration.json?["vars"], members.contains(.string(key)) else { continue }
+				let kept = members.filter { $0 != .string(key) }
+				if kept.isEmpty, base(of: item) == .absent {
+					edits.append((item, .absent))
+				} else {
+					edits.append((item, declaration.replacingJSON { $0.set(.array(kept), forKey: "vars") }))
+				}
+			case .key:
+				guard declaration.json?["requiredWhen"]?["variable"] == .string(key) else { continue }
+				edits.append((item, declaration.replacingJSON { $0.removeValue(forKey: "requiredWhen") }))
+			case .clientPrefixes:
+				continue
+			}
+		}
+		set(edits)
 	}
 
 	private mutating func replaceChanges(_ new: [Change]) {
@@ -422,6 +481,10 @@ struct ProjectEnvSchemaDraft: Sendable {
 		let before = schema == .null ? nil : schema
 		guard case .object(var fields) = before ?? .object([]) else { throw .invalidSchema }
 		var edits = FieldEdits()
+		// A renamed group takes the place its old name had.
+		for (name, original) in renamedGroups where declaration(of: .group(original)) == .absent {
+			if case .declared = declaration(of: .group(name)) { edits.rename(original, to: name, in: "groups") }
+		}
 		for change in changes { edits.add(change.value, for: change.item) }
 		for conflict in conflicts { edits.add(conflict.mine, for: conflict.item) }
 		try edits.apply(to: &fields)
@@ -508,6 +571,8 @@ private struct FieldEdits {
 
 	/// Each container's edits, in the order the draft made them.
 	private var containers: [String: [Edit]] = [:]
+	/// Members each container renames in place: each name with its new one.
+	private var renames: [String: [MemberName: String]] = [:]
 	/// `clientPrefixes`' new value once a change sets it; nil removes it.
 	private var prefixes: LPMConfigJSON??
 	/// Fields an edit puts something in, in the order of the first such edit,
@@ -545,19 +610,25 @@ private struct FieldEdits {
 		if !filled.contains(field) { filled.append(field) }
 	}
 
+	/// Renames `field`'s member `name` to `newName` in place, before the edits,
+	/// once no other member has that name.
+	mutating func rename(_ name: String, to newName: String, in field: String) {
+		renames[field, default: [:]][MemberName(name)] = newName
+	}
+
 	/// Makes the edits to the envSchema's `fields`, rebuilding each field once.
 	/// A field's first spelling is the one edited, as `LPMConfigJSON.set(_:forKey:)` finds it.
 	func apply(to fields: inout [Member]) throws(ProjectEnvSchemaFile.FileError) {
 		/// Each field's new value; nil removes it.
 		var replacements: [String: LPMConfigJSON?] = [:]
-		for (field, edits) in containers {
+		for field in Set(containers.keys).union(renames.keys) {
 			let current: [Member]
 			switch fields.first(where: { $0.key.utf8.elementsEqual(field.utf8) })?.value {
 			case nil, .null?: current = []
 			case .object(let members)?: current = members
 			default: throw .invalidSchema
 			}
-			guard let (members, removed) = Self.edited(current, edits) else { continue }
+			guard let (members, removed) = Self.edited(current, containers[field] ?? [], renaming: renames[field] ?? [:]) else { continue }
 			replacements[field] = members.isEmpty && removed ? .some(nil) : .object(members)
 		}
 		if let prefixes { replacements["clientPrefixes"] = prefixes }
@@ -581,9 +652,16 @@ private struct FieldEdits {
 	/// `members` with `edits` made in one pass: a member keeps its place and
 	/// a new one goes last, in the order of its edit. The draft's items are
 	/// unique, so each name has one edit, made to its first member, as
-	/// `LPMConfigJSON.set(_:forKey:)` finds it. Nil when no edit applies;
-	/// `removed` says whether one removed a member.
-	private static func edited(_ members: [Member], _ edits: [Edit]) -> (members: [Member], removed: Bool)? {
+	/// `LPMConfigJSON.set(_:forKey:)` finds it. The members `renames` names
+	/// are renamed first. Nil when nothing applies; `removed` says whether an
+	/// edit removed a member.
+	private static func edited(_ members: [Member], _ edits: [Edit], renaming renames: [MemberName: String]) -> (members: [Member], removed: Bool)? {
+		var keys: [String]?
+		if !renames.isEmpty {
+			var renaming = members.map(\.key)
+			if renamed(&renaming, by: renames) { keys = renaming }
+		}
+		var changed = keys != nil
 		var offsets = [MemberName: Int](minimumCapacity: members.isEmpty ? 0 : edits.count)
 		if !members.isEmpty {
 			for (offset, edit) in edits.enumerated() { offsets[MemberName(edit.name)] = offset }
@@ -591,16 +669,16 @@ private struct FieldEdits {
 		var unmatched = [Bool](repeating: true, count: edits.count)
 		var result: [Member] = []
 		result.reserveCapacity(members.count + edits.count)
-		var changed = false
 		var removed = false
-		for member in members {
-			guard let offset = offsets.removeValue(forKey: MemberName(member.key)) else {
-				result.append(member)
+		for (index, member) in members.enumerated() {
+			let key = keys?[index] ?? member.key
+			guard let offset = offsets.removeValue(forKey: MemberName(key)) else {
+				result.append(Member(key: key, value: member.value))
 				continue
 			}
 			unmatched[offset] = false
 			changed = true
-			if let value = edits[offset].value { result.append(Member(key: member.key, value: value)) } else { removed = true }
+			if let value = edits[offset].value { result.append(Member(key: key, value: value)) } else { removed = true }
 		}
 		for (offset, edit) in edits.enumerated() where unmatched[offset] {
 			guard let value = edit.value else { continue }
@@ -608,6 +686,27 @@ private struct FieldEdits {
 			changed = true
 		}
 		return changed ? (result, removed) : nil
+	}
+
+	/// Renames each of `keys` that `renames` names once no other key has its
+	/// new name, so renames that free each other's names apply in any order.
+	/// Whether any applied.
+	private static func renamed(_ keys: inout [String], by renames: [MemberName: String]) -> Bool {
+		var positions = [MemberName: Int](minimumCapacity: keys.count)
+		for (index, key) in keys.enumerated() where positions[MemberName(key)] == nil { positions[MemberName(key)] = index }
+		var pending = renames.filter { positions[$0.key] != nil }
+		var applied = false
+		while true {
+			let ready = pending.filter { positions[MemberName($0.value)] == nil }
+			guard !ready.isEmpty else { return applied }
+			for (name, newName) in ready {
+				guard positions[MemberName(newName)] == nil, let index = positions.removeValue(forKey: name) else { continue }
+				keys[index] = newName
+				positions[MemberName(newName)] = index
+				pending.removeValue(forKey: name)
+				applied = true
+			}
+		}
 	}
 }
 
@@ -630,6 +729,7 @@ extension ProjectEnvSchemaDraft: Equatable {
 	/// The indexes follow from the schema and the changes, so they don't take part.
 	static func == (lhs: Self, rhs: Self) -> Bool {
 		lhs.changes == rhs.changes && lhs.conflicts == rhs.conflicts && lhs.schema == rhs.schema && lhs.removals == rhs.removals
+			&& lhs.renamedGroups == rhs.renamedGroups
 	}
 }
 

@@ -11,6 +11,9 @@ struct VaultSchemaEditorFooter: View {
 	var readOnlyAction: (systemImage: String, title: String, run: () -> Void)?
 	/// Discards the item's change; nil when it has none to discard.
 	var discard: (() -> Void)?
+	/// The discard changes the draft, so it's off while the rules can't be
+	/// edited; one that only closes an item being added isn't.
+	var discardEdits = true
 	/// Why saving now would leave out what the panel holds, such as an item
 	/// whose name can't be used yet.
 	var pending: String?
@@ -57,10 +60,10 @@ struct VaultSchemaEditorFooter: View {
 		}
 	}
 
-	static func name(of item: ProjectEnvSchemaDraft.Item) -> String {
+	nonisolated static func name(of item: ProjectEnvSchemaDraft.Item) -> String {
 		switch item {
-		case .key(let key): key
-		case .group(let name): "the group \(name)"
+		case .key(let key): key.escapingDirectionControls
+		case .group(let name): "the group \(name.escapingDirectionControls)"
 		case .clientPrefixes: "the client prefixes"
 		}
 	}
@@ -70,6 +73,14 @@ struct VaultSchemaEditorFooter: View {
 		case .key: "key"
 		case .group: "group"
 		case .clientPrefixes: "list"
+		}
+	}
+
+	private static func showLabel(_ selection: VaultSchemaSelection) -> String {
+		switch selection {
+		case .key(let key): "Show \(key.escapingDirectionControls)"
+		case .group(let name): "Show the group \(name.escapingDirectionControls)"
+		case .newKey, .newGroup: "Show what blocks saving"
 		}
 	}
 
@@ -98,7 +109,7 @@ struct VaultSchemaEditorFooter: View {
 							.font(.system(size: 11, weight: .semibold))
 							.foregroundStyle(VaultPalette.accentForeground)
 							.vaultPointingHand()
-							.accessibilityLabel("Show what blocks saving")
+							.accessibilityLabel(Self.showLabel(show))
 					}
 				}
 			}
@@ -131,7 +142,7 @@ struct VaultSchemaEditorFooter: View {
 					Spacer(minLength: 4)
 					if let discard {
 						VaultBarButton(title: "Discard", height: 26, action: discard)
-							.disabled(!canEdit)
+							.disabled(discardEdits && !canEdit)
 					}
 					if failure != nil {
 						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)

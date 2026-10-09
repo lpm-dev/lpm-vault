@@ -58,9 +58,6 @@ struct ProjectEnvSchemaGroup: Equatable, Sendable {
 		return updated
 	}
 
-	/// Such as "Exactly one of PASSWORD, OAUTH_TOKEN".
-	var summary: String { "\(mode.title) \(members.joined(separator: ", "))" }
-
 	/// What a group of one member does, which isn't what a group is for.
 	var hint: String? {
 		guard members.count == 1 else { return nil }

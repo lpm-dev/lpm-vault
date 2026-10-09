@@ -226,7 +226,11 @@ struct VaultSchemaReviewSheet: View {
 	}
 
 	private func note(for item: ProjectEnvSchemaReview.Item) -> String? {
-		switch item.state {
+		if case .group(let name) = item.item, let draft = store.schemaDraft(for: project.id) {
+			if let original = draft.originalName(ofGroup: name) { return "Renamed from \(original.escapingDirectionControls); it keeps its place in lpm.json." }
+			if let renamed = draft.newName(ofGroup: name) { return "Renamed to \(renamed.escapingDirectionControls)." }
+		}
+		return switch item.state {
 		case .override(let source): "Adds an override. The rule from \(source) is replaced, not merged."
 		case .resetOverride(let source): "Removes the override, so the rule from \(source) applies again."
 		default: item.diff.previousPath.map { "Moves from \($0)." }
