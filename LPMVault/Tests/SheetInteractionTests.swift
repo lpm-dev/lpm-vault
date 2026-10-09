@@ -544,9 +544,12 @@ final class SheetTestHost<V: View> {
 		window.makeFirstResponder(nil)
 	}
 
-	/// Types into the plain text field showing `placeholder` and leaves it being edited.
-	func typeText(_ text: String, placeholder: String) throws {
-		let field = try #require(textFields(in: view).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
+	/// Types into the plain text field showing `placeholder`, in the host's
+	/// window or `targetWindow`, such as a popover, and leaves it being edited.
+	func typeText(_ text: String, placeholder: String, in targetWindow: NSWindow? = nil) throws {
+		let window = targetWindow ?? self.window
+		let root = try #require(window.contentView)
+		let field = try #require(textFields(in: root).first { $0.placeholderString == placeholder }, "Missing field \(placeholder)")
 		window.makeFirstResponder(field)
 		let editor = try #require(field.currentEditor() as? NSTextView)
 		editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
@@ -798,19 +801,20 @@ final class SheetTestHost<V: View> {
 		return try #require(bitmap.cgImage)
 	}
 
-	/// Where `label` is in the view, once it appears: a runner can draw what the
-	/// last step changed only on a later turn.
-	func labelFrame(_ label: String, region: CGRect? = nil) async throws -> CGRect {
+	/// Where `label` is rendered once it appears, in the coordinates of the host's view or
+	/// of `targetWindow`'s content: a runner can draw what the last step changed only on a later turn.
+	func labelFrame(_ label: String, region: CGRect? = nil, in targetWindow: NSWindow? = nil) async throws -> CGRect {
+		let target = try #require(targetWindow?.contentView ?? view)
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		var bounds = try await labelBounds(label, in: view, options: [], region: region)
+		var bounds = try await labelBounds(label, in: target, options: [], region: region)
 		while bounds == nil, ContinuousClock.now < deadline {
 			try await Task.sleep(for: .milliseconds(20))
-			bounds = try await labelBounds(label, in: view, options: [], region: region)
+			bounds = try await labelBounds(label, in: target, options: [], region: region)
 		}
-		if bounds == nil { RenderedText.saveDiagnostic(try snapshot(view), named: label) }
+		if bounds == nil { RenderedText.saveDiagnostic(try snapshot(target), named: label) }
 		let box = try #require(bounds, "Missing label \(label)")
-		return CGRect(x: box.minX * view.bounds.width, y: box.minY * view.bounds.height,
-			width: box.width * view.bounds.width, height: box.height * view.bounds.height)
+		return CGRect(x: box.minX * target.bounds.width, y: box.minY * target.bounds.height,
+			width: box.width * target.bounds.width, height: box.height * target.bounds.height)
 	}
 
 	/// Clicks the sidebar row of an environment, such as ".env", found by its

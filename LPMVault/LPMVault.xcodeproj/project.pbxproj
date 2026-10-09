@@ -31,6 +31,7 @@
 		235B145D124AB17033C2979E /* VaultCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF8259DCF0973664EDEE6EA /* VaultCrypto.swift */; };
 		244FF73911575D8E7904FE72 /* lpm-json-edit-expected.json in Resources */ = {isa = PBXBuildFile; fileRef = BC6202E0BC76FCCD7043054E /* lpm-json-edit-expected.json */; };
 		27447FD6BA072FEA0D48D8FD /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A457BD449E91D4CB9859C4BC /* Sparkle */; };
+		2B86293F0EFF24BA77BD932D /* VaultSchemaClientPrefixes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E19BECC3EE6A24B2A9E3C04 /* VaultSchemaClientPrefixes.swift */; };
 		2C9BFF224E5A877F47F53B59 /* ProjectEnvSchemaSuggestion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B9BC57D99FCBC544AA8B129 /* ProjectEnvSchemaSuggestion.swift */; };
 		2DEAEBDD924683D9D5E1236D /* NewEnvironmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD952D6C2614FAF3EF8B184F /* NewEnvironmentSheet.swift */; };
 		31FFAD21626E09A4ED439662 /* VaultWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F50F4FAADAD699043BBD5D0 /* VaultWorkspaceView.swift */; };
@@ -56,6 +57,7 @@
 		4B88CD1D911996C20CEEBAC0 /* VaultWindowSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5DF41B6F41349F6482E5225 /* VaultWindowSupport.swift */; };
 		4C60693621D2C5D37FF804A5 /* LPMUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BCB466A07FD38A73347A910 /* LPMUser.swift */; };
 		4C947C17C89E0B20D6EE3EF9 /* VaultResizablePane.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68A0B5B65065CE20F58D81F /* VaultResizablePane.swift */; };
+		4C9EC60D1E1601625E0BF4D2 /* ProjectEnvSchemaClientPrefixes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83825F3745E80FDAF2139DF1 /* ProjectEnvSchemaClientPrefixes.swift */; };
 		4CFBF730D3404F13A4751FAB /* AddVariableSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 465AD9498C88039BB74D5D40 /* AddVariableSheet.swift */; };
 		4F2594937CC0514ABE83290E /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 176F614BCA46D100B0DFE439 /* KeychainService.swift */; };
 		510ECEC415D39BCD425418C8 /* ProjectEnvValueCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56F1C37E8DD2602669FD237 /* ProjectEnvValueCheckTests.swift */; };
@@ -219,6 +221,7 @@
 		5CD3C3B276BE5AF1C5E09C40 /* RustSchemaEngineProvenanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustSchemaEngineProvenanceTests.swift; sourceTree = "<group>"; };
 		5CFC95BACBC0D111312A0AFB /* ValueCheckTableInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValueCheckTableInteractionTests.swift; sourceTree = "<group>"; };
 		5D6CBBC8709449B5DA33D8DD /* LPMVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LPMVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5E19BECC3EE6A24B2A9E3C04 /* VaultSchemaClientPrefixes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaClientPrefixes.swift; sourceTree = "<group>"; };
 		606A4D6D619C63A269BDD1D1 /* ProjectEnvSchemaRuleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaRuleTests.swift; sourceTree = "<group>"; };
 		611A7B19E28DAEAEE9A0EFD6 /* SchemaGroupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaGroupTests.swift; sourceTree = "<group>"; };
 		614C541032B4C27C2966138F /* EnvValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvValidation.swift; sourceTree = "<group>"; };
@@ -248,6 +251,7 @@
 		7E7E17CFD8A20E12558CD8E0 /* EnvFileImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportTests.swift; sourceTree = "<group>"; };
 		80577EEE6278D3E10CBC8986 /* VaultValueCheckPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultValueCheckPresentation.swift; sourceTree = "<group>"; };
 		82C79372371909ADC82616B7 /* KeySuggestionInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeySuggestionInteractionTests.swift; sourceTree = "<group>"; };
+		83825F3745E80FDAF2139DF1 /* ProjectEnvSchemaClientPrefixes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaClientPrefixes.swift; sourceTree = "<group>"; };
 		86A2CFC76C772E1EEFD41581 /* ProjectEnvSchemaFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaFile.swift; sourceTree = "<group>"; };
 		8781D80F04E7286497DDF325 /* NewVaultSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewVaultSheet.swift; sourceTree = "<group>"; };
 		8DE1DD0A95404298E92B60F9 /* EnvFileImportReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReviewTests.swift; sourceTree = "<group>"; };
@@ -366,6 +370,7 @@
 				17BF48E7FA6D4713B74FA496 /* VaultInspectorView.swift */,
 				C68A0B5B65065CE20F58D81F /* VaultResizablePane.swift */,
 				A92B9253F0D8553F9082E72F /* VaultRuleBadges.swift */,
+				5E19BECC3EE6A24B2A9E3C04 /* VaultSchemaClientPrefixes.swift */,
 				983443571C69A2E11CCEEAFF /* VaultSchemaEditorFooter.swift */,
 				D07D6C686ABD1CB42CDDCEA5 /* VaultSchemaGroupPanel.swift */,
 				3DFF55C39E6E2DA8FAA92C8C /* VaultSchemaPanel.swift */,
@@ -391,6 +396,7 @@
 				7CEFDB752A8CA0EF3E0007CF /* LPMOrg.swift */,
 				178A6AD4D7254CB4955C912E /* LPMToken.swift */,
 				1BCB466A07FD38A73347A910 /* LPMUser.swift */,
+				83825F3745E80FDAF2139DF1 /* ProjectEnvSchemaClientPrefixes.swift */,
 				41FF1A17FB39F50360CE49DB /* ProjectEnvSchemaDraft.swift */,
 				73F470C9EFAD23F8A977C77A /* ProjectEnvSchemaGroup.swift */,
 				AE4036BEAE9D18D531B8B023 /* ProjectEnvSchemaOverview.swift */,
@@ -766,6 +772,7 @@
 				E86F773021FC6A17A1E1467B /* ProjectConfigFile.swift in Sources */,
 				BE7E0198873938E0B4EB3EAF /* ProjectConfigOpener.swift in Sources */,
 				98E999243060235FCAE05FFF /* ProjectConfigWatcher.swift in Sources */,
+				4C9EC60D1E1601625E0BF4D2 /* ProjectEnvSchemaClientPrefixes.swift in Sources */,
 				7908040342BE96F6602C8930 /* ProjectEnvSchemaDraft.swift in Sources */,
 				5C9ACA08B2B18B1FBD316B1A /* ProjectEnvSchemaFile.swift in Sources */,
 				0E06870733B84A77B423A769 /* ProjectEnvSchemaGroup.swift in Sources */,
@@ -796,6 +803,7 @@
 				49208572B2677AAF550F893E /* VaultProject.swift in Sources */,
 				4C947C17C89E0B20D6EE3EF9 /* VaultResizablePane.swift in Sources */,
 				E64821F8E84FBF80C038B7E3 /* VaultRuleBadges.swift in Sources */,
+				2B86293F0EFF24BA77BD932D /* VaultSchemaClientPrefixes.swift in Sources */,
 				409BEB02E667884D93A7D0DB /* VaultSchemaEditorFooter.swift in Sources */,
 				5CC5F3B8CFA187935D373ADD /* VaultSchemaGroupPanel.swift in Sources */,
 				E3F1E62A050644382ACA62A2 /* VaultSchemaPanel.swift in Sources */,
