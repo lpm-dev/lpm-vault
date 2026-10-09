@@ -18,6 +18,7 @@ struct VaultSchemaView: View {
 	/// The rules can be edited: lpm.json is read from the project's folder.
 	var canEdit = false
 	var onAddKey: () -> Void = {}
+	var onAddGroup: () -> Void = {}
 	/// Keys stored in some environment that lpm.json doesn't declare.
 	var undeclared: [VaultStore.StoredSchemaKey] = []
 	var onDeclare: (String) -> Void = { _ in }
@@ -32,6 +33,8 @@ struct VaultSchemaView: View {
 	/// How a row differs from lpm.json in the draft.
 	enum RowState: Equatable {
 		case saved, draft, new, removed
+		/// A group of lpm.json's the draft renames, from its name there, escaped.
+		case renamed(from: String)
 	}
 
 	static let docsURL = URL(string: "https://cli.lpm.dev/docs/reference/lpm-json#envschema")!
@@ -326,13 +329,17 @@ struct VaultSchemaView: View {
 						ruleRow(rule, state: rowState(rule.key, in: saved), description: description(of: rule.key))
 							.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 					}
+					if !listed.groups.isEmpty || canEdit {
+						groupsHeader(count: listed.groupCount)
+						ForEach(listed.groups, id: \.name) { group in
+							groupRow(group, state: groupState(group.name, in: saved))
+								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+						}
+					}
 					// Rows go straight into the lazy stack, so only those on screen are built.
 					if !undeclared.isEmpty {
 						undeclaredHeader
 						ForEach(sortedUndeclared, id: \.key, content: undeclaredRow)
-					}
-					if !listed.groups.isEmpty {
-						groupsRow(listed.groups)
 					}
 				} header: {
 					HStack(spacing: 0) {
@@ -362,9 +369,12 @@ struct VaultSchemaView: View {
 	private struct Listed {
 		/// With the keys the draft removes kept, so they show as removed.
 		var rules: [ProjectEnvSchemaOverview.Rule]
+		/// With the groups the draft removes kept, so they show as removed.
 		var groups: [ProjectEnvSchemaOverview.Group]
 		/// Keys declared once the draft is saved.
 		var declaredCount: Int
+		/// Groups declared once the draft is saved.
+		var groupCount: Int
 		var inheritedCount: Int
 	}
 
@@ -372,13 +382,15 @@ struct VaultSchemaView: View {
 	/// keys it changes show as it writes them.
 	private func listed(_ saved: ProjectEnvSchemaOverview) -> Listed {
 		guard let draft, !draft.isEmpty else {
-			return Listed(rules: saved.rules, groups: saved.groups, declaredCount: saved.rules.count, inheritedCount: saved.inheritedCount)
+			return Listed(rules: saved.rules, groups: saved.groups, declaredCount: saved.rules.count, groupCount: saved.groups.count,
+				inheritedCount: saved.inheritedCount)
 		}
 		let shown = draftOverview ?? saved
+		let changed = draft.changedItems
 		var rules = shown.rules
 		var added: [ProjectEnvSchemaOverview.Rule] = []
 		var removed = 0
-		for item in draft.changedItems {
+		for item in changed {
 			guard case .key(let key) = item else { continue }
 			let declaration = draft.declaration(of: item)
 			if let json = declaration.json {
@@ -392,7 +404,45 @@ struct VaultSchemaView: View {
 			}
 		}
 		rules = VaultKeySortOrder.mergingAscending(added, into: rules, by: \.key)
-		return Listed(rules: rules, groups: shown.groups, declaredCount: rules.count - removed, inheritedCount: shown.inheritedCount)
+		var groups = shown.groups
+		var removedGroups = 0
+		var appendedGroups = false
+		for item in changed {
+			guard case .group(let name) = item else { continue }
+			let declaration = draft.declaration(of: item)
+			if let json = declaration.json {
+				guard draftOverview == nil else { continue }
+				let isOverride = if case .overridden = declaration { true } else { false }
+				let saved = saved.groups.first { $0.name == name }
+				guard let row = ProjectEnvSchemaOverview.Group(name: name, draft: json, isOverride: isOverride, saved: saved) else { continue }
+				if let index = groups.firstIndex(where: { $0.name == name }) {
+					groups[index] = row
+				} else {
+					groups.append(row)
+					appendedGroups = true
+				}
+			} else if case .declared = draft.base(of: item), draft.newName(ofGroup: name) == nil {
+				// A renamed group shows once, under its new name.
+				removedGroups += 1
+				if !groups.contains(where: { $0.name == name }), let row = saved.groups.first(where: { $0.name == name }) {
+					groups.append(row)
+					appendedGroups = true
+				}
+			}
+		}
+		if appendedGroups { groups.sort { $0.name < $1.name } }
+		return Listed(rules: rules, groups: groups, declaredCount: rules.count - removed, groupCount: groups.count - removedGroups,
+			inheritedCount: shown.inheritedCount)
+	}
+
+	private func groupState(_ name: String, in saved: ProjectEnvSchemaOverview) -> RowState {
+		guard let draft, draft.hasChange(to: .group(name)) else { return .saved }
+		if let original = draft.originalName(ofGroup: name) { return .renamed(from: original.escapingDirectionControls) }
+		switch (draft.base(of: .group(name)), draft.declaration(of: .group(name))) {
+		case (.declared, .absent): return .removed
+		case (.absent, .declared) where !saved.groups.contains(where: { $0.name == name }): return .new
+		default: return .draft
+		}
 	}
 
 	private func rowState(_ key: String, in saved: ProjectEnvSchemaOverview) -> RowState {
@@ -452,6 +502,9 @@ struct VaultSchemaView: View {
 					case .draft: VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 					case .new: VaultTagBadge(text: "New", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 					case .removed: VaultTagBadge(text: "Removed", foreground: VaultPalette.redText, background: VaultPalette.redTint, size: 10)
+					case .renamed(let original):
+						VaultTagBadge(text: "Renamed", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
+							.help("Renamed from \(original) in your draft")
 					}
 				}
 				if let description, !description.isEmpty {
@@ -561,21 +614,78 @@ struct VaultSchemaView: View {
 
 	private static let undeclaredRowHeight: CGFloat = 42
 
-	private func groupsRow(_ groups: [ProjectEnvSchemaOverview.Group]) -> some View {
-		HStack(alignment: .firstTextBaseline, spacing: 12) {
-			Text("GROUPS").vaultSectionLabel()
-			VStack(alignment: .leading, spacing: 4) {
-				ForEach(groups, id: \.name) { group in
-					Text(group.summary)
-						.font(.system(size: 12))
-						.foregroundStyle(VaultPalette.textSecondary)
+	private func groupsHeader(count: Int) -> some View {
+		HStack(spacing: 8) {
+			Text("GROUPS · \(count)").vaultSectionLabel()
+			Text("keys the LPM CLI checks together")
+				.font(.system(size: 11))
+				.foregroundStyle(VaultPalette.textFaint)
+				.lineLimit(1)
+			Spacer(minLength: 8)
+			if canEdit {
+				let full = count >= ProjectEnvSchemaGroup.maximumGroups
+				Button(action: onAddGroup) {
+					HStack(spacing: 4) {
+						Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
+						Text("Add group").font(.system(size: 11.5, weight: .semibold))
+					}
+					.foregroundStyle(VaultPalette.accentForeground)
 				}
+				.buttonStyle(.plain)
+				.disabled(full)
+				.opacity(full ? 0.4 : 1)
+				.vaultPointingHand()
+				.help(full ? "The LPM CLI accepts at most \(ProjectEnvSchemaGroup.maximumGroups) groups" : "Declare a group of keys in lpm.json")
 			}
 		}
 		.padding(.horizontal, 20)
-		.padding(.vertical, 12)
+		.padding(.vertical, 8)
 		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(VaultPalette.headerRow)
 		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+	}
+
+	private func groupRow(_ group: ProjectEnvSchemaOverview.Group, state: RowState) -> some View {
+		let selected = selection == .group(group.name)
+		let mode = ProjectEnvSchemaGroup.Mode(rawValue: group.mode)
+		return Button { onSelect(selected ? nil : .group(group.name)) } label: {
+			HStack(spacing: 8) {
+				Image(systemName: "square.stack.3d.up").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
+				Text(group.name.escapingDirectionControls)
+					.font(VaultTypography.mono(12.5, .semibold))
+					.foregroundStyle(state == .removed ? VaultPalette.textFaint : VaultPalette.textPrimary)
+					.strikethrough(state == .removed)
+					.lineLimit(1)
+				Text("·").foregroundStyle(VaultPalette.textFaint)
+				(Text(mode?.title ?? group.mode).font(.system(size: 12)).foregroundColor(VaultPalette.textTertiary)
+					+ Text(" " + group.memberPreview).font(VaultTypography.mono(12)).foregroundColor(VaultPalette.textSecondary))
+					.lineLimit(1)
+					.truncationMode(.tail)
+					.opacity(state == .removed ? 0.6 : 1)
+				if let source = group.source { VaultSourceBadge(source: source, declares: "the group") }
+				if let source = group.overrides { VaultSourceBadge(source: source, isOverridden: true, declares: "the group") }
+				switch state {
+				case .saved: EmptyView()
+				case .draft: VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
+				case .new: VaultTagBadge(text: "New", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
+				case .removed: VaultTagBadge(text: "Removed", foreground: VaultPalette.redText, background: VaultPalette.redTint, size: 10)
+				case .renamed(let original):
+					VaultTagBadge(text: "Renamed", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
+						.help("Renamed from \(original) in your draft")
+				}
+				Spacer(minLength: 0)
+			}
+			.padding(.horizontal, 20)
+			.frame(minHeight: 38)
+			.background(selected ? VaultPalette.selectedEnvCell : .clear)
+			.overlay(alignment: .leading) {
+				if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
+			}
+			.contentShape(Rectangle())
+			.accessibilityElement(children: .combine)
+		}
+		.buttonStyle(.plain)
+		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 
 	// MARK: - Status bar
@@ -611,7 +721,7 @@ struct VaultSchemaView: View {
 	private func loadedStatus(_ listed: Listed) -> some View {
 		Text(Self.count(listed.declaredCount, "declared key"))
 		Text("·")
-		Text(Self.count(listed.groups.count, "group"))
+		Text(Self.count(listed.groupCount, "group"))
 		Text("·")
 		Text("\(listed.inheritedCount) inherited")
 		if let changes = draft?.changeCount, changes > 0 {

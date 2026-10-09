@@ -275,7 +275,7 @@ struct VaultValueCheckPresentationTests {
 	private let rules = ProjectEnvSchemaOverview(rules: [
 		.init(key: "API_TOKEN", isPublic: false, source: nil, badges: [.init(text: "Required in production"), .init(text: "Secret")]),
 		.init(key: "DATABASE_URL", isPublic: false, source: nil, badges: [.init(text: "URL")]),
-	], groups: [.init(name: "credentials", summary: "Exactly one of PASSWORD, OAUTH_TOKEN", members: ["PASSWORD", "OAUTH_TOKEN"])])
+	], groups: [.init(name: "credentials", members: ["PASSWORD", "OAUTH_TOKEN"], mode: "exactlyOne")])
 
 	private var presentation: VaultValueCheckPresentation {
 		let group = Problem.Kind.group(name: "credentials", mode: "exactlyOne")

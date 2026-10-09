@@ -216,17 +216,20 @@ private struct ListHeightKey: PreferenceKey {
 	static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-/// Where a key that can't be removed in lpm.json is declared.
-struct VaultSchemaElsewhere: Hashable {
-	/// The file that declares the key, as shown.
+/// Where a key or a group that can't be removed in lpm.json is declared.
+struct VaultSchemaElsewhere: Hashable, Identifiable {
+	/// The file that declares it, as shown.
 	let source: String
 	/// That file's path in the project folder when it can be edited there:
 	/// not a preset, and not an installed package's.
 	let path: String?
-	/// lpm.json overrides the key.
+	/// lpm.json overrides it.
 	let isOverridden: Bool
-	/// Another imported file that overrides the key, as shown.
+	/// Another imported file that overrides it, as shown.
 	var overriddenBy: String?
+	var isGroup = false
+
+	var id: Self { self }
 
 	/// `path` when it can be edited in the project folder.
 	static func editable(_ path: String?) -> String? {
@@ -238,10 +241,11 @@ struct VaultSchemaElsewhere: Hashable {
 	}
 }
 
-/// Explains why a key declared in an imported schema or a preset can't be
-/// removed in lpm.json, with what can be done instead.
+/// Explains why a key or a group declared in an imported schema or a preset
+/// can't be removed in lpm.json, with what can be done instead.
 struct VaultSchemaElsewhereSheet: View {
-	let key: String
+	/// The key or group's name.
+	let name: String
 	let elsewhere: VaultSchemaElsewhere
 	/// The project folder, which the file to open has to be in.
 	let folder: String?
@@ -258,7 +262,7 @@ struct VaultSchemaElsewhereSheet: View {
 					.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.neutralTint))
 					.accessibilityHidden(true)
 				VStack(alignment: .leading, spacing: 5) {
-					(Text(key.escapingDirectionControls).font(VaultTypography.mono(14, .bold)) + Text(" can't be removed here").font(.system(size: 14, weight: .bold)))
+					(Text(name.escapingDirectionControls).font(VaultTypography.mono(14, .bold)) + Text(" can't be removed here").font(.system(size: 14, weight: .bold)))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.fixedSize(horizontal: false, vertical: true)
 					Text(explanation)
@@ -279,7 +283,7 @@ struct VaultSchemaElsewhereSheet: View {
 					}
 					.help(elsewhere.source)
 				}
-				VaultBarButton(title: elsewhere.isOverridden ? "Reset to original" : "Override rules", filled: true, height: 28) {
+				VaultBarButton(title: elsewhere.isOverridden ? "Reset to original" : (elsewhere.isGroup ? "Override group" : "Override rules"), filled: true, height: 28) {
 					onOverride()
 					dismiss()
 				}
@@ -305,19 +309,22 @@ struct VaultSchemaElsewhereSheet: View {
 	/// whether the file that declares it can be opened from the project.
 	nonisolated static func explanation(for elsewhere: VaultSchemaElsewhere, editable: Bool) -> String {
 		let source = elsewhere.source
+		// A key's override replaces its rules; a group's replaces the group.
+		let what = elsewhere.isGroup ? "it" : "its rules"
 		if elsewhere.isOverridden {
+			let original = elsewhere.isGroup ? "the original group" : "the original rules"
 			return editable
-				? "It's declared in \(source), which lpm.json imports, and lpm.json overrides its rules. To remove it, delete it in \(source) and reset the override here: lpm.json can't override a key its imports don't declare."
-				: "It's declared in \(source), which can't be edited here, and lpm.json overrides its rules. Reset the override to bring back the original rules."
+				? "It's declared in \(source), which lpm.json imports, and lpm.json overrides \(what). To remove it, delete it in \(source) and reset the override here: lpm.json can't override \(elsewhere.isGroup ? "a group" : "a key") its imports don't declare."
+				: "It's declared in \(source), which can't be edited here, and lpm.json overrides \(what). Reset the override to bring back \(original)."
 		}
 		if let overriddenBy = elsewhere.overriddenBy {
 			return editable
-				? "It's declared in \(source), and \(overriddenBy) overrides its rules. Remove it from both, or override its rules in lpm.json."
-				: "It's declared in \(source), which can't be edited here, and \(overriddenBy) overrides its rules. Override its rules in lpm.json instead."
+				? "It's declared in \(source), and \(overriddenBy) overrides \(what). Remove it from both, or override \(what) in lpm.json."
+				: "It's declared in \(source), which can't be edited here, and \(overriddenBy) overrides \(what). Override \(what) in lpm.json instead."
 		}
 		return editable
-			? "It's declared in \(source), which lpm.json imports. Remove it there, or override its rules in lpm.json."
-			: "It's declared in \(source), which can't be edited here. Override its rules in lpm.json instead."
+			? "It's declared in \(source), which lpm.json imports. Remove it there, or override \(what) in lpm.json."
+			: "It's declared in \(source), which can't be edited here. Override \(what) in lpm.json instead."
 	}
 }
 

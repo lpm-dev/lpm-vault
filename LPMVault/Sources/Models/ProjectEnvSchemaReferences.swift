@@ -90,7 +90,7 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 			case "atLeastOne": "At least one of"
 			default: "All or none of"
 			}
-			return "Group \(name.escapingDirectionControls): \(lead) \(members.map(\.escapingDirectionControls).joined(separator: ", "))"
+			return "Group \(name.escapingDirectionControls): \(lead) \(ProjectEnvSchemaOverview.Group.preview(of: members))"
 		case .condition(let other):
 			return "\(other.escapingDirectionControls) · Required when \(key.escapingDirectionControls) \(conditionText)"
 		}
