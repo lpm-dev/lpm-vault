@@ -325,7 +325,7 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	private func descriptionField(_ rule: Rule) -> some View {
-		TextField("Description — shown in CLI errors and .env.example", text: textBinding(\.description, field: "description") { $0.description = $1 }, axis: .vertical)
+		TextField("Description — shown in CLI errors and .env.example", text: textBinding(\.description, field: "description"), axis: .vertical)
 			.textFieldStyle(.plain)
 			.font(.system(size: 12))
 			.lineLimit(1...4)
@@ -435,12 +435,12 @@ private struct VaultSchemaKeyEditor: View {
 	private func control(_ field: Field, rule: Rule) -> some View {
 		switch field {
 		case .required:
-			toggle(rule.required, label: "Required") { value in update { $0.required = value } }
+			toggle(\.required, label: "Required")
 		case .secret:
-			toggle(rule.secret, label: "Secret", disabled: publicPrefix != nil && !rule.secret) { value in update { $0.secret = value } }
+			toggle(\.secret, label: "Secret", disabled: publicPrefix != nil && !rule.secret)
 		case .client:
 			HStack(spacing: 6) {
-				toggle(rule.client, label: "Public", disabled: true) { _ in }
+				toggle(\.client, label: "Public", disabled: true)
 				if publicPrefix != nil {
 					Text("from the name").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
 				}
@@ -465,18 +465,18 @@ private struct VaultSchemaKeyEditor: View {
 			.accessibilityLabel("Format")
 		case .bounds:
 			HStack(spacing: 6) {
-				numberField("min", text: \.min, field: "min") { $0.min = $1 }
-				numberField("max", text: \.max, field: "max") { $0.max = $1 }
+				numberField("min", text: \.min, field: "min")
+				numberField("max", text: \.max, field: "max")
 			}
 		case .length:
 			HStack(spacing: 6) {
-				numberField("min", text: \.minLength, field: "minLength") { $0.minLength = $1 }
-				numberField("max", text: \.maxLength, field: "maxLength") { $0.maxLength = $1 }
+				numberField("min", text: \.minLength, field: "minLength")
+				numberField("max", text: \.maxLength, field: "maxLength")
 			}
 		case .pattern:
-			textField("regular expression", text: \.pattern, field: "pattern") { $0.pattern = $1 }
+			textField("regular expression", text: \.pattern, field: "pattern")
 		case .defaultValue:
-			textField("value", text: \.defaultValue, field: "default") { $0.defaultValue = $1 }
+			textField("value", text: \.defaultValue, field: "default")
 		case .protocols:
 			VaultChipField(values: rule.protocols ?? [], placeholder: "https", disabled: !canEdit,
 				normalize: { $0.lowercased() }) { values in update { $0.protocols = values } }
@@ -494,8 +494,9 @@ private struct VaultSchemaKeyEditor: View {
 
 	// MARK: - Controls
 
-	private func toggle(_ isOn: Bool, label: String, disabled: Bool = false, _ set: @escaping @MainActor @Sendable (Bool) -> Void) -> some View {
-		Toggle(label, isOn: Binding(get: { isOn }, set: set))
+	/// Reads and writes the rule as it is when asked, like `textBinding`.
+	private func toggle(_ field: WritableKeyPath<Rule, Bool>, label: String, disabled: Bool = false) -> some View {
+		Toggle(label, isOn: Binding(get: { rule[keyPath: field] }, set: { value in update { $0[keyPath: field] = value } }))
 			.toggleStyle(.switch)
 			.controlSize(.mini)
 			.labelsHidden()
@@ -550,8 +551,8 @@ private struct VaultSchemaKeyEditor: View {
 		.contentShape(Rectangle())
 	}
 
-	private func textField(_ placeholder: String, text: KeyPath<Rule, String?>, field: String, _ set: @escaping @Sendable (inout Rule, String?) -> Void) -> some View {
-		TextField(placeholder, text: textBinding(text, field: field, set))
+	private func textField(_ placeholder: String, text: WritableKeyPath<Rule, String?>, field: String) -> some View {
+		TextField(placeholder, text: textBinding(text, field: field))
 			.textFieldStyle(.plain)
 			.font(VaultTypography.mono(12))
 			.autocorrectionDisabled()
@@ -563,15 +564,15 @@ private struct VaultSchemaKeyEditor: View {
 			.accessibilityLabel(placeholder)
 	}
 
-	private func numberField(_ placeholder: String, text: KeyPath<Rule, String?>, field: String, _ set: @escaping @Sendable (inout Rule, String?) -> Void) -> some View {
-		textField(placeholder, text: text, field: field, set)
+	private func numberField(_ placeholder: String, text: WritableKeyPath<Rule, String?>, field: String) -> some View {
+		textField(placeholder, text: text, field: field)
 			.accessibilityLabel("\(field) \(placeholder)")
 	}
 
 	/// Reads the rule as it is when asked, not when the panel last drew, so
 	/// ending an edit before the panel redraws can't write an older value back.
-	private func textBinding(_ text: KeyPath<Rule, String?>, field: String, _ set: @escaping @Sendable (inout Rule, String?) -> Void) -> Binding<String> {
-		Binding(get: { rule[keyPath: text] ?? "" }, set: { value in update(coalescing: field) { set(&$0, value) } })
+	private func textBinding(_ text: WritableKeyPath<Rule, String?>, field: String) -> Binding<String> {
+		Binding(get: { rule[keyPath: text] ?? "" }, set: { value in update(coalescing: field) { $0[keyPath: text] = value } })
 	}
 
 	private func requiredWhenControl(_ rule: Rule) -> some View {
