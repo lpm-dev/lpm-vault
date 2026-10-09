@@ -1240,9 +1240,6 @@ final class VaultStore {
   /// Each project's review of its draft, for the environment order it was
   /// built for, until anything it's built from changes.
   @ObservationIgnored private var schemaReviews: [String: (environments: [String], review: ProjectEnvSchemaReview?)] = [:]
-  /// Keys each project's draft removes, with what the removal changed, so
-  /// "Keep in schema" can take it back.
-  @ObservationIgnored private var schemaRemovals: [String: [String: SchemaRemoval]] = [:]
   /// What merging drafts onto lpm.json's rules as read from disk changed, until dismissed.
   private(set) var schemaDraftRebases: [String: ProjectEnvSchemaDraft.Rebase] = [:]
   private(set) var savingSchemaDrafts: Set<String> = []
@@ -3542,40 +3539,17 @@ final class VaultStore {
     schemaDrafts[projectID].flatMap { $0.isEmpty ? nil : $0 }
   }
 
-  /// What removing a key changed: each item, as it was and as the removal left it.
-  private struct SchemaRemoval {
-    var changes: [(item: ProjectEnvSchemaDraft.Item, before: ProjectEnvSchemaDraft.Declaration, after: ProjectEnvSchemaDraft.Declaration)]
-  }
-
-  /// Removes `key` from lpm.json in the project's draft, with `fixes` for
-  /// what refers to it, as one change.
+  /// Removes `key` from lpm.json in the project's draft, with a fix for
+  /// each reference to it, as one change.
   func removeSchemaKey(
-    _ key: String, fixes: [(item: ProjectEnvSchemaDraft.Item, declaration: ProjectEnvSchemaDraft.Declaration)], in projectID: String
+    _ key: String, settling fixes: [(reference: ProjectEnvSchemaReference, fix: ProjectEnvSchemaReference.Fix)], in projectID: String
   ) {
-    guard canEditSchema(of: projectID) else { return }
-    let draft = schemaDraftOrBase(for: projectID)
-    let edits = fixes + [(item: .key(key), declaration: .absent)]
-    let removal = SchemaRemoval(changes: edits.map { (item: $0.item, before: draft.declaration(of: $0.item), after: $0.declaration) })
-    editSchemaDraft(in: projectID) { draft in
-      for edit in edits { draft.set(edit.declaration, for: edit.item) }
-    }
-    schemaRemovals[projectID, default: [:]][key] = removal
+    editSchemaDraft(in: projectID) { $0.remove(key, settling: fixes) }
   }
 
-  /// Takes a key's removal back, with each fix that came with it that
-  /// hasn't changed since.
+  /// Takes a key's removal back, with the fixes that came with it.
   func keepSchemaKey(_ key: String, in projectID: String) {
-    let removal = schemaRemovals[projectID]?[key]
-    editSchemaDraft(in: projectID) { draft in
-      guard let removal else {
-        draft.discard(.key(key))
-        return
-      }
-      for change in removal.changes where draft.declaration(of: change.item).isEquivalent(to: change.after) {
-        draft.set(change.before, for: change.item)
-      }
-    }
-    schemaRemovals[projectID]?[key] = nil
+    editSchemaDraft(in: projectID) { $0.keep(key) }
   }
 
   /// A key some environment stores, and how many do.
@@ -3890,10 +3864,7 @@ final class VaultStore {
   private func setSchemaDraft(_ draft: ProjectEnvSchemaDraft, for projectID: String) {
     schemaDrafts[projectID] = draft
     schemaDraftRevisions[projectID, default: 0] &+= 1
-    if draft.isEmpty {
-      schemaDraftRebases[projectID] = nil
-      schemaRemovals[projectID] = nil
-    }
+    if draft.isEmpty { schemaDraftRebases[projectID] = nil }
     refreshSchemaDraftEvaluation(for: projectID)
   }
 
@@ -3928,7 +3899,6 @@ final class VaultStore {
     schemaDraftRebases[projectID] = nil
     schemaDraftHistory[projectID] = nil
     schemaDraftSaveFailures[projectID] = nil
-    schemaRemovals[projectID] = nil
     debouncedSchemaDrafts.remove(projectID)
     refreshSchemaDraftEvaluation(for: projectID)
   }
@@ -4053,7 +4023,6 @@ final class VaultStore {
     debouncedSchemaDrafts = []
     schemaDraftSaveFailures = [:]
     pendingSchemaMerges = []
-    schemaRemovals = [:]
     schemaDraftGeneration &+= 1
   }
 

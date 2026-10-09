@@ -10,21 +10,43 @@ struct VaultSchemaRemoveSheet: View {
 	@Environment(\.dismiss) private var dismiss
 
 	@State private var chosen: [ProjectEnvSchemaDraft.Item: ProjectEnvSchemaReference.Fix] = [:]
+	@State private var listHeight: CGFloat = 0
 
-	private var references: [ProjectEnvSchemaReference] {
-		let rules = store.latestSchemaDraftEvaluation(for: project.id)?.overview ?? store.keyDescriptions[project.id]?.schema?.overview
-		return ProjectEnvSchemaReference.references(to: key, in: store.schemaDraftOrBase(for: project.id), rules: rules)
+	private static let maximumListHeight: CGFloat = 320
+
+	/// The rules references are found in.
+	private enum Rules {
+		/// lpm.json's, or the draft's as evaluated now, which imports' references need.
+		case ready(ProjectEnvSchemaOverview?)
+		case checking
+		/// The engine rejects the draft, so imported schemas' references can't be found.
+		case rejected
+
+		var isReady: Bool { if case .ready = self { true } else { false } }
+	}
+
+	private var rules: Rules {
+		guard store.schemaDraft(for: project.id) != nil else { return .ready(store.keyDescriptions[project.id]?.schema?.overview) }
+		guard let evaluation = store.currentSchemaDraftEvaluation(for: project.id) else { return .checking }
+		return evaluation.overview.map(Rules.ready) ?? .rejected
 	}
 
 	var body: some View {
-		let references = references
-		let left = references.filter { chosen[$0.id] == nil }.count
+		let rules = rules
+		let references: [ProjectEnvSchemaReference] = if case .ready(let overview) = rules {
+			ProjectEnvSchemaReference.references(to: key, in: store.schemaDraftOrBase(for: project.id), rules: overview)
+		} else {
+			[]
+		}
+		let settled = references.compactMap { reference in chosen[reference.id].flatMap { reference.fixes.contains($0) ? (reference: reference, fix: $0) : nil } }
+		let left = references.count - settled.count
 		let stored = project.environments.values.filter { $0[key] != nil }.count
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 6) {
-				(Text("Remove ") + Text(key).font(VaultTypography.mono(16, .bold)) + Text(" from the schema?"))
+				(Text("Remove ") + Text(key.escapingDirectionControls).font(VaultTypography.mono(16, .bold)) + Text(" from the schema?"))
 					.font(.system(size: 16, weight: .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
+					.fixedSize(horizontal: false, vertical: true)
 				Text(Self.consequence(stored: stored))
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
@@ -32,36 +54,37 @@ struct VaultSchemaRemoveSheet: View {
 			}
 			.padding(20)
 
-			if !references.isEmpty {
+			switch rules {
+			case .checking:
 				VaultHairline()
-				VStack(alignment: .leading, spacing: 8) {
-					HStack(spacing: 8) {
-						Text("REFERENCED BY · \(references.count)").vaultSectionLabel()
-						Text("resolve these first — fixes join the same draft")
-							.font(.system(size: 11))
-							.foregroundStyle(VaultPalette.textTertiary)
-					}
-					VStack(spacing: 0) {
-						ForEach(Array(references.enumerated()), id: \.element.id) { index, reference in
-							referenceRow(reference)
-								.overlay(alignment: .top) { if index > 0 { VaultHairline() } }
-						}
-					}
-					.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+				HStack(spacing: 8) {
+					ProgressView().controlSize(.small)
+					Text("Checking the rules…").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
 				}
 				.padding(20)
+			case .rejected:
+				VaultHairline()
+				Text("Your draft has a problem the LPM CLI would reject, so what refers to \(key.escapingDirectionControls) in imported schemas can't be found yet. Fix the problem first.")
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.redText)
+					.fixedSize(horizontal: false, vertical: true)
+					.padding(20)
+			case .ready:
+				if !references.isEmpty {
+					VaultHairline()
+					referenceList(references, left: left)
+				}
 			}
 
 			VaultSheetFooter {
-				Text(left == 0 ? (references.isEmpty ? "Nothing else refers to it." : "Every reference is settled.") : (left == 1 ? "1 reference left" : "\(left) references left"))
+				Text(footerText(references: references.count, left: left))
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			} actions: {
 				VaultBarButton(title: "Cancel", height: 28) { dismiss() }
 					.keyboardShortcut(.cancelAction)
-				VaultBarButton(title: "Add to draft", filled: true, disabled: left > 0 || !store.canEditSchema(of: project.id), height: 28) {
-					let fixes = references.compactMap { reference in chosen[reference.id].map { (item: reference.item, declaration: reference.fixed(by: $0)) } }
-					store.removeSchemaKey(key, fixes: fixes, in: project.id)
+				VaultBarButton(title: "Add to draft", filled: true, disabled: !rules.isReady || left > 0 || !store.canEditSchema(of: project.id), height: 28) {
+					store.removeSchemaKey(key, settling: settled, in: project.id)
 					dismiss()
 				}
 				.keyboardShortcut(.defaultAction)
@@ -71,22 +94,71 @@ struct VaultSchemaRemoveSheet: View {
 		.background(VaultPalette.content)
 	}
 
+	private func footerText(references: Int, left: Int) -> String {
+		guard rules.isReady else { return "" }
+		if left == 0 { return references == 0 ? "Nothing else refers to it." : "Every reference is settled." }
+		return left == 1 ? "1 reference left" : "\(left) references left"
+	}
+
+	private func referenceList(_ references: [ProjectEnvSchemaReference], left: Int) -> some View {
+		VStack(alignment: .leading, spacing: 8) {
+			HStack(spacing: 8) {
+				Text("REFERENCED BY · \(references.count)").vaultSectionLabel()
+				Text("resolve these first — fixes join the same draft")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+				Spacer(minLength: 8)
+				if left > 1 {
+					Button("Settle all") {
+						for reference in references where chosen[reference.id].map(reference.fixes.contains) != true {
+							chosen[reference.id] = reference.fixes.first
+						}
+					}
+					.buttonStyle(.plain)
+					.font(.system(size: 11, weight: .semibold))
+					.foregroundStyle(VaultPalette.accentForeground)
+					.help("Choose each reference's first fix")
+					.vaultPointingHand()
+				}
+			}
+			// Only the rows on screen are built, so a key many rules name stays quick.
+			ScrollView {
+				LazyVStack(spacing: 0) {
+					ForEach(Array(references.enumerated()), id: \.element.id) { index, reference in
+						referenceRow(reference)
+							.overlay(alignment: .top) { if index > 0 { VaultHairline() } }
+					}
+				}
+				.background {
+					GeometryReader { proxy in Color.clear.preference(key: ListHeightKey.self, value: proxy.size.height) }
+				}
+			}
+			.frame(height: min(max(listHeight, 1), Self.maximumListHeight))
+			.onPreferenceChange(ListHeightKey.self) { listHeight = $0 }
+			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		}
+		.padding(20)
+	}
+
 	/// What removing does to the values stored under the key.
-	static func consequence(stored: Int) -> String {
+	nonisolated static func consequence(stored: Int) -> String {
 		let values = switch stored {
 		case 0: "No environment stores a value for it."
-		case 1: "Its stored value stays in the Keychain — the LPM CLI just stops checking it."
-		default: "Stored values stay in the Keychain in all \(stored) envs — the LPM CLI just stops checking them."
+		case 1: "Its value stays in the Keychain, and the LPM CLI stops checking it."
+		default: "Its values stay in the Keychain in \(stored) environments, and the LPM CLI stops checking them."
 		}
 		return "Adds the removal to your draft. \(values)"
 	}
 
 	private func referenceRow(_ reference: ProjectEnvSchemaReference) -> some View {
-		HStack(alignment: .center, spacing: 10) {
+		let fix = chosen[reference.id].flatMap { reference.fixes.contains($0) ? $0 : nil }
+		return HStack(alignment: .center, spacing: 10) {
 			Image(systemName: reference.kind.isGroup ? "square.stack.3d.up" : "link")
 				.font(.system(size: 11))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.frame(width: 14)
+				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 2) {
 				Text(reference.title)
 					.font(.system(size: 12, weight: .semibold))
@@ -105,23 +177,31 @@ struct VaultSchemaRemoveSheet: View {
 						.foregroundStyle(VaultPalette.redText)
 						.fixedSize(horizontal: false, vertical: true)
 				}
+				if let fix, let note = reference.note(for: fix) {
+					Text(note)
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.orangeTintText)
+						.fixedSize(horizontal: false, vertical: true)
+				}
 			}
 			Spacer(minLength: 8)
-			if let fix = chosen[reference.id] {
+			if let fix {
 				HStack(spacing: 6) {
-					Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
-					Text(fix.done).font(.system(size: 11))
+					Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).accessibilityHidden(true)
+					Text(reference.done(by: fix)).font(.system(size: 11))
 				}
 				.foregroundStyle(VaultPalette.greenTintText)
+				.fixedSize()
 				Button("Undo") { chosen[reference.id] = nil }
 					.buttonStyle(.plain)
 					.font(.system(size: 11))
 					.foregroundStyle(VaultPalette.textTertiary)
-					.accessibilityLabel("Undo \(fix.done.lowercased())")
+					.accessibilityLabel("Undo \(reference.done(by: fix).lowercased())")
 			} else {
 				ForEach(reference.fixes, id: \.self) { fix in
-					VaultBarButton(title: fix.title, height: 24) { chosen[reference.id] = fix }
+					VaultBarButton(title: reference.title(of: fix), height: 24) { chosen[reference.id] = fix }
 						.fixedSize()
+						.help(reference.note(for: fix) ?? "")
 				}
 			}
 		}
@@ -131,16 +211,40 @@ struct VaultSchemaRemoveSheet: View {
 	}
 }
 
+private struct ListHeightKey: PreferenceKey {
+	static let defaultValue: CGFloat = 0
+	static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Where a key that can't be removed in lpm.json is declared.
+struct VaultSchemaElsewhere: Hashable {
+	/// The file that declares the key, as shown.
+	let source: String
+	/// That file's path in the project folder when it can be edited there:
+	/// not a preset, and not an installed package's.
+	let path: String?
+	/// lpm.json overrides the key.
+	let isOverridden: Bool
+	/// Another imported file that overrides the key, as shown.
+	var overriddenBy: String?
+
+	/// `path` when it can be edited in the project folder.
+	static func editable(_ path: String?) -> String? {
+		guard let path, !path.hasPrefix("preset:"),
+			// Folded the way the file system compares names, so no spelling of the folder slips through.
+			!path.split(separator: "/").contains(where: { $0.folding(options: [.caseInsensitive, .widthInsensitive], locale: nil) == "node_modules" })
+		else { return nil }
+		return path
+	}
+}
+
 /// Explains why a key declared in an imported schema or a preset can't be
 /// removed in lpm.json, with what can be done instead.
 struct VaultSchemaElsewhereSheet: View {
 	let key: String
-	/// The file that declares it, as shown.
-	let source: String
-	/// The file to open, inside the project folder; nil when it can't be edited there.
-	let file: URL?
-	/// lpm.json overrides it.
-	let isOverridden: Bool
+	let elsewhere: VaultSchemaElsewhere
+	/// The project folder, which the file to open has to be in.
+	let folder: String?
 	let onOverride: () -> Void
 	@Environment(\.dismiss) private var dismiss
 
@@ -152,9 +256,11 @@ struct VaultSchemaElsewhereSheet: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 					.frame(width: 28, height: 28)
 					.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.neutralTint))
+					.accessibilityHidden(true)
 				VStack(alignment: .leading, spacing: 5) {
-					(Text(key).font(VaultTypography.mono(14, .bold)) + Text(" can't be removed here").font(.system(size: 14, weight: .bold)))
+					(Text(key.escapingDirectionControls).font(VaultTypography.mono(14, .bold)) + Text(" can't be removed here").font(.system(size: 14, weight: .bold)))
 						.foregroundStyle(VaultPalette.textPrimary)
+						.fixedSize(horizontal: false, vertical: true)
 					Text(explanation)
 						.font(.system(size: 12))
 						.foregroundStyle(VaultPalette.textTertiary)
@@ -167,12 +273,13 @@ struct VaultSchemaElsewhereSheet: View {
 				VaultBarButton(title: "Cancel", height: 28) { dismiss() }
 					.keyboardShortcut(.cancelAction)
 				if let file {
-					VaultBarButton(systemImage: "doc", title: "Open \(file.lastPathComponent.escapingDirectionControls)", height: 28) {
-						ProjectConfigOpener.open(file)
+					VaultBarButton(systemImage: "doc", title: "Open file", height: 28) {
+						ProjectConfigOpener.open(file.url, within: file.folder)
 						dismiss()
 					}
+					.help(elsewhere.source)
 				}
-				VaultBarButton(title: isOverridden ? "Reset to original" : "Override rules", filled: true, height: 28) {
+				VaultBarButton(title: elsewhere.isOverridden ? "Reset to original" : "Override rules", filled: true, height: 28) {
 					onOverride()
 					dismiss()
 				}
@@ -185,14 +292,32 @@ struct VaultSchemaElsewhereSheet: View {
 		.background(VaultPalette.content)
 	}
 
-	private var explanation: String {
-		let place = file == nil ? "\(source), which can't be edited here" : "\(source), which lpm.json imports"
-		if isOverridden {
-			return "It's declared in \(place); lpm.json only overrides its rules. Remove it there, or reset the override to bring back the original rules."
+	/// The file to open, built only when there's one.
+	private var file: (url: URL, folder: URL)? {
+		guard let path = elsewhere.path, let folder, !folder.isEmpty else { return nil }
+		let root = URL(filePath: folder, directoryHint: .isDirectory)
+		return (root.appending(path: path, directoryHint: .notDirectory), root)
+	}
+
+	private var explanation: String { Self.explanation(for: elsewhere, editable: file != nil) }
+
+	/// Why the key can't be removed in lpm.json, and what can be done, given
+	/// whether the file that declares it can be opened from the project.
+	nonisolated static func explanation(for elsewhere: VaultSchemaElsewhere, editable: Bool) -> String {
+		let source = elsewhere.source
+		if elsewhere.isOverridden {
+			return editable
+				? "It's declared in \(source), which lpm.json imports, and lpm.json overrides its rules. To remove it, delete it in \(source) and reset the override here: lpm.json can't override a key its imports don't declare."
+				: "It's declared in \(source), which can't be edited here, and lpm.json overrides its rules. Reset the override to bring back the original rules."
 		}
-		return file == nil
-			? "It's declared in \(place). Override its rules in lpm.json instead."
-			: "It's declared in \(place). Remove it there, or override its rules in lpm.json."
+		if let overriddenBy = elsewhere.overriddenBy {
+			return editable
+				? "It's declared in \(source), and \(overriddenBy) overrides its rules. Remove it from both, or override its rules in lpm.json."
+				: "It's declared in \(source), which can't be edited here, and \(overriddenBy) overrides its rules. Override its rules in lpm.json instead."
+		}
+		return editable
+			? "It's declared in \(source), which lpm.json imports. Remove it there, or override its rules in lpm.json."
+			: "It's declared in \(source), which can't be edited here. Override its rules in lpm.json instead."
 	}
 }
 

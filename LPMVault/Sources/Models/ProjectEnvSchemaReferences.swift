@@ -18,23 +18,8 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 		case dropFromGroup
 		case removeGroup
 		case removeCondition
-
-		var title: String {
-			switch self {
-			case .dropFromGroup: "Drop from group"
-			case .removeGroup: "Remove group"
-			case .removeCondition: "Remove rule"
-			}
-		}
-
-		/// What the reference shows once fixed.
-		var done: String {
-			switch self {
-			case .dropFromGroup: "Dropped from group"
-			case .removeGroup: "Group removed"
-			case .removeCondition: "Rule removed"
-			}
-		}
+		/// Removes lpm.json's override of an imported group, so the original applies.
+		case removeGroupOverride
 	}
 
 	let kind: Kind
@@ -54,6 +39,47 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 	}
 
 	var id: Draft.Item { item }
+
+	/// The fix writes an override of an imported declaration into lpm.json,
+	/// which replaces it whole: later changes to that file no longer apply.
+	var writesOverride: Bool { source != nil }
+
+	func title(of fix: Fix) -> String {
+		switch fix {
+		case .dropFromGroup: writesOverride ? "Override without it" : "Drop from group"
+		case .removeGroup: "Remove group"
+		case .removeCondition: writesOverride ? "Override without the rule" : "Remove rule"
+		case .removeGroupOverride: "Use the original group"
+		}
+	}
+
+	/// What the reference shows once `fix` is chosen.
+	func done(by fix: Fix) -> String {
+		if writesOverride { return "Overridden in lpm.json" }
+		return switch fix {
+		case .dropFromGroup: "Dropped from group"
+		case .removeGroup: "Group removed"
+		case .removeCondition: "Rule removed"
+		case .removeGroupOverride: "Override removed"
+		}
+	}
+
+	/// What `fix` does beyond dropping the reference, when that needs saying.
+	func note(for fix: Fix) -> String? {
+		if writesOverride, let source {
+			let container = item.isGroup ? "groupOverrides" : "overrides"
+			return "Writes envSchema.\(container).\(item.name.escapingDirectionControls) to lpm.json, which replaces \(source)'s version in full: later changes there won't apply."
+		}
+		switch (fix, kind) {
+		case (.dropFromGroup, .group(_, let mode, let members)) where mode != "allOrNone" && members.count == 2:
+			let other = members.first { $0 != key } ?? ""
+			return "Leaves \(other.escapingDirectionControls) as the group's only member, which makes it required."
+		case (.removeGroupOverride, _):
+			return "The group the import declares applies again."
+		default:
+			return nil
+		}
+	}
 
 	/// Such as "Group auth: Exactly one of PASSWORD, OAUTH_TOKEN".
 	var title: String {
@@ -97,12 +123,19 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 		}
 	}
 
+	/// The ways to settle the reference, the one that changes least first.
 	var fixes: [Fix] {
 		switch kind {
-		case .condition: [.removeCondition]
-		case .group(_, _, let members):
+		case .condition:
+			return [.removeCondition]
+		case .group(_, let mode, let members):
 			// A group needs a member, and only lpm.json's own groups can be removed from it.
-			(members.count > 1 ? [.dropFromGroup] : []) + (source == nil && declaration.isDeclared ? [.removeGroup] : [])
+			let drop: [Fix] = members.count > 1 ? [.dropFromGroup] : []
+			let remove: [Fix] = source == nil && declaration.isDeclared ? [.removeGroup] : []
+			let reset: [Fix] = source == nil && !declaration.isDeclared ? [.removeGroupOverride] : []
+			// Dropping one of two members leaves the other required, which removing the group doesn't.
+			let leavesRequired = mode != "allOrNone" && members.count == 2
+			return leavesRequired ? remove + reset + drop : drop + remove + reset
 		}
 	}
 
@@ -115,7 +148,7 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 	/// The item's declaration after `fix`.
 	func fixed(by fix: Fix) -> Draft.Declaration {
 		switch fix {
-		case .removeGroup:
+		case .removeGroup, .removeGroupOverride:
 			return .absent
 		case .dropFromGroup:
 			guard case .group(_, let mode, let members) = kind else { return declaration }
@@ -142,8 +175,7 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 		var groups: [ProjectEnvSchemaReference] = []
 		var conditions: [ProjectEnvSchemaReference] = []
 		var inRoot = Set<Draft.Item>()
-		let schema = (try? draft.applied(to: draft.schema)) ?? draft.schema
-		for (item, declaration) in Draft.items(in: schema) {
+		for (item, declaration) in draft.currentItems {
 			inRoot.insert(item)
 			guard let json = declaration.json else { continue }
 			switch item {
@@ -185,6 +217,8 @@ private extension ProjectEnvSchemaDraft.Item {
 		case .clientPrefixes: ""
 		}
 	}
+
+	var isGroup: Bool { if case .group = self { true } else { false } }
 }
 
 private extension ProjectEnvSchemaDraft.Declaration {
