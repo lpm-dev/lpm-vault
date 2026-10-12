@@ -53,6 +53,9 @@ struct VaultSchemaReviewSheet: View {
 						if let clash {
 							problem("Can't save: \(clash.message)")
 						}
+						if let summary = review.warningSummary {
+							problem(summary)
+						}
 						if changedWhileOpen {
 							notice("This review changed while it was open, because lpm.json, its imports, or the stored values changed. Check it again before saving.")
 						}
@@ -103,8 +106,8 @@ struct VaultSchemaReviewSheet: View {
 					store.discardSchemaDraft(in: project.id)
 					dismiss()
 				}
-				// A review that changed while open saves only with a click, not Return.
-				if changedWhileOpen {
+				// A review that changed while open, or gives up Secret, saves only with a click, not Return.
+				if changedWhileOpen || review?.warningSummary != nil {
 					VaultBarButton(title: saving ? "Saving…" : "Save to lpm.json", filled: true, disabled: blocked, height: 28, action: save)
 				} else {
 					VaultBarButton(title: saving ? "Saving…" : "Save to lpm.json", shortcut: "⏎", filled: true, disabled: blocked, height: 28, action: save)
@@ -196,6 +199,17 @@ struct VaultSchemaReviewSheet: View {
 					.foregroundStyle(VaultPalette.textFaint)
 					.lineLimit(1)
 					.truncationMode(.middle)
+			}
+			if let warning = item.warning {
+				HStack(alignment: .top, spacing: 6) {
+					Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).padding(.top, 1)
+					Text(warning).font(.system(size: 11.5, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+				}
+				.foregroundStyle(VaultPalette.redText)
+				.padding(9)
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.redTint))
+				.accessibilityElement(children: .combine)
 			}
 			if let note = note(for: item) {
 				HStack(alignment: .top, spacing: 6) {

@@ -19,6 +19,10 @@ struct VaultSchemaView: View {
 	var canEdit = false
 	var onAddKey: () -> Void = {}
 	var onAddGroup: () -> Void = {}
+	/// How many prefixes make keys public besides the frameworks'.
+	var clientPrefixCount = 0
+	/// What edits the client prefixes, shown from the header; nil while they can't be shown.
+	var clientPrefixes: AnyView?
 	/// Keys stored in some environment that lpm.json doesn't declare.
 	var undeclared: [VaultStore.StoredSchemaKey] = []
 	var onDeclare: (String) -> Void = { _ in }
@@ -29,6 +33,8 @@ struct VaultSchemaView: View {
 	var onResolveConflict: (ProjectEnvSchemaDraft.Item, _ keepingMine: Bool) -> Void = { _, _ in }
 	let onConnectCLI: () -> Void
 	let onRecheck: () -> Void
+
+	@State private var showsClientPrefixes = false
 
 	/// How a row differs from lpm.json in the draft.
 	enum RowState: Equatable {
@@ -93,6 +99,12 @@ struct VaultSchemaView: View {
 				.lineLimit(1)
 			}
 			Spacer(minLength: 8)
+			if case .loaded? = state, let clientPrefixes {
+				VaultOutlineButton(systemImage: "globe", title: "Client prefixes \(clientPrefixCount)", help: "Prefixes that make keys public",
+					active: showsClientPrefixes) { showsClientPrefixes.toggle() }
+					.fixedSize()
+					.popover(isPresented: $showsClientPrefixes, arrowEdge: .bottom) { clientPrefixes }
+			}
 			if let configFile {
 				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor") {
 					ProjectConfigOpener.open(configFile)
