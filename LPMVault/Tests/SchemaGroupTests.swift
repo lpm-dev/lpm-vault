@@ -349,6 +349,8 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("MEMBERS"))
 			try await host.click("At least one of")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.changedItems == [.group("auth")] })
+			// Review & save stays off until the draft is checked, which a slow runner can still be doing.
+			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-groups") != nil })
 			try await host.click("Review & save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
