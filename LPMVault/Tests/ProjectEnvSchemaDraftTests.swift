@@ -86,6 +86,33 @@ struct ProjectEnvSchemaDraftTests {
 		#expect(try Draft(schema: nil).applied(to: nil) == nil, "No envSchema is added without rules")
 	}
 
+	@Test("a container keeps its place whatever order its changes were made in, and new fields go last in the order first changed")
+	func fieldsKeepTheirPlace() throws {
+		let base = try schema(#"{"vars":{"A":{}},"extends":["x.json"],"groups":null}"#)
+		var draft = Draft(schema: base)
+		draft.set(.absent, for: .key("A"))
+		draft.set(.declared(try json(#"["ACME_"]"#)), for: .clientPrefixes)
+		draft.set(.overridden(.object([])), for: .key("B"))
+		draft.set(.declared(.object([])), for: .key("C"))
+		draft.set(.declared(try json(#"{"mode":"allOrNone","vars":["C"]}"#)), for: .group("g"))
+		let applied = try #require(try draft.applied(to: base))
+		#expect(applied == (try json(#"{"vars":{"C":{}},"extends":["x.json"],"groups":{"g":{"mode":"allOrNone","vars":["C"]}},"clientPrefixes":["ACME_"],"overrides":{"B":{}}}"#)))
+	}
+
+	@Test("members match by their bytes, so another spelling of a name is another member")
+	func membersMatchByBytes() throws {
+		let base = try schema(#"{"vars":{"CAFé":{"format":"url"}}}"#)
+		var draft = Draft(schema: base)
+		draft.set(.declared(.object([])), for: .key("CAFe\u{301}"))
+		let applied = try #require(try draft.applied(to: base))
+		guard case .object(let members)? = applied["vars"] else {
+			Issue.record("vars isn't an object")
+			return
+		}
+		#expect(members.map { Array($0.key.utf8) } == [Array("CAF\u{e9}".utf8), Array("CAFe\u{301}".utf8)])
+		#expect(members.first?.value == (try json(#"{"format":"url"}"#)))
+	}
+
 	@Test("groups, group overrides, and client prefixes apply to their own containers")
 	func groupsAndPrefixes() throws {
 		let base = try schema(#"{"vars":{"A":{},"B":{}},"groups":{"auth":{"mode":"exactlyOne","vars":["A","B"]}},"clientPrefixes":["ACME_"]}"#)

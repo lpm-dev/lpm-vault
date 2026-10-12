@@ -38,6 +38,26 @@ struct SchemaDraftBenchmarkTests {
 		#expect(empty < 5)
 	}
 
+	@Test("applying a draft that changes all 4096 rules, moving half to overrides")
+	func applyingEveryRule() throws {
+		let base = schema("RULE")
+		var draft = Draft(schema: base)
+		let json = LPMConfigJSON.object([.init(key: "format", value: .string("email"))])
+		for (index, entry) in Draft.items(in: base).enumerated() {
+			draft.set(index.isMultiple(of: 2) ? .declared(json) : .overridden(json), for: entry.item)
+		}
+		#expect(draft.changedItems.count == 4096)
+		var applied: LPMConfigJSON?
+		let milliseconds = median { applied = try? draft.applied(to: base) }
+		print("applied(to:) × 4096 changes: \(milliseconds) ms")
+		guard case .object(let vars)? = applied?["vars"], case .object(let overrides)? = applied?["overrides"] else {
+			Issue.record("The draft didn't apply")
+			return
+		}
+		#expect(vars.count == 2048 && overrides.count == 2048)
+		#expect(milliseconds < 60)
+	}
+
 	@Test("reading every row's declaration of a 4096-rule schema")
 	func declarationsOfEveryRow() {
 		let base = schema("ROW")

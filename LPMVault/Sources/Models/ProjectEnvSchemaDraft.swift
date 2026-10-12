@@ -219,16 +219,19 @@ struct ProjectEnvSchemaDraft: Sendable {
 
 	/// `schema` with every change applied: nil when the draft empties an
 	/// envSchema that had rules, or adds none to a file without one.
-	/// Members keep their place; new ones go last; a container the draft
-	/// empties goes away, and one that was already empty stays.
+	/// Members and fields keep their place; new ones go last, in the order
+	/// the draft first changed them; a container the draft empties goes
+	/// away, and one that was already empty stays. Each field the draft
+	/// changes is rebuilt once, in time linear in the field and its changes.
 	func applied(to schema: LPMConfigJSON?) throws(ProjectEnvSchemaFile.FileError) -> LPMConfigJSON? {
 		let before = schema == .null ? nil : schema
-		var result = before ?? .object([])
-		guard case .object = result else { throw .invalidSchema }
-		for change in changes { try Self.apply(change.value, for: change.item, to: &result) }
-		for conflict in conflicts { try Self.apply(conflict.mine, for: conflict.item, to: &result) }
-		if result.isEmptyObject, before?.isEmptyObject != true { return nil }
-		return result
+		guard case .object(var fields) = before ?? .object([]) else { throw .invalidSchema }
+		var edits = FieldEdits()
+		for change in changes { edits.add(change.value, for: change.item) }
+		for conflict in conflicts { edits.add(conflict.mine, for: conflict.item) }
+		try edits.apply(to: &fields)
+		if fields.isEmpty, before?.isEmptyObject != true { return nil }
+		return .object(fields)
 	}
 
 	// MARK: - Items in a schema
@@ -298,43 +301,133 @@ struct ProjectEnvSchemaDraft: Sendable {
 		return changed
 	}
 
-	private static func apply(_ value: Declaration, for item: Item, to schema: inout LPMConfigJSON) throws(ProjectEnvSchemaFile.FileError) {
+}
+
+/// The draft's changes as edits to the envSchema's fields: members of
+/// `vars`, `overrides`, `groups` and `groupOverrides` set or removed, and
+/// `clientPrefixes` replaced whole.
+private struct FieldEdits {
+	typealias Member = LPMConfigJSON.Member
+	/// A member's new value; nil removes it.
+	typealias Edit = (name: String, value: LPMConfigJSON?)
+
+	/// Each container's edits, in the order the draft made them.
+	private var containers: [String: [Edit]] = [:]
+	/// `clientPrefixes`' new value once a change sets it; nil removes it.
+	private var prefixes: LPMConfigJSON??
+	/// Fields an edit puts something in, in the order of the first such edit,
+	/// which is where each goes when lpm.json lacks it.
+	private var filled: [String] = []
+
+	mutating func add(_ value: ProjectEnvSchemaDraft.Declaration, for item: ProjectEnvSchemaDraft.Item) {
 		let name: String
 		let declared: String
 		let overridden: String
 		switch item {
 		case .clientPrefixes:
-			if let json = value.json { schema.set(json, forKey: "clientPrefixes") } else { schema.removeValue(forKey: "clientPrefixes") }
+			prefixes = .some(value.json)
+			if value.json != nil { fill("clientPrefixes") }
 			return
 		case .key(let key): (name, declared, overridden) = (key, "vars", "overrides")
 		case .group(let group): (name, declared, overridden) = (group, "groups", "groupOverrides")
 		}
 		switch value {
 		case .absent:
-			try remove(name, from: declared, in: &schema)
-			try remove(name, from: overridden, in: &schema)
+			containers[declared, default: []].append((name, nil))
+			containers[overridden, default: []].append((name, nil))
 		case .declared(let json):
-			try remove(name, from: overridden, in: &schema)
-			try set(json, for: name, in: declared, of: &schema)
+			containers[overridden, default: []].append((name, nil))
+			containers[declared, default: []].append((name, json))
+			fill(declared)
 		case .overridden(let json):
-			try remove(name, from: declared, in: &schema)
-			try set(json, for: name, in: overridden, of: &schema)
+			containers[declared, default: []].append((name, nil))
+			containers[overridden, default: []].append((name, json))
+			fill(overridden)
 		}
 	}
 
-	private static func set(_ value: LPMConfigJSON, for name: String, in field: String, of schema: inout LPMConfigJSON) throws(ProjectEnvSchemaFile.FileError) {
-		var container = schema[field] ?? .object([])
-		if container == .null { container = .object([]) }
-		guard case .object = container else { throw .invalidSchema }
-		container.set(value, forKey: name)
-		schema.set(container, forKey: field)
+	private mutating func fill(_ field: String) {
+		if !filled.contains(field) { filled.append(field) }
 	}
 
-	private static func remove(_ name: String, from field: String, in schema: inout LPMConfigJSON) throws(ProjectEnvSchemaFile.FileError) {
-		guard var container = schema[field], container != .null else { return }
-		guard case .object = container else { throw .invalidSchema }
-		guard container.removeValue(forKey: name) != nil else { return }
-		if container.isEmptyObject { schema.removeValue(forKey: field) } else { schema.set(container, forKey: field) }
+	/// Makes the edits to the envSchema's `fields`, rebuilding each field once.
+	/// A field's first spelling is the one edited, as `LPMConfigJSON.set(_:forKey:)` finds it.
+	func apply(to fields: inout [Member]) throws(ProjectEnvSchemaFile.FileError) {
+		/// Each field's new value; nil removes it.
+		var replacements: [String: LPMConfigJSON?] = [:]
+		for (field, edits) in containers {
+			let current: [Member]
+			switch fields.first(where: { $0.key.utf8.elementsEqual(field.utf8) })?.value {
+			case nil, .null?: current = []
+			case .object(let members)?: current = members
+			default: throw .invalidSchema
+			}
+			guard let (members, removed) = Self.edited(current, edits) else { continue }
+			replacements[field] = members.isEmpty && removed ? .some(nil) : .object(members)
+		}
+		if let prefixes { replacements["clientPrefixes"] = prefixes }
+		guard !replacements.isEmpty else { return }
+		var result: [Member] = []
+		result.reserveCapacity(fields.count + replacements.count)
+		for member in fields {
+			guard let replacement = replacements.first(where: { $0.key.utf8.elementsEqual(member.key.utf8) }) else {
+				result.append(member)
+				continue
+			}
+			replacements.removeValue(forKey: replacement.key)
+			if let value = replacement.value { result.append(Member(key: member.key, value: value)) }
+		}
+		for field in filled {
+			if case .some(let value?) = replacements[field] { result.append(Member(key: field, value: value)) }
+		}
+		fields = result
+	}
+
+	/// `members` with `edits` made in one pass: a member keeps its place and
+	/// a new one goes last, in the order of its edit. The draft's items are
+	/// unique, so each name has one edit, made to its first member, as
+	/// `LPMConfigJSON.set(_:forKey:)` finds it. Nil when no edit applies;
+	/// `removed` says whether one removed a member.
+	private static func edited(_ members: [Member], _ edits: [Edit]) -> (members: [Member], removed: Bool)? {
+		var offsets = [MemberName: Int](minimumCapacity: members.isEmpty ? 0 : edits.count)
+		if !members.isEmpty {
+			for (offset, edit) in edits.enumerated() { offsets[MemberName(edit.name)] = offset }
+		}
+		var unmatched = [Bool](repeating: true, count: edits.count)
+		var result: [Member] = []
+		result.reserveCapacity(members.count + edits.count)
+		var changed = false
+		var removed = false
+		for member in members {
+			guard let offset = offsets.removeValue(forKey: MemberName(member.key)) else {
+				result.append(member)
+				continue
+			}
+			unmatched[offset] = false
+			changed = true
+			if let value = edits[offset].value { result.append(Member(key: member.key, value: value)) } else { removed = true }
+		}
+		for (offset, edit) in edits.enumerated() where unmatched[offset] {
+			guard let value = edit.value else { continue }
+			result.append(Member(key: edit.name, value: value))
+			changed = true
+		}
+		return changed ? (result, removed) : nil
+	}
+}
+
+/// A member name hashed and compared by its UTF-8 bytes, as lpm.json's
+/// members are: String equality would merge distinct spellings of the same text.
+private struct MemberName: Hashable {
+	let text: String
+
+	init(_ text: String) { self.text = text }
+
+	static func == (lhs: Self, rhs: Self) -> Bool { lhs.text.utf8.elementsEqual(rhs.text.utf8) }
+
+	func hash(into hasher: inout Hasher) {
+		var text = text
+		text.withUTF8 { hasher.combine(bytes: UnsafeRawBufferPointer($0)) }
 	}
 }
 
