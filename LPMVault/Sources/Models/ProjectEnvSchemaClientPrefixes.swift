@@ -274,7 +274,7 @@ enum ProjectEnvSchemaClientPrefixes {
 		for key in keys {
 			let item = Draft.Item.key(key)
 			if isPublic, let secret = context.rules.replacedRules[key]?.secret {
-				exposed.append(Exposure(key: key, source: secret.source.escapingDirectionControls))
+				exposed.append(Exposure(key: key, source: secret.escapingDirectionControls))
 			}
 			switch draft.declaration(of: item) {
 			case .overridden where overrideCanGo(key, public: isPublic, in: context):

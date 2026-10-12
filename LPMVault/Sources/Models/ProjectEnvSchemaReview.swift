@@ -171,7 +171,7 @@ struct ProjectEnvSchemaReview: Equatable {
 			let secret = rules.replacedRules[key]?.secret, !ProjectEnvSchemaRule(resolved: json).secret
 		else { return nil }
 		let rule = ProjectEnvSchemaRule(resolved: json)
-		return "\(secret.source.escapingDirectionControls) marks \(key.escapingDirectionControls) Secret, and this override doesn't"
+		return "\(secret.escapingDirectionControls) marks \(key.escapingDirectionControls) Secret, and this override doesn't"
 			+ (rule.client ? ", so its value becomes public." : ", so its value is no longer treated as secret.")
 	}
 

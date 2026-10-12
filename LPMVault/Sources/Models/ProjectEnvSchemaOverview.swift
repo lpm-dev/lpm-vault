@@ -172,7 +172,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				declaringGroups[name] = declaringSource
 			}
 		}
-		let imported = resolution.clientPrefixOrigins.compactMapValues { $0.source == "lpm.json" ? nil : $0.source }
+		let imported = resolution.clientPrefixSources.compactMapValues { $0 == "lpm.json" ? nil : $0 }
 		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source), overridden: overridden,
 			declaring: declaring, groupSources: resolution.groupOrigins.mapValues(\.source), overriddenGroups: overriddenGroups,
 			declaringGroups: declaringGroups, importedClientPrefixes: imported, replacedRules: resolution.replacedRules)
