@@ -426,6 +426,23 @@ extension SheetInteractionTests {
 			#expect(ProjectEnvSchemaGroup(store.schemaDraft(for: "schema-groups")?.declaration(of: .group("mail")).json)?.members == ["PORT", "TOKEN"])
 		}
 
+		@Test("a rename undone before the panel redraws still leaves the panel on the group")
+		func renameUndoneBeforeRedraw() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			try await host.click("auth")
+			#expect(try await host.waitForText("MEMBERS"))
+			try host.enterText("signin", placeholder: "group_name")
+			try await host.click("Rename")
+			try await host.settle()
+			try host.enterText("signin2", placeholder: "group_name")
+			try await host.click("Rename")
+			// No redraw comes between the two, as on a runner where SwiftUI redraws only on a later turn.
+			store.undoSchemaDraft(in: "schema-groups")
+			#expect(store.schemaDraft(for: "schema-groups")?.originalName(ofGroup: "signin") == "auth")
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "group_name") == "signin" }, "The panel stays with the group under the name it has again")
+		}
+
 		@Test("removing the last member of a group being added takes it out of the draft, without the member")
 		func removeLastMember() async throws {
 			let (store, host, folder) = try await workspace()

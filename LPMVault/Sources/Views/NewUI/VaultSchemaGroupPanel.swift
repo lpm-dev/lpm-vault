@@ -192,9 +192,11 @@ struct VaultSchemaGroupEditor: View {
 		}
 		.onChange(of: field) { _, _ in if isNew { adopt() } }
 		.onChange(of: heldName) { _, held in follow(held) }
-		.onChange(of: renamedHeld) { _, held in
-			// Undo, redo, and discarding move a rename; the panel stays with the group.
-			guard let held else { return }
+		// Undo, redo, and discarding move a rename; the panel stays with the group. The name
+		// shown counts too, as a rename and its undo can land in one update that leaves
+		// the name the group has where it was.
+		.onChange(of: [renamedHeld, name]) { _, _ in
+			guard let held = renamedHeld else { return }
 			if field != held { field = held }
 			if held != name { onFollow(.group(held)) }
 		}
