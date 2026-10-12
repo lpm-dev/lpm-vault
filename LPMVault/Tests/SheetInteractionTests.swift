@@ -709,10 +709,43 @@ final class SheetTestHost<V: View> {
 		return nil
 	}
 
+	/// Where `label` is drawn now. SwiftUI on macOS 15 draws a change only on a later
+	/// turn of the run loop, which can come while recognition runs and move the label,
+	/// so the label's area of the frame read is checked against the frame drawn after.
+	private func labelBounds(_ label: String, in target: NSView, options: String.CompareOptions, region: CGRect? = nil, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> CGRect? {
+		var bounds: CGRect?
+		for _ in 0..<4 {
+			// A turn of the run loop draws what the last step changed.
+			try await Task.sleep(for: .milliseconds(10))
+			let image = try snapshot(target)
+			bounds = try await labelBounds(label, in: image, target: target, options: options, region: region, onRecognition: onRecognition)
+			guard let found = bounds, !sameArea(found, of: image, as: try snapshot(target)) else { return bounds }
+		}
+		return bounds
+	}
+
+	/// Whether `bounds`, in Vision's normalized coordinates, holds the same pixels in both
+	/// frames, with a margin around it: the label is still where it was read.
+	private func sameArea(_ bounds: CGRect, of image: CGImage, as other: CGImage) -> Bool {
+		guard image.width == other.width, image.height == other.height, image.bitsPerPixel == other.bitsPerPixel,
+			image.bytesPerRow == other.bytesPerRow, let left = image.dataProvider?.data, let right = other.dataProvider?.data,
+			let leftBytes = CFDataGetBytePtr(left), let rightBytes = CFDataGetBytePtr(right)
+		else { return false }
+		let width = image.width, height = image.height, pixel = image.bitsPerPixel / 8
+		let margin = 4
+		let minX = max(0, Int(bounds.minX * CGFloat(width)) - margin), maxX = min(width, Int((bounds.maxX * CGFloat(width)).rounded(.up)) + margin)
+		let minY = max(0, Int((1 - bounds.maxY) * CGFloat(height)) - margin), maxY = min(height, Int(((1 - bounds.minY) * CGFloat(height)).rounded(.up)) + margin)
+		guard minX < maxX, minY < maxY, CFDataGetLength(left) >= image.bytesPerRow * height, CFDataGetLength(right) >= other.bytesPerRow * height else { return false }
+		for row in minY..<maxY {
+			let start = row * image.bytesPerRow + minX * pixel
+			if memcmp(leftBytes + start, rightBytes + start, (maxX - minX) * pixel) != 0 { return false }
+		}
+		return true
+	}
+
 	/// Fast mode finds the line cheaply but reports whole-line boxes for substrings, which
 	/// can land a click between neighboring buttons. Accurate mode then reads only that line.
-	private func labelBounds(_ label: String, in target: NSView, options: String.CompareOptions, region: CGRect? = nil, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> CGRect? {
-		let image = try snapshot(target)
+	private func labelBounds(_ label: String, in image: CGImage, target: NSView, options: String.CompareOptions, region: CGRect?, onRecognition: (@Sendable (Int, Int) -> Void)?) async throws -> CGRect? {
 		if let region {
 			let lines = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: region, onRecognition: onRecognition)
 			return lines.lazy.compactMap(\.labelBounds).first
@@ -765,8 +798,17 @@ final class SheetTestHost<V: View> {
 		return try #require(bitmap.cgImage)
 	}
 
+	/// Where `label` is in the view, once it appears: a runner can draw what the
+	/// last step changed only on a later turn.
 	func labelFrame(_ label: String, region: CGRect? = nil) async throws -> CGRect {
-		let box = try #require(try await labelBounds(label, in: view, options: [], region: region), "Missing label \(label)")
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		var bounds = try await labelBounds(label, in: view, options: [], region: region)
+		while bounds == nil, ContinuousClock.now < deadline {
+			try await Task.sleep(for: .milliseconds(20))
+			bounds = try await labelBounds(label, in: view, options: [], region: region)
+		}
+		if bounds == nil { RenderedText.saveDiagnostic(try snapshot(view), named: label) }
+		let box = try #require(bounds, "Missing label \(label)")
 		return CGRect(x: box.minX * view.bounds.width, y: box.minY * view.bounds.height,
 			width: box.width * view.bounds.width, height: box.height * view.bounds.height)
 	}
