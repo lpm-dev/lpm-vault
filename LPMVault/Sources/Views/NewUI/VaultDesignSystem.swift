@@ -352,9 +352,11 @@ struct VaultOutlineButton: View {
 
 struct VaultRowIconButton: View {
 	let systemImage: String
-	/// The tooltip, which also names the button for accessibility.
+	/// The tooltip, which also names the button for accessibility unless `label` does.
 	let help: String
 	var destructive = false
+	/// The button's name for accessibility, when the tooltip says more, such as a shortcut.
+	var label: String?
 	let action: () -> Void
 
 	@State private var hovering = false
@@ -376,7 +378,7 @@ struct VaultRowIconButton: View {
 		}
 		.buttonStyle(.plain)
 		.help(help)
-		.accessibilityLabel(help)
+		.accessibilityLabel(label ?? help)
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
 	}
