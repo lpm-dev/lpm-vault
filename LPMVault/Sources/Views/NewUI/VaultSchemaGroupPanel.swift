@@ -19,6 +19,10 @@ struct VaultSchemaGroupEditor: View {
 	@State private var newGroup = SchemaGroup()
 	/// Names this panel gave the group it adds, which undo and redo can bring back.
 	@State private var adoptedNames: Set<String> = []
+	/// The name the draft last held the group this panel adds under, which a
+	/// key's removal may have dropped a member from; the next name takes it
+	/// over, also after the group waited in the panel.
+	@State private var referencedName: String?
 	/// Names a group of lpm.json had in this panel as it was renamed, which undo and redo can bring back.
 	@State private var renamedNames: Set<String> = []
 	@State private var editsOverride = false
@@ -180,7 +184,10 @@ struct VaultSchemaGroupEditor: View {
 		}
 		.onAppear {
 			field = name
-			if isNew, !name.isEmpty { adoptedNames = [name] }
+			if isNew, !name.isEmpty {
+				adoptedNames = [name]
+				referencedName = name
+			}
 			if name.isEmpty { Task { @MainActor in nameFocused = true } }
 		}
 		.onChange(of: field) { _, _ in if isNew { adopt() } }
@@ -405,13 +412,16 @@ struct VaultSchemaGroupEditor: View {
 			return
 		}
 		let json = current.json(updating: held.flatMap { draft.declaration(of: .group($0)).json })
+		let referenced = referencedName ?? held
 		store.editSchemaDraft(in: project.id, coalescing: "new-group") { draft in
 			if let held { draft.set(.absent, for: .group(held)) }
 			draft.set(.declared(json), for: .group(candidate))
+			if let referenced { draft.renameReferences(toGroup: referenced, as: candidate) }
 		}
 		// The store ignores edits while the rules can't be edited.
 		guard Self.isAdded(candidate, in: draft) else { return }
 		adoptedNames.insert(candidate)
+		referencedName = candidate
 		onFollow(.group(candidate))
 	}
 
@@ -454,6 +464,7 @@ struct VaultSchemaGroupEditor: View {
 	private func follow(_ held: String?) {
 		guard !adoptedNames.isEmpty else { return }
 		if let held {
+			referencedName = held
 			if held != field { field = held }
 			if name != held { onFollow(.group(held)) }
 		} else if !name.isEmpty, draft.declaration(of: item) != .absent {

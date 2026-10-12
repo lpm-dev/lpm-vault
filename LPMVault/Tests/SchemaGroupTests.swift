@@ -138,6 +138,70 @@ struct SchemaGroupModelTests {
 		#expect(groups.map(\.key) == ["login", "zeta"], "A later rename keeps the group's place")
 	}
 
+	@Test("keeping a key puts it back in its group renamed since, whichever side of the removal the renames are on")
+	func keepAfterGroupRename() throws {
+		let schema = try json(#"{"vars":{"A":{},"B":{},"C":{}},"groups":{"g":{"mode":"allOrNone","vars":["A","B","C"]},"zeta":{"mode":"allOrNone","vars":["C"]}}}"#)
+		func removeA(from draft: inout ProjectEnvSchemaDraft) {
+			let references = ProjectEnvSchemaReference.references(to: "A", in: draft, rules: nil)
+			draft.remove("A", settling: references.map { ($0, .dropFromGroup) })
+		}
+		var after = ProjectEnvSchemaDraft(schema: schema)
+		removeA(from: &after)
+		after.renameGroup("g", to: "h")
+		after.keep("A")
+		#expect(after.declaration(of: .group("h")).json?["vars"] == .array(["A", "B", "C"].map(LPMConfigJSON.string)))
+		#expect(after.originalName(ofGroup: "h") == "g", "The rename stands")
+
+		var around = ProjectEnvSchemaDraft(schema: schema)
+		around.renameGroup("g", to: "h")
+		removeA(from: &around)
+		around.renameGroup("h", to: "i")
+		around.keep("A")
+		#expect(around.declaration(of: .group("i")).json?["vars"] == .array(["A", "B", "C"].map(LPMConfigJSON.string)))
+
+		var back = ProjectEnvSchemaDraft(schema: schema)
+		removeA(from: &back)
+		back.renameGroup("g", to: "h")
+		back.renameGroup("h", to: "g")
+		back.keep("A")
+		#expect(back.isEmpty, "Renamed back, keeping the key leaves the group as lpm.json has it")
+	}
+
+	@Test("keeping a key puts it back in a group the draft adds, renamed since")
+	func keepAfterNewGroupRename() throws {
+		var draft = ProjectEnvSchemaDraft(schema: try json(#"{"vars":{"A":{},"B":{}}}"#))
+		draft.set(.declared(try json(#"{"mode":"allOrNone","vars":["A","B"]}"#)), for: .group("n"))
+		let references = ProjectEnvSchemaReference.references(to: "A", in: draft, rules: nil)
+		draft.remove("A", settling: references.map { ($0, .dropFromGroup) })
+		// The group panel renames a group it adds as its name is typed.
+		let group = draft.declaration(of: .group("n"))
+		draft.set(.absent, for: .group("n"))
+		draft.set(group, for: .group("m"))
+		draft.renameReferences(toGroup: "n", as: "m")
+		draft.keep("A")
+		#expect(draft.declaration(of: .group("m")).json?["vars"] == .array(["A", "B"].map(LPMConfigJSON.string)))
+		#expect(draft.changedItems == [.group("m")])
+	}
+
+	@Test("renames that free each other's names keep every group's place")
+	func renameChain() throws {
+		var draft = ProjectEnvSchemaDraft(schema: try json(#"{"vars":{"A":{}},"groups":{"g":{"mode":"allOrNone","vars":["A"]},"h":{"mode":"atLeastOne","vars":["A"]},"z":{"mode":"exactlyOne","vars":["A"]}}}"#))
+		draft.renameGroup("h", to: "i")
+		draft.renameGroup("g", to: "h")
+		guard case .object(let groups)? = try draft.applied(to: draft.schema)?["groups"] else { Issue.record("No groups"); return }
+		#expect(groups.map(\.key) == ["h", "i", "z"])
+		#expect(groups.first?.value["mode"] == .string("allOrNone"), "g's rules move to h, in g's place")
+		#expect(draft.originalName(ofGroup: "h") == "g" && draft.originalName(ofGroup: "i") == "h")
+
+		var swapped = ProjectEnvSchemaDraft(schema: draft.schema)
+		swapped.renameGroup("g", to: "t")
+		swapped.renameGroup("h", to: "g")
+		swapped.renameGroup("t", to: "h")
+		guard case .object(let swaps)? = try swapped.applied(to: swapped.schema)?["groups"] else { Issue.record("No groups"); return }
+		#expect(swaps.map(\.key) == ["h", "g", "z"])
+		#expect(swaps.first?.value["mode"] == .string("allOrNone"), "Swapped names keep each group's place")
+	}
+
 	@Test("a key the draft no longer adds leaves a renamed group of lpm.json's without members, never removing it")
 	func dropReferencesKeepsRenamedGroups() throws {
 		var draft = ProjectEnvSchemaDraft(schema: try json(#"{"vars":{"A":{}},"groups":{"auth":{"mode":"allOrNone","vars":["A"]}}}"#))
@@ -337,6 +401,27 @@ extension SheetInteractionTests {
 				ProjectEnvSchemaGroup(store.schemaDraft(for: "schema-groups")?.declaration(of: .group("signin")).json)?.members == ["PASSWORD"]
 			})
 			#expect(try await host.waitForText("works like Required"))
+		}
+
+		@Test("keeping a key puts it back in a group being added, renamed since, also after the name was cleared")
+		func keepAfterRenamingNewGroup() async throws {
+			let (store, host, folder) = try await workspace()
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			store.editSchemaDraft(in: "schema-groups") { $0.set(.declared(ProjectEnvSchemaGroup(members: ["PORT", "TOKEN"]).json()), for: .group("smtp")) }
+			let references = ProjectEnvSchemaReference.references(to: "PORT", in: store.schemaDraftOrBase(for: "schema-groups"),
+				rules: store.keyDescriptions["schema-groups"]?.schema?.overview)
+			store.removeSchemaKey("PORT", settling: references.map { ($0, .dropFromGroup) }, in: "schema-groups")
+			#expect(ProjectEnvSchemaGroup(store.schemaDraft(for: "schema-groups")?.declaration(of: .group("smtp")).json)?.members == ["TOKEN"])
+			try await host.click("smtp")
+			#expect(try await host.waitForText("NEW GROUP"))
+			try host.enterText("email", placeholder: "group_name")
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.declaration(of: .group("email")) != .absent })
+			try host.enterText("", placeholder: "group_name")
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.declaration(of: .group("email")) == .absent })
+			try host.enterText("mail", placeholder: "group_name")
+			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.declaration(of: .group("mail")) != .absent })
+			store.keepSchemaKey("PORT", in: "schema-groups")
+			#expect(ProjectEnvSchemaGroup(store.schemaDraft(for: "schema-groups")?.declaration(of: .group("mail")).json)?.members == ["PORT", "TOKEN"])
 		}
 
 		@Test("removing the last member of a group being added takes it out of the draft, without the member")

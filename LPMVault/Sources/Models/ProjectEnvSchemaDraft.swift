@@ -195,15 +195,24 @@ struct ProjectEnvSchemaDraft: Sendable {
 
 	/// Forgets a rename the draft no longer makes: one lpm.json's group no
 	/// longer leaves for the new name, after an edit, a discard, a merge, or
-	/// a conflict settled either way.
+	/// a conflict settled either way. Renames stand together, so a group can
+	/// take a name another renamed group left, or two groups swap names.
 	private mutating func pruneRenames() {
 		guard !renamedGroups.isEmpty else { return }
-		renamedGroups = renamedGroups.filter { name, original in
-			guard case .declared = base(of: .group(original)), declaration(of: .group(original)) == .absent,
-				base(of: .group(name)) == .absent, case .declared = declaration(of: .group(name))
-			else { return false }
+		var standing = renamedGroups.filter { name, original in
+			guard case .declared = base(of: .group(original)), case .declared = declaration(of: .group(name)) else { return false }
 			return true
 		}
+		while true {
+			let originals = Set(standing.values)
+			// The old name is free, or another renamed group has it; the new one is new to lpm.json, or left by a renamed group.
+			let ended = standing.filter { name, original in
+				(declaration(of: .group(original)) != .absent && standing[original] == nil) || (base(of: .group(name)) != .absent && !originals.contains(name))
+			}
+			guard !ended.isEmpty else { break }
+			for name in ended.keys { standing.removeValue(forKey: name) }
+		}
+		renamedGroups = standing
 	}
 
 	mutating func discardAll() {
@@ -219,8 +228,17 @@ struct ProjectEnvSchemaDraft: Sendable {
 	mutating func renameGroup(_ name: String, to newName: String) {
 		guard name != newName else { return }
 		let original = renamedGroups.removeValue(forKey: name) ?? name
-		set([(.group(name), .absent), (.group(newName), declaration(of: .group(name)))])
 		if newName != original, case .declared = base(of: .group(original)) { renamedGroups[newName] = original }
+		set([(.group(name), .absent), (.group(newName), declaration(of: .group(name)))])
+		renameReferences(toGroup: name, as: newName)
+	}
+
+	/// Points removals' fixes to the group `name` at `newName`, so keeping a
+	/// removed key gives them back to the group under its new name. Groups
+	/// aren't named elsewhere in the rules.
+	mutating func renameReferences(toGroup name: String, as newName: String) {
+		guard name != newName else { return }
+		removals = removals.mapValues { $0.renaming(.group(name), to: .group(newName)) }
 	}
 
 	/// The name lpm.json has for a group the draft renames to `name`.
@@ -289,7 +307,7 @@ struct ProjectEnvSchemaDraft: Sendable {
 	/// under the new name.
 	mutating func renameReferences(to key: String, as newKey: String) {
 		guard key != newKey else { return }
-		removals = removals.mapValues { $0.renaming(key, to: newKey) }
+		removals = removals.mapValues { $0.renaming(.key(key), to: .key(newKey)) }
 		var edits: [(item: Item, declaration: Declaration)] = []
 		for item in changedItems {
 			let declaration = declaration(of: item)
@@ -330,24 +348,38 @@ struct ProjectEnvSchemaDraft: Sendable {
 			}
 		}
 
+		/// A fix, with what lpm.json had for the item it changed when the key
+		/// was removed, under lpm.json's name for it: the fix follows the item
+		/// when the draft renames it, and a change on disk since stands.
+		struct Settled: Equatable, Sendable {
+			fileprivate(set) var fix: Fix
+			let original: Item
+			let base: Declaration
+		}
+
 		/// The key as the draft had changed it; nil when the draft hadn't.
 		let edited: Declaration?
-		let fixes: [Fix]
-		/// What lpm.json had for each item when the key was removed.
-		let bases: [Item: Declaration]
+		fileprivate(set) var fixes: [Settled]
 
-		/// This removal with `key`, a key the draft adds, renamed to `newKey`.
-		fileprivate func renaming(_ key: String, to newKey: String) -> Removal {
-			let renamed = fixes.map { fix -> Fix in
-				switch fix {
-				case .droppedFromGroup(let name, let members): .droppedFromGroup(name, members: members.map { $0 == key ? newKey : $0 })
-				case .removedCondition(let other, let condition) where other == key: .removedCondition(key: newKey, condition: condition)
-				default: fix
+		/// This removal with `item` renamed to `newItem`: fixes to it, and a key
+		/// in the members a group had.
+		fileprivate func renaming(_ item: Item, to newItem: Item) -> Removal {
+			var removal = self
+			for index in removal.fixes.indices {
+				switch (removal.fixes[index].fix, item, newItem) {
+				case (.droppedFromGroup(let name, let members), _, _):
+					let renamed = if case .group(name) = item, case .group(let newName) = newItem { newName } else { name }
+					let keys = if case .key(let key) = item, case .key(let newKey) = newItem { members.map { $0 == key ? newKey : $0 } } else { members }
+					removal.fixes[index].fix = .droppedFromGroup(renamed, members: keys)
+				case (.removedCondition(let other, let condition), .key(let key), .key(let newKey)) where other == key:
+					removal.fixes[index].fix = .removedCondition(key: newKey, condition: condition)
+				case (.replaced(item, let before, let after), _, _):
+					removal.fixes[index].fix = .replaced(newItem, before: before, after: after)
+				default:
+					continue
 				}
 			}
-			var bases = bases
-			if let base = bases.removeValue(forKey: .key(key)) { bases[.key(newKey)] = base }
-			return Removal(edited: edited, fixes: renamed, bases: bases)
+			return removal
 		}
 	}
 
@@ -360,24 +392,27 @@ struct ProjectEnvSchemaDraft: Sendable {
 	mutating func remove(_ key: String, settling fixes: [(reference: ProjectEnvSchemaReference, fix: ProjectEnvSchemaReference.Fix)]) {
 		let item = Item.key(key)
 		var edits: [(item: Item, declaration: Declaration)] = []
-		var records: [Removal.Fix] = []
-		var bases: [Item: Declaration] = [item: base(of: item)]
+		var records: [Removal.Settled] = []
 		for (reference, fix) in fixes {
 			let current = declaration(of: reference.item)
 			let fixed = reference.fixed(by: fix)
-			bases[reference.item] = base(of: reference.item)
+			let record: Removal.Fix?
 			switch (fix, reference.kind) {
 			case (.dropFromGroup, .group(let name, _, let members)) where reference.source == nil:
-				records.append(.droppedFromGroup(name, members: members))
+				record = .droppedFromGroup(name, members: members)
 			case (.removeCondition, .condition(let other)) where reference.source == nil:
-				if let condition = current.json?["requiredWhen"] { records.append(.removedCondition(key: other, condition: condition)) }
+				record = current.json?["requiredWhen"].map { .removedCondition(key: other, condition: $0) }
 			default:
-				records.append(.replaced(reference.item, before: current, after: fixed))
+				record = .replaced(reference.item, before: current, after: fixed)
+			}
+			if let record {
+				let original: Item = if case .group(let name) = reference.item, let original = originalName(ofGroup: name) { .group(original) } else { reference.item }
+				records.append(Removal.Settled(fix: record, original: original, base: base(of: original)))
 			}
 			edits.append((reference.item, fixed))
 		}
 		edits.append((item, .absent))
-		removals[key] = Removal(edited: hasChange(to: item) ? declaration(of: item) : nil, fixes: records, bases: bases)
+		removals[key] = Removal(edited: hasChange(to: item) ? declaration(of: item) : nil, fixes: records)
 		set(edits)
 	}
 
@@ -394,7 +429,8 @@ struct ProjectEnvSchemaDraft: Sendable {
 			return
 		}
 		var edits: [(item: Item, declaration: Declaration)] = []
-		for fix in removal.fixes where removal.bases[fix.item].map({ base(of: fix.item).isEquivalent(to: $0) }) == true {
+		for settled in removal.fixes where base(of: settled.original).isEquivalent(to: settled.base) {
+			let fix = settled.fix
 			let current = declaration(of: fix.item)
 			switch fix {
 			case .droppedFromGroup(_, let original):
@@ -504,9 +540,7 @@ struct ProjectEnvSchemaDraft: Sendable {
 		guard case .object(var fields) = before ?? .object([]) else { throw .invalidSchema }
 		var edits = FieldEdits()
 		// A renamed group takes the place its old name had.
-		for (name, original) in renamedGroups where declaration(of: .group(original)) == .absent {
-			if case .declared = declaration(of: .group(name)) { edits.rename(original, to: name, in: "groups") }
-		}
+		for (name, original) in renamedGroups { edits.rename(original, to: name, in: "groups") }
 		for change in changes { edits.add(change.value, for: change.item) }
 		for conflict in conflicts { edits.add(conflict.mine, for: conflict.item) }
 		try edits.apply(to: &fields)
@@ -710,25 +744,22 @@ private struct FieldEdits {
 		return changed ? (result, removed) : nil
 	}
 
-	/// Renames each of `keys` that `renames` names once no other key has its
-	/// new name, so renames that free each other's names apply in any order.
-	/// Whether any applied.
+	/// Renames each of `keys` that `renames` names, all at once, unless its new
+	/// name stays with a key that isn't renamed too, so renames that take each
+	/// other's names, in a chain or a swap, all apply. Whether any applied.
 	private static func renamed(_ keys: inout [String], by renames: [MemberName: String]) -> Bool {
 		var positions = [MemberName: Int](minimumCapacity: keys.count)
 		for (index, key) in keys.enumerated() where positions[MemberName(key)] == nil { positions[MemberName(key)] = index }
-		var pending = renames.filter { positions[$0.key] != nil }
-		var applied = false
+		var moving = renames.filter { positions[$0.key] != nil }
 		while true {
-			let ready = pending.filter { positions[MemberName($0.value)] == nil }
-			guard !ready.isEmpty else { return applied }
-			for (name, newName) in ready {
-				guard positions[MemberName(newName)] == nil, let index = positions.removeValue(forKey: name) else { continue }
-				keys[index] = newName
-				positions[MemberName(newName)] = index
-				pending.removeValue(forKey: name)
-				applied = true
-			}
+			let blocked = moving.filter { positions[MemberName($0.value)] != nil && moving[MemberName($0.value)] == nil }
+			guard !blocked.isEmpty else { break }
+			for name in blocked.keys { moving.removeValue(forKey: name) }
 		}
+		for (name, newName) in moving {
+			if let index = positions[name] { keys[index] = newName }
+		}
+		return !moving.isEmpty
 	}
 }
 
