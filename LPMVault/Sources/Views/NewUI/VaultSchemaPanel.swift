@@ -4,14 +4,27 @@ import SwiftUI
 /// What the Schema page's side panel shows.
 enum VaultSchemaSelection: Hashable {
 	case key(String)
-	/// A key being added, before it has a valid name.
+	/// A key being added, before the draft holds it.
 	case newKey
+	case group(String)
+	/// A group being added, before the draft holds it.
+	case newGroup
 
-	/// The key shown; empty for a key without a valid name yet.
-	var key: String {
+	/// The key shown, empty for one being added; nil for a group.
+	var key: String? {
 		switch self {
 		case .key(let key): key
 		case .newKey: ""
+		case .group, .newGroup: nil
+		}
+	}
+
+	/// The group shown, empty for one being added; nil for a key.
+	var group: String? {
+		switch self {
+		case .group(let name): name
+		case .newGroup: ""
+		case .key, .newKey: nil
 		}
 	}
 }
@@ -35,13 +48,27 @@ struct VaultSchemaPanel: View {
 	var onRenamed: (String, String) -> Void = { _, _ in }
 
 	var body: some View {
-		// One editor for every selection of a session, so a key being added
+		// One editor for every selection of a session, so an item being added
 		// keeps its rows and focus as its name settles.
-		VaultSchemaKeyEditor(store: store, project: project, environments: environments, key: selection.key,
-			onSelect: onSelect, onFollow: onFollow, onReview: onReview, onRenamed: onRenamed)
-			.id(session)
+		Group {
+			// One case each, so a new item's editor stays the same view once it's named.
+			switch selection {
+			case .key, .newKey: keyEditor(selection.key ?? "")
+			case .group, .newGroup: groupEditor(selection.group ?? "")
+			}
+		}
+		.id(session)
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 		.background(VaultPalette.inspector)
+	}
+
+	private func keyEditor(_ key: String) -> some View {
+		VaultSchemaKeyEditor(store: store, project: project, environments: environments, key: key,
+			onSelect: onSelect, onFollow: onFollow, onReview: onReview, onRenamed: onRenamed)
+	}
+
+	private func groupEditor(_ name: String) -> some View {
+		VaultSchemaGroupEditor(store: store, project: project, name: name, onSelect: onSelect, onFollow: onFollow, onReview: onReview)
 	}
 }
 
@@ -121,8 +148,6 @@ private struct VaultSchemaKeyEditor: View {
 		/// The draft removes the key from lpm.json.
 		case removed
 		case missing
-
-		var isOverridden: Bool { if case .overridden = self { true } else { false } }
 	}
 
 	// MARK: - State
@@ -136,7 +161,6 @@ private struct VaultSchemaKeyEditor: View {
 	private var overview: ProjectEnvSchemaOverview? { store.schemaOverview(for: project.id) }
 	private var item: Draft.Item { .key(key) }
 	private var savedRule: ProjectEnvSchemaOverview.Rule? { savedOverview?.rule(for: key) }
-	private var saving: Bool { store.savingSchemaDrafts.contains(project.id) }
 	private var importedSource: String { savedRule?.overrides ?? savedRule?.source ?? "an imported schema" }
 
 	/// A key the draft adds, or one being added.
@@ -241,11 +265,7 @@ private struct VaultSchemaKeyEditor: View {
 				VStack(alignment: .leading, spacing: 0) {
 					header(mode)
 					identity(mode, rule: rule, conflicts: conflicts, visible: visible)
-					if saveFailure != nil {
-						saveFailureNotice
-							.padding(.horizontal, 16)
-							.padding(.bottom, 12)
-					}
+					VaultSchemaSaveFailureNotice(store: store, project: project)
 					if mode == .removed {
 						removedNotice
 					}
@@ -358,7 +378,7 @@ private struct VaultSchemaKeyEditor: View {
 			case .remove:
 				VaultSchemaRemoveSheet(store: store, project: project, key: key)
 			case .elsewhere(let elsewhere):
-				VaultSchemaElsewhereSheet(key: key, elsewhere: elsewhere, folder: descriptions?.folder) {
+				VaultSchemaElsewhereSheet(name: key, elsewhere: elsewhere, folder: descriptions?.folder) {
 					update(declaration: elsewhere.isOverridden ? .absent : .overridden(rule.json))
 				}
 			}
@@ -1546,157 +1566,41 @@ private struct VaultSchemaKeyEditor: View {
 
 	// MARK: - Footer
 
-	/// Why Save is off while the draft has changes, and the item to show for it.
-	private struct Blocker {
-		let message: String
-		var key: String?
-	}
-
-	private var blocker: Blocker? {
-		guard let draft = pendingDraft else { return nil }
-		// Saving now would leave out the key being added, whose name can't be used yet.
-		if key.isEmpty, !name.isEmpty || newRule != Rule() { return Blocker(message: "Name the key to add it to your draft.") }
-		if let conflict = draft.conflicts.first(where: { $0.item == item }) ?? draft.conflicts.first {
-			if conflict.item == item { return Blocker(message: "Choose a version of this key above to save.") }
-			return Blocker(message: "Can't save until you choose a version of \(Self.name(of: conflict.item)), which changed on disk.", key: conflict.item.key)
-		}
-		guard let current = store.currentSchemaDraftEvaluation(for: project.id) else { return Blocker(message: "Checking the rules…") }
-		guard let rejection = current.rejection else {
-			guard let clash = store.schemaDraftCaseClash(for: project.id) else { return nil }
-			let other = clash.keys.first { $0 != key && Self.isAdded($0, in: draft) }
-			return Blocker(message: "Can't save: \(clash.message)", key: clash.keys.contains(key) ? nil : other)
-		}
-		if rejection.item == item { return Blocker(message: "Fix the problem above to save.") }
-		guard let other = rejection.item else { return Blocker(message: "Can't save: \(rejection.reason)") }
-		return Blocker(message: "Can't save: \(Self.name(of: other)) has a problem. \(rejection.reason)", key: other.key)
-	}
-
-	/// A save that failed for a reason the review can't show, such as a file that can't be written.
-	private var saveFailure: ProjectEnvSchemaFile.DraftSaveError? {
-		switch store.schemaDraftSaveFailure(for: project.id) {
-		case nil, .file(.changed)?, .conflicts?, .inProgress?, .importsChanged?: nil
-		case let failure?: failure
-		}
-	}
-
-	private static func name(of item: Draft.Item) -> String {
-		switch item {
-		case .key(let key): key
-		case .group(let name): "the group \(name)"
-		case .clientPrefixes: "the client prefixes"
-		}
-	}
-
 	private func footer(_ mode: Mode) -> some View {
-		let changes = pendingDraft?.changeCount ?? 0
-		let blocker = blocker
-		let failure = saveFailure
-		return VStack(alignment: .leading, spacing: 6) {
-			if let blocker {
-				HStack(alignment: .firstTextBaseline, spacing: 6) {
-					Text(blocker.message)
-						.font(.system(size: 11))
-						.foregroundStyle(VaultPalette.textTertiary)
-						.fixedSize(horizontal: false, vertical: true)
-					if let other = blocker.key {
-						Button("Show") { onSelect(.key(other)) }
-							.buttonStyle(.plain)
-							.font(.system(size: 11, weight: .semibold))
-							.foregroundStyle(VaultPalette.accentForeground)
-							.vaultPointingHand()
-							.accessibilityLabel("Show \(other)")
-					}
-				}
-			}
-			HStack(spacing: 8) {
-				switch mode {
-				case .inherited, .overridden:
-					Text("Read-only").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
-					Spacer(minLength: 4)
-					VaultBarButton(systemImage: "pencil", title: mode.isOverridden ? "Edit override" : "Override rules", height: 26) {
-						if mode.isOverridden { editsOverride = true } else { update(declaration: .overridden(rule.json)) }
-					}
-					.disabled(!canEdit)
-					if failure != nil {
-						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)
-					}
-				default:
-					if failure != nil {
-						HStack(spacing: 4) {
-							Image(systemName: "xmark.circle").font(.system(size: 10, weight: .semibold))
-							Text("Not saved").font(.system(size: 11, weight: .medium))
-						}
-						.foregroundStyle(VaultPalette.redText)
-					} else if changes > 0 {
-						HStack(spacing: 4) {
-							Image(systemName: "arrow.uturn.backward").font(.system(size: 9, weight: .semibold))
-							Text(changes == 1 ? "1 change" : "\(changes) changes").font(.system(size: 11, weight: .medium))
-						}
-						.foregroundStyle(VaultPalette.orangeTintText)
-						.help("⌘Z undoes the last change")
-					} else {
-						Text("No changes").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
-					}
-					Spacer(minLength: 4)
-					if key.isEmpty {
-						VaultBarButton(title: "Discard", height: 26) { onSelect(nil) }
-					} else if draft.hasChange(to: item) {
-						VaultBarButton(title: "Discard", height: 26) {
-							let wasNew = isNew
-							shownFields = []
-							editsOverride = false
-							if mode == .removed {
-								// Discarding a removal keeps the key, with the fixes that came with it.
-								store.keepSchemaKey(key, in: project.id)
-							} else {
-								store.editSchemaDraft(in: project.id) { $0.discard(.key(key)) }
-							}
-							if wasNew { onSelect(nil) }
-						}
-						.disabled(!canEdit)
-					}
-					if failure != nil {
-						VaultBarButton(title: saving ? "Saving…" : "Retry save", filled: true, disabled: blocker != nil || !canEdit, height: 26, action: retrySave)
-					} else {
-						VaultBarButton(title: "Review & save", filled: true, disabled: changes == 0 || blocker != nil || !canEdit, height: 26, action: onReview)
-					}
-				}
-			}
+		let readOnlyAction: (systemImage: String, title: String, run: () -> Void)? = switch mode {
+		case .inherited: ("pencil", "Override rules", { update(declaration: .overridden(rule.json)) })
+		case .overridden: ("pencil", "Edit override", { editsOverride = true })
+		default: nil
 		}
-		.padding(.horizontal, 14)
-		.padding(.vertical, 10)
-		.background(VaultPalette.headerRow)
-	}
-
-	/// The failed save, with the draft kept.
-	@ViewBuilder
-	private var saveFailureNotice: some View {
-		if let saveFailure {
-			HStack(alignment: .top, spacing: 8) {
-				Image(systemName: "xmark.circle").font(.system(size: 11)).padding(.top, 1)
-				VStack(alignment: .leading, spacing: 3) {
-					Text("Couldn't save lpm.json").font(.system(size: 12, weight: .semibold))
-					Text(saveFailure.message + " Your draft is kept.")
-						.font(.system(size: 11.5))
-						.fixedSize(horizontal: false, vertical: true)
-				}
-			}
-			.foregroundStyle(VaultPalette.redText)
-			.padding(10)
-			.frame(maxWidth: .infinity, alignment: .leading)
-			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.redTint))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.red.opacity(0.5), lineWidth: 1) }
-		}
-	}
-
-	/// Saves the draft the review already showed, after a failure that didn't change it.
-	private func retrySave() {
-		Task {
-			do throws(ProjectEnvSchemaFile.DraftSaveError) {
-				try await store.saveSchemaDraft(in: project.id)
+		let discard: (() -> Void)? = if key.isEmpty {
+			{ onSelect(nil) }
+		} else if draft.hasChange(to: item) {
+			{
+				let wasNew = isNew
 				shownFields = []
 				editsOverride = false
-			} catch {}
+				if mode == .removed {
+					// Discarding a removal keeps the key, with the fixes that came with it.
+					store.keepSchemaKey(key, in: project.id)
+				} else {
+					let removed = key
+					store.editSchemaDraft(in: project.id) { draft in
+						draft.discard(.key(removed))
+						// A key the draft no longer adds can't stay in its groups or conditions.
+						if wasNew { draft.dropReferences(to: removed) }
+					}
+				}
+				if wasNew { onSelect(nil) }
+			}
+		} else {
+			nil
+		}
+		// Saving now would leave out the key being added, whose name can't be used yet.
+		let pending: String? = key.isEmpty && (!name.isEmpty || newRule != Rule()) ? "Name the key to add it to your draft." : nil
+		return VaultSchemaEditorFooter(store: store, project: project, item: item, readOnlyAction: readOnlyAction, discard: discard,
+			discardEdits: !key.isEmpty, pending: pending, onSelect: onSelect, onReview: onReview) {
+			shownFields = []
+			editsOverride = false
 		}
 	}
 

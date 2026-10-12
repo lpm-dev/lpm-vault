@@ -136,7 +136,7 @@ struct VaultValueCheckPresentation {
 		case group.members.count: group.members.count == 2 ? "both set" : "all set"
 		default: "\(set) of \(group.members.count) set"
 		}
-		return "\(group.summary.escapingDirectionControls) — \(state)"
+		return "\(group.summary) — \(state)"
 	}
 
 	private static func formatMessage(_ format: String) -> String {

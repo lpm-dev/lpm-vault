@@ -136,7 +136,7 @@ struct ProjectEnvSchemaReview: Equatable {
 			let summary = effects?.summary(for: item) ?? .init()
 			let isGroup = if case .group = item { true } else { false }
 			return Item(
-				item: item, title: Self.title(of: item), state: Self.state(of: item, in: draft, savedRules: savedRules),
+				item: item, title: Self.title(of: item), state: Self.state(of: item, in: draft, savedRules: savedRules, draftRules: evaluation.overview),
 				diff: diff, effects: words(summary, naming: isGroup), unchanged: summary.unchanged
 			)
 		}
@@ -151,9 +151,20 @@ struct ProjectEnvSchemaReview: Equatable {
 		}
 	}
 
-	private static func state(of item: ProjectEnvSchemaDraft.Item, in draft: ProjectEnvSchemaDraft, savedRules: ProjectEnvSchemaOverview?) -> State {
+	/// How the draft changes `item`. The file an override replaces comes from
+	/// lpm.json's rules; for a group whose override the draft removes, from the
+	/// draft's, since the engine names only the file a group comes from.
+	private static func state(
+		of item: ProjectEnvSchemaDraft.Item, in draft: ProjectEnvSchemaDraft, savedRules: ProjectEnvSchemaOverview?, draftRules: ProjectEnvSchemaOverview?
+	) -> State {
 		let key: String? = if case .key(let name) = item { name } else { nil }
-		let source = key.flatMap { savedRules?.rule(for: $0)?.overrides ?? savedRules?.rule(for: $0)?.source } ?? "an imported schema"
+		let source: String = switch item {
+		case .key(let name): savedRules?.rule(for: name)?.overrides ?? savedRules?.rule(for: name)?.source ?? "an imported schema"
+		case .group(let name):
+			savedRules?.groups.first { $0.name == name }.flatMap { $0.overrides ?? $0.source }
+				?? draftRules?.groups.first { $0.name == name }?.source ?? "an imported schema"
+		case .clientPrefixes: "an imported schema"
+		}
 		switch (draft.base(of: item), draft.declaration(of: item)) {
 		case (.declared, .absent): return .removed
 		case (.overridden, .absent): return .resetOverride(source: source)
