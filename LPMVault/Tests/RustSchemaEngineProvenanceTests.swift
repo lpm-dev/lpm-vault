@@ -29,7 +29,7 @@ struct RustSchemaEngineProvenanceTests {
 	}
 
 	@Test("a schema whose output fits the engine's budget without provenance resolves with it, past that budget")
-	func provenancePastTheBudget() throws {
+	func provenancePastTheBudget() async throws {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "engine-provenance-\(UUID().uuidString)").path
 		let directory = String(repeating: "f", count: 250)
 		try FileManager.default.createDirectory(atPath: folder + "/" + directory, withIntermediateDirectories: true)
@@ -38,7 +38,16 @@ struct RustSchemaEngineProvenanceTests {
 		let names = (0..<4096).map { index in "K" + String(repeating: "0", count: 255 - String(index).count) + String(index) }
 		func rules(_ rule: String) -> String { names.map { "\"\($0)\":\(rule)" }.joined(separator: ",") }
 		try #"{"vars":{\#(rules(#"{"secret":true}"#))}}"#.write(toFile: folder + "/" + path, atomically: true, encoding: .utf8)
-		let resolution = try Engine.resolve(try json(#"{"extends":["\#(path)"],"overrides":{\#(rules("{}"))}}"#), inFolder: folder)
+		let schema = #"{"extends":["\#(path)"],"overrides":{\#(rules("{}"))}}"#
+		// Resolving this much holds a thread for seconds in a debug build, so it gets its
+		// own rather than one of the few that every other test's tasks run on.
+		let resolution = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Engine.Resolution, any Error>) in
+			Thread.detachNewThread {
+				continuation.resume(with: Result {
+					try Engine.resolve(try LPMConfigJSON(parsing: Data(schema.utf8), rejectDuplicateKeys: true), inFolder: folder)
+				})
+			}
+		}
 		#expect(resolution.replacedRules.count == 4096)
 		#expect(resolution.replacedRules[names[0]] == .init(count: 1, source: path, client: false, secret: path))
 	}
