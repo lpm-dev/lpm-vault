@@ -117,7 +117,8 @@ enum ProjectMutationPersistenceResult: Sendable {
 }
 
 enum SchemaKeyRenameResult: Sendable {
-	case success(SecretPersistenceCommit, ProjectEnvSchemaFile.Rules?)
+	/// The rules and lpm.json's envSchema after the edit, when lpm.json was edited.
+	case success(SecretPersistenceCommit, ProjectEnvSchemaFile.Rules?, rootSchema: LPMConfigJSON? = nil)
 	case failure(VaultKeyEditError)
 	case indeterminate
 	case conflict(latest: VaultProject, metadata: SyncMetadata?, failure: VaultKeyEditError)
@@ -504,6 +505,7 @@ actor VaultPersistenceCoordinator {
 			var rollbackFailed = false
 			var outcomeIndeterminate = false
 			var updatedRules: ProjectEnvSchemaFile.Rules?
+			var rootSchema: LPMConfigJSON?
 			var selectedSource = "lpm.json"
 			do {
 				var isDirectory: ObjCBool = false
@@ -527,15 +529,16 @@ actor VaultPersistenceCoordinator {
 				}, onWriteFailure: {
 					let restore: VaultKeychainMutation = metadata.data.map { .write(account: metadata.account, data: $0) } ?? .delete(account: metadata.account)
 					rollbackFailed = !self.service.applyVaultTransaction(project: .upsert(previous), data: [restore]).succeeded
-				}, onPrepared: { rules, source in updatedRules = rules; selectedSource = source }, strictRename: true)
+				}, onPrepared: { rules, source in updatedRules = rules; selectedSource = source }, strictRename: true,
+				onRootSchema: { rootSchema = $0 })
 
 				guard let persisted else { return .indeterminate }
-				return .success(persisted, rules)
+				return .success(persisted, rules, rootSchema: rootSchema)
 			} catch {
 				if rollbackFailed || outcomeIndeterminate { return .indeterminate }
 				if case SecureFileWriter.WriteError.directorySyncFailed = error, let persisted, let updatedRules {
 					let warning = "The rename was saved, but crash durability of \(selectedSource) is unconfirmed. " + error.localizedDescription
-					return .success(SecretPersistenceCommit(project: persisted.project, syncMetadata: persisted.syncMetadata, warning: [persisted.warning, warning].compactMap { $0 }.joined(separator: " ")), updatedRules)
+					return .success(SecretPersistenceCommit(project: persisted.project, syncMetadata: persisted.syncMetadata, warning: [persisted.warning, warning].compactMap { $0 }.joined(separator: " ")), updatedRules, rootSchema: rootSchema)
 				}
 				if let failure = error as? VaultKeyEditError { return .failure(failure) }
 				let failure = (error as? ProjectEnvSchemaFile.FileError) ?? (error as? ProjectConfigFile.FileError).map(ProjectEnvSchemaFile.FileError.init) ?? .writeFailed(error.localizedDescription)

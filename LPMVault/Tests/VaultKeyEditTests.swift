@@ -477,7 +477,7 @@ struct VaultKeyDescriptionStoreTests {
 		let result = VaultPersistenceCoordinator(service: keychain).coordinatedKeyRename(project: try #require(store.selectedProject), edit: .init(key: id.key, environments: environments, newKey: "NEW"), change: .init(rename: .init(from: id.key, to: "NEW")), folder: folder, fileWriter: { data, url, permissions, replace, directoryDescriptor, check in
 			try SecureFileWriter.write(data, to: url, permissions: permissions, replaceExisting: replace, beforeReplacement: check, directorySynchronizer: { _ in EIO }, directoryDescriptor: directoryDescriptor)
 		})
-		guard case .success(let commit, let rules) = result else { Issue.record("Replacement committed; report the durability warning without reverting keys"); return }
+		guard case .success(let commit, let rules, _) = result else { Issue.record("Replacement committed; report the durability warning without reverting keys"); return }
 		#expect(commit.warning != nil)
 		#expect(rules?.keys.contains("NEW") == true)
 		#expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == "sk_dev")
@@ -816,7 +816,7 @@ struct VaultKeyDescriptionStoreTests {
             else { throw ProjectConfigFile.FileError.writeFailed("fixture failure") }
         })
         if durabilityFailure {
-            guard case .success(let commit,_) = result else { Issue.record("Committed fragment must retain renamed keys"); return }
+            guard case .success(let commit, _, _) = result else { Issue.record("Committed fragment must retain renamed keys"); return }
             #expect(commit.warning?.contains("base.json") == true)
             #expect(keychain.envStorage["project"]?.environments["default"]?["TOKEN"] == "sk_dev")
             #expect(try String(contentsOfFile:folder+"/base.json",encoding:.utf8).contains("New"))
