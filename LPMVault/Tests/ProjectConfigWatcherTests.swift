@@ -104,14 +104,13 @@ struct ProjectConfigWatcherTests {
 		let pipe = (throughLink ? outside : folder) + "/lpm.json"
 		try #require(mkfifo(pipe, 0o600) == 0)
 		if throughLink { try FileManager.default.createSymbolicLink(atPath: folder + "/lpm.json", withDestinationPath: pipe) }
-		let descriptors = openDescriptors()
 		for _ in 0..<10 {
 			let changes = ChangeCounter()
 			let watching = watch(folder, into: changes)
 			try await Task.sleep(for: .milliseconds(30))
 			watching.cancel()
 		}
-		#expect(try await eventually { openDescriptors() <= descriptors }, "Every watch closes what it opened")
+		#expect(try await eventually { descriptors(in: folder) + descriptors(in: outside) == 0 }, "Every watch closes what it opened")
 
 		let changes = ChangeCounter()
 		let watching = watch(folder, into: changes)
@@ -160,8 +159,19 @@ struct ProjectConfigWatcherTests {
 		}
 	}
 
-	private func openDescriptors() -> Int {
-		(try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0
+	/// The process's descriptors open on `folder` or anything in it, which
+	/// other tests running at the same time don't change.
+	private func descriptors(in folder: String) -> Int {
+		guard let resolved = realpath(folder, nil) else { return 0 }
+		let root = String(cString: resolved)
+		free(resolved)
+		let entries = (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd")) ?? []
+		var buffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN))
+		return entries.lazy.compactMap(Int32.init).filter { descriptor in
+			guard fcntl(descriptor, F_GETPATH, &buffer) != -1 else { return false }
+			let path = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
+			return path == root || path.hasPrefix(root + "/")
+		}.count
 	}
 
 	private func eventually(seconds: Double = 3, _ condition: () -> Bool) async throws -> Bool {
