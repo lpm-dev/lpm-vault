@@ -38,21 +38,21 @@ enum RustSchemaEngine {
 	struct ReplacedRules: Equatable, Sendable {
 		/// More than one when the override settles a conflict between imports.
 		let count: Int
-		/// Where the first one comes from: what lpm.json's imports resolve,
+		/// The file the first one comes from: what lpm.json's imports resolve,
 		/// which is an import's own override when one sits between.
-		let origin: Origin
+		let source: String
 		/// Whether every one marks the key public.
 		let client: Bool
-		/// Where the first one that marks the key secret comes from; nil when none does.
-		let secret: Origin?
+		/// The file the first one that marks the key secret comes from; nil when none does.
+		let secret: String?
 	}
 
 	/// The inherited groups one of lpm.json's group overrides replaces, in summary.
 	struct ReplacedGroups: Equatable, Sendable {
 		/// More than one when the override settles a conflict between imports.
 		let count: Int
-		/// Where the first one comes from, as for `ReplacedRules`.
-		let origin: Origin
+		/// The file the first one comes from, as for `ReplacedRules`.
+		let source: String
 	}
 
 	/// What the engine says about a resolved schema, apart from the snapshot it retains.
@@ -62,11 +62,11 @@ enum RustSchemaEngine {
 		let groupOrigins: [String: Origin]
 		/// Where an overridden key was declared before the override replaced it.
 		let declaringOrigins: [String: Origin]
-		/// Where an overridden group was declared before the override replaced it.
-		let groupDeclaringOrigins: [String: Origin]
-		/// Where each client prefix is listed: the first schema to list it, so a
-		/// prefix lpm.json shares with an import names the import.
-		let clientPrefixOrigins: [String: Origin]
+		/// The file that declared an overridden group before the override replaced it.
+		let groupDeclaringSources: [String: String]
+		/// The file each client prefix is listed in: the first schema to list it,
+		/// so a prefix lpm.json shares with an import names the import.
+		let clientPrefixSources: [String: String]
 		/// What each of lpm.json's key overrides replaces.
 		let replacedRules: [String: ReplacedRules]
 		/// What each of lpm.json's group overrides replaces.
@@ -92,7 +92,7 @@ enum RustSchemaEngine {
 			guard result.status == 0 else {
 				throw result.status == 4 ? .tooLarge : .invalidSchema
 			}
-			guard result.length > 0, result.length <= 8 * 1024 * 1024, let data = result.data else { throw .invalidSchema }
+			guard result.length > 0, result.length <= RustSchemaEngine.maximumOutputBytes, let data = result.data else { throw .invalidSchema }
 			do { return try LPMConfigJSON(parsing: Data(bytesNoCopy: data, count: result.length, deallocator: .none), rejectDuplicateKeys: true) }
 			catch { throw .invalidSchema }
 		}
@@ -144,13 +144,17 @@ enum RustSchemaEngine {
 		return Resolution(resolved: try resolved(from: output), snapshot: Snapshot(owned: owned))
 	}
 
+	/// The engine's output budget, with the allowance on top of it that a
+	/// resolution's provenance has, which the engine bounds.
+	static let maximumOutputBytes = (8 + 2) * 1024 * 1024
+
 	/// The engine's resolve output, checked field by field: provenance has to
 	/// name what the effective schema declares, so a malformed output is
 	/// rejected rather than shown.
 	static func resolved(from output: LPMConfigJSON) throws(ProjectEnvSchemaFile.FileError) -> Resolved {
 		guard output["abiVersion"] == .number("1"), let effective = output["effective"],
 			case .array(let rawDependencies)? = output["dependencies"], case .object(let rawReplaced)? = output["replacedVars"],
-			case .object(let rawReplacedGroups)? = output["replacedGroups"]
+			case .object(let rawReplacedGroups)? = output["replacedGroups"], case .array(let rawSources)? = output["sources"]
 		else { throw .invalidSchema }
 		func origin(_ value: LPMConfigJSON?) throws(ProjectEnvSchemaFile.FileError) -> Origin {
 			guard case .string(let source)? = value?["source"], case .string(let pointer)? = value?["pointer"] else { throw .invalidSchema }
@@ -162,11 +166,28 @@ enum RustSchemaEngine {
 			for member in members { origins[member.key] = try origin(member.value) }
 			return origins
 		}
+		// Provenance names each file once in `sources`, and by its index elsewhere.
+		var sources: [String] = []
+		sources.reserveCapacity(rawSources.count)
+		for value in rawSources {
+			guard case .string(let source) = value else { throw .invalidSchema }
+			sources.append(source)
+		}
+		func source(_ value: LPMConfigJSON?) throws(ProjectEnvSchemaFile.FileError) -> String {
+			guard case .number(let raw)? = value, let index = Int(raw), sources.indices.contains(index) else { throw .invalidSchema }
+			return sources[index]
+		}
+		func sourcesByName(_ field: String) throws(ProjectEnvSchemaFile.FileError) -> [String: String] {
+			guard case .object(let members)? = output[field] else { throw .invalidSchema }
+			var named = Dictionary<String, String>(minimumCapacity: members.count)
+			for member in members { named[member.key] = try source(member.value) }
+			return named
+		}
 		let keyOrigins = try origins("origins")
 		let groupOrigins = try origins("groupOrigins")
-		let groupDeclaringOrigins = try origins("groupDeclaringOrigins")
-		let clientPrefixOrigins = try origins("clientPrefixOrigins")
-		guard groupDeclaringOrigins.keys.allSatisfy({ groupOrigins[$0] != nil }) else { throw .invalidSchema }
+		let groupDeclaringSources = try sourcesByName("groupDeclaringOrigins")
+		let clientPrefixSources = try sourcesByName("clientPrefixOrigins")
+		guard groupDeclaringSources.keys.allSatisfy({ groupOrigins[$0] != nil }) else { throw .invalidSchema }
 		var prefixes: Set<String> = []
 		if case .array(let values)? = effective["clientPrefixes"] {
 			for value in values {
@@ -174,7 +195,7 @@ enum RustSchemaEngine {
 				prefixes.insert(prefix)
 			}
 		}
-		guard Set(clientPrefixOrigins.keys) == prefixes else { throw .invalidSchema }
+		guard Set(clientPrefixSources.keys) == prefixes else { throw .invalidSchema }
 		var replacedRules = Dictionary<String, ReplacedRules>(minimumCapacity: rawReplaced.count)
 		for member in rawReplaced {
 			// Only lpm.json's own overrides replace anything it shows.
@@ -182,15 +203,15 @@ enum RustSchemaEngine {
 				case .number(let rawCount)? = member.value["count"], let count = Int(rawCount), count >= 1,
 				case .bool(let client)? = member.value["client"]
 			else { throw .invalidSchema }
-			let secret: Origin? = if let value = member.value["secret"] { try origin(value) } else { nil }
-			replacedRules[member.key] = ReplacedRules(count: count, origin: try origin(member.value["origin"]), client: client, secret: secret)
+			let secret: String? = if let value = member.value["secret"] { try source(value) } else { nil }
+			replacedRules[member.key] = ReplacedRules(count: count, source: try source(member.value["origin"]), client: client, secret: secret)
 		}
 		var replacedGroups = Dictionary<String, ReplacedGroups>(minimumCapacity: rawReplacedGroups.count)
 		for member in rawReplacedGroups {
 			guard let override = groupOrigins[member.key], override.source == "lpm.json", override.pointer.hasPrefix("/envSchema/groupOverrides/"),
 				case .number(let rawCount)? = member.value["count"], let count = Int(rawCount), count >= 1
 			else { throw .invalidSchema }
-			replacedGroups[member.key] = ReplacedGroups(count: count, origin: try origin(member.value["origin"]))
+			replacedGroups[member.key] = ReplacedGroups(count: count, source: try source(member.value["origin"]))
 		}
 		var dependencies: [Dependency] = []
 		dependencies.reserveCapacity(rawDependencies.count)
@@ -202,7 +223,7 @@ enum RustSchemaEngine {
 			dependencies.append(Dependency(path: path, digest: digest, bytes: bytes))
 		}
 		return Resolved(effective: effective, origins: keyOrigins, groupOrigins: groupOrigins, declaringOrigins: try origins("declaringOrigins"),
-			groupDeclaringOrigins: groupDeclaringOrigins, clientPrefixOrigins: clientPrefixOrigins, replacedRules: replacedRules,
+			groupDeclaringSources: groupDeclaringSources, clientPrefixSources: clientPrefixSources, replacedRules: replacedRules,
 			replacedGroups: replacedGroups, dependencies: dependencies)
 	}
 

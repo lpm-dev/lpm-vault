@@ -148,7 +148,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		// own override; a rule an import overrides names where it was declared.
 		for (key, origin) in resolution.origins {
 			if origin.source == "lpm.json" {
-				if origin.pointer.hasPrefix("/envSchema/overrides/"), let replaced = resolution.replacedRules[key]?.origin.source { overridden[key] = replaced }
+				if origin.pointer.hasPrefix("/envSchema/overrides/"), let replaced = resolution.replacedRules[key]?.source { overridden[key] = replaced }
 			} else if let declaringSource = resolution.declaringOrigins[key]?.source, declaringSource != origin.source, declaringSource != "lpm.json" {
 				declaring[key] = declaringSource
 			}
@@ -157,8 +157,8 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		var declaringGroups: [String: String] = [:]
 		for (name, origin) in resolution.groupOrigins {
 			if origin.source == "lpm.json" {
-				if origin.pointer.hasPrefix("/envSchema/groupOverrides/"), let replaced = resolution.replacedGroups[name]?.origin.source { overriddenGroups[name] = replaced }
-			} else if let declaringSource = resolution.groupDeclaringOrigins[name]?.source, declaringSource != origin.source, declaringSource != "lpm.json" {
+				if origin.pointer.hasPrefix("/envSchema/groupOverrides/"), let replaced = resolution.replacedGroups[name]?.source { overriddenGroups[name] = replaced }
+			} else if let declaringSource = resolution.groupDeclaringSources[name], declaringSource != origin.source, declaringSource != "lpm.json" {
 				declaringGroups[name] = declaringSource
 			}
 		}
