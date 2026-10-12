@@ -633,9 +633,14 @@ extension SheetInteractionTests {
 			try await host.click("Client prefixes")
 			let popover = try await host.popoverWindow()
 			#expect(try await host.waitForText("WIDGET_", in: popover))
-			// The prefix's remove button is the × right after its key count.
+			// The prefix's remove button, 20 points wide, ends its row as far from the popover's
+			// right edge as the title starts from its left, an inset that differs between macOS
+			// versions. Recognition places where text starts, and lines, reliably; CI reads
+			// "2 keys ×" as one run and boxes the count loosely along it.
+			let title = try await host.labelFrame("Client prefixes", in: popover)
 			let count = try await host.labelFrame("2 keys", in: popover)
-			try NativeTestClick.send(to: popover, at: NSPoint(x: count.maxX + 11, y: count.midY))
+			let width = try #require(popover.contentView).bounds.width
+			try NativeTestClick.send(to: popover, at: NSPoint(x: width - title.minX - 10, y: count.midY))
 			#expect(try await host.waitForText("become private", in: popover))
 			#expect(store.schemaDraft(for: "schema-prefixes") == nil, "Nothing changes before Remove")
 			try await host.click("Remove", in: popover)
