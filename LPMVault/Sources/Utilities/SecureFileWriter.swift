@@ -192,11 +192,11 @@ enum SecureFileWriter {
 			let operation: String
 			switch self {
 			case .createFailed(let value):
-				(code, operation) = (value, "create the private export")
+				(code, operation) = (value, "create the file")
 			case .writeFailed(let value):
-				(code, operation) = (value, "write the private export")
+				(code, operation) = (value, "write the file")
 			case .syncFailed(let value):
-				(code, operation) = (value, "save the private export")
+				(code, operation) = (value, "save the file to disk")
 			case .replaceFailed(let value):
 				(code, operation) = (value, "replace the destination")
 			case .directorySyncFailed(let value):

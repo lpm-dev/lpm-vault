@@ -208,7 +208,13 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("1 unsaved change"))
 			#expect(try await host.waitForText("Draft"))
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-panel") != nil })
-			try await host.click("Save")
+			try await host.click("Review & save")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil })
+			let sheet = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("Review changes to lpm.json", in: sheet))
+			let save = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+				windowNumber: sheet.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+			#expect(sheet.performKeyEquivalent(with: save))
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel") == nil })
 			#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""8080""#))
 		}

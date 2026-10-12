@@ -12,6 +12,8 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var beforeCliAccessRead: (@Sendable () -> Void)?
 	var failCliAccessChange = false
 	var beforeKeychainTransaction: (@Sendable () -> Void)?
+	/// Runs after a transaction's work, as a slow Keychain commit would.
+	var afterKeychainTransaction: (@Sendable () -> Void)?
 
 	func cliAccessResult(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
 		beforeCliAccessRead?()
@@ -90,7 +92,9 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError> {
 		beforeKeychainTransaction?()
 		if let error = nextKeychainTransactionError { nextKeychainTransactionError = nil; return .failure(error) }
-		return .success(lock.withLock(operation))
+		let result = lock.withLock(operation)
+		afterKeychainTransaction?()
+		return .success(result)
 	}
 
 	// Convenience for old tests that use flat secrets

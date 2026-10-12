@@ -1151,6 +1151,7 @@ final class VaultStore {
 
   var projects: [VaultProject] = [] {
     didSet {
+      schemaReviews = [:]
       invalidateLocalStateRefresh()
       keyDrafts.receive(projects)
       if !projects.elementsEqual(oldValue, by: { $0.id == $1.id }) {
@@ -1203,16 +1204,26 @@ final class VaultStore {
   /// Unsaved key edits of this session; cleared on lock and account changes.
   let keyDrafts = VaultKeyDrafts()
   /// Key descriptions from each project's `lpm.json`, by project ID.
-  private(set) var keyDescriptions: [String: ProjectKeyDescriptions] = [:] { didSet { schemaBases = [:] } }
+  private(set) var keyDescriptions: [String: ProjectKeyDescriptions] = [:] {
+    didSet {
+      schemaBases = [:]
+      schemaReviews = [:]
+    }
+  }
+  /// The app's own edits of each project's lpm.json that are in flight.
+  @ObservationIgnored private var ownSchemaWrites: [String: Int] = [:]
+  /// Projects whose draft merges once their own edits are published.
+  @ObservationIgnored private var pendingSchemaMerges: Set<String> = []
   /// lpm.json's rules as a draft without changes, parsed once per project
   /// while its descriptions stay the same.
   @ObservationIgnored private var schemaBases: [String: ProjectEnvSchemaDraft] = [:]
   /// What the bundled engine finds in each project's stored values, by
   /// project ID; absent while a project's rules are unknown or unreadable.
-  private(set) var valueChecks: [String: ProjectEnvValueCheck] = [:]
+  private(set) var valueChecks: [String: ProjectEnvValueCheck] = [:] { didSet { schemaReviews = [:] } }
   /// Unsaved schema edits by project ID; cleared on lock and account changes.
   private(set) var schemaDrafts: [String: ProjectEnvSchemaDraft] = [:] {
     didSet {
+      schemaReviews = [:]
       let edited = Set(schemaDrafts.lazy.filter { !$0.value.isEmpty }.map(\.key))
       if edited != projectsWithSchemaDrafts { projectsWithSchemaDrafts = edited }
     }
@@ -1225,7 +1236,10 @@ final class VaultStore {
   /// Counts each project's draft changes, so an evaluation is matched to its draft cheaply.
   @ObservationIgnored private var schemaDraftRevisions: [String: Int] = [:]
   /// Each draft's latest evaluation, with the draft revision and values it used.
-  private(set) var schemaDraftEvaluations: [String: EvaluatedSchemaDraft] = [:]
+  private(set) var schemaDraftEvaluations: [String: EvaluatedSchemaDraft] = [:] { didSet { schemaReviews = [:] } }
+  /// Each project's review of its draft, for the environment order it was
+  /// built for, until anything it's built from changes.
+  @ObservationIgnored private var schemaReviews: [String: (environments: [String], review: ProjectEnvSchemaReview?)] = [:]
   /// What merging drafts onto lpm.json's rules as read from disk changed, until dismissed.
   private(set) var schemaDraftRebases: [String: ProjectEnvSchemaDraft.Rebase] = [:]
   private(set) var savingSchemaDrafts: Set<String> = []
@@ -1234,6 +1248,8 @@ final class VaultStore {
   /// Projects whose next evaluation waits for typing to pause.
   @ObservationIgnored private var debouncedSchemaDrafts: Set<String> = []
   private(set) var schemaDraftHistory: [String: SchemaDraftHistory] = [:]
+  /// Each project's last failed save, with the draft revision it tried to save.
+  private(set) var schemaDraftSaveFailures: [String: SchemaDraftSaveFailure] = [:]
   @ObservationIgnored private var schemaDraftEvaluationInputs: [String: SchemaDraftEvaluationInputs] = [:]
   @ObservationIgnored private var schemaDraftEvaluationTasks: [String: Task<Void, Never>] = [:]
   @ObservationIgnored var schemaDraftEvaluator = ProjectEnvSchemaDraftEvaluator()
@@ -3312,6 +3328,8 @@ final class VaultStore {
     }
 
     let projectID = id.projectID
+    beginOwnSchemaWrite(projectID)
+    defer { endOwnSchemaWrite(projectID) }
     let result = await ProjectEnvSchemaFile.save(schemaChange, inFolder: schemaFolder, vaultID: projectID)
     guard generation == keyDrafts.generation, isUnlocked else { throw .targetUnavailable }
     switch result {
@@ -3424,13 +3442,18 @@ final class VaultStore {
   }
 
   /// `mergingDraft` false leaves merging the schema draft to the caller.
+  /// While the app's own edit of lpm.json is in flight, the draft merges once
+  /// it's published, so a reread that sees the edit first doesn't take it
+  /// for a change on disk.
   private func publishKeyDescriptions(_ descriptions: ProjectKeyDescriptions, for projectID: String, mergingDraft: Bool = true) {
     guard keyDescriptions[projectID] != descriptions else { return }
     keyDescriptions[projectID] = descriptions
     if case .success(let rules) = descriptions.rules {
       keyDrafts.receiveKeyDescriptions(rules.descriptions, ruleKeys: rules.keys, folder: descriptions.folder, in: projectID)
     }
-    if mergingDraft { mergeSchemaDraft(for: projectID) }
+    if mergingDraft {
+      if ownSchemaWrites[projectID] != nil { pendingSchemaMerges.insert(projectID) } else { mergeSchemaDraft(for: projectID) }
+    }
     refreshValueCheck(for: projectID)
     refreshSchemaDraftEvaluation(for: projectID)
   }
@@ -3514,6 +3537,22 @@ final class VaultStore {
   /// The project's unsaved schema edits; nil while it has none.
   func schemaDraft(for projectID: String) -> ProjectEnvSchemaDraft? {
     schemaDrafts[projectID].flatMap { $0.isEmpty ? nil : $0 }
+  }
+
+  /// The review of the project's draft as it is now: nil without a draft,
+  /// and while it's evaluated or the engine rejects it.
+  func schemaDraftReview(for projectID: String, environments: [String]) -> ProjectEnvSchemaReview? {
+    // Read every input first, so a view that shows the review follows them.
+    guard let draft = schemaDraft(for: projectID), let evaluation = currentSchemaDraftEvaluation(for: projectID),
+      let project = projects.first(where: { $0.id == projectID })
+    else { return nil }
+    let savedRules = keyDescriptions[projectID]?.schema?.overview
+    let savedCheck = valueChecks[projectID]
+    if let cached = schemaReviews[projectID], cached.environments == environments { return cached.review }
+    let review = ProjectEnvSchemaReview(draft: draft, evaluation: evaluation, savedRules: savedRules, savedCheck: savedCheck,
+      project: project, environments: environments)
+    schemaReviews[projectID] = (environments, review)
+    return review
   }
 
   /// The project's schema draft, or lpm.json's rules as last read when it has none.
@@ -3611,9 +3650,46 @@ final class VaultStore {
   /// a change that only reordered the file saves right away, and any other
   /// fails with `changed` so the merged draft can be reviewed.
   func saveSchemaDraft(in projectID: String) async throws(ProjectEnvSchemaFile.DraftSaveError) {
+    var attempt = SchemaDraftSaveAttempt()
+    do {
+      try await saveSchemaDraftOnce(in: projectID, attempt: &attempt)
+      schemaDraftSaveFailures[projectID] = nil
+    } catch {
+      if error != .inProgress, let revision = attempt.revision, let evaluation = attempt.evaluation, schemaDrafts[projectID] != nil {
+        schemaDraftSaveFailures[projectID] = SchemaDraftSaveFailure(revision: revision, evaluation: evaluation, error: error)
+      }
+      throw error
+    }
+  }
+
+  /// What a save tried: the draft revision of its last attempt, and the
+  /// evaluation the first attempt saved with, which the review showed.
+  private struct SchemaDraftSaveAttempt {
+    var revision: Int?
+    var evaluation: ProjectEnvSchemaDraft.Evaluation?
+  }
+
+  /// A failed save, with the draft revision and the evaluation it tried to save.
+  struct SchemaDraftSaveFailure: Equatable {
+    let revision: Int
+    let evaluation: ProjectEnvSchemaDraft.Evaluation
+    let error: ProjectEnvSchemaFile.DraftSaveError
+  }
+
+  /// Why saving the project's draft as it is now failed: nil once the draft,
+  /// or what its evaluation shows, changes, since that needs another review.
+  func schemaDraftSaveFailure(for projectID: String) -> ProjectEnvSchemaFile.DraftSaveError? {
+    guard let failure = schemaDraftSaveFailures[projectID], failure.revision == schemaDraftRevisions[projectID],
+      currentSchemaDraftEvaluation(for: projectID) == failure.evaluation
+    else { return nil }
+    return failure.error
+  }
+
+  private func saveSchemaDraftOnce(in projectID: String, attempt saving: inout SchemaDraftSaveAttempt) async throws(ProjectEnvSchemaFile.DraftSaveError) {
     // The imports the evaluation showed, which a retry after a reordering keeps.
     var reviewed: [RustSchemaEngine.Dependency] = []
     for attempt in 0..<2 {
+      saving.revision = schemaDraftRevisions[projectID]
       guard let draft = schemaDraft(for: projectID) else { return }
       guard !savingSchemaDrafts.contains(projectID) else { throw .inProgress }
       guard let folder = editableSchemaFolder(for: projectID), schemaDraftFolders[projectID]?.path == folder.path else {
@@ -3625,6 +3701,7 @@ final class VaultStore {
           throw .unavailable("The rules are still being checked. Save again in a moment.")
         }
         reviewed = evaluation.dependencies
+        saving.evaluation = evaluation
       }
       let generation = schemaDraftGeneration
       savingSchemaDrafts.insert(projectID)
@@ -3637,7 +3714,10 @@ final class VaultStore {
       switch result {
       case .success(let saved):
         guard let project = projects.first(where: { $0.id == projectID }), keyDescriptionFolder(for: project) == folder.path else {
-          throw .unavailable("The rules were saved, but the project's folder changed meanwhile. Review the rules again.")
+          // Saved where the draft was reviewed; the project's new folder has its own rules.
+          endSchemaDraft(for: projectID)
+          reloadKeyDescriptions()
+          return
         }
         schemaDraftHistory[projectID] = nil
         setSchemaDraft(ProjectEnvSchemaDraft(schema: saved.schema), for: projectID)
@@ -3748,8 +3828,25 @@ final class VaultStore {
     schemaDraftRevisions[projectID] = nil
     schemaDraftRebases[projectID] = nil
     schemaDraftHistory[projectID] = nil
+    schemaDraftSaveFailures[projectID] = nil
     debouncedSchemaDrafts.remove(projectID)
     refreshSchemaDraftEvaluation(for: projectID)
+  }
+
+  private func beginOwnSchemaWrite(_ projectID: String) {
+    ownSchemaWrites[projectID, default: 0] += 1
+  }
+
+  /// Ends an own edit, merging the draft with what was read meanwhile once
+  /// none is left.
+  private func endOwnSchemaWrite(_ projectID: String) {
+    guard let count = ownSchemaWrites[projectID] else { return }
+    guard count == 1 else {
+      ownSchemaWrites[projectID] = count - 1
+      return
+    }
+    ownSchemaWrites[projectID] = nil
+    if pendingSchemaMerges.remove(projectID) != nil { mergeSchemaDraft(for: projectID) }
   }
 
   /// Ends the drafts of projects that are gone.
@@ -3854,6 +3951,8 @@ final class VaultStore {
     schemaDraftHistory = [:]
     savingSchemaDrafts = []
     debouncedSchemaDrafts = []
+    schemaDraftSaveFailures = [:]
+    pendingSchemaMerges = []
     schemaDraftGeneration &+= 1
   }
 
@@ -6825,6 +6924,8 @@ final class VaultStore {
         afterCompletion(.failure(.description("The project folder changed. Review its descriptions, then save again.", keySaved: false)))
         return
       }
+      beginOwnSchemaWrite(project.id)
+      defer { endOwnSchemaWrite(project.id) }
       let result = await persistence.renameKeyWithSchema(project: project, edit: edit, change: change, folder: folder, folderIdentity: folderIdentity)
       guard sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked else {
         afterCompletion(.failure(.targetUnavailable)); return

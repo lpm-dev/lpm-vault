@@ -15,6 +15,11 @@ struct VaultSchemaView: View {
 	var draftOverview: ProjectEnvSchemaOverview? = nil
 	var selection: VaultSchemaSelection? = nil
 	var onSelect: (VaultSchemaSelection?) -> Void = { _ in }
+	/// What merging the draft with changes on disk did, until dismissed.
+	var rebase: ProjectEnvSchemaDraft.Rebase? = nil
+	var onDismissRebase: () -> Void = {}
+	/// Settles a conflict, keeping the draft's version or the file's.
+	var onResolveConflict: (ProjectEnvSchemaDraft.Item, _ keepingMine: Bool) -> Void = { _, _ in }
 	let onConnectCLI: () -> Void
 	let onRecheck: () -> Void
 
@@ -39,6 +44,7 @@ struct VaultSchemaView: View {
 		VStack(spacing: 0) {
 			header
 			VaultHairline()
+			changesOnDisk
 			content(listed)
 				.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 			VaultHairline()
@@ -79,14 +85,97 @@ struct VaultSchemaView: View {
 			}
 			Spacer(minLength: 8)
 			if let configFile {
-				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in its default editor") {
-					NSWorkspace.shared.open(configFile)
+				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor") {
+					ProjectConfigOpener.open(configFile)
 				}
 				.fixedSize()
 			}
 		}
 		.padding(.horizontal, 20)
 		.frame(height: 64)
+	}
+
+	// MARK: - Changes on disk
+
+	@ViewBuilder
+	private var changesOnDisk: some View {
+		if let conflicts = draft?.conflicts, !conflicts.isEmpty {
+			conflictBanner(conflicts)
+				.padding(.horizontal, 20)
+				.padding(.top, 12)
+		} else if let rebase, !rebase.isEmpty {
+			HStack(spacing: 8) {
+				Image(systemName: "checkmark").font(.system(size: 10.5, weight: .bold)).foregroundStyle(VaultPalette.greenTintText)
+				Text("lpm.json changed on disk — your draft was re-applied.")
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textSecondary)
+				Spacer(minLength: 8)
+				Text(rebase.summary)
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+					.truncationMode(.tail)
+				VaultRowIconButton(systemImage: "xmark", help: "Dismiss", action: onDismissRebase)
+			}
+			.padding(.leading, 12)
+			.padding(.trailing, 4)
+			.frame(height: 36)
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.headerRow))
+			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.padding(.horizontal, 20)
+			.padding(.top, 12)
+			.accessibilityElement(children: .combine)
+		}
+	}
+
+	private func conflictBanner(_ conflicts: [ProjectEnvSchemaDraft.Conflict]) -> some View {
+		VStack(alignment: .leading, spacing: 10) {
+			HStack(alignment: .top, spacing: 10) {
+				Image(systemName: "exclamationmark.triangle.fill")
+					.foregroundStyle(VaultPalette.orange)
+					.padding(.top, 1)
+				VStack(alignment: .leading, spacing: 3) {
+					Text(conflicts.count == 1 ? "lpm.json changed on disk — 1 change conflicts with your draft" : "lpm.json changed on disk — \(conflicts.count) changes conflict with your draft")
+						.font(.system(size: 13, weight: .semibold))
+						.foregroundStyle(VaultPalette.textPrimary)
+					Text("The rest of your draft was re-applied. Choose a version for each; saving waits until every one is settled.")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.fixedSize(horizontal: false, vertical: true)
+				}
+				Spacer(minLength: 8)
+				if let configFile {
+					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 26) { ProjectConfigOpener.open(configFile) }
+				}
+			}
+			VStack(spacing: 0) {
+				ForEach(Array(conflicts.enumerated()), id: \.element.item) { index, conflict in
+					let summary = conflict.summary
+					HStack(spacing: 10) {
+						VStack(alignment: .leading, spacing: 2) {
+							Text(ProjectEnvSchemaReview.title(of: conflict.item))
+								.font(VaultTypography.mono(12, .semibold))
+								.foregroundStyle(VaultPalette.textPrimary)
+							Text("Yours: \(summary.mine) · Theirs: \(summary.theirs)")
+								.font(.system(size: 11))
+								.foregroundStyle(VaultPalette.textTertiary)
+								.lineLimit(2)
+						}
+						Spacer(minLength: 8)
+						VaultBarButton(title: "Keep mine", height: 24) { onResolveConflict(conflict.item, true) }
+						VaultBarButton(title: "Take theirs", height: 24) { onResolveConflict(conflict.item, false) }
+					}
+					.padding(.horizontal, 10)
+					.padding(.vertical, 8)
+					.overlay(alignment: .top) { if index > 0 { VaultHairline() } }
+				}
+			}
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.content))
+			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		}
+		.padding(12)
+		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.orangeTint))
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.orange.opacity(0.6)) }
 	}
 
 	// MARK: - Content
@@ -116,7 +205,7 @@ struct VaultSchemaView: View {
 				message: "lpm.json has no envSchema. Add one to declare formats, defaults, and required keys; the LPM CLI enforces them and this page shows them."
 			) {
 				if let configFile {
-					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { NSWorkspace.shared.open(configFile) }
+					VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { ProjectConfigOpener.open(configFile) }
 				}
 				VaultBarButton(title: "Docs: envSchema", height: 28) { NSWorkspace.shared.open(Self.docsURL) }
 			} footer: {
@@ -188,7 +277,7 @@ struct VaultSchemaView: View {
 			}
 			Spacer(minLength: 8)
 			if let configFile {
-				VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { NSWorkspace.shared.open(configFile) }
+				VaultBarButton(systemImage: "doc", title: "Open lpm.json", height: 28) { ProjectConfigOpener.open(configFile) }
 			}
 			VaultBarButton(title: "Recheck", filled: true, height: 28, action: onRecheck)
 		}
