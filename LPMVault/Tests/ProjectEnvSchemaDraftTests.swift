@@ -34,6 +34,18 @@ struct ProjectEnvSchemaDraftTests {
 		#expect(draft.declaration(of: .key("API_URL")) == .absent)
 	}
 
+	@Test("renaming a key the draft adds points the draft's conditions and group members at the new name")
+	func renamesReferences() throws {
+		var draft = Draft(schema: try schema(#"{"vars":{"A":{}},"groups":{"auth":{"mode":"atLeastOne","vars":["A"]}}}"#))
+		draft.set(.declared(try json(#"{"requiredWhen":{"variable":"FOO","present":true}}"#)), for: .key("FOO"))
+		draft.set(.declared(try json(#"{"requiredWhen":{"variable":"FOO","equals":"on"}}"#)), for: .key("A"))
+		draft.set(.declared(try json(#"{"mode":"atLeastOne","vars":["A","FOO"]}"#)), for: .group("auth"))
+		draft.renameReferences(to: "FOO", as: "BAR")
+		#expect(draft.declaration(of: .key("FOO")) == .declared(try json(#"{"requiredWhen":{"variable":"BAR","present":true}}"#)))
+		#expect(draft.declaration(of: .key("A")) == .declared(try json(#"{"requiredWhen":{"variable":"BAR","equals":"on"}}"#)))
+		#expect(draft.declaration(of: .group("auth")) == .declared(try json(#"{"mode":"atLeastOne","vars":["A","BAR"]}"#)))
+	}
+
 	// MARK: - Applying
 
 	@Test("members keep their place, new ones go last, and a moved key leaves its old container")

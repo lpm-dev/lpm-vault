@@ -3539,6 +3539,53 @@ final class VaultStore {
     schemaDrafts[projectID].flatMap { $0.isEmpty ? nil : $0 }
   }
 
+  /// A key some environment stores, and how many do.
+  struct StoredSchemaKey: Hashable, Sendable {
+    let key: String
+    let environments: Int
+    /// A declared key whose name differs from this one only in letter case,
+    /// which Windows reads as the same name, so this one can't be declared.
+    var conflict: String?
+    /// The LPM CLI never passes the key to a process, so a rule for it has no effect.
+    var isIgnored = false
+  }
+
+  /// Keys the project stores that lpm.json doesn't declare, with the draft
+  /// applied, from A to Z. A key the draft removes isn't one: it's listed as
+  /// removed. Read from the workspace snapshot, which is built off the main
+  /// thread whenever the values change.
+  func undeclaredSchemaKeys(for projectID: String) -> [StoredSchemaKey] {
+    guard let project = projects.first(where: { $0.id == projectID }), project.hasLoadedEnvironments,
+      case .loaded(let saved, _)? = keyDescriptions[projectID]?.schema, let snapshot = workspaceSnapshots[projectID]
+    else { return [] }
+    let draft = schemaDraftOrBase(for: projectID)
+    // Declared keys by their name in capitals, with the draft applied.
+    var declared: [String: String] = [:]
+    for rule in saved.rules {
+      let item = ProjectEnvSchemaDraft.Item.key(rule.key)
+      if case .declared = draft.base(of: item), draft.declaration(of: item) == .absent { continue }
+      declared[rule.key.uppercased()] = declared[rule.key.uppercased()] ?? rule.key
+    }
+    for case .key(let key) in draft.changedItems where draft.declaration(of: .key(key)) != .absent {
+      declared[key.uppercased()] = declared[key.uppercased()] ?? key
+    }
+    let ignored = valueChecks[projectID]?.environments.values.reduce(into: Set<String>()) { $0.formUnion($1.ignored) } ?? []
+    return snapshot.allSecretKeys.compactMap { key in
+      let item = ProjectEnvSchemaDraft.Item.key(key)
+      guard draft.declaration(of: item) == .absent, draft.base(of: item) == .absent, saved.rule(for: key)?.source == nil else { return nil }
+      return StoredSchemaKey(key: key, environments: snapshot.summaries[key]?.environmentCount ?? 0,
+        conflict: declared[key.uppercased()], isIgnored: ignored.contains(key))
+    }
+  }
+
+  /// Keys the project's draft declares whose names differ only in letter
+  /// case, which the LPM CLI rejects on Windows; nil when the draft adds no
+  /// such names. Names lpm.json already has that clash don't stop a save.
+  func schemaDraftCaseClash(for projectID: String) -> ProjectEnvSchemaOverview.CaseClash? {
+    guard schemaDraft(for: projectID) != nil else { return nil }
+    return currentSchemaDraftEvaluation(for: projectID)?.overview?.caseClash(since: keyDescriptions[projectID]?.schema?.overview)
+  }
+
   /// The review of the project's draft as it is now: nil without a draft,
   /// and while it's evaluated or the engine rejects it.
   func schemaDraftReview(for projectID: String, environments: [String]) -> ProjectEnvSchemaReview? {
@@ -3576,6 +3623,13 @@ final class VaultStore {
       evaluated.values == projects.first(where: { $0.id == projectID })?.workspaceSnapshotIdentity
     else { return nil }
     return evaluated.evaluation
+  }
+
+  /// The project's rules with its draft applied, as last evaluated, which can
+  /// lag the draft; lpm.json's rules when it has no draft.
+  func schemaOverview(for projectID: String) -> ProjectEnvSchemaOverview? {
+    let saved = keyDescriptions[projectID]?.schema?.overview
+    return schemaDraft(for: projectID) == nil ? saved : latestSchemaDraftEvaluation(for: projectID)?.overview ?? saved
   }
 
   /// The latest evaluation of the project's draft, which can be of an earlier
@@ -3702,6 +3756,9 @@ final class VaultStore {
         }
         reviewed = evaluation.dependencies
         saving.evaluation = evaluation
+        if let clash = evaluation.overview?.caseClash(since: keyDescriptions[projectID]?.schema?.overview) {
+          throw .unavailable(clash.message)
+        }
       }
       let generation = schemaDraftGeneration
       savingSchemaDrafts.insert(projectID)

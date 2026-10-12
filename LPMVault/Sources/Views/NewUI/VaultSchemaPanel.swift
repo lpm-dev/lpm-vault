@@ -4,6 +4,16 @@ import SwiftUI
 /// What the Schema page's side panel shows.
 enum VaultSchemaSelection: Hashable {
 	case key(String)
+	/// A key being added, before it has a valid name.
+	case newKey
+
+	/// The key shown; empty for a key without a valid name yet.
+	var key: String {
+		switch self {
+		case .key(let key): key
+		case .newKey: ""
+		}
+	}
 }
 
 /// The Schema page's side panel: one key's rule, edited into the project's
@@ -13,21 +23,23 @@ struct VaultSchemaPanel: View {
 	let project: VaultProject
 	let environments: [String]
 	let selection: VaultSchemaSelection
+	/// Identifies one stretch of editing, which a key added in the panel
+	/// keeps as its name settles, so its fields stay focused.
+	let session: UUID
 	let onSelect: (VaultSchemaSelection?) -> Void
+	/// Follows the key the panel edits to a new name without a new session.
+	let onFollow: (VaultSchemaSelection) -> Void
 	/// Opens the review before saving.
 	let onReview: () -> Void
 	/// A key the panel renamed, so pages that show it follow the new name.
 	var onRenamed: (String, String) -> Void = { _, _ in }
 
 	var body: some View {
-		Group {
-			switch selection {
-			case .key(let key):
-				VaultSchemaKeyEditor(store: store, project: project, environments: environments, key: key,
-					onSelect: onSelect, onReview: onReview, onRenamed: onRenamed)
-					.id("\(project.id)/\(key)")
-			}
-		}
+		// One editor for every selection of a session, so a key being added
+		// keeps its rows and focus as its name settles.
+		VaultSchemaKeyEditor(store: store, project: project, environments: environments, key: selection.key,
+			onSelect: onSelect, onFollow: onFollow, onReview: onReview, onRenamed: onRenamed)
+			.id(session)
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 		.background(VaultPalette.inspector)
 	}
@@ -43,6 +55,7 @@ private struct VaultSchemaKeyEditor: View {
 	let environments: [String]
 	let key: String
 	let onSelect: (VaultSchemaSelection?) -> Void
+	let onFollow: (VaultSchemaSelection) -> Void
 	let onReview: () -> Void
 	let onRenamed: (String, String) -> Void
 
@@ -56,6 +69,20 @@ private struct VaultSchemaKeyEditor: View {
 	@State private var addingRule = false
 	@State private var scopeTarget: ScopeTarget?
 	@State private var pickingKey = false
+	/// A key being added keeps its rules here while its name can't be added.
+	@State private var newRule = Rule()
+	/// The panel opened to add a key, whose name stays editable as it's typed.
+	@State private var startedNew = false
+	/// Names this panel gave the key it adds, which undo and redo can bring back.
+	@State private var adoptedNames: Set<String> = []
+	/// The name the draft's references to the key being added use, which
+	/// follow it to its next name.
+	@State private var referencedName: String?
+	/// A name that looks like a credential, which the user chose to use anyway.
+	@State private var acceptedCredentialName: String?
+	@State private var suggestions: [ProjectEnvSchemaSuggestion] = []
+	@State private var dismissedSuggestions: Set<String> = []
+	@FocusState private var nameFocused: Bool
 	/// Whether the panel still shows this key, which a rename finishing later checks.
 	@State private var isPresented = false
 
@@ -92,13 +119,41 @@ private struct VaultSchemaKeyEditor: View {
 	private var draft: Draft { store.schemaDraftOrBase(for: project.id) }
 	/// The latest evaluation, which can lag the draft while it's evaluated.
 	private var evaluation: Draft.Evaluation? { store.latestSchemaDraftEvaluation(for: project.id) }
-	private var overview: ProjectEnvSchemaOverview? { pendingDraft == nil ? savedOverview : evaluation?.overview ?? savedOverview }
+	private var overview: ProjectEnvSchemaOverview? { store.schemaOverview(for: project.id) }
 	private var item: Draft.Item { .key(key) }
 	private var savedRule: ProjectEnvSchemaOverview.Rule? { savedOverview?.rule(for: key) }
 	private var saving: Bool { store.savingSchemaDrafts.contains(project.id) }
 	private var importedSource: String { savedRule?.overrides ?? savedRule?.source ?? "an imported schema" }
 
+	/// A key the draft adds, or one being added.
+	private var isNew: Bool {
+		guard !key.isEmpty else { return true }
+		return savedRule == nil && Self.isAdded(key, in: draft)
+	}
+
+	/// Whether the draft declares `name` in lpm.json without lpm.json having it.
+	private static func isAdded(_ name: String, in draft: Draft) -> Bool {
+		guard draft.base(of: .key(name)) == .absent, case .declared = draft.declaration(of: .key(name)) else { return false }
+		return true
+	}
+
+	/// Whether the name field names the key in the draft as it's typed: a key
+	/// being added here, or one the draft adds without values stored under its
+	/// name. A stored key that's declared keeps its name, which ties it to its values.
+	private var namesFreely: Bool {
+		guard isNew else { return false }
+		return startedNew || key.isEmpty || !environments.contains { project.value(for: key, in: $0) != nil }
+	}
+
+	/// The name the draft holds the key this panel adds under; nil while it holds none.
+	private var heldName: String? {
+		let draft = draft
+		if adoptedNames.contains(key), Self.isAdded(key, in: draft) { return key }
+		return adoptedNames.first { Self.isAdded($0, in: draft) }
+	}
+
 	private var mode: Mode {
+		if key.isEmpty { return .editing(isOverride: false) }
 		switch draft.declaration(of: item) {
 		case .declared: return .editing(isOverride: false)
 		case .overridden:
@@ -114,6 +169,12 @@ private struct VaultSchemaKeyEditor: View {
 	}
 
 	private var rule: Rule {
+		if key.isEmpty {
+			// The name decides whether a key is public, so a key waiting for one follows what's typed.
+			var rule = newRule
+			rule.client = publicPrefix != nil
+			return rule
+		}
 		switch draft.declaration(of: item) {
 		case .declared(let json), .overridden(let json): return Rule(json)
 		case .absent:
@@ -125,15 +186,19 @@ private struct VaultSchemaKeyEditor: View {
 		}
 	}
 
+	/// The name whose prefix decides whether the key is public: the key's, or
+	/// the one typed for a key being added.
+	private var exposedName: String { key.isEmpty ? name : key }
+
 	private var publicPrefix: String? {
-		Rule.publicPrefix(of: key, clientPrefixes: overview?.clientPrefixes ?? [])
+		Rule.publicPrefix(of: exposedName, clientPrefixes: overview?.clientPrefixes ?? [])
 	}
 
 	private var context: Rule.Context {
 		let overview = overview
 		return Rule.Context(
 			key: key,
-			publicPrefix: Rule.publicPrefix(of: key, clientPrefixes: overview?.clientPrefixes ?? []),
+			publicPrefix: Rule.publicPrefix(of: exposedName, clientPrefixes: overview?.clientPrefixes ?? []),
 			secretKeys: overview?.secretKeys ?? [],
 			comparedBy: overview?.keys(comparing: key) ?? [],
 			declaredKeys: overview.map(\.declaredKeys)
@@ -194,9 +259,25 @@ private struct VaultSchemaKeyEditor: View {
 		.onAppear {
 			name = key
 			isPresented = true
+			startedNew = key.isEmpty
+			if isNew, !key.isEmpty {
+				adoptedNames = [key]
+				referencedName = key
+			}
+			if key.isEmpty {
+				shownFields = [.required, .format, .secret]
+				// The field takes focus once it's in the window.
+				Task { @MainActor in nameFocused = true }
+			}
 		}
 		.onDisappear { isPresented = false }
-		.onChange(of: name) { renameError = nil }
+		.onChange(of: name) { _, newName in
+			renameError = nil
+			if namesFreely { adopt(newName) }
+		}
+		.onChange(of: heldName) { _, held in follow(held) }
+		.onChange(of: key) { _, newKey in if name != newKey, !isNew { name = newKey } }
+		.task(id: suggestionInput) { await suggest() }
 	}
 
 	private func undo(redo: Bool) -> Bool {
@@ -214,7 +295,7 @@ private struct VaultSchemaKeyEditor: View {
 
 	private func header(_ mode: Mode) -> some View {
 		HStack(spacing: 6) {
-			Text("KEY").vaultSectionLabel()
+			Text(isNew ? "NEW KEY" : "KEY").vaultSectionLabel()
 			switch mode {
 			case .inherited(let source), .overridden(let source), .reset(let source):
 				VaultSourceBadge(source: source)
@@ -230,7 +311,7 @@ private struct VaultSchemaKeyEditor: View {
 			if case .overridden = mode {
 				VaultTagBadge(text: "Overridden", foreground: VaultPalette.accentForeground, background: VaultPalette.accentTint, size: 10)
 			}
-			if draft.hasChange(to: item), mode != .removed {
+			if draft.hasChange(to: item), mode != .removed, !isNew {
 				VaultTagBadge(text: "Draft", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 10)
 			}
 			Spacer(minLength: 4)
@@ -306,7 +387,19 @@ private struct VaultSchemaKeyEditor: View {
 		store.editSchemaDraft(in: project.id) { $0.resolveConflict(item, keepingMine: keepingMine) }
 	}
 
+	@ViewBuilder
 	private func nameField(_ mode: Mode, rule: Rule) -> some View {
+		if namesFreely { newNameField } else { savedNameField(mode, rule: rule) }
+		if isNew, let warning = ProjectEnvSchemaSuggestion.exposureWarning(for: exposedName, publicPrefix: publicPrefix) {
+			HStack(alignment: .top, spacing: 6) {
+				Image(systemName: "exclamationmark.triangle").font(.system(size: 10)).padding(.top, 1)
+				Text(warning).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+			}
+			.foregroundStyle(VaultPalette.orangeTintText)
+		}
+	}
+
+	private func savedNameField(_ mode: Mode, rule: Rule) -> some View {
 		let renamable = mode == .editing(isOverride: false) && draft.base(of: item) != .absent
 		let changed = name != key
 		let issue = changed ? nameIssue(name, rule: rule) : nil
@@ -421,6 +514,340 @@ private struct VaultSchemaKeyEditor: View {
 		}
 	}
 
+	// MARK: - New keys
+
+	/// Why a name can't be a new key, with ways out.
+	private enum NameStatus: Equatable {
+		case empty
+		case invalid(suggestion: String?)
+		case tooLong
+		/// The name looks like a pasted credential, which lpm.json would share.
+		case credential
+		/// lpm.json or a schema it imports declares the name.
+		case declared(source: String)
+		/// The draft adds another key with the name.
+		case added
+		/// The draft removes the key lpm.json declares with the name.
+		case removed
+		case casing(existing: String)
+		case available
+	}
+
+	/// What the name would be for the key being added, from the draft and
+	/// lpm.json as last read, which are current while an evaluation catches up.
+	private func nameStatus(_ name: String) -> NameStatus {
+		guard !name.isEmpty else { return .empty }
+		guard EnvValidation.isValidVariableName(name) else {
+			var fixed = String(name.uppercased().unicodeScalars.map { scalar -> Character in
+				(scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || scalar == "_")) ? Character(scalar) : "_"
+			})
+			if fixed.first?.isNumber == true { fixed = "_" + fixed }
+			return .invalid(suggestion: EnvValidation.isValidVariableName(fixed) && fixed != name ? fixed : nil)
+		}
+		guard name.utf8.count <= EnvValidation.maximumSchemaKeyNameBytes else { return .tooLong }
+		let held = heldName
+		if name == held { return .available }
+		if acceptedCredentialName != name, ProjectEnvSchemaSuggestion.looksLikeCredential(name) { return .credential }
+		let draft = draft
+		let saved = savedOverview?.rule(for: name)
+		switch draft.declaration(of: .key(name)) {
+		case .declared, .overridden:
+			if draft.base(of: .key(name)) == .absent, saved == nil { return .added }
+			return .declared(source: saved.flatMap { $0.overrides ?? $0.source } ?? "lpm.json")
+		case .absent:
+			if case .declared = draft.base(of: .key(name)) { return .removed }
+			if let saved { return .declared(source: saved.overrides ?? saved.source ?? "lpm.json") }
+		}
+		let isRemoved = { (other: String) -> Bool in
+			if case .declared = draft.base(of: .key(other)), draft.declaration(of: .key(other)) == .absent { return true }
+			return false
+		}
+		if let existing = savedOverview?.keys(named: name, otherThan: name).first(where: { $0 != held && !isRemoved($0) }) {
+			return .casing(existing: existing)
+		}
+		let folded = name.uppercased()
+		for case .key(let other) in draft.changedItems where other != held && other != name && other.uppercased() == folded
+			&& draft.declaration(of: .key(other)) != .absent
+		{
+			return .casing(existing: other)
+		}
+		return .available
+	}
+
+	private var newNameField: some View {
+		let status = nameStatus(name)
+		let invalid = switch status { case .empty, .available: false; default: true }
+		return VStack(alignment: .leading, spacing: 6) {
+			HStack(spacing: 6) {
+				TextField("KEY_NAME", text: $name)
+					.textFieldStyle(.plain)
+					.font(VaultTypography.mono(13.5, .bold))
+					.autocorrectionDisabled()
+					.focused($nameFocused)
+					.disabled(!canEdit)
+					.accessibilityLabel("Key name")
+				if publicPrefix != nil, status == .available { VaultPublicBadge() }
+			}
+			.padding(.horizontal, 9)
+			.frame(height: 32)
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
+			.overlay {
+				RoundedRectangle(cornerRadius: 8)
+					.stroke(invalid ? VaultPalette.red : (nameFocused ? VaultPalette.accent : VaultPalette.border), lineWidth: invalid || nameFocused ? 1.5 : 1)
+			}
+			switch status {
+			case .empty:
+				EmptyView()
+			case .invalid(let suggestion):
+				nameIssueLine("Use letters, digits and underscores; a name can't start with a digit.",
+					actions: suggestion.map { fixed in [NameAction(title: "Use \(fixed)", edits: true) { name = fixed }] } ?? [])
+			case .tooLong:
+				nameIssueLine("Names can be at most \(EnvValidation.maximumSchemaKeyNameBytes) characters long.", actions: [])
+			case .credential:
+				nameIssueLine("This looks like a token or a key, not a name. lpm.json is shared with the team, so it isn't added.", actions: [
+					NameAction(title: "Use it as a name", edits: true) {
+						acceptedCredentialName = name
+						adopt(name)
+					},
+				])
+			case .declared(let source):
+				nameIssueLine("Already declared in \(source.escapingDirectionControls).", actions: [
+					NameAction(title: "Open that key", edits: false) { let target = name; onSelect(.key(target)) },
+					pickAnotherName,
+				])
+			case .added:
+				nameIssueLine("Already added in your draft.", actions: [
+					NameAction(title: "Open that key", edits: false) { let target = name; onSelect(.key(target)) },
+					pickAnotherName,
+				])
+			case .removed:
+				nameIssueLine("Your draft removes this key. Keep it in the schema to edit its rules.", actions: [
+					NameAction(title: "Open that key", edits: false) { let target = name; onSelect(.key(target)) },
+					pickAnotherName,
+				])
+			case .casing(let existing):
+				nameIssueLine("Conflicts with \(existing): names can't differ only in letter case, which Windows reads as one name.",
+					actions: [NameAction(title: "Open \(existing)", edits: false) { onSelect(.key(existing)) }])
+			case .available:
+				let stored = environments.filter { project.value(for: name, in: $0) != nil }.count
+				HStack(spacing: 5) {
+					Image(systemName: publicPrefix != nil ? "globe" : "checkmark").font(.system(size: 9.5, weight: .semibold))
+						.foregroundStyle(publicPrefix != nil ? VaultPalette.publicText : VaultPalette.greenTintText)
+					Text(availability(stored: stored))
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.fixedSize(horizontal: false, vertical: true)
+				}
+			}
+		}
+	}
+
+	private var pickAnotherName: NameAction {
+		NameAction(title: "Pick another name", edits: true) {
+			name = ""
+			nameFocused = true
+		}
+	}
+
+	private func availability(stored: Int) -> String {
+		let place = stored == 0 ? "" : stored == 1 ? " · stored in 1 environment" : " · stored in \(stored) environments"
+		if let prefix = publicPrefix { return "Starts with \(prefix) — this key will be public\(place)." }
+		return "Available · server key (no public prefix)\(place)"
+	}
+
+	/// A way out of a name that can't be used; one that edits the name is off
+	/// while the rules can't be edited.
+	private struct NameAction {
+		let title: String
+		let edits: Bool
+		let action: () -> Void
+	}
+
+	private func nameIssueLine(_ message: String, actions: [NameAction]) -> some View {
+		VStack(alignment: .leading, spacing: 4) {
+			HStack(alignment: .top, spacing: 6) {
+				Image(systemName: "xmark.circle").font(.system(size: 10)).padding(.top, 1)
+				Text(message).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+			}
+			.foregroundStyle(VaultPalette.redText)
+			if !actions.isEmpty {
+				HStack(spacing: 10) {
+					ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+						Button(action.title, action: action.action)
+							.buttonStyle(.plain)
+							.font(.system(size: 11, weight: .semibold))
+							.foregroundStyle(VaultPalette.accentForeground)
+							.disabled(action.edits && !canEdit)
+							.vaultPointingHand()
+					}
+				}
+				.padding(.leading, 16)
+			}
+		}
+	}
+
+	/// Keeps the key being added under `newName` while it's a name a new key
+	/// can have, carrying its rules and the draft's references to it.
+	/// Otherwise the key leaves the draft, and its rules wait in the panel
+	/// until the name can be used: the draft never holds a name that's taken
+	/// or one the field only passed through.
+	private func adopt(_ newName: String) {
+		let held = heldName
+		guard nameStatus(newName) == .available else {
+			park(held)
+			return
+		}
+		guard newName != held else {
+			if key != newName { onFollow(.key(newName)) }
+			return
+		}
+		var adopted = held.map { Rule(draft.declaration(of: .key($0)).json ?? .object([])) } ?? newRule
+		if Rule.publicPrefix(of: newName, clientPrefixes: overview?.clientPrefixes ?? []) != nil {
+			adopted.secret = false
+			adopted.client = true
+		} else {
+			adopted.client = false
+		}
+		let references = referencedName ?? held
+		store.editSchemaDraft(in: project.id, coalescing: "new-key-name") { draft in
+			if let held { draft.set(.absent, for: .key(held)) }
+			draft.set(.declared(adopted.json), for: .key(newName))
+			if let references { draft.renameReferences(to: references, as: newName) }
+		}
+		// The store ignores edits while the rules can't be edited.
+		guard Self.isAdded(newName, in: draft) else { return }
+		adoptedNames.insert(newName)
+		referencedName = newName
+		onFollow(.key(newName))
+	}
+
+	/// Takes the key being added out of the draft while its name can't be used.
+	private func park(_ held: String?) {
+		guard let held else {
+			if !key.isEmpty, !Self.isAdded(key, in: draft) { onFollow(.newKey) }
+			return
+		}
+		let rules = Rule(draft.declaration(of: .key(held)).json ?? .object([]))
+		store.editSchemaDraft(in: project.id, coalescing: "new-key-name") { $0.set(.absent, for: .key(held)) }
+		guard !Self.isAdded(held, in: draft) else { return }
+		newRule = rules
+		onFollow(.newKey)
+	}
+
+	/// Follows the key being added when the draft moves it, as undo and redo
+	/// do: to the name the draft now holds it under, or back to an empty name.
+	private func follow(_ held: String?) {
+		guard !adoptedNames.isEmpty else { return }
+		if let held {
+			referencedName = held
+			if held != name { name = held }
+			if key != held { onFollow(.key(held)) }
+		} else if !key.isEmpty, draft.declaration(of: item) != .absent {
+			// Saved, or changed on disk: the key is lpm.json's now.
+			adoptedNames = []
+		} else if !key.isEmpty || nameStatus(name) == .available {
+			name = ""
+			newRule = Rule()
+			if !key.isEmpty { onFollow(.newKey) }
+		}
+	}
+
+	// MARK: - Suggestions
+
+	/// What a new key's suggestions come from; the values stay in memory here.
+	private struct SuggestionInput: Hashable {
+		let key: String
+		let values: UUID
+		let publicPrefix: String?
+		let clientPrefixes: [String]
+	}
+
+	/// Suggestions read stored values, so only while they're loaded and usable.
+	private var suggestionInput: SuggestionInput? {
+		guard isNew, !key.isEmpty, project.hasLoadedEnvironments, store.canUseLocalSecrets else { return nil }
+		return SuggestionInput(key: key, values: project.workspaceSnapshotIdentity, publicPrefix: publicPrefix,
+			clientPrefixes: overview?.clientPrefixes ?? [])
+	}
+
+	private func suggest() async {
+		guard let input = suggestionInput else {
+			suggestions = []
+			return
+		}
+		suggestions = []
+		let values = project.environments.values.compactMap { $0[input.key] }
+		let work = Task.detached(priority: .userInitiated) {
+			ProjectEnvSchemaSuggestion.suggestions(for: input.key, values: values, publicPrefix: input.publicPrefix,
+				clientPrefixes: input.clientPrefixes)
+		}
+		let found = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+		guard !Task.isCancelled, suggestionInput == input else { return }
+		suggestions = found
+	}
+
+	@ViewBuilder
+	private func suggestionsSection(_ rule: Rule) -> some View {
+		let secretAvailable = rule.availability(of: .secret, in: context).isAvailable
+		let shown = suggestions.filter { !dismissedSuggestions.contains($0.id) && ($0.change != .secret || secretAvailable || $0.isApplied(in: rule)) }
+		if isNew, !shown.isEmpty {
+			VStack(alignment: .leading, spacing: 8) {
+				Text("SUGGESTED FROM STORED VALUES").vaultSectionLabel()
+				ForEach(shown) { suggestion in
+					let applied = suggestion.isApplied(in: rule)
+					VStack(alignment: .leading, spacing: 7) {
+						HStack(spacing: 7) {
+							Image(systemName: "sparkle").font(.system(size: 10)).foregroundStyle(VaultPalette.accentForeground)
+							VaultRuleBadge(badge: .init(text: suggestion.title))
+							Text(suggestion.evidence)
+								.font(.system(size: 11))
+								.foregroundStyle(VaultPalette.textTertiary)
+								.fixedSize(horizontal: false, vertical: true)
+						}
+						HStack(spacing: 6) {
+							if applied {
+								HStack(spacing: 4) {
+									Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
+									Text("Accepted").font(.system(size: 11))
+								}
+								.foregroundStyle(VaultPalette.greenTintText)
+								Spacer(minLength: 4)
+								Button("Undo") { update { suggestion.undo(in: &$0) } }
+									.buttonStyle(.plain)
+									.font(.system(size: 11))
+									.foregroundStyle(VaultPalette.textTertiary)
+									.disabled(!canEdit)
+									.accessibilityLabel("Undo \(suggestion.title)")
+							} else {
+								VaultBarButton(title: "Accept", filled: true, disabled: !canEdit, height: 24) {
+									switch suggestion.change {
+									case .secret: shownFields.insert(.secret)
+									case .format: shownFields.insert(.format)
+									case .protocols: shownFields.formUnion([.format, .protocols])
+									}
+									update { suggestion.apply(to: &$0) }
+								}
+								.accessibilityLabel("Accept \(suggestion.title)")
+								VaultBarButton(title: "Dismiss", height: 24) { dismissedSuggestions.insert(suggestion.id) }
+									.accessibilityLabel("Dismiss \(suggestion.title)")
+							}
+						}
+					}
+					.padding(10)
+					.frame(maxWidth: .infinity, alignment: .leading)
+					.background(RoundedRectangle(cornerRadius: 8).fill(applied ? VaultPalette.accentTint : VaultPalette.content))
+					.overlay { RoundedRectangle(cornerRadius: 8).stroke(applied ? VaultPalette.accent.opacity(0.5) : VaultPalette.border, lineWidth: 1) }
+				}
+				Text("Defaults are never suggested — lpm.json is shared, and a value may be a secret.")
+					.font(.system(size: 10.5))
+					.foregroundStyle(VaultPalette.textFaint)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			.padding(.horizontal, 16)
+			.padding(.top, 12)
+		}
+	}
+
+
 	private var descriptionField: some View {
 		TextField("Description — shown in CLI errors and .env.example", text: textBinding(\.description, field: "description"), axis: .vertical)
 			.textFieldStyle(.plain)
@@ -450,6 +877,7 @@ private struct VaultSchemaKeyEditor: View {
 	private func editingSections(_ rule: Rule, context: Rule.Context, conflicts: [Field: Rule.Conflict], visible: Set<Field>) -> some View {
 		let engineRow = rejection.flatMap { rejectionRow($0, mode: mode, visible: visible) }
 		return VStack(alignment: .leading, spacing: 0) {
+			suggestionsSection(rule)
 			ForEach(ProjectEnvSchemaRule.Section.allCases, id: \.self) { section in
 				let rows = Field.allCases.filter { $0.section == section && visible.contains($0) }
 				if !rows.isEmpty {
@@ -1054,12 +1482,18 @@ private struct VaultSchemaKeyEditor: View {
 
 	private var blocker: Blocker? {
 		guard let draft = pendingDraft else { return nil }
+		// Saving now would leave out the key being added, whose name can't be used yet.
+		if key.isEmpty, !name.isEmpty || newRule != Rule() { return Blocker(message: "Name the key to add it to your draft.") }
 		if let conflict = draft.conflicts.first(where: { $0.item == item }) ?? draft.conflicts.first {
 			if conflict.item == item { return Blocker(message: "Choose a version of this key above to save.") }
 			return Blocker(message: "Can't save until you choose a version of \(Self.name(of: conflict.item)), which changed on disk.", key: conflict.item.key)
 		}
 		guard let current = store.currentSchemaDraftEvaluation(for: project.id) else { return Blocker(message: "Checking the rules…") }
-		guard let rejection = current.rejection else { return nil }
+		guard let rejection = current.rejection else {
+			guard let clash = store.schemaDraftCaseClash(for: project.id) else { return nil }
+			let other = clash.keys.first { $0 != key && Self.isAdded($0, in: draft) }
+			return Blocker(message: "Can't save: \(clash.message)", key: clash.keys.contains(key) ? nil : other)
+		}
 		if rejection.item == item { return Blocker(message: "Fix the problem above to save.") }
 		guard let other = rejection.item else { return Blocker(message: "Can't save: \(rejection.reason)") }
 		return Blocker(message: "Can't save: \(Self.name(of: other)) has a problem. \(rejection.reason)", key: other.key)
@@ -1132,11 +1566,15 @@ private struct VaultSchemaKeyEditor: View {
 						Text("No changes").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
 					}
 					Spacer(minLength: 4)
-					if draft.hasChange(to: item) {
+					if key.isEmpty {
+						VaultBarButton(title: "Discard", height: 26) { onSelect(nil) }
+					} else if draft.hasChange(to: item) {
 						VaultBarButton(title: "Discard", height: 26) {
+							let wasNew = isNew
 							shownFields = []
 							editsOverride = false
 							store.editSchemaDraft(in: project.id) { $0.discard(.key(key)) }
+							if wasNew { onSelect(nil) }
 						}
 						.disabled(!canEdit)
 					}
@@ -1193,6 +1631,10 @@ private struct VaultSchemaKeyEditor: View {
 		var rule = rule
 		shownFields.formUnion(Field.allCases.filter(rule.has))
 		change(&rule)
+		guard !key.isEmpty else {
+			newRule = rule
+			return
+		}
 		let isOverride: Bool = switch mode {
 		case .editing(true), .overridden: true
 		default: false
@@ -1296,7 +1738,11 @@ struct VaultSchemaStoredValues: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
 			}
-			if let unavailable {
+			if key.isEmpty {
+				Text("Name the key to check the values stored under it.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+			} else if let unavailable {
 				Text(unavailable)
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
