@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
+import os
 
 @testable import LPMVault
 
@@ -364,8 +365,10 @@ struct SchemaClientPrefixTests {
 		store.editSchemaDraft(in: Self.id) { $0.set(.declared(.object([.init(key: "client", value: .bool(true)), .init(key: "description", value: .string("Theme"))])), for: .key("WIDGET_THEME")) }
 		#expect(try await Self.waitUntil { store.currentSchemaDraftEvaluation(for: Self.id) != nil })
 		let before = store.keyDescriptions[Self.id]?.dependencies
+		// The check waits until the test has seen the prefixes wait for it, however slow the runner.
+		let released = OSAllocatedUnfairLock(initialState: false)
 		store.schemaDraftEvaluator = ProjectEnvSchemaDraftEvaluator { schema, folder in
-			Thread.sleep(forTimeInterval: 1)
+			for _ in 0..<3000 where !released.withLock({ $0 }) { Thread.sleep(forTimeInterval: 0.01) }
 			return ProjectEnvSchemaDraftEvaluator.resolve(schema, inFolder: folder)
 		}
 		try Self.base.replacingOccurrences(of: #""ACME_PUBLIC_REGION":{"default":"eu"}"#, with: #""ACME_PUBLIC_REGION":{"secret":true}"#)
@@ -374,6 +377,7 @@ struct SchemaClientPrefixTests {
 		#expect(try await Self.waitUntil { store.keyDescriptions[Self.id]?.dependencies != before })
 		#expect(store.currentSchemaDraftEvaluation(for: Self.id) == nil)
 		#expect(store.schemaPrefixAvailability(for: Self.id) == .checking)
+		released.withLock { $0 = true }
 		#expect(try await Self.waitUntil { store.schemaPrefixAvailability(for: Self.id).context != nil })
 		let context = try #require(store.schemaPrefixAvailability(for: Self.id).context)
 		#expect(Prefixes.issue(adding: "ACME_PUBLIC_", in: context) == .secret(key: "ACME_PUBLIC_REGION"))
