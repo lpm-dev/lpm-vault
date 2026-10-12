@@ -324,84 +324,86 @@ struct ProjectCLILinkTests {
 	}
 }
 
-@Suite("Connect CLI rendering", .serialized)
-@MainActor
-struct ConnectCLIRenderingTests {
-	private func makeStore(path: String) -> VaultStore {
-		let environments: [String: [String: String]] = ["default": [:]]
-		let keychain = MockKeychainService()
-		keychain.envStorage["7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"] = (name: "my-api-server", path: path, environments: environments)
-		let store = VaultStore(
-			keychainService: keychain,
-			biometricService: MockBiometricService(),
-			apiService: MockAPIService()
-		)
-		store.projects = [VaultProject(
-			id: "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b",
-			name: "my-api-server",
-			path: path,
-			environments: environments
-		)]
-		store.selectedProjectId = "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"
-		store.isUnlocked = true
-		return store
-	}
-
-	@Test("the sheet shows the vault ID, lpm.json snippet, and terminal commands")
-	func rendersSheet() async throws {
-		let store = makeStore(path: "")
-		let text = try await renderedText(
-			of: ConnectCLISheet(store: store, projectId: "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"),
-			size: NSSize(width: 600, height: 560),
-			named: "connect-cli-sheet.png"
-		)
-
-		for expected in [
-			"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
-			"Optional task environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "lpm dev", "lpm run", "Docs", "Done",
-		] {
-			#expect(text.contains(expected), "missing \(expected)")
+extension SheetInteractionTests {
+	@Suite("Connect CLI rendering", .serialized)
+	@MainActor
+	struct ConnectCLIRenderingTests {
+		private func makeStore(path: String) -> VaultStore {
+			let environments: [String: [String: String]] = ["default": [:]]
+			let keychain = MockKeychainService()
+			keychain.envStorage["7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"] = (name: "my-api-server", path: path, environments: environments)
+			let store = VaultStore(
+				keychainService: keychain,
+				biometricService: MockBiometricService(),
+				apiService: MockAPIService()
+			)
+			store.projects = [VaultProject(
+				id: "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b",
+				name: "my-api-server",
+				path: path,
+				environments: environments
+			)]
+			store.selectedProjectId = "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"
+			store.isUnlocked = true
+			return store
 		}
-	}
 
-	@Test("the connection sheet explicitly selects the named environment")
-	func rendersSelectedEnvironment() async throws {
-		let store = makeStore(path: "")
-		store.projects[0].environments["staging"] = ["TOKEN": "dummy"]
-		store.selectedEnvironment = "staging"
-		let text = try await renderedText(
-			of: ConnectCLISheet(store: store, projectId: store.projects[0].id),
-			size: NSSize(width: 600, height: 620),
-			named: "connect-cli-staging.png"
-		)
-		#expect(text.contains("--env=staging"))
-		#expect(text.contains("Run from the linked project folder"))
-	}
+		@Test("the sheet shows the vault ID, lpm.json snippet, and terminal commands")
+		func rendersSheet() async throws {
+			let store = makeStore(path: "")
+			let text = try await renderedText(
+				of: ConnectCLISheet(store: store, projectId: "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"),
+				size: NSSize(width: 600, height: 560),
+				named: "connect-cli-sheet.png"
+			)
 
-	@Test("the title bar chip reads Connect CLI")
-	func rendersTitleBarChip() async throws {
-		let store = makeStore(path: "")
-		let text = try await renderedText(
-			of: VaultTitleBarView(store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {})
-				.environment(UpdateChecker()),
-			size: NSSize(width: 1040, height: VaultMetrics.titleBar),
-			named: "title-bar-connect-cli.png"
-		)
+			for expected in [
+				"Connect to the LPM CLI", "my-api-server", "Vault ID", "Copy", "Add it to your project",
+				"Optional task environments", "lpm.json", "Copy JSON", "vault", "lpm env list", "lpm dev", "lpm run", "Docs", "Done",
+			] {
+				#expect(text.contains(expected), "missing \(expected)")
+			}
+		}
 
-		#expect(text.contains("Connect CLI"))
-		#expect(!text.contains("vault 7f3a1e2c"))
-	}
+		@Test("the connection sheet explicitly selects the named environment")
+		func rendersSelectedEnvironment() async throws {
+			let store = makeStore(path: "")
+			store.projects[0].environments["staging"] = ["TOKEN": "dummy"]
+			store.selectedEnvironment = "staging"
+			let text = try await renderedText(
+				of: ConnectCLISheet(store: store, projectId: store.projects[0].id),
+				size: NSSize(width: 600, height: 620),
+				named: "connect-cli-staging.png"
+			)
+			#expect(text.contains("--env=staging"))
+			#expect(text.contains("Run from the linked project folder"))
+		}
 
-	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> OCRText {
-		let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
-		host.frame = NSRect(origin: .zero, size: size)
-		host.layoutSubtreeIfNeeded()
-		let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-		host.cacheDisplay(in: host.bounds, to: bitmap)
-		let image = try #require(bitmap.cgImage)
-		let data = try #require(bitmap.representation(using: .png, properties: [:]))
-		Attachment.record(data, named: name)
-		return OCRText(try await RenderedText.strings(in: image, usesLanguageCorrection: false).joined(separator: "\n"))
+		@Test("the title bar chip reads Connect CLI")
+		func rendersTitleBarChip() async throws {
+			let store = makeStore(path: "")
+			let text = try await renderedText(
+				of: VaultTitleBarView(store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {})
+					.environment(UpdateChecker()),
+				size: NSSize(width: 1040, height: VaultMetrics.titleBar),
+				named: "title-bar-connect-cli.png"
+			)
+
+			#expect(text.contains("Connect CLI"))
+			#expect(!text.contains("vault 7f3a1e2c"))
+		}
+
+		private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> OCRText {
+			let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
+			host.frame = NSRect(origin: .zero, size: size)
+			host.layoutSubtreeIfNeeded()
+			let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+			host.cacheDisplay(in: host.bounds, to: bitmap)
+			let image = try #require(bitmap.cgImage)
+			let data = try #require(bitmap.representation(using: .png, properties: [:]))
+			Attachment.record(data, named: name)
+			return OCRText(try await RenderedText.strings(in: image, usesLanguageCorrection: false).joined(separator: "\n"))
+		}
 	}
 }
 

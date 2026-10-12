@@ -471,15 +471,24 @@ actor VaultPersistenceCoordinator {
 			))
 	}
 
-	func renameKeyWithSchema(project: VaultProject, edit: VaultKeyEdit, change: ProjectEnvSchemaFile.Change, folder: String) async -> SchemaKeyRenameResult {
+	func renameKeyWithSchema(
+		project: VaultProject, edit: VaultKeyEdit, change: ProjectEnvSchemaFile.Change, folder: String,
+		folderIdentity: ProjectConfigFile.DirectoryIdentity? = nil
+	) async -> SchemaKeyRenameResult {
 		await withCheckedContinuation { continuation in
 			ProjectConfigFile.editQueue.async {
-				continuation.resume(returning: self.coordinatedKeyRename(project: project, edit: edit, change: change, folder: folder))
+				continuation.resume(returning: self.coordinatedKeyRename(project: project, edit: edit, change: change, folder: folder, folderIdentity: folderIdentity))
 			}
 		}
 	}
 
-	nonisolated func coordinatedKeyRename(project expected: VaultProject, edit: VaultKeyEdit, change: ProjectEnvSchemaFile.Change, folder: String, fileWriter: ProjectConfigFile.FileWriter = ProjectConfigFile.writeSecurely) -> SchemaKeyRenameResult {
+	/// Renames a key in the Keychain and in lpm.json as one change. The
+	/// Keychain decides which environments store the key, under its lock; when
+	/// none do, only lpm.json changes and the project isn't written.
+	nonisolated func coordinatedKeyRename(
+		project expected: VaultProject, edit: VaultKeyEdit, change: ProjectEnvSchemaFile.Change, folder: String,
+		folderIdentity: ProjectConfigFile.DirectoryIdentity? = nil, fileWriter: ProjectConfigFile.FileWriter = ProjectConfigFile.writeSecurely
+	) -> SchemaKeyRenameResult {
 		// Match the CLI's Keychain-before-config lock order; compensate before either lock is released.
 		let transaction = service.withKeychainTransaction { () -> SchemaKeyRenameResult in
 			let previous: VaultProject
@@ -517,8 +526,12 @@ actor VaultPersistenceCoordinator {
 					default: return .failure(.changed)
 					}
 				}
+				let storesValues = next.environments != previous.environments
 				let rules = try ProjectEnvSchemaFile.edit(change, at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), vaultID: previous.id, fileWriter: fileWriter, beforeWrite: {
-
+					guard storesValues else {
+						persisted = SecretPersistenceCommit(project: previous, syncMetadata: metadata.metadata, warning: nil)
+						return
+					}
 					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
 					case .success(let commit): persisted = commit
 					case .failure(let error):
@@ -527,10 +540,11 @@ actor VaultPersistenceCoordinator {
 					default: throw VaultKeyEditError.changed
 					}
 				}, onWriteFailure: {
+					guard storesValues else { return }
 					let restore: VaultKeychainMutation = metadata.data.map { .write(account: metadata.account, data: $0) } ?? .delete(account: metadata.account)
 					rollbackFailed = !self.service.applyVaultTransaction(project: .upsert(previous), data: [restore]).succeeded
 				}, onPrepared: { rules, source in updatedRules = rules; selectedSource = source }, strictRename: true,
-				onRootSchema: { rootSchema = $0 })
+				onRootSchema: { rootSchema = $0 }, folderIdentity: folderIdentity)
 
 				guard let persisted else { return .indeterminate }
 				return .success(persisted, rules, rootSchema: rootSchema)

@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
 # Runs `swift test` with the given arguments under a time limit. A run that
 # hangs prints the stacks of the test process and fails, instead of holding
-# the job until its timeout.
+# the job until its timeout. With SWIFT_TEST_SHARD set, it runs only that
+# shard of the tests (see swift-test-shard.py), and fails unless exactly those ran.
 set -euo pipefail
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 limit="${SWIFT_TEST_TIME_LIMIT:-900}"
 report_dir="$(mktemp -d)"
 trap 'rm -rf -- "$report_dir"' EXIT
-swift test "$@" --enable-swift-testing --disable-xctest --xunit-output "$report_dir/results.xml" &
+filters=()
+expected=""
+if [[ -n "${SWIFT_TEST_SHARD:-}" ]]; then
+	expected="$report_dir/shard-tests.txt"
+	python3 "$script_dir/swift-test-shard.py" "$SWIFT_TEST_SHARD" "$expected" "$report_dir/shard-filters.txt" "$@"
+	while IFS= read -r filter; do
+		filters+=(--filter "$filter")
+	done < "$report_dir/shard-filters.txt"
+	echo "Shard $SWIFT_TEST_SHARD runs $(($(wc -l < "$expected"))) tests"
+fi
+swift test "$@" ${filters[@]+"${filters[@]}"} --enable-swift-testing --disable-xctest --xunit-output "$report_dir/results.xml" &
 runner=$!
 deadline=$((SECONDS + limit))
 while kill -0 "$runner" 2>/dev/null; do
@@ -28,9 +40,16 @@ done
 wait "$runner"
 
 # AppKit can end the process successfully before Swift Testing finishes.
-python3 - "$report_dir/results.xml" <<'PY'
+python3 - "$report_dir/results.xml" "$expected" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
+
+
+def identifier(case):
+    """The case's test as `swift test list` names it: Module.Suite/Nested/test(), or Module.test() outside a suite."""
+    module, _, suites = case.get('classname', '').partition('.')
+    return module + '.' + '/'.join(suites.split('.') + [case.get('name', '')] if suites else [case.get('name', '')])
+
 
 try:
     root = ET.parse(sys.argv[1]).getroot()
@@ -50,6 +69,13 @@ try:
         raise ValueError('reported test failures')
     if next(root.iter('failure'), None) is not None or next(root.iter('error'), None) is not None:
         raise ValueError('reported test failures')
+    if sys.argv[2]:
+        with open(sys.argv[2]) as tests:
+            expected = {line.strip() for line in tests if line.strip()}
+        ran = {identifier(case) for case in root.iter('testcase')}
+        if ran != expected:
+            missing, extra = sorted(expected - ran), sorted(ran - expected)
+            raise ValueError(f'the shard ran {len(ran)} of its {len(expected)} tests; missing {missing[:5]}, unexpected {extra[:5]}')
 except (OSError, ET.ParseError, ValueError) as error:
     raise SystemExit('::error::Swift tests did not produce a complete passing report: ' + str(error))
 PY

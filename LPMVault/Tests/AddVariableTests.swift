@@ -269,55 +269,57 @@ struct AddVariableStoreTests {
 	}
 }
 
-@Suite("Add variable sheet rendering", .serialized)
-@MainActor
-struct AddVariableSheetRenderingTests {
-	@Test("the sheet renders its fields, environments, and submit action")
-	func rendersSheet() async throws {
-		let environments: [String: [String: String]] = ["default": [:], "staging": [:], "production": [:]]
-		let keychain = MockKeychainService()
-		keychain.envStorage["id-1"] = (name: "my-api-server", path: "/tmp/api", environments: environments)
-		let store = VaultStore(
-			keychainService: keychain,
-			biometricService: MockBiometricService(),
-			apiService: MockAPIService()
-		)
-		store.projects = [VaultProject(id: "id-1", name: "my-api-server", path: "/tmp/api", environments: environments)]
-		store.isUnlocked = true
+extension SheetInteractionTests {
+	@Suite("Add variable sheet rendering", .serialized)
+	@MainActor
+	struct AddVariableSheetRenderingTests {
+		@Test("the sheet renders its fields, environments, and submit action")
+		func rendersSheet() async throws {
+			let environments: [String: [String: String]] = ["default": [:], "staging": [:], "production": [:]]
+			let keychain = MockKeychainService()
+			keychain.envStorage["id-1"] = (name: "my-api-server", path: "/tmp/api", environments: environments)
+			let store = VaultStore(
+				keychainService: keychain,
+				biometricService: MockBiometricService(),
+				apiService: MockAPIService()
+			)
+			store.projects = [VaultProject(id: "id-1", name: "my-api-server", path: "/tmp/api", environments: environments)]
+			store.isUnlocked = true
 
-		let text = try await renderedText(
-			of: AddVariableSheet(store: store, projectId: "id-1", environment: "staging"),
-			size: NSSize(width: 560, height: 520),
-			named: "add-variable-sheet.png"
-		)
+			let text = try await renderedText(
+				of: AddVariableSheet(store: store, projectId: "id-1", environment: "staging"),
+				size: NSSize(width: 560, height: 520),
+				named: "add-variable-sheet.png"
+			)
 
-		for expected in ["Add variable", "my-api-server", "Key", "Value", "Generate", "Environments", ".env.staging", "adds and keeps the sheet open", "Cancel"] {
-			#expect(text.contains(expected), "missing \(expected)")
+			for expected in ["Add variable", "my-api-server", "Key", "Value", "Generate", "Environments", ".env.staging", "adds and keeps the sheet open", "Cancel"] {
+				#expect(text.contains(expected), "missing \(expected)")
+			}
 		}
-	}
 
-	@Test("the generator panel lists every value kind")
-	func rendersGeneratorPanel() async throws {
-		let text = try await renderedText(
-			of: SecretGeneratorPanel(kind: .constant(.base64), length: .constant(32), onGenerate: {}),
-			size: NSSize(width: 300, height: 330),
-			named: "secret-generator-panel.png"
-		)
+		@Test("the generator panel lists every value kind")
+		func rendersGeneratorPanel() async throws {
+			let text = try await renderedText(
+				of: SecretGeneratorPanel(kind: .constant(.base64), length: .constant(32), onGenerate: {}),
+				size: NSSize(width: 300, height: 330),
+				named: "secret-generator-panel.png"
+			)
 
-		for expected in ["GENERATE VALUE", "Base64 random", "openssl rand -base64 32", "Hexadecimal", "UUID", "Alphanumeric", "Password", "Length", "Regenerate"] {
-			#expect(text.contains(expected), "missing \(expected)")
+			for expected in ["GENERATE VALUE", "Base64 random", "openssl rand -base64 32", "Hexadecimal", "UUID", "Alphanumeric", "Password", "Length", "Regenerate"] {
+				#expect(text.contains(expected), "missing \(expected)")
+			}
 		}
-	}
 
-	private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> OCRText {
-		let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
-		host.frame = NSRect(origin: .zero, size: size)
-		host.layoutSubtreeIfNeeded()
-		let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-		host.cacheDisplay(in: host.bounds, to: bitmap)
-		let image = try #require(bitmap.cgImage)
-		let data = try #require(bitmap.representation(using: .png, properties: [:]))
-		Attachment.record(data, named: name)
-		return OCRText(try await RenderedText.strings(in: image, usesLanguageCorrection: false).joined(separator: "\n"))
+		private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> OCRText {
+			let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
+			host.frame = NSRect(origin: .zero, size: size)
+			host.layoutSubtreeIfNeeded()
+			let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+			host.cacheDisplay(in: host.bounds, to: bitmap)
+			let image = try #require(bitmap.cgImage)
+			let data = try #require(bitmap.representation(using: .png, properties: [:]))
+			Attachment.record(data, named: name)
+			return OCRText(try await RenderedText.strings(in: image, usesLanguageCorrection: false).joined(separator: "\n"))
+		}
 	}
 }

@@ -1182,80 +1182,6 @@ struct VaultStoreTests {
 		#expect(!store.isUnlocked)
 	}
 
-	@Test("auto-lock counts down every final second and locks at the deadline")
-	func autoLockCountdownTracksFinalThirtySeconds() async throws {
-		let sleeper = AutoLockSleeper()
-		let clock = AutoLockClock()
-		let store = VaultStore(
-			keychainService: MockKeychainService(), biometricService: MockBiometricService(),
-			apiService: MockAPIService(),
-			autoLockSleep: { duration in try await sleeper.sleep(duration) },
-			autoLockNow: { clock.now }, autoLockDuration: 120
-		)
-		defer { store.lock() }
-		await store.unlock()
-		while await sleeper.count < 1 { await Task.yield() }
-		#expect(store.autoLockCountdownSeconds == nil)
-
-		for seconds in stride(from: 30, through: 1, by: -1) {
-			clock.now = Double(120 - seconds)
-			await sleeper.resume(at: 30 - seconds)
-			while await sleeper.count < 32 - seconds { await Task.yield() }
-			#expect(store.isUnlocked)
-			#expect(store.autoLockCountdownSeconds == seconds)
-			if seconds == 30 || seconds == 1 {
-				try await expectRenderedLockTitle(store: store, seconds: seconds)
-			}
-		}
-		#expect(await sleeper.durations == [.seconds(90)] + Array(repeating: .seconds(1), count: 30))
-		clock.now = 120
-		await sleeper.resume(at: 30)
-		while store.isUnlocked { await Task.yield() }
-		#expect(store.autoLockCountdownSeconds == nil)
-	}
-
-	@Test("accessibility column resizing clears and postpones the auto-lock countdown", arguments: [false, true])
-	func columnAccessibilityResetsAutoLock(singleEnvironment: Bool) async throws {
-		let sleeper = AutoLockSleeper()
-		let clock = AutoLockClock()
-		let keychain = MockKeychainService()
-		keychain.envStorage["column-activity"] = (name: "Columns", path: "", environments: ["default": ["TOKEN": "fixture-value"]])
-		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
-			autoLockSleep: { duration in try await sleeper.sleep(duration) }, autoLockNow: { clock.now }, autoLockDuration: 120)
-		await store.unlock()
-		defer { store.lock() }
-		store.openProject(id: "column-activity")
-		let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "column-activity-test")!)),
-			size: NSSize(width: 1400, height: 800), keepsRequestedSize: true, usesHostingView: true)
-		defer { host.window.close() }
-		#expect(try await host.waitUntil { store.workspaceSnapshots["column-activity"] != nil })
-		try await host.settle()
-		if singleEnvironment {
-			try await host.clickSidebarEnvironment(".env")
-			try await host.settle()
-		}
-		func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {
-			if let divider = view as? VaultResizeTrackingView { return [divider] }
-			return view.subviews.flatMap { resizeViews(in: $0) }
-		}
-		let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
-		while await sleeper.count < 1 { await Task.yield() }
-		clock.now = 90
-		await sleeper.resume(at: 0)
-		while await sleeper.count < 2 { await Task.yield() }
-		#expect(store.autoLockCountdownSeconds == 30)
-		clock.now = 90.25
-		#expect(divider.accessibilityPerformIncrement())
-		#expect(store.autoLockCountdownSeconds == nil)
-		clock.now = 120
-		await sleeper.resume(at: 1)
-		while await sleeper.count < 3, store.isUnlocked { await Task.yield() }
-		#expect(store.isUnlocked)
-		#expect(await sleeper.durations.last == .seconds(60.25))
-		store.lock()
-		for index in 0..<(await sleeper.count) { await sleeper.resume(at: index) }
-	}
-
 	@Test("user activity clears and postpones the auto-lock countdown")
 	func autoLockCountdownResetsWithActivity() async {
 		let sleeper = AutoLockSleeper()
@@ -1369,23 +1295,6 @@ struct VaultStoreTests {
 		#expect(await sleeper.count == 3)
 		store.lock()
 		await sleeper.resume(at: 2)
-	}
-
-	private func expectRenderedLockTitle(store: VaultStore, seconds: Int) async throws {
-		let view = NSHostingView(rootView: VaultTitleBarView(
-			store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
-		).environment(UpdateChecker()).environment(\.colorScheme, .light))
-		view.frame = NSRect(x: 0, y: 0, width: 1040, height: VaultMetrics.titleBar)
-		view.layoutSubtreeIfNeeded()
-		let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-		view.cacheDisplay(in: view.bounds, to: bitmap)
-		let image = try #require(bitmap.cgImage)
-		let data = try #require(bitmap.representation(using: .png, properties: [:]))
-		Attachment.record(data, named: "lock-countdown-\(seconds).png")
-		let width = min(1, 180 / view.bounds.width)
-		let controls = CGRect(x: 1 - width, y: 0, width: width, height: 1)
-		let text = try await RenderedText.strings(in: image, region: controls).joined(separator: " ")
-		#expect(text.contains("Lock \(seconds)s"))
 	}
 
 	// MARK: - Add Secret
@@ -6824,5 +6733,102 @@ private func saveLocalValue(in store: VaultStore) async -> Bool {
 		return true
 	} catch {
 		return false
+	}
+}
+
+extension SheetInteractionTests {
+	@Suite("VaultStore, rendered")
+	@MainActor
+	struct VaultStoreRenderingTests {
+		@Test("auto-lock counts down every final second and locks at the deadline")
+		func autoLockCountdownTracksFinalThirtySeconds() async throws {
+			let sleeper = AutoLockSleeper()
+			let clock = AutoLockClock()
+			let store = VaultStore(
+				keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+				apiService: MockAPIService(),
+				autoLockSleep: { duration in try await sleeper.sleep(duration) },
+				autoLockNow: { clock.now }, autoLockDuration: 120
+			)
+			defer { store.lock() }
+			await store.unlock()
+			while await sleeper.count < 1 { await Task.yield() }
+			#expect(store.autoLockCountdownSeconds == nil)
+
+			for seconds in stride(from: 30, through: 1, by: -1) {
+				clock.now = Double(120 - seconds)
+				await sleeper.resume(at: 30 - seconds)
+				while await sleeper.count < 32 - seconds { await Task.yield() }
+				#expect(store.isUnlocked)
+				#expect(store.autoLockCountdownSeconds == seconds)
+				if seconds == 30 || seconds == 1 {
+					try await expectRenderedLockTitle(store: store, seconds: seconds)
+				}
+			}
+			#expect(await sleeper.durations == [.seconds(90)] + Array(repeating: .seconds(1), count: 30))
+			clock.now = 120
+			await sleeper.resume(at: 30)
+			while store.isUnlocked { await Task.yield() }
+			#expect(store.autoLockCountdownSeconds == nil)
+		}
+
+		@Test("accessibility column resizing clears and postpones the auto-lock countdown", arguments: [false, true])
+		func columnAccessibilityResetsAutoLock(singleEnvironment: Bool) async throws {
+			let sleeper = AutoLockSleeper()
+			let clock = AutoLockClock()
+			let keychain = MockKeychainService()
+			keychain.envStorage["column-activity"] = (name: "Columns", path: "", environments: ["default": ["TOKEN": "fixture-value"]])
+			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
+				autoLockSleep: { duration in try await sleeper.sleep(duration) }, autoLockNow: { clock.now }, autoLockDuration: 120)
+			await store.unlock()
+			defer { store.lock() }
+			store.openProject(id: "column-activity")
+			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "column-activity-test")!)),
+				size: NSSize(width: 1400, height: 800), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			#expect(try await host.waitUntil { store.workspaceSnapshots["column-activity"] != nil })
+			try await host.settle()
+			if singleEnvironment {
+				try await host.clickSidebarEnvironment(".env")
+				try await host.settle()
+			}
+			func resizeViews(in view: NSView) -> [VaultResizeTrackingView] {
+				if let divider = view as? VaultResizeTrackingView { return [divider] }
+				return view.subviews.flatMap { resizeViews(in: $0) }
+			}
+			let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
+			while await sleeper.count < 1 { await Task.yield() }
+			clock.now = 90
+			await sleeper.resume(at: 0)
+			while await sleeper.count < 2 { await Task.yield() }
+			#expect(store.autoLockCountdownSeconds == 30)
+			clock.now = 90.25
+			#expect(divider.accessibilityPerformIncrement())
+			#expect(store.autoLockCountdownSeconds == nil)
+			clock.now = 120
+			await sleeper.resume(at: 1)
+			while await sleeper.count < 3, store.isUnlocked { await Task.yield() }
+			#expect(store.isUnlocked)
+			#expect(await sleeper.durations.last == .seconds(60.25))
+			store.lock()
+			for index in 0..<(await sleeper.count) { await sleeper.resume(at: index) }
+		}
+
+		private func expectRenderedLockTitle(store: VaultStore, seconds: Int) async throws {
+			let view = NSHostingView(rootView: VaultTitleBarView(
+				store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
+			).environment(UpdateChecker()).environment(\.colorScheme, .light))
+			view.frame = NSRect(x: 0, y: 0, width: 1040, height: VaultMetrics.titleBar)
+			view.layoutSubtreeIfNeeded()
+			let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+			view.cacheDisplay(in: view.bounds, to: bitmap)
+			let image = try #require(bitmap.cgImage)
+			let data = try #require(bitmap.representation(using: .png, properties: [:]))
+			Attachment.record(data, named: "lock-countdown-\(seconds).png")
+			let width = min(1, 180 / view.bounds.width)
+			let controls = CGRect(x: 1 - width, y: 0, width: width, height: 1)
+			let text = try await RenderedText.strings(in: image, region: controls).joined(separator: " ")
+			#expect(text.contains("Lock \(seconds)s"))
+		}
 	}
 }

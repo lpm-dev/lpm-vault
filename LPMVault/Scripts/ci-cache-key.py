@@ -30,7 +30,7 @@ def cache_files(kind, root):
         inputs = common + [root / 'LPMVault/Scripts/verify-env-engine.py']
         sources = inputs
     elif kind == 'swift':
-        inputs = common + [root / 'LPMVault/Package.swift', root / 'LPMVault/Package.resolved']
+        inputs = common + [root / '.github/workflows/swift-tests.yml', root / 'LPMVault/Package.swift', root / 'LPMVault/Package.resolved']
         sources = [p for folder in ['Sources', 'Tests']
                    for p in (root / 'LPMVault' / folder).rglob('*') if p.is_file()]
     elif kind == 'release':

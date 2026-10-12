@@ -3,7 +3,7 @@ import Foundation
 /// A project's env rules as the app shows them: each declared key's rules as
 /// plain-word badges, the file an inherited rule comes from, and the groups.
 /// Built from the engine's resolved schema, so it shows exactly what the LPM
-/// CLI enforces. Rules are read-only in the app; people edit them in lpm.json.
+/// CLI enforces.
 struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	struct Badge: Hashable, Sendable {
 		let text: String
@@ -20,6 +20,10 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		let badges: [Badge]
 		/// The rule bounds the value's length.
 		var hasLengthRule = false
+		var isSecret = false
+		/// The imported file whose declaration lpm.json overrides; nil when
+		/// lpm.json declares the key or doesn't override it.
+		var overrides: String?
 	}
 
 	struct Group: Equatable, Sendable {
@@ -34,30 +38,60 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	let rules: [Rule]
 	let groups: [Group]
 	let publicKeys: Set<String>
+	/// Declared keys whose values are secret.
+	let secretKeys: Set<String>
+	let declaredKeys: Set<String>
+	/// Prefixes that make a key public besides the frameworks', from lpm.json
+	/// and the schemas it imports.
+	let clientPrefixes: [String]
 	/// The resolved schema as compact JSON, which the bundled engine checks
 	/// stored values against; nil for rules not built from a resolution.
 	let effectiveSchema: Data?
 	private let index: [String: Int]
+	private let declarations: [String: LPMConfigJSON]
+	/// The keys whose Required when compares each key's value, from A to Z.
+	private let comparisons: [String: [String]]
+	/// Declared keys by their name in capitals, which Windows reads as one name.
+	private let foldedKeys: [String: [String]]
 
-	init(rules: [Rule], groups: [Group], effectiveSchema: Data? = nil) {
+	init(rules: [Rule], groups: [Group], effectiveSchema: Data? = nil, clientPrefixes: [String] = [], declarations: [String: LPMConfigJSON] = [:]) {
 		let order = Dictionary(uniqueKeysWithValues: VaultKeySortOrder.sortedAscending(rules.map(\.key)).enumerated().map { ($1, $0) })
 		self.rules = rules.sorted { order[$0.key, default: 0] < order[$1.key, default: 0] }
 		self.groups = groups.sorted { $0.name < $1.name }
 		publicKeys = Set(rules.lazy.filter(\.isPublic).map(\.key))
+		secretKeys = Set(rules.lazy.filter(\.isSecret).map(\.key))
+		declaredKeys = Set(rules.lazy.map(\.key))
+		foldedKeys = Dictionary(grouping: self.rules.lazy.map(\.key), by: { $0.uppercased() })
+		self.clientPrefixes = clientPrefixes
 		self.effectiveSchema = effectiveSchema
+		self.declarations = declarations
 		index = Dictionary(uniqueKeysWithValues: self.rules.enumerated().map { ($1.key, $0) })
+		var comparisons: [String: [String]] = [:]
+		for (key, declaration) in declarations {
+			if case .string(let source)? = declaration["requiredWhen"]?["variable"], declaration["requiredWhen"]?["equals"] != nil {
+				comparisons[source, default: []].append(key)
+			}
+		}
+		self.comparisons = comparisons.mapValues { $0.sorted() }
 	}
 
 	init(resolution: RustSchemaEngine.Resolution) {
-		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source))
+		var overridden: [String: String] = [:]
+		for (key, origin) in resolution.origins where origin.source == "lpm.json" && origin.pointer.hasPrefix("/envSchema/overrides/") {
+			if let declaring = resolution.declaringOrigins[key]?.source, declaring != "lpm.json" { overridden[key] = declaring }
+		}
+		self.init(effective: resolution.effective, sources: resolution.origins.mapValues(\.source), overridden: overridden)
 	}
 
-	private init(effective: LPMConfigJSON, sources: [String: String]) {
+	private init(effective: LPMConfigJSON, sources: [String: String], overridden: [String: String] = [:]) {
 		var rules: [Rule] = []
+		var declared: [String: LPMConfigJSON] = [:]
 		if case .object(let declarations)? = effective["vars"] {
 			rules.reserveCapacity(declarations.count)
+			declared.reserveCapacity(declarations.count)
 			for declaration in declarations {
 				let source = sources[declaration.key]
+				declared[declaration.key] = declaration.value
 				rules.append(Rule(
 					key: declaration.key,
 					isPublic: declaration.value["client"] == .bool(true),
@@ -65,7 +99,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 					badges: Self.badges(for: declaration.value).map {
 						Badge(text: $0.text.escapingDirectionControls, help: $0.help?.escapingDirectionControls)
 					},
-					hasLengthRule: declaration.value["minLength"] != nil || declaration.value["maxLength"] != nil
+					hasLengthRule: declaration.value["minLength"] != nil || declaration.value["maxLength"] != nil,
+					isSecret: declaration.value["secret"] == .bool(true),
+					overrides: overridden[declaration.key]?.escapingDirectionControls
 				))
 			}
 		}
@@ -82,7 +118,12 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 				groups.append(Group(name: group.key, summary: "\(lead) \(members.joined(separator: ", "))", members: members))
 			}
 		}
-		self.init(rules: rules, groups: groups, effectiveSchema: try? effective.compactData(maximumBytes: Self.engineInputLimit))
+		var prefixes: [String] = []
+		if case .array(let values)? = effective["clientPrefixes"] {
+			prefixes = values.compactMap { if case .string(let prefix) = $0 { prefix } else { nil } }
+		}
+		self.init(rules: rules, groups: groups, effectiveSchema: try? effective.compactData(maximumBytes: Self.engineInputLimit),
+			clientPrefixes: prefixes, declarations: declared)
 	}
 
 	/// The bundled engine's input limit for a schema or a set of values.
@@ -119,7 +160,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		if schema["vars"]?[from] != nil, schema["vars"]?[to] == nil {
 			sources[to] = sources.removeValue(forKey: from)
 		}
-		return ProjectEnvSchemaOverview(effective: effective, sources: sources)
+		var overridden = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.overrides.map { (rule.key, $0) } })
+		if let moved = overridden.removeValue(forKey: from) { overridden[to] = moved }
+		return ProjectEnvSchemaOverview(effective: effective, sources: sources, overridden: overridden)
 	}
 
 	var isEmpty: Bool { rules.isEmpty && groups.isEmpty }
@@ -145,8 +188,30 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		index[key].map { rules[$0] }
 	}
 
+	/// Where `key` is in `rules`.
+	func position(of key: String) -> Int? {
+		index[key]
+	}
+
+	/// Declared keys other than `key` whose names differ from `name` at most in letter case.
+	func keys(named name: String, otherThan key: String) -> [String] {
+		(foldedKeys[name.uppercased()] ?? []).filter { $0 != key }
+	}
+
+	/// The keys whose Required when compares `key`'s value, which keeps it from being secret.
+	func keys(comparing key: String) -> [String] {
+		comparisons[key] ?? []
+	}
+
+	/// The key's resolved rule as JSON, as the LPM CLI enforces it.
+	func declaration(of key: String) -> LPMConfigJSON? {
+		declarations[key]
+	}
+
+	/// The resolved schema decides the rest, unless it was too large to keep.
 	static func == (lhs: Self, rhs: Self) -> Bool {
-		lhs.rules == rhs.rules && lhs.groups == rhs.groups && lhs.effectiveSchema == rhs.effectiveSchema
+		lhs.rules == rhs.rules && lhs.groups == rhs.groups && lhs.clientPrefixes == rhs.clientPrefixes && lhs.effectiveSchema == rhs.effectiveSchema
+			&& (lhs.effectiveSchema != nil || lhs.declarations == rhs.declarations)
 	}
 
 	// MARK: - Badges
@@ -270,6 +335,25 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	private static func chars(_ count: String) -> String { count == "1" ? "char" : "chars" }
 }
 
+extension ProjectEnvSchemaOverview.Rule {
+	/// A key's rule as a draft writes it, before the engine resolves it.
+	/// `saved` is its rule in lpm.json's resolved rules, which names the
+	/// schema an override replaces.
+	init(key: String, draft declaration: LPMConfigJSON, isOverride: Bool, saved: Self?) {
+		self.init(
+			key: key,
+			isPublic: declaration["client"] == .bool(true),
+			source: nil,
+			badges: ProjectEnvSchemaOverview.badges(for: declaration).map {
+				.init(text: $0.text.escapingDirectionControls, help: $0.help?.escapingDirectionControls)
+			},
+			hasLengthRule: declaration["minLength"] != nil || declaration["maxLength"] != nil,
+			isSecret: declaration["secret"] == .bool(true),
+			overrides: isOverride ? saved?.overrides ?? saved?.source : nil
+		)
+	}
+}
+
 /// What the Schema page shows for a project.
 enum ProjectEnvSchemaState: Equatable, Sendable {
 	/// The project has no folder on this Mac to read lpm.json from.
@@ -301,11 +385,67 @@ enum ProjectEnvSchemaState: Equatable, Sendable {
 		let location = (path.isEmpty
 			? (diagnostic.source == nil ? "lpm.json › envSchema" : source)
 			: "\(source) › \(path.joined(separator: "."))").escapingDirectionControls
-		let reason = diagnostic.message.map { $0.prefix(1).uppercased() + $0.dropFirst() }
-			?? reasons[diagnostic.code]
-			?? "Invalid declaration (\(diagnostic.code))."
-		return Problem(location: location, reason: reason)
+		return Problem(location: location, reason: reason(code: diagnostic.code, message: diagnostic.message))
 	}
+
+	/// The engine's reason in plain words: its message when it gives one, or
+	/// what its code means.
+	static func reason(code: String, message: String?) -> String {
+		if let message {
+			return messages[message]?.reason ?? message.prefix(1).uppercased() + message.dropFirst()
+		}
+		return reasons[code] ?? "Invalid declaration (\(code))."
+	}
+
+	/// The rule fields a definition problem is about, most likely first, when
+	/// the engine's location names only the key. Empty when it isn't about one.
+	static func fields(code: String, message: String?) -> [String] {
+		if let message { return messages[message]?.fields ?? [] }
+		return switch code {
+		case "env.invalid_pattern": ["pattern"]
+		case "env.invalid_format", "env.enum_mismatch", "env.pattern_mismatch", "env.constraint", "env.invalid_value": ["default"]
+		case "env.empty", "env.required": ["default", "defaultsIn"]
+		default: []
+		}
+	}
+
+	/// The engine's rule messages, in plain words, with the fields they're about.
+	private static let messages: [String: (reason: String, fields: [String])] = [
+		"min and max require the integer or port format": ("Min and max need the integer or port format.", ["min", "max"]),
+		"min cannot exceed max": ("Min can't be more than max.", ["min", "max"]),
+		"numeric bounds exclude every valid port": ("These bounds leave no valid port, which runs from 1 to 65535.", ["min", "max"]),
+		"minLength cannot exceed maxLength": ("The shortest length can't be more than the longest.", ["minLength", "maxLength"]),
+		"protocols require the url format": ("Protocols need the url format.", ["protocols"]),
+		"protocols must contain 1 to 32 unique lowercase URL schemes": ("List 1 to 32 different URL schemes in lowercase, such as https, without a colon.", ["protocols"]),
+		"requiredWhen must reference a declared variable": ("Required when must name a declared key.", ["requiredWhen"]),
+		"requiredWhen cannot compare a secret source with a literal": ("Required when can't compare a secret key's value. Use “is set” or “is not set”.", ["requiredWhen"]),
+		"schema text cannot contain unsafe control characters": ("The rule's text can't contain control characters.", ["description", "pattern", "default", "defaultsIn", "enum", "requiredWhen"]),
+		"secret rules cannot be client-visible": ("Public keys can't be secret.", ["secret", "client"]),
+		"secret rules cannot use readable CI variable storage": ("Secret keys can't use readable CI variables.", ["ci"]),
+		"client-visible keys must use a framework or declared client prefix; rename the key or add its prefix to clientPrefixes":
+			("Public keys need a public prefix, such as NEXT_PUBLIC_ or one of the project's client prefixes.", ["client"]),
+		"public-prefix keys require client: true; remove secret: true or rename the key to keep it private":
+			("A key with a public prefix is public. Turn off Secret, or rename the key to keep it private.", ["secret", "client"]),
+		"secret rules cannot contain literal defaults or enum values": ("Secret keys can't have a default or allowed values.", ["default", "enum"]),
+		"secret rules cannot contain literal scoped defaults": ("Secret keys can't have scoped defaults.", ["defaultsIn"]),
+		"enum must contain at least one value": ("Add at least one allowed value.", ["enum"]),
+		"scoped default does not satisfy its format": ("A scoped default doesn't match the format.", ["defaultsIn"]),
+		"scoped default does not satisfy its enum": ("A scoped default isn't one of the allowed values.", ["defaultsIn"]),
+		"scoped default does not satisfy its pattern": ("A scoped default doesn't match the pattern.", ["defaultsIn"]),
+		"scoped default does not satisfy its scalar constraints": ("A scoped default is outside the bounds or length.", ["defaultsIn"]),
+		"scoped default is not a process environment value": ("A scoped default can't contain a null character.", ["defaultsIn"]),
+		"requiredIn and defaultsIn each support at most 32 selectors": ("A rule can have at most 32 scopes in Required in and 32 in Default in.", ["requiredIn", "defaultsIn"]),
+		"scope selectors require unique nonempty dimensions with valid environment, stage, and service names":
+			("A scope names an environment or service that isn't valid, or names one twice. Names use letters, digits, “.”, “_” and “-”, up to 64 characters.", ["requiredIn", "defaultsIn"]),
+		"requiredIn selectors must be unique": ("Two scopes in Required in are the same.", ["requiredIn"]),
+		"defaultsIn selectors cannot overlap": ("Scoped defaults overlap, so more than one could apply. Narrow them.", ["defaultsIn"]),
+		"groups must contain at most 128 groups and 4096 total members": ("There can be at most 128 groups, with 4096 members in all.", []),
+		"group names must be portable environment variable names": ("Group names use letters, digits and underscores, and can't start with a digit.", []),
+		"groups must contain at least one declared variable": ("A group needs at least one key.", ["vars"]),
+		"group members must be unique declared variables": ("A group's members must be declared keys, each listed once.", ["vars"]),
+		"clientPrefixes must contain at most 32 unique portable prefixes ending in '_'":
+			("Client prefixes: at most 32, each listed once, using letters, digits and underscores, and ending in “_”.", []),
+	]
 
 	/// Plain words for the engine's definition codes when it gives no message.
 	private static let reasons: [String: String] = {
@@ -315,7 +455,14 @@ enum ProjectEnvSchemaState: Equatable, Sendable {
 			"env.invalid_rule": "This rule is invalid.",
 			"env.invalid_name": "A key or group name isn't a valid environment variable name.",
 			"env.invalid_pattern": "This pattern isn't a valid regular expression.",
-			"env.invalid_prefixes": "clientPrefixes is invalid.",
+			"env.invalid_format": "The default doesn't match the format.",
+			"env.enum_mismatch": "The default isn't one of the allowed values.",
+			"env.pattern_mismatch": "The default doesn't match the pattern.",
+			"env.constraint": "The default is outside the bounds or length.",
+			"env.invalid_value": "The default can't contain a null character.",
+			"env.empty": "An empty default can't be used while empty values are rejected.",
+			"env.required": "An empty default can't satisfy Required.",
+			"env.invalid_prefixes": "A client prefix is listed twice.",
 			"env.declaration_conflict": "More than one schema declares this key. Add an override in lpm.json to choose one.",
 			"env.override_missing": "This override names a key that no imported schema declares.",
 			"env.import_unreadable": "An imported schema can't be read.",
@@ -334,11 +481,14 @@ enum ProjectEnvSchemaState: Equatable, Sendable {
 }
 
 extension String {
+	/// Whether the text has characters that could hide or reorder the text around them.
+	var hasHiddenCharacters: Bool { unicodeScalars.contains(where: \.hidesOrReordersText) }
+
 	/// This text with each character that could hide or reorder the text
 	/// around it written as an escape, such as \u{202e}, for showing text
 	/// that comes from lpm.json, which an untrusted project can write.
 	var escapingDirectionControls: String {
-		guard unicodeScalars.contains(where: \.hidesOrReordersText) else { return self }
+		guard hasHiddenCharacters else { return self }
 		var escaped = ""
 		escaped.reserveCapacity(utf8.count + 8)
 		for scalar in unicodeScalars {
