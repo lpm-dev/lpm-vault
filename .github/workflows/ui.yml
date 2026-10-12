@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     uses: ./.github/workflows/swift-tests.yml
     with:
       shard: ${{ matrix.shard }}/${{ strategy.job-total }}
