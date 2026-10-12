@@ -22,12 +22,14 @@ enum ProjectConfigWatcher {
 	}
 }
 
-/// Watches each folder that holds a watched file for entries being added,
-/// replaced, or removed, and each file for writes: one descriptor for each
-/// folder however many files it holds, and one for each file. Folders below
-/// the project folder are opened a component at a time, never through a
-/// link, as the engine reads them. lpm.json and what it imports come from
-/// the project, so only a regular file is opened, never followed through a
+/// Watches each folder that holds a watched file, and each folder above one,
+/// for entries being added, replaced, or removed, and each file for writes:
+/// one descriptor for each folder however many files it holds, and one for
+/// each file. A folder replaced at its path is followed, with everything
+/// below it, whichever folder above it was replaced. Folders below the
+/// project folder are opened a component at a time, never through a link,
+/// as the engine reads them. lpm.json and what it imports come from the
+/// project, so only a regular file is opened, never followed through a
 /// link: opening a pipe or a device could block the queue `stop()` runs on,
 /// or reach a device's driver. All state lives on `queue`, which nothing blocks.
 private final class Watch: @unchecked Sendable {
@@ -36,12 +38,24 @@ private final class Watch: @unchecked Sendable {
 		let components: [String]
 		/// The files watched in it, by name.
 		var files: [String: File] = [:]
+		/// The folders in it that hold a watched file, or are above one.
+		var children: [Folder] = []
 		var source: DispatchSourceFileSystemObject?
 		/// The folder's descriptor while `source` is open; the source closes it.
 		var descriptor: Int32 = -1
+		/// The folder `descriptor` is open on, which tells it from another one made at its path.
+		var identity: FolderIdentity?
 		var reopening: DispatchWorkItem?
 
 		init(components: [String]) { self.components = components }
+
+		/// The folders below it, at any depth.
+		var descendants: [Folder] { children.flatMap { [$0] + $0.descendants } }
+	}
+
+	private struct FolderIdentity: Equatable {
+		let device: dev_t
+		let inode: ino_t
 	}
 
 	private final class File {
@@ -69,6 +83,7 @@ private final class Watch: @unchecked Sendable {
 	}
 
 	private let root: String
+	/// The project folder, then the others, each after the folder it's in.
 	private let folders: [Folder]
 	private let settling: DispatchTimeInterval
 	private let maximumDelay: DispatchTimeInterval
@@ -86,18 +101,21 @@ private final class Watch: @unchecked Sendable {
 		onChange: @escaping @Sendable () -> Void)
 	{
 		self.root = root
-		var byPath: [[String]: Folder] = [:]
-		var order: [Folder] = []
+		var byPath: [[String]: Folder] = [[]: Folder(components: [])]
+		var order = [byPath[[]]!]
+		func folder(at components: [String]) -> Folder {
+			if let folder = byPath[components] { return folder }
+			let parent = folder(at: Array(components.dropLast()))
+			let folder = Folder(components: components)
+			byPath[components] = folder
+			parent.children.append(folder)
+			order.append(folder)
+			return folder
+		}
 		for path in files {
 			var components = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init).filter { $0 != "." }
 			guard let name = components.popLast(), !components.contains(".."), name != ".." else { continue }
-			let folder = byPath[components] ?? {
-				let folder = Folder(components: components)
-				byPath[components] = folder
-				order.append(folder)
-				return folder
-			}()
-			folder.files[name] = File()
+			folder(at: components).files[name] = File()
 		}
 		folders = order
 		self.settling = settling
@@ -107,7 +125,7 @@ private final class Watch: @unchecked Sendable {
 	}
 
 	func start() {
-		queue.async { [self] in for folder in folders { watch(folder) } }
+		queue.async { [self] in watch(folders[0]) }
 	}
 
 	func stop() {
@@ -137,20 +155,28 @@ private final class Watch: @unchecked Sendable {
 		folder.source?.cancel()
 		folder.source = nil
 		folder.descriptor = -1
+		folder.identity = nil
 		for file in folder.files.values {
 			file.source?.cancel()
 			file.source = nil
 		}
 	}
 
-	/// Watches the folder at its path, or tries again later while there's
-	/// none. A file that differs from what was seen before is a change.
+	/// Watches the folder at its path, and each folder in it that isn't the
+	/// one watched before, as when a folder above was replaced. While there's
+	/// none at its path, the folders below it close too, and it tries again
+	/// later. A file that differs from what was seen before is a change.
 	private func watch(_ folder: Folder) {
 		guard !stopped else { return }
 		close(folder)
 		let descriptor = open(folder)
-		guard descriptor >= 0 else {
-			for name in folder.files.keys { note(.missing, for: name, in: folder) }
+		var info = stat()
+		guard descriptor >= 0, fstat(descriptor, &info) == 0 else {
+			if descriptor >= 0 { Darwin.close(descriptor) }
+			for missing in [folder] + folder.descendants {
+				if missing !== folder { close(missing) }
+				for name in missing.files.keys { note(.missing, for: name, in: missing) }
+			}
 			let work = DispatchWorkItem { [weak self, weak folder] in
 				guard let self, let folder else { return }
 				watch(folder)
@@ -168,21 +194,20 @@ private final class Watch: @unchecked Sendable {
 		source.resume()
 		folder.source = source
 		folder.descriptor = descriptor
+		folder.identity = FolderIdentity(device: info.st_dev, inode: info.st_ino)
 		for name in folder.files.keys {
 			note(state(of: name, in: folder), for: name, in: folder)
 			watchFile(name, in: folder)
+		}
+		for child in folder.children where child.source == nil || identity(of: child, in: folder) != child.identity {
+			watch(child)
 		}
 	}
 
 	private func folderChanged(_ folder: Folder, events: DispatchSource.FileSystemEvent) {
 		if !events.isDisjoint(with: [.rename, .delete, .revoke]) {
-			// The folder moved or went away; watch what's at its path instead. Folders
-			// below the project folder were reached through it, so they're reopened too.
-			if folder.components.isEmpty {
-				for folder in folders { watch(folder) }
-			} else {
-				watch(folder)
-			}
+			// The folder moved or went away; watch what's at its path instead.
+			watch(folder)
 			return
 		}
 		for (name, file) in folder.files {
@@ -191,6 +216,20 @@ private final class Watch: @unchecked Sendable {
 			note(now, for: name, in: folder)
 			watchFile(name, in: folder)
 		}
+		// A folder in it moved, went away, or was made: each below it was reached through it.
+		for child in folder.children where identity(of: child, in: folder) != child.identity {
+			watch(child)
+		}
+	}
+
+	/// The folder now at `child`'s path in `folder`, without following a link;
+	/// nil when there's none.
+	private func identity(of child: Folder, in folder: Folder) -> FolderIdentity? {
+		var info = stat()
+		guard folder.descriptor >= 0, let name = child.components.last, fstatat(folder.descriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+			info.st_mode & S_IFMT == S_IFDIR
+		else { return nil }
+		return FolderIdentity(device: info.st_dev, inode: info.st_ino)
 	}
 
 	/// Records what's at a file's path; anything other than what was seen

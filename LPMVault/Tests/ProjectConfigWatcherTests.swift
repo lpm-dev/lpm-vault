@@ -197,6 +197,46 @@ struct ProjectConfigWatcherTests {
 		#expect(try await eventually { descriptors(in: folder) == 0 })
 	}
 
+	@Test("an import stays watched when a folder above it is moved aside and made again", arguments: [
+		(import: "a/b/schema.json", replaced: "a"), (import: "a/b/c/schema.json", replaced: "a/b"),
+	])
+	func followsReplacedFolders(import path: String, replaced: String) async throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let file = folder + "/" + path
+		let parent = (file as NSString).deletingLastPathComponent
+		try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
+		try "{}".write(toFile: file, atomically: false, encoding: .utf8)
+		let changes = ChangeCounter()
+		let watching = Task {
+			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: [path], settling: .milliseconds(100),
+				maximumDelay: .milliseconds(600), retryingEvery: .milliseconds(200)) {
+				changes.increment()
+			}
+		}
+		defer { watching.cancel() }
+		try await Task.sleep(for: .milliseconds(100))
+		let aside = folder + "/" + replaced + "-old"
+		try FileManager.default.moveItem(atPath: folder + "/" + replaced, toPath: aside)
+		#expect(try await eventually { changes.count == 1 }, "The import left with its folder")
+		try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+		try #"{"vars":{}}"#.write(toFile: file, atomically: false, encoding: .utf8)
+		#expect(try await eventually { changes.count == 2 }, "The import made again at its path")
+		try await Task.sleep(for: .milliseconds(200))
+		let handle = try #require(FileHandle(forWritingAtPath: file))
+		handle.write(Data(#"{"vars":{"A":{}}}"#.utf8))
+		try handle.close()
+		#expect(try await eventually { changes.count == 3 }, "The new file is the one watched")
+		try #"{"vars":{"B":{}}}"#.write(toFile: aside + path.dropFirst(replaced.count), atomically: false, encoding: .utf8)
+		try await Task.sleep(for: .milliseconds(400))
+		#expect(changes.count == 3, "The file moved aside isn't")
+		let watched = path.split(separator: "/").count + 2
+		#expect(descriptors(in: folder) == watched, "One for each folder on the import's path and one for each file, none on what moved aside")
+		watching.cancel()
+		#expect(try await eventually { descriptors(in: folder) == 0 })
+	}
+
 	@Test("an import whose folder is a link out of the project isn't watched")
 	func ignoresLinkedFolders() async throws {
 		let folder = try makeFolder()
@@ -223,20 +263,6 @@ struct ProjectConfigWatcherTests {
 		}
 		try await Task.sleep(for: .milliseconds(400))
 		#expect(changes.count == 0)
-	}
-
-	/// The process's descriptors open on `folder` or anything in it.
-	private func descriptors(in folder: String) -> Int {
-		guard let resolved = realpath(folder, nil) else { return 0 }
-		let root = String(cString: resolved)
-		free(resolved)
-		let entries = (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd")) ?? []
-		var buffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN))
-		return entries.lazy.compactMap(Int32.init).filter { descriptor in
-			guard fcntl(descriptor, F_GETPATH, &buffer) != -1 else { return false }
-			let path = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
-			return path == root || path.hasPrefix(root + "/")
-		}.count
 	}
 
 	private func makeFolder() throws -> String {
