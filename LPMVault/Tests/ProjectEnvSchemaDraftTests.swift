@@ -50,7 +50,7 @@ struct ProjectEnvSchemaDraftTests {
 	func setScalesLinearly() {
 		func time(_ count: Int) -> Duration {
 			let items = (0..<count).map { Draft.Item.key("KEY_\($0)") }
-			return (0..<3).map { _ in
+			return (0..<5).map { _ in
 				ContinuousClock().measure {
 					var draft = Draft(schema: nil)
 					for item in items { draft.set(.declared(.object([])), for: item) }
@@ -58,10 +58,12 @@ struct ProjectEnvSchemaDraftTests {
 				}
 			}.min() ?? .zero
 		}
-		_ = time(500)
-		let small = time(2000)
-		let large = time(8000)
-		#expect(large < small * 10, "8000 items took \(large), 2000 took \(small)")
+		// Long enough runs, best of several, that a busy runner's pauses don't decide it:
+		// four times the items takes about four times as long, and sixteen if it were quadratic.
+		_ = time(1000)
+		let small = time(4000)
+		let large = time(16000)
+		#expect(large < small * 10, "16000 items took \(large), 4000 took \(small)")
 	}
 
 	// MARK: - Applying
