@@ -953,6 +953,46 @@ actor ProjectEnvSchemaDraftEvaluator {
 		}
 	}
 
+	/// What going back to the imports' version of each of `groups`, which
+	/// `draft` overrides, brings back; nil when the calling task was cancelled.
+	func restoredGroups(_ groups: [String], of draft: ProjectEnvSchemaDraft, inFolder folder: String) -> [String: ProjectEnvSchemaReference.Restore]? {
+		guard !Task.isCancelled else { return nil }
+		let restored = Self.restoredGroups(groups, of: draft, inFolder: folder, resolve: resolver)
+		return Task.isCancelled ? nil : restored
+	}
+
+	/// What going back to the imports' version of each of `groups` brings
+	/// back: the rules resolved without those overrides, or without each
+	/// alone when they don't resolve together, so one override that can't go
+	/// doesn't hide the others.
+	static func restoredGroups(
+		_ groups: [String], of draft: ProjectEnvSchemaDraft, inFolder folder: String, resolve: Resolve = { resolve($0, inFolder: $1) }
+	) -> [String: ProjectEnvSchemaReference.Restore] {
+		func importedGroups(without names: [String]) -> [String: ProjectEnvSchemaOverview.Group]? {
+			var variant = draft
+			variant.set(names.map { (item: .group($0), declaration: .absent) })
+			let schema: LPMConfigJSON
+			do { schema = try variant.applied(to: variant.schema) ?? .object([]) } catch { return nil }
+			guard case .resolved(let overview, _) = resolve(schema, folder) else { return nil }
+			var imported: [String: ProjectEnvSchemaOverview.Group] = [:]
+			for group in overview.groups where group.source != nil { imported[group.name] = group }
+			return imported
+		}
+		func restore(_ group: ProjectEnvSchemaOverview.Group?) -> ProjectEnvSchemaReference.Restore {
+			guard let group, let source = group.source else { return .unavailable }
+			return .group(members: group.members, source: source)
+		}
+		var restored: [String: ProjectEnvSchemaReference.Restore] = [:]
+		if let imported = importedGroups(without: groups) {
+			for name in groups { restored[name] = restore(imported[name]) }
+		} else if groups.count > 1 {
+			for name in groups where !Task.isCancelled { restored[name] = restore(importedGroups(without: [name])?[name]) }
+		} else {
+			for name in groups { restored[name] = .unavailable }
+		}
+		return restored
+	}
+
 	/// The evaluation of `draft`; nil when the calling task was cancelled.
 	/// `imports` are the imported schemas' digests as last read; the last
 	/// resolution is reused only while they're known and the same.

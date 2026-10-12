@@ -83,12 +83,65 @@ struct SchemaKeyReferenceTests {
 		defer { try? FileManager.default.removeItem(atPath: folder) }
 		let loaded = ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project")
 		var draft = Draft(schema: loaded.rootSchema)
-		let references = Reference.references(to: "PASSWORD", in: draft, rules: loaded.schema.overview)
+		let found = Reference.references(to: "PASSWORD", in: draft, rules: loaded.schema.overview)
+		#expect(found.map(\.restore) == [.checking])
+		#expect(found.map(\.fixes) == [[]] && found.first?.unfixable == nil, "Nothing is offered until what comes back is known")
+		let restored = ProjectEnvSchemaDraftEvaluator.restoredGroups(["login"], of: draft, inFolder: folder)
+		#expect(restored == ["login": .group(members: ["SSO", "OTP"], source: "base.json")])
+		let references = found.map { $0.restored(by: restored) }
 		#expect(references.map(\.fixes) == [[.removeGroupOverride]])
+		#expect(references.first?.note(for: .removeGroupOverride) == "The group base.json declares applies again.")
 		#expect(references.first?.location == "envSchema.groupOverrides.login")
 		draft.remove("PASSWORD", settling: references.map { ($0, .removeGroupOverride) })
 		let evaluation = ProjectEnvSchemaFile.evaluate(draft, inFolder: folder, environments: [:])
 		#expect(evaluation.rejection == nil, "\(evaluation.rejection?.reason ?? "")")
+	}
+
+	@Test("going back to the import's group isn't offered when that group names the key too, so settling every reference leaves rules the CLI accepts")
+	func groupOverrideOfAGroupThatNamesTheKey() throws {
+		let folder = try makeFolder(
+			#"{"envSchema":{"extends":["base.json"],"vars":{"PASSWORD":{}},"groupOverrides":{"login":{"mode":"exactlyOne","vars":["PASSWORD","SSO"]}}}}"#,
+			base: #"{"vars":{"SSO":{}},"groups":{"login":{"mode":"atLeastOne","vars":["PASSWORD","SSO"]}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let loaded = ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project")
+		var draft = Draft(schema: loaded.rootSchema)
+		let restored = ProjectEnvSchemaDraftEvaluator.restoredGroups(["login"], of: draft, inFolder: folder)
+		#expect(restored == ["login": .group(members: ["PASSWORD", "SSO"], source: "base.json")])
+		let references = Reference.references(to: "PASSWORD", in: draft, rules: loaded.schema.overview).map { $0.restored(by: restored) }
+		#expect(references.map(\.fixes) == [[.dropFromGroup]])
+		draft.remove("PASSWORD", settling: references.map { ($0, $0.fixes[0]) })
+		let evaluation = ProjectEnvSchemaFile.evaluate(draft, inFolder: folder, environments: [:])
+		#expect(evaluation.rejection == nil, "\(evaluation.rejection?.reason ?? "")")
+	}
+
+	@Test("an override that lists only the key, of a group whose import names it too, says where to fix it")
+	func groupOverrideOfOneThatTheImportNames() throws {
+		let folder = try makeFolder(
+			#"{"envSchema":{"extends":["base.json"],"vars":{"PASSWORD":{}},"groupOverrides":{"login":{"mode":"allOrNone","vars":["PASSWORD"]}}}}"#,
+			base: #"{"vars":{"SSO":{}},"groups":{"login":{"mode":"allOrNone","vars":["PASSWORD","SSO"]}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let loaded = ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project")
+		let draft = Draft(schema: loaded.rootSchema)
+		let restored = ProjectEnvSchemaDraftEvaluator.restoredGroups(["login"], of: draft, inFolder: folder)
+		let references = Reference.references(to: "PASSWORD", in: draft, rules: loaded.schema.overview).map { $0.restored(by: restored) }
+		#expect(references.map(\.fixes) == [[]])
+		#expect(references.first?.unfixable == "lpm.json's override lists only it, and the group base.json declares names it too. Remove it there.")
+	}
+
+	@Test("an override that settles a conflict between imports can't go, while another override checked with it still can")
+	func groupOverrideThatSettlesAConflict() throws {
+		let folder = try makeFolder(
+			#"{"envSchema":{"extends":["base.json","other.json"],"vars":{"PASSWORD":{}},"groupOverrides":{"login":{"mode":"allOrNone","vars":["PASSWORD"]},"access":{"mode":"allOrNone","vars":["PASSWORD"]}}}}"#,
+			base: #"{"vars":{"SSO":{},"OTP":{}},"groups":{"login":{"mode":"allOrNone","vars":["SSO"]},"access":{"mode":"atLeastOne","vars":["OTP"]}}}"#)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		try #"{"groups":{"login":{"mode":"exactlyOne","vars":["SSO"]}}}"#.write(toFile: folder + "/other.json", atomically: true, encoding: .utf8)
+		let loaded = ProjectEnvSchemaFile.load(inFolder: folder, vaultID: "project")
+		let draft = Draft(schema: loaded.rootSchema)
+		let restored = ProjectEnvSchemaDraftEvaluator.restoredGroups(["access", "login"], of: draft, inFolder: folder)
+		#expect(restored == ["access": .group(members: ["OTP"], source: "base.json"), "login": .unavailable])
+		let references = Reference.references(to: "PASSWORD", in: draft, rules: loaded.schema.overview).map { $0.restored(by: restored) }
+		#expect(references.map(\.fixes) == [[.removeGroupOverride], []])
+		#expect(references.last?.unfixable == "lpm.json's override lists only it, and the LPM CLI would reject the rules without the override. Give the override another member first.")
 	}
 
 	@Test("a key declared in both vars and overrides, which the CLI rejects, is still one reference per item")
@@ -369,6 +422,28 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-remove")?.changedItems.count == 41 })
 		}
 
+		@Test("Settle all waits until going back to an imported group is checked, and skips a version that names the key too")
+		func settleAllWithGroupOverride() async throws {
+			let (store, host, folder) = try await workspace(
+				#"{"envSchema":{"extends":["schemas/base.json"],"vars":{"PASSWORD":{"secret":true},"TOKEN":{"requiredWhen":{"variable":"PASSWORD","present":true}}},"groupOverrides":{"login":{"mode":"exactlyOne","vars":["PASSWORD","SSO"]}}}}"#,
+				base: #"{"vars":{"SSO":{},"DATABASE_URL":{"format":"url"}},"groups":{"login":{"mode":"atLeastOne","vars":["PASSWORD","SSO"]}}}"#)
+			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			try await host.click("PASSWORD")
+			#expect(try await host.waitForText("STORED VALUES"))
+			try host.shortcut("\u{7f}", code: 51)
+			#expect(try await host.waitUntil { host.window.sheets.first != nil })
+			let sheet = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("Drop from group", in: sheet))
+			#expect(!(try await host.text(in: sheet).contains("Use the original group")))
+			try await host.click("Settle all", in: sheet)
+			#expect(try await host.waitForText("Every reference is settled", in: sheet))
+			try await host.click("Add to draft", in: sheet)
+			#expect(try await host.waitUntil { host.window.sheets.isEmpty })
+			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-remove").map { $0.rejection == nil && $0.overview != nil } == true },
+				"The LPM CLI accepts the rules")
+			#expect(store.schemaDraft(for: "schema-remove")?.declaration(of: .group("login")).json?["vars"] == .array([.string("SSO")]))
+		}
+
 		@Test("a long file name doesn't push the dialog's buttons out of view")
 		func longFileName() async throws {
 			let (store, host, folder) = try await workspace(basePath: "schemas/production-environment-shared-schema-for-all-services.json")
@@ -398,11 +473,13 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { if case .overridden? = store.schemaDraft(for: "schema-remove")?.declaration(of: .key("DATABASE_URL")) { true } else { false } })
 		}
 
-		private func workspace(_ sample: String = Self.sample, basePath: String = "schemas/base.json") async throws -> (VaultStore, SheetTestHost<some View>, String) {
+		private func workspace(
+			_ sample: String = Self.sample, base: String = #"{"vars":{"DATABASE_URL":{"format":"url"}}}"#, basePath: String = "schemas/base.json"
+		) async throws -> (VaultStore, SheetTestHost<some View>, String) {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "schema-remove-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
 			try sample.replacingOccurrences(of: "schemas/base.json", with: basePath).write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-			try #"{"vars":{"DATABASE_URL":{"format":"url"}}}"#.write(toFile: folder + "/" + basePath, atomically: true, encoding: .utf8)
+			try base.write(toFile: folder + "/" + basePath, atomically: true, encoding: .utf8)
 			let keychain = MockKeychainService()
 			let project = VaultProject(id: "schema-remove", name: "billing-app", path: folder, environments: [
 				"default": ["PASSWORD": "long-enough-password", "PORT": "3000"],

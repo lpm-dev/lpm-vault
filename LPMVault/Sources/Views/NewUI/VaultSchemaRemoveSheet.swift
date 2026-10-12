@@ -10,7 +10,20 @@ struct VaultSchemaRemoveSheet: View {
 	@Environment(\.dismiss) private var dismiss
 
 	@State private var chosen: [ProjectEnvSchemaDraft.Item: ProjectEnvSchemaReference.Fix] = [:]
+	@State private var restored: Restored?
 	@State private var listHeight: CGFloat = 0
+
+	/// The groups lpm.json overrides whose references need what going back to
+	/// the imports' version brings back, in the rules it's checked against.
+	private struct RestoreRequest: Equatable {
+		let groups: [String]
+		let draft: ProjectEnvSchemaDraft
+	}
+
+	private struct Restored {
+		let request: RestoreRequest
+		let groups: [String: ProjectEnvSchemaReference.Restore]
+	}
 
 	private static let maximumListHeight: CGFloat = 320
 
@@ -33,11 +46,17 @@ struct VaultSchemaRemoveSheet: View {
 
 	var body: some View {
 		let rules = rules
-		let references: [ProjectEnvSchemaReference] = if case .ready(let overview) = rules {
-			ProjectEnvSchemaReference.references(to: key, in: store.schemaDraftOrBase(for: project.id), rules: overview)
+		let draft = store.schemaDraftOrBase(for: project.id)
+		let found: [ProjectEnvSchemaReference] = if case .ready(let overview) = rules {
+			ProjectEnvSchemaReference.references(to: key, in: draft, rules: overview)
 		} else {
 			[]
 		}
+		let request = RestoreRequest(groups: found.compactMap { reference in
+			guard reference.restore == .checking, case .group(let name) = reference.item else { return nil }
+			return name
+		}, draft: draft)
+		let references = if let restored, restored.request == request { found.map { $0.restored(by: restored.groups) } } else { found }
 		let settled = references.compactMap { reference in chosen[reference.id].flatMap { reference.fixes.contains($0) ? (reference: reference, fix: $0) : nil } }
 		let left = references.count - settled.count
 		let stored = project.environments.values.filter { $0[key] != nil }.count
@@ -92,6 +111,12 @@ struct VaultSchemaRemoveSheet: View {
 		}
 		.frame(width: 520)
 		.background(VaultPalette.content)
+		.task(id: request) {
+			guard !request.groups.isEmpty, restored?.request != request,
+				let groups = await store.restoredSchemaGroups(request.groups, of: request.draft, in: project.id)
+			else { return }
+			restored = Restored(request: request, groups: groups)
+		}
 	}
 
 	private func footerText(references: Int, left: Int) -> String {
@@ -115,6 +140,8 @@ struct VaultSchemaRemoveSheet: View {
 							chosen[reference.id] = reference.fixes.first
 						}
 					}
+					// A group still being checked may yet offer a fix that comes first.
+					.disabled(references.contains { $0.restore == .checking })
 					.buttonStyle(.plain)
 					.font(.system(size: 11, weight: .semibold))
 					.foregroundStyle(VaultPalette.accentForeground)
@@ -197,6 +224,13 @@ struct VaultSchemaRemoveSheet: View {
 					.font(.system(size: 11))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.accessibilityLabel("Undo \(reference.done(by: fix).lowercased())")
+			} else if reference.restore == .checking {
+				HStack(spacing: 6) {
+					ProgressView().controlSize(.mini)
+					Text("Checking…").font(.system(size: 11))
+				}
+				.foregroundStyle(VaultPalette.textTertiary)
+				.fixedSize()
 			} else {
 				ForEach(reference.fixes, id: \.self) { fix in
 					VaultBarButton(title: reference.title(of: fix), height: 24) { chosen[reference.id] = fix }

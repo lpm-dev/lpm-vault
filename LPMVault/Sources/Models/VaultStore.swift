@@ -3547,6 +3547,14 @@ final class VaultStore {
     editSchemaDraft(in: projectID) { $0.remove(key, settling: fixes) }
   }
 
+  /// What going back to the imports' version of each of `groups`, which
+  /// `draft`, the project's draft or lpm.json's rules, overrides, brings back;
+  /// nil while the rules can't be edited, or when the calling task was cancelled.
+  func restoredSchemaGroups(_ groups: [String], of draft: ProjectEnvSchemaDraft, in projectID: String) async -> [String: ProjectEnvSchemaReference.Restore]? {
+    guard let folder = editableSchemaFolder(for: projectID)?.path else { return nil }
+    return await schemaDraftEvaluator.restoredGroups(groups, of: draft, inFolder: folder)
+  }
+
   /// Takes a key's removal back, with the fixes that came with it.
   func keepSchemaKey(_ key: String, in projectID: String) {
     editSchemaDraft(in: projectID) { $0.keep(key) }

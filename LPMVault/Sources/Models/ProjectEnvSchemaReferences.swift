@@ -22,6 +22,17 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 		case removeGroupOverride
 	}
 
+	/// What going back to the imports' version of a group lpm.json overrides brings back.
+	enum Restore: Equatable, Sendable {
+		/// Not known yet: it takes resolving the rules without the override.
+		case checking
+		/// The group the imports declare, with the file that declares it, escaped for showing.
+		case group(members: [String], source: String)
+		/// No import declares the group, or the LPM CLI rejects the rules
+		/// without the override, as when it settles a conflict between imports.
+		case unavailable
+	}
+
 	let kind: Kind
 	/// The key removed.
 	let key: String
@@ -30,6 +41,9 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 	let declaration: Draft.Declaration
 	/// The file that declares it when lpm.json doesn't, escaped for showing.
 	let source: String?
+	/// For a group lpm.json overrides, what removing the override brings back;
+	/// nil for any other reference.
+	private(set) var restore: Restore?
 
 	var item: Draft.Item {
 		switch kind {
@@ -75,7 +89,8 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 			let other = members.first { $0 != key } ?? ""
 			return "Leaves \(other.escapingDirectionControls) as the group's only member, which makes it required."
 		case (.removeGroupOverride, _):
-			return "The group the import declares applies again."
+			guard case .group(_, let source)? = restore else { return nil }
+			return "The group \(source) declares applies again."
 		default:
 			return nil
 		}
@@ -132,7 +147,8 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 			// A group needs a member, and only lpm.json's own groups can be removed from it.
 			let drop: [Fix] = members.count > 1 ? [.dropFromGroup] : []
 			let remove: [Fix] = source == nil && declaration.isDeclared ? [.removeGroup] : []
-			let reset: [Fix] = source == nil && !declaration.isDeclared ? [.removeGroupOverride] : []
+			// The imports' version settles the reference only when it doesn't name the key too.
+			let reset: [Fix] = if case .group(let restored, _)? = restore, !restored.contains(key) { [.removeGroupOverride] } else { [] }
 			// Dropping one of two members leaves the other required, which removing the group doesn't.
 			let leavesRequired = mode != "allOrNone" && members.count == 2
 			return leavesRequired ? remove + reset + drop : drop + remove + reset
@@ -142,7 +158,26 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 	/// Why the reference can't be fixed in lpm.json, when it can't.
 	var unfixable: String? {
 		guard fixes.isEmpty else { return nil }
-		return "The group has no other member and is declared in \(source ?? "an imported schema"). Remove it there."
+		switch restore {
+		case .checking?:
+			return nil
+		case .group(_, let restoredSource)?:
+			return "lpm.json's override lists only it, and the group \(restoredSource) declares names it too. Remove it there."
+		case .unavailable?:
+			return "lpm.json's override lists only it, and the LPM CLI would reject the rules without the override. Give the override another member first."
+		case nil:
+			return "The group has no other member and is declared in \(source ?? "an imported schema"). Remove it there."
+		}
+	}
+
+	/// This reference with what going back to the imports' version of its
+	/// group brings back, from `restored`, by group; a group it doesn't name
+	/// can't come back.
+	func restored(by restored: [String: Restore]) -> ProjectEnvSchemaReference {
+		guard restore != nil else { return self }
+		var reference = self
+		reference.restore = restored[item.name] ?? .unavailable
+		return reference
 	}
 
 	/// The item's declaration after `fix`.
@@ -170,7 +205,9 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 	}
 
 	/// The references to `key` in `draft`'s rules, and in imported schemas as
-	/// `rules` resolve them, groups first, each in name order.
+	/// `rules` resolve them, groups first, each in name order. A group lpm.json
+	/// overrides is `checking` what its override's removal brings back, which
+	/// `restored(by:)` fills in.
 	static func references(to key: String, in draft: Draft, rules: ProjectEnvSchemaOverview?) -> [ProjectEnvSchemaReference] {
 		var groups: [ProjectEnvSchemaReference] = []
 		var conditions: [ProjectEnvSchemaReference] = []
@@ -182,7 +219,8 @@ struct ProjectEnvSchemaReference: Identifiable, Equatable, Sendable {
 			case .group(let name):
 				let members = Self.members(json)
 				if members.contains(key), case .string(let mode)? = json["mode"] {
-					groups.append(.init(kind: .group(name: name, mode: mode, members: members), key: key, declaration: declaration, source: nil))
+					let restore: Restore? = if case .overridden = declaration { .checking } else { nil }
+					groups.append(.init(kind: .group(name: name, mode: mode, members: members), key: key, declaration: declaration, source: nil, restore: restore))
 				}
 			case .key(let other):
 				if other != key, case .string(key)? = json["requiredWhen"]?["variable"] {
