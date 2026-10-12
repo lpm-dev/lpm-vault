@@ -387,7 +387,7 @@ private struct VaultSchemaKeyEditor: View {
 			footer(mode)
 		}
 		.background(VaultEscapeResponder(onEscape: { onSelect(nil) }))
-		.background(VaultSchemaShortcuts(undo: { undo(redo: false) }, redo: { undo(redo: true) }, remove: {
+		.background(VaultSchemaShortcuts(remove: {
 			guard canEdit, let prompt = removalPrompt(mode) else { return false }
 			removal = prompt
 			return true
@@ -414,17 +414,6 @@ private struct VaultSchemaKeyEditor: View {
 		.onChange(of: heldName) { _, held in follow(held) }
 		.onChange(of: key) { _, newKey in if name != newKey, !isNew { name = newKey } }
 		.task(id: suggestionInput) { await suggest() }
-	}
-
-	private func undo(redo: Bool) -> Bool {
-		if redo {
-			guard store.canRedoSchemaDraft(in: project.id) else { return false }
-			store.redoSchemaDraft(in: project.id)
-		} else {
-			guard store.canUndoSchemaDraft(in: project.id) else { return false }
-			store.undoSchemaDraft(in: project.id)
-		}
-		return true
 	}
 
 	// MARK: - Header and identity
@@ -1764,27 +1753,67 @@ private extension ProjectEnvSchemaRule.Field {
 
 // MARK: - Shortcuts
 
-/// The panel's Command shortcuts: ⌘Z and ⇧⌘Z undo and redo rule changes,
-/// and ⌘⌫ removes the key, as Move to Trash does in Finder. None applies
-/// while a text field is being edited, where the keys edit the text as
-/// everywhere else. Each closure returns whether it did anything; when not,
-/// the keys go on as usual.
+extension EnvironmentValues {
+	/// Something shown over the window, such as the account switcher, has the
+	/// Schema page's keys for itself.
+	var vaultSchemaKeysSuspended: Bool {
+		get { self[VaultSchemaKeysSuspendedKey.self] }
+		set { self[VaultSchemaKeysSuspendedKey.self] = newValue }
+	}
+}
+
+private struct VaultSchemaKeysSuspendedKey: EnvironmentKey {
+	static let defaultValue = false
+}
+
+/// The Schema page's keys. The page takes ⌘Z and ⇧⌘Z to undo and redo rule
+/// changes, Esc to close the side panel, and ↑ and ↓ to move the selection
+/// through the table; a panel takes ⌘⌫ to remove what it shows, as Move to
+/// Trash does in Finder; ⌘S opens the review from either. Only ⌘S applies
+/// while a text field is being edited, where the other keys edit the text
+/// as everywhere else, and the arrows stay with a control that has keyboard
+/// focus. None applies while a sheet is attached. Each action returns
+/// whether it did anything; when not, the key goes on as usual.
 struct VaultSchemaShortcuts: NSViewRepresentable {
-	let undo: () -> Bool
-	let redo: () -> Bool
-	let remove: () -> Bool
+	var undo: () -> Bool = { false }
+	var redo: () -> Bool = { false }
+	var remove: () -> Bool = { false }
+	var close: () -> Bool = { false }
+	/// Moves the selection by a row: -1 up, 1 down.
+	var move: (Int) -> Bool = { _ in false }
+	var review: () -> Bool = { false }
+
+	enum Shortcut: Equatable, Sendable {
+		case undo, redo, remove, close, review
+		case move(Int)
+	}
+
+	/// The shortcut a key press is, if any.
+	nonisolated static func shortcut(modifiers: NSEvent.ModifierFlags, keyCode: UInt16, characters: String?) -> Shortcut? {
+		let modifiers = modifiers.intersection([.command, .option, .control, .shift])
+		return switch (modifiers, keyCode) {
+		case (.command, 51): .remove
+		case (.command, _) where characters?.lowercased() == "z": .undo
+		case ([.command, .shift], _) where characters?.lowercased() == "z": .redo
+		case (.command, _) where characters?.lowercased() == "s": .review
+		case ([], 53): .close
+		case ([], 126): .move(-1)
+		case ([], 125): .move(1)
+		default: nil
+		}
+	}
 
 	func makeNSView(context: Context) -> MonitorView { MonitorView() }
 
 	func updateNSView(_ view: MonitorView, context: Context) {
-		view.actions = (undo, redo, remove)
+		view.shortcuts = self
+		view.suspended = context.environment.vaultSchemaKeysSuspended
 	}
 
 	final class MonitorView: NSView {
-		var actions: (undo: () -> Bool, redo: () -> Bool, remove: () -> Bool) = ({ false }, { false }, { false })
+		var shortcuts = VaultSchemaShortcuts()
+		var suspended = false
 		private var monitor: Any?
-
-		private enum Shortcut { case undo, redo, remove }
 
 		override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -1796,14 +1825,9 @@ struct VaultSchemaShortcuts: NSViewRepresentable {
 			}
 			guard window != nil else { return }
 			monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-				let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
-				let shortcut: Shortcut? = switch (modifiers, event.keyCode) {
-				case (.command, 51): .remove
-				case (.command, _) where event.charactersIgnoringModifiers?.lowercased() == "z": .undo
-				case ([.command, .shift], _) where event.charactersIgnoringModifiers?.lowercased() == "z": .redo
-				default: nil
-				}
-				guard let shortcut else { return event }
+				guard let shortcut = VaultSchemaShortcuts.shortcut(modifiers: event.modifierFlags, keyCode: event.keyCode,
+					characters: event.charactersIgnoringModifiers)
+				else { return event }
 				let windowNumber = event.windowNumber
 				let handled = MainActor.assumeIsolated { self?.handle(shortcut, inWindow: windowNumber) ?? false }
 				return handled ? nil : event
@@ -1811,11 +1835,17 @@ struct VaultSchemaShortcuts: NSViewRepresentable {
 		}
 
 		private func handle(_ shortcut: Shortcut, inWindow windowNumber: Int) -> Bool {
-			guard let window, window.windowNumber == windowNumber, window.attachedSheet == nil, !(window.firstResponder is NSText) else { return false }
+			guard !suspended, let window, window.windowNumber == windowNumber, window.attachedSheet == nil else { return false }
+			if shortcut == .review { return shortcuts.review() }
+			guard !(window.firstResponder is NSText) else { return false }
 			return switch shortcut {
-			case .undo: actions.undo()
-			case .redo: actions.redo()
-			case .remove: actions.remove()
+			case .undo: shortcuts.undo()
+			case .redo: shortcuts.redo()
+			case .remove: shortcuts.remove()
+			case .close: shortcuts.close()
+			case .review: shortcuts.review()
+			case .move(let offset):
+				window.firstResponder is NSControl || window.firstResponder is NSCollectionView ? false : shortcuts.move(offset)
 			}
 		}
 	}
