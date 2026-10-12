@@ -4,9 +4,11 @@ import Testing
 /// Vision text that tolerates glyph confusions which differ between local
 /// machines and CI runners: `i`/`j`/`l`/`1`/`I`/`|`, `y`/`v`, underscores read
 /// as spaces, periods dropped, curly apostrophes, widened gaps in monospaced
-/// text, and Cyrillic or Greek letters that look like Latin ones, which CI's
-/// CPU-only recognizer reads in short capitalized words such as "ОТР". Both
-/// sides are normalized the same way, so whole words must still be present.
+/// text, Cyrillic or Greek letters that look like Latin ones, which CI's
+/// CPU-only recognizer reads in short capitalized words such as "ОТР", and
+/// spaces it drops in small text, as in "1kevfailsin.env", though not between
+/// digits, where a space makes another number. Both sides are normalized the
+/// same way, so every word must still be present, in order.
 struct OCRText {
 	private let normalized: String
 
@@ -15,7 +17,18 @@ struct OCRText {
 	}
 
 	func contains(_ expected: String) -> Bool {
-		normalized.contains(Self.normalize(expected))
+		let wanted = Array(Self.normalize(expected))
+		guard wanted.contains(" ") else { return normalized.contains(String(wanted)) }
+		var pattern = ""
+		for (index, character) in wanted.enumerated() {
+			guard character == " " else {
+				pattern += NSRegularExpression.escapedPattern(for: String(character))
+				continue
+			}
+			let between = (index > 0 ? wanted[index - 1] : " ", index + 1 < wanted.count ? wanted[index + 1] : " ")
+			pattern += between.0.isNumber && between.1.isNumber ? " " : " ?"
+		}
+		return normalized.range(of: pattern, options: .regularExpression) != nil
 	}
 
 	/// Where `label` is in a recognized line, tolerating the glyph confusions
@@ -90,6 +103,9 @@ struct OCRTextTests {
 		#expect(OCRText("Yours: detaut 2080. Theirs: detault 4000").contains("Theirs: default 4000"))
 		#expect(OCRText("url(schemas/baselson url httos onlv").contains("https only"))
 		#expect(!OCRText("Theirs: default 4000").contains("Theirs: default 400 0"))
+		#expect(OCRText("A declared keus , 1arouo , 1inherited, 1kevfailsin.env , enforced bv LPM CLl").contains("1 key fails in .env"),
+			"Spaces small text loses on CI")
+		#expect(!OCRText("ports 1024").contains("ports 10 24"), "A space between digits makes another number")
 		let line = "Cl storage  secret / variable"
 		#expect(OCRText.range(of: "CI storage", in: line).map { String(line[$0]) } == "Cl storage", "A label is found in the line as read")
 	}
