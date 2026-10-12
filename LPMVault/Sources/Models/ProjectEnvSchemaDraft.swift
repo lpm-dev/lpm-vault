@@ -208,8 +208,11 @@ struct ProjectEnvSchemaDraft: Sendable {
 	/// Points the draft's references to `key`, in Required when and in group
 	/// members, at `newKey`. lpm.json can't refer to a key it doesn't declare,
 	/// so only items the draft changes can refer to a key the draft adds.
+	/// Removals' fixes follow too, so keeping a removed key gives them back
+	/// under the new name.
 	mutating func renameReferences(to key: String, as newKey: String) {
 		guard key != newKey else { return }
+		removals = removals.mapValues { $0.renaming(key, to: newKey) }
 		var edits: [(item: Item, declaration: Declaration)] = []
 		for item in changedItems {
 			let declaration = declaration(of: item)
@@ -255,6 +258,20 @@ struct ProjectEnvSchemaDraft: Sendable {
 		let fixes: [Fix]
 		/// What lpm.json had for each item when the key was removed.
 		let bases: [Item: Declaration]
+
+		/// This removal with `key`, a key the draft adds, renamed to `newKey`.
+		fileprivate func renaming(_ key: String, to newKey: String) -> Removal {
+			let renamed = fixes.map { fix -> Fix in
+				switch fix {
+				case .droppedFromGroup(let name, let members): .droppedFromGroup(name, members: members.map { $0 == key ? newKey : $0 })
+				case .removedCondition(let other, let condition) where other == key: .removedCondition(key: newKey, condition: condition)
+				default: fix
+				}
+			}
+			var bases = bases
+			if let base = bases.removeValue(forKey: .key(key)) { bases[.key(newKey)] = base }
+			return Removal(edited: edited, fixes: renamed, bases: bases)
+		}
 	}
 
 	/// The removal of `key`, while the draft has one on record.

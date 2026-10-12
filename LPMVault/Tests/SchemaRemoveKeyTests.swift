@@ -144,6 +144,28 @@ struct SchemaKeyReferenceTests {
 		#expect(references.last?.unfixable == "lpm.json's override lists only it, and the LPM CLI would reject the rules without the override. Give the override another member first.")
 	}
 
+	@Test("keeping a key gives its Required when back to a new key renamed since, and returns it to its place before that key in a group")
+	func keepAfterNewKeyRename() throws {
+		let base = try json(#"{"vars":{"A":{},"B":{}},"groups":{"g":{"mode":"allOrNone","vars":["A","B"]}}}"#)
+		var draft = Draft(schema: base)
+		let condition = try json(#"{"requiredWhen":{"variable":"A","present":true}}"#)
+		draft.set(.declared(condition), for: .key("N"))
+		draft.set(.declared(try json(#"{"mode":"allOrNone","vars":["A","N","B"]}"#)), for: .group("g"))
+		let references = Reference.references(to: "A", in: draft, rules: nil)
+		#expect(references.map(\.fixes.first) == [.dropFromGroup, .removeCondition])
+		draft.remove("A", settling: references.map { ($0, $0.fixes[0]) })
+		// The key panel renames a key it adds as its name is typed.
+		let rule = try #require(draft.declaration(of: .key("N")).json)
+		draft.set(.absent, for: .key("N"))
+		draft.set(.declared(rule), for: .key("N_2"))
+		draft.renameReferences(to: "N", as: "N_2")
+
+		draft.keep("A")
+		#expect(draft.declaration(of: .key("N_2")) == .declared(condition))
+		#expect(draft.declaration(of: .group("g")).json?["vars"] == .array(["A", "N_2", "B"].map(LPMConfigJSON.string)))
+		#expect(draft.declaration(of: .key("A")) == .declared(.object([])))
+	}
+
 	@Test("a key declared in both vars and overrides, which the CLI rejects, is still one reference per item")
 	func duplicateDeclarations() throws {
 		let schema = try json(#"{"vars":{"PASSWORD":{},"TOKEN":{"requiredWhen":{"variable":"PASSWORD","present":true}}},"overrides":{"TOKEN":{"requiredWhen":{"variable":"PASSWORD","present":false}}}}"#)
