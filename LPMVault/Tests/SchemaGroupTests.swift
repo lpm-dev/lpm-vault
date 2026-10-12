@@ -395,10 +395,7 @@ extension SheetInteractionTests {
 			try host.enterText("signin", placeholder: "group_name")
 			try await host.click("Rename")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.originalName(ofGroup: "signin") == "auth" })
-			// The member's remove button is the × right after its name, in the panel.
-			let panel = CGRect(x: 0.72, y: 0, width: 0.28, height: 1)
-			let token = try await host.labelFrame("TOKEN", region: panel)
-			try NativeTestClick.send(to: host.window, at: NSPoint(x: token.maxX + 9, y: token.midY))
+			try await removeMember("TOKEN", from: host, region: CGRect(x: 0.72, y: 0, width: 0.28, height: 1))
 			#expect(try await host.waitUntil {
 				ProjectEnvSchemaGroup(store.schemaDraft(for: "schema-groups")?.declaration(of: .group("signin")).json)?.members == ["PASSWORD"]
 			})
@@ -453,9 +450,7 @@ extension SheetInteractionTests {
 			try await host.click("Add member")
 			try await host.click("PORT", in: try await host.popoverWindow())
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.declaration(of: .group("smtp")) != .absent })
-			let panel = CGRect(x: 0.72, y: 0, width: 0.28, height: 1)
-			let port = try await host.labelFrame("PORT", region: panel)
-			try NativeTestClick.send(to: host.window, at: NSPoint(x: port.maxX + 9, y: port.midY))
+			try await removeMember("PORT", from: host, region: CGRect(x: 0.72, y: 0, width: 0.28, height: 1))
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups") == nil })
 			try await host.click("Add member")
 			try await host.click("TOKEN", in: try await host.popoverWindow())
@@ -498,8 +493,7 @@ extension SheetInteractionTests {
 			try host.enterText("zebra", placeholder: "Filter 100 members")
 			#expect(try await host.waitForText("ZEBRA_TOKEN"))
 			#expect(try await !host.text().contains("Showing"))
-			let zebra = try await host.labelFrame("ZEBRA_TOKEN")
-			try NativeTestClick.send(to: host.window, at: NSPoint(x: zebra.maxX + 9, y: zebra.midY))
+			try await removeMember("ZEBRA_TOKEN", from: host)
 			#expect(try await host.waitUntil {
 				ProjectEnvSchemaGroup(store.schemaDraft(for: "schema-groups")?.declaration(of: .group("many")).json)?.members
 					== (0..<99).map { String(format: "KEY_%04d", $0) }
@@ -677,6 +671,17 @@ extension SheetInteractionTests {
 			store.openProject(id: project.id)
 			await store.refreshCliAccess()
 			return (store, project)
+		}
+
+		/// Clicks the × that removes `member` in the panel. It's found from where the name
+		/// starts, since recognition on CI boxes a name loosely at its end: the name, in the
+		/// chip's font, then the chip's spacing, then the ×.
+		private func removeMember(_ member: String, from host: SheetTestHost<some View>, region: CGRect? = nil) async throws {
+			let name = try await host.labelFrame(member, region: region)
+			let width = (member as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)]).width
+			let cross = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
+				.withSymbolConfiguration(.init(pointSize: 8, weight: .bold))?.size.width ?? 8
+			try NativeTestClick.send(to: host.window, at: NSPoint(x: name.minX + width + 5 + cross / 2, y: name.midY))
 		}
 
 		private func workspace(overridesOTP: Bool = false) async throws -> (VaultStore, SheetTestHost<some View>, String) {
