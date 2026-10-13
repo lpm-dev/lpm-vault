@@ -30,18 +30,5 @@
 	<false/>
 	<key>SUVerifyUpdateBeforeExtraction</key>
 	<true/>
-	<key>UTExportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-			</array>
-			<key>UTTypeDescription</key>
-			<string>Vault sidebar project</string>
-			<key>UTTypeIdentifier</key>
-			<string>dev.lpm.vault.sidebar-project</string>
-		</dict>
-	</array>
 </dict>
 </plist>
