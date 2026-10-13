@@ -255,6 +255,10 @@ protocol KeychainServiceProtocol: Sendable {
 		environments: [String: [String: String]]
 	) -> KeychainResult
 	func removeFromSidebar(vaultId: String) -> Bool
+	/// The vaults among `vaultIds` whose payload is still in the Keychain,
+	/// found from item attributes alone, so no value is read and no
+	/// approval is asked for. A project removed from the sidebar still counts.
+	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError>
 	func applyVaultTransaction(
 		project: VaultProjectKeychainMutation?,
 		data: [VaultKeychainMutation]
@@ -266,6 +270,13 @@ protocol KeychainServiceProtocol: Sendable {
 	@discardableResult func writeData(account: String, data: Data) -> Bool
 	@discardableResult func deleteData(account: String) -> Bool
 
+	// Publish destinations and history, in the app's own access group, never shared with the CLI.
+	func readPublishingData(account: String) -> Result<Data?, KeychainError>
+	func writePublishingData(account: String, data: Data) -> Result<Void, KeychainError>
+	/// Adds the item; false when one already exists, which is left as it is.
+	func insertPublishingData(account: String, data: Data) -> Result<Bool, KeychainError>
+	func deletePublishingData(account: String) -> Result<Void, KeychainError>
+	func publishingAccounts() -> Result<[String], KeychainError>
 }
 
 extension KeychainServiceProtocol {
@@ -306,7 +317,7 @@ enum KeychainResult: Sendable {
 	case failure(KeychainError)
 }
 
-enum KeychainError: Error, CustomStringConvertible, Sendable {
+enum KeychainError: Error, CustomStringConvertible, Equatable, Sendable {
 	case encodingFailed
 	case itemNotFound
 	case accessDenied
@@ -1863,14 +1874,19 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	private static let maximumProjectDiscoveryShardSize = 128
 
 	private let store: SharedKeychainStore
+	private let publishingBackend: (any PublishingKeychainBackend)?
 
 	init() {
 		self.store = SharedKeychainStore(service: VaultConstants.keychainService)
+		self.publishingBackend = AppKeychainBackend(service: VaultConstants.publishingKeychainService)
 	}
 
+	/// Without a `publishingBackend`, publishing records are unavailable, so
+	/// tests never reach the real Keychain through them.
 	init(
 		testingService: String,
 		backend: any KeychainStoreBackend = SecurityKeychainStoreBackend(),
+		publishingBackend: (any PublishingKeychainBackend)? = nil,
 		performanceCounters: VaultKeychainPerformanceCounters? = nil
 	) {
 		self.store = SharedKeychainStore(
@@ -1878,6 +1894,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			backend: backend,
 			performanceCounters: performanceCounters
 		)
+		self.publishingBackend = publishingBackend
 	}
 
 	// MARK: - Public API
@@ -1898,6 +1915,10 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		do { return .success(try store.cliAccess(accounts: vaultIds)) }
 		catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
 		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
+	}
+
+	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError> {
+		cliAccessResults(vaultIds: vaultIds).map { Set($0.keys) }
 	}
 
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
@@ -2215,6 +2236,33 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		} catch {
 			return false
 		}
+	}
+
+	func readPublishingData(account: String) -> Result<Data?, KeychainError> {
+		publishing { try $0.read(account: account) }
+	}
+
+	func writePublishingData(account: String, data: Data) -> Result<Void, KeychainError> {
+		publishing { try $0.write(account: account, data: data) }
+	}
+
+	func insertPublishingData(account: String, data: Data) -> Result<Bool, KeychainError> {
+		publishing { try $0.insert(account: account, data: data) }
+	}
+
+	func deletePublishingData(account: String) -> Result<Void, KeychainError> {
+		publishing { try $0.delete(account: account) }
+	}
+
+	func publishingAccounts() -> Result<[String], KeychainError> {
+		publishing { try $0.accounts() }
+	}
+
+	private func publishing<T>(_ operation: (any PublishingKeychainBackend) throws -> T) -> Result<T, KeychainError> {
+		guard let publishingBackend else { return .failure(.unexpectedStatus(errSecUnimplemented)) }
+		do { return .success(try operation(publishingBackend)) }
+		catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
+		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
 	}
 	// MARK: - Data Save (shared)
 	private func prepareProjectPayload(_ project: VaultProject) throws -> PreparedProjectPayload {

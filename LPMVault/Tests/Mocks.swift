@@ -79,6 +79,8 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var updateEnvironmentsCallCount = 0
 	var applyVaultTransactionCallCount = 0
 	var nextVaultTransactionError: KeychainError?
+	/// Commits the next vault transaction, then reports this error, as a Keychain whose commit outcome was lost would.
+	var nextVaultTransactionErrorAfterCommit: KeychainError?
 	var nextKeychainTransactionError: KeychainError?
 	var onGetEnvironments: (() -> Void)?
 	var onCreateEnvironments: (() -> Void)?
@@ -307,6 +309,29 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		return true
 	}
 
+	private(set) var existingVaultPayloadsCallCount = 0
+	private var existingVaultPayloadsPause: (entered: DispatchSemaphore, gate: DispatchSemaphore)?
+
+	/// Makes the next existence check signal `entered` once it has its
+	/// answer, then wait for `gate` before returning it.
+	func pauseNextExistenceCheck(entered: DispatchSemaphore, gate: DispatchSemaphore) {
+		lock.withLock { existingVaultPayloadsPause = (entered, gate) }
+	}
+
+	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError> {
+		let (result, pause) = lock.withLock { () -> (Result<Set<String>, KeychainError>, (entered: DispatchSemaphore, gate: DispatchSemaphore)?) in
+			existingVaultPayloadsCallCount += 1
+			defer { existingVaultPayloadsPause = nil }
+			if shouldFail || failProjectReads { return (.failure(failureError), existingVaultPayloadsPause) }
+			return (.success(Set(vaultIds.filter { environments[$0] != nil })), existingVaultPayloadsPause)
+		}
+		if let pause {
+			pause.entered.signal()
+			pause.gate.wait()
+		}
+		return result
+	}
+
 	func removeFromSidebar(vaultId: String) -> Bool {
 		if shouldFail { return false }
 		// Only remove from listing, keep data (like real implementation)
@@ -366,6 +391,10 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				return .failure(failureError)
 			}
 		}
+		if let error = nextVaultTransactionErrorAfterCommit {
+			nextVaultTransactionErrorAfterCommit = nil
+			return .failure(error)
+		}
 		return projectResult
 	}
 
@@ -404,6 +433,55 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		if shouldFail || failDeleteDataAccounts.contains(account) { return false }
 		dataStorage.removeValue(forKey: account)
 		return true
+	}
+
+	private var publishingRecords: [String: Data] = [:]
+	var publishingStorage: [String: Data] {
+		get { lock.withLock { publishingRecords } }
+		set { lock.withLock { publishingRecords = newValue } }
+	}
+	var failPublishingAccounts: Set<String> = []
+
+	func readPublishingData(account: String) -> Result<Data?, KeychainError> {
+		lock.withLock {
+			if failPublishingAccounts.contains(account) { return .failure(failureError) }
+			return .success(publishingRecords[account])
+		}
+	}
+
+	func writePublishingData(account: String, data: Data) -> Result<Void, KeychainError> {
+		lock.withLock {
+			if failPublishingAccounts.contains(account) { return .failure(failureError) }
+			publishingRecords[account] = data
+			return .success(())
+		}
+	}
+
+	func insertPublishingData(account: String, data: Data) -> Result<Bool, KeychainError> {
+		lock.withLock {
+			if failPublishingAccounts.contains(account) { return .failure(failureError) }
+			guard publishingRecords[account] == nil else { return .success(false) }
+			publishingRecords[account] = data
+			return .success(true)
+		}
+	}
+
+	func deletePublishingData(account: String) -> Result<Void, KeychainError> {
+		lock.withLock {
+			if failPublishingAccounts.contains(account) { return .failure(failureError) }
+			publishingRecords.removeValue(forKey: account)
+			return .success(())
+		}
+	}
+
+	private(set) var publishingAccountsCallCount = 0
+
+	func publishingAccounts() -> Result<[String], KeychainError> {
+		lock.withLock {
+			publishingAccountsCallCount += 1
+			if failPublishingAccounts.contains("*") { return .failure(failureError) }
+			return .success(Array(publishingRecords.keys))
+		}
 	}
 }
 
