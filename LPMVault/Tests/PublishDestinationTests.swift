@@ -256,6 +256,8 @@ struct PublishHistoryTests {
 		#expect(back.keys["C"]?.publishedAt == back.publishedAt && back.keys["A"]?.publishedAt == first.publishedAt)
 		let last = PublishTimestamp.date(milliseconds: PublishTimestamp.maximumMilliseconds)
 		#expect(PublishTimestamp.next(after: last, at: publishedAt) == last)
+		#expect(!PublishTimestamp.identifiesOneWrite(last))
+		#expect(PublishTimestamp.identifiesOneWrite(last.addingTimeInterval(-0.001)) && PublishTimestamp.identifiesOneWrite(publishedAt))
 	}
 
 	@Test("over the limit, the records published longest ago go, never this publish's")

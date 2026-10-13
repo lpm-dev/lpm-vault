@@ -384,7 +384,9 @@ extension PublishPlan {
 		/// of those names, may have made the exclusion live again.
 		func applied(to destination: PublishDestination, at date: Date) -> PublishDestination {
 			var excluded = destination.excludedKeys
-			if destination.updatedAt == destinationUpdatedAt { excluded.subtract(staleExclusions) }
+			if destination.updatedAt == destinationUpdatedAt, PublishTimestamp.identifiesOneWrite(destination.updatedAt) {
+				excluded.subtract(staleExclusions)
+			}
 			excluded.formUnion(leftOut)
 			excluded.subtract(chosen)
 			guard excluded != destination.excludedKeys else { return destination }
@@ -397,7 +399,9 @@ extension PublishPlan {
 		/// The stale records `history` still holds as the plan saw them. A key
 		/// published again since has a newer record, which stays.
 		func forgottenRecords(in history: PublishHistory) -> Set<String> {
-			Set(staleHistory.lazy.filter { history.keys[$0.key]?.publishedAt == $0.value }.map(\.key))
+			Set(staleHistory.lazy.filter { key, publishedAt in
+				history.keys[key]?.publishedAt == publishedAt && PublishTimestamp.identifiesOneWrite(publishedAt)
+			}.map(\.key))
 		}
 	}
 

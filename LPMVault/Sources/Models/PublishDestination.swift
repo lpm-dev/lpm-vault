@@ -201,4 +201,11 @@ enum PublishTimestamp {
 	static func next(after previous: Date, at date: Date) -> Date {
 		self.date(milliseconds: max(milliseconds(date), min(milliseconds(previous) + 1, maximumMilliseconds)))
 	}
+
+	/// Whether a record's time still names one write. Every write moves the
+	/// time strictly forward until it reaches the maximum, where later
+	/// writes keep the same time.
+	static func identifiesOneWrite(_ date: Date) -> Bool {
+		milliseconds(date) < maximumMilliseconds
+	}
 }

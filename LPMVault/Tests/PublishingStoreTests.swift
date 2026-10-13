@@ -571,6 +571,42 @@ struct PublishingRecordFindingTests {
 		#expect(savedAgain.excludedKeys == ["B"] && savedAgain.updatedAt == PublishTimestamp.date(milliseconds: milliseconds + 2))
 	}
 
+	@Test("at the last storable time, a rename onto a name the plan saw as stale still keeps its exclusion")
+	func exclusionAtLastTime() async throws {
+		let store = store
+		let secret = SymmetricKey(size: .bits256)
+		let last = PublishTimestamp.date(milliseconds: PublishTimestamp.maximumMilliseconds)
+		let destination = vercelDestination(source: "staging", environment: .preview, excluded: ["OLD", "NEW"], createdAt: last)
+		_ = try await store.save(destination, to: publishTestVault).get()
+		let values = ["OLD": "1", "A": "2"]
+		let plan = PublishPlan(
+			destination: destination, values: values, rules: .empty, check: nil, remote: [:],
+			reservedKeys: [], history: nil, fingerprintKey: secret)
+		let selection = PublishPlan.Selection(defaultsOf: plan)
+		_ = try await store.renameKey("OLD", to: "NEW", sourcedFrom: ["staging"], in: publishTestVault).get()
+		_ = try await store.recordPublish(
+			[], to: destination.id, at: plan.location, choices: plan.choices(for: selection), of: publishTestVault, at: last).get()
+		#expect(try await store.destinations(of: publishTestVault).get().first?.excludedKeys == ["NEW"])
+	}
+
+	@Test("at the last storable time, an older plan keeps a record a newer publish wrote again")
+	func historyAtLastTime() async throws {
+		let store = store
+		let last = PublishTimestamp.date(milliseconds: PublishTimestamp.maximumMilliseconds)
+		let destination = vercelDestination()
+		_ = try await store.save(destination, to: publishTestVault).get()
+		_ = try await record(["A", "B"], to: destination, in: store, at: last).get()
+		let history = try await store.history(of: destination.id, in: publishTestVault).get()
+		let plan = PublishPlan(
+			destination: destination, values: ["A": "1"], rules: .empty, check: nil, remote: [:],
+			reservedKeys: [], history: history, fingerprintKey: SymmetricKey(size: .bits256))
+		_ = try await record(["B"], to: destination, in: store, at: last).get()
+		_ = try await store.recordPublish(
+			[], to: destination.id, at: plan.location, choices: plan.choices(for: PublishPlan.Selection(defaultsOf: plan)),
+			of: publishTestVault, at: last).get()
+		#expect(try await store.history(of: destination.id, in: publishTestVault).get().keys.keys.sorted() == ["A", "B"])
+	}
+
 	@Test("retargeting whose history can't be removed isn't saved, so a retry still clears the old history")
 	func retargetHistoryFailure() async throws {
 		let store = store
@@ -658,14 +694,16 @@ struct PublishingRecordFindingTests {
 		return vault
 	}
 
-	private func record(_ keys: [String], to destination: PublishDestination, in store: PublishingStore) async -> Result<PublishDestination, PublishingStoreError> {
+	private func record(
+		_ keys: [String], to destination: PublishDestination, in store: PublishingStore, at date: Date = Date()
+	) async -> Result<PublishDestination, PublishingStoreError> {
 		await store.recordPublish(
 			keys.map { key in
 				.init(key: key, fingerprint: PublishFingerprint.of(value: "v", key: key, destination: destination.id, using: SymmetricKey(size: .bits256)),
 					remoteID: "env_\(key)", remoteUpdatedAt: nil, publishedAsSecret: true)
 			},
 			to: destination.id, at: destination.target.location,
-			choices: .init(leftOut: [], chosen: Set(keys)), of: publishTestVault, at: Date())
+			choices: .init(leftOut: [], chosen: Set(keys)), of: publishTestVault, at: date)
 	}
 }
 
