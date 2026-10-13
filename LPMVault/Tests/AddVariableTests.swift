@@ -297,6 +297,25 @@ extension SheetInteractionTests {
 			}
 		}
 
+		@Test("tabbing into the value field doesn't offer saved passwords")
+		func valueFieldOffersNoPasswords() async throws {
+			let environments: [String: [String: String]] = ["default": [:]]
+			let keychain = MockKeychainService()
+			keychain.envStorage["id-1"] = (name: "my-api-server", path: "/tmp/api", environments: environments)
+			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService())
+			store.projects = [VaultProject(id: "id-1", name: "my-api-server", path: "/tmp/api", environments: environments)]
+			store.isUnlocked = true
+			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "id-1", environment: "default"),
+				size: NSSize(width: 560, height: 520))
+			defer { host.window.close() }
+			try await host.settle()
+			try host.typeInFirstField("DATABASE_URL")
+			let offered = try await host.opensWindowBelow(secureFieldAt: 0) { try host.pressTab() }
+			#expect(host.isEditingSecureField, "Tab should move into the value field")
+			#expect(!offered, "macOS offered AutoFill in the value field")
+			#expect(host.secureFieldContentTypes == [.oneTimeCode])
+		}
+
 		@Test("the generator panel lists every value kind")
 		func rendersGeneratorPanel() async throws {
 			let text = try await renderedText(

@@ -489,6 +489,42 @@ final class SheetTestHost<V: View> {
 		window.sendEvent(event)
 	}
 
+	/// Presses Tab in this window, wherever focus is. AppKit offers AutoFill
+	/// when focus arrives from the keyboard, not when it's set programmatically.
+	func pressTab() throws {
+		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48))
+		window.sendEvent(event)
+	}
+
+	/// The content type of each secure field, in reading order.
+	var secureFieldContentTypes: [NSTextContentType?] {
+		textFields(in: view).filter { $0 is NSSecureTextField }.map(\.contentType)
+	}
+
+	/// Whether a secure field is being edited.
+	var isEditingSecureField: Bool {
+		(window.firstResponder as? NSText)?.delegate is NSSecureTextField
+	}
+
+	/// Whether a window this test didn't open, such as AutoFill suggestions,
+	/// appears attached below the secure field at `index` within `duration` after `action`.
+	func opensWindowBelow(secureFieldAt index: Int, within duration: Duration = .milliseconds(1500),
+		after action: () throws -> Void) async throws -> Bool {
+		let existing = Set(NSApp.windows.map(ObjectIdentifier.init))
+		try action()
+		let field = try field(at: index, secure: true)
+		let frame = window.convertToScreen(field.convert(field.bounds, to: nil))
+		let deadline = ContinuousClock.now.advanced(by: duration)
+		while ContinuousClock.now < deadline {
+			if NSApp.windows.contains(where: {
+				$0.isVisible && !existing.contains(ObjectIdentifier($0)) && abs($0.frame.maxY - frame.minY) <= 12
+					&& $0.frame.minX < frame.maxX && $0.frame.maxX > frame.minX
+			}) { return true }
+			try await Task.sleep(for: .milliseconds(20))
+		}
+		return false
+	}
+
 	func returnWhileEditing(_ target: String, modifiers: NSEvent.ModifierFlags = .shift) throws {
 		let fields = textFields(in: view)
 		let field = try #require(target == "key" ? fields.first { !($0 is NSSecureTextField) } : fields.last)

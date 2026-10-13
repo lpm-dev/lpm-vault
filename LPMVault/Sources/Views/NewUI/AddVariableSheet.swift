@@ -290,6 +290,7 @@ struct AddVariableSheet: View {
 						TextField("Paste a value or generate one", text: $value)
 					} else {
 						SecureField("Paste a value or generate one", text: $value)
+							.vaultSecretValueField()
 					}
 				}
 				.textFieldStyle(.plain)

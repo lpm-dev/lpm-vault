@@ -27,6 +27,16 @@ extension SheetInteractionTests {
 			#expect(keychain.applyVaultTransactionCallCount == 1)
 		}
 
+		@Test("value fields mark their content so macOS doesn't offer saved passwords")
+		func valueFieldsOfferNoPasswords() async throws {
+			let (store, _) = makeStore(["default": ["TOKEN": "dev"], "staging": ["TOKEN": "stg"]])
+			defer { store.lock() }
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			try await host.settle()
+			#expect(host.secureFieldContentTypes == [.oneTimeCode, .oneTimeCode])
+		}
+
 		@Test("a name that collides with another key is reported and never saved")
 		func nameCollision() async throws {
 			let (store, keychain) = makeStore(["default": ["TOKEN": "dev", "OTHER": "other"]])
