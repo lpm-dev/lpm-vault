@@ -3,13 +3,20 @@ name: UI regressions
 # several times slower on hosted runners, so it runs here rather than in the
 # pull request checks: after every merge to main, on demand, for a pull
 # request labeled ui-tests, and before every release. Contributors run it
-# locally before pushing.
+# locally before pushing. An on-demand run given a filter runs only the
+# tests it matches, on one runner.
 on:
   push:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+    inputs:
+      filter:
+        description: Run only the UI tests whose identifier matches this regular expression, such as VaultProjectOrderTests/dragAutoscrolls. Empty runs them all.
+        required: false
+        default: ''
+        type: string
   workflow_call:
 permissions:
   contents: read
@@ -23,8 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: ${{ fromJSON(inputs.filter && '[1]' || '[1, 2, 3, 4]') }}
     uses: ./.github/workflows/swift-tests.yml
     with:
       shard: ${{ matrix.shard }}/${{ strategy.job-total }}
+      filter: ${{ inputs.filter }}
       diagnostics: ui-test-diagnostics-${{ matrix.shard }}

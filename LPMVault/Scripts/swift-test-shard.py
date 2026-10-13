@@ -11,6 +11,9 @@ naming a suite, such as `Module.SheetInteractionTests`, K/N is the Kth of N
 shards of that suite's tests, and `rest` is every test outside it: a
 serialized suite whose tests wait on the screen then never shares a process
 with the parallel tests that could starve those waits.
+
+With SWIFT_TEST_FILTER set to a regular expression, only the shard's tests
+whose identifier it matches run, as when a run is asked for one test.
 """
 import hashlib
 import os
@@ -75,6 +78,17 @@ def select(tests, shard, isolated=None):
     return [test for test in inside if shard_of(test, shard[1]) == shard[0]]
 
 
+def matching(tests, expression):
+    """The tests whose identifier `expression`, a regular expression, matches anywhere; all of them when it's empty."""
+    if not expression:
+        return tests
+    try:
+        compiled = re.compile(expression)
+    except re.error as error:
+        raise ValueError(f'Invalid filter {expression!r}: {error}')
+    return [test for test in tests if compiled.search(test)]
+
+
 def main(arguments):
     if len(arguments) < 3:
         raise SystemExit(__doc__)
@@ -82,10 +96,13 @@ def main(arguments):
         shard = parse_shard(arguments[0])
         listing = subprocess.run(['swift', 'test', 'list', *arguments[3:], '--enable-swift-testing', '--disable-xctest'],
                                  check=True, capture_output=True, text=True).stdout
-        tests = select(identifiers(listing), shard, os.environ.get('SWIFT_TEST_ISOLATED_SUITE'))
+        expression = os.environ.get('SWIFT_TEST_FILTER', '')
+        tests = matching(select(identifiers(listing), shard, os.environ.get('SWIFT_TEST_ISOLATED_SUITE')), expression)
     except (ValueError, subprocess.CalledProcessError) as error:
         raise SystemExit(f'::error::Could not choose the tests of shard {arguments[0]}: {error}')
     if not tests:
+        if expression:
+            raise SystemExit(f'::error::No tests of shard {arguments[0]} match the filter {expression!r}')
         raise SystemExit(f'::error::Shard {arguments[0]} has no tests')
     Path(arguments[1]).write_text(''.join(test + '\n' for test in tests))
     Path(arguments[2]).write_text(''.join(pattern(test) + '\n' for test in tests))
