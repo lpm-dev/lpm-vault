@@ -1,6 +1,4 @@
 import AppKit
-import CoreTransferable
-import Observation
 import SwiftUI
 
 private enum VaultSidebarLayout {
@@ -14,7 +12,10 @@ private enum VaultSidebarLayout {
 	static let environmentTextOffset: CGFloat = -2
 	static let childSpacing: CGFloat = 7
 	static let childInset: CGFloat = 26
-	static let childRowLeadingInset = projectInset + rowInset + projectIconWidth + projectSpacing - childInset
+	static let projectLabelInset = projectInset + rowInset + VaultSidebarReorder.gripWidth + projectSpacing
+		+ projectIconWidth + projectSpacing
+	static let childRowLeadingInset = projectLabelInset - childInset
+	static let landingLineInset = projectInset + rowInset
 }
 
 struct VaultSidebarView: View {
@@ -34,10 +35,12 @@ struct VaultSidebarView: View {
 	let onDuplicateEnvironment: (VaultEnvironmentTarget) -> Void
 	let onClearEnvironment: (VaultEnvironmentTarget) -> Void
 	let onDeleteEnvironment: (VaultEnvironmentTarget) -> Void
+	/// The project drag in progress, if any. Tests pass their own to follow it.
+	@State var reorder = VaultSidebarReorder()
 
 	@FocusState private var searchFocused: Bool
 	@State private var collapsedProjectIds: Set<String> = []
-	@State private var dropState = VaultSidebarProjectDropState()
+	@GestureState private var isReordering = false
 
 	private var visibleProjects: [VaultProject] {
 		store.visibleVaults(matching: searchText)
@@ -45,43 +48,41 @@ struct VaultSidebarView: View {
 
 	var body: some View {
 		let derivedProjects = visibleProjects
+		let order = derivedProjects.map(\.id)
 		VStack(spacing: 0) {
 			searchField
 				.padding(.horizontal, 14)
 				.padding(.top, 14)
 				.padding(.bottom, 10)
 
-			ScrollView {
-				LazyVStack(alignment: .leading, spacing: 0) {
-					projectHeader
+			ScrollViewReader { proxy in
+				ScrollView {
+					LazyVStack(alignment: .leading, spacing: 0) {
+						projectHeader
 
-					if derivedProjects.isEmpty {
-						Text(searchText.isEmpty ? "No env projects" : "No matching projects or keys")
-							.font(.system(size: 12))
-							.foregroundStyle(VaultPalette.textTertiary)
-							.padding(.horizontal, 16)
-							.padding(.vertical, 12)
-					} else {
-						ForEach(Array(derivedProjects.enumerated()), id: \.element.id) { index, project in
-							VaultSidebarProjectGroup(store: store, projectId: project.id, dropState: dropState) {
-								projectRow(project,
-									previous: index > 0 ? derivedProjects[index - 1].id : nil,
-									next: index + 1 < derivedProjects.count ? derivedProjects[index + 1].id : nil)
-							} environments: {
-								if store.selectedProjectId == project.id,
-									!collapsedProjectIds.contains(project.id)
-								{
-									environmentRows(project)
-								}
-							}
+						if derivedProjects.isEmpty {
+							Text(searchText.isEmpty ? "No env projects" : "No matching projects or keys")
+								.font(.system(size: 12))
+								.foregroundStyle(VaultPalette.textTertiary)
+								.padding(.horizontal, 16)
+								.padding(.vertical, 12)
+						} else {
+							projectGroups(derivedProjects, order: order)
+						}
+
+						if let project = store.selectedProject {
+							smartViews(project)
 						}
 					}
-
-					if let project = store.selectedProject {
-						smartViews(project)
-					}
+					.frame(maxWidth: .infinity, alignment: .leading)
 				}
-				.frame(maxWidth: .infinity, alignment: .leading)
+				.coordinateSpace(.named(VaultSidebarReorder.viewportSpace))
+				.onGeometryChange(for: CGSize.self) { $0.size } action: { reorder.setViewportSize($0) }
+				.background {
+					VaultSidebarKeys(move: { moveSelectedProject(by: $0, scrolling: proxy) }, cancelDrag: {
+						withAnimation(VaultSidebarReorder.settle) { reorder.cancel() }
+					})
+				}
 			}
 			.frame(maxHeight: .infinity, alignment: .top)
 			.simultaneousGesture(TapGesture().onEnded { searchFocused = false })
@@ -91,8 +92,13 @@ struct VaultSidebarView: View {
 				.simultaneousGesture(TapGesture().onEnded { searchFocused = false })
 		}
 		.background(VaultPalette.sidebar)
-		.onChange(of: store.sidebarDragSessionId) { dropState.clear() }
-		.onDisappear { dropState.clear() }
+		.onChange(of: order) { reorder.cancel(unlessShowing: order) }
+		.onChange(of: store.isUnlocked) { _, unlocked in
+			if !unlocked { reorder.cancel() }
+		}
+		.onChange(of: isReordering) { _, active in
+			if !active { withAnimation(VaultSidebarReorder.settle) { reorder.end() } }
+		}
 		.onReceive(NotificationCenter.default.publisher(for: .findSecrets)) { _ in
 			searchFocused = true
 		}
@@ -182,7 +188,58 @@ struct VaultSidebarView: View {
 		.padding(.bottom, 6)
 	}
 
-	private func projectRow(_ project: VaultProject, previous: String?, next: String?) -> some View {
+	private func projectGroups(_ projects: [VaultProject], order: [String]) -> some View {
+		VStack(alignment: .leading, spacing: 0) {
+			ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
+				VaultSidebarProjectGroup(reorder: reorder, projectId: project.id, index: index) {
+					projectRow(project, order: order, index: index)
+				} environments: {
+					if store.selectedProjectId == project.id,
+						!collapsedProjectIds.contains(project.id)
+					{
+						environmentRows(project)
+					}
+				}
+				.zIndex(reorder.layer(at: index))
+				.id(project.id)
+			}
+		}
+		.coordinateSpace(.named(VaultSidebarReorder.contentSpace))
+		.onGeometryChange(for: CGFloat.self) {
+			$0.frame(in: .named(VaultSidebarReorder.viewportSpace)).minY
+		} action: { reorder.setContentTop($0) }
+		.background { VaultSidebarAutoscroll(reorder: reorder) }
+	}
+
+	private func reorderGesture(for projectId: String, in order: [String]) -> some Gesture {
+		DragGesture(minimumDistance: 3, coordinateSpace: .named(VaultSidebarReorder.viewportSpace))
+			.updating($isReordering) { _, active, _ in active = true }
+			.onChanged { reorder.drag(projectId, in: order, from: $0.startLocation, to: $0.location) }
+			.onEnded { value in
+				reorder.drag(projectId, in: order, from: value.startLocation, to: value.location)
+				withAnimation(VaultSidebarReorder.settle) {
+					if let move = reorder.finish() {
+						store.moveProject(id: move.projectId, relativeTo: move.targetId, placement: move.placement)
+					}
+				}
+			}
+	}
+
+	private func moveSelectedProject(by step: Int, scrolling proxy: ScrollViewProxy) -> Bool {
+		guard reorder.lift == nil, let projectId = store.selectedProjectId else { return false }
+		let order = visibleProjects.map(\.id)
+		guard let index = order.firstIndex(of: projectId), order.indices.contains(index + step) else { return false }
+		let moved = withAnimation(VaultSidebarReorder.settle) {
+			store.moveProject(id: projectId, relativeTo: order[index + step], placement: step < 0 ? .before : .after)
+		}
+		// The proxy finds a row where it's laid out now, so it waits for the new order's layout.
+		if moved { Task { @MainActor in proxy.scrollTo(projectId) } }
+		return moved
+	}
+
+	private func projectRow(_ project: VaultProject, order: [String], index: Int) -> some View {
+		let previous = index > 0 ? order[index - 1] : nil
+		let next = index + 1 < order.count ? order[index + 1] : nil
 		let cliAccess = store.projectCliAccess[project.id]
 		let approvalDescription = cliAccess.map {
 			$0 == .requireApproval ? "CLI approval required" : "CLI access automatic"
@@ -201,6 +258,7 @@ struct VaultSidebarView: View {
 			filter = .all
 		} label: {
 			HStack(spacing: VaultSidebarLayout.projectSpacing) {
+				VaultSidebarGrip(reorder: reorder, projectId: project.id)
 				Image(systemName: cliAccess.map { $0 == .requireApproval ? "lock" : "folder" } ?? "questionmark.folder")
 					.font(.system(size: 11, weight: .medium))
 					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
@@ -221,6 +279,7 @@ struct VaultSidebarView: View {
 		}
 		.buttonStyle(.plain)
 		.padding(.horizontal, VaultSidebarLayout.projectInset)
+		.highPriorityGesture(reorderGesture(for: project.id, in: order))
 		.help(approvalDescription)
 		.accessibilityLabel("\(project.name), \(project.secretCount) secrets, \(approvalDescription)")
 		.accessibilityValue(expanded ? "Expanded" : "Collapsed")
@@ -468,115 +527,55 @@ struct VaultSidebarView: View {
 }
 
 private struct VaultSidebarProjectGroup<Row: View, Environments: View>: View {
-	let store: VaultStore
+	let reorder: VaultSidebarReorder
 	let projectId: String
-	let dropState: VaultSidebarProjectDropState
+	let index: Int
 	let row: Row
 	let environments: Environments
-	@State private var rowHeight: CGFloat = 30
-	@State private var marker = VaultSidebarProjectDropMarker()
 
-	init(store: VaultStore, projectId: String, dropState: VaultSidebarProjectDropState,
+	init(reorder: VaultSidebarReorder, projectId: String, index: Int,
 		@ViewBuilder row: () -> Row, @ViewBuilder environments: () -> Environments) {
-		self.store = store
+		self.reorder = reorder
 		self.projectId = projectId
-		self.dropState = dropState
+		self.index = index
 		self.row = row()
 		self.environments = environments()
 	}
 
 	var body: some View {
+		let lifted = reorder.lift?.projectId == projectId
+		let shift = lifted ? 0 : reorder.shift(at: index)
+		let edge = reorder.landingEdge(at: index)
 		VStack(alignment: .leading, spacing: 0) {
 			row
-				.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { rowHeight = $0 }
-				.draggable(VaultSidebarProjectDrag(projectId: projectId, sessionId: store.sidebarDragSessionId))
 			environments
 		}
-		.onDrop(of: [VaultSidebarProjectDrag.contentType], delegate: VaultSidebarProjectDropDelegate(
-			store: store, projectId: projectId, rowHeight: rowHeight, dropState: dropState, marker: marker))
-		.onDisappear { dropState.exit(marker) }
-		.overlay(alignment: marker.placement == .after ? .bottom : .top) {
-			if marker.placement != nil {
-				Rectangle().fill(VaultPalette.accent).frame(height: 2).padding(.horizontal, 12)
+		.background {
+			if lifted {
+				RoundedRectangle(cornerRadius: 7)
+					.fill(VaultPalette.control)
+					.shadow(color: VaultPalette.shadow.opacity(0.18), radius: 8, y: 4)
+					.padding(.horizontal, VaultSidebarLayout.projectInset)
+			}
+		}
+		.overlay(alignment: edge == .bottom ? .bottom : .top) {
+			if let edge {
+				Capsule()
+					.fill(VaultPalette.accent)
+					.frame(height: 2)
+					.padding(.horizontal, VaultSidebarLayout.landingLineInset)
+					.offset(y: edge == .top ? -1 : 1)
 					.allowsHitTesting(false)
 			}
 		}
-	}
-}
-
-@Observable
-@MainActor
-final class VaultSidebarProjectDropMarker {
-	fileprivate(set) var placement: VaultProjectPlacement?
-}
-
-@MainActor
-final class VaultSidebarProjectDropState {
-	private var activeMarker: VaultSidebarProjectDropMarker?
-
-	func update(_ marker: VaultSidebarProjectDropMarker, placement: VaultProjectPlacement) {
-		if activeMarker !== marker {
-			clear()
-			activeMarker = marker
-		}
-		if marker.placement != placement { marker.placement = placement }
-	}
-
-	func exit(_ marker: VaultSidebarProjectDropMarker) {
-		if activeMarker === marker { clear() }
-	}
-
-	func clear() {
-		activeMarker?.placement = nil
-		activeMarker = nil
-	}
-}
-
-struct VaultSidebarProjectDropDelegate: DropDelegate {
-	let store: VaultStore
-	let projectId: String
-	let rowHeight: CGFloat
-	let dropState: VaultSidebarProjectDropState
-	let marker: VaultSidebarProjectDropMarker
-
-	func validateDrop(info: DropInfo) -> Bool {
-		store.isUnlocked && info.hasItemsConforming(to: [VaultSidebarProjectDrag.contentType])
-	}
-
-	func dropEntered(info: DropInfo) {
-		guard validateDrop(info: info) else { dropState.exit(marker); return }
-		dropState.update(marker, placement: .at(y: info.location.y, rowHeight: rowHeight))
-	}
-
-	func dropUpdated(info: DropInfo) -> DropProposal? {
-		guard validateDrop(info: info) else { dropState.exit(marker); return DropProposal(operation: .cancel) }
-		dropState.update(marker, placement: .at(y: info.location.y, rowHeight: rowHeight))
-		return DropProposal(operation: .move)
-	}
-
-	func dropExited(info: DropInfo) { dropState.exit(marker) }
-
-	func performDrop(info: DropInfo) -> Bool {
-		dropState.clear()
-		let providers = info.itemProviders(for: [VaultSidebarProjectDrag.contentType])
-		guard validateDrop(info: info) else { return false }
-		let destination = VaultProjectPlacement.at(y: info.location.y, rowHeight: rowHeight)
-		return enqueueDrop(from: providers, placement: destination) != nil
-	}
-
-	func enqueueDrop(from providers: [NSItemProvider], placement: VaultProjectPlacement) -> Task<Bool, Never>? {
-		guard store.isUnlocked, providers.count == 1, let provider = providers.first else { return nil }
-		return Task { await loadDrop(from: provider, placement: placement) }
-	}
-
-	func loadDrop(from provider: NSItemProvider, placement: VaultProjectPlacement) async -> Bool {
-		let drag = await withCheckedContinuation { continuation in
-			_ = provider.loadTransferable(type: VaultSidebarProjectDrag.self) { result in
-				continuation.resume(returning: try? result.get())
-			}
-		}
-		guard let drag else { return false }
-		return store.dropSidebarProject(drag, relativeTo: projectId, placement: placement)
+		.scaleEffect(lifted ? VaultSidebarReorder.liftScale : 1)
+		.offset(y: lifted ? reorder.offset : shift)
+		.animation(lifted ? nil : VaultSidebarReorder.settle, value: shift)
+		// Measured outside the offset, so the frame is the group's place in the list.
+		.onGeometryChange(for: CGRect.self) {
+			$0.frame(in: .named(VaultSidebarReorder.contentSpace))
+		} action: { reorder.setFrame($0, for: projectId) }
+		.onDisappear { reorder.setFrame(nil, for: projectId) }
 	}
 }
 

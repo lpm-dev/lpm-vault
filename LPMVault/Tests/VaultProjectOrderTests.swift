@@ -1,10 +1,7 @@
 import AppKit
-import CoreTransferable
 import Foundation
-import Observation
 import SwiftUI
 import Testing
-import UniformTypeIdentifiers
 
 @testable import LPMVault
 
@@ -20,30 +17,377 @@ extension SheetInteractionTests {
 			#expect(SidebarEnvironmentLabel.matches(sample.0, displayName: sample.1) == sample.2)
 		}
 
-		@Test("late exits leave the active marker intact and unchanged pointer updates do not invalidate it")
-		func markerTransitions() {
-			let state = VaultSidebarProjectDropState()
-			let first = VaultSidebarProjectDropMarker()
-			let second = VaultSidebarProjectDropMarker()
-			state.update(first, placement: .before)
-			state.update(second, placement: .after)
-			#expect(first.placement == nil)
-			#expect(second.placement == .after)
-			state.exit(first)
-			#expect(second.placement == .after)
-			let changes = SidebarMarkerChanges()
-			withObservationTracking {
-				_ = second.placement
-			} onChange: {
-				MainActor.assumeIsolated { changes.count += 1 }
+		@Test("a dragged group lands once its leading edge passes the middle of the group it moves over",
+			arguments: [(1, CGFloat(-14), 1), (1, -16, 0), (1, 14, 1), (1, 16, 2), (1, 46, 3), (0, 0, 0), (3, -100, 0)])
+		func landing(sample: (Int, CGFloat, Int)) {
+			let order = ["a", "b", "c", "d"]
+			let frames = Dictionary(uniqueKeysWithValues: order.enumerated().map {
+				($0.element, CGRect(x: 0, y: CGFloat($0.offset) * 30, width: 280, height: 30))
+			})
+			let (from, offset, expected) = sample
+			#expect(VaultSidebarReorder.landing(from: from, order: order, frames: frames,
+				origin: CGFloat(from) * 30, height: 30, offset: offset) == expected)
+		}
+
+		@Test("landing stops at a group whose place isn't known")
+		func landingStopsAtUnknownGroups() {
+			let order = ["a", "b", "c", "d"]
+			let frames = ["a": CGRect(x: 0, y: 0, width: 280, height: 30), "b": CGRect(x: 0, y: 30, width: 280, height: 30),
+				"d": CGRect(x: 0, y: 90, width: 280, height: 30)]
+			#expect(VaultSidebarReorder.landing(from: 1, order: order, frames: frames, origin: 30, height: 30, offset: 46) == 1)
+		}
+
+		@Test("dragging near an edge scrolls toward it, faster the closer it gets, and never against the drag")
+		func autoscrollVelocity() {
+			let speed = VaultSidebarReorder.autoscrollSpeed
+			func velocity(_ pointer: CGFloat, grab: CGFloat = 200, height: CGFloat = 400) -> CGFloat {
+				VaultSidebarReorder.autoscrollVelocity(pointerY: pointer, grabY: grab, viewportHeight: height)
 			}
-			for _ in 0..<10_000 { state.update(second, placement: .after) }
-			#expect(changes.count == 0)
-			state.update(second, placement: .before)
-			#expect(changes.count == 1)
-			#expect(second.placement == .before)
-			state.clear()
-			#expect(second.placement == nil)
+			#expect(velocity(200) == 0)
+			#expect(velocity(16) == -speed / 2)
+			#expect(velocity(0) == -speed)
+			#expect(velocity(-80) == -speed)
+			#expect(velocity(384) == speed / 2)
+			#expect(velocity(480) == speed)
+			#expect(velocity(16, grab: 10) == 0, "A pointer moving down mustn't scroll up")
+			#expect(velocity(390, grab: 395) == 0, "A pointer moving up mustn't scroll down")
+			#expect(velocity(10, height: 80) == -speed / 2, "A short list narrows the edges to a quarter of its height")
+			#expect(velocity(10, height: 0) == 0)
+		}
+
+		@Test("sidebar keys are ⌥↑, ⌥↓ and Esc, whatever flags arrow keys carry")
+		func sidebarKeys() {
+			#expect(VaultSidebarKeys.key(modifiers: .option, keyCode: 126) == .move(-1))
+			#expect(VaultSidebarKeys.key(modifiers: [.option, .numericPad, .function], keyCode: 125) == .move(1))
+			#expect(VaultSidebarKeys.key(modifiers: [], keyCode: 53) == .cancelDrag)
+			#expect(VaultSidebarKeys.key(modifiers: [], keyCode: 126) == nil)
+			#expect(VaultSidebarKeys.key(modifiers: [.option, .shift], keyCode: 126) == nil)
+			#expect(VaultSidebarKeys.key(modifiers: .command, keyCode: 125) == nil)
+			#expect(VaultSidebarKeys.key(modifiers: .option, keyCode: 53) == nil)
+		}
+
+		@Test("the drag model reports the move, the room it makes and where it lands, and forgets all of it once it ends")
+		func reorderModel() {
+			let order = ["a", "b", "c", "d"]
+			let reorder = modelWithRows(order)
+			reorder.drag("b", in: order, from: CGPoint(x: 100, y: 45), to: CGPoint(x: 100, y: 95))
+			#expect(reorder.lift == VaultSidebarReorder.Lift(projectId: "b", order: order, from: 1, height: 30))
+			#expect(reorder.offset == 50)
+			#expect(reorder.target == 3)
+			#expect([0, 1, 2, 3].map(reorder.shift(at:)) == [0, 0, -30, -30])
+			#expect([0, 1, 2, 3].map(reorder.landingEdge(at:)) == [nil, nil, nil, .bottom])
+			#expect(reorder.finish() == VaultSidebarReorder.Move(projectId: "b", targetId: "d", placement: .after))
+			#expect(reorder.lift == nil && reorder.offset == 0 && reorder.landingEdge(at: 3) == nil)
+
+			reorder.drag("c", in: order, from: CGPoint(x: 100, y: 75), to: CGPoint(x: 100, y: 20))
+			#expect(reorder.target == 0)
+			#expect([0, 1, 2, 3].map(reorder.shift(at:)) == [30, 30, 0, 0])
+			#expect([0, 1, 2, 3].map(reorder.landingEdge(at:)) == [.top, nil, nil, nil])
+			#expect(reorder.finish() == VaultSidebarReorder.Move(projectId: "c", targetId: "a", placement: .before))
+
+			reorder.drag("b", in: order, from: CGPoint(x: 100, y: 45), to: CGPoint(x: 100, y: 900))
+			#expect(reorder.offset == 60, "The group stops at the end of the list")
+			reorder.drag("b", in: order, from: CGPoint(x: 100, y: 45), to: CGPoint(x: -20, y: 900))
+			#expect(reorder.target == 1, "Outside the sidebar the drag lands where it began")
+			#expect(reorder.autoscrollVelocity == 0)
+			#expect(reorder.finish() == nil)
+		}
+
+		@Test("a cancelled drag ignores the rest of its gesture, and a new gesture starts afresh")
+		func cancelledDrag() {
+			let order = ["a", "b", "c"]
+			let reorder = modelWithRows(order)
+			#expect(!reorder.cancel())
+			reorder.drag("a", in: order, from: CGPoint(x: 100, y: 15), to: CGPoint(x: 100, y: 60))
+			#expect(reorder.target == 1)
+			#expect(reorder.cancel())
+			#expect(reorder.lift == nil)
+			reorder.drag("a", in: order, from: CGPoint(x: 100, y: 15), to: CGPoint(x: 100, y: 80))
+			#expect(reorder.lift == nil)
+			#expect(reorder.finish() == nil)
+			reorder.drag("a", in: order, from: CGPoint(x: 100, y: 15), to: CGPoint(x: 100, y: 60))
+			#expect(reorder.lift?.projectId == "a")
+			reorder.cancel(unlessShowing: order)
+			#expect(reorder.lift != nil)
+			reorder.cancel(unlessShowing: ["c", "a", "b"])
+			#expect(reorder.lift == nil)
+			reorder.end()
+			reorder.drag("a", in: order, from: CGPoint(x: 100, y: 15), to: CGPoint(x: 100, y: 60))
+			#expect(reorder.lift?.projectId == "a")
+		}
+
+		@Test("the lifted group stays under the pointer when the list scrolls or something above it changes size")
+		func liftedGroupFollowsLayout() {
+			let order = ["a", "b", "c"]
+			let reorder = modelWithRows(order)
+			reorder.drag("b", in: order, from: CGPoint(x: 100, y: 45), to: CGPoint(x: 100, y: 55))
+			#expect(reorder.offset == 10)
+			reorder.setContentTop(-20)
+			#expect(reorder.offset == 30, "Scrolling 20 points carries the pointer 20 points further down the list")
+			reorder.setFrame(CGRect(x: 0, y: 0, width: 280, height: 50), for: "a")
+			reorder.setFrame(CGRect(x: 0, y: 80, width: 280, height: 30), for: "c")
+			reorder.setFrame(CGRect(x: 0, y: 50, width: 280, height: 30), for: "b")
+			#expect(reorder.offset == 10, "A taller group above pushes B's place down, and B stays where it was drawn")
+			reorder.setFrame(CGRect(x: 0, y: 50, width: 280, height: 40), for: "b")
+			#expect(reorder.lift?.height == 40)
+		}
+
+		@Test("a drag draws the landing line between the projects it would land between and leaves none once it ends",
+			arguments: ["up", "down"])
+		func dragMovesProject(direction: String) async throws {
+			let (store, _, preferences, domain) = try fixture(count: 5)
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count == 4, "Expected the first four of five project rows, got \(rows)")
+			let pitch = rows[0].midY - rows[1].midY
+			let up = direction == "up"
+			// Far enough past the boundary that the lifted project no longer covers the line.
+			let start = NSPoint(x: 140, y: up ? rows[0].midY - 4 * pitch : rows[0].midY)
+			let end = NSPoint(x: 140, y: start.y + (up ? 2.27 : -2.27) * pitch)
+			try drag(in: host, from: start, to: end, release: false)
+			#expect(reorder.lift?.projectId == (up ? "zz-01" : "alpha"))
+			#expect(reorder.target == 2)
+			#expect(reorder.shift(at: 2) == (up ? 1 : -1) * (reorder.lift?.height ?? 0), "Zulu makes room for the dragged project")
+			try await settleAnimations(in: host)
+			let markers = try markerRows(in: host)
+			#expect((1...4).contains(markers.count), "One 2-point landing line marks the drop")
+			let line = try lineCenter(in: host)
+			// Zulu slides into the dragged project's place, so the line sits where that place met Zulu.
+			let (below, above) = up ? (rows[3], rows[2]) : (rows[2], rows[1])
+			#expect(line > below.maxY && line < above.minY, "Line at \(line) must fall between \(below) and \(above)")
+			try mouse(.leftMouseUp, at: end, in: host)
+			try await settleAnimations(in: host)
+			#expect(try markerRows(in: host).isEmpty, "The landing line must not outlive the drag")
+			#expect(reorder.lift == nil)
+			let expected = up ? ["alpha", "middle", "zz-01", "zulu", "zz-00"] : ["middle", "zulu", "alpha", "zz-00", "zz-01"]
+			#expect(store.visibleVaults(matching: "").map(\.id) == expected)
+			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == expected)
+		}
+
+		@Test("a drag that comes back to where it began moves nothing and draws no line")
+		func dragBackMovesNothing() async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count == 3)
+			let start = NSPoint(x: 140, y: rows[1].midY)
+			try drag(in: host, from: start, to: NSPoint(x: 140, y: rows[0].midY + 4), release: false)
+			#expect(reorder.target == 0)
+			try drag(in: host, from: nil, to: NSPoint(x: 140, y: rows[1].midY + 6), release: false)
+			#expect(reorder.target == 1)
+			try await settleAnimations(in: host)
+			#expect(try markerRows(in: host).isEmpty)
+			try mouse(.leftMouseUp, at: NSPoint(x: 140, y: rows[1].midY + 6), in: host)
+			try await host.settle()
+			#expect(store.visibleVaults(matching: "").map(\.id) == ["alpha", "middle", "zulu"])
+			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == ["alpha", "middle", "zulu"])
+		}
+
+		@Test("Esc cancels a drag, and the rest of its gesture moves nothing")
+		func escapeCancelsDrag() async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count == 3)
+			try drag(in: host, from: NSPoint(x: 140, y: rows[2].midY), to: NSPoint(x: 140, y: rows[0].midY + 8), release: false)
+			#expect(reorder.target == 0)
+			try host.sendEscape()
+			#expect(reorder.lift == nil)
+			try drag(in: host, from: nil, to: NSPoint(x: 140, y: rows[0].midY + 12), release: true)
+			try await settleAnimations(in: host)
+			#expect(try markerRows(in: host).isEmpty)
+			#expect(store.visibleVaults(matching: "").map(\.id) == ["alpha", "middle", "zulu"])
+			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == ["alpha", "middle", "zulu"])
+		}
+
+		@Test("releasing a drag outside the sidebar moves nothing")
+		func releaseOutsideMovesNothing() async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count == 3)
+			try drag(in: host, from: NSPoint(x: 140, y: rows[2].midY), to: NSPoint(x: 140, y: rows[0].midY + 8), release: false)
+			#expect(reorder.target == 0)
+			try drag(in: host, from: nil, to: NSPoint(x: -60, y: rows[0].midY + 8), release: false)
+			#expect(reorder.target == 2)
+			try await settleAnimations(in: host)
+			#expect(try markerRows(in: host).isEmpty)
+			try mouse(.leftMouseUp, at: NSPoint(x: -60, y: rows[0].midY + 8), in: host)
+			try await host.settle()
+			#expect(reorder.lift == nil)
+			#expect(store.visibleVaults(matching: "").map(\.id) == ["alpha", "middle", "zulu"])
+		}
+
+		@Test("a click without a drag still opens the project")
+		func clickOpensProject() async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count == 3)
+			let point = NSPoint(x: 140, y: rows[1].midY)
+			try mouse(.leftMouseDown, at: point, in: host)
+			try mouse(.leftMouseDragged, at: NSPoint(x: point.x + 1, y: point.y), in: host)
+			try mouse(.leftMouseUp, at: NSPoint(x: point.x + 1, y: point.y), in: host)
+			#expect(try await host.waitUntil { store.selectedProjectId == "middle" })
+			#expect(reorder.lift == nil)
+			#expect(store.visibleVaults(matching: "").map(\.id) == ["alpha", "middle", "zulu"])
+		}
+
+		@Test("an expanded project makes room for its environments, and the line falls below them")
+		func expandedProjectLanding() async throws {
+			let (store, _, preferences, domain) = try fixture(count: 5)
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			store.openProject(id: "zulu")
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count >= 3, "Expected Alpha, Middle and Zulu at least, got \(rows)")
+			let alpha = try #require(reorder.frames["alpha"]), zulu = try #require(reorder.frames["zulu"])
+			// Past the line by more than the lifted project's shadow reaches, short of the next landing.
+			let end = NSPoint(x: 140, y: rows[0].midY - (zulu.maxY - alpha.height + 12))
+			try drag(in: host, from: NSPoint(x: 140, y: rows[0].midY), to: end, release: false)
+			#expect(reorder.target == 2)
+			#expect(reorder.landingEdge(at: 2) == .bottom)
+			try await settleAnimations(in: host)
+			let line = try lineCenter(in: host)
+			// Alpha's label sits at the middle of its row, which tells where list coordinates fall in the window.
+			let expected = rows[0].midY - (zulu.maxY - alpha.height - alpha.midY)
+			#expect(abs(line - expected) <= 1.5, "Line at \(line), expected below Zulu's environments at \(expected)")
+			try mouse(.leftMouseUp, at: end, in: host)
+			try await settleAnimations(in: host)
+			#expect(store.visibleVaults(matching: "").map(\.id) == ["middle", "zulu", "alpha", "zz-00", "zz-01"])
+		}
+
+		@Test("dragging to an edge scrolls the list, and the project lands beyond what was visible")
+		func dragAutoscrolls() async throws {
+			let (store, _, preferences, domain) = try fixture(count: 30)
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, height: 320, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let scrollView = try #require(scrollViews(in: host.view).first)
+			let rows = try labelBands(in: host)
+			try #require(rows.count >= 3)
+			let first = store.visibleVaults(matching: "").map(\.id)[0]
+			let scroller = try #require(subviews(of: VaultSidebarAutoscroll.ScrollerView.self, in: host.view).first)
+			#expect(!scroller.isScrolling)
+			let edge = NSPoint(x: 140, y: 6)
+			try drag(in: host, from: NSPoint(x: 140, y: rows[0].midY), to: edge, release: false)
+			#expect(reorder.autoscrollVelocity == VaultSidebarReorder.autoscrollSpeed)
+			try await host.settle()
+			#expect(scroller.isScrolling, "A display link drives the scrolling")
+			// The display link pauses while the test's window is covered, so frames are stepped here.
+			let end = (scrollView.documentView?.frame.height ?? 0) - scrollView.contentView.bounds.height
+			for _ in 0..<120 where scrollView.contentView.bounds.origin.y < end - 1 {
+				scroller.advance(by: 1.0 / 60)
+				try await host.settle()
+			}
+			#expect(scrollView.contentView.bounds.origin.y >= end - 1, "The list should scroll to its end while the pointer holds at the edge")
+			try mouse(.leftMouseDragged, at: edge, in: host)
+			try mouse(.leftMouseUp, at: edge, in: host)
+			try await settleAnimations(in: host)
+			let order = store.visibleVaults(matching: "").map(\.id)
+			let landing = try #require(order.firstIndex(of: first))
+			#expect(landing == order.count - 1, "\(first) landed at \(landing) of \(order.count)")
+			#expect(reorder.autoscrollVelocity == 0)
+			#expect(!scroller.isScrolling)
+		}
+
+		@Test("a drag ends when the projects it began with change", arguments: ["refresh", "account", "lock"])
+		func dragEndsWhenProjectsChange(change: String) async throws {
+			let (store, keychain, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count == 3)
+			let end = NSPoint(x: 140, y: rows[0].midY + 8)
+			try drag(in: host, from: NSPoint(x: 140, y: rows[2].midY), to: end, release: false)
+			#expect(reorder.target == 0)
+			switch change {
+			case "refresh":
+				keychain.envStorage["newest"] = (name: "Newest", path: "", environments: ["default": [:]])
+				await store.refreshLocalState()
+			case "account":
+				store.currentUser = LPMUser(id: "user", username: "user", name: nil, email: nil, avatarUrl: nil, plan: nil,
+					createdAt: nil, orgs: [LPMOrg(id: "team-id", slug: "team", name: "Team", avatarUrl: nil, role: "owner")])
+				store.selectAccount(.org("team"))
+			default:
+				store.lock()
+			}
+			try await host.settle()
+			#expect(reorder.lift == nil)
+			try drag(in: host, from: nil, to: NSPoint(x: 140, y: end.y + 4), release: true)
+			try await settleAnimations(in: host)
+			#expect(try markerRows(in: host).isEmpty)
+			let saved = preferences.stringArray(forKey: VaultStore.projectOrderKey) ?? []
+			#expect(saved.filter { ["alpha", "middle", "zulu"].contains($0) } == ["alpha", "middle", "zulu"])
+		}
+
+		@Test("⌥↑ and ⌥↓ move the selected project, but not while a field is being edited")
+		func keyboardMoves() async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			store.openProject(id: "middle")
+			let host = sidebarHost(store)
+			defer { host.window.close() }
+			try await host.settle()
+			try host.key("\u{F700}", code: 126, modifiers: [.option, .numericPad, .function], in: host.window)
+			#expect(store.visibleVaults(matching: "").map(\.id) == ["middle", "alpha", "zulu"])
+			try host.key("\u{F700}", code: 126, modifiers: [.option, .numericPad, .function], in: host.window)
+			#expect(store.visibleVaults(matching: "").map(\.id) == ["middle", "alpha", "zulu"])
+			for _ in 0..<3 { try host.key("\u{F701}", code: 125, modifiers: [.option, .numericPad, .function], in: host.window) }
+			#expect(store.visibleVaults(matching: "").map(\.id) == ["alpha", "zulu", "middle"])
+			try host.typeInFirstField("")
+			try host.key("\u{F700}", code: 126, modifiers: [.option, .numericPad, .function], in: host.window)
+			#expect(store.visibleVaults(matching: "").map(\.id) == ["alpha", "zulu", "middle"])
+			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == ["alpha", "zulu", "middle"])
+		}
+
+		@Test("a project moved by keyboard past the visible rows scrolls into view")
+		func keyboardMoveScrolls() async throws {
+			let (store, _, preferences, domain) = try fixture(count: 30)
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			let order = store.visibleVaults(matching: "").map(\.id)
+			store.openProject(id: order[0])
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, height: 320, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let scrollView = try #require(scrollViews(in: host.view).first)
+			for _ in 0..<29 { try host.key("\u{F701}", code: 125, modifiers: [.option, .numericPad, .function], in: host.window) }
+			#expect(store.visibleVaults(matching: "").map(\.id).last == order[0])
+			let visible = try await host.waitUntil {
+				guard let frame = reorder.frames[order[0]] else { return false }
+				return reorder.contentTop + frame.minY >= -1 && reorder.contentTop + frame.maxY <= reorder.viewportSize.height + 1
+			}
+			#expect(visible, "The moved project should be scrolled into view")
+			#expect(scrollView.contentView.bounds.minY > 0)
 		}
 
 		@Test("child icon centers and visible labels share their columns", arguments: [CGFloat(280), 400],
@@ -58,141 +402,17 @@ extension SheetInteractionTests {
 			let bands = try labelBands(in: host)
 			try #require(bands.count == 5, "Expected the project label and four child labels, got \(bands)")
 			let project = bands[0]
-			let projectStart = try inkStart(in: host, band: project, columns: 35..<150)
+			let projectStart = try inkStart(in: host, band: project, columns: 55..<150)
 			var labelStarts: [CGFloat] = []
 			for (label, band) in zip(["Schema", "New environment", ".env", ".env.staging"], bands.dropFirst()) {
-				let icon = try inkBounds(in: host, band: band, columns: 30..<54)
+				let icon = try inkBounds(in: host, band: band, columns: 48..<71)
 				#expect(abs(icon.midX - projectStart - 3) <= 0.5, "\(label) icon center is \(icon.midX), expected \(projectStart + 3)")
-				labelStarts.append(try inkStart(in: host, band: band, columns: 54..<180))
+				labelStarts.append(try inkStart(in: host, band: band, columns: 71..<200))
 			}
 			let spread = try #require(labelStarts.max()) - #require(labelStarts.min())
 			#expect(spread <= 1, "Visible label starts: \(labelStarts)")
 			let image = NSBitmapImageRep(cgImage: try host.snapshot(host.view))
 			Attachment.record(try #require(image.representation(using: .png, properties: [:])), named: "sidebar-\(Int(width)).png")
-		}
-
-		@Test("only the current insertion marker is visible and drag completion clears it", arguments: ["drop", "exit", "lock", "account"])
-		func insertionMarkerLifecycle(completion: String) async throws {
-			let (store, _, preferences, domain) = try fixture()
-			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
-			let host = sidebarHost(store)
-			defer { host.window.close() }
-			try await host.settle()
-			let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidebar-marker-test-" + UUID().uuidString))
-			defer { pasteboard.releaseGlobally() }
-			let item = NSPasteboardItem()
-			let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
-			#expect(item.setData(try JSONEncoder().encode(drag), forType: NSPasteboard.PasteboardType(VaultSidebarProjectDrag.contentType.identifier)))
-			#expect(pasteboard.writeObjects([item]))
-			let targets = dropViews(in: host.view).sorted { $0.convert($0.bounds, to: nil).maxY > $1.convert($1.bounds, to: nil).maxY }
-			try #require(targets.count == 3, "Expected three collapsed project drop targets, got \(targets.map { $0.convert($0.bounds, to: nil) })")
-			var previous: (NSView, SidebarTestDraggingInfo)?
-			for target in targets.prefix(2) {
-				let bounds = target.convert(target.bounds, to: nil)
-				let point = NSPoint(x: bounds.midX, y: bounds.maxY - bounds.height / 4)
-				let info = SidebarTestDraggingInfo(window: host.window, pasteboard: pasteboard, location: point)
-				#expect(target.draggingEntered(info).contains(.move))
-				#expect(target.draggingUpdated(info).contains(.move))
-				try await host.settle()
-				#expect(try markerRows(in: host).count == 4, "There must be exactly one 2-point insertion marker")
-				previous = (target, info)
-			}
-			let (target, info) = try #require(previous)
-			switch completion {
-			case "exit":
-				target.draggingExited(info)
-			case "lock":
-				store.lock()
-			case "account":
-				store.selectedAccount = .org("team")
-			default:
-				#expect(target.prepareForDragOperation(info))
-				#expect(target.performDragOperation(info))
-			}
-			try await host.settle()
-			#expect(try markerRows(in: host).isEmpty)
-		}
-
-		@Test("project drag data is available only inside this process")
-		func projectDragVisibility() {
-			if #available(macOS 15.2, *) {
-				#expect(VaultSidebarProjectDrag.exportedContentTypes(visibility: .all).isEmpty)
-				#expect(VaultSidebarProjectDrag.exportedContentTypes(visibility: .ownProcess) == [VaultSidebarProjectDrag.contentType])
-			}
-		}
-
-		@Test("native dragging enumeration respects the requested pasteboard classes")
-		func nativeDraggingEnumeration() throws {
-			let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 500),
-				styleMask: [.titled], backing: .buffered, defer: false)
-			window.isReleasedWhenClosed = false
-			defer { window.close() }
-			let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidebar-enumeration-test-" + UUID().uuidString))
-			defer { pasteboard.releaseGlobally() }
-			let item = NSPasteboardItem()
-			let type = NSPasteboard.PasteboardType(VaultSidebarProjectDrag.contentType.identifier)
-			let data = Data("project drag".utf8)
-			#expect(item.setData(data, forType: type))
-			#expect(pasteboard.writeObjects([item]))
-			let info = SidebarTestDraggingInfo(window: window, pasteboard: pasteboard, location: .zero)
-			var stringItems = 0
-			info.enumerateDraggingItems(options: [], for: nil, classes: [NSString.self], searchOptions: [:]) { _, _, _ in
-				stringItems += 1
-			}
-			#expect(stringItems == 0)
-			var payloads: [Data] = []
-			info.enumerateDraggingItems(options: [], for: nil, classes: [NSPasteboardItem.self], searchOptions: [:]) { item, _, _ in
-				if let data = (item.item as? NSPasteboardItem)?.data(forType: type) { payloads.append(data) }
-			}
-			#expect(payloads == [data])
-		}
-
-		@Test("dropping after an expanded project marks the position below its environments")
-		func expandedProjectInsertionMarker() async throws {
-			let (store, _, preferences, domain) = try fixture()
-			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
-			store.openProject(id: "alpha")
-			let host = SheetTestHost(VaultSidebarView(store: store, snapshots: [:], mode: .constant(.matrix),
-				filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
-				onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onRenameProject: { _ in },
-				onDeleteProject: { _ in }, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
-				onClearEnvironment: { _ in }, onDeleteEnvironment: { _ in }),
-				size: NSSize(width: 280, height: 500), keepsRequestedSize: true, usesHostingView: true)
-			defer { host.window.close() }
-			try await host.settle()
-			let bands = try labelBands(in: host)
-			try #require(bands.count == 5)
-			let staging = bands[4]
-			let target = try #require(dropViews(in: host.view).max { $0.convert($0.bounds, to: nil).maxY < $1.convert($1.bounds, to: nil).maxY })
-			let bounds = target.convert(target.bounds, to: nil)
-			let point = NSPoint(x: bounds.midX, y: bounds.maxY - 24)
-			let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidebar-drop-test-" + UUID().uuidString))
-			defer { pasteboard.releaseGlobally() }
-			let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
-			let item = NSPasteboardItem()
-			#expect(item.setData(try JSONEncoder().encode(drag), forType: NSPasteboard.PasteboardType(VaultSidebarProjectDrag.contentType.identifier)))
-			#expect(pasteboard.writeObjects([item]))
-			let info = SidebarTestDraggingInfo(window: host.window, pasteboard: pasteboard, location: point)
-			#expect(target.draggingEntered(info).contains(.move))
-			#expect(target.draggingUpdated(info).contains(.move))
-			try await host.settle()
-			let image = try host.snapshot(host.view)
-			let width = image.width, height = image.height
-			let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-				bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-			context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
-			let lineRows = (0..<height).filter { row in
-				[width / 4, width / 2, 3 * width / 4].allSatisfy { column in
-					let pixel = (row * width + column) * 4
-					return abs(Int(pixels[pixel]) - 94) < 16 && abs(Int(pixels[pixel + 1]) - 92) < 16 && abs(Int(pixels[pixel + 2]) - 230) < 16
-				}
-			}
-			let row = try #require(lineRows.first, "No insertion marker was rendered")
-			let markerY = host.view.bounds.height * (1 - (CGFloat(row) + 0.5) / CGFloat(height))
-			#expect(markerY < staging.minY, "Insertion marker at \(markerY) must be below the last environment at \(staging.minY)")
-			#expect(abs(markerY - bounds.minY - 1) <= 1, "Marker at \(markerY) must follow the expanded group's bottom at \(bounds.minY)")
-			target.draggingExited(info)
 		}
 
 		@Test("new projects appear at the top before and after manual reordering")
@@ -216,15 +436,14 @@ extension SheetInteractionTests {
 			#expect(store.visibleVaults(matching: "").map(\.id) == ["newest", "alpha", "middle", "zulu"])
 		}
 
-		@Test("dragging projects moves in both directions and persists without changing selection")
+		@Test("moving projects works in both directions and persists without changing selection")
 		func movesAndPersists() async throws {
 			let (store, keychain, preferences, domain) = try fixture()
 			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
 			store.openProject(id: "alpha")
 			store.selectEnvironment("staging")
 			let original = store.projects
-			let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
-			#expect(store.dropSidebarProject(drag, relativeTo: "alpha", placement: .before))
+			#expect(store.moveProject(id: "zulu", relativeTo: "alpha", placement: .before))
 			#expect(store.visibleVaults(matching: "").map(\.id) == ["zulu", "alpha", "middle"])
 			#expect(store.moveProject(id: "alpha", relativeTo: "middle", placement: .after))
 			#expect(store.visibleVaults(matching: "").map(\.id) == ["zulu", "middle", "alpha"])
@@ -255,7 +474,7 @@ extension SheetInteractionTests {
 			#expect(store.visibleVaults(matching: "").map(\.id) == ["zulu", "alpha", "hidden", "middle"])
 		}
 
-		@Test("self drops, missing projects, and already adjacent moves leave preferences untouched")
+		@Test("self moves, missing projects, already adjacent moves and a locked vault leave preferences untouched")
 		func invalidAndNoOpMoves() throws {
 			let (store, _, preferences, domain) = try fixture()
 			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
@@ -266,25 +485,8 @@ extension SheetInteractionTests {
 			] {
 				#expect(!store.moveProject(id: source, relativeTo: target, placement: placement))
 			}
-			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == ["alpha", "middle", "zulu"])
-			#expect(store.visibleVaults(matching: "").map(\.id) == ["alpha", "middle", "zulu"])
-		}
-
-		@Test("drops reject foreign drag sessions, account switches, and locked sessions", arguments: ["foreign", "account", "lock"])
-		func rejectsStaleDrag(transition: String) throws {
-			let (store, _, preferences, domain) = try fixture()
-			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
-			let drag = VaultSidebarProjectDrag(projectId: "zulu",
-				sessionId: transition == "foreign" ? UUID() : store.sidebarDragSessionId)
-			if transition == "account" {
-				store.selectedAccount = .org("team")
-				store.selectedAccount = .personal
-			} else if transition == "lock" {
-				store.lock()
-				#expect(!store.dropSidebarProject(drag, relativeTo: "alpha", placement: .before))
-				store.isUnlocked = true
-			}
-			#expect(!store.dropSidebarProject(drag, relativeTo: "alpha", placement: .before))
+			store.lock()
+			#expect(!store.moveProject(id: "zulu", relativeTo: "alpha", placement: .before))
 			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == ["alpha", "middle", "zulu"])
 		}
 
@@ -319,49 +521,6 @@ extension SheetInteractionTests {
 			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == ["zulu", "middle"])
 			store.projects.insert(VaultProject(id: "new", name: "A new project", path: "", environments: ["default": [:]]), at: 0)
 			#expect(store.visibleVaults(matching: "").map(\.id) == ["new", "zulu", "middle"])
-		}
-
-		@Test("queued native item providers reorder projects and reject malformed data", arguments: [false, true], ["registered", "raw"])
-		func nativeDrop(malformed: Bool, representation: String) async throws {
-			let (store, _, preferences, domain) = try fixture()
-			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
-			let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
-			let data = malformed ? Data("invalid".utf8) : try JSONEncoder().encode(drag)
-			let provider: NSItemProvider
-			if representation == "raw" {
-				provider = NSItemProvider(item: data as NSData, typeIdentifier: VaultSidebarProjectDrag.contentType.identifier)
-			} else {
-				provider = NSItemProvider()
-				provider.registerDataRepresentation(forTypeIdentifier: VaultSidebarProjectDrag.contentType.identifier, visibility: .ownProcess) { completion in
-					completion(data, nil)
-					return nil
-				}
-			}
-			let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "middle", rowHeight: 30, dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
-			let operation = try #require(delegate.enqueueDrop(from: [provider], placement: .before))
-			#expect(await operation.value == !malformed)
-			#expect(store.visibleVaults(matching: "").map(\.id) == (malformed ? ["alpha", "middle", "zulu"] : ["alpha", "zulu", "middle"]))
-		}
-
-		@Test("empty, multiple-item and locked drops do not enqueue work", arguments: ["empty", "multiple", "locked"])
-		func invalidDropQueue(input: String) throws {
-			let (store, _, preferences, domain) = try fixture()
-			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
-			let originalOrder = preferences.stringArray(forKey: VaultStore.projectOrderKey)
-			if input == "locked" { store.lock() }
-			let providers = input == "empty" ? [] : (0..<(input == "multiple" ? 2 : 1)).map { _ in NSItemProvider() }
-			let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "middle", rowHeight: 30,
-				dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
-			#expect(delegate.enqueueDrop(from: providers, placement: .before) == nil)
-			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == originalOrder)
-		}
-
-		@Test("the pointer selects an insertion before or after the target row")
-		func dropPlacement() {
-			#expect(VaultProjectPlacement.at(y: 0, rowHeight: 30) == .before)
-			#expect(VaultProjectPlacement.at(y: 14, rowHeight: 30) == .before)
-			#expect(VaultProjectPlacement.at(y: 15, rowHeight: 30) == .after)
-			#expect(VaultProjectPlacement.at(y: 30, rowHeight: 30) == .after)
 		}
 
 		@Test("the sidebar restores saved project order before and after a local refresh")
@@ -400,65 +559,71 @@ extension SheetInteractionTests {
 			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == ["middle", "zulu", "alpha"])
 		}
 
-		@Test("rendered sidebar registers project drops and updates its rows after a native drop")
-		func renderedSidebarDrop() async throws {
-			let (store, _, preferences, domain) = try fixture()
-			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
-			let host = SheetTestHost(VaultSidebarView(store: store, snapshots: [:], mode: .constant(.matrix),
-				filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
-				onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onRenameProject: { _ in },
-				onDeleteProject: { _ in }, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
-				onClearEnvironment: { _ in }, onDeleteEnvironment: { _ in }),
-				size: NSSize(width: 280, height: 500), keepsRequestedSize: true, usesHostingView: true)
-			defer { host.window.close() }
-			try await host.settle()
-			func registeredTypes(in view: NSView) -> [NSPasteboard.PasteboardType] {
-				view.registeredDraggedTypes + view.subviews.flatMap { registeredTypes(in: $0) }
+		private func modelWithRows(_ order: [String]) -> VaultSidebarReorder {
+			let reorder = VaultSidebarReorder()
+			reorder.setViewportSize(CGSize(width: 280, height: 500))
+			for (index, id) in order.enumerated() {
+				reorder.setFrame(CGRect(x: 0, y: CGFloat(index) * 30, width: 280, height: 30), for: id)
 			}
-			let types = registeredTypes(in: host.view)
-			#expect(types.contains(NSPasteboard.PasteboardType(UTType.data.identifier)))
-			let projectRows = CGRect(x: 0, y: 0.5, width: 1, height: 0.5)
-			let alphaBefore = try await host.labelFrame("Alpha", region: projectRows)
-			let zuluBefore = try await host.labelFrame("Zulu", region: projectRows)
-			#expect(alphaBefore.midY > zuluBefore.midY)
-			let drag = VaultSidebarProjectDrag(projectId: "zulu", sessionId: store.sidebarDragSessionId)
-			let data = try JSONEncoder().encode(drag)
-			let provider = NSItemProvider()
-			provider.registerDataRepresentation(forTypeIdentifier: VaultSidebarProjectDrag.contentType.identifier, visibility: .ownProcess) { completion in
-				completion(data, nil)
-				return nil
-			}
-			let delegate = VaultSidebarProjectDropDelegate(store: store, projectId: "alpha", rowHeight: 30, dropState: VaultSidebarProjectDropState(), marker: VaultSidebarProjectDropMarker())
-			#expect(await delegate.loadDrop(from: provider, placement: .before))
-			try await host.settle()
-			let alphaAfter = try await host.labelFrame("Alpha", region: projectRows)
-			let zuluAfter = try await host.labelFrame("Zulu", region: projectRows)
-			#expect(zuluAfter.midY > alphaAfter.midY)
+			return reorder
 		}
 
-		@Test("the app declares its project drag type as data")
-		func declaresProjectDragType() throws {
-			let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-			let data = try Data(contentsOf: package.appendingPathComponent("Info.plist"))
-			let plist = try #require(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
-			let declarations = try #require(plist["UTExportedTypeDeclarations"] as? [[String: Any]])
-			let declaration = try #require(declarations.first { $0["UTTypeIdentifier"] as? String == VaultSidebarProjectDrag.contentType.identifier })
-			#expect(declaration["UTTypeConformsTo"] as? [String] == [UTType.data.identifier])
-		}
-
-		private func sidebarHost(_ store: VaultStore, width: CGFloat = 280, mode: VaultWorkspaceMode = .matrix) -> SheetTestHost<some View> {
+		private func sidebarHost(_ store: VaultStore, width: CGFloat = 280, height: CGFloat = 500,
+			mode: VaultWorkspaceMode = .matrix, reorder: VaultSidebarReorder = VaultSidebarReorder()) -> SheetTestHost<some View> {
 			SheetTestHost(VaultSidebarView(store: store, snapshots: [:], mode: .constant(mode),
 				filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
 				onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onRenameProject: { _ in },
 				onDeleteProject: { _ in }, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
-				onClearEnvironment: { _ in }, onDeleteEnvironment: { _ in }),
-				size: NSSize(width: width, height: 500), keepsRequestedSize: true, usesHostingView: true)
+				onClearEnvironment: { _ in }, onDeleteEnvironment: { _ in }, reorder: reorder),
+				size: NSSize(width: width, height: height), keepsRequestedSize: true, usesHostingView: true)
 		}
 
-		private func dropViews(in view: NSView) -> [NSView] {
-			(view.registeredDraggedTypes.isEmpty ? [] : [view]) + view.subviews.flatMap { dropViews(in: $0) }
+		/// Presses on `start`, when given, and drags through to `end` in steps, as a pointer does.
+		private func drag<V: View>(in host: SheetTestHost<V>, from start: NSPoint?, to end: NSPoint, release: Bool) throws {
+			var current = start ?? end
+			if let start {
+				try mouse(.leftMouseDown, at: start, in: host)
+				current = start
+			}
+			let steps = 6
+			let origin = current
+			for step in 1...steps {
+				let fraction = CGFloat(step) / CGFloat(steps)
+				current = NSPoint(x: origin.x + (end.x - origin.x) * fraction, y: origin.y + (end.y - origin.y) * fraction)
+				try mouse(.leftMouseDragged, at: current, in: host)
+			}
+			if release { try mouse(.leftMouseUp, at: end, in: host) }
 		}
 
+		private func mouse<V: View>(_ type: NSEvent.EventType, at point: NSPoint, in host: SheetTestHost<V>) throws {
+			let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+				timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber, context: nil,
+				eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+			host.window.sendEvent(event)
+		}
+
+		/// Lets the 160-millisecond slides and fades of a drag finish, then settles.
+		private func settleAnimations<V: View>(in host: SheetTestHost<V>) async throws {
+			try await Task.sleep(for: .milliseconds(250))
+			try await host.settle()
+		}
+
+		/// The landing line's center, in window coordinates.
+		private func lineCenter<V: View>(in host: SheetTestHost<V>) throws -> CGFloat {
+			let rows = try markerRows(in: host)
+			let first = try #require(rows.first), last = try #require(rows.last)
+			return host.view.bounds.height - CGFloat(first + last + 1) / 4
+		}
+
+		private func scrollViews(in view: NSView) -> [NSScrollView] {
+			subviews(of: NSScrollView.self, in: view)
+		}
+
+		private func subviews<T: NSView>(of type: T.Type, in view: NSView) -> [T] {
+			((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { subviews(of: type, in: $0) }
+		}
+
+		/// Pixel rows, from the top at 2x, drawn in the accent color across the sidebar.
 		private func markerRows<V: View>(in host: SheetTestHost<V>) throws -> [Int] {
 			let image = try host.snapshot(host.view)
 			let context = try pixelContext(image)
@@ -475,6 +640,7 @@ extension SheetInteractionTests {
 			try inkBounds(in: host, band: band, columns: columns).minX
 		}
 
+		/// The rows of the sidebar's projects and children with text in them, from the top, in window coordinates.
 		private func labelBands<V: View>(in host: SheetTestHost<V>) throws -> [CGRect] {
 			let image = try host.snapshot(host.view)
 			let context = try pixelContext(image)
@@ -482,7 +648,7 @@ extension SheetInteractionTests {
 			let scale = CGFloat(image.width) / host.view.bounds.width
 			var bands: [CGRect] = []
 			var first: Int?
-			for row in Int(80 * scale)..<Int(215 * scale) {
+			for row in Int(80 * scale)..<min(Int(215 * scale), image.height) {
 				let background = (row * image.width + Int(220 * scale)) * 4
 				let hasInk = (Int(55 * scale)..<Int(190 * scale)).contains { column in
 					let pixel = (row * image.width + column) * 4
@@ -531,11 +697,14 @@ extension SheetInteractionTests {
 			return context
 		}
 
-		private func fixture() throws -> (VaultStore, MockKeychainService, UserDefaults, String) {
+		/// Alpha, Middle and Zulu, each with `.env` and `.env.staging`, then
+		/// `count - 3` more projects named so they sort after them.
+		private func fixture(count: Int = 3) throws -> (VaultStore, MockKeychainService, UserDefaults, String) {
 			let domain = "sidebar-project-order-" + UUID().uuidString
 			let preferences = try #require(UserDefaults(suiteName: domain))
 			let keychain = MockKeychainService()
-			let projects = ["alpha", "middle", "zulu"].map {
+			let ids = ["alpha", "middle", "zulu"] + (0..<max(0, count - 3)).map { String(format: "zz-%02d", $0) }
+			let projects = ids.map {
 				VaultProject(id: $0, name: $0.capitalized, path: "", environments: ["default": [:], "staging": [:]])
 			}
 			for project in projects {
@@ -546,53 +715,6 @@ extension SheetInteractionTests {
 			store.projects = projects
 			store.isUnlocked = true
 			return (store, keychain, preferences, domain)
-		}
-	}
-}
-
-@MainActor
-private final class SidebarMarkerChanges {
-	var count = 0
-}
-
-@MainActor
-private final class SidebarTestDraggingSource: NSObject, NSDraggingSource {
-	func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .move }
-}
-
-@MainActor
-private final class SidebarTestDraggingInfo: NSObject, NSDraggingInfo {
-	private let source = SidebarTestDraggingSource()
-	let draggingDestinationWindow: NSWindow?
-	let draggingPasteboard: NSPasteboard
-	let draggingLocation: NSPoint
-	let draggingSourceOperationMask: NSDragOperation = .move
-	let draggingSequenceNumber = 1
-	var draggingSource: Any? { source }
-	var draggedImageLocation: NSPoint { draggingLocation }
-	nonisolated var draggedImage: NSImage? { nil }
-	var draggingFormation: NSDraggingFormation = .default
-	var animatesToDestination = false
-	var numberOfValidItemsForDrop = 1
-	var springLoadingHighlight: NSSpringLoadingHighlight { .none }
-
-	init(window: NSWindow, pasteboard: NSPasteboard, location: NSPoint) {
-		draggingDestinationWindow = window
-		draggingPasteboard = pasteboard
-		draggingLocation = location
-	}
-
-	func slideDraggedImage(to screenPoint: NSPoint) {}
-	nonisolated override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
-	func resetSpringLoading() {}
-	func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?, classes: [AnyClass],
-		searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {
-		var stop: ObjCBool = false
-		let items = draggingPasteboard.readObjects(forClasses: classes, options: searchOptions) ?? []
-		for (index, object) in items.enumerated() {
-			guard let item = object as? NSPasteboardWriting else { continue }
-			block(NSDraggingItem(pasteboardWriter: item), index, &stop)
-			if stop.boolValue { break }
 		}
 	}
 }
