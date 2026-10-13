@@ -386,18 +386,16 @@ extension SheetInteractionTests {
 			let scrollView = try #require(subviews(of: VaultSidebarAutoscroll.ScrollerView.self, in: host.view).first?.enclosingScrollView)
 			for _ in 0..<29 { try host.key("\u{F701}", code: 125, modifiers: [.option, .numericPad, .function], in: host.window) }
 			#expect(store.visibleVaults(matching: "").map(\.id).last == order[0])
+			// macOS 15 lays out the new order a turn later, so the wait needs the
+			// project at the end of the list: its old place at the top is in view too.
 			let visible = try await host.waitUntil {
-				guard let frame = reorder.frames[order[0]] else { return false }
+				guard let frame = reorder.frames[order[0]], frame.minY > reorder.viewportSize.height else { return false }
 				return reorder.contentTop + frame.minY >= -1 && reorder.contentTop + frame.maxY <= reorder.viewportSize.height + 1
 			}
-			let layout = """
-				frame \(reorder.frames[order[0]].map(String.init(describing:)) ?? "none"), content top \(reorder.contentTop), \
-				viewport \(reorder.viewportSize), clip \(scrollView.contentView.bounds), document \(scrollView.documentView?.frame ?? .zero)
-				"""
-			#expect(visible, "The moved project should be scrolled into view: \(layout)")
-			#expect(reorder.frames[order[0]].map { $0.minY > reorder.viewportSize.height } == true,
-				"The moved project's frame should follow it to the end of the list: \(layout)")
-			#expect(reorder.contentTop < 0, "The list should have scrolled: \(layout)")
+			#expect(visible, """
+				The moved project should be scrolled into view: frame \(reorder.frames[order[0]].map(String.init(describing:)) ?? "none"), \
+				content top \(reorder.contentTop), viewport \(reorder.viewportSize), clip \(scrollView.contentView.bounds)
+				""")
 		}
 
 		@Test("child icon centers and visible labels share their columns", arguments: [CGFloat(280), 400],
