@@ -96,10 +96,15 @@ extension SheetInteractionTests {
 			#expect(text.contains("Check the field name"))
 			#expect(text.contains("Checks paused"))
 
+			// Found before the fix is written: the page also rereads lpm.json once
+			// it changes, which takes Recheck away, sooner than a slow runner reads it.
+			let recheck = try await host.clickLater("Recheck")
 			try Self.sample.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 			try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
 			try #"{"vars":{}}"#.write(toFile: folder + "/schemas/base.json", atomically: true, encoding: .utf8)
-			try await host.click("Recheck")
+			#expect(!store.isReloadingKeyDescriptions)
+			try recheck()
+			#expect(store.isReloadingKeyDescriptions, "Recheck reads lpm.json again before the page notices the change itself")
 			#expect(try await host.waitForText("5 declared keys"))
 			#expect(try await !host.text().contains("Schema can't be read"))
 		}
