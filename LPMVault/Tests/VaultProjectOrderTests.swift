@@ -390,8 +390,14 @@ extension SheetInteractionTests {
 				guard let frame = reorder.frames[order[0]] else { return false }
 				return reorder.contentTop + frame.minY >= -1 && reorder.contentTop + frame.maxY <= reorder.viewportSize.height + 1
 			}
-			#expect(visible, "The moved project should be scrolled into view")
-			#expect(scrollView.contentView.bounds.minY > 0)
+			let layout = """
+				frame \(reorder.frames[order[0]].map(String.init(describing:)) ?? "none"), content top \(reorder.contentTop), \
+				viewport \(reorder.viewportSize), clip \(scrollView.contentView.bounds), document \(scrollView.documentView?.frame ?? .zero)
+				"""
+			#expect(visible, "The moved project should be scrolled into view: \(layout)")
+			#expect(reorder.frames[order[0]].map { $0.minY > reorder.viewportSize.height } == true,
+				"The moved project's frame should follow it to the end of the list: \(layout)")
+			#expect(reorder.contentTop < 0, "The list should have scrolled: \(layout)")
 		}
 
 		@Test("child icon centers and visible labels share their columns", arguments: [CGFloat(280), 400],
@@ -623,7 +629,9 @@ extension SheetInteractionTests {
 			((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { subviews(of: type, in: $0) }
 		}
 
-		/// Pixel rows, from the top at 2x, drawn in the accent color across the sidebar.
+		/// Pixel rows, from the top at 2x, drawn in the accent's hue across the sidebar.
+		/// Matching the hue, not the exact color, keeps the line found where the
+		/// lifted project's shadow shades it, which macOS 15 draws farther out.
 		private func markerRows<V: View>(in host: SheetTestHost<V>) throws -> [Int] {
 			let image = try host.snapshot(host.view)
 			let context = try pixelContext(image)
@@ -631,7 +639,8 @@ extension SheetInteractionTests {
 			return (0..<image.height).filter { row in
 				[image.width / 4, image.width / 2, 3 * image.width / 4].allSatisfy { column in
 					let pixel = (row * image.width + column) * 4
-					return abs(Int(pixels[pixel]) - 94) < 16 && abs(Int(pixels[pixel + 1]) - 92) < 16 && abs(Int(pixels[pixel + 2]) - 230) < 16
+					let red = Int(pixels[pixel]), green = Int(pixels[pixel + 1]), blue = Int(pixels[pixel + 2])
+					return blue - red > 80 && blue - green > 80
 				}
 			}
 		}
