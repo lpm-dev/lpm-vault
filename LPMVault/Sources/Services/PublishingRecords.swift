@@ -150,6 +150,7 @@ enum PublishingRecords {
 					.init(key: "publishedAt", value: timestamp(key.publishedAt)),
 					.init(key: "remoteId", value: key.remoteID.map(LPMConfigJSON.string) ?? .null),
 					.init(key: "remoteUpdatedAt", value: key.remoteUpdatedAt.map(timestamp) ?? .null),
+					.init(key: "publishedAsSecret", value: .bool(key.publishedAsSecret)),
 				])
 			})),
 		])
@@ -189,7 +190,7 @@ enum PublishingRecords {
 			}
 			var keys: [String: PublishHistory.Key] = [:]
 			for record in records {
-				let fields = try Fields(record, ["key", "fingerprint", "publishedAt", "remoteId", "remoteUpdatedAt"])
+				let fields = try Fields(record, ["key", "fingerprint", "publishedAt", "remoteId", "remoteUpdatedAt", "publishedAsSecret"])
 				let name = try fields.string("key")
 				guard keys[name] == nil, let fingerprint = Data(base64Encoded: try fields.string("fingerprint")) else {
 					throw DecodingError.unreadable
@@ -198,7 +199,8 @@ enum PublishingRecords {
 					fingerprint: fingerprint,
 					publishedAt: try fields.timestamp("publishedAt"),
 					remoteID: try fields.optionalString("remoteId"),
-					remoteUpdatedAt: try fields.optionalTimestamp("remoteUpdatedAt")
+					remoteUpdatedAt: try fields.optionalTimestamp("remoteUpdatedAt"),
+					publishedAsSecret: try fields.bool("publishedAsSecret")
 				)
 				guard isValidRecord(key: name, key) else { throw DecodingError.unreadable }
 				keys[name] = key
@@ -277,6 +279,11 @@ enum PublishingRecords {
 		func optionalString(_ key: String) throws -> String? {
 			if case .null = try value(key) { return nil }
 			return try string(key)
+		}
+
+		func bool(_ key: String) throws -> Bool {
+			guard case .bool(let value) = try value(key) else { throw DecodingError.unreadable }
+			return value
 		}
 
 		func uuid(_ key: String) throws -> UUID {

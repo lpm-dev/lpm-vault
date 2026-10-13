@@ -235,7 +235,7 @@ struct PublishPlanTests {
 			key: key,
 			fingerprint: PublishFingerprint.of(value: value, key: key, destination: destination.id, using: secret),
 			remoteID: remoteID,
-			remoteUpdatedAt: updatedAt
+			remoteUpdatedAt: updatedAt, publishedAsSecret: true
 		)
 	}
 }
@@ -256,7 +256,7 @@ struct PublishPlanFindingTests {
 	func changedOnBothSides() {
 		let history = PublishHistory().recording([
 			.init(key: "A", fingerprint: PublishFingerprint.of(value: "old", key: "A", destination: destination.id, using: secret),
-				remoteID: "env_a", remoteUpdatedAt: lastPublish),
+				remoteID: "env_a", remoteUpdatedAt: lastPublish, publishedAsSecret: true),
 		], keeping: [], at: lastPublish)
 		for remote in [["A": PublishPlan.RemoteVariable(id: "env_a", updatedAt: lastPublish.addingTimeInterval(5))], [:]] {
 			let plan = PublishPlan(
@@ -272,7 +272,7 @@ struct PublishPlanFindingTests {
 		let excluded = vercelDestination(id: destination.id, excluded: ["A"])
 		let history = PublishHistory().recording([
 			.init(key: "A", fingerprint: PublishFingerprint.of(value: "same", key: "A", destination: destination.id, using: secret),
-				remoteID: "env_a", remoteUpdatedAt: lastPublish),
+				remoteID: "env_a", remoteUpdatedAt: lastPublish, publishedAsSecret: true),
 		], keeping: [], at: lastPublish)
 		let plan = PublishPlan(
 			destination: excluded, values: ["A": "same"], rules: .empty, check: nil,
@@ -308,6 +308,43 @@ struct PublishPlanFindingTests {
 		#expect(PublishTimestamp.milliseconds(Date(timeIntervalSince1970: .nan)) == 0)
 		#expect(PublishTimestamp.milliseconds(Date(timeIntervalSince1970: -1)) == 0)
 		#expect(PublishTimestamp.milliseconds(Date(timeIntervalSince1970: 1e300)) == PublishTimestamp.maximumMilliseconds)
+	}
+
+	@Test("a value published readable that should now be a secret isn't up to date")
+	func protectionChange() throws {
+		let readable = ProjectEnvSchemaOverview(rules: [rule("A", isPublic: true)], groups: [])
+		let secretRule = ProjectEnvSchemaOverview(rules: [rule("A", secret: true)], groups: [])
+		let first = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil, remote: [:],
+			reservedKeys: [], history: nil, fingerprintKey: secret)
+		let change = try #require(try first.changes(for: .init(defaultsOf: first), values: ["A": "same"], fingerprintKey: secret).get().first)
+		#expect(!change.publishesAsSecret)
+		let history = PublishHistory().recording(
+			[change.published(remoteID: "env_a", remoteUpdatedAt: lastPublish)], keeping: [], at: lastPublish)
+		let remote = ["A": PublishPlan.RemoteVariable(id: "env_a", updatedAt: lastPublish)]
+		let plan = PublishPlan(destination: destination, values: ["A": "same"], rules: secretRule, check: nil, remote: remote,
+			reservedKeys: [], history: history, fingerprintKey: secret)
+		let row = try #require(plan.row("A"))
+		#expect(!row.status.isUpToDate && row.isSelectedByDefault)
+		let unchanged = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil, remote: remote,
+			reservedKeys: [], history: history, fingerprintKey: secret)
+		#expect(unchanged.row("A")?.status.isUpToDate == true)
+		// What the platform says it stores wins over this Mac's history.
+		let storedReadable = ["A": PublishPlan.RemoteVariable(id: "env_a", updatedAt: lastPublish, storedAsSecret: false)]
+		let secretHistory = PublishHistory().recording(
+			[.init(key: "A", fingerprint: change.fingerprint, remoteID: "env_a", remoteUpdatedAt: lastPublish, publishedAsSecret: true)],
+			keeping: [], at: lastPublish)
+		let reported = PublishPlan(destination: destination, values: ["A": "same"], rules: secretRule, check: nil,
+			remote: storedReadable, reservedKeys: [], history: secretHistory, fingerprintKey: secret)
+		#expect(reported.row("A")?.status.protectionChanged == true)
+		#expect(reported.row("A")?.isSelectedByDefault == true)
+	}
+
+	@Test("without rules, a value no process can receive still can't be published")
+	func schemaFreeUnusableValue() {
+		let plan = plan(values: ["A": "bad\u{0}value", "B": "fine"])
+		#expect(plan.row("A")?.holds == [.unusableValue])
+		#expect(plan.row("A")?.isPublishable == false)
+		#expect(PublishPlan.Selection(defaultsOf: plan).keys == ["B"])
 	}
 
 	@Test("row lookups stay fast for large environments")

@@ -42,11 +42,22 @@ struct PublishPlan: Equatable, Sendable {
 		/// Whether the value differs from the one this Mac published; true when it hasn't published it.
 		let valueChanged: Bool
 		let platform: Platform
+		/// Whether the key should now be stored differently, readable or not,
+		/// from how the platform stores it.
+		let protectionChanged: Bool
+
+		init(publishedAt: Date?, valueChanged: Bool, platform: Platform, protectionChanged: Bool = false) {
+			self.publishedAt = publishedAt
+			self.valueChanged = valueChanged
+			self.platform = platform
+			self.protectionChanged = protectionChanged
+		}
 
 		static let notPublished = Status(publishedAt: nil, valueChanged: true, platform: .unchanged)
 
-		/// The platform has the value this Mac published, and nobody changed it since.
-		var isUpToDate: Bool { !valueChanged && platform == .unchanged }
+		/// The platform has the value this Mac published, stored the same way,
+		/// and nobody changed it since.
+		var isUpToDate: Bool { !valueChanged && !protectionChanged && platform == .unchanged }
 	}
 
 	/// A reason a key isn't published unless the person chooses it.
@@ -96,11 +107,14 @@ struct PublishPlan: Equatable, Sendable {
 		/// The other environments the same variable applies to, for display.
 		let sharedWith: [String]
 		let updatedAt: Date?
+		/// Whether the platform stores it so its value can't be read back; nil when it doesn't say.
+		let storedAsSecret: Bool?
 
-		init(id: String, sharedWith: [String] = [], updatedAt: Date?) {
+		init(id: String, sharedWith: [String] = [], updatedAt: Date?, storedAsSecret: Bool? = nil) {
 			self.id = id
 			self.sharedWith = sharedWith
 			self.updatedAt = updatedAt.map(PublishTimestamp.normalized)
+			self.storedAsSecret = storedAsSecret
 		}
 	}
 
@@ -113,6 +127,10 @@ struct PublishPlan: Equatable, Sendable {
 	let rows: [Row]
 	/// Variables only on the platform. A publish leaves them as they are.
 	let remoteOnlyCount: Int
+	/// Keys the destination left out that the source no longer has, as the
+	/// plan saw them; a publish forgets only these, so an exclusion a rename
+	/// carries to a new name meanwhile survives.
+	let staleExclusions: Set<String>
 	private let rowIndex: [String: Int]
 
 	/// - Parameters:
@@ -137,11 +155,16 @@ struct PublishPlan: Equatable, Sendable {
 			let value = values[key] ?? ""
 			let fingerprint = PublishFingerprint.of(value: value, key: key, destination: destination.id, using: fingerprintKey)
 			let remoteVariable = remote[key]
-			let status = Self.status(fingerprint: fingerprint, remote: remoteVariable, record: history?.keys[key])
+			let kind = Self.kind(of: key, in: rules)
+			let status = Self.status(
+				fingerprint: fingerprint, publishesAsSecret: kind.publishesAsSecret, remote: remoteVariable, record: history?.keys[key])
 			let problems = check?.problems[key] ?? []
 			var holds: [Hold] = []
 			if reservedKeys.contains(key) { holds.append(.reserved) }
-			if problems.contains(where: { $0.kind == .unusableValue }) { holds.append(.unusableValue) }
+			// A process environment can't carry NUL, whether or not the project has rules to check.
+			if value.utf8.contains(0) || problems.contains(where: { $0.kind == .unusableValue }) {
+				holds.append(.unusableValue)
+			}
 			if let shared = remoteVariable?.sharedWith, !shared.isEmpty { holds.append(.sharedWith(shared)) }
 			let failures = problems.filter { $0.kind != .unusableValue }
 			if !failures.isEmpty { holds.append(.failsRules(failures)) }
@@ -151,7 +174,7 @@ struct PublishPlan: Equatable, Sendable {
 			if status.isUpToDate { holds.append(.upToDate) }
 			return Row(
 				key: key,
-				kind: Self.kind(of: key, in: rules),
+				kind: kind,
 				operation: remoteVariable.map { .replace(remoteID: $0.id) } ?? .add,
 				status: status,
 				holds: holds,
@@ -160,6 +183,7 @@ struct PublishPlan: Equatable, Sendable {
 		}
 		rowIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.key, $0) })
 		remoteOnlyCount = remote.keys.reduce(0) { count, key in values[key] == nil ? count + 1 : count }
+		staleExclusions = destination.excludedKeys.filter { values[$0] == nil }
 	}
 
 	func row(_ key: String) -> Row? {
@@ -177,8 +201,15 @@ struct PublishPlan: Equatable, Sendable {
 	}
 
 	/// The platform side is judged on its own, so a value changed here
-	/// doesn't hide that someone also changed or removed it there.
-	private static func status(fingerprint: Data, remote: RemoteVariable?, record: PublishHistory.Key?) -> Status {
+	/// doesn't hide that someone also changed or removed it there. How the
+	/// platform stores the key comes from the platform when it says, else
+	/// from this Mac's last publish.
+	private static func status(
+		fingerprint: Data,
+		publishesAsSecret: Bool,
+		remote: RemoteVariable?,
+		record: PublishHistory.Key?
+	) -> Status {
 		guard let record else { return .notPublished }
 		let platform: Status.Platform
 		if let remote {
@@ -188,7 +219,13 @@ struct PublishPlan: Equatable, Sendable {
 		} else {
 			platform = .removed
 		}
-		return Status(publishedAt: record.publishedAt, valueChanged: record.fingerprint != fingerprint, platform: platform)
+		let storedAsSecret = remote?.storedAsSecret ?? record.publishedAsSecret
+		return Status(
+			publishedAt: record.publishedAt,
+			valueChanged: record.fingerprint != fingerprint,
+			platform: platform,
+			protectionChanged: storedAsSecret != publishesAsSecret
+		)
 	}
 }
 
@@ -259,7 +296,9 @@ extension PublishPlan {
 
 		/// The history record of this change, once the platform accepted it.
 		func published(remoteID: String?, remoteUpdatedAt: Date?) -> PublishHistory.Published {
-			PublishHistory.Published(key: key, fingerprint: fingerprint, remoteID: remoteID, remoteUpdatedAt: remoteUpdatedAt)
+			PublishHistory.Published(
+				key: key, fingerprint: fingerprint, remoteID: remoteID, remoteUpdatedAt: remoteUpdatedAt,
+				publishedAsSecret: publishesAsSecret)
 		}
 
 		var description: String { "Change(\(key), \(operation), value: <redacted>)" }
@@ -316,12 +355,22 @@ extension PublishPlan {
 		let chosen: Set<String>
 		/// Every key the source had.
 		let sourceKeys: Set<String>
+		/// Exclusions of keys the source no longer had, as the plan saw them.
+		let forgotten: Set<String>
+
+		init(leftOut: Set<String>, chosen: Set<String>, sourceKeys: Set<String>, forgotten: Set<String> = []) {
+			self.leftOut = leftOut
+			self.chosen = chosen
+			self.sourceKeys = sourceKeys
+			self.forgotten = forgotten
+		}
 
 		/// A key left out stays out next time; a chosen key is no longer left
-		/// out; keys the source no longer has are forgotten.
+		/// out; the stale exclusions the plan saw are forgotten. Exclusions
+		/// added since the plan, such as one a rename carried, are kept.
 		func applied(to destination: PublishDestination, at date: Date) -> PublishDestination {
 			var updated = destination
-			updated.excludedKeys = destination.excludedKeys.intersection(sourceKeys).union(leftOut).subtracting(chosen)
+			updated.excludedKeys = destination.excludedKeys.subtracting(forgotten).union(leftOut).subtracting(chosen)
 			updated.updatedAt = max(destination.updatedAt, PublishTimestamp.normalized(date))
 			return updated
 		}
@@ -341,6 +390,8 @@ extension PublishPlan {
 				}
 			}
 		}
-		return Choices(leftOut: leftOut, chosen: chosen, sourceKeys: Set(rows.lazy.map(\.key)))
+		return Choices(
+			leftOut: leftOut, chosen: chosen, sourceKeys: Set(rows.lazy.map(\.key)),
+			forgotten: selection.planID == id ? staleExclusions : [])
 	}
 }

@@ -136,7 +136,8 @@ struct PublishingStoreTests {
 		let production = vercelDestination(excluded: ["GONE"])
 		_ = try await store.save(production, to: publishTestVault).get()
 		let at = Date(timeIntervalSince1970: 1_760_000_600)
-		let choices = PublishPlan.Choices(leftOut: ["LOG_LEVEL"], chosen: ["API_TOKEN"], sourceKeys: ["API_TOKEN", "LOG_LEVEL"])
+		let choices = PublishPlan.Choices(
+			leftOut: ["LOG_LEVEL"], chosen: ["API_TOKEN"], sourceKeys: ["API_TOKEN", "LOG_LEVEL"], forgotten: ["GONE"])
 		let updated = try await store.recordPublish(
 			[published("API_TOKEN", to: production)], to: production.id, at: production.target.location,
 			choices: choices, of: publishTestVault, at: at).get()
@@ -207,7 +208,7 @@ struct PublishingStoreTests {
 			key: key,
 			fingerprint: PublishFingerprint.of(value: "value", key: key, destination: destination.id, using: SymmetricKey(size: .bits256)),
 			remoteID: "env_\(key)",
-			remoteUpdatedAt: nil
+			remoteUpdatedAt: nil, publishedAsSecret: true
 		)
 	}
 }
@@ -459,6 +460,64 @@ struct PublishingRecordFindingTests {
 		#expect(keychain.publishingStorage["history.project.\(staging.id.uuidString.lowercased())"] == nil)
 	}
 
+	@Test("an exclusion a rename carried to a new name survives recording a publish planned before the rename")
+	func exclusionSurvivesConcurrentRename() async throws {
+		let store = store
+		let secret = SymmetricKey(size: .bits256)
+		let destination = vercelDestination(source: "staging", environment: .preview, excluded: ["OLD"])
+		_ = try await store.save(destination, to: publishTestVault).get()
+		let plan = PublishPlan(
+			destination: destination, values: ["OLD": "1", "KEEP": "2"], rules: .empty, check: nil, remote: [:],
+			reservedKeys: [], history: nil, fingerprintKey: secret)
+		let selection = PublishPlan.Selection(defaultsOf: plan)
+		_ = try await store.renameKey("OLD", to: "NEW", sourcedFrom: ["staging"], in: publishTestVault).get()
+		let changes = try plan.changes(for: selection, values: ["OLD": "1", "KEEP": "2"], fingerprintKey: secret).get()
+		_ = try await store.recordPublish(
+			changes.map { $0.published(remoteID: "env_\($0.key)", remoteUpdatedAt: nil) }, to: destination.id,
+			at: plan.location, choices: plan.choices(for: selection), of: publishTestVault, at: Date()).get()
+		#expect(try await store.destinations(of: publishTestVault).get().first?.excludedKeys == ["NEW"])
+	}
+
+	@Test("retargeting whose history can't be removed isn't saved, so a retry still clears the old history")
+	func retargetHistoryFailure() async throws {
+		let store = store
+		var destination = vercelDestination()
+		_ = try await store.save(destination, to: publishTestVault).get()
+		_ = try await record(["A"], to: destination, in: store).get()
+		let historyAccount = "history.\(publishTestVault).\(destination.id.uuidString.lowercased())"
+		destination.target = vercelDestination(project: "prj_other", environment: .preview).target
+		keychain.failPublishingAccounts = [historyAccount]
+		_ = await store.save(destination, to: publishTestVault)
+		keychain.failPublishingAccounts = []
+		_ = try await store.save(destination, to: publishTestVault).get()
+		#expect(try await store.history(of: destination.id, in: publishTestVault).get() == PublishHistory())
+	}
+
+	@Test("a local deletion whose outcome was lost removes the vault's publishing records once it's seen deleted")
+	func deletionAfterLostOutcome() async throws {
+		let vault = makeVault(["default": ["A": "1"]])
+		defer { vault.lock() }
+		let destination = vercelDestination(source: "default")
+		_ = try await vault.publishing.save(destination, to: "project").get()
+		keychain.nextVaultTransactionErrorAfterCommit = .transactionOutcomeIndeterminate
+		let project = try #require(vault.selectedProject)
+		_ = await vault.deleteLocalVault(project)
+		#expect(keychain.envStorage["project"] == nil)
+		#expect(keychain.publishingStorage.isEmpty)
+	}
+
+	@Test("unlocking clears publishing records of vaults deleted from this Mac, and keeps those only removed from the sidebar")
+	func reconcileOnUnlock() async throws {
+		let vault = makeVault(["default": ["A": "1"]])
+		defer { vault.lock() }
+		_ = try await vault.publishing.save(vercelDestination(source: "default"), to: "project").get()
+		_ = try await vault.publishing.save(vercelDestination(source: "default"), to: "deleted-vault").get()
+		keychain.envStorage["sidebar-vault"] = (name: "Hidden", path: "", environments: ["default": [:]])
+		_ = try await vault.publishing.save(vercelDestination(source: "default"), to: "sidebar-vault").get()
+		await vault.reconcilePublishingRecords()
+		#expect(Set(keychain.publishingStorage.keys) == ["destinations.project", "destinations.sidebar-vault"])
+	}
+
 	private func makeVault(_ environments: [String: [String: String]]) -> VaultStore {
 		keychain.envStorage["project"] = (name: "Project", path: "", environments: environments)
 		let vault = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService())
@@ -472,7 +531,7 @@ struct PublishingRecordFindingTests {
 		await store.recordPublish(
 			keys.map { key in
 				.init(key: key, fingerprint: PublishFingerprint.of(value: "v", key: key, destination: destination.id, using: SymmetricKey(size: .bits256)),
-					remoteID: "env_\(key)", remoteUpdatedAt: nil)
+					remoteID: "env_\(key)", remoteUpdatedAt: nil, publishedAsSecret: true)
 			},
 			to: destination.id, at: destination.target.location,
 			choices: .init(leftOut: [], chosen: Set(keys), sourceKeys: Set(keys)), of: publishTestVault, at: Date())

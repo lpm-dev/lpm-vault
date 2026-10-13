@@ -196,10 +196,10 @@ struct PublishHistoryTests {
 	@Test("a history the decoder would reject isn't encoded: wrong fingerprint length, invalid key name, odd remote ID")
 	func encoderMatchesDecoder() {
 		let invalid: [PublishHistory.Published] = [
-			.init(key: "API_TOKEN", fingerprint: Data(count: 16), remoteID: nil, remoteUpdatedAt: nil),
-			.init(key: "1API", fingerprint: Data(count: 32), remoteID: nil, remoteUpdatedAt: nil),
-			.init(key: "API", fingerprint: Data(count: 32), remoteID: "../env", remoteUpdatedAt: nil),
-			.init(key: "API", fingerprint: Data(count: 32), remoteID: "env\u{0}", remoteUpdatedAt: nil),
+			.init(key: "API_TOKEN", fingerprint: Data(count: 16), remoteID: nil, remoteUpdatedAt: nil, publishedAsSecret: true),
+			.init(key: "1API", fingerprint: Data(count: 32), remoteID: nil, remoteUpdatedAt: nil, publishedAsSecret: true),
+			.init(key: "API", fingerprint: Data(count: 32), remoteID: "../env", remoteUpdatedAt: nil, publishedAsSecret: true),
+			.init(key: "API", fingerprint: Data(count: 32), remoteID: "env\u{0}", remoteUpdatedAt: nil, publishedAsSecret: true),
 		]
 		for item in invalid {
 			let history = PublishHistory().recording([item], keeping: [], at: publishedAt)
@@ -308,7 +308,7 @@ struct PublishHistoryTests {
 			key: key,
 			fingerprint: PublishFingerprint.of(value: key.lowercased(), key: key, destination: destination, using: secret),
 			remoteID: remoteID,
-			remoteUpdatedAt: updatedAt
+			remoteUpdatedAt: updatedAt, publishedAsSecret: true
 		)
 	}
 }

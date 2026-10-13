@@ -12,12 +12,15 @@ struct PublishHistory: Equatable, Sendable {
 		let remoteID: String?
 		/// When the platform says that variable last changed, as of the publish.
 		let remoteUpdatedAt: Date?
+		/// Whether it was stored so its value can't be read back.
+		let publishedAsSecret: Bool
 
-		init(fingerprint: Data, publishedAt: Date, remoteID: String?, remoteUpdatedAt: Date?) {
+		init(fingerprint: Data, publishedAt: Date, remoteID: String?, remoteUpdatedAt: Date?, publishedAsSecret: Bool) {
 			self.fingerprint = fingerprint
 			self.publishedAt = PublishTimestamp.normalized(publishedAt)
 			self.remoteID = remoteID
 			self.remoteUpdatedAt = remoteUpdatedAt.map(PublishTimestamp.normalized)
+			self.publishedAsSecret = publishedAsSecret
 		}
 	}
 
@@ -27,6 +30,7 @@ struct PublishHistory: Equatable, Sendable {
 		let fingerprint: Data
 		let remoteID: String?
 		let remoteUpdatedAt: Date?
+		let publishedAsSecret: Bool
 	}
 
 	/// When this Mac last published to the destination; nil before its first publish.
@@ -61,7 +65,8 @@ struct PublishHistory: Equatable, Sendable {
 				fingerprint: item.fingerprint,
 				publishedAt: date,
 				remoteID: item.remoteID,
-				remoteUpdatedAt: item.remoteUpdatedAt
+				remoteUpdatedAt: item.remoteUpdatedAt,
+				publishedAsSecret: item.publishedAsSecret
 			)
 		}
 		return PublishHistory(publishedAt: date, keys: keys)

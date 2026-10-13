@@ -2748,6 +2748,11 @@ final class VaultStore {
       }
     case .failure(let persistenceError):
 	  if case .transactionOutcomeIndeterminate = persistenceError {
+        if case .success(let existing) = await persistence.existingVaultPayloads(vaultIds: [project.id]),
+          !existing.contains(project.id)
+        {
+          _ = await publishing.deleteRecords(of: project.id)
+        }
         lock()
         error =
           "The local deletion could not be rolled back completely. The vault was locked; unlock to reload durable state."
@@ -4797,6 +4802,7 @@ final class VaultStore {
     beginSelectedProjectLoadIfNeeded()
     isUnlocking = false
     scheduleAutoLock()
+    Task { [weak self] in await self?.reconcilePublishingRecords() }
   }
 
   func authenticateForSensitiveAction(reason: String) async -> Bool {
@@ -7239,6 +7245,18 @@ final class VaultStore {
     }
     if case .failure(let failure) = result { return failure }
     return nil
+  }
+
+  /// Deletes the publishing records of vaults whose local copy is gone,
+  /// such as one whose deletion's outcome was lost. A project only removed
+  /// from the sidebar keeps its payload, and with it its records.
+  func reconcilePublishingRecords() async {
+    guard case .success(let vaults) = await publishing.vaultsWithRecords(), !vaults.isEmpty,
+      case .success(let existing) = await persistence.existingVaultPayloads(vaultIds: vaults.sorted())
+    else { return }
+    for vault in vaults.subtracting(existing) {
+      _ = await publishing.deleteRecords(of: vault)
+    }
   }
 
   /// Whether `latest` shows `mutation` applied to `base`.

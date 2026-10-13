@@ -52,7 +52,8 @@ actor PublishingStore {
 	}
 
 	/// Adds `destination`, or replaces the one with its ID. Pointing a
-	/// destination somewhere else drops its history, which described the old place.
+	/// destination somewhere else drops its history, which described the old
+	/// place, before the new place is saved, so a failure leaves neither.
 	func save(_ destination: PublishDestination, to vaultID: String) -> Result<[PublishDestination], PublishingStoreError> {
 		Result {
 			if let invalidity = destination.invalidity { throw PublishingStoreError.invalidDestination(invalidity) }
@@ -60,16 +61,16 @@ actor PublishingStore {
 			if let other = destinations.first(where: { $0.id != destination.id && $0.target.location == destination.target.location }) {
 				throw PublishingStoreError.duplicateLocation(existing: other.id)
 			}
-			var moved = false
 			if let index = destinations.firstIndex(where: { $0.id == destination.id }) {
-				moved = destinations[index].target.location != destination.target.location
+				if destinations[index].target.location != destination.target.location {
+					try service.deletePublishingData(account: Self.historyAccount(vaultID, destination.id)).get()
+				}
 				destinations[index] = destination
 			} else {
 				guard destinations.count < PublishingRecords.maximumDestinations else { throw PublishingStoreError.limitReached }
 				destinations.append(destination)
 			}
 			try writeDestinations(destinations, of: vaultID)
-			if moved { try service.deletePublishingData(account: Self.historyAccount(vaultID, destination.id)).get() }
 			return destinations
 		}.mapError(Self.storeError)
 	}
@@ -185,6 +186,24 @@ actor PublishingStore {
 			for destination in removed {
 				try service.deletePublishingData(account: Self.historyAccount(vaultID, destination.id)).get()
 			}
+		}.mapError(Self.storeError)
+	}
+
+	/// The vaults this Mac holds publishing records for.
+	func vaultsWithRecords() -> Result<Set<String>, PublishingStoreError> {
+		Result {
+			var vaults: Set<String> = []
+			for account in try service.publishingAccounts().get() {
+				if account.hasPrefix("destinations.") {
+					vaults.insert(String(account.dropFirst("destinations.".count)))
+				} else if account.hasPrefix("history."), let separator = account.lastIndex(of: ".") {
+					let vault = account[account.index(account.startIndex, offsetBy: "history.".count)..<separator]
+					if UUID(uuidString: String(account[account.index(after: separator)...])) != nil, !vault.isEmpty {
+						vaults.insert(String(vault))
+					}
+				}
+			}
+			return vaults.filter(EnvValidation.isSafeVaultId)
 		}.mapError(Self.storeError)
 	}
 

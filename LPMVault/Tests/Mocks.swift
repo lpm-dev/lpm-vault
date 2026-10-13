@@ -309,6 +309,13 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		return true
 	}
 
+	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError> {
+		lock.withLock {
+			if shouldFail || failProjectReads { return .failure(failureError) }
+			return .success(Set(vaultIds.filter { environments[$0] != nil }))
+		}
+	}
+
 	func removeFromSidebar(vaultId: String) -> Bool {
 		if shouldFail { return false }
 		// Only remove from listing, keep data (like real implementation)

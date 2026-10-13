@@ -270,6 +270,10 @@ actor VaultPersistenceCoordinator {
 		service.getProjectResult(vaultId: vaultId).map { $0 != nil }
 	}
 
+	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError> {
+		service.existingVaultPayloads(vaultIds: vaultIds)
+	}
+
 	func loadOrgTrust(scope: OrgTrustScope) -> Result<OrgKeyTrust, KeychainError> {
 		switch service.readDataResult(account: scope.storageAccount) {
 		case .success(nil): return .success(OrgKeyTrust())

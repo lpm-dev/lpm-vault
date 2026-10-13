@@ -255,6 +255,10 @@ protocol KeychainServiceProtocol: Sendable {
 		environments: [String: [String: String]]
 	) -> KeychainResult
 	func removeFromSidebar(vaultId: String) -> Bool
+	/// The vaults among `vaultIds` whose payload is still in the Keychain,
+	/// found from item attributes alone, so no value is read and no
+	/// approval is asked for. A project removed from the sidebar still counts.
+	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError>
 	func applyVaultTransaction(
 		project: VaultProjectKeychainMutation?,
 		data: [VaultKeychainMutation]
@@ -1911,6 +1915,10 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		do { return .success(try store.cliAccess(accounts: vaultIds)) }
 		catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
 		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
+	}
+
+	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError> {
+		cliAccessResults(vaultIds: vaultIds).map { Set($0.keys) }
 	}
 
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
