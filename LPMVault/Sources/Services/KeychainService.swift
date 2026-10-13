@@ -266,6 +266,10 @@ protocol KeychainServiceProtocol: Sendable {
 	@discardableResult func writeData(account: String, data: Data) -> Bool
 	@discardableResult func deleteData(account: String) -> Bool
 
+	// Publish destinations and history, in the app's own access group, never shared with the CLI.
+	func readPublishingData(account: String) -> Result<Data?, KeychainError>
+	func writePublishingData(account: String, data: Data) -> Result<Void, KeychainError>
+	func deletePublishingData(account: String) -> Result<Void, KeychainError>
 }
 
 extension KeychainServiceProtocol {
@@ -306,7 +310,7 @@ enum KeychainResult: Sendable {
 	case failure(KeychainError)
 }
 
-enum KeychainError: Error, CustomStringConvertible, Sendable {
+enum KeychainError: Error, CustomStringConvertible, Equatable, Sendable {
 	case encodingFailed
 	case itemNotFound
 	case accessDenied
@@ -1863,14 +1867,19 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	private static let maximumProjectDiscoveryShardSize = 128
 
 	private let store: SharedKeychainStore
+	private let publishingService: String
+	private let publishingBackend: any KeychainStoreBackend
 
 	init() {
 		self.store = SharedKeychainStore(service: VaultConstants.keychainService)
+		self.publishingService = VaultConstants.publishingKeychainService
+		self.publishingBackend = AppKeychainBackend()
 	}
 
 	init(
 		testingService: String,
 		backend: any KeychainStoreBackend = SecurityKeychainStoreBackend(),
+		publishingBackend: any KeychainStoreBackend = AppKeychainBackend(),
 		performanceCounters: VaultKeychainPerformanceCounters? = nil
 	) {
 		self.store = SharedKeychainStore(
@@ -1878,6 +1887,8 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			backend: backend,
 			performanceCounters: performanceCounters
 		)
+		self.publishingService = "\(testingService).publishing"
+		self.publishingBackend = publishingBackend
 	}
 
 	// MARK: - Public API
@@ -2215,6 +2226,24 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		} catch {
 			return false
 		}
+	}
+
+	func readPublishingData(account: String) -> Result<Data?, KeychainError> {
+		publishing { try publishingBackend.read(service: publishingService, account: account) }
+	}
+
+	func writePublishingData(account: String, data: Data) -> Result<Void, KeychainError> {
+		publishing { try publishingBackend.write(service: publishingService, account: account, data: data) }
+	}
+
+	func deletePublishingData(account: String) -> Result<Void, KeychainError> {
+		publishing { _ = try publishingBackend.delete(service: publishingService, account: account) }
+	}
+
+	private func publishing<T>(_ operation: () throws -> T) -> Result<T, KeychainError> {
+		do { return .success(try operation()) }
+		catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
+		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
 	}
 	// MARK: - Data Save (shared)
 	private func prepareProjectPayload(_ project: VaultProject) throws -> PreparedProjectPayload {

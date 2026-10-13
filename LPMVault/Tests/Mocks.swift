@@ -405,6 +405,36 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		dataStorage.removeValue(forKey: account)
 		return true
 	}
+
+	private var publishingRecords: [String: Data] = [:]
+	var publishingStorage: [String: Data] {
+		get { lock.withLock { publishingRecords } }
+		set { lock.withLock { publishingRecords = newValue } }
+	}
+	var failPublishingAccounts: Set<String> = []
+
+	func readPublishingData(account: String) -> Result<Data?, KeychainError> {
+		lock.withLock {
+			if failPublishingAccounts.contains(account) { return .failure(failureError) }
+			return .success(publishingRecords[account])
+		}
+	}
+
+	func writePublishingData(account: String, data: Data) -> Result<Void, KeychainError> {
+		lock.withLock {
+			if failPublishingAccounts.contains(account) { return .failure(failureError) }
+			publishingRecords[account] = data
+			return .success(())
+		}
+	}
+
+	func deletePublishingData(account: String) -> Result<Void, KeychainError> {
+		lock.withLock {
+			if failPublishingAccounts.contains(account) { return .failure(failureError) }
+			publishingRecords.removeValue(forKey: account)
+			return .success(())
+		}
+	}
 }
 
 private struct MockPersistedSyncMetadataRecord: Codable {

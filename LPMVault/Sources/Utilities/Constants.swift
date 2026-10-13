@@ -10,6 +10,14 @@ enum VaultConstants {
 	/// Keychain service for CLI auth tokens
 	static let cliAuthService = "lpm-cli"
 
+	/// The app's own Keychain group, named by its application identifier. The
+	/// signed CLI has a different identifier, so it can't read these items.
+	static let appKeychainAccessGroup = "823S8YKMRW.dev.lpm.vault"
+
+	/// Keychain service for publish destinations, publish history and the
+	/// fingerprint key, kept in `appKeychainAccessGroup`.
+	static let publishingKeychainService = "dev.lpm.vault.publishing"
+
 	/// Maximum recommended vault size in bytes (90KB warning threshold)
 	static let maxVaultSizeWarning = 90 * 1024
 

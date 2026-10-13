@@ -1355,6 +1355,8 @@ final class VaultStore {
 
   private let keychainService: KeychainServiceProtocol
   private let persistence: VaultPersistenceCoordinator
+  /// Publish destinations and this Mac's publish history.
+  let publishing: PublishingStore
   private let biometricService: BiometricServiceProtocol
   private let injectedAPIService: LPMAPIServiceProtocol?
   private let apiServiceFactory: @Sendable (URL) -> any LPMAPIServiceProtocol
@@ -1758,6 +1760,7 @@ final class VaultStore {
   ) {
     self.keychainService = keychainService
     self.persistence = VaultPersistenceCoordinator(service: keychainService)
+    self.publishing = PublishingStore(service: keychainService)
     self.biometricService = biometricService
     self.injectedAPIService = apiService
     self.apiServiceFactory = apiServiceFactory
@@ -2740,6 +2743,7 @@ final class VaultStore {
     switch await persistence.deleteProjectAndMetadata(vaultId: project.id) {
     case .success(let persisted):
       snapshot = persisted
+      _ = await publishing.deleteRecords(of: project.id)
     case .failure(let persistenceError):
 	  if case .transactionOutcomeIndeterminate = persistenceError {
         lock()
@@ -7086,6 +7090,9 @@ final class VaultStore {
       beginOwnSchemaWrite(project.id)
       defer { endOwnSchemaWrite(project.id) }
       let result = await persistence.renameKeyWithSchema(project: project, edit: edit, change: change, folder: folder, folderIdentity: folderIdentity)
+      if case .success = result {
+        await Self.publishingFollow(.editKey(edit), in: project.id, publishing: publishing)
+      }
       guard sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked else {
         afterCompletion(.failure(.targetUnavailable)); return
       }
@@ -7132,7 +7139,7 @@ final class VaultStore {
     let requestId = UUID()
     let sessionGeneration = vaultSessionGeneration
     projectMutationRequestId = requestId
-    let task = Task { @MainActor [weak self, persistence] in
+    let task = Task { @MainActor [weak self, persistence, publishing] in
       await predecessor?.value
       let result = await persistence.mutateProject(
         projectId: project.id,
@@ -7140,6 +7147,9 @@ final class VaultStore {
         expectedPath: project.path,
         mutation: mutation
       )
+      if case .success = result {
+        await Self.publishingFollow(mutation, in: project.id, publishing: publishing)
+      }
       guard let self else {
         afterCompletion(.unavailable)
         return
@@ -7177,6 +7187,23 @@ final class VaultStore {
       }
     }
     projectMutationTask = task
+  }
+
+  /// Keeps publish destinations on an environment or key the vault renamed.
+  /// The rename is already saved, so this runs even if the vault locks meanwhile.
+  private static func publishingFollow(
+    _ mutation: VaultProjectMutation,
+    in vaultID: String,
+    publishing: PublishingStore
+  ) async {
+    switch mutation {
+    case .renameEnvironment(let source, _, let destination):
+      _ = await publishing.renameEnvironment(source, to: destination, in: vaultID)
+    case .editKey(let edit) where edit.isRename:
+      _ = await publishing.renameKey(edit.key, to: edit.newKey, in: vaultID)
+    default:
+      break
+    }
   }
 
   private func waitForProjectMutations() async {
