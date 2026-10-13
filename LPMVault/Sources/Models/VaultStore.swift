@@ -1310,7 +1310,6 @@ final class VaultStore {
   var selectedAccount: SelectedAccount = .personal {
     didSet {
       guard oldValue != selectedAccount else { return }
-      sidebarDragSessionId = UUID()
       lastSyncWarnings = []
       invalidateLocalStateRefresh()
       keyDrafts.discardAll()
@@ -1338,7 +1337,6 @@ final class VaultStore {
   let preferences: UserDefaults
   static let projectOrderKey = "lpm-vault-project-order"
   private var projectOrder: [String]
-  private(set) var sidebarDragSessionId = UUID()
 
   // SECURITY NOTE: Environment tab ordering is stored in UserDefaults (not Keychain).
   // This is intentional — it contains only the display order of environment names
@@ -1516,13 +1514,6 @@ final class VaultStore {
     preferences.set(order, forKey: Self.projectOrderKey)
     resetAutoLock()
     return true
-  }
-
-  @discardableResult
-  func dropSidebarProject(_ drag: VaultSidebarProjectDrag, relativeTo targetId: String,
-    placement: VaultProjectPlacement) -> Bool {
-    guard drag.sessionId == sidebarDragSessionId else { return false }
-    return moveProject(id: drag.projectId, relativeTo: targetId, placement: placement)
   }
 
   // MARK: - Navigation
@@ -4860,7 +4851,6 @@ final class VaultStore {
   }
 
   func lock() {
-    sidebarDragSessionId = UUID()
     lastSyncWarnings = []
     unlockFailure = nil
     keyDrafts.discardAll()
