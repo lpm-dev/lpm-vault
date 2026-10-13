@@ -2743,7 +2743,9 @@ final class VaultStore {
     switch await persistence.deleteProjectAndMetadata(vaultId: project.id) {
     case .success(let persisted):
       snapshot = persisted
-      _ = await publishing.deleteRecords(of: project.id)
+      if case .failure(let failure) = await publishing.deleteRecords(of: project.id) {
+        error = "The local copy was deleted, but its publish destinations couldn't be removed: \(failure)"
+      }
     case .failure(let persistenceError):
 	  if case .transactionOutcomeIndeterminate = persistenceError {
         lock()
@@ -7090,9 +7092,13 @@ final class VaultStore {
       beginOwnSchemaWrite(project.id)
       defer { endOwnSchemaWrite(project.id) }
       let result = await persistence.renameKeyWithSchema(project: project, edit: edit, change: change, folder: folder, folderIdentity: folderIdentity)
-      if case .success = result {
-        await Self.publishingFollow(.editKey(edit), in: project.id, publishing: publishing)
+      let saved: Bool? = switch result {
+      case .success: true
+      case .indeterminate: nil
+      default: false
       }
+      let followFailure = await Self.followPublishing(
+        .editKey(edit), base: project, saved: saved, persistence: persistence, publishing: publishing)
       guard sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked else {
         afterCompletion(.failure(.targetUnavailable)); return
       }
@@ -7100,7 +7106,7 @@ final class VaultStore {
       case .success(let commit, let rules, let rootSchema):
         updateProjectInPlace(commit.project)
         applySyncMetadata(commit.syncMetadata, for: commit.project.id)
-        error = commit.warning
+        error = commit.warning ?? followFailure.map(Self.publishingFollowMessage)
         if let rules, keyDescriptionFolder(for: commit.project) == folder {
           publishSavedRules(rules, rootSchema: rootSchema, folder: folder, for: project.id,
             description: change.description.map { ($0.key, $0.text) })
@@ -7147,9 +7153,13 @@ final class VaultStore {
         expectedPath: project.path,
         mutation: mutation
       )
-      if case .success = result {
-        await Self.publishingFollow(mutation, in: project.id, publishing: publishing)
+      let saved: Bool? = switch result {
+      case .success: true
+      case .failure(.transactionOutcomeIndeterminate): nil
+      default: false
       }
+      let followFailure = await Self.followPublishing(
+        mutation, base: project, saved: saved, persistence: persistence, publishing: publishing)
       guard let self else {
         afterCompletion(.unavailable)
         return
@@ -7162,7 +7172,7 @@ final class VaultStore {
       case .success(let persisted):
         updateProjectInPlace(persisted.project)
         applySyncMetadata(persisted.syncMetadata, for: persisted.project.id)
-        error = persisted.warning
+        error = persisted.warning ?? followFailure.map(Self.publishingFollowMessage)
         afterCommit(persisted.project)
         afterCompletion(.saved)
       case .conflict(let latest, let metadata):
@@ -7189,21 +7199,68 @@ final class VaultStore {
     projectMutationTask = task
   }
 
-  /// Keeps publish destinations on an environment or key the vault renamed.
-  /// The rename is already saved, so this runs even if the vault locks meanwhile.
-  private static func publishingFollow(
+  /// Keeps publish destinations on an environment or key the vault renamed,
+  /// and removes those of a deleted environment. `saved` is nil when the
+  /// Keychain couldn't say whether the change was saved; the vault is then
+  /// read back to find out. The change is already saved when this runs, so
+  /// it runs even if the vault locks meanwhile. Returns why the destinations
+  /// couldn't follow, when they couldn't.
+  private static func followPublishing(
     _ mutation: VaultProjectMutation,
-    in vaultID: String,
+    base project: VaultProject,
+    saved: Bool?,
+    persistence: VaultPersistenceCoordinator,
     publishing: PublishingStore
-  ) async {
+  ) async -> PublishingStoreError? {
+    switch mutation {
+    case .renameEnvironment, .deleteEnvironment: break
+    case .editKey(let edit) where edit.isRename: break
+    default: return nil
+    }
+    switch saved {
+    case true?: break
+    case false?: return nil
+    case nil:
+      guard case .success(let latest) = await persistence.loadProject(vaultId: project.id),
+        isApplied(mutation, base: project, latest: latest)
+      else { return nil }
+    }
+    let result: Result<Void, PublishingStoreError>
     switch mutation {
     case .renameEnvironment(let source, _, let destination):
-      _ = await publishing.renameEnvironment(source, to: destination, in: vaultID)
-    case .editKey(let edit) where edit.isRename:
-      _ = await publishing.renameKey(edit.key, to: edit.newKey, in: vaultID)
+      result = await publishing.renameEnvironment(source, to: destination, in: project.id)
+    case .deleteEnvironment(let name, _):
+      result = await publishing.removeDestinations(sourcedFrom: name, in: project.id)
+    case .editKey(let edit):
+      let environments = Set(VaultKeyEdit.environments(containing: edit.key, in: project.environments))
+      result = await publishing.renameKey(edit.key, to: edit.newKey, sourcedFrom: environments, in: project.id)
     default:
-      break
+      return nil
     }
+    if case .failure(let failure) = result { return failure }
+    return nil
+  }
+
+  /// Whether `latest` shows `mutation` applied to `base`.
+  private static func isApplied(_ mutation: VaultProjectMutation, base: VaultProject, latest: VaultProject?) -> Bool {
+    guard let latest else { return false }
+    switch mutation {
+    case .renameEnvironment(let source, _, let destination):
+      return latest.environments[source] == nil && latest.environments[destination] != nil
+    case .deleteEnvironment(let name, _):
+      return latest.environments[name] == nil
+    case .editKey(let edit) where edit.isRename:
+      let renamed = VaultKeyEdit.environments(containing: edit.key, in: base.environments)
+      return !renamed.isEmpty && renamed.allSatisfy { name in
+        latest.environments[name]?[edit.key] == nil && latest.environments[name]?[edit.newKey] != nil
+      }
+    default:
+      return false
+    }
+  }
+
+  private static func publishingFollowMessage(_ failure: PublishingStoreError) -> String {
+    "The change was saved, but its publish destinations couldn't be updated: \(failure)"
   }
 
   private func waitForProjectMutations() async {

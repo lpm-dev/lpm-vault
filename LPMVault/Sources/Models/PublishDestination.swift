@@ -2,8 +2,8 @@ import Foundation
 
 /// A place a Vault environment is published to, such as a Vercel project's
 /// Production environment. It holds the platform's identifiers and the
-/// person's key choices, never credentials or values, so it can travel with
-/// its vault to another Mac.
+/// person's key choices, never credentials or values, so it can later sync
+/// with its vault to another Mac.
 struct PublishDestination: Identifiable, Hashable, Sendable {
 	let id: UUID
 	/// The Vault environment whose values are published.
@@ -140,7 +140,7 @@ struct VercelPublishTarget: Hashable, Sendable {
 
 	/// The longest ID the LPM CLI accepts from Vercel.
 	static let maximumIdentifierLength = 100
-	static let maximumNameLength = 256
+	static let maximumNameBytes = 512
 
 	fileprivate var invalidity: PublishDestinationInvalidity? {
 		var identifiers = [projectID]
@@ -150,27 +150,43 @@ struct VercelPublishTarget: Hashable, Sendable {
 			identifiers.append(id)
 			names.append(name)
 		}
-		guard identifiers.allSatisfy({ Self.isValid($0, maximumLength: Self.maximumIdentifierLength) && !$0.contains(" ") })
-		else { return .targetIdentifier }
-		guard names.allSatisfy({ Self.isValid($0, maximumLength: Self.maximumNameLength) }) else { return .targetName }
+		guard identifiers.allSatisfy(Self.isValidIdentifier) else { return .targetIdentifier }
+		guard names.allSatisfy(Self.isValidName) else { return .targetName }
 		return nil
 	}
 
-	private static func isValid(_ text: String, maximumLength: Int) -> Bool {
-		!text.isEmpty && text.count <= maximumLength && text.trimmingCharacters(in: .whitespaces) == text
+	/// Vercel's IDs, such as `prj_…` and `team_…`, use only these characters,
+	/// so one can go into a request path without escaping.
+	static func isValidIdentifier(_ text: String) -> Bool {
+		!text.isEmpty && text.utf8.count <= maximumIdentifierLength
+			&& text.utf8.allSatisfy { byte in
+				(byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A)
+					|| byte == 0x5F || byte == 0x2D
+			}
+	}
+
+	/// A display name. It's shown with its direction controls escaped.
+	private static func isValidName(_ text: String) -> Bool {
+		!text.isEmpty && text.utf8.count <= maximumNameBytes && text.trimmingCharacters(in: .whitespaces) == text
 			&& !text.unicodeScalars.contains { $0.properties.generalCategory == .control }
 	}
 }
 
 /// Publish timestamps are stored to the millisecond, the precision platforms
-/// report, so a record reads back exactly as it was written.
+/// report, so a record reads back exactly as it was written. They're kept
+/// between 1970 and the end of 9999, so a platform's impossible time can't
+/// trap or produce a record that can't be read back.
 enum PublishTimestamp {
+	static let maximumMilliseconds: Int64 = 253_402_300_799_999
+
 	static func normalized(_ date: Date) -> Date {
 		self.date(milliseconds: milliseconds(date))
 	}
 
 	static func milliseconds(_ date: Date) -> Int64 {
-		Int64((date.timeIntervalSince1970 * 1_000).rounded())
+		let milliseconds = (date.timeIntervalSince1970 * 1_000).rounded()
+		guard !milliseconds.isNaN, milliseconds > 0 else { return 0 }
+		return milliseconds >= Double(maximumMilliseconds) ? maximumMilliseconds : Int64(milliseconds)
 	}
 
 	static func date(milliseconds: Int64) -> Date {

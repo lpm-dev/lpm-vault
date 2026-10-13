@@ -79,6 +79,8 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var updateEnvironmentsCallCount = 0
 	var applyVaultTransactionCallCount = 0
 	var nextVaultTransactionError: KeychainError?
+	/// Commits the next vault transaction, then reports this error, as a Keychain whose commit outcome was lost would.
+	var nextVaultTransactionErrorAfterCommit: KeychainError?
 	var nextKeychainTransactionError: KeychainError?
 	var onGetEnvironments: (() -> Void)?
 	var onCreateEnvironments: (() -> Void)?
@@ -366,6 +368,10 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				return .failure(failureError)
 			}
 		}
+		if let error = nextVaultTransactionErrorAfterCommit {
+			nextVaultTransactionErrorAfterCommit = nil
+			return .failure(error)
+		}
 		return projectResult
 	}
 
@@ -428,11 +434,27 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
+	func insertPublishingData(account: String, data: Data) -> Result<Bool, KeychainError> {
+		lock.withLock {
+			if failPublishingAccounts.contains(account) { return .failure(failureError) }
+			guard publishingRecords[account] == nil else { return .success(false) }
+			publishingRecords[account] = data
+			return .success(true)
+		}
+	}
+
 	func deletePublishingData(account: String) -> Result<Void, KeychainError> {
 		lock.withLock {
 			if failPublishingAccounts.contains(account) { return .failure(failureError) }
 			publishingRecords.removeValue(forKey: account)
 			return .success(())
+		}
+	}
+
+	func publishingAccounts() -> Result<[String], KeychainError> {
+		lock.withLock {
+			if failPublishingAccounts.contains("*") { return .failure(failureError) }
+			return .success(Array(publishingRecords.keys))
 		}
 	}
 }

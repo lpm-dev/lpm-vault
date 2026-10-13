@@ -1,16 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// What this Mac last published to each of a vault's destinations. It stays
-/// on this Mac and holds keyed fingerprints of values, never the values.
+/// What this Mac last published to one destination. It stays on this Mac and
+/// holds keyed fingerprints of values, never the values.
 struct PublishHistory: Equatable, Sendable {
-	struct Entry: Equatable, Sendable {
-		/// When this Mac last published to the destination.
-		var publishedAt: Date
-		/// The last publish of each key, by name.
-		var keys: [String: Key]
-	}
-
 	struct Key: Equatable, Sendable {
 		/// The value's fingerprint; see `PublishFingerprint`.
 		let fingerprint: Data
@@ -36,38 +29,52 @@ struct PublishHistory: Equatable, Sendable {
 		let remoteUpdatedAt: Date?
 	}
 
-	var entries: [UUID: Entry]
+	/// When this Mac last published to the destination; nil before its first publish.
+	var publishedAt: Date?
+	/// The last publish of each key, by name.
+	var keys: [String: Key]
 
-	init(entries: [UUID: Entry] = [:]) {
-		self.entries = entries
+	init(publishedAt: Date? = nil, keys: [String: Key] = [:]) {
+		self.publishedAt = publishedAt.map(PublishTimestamp.normalized)
+		self.keys = keys
 	}
 
-	static let maximumKeysPerEntry = 4_096
+	static let maximumKeys = 4_096
 
-	/// The history after a publish to `destination` wrote `published` at
-	/// `date`. Keys the publish didn't write keep their earlier record; when
-	/// an entry would outgrow its limit, the records published longest ago go.
-	func recording(_ published: [Published], to destination: UUID, at date: Date) -> PublishHistory {
+	/// The history after a publish that wrote `published` at `date`. Keys
+	/// the publish didn't write keep their earlier record while the source
+	/// still has them. Over the limit, the records published longest ago
+	/// go first, and this publish's records only when it alone is too large.
+	func recording(_ published: [Published], keeping sourceKeys: Set<String>, at date: Date) -> PublishHistory {
 		let date = PublishTimestamp.normalized(date)
-		var entry = entries[destination] ?? Entry(publishedAt: date, keys: [:])
-		entry.publishedAt = date
-		for item in published {
-			entry.keys[item.key] = Key(
+		let written = Set(published.lazy.map(\.key))
+		var keys = self.keys.filter { sourceKeys.contains($0.key) && !written.contains($0.key) }
+		let room = Self.maximumKeys - min(written.count, Self.maximumKeys)
+		if keys.count > room {
+			let oldest = keys.sorted { lhs, rhs in
+				lhs.value.publishedAt == rhs.value.publishedAt ? lhs.key < rhs.key : lhs.value.publishedAt < rhs.value.publishedAt
+			}
+			for (key, _) in oldest.prefix(keys.count - room) { keys.removeValue(forKey: key) }
+		}
+		for item in published.sorted(by: { $0.key < $1.key }).prefix(Self.maximumKeys) {
+			keys[item.key] = Key(
 				fingerprint: item.fingerprint,
 				publishedAt: date,
 				remoteID: item.remoteID,
 				remoteUpdatedAt: item.remoteUpdatedAt
 			)
 		}
-		let excess = entry.keys.count - Self.maximumKeysPerEntry
-		if excess > 0 {
-			let oldest = entry.keys.sorted { lhs, rhs in
-				lhs.value.publishedAt == rhs.value.publishedAt ? lhs.key < rhs.key : lhs.value.publishedAt < rhs.value.publishedAt
-			}
-			for (key, _) in oldest.prefix(excess) { entry.keys.removeValue(forKey: key) }
+		return PublishHistory(publishedAt: date, keys: keys)
+	}
+
+	/// The history without its `count` oldest records, for fitting a byte budget.
+	func droppingOldest(_ count: Int) -> PublishHistory {
+		guard count > 0 else { return self }
+		let oldest = keys.sorted { lhs, rhs in
+			lhs.value.publishedAt == rhs.value.publishedAt ? lhs.key < rhs.key : lhs.value.publishedAt < rhs.value.publishedAt
 		}
 		var history = self
-		history.entries[destination] = entry
+		for (key, _) in oldest.prefix(count) { history.keys.removeValue(forKey: key) }
 		return history
 	}
 }
@@ -83,11 +90,12 @@ enum PublishFingerprint {
 	static func of(value: String, key: String, destination: UUID, using secret: SymmetricKey) -> Data {
 		var authenticator = HMAC<SHA256>(key: secret)
 		authenticator.update(data: domain)
-		authenticator.update(data: withUnsafeBytes(of: destination.uuid) { Data($0) })
-		for field in [key, value] {
-			let bytes = Data(field.utf8)
-			authenticator.update(data: withUnsafeBytes(of: UInt64(bytes.count).bigEndian) { Data($0) })
-			authenticator.update(data: bytes)
+		withUnsafeBytes(of: destination.uuid) { authenticator.update(data: $0) }
+		for var field in [key, value] {
+			field.withUTF8 { bytes in
+				withUnsafeBytes(of: UInt64(bytes.count).bigEndian) { authenticator.update(data: $0) }
+				authenticator.update(data: UnsafeRawBufferPointer(bytes))
+			}
 		}
 		return Data(authenticator.finalize())
 	}

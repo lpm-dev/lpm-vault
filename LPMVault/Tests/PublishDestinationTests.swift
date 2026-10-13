@@ -68,6 +68,9 @@ struct PublishDestinationTests {
 			(vercelDestination(project: String(repeating: "p", count: 101)), .targetIdentifier),
 			(vercelDestination(environment: .custom(id: "env_1", name: "QA\u{7}")), .targetName),
 			(vercelDestination(environment: .custom(id: "env_1", name: " QA")), .targetName),
+			(vercelDestination(project: "prj/../x"), .targetIdentifier),
+			(vercelDestination(team: "team%2F"), .targetIdentifier),
+			(vercelDestination(environment: .custom(id: "env_1", name: String(repeating: "\u{301}", count: 300))), .targetName),
 		]
 	)
 	func invalid(destination: PublishDestination, invalidity: PublishDestinationInvalidity) {
@@ -85,6 +88,8 @@ struct PublishDestinationTests {
 		"a record written by a newer LPM Vault is reported as newer rather than damaged",
 		arguments: [
 			#"{"version":2,"vault":"VAULT","destinations":[],"syncedAt":1}"#,
+			#"{"version":99999999999999999999999,"vault":"VAULT","destinations":[]}"#,
+			record(platform: "netlify", extra: #","netlifySite":"x""#),
 			record(platform: "netlify"),
 			record(environment: #"{"kind":"branch","branch":"main"}"#),
 		]
@@ -110,6 +115,9 @@ struct PublishDestinationTests {
 			record(source: "../production"),
 			record(environment: #"{"kind":"production","id":"x"}"#),
 			"[" + String(repeating: "x", count: 10) + "]",
+			#"{"version":-1,"vault":"VAULT","destinations":[]}"#,
+			record().replacingOccurrences(of: "excludedKeys", with: "excluded\u{212A}eys"),
+			record().replacingOccurrences(of: #""vault":"VAULT""#, with: #""vault":"VAULT\u{301}""#),
 		]
 	)
 	func unreadable(json: String) {
@@ -123,9 +131,12 @@ struct PublishDestinationTests {
 		let sameID = vercelDestination(id: first.id, source: "staging", environment: .preview)
 		let samePlace = vercelDestination(source: "staging")
 		for pair in [[first, sameID], [first, samePlace]] {
-			let data = try #require(PublishingRecords.encode(pair, vaultID: publishTestVault))
-			#expect(PublishingRecords.decodeDestinations(data, vaultID: publishTestVault) == .failure(.unreadable))
+			#expect(PublishingRecords.encode(pair, vaultID: publishTestVault) == nil)
 		}
+		let stored = Self.record().replacingOccurrences(of: "VAULT", with: publishTestVault)
+		let doubled = stored.replacingOccurrences(of: #""destinations":["#, with: #""destinations":["#)
+			.replacingOccurrences(of: "}]}", with: "}," + String(stored[stored.range(of: #"{"id""#)!.lowerBound...].dropLast(2)) + "]}")
+		#expect(PublishingRecords.decodeDestinations(Data(doubled.utf8), vaultID: publishTestVault) == .failure(.unreadable))
 	}
 
 	@Test("the valid record the tests' damaged variants start from reads")
@@ -170,53 +181,97 @@ struct PublishHistoryTests {
 	private let secret = SymmetricKey(size: .bits256)
 	private let publishedAt = Date(timeIntervalSince1970: 1_760_000_100.456)
 
-	@Test("history reads back from its stored form exactly as it was saved")
+	@Test("history reads back from its stored form exactly as it was saved, and holds no values")
 	func roundTrip() throws {
 		let history = PublishHistory().recording([
 			published("API_TOKEN", remoteID: "env_1", updatedAt: Date(timeIntervalSince1970: 1_760_000_100.789)),
 			published("LOG_LEVEL", remoteID: nil, updatedAt: nil),
-		], to: destination, at: publishedAt)
-		let data = try #require(PublishingRecords.encode(history, vaultID: publishTestVault))
-		#expect(try PublishingRecords.decodeHistory(data, vaultID: publishTestVault).get() == history)
-		#expect(!String(decoding: data, as: UTF8.self).contains("value"))
+		], keeping: [], at: publishedAt)
+		let data = try #require(PublishingRecords.encode(history, destination: destination, vaultID: publishTestVault))
+		#expect(try PublishingRecords.decodeHistory(data, destination: destination, vaultID: publishTestVault).get() == history)
+		#expect(!String(decoding: data, as: UTF8.self).contains("api_token"))
+		#expect(PublishingRecords.decodeHistory(data, destination: UUID(), vaultID: publishTestVault) == .failure(.unreadable))
 	}
 
-	@Test("history with a fingerprint of the wrong length, or an invalid key name, isn't read")
-	func damaged() throws {
-		for (key, fingerprint) in [("API_TOKEN", Data(count: 16)), ("1API", Data(count: 32))] {
-			let history = PublishHistory().recording(
-				[.init(key: key, fingerprint: fingerprint, remoteID: nil, remoteUpdatedAt: nil)], to: destination, at: publishedAt)
-			let data = try #require(PublishingRecords.encode(history, vaultID: publishTestVault))
-			#expect(PublishingRecords.decodeHistory(data, vaultID: publishTestVault) == .failure(.unreadable))
+	@Test("a history the decoder would reject isn't encoded: wrong fingerprint length, invalid key name, odd remote ID")
+	func encoderMatchesDecoder() {
+		let invalid: [PublishHistory.Published] = [
+			.init(key: "API_TOKEN", fingerprint: Data(count: 16), remoteID: nil, remoteUpdatedAt: nil),
+			.init(key: "1API", fingerprint: Data(count: 32), remoteID: nil, remoteUpdatedAt: nil),
+			.init(key: "API", fingerprint: Data(count: 32), remoteID: "../env", remoteUpdatedAt: nil),
+			.init(key: "API", fingerprint: Data(count: 32), remoteID: "env\u{0}", remoteUpdatedAt: nil),
+		]
+		for item in invalid {
+			let history = PublishHistory().recording([item], keeping: [], at: publishedAt)
+			#expect(PublishingRecords.encode(history, destination: destination, vaultID: publishTestVault) == nil)
 		}
 	}
 
-	@Test("a later publish replaces the records of the keys it wrote and keeps the others")
-	func laterPublish() {
-		let first = PublishHistory().recording(
-			[published("A", remoteID: "env_a", updatedAt: nil), published("B", remoteID: "env_b", updatedAt: nil)],
-			to: destination, at: publishedAt)
-		let later = publishedAt.addingTimeInterval(60)
-		let second = first.recording([published("B", remoteID: "env_b2", updatedAt: nil)], to: destination, at: later)
-		let entry = second.entries[destination]
-		#expect(entry?.publishedAt == PublishTimestamp.normalized(later))
-		#expect(entry?.keys["A"]?.publishedAt == PublishTimestamp.normalized(publishedAt))
-		#expect(entry?.keys["B"]?.remoteID == "env_b2")
-		#expect(entry?.keys["B"]?.publishedAt == PublishTimestamp.normalized(later))
+	@Test(
+		"a stored time past the year 9999 reads as unreadable instead of crashing",
+		arguments: ["9223372036854775807", "253402300800000"]
+	)
+	func impossibleStoredTimes(milliseconds: String) {
+		let history = #"{"version":1,"vault":"\#(publishTestVault)","destination":"\#(destination.uuidString.lowercased())","publishedAt":\#(milliseconds),"keys":[]}"#
+		#expect(PublishingRecords.decodeHistory(Data(history.utf8), destination: destination, vaultID: publishTestVault) == .failure(.unreadable))
+		let destinations = PublishDestinationTests.record(createdAt: milliseconds).replacingOccurrences(of: "VAULT", with: publishTestVault)
+		#expect(PublishingRecords.decodeDestinations(Data(destinations.utf8), vaultID: publishTestVault) == .failure(.unreadable))
 	}
 
-	@Test("an entry that outgrows its limit drops the records published longest ago")
+	@Test("an impossible platform time is kept within the stored range")
+	func impossiblePlatformTimes() throws {
+		let far = PublishPlan.RemoteVariable(id: "env_1", updatedAt: Date(timeIntervalSince1970: 1e300))
+		#expect(far.updatedAt == PublishTimestamp.date(milliseconds: PublishTimestamp.maximumMilliseconds))
+		let history = PublishHistory().recording(
+			[published("A", remoteID: "env_1", updatedAt: Date(timeIntervalSince1970: .nan))], keeping: [], at: Date(timeIntervalSince1970: -5))
+		#expect(history.publishedAt == Date(timeIntervalSince1970: 0))
+		let data = try #require(PublishingRecords.encode(history, destination: destination, vaultID: publishTestVault))
+		#expect(try PublishingRecords.decodeHistory(data, destination: destination, vaultID: publishTestVault).get() == history)
+	}
+
+	@Test("a later publish replaces the records it wrote, and keeps the others only while the source has them")
+	func laterPublish() {
+		let first = PublishHistory().recording(
+			[published("A", remoteID: "env_a", updatedAt: nil), published("B", remoteID: "env_b", updatedAt: nil),
+			 published("GONE", remoteID: "env_g", updatedAt: nil)],
+			keeping: [], at: publishedAt)
+		let later = publishedAt.addingTimeInterval(60)
+		let second = first.recording([published("B", remoteID: "env_b2", updatedAt: nil)], keeping: ["A", "B"], at: later)
+		#expect(second.publishedAt == PublishTimestamp.normalized(later))
+		#expect(second.keys["A"]?.publishedAt == PublishTimestamp.normalized(publishedAt))
+		#expect(second.keys["B"]?.remoteID == "env_b2")
+		#expect(second.keys["B"]?.publishedAt == PublishTimestamp.normalized(later))
+		#expect(second.keys["GONE"] == nil)
+	}
+
+	@Test("over the limit, the records published longest ago go, never this publish's")
 	func limit() {
-		let limit = PublishHistory.maximumKeysPerEntry
-		let old = PublishHistory().recording(
-			(0..<limit).map { published("OLD_\($0)", remoteID: nil, updatedAt: nil) }, to: destination, at: publishedAt)
+		let limit = PublishHistory.maximumKeys
+		let oldKeys = (0..<limit).map { "OLD_\($0)" }
+		let old = PublishHistory().recording(oldKeys.map { published($0, remoteID: nil, updatedAt: nil) }, keeping: [], at: publishedAt)
+		let newKeys = ["AAA_NEW", "AAB_NEW"]
 		let new = old.recording(
-			[published("NEW_A", remoteID: nil, updatedAt: nil), published("NEW_B", remoteID: nil, updatedAt: nil)],
-			to: destination, at: publishedAt.addingTimeInterval(1))
-		let keys = new.entries[destination]?.keys ?? [:]
-		#expect(keys.count == limit)
-		#expect(keys["NEW_A"] != nil && keys["NEW_B"] != nil)
-		#expect(keys["OLD_0"] == nil && keys["OLD_1"] == nil && keys["OLD_2"] != nil)
+			newKeys.map { published($0, remoteID: nil, updatedAt: nil) }, keeping: Set(oldKeys), at: publishedAt.addingTimeInterval(1))
+		#expect(new.keys.count == limit)
+		#expect(new.keys["AAA_NEW"] != nil && new.keys["AAB_NEW"] != nil)
+		#expect(new.keys["OLD_0"] == nil && new.keys["OLD_1"] == nil && new.keys["OLD_2"] != nil)
+	}
+
+	@Test("a history whose names are too long for one record keeps its newest records")
+	func byteBudget() throws {
+		let longName = String(repeating: "K", count: 1_000)
+		var history = PublishHistory()
+		for batch in 0..<4 {
+			history = history.recording(
+				(0..<500).map { published("\(longName)_\(batch)_\($0)", remoteID: nil, updatedAt: nil) },
+				keeping: Set(history.keys.keys), at: publishedAt.addingTimeInterval(Double(batch)))
+		}
+		#expect(PublishingRecords.encode(history, destination: destination, vaultID: publishTestVault) == nil)
+		let fitted = try #require(PublishingRecords.encodeFitting(history, destination: destination, vaultID: publishTestVault))
+		#expect(fitted.data.count <= PublishingRecords.maximumRecordBytes)
+		#expect(fitted.history.keys.keys.contains { $0.hasPrefix("\(longName)_3_") })
+		#expect(!fitted.history.keys.keys.contains { $0.hasPrefix("\(longName)_0_") })
+		#expect(try PublishingRecords.decodeHistory(fitted.data, destination: destination, vaultID: publishTestVault).get() == fitted.history)
 	}
 
 	@Test("a fingerprint changes with the value, the key, the destination and this Mac's key")
@@ -233,6 +288,19 @@ struct PublishHistoryTests {
 		#expect(
 			PublishFingerprint.of(value: "BC", key: "A", destination: destination, using: secret)
 				!= PublishFingerprint.of(value: "C", key: "AB", destination: destination, using: secret))
+	}
+
+	@Test("the fingerprint is HMAC-SHA256 over a fixed layout, so it stays stable across versions")
+	func fingerprintLayout() {
+		let id = UUID(uuidString: "0B7C2A1E-5F3D-4C8E-9A61-2D4F8E0C7B13")!
+		var message = Data("lpm-vault:publish-fingerprint:v1\0".utf8)
+		message.append(contentsOf: withUnsafeBytes(of: id.uuid) { Array($0) })
+		for field in ["KEY", "välue"] {
+			message.append(contentsOf: withUnsafeBytes(of: UInt64(field.utf8.count).bigEndian) { Array($0) })
+			message.append(contentsOf: Array(field.utf8))
+		}
+		let expected = Data(HMAC<SHA256>.authenticationCode(for: message, using: secret))
+		#expect(PublishFingerprint.of(value: "välue", key: "KEY", destination: id, using: secret) == expected)
 	}
 
 	private func published(_ key: String, remoteID: String?, updatedAt: Date?) -> PublishHistory.Published {

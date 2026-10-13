@@ -1,11 +1,24 @@
 import Foundation
 import Security
 
+/// Storage for the publishing records of one Keychain service.
+protocol PublishingKeychainBackend: Sendable {
+	func read(account: String) throws -> Data?
+	func write(account: String, data: Data) throws
+	/// Adds the item; false when one already exists, which is left as it is.
+	func insert(account: String, data: Data) throws -> Bool
+	func delete(account: String) throws
+	/// Every account the service holds.
+	func accounts() throws -> [String]
+}
+
 /// Data Protection Keychain items in the app's own access group, which the
 /// LPM CLI can't read. Items stay on this Mac and never sync through iCloud.
-struct AppKeychainBackend: KeychainStoreBackend {
-	func read(service: String, account: String) throws -> Data? {
-		var query = Self.query(service: service, account: account)
+struct AppKeychainBackend: PublishingKeychainBackend {
+	let service: String
+
+	func read(account: String) throws -> Data? {
+		var query = query(account: account)
 		query[kSecReturnData as String] = true
 		query[kSecMatchLimit as String] = kSecMatchLimitOne
 		var result: AnyObject?
@@ -18,41 +31,57 @@ struct AppKeychainBackend: KeychainStoreBackend {
 		return data
 	}
 
-	func write(service: String, account: String, data: Data) throws {
-		let query = Self.query(service: service, account: account)
+	func write(account: String, data: Data) throws {
+		let query = query(account: account)
 		let attributes = [kSecValueData as String: data]
 		let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 		if status == errSecSuccess { return }
 		guard status == errSecItemNotFound else { throw KeychainStoreError.status(operation: "write", code: status) }
-		do {
-			try add(service: service, account: account, data: data)
-		} catch KeychainStoreError.status(_, errSecDuplicateItem) {
-			let retry = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-			guard retry == errSecSuccess else { throw KeychainStoreError.status(operation: "write", code: retry) }
-		}
+		if try insert(account: account, data: data) { return }
+		let retry = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+		guard retry == errSecSuccess else { throw KeychainStoreError.status(operation: "write", code: retry) }
 	}
 
-	func add(service: String, account: String, data: Data) throws {
-		var query = Self.query(service: service, account: account)
+	func insert(account: String, data: Data) throws -> Bool {
+		var query = query(account: account)
 		query[kSecValueData as String] = data
 		query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 		let status = SecItemAdd(query as CFDictionary, nil)
+		if status == errSecDuplicateItem { return false }
 		guard status == errSecSuccess else { throw KeychainStoreError.status(operation: "add", code: status) }
-	}
-
-	@discardableResult
-	func delete(service: String, account: String) throws -> Bool {
-		let status = SecItemDelete(Self.query(service: service, account: account) as CFDictionary)
-		if status == errSecItemNotFound { return false }
-		guard status == errSecSuccess else { throw KeychainStoreError.status(operation: "delete", code: status) }
 		return true
 	}
 
-	static func query(service: String, account: String) -> [String: Any] {
+	func delete(account: String) throws {
+		let status = SecItemDelete(query(account: account) as CFDictionary)
+		guard status == errSecSuccess || status == errSecItemNotFound else {
+			throw KeychainStoreError.status(operation: "delete", code: status)
+		}
+	}
+
+	func accounts() throws -> [String] {
+		var query = Self.serviceQuery(service)
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitAll
+		var result: AnyObject?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		if status == errSecItemNotFound { return [] }
+		guard status == errSecSuccess, let items = result as? [[String: Any]] else {
+			throw KeychainStoreError.status(operation: "list", code: status == errSecSuccess ? errSecInternalComponent : status)
+		}
+		return items.compactMap { $0[kSecAttrAccount as String] as? String }
+	}
+
+	func query(account: String) -> [String: Any] {
+		var query = Self.serviceQuery(service)
+		query[kSecAttrAccount as String] = account
+		return query
+	}
+
+	static func serviceQuery(_ service: String) -> [String: Any] {
 		[
 			kSecClass as String: kSecClassGenericPassword,
 			kSecAttrService as String: service,
-			kSecAttrAccount as String: account,
 			kSecAttrAccessGroup as String: VaultConstants.appKeychainAccessGroup,
 			kSecAttrSynchronizable as String: false,
 			kSecUseDataProtectionKeychain as String: true,

@@ -1,9 +1,12 @@
 import Foundation
 
 /// The stored forms of a vault's publish destinations and of this Mac's
-/// publish history. Both are versioned JSON bound to their vault. Reading is
-/// strict: a record with fields this version doesn't know was written by a
-/// newer version, and is reported as such rather than rewritten.
+/// history of publishing to each one. Both are versioned JSON bound to their
+/// vault, and a history record to its destination. Reading is strict: a
+/// record from a newer version, or naming a platform or environment kind this
+/// version doesn't know, reads as newer and is never rewritten; anything else
+/// unexpected, including unknown fields, reads as unreadable. Encoding refuses
+/// whatever reading would reject.
 enum PublishingRecords {
 	enum DecodingError: Error, Equatable, Sendable {
 		case unreadable
@@ -14,10 +17,15 @@ enum PublishingRecords {
 	static let version = 1
 	static let maximumDestinations = 64
 	static let maximumRecordBytes = 1_024 * 1_024
+	static let maximumRemoteIDLength = 128
 
 	// MARK: - Destinations
 
 	static func encode(_ destinations: [PublishDestination], vaultID: String) -> Data? {
+		guard destinations.count <= maximumDestinations, destinations.allSatisfy({ $0.invalidity == nil }),
+			Set(destinations.map(\.id)).count == destinations.count,
+			Set(destinations.map(\.target.location)).count == destinations.count
+		else { return nil }
 		let entries = destinations.sorted { $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt < $1.createdAt }
 		let json = LPMConfigJSON.object([
 			.init(key: "version", value: .number(String(version))),
@@ -28,9 +36,11 @@ enum PublishingRecords {
 	}
 
 	static func decodeDestinations(_ data: Data, vaultID: String) -> Result<[PublishDestination], DecodingError> {
-		do {
-			let entries = try body(of: data, vaultID: vaultID, field: "destinations")
-			guard case .array(let items) = entries, items.count <= maximumDestinations else { throw DecodingError.unreadable }
+		decoding {
+			let fields = try header(of: data, binding: ["vault": vaultID], body: ["destinations"])
+			guard case .array(let items) = try fields.value("destinations"), items.count <= maximumDestinations else {
+				throw DecodingError.unreadable
+			}
 			var destinations: [PublishDestination] = []
 			var ids: Set<UUID> = []
 			var locations: Set<PublishTarget.Location> = []
@@ -42,11 +52,7 @@ enum PublishingRecords {
 				else { throw DecodingError.unreadable }
 				destinations.append(destination)
 			}
-			return .success(destinations)
-		} catch let error as DecodingError {
-			return .failure(error)
-		} catch {
-			return .failure(.unreadable)
+			return destinations
 		}
 	}
 
@@ -80,8 +86,9 @@ enum PublishingRecords {
 	}
 
 	private static func destination(_ json: LPMConfigJSON) throws -> PublishDestination {
+		guard case .string(let name)? = json["platform"] else { throw DecodingError.unreadable }
+		guard let platform = PublishPlatform(rawValue: name) else { throw DecodingError.newerVersion }
 		let fields = try Fields(json, ["id", "source", "platform", "target", "excludedKeys", "createdAt", "updatedAt"])
-		guard let platform = PublishPlatform(rawValue: try fields.string("platform")) else { throw DecodingError.newerVersion }
 		let target: PublishTarget
 		switch platform {
 		case .vercel:
@@ -94,18 +101,19 @@ enum PublishingRecords {
 				environment: try vercelEnvironment(vercel.value("environment"))
 			))
 		}
-		guard case .array(let excluded) = try fields.value("excludedKeys") else { throw DecodingError.unreadable }
+		guard case .array(let excluded) = try fields.value("excludedKeys"),
+			excluded.count <= PublishDestination.maximumExcludedKeys
+		else { throw DecodingError.unreadable }
 		var excludedKeys: Set<String> = []
 		for key in excluded {
 			guard case .string(let name) = key, excludedKeys.insert(name).inserted else { throw DecodingError.unreadable }
 		}
-		let createdAt = try fields.timestamp("createdAt")
 		return PublishDestination(
 			id: try fields.uuid("id"),
 			sourceEnvironment: try fields.string("source"),
 			target: target,
 			excludedKeys: excludedKeys,
-			createdAt: createdAt,
+			createdAt: try fields.timestamp("createdAt"),
 			updatedAt: try fields.timestamp("updatedAt")
 		)
 	}
@@ -126,60 +134,90 @@ enum PublishingRecords {
 
 	// MARK: - History
 
-	static func encode(_ history: PublishHistory, vaultID: String) -> Data? {
-		let entries = history.entries.sorted { $0.key.uuidString < $1.key.uuidString }.map { id, entry in
-			LPMConfigJSON.object([
-				.init(key: "destination", value: .string(id.uuidString.lowercased())),
-				.init(key: "publishedAt", value: timestamp(entry.publishedAt)),
-				.init(key: "keys", value: .array(entry.keys.sorted { $0.key < $1.key }.map { name, key in
-					.object([
-						.init(key: "key", value: .string(name)),
-						.init(key: "fingerprint", value: .string(key.fingerprint.base64EncodedString())),
-						.init(key: "publishedAt", value: timestamp(key.publishedAt)),
-						.init(key: "remoteId", value: key.remoteID.map(LPMConfigJSON.string) ?? .null),
-						.init(key: "remoteUpdatedAt", value: key.remoteUpdatedAt.map(timestamp) ?? .null),
-					])
-				})),
-			])
-		}
+	static func encode(_ history: PublishHistory, destination: UUID, vaultID: String) -> Data? {
+		guard history.keys.count <= PublishHistory.maximumKeys,
+			history.keys.allSatisfy({ isValidRecord(key: $0.key, $0.value) })
+		else { return nil }
 		let json = LPMConfigJSON.object([
 			.init(key: "version", value: .number(String(version))),
 			.init(key: "vault", value: .string(vaultID)),
-			.init(key: "destinations", value: .array(entries)),
+			.init(key: "destination", value: .string(destination.uuidString.lowercased())),
+			.init(key: "publishedAt", value: history.publishedAt.map(timestamp) ?? .null),
+			.init(key: "keys", value: .array(history.keys.sorted { $0.key < $1.key }.map { name, key in
+				.object([
+					.init(key: "key", value: .string(name)),
+					.init(key: "fingerprint", value: .string(key.fingerprint.base64EncodedString())),
+					.init(key: "publishedAt", value: timestamp(key.publishedAt)),
+					.init(key: "remoteId", value: key.remoteID.map(LPMConfigJSON.string) ?? .null),
+					.init(key: "remoteUpdatedAt", value: key.remoteUpdatedAt.map(timestamp) ?? .null),
+				])
+			})),
 		])
 		return try? json.compactData(maximumBytes: maximumRecordBytes)
 	}
 
-	static func decodeHistory(_ data: Data, vaultID: String) -> Result<PublishHistory, DecodingError> {
-		do {
-			guard case .array(let items) = try body(of: data, vaultID: vaultID, field: "destinations"),
-				items.count <= maximumDestinations
-			else { throw DecodingError.unreadable }
-			var entries: [UUID: PublishHistory.Entry] = [:]
-			for item in items {
-				let fields = try Fields(item, ["destination", "publishedAt", "keys"])
-				let id = try fields.uuid("destination")
-				guard entries[id] == nil, case .array(let records) = try fields.value("keys"),
-					records.count <= PublishHistory.maximumKeysPerEntry
-				else { throw DecodingError.unreadable }
-				var keys: [String: PublishHistory.Key] = [:]
-				for record in records {
-					let key = try Fields(record, ["key", "fingerprint", "publishedAt", "remoteId", "remoteUpdatedAt"])
-					let name = try key.string("key")
-					guard EnvValidation.isValidVariableName(name), keys[name] == nil,
-						let fingerprint = Data(base64Encoded: try key.string("fingerprint")),
-						fingerprint.count == PublishFingerprint.byteCount
-					else { throw DecodingError.unreadable }
-					keys[name] = PublishHistory.Key(
-						fingerprint: fingerprint,
-						publishedAt: try key.timestamp("publishedAt"),
-						remoteID: try key.optionalString("remoteId"),
-						remoteUpdatedAt: try key.optionalTimestamp("remoteUpdatedAt")
-					)
-				}
-				entries[id] = PublishHistory.Entry(publishedAt: try fields.timestamp("publishedAt"), keys: keys)
+	/// `history` encoded within the record limit, dropping its oldest
+	/// records when its key names are too long to fit them all.
+	static func encodeFitting(_ history: PublishHistory, destination: UUID, vaultID: String) -> (data: Data, history: PublishHistory)? {
+		if let data = encode(history, destination: destination, vaultID: vaultID) { return (data, history) }
+		guard history.keys.allSatisfy({ isValidRecord(key: $0.key, $0.value) }) else { return nil }
+		var low = 1
+		var high = history.keys.count
+		var best: (Data, PublishHistory)?
+		while low <= high {
+			let dropped = (low + high) / 2
+			let trimmed = history.droppingOldest(dropped)
+			if let data = encode(trimmed, destination: destination, vaultID: vaultID) {
+				best = (data, trimmed)
+				high = dropped - 1
+			} else {
+				low = dropped + 1
 			}
-			return .success(PublishHistory(entries: entries))
+		}
+		return best
+	}
+
+	static func decodeHistory(_ data: Data, destination: UUID, vaultID: String) -> Result<PublishHistory, DecodingError> {
+		decoding {
+			let fields = try header(
+				of: data,
+				binding: ["vault": vaultID, "destination": destination.uuidString.lowercased()],
+				body: ["publishedAt", "keys"]
+			)
+			guard case .array(let records) = try fields.value("keys"), records.count <= PublishHistory.maximumKeys else {
+				throw DecodingError.unreadable
+			}
+			var keys: [String: PublishHistory.Key] = [:]
+			for record in records {
+				let fields = try Fields(record, ["key", "fingerprint", "publishedAt", "remoteId", "remoteUpdatedAt"])
+				let name = try fields.string("key")
+				guard keys[name] == nil, let fingerprint = Data(base64Encoded: try fields.string("fingerprint")) else {
+					throw DecodingError.unreadable
+				}
+				let key = PublishHistory.Key(
+					fingerprint: fingerprint,
+					publishedAt: try fields.timestamp("publishedAt"),
+					remoteID: try fields.optionalString("remoteId"),
+					remoteUpdatedAt: try fields.optionalTimestamp("remoteUpdatedAt")
+				)
+				guard isValidRecord(key: name, key) else { throw DecodingError.unreadable }
+				keys[name] = key
+			}
+			return PublishHistory(publishedAt: try fields.optionalTimestamp("publishedAt"), keys: keys)
+		}
+	}
+
+	private static func isValidRecord(key name: String, _ key: PublishHistory.Key) -> Bool {
+		EnvValidation.isValidVariableName(name)
+			&& key.fingerprint.count == PublishFingerprint.byteCount
+			&& key.remoteID.map { $0.utf8.count <= maximumRemoteIDLength && VercelPublishTarget.isValidIdentifier($0) } ?? true
+	}
+
+	// MARK: - Fields
+
+	private static func decoding<T>(_ body: () throws -> T) -> Result<T, DecodingError> {
+		do {
+			return .success(try body())
 		} catch let error as DecodingError {
 			return .failure(error)
 		} catch {
@@ -187,32 +225,39 @@ enum PublishingRecords {
 		}
 	}
 
-	// MARK: - Fields
-
-	/// The record's `field`, after checking its version and vault.
-	private static func body(of data: Data, vaultID: String, field: String) throws -> LPMConfigJSON {
+	/// The record's fields, after checking its version and that it's bound
+	/// to the expected vault and destination.
+	private static func header(of data: Data, binding: [String: String], body: Set<String>) throws -> Fields {
 		guard data.count <= maximumRecordBytes else { throw DecodingError.unreadable }
 		let json = try LPMConfigJSON(parsing: data, rejectDuplicateKeys: true)
-		guard case .number(let raw)? = json["version"], let recordVersion = Int(raw) else { throw DecodingError.unreadable }
-		guard recordVersion <= version else { throw DecodingError.newerVersion }
-		let fields = try Fields(json, ["version", "vault", field])
-		guard recordVersion == version, try fields.string("vault") == vaultID else { throw DecodingError.unreadable }
-		return try fields.value(field)
+		guard case .number(let raw)? = json["version"], !raw.isEmpty, raw.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else {
+			throw DecodingError.unreadable
+		}
+		guard let recordVersion = Int(raw), recordVersion <= version else { throw DecodingError.newerVersion }
+		let fields = try Fields(json, body.union(binding.keys).union(["version"]))
+		guard recordVersion == version, String(recordVersion) == raw else { throw DecodingError.unreadable }
+		for (field, expected) in binding where !(try fields.string(field)).utf8.elementsEqual(expected.utf8) {
+			throw DecodingError.unreadable
+		}
+		return fields
 	}
 
 	private static func timestamp(_ date: Date) -> LPMConfigJSON {
 		.number(String(PublishTimestamp.milliseconds(date)))
 	}
 
-	/// An object's members, when it has exactly the expected ones.
+	/// An object's members, when it has exactly the expected ones. Names are
+	/// compared byte for byte, as the parser checks for duplicates.
 	private struct Fields {
-		private let values: [String: LPMConfigJSON]
+		private let values: [Data: LPMConfigJSON]
 
 		init(_ json: LPMConfigJSON, _ keys: Set<String>) throws {
 			guard case .object(let members) = json, members.count == keys.count else { throw DecodingError.unreadable }
-			var values: [String: LPMConfigJSON] = [:]
+			let expected = Set(keys.map { Data($0.utf8) })
+			var values: [Data: LPMConfigJSON] = [:]
 			for member in members {
-				guard keys.contains(member.key), values.updateValue(member.value, forKey: member.key) == nil else {
+				let name = Data(member.key.utf8)
+				guard expected.contains(name), values.updateValue(member.value, forKey: name) == nil else {
 					throw DecodingError.unreadable
 				}
 			}
@@ -220,7 +265,7 @@ enum PublishingRecords {
 		}
 
 		func value(_ key: String) throws -> LPMConfigJSON {
-			guard let value = values[key] else { throw DecodingError.unreadable }
+			guard let value = values[Data(key.utf8)] else { throw DecodingError.unreadable }
 			return value
 		}
 
@@ -236,13 +281,15 @@ enum PublishingRecords {
 
 		func uuid(_ key: String) throws -> UUID {
 			let text = try string(key)
-			guard let id = UUID(uuidString: text), id.uuidString.lowercased() == text else { throw DecodingError.unreadable }
+			guard let id = UUID(uuidString: text), id.uuidString.lowercased().utf8.elementsEqual(text.utf8) else {
+				throw DecodingError.unreadable
+			}
 			return id
 		}
 
 		func timestamp(_ key: String) throws -> Date {
 			guard case .number(let raw) = try value(key), let milliseconds = Int64(raw), milliseconds >= 0,
-				String(milliseconds) == raw
+				milliseconds <= PublishTimestamp.maximumMilliseconds, String(milliseconds) == raw
 			else { throw DecodingError.unreadable }
 			return PublishTimestamp.date(milliseconds: milliseconds)
 		}

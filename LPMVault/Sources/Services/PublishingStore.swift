@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-enum PublishingStoreError: Error, Equatable, Sendable {
+enum PublishingStoreError: Error, Equatable, Sendable, CustomStringConvertible {
 	case keychain(KeychainError)
 	/// The stored record isn't one this version can read.
 	case unreadable
@@ -13,11 +13,31 @@ enum PublishingStoreError: Error, Equatable, Sendable {
 	case duplicateLocation(existing: UUID)
 	case limitReached
 	case tooLarge
+	/// The destination was removed while the publish ran.
+	case destinationRemoved
+	/// The destination was pointed somewhere else while the publish ran.
+	case destinationMoved
+
+	var description: String {
+		switch self {
+		case .keychain(let error): error.description
+		case .unreadable: "The saved publish destinations can't be read."
+		case .newerVersion: "A newer LPM Vault saved these publish destinations."
+		case .invalidVault: "The env project's ID can't hold publish destinations."
+		case .invalidDestination: "The publish destination isn't valid."
+		case .duplicateLocation: "Another destination already publishes there."
+		case .limitReached: "This env project has the most publish destinations it can hold."
+		case .tooLarge: "The publish destinations are too large to save."
+		case .destinationRemoved: "The publish destination was removed."
+		case .destinationMoved: "The publish destination was changed."
+		}
+	}
 }
 
-/// A vault's publish destinations and this Mac's history of publishing to
-/// them, kept in the app's own Keychain group. One actor serializes every
-/// read-modify-write, so concurrent edits can't lose each other's changes.
+/// A vault's publish destinations, and this Mac's history of publishing to
+/// each, kept in the app's own Keychain group: one item for the vault's
+/// destinations and one per destination's history. One actor serializes
+/// every read-modify-write, so concurrent edits can't lose each other's changes.
 actor PublishingStore {
 	private let service: any KeychainServiceProtocol
 
@@ -31,7 +51,8 @@ actor PublishingStore {
 		Result { try readDestinations(of: vaultID) }.mapError(Self.storeError)
 	}
 
-	/// Adds `destination`, or replaces the one with its ID.
+	/// Adds `destination`, or replaces the one with its ID. Pointing a
+	/// destination somewhere else drops its history, which described the old place.
 	func save(_ destination: PublishDestination, to vaultID: String) -> Result<[PublishDestination], PublishingStoreError> {
 		Result {
 			if let invalidity = destination.invalidity { throw PublishingStoreError.invalidDestination(invalidity) }
@@ -39,13 +60,16 @@ actor PublishingStore {
 			if let other = destinations.first(where: { $0.id != destination.id && $0.target.location == destination.target.location }) {
 				throw PublishingStoreError.duplicateLocation(existing: other.id)
 			}
+			var moved = false
 			if let index = destinations.firstIndex(where: { $0.id == destination.id }) {
+				moved = destinations[index].target.location != destination.target.location
 				destinations[index] = destination
 			} else {
 				guard destinations.count < PublishingRecords.maximumDestinations else { throw PublishingStoreError.limitReached }
 				destinations.append(destination)
 			}
 			try writeDestinations(destinations, of: vaultID)
+			if moved { try service.deletePublishingData(account: Self.historyAccount(vaultID, destination.id)).get() }
 			return destinations
 		}.mapError(Self.storeError)
 	}
@@ -54,61 +78,74 @@ actor PublishingStore {
 	func remove(_ id: UUID, from vaultID: String) -> Result<[PublishDestination], PublishingStoreError> {
 		Result {
 			var destinations = try readDestinations(of: vaultID)
-			guard destinations.contains(where: { $0.id == id }) else { return destinations }
-			destinations.removeAll { $0.id == id }
-			try writeDestinations(destinations, of: vaultID)
-			// The destination is gone either way; a history this version can't
-			// rewrite keeps the entry until the next publish prunes it.
-			if var history = try? readHistory(of: vaultID), history.entries.removeValue(forKey: id) != nil {
-				try? writeHistory(history, of: vaultID)
+			if destinations.contains(where: { $0.id == id }) {
+				destinations.removeAll { $0.id == id }
+				try writeDestinations(destinations, of: vaultID)
 			}
+			try service.deletePublishingData(account: Self.historyAccount(vaultID, id)).get()
 			return destinations
 		}.mapError(Self.storeError)
 	}
 
 	// MARK: - History
 
-	func history(of vaultID: String) -> Result<PublishHistory, PublishingStoreError> {
-		Result { try readHistory(of: vaultID) }.mapError(Self.storeError)
+	/// This Mac's history of publishing to the destination. A damaged
+	/// history reads as none, since it's only a record of past publishes.
+	func history(of destination: UUID, in vaultID: String) -> Result<PublishHistory, PublishingStoreError> {
+		Result { try readHistory(of: destination, in: vaultID) }.mapError(Self.storeError)
 	}
 
-	/// Records a publish to `destination`: the keys the platform accepted, and
-	/// the destination with the person's choices from the review.
+	/// Records a publish to the destination as it's stored now: the person's
+	/// choices from the review, and the keys the platform accepted. Fails,
+	/// recording nothing, when the destination was removed or pointed
+	/// elsewhere while the publish ran.
 	func recordPublish(
 		_ published: [PublishHistory.Published],
-		to destination: PublishDestination,
+		to destination: UUID,
+		at location: PublishTarget.Location,
+		choices: PublishPlan.Choices,
 		of vaultID: String,
 		at date: Date
-	) -> Result<Void, PublishingStoreError> {
+	) -> Result<PublishDestination, PublishingStoreError> {
 		Result {
-			// The platform already has the values, so the history records them
-			// even when the destination itself can't be saved.
-			let saved = save(destination, to: vaultID)
-			var history = try readHistory(of: vaultID).recording(published, to: destination.id, at: date)
-			if case .success(let destinations) = saved {
-				let current = Set(destinations.map(\.id))
-				history.entries = history.entries.filter { current.contains($0.key) }
+			var destinations = try readDestinations(of: vaultID)
+			guard let index = destinations.firstIndex(where: { $0.id == destination }) else {
+				throw PublishingStoreError.destinationRemoved
 			}
-			try writeHistory(history, of: vaultID)
-			_ = try saved.get()
+			guard destinations[index].target.location == location else { throw PublishingStoreError.destinationMoved }
+			let updated = choices.applied(to: destinations[index], at: date)
+			if let invalidity = updated.invalidity { throw PublishingStoreError.invalidDestination(invalidity) }
+			destinations[index] = updated
+			try writeDestinations(destinations, of: vaultID)
+			let history = try readHistory(of: destination, in: vaultID)
+				.recording(published, keeping: choices.sourceKeys, at: date)
+			try writeHistory(history, of: destination, in: vaultID)
+			return updated
 		}.mapError(Self.storeError)
 	}
 
 	/// The key fingerprints are made with, created the first time it's needed.
+	/// The item under this account is always the raw 32-byte key; another
+	/// format would use another account, so a damaged item can be replaced.
 	func fingerprintKey() -> Result<SymmetricKey, PublishingStoreError> {
 		Result {
-			if let data = try service.readPublishingData(account: Self.fingerprintKeyAccount).get(),
-				data.count == SymmetricKeySize.bits256.bitCount / 8
-			{
-				return SymmetricKey(data: data)
+			let byteCount = SymmetricKeySize.bits256.bitCount / 8
+			if let data = try service.readPublishingData(account: Self.fingerprintKeyAccount).get() {
+				if data.count == byteCount { return SymmetricKey(data: data) }
+				// Damaged: earlier fingerprints then read as changed values, which only costs a review.
+				let key = SymmetricKey(size: .bits256)
+				try service.writePublishingData(account: Self.fingerprintKeyAccount, data: key.withUnsafeBytes { Data($0) }).get()
+				return key
 			}
-			// A missing or damaged key is replaced; earlier fingerprints then read as changed values.
 			let key = SymmetricKey(size: .bits256)
-			try service.writePublishingData(
-				account: Self.fingerprintKeyAccount,
-				data: key.withUnsafeBytes { Data($0) }
-			).get()
-			return key
+			if try service.insertPublishingData(account: Self.fingerprintKeyAccount, data: key.withUnsafeBytes { Data($0) }).get() {
+				return key
+			}
+			// Another process added one first; use it.
+			guard let data = try service.readPublishingData(account: Self.fingerprintKeyAccount).get(), data.count == byteCount else {
+				throw PublishingStoreError.unreadable
+			}
+			return SymmetricKey(data: data)
 		}.mapError(Self.storeError)
 	}
 
@@ -123,9 +160,12 @@ actor PublishingStore {
 		}
 	}
 
-	/// Carries a renamed key's exclusions to its new name.
-	func renameKey(_ old: String, to new: String, in vaultID: String) -> Result<Void, PublishingStoreError> {
-		updateDestinations(of: vaultID) { destination in
+	/// Carries a renamed key's exclusion to its new name, in the destinations
+	/// that publish from `environments`, the ones that had the key.
+	func renameKey(_ old: String, to new: String, sourcedFrom environments: Set<String>, in vaultID: String) -> Result<Void, PublishingStoreError> {
+		guard !environments.isEmpty else { return .success(()) }
+		return updateDestinations(of: vaultID) { destination in
+			guard environments.contains(destination.sourceEnvironment) else { return false }
 			let wasExcluded = destination.excludedKeys.contains(old)
 			guard wasExcluded || destination.excludedKeys.contains(new) else { return false }
 			destination.excludedKeys.remove(old)
@@ -134,13 +174,36 @@ actor PublishingStore {
 		}
 	}
 
-	/// Deletes the vault's destinations and history, as when its local copy is deleted.
+	/// Removes the destinations that publish from a deleted environment, so
+	/// a later environment with its name doesn't inherit them.
+	func removeDestinations(sourcedFrom environment: String, in vaultID: String) -> Result<Void, PublishingStoreError> {
+		Result {
+			let destinations = try readDestinations(of: vaultID)
+			let removed = destinations.filter { $0.sourceEnvironment == environment }
+			guard !removed.isEmpty else { return }
+			try writeDestinations(destinations.filter { $0.sourceEnvironment != environment }, of: vaultID)
+			for destination in removed {
+				try service.deletePublishingData(account: Self.historyAccount(vaultID, destination.id)).get()
+			}
+		}.mapError(Self.storeError)
+	}
+
+	/// Deletes every publishing record of the vault, as when its local copy
+	/// is deleted, whatever version wrote them.
 	func deleteRecords(of vaultID: String) -> Result<Void, PublishingStoreError> {
 		Result {
-			let destinations = service.deletePublishingData(account: try Self.destinationsAccount(vaultID))
-			let history = service.deletePublishingData(account: try Self.historyAccount(vaultID))
-			try destinations.get()
-			try history.get()
+			let destinations = try Self.destinationsAccount(vaultID)
+			let historyPrefix = "history.\(vaultID)."
+			// Destination IDs have no dots, so another vault whose ID extends this one's never matches.
+			let accounts = try service.publishingAccounts().get().filter { account in
+				account == destinations
+					|| (account.hasPrefix(historyPrefix) && UUID(uuidString: String(account.dropFirst(historyPrefix.count))) != nil)
+			}
+			var failure: Error?
+			for account in accounts {
+				do { try service.deletePublishingData(account: account).get() } catch { failure = failure ?? error }
+			}
+			if let failure { throw failure }
 		}.mapError(Self.storeError)
 	}
 
@@ -177,31 +240,34 @@ actor PublishingStore {
 		try service.writePublishingData(account: account, data: data).get()
 	}
 
-	private func readHistory(of vaultID: String) throws -> PublishHistory {
-		guard let data = try service.readPublishingData(account: Self.historyAccount(vaultID)).get() else { return PublishHistory() }
-		return try PublishingRecords.decodeHistory(data, vaultID: vaultID).get()
-	}
-
-	private func writeHistory(_ history: PublishHistory, of vaultID: String) throws {
-		let account = try Self.historyAccount(vaultID)
-		guard !history.entries.isEmpty else {
-			try service.deletePublishingData(account: account).get()
-			return
+	private func readHistory(of destination: UUID, in vaultID: String) throws -> PublishHistory {
+		guard let data = try service.readPublishingData(account: Self.historyAccount(vaultID, destination)).get() else {
+			return PublishHistory()
 		}
-		guard let data = PublishingRecords.encode(history, vaultID: vaultID) else { throw PublishingStoreError.tooLarge }
-		try service.writePublishingData(account: account, data: data).get()
+		switch PublishingRecords.decodeHistory(data, destination: destination, vaultID: vaultID) {
+		case .success(let history): return history
+		case .failure(.newerVersion): throw PublishingStoreError.newerVersion
+		case .failure(.unreadable): return PublishHistory()
+		}
 	}
 
-	private static let fingerprintKeyAccount = "fingerprint-key"
+	private func writeHistory(_ history: PublishHistory, of destination: UUID, in vaultID: String) throws {
+		guard let encoded = PublishingRecords.encodeFitting(history, destination: destination, vaultID: vaultID) else {
+			throw PublishingStoreError.tooLarge
+		}
+		try service.writePublishingData(account: Self.historyAccount(vaultID, destination), data: encoded.data).get()
+	}
+
+	private static let fingerprintKeyAccount = "fingerprint-key.v1"
 
 	private static func destinationsAccount(_ vaultID: String) throws -> String {
 		guard EnvValidation.isSafeVaultId(vaultID) else { throw PublishingStoreError.invalidVault }
 		return "destinations.\(vaultID)"
 	}
 
-	private static func historyAccount(_ vaultID: String) throws -> String {
+	private static func historyAccount(_ vaultID: String, _ destination: UUID) throws -> String {
 		guard EnvValidation.isSafeVaultId(vaultID) else { throw PublishingStoreError.invalidVault }
-		return "history.\(vaultID)"
+		return "history.\(vaultID).\(destination.uuidString.lowercased())"
 	}
 
 	private static func storeError(_ error: Error) -> PublishingStoreError {

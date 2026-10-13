@@ -16,9 +16,10 @@ struct PublishPlan: Equatable, Sendable {
 		/// No rule declares it.
 		case undeclared
 
-		/// Whether the platform should store it so its value can't be read back.
-		/// Keys without a rule are treated as secrets.
-		var publishesAsSecret: Bool { self == .secret || self == .undeclared }
+		/// Whether the platform should store it so its value can't be read
+		/// back. Only public keys, whose values reach browsers anyway, are
+		/// stored readable; a rule that doesn't say "secret" isn't enough.
+		var publishesAsSecret: Bool { self != .public }
 	}
 
 	enum Operation: Equatable, Sendable {
@@ -26,16 +27,26 @@ struct PublishPlan: Equatable, Sendable {
 		case replace(remoteID: String)
 	}
 
-	/// How the value compares with what this Mac last published here.
-	enum Status: Equatable, Sendable {
-		/// This Mac hasn't published the key here.
-		case notPublished
-		case changedSincePublish(publishedAt: Date)
-		case unchangedSincePublish(publishedAt: Date)
-		/// Unchanged here, but the platform's variable changed or was replaced since.
-		case changedOnPlatform(publishedAt: Date)
-		/// Unchanged here, but the platform's variable is gone.
-		case removedFromPlatform(publishedAt: Date)
+	/// How the key compares with what this Mac last published here.
+	struct Status: Equatable, Sendable {
+		enum Platform: Equatable, Sendable {
+			case unchanged
+			/// The platform's variable was edited or replaced since this Mac published it.
+			case changed
+			/// The platform's variable is gone since this Mac published it.
+			case removed
+		}
+
+		/// When this Mac last published the key here; nil when it hasn't.
+		let publishedAt: Date?
+		/// Whether the value differs from the one this Mac published; true when it hasn't published it.
+		let valueChanged: Bool
+		let platform: Platform
+
+		static let notPublished = Status(publishedAt: nil, valueChanged: true, platform: .unchanged)
+
+		/// The platform has the value this Mac published, and nobody changed it since.
+		var isUpToDate: Bool { !valueChanged && platform == .unchanged }
 	}
 
 	/// A reason a key isn't published unless the person chooses it.
@@ -93,18 +104,23 @@ struct PublishPlan: Equatable, Sendable {
 		}
 	}
 
+	/// Tells this plan apart from any other, so a selection can't be used with another plan.
+	let id = UUID()
 	let destination: UUID
+	/// Where the destination published when the plan was made.
+	let location: PublishTarget.Location
 	/// In the key table's order.
 	let rows: [Row]
 	/// Variables only on the platform. A publish leaves them as they are.
 	let remoteOnlyCount: Int
+	private let rowIndex: [String: Int]
 
 	/// - Parameters:
 	///   - values: The source environment's stored values.
 	///   - check: The source environment's evaluation against the project's rules, when the project has rules.
 	///   - remote: The platform's variables that apply to the destination, by key.
 	///   - reservedKeys: Names the platform sets itself.
-	///   - history: This Mac's last publish to the destination.
+	///   - history: This Mac's history of publishing to the destination.
 	init(
 		destination: PublishDestination,
 		values: [String: String],
@@ -112,10 +128,11 @@ struct PublishPlan: Equatable, Sendable {
 		check: ProjectEnvValueCheck.Environment?,
 		remote: [String: RemoteVariable],
 		reservedKeys: Set<String>,
-		history: PublishHistory.Entry?,
+		history: PublishHistory?,
 		fingerprintKey: SymmetricKey
 	) {
 		self.destination = destination.id
+		location = destination.target.location
 		rows = VaultKeySortOrder.sortedAscending(values.keys).map { key in
 			let value = values[key] ?? ""
 			let fingerprint = PublishFingerprint.of(value: value, key: key, destination: destination.id, using: fingerprintKey)
@@ -130,11 +147,8 @@ struct PublishPlan: Equatable, Sendable {
 			if !failures.isEmpty { holds.append(.failsRules(failures)) }
 			if check?.ignored.contains(key) == true { holds.append(.ignoredByLPM) }
 			if destination.excludedKeys.contains(key) { holds.append(.excluded) }
-			switch status {
-			case .changedOnPlatform, .removedFromPlatform: holds.append(.changedOnPlatform)
-			case .unchangedSincePublish: holds.append(.upToDate)
-			case .notPublished, .changedSincePublish: break
-			}
+			if status.platform != .unchanged { holds.append(.changedOnPlatform) }
+			if status.isUpToDate { holds.append(.upToDate) }
 			return Row(
 				key: key,
 				kind: Self.kind(of: key, in: rules),
@@ -144,11 +158,12 @@ struct PublishPlan: Equatable, Sendable {
 				fingerprint: fingerprint
 			)
 		}
+		rowIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.key, $0) })
 		remoteOnlyCount = remote.keys.reduce(0) { count, key in values[key] == nil ? count + 1 : count }
 	}
 
 	func row(_ key: String) -> Row? {
-		rows.first { $0.key == key }
+		rowIndex[key].map { rows[$0] }
 	}
 
 	private static func kind(of key: String, in rules: ProjectEnvSchemaOverview) -> Kind {
@@ -161,34 +176,46 @@ struct PublishPlan: Equatable, Sendable {
 		return rules.declaredKeys.contains(key) ? .config : .undeclared
 	}
 
+	/// The platform side is judged on its own, so a value changed here
+	/// doesn't hide that someone also changed or removed it there.
 	private static func status(fingerprint: Data, remote: RemoteVariable?, record: PublishHistory.Key?) -> Status {
 		guard let record else { return .notPublished }
-		guard record.fingerprint == fingerprint else { return .changedSincePublish(publishedAt: record.publishedAt) }
-		guard let remote else { return .removedFromPlatform(publishedAt: record.publishedAt) }
-		let replaced = record.remoteID.map { $0 != remote.id } ?? false
-		let edited = record.remoteUpdatedAt.flatMap { recorded in remote.updatedAt.map { $0 > recorded } } ?? false
-		return replaced || edited
-			? .changedOnPlatform(publishedAt: record.publishedAt)
-			: .unchangedSincePublish(publishedAt: record.publishedAt)
+		let platform: Status.Platform
+		if let remote {
+			let replaced = record.remoteID.map { $0 != remote.id } ?? false
+			let edited = record.remoteUpdatedAt.flatMap { recorded in remote.updatedAt.map { $0 > recorded } } ?? false
+			platform = replaced || edited ? .changed : .unchanged
+		} else {
+			platform = .removed
+		}
+		return Status(publishedAt: record.publishedAt, valueChanged: record.fingerprint != fingerprint, platform: platform)
 	}
 }
 
 extension PublishPlan {
-	/// The keys the person chose to publish.
+	/// The keys the person chose to publish, for one plan.
 	struct Selection: Equatable, Sendable {
+		let planID: UUID
 		private(set) var keys: Set<String>
 
 		/// The keys published by default.
 		init(defaultsOf plan: PublishPlan) {
+			planID = plan.id
 			keys = Set(plan.rows.lazy.filter(\.isSelectedByDefault).map(\.key))
 		}
 
-		/// Chooses or drops `key`; false when the plan has no publishable row for it.
-		/// A row that needs a confirmation should be chosen only once the person gives it.
+		/// Chooses or drops `key`. Choosing fails when the plan can't publish
+		/// the key, or when publishing it changes other environments and the
+		/// person hasn't confirmed that.
 		@discardableResult
-		mutating func set(_ key: String, selected: Bool, in plan: PublishPlan) -> Bool {
-			guard let row = plan.row(key), row.isPublishable else { return false }
-			if selected { keys.insert(key) } else { keys.remove(key) }
+		mutating func set(_ key: String, selected: Bool, confirmed: Bool = false, in plan: PublishPlan) -> Bool {
+			guard plan.id == planID, let row = plan.row(key) else { return false }
+			guard selected else {
+				keys.remove(key)
+				return true
+			}
+			guard row.isPublishable, !row.needsConfirmation || confirmed else { return false }
+			keys.insert(key)
 			return true
 		}
 	}
@@ -196,7 +223,7 @@ extension PublishPlan {
 	struct Summary: Equatable, Sendable {
 		var adding = 0
 		var replacing = 0
-		/// Not chosen because the platform already has the value.
+		/// Not chosen, and the platform already has the value.
 		var upToDate = 0
 		/// Not chosen for any other reason.
 		var skipped = 0
@@ -207,12 +234,12 @@ extension PublishPlan {
 	func summary(of selection: Selection) -> Summary {
 		var summary = Summary()
 		for row in rows {
-			if selection.keys.contains(row.key), row.isPublishable {
+			if selection.planID == id, selection.keys.contains(row.key) {
 				switch row.operation {
 				case .add: summary.adding += 1
 				case .replace: summary.replacing += 1
 				}
-			} else if row.holds == [.upToDate] {
+			} else if row.status.isUpToDate {
 				summary.upToDate += 1
 			} else {
 				summary.skipped += 1
@@ -221,8 +248,9 @@ extension PublishPlan {
 		return summary
 	}
 
-	/// One variable a publish sends.
-	struct Change: Equatable, Sendable {
+	/// One variable a publish sends. Its value never appears when it's
+	/// printed, logged or dumped.
+	struct Change: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
 		let key: String
 		let value: String
 		let operation: Operation
@@ -233,24 +261,34 @@ extension PublishPlan {
 		func published(remoteID: String?, remoteUpdatedAt: Date?) -> PublishHistory.Published {
 			PublishHistory.Published(key: key, fingerprint: fingerprint, remoteID: remoteID, remoteUpdatedAt: remoteUpdatedAt)
 		}
+
+		var description: String { "Change(\(key), \(operation), value: <redacted>)" }
+		var debugDescription: String { description }
+		var customMirror: Mirror {
+			Mirror(self, children: ["key": key, "operation": operation, "publishesAsSecret": publishesAsSecret])
+		}
 	}
 
-	/// The values changed after the plan was made; these keys differ from what was reviewed.
-	struct StalePlan: Error, Equatable, Sendable {
-		let keys: [String]
+	enum ChangesFailure: Error, Equatable, Sendable {
+		/// The selection was made for another plan.
+		case foreignSelection
+		/// These values changed after the plan was made, so they differ from what was reviewed.
+		case stale(keys: [String])
 	}
 
 	/// The variables to send for `selection`, from the current `values`.
-	/// Fails when any chosen value differs from the one the plan was made
-	/// from, so nothing is sent that the person didn't review.
+	/// Fails when the selection belongs to another plan, or when any chosen
+	/// value differs from the one the plan was made from, so nothing is sent
+	/// that the person didn't review.
 	func changes(
 		for selection: Selection,
 		values: [String: String],
 		fingerprintKey: SymmetricKey
-	) -> Result<[Change], StalePlan> {
+	) -> Result<[Change], ChangesFailure> {
+		guard selection.planID == id else { return .failure(.foreignSelection) }
 		var changes: [Change] = []
 		var stale: [String] = []
-		for row in rows where selection.keys.contains(row.key) && row.isPublishable {
+		for row in rows where selection.keys.contains(row.key) {
 			guard let value = values[row.key],
 				PublishFingerprint.of(value: value, key: row.key, destination: destination, using: fingerprintKey) == row.fingerprint
 			else {
@@ -265,27 +303,44 @@ extension PublishPlan {
 				fingerprint: row.fingerprint
 			))
 		}
-		return stale.isEmpty ? .success(changes) : .failure(StalePlan(keys: stale))
+		return stale.isEmpty ? .success(changes) : .failure(.stale(keys: stale))
 	}
 
-	/// The destination after a publish of `selection`, remembering the
-	/// person's choices: a key they left out that would have been published
-	/// stays out next time, and a key they chose is no longer left out.
-	/// Keys held back for another reason aren't remembered as choices.
-	func destination(
-		_ destination: PublishDestination,
-		afterPublishing selection: Selection,
-		at date: Date
-	) -> PublishDestination {
-		var updated = destination
-		for row in rows where row.isPublishable {
-			if selection.keys.contains(row.key) {
-				updated.excludedKeys.remove(row.key)
-			} else if row.isSelectedByDefault {
-				updated.excludedKeys.insert(row.key)
+	/// The person's choices from a review, applied to the destination as it's
+	/// stored when the publish is recorded, so changes made meanwhile, such as
+	/// a rename, aren't undone.
+	struct Choices: Equatable, Sendable {
+		/// Keys published by default that the person left out.
+		let leftOut: Set<String>
+		/// Keys the person chose.
+		let chosen: Set<String>
+		/// Every key the source had.
+		let sourceKeys: Set<String>
+
+		/// A key left out stays out next time; a chosen key is no longer left
+		/// out; keys the source no longer has are forgotten.
+		func applied(to destination: PublishDestination, at date: Date) -> PublishDestination {
+			var updated = destination
+			updated.excludedKeys = destination.excludedKeys.intersection(sourceKeys).union(leftOut).subtracting(chosen)
+			updated.updatedAt = max(destination.updatedAt, PublishTimestamp.normalized(date))
+			return updated
+		}
+	}
+
+	/// The choices `selection` makes. Keys held back for another reason
+	/// aren't remembered as choices.
+	func choices(for selection: Selection) -> Choices {
+		var leftOut: Set<String> = []
+		var chosen: Set<String> = []
+		if selection.planID == id {
+			for row in rows where row.isPublishable {
+				if selection.keys.contains(row.key) {
+					chosen.insert(row.key)
+				} else if row.isSelectedByDefault {
+					leftOut.insert(row.key)
+				}
 			}
 		}
-		updated.updatedAt = max(destination.updatedAt, PublishTimestamp.normalized(date))
-		return updated
+		return Choices(leftOut: leftOut, chosen: chosen, sourceKeys: Set(rows.lazy.map(\.key)))
 	}
 }
