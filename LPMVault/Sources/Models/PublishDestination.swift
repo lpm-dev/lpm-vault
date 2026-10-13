@@ -13,6 +13,8 @@ struct PublishDestination: Identifiable, Hashable, Sendable {
 	/// are offered, so a review shows them before anything is sent.
 	var excludedKeys: Set<String>
 	let createdAt: Date
+	/// Moves forward with every change the store saves, so it also tells
+	/// whether the destination changed since it was read.
 	var updatedAt: Date {
 		didSet { updatedAt = PublishTimestamp.normalized(updatedAt) }
 	}
@@ -191,5 +193,12 @@ enum PublishTimestamp {
 
 	static func date(milliseconds: Int64) -> Date {
 		Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
+	}
+
+	/// `date`, or the first stored time after `previous` when `date` isn't
+	/// later, so every change to a record gets a time of its own even when
+	/// the clock stalls or steps back.
+	static func next(after previous: Date, at date: Date) -> Date {
+		self.date(milliseconds: max(milliseconds(date), min(milliseconds(previous) + 1, maximumMilliseconds)))
 	}
 }

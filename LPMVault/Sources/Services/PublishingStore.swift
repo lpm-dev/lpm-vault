@@ -51,9 +51,10 @@ actor PublishingStore {
 		Result { try readDestinations(of: vaultID) }.mapError(Self.storeError)
 	}
 
-	/// Adds `destination`, or replaces the one with its ID. Pointing a
-	/// destination somewhere else drops its history, which described the old
-	/// place, before the new place is saved, so a failure leaves neither.
+	/// Adds `destination`, or replaces the one with its ID, moving its
+	/// `updatedAt` past the stored one's. Pointing a destination somewhere
+	/// else drops its history, which described the old place, before the new
+	/// place is saved, so a failure leaves neither.
 	func save(_ destination: PublishDestination, to vaultID: String) -> Result<[PublishDestination], PublishingStoreError> {
 		Result {
 			if let invalidity = destination.invalidity { throw PublishingStoreError.invalidDestination(invalidity) }
@@ -62,10 +63,14 @@ actor PublishingStore {
 				throw PublishingStoreError.duplicateLocation(existing: other.id)
 			}
 			if let index = destinations.firstIndex(where: { $0.id == destination.id }) {
-				if destinations[index].target.location != destination.target.location {
+				let stored = destinations[index]
+				guard destination != stored else { return destinations }
+				if stored.target.location != destination.target.location {
 					try service.deletePublishingData(account: Self.historyAccount(vaultID, destination.id)).get()
 				}
-				destinations[index] = destination
+				var replacement = destination
+				replacement.updatedAt = PublishTimestamp.next(after: stored.updatedAt, at: destination.updatedAt)
+				destinations[index] = replacement
 			} else {
 				guard destinations.count < PublishingRecords.maximumDestinations else { throw PublishingStoreError.limitReached }
 				destinations.append(destination)
@@ -96,10 +101,10 @@ actor PublishingStore {
 		Result { try readHistory(of: destination, in: vaultID) }.mapError(Self.storeError)
 	}
 
-	/// Records a publish to the destination as it's stored now: the person's
-	/// choices from the review, and the keys the platform accepted. Fails,
-	/// recording nothing, when the destination was removed or pointed
-	/// elsewhere while the publish ran.
+	/// Records a publish to the destination and history as they're stored
+	/// now: the person's choices from the review, and the keys the platform
+	/// accepted. Fails, recording nothing, when the destination was removed
+	/// or pointed elsewhere while the publish ran.
 	func recordPublish(
 		_ published: [PublishHistory.Published],
 		to destination: UUID,
@@ -115,12 +120,14 @@ actor PublishingStore {
 			}
 			guard destinations[index].target.location == location else { throw PublishingStoreError.destinationMoved }
 			let updated = choices.applied(to: destinations[index], at: date)
-			if let invalidity = updated.invalidity { throw PublishingStoreError.invalidDestination(invalidity) }
-			destinations[index] = updated
-			try writeDestinations(destinations, of: vaultID)
+			if updated != destinations[index] {
+				if let invalidity = updated.invalidity { throw PublishingStoreError.invalidDestination(invalidity) }
+				destinations[index] = updated
+				try writeDestinations(destinations, of: vaultID)
+			}
 			let history = try readHistory(of: destination, in: vaultID)
-				.recording(published, keeping: choices.sourceKeys, at: date)
-			try writeHistory(history, of: destination, in: vaultID)
+			let recorded = history.recording(published, forgetting: choices.forgottenRecords(in: history), at: date)
+			try writeHistory(recorded, of: destination, in: vaultID)
 			return updated
 		}.mapError(Self.storeError)
 	}
@@ -189,38 +196,25 @@ actor PublishingStore {
 		}.mapError(Self.storeError)
 	}
 
-	/// The vaults this Mac holds publishing records for.
-	func vaultsWithRecords() -> Result<Set<String>, PublishingStoreError> {
+	/// Deletes the records, whatever version wrote them, of every vault
+	/// whose local copy is gone, or only of `candidates` when given. Listing,
+	/// checking and deleting are one step of this actor, so nothing saved
+	/// for a vault recreated meanwhile can be deleted: its save waits for
+	/// the step to end.
+	func deleteOrphanedRecords(among candidates: Set<String>? = nil) -> Result<Void, PublishingStoreError> {
 		Result {
-			var vaults: Set<String> = []
+			var accountsByVault: [String: [String]] = [:]
 			for account in try service.publishingAccounts().get() {
-				if account.hasPrefix("destinations.") {
-					vaults.insert(String(account.dropFirst("destinations.".count)))
-				} else if account.hasPrefix("history."), let separator = account.lastIndex(of: ".") {
-					let vault = account[account.index(account.startIndex, offsetBy: "history.".count)..<separator]
-					if UUID(uuidString: String(account[account.index(after: separator)...])) != nil, !vault.isEmpty {
-						vaults.insert(String(vault))
-					}
-				}
+				guard let vault = Self.vault(ofAccount: account), candidates?.contains(vault) ?? true else { continue }
+				accountsByVault[vault, default: []].append(account)
 			}
-			return vaults.filter(EnvValidation.isSafeVaultId)
-		}.mapError(Self.storeError)
-	}
-
-	/// Deletes every publishing record of the vault, as when its local copy
-	/// is deleted, whatever version wrote them.
-	func deleteRecords(of vaultID: String) -> Result<Void, PublishingStoreError> {
-		Result {
-			let destinations = try Self.destinationsAccount(vaultID)
-			let historyPrefix = "history.\(vaultID)."
-			// Destination IDs have no dots, so another vault whose ID extends this one's never matches.
-			let accounts = try service.publishingAccounts().get().filter { account in
-				account == destinations
-					|| (account.hasPrefix(historyPrefix) && UUID(uuidString: String(account.dropFirst(historyPrefix.count))) != nil)
-			}
+			guard !accountsByVault.isEmpty else { return }
+			let existing = try service.existingVaultPayloads(vaultIds: accountsByVault.keys.sorted()).get()
 			var failure: Error?
-			for account in accounts {
-				do { try service.deletePublishingData(account: account).get() } catch { failure = failure ?? error }
+			for (vault, accounts) in accountsByVault where !existing.contains(vault) {
+				for account in accounts {
+					do { try service.deletePublishingData(account: account).get() } catch { failure = failure ?? error }
+				}
 			}
 			if let failure { throw failure }
 		}.mapError(Self.storeError)
@@ -235,9 +229,11 @@ actor PublishingStore {
 		Result {
 			var destinations = try readDestinations(of: vaultID)
 			var changed = false
-			let now = PublishTimestamp.normalized(Date())
-			for index in destinations.indices where update(&destinations[index]) {
-				destinations[index].updatedAt = max(destinations[index].updatedAt, now)
+			let now = Date()
+			for index in destinations.indices {
+				let previous = destinations[index].updatedAt
+				guard update(&destinations[index]) else { continue }
+				destinations[index].updatedAt = PublishTimestamp.next(after: previous, at: now)
 				changed = true
 			}
 			if changed { try writeDestinations(destinations, of: vaultID) }
@@ -278,15 +274,36 @@ actor PublishingStore {
 	}
 
 	private static let fingerprintKeyAccount = "fingerprint-key.v1"
+	private static let destinationsPrefix = "destinations."
+	private static let historyPrefix = "history."
+
+	/// The vault whose record `account` holds, or nil when it isn't a
+	/// destinations or history account. Destination IDs have no dots, so a
+	/// history account's vault is everything before its last dot.
+	private static func vault(ofAccount account: String) -> String? {
+		let vault: Substring
+		if account.hasPrefix(destinationsPrefix) {
+			vault = account.dropFirst(destinationsPrefix.count)
+		} else if account.hasPrefix(historyPrefix) {
+			let rest = account.dropFirst(historyPrefix.count)
+			guard let separator = rest.lastIndex(of: "."), UUID(uuidString: String(rest[rest.index(after: separator)...])) != nil
+			else { return nil }
+			vault = rest[..<separator]
+		} else {
+			return nil
+		}
+		let vaultID = String(vault)
+		return EnvValidation.isSafeVaultId(vaultID) ? vaultID : nil
+	}
 
 	private static func destinationsAccount(_ vaultID: String) throws -> String {
 		guard EnvValidation.isSafeVaultId(vaultID) else { throw PublishingStoreError.invalidVault }
-		return "destinations.\(vaultID)"
+		return "\(destinationsPrefix)\(vaultID)"
 	}
 
 	private static func historyAccount(_ vaultID: String, _ destination: UUID) throws -> String {
 		guard EnvValidation.isSafeVaultId(vaultID) else { throw PublishingStoreError.invalidVault }
-		return "history.\(vaultID).\(destination.uuidString.lowercased())"
+		return "\(historyPrefix)\(vaultID).\(destination.uuidString.lowercased())"
 	}
 
 	private static func storeError(_ error: Error) -> PublishingStoreError {

@@ -309,11 +309,27 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		return true
 	}
 
+	private(set) var existingVaultPayloadsCallCount = 0
+	private var existingVaultPayloadsPause: (entered: DispatchSemaphore, gate: DispatchSemaphore)?
+
+	/// Makes the next existence check signal `entered` once it has its
+	/// answer, then wait for `gate` before returning it.
+	func pauseNextExistenceCheck(entered: DispatchSemaphore, gate: DispatchSemaphore) {
+		lock.withLock { existingVaultPayloadsPause = (entered, gate) }
+	}
+
 	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError> {
-		lock.withLock {
-			if shouldFail || failProjectReads { return .failure(failureError) }
-			return .success(Set(vaultIds.filter { environments[$0] != nil }))
+		let (result, pause) = lock.withLock { () -> (Result<Set<String>, KeychainError>, (entered: DispatchSemaphore, gate: DispatchSemaphore)?) in
+			existingVaultPayloadsCallCount += 1
+			defer { existingVaultPayloadsPause = nil }
+			if shouldFail || failProjectReads { return (.failure(failureError), existingVaultPayloadsPause) }
+			return (.success(Set(vaultIds.filter { environments[$0] != nil })), existingVaultPayloadsPause)
 		}
+		if let pause {
+			pause.entered.signal()
+			pause.gate.wait()
+		}
+		return result
 	}
 
 	func removeFromSidebar(vaultId: String) -> Bool {
@@ -458,8 +474,11 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
+	private(set) var publishingAccountsCallCount = 0
+
 	func publishingAccounts() -> Result<[String], KeychainError> {
 		lock.withLock {
+			publishingAccountsCallCount += 1
 			if failPublishingAccounts.contains("*") { return .failure(failureError) }
 			return .success(Array(publishingRecords.keys))
 		}

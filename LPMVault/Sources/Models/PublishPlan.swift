@@ -127,10 +127,12 @@ struct PublishPlan: Equatable, Sendable {
 	let rows: [Row]
 	/// Variables only on the platform. A publish leaves them as they are.
 	let remoteOnlyCount: Int
-	/// Keys the destination left out that the source no longer has, as the
-	/// plan saw them; a publish forgets only these, so an exclusion a rename
-	/// carries to a new name meanwhile survives.
+	/// When the destination the plan was made from last changed.
+	let destinationUpdatedAt: Date
+	/// Keys the destination left out that the source no longer has.
 	let staleExclusions: Set<String>
+	/// This Mac's records of keys the source no longer has, by when each was published.
+	let staleHistory: [String: Date]
 	private let rowIndex: [String: Int]
 
 	/// - Parameters:
@@ -183,7 +185,9 @@ struct PublishPlan: Equatable, Sendable {
 		}
 		rowIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.key, $0) })
 		remoteOnlyCount = remote.keys.reduce(0) { count, key in values[key] == nil ? count + 1 : count }
+		destinationUpdatedAt = destination.updatedAt
 		staleExclusions = destination.excludedKeys.filter { values[$0] == nil }
+		staleHistory = history?.keys.filter { values[$0.key] == nil }.mapValues(\.publishedAt) ?? [:]
 	}
 
 	func row(_ key: String) -> Row? {
@@ -345,53 +349,77 @@ extension PublishPlan {
 		return stale.isEmpty ? .success(changes) : .failure(.stale(keys: stale))
 	}
 
-	/// The person's choices from a review, applied to the destination as it's
-	/// stored when the publish is recorded, so changes made meanwhile, such as
-	/// a rename, aren't undone.
+	/// The person's choices from a review, applied to the destination and
+	/// history as they're stored when the publish is recorded, so changes
+	/// made meanwhile, such as a rename or a newer publish, aren't undone.
 	struct Choices: Equatable, Sendable {
 		/// Keys published by default that the person left out.
 		let leftOut: Set<String>
 		/// Keys the person chose.
 		let chosen: Set<String>
-		/// Every key the source had.
-		let sourceKeys: Set<String>
-		/// Exclusions of keys the source no longer had, as the plan saw them.
-		let forgotten: Set<String>
+		/// Exclusions of keys the source no longer had, and when the
+		/// destination they were read from last changed.
+		let staleExclusions: Set<String>
+		let destinationUpdatedAt: Date?
+		/// Records of keys the source no longer had, by when each was published.
+		let staleHistory: [String: Date]
 
-		init(leftOut: Set<String>, chosen: Set<String>, sourceKeys: Set<String>, forgotten: Set<String> = []) {
+		init(
+			leftOut: Set<String>,
+			chosen: Set<String>,
+			staleExclusions: Set<String> = [],
+			destinationUpdatedAt: Date? = nil,
+			staleHistory: [String: Date] = [:]
+		) {
 			self.leftOut = leftOut
 			self.chosen = chosen
-			self.sourceKeys = sourceKeys
-			self.forgotten = forgotten
+			self.staleExclusions = staleExclusions
+			self.destinationUpdatedAt = destinationUpdatedAt
+			self.staleHistory = staleHistory
 		}
 
-		/// A key left out stays out next time; a chosen key is no longer left
-		/// out; the stale exclusions the plan saw are forgotten. Exclusions
-		/// added since the plan, such as one a rename carried, are kept.
+		/// A key left out stays out next time, and a chosen key is no longer
+		/// left out. Stale exclusions are forgotten only while the destination
+		/// is the one the plan saw: a change since, such as a rename onto one
+		/// of those names, may have made the exclusion live again.
 		func applied(to destination: PublishDestination, at date: Date) -> PublishDestination {
+			var excluded = destination.excludedKeys
+			if destination.updatedAt == destinationUpdatedAt { excluded.subtract(staleExclusions) }
+			excluded.formUnion(leftOut)
+			excluded.subtract(chosen)
+			guard excluded != destination.excludedKeys else { return destination }
 			var updated = destination
-			updated.excludedKeys = destination.excludedKeys.subtracting(forgotten).union(leftOut).subtracting(chosen)
-			updated.updatedAt = max(destination.updatedAt, PublishTimestamp.normalized(date))
+			updated.excludedKeys = excluded
+			updated.updatedAt = PublishTimestamp.next(after: destination.updatedAt, at: date)
 			return updated
+		}
+
+		/// The stale records `history` still holds as the plan saw them. A key
+		/// published again since has a newer record, which stays.
+		func forgottenRecords(in history: PublishHistory) -> Set<String> {
+			Set(staleHistory.lazy.filter { history.keys[$0.key]?.publishedAt == $0.value }.map(\.key))
 		}
 	}
 
 	/// The choices `selection` makes. Keys held back for another reason
 	/// aren't remembered as choices.
 	func choices(for selection: Selection) -> Choices {
+		guard selection.planID == id else { return Choices(leftOut: [], chosen: []) }
 		var leftOut: Set<String> = []
 		var chosen: Set<String> = []
-		if selection.planID == id {
-			for row in rows where row.isPublishable {
-				if selection.keys.contains(row.key) {
-					chosen.insert(row.key)
-				} else if row.isSelectedByDefault {
-					leftOut.insert(row.key)
-				}
+		for row in rows where row.isPublishable {
+			if selection.keys.contains(row.key) {
+				chosen.insert(row.key)
+			} else if row.isSelectedByDefault {
+				leftOut.insert(row.key)
 			}
 		}
 		return Choices(
-			leftOut: leftOut, chosen: chosen, sourceKeys: Set(rows.lazy.map(\.key)),
-			forgotten: selection.planID == id ? staleExclusions : [])
+			leftOut: leftOut,
+			chosen: chosen,
+			staleExclusions: staleExclusions,
+			destinationUpdatedAt: destinationUpdatedAt,
+			staleHistory: staleHistory
+		)
 	}
 }

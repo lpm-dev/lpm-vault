@@ -46,13 +46,15 @@ struct PublishHistory: Equatable, Sendable {
 	static let maximumKeys = 4_096
 
 	/// The history after a publish that wrote `published` at `date`. Keys
-	/// the publish didn't write keep their earlier record while the source
-	/// still has them. Over the limit, the records published longest ago
-	/// go first, and this publish's records only when it alone is too large.
-	func recording(_ published: [Published], keeping sourceKeys: Set<String>, at date: Date) -> PublishHistory {
-		let date = PublishTimestamp.normalized(date)
+	/// the publish didn't write keep their earlier record unless they're in
+	/// `forgotten`. Over the limit, the records published longest ago go
+	/// first, and this publish's records only when it alone is too large.
+	/// `publishedAt` always moves forward, so each publish's records carry a
+	/// time of their own.
+	func recording(_ published: [Published], forgetting forgotten: Set<String>, at date: Date) -> PublishHistory {
+		let date = publishedAt.map { PublishTimestamp.next(after: $0, at: date) } ?? PublishTimestamp.normalized(date)
 		let written = Set(published.lazy.map(\.key))
-		var keys = self.keys.filter { sourceKeys.contains($0.key) && !written.contains($0.key) }
+		var keys = self.keys.filter { !forgotten.contains($0.key) && !written.contains($0.key) }
 		let room = Self.maximumKeys - min(written.count, Self.maximumKeys)
 		if keys.count > room {
 			let oldest = keys.sorted { lhs, rhs in

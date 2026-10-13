@@ -20,6 +20,7 @@ struct PublishingStoreTests {
 		_ = try await store.save(preview, to: publishTestVault).get()
 		var edited = production
 		edited.excludedKeys = ["LOG_LEVEL"]
+		edited.updatedAt = production.updatedAt.addingTimeInterval(60)
 		let saved = try await store.save(edited, to: publishTestVault).get()
 		#expect(Set(saved) == [edited, preview])
 		#expect(Set(try await store.destinations(of: publishTestVault).get()) == [edited, preview])
@@ -137,7 +138,7 @@ struct PublishingStoreTests {
 		_ = try await store.save(production, to: publishTestVault).get()
 		let at = Date(timeIntervalSince1970: 1_760_000_600)
 		let choices = PublishPlan.Choices(
-			leftOut: ["LOG_LEVEL"], chosen: ["API_TOKEN"], sourceKeys: ["API_TOKEN", "LOG_LEVEL"], forgotten: ["GONE"])
+			leftOut: ["LOG_LEVEL"], chosen: ["API_TOKEN"], staleExclusions: ["GONE"], destinationUpdatedAt: production.updatedAt)
 		let updated = try await store.recordPublish(
 			[published("API_TOKEN", to: production)], to: production.id, at: production.target.location,
 			choices: choices, of: publishTestVault, at: at).get()
@@ -165,7 +166,7 @@ struct PublishingStoreTests {
 		#expect(movedProduction.sourceEnvironment == "production" && movedProduction.excludedKeys.isEmpty)
 	}
 
-	@Test("deleting a vault's records removes its destinations and histories, even unreadable ones, and nothing else")
+	@Test("deleting a deleted vault's records removes its destinations and histories, even unreadable ones, and nothing else")
 	func deleteRecords() async throws {
 		let store = store
 		let production = vercelDestination()
@@ -176,7 +177,7 @@ struct PublishingStoreTests {
 		_ = try await store.save(vercelDestination(), to: otherVault).get()
 		keychain.publishingStorage["history.\(publishTestVault).\(UUID().uuidString.lowercased())"] = Data("{".utf8)
 		keychain.publishingStorage[destinationsAccount] = Data(#"{"version":9}"#.utf8)
-		_ = try await store.deleteRecords(of: publishTestVault).get()
+		_ = try await store.deleteOrphanedRecords(among: [publishTestVault]).get()
 		#expect(Set(keychain.publishingStorage.keys) == ["fingerprint-key.v1", "destinations.\(otherVault)"])
 	}
 
@@ -200,7 +201,7 @@ struct PublishingStoreTests {
 	private func record(_ keys: [String], to destination: PublishDestination, in store: PublishingStore) async -> Result<PublishDestination, PublishingStoreError> {
 		await store.recordPublish(
 			keys.map { published($0, to: destination) }, to: destination.id, at: destination.target.location,
-			choices: .init(leftOut: [], chosen: Set(keys), sourceKeys: Set(keys)), of: publishTestVault, at: Date())
+			choices: .init(leftOut: [], chosen: Set(keys)), of: publishTestVault, at: Date())
 	}
 
 	private func published(_ key: String, to destination: PublishDestination) -> PublishHistory.Published {
@@ -279,7 +280,7 @@ struct PublishDestinationFollowTests {
 		let destination = vercelDestination()
 		_ = try await store.publishing.save(destination, to: "project").get()
 		_ = try await store.publishing.recordPublish(
-			[], to: destination.id, at: destination.target.location, choices: .init(leftOut: [], chosen: [], sourceKeys: []),
+			[], to: destination.id, at: destination.target.location, choices: .init(leftOut: [], chosen: []),
 			of: "project", at: Date()).get()
 		let project = try #require(store.selectedProject)
 		#expect(await store.deleteLocalVault(project))
@@ -451,7 +452,7 @@ struct PublishingRecordFindingTests {
 		_ = try await vault.publishing.save(staging, to: "project").get()
 		_ = try await vault.publishing.save(production, to: "project").get()
 		_ = try await vault.publishing.recordPublish(
-			[], to: staging.id, at: staging.target.location, choices: .init(leftOut: [], chosen: [], sourceKeys: []),
+			[], to: staging.id, at: staging.target.location, choices: .init(leftOut: [], chosen: []),
 			of: "project", at: Date()).get()
 		vault.deleteEnvironment(from: "project", name: "staging")
 		await vault.refreshLocalState()
@@ -476,6 +477,98 @@ struct PublishingRecordFindingTests {
 			changes.map { $0.published(remoteID: "env_\($0.key)", remoteUpdatedAt: nil) }, to: destination.id,
 			at: plan.location, choices: plan.choices(for: selection), of: publishTestVault, at: Date()).get()
 		#expect(try await store.destinations(of: publishTestVault).get().first?.excludedKeys == ["NEW"])
+	}
+
+	@Test("an exclusion a rename carries onto a name the plan saw as stale survives recording that plan")
+	func exclusionSurvivesRenameOntoStaleName() async throws {
+		let store = store
+		let secret = SymmetricKey(size: .bits256)
+		let destination = vercelDestination(source: "staging", environment: .preview, excluded: ["OLD", "NEW"])
+		_ = try await store.save(destination, to: publishTestVault).get()
+		let values = ["OLD": "1", "A": "2"]
+		let plan = PublishPlan(
+			destination: destination, values: values, rules: .empty, check: nil, remote: [:],
+			reservedKeys: [], history: nil, fingerprintKey: secret)
+		let selection = PublishPlan.Selection(defaultsOf: plan)
+		_ = try await store.renameKey("OLD", to: "NEW", sourcedFrom: ["staging"], in: publishTestVault).get()
+		let changes = try plan.changes(for: selection, values: values, fingerprintKey: secret).get()
+		_ = try await store.recordPublish(
+			changes.map { $0.published(remoteID: "env_\($0.key)", remoteUpdatedAt: nil) }, to: destination.id,
+			at: plan.location, choices: plan.choices(for: selection), of: publishTestVault, at: Date()).get()
+		#expect(try await store.destinations(of: publishTestVault).get().first?.excludedKeys == ["NEW"])
+	}
+
+	@Test("recording an older plan keeps the history a newer publish wrote for a key the older plan didn't know")
+	func olderPlanKeepsNewerHistory() async throws {
+		let store = store
+		let secret = SymmetricKey(size: .bits256)
+		let destination = vercelDestination()
+		_ = try await store.save(destination, to: publishTestVault).get()
+		func publish(_ values: [String: String], at date: Date) async throws -> PublishPlan {
+			let stored = try #require(try await store.destinations(of: publishTestVault).get().first)
+			let history = try await store.history(of: destination.id, in: publishTestVault).get()
+			return PublishPlan(destination: stored, values: values, rules: .empty, check: nil, remote: [:],
+				reservedKeys: [], history: history, fingerprintKey: secret)
+		}
+		let older = try await publish(["A": "1"], at: Date())
+		let newer = try await publish(["A": "1", "B": "2"], at: Date())
+		for (plan, values) in [(newer, ["A": "1", "B": "2"]), (older, ["A": "1"])] {
+			let selection = PublishPlan.Selection(defaultsOf: plan)
+			let changes = try plan.changes(for: selection, values: values, fingerprintKey: secret).get()
+			_ = try await store.recordPublish(
+				changes.map { $0.published(remoteID: "env_\($0.key)", remoteUpdatedAt: nil) }, to: destination.id,
+				at: plan.location, choices: plan.choices(for: selection), of: publishTestVault, at: Date()).get()
+		}
+		#expect(try await store.history(of: destination.id, in: publishTestVault).get().keys.keys.sorted() == ["A", "B"])
+	}
+
+	@Test("cleanup skips account names that aren't publishing records and still clears orphaned ones")
+	func malformedAccounts() async throws {
+		let id = UUID().uuidString.lowercased()
+		let malformed = ["history.", "history.\(id)", "history..\(id)", "history.vault.not-a-uuid", "destinations.", "other"]
+		let orphaned = ["destinations.valid-vault", "history.history-vault.\(id)", "history.dotted.vault.\(id.uppercased())"]
+		for account in malformed + orphaned {
+			keychain.publishingStorage[account] = Data("{}".utf8)
+		}
+		_ = try await store.deleteOrphanedRecords().get()
+		#expect(Set(keychain.publishingStorage.keys) == Set(malformed))
+	}
+
+	@Test("a stale history record is forgotten only while it's the one the plan saw")
+	func staleRecordPublishedAgain() async throws {
+		let store = store
+		let destination = vercelDestination()
+		_ = try await store.save(destination, to: publishTestVault).get()
+		_ = try await record(["A", "B", "C"], to: destination, in: store).get()
+		let history = try await store.history(of: destination.id, in: publishTestVault).get()
+		let plan = PublishPlan(
+			destination: destination, values: ["A": "1"], rules: .empty, check: nil, remote: [:],
+			reservedKeys: [], history: history, fingerprintKey: SymmetricKey(size: .bits256))
+		#expect(Set(plan.staleHistory.keys) == ["B", "C"])
+		// B comes back to the source and is published again before the plan is recorded.
+		_ = try await record(["B"], to: destination, in: store).get()
+		_ = try await store.recordPublish(
+			[], to: destination.id, at: plan.location, choices: plan.choices(for: PublishPlan.Selection(defaultsOf: plan)),
+			of: publishTestVault, at: Date()).get()
+		#expect(try await store.history(of: destination.id, in: publishTestVault).get().keys.keys.sorted() == ["A", "B"])
+		#expect(try await store.destinations(of: publishTestVault).get() == [destination], "No choice changed, so nothing was rewritten")
+	}
+
+	@Test("saving a change moves the destination's time past the stored one's, even when the clock stalls")
+	func saveMovesTimeForward() async throws {
+		let store = store
+		let destination = vercelDestination()
+		_ = try await store.save(destination, to: publishTestVault).get()
+		#expect(try await store.save(destination, to: publishTestVault).get() == [destination])
+		var first = destination
+		first.excludedKeys = ["A"]
+		let saved = try #require(try await store.save(first, to: publishTestVault).get().first)
+		var second = destination
+		second.excludedKeys = ["B"]
+		let savedAgain = try #require(try await store.save(second, to: publishTestVault).get().first)
+		let milliseconds = PublishTimestamp.milliseconds(destination.updatedAt)
+		#expect(saved.excludedKeys == ["A"] && saved.updatedAt == PublishTimestamp.date(milliseconds: milliseconds + 1))
+		#expect(savedAgain.excludedKeys == ["B"] && savedAgain.updatedAt == PublishTimestamp.date(milliseconds: milliseconds + 2))
 	}
 
 	@Test("retargeting whose history can't be removed isn't saved, so a retry still clears the old history")
@@ -506,6 +599,44 @@ struct PublishingRecordFindingTests {
 		#expect(keychain.publishingStorage.isEmpty)
 	}
 
+	@Test("cleanup lists the records once and checks every vault in one call, however many are orphaned")
+	func cleanupIsLinear() async throws {
+		let vault = makeVault(["default": ["A": "1"]])
+		defer { vault.lock() }
+		for index in 0..<20 {
+			keychain.publishingStorage["destinations.gone-\(index)"] = Data("{}".utf8)
+			keychain.publishingStorage["history.gone-\(index).\(UUID().uuidString.lowercased())"] = Data("{}".utf8)
+		}
+		_ = try await vault.publishing.save(vercelDestination(source: "default"), to: "project").get()
+		let lists = keychain.publishingAccountsCallCount
+		let checks = keychain.existingVaultPayloadsCallCount
+		await vault.reconcilePublishingRecords()
+		#expect(keychain.publishingAccountsCallCount - lists == 1)
+		#expect(keychain.existingVaultPayloadsCallCount - checks == 1)
+		#expect(Array(keychain.publishingStorage.keys) == ["destinations.project"])
+	}
+
+	@Test("cleanup never deletes records saved for a vault recreated while it ran")
+	func cleanupRacesRecreation() async throws {
+		let vault = makeVault(["default": ["A": "1"]])
+		defer { vault.lock() }
+		let stale = try #require(PublishingRecords.encode([vercelDestination(source: "default")], vaultID: "recreated"))
+		keychain.publishingStorage["destinations.recreated"] = stale
+		let entered = DispatchSemaphore(value: 0)
+		let gate = DispatchSemaphore(value: 0)
+		keychain.pauseNextExistenceCheck(entered: entered, gate: gate)
+		let cleanup = Task { await vault.reconcilePublishingRecords() }
+		await Task.detached { blockUntilSignaled(entered) }.value
+		keychain.envStorage["recreated"] = (name: "Recreated", path: "", environments: ["default": ["A": "1"]])
+		let fresh = vercelDestination(source: "default")
+		let save = Task { try await vault.publishing.save(fresh, to: "recreated").get() }
+		try await Task.sleep(for: .milliseconds(100))
+		gate.signal()
+		await cleanup.value
+		_ = try await save.value
+		#expect(try await vault.publishing.destinations(of: "recreated").get() == [fresh])
+	}
+
 	@Test("unlocking clears publishing records of vaults deleted from this Mac, and keeps those only removed from the sidebar")
 	func reconcileOnUnlock() async throws {
 		let vault = makeVault(["default": ["A": "1"]])
@@ -534,6 +665,11 @@ struct PublishingRecordFindingTests {
 					remoteID: "env_\(key)", remoteUpdatedAt: nil, publishedAsSecret: true)
 			},
 			to: destination.id, at: destination.target.location,
-			choices: .init(leftOut: [], chosen: Set(keys), sourceKeys: Set(keys)), of: publishTestVault, at: Date())
+			choices: .init(leftOut: [], chosen: Set(keys)), of: publishTestVault, at: Date())
 	}
+}
+
+/// Waits on a semaphore off the cooperative pool's async context.
+private func blockUntilSignaled(_ semaphore: DispatchSemaphore) {
+	semaphore.wait()
 }

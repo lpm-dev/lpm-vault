@@ -186,7 +186,7 @@ struct PublishHistoryTests {
 		let history = PublishHistory().recording([
 			published("API_TOKEN", remoteID: "env_1", updatedAt: Date(timeIntervalSince1970: 1_760_000_100.789)),
 			published("LOG_LEVEL", remoteID: nil, updatedAt: nil),
-		], keeping: [], at: publishedAt)
+		], forgetting: [], at: publishedAt)
 		let data = try #require(PublishingRecords.encode(history, destination: destination, vaultID: publishTestVault))
 		#expect(try PublishingRecords.decodeHistory(data, destination: destination, vaultID: publishTestVault).get() == history)
 		#expect(!String(decoding: data, as: UTF8.self).contains("api_token"))
@@ -202,7 +202,7 @@ struct PublishHistoryTests {
 			.init(key: "API", fingerprint: Data(count: 32), remoteID: "env\u{0}", remoteUpdatedAt: nil, publishedAsSecret: true),
 		]
 		for item in invalid {
-			let history = PublishHistory().recording([item], keeping: [], at: publishedAt)
+			let history = PublishHistory().recording([item], forgetting: [], at: publishedAt)
 			#expect(PublishingRecords.encode(history, destination: destination, vaultID: publishTestVault) == nil)
 		}
 	}
@@ -223,20 +223,20 @@ struct PublishHistoryTests {
 		let far = PublishPlan.RemoteVariable(id: "env_1", updatedAt: Date(timeIntervalSince1970: 1e300))
 		#expect(far.updatedAt == PublishTimestamp.date(milliseconds: PublishTimestamp.maximumMilliseconds))
 		let history = PublishHistory().recording(
-			[published("A", remoteID: "env_1", updatedAt: Date(timeIntervalSince1970: .nan))], keeping: [], at: Date(timeIntervalSince1970: -5))
+			[published("A", remoteID: "env_1", updatedAt: Date(timeIntervalSince1970: .nan))], forgetting: [], at: Date(timeIntervalSince1970: -5))
 		#expect(history.publishedAt == Date(timeIntervalSince1970: 0))
 		let data = try #require(PublishingRecords.encode(history, destination: destination, vaultID: publishTestVault))
 		#expect(try PublishingRecords.decodeHistory(data, destination: destination, vaultID: publishTestVault).get() == history)
 	}
 
-	@Test("a later publish replaces the records it wrote, and keeps the others only while the source has them")
+	@Test("a later publish replaces the records it wrote, and keeps the others unless they're forgotten")
 	func laterPublish() {
 		let first = PublishHistory().recording(
 			[published("A", remoteID: "env_a", updatedAt: nil), published("B", remoteID: "env_b", updatedAt: nil),
 			 published("GONE", remoteID: "env_g", updatedAt: nil)],
-			keeping: [], at: publishedAt)
+			forgetting: [], at: publishedAt)
 		let later = publishedAt.addingTimeInterval(60)
-		let second = first.recording([published("B", remoteID: "env_b2", updatedAt: nil)], keeping: ["A", "B"], at: later)
+		let second = first.recording([published("B", remoteID: "env_b2", updatedAt: nil)], forgetting: ["GONE"], at: later)
 		#expect(second.publishedAt == PublishTimestamp.normalized(later))
 		#expect(second.keys["A"]?.publishedAt == PublishTimestamp.normalized(publishedAt))
 		#expect(second.keys["B"]?.remoteID == "env_b2")
@@ -244,14 +244,28 @@ struct PublishHistoryTests {
 		#expect(second.keys["GONE"] == nil)
 	}
 
+	@Test("each publish moves the history's time forward, even when the clock stalls or steps back")
+	func publishTimeMovesForward() {
+		let first = PublishHistory().recording([published("A", remoteID: nil, updatedAt: nil)], forgetting: [], at: publishedAt)
+		let stalled = first.recording([published("B", remoteID: nil, updatedAt: nil)], forgetting: [], at: publishedAt)
+		let back = stalled.recording(
+			[published("C", remoteID: nil, updatedAt: nil)], forgetting: [], at: publishedAt.addingTimeInterval(-60))
+		let milliseconds = PublishTimestamp.milliseconds(publishedAt)
+		#expect(stalled.publishedAt == PublishTimestamp.date(milliseconds: milliseconds + 1))
+		#expect(back.publishedAt == PublishTimestamp.date(milliseconds: milliseconds + 2))
+		#expect(back.keys["C"]?.publishedAt == back.publishedAt && back.keys["A"]?.publishedAt == first.publishedAt)
+		let last = PublishTimestamp.date(milliseconds: PublishTimestamp.maximumMilliseconds)
+		#expect(PublishTimestamp.next(after: last, at: publishedAt) == last)
+	}
+
 	@Test("over the limit, the records published longest ago go, never this publish's")
 	func limit() {
 		let limit = PublishHistory.maximumKeys
 		let oldKeys = (0..<limit).map { "OLD_\($0)" }
-		let old = PublishHistory().recording(oldKeys.map { published($0, remoteID: nil, updatedAt: nil) }, keeping: [], at: publishedAt)
+		let old = PublishHistory().recording(oldKeys.map { published($0, remoteID: nil, updatedAt: nil) }, forgetting: [], at: publishedAt)
 		let newKeys = ["AAA_NEW", "AAB_NEW"]
 		let new = old.recording(
-			newKeys.map { published($0, remoteID: nil, updatedAt: nil) }, keeping: Set(oldKeys), at: publishedAt.addingTimeInterval(1))
+			newKeys.map { published($0, remoteID: nil, updatedAt: nil) }, forgetting: [], at: publishedAt.addingTimeInterval(1))
 		#expect(new.keys.count == limit)
 		#expect(new.keys["AAA_NEW"] != nil && new.keys["AAB_NEW"] != nil)
 		#expect(new.keys["OLD_0"] == nil && new.keys["OLD_1"] == nil && new.keys["OLD_2"] != nil)
@@ -264,7 +278,7 @@ struct PublishHistoryTests {
 		for batch in 0..<4 {
 			history = history.recording(
 				(0..<500).map { published("\(longName)_\(batch)_\($0)", remoteID: nil, updatedAt: nil) },
-				keeping: Set(history.keys.keys), at: publishedAt.addingTimeInterval(Double(batch)))
+				forgetting: [], at: publishedAt.addingTimeInterval(Double(batch)))
 		}
 		#expect(PublishingRecords.encode(history, destination: destination, vaultID: publishTestVault) == nil)
 		let fitted = try #require(PublishingRecords.encodeFitting(history, destination: destination, vaultID: publishTestVault))
