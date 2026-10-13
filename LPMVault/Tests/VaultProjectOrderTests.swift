@@ -154,7 +154,11 @@ extension SheetInteractionTests {
 			#expect(reorder.shift(at: 2) == (up ? 1 : -1) * (reorder.lift?.height ?? 0), "Zulu makes room for the dragged project")
 			try await settleAnimations(in: host)
 			let markers = try markerRows(in: host)
-			#expect((1...4).contains(markers.count), "One 2-point landing line marks the drop")
+			if markers.isEmpty { RenderedText.saveDiagnostic(try host.snapshot(host.view), named: "sidebar-drag-\(direction)") }
+			#expect((1...4).contains(markers.count), """
+				One 2-point landing line marks the drop; offset \(reorder.offset), \
+				frames \((reorder.lift?.order ?? []).compactMap { reorder.frames[$0] }), rows \(rows)
+				""")
 			let line = try lineCenter(in: host)
 			// Zulu slides into the dragged project's place, so the line sits where that place met Zulu.
 			let (below, above) = up ? (rows[3], rows[2]) : (rows[2], rows[1])
@@ -288,11 +292,11 @@ extension SheetInteractionTests {
 			let host = sidebarHost(store, height: 320, reorder: reorder)
 			defer { host.window.close() }
 			try await host.settle()
-			let scrollView = try #require(scrollViews(in: host.view).first)
+			let scroller = try #require(subviews(of: VaultSidebarAutoscroll.ScrollerView.self, in: host.view).first)
+			let scrollView = try #require(scroller.enclosingScrollView)
 			let rows = try labelBands(in: host)
 			try #require(rows.count >= 3)
 			let first = store.visibleVaults(matching: "").map(\.id)[0]
-			let scroller = try #require(subviews(of: VaultSidebarAutoscroll.ScrollerView.self, in: host.view).first)
 			#expect(!scroller.isScrolling)
 			let edge = NSPoint(x: 140, y: 6)
 			try drag(in: host, from: NSPoint(x: 140, y: rows[0].midY), to: edge, release: false)
@@ -379,7 +383,7 @@ extension SheetInteractionTests {
 			let host = sidebarHost(store, height: 320, reorder: reorder)
 			defer { host.window.close() }
 			try await host.settle()
-			let scrollView = try #require(scrollViews(in: host.view).first)
+			let scrollView = try #require(subviews(of: VaultSidebarAutoscroll.ScrollerView.self, in: host.view).first?.enclosingScrollView)
 			for _ in 0..<29 { try host.key("\u{F701}", code: 125, modifiers: [.option, .numericPad, .function], in: host.window) }
 			#expect(store.visibleVaults(matching: "").map(\.id).last == order[0])
 			let visible = try await host.waitUntil {
@@ -613,10 +617,6 @@ extension SheetInteractionTests {
 			let rows = try markerRows(in: host)
 			let first = try #require(rows.first), last = try #require(rows.last)
 			return host.view.bounds.height - CGFloat(first + last + 1) / 4
-		}
-
-		private func scrollViews(in view: NSView) -> [NSScrollView] {
-			subviews(of: NSScrollView.self, in: view)
 		}
 
 		private func subviews<T: NSView>(of type: T.Type, in view: NSView) -> [T] {
