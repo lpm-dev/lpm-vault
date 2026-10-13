@@ -7,10 +7,10 @@
     "LPMEnv.xcframework/macos-arm64_x86_64/libLPMEnv.a": "cc95c5ff310ab4a55f52871c778477e35e4c857136f74aab91c7e9a52c711352"
   },
   "repository": "https://github.com/lpm-dev/rust-client",
-  "revision": "c53f29896ea14f88792adbf8b7a27a34ce6284b3",
+  "revision": "34f1465d5eb9dffccf47df5351cfb138f3c54738",
   "sources": {
     ".cargo/config.toml": "fccee23445e297786f527a4c0ae0b0171ba8bc5bf7c3ce001fd1f2c81f624ece",
-    "Cargo.lock": "aa5c4602d077eebbf5fd2b3e1b4e5fe6bd3f217e2c6c96ce7681cf223e9ce5d9",
+    "Cargo.lock": "915a17ad8bb43442067ce7f7e8c5443bcc81a5755e326f8d4a320111bdbf6616",
     "Cargo.toml": "de2a239396a4281470f7c7301915d5bfb9b0f23f1cb5a85a2ac3b1f98c89f392",
     "crates/lpm-env-ffi/Cargo.toml": "b1718673c5e15465999aa5e91b0426047053c5033c460aa05a47755c0452032f",
     "crates/lpm-env-ffi/include/lpm_env.h": "94a8291864420f4feb3e69881840d1d5334caa66bcbd58a307472032953c432b",
