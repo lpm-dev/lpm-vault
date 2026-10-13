@@ -414,14 +414,23 @@ final class SheetTestHost<V: View> {
 		_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false,
 		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
 	) async throws {
+		try await clickLater(label, in: targetWindow, region: region, caseInsensitive: caseInsensitive, onRecognition: onRecognition)()
+	}
+
+	/// Finds the rendered target as `click` does and returns the click, for a
+	/// test whose next step can take the target away before recognition would
+	/// find it.
+	func clickLater(
+		_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false,
+		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
+	) async throws -> () throws -> Void {
 		let window = targetWindow ?? self.window
 		let target = try #require(window.contentView)
 		let options: String.CompareOptions = caseInsensitive ? .caseInsensitive : []
 		target.layoutSubtreeIfNeeded()
 		window.displayIfNeeded()
 		if let button = nativeButton(label, in: target, options: options) {
-			NativeTestClick.send(to: button)
-			return
+			return { NativeTestClick.send(to: button) }
 		}
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		var bounds = try await labelBounds(label, in: target, options: options, region: region, onRecognition: onRecognition)
@@ -435,7 +444,7 @@ final class SheetTestHost<V: View> {
 			NSPoint(x: box.midX * target.bounds.width, y: (target.isFlipped ? 1 - box.midY : box.midY) * target.bounds.height),
 			to: nil
 		)
-		try NativeTestClick.send(to: window, at: point)
+		return { try NativeTestClick.send(to: window, at: point) }
 	}
 
 	private func nativeButton(_ label: String, in view: NSView, options: String.CompareOptions) -> NSButton? {
