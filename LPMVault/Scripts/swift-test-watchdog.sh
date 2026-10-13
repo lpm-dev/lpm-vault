@@ -2,7 +2,8 @@
 # Runs `swift test` with the given arguments under a time limit. A run that
 # hangs prints the stacks of the test process and fails, instead of holding
 # the job until its timeout. With SWIFT_TEST_SHARD set, it runs only that
-# shard of the tests (see swift-test-shard.py), and fails unless exactly those ran.
+# shard of the tests, or those of it SWIFT_TEST_FILTER matches (see
+# swift-test-shard.py), and fails unless exactly those ran.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

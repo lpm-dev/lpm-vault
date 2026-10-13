@@ -95,6 +95,30 @@ class SwiftWatchdogTests(unittest.TestCase):
                 result = self.launch(FAKE_SWIFT_TESTS='\n'.join(TESTS), SWIFT_TEST_SHARD=shard, SWIFT_TEST_ISOLATED_SUITE=isolated)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_a_filter_runs_only_the_isolated_suite_tests_it_matches(self):
+        suite = 'LPMVaultTests.SheetInteractionTests'
+        inside = sorted(test for test in TESTS if test.startswith(suite + '/'))
+        for pattern, expected in [(r'Nested/screen1\d?\(', [f'{suite}/Nested/screen{index}()' for index in [1, 10, 11]]),
+                                  ('', inside)]:
+            with self.subTest(pattern=pattern), tempfile.TemporaryDirectory() as directory:
+                ran = Path(directory) / 'ran'
+                result = self.launch(FAKE_SWIFT_TESTS='\n'.join(TESTS), SWIFT_TEST_SHARD='1/1', SWIFT_TEST_ISOLATED_SUITE=suite,
+                                     SWIFT_TEST_FILTER=pattern, FAKE_SWIFT_RAN=str(ran))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(sorted(ran.read_text().split()), expected)
+                self.assertIn(f'runs {len(expected)} tests', result.stdout)
+
+    def test_a_filter_that_is_invalid_or_matches_none_of_the_shard_fails_before_running(self):
+        suite = 'LPMVaultTests.SheetInteractionTests'
+        for pattern, message in [('(', 'Invalid filter'), ('SchemaGroupModelTests', 'match the filter'), ('NoSuchTest', 'match the filter')]:
+            with self.subTest(pattern=pattern), tempfile.TemporaryDirectory() as directory:
+                ran = Path(directory) / 'ran'
+                result = self.launch(FAKE_SWIFT_TESTS='\n'.join(TESTS), SWIFT_TEST_SHARD='1/1', SWIFT_TEST_ISOLATED_SUITE=suite,
+                                     SWIFT_TEST_FILTER=pattern, FAKE_SWIFT_RAN=str(ran))
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(message, result.stdout + result.stderr)
+                self.assertFalse(ran.exists(), 'Nothing runs')
+
     def test_a_shard_that_runs_other_tests_than_its_own_fails(self):
         for extra in [{'FAKE_SWIFT_DROP': '1'}, {'FAKE_SWIFT_EXTRA': 'LPMVaultTests.Elsewhere/stray()'}]:
             with self.subTest(extra=extra):
