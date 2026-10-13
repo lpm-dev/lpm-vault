@@ -6,6 +6,11 @@ on:
         description: The tests to run, as swift-test-shard.py reads SWIFT_TEST_SHARD; the UI suite's tests run apart from every other.
         required: true
         type: string
+      filter:
+        description: A regular expression; only the shard's tests whose identifier it matches run. Empty runs them all.
+        required: false
+        default: ''
+        type: string
       diagnostics:
         description: The name of the artifact that keeps a failed run's diagnostics.
         required: true
@@ -49,6 +54,7 @@ jobs:
         env:
           LPM_TEST_SNAPSHOT_DIR: ${{ runner.temp }}/ui-snapshots
           SWIFT_TEST_SHARD: ${{ inputs.shard }}
+          SWIFT_TEST_FILTER: ${{ inputs.filter }}
           SWIFT_TEST_ISOLATED_SUITE: LPMVaultTests.SheetInteractionTests
         run: bash LPMVault/Scripts/swift-test-watchdog.sh --package-path LPMVault --skip-build --disable-automatic-resolution -Xswiftc -warnings-as-errors
       - name: Preserve failed test diagnostics

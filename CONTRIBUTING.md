@@ -59,6 +59,11 @@ swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warn
 
 Pull request checks run every Swift test except the native UI suite, `SheetInteractionTests`.
 Its tests read the screen with Vision, which is CPU-only and several times slower on hosted runners, so the [UI regressions workflow](.github/workflows/ui.yml) runs them after every merge to `main`, before every release, on demand from the Actions tab, and for a pull request labeled `ui-tests`.
+An on-demand run can take a `filter`, a regular expression for the identifiers of the tests to run, and runs only those, on one runner, in a few minutes. Use it to check one test on the runners' macOS without waiting for every shard:
+
+```sh
+gh workflow run ui.yml --ref <branch> -f filter='VaultProjectOrderTests/dragAutoscrolls'
+```
 Native UI tests belong in `SheetInteractionTests` or a suite nested in it; a test that opens a test window or reads text elsewhere fails.
 
 Before you open a pull request, also run the rest of the CI checks from the repository root:

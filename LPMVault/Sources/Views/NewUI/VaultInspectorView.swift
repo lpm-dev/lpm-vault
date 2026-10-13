@@ -461,6 +461,7 @@ private struct VaultKeyEditor: View {
 					.lineLimit(1...4)
 			} else {
 				SecureField(label, text: binding, prompt: Text("Empty"))
+					.vaultSecretValueField()
 			}
 		}
 		.textFieldStyle(.plain)
