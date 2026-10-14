@@ -179,6 +179,21 @@ struct VercelClientTests {
 		#expect(await client(route).customEnvironments(projectID: "prj_1", teamID: nil) == .failure(expected))
 	}
 
+	@Test(
+		"a token Vercel no longer accepts needs reconnecting; a refused permission or a conflict doesn't",
+		arguments: [
+			(#"{"error":{"code":"forbidden","message":"Not authorized","invalidToken":true}}"#, VercelAPIError.unauthorized),
+			(#"{"error":{"code":"forbidden","message":"You don't have permission"}}"#, .forbidden),
+			(#"{"error":{"code":"ENV_ALREADY_EXISTS","message":"The variable already exists."}}"#,
+				.rejected(code: "ENV_ALREADY_EXISTS", message: "The variable already exists.")),
+			("{}", .forbidden),
+		]
+	)
+	func forbiddenKinds(body: String, expected: VercelAPIError) async {
+		let route = PlatformHTTPStub.platform { _ in PlatformHTTPStub.Reply(status: 403, body: Data(body.utf8)) }
+		#expect(await client(route).variables(projectID: "prj_1", teamID: nil) == .failure(expected))
+	}
+
 	@Test("an ID that could change the request's path is never sent")
 	func refusesUnsafeIdentifiers() async {
 		let route = PlatformHTTPStub.platform { _ in .json(200, [:]) }

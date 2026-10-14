@@ -47,7 +47,7 @@ struct PlatformsView: View {
 						.accessibilityElement(children: .combine)
 					}
 
-					Text("Disconnecting forgets the token on this Mac only. To remove LPM Vault's access, uninstall the integration from your Vercel team's Integrations settings.")
+					Text("Disconnecting forgets the token on this Mac only. To remove LPM Vault's access, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)

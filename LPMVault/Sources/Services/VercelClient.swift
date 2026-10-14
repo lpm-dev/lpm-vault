@@ -353,8 +353,12 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 
 	private static func failure(_ http: HTTPURLResponse, _ data: Data) -> VercelAPIError {
 		let error = (try? JSONDecoder().decode(ErrorResponse.self, from: data))?.error
+		// Vercel answers a token it no longer accepts, as after the integration
+		// is uninstalled, with 403 rather than 401.
+		if error?.invalidToken == true { return .unauthorized }
 		switch http.statusCode {
 		case 401: return .unauthorized
+		case 403 where error?.code == "forbidden": return .forbidden
 		case 404: return .notFound
 		case 429:
 			let reset = http.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap(TimeInterval.init)
@@ -531,6 +535,7 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 		struct Detail: Decodable {
 			let code: String?
 			let message: String?
+			let invalidToken: Bool?
 		}
 		let error: Detail?
 	}
