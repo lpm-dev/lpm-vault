@@ -234,16 +234,15 @@ struct VaultTitleBarView: View {
 	}
 
 	static func title(of destination: PublishDestination) -> String {
-		switch destination.target {
-		case .vercel(let target):
-			"\(target.projectName) / \(target.environment.displayName) — Vercel · \(target.teamName)"
-		}
+		let target = destination.target
+		return "\(target.placeName) — \(target.platform.displayName) · \(target.accountName)"
 	}
 
 	static func subtitle(of summary: PublishDestinationSummary) -> String {
 		let source = "from \(VaultProject.displayName(for: summary.destination.sourceEnvironment))"
-		guard let publishedAt = summary.lastPublishedAt else { return "\(source) · not published yet" }
-		return "\(source) · \(RelativeTimestampFormatter.string(from: publishedAt))"
+		let when = summary.lastPublishedAt.map { RelativeTimestampFormatter.string(from: $0) } ?? "not published yet"
+		let parts = [summary.destination.target.placeDetail, source, when]
+		return parts.compactMap { $0 }.joined(separator: " · ")
 	}
 
 	private var isOrganization: Bool {

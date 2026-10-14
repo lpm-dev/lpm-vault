@@ -126,16 +126,85 @@ struct CoolifyTeam: Equatable, Sendable {
 	}
 }
 
+/// An application or service a Coolify team can publish to.
+struct CoolifyResource: Identifiable, Equatable, Sendable {
+	let kind: CoolifyPublishTarget.Resource
+	/// Its UUID.
+	let id: String
+	let name: String
+	/// The Coolify project and environment holding it; nil when Coolify didn't list them.
+	let projectName: String?
+	let environmentName: String?
+	/// An application's build pack, such as `dockercompose`.
+	let buildPack: String?
+}
+
+/// One of a resource's variables, without its value.
+struct CoolifyVariable: Identifiable, Equatable, Sendable {
+	/// Its UUID.
+	let id: String
+	let key: String
+	/// Whether it belongs to an application's preview deployments.
+	let isPreview: Bool
+	/// Locked: Coolify shows the value once and never again.
+	let isLocked: Bool
+	let updatedAt: Date?
+	let createdAt: Date?
+
+	init(id: String, key: String, isPreview: Bool, isLocked: Bool, updatedAt: Date?, createdAt: Date? = nil) {
+		self.id = id
+		self.key = key
+		self.isPreview = isPreview
+		self.isLocked = isLocked
+		self.updatedAt = updatedAt
+		self.createdAt = createdAt
+	}
+}
+
+/// A variable to create or a value to replace. The value never appears when
+/// it's printed, logged or dumped.
+struct CoolifyVariableWrite: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	let key: String
+	let value: String
+	let isPreview: Bool
+	/// Locked, so Coolify never shows the value again.
+	let isLocked: Bool
+
+	/// Coolify keeps a value with line breaks only as a multiline one.
+	var isMultiline: Bool { value.contains("\n") || value.contains("\r") }
+
+	var description: String { "CoolifyVariableWrite(\(key), preview: \(isPreview), locked: \(isLocked), value: <redacted>)" }
+	var debugDescription: String { description }
+	var customMirror: Mirror { Mirror(self, children: ["key": key, "isPreview": isPreview, "isLocked": isLocked]) }
+}
+
 protocol CoolifyClientProtocol: Sendable {
 	/// The token's team, which also proves the address is a Coolify instance that accepts the token.
 	func team() async -> Result<CoolifyTeam, CoolifyAPIError>
+	/// The team's applications and services, with the projects and environments holding them.
+	func resources() async -> Result<[CoolifyResource], CoolifyAPIError>
+	/// The application's build pack, such as `dockercompose`.
+	func buildPack(ofApplication id: String) async -> Result<String?, CoolifyAPIError>
+	/// The resource's variables, an application's preview ones included.
+	func variables(of resource: CoolifyPublishTarget.Resource, id: String) async -> Result<[CoolifyVariable], CoolifyAPIError>
+	/// Creates the variable and returns its UUID; Coolify refuses a key that already exists.
+	func create(_ write: CoolifyVariableWrite, in resource: CoolifyPublishTarget.Resource, id: String) async -> Result<String, CoolifyAPIError>
+	/// Replaces the value of the variable with the key.
+	func update(_ write: CoolifyVariableWrite, in resource: CoolifyPublishTarget.Resource, id: String) async -> Result<CoolifyVariable, CoolifyAPIError>
+	func delete(_ variableID: String, in resource: CoolifyPublishTarget.Resource, id: String) async -> Result<Void, CoolifyAPIError>
 }
 
 /// Coolify's REST API on one instance, with one API token. Requests go only
 /// to the instance, and redirects are refused so the token never follows one.
 struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
 	static let maximumAccessTokenLength = 4_096
+	/// Projects whose environments are read at once.
+	static let projectConcurrency = 4
 	private static let maximumResponseBytes = 2 * 1024 * 1024
+	/// Coolify lists whole applications, compose files included, without pages.
+	private static let maximumListBytes = 16 * 1024 * 1024
+	/// A project with its environments.
+	private static let maximumProjectBytes = 1024 * 1024
 
 	private let instance: CoolifyInstance
 	private let token: String
@@ -150,10 +219,22 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 		delegateQueue: nil
 	)
 
-	init(instance: CoolifyInstance, token: String, session: URLSession? = nil) {
+	/// How much discovering a team's resources may read.
+	struct Limits: Sendable {
+		/// Projects whose environments are read to name where each resource is.
+		var namedProjects = 100
+		var environmentsPerProject = 1_000
+		/// Everything one discovery reads, in bytes.
+		var discoveryBytes = 48 * 1024 * 1024
+	}
+
+	private let limits: Limits
+
+	init(instance: CoolifyInstance, token: String, session: URLSession? = nil, limits: Limits = Limits()) {
 		self.instance = instance
 		self.token = token
 		self.session = session ?? Self.sharedSession
+		self.limits = limits
 	}
 
 	/// Printable ASCII without spaces, as Coolify issues them.
@@ -182,21 +263,213 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 		}
 	}
 
-	// MARK: - Requests
+	// MARK: - Resources
 
-	private func get(_ path: [String]) async -> Result<Data, CoolifyAPIError> {
-		guard let url = instance.url(path) else { return .failure(.invalidResponse) }
-		return await load(URLRequest(url: url))
+	/// Reads the team's projects, then its applications, then its services,
+	/// one list at a time, so at most one large list is held at once. Where
+	/// each resource is comes from reading every project, which is skipped
+	/// for a team with more projects than `limits` names.
+	func resources() async -> Result<[CoolifyResource], CoolifyAPIError> {
+		var budget = Budget(remaining: limits.discoveryBytes)
+		do {
+			let environments = try await environmentNames(budget: &budget)
+			var resources: [CoolifyResource] = []
+			var seen: Set<String> = []
+			for kind in [CoolifyPublishTarget.Resource.application, .service] {
+				let data = try await budget.read(Self.maximumListBytes) { await get([Self.collection(kind)], limit: $0) }
+				for raw in try decode([RawResource].self, from: data) {
+					guard PlatformIdentifier.isValid(raw.uuid), seen.insert(raw.uuid).inserted,
+						let name = ProviderName.display(raw.name) ?? ProviderName.display(raw.uuid)
+					else { throw CoolifyAPIError.invalidResponse }
+					let place = raw.environmentID.flatMap { environments[$0] }
+					resources.append(CoolifyResource(
+						kind: kind, id: raw.uuid, name: name, projectName: place?.project, environmentName: place?.environment,
+						buildPack: kind == .application ? raw.buildPack : nil))
+				}
+			}
+			return .success(resources)
+		} catch let error as CoolifyAPIError {
+			return .failure(error)
+		} catch {
+			return .failure(.invalidResponse)
+		}
 	}
 
-	private func load(_ request: URLRequest) async -> Result<Data, CoolifyAPIError> {
+	/// What one discovery may still read.
+	private struct Budget {
+		var remaining: Int
+
+		/// Reads with a limit of `limit` or what's left, whichever is less, and counts what was read.
+		mutating func read(_ limit: Int, _ load: (Int) async -> Result<Data, CoolifyAPIError>) async throws -> Data {
+			guard remaining > 0 else { throw CoolifyAPIError.invalidResponse }
+			let data = try await load(min(limit, remaining)).get()
+			try spend(data.count)
+			return data
+		}
+
+		mutating func spend(_ bytes: Int) throws {
+			remaining -= bytes
+			guard remaining >= 0 else { throw CoolifyAPIError.invalidResponse }
+		}
+	}
+
+	/// Each environment's project and name, by the environment's ID; empty
+	/// when the team has more projects than are read.
+	private func environmentNames(budget: inout Budget) async throws -> [Int: (project: String, environment: String)] {
+		let projects = try decode([RawProject].self, from: try await budget.read(Self.maximumListBytes) { await get(["projects"], limit: $0) })
+		guard projects.allSatisfy({ PlatformIdentifier.isValid($0.uuid) }) else { throw CoolifyAPIError.invalidResponse }
+		guard projects.count <= limits.namedProjects else { return [:] }
+		let remaining = budget.remaining
+		let limits = limits
+		// Each project is read into names as it arrives, so only the projects in flight are held.
+		let read = await withTaskGroup(of: Result<Data, CoolifyAPIError>.self) { group -> Result<(names: [Int: (project: String, environment: String)], bytes: Int), CoolifyAPIError> in
+			var pending = projects[...]
+			func startNext() {
+				guard let project = pending.popFirst() else { return }
+				group.addTask { await get(["projects", project.uuid], limit: min(Self.maximumProjectBytes, remaining)) }
+			}
+			for _ in 0..<Self.projectConcurrency { startNext() }
+			var names: [Int: (project: String, environment: String)] = [:]
+			var bytes = 0
+			while let result = await group.next() {
+				let data: Data
+				switch result {
+				case .success(let value): data = value
+				case .failure(let error):
+					group.cancelAll()
+					return .failure(error)
+				}
+				bytes += data.count
+				guard bytes <= remaining, let project = try? JSONDecoder().decode(RawProject.self, from: data),
+					(project.environments?.count ?? 0) <= limits.environmentsPerProject
+				else {
+					group.cancelAll()
+					return .failure(.invalidResponse)
+				}
+				let projectName = ProviderName.display(project.name) ?? project.uuid
+				for environment in project.environments ?? [] {
+					names[environment.id] = (projectName, ProviderName.display(environment.name) ?? String(environment.id))
+				}
+				startNext()
+			}
+			return .success((names, bytes))
+		}
+		let (names, bytes) = try read.get()
+		try budget.spend(bytes)
+		return names
+	}
+
+	func buildPack(ofApplication id: String) async -> Result<String?, CoolifyAPIError> {
+		guard PlatformIdentifier.isValid(id) else { return .failure(.invalidResponse) }
+		return await get(["applications", id], limit: Self.maximumListBytes).flatMap { data in
+			guard let application = try? JSONDecoder().decode(RawResource.self, from: data), application.uuid == id else {
+				return .failure(.invalidResponse)
+			}
+			return .success(application.buildPack)
+		}
+	}
+
+	// MARK: - Variables
+
+	func variables(of resource: CoolifyPublishTarget.Resource, id: String) async -> Result<[CoolifyVariable], CoolifyAPIError> {
+		guard PlatformIdentifier.isValid(id) else { return .failure(.invalidResponse) }
+		return await get([Self.collection(resource), id, "envs"], limit: Self.maximumListBytes).flatMap { data in
+			guard let raw = try? JSONDecoder().decode([RawVariable].self, from: data) else { return .failure(.invalidResponse) }
+			var variables: [CoolifyVariable] = []
+			variables.reserveCapacity(raw.count)
+			for item in raw {
+				guard let variable = item.variable else { return .failure(.invalidResponse) }
+				variables.append(variable)
+			}
+			return .success(variables)
+		}
+	}
+
+	func create(_ write: CoolifyVariableWrite, in resource: CoolifyPublishTarget.Resource, id: String) async -> Result<String, CoolifyAPIError> {
+		guard PlatformIdentifier.isValid(id), let body = Self.body(write, for: resource) else { return .failure(.invalidResponse) }
+		return await send("POST", [Self.collection(resource), id, "envs"], body: body).flatMap { data in
+			// An application answers with the new variable's UUID only; a service with the whole variable.
+			guard let created = try? JSONDecoder().decode(Created.self, from: data), PlatformIdentifier.isValid(created.uuid) else {
+				return .failure(.invalidResponse)
+			}
+			return .success(created.uuid)
+		}
+	}
+
+	func update(_ write: CoolifyVariableWrite, in resource: CoolifyPublishTarget.Resource, id: String) async -> Result<CoolifyVariable, CoolifyAPIError> {
+		guard PlatformIdentifier.isValid(id), let body = Self.body(write, for: resource) else { return .failure(.invalidResponse) }
+		return await send("PATCH", [Self.collection(resource), id, "envs"], body: body).flatMap { data in
+			guard let updated = (try? JSONDecoder().decode(RawVariable.self, from: data))?.variable,
+				updated.key == write.key, updated.isPreview == write.isPreview
+			else { return .failure(.invalidResponse) }
+			return .success(updated)
+		}
+	}
+
+	func delete(_ variableID: String, in resource: CoolifyPublishTarget.Resource, id: String) async -> Result<Void, CoolifyAPIError> {
+		guard PlatformIdentifier.isValid(id), PlatformIdentifier.isValid(variableID) else { return .failure(.invalidResponse) }
+		return await send("DELETE", [Self.collection(resource), id, "envs", variableID], body: nil).map { _ in () }
+	}
+
+	private static func collection(_ resource: CoolifyPublishTarget.Resource) -> String {
+		switch resource {
+		case .application: "applications"
+		case .service: "services"
+		}
+	}
+
+	/// Every flag Coolify would otherwise reset is sent. Values are literal,
+	/// so Coolify passes `$` on instead of reading it as another variable;
+	/// whether the variable is used at build time or run time is left as Coolify has it.
+	private static func body(_ write: CoolifyVariableWrite, for resource: CoolifyPublishTarget.Resource) -> [String: Any]? {
+		guard EnvValidation.isValidVariableName(write.key), resource == .application || !write.isPreview else { return nil }
+		var body: [String: Any] = [
+			"key": write.key,
+			"value": write.value,
+			"is_literal": true,
+			"is_multiline": write.isMultiline,
+			"is_shown_once": write.isLocked,
+		]
+		// A service has no preview deployments, and Coolify would store the flag as given.
+		if resource == .application { body["is_preview"] = write.isPreview }
+		return body
+	}
+
+	// MARK: - Requests
+
+	private func get(_ path: [String], limit: Int = maximumResponseBytes) async -> Result<Data, CoolifyAPIError> {
+		guard let url = instance.url(path) else { return .failure(.invalidResponse) }
+		return await load(URLRequest(url: url), limit: limit)
+	}
+
+	private func send(_ method: String, _ path: [String], body: [String: Any]?) async -> Result<Data, CoolifyAPIError> {
+		guard let url = instance.url(path) else { return .failure(.invalidResponse) }
+		var request = URLRequest(url: url)
+		request.httpMethod = method
+		if let body {
+			guard let data = try? JSONSerialization.data(withJSONObject: body) else { return .failure(.invalidResponse) }
+			request.httpBody = data
+			request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+		}
+		return await load(request, limit: Self.maximumResponseBytes)
+	}
+
+	private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+		do {
+			return try JSONDecoder().decode(type, from: data)
+		} catch {
+			throw CoolifyAPIError.invalidResponse
+		}
+	}
+
+	private func load(_ request: URLRequest, limit: Int = maximumResponseBytes) async -> Result<Data, CoolifyAPIError> {
 		guard Self.isValidAccessToken(token) else { return .failure(.unauthorized) }
 		var request = request
 		// Without it, Laravel answers a refused token with a redirect to its sign-in page.
 		request.setValue("application/json", forHTTPHeaderField: "Accept")
 		request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 		do {
-			let (data, response) = try await BoundedHTTPResponse.load(for: request, using: session, maximumBytes: Self.maximumResponseBytes)
+			let (data, response) = try await BoundedHTTPResponse.load(for: request, using: session, maximumBytes: limit)
 			guard let http = response as? HTTPURLResponse else { return .failure(.invalidResponse) }
 			guard (200..<300).contains(http.statusCode) else { return .failure(Self.failure(http.statusCode, data)) }
 			return .success(data)
@@ -261,11 +534,124 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 		return line.isEmpty ? nil : line
 	}
 
+	/// Laravel's timestamps, such as `2026-10-14T12:34:56.123456Z`, in UTC.
+	static func timestamp(_ text: String) -> Date? {
+		let bytes = Array(text.utf8)
+		func number(_ range: Range<Int>) -> Int? {
+			guard range.upperBound <= bytes.count, bytes[range].allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else { return nil }
+			return bytes[range].reduce(0) { $0 * 10 + Int($1 - 0x30) }
+		}
+		guard bytes.count >= 20, bytes[4] == 0x2D, bytes[7] == 0x2D, bytes[10] == 0x54 || bytes[10] == 0x20,
+			bytes[13] == 0x3A, bytes[16] == 0x3A,
+			let year = number(0..<4), let month = number(5..<7), let day = number(8..<10),
+			let hour = number(11..<13), let minute = number(14..<16), let second = number(17..<19)
+		else { return nil }
+		var index = 19
+		var fraction = 0.0
+		if bytes[index] == 0x2E {
+			index += 1
+			var scale = 0.1
+			let start = index
+			while index < bytes.count, bytes[index] >= 0x30, bytes[index] <= 0x39 {
+				fraction += Double(bytes[index] - 0x30) * scale
+				scale /= 10
+				index += 1
+			}
+			guard index > start else { return nil }
+		}
+		guard bytes[index...].elementsEqual("Z".utf8) || bytes[index...].elementsEqual("+00:00".utf8) else { return nil }
+		var calendar = Calendar(identifier: .gregorian)
+		calendar.timeZone = TimeZone(identifier: "UTC")!
+		let components = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute, second: second)
+		guard components.isValidDate(in: calendar), let date = calendar.date(from: components) else { return nil }
+		return date.addingTimeInterval(fraction)
+	}
+
 	// MARK: - Wire types
 
 	private struct Team: Decodable {
 		let id: Int
 		let name: String?
+	}
+
+	private struct RawProject: Decodable {
+		struct Environment: Decodable {
+			let id: Int
+			let name: String?
+		}
+		let uuid: String
+		let name: String?
+		let environments: [Environment]?
+	}
+
+	private struct RawResource: Decodable {
+		let uuid: String
+		let name: String?
+		let environmentID: Int?
+		let buildPack: String?
+
+		private enum CodingKeys: String, CodingKey {
+			case uuid, name
+			case environmentID = "environment_id"
+			case buildPack = "build_pack"
+		}
+	}
+
+	private struct Created: Decodable {
+		let uuid: String
+	}
+
+	/// A variable as Coolify lists it. Its value, which a token allowed to
+	/// read sensitive data would also get, is never decoded.
+	private struct RawVariable: Decodable {
+		let uuid: String?
+		let key: String
+		let isPreview: Bool
+		let isShownOnce: Bool
+		let updatedAt: String?
+		let createdAt: String?
+
+		private enum CodingKeys: String, CodingKey {
+			case uuid, key
+			case isPreview = "is_preview"
+			case isShownOnce = "is_shown_once"
+			case updatedAt = "updated_at"
+			case createdAt = "created_at"
+		}
+
+		init(from decoder: Decoder) throws {
+			let container = try decoder.container(keyedBy: CodingKeys.self)
+			uuid = try container.decodeIfPresent(String.self, forKey: .uuid)
+			key = try container.decode(String.self, forKey: .key)
+			isPreview = try Self.flag(container, .isPreview)
+			isShownOnce = try Self.flag(container, .isShownOnce)
+			updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+			createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+		}
+
+		/// A flag Coolify sends as a boolean, or as 0 or 1 from a column it doesn't cast.
+		private static func flag(_ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) throws -> Bool {
+			if let value = try? container.decodeIfPresent(Bool.self, forKey: key) { return value }
+			switch try container.decodeIfPresent(Int.self, forKey: key) {
+			case nil, 0?: return false
+			case 1?: return true
+			default: throw CoolifyAPIError.invalidResponse
+			}
+		}
+
+		var variable: CoolifyVariable? {
+			guard let uuid, PlatformIdentifier.isValid(uuid), !key.isEmpty, key.utf8.count <= 1_024 else { return nil }
+			var times: [Date?] = []
+			for text in [updatedAt, createdAt] {
+				guard let text else {
+					times.append(nil)
+					continue
+				}
+				guard let date = CoolifyClient.timestamp(text) else { return nil }
+				times.append(date)
+			}
+			return CoolifyVariable(id: uuid, key: key, isPreview: isPreview, isLocked: isShownOnce, updatedAt: times[0], createdAt: times[1])
+		}
 	}
 
 	private struct ErrorResponse: Decodable {

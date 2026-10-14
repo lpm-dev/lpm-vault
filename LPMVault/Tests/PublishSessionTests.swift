@@ -40,7 +40,7 @@ struct PublishSessionTests {
 				confirm: { confirmations.ask($0) },
 				publishing: publishing,
 				connections: connections,
-				client: client ?? { _ in api },
+				vercel: client ?? { _ in api },
 				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
 	}
 
@@ -51,9 +51,9 @@ struct PublishSessionTests {
 
 	private func chooseProduction(_ session: PublishSession) async throws {
 		session.start()
-		try await waitUntil { session.connectionID != nil && session.projects.value != nil }
-		session.projectID = "prj_api"
-		session.environment = .production
+		try await waitUntil { session.connectionID != nil && session.vercel?.projects.value != nil }
+		session.vercel?.projectID = "prj_api"
+		session.vercel?.environment = .production
 		#expect(session.canReview)
 		session.loadReview()
 		try await waitUntil { session.review != nil || session.reviewError != nil }
@@ -79,31 +79,6 @@ struct PublishSessionTests {
 		let history = try await publishing.history(of: try #require(saved.first).id, in: vault).get()
 		#expect(Set(history.keys.keys) == ["API_TOKEN", "NEXT_PUBLIC_URL"] && history.keys["NEXT_PUBLIC_URL"]?.publishedAsSecret == false)
 		#expect(session.saved?.id == saved.first?.id)
-	}
-
-	@Test("a Coolify connection isn't offered for publishing yet, so its token never reaches Vercel's client")
-	func coolifyNotOffered() async throws {
-		_ = try await connections.save(
-			.coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: "0", teamName: "Root Team")),
-			accessToken: "3|coolify", at: Date()).get()
-		let tokens = TokenLog()
-		let api = api
-		let session = session(client: { token in
-			tokens.append(token)
-			return api
-		})
-		session.start()
-		try await waitUntil { session.connections.value != nil }
-		#expect(session.connections.value == [] && session.connectionID == nil)
-		try await connect()
-		let both = self.session(client: { token in
-			tokens.append(token)
-			return api
-		})
-		both.start()
-		try await waitUntil { both.projects.value != nil }
-		#expect(both.connections.value?.map(\.platform) == [.vercel])
-		#expect(!tokens.values.contains("3|coolify"))
 	}
 
 	@Test("a saved destination opens on its review, with what this Mac published there")
@@ -208,7 +183,7 @@ struct PublishSessionTests {
 		session.start()
 		try await waitUntil { session.review != nil || session.reviewError != nil }
 		session.showDestination()
-		session.environment = .production
+		session.vercel?.environment = .production
 		session.loadReview()
 		try await waitUntil { session.review != nil || session.reviewError != nil }
 		#expect(session.reviewError?.contains("Another saved destination already publishes") == true)
@@ -243,13 +218,31 @@ struct PublishSessionTests {
 		let route = PlatformHTTPStub.platform { _ in VercelPublishingTests.revokedToken }
 		let session = session(client: { VercelClient(token: $0, baseURL: route.baseURL, session: route.session) })
 		session.start()
-		try await waitUntil { session.projects != .idle && session.projects != .loading }
-		#expect(session.projects == .failed(VercelPublishing.message(.unauthorized)))
-		session.projectID = "prj_api"
-		session.environment = .production
+		try await waitUntil { session.vercel.map { $0.projects != .idle && $0.projects != .loading } == true }
+		#expect(session.vercel?.projects == .failed(VercelPublishing.message(.unauthorized)))
+		session.vercel?.projectID = "prj_api"
+		session.vercel?.environment = .production
 		session.loadReview()
 		try await waitUntil { session.reviewError != nil }
 		#expect(session.reviewError == VercelPublishing.message(.unauthorized))
+	}
+
+	@Test("a saved destination opens on its review without listing the account's projects, and lists them once to change it")
+	func savedSkipsProjects() async throws {
+		try await connect()
+		let first = session()
+		try await chooseProduction(first)
+		first.publish()
+		try await waitUntil { first.step == .results }
+		let saved = try #require(try await publishing.destinations(of: vault).get().first)
+		let before = api.projectListingCount
+		let again = session(saved: saved)
+		again.start()
+		try await waitUntil { again.review != nil || again.reviewError != nil }
+		#expect(api.projectListingCount == before)
+		again.showDestination()
+		try await waitUntil { again.vercel?.projects.value != nil }
+		#expect(api.projectListingCount == before + 1)
 	}
 
 	@Test("changing the source, project or environment drops a review made for the old choice")
@@ -263,12 +256,12 @@ struct PublishSessionTests {
 		#expect(session.review == nil)
 		session.loadReview()
 		try await waitUntil { session.review != nil }
-		session.projectID = "prj_web"
+		session.vercel?.projectID = "prj_web"
 		#expect(session.review == nil, "A review of another project")
-		session.environment = .production
+		session.vercel?.environment = .production
 		session.loadReview()
 		try await waitUntil { session.review != nil }
-		session.environment = .preview
+		session.vercel?.environment = .preview
 		#expect(session.review == nil)
 	}
 }
@@ -278,6 +271,238 @@ private final class TokenLog: @unchecked Sendable {
 	private var tokens: [String] = []
 	var values: [String] { lock.withLock { tokens } }
 	func append(_ token: String) { lock.withLock { tokens.append(token) } }
+}
+
+@MainActor
+struct CoolifyPublishSessionTests {
+	private let keychain = MockKeychainService()
+	private let api = FakeCoolifyAPI()
+	private let vault = "publish-session-vault"
+	private let values = ValuesBox(["production": ["API_TOKEN": "tok", "NEXT_PUBLIC_URL": "https://x"]])
+	private let confirmations = Confirmations()
+	private let rules = ProjectEnvSchemaOverview(
+		rules: [ProjectEnvSchemaOverview.Rule(key: "NEXT_PUBLIC_URL", isPublic: true, source: nil, badges: [])], groups: [])
+
+	private var publishing: PublishingStore { PublishingStore(service: keychain) }
+	private var connections: PlatformConnectionStore { PlatformConnectionStore(service: keychain) }
+
+	private func connect() async throws {
+		_ = try await connections.save(
+			.coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: "0", teamName: "Root Team")),
+			accessToken: "3|coolify", at: Date()).get()
+	}
+
+	private func session(saved: PublishDestination? = nil) -> PublishSession {
+		let values = values
+		let confirmations = confirmations
+		let api = api
+		return PublishSession(
+			vaultID: vault, projectName: "demo-api", environments: ["production"], sourceEnvironment: "production",
+			saved: saved,
+			dependencies: .init(
+				values: { values.get($0) },
+				rules: { [rules] in .known(rules) },
+				check: { _ in nil },
+				confirm: { confirmations.ask($0) },
+				publishing: publishing,
+				connections: connections,
+				vercel: { _ in FakeVercelAPI() },
+				coolify: { instance, token in
+					#expect(instance.origin == "https://coolify.example.com" && token == "3|coolify")
+					return api
+				},
+				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
+	}
+
+	private func waitUntil(_ condition: () -> Bool) async throws {
+		for _ in 0..<400 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(condition())
+	}
+
+	private func chooseApplication(_ session: PublishSession) async throws {
+		session.start()
+		try await waitUntil { session.coolify?.resources.value != nil }
+		session.coolify?.resourceID = "app-api"
+		#expect(session.coolify?.deployments == .production, "An application starts on its production deployments")
+		#expect(session.canReview)
+		session.loadReview()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+	}
+
+	@Test("a Coolify application is chosen, reviewed, published with Touch ID, and saved with its names")
+	func publishesNewDestination() async throws {
+		try await connect()
+		let session = session()
+		try await chooseApplication(session)
+		let review = try #require(session.review)
+		#expect(review.platform == .coolify && review.selection.keys == ["API_TOKEN", "NEXT_PUBLIC_URL"])
+		session.publish()
+		try await waitUntil { session.step == .results }
+		#expect(confirmations.reasons == ["Publish 2 variables to Coolify"])
+		#expect(session.results?.publishedCount == 2)
+		let saved = try #require(try await publishing.destinations(of: vault).get().first)
+		guard case .coolify(let target) = saved.target else { Issue.record("Not a Coolify destination"); return }
+		#expect(target.resourceID == "app-api" && target.resourceName == "api" && target.projectName == "Storefront")
+		#expect(target.environmentName == "production" && target.deployments == .production && target.teamName == "Root Team")
+		let history = try await publishing.history(of: saved.id, in: vault).get()
+		#expect(history.keys["API_TOKEN"]?.publishedAsSecret == true && history.keys["NEXT_PUBLIC_URL"]?.publishedAsSecret == false)
+		#expect(history.keys["API_TOKEN"]?.remoteID == api.variables.first { $0.key == "API_TOKEN" && !$0.isPreview }?.id)
+		#expect(api.variables.first { $0.key == "API_TOKEN" && $0.isPreview }?.isLocked == true, "The secret's preview copy is locked")
+		#expect(VaultTitleBarView.title(of: saved) == "api / Production — Coolify · Root Team")
+	}
+
+	@Test("a saved Coolify destination opens on its review, up to date with what this Mac published")
+	func savedOpensOnReview() async throws {
+		try await connect()
+		let first = session()
+		try await chooseApplication(first)
+		first.publish()
+		try await waitUntil { first.step == .results }
+		let saved = try #require(try await publishing.destinations(of: vault).get().first)
+
+		let again = session(saved: saved)
+		#expect(again.step == .review && again.coolify?.resourceID == "app-api")
+		again.start()
+		try await waitUntil { again.review != nil || again.reviewError != nil }
+		let review = try #require(again.review)
+		#expect(review.isSaved && !review.needsSave)
+		let upToDate = review.plan.rows.allSatisfy { $0.status.isUpToDate }
+		#expect(upToDate, "Coolify has the values this Mac published")
+		api.edit("API_TOKEN")
+		again.loadReview()
+		try await waitUntil { again.review != nil && !again.isLoadingReview }
+		#expect(again.review?.plan.row("API_TOKEN")?.holds == [.changedOnPlatform])
+	}
+
+	@Test("a service publishes to its only deployments, and Coolify's own SERVICE_ names can't be published there")
+	func service() async throws {
+		try await connect()
+		api.resourceList = .success([CoolifyResource(kind: .service, id: "svc-db", name: "db", projectName: nil, environmentName: nil, buildPack: nil)])
+		values.set("production", ["SERVICE_PASSWORD_DB": "x", "APP_KEY": "k"])
+		let session = session()
+		session.start()
+		try await waitUntil { session.coolify?.resources.value != nil }
+		session.coolify?.deployments = .preview
+		session.coolify?.resourceID = "svc-db"
+		#expect(session.coolify?.deployments == .production && session.coolify?.deploymentChoices == [.production])
+		session.loadReview()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(session.review?.plan.row("SERVICE_PASSWORD_DB")?.holds.first == .reserved)
+		#expect(session.review?.selection.keys == ["APP_KEY"])
+	}
+
+	@Test("choosing another platform's connection changes the fields and drops the review")
+	func switchesPlatform() async throws {
+		try await connect()
+		_ = try await connections.save(
+			VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_acme", userID: "u_1")!,
+			account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
+		let session = session()
+		session.start()
+		try await waitUntil { session.connections.value?.count == 2 }
+		#expect(session.form == nil, "With two connections, none is chosen for the person")
+		session.connectionID = "coolify.0.https://coolify.example.com"
+		try await chooseApplication(session)
+		#expect(session.review != nil)
+		session.connectionID = "vercel.team_acme"
+		#expect(session.review == nil && session.coolify == nil && session.vercel != nil && session.platform == .vercel)
+	}
+
+	@Test("a saved destination opens on its review without listing the team's resources, and lists them once to change it")
+	func savedSkipsDiscovery() async throws {
+		try await connect()
+		let saved = coolifyDestination()
+		_ = try await publishing.save(saved, to: vault).get()
+		let session = session(saved: saved)
+		session.start()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(session.review != nil && api.resourceListingCount == 0)
+		session.showDestination()
+		try await waitUntil { session.coolify?.resources.value != nil }
+		session.showDestination()
+		session.loadReview()
+		try await waitUntil { session.review != nil && !session.isLoadingReview }
+		session.showDestination()
+		try await Task.sleep(for: .milliseconds(20))
+		#expect(api.resourceListingCount == 1)
+	}
+
+	@Test("Coolify's choices name the instance, and resources that would read alike are told apart")
+	func distinguishesAlikeChoices() throws {
+		let first = PlatformConnection(
+			account: .coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: "0", teamName: "Root Team")),
+			connectedAt: Date())
+		let second = PlatformConnection(
+			account: .coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.dev")!, teamID: "0", teamName: "Root Team")),
+			connectedAt: Date())
+		#expect(PublishSheet.connectionLabel(first) == "Coolify · Root Team · coolify.example.com")
+		#expect(PublishSheet.connectionLabel(first) != PublishSheet.connectionLabel(second))
+		let resources = [
+			CoolifyResource(kind: .application, id: "a1b2c3d4e5f6", name: "api", projectName: "Storefront", environmentName: "production", buildPack: nil),
+			CoolifyResource(kind: .application, id: "f6e5d4c3b2a1", name: "api", projectName: "Storefront", environmentName: "production", buildPack: nil),
+			CoolifyResource(kind: .application, id: "0f0f0f0f0f0f", name: "api", projectName: "Storefront", environmentName: "staging", buildPack: nil),
+		]
+		let labels = CoolifyDestinationForm.labels(for: resources)
+		#expect(Set(labels.values).count == 3)
+		#expect(labels["0f0f0f0f0f0f"] == "api — Storefront / staging")
+		#expect(labels["a1b2c3d4e5f6"] == "api — Storefront / production · a1b2c3d4")
+		let destination = coolifyDestination()
+		#expect(VaultTitleBarView.subtitle(of: PublishDestinationSummary(destination: destination, lastPublishedAt: nil))
+			== "Storefront / production on coolify.example.com · from .env.production · not published yet")
+	}
+
+	@Test("a Coolify review that replaces variables says a change made in Coolify moments before can still be overwritten")
+	func replaceNote() async throws {
+		try await connect()
+		api.seed("API_TOKEN")
+		let session = session()
+		try await chooseApplication(session)
+		let review = try #require(session.review)
+		#expect(PublishSheet.notes(for: review).contains { $0.contains("moments before publishing can still be overwritten") })
+	}
+
+	@Test("each connection's token reaches only its own platform's client")
+	func tokensStayWithTheirPlatform() async throws {
+		try await connect()
+		_ = try await connections.save(
+			VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_acme", userID: "u_1")!,
+			account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
+		let vercelTokens = TokenLog()
+		let coolifyTokens = TokenLog()
+		let api = api
+		let values = values
+		let confirmations = confirmations
+		let session = PublishSession(
+			vaultID: vault, projectName: "demo-api", environments: ["production"], sourceEnvironment: "production",
+			dependencies: .init(
+				values: { values.get($0) }, rules: { .none }, check: { _ in nil }, confirm: { confirmations.ask($0) },
+				publishing: publishing, connections: connections,
+				vercel: { token in
+					vercelTokens.append(token)
+					return FakeVercelAPI()
+				},
+				coolify: { _, token in
+					coolifyTokens.append(token)
+					return api
+				}))
+		session.start()
+		try await waitUntil { session.connections.value?.count == 2 }
+		session.connectionID = "coolify.0.https://coolify.example.com"
+		try await waitUntil { session.coolify?.resources.value != nil }
+		session.connectionID = "vercel.team_acme"
+		try await waitUntil { session.vercel?.projects.value != nil }
+		#expect(Set(vercelTokens.values) == ["vca_1"] && Set(coolifyTokens.values) == ["3|coolify"])
+	}
+
+	@Test("a saved Coolify destination whose team isn't connected here says so")
+	func missingConnection() async throws {
+		let saved = coolifyDestination()
+		_ = try await publishing.save(saved, to: vault).get()
+		let session = session(saved: saved)
+		session.start()
+		try await waitUntil { session.reviewError != nil }
+		#expect(session.reviewError?.contains("Root Team on Coolify, which isn't connected on this Mac") == true)
+	}
 }
 
 @MainActor
@@ -333,9 +558,9 @@ struct PublishStoreTests {
 		let project = try #require(store.selectedProject)
 		#expect(session.sourceEnvironment == "production" && session.environments == store.orderedEnvironmentNames(for: project))
 		session.start()
-		try await waitUntil { session.connectionID != nil && session.projects.value != nil }
-		session.projectID = "prj_api"
-		session.environment = .production
+		try await waitUntil { session.connectionID != nil && session.vercel?.projects.value != nil }
+		session.vercel?.projectID = "prj_api"
+		session.vercel?.environment = .production
 		session.loadReview()
 		try await waitUntil { session.review != nil || session.reviewError != nil }
 		#expect(session.review?.rules == .unreadable, "Rules not read yet publish everything as a Secret")
@@ -417,9 +642,9 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("Publish environment"))
 			#expect(try await host.waitForText("Choose a destination"))
-			#expect(try await host.waitUntil { session.projects.value != nil })
-			session.projectID = "prj_api"
-			session.environment = .production
+			#expect(try await host.waitUntil { session.vercel?.projects.value != nil })
+			session.vercel?.projectID = "prj_api"
+			session.vercel?.environment = .production
 			#expect(try await host.waitForText("storefront / Production"))
 			try await host.click("Review variables")
 			#expect(try await host.waitForText("Publish anyway"))
@@ -433,7 +658,41 @@ extension SheetInteractionTests {
 			#expect(Set(api.createdWrites.map(\.key)) == ["API_TOKEN"] && api.replacedValues.map(\.id) == ["env_SHARED_KEY"])
 		}
 
-		@Test("with no Vercel account connected, the sheet points to Platforms")
+		@Test("a Coolify publish names the application and its deployments, explains a value Coolify would break, and says to redeploy")
+		func publishesToCoolify() async throws {
+			let environments = ["production": ["API_TOKEN": "tok", "QUOTED": "it's"]]
+			keychain.envStorage["project"] = (name: "demo-api", path: "", environments: environments)
+			let coolify = FakeCoolifyAPI()
+			let store = VaultStore(
+				keychainService: keychain, biometricService: biometric, apiService: MockAPIService(),
+				authTokenProvider: { _, _ in nil }, coolifyClient: { _, _ in coolify })
+			store.projects = [VaultProject(id: "project", name: "demo-api", path: "", environments: environments)]
+			store.isUnlocked = true
+			store.openProject(id: "project")
+			store.selectEnvironment("production")
+			_ = try await store.platformConnectionStore.save(
+				.coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.northwind.dev")!, teamID: "0", teamName: "Northwind")),
+				accessToken: "3|coolify", at: Date()).get()
+			let session = try #require(store.makePublishSession())
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 640),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitUntil { session.coolify?.resources.value != nil })
+			#expect(try await host.waitForText("Application or service"))
+			session.coolify?.resourceID = "app-api"
+			#expect(try await host.waitForText("api / Production"))
+			#expect(try await host.waitForText("TO COOLIFY"))
+			try await host.click("Review variables")
+			#expect(try await host.waitForText("single quote"))
+			#expect(try await host.waitForText("Can't publish"))
+			#expect(try await host.waitForText("copies new variables"))
+			try await host.click("Publish 1 variable")
+			#expect(try await host.waitForText("Redeploy in Coolify"))
+			#expect(biometric.confirmationReasons == ["Publish 1 variable to Coolify"])
+			#expect(coolify.writes.map(\.key) == ["API_TOKEN", "API_TOKEN"] && coolify.value(of: "API_TOKEN") == "tok")
+		}
+
+		@Test("with no platform account connected, the sheet points to Platforms")
 		func noConnection() async throws {
 			let store = try await makeStore()
 			_ = await store.platformConnectionStore.remove("vercel.team_northwind")
@@ -441,7 +700,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 480),
 				keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("No Vercel account is connected on this Mac"))
+			#expect(try await host.waitForText("No platform account is connected on this Mac"))
 			try await host.click("Open Platforms")
 			#expect(try await host.waitUntil { store.accountPage == .platforms })
 		}

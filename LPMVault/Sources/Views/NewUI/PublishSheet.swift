@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Publishes a Vault environment to a platform: where it goes, a review of
-/// what changes there, and what Vercel accepted.
+/// what changes there, and what the platform accepted.
 struct PublishSheet: View {
 	@Bindable var store: VaultStore
 	@Bindable var session: PublishSession
@@ -39,7 +39,7 @@ struct PublishSheet: View {
 			Button("Forget Destination", role: .destructive) { forget() }
 			Button("Cancel", role: .cancel) {}
 		} message: {
-			Text("LPM Vault forgets where this environment publishes and what it published there. Nothing changes on Vercel.")
+			Text("LPM Vault forgets where this environment publishes and what it published there. Nothing changes on \(platformName).")
 		}
 	}
 
@@ -66,10 +66,17 @@ struct PublishSheet: View {
 
 	private var subtitle: String {
 		switch session.step {
-		case .results: "Vercel uses new values in new deployments."
+		case .results: "\(platformName) uses new values in new deployments."
 		default: session.saved == nil ? "Send selected variables from a Vault environment to a platform." : "Saved destination · opens on Review."
 		}
 	}
+
+	/// The platform being published to, once it's known.
+	private var platform: PublishPlatform? {
+		session.review?.platform ?? session.platform ?? session.saved?.target.platform
+	}
+
+	private var platformName: String { platform?.displayName ?? "the platform" }
 
 	private var route: some View {
 		HStack(spacing: 14) {
@@ -87,11 +94,12 @@ struct PublishSheet: View {
 				.foregroundStyle(VaultPalette.textTertiary)
 				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 4) {
-				Text("TO VERCEL\(session.connection.map { " · \($0.name.uppercased())" } ?? "")").vaultSectionLabel()
+				Text("TO \(platform?.displayName.uppercased() ?? "PLATFORM")\(session.connection.map { " · \($0.name.uppercased())" } ?? "")")
+					.vaultSectionLabel()
 					.lineLimit(1)
-				Text("\(projectName ?? "—") / \(session.environment?.displayName ?? "—")")
+				Text("\(place.name ?? "—") / \(place.part ?? "—")")
 					.font(VaultTypography.mono(12.5, .semibold))
-					.foregroundStyle(session.environment == nil ? VaultPalette.textTertiary : VaultPalette.accentForeground)
+					.foregroundStyle(place.part == nil ? VaultPalette.textTertiary : VaultPalette.accentForeground)
 					.lineLimit(1)
 					.truncationMode(.middle)
 			}
@@ -104,10 +112,25 @@ struct PublishSheet: View {
 		.accessibilityElement(children: .combine)
 	}
 
-	private var projectName: String? {
-		if let project = session.project { return project.name }
-		if case .vercel(let target)? = session.saved?.target { return target.projectName }
-		return nil
+	/// Where the fields say to publish: the platform's project or resource,
+	/// then the part of it written to, each nil until it's chosen.
+	private var place: (name: String?, part: String?) {
+		switch session.form {
+		case .vercel(let form)?:
+			let project = form.project?.name ?? {
+				if case .vercel(let target)? = session.saved?.target, target.projectID == form.projectID { return target.projectName }
+				return nil
+			}()
+			return (project, form.environment?.displayName)
+		case .coolify(let form)?:
+			let resource = form.resource?.name ?? {
+				if case .coolify(let target)? = session.saved?.target, target.resourceID == form.resourceID { return target.resourceName }
+				return nil
+			}()
+			return (resource, form.deployments?.displayName)
+		case nil:
+			return (nil, nil)
+		}
 	}
 
 	private var steps: some View {
@@ -131,10 +154,10 @@ struct PublishSheet: View {
 		switch session.connections {
 		case .loaded(let connections) where connections.isEmpty:
 			VStack(alignment: .leading, spacing: 10) {
-				Text("No Vercel account is connected on this Mac.")
+				Text("No platform account is connected on this Mac.")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("Connect one on the Platforms page, then publish from here.")
+				Text("Connect Vercel or Coolify on the Platforms page, then publish from here.")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.textTertiary)
 				VaultBarButton(systemImage: "square.stack.3d.up", title: "Open Platforms") {
@@ -148,7 +171,7 @@ struct PublishSheet: View {
 			VStack(alignment: .leading, spacing: 12) {
 				Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
 					GridRow {
-						field("Source environment") {
+						PublishDestinationField("Source environment") {
 							VaultMenuField(
 								title: "Source environment",
 								options: session.environments.map { VaultMenuOption(value: $0, label: VaultProject.displayName(for: $0)) },
@@ -156,37 +179,34 @@ struct PublishSheet: View {
 									get: { session.sourceEnvironment },
 									set: { if let name = $0 { session.sourceEnvironment = name } }))
 						}
-						field("Platform connection") {
+						PublishDestinationField("Platform connection") {
 							VaultMenuField(
 								title: "Platform connection",
 								options: (session.connections.value ?? []).map {
-									VaultMenuOption(value: $0.id, label: "Vercel · \($0.name)", systemImage: "triangle.fill")
+									VaultMenuOption(value: $0.id, label: Self.connectionLabel($0), systemImage: $0.platform.systemImage)
 								},
 								selection: $session.connectionID,
 								placeholder: session.connections == .loading ? "Loading…" : "Choose connection…")
 						}
 					}
-					GridRow {
-						field("Platform project") {
-							VaultMenuField(
-								title: "Platform project",
-								options: (session.projects.value ?? []).map { VaultMenuOption(value: $0.id, label: $0.name) },
-								selection: $session.projectID,
-								placeholder: projectPlaceholder,
-								disabled: session.projects.value?.isEmpty ?? true)
-						}
-						field("Destination environment") {
-							VaultMenuField(
-								title: "Destination environment",
-								options: session.environmentChoices.map { VaultMenuOption(value: $0, label: $0.displayName) },
-								selection: $session.environment,
-								placeholder: "Choose environment…",
-								disabled: session.project == nil)
+					switch session.form {
+					case .vercel(let form)?:
+						VercelDestinationFields(form: form)
+					case .coolify(let form)?:
+						CoolifyDestinationFields(form: form)
+					case nil:
+						GridRow {
+							PublishDestinationField("Destination") {
+								VaultMenuField<String>(
+									title: "Destination", options: [], selection: .constant(nil),
+									placeholder: "Choose a connection first", disabled: true)
+							}
+							Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
 						}
 					}
 				}
-				if case .failed(let message) = session.projects {
-					Text(message).font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
+				if let failure = choicesFailure {
+					Text(failure).font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
 				}
 				Text(session.saved == nil
 					? "Saved as a destination after the first publish, so next time this opens on Review."
@@ -198,20 +218,14 @@ struct PublishSheet: View {
 		}
 	}
 
-	private var projectPlaceholder: String {
-		switch session.projects {
-		case .loading: "Loading projects…"
-		case .loaded(let projects) where projects.isEmpty: "No projects this connection can reach"
-		default: "Choose project…"
+	/// Why the chosen connection's projects or resources couldn't be listed.
+	private var choicesFailure: String? {
+		switch session.form {
+		case .vercel(let form)?: if case .failed(let message) = form.projects { return message }
+		case .coolify(let form)?: if case .failed(let message) = form.resources { return message }
+		case nil: break
 		}
-	}
-
-	private func field<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-		VStack(alignment: .leading, spacing: 6) {
-			VaultFieldLabel(title: title)
-			content()
-		}
-		.frame(maxWidth: .infinity, alignment: .leading)
+		return nil
 	}
 
 	// MARK: - Review
@@ -221,7 +235,7 @@ struct PublishSheet: View {
 		if session.isLoadingReview {
 			HStack(spacing: 8) {
 				ProgressView().controlSize(.small)
-				Text("Reading the variables on Vercel…").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
+				Text("Reading the variables on \(platformName)…").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
 			}
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		} else if let review = session.review {
@@ -280,7 +294,7 @@ struct PublishSheet: View {
 			.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
 			.disabled(session.isPublishing)
 			VStack(alignment: .leading, spacing: 3) {
-				ForEach(notes(review), id: \.self) { note in
+				ForEach(Self.notes(for: review), id: \.self) { note in
 					Text(note).font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
 				}
@@ -350,8 +364,9 @@ struct PublishSheet: View {
 	}
 
 	private func detail(_ row: PublishPlan.Row, review: PublishSession.Review, presentation: VaultValueCheckPresentation) -> String {
+		let platform = review.platform.displayName
 		var parts = [row.publishesAsSecret ? "Secret" : "Config"]
-		if row.staysSecret { parts.append("stays a Secret on Vercel") }
+		if row.staysSecret { parts.append("stays a Secret on \(platform)") }
 		if let hold = row.holds.first {
 			parts.append(holdNote(hold, row: row, review: review, presentation: presentation))
 		} else if let publishedAt = row.status.publishedAt {
@@ -359,7 +374,7 @@ struct PublishSheet: View {
 				? "Changed since last publish"
 				: "Unchanged since you published \(RelativeTimestampFormatter.string(from: publishedAt))")
 		} else if case .replace = row.operation {
-			parts.append("Replaces a variable already on Vercel")
+			parts.append("Replaces a variable already on \(platform)")
 		}
 		if row.status.protectionChanged {
 			parts.append(row.publishesAsSecret ? "will be stored as a Secret" : "will be stored readable")
@@ -370,40 +385,73 @@ struct PublishSheet: View {
 	private func holdNote(
 		_ hold: PublishPlan.Hold, row: PublishPlan.Row, review: PublishSession.Review, presentation: VaultValueCheckPresentation
 	) -> String {
+		let platform = review.platform.displayName
 		switch hold {
-		case .reserved: return "Vercel reserves this name"
+		case .reserved: return review.platform == .vercel ? "Vercel reserves this name" : "\(platform) sets this name itself"
+		case .nameTooLong(let limit): return "\(platform) accepts names up to \(limit) characters"
 		case .unusableValue: return "No process can receive this value"
+		case .changesValue(let issue): return Self.note(for: issue, on: platform)
 		case .sharedWith(let names):
 			let list = ListFormatter.localizedString(byJoining: names)
-			return "Shared with \(list) on Vercel — publishing would change \(list) too"
+			return "Shared with \(list) on \(platform) — publishing would change \(list) too"
 		case .failsRules(let problems):
 			let source = review.destination.sourceEnvironment
 			return "Fails its rule: \(problems.first.map { presentation.message(for: $0, in: source) } ?? "invalid")"
 		case .ignoredByLPM: return "The LPM CLI ignores this key"
 		case .excluded: return "Left out last time"
 		case .changedOnPlatform:
-			return row.status.platform == .removed ? "Removed on Vercel since you published it" : "Changed on Vercel since you published it"
+			return row.status.platform == .removed ? "Removed on \(platform) since you published it" : "Changed on \(platform) since you published it"
 		case .upToDate:
 			return "Unchanged since you published \(row.status.publishedAt.map { RelativeTimestampFormatter.string(from: $0) } ?? "it")"
 		}
 	}
 
-	private func noteColor(_ row: PublishPlan.Row) -> Color {
-		switch row.holds.first {
-		case .failsRules?, .unusableValue?: VaultPalette.redText
-		case .sharedWith?, .changedOnPlatform?: VaultPalette.orangeTintText
-		default: VaultPalette.textTertiary
+	static func note(for issue: PublishPlan.ValueIssue, on platform: String) -> String {
+		switch issue {
+		case .singleQuote: "\(platform) can't pass a value with a single quote (') to your app unchanged"
+		case .trailingBackslash: "\(platform) can't pass a value ending in a backslash (\\) to your app unchanged"
+		case .unquotedJSON: "\(platform) passes JSON without quotes, so its line breaks, $ signs or \" #\" would change"
+		case .reference: "\(platform) replaces its {{…}} reference with a shared variable's value"
+		case .trimmed: "\(platform) drops the spaces and line breaks at its ends"
 		}
 	}
 
-	private func notes(_ review: PublishSession.Review) -> [String] {
+	private func noteColor(_ row: PublishPlan.Row) -> Color {
+		guard let hold = row.holds.first else { return VaultPalette.textTertiary }
+		if hold.blocksPublishing, hold != .reserved { return VaultPalette.redText }
+		switch hold {
+		case .failsRules: return VaultPalette.redText
+		case .sharedWith, .changedOnPlatform, .changesValue: return VaultPalette.orangeTintText
+		default: return VaultPalette.textTertiary
+		}
+	}
+
+	/// A Coolify connection names its instance, since teams on two instances can share a name.
+	static func connectionLabel(_ connection: PlatformConnection) -> String {
+		switch connection.account {
+		case .vercel: "Vercel · \(connection.name)"
+		case .coolify(let account): "Coolify · \(connection.name) · \(account.instance.address)"
+		}
+	}
+
+	static func notes(for review: PublishSession.Review) -> [String] {
+		let platform = review.platform.displayName
 		var notes: [String] = []
 		if review.summary.replacing > 0 {
-			notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare.")
+			switch review.platform {
+			case .vercel: notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare.")
+			case .coolify:
+				notes.append("Existing variables will be replaced. LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten.")
+			}
+		}
+		if case .coolify(let target) = review.destination.target, target.resource == .application, target.deployments == .production,
+			review.summary.adding > 0
+		{
+			notes.append("Coolify also copies new variables to the application's preview deployments. LPM Vault locks the copies of Secrets.")
 		}
 		let remoteOnly = review.plan.remoteOnlyCount
 		if remoteOnly > 0 {
-			notes.append("\(remoteOnly) \(remoteOnly == 1 ? "variable" : "variables") only on Vercel stay as they are.")
+			notes.append("\(remoteOnly) \(remoteOnly == 1 ? "variable" : "variables") only on \(platform) stay as they are.")
 		}
 		switch review.rules {
 		case .unreadable: notes.append("lpm.json's rules can't be read, so values aren't checked, and keys publish as Secrets unless their prefix makes them public.")
@@ -425,7 +473,7 @@ struct PublishSheet: View {
 	private var resultsStep: some View {
 		if let results = session.results {
 			VStack(alignment: .leading, spacing: 10) {
-				Text("Published \(results.publishedCount) of \(results.rows.count) \(results.rows.count == 1 ? "variable" : "variables"). Redeploy on Vercel to use the new values.")
+				Text("Published \(results.publishedCount) of \(results.rows.count) \(results.rows.count == 1 ? "variable" : "variables"). \(Self.redeployNote(for: results.destination.target.platform))")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -448,7 +496,7 @@ struct PublishSheet: View {
 				.clipShape(RoundedRectangle(cornerRadius: 10))
 				.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
 				if results.needsReconnect {
-					Text("Vercel no longer accepts this connection. Connect it again on the Platforms page.")
+					Text("\(results.destination.target.platform.displayName) no longer accepts this connection. Connect it again on the Platforms page.")
 						.font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
 				}
 				if let failure = results.recordFailure {
@@ -458,8 +506,15 @@ struct PublishSheet: View {
 		}
 	}
 
+	static func redeployNote(for platform: PublishPlatform) -> String {
+		switch platform {
+		case .vercel: "Redeploy on Vercel to use the new values."
+		case .coolify: "Redeploy in Coolify to use the new values."
+		}
+	}
+
 	@ViewBuilder
-	private func outcome(_ outcome: VercelPublishing.Outcome) -> some View {
+	private func outcome(_ outcome: PublishOutcome) -> some View {
 		switch outcome {
 		case .published:
 			Label("Published", systemImage: "checkmark.circle.fill").foregroundStyle(VaultPalette.greenTintText)
@@ -528,5 +583,97 @@ struct PublishSheet: View {
 		guard !session.isPublishing else { return }
 		session.cancel()
 		dismiss()
+	}
+}
+
+/// A Vercel destination's project and environment.
+private struct VercelDestinationFields: View {
+	@Bindable var form: VercelDestinationForm
+
+	var body: some View {
+		GridRow {
+			PublishDestinationField("Platform project") {
+				VaultMenuField(
+					title: "Platform project",
+					options: (form.projects.value ?? []).map { VaultMenuOption(value: $0.id, label: $0.name) },
+					selection: $form.projectID,
+					placeholder: placeholder,
+					disabled: form.projects.value?.isEmpty ?? true)
+			}
+			PublishDestinationField("Destination environment") {
+				VaultMenuField(
+					title: "Destination environment",
+					options: form.environmentChoices.map { VaultMenuOption(value: $0, label: $0.displayName) },
+					selection: $form.environment,
+					placeholder: "Choose environment…",
+					disabled: form.project == nil)
+			}
+		}
+	}
+
+	private var placeholder: String {
+		switch form.projects {
+		case .loading: "Loading projects…"
+		case .loaded(let projects) where projects.isEmpty: "No projects this connection can reach"
+		default: "Choose project…"
+		}
+	}
+}
+
+/// A Coolify destination's application or service, and its deployments.
+private struct CoolifyDestinationFields: View {
+	@Bindable var form: CoolifyDestinationForm
+
+	var body: some View {
+		let resources = form.resources.value ?? []
+		let labels = CoolifyDestinationForm.labels(for: resources)
+		GridRow {
+			PublishDestinationField("Application or service") {
+				VaultMenuField(
+					title: "Application or service",
+					options: resources.map {
+						VaultMenuOption(value: $0.id, label: labels[$0.id] ?? $0.name, systemImage: $0.kind == .service ? "square.stack.3d.up" : "app")
+					},
+					selection: $form.resourceID,
+					placeholder: placeholder,
+					disabled: form.resources.value?.isEmpty ?? true)
+			}
+			PublishDestinationField("Deployments") {
+				VaultMenuField(
+					title: "Deployments",
+					options: form.deploymentChoices.map { VaultMenuOption(value: $0, label: $0.displayName) },
+					selection: $form.deployments,
+					placeholder: "Choose deployments…",
+					disabled: form.resource == nil || form.deploymentChoices.count < 2)
+			}
+		}
+	}
+
+
+	private var placeholder: String {
+		switch form.resources {
+		case .loading: "Loading applications…"
+		case .loaded(let resources) where resources.isEmpty: "No applications or services in this team"
+		default: "Choose application or service…"
+		}
+	}
+}
+
+/// One labeled field of the Destination step.
+private struct PublishDestinationField<Content: View>: View {
+	let title: String
+	@ViewBuilder let content: Content
+
+	init(_ title: String, @ViewBuilder content: () -> Content) {
+		self.title = title
+		self.content = content()
+	}
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 6) {
+			VaultFieldLabel(title: title)
+			content
+		}
+		.frame(maxWidth: .infinity, alignment: .leading)
 	}
 }

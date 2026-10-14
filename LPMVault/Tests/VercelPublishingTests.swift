@@ -9,6 +9,7 @@ final class FakeVercelAPI: VercelClientProtocol, @unchecked Sendable {
 	private var created: [VercelVariableWrite] = []
 	private var replaced: [(id: String, value: String, storage: VercelVariableWrite.Storage)] = []
 	private var listings = 0
+	private var projectListings = 0
 
 	var account = VercelAccount(name: "Acme", slug: "acme")
 	var projectList: [VercelProject] = [VercelProject(id: "prj_api", name: "demo-api", accountID: "team_acme")]
@@ -22,9 +23,13 @@ final class FakeVercelAPI: VercelClientProtocol, @unchecked Sendable {
 	var createdWrites: [VercelVariableWrite] { lock.withLock { created } }
 	var replacedValues: [(id: String, value: String, storage: VercelVariableWrite.Storage)] { lock.withLock { replaced } }
 	var listingCount: Int { lock.withLock { listings } }
+	var projectListingCount: Int { lock.withLock { projectListings } }
 
 	func account(teamID: String?) async -> Result<VercelAccount, VercelAPIError> { .success(account) }
-	func projects(teamID: String?) async -> Result<[VercelProject], VercelAPIError> { .success(projectList) }
+	func projects(teamID: String?) async -> Result<[VercelProject], VercelAPIError> {
+		lock.withLock { projectListings += 1 }
+		return .success(projectList)
+	}
 	func customEnvironments(projectID: String, teamID: String?) async -> Result<[VercelCustomEnvironment], VercelAPIError> { .success(custom) }
 
 	func variables(projectID: String, teamID: String?) async -> Result<VercelVariableList, VercelAPIError> {
@@ -131,7 +136,7 @@ struct VercelPublishingTests {
 				guard case .replace(let id) = item.2 else { return nil }
 				return (item.0, PublishPlan.RemoteVariable(id: id, updatedAt: nil, storedAsSecret: item.3))
 			}),
-			reservedKeys: [], history: nil, fingerprintKey: key, secretsStaySecret: true)
+			platform: PublishPlan.Platform(secretsStaySecret: true), history: nil, fingerprintKey: key)
 		var selection = PublishPlan.Selection(defaultsOf: plan)
 		for item in items { selection.set(item.0, selected: true, in: plan) }
 		return (try? plan.changes(for: selection, values: Dictionary(uniqueKeysWithValues: items.map { ($0.0, $0.1) }), fingerprintKey: key).get()) ?? []

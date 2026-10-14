@@ -64,8 +64,12 @@ struct PublishPlan: Equatable, Sendable {
 	enum Hold: Equatable, Sendable {
 		/// The platform sets this name itself, so it can't be published.
 		case reserved
+		/// The name is longer than the platform accepts, in bytes.
+		case nameTooLong(limit: Int)
 		/// No process can receive the value, so it can't be published.
 		case unusableValue
+		/// The platform would change the value on its way to the app.
+		case changesValue(ValueIssue)
 		/// The platform's variable also applies to these environments, so
 		/// publishing changes them too.
 		case sharedWith([String])
@@ -79,6 +83,56 @@ struct PublishPlan: Equatable, Sendable {
 		case changedOnPlatform
 		/// The platform already has the value this Mac published.
 		case upToDate
+
+		/// Whether the key can't be published even when the person chooses it.
+		var blocksPublishing: Bool {
+			switch self {
+			case .reserved, .nameTooLong, .unusableValue: true
+			case .changesValue(let issue): !issue.allowsPublishing
+			case .sharedWith, .failsRules, .ignoredByLPM, .excluded, .changedOnPlatform, .upToDate: false
+			}
+		}
+	}
+
+	/// Something a platform does to a value before an app receives it.
+	enum ValueIssue: Equatable, Sendable {
+		/// The quoting ends at a single quote, so the app wouldn't get the value.
+		case singleQuote
+		/// A backslash at the end escapes the closing quote, so the app wouldn't get the value.
+		case trailingBackslash
+		/// JSON is passed without quotes, so its line breaks, `$` signs or ` #` would change it.
+		case unquotedJSON
+		/// It holds a `{{…}}` reference the platform replaces with another value.
+		case reference
+		/// The spaces and line breaks at its ends are dropped.
+		case trimmed
+
+		/// The app still gets the value, changed only in a way the person may want.
+		var allowsPublishing: Bool {
+			switch self {
+			case .reference, .trimmed: true
+			case .singleQuote, .trailingBackslash, .unquotedJSON: false
+			}
+		}
+	}
+
+	/// What one platform accepts, and what it does to values on their way to an app.
+	struct Platform: Sendable {
+		/// Names the platform sets itself.
+		var reservedKeys: Set<String> = []
+		/// Prefixes of names the platform sets itself.
+		var reservedPrefixes: [String] = []
+		/// The longest name the platform accepts, in bytes.
+		var maximumKeyBytes: Int?
+		/// The platform can't make a variable it stores as a secret readable
+		/// again, so one stays a secret.
+		var secretsStaySecret = false
+		/// What the platform would do to a value, most serious first.
+		var valueIssues: @Sendable (String) -> [ValueIssue] = { _ in [] }
+
+		func isReserved(_ key: String) -> Bool {
+			reservedKeys.contains(key) || reservedPrefixes.contains { key.hasPrefix($0) }
+		}
 	}
 
 	struct Row: Equatable, Sendable, Identifiable {
@@ -98,8 +152,8 @@ struct PublishPlan: Equatable, Sendable {
 
 		var id: String { key }
 		var isSelectedByDefault: Bool { holds.isEmpty }
-		/// False for names the platform reserves and values no process can receive.
-		var isPublishable: Bool { !holds.contains(.reserved) && !holds.contains(.unusableValue) }
+		/// False for names the platform doesn't accept and values the app wouldn't receive.
+		var isPublishable: Bool { !holds.contains(where: \.blocksPublishing) }
 		/// Choosing it changes other environments on the platform, so it needs a confirmation.
 		var needsConfirmation: Bool {
 			holds.contains { if case .sharedWith = $0 { true } else { false } }
@@ -144,20 +198,17 @@ struct PublishPlan: Equatable, Sendable {
 	///   - values: The source environment's stored values.
 	///   - check: The source environment's evaluation against the project's rules, when the project has rules.
 	///   - remote: The platform's variables that apply to the destination, by key.
-	///   - reservedKeys: Names the platform sets itself.
+	///   - platform: What the platform accepts.
 	///   - history: This Mac's history of publishing to the destination.
-	///   - secretsStaySecret: The platform can't make a variable it stores
-	///     as a secret readable again, so one stays a secret.
 	init(
 		destination: PublishDestination,
 		values: [String: String],
 		rules: ProjectEnvSchemaOverview,
 		check: ProjectEnvValueCheck.Environment?,
 		remote: [String: RemoteVariable],
-		reservedKeys: Set<String>,
+		platform: Platform = Platform(),
 		history: PublishHistory?,
-		fingerprintKey: SymmetricKey,
-		secretsStaySecret: Bool = false
+		fingerprintKey: SymmetricKey
 	) {
 		self.destination = destination.id
 		location = destination.target.location
@@ -166,15 +217,18 @@ struct PublishPlan: Equatable, Sendable {
 			let fingerprint = PublishFingerprint.of(value: value, key: key, destination: destination.id, using: fingerprintKey)
 			let remoteVariable = remote[key]
 			let kind = Self.kind(of: key, in: rules)
-			let publishesAsSecret = kind.publishesAsSecret || (secretsStaySecret && remoteVariable?.storedAsSecret == true)
+			let publishesAsSecret = kind.publishesAsSecret || (platform.secretsStaySecret && remoteVariable?.storedAsSecret == true)
 			let status = Self.status(
 				fingerprint: fingerprint, publishesAsSecret: publishesAsSecret, remote: remoteVariable, record: history?.keys[key])
 			let problems = check?.problems[key] ?? []
 			var holds: [Hold] = []
-			if reservedKeys.contains(key) { holds.append(.reserved) }
+			if platform.isReserved(key) { holds.append(.reserved) }
+			if let limit = platform.maximumKeyBytes, key.utf8.count > limit { holds.append(.nameTooLong(limit: limit)) }
 			// A process environment can't carry NUL, whether or not the project has rules to check.
 			if value.utf8.contains(0) || problems.contains(where: { $0.kind == .unusableValue }) {
 				holds.append(.unusableValue)
+			} else {
+				holds.append(contentsOf: platform.valueIssues(value).map(Hold.changesValue))
 			}
 			if let shared = remoteVariable?.sharedWith, !shared.isEmpty { holds.append(.sharedWith(shared)) }
 			let failures = problems.filter { $0.kind != .unusableValue }

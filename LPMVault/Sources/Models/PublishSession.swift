@@ -17,7 +17,8 @@ final class PublishSession: Identifiable {
 		var confirm: @MainActor (_ reason: String) async -> Bool
 		var publishing: PublishingStore
 		var connections: PlatformConnectionStore
-		var client: @Sendable (_ token: String) -> any VercelClientProtocol
+		var vercel: @Sendable (_ token: String) -> any VercelClientProtocol
+		var coolify: CoolifyConnector.ClientFactory = { CoolifyClient(instance: $0, token: $1) }
 		var now: @Sendable () -> Date = { Date() }
 		/// Called after destinations or history change.
 		var didChange: @MainActor () -> Void = {}
@@ -66,17 +67,17 @@ final class PublishSession: Identifiable {
 		let lastPublishedAt: Date?
 		let rules: Rules
 		let hasValueCheck: Bool
+		/// The platform's variables the plan was made from, by key.
+		let remote: [String: PublishPlan.RemoteVariable]
 
 		var summary: PublishPlan.Summary { plan.summary(of: selection) }
-		var target: VercelPublishTarget {
-			switch destination.target { case .vercel(let target): target }
-		}
+		var platform: PublishPlatform { destination.target.platform }
 	}
 
 	struct Results: Equatable {
 		let destination: PublishDestination
 		/// Each sent key with its outcome, in the review's order.
-		let rows: [(key: String, outcome: VercelPublishing.Outcome)]
+		let rows: [(key: String, outcome: PublishOutcome)]
 		let needsReconnect: Bool
 		/// Why the publish couldn't be recorded, when it couldn't.
 		let recordFailure: String?
@@ -105,21 +106,12 @@ final class PublishSession: Identifiable {
 		didSet {
 			guard connectionID != oldValue else { return }
 			invalidateReview()
-			projectID = nil
-			loadProjects()
+			form = makeForm()
+			loadForm()
 		}
 	}
-	private(set) var projects: Loadable<[VercelProject]> = .idle
-	var projectID: String? {
-		didSet {
-			guard projectID != oldValue else { return }
-			invalidateReview()
-			if case .custom = environment { environment = nil }
-			loadCustomEnvironments()
-		}
-	}
-	private(set) var customEnvironments: Loadable<[VercelCustomEnvironment]> = .idle
-	var environment: VercelPublishTarget.Environment? { didSet { if environment != oldValue { invalidateReview() } } }
+	/// The chosen connection's fields.
+	private(set) var form: PublishDestinationForm?
 
 	private(set) var review: Review?
 	private(set) var isLoadingReview = false
@@ -130,7 +122,8 @@ final class PublishSession: Identifiable {
 
 	private let dependencies: Dependencies
 	private var reviewTask: Task<Void, Never>?
-	private var projectsTask: Task<Void, Never>?
+	/// Loads the form's choices: a Vercel project list or Coolify's resources.
+	private var choicesTask: Task<Void, Never>?
 	private var environmentsTask: Task<Void, Never>?
 	private var publishTask: Task<Void, Never>?
 
@@ -147,33 +140,37 @@ final class PublishSession: Identifiable {
 		self.environments = environments
 		self.dependencies = dependencies
 		self.saved = saved
-		if let saved, case .vercel(let target) = saved.target {
+		if let saved {
 			self.sourceEnvironment = saved.sourceEnvironment
-			self.connectionID = target.connectionID
-			self.projectID = target.projectID
-			self.environment = target.environment
+			self.connectionID = saved.target.connectionID
+			switch saved.target {
+			case .vercel(let target):
+				self.form = .vercel(VercelDestinationForm(projectID: target.projectID, environment: target.environment))
+			case .coolify(let target):
+				self.form = .coolify(CoolifyDestinationForm(resourceID: target.resourceID, deployments: target.deployments))
+			}
 			self.step = .review
 		} else {
 			self.sourceEnvironment = sourceEnvironment
 			self.step = .destination
 		}
+		observe(form)
 	}
 
-	/// Loads what the open step needs; a saved destination goes straight to its review.
+	/// Loads what the open step needs. A saved destination goes straight to
+	/// its review, and lists its platform's choices only when it's changed.
 	func start() {
 		Task { [weak self] in
 			guard let self else { return }
 			await self.loadConnections()
 			guard self.saved != nil else { return }
-			self.loadProjects()
-			self.loadCustomEnvironments()
 			self.loadReview()
 		}
 	}
 
 	func cancel() {
 		reviewTask?.cancel()
-		projectsTask?.cancel()
+		choicesTask?.cancel()
 		environmentsTask?.cancel()
 		publishTask?.cancel()
 	}
@@ -184,19 +181,32 @@ final class PublishSession: Identifiable {
 		connections.value?.first { $0.id == connectionID }
 	}
 
-	var project: VercelProject? {
-		projects.value?.first { $0.id == projectID }
+	/// The platform the destination publishes to, once a connection is chosen.
+	var platform: PublishPlatform? {
+		switch form {
+		case .vercel?: .vercel
+		case .coolify?: .coolify
+		case nil: nil
+		}
 	}
 
-	/// Every environment the project has, standard ones first.
-	var environmentChoices: [VercelPublishTarget.Environment] {
-		[.production, .preview, .development]
-			+ (customEnvironments.value ?? []).map { .custom(id: $0.id, name: $0.slug) }
+	var vercel: VercelDestinationForm? {
+		if case .vercel(let form)? = form { return form }
+		return nil
+	}
+
+	var coolify: CoolifyDestinationForm? {
+		if case .coolify(let form)? = form { return form }
+		return nil
 	}
 
 	var canReview: Bool {
-		environments.contains(sourceEnvironment) && connection != nil && project != nil && environment != nil
-			&& !isLoadingReview && !isPublishing
+		let isComplete = switch form {
+		case .vercel(let form)?: form.isComplete
+		case .coolify(let form)?: form.isComplete
+		case nil: false
+		}
+		return environments.contains(sourceEnvironment) && connection != nil && isComplete && !isLoadingReview && !isPublishing
 	}
 
 	func showDestination() {
@@ -204,6 +214,16 @@ final class PublishSession: Identifiable {
 		reviewTask?.cancel()
 		isLoadingReview = false
 		step = .destination
+		if needsChoices { loadForm() }
+	}
+
+	/// Whether the form's choices, such as Coolify's resources, haven't been listed yet.
+	private var needsChoices: Bool {
+		switch form {
+		case .vercel(let form)?: form.projects == .idle
+		case .coolify(let form)?: form.resources == .idle
+		case nil: false
+		}
 	}
 
 	func loadReview() {
@@ -229,114 +249,254 @@ final class PublishSession: Identifiable {
 		connections = .loading
 		switch await dependencies.connections.connections() {
 		case .success(let list):
-			let vercel = list.filter { $0.platform == .vercel }
-			connections = .loaded(vercel)
-			if connectionID == nil, vercel.count == 1 { connectionID = vercel[0].id }
+			connections = .loaded(list)
+			if connectionID == nil, list.count == 1 { connectionID = list[0].id }
 		case .failure(let error):
 			connections = .failed("Platform connections couldn't be read. \(error)")
 		}
 	}
 
-	private func loadProjects() {
-		projectsTask?.cancel()
-		guard let connectionID else {
-			projects = .idle
-			return
+	/// A form for the chosen connection's platform, keeping the saved
+	/// destination's choices when it's the saved destination's connection.
+	private func makeForm() -> PublishDestinationForm? {
+		guard let connectionID, let connection = connections.value?.first(where: { $0.id == connectionID }) else { return nil }
+		let form: PublishDestinationForm = switch connection.platform {
+		case .vercel: .vercel(VercelDestinationForm())
+		case .coolify: .coolify(CoolifyDestinationForm())
 		}
-		projects = .loading
-		let teamID = Self.teamID(of: connectionID, in: connections.value ?? [])
-		projectsTask = Task { [weak self, dependencies] in
+		observe(form)
+		return form
+	}
+
+	private func observe(_ form: PublishDestinationForm?) {
+		switch form {
+		case .vercel(let form)?:
+			form.didChange = { [weak self, weak form] field in
+				guard let self, let form else { return }
+				self.invalidateReview()
+				if field == .project { self.loadCustomEnvironments(form) }
+			}
+		case .coolify(let form)?:
+			form.didChange = { [weak self] in self?.invalidateReview() }
+		case nil:
+			break
+		}
+	}
+
+	private func loadForm() {
+		choicesTask?.cancel()
+		environmentsTask?.cancel()
+		switch form {
+		case .vercel(let form)?:
+			loadProjects(form)
+			loadCustomEnvironments(form)
+		case .coolify(let form)?:
+			loadResources(form)
+		case nil:
+			break
+		}
+	}
+
+	/// The chosen connection's token, read when a request needs it.
+	private func token(for connectionID: PlatformConnection.ID) async -> Result<String, PublishSessionError> {
+		await dependencies.connections.accessToken(for: connectionID)
+			.mapError { "The connection's token can't be read. \($0)" }
+	}
+
+	private func loadProjects(_ form: VercelDestinationForm) {
+		guard let connectionID else { return }
+		form.projects = .loading
+		let teamID = vercelTeamID()
+		choicesTask = Task { [weak self, weak form, dependencies] in
 			let result: Result<[VercelProject], PublishSessionError>
-			switch await dependencies.connections.accessToken(for: connectionID) {
-			case .success(let token):
-				result = await dependencies.client(token).projects(teamID: teamID)
+			switch await self?.token(for: connectionID) {
+			case .success(let token)?:
+				result = await dependencies.vercel(token).projects(teamID: teamID)
 					.map { $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
 					.mapError { PublishSessionError(VercelPublishing.message($0)) }
-			case .failure(let error):
-				result = .failure("The connection's token can't be read. \(error)")
+			case .failure(let error)?:
+				result = .failure(error)
+			case nil:
+				return
 			}
-			guard let self, !Task.isCancelled, connectionID == self.connectionID else { return }
+			guard let self, let form, !Task.isCancelled, self.vercel === form else { return }
 			switch result {
-			case .success(let list): self.projects = .loaded(list)
-			case .failure(let error): self.projects = .failed(error.message)
+			case .success(let list): form.projects = .loaded(list)
+			case .failure(let error): form.projects = .failed(error.message)
 			}
 		}
 	}
 
-	private func loadCustomEnvironments() {
+	private func loadCustomEnvironments(_ form: VercelDestinationForm) {
 		environmentsTask?.cancel()
-		guard let connectionID, let projectID else {
-			customEnvironments = .idle
+		guard let connectionID, let projectID = form.projectID else {
+			form.customEnvironments = .idle
 			return
 		}
-		customEnvironments = .loading
-		let teamID = Self.teamID(of: connectionID, in: connections.value ?? [])
-		environmentsTask = Task { [weak self, dependencies] in
+		form.customEnvironments = .loading
+		let teamID = vercelTeamID()
+		environmentsTask = Task { [weak self, weak form, dependencies] in
 			let result: Result<[VercelCustomEnvironment], PublishSessionError>
-			switch await dependencies.connections.accessToken(for: connectionID) {
-			case .success(let token):
-				result = await dependencies.client(token).customEnvironments(projectID: projectID, teamID: teamID)
+			switch await self?.token(for: connectionID) {
+			case .success(let token)?:
+				result = await dependencies.vercel(token).customEnvironments(projectID: projectID, teamID: teamID)
 					.mapError { PublishSessionError(VercelPublishing.message($0)) }
-			case .failure(let error):
-				result = .failure("The connection's token can't be read. \(error)")
+			case .failure(let error)?:
+				result = .failure(error)
+			case nil:
+				return
 			}
-			guard let self, !Task.isCancelled, projectID == self.projectID else { return }
+			guard let self, let form, !Task.isCancelled, self.vercel === form, form.projectID == projectID else { return }
 			switch result {
-			case .success(let list): self.customEnvironments = .loaded(list)
-			case .failure(let error): self.customEnvironments = .failed(error.message)
+			case .success(let list): form.customEnvironments = .loaded(list)
+			case .failure(let error): form.customEnvironments = .failed(error.message)
 			}
 		}
 	}
 
-	private static func teamID(of connectionID: PlatformConnection.ID, in connections: [PlatformConnection]) -> String? {
-		guard let connection = connections.first(where: { $0.id == connectionID }),
-			case .vercel(let account) = connection.account
-		else { return nil }
-		return account.teamID
+	private func loadResources(_ form: CoolifyDestinationForm) {
+		guard let connectionID, let instance = coolifyInstance() else { return }
+		form.resources = .loading
+		choicesTask = Task { [weak self, weak form, dependencies] in
+			let result: Result<[CoolifyResource], PublishSessionError>
+			switch await self?.token(for: connectionID) {
+			case .success(let token)?:
+				result = await dependencies.coolify(instance, token).resources()
+					.map(CoolifyDestinationForm.sorted)
+					.mapError { PublishSessionError(CoolifyPublishing.message($0)) }
+			case .failure(let error)?:
+				result = .failure(error)
+			case nil:
+				return
+			}
+			guard let self, let form, !Task.isCancelled, self.coolify === form else { return }
+			switch result {
+			case .success(let list): form.resources = .loaded(list)
+			case .failure(let error): form.resources = .failed(error.message)
+			}
+		}
+	}
+
+	/// The Vercel team the chosen connection reaches; nil for a personal account.
+	private func vercelTeamID() -> String? {
+		if case .vercel(let account)? = connection?.account { return account.teamID }
+		if case .vercel(let target)? = saved?.target, target.connectionID == connectionID { return target.teamID }
+		return nil
+	}
+
+	/// The Coolify instance the chosen connection reaches.
+	private func coolifyInstance() -> CoolifyInstance? {
+		if case .coolify(let account)? = connection?.account { return account.instance }
+		if case .coolify(let target)? = saved?.target, target.connectionID == connectionID { return target.instance }
+		return nil
+	}
+
+	/// Where the fields say to publish, from the chosen connection.
+	private func target() -> Result<PublishTarget, PublishSessionError> {
+		if connection == nil, let saved, connectionID == saved.target.connectionID, connections.value != nil {
+			return .failure("This destination publishes through \(saved.target.accountName) on \(saved.target.platform.displayName), which isn't connected on this Mac. Connect it on the Platforms page.")
+		}
+		switch (connection?.account, form) {
+		case (.vercel(let account)?, .vercel(let form)?):
+			guard let projectID = form.projectID, let environment = form.environment else { return .failure("Choose a destination first.") }
+			let projectName = form.project?.name ?? {
+				if case .vercel(let target)? = saved?.target, target.projectID == projectID { return target.projectName }
+				return projectID
+			}()
+			return .success(.vercel(VercelPublishTarget(
+				teamID: account.teamID, accountID: account.ownerID, teamName: account.name,
+				projectID: projectID, projectName: projectName, environment: environment)))
+		case (.coolify(let account)?, .coolify(let form)?):
+			var savedTarget: CoolifyPublishTarget?
+			if case .coolify(let target)? = saved?.target, target.resourceID == form.resourceID, target.instance == account.instance {
+				savedTarget = target
+			}
+			guard let resourceID = form.resourceID, let deployments = form.deployments,
+				let kind = form.resource?.kind ?? savedTarget?.resource
+			else { return .failure("Choose a destination first.") }
+			let resource = form.resource
+			return .success(.coolify(CoolifyPublishTarget(
+				instance: account.instance, teamID: account.teamID, teamName: account.teamName,
+				resource: kind, resourceID: resourceID, resourceName: resource?.name ?? savedTarget?.resourceName ?? resourceID,
+				projectName: resource == nil ? savedTarget?.projectName : resource?.projectName,
+				environmentName: resource == nil ? savedTarget?.environmentName : resource?.environmentName,
+				deployments: deployments)))
+		default:
+			return .failure("Choose a destination first.")
+		}
 	}
 
 	/// The destination the fields describe: the saved one, the saved one
 	/// that already publishes to the same place, or a new one.
 	private func destination(
-		target: VercelPublishTarget,
+		target: PublishTarget,
 		among existing: [PublishDestination]
 	) -> Result<(destination: PublishDestination, stored: PublishDestination?), PublishSessionError> {
-		let location = PublishTarget.vercel(target).location
+		let location = target.location
 		let stored: PublishDestination?
 		if let saved {
 			if let other = existing.first(where: { $0.id != saved.id && $0.target.location == location }) {
-				return .failure("Another saved destination already publishes to \(target.projectName) / \(target.environment.displayName), from \(VaultProject.displayName(for: other.sourceEnvironment)). Choose it from the Publish menu.")
+				return .failure("Another saved destination already publishes to \(target.placeName), from \(VaultProject.displayName(for: other.sourceEnvironment)). Choose it from the Publish menu.")
 			}
 			stored = existing.first { $0.id == saved.id }
 		} else {
 			stored = existing.first { $0.target.location == location }
 		}
-		guard let stored else {
-			let base = saved ?? PublishDestination(sourceEnvironment: sourceEnvironment, target: .vercel(target), createdAt: dependencies.now())
-			var updated = base
-			updated.sourceEnvironment = sourceEnvironment
-			updated.target = .vercel(target)
-			return .success((updated, nil))
-		}
-		var updated = stored
+		var updated = stored ?? saved ?? PublishDestination(sourceEnvironment: sourceEnvironment, target: target, createdAt: dependencies.now())
 		updated.sourceEnvironment = sourceEnvironment
-		updated.target = .vercel(target)
+		updated.target = target
 		return .success((updated, stored))
 	}
 
-	private func makeReview() async -> Result<Review, PublishSessionError> {
-		if connection == nil, connectionID != nil, connections.value != nil, case .vercel(let target)? = saved?.target {
-			return .failure("This destination publishes through \(target.teamName) on Vercel, which isn't connected on this Mac. Connect it on the Platforms page.")
+	/// The platform's variables for the destination, and what the platform accepts.
+	private struct Remote {
+		let variables: [String: PublishPlan.RemoteVariable]
+		let platform: PublishPlan.Platform
+	}
+
+	private func remote(of target: PublishTarget, token: String) async -> Result<Remote, PublishSessionError> {
+		switch target {
+		case .vercel(let target):
+			let client = dependencies.vercel(token)
+			async let listing = client.variables(projectID: target.projectID, teamID: target.teamID)
+			async let customs = client.customEnvironments(projectID: target.projectID, teamID: target.teamID)
+			let list: VercelVariableList
+			switch await listing {
+			case .success(let value): list = value
+			case .failure(let error): return .failure(PublishSessionError(VercelPublishing.message(error)))
+			}
+			return VercelPublishing.snapshot(list, for: target.environment, customEnvironments: (try? await customs.get()) ?? [])
+				.map { Remote(variables: $0.variables, platform: VercelPublishing.platform) }
+				.mapError { PublishSessionError($0.message) }
+		case .coolify(let target):
+			let client = dependencies.coolify(target.instance, token)
+			async let listing = client.variables(of: target.resource, id: target.resourceID)
+			let buildPack: String?
+			if target.resource == .application {
+				switch await client.buildPack(ofApplication: target.resourceID) {
+				case .success(let value): buildPack = value
+				case .failure(let error): return .failure(PublishSessionError(CoolifyPublishing.message(error)))
+				}
+			} else {
+				buildPack = nil
+			}
+			switch await listing {
+			case .success(let list):
+				return CoolifyPublishing.snapshot(list, for: target.deployments)
+					.map { Remote(variables: $0.variables, platform: CoolifyPublishing.platform(for: target.resource, buildPack: buildPack)) }
+					.mapError { PublishSessionError($0.message) }
+			case .failure(let error):
+				return .failure(PublishSessionError(CoolifyPublishing.message(error)))
+			}
 		}
-		guard let connection, let environment, let projectID else { return .failure("Choose a destination first.") }
-		guard case .vercel(let account) = connection.account else { return .failure("Choose a Vercel connection.") }
-		let projectName = project?.name ?? {
-			if case .vercel(let target)? = saved?.target { return target.projectName }
-			return projectID
-		}()
-		let target = VercelPublishTarget(
-			teamID: account.teamID, accountID: account.ownerID, teamName: account.name,
-			projectID: projectID, projectName: projectName, environment: environment)
+	}
+
+	private func makeReview() async -> Result<Review, PublishSessionError> {
+		let target: PublishTarget
+		switch self.target() {
+		case .success(let value): target = value
+		case .failure(let error): return .failure(error)
+		}
 		let source = sourceEnvironment
 		let rules = dependencies.rules()
 		let check = dependencies.check(source)
@@ -370,33 +530,24 @@ final class PublishSession: Identifiable {
 		case .failure(let error): return .failure("LPM Vault's publish key can't be read. \(error)")
 		}
 		let token: String
-		switch await dependencies.connections.accessToken(for: connection.id) {
+		switch await self.token(for: target.connectionID) {
 		case .success(let value): token = value
-		case .failure(let error): return .failure("The connection's token can't be read. \(error)")
+		case .failure(let error): return .failure(error)
 		}
-		let client = dependencies.client(token)
-		async let listing = client.variables(projectID: projectID, teamID: account.teamID)
-		async let customs = client.customEnvironments(projectID: projectID, teamID: account.teamID)
-		let list: VercelVariableList
-		switch await listing {
-		case .success(let value): list = value
-		case .failure(let error): return .failure(PublishSessionError(VercelPublishing.message(error)))
-		}
-		let snapshot: VercelRemoteSnapshot
-		switch VercelPublishing.snapshot(list, for: environment, customEnvironments: (try? await customs.get()) ?? []) {
-		case .success(let value): snapshot = value
-		case .failure(let error): return .failure(PublishSessionError(error.message))
+		let remote: Remote
+		switch await self.remote(of: target, token: token) {
+		case .success(let value): remote = value
+		case .failure(let error): return .failure(error)
 		}
 		let plan = PublishPlan(
 			destination: destination,
 			values: values,
 			rules: rules.overview,
 			check: check,
-			remote: snapshot.variables,
-			reservedKeys: VercelPublishing.reservedKeys,
+			remote: remote.variables,
+			platform: remote.platform,
 			history: history,
-			fingerprintKey: fingerprintKey,
-			secretsStaySecret: true)
+			fingerprintKey: fingerprintKey)
 		return .success(Review(
 			destination: destination,
 			isSaved: stored != nil,
@@ -406,7 +557,8 @@ final class PublishSession: Identifiable {
 			fingerprintKey: fingerprintKey,
 			lastPublishedAt: history?.publishedAt,
 			rules: rules,
-			hasValueCheck: check != nil))
+			hasValueCheck: check != nil,
+			remote: remote.variables))
 	}
 
 	private func invalidateReview() {
@@ -435,7 +587,7 @@ final class PublishSession: Identifiable {
 	// MARK: - Publish
 
 	/// Checks the chosen values are still the reviewed ones, asks for Touch
-	/// ID, sends them, and records what Vercel accepted.
+	/// ID, sends them, and records what the platform accepted.
 	func publish() {
 		guard publishTask == nil, let review, !review.selection.keys.isEmpty else { return }
 		reviewError = nil
@@ -467,18 +619,24 @@ final class PublishSession: Identifiable {
 			return
 		}
 		let count = changes.count
-		let reason = "Publish \(count) \(count == 1 ? "variable" : "variables") to Vercel"
+		let reason = "Publish \(count) \(count == 1 ? "variable" : "variables") to \(review.platform.displayName)"
 		guard await dependencies.confirm(reason), !Task.isCancelled else { return }
 
-		let target = review.target
 		let token: String
-		switch await dependencies.connections.accessToken(for: target.connectionID) {
+		switch await self.token(for: review.destination.target.connectionID) {
 		case .success(let value): token = value
 		case .failure(let error):
-			reviewError = "The connection's token can't be read. \(error)"
+			reviewError = error.message
 			return
 		}
-		let report = await VercelPublishing.publish(changes, to: target, using: dependencies.client(token))
+		let report: PublishReport
+		switch review.destination.target {
+		case .vercel(let target):
+			report = await VercelPublishing.publish(changes, to: target, using: dependencies.vercel(token))
+		case .coolify(let target):
+			report = await CoolifyPublishing.publish(
+				changes, to: target, reviewed: review.remote, using: dependencies.coolify(target.instance, token))
+		}
 		var recordFailure: String?
 		if !report.published.isEmpty {
 			recordFailure = await record(report.published, of: review)

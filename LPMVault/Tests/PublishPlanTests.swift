@@ -90,7 +90,7 @@ struct PublishPlanTests {
 	@Test("choosing held keys counts them; a reserved name or an unusable value can't be chosen")
 	func selection() {
 		let check = ProjectEnvValueCheck.Environment(problems: ["LOG_LEVEL": [.init(key: "LOG_LEVEL", kind: .unusableValue)]])
-		let plan = makePlan(check: check, reservedKeys: ["SESSION_SECRET"])
+		let plan = makePlan(check: check, platform: PublishPlan.Platform(reservedKeys: ["SESSION_SECRET"]))
 		#expect(plan.row("SESSION_SECRET")?.holds == [.reserved])
 		#expect(plan.row("LOG_LEVEL")?.holds == [.unusableValue])
 		var selection = PublishPlan.Selection(defaultsOf: plan)
@@ -218,7 +218,7 @@ struct PublishPlanTests {
 		rules: ProjectEnvSchemaOverview? = nil,
 		check: ProjectEnvValueCheck.Environment?? = .none,
 		remote: [String: PublishPlan.RemoteVariable]? = nil,
-		reservedKeys: Set<String> = [],
+		platform: PublishPlan.Platform = PublishPlan.Platform(),
 		history: PublishHistory?? = .none
 	) -> PublishPlan {
 		PublishPlan(
@@ -227,7 +227,7 @@ struct PublishPlanTests {
 			rules: rules ?? self.rules,
 			check: check ?? self.check,
 			remote: remote ?? self.remote,
-			reservedKeys: reservedKeys,
+			platform: platform,
 			history: history ?? self.history,
 			fingerprintKey: secret
 		)
@@ -264,7 +264,7 @@ struct PublishPlanFindingTests {
 		for remote in [["A": PublishPlan.RemoteVariable(id: "env_a", updatedAt: lastPublish.addingTimeInterval(5))], [:]] {
 			let plan = PublishPlan(
 				destination: destination, values: ["A": "new"], rules: .empty, check: nil, remote: remote,
-				reservedKeys: [], history: history, fingerprintKey: secret)
+				history: history, fingerprintKey: secret)
 			#expect(plan.row("A")?.holds == [.changedOnPlatform])
 			#expect(plan.row("A")?.status.valueChanged == true)
 		}
@@ -279,7 +279,7 @@ struct PublishPlanFindingTests {
 		], forgetting: [], at: lastPublish)
 		let plan = PublishPlan(
 			destination: excluded, values: ["A": "same"], rules: .empty, check: nil,
-			remote: ["A": .init(id: "env_a", updatedAt: lastPublish)], reservedKeys: [], history: history, fingerprintKey: secret)
+			remote: ["A": .init(id: "env_a", updatedAt: lastPublish)], history: history, fingerprintKey: secret)
 		#expect(plan.summary(of: PublishPlan.Selection(defaultsOf: plan)).upToDate == 1)
 	}
 
@@ -321,8 +321,9 @@ struct PublishPlanFindingTests {
 		let history = PublishHistory().recording(
 			[.init(key: "A", fingerprint: fingerprint, remoteID: "env_a", remoteUpdatedAt: lastPublish, publishedAsSecret: true)],
 			forgetting: [], at: lastPublish)
+		let staysSecret = PublishPlan.Platform(secretsStaySecret: true)
 		let staying = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil,
-			remote: storedSecret, reservedKeys: [], history: history, fingerprintKey: secret, secretsStaySecret: true)
+			remote: storedSecret, platform: staysSecret, history: history, fingerprintKey: secret)
 		let row = try #require(staying.row("A"))
 		#expect(row.kind == .public && row.publishesAsSecret && row.staysSecret)
 		#expect(row.status.isUpToDate)
@@ -331,10 +332,10 @@ struct PublishPlanFindingTests {
 		#expect(try staying.changes(for: selection, values: ["A": "same"], fingerprintKey: secret).get().first?.publishesAsSecret == true)
 
 		let convertible = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil,
-			remote: storedSecret, reservedKeys: [], history: history, fingerprintKey: secret)
+			remote: storedSecret, history: history, fingerprintKey: secret)
 		#expect(convertible.row("A")?.publishesAsSecret == false && convertible.row("A")?.status.protectionChanged == true)
 		let added = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil,
-			remote: [:], reservedKeys: [], history: nil, fingerprintKey: secret, secretsStaySecret: true)
+			remote: [:], platform: staysSecret, history: nil, fingerprintKey: secret)
 		#expect(added.row("A")?.publishesAsSecret == false, "A new public key is published readable")
 	}
 
@@ -343,18 +344,18 @@ struct PublishPlanFindingTests {
 		let readable = ProjectEnvSchemaOverview(rules: [rule("A", isPublic: true)], groups: [])
 		let secretRule = ProjectEnvSchemaOverview(rules: [rule("A", secret: true)], groups: [])
 		let first = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil, remote: [:],
-			reservedKeys: [], history: nil, fingerprintKey: secret)
+			history: nil, fingerprintKey: secret)
 		let change = try #require(try first.changes(for: .init(defaultsOf: first), values: ["A": "same"], fingerprintKey: secret).get().first)
 		#expect(!change.publishesAsSecret)
 		let history = PublishHistory().recording(
 			[change.published(remoteID: "env_a", remoteUpdatedAt: lastPublish)], forgetting: [], at: lastPublish)
 		let remote = ["A": PublishPlan.RemoteVariable(id: "env_a", updatedAt: lastPublish)]
 		let plan = PublishPlan(destination: destination, values: ["A": "same"], rules: secretRule, check: nil, remote: remote,
-			reservedKeys: [], history: history, fingerprintKey: secret)
+			history: history, fingerprintKey: secret)
 		let row = try #require(plan.row("A"))
 		#expect(!row.status.isUpToDate && row.isSelectedByDefault)
 		let unchanged = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil, remote: remote,
-			reservedKeys: [], history: history, fingerprintKey: secret)
+			history: history, fingerprintKey: secret)
 		#expect(unchanged.row("A")?.status.isUpToDate == true)
 		// What the platform says it stores wins over this Mac's history.
 		let storedReadable = ["A": PublishPlan.RemoteVariable(id: "env_a", updatedAt: lastPublish, storedAsSecret: false)]
@@ -362,7 +363,7 @@ struct PublishPlanFindingTests {
 			[.init(key: "A", fingerprint: change.fingerprint, remoteID: "env_a", remoteUpdatedAt: lastPublish, publishedAsSecret: true)],
 			forgetting: [], at: lastPublish)
 		let reported = PublishPlan(destination: destination, values: ["A": "same"], rules: secretRule, check: nil,
-			remote: storedReadable, reservedKeys: [], history: secretHistory, fingerprintKey: secret)
+			remote: storedReadable, history: secretHistory, fingerprintKey: secret)
 		#expect(reported.row("A")?.status.protectionChanged == true)
 		#expect(reported.row("A")?.isSelectedByDefault == true)
 	}
@@ -388,6 +389,6 @@ struct PublishPlanFindingTests {
 
 	private func plan(values: [String: String], remote: [String: PublishPlan.RemoteVariable] = [:]) -> PublishPlan {
 		PublishPlan(destination: destination, values: values, rules: .empty, check: nil, remote: remote,
-			reservedKeys: [], history: nil, fingerprintKey: secret)
+			history: nil, fingerprintKey: secret)
 	}
 }
