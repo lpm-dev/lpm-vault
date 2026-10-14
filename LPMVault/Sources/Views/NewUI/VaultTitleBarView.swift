@@ -8,6 +8,8 @@ struct VaultTitleBarView: View {
 	let onPull: () -> Void
 	let onPush: () -> Void
 	var isConnectSheetPresented = false
+	/// Opens the Publish sheet, on a saved destination's review or for a new one.
+	var onPublish: (PublishDestination?) -> Void = { _ in }
 
 	@State private var connectChipHovering = false
 
@@ -85,6 +87,8 @@ struct VaultTitleBarView: View {
 			.accessibilityIdentifier("vault-refresh-local-state")
 
 			syncMenu
+
+			publishControl
 
 			if let version = updateChecker.availableUpdateVersion {
 				VaultBarButton(
@@ -176,11 +180,70 @@ struct VaultTitleBarView: View {
 			.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
 			.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
 		}
-		.menuStyle(.borderlessButton)
+		.menuStyle(.button)
+		.buttonStyle(.plain)
 		.menuIndicator(.hidden)
 		.fixedSize()
 		.disabled(store.isSyncing || (store.isLoggedIn && project == nil))
 		.accessibilityLabel("Sync status: \(syncLabel)")
+	}
+
+	@ViewBuilder
+	private var publishControl: some View {
+		if let project, !store.isShowingAccountPage {
+			let saved = store.publishDestinations[project.id] ?? []
+			Group {
+				if saved.isEmpty {
+					VaultBarButton(systemImage: "arrow.up.to.line", title: "Publish…") { onPublish(nil) }
+				} else {
+					Menu {
+						Section("Saved destinations") {
+							ForEach(saved) { summary in
+								Button { onPublish(summary.destination) } label: {
+									Text(Self.title(of: summary.destination))
+									Text(Self.subtitle(of: summary))
+								}
+							}
+						}
+						Divider()
+						Button("New destination…") { onPublish(nil) }
+					} label: {
+						HStack(spacing: 6) {
+							Image(systemName: "arrow.up.to.line").font(.system(size: 11, weight: .medium))
+							Text("Publish").font(.system(size: 12))
+							Image(systemName: "chevron.down")
+								.font(.system(size: 8, weight: .bold))
+								.foregroundStyle(VaultPalette.textQuaternary)
+						}
+						.foregroundStyle(VaultPalette.textSecondary)
+						.padding(.horizontal, 10)
+						.frame(height: 26)
+						.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
+						.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+					}
+					.menuStyle(.button)
+					.buttonStyle(.plain)
+					.menuIndicator(.hidden)
+					.fixedSize()
+					.accessibilityLabel("Publish")
+				}
+			}
+			.help("Publish an environment to a platform")
+			.task(id: project.id) { await store.loadPublishDestinations(for: project.id) }
+		}
+	}
+
+	static func title(of destination: PublishDestination) -> String {
+		switch destination.target {
+		case .vercel(let target):
+			"\(target.projectName) / \(target.environment.displayName) — Vercel · \(target.teamName)"
+		}
+	}
+
+	static func subtitle(of summary: PublishDestinationSummary) -> String {
+		let source = "from \(VaultProject.displayName(for: summary.destination.sourceEnvironment))"
+		guard let publishedAt = summary.lastPublishedAt else { return "\(source) · not published yet" }
+		return "\(source) · \(RelativeTimestampFormatter.string(from: publishedAt))"
 	}
 
 	private var isOrganization: Bool {

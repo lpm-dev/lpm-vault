@@ -67,6 +67,9 @@ struct VercelEnvironmentVariable: Identifiable, Equatable, Sendable {
 	let id: String
 	let key: String
 	let kind: Kind
+	/// Whether Vercel keeps the value write-only: its Secret type, or a
+	/// Sensitive variable from before Vercel named the types.
+	let isSecret: Bool
 	let targets: Set<Target>
 	let customEnvironmentIDs: Set<String>
 	/// Set when the variable applies only to Preview deployments of one branch.
@@ -116,7 +119,13 @@ protocol VercelClientProtocol: Sendable {
 	func projects(teamID: String?) async -> Result<[VercelProject], VercelAPIError>
 	func customEnvironments(projectID: String, teamID: String?) async -> Result<[VercelCustomEnvironment], VercelAPIError>
 	func variables(projectID: String, teamID: String?) async -> Result<VercelVariableList, VercelAPIError>
-	func create(_ write: VercelVariableWrite, projectID: String, teamID: String?) async -> Result<VercelEnvironmentVariable, VercelAPIError>
+	/// Creates the variables, in batches; each key's own result, or one
+	/// failure when no batch could be sent.
+	func create(
+		_ writes: [VercelVariableWrite],
+		projectID: String,
+		teamID: String?
+	) async -> Result<[String: Result<VercelEnvironmentVariable, VercelAPIError>], VercelAPIError>
 	func replace(
 		_ variableID: String,
 		value: String,
@@ -245,28 +254,61 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			}
 	}
 
-	func create(_ write: VercelVariableWrite, projectID: String, teamID: String?) async -> Result<VercelEnvironmentVariable, VercelAPIError> {
-		guard VercelPublishTarget.isValidIdentifier(projectID), !write.key.isEmpty,
-			!write.targets.isEmpty || !write.customEnvironmentIDs.isEmpty,
-			write.customEnvironmentIDs.allSatisfy(VercelPublishTarget.isValidIdentifier)
+	static let createBatchSize = 50
+
+	func create(
+		_ writes: [VercelVariableWrite],
+		projectID: String,
+		teamID: String?
+	) async -> Result<[String: Result<VercelEnvironmentVariable, VercelAPIError>], VercelAPIError> {
+		guard VercelPublishTarget.isValidIdentifier(projectID),
+			Set(writes.map(\.key)).count == writes.count,
+			writes.allSatisfy({ write in
+				!write.key.isEmpty && (!write.targets.isEmpty || !write.customEnvironmentIDs.isEmpty)
+					&& write.customEnvironmentIDs.allSatisfy(VercelPublishTarget.isValidIdentifier)
+			})
 		else { return .failure(.invalidResponse) }
-		var body: [String: Any] = [
-			"key": write.key, "value": write.value, "type": write.storage.rawValue, "visibility": write.storage.visibility,
-		]
-		if !write.targets.isEmpty { body["target"] = write.targets.map(\.rawValue).sorted() }
-		if !write.customEnvironmentIDs.isEmpty { body["customEnvironmentIds"] = write.customEnvironmentIDs.sorted() }
-		return await send("POST", ["v10", "projects", projectID, "env"], body: body, teamID: teamID).flatMap { data in
-			guard let decoded = try? JSONDecoder().decode(CreateResponse.self, from: data) else {
+		var results: [String: Result<VercelEnvironmentVariable, VercelAPIError>] = [:]
+		var start = writes.startIndex
+		while start < writes.endIndex {
+			let batch = writes[start..<min(start + Self.createBatchSize, writes.endIndex)]
+			start = batch.endIndex
+			let body: [[String: Any]] = batch.map { write in
+				var object: [String: Any] = [
+					"key": write.key, "value": write.value, "type": write.storage.rawValue, "visibility": write.storage.visibility,
+				]
+				if !write.targets.isEmpty { object["target"] = write.targets.map(\.rawValue).sorted() }
+				if !write.customEnvironmentIDs.isEmpty { object["customEnvironmentIds"] = write.customEnvironmentIDs.sorted() }
+				return object
+			}
+			let response = await send("POST", ["v10", "projects", projectID, "env"], body: body, teamID: teamID)
+			guard case .success(let data) = response else {
+				if case .failure(let error) = response {
+					// Later batches would meet the same refusal, so nothing more is sent.
+					guard results.isEmpty else {
+						for write in writes[batch.startIndex...] { results[write.key] = .failure(error) }
+						return .success(results)
+					}
+					return .failure(error)
+				}
 				return .failure(.invalidResponse)
 			}
-			if let failure = decoded.failed?.first?.error {
-				return .failure(.rejected(code: Self.sanitized(failure.code) ?? "unknown", message: Self.sanitized(failure.message) ?? ""))
+			guard let decoded = try? JSONDecoder().decode(CreateResponse.self, from: data) else { return .failure(.invalidResponse) }
+			let keys = Set(batch.map(\.key))
+			for raw in decoded.created ?? [] {
+				guard let created = raw.variable, keys.contains(created.key) else { continue }
+				results[created.key] = .success(created)
 			}
-			guard let created = decoded.created?.first?.variable, created.key == write.key else {
-				return .failure(.invalidResponse)
+			for failure in decoded.failed ?? [] {
+				guard let key = failure.error.key ?? failure.error.envVarKey, keys.contains(key), results[key] == nil else { continue }
+				results[key] = .failure(.rejected(
+					code: Self.sanitized(failure.error.code) ?? "unknown", message: Self.sanitized(failure.error.message) ?? ""))
 			}
-			return .success(created)
+			for write in batch where results[write.key] == nil {
+				results[write.key] = .failure(.invalidResponse)
+			}
 		}
+		return .success(results)
 	}
 
 	func replace(
@@ -305,7 +347,7 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 	private func send(
 		_ method: String,
 		_ path: [String],
-		body: [String: Any],
+		body: Any,
 		teamID: String?
 	) async -> Result<Data, VercelAPIError> {
 		guard let url = url(path, query: [], teamID: teamID),
@@ -460,18 +502,20 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 		let id: String?
 		let key: String
 		let type: String
+		let visibility: String?
 		let target: [String]
 		let customEnvironmentIds: [String]?
 		let gitBranch: String?
 		let updatedAt: Double?
 
-		private enum CodingKeys: String, CodingKey { case id, key, type, target, customEnvironmentIds, gitBranch, updatedAt }
+		private enum CodingKeys: String, CodingKey { case id, key, type, visibility, target, customEnvironmentIds, gitBranch, updatedAt }
 
 		init(from decoder: Decoder) throws {
 			let container = try decoder.container(keyedBy: CodingKeys.self)
 			id = try container.decodeIfPresent(String.self, forKey: .id)
 			key = try container.decode(String.self, forKey: .key)
 			type = try container.decode(String.self, forKey: .type)
+			visibility = try container.decodeIfPresent(String.self, forKey: .visibility)
 			if let targets = try? container.decodeIfPresent([String].self, forKey: .target) {
 				target = targets
 			} else if let single = try? container.decodeIfPresent(String.self, forKey: .target) {
@@ -493,10 +537,12 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			}
 			let customIDs = customEnvironmentIds ?? []
 			guard customIDs.allSatisfy(VercelPublishTarget.isValidIdentifier) else { return nil }
+			let kind = VercelEnvironmentVariable.Kind(type)
 			return VercelEnvironmentVariable(
 				id: id,
 				key: key,
-				kind: .init(type),
+				kind: kind,
+				isSecret: visibility.map { $0 == "secret" } ?? (kind == .sensitive || kind == .secret),
 				targets: targets,
 				customEnvironmentIDs: Set(customIDs),
 				gitBranch: gitBranch.flatMap { $0.isEmpty ? nil : $0 },
@@ -510,6 +556,8 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			struct Detail: Decodable {
 				let code: String?
 				let message: String?
+				let key: String?
+				let envVarKey: String?
 			}
 			let error: Detail
 		}

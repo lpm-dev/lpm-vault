@@ -351,7 +351,7 @@ private struct FakeVercel: VercelClientProtocol {
 	func projects(teamID: String?) async -> Result<[VercelProject], VercelAPIError> { .success([]) }
 	func customEnvironments(projectID: String, teamID: String?) async -> Result<[VercelCustomEnvironment], VercelAPIError> { .success([]) }
 	func variables(projectID: String, teamID: String?) async -> Result<VercelVariableList, VercelAPIError> { .failure(.notFound) }
-	func create(_ write: VercelVariableWrite, projectID: String, teamID: String?) async -> Result<VercelEnvironmentVariable, VercelAPIError> { .failure(.notFound) }
+	func create(_ writes: [VercelVariableWrite], projectID: String, teamID: String?) async -> Result<[String: Result<VercelEnvironmentVariable, VercelAPIError>], VercelAPIError> { .failure(.notFound) }
 	func replace(_ variableID: String, value: String, storage: VercelVariableWrite.Storage, projectID: String, teamID: String?) async -> Result<VercelEnvironmentVariable, VercelAPIError> { .failure(.notFound) }
 }
 

@@ -41,6 +41,7 @@ struct VaultWorkspaceView: View {
 	@State private var showPullConfirmation = false
 	@State private var conflictTarget: VaultSyncTarget?
 	@State private var showConnectCLISheet = false
+	@State private var publishSession: PublishSession?
 	@State private var importReview: EnvFileImportReview?
 	@State private var currentImportTask: Task<Void, Never>?
 	@State private var currentImportID: UUID?
@@ -237,7 +238,8 @@ struct VaultWorkspaceView: View {
 				onConnectCLI: { showConnectCLISheet = true },
 				onPull: { showPullConfirmation = true },
 				onPush: { showPushConfirmation = true },
-				isConnectSheetPresented: showConnectCLISheet
+				isConnectSheetPresented: showConnectCLISheet,
+				onPublish: { publishSession = store.makePublishSession(for: $0) }
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
@@ -550,6 +552,10 @@ struct VaultWorkspaceView: View {
 				ConnectCLISheet(store: store, projectId: project.id)
 					.vaultPrivacyProtected(isObscured)
 			}
+		}
+		.sheet(item: $publishSession) { session in
+			PublishSheet(store: store, session: session)
+				.vaultPrivacyProtected(isObscured)
 		}
 	}
 

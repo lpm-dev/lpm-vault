@@ -19,6 +19,8 @@ enum AuthenticationOutcome: Equatable, Sendable {
 protocol BiometricServiceProtocol: Sendable {
 	var keychainAuthenticationContext: LAContext? { get }
 	func authenticate(reason: String) async -> AuthenticationOutcome
+	/// Asks every time, even right after an approval `authenticate` would reuse.
+	func confirm(reason: String) async -> AuthenticationOutcome
 	func isBiometricAvailable() -> Bool
 	func biometricType() -> BiometricType
 	func resetCache()
@@ -56,11 +58,19 @@ final class BiometricService: BiometricServiceProtocol, @unchecked Sendable {
 	}
 
 	func authenticate(reason: String) async -> AuthenticationOutcome {
+		await authenticate(reason: reason, reusingRecent: true)
+	}
+
+	func confirm(reason: String) async -> AuthenticationOutcome {
+		await authenticate(reason: reason, reusingRecent: false)
+	}
+
+	private func authenticate(reason: String, reusingRecent: Bool) async -> AuthenticationOutcome {
 		let (cachedAuthTime, authenticationEpoch) = lock.withLock {
 			(lastAuthTime, cacheEpoch)
 		}
 		let elapsed = cachedAuthTime.map { now() - $0 }
-		if let elapsed, elapsed >= 0, elapsed < cacheDuration {
+		if reusingRecent, let elapsed, elapsed >= 0, elapsed < cacheDuration {
 			return .authenticated
 		}
 

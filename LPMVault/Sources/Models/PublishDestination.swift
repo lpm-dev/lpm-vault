@@ -125,6 +125,9 @@ struct VercelPublishTarget: Hashable, Sendable {
 
 	/// The team's ID, or nil for a personal account.
 	let teamID: String?
+	/// The team, or for a personal account the user, whose connection
+	/// publishes here; for a team it's the team's ID.
+	let accountID: String
 	/// The team's or account's name when the destination was saved, for display.
 	var teamName: String
 	let projectID: String
@@ -132,8 +135,9 @@ struct VercelPublishTarget: Hashable, Sendable {
 	var projectName: String
 	var environment: Environment
 
-	init(teamID: String?, teamName: String, projectID: String, projectName: String, environment: Environment) {
+	init(teamID: String?, accountID: String, teamName: String, projectID: String, projectName: String, environment: Environment) {
 		self.teamID = teamID
+		self.accountID = accountID
 		self.teamName = teamName
 		self.projectID = projectID
 		self.projectName = projectName
@@ -144,10 +148,16 @@ struct VercelPublishTarget: Hashable, Sendable {
 	static let maximumIdentifierLength = 100
 	static let maximumNameBytes = 512
 
+	/// The connection that publishes here.
+	var connectionID: PlatformConnection.ID { PlatformConnection.vercelID(accountID: accountID) }
+
 	fileprivate var invalidity: PublishDestinationInvalidity? {
-		var identifiers = [projectID]
+		var identifiers = [projectID, accountID]
 		var names = [teamName, projectName]
-		if let teamID { identifiers.append(teamID) }
+		if let teamID {
+			guard teamID == accountID else { return .targetIdentifier }
+			identifiers.append(teamID)
+		}
 		if case .custom(let id, let name) = environment {
 			identifiers.append(id)
 			names.append(name)

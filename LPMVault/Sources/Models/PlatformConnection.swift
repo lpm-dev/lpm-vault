@@ -28,8 +28,13 @@ struct PlatformConnection: Identifiable, Hashable, Sendable {
 
 	static func id(for account: Account) -> String {
 		switch account {
-		case .vercel(let vercel): "vercel.\(vercel.ownerID)"
+		case .vercel(let vercel): vercelID(accountID: vercel.ownerID)
 		}
+	}
+
+	/// The connection to the Vercel team, or personal account, with this ID.
+	static func vercelID(accountID: String) -> String {
+		"vercel.\(accountID)"
 	}
 }
 

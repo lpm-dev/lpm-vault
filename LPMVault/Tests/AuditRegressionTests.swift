@@ -26,6 +26,26 @@ struct AuditRegressionTests {
     #expect(prompts.value == 2)
   }
 
+  @Test("a confirmation asks even right after an approval that authentication reuses")
+  func confirmationNeverReusesApproval() async {
+    let clock = LockedTestClock(100)
+    let prompts = LockedTestCounter()
+    let service = BiometricService(
+      cacheDuration: 300,
+      now: { clock.value },
+      authentication: { _ in
+        prompts.increment()
+        return .authenticated
+      }
+    )
+
+    #expect(await service.authenticate(reason: "unlock") == .authenticated)
+    #expect(await service.authenticate(reason: "reveal") == .authenticated)
+    #expect(prompts.value == 1)
+    #expect(await service.confirm(reason: "publish") == .authenticated)
+    #expect(prompts.value == 2)
+  }
+
   @Test("login attempt throttling does not persist across a monotonic clock reset")
   func loginAttemptClockReset() {
     let limiter = LoginAttemptLimiter()

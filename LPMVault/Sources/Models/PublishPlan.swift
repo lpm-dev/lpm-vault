@@ -84,6 +84,11 @@ struct PublishPlan: Equatable, Sendable {
 	struct Row: Equatable, Sendable, Identifiable {
 		let key: String
 		let kind: Kind
+		/// Whether the publish stores it so its value can't be read back.
+		let publishesAsSecret: Bool
+		/// Its kind says readable, but the platform keeps it a secret, as it
+		/// already stores it as one.
+		var staysSecret: Bool { publishesAsSecret && !kind.publishesAsSecret }
 		let operation: Operation
 		let status: Status
 		/// Why it isn't published by default, most important first; empty when it is.
@@ -141,6 +146,8 @@ struct PublishPlan: Equatable, Sendable {
 	///   - remote: The platform's variables that apply to the destination, by key.
 	///   - reservedKeys: Names the platform sets itself.
 	///   - history: This Mac's history of publishing to the destination.
+	///   - secretsStaySecret: The platform can't make a variable it stores
+	///     as a secret readable again, so one stays a secret.
 	init(
 		destination: PublishDestination,
 		values: [String: String],
@@ -149,7 +156,8 @@ struct PublishPlan: Equatable, Sendable {
 		remote: [String: RemoteVariable],
 		reservedKeys: Set<String>,
 		history: PublishHistory?,
-		fingerprintKey: SymmetricKey
+		fingerprintKey: SymmetricKey,
+		secretsStaySecret: Bool = false
 	) {
 		self.destination = destination.id
 		location = destination.target.location
@@ -158,8 +166,9 @@ struct PublishPlan: Equatable, Sendable {
 			let fingerprint = PublishFingerprint.of(value: value, key: key, destination: destination.id, using: fingerprintKey)
 			let remoteVariable = remote[key]
 			let kind = Self.kind(of: key, in: rules)
+			let publishesAsSecret = kind.publishesAsSecret || (secretsStaySecret && remoteVariable?.storedAsSecret == true)
 			let status = Self.status(
-				fingerprint: fingerprint, publishesAsSecret: kind.publishesAsSecret, remote: remoteVariable, record: history?.keys[key])
+				fingerprint: fingerprint, publishesAsSecret: publishesAsSecret, remote: remoteVariable, record: history?.keys[key])
 			let problems = check?.problems[key] ?? []
 			var holds: [Hold] = []
 			if reservedKeys.contains(key) { holds.append(.reserved) }
@@ -177,6 +186,7 @@ struct PublishPlan: Equatable, Sendable {
 			return Row(
 				key: key,
 				kind: kind,
+				publishesAsSecret: publishesAsSecret,
 				operation: remoteVariable.map { .replace(remoteID: $0.id) } ?? .add,
 				status: status,
 				holds: holds,
@@ -342,7 +352,7 @@ extension PublishPlan {
 				key: row.key,
 				value: value,
 				operation: row.operation,
-				publishesAsSecret: row.kind.publishesAsSecret,
+				publishesAsSecret: row.publishesAsSecret,
 				fingerprint: row.fingerprint
 			))
 		}
