@@ -29,6 +29,14 @@ actor PlatformConnectionStore {
 	private static let maximumRecordBytes = 16 * 1024
 
 	private let service: any KeychainServiceProtocol
+	/// Keychain calls block until the security daemon answers, so the store
+	/// runs on a queue of its own: blocking on the cooperative pool would hold
+	/// up every other task waiting for a thread.
+	private let queue = DispatchSerialQueue(label: "dev.lpm.vault.platform-connections", qos: .userInitiated)
+
+	nonisolated var unownedExecutor: UnownedSerialExecutor {
+		queue.asUnownedSerialExecutor()
+	}
 
 	init(service: any KeychainServiceProtocol) {
 		self.service = service

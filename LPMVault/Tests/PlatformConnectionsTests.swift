@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 import Testing
 @testable import LPMVault
 
@@ -122,6 +123,18 @@ struct PlatformConnectionStoreTests {
 		#expect(PlatformConnectionStore.encode(.init(connection: badTeam, accessToken: "3|ok")) == nil)
 		let badName = PlatformConnection(account: coolify(name: " Root"), connectedAt: connectedAt)
 		#expect(PlatformConnectionStore.encode(.init(connection: badName, accessToken: "3|ok")) == nil)
+	}
+
+	@Test("the store's Keychain calls run off the cooperative pool, so one that blocks never holds up other work")
+	func runsOffThePool() async {
+		let labels = OSAllocatedUnfairLock<[String]>(initialState: [])
+		keychain.beforeAppItemListing = {
+			let label = String(cString: __dispatch_queue_get_label(nil))
+			labels.withLock { $0.append(label) }
+		}
+		_ = await store.connections()
+		#expect(labels.withLock { $0 }.count == 1)
+		#expect(labels.withLock { $0 }.allSatisfy { !$0.contains("cooperative") }, "\(labels.withLock { $0 })")
 	}
 
 	@Test("names stored before they were escaped read back with their direction controls escaped")
