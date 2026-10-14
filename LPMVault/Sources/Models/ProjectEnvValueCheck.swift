@@ -133,6 +133,14 @@ actor ProjectEnvValueCheckWorker {
 	}
 
 	private let checker: Checker
+	/// The engine checks every environment in one call, so checks run on a
+	/// queue of their own: a long check on the cooperative pool would hold up
+	/// every other task waiting for a thread.
+	private let queue = DispatchSerialQueue(label: "dev.lpm.vault.value-check-worker", qos: .userInitiated)
+
+	nonisolated var unownedExecutor: UnownedSerialExecutor {
+		queue.asUnownedSerialExecutor()
+	}
 
 	init(checker: @escaping Checker = { rules, environments in rules.check(environments) }) {
 		self.checker = checker

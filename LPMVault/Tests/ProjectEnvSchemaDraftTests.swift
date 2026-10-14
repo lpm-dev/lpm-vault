@@ -8,6 +8,23 @@ struct ProjectEnvSchemaDraftTests {
 	typealias Draft = ProjectEnvSchemaDraft
 	typealias Problem = ProjectEnvValueCheck.Problem
 
+	@Test("a draft is evaluated off the cooperative pool, so reading slow imports never holds up other work")
+	func evaluationRunsOffThePool() async throws {
+		let queues = QueueLabels()
+		let evaluator = ProjectEnvSchemaDraftEvaluator { schema, folder in
+			queues.record()
+			return ProjectEnvSchemaDraftEvaluator.resolve(schema, inFolder: folder)
+		}
+		let folder = FileManager.default.temporaryDirectory.appending(path: "draft-queue-\(UUID().uuidString)").path
+		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		let draft = Draft(schema: try schema(#"{"vars":{"PORT":{"format":"port"}}}"#))
+		_ = await evaluator.evaluate(draft, inFolder: folder, imports: nil, environments: [:])
+		_ = await evaluator.restoredGroups(["auth"], of: draft, inFolder: folder)
+		#expect(!queues.labels.isEmpty)
+		#expect(queues.labels.allSatisfy { !$0.contains("cooperative") }, "\(queues.labels)")
+	}
+
 	private func json(_ text: String) throws -> LPMConfigJSON {
 		try LPMConfigJSON(parsing: Data(text.utf8), rejectDuplicateKeys: true)
 	}
@@ -1039,4 +1056,15 @@ private final class EvaluationCounter: @unchecked Sendable {
 	private var value = 0
 	var count: Int { lock.withLock { value } }
 	func increment() { lock.withLock { value += 1 } }
+}
+
+/// The dispatch queue each call ran on, by label.
+final class QueueLabels: @unchecked Sendable {
+	private let lock = NSLock()
+	private var recorded: [String] = []
+	var labels: [String] { lock.withLock { recorded } }
+	func record() {
+		let label = String(cString: __dispatch_queue_get_label(nil))
+		lock.withLock { recorded.append(label) }
+	}
 }

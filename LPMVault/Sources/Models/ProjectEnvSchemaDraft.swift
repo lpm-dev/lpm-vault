@@ -1107,6 +1107,14 @@ actor ProjectEnvSchemaDraftEvaluator {
 
 	private let resolver: Resolve
 	private var last: Resolution?
+	/// The engine reads the imported schemas from disk, so evaluations run on
+	/// a queue of their own: blocking on a slow disk on the cooperative pool
+	/// would hold up every other task waiting for a thread.
+	private let queue = DispatchSerialQueue(label: "dev.lpm.vault.schema-draft-evaluator", qos: .userInitiated)
+
+	nonisolated var unownedExecutor: UnownedSerialExecutor {
+		queue.asUnownedSerialExecutor()
+	}
 
 	init(resolve: @escaping Resolve = ProjectEnvSchemaDraftEvaluator.resolve) {
 		resolver = resolve
