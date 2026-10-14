@@ -113,6 +113,44 @@ struct VercelClientTests {
 		#expect(route.requests.last?.json?["customEnvironmentIds"] as? [String] == ["env_custom1"])
 	}
 
+	/// Answers like Vercel, which refuses a Secret that doesn't also say it's one.
+	private static func enforcingVisibility(_ request: PlatformHTTPStub.Request, reply: () -> PlatformHTTPStub.Reply) -> PlatformHTTPStub.Reply {
+		let writes = (try? JSONSerialization.jsonObject(with: request.body)).flatMap { $0 as? [[String: Any]] ?? ($0 as? [String: Any]).map { [$0] } } ?? []
+		for write in writes where write["type"] as? String == "sensitive" && write["visibility"] as? String != "secret" {
+			return .json(400, ["error": ["code": "bad_request", "message": "Environment variables with type: sensitive must use visibility: secret."]])
+		}
+		for write in writes where write["type"] as? String == "encrypted" && write["visibility"] as? String != "config" {
+			return .json(400, ["error": ["code": "bad_request", "message": "Environment variables with type: encrypted must use visibility: config."]])
+		}
+		return reply()
+	}
+
+	@Test("a Config variable replaced with a Secret, or the other way, names its type and visibility as Vercel requires")
+	func replaceStatesVisibility() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			Self.enforcingVisibility(request) {
+				.json(200, ["id": "env_1", "key": "API_TOKEN", "type": "sensitive", "visibility": "secret", "target": ["production"], "value": ""])
+			}
+		}
+		let updated = try await client(route).replace("env_1", value: "s3cret", storage: .sensitive, projectID: "prj_1", teamID: nil).get()
+		#expect(updated.kind == .sensitive)
+		#expect(route.requests.last?.json?["visibility"] as? String == "secret")
+		_ = try await client(route).replace("env_1", value: "info", storage: .encrypted, projectID: "prj_1", teamID: nil).get()
+		#expect(route.requests.last?.json?["visibility"] as? String == "config")
+	}
+
+	@Test("a new variable names its type and visibility as Vercel requires")
+	func createStatesVisibility() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			Self.enforcingVisibility(request) {
+				.json(201, ["created": ["id": "env_new", "key": "API_TOKEN", "type": "sensitive", "target": ["production"], "value": ""], "failed": []])
+			}
+		}
+		let write = VercelVariableWrite(key: "API_TOKEN", value: "s3cret", storage: .sensitive, targets: [.production], customEnvironmentIDs: [])
+		_ = try await client(route).create(write, projectID: "prj_1", teamID: nil).get()
+		#expect(route.requests.last?.json?["visibility"] as? String == "secret")
+	}
+
 	@Test("replacing changes only the value and protection of that variable")
 	func replaces() async throws {
 		let route = PlatformHTTPStub.platform { _ in
@@ -122,7 +160,7 @@ struct VercelClientTests {
 		#expect(updated.targets == [.production, .preview])
 		let request = try #require(route.requests.first)
 		#expect(request.method == "PATCH" && request.url.path() == "/v9/projects/prj_1/env/env_1")
-		#expect(Set(request.json?.keys ?? [:].keys) == ["value", "type"])
+		#expect(Set(request.json?.keys ?? [:].keys) == ["value", "type", "visibility"])
 		#expect(request.json?["value"] as? String == "")
 	}
 

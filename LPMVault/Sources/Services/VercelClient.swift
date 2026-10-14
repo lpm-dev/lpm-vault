@@ -88,6 +88,14 @@ struct VercelVariableWrite: Sendable, CustomStringConvertible, CustomDebugString
 		case encrypted
 		/// Write-only: no one can read it back.
 		case sensitive
+
+		/// Vercel's Config or Secret type, which it requires alongside `type`.
+		var visibility: String {
+			switch self {
+			case .encrypted: "config"
+			case .sensitive: "secret"
+			}
+		}
 	}
 
 	let key: String
@@ -242,7 +250,9 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			!write.targets.isEmpty || !write.customEnvironmentIDs.isEmpty,
 			write.customEnvironmentIDs.allSatisfy(VercelPublishTarget.isValidIdentifier)
 		else { return .failure(.invalidResponse) }
-		var body: [String: Any] = ["key": write.key, "value": write.value, "type": write.storage.rawValue]
+		var body: [String: Any] = [
+			"key": write.key, "value": write.value, "type": write.storage.rawValue, "visibility": write.storage.visibility,
+		]
 		if !write.targets.isEmpty { body["target"] = write.targets.map(\.rawValue).sorted() }
 		if !write.customEnvironmentIDs.isEmpty { body["customEnvironmentIds"] = write.customEnvironmentIDs.sorted() }
 		return await send("POST", ["v10", "projects", projectID, "env"], body: body, teamID: teamID).flatMap { data in
@@ -269,7 +279,7 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 		guard VercelPublishTarget.isValidIdentifier(projectID), VercelPublishTarget.isValidIdentifier(variableID) else {
 			return .failure(.invalidResponse)
 		}
-		let body: [String: Any] = ["value": value, "type": storage.rawValue]
+		let body: [String: Any] = ["value": value, "type": storage.rawValue, "visibility": storage.visibility]
 		return await send("PATCH", ["v9", "projects", projectID, "env", variableID], body: body, teamID: teamID).flatMap { data in
 			guard let updated = (try? JSONDecoder().decode(RawVariable.self, from: data))?.variable, updated.id == variableID else {
 				return .failure(.invalidResponse)
