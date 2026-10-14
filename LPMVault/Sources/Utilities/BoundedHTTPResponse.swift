@@ -299,3 +299,16 @@ class BoundedHTTPResponseDelegate: NSObject, URLSessionDataDelegate,
 		lock.withLock { accumulators[taskIdentifier] }
 	}
 }
+
+/// Refuses redirects, so a request and its token go only where they were sent.
+final class RedirectRefusingHTTPDelegate: BoundedHTTPResponseDelegate, @unchecked Sendable {
+	func urlSession(
+		_ session: URLSession,
+		task: URLSessionTask,
+		willPerformHTTPRedirection response: HTTPURLResponse,
+		newRequest request: URLRequest,
+		completionHandler: @escaping (URLRequest?) -> Void
+	) {
+		completionHandler(nil)
+	}
+}

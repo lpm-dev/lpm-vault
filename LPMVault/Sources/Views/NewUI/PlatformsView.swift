@@ -5,6 +5,7 @@ struct PlatformsView: View {
 	@Bindable var store: VaultStore
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var pendingDisconnect: PlatformConnection?
+	@State private var connectingCoolify = false
 
 	private var platforms: PlatformConnections { store.platforms }
 
@@ -29,6 +30,7 @@ struct PlatformsView: View {
 						.fixedSize(horizontal: false, vertical: true)
 
 					vercelSection
+					coolifySection
 
 					if let notice = platforms.notice {
 						HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -47,7 +49,7 @@ struct PlatformsView: View {
 						.accessibilityElement(children: .combine)
 					}
 
-					Text("Disconnecting forgets the token on this Mac only. To remove LPM Vault's access, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values.")
+					Text("Disconnecting forgets a token on this Mac only. To remove LPM Vault's access to Vercel, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values. To remove its access to Coolify, delete its API token in Coolify's Keys & Tokens.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
@@ -66,21 +68,54 @@ struct PlatformsView: View {
 		) { connection in
 			Button("Disconnect", role: .destructive) { platforms.disconnect(connection) }
 			Button("Cancel", role: .cancel) {}
-		} message: { _ in
-			Text("LPM Vault forgets its token on this Mac. The integration stays installed on Vercel, and variables already published stay as they are.")
+		} message: { connection in
+			switch connection.platform {
+			case .vercel:
+				Text("LPM Vault forgets its token on this Mac. The integration stays installed on Vercel, and variables already published stay as they are.")
+			case .coolify:
+				Text("LPM Vault forgets its token on this Mac. The token keeps working in Coolify until you delete it there, and variables already published stay as they are.")
+			}
+		}
+		.sheet(isPresented: $connectingCoolify) {
+			ConnectCoolifySheet(platforms: platforms)
 		}
 		.onChange(of: isObscured) { _, obscured in
 			if obscured { pendingDisconnect = nil }
 		}
+		.onChange(of: store.isUnlocked) { _, unlocked in
+			if !unlocked { connectingCoolify = false }
+		}
 	}
 
 	private var vercelSection: some View {
-		let connections = platforms.connections.filter { $0.platform == .vercel }
+		section(.vercel, empty: "No Vercel accounts connected yet.") { connectControls }
+	}
+
+	private var coolifySection: some View {
+		section(.coolify, empty: "No Coolify teams connected yet.") {
+			VStack(alignment: .leading, spacing: 8) {
+				VaultBarButton(systemImage: "plus", title: "Connect Coolify", filled: true) {
+					connectingCoolify = true
+				}
+				Text("Connects a team on your Coolify instance with an API token you create there.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+		}
+	}
+
+	private func section<Controls: View>(
+		_ platform: PublishPlatform,
+		empty: String,
+		@ViewBuilder controls: () -> Controls
+	) -> some View {
+		let connections = platforms.connections.filter { $0.platform == platform }
 		return VStack(alignment: .leading, spacing: 8) {
-			Text("VERCEL").vaultSectionLabel()
+			Text(platform.displayName.uppercased()).vaultSectionLabel()
 			VStack(alignment: .leading, spacing: 0) {
 				if connections.isEmpty {
-					Text(platforms.isLoading ? "Loading…" : "No Vercel accounts connected yet.")
+					Text(platforms.isLoading ? "Loading…" : empty)
 						.font(.system(size: 12.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.padding(14)
@@ -90,7 +125,7 @@ struct PlatformsView: View {
 					connectionRow(connection)
 				}
 				VaultHairline()
-				connectControls.padding(14)
+				controls().padding(14)
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.sidebar))
@@ -100,7 +135,7 @@ struct PlatformsView: View {
 
 	private func connectionRow(_ connection: PlatformConnection) -> some View {
 		HStack(spacing: 12) {
-			Image(systemName: "triangle.fill")
+			Image(systemName: connection.platform.systemImage)
 				.font(.system(size: 13))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.frame(width: 28, height: 28)
@@ -173,6 +208,8 @@ struct PlatformsView: View {
 		switch connection.account {
 		case .vercel(let account):
 			kind = account.isTeam ? "Team\(account.slug.map { " · \($0)" } ?? "")" : "Personal account"
+		case .coolify(let account):
+			kind = account.instance.address
 		}
 		let connected = connection.connectedAt.formatted(date: .abbreviated, time: .omitted)
 		return "\(kind) · Connected \(connected)"

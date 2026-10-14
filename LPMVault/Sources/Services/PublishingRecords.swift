@@ -97,11 +97,14 @@ enum PublishingRecords {
 			target = .vercel(VercelPublishTarget(
 				teamID: try vercel.optionalString("teamId"),
 				accountID: try vercel.string("accountId"),
-				teamName: try vercel.string("teamName"),
+				teamName: try vercel.name("teamName"),
 				projectID: try vercel.string("projectId"),
-				projectName: try vercel.string("projectName"),
+				projectName: try vercel.name("projectName"),
 				environment: try vercelEnvironment(vercel.value("environment"))
 			))
+		case .coolify:
+			// This version connects Coolify but doesn't publish to it yet.
+			throw DecodingError.newerVersion
 		}
 		guard case .array(let excluded) = try fields.value("excludedKeys"),
 			excluded.count <= PublishDestination.maximumExcludedKeys
@@ -128,7 +131,7 @@ enum PublishingRecords {
 			return kind == "production" ? .production : kind == "preview" ? .preview : .development
 		case "custom":
 			let fields = try Fields(json, ["kind", "id", "name"])
-			return .custom(id: try fields.string("id"), name: try fields.string("name"))
+			return .custom(id: try fields.string("id"), name: try fields.name("name"))
 		default:
 			throw DecodingError.newerVersion
 		}
@@ -276,6 +279,12 @@ enum PublishingRecords {
 		func string(_ key: String) throws -> String {
 			guard case .string(let text) = try value(key) else { throw DecodingError.unreadable }
 			return text
+		}
+
+		/// A platform's name for something, with its direction controls
+		/// escaped, as names are stored now.
+		func name(_ key: String) throws -> String {
+			try string(key).escapingDirectionControls
 		}
 
 		func optionalString(_ key: String) throws -> String? {

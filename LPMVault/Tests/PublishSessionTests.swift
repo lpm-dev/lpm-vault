@@ -81,6 +81,31 @@ struct PublishSessionTests {
 		#expect(session.saved?.id == saved.first?.id)
 	}
 
+	@Test("a Coolify connection isn't offered for publishing yet, so its token never reaches Vercel's client")
+	func coolifyNotOffered() async throws {
+		_ = try await connections.save(
+			.coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: "0", teamName: "Root Team")),
+			accessToken: "3|coolify", at: Date()).get()
+		let tokens = TokenLog()
+		let api = api
+		let session = session(client: { token in
+			tokens.append(token)
+			return api
+		})
+		session.start()
+		try await waitUntil { session.connections.value != nil }
+		#expect(session.connections.value == [] && session.connectionID == nil)
+		try await connect()
+		let both = self.session(client: { token in
+			tokens.append(token)
+			return api
+		})
+		both.start()
+		try await waitUntil { both.projects.value != nil }
+		#expect(both.connections.value?.map(\.platform) == [.vercel])
+		#expect(!tokens.values.contains("3|coolify"))
+	}
+
 	@Test("a saved destination opens on its review, with what this Mac published there")
 	func savedOpensOnReview() async throws {
 		try await connect()
@@ -246,6 +271,13 @@ struct PublishSessionTests {
 		session.environment = .preview
 		#expect(session.review == nil)
 	}
+}
+
+private final class TokenLog: @unchecked Sendable {
+	private let lock = NSLock()
+	private var tokens: [String] = []
+	var values: [String] { lock.withLock { tokens } }
+	func append(_ token: String) { lock.withLock { tokens.append(token) } }
 }
 
 @MainActor

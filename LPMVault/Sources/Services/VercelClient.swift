@@ -146,16 +146,21 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 
 	private let token: String
 	private let baseURL: URL
-	private let session: URLSession
+	let session: URLSession
+
+	/// The session clients use unless given one. A session holds its
+	/// delegate until it's invalidated, so one per process serves every
+	/// client and token: it keeps no cookies, cache or credentials.
+	static let sharedSession = URLSession(
+		configuration: BoundedHTTPResponse.ephemeralConfiguration(requestTimeout: 20, resourceTimeout: 60),
+		delegate: RedirectRefusingHTTPDelegate(),
+		delegateQueue: nil
+	)
 
 	init(token: String, baseURL: URL = VercelClient.defaultBaseURL, session: URLSession? = nil) {
 		self.token = token
 		self.baseURL = baseURL
-		self.session = session ?? URLSession(
-			configuration: BoundedHTTPResponse.ephemeralConfiguration(requestTimeout: 20, resourceTimeout: 60),
-			delegate: VercelSessionDelegate(),
-			delegateQueue: nil
-		)
+		self.session = session ?? Self.sharedSession
 	}
 
 	var description: String { "VercelClient(\(baseURL.host() ?? "?"), token: <redacted>)" }
@@ -169,16 +174,16 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			guard VercelPublishTarget.isValidIdentifier(teamID) else { return .failure(.invalidResponse) }
 			return await get(["v2", "teams", teamID], query: [], limit: Self.maximumResponseBytes).flatMap { data in
 				guard let team = try? JSONDecoder().decode(Team.self, from: data),
-					let name = Self.displayName(team.name) ?? Self.displayName(team.slug)
+					let name = ProviderName.display(team.name) ?? ProviderName.display(team.slug)
 				else { return .failure(.invalidResponse) }
-				return .success(VercelAccount(name: name, slug: team.slug))
+				return .success(VercelAccount(name: name, slug: ProviderName.display(team.slug)))
 			}
 		}
 		return await get(["v2", "user"], query: [], limit: Self.maximumResponseBytes).flatMap { data in
 			guard let user = try? JSONDecoder().decode(UserResponse.self, from: data).user,
-				let name = Self.displayName(user.name) ?? Self.displayName(user.username)
+				let name = ProviderName.display(user.name) ?? ProviderName.display(user.username)
 			else { return .failure(.invalidResponse) }
-			return .success(VercelAccount(name: name, slug: user.username))
+			return .success(VercelAccount(name: name, slug: ProviderName.display(user.username)))
 		}
 	}
 
@@ -200,7 +205,7 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			for project in decoded.projects {
 				guard VercelPublishTarget.isValidIdentifier(project.id),
 					VercelPublishTarget.isValidIdentifier(project.accountId),
-					let name = Self.displayName(project.name)
+					let name = ProviderName.display(project.name)
 				else { return .failure(.invalidResponse) }
 				projects.append(VercelProject(id: project.id, name: name, accountID: project.accountId))
 			}
@@ -222,7 +227,7 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 				}
 				var environments: [VercelCustomEnvironment] = []
 				for environment in decoded.environments {
-					guard VercelPublishTarget.isValidIdentifier(environment.id), let slug = Self.displayName(environment.slug) else {
+					guard VercelPublishTarget.isValidIdentifier(environment.id), let slug = ProviderName.display(environment.slug) else {
 						return .failure(.invalidResponse)
 					}
 					environments.append(VercelCustomEnvironment(id: environment.id, slug: slug))
@@ -422,13 +427,6 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 		return line.isEmpty ? nil : line
 	}
 
-	private static func displayName(_ text: String?) -> String? {
-		guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
-			text.utf8.count <= 512, !text.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
-		else { return nil }
-		return text
-	}
-
 	// MARK: - Wire types
 
 	private struct Team: Decodable {
@@ -586,18 +584,5 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			let invalidToken: Bool?
 		}
 		let error: Detail?
-	}
-}
-
-/// Refuses redirects, so a request and its token go only where they were sent.
-final class VercelSessionDelegate: BoundedHTTPResponseDelegate, @unchecked Sendable {
-	func urlSession(
-		_ session: URLSession,
-		task: URLSessionTask,
-		willPerformHTTPRedirection response: HTTPURLResponse,
-		newRequest request: URLRequest,
-		completionHandler: @escaping (URLRequest?) -> Void
-	) {
-		completionHandler(nil)
 	}
 }

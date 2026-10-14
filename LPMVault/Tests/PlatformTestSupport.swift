@@ -68,8 +68,13 @@ final class PlatformHTTPStub: URLProtocol {
 	}
 
 	/// A route on a unique https host standing in for a platform's API.
-	static func platform(delegate: BoundedHTTPResponseDelegate = VercelSessionDelegate(), _ handler: @escaping Handler) -> Route {
+	static func platform(delegate: BoundedHTTPResponseDelegate = RedirectRefusingHTTPDelegate(), _ handler: @escaping Handler) -> Route {
 		register(URL(string: "https://api-\(UUID().uuidString.lowercased()).vercel.test")!, delegate: delegate, handler)
+	}
+
+	/// A route on a unique https host standing in for a Coolify instance.
+	static func coolify(_ handler: @escaping Handler) -> Route {
+		register(URL(string: "https://coolify-\(UUID().uuidString.lowercased()).test")!, delegate: RedirectRefusingHTTPDelegate(), handler)
 	}
 
 	private static func register(_ baseURL: URL, delegate: BoundedHTTPResponseDelegate, _ handler: @escaping Handler) -> Route {
