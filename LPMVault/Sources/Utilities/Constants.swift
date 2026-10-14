@@ -18,6 +18,10 @@ enum VaultConstants {
 	/// fingerprint key, kept in `appKeychainAccessGroup`.
 	static let publishingKeychainService = "dev.lpm.vault.publishing"
 
+	/// Keychain service for platform connections and their access tokens,
+	/// kept in `appKeychainAccessGroup`.
+	static let platformConnectionsKeychainService = "dev.lpm.vault.platforms"
+
 	/// Maximum recommended vault size in bytes (90KB warning threshold)
 	static let maxVaultSizeWarning = 90 * 1024
 

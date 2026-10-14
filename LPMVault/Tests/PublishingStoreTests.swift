@@ -181,21 +181,29 @@ struct PublishingStoreTests {
 		#expect(Set(keychain.publishingStorage.keys) == ["fingerprint-key.v1", "destinations.\(otherVault)"])
 	}
 
-	@Test("publishing items live in the app's own access group, on this Mac only")
-	func appOnlyItems() {
-		let query = AppKeychainBackend(service: VaultConstants.publishingKeychainService).query(account: "fingerprint-key.v1")
+	@Test(
+		"publishing items and platform tokens live in the app's own access group, on this Mac only, each under its own service",
+		arguments: [
+			(AppKeychainStore.publishing, "dev.lpm.vault.publishing"),
+			(AppKeychainStore.platformConnections, "dev.lpm.vault.platforms"),
+		]
+	)
+	func appOnlyItems(store: AppKeychainStore, service: String) {
+		let query = AppKeychainBackend(service: store.service).query(account: "fingerprint-key.v1")
 		#expect(query[kSecAttrAccessGroup as String] as? String == "823S8YKMRW.dev.lpm.vault")
 		#expect(query[kSecAttrAccessGroup as String] as? String != VaultConstants.keychainAccessGroup)
-		#expect(query[kSecAttrService as String] as? String == "dev.lpm.vault.publishing")
+		#expect(query[kSecAttrService as String] as? String == service)
 		#expect(query[kSecAttrSynchronizable as String] as? Bool == false)
 		#expect(query[kSecUseDataProtectionKeychain as String] as? Bool == true)
 	}
 
-	@Test("a Keychain service built for tests has no publishing storage unless one is given")
+	@Test("a Keychain service built for tests has no app storage unless one is given")
 	func testingService() {
 		let service = KeychainService(testingService: "dev.lpm.vault.tests.\(UUID().uuidString)")
-		#expect(service.readPublishingData(account: "fingerprint-key.v1") == .failure(.unexpectedStatus(errSecUnimplemented)))
-		#expect(service.publishingAccounts() == .failure(.unexpectedStatus(errSecUnimplemented)))
+		for store in AppKeychainStore.allCases {
+			#expect(service.readAppItem(store, account: "fingerprint-key.v1") == .failure(.unexpectedStatus(errSecUnimplemented)))
+			#expect(service.appItemAccounts(store) == .failure(.unexpectedStatus(errSecUnimplemented)))
+		}
 	}
 
 	private func record(_ keys: [String], to destination: PublishDestination, in store: PublishingStore) async -> Result<PublishDestination, PublishingStoreError> {

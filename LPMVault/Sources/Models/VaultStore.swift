@@ -1316,7 +1316,9 @@ final class VaultStore {
       clearKeyDescriptions()
     }
   }
-  var showAuthStatus: Bool = false
+  /// The account page shown instead of a project, if any.
+  var accountPage: AccountPage?
+  var isShowingAccountPage: Bool { accountPage != nil }
 
   // Sync state
   var isSyncing: Bool = false
@@ -1357,6 +1359,15 @@ final class VaultStore {
   private let persistence: VaultPersistenceCoordinator
   /// Publish destinations and this Mac's publish history.
   let publishing: PublishingStore
+  private let platformConnect: PlatformConnections.Connect?
+  private let platformURLOpener: (@Sendable (URL) async -> Void)?
+  /// The platform accounts this Mac publishes to, for the Platforms page.
+  @ObservationIgnored private(set) lazy var platforms = PlatformConnections(
+    store: PlatformConnectionStore(service: keychainService),
+    connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
+    session: { [weak self] in await self?.platformSession() },
+    openURL: platformURLOpener ?? PlatformConnections.openInBrowser
+  )
   private let biometricService: BiometricServiceProtocol
   private let injectedAPIService: LPMAPIServiceProtocol?
   private let apiServiceFactory: @Sendable (URL) -> any LPMAPIServiceProtocol
@@ -1532,7 +1543,7 @@ final class VaultStore {
     } else {
       reconcileNavigationState()
     }
-    showAuthStatus = false
+    accountPage = nil
     resetAutoLock()
   }
 
@@ -1557,7 +1568,7 @@ final class VaultStore {
       guard userOrgs.contains(where: { $0.slug == orgSlug }) else {
         selectedProjectId = nil
         selectedAccount = .personal
-        showAuthStatus = false
+        accountPage = nil
         resetAutoLock()
         return
       }
@@ -1570,15 +1581,33 @@ final class VaultStore {
       selectedProjectId = nil
       selectedAccount = account
     }
-    showAuthStatus = false
+    accountPage = nil
     selectedProjectId = projectId
     normalizeSelectedEnvironment()
     resetAutoLock()
   }
 
   func showSettings() {
-    showAuthStatus = true
+    accountPage = .settings
     resetAutoLock()
+  }
+
+  func showPlatforms() {
+    accountPage = .platforms
+    platforms.load()
+    resetAutoLock()
+  }
+
+  /// The signed-in LPM session a platform connection starts with, while unlocked.
+  func platformSession() async -> PlatformSession? {
+    guard isUnlocked, let user = currentUser else { return nil }
+    let environment = appEnvironment
+    let generation = vaultSessionGeneration
+    let resolution = await resolveAuthToken(environment.registryURL, environment.baseURL)
+    guard let token = resolution.token, isUnlocked, generation == vaultSessionGeneration,
+      environment == appEnvironment, currentUser?.id == user.id
+    else { return nil }
+    return PlatformSession(token: token, principalID: user.id, baseURL: environment.baseURL)
   }
 
   /// Repairs restored/background state without extending the auto-lock timer.
@@ -1707,6 +1736,8 @@ final class VaultStore {
         )
       },
     authTokenProvider: (@Sendable (String, URL) async throws -> String?)? = nil,
+    platformConnect: PlatformConnections.Connect? = nil,
+    platformURLOpener: (@Sendable (URL) async -> Void)? = nil,
     authAuthorizationProvider:
       @escaping @Sendable (String, URL) async throws -> AuthSessionAuthorization? = {
         registryURL, baseURL in
@@ -1761,6 +1792,8 @@ final class VaultStore {
     self.keychainService = keychainService
     self.persistence = VaultPersistenceCoordinator(service: keychainService)
     self.publishing = PublishingStore(service: keychainService)
+    self.platformConnect = platformConnect
+    self.platformURLOpener = platformURLOpener
     self.biometricService = biometricService
     self.injectedAPIService = apiService
     self.apiServiceFactory = apiServiceFactory
@@ -3000,7 +3033,7 @@ final class VaultStore {
 
   func isCurrentEnvFileImportReview(_ review: EnvFileImportReview) -> Bool {
     let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
-    return isUnlocked && !showAuthStatus
+    return isUnlocked && !isShowingAccountPage
       && review.sessionGeneration == vaultSessionGeneration
       && localEnvReviewIDs[target] == review.id
       && selectedProjectId == review.projectId && selectedEnvironment == review.environment
@@ -4796,6 +4829,8 @@ final class VaultStore {
     isUnlocked = true
     unlockFailure = nil
     beginSelectedProjectLoadIfNeeded()
+    // Locking forgot the list, and the page doesn't reopen to load it again.
+    if accountPage == .platforms { platforms.load() }
     isUnlocking = false
     scheduleAutoLock()
     Task { [weak self] in await self?.reconcilePublishingRecords() }
@@ -4891,6 +4926,7 @@ final class VaultStore {
     ClipboardManager.shared.clearClipboard()
     projects = projects.map { VaultProject(metadata: $0.metadata) }
     workspaceSnapshots = [:]
+    platforms.reset()
   }
 
   /// Records local keyboard, click, scroll, or gesture input while unlocked.

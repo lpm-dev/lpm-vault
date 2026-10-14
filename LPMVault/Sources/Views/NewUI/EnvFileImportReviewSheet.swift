@@ -40,7 +40,7 @@ struct EnvFileImportReviewSheet: View {
 		.onChange(of: store.selectedProjectId) { _, id in if id != review.projectId { close() } }
 		.onChange(of: store.selectedEnvironment) { _, name in if name != review.environment { close() } }
 		.onChange(of: store.selectedAccount) { _, _ in close() }
-		.onChange(of: store.showAuthStatus) { _, showing in if showing { close() } }
+		.onChange(of: store.isShowingAccountPage) { _, showing in if showing { close() } }
 		.onChange(of: isObscured) { _, obscured in if obscured { hideValues() } }
 		.onChange(of: review.id) { _, _ in hideValues() }
 	}

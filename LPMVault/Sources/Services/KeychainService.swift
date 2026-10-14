@@ -270,13 +270,13 @@ protocol KeychainServiceProtocol: Sendable {
 	@discardableResult func writeData(account: String, data: Data) -> Bool
 	@discardableResult func deleteData(account: String) -> Bool
 
-	// Publish destinations and history, in the app's own access group, never shared with the CLI.
-	func readPublishingData(account: String) -> Result<Data?, KeychainError>
-	func writePublishingData(account: String, data: Data) -> Result<Void, KeychainError>
+	// Items in the app's own access group, never shared with the CLI and never synced.
+	func readAppItem(_ store: AppKeychainStore, account: String) -> Result<Data?, KeychainError>
+	func writeAppItem(_ store: AppKeychainStore, account: String, data: Data) -> Result<Void, KeychainError>
 	/// Adds the item; false when one already exists, which is left as it is.
-	func insertPublishingData(account: String, data: Data) -> Result<Bool, KeychainError>
-	func deletePublishingData(account: String) -> Result<Void, KeychainError>
-	func publishingAccounts() -> Result<[String], KeychainError>
+	func insertAppItem(_ store: AppKeychainStore, account: String, data: Data) -> Result<Bool, KeychainError>
+	func deleteAppItem(_ store: AppKeychainStore, account: String) -> Result<Void, KeychainError>
+	func appItemAccounts(_ store: AppKeychainStore) -> Result<[String], KeychainError>
 }
 
 extension KeychainServiceProtocol {
@@ -1874,19 +1874,21 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	private static let maximumProjectDiscoveryShardSize = 128
 
 	private let store: SharedKeychainStore
-	private let publishingBackend: (any PublishingKeychainBackend)?
+	private let appItemBackends: [AppKeychainStore: any AppKeychainItemBackend]
 
 	init() {
 		self.store = SharedKeychainStore(service: VaultConstants.keychainService)
-		self.publishingBackend = AppKeychainBackend(service: VaultConstants.publishingKeychainService)
+		self.appItemBackends = Dictionary(uniqueKeysWithValues: AppKeychainStore.allCases.map {
+			($0, AppKeychainBackend(service: $0.service))
+		})
 	}
 
-	/// Without a `publishingBackend`, publishing records are unavailable, so
-	/// tests never reach the real Keychain through them.
+	/// An app store without a backend in `appItemBackends` is unavailable,
+	/// so tests never reach the real Keychain through it.
 	init(
 		testingService: String,
 		backend: any KeychainStoreBackend = SecurityKeychainStoreBackend(),
-		publishingBackend: (any PublishingKeychainBackend)? = nil,
+		appItemBackends: [AppKeychainStore: any AppKeychainItemBackend] = [:],
 		performanceCounters: VaultKeychainPerformanceCounters? = nil
 	) {
 		self.store = SharedKeychainStore(
@@ -1894,7 +1896,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			backend: backend,
 			performanceCounters: performanceCounters
 		)
-		self.publishingBackend = publishingBackend
+		self.appItemBackends = appItemBackends
 	}
 
 	// MARK: - Public API
@@ -2238,29 +2240,32 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
-	func readPublishingData(account: String) -> Result<Data?, KeychainError> {
-		publishing { try $0.read(account: account) }
+	func readAppItem(_ store: AppKeychainStore, account: String) -> Result<Data?, KeychainError> {
+		appItems(store) { try $0.read(account: account) }
 	}
 
-	func writePublishingData(account: String, data: Data) -> Result<Void, KeychainError> {
-		publishing { try $0.write(account: account, data: data) }
+	func writeAppItem(_ store: AppKeychainStore, account: String, data: Data) -> Result<Void, KeychainError> {
+		appItems(store) { try $0.write(account: account, data: data) }
 	}
 
-	func insertPublishingData(account: String, data: Data) -> Result<Bool, KeychainError> {
-		publishing { try $0.insert(account: account, data: data) }
+	func insertAppItem(_ store: AppKeychainStore, account: String, data: Data) -> Result<Bool, KeychainError> {
+		appItems(store) { try $0.insert(account: account, data: data) }
 	}
 
-	func deletePublishingData(account: String) -> Result<Void, KeychainError> {
-		publishing { try $0.delete(account: account) }
+	func deleteAppItem(_ store: AppKeychainStore, account: String) -> Result<Void, KeychainError> {
+		appItems(store) { try $0.delete(account: account) }
 	}
 
-	func publishingAccounts() -> Result<[String], KeychainError> {
-		publishing { try $0.accounts() }
+	func appItemAccounts(_ store: AppKeychainStore) -> Result<[String], KeychainError> {
+		appItems(store) { try $0.accounts() }
 	}
 
-	private func publishing<T>(_ operation: (any PublishingKeychainBackend) throws -> T) -> Result<T, KeychainError> {
-		guard let publishingBackend else { return .failure(.unexpectedStatus(errSecUnimplemented)) }
-		do { return .success(try operation(publishingBackend)) }
+	private func appItems<T>(
+		_ store: AppKeychainStore,
+		_ operation: (any AppKeychainItemBackend) throws -> T
+	) -> Result<T, KeychainError> {
+		guard let backend = appItemBackends[store] else { return .failure(.unexpectedStatus(errSecUnimplemented)) }
+		do { return .success(try operation(backend)) }
 		catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
 		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
 	}

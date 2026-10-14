@@ -33,7 +33,7 @@ The following identifiers remain stable across updates:
 | Shared Keychain group | `823S8YKMRW.dev.lpm.vault.shared` |
 | Vault-only Keychain group | `823S8YKMRW.dev.lpm.vault` |
 
-Vault and the official CLI use the same narrow Keychain group. Their separate Developer ID profiles authorize their respective application identifiers. Vault also keeps its publish destinations and history in the group named by its own application identifier, which macOS grants it without a `keychain-access-groups` entry and the CLI's identifier can't reach. Sparkle helpers receive no Keychain group entitlement.
+Vault and the official CLI use the same narrow Keychain group. Their separate Developer ID profiles authorize their respective application identifiers. Vault also keeps its publish destinations and history, and the access tokens of the platforms it publishes to, in the group named by its own application identifier, which macOS grants it without a `keychain-access-groups` entry and the CLI's identifier can't reach. These items stay on the Mac and never sync. Sparkle helpers receive no Keychain group entitlement.
 
 Public source code and a copied entitlement file cannot grant access to this group. Apple validates the signature and provisioning profile. Source builds need their own identity and storage contract.
 
