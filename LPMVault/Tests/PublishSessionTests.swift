@@ -81,31 +81,6 @@ struct PublishSessionTests {
 		#expect(session.saved?.id == saved.first?.id)
 	}
 
-	@Test("a Coolify connection isn't offered for publishing yet, so its token never reaches Vercel's client")
-	func coolifyNotOffered() async throws {
-		_ = try await connections.save(
-			.coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: "0", teamName: "Root Team")),
-			accessToken: "3|coolify", at: Date()).get()
-		let tokens = TokenLog()
-		let api = api
-		let session = session(client: { token in
-			tokens.append(token)
-			return api
-		})
-		session.start()
-		try await waitUntil { session.connections.value != nil }
-		#expect(session.connections.value == [] && session.connectionID == nil)
-		try await connect()
-		let both = self.session(client: { token in
-			tokens.append(token)
-			return api
-		})
-		both.start()
-		try await waitUntil { both.projects.value != nil }
-		#expect(both.connections.value?.map(\.platform) == [.vercel])
-		#expect(!tokens.values.contains("3|coolify"))
-	}
-
 	@Test("a saved destination opens on its review, with what this Mac published there")
 	func savedOpensOnReview() async throws {
 		try await connect()
@@ -250,6 +225,24 @@ struct PublishSessionTests {
 		session.loadReview()
 		try await waitUntil { session.reviewError != nil }
 		#expect(session.reviewError == VercelPublishing.message(.unauthorized))
+	}
+
+	@Test("a saved destination opens on its review without listing the account's projects, and lists them once to change it")
+	func savedSkipsProjects() async throws {
+		try await connect()
+		let first = session()
+		try await chooseProduction(first)
+		first.publish()
+		try await waitUntil { first.step == .results }
+		let saved = try #require(try await publishing.destinations(of: vault).get().first)
+		let before = api.projectListingCount
+		let again = session(saved: saved)
+		again.start()
+		try await waitUntil { again.review != nil || again.reviewError != nil }
+		#expect(api.projectListingCount == before)
+		again.showDestination()
+		try await waitUntil { again.vercel?.projects.value != nil }
+		#expect(api.projectListingCount == before + 1)
 	}
 
 	@Test("changing the source, project or environment drops a review made for the old choice")
@@ -413,6 +406,92 @@ struct CoolifyPublishSessionTests {
 		#expect(session.review != nil)
 		session.connectionID = "vercel.team_acme"
 		#expect(session.review == nil && session.coolify == nil && session.vercel != nil && session.platform == .vercel)
+	}
+
+	@Test("a saved destination opens on its review without listing the team's resources, and lists them once to change it")
+	func savedSkipsDiscovery() async throws {
+		try await connect()
+		let saved = coolifyDestination()
+		_ = try await publishing.save(saved, to: vault).get()
+		let session = session(saved: saved)
+		session.start()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(session.review != nil && api.resourceListingCount == 0)
+		session.showDestination()
+		try await waitUntil { session.coolify?.resources.value != nil }
+		session.showDestination()
+		session.loadReview()
+		try await waitUntil { session.review != nil && !session.isLoadingReview }
+		session.showDestination()
+		try await Task.sleep(for: .milliseconds(20))
+		#expect(api.resourceListingCount == 1)
+	}
+
+	@Test("Coolify's choices name the instance, and resources that would read alike are told apart")
+	func distinguishesAlikeChoices() throws {
+		let first = PlatformConnection(
+			account: .coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: "0", teamName: "Root Team")),
+			connectedAt: Date())
+		let second = PlatformConnection(
+			account: .coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.dev")!, teamID: "0", teamName: "Root Team")),
+			connectedAt: Date())
+		#expect(PublishSheet.connectionLabel(first) == "Coolify · Root Team · coolify.example.com")
+		#expect(PublishSheet.connectionLabel(first) != PublishSheet.connectionLabel(second))
+		let resources = [
+			CoolifyResource(kind: .application, id: "a1b2c3d4e5f6", name: "api", projectName: "Storefront", environmentName: "production", buildPack: nil),
+			CoolifyResource(kind: .application, id: "f6e5d4c3b2a1", name: "api", projectName: "Storefront", environmentName: "production", buildPack: nil),
+			CoolifyResource(kind: .application, id: "0f0f0f0f0f0f", name: "api", projectName: "Storefront", environmentName: "staging", buildPack: nil),
+		]
+		let labels = CoolifyDestinationForm.labels(for: resources)
+		#expect(Set(labels.values).count == 3)
+		#expect(labels["0f0f0f0f0f0f"] == "api — Storefront / staging")
+		#expect(labels["a1b2c3d4e5f6"] == "api — Storefront / production · a1b2c3d4")
+		let destination = coolifyDestination()
+		#expect(VaultTitleBarView.subtitle(of: PublishDestinationSummary(destination: destination, lastPublishedAt: nil))
+			== "Storefront / production on coolify.example.com · from .env.production · not published yet")
+	}
+
+	@Test("a Coolify review that replaces variables says a change made in Coolify moments before can still be overwritten")
+	func replaceNote() async throws {
+		try await connect()
+		api.seed("API_TOKEN")
+		let session = session()
+		try await chooseApplication(session)
+		let review = try #require(session.review)
+		#expect(PublishSheet.notes(for: review).contains { $0.contains("moments before publishing can still be overwritten") })
+	}
+
+	@Test("each connection's token reaches only its own platform's client")
+	func tokensStayWithTheirPlatform() async throws {
+		try await connect()
+		_ = try await connections.save(
+			VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_acme", userID: "u_1")!,
+			account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
+		let vercelTokens = TokenLog()
+		let coolifyTokens = TokenLog()
+		let api = api
+		let values = values
+		let confirmations = confirmations
+		let session = PublishSession(
+			vaultID: vault, projectName: "demo-api", environments: ["production"], sourceEnvironment: "production",
+			dependencies: .init(
+				values: { values.get($0) }, rules: { .none }, check: { _ in nil }, confirm: { confirmations.ask($0) },
+				publishing: publishing, connections: connections,
+				vercel: { token in
+					vercelTokens.append(token)
+					return FakeVercelAPI()
+				},
+				coolify: { _, token in
+					coolifyTokens.append(token)
+					return api
+				}))
+		session.start()
+		try await waitUntil { session.connections.value?.count == 2 }
+		session.connectionID = "coolify.0.https://coolify.example.com"
+		try await waitUntil { session.coolify?.resources.value != nil }
+		session.connectionID = "vercel.team_acme"
+		try await waitUntil { session.vercel?.projects.value != nil }
+		#expect(Set(vercelTokens.values) == ["vca_1"] && Set(coolifyTokens.values) == ["3|coolify"])
 	}
 
 	@Test("a saved Coolify destination whose team isn't connected here says so")

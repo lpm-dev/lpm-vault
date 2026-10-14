@@ -149,6 +149,16 @@ struct CoolifyVariable: Identifiable, Equatable, Sendable {
 	/// Locked: Coolify shows the value once and never again.
 	let isLocked: Bool
 	let updatedAt: Date?
+	let createdAt: Date?
+
+	init(id: String, key: String, isPreview: Bool, isLocked: Bool, updatedAt: Date?, createdAt: Date? = nil) {
+		self.id = id
+		self.key = key
+		self.isPreview = isPreview
+		self.isLocked = isLocked
+		self.updatedAt = updatedAt
+		self.createdAt = createdAt
+	}
 }
 
 /// A variable to create or a value to replace. The value never appears when
@@ -193,6 +203,8 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 	private static let maximumResponseBytes = 2 * 1024 * 1024
 	/// Coolify lists whole applications, compose files included, without pages.
 	private static let maximumListBytes = 16 * 1024 * 1024
+	/// A project with its environments.
+	private static let maximumProjectBytes = 1024 * 1024
 
 	private let instance: CoolifyInstance
 	private let token: String
@@ -207,10 +219,22 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 		delegateQueue: nil
 	)
 
-	init(instance: CoolifyInstance, token: String, session: URLSession? = nil) {
+	/// How much discovering a team's resources may read.
+	struct Limits: Sendable {
+		/// Projects whose environments are read to name where each resource is.
+		var namedProjects = 100
+		var environmentsPerProject = 1_000
+		/// Everything one discovery reads, in bytes.
+		var discoveryBytes = 48 * 1024 * 1024
+	}
+
+	private let limits: Limits
+
+	init(instance: CoolifyInstance, token: String, session: URLSession? = nil, limits: Limits = Limits()) {
 		self.instance = instance
 		self.token = token
 		self.session = session ?? Self.sharedSession
+		self.limits = limits
 	}
 
 	/// Printable ASCII without spaces, as Coolify issues them.
@@ -241,38 +265,98 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 
 	// MARK: - Resources
 
+	/// Reads the team's projects, then its applications, then its services,
+	/// one list at a time, so at most one large list is held at once. Where
+	/// each resource is comes from reading every project, which is skipped
+	/// for a team with more projects than `limits` names.
 	func resources() async -> Result<[CoolifyResource], CoolifyAPIError> {
-		async let applicationList = get(["applications"], limit: Self.maximumListBytes)
-		async let serviceList = get(["services"], limit: Self.maximumListBytes)
-		let environments: [Int: (project: String, environment: String)]
-		switch await environmentNames() {
-		case .success(let value): environments = value
-		case .failure(let error): return .failure(error)
-		}
-		let applications: [RawResource]
-		let services: [RawResource]
+		var budget = Budget(remaining: limits.discoveryBytes)
 		do {
-			applications = try decode([RawResource].self, from: await applicationList.get())
-			services = try decode([RawResource].self, from: await serviceList.get())
+			let environments = try await environmentNames(budget: &budget)
+			var resources: [CoolifyResource] = []
+			var seen: Set<String> = []
+			for kind in [CoolifyPublishTarget.Resource.application, .service] {
+				let data = try await budget.read(Self.maximumListBytes) { await get([Self.collection(kind)], limit: $0) }
+				for raw in try decode([RawResource].self, from: data) {
+					guard PlatformIdentifier.isValid(raw.uuid), seen.insert(raw.uuid).inserted,
+						let name = ProviderName.display(raw.name) ?? ProviderName.display(raw.uuid)
+					else { throw CoolifyAPIError.invalidResponse }
+					let place = raw.environmentID.flatMap { environments[$0] }
+					resources.append(CoolifyResource(
+						kind: kind, id: raw.uuid, name: name, projectName: place?.project, environmentName: place?.environment,
+						buildPack: kind == .application ? raw.buildPack : nil))
+				}
+			}
+			return .success(resources)
 		} catch let error as CoolifyAPIError {
 			return .failure(error)
 		} catch {
 			return .failure(.invalidResponse)
 		}
-		var resources: [CoolifyResource] = []
-		resources.reserveCapacity(applications.count + services.count)
-		for (kind, list) in [(CoolifyPublishTarget.Resource.application, applications), (.service, services)] {
-			for raw in list {
-				guard PlatformIdentifier.isValid(raw.uuid), let name = ProviderName.display(raw.name) ?? ProviderName.display(raw.uuid) else {
+	}
+
+	/// What one discovery may still read.
+	private struct Budget {
+		var remaining: Int
+
+		/// Reads with a limit of `limit` or what's left, whichever is less, and counts what was read.
+		mutating func read(_ limit: Int, _ load: (Int) async -> Result<Data, CoolifyAPIError>) async throws -> Data {
+			guard remaining > 0 else { throw CoolifyAPIError.invalidResponse }
+			let data = try await load(min(limit, remaining)).get()
+			try spend(data.count)
+			return data
+		}
+
+		mutating func spend(_ bytes: Int) throws {
+			remaining -= bytes
+			guard remaining >= 0 else { throw CoolifyAPIError.invalidResponse }
+		}
+	}
+
+	/// Each environment's project and name, by the environment's ID; empty
+	/// when the team has more projects than are read.
+	private func environmentNames(budget: inout Budget) async throws -> [Int: (project: String, environment: String)] {
+		let projects = try decode([RawProject].self, from: try await budget.read(Self.maximumListBytes) { await get(["projects"], limit: $0) })
+		guard projects.allSatisfy({ PlatformIdentifier.isValid($0.uuid) }) else { throw CoolifyAPIError.invalidResponse }
+		guard projects.count <= limits.namedProjects else { return [:] }
+		let remaining = budget.remaining
+		let limits = limits
+		// Each project is read into names as it arrives, so only the projects in flight are held.
+		let read = await withTaskGroup(of: Result<Data, CoolifyAPIError>.self) { group -> Result<(names: [Int: (project: String, environment: String)], bytes: Int), CoolifyAPIError> in
+			var pending = projects[...]
+			func startNext() {
+				guard let project = pending.popFirst() else { return }
+				group.addTask { await get(["projects", project.uuid], limit: min(Self.maximumProjectBytes, remaining)) }
+			}
+			for _ in 0..<Self.projectConcurrency { startNext() }
+			var names: [Int: (project: String, environment: String)] = [:]
+			var bytes = 0
+			while let result = await group.next() {
+				let data: Data
+				switch result {
+				case .success(let value): data = value
+				case .failure(let error):
+					group.cancelAll()
+					return .failure(error)
+				}
+				bytes += data.count
+				guard bytes <= remaining, let project = try? JSONDecoder().decode(RawProject.self, from: data),
+					(project.environments?.count ?? 0) <= limits.environmentsPerProject
+				else {
+					group.cancelAll()
 					return .failure(.invalidResponse)
 				}
-				let place = raw.environmentID.flatMap { environments[$0] }
-				resources.append(CoolifyResource(
-					kind: kind, id: raw.uuid, name: name, projectName: place?.project, environmentName: place?.environment,
-					buildPack: kind == .application ? raw.buildPack : nil))
+				let projectName = ProviderName.display(project.name) ?? project.uuid
+				for environment in project.environments ?? [] {
+					names[environment.id] = (projectName, ProviderName.display(environment.name) ?? String(environment.id))
+				}
+				startNext()
 			}
+			return .success((names, bytes))
 		}
-		return .success(resources)
+		let (names, bytes) = try read.get()
+		try budget.spend(bytes)
+		return names
 	}
 
 	func buildPack(ofApplication id: String) async -> Result<String?, CoolifyAPIError> {
@@ -282,46 +366,6 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 				return .failure(.invalidResponse)
 			}
 			return .success(application.buildPack)
-		}
-	}
-
-	/// Each environment's project and name, by the environment's ID.
-	private func environmentNames() async -> Result<[Int: (project: String, environment: String)], CoolifyAPIError> {
-		let projects: [RawProject]
-		do {
-			projects = try decode([RawProject].self, from: await get(["projects"], limit: Self.maximumListBytes).get())
-		} catch let error as CoolifyAPIError {
-			return .failure(error)
-		} catch {
-			return .failure(.invalidResponse)
-		}
-		guard projects.allSatisfy({ PlatformIdentifier.isValid($0.uuid) }) else { return .failure(.invalidResponse) }
-		return await withTaskGroup(of: Result<RawProject, CoolifyAPIError>.self) { group in
-			var pending = projects[...]
-			func startNext() {
-				guard let project = pending.popFirst() else { return }
-				group.addTask {
-					await get(["projects", project.uuid], limit: Self.maximumListBytes).flatMap { data in
-						(try? JSONDecoder().decode(RawProject.self, from: data)).map(Result.success) ?? .failure(.invalidResponse)
-					}
-				}
-			}
-			for _ in 0..<Self.projectConcurrency { startNext() }
-			var names: [Int: (project: String, environment: String)] = [:]
-			while let result = await group.next() {
-				switch result {
-				case .success(let project):
-					let projectName = ProviderName.display(project.name) ?? project.uuid
-					for environment in project.environments ?? [] {
-						names[environment.id] = (projectName, ProviderName.display(environment.name) ?? String(environment.id))
-					}
-					startNext()
-				case .failure(let error):
-					group.cancelAll()
-					return .failure(error)
-				}
-			}
-			return .success(names)
 		}
 	}
 
@@ -565,12 +609,14 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 		let isPreview: Bool
 		let isShownOnce: Bool
 		let updatedAt: String?
+		let createdAt: String?
 
 		private enum CodingKeys: String, CodingKey {
 			case uuid, key
 			case isPreview = "is_preview"
 			case isShownOnce = "is_shown_once"
 			case updatedAt = "updated_at"
+			case createdAt = "created_at"
 		}
 
 		init(from decoder: Decoder) throws {
@@ -580,6 +626,7 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 			isPreview = try Self.flag(container, .isPreview)
 			isShownOnce = try Self.flag(container, .isShownOnce)
 			updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+			createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
 		}
 
 		/// A flag Coolify sends as a boolean, or as 0 or 1 from a column it doesn't cast.
@@ -594,14 +641,16 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 
 		var variable: CoolifyVariable? {
 			guard let uuid, PlatformIdentifier.isValid(uuid), !key.isEmpty, key.utf8.count <= 1_024 else { return nil }
-			let updated: Date?
-			if let updatedAt {
-				guard let date = CoolifyClient.timestamp(updatedAt) else { return nil }
-				updated = date
-			} else {
-				updated = nil
+			var times: [Date?] = []
+			for text in [updatedAt, createdAt] {
+				guard let text else {
+					times.append(nil)
+					continue
+				}
+				guard let date = CoolifyClient.timestamp(text) else { return nil }
+				times.append(date)
 			}
-			return CoolifyVariable(id: uuid, key: key, isPreview: isPreview, isLocked: isShownOnce, updatedAt: updated)
+			return CoolifyVariable(id: uuid, key: key, isPreview: isPreview, isLocked: isShownOnce, updatedAt: times[0], createdAt: times[1])
 		}
 	}
 

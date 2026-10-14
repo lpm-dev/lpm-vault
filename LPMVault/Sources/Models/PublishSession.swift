@@ -157,13 +157,13 @@ final class PublishSession: Identifiable {
 		observe(form)
 	}
 
-	/// Loads what the open step needs; a saved destination goes straight to its review.
+	/// Loads what the open step needs. A saved destination goes straight to
+	/// its review, and lists its platform's choices only when it's changed.
 	func start() {
 		Task { [weak self] in
 			guard let self else { return }
 			await self.loadConnections()
 			guard self.saved != nil else { return }
-			self.loadForm()
 			self.loadReview()
 		}
 	}
@@ -214,6 +214,16 @@ final class PublishSession: Identifiable {
 		reviewTask?.cancel()
 		isLoadingReview = false
 		step = .destination
+		if needsChoices { loadForm() }
+	}
+
+	/// Whether the form's choices, such as Coolify's resources, haven't been listed yet.
+	private var needsChoices: Bool {
+		switch form {
+		case .vercel(let form)?: form.projects == .idle
+		case .coolify(let form)?: form.resources == .idle
+		case nil: false
+		}
 	}
 
 	func loadReview() {

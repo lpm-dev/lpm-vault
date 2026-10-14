@@ -72,12 +72,14 @@ enum CoolifyPublishing {
 
 	/// Coolify's `{{team.X}}`, `{{project.X}}`, `{{environment.X}}`,
 	/// `{{server.X}}` and `{{vault.X}}` references. Spaces around the name
-	/// count, as they do in Coolify.
+	/// count, as they do in Coolify. Only an opening before the last `}}` can
+	/// be closed, so the value is read once however many openings it has.
 	static func containsReference(_ value: String) -> Bool {
-		var rest = value[...]
+		guard let lastClose = value.range(of: "}}", options: .backwards)?.lowerBound else { return false }
+		var rest = value[..<lastClose]
 		while let open = rest.range(of: "{{") {
-			let inner = rest[open.upperBound...].drop { $0 == " " || $0 == "\t" || $0.isNewline }
-			if referencePrefixes.contains(where: { inner.hasPrefix($0) }), inner.contains("}}") { return true }
+			let inner = value[open.upperBound...].drop { $0 == " " || $0 == "\t" || $0.isNewline }
+			if referencePrefixes.contains(where: { inner.hasPrefix($0) }) { return true }
 			rest = rest[open.upperBound...]
 		}
 		return false
@@ -198,7 +200,7 @@ enum CoolifyPublishing {
 		{
 			let preview = target.deployments == .preview
 			for variable in list where variable.isPreview == preview && written[variable.key]?.id == variable.id {
-				times[variable.id] = variable.updatedAt
+				times[variable.id] = creationTime(of: variable)
 			}
 		}
 		for change in changes {
@@ -206,6 +208,16 @@ enum CoolifyPublishing {
 			report.published.append(change.published(remoteID: variable.id, remoteUpdatedAt: variable.updatedAt ?? times[variable.id]))
 		}
 		return report
+	}
+
+	/// The time a variable this publish created had when it was made. Coolify
+	/// keeps times to the second and touches a variable once more while making
+	/// it, so a time within a second of its creation is its own; a later one
+	/// is someone's edit, which the next review should see.
+	private static func creationTime(of variable: CoolifyVariable) -> Date? {
+		guard let created = variable.createdAt else { return variable.updatedAt }
+		guard let updated = variable.updatedAt, updated.timeIntervalSince(created) <= 1 else { return created }
+		return updated
 	}
 
 	/// Why the change no longer matches what Coolify has, or nil when it does.
@@ -219,8 +231,11 @@ enum CoolifyPublishing {
 			return now == nil ? nil : "Added in Coolify since this review. Review again."
 		case .replace(let id):
 			guard let now else { return "Removed in Coolify since this review. Review again." }
-			guard now.id == id, now.updatedAt == reviewed?.updatedAt else { return "Changed in Coolify since this review. Review again." }
-			return nil
+			guard now.id == id else { return "Changed in Coolify since this review. Review again." }
+			guard let current = now.updatedAt, let seen = reviewed?.updatedAt else {
+				return "Coolify doesn't say when this variable last changed, so LPM Vault can't tell whether it changed since this review. Edit it once in Coolify, then review again."
+			}
+			return current == seen ? nil : "Changed in Coolify since this review. Review again."
 		}
 	}
 

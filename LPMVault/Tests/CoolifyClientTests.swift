@@ -188,6 +188,76 @@ struct CoolifyClientTests {
 		#expect(CoolifyClient.projectConcurrency == 4)
 	}
 
+	/// A Coolify with `projects` projects, each with one environment, and one application in the first.
+	private func instance(projects: Int, environments: Int = 1, application: [String: Any]? = nil, service: [String: Any]? = nil) -> PlatformHTTPStub.Route {
+		let applications = PlatformHTTPStub.Reply.json(200, application.map { [$0] } ?? [])
+		let services = PlatformHTTPStub.Reply.json(200, service.map { [$0] } ?? [])
+		return PlatformHTTPStub.coolify { request in
+			let path = request.url.path()
+			if path == "/api/v1/projects" {
+				return .json(200, (0..<projects).map { ["id": $0, "uuid": "proj-\($0)", "name": "Project \($0)"] })
+			}
+			if path.hasPrefix("/api/v1/projects/proj-") {
+				let index = Int(path.dropFirst("/api/v1/projects/proj-".count)) ?? 0
+				return .json(200, ["uuid": "proj-\(index)", "name": "Project \(index)",
+					"environments": (0..<environments).map { ["id": index * 1_000 + $0, "name": "env \($0)"] }])
+			}
+			if path == "/api/v1/applications" { return applications }
+			if path == "/api/v1/services" { return services }
+			return .json(404, ["message": "Not found."])
+		}
+	}
+
+	@Test("names Coolify sends for resources, projects and environments have their direction controls escaped")
+	func escapesResourceNames() async throws {
+		let route = PlatformHTTPStub.coolify { request in
+			switch request.url.path() {
+			case "/api/v1/projects": .json(200, [["id": 1, "uuid": "proj-a", "name": "Store\u{202E}"]])
+			case "/api/v1/projects/proj-a": .json(200, ["uuid": "proj-a", "name": "Store\u{202E}", "environments": [["id": 10, "name": "prod\u{2066}"]]])
+			case "/api/v1/applications": .json(200, [["uuid": "app-api", "name": "api\u{200F}", "environment_id": 10]])
+			default: .json(200, [])
+			}
+		}
+		let resource = try #require(try await client(route).resources().get().first)
+		#expect(resource.name == #"api\u{200f}"# && resource.projectName == #"Store\u{202e}"# && resource.environmentName == #"prod\u{2066}"#)
+	}
+
+	@Test("a team with more projects than are named lists its resources without their projects, and reads no project")
+	func skipsNamesForManyProjects() async throws {
+		let route = instance(projects: 3, application: ["uuid": "app-api", "name": "api", "environment_id": 0])
+		let client = CoolifyClient(instance: try CoolifyInstance.parse(route.baseURL.absoluteString).get(), token: "1|t", session: route.session,
+			limits: .init(namedProjects: 2, environmentsPerProject: 10, discoveryBytes: 1_000_000))
+		#expect(try await client.resources().get() == [
+			CoolifyResource(kind: .application, id: "app-api", name: "api", projectName: nil, environmentName: nil, buildPack: nil),
+		])
+		#expect(!route.requests.contains { $0.url.path().hasPrefix("/api/v1/projects/") })
+	}
+
+	@Test("a project with more environments than allowed, or more bytes than discovery allows in all, fails the listing")
+	func enforcesDiscoveryBudgets() async throws {
+		let environments = instance(projects: 1, environments: 11)
+		let tight = CoolifyClient.Limits(namedProjects: 10, environmentsPerProject: 10, discoveryBytes: 1_000_000)
+		#expect(await CoolifyClient(instance: try CoolifyInstance.parse(environments.baseURL.absoluteString).get(), token: "1|t",
+			session: environments.session, limits: tight).resources() == .failure(.invalidResponse))
+		let large = instance(projects: 1, application: ["uuid": "app-api", "name": "api", "docker_compose_raw": String(repeating: "x", count: 20_000)])
+		let small = CoolifyClient.Limits(namedProjects: 10, environmentsPerProject: 10, discoveryBytes: 10_000)
+		#expect(await CoolifyClient(instance: try CoolifyInstance.parse(large.baseURL.absoluteString).get(), token: "1|t",
+			session: large.session, limits: small).resources() == .failure(.invalidResponse))
+	}
+
+	@Test("two resources with one UUID, in one list or across both, fail the listing")
+	func refusesDuplicateResources() async throws {
+		let across = instance(projects: 0, application: ["uuid": "same", "name": "api"], service: ["uuid": "same", "name": "db"])
+		#expect(try await client(across).resources() == .failure(.invalidResponse))
+		let within = PlatformHTTPStub.coolify { request in
+			switch request.url.path() {
+			case "/api/v1/applications": .json(200, [["uuid": "same", "name": "a"], ["uuid": "same", "name": "b"]])
+			default: .json(200, [])
+			}
+		}
+		#expect(try await client(within).resources() == .failure(.invalidResponse))
+	}
+
 	@Test("a project UUID that could change the request's path fails the listing before it's used")
 	func refusesUnsafeProject() async throws {
 		let route = PlatformHTTPStub.coolify { request in

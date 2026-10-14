@@ -148,12 +148,12 @@ enum PublishingRecords {
 		return CoolifyPublishTarget(
 			instance: instance,
 			teamID: try fields.string("teamId"),
-			teamName: try fields.string("teamName"),
+			teamName: try fields.name("teamName"),
 			resource: resource,
 			resourceID: try fields.string("resourceId"),
-			resourceName: try fields.string("resourceName"),
-			projectName: try fields.optionalString("projectName"),
-			environmentName: try fields.optionalString("environmentName"),
+			resourceName: try fields.name("resourceName"),
+			projectName: try fields.optionalString("projectName")?.escapingDirectionControls,
+			environmentName: try fields.optionalString("environmentName")?.escapingDirectionControls,
 			deployments: deployments
 		)
 	}

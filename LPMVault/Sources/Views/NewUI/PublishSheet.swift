@@ -183,7 +183,7 @@ struct PublishSheet: View {
 							VaultMenuField(
 								title: "Platform connection",
 								options: (session.connections.value ?? []).map {
-									VaultMenuOption(value: $0.id, label: "\($0.platform.displayName) · \($0.name)", systemImage: $0.platform.systemImage)
+									VaultMenuOption(value: $0.id, label: Self.connectionLabel($0), systemImage: $0.platform.systemImage)
 								},
 								selection: $session.connectionID,
 								placeholder: session.connections == .loading ? "Loading…" : "Choose connection…")
@@ -294,7 +294,7 @@ struct PublishSheet: View {
 			.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
 			.disabled(session.isPublishing)
 			VStack(alignment: .leading, spacing: 3) {
-				ForEach(notes(review), id: \.self) { note in
+				ForEach(Self.notes(for: review), id: \.self) { note in
 					Text(note).font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
 				}
@@ -426,13 +426,22 @@ struct PublishSheet: View {
 		}
 	}
 
-	private func notes(_ review: PublishSession.Review) -> [String] {
+	/// A Coolify connection names its instance, since teams on two instances can share a name.
+	static func connectionLabel(_ connection: PlatformConnection) -> String {
+		switch connection.account {
+		case .vercel: "Vercel · \(connection.name)"
+		case .coolify(let account): "Coolify · \(connection.name) · \(account.instance.address)"
+		}
+	}
+
+	static func notes(for review: PublishSession.Review) -> [String] {
 		let platform = review.platform.displayName
 		var notes: [String] = []
 		if review.summary.replacing > 0 {
 			switch review.platform {
 			case .vercel: notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare.")
-			case .coolify: notes.append("Existing variables will be replaced. LPM Vault doesn't read Coolify's current values to compare.")
+			case .coolify:
+				notes.append("Existing variables will be replaced. LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten.")
 			}
 		}
 		if case .coolify(let target) = review.destination.target, target.resource == .application, target.deployments == .production,
@@ -616,12 +625,14 @@ private struct CoolifyDestinationFields: View {
 	@Bindable var form: CoolifyDestinationForm
 
 	var body: some View {
+		let resources = form.resources.value ?? []
+		let labels = CoolifyDestinationForm.labels(for: resources)
 		GridRow {
 			PublishDestinationField("Application or service") {
 				VaultMenuField(
 					title: "Application or service",
-					options: (form.resources.value ?? []).map {
-						VaultMenuOption(value: $0.id, label: Self.label(of: $0), systemImage: $0.kind == .service ? "square.stack.3d.up" : "app")
+					options: resources.map {
+						VaultMenuOption(value: $0.id, label: labels[$0.id] ?? $0.name, systemImage: $0.kind == .service ? "square.stack.3d.up" : "app")
 					},
 					selection: $form.resourceID,
 					placeholder: placeholder,
@@ -638,11 +649,6 @@ private struct CoolifyDestinationFields: View {
 		}
 	}
 
-	/// The resource's name, then the Coolify project and environment holding it.
-	static func label(of resource: CoolifyResource) -> String {
-		let place = [resource.projectName, resource.environmentName].compactMap { $0 }.joined(separator: " / ")
-		return place.isEmpty ? resource.name : "\(resource.name) — \(place)"
-	}
 
 	private var placeholder: String {
 		switch form.resources {

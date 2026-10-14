@@ -84,6 +84,21 @@ final class CoolifyDestinationForm {
 		return deploymentChoices.contains(deployments) && resource != nil
 	}
 
+	/// Each resource's label in the menu, by ID: its name, then the Coolify
+	/// project and environment holding it. Coolify doesn't keep names
+	/// unique, so labels that would read alike end with the start of their UUID.
+	static func labels(for resources: [CoolifyResource]) -> [String: String] {
+		let bases = resources.map { resource in
+			let place = [resource.projectName, resource.environmentName].compactMap { $0 }.joined(separator: " / ")
+			return (id: resource.id, label: place.isEmpty ? resource.name : "\(resource.name) — \(place)")
+		}
+		var counts: [String: Int] = [:]
+		for base in bases { counts[base.label, default: 0] += 1 }
+		return Dictionary(bases.map { base in
+			(base.id, counts[base.label, default: 0] > 1 ? "\(base.label) · \(base.id.prefix(8))" : base.label)
+		}, uniquingKeysWith: { first, _ in first })
+	}
+
 	/// Resources sorted the way Coolify's dashboard groups them.
 	static func sorted(_ resources: [CoolifyResource]) -> [CoolifyResource] {
 		resources.sorted { lhs, rhs in

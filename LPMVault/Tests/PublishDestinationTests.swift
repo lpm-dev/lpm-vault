@@ -111,6 +111,16 @@ struct PublishDestinationTests {
 		#expect(application.target.placeName == "api / Production" && preview.target.placeName == "api / Preview deployments")
 	}
 
+	@Test("a Coolify destination's names stored before they were escaped read back escaped")
+	func escapesStoredCoolifyNames() throws {
+		let json = coolifyRecord().replacingOccurrences(of: #""resourceName":"api""#, with: #""resourceName":"api\u202e""#)
+			.replacingOccurrences(of: #""teamName":"Root Team""#, with: #""teamName":"Root\u2066""#)
+			.replacingOccurrences(of: "VAULT", with: publishTestVault)
+		let destination = try #require(try PublishingRecords.decodeDestinations(Data(json.utf8), vaultID: publishTestVault).get().first)
+		guard case .coolify(let target) = destination.target else { Issue.record("Not a Coolify destination"); return }
+		#expect(target.resourceName == #"api\u{202e}"# && target.teamName == #"Root\u{2066}"#)
+	}
+
 	@Test("a Coolify destination with an unsafe ID, a service with preview deployments, or a bad name can't be stored")
 	func invalidCoolify() {
 		#expect(coolifyDestination(resourceID: "../x").invalidity == .targetIdentifier)

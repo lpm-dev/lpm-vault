@@ -22,6 +22,7 @@ final class FakeCoolifyAPI: CoolifyClientProtocol, @unchecked Sendable {
 	private var sent: [Write] = []
 	private var deletedIDs: [String] = []
 	private var listings = 0
+	private var resourceListings = 0
 	private var clock = 1_760_000_000.0
 
 	var team: Result<CoolifyTeam, CoolifyAPIError> = .success(CoolifyTeam(id: "0", name: "Root Team"))
@@ -41,6 +42,7 @@ final class FakeCoolifyAPI: CoolifyClientProtocol, @unchecked Sendable {
 	var writes: [Write] { lock.withLock { sent } }
 	var deleted: [String] { lock.withLock { deletedIDs } }
 	var listingCount: Int { lock.withLock { listings } }
+	var resourceListingCount: Int { lock.withLock { resourceListings } }
 
 	func value(of key: String, preview: Bool = false) -> String? {
 		lock.withLock { values["\(preview).\(key)"] }
@@ -52,11 +54,31 @@ final class FakeCoolifyAPI: CoolifyClientProtocol, @unchecked Sendable {
 		lock.withLock { insert(key, value: value, preview: preview, locked: locked) }
 	}
 
-	/// Edits a variable as someone would in Coolify, which moves its time.
-	func edit(_ key: String, preview: Bool = false) {
+	/// Edits a variable as someone would in Coolify, which moves its time
+	/// unless `keepsTime`, as an edit within the same second does.
+	func edit(_ key: String, preview: Bool = false, keepsTime: Bool = false, value: String = "edited") {
 		lock.withLock {
 			guard let index = stored.firstIndex(where: { $0.key == key && $0.isPreview == preview }) else { return }
-			stored[index] = variable(stored[index].id, key, preview: preview, locked: stored[index].isLocked)
+			values["\(preview).\(key)"] = value
+			guard !keepsTime else { return }
+			// An edit made a minute later, so Coolify's second-long times tell it apart.
+			clock += 60
+			stored[index] = variable(stored[index].id, key, preview: preview, locked: stored[index].isLocked, createdAt: stored[index].createdAt)
+		}
+	}
+
+	/// A fake holding one variable updated at `time`, as Coolify writes it.
+	func seeded(_ key: String, time: String) -> FakeCoolifyAPI {
+		lock.withLock {
+			stored.append(CoolifyVariable(id: "env-1", key: key, isPreview: false, isLocked: true, updatedAt: CoolifyClient.timestamp(time)))
+		}
+		return self
+	}
+
+	/// Drops every variable's times, as a Coolify that doesn't report them would.
+	func forgetTimes() {
+		lock.withLock {
+			stored = stored.map { CoolifyVariable(id: $0.id, key: $0.key, isPreview: $0.isPreview, isLocked: $0.isLocked, updatedAt: nil) }
 		}
 	}
 
@@ -65,7 +87,10 @@ final class FakeCoolifyAPI: CoolifyClientProtocol, @unchecked Sendable {
 	}
 
 	func team() async -> Result<CoolifyTeam, CoolifyAPIError> { team }
-	func resources() async -> Result<[CoolifyResource], CoolifyAPIError> { resourceList }
+	func resources() async -> Result<[CoolifyResource], CoolifyAPIError> {
+		lock.withLock { resourceListings += 1 }
+		return resourceList
+	}
 	func buildPack(ofApplication id: String) async -> Result<String?, CoolifyAPIError> { .success(buildPack) }
 
 	func variables(of resource: CoolifyPublishTarget.Resource, id: String) async -> Result<[CoolifyVariable], CoolifyAPIError> {
@@ -98,7 +123,7 @@ final class FakeCoolifyAPI: CoolifyClientProtocol, @unchecked Sendable {
 			guard let index = stored.firstIndex(where: { $0.key == write.key && $0.isPreview == write.isPreview }) else {
 				return .failure(.notFound)
 			}
-			stored[index] = variable(stored[index].id, write.key, preview: write.isPreview, locked: write.isLocked)
+			stored[index] = variable(stored[index].id, write.key, preview: write.isPreview, locked: write.isLocked, createdAt: stored[index].createdAt)
 			values["\(write.isPreview).\(write.key)"] = write.value
 			return .success(stored[index])
 		}
@@ -121,9 +146,10 @@ final class FakeCoolifyAPI: CoolifyClientProtocol, @unchecked Sendable {
 		return created
 	}
 
-	private func variable(_ id: String, _ key: String, preview: Bool, locked: Bool) -> CoolifyVariable {
+	private func variable(_ id: String, _ key: String, preview: Bool, locked: Bool, createdAt: Date? = nil) -> CoolifyVariable {
 		clock += 1
-		return CoolifyVariable(id: id, key: key, isPreview: preview, isLocked: locked, updatedAt: Date(timeIntervalSince1970: clock))
+		let now = Date(timeIntervalSince1970: clock)
+		return CoolifyVariable(id: id, key: key, isPreview: preview, isLocked: locked, updatedAt: now, createdAt: createdAt ?? now)
 	}
 }
 
@@ -313,6 +339,59 @@ struct CoolifyPublishingTests {
 		#expect(report.outcomes["ADDED"] == .failed("Added in Coolify since this review. Review again."))
 		#expect(report.outcomes["KEPT"] == .published)
 		#expect(api.writes.map(\.key) == ["KEPT"] && api.value(of: "ADDED") == "someone else's")
+	}
+
+	@Test("a variable Coolify gives no time for isn't replaced, since a change to it can't be seen")
+	func refusesTimelessReplace() async throws {
+		let api = FakeCoolifyAPI()
+		api.seed("TIMELESS")
+		api.forgetTimes()
+		let (changes, reviewed) = try await changes(["TIMELESS": "next"], api: api)
+		api.edit("TIMELESS", keepsTime: true, value: "someone else's")
+		let report = await CoolifyPublishing.publish(changes, to: target(), reviewed: reviewed, using: api)
+		#expect(report.outcomes["TIMELESS"] == .failed("Coolify doesn't say when this variable last changed, so LPM Vault can't tell whether it changed since this review. Edit it once in Coolify, then review again."))
+		#expect(api.writes.isEmpty && api.value(of: "TIMELESS") == "someone else's")
+	}
+
+	@Test("a new variable is recorded with the time Coolify made it, not the time of an edit made right after")
+	func recordsCreationTime() async throws {
+		let api = FakeCoolifyAPI()
+		let (changes, reviewed) = try await changes(["NEW": "fresh"], api: api)
+		api.beforeLaterListing = { api in
+			if api.listingCount == 3 { api.edit("NEW") }
+		}
+		let report = await CoolifyPublishing.publish(changes, to: target(), reviewed: reviewed, using: api)
+		let variable = try #require(api.variables.first { $0.key == "NEW" && !$0.isPreview })
+		let record = try #require(report.published.first)
+		#expect(variable.updatedAt != variable.createdAt, "Someone edited it after it was made")
+		#expect(record.remoteUpdatedAt == variable.createdAt)
+	}
+
+	@Test("finding references takes time in proportion to a value's length, even full of unclosed ones")
+	func referenceScanIsLinear() {
+		func time(_ count: Int) -> Duration {
+			let value = String(repeating: "{{team.", count: count)
+			return (0..<5).map { _ in ContinuousClock().measure { _ = CoolifyPublishing.valueIssues(value) } }.min() ?? .zero
+		}
+		_ = time(1_000)
+		let small = time(2_000)
+		let large = time(8_000)
+		#expect(large < small * 10, "8000 openers took \(large), 2000 took \(small)")
+	}
+
+	@Test("a refusal that echoes the value or the token shows neither")
+	func refusalHidesWhatWasSent() async throws {
+		let route = PlatformHTTPStub.coolify { request in
+			request.method == "GET"
+				? .json(200, [["uuid": "env-1", "key": "API", "is_preview": false, "is_shown_once": true, "updated_at": "2026-10-14T12:00:00.000000Z"]])
+				: .json(422, ["message": "s3cret-value is not valid for 3|coolify-token", "errors": ["value": ["s3cret-value"]]])
+		}
+		let client = CoolifyClient(instance: try CoolifyInstance.parse(route.baseURL.absoluteString).get(), token: "3|coolify-token", session: route.session)
+		let (changes, reviewed) = try await changes(["API": "s3cret-value"], secrets: ["API"], api: FakeCoolifyAPI().seeded("API", time: "2026-10-14T12:00:00.000000Z"))
+		let report = await CoolifyPublishing.publish(changes, to: target(), reviewed: reviewed, using: client)
+		guard case .failed(let reason)? = report.outcomes["API"] else { Issue.record("Not refused"); return }
+		#expect(reason == "Coolify refused it: (value)")
+		#expect(!reason.contains("s3cret-value") && !reason.contains("coolify-token"))
 	}
 
 	@Test("a refused token stops what isn't sent yet and says to reconnect; a read that fails sends nothing")

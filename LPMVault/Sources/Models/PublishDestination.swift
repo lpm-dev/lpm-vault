@@ -126,6 +126,17 @@ enum PublishTarget: Hashable, Sendable {
 		}
 	}
 
+	/// What tells the place apart from others with the same name, such as
+	/// the Coolify project, environment and instance holding a resource.
+	var placeDetail: String? {
+		switch self {
+		case .vercel: return nil
+		case .coolify(let target):
+			let place = [target.projectName, target.environmentName].compactMap { $0 }.joined(separator: " / ")
+			return place.isEmpty ? target.instance.address : "\(place) on \(target.instance.address)"
+		}
+	}
+
 	fileprivate var invalidity: PublishDestinationInvalidity? {
 		switch self {
 		case .vercel(let target): target.invalidity
