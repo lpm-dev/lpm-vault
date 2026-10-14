@@ -109,14 +109,48 @@ enum VercelPublishing {
 
 	/// Sends `changes` to the target. Each key gets an outcome; a refused
 	/// token or a rate limit stops what hasn't been sent yet.
+	///
+	/// Vercel replaces a variable by its ID without checking what it holds,
+	/// so the variables are read again first: a key added, changed, removed
+	/// or shared with another environment since the review isn't sent.
 	static func publish(
 		_ changes: [PublishPlan.Change],
 		to target: VercelPublishTarget,
+		reviewed: [String: PublishPlan.RemoteVariable],
 		using client: any VercelClientProtocol
 	) async -> PublishReport {
 		var result = PublishReport()
-		let adds = changes.filter { $0.operation == .add }
-		let replaces = changes.compactMap { change -> (PublishPlan.Change, String)? in
+		guard !Task.isCancelled else {
+			for change in changes { result.outcomes[change.key] = .notSent }
+			return result
+		}
+		async let listing = client.variables(projectID: target.projectID, teamID: target.teamID)
+		async let customs = client.customEnvironments(projectID: target.projectID, teamID: target.teamID)
+		let current: [String: PublishPlan.RemoteVariable]
+		switch await listing {
+		case .success(let list):
+			switch snapshot(list, for: target.environment, customEnvironments: (try? await customs.get()) ?? []) {
+			case .success(let value): current = value.variables
+			case .failure(let error):
+				for change in changes { result.outcomes[change.key] = .failed(error.message) }
+				return result
+			}
+		case .failure(let error):
+			for change in changes { result.outcomes[change.key] = .failed(message(error)) }
+			result.needsReconnect = needsReconnect(error)
+			return result
+		}
+		var ready: [PublishPlan.Change] = []
+		for change in changes {
+			if isUnchangedSinceReview(change, now: current[change.key], reviewed: reviewed[change.key]) {
+				ready.append(change)
+			} else {
+				result.outcomes[change.key] = .failed("Changed on Vercel since this review. Review again.")
+			}
+		}
+
+		let adds = ready.filter { $0.operation == .add }
+		let replaces = ready.compactMap { change -> (PublishPlan.Change, String)? in
 			if case .replace(let id) = change.operation { return (change, id) }
 			return nil
 		}
@@ -151,7 +185,7 @@ enum VercelPublishing {
 				for (change, id) in batch {
 					group.addTask {
 						(change.key, await client.replace(
-							id, value: change.value, storage: change.publishesAsSecret ? .sensitive : .encrypted,
+							id, key: change.key, value: change.value, storage: change.publishesAsSecret ? .sensitive : .encrypted,
 							projectID: target.projectID, teamID: target.teamID))
 					}
 				}
@@ -167,6 +201,23 @@ enum VercelPublishing {
 			result.outcomes[change.key] = .notSent
 		}
 		return result
+	}
+
+	/// Whether the variable the change would write is still the one the
+	/// review saw: absent for an add; for a replacement, the same ID, sharing,
+	/// protection and change time, which must be known.
+	private static func isUnchangedSinceReview(
+		_ change: PublishPlan.Change,
+		now: PublishPlan.RemoteVariable?,
+		reviewed: PublishPlan.RemoteVariable?
+	) -> Bool {
+		switch change.operation {
+		case .add:
+			return now == nil
+		case .replace(let id):
+			guard let now, let reviewed, now.id == id, now.updatedAt != nil else { return false }
+			return now == reviewed
+		}
 	}
 
 	private static func record(
@@ -217,8 +268,7 @@ enum VercelPublishing {
 		case .forbidden: "The LPM Vault integration can't change this project's variables."
 		case .notFound: "Vercel couldn't find the project or the variable."
 		case .rateLimited: "Vercel is limiting requests. Try again in a minute."
-		case .rejected(_, let message) where !message.isEmpty: "Vercel refused it: \(message)"
-		case .rejected(let code, _): "Vercel refused it (\(code))."
+		case .rejected(let code): "Vercel refused it (\(code))."
 		case .incompleteList: "Vercel listed the variables in pages LPM Vault can't read yet."
 		case .transport: "Vercel couldn't be reached."
 		case .cancelled: "Cancelled."

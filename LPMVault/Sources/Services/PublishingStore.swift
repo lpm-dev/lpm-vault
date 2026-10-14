@@ -17,6 +17,8 @@ enum PublishingStoreError: Error, Equatable, Sendable, CustomStringConvertible {
 	case destinationRemoved
 	/// The destination was pointed somewhere else while the publish ran.
 	case destinationMoved
+	/// The destination changed after it was read, as when another publish saved it first.
+	case destinationChanged
 
 	var description: String {
 		switch self {
@@ -30,6 +32,7 @@ enum PublishingStoreError: Error, Equatable, Sendable, CustomStringConvertible {
 		case .tooLarge: "The publish destinations are too large to save."
 		case .destinationRemoved: "The publish destination was removed."
 		case .destinationMoved: "The publish destination was changed."
+		case .destinationChanged: "The publish destination changed meanwhile."
 		}
 	}
 }
@@ -55,7 +58,14 @@ actor PublishingStore {
 	/// `updatedAt` past the stored one's. Pointing a destination somewhere
 	/// else drops its history, which described the old place, before the new
 	/// place is saved, so a failure leaves neither.
-	func save(_ destination: PublishDestination, to vaultID: String) -> Result<[PublishDestination], PublishingStoreError> {
+	///
+	/// With `expected`, the destination as it was read, nothing is saved when
+	/// the stored one has changed or gone since.
+	func save(
+		_ destination: PublishDestination,
+		to vaultID: String,
+		replacing expected: PublishDestination? = nil
+	) -> Result<[PublishDestination], PublishingStoreError> {
 		Result {
 			if let invalidity = destination.invalidity { throw PublishingStoreError.invalidDestination(invalidity) }
 			var destinations = try readDestinations(of: vaultID)
@@ -64,6 +74,7 @@ actor PublishingStore {
 			}
 			if let index = destinations.firstIndex(where: { $0.id == destination.id }) {
 				let stored = destinations[index]
+				if let expected, stored != expected { throw PublishingStoreError.destinationChanged }
 				guard destination != stored else { return destinations }
 				if stored.target.location != destination.target.location {
 					try service.deleteAppItem(.publishing, account: Self.historyAccount(vaultID, destination.id)).get()
@@ -72,6 +83,7 @@ actor PublishingStore {
 				replacement.updatedAt = PublishTimestamp.next(after: stored.updatedAt, at: destination.updatedAt)
 				destinations[index] = replacement
 			} else {
+				guard expected == nil else { throw PublishingStoreError.destinationRemoved }
 				guard destinations.count < PublishingRecords.maximumDestinations else { throw PublishingStoreError.limitReached }
 				destinations.append(destination)
 			}

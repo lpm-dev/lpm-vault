@@ -467,8 +467,16 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
+	/// Runs before each app item write, outside the mock's lock, so a test can hold the caller there.
+	var beforeAppItemWrite: (@Sendable () -> Void)? {
+		get { lock.withLock { writeHook } }
+		set { lock.withLock { writeHook = newValue } }
+	}
+	private var writeHook: (@Sendable () -> Void)?
+
 	func writeAppItem(_ store: AppKeychainStore, account: String, data: Data) -> Result<Void, KeychainError> {
-		lock.withLock {
+		lock.withLock { writeHook }?()
+		return lock.withLock {
 			if failingAppItems[store]?.contains(account) == true { return .failure(failureError) }
 			appItems[store, default: [:]][account] = data
 			return .success(())
@@ -484,9 +492,16 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
+	/// Accounts whose deletion fails, while reading and writing them work.
+	var failAppItemDeletes: Set<String> {
+		get { lock.withLock { deleteFailures } }
+		set { lock.withLock { deleteFailures = newValue } }
+	}
+	private var deleteFailures: Set<String> = []
+
 	func deleteAppItem(_ store: AppKeychainStore, account: String) -> Result<Void, KeychainError> {
 		lock.withLock {
-			if failingAppItems[store]?.contains(account) == true { return .failure(failureError) }
+			if failingAppItems[store]?.contains(account) == true || deleteFailures.contains(account) { return .failure(failureError) }
 			appItems[store]?.removeValue(forKey: account)
 			return .success(())
 		}

@@ -75,14 +75,19 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 	static let nonceHeader = "x-lpm-platform-request-nonce"
 	private static let maximumResponseBytes = 64 * 1024
 
-	private let session: URLSession
+	let session: URLSession
+
+	/// The session clients use unless given one. A session holds its
+	/// delegate until it's invalidated, so one per process serves every
+	/// connection attempt: it keeps no cookies, cache or credentials.
+	static let sharedSession = URLSession(
+		configuration: BoundedHTTPResponse.ephemeralConfiguration(requestTimeout: 15, resourceTimeout: 30),
+		delegate: PinnedSessionDelegate(),
+		delegateQueue: nil
+	)
 
 	init(session: URLSession? = nil) {
-		self.session = session ?? URLSession(
-			configuration: BoundedHTTPResponse.ephemeralConfiguration(requestTimeout: 15, resourceTimeout: 30),
-			delegate: PinnedSessionDelegate(),
-			delegateQueue: nil
-		)
+		self.session = session ?? Self.sharedSession
 	}
 
 	func startVercel(

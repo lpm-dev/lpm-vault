@@ -34,9 +34,7 @@ struct PublishSessionTests {
 			vaultID: vault, projectName: "demo-api", environments: ["production", "staging"], sourceEnvironment: source,
 			saved: saved,
 			dependencies: .init(
-				values: { values.get($0) },
-				rules: { [rules] in .known(rules) },
-				check: { _ in nil },
+				snapshot: { [rules] in values.get($0).map { .init(values: $0, rules: .known(rules), check: nil) } },
 				confirm: { confirmations.ask($0) },
 				publishing: publishing,
 				connections: connections,
@@ -245,6 +243,188 @@ struct PublishSessionTests {
 		#expect(api.projectListingCount == before + 1)
 	}
 
+	@Test("changing a destination's source forgets exclusions of keys the new source lacks, unless the destination changed meanwhile")
+	func staleExclusionsAfterSourceChange() async throws {
+		try await connect()
+		values.set("production", ["NEW": "n"])
+		values.set("staging", ["OLD": "o", "NEW": "s"])
+		let existing = PublishDestination(
+			sourceEnvironment: "staging",
+			target: .vercel(VercelPublishTarget(teamID: "team_acme", accountID: "team_acme", teamName: "Acme", projectID: "prj_api",
+				projectName: "demo-api", environment: .production)),
+			excludedKeys: ["OLD"], createdAt: Date(timeIntervalSince1970: 1_750_000_000))
+		_ = try await publishing.save(existing, to: vault).get()
+		let session = session(saved: existing)
+		session.start()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+		session.sourceEnvironment = "production"
+		session.loadReview()
+		try await waitUntil { session.review != nil && !session.isLoadingReview }
+		session.publish()
+		try await waitUntil { session.step == .results }
+		#expect(session.results?.recordFailure == nil)
+		#expect(try await publishing.destinations(of: vault).get().first?.excludedKeys == [])
+
+		let stored = try #require(try await publishing.destinations(of: vault).get().first)
+		let again = self.session(saved: stored)
+		again.start()
+		try await waitUntil { again.review != nil || again.reviewError != nil }
+		again.sourceEnvironment = "staging"
+		again.loadReview()
+		try await waitUntil { again.review != nil && !again.isLoadingReview }
+		var changed = try #require(try await publishing.destinations(of: vault).get().first)
+		changed.excludedKeys = ["MEANWHILE"]
+		changed.updatedAt = Date(timeIntervalSince1970: 1_770_000_000)
+		_ = try await publishing.save(changed, to: vault).get()
+		again.publish()
+		try await waitUntil { again.step == .results }
+		#expect(again.results?.recordFailure?.contains("changed") == true)
+		#expect(try await publishing.destinations(of: vault).get().first?.excludedKeys == ["MEANWHILE"])
+	}
+
+	@Test("the values a review reads come with the rules and check made for those same values")
+	func reviewReadsOneSnapshot() async throws {
+		try await connect()
+		let gate = AsyncFlag()
+		let current = SnapshotBox(values: ["PORT": "8080"], check: .init(problems: [:]))
+		let failing = ProjectEnvValueCheck.Environment(problems: ["PORT": [.init(key: "PORT", kind: .format("port"))]])
+		let session = PublishSession(
+			vaultID: vault, projectName: "demo-api", environments: ["production"], sourceEnvironment: "production",
+			dependencies: .init(
+				snapshot: { [rules] _ in
+					await gate.wait()
+					return .init(values: current.values, rules: .known(rules), check: current.check)
+				},
+				confirm: { _ in true },
+				publishing: publishing, connections: connections,
+				vercel: { [api] _ in api }))
+		session.start()
+		try await waitUntil { session.vercel?.projects.value != nil }
+		session.vercel?.projectID = "prj_api"
+		session.vercel?.environment = .production
+		session.loadReview()
+		try await Task.sleep(for: .milliseconds(30))
+		current.values = ["PORT": "not-a-port"]
+		current.check = failing
+		await gate.open()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+		let row = try #require(session.review?.plan.row("PORT"))
+		#expect(row.holds.contains { if case .failsRules = $0 { true } else { false } } && !row.isSelectedByDefault)
+	}
+
+	@Test("cancelling the sheet while it starts stops everything it would start")
+	func cancelDuringStart() async throws {
+		try await connect()
+		let saved = PublishDestination(
+			sourceEnvironment: "production",
+			target: .vercel(VercelPublishTarget(teamID: "team_acme", accountID: "team_acme", teamName: "Acme", projectID: "prj_api",
+				projectName: "demo-api", environment: .production)),
+			createdAt: Date(timeIntervalSince1970: 1_750_000_000))
+		_ = try await publishing.save(saved, to: vault).get()
+		let entered = DispatchSemaphore(value: 0)
+		let held = DispatchSemaphore(value: 0)
+		keychain.beforeAppItemListing = {
+			entered.signal()
+			_ = held.wait(timeout: .now() + 30)
+		}
+		let session = session(saved: saved)
+		session.start()
+		await withCheckedContinuation { continuation in
+			Thread.detachNewThread {
+				_ = entered.wait(timeout: .now() + 30)
+				continuation.resume()
+			}
+		}
+		keychain.beforeAppItemListing = nil
+		session.cancel()
+		held.signal()
+		try await Task.sleep(for: .milliseconds(100))
+		#expect(api.listingCount == 0 && api.projectListingCount == 0 && api.customListingCount == 0)
+		#expect(session.review == nil && session.connections.value == nil)
+	}
+
+	@Test("a variable changed on Vercel after its review isn't replaced, so the review has to be made again")
+	func refusesDriftSinceReview() async throws {
+		try await connect()
+		values.set("production", ["SHARED": "s", "RENAMED": "r", "EDITED": "e", "ADDED": "a"])
+		api.variableList = VercelVariableList(variables: [
+			vercelVariable("SHARED", targets: [.preview]), vercelVariable("RENAMED"), vercelVariable("EDITED"),
+		], hiddenProductionCount: 0)
+		let session = session()
+		session.start()
+		try await waitUntil { session.vercel?.projects.value != nil }
+		session.vercel?.projectID = "prj_api"
+		session.vercel?.environment = .preview
+		session.loadReview()
+		try await waitUntil { session.review != nil }
+		for key in ["SHARED", "RENAMED", "EDITED", "ADDED"] { session.set(key, selected: true, confirmed: true) }
+		session.vercel?.environment = .production
+		session.loadReview()
+		try await waitUntil { session.review != nil && !session.isLoadingReview }
+		for key in ["SHARED", "RENAMED", "EDITED", "ADDED"] { session.set(key, selected: true, confirmed: true) }
+		api.variableList = VercelVariableList(variables: [
+			vercelVariable("SHARED", targets: [.production, .preview]),
+			VercelEnvironmentVariable(id: "env_RENAMED", key: "RENAMED_AGAIN", kind: .sensitive, isSecret: true, targets: [.production],
+				customEnvironmentIDs: [], gitBranch: nil, updatedAt: Date(timeIntervalSince1970: 1_760_000_000)),
+			vercelVariable("EDITED", updatedAt: Date(timeIntervalSince1970: 1_760_000_900)),
+			vercelVariable("ADDED"),
+		], hiddenProductionCount: 0)
+		session.publish()
+		try await waitUntil { session.step == .results }
+		let outcomes = Dictionary(uniqueKeysWithValues: session.results?.rows.map { ($0.key, $0.outcome) } ?? [])
+		for key in ["RENAMED", "EDITED", "ADDED"] {
+			#expect(outcomes[key] == .failed("Changed on Vercel since this review. Review again."), "\(key)")
+		}
+		#expect(api.replacedValues.isEmpty && api.createdWrites.isEmpty)
+		#expect(outcomes["SHARED"] == .failed("Changed on Vercel since this review. Review again."))
+	}
+
+	@Test("reopening a saved destination reads its custom environments once and lists no projects")
+	func savedReadsCustomEnvironmentsOnce() async throws {
+		try await connect()
+		let first = session()
+		try await chooseProduction(first)
+		first.publish()
+		try await waitUntil { first.step == .results }
+		let saved = try #require(try await publishing.destinations(of: vault).get().first)
+		let (projects, customs) = (api.projectListingCount, api.customListingCount)
+		let again = session(saved: saved)
+		again.start()
+		try await waitUntil { again.review != nil || again.reviewError != nil }
+		#expect(api.projectListingCount == projects && api.customListingCount == customs + 1)
+	}
+
+	@Test("two Vercel teams with one name are told apart, and the chosen one's token is used")
+	func distinguishesSameNameTeams() async throws {
+		try await connect()
+		_ = try await connections.save(
+			VercelGrant(accessToken: "vca_eu", installationID: "icfg_2", teamID: "team_acme_eu", userID: "u_1")!,
+			account: VercelAccount(name: "Acme", slug: "acme-eu"), at: Date()).get()
+		let tokens = TokenLog()
+		let api = api
+		let session = session(client: { token in
+			tokens.append(token)
+			return api
+		})
+		session.start()
+		try await waitUntil { session.connections.value?.count == 2 }
+		let labels = (session.connections.value ?? []).map(PublishSheet.connectionLabel)
+		#expect(Set(labels) == ["Vercel · Acme · acme", "Vercel · Acme · acme-eu"])
+		session.connectionID = "vercel.team_acme_eu"
+		try await waitUntil { session.vercel?.projects != nil && session.vercel?.projects != .loading }
+		#expect(tokens.values == ["vca_eu"])
+	}
+
+	@Test("a Vercel review that replaces variables says a change made on Vercel moments before can still be overwritten")
+	func vercelReplaceNote() async throws {
+		try await connect()
+		api.variableList = VercelVariableList(variables: [vercelVariable("API_TOKEN")], hiddenProductionCount: 0)
+		let session = session()
+		try await chooseProduction(session)
+		let review = try #require(session.review)
+		#expect(PublishSheet.notes(for: review).contains { $0.contains("moments before publishing can still be overwritten") })
+	}
+
 	@Test("changing the source, project or environment drops a review made for the old choice")
 	func choiceChangeInvalidates() async throws {
 		try await connect()
@@ -263,6 +443,32 @@ struct PublishSessionTests {
 		try await waitUntil { session.review != nil }
 		session.vercel?.environment = .preview
 		#expect(session.review == nil)
+	}
+}
+
+@MainActor
+private final class SnapshotBox {
+	var values: [String: String]
+	var check: ProjectEnvValueCheck.Environment
+	init(values: [String: String], check: ProjectEnvValueCheck.Environment) {
+		self.values = values
+		self.check = check
+	}
+}
+
+private actor AsyncFlag {
+	private var isOpen = false
+	private var waiters: [CheckedContinuation<Void, Never>] = []
+
+	func wait() async {
+		guard !isOpen else { return }
+		await withCheckedContinuation { waiters.append($0) }
+	}
+
+	func open() {
+		isOpen = true
+		for waiter in waiters { waiter.resume() }
+		waiters = []
 	}
 }
 
@@ -300,9 +506,7 @@ struct CoolifyPublishSessionTests {
 			vaultID: vault, projectName: "demo-api", environments: ["production"], sourceEnvironment: "production",
 			saved: saved,
 			dependencies: .init(
-				values: { values.get($0) },
-				rules: { [rules] in .known(rules) },
-				check: { _ in nil },
+				snapshot: { [rules] in values.get($0).map { .init(values: $0, rules: .known(rules), check: nil) } },
 				confirm: { confirmations.ask($0) },
 				publishing: publishing,
 				connections: connections,
@@ -475,7 +679,7 @@ struct CoolifyPublishSessionTests {
 		let session = PublishSession(
 			vaultID: vault, projectName: "demo-api", environments: ["production"], sourceEnvironment: "production",
 			dependencies: .init(
-				values: { values.get($0) }, rules: { .none }, check: { _ in nil }, confirm: { confirmations.ask($0) },
+				snapshot: { values.get($0).map { .init(values: $0, rules: .none, check: nil) } }, confirm: { confirmations.ask($0) },
 				publishing: publishing, connections: connections,
 				vercel: { token in
 					vercelTokens.append(token)
@@ -597,6 +801,91 @@ struct PublishStoreTests {
 		#expect(store.publishDestinations.isEmpty)
 	}
 
+	@Test("the review checks the values it publishes, not a check made before they changed")
+	func reviewChecksItsOwnValues() async throws {
+		let folder = FileManager.default.temporaryDirectory.appending(path: "publish-check-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try #"{"envSchema":{"vars":{"PORT":{"format":"port"}}}}"#.write(to: folder.appending(path: "lpm.json"), atomically: true, encoding: .utf8)
+		let environments = ["production": ["PORT": "8080"]]
+		keychain.envStorage["project"] = (name: "demo-api", path: folder.path, environments: environments)
+		let api = api
+		let store = VaultStore(
+			keychainService: keychain, biometricService: biometric, apiService: MockAPIService(),
+			authTokenProvider: { _, _ in nil }, platformClient: { _ in api })
+		store.projects = [VaultProject(id: "project", name: "demo-api", path: folder.path, environments: environments)]
+		store.isUnlocked = true
+		store.openProject(id: "project")
+		store.selectEnvironment("production")
+		defer { store.lock() }
+		store.reloadKeyDescriptions()
+		for _ in 0..<500 where store.valueChecks["project"] == nil { try await Task.sleep(for: .milliseconds(10)) }
+		_ = try #require(store.valueChecks["project"])
+		_ = try await store.platformConnectionStore.save(
+			VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_acme", userID: "u_1")!,
+			account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
+		let changed = ["production": ["PORT": "not-a-port"]]
+		keychain.envStorage["project"] = (name: "demo-api", path: folder.path, environments: changed)
+		store.projects = [VaultProject(id: "project", name: "demo-api", path: folder.path, environments: changed)]
+		let session = try #require(store.makePublishSession())
+		session.start()
+		try await waitUntil { session.vercel?.projects.value != nil }
+		session.vercel?.projectID = "prj_api"
+		session.vercel?.environment = .production
+		session.loadReview()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+		let row = try #require(session.review?.plan.row("PORT"))
+		#expect(row.holds.contains { if case .failsRules = $0 { true } else { false } })
+		#expect(!row.isSelectedByDefault)
+	}
+
+	@Test("locking cancels a publish waiting for Touch ID, and one between replacements, so nothing more is sent")
+	func lockCancelsPublish() async throws {
+		let store = try await makeStore()
+		api.variableList = VercelVariableList(
+			variables: (1...6).map { vercelVariable("KEY_\($0)") }, hiddenProductionCount: 0)
+		let environments = ["production": Dictionary(uniqueKeysWithValues: (1...6).map { ("KEY_\($0)", "v\($0)") })]
+		keychain.envStorage["project"] = (name: "demo-api", path: "", environments: environments)
+		store.projects = [VaultProject(id: "project", name: "demo-api", path: "", environments: environments)]
+		store.openProject(id: "project")
+		store.selectEnvironment("production")
+		let session = try #require(store.makePublishSession())
+		session.start()
+		try await waitUntil { session.vercel?.projects.value != nil }
+		session.vercel?.projectID = "prj_api"
+		session.vercel?.environment = .production
+		session.loadReview()
+		try await waitUntil { session.review != nil }
+		for index in 1...6 { session.set("KEY_\(index)", selected: true) }
+		let released = AsyncFlag()
+		api.beforeReplace = { await released.wait() }
+		session.publish()
+		try await waitUntil { api.replacedValues.isEmpty && session.isPublishing }
+		try await Task.sleep(for: .milliseconds(50))
+		store.lock()
+		await released.open()
+		try await waitUntil { !session.isPublishing }
+		#expect(api.replacedValues.count <= VercelPublishing.replaceConcurrency, "No replacement after the first batch")
+
+		let second = try await makeStore()
+		let held = AsyncFlag()
+		biometric.authenticateHandlers = [{ await held.wait(); return true }]
+		let waiting = try #require(second.makePublishSession())
+		waiting.start()
+		try await waitUntil { waiting.vercel?.projects.value != nil }
+		waiting.vercel?.projectID = "prj_api"
+		waiting.vercel?.environment = .production
+		waiting.loadReview()
+		try await waitUntil { waiting.review != nil }
+		let creates = api.createdWrites.count
+		waiting.publish()
+		try await Task.sleep(for: .milliseconds(50))
+		second.lock()
+		await held.open()
+		try await waitUntil { !waiting.isPublishing }
+		#expect(api.createdWrites.count == creates)
+	}
+
 	@Test("no Publish sheet opens without an open project")
 	func needsProject() {
 		let store = VaultStore(keychainService: keychain, biometricService: biometric, apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
@@ -690,6 +979,48 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Redeploy in Coolify"))
 			#expect(biometric.confirmationReasons == ["Publish 1 variable to Coolify"])
 			#expect(coolify.writes.map(\.key) == ["API_TOKEN", "API_TOKEN"] && coolify.value(of: "API_TOKEN") == "tok")
+		}
+
+		@Test("a destination that can't be forgotten says so and stays open, so forgetting can be tried again")
+		func forgetFailure() async throws {
+			let store = try await makeStore()
+			let saved = PublishDestination(
+				sourceEnvironment: "production",
+				target: .vercel(VercelPublishTarget(teamID: "team_northwind", accountID: "team_northwind", teamName: "Northwind",
+					projectID: "prj_api", projectName: "storefront", environment: .production)),
+				createdAt: Date())
+			_ = try await store.publishing.save(saved, to: "project").get()
+			let history = "history.project.\(saved.id.uuidString.lowercased())"
+			keychain.failAppItemDeletes = [history]
+			let session = try #require(store.makePublishSession(for: saved))
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 560),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			try await host.click("Destination")
+			try await host.click("Forget destination")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil })
+			try host.clickAlertButton("Forget Destination", in: try #require(host.window.sheets.first))
+			#expect(try await host.waitForText("couldn't be forgotten"))
+			keychain.failAppItemDeletes = []
+			try await host.click("Forget destination")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil })
+			try host.clickAlertButton("Forget Destination", in: try #require(host.window.sheets.first))
+			#expect(try await host.waitUntil { keychain.publishingStorage[history] == nil })
+			#expect(try await store.publishing.destinations(of: "project").get().isEmpty)
+		}
+
+		@Test("a saved Vercel destination names its team's slug, so two teams with one name are told apart")
+		func vercelDetail() async throws {
+			let store = try await makeStore()
+			let saved = PublishDestination(
+				sourceEnvironment: "production",
+				target: .vercel(VercelPublishTarget(teamID: "team_northwind", accountID: "team_northwind", teamName: "Northwind",
+					projectID: "prj_api", projectName: "storefront", environment: .production)),
+				createdAt: Date())
+			_ = try await store.publishing.save(saved, to: "project").get()
+			await store.loadPublishDestinations(for: "project")
+			let summary = try #require(store.publishDestinations["project"]?.first)
+			#expect(VaultTitleBarView.subtitle(of: summary) == "northwind · from .env.production · not published yet")
 		}
 
 		@Test("with no platform account connected, the sheet points to Platforms")

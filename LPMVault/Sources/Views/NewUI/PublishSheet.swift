@@ -8,6 +8,9 @@ struct PublishSheet: View {
 	@Environment(\.dismiss) private var dismiss
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var confirmingForget = false
+	/// Why forgetting the destination failed, shown until it's tried again.
+	@State private var forgetFailure: String?
+	@State private var isForgetting = false
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
@@ -94,7 +97,7 @@ struct PublishSheet: View {
 				.foregroundStyle(VaultPalette.textTertiary)
 				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 4) {
-				Text("TO \(platform?.displayName.uppercased() ?? "PLATFORM")\(session.connection.map { " · \($0.name.uppercased())" } ?? "")")
+				Text("TO \(platform?.displayName.uppercased() ?? "PLATFORM")\(session.connection.map { " · \($0.name.uppercased()) (\($0.detail))" } ?? "")")
 					.vaultSectionLabel()
 					.lineLimit(1)
 				Text("\(place.name ?? "—") / \(place.part ?? "—")")
@@ -426,12 +429,9 @@ struct PublishSheet: View {
 		}
 	}
 
-	/// A Coolify connection names its instance, since teams on two instances can share a name.
+	/// A connection names what tells it apart, since two teams can share a name.
 	static func connectionLabel(_ connection: PlatformConnection) -> String {
-		switch connection.account {
-		case .vercel: "Vercel · \(connection.name)"
-		case .coolify(let account): "Coolify · \(connection.name) · \(account.instance.address)"
-		}
+		"\(connection.platform.displayName) · \(connection.name) · \(connection.detail)"
 	}
 
 	static func notes(for review: PublishSession.Review) -> [String] {
@@ -439,7 +439,8 @@ struct PublishSheet: View {
 		var notes: [String] = []
 		if review.summary.replacing > 0 {
 			switch review.platform {
-			case .vercel: notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare.")
+			case .vercel:
+				notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare, and Vercel replaces a variable without checking it, so a change made on Vercel moments before publishing can still be overwritten.")
 			case .coolify:
 				notes.append("Existing variables will be replaced. LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten.")
 			}
@@ -534,10 +535,19 @@ struct PublishSheet: View {
 			switch session.step {
 			case .destination:
 				if session.saved != nil {
-					Button("Forget destination…") { confirmingForget = true }
-						.buttonStyle(.plain)
-						.font(.system(size: 12))
-						.foregroundStyle(VaultPalette.redText)
+					HStack(spacing: 10) {
+						Button(isForgetting ? "Forgetting…" : "Forget destination…") { confirmingForget = true }
+							.buttonStyle(.plain)
+							.font(.system(size: 12))
+							.foregroundStyle(VaultPalette.redText)
+							.disabled(isForgetting)
+						if let forgetFailure {
+							Text(forgetFailure)
+								.font(.system(size: 11.5))
+								.foregroundStyle(VaultPalette.redText)
+								.lineLimit(2)
+						}
+					}
 				} else if !session.canReview {
 					Text("Choose a destination").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
 				}
@@ -569,14 +579,22 @@ struct PublishSheet: View {
 
 	private var publishCount: Int { session.review?.selection.keys.count ?? 0 }
 
+	/// Forgets the destination, and closes once it's gone; a failure stays
+	/// shown so forgetting can be tried again.
 	private func forget() {
-		guard let saved = session.saved else { return }
+		guard let saved = session.saved, !isForgetting else { return }
 		let vaultID = session.vaultID
+		forgetFailure = nil
+		isForgetting = true
 		Task {
-			_ = await store.publishing.remove(saved.id, from: vaultID)
+			let result = await store.publishing.remove(saved.id, from: vaultID)
 			await store.loadPublishDestinations(for: vaultID)
+			isForgetting = false
+			switch result {
+			case .success: close()
+			case .failure(let error): forgetFailure = "This destination couldn't be forgotten. \(error)"
+			}
 		}
-		close()
 	}
 
 	private func close() {

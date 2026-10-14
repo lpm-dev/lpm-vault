@@ -269,9 +269,11 @@ struct PublishPlan: Equatable, Sendable {
 	}
 
 	/// The platform side is judged on its own, so a value changed here
-	/// doesn't hide that someone also changed or removed it there. How the
-	/// platform stores the key comes from the platform when it says, else
-	/// from this Mac's last publish.
+	/// doesn't hide that someone also changed or removed it there. A variable
+	/// counts as unchanged only when its ID and change time are both known
+	/// and match this Mac's record; anything less, or a time that went back,
+	/// counts as changed. How the platform stores the key comes from the
+	/// platform when it says, else from this Mac's last publish.
 	private static func status(
 		fingerprint: Data,
 		publishesAsSecret: Bool,
@@ -281,9 +283,9 @@ struct PublishPlan: Equatable, Sendable {
 		guard let record else { return .notPublished }
 		let platform: Status.Platform
 		if let remote {
-			let replaced = record.remoteID.map { $0 != remote.id } ?? false
-			let edited = record.remoteUpdatedAt.flatMap { recorded in remote.updatedAt.map { $0 > recorded } } ?? false
-			platform = replaced || edited ? .changed : .unchanged
+			let sameVariable = record.remoteID == remote.id
+			let sameTime = record.remoteUpdatedAt != nil && record.remoteUpdatedAt == remote.updatedAt
+			platform = sameVariable && sameTime ? .unchanged : .changed
 		} else {
 			platform = .removed
 		}
@@ -440,6 +442,14 @@ extension PublishPlan {
 			self.staleExclusions = staleExclusions
 			self.destinationUpdatedAt = destinationUpdatedAt
 			self.staleHistory = staleHistory
+		}
+
+		/// These choices, as made against the destination saved at `updatedAt`,
+		/// as when the publish itself saved the destination it reviewed.
+		func made(at updatedAt: Date) -> Choices {
+			Choices(
+				leftOut: leftOut, chosen: chosen, staleExclusions: staleExclusions,
+				destinationUpdatedAt: updatedAt, staleHistory: staleHistory)
 		}
 
 		/// A key left out stays out next time, and a chosen key is no longer

@@ -336,6 +336,75 @@ struct PlatformConnectionsModelTests {
 		#expect(model.notice == nil && model.connections.isEmpty)
 	}
 
+	@Test("a grant that arrives after Cancel is never saved")
+	func vercelSuccessAfterCancel() async throws {
+		let gate = AsyncGate()
+		let model = model(connect: {
+			await gate.wait()
+			return .success(Self.acme)
+		})
+		model.connectVercel()
+		try await Task.sleep(for: .milliseconds(30))
+		model.cancelConnecting()
+		await gate.open()
+		await waitUntilIdle(model)
+		#expect(keychain.platformConnectionStorage.isEmpty)
+		#expect(model.notice == nil && model.connections.isEmpty)
+	}
+
+	@Test("locking while the Keychain writes a token takes it back, leaving any earlier token as it was", arguments: [false, true])
+	func lockDuringWrite(hadToken: Bool) async throws {
+		let store = PlatformConnectionStore(service: keychain)
+		if hadToken {
+			_ = try await store.save(Self.acme.grant, account: Self.acme.account, at: Date()).get()
+		}
+		let earlier = keychain.platformConnectionStorage
+		let entered = DispatchSemaphore(value: 0)
+		let held = DispatchSemaphore(value: 0)
+		keychain.beforeAppItemWrite = {
+			entered.signal()
+			_ = held.wait(timeout: .now() + 30)
+		}
+		let replacement = (
+			grant: VercelGrant(accessToken: "vca_replacement", installationID: "icfg_2", teamID: "team_acme", userID: "u_1")!,
+			account: VercelAccount(name: "Acme", slug: "acme"))
+		let model = model(store: store, connect: { .success(replacement) })
+		model.connectVercel()
+		await withCheckedContinuation { continuation in
+			Thread.detachNewThread {
+				_ = entered.wait(timeout: .now() + 30)
+				continuation.resume()
+			}
+		}
+		keychain.beforeAppItemWrite = nil
+		model.reset()
+		held.signal()
+		_ = await store.connections()
+		#expect(keychain.platformConnectionStorage == earlier)
+	}
+
+	@Test("a connection reset before Vercel's page opens never opens it")
+	func resetBeforeOpen() async throws {
+		let gate = AsyncGate()
+		let opened = OpenedLinks()
+		let model = PlatformConnections(
+			store: PlatformConnectionStore(service: keychain),
+			connect: { _, open in
+				await gate.wait()
+				await open(URL(string: "https://vercel.com/integrations/lpm-vault/new")!)
+				return .failure(.cancelled)
+			},
+			session: { platformTestSession(URL(string: "https://lpm.dev")!) },
+			openURL: { opened.append($0) },
+			now: { Date() })
+		model.connectVercel()
+		try await Task.sleep(for: .milliseconds(30))
+		model.reset()
+		await gate.open()
+		try await Task.sleep(for: .milliseconds(50))
+		#expect(opened.urls.isEmpty && model.phase == .idle)
+	}
+
 	@Test("loading reads what this Mac holds")
 	func loads() async throws {
 		_ = try await PlatformConnectionStore(service: keychain).save(
@@ -345,6 +414,13 @@ struct PlatformConnectionsModelTests {
 		await waitUntilIdle(model)
 		#expect(model.connections.map(\.id) == ["vercel.team_acme"])
 	}
+}
+
+private final class OpenedLinks: @unchecked Sendable {
+	private let lock = NSLock()
+	private var opened: [URL] = []
+	var urls: [URL] { lock.withLock { opened } }
+	func append(_ url: URL) { lock.withLock { opened.append(url) } }
 }
 
 private actor AsyncGate {

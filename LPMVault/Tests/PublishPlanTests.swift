@@ -120,12 +120,30 @@ struct PublishPlanTests {
 		}
 	}
 
-	@Test("without the platform's change times, a key published unchanged reads as up to date")
-	func unknownRemoteTimes() throws {
+	@Test(
+		"a key whose identity or change time can't be compared, or whose time went back, reads as changed on the platform",
+		arguments: [
+			(nil, Date(timeIntervalSince1970: 1_760_000_000), "env_api", Date(timeIntervalSince1970: 1_760_000_000)),
+			("env_api", nil, "env_api", Date(timeIntervalSince1970: 1_760_000_000)),
+			("env_api", Date(timeIntervalSince1970: 1_760_000_000), "env_api", nil),
+			("env_api", Date(timeIntervalSince1970: 1_760_000_000), "env_api", Date(timeIntervalSince1970: 1_759_999_000)),
+		] as [(String?, Date?, String, Date?)]
+	)
+	func unknownRemoteTimes(recordedID: String?, recordedTime: Date?, remoteID: String, remoteTime: Date?) throws {
 		let history = PublishHistory().recording(
-			[published("API_TOKEN", value: "token", remoteID: nil, updatedAt: nil)], forgetting: [], at: lastPublish)
+			[published("API_TOKEN", value: "token", remoteID: recordedID, updatedAt: recordedTime)], forgetting: [], at: lastPublish)
 		var remote = remote
-		remote["API_TOKEN"] = .init(id: "env_api", updatedAt: remoteEdit)
+		remote["API_TOKEN"] = .init(id: remoteID, updatedAt: remoteTime)
+		let row = try #require(makePlan(remote: remote, history: history).row("API_TOKEN"))
+		#expect(row.status.platform == .changed && row.holds == [.changedOnPlatform])
+	}
+
+	@Test("a key the platform still has as this Mac published it, at the same time, reads as up to date")
+	func sameRemoteTime() throws {
+		let history = PublishHistory().recording(
+			[published("API_TOKEN", value: "token", remoteID: "env_api", updatedAt: lastPublish)], forgetting: [], at: lastPublish)
+		var remote = remote
+		remote["API_TOKEN"] = .init(id: "env_api", updatedAt: lastPublish)
 		#expect(makePlan(remote: remote, history: history).row("API_TOKEN")?.holds == [.upToDate])
 	}
 

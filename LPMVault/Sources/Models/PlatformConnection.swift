@@ -29,6 +29,15 @@ struct PlatformConnection: Identifiable, Hashable, Sendable {
 		}
 	}
 
+	/// What tells the account apart from another with the same name: a
+	/// Vercel team's slug, or the Coolify instance's address.
+	var detail: String {
+		switch account {
+		case .vercel(let vercel): vercel.isTeam ? (vercel.slug ?? vercel.ownerID) : "personal account"
+		case .coolify(let coolify): coolify.instance.address
+		}
+	}
+
 	static func id(for account: Account) -> String {
 		switch account {
 		case .vercel(let vercel): vercelID(accountID: vercel.ownerID)

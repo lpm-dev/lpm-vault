@@ -110,10 +110,12 @@ final class PlatformConnections {
 			guard generation == self.generation, !Task.isCancelled else { return }
 			let openURL = self.openURL
 			let result = await self.connect(session) { [weak self] url in
-				await MainActor.run {
-					guard let self, generation == self.generation else { return }
+				let isCurrent = await MainActor.run {
+					guard let self, generation == self.generation, !Task.isCancelled else { return false }
 					self.phase = .waitingForBrowser
+					return true
 				}
+				guard isCurrent else { return }
 				await openURL(url)
 			}
 			guard generation == self.generation else { return }

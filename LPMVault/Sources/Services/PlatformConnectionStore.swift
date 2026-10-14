@@ -83,7 +83,8 @@ actor PlatformConnectionStore {
 
 	/// Saves the account with its token, replacing any earlier connection to
 	/// the same account. Nothing is saved once the calling task is cancelled,
-	/// as when the vault locks while the save waits its turn.
+	/// as when the vault locks while the save waits its turn; one cancelled
+	/// while the Keychain writes puts back what was there before.
 	func save(_ account: PlatformConnection.Account, accessToken: String, at date: Date) -> Result<PlatformConnection, PlatformConnectionStoreError> {
 		Result {
 			guard !Task.isCancelled else { throw PlatformConnectionStoreError.cancelled }
@@ -91,8 +92,15 @@ actor PlatformConnectionStore {
 			guard let data = Self.encode(Record(connection: connection, accessToken: accessToken)) else {
 				throw PlatformConnectionStoreError.unreadable
 			}
+			let previous = try service.readAppItem(.platformConnections, account: connection.id).get()
 			try service.writeAppItem(.platformConnections, account: connection.id, data: data).get()
-			return connection
+			guard Task.isCancelled else { return connection }
+			if let previous {
+				try service.writeAppItem(.platformConnections, account: connection.id, data: previous).get()
+			} else {
+				try service.deleteAppItem(.platformConnections, account: connection.id).get()
+			}
+			throw PlatformConnectionStoreError.cancelled
 		}.mapError(Self.storeError)
 	}
 

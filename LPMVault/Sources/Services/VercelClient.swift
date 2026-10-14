@@ -7,8 +7,8 @@ enum VercelAPIError: Error, Equatable, Sendable {
 	case forbidden
 	case notFound
 	case rateLimited(until: Date?)
-	/// Vercel refused the change, with its error code and message.
-	case rejected(code: String, message: String)
+	/// Vercel refused the change, with its error code.
+	case rejected(code: String)
 	/// Vercel listed the variables across pages, so a review would be incomplete.
 	case incompleteList
 	case transport
@@ -116,7 +116,8 @@ struct VercelVariableWrite: Sendable, CustomStringConvertible, CustomDebugString
 
 protocol VercelClientProtocol: Sendable {
 	func account(teamID: String?) async -> Result<VercelAccount, VercelAPIError>
-	func projects(teamID: String?) async -> Result<[VercelProject], VercelAPIError>
+	/// The account's projects; `ownerID` is the team, or for a personal account the user, that must own each.
+	func projects(teamID: String?, ownerID: String) async -> Result<[VercelProject], VercelAPIError>
 	func customEnvironments(projectID: String, teamID: String?) async -> Result<[VercelCustomEnvironment], VercelAPIError>
 	func variables(projectID: String, teamID: String?) async -> Result<VercelVariableList, VercelAPIError>
 	/// Creates the variables, in batches; each key's own result, or one
@@ -126,8 +127,10 @@ protocol VercelClientProtocol: Sendable {
 		projectID: String,
 		teamID: String?
 	) async -> Result<[String: Result<VercelEnvironmentVariable, VercelAPIError>], VercelAPIError>
+	/// Replaces the value of the variable with this ID, which must still be named `key`.
 	func replace(
 		_ variableID: String,
+		key: String,
 		value: String,
 		storage: VercelVariableWrite.Storage,
 		projectID: String,
@@ -157,10 +160,21 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 		delegateQueue: nil
 	)
 
-	init(token: String, baseURL: URL = VercelClient.defaultBaseURL, session: URLSession? = nil) {
+	/// How much listing an account's projects may read.
+	struct Limits: Sendable {
+		/// Everything one listing reads, in bytes.
+		var projectBytes = 64 * 1024 * 1024
+		/// How long one listing may take, every page included.
+		var projectDeadline: Duration = .seconds(120)
+	}
+
+	private let limits: Limits
+
+	init(token: String, baseURL: URL = VercelClient.defaultBaseURL, session: URLSession? = nil, limits: Limits = Limits()) {
 		self.token = token
 		self.baseURL = baseURL
 		self.session = session ?? Self.sharedSession
+		self.limits = limits
 	}
 
 	var description: String { "VercelClient(\(baseURL.host() ?? "?"), token: <redacted>)" }
@@ -187,24 +201,30 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 	}
 
-	func projects(teamID: String?) async -> Result<[VercelProject], VercelAPIError> {
+	/// Reads the projects page by page, within the listing's byte budget and
+	/// deadline. A page holding more projects than asked for, or a project
+	/// another account owns, fails the listing.
+	func projects(teamID: String?, ownerID: String) async -> Result<[VercelProject], VercelAPIError> {
 		var projects: [VercelProject] = []
 		var cursor: String?
 		var seenCursors: Set<String> = []
-		for _ in 0..<Self.maximumProjectPages {
+		var remaining = limits.projectBytes
+		let deadline = ContinuousClock.now.advanced(by: limits.projectDeadline)
+		for page in 0..<Self.maximumProjectPages {
+			guard page == 0 || ContinuousClock.now < deadline, remaining > 0 else { return .failure(.invalidResponse) }
 			var query = [URLQueryItem(name: "limit", value: String(Self.projectPageSize))]
 			if let cursor { query.append(URLQueryItem(name: "from", value: cursor)) }
 			let data: Data
-			switch await get(["v10", "projects"], query: query, teamID: teamID, limit: Self.maximumPageBytes) {
+			switch await get(["v10", "projects"], query: query, teamID: teamID, limit: min(Self.maximumPageBytes, remaining)) {
 			case .success(let page): data = page
 			case .failure(let error): return .failure(error)
 			}
-			guard let decoded = try? JSONDecoder().decode(ProjectPage.self, from: data) else {
+			remaining -= data.count
+			guard let decoded = try? JSONDecoder().decode(ProjectPage.self, from: data), decoded.projects.count <= Self.projectPageSize else {
 				return .failure(.invalidResponse)
 			}
 			for project in decoded.projects {
-				guard VercelPublishTarget.isValidIdentifier(project.id),
-					VercelPublishTarget.isValidIdentifier(project.accountId),
+				guard VercelPublishTarget.isValidIdentifier(project.id), project.accountId == ownerID,
 					let name = ProviderName.display(project.name)
 				else { return .failure(.invalidResponse) }
 				projects.append(VercelProject(id: project.id, name: name, accountID: project.accountId))
@@ -298,7 +318,14 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 				}
 				return .failure(.invalidResponse)
 			}
-			guard let decoded = try? JSONDecoder().decode(CreateResponse.self, from: data) else { return .failure(.invalidResponse) }
+			guard let decoded = try? JSONDecoder().decode(CreateResponse.self, from: data) else {
+				// Earlier batches' variables were created; only this batch's outcome is unknown, and nothing more is sent.
+				guard results.isEmpty else {
+					for write in writes[batch.startIndex...] { results[write.key] = .failure(.invalidResponse) }
+					return .success(results)
+				}
+				return .failure(.invalidResponse)
+			}
 			let keys = Set(batch.map(\.key))
 			for raw in decoded.created ?? [] {
 				guard let created = raw.variable, keys.contains(created.key) else { continue }
@@ -306,8 +333,7 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			}
 			for failure in decoded.failed ?? [] {
 				guard let key = failure.error.key ?? failure.error.envVarKey, keys.contains(key), results[key] == nil else { continue }
-				results[key] = .failure(.rejected(
-					code: Self.sanitized(failure.error.code) ?? "unknown", message: Self.sanitized(failure.error.message) ?? ""))
+				results[key] = .failure(.rejected(code: failure.error.code.flatMap(Self.errorCode) ?? "unknown"))
 			}
 			for write in batch where results[write.key] == nil {
 				results[write.key] = .failure(.invalidResponse)
@@ -318,6 +344,7 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 
 	func replace(
 		_ variableID: String,
+		key: String,
 		value: String,
 		storage: VercelVariableWrite.Storage,
 		projectID: String,
@@ -328,9 +355,9 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 		let body: [String: Any] = ["value": value, "type": storage.rawValue, "visibility": storage.visibility]
 		return await send("PATCH", ["v9", "projects", projectID, "env", variableID], body: body, teamID: teamID).flatMap { data in
-			guard let updated = (try? JSONDecoder().decode(RawVariable.self, from: data))?.variable, updated.id == variableID else {
-				return .failure(.invalidResponse)
-			}
+			guard let updated = (try? JSONDecoder().decode(RawVariable.self, from: data))?.variable, updated.id == variableID,
+				updated.key == key
+			else { return .failure(.invalidResponse) }
 			return .success(updated)
 		}
 	}
@@ -411,8 +438,8 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			let reset = http.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap(TimeInterval.init)
 			return .rateLimited(until: reset.map(Date.init(timeIntervalSince1970:)))
 		case 400, 403, 409:
-			if let code = error?.code.flatMap(sanitized) {
-				return .rejected(code: code, message: error?.message.flatMap(sanitized) ?? "")
+			if let code = error?.code {
+				return .rejected(code: errorCode(code) ?? "unknown")
 			}
 			return http.statusCode == 403 ? .forbidden : .server(http.statusCode)
 		default:
@@ -420,11 +447,13 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 	}
 
-	/// A short single-line text from Vercel, safe to show.
-	private static func sanitized(_ text: String?) -> String? {
-		guard let text else { return nil }
-		let line = String(text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(300))
-		return line.isEmpty ? nil : line
+	/// Vercel's error code when it's an identifier, as its codes are. Its
+	/// messages are never shown: one could echo a value or the token sent.
+	private static func errorCode(_ text: String) -> String? {
+		guard !text.isEmpty, text.utf8.count <= 64,
+			text.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x5F || $0 == 0x2D || $0 == 0x2E })
+		else { return nil }
+		return text
 	}
 
 	// MARK: - Wire types
@@ -540,12 +569,24 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 				id: id,
 				key: key,
 				kind: kind,
-				isSecret: visibility.map { $0 == "secret" } ?? (kind == .sensitive || kind == .secret),
+				isSecret: VercelClient.isSecret(visibility: visibility, kind: kind),
 				targets: targets,
 				customEnvironmentIDs: Set(customIDs),
 				gitBranch: gitBranch.flatMap { $0.isEmpty ? nil : $0 },
 				updatedAt: updatedAt.map { Date(timeIntervalSince1970: $0 / 1_000) }
 			)
+		}
+	}
+
+	/// Readable only when Vercel says Config, or, before it named
+	/// visibilities, when the type is a readable one. Anything else, such as a
+	/// visibility this version doesn't know, reads as a Secret.
+	private static func isSecret(visibility: String?, kind: VercelEnvironmentVariable.Kind) -> Bool {
+		let writeOnlyType = kind == .sensitive || kind == .secret
+		switch visibility {
+		case nil: return writeOnlyType
+		case "config"?: return writeOnlyType
+		default: return true
 		}
 	}
 
