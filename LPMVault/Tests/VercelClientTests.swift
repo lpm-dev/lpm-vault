@@ -22,6 +22,20 @@ struct VercelClientTests {
 		#expect(projects.requests.last?.query["teamId"] == nil)
 	}
 
+	@Test("names Vercel sends have their direction controls escaped, so they can't disguise themselves")
+	func escapesNames() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			switch request.url.path() {
+			case "/v2/teams/team_acme": .json(200, ["name": "Acme\u{202E}", "slug": "acme"])
+			case "/v9/projects/prj_1/custom-environments": .json(200, ["environments": [["id": "env_1", "slug": "qa\u{2066}"]]])
+			default: .json(200, ["projects": [["id": "prj_1", "name": "api\u{200F}", "accountId": "team_acme"]], "pagination": ["count": 1, "next": NSNull()]])
+			}
+		}
+		#expect(try await client(route).account(teamID: "team_acme").get().name == #"Acme\u{202e}"#)
+		#expect(try await client(route).projects(teamID: "team_acme").get().first?.name == #"api\u{200f}"#)
+		#expect(try await client(route).customEnvironments(projectID: "prj_1", teamID: "team_acme").get().first?.slug == #"qa\u{2066}"#)
+	}
+
 	@Test("a personal account's name comes from the user, by name or else username")
 	func personalAccount() async throws {
 		let named = PlatformHTTPStub.platform { _ in .json(200, ["user": ["id": "u_1", "name": "Tolga", "username": "tolga"]]) }

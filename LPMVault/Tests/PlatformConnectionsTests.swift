@@ -124,6 +124,17 @@ struct PlatformConnectionStoreTests {
 		#expect(PlatformConnectionStore.encode(.init(connection: badName, accessToken: "3|ok")) == nil)
 	}
 
+	@Test("names stored before they were escaped read back with their direction controls escaped")
+	func escapesStoredNames() async throws {
+		let store = store
+		let saved = try await store.save(coolify(name: "Root"), accessToken: "3|coolify", at: connectedAt).get()
+		let data = try #require(keychain.platformConnectionStorage[saved.id])
+		var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+		object["teamName"] = "Root\u{202E}maeT\u{2066}"
+		keychain.platformConnectionStorage[saved.id] = try JSONSerialization.data(withJSONObject: object)
+		#expect(try await store.connections().get().first?.name == #"Root\u{202e}maeT\u{2066}"#)
+	}
+
 	@Test("a Keychain failure is reported")
 	func keychainFailure() async {
 		keychain.failPlatformConnectionAccounts = ["*"]
@@ -136,12 +147,13 @@ struct PlatformConnectionsModelTests {
 	private let keychain = MockKeychainService()
 
 	private func model(
+		store: PlatformConnectionStore? = nil,
 		connect: @escaping @Sendable () async -> Result<(grant: VercelGrant, account: VercelAccount), VercelConnectError> = { .failure(.cancelled) },
 		connectCoolify: @escaping PlatformConnections.ConnectCoolify = { _, _ in .failure(.cancelled) },
 		session: PlatformSession? = platformTestSession(URL(string: "https://lpm.dev")!)
 	) -> PlatformConnections {
 		PlatformConnections(
-			store: PlatformConnectionStore(service: keychain),
+			store: store ?? PlatformConnectionStore(service: keychain),
 			connect: { _, open in
 				await open(URL(string: "https://vercel.com/integrations/lpm-vault/new")!)
 				return await connect()
@@ -259,6 +271,56 @@ struct PlatformConnectionsModelTests {
 		#expect(await outcome.value == .dropped)
 		#expect(model.connections.isEmpty && model.notice == nil)
 		#expect(keychain.platformConnectionStorage.isEmpty)
+	}
+
+	/// Holds `store` inside a Keychain listing until `release` is called, so
+	/// a save sent meanwhile waits behind it.
+	private func holdStore(_ store: PlatformConnectionStore) async -> @Sendable () -> Void {
+		let entered = DispatchSemaphore(value: 0)
+		let held = DispatchSemaphore(value: 0)
+		keychain.beforeAppItemListing = {
+			entered.signal()
+			_ = held.wait(timeout: .now() + 30)
+		}
+		Task.detached { _ = await store.connections() }
+		await withCheckedContinuation { continuation in
+			Thread.detachNewThread {
+				_ = entered.wait(timeout: .now() + 30)
+				continuation.resume()
+			}
+		}
+		keychain.beforeAppItemListing = nil
+		return { held.signal() }
+	}
+
+	@Test("locking or cancelling while Coolify's token waits to be saved leaves nothing in the Keychain", arguments: [true, false])
+	func coolifyLateSaveDropped(locks: Bool) async throws {
+		let store = PlatformConnectionStore(service: keychain)
+		let model = model(store: store, connectCoolify: { _, _ in .success(Self.rootTeam) })
+		let release = await holdStore(store)
+		let outcome = Task { await model.connectCoolify(address: "coolify.example.com", token: "3|coolify") }
+		try await Task.sleep(for: .milliseconds(50))
+		if locks { model.reset() } else { outcome.cancel() }
+		release()
+		#expect(await outcome.value == .dropped)
+		_ = await store.connections()
+		#expect(keychain.platformConnectionStorage.isEmpty)
+		#expect(model.connections.isEmpty)
+	}
+
+	@Test("cancelling while Vercel's grant waits to be saved leaves nothing in the Keychain, and no notice")
+	func vercelLateSaveDropped() async throws {
+		let store = PlatformConnectionStore(service: keychain)
+		let model = model(store: store, connect: { .success(Self.acme) })
+		let release = await holdStore(store)
+		model.connectVercel()
+		try await Task.sleep(for: .milliseconds(50))
+		model.cancelConnecting()
+		release()
+		await waitUntilIdle(model)
+		_ = await store.connections()
+		#expect(keychain.platformConnectionStorage.isEmpty)
+		#expect(model.notice == nil && model.connections.isEmpty)
 	}
 
 	@Test("loading reads what this Mac holds")

@@ -17,7 +17,7 @@ enum CoolifyAPIError: Error, Equatable, Sendable {
 	/// A variable with the key already exists.
 	case conflict
 	case rateLimited
-	/// Coolify refused the request, with its reason.
+	/// Coolify refused the request, with the part of its reason that's safe to show.
 	case rejected(String)
 	/// The address answered with a redirect, which is never followed.
 	case redirected
@@ -139,16 +139,21 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 
 	private let instance: CoolifyInstance
 	private let token: String
-	private let session: URLSession
+	let session: URLSession
+
+	/// The session clients use unless given one. A session holds its
+	/// delegate until it's invalidated, so one per process serves every
+	/// client and token: it keeps no cookies, cache or credentials.
+	static let sharedSession = URLSession(
+		configuration: BoundedHTTPResponse.ephemeralConfiguration(requestTimeout: 20, resourceTimeout: 60),
+		delegate: RedirectRefusingHTTPDelegate(),
+		delegateQueue: nil
+	)
 
 	init(instance: CoolifyInstance, token: String, session: URLSession? = nil) {
 		self.instance = instance
 		self.token = token
-		self.session = session ?? URLSession(
-			configuration: BoundedHTTPResponse.ephemeralConfiguration(requestTimeout: 20, resourceTimeout: 60),
-			delegate: RedirectRefusingHTTPDelegate(),
-			delegateQueue: nil
-		)
+		self.session = session ?? Self.sharedSession
 	}
 
 	/// Printable ASCII without spaces, as Coolify issues them.
@@ -171,7 +176,7 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 		}
 		return response.flatMap { data in
 			guard let team = try? JSONDecoder().decode(Team.self, from: data), team.id >= 0,
-				let name = Self.displayName(team.name)
+				let name = ProviderName.display(team.name)
 			else { return .failure(.invalidResponse) }
 			return .success(CoolifyTeam(id: String(team.id), name: name))
 		}
@@ -214,7 +219,8 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 
 	/// Coolify tells its refusals apart only by their messages.
 	private static func failure(_ status: Int, _ data: Data) -> CoolifyAPIError {
-		let message = (try? JSONDecoder().decode(ErrorResponse.self, from: data))?.message.flatMap(sanitized)
+		let response = try? JSONDecoder().decode(ErrorResponse.self, from: data)
+		let message = response?.message.flatMap(sanitized)
 		switch status {
 		case 300..<400: return .redirected
 		case 400 where message == "Invalid token.": return .unauthorized
@@ -230,22 +236,29 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 		case 404: return .notFound
 		case 409: return .conflict
 		case 429: return .rateLimited
-		case 400, 422: return .rejected(message ?? "")
+		case 400, 422: return .rejected(rejection(message, fields: response?.errors.map { Array($0.keys) } ?? []))
 		default: return .server(status)
 		}
+	}
+
+	/// Coolify's own fixed refusals, which are safe to show.
+	private static let knownRefusals: Set<String> = ["Validation failed.", "Bulk data is required.", "UUID is required."]
+	/// Fields LPM Vault sends, which a validation refusal can name.
+	private static let knownFields: Set<String> = ["key", "value", "is_preview", "is_literal", "is_multiline", "is_shown_once", "comment"]
+
+	/// A refusal's reason, from Coolify's fixed messages and the names of the
+	/// fields it refused only. Any other text could echo what was sent, such
+	/// as a value or the token.
+	private static func rejection(_ message: String?, fields: [String]) -> String {
+		let named = Set(fields).intersection(knownFields).sorted()
+		let parts = [message.flatMap { knownRefusals.contains($0) ? $0 : nil }, named.isEmpty ? nil : "(\(named.joined(separator: ", ")))"]
+		return parts.compactMap { $0 }.joined(separator: " ")
 	}
 
 	/// A short single-line text from Coolify, safe to show.
 	private static func sanitized(_ text: String) -> String? {
 		let line = String(text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(300))
 		return line.isEmpty ? nil : line
-	}
-
-	static func displayName(_ text: String?) -> String? {
-		guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
-			text.utf8.count <= 512, !text.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
-		else { return nil }
-		return text
 	}
 
 	// MARK: - Wire types
@@ -257,5 +270,14 @@ struct CoolifyClient: CoolifyClientProtocol, CustomStringConvertible, CustomDebu
 
 	private struct ErrorResponse: Decodable {
 		let message: String?
+		let errors: [String: [String]]?
+
+		private enum CodingKeys: String, CodingKey { case message, errors }
+
+		init(from decoder: Decoder) throws {
+			let container = try decoder.container(keyedBy: CodingKeys.self)
+			message = try? container.decodeIfPresent(String.self, forKey: .message)
+			errors = try? container.decodeIfPresent([String: [String]].self, forKey: .errors)
+		}
 	}
 }

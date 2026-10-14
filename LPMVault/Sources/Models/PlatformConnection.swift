@@ -69,3 +69,18 @@ struct CoolifyConnectionAccount: Hashable, Sendable {
 	/// The team's name when it was connected.
 	let teamName: String
 }
+
+/// A name a platform sends, such as a team's or a project's, made safe to
+/// show: trimmed, with each character that could hide or reorder the text
+/// around it written as an escape, so a name can't disguise itself or what
+/// follows it.
+enum ProviderName {
+	static let maximumBytes = 512
+
+	/// Nil when nothing is left to show, or the name is too long.
+	static func display(_ text: String?) -> String? {
+		guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+		let shown = trimmed.escapingDirectionControls
+		return shown.utf8.count <= maximumBytes ? shown : nil
+	}
+}

@@ -30,7 +30,7 @@ final class PlatformConnections {
 	enum CoolifyOutcome: Equatable {
 		case connected(PlatformConnection)
 		case failed(String)
-		/// The vault locked before it finished.
+		/// It was cancelled, or the vault locked, before the token was saved.
 		case dropped
 	}
 
@@ -48,6 +48,7 @@ final class PlatformConnections {
 	private let openURL: @Sendable (URL) async -> Void
 	private let now: @Sendable () -> Date
 	private var connectTask: Task<Void, Never>?
+	private var coolifyTask: Task<CoolifyOutcome, Never>?
 	private var loadTask: Task<Void, Never>?
 	private var generation = 0
 
@@ -123,6 +124,8 @@ final class PlatformConnections {
 					guard generation == self.generation else { return }
 					self.insert(connection)
 					self.notice = Notice(message: "Connected \(connection.name) on Vercel.", isError: false)
+				case .failure(.cancelled):
+					self.notice = nil
 				case .failure(let error):
 					guard generation == self.generation else { return }
 					self.notice = Notice(message: "Vercel connected, but the connection couldn't be saved. \(error)", isError: true)
@@ -136,12 +139,24 @@ final class PlatformConnections {
 	}
 
 	/// Checks the token with the Coolify instance at `address`, then saves
-	/// the connection, replacing an earlier one to the same team.
+	/// the connection, replacing an earlier one to the same team. Cancelling
+	/// the caller, or locking the vault, stops it before the token is saved.
 	func connectCoolify(address: String, token: String) async -> CoolifyOutcome {
+		coolifyTask?.cancel()
 		notice = nil
 		let generation = generation
+		let task = Task { [weak self] () -> CoolifyOutcome in
+			await self?.completeCoolify(address: address, token: token, generation: generation) ?? .dropped
+		}
+		coolifyTask = task
+		let outcome = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+		if coolifyTask == task { coolifyTask = nil }
+		return outcome
+	}
+
+	private func completeCoolify(address: String, token: String, generation: Int) async -> CoolifyOutcome {
 		let result = await connectCoolifyTeam(address, token)
-		guard generation == self.generation else { return .dropped }
+		guard generation == self.generation, !Task.isCancelled else { return .dropped }
 		switch result {
 		case .success(let connected):
 			let account = CoolifyConnectionAccount(instance: connected.instance, teamID: connected.team.id, teamName: connected.team.name)
@@ -151,10 +166,14 @@ final class PlatformConnections {
 				insert(connection)
 				notice = Notice(message: "Connected \(connection.name) on Coolify.", isError: false)
 				return .connected(connection)
+			case .failure(.cancelled):
+				return .dropped
 			case .failure(let error):
 				guard generation == self.generation else { return .dropped }
 				return .failed("Coolify accepted the token, but the connection couldn't be saved. \(error)")
 			}
+		case .failure(.cancelled):
+			return .dropped
 		case .failure(let error):
 			return .failed(error.message)
 		}
@@ -197,6 +216,8 @@ final class PlatformConnections {
 		generation &+= 1
 		connectTask?.cancel()
 		connectTask = nil
+		coolifyTask?.cancel()
+		coolifyTask = nil
 		loadTask?.cancel()
 		loadTask = nil
 		phase = .idle

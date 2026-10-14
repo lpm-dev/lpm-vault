@@ -95,7 +95,7 @@ struct CoolifyClientTests {
 			(.json(403, ["message": "Missing required team role."]), .roleTooLow),
 			(.json(403, ["message": "This action is unauthorized."]), .forbidden),
 			(.json(429, ["message": "Too Many Attempts."]), .rateLimited),
-			(.json(422, ["message": "Validation failed.", "errors": ["key": ["Bad"]]]), .rejected("Validation failed.")),
+			(.json(422, ["message": "Validation failed.", "errors": ["key": ["Bad"]]]), .rejected("Validation failed. (key)")),
 			(.json(302, [:], headers: ["Location": "https://evil.example/login"]), .redirected),
 			(.json(503, ["message": "Down"]), .server(503)),
 			(.json(200, ["id": "not a number", "name": "Root"]), .invalidResponse),
@@ -105,6 +105,33 @@ struct CoolifyClientTests {
 			let route = PlatformHTTPStub.coolify { _ in reply }
 			#expect(try await client(route).team() == .failure(expected), "\(reply.status) → \(expected)")
 		}
+	}
+
+	@Test("a team name's direction controls are escaped, so it can't disguise itself")
+	func escapesTeamName() async throws {
+		let route = PlatformHTTPStub.coolify { _ in .json(200, ["id": 0, "name": "Root\u{202E}maeT \u{2067}x\u{2069}"]) }
+		#expect(try await client(route).team().get().name == #"Root\u{202e}maeT \u{2067}x\u{2069}"#)
+	}
+
+	@Test("a refusal shows only Coolify's own fixed messages and field names, never text that could echo what was sent")
+	func rejectionText() async throws {
+		let echo = PlatformHTTPStub.coolify { _ in
+			.json(422, ["message": "Value s3cret-value for 3|coolify-token is invalid\u{202E}", "errors": ["value": ["s3cret-value"], "s3cret-value": ["x"]]])
+		}
+		#expect(try await client(echo).team() == .failure(.rejected("(value)")))
+		let known = PlatformHTTPStub.coolify { _ in .json(422, ["message": "Validation failed.", "errors": ["key": ["The key format is invalid."], "is_preview": ["x"]]]) }
+		#expect(try await client(known).team() == .failure(.rejected("Validation failed. (is_preview, key)")))
+	}
+
+	@Test("clients made without a session share one, so a client leaves no session behind")
+	func sharesSession() throws {
+		let instance = try CoolifyInstance.parse("coolify.example.com").get()
+		let first = CoolifyClient(instance: instance, token: "1|a")
+		let second = CoolifyClient(instance: instance, token: "2|b")
+		#expect(first.session === second.session && first.session === CoolifyClient.sharedSession)
+		#expect(VercelClient(token: "a").session === VercelClient(token: "b").session)
+		let route = PlatformHTTPStub.coolify { _ in .json(200, [:]) }
+		#expect(CoolifyClient(instance: instance, token: "1|a", session: route.session).session === route.session)
 	}
 
 	@Test("an address that isn't Coolify answers not found on both paths")

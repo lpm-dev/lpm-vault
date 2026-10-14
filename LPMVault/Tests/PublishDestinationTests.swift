@@ -43,6 +43,16 @@ struct PublishDestinationTests {
 		#expect(decoded.first { $0.sourceEnvironment == "production" }?.createdAt.timeIntervalSince1970 == 1_760_000_000.123)
 	}
 
+	@Test("names stored before they were escaped read back with their direction controls escaped")
+	func escapesStoredNames() throws {
+		let json = Self.record(environment: #"{"kind":"custom","id":"env_qa","name":"qa\u2066"}"#)
+			.replacingOccurrences(of: #""teamName":"Acme""#, with: #""teamName":"Acme\u202e""#)
+			.replacingOccurrences(of: "VAULT", with: publishTestVault)
+		let destination = try #require(try PublishingRecords.decodeDestinations(Data(json.utf8), vaultID: publishTestVault).get().first)
+		guard case .vercel(let target) = destination.target else { Issue.record("Not a Vercel destination"); return }
+		#expect(target.teamName == #"Acme\u{202e}"# && target.environment == .custom(id: "env_qa", name: #"qa\u{2066}"#))
+	}
+
 	@Test("two destinations write to the same place when only their display names differ")
 	func locations() {
 		let production = vercelDestination()

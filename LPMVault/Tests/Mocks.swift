@@ -492,8 +492,16 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
+	/// Runs before each app item listing, outside the mock's lock, so a test can hold the caller there.
+	var beforeAppItemListing: (@Sendable () -> Void)? {
+		get { lock.withLock { listingHook } }
+		set { lock.withLock { listingHook = newValue } }
+	}
+	private var listingHook: (@Sendable () -> Void)?
+
 	func appItemAccounts(_ store: AppKeychainStore) -> Result<[String], KeychainError> {
-		lock.withLock {
+		lock.withLock { listingHook }?()
+		return lock.withLock {
 			appItemListCounts[store, default: 0] += 1
 			if failingAppItems[store]?.contains("*") == true { return .failure(failureError) }
 			return .success(Array((appItems[store] ?? [:]).keys))

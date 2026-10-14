@@ -7,6 +7,8 @@ enum PlatformConnectionStoreError: Error, Equatable, Sendable, CustomStringConve
 	/// A newer LPM Vault saved the connection, so this version leaves it alone.
 	case newerVersion
 	case notFound
+	/// The connection was cancelled before it was saved.
+	case cancelled
 
 	var description: String {
 		switch self {
@@ -14,6 +16,7 @@ enum PlatformConnectionStoreError: Error, Equatable, Sendable, CustomStringConve
 		case .unreadable: "The platform connection can't be read. Connect it again."
 		case .newerVersion: "A newer LPM Vault saved this platform connection."
 		case .notFound: "The platform connection was removed."
+		case .cancelled: "Connecting was cancelled."
 		}
 	}
 }
@@ -70,9 +73,12 @@ actor PlatformConnectionStore {
 		)
 	}
 
-	/// Saves the account with its token, replacing any earlier connection to the same account.
+	/// Saves the account with its token, replacing any earlier connection to
+	/// the same account. Nothing is saved once the calling task is cancelled,
+	/// as when the vault locks while the save waits its turn.
 	func save(_ account: PlatformConnection.Account, accessToken: String, at date: Date) -> Result<PlatformConnection, PlatformConnectionStoreError> {
 		Result {
+			guard !Task.isCancelled else { throw PlatformConnectionStoreError.cancelled }
 			let connection = PlatformConnection(account: account, connectedAt: PublishTimestamp.normalized(date))
 			guard let data = Self.encode(Record(connection: connection, accessToken: accessToken)) else {
 				throw PlatformConnectionStoreError.unreadable
@@ -143,7 +149,8 @@ actor PlatformConnectionStore {
 	}
 
 	/// The record in `data`, which must belong under `account`. A platform
-	/// this version doesn't know reads as a newer version's record.
+	/// this version doesn't know reads as a newer version's record. Names
+	/// read back with their direction controls escaped, as they're stored now.
 	static func decode(_ data: Data, account: String) -> Result<Record, PlatformConnectionStoreError> {
 		guard data.count <= maximumRecordBytes,
 			let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -163,9 +170,9 @@ actor PlatformConnectionStore {
 			guard Set(object.keys) == ["version", "platform", "accessToken", "connectedAt", "installationId", "teamId", "userId", "name", "slug"],
 				let installationID = object["installationId"] as? String,
 				let userID = object["userId"] as? String,
-				let name = object["name"] as? String, isValidName(name),
+				let name = (object["name"] as? String)?.escapingDirectionControls, isValidName(name),
 				let teamID = optionalString(object["teamId"]),
-				let slug = optionalString(object["slug"]),
+				let slug = optionalString(object["slug"]).map({ $0?.escapingDirectionControls }),
 				slug.map(isValidName) ?? true,
 				let grant = VercelGrant(accessToken: accessToken, installationID: installationID, teamID: teamID, userID: userID)
 			else { return .failure(.unreadable) }
@@ -179,7 +186,7 @@ actor PlatformConnectionStore {
 			guard Set(object.keys) == ["version", "platform", "accessToken", "connectedAt", "instance", "teamId", "teamName"],
 				let origin = object["instance"] as? String, let instance = CoolifyInstance(origin: origin),
 				let teamID = object["teamId"] as? String, CoolifyTeam.isValidID(teamID),
-				let teamName = object["teamName"] as? String, isValidName(teamName),
+				let teamName = (object["teamName"] as? String)?.escapingDirectionControls, isValidName(teamName),
 				CoolifyClient.isValidAccessToken(accessToken)
 			else { return .failure(.unreadable) }
 			record = Record(
