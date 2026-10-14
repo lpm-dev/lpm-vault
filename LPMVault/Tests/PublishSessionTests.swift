@@ -22,7 +22,11 @@ struct PublishSessionTests {
 			account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
 	}
 
-	private func session(saved: PublishDestination? = nil, source: String = "production") -> PublishSession {
+	private func session(
+		saved: PublishDestination? = nil,
+		source: String = "production",
+		client: (@Sendable (String) -> any VercelClientProtocol)? = nil
+	) -> PublishSession {
 		let values = values
 		let confirmations = confirmations
 		let api = api
@@ -36,7 +40,7 @@ struct PublishSessionTests {
 				confirm: { confirmations.ask($0) },
 				publishing: publishing,
 				connections: connections,
-				client: { _ in api },
+				client: client ?? { _ in api },
 				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
 	}
 
@@ -206,6 +210,21 @@ struct PublishSessionTests {
 		let session = session()
 		try await chooseProduction(session)
 		#expect(session.review == nil && session.reviewError?.contains("hides 2 production variables") == true)
+	}
+
+	@Test("a revoked connection's projects and review say to connect Vercel again")
+	func revokedConnectionGuidance() async throws {
+		try await connect()
+		let route = PlatformHTTPStub.platform { _ in VercelPublishingTests.revokedToken }
+		let session = session(client: { VercelClient(token: $0, baseURL: route.baseURL, session: route.session) })
+		session.start()
+		try await waitUntil { session.projects != .idle && session.projects != .loading }
+		#expect(session.projects == .failed(VercelPublishing.message(.unauthorized)))
+		session.projectID = "prj_api"
+		session.environment = .production
+		session.loadReview()
+		try await waitUntil { session.reviewError != nil }
+		#expect(session.reviewError == VercelPublishing.message(.unauthorized))
 	}
 
 	@Test("changing the source, project or environment drops a review made for the old choice")

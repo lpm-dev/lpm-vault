@@ -200,6 +200,49 @@ struct VercelPublishingTests {
 		#expect(none.outcomes["C"] == .notSent)
 	}
 
+	/// What Vercel answers a token it no longer accepts, as after the integration is uninstalled.
+	static let revokedToken = PlatformHTTPStub.Reply.json(403, ["error": ["code": "forbidden", "message": "Not authorized", "invalidToken": true]])
+
+	@Test("a revoked connection stops the publish at the first refusal, sends nothing more, and asks to reconnect")
+	func revokedConnection() async throws {
+		let target = VercelPublishTarget(teamID: "team_acme", accountID: "team_acme", teamName: "Acme", projectID: "prj_api",
+			projectName: "demo-api", environment: .production)
+		let route = PlatformHTTPStub.platform { _ in Self.revokedToken }
+		let client = VercelClient(token: "vca_revoked", baseURL: route.baseURL, session: route.session)
+		let sent = changes([("NEW", "1", .add, true)] + (1...6).map { ("K\($0)", "v", .replace(remoteID: "env_K\($0)"), true) })
+		let report = await VercelPublishing.publish(sent, to: target, using: client)
+		#expect(report.needsReconnect)
+		#expect(report.outcomes["NEW"] == .failed(VercelPublishing.message(.unauthorized)))
+		#expect((1...6).allSatisfy { report.outcomes["K\($0)"] == .notSent })
+		#expect(route.requests.count == 1, "Nothing is sent after Vercel refuses the token")
+		#expect(report.published.isEmpty)
+
+		let replacesOnly = PlatformHTTPStub.platform { _ in Self.revokedToken }
+		let stopped = await VercelPublishing.publish(
+			changes((1...6).map { ("K\($0)", "v", .replace(remoteID: "env_K\($0)"), true) }), to: target,
+			using: VercelClient(token: "vca_revoked", baseURL: replacesOnly.baseURL, session: replacesOnly.session))
+		#expect(stopped.needsReconnect && replacesOnly.requests.count == VercelPublishing.replaceConcurrency)
+		#expect(stopped.outcomes.values.filter { $0 == .notSent }.count == 6 - VercelPublishing.replaceConcurrency)
+	}
+
+	@Test("a key the integration isn't allowed to change fails alone, and the rest are still sent")
+	func permissionRefusal() async throws {
+		let target = VercelPublishTarget(teamID: "team_acme", accountID: "team_acme", teamName: "Acme", projectID: "prj_api",
+			projectName: "demo-api", environment: .production)
+		let route = PlatformHTTPStub.platform { request in
+			if request.url.path().hasSuffix("/env_LOCKED") {
+				return .json(403, ["error": ["code": "forbidden", "message": "You don't have permission to change this variable."]])
+			}
+			return .json(200, ["id": request.url.lastPathComponent, "key": "K", "type": "sensitive", "visibility": "secret", "target": ["production"], "value": ""])
+		}
+		let report = await VercelPublishing.publish(
+			changes([("LOCKED", "1", .replace(remoteID: "env_LOCKED"), true), ("OPEN", "2", .replace(remoteID: "env_OPEN"), true)]),
+			to: target, using: VercelClient(token: "vca_1", baseURL: route.baseURL, session: route.session))
+		#expect(!report.needsReconnect)
+		#expect(report.outcomes["LOCKED"] == .failed(VercelPublishing.message(.forbidden)))
+		#expect(report.outcomes["OPEN"] == .published)
+	}
+
 	@Test("Vercel's reserved names are held back")
 	func reserved() {
 		#expect(VercelPublishing.reservedKeys.isSuperset(of: ["TZ", "AWS_SECRET_KEY", "NOW_REGION", "LAMBDA_TASK_ROOT"]))
