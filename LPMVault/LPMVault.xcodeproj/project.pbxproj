@@ -135,6 +135,7 @@
 		B30A47BEBA953039B2AD4092 /* LoginCallbackPageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 799272353D7E4397555E0AB8 /* LoginCallbackPageTests.swift */; };
 		B47DF5E0B8720BF7BCA80E43 /* VaultTitleBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E9F20B5CB6FFB4B7CBFD25A /* VaultTitleBarView.swift */; };
 		B5698C32AC0DD87892CE5A02 /* BoundedHTTPResponse.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35D4657C31CF1A081D03F682 /* BoundedHTTPResponse.swift */; };
+		B8B66270D4576E8D1883A112 /* CoolifyClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4BA8451CDCC17A9CECEB040 /* CoolifyClientTests.swift */; };
 		BB6132BF45F229CF6A1EFF86 /* AuthSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4688C3AA94245B231B939F2F /* AuthSessionStore.swift */; };
 		BB969C6F8AD19DCF9326EDC8 /* VaultInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17BF48E7FA6D4713B74FA496 /* VaultInspectorView.swift */; };
 		BE7E0198873938E0B4EB3EAF /* ProjectConfigOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = 623FE311DD484D349571A459 /* ProjectConfigOpener.swift */; };
@@ -341,6 +342,7 @@
 		B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainServiceTests.swift; sourceTree = "<group>"; };
 		B1CF37F3E1D21EFC23D1163B /* AuthSessionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionCoordinatorTests.swift; sourceTree = "<group>"; };
 		B495305D62923FFDEDE0AE17 /* VaultLoadRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultLoadRecoveryTests.swift; sourceTree = "<group>"; };
+		B4BA8451CDCC17A9CECEB040 /* CoolifyClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoolifyClientTests.swift; sourceTree = "<group>"; };
 		B525DD1074B0316F4375CFB8 /* OrganizationProjectImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganizationProjectImportTests.swift; sourceTree = "<group>"; };
 		B7818555ADC9CFF5B987A748 /* project-index-v3.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "project-index-v3.json"; sourceTree = "<group>"; };
 		B9198E040EEBC0EC72052477 /* ProjectEnvSchemaOverviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaOverviewTests.swift; sourceTree = "<group>"; };
@@ -524,6 +526,7 @@
 				ABA50696ECCA4608639D0C28 /* AuditRegressionTests.swift */,
 				B1CF37F3E1D21EFC23D1163B /* AuthSessionCoordinatorTests.swift */,
 				7DA1AF3AA82DFB003362A6D3 /* ConnectCLITests.swift */,
+				B4BA8451CDCC17A9CECEB040 /* CoolifyClientTests.swift */,
 				0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */,
 				FD248A688D2DCFD4318032CF /* CurrentContractTests.swift */,
 				90D1C40E7E961D8CEC22A477 /* EmptyEnvironmentSyncTests.swift */,
@@ -780,6 +783,7 @@
 				FACB80DACEE686DECB8B4B33 /* AuditRegressionTests.swift in Sources */,
 				38289D7C13B7A79B92794FC0 /* AuthSessionCoordinatorTests.swift in Sources */,
 				C7B7CE1D990AA3A0D98996A5 /* ConnectCLITests.swift in Sources */,
+				B8B66270D4576E8D1883A112 /* CoolifyClientTests.swift in Sources */,
 				5537F30818AE6D9798D8E644 /* CryptoInteropTests.swift in Sources */,
 				1B65DFA8F8C5EE52C99C8D2D /* CurrentContractTests.swift in Sources */,
 				D3CCA5F863C9FCB583CC9049 /* EmptyEnvironmentSyncTests.swift in Sources */,
