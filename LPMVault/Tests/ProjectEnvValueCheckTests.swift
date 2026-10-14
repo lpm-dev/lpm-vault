@@ -80,6 +80,21 @@ struct ProjectEnvValueCheckTests {
 		#expect(presentation.groupFailures(in: "default").first?.message == "Exactly one of A, B — both set")
 	}
 
+	@Test("a value check runs off the cooperative pool, so a slow check never holds up other work")
+	func checkRunsOffThePool() async {
+		let queues = QueueLabels()
+		let worker = ProjectEnvValueCheckWorker { rules, environments in
+			queues.record()
+			return rules.check(environments)
+		}
+		_ = await worker.check(rules: .empty, environments: ["default": ["PORT": "3000"]])
+		let project = VaultProject(id: "p", name: "p", path: "", environments: ["default": ["PORT": "3000"]])
+		let edit = VaultKeyEdit(key: "PORT", environments: project.environments, values: ["default": "4000"])
+		_ = await worker.preview(edit: edit, project: project, rules: .empty)
+		#expect(queues.labels.count == 2)
+		#expect(queues.labels.allSatisfy { !$0.contains("cooperative") }, "\(queues.labels)")
+	}
+
 	@Test("a cancelled queued value check never enters the engine")
 	func cancelledQueuedCheckSkipsEngine() async {
 		let calls = OSAllocatedUnfairLock(initialState: 0)
@@ -90,13 +105,14 @@ struct ProjectEnvValueCheckTests {
 			let call = calls.withLock { count in count += 1; return count }
 			if call == 1 {
 				entered.signal()
-				_ = release.wait(timeout: .now() + 5)
+				_ = release.wait(timeout: .now() + 30)
 			}
 			return nil
 		}
 		let first = Task { await worker.check(rules: .empty, environments: [:]) }
+		// The deadline only bounds a failure: a busy runner can take seconds to start the first check.
 		let started = await withCheckedContinuation { continuation in
-			Thread.detachNewThread { continuation.resume(returning: entered.wait(timeout: .now() + 5) == .success) }
+			Thread.detachNewThread { continuation.resume(returning: entered.wait(timeout: .now() + 30) == .success) }
 		}
 		#expect(started)
 		let cancelled = Task { await worker.check(rules: .empty, environments: [:]) }

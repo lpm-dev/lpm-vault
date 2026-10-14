@@ -1059,7 +1059,7 @@ private final class EvaluationCounter: @unchecked Sendable {
 }
 
 /// The dispatch queue each call ran on, by label.
-private final class QueueLabels: @unchecked Sendable {
+final class QueueLabels: @unchecked Sendable {
 	private let lock = NSLock()
 	private var recorded: [String] = []
 	var labels: [String] { lock.withLock { recorded } }
