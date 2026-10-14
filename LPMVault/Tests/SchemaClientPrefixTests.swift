@@ -364,16 +364,16 @@ struct SchemaClientPrefixTests {
 		store.editSchemaDraft(in: Self.id) { $0.set(.declared(.object([.init(key: "client", value: .bool(true)), .init(key: "description", value: .string("Theme"))])), for: .key("WIDGET_THEME")) }
 		#expect(try await Self.waitUntil { store.currentSchemaDraftEvaluation(for: Self.id) != nil })
 		let before = store.keyDescriptions[Self.id]?.dependencies
-		store.schemaDraftEvaluator = ProjectEnvSchemaDraftEvaluator { schema, folder in
-			Thread.sleep(forTimeInterval: 1)
-			return ProjectEnvSchemaDraftEvaluator.resolve(schema, inFolder: folder)
-		}
+		let gate = EvaluationGate()
+		defer { gate.open() }
+		store.schemaDraftEvaluator = gate.evaluator()
 		try Self.base.replacingOccurrences(of: #""ACME_PUBLIC_REGION":{"default":"eu"}"#, with: #""ACME_PUBLIC_REGION":{"secret":true}"#)
 			.write(toFile: folder + "/base.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
 		#expect(try await Self.waitUntil { store.keyDescriptions[Self.id]?.dependencies != before })
 		#expect(store.currentSchemaDraftEvaluation(for: Self.id) == nil)
 		#expect(store.schemaPrefixAvailability(for: Self.id) == .checking)
+		gate.open()
 		#expect(try await Self.waitUntil { store.schemaPrefixAvailability(for: Self.id).context != nil })
 		let context = try #require(store.schemaPrefixAvailability(for: Self.id).context)
 		#expect(Prefixes.issue(adding: "ACME_PUBLIC_", in: context) == .secret(key: "ACME_PUBLIC_REGION"))
@@ -580,10 +580,9 @@ extension SheetInteractionTests {
 			try await host.click("Client prefixes")
 			let popover = try await host.popoverWindow()
 			#expect(try await host.waitForText("SHOP_", in: popover))
-			store.schemaDraftEvaluator = ProjectEnvSchemaDraftEvaluator { schema, folder in
-				Thread.sleep(forTimeInterval: 3)
-				return ProjectEnvSchemaDraftEvaluator.resolve(schema, inFolder: folder)
-			}
+			let gate = EvaluationGate()
+			defer { gate.open() }
+			store.schemaDraftEvaluator = gate.evaluator()
 			try host.typeText("ACME_PUBLIC_", placeholder: "NEW_PREFIX_", in: popover)
 			#expect(try await host.waitForText("become public with", in: popover))
 			try host.pressWhileEditing("\r", code: 36, in: popover)
@@ -680,5 +679,35 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("enforced by LPM CLI"))
 			return (store, host, folder)
 		}
+	}
+}
+
+/// Holds draft evaluations until the test opens it, so a test sees what the
+/// app shows while a draft is checked however busy the machine is. It holds
+/// only the evaluator's own queue, and lets go on its own after two minutes
+/// so a test that stops early can't hang the run.
+private final class EvaluationGate: @unchecked Sendable {
+	private let condition = NSCondition()
+	private var isOpen = false
+
+	func evaluator() -> ProjectEnvSchemaDraftEvaluator {
+		ProjectEnvSchemaDraftEvaluator { [self] schema, folder in
+			wait()
+			return ProjectEnvSchemaDraftEvaluator.resolve(schema, inFolder: folder)
+		}
+	}
+
+	func open() {
+		condition.lock()
+		isOpen = true
+		condition.broadcast()
+		condition.unlock()
+	}
+
+	private func wait() {
+		condition.lock()
+		defer { condition.unlock() }
+		let deadline = Date(timeIntervalSinceNow: 120)
+		while !isOpen, condition.wait(until: deadline) {}
 	}
 }

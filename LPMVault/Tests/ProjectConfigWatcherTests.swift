@@ -108,16 +108,16 @@ struct ProjectConfigWatcherTests {
 		try await Task.sleep(for: .milliseconds(100))
 		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
 		try "{}".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-		#expect(try await eventually(seconds: 4) { changes.count >= 1 }, "A folder made after the watch started is watched")
+		#expect(try await eventually { changes.count >= 1 }, "A folder made after the watch started is watched")
 
 		let seen = changes.count
 		try FileManager.default.removeItem(atPath: folder)
 		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
 		try #"{"again":true}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-		#expect(try await eventually(seconds: 4) { changes.count > seen }, "A folder made again is watched")
+		#expect(try await eventually { changes.count > seen }, "A folder made again is watched")
 		let recreated = changes.count
 		try #"{"edited":true}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-		#expect(try await eventually(seconds: 4) { changes.count > recreated })
+		#expect(try await eventually { changes.count > recreated })
 	}
 
 	@Test("lpm.json that's a pipe or a link isn't opened, and the watch still ends and follows a real file", arguments: [false, true])
@@ -294,7 +294,9 @@ struct ProjectConfigWatcherTests {
 		}.count
 	}
 
-	private func eventually(seconds: Double = 3, _ condition: () -> Bool) async throws -> Bool {
+	/// The deadline only bounds a failure: a busy runner can take seconds to
+	/// deliver a file event and schedule the task that counts it.
+	private func eventually(seconds: Double = 30, _ condition: () -> Bool) async throws -> Bool {
 		let deadline = ContinuousClock.now + .seconds(seconds)
 		while ContinuousClock.now < deadline {
 			if condition() { return true }
