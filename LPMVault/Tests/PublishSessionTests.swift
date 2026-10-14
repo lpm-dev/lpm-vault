@@ -1054,11 +1054,15 @@ struct PublishStoreTests {
 		session.loadReview()
 		try await waitUntil { session.review != nil }
 		for index in 1...6 { session.set("KEY_\(index)", selected: true) }
+		let replacing = AsyncFlag()
 		let released = AsyncFlag()
-		api.beforeReplace = { await released.wait() }
+		api.beforeReplace = {
+			await replacing.open()
+			await released.wait()
+		}
 		session.publish()
-		try await waitUntil { api.replacedValues.isEmpty && session.isPublishing }
-		try await Task.sleep(for: .milliseconds(50))
+		await replacing.wait()
+		#expect(api.replacedValues.isEmpty && session.isPublishing)
 		store.lock()
 		await released.open()
 		try await waitUntil { !session.isPublishing }
