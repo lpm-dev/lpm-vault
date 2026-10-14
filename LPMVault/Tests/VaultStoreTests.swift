@@ -908,7 +908,7 @@ struct VaultStoreTests {
 
 		store.selectAccount(.personal)
 		#expect(store.selectedProjectId == "personal")
-		#expect(!store.showAuthStatus)
+		#expect(!store.isShowingAccountPage)
 
 		store.selectAccount(.org("acme"))
 		#expect(store.selectedProjectId == nil)
@@ -942,7 +942,7 @@ struct VaultStoreTests {
 		store.openProject(id: "org")
 		#expect(store.selectedAccount == .org("acme"))
 		#expect(store.selectedProjectId == "org")
-		#expect(!store.showAuthStatus)
+		#expect(!store.isShowingAccountPage)
 
 		store.openProject(id: "personal")
 		#expect(store.selectedAccount == .personal)

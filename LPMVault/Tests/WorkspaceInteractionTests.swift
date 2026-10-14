@@ -826,7 +826,7 @@ extension SheetInteractionTests {
 			#expect(store.selectedProjectId == "workspace")
 			store.openProject(id: "workspace")
 			try await host.settle()
-			#expect(!store.showAuthStatus)
+			#expect(!store.isShowingAccountPage)
 		}
 
 		private func makeStore(environments: [String: [String: String]] = ["default": ["TOKEN": "fixture-value"]], additionalProject: Bool = false, keychain: MockKeychainService = MockKeychainService()) -> (VaultStore, MockBiometricService) {

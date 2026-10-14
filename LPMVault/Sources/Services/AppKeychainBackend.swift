@@ -1,8 +1,23 @@
 import Foundation
 import Security
 
-/// Storage for the publishing records of one Keychain service.
-protocol PublishingKeychainBackend: Sendable {
+/// The app's own Keychain stores, one service each.
+enum AppKeychainStore: CaseIterable, Sendable {
+	/// Publish destinations, publish history and the fingerprint key.
+	case publishing
+	/// Platform connections and their access tokens.
+	case platformConnections
+
+	var service: String {
+		switch self {
+		case .publishing: VaultConstants.publishingKeychainService
+		case .platformConnections: VaultConstants.platformConnectionsKeychainService
+		}
+	}
+}
+
+/// The items of one Keychain service.
+protocol AppKeychainItemBackend: Sendable {
 	func read(account: String) throws -> Data?
 	func write(account: String, data: Data) throws
 	/// Adds the item; false when one already exists, which is left as it is.
@@ -14,7 +29,7 @@ protocol PublishingKeychainBackend: Sendable {
 
 /// Data Protection Keychain items in the app's own access group, which the
 /// LPM CLI can't read. Items stay on this Mac and never sync through iCloud.
-struct AppKeychainBackend: PublishingKeychainBackend {
+struct AppKeychainBackend: AppKeychainItemBackend {
 	let service: String
 
 	func read(account: String) throws -> Data? {

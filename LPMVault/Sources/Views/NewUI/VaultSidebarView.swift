@@ -244,7 +244,7 @@ struct VaultSidebarView: View {
 		let approvalDescription = cliAccess.map {
 			$0 == .requireApproval ? "CLI approval required" : "CLI access automatic"
 		} ?? "CLI approval unavailable"
-		let selected = !store.showAuthStatus && store.selectedProjectId == project.id && mode == .matrix
+		let selected = !store.isShowingAccountPage && store.selectedProjectId == project.id && mode == .matrix
 		let expanded = store.selectedProjectId == project.id
 			&& !collapsedProjectIds.contains(project.id)
 		return Button {
@@ -340,7 +340,7 @@ struct VaultSidebarView: View {
 	}
 
 	private func schemaRow(_ project: VaultProject) -> some View {
-		let selected = !store.showAuthStatus && mode == .schema
+		let selected = !store.isShowingAccountPage && mode == .schema
 		let state = store.keyDescriptions[project.id]?.schema
 		let count = state?.overview?.rules.count
 		let unreadable = if case .unreadable? = state { true } else { false }
@@ -390,7 +390,7 @@ struct VaultSidebarView: View {
 	}
 
 	private func environmentRow(_ project: VaultProject, environment: String, color: Color) -> some View {
-		let selected = !store.showAuthStatus && mode == .environment(environment)
+		let selected = !store.isShowingAccountPage && mode == .environment(environment)
 		let target = VaultEnvironmentTarget(projectId: project.id, environment: environment)
 		return Button {
 			store.openProject(id: project.id)
@@ -602,6 +602,10 @@ struct VaultAccountSwitcher: View {
 				store.showSettings()
 				isPresented = false
 			}
+			menuRow(icon: "square.stack.3d.up", title: "Platforms") {
+				store.showPlatforms()
+				isPresented = false
+			}
 			menuRow(icon: "lock", title: "Lock vault", shortcut: "⌘L") {
 				store.lock()
 				isPresented = false
@@ -618,7 +622,7 @@ struct VaultAccountSwitcher: View {
 	}
 
 	private func accountRow(name: String, initials: String, account: SelectedAccount, square: Bool) -> some View {
-		let selected = store.selectedAccount == account && !store.showAuthStatus
+		let selected = store.selectedAccount == account && !store.isShowingAccountPage
 		return Button {
 			store.selectAccount(account)
 			isPresented = false
@@ -644,13 +648,15 @@ struct VaultAccountSwitcher: View {
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 
-	private func menuRow(icon: String, title: String, shortcut: String, action: @escaping () -> Void) -> some View {
+	private func menuRow(icon: String, title: String, shortcut: String? = nil, action: @escaping () -> Void) -> some View {
 		Button(action: action) {
 			HStack(spacing: 9) {
 				Image(systemName: icon).font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary).frame(width: 14)
 				Text(title).font(.system(size: 12.5)).foregroundStyle(VaultPalette.textSecondary)
 				Spacer(minLength: 4)
-				Text(shortcut).font(VaultTypography.mono(10)).foregroundStyle(VaultPalette.textFaint)
+				if let shortcut {
+					Text(shortcut).font(VaultTypography.mono(10)).foregroundStyle(VaultPalette.textFaint)
+				}
 			}
 			.padding(.horizontal, 8)
 			.padding(.vertical, 6)

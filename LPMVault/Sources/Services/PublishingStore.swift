@@ -66,7 +66,7 @@ actor PublishingStore {
 				let stored = destinations[index]
 				guard destination != stored else { return destinations }
 				if stored.target.location != destination.target.location {
-					try service.deletePublishingData(account: Self.historyAccount(vaultID, destination.id)).get()
+					try service.deleteAppItem(.publishing, account: Self.historyAccount(vaultID, destination.id)).get()
 				}
 				var replacement = destination
 				replacement.updatedAt = PublishTimestamp.next(after: stored.updatedAt, at: destination.updatedAt)
@@ -88,7 +88,7 @@ actor PublishingStore {
 				destinations.removeAll { $0.id == id }
 				try writeDestinations(destinations, of: vaultID)
 			}
-			try service.deletePublishingData(account: Self.historyAccount(vaultID, id)).get()
+			try service.deleteAppItem(.publishing, account: Self.historyAccount(vaultID, id)).get()
 			return destinations
 		}.mapError(Self.storeError)
 	}
@@ -138,19 +138,19 @@ actor PublishingStore {
 	func fingerprintKey() -> Result<SymmetricKey, PublishingStoreError> {
 		Result {
 			let byteCount = SymmetricKeySize.bits256.bitCount / 8
-			if let data = try service.readPublishingData(account: Self.fingerprintKeyAccount).get() {
+			if let data = try service.readAppItem(.publishing, account: Self.fingerprintKeyAccount).get() {
 				if data.count == byteCount { return SymmetricKey(data: data) }
 				// Damaged: earlier fingerprints then read as changed values, which only costs a review.
 				let key = SymmetricKey(size: .bits256)
-				try service.writePublishingData(account: Self.fingerprintKeyAccount, data: key.withUnsafeBytes { Data($0) }).get()
+				try service.writeAppItem(.publishing, account: Self.fingerprintKeyAccount, data: key.withUnsafeBytes { Data($0) }).get()
 				return key
 			}
 			let key = SymmetricKey(size: .bits256)
-			if try service.insertPublishingData(account: Self.fingerprintKeyAccount, data: key.withUnsafeBytes { Data($0) }).get() {
+			if try service.insertAppItem(.publishing, account: Self.fingerprintKeyAccount, data: key.withUnsafeBytes { Data($0) }).get() {
 				return key
 			}
 			// Another process added one first; use it.
-			guard let data = try service.readPublishingData(account: Self.fingerprintKeyAccount).get(), data.count == byteCount else {
+			guard let data = try service.readAppItem(.publishing, account: Self.fingerprintKeyAccount).get(), data.count == byteCount else {
 				throw PublishingStoreError.unreadable
 			}
 			return SymmetricKey(data: data)
@@ -191,7 +191,7 @@ actor PublishingStore {
 			guard !removed.isEmpty else { return }
 			try writeDestinations(destinations.filter { $0.sourceEnvironment != environment }, of: vaultID)
 			for destination in removed {
-				try service.deletePublishingData(account: Self.historyAccount(vaultID, destination.id)).get()
+				try service.deleteAppItem(.publishing, account: Self.historyAccount(vaultID, destination.id)).get()
 			}
 		}.mapError(Self.storeError)
 	}
@@ -204,7 +204,7 @@ actor PublishingStore {
 	func deleteOrphanedRecords(among candidates: Set<String>? = nil) -> Result<Void, PublishingStoreError> {
 		Result {
 			var accountsByVault: [String: [String]] = [:]
-			for account in try service.publishingAccounts().get() {
+			for account in try service.appItemAccounts(.publishing).get() {
 				guard let vault = Self.vault(ofAccount: account), candidates?.contains(vault) ?? true else { continue }
 				accountsByVault[vault, default: []].append(account)
 			}
@@ -213,7 +213,7 @@ actor PublishingStore {
 			var failure: Error?
 			for (vault, accounts) in accountsByVault where !existing.contains(vault) {
 				for account in accounts {
-					do { try service.deletePublishingData(account: account).get() } catch { failure = failure ?? error }
+					do { try service.deleteAppItem(.publishing, account: account).get() } catch { failure = failure ?? error }
 				}
 			}
 			if let failure { throw failure }
@@ -241,22 +241,22 @@ actor PublishingStore {
 	}
 
 	private func readDestinations(of vaultID: String) throws -> [PublishDestination] {
-		guard let data = try service.readPublishingData(account: Self.destinationsAccount(vaultID)).get() else { return [] }
+		guard let data = try service.readAppItem(.publishing, account: Self.destinationsAccount(vaultID)).get() else { return [] }
 		return try PublishingRecords.decodeDestinations(data, vaultID: vaultID).get()
 	}
 
 	private func writeDestinations(_ destinations: [PublishDestination], of vaultID: String) throws {
 		let account = try Self.destinationsAccount(vaultID)
 		guard !destinations.isEmpty else {
-			try service.deletePublishingData(account: account).get()
+			try service.deleteAppItem(.publishing, account: account).get()
 			return
 		}
 		guard let data = PublishingRecords.encode(destinations, vaultID: vaultID) else { throw PublishingStoreError.tooLarge }
-		try service.writePublishingData(account: account, data: data).get()
+		try service.writeAppItem(.publishing, account: account, data: data).get()
 	}
 
 	private func readHistory(of destination: UUID, in vaultID: String) throws -> PublishHistory {
-		guard let data = try service.readPublishingData(account: Self.historyAccount(vaultID, destination)).get() else {
+		guard let data = try service.readAppItem(.publishing, account: Self.historyAccount(vaultID, destination)).get() else {
 			return PublishHistory()
 		}
 		switch PublishingRecords.decodeHistory(data, destination: destination, vaultID: vaultID) {
@@ -270,7 +270,7 @@ actor PublishingStore {
 		guard let encoded = PublishingRecords.encodeFitting(history, destination: destination, vaultID: vaultID) else {
 			throw PublishingStoreError.tooLarge
 		}
-		try service.writePublishingData(account: Self.historyAccount(vaultID, destination), data: encoded.data).get()
+		try service.writeAppItem(.publishing, account: Self.historyAccount(vaultID, destination), data: encoded.data).get()
 	}
 
 	private static let fingerprintKeyAccount = "fingerprint-key.v1"

@@ -435,52 +435,68 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		return true
 	}
 
-	private var publishingRecords: [String: Data] = [:]
-	var publishingStorage: [String: Data] {
-		get { lock.withLock { publishingRecords } }
-		set { lock.withLock { publishingRecords = newValue } }
-	}
-	var failPublishingAccounts: Set<String> = []
+	private var appItems: [AppKeychainStore: [String: Data]] = [:]
+	private var failingAppItems: [AppKeychainStore: Set<String>] = [:]
+	private var appItemListCounts: [AppKeychainStore: Int] = [:]
 
-	func readPublishingData(account: String) -> Result<Data?, KeychainError> {
+	var publishingStorage: [String: Data] {
+		get { lock.withLock { appItems[.publishing] ?? [:] } }
+		set { lock.withLock { appItems[.publishing] = newValue } }
+	}
+	/// Accounts whose operations fail; "*" also fails the listing.
+	var failPublishingAccounts: Set<String> {
+		get { lock.withLock { failingAppItems[.publishing] ?? [] } }
+		set { lock.withLock { failingAppItems[.publishing] = newValue } }
+	}
+	var publishingAccountsCallCount: Int { lock.withLock { appItemListCounts[.publishing] ?? 0 } }
+
+	var platformConnectionStorage: [String: Data] {
+		get { lock.withLock { appItems[.platformConnections] ?? [:] } }
+		set { lock.withLock { appItems[.platformConnections] = newValue } }
+	}
+	/// Accounts whose operations fail; "*" also fails the listing.
+	var failPlatformConnectionAccounts: Set<String> {
+		get { lock.withLock { failingAppItems[.platformConnections] ?? [] } }
+		set { lock.withLock { failingAppItems[.platformConnections] = newValue } }
+	}
+
+	func readAppItem(_ store: AppKeychainStore, account: String) -> Result<Data?, KeychainError> {
 		lock.withLock {
-			if failPublishingAccounts.contains(account) { return .failure(failureError) }
-			return .success(publishingRecords[account])
+			if failingAppItems[store]?.contains(account) == true { return .failure(failureError) }
+			return .success(appItems[store]?[account])
 		}
 	}
 
-	func writePublishingData(account: String, data: Data) -> Result<Void, KeychainError> {
+	func writeAppItem(_ store: AppKeychainStore, account: String, data: Data) -> Result<Void, KeychainError> {
 		lock.withLock {
-			if failPublishingAccounts.contains(account) { return .failure(failureError) }
-			publishingRecords[account] = data
+			if failingAppItems[store]?.contains(account) == true { return .failure(failureError) }
+			appItems[store, default: [:]][account] = data
 			return .success(())
 		}
 	}
 
-	func insertPublishingData(account: String, data: Data) -> Result<Bool, KeychainError> {
+	func insertAppItem(_ store: AppKeychainStore, account: String, data: Data) -> Result<Bool, KeychainError> {
 		lock.withLock {
-			if failPublishingAccounts.contains(account) { return .failure(failureError) }
-			guard publishingRecords[account] == nil else { return .success(false) }
-			publishingRecords[account] = data
+			if failingAppItems[store]?.contains(account) == true { return .failure(failureError) }
+			guard appItems[store]?[account] == nil else { return .success(false) }
+			appItems[store, default: [:]][account] = data
 			return .success(true)
 		}
 	}
 
-	func deletePublishingData(account: String) -> Result<Void, KeychainError> {
+	func deleteAppItem(_ store: AppKeychainStore, account: String) -> Result<Void, KeychainError> {
 		lock.withLock {
-			if failPublishingAccounts.contains(account) { return .failure(failureError) }
-			publishingRecords.removeValue(forKey: account)
+			if failingAppItems[store]?.contains(account) == true { return .failure(failureError) }
+			appItems[store]?.removeValue(forKey: account)
 			return .success(())
 		}
 	}
 
-	private(set) var publishingAccountsCallCount = 0
-
-	func publishingAccounts() -> Result<[String], KeychainError> {
+	func appItemAccounts(_ store: AppKeychainStore) -> Result<[String], KeychainError> {
 		lock.withLock {
-			publishingAccountsCallCount += 1
-			if failPublishingAccounts.contains("*") { return .failure(failureError) }
-			return .success(Array(publishingRecords.keys))
+			appItemListCounts[store, default: 0] += 1
+			if failingAppItems[store]?.contains("*") == true { return .failure(failureError) }
+			return .success(Array((appItems[store] ?? [:]).keys))
 		}
 	}
 }

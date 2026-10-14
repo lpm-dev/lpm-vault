@@ -64,7 +64,7 @@ struct VaultWorkspaceView: View {
 
 	/// What the Schema page watches; nil off the page.
 	private var schemaWatch: SchemaWatch? {
-		guard mode == .schema, !store.showAuthStatus, let descriptions = project.flatMap({ store.keyDescriptions[$0.id] }), !descriptions.folder.isEmpty
+		guard mode == .schema, !store.isShowingAccountPage, let descriptions = project.flatMap({ store.keyDescriptions[$0.id] }), !descriptions.folder.isEmpty
 		else { return nil }
 		return SchemaWatch(folder: descriptions.folder, imports: descriptions.importPaths)
 	}
@@ -157,7 +157,7 @@ struct VaultWorkspaceView: View {
 	private var hasUnsavedRecovery: Bool { !store.keyDrafts.orphanIDs.isEmpty }
 
 	private var inspectorVisible: Bool {
-		guard !store.showAuthStatus else { return false }
+		guard !store.isShowingAccountPage else { return false }
 		if hasUnsavedRecovery { return true }
 		if mode == .schema { return schemaPanelVisible }
 		guard showsInspector, let project else { return false }
@@ -195,7 +195,7 @@ struct VaultWorkspaceView: View {
 			revealedKeys.removeAll()
 		}
 		.onChange(of: mode) { _, _ in revealedKeys.removeAll() }
-		.onChange(of: store.showAuthStatus) { _, showingSettings in
+		.onChange(of: store.isShowingAccountPage) { _, showingSettings in
 			if showingSettings { resetCopyPresentation() }
 		}
 		.task(id: copyFeedback?.id) {
@@ -241,7 +241,7 @@ struct VaultWorkspaceView: View {
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
-			if !isObscured, !store.showAuthStatus, let warning = store.lastSyncWarnings.first {
+			if !isObscured, !store.isShowingAccountPage, let warning = store.lastSyncWarnings.first {
 				metadataWarningBanner(warning)
 			}
 			if let refreshError = store.localStateRefreshError {
@@ -278,8 +278,12 @@ struct VaultWorkspaceView: View {
 					}
 
 					Group {
-						if store.showAuthStatus {
+						if store.accountPage == .settings {
 							AuthStatusView(store: store)
+								.frame(maxWidth: .infinity, maxHeight: .infinity)
+								.background(VaultPalette.content)
+						} else if store.accountPage == .platforms {
+							PlatformsView(store: store)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
 						} else if let failure = store.selectedProjectLoadFailure {
@@ -808,7 +812,7 @@ struct VaultWorkspaceView: View {
 
 	/// Copies right away, or once a refresh in progress publishes current values.
 	private func copySecret(_ key: String, _ environment: String) {
-		guard store.canUseLocalSecrets, !store.showAuthStatus, let projectID = project?.id else { return }
+		guard store.canUseLocalSecrets, !store.isShowingAccountPage, let projectID = project?.id else { return }
 		guard store.isRefreshingLocalState else {
 			copyCurrentSecret(key, environment, projectID: projectID)
 			return
@@ -820,7 +824,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func copyCurrentSecret(_ key: String, _ environment: String, projectID: String) {
-		guard store.canUseLocalSecrets, !store.showAuthStatus,
+		guard store.canUseLocalSecrets, !store.isShowingAccountPage,
 			let current = store.selectedProject, current.id == projectID,
 			let value = current.value(for: key, in: environment),
 			ClipboardManager.shared.copy(ClipboardManager.dotenvText(for: [key: value]))
@@ -831,7 +835,7 @@ struct VaultWorkspaceView: View {
 	/// Copies what an inspector value field shows, after a refresh in progress
 	/// publishes current values.
 	private func copyValue(_ request: VaultValueCopy) {
-		guard store.canUseLocalSecrets, !store.showAuthStatus, project?.id == request.projectID else { return }
+		guard store.canUseLocalSecrets, !store.isShowingAccountPage, project?.id == request.projectID else { return }
 		guard store.isRefreshingLocalState else {
 			copyCurrentValue(request)
 			return
@@ -843,7 +847,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func copyCurrentValue(_ request: VaultValueCopy) {
-		guard store.canUseLocalSecrets, !store.showAuthStatus,
+		guard store.canUseLocalSecrets, !store.isShowingAccountPage,
 			let current = store.selectedProject, current.id == request.projectID
 		else { return }
 		let draft = store.keyDrafts.draft(VaultKeyDraft.ID(projectID: request.projectID, key: request.key))
@@ -866,7 +870,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func copyAll() {
-		guard store.canUseLocalSecrets, !store.showAuthStatus, copyAllTask == nil, let project else { return }
+		guard store.canUseLocalSecrets, !store.isShowingAccountPage, copyAllTask == nil, let project else { return }
 		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
 		let requestID = UUID()
 		copyAllID = requestID
@@ -884,7 +888,7 @@ struct VaultWorkspaceView: View {
 			guard success else { return }
 			// Returning from the macOS prompt can trigger a refresh; copy what it publishes.
 			await store.waitForLocalStateRefresh()
-			guard !store.showAuthStatus,
+			guard !store.isShowingAccountPage,
 				copyAllID == requestID,
 				context.isCurrent(in: store),
 				let current = store.selectedProject
@@ -1024,7 +1028,7 @@ struct VaultWorkspaceView: View {
 	/// Copies a value of an unsaved edit whose project or key is gone, after the
 	/// person authenticates, as long as that edit is still shown.
 	private func copyUnsavedValue(_ id: VaultKeyDraft.ID, _ environment: String) {
-		guard store.isUnlocked, !store.showAuthStatus, copyUnsavedTask == nil,
+		guard store.isUnlocked, !store.isShowingAccountPage, copyUnsavedTask == nil,
 			store.keyDrafts.orphanIDs.contains(id) else { return }
 		let requestID = UUID()
 		copyUnsavedID = requestID
@@ -1038,7 +1042,7 @@ struct VaultWorkspaceView: View {
 			}
 			guard await store.authenticateForSensitiveAction(reason: "Copy your unsaved value"),
 				!Task.isCancelled, copyUnsavedID == requestID,
-				store.isUnlocked, !store.showAuthStatus, store.keyDrafts.orphanIDs.contains(id),
+				store.isUnlocked, !store.isShowingAccountPage, store.keyDrafts.orphanIDs.contains(id),
 				let value = store.keyDrafts.draft(id)?.value(in: environment),
 				ClipboardManager.shared.copy(value)
 			else { return }
