@@ -206,7 +206,8 @@ struct PlatformsPageStoreTests {
 		let store = VaultStore(
 			keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 			authTokenProvider: { _, _ in token },
-			platformConnect: connect)
+			platformConnect: connect,
+			platformURLOpener: { _ in })
 		store.projects = [VaultProject(id: "project", name: "Project", path: "", environments: ["default": ["A": "1"]])]
 		store.isUnlocked = true
 		store.currentUser = LPMUser(id: "lpm_user_1", username: "tolga", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
@@ -284,10 +285,15 @@ extension SheetInteractionTests {
 	struct PlatformsPageRenderingTests {
 		private let keychain = MockKeychainService()
 
+		private let opened = OpenedURLs()
+
+		/// The page's store never opens a real browser; `opened` records what it would open.
 		private func page(signedIn: Bool = true, connect: PlatformConnections.Connect? = nil) async throws -> (VaultStore, SheetTestHost<PlatformsView>) {
+			let opened = opened
 			let store = VaultStore(
 				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
-				authTokenProvider: { _, _ in "lpm_session" }, platformConnect: connect)
+				authTokenProvider: { _, _ in "lpm_session" }, platformConnect: connect,
+				platformURLOpener: { opened.append($0) })
 			store.isUnlocked = true
 			if signedIn {
 				store.currentUser = LPMUser(id: "lpm_user_1", username: "tolga", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
@@ -327,6 +333,7 @@ extension SheetInteractionTests {
 			try await host.click("Connect Vercel")
 			#expect(try await host.waitForText("Finish in your browser"))
 			#expect(store.platforms.isConnecting)
+			#expect(opened.urls == [URL(string: "https://vercel.com/integrations/lpm-vault/new")!])
 			try await host.click("Cancel")
 			#expect(try await host.waitUntil { !store.platforms.isConnecting })
 			#expect(try await host.waitForTextToDisappear("Finish in your browser"))
@@ -344,3 +351,11 @@ extension SheetInteractionTests {
 	}
 }
 
+
+private final class OpenedURLs: @unchecked Sendable {
+	private let lock = NSLock()
+	private var opened: [URL] = []
+
+	var urls: [URL] { lock.withLock { opened } }
+	func append(_ url: URL) { lock.withLock { opened.append(url) } }
+}
