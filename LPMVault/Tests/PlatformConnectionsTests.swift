@@ -72,6 +72,58 @@ struct PlatformConnectionStoreTests {
 		#expect(PlatformConnectionStore.decode(data, account: "vercel.u_1") == .success(record))
 	}
 
+	private func coolify(team: String = "0", name: String = "Root Team", origin: String = "https://coolify.example.com") -> PlatformConnection.Account {
+		.coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: origin)!, teamID: team, teamName: name))
+	}
+
+	@Test("a Coolify team is saved by its instance and team, beside Vercel accounts")
+	func savesCoolify() async throws {
+		let store = store
+		let saved = try await store.save(coolify(), accessToken: "3|coolify", at: connectedAt).get()
+		#expect(saved.id == "coolify.0.https://coolify.example.com" && saved.platform == .coolify && saved.name == "Root Team")
+		let elsewhere = try await store.save(coolify(origin: "https://coolify.example.dev"), accessToken: "4|other", at: connectedAt).get()
+		let otherTeam = try await store.save(coolify(team: "12", name: "Northwind"), accessToken: "5|team", at: connectedAt).get()
+		#expect(Set([saved.id, elsewhere.id, otherTeam.id]).count == 3)
+		_ = try await store.save(grant(), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt).get()
+		#expect(try await store.connections().get().map(\.name) == ["Acme", "Northwind", "Root Team", "Root Team"])
+		#expect(try await store.accessToken(for: saved.id).get() == "3|coolify")
+		let again = try await store.save(coolify(name: "Root"), accessToken: "6|new", at: connectedAt).get()
+		#expect(again.id == saved.id)
+		#expect(try await store.accessToken(for: saved.id).get() == "6|new")
+	}
+
+	@Test("a Coolify record round-trips exactly; one with an unknown field or a changed address isn't read")
+	func coolifyRecords() throws {
+		let record = PlatformConnectionStore.Record(
+			connection: PlatformConnection(account: coolify(), connectedAt: PublishTimestamp.normalized(connectedAt)),
+			accessToken: "3|coolify")
+		let id = record.connection.id
+		let data = try #require(PlatformConnectionStore.encode(record))
+		#expect(PlatformConnectionStore.decode(data, account: id) == .success(record))
+
+		func altered(_ change: (inout [String: Any]) -> Void) throws -> Data {
+			var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+			change(&object)
+			return try JSONSerialization.data(withJSONObject: object)
+		}
+		#expect(PlatformConnectionStore.decode(try altered { $0["extra"] = 1 }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["instance"] = "https://Coolify.example.com" }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["teamId"] = "0x" }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["accessToken"] = "has space" }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(data, account: "coolify.1.https://coolify.example.com") == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["platform"] = "netlify" }, account: id) == .failure(.newerVersion))
+	}
+
+	@Test("a Coolify connection that couldn't be read back isn't stored")
+	func refusesUnstorableCoolify() {
+		let connection = PlatformConnection(account: coolify(), connectedAt: connectedAt)
+		#expect(PlatformConnectionStore.encode(.init(connection: connection, accessToken: "3|a b")) == nil)
+		let badTeam = PlatformConnection(account: coolify(team: "-1"), connectedAt: connectedAt)
+		#expect(PlatformConnectionStore.encode(.init(connection: badTeam, accessToken: "3|ok")) == nil)
+		let badName = PlatformConnection(account: coolify(name: " Root"), connectedAt: connectedAt)
+		#expect(PlatformConnectionStore.encode(.init(connection: badName, accessToken: "3|ok")) == nil)
+	}
+
 	@Test("a Keychain failure is reported")
 	func keychainFailure() async {
 		keychain.failPlatformConnectionAccounts = ["*"]
@@ -84,7 +136,8 @@ struct PlatformConnectionsModelTests {
 	private let keychain = MockKeychainService()
 
 	private func model(
-		connect: @escaping @Sendable () async -> Result<(grant: VercelGrant, account: VercelAccount), VercelConnectError>,
+		connect: @escaping @Sendable () async -> Result<(grant: VercelGrant, account: VercelAccount), VercelConnectError> = { .failure(.cancelled) },
+		connectCoolify: @escaping PlatformConnections.ConnectCoolify = { _, _ in .failure(.cancelled) },
 		session: PlatformSession? = platformTestSession(URL(string: "https://lpm.dev")!)
 	) -> PlatformConnections {
 		PlatformConnections(
@@ -93,6 +146,7 @@ struct PlatformConnectionsModelTests {
 				await open(URL(string: "https://vercel.com/integrations/lpm-vault/new")!)
 				return await connect()
 			},
+			connectCoolify: connectCoolify,
 			session: { session },
 			openURL: { _ in },
 			now: { Date(timeIntervalSince1970: 1_760_000_000) })
@@ -165,6 +219,46 @@ struct PlatformConnectionsModelTests {
 		#expect(model.connections.isEmpty)
 		#expect(keychain.platformConnectionStorage.isEmpty)
 		#expect(model.notice?.isError == false)
+	}
+
+	private nonisolated static let rootTeam = CoolifyConnection(
+		instance: CoolifyInstance(origin: "https://coolify.example.com")!, team: CoolifyTeam(id: "0", name: "Root Team"), token: "3|coolify")
+
+	@Test("connecting Coolify needs no LPM sign-in, and saves the team, lists it and says so")
+	func connectsCoolify() async throws {
+		let model = model(connectCoolify: { address, token in
+			#expect(address == "coolify.example.com" && token == "3|coolify")
+			return .success(Self.rootTeam)
+		}, session: nil)
+		let outcome = await model.connectCoolify(address: "coolify.example.com", token: "3|coolify")
+		let connection = try #require(model.connections.first)
+		#expect(outcome == .connected(connection) && connection.name == "Root Team" && connection.platform == .coolify)
+		#expect(model.notice == .init(message: "Connected Root Team on Coolify.", isError: false))
+		#expect(keychain.platformConnectionStorage.keys.sorted() == ["coolify.0.https://coolify.example.com"])
+		#expect(try await PlatformConnectionStore(service: keychain).accessToken(for: connection.id).get() == "3|coolify")
+	}
+
+	@Test("a refused Coolify token is explained, and nothing is saved")
+	func coolifyRefused() async {
+		let model = model(connectCoolify: { _, _ in .failure(.apiDisabled) })
+		#expect(await model.connectCoolify(address: "coolify.example.com", token: "3|coolify") == .failed(CoolifyConnectError.apiDisabled.message))
+		#expect(model.connections.isEmpty && keychain.platformConnectionStorage.isEmpty)
+	}
+
+	@Test("locking while Coolify checks the token drops the connection unsaved")
+	func coolifyDroppedOnLock() async throws {
+		let gate = AsyncGate()
+		let model = model(connectCoolify: { _, _ in
+			await gate.wait()
+			return .success(Self.rootTeam)
+		})
+		let outcome = Task { await model.connectCoolify(address: "coolify.example.com", token: "3|coolify") }
+		try await Task.sleep(for: .milliseconds(30))
+		model.reset()
+		await gate.open()
+		#expect(await outcome.value == .dropped)
+		#expect(model.connections.isEmpty && model.notice == nil)
+		#expect(keychain.platformConnectionStorage.isEmpty)
 	}
 
 	@Test("loading reads what this Mac holds")
@@ -347,6 +441,85 @@ extension SheetInteractionTests {
 			try await host.click("Connect Vercel")
 			try await host.settle()
 			#expect(!store.platforms.isConnecting)
+		}
+
+		@Test("a connected Coolify team shows with its instance, and Connect Coolify opens the sheet")
+		func coolifySection() async throws {
+			_ = try await PlatformConnectionStore(service: keychain).save(
+				.coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.northwind.dev")!, teamID: "0", teamName: "Northwind")),
+				accessToken: "3|coolify", at: Date()).get()
+			let (store, host) = try await page()
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Northwind"))
+			#expect(try await host.waitForText("coolify.northwind.dev"))
+			#expect(try await host.waitForText("No Vercel accounts connected yet"))
+			try await host.click("Connect Coolify")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Connect Coolify opens its sheet")
+			let sheet = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("Turn on API access", in: sheet))
+		}
+	}
+
+	@Suite("Connect Coolify sheet, rendered")
+	@MainActor
+	struct ConnectCoolifySheetRenderingTests {
+		private let keychain = MockKeychainService()
+
+		private final class Answers: @unchecked Sendable {
+			private let lock = NSLock()
+			private var pending: [Result<CoolifyConnection, CoolifyConnectError>]
+			private var received: [(address: String, token: String)] = []
+
+			init(_ answers: [Result<CoolifyConnection, CoolifyConnectError>]) { pending = answers }
+
+			var calls: [(address: String, token: String)] { lock.withLock { received } }
+
+			func next(_ address: String, _ token: String) -> Result<CoolifyConnection, CoolifyConnectError> {
+				lock.withLock {
+					received.append((address, token))
+					return pending.isEmpty ? .failure(.cancelled) : pending.removeFirst()
+				}
+			}
+		}
+
+		private func sheet(_ answers: Answers) -> (PlatformConnections, SheetTestHost<ConnectCoolifySheet>) {
+			let platforms = PlatformConnections(
+				store: PlatformConnectionStore(service: keychain),
+				connect: { _, _ in .failure(.cancelled) },
+				connectCoolify: { answers.next($0, $1) },
+				session: { nil },
+				openURL: { _ in })
+			let host = SheetTestHost(ConnectCoolifySheet(platforms: platforms), size: NSSize(width: 520, height: 520), keepsRequestedSize: true, usesHostingView: true)
+			return (platforms, host)
+		}
+
+		/// The sheet's own Connect button, in its footer, not the title above it.
+		private let footer = CGRect(x: 0.5, y: 0, width: 0.5, height: 0.2)
+
+		@Test("Connect waits for both fields, explains a refusal, then saves the team Coolify names")
+		func connects() async throws {
+			let northwind = CoolifyConnection(
+				instance: CoolifyInstance(origin: "https://coolify.northwind.dev")!, team: CoolifyTeam(id: "4", name: "Northwind"), token: "3|coolify")
+			let answers = Answers([.failure(.apiDisabled), .success(northwind)])
+			let (platforms, host) = sheet(answers)
+			defer { host.window.close() }
+			#expect(try await host.waitForText("Read and Write permissions"))
+			try await host.click("Connect", region: footer)
+			try await host.settle()
+			#expect(answers.calls.isEmpty, "Nothing is checked until both fields are filled")
+
+			try host.enterText("coolify.northwind.dev", at: 0)
+			try host.enterValue("3|coolify")
+			try await host.click("Connect", region: footer)
+			#expect(try await host.waitForText("API is turned off"))
+			#expect(platforms.connections.isEmpty && keychain.platformConnectionStorage.isEmpty)
+
+			try await host.click("Connect", region: footer)
+			#expect(try await host.waitUntil { !platforms.connections.isEmpty })
+			#expect(answers.calls.map(\.address) == ["coolify.northwind.dev", "coolify.northwind.dev"])
+			#expect(answers.calls.map(\.token) == ["3|coolify", "3|coolify"])
+			#expect(platforms.connections.map(\.name) == ["Northwind"])
+			#expect(keychain.platformConnectionStorage.keys.sorted() == ["coolify.4.https://coolify.northwind.dev"])
 		}
 	}
 }

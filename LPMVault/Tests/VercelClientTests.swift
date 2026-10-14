@@ -253,7 +253,7 @@ struct VercelClientTests {
 
 	@Test("redirects are refused, so the token never follows one to another host")
 	func refusesRedirects() async throws {
-		let delegate = VercelSessionDelegate()
+		let delegate = RedirectRefusingHTTPDelegate()
 		let session = URLSession(configuration: .ephemeral)
 		let task = session.dataTask(with: URL(string: "https://api.vercel.com/v2/user")!)
 		let response = try #require(HTTPURLResponse(

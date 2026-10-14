@@ -58,10 +58,19 @@ enum PublishDestinationInvalidity: Equatable, Sendable {
 
 enum PublishPlatform: String, CaseIterable, Sendable {
 	case vercel
+	case coolify
 
 	var displayName: String {
 		switch self {
 		case .vercel: "Vercel"
+		case .coolify: "Coolify"
+		}
+	}
+
+	var systemImage: String {
+		switch self {
+		case .vercel: "triangle.fill"
+		case .coolify: "server.rack"
 		}
 	}
 }

@@ -95,6 +95,7 @@ struct PublishDestinationTests {
 			#"{"version":99999999999999999999999,"vault":"VAULT","destinations":[]}"#,
 			record(platform: "netlify", extra: #","netlifySite":"x""#),
 			record(platform: "netlify"),
+			record(platform: "coolify"),
 			record(environment: #"{"kind":"branch","branch":"main"}"#),
 		]
 	)

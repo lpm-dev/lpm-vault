@@ -24,6 +24,16 @@ final class PlatformConnections {
 		_ open: @escaping @Sendable (URL) async -> Void
 	) async -> Result<(grant: VercelGrant, account: VercelAccount), VercelConnectError>
 
+	/// One check of a Coolify address and token; see `CoolifyConnector.connect`.
+	typealias ConnectCoolify = @Sendable (_ address: String, _ token: String) async -> Result<CoolifyConnection, CoolifyConnectError>
+
+	enum CoolifyOutcome: Equatable {
+		case connected(PlatformConnection)
+		case failed(String)
+		/// The vault locked before it finished.
+		case dropped
+	}
+
 	private(set) var connections: [PlatformConnection] = []
 	private(set) var phase: Phase = .idle
 	private(set) var notice: Notice?
@@ -33,6 +43,7 @@ final class PlatformConnections {
 
 	private let store: PlatformConnectionStore
 	private let connect: Connect
+	private let connectCoolifyTeam: ConnectCoolify
 	private let session: SessionProvider
 	private let openURL: @Sendable (URL) async -> Void
 	private let now: @Sendable () -> Date
@@ -43,12 +54,14 @@ final class PlatformConnections {
 	init(
 		store: PlatformConnectionStore,
 		connect: @escaping Connect = { await VercelConnector().connect(session: $0, open: $1) },
+		connectCoolify: @escaping ConnectCoolify = { await CoolifyConnector().connect(address: $0, token: $1) },
 		session: @escaping SessionProvider,
 		openURL: @escaping @Sendable (URL) async -> Void = PlatformConnections.openInBrowser,
 		now: @escaping @Sendable () -> Date = { Date() }
 	) {
 		self.store = store
 		self.connect = connect
+		self.connectCoolifyTeam = connectCoolify
 		self.session = session
 		self.openURL = openURL
 		self.now = now
@@ -108,9 +121,7 @@ final class PlatformConnections {
 				switch await self.store.save(connected.grant, account: connected.account, at: self.now()) {
 				case .success(let connection):
 					guard generation == self.generation else { return }
-					self.connections.removeAll { $0.id == connection.id }
-					self.connections.append(connection)
-					self.connections.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+					self.insert(connection)
 					self.notice = Notice(message: "Connected \(connection.name) on Vercel.", isError: false)
 				case .failure(let error):
 					guard generation == self.generation else { return }
@@ -122,6 +133,37 @@ final class PlatformConnections {
 				self.notice = Notice(message: error.message, isError: true)
 			}
 		}
+	}
+
+	/// Checks the token with the Coolify instance at `address`, then saves
+	/// the connection, replacing an earlier one to the same team.
+	func connectCoolify(address: String, token: String) async -> CoolifyOutcome {
+		notice = nil
+		let generation = generation
+		let result = await connectCoolifyTeam(address, token)
+		guard generation == self.generation else { return .dropped }
+		switch result {
+		case .success(let connected):
+			let account = CoolifyConnectionAccount(instance: connected.instance, teamID: connected.team.id, teamName: connected.team.name)
+			switch await store.save(.coolify(account), accessToken: connected.token, at: now()) {
+			case .success(let connection):
+				guard generation == self.generation else { return .dropped }
+				insert(connection)
+				notice = Notice(message: "Connected \(connection.name) on Coolify.", isError: false)
+				return .connected(connection)
+			case .failure(let error):
+				guard generation == self.generation else { return .dropped }
+				return .failed("Coolify accepted the token, but the connection couldn't be saved. \(error)")
+			}
+		case .failure(let error):
+			return .failed(error.message)
+		}
+	}
+
+	private func insert(_ connection: PlatformConnection) {
+		connections.removeAll { $0.id == connection.id }
+		connections.append(connection)
+		connections.sort(by: PlatformConnectionStore.displayOrder)
 	}
 
 	func cancelConnecting() {

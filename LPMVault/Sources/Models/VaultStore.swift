@@ -1364,11 +1364,13 @@ final class VaultStore {
   /// The platform accounts this Mac publishes to, for the Platforms page.
   let platformConnectionStore: PlatformConnectionStore
   private let platformClient: @Sendable (String) -> any VercelClientProtocol
+  private let coolifyClient: CoolifyConnector.ClientFactory
   /// Each project's saved publish destinations, for the Publish menu.
   private(set) var publishDestinations: [String: [PublishDestinationSummary]] = [:]
   @ObservationIgnored private(set) lazy var platforms = PlatformConnections(
     store: platformConnectionStore,
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
+    connectCoolify: { [coolifyClient] in await CoolifyConnector(client: coolifyClient).connect(address: $0, token: $1) },
     session: { [weak self] in await self?.platformSession() },
     openURL: platformURLOpener ?? PlatformConnections.openInBrowser
   )
@@ -1805,6 +1807,7 @@ final class VaultStore {
     authTokenProvider: (@Sendable (String, URL) async throws -> String?)? = nil,
     platformConnect: PlatformConnections.Connect? = nil,
     platformClient: (@Sendable (String) -> any VercelClientProtocol)? = nil,
+    coolifyClient: CoolifyConnector.ClientFactory? = nil,
     platformURLOpener: (@Sendable (URL) async -> Void)? = nil,
     authAuthorizationProvider:
       @escaping @Sendable (String, URL) async throws -> AuthSessionAuthorization? = {
@@ -1863,6 +1866,7 @@ final class VaultStore {
     self.platformConnect = platformConnect
     self.platformConnectionStore = PlatformConnectionStore(service: keychainService)
     self.platformClient = platformClient ?? { VercelClient(token: $0) }
+    self.coolifyClient = coolifyClient ?? { CoolifyClient(instance: $0, token: $1) }
     self.platformURLOpener = platformURLOpener
     self.biometricService = biometricService
     self.injectedAPIService = apiService

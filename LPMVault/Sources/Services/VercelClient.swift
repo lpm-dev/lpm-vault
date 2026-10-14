@@ -153,7 +153,7 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 		self.baseURL = baseURL
 		self.session = session ?? URLSession(
 			configuration: BoundedHTTPResponse.ephemeralConfiguration(requestTimeout: 20, resourceTimeout: 60),
-			delegate: VercelSessionDelegate(),
+			delegate: RedirectRefusingHTTPDelegate(),
 			delegateQueue: nil
 		)
 	}
@@ -586,18 +586,5 @@ struct VercelClient: VercelClientProtocol, CustomStringConvertible, CustomDebugS
 			let invalidToken: Bool?
 		}
 		let error: Detail?
-	}
-}
-
-/// Refuses redirects, so a request and its token go only where they were sent.
-final class VercelSessionDelegate: BoundedHTTPResponseDelegate, @unchecked Sendable {
-	func urlSession(
-		_ session: URLSession,
-		task: URLSessionTask,
-		willPerformHTTPRedirection response: HTTPURLResponse,
-		newRequest request: URLRequest,
-		completionHandler: @escaping (URLRequest?) -> Void
-	) {
-		completionHandler(nil)
 	}
 }

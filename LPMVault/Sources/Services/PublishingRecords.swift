@@ -102,6 +102,9 @@ enum PublishingRecords {
 				projectName: try vercel.string("projectName"),
 				environment: try vercelEnvironment(vercel.value("environment"))
 			))
+		case .coolify:
+			// This version connects Coolify but doesn't publish to it yet.
+			throw DecodingError.newerVersion
 		}
 		guard case .array(let excluded) = try fields.value("excludedKeys"),
 			excluded.count <= PublishDestination.maximumExcludedKeys

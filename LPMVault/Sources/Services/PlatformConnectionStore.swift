@@ -42,27 +42,39 @@ actor PlatformConnectionStore {
 				else { continue }
 				connections.append(record.connection)
 			}
-			return connections.sorted {
-				$0.name.localizedStandardCompare($1.name) == .orderedAscending
-					|| ($0.name == $1.name && $0.id < $1.id)
-			}
+			return connections.sorted(by: Self.displayOrder)
 		}.mapError(Self.storeError)
+	}
+
+	/// By name, then by ID, so connections with the same name keep one order.
+	nonisolated static func displayOrder(_ lhs: PlatformConnection, _ rhs: PlatformConnection) -> Bool {
+		switch lhs.name.localizedStandardCompare(rhs.name) {
+		case .orderedAscending: true
+		case .orderedDescending: false
+		case .orderedSame: lhs.id < rhs.id
+		}
 	}
 
 	/// Saves the Vercel grant, replacing any earlier connection to the same account.
 	func save(_ grant: VercelGrant, account: VercelAccount, at date: Date) -> Result<PlatformConnection, PlatformConnectionStoreError> {
+		save(
+			.vercel(VercelConnectionAccount(
+				installationID: grant.installationID,
+				teamID: grant.teamID,
+				userID: grant.userID,
+				name: account.name,
+				slug: account.slug
+			)),
+			accessToken: grant.accessToken,
+			at: date
+		)
+	}
+
+	/// Saves the account with its token, replacing any earlier connection to the same account.
+	func save(_ account: PlatformConnection.Account, accessToken: String, at date: Date) -> Result<PlatformConnection, PlatformConnectionStoreError> {
 		Result {
-			let connection = PlatformConnection(
-				account: .vercel(VercelConnectionAccount(
-					installationID: grant.installationID,
-					teamID: grant.teamID,
-					userID: grant.userID,
-					name: account.name,
-					slug: account.slug
-				)),
-				connectedAt: PublishTimestamp.normalized(date)
-			)
-			guard let data = Self.encode(Record(connection: connection, accessToken: grant.accessToken)) else {
+			let connection = PlatformConnection(account: account, connectedAt: PublishTimestamp.normalized(date))
+			guard let data = Self.encode(Record(connection: connection, accessToken: accessToken)) else {
 				throw PlatformConnectionStoreError.unreadable
 			}
 			try service.writeAppItem(.platformConnections, account: connection.id, data: data).get()
@@ -93,30 +105,45 @@ actor PlatformConnectionStore {
 	}
 
 	static func encode(_ record: Record) -> Data? {
-		guard case .vercel(let vercel) = record.connection.account,
-			VercelGrant(
-				accessToken: record.accessToken, installationID: vercel.installationID,
-				teamID: vercel.teamID, userID: vercel.userID) != nil,
-			isValidName(vercel.name), vercel.slug.map(isValidName) ?? true
-		else { return nil }
-		let object: [String: Any] = [
+		var object: [String: Any] = [
 			"version": version,
-			"platform": "vercel",
-			"installationId": vercel.installationID,
-			"teamId": vercel.teamID ?? NSNull(),
-			"userId": vercel.userID,
-			"name": vercel.name,
-			"slug": vercel.slug ?? NSNull(),
 			"accessToken": record.accessToken,
 			"connectedAt": PublishTimestamp.milliseconds(record.connection.connectedAt),
 		]
+		switch record.connection.account {
+		case .vercel(let vercel):
+			guard VercelGrant(
+				accessToken: record.accessToken, installationID: vercel.installationID,
+				teamID: vercel.teamID, userID: vercel.userID) != nil,
+				isValidName(vercel.name), vercel.slug.map(isValidName) ?? true
+			else { return nil }
+			object.merge([
+				"platform": "vercel",
+				"installationId": vercel.installationID,
+				"teamId": vercel.teamID ?? NSNull(),
+				"userId": vercel.userID,
+				"name": vercel.name,
+				"slug": vercel.slug ?? NSNull(),
+			]) { _, new in new }
+		case .coolify(let coolify):
+			guard CoolifyClient.isValidAccessToken(record.accessToken), CoolifyTeam.isValidID(coolify.teamID),
+				isValidName(coolify.teamName)
+			else { return nil }
+			object.merge([
+				"platform": "coolify",
+				"instance": coolify.instance.origin,
+				"teamId": coolify.teamID,
+				"teamName": coolify.teamName,
+			]) { _, new in new }
+		}
 		guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
 			data.count <= maximumRecordBytes
 		else { return nil }
 		return data
 	}
 
-	/// The record in `data`, which must belong under `account`.
+	/// The record in `data`, which must belong under `account`. A platform
+	/// this version doesn't know reads as a newer version's record.
 	static func decode(_ data: Data, account: String) -> Result<Record, PlatformConnectionStoreError> {
 		guard data.count <= maximumRecordBytes,
 			let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -124,25 +151,47 @@ actor PlatformConnectionStore {
 		else { return .failure(.unreadable) }
 		guard version <= Self.version else { return .failure(.newerVersion) }
 		guard version == Self.version,
-			object["platform"] as? String == "vercel",
-			let installationID = object["installationId"] as? String,
-			let userID = object["userId"] as? String,
+			let platform = object["platform"] as? String,
 			let accessToken = object["accessToken"] as? String,
-			let name = object["name"] as? String, isValidName(name),
 			let milliseconds = object["connectedAt"] as? Int64,
-			(0...PublishTimestamp.maximumMilliseconds).contains(milliseconds),
-			let teamID = optionalString(object["teamId"]),
-			let slug = optionalString(object["slug"]),
-			slug.map(isValidName) ?? true,
-			let grant = VercelGrant(accessToken: accessToken, installationID: installationID, teamID: teamID, userID: userID)
+			(0...PublishTimestamp.maximumMilliseconds).contains(milliseconds)
 		else { return .failure(.unreadable) }
-		let connection = PlatformConnection(
-			account: .vercel(VercelConnectionAccount(
-				installationID: grant.installationID, teamID: grant.teamID, userID: grant.userID, name: name, slug: slug)),
-			connectedAt: PublishTimestamp.date(milliseconds: milliseconds)
-		)
-		guard connection.id == account else { return .failure(.unreadable) }
-		return .success(Record(connection: connection, accessToken: grant.accessToken))
+		let connectedAt = PublishTimestamp.date(milliseconds: milliseconds)
+		let record: Record
+		switch PublishPlatform(rawValue: platform) {
+		case .vercel?:
+			guard Set(object.keys) == ["version", "platform", "accessToken", "connectedAt", "installationId", "teamId", "userId", "name", "slug"],
+				let installationID = object["installationId"] as? String,
+				let userID = object["userId"] as? String,
+				let name = object["name"] as? String, isValidName(name),
+				let teamID = optionalString(object["teamId"]),
+				let slug = optionalString(object["slug"]),
+				slug.map(isValidName) ?? true,
+				let grant = VercelGrant(accessToken: accessToken, installationID: installationID, teamID: teamID, userID: userID)
+			else { return .failure(.unreadable) }
+			record = Record(
+				connection: PlatformConnection(
+					account: .vercel(VercelConnectionAccount(
+						installationID: grant.installationID, teamID: grant.teamID, userID: grant.userID, name: name, slug: slug)),
+					connectedAt: connectedAt),
+				accessToken: grant.accessToken)
+		case .coolify?:
+			guard Set(object.keys) == ["version", "platform", "accessToken", "connectedAt", "instance", "teamId", "teamName"],
+				let origin = object["instance"] as? String, let instance = CoolifyInstance(origin: origin),
+				let teamID = object["teamId"] as? String, CoolifyTeam.isValidID(teamID),
+				let teamName = object["teamName"] as? String, isValidName(teamName),
+				CoolifyClient.isValidAccessToken(accessToken)
+			else { return .failure(.unreadable) }
+			record = Record(
+				connection: PlatformConnection(
+					account: .coolify(CoolifyConnectionAccount(instance: instance, teamID: teamID, teamName: teamName)),
+					connectedAt: connectedAt),
+				accessToken: accessToken)
+		case nil:
+			return .failure(.newerVersion)
+		}
+		guard record.connection.id == account else { return .failure(.unreadable) }
+		return .success(record)
 	}
 
 	/// A present string, or `.some(nil)` for an explicit null; nil when it's neither.

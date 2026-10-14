@@ -289,10 +289,10 @@ final class PublishSession: Identifiable {
 	}
 
 	private static func teamID(of connectionID: PlatformConnection.ID, in connections: [PlatformConnection]) -> String? {
-		guard let connection = connections.first(where: { $0.id == connectionID }) else { return nil }
-		switch connection.account {
-		case .vercel(let account): return account.teamID
-		}
+		guard let connection = connections.first(where: { $0.id == connectionID }),
+			case .vercel(let account) = connection.account
+		else { return nil }
+		return account.teamID
 	}
 
 	/// The destination the fields describe: the saved one, the saved one
