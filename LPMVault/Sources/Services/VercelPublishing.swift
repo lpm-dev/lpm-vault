@@ -36,6 +36,9 @@ enum VercelPublishing {
 		"NOW_REGION", "TZ", "LAMBDA_TASK_ROOT", "LAMBDA_RUNTIME_DIR",
 	]
 
+	/// What Vercel accepts. It can't make a Secret readable again.
+	static let platform = PublishPlan.Platform(reservedKeys: reservedKeys, secretsStaySecret: true)
+
 	/// How many variables are replaced at once.
 	static let replaceConcurrency = 4
 
@@ -104,30 +107,14 @@ enum VercelPublishing {
 		return names + custom.sorted()
 	}
 
-	/// What happened to each key a publish sent.
-	enum Outcome: Equatable, Sendable {
-		case published
-		case failed(String)
-		/// Not sent, because an earlier refusal stopped the publish.
-		case notSent
-	}
-
-	struct Report: Equatable, Sendable {
-		var outcomes: [String: Outcome] = [:]
-		/// The history records of the keys Vercel accepted.
-		var published: [PublishHistory.Published] = []
-		/// The connection's token was refused, so it needs connecting again.
-		var needsReconnect = false
-	}
-
 	/// Sends `changes` to the target. Each key gets an outcome; a refused
 	/// token or a rate limit stops what hasn't been sent yet.
 	static func publish(
 		_ changes: [PublishPlan.Change],
 		to target: VercelPublishTarget,
 		using client: any VercelClientProtocol
-	) async -> Report {
-		var result = Report()
+	) async -> PublishReport {
+		var result = PublishReport()
 		let adds = changes.filter { $0.operation == .add }
 		let replaces = changes.compactMap { change -> (PublishPlan.Change, String)? in
 			if case .replace(let id) = change.operation { return (change, id) }
@@ -185,7 +172,7 @@ enum VercelPublishing {
 	private static func record(
 		_ answer: Result<VercelEnvironmentVariable, VercelAPIError>,
 		for change: PublishPlan.Change,
-		into result: inout Report,
+		into result: inout PublishReport,
 		stopped: inout Bool
 	) {
 		switch answer {

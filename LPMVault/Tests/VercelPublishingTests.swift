@@ -131,7 +131,7 @@ struct VercelPublishingTests {
 				guard case .replace(let id) = item.2 else { return nil }
 				return (item.0, PublishPlan.RemoteVariable(id: id, updatedAt: nil, storedAsSecret: item.3))
 			}),
-			reservedKeys: [], history: nil, fingerprintKey: key, secretsStaySecret: true)
+			platform: PublishPlan.Platform(secretsStaySecret: true), history: nil, fingerprintKey: key)
 		var selection = PublishPlan.Selection(defaultsOf: plan)
 		for item in items { selection.set(item.0, selected: true, in: plan) }
 		return (try? plan.changes(for: selection, values: Dictionary(uniqueKeysWithValues: items.map { ($0.0, $0.1) }), fingerprintKey: key).get()) ?? []

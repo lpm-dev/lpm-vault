@@ -1638,7 +1638,8 @@ final class VaultStore {
       confirm: { [weak self] reason in await self?.authenticateForSensitiveAction(reason: reason, reusingRecent: false) ?? false },
       publishing: publishing,
       connections: platformConnectionStore,
-      client: platformClient,
+      vercel: platformClient,
+      coolify: coolifyClient,
       didChange: { [weak self] in Task { await self?.loadPublishDestinations(for: projectID) } })
     return PublishSession(
       vaultID: projectID,

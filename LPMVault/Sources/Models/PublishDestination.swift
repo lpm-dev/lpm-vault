@@ -77,16 +77,19 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 
 enum PublishTarget: Hashable, Sendable {
 	case vercel(VercelPublishTarget)
+	case coolify(CoolifyPublishTarget)
 
 	/// Where a publish writes. Two destinations with the same location would
 	/// overwrite each other's values, so a vault keeps at most one per location.
 	enum Location: Hashable, Sendable {
 		case vercel(teamID: String?, projectID: String, environment: String)
+		case coolify(instance: String, resource: CoolifyPublishTarget.Resource, resourceID: String, deployments: CoolifyPublishTarget.Deployments)
 	}
 
 	var platform: PublishPlatform {
 		switch self {
 		case .vercel: .vercel
+		case .coolify: .coolify
 		}
 	}
 
@@ -94,13 +97,60 @@ enum PublishTarget: Hashable, Sendable {
 		switch self {
 		case .vercel(let target):
 			.vercel(teamID: target.teamID, projectID: target.projectID, environment: target.environment.identifier)
+		case .coolify(let target):
+			.coolify(instance: target.instance.origin, resource: target.resource, resourceID: target.resourceID, deployments: target.deployments)
+		}
+	}
+
+	/// The connection that publishes here.
+	var connectionID: PlatformConnection.ID {
+		switch self {
+		case .vercel(let target): target.connectionID
+		case .coolify(let target): target.connectionID
+		}
+	}
+
+	/// The account's name when the destination was saved, such as a team's.
+	var accountName: String {
+		switch self {
+		case .vercel(let target): target.teamName
+		case .coolify(let target): target.teamName
+		}
+	}
+
+	/// What the platform calls the place, such as a project, then the part of it written to.
+	var placeName: String {
+		switch self {
+		case .vercel(let target): "\(target.projectName) / \(target.environment.displayName)"
+		case .coolify(let target): "\(target.resourceName) / \(target.deployments.displayName)"
 		}
 	}
 
 	fileprivate var invalidity: PublishDestinationInvalidity? {
 		switch self {
 		case .vercel(let target): target.invalidity
+		case .coolify(let target): target.invalidity
 		}
+	}
+}
+
+/// IDs a platform assigns, such as Vercel's `prj_…` and Coolify's UUIDs,
+/// use only these characters, so one can go into a request path without escaping.
+enum PlatformIdentifier {
+	static let maximumLength = 100
+
+	static func isValid(_ text: String) -> Bool {
+		!text.isEmpty && text.utf8.count <= maximumLength
+			&& text.utf8.allSatisfy { byte in
+				(byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A)
+					|| byte == 0x5F || byte == 0x2D
+			}
+	}
+
+	/// A display name. It's shown with its direction controls escaped.
+	static func isValidName(_ text: String) -> Bool {
+		!text.isEmpty && text.utf8.count <= 512 && text.trimmingCharacters(in: .whitespaces) == text
+			&& !text.unicodeScalars.contains { $0.properties.generalCategory == .control }
 	}
 }
 
@@ -154,8 +204,7 @@ struct VercelPublishTarget: Hashable, Sendable {
 	}
 
 	/// The longest ID the LPM CLI accepts from Vercel.
-	static let maximumIdentifierLength = 100
-	static let maximumNameBytes = 512
+	static let maximumIdentifierLength = PlatformIdentifier.maximumLength
 
 	/// The connection that publishes here.
 	var connectionID: PlatformConnection.ID { PlatformConnection.vercelID(accountID: accountID) }
@@ -172,24 +221,73 @@ struct VercelPublishTarget: Hashable, Sendable {
 			names.append(name)
 		}
 		guard identifiers.allSatisfy(Self.isValidIdentifier) else { return .targetIdentifier }
-		guard names.allSatisfy(Self.isValidName) else { return .targetName }
+		guard names.allSatisfy(PlatformIdentifier.isValidName) else { return .targetName }
 		return nil
 	}
 
-	/// Vercel's IDs, such as `prj_…` and `team_…`, use only these characters,
-	/// so one can go into a request path without escaping.
+	/// Vercel's IDs, such as `prj_…` and `team_…`.
 	static func isValidIdentifier(_ text: String) -> Bool {
-		!text.isEmpty && text.utf8.count <= maximumIdentifierLength
-			&& text.utf8.allSatisfy { byte in
-				(byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A)
-					|| byte == 0x5F || byte == 0x2D
+		PlatformIdentifier.isValid(text)
+	}
+}
+
+/// A Coolify application's or service's variables, on one instance.
+struct CoolifyPublishTarget: Hashable, Sendable {
+	enum Resource: String, Hashable, Sendable {
+		case application
+		/// A service, such as one of Coolify's one-click stacks.
+		case service
+
+		var displayName: String {
+			switch self {
+			case .application: "Application"
+			case .service: "Service"
 			}
+		}
 	}
 
-	/// A display name. It's shown with its direction controls escaped.
-	private static func isValidName(_ text: String) -> Bool {
-		!text.isEmpty && text.utf8.count <= maximumNameBytes && text.trimmingCharacters(in: .whitespaces) == text
-			&& !text.unicodeScalars.contains { $0.properties.generalCategory == .control }
+	/// Which deployments' variables are written. Only an application has
+	/// preview deployments, with variables of their own.
+	enum Deployments: String, Hashable, Sendable {
+		case production
+		case preview
+
+		var displayName: String {
+			switch self {
+			case .production: "Production"
+			case .preview: "Preview deployments"
+			}
+		}
+	}
+
+	let instance: CoolifyInstance
+	let teamID: String
+	/// The team's name when the destination was saved, for display.
+	var teamName: String
+	let resource: Resource
+	/// The application's or service's UUID.
+	let resourceID: String
+	/// The resource's name when the destination was saved, for display.
+	var resourceName: String
+	/// The Coolify project and environment holding the resource, for display;
+	/// nil when Coolify didn't name them.
+	var projectName: String?
+	var environmentName: String?
+	var deployments: Deployments
+
+	/// The connection that publishes here.
+	var connectionID: PlatformConnection.ID { PlatformConnection.coolifyID(instance: instance, teamID: teamID) }
+
+	fileprivate var invalidity: PublishDestinationInvalidity? {
+		guard CoolifyTeam.isValidID(teamID), PlatformIdentifier.isValid(resourceID),
+			resource == .application || deployments == .production
+		else { return .targetIdentifier }
+		guard [teamName, resourceName].allSatisfy(PlatformIdentifier.isValidName),
+			[projectName, environmentName].allSatisfy({ $0.map(PlatformIdentifier.isValidName) ?? true })
+		else {
+			return .targetName
+		}
+		return nil
 	}
 }
 

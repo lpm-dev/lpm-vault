@@ -91,6 +91,35 @@ struct PublishDestinationTests {
 		#expect(destination.invalidity == invalidity)
 	}
 
+	@Test("a Coolify destination reads back exactly, with or without its project's names, and writes to its resource's deployments")
+	func coolifyRoundTrip() throws {
+		let application = coolifyDestination()
+		let preview = coolifyDestination(deployments: .preview, project: nil)
+		let service = coolifyDestination(resource: .service, resourceID: "svc-db")
+		let data = try #require(PublishingRecords.encode([application, preview, service], vaultID: publishTestVault))
+		#expect(Set(try PublishingRecords.decodeDestinations(data, vaultID: publishTestVault).get()) == [application, preview, service])
+		var renamed = coolifyDestination(source: "staging")
+		if case .coolify(var target) = renamed.target {
+			target.resourceName = "renamed"
+			target.teamName = "Renamed"
+			renamed.target = .coolify(target)
+		}
+		#expect(renamed.target.location == application.target.location)
+		#expect(preview.target.location != application.target.location)
+		#expect(PublishingRecords.encode([application, renamed], vaultID: publishTestVault) == nil)
+		#expect(application.target.connectionID == "coolify.0.https://coolify.example.com")
+		#expect(application.target.placeName == "api / Production" && preview.target.placeName == "api / Preview deployments")
+	}
+
+	@Test("a Coolify destination with an unsafe ID, a service with preview deployments, or a bad name can't be stored")
+	func invalidCoolify() {
+		#expect(coolifyDestination(resourceID: "../x").invalidity == .targetIdentifier)
+		#expect(coolifyDestination(resource: .service, deployments: .preview).invalidity == .targetIdentifier)
+		#expect(coolifyDestination(teamID: "root").invalidity == .targetIdentifier)
+		#expect(coolifyDestination(project: " Storefront").invalidity == .targetName)
+		#expect(coolifyDestination().invalidity == nil)
+	}
+
 	@Test("a destination changed before it was created is invalid")
 	func timestamps() {
 		var destination = vercelDestination()
@@ -105,8 +134,9 @@ struct PublishDestinationTests {
 			#"{"version":99999999999999999999999,"vault":"VAULT","destinations":[]}"#,
 			record(platform: "netlify", extra: #","netlifySite":"x""#),
 			record(platform: "netlify"),
-			record(platform: "coolify"),
 			record(environment: #"{"kind":"branch","branch":"main"}"#),
+			coolifyRecord(resource: "database"),
+			coolifyRecord(deployments: "staging"),
 		]
 	)
 	func newerVersion(json: String) {
@@ -133,6 +163,12 @@ struct PublishDestinationTests {
 			#"{"version":-1,"vault":"VAULT","destinations":[]}"#,
 			record().replacingOccurrences(of: "excludedKeys", with: "excluded\u{212A}eys"),
 			record().replacingOccurrences(of: #""vault":"VAULT""#, with: #""vault":"VAULT\u{301}""#),
+			record(platform: "coolify"),
+			coolifyRecord(instance: "https://Coolify.example.com"),
+			coolifyRecord(instance: "http://coolify.example.com"),
+			coolifyRecord(resource: "service", deployments: "preview"),
+			coolifyRecord(extra: #","buildPack":"nixpacks""#),
+			coolifyRecord(teamID: "team_acme"),
 		]
 	)
 	func unreadable(json: String) {
@@ -154,11 +190,13 @@ struct PublishDestinationTests {
 		#expect(PublishingRecords.decodeDestinations(Data(doubled.utf8), vaultID: publishTestVault) == .failure(.unreadable))
 	}
 
-	@Test("the valid record the tests' damaged variants start from reads")
+	@Test("the valid records the tests' damaged variants start from read")
 	func baseRecord() throws {
-		let data = Data(Self.record().replacingOccurrences(of: "VAULT", with: publishTestVault).utf8)
-		let destinations = try PublishingRecords.decodeDestinations(data, vaultID: publishTestVault).get()
-		#expect(destinations.map(\.sourceEnvironment) == ["production"])
+		for json in [Self.record(), coolifyRecord()] {
+			let data = Data(json.replacingOccurrences(of: "VAULT", with: publishTestVault).utf8)
+			let destinations = try PublishingRecords.decodeDestinations(data, vaultID: publishTestVault).get()
+			#expect(destinations.map(\.sourceEnvironment) == ["production"])
+		}
 	}
 
 	static func record(
@@ -174,6 +212,36 @@ struct PublishDestinationTests {
 			+ #""target":{"teamId":"team_acme","accountId":"team_acme","teamName":"Acme","projectId":"prj_demo","projectName":"demo-api","environment":\#(environment)},"#
 			+ #""excludedKeys":\#(excluded),"createdAt":\#(createdAt),"updatedAt":1760000000123\#(extra)}]}"#
 	}
+}
+
+func coolifyDestination(
+	source: String = "production",
+	teamID: String = "0",
+	resource: CoolifyPublishTarget.Resource = .application,
+	resourceID: String = "app-api",
+	deployments: CoolifyPublishTarget.Deployments = .production,
+	project: String? = "Storefront"
+) -> PublishDestination {
+	PublishDestination(
+		sourceEnvironment: source,
+		target: .coolify(CoolifyPublishTarget(
+			instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: teamID, teamName: "Root Team",
+			resource: resource, resourceID: resourceID, resourceName: "api",
+			projectName: project, environmentName: project == nil ? nil : "production", deployments: deployments)),
+		createdAt: Date(timeIntervalSince1970: 1_760_000_000.123))
+}
+
+private func coolifyRecord(
+	instance: String = "https://coolify.example.com",
+	teamID: String = "0",
+	resource: String = "application",
+	deployments: String = "production",
+	extra: String = ""
+) -> String {
+	#"{"version":1,"vault":"VAULT","destinations":[{"id":"9a0b7c2d-1e3f-4a5b-8c6d-7e8f9a0b1c2d","source":"production","platform":"coolify","#
+		+ #""target":{"instance":"\#(instance)","teamId":"\#(teamID)","teamName":"Root Team","resource":"\#(resource)","resourceId":"app-api","#
+		+ #""resourceName":"api","projectName":"Storefront","environmentName":null,"deployments":"\#(deployments)"\#(extra)},"#
+		+ #""excludedKeys":[],"createdAt":1760000000123,"updatedAt":1760000000123}]}"#
 }
 
 private func record(

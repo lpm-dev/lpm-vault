@@ -477,7 +477,7 @@ struct PublishingRecordFindingTests {
 		_ = try await store.save(destination, to: publishTestVault).get()
 		let plan = PublishPlan(
 			destination: destination, values: ["OLD": "1", "KEEP": "2"], rules: .empty, check: nil, remote: [:],
-			reservedKeys: [], history: nil, fingerprintKey: secret)
+			history: nil, fingerprintKey: secret)
 		let selection = PublishPlan.Selection(defaultsOf: plan)
 		_ = try await store.renameKey("OLD", to: "NEW", sourcedFrom: ["staging"], in: publishTestVault).get()
 		let changes = try plan.changes(for: selection, values: ["OLD": "1", "KEEP": "2"], fingerprintKey: secret).get()
@@ -496,7 +496,7 @@ struct PublishingRecordFindingTests {
 		let values = ["OLD": "1", "A": "2"]
 		let plan = PublishPlan(
 			destination: destination, values: values, rules: .empty, check: nil, remote: [:],
-			reservedKeys: [], history: nil, fingerprintKey: secret)
+			history: nil, fingerprintKey: secret)
 		let selection = PublishPlan.Selection(defaultsOf: plan)
 		_ = try await store.renameKey("OLD", to: "NEW", sourcedFrom: ["staging"], in: publishTestVault).get()
 		let changes = try plan.changes(for: selection, values: values, fingerprintKey: secret).get()
@@ -516,7 +516,7 @@ struct PublishingRecordFindingTests {
 			let stored = try #require(try await store.destinations(of: publishTestVault).get().first)
 			let history = try await store.history(of: destination.id, in: publishTestVault).get()
 			return PublishPlan(destination: stored, values: values, rules: .empty, check: nil, remote: [:],
-				reservedKeys: [], history: history, fingerprintKey: secret)
+				history: history, fingerprintKey: secret)
 		}
 		let older = try await publish(["A": "1"], at: Date())
 		let newer = try await publish(["A": "1", "B": "2"], at: Date())
@@ -551,7 +551,7 @@ struct PublishingRecordFindingTests {
 		let history = try await store.history(of: destination.id, in: publishTestVault).get()
 		let plan = PublishPlan(
 			destination: destination, values: ["A": "1"], rules: .empty, check: nil, remote: [:],
-			reservedKeys: [], history: history, fingerprintKey: SymmetricKey(size: .bits256))
+			history: history, fingerprintKey: SymmetricKey(size: .bits256))
 		#expect(Set(plan.staleHistory.keys) == ["B", "C"])
 		// B comes back to the source and is published again before the plan is recorded.
 		_ = try await record(["B"], to: destination, in: store).get()
@@ -589,7 +589,7 @@ struct PublishingRecordFindingTests {
 		let values = ["OLD": "1", "A": "2"]
 		let plan = PublishPlan(
 			destination: destination, values: values, rules: .empty, check: nil, remote: [:],
-			reservedKeys: [], history: nil, fingerprintKey: secret)
+			history: nil, fingerprintKey: secret)
 		let selection = PublishPlan.Selection(defaultsOf: plan)
 		_ = try await store.renameKey("OLD", to: "NEW", sourcedFrom: ["staging"], in: publishTestVault).get()
 		_ = try await store.recordPublish(
@@ -607,7 +607,7 @@ struct PublishingRecordFindingTests {
 		let history = try await store.history(of: destination.id, in: publishTestVault).get()
 		let plan = PublishPlan(
 			destination: destination, values: ["A": "1"], rules: .empty, check: nil, remote: [:],
-			reservedKeys: [], history: history, fingerprintKey: SymmetricKey(size: .bits256))
+			history: history, fingerprintKey: SymmetricKey(size: .bits256))
 		_ = try await record(["B"], to: destination, in: store, at: last).get()
 		_ = try await store.recordPublish(
 			[], to: destination.id, at: plan.location, choices: plan.choices(for: PublishPlan.Selection(defaultsOf: plan)),

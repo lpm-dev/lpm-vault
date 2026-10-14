@@ -234,10 +234,8 @@ struct VaultTitleBarView: View {
 	}
 
 	static func title(of destination: PublishDestination) -> String {
-		switch destination.target {
-		case .vercel(let target):
-			"\(target.projectName) / \(target.environment.displayName) — Vercel · \(target.teamName)"
-		}
+		let target = destination.target
+		return "\(target.placeName) — \(target.platform.displayName) · \(target.accountName)"
 	}
 
 	static func subtitle(of summary: PublishDestinationSummary) -> String {

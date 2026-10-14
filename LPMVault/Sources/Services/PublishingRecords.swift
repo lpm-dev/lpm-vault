@@ -74,6 +74,18 @@ enum PublishingRecords {
 				.init(key: "projectName", value: .string(vercel.projectName)),
 				.init(key: "environment", value: .object(environment)),
 			])
+		case .coolify(let coolify):
+			target = .object([
+				.init(key: "instance", value: .string(coolify.instance.origin)),
+				.init(key: "teamId", value: .string(coolify.teamID)),
+				.init(key: "teamName", value: .string(coolify.teamName)),
+				.init(key: "resource", value: .string(coolify.resource.rawValue)),
+				.init(key: "resourceId", value: .string(coolify.resourceID)),
+				.init(key: "resourceName", value: .string(coolify.resourceName)),
+				.init(key: "projectName", value: coolify.projectName.map(LPMConfigJSON.string) ?? .null),
+				.init(key: "environmentName", value: coolify.environmentName.map(LPMConfigJSON.string) ?? .null),
+				.init(key: "deployments", value: .string(coolify.deployments.rawValue)),
+			])
 		}
 		return .object([
 			.init(key: "id", value: .string(destination.id.uuidString.lowercased())),
@@ -103,8 +115,7 @@ enum PublishingRecords {
 				environment: try vercelEnvironment(vercel.value("environment"))
 			))
 		case .coolify:
-			// This version connects Coolify but doesn't publish to it yet.
-			throw DecodingError.newerVersion
+			target = .coolify(try coolifyTarget(fields.value("target")))
 		}
 		guard case .array(let excluded) = try fields.value("excludedKeys"),
 			excluded.count <= PublishDestination.maximumExcludedKeys
@@ -120,6 +131,30 @@ enum PublishingRecords {
 			excludedKeys: excludedKeys,
 			createdAt: try fields.timestamp("createdAt"),
 			updatedAt: try fields.timestamp("updatedAt")
+		)
+	}
+
+	private static func coolifyTarget(_ json: LPMConfigJSON) throws -> CoolifyPublishTarget {
+		guard case .string(let resourceName)? = json["resource"], case .string(let deploymentsName)? = json["deployments"] else {
+			throw DecodingError.unreadable
+		}
+		guard let resource = CoolifyPublishTarget.Resource(rawValue: resourceName),
+			let deployments = CoolifyPublishTarget.Deployments(rawValue: deploymentsName)
+		else { throw DecodingError.newerVersion }
+		let fields = try Fields(json, [
+			"instance", "teamId", "teamName", "resource", "resourceId", "resourceName", "projectName", "environmentName", "deployments",
+		])
+		guard let instance = CoolifyInstance(origin: try fields.string("instance")) else { throw DecodingError.unreadable }
+		return CoolifyPublishTarget(
+			instance: instance,
+			teamID: try fields.string("teamId"),
+			teamName: try fields.string("teamName"),
+			resource: resource,
+			resourceID: try fields.string("resourceId"),
+			resourceName: try fields.string("resourceName"),
+			projectName: try fields.optionalString("projectName"),
+			environmentName: try fields.optionalString("environmentName"),
+			deployments: deployments
 		)
 	}
 
@@ -217,7 +252,7 @@ enum PublishingRecords {
 	private static func isValidRecord(key name: String, _ key: PublishHistory.Key) -> Bool {
 		EnvValidation.isValidVariableName(name)
 			&& key.fingerprint.count == PublishFingerprint.byteCount
-			&& key.remoteID.map { $0.utf8.count <= maximumRemoteIDLength && VercelPublishTarget.isValidIdentifier($0) } ?? true
+			&& key.remoteID.map { $0.utf8.count <= maximumRemoteIDLength && PlatformIdentifier.isValid($0) } ?? true
 	}
 
 	// MARK: - Fields

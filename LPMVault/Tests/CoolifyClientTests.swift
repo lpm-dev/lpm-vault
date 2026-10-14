@@ -157,16 +157,144 @@ struct CoolifyClientTests {
 		#expect(await elsewhere.team() == .failure(.transport))
 	}
 
+	@Test("resources come with the project and environment holding them, read four projects at a time at most")
+	func listsResources() async throws {
+		let route = PlatformHTTPStub.coolify { request in
+			switch request.url.path() {
+			case "/api/v1/projects":
+				return .json(200, [["id": 1, "uuid": "proj-store", "name": "Storefront", "description": NSNull()], ["id": 2, "uuid": "proj-ops", "name": "Ops"]])
+			case "/api/v1/projects/proj-store":
+				return .json(200, ["id": 1, "uuid": "proj-store", "name": "Storefront", "environments": [["id": 10, "name": "production", "uuid": "env-1"], ["id": 11, "name": "staging"]]])
+			case "/api/v1/projects/proj-ops":
+				return .json(200, ["id": 2, "uuid": "proj-ops", "name": "Ops", "environments": [["id": 20, "name": "production"]]])
+			case "/api/v1/applications":
+				return .json(200, [
+					["uuid": "app-api", "name": "api", "environment_id": 10, "build_pack": "dockercompose", "docker_compose_raw": String(repeating: "x", count: 4_096)],
+					["uuid": "app-web", "name": "web", "environment_id": 11, "build_pack": "nixpacks"],
+				])
+			case "/api/v1/services":
+				return .json(200, [["uuid": "svc-db", "name": "db", "environment_id": 20, "build_pack": "ignored"], ["uuid": "svc-orphan", "name": "orphan", "environment_id": 99]])
+			default:
+				return .json(404, ["message": "Not found."])
+			}
+		}
+		let resources = try await client(route).resources().get()
+		#expect(resources == [
+			CoolifyResource(kind: .application, id: "app-api", name: "api", projectName: "Storefront", environmentName: "production", buildPack: "dockercompose"),
+			CoolifyResource(kind: .application, id: "app-web", name: "web", projectName: "Storefront", environmentName: "staging", buildPack: "nixpacks"),
+			CoolifyResource(kind: .service, id: "svc-db", name: "db", projectName: "Ops", environmentName: "production", buildPack: nil),
+			CoolifyResource(kind: .service, id: "svc-orphan", name: "orphan", projectName: nil, environmentName: nil, buildPack: nil),
+		])
+		#expect(CoolifyClient.projectConcurrency == 4)
+	}
+
+	@Test("a project UUID that could change the request's path fails the listing before it's used")
+	func refusesUnsafeProject() async throws {
+		let route = PlatformHTTPStub.coolify { request in
+			request.url.path() == "/api/v1/projects" ? .json(200, [["id": 1, "uuid": "../teams", "name": "x"]]) : .json(200, [])
+		}
+		#expect(try await client(route).resources() == .failure(.invalidResponse))
+		#expect(!route.requests.contains { $0.url.path().contains("teams") })
+	}
+
+	@Test("variables are read without their values, whether Coolify sends flags as booleans or numbers")
+	func readsVariables() async throws {
+		let route = PlatformHTTPStub.coolify { _ in
+			.json(200, [
+				["uuid": "env-1", "key": "API_TOKEN", "value": "s3cret-if-sensitive", "real_value": "s3cret-if-sensitive",
+					"is_preview": false, "is_shown_once": true, "updated_at": "2026-10-14T12:34:56.123456Z"],
+				["uuid": "env-2", "key": "API_TOKEN", "is_preview": 1, "is_shown_once": 0, "updated_at": "2026-10-14T12:34:56Z"],
+				["uuid": "env-3", "key": "LOG_LEVEL", "is_preview": NSNull(), "updated_at": NSNull()],
+			])
+		}
+		let variables = try await client(route).variables(of: .application, id: "app-api").get()
+		#expect(route.requests.first?.url.path() == "/api/v1/applications/app-api/envs")
+		#expect(variables.map(\.id) == ["env-1", "env-2", "env-3"])
+		#expect(variables[0].isLocked && !variables[0].isPreview && variables[1].isPreview && !variables[1].isLocked)
+		#expect(variables[0].updatedAt == Date(timeIntervalSince1970: 1_791_981_296.123456))
+		#expect(variables[2].updatedAt == nil && !variables[2].isPreview)
+		#expect(!String(describing: variables).contains("s3cret"))
+
+		let services = PlatformHTTPStub.coolify { _ in .json(200, [["uuid": "env-1", "key": "A", "is_shown_once": 2]]) }
+		#expect(try await client(services).variables(of: .service, id: "svc-db") == .failure(.invalidResponse))
+		#expect(services.requests.first?.url.path() == "/api/v1/services/svc-db/envs")
+	}
+
+	@Test("Laravel's timestamps read to the microsecond, in UTC; anything else isn't a time")
+	func timestamps() {
+		#expect(CoolifyClient.timestamp("2026-10-14T12:34:56.000000Z") == Date(timeIntervalSince1970: 1_791_981_296))
+		#expect(CoolifyClient.timestamp("2026-10-14 12:34:56+00:00") == Date(timeIntervalSince1970: 1_791_981_296))
+		#expect(CoolifyClient.timestamp("2026-10-14T12:34:56.5Z") == Date(timeIntervalSince1970: 1_791_981_296.5))
+		for text in ["2026-10-14T12:34:56", "2026-02-30T00:00:00Z", "2026-10-14T12:34:56.Z", "2026-10-14T12:34:56+02:00", "yesterday"] {
+			#expect(CoolifyClient.timestamp(text) == nil, "\(text)")
+		}
+	}
+
+	@Test("a write sends every flag Coolify would otherwise reset, keeps values literal, and names preview deployments only for an application")
+	func writes() async throws {
+		let route = PlatformHTTPStub.coolify { request in
+			switch (request.method, request.url.path()) {
+			case ("POST", "/api/v1/applications/app-api/envs"): return .json(201, ["uuid": "env-new"])
+			case ("POST", "/api/v1/services/svc-db/envs"):
+				return .json(201, ["uuid": "env-svc", "key": "TOKEN", "is_preview": false, "is_shown_once": true, "updated_at": "2026-10-14T12:00:00.000000Z"])
+			case ("PATCH", "/api/v1/applications/app-api/envs"):
+				return .json(201, ["uuid": "env-old", "key": "TOKEN", "is_preview": true, "is_shown_once": false, "updated_at": "2026-10-14T12:00:01.000000Z"])
+			case ("DELETE", "/api/v1/applications/app-api/envs/env-new"): return .json(200, ["message": "Environment variable deleted."])
+			default: return .json(404, ["message": "Not found."])
+			}
+		}
+		let client = try client(route)
+		let secret = CoolifyVariableWrite(key: "TOKEN", value: "line1\nline2", isPreview: false, isLocked: true)
+		#expect(try await client.create(secret, in: .application, id: "app-api").get() == "env-new")
+		let body = try #require(route.requests.last?.json)
+		#expect(body as NSDictionary == ["key": "TOKEN", "value": "line1\nline2", "is_literal": true, "is_multiline": true, "is_shown_once": true, "is_preview": false] as NSDictionary)
+		#expect(route.requests.last?.header("Content-Type") == "application/json")
+
+		#expect(try await client.create(secret, in: .service, id: "svc-db").get() == "env-svc")
+		#expect(route.requests.last?.json?["is_preview"] == nil, "A service has no preview deployments")
+
+		let replace = CoolifyVariableWrite(key: "TOKEN", value: "plain", isPreview: true, isLocked: false)
+		let updated = try await client.update(replace, in: .application, id: "app-api").get()
+		#expect(updated.id == "env-old" && updated.isPreview && route.requests.last?.json?["is_multiline"] as? Bool == false)
+		#expect(await client.update(CoolifyVariableWrite(key: "OTHER", value: "x", isPreview: true, isLocked: false), in: .application, id: "app-api")
+			== .failure(.invalidResponse), "An answer about another variable isn't taken for this one")
+
+		try await client.delete("env-new", in: .application, id: "app-api").get()
+		#expect(await client.create(CoolifyVariableWrite(key: "A", value: "x", isPreview: true, isLocked: false), in: .service, id: "svc-db")
+			== .failure(.invalidResponse), "A preview write to a service is never sent")
+		guard case .failure(.invalidResponse) = await client.delete("../x", in: .application, id: "app-api") else {
+			Issue.record("An unsafe variable ID was sent")
+			return
+		}
+		#expect(route.requests.count == 5)
+	}
+
+	@Test("an existing key is a conflict, and the application's build pack is read from the application")
+	func conflictAndBuildPack() async throws {
+		let route = PlatformHTTPStub.coolify { request in
+			request.method == "POST"
+				? .json(409, ["message": "Environment variable already exists. Use PATCH request to update it."])
+				: .json(200, ["uuid": "app-api", "name": "api", "build_pack": "dockercompose"])
+		}
+		let client = try client(route)
+		#expect(await client.create(CoolifyVariableWrite(key: "A", value: "x", isPreview: false, isLocked: false), in: .application, id: "app-api") == .failure(.conflict))
+		#expect(try await client.buildPack(ofApplication: "app-api").get() == "dockercompose")
+		#expect(route.requests.last?.url.path() == "/api/v1/applications/app-api")
+	}
+
 	@Test("the client never prints its token")
 	func redacts() throws {
 		let client = CoolifyClient(instance: try CoolifyInstance.parse("coolify.example.com").get(), token: "3|s3cret-token")
 		let connection = CoolifyConnection(
 			instance: try CoolifyInstance.parse("coolify.example.com").get(), team: CoolifyTeam(id: "0", name: "Root"), token: "3|s3cret-token")
+		let write = CoolifyVariableWrite(key: "API", value: "s3cret-value", isPreview: false, isLocked: true)
 		var dumped = ""
 		dump(client, to: &dumped)
 		dump(connection, to: &dumped)
-		for text in [client.description, String(reflecting: client), connection.description, String(reflecting: connection), dumped] {
-			#expect(!text.contains("s3cret-token"))
+		dump(write, to: &dumped)
+		for text in [client.description, String(reflecting: client), connection.description, String(reflecting: connection),
+			write.description, String(reflecting: write), dumped] {
+			#expect(!text.contains("s3cret-token") && !text.contains("s3cret-value"))
 		}
 	}
 }
@@ -179,15 +307,12 @@ struct CoolifyConnectorTests {
 		func append(_ origin: String, _ token: String) { lock.withLock { calls.append((origin, token)) } }
 	}
 
-	private struct FakeClient: CoolifyClientProtocol {
-		let answer: Result<CoolifyTeam, CoolifyAPIError>
-		func team() async -> Result<CoolifyTeam, CoolifyAPIError> { answer }
-	}
-
 	private func connector(_ answer: Result<CoolifyTeam, CoolifyAPIError>, recorder: Recorder = Recorder()) -> CoolifyConnector {
 		CoolifyConnector { instance, token in
 			recorder.append(instance.origin, token)
-			return FakeClient(answer: answer)
+			let api = FakeCoolifyAPI()
+			api.team = answer
+			return api
 		}
 	}
 
