@@ -71,3 +71,67 @@ extension View {
 			}
 	}
 }
+
+/// One choice in a `VaultMenuField`.
+struct VaultMenuOption<Value: Hashable>: Identifiable {
+	let value: Value
+	let label: String
+	var systemImage: String?
+
+	var id: Value { value }
+}
+
+/// A full-width field that opens a menu of choices, styled like the sheet's text fields.
+struct VaultMenuField<Value: Hashable>: View {
+	let title: String
+	let options: [VaultMenuOption<Value>]
+	@Binding var selection: Value?
+	var placeholder = "Choose…"
+	var disabled = false
+
+	private var selected: VaultMenuOption<Value>? {
+		selection.flatMap { value in options.first { $0.value == value } }
+	}
+
+	var body: some View {
+		Menu {
+			ForEach(options) { option in
+				Button {
+					selection = option.value
+				} label: {
+					if let systemImage = option.systemImage {
+						Label(option.label, systemImage: systemImage)
+					} else {
+						Text(option.label)
+					}
+				}
+			}
+		} label: {
+			HStack(spacing: 7) {
+				if let systemImage = selected?.systemImage {
+					Image(systemName: systemImage).font(.system(size: 10)).foregroundStyle(VaultPalette.textPrimary)
+				}
+				Text(selected?.label ?? placeholder)
+					.font(.system(size: 12.5))
+					.foregroundStyle(selected == nil || disabled ? VaultPalette.textTertiary : VaultPalette.textPrimary)
+					.lineLimit(1)
+					.truncationMode(.middle)
+				Spacer(minLength: 6)
+				Image(systemName: "chevron.down")
+					.font(.system(size: 8, weight: .bold))
+					.foregroundStyle(VaultPalette.textQuaternary)
+			}
+			.padding(.horizontal, 10)
+			.frame(height: 28)
+			.frame(maxWidth: .infinity)
+			.contentShape(Rectangle())
+			.vaultInputField(focused: false)
+		}
+		.menuStyle(.button)
+		.buttonStyle(.plain)
+		.menuIndicator(.hidden)
+		.disabled(disabled)
+		.accessibilityLabel(title)
+		.accessibilityValue(selected?.label ?? placeholder)
+	}
+}

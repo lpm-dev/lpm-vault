@@ -580,10 +580,18 @@ final class MockBiometricService: BiometricServiceProtocol, @unchecked Sendable 
 	var authenticateHandlers: [@Sendable () async -> Bool] = []
 	private var authenticationCalls = 0
 	private var reasons: [String] = []
+	private var confirmations: [String] = []
 
 	var authenticateCallCount: Int { lock.withLock { authenticationCalls } }
 	/// The prompt reason of each authentication request, in order.
 	var authenticationReasons: [String] { lock.withLock { reasons } }
+	/// The reason of each confirmation that couldn't reuse an earlier approval, in order.
+	var confirmationReasons: [String] { lock.withLock { confirmations } }
+
+	func confirm(reason: String) async -> AuthenticationOutcome {
+		lock.withLock { confirmations.append(reason) }
+		return await authenticate(reason: reason)
+	}
 
 	func authenticate(reason: String) async -> AuthenticationOutcome {
 		let response: ((@Sendable () async -> Bool)?, Bool, AuthenticationOutcome) = lock.withLock {

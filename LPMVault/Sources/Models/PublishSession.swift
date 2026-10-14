@@ -1,0 +1,545 @@
+import CryptoKit
+import Foundation
+import Observation
+
+/// One run of the Publish sheet: choosing where an environment goes, the
+/// review of what that changes, and the publish itself.
+@MainActor
+@Observable
+final class PublishSession: Identifiable {
+	/// What the session reads and changes outside itself.
+	struct Dependencies {
+		/// The environment's saved values, once local changes are read; nil when it's gone.
+		var values: @MainActor (_ environment: String) async -> [String: String]?
+		var rules: @MainActor () -> Rules
+		var check: @MainActor (_ environment: String) -> ProjectEnvValueCheck.Environment?
+		/// Asks for Touch ID or the password, without reusing an earlier approval.
+		var confirm: @MainActor (_ reason: String) async -> Bool
+		var publishing: PublishingStore
+		var connections: PlatformConnectionStore
+		var client: @Sendable (_ token: String) -> any VercelClientProtocol
+		var now: @Sendable () -> Date = { Date() }
+		/// Called after destinations or history change.
+		var didChange: @MainActor () -> Void = {}
+	}
+
+	/// The project's rules as the review uses them.
+	enum Rules: Equatable, Sendable {
+		case known(ProjectEnvSchemaOverview)
+		/// The project has no rules, so every key is undeclared.
+		case none
+		/// lpm.json can't be read; every key is treated as undeclared and nothing is checked.
+		case unreadable
+
+		var overview: ProjectEnvSchemaOverview {
+			if case .known(let overview) = self { return overview }
+			return .empty
+		}
+	}
+
+	enum Step: Equatable {
+		case destination
+		case review
+		case results
+	}
+
+	enum Loadable<Value: Equatable>: Equatable {
+		case idle
+		case loading
+		case loaded(Value)
+		case failed(String)
+
+		var value: Value? {
+			if case .loaded(let value) = self { return value }
+			return nil
+		}
+	}
+
+	struct Review {
+		let destination: PublishDestination
+		let isSaved: Bool
+		/// The destination is new, or differs from the saved one, so a publish saves it first.
+		let needsSave: Bool
+		let plan: PublishPlan
+		var selection: PublishPlan.Selection
+		let fingerprintKey: SymmetricKey
+		let lastPublishedAt: Date?
+		let rules: Rules
+		let hasValueCheck: Bool
+
+		var summary: PublishPlan.Summary { plan.summary(of: selection) }
+		var target: VercelPublishTarget {
+			switch destination.target { case .vercel(let target): target }
+		}
+	}
+
+	struct Results: Equatable {
+		let destination: PublishDestination
+		/// Each sent key with its outcome, in the review's order.
+		let rows: [(key: String, outcome: VercelPublishing.Outcome)]
+		let needsReconnect: Bool
+		/// Why the publish couldn't be recorded, when it couldn't.
+		let recordFailure: String?
+
+		var publishedCount: Int { rows.lazy.filter { $0.outcome == .published }.count }
+
+		static func == (lhs: Results, rhs: Results) -> Bool {
+			lhs.destination == rhs.destination && lhs.rows.elementsEqual(rhs.rows) { $0.key == $1.key && $0.outcome == $1.outcome }
+				&& lhs.needsReconnect == rhs.needsReconnect && lhs.recordFailure == rhs.recordFailure
+		}
+	}
+
+	let id = UUID()
+	let vaultID: String
+	let projectName: String
+	/// The project's environments, in its order.
+	let environments: [String]
+
+	private(set) var step: Step
+	/// The destination the sheet opened with, when it's a saved one.
+	private(set) var saved: PublishDestination?
+
+	var sourceEnvironment: String { didSet { if sourceEnvironment != oldValue { invalidateReview() } } }
+	private(set) var connections: Loadable<[PlatformConnection]> = .idle
+	var connectionID: PlatformConnection.ID? {
+		didSet {
+			guard connectionID != oldValue else { return }
+			invalidateReview()
+			projectID = nil
+			loadProjects()
+		}
+	}
+	private(set) var projects: Loadable<[VercelProject]> = .idle
+	var projectID: String? {
+		didSet {
+			guard projectID != oldValue else { return }
+			invalidateReview()
+			if case .custom = environment { environment = nil }
+			loadCustomEnvironments()
+		}
+	}
+	private(set) var customEnvironments: Loadable<[VercelCustomEnvironment]> = .idle
+	var environment: VercelPublishTarget.Environment? { didSet { if environment != oldValue { invalidateReview() } } }
+
+	private(set) var review: Review?
+	private(set) var isLoadingReview = false
+	/// Why the review couldn't be made or used.
+	private(set) var reviewError: String?
+	private(set) var isPublishing = false
+	private(set) var results: Results?
+
+	private let dependencies: Dependencies
+	private var reviewTask: Task<Void, Never>?
+	private var projectsTask: Task<Void, Never>?
+	private var environmentsTask: Task<Void, Never>?
+	private var publishTask: Task<Void, Never>?
+
+	init(
+		vaultID: String,
+		projectName: String,
+		environments: [String],
+		sourceEnvironment: String,
+		saved: PublishDestination? = nil,
+		dependencies: Dependencies
+	) {
+		self.vaultID = vaultID
+		self.projectName = projectName
+		self.environments = environments
+		self.dependencies = dependencies
+		self.saved = saved
+		if let saved, case .vercel(let target) = saved.target {
+			self.sourceEnvironment = saved.sourceEnvironment
+			self.connectionID = target.connectionID
+			self.projectID = target.projectID
+			self.environment = target.environment
+			self.step = .review
+		} else {
+			self.sourceEnvironment = sourceEnvironment
+			self.step = .destination
+		}
+	}
+
+	/// Loads what the open step needs; a saved destination goes straight to its review.
+	func start() {
+		Task { [weak self] in
+			guard let self else { return }
+			await self.loadConnections()
+			guard self.saved != nil else { return }
+			self.loadProjects()
+			self.loadCustomEnvironments()
+			self.loadReview()
+		}
+	}
+
+	func cancel() {
+		reviewTask?.cancel()
+		projectsTask?.cancel()
+		environmentsTask?.cancel()
+		publishTask?.cancel()
+	}
+
+	// MARK: - Destination
+
+	var connection: PlatformConnection? {
+		connections.value?.first { $0.id == connectionID }
+	}
+
+	var project: VercelProject? {
+		projects.value?.first { $0.id == projectID }
+	}
+
+	/// Every environment the project has, standard ones first.
+	var environmentChoices: [VercelPublishTarget.Environment] {
+		[.production, .preview, .development]
+			+ (customEnvironments.value ?? []).map { .custom(id: $0.id, name: $0.slug) }
+	}
+
+	var canReview: Bool {
+		environments.contains(sourceEnvironment) && connection != nil && project != nil && environment != nil
+			&& !isLoadingReview && !isPublishing
+	}
+
+	func showDestination() {
+		guard !isPublishing else { return }
+		reviewTask?.cancel()
+		isLoadingReview = false
+		step = .destination
+	}
+
+	func loadReview() {
+		reviewTask?.cancel()
+		reviewError = nil
+		isLoadingReview = true
+		step = .review
+		reviewTask = Task { [weak self] in
+			guard let self else { return }
+			let outcome = await self.makeReview()
+			guard !Task.isCancelled else { return }
+			self.isLoadingReview = false
+			switch outcome {
+			case .success(let review): self.review = review
+			case .failure(let error):
+				self.review = nil
+				self.reviewError = error.message
+			}
+		}
+	}
+
+	private func loadConnections() async {
+		connections = .loading
+		switch await dependencies.connections.connections() {
+		case .success(let list):
+			let vercel = list.filter { $0.platform == .vercel }
+			connections = .loaded(vercel)
+			if connectionID == nil, vercel.count == 1 { connectionID = vercel[0].id }
+		case .failure(let error):
+			connections = .failed("Platform connections couldn't be read. \(error)")
+		}
+	}
+
+	private func loadProjects() {
+		projectsTask?.cancel()
+		guard let connectionID else {
+			projects = .idle
+			return
+		}
+		projects = .loading
+		let teamID = Self.teamID(of: connectionID, in: connections.value ?? [])
+		projectsTask = Task { [weak self, dependencies] in
+			let result: Result<[VercelProject], PublishSessionError>
+			switch await dependencies.connections.accessToken(for: connectionID) {
+			case .success(let token):
+				result = await dependencies.client(token).projects(teamID: teamID)
+					.map { $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
+					.mapError { PublishSessionError(VercelPublishing.message($0)) }
+			case .failure(let error):
+				result = .failure("The connection's token can't be read. \(error)")
+			}
+			guard let self, !Task.isCancelled, connectionID == self.connectionID else { return }
+			switch result {
+			case .success(let list): self.projects = .loaded(list)
+			case .failure(let error): self.projects = .failed(error.message)
+			}
+		}
+	}
+
+	private func loadCustomEnvironments() {
+		environmentsTask?.cancel()
+		guard let connectionID, let projectID else {
+			customEnvironments = .idle
+			return
+		}
+		customEnvironments = .loading
+		let teamID = Self.teamID(of: connectionID, in: connections.value ?? [])
+		environmentsTask = Task { [weak self, dependencies] in
+			let result: Result<[VercelCustomEnvironment], PublishSessionError>
+			switch await dependencies.connections.accessToken(for: connectionID) {
+			case .success(let token):
+				result = await dependencies.client(token).customEnvironments(projectID: projectID, teamID: teamID)
+					.mapError { PublishSessionError(VercelPublishing.message($0)) }
+			case .failure(let error):
+				result = .failure("The connection's token can't be read. \(error)")
+			}
+			guard let self, !Task.isCancelled, projectID == self.projectID else { return }
+			switch result {
+			case .success(let list): self.customEnvironments = .loaded(list)
+			case .failure(let error): self.customEnvironments = .failed(error.message)
+			}
+		}
+	}
+
+	private static func teamID(of connectionID: PlatformConnection.ID, in connections: [PlatformConnection]) -> String? {
+		guard let connection = connections.first(where: { $0.id == connectionID }) else { return nil }
+		switch connection.account {
+		case .vercel(let account): return account.teamID
+		}
+	}
+
+	/// The destination the fields describe: the saved one, the saved one
+	/// that already publishes to the same place, or a new one.
+	private func destination(
+		target: VercelPublishTarget,
+		among existing: [PublishDestination]
+	) -> Result<(destination: PublishDestination, stored: PublishDestination?), PublishSessionError> {
+		let location = PublishTarget.vercel(target).location
+		let stored: PublishDestination?
+		if let saved {
+			if let other = existing.first(where: { $0.id != saved.id && $0.target.location == location }) {
+				return .failure("Another saved destination already publishes to \(target.projectName) / \(target.environment.displayName), from \(VaultProject.displayName(for: other.sourceEnvironment)). Choose it from the Publish menu.")
+			}
+			stored = existing.first { $0.id == saved.id }
+		} else {
+			stored = existing.first { $0.target.location == location }
+		}
+		guard let stored else {
+			let base = saved ?? PublishDestination(sourceEnvironment: sourceEnvironment, target: .vercel(target), createdAt: dependencies.now())
+			var updated = base
+			updated.sourceEnvironment = sourceEnvironment
+			updated.target = .vercel(target)
+			return .success((updated, nil))
+		}
+		var updated = stored
+		updated.sourceEnvironment = sourceEnvironment
+		updated.target = .vercel(target)
+		return .success((updated, stored))
+	}
+
+	private func makeReview() async -> Result<Review, PublishSessionError> {
+		if connection == nil, connectionID != nil, connections.value != nil, case .vercel(let target)? = saved?.target {
+			return .failure("This destination publishes through \(target.teamName) on Vercel, which isn't connected on this Mac. Connect it on the Platforms page.")
+		}
+		guard let connection, let environment, let projectID else { return .failure("Choose a destination first.") }
+		guard case .vercel(let account) = connection.account else { return .failure("Choose a Vercel connection.") }
+		let projectName = project?.name ?? {
+			if case .vercel(let target)? = saved?.target { return target.projectName }
+			return projectID
+		}()
+		let target = VercelPublishTarget(
+			teamID: account.teamID, accountID: account.ownerID, teamName: account.name,
+			projectID: projectID, projectName: projectName, environment: environment)
+		let source = sourceEnvironment
+		let rules = dependencies.rules()
+		let check = dependencies.check(source)
+		guard let values = await dependencies.values(source) else {
+			return .failure("\(VaultProject.displayName(for: source)) can't be read right now.")
+		}
+		let publishing = dependencies.publishing
+		let destination: PublishDestination
+		let stored: PublishDestination?
+		switch await publishing.destinations(of: vaultID) {
+		case .success(let existing):
+			switch self.destination(target: target, among: existing) {
+			case .success(let found): (destination, stored) = found
+			case .failure(let error): return .failure(error)
+			}
+		case .failure(let error):
+			return .failure("Saved destinations can't be read. \(error)")
+		}
+		let history: PublishHistory?
+		if let stored, stored.target.location == destination.target.location {
+			switch await publishing.history(of: destination.id, in: vaultID) {
+			case .success(let value): history = value
+			case .failure(let error): return .failure("This destination's history can't be read. \(error)")
+			}
+		} else {
+			history = nil
+		}
+		let fingerprintKey: SymmetricKey
+		switch await publishing.fingerprintKey() {
+		case .success(let key): fingerprintKey = key
+		case .failure(let error): return .failure("LPM Vault's publish key can't be read. \(error)")
+		}
+		let token: String
+		switch await dependencies.connections.accessToken(for: connection.id) {
+		case .success(let value): token = value
+		case .failure(let error): return .failure("The connection's token can't be read. \(error)")
+		}
+		let client = dependencies.client(token)
+		async let listing = client.variables(projectID: projectID, teamID: account.teamID)
+		async let customs = client.customEnvironments(projectID: projectID, teamID: account.teamID)
+		let list: VercelVariableList
+		switch await listing {
+		case .success(let value): list = value
+		case .failure(let error): return .failure(PublishSessionError(VercelPublishing.message(error)))
+		}
+		let snapshot: VercelRemoteSnapshot
+		switch VercelPublishing.snapshot(list, for: environment, customEnvironments: (try? await customs.get()) ?? []) {
+		case .success(let value): snapshot = value
+		case .failure(let error): return .failure(PublishSessionError(error.message))
+		}
+		let plan = PublishPlan(
+			destination: destination,
+			values: values,
+			rules: rules.overview,
+			check: check,
+			remote: snapshot.variables,
+			reservedKeys: VercelPublishing.reservedKeys,
+			history: history,
+			fingerprintKey: fingerprintKey,
+			secretsStaySecret: true)
+		return .success(Review(
+			destination: destination,
+			isSaved: stored != nil,
+			needsSave: stored != destination,
+			plan: plan,
+			selection: PublishPlan.Selection(defaultsOf: plan),
+			fingerprintKey: fingerprintKey,
+			lastPublishedAt: history?.publishedAt,
+			rules: rules,
+			hasValueCheck: check != nil))
+	}
+
+	private func invalidateReview() {
+		guard !isPublishing else { return }
+		reviewTask?.cancel()
+		review = nil
+		reviewError = nil
+		isLoadingReview = false
+	}
+
+	// MARK: - Review
+
+	/// Chooses or drops the key; a key shared with other environments needs `confirmed`.
+	@discardableResult
+	func set(_ key: String, selected: Bool, confirmed: Bool = false) -> Bool {
+		guard var review, !isPublishing else { return false }
+		let changed = review.selection.set(key, selected: selected, confirmed: confirmed, in: review.plan)
+		self.review = review
+		return changed
+	}
+
+	func isSelected(_ key: String) -> Bool {
+		review?.selection.keys.contains(key) ?? false
+	}
+
+	// MARK: - Publish
+
+	/// Checks the chosen values are still the reviewed ones, asks for Touch
+	/// ID, sends them, and records what Vercel accepted.
+	func publish() {
+		guard publishTask == nil, let review, !review.selection.keys.isEmpty else { return }
+		reviewError = nil
+		isPublishing = true
+		publishTask = Task { [weak self] in
+			guard let self else { return }
+			defer {
+				self.isPublishing = false
+				self.publishTask = nil
+			}
+			await self.run(review)
+		}
+	}
+
+	private func run(_ review: Review) async {
+		let dependencies = dependencies
+		guard let values = await dependencies.values(review.destination.sourceEnvironment) else {
+			reviewError = "\(VaultProject.displayName(for: review.destination.sourceEnvironment)) can't be read right now."
+			return
+		}
+		let changes: [PublishPlan.Change]
+		switch review.plan.changes(for: review.selection, values: values, fingerprintKey: review.fingerprintKey) {
+		case .success(let value): changes = value
+		case .failure(.stale(let keys)):
+			reviewError = "\(keys.joined(separator: ", ")) changed since this review. Review again to publish the current \(keys.count == 1 ? "value" : "values")."
+			return
+		case .failure(.foreignSelection):
+			reviewError = "This review is out of date. Review again."
+			return
+		}
+		let count = changes.count
+		let reason = "Publish \(count) \(count == 1 ? "variable" : "variables") to Vercel"
+		guard await dependencies.confirm(reason), !Task.isCancelled else { return }
+
+		let target = review.target
+		let token: String
+		switch await dependencies.connections.accessToken(for: target.connectionID) {
+		case .success(let value): token = value
+		case .failure(let error):
+			reviewError = "The connection's token can't be read. \(error)"
+			return
+		}
+		let report = await VercelPublishing.publish(changes, to: target, using: dependencies.client(token))
+		var recordFailure: String?
+		if !report.published.isEmpty {
+			recordFailure = await record(report.published, of: review)
+		}
+		dependencies.didChange()
+		results = Results(
+			destination: review.destination,
+			rows: changes.map { ($0.key, report.outcomes[$0.key] ?? .notSent) },
+			needsReconnect: report.needsReconnect,
+			recordFailure: recordFailure)
+		step = .results
+	}
+
+	/// Saves the destination when it's new or changed, then records the
+	/// publish; the reason it couldn't, or nil.
+	private func record(_ published: [PublishHistory.Published], of review: Review) async -> String? {
+		let publishing = dependencies.publishing
+		var destination = review.destination
+		if review.needsSave {
+			switch await publishing.save(destination, to: vaultID) {
+			case .success(let saved):
+				guard let stored = saved.first(where: { $0.id == destination.id }) else { return "The destination couldn't be saved." }
+				destination = stored
+			case .failure(let error):
+				return "The variables were published, but the destination couldn't be saved. \(error)"
+			}
+		}
+		switch await publishing.recordPublish(
+			published, to: destination.id, at: destination.target.location,
+			choices: review.plan.choices(for: review.selection), of: vaultID, at: dependencies.now())
+		{
+		case .success(let recorded):
+			saved = recorded
+			return nil
+		case .failure(let error):
+			return "The variables were published, but this Mac couldn't record it. \(error)"
+		}
+	}
+}
+
+/// A reason the Publish sheet shows, as text.
+struct PublishSessionError: Error, Equatable, Sendable, ExpressibleByStringInterpolation {
+	let message: String
+
+	init(_ message: String) {
+		self.message = message
+	}
+
+	init(stringLiteral value: String) {
+		message = value
+	}
+
+	init(stringInterpolation: DefaultStringInterpolation) {
+		message = String(stringInterpolation: stringInterpolation)
+	}
+}
+
+/// A saved destination with when this Mac last published to it.
+struct PublishDestinationSummary: Identifiable, Equatable, Sendable {
+	let destination: PublishDestination
+	let lastPublishedAt: Date?
+
+	var id: UUID { destination.id }
+}

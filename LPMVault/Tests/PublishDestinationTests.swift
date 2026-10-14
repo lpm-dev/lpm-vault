@@ -10,6 +10,7 @@ func vercelDestination(
 	id: UUID = UUID(),
 	source: String = "production",
 	team: String? = "team_acme",
+	account: String? = nil,
 	project: String = "prj_demo",
 	environment: VercelPublishTarget.Environment = .production,
 	excluded: Set<String> = [],
@@ -19,7 +20,8 @@ func vercelDestination(
 		id: id,
 		sourceEnvironment: source,
 		target: .vercel(VercelPublishTarget(
-			teamID: team, teamName: "Acme", projectID: project, projectName: "demo-api", environment: environment
+			teamID: team, accountID: account ?? team ?? "user_tolga", teamName: "Acme", projectID: project, projectName: "demo-api",
+			environment: environment
 		)),
 		excludedKeys: excluded,
 		createdAt: createdAt
@@ -70,6 +72,8 @@ struct PublishDestinationTests {
 			(vercelDestination(environment: .custom(id: "env_1", name: " QA")), .targetName),
 			(vercelDestination(project: "prj/../x"), .targetIdentifier),
 			(vercelDestination(team: "team%2F"), .targetIdentifier),
+			(vercelDestination(team: "team_acme", account: "team_other"), .targetIdentifier),
+			(vercelDestination(team: nil, account: "user/../x"), .targetIdentifier),
 			(vercelDestination(environment: .custom(id: "env_1", name: String(repeating: "\u{301}", count: 300))), .targetName),
 		]
 	)
@@ -156,7 +160,7 @@ struct PublishDestinationTests {
 		extra: String = ""
 	) -> String {
 		#"{"version":1,"vault":"VAULT","destinations":[{"id":"\#(id)","source":"\#(source)","platform":"\#(platform)","#
-			+ #""target":{"teamId":"team_acme","teamName":"Acme","projectId":"prj_demo","projectName":"demo-api","environment":\#(environment)},"#
+			+ #""target":{"teamId":"team_acme","accountId":"team_acme","teamName":"Acme","projectId":"prj_demo","projectName":"demo-api","environment":\#(environment)},"#
 			+ #""excludedKeys":\#(excluded),"createdAt":\#(createdAt),"updatedAt":1760000000123\#(extra)}]}"#
 	}
 }

@@ -1362,8 +1362,12 @@ final class VaultStore {
   private let platformConnect: PlatformConnections.Connect?
   private let platformURLOpener: (@Sendable (URL) async -> Void)?
   /// The platform accounts this Mac publishes to, for the Platforms page.
+  let platformConnectionStore: PlatformConnectionStore
+  private let platformClient: @Sendable (String) -> any VercelClientProtocol
+  /// Each project's saved publish destinations, for the Publish menu.
+  private(set) var publishDestinations: [String: [PublishDestinationSummary]] = [:]
   @ObservationIgnored private(set) lazy var platforms = PlatformConnections(
-    store: PlatformConnectionStore(service: keychainService),
+    store: platformConnectionStore,
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
     session: { [weak self] in await self?.platformSession() },
     openURL: platformURLOpener ?? PlatformConnections.openInBrowser
@@ -1598,6 +1602,69 @@ final class VaultStore {
     resetAutoLock()
   }
 
+  /// Reads the project's saved publish destinations, most recently published first.
+  func loadPublishDestinations(for projectID: String) async {
+    guard isUnlocked else { return }
+    let generation = vaultSessionGeneration
+    guard case .success(let destinations) = await publishing.destinations(of: projectID) else { return }
+    var summaries: [PublishDestinationSummary] = []
+    summaries.reserveCapacity(destinations.count)
+    for destination in destinations {
+      let history = try? await publishing.history(of: destination.id, in: projectID).get()
+      summaries.append(PublishDestinationSummary(destination: destination, lastPublishedAt: history?.publishedAt))
+    }
+    guard isUnlocked, generation == vaultSessionGeneration else { return }
+    publishDestinations[projectID] = summaries.sorted {
+      switch ($0.lastPublishedAt, $1.lastPublishedAt) {
+      case let (left?, right?) where left != right: left > right
+      case (.some, nil): true
+      case (nil, .some): false
+      default: $0.destination.createdAt < $1.destination.createdAt
+      }
+    }
+  }
+
+  /// A Publish sheet for the selected project, opening on `destination`'s
+  /// review when it's a saved one.
+  func makePublishSession(for destination: PublishDestination? = nil) -> PublishSession? {
+    guard isUnlocked, let project = selectedProject else { return nil }
+    let projectID = project.id
+    let dependencies = PublishSession.Dependencies(
+      values: { [weak self] environment in await self?.publishValues(projectID: projectID, environment: environment) },
+      rules: { [weak self] in self?.publishRules(projectID: projectID) ?? .unreadable },
+      check: { [weak self] environment in self?.valueChecks[projectID]?.environments[environment] },
+      confirm: { [weak self] reason in await self?.authenticateForSensitiveAction(reason: reason, reusingRecent: false) ?? false },
+      publishing: publishing,
+      connections: platformConnectionStore,
+      client: platformClient,
+      didChange: { [weak self] in Task { await self?.loadPublishDestinations(for: projectID) } })
+    return PublishSession(
+      vaultID: projectID,
+      projectName: project.name,
+      environments: orderedEnvironmentNames(for: project),
+      sourceEnvironment: selectedEnvironment,
+      saved: destination,
+      dependencies: dependencies)
+  }
+
+  /// The environment's saved values once local changes are read, while the project is open.
+  private func publishValues(projectID: String, environment: String) async -> [String: String]? {
+    await waitForLocalStateRefresh()
+    guard canUseLocalSecrets, selectedProjectId == projectID, let project = selectedProject,
+      project.environmentNames.contains(environment)
+    else { return nil }
+    return project.environments[environment] ?? [:]
+  }
+
+  /// lpm.json's saved rules; an unsaved draft isn't published by.
+  private func publishRules(projectID: String) -> PublishSession.Rules {
+    switch keyDescriptions[projectID]?.schema {
+    case .loaded(let overview, _)?: .known(overview)
+    case .noFolder?: .none
+    case .unreadable?, nil: .unreadable
+    }
+  }
+
   /// The signed-in LPM session a platform connection starts with, while unlocked.
   func platformSession() async -> PlatformSession? {
     guard isUnlocked, let user = currentUser else { return nil }
@@ -1737,6 +1804,7 @@ final class VaultStore {
       },
     authTokenProvider: (@Sendable (String, URL) async throws -> String?)? = nil,
     platformConnect: PlatformConnections.Connect? = nil,
+    platformClient: (@Sendable (String) -> any VercelClientProtocol)? = nil,
     platformURLOpener: (@Sendable (URL) async -> Void)? = nil,
     authAuthorizationProvider:
       @escaping @Sendable (String, URL) async throws -> AuthSessionAuthorization? = {
@@ -1793,6 +1861,8 @@ final class VaultStore {
     self.persistence = VaultPersistenceCoordinator(service: keychainService)
     self.publishing = PublishingStore(service: keychainService)
     self.platformConnect = platformConnect
+    self.platformConnectionStore = PlatformConnectionStore(service: keychainService)
+    self.platformClient = platformClient ?? { VercelClient(token: $0) }
     self.platformURLOpener = platformURLOpener
     self.biometricService = biometricService
     self.injectedAPIService = apiService
@@ -4836,10 +4906,12 @@ final class VaultStore {
     Task { [weak self] in await self?.reconcilePublishingRecords() }
   }
 
-  func authenticateForSensitiveAction(reason: String) async -> Bool {
+  func authenticateForSensitiveAction(reason: String, reusingRecent: Bool = true) async -> Bool {
     guard isUnlocked else { return false }
     let sessionGeneration = vaultSessionGeneration
-    let outcome = await biometricService.authenticate(reason: reason)
+    let outcome = reusingRecent
+      ? await biometricService.authenticate(reason: reason)
+      : await biometricService.confirm(reason: reason)
     let approved = !Task.isCancelled
       && outcome == .authenticated
       && isUnlocked
@@ -4927,6 +4999,7 @@ final class VaultStore {
     projects = projects.map { VaultProject(metadata: $0.metadata) }
     workspaceSnapshots = [:]
     platforms.reset()
+    publishDestinations = [:]
   }
 
   /// Records local keyboard, click, scroll, or gesture input while unlocked.

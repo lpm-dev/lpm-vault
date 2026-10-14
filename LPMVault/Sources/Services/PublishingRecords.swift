@@ -68,6 +68,7 @@ enum PublishingRecords {
 			}
 			target = .object([
 				.init(key: "teamId", value: vercel.teamID.map(LPMConfigJSON.string) ?? .null),
+				.init(key: "accountId", value: .string(vercel.accountID)),
 				.init(key: "teamName", value: .string(vercel.teamName)),
 				.init(key: "projectId", value: .string(vercel.projectID)),
 				.init(key: "projectName", value: .string(vercel.projectName)),
@@ -92,9 +93,10 @@ enum PublishingRecords {
 		let target: PublishTarget
 		switch platform {
 		case .vercel:
-			let vercel = try Fields(fields.value("target"), ["teamId", "teamName", "projectId", "projectName", "environment"])
+			let vercel = try Fields(fields.value("target"), ["teamId", "accountId", "teamName", "projectId", "projectName", "environment"])
 			target = .vercel(VercelPublishTarget(
 				teamID: try vercel.optionalString("teamId"),
+				accountID: try vercel.string("accountId"),
 				teamName: try vercel.string("teamName"),
 				projectID: try vercel.string("projectId"),
 				projectName: try vercel.string("projectName"),

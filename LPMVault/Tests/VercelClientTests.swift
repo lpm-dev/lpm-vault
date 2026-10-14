@@ -88,29 +88,69 @@ struct VercelClientTests {
 		#expect(await client(route).variables(projectID: "prj_1", teamID: nil) == .failure(.incompleteList))
 	}
 
-	@Test("creating sends the key, value, protection and targets exactly; Vercel's refusal comes back with its code")
+	@Test("creating sends each key, value, protection and target exactly, and returns each key's own result")
 	func creates() async throws {
 		let value = "line one\nline \"two\" ✓"
-		let route = PlatformHTTPStub.platform { request in
-			if request.json?["key"] as? String == "TAKEN" {
-				return .json(201, ["failed": [["error": ["code": "ENV_ALREADY_EXISTS", "message": "The variable already exists.\u{0007}"]]]])
-			}
-			return .json(201, ["created": ["id": "env_new", "key": "API_TOKEN", "type": "sensitive", "target": ["production"], "value": ""], "failed": []])
+		let route = PlatformHTTPStub.platform { _ in
+			.json(201, [
+				"created": [["id": "env_new", "key": "API_TOKEN", "type": "sensitive", "target": ["production"], "value": ""]],
+				"failed": [["error": ["code": "ENV_ALREADY_EXISTS", "message": "The variable already exists.\u{0007}", "key": "TAKEN"]]],
+			])
 		}
-		let write = VercelVariableWrite(key: "API_TOKEN", value: value, storage: .sensitive, targets: [.production], customEnvironmentIDs: [])
-		let created = try await client(route).create(write, projectID: "prj_1", teamID: "team_acme").get()
-		#expect(created.id == "env_new" && created.kind == .sensitive)
+		let writes = [
+			VercelVariableWrite(key: "API_TOKEN", value: value, storage: .sensitive, targets: [.production], customEnvironmentIDs: []),
+			VercelVariableWrite(key: "TAKEN", value: "", storage: .encrypted, targets: [], customEnvironmentIDs: ["env_custom1"]),
+		]
+		let results = try await client(route).create(writes, projectID: "prj_1", teamID: "team_acme").get()
+		#expect(try results["API_TOKEN"]?.get().id == "env_new")
+		#expect(results["TAKEN"] == .failure(.rejected(code: "ENV_ALREADY_EXISTS", message: "The variable already exists.")))
 		let request = try #require(route.requests.first)
 		#expect(request.method == "POST" && request.url.path() == "/v10/projects/prj_1/env" && request.query["upsert"] == nil)
-		#expect(request.json?["value"] as? String == value)
-		#expect(request.json?["type"] as? String == "sensitive")
-		#expect(request.json?["target"] as? [String] == ["production"])
-		#expect(request.json?["customEnvironmentIds"] == nil)
+		let sent = try #require(try JSONSerialization.jsonObject(with: request.body) as? [[String: Any]])
+		#expect(sent.count == 2)
+		#expect(sent[0]["value"] as? String == value && sent[0]["type"] as? String == "sensitive")
+		#expect(sent[0]["target"] as? [String] == ["production"] && sent[0]["customEnvironmentIds"] == nil)
+		#expect(sent[1]["customEnvironmentIds"] as? [String] == ["env_custom1"] && sent[1]["target"] == nil)
+	}
 
-		let taken = VercelVariableWrite(key: "TAKEN", value: "", storage: .encrypted, targets: [], customEnvironmentIDs: ["env_custom1"])
-		#expect(await client(route).create(taken, projectID: "prj_1", teamID: nil)
-			== .failure(.rejected(code: "ENV_ALREADY_EXISTS", message: "The variable already exists.")))
-		#expect(route.requests.last?.json?["customEnvironmentIds"] as? [String] == ["env_custom1"])
+	@Test("many variables go in batches, and a key Vercel neither created nor refused isn't reported as created")
+	func createsInBatches() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			let sent = (try? JSONSerialization.jsonObject(with: request.body) as? [[String: Any]]) ?? []
+			let created = sent.compactMap { $0["key"] as? String }.filter { $0 != "KEY_7" }.map { key in
+				["id": "env_\(key)", "key": key, "type": "sensitive", "target": ["preview"], "value": ""] as [String: Any]
+			}
+			return .json(201, ["created": created, "failed": []])
+		}
+		let writes = (0..<(VercelClient.createBatchSize + 5)).map {
+			VercelVariableWrite(key: "KEY_\($0)", value: "v", storage: .sensitive, targets: [.preview], customEnvironmentIDs: [])
+		}
+		let results = try await client(route).create(writes, projectID: "prj_1", teamID: nil).get()
+		#expect(route.requests.count == 2)
+		#expect(results.count == writes.count)
+		#expect(results["KEY_7"] == .failure(.invalidResponse))
+		#expect(results.filter { (try? $0.value.get()) != nil }.count == writes.count - 1)
+	}
+
+	@Test("a refusal of the whole request comes back once, before anything is created")
+	func createRefused() async {
+		let route = PlatformHTTPStub.platform { _ in .json(401, ["error": ["message": "Not authorized"]]) }
+		let write = VercelVariableWrite(key: "A", value: "v", storage: .sensitive, targets: [.preview], customEnvironmentIDs: [])
+		#expect(await client(route).create([write], projectID: "prj_1", teamID: nil) == .failure(.unauthorized))
+	}
+
+	@Test("Vercel's Config or Secret label decides, and older variables fall back to their type")
+	func readsVisibility() async throws {
+		let route = PlatformHTTPStub.platform { _ in
+			.json(200, ["envs": [
+				["id": "env_1", "key": "A", "type": "encrypted", "visibility": "secret", "target": ["preview"], "value": ""],
+				["id": "env_2", "key": "B", "type": "sensitive", "visibility": "config", "target": ["preview"], "value": ""],
+				["id": "env_3", "key": "C", "type": "sensitive", "target": ["preview"], "value": ""],
+				["id": "env_4", "key": "D", "type": "encrypted", "target": ["preview"], "value": "x"],
+			]])
+		}
+		let list = try await client(route).variables(projectID: "prj_1", teamID: nil).get()
+		#expect(list.variables.map(\.isSecret) == [true, false, true, false])
 	}
 
 	/// Answers like Vercel, which refuses a Secret that doesn't also say it's one.
@@ -139,16 +179,25 @@ struct VercelClientTests {
 		#expect(route.requests.last?.json?["visibility"] as? String == "config")
 	}
 
-	@Test("a new variable names its type and visibility as Vercel requires")
+	@Test("new variables name their type and visibility as Vercel requires")
 	func createStatesVisibility() async throws {
 		let route = PlatformHTTPStub.platform { request in
 			Self.enforcingVisibility(request) {
-				.json(201, ["created": ["id": "env_new", "key": "API_TOKEN", "type": "sensitive", "target": ["production"], "value": ""], "failed": []])
+				.json(201, ["created": [
+					["id": "env_secret", "key": "API_TOKEN", "type": "sensitive", "target": ["production"], "value": ""],
+					["id": "env_config", "key": "LOG_LEVEL", "type": "encrypted", "target": ["production"], "value": ""],
+				], "failed": []])
 			}
 		}
-		let write = VercelVariableWrite(key: "API_TOKEN", value: "s3cret", storage: .sensitive, targets: [.production], customEnvironmentIDs: [])
-		_ = try await client(route).create(write, projectID: "prj_1", teamID: nil).get()
-		#expect(route.requests.last?.json?["visibility"] as? String == "secret")
+		let writes = [
+			VercelVariableWrite(key: "API_TOKEN", value: "s3cret", storage: .sensitive, targets: [.production], customEnvironmentIDs: []),
+			VercelVariableWrite(key: "LOG_LEVEL", value: "info", storage: .encrypted, targets: [.production], customEnvironmentIDs: []),
+		]
+		let results = try await client(route).create(writes, projectID: "prj_1", teamID: nil).get()
+		#expect(try results["API_TOKEN"]?.get().id == "env_secret" && results["LOG_LEVEL"]?.get().id == "env_config")
+		let request = try #require(route.requests.last)
+		let sent = try #require(try JSONSerialization.jsonObject(with: request.body) as? [[String: Any]])
+		#expect(sent.map { $0["visibility"] as? String } == ["secret", "config"])
 	}
 
 	@Test("replacing changes only the value and protection of that variable")

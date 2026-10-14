@@ -313,6 +313,31 @@ struct PublishPlanFindingTests {
 		#expect(PublishTimestamp.milliseconds(Date(timeIntervalSince1970: 1e300)) == PublishTimestamp.maximumMilliseconds)
 	}
 
+	@Test("on a platform that can't make a secret readable again, a public key it stores as a secret stays one and can be up to date")
+	func secretsStaySecret() throws {
+		let readable = ProjectEnvSchemaOverview(rules: [rule("A", isPublic: true)], groups: [])
+		let storedSecret = ["A": PublishPlan.RemoteVariable(id: "env_a", updatedAt: lastPublish, storedAsSecret: true)]
+		let fingerprint = PublishFingerprint.of(value: "same", key: "A", destination: destination.id, using: secret)
+		let history = PublishHistory().recording(
+			[.init(key: "A", fingerprint: fingerprint, remoteID: "env_a", remoteUpdatedAt: lastPublish, publishedAsSecret: true)],
+			forgetting: [], at: lastPublish)
+		let staying = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil,
+			remote: storedSecret, reservedKeys: [], history: history, fingerprintKey: secret, secretsStaySecret: true)
+		let row = try #require(staying.row("A"))
+		#expect(row.kind == .public && row.publishesAsSecret && row.staysSecret)
+		#expect(row.status.isUpToDate)
+		var selection = PublishPlan.Selection(defaultsOf: staying)
+		selection.set("A", selected: true, in: staying)
+		#expect(try staying.changes(for: selection, values: ["A": "same"], fingerprintKey: secret).get().first?.publishesAsSecret == true)
+
+		let convertible = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil,
+			remote: storedSecret, reservedKeys: [], history: history, fingerprintKey: secret)
+		#expect(convertible.row("A")?.publishesAsSecret == false && convertible.row("A")?.status.protectionChanged == true)
+		let added = PublishPlan(destination: destination, values: ["A": "same"], rules: readable, check: nil,
+			remote: [:], reservedKeys: [], history: nil, fingerprintKey: secret, secretsStaySecret: true)
+		#expect(added.row("A")?.publishesAsSecret == false, "A new public key is published readable")
+	}
+
 	@Test("a value published readable that should now be a secret isn't up to date")
 	func protectionChange() throws {
 		let readable = ProjectEnvSchemaOverview(rules: [rule("A", isPublic: true)], groups: [])
