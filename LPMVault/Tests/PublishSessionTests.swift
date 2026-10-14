@@ -208,13 +208,23 @@ struct PublishSessionTests {
 		#expect(session.review == nil && session.reviewError?.contains("hides 2 production variables") == true)
 	}
 
-	@Test("changing the source environment drops a review made from the old one")
-	func sourceChangeInvalidates() async throws {
+	@Test("changing the source, project or environment drops a review made for the old choice")
+	func choiceChangeInvalidates() async throws {
 		try await connect()
+		api.projectList.append(VercelProject(id: "prj_web", name: "web", accountID: "team_acme"))
 		let session = session()
 		try await chooseProduction(session)
 		#expect(session.review != nil)
 		session.sourceEnvironment = "staging"
+		#expect(session.review == nil)
+		session.loadReview()
+		try await waitUntil { session.review != nil }
+		session.projectID = "prj_web"
+		#expect(session.review == nil, "A review of another project")
+		session.environment = .production
+		session.loadReview()
+		try await waitUntil { session.review != nil }
+		session.environment = .preview
 		#expect(session.review == nil)
 	}
 }

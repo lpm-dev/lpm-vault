@@ -104,6 +104,7 @@ final class PublishSession: Identifiable {
 	var connectionID: PlatformConnection.ID? {
 		didSet {
 			guard connectionID != oldValue else { return }
+			invalidateReview()
 			projectID = nil
 			loadProjects()
 		}
@@ -112,6 +113,7 @@ final class PublishSession: Identifiable {
 	var projectID: String? {
 		didSet {
 			guard projectID != oldValue else { return }
+			invalidateReview()
 			if case .custom = environment { environment = nil }
 			loadCustomEnvironments()
 		}
