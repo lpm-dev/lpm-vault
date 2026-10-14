@@ -214,12 +214,14 @@ enum BoundedHTTPResponse {
 		)
 	}
 
+	/// Loads the response; a task already cancelled starts no request.
 	static func load(
 		for request: URLRequest,
 		using session: URLSession,
 		maximumBytes: Int
 	) async throws -> (data: Data, response: URLResponse) {
-		try await start(
+		try Task.checkCancellation()
+		return try await start(
 			for: request,
 			using: session,
 			maximumBytes: maximumBytes
@@ -300,7 +302,10 @@ class BoundedHTTPResponseDelegate: NSObject, URLSessionDataDelegate,
 	}
 }
 
-/// Refuses redirects, so a request and its token go only where they were sent.
+/// Refuses redirects, so a request and its token go only where they were
+/// sent. Every authentication challenge but the check of the server's
+/// certificate is refused too, so the system never answers one with
+/// credentials of its own, such as a Kerberos ticket or a client certificate.
 final class RedirectRefusingHTTPDelegate: BoundedHTTPResponseDelegate, @unchecked Sendable {
 	func urlSession(
 		_ session: URLSession,
@@ -310,5 +315,18 @@ final class RedirectRefusingHTTPDelegate: BoundedHTTPResponseDelegate, @unchecke
 		completionHandler: @escaping (URLRequest?) -> Void
 	) {
 		completionHandler(nil)
+	}
+
+	func urlSession(
+		_ session: URLSession,
+		task: URLSessionTask,
+		didReceive challenge: URLAuthenticationChallenge,
+		completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+	) {
+		if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
+			completionHandler(.performDefaultHandling, nil)
+		} else {
+			completionHandler(.rejectProtectionSpace, nil)
+		}
 	}
 }

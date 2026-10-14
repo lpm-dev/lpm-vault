@@ -17,6 +17,8 @@ final class FakeVercelAPI: VercelClientProtocol, @unchecked Sendable {
 	var custom: [VercelCustomEnvironment] = []
 	var variableList = VercelVariableList(variables: [], hiddenProductionCount: 0)
 	var listFailure: VercelAPIError?
+	/// Refuses reading the project's custom environments.
+	var customFailure: VercelAPIError?
 	/// Keys whose creation or replacement Vercel refuses, with the refusal.
 	var refusals: [String: VercelAPIError] = [:]
 	var createFailure: VercelAPIError?
@@ -28,14 +30,17 @@ final class FakeVercelAPI: VercelClientProtocol, @unchecked Sendable {
 	var customListingCount: Int { lock.withLock { customListings } }
 	/// Runs before each replacement is answered, as a slow Vercel would.
 	var beforeReplace: (@Sendable () async -> Void)?
+	/// Runs once new variables are created, as someone changing Vercel meanwhile would.
+	var afterCreate: (@Sendable (FakeVercelAPI) -> Void)?
 
 	func account(teamID: String?) async -> Result<VercelAccount, VercelAPIError> { .success(account) }
-	func projects(teamID: String?, ownerID: String) async -> Result<[VercelProject], VercelAPIError> {
+	func projects(teamID: String?) async -> Result<[VercelProject], VercelAPIError> {
 		lock.withLock { projectListings += 1 }
 		return .success(projectList)
 	}
 	func customEnvironments(projectID: String, teamID: String?) async -> Result<[VercelCustomEnvironment], VercelAPIError> {
 		lock.withLock { customListings += 1 }
+		if let customFailure { return .failure(customFailure) }
 		return .success(custom)
 	}
 
@@ -48,6 +53,7 @@ final class FakeVercelAPI: VercelClientProtocol, @unchecked Sendable {
 	func create(_ writes: [VercelVariableWrite], projectID: String, teamID: String?) async -> Result<[String: Result<VercelEnvironmentVariable, VercelAPIError>], VercelAPIError> {
 		if let createFailure { return .failure(createFailure) }
 		lock.withLock { created.append(contentsOf: writes) }
+		defer { afterCreate?(self) }
 		var results: [String: Result<VercelEnvironmentVariable, VercelAPIError>] = [:]
 		for write in writes {
 			if let refusal = refusals[write.key] {
@@ -309,9 +315,126 @@ struct VercelPublishingTests {
 		#expect(report.outcomes["OPEN"] == .published)
 	}
 
+	@Test("keys in batches never sent read as not sent, not as an unreadable answer")
+	func unsentBatches() async throws {
+		let target = VercelPublishTarget(teamID: "team_acme", accountID: "team_acme", teamName: "Acme", projectID: "prj_api",
+			projectName: "demo-api", environment: .production)
+		let calls = Counter()
+		let route = PlatformHTTPStub.platform { request in
+			if request.method == "GET" {
+				return request.url.path().hasSuffix("/env") ? .json(200, ["envs": []]) : .json(200, ["environments": []])
+			}
+			calls.increment()
+			guard calls.count == 1, let body = try? JSONSerialization.jsonObject(with: request.body) as? [[String: Any]] else {
+				return PlatformHTTPStub.Reply(status: 200, body: Data("{not json".utf8))
+			}
+			return .json(201, ["created": body.map { ["id": "env_\($0["key"] as! String)", "key": $0["key"]!, "type": "sensitive", "target": ["production"]] }])
+		}
+		let count = VercelClient.createBatchSize * 2 + 5
+		let review = review((0..<count).map { ("KEY_\($0)", "v", .add, true) })
+		let report = await VercelPublishing.publish(
+			review.changes, to: target, reviewed: review.reviewed,
+			using: VercelClient(token: "vca_1", baseURL: route.baseURL, session: route.session))
+		let outcomes = report.outcomes.values
+		#expect(outcomes.filter { $0 == .published }.count == VercelClient.createBatchSize)
+		#expect(outcomes.filter { $0 == .failed(VercelPublishing.message(.invalidResponse)) }.count == VercelClient.createBatchSize)
+		#expect(outcomes.filter { $0 == .notSent }.count == 5)
+	}
+
+	@Test("a duplicate key's direction controls are escaped in the message")
+	func escapesDuplicateKeys() {
+		let list = VercelVariableList(variables: [vercelVariable("A\u{202E}B"), vercelVariable("A\u{202E}B")].enumerated().map { index, variable in
+			VercelEnvironmentVariable(id: "env_\(index)", key: variable.key, kind: variable.kind, isSecret: true, targets: variable.targets,
+				customEnvironmentIDs: [], gitBranch: nil, updatedAt: variable.updatedAt)
+		}, hiddenProductionCount: 0)
+		guard case .failure(let error) = VercelPublishing.snapshot(list, for: .production, customEnvironments: []) else {
+			Issue.record("Not refused"); return
+		}
+		#expect(error.message.contains(#"A\u{202e}B"#) && !error.message.contains("\u{202E}"))
+	}
+
+	private static let production = VercelPublishTarget(teamID: "team_acme", accountID: "team_acme", teamName: "Acme", projectID: "prj_api",
+		projectName: "demo-api", environment: .production)
+
+	private func replacement(_ key: String) -> PublishPlan.Change {
+		PublishPlan.Change(key: key, value: "new", operation: .replace(remoteID: "env_\(key)"), publishesAsSecret: true, fingerprint: Data())
+	}
+
+	@Test("sharing is compared by the environments' IDs, so a custom environment that can't be named now, or was renamed, isn't a change")
+	func sharingByIdentity() async throws {
+		let shared = VercelVariableList(variables: [vercelVariable("API", custom: ["env_qa"])], hiddenProductionCount: 0)
+		let reviewed = try VercelPublishing.snapshot(shared, for: .production, customEnvironments: [VercelCustomEnvironment(id: "env_qa", slug: "qa")])
+			.get().variables
+		#expect(reviewed["API"]?.sharedWith == ["qa"])
+
+		let unnamed = FakeVercelAPI()
+		unnamed.variableList = shared
+		unnamed.customFailure = .rateLimited(until: nil)
+		let report = await VercelPublishing.publish([replacement("API")], to: Self.production, reviewed: reviewed, using: unnamed)
+		#expect(report.outcomes["API"] == .published)
+
+		let renamed = FakeVercelAPI()
+		renamed.variableList = shared
+		renamed.custom = [VercelCustomEnvironment(id: "env_qa", slug: "quality")]
+		#expect(await VercelPublishing.publish([replacement("API")], to: Self.production, reviewed: reviewed, using: renamed).outcomes["API"] == .published)
+
+		let widened = FakeVercelAPI()
+		widened.variableList = VercelVariableList(variables: [vercelVariable("API", custom: ["env_qa", "env_new"])], hiddenProductionCount: 0)
+		widened.custom = [VercelCustomEnvironment(id: "env_qa", slug: "qa")]
+		#expect(await VercelPublishing.publish([replacement("API")], to: Self.production, reviewed: reviewed, using: widened).outcomes["API"]
+			== .failed("Changed on Vercel since this review. Review again."))
+		#expect(widened.replacedValues.isEmpty)
+	}
+
+	@Test("a variable Vercel doesn't say the change time of isn't replaced, and the reason says how to fix it")
+	func unknownChangeTime() async throws {
+		let api = FakeVercelAPI()
+		api.variableList = VercelVariableList(variables: [vercelVariable("API", updatedAt: nil)], hiddenProductionCount: 0)
+		let reviewed = try VercelPublishing.snapshot(api.variableList, for: .production, customEnvironments: []).get().variables
+		let report = await VercelPublishing.publish([replacement("API")], to: Self.production, reviewed: reviewed, using: api)
+		guard case .failed(let reason)? = report.outcomes["API"] else { Issue.record("Not refused"); return }
+		#expect(reason.contains("doesn't say when") && reason.contains("Edit it once on Vercel"))
+		#expect(api.replacedValues.isEmpty)
+	}
+
+	@Test("a variable changed on Vercel while new ones were sent isn't replaced: the variables are read again first")
+	func rereadsBeforeReplacing() async throws {
+		let api = FakeVercelAPI()
+		api.variableList = VercelVariableList(variables: [vercelVariable("API")], hiddenProductionCount: 0)
+		let reviewed = try VercelPublishing.snapshot(api.variableList, for: .production, customEnvironments: []).get().variables
+		api.afterCreate = { api in
+			api.variableList = VercelVariableList(
+				variables: [vercelVariable("API", updatedAt: Date(timeIntervalSince1970: 1_760_000_900))], hiddenProductionCount: 0)
+		}
+		let added = PublishPlan.Change(key: "NEW", value: "1", operation: .add, publishesAsSecret: true, fingerprint: Data())
+		let report = await VercelPublishing.publish([added, replacement("API")], to: Self.production, reviewed: reviewed, using: api)
+		#expect(report.outcomes["NEW"] == .published)
+		#expect(report.outcomes["API"] == .failed("Changed on Vercel since this review. Review again."))
+		#expect(api.replacedValues.isEmpty && api.listingCount == 2)
+	}
+
+	@Test("a refusal says whether the variable was added, removed or changed on Vercel since the review")
+	func driftWording() async throws {
+		let api = FakeVercelAPI()
+		api.variableList = VercelVariableList(variables: [vercelVariable("NEW")], hiddenProductionCount: 0)
+		let added = PublishPlan.Change(key: "NEW", value: "1", operation: .add, publishesAsSecret: true, fingerprint: Data())
+		let reviewed = ["GONE": PublishPlan.RemoteVariable(id: "env_GONE", updatedAt: Date(timeIntervalSince1970: 1_760_000_000))]
+		let report = await VercelPublishing.publish([added, replacement("GONE")], to: Self.production, reviewed: reviewed, using: api)
+		#expect(report.outcomes["NEW"] == .failed("Added on Vercel since this review. Review again."))
+		#expect(report.outcomes["GONE"] == .failed("Removed on Vercel since this review. Review again."))
+		#expect(api.createdWrites.isEmpty && api.replacedValues.isEmpty)
+	}
+
 	@Test("Vercel's reserved names are held back")
 	func reserved() {
 		#expect(VercelPublishing.reservedKeys.isSuperset(of: ["TZ", "AWS_SECRET_KEY", "NOW_REGION", "LAMBDA_TASK_ROOT"]))
 		#expect(!VercelPublishing.reservedKeys.contains("AWS_REGION"), "Vercel allows the AWS SDK's own names")
 	}
+}
+
+private final class Counter: @unchecked Sendable {
+	private let lock = NSLock()
+	private var value = 0
+	var count: Int { lock.withLock { value } }
+	func increment() { lock.withLock { value += 1 } }
 }

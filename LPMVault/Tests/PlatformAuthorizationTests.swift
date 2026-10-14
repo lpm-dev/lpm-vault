@@ -348,7 +348,7 @@ private final class FakeAuthorizations: PlatformAuthorizationClientProtocol, @un
 private struct FakeVercel: VercelClientProtocol {
 	var account: Result<VercelAccount, VercelAPIError> = .success(VercelAccount(name: "Acme", slug: "acme"))
 	func account(teamID: String?) async -> Result<VercelAccount, VercelAPIError> { account }
-	func projects(teamID: String?, ownerID: String) async -> Result<[VercelProject], VercelAPIError> { .success([]) }
+	func projects(teamID: String?) async -> Result<[VercelProject], VercelAPIError> { .success([]) }
 	func customEnvironments(projectID: String, teamID: String?) async -> Result<[VercelCustomEnvironment], VercelAPIError> { .success([]) }
 	func variables(projectID: String, teamID: String?) async -> Result<VercelVariableList, VercelAPIError> { .failure(.notFound) }
 	func create(_ writes: [VercelVariableWrite], projectID: String, teamID: String?) async -> Result<[String: Result<VercelEnvironmentVariable, VercelAPIError>], VercelAPIError> { .failure(.notFound) }

@@ -438,6 +438,24 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	private var appItems: [AppKeychainStore: [String: Data]] = [:]
 	private var failingAppItems: [AppKeychainStore: Set<String>] = [:]
 	private var appItemListCounts: [AppKeychainStore: Int] = [:]
+	private var appItemReadCounts: [AppKeychainStore: Int] = [:]
+	private var readFailures: Set<String> = []
+	private var writeFailures: Set<String> = []
+
+	/// How many times the store's app items were listed.
+	func appItemListCount(_ store: AppKeychainStore) -> Int { lock.withLock { appItemListCounts[store] ?? 0 } }
+	/// How many app items of the store were read.
+	func appItemReadCount(_ store: AppKeychainStore) -> Int { lock.withLock { appItemReadCounts[store] ?? 0 } }
+	/// Accounts whose reads fail, while writing and deleting them work.
+	var failAppItemReads: Set<String> {
+		get { lock.withLock { readFailures } }
+		set { lock.withLock { readFailures = newValue } }
+	}
+	/// Accounts whose writes fail, while reading and deleting them work.
+	var failAppItemWrites: Set<String> {
+		get { lock.withLock { writeFailures } }
+		set { lock.withLock { writeFailures = newValue } }
+	}
 
 	var publishingStorage: [String: Data] {
 		get { lock.withLock { appItems[.publishing] ?? [:] } }
@@ -462,7 +480,8 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func readAppItem(_ store: AppKeychainStore, account: String) -> Result<Data?, KeychainError> {
 		lock.withLock {
-			if failingAppItems[store]?.contains(account) == true { return .failure(failureError) }
+			appItemReadCounts[store, default: 0] += 1
+			if failingAppItems[store]?.contains(account) == true || readFailures.contains(account) { return .failure(failureError) }
 			return .success(appItems[store]?[account])
 		}
 	}
@@ -477,7 +496,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	func writeAppItem(_ store: AppKeychainStore, account: String, data: Data) -> Result<Void, KeychainError> {
 		lock.withLock { writeHook }?()
 		return lock.withLock {
-			if failingAppItems[store]?.contains(account) == true { return .failure(failureError) }
+			if failingAppItems[store]?.contains(account) == true || writeFailures.contains(account) { return .failure(failureError) }
 			appItems[store, default: [:]][account] = data
 			return .success(())
 		}

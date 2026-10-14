@@ -37,7 +37,7 @@ struct PublishPlanTests {
 		[
 			"DATABASE_URL": .init(id: "env_db", updatedAt: lastPublish),
 			"API_TOKEN": .init(id: "env_api", updatedAt: lastPublish),
-			"NEXT_PUBLIC_API_URL": .init(id: "env_pub", sharedWith: ["Preview"], updatedAt: nil),
+			"NEXT_PUBLIC_API_URL": .init(id: "env_pub", sharedWith: ["Preview"], updatedAt: remoteEdit),
 			"ONLY_ON_VERCEL_1": .init(id: "env_o1", updatedAt: nil),
 			"ONLY_ON_VERCEL_2": .init(id: "env_o2", updatedAt: nil),
 			"ONLY_ON_VERCEL_3": .init(id: "env_o3", updatedAt: nil),
@@ -121,12 +121,11 @@ struct PublishPlanTests {
 	}
 
 	@Test(
-		"a key whose identity or change time can't be compared, or whose time went back, reads as changed on the platform",
+		"a key whose identity or change time can't be compared isn't up to date, nor said to have changed on the platform",
 		arguments: [
 			(nil, Date(timeIntervalSince1970: 1_760_000_000), "env_api", Date(timeIntervalSince1970: 1_760_000_000)),
 			("env_api", nil, "env_api", Date(timeIntervalSince1970: 1_760_000_000)),
 			("env_api", Date(timeIntervalSince1970: 1_760_000_000), "env_api", nil),
-			("env_api", Date(timeIntervalSince1970: 1_760_000_000), "env_api", Date(timeIntervalSince1970: 1_759_999_000)),
 		] as [(String?, Date?, String, Date?)]
 	)
 	func unknownRemoteTimes(recordedID: String?, recordedTime: Date?, remoteID: String, remoteTime: Date?) throws {
@@ -135,7 +134,35 @@ struct PublishPlanTests {
 		var remote = remote
 		remote["API_TOKEN"] = .init(id: remoteID, updatedAt: remoteTime)
 		let row = try #require(makePlan(remote: remote, history: history).row("API_TOKEN"))
-		#expect(row.status.platform == .changed && row.holds == [.changedOnPlatform])
+		#expect(row.status.platform == .unknown && !row.status.isUpToDate && !row.isSelectedByDefault)
+		#expect(row.holds == (remoteTime == nil ? [.unknownChangeTime, .unknownSincePublish] : [.unknownSincePublish]))
+	}
+
+	@Test("a variable the platform gives no change time for can't be replaced, since a change made meanwhile couldn't be caught")
+	func unknownChangeTime() throws {
+		let planned = makePlan(
+			values: ["A": "1", "B": "2"], rules: .empty, check: .some(nil), remote: ["A": .init(id: "env_a", updatedAt: nil)], history: .some(nil))
+		let row = try #require(planned.row("A"))
+		#expect(row.holds == [.unknownChangeTime] && !row.isPublishable)
+		var selection = PublishPlan.Selection(defaultsOf: planned)
+		let accepted = selection.set("A", selected: true, confirmed: true, in: planned)
+		#expect(!accepted)
+		#expect(planned.row("B")?.isSelectedByDefault == true, "A new key has no change time to know")
+	}
+
+	@Test("a key whose platform time went back, or that the platform holds under another ID, reads as changed on the platform")
+	func earlierRemoteTime() throws {
+		let history = PublishHistory().recording(
+			[published("API_TOKEN", value: "token", remoteID: "env_api", updatedAt: lastPublish)], forgetting: [], at: lastPublish)
+		for variable in [
+			PublishPlan.RemoteVariable(id: "env_api", updatedAt: lastPublish.addingTimeInterval(-1_000)),
+			PublishPlan.RemoteVariable(id: "env_other", updatedAt: lastPublish),
+		] {
+			var remote = remote
+			remote["API_TOKEN"] = variable
+			let row = try #require(makePlan(remote: remote, history: history).row("API_TOKEN"))
+			#expect(row.status.platform == .changed && row.holds == [.changedOnPlatform])
+		}
 	}
 
 	@Test("a key the platform still has as this Mac published it, at the same time, reads as up to date")
@@ -314,7 +341,7 @@ struct PublishPlanFindingTests {
 
 	@Test("a key shared with other environments is chosen only with the person's confirmation")
 	func confirmation() throws {
-		let plan = plan(values: ["A": "1"], remote: ["A": .init(id: "env_a", sharedWith: ["Preview"], updatedAt: nil)])
+		let plan = plan(values: ["A": "1"], remote: ["A": .init(id: "env_a", sharedWith: ["Preview"], updatedAt: lastPublish)])
 		var selection = PublishPlan.Selection(defaultsOf: plan)
 		let unconfirmed = selection.set("A", selected: true, in: plan)
 		#expect(!unconfirmed && selection.keys.isEmpty)

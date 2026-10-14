@@ -16,9 +16,9 @@ struct VercelClientTests {
 		#expect(request.header("Authorization") == "Bearer vca_secret")
 
 		let projects = PlatformHTTPStub.platform { _ in .json(200, ["projects": [], "pagination": ["count": 0, "next": NSNull()]]) }
-		_ = try await client(projects).projects(teamID: "team_acme", ownerID: "team_acme").get()
+		_ = try await client(projects).projects(teamID: "team_acme").get()
 		#expect(projects.requests.first?.query["teamId"] == "team_acme")
-		_ = try await client(projects).projects(teamID: nil, ownerID: "team_acme").get()
+		_ = try await client(projects).projects(teamID: nil).get()
 		#expect(projects.requests.last?.query["teamId"] == nil)
 	}
 
@@ -32,7 +32,7 @@ struct VercelClientTests {
 			}
 		}
 		#expect(try await client(route).account(teamID: "team_acme").get().name == #"Ac\u{2028}me\u{202e}"#)
-		#expect(try await client(route).projects(teamID: "team_acme", ownerID: "team_acme").get().first?.name == #"api\u{200f}"#)
+		#expect(try await client(route).projects(teamID: "team_acme").get().first?.name == #"api\u{200f}"#)
 		#expect(try await client(route).customEnvironments(projectID: "prj_1", teamID: "team_acme").get().first?.slug == #"qa\u{2066}"#)
 	}
 
@@ -60,7 +60,7 @@ struct VercelClientTests {
 			.json(200, ["projects": (0...VercelClient.projectPageSize).map { ["id": "prj_\($0)", "name": "p\($0)", "accountId": "team_acme"] },
 				"pagination": ["next": NSNull()]])
 		}
-		#expect(await client(oversized).projects(teamID: "team_acme", ownerID: "team_acme") == .failure(.invalidResponse))
+		#expect(await client(oversized).projects(teamID: "team_acme") == .failure(.invalidResponse))
 		let endless = PlatformHTTPStub.platform { request in
 			let page = Int(request.query["from"] ?? "0") ?? 0
 			return .json(200, ["projects": [["id": "prj_\(page)", "name": String(repeating: "n", count: 400), "accountId": "team_acme"]],
@@ -68,22 +68,32 @@ struct VercelClientTests {
 		}
 		let budget = VercelClient(token: "vca_secret", baseURL: endless.baseURL, session: endless.session,
 			limits: .init(projectBytes: 4_000, projectDeadline: .seconds(60)))
-		#expect(await budget.projects(teamID: "team_acme", ownerID: "team_acme") == .failure(.invalidResponse))
+		#expect(await budget.projects(teamID: "team_acme") == .failure(.invalidResponse))
 		#expect(endless.requests.count < 20)
 		let late = VercelClient(token: "vca_secret", baseURL: endless.baseURL, session: endless.session,
 			limits: .init(projectBytes: 1_000_000, projectDeadline: .zero))
 		let before = endless.requests.count
-		#expect(await late.projects(teamID: "team_acme", ownerID: "team_acme") == .failure(.invalidResponse))
+		#expect(await late.projects(teamID: "team_acme") == .failure(.invalidResponse))
 		#expect(endless.requests.count - before == 1)
 	}
 
-	@Test("a project another account owns fails the listing")
+	@Test("a team's project another account owns fails the listing")
 	func refusesForeignProjects() async throws {
 		let route = PlatformHTTPStub.platform { _ in
 			.json(200, ["projects": [["id": "prj_1", "name": "api", "accountId": "team_acme"], ["id": "prj_2", "name": "web", "accountId": "team_other"]],
 				"pagination": ["next": NSNull()]])
 		}
-		#expect(await client(route).projects(teamID: "team_acme", ownerID: "team_acme") == .failure(.invalidResponse))
+		#expect(await client(route).projects(teamID: "team_acme") == .failure(.foreignProjects))
+	}
+
+	@Test("a value written to a variable renamed meanwhile says so")
+	func renamedMeanwhile() async throws {
+		let route = PlatformHTTPStub.platform { _ in
+			.json(200, ["id": "env_1", "key": "OTHER", "type": "sensitive", "visibility": "secret", "target": ["production"], "value": ""])
+		}
+		let result = await client(route).replace("env_1", key: "API", value: "v", storage: .sensitive, projectID: "prj_1", teamID: nil)
+		#expect(result == .failure(.wroteToRenamedVariable))
+		#expect(VercelPublishing.message(.wroteToRenamedVariable).contains("renamed"))
 	}
 
 	@Test("a variable reads as a Secret unless Vercel says it's Config and its type is readable")
@@ -118,6 +128,97 @@ struct VercelClientTests {
 		#expect(!VercelPublishing.message(other).contains("s3cret-value"))
 	}
 
+	@Test("a cancelled task sends nothing, and a create stops between batches once cancelled")
+	func cancelledSendsNothing() async throws {
+		let started = CountingStarts()
+		let route = PlatformHTTPStub.platform(delegate: started) { _ in .json(200, ["envs": []]) }
+		let client = client(route)
+		let listing = Task { () -> Result<VercelVariableList, VercelAPIError> in
+			withUnsafeCurrentTask { $0?.cancel() }
+			return await client.variables(projectID: "prj_1", teamID: nil)
+		}
+		#expect(await listing.value == .failure(.cancelled))
+		#expect(started.count == 0, "A request started, even if cancelled at once, may still reach Vercel")
+
+		let cancelling = TaskCanceller()
+		let batchStarts = CountingStarts()
+		batchStarts.beforeCompleting = { cancelling.fire() }
+		let batches = PlatformHTTPStub.platform(delegate: batchStarts) { request in
+			let body = (try? JSONSerialization.jsonObject(with: request.body) as? [[String: Any]]) ?? []
+			return .json(201, ["created": body.map { ["id": "env_\($0["key"] as! String)", "key": $0["key"]!, "type": "sensitive", "target": ["production"]] }])
+		}
+		let writes = (0..<(VercelClient.createBatchSize * 2 + 20)).map {
+			VercelVariableWrite(key: "KEY_\($0)", value: "v", storage: .sensitive, targets: [.production], customEnvironmentIDs: [])
+		}
+		let batchClient = self.client(batches)
+		let ready = AsyncFlag()
+		let create = Task {
+			await ready.wait()
+			return await batchClient.create(writes, projectID: "prj_1", teamID: nil)
+		}
+		cancelling.cancel = { create.cancel() }
+		await ready.open()
+		_ = await create.value
+		#expect(batchStarts.count == 1)
+	}
+
+	@Test("an error code that repeats a value or the token that was sent isn't shown")
+	func codeEchoingValue() async throws {
+		let route = PlatformHTTPStub.platform { _ in .json(400, ["error": ["code": "sk_live_abc123", "message": "x"]]) }
+		let result = await client(route).replace("env_1", key: "API", value: "sk_live_abc123", storage: .sensitive, projectID: "prj_1", teamID: nil)
+		#expect(result == .failure(.rejected(code: "unknown")))
+		let partial = PlatformHTTPStub.platform { _ in .json(400, ["error": ["code": "sk_live", "message": "x"]]) }
+		#expect(await client(partial).replace("env_1", key: "API", value: "sk_live_abc123", storage: .sensitive, projectID: "prj_1", teamID: nil)
+			== .failure(.rejected(code: "unknown")))
+		let token = PlatformHTTPStub.platform { _ in .json(400, ["error": ["code": "vca_secret", "message": "x"]]) }
+		#expect(await client(token).replace("env_1", key: "API", value: "v", storage: .sensitive, projectID: "prj_1", teamID: nil)
+			== .failure(.rejected(code: "unknown")))
+		let created = PlatformHTTPStub.platform { _ in
+			.json(201, ["created": [], "failed": [["error": ["code": "sk_live_abc123", "key": "API"]]]])
+		}
+		let write = VercelVariableWrite(key: "API", value: "sk_live_abc123", storage: .sensitive, targets: [.production], customEnvironmentIDs: [])
+		#expect(try await client(created).create([write], projectID: "prj_1", teamID: nil).get()["API"] == .failure(.rejected(code: "unknown")))
+	}
+
+	@Test("a personal account's projects aren't checked against its user, a team's are, and the legacy list may hold more than a page")
+	func projectOwnership() async throws {
+		let personal = PlatformHTTPStub.platform { _ in
+			.json(200, ["projects": [["id": "prj_1", "name": "api", "accountId": "team_hobby"]], "pagination": ["next": NSNull()]])
+		}
+		#expect(try await client(personal).projects(teamID: nil).get().map(\.id) == ["prj_1"])
+		let foreign = PlatformHTTPStub.platform { _ in
+			.json(200, ["projects": [["id": "prj_1", "name": "api", "accountId": "team_other"]], "pagination": ["next": NSNull()]])
+		}
+		#expect(await client(foreign).projects(teamID: "team_acme") == .failure(.foreignProjects))
+		#expect(VercelPublishing.message(.foreignProjects).contains("another account"))
+		let legacy = PlatformHTTPStub.platform { _ in
+			.json(200, (0..<60).map { ["id": "prj_\($0)", "name": "p\($0)", "accountId": "team_acme"] })
+		}
+		#expect(try await client(legacy).projects(teamID: "team_acme").get().count == 60)
+	}
+
+	@Test("Vercel's and Coolify's session answers no authentication challenge but the check of the server's certificate")
+	func refusesChallenges() {
+		let delegate: any URLSessionTaskDelegate = RedirectRefusingHTTPDelegate()
+		let session = URLSession(configuration: .ephemeral)
+		let task = session.dataTask(with: URL(string: "https://api.vercel.com/v2/user")!)
+		func disposition(_ method: String) -> URLSession.AuthChallengeDisposition? {
+			let space = URLProtectionSpace(host: "api.vercel.com", port: 443, protocol: "https", realm: nil, authenticationMethod: method)
+			let challenge = URLAuthenticationChallenge(
+				protectionSpace: space, proposedCredential: nil, previousFailureCount: 0, failureResponse: nil, error: nil, sender: ChallengeSender())
+			let answer = ChallengeAnswer()
+			delegate.urlSession?(session, task: task, didReceive: challenge) { disposition, credential in
+				answer.record(disposition, credential)
+			}
+			return answer.disposition
+		}
+		for method in [NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodNegotiate, NSURLAuthenticationMethodNTLM, NSURLAuthenticationMethodClientCertificate] {
+			#expect(disposition(method) == .rejectProtectionSpace, "\(method)")
+		}
+		#expect(disposition(NSURLAuthenticationMethodServerTrust) == .performDefaultHandling)
+		session.invalidateAndCancel()
+	}
+
 	@Test("a personal account's name comes from the user, by name or else username")
 	func personalAccount() async throws {
 		let named = PlatformHTTPStub.platform { _ in .json(200, ["user": ["id": "u_1", "name": "Tolga", "username": "tolga"]]) }
@@ -140,7 +241,7 @@ struct VercelClientTests {
 				return .json(200, ["projects": [["id": "prj_3", "name": "docs", "accountId": "team_acme"]], "pagination": ["count": 1, "next": NSNull()]])
 			}
 		}
-		let projects = try await client(route).projects(teamID: "team_acme", ownerID: "team_acme").get()
+		let projects = try await client(route).projects(teamID: "team_acme").get()
 		#expect(projects.map(\.id) == ["prj_1", "prj_2", "prj_3"])
 		#expect(route.requests.allSatisfy { $0.query["limit"] == String(VercelClient.projectPageSize) })
 	}
@@ -150,7 +251,7 @@ struct VercelClientTests {
 		let route = PlatformHTTPStub.platform { _ in
 			.json(200, ["projects": [["id": "prj_1", "name": "api", "accountId": "team_acme"]], "pagination": ["count": 1, "next": "same"]])
 		}
-		#expect(await client(route).projects(teamID: nil, ownerID: "team_acme") == .failure(.invalidResponse))
+		#expect(await client(route).projects(teamID: nil) == .failure(.invalidResponse))
 		#expect(route.requests.count == 2)
 	}
 
@@ -303,8 +404,8 @@ struct VercelClientTests {
 		}
 		let updated = try await client(route).replace("env_1", key: "API_TOKEN", value: "", storage: .sensitive, projectID: "prj_1", teamID: nil).get()
 		#expect(updated.targets == [.production, .preview])
-		#expect(await client(route).replace("env_1", key: "OTHER", value: "", storage: .sensitive, projectID: "prj_1", teamID: nil) == .failure(.invalidResponse),
-			"An answer naming another key isn't taken for this variable")
+		#expect(await client(route).replace("env_1", key: "OTHER", value: "", storage: .sensitive, projectID: "prj_1", teamID: nil)
+			== .failure(.wroteToRenamedVariable), "An answer naming another key isn't taken for this variable")
 		let request = try #require(route.requests.first)
 		#expect(request.method == "PATCH" && request.url.path() == "/v9/projects/prj_1/env/env_1")
 		#expect(Set(request.json?.keys ?? [:].keys) == ["value", "type", "visibility"])
@@ -377,4 +478,57 @@ struct VercelClientTests {
 			#expect(!text.contains("vca_secret") && !text.contains("s3cret-value"))
 		}
 	}
+}
+
+/// Counts the requests a session starts, whether or not they're cancelled before reaching the stub.
+private final class CountingStarts: BoundedHTTPResponseDelegate, @unchecked Sendable {
+	private let lock = NSLock()
+	private var started = 0
+	private var completionHook: (@Sendable () -> Void)?
+	var count: Int { lock.withLock { started } }
+	/// Runs as each response completes, before its caller sees it.
+	var beforeCompleting: (@Sendable () -> Void)? {
+		get { lock.withLock { completionHook } }
+		set { lock.withLock { completionHook = newValue } }
+	}
+
+	override func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+		beforeCompleting?()
+		super.urlSession(session, task: task, didCompleteWithError: error)
+	}
+
+	override func startBoundedResponse(
+		for request: URLRequest,
+		using session: URLSession,
+		maximumBytes: Int
+	) throws -> BoundedHTTPResponse.Started {
+		lock.withLock { started += 1 }
+		return try super.startBoundedResponse(for: request, using: session, maximumBytes: maximumBytes)
+	}
+}
+
+/// Cancels the task it's given.
+private final class TaskCanceller: @unchecked Sendable {
+	private let lock = NSLock()
+	private var cancelTask: (@Sendable () -> Void)?
+	var cancel: (@Sendable () -> Void)? {
+		get { lock.withLock { cancelTask } }
+		set { lock.withLock { cancelTask = newValue } }
+	}
+	func fire() { cancel?() }
+}
+
+private final class ChallengeAnswer: @unchecked Sendable {
+	private let lock = NSLock()
+	private var answered: URLSession.AuthChallengeDisposition?
+	var disposition: URLSession.AuthChallengeDisposition? { lock.withLock { answered } }
+	func record(_ disposition: URLSession.AuthChallengeDisposition, _ credential: URLCredential?) {
+		lock.withLock { answered = credential == nil ? disposition : nil }
+	}
+}
+
+private final class ChallengeSender: NSObject, URLAuthenticationChallengeSender {
+	func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {}
+	func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {}
+	func cancel(_ challenge: URLAuthenticationChallenge) {}
 }
