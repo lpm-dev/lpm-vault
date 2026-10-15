@@ -1027,6 +1027,7 @@ struct NetlifyPublishSessionTests {
 		let review = try #require(session.review)
 		#expect(review.summary.replacing == 0 && review.summary.adding == 2)
 		#expect(PublishSheet.notes(for: review).contains { $0.contains("moments before publishing can still be overwritten") })
+		#expect(PublishSheet.notes(for: review).contains { $0.contains("another deploy context at that moment can't be told apart from this publish") })
 		review.selection.keys.forEach { if $0 == "API_TOKEN" { session.set($0, selected: false) } }
 		let onlyNew = try #require(session.review)
 		#expect(!PublishSheet.notes(for: onlyNew).contains { $0.contains("moments before publishing") }, "A new variable can't overwrite anything")
