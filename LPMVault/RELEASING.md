@@ -10,6 +10,7 @@ LPM Vault uses Sparkle 2.10.0 for direct macOS updates. The app supports macOS 1
 | `https://vault.lpm.dev/download` | Current DMG installer |
 | `https://vault.lpm.dev/releases/vVERSION/FILENAME` | Immutable release artifact |
 | `https://vault.lpm.dev/updates/appcast.xml` | Signed Sparkle feed |
+| `https://vault.lpm.dev/netlify/connected` | Redirect URI of the Netlify OAuth app |
 
 Coolify serves the website from `web/Dockerfile`, with the repository root as the build context. The container listens on port 8080. Its health endpoint is `/health`.
 
@@ -20,6 +21,12 @@ Cloudflare routes `vault.lpm.dev` to the Coolify server. Coolify must have the d
 The download routes redirect to public GitHub release assets. The repository must be public before downloads can work without authentication. No GitHub token belongs in the app or website.
 
 GitHub release immutability protects each published version. The current installer and feed use uncached redirects. Published releases contain all assets before they become visible.
+
+## Netlify OAuth app
+
+LPM Vault connects Netlify through Netlify's OAuth ticket flow, as the Netlify CLI does. The app starts a ticket with the OAuth application's client ID, the person approves it on Netlify, and the Mac exchanges the ticket for the token directly with Netlify. No client secret is used, so none belongs in the app, the website or the Registry.
+
+The **LPM Vault** OAuth application is registered in a Netlify account's **User settings → Applications → OAuth applications**. Netlify ties the application to that user, so keep the account. Its redirect URI is `https://vault.lpm.dev/netlify/connected`, a static page without analytics that sends the person back to the app. Its client ID is public and lives in `VaultConstants.netlifyOAuthClientID`, so replacing the application needs an app release.
 
 ## Signing boundaries
 

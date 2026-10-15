@@ -1360,6 +1360,7 @@ final class VaultStore {
   /// Publish destinations and this Mac's publish history.
   let publishing: PublishingStore
   private let platformConnect: PlatformConnections.Connect?
+  private let netlifyConnect: PlatformConnections.ConnectNetlify?
   private let platformURLOpener: (@MainActor @Sendable (URL) -> Void)?
   /// The platform accounts this Mac publishes to, for the Platforms page.
   let platformConnectionStore: PlatformConnectionStore
@@ -1377,6 +1378,7 @@ final class VaultStore {
     store: platformConnectionStore,
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
     connectCoolify: { [coolifyClient] in await CoolifyConnector(client: coolifyClient).connect(address: $0, token: $1) },
+    connectNetlify: netlifyConnect ?? { await NetlifyConnector().connect(open: $0) },
     session: { [weak self] in await self?.platformSession() },
     openURL: platformURLOpener ?? PlatformConnections.openInBrowser,
     didChange: { [weak self] in self?.forgetConnectionDetails() }
@@ -1871,6 +1873,7 @@ final class VaultStore {
       },
     authTokenProvider: (@Sendable (String, URL) async throws -> String?)? = nil,
     platformConnect: PlatformConnections.Connect? = nil,
+    netlifyConnect: PlatformConnections.ConnectNetlify? = nil,
     platformClient: (@Sendable (String) -> any VercelClientProtocol)? = nil,
     coolifyClient: CoolifyConnector.ClientFactory? = nil,
     platformURLOpener: (@MainActor @Sendable (URL) -> Void)? = nil,
@@ -1930,6 +1933,7 @@ final class VaultStore {
     self.persistence = VaultPersistenceCoordinator(service: keychainService)
     self.publishing = PublishingStore(service: keychainService)
     self.platformConnect = platformConnect
+    self.netlifyConnect = netlifyConnect
     self.platformConnectionStore = PlatformConnectionStore(service: keychainService)
     self.platformClient = platformClient ?? { VercelClient(token: $0) }
     self.coolifyClient = coolifyClient ?? { CoolifyClient(instance: $0, token: $1) }

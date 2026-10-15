@@ -22,6 +22,10 @@ enum VaultConstants {
 	/// kept in `appKeychainAccessGroup`.
 	static let platformConnectionsKeychainService = "dev.lpm.vault.platforms"
 
+	/// LPM Vault's Netlify OAuth app. A client ID is public: the ticket flow
+	/// needs no client secret, so none ships in the app or on a server.
+	static let netlifyOAuthClientID = "NETLIFY_CLIENT_ID_PENDING"
+
 	/// Maximum recommended vault size in bytes (90KB warning threshold)
 	static let maxVaultSizeWarning = 90 * 1024
 

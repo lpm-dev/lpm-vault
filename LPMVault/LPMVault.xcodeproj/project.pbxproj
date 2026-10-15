@@ -30,6 +30,7 @@
 		19D89CB98C5DBE28ECF56875 /* Round4AuditRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DD9BE611F1BB7A4B5E38DE1 /* Round4AuditRegressionTests.swift */; };
 		1B65DFA8F8C5EE52C99C8D2D /* CurrentContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD248A688D2DCFD4318032CF /* CurrentContractTests.swift */; };
 		1BAA3CBB12E0F7974FC2F3C0 /* PublicKeyRevealTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E9AF1DB6216DC5E2907A5B3 /* PublicKeyRevealTests.swift */; };
+		1DA17DD2292B9A6630D4BD1E /* NetlifyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 458FE25088254AA68B9EDEE1 /* NetlifyClient.swift */; };
 		1DE21B8419F44BB534C03C30 /* PublishHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FEFF73DB71597834B779F2 /* PublishHistory.swift */; };
 		1F1703A5C68145FAB01857A6 /* VercelClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38F25A372F8AAC1E6FD1C755 /* VercelClientTests.swift */; };
 		22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10F9038EDB0DF8525A388573 /* ModelTests.swift */; };
@@ -96,6 +97,7 @@
 		683ACA166A8ACAD4FEBE60B8 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */; };
 		6CCEDC914C33070A2489CA21 /* VaultSchemaReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D487550C0437B4F55F50D03C /* VaultSchemaReviewSheet.swift */; };
 		6ED4D87B9BD3A139401AFBCD /* EnvSchemaCompositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6AC2FB02EDCD85F6095DAE /* EnvSchemaCompositionTests.swift */; };
+		72A556D5F4A968AFC33FE63D /* NetlifyClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C7F37326D9E2F264CAC1E42 /* NetlifyClientTests.swift */; };
 		7627BBC2CFC099173303EE50 /* PublishDestinationForms.swift in Sources */ = {isa = PBXBuildFile; fileRef = 837EB7065CA0617259762054 /* PublishDestinationForms.swift */; };
 		7908040342BE96F6602C8930 /* ProjectEnvSchemaDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41FF1A17FB39F50360CE49DB /* ProjectEnvSchemaDraft.swift */; };
 		79239F41A5347411FC68689B /* Mocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63C91F636E4DF09BA177F24F /* Mocks.swift */; };
@@ -116,6 +118,7 @@
 		860FD73B8CD4AF75C68D0268 /* VaultPaneBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F6C9EE8B916ECE78400C09 /* VaultPaneBudgetTests.swift */; };
 		89A4B6EF8C27BB520DC3C148 /* KeychainServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */; };
 		8CA56038EA5DD843D6D0CBAE /* EnvFileImportReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = B93FF58179E5B6CF737002F6 /* EnvFileImportReview.swift */; };
+		8CB33D1D735B14F9322F8B1E /* NetlifyConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB55A757FA0068F1A7D2568 /* NetlifyConnector.swift */; };
 		8CDB854CC6FDB5D81FA4A298 /* LPMOrg.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CEFDB752A8CA0EF3E0007CF /* LPMOrg.swift */; };
 		8DFD27CCCCEAAA3605397A7D /* UpdateCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A8500EA1B90B673155FDB5A /* UpdateCheckerTests.swift */; };
 		92E621F7F5F52DD31197D239 /* NewVaultSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8781D80F04E7286497DDF325 /* NewVaultSheet.swift */; };
@@ -270,6 +273,7 @@
 		4087411C6D51EB8AFBC77E53 /* Round3BenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round3BenchmarkTests.swift; sourceTree = "<group>"; };
 		408CB91D419B483C1DED72C5 /* Resources */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Resources; path = Sources/Resources; sourceTree = SOURCE_ROOT; };
 		41FF1A17FB39F50360CE49DB /* ProjectEnvSchemaDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaDraft.swift; sourceTree = "<group>"; };
+		458FE25088254AA68B9EDEE1 /* NetlifyClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetlifyClient.swift; sourceTree = "<group>"; };
 		465AD9498C88039BB74D5D40 /* AddVariableSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddVariableSheet.swift; sourceTree = "<group>"; };
 		4688C3AA94245B231B939F2F /* AuthSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionStore.swift; sourceTree = "<group>"; };
 		47A81DE99D02A3D02E6022EE /* PublishSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishSheet.swift; sourceTree = "<group>"; };
@@ -284,6 +288,7 @@
 		58E4E4C897F8E4401D882AF6 /* SecureFileWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureFileWriter.swift; sourceTree = "<group>"; };
 		5B29E80D234EA32595E080E5 /* CoolifyConnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoolifyConnector.swift; sourceTree = "<group>"; };
 		5B2ACF6C2FF1577ADB967ABF /* PlatformConnectionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformConnectionsTests.swift; sourceTree = "<group>"; };
+		5C7F37326D9E2F264CAC1E42 /* NetlifyClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetlifyClientTests.swift; sourceTree = "<group>"; };
 		5CD3C3B276BE5AF1C5E09C40 /* RustSchemaEngineProvenanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustSchemaEngineProvenanceTests.swift; sourceTree = "<group>"; };
 		5CFC95BACBC0D111312A0AFB /* ValueCheckTableInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValueCheckTableInteractionTests.swift; sourceTree = "<group>"; };
 		5D6CBBC8709449B5DA33D8DD /* LPMVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LPMVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -359,6 +364,7 @@
 		B9198E040EEBC0EC72052477 /* ProjectEnvSchemaOverviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaOverviewTests.swift; sourceTree = "<group>"; };
 		B93FF58179E5B6CF737002F6 /* EnvFileImportReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReview.swift; sourceTree = "<group>"; };
 		BB40CA66BB61A66922B80DB4 /* PublishPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishPlan.swift; sourceTree = "<group>"; };
+		BBB55A757FA0068F1A7D2568 /* NetlifyConnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetlifyConnector.swift; sourceTree = "<group>"; };
 		BC1454DBB5C406F654AA9519 /* BlockingWorkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockingWorkTests.swift; sourceTree = "<group>"; };
 		BC6202E0BC76FCCD7043054E /* lpm-json-edit-expected.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "lpm-json-edit-expected.json"; sourceTree = "<group>"; };
 		BCFFA64462F1369E71D85556 /* LoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginService.swift; sourceTree = "<group>"; };
@@ -558,6 +564,7 @@
 				758E847084D4401033C747AC /* MetadataWarningTests.swift */,
 				63C91F636E4DF09BA177F24F /* Mocks.swift */,
 				10F9038EDB0DF8525A388573 /* ModelTests.swift */,
+				5C7F37326D9E2F264CAC1E42 /* NetlifyClientTests.swift */,
 				C76DF6C1DCC3927A6969C8E4 /* OCRText.swift */,
 				B525DD1074B0316F4375CFB8 /* OrganizationProjectImportTests.swift */,
 				F375377661ADD940B7762CFC /* PersonalKeyEnvelopeTests.swift */,
@@ -673,6 +680,8 @@
 				BCFFA64462F1369E71D85556 /* LoginService.swift */,
 				E193FA88E1F59BB173A56569 /* LoopbackHTTP.swift */,
 				CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */,
+				458FE25088254AA68B9EDEE1 /* NetlifyClient.swift */,
+				BBB55A757FA0068F1A7D2568 /* NetlifyConnector.swift */,
 				2F0BBE2F9D0891DC2DB71743 /* PersonalProjectCrypto.swift */,
 				69E5C843D5E284E813E58B4F /* PinnedSessionDelegate.swift */,
 				5471F56B8470AA2D08698F06 /* PlatformAuthorizationClient.swift */,
@@ -818,6 +827,7 @@
 				E550CBF5396F86B284B97B94 /* MetadataWarningTests.swift in Sources */,
 				79239F41A5347411FC68689B /* Mocks.swift in Sources */,
 				22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */,
+				72A556D5F4A968AFC33FE63D /* NetlifyClientTests.swift in Sources */,
 				35AAAC807BBE6E0D97B42E51 /* OCRText.swift in Sources */,
 				AFDB64DB0C06E90C68BACE8A /* OrganizationProjectImportTests.swift in Sources */,
 				C9350649A7097AED2D9830A3 /* PersonalKeyEnvelopeTests.swift in Sources */,
@@ -910,6 +920,8 @@
 				4C60693621D2C5D37FF804A5 /* LPMUser.swift in Sources */,
 				53BEA16BDEA8F0F8EACD5BB1 /* LoginService.swift in Sources */,
 				FCA0025A2C6AF7CBAF2DF0AD /* LoopbackHTTP.swift in Sources */,
+				1DA17DD2292B9A6630D4BD1E /* NetlifyClient.swift in Sources */,
+				8CB33D1D735B14F9322F8B1E /* NetlifyConnector.swift in Sources */,
 				2DEAEBDD924683D9D5E1236D /* NewEnvironmentSheet.swift in Sources */,
 				92E621F7F5F52DD31197D239 /* NewVaultSheet.swift in Sources */,
 				9985BDBA7A430BE63659F484 /* OrgVaultsSheet.swift in Sources */,

@@ -30,6 +30,7 @@ struct PlatformsView: View {
 						.fixedSize(horizontal: false, vertical: true)
 
 					vercelSection
+					netlifySection
 					coolifySection
 
 					if let notice = platforms.notice {
@@ -49,7 +50,7 @@ struct PlatformsView: View {
 						.accessibilityElement(children: .combine)
 					}
 
-					Text("Disconnecting forgets a token on this Mac only. To remove LPM Vault's access to Vercel, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values. To remove its access to Coolify, delete its API token in Coolify's Keys & Tokens.")
+					Text("Disconnecting forgets a token on this Mac only. To remove LPM Vault's access to Vercel, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values. To remove its access to Netlify, revoke LPM Vault under Applications → Authorized applications in your Netlify user settings. To remove its access to Coolify, delete its API token in Coolify's Keys & Tokens.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
@@ -74,6 +75,8 @@ struct PlatformsView: View {
 				Text("LPM Vault forgets its token on this Mac. The integration stays installed on Vercel, and variables already published stay as they are.")
 			case .coolify:
 				Text("LPM Vault forgets its token on this Mac. The token keeps working in Coolify until you delete it there, and variables already published stay as they are.")
+			case .netlify:
+				Text("LPM Vault forgets its token on this Mac. LPM Vault stays authorized on Netlify until you revoke it there, and variables already published stay as they are.")
 			}
 		}
 		.sheet(isPresented: $connectingCoolify) {
@@ -88,7 +91,11 @@ struct PlatformsView: View {
 	}
 
 	private var vercelSection: some View {
-		section(.vercel, empty: "No Vercel accounts connected yet.") { connectControls }
+		section(.vercel, empty: "No Vercel accounts connected yet.") { browserConnectControls(.vercel) }
+	}
+
+	private var netlifySection: some View {
+		section(.netlify, empty: "No Netlify accounts connected yet.") { browserConnectControls(.netlify) }
 	}
 
 	private var coolifySection: some View {
@@ -97,7 +104,7 @@ struct PlatformsView: View {
 				VaultBarButton(systemImage: "plus", title: "Connect Coolify", filled: true) {
 					connectingCoolify = true
 				}
-				Text("Connects a team on your Coolify instance with an API token you create there.")
+				Text(Self.coolifyGuidance)
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -162,24 +169,32 @@ struct PlatformsView: View {
 		.padding(.vertical, 11)
 	}
 
-	@ViewBuilder
-	private var connectControls: some View {
-		VStack(alignment: .leading, spacing: 8) {
+	/// Connect and Cancel for a platform that connects in the browser. One
+	/// browser connection runs at a time, so the other platform's Connect
+	/// waits for it.
+	private func browserConnectControls(_ platform: PublishPlatform) -> some View {
+		let isConnectingHere = platforms.connecting == platform
+		let needsSignIn = platform == .vercel && !store.isLoggedIn
+		return VStack(alignment: .leading, spacing: 8) {
 			HStack(spacing: 8) {
 				VaultBarButton(
 					systemImage: "plus",
-					title: platforms.isConnecting ? "Connecting…" : "Connect Vercel",
+					title: isConnectingHere ? "Connecting…" : "Connect \(platform.displayName)",
 					filled: true,
-					disabled: platforms.isConnecting || !store.isLoggedIn
+					disabled: platforms.isConnecting || needsSignIn
 				) {
-					platforms.connectVercel()
+					switch platform {
+					case .vercel: platforms.connectVercel()
+					case .netlify: platforms.connectNetlify()
+					case .coolify: break
+					}
 				}
-				if platforms.isConnecting {
+				if isConnectingHere {
 					ProgressView().controlSize(.small)
 					VaultBarButton(title: "Cancel", action: platforms.cancelConnecting)
 				}
 			}
-			if !store.isLoggedIn {
+			if needsSignIn {
 				HStack(spacing: 6) {
 					Text("Sign in to LPM to connect Vercel.")
 						.font(.system(size: 11.5))
@@ -189,17 +204,29 @@ struct PlatformsView: View {
 						.font(.system(size: 11.5, weight: .medium))
 						.foregroundStyle(VaultPalette.accentForeground)
 				}
-			} else if platforms.phase == .waitingForBrowser {
-				Text("Finish in your browser: choose the Vercel team and the projects LPM Vault can reach, then come back here.")
-					.font(.system(size: 11.5))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.fixedSize(horizontal: false, vertical: true)
 			} else {
-				Text("Opens Vercel in your browser to install the LPM Vault integration for a team or your personal account.")
+				Text(Self.browserGuidance(platform, waiting: isConnectingHere && platforms.phase == .waitingForBrowser))
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
 			}
+		}
+	}
+
+	static let coolifyGuidance = "Connects a team on your Coolify instance with an API token you create there."
+
+	static func browserGuidance(_ platform: PublishPlatform, waiting: Bool) -> String {
+		switch (platform, waiting) {
+		case (.vercel, true):
+			"Finish in your browser: choose the Vercel team and the projects LPM Vault can reach, then come back here."
+		case (.netlify, true):
+			"Finish in your browser: authorize LPM Vault on Netlify, then come back here."
+		case (.netlify, false):
+			"Opens Netlify in your browser to authorize LPM Vault. It reaches the sites of every team your Netlify account belongs to."
+		case (.vercel, false):
+			"Opens Vercel in your browser to install the LPM Vault integration for a team or your personal account."
+		case (.coolify, _):
+			coolifyGuidance
 		}
 	}
 
@@ -210,6 +237,8 @@ struct PlatformsView: View {
 			kind = account.isTeam ? "Team\(account.slug.map { " · \($0)" } ?? "")" : "Personal account"
 		case .coolify(let account):
 			kind = account.instance.address
+		case .netlify(let account):
+			kind = account.email ?? "Netlify account"
 		}
 		let connected = connection.connectedAt.formatted(date: .abbreviated, time: .omitted)
 		return "\(kind) · Connected \(connected)"

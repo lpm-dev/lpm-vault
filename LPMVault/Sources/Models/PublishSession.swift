@@ -288,7 +288,9 @@ final class PublishSession: Identifiable {
 		let result = await dependencies.connections.connections()
 		guard !Task.isCancelled else { return }
 		switch result {
-		case .success(let list):
+		case .success(let all):
+			// This version connects Netlify but doesn't publish to it yet.
+			let list = all.filter { $0.platform != .netlify }
 			connections = .loaded(list)
 			if connectionID == nil, list.count == 1 { connectionID = list[0].id }
 		case .failure(let error):
@@ -300,9 +302,11 @@ final class PublishSession: Identifiable {
 	/// destination's choices when it's the saved destination's connection.
 	private func makeForm() -> PublishDestinationForm? {
 		guard let connectionID, let connection = connections.value?.first(where: { $0.id == connectionID }) else { return nil }
-		let form: PublishDestinationForm = switch connection.platform {
-		case .vercel: .vercel(VercelDestinationForm())
-		case .coolify: .coolify(CoolifyDestinationForm())
+		let form: PublishDestinationForm
+		switch connection.platform {
+		case .vercel: form = .vercel(VercelDestinationForm())
+		case .coolify: form = .coolify(CoolifyDestinationForm())
+		case .netlify: return nil
 		}
 		observe(form)
 		return form

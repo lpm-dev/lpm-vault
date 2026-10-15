@@ -142,7 +142,8 @@ struct PublishDestinationTests {
 		arguments: [
 			#"{"version":2,"vault":"VAULT","destinations":[],"syncedAt":1}"#,
 			#"{"version":99999999999999999999999,"vault":"VAULT","destinations":[]}"#,
-			record(platform: "netlify", extra: #","netlifySite":"x""#),
+			record(platform: "cloudflare", extra: #","cloudflareScript":"x""#),
+			record(platform: "cloudflare"),
 			record(platform: "netlify"),
 			record(environment: #"{"kind":"branch","branch":"main"}"#),
 			coolifyRecord(resource: "database"),
