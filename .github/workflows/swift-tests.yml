@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       cooperative:
-        description: Also run the cooperative executor regressions.
+        description: Also run every test but the native UI suite on a one-thread cooperative pool.
         required: false
         default: false
         type: boolean
@@ -67,6 +67,6 @@ jobs:
             ${{ runner.temp }}/ui-snapshots/*
           if-no-files-found: ignore
           retention-days: 7
-      - name: Cooperative executor regressions
+      - name: Swift tests on a one-thread cooperative pool
         if: inputs.cooperative
         run: bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh

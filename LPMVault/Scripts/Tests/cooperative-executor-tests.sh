@@ -27,8 +27,12 @@ toolset = {
 (runner_dir / "toolset.json").write_text(json.dumps(toolset))
 PY
 
-SWIFT_TEST_TIME_LIMIT=60 \
+# Every test but the native UI suite, on one cooperative thread: work that
+# blocks that thread, or waits on a task that needs it, deadlocks here
+# instead of only on a runner with few cores. The run takes seconds, so the
+# limit only bounds a hang.
+SWIFT_TEST_TIME_LIMIT=300 \
   bash "$package_dir/Scripts/swift-test-watchdog.sh" \
   --package-path "$package_dir" --skip-build --disable-xctest --enable-swift-testing \
   --disable-automatic-resolution --toolset "$runner_dir/toolset.json" \
-  --filter 'supersededWorkspaceSnapshotBuildStopsSerially|staleEnvironmentMutationPreservesCurrentSelection|navigationRejectsAStaleProjectLoad|cancelledDotenvExportDoesNotCommit|schemaRenameSerializesLaterMutations|queuedSchemaRenameRejectsChangedTarget|MockKeychainConcurrencyTests'
+  --skip 'LPMVaultTests.SheetInteractionTests'

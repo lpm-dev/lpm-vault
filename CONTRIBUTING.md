@@ -58,7 +58,14 @@ swift test --package-path LPMVault --disable-automatic-resolution -Xswiftc -warn
 ```
 
 Pull request checks run every Swift test except the native UI suite, `SheetInteractionTests`.
-Its tests read the screen with Vision, which is CPU-only and several times slower on hosted runners, so the [UI regressions workflow](.github/workflows/ui.yml) runs them after every merge to `main`, before every release, on demand from the Actions tab, and for a pull request labeled `ui-tests`.
+They run those tests a second time on a one-thread cooperative pool, so work that blocks a cooperative thread, or waits on a task that needs one, deadlocks there rather than only on a runner with few cores. After a build, run that check locally from the repository root; it takes a few seconds:
+
+```sh
+bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh
+```
+
+The native UI suite's tests read the screen with Vision, which is CPU-only and several times slower on hosted runners, so the [UI regressions workflow](.github/workflows/ui.yml) runs them after every merge to `main`, before every release, on demand from the Actions tab, and for a pull request labeled `ui-tests`.
+Label a pull request `ui-tests` only when it changes what a sheet or view shows, or how it responds to input; the local run before you push covers the rest.
 An on-demand run can take a `filter`, a regular expression for the identifiers of the tests to run, and runs only those, on one runner, in a few minutes. Use it to check one test on the runners' macOS without waiting for every shard:
 
 ```sh
