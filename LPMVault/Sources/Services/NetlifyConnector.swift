@@ -118,7 +118,8 @@ struct NetlifyConnector: Sendable {
 
 	/// Checks the ticket until the person approves it; the reason it ended
 	/// otherwise, or nil once it's approved. Checks Netlify couldn't answer
-	/// are tried again, each time a little later.
+	/// are tried again, each time a little later. The last check is made at
+	/// the deadline, so an approval given in time is kept.
 	private func waitForApproval(of ticket: NetlifyTicket) async -> NetlifyConnectError? {
 		let clock = ContinuousClock()
 		let deadline = clock.now.advanced(by: maximumWait)

@@ -226,6 +226,17 @@ struct NetlifyConnectorTests {
 		#expect(!tickets.calls.contains { $0.hasPrefix("exchange") })
 	}
 
+	@Test("the last check, at the deadline, keeps an approval the person gave in time")
+	func lastCheckAtDeadline() async throws {
+		let tickets = FakeTickets()
+		tickets.checks = [.success(NetlifyTicket(id: "ticket_1", isAuthorized: true))]
+		var connector = connector(tickets)
+		connector.maximumWait = .milliseconds(20)
+		connector.pollInterval = .milliseconds(200)
+		#expect(try await connector.connect { _ in }.get().token == "nfo_granted")
+		#expect(tickets.calls == ["create lpm_client", "check ticket_1", "exchange ticket_1"])
+	}
+
 	@Test("checks Netlify couldn't answer, or answered with a rate limit, don't end the wait once it answers again")
 	func survivesTransientChecks() async throws {
 		let tickets = FakeTickets()
