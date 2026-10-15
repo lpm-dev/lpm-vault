@@ -24,41 +24,6 @@ struct NetlifyUser: Equatable, Sendable {
 	let email: String?
 }
 
-/// A request to authorize LPM Vault, which the person approves on Netlify's
-/// own page. Its ID is a bearer secret until it's exchanged: whoever holds
-/// it can collect the token once it's approved.
-struct NetlifyTicket: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
-	let id: String
-	let isAuthorized: Bool
-
-	var description: String { "NetlifyTicket(id: <redacted>, authorized: \(isAuthorized))" }
-	var debugDescription: String { description }
-	var customMirror: Mirror { Mirror(self, children: ["isAuthorized": isAuthorized]) }
-}
-
-/// The access token an approved ticket was exchanged for. The token never
-/// appears when it's printed, logged or dumped.
-struct NetlifyGrant: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
-	let accessToken: String
-	/// The user Netlify issued the token to, when it said.
-	let userID: String?
-	let email: String?
-
-	var description: String { "NetlifyGrant(user: \(userID ?? "?"), accessToken: <redacted>)" }
-	var debugDescription: String { description }
-	var customMirror: Mirror { Mirror(self, children: ["userID": userID as Any]) }
-}
-
-/// Netlify's OAuth tickets, which need no token: LPM Vault's client ID
-/// starts one, and the person approves it in the browser.
-protocol NetlifyAuthorizationClientProtocol: Sendable {
-	func createTicket(clientID: String) async -> Result<NetlifyTicket, NetlifyAPIError>
-	/// The ticket as it is now; `notFound` once Netlify refused or dropped it.
-	func ticket(_ id: String) async -> Result<NetlifyTicket, NetlifyAPIError>
-	/// Collects the token of an approved ticket. Netlify hands it out once.
-	func exchange(_ ticketID: String) async -> Result<NetlifyGrant, NetlifyAPIError>
-}
-
 protocol NetlifyClientProtocol: Sendable {
 	/// The user the token belongs to.
 	func user() async -> Result<NetlifyUser, NetlifyAPIError>
@@ -91,12 +56,12 @@ enum NetlifyHTTP {
 		return components.url
 	}
 
-	static func request(_ method: String, _ url: URL, token: String?, body: Data? = nil) -> URLRequest {
+	static func request(_ method: String, _ url: URL, token: String, body: Data? = nil) -> URLRequest {
 		var request = URLRequest(url: url)
 		request.httpMethod = method
 		request.setValue("application/json", forHTTPHeaderField: "Accept")
 		request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-		if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+		request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 		if let body {
 			request.httpBody = body
 			request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -133,7 +98,7 @@ enum NetlifyHTTP {
 		}
 	}
 
-	/// IDs Netlify assigns, such as tickets', users' and sites', use only
+	/// IDs Netlify assigns, such as users', teams' and sites', use only
 	/// characters that are safe in a request path.
 	static func isValidIdentifier(_ text: String) -> Bool {
 		PlatformIdentifier.isValid(text)
@@ -142,72 +107,6 @@ enum NetlifyHTTP {
 	/// Printable ASCII without spaces, as Netlify issues them.
 	static func isValidAccessToken(_ token: String) -> Bool {
 		!token.isEmpty && token.utf8.count <= 4_096 && token.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7E }
-	}
-}
-
-/// Netlify's OAuth ticket endpoints, which LPM Vault calls without a token.
-struct NetlifyAuthorizationClient: NetlifyAuthorizationClientProtocol {
-	private let baseURL: URL
-	let session: URLSession
-
-	init(baseURL: URL = NetlifyHTTP.defaultBaseURL, session: URLSession? = nil) {
-		self.baseURL = baseURL
-		self.session = session ?? NetlifyHTTP.sharedSession
-	}
-
-	func createTicket(clientID: String) async -> Result<NetlifyTicket, NetlifyAPIError> {
-		guard NetlifyHTTP.isValidIdentifier(clientID),
-			let url = NetlifyHTTP.url(baseURL, ["oauth", "tickets"], query: [URLQueryItem(name: "client_id", value: clientID)])
-		else { return .failure(.invalidResponse) }
-		return await NetlifyHTTP.load(NetlifyHTTP.request("POST", url, token: nil), using: session).flatMap(Self.ticket)
-	}
-
-	func ticket(_ id: String) async -> Result<NetlifyTicket, NetlifyAPIError> {
-		guard NetlifyHTTP.isValidIdentifier(id), let url = NetlifyHTTP.url(baseURL, ["oauth", "tickets", id]) else {
-			return .failure(.invalidResponse)
-		}
-		return await NetlifyHTTP.load(NetlifyHTTP.request("GET", url, token: nil), using: session).flatMap(Self.ticket).flatMap { ticket in
-			ticket.id == id ? .success(ticket) : .failure(.invalidResponse)
-		}
-	}
-
-	func exchange(_ ticketID: String) async -> Result<NetlifyGrant, NetlifyAPIError> {
-		guard NetlifyHTTP.isValidIdentifier(ticketID), let url = NetlifyHTTP.url(baseURL, ["oauth", "tickets", ticketID, "exchange"]) else {
-			return .failure(.invalidResponse)
-		}
-		return await NetlifyHTTP.load(NetlifyHTTP.request("POST", url, token: nil), using: session).flatMap { data in
-			guard let decoded = try? JSONDecoder().decode(AccessToken.self, from: data),
-				NetlifyHTTP.isValidAccessToken(decoded.accessToken),
-				decoded.userID.map(NetlifyHTTP.isValidIdentifier) ?? true
-			else { return .failure(.invalidResponse) }
-			return .success(NetlifyGrant(
-				accessToken: decoded.accessToken, userID: decoded.userID, email: ProviderName.display(decoded.userEmail)))
-		}
-	}
-
-	private static func ticket(_ data: Data) -> Result<NetlifyTicket, NetlifyAPIError> {
-		guard let decoded = try? JSONDecoder().decode(Ticket.self, from: data), NetlifyHTTP.isValidIdentifier(decoded.id) else {
-			return .failure(.invalidResponse)
-		}
-		// A ticket waiting for the person reads `authorized: null`.
-		return .success(NetlifyTicket(id: decoded.id, isAuthorized: decoded.authorized == true))
-	}
-
-	private struct Ticket: Decodable {
-		let id: String
-		let authorized: Bool?
-	}
-
-	private struct AccessToken: Decodable {
-		let accessToken: String
-		let userID: String?
-		let userEmail: String?
-
-		private enum CodingKeys: String, CodingKey {
-			case accessToken = "access_token"
-			case userID = "user_id"
-			case userEmail = "user_email"
-		}
 	}
 }
 

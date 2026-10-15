@@ -254,30 +254,6 @@ class Routes(unittest.TestCase):
         self.assertEqual(headers['Location'], f'https://github.com/lpm-dev/lpm-vault/releases/download/v{version}/LPM-Vault-{version}.dmg')
         self.assertIn('immutable', headers['Cache-Control'])
 
-    def test_netlify_return_page_is_static_unindexed_and_untracked(self):
-        status, headers, body = self.request('/netlify/connected')
-        self.assertEqual(status, 200)
-        self.assertIn('text/html', headers['Content-Type'])
-        self.assertEqual(headers['Cache-Control'], 'no-cache')
-        self.assertIn("frame-ancestors 'none'", headers['Content-Security-Policy'])
-        page = body.decode()
-        head = page.split('</head>')[0]
-        self.assertIn('<meta name="robots" content="noindex">', head)
-        self.assertIn('<meta name="referrer" content="no-referrer">', head)
-        self.assertIn('Return to LPM Vault', page)
-        self.assertNotIn('<script', page)
-        self.assertNotIn('canonical', page)
-        inventory = PageInventory()
-        inventory.feed(page)
-        self.assertEqual(inventory.inline_styles, [])
-        self.assertEqual(inventory.event_handlers, [])
-        self.assertEqual(inventory.external_subresources, [])
-        style = re.findall(r'href="(/assets/style\.([a-f0-9]{64})\.css)"', page)
-        self.assertEqual(len(style), 1)
-        for path in sorted(inventory.local_references):
-            with self.subTest(path=path):
-                self.assertEqual(self.request(path)[0], 200)
-
     def test_sitemap_contains_only_the_canonical_landing_page(self):
         status, headers, body = self.request('/sitemap.xml')
         self.assertEqual(status, 200)

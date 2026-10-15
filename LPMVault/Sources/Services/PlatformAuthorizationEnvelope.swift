@@ -3,7 +3,7 @@ import Foundation
 
 /// A platform's access grant, as the Registry encrypts it to this Mac's
 /// one-time key after the browser finishes connecting. Matches
-/// `sealAuthorizationResult` in the Registry's `lib/vault/vercel-authorization.js`:
+/// `sealAuthorizationResult` in the Registry's `lib/vault/platform-authorization.js`:
 ///
 ///     shared = ECDH-P256(client, serverEphemeral)
 ///     key    = HKDF-SHA256(ikm: shared, salt: authorizationID (UTF-8),
@@ -33,12 +33,14 @@ enum PlatformAuthorizationEnvelope {
 
 	private static let maximumCiphertextBytes = 16 * 1024
 
-	/// The Vercel grant inside `sealed`, decrypted with `clientKey` for `authorizationID`.
-	static func openVercelGrant(
+	/// The grant inside `sealed`, decrypted with `clientKey` for
+	/// `authorizationID`. It opens only as the platform's grant it names.
+	static func open<Grant: PlatformGrant>(
 		_ sealed: Sealed,
+		as _: Grant.Type,
 		authorizationID: String,
 		clientKey: P256.KeyAgreement.PrivateKey
-	) -> Result<VercelGrant, OpenError> {
+	) -> Result<Grant, OpenError> {
 		guard sealed.version == 1,
 			let ephemeralBytes = Data(base64Encoded: sealed.ephemeralPublicKey), ephemeralBytes.count == 65,
 			let nonceBytes = Data(base64Encoded: sealed.nonce), nonceBytes.count == 12,
@@ -69,15 +71,28 @@ enum PlatformAuthorizationEnvelope {
 			return .failure(.undecryptable)
 		}
 		defer { plaintext.resetBytes(in: plaintext.startIndex..<plaintext.endIndex) }
-		guard let grant = VercelGrant(json: plaintext) else { return .failure(.invalidGrant) }
+		guard let payload = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+			payload["platform"] as? String == Grant.platform.rawValue,
+			let grant = Grant(payload: payload)
+		else { return .failure(.invalidGrant) }
 		return .success(grant)
 	}
+}
+
+/// What connecting a platform account grants, as the Registry seals it.
+/// The payload names its platform, which `open` checks before reading it.
+protocol PlatformGrant: Sendable {
+	static var platform: BrowserPlatform { get }
+	/// The grant `payload` describes, or nil when it isn't a well-formed one.
+	init?(payload: [String: Any])
 }
 
 /// What connecting a Vercel account grants: an access token for one
 /// installation of the LPM Vault integration. The token never appears when
 /// the grant is printed, logged or dumped.
-struct VercelGrant: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+struct VercelGrant: PlatformGrant, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	static let platform = BrowserPlatform.vercel
+
 	let accessToken: String
 	let installationID: String
 	/// The team the integration was installed for, or nil for a personal account.
@@ -98,15 +113,13 @@ struct VercelGrant: Equatable, Sendable, CustomStringConvertible, CustomDebugStr
 		self.userID = userID
 	}
 
-	fileprivate init?(json: Data) {
-		guard let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
-			object["platform"] as? String == "vercel",
-			let accessToken = object["accessToken"] as? String,
-			let installationID = object["installationId"] as? String,
-			let userID = object["userId"] as? String
+	init?(payload: [String: Any]) {
+		guard let accessToken = payload["accessToken"] as? String,
+			let installationID = payload["installationId"] as? String,
+			let userID = payload["userId"] as? String
 		else { return nil }
 		let teamID: String?
-		switch object["teamId"] {
+		switch payload["teamId"] {
 		case nil, is NSNull: teamID = nil
 		case let value as String: teamID = value
 		default: return nil
@@ -127,4 +140,27 @@ struct VercelGrant: Equatable, Sendable, CustomStringConvertible, CustomDebugStr
 	var customMirror: Mirror {
 		Mirror(self, children: ["installationID": installationID, "teamID": teamID as Any, "userID": userID])
 	}
+}
+
+/// What connecting a Netlify account grants: an access token that reaches
+/// every team of the Netlify user who approved LPM Vault. The token never
+/// appears when the grant is printed, logged or dumped.
+struct NetlifyGrant: PlatformGrant, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	static let platform = BrowserPlatform.netlify
+
+	let accessToken: String
+
+	init?(accessToken: String) {
+		guard NetlifyHTTP.isValidAccessToken(accessToken) else { return nil }
+		self.accessToken = accessToken
+	}
+
+	init?(payload: [String: Any]) {
+		guard let accessToken = payload["accessToken"] as? String else { return nil }
+		self.init(accessToken: accessToken)
+	}
+
+	var description: String { "NetlifyGrant(accessToken: <redacted>)" }
+	var debugDescription: String { description }
+	var customMirror: Mirror { Mirror(self, children: [:]) }
 }

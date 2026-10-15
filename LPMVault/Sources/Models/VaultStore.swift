@@ -1378,7 +1378,7 @@ final class VaultStore {
     store: platformConnectionStore,
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
     connectCoolify: { [coolifyClient] in await CoolifyConnector(client: coolifyClient).connect(address: $0, token: $1) },
-    connectNetlify: netlifyConnect ?? { await NetlifyConnector().connect(open: $0) },
+    connectNetlify: netlifyConnect ?? { await NetlifyConnector().connect(session: $0, open: $1) },
     session: { [weak self] in await self?.platformSession() },
     openURL: platformURLOpener ?? PlatformConnections.openInBrowser,
     didChange: { [weak self] in self?.forgetConnectionDetails() }

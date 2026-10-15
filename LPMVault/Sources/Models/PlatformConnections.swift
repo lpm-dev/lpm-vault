@@ -22,15 +22,16 @@ final class PlatformConnections {
 	typealias Connect = @Sendable (
 		_ session: PlatformSession,
 		_ open: @escaping @Sendable (URL) async -> Void
-	) async -> Result<(grant: VercelGrant, account: VercelAccount), VercelConnectError>
+	) async -> Result<(grant: VercelGrant, account: VercelAccount), BrowserConnectError>
 
 	/// One check of a Coolify address and token; see `CoolifyConnector.connect`.
 	typealias ConnectCoolify = @Sendable (_ address: String, _ token: String) async -> Result<CoolifyConnection, CoolifyConnectError>
 
 	/// One run of connecting Netlify; see `NetlifyConnector.connect`.
 	typealias ConnectNetlify = @Sendable (
+		_ session: PlatformSession,
 		_ open: @escaping @Sendable (URL) async -> Void
-	) async -> Result<NetlifyConnection, NetlifyConnectError>
+	) async -> Result<NetlifyConnection, BrowserConnectError>
 
 	enum CoolifyOutcome: Equatable {
 		case connected(PlatformConnection)
@@ -66,7 +67,7 @@ final class PlatformConnections {
 		store: PlatformConnectionStore,
 		connect: @escaping Connect = { await VercelConnector().connect(session: $0, open: $1) },
 		connectCoolify: @escaping ConnectCoolify = { await CoolifyConnector().connect(address: $0, token: $1) },
-		connectNetlify: @escaping ConnectNetlify = { await NetlifyConnector().connect(open: $0) },
+		connectNetlify: @escaping ConnectNetlify = { await NetlifyConnector().connect(session: $0, open: $1) },
 		session: @escaping SessionProvider,
 		openURL: @escaping @MainActor @Sendable (URL) -> Void = PlatformConnections.openInBrowser,
 		now: @escaping @Sendable () -> Date = { Date() },
@@ -106,57 +107,51 @@ final class PlatformConnections {
 
 	/// Connects a Vercel account in the browser; does nothing while a browser connection runs.
 	func connectVercel() {
-		connectInBrowser(.vercel) { [weak self] open in
-			guard let self, let session = await self.session() else { return .failed(VercelConnectError.signedOut.message) }
-			guard !Task.isCancelled else { return .cancelled }
-			switch await self.connect(session, open) {
-			case .success(let connected):
+		connectInBrowser(.vercel) { [connect] session, open in
+			await connect(session, open).map { connected in
 				let grant = connected.grant
-				return .connected(
-					.vercel(VercelConnectionAccount(
+				return BrowserConnected(
+					account: .vercel(VercelConnectionAccount(
 						installationID: grant.installationID, teamID: grant.teamID, userID: grant.userID,
 						name: connected.account.name, slug: connected.account.slug)),
 					token: grant.accessToken)
-			case .failure(.cancelled): return .cancelled
-			case .failure(let error): return .failed(error.message)
 			}
 		}
 	}
 
-	/// Connects a Netlify account in the browser; does nothing while a
-	/// browser connection runs. It needs no LPM sign-in.
+	/// Connects a Netlify account in the browser; does nothing while a browser connection runs.
 	func connectNetlify() {
-		connectInBrowser(.netlify) { [connectNetlifyAccount] open in
-			switch await connectNetlifyAccount(open) {
-			case .success(let connected):
+		connectInBrowser(.netlify) { [connectNetlifyAccount] session, open in
+			await connectNetlifyAccount(session, open).map { connected in
 				let user = connected.user
-				return .connected(
-					.netlify(NetlifyConnectionAccount(userID: user.id, name: user.name ?? user.email ?? "Netlify account", email: user.email)),
+				return BrowserConnected(
+					account: .netlify(NetlifyConnectionAccount(userID: user.id, name: user.name ?? user.email ?? "Netlify account", email: user.email)),
 					token: connected.token)
-			case .failure(.cancelled): return .cancelled
-			case .failure(let error): return .failed(error.message)
 			}
 		}
 	}
 
-	/// How a browser connection ended.
-	private enum BrowserOutcome: Sendable {
-		case connected(PlatformConnection.Account, token: String)
-		case failed(String)
-		case cancelled
+	/// What a browser connection connected, ready to save.
+	private struct BrowserConnected: Sendable {
+		let account: PlatformConnection.Account
+		let token: String
 	}
 
-	/// Runs `run`, which opens the platform's page with the `open` it's given,
-	/// then saves what it connected. The page opens only while the connection
-	/// is still wanted, and a connection the vault locked or the person
-	/// cancelled before it could be used is never kept.
+	/// Runs `run` with the LPM session, which opens the platform's page with
+	/// the `open` it's given, then saves what it connected. Without a session
+	/// nothing starts. The page opens only while the connection is still
+	/// wanted, and a connection the vault locked or the person cancelled
+	/// before it could be used is never kept.
 	private func connectInBrowser(
-		_ platform: PublishPlatform,
-		_ run: @escaping @MainActor (_ open: @escaping @Sendable (URL) async -> Void) async -> BrowserOutcome
+		_ platform: BrowserPlatform,
+		_ run: @escaping @Sendable (
+			_ session: PlatformSession,
+			_ open: @escaping @Sendable (URL) async -> Void
+		) async -> Result<BrowserConnected, BrowserConnectError>
 	) {
 		guard connectTask == nil else { return }
 		notice = nil
-		connecting = platform
+		connecting = platform.publishPlatform
 		let generation = generation
 		connectTask = Task { [weak self] in
 			guard let self else { return }
@@ -167,19 +162,25 @@ final class PlatformConnections {
 					self.phase = .idle
 				}
 			}
-			let openURL = self.openURL
-			let outcome = await run { [weak self] url in
-				// Checked and opened in one turn on the main actor, so a lock can't land in between.
-				await MainActor.run {
-					guard let self, generation == self.generation, !Task.isCancelled else { return }
-					self.phase = .waitingForBrowser
-					openURL(url)
+			let outcome: Result<BrowserConnected, BrowserConnectError>
+			if let session = await self.session() {
+				guard generation == self.generation, !Task.isCancelled else { return }
+				let openURL = self.openURL
+				outcome = await run(session) { [weak self] url in
+					// Checked and opened in one turn on the main actor, so a lock can't land in between.
+					await MainActor.run {
+						guard let self, generation == self.generation, !Task.isCancelled else { return }
+						self.phase = .waitingForBrowser
+						openURL(url)
+					}
 				}
+			} else {
+				outcome = .failure(.signedOut)
 			}
 			guard generation == self.generation else { return }
 			switch outcome {
-			case .connected(let account, let token):
-				switch await self.store.saveUndoably(account, accessToken: token, at: self.now()) {
+			case .success(let connected):
+				switch await self.store.saveUndoably(connected.account, accessToken: connected.token, at: self.now()) {
 				case .success(let saved):
 					guard await self.keep(saved, generation: generation) else { return }
 					let connection = saved.connection
@@ -191,10 +192,10 @@ final class PlatformConnections {
 					guard generation == self.generation else { return }
 					self.notice = Notice(message: "\(platform.displayName) connected, but the connection couldn't be saved. \(error)", isError: true)
 				}
-			case .cancelled:
+			case .failure(.cancelled):
 				self.notice = nil
-			case .failed(let message):
-				self.notice = Notice(message: message, isError: true)
+			case .failure(let error):
+				self.notice = Notice(message: error.message(for: platform), isError: true)
 			}
 		}
 	}

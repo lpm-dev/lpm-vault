@@ -342,10 +342,6 @@ h3 code {
 	padding: 72px var(--gutter) 0;
 }
 
-.return-page {
-	padding-bottom: 96px;
-}
-
 .hero-glow {
 	position: absolute;
 	top: 62%;

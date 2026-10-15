@@ -91,6 +91,7 @@
 		5CFF8C9C3F7163E4F9EB4625 /* LPMToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178A6AD4D7254CB4955C912E /* LPMToken.swift */; };
 		5F7A8315BFCAF31BD93A65EF /* PublishDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC603D98BBFFDD181A88AAD2 /* PublishDestination.swift */; };
 		5FF5B4064E8EAF4BCE4B8755 /* SheetInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E75A2A8B354D17791E2390F /* SheetInteractionTests.swift */; };
+		613EDF78FC1B9CFC1E22F759 /* BrowserAuthorization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266550AAF7BE0ECE87C3EF15 /* BrowserAuthorization.swift */; };
 		624242199ADD00465D0F54A5 /* VaultContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEDE6264C2563EEC4611935A /* VaultContentView.swift */; };
 		646C81D9ADF1290BAFEC80D9 /* VaultKeyEdit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 621C09DBB341EAA1AA6C9DB1 /* VaultKeyEdit.swift */; };
 		6627ADDBD5EA83D7F247FAFA /* PlatformAuthorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D6199E770D8BCE8E4C9EE4A /* PlatformAuthorizationTests.swift */; };
@@ -251,6 +252,7 @@
 		237FE9B740DFACF0D52C8353 /* EnvSchemaScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvSchemaScopeTests.swift; sourceTree = "<group>"; };
 		2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectConfigFile.swift; sourceTree = "<group>"; };
 		262EBDA4D72D70C5E237C904 /* SchemaPageStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaPageStateTests.swift; sourceTree = "<group>"; };
+		266550AAF7BE0ECE87C3EF15 /* BrowserAuthorization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserAuthorization.swift; sourceTree = "<group>"; };
 		275BE1DCB4AC27367E4E71F9 /* ConnectCoolifySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectCoolifySheet.swift; sourceTree = "<group>"; };
 		2965F7490F3928DA989BBC43 /* CoolifyPublishing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoolifyPublishing.swift; sourceTree = "<group>"; };
 		2B36ADA90129E79376810409 /* CoolifyPublishingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoolifyPublishingTests.swift; sourceTree = "<group>"; };
@@ -670,6 +672,7 @@
 				031C570F6BF94FC959CB4D89 /* AuthSessionCoordinator.swift */,
 				4688C3AA94245B231B939F2F /* AuthSessionStore.swift */,
 				09F3D97EC4B3C023F301406F /* BiometricService.swift */,
+				266550AAF7BE0ECE87C3EF15 /* BrowserAuthorization.swift */,
 				AA17FB26EDFE51906892C132 /* ClipboardManager.swift */,
 				1537A923FE9D31FAE64204AD /* CoolifyClient.swift */,
 				5B29E80D234EA32595E080E5 /* CoolifyConnector.swift */,
@@ -897,6 +900,7 @@
 				38AFEC6E457B9C83373C397F /* BiometricService.swift in Sources */,
 				AB3D53CC0B3F588FF516B71E /* BlockingWork.swift in Sources */,
 				B5698C32AC0DD87892CE5A02 /* BoundedHTTPResponse.swift in Sources */,
+				613EDF78FC1B9CFC1E22F759 /* BrowserAuthorization.swift in Sources */,
 				1502B1EBDA3730B341AC1C18 /* ClipboardManager.swift in Sources */,
 				0AE7F8802E0EAB9364630CBC /* CloudVaultsSheet.swift in Sources */,
 				14E8D1B3AC9A80878E1E69A4 /* ConnectCLISheet.swift in Sources */,

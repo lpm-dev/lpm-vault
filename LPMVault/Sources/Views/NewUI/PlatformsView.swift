@@ -104,7 +104,7 @@ struct PlatformsView: View {
 				VaultBarButton(systemImage: "plus", title: "Connect Coolify", filled: true) {
 					connectingCoolify = true
 				}
-				Text(Self.coolifyGuidance)
+				Text("Connects a team on your Coolify instance with an API token you create there.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -169,12 +169,12 @@ struct PlatformsView: View {
 		.padding(.vertical, 11)
 	}
 
-	/// Connect and Cancel for a platform that connects in the browser. One
-	/// browser connection runs at a time, so the other platform's Connect
-	/// waits for it.
-	private func browserConnectControls(_ platform: PublishPlatform) -> some View {
-		let isConnectingHere = platforms.connecting == platform
-		let needsSignIn = platform == .vercel && !store.isLoggedIn
+	/// Connect and Cancel for a platform that connects in the browser, which
+	/// needs an LPM sign-in. One browser connection runs at a time, so the
+	/// other platform's Connect waits for it.
+	private func browserConnectControls(_ platform: BrowserPlatform) -> some View {
+		let isConnectingHere = platforms.connecting == platform.publishPlatform
+		let needsSignIn = !store.isLoggedIn
 		return VStack(alignment: .leading, spacing: 8) {
 			HStack(spacing: 8) {
 				VaultBarButton(
@@ -186,7 +186,6 @@ struct PlatformsView: View {
 					switch platform {
 					case .vercel: platforms.connectVercel()
 					case .netlify: platforms.connectNetlify()
-					case .coolify: break
 					}
 				}
 				if isConnectingHere {
@@ -196,7 +195,7 @@ struct PlatformsView: View {
 			}
 			if needsSignIn {
 				HStack(spacing: 6) {
-					Text("Sign in to LPM to connect Vercel.")
+					Text("Sign in to LPM to connect \(platform.displayName).")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 					Button("Open Settings", action: store.showSettings)
@@ -213,9 +212,7 @@ struct PlatformsView: View {
 		}
 	}
 
-	static let coolifyGuidance = "Connects a team on your Coolify instance with an API token you create there."
-
-	static func browserGuidance(_ platform: PublishPlatform, waiting: Bool) -> String {
+	static func browserGuidance(_ platform: BrowserPlatform, waiting: Bool) -> String {
 		switch (platform, waiting) {
 		case (.vercel, true):
 			"Finish in your browser: choose the Vercel team and the projects LPM Vault can reach, then come back here."
@@ -225,8 +222,6 @@ struct PlatformsView: View {
 			"Opens Netlify in your browser to authorize LPM Vault. It reaches the sites of every team your Netlify account belongs to."
 		case (.vercel, false):
 			"Opens Vercel in your browser to install the LPM Vault integration for a team or your personal account."
-		case (.coolify, _):
-			coolifyGuidance
 		}
 	}
 

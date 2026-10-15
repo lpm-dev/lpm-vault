@@ -21,21 +21,22 @@ enum PlatformConnectFailure: Equatable, Sendable {
 		}
 	}
 
-	var message: String {
-		switch self {
-		case .cancelledOnPlatform: "The connection was cancelled on Vercel."
-		case .differentInstallation: "Vercel answered for a different installation. Connect again."
+	func message(for platform: BrowserPlatform) -> String {
+		let name = platform.displayName
+		return switch self {
+		case .cancelledOnPlatform: "The connection was cancelled on \(name)."
+		case .differentInstallation: "\(name) answered for a different installation. Connect again."
 		case .alreadyUsed: "This connection link was already used. Connect again from LPM Vault."
-		case .platformUnavailable: "Vercel isn't reachable right now. Try again later."
-		case .platformRefused: "Vercel didn't accept the connection. Connect again."
-		case .other: "Vercel couldn't be connected. Try again."
+		case .platformUnavailable: "\(name) isn't reachable right now. Try again later."
+		case .platformRefused: "\(name) didn't accept the connection. Connect again."
+		case .other: "\(name) couldn't be connected. Try again."
 		}
 	}
 }
 
-/// Listens on 127.0.0.1 for the browser's return from connecting Vercel,
-/// which the Registry's callback redirects to
-/// `/platforms/vercel/complete?authorization=…&proof=…` (or `&error=…`),
+/// Listens on 127.0.0.1 for the browser's return from connecting a
+/// platform, which the Registry's callback redirects to
+/// `/platforms/{platform}/complete?authorization=…&proof=…` (or `&error=…`),
 /// signed with its response-signing key. Only a signed return for the
 /// authorization this Mac started counts; any other request gets a page and
 /// is otherwise ignored, so someone who learns the authorization can't end
@@ -55,7 +56,7 @@ final class PlatformConnectionListener: @unchecked Sendable {
 	struct Request: Equatable, Sendable {
 		let authorizationID: String
 		let completion: Completion
-		/// Vercel's page to continue on, when it gave one.
+		/// The platform's page to continue on, when it gave one.
 		let next: URL?
 		/// The Registry's signature over what the return says, and the key it used.
 		let keyID: String
@@ -69,9 +70,9 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		let registry: URL
 	}
 
-	static let path = "/platforms/vercel/complete"
 	private static let maximumConcurrentConnections = 16
 
+	let platform: BrowserPlatform
 	let port: UInt16
 	private let listener: NWListener
 	private let lock = NSLock()
@@ -80,13 +81,20 @@ final class PlatformConnectionListener: @unchecked Sendable {
 	private var waiter: CheckedContinuation<Completion, Error>?
 	private var activeConnections = 0
 
-	private init(listener: NWListener, port: UInt16) {
+	private init(listener: NWListener, platform: BrowserPlatform, port: UInt16) {
 		self.listener = listener
+		self.platform = platform
 		self.port = port
 	}
 
-	/// A listener on a free port of 127.0.0.1, ready for connections.
-	static func start() async throws -> PlatformConnectionListener {
+	/// The path the browser returns to after connecting `platform`.
+	static func path(for platform: BrowserPlatform) -> String {
+		"/platforms/\(platform.rawValue)/complete"
+	}
+
+	/// A listener on a free port of 127.0.0.1 for returns from connecting
+	/// `platform`, ready for connections.
+	static func start(for platform: BrowserPlatform) async throws -> PlatformConnectionListener {
 		let parameters = NWParameters.tcp
 		parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
 		let listener = try NWListener(using: parameters, on: .any)
@@ -105,7 +113,7 @@ final class PlatformConnectionListener: @unchecked Sendable {
 			listener.newConnectionHandler = { $0.cancel() }
 			listener.start(queue: .global(qos: .userInitiated))
 		}
-		let started = PlatformConnectionListener(listener: listener, port: port)
+		let started = PlatformConnectionListener(listener: listener, platform: platform, port: port)
 		listener.stateUpdateHandler = { [weak started] state in
 			if case .failed = state { started?.finish(.failure(ListenerError.unavailable)) }
 		}
@@ -168,7 +176,7 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		connection.start(queue: .global(qos: .userInitiated))
 		LoopbackHTTP.readRequest(connection) { [weak self] data in
 			guard let self else { return connection.cancel() }
-			let request = data.flatMap(Self.parse)
+			let request = data.flatMap { Self.parse($0, for: platform) }
 			let expected = lock.withLock {
 				activeConnections -= 1
 				return self.expected
@@ -177,20 +185,21 @@ final class PlatformConnectionListener: @unchecked Sendable {
 				PinnedSessionDelegate.verifyRegistrySignature(
 					request.signature, keyID: request.keyID, message: request.signedMessage, registry: expected.registry)
 			{
-				LoopbackHTTP.send(Self.page(for: request.completion, next: request.next), on: connection)
+				LoopbackHTTP.send(Self.page(for: request.completion, on: platform, next: request.next), on: connection)
 				finish(.success(request.completion))
 			} else {
-				LoopbackHTTP.send(Self.page(for: nil, next: nil), on: connection)
+				LoopbackHTTP.send(Self.page(for: nil, on: platform, next: nil), on: connection)
 			}
 		}
 	}
 
-	/// The return the request describes, or nil when it isn't one. Whether
-	/// the Registry signed it is checked against the authorization expected.
-	static func parse(_ request: Data) -> Request? {
+	/// The return from connecting `platform` the request describes, or nil
+	/// when it isn't one. Whether the Registry signed it is checked against
+	/// the authorization expected.
+	static func parse(_ request: Data, for platform: BrowserPlatform) -> Request? {
 		guard let (method, target, _, _) = LoopbackHTTP.split(request), method == "GET" else { return nil }
 		let parts = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
-		guard parts.first == path[...], parts.count == 2 else { return nil }
+		guard parts.first == path(for: platform)[...], parts.count == 2 else { return nil }
 		let fields = LoopbackHTTP.parseForm(String(parts[1]))
 		guard let authorizationID = fields["authorization"],
 			PlatformAuthorizationClient.isCanonicalUUID(authorizationID),
@@ -215,7 +224,7 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		return Request(
 			authorizationID: authorizationID,
 			completion: completion,
-			next: next.flatMap(validatedVercelPage),
+			next: next.flatMap { validatedNextPage($0, for: platform) },
 			keyID: keyID,
 			signature: signature,
 			signedMessage: message
@@ -233,8 +242,8 @@ final class PlatformConnectionListener: @unchecked Sendable {
 
 	/// The bytes the Registry signs a return over, as its
 	/// `loopbackCompletionUrl` documents: the domain, the frame's version and
-	/// key ID, then the authorization, the outcome and Vercel's link, each
-	/// text length-prefixed. Nil when the key ID isn't one, or a field is too long.
+	/// key ID, then the authorization, the outcome and the platform's link,
+	/// each text length-prefixed. Nil when the key ID isn't one, or a field is too long.
 	static func signedMessage(authorizationID: String, outcome: Outcome, next: String?, keyID: String) -> Data? {
 		guard let keyIDLength = UInt8(exactly: keyID.utf8.count), keyIDLength > 0,
 			keyID.utf8.allSatisfy({ byte in
@@ -262,9 +271,10 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		return message
 	}
 
-	/// A page on vercel.com over https, or nil.
-	static func validatedVercelPage(_ text: String) -> URL? {
-		guard text.utf8.count <= 2_048,
+	/// The platform's page to continue on: one on vercel.com over https, as
+	/// Vercel names after an install. Netlify names none, so nil.
+	static func validatedNextPage(_ text: String, for platform: BrowserPlatform) -> URL? {
+		guard platform == .vercel, text.utf8.count <= 2_048,
 			let components = URLComponents(string: text),
 			components.scheme == "https", components.host == "vercel.com",
 			components.user == nil, components.password == nil, components.port == nil
@@ -272,29 +282,30 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		return components.url
 	}
 
-	static func page(for completion: Completion?, next: URL?) -> String {
-		let link = next.map { LoopbackPage.Link(title: "Continue on Vercel", url: $0) }
+	static func page(for completion: Completion?, on platform: BrowserPlatform, next: URL?) -> String {
+		let name = platform.displayName
+		let link = next.map { LoopbackPage.Link(title: "Continue on \(name)", url: $0) }
 		switch completion {
 		case .proof:
 			return LoopbackPage.response(
 				success: true,
 				title: "Return to LPM Vault",
-				label: "Vercel approved",
-				detail: "LPM Vault will finish connecting Vercel on this Mac. Check the app to see it connected.",
+				label: "\(name) approved",
+				detail: "LPM Vault will finish connecting \(name) on this Mac. Check the app to see it connected.",
 				link: link)
 		case .failure(let failure):
 			return LoopbackPage.response(
 				success: false,
-				title: "Vercel wasn't connected",
+				title: "\(name) wasn't connected",
 				label: "Connection stopped",
-				detail: "\(failure.message) Return to LPM Vault to try again.",
+				detail: "\(failure.message(for: platform)) Return to LPM Vault to try again.",
 				link: link)
 		case nil:
 			return LoopbackPage.response(
 				success: false,
 				title: "Start from LPM Vault",
 				label: "Not recognized",
-				detail: "This page didn't come from a connection LPM Vault started. Connect Vercel from LPM Vault's Platforms page.")
+				detail: "This page didn't come from a connection LPM Vault started. Connect \(name) from LPM Vault's Platforms page.")
 		}
 	}
 }
