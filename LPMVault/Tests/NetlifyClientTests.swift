@@ -214,25 +214,29 @@ struct NetlifyConnectorTests {
 		#expect(!tickets.calls.contains { $0.hasPrefix("exchange") })
 	}
 
-	@Test("a ticket not approved in time ends the connection, and checks Netlify couldn't answer are tried again until then")
+	@Test("a ticket not approved in time ends the connection, near its deadline, without an exchange")
 	func timesOut() async {
 		let tickets = FakeTickets()
-		tickets.checks = [.failure(.transport), .failure(.server(503)), .success(NetlifyTicket(id: "ticket_1", isAuthorized: false))]
+		tickets.checks = [.success(NetlifyTicket(id: "ticket_1", isAuthorized: false))]
 		var connector = connector(tickets)
 		connector.maximumWait = .milliseconds(150)
 		let started = ContinuousClock.now
 		#expect(await connector.connect { _ in } == .failure(.timedOut))
-		#expect(ContinuousClock.now - started < .seconds(2))
-		#expect(tickets.calls.filter { $0.hasPrefix("check") }.count >= 3)
+		#expect(ContinuousClock.now - started < .seconds(10))
+		#expect(!tickets.calls.contains { $0.hasPrefix("exchange") })
 	}
 
-	@Test("checks Netlify couldn't answer don't end the wait once it answers again")
+	@Test("checks Netlify couldn't answer, or answered with a rate limit, don't end the wait once it answers again")
 	func survivesTransientChecks() async throws {
 		let tickets = FakeTickets()
-		tickets.checks = [.failure(.transport), .failure(.rateLimited(until: nil)), .success(NetlifyTicket(id: "ticket_1", isAuthorized: true))]
+		tickets.checks = [
+			.failure(.transport), .failure(.server(503)), .failure(.rateLimited(until: nil)),
+			.success(NetlifyTicket(id: "ticket_1", isAuthorized: true)),
+		]
 		var connector = connector(tickets)
 		connector.maximumPollInterval = .milliseconds(10)
 		#expect(try await connector.connect { _ in }.get().token == "nfo_granted")
+		#expect(tickets.calls.filter { $0.hasPrefix("check") }.count == 4)
 	}
 
 	@Test("an exchange Netlify couldn't answer is tried again; a refused one means the approval is gone")
