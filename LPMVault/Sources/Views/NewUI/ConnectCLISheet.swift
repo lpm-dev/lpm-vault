@@ -398,10 +398,10 @@ struct ConnectCLISheet: View {
 		let vaultId = projectId
 		let folder = folder
 		statusTask = Task {
-			let (resolved, config) = await Task.detached(priority: .userInitiated) {
+			let (resolved, config) = await BlockingWork.run {
 				let snapshot = ProjectCLILink.inspect(vaultId: vaultId, folder: folder)
 				return (snapshot.status, snapshot.configuration)
-			}.value
+			}
 			guard !Task.isCancelled, generation == statusGeneration, folder == self.folder else { return }
 			status = resolved
 			configuration = config

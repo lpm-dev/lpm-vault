@@ -43,6 +43,14 @@ enum PublishingStoreError: Error, Equatable, Sendable, CustomStringConvertible {
 /// every read-modify-write, so concurrent edits can't lose each other's changes.
 actor PublishingStore {
 	private let service: any KeychainServiceProtocol
+	/// Keychain calls block until the security daemon answers, so the store
+	/// runs on a queue of its own: blocking on the cooperative pool would hold
+	/// up every other task waiting for a thread.
+	private let queue = DispatchSerialQueue(label: "dev.lpm.vault.publishing", qos: .userInitiated)
+
+	nonisolated var unownedExecutor: UnownedSerialExecutor {
+		queue.asUnownedSerialExecutor()
+	}
 
 	init(service: any KeychainServiceProtocol) {
 		self.service = service

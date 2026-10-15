@@ -62,21 +62,18 @@ struct EnvFileExportService: Sendable {
 			throw error
 		}
 
-		let backgroundTask = Task.detached(priority: .userInitiated) { [worker] in
-			try authorization.check()
-			try worker(secrets, destination, authorization)
-		}
 		do {
 			try await withTaskCancellationHandler {
-				try await backgroundTask.value
+				try await BlockingWork.run { [worker] in
+					try authorization.check()
+					try worker(secrets, destination, authorization)
+				}
 			} onCancel: {
 				authorization.invalidate()
-				backgroundTask.cancel()
 			}
 			await admission.release()
 		} catch {
 			authorization.invalidate()
-			backgroundTask.cancel()
 			await admission.release()
 			throw error
 		}

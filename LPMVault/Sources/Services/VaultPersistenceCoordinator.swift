@@ -160,6 +160,15 @@ actor VaultPersistenceCoordinator {
 	private static let syncMetadataSchemaVersion = VaultKeychainRecordContract.syncMetadataSchemaVersion
 
 	private let service: KeychainServiceProtocol
+	/// Transactions wait for the lock the LPM CLI shares for as long as the
+	/// CLI holds it, and every Keychain call blocks until the security daemon
+	/// answers, so the coordinator runs on a queue of its own rather than
+	/// holding threads of the cooperative pool.
+	private let queue = DispatchSerialQueue(label: "dev.lpm.vault.persistence", qos: .userInitiated)
+
+	nonisolated var unownedExecutor: UnownedSerialExecutor {
+		queue.asUnownedSerialExecutor()
+	}
 
 	init(service: KeychainServiceProtocol) {
 		self.service = service

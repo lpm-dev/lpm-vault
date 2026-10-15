@@ -5887,14 +5887,14 @@ final class VaultStore {
       let callerUserID = memberAccess.callerUserID
       let expectedPublicKey = authenticatedMember.publicKey
       let expectedFingerprint = authenticatedMember.publicKeyFingerprint
-      let (_, pubKey) = try await Task.detached(priority: .userInitiated) {
+      let (_, pubKey) = try await BlockingWork.run {
         try keypairProvider(
           registryURL,
           callerUserID,
           expectedPublicKey,
           expectedFingerprint
         )
-      }.value
+      }
       guard await hasCurrentSyncAuth(authority) else {
         finishSyncIfOwned(authority)
         return .failed
@@ -6120,14 +6120,14 @@ final class VaultStore {
       let callerUserID = refreshedAccess.callerUserID
       let expectedPublicKey = authenticatedMember.publicKey
       let expectedFingerprint = authenticatedMember.publicKeyFingerprint
-      let (_, localPublicKey) = try await Task.detached(priority: .userInitiated) {
+      let (_, localPublicKey) = try await BlockingWork.run {
         try keypairProvider(
           registryURL,
           callerUserID,
           expectedPublicKey,
           expectedFingerprint
         )
-      }.value
+      }
       guard await hasCurrentSyncAuth(authority) else {
         finishSyncIfOwned(authority)
         return
@@ -6297,14 +6297,14 @@ final class VaultStore {
       }
       let keypairProvider = sharingKeypairProvider
       let registryURL = authority.environment.registryURL
-      let (privateKey, publicKey) = try await Task.detached(priority: .userInitiated) {
+      let (privateKey, publicKey) = try await BlockingWork.run {
         try keypairProvider(
           registryURL,
           callerUserID,
           nil,
           expectedFingerprint
         )
-      }.value
+      }
       guard VaultCrypto.publicKeyFingerprint(publicKey) == expectedFingerprint else {
         throw VaultSyncError(
           "The organization response has an invalid sharing-key binding."
@@ -6861,14 +6861,14 @@ final class VaultStore {
         let registryURL = environment.registryURL
         let callerUserID = currentUserID
         let expectedFingerprint = serverKey?.publicKeyFingerprint
-        let (_, publicKey) = try await Task.detached(priority: .userInitiated) {
+        let (_, publicKey) = try await BlockingWork.run {
           try keypairProvider(
             registryURL,
             callerUserID,
             registeredKey,
             expectedFingerprint
           )
-        }.value
+        }
         guard registeredKey == publicKey.base64EncodedString() else {
           throw VaultSyncError(
             "This device does not hold the sharing key registered for your account."
@@ -6931,14 +6931,14 @@ final class VaultStore {
       let keypairProvider = sharingKeypairProvider
       let registryURL = environment.registryURL
       let callerUserID = currentUserID
-      let (privKey, pubKey) = try await Task.detached(priority: .userInitiated) {
+      let (privKey, pubKey) = try await BlockingWork.run {
         try keypairProvider(
           registryURL,
           callerUserID,
           nil,
           expectedFingerprint
         )
-      }.value
+      }
       guard VaultCrypto.publicKeyFingerprint(pubKey) == expectedFingerprint else {
         throw VaultSyncError(
           "The organization response has an invalid sharing-key binding."
@@ -7235,7 +7235,7 @@ final class VaultStore {
 		let path = keyDescriptionFolder(for: project)
     guard !path.isEmpty else { return CapturedSyncSchema(value: nil, sources: nil) }
     let projectID = project.id
-    return try await Task.detached(priority: .userInitiated) {
+    return try await BlockingWork.run {
       let captured: ProjectEnvSchemaFile.SyncSnapshot
       do { captured = try ProjectEnvSchemaFile.validatedSyncSnapshot(inFolder: path, vaultID: projectID) }
       catch ProjectEnvSchemaFile.FileError.noFolder { return CapturedSyncSchema(value: nil, sources: nil) }
@@ -7244,7 +7244,7 @@ final class VaultStore {
       }
 
       return CapturedSyncSchema(value: ProjectEnvSchemaFile.pushMetadata(from: root), sources: captured)
-    }.value
+    }
   }
 
   // MARK: - Private

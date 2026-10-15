@@ -59,6 +59,15 @@ struct AuditRegressionTests {
     #expect(context.wasInvalidated)
   }
 
+  @Test("vault transactions take the Keychain lock off the cooperative pool, which they can wait on for long")
+  func persistenceIsOffCooperativePool() async {
+    let keychain = MockKeychainService()
+    let pool = PoolObservation()
+    keychain.beforeKeychainTransaction = { pool.record() }
+    _ = await VaultPersistenceCoordinator(service: keychain).loadSnapshot()
+    #expect(pool.stayedOffPool)
+  }
+
   @Test("login attempt throttling does not persist across a monotonic clock reset")
   func loginAttemptClockReset() {
     let limiter = LoginAttemptLimiter()

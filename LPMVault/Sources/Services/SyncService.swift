@@ -393,7 +393,7 @@ final class SyncService: @unchecked Sendable {
     }
     let origin = try PersonalProjectCrypto.registryOrigin(apiBaseURL.absoluteString)
     let keys = personalProjectKeys
-    return try await Task.detached(priority: .userInitiated) {
+    return try await BlockingWork.run {
       try keys.validate(envelope: result.personalKeys, registryURL: origin, principalID: principal, vaultID: vault)
       if let envelope = result.personalKeys {
         let project = try PersonalProjectCrypto.open(root: keys.root(origin, principal, false),
@@ -402,7 +402,7 @@ final class SyncService: @unchecked Sendable {
           principalID: principal, vaultID: vault, revision: revision, cryptoVersion: cryptoVersion)
       }
       return try legacyDecryptor(blob, wrapped, principal, vault, revision, cryptoVersion)
-    }.value
+    }
   }
 
   func rememberPersonalKeys(_ envelope: PersonalKeyEnvelope, principalID: String, vaultID: String) async throws {
@@ -410,9 +410,9 @@ final class SyncService: @unchecked Sendable {
       throw PersonalProjectCrypto.KeyError.invalidContext
     }
     let keys = personalProjectKeys
-    try await Task.detached(priority: .userInitiated) {
+    try await BlockingWork.run {
       try keys.remember(envelope: envelope, principalID: principalID, vaultID: vaultID)
-    }.value
+    }
   }
 
   func preparePersonalPush(
@@ -446,27 +446,27 @@ final class SyncService: @unchecked Sendable {
       guard remoteVersion == expectedVersion else {
         return conflict(expectedVersion == nil ? "vault_expected_version_required" : "vault_version_conflict", remoteVersion)
       }
-      try await Task.detached(priority: .userInitiated) {
+      try await BlockingWork.run {
         try keys.validate(envelope: remote.personalKeys, registryURL: origin,
           principalID: expectedPrincipalId, vaultID: vaultId)
-      }.value
+      }
       if let envelope = remote.personalKeys {
-        project = try await Task.detached(priority: .userInitiated) {
+        project = try await BlockingWork.run {
           try PersonalProjectCrypto.open(root: keys.root(origin, expectedPrincipalId, false),
             envelope: envelope, registryURL: origin,
             principalID: expectedPrincipalId, vaultID: vaultId)
-        }.value
+        }
       } else {
         guard let blob = remote.encryptedBlob, let wrapped = remote.wrappedKey,
           let revision = remote.version, let cryptoVersion = remote.cryptoVersion else {
           throw PersonalProjectCrypto.KeyError.invalidContext
         }
-        project = try await Task.detached(priority: .userInitiated) {
+        project = try await BlockingWork.run {
           let previous = try legacyDecryptor(blob, wrapped, expectedPrincipalId, vaultId, revision, cryptoVersion)
           _ = try EnvValidation.mergeRemotePayload(previous, into: [:])
           return try PersonalProjectCrypto.create(root: keys.root(origin, expectedPrincipalId, true), registryOrigin: origin,
             principalID: expectedPrincipalId, vaultID: vaultId, version: 1)
-        }.value
+        }
       }
     } else if remote.outcome == "missing" {
       let retained = remote.serverVersion ?? 0
@@ -476,12 +476,12 @@ final class SyncService: @unchecked Sendable {
       guard retained == 0 || recreateMissing else {
         return conflict("vault_recreation_intent_required", retained)
       }
-      project = try await Task.detached(priority: .userInitiated) {
+      project = try await BlockingWork.run {
         let floor = try keys.checkpoint(origin, expectedPrincipalId, vaultId, nil)
         guard floor < Int32.max else { throw PersonalProjectCrypto.KeyError.invalidContext }
         return try PersonalProjectCrypto.create(root: keys.root(origin, expectedPrincipalId, true), registryOrigin: origin,
           principalID: expectedPrincipalId, vaultID: vaultId, version: floor + 1)
-      }.value
+      }
     } else { throw VaultSyncError(remote.displayError ?? "Could not authenticate the personal env project key.") }
     let revision = (expectedVersion ?? 0) + 1
     guard revision > 0, revision <= Int32.max else { throw PersonalProjectCrypto.KeyError.invalidContext }

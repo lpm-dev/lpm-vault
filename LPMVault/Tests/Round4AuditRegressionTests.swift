@@ -518,6 +518,17 @@ extension VaultStoreTests {
 		#expect(VaultWorkspaceMode.matrix.synchronized(to: "new") == .matrix)
 	}
 
+	@Test("dotenv export work runs off the cooperative pool, which blocking work must never hold")
+	func dotenvExportIsOffCooperativePool() async throws {
+		let pool = PoolObservation()
+		let service = EnvFileExportService { _, _, _ in pool.record() }
+		try await service.export(
+			secrets: ["TOKEN": "secret"],
+			to: FileManager.default.temporaryDirectory.appendingPathComponent("unused.env")
+		)
+		#expect(pool.stayedOffPool)
+	}
+
 	@Test("dotenv export work runs away from the main actor")
 	@MainActor
 	func dotenvExportDoesNotBlockMainActor() async throws {

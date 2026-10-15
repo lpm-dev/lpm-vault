@@ -3644,6 +3644,17 @@ struct VaultStoreTests {
 		#expect(recorder.value == false)
 	}
 
+	@Test("organization sharing key lookup runs off the cooperative pool, which Keychain calls must never hold")
+	func organizationKeypairLookupIsOffCooperativePool() async {
+		let pool = PoolObservation()
+		let fixture = makeOrgTrustFixture { pool.record() }
+
+		await fixture.store.pushToOrg(orgSlug: fixture.slug)
+
+		#expect(pool.stayedOffPool)
+		fixture.store.lock()
+	}
+
 	@Test("security transitions discard pending organization authorization")
 	func securityTransitionsDiscardPendingOrgAuthorization() async {
 		let (store, _, _, _) = makeStore()
