@@ -197,6 +197,25 @@ func platformTestSession(_ baseURL: URL) -> PlatformSession {
 	PlatformSession(token: "lpm_session_token", principalID: platformTestPrincipal, baseURL: baseURL)
 }
 
+/// The query of a return to the Mac's listener, signed as a local Registry
+/// signs it: with the RFC 8032 test key.
+func platformTestReturn(authorization: String, proof: String? = nil, error: String? = nil, next: String? = nil) -> String {
+	let outcome: PlatformConnectionListener.Outcome = proof.map { .proof($0) } ?? .error(error ?? "")
+	let keyID = "vault-test-rfc8032"
+	let seed = Data(base64Encoded: "nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A=")!
+	let message = PlatformConnectionListener.signedMessage(authorizationID: authorization, outcome: outcome, next: next, keyID: keyID)!
+	let signature = try! Curve25519.Signing.PrivateKey(rawRepresentation: seed).signature(for: message)
+	var query = URLComponents()
+	query.queryItems = [URLQueryItem(name: "authorization", value: authorization)]
+		+ (proof.map { [URLQueryItem(name: "proof", value: $0)] } ?? [URLQueryItem(name: "error", value: error)])
+		+ (next.map { [URLQueryItem(name: "next", value: $0)] } ?? [])
+		+ [URLQueryItem(name: "key", value: keyID), URLQueryItem(name: "signature", value: PlatformAuthorizationClient.base64URL(signature))]
+	return query.percentEncodedQuery!
+}
+
+/// The Registry a test signs its returns as, which trusts the test key.
+let platformTestRegistry = URL(string: "http://127.0.0.1:3000")!
+
 func platformTestOneTimeValue() -> String {
 	PlatformAuthorizationClient.base64URL(SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) })
 }

@@ -35,9 +35,11 @@ enum PlatformConnectFailure: Equatable, Sendable {
 
 /// Listens on 127.0.0.1 for the browser's return from connecting Vercel,
 /// which the Registry's callback redirects to
-/// `/platforms/vercel/complete?authorization=…&proof=…` (or `&error=…`).
-/// Only the authorization this Mac started counts; any other request gets a
-/// page and is otherwise ignored, so a page elsewhere can't end the wait.
+/// `/platforms/vercel/complete?authorization=…&proof=…` (or `&error=…`),
+/// signed with its response-signing key. Only a signed return for the
+/// authorization this Mac started counts; any other request gets a page and
+/// is otherwise ignored, so someone who learns the authorization can't end
+/// the wait with a made-up failure or proof.
 final class PlatformConnectionListener: @unchecked Sendable {
 	enum Completion: Equatable, Sendable {
 		/// The one-time proof the Registry gave the browser to bring here.
@@ -55,6 +57,16 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		let completion: Completion
 		/// Vercel's page to continue on, when it gave one.
 		let next: URL?
+		/// The Registry's signature over what the return says, and the key it used.
+		let keyID: String
+		let signature: String
+		/// The bytes the signature covers; see `signedMessage`.
+		let signedMessage: Data
+	}
+
+	private struct Expected {
+		let authorizationID: String
+		let registry: URL
 	}
 
 	static let path = "/platforms/vercel/complete"
@@ -63,7 +75,7 @@ final class PlatformConnectionListener: @unchecked Sendable {
 	let port: UInt16
 	private let listener: NWListener
 	private let lock = NSLock()
-	private var expectedAuthorizationID: String?
+	private var expected: Expected?
 	private var outcome: Result<Completion, Error>?
 	private var waiter: CheckedContinuation<Completion, Error>?
 	private var activeConnections = 0
@@ -104,9 +116,9 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		return started
 	}
 
-	/// Accepts returns for `authorizationID` only.
-	func expect(_ authorizationID: String) {
-		lock.withLock { expectedAuthorizationID = authorizationID }
+	/// Accepts returns for `authorizationID` only, signed by `registry`.
+	func expect(_ authorizationID: String, from registry: URL) {
+		lock.withLock { expected = Expected(authorizationID: authorizationID, registry: registry) }
 	}
 
 	/// The browser's return, waiting at most until `deadline`.
@@ -159,9 +171,12 @@ final class PlatformConnectionListener: @unchecked Sendable {
 			let request = data.flatMap(Self.parse)
 			let expected = lock.withLock {
 				activeConnections -= 1
-				return expectedAuthorizationID
+				return self.expected
 			}
-			if let request, request.authorizationID == expected {
+			if let request, let expected, request.authorizationID == expected.authorizationID,
+				PinnedSessionDelegate.verifyRegistrySignature(
+					request.signature, keyID: request.keyID, message: request.signedMessage, registry: expected.registry)
+			{
 				LoopbackHTTP.send(Self.page(for: request.completion, next: request.next), on: connection)
 				finish(.success(request.completion))
 			} else {
@@ -170,29 +185,81 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		}
 	}
 
-	/// The return the request describes, or nil when it isn't one.
+	/// The return the request describes, or nil when it isn't one. Whether
+	/// the Registry signed it is checked against the authorization expected.
 	static func parse(_ request: Data) -> Request? {
 		guard let (method, target, _, _) = LoopbackHTTP.split(request), method == "GET" else { return nil }
 		let parts = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
 		guard parts.first == path[...], parts.count == 2 else { return nil }
 		let fields = LoopbackHTTP.parseForm(String(parts[1]))
 		guard let authorizationID = fields["authorization"],
-			PlatformAuthorizationClient.isCanonicalUUID(authorizationID)
+			PlatformAuthorizationClient.isCanonicalUUID(authorizationID),
+			let keyID = fields["key"], let signature = fields["signature"]
 		else { return nil }
 		let completion: Completion
+		let outcome: Outcome
 		switch (fields["proof"], fields["error"]) {
 		case (let proof?, nil) where PlatformAuthorizationClient.isOneTimeValue(proof):
 			completion = .proof(proof)
+			outcome = .proof(proof)
 		case (nil, let code?) where PlatformAuthorizationClient.isFailureCode(code):
 			completion = .failure(PlatformConnectFailure(code: code))
+			outcome = .error(code)
 		default:
+			return nil
+		}
+		let next = fields["next"]
+		guard let message = signedMessage(authorizationID: authorizationID, outcome: outcome, next: next, keyID: keyID) else {
 			return nil
 		}
 		return Request(
 			authorizationID: authorizationID,
 			completion: completion,
-			next: fields["next"].flatMap(validatedVercelPage)
+			next: next.flatMap(validatedVercelPage),
+			keyID: keyID,
+			signature: signature,
+			signedMessage: message
 		)
+	}
+
+	/// What a return says, as the Registry signs it.
+	enum Outcome: Equatable, Sendable {
+		case proof(String)
+		/// The failure's code, as the Registry sent it.
+		case error(String)
+	}
+
+	private static let signatureDomain = Data("lpm-vault:platform-return\0".utf8)
+
+	/// The bytes the Registry signs a return over, as its
+	/// `loopbackCompletionUrl` documents: the domain, the frame's version and
+	/// key ID, then the authorization, the outcome and Vercel's link, each
+	/// text length-prefixed. Nil when the key ID isn't one, or a field is too long.
+	static func signedMessage(authorizationID: String, outcome: Outcome, next: String?, keyID: String) -> Data? {
+		guard let keyIDLength = UInt8(exactly: keyID.utf8.count), keyIDLength > 0,
+			keyID.utf8.allSatisfy({ byte in
+				(65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte) || byte == 45 || byte == 95
+			})
+		else { return nil }
+		let (kind, value): (UInt8, String) = switch outcome {
+		case .proof(let proof): (1, proof)
+		case .error(let code): (2, code)
+		}
+		var message = signatureDomain
+		func append(_ text: String) -> Bool {
+			guard let length = UInt16(exactly: text.utf8.count) else { return false }
+			message.append(UInt8(length >> 8))
+			message.append(UInt8(length & 0xff))
+			message.append(contentsOf: text.utf8)
+			return true
+		}
+		message.append(1)
+		message.append(keyIDLength)
+		message.append(contentsOf: keyID.utf8)
+		guard append(authorizationID) else { return nil }
+		message.append(kind)
+		guard append(value), append(next ?? "") else { return nil }
+		return message
 	}
 
 	/// A page on vercel.com over https, or nil.
