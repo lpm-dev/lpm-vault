@@ -6,6 +6,26 @@ import Testing
 
 @Suite("Personal project key sync")
 struct PersonalProjectSyncTests {
+  @Test("personal project keys are read off the cooperative pool, which their Keychain lock must never hold")
+  func personalKeysOffCooperativePool() async throws {
+    let pool = PoolObservation()
+    let keys = PersonalProjectKeyStore(
+      root: { _, _, _ in
+        pool.record()
+        return SymmetricKey(data: Data(repeating: 7, count: 32))
+      },
+      checkpoint: { _, _, _, _ in
+        pool.record()
+        return 0
+      })
+    let envelope = PersonalKeyEnvelope(
+      personalKeyScheme: 2, personalRegistryOrigin: "https://lpm.dev", projectKeyVersion: 1,
+      wrappedProjectKey: "BgYGBgYGBgYGBgYG:ho6FG4W2ieY4Rv1h/lYepfDXmuXBR3QKoT6E/HHxfMgXuahCSKQPPcQKp72xBXhj")
+    let service = SyncService(baseURL: URL(string: "https://lpm.dev")!, personalProjectKeys: keys)
+    try await service.rememberPersonalKeys(envelope, principalID: "user-a", vaultID: "project-a")
+    #expect(pool.stayedOffPool)
+  }
+
   @Test("new personal pushes prepare project keys and fresh content without starting a write")
   func newPushUsesProjectKeys() async throws {
     let fixture = PersonalSyncFixture()

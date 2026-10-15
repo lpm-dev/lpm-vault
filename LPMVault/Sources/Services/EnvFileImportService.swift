@@ -84,7 +84,7 @@ protocol EnvFileImportServiceProtocol: Sendable {
 }
 
 /// Bounds all local dotenv work behind one shared admission pool. File reads
-/// and parsing run on background executors; callers only publish the result.
+/// and parsing run off the cooperative pool; callers only publish the result.
 final class EnvFileImportService: EnvFileImportServiceProtocol, @unchecked Sendable {
 	typealias Worker = @Sendable (URL, EnvFileImportLimits) throws -> ImportedEnvFile
 	static let shared = EnvFileImportService()
@@ -110,21 +110,14 @@ final class EnvFileImportService: EnvFileImportServiceProtocol, @unchecked Senda
 			throw EnvFileImportError.cancelled
 		}
 
-		let backgroundTask = Task.detached(priority: .userInitiated) { [limits, worker] in
-			try Task.checkCancellation()
-			return try worker(url, limits)
-		}
-
 		do {
-			let imported = try await withTaskCancellationHandler {
-				try await backgroundTask.value
-			} onCancel: {
-				backgroundTask.cancel()
+			let imported = try await BlockingWork.run { [limits, worker] in
+				try Task.checkCancellation()
+				return try worker(url, limits)
 			}
 			await admission.release()
 			return imported
 		} catch is CancellationError {
-			backgroundTask.cancel()
 			await admission.release()
 			throw EnvFileImportError.cancelled
 		} catch {

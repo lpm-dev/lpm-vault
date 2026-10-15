@@ -1092,3 +1092,23 @@ actor MockEnvFileImportService: EnvFileImportServiceProtocol {
 		}
 	}
 }
+
+/// Whether the caller runs on a thread of Swift's cooperative pool, which
+/// blocking work must never hold: every other task needs those threads.
+func isOnCooperativePool() -> Bool {
+	String(cString: __dispatch_queue_get_label(nil)).hasSuffix(".cooperative")
+}
+
+/// Where blocking work ran, each time a test recorded it.
+final class PoolObservation: @unchecked Sendable {
+	private let lock = NSLock()
+	private var observations: [Bool] = []
+
+	func record() {
+		let onPool = isOnCooperativePool()
+		lock.withLock { observations.append(onPool) }
+	}
+
+	/// Recorded at least once, and never on the cooperative pool.
+	var stayedOffPool: Bool { lock.withLock { !observations.isEmpty && !observations.contains(true) } }
+}

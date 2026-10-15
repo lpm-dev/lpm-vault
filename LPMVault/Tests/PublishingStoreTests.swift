@@ -426,6 +426,20 @@ struct PublishingRecordFindingTests {
 		#expect(try await vault.publishing.destinations(of: "project").get().first?.excludedKeys == ["NEW"])
 	}
 
+	@Test("publishing records are read and written off the cooperative pool, which Keychain calls must never hold")
+	func keychainOffCooperativePool() async throws {
+		let pool = PoolObservation()
+		keychain.beforeAppItemWrite = { pool.record() }
+		keychain.beforeAppItemListing = { pool.record() }
+		defer {
+			keychain.beforeAppItemWrite = nil
+			keychain.beforeAppItemListing = nil
+		}
+		_ = try await store.save(vercelDestination(), to: publishTestVault).get()
+		_ = await store.deleteOrphanedRecords()
+		#expect(pool.stayedOffPool)
+	}
+
 	@Test("histories of many destinations stay readable, each in its own record")
 	func historyStaysReadable() async throws {
 		let store = store
@@ -752,7 +766,7 @@ struct PublishingRecordFindingTests {
 		let gate = DispatchSemaphore(value: 0)
 		keychain.pauseNextExistenceCheck(entered: entered, gate: gate)
 		let cleanup = Task { await vault.reconcilePublishingRecords() }
-		await Task.detached { blockUntilSignaled(entered) }.value
+		await waitOffPool(for: entered)
 		keychain.envStorage["recreated"] = (name: "Recreated", path: "", environments: ["default": ["A": "1"]])
 		let fresh = vercelDestination(source: "default")
 		let save = Task { try await vault.publishing.save(fresh, to: "recreated").get() }
@@ -797,7 +811,8 @@ struct PublishingRecordFindingTests {
 	}
 }
 
-/// Waits on a semaphore off the cooperative pool's async context.
-private func blockUntilSignaled(_ semaphore: DispatchSemaphore) {
-	semaphore.wait()
+/// Waits for the semaphore without holding a thread of the cooperative pool,
+/// which the work that signals it may need.
+private func waitOffPool(for semaphore: DispatchSemaphore) async {
+	await BlockingWork.run { semaphore.wait() }
 }

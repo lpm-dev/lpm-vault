@@ -418,6 +418,17 @@ struct EnvFileImportTests {
 		#expect(tracker.maximumActive == 2)
 	}
 
+	@Test("the worker reads the file off the cooperative pool, which blocking work must never hold")
+	func workerIsOffCooperativePool() async throws {
+		let pool = PoolObservation()
+		let service = EnvFileImportService(maximumConcurrentImports: 1) { _, _ in
+			pool.record()
+			return ImportedEnvFile(secrets: ["KEY": "value"])
+		}
+		_ = try await service.load(at: URL(fileURLWithPath: "/tmp/off-pool"))
+		#expect(pool.stayedOffPool)
+	}
+
 	@Test("worker executes away from the main thread")
 	@MainActor
 	func workerIsBackground() async throws {
