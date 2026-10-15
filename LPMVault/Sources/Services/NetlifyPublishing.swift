@@ -94,9 +94,11 @@ enum NetlifyPublishing {
 
 	/// Sends `changes` to the target. Each key gets an outcome. The site's
 	/// variables are read again first, and a key added, changed, removed or
-	/// made a secret on Netlify since the review isn't sent. A refused token,
-	/// a role that can't change variables, or a rate limit stops what hasn't
-	/// been sent yet.
+	/// made a secret on Netlify since the review isn't sent. A variable that
+	/// also holds other contexts' values is read once more right before its
+	/// write, so the time other destinations' histories move forward from is
+	/// the one this write replaces. A refused token, a role that can't change
+	/// variables, or a rate limit stops what hasn't been sent yet.
 	static func publish(
 		_ changes: [PublishPlan.Change],
 		to target: NetlifyPublishTarget,
@@ -139,26 +141,21 @@ enum NetlifyPublishing {
 		while !pending.isEmpty, !stopped, !Task.isCancelled {
 			let batch = pending.prefix(writeConcurrency)
 			pending = pending.dropFirst(batch.count)
-			let answers = await withTaskGroup(of: (String, Result<NetlifyVariable, NetlifyAPIError>).self) { group in
+			let answers = await withTaskGroup(of: (String, Answer).self) { group in
 				for write in batch {
-					group.addTask {
-						let request = NetlifyVariableWrite(
-							key: write.change.key, value: write.change.value, context: target.context, isSecret: write.change.publishesAsSecret)
-						let answer = write.createsVariable
-							? await client.create(request, siteID: target.siteID, teamID: target.teamID)
-							: await client.setValue(request, siteID: target.siteID, teamID: target.teamID)
-						return (write.change.key, answer)
-					}
+					group.addTask { (write.change.key, await send(write, to: target, reviewed: reviewed, using: client)) }
 				}
-				var answers: [String: Result<NetlifyVariable, NetlifyAPIError>] = [:]
+				var answers: [String: Answer] = [:]
 				for await (key, answer) in group { answers[key] = answer }
 				return answers
 			}
 			for write in batch {
-				switch answers[write.change.key] ?? .failure(.invalidResponse) {
-				case .success(let variable):
-					record(variable, for: write, in: target.context, into: &report)
-				case .failure(let error):
+				switch answers[write.change.key] ?? .failed(.invalidResponse) {
+				case .written(let variable, let sent):
+					record(variable, for: sent, in: target.context, into: &report)
+				case .refused(let reason):
+					report.outcomes[write.change.key] = .failed(reason)
+				case .failed(let error):
 					report.outcomes[write.change.key] = .failed(message(error))
 					if stops(error) { stopped = true }
 					if error == .unauthorized { report.needsReconnect = true }
@@ -177,6 +174,55 @@ enum NetlifyPublishing {
 		let change: PublishPlan.Change
 		let createsVariable: Bool
 		let before: NetlifyVariable?
+
+		/// Whether the variable holds values for other contexts, whose
+		/// destinations' histories the write moves forward.
+		func sharesVariable(with context: NetlifyPublishTarget.Context) -> Bool {
+			let own = NetlifyVariable.Context(context)
+			return before?.values.contains { $0.context != own } ?? false
+		}
+	}
+
+	private enum Answer: Sendable {
+		case written(NetlifyVariable, Write)
+		case refused(String)
+		case failed(NetlifyAPIError)
+	}
+
+	/// Sends one write. A variable other contexts share is read again first
+	/// and must still be as the review saw it.
+	private static func send(
+		_ write: Write,
+		to target: NetlifyPublishTarget,
+		reviewed: NetlifyRemoteSnapshot,
+		using client: any NetlifyClientProtocol
+	) async -> Answer {
+		var write = write
+		if write.sharesVariable(with: target.context) {
+			let fresh: NetlifyVariable?
+			switch await client.variable(write.change.key, siteID: target.siteID, teamID: target.teamID) {
+			case .success(let value): fresh = value
+			case .failure(let error): return .failed(error)
+			}
+			let current: NetlifyRemoteSnapshot
+			switch snapshot(fresh.map { [$0] } ?? [], for: target.context) {
+			case .success(let value): current = value
+			case .failure(let error): return .refused(error.message)
+			}
+			switch self.write(for: write.change, reviewed: reviewed, current: current, listed: fresh) {
+			case .success(let confirmed): write = confirmed
+			case .failure(let refusal): return .refused(refusal.text)
+			}
+		}
+		let request = NetlifyVariableWrite(
+			key: write.change.key, value: write.change.value, context: target.context, isSecret: write.change.publishesAsSecret)
+		let answer = write.createsVariable
+			? await client.create(request, siteID: target.siteID, teamID: target.teamID)
+			: await client.setValue(request, siteID: target.siteID, teamID: target.teamID)
+		switch answer {
+		case .success(let variable): return .written(variable, write)
+		case .failure(let error): return .failed(error)
+		}
 	}
 
 	private struct Refusal: Error {
@@ -249,7 +295,9 @@ enum NetlifyPublishing {
 			for value in before.values where value.context != own {
 				if let id = after[value.context] { remoteIDs[value.id] = id }
 			}
-			report.advances.append(PublishHistory.Advance(key: change.key, from: from, to: to, remoteIDs: remoteIDs))
+			if !remoteIDs.isEmpty {
+				report.advances.append(PublishHistory.Advance(key: change.key, from: from, to: to, remoteIDs: remoteIDs))
+			}
 		}
 		if variable.isSecret != change.publishesAsSecret {
 			report.outcomes[change.key] = .failed(

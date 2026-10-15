@@ -25,6 +25,7 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 	private var stored: [String: Stored] = [:]
 	private var order: [String] = []
 	private var sent: [Write] = []
+	private var reads: [String] = []
 	private var listings = 0
 	private var siteListings = 0
 	private var clock = 1_760_000_000.0
@@ -43,8 +44,16 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 	var renewsValueIDs = false
 	/// Runs before each listing after the first, as someone changing Netlify meanwhile would.
 	var beforeLaterListing: (@Sendable (FakeNetlifyAPI) -> Void)?
+	/// Runs once, right after the next listing is answered, as someone changing Netlify just then would.
+	var afterNextListing: (@Sendable (FakeNetlifyAPI) -> Void)? {
+		get { lock.withLock { nextListingHook } }
+		set { lock.withLock { nextListingHook = newValue } }
+	}
+	private var nextListingHook: (@Sendable (FakeNetlifyAPI) -> Void)?
 
 	var writes: [Write] { lock.withLock { sent } }
+	/// Keys read one at a time, in order.
+	var keyReads: [String] { lock.withLock { reads } }
 	var listingCount: Int { lock.withLock { listings } }
 	var siteListingCount: Int { lock.withLock { siteListings } }
 
@@ -110,7 +119,19 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 		}
 		if count > 1 { beforeLaterListing?(self) }
 		if let listFailure { return .failure(listFailure) }
-		return .success(lock.withLock { order.compactMap { variable($0) } })
+		let (listed, hook) = lock.withLock {
+			defer { nextListingHook = nil }
+			return (order.compactMap { variable($0) }, nextListingHook)
+		}
+		hook?(self)
+		return .success(listed)
+	}
+
+	func variable(_ key: String, siteID: String, teamID: String) async -> Result<NetlifyVariable?, NetlifyAPIError> {
+		lock.withLock {
+			reads.append(key)
+			return .success(variable(key))
+		}
 	}
 
 	func create(_ write: NetlifyVariableWrite, siteID: String, teamID: String) async -> Result<NetlifyVariable, NetlifyAPIError> {
@@ -361,6 +382,45 @@ struct NetlifyPublishingTests {
 		#expect(report.outcomes.filter { $0.value == .published }.count == 2)
 	}
 
+	@Test(
+		"an edit to another context made after the publish read the variables, but before it wrote, still shows for that context",
+		arguments: [(false, false), (false, true), (true, false), (true, true)]
+	)
+	func siblingEditDuringPublish(replaces: Bool, renewsValueIDs: Bool) async throws {
+		let api = FakeNetlifyAPI()
+		api.renewsValueIDs = renewsValueIDs
+		api.seed("API_TOKEN", replaces ? [.production: "old", .deployPreview: "p"] : [.deployPreview: "p"], secret: true)
+		let listed = try await api.variables(siteID: "site-storefront", teamID: "team_northwind").get()
+		let preview = try #require(listed.first?.values.first { $0.context == .deployPreview })
+		let seen = try #require(listed.first?.updatedAt)
+		let previewHistory = PublishHistory(publishedAt: seen, keys: ["API_TOKEN": PublishHistory.Key(
+			fingerprint: Data(repeating: 1, count: PublishFingerprint.byteCount), publishedAt: seen, remoteID: preview.id,
+			remoteUpdatedAt: seen, publishedAsSecret: true)])
+
+		let reviewed = try await snapshot(api)
+		let values = ["API_TOKEN": "new"]
+		let plan = plan(values, snapshot: reviewed)
+		api.afterNextListing = { $0.edit("API_TOKEN", in: .deployPreview, value: "someone") }
+		let report = await NetlifyPublishing.publish(try changes(plan, values), to: netlifyTarget(), reviewed: reviewed, using: api)
+		#expect(api.value(of: "API_TOKEN", in: .deployPreview) == "someone")
+		let advanced = previewHistory.advancing(report.advances)
+		#expect(advanced.keys["API_TOKEN"]?.remoteUpdatedAt == seen, "Deploy Previews still sees its variable changed on Netlify")
+	}
+
+	@Test("only a variable that other contexts share is read again right before its write")
+	func rereadsSharedVariables() async throws {
+		let api = FakeNetlifyAPI()
+		api.seed("OWN_ONLY", [.production: "old"], secret: true)
+		api.seed("SHARED", [.production: "old", .deployPreview: "p"], secret: true)
+		api.seed("ELSEWHERE", [.deployPreview: "p"], secret: true)
+		let values = ["OWN_ONLY": "a", "SHARED": "b", "ELSEWHERE": "c", "FRESH": "d"]
+		let reviewed = try await snapshot(api)
+		let report = await NetlifyPublishing.publish(try changes(plan(values, snapshot: reviewed), values), to: netlifyTarget(), reviewed: reviewed, using: api)
+		#expect(report.outcomes.values.allSatisfy { $0 == .published })
+		#expect(Set(api.keyReads) == ["SHARED", "ELSEWHERE"] && api.keyReads.count == 2)
+		#expect(Set(report.advances.map(\.key)) == ["SHARED", "ELSEWHERE"])
+	}
+
 	@Test("a replacement Netlify gives no change time for isn't sent")
 	func refusesTimelessReplace() async throws {
 		let api = FakeNetlifyAPI()
@@ -409,6 +469,26 @@ struct NetlifyPublishingTests {
 		#expect(NetlifyPublishing.message(.forbidden).contains("role"))
 	}
 
+	@Test("branch names that differ only in Unicode composition are different branches, as Git and Netlify keep them")
+	func branchBytes() async throws {
+		let composed = "caf\u{00E9}"
+		let decomposed = "cafe\u{0301}"
+		#expect(composed == decomposed, "Swift compares them as one string")
+		#expect(NetlifyPublishTarget.Context.branch(composed) != .branch(decomposed))
+		#expect(NetlifyVariable.Context.branch(composed) != .branch(decomposed))
+		#expect(Set([NetlifyPublishTarget.Context.branch(composed), .branch(decomposed)]).count == 2)
+		#expect(netlifyDestination(.branch(composed)).target.location != netlifyDestination(.branch(decomposed)).target.location)
+		let api = FakeNetlifyAPI()
+		api.seed("TOKEN", [.branch(composed): "a", .branch(decomposed): "b"], secret: true)
+		let snapshot = try await snapshot(api, .branch(decomposed))
+		#expect(snapshot.variables["TOKEN"] != nil, "Only the destination's own spelling is its value")
+		let destinations = [netlifyDestination(.branch(composed)), netlifyDestination(.branch(decomposed), source: "other")]
+		let data = try #require(PublishingRecords.encode(destinations, vaultID: publishTestVault))
+		let decoded = try PublishingRecords.decodeDestinations(data, vaultID: publishTestVault).get()
+		let branches = decoded.compactMap { if case .netlify(let target) = $0.target { target.context.branch } else { nil } }
+		#expect(Set(branches.map { Array($0.utf8) }) == Set([Array(composed.utf8), Array(decomposed.utf8)]))
+	}
+
 	@Test("a write to a variable never prints its value")
 	func writeRedacted() {
 		let write = NetlifyVariableWrite(key: "API_TOKEN", value: "s3cret-value", context: .production, isSecret: true)
@@ -425,6 +505,7 @@ struct NetlifyPublishingTests {
 			("staging", true), ("release/1.0", true), ("release/*", true), ("feature/día", true), ("deploy-preview", true),
 			("", false), ("*", false), ("a*b", false), ("-x", false), ("/x", false), ("x/", false), ("a..b", false), ("a b", false),
 			("a\u{202E}b", false), ("x.lock", false), ("a/.b", false), ("a:b", false), ("a~b", false), ("a\\b", false),
+			("release.lock/staging", false), ("release.lock/*", false), ("a/b.lock/c", false), ("lockers/x", true), ("x.locks/y", true),
 			(String(repeating: "b", count: 256), false),
 		]
 	)

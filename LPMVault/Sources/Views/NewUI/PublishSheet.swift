@@ -457,14 +457,16 @@ struct PublishSheet: View {
 	static func notes(for review: PublishSession.Review) -> [String] {
 		let platform = review.platform.displayName
 		var notes: [String] = []
-		if review.summary.replacing > 0 {
+		// A value added to a variable the platform already has is written over whatever that variable holds for it then.
+		let writesExistingVariables = review.summary.replacing > 0 || review.selection.keys.contains { review.remoteKeys[$0] != nil }
+		if writesExistingVariables {
 			switch review.platform {
 			case .vercel:
 				notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare, and Vercel replaces a variable without checking it, so a change made on Vercel moments before publishing can still be overwritten.")
 			case .coolify:
 				notes.append("Existing variables will be replaced. LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten.")
 			case .netlify:
-				notes.append("Existing values will be replaced. LPM Vault doesn't read Netlify's current values to compare, and Netlify replaces a value without checking it, so a change made on Netlify moments before publishing can still be overwritten.")
+				notes.append("Values will be written to variables Netlify already has. LPM Vault doesn't read Netlify's current values to compare, and Netlify writes a value without checking it, so a change made on Netlify moments before publishing can still be overwritten.")
 			}
 		}
 		if case .coolify(let target) = review.destination.target, target.resource == .application, target.deployments == .production,

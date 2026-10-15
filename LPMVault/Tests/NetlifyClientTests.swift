@@ -177,6 +177,22 @@ struct NetlifyClientTests {
 		#expect(await client(other).setValue(write, siteID: "site-1", teamID: "team_1") == .failure(.invalidResponse))
 	}
 
+	@Test("one variable is read under the site's team with the site in the query; one the site doesn't have reads as none")
+	func readsOneVariable() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			request.url.lastPathComponent == "MISSING"
+				? .json(404, ["code": 404, "message": "Not Found"])
+				: .json(200, ["key": request.url.lastPathComponent, "is_secret": true, "values": [["id": "v1", "context": "production", "value": "x"]]])
+		}
+		let variable = try await client(route).variable("API_TOKEN", siteID: "site-1", teamID: "team_1").get()
+		#expect(variable?.key == "API_TOKEN" && variable?.values.first?.id == "v1")
+		let request = try #require(route.requests.first)
+		#expect(request.method == "GET" && request.url.path() == "/api/v1/accounts/team_1/env/API_TOKEN" && request.query["site_id"] == "site-1")
+		#expect(try await client(route).variable("MISSING", siteID: "site-1", teamID: "team_1").get() == nil)
+		let other = PlatformHTTPStub.platform { _ in .json(200, ["key": "OTHER", "values": []]) }
+		#expect(await client(other).variable("API_TOKEN", siteID: "site-1", teamID: "team_1") == .failure(.invalidResponse))
+	}
+
 	@Test("a write with an unsafe name, site or team sends nothing")
 	func unsafeWrites() async {
 		let route = PlatformHTTPStub.platform { _ in .json(201, []) }

@@ -61,6 +61,35 @@ struct NetlifyVariable: Equatable, Sendable {
 			}
 		}
 
+		/// Branch names and unknown contexts compare byte for byte, as Netlify
+		/// keeps them; see `NetlifyPublishTarget.Context`.
+		static func == (lhs: Context, rhs: Context) -> Bool {
+			switch (lhs, rhs) {
+			case (.all, .all), (.production, .production), (.deployPreview, .deployPreview), (.branchDeploy, .branchDeploy),
+				(.dev, .dev), (.devServer, .devServer):
+				true
+			case (.branch(let left), .branch(let right)), (.other(let left), .other(let right)): left.utf8.elementsEqual(right.utf8)
+			default: false
+			}
+		}
+
+		func hash(into hasher: inout Hasher) {
+			switch self {
+			case .all: hasher.combine(0)
+			case .production: hasher.combine(1)
+			case .deployPreview: hasher.combine(2)
+			case .branchDeploy: hasher.combine(3)
+			case .dev: hasher.combine(4)
+			case .devServer: hasher.combine(5)
+			case .branch(let name):
+				hasher.combine(6)
+				NetlifyPublishTarget.Context.hashBytes(of: name, into: &hasher)
+			case .other(let name):
+				hasher.combine(7)
+				NetlifyPublishTarget.Context.hashBytes(of: name, into: &hasher)
+			}
+		}
+
 		/// The context a publish destination writes.
 		init(_ context: NetlifyPublishTarget.Context) {
 			switch context {
@@ -107,6 +136,8 @@ protocol NetlifyClientProtocol: Sendable {
 	func sites() async -> Result<[NetlifySite], NetlifyAPIError>
 	/// The site's own variables, without their values; a team's shared variables aren't among them.
 	func variables(siteID: String, teamID: String) async -> Result<[NetlifyVariable], NetlifyAPIError>
+	/// One of the site's own variables, without its values; nil when the site has none with the key.
+	func variable(_ key: String, siteID: String, teamID: String) async -> Result<NetlifyVariable?, NetlifyAPIError>
 	/// Creates the site variable with one value, for the write's context.
 	func create(_ write: NetlifyVariableWrite, siteID: String, teamID: String) async -> Result<NetlifyVariable, NetlifyAPIError>
 	/// Sets the existing site variable's value for the write's context, adding one when it has none.
@@ -300,6 +331,23 @@ struct NetlifyClient: NetlifyClientProtocol, CustomStringConvertible, CustomDebu
 				}
 				return .success(variables)
 			}
+	}
+
+	func variable(_ key: String, siteID: String, teamID: String) async -> Result<NetlifyVariable?, NetlifyAPIError> {
+		guard NetlifyHTTP.isPathSafeKey(key), let url = Self.envURL(baseURL, siteID: siteID, teamID: teamID, key: key) else {
+			return .failure(.invalidResponse)
+		}
+		switch await NetlifyHTTP.load(NetlifyHTTP.request("GET", url, token: token), using: session) {
+		case .success(let data):
+			guard let variable = (try? JSONDecoder().decode(RawVariable.self, from: data))?.variable, variable.key == key else {
+				return .failure(.invalidResponse)
+			}
+			return .success(variable)
+		case .failure(.notFound):
+			return .success(nil)
+		case .failure(let error):
+			return .failure(error)
+		}
 	}
 
 	func create(_ write: NetlifyVariableWrite, siteID: String, teamID: String) async -> Result<NetlifyVariable, NetlifyAPIError> {

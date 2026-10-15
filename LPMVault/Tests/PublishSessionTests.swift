@@ -1018,6 +1018,20 @@ struct NetlifyPublishSessionTests {
 		#expect(session.reviewError?.contains("Tolga on Netlify, which isn't connected on this Mac") == true)
 	}
 
+	@Test("a Netlify review that only adds values to variables Netlify has says a change made moments before can still be overwritten")
+	func addNote() async throws {
+		try await connect()
+		api.seed("API_TOKEN", [.deployPreview: "d"], secret: true)
+		let session = session()
+		try await choose(session, .production)
+		let review = try #require(session.review)
+		#expect(review.summary.replacing == 0 && review.summary.adding == 2)
+		#expect(PublishSheet.notes(for: review).contains { $0.contains("moments before publishing can still be overwritten") })
+		review.selection.keys.forEach { if $0 == "API_TOKEN" { session.set($0, selected: false) } }
+		let onlyNew = try #require(session.review)
+		#expect(!PublishSheet.notes(for: onlyNew).contains { $0.contains("moments before publishing") }, "A new variable can't overwrite anything")
+	}
+
 	@Test("a Netlify review notes that netlify.toml and site variables take precedence")
 	func notes() async throws {
 		try await connect()
