@@ -7,12 +7,32 @@ import Observation
 @MainActor
 @Observable
 final class PublishSession: Identifiable {
+	/// An environment's saved values with the project's rules and the
+	/// values' check against them, all describing the same moment. Its
+	/// values never appear when it's printed, logged or dumped.
+	struct Snapshot: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+		/// What a read of a snapshot includes.
+		enum Contents: Sendable {
+			/// The values and rules, with the values' check.
+			case checked
+			/// The values and rules only, as a publish needs to compare them with its review.
+			case unchecked
+		}
+
+		let values: [String: String]
+		let rules: Rules
+		/// The values' check, when the project has rules to check them by and the read asked for it.
+		let check: ProjectEnvValueCheck.Environment?
+
+		var description: String { "Snapshot(\(values.count) values: <redacted>)" }
+		var debugDescription: String { description }
+		var customMirror: Mirror { Mirror(self, children: ["keys": values.keys.sorted()]) }
+	}
+
 	/// What the session reads and changes outside itself.
 	struct Dependencies {
-		/// The environment's saved values, once local changes are read; nil when it's gone.
-		var values: @MainActor (_ environment: String) async -> [String: String]?
-		var rules: @MainActor () -> Rules
-		var check: @MainActor (_ environment: String) -> ProjectEnvValueCheck.Environment?
+		/// The environment's snapshot once local changes are read; nil when it's gone.
+		var snapshot: @MainActor (_ environment: String, _ contents: Snapshot.Contents) async -> Snapshot?
 		/// Asks for Touch ID or the password, without reusing an earlier approval.
 		var confirm: @MainActor (_ reason: String) async -> Bool
 		var publishing: PublishingStore
@@ -58,6 +78,8 @@ final class PublishSession: Identifiable {
 
 	struct Review {
 		let destination: PublishDestination
+		/// The destination as it was stored when the review was made.
+		let stored: PublishDestination?
 		let isSaved: Bool
 		/// The destination is new, or differs from the saved one, so a publish saves it first.
 		let needsSave: Bool
@@ -67,6 +89,9 @@ final class PublishSession: Identifiable {
 		let lastPublishedAt: Date?
 		let rules: Rules
 		let hasValueCheck: Bool
+		/// Why each key that fails the project's rules fails, as the values
+		/// and check the plan was made from show it.
+		let ruleNotes: [String: String]
 		/// The platform's variables the plan was made from, by key.
 		let remote: [String: PublishPlan.RemoteVariable]
 
@@ -102,16 +127,23 @@ final class PublishSession: Identifiable {
 
 	var sourceEnvironment: String { didSet { if sourceEnvironment != oldValue { invalidateReview() } } }
 	private(set) var connections: Loadable<[PlatformConnection]> = .idle
+	/// The chosen connection. Choosing another starts its fields afresh.
 	var connectionID: PlatformConnection.ID? {
-		didSet {
-			guard connectionID != oldValue else { return }
+		get { chosenConnectionID }
+		set {
+			guard newValue != chosenConnectionID else { return }
+			chosenConnectionID = newValue
 			invalidateReview()
 			form = makeForm()
 			loadForm()
 		}
 	}
+	private var chosenConnectionID: PlatformConnection.ID?
 	/// The chosen connection's fields.
 	private(set) var form: PublishDestinationForm?
+	/// Why the destination step opened in place of the review, as when the
+	/// saved destination was forgotten meanwhile.
+	private(set) var destinationError: String?
 
 	private(set) var review: Review?
 	private(set) var isLoadingReview = false
@@ -121,6 +153,9 @@ final class PublishSession: Identifiable {
 	private(set) var results: Results?
 
 	private let dependencies: Dependencies
+	/// Set once the sheet closes or the vault locks; nothing starts after it.
+	private(set) var isCancelled = false
+	private var startTask: Task<Void, Never>?
 	private var reviewTask: Task<Void, Never>?
 	/// Loads the form's choices: a Vercel project list or Coolify's resources.
 	private var choicesTask: Task<Void, Never>?
@@ -142,13 +177,8 @@ final class PublishSession: Identifiable {
 		self.saved = saved
 		if let saved {
 			self.sourceEnvironment = saved.sourceEnvironment
-			self.connectionID = saved.target.connectionID
-			switch saved.target {
-			case .vercel(let target):
-				self.form = .vercel(VercelDestinationForm(projectID: target.projectID, environment: target.environment))
-			case .coolify(let target):
-				self.form = .coolify(CoolifyDestinationForm(resourceID: target.resourceID, deployments: target.deployments))
-			}
+			self.chosenConnectionID = saved.target.connectionID
+			self.form = Self.form(for: saved.target)
 			self.step = .review
 		} else {
 			self.sourceEnvironment = sourceEnvironment
@@ -157,18 +187,24 @@ final class PublishSession: Identifiable {
 		observe(form)
 	}
 
-	/// Loads what the open step needs. A saved destination goes straight to
-	/// its review, and lists its platform's choices only when it's changed.
+	/// Loads what the open step needs. A saved destination is read again,
+	/// since the one the sheet opened with may be out of date, then goes
+	/// straight to its review, unless the person chose Destination meanwhile;
+	/// its platform's choices are listed only when it's changed.
 	func start() {
-		Task { [weak self] in
+		guard !isCancelled, startTask == nil else { return }
+		startTask = Task { [weak self] in
 			guard let self else { return }
 			await self.loadConnections()
-			guard self.saved != nil else { return }
+			guard !Task.isCancelled, self.saved != nil, await self.refreshSaved(), !Task.isCancelled, self.step == .review else { return }
 			self.loadReview()
 		}
 	}
 
+	/// Stops everything the session runs, for good.
 	func cancel() {
+		isCancelled = true
+		startTask?.cancel()
 		reviewTask?.cancel()
 		choicesTask?.cancel()
 		environmentsTask?.cancel()
@@ -210,7 +246,7 @@ final class PublishSession: Identifiable {
 	}
 
 	func showDestination() {
-		guard !isPublishing else { return }
+		guard !isPublishing, !isCancelled else { return }
 		reviewTask?.cancel()
 		isLoadingReview = false
 		step = .destination
@@ -227,8 +263,10 @@ final class PublishSession: Identifiable {
 	}
 
 	func loadReview() {
+		guard !isCancelled else { return }
 		reviewTask?.cancel()
 		reviewError = nil
+		destinationError = nil
 		isLoadingReview = true
 		step = .review
 		reviewTask = Task { [weak self] in
@@ -247,7 +285,9 @@ final class PublishSession: Identifiable {
 
 	private func loadConnections() async {
 		connections = .loading
-		switch await dependencies.connections.connections() {
+		let result = await dependencies.connections.connections()
+		guard !Task.isCancelled else { return }
+		switch result {
 		case .success(let list):
 			connections = .loaded(list)
 			if connectionID == nil, list.count == 1 { connectionID = list[0].id }
@@ -268,6 +308,48 @@ final class PublishSession: Identifiable {
 		return form
 	}
 
+	/// Reads the saved destination as it's stored now, following a rename of
+	/// its source or a move to another place; false when it can't be
+	/// reviewed. A destination forgotten meanwhile isn't brought back: the
+	/// destination step opens on its choices instead.
+	private func refreshSaved() async -> Bool {
+		guard let saved else { return true }
+		let result = await dependencies.publishing.destinations(of: vaultID)
+		guard !Task.isCancelled else { return false }
+		switch result {
+		case .success(let destinations):
+			guard let stored = destinations.first(where: { $0.id == saved.id }) else {
+				self.saved = nil
+				step = .destination
+				destinationError = "This destination was forgotten on this Mac, as when its source environment is deleted. Choose where to publish instead."
+				loadForm()
+				return false
+			}
+			guard stored != saved else { return true }
+			self.saved = stored
+			sourceEnvironment = stored.sourceEnvironment
+			if stored.target != saved.target {
+				choicesTask?.cancel()
+				environmentsTask?.cancel()
+				chosenConnectionID = stored.target.connectionID
+				form = Self.form(for: stored.target)
+				observe(form)
+				invalidateReview()
+			}
+			return true
+		case .failure(let error):
+			reviewError = "Saved destinations can't be read. \(error)"
+			return false
+		}
+	}
+
+	private static func form(for target: PublishTarget) -> PublishDestinationForm {
+		switch target {
+		case .vercel(let target): .vercel(VercelDestinationForm(projectID: target.projectID, environment: target.environment))
+		case .coolify(let target): .coolify(CoolifyDestinationForm(resourceID: target.resourceID, deployments: target.deployments))
+		}
+	}
+
 	private func observe(_ form: PublishDestinationForm?) {
 		switch form {
 		case .vercel(let form)?:
@@ -284,6 +366,7 @@ final class PublishSession: Identifiable {
 	}
 
 	private func loadForm() {
+		guard !isCancelled else { return }
 		choicesTask?.cancel()
 		environmentsTask?.cancel()
 		switch form {
@@ -310,13 +393,13 @@ final class PublishSession: Identifiable {
 		choicesTask = Task { [weak self, weak form, dependencies] in
 			let result: Result<[VercelProject], PublishSessionError>
 			switch await self?.token(for: connectionID) {
-			case .success(let token)?:
+			case .success(let token)? where !Task.isCancelled:
 				result = await dependencies.vercel(token).projects(teamID: teamID)
 					.map { $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
 					.mapError { PublishSessionError(VercelPublishing.message($0)) }
-			case .failure(let error)?:
+			case .failure(let error)? where !Task.isCancelled:
 				result = .failure(error)
-			case nil:
+			case .success?, .failure?, nil:
 				return
 			}
 			guard let self, let form, !Task.isCancelled, self.vercel === form else { return }
@@ -338,12 +421,12 @@ final class PublishSession: Identifiable {
 		environmentsTask = Task { [weak self, weak form, dependencies] in
 			let result: Result<[VercelCustomEnvironment], PublishSessionError>
 			switch await self?.token(for: connectionID) {
-			case .success(let token)?:
+			case .success(let token)? where !Task.isCancelled:
 				result = await dependencies.vercel(token).customEnvironments(projectID: projectID, teamID: teamID)
 					.mapError { PublishSessionError(VercelPublishing.message($0)) }
-			case .failure(let error)?:
+			case .failure(let error)? where !Task.isCancelled:
 				result = .failure(error)
-			case nil:
+			case .success?, .failure?, nil:
 				return
 			}
 			guard let self, let form, !Task.isCancelled, self.vercel === form, form.projectID == projectID else { return }
@@ -360,13 +443,13 @@ final class PublishSession: Identifiable {
 		choicesTask = Task { [weak self, weak form, dependencies] in
 			let result: Result<[CoolifyResource], PublishSessionError>
 			switch await self?.token(for: connectionID) {
-			case .success(let token)?:
+			case .success(let token)? where !Task.isCancelled:
 				result = await dependencies.coolify(instance, token).resources()
 					.map(CoolifyDestinationForm.sorted)
 					.mapError { PublishSessionError(CoolifyPublishing.message($0)) }
-			case .failure(let error)?:
+			case .failure(let error)? where !Task.isCancelled:
 				result = .failure(error)
-			case nil:
+			case .success?, .failure?, nil:
 				return
 			}
 			guard let self, let form, !Task.isCancelled, self.coolify === form else { return }
@@ -438,7 +521,10 @@ final class PublishSession: Identifiable {
 			if let other = existing.first(where: { $0.id != saved.id && $0.target.location == location }) {
 				return .failure("Another saved destination already publishes to \(target.placeName), from \(VaultProject.displayName(for: other.sourceEnvironment)). Choose it from the Publish menu.")
 			}
-			stored = existing.first { $0.id == saved.id }
+			guard let found = existing.first(where: { $0.id == saved.id }) else {
+				return .failure("This destination was forgotten on this Mac, as when its source environment is deleted. Choose where to publish instead.")
+			}
+			stored = found
 		} else {
 			stored = existing.first { $0.target.location == location }
 		}
@@ -491,6 +577,8 @@ final class PublishSession: Identifiable {
 		}
 	}
 
+	/// The review of the destination the fields describe. Nothing more is
+	/// read once the review is cancelled, as when the vault locks.
 	private func makeReview() async -> Result<Review, PublishSessionError> {
 		let target: PublishTarget
 		switch self.target() {
@@ -498,15 +586,18 @@ final class PublishSession: Identifiable {
 		case .failure(let error): return .failure(error)
 		}
 		let source = sourceEnvironment
-		let rules = dependencies.rules()
-		let check = dependencies.check(source)
-		guard let values = await dependencies.values(source) else {
+		let read = await dependencies.snapshot(source, .checked)
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+		guard let snapshot = read else {
 			return .failure("\(VaultProject.displayName(for: source)) can't be read right now.")
 		}
+		let (values, rules, check) = (snapshot.values, snapshot.rules, snapshot.check)
 		let publishing = dependencies.publishing
 		let destination: PublishDestination
 		let stored: PublishDestination?
-		switch await publishing.destinations(of: vaultID) {
+		let destinations = await publishing.destinations(of: vaultID)
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+		switch destinations {
 		case .success(let existing):
 			switch self.destination(target: target, among: existing) {
 			case .success(let found): (destination, stored) = found
@@ -517,22 +608,27 @@ final class PublishSession: Identifiable {
 		}
 		let history: PublishHistory?
 		if let stored, stored.target.location == destination.target.location {
-			switch await publishing.history(of: destination.id, in: vaultID) {
+			let read = await publishing.history(of: destination.id, in: vaultID)
+			guard !Task.isCancelled else { return .failure(.cancelled) }
+			switch read {
 			case .success(let value): history = value
 			case .failure(let error): return .failure("This destination's history can't be read. \(error)")
 			}
 		} else {
 			history = nil
 		}
+		let key = await publishing.fingerprintKey()
+		guard !Task.isCancelled else { return .failure(.cancelled) }
 		let fingerprintKey: SymmetricKey
-		switch await publishing.fingerprintKey() {
-		case .success(let key): fingerprintKey = key
+		switch key {
+		case .success(let value): fingerprintKey = value
 		case .failure(let error): return .failure("LPM Vault's publish key can't be read. \(error)")
 		}
 		let token: String
 		switch await self.token(for: target.connectionID) {
-		case .success(let value): token = value
-		case .failure(let error): return .failure(error)
+		case .success(let value) where !Task.isCancelled: token = value
+		case .failure(let error) where !Task.isCancelled: return .failure(error)
+		case .success, .failure: return .failure(.cancelled)
 		}
 		let remote: Remote
 		switch await self.remote(of: target, token: token) {
@@ -550,6 +646,7 @@ final class PublishSession: Identifiable {
 			fingerprintKey: fingerprintKey)
 		return .success(Review(
 			destination: destination,
+			stored: stored,
 			isSaved: stored != nil,
 			needsSave: stored != destination,
 			plan: plan,
@@ -558,7 +655,28 @@ final class PublishSession: Identifiable {
 			lastPublishedAt: history?.publishedAt,
 			rules: rules,
 			hasValueCheck: check != nil,
+			ruleNotes: Self.ruleNotes(for: plan, values: values, rules: rules, check: check, in: source),
 			remote: remote.variables))
+	}
+
+	/// Why each key failing the project's rules fails, from the values and check `plan` was made from.
+	private static func ruleNotes(
+		for plan: PublishPlan,
+		values: [String: String],
+		rules: Rules,
+		check: ProjectEnvValueCheck.Environment?,
+		in environment: String
+	) -> [String: String] {
+		guard let check else { return [:] }
+		let presentation = VaultValueCheckPresentation(
+			check: ProjectEnvValueCheck(environments: [environment: check]), rules: rules.overview, environments: [environment: values])
+		var notes: [String: String] = [:]
+		for row in plan.rows {
+			for case .failsRules(let problems) in row.holds {
+				if let problem = problems.first { notes[row.key] = presentation.message(for: problem, in: environment) }
+			}
+		}
+		return notes
 	}
 
 	private func invalidateReview() {
@@ -584,12 +702,21 @@ final class PublishSession: Identifiable {
 		review?.selection.keys.contains(key) ?? false
 	}
 
+	/// Reviews the destination again after a publish, as when Vercel or
+	/// Coolify changed some of its variables meanwhile.
+	func reviewAgain() {
+		guard step == .results, !isPublishing, !isCancelled else { return }
+		results = nil
+		review = nil
+		loadReview()
+	}
+
 	// MARK: - Publish
 
 	/// Checks the chosen values are still the reviewed ones, asks for Touch
 	/// ID, sends them, and records what the platform accepted.
 	func publish() {
-		guard publishTask == nil, let review, !review.selection.keys.isEmpty else { return }
+		guard !isCancelled, publishTask == nil, let review, !review.selection.keys.isEmpty else { return }
 		reviewError = nil
 		isPublishing = true
 		publishTask = Task { [weak self] in
@@ -604,12 +731,18 @@ final class PublishSession: Identifiable {
 
 	private func run(_ review: Review) async {
 		let dependencies = dependencies
-		guard let values = await dependencies.values(review.destination.sourceEnvironment) else {
-			reviewError = "\(VaultProject.displayName(for: review.destination.sourceEnvironment)) can't be read right now."
+		let source = review.destination.sourceEnvironment
+		guard let snapshot = await dependencies.snapshot(source, .unchecked), !Task.isCancelled else {
+			if !Task.isCancelled { reviewError = "\(VaultProject.displayName(for: source)) can't be read right now." }
+			return
+		}
+		// The rules decide which keys publish readable, so ones changed since the review would send what wasn't reviewed.
+		guard snapshot.rules == review.rules else {
+			reviewError = "lpm.json's rules changed since this review. Review again to publish by the current rules."
 			return
 		}
 		let changes: [PublishPlan.Change]
-		switch review.plan.changes(for: review.selection, values: values, fingerprintKey: review.fingerprintKey) {
+		switch review.plan.changes(for: review.selection, values: snapshot.values, fingerprintKey: review.fingerprintKey) {
 		case .success(let value): changes = value
 		case .failure(.stale(let keys)):
 			reviewError = "\(keys.joined(separator: ", ")) changed since this review. Review again to publish the current \(keys.count == 1 ? "value" : "values")."
@@ -619,7 +752,8 @@ final class PublishSession: Identifiable {
 			return
 		}
 		let count = changes.count
-		let reason = "Publish \(count) \(count == 1 ? "variable" : "variables") to \(review.platform.displayName)"
+		let place = review.destination.target.placeName
+		let reason = "Publish \(count) \(count == 1 ? "variable" : "variables") to \(place) on \(review.platform.displayName)"
 		guard await dependencies.confirm(reason), !Task.isCancelled else { return }
 
 		let token: String
@@ -629,10 +763,11 @@ final class PublishSession: Identifiable {
 			reviewError = error.message
 			return
 		}
+		guard !Task.isCancelled else { return }
 		let report: PublishReport
 		switch review.destination.target {
 		case .vercel(let target):
-			report = await VercelPublishing.publish(changes, to: target, using: dependencies.vercel(token))
+			report = await VercelPublishing.publish(changes, to: target, reviewed: review.remote, using: dependencies.vercel(token))
 		case .coolify(let target):
 			report = await CoolifyPublishing.publish(
 				changes, to: target, reviewed: review.remote, using: dependencies.coolify(target.instance, token))
@@ -651,22 +786,30 @@ final class PublishSession: Identifiable {
 	}
 
 	/// Saves the destination when it's new or changed, then records the
-	/// publish; the reason it couldn't, or nil.
+	/// publish; the reason it couldn't, or nil. What the platform accepted
+	/// is recorded even when the vault locked meanwhile: the platform holds
+	/// those values, so the next review has to know them. Only the
+	/// destination and fingerprints are written, never a value or token.
 	private func record(_ published: [PublishHistory.Published], of review: Review) async -> String? {
 		let publishing = dependencies.publishing
 		var destination = review.destination
+		var choices = review.plan.choices(for: review.selection)
 		if review.needsSave {
-			switch await publishing.save(destination, to: vaultID) {
+			// Saved only over the destination the review read, so a change made meanwhile isn't lost.
+			switch await publishing.save(destination, to: vaultID, replacing: review.stored) {
 			case .success(let saved):
 				guard let stored = saved.first(where: { $0.id == destination.id }) else { return "The destination couldn't be saved." }
 				destination = stored
+				choices = choices.made(at: stored.updatedAt)
+			case .failure(.destinationChanged), .failure(.destinationRemoved):
+				return "The variables were published, but the destination changed on this Mac meanwhile, so this publish wasn't recorded. Review again."
 			case .failure(let error):
 				return "The variables were published, but the destination couldn't be saved. \(error)"
 			}
 		}
 		switch await publishing.recordPublish(
 			published, to: destination.id, at: destination.target.location,
-			choices: review.plan.choices(for: review.selection), of: vaultID, at: dependencies.now())
+			choices: choices, of: vaultID, at: dependencies.now())
 		{
 		case .success(let recorded):
 			saved = recorded
@@ -679,6 +822,8 @@ final class PublishSession: Identifiable {
 
 /// A reason the Publish sheet shows, as text.
 struct PublishSessionError: Error, Equatable, Sendable, ExpressibleByStringInterpolation {
+	static let cancelled = PublishSessionError("Cancelled.")
+
 	let message: String
 
 	init(_ message: String) {
@@ -698,6 +843,9 @@ struct PublishSessionError: Error, Equatable, Sendable, ExpressibleByStringInter
 struct PublishDestinationSummary: Identifiable, Equatable, Sendable {
 	let destination: PublishDestination
 	let lastPublishedAt: Date?
+	/// What tells the connection apart from another with the same name, such
+	/// as a Vercel team's slug; nil when it isn't connected on this Mac.
+	var accountDetail: String?
 
 	var id: UUID { destination.id }
 }

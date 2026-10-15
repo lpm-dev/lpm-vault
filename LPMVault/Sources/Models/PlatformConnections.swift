@@ -45,8 +45,10 @@ final class PlatformConnections {
 	private let connect: Connect
 	private let connectCoolifyTeam: ConnectCoolify
 	private let session: SessionProvider
-	private let openURL: @Sendable (URL) async -> Void
+	private let openURL: @MainActor @Sendable (URL) -> Void
 	private let now: @Sendable () -> Date
+	/// Called after a connection is saved or removed.
+	private let didChange: @MainActor () -> Void
 	private var connectTask: Task<Void, Never>?
 	private var coolifyTask: Task<CoolifyOutcome, Never>?
 	private var loadTask: Task<Void, Never>?
@@ -57,8 +59,9 @@ final class PlatformConnections {
 		connect: @escaping Connect = { await VercelConnector().connect(session: $0, open: $1) },
 		connectCoolify: @escaping ConnectCoolify = { await CoolifyConnector().connect(address: $0, token: $1) },
 		session: @escaping SessionProvider,
-		openURL: @escaping @Sendable (URL) async -> Void = PlatformConnections.openInBrowser,
-		now: @escaping @Sendable () -> Date = { Date() }
+		openURL: @escaping @MainActor @Sendable (URL) -> Void = PlatformConnections.openInBrowser,
+		now: @escaping @Sendable () -> Date = { Date() },
+		didChange: @escaping @MainActor () -> Void = {}
 	) {
 		self.store = store
 		self.connect = connect
@@ -66,12 +69,13 @@ final class PlatformConnections {
 		self.session = session
 		self.openURL = openURL
 		self.now = now
+		self.didChange = didChange
 	}
 
 	var isConnecting: Bool { connectTask != nil }
 
-	nonisolated static let openInBrowser: @Sendable (URL) async -> Void = { url in
-		await MainActor.run { _ = NSWorkspace.shared.open(url) }
+	nonisolated static let openInBrowser: @MainActor @Sendable (URL) -> Void = { url in
+		_ = NSWorkspace.shared.open(url)
 	}
 
 	func load() {
@@ -110,18 +114,20 @@ final class PlatformConnections {
 			guard generation == self.generation, !Task.isCancelled else { return }
 			let openURL = self.openURL
 			let result = await self.connect(session) { [weak self] url in
+				// Checked and opened in one turn on the main actor, so a lock can't land in between.
 				await MainActor.run {
-					guard let self, generation == self.generation else { return }
+					guard let self, generation == self.generation, !Task.isCancelled else { return }
 					self.phase = .waitingForBrowser
+					openURL(url)
 				}
-				await openURL(url)
 			}
 			guard generation == self.generation else { return }
 			switch result {
 			case .success(let connected):
-				switch await self.store.save(connected.grant, account: connected.account, at: self.now()) {
-				case .success(let connection):
-					guard generation == self.generation else { return }
+				switch await self.store.saveUndoably(connected.grant, account: connected.account, at: self.now()) {
+				case .success(let saved):
+					guard await self.keep(saved, generation: generation) else { return }
+					let connection = saved.connection
 					self.insert(connection)
 					self.notice = Notice(message: "Connected \(connection.name) on Vercel.", isError: false)
 				case .failure(.cancelled):
@@ -160,9 +166,10 @@ final class PlatformConnections {
 		switch result {
 		case .success(let connected):
 			let account = CoolifyConnectionAccount(instance: connected.instance, teamID: connected.team.id, teamName: connected.team.name)
-			switch await store.save(.coolify(account), accessToken: connected.token, at: now()) {
-			case .success(let connection):
-				guard generation == self.generation else { return .dropped }
+			switch await store.saveUndoably(.coolify(account), accessToken: connected.token, at: now()) {
+			case .success(let saved):
+				guard await keep(saved, generation: generation) else { return .dropped }
+				let connection = saved.connection
 				insert(connection)
 				notice = Notice(message: "Connected \(connection.name) on Coolify.", isError: false)
 				return .connected(connection)
@@ -177,6 +184,17 @@ final class PlatformConnections {
 		case .failure(let error):
 			return .failed(error.message)
 		}
+	}
+
+	/// Whether a connection saved for `generation` is still wanted. One the
+	/// vault locked, or the person cancelled, before this could use it is
+	/// taken back: the save had finished, but nobody asked for it any longer.
+	private func keep(_ saved: PlatformConnectionStore.SavedConnection, generation: Int) async -> Bool {
+		didChange()
+		guard generation != self.generation || Task.isCancelled else { return true }
+		_ = await store.undo(saved)
+		didChange()
+		return false
 	}
 
 	private func insert(_ connection: PlatformConnection) {
@@ -195,7 +213,9 @@ final class PlatformConnections {
 		let generation = generation
 		Task { [weak self, store] in
 			let result = await store.remove(connection.id)
-			guard let self, generation == self.generation else { return }
+			guard let self else { return }
+			if case .success = result { self.didChange() }
+			guard generation == self.generation else { return }
 			self.disconnecting.remove(connection.id)
 			switch result {
 			case .success:

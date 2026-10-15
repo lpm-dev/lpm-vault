@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LocalAuthentication
 import Testing
 
 @testable import LPMVault
@@ -44,6 +45,18 @@ struct AuditRegressionTests {
     #expect(prompts.value == 1)
     #expect(await service.confirm(reason: "publish") == .authenticated)
     #expect(prompts.value == 2)
+  }
+
+  @Test("locking takes down a Touch ID prompt still showing, which then reads as cancelled")
+  func resetTakesDownPrompt() async throws {
+    let context = HeldContext()
+    let service = BiometricService(makeContext: { context })
+    let outcome = Task { await service.confirm(reason: "Publish 1 variable to demo-api / Production on Vercel") }
+    for _ in 0..<400 where !context.isShowing { try await Task.sleep(for: .milliseconds(5)) }
+    #expect(context.isShowing)
+    service.resetCache()
+    #expect(await outcome.value == .cancelled)
+    #expect(context.wasInvalidated)
   }
 
   @Test("login attempt throttling does not persist across a monotonic clock reset")
@@ -1281,4 +1294,36 @@ extension SheetInteractionTests {
 		manager.clearClipboard()
 		#expect(pasteboard.string(forType: .string) == nil)
 	}
+}
+
+/// A Touch ID prompt that stays up until it's invalidated, or approves after a while.
+private final class HeldContext: LAContext, @unchecked Sendable {
+  private let lock = NSLock()
+  private var pendingReply: (@Sendable (Bool, (any Error)?) -> Void)?
+  private var invalidated = false
+
+  var isShowing: Bool { lock.withLock { pendingReply != nil } }
+  var wasInvalidated: Bool { lock.withLock { invalidated } }
+
+  override func evaluatePolicy(
+    _ policy: LAPolicy,
+    localizedReason: String,
+    reply: @escaping @Sendable (Bool, (any Error)?) -> Void
+  ) {
+    lock.withLock { pendingReply = reply }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in self?.finish(true, nil) }
+  }
+
+  override func invalidate() {
+    lock.withLock { invalidated = true }
+    finish(false, LAError(.appCancel))
+  }
+
+  private func finish(_ success: Bool, _ error: (any Error)?) {
+    let reply = lock.withLock {
+      defer { pendingReply = nil }
+      return pendingReply
+    }
+    reply?(success, error)
+  }
 }

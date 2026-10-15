@@ -35,6 +35,9 @@ struct PublishPlan: Equatable, Sendable {
 			case changed
 			/// The platform's variable is gone since this Mac published it.
 			case removed
+			/// The platform doesn't say enough to tell whether its variable
+			/// changed since this Mac published it, such as when it last changed.
+			case unknown
 		}
 
 		/// When this Mac last published the key here; nil when it hasn't.
@@ -70,6 +73,9 @@ struct PublishPlan: Equatable, Sendable {
 		case unusableValue
 		/// The platform would change the value on its way to the app.
 		case changesValue(ValueIssue)
+		/// The platform doesn't say when its variable last changed, so a
+		/// publish can't make sure it isn't overwriting a change made since the review.
+		case unknownChangeTime
 		/// The platform's variable also applies to these environments, so
 		/// publishing changes them too.
 		case sharedWith([String])
@@ -81,15 +87,17 @@ struct PublishPlan: Equatable, Sendable {
 		case excluded
 		/// Someone changed or removed it on the platform since this Mac published it.
 		case changedOnPlatform
+		/// Whether someone changed it on the platform since this Mac published it can't be told.
+		case unknownSincePublish
 		/// The platform already has the value this Mac published.
 		case upToDate
 
 		/// Whether the key can't be published even when the person chooses it.
 		var blocksPublishing: Bool {
 			switch self {
-			case .reserved, .nameTooLong, .unusableValue: true
+			case .reserved, .nameTooLong, .unusableValue, .unknownChangeTime: true
 			case .changesValue(let issue): !issue.allowsPublishing
-			case .sharedWith, .failsRules, .ignoredByLPM, .excluded, .changedOnPlatform, .upToDate: false
+			case .sharedWith, .failsRules, .ignoredByLPM, .excluded, .changedOnPlatform, .unknownSincePublish, .upToDate: false
 			}
 		}
 	}
@@ -165,13 +173,17 @@ struct PublishPlan: Equatable, Sendable {
 		let id: String
 		/// The other environments the same variable applies to, for display.
 		let sharedWith: [String]
+		/// Where the variable applies, as the platform identifies those places,
+		/// so a rename doesn't read as a change; compared, never shown.
+		let scope: Set<String>
 		let updatedAt: Date?
 		/// Whether the platform stores it so its value can't be read back; nil when it doesn't say.
 		let storedAsSecret: Bool?
 
-		init(id: String, sharedWith: [String] = [], updatedAt: Date?, storedAsSecret: Bool? = nil) {
+		init(id: String, sharedWith: [String] = [], scope: Set<String> = [], updatedAt: Date?, storedAsSecret: Bool? = nil) {
 			self.id = id
 			self.sharedWith = sharedWith
+			self.scope = scope
 			self.updatedAt = updatedAt.map(PublishTimestamp.normalized)
 			self.storedAsSecret = storedAsSecret
 		}
@@ -230,12 +242,17 @@ struct PublishPlan: Equatable, Sendable {
 			} else {
 				holds.append(contentsOf: platform.valueIssues(value).map(Hold.changesValue))
 			}
+			if let remoteVariable, remoteVariable.updatedAt == nil { holds.append(.unknownChangeTime) }
 			if let shared = remoteVariable?.sharedWith, !shared.isEmpty { holds.append(.sharedWith(shared)) }
 			let failures = problems.filter { $0.kind != .unusableValue }
 			if !failures.isEmpty { holds.append(.failsRules(failures)) }
 			if check?.ignored.contains(key) == true { holds.append(.ignoredByLPM) }
 			if destination.excludedKeys.contains(key) { holds.append(.excluded) }
-			if status.platform != .unchanged { holds.append(.changedOnPlatform) }
+			switch status.platform {
+			case .changed, .removed: holds.append(.changedOnPlatform)
+			case .unknown: holds.append(.unknownSincePublish)
+			case .unchanged: break
+			}
 			if status.isUpToDate { holds.append(.upToDate) }
 			return Row(
 				key: key,
@@ -269,9 +286,12 @@ struct PublishPlan: Equatable, Sendable {
 	}
 
 	/// The platform side is judged on its own, so a value changed here
-	/// doesn't hide that someone also changed or removed it there. How the
-	/// platform stores the key comes from the platform when it says, else
-	/// from this Mac's last publish.
+	/// doesn't hide that someone also changed or removed it there. A variable
+	/// counts as unchanged only when its ID and change time are both known
+	/// and match this Mac's record. Another ID, or another time, even an
+	/// earlier one, counts as changed; an ID or time that isn't known on
+	/// either side leaves it unknown. How the platform stores the key comes
+	/// from the platform when it says, else from this Mac's last publish.
 	private static func status(
 		fingerprint: Data,
 		publishesAsSecret: Bool,
@@ -280,12 +300,19 @@ struct PublishPlan: Equatable, Sendable {
 	) -> Status {
 		guard let record else { return .notPublished }
 		let platform: Status.Platform
-		if let remote {
-			let replaced = record.remoteID.map { $0 != remote.id } ?? false
-			let edited = record.remoteUpdatedAt.flatMap { recorded in remote.updatedAt.map { $0 > recorded } } ?? false
-			platform = replaced || edited ? .changed : .unchanged
-		} else {
+		switch (remote, record.remoteID) {
+		case (nil, _):
 			platform = .removed
+		case (let remote?, let recordedID?) where recordedID != remote.id:
+			platform = .changed
+		case (let remote?, _?):
+			if let recorded = record.remoteUpdatedAt, let current = remote.updatedAt {
+				platform = recorded == current ? .unchanged : .changed
+			} else {
+				platform = .unknown
+			}
+		case (_?, nil):
+			platform = .unknown
 		}
 		let storedAsSecret = remote?.storedAsSecret ?? record.publishedAsSecret
 		return Status(
@@ -440,6 +467,14 @@ extension PublishPlan {
 			self.staleExclusions = staleExclusions
 			self.destinationUpdatedAt = destinationUpdatedAt
 			self.staleHistory = staleHistory
+		}
+
+		/// These choices, as made against the destination saved at `updatedAt`,
+		/// as when the publish itself saved the destination it reviewed.
+		func made(at updatedAt: Date) -> Choices {
+			Choices(
+				leftOut: leftOut, chosen: chosen, staleExclusions: staleExclusions,
+				destinationUpdatedAt: updatedAt, staleHistory: staleHistory)
 		}
 
 		/// A key left out stays out next time, and a chosen key is no longer

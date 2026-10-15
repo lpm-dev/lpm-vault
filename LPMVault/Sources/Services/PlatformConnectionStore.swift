@@ -66,9 +66,29 @@ actor PlatformConnectionStore {
 		}
 	}
 
+	/// A connection a save wrote, with what it replaced, so the save can be
+	/// taken back. The records it holds never appear when it's printed,
+	/// logged or dumped.
+	struct SavedConnection: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+		let connection: PlatformConnection
+		fileprivate let written: Data
+		/// The record the save replaced: `.some(nil)` when there was none, and
+		/// nil when it couldn't be read.
+		fileprivate let replaced: Data??
+
+		var description: String { "SavedConnection(\(connection.id), records: <redacted>)" }
+		var debugDescription: String { description }
+		var customMirror: Mirror { Mirror(self, children: ["connection": connection]) }
+	}
+
 	/// Saves the Vercel grant, replacing any earlier connection to the same account.
 	func save(_ grant: VercelGrant, account: VercelAccount, at date: Date) -> Result<PlatformConnection, PlatformConnectionStoreError> {
-		save(
+		saveUndoably(grant, account: account, at: date).map(\.connection)
+	}
+
+	/// Saves the Vercel grant as `save` does, keeping what's needed to take the save back.
+	func saveUndoably(_ grant: VercelGrant, account: VercelAccount, at date: Date) -> Result<SavedConnection, PlatformConnectionStoreError> {
+		saveUndoably(
 			.vercel(VercelConnectionAccount(
 				installationID: grant.installationID,
 				teamID: grant.teamID,
@@ -83,17 +103,54 @@ actor PlatformConnectionStore {
 
 	/// Saves the account with its token, replacing any earlier connection to
 	/// the same account. Nothing is saved once the calling task is cancelled,
-	/// as when the vault locks while the save waits its turn.
+	/// as when the vault locks while the save waits its turn; one cancelled
+	/// while the Keychain writes is taken back.
 	func save(_ account: PlatformConnection.Account, accessToken: String, at date: Date) -> Result<PlatformConnection, PlatformConnectionStoreError> {
+		saveUndoably(account, accessToken: accessToken, at: date).map(\.connection)
+	}
+
+	/// Saves the account as `save` does, keeping what's needed to take the
+	/// save back, as when the vault locks before the caller can use it.
+	func saveUndoably(
+		_ account: PlatformConnection.Account,
+		accessToken: String,
+		at date: Date
+	) -> Result<SavedConnection, PlatformConnectionStoreError> {
 		Result {
 			guard !Task.isCancelled else { throw PlatformConnectionStoreError.cancelled }
 			let connection = PlatformConnection(account: account, connectedAt: PublishTimestamp.normalized(date))
 			guard let data = Self.encode(Record(connection: connection, accessToken: accessToken)) else {
 				throw PlatformConnectionStoreError.unreadable
 			}
+			// A record the Keychain can't read is still replaced: connecting again is how one is mended.
+			let replaced = try? service.readAppItem(.platformConnections, account: connection.id).get()
 			try service.writeAppItem(.platformConnections, account: connection.id, data: data).get()
-			return connection
+			let saved = SavedConnection(connection: connection, written: data, replaced: replaced)
+			guard Task.isCancelled else { return saved }
+			try restore(before: saved)
+			throw PlatformConnectionStoreError.cancelled
 		}.mapError(Self.storeError)
+	}
+
+	/// Takes back `saved`, putting back the connection it replaced, unless
+	/// the connection was saved again since.
+	func undo(_ saved: SavedConnection) -> Result<Void, PlatformConnectionStoreError> {
+		Result {
+			guard try service.readAppItem(.platformConnections, account: saved.connection.id).get() == saved.written else { return }
+			try restore(before: saved)
+		}.mapError(Self.storeError)
+	}
+
+	/// Puts back the record `saved` replaced, or none. One that couldn't be
+	/// read, or written back, is deleted instead, so the saved token never
+	/// outlives the save being taken back.
+	private func restore(before saved: SavedConnection) throws {
+		if case let replaced?? = saved.replaced,
+			case .success = service.writeAppItem(.platformConnections, account: saved.connection.id, data: replaced)
+		{
+			return
+		}
+		try service.deleteAppItem(.platformConnections, account: saved.connection.id).get()
 	}
 
 	/// The connection's access token, read when a request needs it.
@@ -113,9 +170,14 @@ actor PlatformConnectionStore {
 
 	// MARK: - Records
 
-	struct Record: Equatable, Sendable {
+	/// A connection with its token, which never appears when it's printed, logged or dumped.
+	struct Record: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
 		let connection: PlatformConnection
 		let accessToken: String
+
+		var description: String { "Record(\(connection.id), accessToken: <redacted>)" }
+		var debugDescription: String { description }
+		var customMirror: Mirror { Mirror(self, children: ["connection": connection]) }
 	}
 
 	static func encode(_ record: Record) -> Data? {

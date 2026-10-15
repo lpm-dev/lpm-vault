@@ -1253,7 +1253,7 @@ final class VaultStore {
   @ObservationIgnored private var schemaDraftEvaluationInputs: [String: SchemaDraftEvaluationInputs] = [:]
   @ObservationIgnored private var schemaDraftEvaluationTasks: [String: Task<Void, Never>] = [:]
   @ObservationIgnored var schemaDraftEvaluator = ProjectEnvSchemaDraftEvaluator()
-  @ObservationIgnored let valueCheckWorker = ProjectEnvValueCheckWorker()
+  @ObservationIgnored let valueCheckWorker: ProjectEnvValueCheckWorker
   @ObservationIgnored private var valueCheckInputs: [String: ValueCheckInputs] = [:]
   @ObservationIgnored private var valueCheckTasks: [String: Task<Void, Never>] = [:]
   private var unverifiedKeyDescriptionProjects: Set<String> = []
@@ -1360,19 +1360,26 @@ final class VaultStore {
   /// Publish destinations and this Mac's publish history.
   let publishing: PublishingStore
   private let platformConnect: PlatformConnections.Connect?
-  private let platformURLOpener: (@Sendable (URL) async -> Void)?
+  private let platformURLOpener: (@MainActor @Sendable (URL) -> Void)?
   /// The platform accounts this Mac publishes to, for the Platforms page.
   let platformConnectionStore: PlatformConnectionStore
   private let platformClient: @Sendable (String) -> any VercelClientProtocol
   private let coolifyClient: CoolifyConnector.ClientFactory
   /// Each project's saved publish destinations, for the Publish menu.
   private(set) var publishDestinations: [String: [PublishDestinationSummary]] = [:]
+  /// Open Publish sheets' sessions, which locking stops.
+  @ObservationIgnored private var publishSessions: [WeakPublishSession] = []
+  /// Each platform connection's detail for the Publish menu, read once
+  /// while unlocked; nil until read, and again once the connections change.
+  @ObservationIgnored private var connectionDetails: [PlatformConnection.ID: String]?
+  @ObservationIgnored private var connectionDetailsGeneration = 0
   @ObservationIgnored private(set) lazy var platforms = PlatformConnections(
     store: platformConnectionStore,
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
     connectCoolify: { [coolifyClient] in await CoolifyConnector(client: coolifyClient).connect(address: $0, token: $1) },
     session: { [weak self] in await self?.platformSession() },
-    openURL: platformURLOpener ?? PlatformConnections.openInBrowser
+    openURL: platformURLOpener ?? PlatformConnections.openInBrowser,
+    didChange: { [weak self] in self?.forgetConnectionDetails() }
   )
   private let biometricService: BiometricServiceProtocol
   private let injectedAPIService: LPMAPIServiceProtocol?
@@ -1609,11 +1616,14 @@ final class VaultStore {
     guard isUnlocked else { return }
     let generation = vaultSessionGeneration
     guard case .success(let destinations) = await publishing.destinations(of: projectID) else { return }
+    let details = destinations.isEmpty ? [:] : await platformConnectionDetails()
     var summaries: [PublishDestinationSummary] = []
     summaries.reserveCapacity(destinations.count)
     for destination in destinations {
       let history = try? await publishing.history(of: destination.id, in: projectID).get()
-      summaries.append(PublishDestinationSummary(destination: destination, lastPublishedAt: history?.publishedAt))
+      summaries.append(PublishDestinationSummary(
+        destination: destination, lastPublishedAt: history?.publishedAt,
+        accountDetail: details[destination.target.connectionID]))
     }
     guard isUnlocked, generation == vaultSessionGeneration else { return }
     publishDestinations[projectID] = summaries.sorted {
@@ -1626,37 +1636,91 @@ final class VaultStore {
     }
   }
 
+  /// Reads the project's destinations again when the Publish menu has them,
+  /// as after a rename or deletion moved or removed some.
+  private func refreshPublishMenu(for projectID: String) async {
+    guard publishDestinations[projectID] != nil else { return }
+    await loadPublishDestinations(for: projectID)
+  }
+
+  /// Each platform connection's detail, read from the Keychain only when
+  /// the connections changed since it was last read. Each record holds its
+  /// token, so the menu doesn't read them all every time it's refreshed.
+  private func platformConnectionDetails() async -> [PlatformConnection.ID: String] {
+    if let connectionDetails { return connectionDetails }
+    let generation = connectionDetailsGeneration
+    guard case .success(let connections) = await platformConnectionStore.connections() else { return [:] }
+    let details = Dictionary(connections.map { ($0.id, $0.detail) }, uniquingKeysWith: { first, _ in first })
+    if generation == connectionDetailsGeneration, isUnlocked { connectionDetails = details }
+    return details
+  }
+
+  private func forgetConnectionDetails() {
+    connectionDetailsGeneration &+= 1
+    connectionDetails = nil
+  }
+
   /// A Publish sheet for the selected project, opening on `destination`'s
   /// review when it's a saved one.
   func makePublishSession(for destination: PublishDestination? = nil) -> PublishSession? {
     guard isUnlocked, let project = selectedProject else { return nil }
     let projectID = project.id
     let dependencies = PublishSession.Dependencies(
-      values: { [weak self] environment in await self?.publishValues(projectID: projectID, environment: environment) },
-      rules: { [weak self] in self?.publishRules(projectID: projectID) ?? .unreadable },
-      check: { [weak self] environment in self?.valueChecks[projectID]?.environments[environment] },
+      snapshot: { [weak self] environment, contents in
+        await self?.publishSnapshot(projectID: projectID, environment: environment, contents: contents)
+      },
       confirm: { [weak self] reason in await self?.authenticateForSensitiveAction(reason: reason, reusingRecent: false) ?? false },
       publishing: publishing,
       connections: platformConnectionStore,
       vercel: platformClient,
       coolify: coolifyClient,
       didChange: { [weak self] in Task { await self?.loadPublishDestinations(for: projectID) } })
-    return PublishSession(
+    let session = PublishSession(
       vaultID: projectID,
       projectName: project.name,
       environments: orderedEnvironmentNames(for: project),
       sourceEnvironment: selectedEnvironment,
       saved: destination,
       dependencies: dependencies)
+    publishSessions.removeAll { $0.session == nil }
+    publishSessions.append(WeakPublishSession(session: session))
+    return session
   }
 
-  /// The environment's saved values once local changes are read, while the project is open.
-  private func publishValues(projectID: String, environment: String) async -> [String: String]? {
+  /// The environment's saved values once local changes are read, with
+  /// lpm.json's rules and, when `contents` asks for it, those values' check,
+  /// while the project is open. The check is the one made for these values:
+  /// one still running for them is waited for, and one made for other values
+  /// isn't taken for theirs. A check made here for the project's current
+  /// values is kept for the rest of the app.
+  private func publishSnapshot(
+    projectID: String,
+    environment: String,
+    contents: PublishSession.Snapshot.Contents
+  ) async -> PublishSession.Snapshot? {
     await waitForLocalStateRefresh()
     guard canUseLocalSecrets, selectedProjectId == projectID, let project = selectedProject,
       project.environmentNames.contains(environment)
     else { return nil }
-    return project.environments[environment] ?? [:]
+    let values = project.environments[environment] ?? [:]
+    let rules = publishRules(projectID: projectID)
+    guard contents == .checked, case .known(let overview) = rules, overview.effectiveSchema != nil, project.hasLoadedEnvironments
+    else {
+      return PublishSession.Snapshot(values: values, rules: rules, check: nil)
+    }
+    let inputs = ValueCheckInputs(values: project.workspaceSnapshotIdentity, rules: overview)
+    if valueCheckInputs[projectID] == inputs {
+      if valueChecks[projectID] == nil, let running = valueCheckTasks[projectID] { await running.value }
+      if valueCheckInputs[projectID] == inputs, let check = valueChecks[projectID] {
+        return PublishSession.Snapshot(values: values, rules: rules, check: check.environments[environment])
+      }
+    }
+    let check = await valueCheckWorker.check(rules: overview, environments: project.environments)
+    if let check, valueCheckInputs[projectID] == inputs, valueChecks[projectID] == nil {
+      valueCheckTasks.removeValue(forKey: projectID)?.cancel()
+      valueChecks[projectID] = check
+    }
+    return PublishSession.Snapshot(values: values, rules: rules, check: check?.environments[environment])
   }
 
   /// lpm.json's saved rules; an unsaved draft isn't published by.
@@ -1809,7 +1873,8 @@ final class VaultStore {
     platformConnect: PlatformConnections.Connect? = nil,
     platformClient: (@Sendable (String) -> any VercelClientProtocol)? = nil,
     coolifyClient: CoolifyConnector.ClientFactory? = nil,
-    platformURLOpener: (@Sendable (URL) async -> Void)? = nil,
+    platformURLOpener: (@MainActor @Sendable (URL) -> Void)? = nil,
+    valueChecker: ProjectEnvValueCheckWorker.Checker? = nil,
     authAuthorizationProvider:
       @escaping @Sendable (String, URL) async throws -> AuthSessionAuthorization? = {
         registryURL, baseURL in
@@ -1869,6 +1934,7 @@ final class VaultStore {
     self.platformClient = platformClient ?? { VercelClient(token: $0) }
     self.coolifyClient = coolifyClient ?? { CoolifyClient(instance: $0, token: $1) }
     self.platformURLOpener = platformURLOpener
+    self.valueCheckWorker = valueChecker.map(ProjectEnvValueCheckWorker.init(checker:)) ?? ProjectEnvValueCheckWorker()
     self.biometricService = biometricService
     self.injectedAPIService = apiService
     self.apiServiceFactory = apiServiceFactory
@@ -5004,7 +5070,10 @@ final class VaultStore {
     projects = projects.map { VaultProject(metadata: $0.metadata) }
     workspaceSnapshots = [:]
     platforms.reset()
+    for entry in publishSessions { entry.session?.cancel() }
+    publishSessions = []
     publishDestinations = [:]
+    forgetConnectionDetails()
   }
 
   /// Records local keyboard, click, scroll, or gesture input while unlocked.
@@ -7213,8 +7282,9 @@ final class VaultStore {
       case .indeterminate: nil
       default: false
       }
-      let followFailure = await Self.followPublishing(
+      let follow = await Self.followPublishing(
         .editKey(edit), base: project, saved: saved, persistence: persistence, publishing: publishing)
+      if follow.touchedDestinations { await refreshPublishMenu(for: project.id) }
       guard sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked else {
         afterCompletion(.failure(.targetUnavailable)); return
       }
@@ -7222,7 +7292,7 @@ final class VaultStore {
       case .success(let commit, let rules, let rootSchema):
         updateProjectInPlace(commit.project)
         applySyncMetadata(commit.syncMetadata, for: commit.project.id)
-        error = commit.warning ?? followFailure.map(Self.publishingFollowMessage)
+        error = commit.warning ?? follow.failure.map(Self.publishingFollowMessage)
         if let rules, keyDescriptionFolder(for: commit.project) == folder {
           publishSavedRules(rules, rootSchema: rootSchema, folder: folder, for: project.id,
             description: change.description.map { ($0.key, $0.text) })
@@ -7274,8 +7344,9 @@ final class VaultStore {
       case .failure(.transactionOutcomeIndeterminate): nil
       default: false
       }
-      let followFailure = await Self.followPublishing(
+      let follow = await Self.followPublishing(
         mutation, base: project, saved: saved, persistence: persistence, publishing: publishing)
+      if follow.touchedDestinations { await self?.refreshPublishMenu(for: project.id) }
       guard let self else {
         afterCompletion(.unavailable)
         return
@@ -7288,7 +7359,7 @@ final class VaultStore {
       case .success(let persisted):
         updateProjectInPlace(persisted.project)
         applySyncMetadata(persisted.syncMetadata, for: persisted.project.id)
-        error = persisted.warning ?? followFailure.map(Self.publishingFollowMessage)
+        error = persisted.warning ?? follow.failure.map(Self.publishingFollowMessage)
         afterCommit(persisted.project)
         afterCompletion(.saved)
       case .conflict(let latest, let metadata):
@@ -7315,31 +7386,47 @@ final class VaultStore {
     projectMutationTask = task
   }
 
+  /// What following a vault change did to its publish destinations.
+  private enum PublishingFollow {
+    /// The change doesn't move or remove destinations, or wasn't saved.
+    case untouched
+    case followed
+    /// The destinations couldn't follow, or only some did.
+    case failed(PublishingStoreError)
+
+    var touchedDestinations: Bool {
+      if case .untouched = self { false } else { true }
+    }
+
+    var failure: PublishingStoreError? {
+      if case .failed(let failure) = self { failure } else { nil }
+    }
+  }
+
   /// Keeps publish destinations on an environment or key the vault renamed,
   /// and removes those of a deleted environment. `saved` is nil when the
   /// Keychain couldn't say whether the change was saved; the vault is then
   /// read back to find out. The change is already saved when this runs, so
-  /// it runs even if the vault locks meanwhile. Returns why the destinations
-  /// couldn't follow, when they couldn't.
+  /// it runs even if the vault locks meanwhile.
   private static func followPublishing(
     _ mutation: VaultProjectMutation,
     base project: VaultProject,
     saved: Bool?,
     persistence: VaultPersistenceCoordinator,
     publishing: PublishingStore
-  ) async -> PublishingStoreError? {
+  ) async -> PublishingFollow {
     switch mutation {
     case .renameEnvironment, .deleteEnvironment: break
     case .editKey(let edit) where edit.isRename: break
-    default: return nil
+    default: return .untouched
     }
     switch saved {
     case true?: break
-    case false?: return nil
+    case false?: return .untouched
     case nil:
       guard case .success(let latest) = await persistence.loadProject(vaultId: project.id),
         isApplied(mutation, base: project, latest: latest)
-      else { return nil }
+      else { return .untouched }
     }
     let result: Result<Void, PublishingStoreError>
     switch mutation {
@@ -7351,10 +7438,10 @@ final class VaultStore {
       let environments = Set(VaultKeyEdit.environments(containing: edit.key, in: project.environments))
       result = await publishing.renameKey(edit.key, to: edit.newKey, sourcedFrom: environments, in: project.id)
     default:
-      return nil
+      return .untouched
     }
-    if case .failure(let failure) = result { return failure }
-    return nil
+    if case .failure(let failure) = result { return .failed(failure) }
+    return .followed
   }
 
   /// Deletes the publishing records of vaults whose local copy is gone,
@@ -7496,4 +7583,9 @@ final class VaultStore {
       }
     }
   }
+}
+
+/// A Publish sheet's session, held without keeping it alive.
+private struct WeakPublishSession {
+  weak var session: PublishSession?
 }

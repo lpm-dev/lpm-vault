@@ -148,6 +148,77 @@ struct PlatformConnectionStoreTests {
 		#expect(try await store.connections().get().first?.name == #"Root\u{202e}maeT\u{2066}"#)
 	}
 
+	@Test("a token is saved even when the Keychain can't read the one it replaces")
+	func savesOverUnreadable() async throws {
+		let store = store
+		keychain.failAppItemReads = ["vercel.team_acme"]
+		let saved = try await store.save(grant(), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt).get()
+		keychain.failAppItemReads = []
+		#expect(try await store.accessToken(for: saved.id).get() == "vca_token_1")
+	}
+
+	@Test("a save cancelled while it writes, whose earlier token can't be written back, keeps no token")
+	func failedRollbackDeletes() async throws {
+		let store = store
+		_ = try await store.save(grant(), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt).get()
+		let entered = DispatchSemaphore(value: 0)
+		let held = DispatchSemaphore(value: 0)
+		let writes = OSAllocatedUnfairLock(initialState: 0)
+		keychain.beforeAppItemWrite = { [keychain] in
+			if writes.withLock({ $0 += 1; return $0 }) == 1 {
+				entered.signal()
+				_ = held.wait(timeout: .now() + 30)
+			} else {
+				keychain.failAppItemWrites = ["vercel.team_acme"]
+			}
+		}
+		let save = Task { await store.save(grant(token: "vca_token_2"), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt) }
+		await withCheckedContinuation { continuation in
+			Thread.detachNewThread {
+				_ = entered.wait(timeout: .now() + 30)
+				continuation.resume()
+			}
+		}
+		save.cancel()
+		held.signal()
+		#expect(await save.value == .failure(.cancelled))
+		keychain.beforeAppItemWrite = nil
+		keychain.failAppItemWrites = []
+		#expect(keychain.platformConnectionStorage["vercel.team_acme"] == nil)
+	}
+
+	@Test("a connection record never prints its token")
+	func recordRedacted() {
+		let record = PlatformConnectionStore.Record(
+			connection: PlatformConnection(
+				account: .coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: "0", teamName: "Root")),
+				connectedAt: connectedAt),
+			accessToken: "3|secret-token")
+		var dumped = ""
+		dump(record, to: &dumped)
+		for text in [String(describing: record), String(reflecting: record), dumped] {
+			#expect(!text.contains("secret-token"))
+		}
+	}
+
+	@Test("connections with one name are told apart: personal Vercel accounts by username or user, Coolify teams by team")
+	@MainActor
+	func sameNamesTellApart() {
+		func personal(_ user: String, slug: String?) -> PlatformConnection {
+			PlatformConnection(
+				account: .vercel(VercelConnectionAccount(installationID: "icfg_\(user)", teamID: nil, userID: user, name: "Personal account", slug: slug)),
+				connectedAt: connectedAt)
+		}
+		let personals = [personal("u_1", slug: nil), personal("u_2", slug: nil), personal("u_3", slug: "tolga")]
+		#expect(Set(personals.map(PublishSheet.connectionLabel)).count == personals.count)
+		#expect(personals.allSatisfy { $0.detail.contains("personal") })
+		let instance = CoolifyInstance(origin: "https://coolify.example.com")!
+		let teams = ["0", "1"].map {
+			PlatformConnection(account: .coolify(CoolifyConnectionAccount(instance: instance, teamID: $0, teamName: "Team")), connectedAt: connectedAt)
+		}
+		#expect(PublishSheet.connectionLabel(teams[0]) != PublishSheet.connectionLabel(teams[1]))
+	}
+
 	@Test("a Keychain failure is reported")
 	func keychainFailure() async {
 		keychain.failPlatformConnectionAccounts = ["*"]
@@ -336,6 +407,132 @@ struct PlatformConnectionsModelTests {
 		#expect(model.notice == nil && model.connections.isEmpty)
 	}
 
+	@Test("a grant that arrives after Cancel is never saved")
+	func vercelSuccessAfterCancel() async throws {
+		let gate = AsyncGate()
+		let model = model(connect: {
+			await gate.wait()
+			return .success(Self.acme)
+		})
+		model.connectVercel()
+		try await Task.sleep(for: .milliseconds(30))
+		model.cancelConnecting()
+		await gate.open()
+		await waitUntilIdle(model)
+		#expect(keychain.platformConnectionStorage.isEmpty)
+		#expect(model.notice == nil && model.connections.isEmpty)
+	}
+
+	@Test("locking while the Keychain writes a token takes it back, leaving any earlier token as it was", arguments: [false, true])
+	func lockDuringWrite(hadToken: Bool) async throws {
+		let store = PlatformConnectionStore(service: keychain)
+		if hadToken {
+			_ = try await store.save(Self.acme.grant, account: Self.acme.account, at: Date()).get()
+		}
+		let earlier = keychain.platformConnectionStorage
+		let entered = DispatchSemaphore(value: 0)
+		let held = DispatchSemaphore(value: 0)
+		keychain.beforeAppItemWrite = {
+			entered.signal()
+			_ = held.wait(timeout: .now() + 30)
+		}
+		let replacement = (
+			grant: VercelGrant(accessToken: "vca_replacement", installationID: "icfg_2", teamID: "team_acme", userID: "u_1")!,
+			account: VercelAccount(name: "Acme", slug: "acme"))
+		let model = model(store: store, connect: { .success(replacement) })
+		model.connectVercel()
+		await withCheckedContinuation { continuation in
+			Thread.detachNewThread {
+				_ = entered.wait(timeout: .now() + 30)
+				continuation.resume()
+			}
+		}
+		keychain.beforeAppItemWrite = nil
+		model.reset()
+		held.signal()
+		_ = await store.connections()
+		#expect(keychain.platformConnectionStorage == earlier)
+	}
+
+	@Test("a token saved just before the vault locks is taken back, though the save itself had finished")
+	func lockAfterSave() async throws {
+		let store = PlatformConnectionStore(service: keychain)
+		_ = try await store.save(Self.acme.grant, account: Self.acme.account, at: Date()).get()
+		let earlier = keychain.platformConnectionStorage
+		let entered = DispatchSemaphore(value: 0)
+		let held = DispatchSemaphore(value: 0)
+		keychain.beforeAppItemWrite = {
+			entered.signal()
+			_ = held.wait(timeout: .now() + 30)
+		}
+		let replacement = (
+			grant: VercelGrant(accessToken: "vca_replacement", installationID: "icfg_2", teamID: "team_acme", userID: "u_1")!,
+			account: VercelAccount(name: "Acme", slug: "acme"))
+		let model = model(store: store, connect: { .success(replacement) })
+		model.connectVercel()
+		await withCheckedContinuation { continuation in
+			Thread.detachNewThread {
+				_ = entered.wait(timeout: .now() + 30)
+				continuation.resume()
+			}
+		}
+		keychain.beforeAppItemWrite = nil
+		held.signal()
+		// Holding the main actor lets the store finish and return before the lock, and the lock land before the caller resumes.
+		usleep(200_000)
+		model.reset()
+		for _ in 0..<400 where keychain.platformConnectionStorage != earlier { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(keychain.platformConnectionStorage == earlier)
+		#expect(model.connections.isEmpty && model.notice == nil)
+	}
+
+	@Test("Vercel's page opens on the main actor, in the turn that checked the connection is still current")
+	func opensWhileCurrent() async throws {
+		let opened = OpenedLinks()
+		let onMain = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+		let current = CurrentModel()
+		let model = PlatformConnections(
+			store: PlatformConnectionStore(service: keychain),
+			connect: { _, open in
+				await open(URL(string: "https://vercel.com/integrations/lpm-vault/new")!)
+				return .failure(.cancelled)
+			},
+			session: { platformTestSession(URL(string: "https://lpm.dev")!) },
+			openURL: { url in
+				onMain.withLock { $0 = isMainThread() }
+				#expect(current.model?.phase == .waitingForBrowser && current.model?.isConnecting == true)
+				opened.append(url)
+			},
+			now: { Date() })
+		current.model = model
+		model.connectVercel()
+		await waitUntilIdle(model)
+		#expect(opened.urls.count == 1)
+		#expect(onMain.withLock { $0 } == true)
+	}
+
+	@Test("a connection reset before Vercel's page opens never opens it")
+	func resetBeforeOpen() async throws {
+		let gate = AsyncGate()
+		let opened = OpenedLinks()
+		let model = PlatformConnections(
+			store: PlatformConnectionStore(service: keychain),
+			connect: { _, open in
+				await gate.wait()
+				await open(URL(string: "https://vercel.com/integrations/lpm-vault/new")!)
+				return .failure(.cancelled)
+			},
+			session: { platformTestSession(URL(string: "https://lpm.dev")!) },
+			openURL: { opened.append($0) },
+			now: { Date() })
+		model.connectVercel()
+		try await Task.sleep(for: .milliseconds(30))
+		model.reset()
+		await gate.open()
+		try await Task.sleep(for: .milliseconds(50))
+		#expect(opened.urls.isEmpty && model.phase == .idle)
+	}
+
 	@Test("loading reads what this Mac holds")
 	func loads() async throws {
 		_ = try await PlatformConnectionStore(service: keychain).save(
@@ -345,6 +542,20 @@ struct PlatformConnectionsModelTests {
 		await waitUntilIdle(model)
 		#expect(model.connections.map(\.id) == ["vercel.team_acme"])
 	}
+}
+
+private final class OpenedLinks: @unchecked Sendable {
+	private let lock = NSLock()
+	private var opened: [URL] = []
+	var urls: [URL] { lock.withLock { opened } }
+	func append(_ url: URL) { lock.withLock { opened.append(url) } }
+}
+
+private func isMainThread() -> Bool { Thread.isMainThread }
+
+@MainActor
+private final class CurrentModel {
+	weak var model: PlatformConnections?
 }
 
 private actor AsyncGate {

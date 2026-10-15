@@ -181,6 +181,30 @@ struct CoolifyPublishingTests {
 		#expect(CoolifyPublishing.valueIssues(value) == expected)
 	}
 
+	@Test("a duplicate key's direction controls are escaped in Coolify's message")
+	func escapesDuplicateKeys() {
+		let list = ["env-1", "env-2"].map {
+			CoolifyVariable(id: $0, key: "A\u{202E}B", isPreview: false, isLocked: true, updatedAt: Date(timeIntervalSince1970: 1_760_000_000))
+		}
+		guard case .failure(let error) = CoolifyPublishing.snapshot(list, for: .production) else { Issue.record("Not refused"); return }
+		#expect(error.message.contains(#"A\u{202e}B"#) && !error.message.contains("\u{202E}"))
+	}
+
+	@Test("a publish from a cancelled task reads and writes nothing")
+	func cancelledPublish() async {
+		let api = FakeCoolifyAPI()
+		let target = CoolifyPublishTarget(
+			instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: "0", teamName: "Root Team", resource: .application,
+			resourceID: "app-api", resourceName: "api", projectName: "Storefront", environmentName: "production", deployments: .production)
+		let change = PublishPlan.Change(key: "A", value: "1", operation: .add, publishesAsSecret: true, fingerprint: Data())
+		let report = await Task {
+			withUnsafeCurrentTask { $0?.cancel() }
+			return await CoolifyPublishing.publish([change], to: target, reviewed: [:], using: api)
+		}.value
+		#expect(report.outcomes["A"] == .notSent)
+		#expect(api.listingCount == 0 && api.writes.isEmpty)
+	}
+
 	@Test("Coolify's own names are reserved where it makes them: every SERVICE_ one in a service, a compose application's routes")
 	func reservedNames() {
 		let service = CoolifyPublishing.platform(for: .service, buildPack: nil)
@@ -346,7 +370,10 @@ struct CoolifyPublishingTests {
 		let api = FakeCoolifyAPI()
 		api.seed("TIMELESS")
 		api.forgetTimes()
-		let (changes, reviewed) = try await changes(["TIMELESS": "next"], api: api)
+		let (planned, reviewed) = try await changes(["TIMELESS": "next"], api: api)
+		#expect(planned.isEmpty, "The review holds it back")
+		let id = try #require(reviewed["TIMELESS"]?.id)
+		let changes = [PublishPlan.Change(key: "TIMELESS", value: "next", operation: .replace(remoteID: id), publishesAsSecret: true, fingerprint: Data())]
 		api.edit("TIMELESS", keepsTime: true, value: "someone else's")
 		let report = await CoolifyPublishing.publish(changes, to: target(), reviewed: reviewed, using: api)
 		#expect(report.outcomes["TIMELESS"] == .failed("Coolify doesn't say when this variable last changed, so LPM Vault can't tell whether it changed since this review. Edit it once in Coolify, then review again."))

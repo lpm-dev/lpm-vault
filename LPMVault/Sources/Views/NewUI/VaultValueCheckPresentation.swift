@@ -24,9 +24,14 @@ struct VaultValueCheckPresentation {
 	private let invalidKeysByEnvironment: [String: Set<String>]
 
 	init(check: ProjectEnvValueCheck?, rules: ProjectEnvSchemaOverview?, project: VaultProject?) {
+		self.init(check: check, rules: rules, environments: project?.environments ?? [:])
+	}
+
+	/// - Parameter environments: The values `check` was made from, by environment.
+	init(check: ProjectEnvValueCheck?, rules: ProjectEnvSchemaOverview?, environments: [String: [String: String]]) {
 		self.check = check
 		self.rules = rules
-		environments = project?.environments ?? [:]
+		self.environments = environments
 		var byEnvironment: [String: Set<String>] = [:]
 		for (name, environment) in check?.environments ?? [:] {
 			var keys = Set(environment.problems.keys)

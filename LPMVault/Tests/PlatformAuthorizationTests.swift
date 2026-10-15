@@ -352,7 +352,7 @@ private struct FakeVercel: VercelClientProtocol {
 	func customEnvironments(projectID: String, teamID: String?) async -> Result<[VercelCustomEnvironment], VercelAPIError> { .success([]) }
 	func variables(projectID: String, teamID: String?) async -> Result<VercelVariableList, VercelAPIError> { .failure(.notFound) }
 	func create(_ writes: [VercelVariableWrite], projectID: String, teamID: String?) async -> Result<[String: Result<VercelEnvironmentVariable, VercelAPIError>], VercelAPIError> { .failure(.notFound) }
-	func replace(_ variableID: String, value: String, storage: VercelVariableWrite.Storage, projectID: String, teamID: String?) async -> Result<VercelEnvironmentVariable, VercelAPIError> { .failure(.notFound) }
+	func replace(_ variableID: String, key: String, value: String, storage: VercelVariableWrite.Storage, projectID: String, teamID: String?) async -> Result<VercelEnvironmentVariable, VercelAPIError> { .failure(.notFound) }
 }
 
 /// Plays the browser: after Vercel's page "opens", returns to the Mac's listener.
@@ -495,5 +495,15 @@ struct VercelConnectorTests {
 		#expect(failure(of: await task.value) == .cancelled)
 		try await Task.sleep(for: .milliseconds(50))
 		#expect(authorizations.cancelledIDs == [authorizations.id])
+	}
+}
+
+@Suite("Registry sessions")
+struct PlatformAuthorizationSessionTests {
+	@Test("authorization clients made without a session share one, so a connection attempt leaves no session behind")
+	func sharesSession() {
+		#expect(PlatformAuthorizationClient().session === PlatformAuthorizationClient().session)
+		let injected = URLSession(configuration: .ephemeral)
+		#expect(PlatformAuthorizationClient(session: injected).session === injected)
 	}
 }

@@ -240,6 +240,88 @@ struct PublishDestinationFollowTests {
 		try await waitForSource("qa", of: destination.id, in: store)
 	}
 
+	@Test("renaming a destination's source refreshes the Publish menu, and its old menu entry opens on the new source")
+	func renameRefreshesMenu() async throws {
+		let (store, _) = makeStore()
+		defer { store.lock() }
+		let destination = vercelDestination(source: "staging", environment: .preview)
+		_ = try await store.publishing.save(destination, to: "project").get()
+		await store.loadPublishDestinations(for: "project")
+		let cached = try #require(store.publishDestinations["project"]?.first?.destination)
+		store.renameEnvironment(in: "project", from: "staging", to: "qa")
+		try await waitForSource("qa", of: destination.id, in: store)
+		for _ in 0..<1000 where store.publishDestinations["project"]?.first?.destination.sourceEnvironment != "qa" {
+			try await Task.sleep(for: .milliseconds(5))
+		}
+		#expect(store.publishDestinations["project"]?.first?.destination.sourceEnvironment == "qa")
+		let session = try #require(store.makePublishSession(for: cached))
+		session.start()
+		for _ in 0..<1000 where session.reviewError == nil && session.review == nil { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(session.sourceEnvironment == "qa" && session.saved?.sourceEnvironment == "qa")
+	}
+
+	@Test("a destination deleted with its environment leaves the menu, and its old entry can't bring it back")
+	func deleteDoesNotResurrect() async throws {
+		let (store, _) = makeStore()
+		defer { store.lock() }
+		let destination = vercelDestination(source: "staging", environment: .preview, excluded: ["STRIPE_KEY"])
+		_ = try await store.publishing.save(destination, to: "project").get()
+		await store.loadPublishDestinations(for: "project")
+		let cached = try #require(store.publishDestinations["project"]?.first?.destination)
+		store.deleteEnvironment(from: "project", name: "staging")
+		for _ in 0..<1000 where !(try await store.publishing.destinations(of: "project").get().isEmpty) { try await Task.sleep(for: .milliseconds(5)) }
+		for _ in 0..<1000 where store.publishDestinations["project"]?.isEmpty == false { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(store.publishDestinations["project"]?.isEmpty == true)
+		#expect(await store.addEnvironment(to: "project", name: "staging", secrets: ["STRIPE_KEY": "sk_new"]))
+		let session = try #require(store.makePublishSession(for: cached))
+		session.start()
+		for _ in 0..<1000 where session.step != .destination { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(session.step == .destination && session.saved == nil && session.review == nil)
+		#expect(session.destinationError?.contains("forgotten") == true)
+		session.cancel()
+		try await Task.sleep(for: .milliseconds(50))
+		#expect(try await store.publishing.destinations(of: "project").get().isEmpty)
+	}
+
+	@Test("editing a value leaves the Publish menu's destinations unread")
+	func valueEditSkipsMenu() async throws {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		_ = try await store.publishing.save(vercelDestination(source: "staging", environment: .preview), to: "project").get()
+		await store.loadPublishDestinations(for: "project")
+		#expect(store.publishDestinations["project"]?.count == 1)
+		let (publishingReads, connectionLists) = (keychain.appItemReadCount(.publishing), keychain.appItemListCount(.platformConnections))
+		let environments = try #require(store.selectedProject?.environments)
+		try await store.saveKeyEdit(VaultKeyEdit(key: "STRIPE_KEY", environments: environments, values: ["staging": "sk_rotated"]), in: "project")
+		#expect(keychain.envStorage["project"]?.environments["staging"]?["STRIPE_KEY"] == "sk_rotated")
+		#expect(keychain.appItemReadCount(.publishing) == publishingReads)
+		#expect(keychain.appItemListCount(.platformConnections) == connectionLists)
+	}
+
+	@Test("a project without destinations reads no platform connections for its Publish menu")
+	func emptyMenuSkipsConnections() async throws {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		await store.loadPublishDestinations(for: "project")
+		#expect(store.publishDestinations["project"]?.isEmpty == true)
+		#expect(keychain.appItemListCount(.platformConnections) == 0)
+	}
+
+	@Test("the Publish menu reads the platform connections once while they don't change")
+	func menuReadsConnectionsOnce() async throws {
+		let (store, keychain) = makeStore()
+		defer { store.lock() }
+		_ = try await store.platformConnectionStore.save(
+			VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_acme", userID: "u_1")!,
+			account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
+		_ = try await store.publishing.save(vercelDestination(source: "staging", environment: .preview), to: "project").get()
+		await store.loadPublishDestinations(for: "project")
+		let reads = keychain.appItemReadCount(.platformConnections)
+		await store.loadPublishDestinations(for: "project")
+		#expect(keychain.appItemReadCount(.platformConnections) == reads)
+		#expect(store.publishDestinations["project"]?.first?.accountDetail == "acme")
+	}
+
 	@Test("an environment rename saved as the vault locks still moves its destinations")
 	func renameDuringLock() async throws {
 		let (store, keychain) = makeStore()

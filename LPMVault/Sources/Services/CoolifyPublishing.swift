@@ -17,7 +17,7 @@ enum CoolifySnapshotError: Error, Equatable, Sendable {
 	var message: String {
 		switch self {
 		case .duplicateKeys(let keys):
-			"Coolify has more than one variable for \(keys.joined(separator: ", ")) here. Remove the extra one in Coolify, then review again."
+			"Coolify has more than one variable for \(keys.lazy.map(\.escapingDirectionControls).joined(separator: ", ")) here. Remove the extra one in Coolify, then review again."
 		}
 	}
 }
@@ -137,6 +137,10 @@ enum CoolifyPublishing {
 		using client: any CoolifyClientProtocol
 	) async -> PublishReport {
 		var report = PublishReport()
+		guard !Task.isCancelled else {
+			for change in changes { report.outcomes[change.key] = .notSent }
+			return report
+		}
 		let current: CoolifyRemoteSnapshot
 		switch await client.variables(of: target.resource, id: target.resourceID) {
 		case .success(let list):

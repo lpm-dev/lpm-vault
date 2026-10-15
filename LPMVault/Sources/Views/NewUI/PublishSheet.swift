@@ -8,6 +8,9 @@ struct PublishSheet: View {
 	@Environment(\.dismiss) private var dismiss
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var confirmingForget = false
+	/// Why forgetting the destination failed, shown until it's tried again.
+	@State private var forgetFailure: String?
+	@State private var isForgetting = false
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
@@ -94,9 +97,10 @@ struct PublishSheet: View {
 				.foregroundStyle(VaultPalette.textTertiary)
 				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 4) {
-				Text("TO \(platform?.displayName.uppercased() ?? "PLATFORM")\(session.connection.map { " · \($0.name.uppercased())" } ?? "")")
+				Text("TO \(platform?.displayName.uppercased() ?? "PLATFORM")\(session.connection.map { " · \($0.name.uppercased()) (\($0.detail))" } ?? "")")
 					.vaultSectionLabel()
 					.lineLimit(1)
+					.truncationMode(.middle)
 				Text("\(place.name ?? "—") / \(place.part ?? "—")")
 					.font(VaultTypography.mono(12.5, .semibold))
 					.foregroundStyle(place.part == nil ? VaultPalette.textTertiary : VaultPalette.accentForeground)
@@ -208,6 +212,10 @@ struct PublishSheet: View {
 				if let failure = choicesFailure {
 					Text(failure).font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
 				}
+				if let error = session.destinationError {
+					Text(error).font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
+						.fixedSize(horizontal: false, vertical: true)
+				}
 				Text(session.saved == nil
 					? "Saved as a destination after the first publish, so next time this opens on Review."
 					: "Changing where this destination publishes forgets what it published before.")
@@ -253,8 +261,6 @@ struct PublishSheet: View {
 
 	private func reviewContent(_ review: PublishSession.Review) -> some View {
 		let summary = review.summary
-		let presentation = VaultValueCheckPresentation(
-			check: store.valueChecks[session.vaultID], rules: review.rules.overview, project: store.selectedProject)
 		return VStack(alignment: .leading, spacing: 10) {
 			HStack(spacing: 6) {
 				VaultTagBadge(text: "\(summary.adding) add", foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint, size: 11)
@@ -285,7 +291,7 @@ struct PublishSheet: View {
 					}
 					ForEach(review.plan.rows) { row in
 						VaultHairline(color: VaultPalette.rowDivider)
-						reviewRow(row, review: review, presentation: presentation)
+						reviewRow(row, review: review)
 					}
 				}
 			}
@@ -306,7 +312,7 @@ struct PublishSheet: View {
 		}
 	}
 
-	private func reviewRow(_ row: PublishPlan.Row, review: PublishSession.Review, presentation: VaultValueCheckPresentation) -> some View {
+	private func reviewRow(_ row: PublishPlan.Row, review: PublishSession.Review) -> some View {
 		let selected = session.isSelected(row.key)
 		let failsRules = row.holds.contains { if case .failsRules = $0 { true } else { false } }
 		return HStack(alignment: .top, spacing: 12) {
@@ -326,7 +332,7 @@ struct PublishSheet: View {
 						.truncationMode(.middle)
 					if row.kind == .public { VaultPublicBadge() }
 				}
-				Text(detail(row, review: review, presentation: presentation))
+				Text(detail(row, review: review))
 					.font(.system(size: 11.5))
 					.foregroundStyle(noteColor(row))
 					.fixedSize(horizontal: false, vertical: true)
@@ -363,12 +369,12 @@ struct PublishSheet: View {
 		}
 	}
 
-	private func detail(_ row: PublishPlan.Row, review: PublishSession.Review, presentation: VaultValueCheckPresentation) -> String {
+	private func detail(_ row: PublishPlan.Row, review: PublishSession.Review) -> String {
 		let platform = review.platform.displayName
 		var parts = [row.publishesAsSecret ? "Secret" : "Config"]
 		if row.staysSecret { parts.append("stays a Secret on \(platform)") }
 		if let hold = row.holds.first {
-			parts.append(holdNote(hold, row: row, review: review, presentation: presentation))
+			parts.append(Self.holdNote(hold, row: row, review: review))
 		} else if let publishedAt = row.status.publishedAt {
 			parts.append(row.status.valueChanged
 				? "Changed since last publish"
@@ -382,25 +388,27 @@ struct PublishSheet: View {
 		return parts.joined(separator: " · ")
 	}
 
-	private func holdNote(
-		_ hold: PublishPlan.Hold, row: PublishPlan.Row, review: PublishSession.Review, presentation: VaultValueCheckPresentation
-	) -> String {
+	static func holdNote(_ hold: PublishPlan.Hold, row: PublishPlan.Row, review: PublishSession.Review) -> String {
 		let platform = review.platform.displayName
+		let onPlatform = review.platform == .vercel ? "on Vercel" : "in \(platform)"
 		switch hold {
 		case .reserved: return review.platform == .vercel ? "Vercel reserves this name" : "\(platform) sets this name itself"
 		case .nameTooLong(let limit): return "\(platform) accepts names up to \(limit) characters"
 		case .unusableValue: return "No process can receive this value"
 		case .changesValue(let issue): return Self.note(for: issue, on: platform)
+		case .unknownChangeTime:
+			return "\(platform) doesn't say when this variable last changed, so a change made meanwhile can't be caught. Edit it once \(onPlatform), then review again"
 		case .sharedWith(let names):
 			let list = ListFormatter.localizedString(byJoining: names)
 			return "Shared with \(list) on \(platform) — publishing would change \(list) too"
-		case .failsRules(let problems):
-			let source = review.destination.sourceEnvironment
-			return "Fails its rule: \(problems.first.map { presentation.message(for: $0, in: source) } ?? "invalid")"
+		case .failsRules:
+			return "Fails its rule: \(review.ruleNotes[row.key] ?? "invalid")"
 		case .ignoredByLPM: return "The LPM CLI ignores this key"
 		case .excluded: return "Left out last time"
 		case .changedOnPlatform:
-			return row.status.platform == .removed ? "Removed on \(platform) since you published it" : "Changed on \(platform) since you published it"
+			return row.status.platform == .removed ? "Removed \(onPlatform) since you published it" : "Changed \(onPlatform) since you published it"
+		case .unknownSincePublish:
+			return "\(platform) doesn't say whether it changed since you published it"
 		case .upToDate:
 			return "Unchanged since you published \(row.status.publishedAt.map { RelativeTimestampFormatter.string(from: $0) } ?? "it")"
 		}
@@ -426,12 +434,9 @@ struct PublishSheet: View {
 		}
 	}
 
-	/// A Coolify connection names its instance, since teams on two instances can share a name.
+	/// A connection names what tells it apart, since two teams can share a name.
 	static func connectionLabel(_ connection: PlatformConnection) -> String {
-		switch connection.account {
-		case .vercel: "Vercel · \(connection.name)"
-		case .coolify(let account): "Coolify · \(connection.name) · \(account.instance.address)"
-		}
+		"\(connection.platform.displayName) · \(connection.name) · \(connection.detail)"
 	}
 
 	static func notes(for review: PublishSession.Review) -> [String] {
@@ -439,7 +444,8 @@ struct PublishSheet: View {
 		var notes: [String] = []
 		if review.summary.replacing > 0 {
 			switch review.platform {
-			case .vercel: notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare.")
+			case .vercel:
+				notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare, and Vercel replaces a variable without checking it, so a change made on Vercel moments before publishing can still be overwritten.")
 			case .coolify:
 				notes.append("Existing variables will be replaced. LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten.")
 			}
@@ -534,10 +540,19 @@ struct PublishSheet: View {
 			switch session.step {
 			case .destination:
 				if session.saved != nil {
-					Button("Forget destination…") { confirmingForget = true }
-						.buttonStyle(.plain)
-						.font(.system(size: 12))
-						.foregroundStyle(VaultPalette.redText)
+					HStack(spacing: 10) {
+						Button(isForgetting ? "Forgetting…" : "Forget destination…") { confirmingForget = true }
+							.buttonStyle(.plain)
+							.font(.system(size: 12))
+							.foregroundStyle(VaultPalette.redText)
+							.disabled(isForgetting)
+						if let forgetFailure {
+							Text(forgetFailure)
+								.font(.system(size: 11.5))
+								.foregroundStyle(VaultPalette.redText)
+								.lineLimit(2)
+						}
+					}
 				} else if !session.canReview {
 					Text("Choose a destination").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
 				}
@@ -562,6 +577,9 @@ struct PublishSheet: View {
 					height: 28,
 					action: session.publish)
 			case .results:
+				if session.results?.rows.contains(where: { $0.outcome != .published }) == true {
+					VaultBarButton(title: "Review Again", height: 28, action: session.reviewAgain)
+				}
 				VaultBarButton(title: "Done", filled: true, height: 28, action: close)
 			}
 		}
@@ -569,14 +587,22 @@ struct PublishSheet: View {
 
 	private var publishCount: Int { session.review?.selection.keys.count ?? 0 }
 
+	/// Forgets the destination, and closes once it's gone; a failure stays
+	/// shown so forgetting can be tried again.
 	private func forget() {
-		guard let saved = session.saved else { return }
+		guard let saved = session.saved, !isForgetting else { return }
 		let vaultID = session.vaultID
+		forgetFailure = nil
+		isForgetting = true
 		Task {
-			_ = await store.publishing.remove(saved.id, from: vaultID)
+			let result = await store.publishing.remove(saved.id, from: vaultID)
 			await store.loadPublishDestinations(for: vaultID)
+			isForgetting = false
+			switch result {
+			case .success: close()
+			case .failure(let error): forgetFailure = "This destination couldn't be forgotten. \(error)"
+			}
 		}
-		close()
 	}
 
 	private func close() {

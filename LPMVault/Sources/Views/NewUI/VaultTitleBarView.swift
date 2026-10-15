@@ -241,7 +241,7 @@ struct VaultTitleBarView: View {
 	static func subtitle(of summary: PublishDestinationSummary) -> String {
 		let source = "from \(VaultProject.displayName(for: summary.destination.sourceEnvironment))"
 		let when = summary.lastPublishedAt.map { RelativeTimestampFormatter.string(from: $0) } ?? "not published yet"
-		let parts = [summary.destination.target.placeDetail, source, when]
+		let parts = [summary.destination.target.placeDetail ?? summary.accountDetail, source, when]
 		return parts.compactMap { $0 }.joined(separator: " · ")
 	}
 
