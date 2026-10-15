@@ -196,8 +196,9 @@ final class NetlifyDestinationForm {
 		Dictionary(sites.map { ($0.id, "\($0.name) — \($0.teamName)") }, uniquingKeysWith: { first, _ in first })
 	}
 
-	/// Sites sorted the way Netlify's dashboard groups them: by team, then name.
-	static func sorted(_ sites: [NetlifySite]) -> [NetlifySite] {
+	/// Sites sorted the way Netlify's dashboard groups them: by team, then
+	/// name. Nonisolated, so a long list is sorted off the main actor.
+	nonisolated static func sorted(_ sites: [NetlifySite]) -> [NetlifySite] {
 		sites.sorted { lhs, rhs in
 			for (left, right) in [(lhs.teamName, rhs.teamName), (lhs.name, rhs.name)] {
 				switch left.localizedStandardCompare(right) {

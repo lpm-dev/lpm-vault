@@ -42,6 +42,23 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 	var storesReadable: Set<String> = []
 	/// Gives every value of a variable a new ID whenever one of them is written.
 	var renewsValueIDs = false
+	/// Refuses every request whose count is a multiple of this with a rate limit lifting at once, applying nothing.
+	var rateLimitEvery: Int? {
+		get { lock.withLock { limitEvery } }
+		set { lock.withLock { limitEvery = newValue } }
+	}
+	private var limitEvery: Int?
+	private var requestCount = 0
+	private var limited = 0
+	var rateLimitedCount: Int { lock.withLock { limited } }
+
+	/// Whether this request is refused with a rate limit; counts it either way.
+	private func rateLimited() -> NetlifyAPIError? {
+		requestCount += 1
+		guard let limitEvery, requestCount.isMultiple(of: limitEvery) else { return nil }
+		limited += 1
+		return .rateLimited(until: Date().addingTimeInterval(0.01))
+	}
 	/// Runs before each listing after the first, as someone changing Netlify meanwhile would.
 	var beforeLaterListing: (@Sendable (FakeNetlifyAPI) -> Void)?
 	/// Runs once, right after the next listing is answered, as someone changing Netlify just then would.
@@ -119,6 +136,7 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 		}
 		if count > 1 { beforeLaterListing?(self) }
 		if let listFailure { return .failure(listFailure) }
+		if let limit = lock.withLock({ rateLimited() }) { return .failure(limit) }
 		let (listed, hook) = lock.withLock {
 			defer { nextListingHook = nil }
 			return (order.compactMap { variable($0) }, nextListingHook)
@@ -129,6 +147,7 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 
 	func variable(_ key: String, siteID: String, teamID: String) async -> Result<NetlifyVariable?, NetlifyAPIError> {
 		lock.withLock {
+			if let limit = rateLimited() { return .failure(limit) }
 			reads.append(key)
 			return .success(variable(key))
 		}
@@ -136,6 +155,7 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 
 	func create(_ write: NetlifyVariableWrite, siteID: String, teamID: String) async -> Result<NetlifyVariable, NetlifyAPIError> {
 		lock.withLock {
+			if let limit = rateLimited() { return .failure(limit) }
 			sent.append(Write(method: "POST", key: write.key, value: write.value, context: write.context.identifier, isSecret: write.isSecret))
 			if let refusal = refusals[write.key] { return .failure(refusal) }
 			guard stored[write.key] == nil else { return .failure(.rejected(status: 422)) }
@@ -149,6 +169,7 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 
 	func setValue(_ write: NetlifyVariableWrite, siteID: String, teamID: String) async -> Result<NetlifyVariable, NetlifyAPIError> {
 		lock.withLock {
+			if let limit = rateLimited() { return .failure(limit) }
 			sent.append(Write(method: "PATCH", key: write.key, value: write.value, context: write.context.identifier, isSecret: write.isSecret))
 			if let refusal = refusals[write.key] { return .failure(refusal) }
 			guard var variable = stored[write.key] else { return .failure(.notFound) }
@@ -452,6 +473,19 @@ struct NetlifyPublishingTests {
 		}
 	}
 
+	@Test("a rate limit mid-publish is waited out, since Netlify applies nothing it refuses that way, so every key is still sent")
+	func waitsOutRateLimits() async throws {
+		let api = FakeNetlifyAPI()
+		for index in 0..<10 { api.seed("SHARED_\(index)", [.deployPreview: "p"], secret: true) }
+		let values = Dictionary(uniqueKeysWithValues: (0..<10).map { ("SHARED_\($0)", "v") } + (0..<20).map { ("NEW_\($0)", "v") })
+		let reviewed = try await snapshot(api)
+		api.rateLimitEvery = 6
+		let report = await NetlifyPublishing.publish(try changes(plan(values, snapshot: reviewed), values), to: netlifyTarget(), reviewed: reviewed, using: api)
+		#expect(api.rateLimitedCount > 0)
+		#expect(report.outcomes.count == values.count && report.outcomes.values.allSatisfy { $0 == .published }, "\(report.outcomes)")
+		#expect(api.writes.count == values.count && !report.needsReconnect)
+	}
+
 	@Test("a value Netlify stored readable, though sent as a secret, says so and is recorded as Netlify has it")
 	func storedOtherwise() async throws {
 		let api = FakeNetlifyAPI()
@@ -487,6 +521,18 @@ struct NetlifyPublishingTests {
 		let decoded = try PublishingRecords.decodeDestinations(data, vaultID: publishTestVault).get()
 		let branches = decoded.compactMap { if case .netlify(let target) = $0.target { target.context.branch } else { nil } }
 		#expect(Set(branches.map { Array($0.utf8) }) == Set([Array(composed.utf8), Array(decomposed.utf8)]))
+	}
+
+	@Test("sites sort by team, then name, off the main actor: the sort is nonisolated, so a detached task calls it directly")
+	func sortsSitesOffMain() async {
+		let sites = [
+			NetlifySite(id: "s3", name: "web", teamID: "t2", teamName: "Northwind"),
+			NetlifySite(id: "s1", name: "docs", teamID: "t1", teamName: "Acme"),
+			NetlifySite(id: "s2", name: "app10", teamID: "t2", teamName: "Northwind"),
+			NetlifySite(id: "s4", name: "app9", teamID: "t2", teamName: "Northwind"),
+		]
+		let sorted = await Task.detached { NetlifyDestinationForm.sorted(sites) }.value
+		#expect(sorted.map(\.id) == ["s1", "s4", "s2", "s3"])
 	}
 
 	@Test("a write to a variable never prints its value")

@@ -94,12 +94,20 @@ enum PublishTarget: Hashable, Sendable {
 		/// same records, as a Netlify variable keeps its value for every deploy
 		/// context of a site with one change time. A publish here moves those
 		/// records forward for the others too; nil when no other place shares them.
-		var sharedRecords: String? {
+		var sharedRecords: SharedRecords? {
 			switch self {
 			case .vercel, .coolify: nil
-			case .netlify(let siteID, _): "netlify.site.\(siteID)"
+			case .netlify(let siteID, _): SharedRecords(platform: .netlify, ownerID: siteID)
 			}
 		}
+	}
+
+	/// The records places on one platform share, by the ID of what holds them.
+	struct SharedRecords: Hashable, Sendable {
+		let platform: PublishPlatform
+		/// The platform's ID for what holds the records, such as a Netlify
+		/// site, which every stored destination writing there contains.
+		let ownerID: String
 	}
 
 	var platform: PublishPlatform {

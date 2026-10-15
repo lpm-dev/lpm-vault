@@ -219,7 +219,7 @@ struct PublishDestinationTests {
 		#expect(Set(try PublishingRecords.decodeDestinations(data, vaultID: publishTestVault).get()) == Set(destinations))
 		#expect(Set(destinations.map(\.target.location)).count == 4)
 		#expect(destinations[3].target.location == .netlify(siteID: "site-storefront", context: "branch:release/*"))
-		#expect(destinations.allSatisfy { $0.target.location.sharedRecords == "netlify.site.site-storefront" })
+		#expect(destinations.allSatisfy { $0.target.location.sharedRecords == .init(platform: .netlify, ownerID: "site-storefront") })
 		#expect(vercelDestination().target.location.sharedRecords == nil && coolifyDestination().target.location.sharedRecords == nil)
 		#expect(destinations[0].target.connectionID == "netlify.5f1a2b3c4d5e6f7a8b9c0d1e" && destinations[0].target.connectionName == "Tolga")
 		#expect(destinations[3].target.placeName == "storefront / Branch release/*" && destinations[0].target.accountName == "Northwind")

@@ -161,27 +161,39 @@ actor PublishingStore {
 	}
 
 	/// Moves forward the histories of every destination on this Mac whose
-	/// place shares `shared` records, but `destination`. It's best effort: a
-	/// history left behind reads as changed on the platform, which only costs
-	/// a review.
+	/// place shares `shared` records, but `destination`. Another vault's
+	/// destinations are decoded only when their record mentions what holds the
+	/// records, one vault at a time. It's best effort: a history left behind
+	/// reads as changed on the platform, which only costs a review.
 	private func advanceHistories(
-		sharing shared: String,
+		sharing shared: PublishTarget.SharedRecords,
 		except destination: UUID,
 		in vaultID: String,
 		destinations: [PublishDestination],
 		by advances: [PublishHistory.Advance]
 	) {
-		var vaults = [(vaultID, destinations)]
+		advance(destinations, of: vaultID, sharing: shared, except: destination, by: advances)
+		let mention = Data("\"\(shared.ownerID)\"".utf8)
 		for account in (try? service.appItemAccounts(.publishing).get()) ?? [] where account.hasPrefix(Self.destinationsPrefix) {
-			guard let other = Self.vault(ofAccount: account), other != vaultID, let stored = try? readDestinations(of: other) else { continue }
-			vaults.append((other, stored))
+			guard let other = Self.vault(ofAccount: account), other != vaultID,
+				let data = try? service.readAppItem(.publishing, account: account).get(), data.range(of: mention) != nil,
+				case .success(let stored) = PublishingRecords.decodeDestinations(data, vaultID: other)
+			else { continue }
+			advance(stored, of: other, sharing: shared, except: destination, by: advances)
 		}
-		for (vault, stored) in vaults {
-			for other in stored where other.id != destination && other.target.location.sharedRecords == shared {
-				guard let earlier = try? readHistory(of: other.id, in: vault) else { continue }
-				let advanced = earlier.advancing(advances)
-				if advanced != earlier { try? writeHistory(advanced, of: other.id, in: vault) }
-			}
+	}
+
+	private func advance(
+		_ destinations: [PublishDestination],
+		of vaultID: String,
+		sharing shared: PublishTarget.SharedRecords,
+		except destination: UUID,
+		by advances: [PublishHistory.Advance]
+	) {
+		for other in destinations where other.id != destination && other.target.location.sharedRecords == shared {
+			guard let earlier = try? readHistory(of: other.id, in: vaultID) else { continue }
+			let advanced = earlier.advancing(advances)
+			if advanced != earlier { try? writeHistory(advanced, of: other.id, in: vaultID) }
 		}
 	}
 

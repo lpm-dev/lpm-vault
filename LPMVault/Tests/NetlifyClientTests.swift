@@ -90,7 +90,22 @@ struct NetlifyClientTests {
 			limits: .init(siteBytes: 64 * 1024 * 1024, siteDeadline: .zero))
 		let before = endless.requests.count
 		#expect(await late.sites() == .failure(.invalidResponse))
-		#expect(endless.requests.count - before == 1)
+		#expect(endless.requests.count - before <= 1, "Nothing loads past the deadline")
+	}
+
+	@Test("a page that arrives after the listing's deadline fails the listing, though it's the last")
+	func lateLastPage() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			if request.query["page"] == "2" {
+				Thread.sleep(forTimeInterval: 0.3)
+				return .json(200, [self.site("late")])
+			}
+			return .json(200, (0..<NetlifyClient.sitePageSize).map { self.site("s\($0)") })
+		}
+		let client = NetlifyClient(token: "nfo_secret", baseURL: route.baseURL, session: route.session,
+			limits: .init(siteBytes: 64 * 1024 * 1024, siteDeadline: .milliseconds(100)))
+		#expect(await client.sites() == .failure(.invalidResponse))
+		#expect(route.requests.count == 2)
 	}
 
 	@Test("a site's variables are read under its team, with the site in the query, and without their values")

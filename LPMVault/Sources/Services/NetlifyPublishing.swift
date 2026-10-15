@@ -37,6 +37,10 @@ enum NetlifyPublishing {
 	static let maximumValueCharacters = 5_000
 	/// How many variables are written at once.
 	static let writeConcurrency = 4
+	/// How many times a request Netlify refused with a rate limit is sent again.
+	static let rateLimitRetries = 3
+	/// The longest wait for a rate limit to lift; Netlify's window is a minute.
+	static let maximumRateLimitWait: Duration = .seconds(65)
 
 	/// What Netlify accepts. It decides whether a whole variable is a secret,
 	/// so every value of it is stored that way.
@@ -112,7 +116,7 @@ enum NetlifyPublishing {
 		}
 		let current: NetlifyRemoteSnapshot
 		let listed: [String: NetlifyVariable]
-		switch await client.variables(siteID: target.siteID, teamID: target.teamID) {
+		switch await afterRateLimits({ await client.variables(siteID: target.siteID, teamID: target.teamID) }) {
 		case .success(let list):
 			switch snapshot(list, for: target.context) {
 			case .success(let value):
@@ -200,7 +204,7 @@ enum NetlifyPublishing {
 		var write = write
 		if write.sharesVariable(with: target.context) {
 			let fresh: NetlifyVariable?
-			switch await client.variable(write.change.key, siteID: target.siteID, teamID: target.teamID) {
+			switch await afterRateLimits({ await client.variable(write.change.key, siteID: target.siteID, teamID: target.teamID) }) {
 			case .success(let value): fresh = value
 			case .failure(let error): return .failed(error)
 			}
@@ -216,9 +220,11 @@ enum NetlifyPublishing {
 		}
 		let request = NetlifyVariableWrite(
 			key: write.change.key, value: write.change.value, context: target.context, isSecret: write.change.publishesAsSecret)
-		let answer = write.createsVariable
-			? await client.create(request, siteID: target.siteID, teamID: target.teamID)
-			: await client.setValue(request, siteID: target.siteID, teamID: target.teamID)
+		let answer = await afterRateLimits {
+			write.createsVariable
+				? await client.create(request, siteID: target.siteID, teamID: target.teamID)
+				: await client.setValue(request, siteID: target.siteID, teamID: target.teamID)
+		}
 		switch answer {
 		case .success(let variable): return .written(variable, write)
 		case .failure(let error): return .failed(error)
@@ -308,6 +314,24 @@ enum NetlifyPublishing {
 			report.outcomes[change.key] = .failed("Netlify accepted it, but its answer doesn't show the value for this deploy context. Check it on Netlify.")
 		} else {
 			report.outcomes[change.key] = .published
+		}
+	}
+
+	/// The request's answer, sending it again once a rate limit lifts:
+	/// Netlify applies nothing it refuses that way, so sending again is
+	/// safe. A limit lifting later than the longest wait is the answer.
+	private static func afterRateLimits<Value>(
+		_ request: () async -> Result<Value, NetlifyAPIError>
+	) async -> Result<Value, NetlifyAPIError> {
+		var attempt = 0
+		while true {
+			let answer = await request()
+			guard case .failure(.rateLimited(let until)) = answer, attempt < rateLimitRetries else { return answer }
+			let seconds = until.map { $0.timeIntervalSinceNow } ?? 60
+			let wait: Duration = .milliseconds(Int64(max(0, seconds) * 1_000))
+			guard seconds.isFinite, wait <= maximumRateLimitWait else { return answer }
+			do { try await Task.sleep(for: wait) } catch { return .failure(.cancelled) }
+			attempt += 1
 		}
 	}
 

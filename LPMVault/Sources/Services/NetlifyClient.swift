@@ -204,6 +204,25 @@ enum NetlifyHTTP {
 		}
 	}
 
+	/// The load's answer, or nil once `deadline` passes first, which cancels the load.
+	static func load(
+		_ request: URLRequest,
+		using session: URLSession,
+		limit: Int,
+		until deadline: ContinuousClock.Instant
+	) async -> Result<Data, NetlifyAPIError>? {
+		await withTaskGroup(of: Result<Data, NetlifyAPIError>?.self) { group in
+			group.addTask { await load(request, using: session, limit: limit) }
+			group.addTask {
+				try? await Task.sleep(until: deadline, clock: .continuous)
+				return nil
+			}
+			let first = await group.next() ?? nil
+			group.cancelAll()
+			return first
+		}
+	}
+
 	/// How long to wait for a rate limit Netlify says lifts at `reset`, or a
 	/// minute when it doesn't say; nil when it lifts after the longest wait.
 	static func rateLimitWait(until reset: Date?) -> Duration? {
@@ -285,8 +304,8 @@ struct NetlifyClient: NetlifyClientProtocol, CustomStringConvertible, CustomDebu
 	}
 
 	/// Reads the sites page by page, within the listing's byte budget and
-	/// deadline. A page holding more sites than asked for, or a site listed
-	/// twice, fails the listing.
+	/// deadline, which a page still loading doesn't outlast. A page holding
+	/// more sites than asked for, or a site listed twice, fails the listing.
 	func sites() async -> Result<[NetlifySite], NetlifyAPIError> {
 		var sites: [NetlifySite] = []
 		var seen: Set<String> = []
@@ -300,8 +319,11 @@ struct NetlifyClient: NetlifyClientProtocol, CustomStringConvertible, CustomDebu
 				URLQueryItem(name: "per_page", value: String(Self.sitePageSize)),
 			]
 			guard let url = NetlifyHTTP.url(baseURL, ["sites"], query: query) else { return .failure(.invalidResponse) }
+			let request = NetlifyHTTP.request("GET", url, token: token)
+			guard let loaded = await NetlifyHTTP.load(request, using: session, limit: min(NetlifyHTTP.maximumListBytes, remaining), until: deadline)
+			else { return .failure(Task.isCancelled ? .cancelled : .invalidResponse) }
 			let data: Data
-			switch await NetlifyHTTP.load(NetlifyHTTP.request("GET", url, token: token), using: session, limit: min(NetlifyHTTP.maximumListBytes, remaining)) {
+			switch loaded {
 			case .success(let value): data = value
 			case .failure(let error): return .failure(error)
 			}

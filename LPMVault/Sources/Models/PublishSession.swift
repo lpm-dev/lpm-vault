@@ -485,9 +485,7 @@ final class PublishSession: Identifiable {
 			let result: Result<[NetlifySite], PublishSessionError>
 			switch await self?.token(for: connectionID) {
 			case .success(let token)? where !Task.isCancelled:
-				result = await dependencies.netlify(token).sites()
-					.map(NetlifyDestinationForm.sorted)
-					.mapError { PublishSessionError(NetlifyPublishing.message($0)) }
+				result = await Self.sortedSites(from: dependencies.netlify(token))
 			case .failure(let error)? where !Task.isCancelled:
 				result = .failure(error)
 			case .success?, .failure?, nil:
@@ -499,6 +497,13 @@ final class PublishSession: Identifiable {
 			case .failure(let error): form.sites = .failed(error.message)
 			}
 		}
+	}
+
+	/// The client's sites in the menu's order, listed and sorted off the main actor.
+	private nonisolated static func sortedSites(from client: any NetlifyClientProtocol) async -> Result<[NetlifySite], PublishSessionError> {
+		await client.sites()
+			.map(NetlifyDestinationForm.sorted)
+			.mapError { PublishSessionError(NetlifyPublishing.message($0)) }
 	}
 
 	/// The Vercel team the chosen connection reaches; nil for a personal account.
