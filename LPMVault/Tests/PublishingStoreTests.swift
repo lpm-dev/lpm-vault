@@ -250,6 +250,36 @@ struct PublishingStoreTests {
 		#expect(try await store.history(of: production.id, in: publishTestVault).get().keys["SHARED"]?.remoteUpdatedAt == t1)
 	}
 
+	@Test("a publish moves forward shared records in other vaults' destinations on the same site too, but not one writing the same context")
+	func advancesSharedRecordsAcrossVaults() async throws {
+		let store = store
+		let otherVault = "7d1e3a2b-4c5f-4e6a-8b9c-0d1e2f3a4b5c"
+		let production = netlifyDestination(.production)
+		let previews = netlifyDestination(.deployPreview, source: "preview")
+		let sameContext = netlifyDestination(.production, source: "other")
+		_ = try await store.save(production, to: publishTestVault).get()
+		for destination in [previews, sameContext] { _ = try await store.save(destination, to: otherVault).get() }
+		let t0 = Date(timeIntervalSince1970: 1_760_000_100)
+		let t1 = Date(timeIntervalSince1970: 1_760_000_200)
+		for (destination, id) in [(previews, "value-preview"), (sameContext, "value-production")] {
+			let record = PublishHistory.Published(
+				key: "SHARED", fingerprint: published("SHARED", to: destination).fingerprint, remoteID: id, remoteUpdatedAt: t0, publishedAsSecret: true)
+			_ = try await store.recordPublish(
+				[record], to: destination.id, at: destination.target.location, choices: .init(leftOut: [], chosen: []), of: otherVault, at: t0).get()
+		}
+		let written = PublishHistory.Published(
+			key: "SHARED", fingerprint: published("SHARED", to: production).fingerprint, remoteID: "value-production-2", remoteUpdatedAt: t1,
+			publishedAsSecret: true)
+		_ = try await store.recordPublish(
+			[written], to: production.id, at: production.target.location, choices: .init(leftOut: [], chosen: []),
+			advancing: [PublishHistory.Advance(key: "SHARED", from: t0, to: t1, remoteIDs: ["value-preview": "value-preview-2"])],
+			of: publishTestVault, at: t1).get()
+		let advanced = try await store.history(of: previews.id, in: otherVault).get().keys["SHARED"]
+		#expect(advanced?.remoteUpdatedAt == t1 && advanced?.remoteID == "value-preview-2")
+		let overwritten = try await store.history(of: sameContext.id, in: otherVault).get().keys["SHARED"]
+		#expect(overwritten?.remoteUpdatedAt == t0 && overwritten?.remoteID == "value-production", "This publish changed its value, so it reads as changed")
+	}
+
 	private func published(_ key: String, to destination: PublishDestination) -> PublishHistory.Published {
 		.init(
 			key: key,

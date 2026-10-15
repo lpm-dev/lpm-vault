@@ -126,9 +126,9 @@ actor PublishingStore {
 	/// accepted. Fails, recording nothing, when the destination was removed
 	/// or pointed elsewhere while the publish ran.
 	///
-	/// `advances` move forward the histories of the vault's other
-	/// destinations whose places share the platform's records with this one,
-	/// so this publish doesn't read there as someone else's change.
+	/// `advances` move forward the histories of this Mac's other
+	/// destinations, in any vault, whose places share the platform's records
+	/// with this one, so this publish doesn't read there as someone else's change.
 	func recordPublish(
 		_ published: [PublishHistory.Published],
 		to destination: UUID,
@@ -154,15 +154,35 @@ actor PublishingStore {
 			let recorded = history.recording(published, forgetting: choices.forgottenRecords(in: history), at: date)
 			try writeHistory(recorded, of: destination, in: vaultID)
 			if !advances.isEmpty, let shared = location.sharedRecords {
-				for other in destinations where other.id != destination && other.target.location.sharedRecords == shared {
-					// Best effort: a history left behind reads as changed on the platform, which only costs a review.
-					guard let earlier = try? readHistory(of: other.id, in: vaultID) else { continue }
-					let advanced = earlier.advancing(advances)
-					if advanced != earlier { try? writeHistory(advanced, of: other.id, in: vaultID) }
-				}
+				advanceHistories(sharing: shared, except: destination, in: vaultID, destinations: destinations, by: advances)
 			}
 			return updated
 		}.mapError(Self.storeError)
+	}
+
+	/// Moves forward the histories of every destination on this Mac whose
+	/// place shares `shared` records, but `destination`. It's best effort: a
+	/// history left behind reads as changed on the platform, which only costs
+	/// a review.
+	private func advanceHistories(
+		sharing shared: String,
+		except destination: UUID,
+		in vaultID: String,
+		destinations: [PublishDestination],
+		by advances: [PublishHistory.Advance]
+	) {
+		var vaults = [(vaultID, destinations)]
+		for account in (try? service.appItemAccounts(.publishing).get()) ?? [] where account.hasPrefix(Self.destinationsPrefix) {
+			guard let other = Self.vault(ofAccount: account), other != vaultID, let stored = try? readDestinations(of: other) else { continue }
+			vaults.append((other, stored))
+		}
+		for (vault, stored) in vaults {
+			for other in stored where other.id != destination && other.target.location.sharedRecords == shared {
+				guard let earlier = try? readHistory(of: other.id, in: vault) else { continue }
+				let advanced = earlier.advancing(advances)
+				if advanced != earlier { try? writeHistory(advanced, of: other.id, in: vault) }
+			}
+		}
 	}
 
 	/// The key fingerprints are made with, created the first time it's needed.
