@@ -33,6 +33,26 @@ struct PublishHistory: Equatable, Sendable {
 		let publishedAsSecret: Bool
 	}
 
+	/// A platform record a publish moved forward by writing another part of
+	/// it, such as a Netlify variable's value for another deploy context.
+	/// A destination whose history last saw the record at `from` sees it at
+	/// `to` now, with nothing of its own changed.
+	struct Advance: Equatable, Sendable {
+		let key: String
+		let from: Date
+		let to: Date
+		/// The platform's IDs for the record's parts before the write, each
+		/// with its ID after, which may be new even for a part left as it was.
+		let remoteIDs: [String: String]
+
+		init(key: String, from: Date, to: Date, remoteIDs: [String: String]) {
+			self.key = key
+			self.from = PublishTimestamp.normalized(from)
+			self.to = PublishTimestamp.normalized(to)
+			self.remoteIDs = remoteIDs
+		}
+	}
+
 	/// When this Mac last published to the destination; nil before its first publish.
 	var publishedAt: Date?
 	/// The last publish of each key, by name.
@@ -72,6 +92,23 @@ struct PublishHistory: Equatable, Sendable {
 			)
 		}
 		return PublishHistory(publishedAt: date, keys: keys)
+	}
+
+	/// The history with each record that last saw its platform record at an
+	/// advance's `from`, through a part the write kept, moved to its `to` and
+	/// that part's ID now. A record that saw another time, or a part the
+	/// write didn't keep, stays as it was, so a change someone else made still shows.
+	func advancing(_ advances: [Advance]) -> PublishHistory {
+		var history = self
+		for advance in advances {
+			guard let record = keys[advance.key], record.remoteUpdatedAt == advance.from,
+				let seen = record.remoteID, let now = advance.remoteIDs[seen]
+			else { continue }
+			history.keys[advance.key] = Key(
+				fingerprint: record.fingerprint, publishedAt: record.publishedAt, remoteID: now,
+				remoteUpdatedAt: advance.to, publishedAsSecret: record.publishedAsSecret)
+		}
+		return history
 	}
 
 	/// The history without its `count` oldest records, for fitting a byte budget.

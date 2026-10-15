@@ -39,6 +39,7 @@ final class PublishSession: Identifiable {
 		var connections: PlatformConnectionStore
 		var vercel: @Sendable (_ token: String) -> any VercelClientProtocol
 		var coolify: CoolifyConnector.ClientFactory = { CoolifyClient(instance: $0, token: $1) }
+		var netlify: NetlifyConnector.ClientFactory = { NetlifyClient(token: $0) }
 		var now: @Sendable () -> Date = { Date() }
 		/// Called after destinations or history change.
 		var didChange: @MainActor () -> Void = {}
@@ -94,6 +95,8 @@ final class PublishSession: Identifiable {
 		let ruleNotes: [String: String]
 		/// The platform's variables the plan was made from, by key.
 		let remote: [String: PublishPlan.RemoteVariable]
+		/// The platform's variables without a value of the destination's own the plan was made from, by key.
+		let remoteKeys: [String: PublishPlan.RemoteKey]
 
 		var summary: PublishPlan.Summary { plan.summary(of: selection) }
 		var platform: PublishPlatform { destination.target.platform }
@@ -157,7 +160,7 @@ final class PublishSession: Identifiable {
 	private(set) var isCancelled = false
 	private var startTask: Task<Void, Never>?
 	private var reviewTask: Task<Void, Never>?
-	/// Loads the form's choices: a Vercel project list or Coolify's resources.
+	/// Loads the form's choices: a Vercel project list, Coolify's resources or Netlify's sites.
 	private var choicesTask: Task<Void, Never>?
 	private var environmentsTask: Task<Void, Never>?
 	private var publishTask: Task<Void, Never>?
@@ -222,6 +225,7 @@ final class PublishSession: Identifiable {
 		switch form {
 		case .vercel?: .vercel
 		case .coolify?: .coolify
+		case .netlify?: .netlify
 		case nil: nil
 		}
 	}
@@ -236,10 +240,16 @@ final class PublishSession: Identifiable {
 		return nil
 	}
 
+	var netlify: NetlifyDestinationForm? {
+		if case .netlify(let form)? = form { return form }
+		return nil
+	}
+
 	var canReview: Bool {
 		let isComplete = switch form {
 		case .vercel(let form)?: form.isComplete
 		case .coolify(let form)?: form.isComplete
+		case .netlify(let form)?: form.isComplete
 		case nil: false
 		}
 		return environments.contains(sourceEnvironment) && connection != nil && isComplete && !isLoadingReview && !isPublishing
@@ -258,6 +268,7 @@ final class PublishSession: Identifiable {
 		switch form {
 		case .vercel(let form)?: form.projects == .idle
 		case .coolify(let form)?: form.resources == .idle
+		case .netlify(let form)?: form.sites == .idle
 		case nil: false
 		}
 	}
@@ -288,9 +299,7 @@ final class PublishSession: Identifiable {
 		let result = await dependencies.connections.connections()
 		guard !Task.isCancelled else { return }
 		switch result {
-		case .success(let all):
-			// This version connects Netlify but doesn't publish to it yet.
-			let list = all.filter { $0.platform != .netlify }
+		case .success(let list):
 			connections = .loaded(list)
 			if connectionID == nil, list.count == 1 { connectionID = list[0].id }
 		case .failure(let error):
@@ -306,7 +315,7 @@ final class PublishSession: Identifiable {
 		switch connection.platform {
 		case .vercel: form = .vercel(VercelDestinationForm())
 		case .coolify: form = .coolify(CoolifyDestinationForm())
-		case .netlify: return nil
+		case .netlify: form = .netlify(NetlifyDestinationForm())
 		}
 		observe(form)
 		return form
@@ -351,6 +360,7 @@ final class PublishSession: Identifiable {
 		switch target {
 		case .vercel(let target): .vercel(VercelDestinationForm(projectID: target.projectID, environment: target.environment))
 		case .coolify(let target): .coolify(CoolifyDestinationForm(resourceID: target.resourceID, deployments: target.deployments))
+		case .netlify(let target): .netlify(NetlifyDestinationForm(siteID: target.siteID, context: target.context))
 		}
 	}
 
@@ -363,6 +373,8 @@ final class PublishSession: Identifiable {
 				if field == .project { self.loadCustomEnvironments(form) }
 			}
 		case .coolify(let form)?:
+			form.didChange = { [weak self] in self?.invalidateReview() }
+		case .netlify(let form)?:
 			form.didChange = { [weak self] in self?.invalidateReview() }
 		case nil:
 			break
@@ -379,6 +391,8 @@ final class PublishSession: Identifiable {
 			loadCustomEnvironments(form)
 		case .coolify(let form)?:
 			loadResources(form)
+		case .netlify(let form)?:
+			loadSites(form)
 		case nil:
 			break
 		}
@@ -464,6 +478,29 @@ final class PublishSession: Identifiable {
 		}
 	}
 
+	private func loadSites(_ form: NetlifyDestinationForm) {
+		guard let connectionID else { return }
+		form.sites = .loading
+		choicesTask = Task { [weak self, weak form, dependencies] in
+			let result: Result<[NetlifySite], PublishSessionError>
+			switch await self?.token(for: connectionID) {
+			case .success(let token)? where !Task.isCancelled:
+				result = await dependencies.netlify(token).sites()
+					.map(NetlifyDestinationForm.sorted)
+					.mapError { PublishSessionError(NetlifyPublishing.message($0)) }
+			case .failure(let error)? where !Task.isCancelled:
+				result = .failure(error)
+			case .success?, .failure?, nil:
+				return
+			}
+			guard let self, let form, !Task.isCancelled, self.netlify === form else { return }
+			switch result {
+			case .success(let list): form.sites = .loaded(list)
+			case .failure(let error): form.sites = .failed(error.message)
+			}
+		}
+	}
+
 	/// The Vercel team the chosen connection reaches; nil for a personal account.
 	private func vercelTeamID() -> String? {
 		if case .vercel(let account)? = connection?.account { return account.teamID }
@@ -481,7 +518,7 @@ final class PublishSession: Identifiable {
 	/// Where the fields say to publish, from the chosen connection.
 	private func target() -> Result<PublishTarget, PublishSessionError> {
 		if connection == nil, let saved, connectionID == saved.target.connectionID, connections.value != nil {
-			return .failure("This destination publishes through \(saved.target.accountName) on \(saved.target.platform.displayName), which isn't connected on this Mac. Connect it on the Platforms page.")
+			return .failure("This destination publishes through \(saved.target.connectionName) on \(saved.target.platform.displayName), which isn't connected on this Mac. Connect it on the Platforms page.")
 		}
 		switch (connection?.account, form) {
 		case (.vercel(let account)?, .vercel(let form)?):
@@ -508,6 +545,20 @@ final class PublishSession: Identifiable {
 				projectName: resource == nil ? savedTarget?.projectName : resource?.projectName,
 				environmentName: resource == nil ? savedTarget?.environmentName : resource?.environmentName,
 				deployments: deployments)))
+		case (.netlify(let account)?, .netlify(let form)?):
+			var savedTarget: NetlifyPublishTarget?
+			if case .netlify(let target)? = saved?.target, target.siteID == form.siteID, target.userID == account.userID {
+				savedTarget = target
+			}
+			let site = form.site
+			guard let siteID = form.siteID, let context = form.context, let teamID = site?.teamID ?? savedTarget?.teamID else {
+				return .failure("Choose a destination first.")
+			}
+			return .success(.netlify(NetlifyPublishTarget(
+				userID: account.userID, userName: account.name,
+				teamID: teamID, teamName: site?.teamName ?? savedTarget?.teamName ?? teamID,
+				siteID: siteID, siteName: site?.name ?? savedTarget?.siteName ?? siteID,
+				context: context)))
 		default:
 			return .failure("Choose a destination first.")
 		}
@@ -541,6 +592,7 @@ final class PublishSession: Identifiable {
 	/// The platform's variables for the destination, and what the platform accepts.
 	private struct Remote {
 		let variables: [String: PublishPlan.RemoteVariable]
+		var keys: [String: PublishPlan.RemoteKey] = [:]
 		let platform: PublishPlan.Platform
 	}
 
@@ -577,6 +629,15 @@ final class PublishSession: Identifiable {
 					.mapError { PublishSessionError($0.message) }
 			case .failure(let error):
 				return .failure(PublishSessionError(CoolifyPublishing.message(error)))
+			}
+		case .netlify(let target):
+			switch await dependencies.netlify(token).variables(siteID: target.siteID, teamID: target.teamID) {
+			case .success(let list):
+				return NetlifyPublishing.snapshot(list, for: target.context)
+					.map { Remote(variables: $0.variables, keys: $0.keys, platform: NetlifyPublishing.platform) }
+					.mapError { PublishSessionError($0.message) }
+			case .failure(let error):
+				return .failure(PublishSessionError(NetlifyPublishing.message(error)))
 			}
 		}
 	}
@@ -645,6 +706,7 @@ final class PublishSession: Identifiable {
 			rules: rules.overview,
 			check: check,
 			remote: remote.variables,
+			remoteKeys: remote.keys,
 			platform: remote.platform,
 			history: history,
 			fingerprintKey: fingerprintKey)
@@ -660,7 +722,8 @@ final class PublishSession: Identifiable {
 			rules: rules,
 			hasValueCheck: check != nil,
 			ruleNotes: Self.ruleNotes(for: plan, values: values, rules: rules, check: check, in: source),
-			remote: remote.variables))
+			remote: remote.variables,
+			remoteKeys: remote.keys))
 	}
 
 	/// Why each key failing the project's rules fails, from the values and check `plan` was made from.
@@ -706,8 +769,8 @@ final class PublishSession: Identifiable {
 		review?.selection.keys.contains(key) ?? false
 	}
 
-	/// Reviews the destination again after a publish, as when Vercel or
-	/// Coolify changed some of its variables meanwhile.
+	/// Reviews the destination again after a publish, as when the platform
+	/// changed some of its variables meanwhile.
 	func reviewAgain() {
 		guard step == .results, !isPublishing, !isCancelled else { return }
 		results = nil
@@ -775,10 +838,14 @@ final class PublishSession: Identifiable {
 		case .coolify(let target):
 			report = await CoolifyPublishing.publish(
 				changes, to: target, reviewed: review.remote, using: dependencies.coolify(target.instance, token))
+		case .netlify(let target):
+			report = await NetlifyPublishing.publish(
+				changes, to: target, reviewed: NetlifyRemoteSnapshot(variables: review.remote, keys: review.remoteKeys),
+				using: dependencies.netlify(token))
 		}
 		var recordFailure: String?
 		if !report.published.isEmpty {
-			recordFailure = await record(report.published, of: review)
+			recordFailure = await record(report.published, advancing: report.advances, of: review)
 		}
 		dependencies.didChange()
 		results = Results(
@@ -794,7 +861,11 @@ final class PublishSession: Identifiable {
 	/// is recorded even when the vault locked meanwhile: the platform holds
 	/// those values, so the next review has to know them. Only the
 	/// destination and fingerprints are written, never a value or token.
-	private func record(_ published: [PublishHistory.Published], of review: Review) async -> String? {
+	private func record(
+		_ published: [PublishHistory.Published],
+		advancing advances: [PublishHistory.Advance],
+		of review: Review
+	) async -> String? {
 		let publishing = dependencies.publishing
 		var destination = review.destination
 		var choices = review.plan.choices(for: review.selection)
@@ -813,7 +884,7 @@ final class PublishSession: Identifiable {
 		}
 		switch await publishing.recordPublish(
 			published, to: destination.id, at: destination.target.location,
-			choices: choices, of: vaultID, at: dependencies.now())
+			choices: choices, advancing: advances, of: vaultID, at: dependencies.now())
 		{
 		case .success(let recorded):
 			saved = recorded

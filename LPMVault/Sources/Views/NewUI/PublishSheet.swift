@@ -132,6 +132,12 @@ struct PublishSheet: View {
 				return nil
 			}()
 			return (resource, form.deployments?.displayName)
+		case .netlify(let form)?:
+			let site = form.site?.name ?? {
+				if case .netlify(let target)? = session.saved?.target, target.siteID == form.siteID { return target.siteName }
+				return nil
+			}()
+			return (site, form.context?.displayName)
 		case nil:
 			return (nil, nil)
 		}
@@ -161,7 +167,7 @@ struct PublishSheet: View {
 				Text("No platform account is connected on this Mac.")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("Connect Vercel or Coolify on the Platforms page, then publish from here.")
+				Text("Connect Vercel, Netlify or Coolify on the Platforms page, then publish from here.")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.textTertiary)
 				VaultBarButton(systemImage: "square.stack.3d.up", title: "Open Platforms") {
@@ -198,6 +204,8 @@ struct PublishSheet: View {
 						VercelDestinationFields(form: form)
 					case .coolify(let form)?:
 						CoolifyDestinationFields(form: form)
+					case .netlify(let form)?:
+						NetlifyDestinationFields(form: form)
 					case nil:
 						GridRow {
 							PublishDestinationField("Destination") {
@@ -231,6 +239,7 @@ struct PublishSheet: View {
 		switch session.form {
 		case .vercel(let form)?: if case .failed(let message) = form.projects { return message }
 		case .coolify(let form)?: if case .failed(let message) = form.resources { return message }
+		case .netlify(let form)?: if case .failed(let message) = form.sites { return message }
 		case nil: break
 		}
 		return nil
@@ -390,12 +399,18 @@ struct PublishSheet: View {
 
 	static func holdNote(_ hold: PublishPlan.Hold, row: PublishPlan.Row, review: PublishSession.Review) -> String {
 		let platform = review.platform.displayName
-		let onPlatform = review.platform == .vercel ? "on Vercel" : "in \(platform)"
+		let onPlatform = review.platform == .coolify ? "in \(platform)" : "on \(platform)"
 		switch hold {
 		case .reserved: return review.platform == .vercel ? "Vercel reserves this name" : "\(platform) sets this name itself"
 		case .nameTooLong(let limit): return "\(platform) accepts names up to \(limit) characters"
+		case .nameNotAccepted: return "\(platform) accepts only names that start with a letter and use letters, digits and underscores"
 		case .unusableValue: return "No process can receive this value"
 		case .changesValue(let issue): return Self.note(for: issue, on: platform)
+		case .valueTooLong(let limit): return "\(platform) accepts values up to \(limit.formatted()) characters"
+		case .sameValueEverywhere:
+			return "\(platform) uses one value for all deploy contexts here. Give it a value per deploy context \(onPlatform), then review again"
+		case .staysReadable:
+			return "\(platform) keeps this variable readable, so the value would be too. Mark it as containing secret values \(onPlatform) to keep it write-only"
 		case .unknownChangeTime:
 			return "\(platform) doesn't say when this variable last changed, so a change made meanwhile can't be caught. Edit it once \(onPlatform), then review again"
 		case .sharedWith(let names):
@@ -429,7 +444,7 @@ struct PublishSheet: View {
 		if hold.blocksPublishing, hold != .reserved { return VaultPalette.redText }
 		switch hold {
 		case .failsRules: return VaultPalette.redText
-		case .sharedWith, .changedOnPlatform, .changesValue: return VaultPalette.orangeTintText
+		case .sharedWith, .staysReadable, .changedOnPlatform, .changesValue: return VaultPalette.orangeTintText
 		default: return VaultPalette.textTertiary
 		}
 	}
@@ -456,6 +471,9 @@ struct PublishSheet: View {
 			review.summary.adding > 0
 		{
 			notes.append("Coolify also copies new variables to the application's preview deployments. LPM Vault locks the copies of Secrets.")
+		}
+		if review.platform == .netlify {
+			notes.append("Values set in the site's netlify.toml override published ones. A site's variables also override the team's shared variables with the same name.")
 		}
 		let remoteOnly = review.plan.remoteOnlyCount
 		if remoteOnly > 0 {
@@ -684,6 +702,65 @@ private struct CoolifyDestinationFields: View {
 		case .loading: "Loading applications…"
 		case .loaded(let resources) where resources.isEmpty: "No applications or services in this team"
 		default: "Choose application or service…"
+		}
+	}
+}
+
+/// A Netlify destination's site and deploy context, and a branch's name when it's one branch's deploys.
+private struct NetlifyDestinationFields: View {
+	@Bindable var form: NetlifyDestinationForm
+	@FocusState private var editingBranch: Bool
+
+	var body: some View {
+		let sites = form.sites.value ?? []
+		let labels = NetlifyDestinationForm.labels(for: sites)
+		GridRow {
+			PublishDestinationField("Site") {
+				VaultMenuField(
+					title: "Site",
+					options: sites.map { VaultMenuOption(value: $0.id, label: labels[$0.id] ?? $0.name) },
+					selection: $form.siteID,
+					placeholder: placeholder,
+					disabled: form.sites.value?.isEmpty ?? true)
+			}
+			PublishDestinationField("Deploy context") {
+				VaultMenuField(
+					title: "Deploy context",
+					options: NetlifyDestinationForm.ContextChoice.allCases.map { VaultMenuOption(value: $0, label: $0.displayName) },
+					selection: $form.contextChoice,
+					placeholder: "Choose deploy context…",
+					disabled: form.site == nil)
+			}
+		}
+		if form.contextChoice == .branch {
+			GridRow {
+				PublishDestinationField("Branch") {
+					VStack(alignment: .leading, spacing: 4) {
+						TextField("staging", text: $form.branch)
+							.textFieldStyle(.plain)
+							.font(VaultTypography.mono(12.5))
+							.foregroundStyle(VaultPalette.textPrimary)
+							.autocorrectionDisabled()
+							.focused($editingBranch)
+							.padding(.horizontal, 11)
+							.frame(height: 30)
+							.vaultInputField(focused: editingBranch)
+						if let problem = form.branchProblem {
+							Text(problem).font(.system(size: 11)).foregroundStyle(VaultPalette.redText)
+								.fixedSize(horizontal: false, vertical: true)
+						}
+					}
+				}
+				Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+			}
+		}
+	}
+
+	private var placeholder: String {
+		switch form.sites {
+		case .loading: "Loading sites…"
+		case .loaded(let sites) where sites.isEmpty: "No sites this connection can reach"
+		default: "Choose site…"
 		}
 	}
 }

@@ -69,16 +69,29 @@ struct PublishPlan: Equatable, Sendable {
 		case reserved
 		/// The name is longer than the platform accepts, in bytes.
 		case nameTooLong(limit: Int)
+		/// The platform doesn't accept the name, as Netlify refuses one that
+		/// doesn't start with a letter.
+		case nameNotAccepted
 		/// No process can receive the value, so it can't be published.
 		case unusableValue
 		/// The platform would change the value on its way to the app.
 		case changesValue(ValueIssue)
+		/// The value is longer than the platform accepts, in characters.
+		case valueTooLong(limit: Int)
+		/// The platform gives every environment the variable's one value, so
+		/// the destination can't get a value of its own until the variable
+		/// has one per environment there.
+		case sameValueEverywhere
 		/// The platform doesn't say when its variable last changed, so a
 		/// publish can't make sure it isn't overwriting a change made since the review.
 		case unknownChangeTime
 		/// The platform's variable also applies to these environments, so
 		/// publishing changes them too.
 		case sharedWith([String])
+		/// The platform keeps the variable readable and stores every value of
+		/// it that way, so the value would be readable there, though LPM
+		/// Vault would store it as a secret.
+		case staysReadable
 		/// The value fails the project's rules.
 		case failsRules([ProjectEnvValueCheck.Problem])
 		/// The LPM CLI never passes it to a process.
@@ -95,9 +108,10 @@ struct PublishPlan: Equatable, Sendable {
 		/// Whether the key can't be published even when the person chooses it.
 		var blocksPublishing: Bool {
 			switch self {
-			case .reserved, .nameTooLong, .unusableValue, .unknownChangeTime: true
+			case .reserved, .nameTooLong, .nameNotAccepted, .unusableValue, .valueTooLong, .sameValueEverywhere, .unknownChangeTime: true
 			case .changesValue(let issue): !issue.allowsPublishing
-			case .sharedWith, .failsRules, .ignoredByLPM, .excluded, .changedOnPlatform, .unknownSincePublish, .upToDate: false
+			case .sharedWith, .staysReadable, .failsRules, .ignoredByLPM, .excluded, .changedOnPlatform, .unknownSincePublish, .upToDate:
+				false
 			}
 		}
 	}
@@ -132,9 +146,17 @@ struct PublishPlan: Equatable, Sendable {
 		var reservedPrefixes: [String] = []
 		/// The longest name the platform accepts, in bytes.
 		var maximumKeyBytes: Int?
+		/// Whether the platform accepts a name, beyond its length.
+		var acceptsKey: @Sendable (String) -> Bool = { _ in true }
+		/// The longest value the platform accepts, in characters.
+		var maximumValueCharacters: Int?
 		/// The platform can't make a variable it stores as a secret readable
 		/// again, so one stays a secret.
 		var secretsStaySecret = false
+		/// The platform stores every value of a variable the way it stores the
+		/// whole variable, readable or a secret, as Netlify does, so a value a
+		/// publish replaces or adds is stored that way too.
+		var protectionFollowsVariable = false
 		/// What the platform would do to a value, most serious first.
 		var valueIssues: @Sendable (String) -> [ValueIssue] = { _ in [] }
 
@@ -189,6 +211,29 @@ struct PublishPlan: Equatable, Sendable {
 		}
 	}
 
+	/// A variable the platform has at the destination's place without a value
+	/// of the destination's own, such as a Netlify variable with values for
+	/// other deploy contexts only.
+	struct RemoteKey: Equatable, Sendable {
+		enum Kind: Equatable, Sendable {
+			/// Only other environments have values, so a publish adds one for the destination.
+			case elsewhere
+			/// One value serves every environment, the destination's included.
+			case sameValueEverywhere
+		}
+
+		let kind: Kind
+		/// Whether the platform stores the variable so its values can't be read back.
+		let storedAsSecret: Bool
+		let updatedAt: Date?
+
+		init(kind: Kind, storedAsSecret: Bool, updatedAt: Date?) {
+			self.kind = kind
+			self.storedAsSecret = storedAsSecret
+			self.updatedAt = updatedAt.map(PublishTimestamp.normalized)
+		}
+	}
+
 	/// Tells this plan apart from any other, so a selection can't be used with another plan.
 	let id = UUID()
 	let destination: UUID
@@ -196,7 +241,8 @@ struct PublishPlan: Equatable, Sendable {
 	let location: PublishTarget.Location
 	/// In the key table's order.
 	let rows: [Row]
-	/// Variables only on the platform. A publish leaves them as they are.
+	/// Variables only on the platform that apply to the destination, its own
+	/// or one value every environment uses. A publish leaves them as they are.
 	let remoteOnlyCount: Int
 	/// When the destination the plan was made from last changed.
 	let destinationUpdatedAt: Date
@@ -210,6 +256,8 @@ struct PublishPlan: Equatable, Sendable {
 	///   - values: The source environment's stored values.
 	///   - check: The source environment's evaluation against the project's rules, when the project has rules.
 	///   - remote: The platform's variables that apply to the destination, by key.
+	///   - remoteKeys: The platform's variables at the destination's place
+	///     without a value of the destination's own, by key.
 	///   - platform: What the platform accepts.
 	///   - history: This Mac's history of publishing to the destination.
 	init(
@@ -218,6 +266,7 @@ struct PublishPlan: Equatable, Sendable {
 		rules: ProjectEnvSchemaOverview,
 		check: ProjectEnvValueCheck.Environment?,
 		remote: [String: RemoteVariable],
+		remoteKeys: [String: RemoteKey] = [:],
 		platform: Platform = Platform(),
 		history: PublishHistory?,
 		fingerprintKey: SymmetricKey
@@ -228,22 +277,29 @@ struct PublishPlan: Equatable, Sendable {
 			let value = values[key] ?? ""
 			let fingerprint = PublishFingerprint.of(value: value, key: key, destination: destination.id, using: fingerprintKey)
 			let remoteVariable = remote[key]
+			let remoteKey = remoteVariable == nil ? remoteKeys[key] : nil
 			let kind = Self.kind(of: key, in: rules)
-			let publishesAsSecret = kind.publishesAsSecret || (platform.secretsStaySecret && remoteVariable?.storedAsSecret == true)
+			let variableProtection = platform.protectionFollowsVariable ? remoteVariable?.storedAsSecret ?? remoteKey?.storedAsSecret : nil
+			let publishesAsSecret = variableProtection
+				?? (kind.publishesAsSecret || (platform.secretsStaySecret && remoteVariable?.storedAsSecret == true))
 			let status = Self.status(
 				fingerprint: fingerprint, publishesAsSecret: publishesAsSecret, remote: remoteVariable, record: history?.keys[key])
 			let problems = check?.problems[key] ?? []
 			var holds: [Hold] = []
 			if platform.isReserved(key) { holds.append(.reserved) }
 			if let limit = platform.maximumKeyBytes, key.utf8.count > limit { holds.append(.nameTooLong(limit: limit)) }
+			if !platform.acceptsKey(key) { holds.append(.nameNotAccepted) }
 			// A process environment can't carry NUL, whether or not the project has rules to check.
 			if value.utf8.contains(0) || problems.contains(where: { $0.kind == .unusableValue }) {
 				holds.append(.unusableValue)
 			} else {
 				holds.append(contentsOf: platform.valueIssues(value).map(Hold.changesValue))
 			}
+			if let limit = platform.maximumValueCharacters, value.unicodeScalars.count > limit { holds.append(.valueTooLong(limit: limit)) }
+			if remoteKey?.kind == .sameValueEverywhere { holds.append(.sameValueEverywhere) }
 			if let remoteVariable, remoteVariable.updatedAt == nil { holds.append(.unknownChangeTime) }
 			if let shared = remoteVariable?.sharedWith, !shared.isEmpty { holds.append(.sharedWith(shared)) }
+			if kind.publishesAsSecret, !publishesAsSecret { holds.append(.staysReadable) }
 			let failures = problems.filter { $0.kind != .unusableValue }
 			if !failures.isEmpty { holds.append(.failsRules(failures)) }
 			if check?.ignored.contains(key) == true { holds.append(.ignoredByLPM) }
@@ -266,6 +322,7 @@ struct PublishPlan: Equatable, Sendable {
 		}
 		rowIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.key, $0) })
 		remoteOnlyCount = remote.keys.reduce(0) { count, key in values[key] == nil ? count + 1 : count }
+			+ remoteKeys.reduce(0) { count, entry in entry.value.kind == .sameValueEverywhere && values[entry.key] == nil ? count + 1 : count }
 		destinationUpdatedAt = destination.updatedAt
 		staleExclusions = destination.excludedKeys.filter { values[$0] == nil }
 		staleHistory = history?.keys.filter { values[$0.key] == nil }.mapValues(\.publishedAt) ?? [:]

@@ -125,11 +125,16 @@ actor PublishingStore {
 	/// now: the person's choices from the review, and the keys the platform
 	/// accepted. Fails, recording nothing, when the destination was removed
 	/// or pointed elsewhere while the publish ran.
+	///
+	/// `advances` move forward the histories of the vault's other
+	/// destinations whose places share the platform's records with this one,
+	/// so this publish doesn't read there as someone else's change.
 	func recordPublish(
 		_ published: [PublishHistory.Published],
 		to destination: UUID,
 		at location: PublishTarget.Location,
 		choices: PublishPlan.Choices,
+		advancing advances: [PublishHistory.Advance] = [],
 		of vaultID: String,
 		at date: Date
 	) -> Result<PublishDestination, PublishingStoreError> {
@@ -148,6 +153,14 @@ actor PublishingStore {
 			let history = try readHistory(of: destination, in: vaultID)
 			let recorded = history.recording(published, forgetting: choices.forgottenRecords(in: history), at: date)
 			try writeHistory(recorded, of: destination, in: vaultID)
+			if !advances.isEmpty, let shared = location.sharedRecords {
+				for other in destinations where other.id != destination && other.target.location.sharedRecords == shared {
+					// Best effort: a history left behind reads as changed on the platform, which only costs a review.
+					guard let earlier = try? readHistory(of: other.id, in: vaultID) else { continue }
+					let advanced = earlier.advancing(advances)
+					if advanced != earlier { try? writeHistory(advanced, of: other.id, in: vaultID) }
+				}
+			}
 			return updated
 		}.mapError(Self.storeError)
 	}

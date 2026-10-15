@@ -70,7 +70,7 @@ final class FakeCoolifyAPI: CoolifyClientProtocol, @unchecked Sendable {
 	/// A fake holding one variable updated at `time`, as Coolify writes it.
 	func seeded(_ key: String, time: String) -> FakeCoolifyAPI {
 		lock.withLock {
-			stored.append(CoolifyVariable(id: "env-1", key: key, isPreview: false, isLocked: true, updatedAt: CoolifyClient.timestamp(time)))
+			stored.append(CoolifyVariable(id: "env-1", key: key, isPreview: false, isLocked: true, updatedAt: PlatformTimestamp.utc(time)))
 		}
 		return self
 	}

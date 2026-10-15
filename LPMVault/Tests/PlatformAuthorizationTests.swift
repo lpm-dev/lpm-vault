@@ -736,6 +736,11 @@ private final class ScriptedNetlify: NetlifyClientProtocol, @unchecked Sendable 
 			return answers.count > 1 ? answers.removeFirst() : answers[0]
 		}
 	}
+
+	func sites() async -> Result<[NetlifySite], NetlifyAPIError> { .failure(.notFound) }
+	func variables(siteID: String, teamID: String) async -> Result<[NetlifyVariable], NetlifyAPIError> { .failure(.notFound) }
+	func create(_ write: NetlifyVariableWrite, siteID: String, teamID: String) async -> Result<NetlifyVariable, NetlifyAPIError> { .failure(.notFound) }
+	func setValue(_ write: NetlifyVariableWrite, siteID: String, teamID: String) async -> Result<NetlifyVariable, NetlifyAPIError> { .failure(.notFound) }
 }
 
 private final class OpenedPages: @unchecked Sendable {

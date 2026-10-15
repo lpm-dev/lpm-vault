@@ -212,6 +212,44 @@ struct PublishingStoreTests {
 			choices: .init(leftOut: [], chosen: Set(keys)), of: publishTestVault, at: Date())
 	}
 
+	@Test("a publish moves forward the records of the vault's other destinations sharing its platform records, only where they saw the time it replaced")
+	func advancesSharedRecords() async throws {
+		let store = store
+		let production = netlifyDestination(.production)
+		let previews = netlifyDestination(.deployPreview, source: "preview")
+		let elsewhere = netlifyDestination(.production, source: "other", site: "site-other")
+		let vercel = vercelDestination(source: "vercel")
+		for destination in [production, previews, elsewhere, vercel] { _ = try await store.save(destination, to: publishTestVault).get() }
+		let t0 = Date(timeIntervalSince1970: 1_760_000_100)
+		let t1 = Date(timeIntervalSince1970: 1_760_000_200)
+		let before = Date(timeIntervalSince1970: 1_760_000_050)
+		func seen(_ key: String, at time: Date, by destination: PublishDestination) -> PublishHistory.Published {
+			.init(key: key, fingerprint: published(key, to: destination).fingerprint, remoteID: "value-\(key)", remoteUpdatedAt: time, publishedAsSecret: true)
+		}
+		for destination in [previews, elsewhere, vercel] {
+			_ = try await store.recordPublish(
+				[seen("SHARED", at: t0, by: destination), seen("EDITED", at: before, by: destination)],
+				to: destination.id, at: destination.target.location, choices: .init(leftOut: [], chosen: []), of: publishTestVault, at: t0).get()
+		}
+		let advances = [
+			PublishHistory.Advance(key: "SHARED", from: t0, to: t1, remoteIDs: ["value-SHARED": "value-SHARED-2"]),
+			PublishHistory.Advance(key: "EDITED", from: t0, to: t1, remoteIDs: ["value-EDITED": "value-EDITED"]),
+		]
+		_ = try await store.recordPublish(
+			[seen("SHARED", at: t1, by: production), seen("EDITED", at: t1, by: production)], to: production.id, at: production.target.location,
+			choices: .init(leftOut: [], chosen: []), advancing: advances, of: publishTestVault, at: t1).get()
+
+		let previewHistory = try await store.history(of: previews.id, in: publishTestVault).get()
+		#expect(previewHistory.keys["SHARED"]?.remoteUpdatedAt == t1, "Only this Mac's write moved the variable, so Deploy Previews still has what it published")
+		#expect(previewHistory.keys["SHARED"]?.remoteID == "value-SHARED-2" && previewHistory.keys["SHARED"]?.publishedAt == t0,
+			"A value Netlify gave a new ID while keeping it is followed")
+		#expect(previewHistory.keys["EDITED"]?.remoteUpdatedAt == before, "Someone's earlier change still shows")
+		for other in [elsewhere, vercel] {
+			#expect(try await store.history(of: other.id, in: publishTestVault).get().keys["SHARED"]?.remoteUpdatedAt == t0)
+		}
+		#expect(try await store.history(of: production.id, in: publishTestVault).get().keys["SHARED"]?.remoteUpdatedAt == t1)
+	}
+
 	private func published(_ key: String, to destination: PublishDestination) -> PublishHistory.Published {
 		.init(
 			key: key,
