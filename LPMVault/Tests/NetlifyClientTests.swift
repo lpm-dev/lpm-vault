@@ -191,6 +191,12 @@ struct NetlifyConnectorTests {
 		#expect(tokens.tokens == ["nfo_granted"])
 	}
 
+	@Test("LPM Vault's own client ID is one the ticket request sends, and the connector uses it")
+	func shippedClientID() {
+		#expect(NetlifyHTTP.isValidIdentifier(VaultConstants.netlifyOAuthClientID))
+		#expect(NetlifyConnector().clientID == VaultConstants.netlifyOAuthClientID)
+	}
+
 	@Test("Netlify refusing LPM Vault's app ends before any page opens")
 	func appRefused() async {
 		let tickets = FakeTickets()
