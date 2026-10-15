@@ -99,7 +99,7 @@ struct VercelConnector: Sendable {
 			}
 		}
 
-		listener.expect(started.id)
+		listener.expect(started.id, from: session.baseURL)
 		guard !Task.isCancelled else { return .failure(.cancelled) }
 		await open(started.installURL)
 

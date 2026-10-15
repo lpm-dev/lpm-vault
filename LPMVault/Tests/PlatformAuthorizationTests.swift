@@ -243,15 +243,44 @@ struct PlatformConnectionListenerTests {
 		let listener = try await PlatformConnectionListener.start()
 		defer { listener.stop() }
 		let id = UUID().uuidString.lowercased()
-		listener.expect(id)
+		listener.expect(id, from: platformTestRegistry)
 		let proof = platformTestOneTimeValue()
-		let other = try await get(listener.port, "authorization=\(UUID().uuidString.lowercased())&proof=\(proof)")
+		let other = try await get(listener.port, platformTestReturn(authorization: UUID().uuidString.lowercased(), proof: proof))
 		#expect(other.0 == 400 && other.1.contains("Start from LPM Vault"))
-		let next = "https%3A%2F%2Fvercel.com%2Fdashboard"
 		async let completion = listener.completion(until: Date(timeIntervalSinceNow: 5))
-		let page = try await get(listener.port, "authorization=\(id)&proof=\(proof)&next=\(next)")
+		let page = try await get(listener.port, platformTestReturn(authorization: id, proof: proof, next: "https://vercel.com/dashboard"))
 		#expect(page.0 == 200 && page.1.contains("Return to LPM Vault") && page.1.contains("href=\"https://vercel.com/dashboard\""))
 		#expect(try await completion == .proof(proof))
+	}
+
+	@Test("a return the Registry didn't sign, a failure or a made-up proof, doesn't end the wait")
+	func ignoresUnsignedReturns() async throws {
+		let listener = try await PlatformConnectionListener.start()
+		defer { listener.stop() }
+		let id = UUID().uuidString.lowercased()
+		listener.expect(id, from: platformTestRegistry)
+		let completion = Task { try await listener.completion(until: Date(timeIntervalSinceNow: 1)) }
+		let forgedFailure = try await get(listener.port, "authorization=\(id)&error=authorization_cancelled")
+		let forgedProof = try await get(listener.port, "authorization=\(id)&proof=\(platformTestOneTimeValue())")
+		let signed = platformTestReturn(authorization: id, error: "authorization_cancelled")
+		let swapped = try await get(listener.port, signed.replacingOccurrences(of: "authorization_cancelled", with: "platform_rejected"))
+		#expect([forgedFailure, forgedProof, swapped].allSatisfy { $0.1.contains("Start from LPM Vault") })
+		await #expect(throws: PlatformConnectionListener.ListenerError.timedOut) { try await completion.value }
+	}
+
+	@Test("the Registry's signature, made as its tests make it, is accepted for a local Registry and not for lpm.dev")
+	func registrySignatureVector() throws {
+		let id = "5f0c2a8e-1b3d-4c5e-8f9a-0b1c2d3e4f5a"
+		let signature = "FIExkk9QV1xikHTWmbQAPQ5A-a4aFs8P3L-8q05nWbafm9cWlN6mhGDXm7L7ILsEedeJDZoiYRPSijRSdanzBQ"
+		let line = "GET \(PlatformConnectionListener.path)?authorization=\(id)&error=authorization_cancelled&key=vault-test-rfc8032&signature=\(signature)"
+		let request = try #require(PlatformConnectionListener.parse(Data("\(line) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8)))
+		#expect(request.completion == .failure(.cancelledOnPlatform))
+		func verifies(_ registry: URL) -> Bool {
+			PinnedSessionDelegate.verifyRegistrySignature(
+				request.signature, keyID: request.keyID, message: request.signedMessage, registry: registry)
+		}
+		#expect(verifies(platformTestRegistry))
+		#expect(!verifies(URL(string: "https://lpm.dev")!), "The test key is never trusted for lpm.dev")
 	}
 
 	@Test("a failure from the Registry ends the wait with its reason")
@@ -259,8 +288,8 @@ struct PlatformConnectionListenerTests {
 		let listener = try await PlatformConnectionListener.start()
 		defer { listener.stop() }
 		let id = UUID().uuidString.lowercased()
-		listener.expect(id)
-		let page = try await get(listener.port, "authorization=\(id)&error=authorization_cancelled")
+		listener.expect(id, from: platformTestRegistry)
+		let page = try await get(listener.port, platformTestReturn(authorization: id, error: "authorization_cancelled"))
 		#expect(page.0 == 400 && page.1.contains("cancelled on Vercel"))
 		#expect(try await listener.completion(until: Date(timeIntervalSinceNow: 5)) == .failure(.cancelledOnPlatform))
 	}
@@ -284,23 +313,27 @@ struct PlatformConnectionListenerTests {
 		let proof = platformTestOneTimeValue()
 		func request(_ line: String) -> Data { Data("\(line) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8) }
 		let path = PlatformConnectionListener.path
-		#expect(PlatformConnectionListener.parse(request("GET \(path)?authorization=\(id)&proof=\(proof)"))?.completion == .proof(proof))
+		let signed = platformTestReturn(authorization: id, proof: proof)
+		#expect(PlatformConnectionListener.parse(request("GET \(path)?\(signed)"))?.completion == .proof(proof))
+		let signature = "&key=vault-test-rfc8032&signature=\(String(repeating: "A", count: 86))"
 		for line in [
-			"POST \(path)?authorization=\(id)&proof=\(proof)",
-			"GET /callback?authorization=\(id)&proof=\(proof)",
-			"GET \(path)?authorization=\(id)",
-			"GET \(path)?authorization=\(id)&proof=\(proof)&error=server_error",
-			"GET \(path)?authorization=\(id.uppercased())&proof=\(proof)",
-			"GET \(path)?authorization=\(id)&proof=short",
-			"GET \(path)?authorization=\(id)&error=Bad%20Code",
+			"POST \(path)?\(signed)",
+			"GET /callback?\(signed)",
+			"GET \(path)?authorization=\(id)\(signature)",
+			"GET \(path)?authorization=\(id)&proof=\(proof)&error=server_error\(signature)",
+			"GET \(path)?authorization=\(id.uppercased())&proof=\(proof)\(signature)",
+			"GET \(path)?authorization=\(id)&proof=short\(signature)",
+			"GET \(path)?authorization=\(id)&error=Bad%20Code\(signature)",
+			"GET \(path)?authorization=\(id)&proof=\(proof)",
+			"GET \(path)?authorization=\(id)&proof=\(proof)&key=bad%20key&signature=x",
 		] {
 			#expect(PlatformConnectionListener.parse(request(line)) == nil, "\(line)")
 		}
-		let badlyEncoded = PlatformConnectionListener.parse(request("GET \(path)?authorization=\(id)&proof=\(proof)&next=%zz"))
+		let badlyEncoded = PlatformConnectionListener.parse(request("GET \(path)?\(signed)&next=%zz"))
 		#expect(badlyEncoded?.completion == .proof(proof) && badlyEncoded?.next == nil)
 		for next in ["https://evil.example/", "http://vercel.com/", "https://user@vercel.com/", "https://vercel.com:8443/"] {
-			let encoded = try #require(next.addingPercentEncoding(withAllowedCharacters: .alphanumerics))
-			#expect(PlatformConnectionListener.parse(request("GET \(path)?authorization=\(id)&proof=\(proof)&next=\(encoded)"))?.next == nil)
+			let query = platformTestReturn(authorization: id, proof: proof, next: next)
+			#expect(PlatformConnectionListener.parse(request("GET \(path)?\(query)"))?.next == nil)
 		}
 	}
 }
@@ -411,7 +444,7 @@ struct VercelConnectorTests {
 		let result = await connector(authorizations, port: port).connect(session: session) { url in
 			#expect(url == authorizations.installURL)
 			opened.port = 1
-			await browser(returning: "authorization=\(id)&proof=\(proof)", listener: { port.port })(url)
+			await browser(returning: platformTestReturn(authorization: id, proof: proof), listener: { port.port })(url)
 		}
 		let connected = try result.get()
 		#expect(opened.port == 1)
@@ -429,7 +462,7 @@ struct VercelConnectorTests {
 		let id = authorizations.id
 		let proof = platformTestOneTimeValue()
 		let result = await connector(authorizations, port: port).connect(
-			session: session, open: browser(returning: "authorization=\(id)&proof=\(proof)", listener: { port.port }))
+			session: session, open: browser(returning: platformTestReturn(authorization: id, proof: proof), listener: { port.port }))
 		#expect(try result.get().grant.installationID == "icfg_acme")
 	}
 
@@ -440,11 +473,11 @@ struct VercelConnectorTests {
 	func endsEarly(path: String) async {
 		let authorizations = FakeAuthorizations()
 		var vercel = FakeVercel()
-		var query = "authorization=\(authorizations.id)&proof=\(platformTestOneTimeValue())"
+		var query = platformTestReturn(authorization: authorizations.id, proof: platformTestOneTimeValue())
 		let expected: VercelConnectError
 		switch path {
 		case "platform":
-			query = "authorization=\(authorizations.id)&error=authorization_cancelled"
+			query = platformTestReturn(authorization: authorizations.id, error: "authorization_cancelled")
 			expected = .platform(.cancelledOnPlatform)
 		case "proof":
 			authorizations.outcome = { _, _, _ in .success(.proofMismatch) }
@@ -480,7 +513,7 @@ struct VercelConnectorTests {
 		let id = authorizations.id
 		let proof = platformTestOneTimeValue()
 		let result = await connector(authorizations, vercel: vercel, port: port).connect(
-			session: session, open: browser(returning: "authorization=\(id)&proof=\(proof)", listener: { port.port }))
+			session: session, open: browser(returning: platformTestReturn(authorization: id, proof: proof), listener: { port.port }))
 		#expect(try result.get().account == VercelAccount(name: "Personal account", slug: nil))
 	}
 

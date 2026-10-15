@@ -186,15 +186,40 @@ final class PinnedSessionDelegate: BoundedHTTPResponseDelegate, @unchecked Senda
 	}()
 	#endif
 
+	/// Whether `encodedSignature` is the Registry's Ed25519 signature, by
+	/// the key `keyID`, over `message`, which must begin with its own domain.
+	/// A local Registry in a debug build may also use its test key.
+	static func verifyRegistrySignature(
+		_ encodedSignature: String,
+		keyID: String,
+		message: Data,
+		registry: URL
+	) -> Bool {
+		var trustedSigningKeys = responseSigningKeys
+		#if DEBUG
+		if isLocalRegistry(registry) { trustedSigningKeys = localResponseSigningKeys }
+		#endif
+		guard let rawPublicKey = trustedSigningKeys[keyID],
+			let publicKey = try? Curve25519.Signing.PublicKey(rawRepresentation: rawPublicKey),
+			let signature = decodeCanonicalBase64URL(encodedSignature, expectedByteCount: 64)
+		else { return false }
+		return publicKey.isValidSignature(signature, for: message)
+	}
+
+	#if DEBUG
+	private static func isLocalRegistry(_ url: URL) -> Bool {
+		guard url.scheme == "http", let host = url.host else { return false }
+		return ["localhost", "127.0.0.1", "[::1]"].contains(host)
+	}
+	#endif
+
 	static func verifyResponseSignature(
 		_ response: HTTPURLResponse,
 		body: Data,
 		requireSignature: Bool = false
 	) -> Bool {
 		#if DEBUG
-		if let url = response.url, url.scheme == "http",
-			let host = url.host, ["localhost", "127.0.0.1", "[::1]"].contains(host)
-		{
+		if let url = response.url, isLocalRegistry(url) {
 			return verifyResponseSignature(
 				response, body: body, requireSignature: requireSignature,
 				trustedSigningKeys: localResponseSigningKeys
