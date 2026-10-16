@@ -13,6 +13,24 @@ struct PlatformSession: Sendable, CustomStringConvertible, CustomDebugStringConv
 	var customMirror: Mirror { Mirror(self, children: ["principalID": principalID, "baseURL": baseURL]) }
 }
 
+/// A platform LPM Vault connects in the browser through the Registry, whose
+/// OAuth code exchange needs a client secret only the Registry holds. Its raw
+/// value names the platform in the Registry's routes and signed answers, and
+/// in the path the browser returns to on this Mac.
+enum BrowserPlatform: String, CaseIterable, Sendable {
+	case vercel
+	case netlify
+
+	var publishPlatform: PublishPlatform {
+		switch self {
+		case .vercel: .vercel
+		case .netlify: .netlify
+		}
+	}
+
+	var displayName: String { publishPlatform.displayName }
+}
+
 enum PlatformAuthorizationError: Error, Equatable, Sendable {
 	/// The LPM session is missing or no longer valid.
 	case signedOut
@@ -34,8 +52,8 @@ enum PlatformAuthorizationError: Error, Equatable, Sendable {
 struct StartedPlatformAuthorization: Equatable, Sendable {
 	/// A lowercase UUID; it also binds the encrypted grant.
 	let id: String
-	/// Vercel's install page, carrying the single-use state.
-	let installURL: URL
+	/// The platform's page where the person approves LPM Vault, carrying the single-use state.
+	let pageURL: URL
 	let expiresAt: Date
 }
 
@@ -54,23 +72,25 @@ enum PlatformAuthorizationOutcome: Equatable, Sendable {
 }
 
 protocol PlatformAuthorizationClientProtocol: Sendable {
-	func startVercel(
+	func start(
+		_ platform: BrowserPlatform,
 		clientPublicKey: Data,
 		loopbackPort: UInt16,
 		session: PlatformSession
 	) async -> Result<StartedPlatformAuthorization, PlatformAuthorizationError>
 	func redeem(
 		_ authorizationID: String,
+		on platform: BrowserPlatform,
 		proof: String,
 		session: PlatformSession
 	) async -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError>
-	func cancel(_ authorizationID: String, session: PlatformSession) async
+	func cancel(_ authorizationID: String, on platform: BrowserPlatform, session: PlatformSession) async
 }
 
 /// The Registry's platform connection routes. Every answer that carries a
 /// result must be signed by the Registry and name this request's nonce, the
-/// signed-in person and the connection, so nothing another request or
-/// another person caused is accepted.
+/// signed-in person, the platform and the connection, so nothing another
+/// request, another person or another platform caused is accepted.
 struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 	static let nonceHeader = "x-lpm-platform-request-nonce"
 	private static let maximumResponseBytes = 64 * 1024
@@ -90,13 +110,14 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 		self.session = session ?? Self.sharedSession
 	}
 
-	func startVercel(
+	func start(
+		_ platform: BrowserPlatform,
 		clientPublicKey: Data,
 		loopbackPort: UInt16,
 		session platformSession: PlatformSession
 	) async -> Result<StartedPlatformAuthorization, PlatformAuthorizationError> {
 		guard clientPublicKey.count == 65, clientPublicKey.first == 0x04, loopbackPort >= 1024,
-			let url = URL(string: "/api/vault/platforms/vercel/authorizations", relativeTo: platformSession.baseURL),
+			let url = URL(string: "/api/vault/platforms/\(platform.rawValue)/authorizations", relativeTo: platformSession.baseURL),
 			let body = try? JSONSerialization.data(withJSONObject: [
 				"publicKey": clientPublicKey.base64EncodedString(),
 				"loopbackPort": Int(loopbackPort),
@@ -105,25 +126,27 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 		let nonce = Self.makeNonce()
 		return await send(url: url, body: body, nonce: nonce, session: platformSession).flatMap { http, data in
 			guard http.statusCode == 201 else { return .failure(Self.failure(status: http.statusCode, body: data)) }
-			guard let object = Self.signedObject(http, data, nonce: nonce, principalID: platformSession.principalID),
+			guard let object = Self.signedObject(
+				http, data, nonce: nonce, principalID: platformSession.principalID, platform: platform),
 				let id = object["authorizationId"] as? String, Self.isCanonicalUUID(id),
-				let installText = object["installUrl"] as? String,
-				let installURL = Self.validatedInstallURL(installText),
+				let pageText = object["installUrl"] as? String,
+				let pageURL = Self.validatedPageURL(pageText, for: platform, registry: platformSession.baseURL),
 				let expiresText = object["expiresAt"] as? String,
 				let expiresAt = Self.date(expiresText)
 			else { return .failure(.invalidResponse) }
-			return .success(StartedPlatformAuthorization(id: id, installURL: installURL, expiresAt: expiresAt))
+			return .success(StartedPlatformAuthorization(id: id, pageURL: pageURL, expiresAt: expiresAt))
 		}
 	}
 
 	func redeem(
 		_ authorizationID: String,
+		on platform: BrowserPlatform,
 		proof: String,
 		session platformSession: PlatformSession
 	) async -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
 		guard Self.isCanonicalUUID(authorizationID), Self.isOneTimeValue(proof),
 			let url = URL(
-				string: "/api/vault/platforms/vercel/authorizations/\(authorizationID)/redeem",
+				string: "/api/vault/platforms/\(platform.rawValue)/authorizations/\(authorizationID)/redeem",
 				relativeTo: platformSession.baseURL),
 			let body = try? JSONSerialization.data(withJSONObject: ["proof": proof])
 		else { return .failure(.invalidResponse) }
@@ -133,7 +156,8 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 				return .failure(Self.failure(status: http.statusCode, body: data))
 			}
 			// An unsigned 403 or 404 comes from authentication, before the route signs anything.
-			guard let object = Self.signedObject(http, data, nonce: nonce, principalID: platformSession.principalID),
+			guard let object = Self.signedObject(
+				http, data, nonce: nonce, principalID: platformSession.principalID, platform: platform),
 				object["authorizationId"] as? String == authorizationID,
 				let status = object["status"] as? String
 			else {
@@ -162,10 +186,10 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 		}
 	}
 
-	func cancel(_ authorizationID: String, session platformSession: PlatformSession) async {
+	func cancel(_ authorizationID: String, on platform: BrowserPlatform, session platformSession: PlatformSession) async {
 		guard Self.isCanonicalUUID(authorizationID),
 			let url = URL(
-				string: "/api/vault/platforms/vercel/authorizations/\(authorizationID)",
+				string: "/api/vault/platforms/\(platform.rawValue)/authorizations/\(authorizationID)",
 				relativeTo: platformSession.baseURL)
 		else { return }
 		var request = URLRequest(url: url)
@@ -205,18 +229,19 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 	}
 
 	/// The body as an object, when the Registry signed it for this request's
-	/// nonce, for `principalID`, about Vercel.
+	/// nonce, for `principalID`, about `platform`.
 	private static func signedObject(
 		_ http: HTTPURLResponse,
 		_ data: Data,
 		nonce: String,
-		principalID: String
+		principalID: String,
+		platform: BrowserPlatform
 	) -> [String: Any]? {
 		guard PinnedSessionDelegate.verifyResponseSignature(http, body: data, requireSignature: true),
 			let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
 			object["requestNonce"] as? String == nonce,
 			object["principalId"] as? String == principalID,
-			object["platform"] as? String == "vercel"
+			object["platform"] as? String == platform.rawValue
 		else { return nil }
 		return object
 	}
@@ -266,20 +291,55 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 			&& text.utf8.allSatisfy { ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x5F }
 	}
 
-	/// Vercel's install page for an integration, and nothing else, so a
-	/// signed answer can't send the browser anywhere unexpected.
-	static func validatedInstallURL(_ text: String) -> URL? {
+	/// The platform's page for approving LPM Vault, and nothing else, so a
+	/// signed answer can't send the browser anywhere unexpected: Vercel's
+	/// install page for an integration, or Netlify's Authorize page for an
+	/// OAuth app that returns the code to `registry`'s callback.
+	static func validatedPageURL(_ text: String, for platform: BrowserPlatform, registry: URL) -> URL? {
 		guard text.utf8.count <= 2_048,
 			let components = URLComponents(string: text),
-			components.scheme == "https", components.host == "vercel.com",
-			components.user == nil, components.password == nil, components.port == nil, components.fragment == nil
+			components.scheme == "https",
+			components.user == nil, components.password == nil, components.port == nil, components.fragment == nil,
+			let items = components.queryItems
 		else { return nil }
+		var query: [String: String] = [:]
+		for item in items {
+			guard let value = item.value, query.updateValue(value, forKey: item.name) == nil else { return nil }
+		}
+		let isValid = switch platform {
+		case .vercel: isVercelInstallPage(components, query: query)
+		case .netlify: isNetlifyAuthorizePage(components, query: query, registry: registry)
+		}
+		return isValid ? components.url : nil
+	}
+
+	private static func isVercelInstallPage(_ components: URLComponents, query: [String: String]) -> Bool {
 		let path = components.path.split(separator: "/", omittingEmptySubsequences: false)
-		guard path.count == 4, path[0].isEmpty, path[1] == "integrations", path[3] == "new",
-			VercelPublishTarget.isValidIdentifier(String(path[2])),
-			let items = components.queryItems, items.count == 1, items[0].name == "state",
-			let state = items[0].value, isOneTimeValue(state)
-		else { return nil }
+		return components.host == "vercel.com"
+			&& path.count == 4 && path[0].isEmpty && path[1] == "integrations" && path[3] == "new"
+			&& VercelPublishTarget.isValidIdentifier(String(path[2]))
+			&& query.count == 1 && query["state"].map(isOneTimeValue) == true
+	}
+
+	private static func isNetlifyAuthorizePage(_ components: URLComponents, query: [String: String], registry: URL) -> Bool {
+		guard let callback = callbackURL(for: .netlify, registry: registry)?.absoluteString else { return false }
+		return components.host == "app.netlify.com" && components.path == "/authorize"
+			&& query.count == 4
+			&& query["client_id"].map(NetlifyHTTP.isValidIdentifier) == true
+			&& query["response_type"] == "code"
+			&& query["redirect_uri"] == callback
+			&& query["state"].map(isOneTimeValue) == true
+	}
+
+	/// Where the platform returns the browser with its code: `registry`'s
+	/// callback for the platform, on the Registry's origin.
+	static func callbackURL(for platform: BrowserPlatform, registry: URL) -> URL? {
+		guard var components = URLComponents(url: registry, resolvingAgainstBaseURL: true) else { return nil }
+		components.path = "/api/vault/platforms/\(platform.rawValue)/callback"
+		components.query = nil
+		components.fragment = nil
+		components.user = nil
+		components.password = nil
 		return components.url
 	}
 

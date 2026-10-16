@@ -4,7 +4,7 @@ import Testing
 @testable import LPMVault
 
 struct PlatformAuthorizationEnvelopeTests {
-	/// Sealed by the Registry's own `sealAuthorizationResult` (lib/vault/vercel-authorization.js).
+	/// Sealed by the Registry's own `sealAuthorizationResult` (lib/vault/platform-authorization.js).
 	private let vector = (
 		clientPrivateKey: "DNNyB9HoOrWe9u4YXWBgK7N7K2vRpMhDs+Uni73Lajs=",
 		authorizationID: "6f1c2d3e-4a5b-4c6d-8e7f-901a2b3c4d5e",
@@ -22,8 +22,7 @@ struct PlatformAuthorizationEnvelopeTests {
 
 	@Test("a grant the Registry sealed opens with the Mac's key, exactly as sent")
 	func opensRegistryVector() throws {
-		let grant = try PlatformAuthorizationEnvelope.openVercelGrant(
-			vector.sealed, authorizationID: vector.authorizationID, clientKey: clientKey
+		let grant = try PlatformAuthorizationEnvelope.open(vector.sealed, as: VercelGrant.self, authorizationID: vector.authorizationID, clientKey: clientKey
 		).get()
 		#expect(grant.accessToken == "vca_TestToken_0123456789abcdefABCDEF")
 		#expect(grant.installationID == "icfg_TestInstallation01")
@@ -34,19 +33,17 @@ struct PlatformAuthorizationEnvelopeTests {
 	@Test("a sealed grant doesn't open for another authorization, another key, or after any change")
 	func refusesTampering() throws {
 		let key = try clientKey
-		#expect(PlatformAuthorizationEnvelope.openVercelGrant(
-			vector.sealed, authorizationID: UUID().uuidString.lowercased(), clientKey: key) == .failure(.undecryptable))
-		#expect(PlatformAuthorizationEnvelope.openVercelGrant(
-			vector.sealed, authorizationID: vector.authorizationID, clientKey: P256.KeyAgreement.PrivateKey()) == .failure(.undecryptable))
+		#expect(PlatformAuthorizationEnvelope.open(vector.sealed, as: VercelGrant.self, authorizationID: UUID().uuidString.lowercased(), clientKey: key) == .failure(.undecryptable))
+		#expect(PlatformAuthorizationEnvelope.open(vector.sealed, as: VercelGrant.self, authorizationID: vector.authorizationID, clientKey: P256.KeyAgreement.PrivateKey()) == .failure(.undecryptable))
 		var ciphertext = try #require(Data(base64Encoded: vector.sealed.ciphertext))
 		ciphertext[ciphertext.startIndex] ^= 0x01
 		let changed = PlatformAuthorizationEnvelope.Sealed(
 			version: 1, ephemeralPublicKey: vector.sealed.ephemeralPublicKey, nonce: vector.sealed.nonce,
 			ciphertext: ciphertext.base64EncodedString())
-		#expect(PlatformAuthorizationEnvelope.openVercelGrant(changed, authorizationID: vector.authorizationID, clientKey: key) == .failure(.undecryptable))
+		#expect(PlatformAuthorizationEnvelope.open(changed, as: VercelGrant.self, authorizationID: vector.authorizationID, clientKey: key) == .failure(.undecryptable))
 		let newer = PlatformAuthorizationEnvelope.Sealed(
 			version: 2, ephemeralPublicKey: vector.sealed.ephemeralPublicKey, nonce: vector.sealed.nonce, ciphertext: vector.sealed.ciphertext)
-		#expect(PlatformAuthorizationEnvelope.openVercelGrant(newer, authorizationID: vector.authorizationID, clientKey: key) == .failure(.malformed))
+		#expect(PlatformAuthorizationEnvelope.open(newer, as: VercelGrant.self, authorizationID: vector.authorizationID, clientKey: key) == .failure(.malformed))
 	}
 
 	@Test(
@@ -64,7 +61,7 @@ struct PlatformAuthorizationEnvelopeTests {
 		let key = P256.KeyAgreement.PrivateKey()
 		let id = UUID().uuidString.lowercased()
 		let sealed = try RegistryTestSealer.seal(payload, authorizationID: id, to: key.publicKey.x963Representation)
-		#expect(PlatformAuthorizationEnvelope.openVercelGrant(sealed, authorizationID: id, clientKey: key) == .failure(.invalidGrant))
+		#expect(PlatformAuthorizationEnvelope.open(sealed, as: VercelGrant.self, authorizationID: id, clientKey: key) == .failure(.invalidGrant))
 	}
 
 	@Test("a personal account's grant has no team, and the token never prints")
@@ -74,13 +71,59 @@ struct PlatformAuthorizationEnvelopeTests {
 		let sealed = try RegistryTestSealer.seal(
 			["platform": "vercel", "accessToken": "vca_secret_value", "installationId": "icfg_1", "teamId": NSNull(), "userId": "u_1"],
 			authorizationID: id, to: key.publicKey.x963Representation)
-		let grant = try PlatformAuthorizationEnvelope.openVercelGrant(sealed, authorizationID: id, clientKey: key).get()
+		let grant = try PlatformAuthorizationEnvelope.open(sealed, as: VercelGrant.self, authorizationID: id, clientKey: key).get()
 		#expect(grant.teamID == nil)
 		var dumped = ""
 		dump(grant, to: &dumped)
 		for text in [grant.description, String(reflecting: grant), "\(grant)", dumped] {
 			#expect(!text.contains("vca_secret_value"))
 		}
+	}
+
+	/// Sealed by the Registry's own `sealAuthorizationResult` for a Netlify connection, to the same client key.
+	private let netlifyVector = (
+		authorizationID: "0b7e4f2a-9c1d-4e3f-8a5b-6c7d8e9f0a1b",
+		sealed: PlatformAuthorizationEnvelope.Sealed(
+			version: 1,
+			ephemeralPublicKey: "BLq2Wgs9xVEfkPqJHrPKLE8qV78lIcUClr9U9pJblGUi1QYqPI54nUefhJTgpGfEBaBrHj4nHT+HkIwJ9/xJwzw=",
+			nonce: "mSB2C2RB0HQ4cir7",
+			ciphertext: "Y7QInSWfLTKcbOmA+eCK8rcfvUuIyCgIhnBVCi/PGPGkEJdagiSzHqNcyui9wvRWVtbU+/l0hSX1HVOOFHvOr+55OxfCzjs0EXEDWPu4tAFGPArxdwiWs2gnjQ=="
+		)
+	)
+
+	@Test("a Netlify grant the Registry sealed opens with the Mac's key, exactly as sent")
+	func opensRegistryNetlifyVector() throws {
+		let grant = try PlatformAuthorizationEnvelope.open(
+			netlifyVector.sealed, as: NetlifyGrant.self, authorizationID: netlifyVector.authorizationID, clientKey: clientKey
+		).get()
+		#expect(grant.accessToken == "nfp_TestToken_0123456789abcdefABCDEF")
+	}
+
+	@Test("a grant opens only as the platform it names, so one platform's token never passes for another's")
+	func opensOnlyAsItsPlatform() throws {
+		let key = try clientKey
+		#expect(PlatformAuthorizationEnvelope.open(
+			vector.sealed, as: NetlifyGrant.self, authorizationID: vector.authorizationID, clientKey: key) == .failure(.invalidGrant))
+		#expect(PlatformAuthorizationEnvelope.open(
+			netlifyVector.sealed, as: VercelGrant.self, authorizationID: netlifyVector.authorizationID, clientKey: key) == .failure(.invalidGrant))
+	}
+
+	@Test(
+		"a decrypted grant that isn't a well-formed Netlify grant is refused",
+		arguments: [
+			#"{"accessToken":"nfp_ok"}"#,
+			#"{"platform":"netlify"}"#,
+			#"{"platform":"netlify","accessToken":7}"#,
+			#"{"platform":"netlify","accessToken":"has space"}"#,
+			#"{"platform":"netlify","accessToken":""}"#,
+		]
+	)
+	func refusesMalformedNetlifyGrant(json: String) throws {
+		let payload = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+		let key = P256.KeyAgreement.PrivateKey()
+		let id = UUID().uuidString.lowercased()
+		let sealed = try RegistryTestSealer.seal(payload, authorizationID: id, to: key.publicKey.x963Representation)
+		#expect(PlatformAuthorizationEnvelope.open(sealed, as: NetlifyGrant.self, authorizationID: id, clientKey: key) == .failure(.invalidGrant))
 	}
 }
 
@@ -106,9 +149,9 @@ struct PlatformAuthorizationClientTests {
 		let route = PlatformHTTPStub.registry { startReply($0) }
 		let client = PlatformAuthorizationClient(session: route.session)
 		let key = P256.KeyAgreement.PrivateKey().publicKey.x963Representation
-		let started = try await client.startVercel(clientPublicKey: key, loopbackPort: 51_234, session: platformTestSession(route.baseURL)).get()
+		let started = try await client.start(.vercel, clientPublicKey: key, loopbackPort: 51_234, session: platformTestSession(route.baseURL)).get()
 		#expect(started.id == authorizationID)
-		#expect(started.installURL.absoluteString == installURL)
+		#expect(started.pageURL.absoluteString == installURL)
 		let request = try #require(route.requests.first)
 		#expect(request.method == "POST" && request.url.path() == "/api/vault/platforms/vercel/authorizations")
 		#expect(request.header("Authorization") == "Bearer lpm_session_token")
@@ -116,7 +159,7 @@ struct PlatformAuthorizationClientTests {
 		#expect(request.json?["loopbackPort"] as? Int == 51_234)
 		let nonce = try #require(request.header(PlatformAuthorizationClient.nonceHeader))
 		#expect(nonce.utf8.count == 43)
-		_ = try await client.startVercel(clientPublicKey: key, loopbackPort: 51_234, session: platformTestSession(route.baseURL)).get()
+		_ = try await client.start(.vercel, clientPublicKey: key, loopbackPort: 51_234, session: platformTestSession(route.baseURL)).get()
 		#expect(route.requests.last?.header(PlatformAuthorizationClient.nonceHeader) != nonce)
 	}
 
@@ -138,8 +181,8 @@ struct PlatformAuthorizationClientTests {
 			}
 		}
 		let client = PlatformAuthorizationClient(session: route.session)
-		let result = await client.startVercel(
-			clientPublicKey: P256.KeyAgreement.PrivateKey().publicKey.x963Representation, loopbackPort: 50_000,
+		let result = await client.start(
+			.vercel, clientPublicKey: P256.KeyAgreement.PrivateKey().publicKey.x963Representation, loopbackPort: 50_000,
 			session: platformTestSession(route.baseURL))
 		#expect(result == .failure(.invalidResponse))
 	}
@@ -157,8 +200,8 @@ struct PlatformAuthorizationClientTests {
 	)
 	func startRefusals(status: Int, body: [String: String], expected: PlatformAuthorizationError) async {
 		let route = PlatformHTTPStub.registry { _ in .json(status, body) }
-		let result = await PlatformAuthorizationClient(session: route.session).startVercel(
-			clientPublicKey: P256.KeyAgreement.PrivateKey().publicKey.x963Representation, loopbackPort: 50_000,
+		let result = await PlatformAuthorizationClient(session: route.session).start(
+			.vercel, clientPublicKey: P256.KeyAgreement.PrivateKey().publicKey.x963Representation, loopbackPort: 50_000,
 			session: platformTestSession(route.baseURL))
 		#expect(result == .failure(expected))
 	}
@@ -187,7 +230,7 @@ struct PlatformAuthorizationClientTests {
 			}
 			let proof = platformTestOneTimeValue()
 			let outcome = await PlatformAuthorizationClient(session: route.session).redeem(
-				authorizationID, proof: proof, session: platformTestSession(route.baseURL))
+				authorizationID, on: .vercel, proof: proof, session: platformTestSession(route.baseURL))
 			#expect(outcome == .success(expected), "HTTP \(status)")
 			#expect(route.requests.first?.url.path() == "/api/vault/platforms/vercel/authorizations/\(authorizationID)/redeem")
 			#expect(route.requests.first?.json?["proof"] as? String == proof)
@@ -206,18 +249,105 @@ struct PlatformAuthorizationClientTests {
 		for reply in replies {
 			let route = PlatformHTTPStub.registry(reply)
 			let outcome = await PlatformAuthorizationClient(session: route.session).redeem(
-				authorizationID, proof: platformTestOneTimeValue(), session: platformTestSession(route.baseURL))
+				authorizationID, on: .vercel, proof: platformTestOneTimeValue(), session: platformTestSession(route.baseURL))
 			#expect(outcome == .failure(.invalidResponse))
 		}
 	}
 
-	@Test("cancelling deletes the authorization with the session")
-	func cancel() async throws {
+	@Test("cancelling deletes the authorization on its platform's route, with the session", arguments: BrowserPlatform.allCases)
+	func cancel(platform: BrowserPlatform) async throws {
 		let route = PlatformHTTPStub.registry { _ in PlatformHTTPStub.Reply(status: 204, body: Data()) }
-		await PlatformAuthorizationClient(session: route.session).cancel(authorizationID, session: platformTestSession(route.baseURL))
+		await PlatformAuthorizationClient(session: route.session).cancel(
+			authorizationID, on: platform, session: platformTestSession(route.baseURL))
 		let request = try #require(route.requests.first)
-		#expect(request.method == "DELETE" && request.url.path() == "/api/vault/platforms/vercel/authorizations/\(authorizationID)")
+		#expect(request.method == "DELETE" && request.url.path() == "/api/vault/platforms/\(platform.rawValue)/authorizations/\(authorizationID)")
 		#expect(request.header("Authorization") == "Bearer lpm_session_token")
+	}
+
+	/// Netlify's Authorize page as the Registry's `netlifyAuthorizeUrl` makes it, for a Registry at `registry`.
+	private func netlifyPage(
+		_ registry: URL,
+		clientID: String = "-pXkF9rearrWFTVbHyDrWRw_w2Lvg_xHPgFE4B06N-U",
+		responseType: String = "code",
+		redirect: String? = nil,
+		state: String = platformTestOneTimeValue(),
+		extra: String = ""
+	) -> String {
+		let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+		func encoded(_ text: String) -> String { text.addingPercentEncoding(withAllowedCharacters: unreserved)! }
+		let callback = redirect ?? "\(registry.absoluteString)/api/vault/platforms/netlify/callback"
+		return "https://app.netlify.com/authorize?client_id=\(encoded(clientID))&response_type=\(responseType)"
+			+ "&redirect_uri=\(encoded(callback))&state=\(state)\(extra)"
+	}
+
+	/// The Registry a stubbed request reached.
+	private func registry(of request: PlatformHTTPStub.Request) -> URL {
+		URL(string: "http://\(request.url.host() ?? ""):\(request.url.port ?? 0)")!
+	}
+
+	@Test("starting a Netlify connection uses Netlify's route and opens Netlify's Authorize page, which returns the code to this Registry")
+	func startNetlify() async throws {
+		let state = platformTestOneTimeValue()
+		let route = PlatformHTTPStub.registry { request in
+			startReply(request, overrides: ["platform": "netlify", "installUrl": netlifyPage(registry(of: request), state: state)])
+		}
+		let started = try await PlatformAuthorizationClient(session: route.session).start(
+			.netlify, clientPublicKey: P256.KeyAgreement.PrivateKey().publicKey.x963Representation, loopbackPort: 51_234,
+			session: platformTestSession(route.baseURL)
+		).get()
+		#expect(started.id == authorizationID)
+		#expect(started.pageURL.absoluteString == netlifyPage(route.baseURL, state: state))
+		#expect(route.requests.first?.url.path() == "/api/vault/platforms/netlify/authorizations")
+	}
+
+	@Test(
+		"a Netlify start answer about Vercel, or whose page isn't LPM Vault's Authorize page returning the code to this Registry, is refused",
+		arguments: [
+			"signed-for-vercel", "vercel-page", "http", "host", "path", "fragment", "response-type", "redirect-elsewhere",
+			"redirect-vercel", "redirect-missing", "extra", "duplicate-state", "client-id", "state",
+		]
+	)
+	func refusesUntrustedNetlifyStart(change: String) async throws {
+		let route = PlatformHTTPStub.registry { request in
+			let registry = registry(of: request)
+			let page: String = switch change {
+			case "vercel-page": installURL
+			case "http": netlifyPage(registry).replacingOccurrences(of: "https://", with: "http://")
+			case "host": netlifyPage(registry).replacingOccurrences(of: "app.netlify.com", with: "app.netlify.com.example")
+			case "path": netlifyPage(registry).replacingOccurrences(of: "/authorize?", with: "/authorize/other?")
+			case "fragment": netlifyPage(registry) + "#top"
+			case "response-type": netlifyPage(registry, responseType: "token")
+			case "redirect-elsewhere": netlifyPage(registry, redirect: "https://elsewhere.example/api/vault/platforms/netlify/callback")
+			case "redirect-vercel": netlifyPage(registry, redirect: "\(registry.absoluteString)/api/vault/platforms/vercel/callback")
+			case "redirect-missing": netlifyPage(registry).replacingOccurrences(of: "&redirect_uri=", with: "&redirect=")
+			case "extra": netlifyPage(registry, extra: "&scope=all")
+			case "duplicate-state": netlifyPage(registry, extra: "&state=\(platformTestOneTimeValue())")
+			case "client-id": netlifyPage(registry, clientID: "a/b")
+			case "state": netlifyPage(registry, state: "short")
+			default: netlifyPage(registry)
+			}
+			return startReply(request, overrides: ["platform": change == "signed-for-vercel" ? "vercel" : "netlify", "installUrl": page])
+		}
+		let result = await PlatformAuthorizationClient(session: route.session).start(
+			.netlify, clientPublicKey: P256.KeyAgreement.PrivateKey().publicKey.x963Representation, loopbackPort: 50_000,
+			session: platformTestSession(route.baseURL))
+		#expect(result == .failure(.invalidResponse))
+	}
+
+	@Test("redeeming a Netlify connection uses Netlify's route, and an answer signed about Vercel is refused")
+	func redeemNetlify() async throws {
+		for (signedPlatform, expected) in [("netlify", Result<PlatformAuthorizationOutcome, PlatformAuthorizationError>.success(.pending)), ("vercel", .failure(.invalidResponse))] {
+			let route = PlatformHTTPStub.registry { request in
+				RegistryTestSigner.signed(202, [
+					"requestNonce": request.header(PlatformAuthorizationClient.nonceHeader) ?? "", "principalId": platformTestPrincipal,
+					"platform": signedPlatform, "authorizationId": authorizationID, "status": "pending",
+				])
+			}
+			let outcome = await PlatformAuthorizationClient(session: route.session).redeem(
+				authorizationID, on: .netlify, proof: platformTestOneTimeValue(), session: platformTestSession(route.baseURL))
+			#expect(outcome == expected, "signed about \(signedPlatform)")
+			#expect(route.requests.first?.url.path() == "/api/vault/platforms/netlify/authorizations/\(authorizationID)/redeem")
+		}
 	}
 
 	@Test("the session's token never prints")
@@ -232,15 +362,15 @@ struct PlatformAuthorizationClientTests {
 }
 
 struct PlatformConnectionListenerTests {
-	private func get(_ port: UInt16, _ query: String) async throws -> (Int, String) {
-		let url = try #require(URL(string: "http://127.0.0.1:\(port)\(PlatformConnectionListener.path)?\(query)"))
+	private func get(_ port: UInt16, _ query: String, on platform: BrowserPlatform = .vercel) async throws -> (Int, String) {
+		let url = try #require(URL(string: "http://127.0.0.1:\(port)\(PlatformConnectionListener.path(for: platform))?\(query)"))
 		let (data, response) = try await URLSession(configuration: .ephemeral).data(from: url)
 		return ((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: data, as: UTF8.self))
 	}
 
 	@Test("only the expected authorization ends the wait; anything else gets a page and is ignored")
 	func waitsForExpectedAuthorization() async throws {
-		let listener = try await PlatformConnectionListener.start()
+		let listener = try await PlatformConnectionListener.start(for: .vercel)
 		defer { listener.stop() }
 		let id = UUID().uuidString.lowercased()
 		listener.expect(id, from: platformTestRegistry)
@@ -255,7 +385,7 @@ struct PlatformConnectionListenerTests {
 
 	@Test("a return the Registry didn't sign, a failure or a made-up proof, doesn't end the wait")
 	func ignoresUnsignedReturns() async throws {
-		let listener = try await PlatformConnectionListener.start()
+		let listener = try await PlatformConnectionListener.start(for: .vercel)
 		defer { listener.stop() }
 		let id = UUID().uuidString.lowercased()
 		listener.expect(id, from: platformTestRegistry)
@@ -272,8 +402,8 @@ struct PlatformConnectionListenerTests {
 	func registrySignatureVector() throws {
 		let id = "5f0c2a8e-1b3d-4c5e-8f9a-0b1c2d3e4f5a"
 		let signature = "FIExkk9QV1xikHTWmbQAPQ5A-a4aFs8P3L-8q05nWbafm9cWlN6mhGDXm7L7ILsEedeJDZoiYRPSijRSdanzBQ"
-		let line = "GET \(PlatformConnectionListener.path)?authorization=\(id)&error=authorization_cancelled&key=vault-test-rfc8032&signature=\(signature)"
-		let request = try #require(PlatformConnectionListener.parse(Data("\(line) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8)))
+		let line = "GET \(PlatformConnectionListener.path(for: .vercel))?authorization=\(id)&error=authorization_cancelled&key=vault-test-rfc8032&signature=\(signature)"
+		let request = try #require(PlatformConnectionListener.parse(Data("\(line) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8), for: .vercel))
 		#expect(request.completion == .failure(.cancelledOnPlatform))
 		func verifies(_ registry: URL) -> Bool {
 			PinnedSessionDelegate.verifyRegistrySignature(
@@ -285,7 +415,7 @@ struct PlatformConnectionListenerTests {
 
 	@Test("a failure from the Registry ends the wait with its reason")
 	func failureEndsWait() async throws {
-		let listener = try await PlatformConnectionListener.start()
+		let listener = try await PlatformConnectionListener.start(for: .vercel)
 		defer { listener.stop() }
 		let id = UUID().uuidString.lowercased()
 		listener.expect(id, from: platformTestRegistry)
@@ -296,15 +426,32 @@ struct PlatformConnectionListenerTests {
 
 	@Test("waiting ends at the deadline, or when the task is cancelled")
 	func deadlineAndCancellation() async throws {
-		let listener = try await PlatformConnectionListener.start()
+		let listener = try await PlatformConnectionListener.start(for: .vercel)
 		await #expect(throws: PlatformConnectionListener.ListenerError.timedOut) {
 			try await listener.completion(until: Date(timeIntervalSinceNow: 0.2))
 		}
-		let waiting = try await PlatformConnectionListener.start()
+		let waiting = try await PlatformConnectionListener.start(for: .vercel)
 		let task = Task { try await waiting.completion(until: Date(timeIntervalSinceNow: 30)) }
 		try await Task.sleep(for: .milliseconds(50))
 		task.cancel()
 		await #expect(throws: CancellationError.self) { try await task.value }
+	}
+
+	@Test("a Netlify listener takes returns only at Netlify's path, its pages name Netlify, and it offers no link onward")
+	func netlifyListener() async throws {
+		let listener = try await PlatformConnectionListener.start(for: .netlify)
+		defer { listener.stop() }
+		let id = UUID().uuidString.lowercased()
+		listener.expect(id, from: platformTestRegistry)
+		let proof = platformTestOneTimeValue()
+		let completion = Task { try await listener.completion(until: Date(timeIntervalSinceNow: 5)) }
+		let atVercel = try await get(listener.port, platformTestReturn(authorization: id, proof: proof), on: .vercel)
+		#expect(atVercel.0 == 400 && atVercel.1.contains("Connect Netlify from"))
+		let page = try await get(listener.port, platformTestReturn(authorization: id, proof: proof, next: "https://vercel.com/dashboard"), on: .netlify)
+		#expect(page.0 == 200 && page.1.contains("Netlify approved") && !page.1.contains("vercel.com"))
+		#expect(try await completion.value == .proof(proof))
+		let refused = PlatformConnectionListener.page(for: .failure(.cancelledOnPlatform), on: .netlify, next: nil)
+		#expect(refused.contains("Netlify wasn") && refused.contains("The connection was cancelled on Netlify."))
 	}
 
 	@Test("requests that aren't a return from Vercel are not completions")
@@ -312,9 +459,9 @@ struct PlatformConnectionListenerTests {
 		let id = UUID().uuidString.lowercased()
 		let proof = platformTestOneTimeValue()
 		func request(_ line: String) -> Data { Data("\(line) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8) }
-		let path = PlatformConnectionListener.path
+		let path = PlatformConnectionListener.path(for: .vercel)
 		let signed = platformTestReturn(authorization: id, proof: proof)
-		#expect(PlatformConnectionListener.parse(request("GET \(path)?\(signed)"))?.completion == .proof(proof))
+		#expect(PlatformConnectionListener.parse(request("GET \(path)?\(signed)"), for: .vercel)?.completion == .proof(proof))
 		let signature = "&key=vault-test-rfc8032&signature=\(String(repeating: "A", count: 86))"
 		for line in [
 			"POST \(path)?\(signed)",
@@ -327,53 +474,77 @@ struct PlatformConnectionListenerTests {
 			"GET \(path)?authorization=\(id)&proof=\(proof)",
 			"GET \(path)?authorization=\(id)&proof=\(proof)&key=bad%20key&signature=x",
 		] {
-			#expect(PlatformConnectionListener.parse(request(line)) == nil, "\(line)")
+			#expect(PlatformConnectionListener.parse(request(line), for: .vercel) == nil, "\(line)")
 		}
-		let badlyEncoded = PlatformConnectionListener.parse(request("GET \(path)?\(signed)&next=%zz"))
+		let badlyEncoded = PlatformConnectionListener.parse(request("GET \(path)?\(signed)&next=%zz"), for: .vercel)
 		#expect(badlyEncoded?.completion == .proof(proof) && badlyEncoded?.next == nil)
 		for next in ["https://evil.example/", "http://vercel.com/", "https://user@vercel.com/", "https://vercel.com:8443/"] {
 			let query = platformTestReturn(authorization: id, proof: proof, next: next)
-			#expect(PlatformConnectionListener.parse(request("GET \(path)?\(query)"))?.next == nil)
+			#expect(PlatformConnectionListener.parse(request("GET \(path)?\(query)"), for: .vercel)?.next == nil)
 		}
 	}
 }
 
-/// A Registry that answers from closures and records what was cancelled.
+/// A Registry that answers from closures and records each call's platform,
+/// and what was cancelled.
 private final class FakeAuthorizations: PlatformAuthorizationClientProtocol, @unchecked Sendable {
 	private let lock = NSLock()
 	private var publicKey: Data?
 	private var cancelled: [String] = []
+	private var calls: [String] = []
 	private var redeems = 0
 	let id = UUID().uuidString.lowercased()
 	var start: (@Sendable () -> Result<Void, PlatformAuthorizationError>) = { .success(()) }
 	var outcome: (@Sendable (_ attempt: Int, _ id: String, _ key: Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError>) = { _, _, _ in .success(.missing) }
-	let installURL = URL(string: "https://vercel.com/integrations/lpm-vault/new?state=\(platformTestOneTimeValue())")!
+	/// How long after starting the authorization expires.
+	var expiresIn: TimeInterval = 30
+	let pageURL: URL
 
-	var cancelledIDs: [String] { lock.withLock { cancelled } }
-
-	func startVercel(clientPublicKey: Data, loopbackPort: UInt16, session: PlatformSession) async -> Result<StartedPlatformAuthorization, PlatformAuthorizationError> {
-		lock.withLock { publicKey = clientPublicKey }
-		return start().map { StartedPlatformAuthorization(id: id, installURL: installURL, expiresAt: Date(timeIntervalSinceNow: 30)) }
+	init(pageURL: URL = URL(string: "https://vercel.com/integrations/lpm-vault/new?state=\(platformTestOneTimeValue())")!) {
+		self.pageURL = pageURL
 	}
 
-	func redeem(_ authorizationID: String, proof: String, session: PlatformSession) async -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
+	var cancelledIDs: [String] { lock.withLock { cancelled } }
+	/// Each call as `start`, `redeem` or `cancel` with its platform, such as `start vercel`.
+	var platformCalls: [String] { lock.withLock { calls } }
+
+	func start(_ platform: BrowserPlatform, clientPublicKey: Data, loopbackPort: UInt16, session: PlatformSession) async -> Result<StartedPlatformAuthorization, PlatformAuthorizationError> {
+		lock.withLock {
+			publicKey = clientPublicKey
+			calls.append("start \(platform.rawValue)")
+		}
+		return start().map { StartedPlatformAuthorization(id: id, pageURL: pageURL, expiresAt: Date(timeIntervalSinceNow: expiresIn)) }
+	}
+
+	func redeem(_ authorizationID: String, on platform: BrowserPlatform, proof: String, session: PlatformSession) async -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
 		let (attempt, key) = lock.withLock { () -> (Int, Data) in
 			defer { redeems += 1 }
+			calls.append("redeem \(platform.rawValue)")
 			return (redeems, publicKey ?? Data())
 		}
 		return outcome(attempt, authorizationID, key)
 	}
 
-	func cancel(_ authorizationID: String, session: PlatformSession) async {
-		lock.withLock { cancelled.append(authorizationID) }
+	func cancel(_ authorizationID: String, on platform: BrowserPlatform, session: PlatformSession) async {
+		lock.withLock {
+			cancelled.append(authorizationID)
+			calls.append("cancel \(platform.rawValue)")
+		}
 	}
 
 	func readyGrant(teamID: String? = "team_acme") -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
-		{ _, id, key in
-			let sealed = try! RegistryTestSealer.seal(
-				["platform": "vercel", "accessToken": "vca_granted", "installationId": "icfg_acme", "teamId": teamID ?? NSNull(), "userId": "u_tolga"],
-				authorizationID: id, to: key)
-			return .success(.ready(sealed))
+		ready(["platform": "vercel", "accessToken": "vca_granted", "installationId": "icfg_acme", "teamId": teamID ?? NSNull(), "userId": "u_tolga"])
+	}
+
+	func readyNetlifyGrant() -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
+		ready(["platform": "netlify", "accessToken": "nfp_granted"])
+	}
+
+	private func ready(_ payload: [String: Any]) -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
+		let json = try! JSONSerialization.data(withJSONObject: payload)
+		return { _, id, key in
+			let payload = try! JSONSerialization.jsonObject(with: json) as! [String: Any]
+			return .success(.ready(try! RegistryTestSealer.seal(payload, authorizationID: id, to: key)))
 		}
 	}
 }
@@ -388,47 +559,55 @@ private struct FakeVercel: VercelClientProtocol {
 	func replace(_ variableID: String, key: String, value: String, storage: VercelVariableWrite.Storage, projectID: String, teamID: String?) async -> Result<VercelEnvironmentVariable, VercelAPIError> { .failure(.notFound) }
 }
 
-/// Plays the browser: after Vercel's page "opens", returns to the Mac's listener.
-private func browser(returning query: String, listener: @escaping @Sendable () -> UInt16?) -> @Sendable (URL) async -> Void {
+/// Plays the browser: `delay` after the platform's page "opens", returns to the Mac's listener.
+private func browser(
+	returning query: String,
+	on platform: BrowserPlatform = .vercel,
+	after delay: Duration = .zero,
+	listener: @escaping @Sendable () -> UInt16?
+) -> @Sendable (URL) async -> Void {
 	{ _ in
 		guard let port = listener() else { return }
 		Task.detached {
-			let url = URL(string: "http://127.0.0.1:\(port)\(PlatformConnectionListener.path)?\(query)")!
+			try? await Task.sleep(for: delay)
+			let url = URL(string: "http://127.0.0.1:\(port)\(PlatformConnectionListener.path(for: platform))?\(query)")!
 			_ = try? await URLSession(configuration: .ephemeral).data(from: url)
 		}
 	}
 }
 
-private func failure<Value>(of result: Result<Value, VercelConnectError>) -> VercelConnectError? {
+private func failure<Value>(of result: Result<Value, BrowserConnectError>) -> BrowserConnectError? {
 	if case .failure(let error) = result { return error }
 	return nil
 }
 
-struct VercelConnectorTests {
-	private final class Port: @unchecked Sendable {
-		private let lock = NSLock()
-		private var value: UInt16?
-		var port: UInt16? {
-			get { lock.withLock { value } }
-			set { lock.withLock { value = newValue } }
-		}
+private final class Port: @unchecked Sendable {
+	private let lock = NSLock()
+	private var value: UInt16?
+	var port: UInt16? {
+		get { lock.withLock { value } }
+		set { lock.withLock { value = newValue } }
 	}
+}
 
+/// A browser authorization against `authorizations` whose listener's port lands in `port`.
+private func browserAuthorization(_ authorizations: FakeAuthorizations, port: Port) -> BrowserAuthorization {
+	var authorization = BrowserAuthorization(authorizations: authorizations, listen: { platform in
+		let listener = try await PlatformConnectionListener.start(for: platform)
+		port.port = listener.port
+		return listener
+	})
+	authorization.pendingDelay = .milliseconds(10)
+	return authorization
+}
+
+struct VercelConnectorTests {
 	private func connector(
 		_ authorizations: FakeAuthorizations,
 		vercel: FakeVercel = FakeVercel(),
 		port: Port
 	) -> VercelConnector {
-		var connector = VercelConnector(
-			authorizations: authorizations,
-			listen: {
-				let listener = try await PlatformConnectionListener.start()
-				port.port = listener.port
-				return listener
-			},
-			client: { _ in vercel })
-		connector.pendingDelay = .milliseconds(10)
-		return connector
+		VercelConnector(authorization: browserAuthorization(authorizations, port: port), client: { _ in vercel })
 	}
 
 	private let session = platformTestSession(URL(string: "http://localhost:1")!)
@@ -442,7 +621,7 @@ struct VercelConnectorTests {
 		let id = authorizations.id
 		let proof = platformTestOneTimeValue()
 		let result = await connector(authorizations, port: port).connect(session: session) { url in
-			#expect(url == authorizations.installURL)
+			#expect(url == authorizations.pageURL)
 			opened.port = 1
 			await browser(returning: platformTestReturn(authorization: id, proof: proof), listener: { port.port })(url)
 		}
@@ -474,7 +653,7 @@ struct VercelConnectorTests {
 		let authorizations = FakeAuthorizations()
 		var vercel = FakeVercel()
 		var query = platformTestReturn(authorization: authorizations.id, proof: platformTestOneTimeValue())
-		let expected: VercelConnectError
+		let expected: BrowserConnectError
 		switch path {
 		case "platform":
 			query = platformTestReturn(authorization: authorizations.id, error: "authorization_cancelled")
@@ -528,6 +707,198 @@ struct VercelConnectorTests {
 		#expect(failure(of: await task.value) == .cancelled)
 		try await Task.sleep(for: .milliseconds(50))
 		#expect(authorizations.cancelledIDs == [authorizations.id])
+	}
+}
+
+/// A Netlify that answers each read of the user from a script, whose last answer repeats.
+private final class ScriptedNetlify: NetlifyClientProtocol, @unchecked Sendable {
+	private let lock = NSLock()
+	private var answers: [Result<NetlifyUser, NetlifyAPIError>]
+	private var reads = 0
+	private var received: [String] = []
+
+	init(_ answers: [Result<NetlifyUser, NetlifyAPIError>]) {
+		self.answers = answers
+	}
+
+	var userReads: Int { lock.withLock { reads } }
+	/// The tokens clients were made with.
+	var tokens: [String] { lock.withLock { received } }
+
+	func client(_ token: String) -> any NetlifyClientProtocol {
+		lock.withLock { received.append(token) }
+		return self
+	}
+
+	func user() async -> Result<NetlifyUser, NetlifyAPIError> {
+		lock.withLock {
+			reads += 1
+			return answers.count > 1 ? answers.removeFirst() : answers[0]
+		}
+	}
+}
+
+private final class OpenedPages: @unchecked Sendable {
+	private let lock = NSLock()
+	private var opened: [URL] = []
+	var urls: [URL] { lock.withLock { opened } }
+	func append(_ url: URL) { lock.withLock { opened.append(url) } }
+}
+
+struct NetlifyConnectorTests {
+	private static let tolga = NetlifyUser(id: "5f1a2b3c4d5e6f7a8b9c0d1e", name: "Tolga Ergin", email: "tolga@example.com")
+	private static let authorizePage = URL(string:
+		"https://app.netlify.com/authorize?client_id=lpm_vault&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fapi%2Fvault%2Fplatforms%2Fnetlify%2Fcallback&state=\(platformTestOneTimeValue())")!
+
+	private let session = platformTestSession(URL(string: "http://localhost:1")!)
+
+	/// Connects against `authorizations`, with a browser that returns `query` for the authorization to the listener.
+	private func connect(
+		_ authorizations: FakeAuthorizations,
+		netlify: ScriptedNetlify = ScriptedNetlify([.success(tolga)]),
+		query: ((String) -> String)? = nil,
+		retryDelay: Duration = .milliseconds(5),
+		browserDelay: Duration = .zero,
+		opened: OpenedPages? = nil
+	) async -> Result<NetlifyConnection, BrowserConnectError> {
+		let port = Port()
+		var connector = NetlifyConnector(authorization: browserAuthorization(authorizations, port: port), client: netlify.client)
+		connector.retryDelay = retryDelay
+		let returning = query?(authorizations.id) ?? platformTestReturn(authorization: authorizations.id, proof: platformTestOneTimeValue())
+		let browser = browser(returning: returning, on: .netlify, after: browserDelay, listener: { port.port })
+		return await connector.connect(session: session) { url in
+			opened?.append(url)
+			await browser(url)
+		}
+	}
+
+	@Test("connecting opens Netlify's Authorize page, waits for the browser at Netlify's path, collects the token once and reads whose it is")
+	func connects() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyNetlifyGrant()
+		let netlify = ScriptedNetlify([.success(Self.tolga)])
+		let opened = OpenedPages()
+		let connection = try await connect(authorizations, netlify: netlify, opened: opened).get()
+		#expect(opened.urls == [Self.authorizePage])
+		#expect(connection == NetlifyConnection(user: Self.tolga, token: "nfp_granted"))
+		#expect(netlify.tokens == ["nfp_granted"])
+		#expect(authorizations.platformCalls == ["start netlify", "redeem netlify"])
+		#expect(authorizations.cancelledIDs.isEmpty)
+	}
+
+	@Test("without an LPM session nothing opens, and the message says to sign in")
+	func signedOut() async {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.start = { .failure(.signedOut) }
+		let opened = OpenedPages()
+		let result = await connect(authorizations, opened: opened)
+		#expect(failure(of: result) == .signedOut)
+		#expect(failure(of: result)?.message(for: .netlify) == "Sign in to LPM to connect Netlify.")
+		#expect(opened.urls.isEmpty)
+	}
+
+	@Test("a Vercel grant can't complete a Netlify connection, and its token is never used")
+	func refusesVercelGrant() async {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGrant()
+		let netlify = ScriptedNetlify([.success(Self.tolga)])
+		#expect(failure(of: await connect(authorizations, netlify: netlify)) == .invalidResponse)
+		#expect(netlify.tokens.isEmpty && netlify.userReads == 0)
+	}
+
+	@Test("refusing on Netlify ends the connection naming Netlify, and the authorization is cancelled on Netlify's route")
+	func refusedOnNetlify() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		let result = await connect(authorizations, query: { platformTestReturn(authorization: $0, error: "authorization_cancelled") })
+		#expect(failure(of: result) == .platform(.cancelledOnPlatform))
+		#expect(failure(of: result)?.message(for: .netlify) == "The connection was cancelled on Netlify.")
+		for _ in 0..<100 where authorizations.cancelledIDs.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(authorizations.cancelledIDs == [authorizations.id])
+		#expect(authorizations.platformCalls == ["start netlify", "cancel netlify"])
+	}
+
+	@Test("the user is read again when Netlify couldn't answer, since the token can't be collected again")
+	func retriesUser() async throws {
+		let recovering = FakeAuthorizations(pageURL: Self.authorizePage)
+		recovering.outcome = recovering.readyNetlifyGrant()
+		let netlify = ScriptedNetlify([.failure(.transport), .failure(.server(503)), .success(Self.tolga)])
+		#expect(try await connect(recovering, netlify: netlify).get().user == Self.tolga)
+		#expect(netlify.userReads == 3)
+
+		let down = FakeAuthorizations(pageURL: Self.authorizePage)
+		down.outcome = down.readyNetlifyGrant()
+		let unreachable = ScriptedNetlify([.failure(.rateLimited(until: Date())), .failure(.transport)])
+		#expect(failure(of: await connect(down, netlify: unreachable)) == .transport)
+		#expect(unreachable.userReads == 3)
+	}
+
+	@Test(
+		"a token Netlify refuses at once isn't kept, and neither is one whose user Netlify doesn't say",
+		arguments: [
+			(NetlifyAPIError.unauthorized, BrowserConnectError.tokenRejected), (.forbidden, .tokenRejected),
+			(.invalidResponse, .accountUnreadable), (.notFound, .accountUnreadable), (.rejected(status: 422), .accountUnreadable),
+		]
+	)
+	func refusedUser(error: NetlifyAPIError, expected: BrowserConnectError) async {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyNetlifyGrant()
+		let netlify = ScriptedNetlify([.failure(error)])
+		#expect(failure(of: await connect(authorizations, netlify: netlify)) == expected)
+		#expect(netlify.userReads == 1)
+	}
+
+	@Test("a rate limit on reading the user is waited out until Netlify says it lifts, so the grant isn't lost")
+	func waitsOutUserRateLimit() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyNetlifyGrant()
+		let lifts = Date(timeIntervalSinceNow: 0.4)
+		let netlify = ScriptedNetlify([.failure(.rateLimited(until: lifts)), .success(Self.tolga)])
+		#expect(try await connect(authorizations, netlify: netlify).get().user == Self.tolga)
+		#expect(Date() >= lifts)
+		#expect(netlify.userReads == 2)
+	}
+
+	@Test("a rate limit that lifts later than LPM Vault waits, or keeps applying, says Netlify is limiting requests")
+	func userRateLimited() async {
+		let later = FakeAuthorizations(pageURL: Self.authorizePage)
+		later.outcome = later.readyNetlifyGrant()
+		let limited = ScriptedNetlify([.failure(.rateLimited(until: Date(timeIntervalSinceNow: 3_600)))])
+		let result = await connect(later, netlify: limited)
+		#expect(failure(of: result) == .platformRateLimited)
+		#expect(failure(of: result)?.message(for: .netlify) == "Netlify is limiting requests. Wait a minute, then connect again.")
+		#expect(limited.userReads == 1)
+
+		let again = FakeAuthorizations(pageURL: Self.authorizePage)
+		again.outcome = again.readyNetlifyGrant()
+		let stays = ScriptedNetlify([.failure(.rateLimited(until: Date()))])
+		#expect(failure(of: await connect(again, netlify: stays)) == .platformRateLimited)
+		#expect(stays.userReads == 3)
+	}
+
+	@Test("cancelling while the user is about to be read again, or a rate limit is waited out, stops at once")
+	func cancelWhileRetrying() async throws {
+		for answer: NetlifyAPIError in [.transport, .rateLimited(until: Date(timeIntervalSinceNow: 30))] {
+			let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+			authorizations.outcome = authorizations.readyNetlifyGrant()
+			let netlify = ScriptedNetlify([.failure(answer)])
+			let task = Task { await connect(authorizations, netlify: netlify, retryDelay: .seconds(30)) }
+			for _ in 0..<400 where netlify.userReads == 0 { try await Task.sleep(for: .milliseconds(5)) }
+			let cancelled = ContinuousClock.now
+			task.cancel()
+			#expect(failure(of: await task.value) == .cancelled)
+			#expect(ContinuousClock.now - cancelled < .seconds(5))
+			#expect(netlify.userReads == 1)
+		}
+	}
+
+	@Test("a browser coming back just after the authorization expires, from a code the Registry claimed in time, still connects")
+	func returnsAfterExpiry() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.expiresIn = 0.05
+		authorizations.outcome = authorizations.readyNetlifyGrant()
+		let connection = try await connect(authorizations, browserDelay: .milliseconds(300)).get()
+		#expect(connection.user == Self.tolga)
+		#expect(authorizations.cancelledIDs.isEmpty)
 	}
 }
 

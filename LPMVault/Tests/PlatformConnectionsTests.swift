@@ -112,7 +112,7 @@ struct PlatformConnectionStoreTests {
 		#expect(PlatformConnectionStore.decode(try altered { $0["teamId"] = "0x" }, account: id) == .failure(.unreadable))
 		#expect(PlatformConnectionStore.decode(try altered { $0["accessToken"] = "has space" }, account: id) == .failure(.unreadable))
 		#expect(PlatformConnectionStore.decode(data, account: "coolify.1.https://coolify.example.com") == .failure(.unreadable))
-		#expect(PlatformConnectionStore.decode(try altered { $0["platform"] = "netlify" }, account: id) == .failure(.newerVersion))
+		#expect(PlatformConnectionStore.decode(try altered { $0["platform"] = "cloudflare" }, account: id) == .failure(.newerVersion))
 	}
 
 	@Test("a Coolify connection that couldn't be read back isn't stored")
@@ -219,6 +219,64 @@ struct PlatformConnectionStoreTests {
 		#expect(PublishSheet.connectionLabel(teams[0]) != PublishSheet.connectionLabel(teams[1]))
 	}
 
+	private func netlify(user: String = "5f1a2b3c4d5e6f7a8b9c0d1e", name: String = "Tolga Ergin", email: String? = "tolga@example.com") -> PlatformConnection.Account {
+		.netlify(NetlifyConnectionAccount(userID: user, name: name, email: email))
+	}
+
+	@Test("a Netlify user is saved by its user, beside other platforms' accounts, and connecting again replaces it")
+	func savesNetlify() async throws {
+		let store = store
+		let saved = try await store.save(netlify(), accessToken: "nfo_first", at: connectedAt).get()
+		#expect(saved.id == "netlify.5f1a2b3c4d5e6f7a8b9c0d1e" && saved.platform == .netlify && saved.name == "Tolga Ergin")
+		#expect(saved.detail == "tolga@example.com")
+		_ = try await store.save(grant(), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt).get()
+		let again = try await store.save(netlify(name: "Tolga"), accessToken: "nfo_second", at: connectedAt).get()
+		#expect(again.id == saved.id)
+		#expect(try await store.connections().get().map(\.name) == ["Acme", "Tolga"])
+		#expect(try await store.accessToken(for: saved.id).get() == "nfo_second")
+	}
+
+	@Test("a Netlify record round-trips exactly, with or without an email; one with an unknown field, an unsafe user or token isn't read")
+	func netlifyRecords() throws {
+		for account in [netlify(), netlify(email: nil)] {
+			let record = PlatformConnectionStore.Record(
+				connection: PlatformConnection(account: account, connectedAt: PublishTimestamp.normalized(connectedAt)),
+				accessToken: "nfo_token")
+			let data = try #require(PlatformConnectionStore.encode(record))
+			#expect(PlatformConnectionStore.decode(data, account: record.connection.id) == .success(record))
+		}
+		let record = PlatformConnectionStore.Record(
+			connection: PlatformConnection(account: netlify(), connectedAt: connectedAt), accessToken: "nfo_token")
+		let id = record.connection.id
+		let data = try #require(PlatformConnectionStore.encode(record))
+		func altered(_ change: (inout [String: Any]) -> Void) throws -> Data {
+			var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+			change(&object)
+			return try JSONSerialization.data(withJSONObject: object)
+		}
+		#expect(PlatformConnectionStore.decode(try altered { $0["extra"] = 1 }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0.removeValue(forKey: "email") }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["email"] = 1 }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["accessToken"] = "has space" }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["userId"] = "../u" }, account: "netlify.../u") == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(data, account: "netlify.someone_else") == .failure(.unreadable))
+		#expect(PlatformConnectionStore.encode(.init(connection: PlatformConnection(account: netlify(name: " Tolga"), connectedAt: connectedAt), accessToken: "nfo")) == nil)
+		#expect(PlatformConnectionStore.encode(.init(connection: PlatformConnection(account: netlify(), connectedAt: connectedAt), accessToken: "nfo x")) == nil)
+	}
+
+	@Test("a Netlify name and email stored before they were escaped read back escaped")
+	func escapesStoredNetlifyNames() async throws {
+		let store = store
+		let saved = try await store.save(netlify(), accessToken: "nfo_token", at: connectedAt).get()
+		let data = try #require(keychain.platformConnectionStorage[saved.id])
+		var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+		object["name"] = "Tolga\u{202E}"
+		object["email"] = "a\u{2066}@example.com"
+		keychain.platformConnectionStorage[saved.id] = try JSONSerialization.data(withJSONObject: object)
+		let connection = try #require(try await store.connections().get().first)
+		#expect(connection.name == #"Tolga\u{202e}"# && connection.detail == #"a\u{2066}@example.com"#)
+	}
+
 	@Test("a Keychain failure is reported")
 	func keychainFailure() async {
 		keychain.failPlatformConnectionAccounts = ["*"]
@@ -232,8 +290,10 @@ struct PlatformConnectionsModelTests {
 
 	private func model(
 		store: PlatformConnectionStore? = nil,
-		connect: @escaping @Sendable () async -> Result<(grant: VercelGrant, account: VercelAccount), VercelConnectError> = { .failure(.cancelled) },
+		connect: @escaping @Sendable () async -> Result<(grant: VercelGrant, account: VercelAccount), BrowserConnectError> = { .failure(.cancelled) },
 		connectCoolify: @escaping PlatformConnections.ConnectCoolify = { _, _ in .failure(.cancelled) },
+		connectNetlify: @escaping @Sendable () async -> Result<NetlifyConnection, BrowserConnectError> = { .failure(.cancelled) },
+		opened: OpenedLinks? = nil,
 		session: PlatformSession? = platformTestSession(URL(string: "https://lpm.dev")!)
 	) -> PlatformConnections {
 		PlatformConnections(
@@ -243,10 +303,16 @@ struct PlatformConnectionsModelTests {
 				return await connect()
 			},
 			connectCoolify: connectCoolify,
+			connectNetlify: { _, open in
+				await open(Self.netlifyAuthorizePage)
+				return await connectNetlify()
+			},
 			session: { session },
-			openURL: { _ in },
+			openURL: { opened?.append($0) },
 			now: { Date(timeIntervalSince1970: 1_760_000_000) })
 	}
+
+	private nonisolated static let netlifyAuthorizePage = URL(string: "https://app.netlify.com/authorize?client_id=lpm_vault&response_type=code")!
 
 	private func waitUntilIdle(_ model: PlatformConnections) async {
 		for _ in 0..<500 where model.isConnecting || model.isLoading { try? await Task.sleep(for: .milliseconds(5)) }
@@ -271,7 +337,7 @@ struct PlatformConnectionsModelTests {
 		let model = model(connect: { Issue.record("Started without a session"); return .failure(.cancelled) }, session: nil)
 		model.connectVercel()
 		await waitUntilIdle(model)
-		#expect(model.notice == .init(message: VercelConnectError.signedOut.message, isError: true))
+		#expect(model.notice == .init(message: "Sign in to LPM to connect Vercel.", isError: true))
 	}
 
 	@Test("a failed connection shows why; a cancelled one shows nothing")
@@ -279,7 +345,7 @@ struct PlatformConnectionsModelTests {
 		let failed = model { .failure(.platform(.cancelledOnPlatform)) }
 		failed.connectVercel()
 		await waitUntilIdle(failed)
-		#expect(failed.notice?.isError == true && failed.notice?.message == PlatformConnectFailure.cancelledOnPlatform.message)
+		#expect(failed.notice?.isError == true && failed.notice?.message == "The connection was cancelled on Vercel.")
 		let cancelled = model { .failure(.cancelled) }
 		cancelled.connectVercel()
 		await waitUntilIdle(cancelled)
@@ -533,6 +599,115 @@ struct PlatformConnectionsModelTests {
 		#expect(opened.urls.isEmpty && model.phase == .idle)
 	}
 
+	private nonisolated static let tolga = NetlifyConnection(
+		user: NetlifyUser(id: "5f1a2b3c4d5e6f7a8b9c0d1e", name: "Tolga Ergin", email: "tolga@example.com"), token: "nfo_tolga")
+
+	@Test("connecting Netlify with the LPM session opens its page, and saves the user, lists it and says so")
+	func connectsNetlify() async throws {
+		let opened = OpenedLinks()
+		let model = model(connectNetlify: { .success(Self.tolga) }, opened: opened)
+		model.connectNetlify()
+		#expect(model.connecting == .netlify)
+		await waitUntilIdle(model)
+		#expect(opened.urls == [Self.netlifyAuthorizePage])
+		let connection = try #require(model.connections.first)
+		#expect(connection.id == "netlify.5f1a2b3c4d5e6f7a8b9c0d1e" && connection.name == "Tolga Ergin" && connection.detail == "tolga@example.com")
+		#expect(model.notice == .init(message: "Connected Tolga Ergin on Netlify.", isError: false))
+		#expect(model.connecting == nil && model.phase == .idle)
+		#expect(try await PlatformConnectionStore(service: keychain).accessToken(for: connection.id).get() == "nfo_tolga")
+	}
+
+	@Test("without an LPM session Netlify doesn't start, no page opens, and the page says to sign in")
+	func netlifyNeedsSession() async {
+		let opened = OpenedLinks()
+		let model = model(connectNetlify: { Issue.record("Started without a session"); return .failure(.cancelled) }, opened: opened, session: nil)
+		model.connectNetlify()
+		await waitUntilIdle(model)
+		#expect(opened.urls.isEmpty)
+		#expect(model.notice == .init(message: "Sign in to LPM to connect Netlify.", isError: true))
+	}
+
+	@Test("a Netlify user without a name is listed by email, or else as a Netlify account")
+	func namesNetlifyUser() async throws {
+		let unnamed = NetlifyConnection(user: NetlifyUser(id: "u1", name: nil, email: "tolga@example.com"), token: "nfo_1")
+		let anonymous = NetlifyConnection(user: NetlifyUser(id: "u2", name: nil, email: nil), token: "nfo_2")
+		for (connection, name, detail) in [(unnamed, "tolga@example.com", "tolga@example.com"), (anonymous, "Netlify account", "user u2")] {
+			let model = model(connectNetlify: { .success(connection) })
+			model.connectNetlify()
+			await waitUntilIdle(model)
+			let saved = try #require(model.connections.first { $0.id == "netlify.\(connection.user.id)" })
+			#expect(saved.name == name && saved.detail == detail)
+		}
+	}
+
+	@Test("a refused Netlify connection shows why, and a cancelled one shows nothing")
+	func netlifyFailures() async {
+		let failed = model(connectNetlify: { .failure(.platform(.cancelledOnPlatform)) })
+		failed.connectNetlify()
+		await waitUntilIdle(failed)
+		#expect(failed.notice == .init(message: "The connection was cancelled on Netlify.", isError: true))
+		let cancelled = model(connectNetlify: { .failure(.cancelled) })
+		cancelled.connectNetlify()
+		await waitUntilIdle(cancelled)
+		#expect(cancelled.notice == nil && keychain.platformConnectionStorage.isEmpty)
+	}
+
+	@Test("one browser connection runs at a time, so Vercel doesn't start while Netlify connects")
+	func oneBrowserConnection() async throws {
+		let gate = AsyncGate()
+		let vercelStarted = OSAllocatedUnfairLock(initialState: false)
+		let model = model(
+			connect: {
+				vercelStarted.withLock { $0 = true }
+				return .failure(.cancelled)
+			},
+			connectNetlify: {
+				await gate.wait()
+				return .failure(.cancelled)
+			})
+		model.connectNetlify()
+		model.connectVercel()
+		try await Task.sleep(for: .milliseconds(30))
+		#expect(model.connecting == .netlify && !vercelStarted.withLock { $0 })
+		await gate.open()
+		await waitUntilIdle(model)
+		model.connectVercel()
+		await waitUntilIdle(model)
+		#expect(vercelStarted.withLock { $0 })
+	}
+
+	@Test("locking while Netlify connects drops it, and a token that arrives afterward isn't saved")
+	func netlifyDroppedOnLock() async throws {
+		let gate = AsyncGate()
+		let model = model(connectNetlify: {
+			await gate.wait()
+			return .success(Self.tolga)
+		})
+		model.connectNetlify()
+		try await Task.sleep(for: .milliseconds(30))
+		model.reset()
+		#expect(!model.isConnecting && model.connecting == nil)
+		await gate.open()
+		try await Task.sleep(for: .milliseconds(50))
+		#expect(model.connections.isEmpty && model.notice == nil)
+		#expect(keychain.platformConnectionStorage.isEmpty)
+	}
+
+	@Test("cancelling while Netlify's token waits to be saved leaves nothing in the Keychain, and no notice")
+	func netlifyLateSaveDropped() async throws {
+		let store = PlatformConnectionStore(service: keychain)
+		let model = model(store: store, connectNetlify: { .success(Self.tolga) })
+		let release = await holdStore(store)
+		model.connectNetlify()
+		try await Task.sleep(for: .milliseconds(50))
+		model.cancelConnecting()
+		release()
+		await waitUntilIdle(model)
+		_ = await store.connections()
+		#expect(keychain.platformConnectionStorage.isEmpty)
+		#expect(model.notice == nil && model.connections.isEmpty)
+	}
+
 	@Test("loading reads what this Mac holds")
 	func loads() async throws {
 		_ = try await PlatformConnectionStore(service: keychain).save(
@@ -668,11 +843,15 @@ extension SheetInteractionTests {
 		private let opened = OpenedURLs()
 
 		/// The page's store never opens a real browser; `opened` records what it would open.
-		private func page(signedIn: Bool = true, connect: PlatformConnections.Connect? = nil) async throws -> (VaultStore, SheetTestHost<PlatformsView>) {
+		private func page(
+			signedIn: Bool = true,
+			connect: PlatformConnections.Connect? = nil,
+			connectNetlify: PlatformConnections.ConnectNetlify? = nil
+		) async throws -> (VaultStore, SheetTestHost<PlatformsView>) {
 			let opened = opened
 			let store = VaultStore(
 				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
-				authTokenProvider: { _, _ in "lpm_session" }, platformConnect: connect,
+				authTokenProvider: { _, _ in "lpm_session" }, platformConnect: connect, netlifyConnect: connectNetlify,
 				platformURLOpener: { opened.append($0) })
 			store.isUnlocked = true
 			if signedIn {
@@ -743,6 +922,82 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Connect Coolify opens its sheet")
 			let sheet = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Turn on API access", in: sheet))
+		}
+	}
+
+	@Suite("Platforms page Netlify section, rendered")
+	@MainActor
+	struct NetlifySectionRenderingTests {
+		private let keychain = MockKeychainService()
+		private let opened = OpenedURLs()
+
+		private func page(
+			signedIn: Bool = true,
+			connectNetlify: @escaping PlatformConnections.ConnectNetlify
+		) -> (VaultStore, SheetTestHost<PlatformsView>) {
+			let opened = opened
+			let store = VaultStore(
+				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
+				authTokenProvider: { _, _ in signedIn ? "lpm_session" : nil }, netlifyConnect: connectNetlify,
+				platformURLOpener: { opened.append($0) })
+			store.isUnlocked = true
+			if signedIn {
+				store.currentUser = LPMUser(id: "lpm_user_1", username: "tolga", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
+			}
+			store.showPlatforms()
+			let host = SheetTestHost(PlatformsView(store: store), size: NSSize(width: 760, height: 720), keepsRequestedSize: true, usesHostingView: true)
+			return (store, host)
+		}
+
+		@Test("Connect Netlify opens Netlify's page with the LPM session, says where to finish, and Cancel stops it")
+		func connectsAndCancels() async throws {
+			let authorize = URL(string: "https://app.netlify.com/authorize?client_id=lpm_vault&response_type=code")!
+			let (store, host) = page(connectNetlify: { session, open in
+				#expect(session.principalID == "lpm_user_1")
+				await open(authorize)
+				try? await Task.sleep(for: .seconds(60))
+				return .failure(.cancelled)
+			})
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("No Netlify accounts connected yet"))
+			try await host.click("Connect Netlify")
+			#expect(try await host.waitForText("authorize LPM Vault on Netlify"))
+			#expect(store.platforms.connecting == .netlify)
+			#expect(opened.urls == [authorize])
+			try await host.click("Cancel")
+			#expect(try await host.waitUntil { !store.platforms.isConnecting })
+			#expect(try await host.waitForTextToDisappear("authorize LPM Vault on Netlify"))
+		}
+
+		@Test("signed out of LPM, the Netlify section says to sign in, and Connect Netlify does nothing")
+		func signedOut() async throws {
+			let (store, host) = page(signedIn: false, connectNetlify: { _, _ in
+				Issue.record("Started without a session")
+				return .failure(.cancelled)
+			})
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Sign in to LPM to connect Netlify"))
+			try await host.click("Connect Netlify")
+			try await host.settle()
+			#expect(!store.platforms.isConnecting && opened.urls.isEmpty)
+		}
+
+		@Test("a connected Netlify account shows with its email, and Disconnect forgets it on this Mac")
+		func disconnects() async throws {
+			_ = try await PlatformConnectionStore(service: keychain).save(
+				.netlify(NetlifyConnectionAccount(userID: "5f1a2b3c4d5e6f7a8b9c0d1e", name: "Northwind Dev", email: "dev@northwind.test")),
+				accessToken: "nfo_1", at: Date()).get()
+			let (store, host) = page(connectNetlify: { _, _ in .failure(.cancelled) })
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Northwind Dev"))
+			#expect(try await host.waitForText("dev@northwind.test"))
+			try await host.click("Disconnect")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
+			let dialog = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("until you revoke it", in: dialog))
+			try host.clickAlertButton("Disconnect", in: dialog)
+			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
+			#expect(try await host.waitForText("No Netlify accounts connected yet"))
 		}
 	}
 

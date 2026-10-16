@@ -211,6 +211,16 @@ actor PlatformConnectionStore {
 				"teamId": coolify.teamID,
 				"teamName": coolify.teamName,
 			]) { _, new in new }
+		case .netlify(let netlify):
+			guard NetlifyHTTP.isValidAccessToken(record.accessToken), NetlifyHTTP.isValidIdentifier(netlify.userID),
+				isValidName(netlify.name), netlify.email.map(isValidName) ?? true
+			else { return nil }
+			object.merge([
+				"platform": "netlify",
+				"userId": netlify.userID,
+				"name": netlify.name,
+				"email": netlify.email ?? NSNull(),
+			]) { _, new in new }
 		}
 		guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
 			data.count <= maximumRecordBytes
@@ -262,6 +272,19 @@ actor PlatformConnectionStore {
 			record = Record(
 				connection: PlatformConnection(
 					account: .coolify(CoolifyConnectionAccount(instance: instance, teamID: teamID, teamName: teamName)),
+					connectedAt: connectedAt),
+				accessToken: accessToken)
+		case .netlify?:
+			guard Set(object.keys) == ["version", "platform", "accessToken", "connectedAt", "userId", "name", "email"],
+				let userID = object["userId"] as? String, NetlifyHTTP.isValidIdentifier(userID),
+				let name = (object["name"] as? String)?.escapingDirectionControls, isValidName(name),
+				let email = optionalString(object["email"]).map({ $0?.escapingDirectionControls }),
+				email.map(isValidName) ?? true,
+				NetlifyHTTP.isValidAccessToken(accessToken)
+			else { return .failure(.unreadable) }
+			record = Record(
+				connection: PlatformConnection(
+					account: .netlify(NetlifyConnectionAccount(userID: userID, name: name, email: email)),
 					connectedAt: connectedAt),
 				accessToken: accessToken)
 		case nil:

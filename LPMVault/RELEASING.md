@@ -21,6 +21,12 @@ The download routes redirect to public GitHub release assets. The repository mus
 
 GitHub release immutability protects each published version. The current installer and feed use uncached redirects. Published releases contain all assets before they become visible.
 
+## Netlify OAuth app
+
+LPM Vault connects Netlify through the Registry, as it connects Vercel. The Mac starts the connection on the Registry with a one-time key, the person approves the OAuth application on Netlify, and Netlify returns the browser to the Registry with a code. The Registry exchanges the code with the application's client secret, encrypts the token to the Mac's key and sends the browser back to the Mac, which collects it. The token never reaches the browser, and the Registry keeps it only encrypted.
+
+The **LPM Vault** OAuth application is registered in a Netlify account's **User settings → Applications → OAuth applications**. Netlify ties the application to that user, so keep the account. Its redirect URI is `https://lpm.dev/api/vault/platforms/netlify/callback`. The Registry reads its client ID and secret from `NETLIFY_OAUTH_CLIENT_ID` and `NETLIFY_OAUTH_CLIENT_SECRET`; neither belongs in the app or the website. Without them, the app reports that connecting Netlify isn't available. A local Registry needs its own application whose redirect URI is `http://localhost:3000/api/vault/platforms/netlify/callback`.
+
 ## Signing boundaries
 
 The following identifiers remain stable across updates:

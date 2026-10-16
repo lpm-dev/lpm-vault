@@ -86,6 +86,25 @@ struct PublishSessionTests {
 		#expect(session.saved?.id == saved.first?.id)
 	}
 
+	@Test("a Netlify connection isn't offered for publishing yet, so its token never reaches another platform's client")
+	func netlifyNotOffered() async throws {
+		try await connect()
+		_ = try await connections.save(
+			.netlify(NetlifyConnectionAccount(userID: "5f1a2b3c4d5e6f7a8b9c0d1e", name: "Tolga", email: nil)),
+			accessToken: "nfo_secret", at: Date()).get()
+		let tokens = TokenLog()
+		let api = api
+		let session = session(client: { token in
+			tokens.append(token)
+			return api
+		})
+		session.start()
+		try await waitUntil { session.vercel?.projects.value != nil }
+		#expect(session.connections.value?.map(\.id) == ["vercel.team_acme"])
+		#expect(session.connectionID == "vercel.team_acme", "The only connection that can publish is chosen")
+		#expect(Set(tokens.values) == ["vca_1"])
+	}
+
 	@Test("a saved destination opens on its review, with what this Mac published there")
 	func savedOpensOnReview() async throws {
 		try await connect()

@@ -448,6 +448,8 @@ struct PublishSheet: View {
 				notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare, and Vercel replaces a variable without checking it, so a change made on Vercel moments before publishing can still be overwritten.")
 			case .coolify:
 				notes.append("Existing variables will be replaced. LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten.")
+			case .netlify:
+				notes.append("Existing values will be replaced. LPM Vault doesn't read Netlify's current values to compare, and Netlify replaces a value without checking it, so a change made on Netlify moments before publishing can still be overwritten.")
 			}
 		}
 		if case .coolify(let target) = review.destination.target, target.resource == .application, target.deployments == .production,
@@ -516,6 +518,7 @@ struct PublishSheet: View {
 		switch platform {
 		case .vercel: "Redeploy on Vercel to use the new values."
 		case .coolify: "Redeploy in Coolify to use the new values."
+		case .netlify: "Redeploy on Netlify to use the new values."
 		}
 	}
 
