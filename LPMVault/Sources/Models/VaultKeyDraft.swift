@@ -308,7 +308,7 @@ final class VaultKeyDrafts {
 			return
 		}
 		draft.finishSave()
-		receive(into: &draft, from: projects)
+		receive(into: &draft, from: projects.first { $0.id == draft.id.projectID })
 		store(draft)
 	}
 
@@ -328,14 +328,17 @@ final class VaultKeyDrafts {
 	/// leave their drafts as they are.
 	func receive(_ projects: [VaultProject]) {
 		guard !drafts.isEmpty else { return }
+		let byID = Dictionary(projects.lazy.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 		for var draft in drafts.values {
-			receive(into: &draft, from: projects)
-			store(draft)
+			receive(into: &draft, from: byID[draft.id.projectID])
+			store(draft, publishesSummaries: false)
 		}
+		publishSummaries()
 	}
 
-	private func receive(into draft: inout VaultKeyDraft, from projects: [VaultProject]) {
-		if let project = projects.first(where: { $0.id == draft.id.projectID }) {
+	/// Applies `project`'s latest values to `draft`; nil means the project is gone.
+	private func receive(into draft: inout VaultKeyDraft, from project: VaultProject?) {
+		if let project {
 			if project.hasLoadedEnvironments { draft.receive(project.environments) }
 		} else {
 			draft.receive(nil)

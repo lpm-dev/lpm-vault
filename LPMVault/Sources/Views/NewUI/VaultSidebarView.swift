@@ -670,6 +670,7 @@ private struct VaultSidebarProjectGroup<Row: View, Environments: View>: View {
 struct VaultAccountSwitcher: View {
 	@Bindable var store: VaultStore
 	@Binding var isPresented: Bool
+	@Environment(\.openSettings) private var openSettings
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 1) {
@@ -686,9 +687,13 @@ struct VaultAccountSwitcher: View {
 
 			VaultHairline().padding(.horizontal, 4).padding(.vertical, 5)
 
-			menuRow(icon: "gearshape", title: "Settings", shortcut: "⌘,") {
-				store.showSettings()
+			menuRow(icon: "person.crop.circle", title: "Account") {
+				store.showAccount()
 				isPresented = false
+			}
+			menuRow(icon: "gearshape", title: "Settings…", shortcut: "⌘,") {
+				isPresented = false
+				openSettings()
 			}
 			menuRow(icon: "square.stack.3d.up", title: "Platforms") {
 				store.showPlatforms()

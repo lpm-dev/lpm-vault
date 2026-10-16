@@ -3,7 +3,7 @@ import Foundation
 /// Which account context is selected in the account rail (Column 1).
 /// A page about the person's setup rather than a project, opened from the account menu.
 enum AccountPage: Hashable, Sendable {
-	case settings
+	case account
 	case platforms
 }
 

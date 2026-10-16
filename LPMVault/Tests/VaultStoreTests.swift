@@ -916,7 +916,7 @@ struct VaultStoreTests {
 		store.currentUser = userWithOrganization(slug: "acme")
 		store.vaultOrgAssociations = ["org": "acme"]
 		store.openProject(id: "personal")
-		store.showSettings()
+		store.showAccount()
 
 		store.selectAccount(.personal)
 		#expect(store.selectedProjectId == "personal")
@@ -950,7 +950,7 @@ struct VaultStoreTests {
 		store.currentUser = userWithOrganization(slug: "acme")
 		store.vaultOrgAssociations = ["org": "acme"]
 
-		store.showSettings()
+		store.showAccount()
 		store.openProject(id: "org")
 		#expect(store.selectedAccount == .org("acme"))
 		#expect(store.selectedProjectId == "org")

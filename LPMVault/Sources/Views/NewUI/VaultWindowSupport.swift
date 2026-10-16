@@ -92,6 +92,7 @@ struct VaultWindowConfigurator: NSViewRepresentable {
 
 	private func configure(_ window: NSWindow?) {
 		guard let window else { return }
+		VaultMainWindow.current = window
 		window.titlebarAppearsTransparent = true
 		window.titleVisibility = .hidden
 		window.backgroundColor = NSColor(VaultPalette.content)

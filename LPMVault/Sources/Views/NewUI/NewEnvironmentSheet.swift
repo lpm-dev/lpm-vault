@@ -19,6 +19,13 @@ struct NewEnvironmentSheet: View {
 		EnvValidation.isValidEnvironmentName(candidate) && project.environments[candidate] == nil
 	}
 
+	/// What quitting would discard: the environment's name, or that variables were imported for it.
+	private var unsavedWork: String? {
+		let name = name.trimmingCharacters(in: .whitespaces)
+		if !name.isEmpty { return name }
+		return importedSecrets.isEmpty ? nil : "Variables imported from a file"
+	}
+
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 5) {
@@ -112,6 +119,7 @@ struct NewEnvironmentSheet: View {
 		}
 		.frame(width: 440)
 		.background(VaultPalette.content)
+		.vaultUnsavedSheetWork(store, projectID: project.id, projectName: project.name, title: "New environment", detail: unsavedWork)
 		.onAppear { nameFocused = true }
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { cancelWork(); dismiss() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != project.id { cancelWork(); dismiss() } }

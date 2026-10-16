@@ -1269,7 +1269,7 @@ final class VaultStore {
   @ObservationIgnored private var valueCheckInputs: [String: ValueCheckInputs] = [:]
   @ObservationIgnored private var valueCheckTasks: [String: Task<Void, Never>] = [:]
   private var unverifiedKeyDescriptionProjects: Set<String> = []
-  @ObservationIgnored private var keyDescriptionsTask: Task<Void, Never>?
+  private var keyDescriptionsTask: Task<Void, Never>?
   private(set) var workspaceSnapshots: [String: VaultWorkspaceSnapshot] = [:]
   private(set) var workspaceSnapshotBuildCount = 0
   private let workspaceSnapshotBuilder = VaultWorkspaceSnapshotBuilder()
@@ -1452,6 +1452,10 @@ final class VaultStore {
   private var selectedProjectLoadGeneration = 0
   private(set) var isLoadingSelectedProject = false
   private var projectMutationTask: Task<Void, Never>?
+  /// Every write running, which quitting lets finish.
+  private let writes = VaultWrites()
+  /// What sheets still open hold, which quitting would discard.
+  private(set) var openSheetWork: [UUID: VaultUnsavedWork.OpenSheet] = [:]
   private var projectMutationRequestId: UUID?
   private var tokenLoadTask: Task<Void, Never>?
   private var tokenLoadGeneration = 0
@@ -1586,7 +1590,7 @@ final class VaultStore {
   }
 
   /// Selects a project after switching to its owning account, and always
-  /// leaves Settings.
+  /// leaves the Account page.
   func openProject(id projectId: String) {
     guard projects.contains(where: { $0.id == projectId }) else {
       reconcileNavigationState()
@@ -1616,8 +1620,8 @@ final class VaultStore {
     resetAutoLock()
   }
 
-  func showSettings() {
-    accountPage = .settings
+  func showAccount() {
+    accountPage = .account
     resetAutoLock()
   }
 
@@ -2266,6 +2270,8 @@ final class VaultStore {
   }
 
   func changeCliAccess(to access: VaultCliAccess) async {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard isUnlocked, let projectID = selectedProjectId,
       projectBelongsToSelectedAccount(projectID), selectedProjectCliAccess != nil,
       selectedProjectCliAccess != access, !isChangingCliAccess
@@ -2460,6 +2466,8 @@ final class VaultStore {
     _ remote: SyncService.RemoteProject,
     orgSlug: String?
   ) async -> Result<ImportedEnvProject, EnvProjectImportError> {
+    let write = writes.begin()
+    defer { writes.end(write) }
     let sessionGeneration = vaultSessionGeneration
     let authGeneration = authOperationGeneration
     let environment = appEnvironment
@@ -2826,6 +2834,8 @@ final class VaultStore {
   /// Associate a vault with an org (for column 2 filtering).
   @discardableResult
   func associateVaultWithOrg(vaultId: String, orgSlug: String) async -> Bool {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard let associations = await persistence.associate(vaultId: vaultId, orgSlug: orgSlug)
     else {
       error = "Could not save the organization association."
@@ -2846,6 +2856,8 @@ final class VaultStore {
     environments: [String: [String: String]],
     orgSlug: String? = nil
   ) async -> Bool {
+    let write = writes.begin()
+    defer { writes.end(write) }
     invalidateProjectLoad()
     let expectedAccount = orgSlug.map(SelectedAccount.org) ?? selectedAccount
     guard isUnlocked, selectedAccount == expectedAccount else { return false }
@@ -2921,7 +2933,9 @@ final class VaultStore {
   func removeFromSidebar(_ project: VaultProject) {
     cancelLocalEnvImports(projectId: project.id)
     invalidateProjectLoad()
-    Task { [weak self, persistence] in
+    let write = writes.begin()
+    Task { [weak self, persistence, writes] in
+      defer { writes.end(write) }
       guard await persistence.removeFromSidebar(vaultId: project.id) else {
         self?.error = "Could not remove the env project from the protected sidebar index."
         return
@@ -2940,6 +2954,8 @@ final class VaultStore {
   /// Can be recovered via `lpm env pull`.
   @discardableResult
   func deleteLocalVault(_ project: VaultProject) async -> Bool {
+    let write = writes.begin()
+    defer { writes.end(write) }
     cancelLocalEnvImports(projectId: project.id)
     invalidateProjectLoad()
     let sessionGeneration = vaultSessionGeneration
@@ -2991,6 +3007,8 @@ final class VaultStore {
     name: String,
     secrets: [String: String] = [:]
   ) async -> Bool {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard isUnlocked else {
       error = EnvFileImportError.vaultLocked.localizedDescription
       return false
@@ -3236,6 +3254,8 @@ final class VaultStore {
   private func commitEnvFileImport(
     _ review: EnvFileImportReview, replacingKeys: Set<String>
   ) async -> Result<ImportedEnvFile, EnvFileImportError> {
+    let write = writes.begin()
+    defer { writes.end(write) }
     let projectId = review.projectId
     let environment = review.environment
     guard selectedProjectId == projectId, selectedEnvironment == environment,
@@ -3394,6 +3414,8 @@ final class VaultStore {
     key: String,
     value: String
   ) async -> AddSecretResult {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard isUnlocked else { return .failure(.vaultLocked) }
     guard !environments.isEmpty else { return .failure(.noEnvironments) }
     guard EnvValidation.isValidVariableName(key) else { return .failure(.invalidName) }
@@ -3448,6 +3470,8 @@ final class VaultStore {
   /// A successful save ends the draft; a failed one keeps it, updated to the
   /// latest saved state, and throws the reason.
   func saveKeyDraft(_ id: VaultKeyDraft.ID) async throws(VaultKeyEditError) {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard let draft = keyDrafts.draft(id), let edit = keyDrafts.beginSave(id) else { return }
     let generation = keyDrafts.generation
     let description = draft.keyDescriptionChange
@@ -4009,6 +4033,8 @@ final class VaultStore {
   /// a change that only reordered the file saves right away, and any other
   /// fails with `changed` so the merged draft can be reviewed.
   func saveSchemaDraft(in projectID: String) async throws(ProjectEnvSchemaFile.DraftSaveError) {
+    let write = writes.begin()
+    defer { writes.end(write) }
     var attempt = SchemaDraftSaveAttempt()
     do {
       try await saveSchemaDraftOnce(in: projectID, attempt: &attempt)
@@ -5030,6 +5056,8 @@ final class VaultStore {
     environment: String,
     to destination: URL
   ) async throws {
+    let write = writes.begin()
+    defer { writes.end(write) }
     await waitForLocalStateRefresh()
     guard canUseLocalSecrets,
       selectedProjectId == projectId,
@@ -5073,6 +5101,7 @@ final class VaultStore {
     unlockFailure = nil
     keyDrafts.discardAll()
     discardAllProjectSettings()
+    openSheetWork.removeAll()
     clearKeyDescriptions()
     cancelCliAccessChange()
     cliAccessLoadTask?.cancel()
@@ -5208,6 +5237,8 @@ final class VaultStore {
   /// Push the selected project's secrets to cloud.
   /// Pushes ALL environments (default, live, local, etc.), not just the selected one.
   func pushToCloud(force: Bool = false) async {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard isUnlocked, selectedAccount == .personal, let project = selectedProject else {
       return
     }
@@ -5520,6 +5551,8 @@ final class VaultStore {
   /// Pull secrets from cloud and merge into the selected project.
   @discardableResult
   func pullFromCloud() async -> Bool {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard isUnlocked, selectedAccount == .personal, let project = selectedProject else {
       return false
     }
@@ -6001,6 +6034,8 @@ final class VaultStore {
 
   /// Called from KeyApprovalSheet when user accepts all pending keys.
   func approveAndContinueOrgPush(approved: [PendingKeyApproval]) async {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard let pending = pendingOrgPush else { return }
     guard
       PendingKeyApproval.exactlyMatches(
@@ -6231,6 +6266,8 @@ final class VaultStore {
     callerUserID: String,
     authority: SyncAuthority
   ) async throws -> VaultCreationResult {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard await hasCurrentSyncAuth(authority) else {
       finishSyncIfOwned(authority)
       return .failed
@@ -6569,6 +6606,8 @@ final class VaultStore {
     action: String,
     version: Int
   ) async throws -> PullPersistenceResult? {
+    let write = writes.begin()
+    defer { writes.end(write) }
     let persistence = persistence
     let binding = syncBinding(for: authority)
     let operation: @Sendable () async -> PullPersistenceResult = { [weak self] in
@@ -6752,6 +6791,8 @@ final class VaultStore {
 
   /// Pull a vault from an org using X25519 decryption.
   func pullFromOrg(orgSlug: String) async {
+    let write = writes.begin()
+    defer { writes.end(write) }
     guard isUnlocked, selectedAccount == .org(orgSlug), let project = selectedProject else {
       return
     }
@@ -7297,7 +7338,9 @@ final class VaultStore {
     let sessionGeneration = vaultSessionGeneration
     let draftGeneration = keyDrafts.generation
     projectMutationRequestId = requestId
-    projectMutationTask = Task { @MainActor [weak self, persistence] in
+    let write = writes.begin()
+    projectMutationTask = Task { @MainActor [weak self, persistence, writes] in
+      defer { writes.end(write) }
       await predecessor?.value
       guard let self, sessionGeneration == vaultSessionGeneration, draftGeneration == keyDrafts.generation, isUnlocked,
         selectedProjectId == project.id
@@ -7364,7 +7407,9 @@ final class VaultStore {
     let requestId = UUID()
     let sessionGeneration = vaultSessionGeneration
     projectMutationRequestId = requestId
-    let task = Task { @MainActor [weak self, persistence, publishing] in
+    let write = writes.begin()
+    let task = Task { @MainActor [weak self, persistence, publishing, writes] in
+      defer { writes.end(write) }
       await predecessor?.value
       let result = await persistence.mutateProject(
         projectId: project.id,
@@ -7504,6 +7549,41 @@ final class VaultStore {
 
   private static func publishingFollowMessage(_ failure: PublishingStoreError) -> String {
     "The change was saved, but its publish destinations couldn't be updated: \(failure)"
+  }
+
+  /// Returns true once nothing is being written to the Keychain, a project's
+  /// lpm.json, an exported file or a platform, or false when `timeout` passes first.
+  func finishWritesInProgress(within timeout: Duration) async -> Bool {
+    await writes.finish(within: timeout)
+  }
+
+  /// Whether anything is being written, which quitting waits for.
+  var isWriting: Bool { writes.isWriting }
+
+  /// Notes what an open sheet holds, until it's saved, discarded or closed.
+  func holdSheetWork(_ work: VaultUnsavedWork.OpenSheet) {
+    if openSheetWork[work.id] != work { openSheetWork[work.id] = work }
+  }
+
+  func releaseSheetWork(_ id: UUID) {
+    if openSheetWork[id] != nil { openSheetWork[id] = nil }
+  }
+
+  /// Selects a project and waits until its values and rules are loaded, so
+  /// its unsaved edits can be saved; false when it can't be loaded.
+  func openProjectForSaving(_ projectID: String, timeout: Duration = .seconds(15)) async -> Bool {
+    guard isUnlocked, projects.contains(where: { $0.id == projectID }) else { return false }
+    if selectedProjectId != projectID || isShowingAccountPage { openProject(id: projectID) }
+    guard selectedProjectId == projectID else { return false }
+    reloadKeyDescriptions()
+    let loaded = await ObservedWait.value(within: timeout) { [weak self] () -> Bool? in
+      guard let self, isUnlocked, selectedProjectId == projectID, selectedProjectLoadFailure == nil else { return false }
+      guard let project = selectedProject, project.hasLoadedEnvironments, !isLoadingSelectedProject,
+        !isReloadingKeyDescriptions, keyDescriptions[projectID] != nil
+      else { return nil }
+      return true
+    }
+    return loaded ?? false
   }
 
   private func waitForProjectMutations() async {

@@ -262,6 +262,23 @@ struct VaultKeyDraftsTests {
 		#expect(changed.isSet)
 	}
 
+	@Test("receiving the latest projects takes time in proportion to how many drafts there are, as each key's save does")
+	func receiveScalesLinearly() {
+		func time(_ count: Int) -> Duration {
+			let keys = (0..<count).map { "KEY_\($0)" }
+			let project = VaultProject(id: "project", name: "Project", path: "",
+				environments: ["default": Dictionary(uniqueKeysWithValues: keys.map { ($0, "value") })])
+			let drafts = VaultKeyDrafts()
+			for key in keys { drafts.edit(project, key: key) { $0.setValue("edit", in: "default") } }
+			return (0..<3).map { _ in ContinuousClock().measure { drafts.receive([project]) } }.min() ?? .zero
+		}
+		// Four times the drafts takes about four times as long, and sixteen if it were quadratic.
+		_ = time(250)
+		let small = time(500)
+		let large = time(2000)
+		#expect(large < small * 10, "2000 drafts took \(large), 500 took \(small)")
+	}
+
 	@Test("a missing project orphans its drafts and an unloaded one leaves them as they are")
 	func receiveProjects() {
 		let drafts = VaultKeyDrafts()

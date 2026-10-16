@@ -218,8 +218,8 @@ struct VaultWorkspaceView: View {
 			revealedKeys.removeAll()
 		}
 		.onChange(of: mode) { _, _ in revealedKeys.removeAll() }
-		.onChange(of: store.isShowingAccountPage) { _, showingSettings in
-			if showingSettings { resetCopyPresentation() }
+		.onChange(of: store.isShowingAccountPage) { _, showingAccount in
+			if showingAccount { resetCopyPresentation() }
 		}
 		.task(id: copyFeedback?.id) {
 			guard let feedbackID = copyFeedback?.id else { return }
@@ -303,7 +303,7 @@ struct VaultWorkspaceView: View {
 					}
 
 					Group {
-						if store.accountPage == .settings {
+						if store.accountPage == .account {
 							AuthStatusView(store: store)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)

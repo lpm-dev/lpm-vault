@@ -72,7 +72,7 @@ See [Release channels](docs/release-channels.md) for the publishing and recovery
 Local project storage does not require an LPM.dev account.
 Cloud sync requires an account and the permissions for the selected project.
 
-Use **Settings → Sign in with browser** to connect your account.
+Open **Account** from the account menu at the bottom of the sidebar, then choose **Sign in with browser** to connect your account.
 After browser verification, return to the app to check the connection status.
 The local callback page provides retry instructions if verification fails. It loads no external resources.
 
@@ -87,7 +87,7 @@ The local callback page provides retry instructions if verification fails. It lo
 Click anywhere in a key cell to open its inspector.
 Drag a column boundary in the table header to resize the column.
 Both **All variables** and each environment table support this gesture.
-Each project keeps its column widths during the session, including visits to Settings and project reloads.
+Each project keeps its column widths during the session, including visits to the Account page and project reloads.
 
 Select **Schema** under a project to see and edit the rules its `lpm.json` declares for each key, such as required keys, formats, defaults, and keys exposed to the browser. The LPM CLI enforces them.
 Rules inherited from another schema file or a preset show where they come from.

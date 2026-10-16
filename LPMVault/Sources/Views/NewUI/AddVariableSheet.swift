@@ -35,6 +35,7 @@ struct AddVariableSheet: View {
 	init(store: VaultStore, projectId: String, environment: String, initialKey: String = "", initialValueRevealed: Bool = false) {
 		self.store = store
 		self.projectId = projectId
+		self.initialKey = initialKey
 		_isValueRevealed = State(initialValue: initialValueRevealed)
 		let project = store.projects.first { $0.id == projectId }
 		let environments = project.map(store.orderedEnvironmentNames(for:)) ?? []
@@ -47,8 +48,17 @@ struct AddVariableSheet: View {
 		))
 	}
 
+	private let initialKey: String
+
 	private var project: VaultProject? {
 		store.projects.first { $0.id == projectId }
+	}
+
+	/// What quitting would discard: the key typed, never its value.
+	private var unsavedWork: String? {
+		let key = draft.key.trimmingCharacters(in: .whitespaces)
+		if !key.isEmpty, key != initialKey || !value.isEmpty { return key }
+		return value.isEmpty ? nil : "A value, with no key yet"
 	}
 
 	private var isSubmitting: Bool { submitTask != nil }
@@ -76,6 +86,7 @@ struct AddVariableSheet: View {
 		}
 		.frame(width: 560)
 		.background(VaultPalette.content)
+		.vaultUnsavedSheetWork(store, projectID: projectId, projectName: project?.name ?? "", title: "Add variable", detail: unsavedWork)
 		.overlayPreferenceValue(KeyFieldBounds.self) { anchor in
 			let suggestions = suggestions
 			if let anchor, !suggestions.isEmpty {

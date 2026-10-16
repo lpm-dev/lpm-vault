@@ -1,16 +1,16 @@
 import SwiftUI
 
+/// The Account page: who's signed in, the server, and the actions on the
+/// account. The app's own settings are in the Settings window.
 struct AuthStatusView: View {
 	@Bindable var store: VaultStore
-	@Environment(VaultAppearanceSettings.self) private var appearanceSettings
-	@Environment(UpdateChecker.self) private var updateChecker
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var showLogoutConfirmation = false
 
 	var body: some View {
 		VStack(spacing: 0) {
 			HStack {
-				Text("Settings")
+				Text("Account")
 					.font(.system(size: 19, weight: .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Spacer()
@@ -42,8 +42,7 @@ struct AuthStatusView: View {
 						}
 
 						serverSettings
-						appearanceSection
-						updatesSection
+						appSettingsSection
 
 						settingsSection("ACTIONS") {
 							HStack(spacing: 8) {
@@ -89,9 +88,7 @@ struct AuthStatusView: View {
 
 						serverSettings
 							.frame(maxWidth: 360)
-						appearanceSection
-							.frame(maxWidth: 360)
-						updatesSection
+						appSettingsSection
 							.frame(maxWidth: 360)
 
 					}
@@ -114,50 +111,26 @@ struct AuthStatusView: View {
 		}
 	}
 
-	private var appearanceSection: some View {
-		@Bindable var settings = appearanceSettings
-		return settingsSection("APPEARANCE") {
-			VStack(alignment: .leading, spacing: 10) {
-				Picker("Appearance", selection: $settings.selection) {
-					ForEach(VaultAppearance.allCases) { appearance in
-						Text(appearance.title).tag(appearance)
-					}
-				}
-				.pickerStyle(.segmented)
-				.labelsHidden()
-				.accessibilityLabel("Appearance")
-				Text("System follows macOS. Light and Dark apply only to Vault.")
-					.font(.system(size: 11.5))
-					.foregroundStyle(VaultPalette.textTertiary)
+	private var appSettingsSection: some View {
+		settingsSection("APP SETTINGS") {
+			HStack(spacing: 12) {
+				Text("The quit shortcut, appearance and updates are in Settings.")
+					.font(.system(size: 12.5))
+					.foregroundStyle(VaultPalette.textSecondary)
 					.fixedSize(horizontal: false, vertical: true)
-			}
-		}
-	}
-
-	private var updatesSection: some View {
-		@Bindable var updates = updateChecker
-		return settingsSection("UPDATES") {
-			VStack(alignment: .leading, spacing: 10) {
-				Text("Installed version").font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
-				Text(updates.buildInfo.displayVersion).font(VaultTypography.mono(11)).textSelection(.enabled)
-				Picker("Update channel", selection: $updates.channel) {
-					ForEach(VaultReleaseChannel.allCases) { channel in
-						Text(channel.title).tag(channel)
-					}
+				Spacer(minLength: 8)
+				SettingsLink {
+					Text("Open Settings…")
+						.font(.system(size: 12))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.padding(.horizontal, 10)
+						.frame(height: 26)
+						.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
+						.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+						.fixedSize()
 				}
-				.pickerStyle(.segmented)
-				.disabled(!updates.canChangeChannel)
-				if updates.hasPendingUpdate {
-					Text("Install or skip the pending update before changing channels. Use Check for Updates to reopen it.")
-						.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
-						.fixedSize(horizontal: false, vertical: true)
-				}
-				Text(updates.channelDescription)
-					.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
-					.fixedSize(horizontal: false, vertical: true)
-				VaultBarButton(title: "Check for Updates…", disabled: !updates.canCheckForUpdates) {
-					updates.checkForUpdates()
-				}
+				.buttonStyle(.plain)
+				.help("Open the Settings window (⌘,)")
 			}
 		}
 	}

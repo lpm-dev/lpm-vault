@@ -1,8 +1,18 @@
 import SwiftUI
 
-/// Handles dock click and prevents quit on window close.
+/// Handles dock click, prevents quit on window close, and decides what ⌘Q
+/// and quitting take.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+	static let quitShortcutEvents: NSEvent.EventTypeMask = [
+		.keyDown,
+		.keyUp,
+		.flagsChanged,
+		.leftMouseDown,
+		.rightMouseDown,
+		.otherMouseDown,
+	]
+
 	static let userActivityEvents: NSEvent.EventTypeMask = [
 		.keyDown,
 		.leftMouseDown,
@@ -24,7 +34,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		}
 	}
 	var recordUserActivity: (() -> Void)?
+	/// The answer to quitting, given whether the session is ending, once the app's window has connected it.
+	var shouldTerminate: ((_ sessionEnding: Bool) -> NSApplication.TerminateReply)?
+	/// Whether quitting is already deciding, so ⌘Q doesn't ask again meanwhile.
+	var isQuitting: () -> Bool = { false }
+	var quitShortcut: () -> VaultQuitShortcut = { VaultQuitShortcut.saved(in: .standard) }
+	var terminate: () -> Void = { NSApp.terminate(nil) }
+	let quitHUD = VaultQuitHUDController()
+	private(set) lazy var quitGate = VaultQuitGate(
+		mode: { [weak self] in self?.quitShortcut() ?? VaultQuitShortcut.standard },
+		isDeciding: { [weak self] in self?.isQuitting() ?? false },
+		quit: { [weak self] in self?.quitFromShortcut() },
+		showHint: { [weak self] in self?.quitHUD.show($0) },
+		hideHint: { [weak self] in self?.quitHUD.hide() }
+	)
 	private var localEventMonitor: Any?
+	private var quitShortcutMonitor: Any?
 	private var hasPendingSecurityLock = false
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
@@ -39,6 +64,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			[weak self] event in
 			self?.recordUserActivity?()
 			return event
+		}
+		VaultMainWindow.onClose = { [weak self] in self?.lockVault?() }
+		// Sees ⌘Q before the Quit menu item does, so the gate decides when it quits.
+		quitShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.quitShortcutEvents) {
+			[weak self] event in
+			guard let self, let input = VaultQuitGate.input(for: event) else { return event }
+			return quitGate.handle(input, at: event.timestamp) ? nil : event
 		}
 
 		let workspaceCenter = NSWorkspace.shared.notificationCenter
@@ -68,10 +100,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		lockVault()
 	}
 
+	func applicationDidResignActive(_ notification: Notification) {
+		quitGate.cancel()
+	}
+
+	/// Every way of quitting arrives here: the shortcut once its gate allows
+	/// it, the menu, the Dock, logging out, shutting down and update restarts.
+	func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+		quitGate.cancel()
+		return shouldTerminate?(Self.isSessionEnding(NSAppleEventManager.shared().currentAppleEvent)) ?? .terminateNow
+	}
+
+	/// Whether `event` asks every app to quit, as logging out, restarting and
+	/// shutting down do, which wait for each app's answer.
+	static func isSessionEnding(_ event: NSAppleEventDescriptor?) -> Bool {
+		guard let event, event.eventClass == AEEventClass(kCoreEventClass), event.eventID == AEEventID(kAEQuitApplication),
+			let reason = event.paramDescriptor(forKeyword: AEKeyword(kAEQuitReason)) ?? event.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))
+		else { return false }
+		return [kAEQuitAll, kAEShutDown, kAERestart, kAEReallyLogOut].map { OSType($0) }.contains(reason.enumCodeValue)
+	}
+
+	private func quitFromShortcut() {
+		guard !isQuitting() else { return }
+		Self.requestTermination { [weak self] in self?.terminate() }
+	}
+
+	/// Asks to quit from the run loop rather than from a block on the main
+	/// queue, as the gate's timers are: while AppKit waits for a later answer
+	/// to quitting, it doesn't drain the main queue from inside one of its
+	/// blocks, so the main-actor work that answers would never run.
+	static func requestTermination(_ terminate: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }) {
+		RunLoop.main.perform(inModes: [.common]) {
+			MainActor.assumeIsolated { terminate() }
+		}
+	}
+
 	func applicationWillTerminate(_ notification: Notification) {
 		lockVault?()
-		if let localEventMonitor { NSEvent.removeMonitor(localEventMonitor) }
+		for monitor in [localEventMonitor, quitShortcutMonitor].compactMap({ $0 }) { NSEvent.removeMonitor(monitor) }
 		localEventMonitor = nil
+		quitShortcutMonitor = nil
 		NSWorkspace.shared.notificationCenter.removeObserver(self)
 	}
 
@@ -81,8 +149,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		return false
 	}
 
+	/// Clicking the Dock icon brings the main window back, even while another
+	/// window, such as Settings, is open.
 	func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-		if !flag {
+		if let window = VaultMainWindow.current, window.isMiniaturized {
+			window.deminiaturize(nil)
+		} else if VaultMainWindow.current?.isVisible != true {
 			openWindow?()
 		}
 		return true
@@ -96,6 +168,10 @@ struct LPMVaultApp: App {
 	@State private var store = VaultStore()
 	@State private var updateChecker = UpdateChecker()
 	@State private var appearanceSettings = VaultAppearanceSettings()
+	@State private var quitSettings = VaultQuitSettings()
+	@State private var quitCoordinator = VaultQuitCoordinator(store: nil, presenter: VaultQuitSheetPresenter()) {
+		AppDelegate.requestTermination()
+	}
 	@State private var isObscured = false
 
 	var body: some Scene {
@@ -129,12 +205,21 @@ struct LPMVaultApp: App {
 					appDelegate.recordUserActivity = { [store] in
 						store.recordUserActivity()
 					}
+					quitCoordinator.attach(store)
+					appDelegate.shouldTerminate = { [quitCoordinator] in quitCoordinator.shouldTerminate(sessionEnding: $0) }
+					appDelegate.isQuitting = { [quitCoordinator] in quitCoordinator.isQuitting }
 				}
 		}
 		.defaultSize(width: 1200, height: 760)
 		.windowStyle(.hiddenTitleBar)
 		.commands {
 			CommandGroup(replacing: .newItem) {}
+			// Asking to quit again while quitting is being decided would quit at once.
+			CommandGroup(replacing: .appTermination) {
+				Button("Quit LPM Vault") { AppDelegate.requestTermination() }
+					.keyboardShortcut("q")
+					.disabled(quitCoordinator.isQuitting)
+			}
 			CommandGroup(after: .appInfo) {
 				Button("Check for Updates…") { updateChecker.checkForUpdates() }
 					.disabled(!updateChecker.canCheckForUpdates)
@@ -170,6 +255,15 @@ struct LPMVaultApp: App {
 					.keyboardShortcut("l", modifiers: .command)
 					.disabled(store.isUnlocking)
 			}
+		}
+
+		Settings {
+			VaultSettingsView()
+				.environment(updateChecker)
+				.environment(appearanceSettings)
+				.environment(quitSettings)
+				.vaultAppearance(appearanceSettings.selection)
+				.tint(VaultPalette.accent)
 		}
 	}
 
