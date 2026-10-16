@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import Sparkle
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -378,11 +377,10 @@ extension SheetInteractionTests {
 			Attachment.record(data, named: "updates-settings-\(signedIn).png")
 			try data.write(to: URL(fileURLWithPath: "/tmp/vault-nightly-settings-\(signedIn).png"))
 			if !signedIn {
-				let image = try #require(bitmap.cgImage)
-				let lines = try await RenderedText.lines(in: image, level: .accurate)
+				let lines = AccessibilityTree.lines(in: host)
 				let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
 				let signIn = try #require(lines.first { $0.text.contains("Sign in with browser") })
-				let server = try #require(lines.first { $0.text == "SERVER" })
+				let server = try #require(lines.first { $0.text.caseInsensitiveCompare("Server") == .orderedSame }, "Lines: \(lines.map(\.text))")
 				#expect(explanation.bounds.minY > signIn.bounds.maxY)
 				#expect(signIn.bounds.minY > server.bounds.maxY)
 			}
@@ -451,13 +449,13 @@ extension SheetInteractionTests {
 				repeat {
 					try await Task.sleep(for: .milliseconds(10))
 					bitmap = try renderTitleBar(view)
-					updateBounds = try await bounds(of: "Update available", in: bitmap)
+					updateBounds = bounds(of: "Update available", in: view)
 					if (updateBounds != nil) == (version != nil) { break }
 				} while ContinuousClock.now < deadline
 				let data = try #require(bitmap.representation(using: .png, properties: [:]))
 				Attachment.record(data, named: "update-reminder-\(Int(width))-\(version ?? "none")-\(canCheck).png")
 				#expect((updateBounds != nil) == (version != nil))
-				let lockBounds = try #require(try await bounds(of: "Lock", in: bitmap))
+				let lockBounds = try #require(bounds(of: "Lock", in: view))
 				if version != nil {
 					let updateBounds = try #require(updateBounds)
 					#expect(updateBounds.maxX < lockBounds.minX)
@@ -479,13 +477,12 @@ extension SheetInteractionTests {
 			return bitmap
 		}
 
-		/// Recognition runs off the main thread: Vision can wait on work that needs it.
-		private func bounds(of text: String, in bitmap: NSBitmapImageRep) async throws -> CGRect? {
-			let image = try #require(bitmap.cgImage)
-			let width = min(1, 340 / bitmap.size.width)
+		/// Where the title bar's controls say `text`, normalized from the bottom-left.
+		private func bounds(of text: String, in view: NSView) -> CGRect? {
+			view.layoutSubtreeIfNeeded()
+			let width = min(1, 340 / view.bounds.width)
 			let controls = CGRect(x: 1 - width, y: 0, width: width, height: 1)
-			let lines = try await RenderedText.lines(in: image, level: .accurate, label: text, options: .caseInsensitive, region: controls)
-			return lines.lazy.compactMap(\.labelBounds).first
+			return AccessibilityTree.lines(in: view, region: controls, label: text, options: .caseInsensitive).lazy.compactMap(\.labelBounds).first
 		}
 	}
 }

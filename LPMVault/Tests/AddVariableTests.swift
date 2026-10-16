@@ -2,7 +2,6 @@ import AppKit
 import Foundation
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -329,16 +328,8 @@ extension SheetInteractionTests {
 			}
 		}
 
-		private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> OCRText {
-			let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
-			host.frame = NSRect(origin: .zero, size: size)
-			host.layoutSubtreeIfNeeded()
-			let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-			host.cacheDisplay(in: host.bounds, to: bitmap)
-			let image = try #require(bitmap.cgImage)
-			let data = try #require(bitmap.representation(using: .png, properties: [:]))
-			Attachment.record(data, named: name)
-			return OCRText(try await RenderedText.strings(in: image, usesLanguageCorrection: false).joined(separator: "\n"))
+		private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> AccessibleText {
+			try await AccessibilityTree.text(of: view.environment(\.colorScheme, .light), size: size, attaching: name)
 		}
 	}
 }

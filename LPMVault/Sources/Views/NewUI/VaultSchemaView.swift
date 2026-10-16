@@ -604,6 +604,8 @@ struct VaultSchemaView: View {
 						Circle().fill(VaultPalette.red).frame(width: 6, height: 6)
 							.help("Fails its rules in \(environments.joined(separator: ", "))")
 							.accessibilityLabel("Fails its rules in \(environments.joined(separator: ", "))")
+							// Read after the key, so the row says its key first.
+							.accessibilitySortPriority(-1)
 					}
 					Text(rule.key)
 						.font(VaultTypography.mono(12.5, .semibold))

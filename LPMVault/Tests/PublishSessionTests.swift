@@ -1338,10 +1338,10 @@ extension SheetInteractionTests {
 			session.vercel?.environment = .production
 			#expect(try await host.waitForText("storefront / Production"))
 			try await host.click("Review variables")
-			#expect(try await host.waitForText("Publish anyway"))
+			#expect(try await host.waitForText("Publish SHARED_KEY anyway"))
 			#expect(try await host.waitForText("Shared with Preview on Vercel"))
 			#expect(try await host.waitForText("Publish 1 variable"))
-			try await host.click("Publish anyway")
+			try await host.click("Publish SHARED_KEY anyway")
 			#expect(try await host.waitForText("Publish 2 variables"))
 			try await host.click("Publish 2 variables")
 			#expect(try await host.waitForText("Published 2 of 2 variables"))

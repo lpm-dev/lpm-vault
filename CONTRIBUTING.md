@@ -64,7 +64,7 @@ They run those tests a second time on a one-thread cooperative pool, so work tha
 bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh
 ```
 
-The native UI suite's tests read the screen with Vision, which is CPU-only and several times slower on hosted runners, so the [UI regressions workflow](.github/workflows/ui.yml) runs them after every merge to `main`, before every release, on demand from the Actions tab, and for a pull request labeled `ui-tests`.
+The native UI suite's tests open real windows and run one at a time, so the [UI regressions workflow](.github/workflows/ui.yml) runs them after every merge to `main`, before every release, on demand from the Actions tab, and for a pull request labeled `ui-tests`.
 Label a pull request `ui-tests` only when it changes what a sheet or view shows, or how it responds to input; the local run before you push covers the rest.
 An on-demand run can take a `filter`, a regular expression for the identifiers of the tests to run, and runs only those, on one runner, in a few minutes. Use it to check one test on the runners' macOS without waiting for every shard:
 
@@ -72,6 +72,8 @@ An on-demand run can take a `filter`, a regular expression for the identifiers o
 gh workflow run ui.yml --ref <branch> -f filter='VaultProjectOrderTests/dragAutoscrolls'
 ```
 Native UI tests belong in `SheetInteractionTests` or a suite nested in it; a test that opens a test window or reads text elsewhere fails.
+
+UI tests find and read views through the accessibility tree, as VoiceOver does: `waitForText`, `text()`, `click`, `waitForElement(saying:)` and `lines(in:)` on `SheetTestHost`, built on `AccessibilityTree`. Match what a view says, its accessibility label or text; letter case doesn't count, since some text is drawn uppercased. A control that shows only an icon needs a label, which is also how VoiceOver users know it. Don't read text from pixels: check pixels only for what's visual, such as color, alignment or overlap. Secret values are kept out of the tree by design, so assert what their labels say, such as "Current value for TOKEN revealed visually" or "values hidden", rather than the value.
 
 Before you open a pull request, also run the rest of the CI checks from the repository root:
 

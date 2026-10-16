@@ -134,7 +134,7 @@ struct VaultSchemaReviewSheet: View {
 
 	private func problem(_ text: String) -> some View {
 		HStack(alignment: .top, spacing: 8) {
-			Image(systemName: "xmark.circle").font(.system(size: 11)).padding(.top, 1)
+			Image(systemName: "xmark.circle").font(.system(size: 11)).padding(.top, 1).accessibilityHidden(true)
 			Text(text).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
 		}
 		.foregroundStyle(VaultPalette.redText)
@@ -145,7 +145,7 @@ struct VaultSchemaReviewSheet: View {
 
 	private func notice(_ text: String) -> some View {
 		HStack(alignment: .top, spacing: 8) {
-			Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 11)).padding(.top, 1)
+			Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 11)).padding(.top, 1).accessibilityHidden(true)
 			Text(text).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
 		}
 		.foregroundStyle(VaultPalette.orangeTintText)
@@ -186,8 +186,8 @@ struct VaultSchemaReviewSheet: View {
 		VStack(alignment: .leading, spacing: 7) {
 			HStack(spacing: 7) {
 				switch item.item {
-				case .group: Image(systemName: "square.stack.3d.up").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
-				case .clientPrefixes: Image(systemName: "globe").font(.system(size: 11)).foregroundStyle(VaultPalette.publicText)
+				case .group: Image(systemName: "square.stack.3d.up").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary).accessibilityLabel("Group")
+				case .clientPrefixes: Image(systemName: "globe").font(.system(size: 11)).foregroundStyle(VaultPalette.publicText).accessibilityHidden(true)
 				case .key: EmptyView()
 				}
 				Text(item.title)
@@ -202,7 +202,7 @@ struct VaultSchemaReviewSheet: View {
 			}
 			if let warning = item.warning {
 				HStack(alignment: .top, spacing: 6) {
-					Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).padding(.top, 1)
+					Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).padding(.top, 1).accessibilityHidden(true)
 					Text(warning).font(.system(size: 11.5, weight: .medium)).fixedSize(horizontal: false, vertical: true)
 				}
 				.foregroundStyle(VaultPalette.redText)
@@ -213,7 +213,7 @@ struct VaultSchemaReviewSheet: View {
 			}
 			if let note = note(for: item) {
 				HStack(alignment: .top, spacing: 6) {
-					Image(systemName: "square.stack.3d.up").font(.system(size: 10)).padding(.top, 1)
+					Image(systemName: "square.stack.3d.up").font(.system(size: 10)).padding(.top, 1).accessibilityHidden(true)
 					Text(note).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
 				}
 				.foregroundStyle(VaultPalette.accentText)
@@ -278,6 +278,8 @@ struct VaultSchemaReviewSheet: View {
 				.padding(.vertical, 1.5)
 				.frame(maxWidth: .infinity, alignment: .leading)
 				.background(background(line.kind))
+				.accessibilityElement(children: .ignore)
+				.accessibilityLabel(Self.spoken(line))
 			}
 		}
 		.padding(.vertical, 6)
@@ -285,8 +287,19 @@ struct VaultSchemaReviewSheet: View {
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
 		.clipShape(RoundedRectangle(cornerRadius: 8))
-		.accessibilityElement(children: .combine)
+		.accessibilityElement(children: .contain)
 		.accessibilityLabel("Changes to lpm.json")
+	}
+
+	/// A diff line as VoiceOver reads it: with words where the view shows + and −,
+	/// and without the indentation.
+	static func spoken(_ line: ProjectEnvSchemaDraft.Diff.Line) -> String {
+		let text = line.text.trimmingCharacters(in: .whitespaces)
+		return switch line.kind {
+		case .added: "Added " + text
+		case .removed: "Removed " + text
+		case .unchanged, .omitted: text
+		}
 	}
 
 	private func marker(_ kind: ProjectEnvSchemaDraft.Diff.Line.Kind) -> String {
@@ -334,7 +347,7 @@ struct VaultSchemaReviewSheet: View {
 						.lineLimit(1)
 						.truncationMode(.middle)
 					HStack(spacing: 4) {
-						Image(systemName: symbol(effect.kind)).font(.system(size: 10, weight: .semibold))
+						Image(systemName: symbol(effect.kind)).font(.system(size: 10, weight: .semibold)).accessibilityHidden(true)
 						Text(title(effect.kind)).font(.system(size: 11.5, weight: .semibold))
 					}
 					.foregroundStyle(effectTint(effect.kind))
@@ -367,7 +380,7 @@ struct VaultSchemaReviewSheet: View {
 			}
 			if unchanged > 0 {
 				HStack(spacing: 6) {
-					Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(VaultPalette.textFaint)
+					Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(VaultPalette.textFaint).accessibilityHidden(true)
 					Text(unchanged == 1 ? "1 problem already there, not caused by this change" : "\(unchanged) problems already there, not caused by this change")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)

@@ -395,7 +395,7 @@ extension SheetInteractionTests {
 				size: NSSize(width: 1000, height: 700), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
 			#expect(try await host.waitForText("NODE_OPTIONS"))
-			let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate).map(\.text)
+			let lines = host.lines().map(\.text)
 			#expect(!lines.contains { $0.contains("Declare 2") }, "No button declares them all")
 			#expect(!lines.contains { $0.filter(\.isLetter) == "Declare" }, "No row offers Declare")
 		}
@@ -462,8 +462,8 @@ extension SheetInteractionTests {
 		private func panelShows(_ text: String, in host: SheetTestHost<some View>) async throws -> Bool {
 			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
 			while ContinuousClock.now < deadline {
-				let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: Self.panel)
-				if OCRText(lines.map(\.text).joined(separator: "\n")).contains(text) { return true }
+				let lines = host.lines(in: Self.panel)
+				if AccessibleText(lines.map(\.text)).contains(text) { return true }
 				try await Task.sleep(for: .milliseconds(20))
 			}
 			return false
@@ -477,34 +477,34 @@ extension SheetInteractionTests {
 		}
 
 		/// What the page's status bar reads, right of the sidebar and left of the panel.
-		private func statusBarText(in host: SheetTestHost<some View>, panelOpen: Bool = false) async throws -> OCRText {
+		private func statusBarText(in host: SheetTestHost<some View>, panelOpen: Bool = false) async throws -> AccessibleText {
 			let width = host.view.bounds.width
 			let left = (VaultMetrics.sidebar + 4) / width
 			let right = panelOpen ? (width - VaultMetrics.inspector) / width : 1
 			let bar = CGRect(x: left, y: 0, width: right - left, height: 30 / host.view.bounds.height)
-			let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: bar)
-			return OCRText(lines.map(\.text).joined(separator: "\n"))
+			let lines = host.lines(in: bar)
+			return AccessibleText(lines.map(\.text))
 		}
 
-		private func waitForStatusBar(in host: SheetTestHost<some View>, _ condition: (OCRText) -> Bool) async throws -> Bool {
+		private func waitForStatusBar(in host: SheetTestHost<some View>, _ condition: (AccessibleText) -> Bool) async throws -> Bool {
 			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
 			while ContinuousClock.now < deadline {
 				if try await condition(statusBarText(in: host)) { return true }
 				try await Task.sleep(for: .milliseconds(20))
 			}
-			RenderedText.saveDiagnostic(try host.snapshot(host.view), named: "status-bar")
+			try host.attachSnapshot(named: "status-bar")
 			print("The status bar read: \(try await statusBarText(in: host))")
 			return false
 		}
 
 		/// What the table's key column reads, left of the panel.
-		private func tableText(in host: SheetTestHost<some View>) async throws -> OCRText {
+		private func tableText(in host: SheetTestHost<some View>) async throws -> AccessibleText {
 			let column = CGRect(x: 0.2, y: 0, width: 0.2, height: 1)
-			let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: column)
-			return OCRText(lines.map(\.text).joined(separator: "\n"))
+			let lines = host.lines(in: column)
+			return AccessibleText(lines.map(\.text))
 		}
 
-		private func waitForTable(in host: SheetTestHost<some View>, _ condition: (OCRText) -> Bool) async throws -> Bool {
+		private func waitForTable(in host: SheetTestHost<some View>, _ condition: (AccessibleText) -> Bool) async throws -> Bool {
 			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
 			while ContinuousClock.now < deadline {
 				if try await condition(tableText(in: host)) { return true }

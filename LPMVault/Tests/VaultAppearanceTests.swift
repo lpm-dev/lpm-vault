@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -251,19 +250,10 @@ extension SheetInteractionTests {
 		}
 
 		private func render<V: View>(_ view: V, size: CGSize, scheme: ColorScheme, name: String, expectedText: [String]) async throws {
-			let host = NSHostingView(rootView: view.environment(\.colorScheme, scheme).tint(VaultPalette.accent))
-			host.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-			host.frame = NSRect(origin: .zero, size: size)
-			host.layoutSubtreeIfNeeded()
-			let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-			host.cacheDisplay(in: host.bounds, to: bitmap)
-			let data = try #require(bitmap.representation(using: .png, properties: [:]))
-			Attachment.record(data, named: name + ".png")
-			let image = try #require(bitmap.cgImage)
-			let text = try await RenderedText.strings(in: image).joined(separator: " ")
-			let recognized = OCRText(text)
+			let text = try await AccessibilityTree.text(of: view.environment(\.colorScheme, scheme).tint(VaultPalette.accent), size: size,
+				appearance: NSAppearance(named: scheme == .dark ? .darkAqua : .aqua), attaching: name + ".png")
 			for label in expectedText {
-				#expect(recognized.contains(label), "Missing \(label) in \(name): \(text)")
+				#expect(text.contains(label), "Missing \(label) in \(name): \(text)")
 			}
 		}
 	}

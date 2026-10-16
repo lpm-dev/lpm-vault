@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -138,8 +137,8 @@ extension SheetInteractionTests {
 				if indicators.count == 2 {
 					#expect(indicators[0] != indicators[1], "Unsaved changes and differing values need distinct shapes")
 				}
-				let lines = try await RenderedText.lines(in: image, level: .accurate, region: region)
-				#expect(lines.contains { OCRText($0.text).contains("LONG") }, "Key column contains: \(lines.map(\.text))")
+				let lines = host.lines(in: region)
+				#expect(lines.contains { $0.text.contains("LONG") }, "Key column contains: \(lines.map(\.text))")
 				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])), named: "narrow-edited-drifting-key.png")
 			}
 
@@ -153,13 +152,7 @@ extension SheetInteractionTests {
 				let host = try await workspace(store, defaults: defaults)
 				defer { host.window.close() }
 				host.window.appearance = appearance.nativeAppearance
-				let sidebar = CGRect(x: 0, y: 0, width: VaultMetrics.sidebar / host.view.bounds.width, height: 1)
-				let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: sidebar)
-				let environment = try #require(lines.first {
-					$0.text.filter { !$0.isWhitespace && $0 != "•" }.drop { $0 == "." } == "env"
-				})
-				try clickAt(NSPoint(x: environment.bounds.midX * host.view.bounds.width,
-					y: environment.bounds.midY * host.view.bounds.height), in: host)
+				try await host.clickSidebarEnvironment(".env")
 				#expect(try await host.waitForText("ACTIONS"))
 				try await host.settle()
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
@@ -224,7 +217,7 @@ extension SheetInteractionTests {
 					divider.onDragEnded?(-2000)
 					try await host.settle()
 				}
-				let header = try await host.labelFrame("KEY", region: CGRect(x: 0.18, y: 0.75, width: 0.8, height: 0.1))
+				let header = try await host.drawnFrame(saying: "KEY", region: CGRect(x: 0.18, y: 0.75, width: 0.8, height: 0.1))
 				#expect(abs(header.minX - VaultMetrics.sidebar - VaultMetrics.paneDivider - 20) < 3)
 			}
 
@@ -283,7 +276,7 @@ extension SheetInteractionTests {
 			try await host.settle()
 			#expect(divider.accessibilityValue() as? String == "\(startWidth + 80) points")
 			if singleEnvironment {
-				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.75, width: 0.17, height: 0.15))
+				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.7, width: 0.25, height: 0.25))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
 				#expect(try await host.waitForText("All variables"))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
@@ -293,7 +286,7 @@ extension SheetInteractionTests {
 			} else {
 				try await host.clickSidebarEnvironment(".env")
 				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Value column" } })
-				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.75, width: 0.17, height: 0.15))
+				let project = try await host.labelFrame("Workspace", region: CGRect(x: 0, y: 0.7, width: 0.25, height: 0.25))
 				try clickAt(NSPoint(x: project.midX, y: project.midY), in: host)
 				#expect(try await host.waitForText("All variables"))
 			}
@@ -356,8 +349,8 @@ extension SheetInteractionTests {
 				try clickAt(NSPoint(x: 330, y: 700 - 197), in: host)
 				#expect(try await host.waitForText("VALUES"))
 			}
-			let title = try await host.labelFrame("All variables")
-			let keyColumn = try await host.labelFrame("KEY", region: CGRect(x: 0.25, y: 0.6, width: 0.4, height: 0.25))
+			let title = try await host.drawnFrame(saying: "All variables")
+			let keyColumn = try await host.drawnFrame(saying: "KEY", region: CGRect(x: 0.25, y: 0.6, width: 0.4, height: 0.25))
 			#expect(abs(keyColumn.minX - title.minX) < 3, "KEY starts at \(keyColumn.minX), the title at \(title.minX)")
 		}
 
@@ -448,8 +441,8 @@ extension SheetInteractionTests {
 			try await host.clickSidebarEnvironment(".env")
 			try await host.settle()
 			let headerRegion = CGRect(x: 0.27, y: 0.7, width: 0.43, height: 0.13)
-			let keyHeader = try await host.labelFrame("KEY", region: headerRegion)
-			let valueHeader = try await host.labelFrame("VALUE", region: headerRegion)
+			let keyHeader = try await host.drawnFrame(saying: "KEY", region: headerRegion)
+			let valueHeader = try await host.drawnFrame(saying: "VALUE", region: headerRegion)
 			let keyRegion = keyColumnRegion(header: keyHeader, size: host.view.bounds.size)
 			#expect(try await waitForKeyOrder(["ALPHA", "ZULU"], in: host, region: keyRegion))
 			let firstKey = try await keyFrame("ALPHA", in: host, region: keyRegion)
@@ -461,35 +454,19 @@ extension SheetInteractionTests {
 			#expect(try await waitForKeyOrder(["ZULU", "ALPHA"], in: host, region: keyRegion))
 		}
 
-		@Test("key order combines complementary recognition of the same frame")
-		func complementaryKeyRecognition() {
-			let fast = [RenderedText.Line(text: "ZULU", bounds: CGRect(x: 0.291, y: 0.661, width: 0.03, height: 0.014), labelBounds: nil)]
-			let accurate = [RenderedText.Line(text: "ALPHA", bounds: CGRect(x: 0.283, y: 0.588, width: 0.048, height: 0.023), labelBounds: nil)]
-			#expect(keyOrderIsVisible(["ZULU", "ALPHA"], readings: [fast, accurate]))
-			#expect(!keyOrderIsVisible(["ALPHA", "ZULU"], readings: [fast, accurate]))
-			#expect(!keyOrderIsVisible(["ZULU", "ALPHA"], readings: [fast, fast]))
-			let merged = [RenderedText.Line(text: "ZULU ALPHA", bounds: CGRect(x: 0.28, y: 0.66, width: 0.1, height: 0.02), labelBounds: nil)]
-			#expect(!keyOrderIsVisible(["ZULU", "ALPHA"], readings: [merged, fast]))
-		}
-
-		@Test("rendered key order tolerates text recognition's case and glyph differences")
-		func recognizedKeyOrder() {
+		@Test("key order is read from the top, and a key that isn't shown has no place in it")
+		func keyOrderFromLines() {
 			let lines = [
-				RenderedText.Line(text: "ZuIu", bounds: CGRect(x: 0.3, y: 0.5, width: 0.1, height: 0.02), labelBounds: nil),
-				RenderedText.Line(text: "alpha", bounds: CGRect(x: 0.3, y: 0.6, width: 0.1, height: 0.02), labelBounds: nil),
+				AccessibilityTree.Line(text: "ZULU", bounds: CGRect(x: 0.3, y: 0.5, width: 0.1, height: 0.02), labelBounds: nil),
+				AccessibilityTree.Line(text: "ALPHA", bounds: CGRect(x: 0.3, y: 0.6, width: 0.1, height: 0.02), labelBounds: nil),
 			]
 			#expect(keysFromTop(["ALPHA", "ZULU"], lines: lines) == ["ALPHA", "ZULU"])
 			#expect(keysFromTop(["ZULU", "ALPHA"], lines: lines) == ["ALPHA", "ZULU"])
 			#expect(keysFromTop(["ALPHA", "ZULU"], lines: Array(lines.prefix(1))) == ["ZULU"])
 			#expect(keyLine("ALPHA", lines: lines)?.bounds == lines[1].bounds)
-			let noisyLines = [
-				RenderedText.Line(text: "ALPHA", bounds: CGRect(x: 0.2853, y: 0.6569, width: 0.0438, height: 0.0171), labelBounds: nil),
-				RenderedText.Line(text: "ZULUI", bounds: CGRect(x: 0.2891, y: 0.5940, width: 0.0343, height: 0.0144), labelBounds: nil),
-			]
-			#expect(keysFromTop(["ALPHA", "ZULU"], lines: noisyLines) == ["ALPHA", "ZULU"])
 		}
 
-		@Test("key alignment measures visible pixels independently of OCR padding", arguments: [1, 2])
+		@Test("key alignment measures the pixels drawn, not the frame the text is laid out in", arguments: [1, 2])
 		func keyAlignmentUsesInk(scale: Int) throws {
 			let width = 200 * scale, height = 100 * scale
 			let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
@@ -514,20 +491,20 @@ extension SheetInteractionTests {
 			}
 		}
 
-		@Test("overlapping recognition cannot establish the order of two table rows", arguments: ["merged", "same height", "overlapping"])
+		@Test("overlapping lines can't establish the order of two table rows", arguments: ["merged", "same height", "overlapping"])
 		func combinedKeyLineCannotProveOrder(reading: String) {
 			let bounds = CGRect(x: 0.3, y: 0.5, width: 0.2, height: 0.02)
 			let lines = reading == "merged"
-				? [RenderedText.Line(text: "ZULU ALPHA", bounds: bounds, labelBounds: nil)]
+				? [AccessibilityTree.Line(text: "ZULU ALPHA", bounds: bounds, labelBounds: nil)]
 				: [
-					RenderedText.Line(text: "ZULU", bounds: bounds.offsetBy(dx: 0.1, dy: reading == "overlapping" ? 0.000001 : 0), labelBounds: nil),
-					RenderedText.Line(text: "ALPHA", bounds: bounds, labelBounds: nil),
+					AccessibilityTree.Line(text: "ZULU", bounds: bounds.offsetBy(dx: 0.1, dy: reading == "overlapping" ? bounds.height / 2 : 0), labelBounds: nil),
+					AccessibilityTree.Line(text: "ALPHA", bounds: bounds, labelBounds: nil),
 				]
 			#expect(keysFromTop(["ALPHA", "ZULU"], lines: lines).isEmpty)
 			#expect(keysFromTop(["ZULU", "ALPHA"], lines: lines).isEmpty)
 		}
 
-		@Test("key recognition covers rows below the rendered header and excludes the footer", arguments: [NSSize(width: 1040, height: 700), NSSize(width: 1600, height: 800)])
+		@Test("the key column's region covers rows below the header and excludes the footer", arguments: [NSSize(width: 1040, height: 700), NSSize(width: 1600, height: 800)])
 		func keyRecognitionFollowsHeader(size: NSSize) {
 			let header = CGRect(x: 301, y: size.height - 150, width: 30, height: 12)
 			let region = keyColumnRegion(header: header, size: size)
@@ -691,10 +668,10 @@ extension SheetInteractionTests {
 			let host = try await workspace(store)
 			defer { host.window.close() }
 			try await host.click("Reveal")
-			#expect(try await host.waitForText("fixture-value"))
+			#expect(try await host.waitForText("TOKEN, set in 1 of 1 environments, values shown"))
 			await store.refreshLocalState()
 			try await host.settle()
-			#expect(try await host.text().contains("fixture-value"))
+			#expect(try await host.text().contains("TOKEN, set in 1 of 1 environments, values shown"))
 		}
 
 		@Test("copy all keeps the toolbar stationary and confirms success")
@@ -800,9 +777,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!)),
 				size: NSSize(width: 1600, height: 800), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
-			let initialImage = try host.snapshot(host.view)
-			let lines = try await RenderedText.lines(in: initialImage, level: .accurate)
-			#expect(!lines.contains { $0.text.contains("Select an env project") })
+			#expect(!host.lines().contains { $0.text.contains("Select an env project") })
 			#expect(try await host.waitUntil { store.workspaceSnapshots["workspace"] != nil })
 			#expect(try await host.waitForText("All variables"))
 		}
@@ -867,15 +842,16 @@ extension SheetInteractionTests {
 			try clickAt(NSPoint(x: label.midX, y: label.midY), in: host)
 		}
 
-		private func keysFromTop(_ keys: [String], lines: [RenderedText.Line]) -> [String] {
+		private func keysFromTop(_ keys: [String], lines: [AccessibilityTree.Line]) -> [String] {
 			let matches = keys.compactMap { key in keyLine(key, lines: lines).map { (key: key, bounds: $0.bounds) } }
 				.sorted { $0.bounds.midY > $1.bounds.midY }
-			guard zip(matches, matches.dropFirst()).allSatisfy({ upper, lower in upper.bounds.minY > lower.bounds.maxY }) else { return [] }
+			// Rows next to each other share an edge; rows that overlap can't be ordered.
+			guard zip(matches, matches.dropFirst()).allSatisfy({ upper, lower in upper.bounds.minY >= lower.bounds.maxY - 0.000_5 }) else { return [] }
 			return matches.map(\.key)
 		}
 
-		private func keyLine(_ key: String, lines: [RenderedText.Line]) -> RenderedText.Line? {
-			lines.first { OCRText($0.text).contains(key) }
+		private func keyLine(_ key: String, lines: [AccessibilityTree.Line]) -> AccessibilityTree.Line? {
+			lines.first { $0.text.split { !($0.isLetter || $0.isNumber || $0 == "_") }.contains(Substring(key)) }
 		}
 
 		private func keyColumnRegion(header: CGRect, size: NSSize) -> CGRect {
@@ -883,32 +859,20 @@ extension SheetInteractionTests {
 				width: (VaultMetrics.keyColumn - 20) / size.width, height: (header.minY - VaultMetrics.statusBar) / size.height)
 		}
 
-		private func keyOrderIsVisible(_ expected: [String], readings: [[RenderedText.Line]]) -> Bool {
-			readings.contains { keysFromTop(expected, lines: $0) == expected }
-				|| keysFromTop(expected, lines: readings.flatMap { $0 }) == expected
-		}
-
 		private func waitForKeyOrder<V: View>(_ expected: [String], in host: SheetTestHost<V>, region: CGRect? = nil) async throws -> Bool {
 			let keyRegion: CGRect
 			if let region {
 				keyRegion = region
 			} else {
-				let header = try await host.labelFrame("KEY", region: CGRect(x: 0.15, y: 0.75, width: 0.5, height: 0.1))
+				let header = try await host.drawnFrame(saying: "KEY", region: CGRect(x: 0.15, y: 0.75, width: 0.5, height: 0.1))
 				keyRegion = keyColumnRegion(header: header, size: host.view.bounds.size)
 			}
 			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
 			while true {
-				let image = try host.snapshot(host.view)
-				var readings: [String] = []
-				var recognized: [[RenderedText.Line]] = []
-				for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
-					let lines = try await RenderedText.lines(in: image, level: level, region: keyRegion)
-					recognized.append(lines)
-					if keyOrderIsVisible(expected, readings: recognized) { return true }
-					readings.append("\(level): " + lines.map { "\($0.text) at \($0.bounds)" }.joined(separator: " | "))
-				}
+				let lines = host.lines(in: keyRegion)
+				if keysFromTop(expected, lines: lines) == expected { return true }
 				guard ContinuousClock.now < deadline else {
-					print("Expected rendered keys \(expected) in \(keyRegion). Readings: \(readings)")
+					print("Expected keys \(expected) in \(keyRegion). Lines: " + lines.map { "\($0.text) at \($0.bounds)" }.joined(separator: " | "))
 					return false
 				}
 				try await Task.sleep(for: .milliseconds(20))
@@ -917,19 +881,17 @@ extension SheetInteractionTests {
 
 		private func keyFrame<V: View>(_ key: String, in host: SheetTestHost<V>, region: CGRect) async throws -> CGRect {
 			let image = try host.snapshot(host.view)
-			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
-				let lines = try await RenderedText.lines(in: image, level: level, region: region)
-				if let line = keyLine(key, lines: lines) {
-					// Vision can pad a whole word to the crop edge; measure its visible ink.
-					let band = CGRect(x: region.minX, y: line.bounds.minY, width: region.width, height: line.bounds.height)
-						.insetBy(dx: 0, dy: -2 / CGFloat(image.height)).intersection(region)
-					let box = try inkBounds(in: image, region: band)
-					return CGRect(x: box.minX * host.view.bounds.width, y: box.minY * host.view.bounds.height,
-						width: box.width * host.view.bounds.width, height: box.height * host.view.bounds.height)
-				}
-				print("Missing key \(key) in \(region), \(level): " + lines.map { "\($0.text) at \($0.bounds)" }.joined(separator: " | "))
+			let lines = host.lines(in: region, label: key)
+			guard let line = lines.first(where: { $0.labelBounds != nil }), let label = line.labelBounds else {
+				print("Missing key \(key) in \(region): " + lines.map { "\($0.text) at \($0.bounds)" }.joined(separator: " | "))
+				throw CocoaError(.coderValueNotFound)
 			}
-			throw CocoaError(.coderValueNotFound)
+			// Alignment is about what's drawn, so the key's ink is measured within its row.
+			let band = CGRect(x: region.minX, y: label.minY, width: region.width, height: label.height)
+				.insetBy(dx: 0, dy: -2 / CGFloat(image.height)).intersection(region)
+			let box = try inkBounds(in: image, region: band)
+			return CGRect(x: box.minX * host.view.bounds.width, y: box.minY * host.view.bounds.height,
+				width: box.width * host.view.bounds.width, height: box.height * host.view.bounds.height)
 		}
 
 		private func inkBounds(in image: CGImage, region: CGRect) throws -> CGRect {

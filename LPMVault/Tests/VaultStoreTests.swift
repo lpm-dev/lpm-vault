@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -6826,20 +6825,18 @@ extension SheetInteractionTests {
 		}
 
 		private func expectRenderedLockTitle(store: VaultStore, seconds: Int) async throws {
-			let view = NSHostingView(rootView: VaultTitleBarView(
+			let host = SheetTestHost(VaultTitleBarView(
 				store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
-			).environment(UpdateChecker()).environment(\.colorScheme, .light))
-			view.frame = NSRect(x: 0, y: 0, width: 1040, height: VaultMetrics.titleBar)
-			view.layoutSubtreeIfNeeded()
-			let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-			view.cacheDisplay(in: view.bounds, to: bitmap)
-			let image = try #require(bitmap.cgImage)
-			let data = try #require(bitmap.representation(using: .png, properties: [:]))
-			Attachment.record(data, named: "lock-countdown-\(seconds).png")
-			let width = min(1, 180 / view.bounds.width)
+			).environment(UpdateChecker()).environment(\.colorScheme, .light),
+				size: NSSize(width: 1040, height: VaultMetrics.titleBar), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			try await host.settle()
+			Attachment.record(try #require(NSBitmapImageRep(cgImage: host.snapshot(host.view)).representation(using: .png, properties: [:])),
+				named: "lock-countdown-\(seconds).png")
+			let width = min(1, 180 / host.view.bounds.width)
 			let controls = CGRect(x: 1 - width, y: 0, width: width, height: 1)
-			let text = try await RenderedText.strings(in: image, region: controls).joined(separator: " ")
-			#expect(text.contains("Lock \(seconds)s"))
+			let text = AccessibleText(host.lines(in: controls).map(\.text))
+			#expect(text.contains("Lock LPM Vault, auto-lock in \(seconds) \(seconds == 1 ? "second" : "seconds")"), "The title bar's controls say: \(text)")
 		}
 	}
 }

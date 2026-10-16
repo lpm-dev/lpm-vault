@@ -1,7 +1,6 @@
 import Foundation
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -118,11 +117,9 @@ extension SheetInteractionTests {
 	struct OrganizationProjectImportRenderingTests {
 		@Test("organization move confirmation explains local relocation and cloud merge precedence")
 		func moveConfirmationExplainsConsequences() async throws {
-			let renderer = ImageRenderer(content: OrgProjectMoveConfirmation(
+			let text = try await AccessibilityTree.text(of: OrgProjectMoveConfirmation(
 				projectName: "test-project", onConfirm: {}, onCancel: {}
 			).background(Color.white).environment(\.colorScheme, .light))
-			renderer.scale = 3
-			let text = try await RenderedText.strings(in: #require(renderer.cgImage)).joined(separator: " ")
 			#expect(text.contains("Cloud values replace conflicting local values."))
 			#expect(text.contains("Nothing is uploaded."))
 			#expect(text.contains("Move and merge"))

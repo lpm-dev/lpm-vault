@@ -326,7 +326,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Add a key to add the group"))
 			#expect(store.schemaDraft(for: "schema-groups") == nil, "A group without a key isn't added")
 
-			try await host.click("Add member")
+			try await host.click("Add a key to the group")
 			try await host.click("PORT", in: try await host.popoverWindow())
 			#expect(try await host.waitUntil {
 				store.schemaDraft(for: "schema-groups")?.declaration(of: .group("smtp")) == .declared(ProjectEnvSchemaGroup(members: ["PORT"]).json())
@@ -354,7 +354,7 @@ extension SheetInteractionTests {
 			try await host.click("Review & save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
-			#expect(try await host.waitForText("atLeastOne", in: sheet))
+			#expect(try await host.waitForText(#"Added "mode": "atLeastOne""#, in: sheet))
 			try await host.click("Save to", in: sheet)
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups") == nil })
 			let written = try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8)
@@ -447,12 +447,12 @@ extension SheetInteractionTests {
 			try await host.click("Add group")
 			#expect(try await host.waitUntil { host.hasField(placeholder: "group_name") })
 			try host.enterText("smtp", placeholder: "group_name")
-			try await host.click("Add member")
+			try await host.click("Add a key to the group")
 			try await host.click("PORT", in: try await host.popoverWindow())
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.declaration(of: .group("smtp")) != .absent })
 			try await removeMember("PORT", from: host, region: CGRect(x: 0.72, y: 0, width: 0.28, height: 1))
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups") == nil })
-			try await host.click("Add member")
+			try await host.click("Add a key to the group")
 			try await host.click("TOKEN", in: try await host.popoverWindow())
 			#expect(try await host.waitUntil {
 				ProjectEnvSchemaGroup(store.schemaDraft(for: "schema-groups")?.declaration(of: .group("smtp")).json)?.members == ["TOKEN"]
@@ -584,10 +584,10 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Add group")
 			#expect(try await host.waitUntil { host.isEditing(placeholder: "group_name") })
-			try await host.click("Add member")
+			try await host.click("Add a key to the group")
 			try await host.click("PORT", in: try await host.popoverWindow())
 			#expect(try await host.waitForText("Name the group to add it to your draft"))
-			#expect(try await !host.text().contains("add a key"), "The group has a key")
+			#expect(try await !host.text().contains("add a key", options: []), "The group has a key; its button says Add a key to the group")
 		}
 
 		@Test("a group whose keys the draft all removes can't be kept without one of them")
@@ -615,7 +615,7 @@ extension SheetInteractionTests {
 			store.editSchemaDraft(in: "schema-groups") { $0.set(.absent, for: .key("OTP")) }
 			try await host.click("auth")
 			#expect(try await host.waitForText("MEMBERS"))
-			try await host.click("Add member")
+			try await host.click("Add a key to the group")
 			#expect(try await host.waitForText("OTP", in: try await host.popoverWindow()))
 		}
 
@@ -673,15 +673,9 @@ extension SheetInteractionTests {
 			return (store, project)
 		}
 
-		/// Clicks the × that removes `member` in the panel. It's found from where the name
-		/// starts, since recognition on CI boxes a name loosely at its end: the name, in the
-		/// chip's font, then the chip's spacing, then the ×.
+		/// Clicks the × that removes `member` in the panel.
 		private func removeMember(_ member: String, from host: SheetTestHost<some View>, region: CGRect? = nil) async throws {
-			let name = try await host.labelFrame(member, region: region)
-			let width = (member as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)]).width
-			let cross = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
-				.withSymbolConfiguration(.init(pointSize: 8, weight: .bold))?.size.width ?? 8
-			try NativeTestClick.send(to: host.window, at: NSPoint(x: name.minX + width + 5 + cross / 2, y: name.midY))
+			try await host.click("Remove \(member) from the group", region: region)
 		}
 
 		private func workspace(overridesOTP: Bool = false) async throws -> (VaultStore, SheetTestHost<some View>, String) {

@@ -45,8 +45,8 @@ extension SheetInteractionTests {
 			}
 			// Recognition misreads the small dashed source badge; the page renders the model's source.
 			#expect(store.keyDescriptions["schema-page"]?.schema?.overview?.rule(for: "DATABASE_URL")?.source == "schemas/base.json")
-			let inspector = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: CGRect(x: 0.78, y: 0, width: 0.22, height: 1))
-			#expect(!OCRText(inspector.map(\.text).joined(separator: "\n")).contains("VALUES"), "The inspector stays closed on the Schema page")
+			let inspector = host.lines(in: CGRect(x: 0.78, y: 0, width: 0.22, height: 1))
+			#expect(!AccessibleText(inspector.map(\.text)).contains("VALUES"), "The inspector stays closed on the Schema page")
 		}
 
 		@Test("without a folder, the page explains where rules live and offers Connect CLI")
@@ -96,8 +96,10 @@ extension SheetInteractionTests {
 			#expect(text.contains("Check the field name"))
 			#expect(text.contains("Checks paused"))
 
+			// Opening the page reads lpm.json; Recheck has to start a read of its own.
+			#expect(try await host.waitUntil { !store.isReloadingKeyDescriptions })
 			// Found before the fix is written: the page also rereads lpm.json once
-			// it changes, which takes Recheck away, sooner than a slow runner reads it.
+			// it changes, which takes Recheck away.
 			let recheck = try await host.clickLater("Recheck")
 			try Self.sample.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 			try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
@@ -144,8 +146,8 @@ extension SheetInteractionTests {
 
 			try await host.click("PASSWORD")
 			#expect(try await host.waitForText("RULES"))
-			let rules = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: inspector)
-			let text = OCRText(rules.map(\.text).joined(separator: "\n"))
+			let rules = host.lines(in: inspector)
+			let text = AccessibleText(rules.map(\.text))
 			for expected in ["12+ chars", "Secret", "Exactly one of PASSWORD, OAUTH_TOKEN", "Edit in Schema"] {
 				#expect(text.contains(expected), "Missing \(expected) in the inspector")
 			}

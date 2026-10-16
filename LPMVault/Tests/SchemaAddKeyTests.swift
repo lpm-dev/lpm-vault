@@ -425,7 +425,7 @@ extension SheetInteractionTests {
 			], order: .descending)
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			#expect(try await host.waitForText("REDIS_URL"))
-			let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate)
+			let lines = host.lines()
 			let redis = try #require(lines.first { $0.text.contains("REDIS_URL") })
 			let api = try #require(lines.first { $0.text.contains("API_TOKEN") })
 			#expect(redis.bounds.midY > api.bounds.midY, "Z to A puts REDIS_URL above API_TOKEN")

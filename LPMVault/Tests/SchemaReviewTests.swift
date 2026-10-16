@@ -6,6 +6,23 @@ import Testing
 
 @Suite("Schema review")
 struct SchemaReviewTests {
+	@Test("VoiceOver reads a change to lpm.json line by line, saying what's added and removed, without indentation")
+	@MainActor
+	func spokenLines() {
+		let diff = ProjectEnvSchemaDraft.Diff(path: "envSchema.groups.auth", lines: [
+			.init(kind: .unchanged, text: #""auth": {"#),
+			.init(kind: .removed, text: #"  "mode": "exactlyOne","#),
+			.init(kind: .added, text: #"  "mode": "atLeastOne","#),
+			.init(kind: .omitted, text: "2 unchanged lines"),
+		])
+		#expect(diff.lines.map(VaultSchemaReviewSheet.spoken) == [
+			#""auth": {"#,
+			#"Removed "mode": "exactlyOne","#,
+			#"Added "mode": "atLeastOne","#,
+			"2 unchanged lines",
+		])
+	}
+
 	typealias Draft = ProjectEnvSchemaDraft
 	typealias Problem = ProjectEnvValueCheck.Problem
 

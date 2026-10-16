@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -170,11 +169,10 @@ extension SheetInteractionTests {
 			let project = VaultProject(id: "branding-test", name: "project-source", path: "/tmp/project-source", environments: ["default": [:]])
 			store.projects = [project]
 			store.selectedProjectId = project.id
-			let image = try renderNative(VaultTitleBarView(
+			let text = try await AccessibilityTree.text(of: VaultTitleBarView(
 				store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {}
-			).environment(UpdateChecker()).environment(\.colorScheme, .light), size: CGSize(width: 1100, height: VaultMetrics.titleBar))
-			try recordPNG(image, named: "title-bar.png")
-			let text = OCRText(try await RenderedText.strings(in: image).joined(separator: " "))
+			).environment(UpdateChecker()).environment(\.colorScheme, .light), size: CGSize(width: 1100, height: VaultMetrics.titleBar),
+				attaching: "title-bar.png")
 			#expect(text.contains("LPM Vault"))
 			#expect(text.contains("project-source"))
 		}
@@ -185,26 +183,11 @@ extension SheetInteractionTests {
 				keychainService: MockKeychainService(), biometricService: MockBiometricService(),
 				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }
 			)
-			let image = try renderNative(ContentView(store: store)
-				.environment(\.colorScheme, .light), size: CGSize(width: 1040, height: 640))
-			try recordPNG(image, named: "lock-screen.png")
-			let text = try await RenderedText.strings(in: image).joined(separator: " ")
+			let text = try await AccessibilityTree.text(of: ContentView(store: store)
+				.environment(\.colorScheme, .light), size: CGSize(width: 1040, height: 640), attaching: "lock-screen.png")
 			#expect(text.contains("LPM Vault is Locked"))
 			#expect(text.contains("Authenticate with Touch ID or your Mac password to unlock."))
 		}
 
-		private func recordPNG(_ image: CGImage, named name: String) throws {
-			let data = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-			Attachment.record(data, named: name)
-		}
-
-		private func renderNative<V: View>(_ view: V, size: CGSize) throws -> CGImage {
-			let hostingView = NSHostingView(rootView: view)
-			hostingView.frame = NSRect(origin: .zero, size: size)
-			hostingView.layoutSubtreeIfNeeded()
-			let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
-			hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
-			return try #require(bitmap.cgImage)
-		}
 	}
 }

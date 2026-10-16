@@ -257,13 +257,11 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			#expect(try await host.waitUntil { store.valueChecks[project.id] != nil })
 
-			// Recognition on CI runners misreads the matrix's 11-point Required;
-			// the environment table below checks it at its larger size.
+			// The matrix says a row's key and how many environments set it; the
+			// environment table below says each value's Required or default.
 			#expect(try await host.waitForText("Invalid values"))
 			var text = try await host.text()
-			for expected in ["API_TOKEN", "(default)"] {
-				#expect(text.contains(expected), "Missing \(expected)")
-			}
+			#expect(text.contains("API_TOKEN"))
 
 			try await host.click("Invalid values")
 			#expect(try await host.waitForTextToDisappear("NODE_ENV"))
@@ -276,8 +274,8 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Exactly one of PASSWORD, OAUTH_TOKEN"))
 			text = try await host.text()
 			#expect(text.contains("both set"))
-			#expect(text.contains("Required"), "A key required in production shows in its table without a stored value")
-			#expect(text.contains("(default)"), "A default fills PORT in production")
+			#expect(text.contains("required, no value"), "A key required in production shows in its table without a stored value")
+			#expect(text.contains("PORT, default"), "A default fills PORT in production")
 		}
 
 		@Test("the inspector checks an unsaved edit against the current rules before it is saved")
@@ -309,9 +307,9 @@ extension SheetInteractionTests {
 			try await host.click("DATABASE_URL")
 			#expect(try await host.waitForText("RULES"))
 			let inspector = CGRect(x: 0.78, y: 0, width: 0.22, height: 1)
-			func inspectorText() async throws -> OCRText {
-				let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate, region: inspector)
-				return OCRText(lines.map(\.text).joined(separator: "\n"))
+			func inspectorText() async throws -> AccessibleText {
+				let lines = host.lines(in: inspector)
+				return AccessibleText(lines.map(\.text))
 			}
 			#expect(try await inspectorText().contains("Not a valid URL"))
 			#expect(try await inspectorText().contains("production"))
