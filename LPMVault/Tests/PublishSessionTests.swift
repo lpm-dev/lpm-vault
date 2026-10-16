@@ -86,25 +86,6 @@ struct PublishSessionTests {
 		#expect(session.saved?.id == saved.first?.id)
 	}
 
-	@Test("a Netlify connection isn't offered for publishing yet, so its token never reaches another platform's client")
-	func netlifyNotOffered() async throws {
-		try await connect()
-		_ = try await connections.save(
-			.netlify(NetlifyConnectionAccount(userID: "5f1a2b3c4d5e6f7a8b9c0d1e", name: "Tolga", email: nil)),
-			accessToken: "nfo_secret", at: Date()).get()
-		let tokens = TokenLog()
-		let api = api
-		let session = session(client: { token in
-			tokens.append(token)
-			return api
-		})
-		session.start()
-		try await waitUntil { session.vercel?.projects.value != nil }
-		#expect(session.connections.value?.map(\.id) == ["vercel.team_acme"])
-		#expect(session.connectionID == "vercel.team_acme", "The only connection that can publish is chosen")
-		#expect(Set(tokens.values) == ["vca_1"])
-	}
-
 	@Test("a saved destination opens on its review, with what this Mac published there")
 	func savedOpensOnReview() async throws {
 		try await connect()
@@ -879,6 +860,203 @@ struct CoolifyPublishSessionTests {
 }
 
 @MainActor
+struct NetlifyPublishSessionTests {
+	private let keychain = MockKeychainService()
+	private let api = FakeNetlifyAPI()
+	private let vault = "publish-session-vault"
+	private let values = ValuesBox([
+		"production": ["API_TOKEN": "tok", "NEXT_PUBLIC_URL": "https://x"],
+		"preview": ["API_TOKEN": "preview-tok", "NEXT_PUBLIC_URL": "https://preview"],
+	])
+	private let confirmations = Confirmations()
+	private let rules = ProjectEnvSchemaOverview(
+		rules: [ProjectEnvSchemaOverview.Rule(key: "NEXT_PUBLIC_URL", isPublic: true, source: nil, badges: [])], groups: [])
+
+	private var publishing: PublishingStore { PublishingStore(service: keychain) }
+	private var connections: PlatformConnectionStore { PlatformConnectionStore(service: keychain) }
+
+	private func connect() async throws {
+		_ = try await connections.save(
+			.netlify(NetlifyConnectionAccount(userID: "5f1a2b3c4d5e6f7a8b9c0d1e", name: "Tolga", email: "tolga@example.com")),
+			accessToken: "nfo_1", at: Date()).get()
+	}
+
+	private func session(saved: PublishDestination? = nil, source: String = "production", tokens: TokenLog? = nil) -> PublishSession {
+		let values = values
+		let confirmations = confirmations
+		let api = api
+		return PublishSession(
+			vaultID: vault, projectName: "demo-api", environments: ["production", "preview"], sourceEnvironment: source,
+			saved: saved,
+			dependencies: .init(
+				snapshot: { [rules] environment, _ in values.get(environment).map { .init(values: $0, rules: .known(rules), check: nil) } },
+				confirm: { confirmations.ask($0) },
+				publishing: publishing,
+				connections: connections,
+				vercel: { _ in
+					tokens?.append("vercel")
+					return FakeVercelAPI()
+				},
+				netlify: { token in
+					tokens?.append(token)
+					return api
+				},
+				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
+	}
+
+	private func waitUntil(_ condition: () -> Bool) async throws {
+		for _ in 0..<400 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(condition())
+	}
+
+	private func choose(_ session: PublishSession, _ context: NetlifyDestinationForm.ContextChoice, branch: String = "") async throws {
+		session.start()
+		try await waitUntil { session.netlify?.sites.value != nil }
+		session.netlify?.siteID = "site-storefront"
+		session.netlify?.contextChoice = context
+		session.netlify?.branch = branch
+		#expect(session.canReview)
+		session.loadReview()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+	}
+
+	private func publish(_ session: PublishSession) async throws {
+		session.publish()
+		try await waitUntil { session.step == .results }
+	}
+
+	@Test("a Netlify site's context is chosen, reviewed, published with Touch ID, and saved with its names")
+	func publishesNewDestination() async throws {
+		try await connect()
+		let tokens = TokenLog()
+		let session = session(tokens: tokens)
+		try await choose(session, .production)
+		let review = try #require(session.review)
+		#expect(review.platform == .netlify && review.selection.keys == ["API_TOKEN", "NEXT_PUBLIC_URL"])
+		try await publish(session)
+		#expect(confirmations.reasons == ["Publish 2 variables to storefront / Production on Netlify"])
+		#expect(session.results?.publishedCount == 2)
+		#expect(api.isSecret("API_TOKEN") == true && api.isSecret("NEXT_PUBLIC_URL") == false)
+		let saved = try #require(try await publishing.destinations(of: vault).get().first)
+		guard case .netlify(let target) = saved.target else { Issue.record("Not a Netlify destination"); return }
+		#expect(target == netlifyTarget(.production))
+		let history = try await publishing.history(of: saved.id, in: vault).get()
+		#expect(history.keys["API_TOKEN"]?.publishedAsSecret == true && history.keys["NEXT_PUBLIC_URL"]?.publishedAsSecret == false)
+		#expect(VaultTitleBarView.title(of: saved) == "storefront / Production — Netlify · Northwind")
+		#expect(Set(tokens.values) == ["nfo_1"], "Only Netlify's client gets the token")
+	}
+
+	@Test(
+		"publishing another context of the same site leaves the first destination up to date, while an edit on Netlify still shows",
+		arguments: [false, true]
+	)
+	func siblingsStayUpToDate(renewsValueIDs: Bool) async throws {
+		api.renewsValueIDs = renewsValueIDs
+		try await connect()
+		let production = session()
+		try await choose(production, .production)
+		try await publish(production)
+		let previews = session(source: "preview")
+		try await choose(previews, .deployPreview)
+		#expect(previews.review?.plan.rows.map(\.operation) == [.add, .add], "Each variable gets a Deploy Previews value of its own")
+		try await publish(previews)
+		#expect(api.value(of: "API_TOKEN", in: .production) == "tok" && api.value(of: "API_TOKEN", in: .deployPreview) == "preview-tok")
+
+		let saved = try await publishing.destinations(of: vault).get()
+		let productionDestination = try #require(saved.first { $0.sourceEnvironment == "production" })
+		let reopened = session(saved: productionDestination)
+		reopened.start()
+		try await waitUntil { reopened.review != nil || reopened.reviewError != nil }
+		#expect(reopened.review?.plan.rows.allSatisfy(\.status.isUpToDate) == true, "Deploy Previews' publish isn't someone else's change")
+
+		api.edit("API_TOKEN", in: .deployPreview)
+		reopened.loadReview()
+		try await waitUntil { reopened.review != nil && !reopened.isLoadingReview }
+		#expect(reopened.review?.plan.row("API_TOKEN")?.holds == [.changedOnPlatform],
+			"Netlify keeps one change time per variable, so an edit to another context's value reads as a change")
+	}
+
+	@Test("one branch's destination needs a branch name Git accepts, and publishes that branch's value")
+	func branch() async throws {
+		try await connect()
+		let session = session()
+		session.start()
+		try await waitUntil { session.netlify?.sites.value != nil }
+		session.netlify?.siteID = "site-storefront"
+		session.netlify?.contextChoice = .branch
+		#expect(!session.canReview)
+		session.netlify?.branch = "bad name"
+		#expect(!session.canReview && session.netlify?.branchProblem != nil)
+		session.netlify?.branch = " staging "
+		#expect(session.canReview && session.netlify?.context == .branch("staging"))
+		session.loadReview()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+		try await publish(session)
+		#expect(api.writes.allSatisfy { $0.context == "branch:staging" } && api.writes.count == 2)
+		#expect(confirmations.reasons == ["Publish 2 variables to storefront / Branch staging on Netlify"])
+	}
+
+	@Test("a branch name typed again in another Unicode composition names another branch, so its review is cleared")
+	func branchRecomposed() async throws {
+		try await connect()
+		let session = session()
+		try await choose(session, .branch, branch: "caf\u{00E9}")
+		#expect(session.review != nil)
+		session.netlify?.branch = "cafe\u{0301}"
+		#expect(session.review == nil, "The review was of the other spelling's branch")
+		#expect(session.netlify?.context?.branch.map { Array($0.utf8) } == Array("cafe\u{0301}".utf8))
+	}
+
+	@Test("a saved Netlify destination opens on its review without listing sites")
+	func savedSkipsDiscovery() async throws {
+		try await connect()
+		let saved = netlifyDestination(.production)
+		_ = try await publishing.save(saved, to: vault).get()
+		let session = session(saved: saved)
+		#expect(session.step == .review && session.netlify?.siteID == "site-storefront" && session.netlify?.context == .production)
+		session.start()
+		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(session.review != nil && api.siteListingCount == 0)
+	}
+
+	@Test("a saved Netlify destination whose user isn't connected here names the user")
+	func missingConnection() async throws {
+		let saved = netlifyDestination(.production)
+		_ = try await publishing.save(saved, to: vault).get()
+		let session = session(saved: saved)
+		session.start()
+		try await waitUntil { session.reviewError != nil }
+		#expect(session.reviewError?.contains("Tolga on Netlify, which isn't connected on this Mac") == true)
+	}
+
+	@Test("a Netlify review that only adds values to variables Netlify has says a change made moments before can still be overwritten")
+	func addNote() async throws {
+		try await connect()
+		api.seed("API_TOKEN", [.deployPreview: "d"], secret: true)
+		let session = session()
+		try await choose(session, .production)
+		let review = try #require(session.review)
+		#expect(review.summary.replacing == 0 && review.summary.adding == 2)
+		#expect(PublishSheet.notes(for: review).contains { $0.contains("moments before publishing can still be overwritten") })
+		#expect(PublishSheet.notes(for: review).contains { $0.contains("another deploy context at that moment can't be told apart from this publish") })
+		review.selection.keys.forEach { if $0 == "API_TOKEN" { session.set($0, selected: false) } }
+		let onlyNew = try #require(session.review)
+		#expect(!PublishSheet.notes(for: onlyNew).contains { $0.contains("moments before publishing") }, "A new variable can't overwrite anything")
+	}
+
+	@Test("a Netlify review notes that netlify.toml and site variables take precedence")
+	func notes() async throws {
+		try await connect()
+		api.seed("API_TOKEN", [.production: "old"], secret: true)
+		let session = session()
+		try await choose(session, .production)
+		let notes = PublishSheet.notes(for: try #require(session.review))
+		#expect(notes.contains { $0.contains("netlify.toml") })
+		#expect(notes.contains { $0.contains("moments before publishing can still be overwritten") })
+	}
+}
+
+@MainActor
 private final class ValuesBox {
 	private var environments: [String: [String: String]]
 	init(_ environments: [String: [String: String]]) { self.environments = environments }
@@ -1243,6 +1421,74 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Redeploy in Coolify"))
 			#expect(biometric.confirmationReasons == ["Publish 1 variable to api / Production on Coolify"])
 			#expect(coolify.writes.map(\.key) == ["API_TOKEN", "API_TOKEN"] && coolify.value(of: "API_TOKEN") == "tok")
+		}
+
+		@Test("a Netlify publish names the site and deploy context, holds a variable Netlify uses everywhere, and says to redeploy")
+		func publishesToNetlify() async throws {
+			let environments = ["production": ["API_TOKEN": "tok", "DATABASE_URL": "postgres://prod"]]
+			keychain.envStorage["project"] = (name: "demo-api", path: "", environments: environments)
+			let netlify = FakeNetlifyAPI()
+			netlify.seed("DATABASE_URL", [.all: "postgres://shared"])
+			let store = VaultStore(
+				keychainService: keychain, biometricService: biometric, apiService: MockAPIService(),
+				authTokenProvider: { _, _ in nil }, netlifyClient: { _ in netlify })
+			store.projects = [VaultProject(id: "project", name: "demo-api", path: "", environments: environments)]
+			store.isUnlocked = true
+			store.openProject(id: "project")
+			store.selectEnvironment("production")
+			_ = try await store.platformConnectionStore.save(
+				.netlify(NetlifyConnectionAccount(userID: "5f1a2b3c4d5e6f7a8b9c0d1e", name: "Tolga", email: "tolga@example.com")),
+				accessToken: "nfo_1", at: Date()).get()
+			let session = try #require(store.makePublishSession())
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 640),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitUntil { session.netlify?.sites.value != nil })
+			#expect(try await host.waitForText("Deploy context"))
+			session.netlify?.siteID = "site-storefront"
+			session.netlify?.contextChoice = .production
+			#expect(try await host.waitForText("storefront / Production"))
+			#expect(try await host.waitForText("TO NETLIFY"))
+			try await host.click("Review variables")
+			#expect(try await host.waitForText("one value for all deploy contexts"))
+			#expect(try await host.waitForText("Can't publish"))
+			#expect(try await host.waitForText("netlify.toml"))
+			try await host.click("Publish 1 variable")
+			#expect(try await host.waitForText("Redeploy on Netlify"))
+			#expect(biometric.confirmationReasons == ["Publish 1 variable to storefront / Production on Netlify"])
+			#expect(netlify.writes.map(\.key) == ["API_TOKEN"] && netlify.value(of: "API_TOKEN", in: .production) == "tok")
+			#expect(netlify.value(of: "DATABASE_URL", in: .all) == "postgres://shared")
+		}
+
+		@Test("a Netlify destination for one branch takes the branch's name, and says when Git wouldn't accept it")
+		func netlifyBranch() async throws {
+			let environments = ["staging": ["API_TOKEN": "tok"]]
+			keychain.envStorage["project"] = (name: "demo-api", path: "", environments: environments)
+			let netlify = FakeNetlifyAPI()
+			let store = VaultStore(
+				keychainService: keychain, biometricService: biometric, apiService: MockAPIService(),
+				authTokenProvider: { _, _ in nil }, netlifyClient: { _ in netlify })
+			store.projects = [VaultProject(id: "project", name: "demo-api", path: "", environments: environments)]
+			store.isUnlocked = true
+			store.openProject(id: "project")
+			store.selectEnvironment("staging")
+			_ = try await store.platformConnectionStore.save(
+				.netlify(NetlifyConnectionAccount(userID: "5f1a2b3c4d5e6f7a8b9c0d1e", name: "Tolga", email: nil)),
+				accessToken: "nfo_1", at: Date()).get()
+			let session = try #require(store.makePublishSession())
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 640),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitUntil { session.netlify?.sites.value != nil })
+			session.netlify?.siteID = "site-storefront"
+			session.netlify?.contextChoice = .branch
+			#expect(try await host.waitForText("Branch"))
+			try host.enterText("bad name", at: 0)
+			#expect(try await host.waitForText("Enter a branch name Git accepts"))
+			#expect(!session.canReview)
+			try host.enterText("staging", at: 0)
+			#expect(try await host.waitForText("storefront / Branch staging"))
+			#expect(try await host.waitUntil { session.canReview })
 		}
 
 		@Test("a destination that can't be forgotten says so and stays open, so forgetting can be tried again")

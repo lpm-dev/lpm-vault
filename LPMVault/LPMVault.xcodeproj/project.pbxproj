@@ -13,6 +13,7 @@
 		05A7826076A2DCF3CA6EB450 /* EnvSchemaScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 237FE9B740DFACF0D52C8353 /* EnvSchemaScopeTests.swift */; };
 		05F8B08121A9FDBB332690DC /* EnvFileImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E7E17CFD8A20E12558CD8E0 /* EnvFileImportTests.swift */; };
 		06F2A10ECDC146991E96109E /* VaultDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18DEAAFEE6A92D4350A97363 /* VaultDesignSystem.swift */; };
+		085CD6308F8C164498EEA3D5 /* NetlifyPublishing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AE891AEC9FEED4DF4C84CF4 /* NetlifyPublishing.swift */; };
 		08F37F300A8B755593460DB4 /* PublishSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47A81DE99D02A3D02E6022EE /* PublishSheet.swift */; };
 		0AE7F8802E0EAB9364630CBC /* CloudVaultsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C8C7039C4F82A75ABAFDBB9 /* CloudVaultsSheet.swift */; };
 		0B08592D1D9F3834CB93FC92 /* ProjectEnvValueCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = 132B8BB771BBAB418793A322 /* ProjectEnvValueCheck.swift */; };
@@ -76,6 +77,7 @@
 		4C9EC60D1E1601625E0BF4D2 /* ProjectEnvSchemaClientPrefixes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83825F3745E80FDAF2139DF1 /* ProjectEnvSchemaClientPrefixes.swift */; };
 		4C9F5820A9BA4AFD15BAB060 /* VercelPublishingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2AB1D6BA22486C9CB6D596E /* VercelPublishingTests.swift */; };
 		4CFBF730D3404F13A4751FAB /* AddVariableSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 465AD9498C88039BB74D5D40 /* AddVariableSheet.swift */; };
+		4D0C2A52B3180DA0EC23D5A7 /* PlatformTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE7189FA596408E53283745A /* PlatformTimestamp.swift */; };
 		4F2594937CC0514ABE83290E /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 176F614BCA46D100B0DFE439 /* KeychainService.swift */; };
 		510ECEC415D39BCD425418C8 /* ProjectEnvValueCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56F1C37E8DD2602669FD237 /* ProjectEnvValueCheckTests.swift */; };
 		526339DE32350679C14DF34E /* SchemaReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05BF0E7D2234A6C4C92BE40F /* SchemaReviewTests.swift */; };
@@ -85,6 +87,7 @@
 		5537F30818AE6D9798D8E644 /* CryptoInteropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */; };
 		5838410E4F31FD9EA7FD0777 /* VaultSchemaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33C7D77A4843EE282AD836FE /* VaultSchemaView.swift */; };
 		586A14395A9C62885C8CA315 /* RustSchemaEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E22643ECC7E5386112087259 /* RustSchemaEngine.swift */; };
+		59EC2828AF356F418659FE0D /* NetlifyBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 316A30E15E450A3F7B451AAA /* NetlifyBenchmarkTests.swift */; };
 		5B691FBC3BF68B58E21B79B5 /* SchemaDraftBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6C87067D273C91F49ACAC02 /* SchemaDraftBenchmarkTests.swift */; };
 		5C9ACA08B2B18B1FBD316B1A /* ProjectEnvSchemaFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86A2CFC76C772E1EEFD41581 /* ProjectEnvSchemaFile.swift */; };
 		5CC5F3B8CFA187935D373ADD /* VaultSchemaGroupPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07D6C686ABD1CB42CDDCEA5 /* VaultSchemaGroupPanel.swift */; };
@@ -126,6 +129,7 @@
 		9353C42198A65538DA3E2621 /* PersonalProjectSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91D4007E5BFE99FA0AD820C3 /* PersonalProjectSyncTests.swift */; };
 		941460F227C1E7E8B4D20F20 /* ProjectEnvSchemaOverview.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE4036BEAE9D18D531B8B023 /* ProjectEnvSchemaOverview.swift */; };
 		944FFE2B1896AE3C17197674 /* VaultSheetChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 928F7EC25905ABD41EAD3431 /* VaultSheetChrome.swift */; };
+		94CE98228716C7DC2F4FDD6B /* NetlifyPublishingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E3F7B9D7D51756CEBF3BDB /* NetlifyPublishingTests.swift */; };
 		98E999243060235FCAE05FFF /* ProjectConfigWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4BA60E4876BDA7818D1F5A /* ProjectConfigWatcher.swift */; };
 		9985BDBA7A430BE63659F484 /* OrgVaultsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0682E805810ACD18F61FEDF2 /* OrgVaultsSheet.swift */; };
 		9C4C6AC00EADDAFC7F798046 /* VaultAppearanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC906597DAFEA713D347A59B /* VaultAppearanceTests.swift */; };
@@ -262,6 +266,7 @@
 		2ECA3896A678B7DAEF3EE2A3 /* ProjectEnvSchemaReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaReview.swift; sourceTree = "<group>"; };
 		2F0BBE2F9D0891DC2DB71743 /* PersonalProjectCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalProjectCrypto.swift; sourceTree = "<group>"; };
 		3005A677D1BA50A8A6A05456 /* PublishSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishSessionTests.swift; sourceTree = "<group>"; };
+		316A30E15E450A3F7B451AAA /* NetlifyBenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetlifyBenchmarkTests.swift; sourceTree = "<group>"; };
 		33C7D77A4843EE282AD836FE /* VaultSchemaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaView.swift; sourceTree = "<group>"; };
 		35D4657C31CF1A081D03F682 /* BoundedHTTPResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoundedHTTPResponse.swift; sourceTree = "<group>"; };
 		36365D62B5851474D2DC178D /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
@@ -332,6 +337,7 @@
 		83825F3745E80FDAF2139DF1 /* ProjectEnvSchemaClientPrefixes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaClientPrefixes.swift; sourceTree = "<group>"; };
 		86A2CFC76C772E1EEFD41581 /* ProjectEnvSchemaFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaFile.swift; sourceTree = "<group>"; };
 		8781D80F04E7286497DDF325 /* NewVaultSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewVaultSheet.swift; sourceTree = "<group>"; };
+		8AE891AEC9FEED4DF4C84CF4 /* NetlifyPublishing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetlifyPublishing.swift; sourceTree = "<group>"; };
 		8DE1DD0A95404298E92B60F9 /* EnvFileImportReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReviewTests.swift; sourceTree = "<group>"; };
 		8F5EBA8FE3F0077FCAA53B63 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		90D1C40E7E961D8CEC22A477 /* EmptyEnvironmentSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyEnvironmentSyncTests.swift; sourceTree = "<group>"; };
@@ -384,6 +390,7 @@
 		CC1771B869D4D9BEDE704A04 /* AuthStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthStatusView.swift; sourceTree = "<group>"; };
 		CC906597DAFEA713D347A59B /* VaultAppearanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultAppearanceTests.swift; sourceTree = "<group>"; };
 		CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LPMAPIService.swift; sourceTree = "<group>"; };
+		CE7189FA596408E53283745A /* PlatformTimestamp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformTimestamp.swift; sourceTree = "<group>"; };
 		CEDE6264C2563EEC4611935A /* VaultContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultContentView.swift; sourceTree = "<group>"; };
 		D07D6C686ABD1CB42CDDCEA5 /* VaultSchemaGroupPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaGroupPanel.swift; sourceTree = "<group>"; };
 		D26762F360804E157281F8C7 /* PlatformConnections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformConnections.swift; sourceTree = "<group>"; };
@@ -404,6 +411,7 @@
 		EBF8259DCF0973664EDEE6EA /* VaultCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultCrypto.swift; sourceTree = "<group>"; };
 		F1AD8E81890535EBF8170E82 /* PlatformConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformConnection.swift; sourceTree = "<group>"; };
 		F375377661ADD940B7762CFC /* PersonalKeyEnvelopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalKeyEnvelopeTests.swift; sourceTree = "<group>"; };
+		F5E3F7B9D7D51756CEBF3BDB /* NetlifyPublishingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetlifyPublishingTests.swift; sourceTree = "<group>"; };
 		F73FB74A825968E889047E69 /* SecretValueGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretValueGenerator.swift; sourceTree = "<group>"; };
 		F9FF906993D46DE0663FDBE6 /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		FD248A688D2DCFD4318032CF /* CurrentContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrentContractTests.swift; sourceTree = "<group>"; };
@@ -527,6 +535,7 @@
 				F9FF906993D46DE0663FDBE6 /* Constants.swift */,
 				614C541032B4C27C2966138F /* EnvValidation.swift */,
 				A9F299C0796F0A1335370EBB /* LPMConfigJSON.swift */,
+				CE7189FA596408E53283745A /* PlatformTimestamp.swift */,
 				7FA4AF9738D049CABAD6AFA1 /* ProcessLimits.swift */,
 				AA15A85B7406128FB479BB79 /* ProjectCLILink.swift */,
 				2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */,
@@ -566,7 +575,9 @@
 				758E847084D4401033C747AC /* MetadataWarningTests.swift */,
 				63C91F636E4DF09BA177F24F /* Mocks.swift */,
 				10F9038EDB0DF8525A388573 /* ModelTests.swift */,
+				316A30E15E450A3F7B451AAA /* NetlifyBenchmarkTests.swift */,
 				5C7F37326D9E2F264CAC1E42 /* NetlifyClientTests.swift */,
+				F5E3F7B9D7D51756CEBF3BDB /* NetlifyPublishingTests.swift */,
 				C76DF6C1DCC3927A6969C8E4 /* OCRText.swift */,
 				B525DD1074B0316F4375CFB8 /* OrganizationProjectImportTests.swift */,
 				F375377661ADD940B7762CFC /* PersonalKeyEnvelopeTests.swift */,
@@ -685,6 +696,7 @@
 				CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */,
 				458FE25088254AA68B9EDEE1 /* NetlifyClient.swift */,
 				BBB55A757FA0068F1A7D2568 /* NetlifyConnector.swift */,
+				8AE891AEC9FEED4DF4C84CF4 /* NetlifyPublishing.swift */,
 				2F0BBE2F9D0891DC2DB71743 /* PersonalProjectCrypto.swift */,
 				69E5C843D5E284E813E58B4F /* PinnedSessionDelegate.swift */,
 				5471F56B8470AA2D08698F06 /* PlatformAuthorizationClient.swift */,
@@ -830,7 +842,9 @@
 				E550CBF5396F86B284B97B94 /* MetadataWarningTests.swift in Sources */,
 				79239F41A5347411FC68689B /* Mocks.swift in Sources */,
 				22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */,
+				59EC2828AF356F418659FE0D /* NetlifyBenchmarkTests.swift in Sources */,
 				72A556D5F4A968AFC33FE63D /* NetlifyClientTests.swift in Sources */,
+				94CE98228716C7DC2F4FDD6B /* NetlifyPublishingTests.swift in Sources */,
 				35AAAC807BBE6E0D97B42E51 /* OCRText.swift in Sources */,
 				AFDB64DB0C06E90C68BACE8A /* OrganizationProjectImportTests.swift in Sources */,
 				C9350649A7097AED2D9830A3 /* PersonalKeyEnvelopeTests.swift in Sources */,
@@ -926,6 +940,7 @@
 				FCA0025A2C6AF7CBAF2DF0AD /* LoopbackHTTP.swift in Sources */,
 				1DA17DD2292B9A6630D4BD1E /* NetlifyClient.swift in Sources */,
 				8CB33D1D735B14F9322F8B1E /* NetlifyConnector.swift in Sources */,
+				085CD6308F8C164498EEA3D5 /* NetlifyPublishing.swift in Sources */,
 				2DEAEBDD924683D9D5E1236D /* NewEnvironmentSheet.swift in Sources */,
 				92E621F7F5F52DD31197D239 /* NewVaultSheet.swift in Sources */,
 				9985BDBA7A430BE63659F484 /* OrgVaultsSheet.swift in Sources */,
@@ -937,6 +952,7 @@
 				BF4C4341C9B57CE8138F48BE /* PlatformConnectionListener.swift in Sources */,
 				344DD51687F0F91489EA72AD /* PlatformConnectionStore.swift in Sources */,
 				9CC25A752C51EC5CE0FC47EA /* PlatformConnections.swift in Sources */,
+				4D0C2A52B3180DA0EC23D5A7 /* PlatformTimestamp.swift in Sources */,
 				3B6F87818D760ED5C4D182F2 /* PlatformsView.swift in Sources */,
 				CBBD41BF3BC64015F7580499 /* ProcessLimits.swift in Sources */,
 				8317184044046DED39284AA1 /* ProjectCLILink.swift in Sources */,

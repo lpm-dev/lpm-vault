@@ -292,11 +292,11 @@ struct CoolifyClientTests {
 
 	@Test("Laravel's timestamps read to the microsecond, in UTC; anything else isn't a time")
 	func timestamps() {
-		#expect(CoolifyClient.timestamp("2026-10-14T12:34:56.000000Z") == Date(timeIntervalSince1970: 1_791_981_296))
-		#expect(CoolifyClient.timestamp("2026-10-14 12:34:56+00:00") == Date(timeIntervalSince1970: 1_791_981_296))
-		#expect(CoolifyClient.timestamp("2026-10-14T12:34:56.5Z") == Date(timeIntervalSince1970: 1_791_981_296.5))
+		#expect(PlatformTimestamp.utc("2026-10-14T12:34:56.000000Z") == Date(timeIntervalSince1970: 1_791_981_296))
+		#expect(PlatformTimestamp.utc("2026-10-14 12:34:56+00:00") == Date(timeIntervalSince1970: 1_791_981_296))
+		#expect(PlatformTimestamp.utc("2026-10-14T12:34:56.5Z") == Date(timeIntervalSince1970: 1_791_981_296.5))
 		for text in ["2026-10-14T12:34:56", "2026-02-30T00:00:00Z", "2026-10-14T12:34:56.Z", "2026-10-14T12:34:56+02:00", "yesterday"] {
-			#expect(CoolifyClient.timestamp(text) == nil, "\(text)")
+			#expect(PlatformTimestamp.utc(text) == nil, "\(text)")
 		}
 	}
 

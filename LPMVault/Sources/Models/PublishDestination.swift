@@ -81,18 +81,40 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 enum PublishTarget: Hashable, Sendable {
 	case vercel(VercelPublishTarget)
 	case coolify(CoolifyPublishTarget)
+	case netlify(NetlifyPublishTarget)
 
 	/// Where a publish writes. Two destinations with the same location would
 	/// overwrite each other's values, so a vault keeps at most one per location.
 	enum Location: Hashable, Sendable {
 		case vercel(teamID: String?, projectID: String, environment: String)
 		case coolify(instance: String, resource: CoolifyPublishTarget.Resource, resourceID: String, deployments: CoolifyPublishTarget.Deployments)
+		case netlify(siteID: String, context: String)
+
+		/// The places, beside this one, whose values the platform keeps in the
+		/// same records, as a Netlify variable keeps its value for every deploy
+		/// context of a site with one change time. A publish here moves those
+		/// records forward for the others too; nil when no other place shares them.
+		var sharedRecords: SharedRecords? {
+			switch self {
+			case .vercel, .coolify: nil
+			case .netlify(let siteID, _): SharedRecords(platform: .netlify, ownerID: siteID)
+			}
+		}
+	}
+
+	/// The records places on one platform share, by the ID of what holds them.
+	struct SharedRecords: Hashable, Sendable {
+		let platform: PublishPlatform
+		/// The platform's ID for what holds the records, such as a Netlify
+		/// site, which every stored destination writing there contains.
+		let ownerID: String
 	}
 
 	var platform: PublishPlatform {
 		switch self {
 		case .vercel: .vercel
 		case .coolify: .coolify
+		case .netlify: .netlify
 		}
 	}
 
@@ -102,6 +124,8 @@ enum PublishTarget: Hashable, Sendable {
 			.vercel(teamID: target.teamID, projectID: target.projectID, environment: target.environment.identifier)
 		case .coolify(let target):
 			.coolify(instance: target.instance.origin, resource: target.resource, resourceID: target.resourceID, deployments: target.deployments)
+		case .netlify(let target):
+			.netlify(siteID: target.siteID, context: target.context.identifier)
 		}
 	}
 
@@ -110,6 +134,7 @@ enum PublishTarget: Hashable, Sendable {
 		switch self {
 		case .vercel(let target): target.connectionID
 		case .coolify(let target): target.connectionID
+		case .netlify(let target): target.connectionID
 		}
 	}
 
@@ -118,6 +143,17 @@ enum PublishTarget: Hashable, Sendable {
 		switch self {
 		case .vercel(let target): target.teamName
 		case .coolify(let target): target.teamName
+		case .netlify(let target): target.teamName
+		}
+	}
+
+	/// The name of the connection that publishes here when the destination
+	/// was saved: the team's for Vercel and Coolify, the user's for Netlify.
+	var connectionName: String {
+		switch self {
+		case .vercel(let target): target.teamName
+		case .coolify(let target): target.teamName
+		case .netlify(let target): target.userName
 		}
 	}
 
@@ -126,6 +162,7 @@ enum PublishTarget: Hashable, Sendable {
 		switch self {
 		case .vercel(let target): "\(target.projectName) / \(target.environment.displayName)"
 		case .coolify(let target): "\(target.resourceName) / \(target.deployments.displayName)"
+		case .netlify(let target): "\(target.siteName) / \(target.context.displayName)"
 		}
 	}
 
@@ -133,7 +170,7 @@ enum PublishTarget: Hashable, Sendable {
 	/// the Coolify project, environment and instance holding a resource.
 	var placeDetail: String? {
 		switch self {
-		case .vercel: return nil
+		case .vercel, .netlify: return nil
 		case .coolify(let target):
 			let place = [target.projectName, target.environmentName].compactMap { $0 }.joined(separator: " / ")
 			return place.isEmpty ? target.instance.address : "\(place) on \(target.instance.address)"
@@ -144,6 +181,7 @@ enum PublishTarget: Hashable, Sendable {
 		switch self {
 		case .vercel(let target): target.invalidity
 		case .coolify(let target): target.invalidity
+		case .netlify(let target): target.invalidity
 		}
 	}
 }
@@ -305,6 +343,144 @@ struct CoolifyPublishTarget: Hashable, Sendable {
 	}
 }
 
+/// A Netlify site's values for one deploy context. Netlify keeps one
+/// variable per key for the whole site, holding a value for each context.
+struct NetlifyPublishTarget: Hashable, Sendable {
+	/// Branch names are compared byte for byte, as Git and Netlify compare
+	/// them, not by Swift's canonical equivalence, which would take a
+	/// precomposed `é` and a decomposed one for the same branch.
+	enum Context: Hashable, Sendable {
+		case production
+		case deployPreview
+		case branchDeploy
+		/// The deploys of one branch, by its name. A name ending in `*` covers
+		/// every branch that starts with the rest.
+		case branch(String)
+
+		/// The context's stable identity on Netlify, in ASCII: a branch's name
+		/// has `%` and every byte outside ASCII percent-escaped, so equal
+		/// identities are equal bytes.
+		var identifier: String {
+			switch self {
+			case .production: "production"
+			case .deployPreview: "deploy-preview"
+			case .branchDeploy: "branch-deploy"
+			case .branch(let name): "branch:\(Self.escapingNonASCII(name))"
+			}
+		}
+
+		static func == (lhs: Context, rhs: Context) -> Bool {
+			switch (lhs, rhs) {
+			case (.production, .production), (.deployPreview, .deployPreview), (.branchDeploy, .branchDeploy): true
+			case (.branch(let left), .branch(let right)): left.utf8.elementsEqual(right.utf8)
+			default: false
+			}
+		}
+
+		func hash(into hasher: inout Hasher) {
+			switch self {
+			case .production: hasher.combine(0)
+			case .deployPreview: hasher.combine(1)
+			case .branchDeploy: hasher.combine(2)
+			case .branch(let name):
+				hasher.combine(3)
+				Self.hashBytes(of: name, into: &hasher)
+			}
+		}
+
+		static func hashBytes(of text: String, into hasher: inout Hasher) {
+			hasher.combine(text.utf8.count)
+			for byte in text.utf8 { hasher.combine(byte) }
+		}
+
+		private static func escapingNonASCII(_ text: String) -> String {
+			var escaped = ""
+			escaped.reserveCapacity(text.utf8.count)
+			for byte in text.utf8 {
+				if byte < 0x80, byte != 0x25 {
+					escaped.unicodeScalars.append(Unicode.Scalar(byte))
+				} else {
+					escaped += "%" + String(byte, radix: 16, uppercase: true).leftPadding(to: 2)
+				}
+			}
+			return escaped
+		}
+
+		var displayName: String {
+			switch self {
+			case .production: "Production"
+			case .deployPreview: "Deploy Previews"
+			case .branchDeploy: "Branch deploys"
+			case .branch(let name): "Branch \(name)"
+			}
+		}
+
+		/// Netlify's name for the context in its API.
+		var apiName: String {
+			switch self {
+			case .production: "production"
+			case .deployPreview: "deploy-preview"
+			case .branchDeploy: "branch-deploy"
+			case .branch: "branch"
+			}
+		}
+
+		/// The branch a branch's context is for.
+		var branch: String? {
+			if case .branch(let name) = self { return name }
+			return nil
+		}
+
+		static let maximumBranchBytes = 255
+
+		/// A branch name Git accepts, which may end in Netlify's `*` wildcard:
+		/// printable, without spaces or the characters Git refuses in a ref,
+		/// and without anything that could hide or reorder text around it.
+		/// No part between slashes may be empty, start with a dot or end in `.lock`.
+		static func isValidBranch(_ name: String) -> Bool {
+			guard !name.isEmpty, name.utf8.count <= maximumBranchBytes,
+				!name.hasPrefix("-"), !name.hasSuffix("."), !name.contains(".."), !name.contains("@{"), name != "@",
+				name.split(separator: "/", omittingEmptySubsequences: false)
+					.allSatisfy({ !$0.isEmpty && !$0.hasPrefix(".") && !$0.hasSuffix(".lock") })
+			else { return false }
+			let pattern = name.hasSuffix("*") ? name.dropLast() : name[...]
+			guard !pattern.isEmpty else { return false }
+			return pattern.unicodeScalars.allSatisfy { scalar in
+				switch scalar.properties.generalCategory {
+				case .control, .format, .spaceSeparator, .lineSeparator, .paragraphSeparator, .privateUse, .surrogate, .unassigned:
+					return false
+				default:
+					return !"~^:?*[\\".unicodeScalars.contains(scalar)
+				}
+			}
+		}
+	}
+
+	/// The Netlify user whose connection publishes here.
+	let userID: String
+	/// The user's name when the destination was saved, for display.
+	var userName: String
+	/// The team that owns the site, which Netlify's API names it by.
+	let teamID: String
+	/// The team's name when the destination was saved, for display.
+	var teamName: String
+	let siteID: String
+	/// The site's name when the destination was saved, for display.
+	var siteName: String
+	var context: Context
+
+	/// The connection that publishes here.
+	var connectionID: PlatformConnection.ID { PlatformConnection.netlifyID(userID: userID) }
+
+	fileprivate var invalidity: PublishDestinationInvalidity? {
+		guard [userID, teamID, siteID].allSatisfy(PlatformIdentifier.isValid),
+			context.branch.map(Context.isValidBranch) ?? true
+		else { return .targetIdentifier }
+		guard [userName, teamName, siteName].allSatisfy(PlatformIdentifier.isValidName) else { return .targetName }
+		return nil
+	}
+}
+
 /// Publish timestamps are stored to the millisecond, the precision platforms
 /// report, so a record reads back exactly as it was written. They're kept
 /// between 1970 and the end of 9999, so a platform's impossible time can't
@@ -338,5 +514,11 @@ enum PublishTimestamp {
 	/// writes keep the same time.
 	static func identifiesOneWrite(_ date: Date) -> Bool {
 		milliseconds(date) < maximumMilliseconds
+	}
+}
+
+private extension String {
+	func leftPadding(to length: Int) -> String {
+		count >= length ? self : String(repeating: "0", count: length - count) + self
 	}
 }

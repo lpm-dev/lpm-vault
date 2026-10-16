@@ -144,7 +144,7 @@ struct PublishDestinationTests {
 			#"{"version":99999999999999999999999,"vault":"VAULT","destinations":[]}"#,
 			record(platform: "cloudflare", extra: #","cloudflareScript":"x""#),
 			record(platform: "cloudflare"),
-			record(platform: "netlify"),
+			netlifyRecord(context: #"{"kind":"dev"}"#),
 			record(environment: #"{"kind":"branch","branch":"main"}"#),
 			coolifyRecord(resource: "database"),
 			coolifyRecord(deployments: "staging"),
@@ -180,6 +180,12 @@ struct PublishDestinationTests {
 			coolifyRecord(resource: "service", deployments: "preview"),
 			coolifyRecord(extra: #","buildPack":"nixpacks""#),
 			coolifyRecord(teamID: "team_acme"),
+			record(platform: "netlify"),
+			netlifyRecord(context: #"{"kind":"branch"}"#),
+			netlifyRecord(context: #"{"kind":"branch","branch":"a b"}"#),
+			netlifyRecord(context: #"{"kind":"production","branch":"main"}"#),
+			netlifyRecord(siteID: "../site"),
+			netlifyRecord(extra: #","teamSlug":"northwind""#),
 		]
 	)
 	func unreadable(json: String) {
@@ -201,9 +207,50 @@ struct PublishDestinationTests {
 		#expect(PublishingRecords.decodeDestinations(Data(doubled.utf8), vaultID: publishTestVault) == .failure(.unreadable))
 	}
 
+	@Test("a Netlify destination reads back exactly, for each deploy context or one branch, and writes to its site's context")
+	func netlifyRoundTrip() throws {
+		let destinations = [
+			netlifyDestination(.production),
+			netlifyDestination(.deployPreview, source: "preview"),
+			netlifyDestination(.branchDeploy, source: "branches"),
+			netlifyDestination(.branch("release/*"), source: "release"),
+		]
+		let data = try #require(PublishingRecords.encode(destinations, vaultID: publishTestVault))
+		#expect(Set(try PublishingRecords.decodeDestinations(data, vaultID: publishTestVault).get()) == Set(destinations))
+		#expect(Set(destinations.map(\.target.location)).count == 4)
+		#expect(destinations[3].target.location == .netlify(siteID: "site-storefront", context: "branch:release/*"))
+		#expect(destinations.allSatisfy { $0.target.location.sharedRecords == .init(platform: .netlify, ownerID: "site-storefront") })
+		#expect(vercelDestination().target.location.sharedRecords == nil && coolifyDestination().target.location.sharedRecords == nil)
+		#expect(destinations[0].target.connectionID == "netlify.5f1a2b3c4d5e6f7a8b9c0d1e" && destinations[0].target.connectionName == "Tolga")
+		#expect(destinations[3].target.placeName == "storefront / Branch release/*" && destinations[0].target.accountName == "Northwind")
+	}
+
+	@Test("a Netlify destination's names stored before they were escaped read back escaped")
+	func escapesStoredNetlifyNames() throws {
+		let json = netlifyRecord().replacingOccurrences(of: #""siteName":"storefront""#, with: #""siteName":"store‮front""#)
+			.replacingOccurrences(of: "VAULT", with: publishTestVault)
+		let destination = try #require(try PublishingRecords.decodeDestinations(Data(json.utf8), vaultID: publishTestVault).get().first)
+		guard case .netlify(let target) = destination.target else { Issue.record("Not a Netlify destination"); return }
+		#expect(target.siteName == #"store\u{202e}front"#)
+	}
+
+	@Test("a Netlify destination with an unsafe ID, a branch Git refuses, or a bad name can't be stored")
+	func invalidNetlify() {
+		#expect(netlifyDestination(.branch("a b")).invalidity == .targetIdentifier)
+		#expect(netlifyDestination(.branch("")).invalidity == .targetIdentifier)
+		#expect(netlifyDestination(.production, site: "a/b").invalidity == .targetIdentifier)
+		var named = netlifyDestination(.production)
+		if case .netlify(var target) = named.target {
+			target.siteName = " storefront"
+			named.target = .netlify(target)
+		}
+		#expect(named.invalidity == .targetName)
+		#expect(netlifyDestination(.branch("release/*")).invalidity == nil)
+	}
+
 	@Test("the valid records the tests' damaged variants start from read")
 	func baseRecord() throws {
-		for json in [Self.record(), coolifyRecord()] {
+		for json in [Self.record(), coolifyRecord(), netlifyRecord()] {
 			let data = Data(json.replacingOccurrences(of: "VAULT", with: publishTestVault).utf8)
 			let destinations = try PublishingRecords.decodeDestinations(data, vaultID: publishTestVault).get()
 			#expect(destinations.map(\.sourceEnvironment) == ["production"])
@@ -421,4 +468,26 @@ struct PublishHistoryTests {
 			remoteUpdatedAt: updatedAt, publishedAsSecret: true
 		)
 	}
+}
+
+func netlifyDestination(
+	_ context: NetlifyPublishTarget.Context,
+	source: String = "production",
+	site: String = "site-storefront"
+) -> PublishDestination {
+	PublishDestination(
+		sourceEnvironment: source,
+		target: .netlify(netlifyTarget(context, site: site)),
+		createdAt: Date(timeIntervalSince1970: 1_760_000_000.123))
+}
+
+private func netlifyRecord(
+	siteID: String = "site-storefront",
+	context: String = #"{"kind":"production"}"#,
+	extra: String = ""
+) -> String {
+	#"{"version":1,"vault":"VAULT","destinations":[{"id":"9a0b7c2d-1e3f-4a5b-8c6d-7e8f9a0b1c2d","source":"production","platform":"netlify","#
+		+ #""target":{"userId":"5f1a2b3c4d5e6f7a8b9c0d1e","userName":"Tolga","teamId":"team_northwind","teamName":"Northwind","#
+		+ #""siteId":"\#(siteID)","siteName":"storefront","context":\#(context)\#(extra)},"#
+		+ #""excludedKeys":[],"createdAt":1760000000123,"updatedAt":1760000000123}]}"#
 }

@@ -86,6 +86,18 @@ enum PublishingRecords {
 				.init(key: "environmentName", value: coolify.environmentName.map(LPMConfigJSON.string) ?? .null),
 				.init(key: "deployments", value: .string(coolify.deployments.rawValue)),
 			])
+		case .netlify(let netlify):
+			var context: [LPMConfigJSON.Member] = [.init(key: "kind", value: .string(netlify.context.apiName))]
+			if let branch = netlify.context.branch { context.append(.init(key: "branch", value: .string(branch))) }
+			target = .object([
+				.init(key: "userId", value: .string(netlify.userID)),
+				.init(key: "userName", value: .string(netlify.userName)),
+				.init(key: "teamId", value: .string(netlify.teamID)),
+				.init(key: "teamName", value: .string(netlify.teamName)),
+				.init(key: "siteId", value: .string(netlify.siteID)),
+				.init(key: "siteName", value: .string(netlify.siteName)),
+				.init(key: "context", value: .object(context)),
+			])
 		}
 		return .object([
 			.init(key: "id", value: .string(destination.id.uuidString.lowercased())),
@@ -117,8 +129,7 @@ enum PublishingRecords {
 		case .coolify:
 			target = .coolify(try coolifyTarget(fields.value("target")))
 		case .netlify:
-			// This version connects Netlify but doesn't publish to it yet.
-			throw DecodingError.newerVersion
+			target = .netlify(try netlifyTarget(fields.value("target")))
 		}
 		guard case .array(let excluded) = try fields.value("excludedKeys"),
 			excluded.count <= PublishDestination.maximumExcludedKeys
@@ -158,6 +169,32 @@ enum PublishingRecords {
 			projectName: try fields.optionalString("projectName")?.escapingDirectionControls,
 			environmentName: try fields.optionalString("environmentName")?.escapingDirectionControls,
 			deployments: deployments
+		)
+	}
+
+	private static func netlifyTarget(_ json: LPMConfigJSON) throws -> NetlifyPublishTarget {
+		guard case .object = json, let contextJSON = json["context"], case .string(let kind)? = contextJSON["kind"] else {
+			throw DecodingError.unreadable
+		}
+		let context: NetlifyPublishTarget.Context
+		switch kind {
+		case "production", "deploy-preview", "branch-deploy":
+			_ = try Fields(contextJSON, ["kind"])
+			context = kind == "production" ? .production : kind == "deploy-preview" ? .deployPreview : .branchDeploy
+		case "branch":
+			context = .branch(try Fields(contextJSON, ["kind", "branch"]).string("branch"))
+		default:
+			throw DecodingError.newerVersion
+		}
+		let fields = try Fields(json, ["userId", "userName", "teamId", "teamName", "siteId", "siteName", "context"])
+		return NetlifyPublishTarget(
+			userID: try fields.string("userId"),
+			userName: try fields.name("userName"),
+			teamID: try fields.string("teamId"),
+			teamName: try fields.name("teamName"),
+			siteID: try fields.string("siteId"),
+			siteName: try fields.name("siteName"),
+			context: context
 		)
 	}
 

@@ -125,11 +125,16 @@ actor PublishingStore {
 	/// now: the person's choices from the review, and the keys the platform
 	/// accepted. Fails, recording nothing, when the destination was removed
 	/// or pointed elsewhere while the publish ran.
+	///
+	/// `advances` move forward the histories of this Mac's other
+	/// destinations, in any vault, whose places share the platform's records
+	/// with this one, so this publish doesn't read there as someone else's change.
 	func recordPublish(
 		_ published: [PublishHistory.Published],
 		to destination: UUID,
 		at location: PublishTarget.Location,
 		choices: PublishPlan.Choices,
+		advancing advances: [PublishHistory.Advance] = [],
 		of vaultID: String,
 		at date: Date
 	) -> Result<PublishDestination, PublishingStoreError> {
@@ -148,8 +153,48 @@ actor PublishingStore {
 			let history = try readHistory(of: destination, in: vaultID)
 			let recorded = history.recording(published, forgetting: choices.forgottenRecords(in: history), at: date)
 			try writeHistory(recorded, of: destination, in: vaultID)
+			if !advances.isEmpty, let shared = location.sharedRecords {
+				advanceHistories(sharing: shared, except: destination, in: vaultID, destinations: destinations, by: advances)
+			}
 			return updated
 		}.mapError(Self.storeError)
+	}
+
+	/// Moves forward the histories of every destination on this Mac whose
+	/// place shares `shared` records, but `destination`. Another vault's
+	/// destinations are decoded only when their record mentions what holds the
+	/// records, one vault at a time. It's best effort: a history left behind
+	/// reads as changed on the platform, which only costs a review.
+	private func advanceHistories(
+		sharing shared: PublishTarget.SharedRecords,
+		except destination: UUID,
+		in vaultID: String,
+		destinations: [PublishDestination],
+		by advances: [PublishHistory.Advance]
+	) {
+		advance(destinations, of: vaultID, sharing: shared, except: destination, by: advances)
+		let mention = Data("\"\(shared.ownerID)\"".utf8)
+		for account in (try? service.appItemAccounts(.publishing).get()) ?? [] where account.hasPrefix(Self.destinationsPrefix) {
+			guard let other = Self.vault(ofAccount: account), other != vaultID,
+				let data = try? service.readAppItem(.publishing, account: account).get(), data.range(of: mention) != nil,
+				case .success(let stored) = PublishingRecords.decodeDestinations(data, vaultID: other)
+			else { continue }
+			advance(stored, of: other, sharing: shared, except: destination, by: advances)
+		}
+	}
+
+	private func advance(
+		_ destinations: [PublishDestination],
+		of vaultID: String,
+		sharing shared: PublishTarget.SharedRecords,
+		except destination: UUID,
+		by advances: [PublishHistory.Advance]
+	) {
+		for other in destinations where other.id != destination && other.target.location.sharedRecords == shared {
+			guard let earlier = try? readHistory(of: other.id, in: vaultID) else { continue }
+			let advanced = earlier.advancing(advances)
+			if advanced != earlier { try? writeHistory(advanced, of: other.id, in: vaultID) }
+		}
 	}
 
 	/// The key fingerprints are made with, created the first time it's needed.
