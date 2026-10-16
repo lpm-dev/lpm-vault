@@ -47,6 +47,25 @@ struct NetlifyClientTests {
 		}
 	}
 
+	@Test("the wait for a rate limit covers all the time left, never stopping short of when it lifts")
+	func rateLimitWaitRoundsUp() throws {
+		for left in [0.4, 0.0004, 1.2345678] {
+			let reset = Date(timeIntervalSinceNow: left)
+			let wait = try #require(NetlifyHTTP.rateLimitWait(until: reset))
+			let waited = Double(wait.components.seconds) + Double(wait.components.attoseconds) / 1e18
+			#expect(Date(timeIntervalSinceNow: waited) >= reset, "A wait of \(wait) stops short of a limit lifting in \(left) s")
+		}
+	}
+
+	@Test("waiting out a rate limit returns only once the wall clock has passed it, though the sleep's own clock may run ahead")
+	func waitsForTheWallClock() async throws {
+		let reset = Date(timeIntervalSinceNow: 0.05)
+		// A sleep that ends at once stands in for a sleep clock running ahead of the wall clock.
+		try await NetlifyHTTP.waitOut(.zero, until: reset)
+		#expect(Date() >= reset)
+		try await NetlifyHTTP.waitOut(.milliseconds(1), until: nil)
+	}
+
 	private func site(_ id: String, team: String = "team_northwind", teamName: Any = "Northwind") -> [String: Any] {
 		["id": id, "name": "site-\(id)", "account_id": team, "account_name": teamName, "account_slug": "northwind",
 			"build_settings": ["env": ["IGNORED": "x"]], "published_deploy": ["id": "d1"]]

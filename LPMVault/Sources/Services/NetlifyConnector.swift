@@ -48,6 +48,7 @@ struct NetlifyConnector: Sendable {
 		let netlify = client(grant.accessToken)
 		for attempt in 0...userRetries {
 			let wait: Duration
+			var lifts: Date?
 			let giveUp: BrowserConnectError
 			switch await netlify.user() {
 			case .success(let user):
@@ -57,8 +58,9 @@ struct NetlifyConnector: Sendable {
 			case .failure(.cancelled):
 				return .failure(.cancelled)
 			case .failure(.rateLimited(let reset)):
-				guard let lifts = NetlifyHTTP.rateLimitWait(until: reset) else { return .failure(.platformRateLimited) }
-				wait = lifts
+				guard let limit = NetlifyHTTP.rateLimitWait(until: reset) else { return .failure(.platformRateLimited) }
+				wait = limit
+				lifts = reset
 				giveUp = .platformRateLimited
 			case .failure(.transport), .failure(.server):
 				wait = retryDelay * (attempt + 1)
@@ -67,7 +69,7 @@ struct NetlifyConnector: Sendable {
 				return .failure(.accountUnreadable)
 			}
 			guard attempt < userRetries else { return .failure(giveUp) }
-			do { try await Task.sleep(for: wait) } catch { return .failure(.cancelled) }
+			do { try await NetlifyHTTP.waitOut(wait, until: lifts) } catch { return .failure(.cancelled) }
 		}
 		return .failure(.transport)
 	}
