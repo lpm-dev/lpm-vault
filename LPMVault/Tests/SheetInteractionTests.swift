@@ -604,8 +604,9 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Bounds, in points from the bottom-left, of everything drawn over the solid
-	/// background within the bottom `band` points, plus the text said there.
-	func bottomInk(band: CGFloat) async throws -> (bounds: CGRect, text: AccessibleText) {
+	/// background within the bottom `band` points, leaving out the last `trailing`
+	/// points of each row, plus the text said there.
+	func bottomInk(band: CGFloat, ignoringTrailing trailing: CGFloat = 0) async throws -> (bounds: CGRect, text: AccessibleText) {
 		let image = try snapshot(view, rect: bottomBand(of: view, height: band))
 		let scale = CGFloat(image.width) / view.bounds.width
 		let width = image.width, height = image.height
@@ -620,7 +621,7 @@ final class SheetTestHost<V: View> {
 		var minX = Int.max, maxX = Int.min, minTop = Int.max, maxTop = Int.min
 		for top in 0..<height {
 			var pixel = (top * width + margin) * 4
-			for column in margin..<(width - margin) {
+			for column in margin..<(width - max(margin, Int(trailing * scale))) {
 				let difference = abs(Int(pixels[pixel]) - red) + abs(Int(pixels[pixel + 1]) - green) + abs(Int(pixels[pixel + 2]) - blue)
 				if difference > 24 {
 					if column < minX { minX = column }
@@ -804,7 +805,8 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ContentView(store: store).environment(\.colorScheme, scheme), size: size, keepsRequestedSize: true)
 		defer { host.window.close() }
 		try await host.settle()
-		let note = try await host.bottomInk(band: 60)
+		// Past the Settings button in the bottom-right corner.
+		let note = try await host.bottomInk(band: 60, ignoringTrailing: 48)
 		#expect(host.view.bounds.size == size)
 		#expect(note.text.contains("Values stay encrypted"))
 		#expect(abs(note.bounds.midX - host.view.bounds.width / 2) < 3)

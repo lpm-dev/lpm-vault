@@ -1,8 +1,18 @@
 import SwiftUI
 
-/// Handles dock click and prevents quit on window close.
+/// Handles dock click, prevents quit on window close, and decides what ⌘Q
+/// and quitting take.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+	static let quitShortcutEvents: NSEvent.EventTypeMask = [
+		.keyDown,
+		.keyUp,
+		.flagsChanged,
+		.leftMouseDown,
+		.rightMouseDown,
+		.otherMouseDown,
+	]
+
 	static let userActivityEvents: NSEvent.EventTypeMask = [
 		.keyDown,
 		.leftMouseDown,
@@ -24,7 +34,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		}
 	}
 	var recordUserActivity: (() -> Void)?
+	/// The answer to quitting, once the app's window has connected it.
+	var shouldTerminate: (() -> NSApplication.TerminateReply)?
+	/// Whether quitting is already deciding, so ⌘Q doesn't ask again meanwhile.
+	var isQuitting: () -> Bool = { false }
+	var quitShortcut: () -> VaultQuitShortcut = { VaultQuitShortcut.saved(in: .standard) }
+	let quitHUD = VaultQuitHUDController()
+	private(set) lazy var quitGate = VaultQuitGate(
+		mode: { [weak self] in self?.quitShortcut() ?? VaultQuitShortcut.standard },
+		quit: { [weak self] in self?.quitFromShortcut() },
+		showHint: { [weak self] in self?.quitHUD.show($0) },
+		hideHint: { [weak self] in self?.quitHUD.hide() }
+	)
 	private var localEventMonitor: Any?
+	private var quitShortcutMonitor: Any?
 	private var hasPendingSecurityLock = false
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
@@ -39,6 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			[weak self] event in
 			self?.recordUserActivity?()
 			return event
+		}
+		// Sees ⌘Q before the Quit menu item does, so the gate decides when it quits.
+		quitShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.quitShortcutEvents) {
+			[weak self] event in
+			guard let self, let input = VaultQuitGate.input(for: event) else { return event }
+			return quitGate.handle(input, at: event.timestamp) ? nil : event
 		}
 
 		let workspaceCenter = NSWorkspace.shared.notificationCenter
@@ -68,10 +97,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		lockVault()
 	}
 
+	func applicationDidResignActive(_ notification: Notification) {
+		quitGate.cancel()
+	}
+
+	/// Every way of quitting arrives here: the shortcut once its gate allows
+	/// it, the menu, the Dock, logging out, shutting down and update restarts.
+	func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+		quitGate.cancel()
+		return shouldTerminate?() ?? .terminateNow
+	}
+
+	private func quitFromShortcut() {
+		guard !isQuitting() else { return }
+		NSApp.terminate(nil)
+	}
+
 	func applicationWillTerminate(_ notification: Notification) {
 		lockVault?()
-		if let localEventMonitor { NSEvent.removeMonitor(localEventMonitor) }
+		for monitor in [localEventMonitor, quitShortcutMonitor].compactMap({ $0 }) { NSEvent.removeMonitor(monitor) }
 		localEventMonitor = nil
+		quitShortcutMonitor = nil
 		NSWorkspace.shared.notificationCenter.removeObserver(self)
 	}
 
@@ -96,6 +142,8 @@ struct LPMVaultApp: App {
 	@State private var store = VaultStore()
 	@State private var updateChecker = UpdateChecker()
 	@State private var appearanceSettings = VaultAppearanceSettings()
+	@State private var quitSettings = VaultQuitSettings()
+	@State private var quitCoordinator = VaultQuitCoordinator(store: nil, presenter: VaultQuitSheetPresenter())
 	@State private var isObscured = false
 
 	var body: some Scene {
@@ -129,6 +177,9 @@ struct LPMVaultApp: App {
 					appDelegate.recordUserActivity = { [store] in
 						store.recordUserActivity()
 					}
+					quitCoordinator.attach(store)
+					appDelegate.shouldTerminate = { [quitCoordinator] in quitCoordinator.shouldTerminate() }
+					appDelegate.isQuitting = { [quitCoordinator] in quitCoordinator.isQuitting }
 				}
 		}
 		.defaultSize(width: 1200, height: 760)
@@ -170,6 +221,15 @@ struct LPMVaultApp: App {
 					.keyboardShortcut("l", modifiers: .command)
 					.disabled(store.isUnlocking)
 			}
+		}
+
+		Settings {
+			VaultSettingsView()
+				.environment(updateChecker)
+				.environment(appearanceSettings)
+				.environment(quitSettings)
+				.vaultAppearance(appearanceSettings.selection)
+				.tint(VaultPalette.accent)
 		}
 	}
 

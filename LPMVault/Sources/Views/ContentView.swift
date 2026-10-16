@@ -79,6 +79,21 @@ struct ContentView: View {
 				.foregroundStyle(VaultPalette.textFaint)
 				.padding(.bottom, 18)
 		}
+		.overlay(alignment: .bottomTrailing) {
+			SettingsLink {
+				Image(systemName: "gearshape")
+					.font(.system(size: 12, weight: .medium))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.frame(width: 27, height: 27)
+					.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
+					.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+					.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.help("Settings")
+			.accessibilityLabel("Settings")
+			.padding(14)
+		}
 		.ignoresSafeArea(.container, edges: .top)
 	}
 }

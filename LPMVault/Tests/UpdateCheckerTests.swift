@@ -332,8 +332,8 @@ extension SheetInteractionTests {
 	@Suite("Signed application updates, rendered")
 	@MainActor
 	struct UpdateCheckerRenderingTests {
-		@Test("settings expose a working channel picker before and after sign-in", arguments: [false, true])
-		func settingsChannelPicker(signedIn: Bool) async throws {
+		@Test("the Settings window's Updates tab exposes a working channel picker, locked or signed out")
+		func settingsChannelPicker() async throws {
 			let domain = "update-settings-\(UUID().uuidString)"
 			let defaults = try #require(UserDefaults(suiteName: domain))
 			defer { defaults.removePersistentDomain(forName: domain) }
@@ -341,14 +341,7 @@ extension SheetInteractionTests {
 			let checker = UpdateChecker(driver: driver, defaults: defaults,
 				buildInfo: VaultBuildInfo(info: ["CFBundleShortVersionString": "1.0.1", "CFBundleVersion": "6"]))
 			checker.start()
-			let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(),
-				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
-			if signedIn {
-				store.currentUser = LPMUser(id: "updates-test", username: "demo", name: nil, email: nil,
-					avatarUrl: nil, plan: "free", createdAt: nil, orgs: nil)
-			}
-			let host = NSHostingView(rootView: AuthStatusView(store: store).environment(checker)
-				.environment(VaultAppearanceSettings(defaults: defaults)).environment(\.colorScheme, .light))
+			let host = NSHostingView(rootView: VaultUpdateSettingsPane().environment(checker).environment(\.colorScheme, .light))
 			let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
 				styleMask: [.titled], backing: .buffered, defer: false)
 			window.isReleasedWhenClosed = false
@@ -374,16 +367,9 @@ extension SheetInteractionTests {
 			#expect(driver.checks == 0)
 			let bitmap = try renderTitleBar(host)
 			let data = try #require(bitmap.representation(using: .png, properties: [:]))
-			Attachment.record(data, named: "updates-settings-\(signedIn).png")
-			try data.write(to: URL(fileURLWithPath: "/tmp/vault-nightly-settings-\(signedIn).png"))
-			if !signedIn {
-				let lines = AccessibilityTree.lines(in: host)
-				let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
-				let signIn = try #require(lines.first { $0.text.contains("Sign in with browser") })
-				let server = try #require(lines.first { $0.text.caseInsensitiveCompare("Server") == .orderedSame }, "Lines: \(lines.map(\.text))")
-				#expect(explanation.bounds.minY > signIn.bounds.maxY)
-				#expect(signIn.bounds.minY > server.bounds.maxY)
-			}
+			Attachment.record(data, named: "updates-settings.png")
+			let text = AccessibilityTree.text(in: host)
+			#expect(text.contains("Installed version") && text.contains("Check for Updates"))
 			driver.availableUpdateVersion = "A newer nightly"
 			driver.sessionInProgress = true
 			try await Task.sleep(for: .milliseconds(20))

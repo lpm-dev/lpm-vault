@@ -155,7 +155,7 @@ struct VaultTitleBarView: View {
 				Button(isOrganization ? "Share…" : "Push…", action: onPush)
 					.keyboardShortcut("p", modifiers: [.command, .shift])
 			} else if !store.isLoggedIn {
-				Button("Sign in to sync…") { store.showSettings() }
+				Button("Sign in to sync…") { store.showAccount() }
 			} else {
 				Button("Select an env project") {}
 					.disabled(true)

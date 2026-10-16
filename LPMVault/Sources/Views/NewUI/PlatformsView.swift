@@ -198,7 +198,7 @@ struct PlatformsView: View {
 					Text("Sign in to LPM to connect \(platform.displayName).")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
-					Button("Open Settings", action: store.showSettings)
+					Button("Open Account", action: store.showAccount)
 						.buttonStyle(.plain)
 						.font(.system(size: 11.5, weight: .medium))
 						.foregroundStyle(VaultPalette.accentForeground)

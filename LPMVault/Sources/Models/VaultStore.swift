@@ -1616,8 +1616,8 @@ final class VaultStore {
     resetAutoLock()
   }
 
-  func showSettings() {
-    accountPage = .settings
+  func showAccount() {
+    accountPage = .account
     resetAutoLock()
   }
 
@@ -7504,6 +7504,38 @@ final class VaultStore {
 
   private static func publishingFollowMessage(_ failure: PublishingStoreError) -> String {
     "The change was saved, but its publish destinations couldn't be updated: \(failure)"
+  }
+
+  /// Returns once nothing is being written to the Keychain or to a project's
+  /// lpm.json: project changes, key and schema saves, a CLI approval change, or a sync.
+  func finishWritesInProgress() async {
+    while true {
+      await waitForProjectMutations()
+      let writing = !savingSchemaDrafts.isEmpty || isChangingCliAccess || isSyncing
+        || keyDrafts.drafts.values.contains(where: \.isSaveInFlight)
+      guard writing || projectMutationTask != nil else { return }
+      try? await Task.sleep(for: .milliseconds(25))
+    }
+  }
+
+  /// Selects a project and waits until its values and rules are loaded, so
+  /// its unsaved edits can be saved; false when it can't be loaded.
+  func openProjectForSaving(_ projectID: String, timeout: Duration = .seconds(15)) async -> Bool {
+    guard isUnlocked, projects.contains(where: { $0.id == projectID }) else { return false }
+    if selectedProjectId != projectID || isShowingAccountPage { openProject(id: projectID) }
+    guard selectedProjectId == projectID else { return false }
+    reloadKeyDescriptions()
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+      guard isUnlocked, selectedProjectId == projectID, selectedProjectLoadFailure == nil else { return false }
+      if let project = selectedProject, project.hasLoadedEnvironments, !isLoadingSelectedProject,
+        !isReloadingKeyDescriptions, keyDescriptions[projectID] != nil
+      {
+        return true
+      }
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    return false
   }
 
   private func waitForProjectMutations() async {

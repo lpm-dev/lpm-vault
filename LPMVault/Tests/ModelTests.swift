@@ -1,3 +1,4 @@
+import AppKit
 import Testing
 import SwiftUI
 
@@ -7,7 +8,7 @@ extension SheetInteractionTests {
 	@Suite("Account settings presentation")
 	@MainActor
 	struct AuthStatusViewTests {
-		@Test("signed-out settings offer local server selection only in debug builds")
+		@Test("the signed-out Account page offers local server selection only in debug builds, and points to Settings")
 		func signedOutSettingsOfferLocalServerSelection() async throws {
 			let store = VaultStore(
 				keychainService: MockKeychainService(),
@@ -16,11 +17,21 @@ extension SheetInteractionTests {
 				authTokenProvider: { _, _ in nil }
 			)
 			store.appEnvironment = .production
-			let labels = try await AccessibilityTree.text(of: AuthStatusView(store: store).environment(VaultAppearanceSettings())
-				.environment(UpdateChecker()).environment(\.colorScheme, .light), size: CGSize(width: 700, height: 700))
+			let host = SheetTestHost(AuthStatusView(store: store).environment(VaultAppearanceSettings())
+				.environment(UpdateChecker()).environment(\.colorScheme, .light), size: NSSize(width: 700, height: 700), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			let labels = try await host.text()
 			#expect(labels.contains("Not logged in"))
-			#expect(labels.contains("UPDATES"))
-			#expect(labels.contains("Installed version"))
+			#expect(labels.contains("APP SETTINGS"))
+			#expect(labels.contains("Open Settings"))
+			#expect(!labels.contains("UPDATES"), "Updates are in the Settings window")
+			let lines = AccessibilityTree.lines(in: host.view)
+			let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
+			let signIn = try #require(lines.first { $0.text.contains("Sign in with browser") })
+			let server = try #require(lines.first { $0.text.caseInsensitiveCompare("Server") == .orderedSame }, "Lines: \(lines.map(\.text))")
+			#expect(explanation.bounds.minY > signIn.bounds.maxY)
+			#expect(signIn.bounds.minY > server.bounds.maxY)
 			#if DEBUG
 			#expect(labels.contains("Use local"))
 			#else

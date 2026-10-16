@@ -63,7 +63,7 @@ extension SheetInteractionTests {
 				divider.onDragEnded?(-2000)
 				try await host.settle()
 				#expect(divider.accessibilityValue() as? String == "160 points")
-				store.showSettings()
+				store.showAccount()
 				#expect(try await host.waitUntil { !resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
 				store.openProject(id: "workspace")
 				try await host.settle()
@@ -559,7 +559,7 @@ extension SheetInteractionTests {
 			try await host.settle()
 			try host.enterValue("unsaved-removed-project")
 			try await host.settle()
-			if hiddenInSettings { store.showSettings(); try await host.settle() }
+			if hiddenInSettings { store.showAccount(); try await host.settle() }
 			let saved = keychain.envStorage.removeValue(forKey: "workspace")
 			await store.refreshLocalState()
 			try await host.settle()
@@ -606,7 +606,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			#expect(biometric.authenticationReasons == ["Copy your unsaved value"])
 			switch transition {
-			case "settings": store.showSettings()
+			case "settings": store.showAccount()
 			case "discard": try await host.click("Discard")
 			case "account": store.selectedAccount = .org("other")
 			default: store.lock()
@@ -733,7 +733,7 @@ extension SheetInteractionTests {
 			try await host.click("Copy all")
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			switch transition {
-			case "settings": store.showSettings()
+			case "settings": store.showAccount()
 			case "environment": store.selectEnvironment("production")
 			case "project": store.openProject(id: "other")
 			case "lock": store.lock()
@@ -795,7 +795,7 @@ extension SheetInteractionTests {
 				try await host.settle()
 			}
 			#expect(try host.rowIsHighlighted(inset: inset, rowMidY: rowMidY))
-			store.showSettings()
+			store.showAccount()
 			try await host.settle()
 			#expect(try !host.rowIsHighlighted(inset: inset, rowMidY: rowMidY))
 			#expect(store.selectedProjectId == "workspace")

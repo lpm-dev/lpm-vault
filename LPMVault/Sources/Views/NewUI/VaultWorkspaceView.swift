@@ -303,7 +303,7 @@ struct VaultWorkspaceView: View {
 					}
 
 					Group {
-						if store.accountPage == .settings {
+						if store.accountPage == .account {
 							AuthStatusView(store: store)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
