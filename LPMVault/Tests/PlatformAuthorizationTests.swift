@@ -496,6 +496,8 @@ private final class FakeAuthorizations: PlatformAuthorizationClientProtocol, @un
 	let id = UUID().uuidString.lowercased()
 	var start: (@Sendable () -> Result<Void, PlatformAuthorizationError>) = { .success(()) }
 	var outcome: (@Sendable (_ attempt: Int, _ id: String, _ key: Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError>) = { _, _, _ in .success(.missing) }
+	/// How long after starting the authorization expires.
+	var expiresIn: TimeInterval = 30
 	let pageURL: URL
 
 	init(pageURL: URL = URL(string: "https://vercel.com/integrations/lpm-vault/new?state=\(platformTestOneTimeValue())")!) {
@@ -511,7 +513,7 @@ private final class FakeAuthorizations: PlatformAuthorizationClientProtocol, @un
 			publicKey = clientPublicKey
 			calls.append("start \(platform.rawValue)")
 		}
-		return start().map { StartedPlatformAuthorization(id: id, pageURL: pageURL, expiresAt: Date(timeIntervalSinceNow: 30)) }
+		return start().map { StartedPlatformAuthorization(id: id, pageURL: pageURL, expiresAt: Date(timeIntervalSinceNow: expiresIn)) }
 	}
 
 	func redeem(_ authorizationID: String, on platform: BrowserPlatform, proof: String, session: PlatformSession) async -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
@@ -557,15 +559,17 @@ private struct FakeVercel: VercelClientProtocol {
 	func replace(_ variableID: String, key: String, value: String, storage: VercelVariableWrite.Storage, projectID: String, teamID: String?) async -> Result<VercelEnvironmentVariable, VercelAPIError> { .failure(.notFound) }
 }
 
-/// Plays the browser: after the platform's page "opens", returns to the Mac's listener.
+/// Plays the browser: `delay` after the platform's page "opens", returns to the Mac's listener.
 private func browser(
 	returning query: String,
 	on platform: BrowserPlatform = .vercel,
+	after delay: Duration = .zero,
 	listener: @escaping @Sendable () -> UInt16?
 ) -> @Sendable (URL) async -> Void {
 	{ _ in
 		guard let port = listener() else { return }
 		Task.detached {
+			try? await Task.sleep(for: delay)
 			let url = URL(string: "http://127.0.0.1:\(port)\(PlatformConnectionListener.path(for: platform))?\(query)")!
 			_ = try? await URLSession(configuration: .ephemeral).data(from: url)
 		}
@@ -754,13 +758,14 @@ struct NetlifyConnectorTests {
 		netlify: ScriptedNetlify = ScriptedNetlify([.success(tolga)]),
 		query: ((String) -> String)? = nil,
 		retryDelay: Duration = .milliseconds(5),
+		browserDelay: Duration = .zero,
 		opened: OpenedPages? = nil
 	) async -> Result<NetlifyConnection, BrowserConnectError> {
 		let port = Port()
 		var connector = NetlifyConnector(authorization: browserAuthorization(authorizations, port: port), client: netlify.client)
 		connector.retryDelay = retryDelay
 		let returning = query?(authorizations.id) ?? platformTestReturn(authorization: authorizations.id, proof: platformTestOneTimeValue())
-		let browser = browser(returning: returning, on: .netlify, listener: { port.port })
+		let browser = browser(returning: returning, on: .netlify, after: browserDelay, listener: { port.port })
 		return await connector.connect(session: session) { url in
 			opened?.append(url)
 			await browser(url)
@@ -822,7 +827,7 @@ struct NetlifyConnectorTests {
 
 		let down = FakeAuthorizations(pageURL: Self.authorizePage)
 		down.outcome = down.readyNetlifyGrant()
-		let unreachable = ScriptedNetlify([.failure(.rateLimited(until: nil)), .failure(.transport)])
+		let unreachable = ScriptedNetlify([.failure(.rateLimited(until: Date())), .failure(.transport)])
 		#expect(failure(of: await connect(down, netlify: unreachable)) == .transport)
 		#expect(unreachable.userReads == 3)
 	}
@@ -842,18 +847,58 @@ struct NetlifyConnectorTests {
 		#expect(netlify.userReads == 1)
 	}
 
-	@Test("cancelling while the user is about to be read again stops at once")
-	func cancelWhileRetrying() async throws {
+	@Test("a rate limit on reading the user is waited out until Netlify says it lifts, so the grant isn't lost")
+	func waitsOutUserRateLimit() async throws {
 		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
 		authorizations.outcome = authorizations.readyNetlifyGrant()
-		let netlify = ScriptedNetlify([.failure(.transport)])
-		let task = Task { await connect(authorizations, netlify: netlify, retryDelay: .seconds(30)) }
-		for _ in 0..<400 where netlify.userReads == 0 { try await Task.sleep(for: .milliseconds(5)) }
-		let cancelled = ContinuousClock.now
-		task.cancel()
-		#expect(failure(of: await task.value) == .cancelled)
-		#expect(ContinuousClock.now - cancelled < .seconds(5))
-		#expect(netlify.userReads == 1)
+		let lifts = Date(timeIntervalSinceNow: 0.4)
+		let netlify = ScriptedNetlify([.failure(.rateLimited(until: lifts)), .success(Self.tolga)])
+		#expect(try await connect(authorizations, netlify: netlify).get().user == Self.tolga)
+		#expect(Date() >= lifts)
+		#expect(netlify.userReads == 2)
+	}
+
+	@Test("a rate limit that lifts later than LPM Vault waits, or keeps applying, says Netlify is limiting requests")
+	func userRateLimited() async {
+		let later = FakeAuthorizations(pageURL: Self.authorizePage)
+		later.outcome = later.readyNetlifyGrant()
+		let limited = ScriptedNetlify([.failure(.rateLimited(until: Date(timeIntervalSinceNow: 3_600)))])
+		let result = await connect(later, netlify: limited)
+		#expect(failure(of: result) == .platformRateLimited)
+		#expect(failure(of: result)?.message(for: .netlify) == "Netlify is limiting requests. Wait a minute, then connect again.")
+		#expect(limited.userReads == 1)
+
+		let again = FakeAuthorizations(pageURL: Self.authorizePage)
+		again.outcome = again.readyNetlifyGrant()
+		let stays = ScriptedNetlify([.failure(.rateLimited(until: Date()))])
+		#expect(failure(of: await connect(again, netlify: stays)) == .platformRateLimited)
+		#expect(stays.userReads == 3)
+	}
+
+	@Test("cancelling while the user is about to be read again, or a rate limit is waited out, stops at once")
+	func cancelWhileRetrying() async throws {
+		for answer: NetlifyAPIError in [.transport, .rateLimited(until: Date(timeIntervalSinceNow: 30))] {
+			let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+			authorizations.outcome = authorizations.readyNetlifyGrant()
+			let netlify = ScriptedNetlify([.failure(answer)])
+			let task = Task { await connect(authorizations, netlify: netlify, retryDelay: .seconds(30)) }
+			for _ in 0..<400 where netlify.userReads == 0 { try await Task.sleep(for: .milliseconds(5)) }
+			let cancelled = ContinuousClock.now
+			task.cancel()
+			#expect(failure(of: await task.value) == .cancelled)
+			#expect(ContinuousClock.now - cancelled < .seconds(5))
+			#expect(netlify.userReads == 1)
+		}
+	}
+
+	@Test("a browser coming back just after the authorization expires, from a code the Registry claimed in time, still connects")
+	func returnsAfterExpiry() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.expiresIn = 0.05
+		authorizations.outcome = authorizations.readyNetlifyGrant()
+		let connection = try await connect(authorizations, browserDelay: .milliseconds(300)).get()
+		#expect(connection.user == Self.tolga)
+		#expect(authorizations.cancelledIDs.isEmpty)
 	}
 }
 

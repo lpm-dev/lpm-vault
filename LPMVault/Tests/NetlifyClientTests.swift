@@ -34,6 +34,19 @@ struct NetlifyClientTests {
 		#expect(route.requests.count == 1, "A redirect is never followed")
 	}
 
+	@Test("a rate limit is waited out until Netlify says it lifts, a minute when it doesn't say, and not when it lifts after the longest wait, however far off or malformed")
+	func rateLimitWait() {
+		#expect(NetlifyHTTP.rateLimitWait(until: nil) == .seconds(60))
+		#expect(NetlifyHTTP.rateLimitWait(until: Date(timeIntervalSinceNow: -5)) == .zero)
+		#expect(NetlifyHTTP.rateLimitWait(until: Date(timeIntervalSince1970: -1e20)) == .zero)
+		let soon = NetlifyHTTP.rateLimitWait(until: Date(timeIntervalSinceNow: 30))
+		#expect(soon.map { $0 > .seconds(29) && $0 <= .seconds(30) } == true)
+		let longest = Date(timeIntervalSinceNow: Double(NetlifyHTTP.maximumRateLimitWait.components.seconds) + 1)
+		for reset in [longest, Date(timeIntervalSince1970: 1e20), Date(timeIntervalSince1970: .infinity), Date(timeIntervalSince1970: .nan)] {
+			#expect(NetlifyHTTP.rateLimitWait(until: reset) == nil)
+		}
+	}
+
 	@Test("a cancelled task sends nothing")
 	func cancelledSendsNothing() async {
 		let route = PlatformHTTPStub.platform { _ in .json(200, ["id": "u1"]) }

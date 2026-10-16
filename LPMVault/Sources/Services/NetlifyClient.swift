@@ -37,6 +37,8 @@ enum NetlifyHTTP {
 	static let maximumResponseBytes = 2 * 1024 * 1024
 	/// Netlify asks API clients to name themselves.
 	static let userAgent = "LPM Vault (https://vault.lpm.dev)"
+	/// The longest wait for a rate limit to lift; Netlify's window is a minute.
+	static let maximumRateLimitWait: Duration = .seconds(65)
 
 	/// The session clients use unless given one. A session holds its
 	/// delegate until it's invalidated, so one per process serves every
@@ -84,6 +86,15 @@ enum NetlifyHTTP {
 		} catch {
 			return .failure(.transport)
 		}
+	}
+
+	/// How long to wait for a rate limit Netlify says lifts at `reset`, or a
+	/// minute when it doesn't say; nil when it lifts after the longest wait.
+	static func rateLimitWait(until reset: Date?) -> Duration? {
+		let seconds = reset?.timeIntervalSinceNow ?? 60
+		// Compared as a number first: a far-off or infinite reset traps as a duration.
+		guard seconds.isFinite, seconds <= Double(maximumRateLimitWait.components.seconds) else { return nil }
+		return .milliseconds(Int64(max(0, seconds) * 1_000))
 	}
 
 	private static func failure(_ http: HTTPURLResponse) -> NetlifyAPIError {

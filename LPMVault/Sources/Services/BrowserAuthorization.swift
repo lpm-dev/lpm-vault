@@ -20,6 +20,8 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 	case tokenRejected
 	/// The platform didn't say whose the token it had just granted is.
 	case accountUnreadable
+	/// The platform was limiting requests when the new connection was read.
+	case platformRateLimited
 	case transport
 	case invalidResponse
 
@@ -39,6 +41,7 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 		case .expired: "This connection expired. Connect again."
 		case .tokenRejected: "\(name) didn't accept the new connection. Connect again."
 		case .accountUnreadable: "\(name) didn't say which account was connected. Connect again."
+		case .platformRateLimited: "\(name) is limiting requests. Wait a minute, then connect again."
 		case .transport: "The connection couldn't reach lpm.dev or \(name). Check your network and try again."
 		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn't verify. Try again."
 		}
@@ -57,6 +60,10 @@ struct BrowserAuthorization: Sendable {
 	/// How often a result still pending is asked for again.
 	static let pendingRetries = 3
 	static let maximumWait: TimeInterval = 15 * 60
+	/// How long after an authorization expires the browser can still come
+	/// back: the Registry finishes exchanging a code it claimed before the
+	/// expiry within this window (`AUTHORIZATION_EXCHANGE_WINDOW_MS`).
+	static let exchangeWindow: TimeInterval = 2 * 60
 
 	let authorizations: any PlatformAuthorizationClientProtocol
 	let listen: ListenerFactory
@@ -109,7 +116,8 @@ struct BrowserAuthorization: Sendable {
 
 		let completion: PlatformConnectionListener.Completion
 		do {
-			completion = try await listener.completion(until: min(started.expiresAt, Date(timeIntervalSinceNow: Self.maximumWait)))
+			completion = try await listener.completion(
+				until: min(started.expiresAt.addingTimeInterval(Self.exchangeWindow), Date(timeIntervalSinceNow: Self.maximumWait)))
 		} catch PlatformConnectionListener.ListenerError.timedOut {
 			return .failure(.timedOut)
 		} catch PlatformConnectionListener.ListenerError.unavailable {
