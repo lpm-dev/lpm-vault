@@ -174,7 +174,7 @@ extension SheetInteractionTests {
 			#expect(try await host.labelFrame("api.example.com", region: inspector).width > 0, "The inspector shows the public value")
 
 			try await host.clickSidebarEnvironment(".env")
-			#expect(try await host.waitForText("ACTIONS"))
+			#expect(try await host.waitForText("ACTIONS", exactly: true))
 			#expect(try await host.waitForText("NEXT_PUBLIC_API_URL, public, value shown"))
 			#expect(try await host.text().contains("API_TOKEN, value hidden"))
 			#expect(try await !host.text().contains("tok-hidden-value"))

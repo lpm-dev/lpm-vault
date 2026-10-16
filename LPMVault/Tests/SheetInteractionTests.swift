@@ -39,21 +39,29 @@ enum NativeTestClick {
 		}
 	}
 
-	static func send(to window: NSWindow, at point: NSPoint) throws {
-		let content = try #require(window.contentView)
+	/// The AppKit button drawn at `point` of `window`, which SwiftUI uses for many of its buttons.
+	static func button(in window: NSWindow, at point: NSPoint) -> NSButton? {
+		guard let content = window.contentView else { return nil }
 		// SwiftUI updates hit-testing for newly shown controls on a display pass,
 		// which a slow runner may not have made yet.
 		content.layoutSubtreeIfNeeded()
 		window.displayIfNeeded()
-		let hitPoint = content.superview?.convert(point, from: nil) ?? point
-		var hit = content.hitTest(hitPoint)
+		var hit = content.hitTest(content.superview?.convert(point, from: nil) ?? point)
 		while let view = hit {
-			if let button = view as? NSButton {
-				send(to: button)
-				return
-			}
+			if let button = view as? NSButton { return button }
 			hit = view.superview
 		}
+		return nil
+	}
+
+	static func send(to window: NSWindow, at point: NSPoint) throws {
+		let content = try #require(window.contentView)
+		if let button = button(in: window, at: point) {
+			send(to: button)
+			return
+		}
+		let hitPoint = content.superview?.convert(point, from: nil) ?? point
+		var hit = content.hitTest(hitPoint)
 		let events = try [NSEvent.EventType.leftMouseDown, .leftMouseUp].map { type in
 			try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
 		}
@@ -208,7 +216,7 @@ final class SheetTestHost<V: View> {
 
 	/// Clicks the element saying `label` once it appears, within `region` of
 	/// the view when given, in normalized coordinates from the bottom-left.
-	/// A SwiftUI button is pressed as VoiceOver presses it.
+	/// A SwiftUI control that isn't an AppKit button is pressed as VoiceOver presses it.
 	func click(_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false) async throws {
 		try await clickLater(label, in: targetWindow, region: region, caseInsensitive: caseInsensitive)()
 	}
@@ -228,10 +236,14 @@ final class SheetTestHost<V: View> {
 		}
 		let element = try await waitForElement(saying: label, in: window, of: target, region: region, options: options)
 		let point = AccessibilityTree.center(of: element, in: window)
-		guard element.isPressable else { return { try NativeTestClick.send(to: window, at: point) } }
 		return {
-			guard element.isEnabled else { return }
-			if !element.press() { try NativeTestClick.send(to: window, at: point) }
+			// An AppKit button takes its action directly, as it always has; other
+			// SwiftUI controls are pressed, and anything else gets mouse events.
+			if NativeTestClick.button(in: window, at: point) == nil, element.isPressable {
+				guard element.isEnabledNow else { return }
+				if element.press() { return }
+			}
+			try NativeTestClick.send(to: window, at: point)
 		}
 	}
 

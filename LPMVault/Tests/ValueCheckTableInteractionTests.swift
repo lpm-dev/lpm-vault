@@ -305,7 +305,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { store.valueChecks[project.id] != nil })
 
 			try await host.click("DATABASE_URL")
-			#expect(try await host.waitForText("RULES"))
+			#expect(try await host.waitForText("RULES", exactly: true))
 			let inspector = CGRect(x: 0.78, y: 0, width: 0.22, height: 1)
 			func inspectorText() async throws -> AccessibleText {
 				let lines = host.lines(in: inspector)

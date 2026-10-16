@@ -385,7 +385,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("RETRY_COUNT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.enterText("5", placeholder: "max")
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-review") != nil })
 			try await host.click("Review & save")
@@ -511,13 +511,13 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace(#"{"envSchema":{"vars":{"MODE":{},\#(keys)}}}"#)
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("MODE")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			store.editSchemaDraft(in: "schema-review") { $0.set(.declared(.object([.init(key: "default", value: .string("on"))])), for: .key("MODE")) }
 			#expect(try await host.waitUntil { store.schemaDraftReview(for: "schema-review", environments: ["default"])?.values == .checked })
 			try await host.click("Review & save")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
-			#expect(try await host.waitForText("OTHER KEYS", in: sheet))
+			#expect(try await host.waitForText("OTHER KEYS", exactly: true, in: sheet))
 			try scrollToEnd(sheet)
 			#expect(try await host.waitForText("Show 3 more", in: sheet))
 			try await host.click("Show 3 more", in: sheet)
@@ -526,7 +526,7 @@ extension SheetInteractionTests {
 
 		private func openReview(_ store: VaultStore, _ host: SheetTestHost<some View>) async throws -> NSWindow {
 			try await host.click("RETRY_COUNT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.enterText("5", placeholder: "max")
 			#expect(try await host.waitUntil { store.schemaDraftReview(for: "schema-review", environments: ["default"])?.values == .checked })
 			try await host.click("Review & save")

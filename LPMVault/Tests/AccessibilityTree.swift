@@ -85,6 +85,11 @@ enum AccessibilityTree {
 			object.accessibilityPerformPress?() ?? false
 		}
 
+		/// Whether it's enabled now, which may have changed since it was read.
+		var isEnabledNow: Bool {
+			object.isAccessibilityEnabled?() ?? isEnabled
+		}
+
 		/// Whether it's a SwiftUI control that a press works as a click on. On
 		/// CI's macOS 15 runners, mouse events a test sends don't reliably reach
 		/// SwiftUI controls, and a press needs none.

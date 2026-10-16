@@ -18,7 +18,7 @@ extension SheetInteractionTests {
 				#expect(try await host.waitForText("VALUES", exactly: true))
 				if singleEnvironment {
 					try await host.clickSidebarEnvironment(".env")
-					#expect(try await host.waitForText("ACTIONS"))
+					#expect(try await host.waitForText("ACTIONS", exactly: true))
 				}
 				let finalLabel = singleEnvironment ? "Resize Actions column" : "Resize .env.production column"
 				let last = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == finalLabel })
@@ -57,7 +57,7 @@ extension SheetInteractionTests {
 				defer { host.window.close() }
 				if singleEnvironment {
 					try await host.clickSidebarEnvironment(".env")
-					#expect(try await host.waitForText("ACTIONS"))
+					#expect(try await host.waitForText("ACTIONS", exactly: true))
 				}
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
 				divider.onDragEnded?(-2000)
@@ -79,7 +79,7 @@ extension SheetInteractionTests {
 				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
 				if singleEnvironment {
 					try await host.clickSidebarEnvironment(".env")
-					#expect(try await host.waitForText("ACTIONS"))
+					#expect(try await host.waitForText("ACTIONS", exactly: true))
 				}
 				try await host.settle()
 				let reloaded = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
@@ -122,7 +122,7 @@ extension SheetInteractionTests {
 				try await host.settle()
 				try host.enterValue("unsaved-value")
 				try await host.clickSidebarEnvironment(".env")
-				#expect(try await host.waitForText("ACTIONS"))
+				#expect(try await host.waitForText("ACTIONS", exactly: true))
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
 				divider.onDragEnded?(-2000)
 				try await host.settle()
@@ -153,7 +153,7 @@ extension SheetInteractionTests {
 				defer { host.window.close() }
 				host.window.appearance = appearance.nativeAppearance
 				try await host.clickSidebarEnvironment(".env")
-				#expect(try await host.waitForText("ACTIONS"))
+				#expect(try await host.waitForText("ACTIONS", exactly: true))
 				try await host.settle()
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
 				let windowFrame = divider.convert(divider.bounds, to: nil)
@@ -175,7 +175,7 @@ extension SheetInteractionTests {
 				defer { host.window.close() }
 				if singleEnvironment {
 					try await host.clickSidebarEnvironment(".env")
-					#expect(try await host.waitForText("ACTIONS"))
+					#expect(try await host.waitForText("ACTIONS", exactly: true))
 				}
 				try clickAt(NSPoint(x: host.view.bounds.width - 129.5, y: 723.5), in: host)
 				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize inspector" } })
@@ -211,7 +211,7 @@ extension SheetInteractionTests {
 				defer { host.window.close() }
 				if singleEnvironment {
 					try await host.clickSidebarEnvironment(".env")
-					#expect(try await host.waitForText("ACTIONS"))
+					#expect(try await host.waitForText("ACTIONS", exactly: true))
 				}
 				for divider in resizeViews(in: host.view) where divider.accessibilityLabel()?.hasSuffix(" column") == true {
 					divider.onDragEnded?(-2000)
@@ -245,7 +245,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			if singleEnvironment {
 				try await host.clickSidebarEnvironment(".env")
-				#expect(try await host.waitForText("ACTIONS"))
+				#expect(try await host.waitForText("ACTIONS", exactly: true))
 			}
 			let label = "Resize Key column"
 			let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == label })
@@ -404,7 +404,7 @@ extension SheetInteractionTests {
 
 			// The environment's own table uses the same order and its header reverses it too.
 			try await host.clickSidebarEnvironment(".env")
-			#expect(try await host.waitForText("ACTIONS"))
+			#expect(try await host.waitForText("ACTIONS", exactly: true))
 			#expect(try await waitForKeyOrder(["ZULU", "ALPHA"], in: host))
 			try await clickKeyHeader(in: host)
 			#expect(try await host.waitUntil { defaults.string(forKey: VaultKeySortOrder.defaultsKey) == "ascending" })
@@ -566,7 +566,7 @@ extension SheetInteractionTests {
 			keychain.envStorage["workspace"] = saved
 			await store.refreshLocalState()
 			store.openProject(id: "workspace")
-			#expect(try await host.waitForText("UNSAVED EDITS"))
+			#expect(try await host.waitForText("UNSAVED EDITS", exactly: true))
 			#expect(try await host.waitForText("deleted outside the editor"))
 			NSPasteboard.general.clearContents()
 			NSPasteboard.general.setString("unsaved-removed-project", forType: .string)
@@ -601,7 +601,7 @@ extension SheetInteractionTests {
 			try await host.settle()
 			keychain.envStorage.removeValue(forKey: "workspace")
 			await store.refreshLocalState()
-			#expect(try await host.waitForText("UNSAVED EDITS"))
+			#expect(try await host.waitForText("UNSAVED EDITS", exactly: true))
 			try await host.click("Copy value")
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			#expect(biometric.authenticationReasons == ["Copy your unsaved value"])

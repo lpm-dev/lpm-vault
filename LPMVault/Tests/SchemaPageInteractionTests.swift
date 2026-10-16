@@ -145,7 +145,7 @@ extension SheetInteractionTests {
 			let inspector = CGRect(x: 0.78, y: 0, width: 0.22, height: 1)
 
 			try await host.click("PASSWORD")
-			#expect(try await host.waitForText("RULES"))
+			#expect(try await host.waitForText("RULES", exactly: true))
 			let rules = host.lines(in: inspector)
 			let text = AccessibleText(rules.map(\.text))
 			for expected in ["12+ chars", "Secret", "Exactly one of PASSWORD, OAUTH_TOKEN", "Edit in Schema"] {

@@ -318,7 +318,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Add group")
-			#expect(try await host.waitForText("NEW GROUP"))
+			#expect(try await host.waitForText("NEW GROUP", exactly: true))
 			#expect(try await host.waitUntil { host.isEditing(placeholder: "group_name") }, "Add group puts the cursor in the name")
 			try await host.typeCharacters("auth", placeholder: "group_name")
 			#expect(try await host.waitForText("already declared"))
@@ -412,7 +412,7 @@ extension SheetInteractionTests {
 			store.removeSchemaKey("PORT", settling: references.map { ($0, .dropFromGroup) }, in: "schema-groups")
 			#expect(ProjectEnvSchemaGroup(store.schemaDraft(for: "schema-groups")?.declaration(of: .group("smtp")).json)?.members == ["TOKEN"])
 			try await host.click("smtp")
-			#expect(try await host.waitForText("NEW GROUP"))
+			#expect(try await host.waitForText("NEW GROUP", exactly: true))
 			try host.enterText("email", placeholder: "group_name")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-groups")?.declaration(of: .group("email")) != .absent })
 			try host.enterText("", placeholder: "group_name")

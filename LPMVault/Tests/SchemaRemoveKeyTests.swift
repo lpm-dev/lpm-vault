@@ -357,7 +357,7 @@ extension SheetInteractionTests {
 				$0.set(.declared(.object([.init(key: "secret", value: .bool(true)), .init(key: "minLength", value: .number("20"))])), for: .key("PASSWORD"))
 			}
 			try await host.click("PASSWORD")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.shortcut("\u{7f}", code: 51)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
@@ -398,7 +398,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("PASSWORD")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.shortcut("\u{7f}", code: 51)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
@@ -418,7 +418,7 @@ extension SheetInteractionTests {
 			store.editSchemaDraft(in: "schema-remove") { $0.set(.declared(.object([.init(key: "format", value: .string("nope"))])), for: .key("PORT")) }
 			#expect(try await host.waitUntil { store.currentSchemaDraftEvaluation(for: "schema-remove")?.rejection != nil })
 			try await host.click("PASSWORD")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.shortcut("\u{7f}", code: 51)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
@@ -432,7 +432,7 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			// The other rows name ADMIN in their badges; its own row, first from A to Z, is the one with Email.
 			try await host.click("Email")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.shortcut("\u{7f}", code: 51)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
@@ -451,7 +451,7 @@ extension SheetInteractionTests {
 				base: #"{"vars":{"SSO":{},"DATABASE_URL":{"format":"url"}},"groups":{"login":{"mode":"atLeastOne","vars":["PASSWORD","SSO"]}}}"#)
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("PASSWORD")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.shortcut("\u{7f}", code: 51)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			let sheet = try #require(host.window.sheets.first)
