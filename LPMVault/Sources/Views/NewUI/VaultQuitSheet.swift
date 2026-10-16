@@ -242,9 +242,9 @@ struct VaultQuitSheet: View {
 					Capsule().fill(VaultPalette.accent).frame(width: proxy.size.width * fraction)
 				}
 			}
-			.accessibilityElement()
-			.accessibilityLabel("Saving")
-			.accessibilityValue("\(done) of \(saveable.count)")
+			.accessibilityRepresentation {
+				ProgressView("Saving", value: Double(done), total: Double(max(saveable.count, 1)))
+			}
 	}
 
 	private var callout: AnyView? {
@@ -299,7 +299,7 @@ struct VaultQuitSheet: View {
 		switch coordinator.phase {
 		case .idle, .reviewing:
 			VaultBarButton(title: "Discard all", height: 28) { coordinator.discardAndQuit() }
-				.keyboardShortcut(.delete, modifiers: .command)
+				.help("Discard all (⌘⌫)")
 			VaultBarButton(title: "Cancel", height: 28) { coordinator.cancel() }
 				.keyboardShortcut(.cancelAction)
 			VaultBarButton(title: "Save and quit", filled: true, height: 28) { coordinator.saveAndQuit() }
@@ -397,6 +397,15 @@ final class VaultQuitSheetPresenter: VaultQuitCoordinator.Presenter {
 	private(set) var sheet: NSWindow?
 	private weak var coordinator: VaultQuitCoordinator?
 	private var parentObservers: [any NSObjectProtocol] = []
+	private var keyMonitor: Any?
+
+	/// ⌘⌫ discards, as Don't Save does in a document's save sheet. The key is
+	/// read by its code: a SwiftUI shortcut for it doesn't match the event the
+	/// Delete key makes.
+	static func isDiscardKey(_ event: NSEvent) -> Bool {
+		event.type == .keyDown && event.keyCode == 51
+			&& event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function]) == .command
+	}
 
 	func present(_ coordinator: VaultQuitCoordinator) -> Bool {
 		self.coordinator = coordinator
@@ -414,11 +423,22 @@ final class VaultQuitSheetPresenter: VaultQuitCoordinator.Presenter {
 		parent.beginSheet(sheet)
 		self.sheet = sheet
 		watch(parent)
+		if keyMonitor == nil {
+			keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+				guard let self, event.window === self.sheet, Self.isDiscardKey(event), let shown = self.coordinator,
+					shown.phase == .reviewing || shown.phase == .failed
+				else { return event }
+				shown.discardAndQuit()
+				return nil
+			}
+		}
 		return true
 	}
 
 	func dismiss() {
 		stopWatching()
+		if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+		keyMonitor = nil
 		guard let sheet else { return }
 		sheet.sheetParent?.endSheet(sheet)
 		sheet.orderOut(nil)
