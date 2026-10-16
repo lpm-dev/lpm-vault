@@ -123,6 +123,7 @@ enum AccessibilityTree {
 	static func activate() {
 		guard !isActive else { return }
 		isActive = true
+		NSApplication.shared.delegate = TestProcessDelegate.shared
 		// A test process never finishes launching on its own, and until it has,
 		// it can't answer an accessibility request, even its own.
 		NSApplication.shared.finishLaunching()
@@ -260,6 +261,22 @@ enum AccessibilityTree {
 		default: nil
 		}
 	}
+}
+
+/// Keeps the test process running whatever asks it to quit. Once it has
+/// finished launching it's an app the system can send a quit to, as CI
+/// runners do, which would end the run before its report is written.
+@MainActor
+private final class TestProcessDelegate: NSObject, NSApplicationDelegate {
+	static let shared = TestProcessDelegate()
+
+	func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+		let event = NSAppleEventManager.shared().currentAppleEvent
+		print("The test process was asked to quit, and keeps running: \(event.map(String.init(describing:)) ?? "no Apple event")")
+		return .terminateCancel
+	}
+
+	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 /// The text a view says, line by line. Letter case doesn't count: views draw

@@ -110,6 +110,19 @@ extension SheetInteractionTests {
 			#expect(drawn.height < 20, "\(drawn) is the text's height, not the cell's")
 		}
 
+		@Test("a quit sent to the test process, which has finished launching to read the tree, doesn't end the run")
+		func refusesQuit() async throws {
+			let host = SheetTestHost(Text("Still here").frame(width: 200, height: 80), size: NSSize(width: 200, height: 80))
+			defer { host.window.close() }
+			try await host.settle()
+			let quit = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEQuitApplication),
+				targetDescriptor: NSAppleEventDescriptor.currentProcess(), returnID: AEReturnID(kAutoGenerateReturnID),
+				transactionID: AETransactionID(kAnyTransactionID))
+			_ = try? quit.sendEvent(options: [.waitForReply], timeout: 2)
+			try await host.settle()
+			#expect(try await host.waitForText("Still here"))
+		}
+
 		@Test("a sheet is read in its own window")
 		func readsSheets() async throws {
 			let host = SheetTestHost(SheetFixture(), size: NSSize(width: 520, height: 360))
