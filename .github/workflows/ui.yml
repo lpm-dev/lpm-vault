@@ -2,9 +2,10 @@ name: UI regressions
 # The native UI suite opens real windows and runs one test at a time, so it
 # runs here rather than in the pull request checks: after every merge to
 # main, on demand, for a pull request labeled ui-tests, and before every
-# release. Contributors run it
-# locally before pushing. An on-demand run given a filter runs only the
-# tests it matches, on one runner.
+# release. Contributors run it locally before pushing. It runs on one
+# runner, in one process and in the order it runs locally; it takes a few
+# minutes, and more runners would each pay for a build. An on-demand run
+# given a filter runs only the tests it matches.
 on:
   push:
     branches: [main]
@@ -22,17 +23,13 @@ permissions:
   contents: read
 jobs:
   ui:
-    name: UI regressions (${{ matrix.shard }}/${{ strategy.job-total }})
+    name: UI regressions
     if: >-
       github.event_name != 'pull_request' ||
       (contains(github.event.pull_request.labels.*.name, 'ui-tests') &&
        (github.event.action != 'labeled' || github.event.label.name == 'ui-tests'))
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(inputs.filter && '[1]' || '[1, 2, 3, 4]') }}
     uses: ./.github/workflows/swift-tests.yml
     with:
-      shard: ${{ matrix.shard }}/${{ strategy.job-total }}
+      shard: 1/1
       filter: ${{ inputs.filter }}
-      diagnostics: ui-test-diagnostics-${{ matrix.shard }}
+      diagnostics: ui-test-diagnostics

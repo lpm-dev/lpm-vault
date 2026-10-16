@@ -255,8 +255,7 @@ final class SheetTestHost<V: View> {
 		return {
 			// An AppKit button takes its action directly, as it always has; other
 			// SwiftUI controls are pressed, and anything else gets mouse events.
-			// A press isn't followed by a click: macOS 15 can report a press it
-			// performed as not performed, and a click would act a second time.
+			// A press is never followed by a click, so nothing can act twice.
 			if NativeTestClick.button(in: window, at: point) == nil, element.isPressable {
 				if element.isEnabledNow { element.press() }
 				return
