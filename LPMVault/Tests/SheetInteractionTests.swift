@@ -171,7 +171,12 @@ final class SheetTestHost<V: View> {
 
 	/// Returns as soon as the window says `expected`, or `false` after the
 	/// timeout. `footer` limits the search to the bottom points of the window.
-	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil, footer: CGFloat? = nil) async throws -> Bool {
+	/// `exactly` waits for an element saying all of `expected` and nothing
+	/// else, such as a section's label, which a longer label holding the same
+	/// words can't stand in for.
+	func waitForText(_ expected: String, exactly: Bool = false, in targetWindow: NSWindow? = nil, footer: CGFloat? = nil)
+		async throws -> Bool
+	{
 		let window = targetWindow ?? self.window
 		let target = try #require(targetWindow?.contentView ?? view)
 		let area = footer.map { bottomBand(of: target, height: $0) }
@@ -179,7 +184,9 @@ final class SheetTestHost<V: View> {
 		while true {
 			target.layoutSubtreeIfNeeded()
 			let text = AccessibilityTree.text(in: target, root: window, area: area)
-			if text.contains(expected) { return true }
+			if exactly ? AccessibilityTree.visibleElements(in: window, of: target, area: area).contains(where: {
+				$0.says(expected, options: .caseInsensitive)
+			}) : text.contains(expected) { return true }
 			guard ContinuousClock.now < deadline else {
 				print("waitForText did not find \"\(expected)\". The window says:\n\(text)")
 				try? attachSnapshot(named: expected, of: target)
@@ -455,7 +462,6 @@ final class SheetTestHost<V: View> {
 		textFields(in: view).first { $0.placeholderString == placeholder }?.stringValue
 	}
 
-	/// Whether the field showing `placeholder` is being edited.
 	/// Whether the field showing `placeholder` is being edited, in the host's window or `targetWindow`.
 	func isEditing(placeholder: String, in targetWindow: NSWindow? = nil) -> Bool {
 		let window = targetWindow ?? self.window
@@ -466,10 +472,11 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// The popover showing now, once one is.
+	/// The frontmost popover showing, not one an earlier choice is still closing.
 	func popoverWindow() async throws -> NSWindow {
 		var found: NSWindow?
 		_ = try await waitUntil {
-			found = NSApp.windows.first { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
+			found = NSApp.orderedWindows.first { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
 			return found != nil
 		}
 		return try #require(found, "No popover is showing")

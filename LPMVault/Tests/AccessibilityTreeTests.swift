@@ -87,6 +87,17 @@ extension SheetInteractionTests {
 			#expect(clicked == ["Row two"], "The click lands on the part of the row that shows, not below the scroll area")
 		}
 
+		@Test("a host keeps the size it asks for when that's larger than the screen, as a runner's small screen is")
+		func keepsSizeLargerThanScreen() async throws {
+			let screen = try #require(NSScreen.main?.visibleFrame.size)
+			let size = NSSize(width: screen.width + 400, height: screen.height + 300)
+			let host = SheetTestHost(Text("Wide").frame(maxWidth: .infinity, maxHeight: .infinity), size: size, keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			#expect(host.window.contentLayoutRect.size == size)
+			#expect(host.view.frame.size == size)
+		}
+
 		@Test("a sheet is read in its own window")
 		func readsSheets() async throws {
 			let host = SheetTestHost(SheetFixture(), size: NSSize(width: 520, height: 360))

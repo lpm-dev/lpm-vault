@@ -169,7 +169,7 @@ extension SheetInteractionTests {
 			#expect(try await !host.text().contains("tok-hidden-value"))
 
 			try await host.click("NEXT_PUBLIC_API_URL")
-			#expect(try await host.waitForText("VALUES"))
+			#expect(try await host.waitForText("VALUES", exactly: true))
 			let inspector = CGRect(x: 0.78, y: 0, width: 0.22, height: 1)
 			#expect(try await host.labelFrame("api.example.com", region: inspector).width > 0, "The inspector shows the public value")
 

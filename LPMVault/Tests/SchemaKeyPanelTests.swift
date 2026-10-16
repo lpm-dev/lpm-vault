@@ -340,7 +340,7 @@ extension SheetInteractionTests {
 			try host.enterText("NEXT_PUBLIC_PORT", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Becomes public"))
 			try await host.click("API_TOKEN")
-			#expect(try await host.waitForText("Bearer token"))
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "KEY_NAME") == "API_TOKEN" })
 			try host.enterText("NEXT_PUBLIC_TOKEN", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Secret keys can't start with NEXT_PUBLIC_"))
 		}

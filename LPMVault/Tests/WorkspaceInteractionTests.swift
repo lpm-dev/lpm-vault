@@ -15,7 +15,7 @@ extension SheetInteractionTests {
 				let host = try await workspace(store)
 				defer { host.window.close() }
 				try selectRow(0, in: host)
-				#expect(try await host.waitForText("VALUES"))
+				#expect(try await host.waitForText("VALUES", exactly: true))
 				if singleEnvironment {
 					try await host.clickSidebarEnvironment(".env")
 					#expect(try await host.waitForText("ACTIONS"))
@@ -228,7 +228,7 @@ extension SheetInteractionTests {
 			let host = try await workspace(store)
 			defer { host.window.close() }
 			try clickAt(NSPoint(x: VaultMetrics.sidebar + VaultMetrics.paneDivider + offset, y: 603), in: host)
-			#expect(try await host.waitForText("VALUES"))
+			#expect(try await host.waitForText("VALUES", exactly: true))
 			#expect(try await host.waitUntil { host.value == "fixture-value" })
 		}
 
@@ -326,7 +326,7 @@ extension SheetInteractionTests {
 			let host = try await workspace(store)
 			defer { host.window.close() }
 			try selectRow(0, in: host)
-			#expect(try await host.waitForText("VALUES"))
+			#expect(try await host.waitForText("VALUES", exactly: true))
 			// The search field is the topmost text field in the window.
 			try host.escapeWhileEditing(fieldAt: 0, secure: false)
 			try await host.settle()
@@ -347,7 +347,7 @@ extension SheetInteractionTests {
 			try await host.settle()
 			if inspectorOpen {
 				try clickAt(NSPoint(x: 330, y: 700 - 197), in: host)
-				#expect(try await host.waitForText("VALUES"))
+				#expect(try await host.waitForText("VALUES", exactly: true))
 			}
 			let title = try await host.drawnFrame(saying: "All variables")
 			let keyColumn = try await host.drawnFrame(saying: "KEY", region: CGRect(x: 0.25, y: 0.6, width: 0.4, height: 0.25))
@@ -361,7 +361,7 @@ extension SheetInteractionTests {
 			let host = try await workspace(store, size: NSSize(width: 1040, height: 700))
 			defer { host.window.close() }
 			try clickAt(NSPoint(x: 330, y: 700 - 197), in: host)
-			#expect(try await host.waitForText("VALUES"))
+			#expect(try await host.waitForText("VALUES", exactly: true))
 			try host.enterValue("unsaved-narrow-draft")
 			#expect(try await host.waitForText("1 key with unsaved changes", footer: VaultMetrics.statusBar))
 			#expect(try await host.waitForText("2 of 2 keys shown", footer: VaultMetrics.statusBar))
@@ -429,7 +429,7 @@ extension SheetInteractionTests {
 			let host = try await workspace(store, size: NSSize(width: 1040, height: 700), defaults: defaults)
 			defer { host.window.close() }
 			try clickAt(NSPoint(x: 330, y: 503), in: host)
-			#expect(try await host.waitForText("VALUES"))
+			#expect(try await host.waitForText("VALUES", exactly: true))
 			if minimumContentWidth {
 				let inspector = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize inspector" })
 				#expect(inspector.accessibilityPerformIncrement())
