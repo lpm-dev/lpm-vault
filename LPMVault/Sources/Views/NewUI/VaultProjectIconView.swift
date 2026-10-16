@@ -89,7 +89,8 @@ enum VaultProjectMenu {
 	@MainActor
 	static func headerItems(
 		for project: VaultProject, folderExists: Bool,
-		openSettings: @escaping () -> Void, rename: @escaping () -> Void, delete: @escaping () -> Void
+		openSettings: @escaping () -> Void, rename: @escaping () -> Void, delete: @escaping () -> Void,
+		copyText: @escaping (String) -> Void
 	) -> [VaultMenuItem] {
 		let path = project.path
 		return [
@@ -98,10 +99,7 @@ enum VaultProjectMenu {
 			.action("Show in Finder", enabled: !path.isEmpty && folderExists) {
 				NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path, isDirectory: true)])
 			},
-			.action("Copy folder path", enabled: !path.isEmpty) {
-				NSPasteboard.general.clearContents()
-				NSPasteboard.general.setString(path, forType: .string)
-			},
+			.action("Copy folder path", enabled: !path.isEmpty) { copyText(path) },
 			.divider,
 			.action("Rename…", perform: rename),
 			.action("Delete Locally…", perform: delete),

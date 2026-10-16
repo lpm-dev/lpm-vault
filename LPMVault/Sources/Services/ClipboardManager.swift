@@ -1,17 +1,21 @@
 import AppKit
 import Foundation
 
+/// Copies to a pasteboard, the system's in the app, and clears a copied
+/// secret after a while or when the vault locks, unless something newer has
+/// been copied since. Each store has its own, so a lock clears only its copies.
 @MainActor
 final class ClipboardManager {
-	static let shared = ClipboardManager()
 	static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
 	static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
+	let pasteboard: NSPasteboard
 	private var clearTask: Task<Void, Never>?
 	private let clearDelay: TimeInterval
 	private var ownedChangeCount: Int?
 
-	init(clearDelay: TimeInterval = VaultConstants.clipboardClearDelay) {
+	init(pasteboard: NSPasteboard = .general, clearDelay: TimeInterval = VaultConstants.clipboardClearDelay) {
+		self.pasteboard = pasteboard
 		self.clearDelay = clearDelay
 	}
 
@@ -24,7 +28,6 @@ final class ClipboardManager {
 	func copy(_ value: String, clearAfter: TimeInterval? = nil) -> Bool {
 		let delay = clearAfter ?? clearDelay
 
-		let pasteboard = NSPasteboard.general
 		pasteboard.clearContents()
 		guard pasteboard.setString(value, forType: .string) else {
 			ownedChangeCount = nil
@@ -49,8 +52,14 @@ final class ClipboardManager {
 		return true
 	}
 
+	/// Copies text that isn't secret, such as a folder path or a command; it isn't cleared later.
+	@discardableResult
+	func copyText(_ text: String) -> Bool {
+		pasteboard.clearContents()
+		return pasteboard.setString(text, forType: .string)
+	}
+
 	private func clearClipboardIfOwned() {
-		let pasteboard = NSPasteboard.general
 		guard pasteboard.changeCount == ownedChangeCount else {
 			ownedChangeCount = nil
 			clearTask = nil
@@ -61,7 +70,6 @@ final class ClipboardManager {
 
 	/// Clear clipboard immediately
 	func clearClipboard() {
-		let pasteboard = NSPasteboard.general
 		if let ownedChangeCount, pasteboard.changeCount == ownedChangeCount {
 			pasteboard.clearContents()
 		}
