@@ -85,9 +85,9 @@ enum AccessibilityTree {
 			object.accessibilityPerformPress?() ?? false
 		}
 
-		/// Whether it's a SwiftUI control that a press works as a click on. A
-		/// runner's screen is small and leaves much of a large window off it,
-		/// where SwiftUI on macOS 15 ignores the mouse events a test sends.
+		/// Whether it's a SwiftUI control that a press works as a click on. On
+		/// CI's macOS 15 runners, mouse events a test sends don't reliably reach
+		/// SwiftUI controls, and a press needs none.
 		var isPressable: Bool {
 			guard let role, Self.pressableRoles.contains(role), !(object is NSView), let object = object as? NSObject else { return false }
 			return object.responds(to: #selector(NSAccessibilityProtocol.accessibilityPerformPress))
@@ -307,19 +307,31 @@ extension SheetTestHost {
 			let pixel = (row * width + column) * 4
 			return (Int(pixels[pixel]), Int(pixels[pixel + 1]), Int(pixels[pixel + 2]))
 		}
-		// The frame's edge is its background: the color most of its border has.
-		var border: [Int: Int] = [:]
-		for column in minColumn..<maxColumn {
-			for row in [minRow, maxRow - 1] { let (r, g, b) = color(column, row); border[(r << 16) | (g << 8) | b, default: 0] += 1 }
-		}
-		let background = try #require(border.max { $0.value < $1.value }?.key)
-		let (red, green, blue) = (background >> 16, (background >> 8) & 255, background & 255)
-		var ink: (minX: Int, maxX: Int, minY: Int, maxY: Int)?
+		// The background is the color most of the frame has. Lines across the
+		// whole frame, such as a cell's hairlines or a divider, aren't its text.
+		var counts: [Int: Int] = [:]
 		for row in minRow..<maxRow {
-			for column in minColumn..<maxColumn {
-				let (r, g, b) = color(column, row)
+			for column in minColumn..<maxColumn { let (r, g, b) = color(column, row); counts[(r << 16) | (g << 8) | b, default: 0] += 1 }
+		}
+		let background = try #require(counts.max { $0.value < $1.value }?.key)
+		let (red, green, blue) = (background >> 16, (background >> 8) & 255, background & 255)
+		let columns = maxColumn - minColumn, rows = maxRow - minRow
+		var isInk = [Bool](repeating: false, count: columns * rows)
+		var rowInk = [Int](repeating: 0, count: rows), columnInk = [Int](repeating: 0, count: columns)
+		for row in 0..<rows {
+			for column in 0..<columns {
+				let (r, g, b) = color(minColumn + column, minRow + row)
 				guard abs(r - red) + abs(g - green) + abs(b - blue) > 60 else { continue }
-				ink = (min(ink?.minX ?? column, column), max(ink?.maxX ?? column, column), min(ink?.minY ?? row, row), max(ink?.maxY ?? row, row))
+				isInk[row * columns + column] = true
+				rowInk[row] += 1
+				columnInk[column] += 1
+			}
+		}
+		var ink: (minX: Int, maxX: Int, minY: Int, maxY: Int)?
+		for row in 0..<rows where rowInk[row] * 20 < columns * 19 {
+			for column in 0..<columns where isInk[row * columns + column] && columnInk[column] * 20 < rows * 19 {
+				let (x, y) = (minColumn + column, minRow + row)
+				ink = (min(ink?.minX ?? x, x), max(ink?.maxX ?? x, x), min(ink?.minY ?? y, y), max(ink?.maxY ?? y, y))
 			}
 		}
 		let drawn = try #require(ink, "Nothing is drawn where \(label) is")

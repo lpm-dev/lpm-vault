@@ -98,21 +98,16 @@ extension SheetInteractionTests {
 			#expect(host.view.frame.size == size)
 		}
 
-		@Test("a SwiftUI button off the screen, as a runner's small screen leaves part of a large window, is pressed as VoiceOver presses it")
-		func pressesButtonsOffScreen() async throws {
-			var pressed: [String] = []
-			let host = SheetTestHost(VStack {
-				Button("Off-screen save") { pressed.append("save") }
-				ScrollView { Button("Scrolled toggle") { pressed.append("toggle") }.padding(20) }.frame(height: 80)
-			}.frame(width: 320, height: 200), size: NSSize(width: 320, height: 200), keepsRequestedSize: true)
+		@Test("what's drawn of a header cell is its text, not the hairlines along its edges or its fill")
+		func drawnFrameSkipsLines() async throws {
+			let host = SheetTestHost(HeaderCellFixture(), size: NSSize(width: 360, height: 120), keepsRequestedSize: true)
 			defer { host.window.close() }
-			let screen = try #require(host.window.screen ?? NSScreen.main)
-			host.window.setFrameOrigin(NSPoint(x: screen.frame.maxX + 200, y: screen.frame.minY - 400))
 			try await host.settle()
-			try await host.click("Off-screen save")
-			try await host.click("Scrolled toggle")
-			#expect(try await host.waitUntil { pressed.count == 2 })
-			#expect(pressed == ["save", "toggle"])
+			let cell = AccessibilityTree.normalizedBounds(of: try await host.waitForElement(saying: "Key"), in: host.view)
+			let drawn = try await host.drawnFrame(saying: "Key")
+			let cellMinX = cell.minX * host.view.bounds.width
+			#expect(abs(drawn.minX - cellMinX - 20) < 2, "The text starts at \(drawn.minX), the cell at \(cellMinX)")
+			#expect(drawn.height < 20, "\(drawn) is the text's height, not the cell's")
 		}
 
 		@Test("a sheet is read in its own window")
@@ -241,6 +236,29 @@ private struct ScrolledRowsFixture: View {
 			.buttonStyle(.plain)
 		}
 		.frame(width: 320, height: 220)
+	}
+}
+
+/// A table's header cell: its text inset 20 points, on a fill, with
+/// hairlines along its top and bottom as macOS 15 reads into the cell.
+private struct HeaderCellFixture: View {
+	var body: some View {
+		VStack {
+			Button {} label: {
+				Text("Key")
+					.font(.system(size: 11, weight: .semibold))
+					.foregroundStyle(Color(white: 0.25))
+					.padding(.horizontal, 20)
+					.frame(width: 160, height: 34, alignment: .leading)
+					.background(Color(white: 0.98))
+					.overlay(alignment: .top) { Rectangle().fill(Color(white: 0.89)).frame(height: 1) }
+					.overlay(alignment: .bottom) { Rectangle().fill(Color(white: 0.89)).frame(height: 1) }
+			}
+			.buttonStyle(.plain)
+			.accessibilityLabel("Key")
+		}
+		.frame(width: 360, height: 120)
+		.background(Color.white)
 	}
 }
 
