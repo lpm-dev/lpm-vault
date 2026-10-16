@@ -98,6 +98,23 @@ extension SheetInteractionTests {
 			#expect(host.view.frame.size == size)
 		}
 
+		@Test("a SwiftUI button off the screen, as a runner's small screen leaves part of a large window, is pressed as VoiceOver presses it")
+		func pressesButtonsOffScreen() async throws {
+			var pressed: [String] = []
+			let host = SheetTestHost(VStack {
+				Button("Off-screen save") { pressed.append("save") }
+				ScrollView { Button("Scrolled toggle") { pressed.append("toggle") }.padding(20) }.frame(height: 80)
+			}.frame(width: 320, height: 200), size: NSSize(width: 320, height: 200), keepsRequestedSize: true)
+			defer { host.window.close() }
+			let screen = try #require(host.window.screen ?? NSScreen.main)
+			host.window.setFrameOrigin(NSPoint(x: screen.frame.maxX + 200, y: screen.frame.minY - 400))
+			try await host.settle()
+			try await host.click("Off-screen save")
+			try await host.click("Scrolled toggle")
+			#expect(try await host.waitUntil { pressed.count == 2 })
+			#expect(pressed == ["save", "toggle"])
+		}
+
 		@Test("a sheet is read in its own window")
 		func readsSheets() async throws {
 			let host = SheetTestHost(SheetFixture(), size: NSSize(width: 520, height: 360))

@@ -85,6 +85,16 @@ enum AccessibilityTree {
 			object.accessibilityPerformPress?() ?? false
 		}
 
+		/// Whether it's a SwiftUI control that a press works as a click on. A
+		/// runner's screen is small and leaves much of a large window off it,
+		/// where SwiftUI on macOS 15 ignores the mouse events a test sends.
+		var isPressable: Bool {
+			guard let role, Self.pressableRoles.contains(role), !(object is NSView), let object = object as? NSObject else { return false }
+			return object.responds(to: #selector(NSAccessibilityProtocol.accessibilityPerformPress))
+		}
+
+		private static let pressableRoles: Set<NSAccessibility.Role> = [.button, .link, .checkBox, .disclosureTriangle]
+
 		private static let interactiveRoles: Set<NSAccessibility.Role> = [
 			.button, .checkBox, .radioButton, .popUpButton, .menuButton, .menuItem, .link, .disclosureTriangle,
 			.textField, .comboBox, .slider, .incrementor, .cell, .row,

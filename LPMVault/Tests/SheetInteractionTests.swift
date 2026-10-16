@@ -208,6 +208,7 @@ final class SheetTestHost<V: View> {
 
 	/// Clicks the element saying `label` once it appears, within `region` of
 	/// the view when given, in normalized coordinates from the bottom-left.
+	/// A SwiftUI button is pressed as VoiceOver presses it.
 	func click(_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false) async throws {
 		try await clickLater(label, in: targetWindow, region: region, caseInsensitive: caseInsensitive)()
 	}
@@ -227,7 +228,11 @@ final class SheetTestHost<V: View> {
 		}
 		let element = try await waitForElement(saying: label, in: window, of: target, region: region, options: options)
 		let point = AccessibilityTree.center(of: element, in: window)
-		return { try NativeTestClick.send(to: window, at: point) }
+		guard element.isPressable else { return { try NativeTestClick.send(to: window, at: point) } }
+		return {
+			guard element.isEnabled else { return }
+			if !element.press() { try NativeTestClick.send(to: window, at: point) }
+		}
 	}
 
 	/// The element saying `label` once it appears: an interactive one before
@@ -472,11 +477,12 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// The popover showing now, once one is.
-	/// The frontmost popover showing, not one an earlier choice is still closing.
+	/// The popover showing, once one an earlier choice is closing has gone.
 	func popoverWindow() async throws -> NSWindow {
 		var found: NSWindow?
 		_ = try await waitUntil {
-			found = NSApp.orderedWindows.first { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
+			let showing = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
+			found = showing.count == 1 ? showing.first : nil
 			return found != nil
 		}
 		return try #require(found, "No popover is showing")
