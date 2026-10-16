@@ -44,13 +44,14 @@ struct VaultQuitGateTests {
 		var hints: [VaultQuitGate.Hint?] = []
 	}
 
-	private func makeGate(_ mode: VaultQuitShortcut, keyRepeatDelay: TimeInterval = 0.5, keyRepeatInterval: TimeInterval = 0.05)
-		-> (VaultQuitGate, ManualQuitClock, Recorder)
+	private func makeGate(_ mode: VaultQuitShortcut, keyRepeatDelay: TimeInterval = 0.5, keyRepeatInterval: TimeInterval = 0.05,
+		isDeciding: @escaping () -> Bool = { false }) -> (VaultQuitGate, ManualQuitClock, Recorder)
 	{
 		let clock = ManualQuitClock()
 		let recorder = Recorder()
 		let gate = VaultQuitGate(
 			mode: { mode },
+			isDeciding: isDeciding,
 			now: { clock.now },
 			keyRepeatDelay: { keyRepeatDelay },
 			keyRepeatInterval: { keyRepeatInterval },
@@ -211,6 +212,93 @@ struct VaultQuitGateTests {
 		#expect(recorder.quits == 1)
 	}
 
+	/// Holds ⌘Q with repeats every `interval` after `delay` until `until`, from the press.
+	private func hold(_ gate: VaultQuitGate, _ clock: ManualQuitClock, delay: TimeInterval, interval: TimeInterval, until end: TimeInterval) {
+		let start = clock.now
+		press(gate, clock)
+		var count = 0.0
+		while delay + count * interval <= end + 0.000_1 {
+			clock.advance(by: start + delay + count * interval - clock.now)
+			press(gate, clock, repeat: true)
+			count += 1
+		}
+	}
+
+	@Test("a finished hold is cancelled by Esc, another key or a click, and only Esc is used up",
+		arguments: ["escape", "other", "pointer"])
+	func finishedHoldCancels(how: String) {
+		let (gate, clock, recorder) = makeGate(.hold)
+		hold(gate, clock, delay: 0.5, interval: 0.05, until: 1.05)
+		switch how {
+		case "escape": #expect(gate.handle(.otherKey(isEscape: true), at: clock.now))
+		case "other": #expect(!gate.handle(.otherKey(isEscape: false), at: clock.now), "Typing reaches the app")
+		default: #expect(!gate.handle(.pointer, at: clock.now))
+		}
+		clock.advance(by: 5)
+		#expect(recorder.quits == 0)
+		#expect(gate.hint == nil)
+	}
+
+	@Test("with slow key repeats, a finished hold waits longer than the gap between repeats before it quits")
+	func slowRepeatsDontQuitWhileHeld() {
+		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: 1.2, keyRepeatInterval: 0.8)
+		hold(gate, clock, delay: 1.2, interval: 0.8, until: 2.8)
+		#expect(recorder.quits == 0, "The key repeated at 2.0 and 2.8 s, so it's still held")
+		clock.advance(by: 1.7)
+		#expect(recorder.quits == 1, "Once the repeats stop for two of their gaps, the key was let go")
+	}
+
+	@Test("a hold let go before a second never quits, whatever the repeat rate", arguments: [(0.5, 0.5, 0.51), (0.5, 0.05, 0.96), (0.25, 0.03, 0.99)])
+	func shortHoldDoesntQuit(sample: (TimeInterval, TimeInterval, TimeInterval)) {
+		let (delay, interval, released) = sample
+		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: delay, keyRepeatInterval: interval)
+		hold(gate, clock, delay: delay, interval: interval, until: released)
+		clock.advance(by: 5)
+		#expect(recorder.quits == 0)
+		#expect(gate.hint == nil)
+	}
+
+	@Test("the hold's hint lasts as long as a hold takes to prove, which a long repeat delay lengthens",
+		arguments: [(0.5, 0.05, 1.0), (0.25, 0.3, 1.15), (1.8, 0.1, 1.8)])
+	func holdHintLasts(sample: (TimeInterval, TimeInterval, TimeInterval)) throws {
+		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: sample.0, keyRepeatInterval: sample.1)
+		press(gate, clock)
+		guard case .hold(let duration) = try #require(gate.hint) else {
+			Issue.record("Hold shows its ring")
+			return
+		}
+		#expect(abs(duration - sample.2) < 0.001)
+		hold(gate, clock, delay: sample.0, interval: sample.1, until: sample.2)
+		gate.handle(.commandReleased, at: clock.now)
+		clock.advance(by: 5)
+		#expect(recorder.quits == 1, "A hold as long as its hint quits")
+	}
+
+	@Test("with key repeat off, Hold takes two presses instead, as its hint says")
+	func holdWithoutKeyRepeat() {
+		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: 300, keyRepeatInterval: 300)
+		press(gate, clock)
+		#expect(gate.hint == .pressAgain)
+		gate.handle(.commandReleased, at: clock.now)
+		clock.advance(by: 1.5)
+		press(gate, clock)
+		#expect(recorder.quits == 1)
+	}
+
+	@Test("while quitting is being decided, ⌘Q shows nothing and Esc reaches the sheet", arguments: [VaultQuitShortcut.doublePress, .hold])
+	func ignoredWhileDeciding(mode: VaultQuitShortcut) {
+		var deciding = true
+		let (gate, clock, recorder) = makeGate(mode, isDeciding: { deciding })
+		#expect(press(gate, clock), "⌘Q is used up, so the menu doesn't ask again")
+		#expect(gate.hint == nil)
+		#expect(!gate.handle(.otherKey(isEscape: true), at: clock.now))
+		clock.advance(by: 5)
+		#expect(recorder.quits == 0)
+		deciding = false
+		press(gate, clock)
+		#expect(gate.hint != nil)
+	}
+
 	@Test("Hold also quits on two quick presses, but not two slow ones", arguments: [(0.3, 1), (0.7, 0)])
 	func holdDoublePress(sample: (TimeInterval, Int)) {
 		let (gate, clock, recorder) = makeGate(.hold)
@@ -258,16 +346,153 @@ struct VaultQuitGateTests {
 		#expect(VaultQuitShortcut.allCases.map(\.explanation) == ["⌘Q quits immediately.", "Press ⌘Q twice.", "Hold ⌘Q, or press it twice."])
 	}
 
-	@Test("every way of quitting asks the app, and the shortcut doesn't ask again while it decides")
+	@MainActor
+	final class TerminationWait {
+		var terminated = false
+		var answered = false
+		var answeredWhileWaiting = false
+	}
+
+	@Test("a quit the gate's timer decides leaves room for the main-actor work that answers it, as AppKit's wait needs")
+	func shortcutQuitsOutsideTheMainQueue() async throws {
+		// The application makes its modal waits part of the run loop's common modes, as in the app.
+		_ = NSApplication.shared
+		let delegate = AppDelegate()
+		delegate.quitShortcut = { .direct }
+		let wait = TerminationWait()
+		delegate.terminate = {
+			wait.terminated = true
+			// AppKit waits for a later answer in a modal run loop, and the answer comes from main-actor work.
+			Task { @MainActor in wait.answered = true }
+			let deadline = Date(timeIntervalSinceNow: 2)
+			while !wait.answered, Date() < deadline {
+				_ = RunLoop.current.run(mode: .modalPanel, before: Date(timeIntervalSinceNow: 0.01))
+			}
+			wait.answeredWhileWaiting = wait.answered
+		}
+		// The gate's timers run as blocks on the main queue.
+		DispatchQueue.main.async { delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 0) }
+		let deadline = ContinuousClock.now + .seconds(5)
+		while !wait.terminated, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+		#expect(wait.terminated)
+		#expect(wait.answeredWhileWaiting, "Main-actor work runs while AppKit waits for the answer")
+	}
+
+	@Test("every way of quitting asks the app, saying whether the session is ending, and cancels a hint the shortcut shows")
 	func delegateRoutesQuitting() {
 		let delegate = AppDelegate()
-		#expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateNow)
-		var asked = 0
+		#expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateNow, "Before the window connects, quitting goes ahead")
+		var asked: [Bool] = []
 		delegate.shouldTerminate = {
-			asked += 1
-			return .terminateLater
+			asked.append($0)
+			return .terminateCancel
 		}
-		#expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateLater)
-		#expect(asked == 1)
+		delegate.quitShortcut = { .doublePress }
+		delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 0)
+		#expect(delegate.quitGate.hint == .pressAgain)
+		#expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
+		#expect(asked == [false], "Quitting from the menu doesn't end the session")
+		#expect(delegate.quitGate.hint == nil, "Quitting another way cancels the shortcut's hint")
+	}
+
+	@Test("while quitting is being decided, the shortcut asks nothing again")
+	func shortcutWaitsWhileDeciding() async throws {
+		let delegate = AppDelegate()
+		delegate.quitShortcut = { .direct }
+		var deciding = true
+		delegate.isQuitting = { deciding }
+		var terminations = 0
+		delegate.terminate = { terminations += 1 }
+		#expect(delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 0), "⌘Q is used up, so the Quit command doesn't see it")
+		deciding = false
+		#expect(delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 1))
+		let deadline = ContinuousClock.now + .seconds(5)
+		while terminations == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(terminations == 1)
+	}
+
+	@Test("logging out, restarting, shutting down and quitting every app end the session; the Dock's Quit and an update's don't",
+		arguments: [(OSType(kAEReallyLogOut), true), (OSType(kAERestart), true), (OSType(kAEShutDown), true), (OSType(kAEQuitAll), true), (nil, false)])
+	func sessionEnding(reason: OSType?, ends: Bool) {
+		let quit = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEQuitApplication),
+			targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+		if let reason { quit.setParam(NSAppleEventDescriptor(enumCode: reason), forKeyword: AEKeyword(kAEQuitReason)) }
+		#expect(AppDelegate.isSessionEnding(quit) == ends)
+		#expect(!AppDelegate.isSessionEnding(nil), "Quitting from the menu has no Apple event")
+		let open = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEReopenApplication),
+			targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+		open.setParam(NSAppleEventDescriptor(enumCode: OSType(kAEReallyLogOut)), forKeyword: AEKeyword(kAEQuitReason))
+		#expect(!AppDelegate.isSessionEnding(open), "Only a quit ends the session")
+	}
+
+	@Test("closing the main window locks the vault, whatever other window stays open")
+	func mainWindowCloseLocks() {
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+		window.isReleasedWhenClosed = false
+		let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+		settings.isReleasedWhenClosed = false
+		let previous = (VaultMainWindow.current, VaultMainWindow.onClose)
+		defer {
+			settings.close()
+			VaultMainWindow.current = previous.0
+			VaultMainWindow.onClose = previous.1
+		}
+		var closes = 0
+		VaultMainWindow.onClose = { closes += 1 }
+		VaultMainWindow.current = window
+		settings.orderBack(nil)
+		window.orderBack(nil)
+		settings.close()
+		#expect(closes == 0)
+		window.close()
+		#expect(closes == 1)
+	}
+
+	@Test("clicking the Dock icon opens the main window when it's closed, even with Settings open")
+	func reopenOpensMainWindow() {
+		let delegate = AppDelegate()
+		var opened = 0
+		delegate.openWindow = { opened += 1 }
+		let previous = VaultMainWindow.current
+		defer { VaultMainWindow.current = previous }
+		VaultMainWindow.current = nil
+		#expect(delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: true))
+		#expect(opened == 1, "Settings being visible doesn't stand in for the main window")
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+		window.isReleasedWhenClosed = false
+		defer { window.close() }
+		VaultMainWindow.current = window
+		window.orderBack(nil)
+		#expect(delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: true))
+		#expect(opened == 1)
+	}
+}
+
+@Suite("Quit hint placement")
+@MainActor
+struct VaultQuitHUDPlacementTests {
+	private let size = NSSize(width: 240, height: 84)
+	private let screen = NSRect(x: 0, y: 25, width: 1440, height: 875)
+
+	@Test("the hint is centered 44 points above the bottom of the window")
+	func aboveWindow() {
+		let frame = VaultQuitHUDController.frame(for: size, anchor: NSRect(x: 100, y: 100, width: 1000, height: 700), screen: screen)
+		#expect(frame.midX == 600)
+		#expect(frame.minY + VaultQuitHUDController.shadowMargin == 144)
+	}
+
+	@Test("a window partly off the screen, or across two, keeps the hint on the screen it's on",
+		arguments: [NSRect(x: -900, y: -500, width: 1000, height: 700), NSRect(x: 1200, y: 200, width: 1000, height: 700)])
+	func staysOnScreen(anchor: NSRect) {
+		let frame = VaultQuitHUDController.frame(for: size, anchor: anchor, screen: screen)
+		let drawn = frame.insetBy(dx: VaultQuitHUDController.shadowMargin, dy: VaultQuitHUDController.shadowMargin)
+		#expect(screen.contains(drawn), "\(drawn) is outside \(screen)")
+	}
+
+	@Test("with no window, the hint sits at the bottom of the screen")
+	func noWindow() {
+		let frame = VaultQuitHUDController.frame(for: size, anchor: nil, screen: screen)
+		#expect(frame.midX == screen.midX)
+		#expect(frame.minY + VaultQuitHUDController.shadowMargin == screen.minY + VaultQuitHUDController.bottomInset)
 	}
 }

@@ -4,6 +4,8 @@ import SwiftUI
 /// created there. The token is checked with Coolify before it's saved.
 struct ConnectCoolifySheet: View {
 	let platforms: PlatformConnections
+	/// Where what's typed is listed among what quitting would discard.
+	var store: VaultStore?
 	@Environment(\.dismiss) private var dismiss
 
 	@State private var address = ""
@@ -18,6 +20,13 @@ struct ConnectCoolifySheet: View {
 	}
 
 	private var isConnecting: Bool { connectTask != nil }
+
+	/// What quitting would discard: the address typed, never the token.
+	private var unsavedWork: String? {
+		let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
+		if !address.isEmpty { return address }
+		return token.isEmpty ? nil : "An API token"
+	}
 
 	private var canConnect: Bool {
 		!address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -79,6 +88,7 @@ struct ConnectCoolifySheet: View {
 		}
 		.frame(width: 520)
 		.background(VaultPalette.content)
+		.vaultUnsavedSheetWork(store, projectID: nil, projectName: "Platforms", title: "Connect Coolify", detail: unsavedWork)
 		.onAppear { focusedField = .address }
 		.onDisappear(perform: cancel)
 	}

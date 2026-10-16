@@ -80,7 +80,7 @@ struct PlatformsView: View {
 			}
 		}
 		.sheet(isPresented: $connectingCoolify) {
-			ConnectCoolifySheet(platforms: platforms)
+			ConnectCoolifySheet(platforms: platforms, store: store)
 		}
 		.onChange(of: isObscured) { _, obscured in
 			if obscured { pendingDisconnect = nil }

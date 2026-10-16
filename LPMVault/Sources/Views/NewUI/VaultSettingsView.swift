@@ -30,6 +30,7 @@ struct VaultGeneralSettingsPane: View {
 				.pickerStyle(.segmented)
 				.labelsHidden()
 				.fixedSize()
+				.accessibilityHint(quitSettings.selection.explanation)
 			}
 		}
 	}
@@ -38,16 +39,19 @@ struct VaultGeneralSettingsPane: View {
 struct VaultAppearanceSettingsPane: View {
 	@Environment(VaultAppearanceSettings.self) private var appearanceSettings
 
+	private static let themeExplanation = "System follows macOS. Light and Dark apply only to Vault."
+
 	var body: some View {
 		@Bindable var appearanceSettings = appearanceSettings
 		VaultSettingsPane {
-			VaultSettingsRow(title: "Theme", detail: "System follows macOS. Light and Dark apply only to Vault.") {
+			VaultSettingsRow(title: "Theme", detail: Self.themeExplanation) {
 				Picker("Appearance", selection: $appearanceSettings.selection) {
 					ForEach(VaultAppearance.allCases) { Text($0.title).tag($0) }
 				}
 				.pickerStyle(.segmented)
 				.labelsHidden()
 				.fixedSize()
+				.accessibilityHint(Self.themeExplanation)
 			}
 		}
 	}
@@ -59,7 +63,7 @@ struct VaultUpdateSettingsPane: View {
 	var body: some View {
 		@Bindable var updates = updateChecker
 		VaultSettingsPane {
-			VaultSettingsRow(title: "Installed version", detail: updates.buildInfo.displayVersion) {
+			VaultSettingsRow(title: "Installed version", detail: updates.buildInfo.displayVersion, detailIsSelectable: true) {
 				VaultBarButton(title: "Check for Updates…", disabled: !updates.canCheckForUpdates, height: 28) {
 					updates.checkForUpdates()
 				}
@@ -73,6 +77,7 @@ struct VaultUpdateSettingsPane: View {
 				.labelsHidden()
 				.fixedSize()
 				.disabled(!updates.canChangeChannel)
+				.accessibilityHint(updates.channelDescription)
 			}
 			if updates.hasPendingUpdate {
 				Text("Install or skip the pending update before changing channels. Use Check for Updates to reopen it.")
@@ -99,9 +104,11 @@ private struct VaultSettingsPane<Content: View>: View {
 }
 
 /// A setting's name and explanation, with its control on the trailing side.
+/// A detail that's a value, such as the version, can be selected and copied.
 private struct VaultSettingsRow<Control: View>: View {
 	let title: String
 	let detail: String
+	var detailIsSelectable = false
 	@ViewBuilder let control: Control
 
 	var body: some View {
@@ -110,10 +117,17 @@ private struct VaultSettingsRow<Control: View>: View {
 				Text(title)
 					.font(.system(size: 13))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text(detail)
-					.font(.system(size: 11.5))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.fixedSize(horizontal: false, vertical: true)
+				if detailIsSelectable {
+					Text(detail)
+						.font(VaultTypography.mono(11))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.textSelection(.enabled)
+				} else {
+					Text(detail)
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.fixedSize(horizontal: false, vertical: true)
+				}
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
 			control

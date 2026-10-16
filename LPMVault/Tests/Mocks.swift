@@ -87,6 +87,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var onGetEnvironments: (() -> Void)?
 	var onCreateEnvironments: (() -> Void)?
 	var blockNextSaveEnvironments: (() -> Void)?
+	var blockNextVaultTransaction: (() -> Void)?
 	var blockNextListProjects: (() -> Void)?
 	var blockNextListProjectMetadata: (() -> Void)?
 	var blockNextDeleteProject: (() -> Void)?
@@ -344,6 +345,11 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		project: VaultProjectKeychainMutation?,
 		data mutations: [VaultKeychainMutation]
 	) -> KeychainResult {
+		lock.lock()
+		let blocker = blockNextVaultTransaction
+		blockNextVaultTransaction = nil
+		lock.unlock()
+		blocker?()
 		lock.lock()
 		defer { lock.unlock() }
 		applyVaultTransactionCallCount += 1

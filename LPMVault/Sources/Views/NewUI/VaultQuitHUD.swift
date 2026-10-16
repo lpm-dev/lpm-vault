@@ -6,6 +6,8 @@ struct VaultQuitHUD: View {
 	let hint: VaultQuitGate.Hint
 	let visible: Bool
 
+	static let ringWidth: CGFloat = 2
+
 	@Environment(\.accessibilityReduceMotion) private var reduceMotion
 	@Environment(\.colorScheme) private var colorScheme
 	@State private var progress: CGFloat = 0
@@ -20,17 +22,19 @@ struct VaultQuitHUD: View {
 					.padding(.horizontal, 5)
 					.padding(.vertical, 1)
 					.background(RoundedRectangle(cornerRadius: 4).fill(VaultPalette.neutralTint))
+					.accessibilityHidden(true)
 				Text("Press ⌘Q again to quit")
 			case .hold(let duration):
 				ZStack {
-					Circle().stroke(VaultPalette.border, lineWidth: 2)
+					Circle().strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.24 : 0.14), lineWidth: Self.ringWidth)
 					Circle()
+						.inset(by: Self.ringWidth / 2)
 						.trim(from: 0, to: progress)
-						.stroke(VaultPalette.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+						.stroke(VaultPalette.accent, style: StrokeStyle(lineWidth: Self.ringWidth, lineCap: .round))
 						.rotationEffect(.degrees(-90))
 				}
-				.frame(width: 14, height: 14)
 				.frame(width: 16, height: 16)
+				.accessibilityHidden(true)
 				.onAppear {
 					progress = 0
 					withAnimation(.linear(duration: duration)) { progress = 1 }
@@ -147,9 +151,22 @@ final class VaultQuitHUDController {
 
 	private func frame(for size: NSSize) -> NSRect {
 		let anchor = NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain && $0 !== panel }
-		let area = anchor?.frame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
-		return NSRect(x: (area.midX - size.width / 2).rounded(), y: area.minY + Self.bottomInset - Self.shadowMargin,
+		return Self.frame(for: size, anchor: anchor?.frame, screen: (anchor?.screen ?? NSScreen.main)?.visibleFrame)
+	}
+
+	/// Centered 44 points above the bottom of `anchor`, or of `screen` without
+	/// one, and kept on `screen`, where a window partly off it or across two
+	/// screens would put it out of sight.
+	static func frame(for size: NSSize, anchor: NSRect?, screen: NSRect?) -> NSRect {
+		let screen = screen ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
+		let area = anchor.map { $0.intersection(screen) }.flatMap { $0.isEmpty ? nil : $0 } ?? screen
+		var frame = NSRect(x: (area.midX - size.width / 2).rounded(), y: area.minY + bottomInset - shadowMargin,
 			width: size.width, height: size.height)
+		// The shadow margin may leave the screen; what's drawn inside it may not.
+		let drawn = screen.insetBy(dx: -shadowMargin, dy: -shadowMargin)
+		frame.origin.x = min(max(frame.minX, drawn.minX), drawn.maxX - frame.width)
+		frame.origin.y = min(max(frame.minY, drawn.minY), drawn.maxY - frame.height)
+		return frame
 	}
 }
 

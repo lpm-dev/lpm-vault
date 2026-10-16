@@ -6,11 +6,14 @@ import AppKit
 /// press within two seconds. Hold quits once ⌘Q has been held for a second
 /// and let go, or on a second press within half a second. A held key's
 /// repeats are never another press. Any other key, a click, or leaving the
-/// app cancels, and Esc is used up doing so.
+/// app cancels, and Esc is used up doing so. While quitting is already being
+/// decided, ⌘Q does nothing.
 ///
-/// macOS sends no key-up for Q while ⌘ is down, so a hold is proven by the
-/// key's repeats, and a finished hold quits only once they stop: quitting
-/// while the key still repeats would send ⌘Q to the app that comes forward.
+/// macOS sends no key-up for Q while ⌘ is down, so a hold is proven by a
+/// repeat that comes once the hold's time is up, and a finished hold quits
+/// only once the repeats stop: quitting while the key still repeats would
+/// send ⌘Q to the app that comes forward. With key repeat off nothing can
+/// prove a hold, so Hold takes two presses instead.
 @MainActor
 final class VaultQuitGate {
 	enum Hint: Equatable {
@@ -33,12 +36,16 @@ final class VaultQuitGate {
 		var holdDuration: TimeInterval = 1
 		/// How long a finished hold waits after the last repeat before quitting.
 		var releaseGrace: TimeInterval = 0.6
+		/// The longest repeat delay a hold waits for; longer means key repeat is off.
+		var longestRepeatDelay: TimeInterval = 3
 	}
 
 	typealias Schedule = @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void
 
 	private let timing: Timing
 	private let mode: () -> VaultQuitShortcut
+	/// Whether the app is already deciding whether to quit, with its sheet up.
+	private let isDeciding: () -> Bool
 	private let now: () -> TimeInterval
 	/// How long a held key waits before it starts repeating, as set in System Settings.
 	private let keyRepeatDelay: () -> TimeInterval
@@ -60,6 +67,7 @@ final class VaultQuitGate {
 	init(
 		timing: Timing = Timing(),
 		mode: @escaping () -> VaultQuitShortcut,
+		isDeciding: @escaping () -> Bool = { false },
 		now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
 		keyRepeatDelay: @escaping () -> TimeInterval = { NSEvent.keyRepeatDelay },
 		keyRepeatInterval: @escaping () -> TimeInterval = { NSEvent.keyRepeatInterval },
@@ -70,6 +78,7 @@ final class VaultQuitGate {
 	) {
 		self.timing = timing
 		self.mode = mode
+		self.isDeciding = isDeciding
 		self.now = now
 		self.keyRepeatDelay = keyRepeatDelay
 		self.keyRepeatInterval = keyRepeatInterval
@@ -106,6 +115,11 @@ final class VaultQuitGate {
 	/// timestamp; returns whether the input is used up.
 	@discardableResult
 	func handle(_ input: Input, at time: TimeInterval) -> Bool {
+		if isDeciding() {
+			cancel()
+			if case .quitKeyDown = input { return true }
+			return false
+		}
 		switch input {
 		case .quitKeyDown(let isRepeat):
 			return quitKeyDown(isRepeat: isRepeat, at: time)
@@ -124,12 +138,11 @@ final class VaultQuitGate {
 			}
 			return false
 		case .otherKey(let isEscape):
-			if quitsOnRelease { return true }
 			guard isActive else { return false }
 			cancel()
 			return isEscape
 		case .pointer:
-			if isActive, !quitsOnRelease { cancel() }
+			cancel()
 			return false
 		}
 	}
@@ -163,26 +176,32 @@ final class VaultQuitGate {
 			quitNow()
 			return true
 		}
-		let window = mode == .hold ? timing.quickPressWindow : timing.doublePressWindow
+		let holds = mode == .hold && keyRepeatDelay() <= timing.longestRepeatDelay
+		let window = holds ? timing.quickPressWindow : timing.doublePressWindow
 		if let lastPressAt, time - lastPressAt <= window {
 			quitNow()
 			return true
 		}
 		reset()
 		lastPressAt = time
-		switch mode {
-		case .direct:
-			break
-		case .doublePress:
-			show(.pressAgain)
-			start("press", after: timing.doublePressWindow) { [weak self] in self?.reset() }
-		case .hold:
+		if holds {
 			heldSince = time
-			show(.hold(timing.holdDuration))
+			show(.hold(provenHoldDuration))
 			start("hold", after: timing.holdDuration) { [weak self] in self?.holdElapsed() }
 			start("press", after: timing.quickPressWindow) { [weak self] in self?.lastPressAt = nil }
+		} else {
+			show(.pressAgain)
+			start("press", after: timing.doublePressWindow) { [weak self] in self?.reset() }
 		}
 		return true
+	}
+
+	/// When the first repeat that can prove a hold comes: the first once the
+	/// hold's time is up, which a long repeat delay puts later.
+	private var provenHoldDuration: TimeInterval {
+		let delay = keyRepeatDelay(), interval = max(keyRepeatInterval(), 0.001)
+		guard delay < timing.holdDuration else { return delay }
+		return delay + ((timing.holdDuration - delay) / interval - 0.000_001).rounded(.up) * interval
 	}
 
 	/// The first repeat comes after the system's initial delay, so the
@@ -195,13 +214,14 @@ final class VaultQuitGate {
 	/// The longest gap between repeats of a key that's still held.
 	private var heldGap: TimeInterval { max(2 * max(repeatCadence, keyRepeatInterval()), 0.1) }
 
-	/// The hold's time is up: it's finished if the key still repeats. Before
-	/// its first repeat, it waits for the system's repeat delay.
+	/// The hold's time is up: a repeat from now on finishes it. Until one comes,
+	/// it waits for as long as the key could still be held: one gap between
+	/// repeats, or before its first repeat, the system's repeat delay.
 	private func holdElapsed() {
 		guard let heldSince else { return }
 		let time = now()
 		if let lastRepeatAt {
-			if time - lastRepeatAt <= heldGap { finishHold() } else { releaseHold() }
+			start("released", after: max(0, lastRepeatAt + heldGap - time)) { [weak self] in self?.releaseHold() }
 			return
 		}
 		let firstRepeatDeadline = heldSince + keyRepeatDelay() + timing.releaseGrace
@@ -225,7 +245,8 @@ final class VaultQuitGate {
 		quitAfterRepeatsStop()
 	}
 
-	private var quietPeriod: TimeInterval { max(timing.releaseGrace, repeatCadence * 2) }
+	/// How long a finished hold waits for another repeat before taking the key as let go.
+	private var quietPeriod: TimeInterval { max(timing.releaseGrace, 2 * max(repeatCadence, keyRepeatInterval())) }
 
 	private func quitAfterRepeatsStop() {
 		start("quit", after: quietPeriod) { [weak self] in self?.quitNow() }

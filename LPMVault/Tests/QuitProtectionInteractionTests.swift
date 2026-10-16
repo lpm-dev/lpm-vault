@@ -53,8 +53,9 @@ extension SheetInteractionTests {
 			let project = try #require(store.projects.first)
 			store.keyDrafts.edit(project, key: "TOKEN") { $0.setValue("two", in: "default") }
 			var replies: [Bool] = []
-			let coordinator = VaultQuitCoordinator(store: store, presenter: RecordingQuitPresenter()) { replies.append($0) }
-			#expect(coordinator.shouldTerminate() == .terminateLater)
+			let coordinator = VaultQuitCoordinator(store: store, presenter: RecordingQuitPresenter(), reply: { replies.append($0) },
+				terminate: { replies.append(true) })
+			#expect(coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
 			let host = SheetTestHost(VaultQuitSheet(coordinator: coordinator), size: NSSize(width: 480, height: 330))
 			defer { host.window.close() }
 			#expect(try await host.waitForText("Quit with unsaved changes?"))
@@ -72,8 +73,9 @@ extension SheetInteractionTests {
 			let project = try #require(store.projects.first)
 			store.keyDrafts.edit(project, key: "TOKEN") { $0.setValue("two", in: "default") }
 			var replies: [Bool] = []
-			let coordinator = VaultQuitCoordinator(store: store, presenter: RecordingQuitPresenter()) { replies.append($0) }
-			#expect(coordinator.shouldTerminate() == .terminateLater)
+			let coordinator = VaultQuitCoordinator(store: store, presenter: RecordingQuitPresenter(), reply: { replies.append($0) },
+				terminate: { replies.append(true) })
+			#expect(coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
 			let host = SheetTestHost(VaultQuitSheet(coordinator: coordinator), size: NSSize(width: 480, height: 400))
 			defer { host.window.close() }
 			#expect(try await host.waitForText("Save and quit"))
@@ -99,7 +101,7 @@ extension SheetInteractionTests {
 			VaultMainWindow.current = host.window
 			defer { VaultMainWindow.current = previous }
 			let presenter = VaultQuitSheetPresenter()
-			let coordinator = VaultQuitCoordinator(store: store, presenter: presenter)
+			let coordinator = VaultQuitCoordinator(store: store, presenter: presenter, terminate: {})
 			#expect(presenter.present(coordinator))
 			#expect(try await host.waitUntil { host.window.attachedSheet === presenter.sheet })
 			presenter.dismiss()

@@ -30,6 +30,9 @@ struct EnvFileImportReviewSheet: View {
 		.frame(width: 600)
 		.frame(height: completedReplacements == nil ? 510 : nil)
 		.background(VaultPalette.content)
+		.vaultUnsavedSheetWork(store, projectID: review.projectId, projectName: review.projectName, title: "Import review",
+			detail: completedReplacements == nil
+				? "\(review.sourceURL.lastPathComponent) into \(VaultProject.displayName(for: review.environment))" : nil)
 		.onDisappear {
 			task?.cancel()
 			task = nil
