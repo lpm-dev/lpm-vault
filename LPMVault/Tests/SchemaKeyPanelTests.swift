@@ -201,7 +201,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("PORT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			#expect(try await host.waitForText("Passes"))
 			try host.enterText("8080", placeholder: "value")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel")?.declaration(of: .key("PORT")).json?["default"] == .string("8080") })
@@ -239,7 +239,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("PORT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			store.editSchemaDraft(in: "schema-panel") {
 				$0.set(.declared(try! LPMConfigJSON(parsing: Data(#"{"format":"port","default":"3000","description":"HTTP port the server listens on.","secret":true}"#.utf8))), for: .key("PORT"))
 			}
@@ -254,7 +254,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("RETRY_COUNT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			store.editSchemaDraft(in: "schema-panel") {
 				$0.set(.declared(try! LPMConfigJSON(parsing: Data(#"{"format":"integer","min":0,"max":5}"#.utf8))), for: .key("RETRY_COUNT"))
 			}
@@ -270,7 +270,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("PORT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.typeText("80", placeholder: "value")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel")?.declaration(of: .key("PORT")).json?["default"] == .string("80") })
 			try host.shortcut("z", code: 6)
@@ -286,7 +286,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("PORT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.enterText("", placeholder: "value")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-panel")?.declaration(of: .key("PORT")).json?["default"] == nil })
 			try await host.settle()
@@ -300,7 +300,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("PORT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.enterText("abc", placeholder: "value")
 			#expect(try await host.waitForText("The default doesn't match the format."))
 			#expect(try await !host.text().contains("env.invalid_format"))
@@ -312,7 +312,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("PORT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			store.editSchemaDraft(in: "schema-panel") {
 				$0.set(.declared(try! LPMConfigJSON(parsing: Data(#"{"format":"port","empty":"reject","defaultsIn":[{"when":{"stage":["build"]},"value":""}]}"#.utf8))), for: .key("PORT"))
 			}
@@ -324,7 +324,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("RETRY_COUNT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try await host.click("Add rule")
 			try await host.click("CI storage", in: try await host.popoverWindow())
 			#expect(try await host.waitForText("variable"))
@@ -336,11 +336,11 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("PORT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.enterText("NEXT_PUBLIC_PORT", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Becomes public"))
 			try await host.click("API_TOKEN")
-			#expect(try await host.waitForText("Bearer token"))
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "KEY_NAME") == "API_TOKEN" })
 			try host.enterText("NEXT_PUBLIC_TOKEN", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Secret keys can't start with NEXT_PUBLIC_"))
 		}
@@ -350,7 +350,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("RETRY_COUNT")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			try host.typeText("RETRIES", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("values in 1 environment"))
 			try host.pressWhileEditing("\r", code: 36)
@@ -395,7 +395,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace(#"{"envSchema":{"vars":{"MODE":{},"X":{"requiredWhen":{"variable":"MODE","equals":"on"}}}}}"#)
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("MODE")
-			#expect(try await host.waitForText("STORED VALUES"))
+			#expect(try await host.waitForText("STORED VALUES", exactly: true))
 			store.editSchemaDraft(in: "schema-panel") { $0.set(.declared(.object([.init(key: "secret", value: .bool(true))])), for: .key("MODE")) }
 			#expect(try await host.waitForText("X compares this key's value"))
 			#expect(try await host.waitForText("X has a problem"))

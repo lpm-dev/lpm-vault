@@ -9,14 +9,6 @@ extension SheetInteractionTests {
 	@Suite("Sidebar project order", .serialized)
 	@MainActor
 	struct VaultProjectOrderTests {
-		@Test("sidebar recognition tolerates a spurious dot on the default label without confusing named environments",
-			arguments: [("• .env.", ".env", true), (".env", ".env", true), (".env.staging", ".env", false),
-				(".env..", ".env", false), (".env.production.", ".env.production", false),
-				(".env.production.", ".env.production.", true)])
-		func sidebarEnvironmentRecognition(sample: (String, String, Bool)) {
-			#expect(SidebarEnvironmentLabel.matches(sample.0, displayName: sample.1) == sample.2)
-		}
-
 		@Test("a dragged group lands once its leading edge passes the middle of the group it moves over",
 			arguments: [(1, CGFloat(-14), 1), (1, -16, 0), (1, 14, 1), (1, 16, 2), (1, 46, 3), (0, 0, 0), (3, -100, 0)])
 		func landing(sample: (Int, CGFloat, Int)) {
@@ -154,7 +146,7 @@ extension SheetInteractionTests {
 			#expect(reorder.shift(at: 2) == (up ? 1 : -1) * (reorder.lift?.height ?? 0), "Zulu makes room for the dragged project")
 			try await settleAnimations(in: host)
 			let markers = try markerRows(in: host)
-			if markers.isEmpty { RenderedText.saveDiagnostic(try host.snapshot(host.view), named: "sidebar-drag-\(direction)") }
+			if markers.isEmpty { try host.attachSnapshot(named: "sidebar-drag-\(direction)") }
 			#expect((1...4).contains(markers.count), """
 				One 2-point landing line marks the drop; offset \(reorder.offset), \
 				frames \((reorder.lift?.order ?? []).compactMap { reorder.frames[$0] }), rows \(rows)

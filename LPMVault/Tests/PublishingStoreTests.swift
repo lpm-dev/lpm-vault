@@ -71,6 +71,24 @@ struct PublishingStoreTests {
 		#expect(keychain.publishingStorage.isEmpty)
 	}
 
+	@Test("removing a destination whose history can't be deleted leaves the destination, so removing it can be tried again")
+	func removeKeepsDestinationOnFailure() async throws {
+		let store = store
+		let production = vercelDestination()
+		_ = try await store.save(production, to: publishTestVault).get()
+		_ = try await record(["API_TOKEN"], to: production, in: store).get()
+		let history = "history.\(publishTestVault).\(production.id.uuidString.lowercased())"
+		keychain.failAppItemDeletes = [history]
+		guard case .failure = await store.remove(production.id, from: publishTestVault) else {
+			Issue.record("The history's deletion failed, so removing fails")
+			return
+		}
+		#expect(try await store.destinations(of: publishTestVault).get() == [production], "A failed removal leaves the destination")
+		keychain.failAppItemDeletes = []
+		#expect(try await store.remove(production.id, from: publishTestVault).get().isEmpty)
+		#expect(keychain.publishingStorage.isEmpty)
+	}
+
 	@Test("a record written by a newer LPM Vault is reported and left exactly as it was")
 	func newerRecord() async throws {
 		let store = store

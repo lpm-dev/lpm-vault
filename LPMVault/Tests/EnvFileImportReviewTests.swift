@@ -2,7 +2,6 @@ import AppKit
 import Foundation
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -219,21 +218,19 @@ extension SheetInteractionTests {
 			try await host.settle()
 			try await host.click("Reveal")
 			try #require(try await host.waitUntil { biometric.authenticateCallCount == 1 })
-			#expect(try await host.waitForText("ExistingValue"))
+			#expect(try await host.waitForText("Current value for TOKEN revealed visually"))
 			let text = try await host.text()
-			#expect(text.contains("IncomingValue"))
-			#expect(text.contains("Current"))
-			#expect(text.contains("Incoming"))
+			#expect(text.contains("Incoming value for TOKEN revealed visually"))
 			#expect(text.contains("replacements selected"))
 			#expect(biometric.authenticateCallCount == 1)
 			try await host.click("Hide")
-			try await host.settle()
-			#expect(try await !host.text().contains("ExistingValue"))
+			#expect(try await host.waitForText("Current value for TOKEN hidden"))
+			#expect(try await host.text().contains("Incoming value for TOKEN hidden"))
 			try await host.click("Reveal")
-			#expect(try await host.waitForText("IncomingValue"))
+			#expect(try await host.waitForText("Incoming value for TOKEN revealed visually"))
 			try submitImport(in: host)
 			#expect(try await host.waitForText("Import complete"))
-			#expect(try await !host.text().contains("IncomingValue"))
+			#expect(try await !host.text().contains("revealed visually"))
 			try record(host, named: "import-review-complete")
 			#expect(keychain.envStorage["project"]?.environments["default"]?["TOKEN"] == "ExistingValue")
 		}
@@ -245,8 +242,8 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(EnvFileImportReviewSheet(store: store, review: try await review(store)).environment(\.colorScheme, .light), size: NSSize(width: 600, height: 510), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
 			try await host.click("Reveal")
-			#expect(try await host.waitForText("NewValue"))
-			#expect(try await !host.text().contains("Current"))
+			#expect(try await host.waitForText("Incoming value for NEW revealed visually"))
+			#expect(try await !host.text().contains("Current value"), "A new key has no current value to compare")
 		}
 
 		@Test("unsuccessful authentication keeps values hidden")
@@ -261,8 +258,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			try await host.settle()
 			let text = try await host.text()
-			#expect(!text.contains("ExistingValue"))
-			#expect(!text.contains("IncomingValue"))
+			#expect(!text.contains("revealed visually"))
 			#expect(!text.contains("Authentication failed"))
 		}
 
@@ -297,9 +293,7 @@ extension SheetInteractionTests {
 			if transition == "privacy" { presentation.isObscured = false }
 			if transition == "dismiss" { presentation.isPresented = true }
 			try await host.settle()
-			let text = try await host.text()
-			#expect(!text.contains("ExistingValue"))
-			#expect(!text.contains("IncomingValue"))
+			#expect(try await !host.text().contains("revealed visually"))
 		}
 
 		@Test("visible comparisons stay masked after privacy or dismissal", arguments: ["privacy", "dismiss"])
@@ -310,13 +304,12 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(ImportReviewTestView(store: store, review: try await review(store), presentation: presentation), size: NSSize(width: 600, height: 510), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
 			try await host.click("Reveal")
-			#expect(try await host.waitForText("IncomingValue"))
+			#expect(try await host.waitForText("Incoming value for NEW revealed visually"))
 			if transition == "privacy" { presentation.isObscured = true } else { presentation.isPresented = false }
 			try await host.settle()
 			presentation.isObscured = false
 			presentation.isPresented = true
-			try await host.settle()
-			#expect(try await !host.text().contains("IncomingValue"))
+			#expect(try await host.waitForText("Incoming value for NEW hidden"))
 		}
 
 		@Test("Hide stays available while another row waits for authentication")
@@ -331,15 +324,14 @@ extension SheetInteractionTests {
 			defer { gate.continuation.finish(); store.lock() }
 			let host = SheetTestHost(EnvFileImportReviewSheet(store: store, review: try await review(store)).environment(\.colorScheme, .light), size: NSSize(width: 600, height: 510), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
-			try await host.click("Reveal")
-			#expect(try await host.waitForText("AlphaIncoming"))
-			try await host.click("Reveal")
+			try await host.click("Reveal values for ALPHA")
+			#expect(try await host.waitForText("Incoming value for ALPHA revealed visually"))
+			try await host.click("Reveal values for BETA")
 			try #require(try await host.waitUntil { biometric.authenticateCallCount == 2 })
-			try await host.click("Hide")
-			try await host.settle()
-			#expect(try await !host.text().contains("AlphaIncoming"))
+			try await host.click("Hide values for ALPHA")
+			#expect(try await host.waitForText("Incoming value for ALPHA hidden"))
 			gate.continuation.yield(())
-			#expect(try await host.waitForText("BetaIncoming"))
+			#expect(try await host.waitForText("Incoming value for BETA revealed visually"))
 		}
 
 		@Test("review again clears revealed values and replacement approval")
@@ -349,7 +341,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(EnvFileImportReviewSheet(store: store, review: try await review(store)).environment(\.colorScheme, .light), size: NSSize(width: 600, height: 510), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
 			try await host.click("Reveal")
-			#expect(try await host.waitForText("IncomingValue"))
+			#expect(try await host.waitForText("Incoming value for TOKEN revealed visually"))
 			try await host.click("Replace")
 			#expect(try await host.waitForText("1 replacement selected"))
 			try record(host, named: "import-review-replacing")
@@ -359,13 +351,13 @@ extension SheetInteractionTests {
 			try record(host, named: "import-review-changed")
 			try await host.click("Reveal")
 			try await host.settle()
-			#expect(try await !host.text().contains("ExistingValue"))
+			#expect(try await !host.text().contains("revealed visually"), "A review that's out of date reveals nothing")
 			try await host.click("Review again")
 			#expect(try await host.waitForText("replacements selected"))
 			#expect(try await !host.text().contains("1 replacement selected"))
-			#expect(try await !host.text().contains("IncomingValue"))
+			#expect(try await !host.text().contains("revealed visually"))
 			try await host.click("Reveal")
-			#expect(try await host.waitForText("NewerValue"))
+			#expect(try await host.waitForText("Current value for TOKEN revealed visually"))
 		}
 
 		@Test("review displays the target and choices while secret values remain hidden") func reviewMasksValues()
@@ -382,18 +374,14 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			#expect(try await host.waitForText("TOKEN"))
 			#expect(try await host.waitForText("NEW"))
-			let view = host.view
-			let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-			view.cacheDisplay(in: view.bounds, to: bitmap)
-			let lines = try await RenderedText.lines(in: #require(bitmap.cgImage), level: .accurate)
-			let text = OCRText(lines.map(\.text).joined(separator: "\n"))
+			let text = try await host.text()
 			#expect(text.contains("Dummy Project"))
 			#expect(text.contains("Different value"))
 			#expect(text.contains("Replace"))
 			#expect(text.contains("Reveal"))
 			#expect(!text.contains("SecretMustStayHidden"))
 			Attachment.record(
-				try #require(bitmap.representation(using: .png, properties: [:])), named: "masked-import-review")
+				try #require(NSBitmapImageRep(cgImage: host.snapshot(host.view)).representation(using: .png, properties: [:])), named: "masked-import-review")
 		}
 	}
 }

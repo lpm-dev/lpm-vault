@@ -1,229 +1,35 @@
 import AppKit
-import CoreML
+import os
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
-/// Text recognition for tests. Requests run one at a time on their own queue:
-/// off the main thread, because Vision can wait on work that needs it, and never
-/// concurrently, because CI's CPU-only recognizer can deadlock on overlapping
-/// requests from suites running in parallel.
-enum RenderedText {
-	private static let queue = DispatchQueue(label: "dev.lpm.vault.tests.text-recognition", qos: .userInitiated)
+/// The suite native UI tests belong to. It runs them one at a time, and CI
+/// runs it on runners of its own: beside parallel tests, the load starves the
+/// waits windows depend on.
+enum UITestSuite {
+	static let name = "SheetInteractionTests"
 
-	/// The suite native UI tests belong to. It runs them one at a time, and CI
-	/// runs it on runners of its own: beside parallel tests, the load starves
-	/// the waits recognition and windows depend on.
-	static let uiSuite = "SheetInteractionTests"
+	/// Whether the suite is running, and the last of its tests to open a window.
+	fileprivate static let running = OSAllocatedUnfairLock<(isRunning: Bool, test: String?)>(initialState: (false, nil))
 
-	/// Records an issue when the running test isn't in `uiSuite` or a suite nested in it.
-	static func requireUISuite(sourceLocation: SourceLocation = #_sourceLocation) {
-		guard let test = Test.current, test.id.nameComponents.first != uiSuite else { return }
-		Issue.record("Native UI tests belong in \(uiSuite) or a suite nested in it, which runs them one at a time", sourceLocation: sourceLocation)
-	}
-
-	private static func recognize(
-		_ image: CGImage,
-		level: VNRequestTextRecognitionLevel,
-		usesLanguageCorrection: Bool,
-		region: CGRect? = nil,
-		cache: RecognitionCache = .shared,
-		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
-	) async throws -> [VNRecognizedTextObservation] {
-		requireUISuite()
-		let frame = RecognitionCache.Frame(image: image)
-		if let cached = cache.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
-			return cached
-		}
-		return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RecognitionCache.Observations, Error>) in
-			queue.async {
-				if let cached = cache.observations(for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region) {
-					continuation.resume(returning: RecognitionCache.Observations(values: cached))
-					return
-				}
-				onRecognition?(image.width, image.height)
-				// Vision's model sometimes fails to load, as on a machine busy with
-				// other recognition, and then keeps failing in the process. Retries
-				// wait, run on the CPU, and then use the previous model, which loads
-				// separately; a real failure fails every attempt.
-				var failure: Error?
-				for attempt in 0..<4 {
-					if attempt > 0 { Thread.sleep(forTimeInterval: 0.25 * Double(attempt)) }
-					let request = VNRecognizeTextRequest()
-					request.recognitionLevel = level
-					request.usesLanguageCorrection = usesLanguageCorrection
-					if attempt >= 2, VNRecognizeTextRequest.supportedRevisions.contains(VNRecognizeTextRequestRevision2) {
-						request.revision = VNRecognizeTextRequestRevision2
-					}
-					if attempt > 0, let stages = try? request.supportedComputeStageDevices {
-						for (stage, devices) in stages {
-							if let cpu = devices.first(where: { if case .cpu = $0 { true } else { false } }) { request.setComputeDevice(cpu, for: stage) }
-						}
-					}
-					do {
-						try VNImageRequestHandler(cgImage: image).perform([request])
-						let observations = request.results ?? []
-						cache.store(observations, for: frame, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region)
-						continuation.resume(returning: RecognitionCache.Observations(values: observations))
-						return
-					} catch {
-						failure = error
-					}
-				}
-				continuation.resume(throwing: failure ?? CocoaError(.featureUnsupported))
-			}
-		}.values
-	}
-
-	struct Line: Sendable {
-		let text: String
-		/// Normalized Vision bounds of the whole line.
-		let bounds: CGRect
-		/// Normalized Vision bounds of the searched label within the line.
-		let labelBounds: CGRect?
-	}
-
-	static func lines(
-		in image: CGImage,
-		level: VNRequestTextRecognitionLevel,
-		label: String? = nil,
-		options: String.CompareOptions = [],
-		region: CGRect? = nil,
-		cache: RecognitionCache = .shared,
-		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
-	) async throws -> [Line] {
-		guard let input = recognitionInput(image, region: region) else { return [] }
-		let observations = try await recognize(input.image, level: level, usesLanguageCorrection: false, region: input.region, cache: cache, onRecognition: onRecognition)
-		// A label read exactly anywhere wins over one only found by tolerating misread glyphs.
-		let readsExactly = label.map { label in
-			observations.contains { $0.topCandidates(1).first?.string.range(of: label, options: options) != nil }
-		} ?? true
-		return observations.compactMap { observation -> Line? in
-			guard let candidate = observation.topCandidates(1).first else { return nil }
-			var labelBounds: CGRect?
-			let range = label.flatMap { label in
-				readsExactly ? candidate.string.range(of: label, options: options) : OCRText.range(of: label, in: candidate.string, options: options)
-			}
-			if let range {
-				labelBounds = try? candidate.boundingBox(for: range)?.boundingBox
-			}
-			let map: (CGRect) -> CGRect = { box in
-				guard let region = input.region else { return box }
-				return CGRect(
-					x: region.minX + box.minX * region.width,
-					y: region.minY + box.minY * region.height,
-					width: box.width * region.width,
-					height: box.height * region.height
-				)
-			}
-			return Line(text: candidate.string, bounds: map(observation.boundingBox), labelBounds: labelBounds.map(map))
+	/// Prints where the process exits from when it ends while the suite runs,
+	/// which otherwise ends the run with an incomplete report and no reason.
+	static func reportExitsDuringTests() {
+		atexit {
+			let state = UITestSuite.running.withLock { $0 }
+			guard state.isRunning else { return }
+			print("The test process exited during \"\(state.test ?? "the UI suite")\":\n" + Thread.callStackSymbols.joined(separator: "\n"))
+			fflush(stdout)
 		}
 	}
 
-	private static func recognitionInput(_ image: CGImage, region: CGRect?) -> (image: CGImage, region: CGRect?)? {
-		guard let region else { return (image, nil) }
-		guard region.origin.x.isFinite, region.origin.y.isFinite,
-			region.width.isFinite, region.height.isFinite, region.width > 0, region.height > 0 else { return nil }
-		let clipped = region.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-		guard !clipped.isEmpty else { return nil }
-		let width = CGFloat(image.width), height = CGFloat(image.height)
-		let pixels = CGRect(x: clipped.minX * width, y: (1 - clipped.maxY) * height,
-			width: clipped.width * width, height: clipped.height * height).integral
-			.intersection(CGRect(x: 0, y: 0, width: width, height: height))
-		guard let cropped = image.cropping(to: pixels) else { return nil }
-		let actual = CGRect(x: pixels.minX / width, y: 1 - pixels.maxY / height,
-			width: pixels.width / width, height: pixels.height / height)
-		return (cropped, actual)
-	}
-}
-
-extension RenderedText {
-	/// The parts of a window with its smallest, faintest text, read on their
-	/// own when the whole window doesn't read clearly: the side panel's top
-	/// and bottom, which overlap, and the status bar. Recognition scales a
-	/// whole window down, which loses such text on CI runners; a region
-	/// keeps it near full size, at a fraction of reading every part.
-	static let detailRegions: [CGRect] = [
-		CGRect(x: 0.70, y: 0.42, width: 0.30, height: 0.58),
-		CGRect(x: 0.70, y: 0, width: 0.30, height: 0.58),
-		CGRect(x: 0, y: 0, width: 1, height: 0.07),
-	]
-
-	/// Keeps a frame recognition couldn't read when LPM_TEST_SNAPSHOT_DIR
-	/// names a folder, as CI does, so a failure there can be looked at.
-	static func saveDiagnostic(_ image: CGImage, named name: String) {
-		guard let folder = ProcessInfo.processInfo.environment["LPM_TEST_SNAPSHOT_DIR"], !folder.isEmpty,
-			let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
-		else { return }
-		let label = String(String.UnicodeScalarView(name.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? $0 : "-" }).prefix(60))
-		try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
-		try? data.write(to: URL(filePath: folder, directoryHint: .isDirectory).appending(path: "\(label)-\(UUID().uuidString.prefix(8)).png"))
-	}
-
-	/// The text of every recognized line within the requested region.
-	static func strings(in image: CGImage, usesLanguageCorrection: Bool = true, region: CGRect? = nil, cache: RecognitionCache = .shared, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [String] {
-		guard let input = recognitionInput(image, region: region) else { return [] }
-		return try await recognize(input.image, level: .accurate, usesLanguageCorrection: usesLanguageCorrection, region: input.region, cache: cache, onRecognition: onRecognition)
-			.compactMap { $0.topCandidates(1).first?.string }
-	}
-}
-
-/// Recognition results for recently read frames. Polling helpers read the same
-/// frame repeatedly while they wait, and identical pixels always recognize the
-/// same way, so each frame is read once per level and region.
-final class RecognitionCache: @unchecked Sendable {
-	struct Frame: @unchecked Sendable {
-		let width: Int
-		let height: Int
-		let pixels: CFData?
-		init(image: CGImage) {
-			width = image.width
-			height = image.height
-			pixels = image.dataProvider?.data
-		}
-	}
-
-	/// Vision returns immutable observations; the box only carries them out of the recognition task.
-	struct Observations: @unchecked Sendable {
-		let values: [VNRecognizedTextObservation]
-	}
-
-	private struct Entry {
-		let width: Int
-		let height: Int
-		let level: VNRequestTextRecognitionLevel
-		let usesLanguageCorrection: Bool
-		let region: CGRect?
-		let pixels: CFData
-		let observations: [VNRecognizedTextObservation]
-	}
-
-	static let shared = RecognitionCache()
-	private static let capacity = 8
-	private let lock = NSLock()
-	private var entries: [Entry] = []
-
-	func observations(for frame: Frame, level: VNRequestTextRecognitionLevel, usesLanguageCorrection: Bool, region: CGRect?) -> [VNRecognizedTextObservation]? {
-		guard let pixels = frame.pixels else { return nil }
-		return lock.withLock {
-			guard let index = entries.firstIndex(where: {
-				$0.width == frame.width && $0.height == frame.height && $0.level == level
-					&& $0.usesLanguageCorrection == usesLanguageCorrection && $0.region == region && samePixels($0.pixels, pixels)
-			}) else { return nil }
-			let entry = entries.remove(at: index)
-			entries.append(entry)
-			return entry.observations
-		}
-	}
-
-	func store(_ observations: [VNRecognizedTextObservation], for frame: Frame, level: VNRequestTextRecognitionLevel, usesLanguageCorrection: Bool, region: CGRect?) {
-		guard let pixels = frame.pixels else { return }
-		lock.withLock {
-			entries.append(Entry(width: frame.width, height: frame.height, level: level, usesLanguageCorrection: usesLanguageCorrection, region: region, pixels: pixels, observations: observations))
-			if entries.count > Self.capacity { entries.removeFirst() }
-		}
+	/// Records an issue when the running test isn't in the suite or a suite nested in it.
+	static func require(sourceLocation: SourceLocation = #_sourceLocation) {
+		running.withLock { $0.test = Test.current.map { $0.displayName ?? $0.name } }
+		guard let test = Test.current, test.id.nameComponents.first != name else { return }
+		Issue.record("Native UI tests belong in \(name) or a suite nested in it, which runs them one at a time", sourceLocation: sourceLocation)
 	}
 }
 
@@ -249,36 +55,54 @@ enum NativeTestClick {
 		}
 	}
 
-	static func send(to window: NSWindow, at point: NSPoint) throws {
-		let content = try #require(window.contentView)
+	/// The AppKit button drawn at `point` of `window`, which SwiftUI uses for many of its buttons.
+	static func button(in window: NSWindow, at point: NSPoint) -> NSButton? {
+		guard let content = window.contentView else { return nil }
 		// SwiftUI updates hit-testing for newly shown controls on a display pass,
 		// which a slow runner may not have made yet.
 		content.layoutSubtreeIfNeeded()
 		window.displayIfNeeded()
+		var hit = content.hitTest(content.superview?.convert(point, from: nil) ?? point)
+		while let view = hit {
+			if let button = view as? NSButton { return button }
+			hit = view.superview
+		}
+		return nil
+	}
+
+	static func send(to window: NSWindow, at point: NSPoint) throws {
+		let content = try #require(window.contentView)
+		if let button = button(in: window, at: point) {
+			send(to: button)
+			return
+		}
 		let hitPoint = content.superview?.convert(point, from: nil) ?? point
 		var hit = content.hitTest(hitPoint)
+		let events = try [NSEvent.EventType.leftMouseDown, .leftMouseUp].map { type in
+			try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+		}
+		// A segmented control tracks the mouse in its mouse-down, reading events
+		// until a mouse-up the window server never sends a test, so the segment
+		// under the point, found as VoiceOver finds it, is selected and the
+		// control's action sent, as a click does.
+		hit = content.hitTest(hitPoint)
 		while let view = hit {
-			if let button = view as? NSButton {
-				send(to: button)
+			if let control = view as? NSSegmentedControl {
+				let screenPoint = window.convertPoint(toScreen: point)
+				let controlFrame = window.convertToScreen(control.convert(control.bounds, to: nil))
+				let segments = AccessibilityTree.elements(in: window)
+					.filter { $0.role == .radioButton && controlFrame.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) }
+					.sorted { $0.frame.minX < $1.frame.minX }
+				try #require(segments.count == control.segmentCount, "Read \(segments.count) of \(control.segmentCount) segments")
+				let segment = try #require(segments.firstIndex { $0.frame.contains(screenPoint) }, "No segment at \(point)")
+				guard control.isEnabled, control.isEnabled(forSegment: segment) else { return }
+				control.selectedSegment = segment
+				_ = control.sendAction(control.action, to: control.target)
 				return
 			}
 			hit = view.superview
 		}
-		for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-			let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
-			window.sendEvent(event)
-		}
-	}
-}
-
-enum SidebarEnvironmentLabel {
-	static func matches(_ text: String, displayName: String) -> Bool {
-		func name(_ text: String) -> Substring {
-			let compact = Substring(text.filter { !$0.isWhitespace && $0 != "•" })
-			return compact.drop { $0 == "." }
-		}
-		let recognized = name(text)
-		return recognized == name(displayName) || (displayName == ".env" && recognized == "env.")
+		for event in events { window.sendEvent(event) }
 	}
 }
 
@@ -286,13 +110,13 @@ enum SidebarEnvironmentLabel {
 final class SheetTestHost<V: View> {
 	let view: NSView
 	let window: NSWindow
-	/// Generous because one recognition pass can take seconds on CPU-only CI runners;
-	/// successful waits return as soon as their condition holds.
+	/// Generous for loaded CI runners; successful waits return as soon as their condition holds.
 	private static var timeout: Duration { .seconds(10) }
 
 	/// `keepsRequestedSize` stops the hosting view from shrinking to the content's minimum size.
 	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false, usesHostingView: Bool = false) {
-		RenderedText.requireUISuite()
+		UITestSuite.require()
+		AccessibilityTree.activate()
 		window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
 		window.animationBehavior = .none
@@ -307,6 +131,9 @@ final class SheetTestHost<V: View> {
 			view = controller.view
 			window.contentViewController = controller
 		}
+		// The window takes the requested size too: SwiftUI exposes nothing to
+		// accessibility from a window with no area.
+		window.setContentSize(size)
 		view.frame = NSRect(origin: .zero, size: size)
 		window.orderBack(nil)
 		view.layoutSubtreeIfNeeded()
@@ -358,47 +185,42 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
-	/// Definitive recognition, for assertions that text is absent or present right now.
-	func text(in targetWindow: NSWindow? = nil) async throws -> OCRText {
-		let lines = try await RenderedText.lines(in: snapshot(targetWindow?.contentView ?? view), level: .accurate)
-		return OCRText(lines.map(\.text).joined(separator: "\n"))
+	/// What the window says right now, for assertions that text is absent or present.
+	func text(in targetWindow: NSWindow? = nil) async throws -> AccessibleText {
+		let window = targetWindow ?? self.window
+		let target = try #require(targetWindow?.contentView ?? view)
+		target.layoutSubtreeIfNeeded()
+		return AccessibilityTree.text(in: target, root: window)
 	}
 
-	/// Tries fast recognition, then accurate recognition for small text, on each
-	/// pass, then the regions of the window where the smallest text is.
-	/// `footer` limits rendering and recognition to the bottom points of the window.
-	func waitForText(_ expected: String, in targetWindow: NSWindow? = nil, footer: CGFloat? = nil) async throws -> Bool {
+	/// Returns as soon as the window says `expected`, or `false` after the
+	/// timeout. `footer` limits the search to the bottom points of the window.
+	/// `exactly` waits for an element saying all of `expected` and nothing
+	/// else, such as a section's label, which a longer label holding the same
+	/// words can't stand in for.
+	func waitForText(_ expected: String, exactly: Bool = false, in targetWindow: NSWindow? = nil, footer: CGFloat? = nil)
+		async throws -> Bool
+	{
+		let window = targetWindow ?? self.window
 		let target = try #require(targetWindow?.contentView ?? view)
 		let area = footer.map { bottomBand(of: target, height: $0) }
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		while true {
-			let image = try snapshot(target, rect: area)
-			var read = ""
-			for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
-				let lines = try await RenderedText.lines(in: image, level: level)
-				read = lines.map(\.text).joined(separator: "\n")
-				if OCRText(read).contains(expected) { return true }
-			}
-			var regions: [String] = []
-			if area == nil, targetWindow == nil {
-				for region in RenderedText.detailRegions {
-					let text = try await RenderedText.lines(in: image, level: .accurate, region: region).map(\.text).joined(separator: "\n")
-					if OCRText(text).contains(expected) { return true }
-					regions.append(text)
-				}
-			}
+			target.layoutSubtreeIfNeeded()
+			let text = AccessibilityTree.text(in: target, root: window, area: area)
+			if exactly ? AccessibilityTree.visibleElements(in: window, of: target, area: area).contains(where: {
+				$0.says(expected, options: .caseInsensitive)
+			}) : text.contains(expected) { return true }
 			guard ContinuousClock.now < deadline else {
-				// Runners read glyphs differently; the log shows what this one read.
-				print("waitForText did not find \"\(expected)\". Last accurate reading:\n\(read)")
-				if !regions.isEmpty { print("Region by region:\n\(regions.joined(separator: "\n---\n"))") }
-				RenderedText.saveDiagnostic(image, named: expected)
+				print("waitForText did not find \"\(expected)\". The window says:\n\(text)")
+				try? attachSnapshot(named: expected, of: target)
 				return false
 			}
 			try await Task.sleep(for: .milliseconds(20))
 		}
 	}
 
-	/// Returns as soon as `unexpected` is no longer rendered, or `false` after the timeout.
+	/// Returns as soon as `unexpected` is no longer said, or `false` after the timeout.
 	func waitForTextToDisappear(_ unexpected: String) async throws -> Bool {
 		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
 		while true {
@@ -408,52 +230,99 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
-	/// Clicks the rendered target after it appears, within `region` of the
-	/// view when given, in Vision's normalized coordinates.
-	func click(
-		_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false,
-		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
-	) async throws {
-		try await clickLater(label, in: targetWindow, region: region, caseInsensitive: caseInsensitive, onRecognition: onRecognition)()
+	/// Clicks the element saying `label` once it appears, within `region` of
+	/// the view when given, in normalized coordinates from the bottom-left.
+	/// A SwiftUI control that isn't an AppKit button is pressed as VoiceOver presses it.
+	func click(_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false) async throws {
+		try await clickLater(label, in: targetWindow, region: region, caseInsensitive: caseInsensitive)()
 	}
 
-	/// Finds the rendered target as `click` does and returns the click, for a
-	/// test whose next step can take the target away before recognition would
-	/// find it.
-	func clickLater(
-		_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false,
-		onRecognition: (@Sendable (Int, Int) -> Void)? = nil
-	) async throws -> () throws -> Void {
+	/// Finds the element as `click` does and returns the click, for a test
+	/// whose next step can take the element away.
+	func clickLater(_ label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil, caseInsensitive: Bool = false)
+		async throws -> () throws -> Void
+	{
 		let window = targetWindow ?? self.window
 		let target = try #require(window.contentView)
 		let options: String.CompareOptions = caseInsensitive ? .caseInsensitive : []
 		target.layoutSubtreeIfNeeded()
 		window.displayIfNeeded()
-		if let button = nativeButton(label, in: target, options: options) {
+		if let button = nativeButton(label, in: target, of: target, options: options) {
 			return { NativeTestClick.send(to: button) }
 		}
-		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		var bounds = try await labelBounds(label, in: target, options: options, region: region, onRecognition: onRecognition)
-		while bounds == nil, ContinuousClock.now < deadline {
-			try await Task.sleep(for: .milliseconds(20))
-			bounds = try await labelBounds(label, in: target, options: options, region: region, onRecognition: onRecognition)
+		let element = try await waitForElement(saying: label, in: window, of: target, region: region, options: options)
+		let point = AccessibilityTree.center(of: element, in: window)
+		return {
+			// An AppKit button takes its action directly, as it always has; other
+			// SwiftUI controls are pressed, and anything else gets mouse events.
+			// A press is never followed by a click, so nothing can act twice.
+			if NativeTestClick.button(in: window, at: point) == nil, element.isPressable {
+				if element.isEnabledNow { element.press() }
+				return
+			}
+			try NativeTestClick.send(to: window, at: point)
 		}
-		if bounds == nil { RenderedText.saveDiagnostic(try snapshot(target), named: label) }
-		let box = try #require(bounds, "Missing button \(label)")
-		let point = target.convert(
-			NSPoint(x: box.midX * target.bounds.width, y: (target.isFlipped ? 1 - box.midY : box.midY) * target.bounds.height),
-			to: nil
-		)
-		return { try NativeTestClick.send(to: window, at: point) }
 	}
 
-	private func nativeButton(_ label: String, in view: NSView, options: String.CompareOptions) -> NSButton? {
-		guard !view.isHiddenOrHasHiddenAncestor, !view.visibleRect.isEmpty else { return nil }
+	/// The element saying `label` once it appears: an interactive one before
+	/// static text, one saying exactly `label` before one that says more.
+	func waitForElement(saying label: String, in targetWindow: NSWindow? = nil, region: CGRect? = nil,
+		options: String.CompareOptions = []) async throws -> AccessibilityTree.Element
+	{
+		let window = targetWindow ?? self.window
+		let target = try #require(targetWindow?.contentView ?? view)
+		return try await waitForElement(saying: label, in: window, of: target, region: region, options: options)
+	}
+
+	private func waitForElement(saying label: String, in window: NSWindow, of target: NSView, region: CGRect?,
+		options: String.CompareOptions) async throws -> AccessibilityTree.Element
+	{
+		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		while true {
+			target.layoutSubtreeIfNeeded()
+			if let element = Self.element(saying: label, in: window, of: target, region: region, options: options) { return element }
+			guard ContinuousClock.now < deadline else {
+				print("No element says \"\(label)\". The window says:\n\(AccessibilityTree.text(in: target, root: window))")
+				try? attachSnapshot(named: label, of: target)
+				return try #require(nil as AccessibilityTree.Element?, "Missing \(label)")
+			}
+			try await Task.sleep(for: .milliseconds(20))
+		}
+	}
+
+	private static func element(saying label: String, in window: NSWindow, of target: NSView, region: CGRect?,
+		options: String.CompareOptions) -> AccessibilityTree.Element?
+	{
+		let candidates = AccessibilityTree.visibleElements(in: window, of: target).filter { element in
+			guard let region else { return true }
+			let bounds = AccessibilityTree.normalizedBounds(of: element, in: target)
+			return region.contains(CGPoint(x: bounds.midX, y: bounds.midY))
+		}
+		// An element saying exactly the label wins over one that begins with it,
+		// and that over one that says it somewhere; letter case counts first,
+		// then not: views draw some labels uppercased.
+		for match in AccessibilityTree.Element.Match.allCases {
+			for options in [options, options.union(.caseInsensitive)] {
+				let matches = candidates.filter { $0.says(label, as: match, options: options) }
+				let shortest = { (elements: [AccessibilityTree.Element]) in elements.min { $0.texts.joined().count < $1.texts.joined().count } }
+				if let element = shortest(matches.filter(\.isInteractive)) ?? shortest(matches) { return element }
+			}
+		}
+		return nil
+	}
+
+	/// An AppKit button titled `label` that's drawn in `content`. Views don't
+	/// clip their subviews, so a button is visible only where it overlaps the
+	/// window's content.
+	private func nativeButton(_ label: String, in view: NSView, of content: NSView, options: String.CompareOptions) -> NSButton? {
+		guard !view.isHiddenOrHasHiddenAncestor else { return nil }
 		if let button = view as? NSButton, NativeTestClick.isMomentaryAction(button),
-			button.title.compare(label, options: options) == .orderedSame {
+			button.title.compare(label, options: options) == .orderedSame,
+			button.convert(button.bounds, to: content).intersects(content.bounds)
+		{
 			return button
 		}
-		return view.subviews.lazy.compactMap { self.nativeButton(label, in: $0, options: options) }.first
+		return view.subviews.lazy.compactMap { self.nativeButton(label, in: $0, of: content, options: options) }.first
 	}
 
 	func enterKey(_ key: String) throws {
@@ -627,7 +496,6 @@ final class SheetTestHost<V: View> {
 		textFields(in: view).first { $0.placeholderString == placeholder }?.stringValue
 	}
 
-	/// Whether the field showing `placeholder` is being edited.
 	/// Whether the field showing `placeholder` is being edited, in the host's window or `targetWindow`.
 	func isEditing(placeholder: String, in targetWindow: NSWindow? = nil) -> Bool {
 		let window = targetWindow ?? self.window
@@ -638,10 +506,12 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// The popover showing now, once one is.
+	/// The popover showing, once one an earlier choice is closing has gone.
 	func popoverWindow() async throws -> NSWindow {
 		var found: NSWindow?
 		_ = try await waitUntil {
-			found = NSApp.windows.first { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
+			let showing = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.className.contains("Popover") }
+			found = showing.count == 1 ? showing.first : nil
 			return found != nil
 		}
 		return try #require(found, "No popover is showing")
@@ -716,9 +586,7 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Clicks an icon control of the secure value field at `index`, counting from
-	/// the top. Text recognition cannot find icons, and SwiftUI exposes no
-	/// accessibility tree without an assistive client, so the click is placed
-	/// from the field's AppKit frame.
+	/// the top, at its distance from the field's trailing edge.
 	func click(_ control: ValueFieldControl, ofValueAt index: Int = 0) throws {
 		view.layoutSubtreeIfNeeded()
 		let fields = textFields(in: view).filter { $0 is NSSecureTextField }
@@ -728,8 +596,8 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// Bounds, in points from the bottom-left, of everything drawn over the solid
-	/// background within the bottom `band` points, plus the text recognized there.
-	func bottomInk(band: CGFloat) async throws -> (bounds: CGRect, text: OCRText) {
+	/// background within the bottom `band` points, plus the text said there.
+	func bottomInk(band: CGFloat) async throws -> (bounds: CGRect, text: AccessibleText) {
 		let image = try snapshot(view, rect: bottomBand(of: view, height: band))
 		let scale = CGFloat(image.width) / view.bounds.width
 		let width = image.width, height = image.height
@@ -762,20 +630,13 @@ final class SheetTestHost<V: View> {
 			width: CGFloat(maxX - minX + 1) / scale,
 			height: CGFloat(maxTop - minTop + 1) / scale
 		)
-		let region = CGRect(
-			x: bounds.minX / view.bounds.width,
-			y: bounds.minY / band,
-			width: bounds.width / view.bounds.width,
-			height: bounds.height / band
-		).insetBy(dx: -0.01, dy: -0.1).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-		let lines = try await RenderedText.lines(in: image, level: .accurate, region: region)
-		return (bounds, OCRText(lines.map(\.text).joined(separator: " ")))
+		return (bounds, AccessibilityTree.text(in: view, root: window, area: bottomBand(of: view, height: band)))
 	}
 
-	/// Recognizes the line containing `label` within `rect` (view coordinates).
+	/// The line saying `label` within `rect` (view coordinates).
 	func line(containing label: String, rect: NSRect) async throws -> String {
-		let lines = try await RenderedText.lines(in: snapshot(view, rect: rect), level: .accurate)
-		return try #require(lines.map(\.text).first { $0.contains(label) })
+		let text = AccessibilityTree.text(in: view, root: window, area: rect)
+		return try #require(text.lines.first { $0.contains(label) })
 	}
 
 	func generatorWindow() async throws -> NSWindow {
@@ -795,75 +656,13 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// The generator is the only popover these fixtures present. Fall back to its
-	/// rendered heading in case a future macOS hosts popovers in another window class.
+	/// heading in case a future macOS hosts popovers in another window class.
 	func visibleGeneratorWindow() async throws -> NSWindow? {
 		let candidates = NSApp.windows.filter { $0 !== window && $0.isVisible && !($0.contentView?.bounds.isEmpty ?? true) }
 		if let popover = candidates.first(where: { $0.className.contains("Popover") }) { return popover }
 		for candidate in candidates where !window.sheets.contains(candidate) {
 			guard let content = candidate.contentView else { continue }
-			let lines = try await RenderedText.lines(in: snapshot(content), level: .fast)
-			if OCRText(lines.map(\.text).joined(separator: " ")).contains("GENERATE VALUE") { return candidate }
-		}
-		return nil
-	}
-
-	/// Where `label` is drawn now. SwiftUI on macOS 15 draws a change only on a later
-	/// turn of the run loop, which can come while recognition runs and move the label,
-	/// so the label's area of the frame read is checked against the frame drawn after.
-	private func labelBounds(_ label: String, in target: NSView, options: String.CompareOptions, region: CGRect? = nil, onRecognition: (@Sendable (Int, Int) -> Void)? = nil) async throws -> CGRect? {
-		var bounds: CGRect?
-		for _ in 0..<4 {
-			// A turn of the run loop draws what the last step changed.
-			try await Task.sleep(for: .milliseconds(10))
-			let image = try snapshot(target)
-			bounds = try await labelBounds(label, in: image, target: target, options: options, region: region, onRecognition: onRecognition)
-			guard let found = bounds, !sameArea(found, of: image, as: try snapshot(target)) else { return bounds }
-		}
-		return bounds
-	}
-
-	/// Whether `bounds`, in Vision's normalized coordinates, holds the same pixels in both
-	/// frames, with a margin around it: the label is still where it was read.
-	private func sameArea(_ bounds: CGRect, of image: CGImage, as other: CGImage) -> Bool {
-		guard image.width == other.width, image.height == other.height, image.bitsPerPixel == other.bitsPerPixel,
-			image.bytesPerRow == other.bytesPerRow, let left = image.dataProvider?.data, let right = other.dataProvider?.data,
-			let leftBytes = CFDataGetBytePtr(left), let rightBytes = CFDataGetBytePtr(right)
-		else { return false }
-		let width = image.width, height = image.height, pixel = image.bitsPerPixel / 8
-		let margin = 4
-		let minX = max(0, Int(bounds.minX * CGFloat(width)) - margin), maxX = min(width, Int((bounds.maxX * CGFloat(width)).rounded(.up)) + margin)
-		let minY = max(0, Int((1 - bounds.maxY) * CGFloat(height)) - margin), maxY = min(height, Int(((1 - bounds.minY) * CGFloat(height)).rounded(.up)) + margin)
-		guard minX < maxX, minY < maxY, CFDataGetLength(left) >= image.bytesPerRow * height, CFDataGetLength(right) >= other.bytesPerRow * height else { return false }
-		for row in minY..<maxY {
-			let start = row * image.bytesPerRow + minX * pixel
-			if memcmp(leftBytes + start, rightBytes + start, (maxX - minX) * pixel) != 0 { return false }
-		}
-		return true
-	}
-
-	/// Fast mode finds the line cheaply but reports whole-line boxes for substrings, which
-	/// can land a click between neighboring buttons. Accurate mode then reads only that line.
-	private func labelBounds(_ label: String, in image: CGImage, target: NSView, options: String.CompareOptions, region: CGRect?, onRecognition: (@Sendable (Int, Int) -> Void)?) async throws -> CGRect? {
-		if let region {
-			let lines = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: region, onRecognition: onRecognition)
-			return lines.lazy.compactMap(\.labelBounds).first
-		}
-		let fast = try await RenderedText.lines(in: image, level: .fast, label: label, options: options, onRecognition: onRecognition)
-		if let line = fast.first(where: { $0.labelBounds != nil }) {
-			// A line that reads exactly as the label is the label, so its box needs no refinement.
-			if line.text.trimmingCharacters(in: .whitespaces).compare(label, options: options) == .orderedSame {
-				return line.bounds
-			}
-			let strip = line.bounds.insetBy(dx: -0.02, dy: -line.bounds.height).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-			let refined = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: strip, onRecognition: onRecognition)
-			if let bounds = refined.lazy.compactMap(\.labelBounds).first { return bounds }
-		}
-		let accurate = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, onRecognition: onRecognition)
-		if let bounds = accurate.lazy.compactMap(\.labelBounds).first { return bounds }
-		guard target === view else { return nil }
-		for region in RenderedText.detailRegions {
-			let lines = try await RenderedText.lines(in: image, level: .accurate, label: label, options: options, region: region, onRecognition: onRecognition)
-			if let bounds = lines.lazy.compactMap(\.labelBounds).first { return bounds }
+			if AccessibilityTree.text(in: content, root: candidate).contains("Generate value", options: .caseInsensitive) { return candidate }
 		}
 		return nil
 	}
@@ -896,41 +695,25 @@ final class SheetTestHost<V: View> {
 		return try #require(bitmap.cgImage)
 	}
 
-	/// Where `label` is rendered once it appears, in the coordinates of the host's view or
-	/// of `targetWindow`'s content: a runner can draw what the last step changed only on a later turn.
+	/// Where the element saying `label` is once it appears, in the coordinates of
+	/// the host's view or of `targetWindow`'s content, from the bottom-left.
 	func labelFrame(_ label: String, region: CGRect? = nil, in targetWindow: NSWindow? = nil) async throws -> CGRect {
 		let target = try #require(targetWindow?.contentView ?? view)
-		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		var bounds = try await labelBounds(label, in: target, options: [], region: region)
-		while bounds == nil, ContinuousClock.now < deadline {
-			try await Task.sleep(for: .milliseconds(20))
-			bounds = try await labelBounds(label, in: target, options: [], region: region)
-		}
-		if bounds == nil { RenderedText.saveDiagnostic(try snapshot(target), named: label) }
-		let box = try #require(bounds, "Missing label \(label)")
+		let element = try await waitForElement(saying: label, in: targetWindow, region: region)
+		let box = AccessibilityTree.normalizedBounds(of: element, in: target)
 		return CGRect(x: box.minX * target.bounds.width, y: box.minY * target.bounds.height,
 			width: box.width * target.bounds.width, height: box.height * target.bounds.height)
 	}
 
 	/// Clicks the sidebar row of an environment, such as ".env", found by its
-	/// rendered name, and returns the clicked point in window coordinates.
+	/// name, and returns the clicked point in window coordinates.
 	@discardableResult
 	func clickSidebarEnvironment(_ displayName: String) async throws -> NSPoint {
 		let region = CGRect(x: 0, y: 0, width: min(1, (VaultMetrics.sidebar + 20) / view.bounds.width), height: 1)
-		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
-		while true {
-			let lines = try await RenderedText.lines(in: snapshot(view), level: .accurate, region: region)
-			if let line = lines.first(where: { SidebarEnvironmentLabel.matches($0.text, displayName: displayName) }) {
-				let point = NSPoint(x: line.bounds.midX * view.bounds.width, y: line.bounds.midY * view.bounds.height)
-				try NativeTestClick.send(to: window, at: point)
-				return point
-			}
-			guard ContinuousClock.now < deadline else {
-				print("Sidebar rows read as: \(lines.map(\.text))")
-				return try #require(nil as NSPoint?, "Missing sidebar row \(displayName)")
-			}
-			try await Task.sleep(for: .milliseconds(20))
-		}
+		let element = try await waitForElement(saying: displayName, region: region)
+		let point = AccessibilityTree.center(of: element, in: window)
+		try NativeTestClick.send(to: window, at: point)
+		return point
 	}
 
 	func rowIsHighlighted(inset: CGFloat, rowMidY: CGFloat) throws -> Bool {
@@ -954,7 +737,20 @@ final class SheetTestHost<V: View> {
 	}
 }
 
-@Suite("Sheet interaction regressions", .serialized)
+/// Notes that the UI suite is running, for an exit during it to be reported.
+struct RunningUITest: SuiteTrait, TestScoping {
+	func provideScope(for test: Test, testCase: Test.Case?, performing function: @Sendable () async throws -> Void) async throws {
+		UITestSuite.running.withLock { $0.isRunning = true }
+		defer { UITestSuite.running.withLock { $0 = (false, nil) } }
+		try await function()
+	}
+}
+
+extension Trait where Self == RunningUITest {
+	static var notesRunningTest: Self { RunningUITest() }
+}
+
+@Suite("Sheet interaction regressions", .serialized, .notesRunningTest)
 @MainActor
 struct SheetInteractionTests {
 	private func makeStore(path: String = "", environments: [String: [String: String]] = ["default": [:]], preferences: UserDefaults = .standard) -> (VaultStore, MockKeychainService) {
@@ -1001,7 +797,8 @@ struct SheetInteractionTests {
 		#expect(abs(note.bounds.midX - host.view.bounds.width / 2) < 3)
 		#expect((15...28).contains(note.bounds.minY))
 		let center = host.view.bounds.insetBy(dx: host.view.bounds.width * 0.25, dy: host.view.bounds.height * 0.25)
-		#expect(try await host.line(containing: "Unlock", rect: center).range(of: #"Unlock\s+\S*L"#, options: .regularExpression) != nil)
+		let unlock = try await host.line(containing: "Unlock", rect: center)
+		#expect(unlock.range(of: #"Unlock\W+⌘L"#, options: .regularExpression) != nil, "The Unlock button says \(unlock)")
 	}
 
 	@Test("cancel is unavailable while an add transaction is committing")
@@ -1259,8 +1056,8 @@ private struct AddVariablePresentedFixture: View {
 	}
 }
 
-/// Copy confirmations that end when a test says, so assertions about them do
-/// not race a two-second timer against slow text recognition.
+/// Copy confirmations that end when a test says, so assertions about them
+/// don't race a two-second timer.
 final class ManualCopyFeedbackTimer: @unchecked Sendable {
 	private final class Wait: @unchecked Sendable {
 		var continuation: CheckedContinuation<Void, Error>?

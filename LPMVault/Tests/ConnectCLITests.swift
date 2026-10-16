@@ -2,7 +2,6 @@ import AppKit
 import Foundation
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -379,7 +378,7 @@ extension SheetInteractionTests {
 			#expect(text.contains("Run from the linked project folder"))
 		}
 
-		@Test("the title bar chip reads Connect CLI")
+		@Test("the title bar chip offers to connect the project to the LPM CLI")
 		func rendersTitleBarChip() async throws {
 			let store = makeStore(path: "")
 			let text = try await renderedText(
@@ -389,20 +388,12 @@ extension SheetInteractionTests {
 				named: "title-bar-connect-cli.png"
 			)
 
-			#expect(text.contains("Connect CLI"))
+			#expect(text.contains("Connect my-api-server to the LPM CLI"))
 			#expect(!text.contains("vault 7f3a1e2c"))
 		}
 
-		private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> OCRText {
-			let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
-			host.frame = NSRect(origin: .zero, size: size)
-			host.layoutSubtreeIfNeeded()
-			let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-			host.cacheDisplay(in: host.bounds, to: bitmap)
-			let image = try #require(bitmap.cgImage)
-			let data = try #require(bitmap.representation(using: .png, properties: [:]))
-			Attachment.record(data, named: name)
-			return OCRText(try await RenderedText.strings(in: image, usesLanguageCorrection: false).joined(separator: "\n"))
+		private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> AccessibleText {
+			try await AccessibilityTree.text(of: view.environment(\.colorScheme, .light), size: size, attaching: name)
 		}
 	}
 }
@@ -562,7 +553,6 @@ extension SheetInteractionTests {
 		defer { host.window.close() }
 		#expect(try await host.waitForText("Not linked to a project folder yet"))
 		let text = try await host.text()
-		// CI's Vision can split the flag's dashes from its value at 1x.
 		#expect(text.contains("env=staging"))
 		#expect(!text.contains("has not been verified"))
 	}

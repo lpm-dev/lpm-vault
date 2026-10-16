@@ -224,7 +224,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
 			defer { host.window.close() }
 			#expect(try await host.waitUntil { store.keyDescriptions["inspector"] != nil })
-			#expect(try await host.waitForText("DESCRIPTION"))
+			#expect(try await host.waitForText("DESCRIPTION", exactly: true))
 			#expect(try await host.text().contains("Stored in lpm.json, not encrypted"))
 			try host.enterText("Rotated monthly by the billing team", at: 1)
 			#expect(try await host.waitForText("1 unsaved change"))

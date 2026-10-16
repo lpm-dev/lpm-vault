@@ -2,7 +2,6 @@ import AppKit
 import LocalAuthentication
 import SwiftUI
 import Testing
-import Vision
 
 @testable import LPMVault
 
@@ -159,15 +158,8 @@ extension SheetInteractionTests {
 			VaultStore(keychainService: keychain, biometricService: biometric, apiService: MockAPIService())
 		}
 
-		private func renderedText<V: View>(_ view: V) async throws -> OCRText {
-			let host = NSHostingView(rootView: view.environment(\.colorScheme, .light))
-			host.frame = NSRect(x: 0, y: 0, width: 1040, height: 640)
-			host.layoutSubtreeIfNeeded()
-			let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-			host.cacheDisplay(in: host.bounds, to: bitmap)
-			let image = try #require(bitmap.cgImage)
-			let lines = try await RenderedText.lines(in: image, level: .accurate)
-			return OCRText(lines.map(\.text).joined(separator: "\n"))
+		private func renderedText<V: View>(_ view: V) async throws -> AccessibleText {
+			try await AccessibilityTree.text(of: view.environment(\.colorScheme, .light), size: CGSize(width: 1040, height: 640))
 		}
 	}
 }

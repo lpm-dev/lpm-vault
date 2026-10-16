@@ -246,7 +246,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Add key")
-			#expect(try await host.waitForText("NEW KEY"))
+			#expect(try await host.waitForText("NEW KEY", exactly: true))
 
 			try host.enterText("api-token", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Use API_TOKEN"))
@@ -280,7 +280,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Add key")
-			#expect(try await host.waitForText("NEW KEY"))
+			#expect(try await host.waitForText("NEW KEY", exactly: true))
 			try host.enterText("NEXT_PUBLIC_ANALYTICS", placeholder: "KEY_NAME")
 			#expect(try await host.waitUntil {
 				store.schemaDraft(for: "schema-add")?.declaration(of: .key("NEXT_PUBLIC_ANALYTICS")) == .declared(.object([.init(key: "client", value: .bool(true))]))
@@ -303,7 +303,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("REDIS_URL"))
 			try await host.click("Declare")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.declaration(of: .key("REDIS_URL")) == .declared(.object([])) })
-			#expect(try await host.waitForText("SUGGESTED FROM STORED VALUES"))
+			#expect(try await host.waitForText("SUGGESTED FROM STORED VALUES", exactly: true))
 			#expect(!host.hasField(placeholder: "KEY_NAME"), "A declared key keeps the name its values are stored under")
 			#expect(try await host.waitForText("both values are URLs"))
 			try await host.click("Accept")
@@ -425,7 +425,7 @@ extension SheetInteractionTests {
 			], order: .descending)
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			#expect(try await host.waitForText("REDIS_URL"))
-			let lines = try await RenderedText.lines(in: host.snapshot(host.view), level: .accurate)
+			let lines = host.lines()
 			let redis = try #require(lines.first { $0.text.contains("REDIS_URL") })
 			let api = try #require(lines.first { $0.text.contains("API_TOKEN") })
 			#expect(redis.bounds.midY > api.bounds.midY, "Z to A puts REDIS_URL above API_TOKEN")

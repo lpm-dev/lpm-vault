@@ -134,10 +134,11 @@ struct EnvFileImportReviewSheet: View {
 			}
 			VStack(alignment: .leading, spacing: 4) {
 				if row.change == .changed {
-					valueLine("Current", value: review.baseline[row.key] ?? "", revealed: revealed, superseded: replacing)
+					valueLine("Current", of: row.key, value: review.baseline[row.key] ?? "", revealed: revealed, superseded: replacing)
 				}
 				valueLine(
 					"Incoming",
+					of: row.key,
 					value: review.imported.secrets[row.key] ?? "",
 					revealed: revealed,
 					superseded: row.change == .changed && !replacing
@@ -161,7 +162,7 @@ struct EnvFileImportReviewSheet: View {
 	}
 
 	/// One labeled value. A superseded value is the one the import will not keep.
-	private func valueLine(_ label: String, value: String, revealed: Bool, superseded: Bool) -> some View {
+	private func valueLine(_ label: String, of key: String, value: String, revealed: Bool, superseded: Bool) -> some View {
 		HStack(alignment: .firstTextBaseline, spacing: 12) {
 			Text(label)
 				.font(.system(size: 11, weight: .medium))
@@ -172,7 +173,7 @@ struct EnvFileImportReviewSheet: View {
 				.foregroundStyle(superseded ? VaultPalette.textFaint : (revealed ? VaultPalette.textPrimary : VaultPalette.masked))
 				.frame(maxWidth: .infinity, alignment: .leading)
 				.fixedSize(horizontal: false, vertical: true)
-				.accessibilityLabel(revealed ? "\(label) value revealed visually" : "\(label) value hidden")
+				.accessibilityLabel("\(label) value for \(key) \(revealed ? "revealed visually" : "hidden")")
 		}
 	}
 

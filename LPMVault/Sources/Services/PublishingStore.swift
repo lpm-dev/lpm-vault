@@ -104,11 +104,12 @@ actor PublishingStore {
 	func remove(_ id: UUID, from vaultID: String) -> Result<[PublishDestination], PublishingStoreError> {
 		Result {
 			var destinations = try readDestinations(of: vaultID)
+			// The history goes first: if it can't, the destination stays, to be removed again.
+			try service.deleteAppItem(.publishing, account: Self.historyAccount(vaultID, id)).get()
 			if destinations.contains(where: { $0.id == id }) {
 				destinations.removeAll { $0.id == id }
 				try writeDestinations(destinations, of: vaultID)
 			}
-			try service.deleteAppItem(.publishing, account: Self.historyAccount(vaultID, id)).get()
 			return destinations
 		}.mapError(Self.storeError)
 	}

@@ -598,7 +598,7 @@ private struct VaultMatrixRow: View {
 		.simultaneousGesture(TapGesture(count: 2).onEnded { onReveal() })
 		.onHover { hovering = $0 }
 		.accessibilityElement(children: .ignore)
-		.accessibilityLabel("\(key), set in \(snapshot.environmentCount(for: key)) of \(environments.count) environments\(checks.invalidKeys.contains(key) ? ", fails its rules" : "")\(isEdited ? ", unsaved changes" : "")")
+		.accessibilityLabel("\(key), set in \(snapshot.environmentCount(for: key)) of \(environments.count) environments\(isPublic ? ", public" : ""), values \(isRevealed ? "shown" : "hidden")\(checks.invalidKeys.contains(key) ? ", fails its rules" : "")\(isEdited ? ", unsaved changes" : "")")
 		.accessibilityValue(snapshot.hasDrift(for: key) ? "Values differ" : "Values consistent")
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
 		.accessibilityAction(named: isRevealed ? "Hide values" : "Reveal values", onReveal)

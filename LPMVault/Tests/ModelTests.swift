@@ -1,6 +1,5 @@
 import Testing
 import SwiftUI
-import Vision
 
 @testable import LPMVault
 
@@ -17,20 +16,8 @@ extension SheetInteractionTests {
 				authTokenProvider: { _, _ in nil }
 			)
 			store.appEnvironment = .production
-			let host = NSHostingView(rootView: AuthStatusView(store: store).environment(VaultAppearanceSettings())
-				.environment(UpdateChecker()).environment(\.colorScheme, .light))
-			let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
-				styleMask: [.titled], backing: .buffered, defer: false)
-			window.isReleasedWhenClosed = false
-			window.contentView = host
-			window.orderBack(nil)
-			defer { window.close() }
-			try await Task.sleep(for: .milliseconds(50))
-			host.layoutSubtreeIfNeeded()
-			let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-			host.cacheDisplay(in: host.bounds, to: bitmap)
-			let image = try #require(bitmap.cgImage)
-			let labels = try await RenderedText.strings(in: image)
+			let labels = try await AccessibilityTree.text(of: AuthStatusView(store: store).environment(VaultAppearanceSettings())
+				.environment(UpdateChecker()).environment(\.colorScheme, .light), size: CGSize(width: 700, height: 700))
 			#expect(labels.contains("Not logged in"))
 			#expect(labels.contains("UPDATES"))
 			#expect(labels.contains("Installed version"))
@@ -49,13 +36,10 @@ extension SheetInteractionTests {
 	struct ConflictResolutionSheetTests {
 		@Test("personal conflict recovery explains which values survive before confirmation")
 		func personalConflictExplainsMergePrecedence() async throws {
-			let renderer = ImageRenderer(content: ConflictResolutionSheet(
+			let text = try await AccessibilityTree.text(of: ConflictResolutionSheet(
 				projectName: "test-project", account: .personal,
 				onPullAndMerge: {}, onForcePush: {}, onCancel: {}
-			).frame(width: 400, height: 450).background(Color.white).environment(\.colorScheme, .light))
-			renderer.scale = 3
-			let image = try #require(renderer.cgImage)
-			let text = try await RenderedText.strings(in: image).joined(separator: " ")
+			).frame(width: 400, height: 450).background(Color.white).environment(\.colorScheme, .light), size: CGSize(width: 400, height: 450))
 			#expect(text.contains("Version Conflict"))
 			#expect(text.contains("Cloud values replace conflicting local values."))
 			#expect(text.contains("Force Push replaces cloud values with local values."))

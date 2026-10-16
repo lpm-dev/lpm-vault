@@ -84,8 +84,8 @@ extension SheetInteractionTests {
 				.environment(VaultAppearanceSettings(defaults: store.preferences)).defaultAppStorage(store.preferences),
 				size: NSSize(width: 1400, height: 700), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
-			let text = try await RenderedText.strings(in: host.snapshot(host.view)).joined(separator: "\n")
-			#expect(!text.contains("PRIVATE_FRESH_VALUE"))
+			try await host.settle()
+			#expect(try await !host.text().contains("PRIVATE_FRESH_VALUE"))
 			#expect(try await host.waitUntil { store.keyDescriptions["public-review"]?.schema?.overview?.rules.count == 501 })
 			#expect(store.publicKeys(in: "public-review").isEmpty)
 		}
@@ -164,17 +164,19 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			#expect(try await host.waitUntil { store.publicKeys(in: project.id) == ["NEXT_PUBLIC_API_URL"] })
 
-			#expect(try await host.waitForText("api.example.com"))
+			#expect(try await host.waitForText("NEXT_PUBLIC_API_URL, set in 1 of 1 environments, public, values shown"))
+			#expect(try await host.text().contains("API_TOKEN, set in 1 of 1 environments, values hidden"))
 			#expect(try await !host.text().contains("tok-hidden-value"))
 
 			try await host.click("NEXT_PUBLIC_API_URL")
-			#expect(try await host.waitForText("VALUES"))
+			#expect(try await host.waitForText("VALUES", exactly: true))
 			let inspector = CGRect(x: 0.78, y: 0, width: 0.22, height: 1)
 			#expect(try await host.labelFrame("api.example.com", region: inspector).width > 0, "The inspector shows the public value")
 
 			try await host.clickSidebarEnvironment(".env")
-			#expect(try await host.waitForText("ACTIONS"))
-			#expect(try await host.waitForText("api.example.com"))
+			#expect(try await host.waitForText("ACTIONS", exactly: true))
+			#expect(try await host.waitForText("NEXT_PUBLIC_API_URL, public, value shown"))
+			#expect(try await host.text().contains("API_TOKEN, value hidden"))
 			#expect(try await !host.text().contains("tok-hidden-value"))
 
 			try "{not json".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
