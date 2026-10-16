@@ -381,15 +381,18 @@ extension SheetInteractionTests {
 		@Test("the title bar chip offers to connect the project to the LPM CLI")
 		func rendersTitleBarChip() async throws {
 			let store = makeStore(path: "")
-			let text = try await renderedText(
-				of: VaultTitleBarView(store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {})
-					.environment(UpdateChecker()),
-				size: NSSize(width: 1040, height: VaultMetrics.titleBar),
-				named: "title-bar-connect-cli.png"
-			)
+			let host = SheetTestHost(
+				VaultTitleBarView(store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {})
+					.environment(UpdateChecker()).environment(\.colorScheme, .light),
+				size: NSSize(width: 1040, height: VaultMetrics.titleBar), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			try await host.settle()
+			try host.attachSnapshot(named: "title-bar-connect-cli")
 
-			#expect(text.contains("Connect my-api-server to the LPM CLI"))
-			#expect(!text.contains("vault 7f3a1e2c"))
+			let chip = try await host.waitForElement(saying: "Connect CLI")
+			#expect(chip.role == .button && chip.label == "Connect CLI")
+			#expect(chip.help == "Connect my-api-server to the LPM CLI")
+			#expect(try await !host.text().contains("vault 7f3a1e2c"))
 		}
 
 		private func renderedText<V: View>(of view: V, size: NSSize, named name: String) async throws -> AccessibleText {

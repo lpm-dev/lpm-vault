@@ -259,7 +259,7 @@ struct VaultSidebarView: View {
 			projectButton(project, selected: selected, expanded: expanded, lifted: lifted, hovered: hovered, cliAccess: cliAccess, order: order)
 		}
 		.help(project.name)
-		.accessibilityLabel("\(project.name), \(project.secretCount) secrets, \(approvalDescription)")
+		.accessibilityLabel("\(project.name), \(project.secretCount.counted("secret")), \(approvalDescription)")
 		.accessibilityValue(expanded ? "Expanded" : "Collapsed")
 		.accessibilityAddTraits(selected ? .isSelected : [])
 		.accessibilityAction(named: "Project Settings") { onProjectSettings(project) }
@@ -409,7 +409,7 @@ struct VaultSidebarView: View {
 		}
 		.buttonStyle(.plain)
 		.accessibilityLabel("Schema")
-		.accessibilityValue([unreadable ? "lpm.json can't be read" : count.map { "\($0) declared keys" }, hasDraft ? "unsaved rule changes" : nil].compactMap { $0 }.joined(separator: ", "))
+		.accessibilityValue([unreadable ? "lpm.json can't be read" : count.map { $0.counted("declared key") }, hasDraft ? "unsaved rule changes" : nil].compactMap { $0 }.joined(separator: ", "))
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 
@@ -446,7 +446,7 @@ struct VaultSidebarView: View {
 		}
 		.buttonStyle(.plain)
 		.accessibilityLabel(VaultProject.displayName(for: environment))
-		.accessibilityValue("\(project.secretCount(for: environment)) secrets")
+		.accessibilityValue(project.secretCount(for: environment).counted("secret"))
 		.accessibilityAddTraits(selected ? .isSelected : [])
 		.contextMenu {
 			Button("Rename…") { onRenameEnvironment(target) }

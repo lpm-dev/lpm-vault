@@ -72,7 +72,6 @@ struct VaultTitleBarView: View {
 				.buttonStyle(.plain)
 				.onHover { connectChipHovering = $0 }
 				.help("Connect \(project.name) to the LPM CLI")
-				.accessibilityLabel("Connect \(project.name) to the LPM CLI")
 				.vaultPointingHand()
 			}
 
@@ -148,7 +147,7 @@ struct VaultTitleBarView: View {
 	}
 
 	private var syncMenu: some View {
-		Menu {
+		VaultBarMenu(accessibilityLabel: "Sync status: \(syncLabel)") {
 			if store.isLoggedIn, project != nil {
 				Button("Pull…", action: onPull)
 					.keyboardShortcut("l", modifiers: [.command, .shift])
@@ -161,31 +160,14 @@ struct VaultTitleBarView: View {
 					.disabled(true)
 			}
 		} label: {
-			HStack(spacing: 6) {
-				if store.isSyncing {
-					ProgressView().controlSize(.mini)
-				} else {
-					VaultStatusDot(color: syncColor)
-				}
-				Text(syncLabel)
-					.font(.system(size: 12))
-					.foregroundStyle(VaultPalette.textSecondary)
-				Image(systemName: "chevron.down")
-					.font(.system(size: 8, weight: .bold))
-					.foregroundStyle(VaultPalette.textQuaternary)
+			if store.isSyncing {
+				ProgressView().controlSize(.mini)
+			} else {
+				VaultStatusDot(color: syncColor)
 			}
-			.foregroundStyle(VaultPalette.textSecondary)
-			.padding(.horizontal, 10)
-			.frame(height: 26)
-			.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+			Text(syncLabel).font(.system(size: 12))
 		}
-		.menuStyle(.button)
-		.buttonStyle(.plain)
-		.menuIndicator(.hidden)
-		.fixedSize()
 		.disabled(store.isSyncing || (store.isLoggedIn && project == nil))
-		.accessibilityLabel("Sync status: \(syncLabel)")
 	}
 
 	@ViewBuilder
@@ -196,7 +178,7 @@ struct VaultTitleBarView: View {
 				if saved.isEmpty {
 					VaultBarButton(systemImage: "arrow.up.to.line", title: "Publish…") { onPublish(nil) }
 				} else {
-					Menu {
+					VaultBarMenu(accessibilityLabel: "Publish") {
 						Section("Saved destinations") {
 							ForEach(saved) { summary in
 								Button { onPublish(summary.destination) } label: {
@@ -208,24 +190,9 @@ struct VaultTitleBarView: View {
 						Divider()
 						Button("New destination…") { onPublish(nil) }
 					} label: {
-						HStack(spacing: 6) {
-							Image(systemName: "arrow.up.to.line").font(.system(size: 11, weight: .medium))
-							Text("Publish").font(.system(size: 12))
-							Image(systemName: "chevron.down")
-								.font(.system(size: 8, weight: .bold))
-								.foregroundStyle(VaultPalette.textQuaternary)
-						}
-						.foregroundStyle(VaultPalette.textSecondary)
-						.padding(.horizontal, 10)
-						.frame(height: 26)
-						.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-						.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+						Image(systemName: "arrow.up.to.line").font(.system(size: 11, weight: .medium))
+						Text("Publish").font(.system(size: 12))
 					}
-					.menuStyle(.button)
-					.buttonStyle(.plain)
-					.menuIndicator(.hidden)
-					.fixedSize()
-					.accessibilityLabel("Publish")
 				}
 			}
 			.help("Publish an environment to a platform")

@@ -177,7 +177,7 @@ extension SheetInteractionTests {
 					try await host.clickSidebarEnvironment(".env")
 					#expect(try await host.waitForText("ACTIONS", exactly: true))
 				}
-				try clickAt(WorkspaceHeaderGeometry.inspectorToggle(contentRightEdge: host.view.bounds.width), in: host)
+				try await host.click("Show inspector")
 				#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize inspector" } })
 				try await host.settle()
 				let lastLabel = singleEnvironment ? "Resize Actions column" : "Resize .env.production column"
@@ -270,7 +270,7 @@ extension SheetInteractionTests {
 			#expect(next.accessibilityPerformIncrement())
 			try await host.settle()
 			#expect(divider.accessibilityValue() as? String == "\(startWidth + 80) points")
-			try clickAt(WorkspaceHeaderGeometry.inspectorToggle(contentRightEdge: host.view.bounds.width), in: host)
+			try await host.click("Show inspector")
 			#expect(try await host.waitUntil { resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize inspector" } })
 			host.window.setContentSize(NSSize(width: 1040, height: 800))
 			try await host.settle()

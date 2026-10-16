@@ -47,6 +47,23 @@ extension SheetInteractionTests {
 			#expect(!lines.contains { $0.text.contains("3 environments") }, "Text outside the region isn't read")
 		}
 
+		@Test("a switch says the text beside it and what VoiceOver reads for its state, and toggles and selections say theirs")
+		func readsNamesAndStates() async throws {
+			let host = SheetTestHost(StatesFixture(), size: NSSize(width: 360, height: 200), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.settle()
+			let elements = AccessibilityTree.visibleElements(in: host.window, of: host.view)
+			let approval = try #require(elements.first { $0.role == .checkBox && $0.says("Approval") })
+			#expect(approval.label == nil && approval.title == "Approval", "A switch is named by the text beside it")
+			#expect(approval.value == "Required")
+			#expect(approval.isOn == true)
+			let reveal = try #require(elements.first { $0.says("Reveal") })
+			#expect(reveal.role == .checkBox && reveal.isOn == false)
+			let chosen = try #require(elements.first { $0.says("Chosen") })
+			#expect(chosen.role == .button && chosen.isSelected && chosen.isOn == nil)
+			#expect(elements.first { $0.says("Other") }?.isSelected == false)
+		}
+
 		@Test("clicking a segmented control selects the segment under the point without waiting on a mouse-up")
 		func clicksTrackingControls() async throws {
 			let host = SheetTestHost(SegmentsFixture(), size: NSSize(width: 360, height: 120), keepsRequestedSize: true)
@@ -196,6 +213,20 @@ private struct TreeFixture: View {
 		}
 		.padding()
 		.frame(width: 480, height: 320, alignment: .topLeading)
+	}
+}
+
+private struct StatesFixture: View {
+	@State private var required = true
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 12) {
+			Toggle("Approval", isOn: $required).toggleStyle(.switch).accessibilityValue("Required")
+			Button("Reveal") {}.accessibilityAddTraits(.isToggle)
+			Button("Chosen") {}.accessibilityAddTraits(.isSelected)
+			Button("Other") {}
+		}
+		.padding(20)
 	}
 }
 

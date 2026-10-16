@@ -173,7 +173,7 @@ struct VaultContentView: View {
 					.font(.system(size: 19, weight: .bold))
 					.tracking(-0.28)
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("\(Self.count(derived.allKeys.count, "key")) · \(Self.count(environments.count, "env"))")
+				Text("\(derived.allKeys.count.counted("key")) · \(environments.count.counted("env"))")
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			} else {
@@ -185,7 +185,7 @@ struct VaultContentView: View {
 					foreground: VaultPalette.orangeTintText,
 					background: VaultPalette.orangeTint
 				)
-				Text(Self.count(project.secretCount(for: selectedEnvironment), "key"))
+				Text(project.secretCount(for: selectedEnvironment).counted("key"))
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
@@ -198,7 +198,6 @@ struct VaultContentView: View {
 			.font(.system(size: 11.5))
 			.disabled(cliAccess == nil || isChangingCliAccess || !canUseSecrets)
 			.help(VaultCliAccessPresentation(access: cliAccess).help)
-			.accessibilityLabel("Require approval for CLI env access")
 			.accessibilityValue(VaultCliAccessPresentation(access: cliAccess).accessibilityValue)
 		}
 		.lineLimit(1)
@@ -220,7 +219,6 @@ struct VaultContentView: View {
 				height: 27,
 				action: onAddSecret
 			)
-			.accessibilityLabel("New secret")
 		}
 		.fixedSize()
 	}
@@ -233,26 +231,30 @@ struct VaultContentView: View {
 		let copyHelp = isCopyingAll
 			? "Authenticating to copy all \(environmentName) values"
 			: (isCopiedAll ? "All \(environmentName) values copied" : "Copy all \(environmentName) values")
+		let copyLabel = isCopyingAll
+			? "Copying all \(environmentName) values"
+			: (isCopiedAll ? "Copied all \(environmentName) values" : "Copy all \(environmentName) values")
 		return HStack(spacing: 6) {
 			VaultOutlineButton(
 				systemImage: derived.allVisibleRevealed ? "eye.slash" : "eye",
 				title: compact ? nil : "Reveal",
 				help: derived.allVisibleRevealed ? "Hide all values" : "Reveal all values",
+				label: "Reveal all values",
 				active: derived.allVisibleRevealed,
+				toggles: true,
 				disabled: !canUseSecrets || !derived.hasMaskableValues
 			) { toggleRevealAll(derived) }
-			.accessibilityLabel(derived.allVisibleRevealed ? "Hide all values" : "Reveal all values")
 
 			VaultOutlineButton(
 				systemImage: isCopiedAll && !isCopyingAll ? "checkmark" : "doc.on.doc",
 				title: compact ? nil : copyTitle,
 				reservedTitles: compact ? [] : ["Copy all", "Copying…", "Copied"],
 				help: copyHelp,
+				label: copyLabel,
 				active: isCopiedAll && !isCopyingAll,
 				disabled: isCopyingAll || !canUseSecrets,
 				action: onCopyAll
 			)
-			.accessibilityLabel(copyHelp)
 			VaultOutlineButton(
 				systemImage: "square.and.arrow.down",
 				help: isImporting ? "Importing into \(environmentName)" : "Import a .env file into \(environmentName)",
@@ -430,8 +432,8 @@ struct VaultContentView: View {
 	private func statusBar(_ derived: VaultContentDerivation) -> some View {
 		let declaredOnly = mode == .matrix ? 0 : derived.environmentKeys.lazy.filter { project.value(for: $0, in: selectedEnvironment) == nil }.count
 		let count = Text(mode == .matrix
-			? "\(derived.filteredKeys.count) of \(Self.count(derived.allKeys.count, "key")) shown"
-			: Self.count(derived.environmentKeys.count - declaredOnly, "key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) from lpm.json"))
+			? "\(derived.filteredKeys.count) of \(derived.allKeys.count.counted("key")) shown"
+			: (derived.environmentKeys.count - declaredOnly).counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) from lpm.json"))
 		let sort = Text("sorted \(sortOrder.title)").accessibilityLabel("sorted \(sortOrder.spokenTitle)")
 		var details = mode == .matrix
 			? [Text("\(snapshot.driftingKeyCount) drifting"), Text("\(snapshot.missingKeyCount) missing")]
@@ -439,7 +441,7 @@ struct VaultContentView: View {
 		if valueChecks.hasCheck {
 			let invalid = mode == .matrix ? valueChecks.invalidKeys.count : valueChecks.invalidKeys(in: selectedEnvironment).count
 			let groups = mode == .matrix ? 0 : valueChecks.groupFailures(in: selectedEnvironment).count
-			let text = "\(invalid) invalid" + (groups == 0 ? "" : " · \(Self.count(groups, "group"))")
+			let text = "\(invalid) invalid" + (groups == 0 ? "" : " · \(groups.counted("group"))")
 			details.insert(Text(text).foregroundStyle(invalid == 0 ? VaultPalette.textTertiary : VaultPalette.redText), at: mode == .matrix ? 2 : 1)
 		}
 		let unsaved = editedKeys.isEmpty
@@ -470,10 +472,6 @@ struct VaultContentView: View {
 			}
 			Spacer(minLength: 0)
 		}
-	}
-
-	private static func count(_ value: Int, _ noun: String) -> String {
-		"\(value) \(noun)\(value == 1 ? "" : "s")"
 	}
 
 	/// Public values show unmasked only while secret actions are available.

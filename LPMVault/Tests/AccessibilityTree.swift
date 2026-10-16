@@ -17,7 +17,9 @@ enum AccessibilityTree {
 	struct Element {
 		let role: NSAccessibility.Role?
 		let label: String?
+		/// Its title, or for a control named by the text beside it, as a switch is, that text.
 		let title: String?
+		/// Its value, or what VoiceOver reads for a value that isn't text, as a switch's state can be.
 		let value: String?
 		let placeholder: String?
 		let help: String?
@@ -27,6 +29,9 @@ enum AccessibilityTree {
 		/// The part of `frame` its scroll areas show; empty when it's scrolled out of view.
 		let visibleFrame: CGRect
 		let isEnabled: Bool
+		let isSelected: Bool
+		/// Whether a switch, checkbox or toggle button is on; nil for anything else.
+		let isOn: Bool?
 		fileprivate let object: AnyObject
 
 		/// What it says, as VoiceOver reads it out: its label, title and value.
@@ -258,17 +263,23 @@ enum AccessibilityTree {
 
 	private static func element(_ object: AnyObject, clip: CGRect) -> Element {
 		let frame = object.accessibilityFrame?() ?? .zero
+		let role = string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityRole))).map(NSAccessibility.Role.init(rawValue:))
+		let titleElement = attribute(object, #selector(NSAccessibilityProtocol.accessibilityTitleUIElement)) as AnyObject?
 		return Element(
-			role: string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityRole))).map(NSAccessibility.Role.init(rawValue:)),
+			role: role,
 			label: string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityLabel))),
-			title: string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityTitle))),
-			value: string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityValue))),
+			title: string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityTitle)))
+				?? titleElement.flatMap { string(attribute($0, #selector(NSAccessibilityProtocol.accessibilityValue))) },
+			value: string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityValue)))
+				?? string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityValueDescription))),
 			placeholder: string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityPlaceholderValue))),
 			help: string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityHelp))),
 			identifier: string(attribute(object, #selector(NSAccessibilityProtocol.accessibilityIdentifier))),
 			frame: frame,
 			visibleFrame: frame.intersection(clip),
 			isEnabled: object.isAccessibilityEnabled?() ?? true,
+			isSelected: object.isAccessibilitySelected?() ?? false,
+			isOn: role == .checkBox ? (attribute(object, #selector(NSAccessibilityProtocol.accessibilityValue)) as? NSNumber)?.boolValue : nil,
 			object: object
 		)
 	}

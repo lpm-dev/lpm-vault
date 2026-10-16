@@ -262,7 +262,6 @@ struct VaultProjectSettingsView: View {
 			.labelsHidden()
 			.disabled(access == nil || store.isChangingCliAccess || !store.canUseLocalSecrets)
 			.help(VaultCliAccessPresentation(access: access).help)
-			.accessibilityLabel("Require approval for CLI env access")
 			.accessibilityValue(VaultCliAccessPresentation(access: access).accessibilityValue)
 		}
 	}

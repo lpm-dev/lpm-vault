@@ -109,6 +109,7 @@
 		683ACA166A8ACAD4FEBE60B8 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */; };
 		6CCEDC914C33070A2489CA21 /* VaultSchemaReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D487550C0437B4F55F50D03C /* VaultSchemaReviewSheet.swift */; };
 		6ED4D87B9BD3A139401AFBCD /* EnvSchemaCompositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6AC2FB02EDCD85F6095DAE /* EnvSchemaCompositionTests.swift */; };
+		7037E1423C720FF964CE88C7 /* CountedNoun.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF02796887E7ECB5B31624FB /* CountedNoun.swift */; };
 		72A556D5F4A968AFC33FE63D /* NetlifyClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C7F37326D9E2F264CAC1E42 /* NetlifyClientTests.swift */; };
 		7302132FAB90E538507C530F /* AccessibilityTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = 011E191D4571C3B1A4F17C66 /* AccessibilityTree.swift */; };
 		7627BBC2CFC099173303EE50 /* PublishDestinationForms.swift in Sources */ = {isa = PBXBuildFile; fileRef = 837EB7065CA0617259762054 /* PublishDestinationForms.swift */; };
@@ -200,6 +201,7 @@
 		DC77CF7ED3A974F13B9A872A /* VaultProjectSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1C105854E7D91FF6577642B /* VaultProjectSettingsView.swift */; };
 		DD91B85B21E7B169BB79EB04 /* BlockingWorkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC1454DBB5C406F654AA9519 /* BlockingWorkTests.swift */; };
 		DE886DF789314E4EAAD79DD0 /* VaultWrites.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD382178E5B936352E5D8275 /* VaultWrites.swift */; };
+		DEFB269C23D8B02C82CA5DCB /* WorkspaceHeaderAccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5681E4911FC5CC9A372890E6 /* WorkspaceHeaderAccessibilityTests.swift */; };
 		DF99157CC6CB92499358AC6E /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36365D62B5851474D2DC178D /* UpdateChecker.swift */; };
 		E04C0B6AF4E856ADF3C70441 /* VaultKeyDraftTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD717F62997D6DD898B33102 /* VaultKeyDraftTests.swift */; };
 		E0C31D8D18D37370A9CED6AA /* VaultProjectIconPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ECB6CE7A642A3229BCBB38D /* VaultProjectIconPicker.swift */; };
@@ -328,6 +330,7 @@
 		547D88A2D08665F045A7D27C /* EnvProjectImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvProjectImportService.swift; sourceTree = "<group>"; };
 		54B2B378136A9AF7AF30122D /* PublishPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishPlanTests.swift; sourceTree = "<group>"; };
 		567082BBA115B816ABD4F7CA /* ProjectSettingsInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSettingsInteractionTests.swift; sourceTree = "<group>"; };
+		5681E4911FC5CC9A372890E6 /* WorkspaceHeaderAccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceHeaderAccessibilityTests.swift; sourceTree = "<group>"; };
 		56EDAD1416DB8AA9695355DA /* VaultQuitSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultQuitSheet.swift; sourceTree = "<group>"; };
 		57CB848FFEC1CAA584202946 /* PlatformAuthorizationEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformAuthorizationEnvelope.swift; sourceTree = "<group>"; };
 		58E4E4C897F8E4401D882AF6 /* SecureFileWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureFileWriter.swift; sourceTree = "<group>"; };
@@ -436,6 +439,7 @@
 		CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LPMAPIService.swift; sourceTree = "<group>"; };
 		CE7189FA596408E53283745A /* PlatformTimestamp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformTimestamp.swift; sourceTree = "<group>"; };
 		CEDE6264C2563EEC4611935A /* VaultContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultContentView.swift; sourceTree = "<group>"; };
+		CF02796887E7ECB5B31624FB /* CountedNoun.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CountedNoun.swift; sourceTree = "<group>"; };
 		D07D6C686ABD1CB42CDDCEA5 /* VaultSchemaGroupPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaGroupPanel.swift; sourceTree = "<group>"; };
 		D26762F360804E157281F8C7 /* PlatformConnections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformConnections.swift; sourceTree = "<group>"; };
 		D487550C0437B4F55F50D03C /* VaultSchemaReviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaReviewSheet.swift; sourceTree = "<group>"; };
@@ -597,6 +601,7 @@
 				1FBE437C5B6386ECCA2D40B1 /* BlockingWork.swift */,
 				35D4657C31CF1A081D03F682 /* BoundedHTTPResponse.swift */,
 				F9FF906993D46DE0663FDBE6 /* Constants.swift */,
+				CF02796887E7ECB5B31624FB /* CountedNoun.swift */,
 				614C541032B4C27C2966138F /* EnvValidation.swift */,
 				A9F299C0796F0A1335370EBB /* LPMConfigJSON.swift */,
 				AE03BDCB3BDAEDDF155A0998 /* ObservedWait.swift */,
@@ -700,6 +705,7 @@
 				0031F9F691CEFB97DCB58694 /* VaultWritesTests.swift */,
 				38F25A372F8AAC1E6FD1C755 /* VercelClientTests.swift */,
 				A2AB1D6BA22486C9CB6D596E /* VercelPublishingTests.swift */,
+				5681E4911FC5CC9A372890E6 /* WorkspaceHeaderAccessibilityTests.swift */,
 				639C6432C2667DC16F75B730 /* WorkspaceInteractionTests.swift */,
 				9BC920655BE718CBDE14A361 /* Fixtures */,
 			);
@@ -980,6 +986,7 @@
 				8A3471CD0FC57859EBAF3BF7 /* VaultWritesTests.swift in Sources */,
 				1F1703A5C68145FAB01857A6 /* VercelClientTests.swift in Sources */,
 				4C9F5820A9BA4AFD15BAB060 /* VercelPublishingTests.swift in Sources */,
+				DEFB269C23D8B02C82CA5DCB /* WorkspaceHeaderAccessibilityTests.swift in Sources */,
 				CA08DB849A3C93E99F58D4C2 /* WorkspaceInteractionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1010,6 +1017,7 @@
 				2B2B19A794629264CAEB0D0E /* CoolifyClient.swift in Sources */,
 				4207B8276428EB5364562DA3 /* CoolifyConnector.swift in Sources */,
 				292CA418679C93A21914393C /* CoolifyPublishing.swift in Sources */,
+				7037E1423C720FF964CE88C7 /* CountedNoun.swift in Sources */,
 				8CA56038EA5DD843D6D0CBAE /* EnvFileImportReview.swift in Sources */,
 				C6896B6C44E9A15A012DC7F7 /* EnvFileImportReviewSheet.swift in Sources */,
 				79314C80BEC853A4C3E50B77 /* EnvFileImportService.swift in Sources */,

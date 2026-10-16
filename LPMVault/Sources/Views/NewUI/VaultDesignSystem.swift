@@ -314,12 +314,55 @@ struct VaultBarButton: View {
 	}
 }
 
+/// A control that opens a menu, drawn like a `VaultBarButton` with a chevron after its label.
+struct VaultBarMenu<Items: View, Label: View>: View {
+	let accessibilityLabel: String
+	let items: Items
+	let label: Label
+
+	init(accessibilityLabel: String, @ViewBuilder items: () -> Items, @ViewBuilder label: () -> Label) {
+		self.accessibilityLabel = accessibilityLabel
+		self.items = items()
+		self.label = label()
+	}
+
+	var body: some View {
+		Menu {
+			items
+		} label: {
+			HStack(spacing: 6) {
+				label
+				Image(systemName: "chevron.down")
+					.font(.system(size: 8, weight: .bold))
+					.foregroundStyle(VaultPalette.textQuaternary)
+			}
+			.foregroundStyle(VaultPalette.textSecondary)
+			.padding(.horizontal, 10)
+			.frame(height: 26)
+			.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
+			.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+			// A menu drawn as a button otherwise makes each part of its label a menu of its own.
+			.accessibilityElement(children: .combine)
+		}
+		.menuStyle(.button)
+		.buttonStyle(.plain)
+		.menuIndicator(.hidden)
+		.fixedSize()
+		.accessibilityLabel(accessibilityLabel)
+	}
+}
+
 struct VaultOutlineButton: View {
 	var systemImage: String?
 	var title: String?
 	var reservedTitles: [String] = []
+	/// The tooltip, which also names a button that shows only its icon.
 	var help: String?
+	/// The button's name for accessibility, which begins with its title.
+	var label: String?
 	var active = false
+	/// Whether `active` is an on-off state, which makes it a toggle button for accessibility.
+	var toggles = false
 	var disabled = false
 	let action: () -> Void
 
@@ -357,6 +400,8 @@ struct VaultOutlineButton: View {
 		.buttonStyle(.plain)
 		.disabled(disabled)
 		.help(help ?? title ?? "")
+		.accessibilityLabel(label ?? title ?? help ?? "")
+		.accessibilityAddTraits(toggles ? (active ? [.isToggle, .isSelected] : .isToggle) : [])
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
 	}
@@ -424,6 +469,7 @@ struct VaultFilterChip: View {
 			.fixedSize()
 		}
 		.buttonStyle(.plain)
+		.accessibilityAddTraits(selected ? .isSelected : [])
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
 	}
