@@ -1515,7 +1515,7 @@ extension SheetInteractionTests {
 			try await host.click("Forget destination")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
 			try host.clickAlertButton("Forget Destination", in: try #require(host.window.sheets.first))
-			#expect(try await host.waitUntil { keychain.publishingStorage[history] == nil })
+			#expect(try await host.waitUntil { keychain.publishingStorage[history] == nil && keychain.publishingStorage["destinations.project"] == nil })
 			#expect(try await store.publishing.destinations(of: "project").get().isEmpty)
 		}
 
