@@ -25,7 +25,8 @@ extension SheetInteractionTests {
 			#expect(labels.contains("Not logged in"))
 			#expect(labels.contains("APP SETTINGS"))
 			#expect(labels.contains("Open Settings"))
-			#expect(!labels.contains("UPDATES"), "Updates are in the Settings window")
+			#expect(!AccessibilityTree.elements(in: host.window).contains { $0.says("Updates", options: .caseInsensitive) },
+				"Updates are in the Settings window")
 			let lines = AccessibilityTree.lines(in: host.view)
 			let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
 			let signIn = try #require(lines.first { $0.text.contains("Sign in with browser") })

@@ -46,6 +46,7 @@
 		2B86293F0EFF24BA77BD932D /* VaultSchemaClientPrefixes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E19BECC3EE6A24B2A9E3C04 /* VaultSchemaClientPrefixes.swift */; };
 		2C9BFF224E5A877F47F53B59 /* ProjectEnvSchemaSuggestion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B9BC57D99FCBC544AA8B129 /* ProjectEnvSchemaSuggestion.swift */; };
 		2DEAEBDD924683D9D5E1236D /* NewEnvironmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD952D6C2614FAF3EF8B184F /* NewEnvironmentSheet.swift */; };
+		2F1EF431ADBDB5344388D16E /* ObservedWaitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 420DB706B411B10C36A91F99 /* ObservedWaitTests.swift */; };
 		2FA5094F5A9238600C5D1705 /* PublishReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0631260A130D30932AA85D3A /* PublishReport.swift */; };
 		31C37550C9C66D1D977DA12E /* ConnectCoolifySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 275BE1DCB4AC27367E4E71F9 /* ConnectCoolifySheet.swift */; };
 		31FFAD21626E09A4ED439662 /* VaultWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F50F4FAADAD699043BBD5D0 /* VaultWorkspaceView.swift */; };
@@ -313,6 +314,7 @@
 		4087411C6D51EB8AFBC77E53 /* Round3BenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round3BenchmarkTests.swift; sourceTree = "<group>"; };
 		408CB91D419B483C1DED72C5 /* Resources */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Resources; path = Sources/Resources; sourceTree = SOURCE_ROOT; };
 		41FF1A17FB39F50360CE49DB /* ProjectEnvSchemaDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaDraft.swift; sourceTree = "<group>"; };
+		420DB706B411B10C36A91F99 /* ObservedWaitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservedWaitTests.swift; sourceTree = "<group>"; };
 		458FE25088254AA68B9EDEE1 /* NetlifyClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetlifyClient.swift; sourceTree = "<group>"; };
 		465AD9498C88039BB74D5D40 /* AddVariableSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddVariableSheet.swift; sourceTree = "<group>"; };
 		4688C3AA94245B231B939F2F /* AuthSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionStore.swift; sourceTree = "<group>"; };
@@ -643,6 +645,7 @@
 				316A30E15E450A3F7B451AAA /* NetlifyBenchmarkTests.swift */,
 				5C7F37326D9E2F264CAC1E42 /* NetlifyClientTests.swift */,
 				F5E3F7B9D7D51756CEBF3BDB /* NetlifyPublishingTests.swift */,
+				420DB706B411B10C36A91F99 /* ObservedWaitTests.swift */,
 				B525DD1074B0316F4375CFB8 /* OrganizationProjectImportTests.swift */,
 				F375377661ADD940B7762CFC /* PersonalKeyEnvelopeTests.swift */,
 				9581DE9E52A6C30E2F1CE82F /* PersonalProjectReadErrorTests.swift */,
@@ -922,6 +925,7 @@
 				59EC2828AF356F418659FE0D /* NetlifyBenchmarkTests.swift in Sources */,
 				72A556D5F4A968AFC33FE63D /* NetlifyClientTests.swift in Sources */,
 				94CE98228716C7DC2F4FDD6B /* NetlifyPublishingTests.swift in Sources */,
+				2F1EF431ADBDB5344388D16E /* ObservedWaitTests.swift in Sources */,
 				AFDB64DB0C06E90C68BACE8A /* OrganizationProjectImportTests.swift in Sources */,
 				C9350649A7097AED2D9830A3 /* PersonalKeyEnvelopeTests.swift in Sources */,
 				E85EDB2503341B5328BF927A /* PersonalProjectReadErrorTests.swift in Sources */,

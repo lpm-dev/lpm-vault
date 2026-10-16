@@ -91,19 +91,17 @@ struct VaultQuitCoordinatorTests {
 		}
 	}
 
-	@Test("opening a project to save it returns as soon as it's loaded, without waiting on a timer")
-	func opensWithoutPolling() async throws {
+	@Test("opening a project to save it waits until it's loaded, for each project in turn")
+	func opensProjects() async throws {
 		let fixture = try await makeFixture()
 		defer { fixture.store.lock() }
-		let opens = 40
-		let elapsed = try await ContinuousClock().measure {
-			for index in 0..<opens {
-				let opened = await fixture.store.openProjectForSaving(index.isMultiple(of: 2) ? "second" : "first")
-				try #require(opened)
-			}
+		for projectID in ["second", "first", "second"] {
+			#expect(await fixture.store.openProjectForSaving(projectID))
+			#expect(fixture.store.selectedProjectId == projectID)
+			#expect(fixture.store.selectedProject?.hasLoadedEnvironments == true)
+			#expect(!fixture.store.isReloadingKeyDescriptions)
 		}
-		// Polling sleeps 20 milliseconds at least once for each.
-		#expect(elapsed < .milliseconds(20) * opens / 2, "\(opens) opens took \(elapsed)")
+		#expect(await !fixture.store.openProjectForSaving("missing"))
 	}
 
 	@Test("with nothing unsaved and nothing being written, quitting goes ahead at once, with no sheet")

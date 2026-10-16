@@ -354,38 +354,6 @@ struct VaultQuitGateTests {
 		#expect(VaultQuitShortcut.allCases.map(\.explanation) == ["⌘Q quits immediately.", "Press ⌘Q twice.", "Hold ⌘Q, or press it twice."])
 	}
 
-	@MainActor
-	final class TerminationWait {
-		var terminated = false
-		var answered = false
-		var answeredWhileWaiting = false
-	}
-
-	@Test("a quit the gate's timer decides leaves room for the main-actor work that answers it, as AppKit's wait needs")
-	func shortcutQuitsOutsideTheMainQueue() async throws {
-		// The application makes its modal waits part of the run loop's common modes, as in the app.
-		_ = NSApplication.shared
-		let delegate = AppDelegate()
-		delegate.quitShortcut = { .direct }
-		let wait = TerminationWait()
-		delegate.terminate = {
-			wait.terminated = true
-			// AppKit waits for a later answer in a modal run loop, and the answer comes from main-actor work.
-			Task { @MainActor in wait.answered = true }
-			let deadline = Date(timeIntervalSinceNow: 2)
-			while !wait.answered, Date() < deadline {
-				_ = RunLoop.current.run(mode: .modalPanel, before: Date(timeIntervalSinceNow: 0.01))
-			}
-			wait.answeredWhileWaiting = wait.answered
-		}
-		// The gate's timers run as blocks on the main queue.
-		DispatchQueue.main.async { delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 0) }
-		let deadline = ContinuousClock.now + .seconds(5)
-		while !wait.terminated, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-		#expect(wait.terminated)
-		#expect(wait.answeredWhileWaiting, "Main-actor work runs while AppKit waits for the answer")
-	}
-
 	@Test("every way of quitting asks the app, saying whether the session is ending, and cancels a hint the shortcut shows")
 	func delegateRoutesQuitting() {
 		let delegate = AppDelegate()
@@ -502,5 +470,46 @@ struct VaultQuitHUDPlacementTests {
 		let frame = VaultQuitHUDController.frame(for: size, anchor: nil, screen: screen)
 		#expect(frame.midX == screen.midX)
 		#expect(frame.minY + VaultQuitHUDController.shadowMargin == screen.minY + VaultQuitHUDController.bottomInset)
+	}
+}
+
+extension SheetInteractionTests {
+	/// AppKit's run loop, as quitting waits on it; in the UI suite, so no other
+	/// test's nested run loops interleave with it.
+	@Suite("Quitting from the shortcut's timer")
+	@MainActor
+	struct QuitShortcutRunLoopTests {
+		@MainActor
+		final class TerminationWait {
+			var terminated = false
+			var answered = false
+			var answeredWhileWaiting = false
+		}
+
+		@Test("a quit the gate's timer decides leaves room for the main-actor work that answers it, as AppKit's wait needs")
+		func shortcutQuitsOutsideTheMainQueue() async throws {
+			// The application makes its modal waits part of the run loop's common modes, as in the app.
+			_ = NSApplication.shared
+			UITestSuite.require()
+			let delegate = AppDelegate()
+			delegate.quitShortcut = { .direct }
+			let wait = TerminationWait()
+			delegate.terminate = {
+				wait.terminated = true
+				// AppKit waits for a later answer in a modal run loop, and the answer comes from main-actor work.
+				Task { @MainActor in wait.answered = true }
+				let deadline = Date(timeIntervalSinceNow: 2)
+				while !wait.answered, Date() < deadline {
+					_ = RunLoop.current.run(mode: .modalPanel, before: Date(timeIntervalSinceNow: 0.01))
+				}
+				wait.answeredWhileWaiting = wait.answered
+			}
+			// The gate's timers run as blocks on the main queue.
+			DispatchQueue.main.async { delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 0) }
+			let deadline = ContinuousClock.now + .seconds(5)
+			while !wait.terminated, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+			#expect(wait.terminated)
+			#expect(wait.answeredWhileWaiting, "Main-actor work runs while AppKit waits for the answer")
+		}
 	}
 }
