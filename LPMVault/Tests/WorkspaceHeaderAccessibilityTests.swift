@@ -78,6 +78,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Copying all .env values", exactly: true))
 			gate.continuation.yield(())
 			#expect(try await host.waitForText("Copied all .env values", exactly: true))
+			#expect(fixture.store.clipboard.pasteboard.string(forType: .string)?.contains("PORT=") == true)
 			copyFeedback.expire()
 			#expect(try await host.waitForText("Copy all .env values", exactly: true))
 		}
@@ -165,6 +166,7 @@ extension SheetInteractionTests {
 
 			@MainActor func tearDown() {
 				store.lock()
+				store.clipboard.pasteboard.releaseGlobally()
 				try? FileManager.default.removeItem(atPath: folder)
 			}
 		}
@@ -184,7 +186,7 @@ extension SheetInteractionTests {
 				keychain.envStorage[project.id] = (name: project.name, path: project.path, environments: project.environments)
 			}
 			let store = VaultStore(keychainService: keychain, biometricService: biometric,
-				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }, clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 			store.isUnlocked = true
 			store.projects = [project, solo]
 			store.openProject(id: project.id)
