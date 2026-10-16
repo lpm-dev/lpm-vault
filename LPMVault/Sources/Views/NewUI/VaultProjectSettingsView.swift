@@ -54,7 +54,7 @@ struct VaultProjectSettingsView: View {
 		.onDisappear { store.projectIcons.endDetailing(project.id) }
 		.task(id: nameFocusRequest) {
 			// VoiceOver lands on the page's title, or follows focus to the name Rename edits.
-			if nameFocusRequest != nil { nameFocused = true } else { titleFocused = true }
+			if nameFocusRequest == nil { titleFocused = true }
 		}
 		.sheet(isPresented: $showsIconPicker) {
 			VaultProjectIconPicker(projectName: settings.name, initial: settings.icon) { choice in
@@ -150,6 +150,8 @@ struct VaultProjectSettingsView: View {
 			.font(.system(size: 12.5))
 			.foregroundStyle(VaultPalette.textPrimary)
 			.focused($nameFocused)
+			.onAppear { if nameFocusRequest != nil { focusName() } }
+			.onChange(of: nameFocusRequest) { _, request in if request != nil { focusName() } }
 			.onSubmit { if isEdited, nameIsValid { save() } }
 			.disabled(isSaving)
 			.padding(.horizontal, 9)
@@ -157,6 +159,13 @@ struct VaultProjectSettingsView: View {
 			.vaultInputField(focused: nameFocused, invalid: !nameIsValid)
 			.accessibilityLabel("Project name")
 		}
+	}
+
+	/// Focuses the name once the update that showed the page is done: SwiftUI
+	/// hands focus back to the window as the view the page replaces goes,
+	/// which undoes a request made during that update.
+	private func focusName() {
+		DispatchQueue.main.async { nameFocused = true }
 	}
 
 	private var iconRow: some View {

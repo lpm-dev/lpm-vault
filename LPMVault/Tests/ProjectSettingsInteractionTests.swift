@@ -65,7 +65,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { fixture.store.projectSettingsDrafts.isEmpty })
 			#expect(try await host.waitForTextToDisappear("Unsaved changes"))
 			try await host.click("All variables")
-			#expect(try await host.waitForText("New key"))
+			#expect(try await host.waitForText("New secret"))
 		}
 
 		private func workspace(_ fixture: Fixture) async throws -> SheetTestHost<some View> {
@@ -78,12 +78,12 @@ extension SheetInteractionTests {
 
 		/// The context menu of the sidebar row showing `name`.
 		private func rowMenu<V: View>(_ name: String, in host: SheetTestHost<V>) async throws -> NSMenu {
-			let frame = try await host.labelFrame(name, region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
-			let point = host.view.convert(NSPoint(x: frame.midX, y: frame.midY), to: nil)
+			let row = try await host.waitForElement(saying: name, region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
+			let point = AccessibilityTree.center(of: row, in: host.window)
 			let event = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [],
 				timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber, context: nil,
 				eventNumber: 0, clickCount: 1, pressure: 1))
-			let target = try #require(host.view.hitTest(host.view.convert(point, from: nil)))
+			let target = try #require(host.view.hitTest(host.view.superview?.convert(point, from: nil) ?? point))
 			return try #require(target.menu(for: event) ?? host.view.menu(for: event), "\(name) has a context menu")
 		}
 
@@ -105,7 +105,7 @@ extension SheetInteractionTests {
 			try perform("Rename…", in: try await rowMenu("demo-api", in: host))
 			#expect(try await host.waitUntilRendered { editingName(in: host) })
 			try await host.click("All variables")
-			#expect(try await host.waitForText("New key"))
+			#expect(try await host.waitForText("New secret"))
 			host.window.makeFirstResponder(nil)
 			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
 			#expect(try await host.waitForText("Project Settings"))
@@ -149,7 +149,7 @@ extension SheetInteractionTests {
 			try perform("Project Settings…", in: menu)
 			try await host.settle()
 			#expect(fixture.store.selectedProjectId == "demo")
-			#expect(try await host.waitForText("New key"))
+			#expect(try await host.waitForText("New secret"))
 			#expect(try await !host.text().contains("Project Settings"))
 		}
 
