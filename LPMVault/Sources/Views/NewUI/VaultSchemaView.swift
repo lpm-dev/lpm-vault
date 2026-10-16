@@ -820,19 +820,19 @@ struct VaultSchemaView: View {
 					if let listed, !listed.rules.isEmpty || !listed.groups.isEmpty {
 						loadedStatus(listed)
 					} else {
-						Text(Self.count(storedKeyCount, "stored key"))
+						Text(storedKeyCount.counted("stored key"))
 						Text("·")
 						Text("no rules yet")
 						draftStatus
 					}
 				case .unreadable?:
-					Text(Self.count(storedKeyCount, "stored key"))
+					Text(storedKeyCount.counted("stored key"))
 					Text("·")
 					Text("checks paused — lpm.json can't be read")
 						.foregroundStyle(VaultPalette.orangeTintText)
 					draftStatus
 				case .noFolder?:
-					Text(Self.count(storedKeyCount, "stored key"))
+					Text(storedKeyCount.counted("stored key"))
 					Text("·")
 					Text("no schema")
 					Text("·")
@@ -860,9 +860,9 @@ struct VaultSchemaView: View {
 
 	@ViewBuilder
 	private func loadedStatus(_ listed: Listed) -> some View {
-		Text(Self.count(listed.declaredCount, "declared key"))
+		Text(listed.declaredCount.counted("declared key"))
 		Text("·")
-		Text(Self.count(listed.groupCount, "group"))
+		Text(listed.groupCount.counted("group"))
 		Text("·")
 		Text("\(listed.inheritedCount) inherited")
 		draftStatus
@@ -943,9 +943,5 @@ struct VaultSchemaView: View {
 		let environments = Set(failures.values.joined())
 		let keys = failures.count == 1 ? "1 key fails" : "\(failures.count) keys fail"
 		return environments.count == 1 ? "\(keys) in \(environments.first ?? "")" : "\(keys) in \(environments.count) environments"
-	}
-
-	private static func count(_ value: Int, _ noun: String) -> String {
-		"\(value) \(noun)\(value == 1 ? "" : "s")"
 	}
 }

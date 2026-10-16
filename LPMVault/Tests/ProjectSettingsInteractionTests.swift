@@ -65,7 +65,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { fixture.store.projectSettingsDrafts.isEmpty })
 			#expect(try await host.waitForTextToDisappear("Unsaved changes"))
 			try await host.click("All variables")
-			#expect(try await host.waitForText("New secret"))
+			#expect(try await host.waitForText("New key", exactly: true))
 		}
 
 		private func workspace(_ fixture: Fixture) async throws -> SheetTestHost<some View> {
@@ -105,7 +105,7 @@ extension SheetInteractionTests {
 			try perform("Rename…", in: try await rowMenu("demo-api", in: host))
 			#expect(try await host.waitUntilRendered { editingName(in: host) })
 			try await host.click("All variables")
-			#expect(try await host.waitForText("New secret"))
+			#expect(try await host.waitForText("New key", exactly: true))
 			host.window.makeFirstResponder(nil)
 			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
 			#expect(try await host.waitForText("Project Settings"))
@@ -149,7 +149,7 @@ extension SheetInteractionTests {
 			try perform("Project Settings…", in: menu)
 			try await host.settle()
 			#expect(fixture.store.selectedProjectId == "demo")
-			#expect(try await host.waitForText("New secret"))
+			#expect(try await host.waitForText("New key", exactly: true))
 			#expect(try await !host.text().contains("Project Settings"))
 		}
 
@@ -198,14 +198,19 @@ extension SheetInteractionTests {
 			func switches(in view: NSView) -> [NSSwitch] {
 				((view as? NSSwitch).map { [$0] } ?? []) + view.subviews.flatMap { switches(in: $0) }
 			}
+			func cliSwitch() -> AccessibilityTree.Element? {
+				AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .checkBox }
+			}
 			#expect(try await host.waitUntil { switches(in: host.view).count == 1 })
 			#expect(fixture.store.projectCliAccess["demo"] == nil)
 			#expect(switches(in: host.view).allSatisfy { !$0.isEnabled }, "An unreadable policy can't be changed from here")
+			#expect(try await host.waitUntil { cliSwitch().map { ($0.label ?? $0.title) == "CLI approval" && $0.value == "Unavailable" } ?? false })
 			fixture.keychain.cliAccessPolicies["demo"] = .requireApproval
 			#expect(await fixture.store.loadProjects())
 			fixture.store.isUnlocked = true
 			#expect(try await host.waitUntil { switches(in: host.view).first?.isEnabled == true })
 			#expect(switches(in: host.view).first?.state == .on)
+			#expect(try await host.waitUntil { cliSwitch()?.value == "Required" })
 		}
 
 		@Test("Return in the picker's search uses its first match, once, and Cancel uses nothing")

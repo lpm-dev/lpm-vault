@@ -86,7 +86,7 @@ struct KeyApprovalSheet: View {
 
 			// Buttons
 			HStack {
-				Text("\(approvals.count) key\(approvals.count == 1 ? "" : "s") pending")
+				Text("\(approvals.count.counted("key")) pending")
 					.font(.caption)
 					.foregroundStyle(.secondary)
 

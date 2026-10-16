@@ -243,9 +243,11 @@ struct VaultPaneLayoutTests {
 		return view.subviews.flatMap { resizeViews(in: $0) }
 	}
 
+	/// Clicks where the inspector toggle is drawn in an 800-point-tall window: left of
+	/// More actions and New key, from the content's right edge. This suite isn't
+	/// a UI suite, so it can't find the toggle by its name.
 	private func clickInspectorToggle(in window: NSWindow, contentRightEdge: CGFloat) throws {
-		let location = WorkspaceHeaderGeometry.inspectorToggle(contentRightEdge: contentRightEdge)
-		try NativeTestClick.send(to: window, at: location)
+		try NativeTestClick.send(to: window, at: NSPoint(x: contentRightEdge - 162.5, y: 723.5))
 	}
 
 	private func event(_ type: NSEvent.EventType, x: CGFloat) throws -> NSEvent {
