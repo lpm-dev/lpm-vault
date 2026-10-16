@@ -123,12 +123,14 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Still here"))
 		}
 
-		@Test("a stop of the main run loop, as some framework sends a test process, doesn't end the run")
+		@Test("stops of the main run loop, as frameworks send a test process, don't end the run")
 		func survivesRunLoopStop() async throws {
 			let host = SheetTestHost(Text("Still here").frame(width: 200, height: 80), size: NSSize(width: 200, height: 80))
 			defer { host.window.close() }
-			CFRunLoopStop(CFRunLoopGetMain())
-			try await Task.sleep(for: .milliseconds(50))
+			for _ in 0..<3 {
+				CFRunLoopStop(CFRunLoopGetMain())
+				try await Task.sleep(for: .milliseconds(30))
+			}
 			#expect(try await host.waitForText("Still here"))
 		}
 

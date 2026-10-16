@@ -137,11 +137,11 @@ enum AccessibilityTree {
 		if result != .success { Issue.record("Accessibility didn't answer this process's request: \(result.rawValue)") }
 	}
 
-	/// Runs the main run loop again when its outermost run is stopped. Swift's
-	/// async `main` runs that loop and exits when it returns, and a launched
-	/// app's frameworks can stop it as if a modal loop of theirs were running,
-	/// which ended runs before their reports were written. A stop then ends
-	/// only the nested runs it can be meant for.
+	/// Keeps running the main run loop once its outermost run is stopped.
+	/// Swift's async `main` runs that loop and exits when it returns, and a
+	/// launched app's frameworks can stop it, as AppKit does after a refused
+	/// quit, which ended runs before their reports were written. The test run
+	/// ends with its own exit, so this run never needs to return.
 	private static func keepMainRunLoopRunning() {
 		var nested = 0
 		let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.entry.rawValue | CFRunLoopActivity.exit.rawValue, true, 0) {
@@ -151,7 +151,8 @@ enum AccessibilityTree {
 			} else if nested > 0 {
 				nested -= 1
 			} else {
-				CFRunLoopRun()
+				// The runs started here are nested ones, which stops end, so run again after each.
+				while true { CFRunLoopRun() }
 			}
 		}
 		CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
