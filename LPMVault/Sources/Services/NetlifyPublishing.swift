@@ -346,7 +346,7 @@ enum NetlifyPublishing {
 	private static func waitOut(until reset: Date?, waits: inout Int) async -> NetlifyAPIError? {
 		guard waits < rateLimitRetries, let wait = NetlifyHTTP.rateLimitWait(until: reset) else { return .rateLimited(until: reset) }
 		waits += 1
-		do { try await Task.sleep(for: wait) } catch { return .cancelled }
+		do { try await NetlifyHTTP.waitOut(wait, until: reset) } catch { return .cancelled }
 		return nil
 	}
 
