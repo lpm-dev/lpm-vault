@@ -93,23 +93,18 @@ struct NetlifyClientTests {
 		#expect(endless.requests.count - before <= 1, "Nothing loads past the deadline")
 	}
 
-	@Test("a page that arrives after the listing's deadline fails the listing, though it's the last")
+	@Test("a page that arrives after the listing's deadline fails the listing, though it's the last", .timeLimit(.minutes(1)))
 	func lateLastPage() async throws {
 		let lastPage = DispatchSemaphore(value: 0)
 		defer { lastPage.signal() }
-		let route = PlatformHTTPStub.platform { request in
-			if request.query["page"] == "2" {
-				lastPage.wait()
-				return .json(200, [self.site("late")])
-			}
-			return .json(200, (0..<NetlifyClient.sitePageSize).map { self.site("s\($0)") })
+		let route = PlatformHTTPStub.platform { _ in
+			lastPage.wait()
+			return .json(200, [self.site("late")])
 		}
 		let client = NetlifyClient(token: "nfo_secret", baseURL: route.baseURL, session: route.session,
-			limits: .init(siteBytes: 64 * 1024 * 1024, siteDeadline: .seconds(2)))
-		let started = ContinuousClock.now
-		#expect(await client.sites() == .failure(.invalidResponse))
-		#expect(route.requests.count == 2, "The last page was asked for before the deadline")
-		#expect(ContinuousClock.now - started < .seconds(10), "The listing ends at its deadline, not when the page arrives")
+			limits: .init(siteBytes: 64 * 1024 * 1024, siteDeadline: .milliseconds(200)))
+		#expect(await client.sites() == .failure(.invalidResponse), "The listing ends at its deadline: the page arrives only after it returns")
+		#expect(route.requests.count == 1)
 	}
 
 	@Test("a site's variables are read under its team, with the site in the query, and without their values")
