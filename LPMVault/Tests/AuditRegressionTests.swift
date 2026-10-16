@@ -1266,15 +1266,15 @@ private final class SnapshotBuildTracker: @unchecked Sendable {
   }
 }
 
-/// These tests own the system pasteboard while they run. The native UI tests
-/// also read it, so both belong to the same serialized suite.
-extension SheetInteractionTests {
+/// Each test copies to a pasteboard of its own, so none touches the system's.
+@Suite("Clipboard ownership")
+@MainActor
+struct ClipboardOwnershipTests {
 	@Test("clipboard timeout never clears a newer pasteboard owner")
-	@MainActor
 	func clipboardOwnership() async throws {
-		let pasteboard = NSPasteboard.general
-		pasteboard.clearContents()
-		let manager = ClipboardManager(clearDelay: 0.02)
+		let pasteboard = NSPasteboard.withUniqueName()
+		defer { pasteboard.releaseGlobally() }
+		let manager = ClipboardManager(pasteboard: pasteboard, clearDelay: 0.02)
 		manager.copy("lpm-secret")
 		pasteboard.clearContents()
 		pasteboard.setString("newer-owner", forType: .string)
@@ -1287,12 +1287,11 @@ extension SheetInteractionTests {
 	}
 
 	@Test("an immediate clear removes only a clipboard value owned by the vault")
-	@MainActor
 	func immediateClipboardOwnership() {
-		let pasteboard = NSPasteboard.general
-		pasteboard.clearContents()
+		let pasteboard = NSPasteboard.withUniqueName()
+		defer { pasteboard.releaseGlobally() }
 		pasteboard.setString("unrelated", forType: .string)
-		let manager = ClipboardManager(clearDelay: 60)
+		let manager = ClipboardManager(pasteboard: pasteboard, clearDelay: 60)
 
 		manager.clearClipboard()
 		#expect(pasteboard.string(forType: .string) == "unrelated")
@@ -1301,6 +1300,22 @@ extension SheetInteractionTests {
 		#expect(pasteboard.types?.contains(ClipboardManager.concealedType) == true)
 		#expect(pasteboard.types?.contains(ClipboardManager.transientType) == true)
 		manager.clearClipboard()
+		#expect(pasteboard.string(forType: .string) == nil)
+	}
+
+	@Test("locking one store leaves what another copied, and clears its own copy")
+	func lockClearsOnlyItsOwnCopies() {
+		let pasteboard = NSPasteboard.withUniqueName()
+		defer { pasteboard.releaseGlobally() }
+		func store() -> VaultStore {
+			VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService(),
+				authTokenProvider: { _, _ in nil }, clipboard: ClipboardManager(pasteboard: pasteboard))
+		}
+		let copying = store(), other = store()
+		#expect(copying.clipboard.copy("copied-secret"))
+		other.lock()
+		#expect(pasteboard.string(forType: .string) == "copied-secret")
+		copying.lock()
 		#expect(pasteboard.string(forType: .string) == nil)
 	}
 }

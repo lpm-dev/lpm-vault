@@ -444,8 +444,7 @@ struct ConnectCLISheet: View {
 	}
 
 	private func copy(_ text: String, as item: String) {
-		NSPasteboard.general.clearContents()
-		NSPasteboard.general.setString(text, forType: .string)
+		store.clipboard.copyText(text)
 		copiedItem = item
 		copyResetTask?.cancel()
 		copyResetTask = Task {

@@ -856,7 +856,7 @@ struct VaultWorkspaceView: View {
 		guard store.canUseLocalSecrets, !store.isShowingAccountPage,
 			let current = store.selectedProject, current.id == projectID,
 			let value = current.value(for: key, in: environment),
-			ClipboardManager.shared.copy(ClipboardManager.dotenvText(for: [key: value]))
+			store.clipboard.copy(ClipboardManager.dotenvText(for: [key: value]))
 		else { return }
 		copyFeedback = VaultCopyFeedback(target: .secret(projectID: projectID, environment: environment, key: key))
 	}
@@ -887,7 +887,7 @@ struct VaultWorkspaceView: View {
 			else { return }
 			value = shown
 		}
-		guard ClipboardManager.shared.copy(request.format.text(key: name, value: value)) else { return }
+		guard store.clipboard.copy(request.format.text(key: name, value: value)) else { return }
 		copyFeedback = VaultCopyFeedback(target: .secret(projectID: request.projectID, environment: request.environment, key: request.key))
 	}
 
@@ -925,7 +925,7 @@ struct VaultWorkspaceView: View {
 			let contents = ClipboardManager.dotenvText(
 				for: current.secrets(for: context.environment)
 			)
-			if ClipboardManager.shared.copy(contents, clearAfter: 15) {
+			if store.clipboard.copy(contents, clearAfter: 15) {
 				copyFeedback = VaultCopyFeedback(target: .all(context))
 			}
 		}
@@ -1011,7 +1011,8 @@ struct VaultWorkspaceView: View {
 			folderExists: store.projectIcons.detection(for: project.id) != .folderMissing,
 			openSettings: { openProjectSettings(project, focusingName: false) },
 			rename: { openProjectSettings(project, focusingName: true) },
-			delete: { projectToDelete = project }
+			delete: { projectToDelete = project },
+			copyText: { store.clipboard.copyText($0) }
 		)
 	}
 
@@ -1085,7 +1086,7 @@ struct VaultWorkspaceView: View {
 				!Task.isCancelled, copyUnsavedID == requestID,
 				store.isUnlocked, !store.isShowingAccountPage, store.keyDrafts.orphanIDs.contains(id),
 				let value = store.keyDrafts.draft(id)?.value(in: environment),
-				ClipboardManager.shared.copy(value)
+				store.clipboard.copy(value)
 			else { return }
 			copyFeedback = VaultCopyFeedback(target: .unsaved(id, environment: environment))
 		}

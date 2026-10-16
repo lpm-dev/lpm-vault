@@ -515,7 +515,8 @@ extension SheetInteractionTests {
 		let original = Data(#"{"tasks":{"dev":{"command":"npm run dev","env":"qa"}},"custom":true}"#.utf8)
 		let url = folder.appendingPathComponent("lpm.json")
 		try original.write(to: url)
-		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService())
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService(),
+			clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 		store.projects = [VaultProject(id: "example", name: "Example", path: folder.path, environments: ["development": [:], "staging": [:]])]
 		store.isUnlocked = true
 		store.selectedProjectId = "example"
@@ -527,7 +528,7 @@ extension SheetInteractionTests {
 		try await host.click("Optional task environments")
 		try await host.settle()
 		try await host.click("Copy example")
-		let copied = try #require(NSPasteboard.general.string(forType: .string))
+		let copied = try #require(store.clipboard.pasteboard.string(forType: .string))
 		#expect(copied == ProjectCLITaskExample(vaultId: "example", environments: ["development", "staging"], selectedEnvironment: "development", configuration: ProjectCLILink.configuration(inFolder: folder.path))?.json)
 		#expect(try Data(contentsOf: url) == original)
 		try ProjectCLILink.link(vaultId: "example", folder: folder.path)
@@ -543,7 +544,8 @@ extension SheetInteractionTests {
 		let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cli-no-config-\(UUID().uuidString)")
 		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 		defer { try? FileManager.default.removeItem(at: folder) }
-		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService())
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService(),
+			clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 		store.projects = [VaultProject(id: "fresh", name: "Fresh", path: folder.path, environments: ["staging": [:]])]
 		store.isUnlocked = true
 		store.selectedProjectId = "fresh"
@@ -562,7 +564,8 @@ extension SheetInteractionTests {
 	@Test("an expanded task example fits a constrained sheet with visible footer actions")
 	@MainActor
 	func expandedExampleFitsShortWindow() async throws {
-		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService())
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(), apiService: MockAPIService(),
+			clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 		store.projects = [VaultProject(id: "example", name: "Example", path: "", environments: ["development": [:], "staging": [:]])]
 		store.isUnlocked = true
 		store.selectedProjectId = "example"
@@ -572,6 +575,6 @@ extension SheetInteractionTests {
 		#expect(try await host.waitForText("Done", footer: 70))
 		#expect(try await host.waitForText("Docs", footer: 70))
 		try await host.click("Copy example")
-		#expect(NSPasteboard.general.string(forType: .string)?.contains("tasks") == true)
+		#expect(store.clipboard.pasteboard.string(forType: .string)?.contains("tasks") == true)
 	}
 }

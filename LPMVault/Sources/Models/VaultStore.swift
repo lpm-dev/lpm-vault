@@ -1209,6 +1209,8 @@ final class VaultStore {
   let keyDrafts = VaultKeyDrafts()
   /// Each project's icon, chosen or found in its folder.
   let projectIcons: ProjectIconStore
+  /// Where values are copied, and cleared from when the vault locks.
+  let clipboard: ClipboardManager
   /// Unsaved Project Settings edits by project ID; cleared on lock and account changes.
   var projectSettingsDrafts: [String: ProjectSettingsDraft] = [:]
   /// Projects whose Project Settings are being saved.
@@ -1948,9 +1950,11 @@ final class VaultStore {
       ProcessInfo.processInfo.systemUptime
     },
     autoLockDuration: TimeInterval = VaultConstants.vaultAutoLockDuration,
-    projectIconsDirectory: URL = ProjectIconStore.defaultImagesDirectory
+    projectIconsDirectory: URL = ProjectIconStore.defaultImagesDirectory,
+    clipboard: ClipboardManager = ClipboardManager()
   ) {
     self.keychainService = keychainService
+    self.clipboard = clipboard
     self.projectIcons = ProjectIconStore(preferences: preferences, imagesDirectory: projectIconsDirectory)
     self.persistence = VaultPersistenceCoordinator(service: keychainService)
     self.publishing = PublishingStore(service: keychainService)
@@ -5128,7 +5132,7 @@ final class VaultStore {
     cancelLocalStateRefresh()
     localStateRefreshError = nil
     biometricService.resetCache()
-    ClipboardManager.shared.clearClipboard()
+    clipboard.clearClipboard()
     projects = projects.map { VaultProject(metadata: $0.metadata) }
     workspaceSnapshots = [:]
     platforms.reset()

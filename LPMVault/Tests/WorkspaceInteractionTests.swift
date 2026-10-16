@@ -314,7 +314,7 @@ extension SheetInteractionTests {
 			#expect(host.value == (edited ? "unsaved-workspace-draft" : "current-cli-value"))
 			try host.click(.copy)
 			#expect(try await host.waitUntil {
-				NSPasteboard.general.string(forType: .string) == (edited ? "unsaved-workspace-draft" : "current-cli-value")
+				store.clipboard.pasteboard.string(forType: .string) == (edited ? "unsaved-workspace-draft" : "current-cli-value")
 			})
 			if edited { #expect(try await host.waitForText("Changed outside the editor")) }
 		}
@@ -541,7 +541,7 @@ extension SheetInteractionTests {
 			#expect(keychain.envStorage["workspace"]?.environments["default"]?["TOKEN"] == "default-value")
 			// Kept values of a deleted environment follow the project's environments.
 			try host.click(.copy, ofValueAt: removal == "rename" ? 2 : 1)
-			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "unsaved-removed-target" })
+			#expect(try await host.waitUntil { store.clipboard.pasteboard.string(forType: .string) == "unsaved-removed-target" })
 			try await host.click("Discard")
 			try await host.settle()
 			#expect(try await !host.text().contains("deleted outside the editor"))
@@ -568,12 +568,12 @@ extension SheetInteractionTests {
 			store.openProject(id: "workspace")
 			#expect(try await host.waitForText("UNSAVED EDITS", exactly: true))
 			#expect(try await host.waitForText("deleted outside the editor"))
-			NSPasteboard.general.clearContents()
-			NSPasteboard.general.setString("unsaved-removed-project", forType: .string)
+			store.clipboard.pasteboard.clearContents()
+			store.clipboard.pasteboard.setString("unsaved-removed-project", forType: .string)
 			try await host.click("Copy value")
 			#expect(try await host.waitUntil {
 				biometric.authenticationReasons == ["Copy your unsaved value"]
-					&& NSPasteboard.general.string(forType: .string) == "unsaved-removed-project"
+					&& store.clipboard.pasteboard.string(forType: .string) == "unsaved-removed-project"
 			})
 			#expect(try await host.waitForText("Copied"))
 			#expect(keychain.envStorage["workspace"]?.environments["default"]?["TOKEN"] == "fixture-value")
@@ -613,7 +613,7 @@ extension SheetInteractionTests {
 			}
 			gate.continuation.yield(())
 			try await host.settle()
-			#expect(NSPasteboard.general.string(forType: .string) != "draft-must-not-copy")
+			#expect(store.clipboard.pasteboard.string(forType: .string) != "draft-must-not-copy")
 		}
 
 		@Test("copy all copies refreshed values when authentication reactivates the app")
@@ -635,7 +635,7 @@ extension SheetInteractionTests {
 			let refresh = Task { await store.refreshLocalState() }
 			gate.continuation.yield(())
 			await refresh.value
-			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "TOKEN=\"cli-updated\"\n" })
+			#expect(try await host.waitUntil { store.clipboard.pasteboard.string(forType: .string) == "TOKEN=\"cli-updated\"\n" })
 			#expect(try await host.waitForText("Copied"))
 		}
 
@@ -713,7 +713,7 @@ extension SheetInteractionTests {
 			try selectRow(0, in: host)
 			try await host.settle()
 			try host.click(.copy)
-			#expect(try await host.waitUntil { NSPasteboard.general.string(forType: .string) == "fixture-value" })
+			#expect(try await host.waitUntil { store.clipboard.pasteboard.string(forType: .string) == "fixture-value" })
 			#expect(try await host.waitForText("Copied"))
 			copyFeedback.expire()
 			#expect(try await host.waitForTextToDisappear("Copied"))
@@ -810,7 +810,7 @@ extension SheetInteractionTests {
 				environments: environments)
 			keychain.envStorage[project.id] = (name: project.name, path: "", environments: project.environments)
 			let store = VaultStore(keychainService: keychain, biometricService: biometric,
-				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }, clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 			store.isUnlocked = true
 			store.projects = [project]
 			if additionalProject {
