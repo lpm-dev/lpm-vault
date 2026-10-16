@@ -27,6 +27,15 @@ struct VaultUnsavedWork: Equatable {
 		let changeCount: Int
 	}
 
+	/// A project's unsaved Project Settings: a new name, a new icon, or both.
+	struct ProjectSettings: Equatable {
+		let projectID: String
+		let projectName: String
+		/// The name typed over the saved one, if it was changed.
+		let newName: String?
+		let changesIcon: Bool
+	}
+
 	/// A sheet still open with something typed into it, which only it can save.
 	struct OpenSheet: Equatable, Identifiable {
 		let id: UUID
@@ -42,11 +51,12 @@ struct VaultUnsavedWork: Equatable {
 
 	var keyEdits: [KeyEdits] = []
 	var schemaDrafts: [SchemaDraft] = []
+	var projectSettings: [ProjectSettings] = []
 	var openSheets: [OpenSheet] = []
 	/// The projects with unsaved work, the selected one first, then in the sidebar's order.
 	var projectOrder: [String] = []
 
-	var isEmpty: Bool { keyEdits.isEmpty && schemaDrafts.isEmpty && openSheets.isEmpty }
+	var isEmpty: Bool { keyEdits.isEmpty && schemaDrafts.isEmpty && projectSettings.isEmpty && openSheets.isEmpty }
 }
 
 extension VaultStore {
@@ -83,6 +93,11 @@ extension VaultStore {
 			return VaultUnsavedWork.SchemaDraft(projectID: projectID, projectName: name, changeCount: draft.changeCount)
 		}
 		.sorted { ranked($0.projectID, $0.projectName) < ranked($1.projectID, $1.projectName) }
+		work.projectSettings = projectSettingsDrafts.compactMap { projectID, draft in
+			guard let name = names[projectID], !draft.isEmpty else { return nil }
+			return VaultUnsavedWork.ProjectSettings(projectID: projectID, projectName: name, newName: draft.name?.text, changesIcon: draft.icon != nil)
+		}
+		.sorted { ranked($0.projectID, $0.projectName) < ranked($1.projectID, $1.projectName) }
 		work.openSheets = openSheetWork.values
 			.map { sheet in
 				VaultUnsavedWork.OpenSheet(id: sheet.id, projectID: sheet.projectID,
@@ -95,7 +110,9 @@ extension VaultStore {
 				return first != second ? first < second : $0.title < $1.title
 			}
 		var seen = Set<String>()
-		for projectID in work.keyEdits.map(\.projectID) + work.schemaDrafts.map(\.projectID) + work.openSheets.compactMap(\.projectID) {
+		for projectID in work.keyEdits.map(\.projectID) + work.schemaDrafts.map(\.projectID) + work.projectSettings.map(\.projectID)
+			+ work.openSheets.compactMap(\.projectID)
+		{
 			seen.insert(projectID)
 		}
 		work.projectOrder = seen.sorted { ranked($0, names[$0] ?? $0) < ranked($1, names[$1] ?? $1) }

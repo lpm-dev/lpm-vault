@@ -408,6 +408,39 @@ struct VaultQuitCoordinatorTests {
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""RETRY""#))
 	}
 
+	@Test("an unsaved Project Settings edit is listed, saved before quitting, and its failure says why")
+	func savesProjectSettings() async throws {
+		let fixture = try await makeFixture()
+		defer { fixture.store.lock() }
+		let project = try #require(fixture.store.projects.first { $0.id == "first" })
+		#expect(fixture.store.editProjectSettings(of: project) { $0.name = "first-renamed" })
+		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel, "An unsaved name is something to lose")
+		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(fixture.coordinator.items.map(\.subject) == ["Project settings"])
+		#expect(fixture.coordinator.items.first?.detail == "Name first-renamed · not saved")
+		#expect(VaultQuitSheet.summary(of: fixture.coordinator.items) == "Project settings for 1 project haven't been saved.")
+		fixture.coordinator.saveAndQuit()
+		try await waitUntil { fixture.outcome.terminations == 1 }
+		#expect(fixture.keychain.envStorage["first"]?.name == "first-renamed")
+		#expect(fixture.store.projectSettingsDrafts.isEmpty)
+	}
+
+	@Test("a Project Settings edit that can't be saved stops quitting with the reason")
+	func projectSettingsFailure() async throws {
+		let fixture = try await makeFixture()
+		defer { fixture.store.lock() }
+		let project = try #require(fixture.store.projects.first { $0.id == "first" })
+		#expect(fixture.store.editProjectSettings(of: project) { $0.name = "   " })
+		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
+		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		fixture.coordinator.saveAndQuit()
+		try await waitUntil { fixture.coordinator.phase == .failed }
+		#expect(fixture.coordinator.failedItems.first?.state == .failed("Enter a name for the project."))
+		#expect(fixture.outcome.terminations == 0)
+		#expect(!fixture.store.projectSettingsDrafts.isEmpty, "The edit stays")
+		fixture.coordinator.cancel()
+	}
+
 	@Test("what an open sheet holds is listed, and quitting asks about it alone")
 	func openSheetWork() async throws {
 		let fixture = try await makeFixture()

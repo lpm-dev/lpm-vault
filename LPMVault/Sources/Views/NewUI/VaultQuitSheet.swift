@@ -117,6 +117,7 @@ struct VaultQuitSheet: View {
 		let projects = Set(keyItems.map(\.projectID)).count
 		let drafts = items.filter { if case .schema = $0.kind { true } else { false } }.count
 		let sheets = items.filter { if case .sheet = $0.kind { true } else { false } }.count
+		let settings = Set(items.compactMap { if case .settings = $0.kind { $0.projectID } else { nil } }).count
 		var parts: [String] = []
 		if edits > 0 {
 			let editText = edits == 1 ? "1 edit" : "\(edits) edits"
@@ -125,6 +126,9 @@ struct VaultQuitSheet: View {
 		}
 		if drafts > 0 {
 			parts.append(drafts == 1 ? "a schema draft hasn't been written to lpm.json" : "\(drafts) schema drafts haven't been written to lpm.json")
+		}
+		if settings > 0 {
+			parts.append("project settings for \(settings == 1 ? "1 project" : "\(settings) projects") haven't been saved")
 		}
 		if sheets > 0 {
 			parts.append(sheets == 1 ? "a sheet is still open" : "\(sheets) sheets are still open")
@@ -162,6 +166,7 @@ struct VaultQuitSheet: View {
 			Group {
 				switch item.kind {
 				case .schema: Text("{}").font(VaultTypography.mono(11, .bold))
+				case .settings: Image(systemName: "gearshape").font(.system(size: 12, weight: .medium))
 				case .sheet: Image(systemName: "macwindow").font(.system(size: 12, weight: .medium))
 				case .keys, .review: Image(systemName: "folder").font(.system(size: 12, weight: .medium))
 				}
@@ -334,6 +339,7 @@ extension VaultQuitCoordinator.Item {
 		case .keys(let keys): keys.count == 1 ? "1 key" : "\(keys.count) keys"
 		case .review(let keys): keys.count == 1 ? "1 key needs review" : "\(keys.count) keys need review"
 		case .schema: "Schema draft"
+		case .settings: "Project settings"
 		case .sheet(let title, _): title
 		}
 	}
@@ -346,6 +352,9 @@ extension VaultQuitCoordinator.Item {
 			keys.map(\.key).joined(separator: ", ") + " · changed elsewhere since the edit"
 		case .schema(let changes):
 			(changes == 1 ? "1 rule change" : "\(changes) rule changes") + " · lpm.json not written"
+		case .settings(let newName, let changesIcon):
+			[newName.map { "Name \($0)" }, changesIcon ? (newName == nil ? "Icon" : "icon") : nil]
+				.compactMap { $0 }.joined(separator: " and ") + " · not saved"
 		case .sheet(_, let detail):
 			detail
 		}
@@ -354,7 +363,7 @@ extension VaultQuitCoordinator.Item {
 	var badge: String {
 		switch kind {
 		case .keys, .review: editCount == 1 ? "1 edit" : "\(editCount) edits"
-		case .schema: "draft"
+		case .schema, .settings: "draft"
 		case .sheet: "open"
 		}
 	}

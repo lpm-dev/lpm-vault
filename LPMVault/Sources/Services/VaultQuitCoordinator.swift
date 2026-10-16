@@ -40,6 +40,8 @@ final class VaultQuitCoordinator {
 			case review([VaultUnsavedWork.KeyEdit])
 			/// The project's schema draft, with how many rules it changes.
 			case schema(changes: Int)
+			/// The project's unsaved Project Settings.
+			case settings(newName: String?, changesIcon: Bool)
 			/// A sheet still open, with what it does and what's typed into it.
 			case sheet(title: String, detail: String)
 		}
@@ -54,7 +56,7 @@ final class VaultQuitCoordinator {
 		var editCount: Int {
 			switch kind {
 			case .keys(let keys), .review(let keys): keys.reduce(0) { $0 + $1.edits }
-			case .schema, .sheet: 0
+			case .schema, .settings, .sheet: 0
 			}
 		}
 
@@ -69,7 +71,7 @@ final class VaultQuitCoordinator {
 		/// Whether this sheet can save it, unlike edits that need a review or an open sheet's.
 		var isSaveable: Bool {
 			switch kind {
-			case .keys, .schema: true
+			case .keys, .schema, .settings: true
 			case .review, .sheet: false
 			}
 		}
@@ -280,7 +282,7 @@ final class VaultQuitCoordinator {
 				if !outcome.review.isEmpty { changedWhileSaving = true }
 				index += replace(at: index, with: outcome)
 			} else {
-				let state = await saveSchema(item, in: store)
+				let state = if case .settings = item.kind { await saveSettings(item, in: store) } else { await saveSchema(item, in: store) }
 				guard self.run == run, phase == .saving else { return }
 				items[index].state = state
 				index += 1
@@ -383,6 +385,12 @@ final class VaultQuitCoordinator {
 		}
 	}
 
+	private func saveSettings(_ item: Item, in store: VaultStore) async -> ItemState {
+		await store.saveProjectSettings(of: item.projectID)
+		guard store.projectSettingsDrafts[item.projectID] != nil else { return .saved }
+		return .failed(store.projectSettingsErrors[item.projectID] ?? "\(item.projectName)'s settings couldn't be saved.")
+	}
+
 	private func finish(quitting: Bool) {
 		if isPresented {
 			presenter.dismiss()
@@ -411,10 +419,11 @@ final class VaultQuitCoordinator {
 	}
 
 	/// The sheet's rows, a project's together: its keys, the keys it can't
-	/// save, its schema draft, then its open sheets.
+	/// save, its schema draft, its Project Settings, then its open sheets.
 	static func items(for work: VaultUnsavedWork) -> [Item] {
 		let keyEdits = Dictionary(work.keyEdits.map { ($0.projectID, $0) }, uniquingKeysWith: { first, _ in first })
 		let drafts = Dictionary(work.schemaDrafts.map { ($0.projectID, $0) }, uniquingKeysWith: { first, _ in first })
+		let settings = Dictionary(work.projectSettings.map { ($0.projectID, $0) }, uniquingKeysWith: { first, _ in first })
 		let sheets = Dictionary(grouping: work.openSheets.filter { $0.projectID != nil }, by: { $0.projectID ?? "" })
 		var items: [Item] = []
 		func sheetItem(_ sheet: VaultUnsavedWork.OpenSheet) -> Item {
@@ -435,6 +444,10 @@ final class VaultQuitCoordinator {
 			if let draft = drafts[projectID] {
 				items.append(Item(id: "schema:" + projectID, projectID: projectID, projectName: draft.projectName,
 					kind: .schema(changes: draft.changeCount), state: .waiting))
+			}
+			if let edit = settings[projectID] {
+				items.append(Item(id: "settings:" + projectID, projectID: projectID, projectName: edit.projectName,
+					kind: .settings(newName: edit.newName, changesIcon: edit.changesIcon), state: .waiting))
 			}
 			items += (sheets[projectID] ?? []).map(sheetItem)
 		}
