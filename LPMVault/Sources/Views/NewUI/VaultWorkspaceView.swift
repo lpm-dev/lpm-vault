@@ -77,15 +77,6 @@ struct VaultWorkspaceView: View {
 		return IconWatch(projectID: project.id, folder: project.path, paths: store.projectIcons.watchedPaths(for: project.id))
 	}
 
-	/// Redraws the selected project's icon whenever a file it can come from changes.
-	private func watchIconFiles() async {
-		guard let watch = iconWatch else { return }
-		for await _ in ProjectConfigWatcher.changes(inFolder: watch.folder, watching: watch.paths) {
-			guard !Task.isCancelled else { return }
-			store.projectIcons.revalidate(watch.projectID)
-		}
-	}
-
 	/// What the Schema page watches; nil off the page.
 	private var schemaWatch: SchemaWatch? {
 		guard mode == .schema, !store.isShowingAccountPage, let descriptions = project.flatMap({ store.keyDescriptions[$0.id] }), !descriptions.folder.isEmpty
@@ -210,7 +201,10 @@ struct VaultWorkspaceView: View {
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
 		.task(id: schemaWatch) { await watchSchemaFolder() }
-		.task(id: iconWatch) { await watchIconFiles() }
+		.task(id: iconWatch) {
+			// Redraws the selected project's icon whenever a file it can come from changes.
+			if let iconWatch { await store.projectIcons.watch(iconWatch.projectID) }
+		}
 		.onChange(of: store.selectedEnvironment) { _, environment in
 			resetCopyPresentation()
 			importReview = nil
@@ -325,6 +319,7 @@ struct VaultWorkspaceView: View {
 								onBack: { mode = .matrix },
 								onDelete: { projectToDelete = project }
 							)
+							.id(project.id)
 							.frame(maxWidth: .infinity, maxHeight: .infinity)
 						} else if let failure = store.selectedProjectLoadFailure {
 							VaultLoadErrorView(failure: failure, retry: store.retrySelectedProjectLoad)
@@ -1002,14 +997,18 @@ struct VaultWorkspaceView: View {
 		// Selecting another project resets the page, so it reopens on this one once selected.
 		pendingProjectSettings = store.selectedProjectId == target.id ? nil : target.id
 		store.openProject(id: target.id)
+		guard store.selectedProjectId == target.id else {
+			pendingProjectSettings = nil
+			return
+		}
+		projectNameFocusRequest = focusingName ? UUID() : nil
 		mode = .projectSettings
-		if focusingName { projectNameFocusRequest = UUID() }
 	}
 
 	private func projectMenuItems(_ project: VaultProject) -> [VaultMenuItem] {
 		VaultProjectMenu.headerItems(
 			for: project,
-			folderExists: project.pathExists,
+			folderExists: store.projectIcons.detection(for: project.id) != .folderMissing,
 			openSettings: { openProjectSettings(project, focusingName: false) },
 			rename: { openProjectSettings(project, focusingName: true) },
 			delete: { projectToDelete = project }

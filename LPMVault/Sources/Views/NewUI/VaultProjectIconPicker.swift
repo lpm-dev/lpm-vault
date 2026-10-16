@@ -26,7 +26,9 @@ struct VaultProjectIconPicker: View {
 	@State private var emoji: String?
 	@State private var letters: String
 	@State private var query = ""
+	@State private var isUsed = false
 	@FocusState private var searchFocused: Bool
+	@FocusState private var gridFocused: Bool
 	@FocusState private var lettersFocused: Bool
 
 	init(projectName: String, initial: ProjectIconChoice, onUse: @escaping (ProjectIconChoice) -> Void) {
@@ -58,13 +60,24 @@ struct VaultProjectIconPicker: View {
 		_letters = State(initialValue: letters)
 	}
 
-	/// What Use Icon would choose, or nil while the tab has nothing chosen.
+	/// What Use Icon, and Return, would choose, or nil while the tab has nothing chosen.
 	var choice: ProjectIconChoice? {
 		switch tab {
-		case .icons: .symbol(symbol, color)
-		case .emoji: emoji.map(ProjectIconChoice.emoji)
+		case .icons: shownSymbol.map { .symbol($0, color) }
+		case .emoji: shownEmoji.map(ProjectIconChoice.emoji)
 		case .monogram: ProjectIconChoice.normalizedMonogram(letters).map { .monogram($0, color) }
 		}
+	}
+
+	private var symbolEntries: [ProjectIconCatalog.Entry] { ProjectIconCatalog.symbols(matching: query) }
+	private var shownSymbol: String? { Self.shown(symbol, in: symbolEntries, searching: !query.isEmpty) }
+	private var shownEmoji: String? { Self.shown(emoji, in: emojiEntries, searching: !query.isEmpty) }
+
+	/// The cell a choice comes from: the selected one while the grid shows
+	/// it, else the search's first match, so what's chosen is always in view.
+	private static func shown(_ selected: String?, in entries: [ProjectIconCatalog.Entry], searching: Bool) -> String? {
+		if let selected, entries.contains(where: { $0.value == selected }) { return selected }
+		return searching ? entries.first?.value : nil
 	}
 
 	var body: some View {
@@ -80,15 +93,15 @@ struct VaultProjectIconPicker: View {
 				if tab != .emoji { colorRow }
 				switch tab {
 				case .icons:
-					searchField("Search symbols") { symbol = ProjectIconCatalog.symbols(matching: query).first?.value ?? symbol }
-					grid(ProjectIconCatalog.symbols(matching: query), selected: symbol) { entry in
+					searchField("Search symbols")
+					grid(symbolEntries, selected: shownSymbol) { entry in
 						Image(systemName: entry.value)
 							.font(.system(size: 18))
 							.foregroundStyle(color.color)
 					} select: { symbol = $0 }
 				case .emoji:
-					searchField("Search emoji") { emoji = emojiEntries.first?.value ?? emoji }
-					grid(emojiEntries, selected: emoji) { entry in
+					searchField("Search emoji")
+					grid(emojiEntries, selected: shownEmoji) { entry in
 						Text(entry.value).font(.system(size: 22))
 					} select: { emoji = $0 }
 				case .monogram:
@@ -112,6 +125,10 @@ struct VaultProjectIconPicker: View {
 		.frame(width: 560)
 		.background(VaultPalette.content)
 		.onChange(of: tab) { _, _ in query = "" }
+		.task(id: tab) {
+			searchFocused = tab != .monogram
+			lettersFocused = tab == .monogram
+		}
 	}
 
 	private var header: some View {
@@ -160,15 +177,20 @@ struct VaultProjectIconPicker: View {
 		}
 	}
 
-	/// The search field; Return in it chooses the first match.
-	private func searchField(_ prompt: String, onSubmit: @escaping () -> Void) -> some View {
+	/// The search field. Return uses what the grid shows as chosen, and Down
+	/// moves to the grid.
+	private func searchField(_ prompt: String) -> some View {
 		HStack(spacing: 6) {
 			TextField(prompt, text: $query)
 				.textFieldStyle(.plain)
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.focused($searchFocused)
-				.onSubmit(onSubmit)
+				.onSubmit(use)
+				.onKeyPress(.downArrow) {
+					gridFocused = true
+					return .handled
+				}
 				.accessibilityLabel(prompt)
 			Image(systemName: "magnifyingglass")
 				.font(.system(size: 11, weight: .medium))
@@ -194,25 +216,49 @@ struct VaultProjectIconPicker: View {
 		@ViewBuilder glyph: @escaping (ProjectIconCatalog.Entry) -> Glyph, select: @escaping (String) -> Void
 	) -> some View {
 		let height = Self.visibleRows * Self.cellHeight + (Self.visibleRows - 1) * Self.cellSpacing
-		return ScrollView {
-			if entries.isEmpty {
-				Text("Nothing matches “\(query)”")
-					.font(.system(size: 12))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.frame(maxWidth: .infinity, minHeight: height)
-			} else {
-				LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Self.cellSpacing), count: Self.columns), spacing: Self.cellSpacing) {
-					ForEach(entries) { entry in
-						VaultIconPickerCell(selected: entry.value == selected, help: entry.value) {
-							glyph(entry)
-						} action: {
-							select(entry.value)
+		return ScrollViewReader { proxy in
+			ScrollView {
+				if entries.isEmpty {
+					Text("Nothing matches “\(query)”")
+						.font(.system(size: 12))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.frame(maxWidth: .infinity, minHeight: height)
+				} else {
+					LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Self.cellSpacing), count: Self.columns), spacing: Self.cellSpacing) {
+						ForEach(entries) { entry in
+							VaultIconPickerCell(selected: entry.value == selected, title: entry.title) {
+								glyph(entry)
+							} action: {
+								select(entry.value)
+							}
 						}
 					}
 				}
 			}
+			.frame(height: height)
+			// The grid takes focus as a whole, with or without Full Keyboard
+			// Access, and arrows move the selection through it.
+			.focusable(interactions: .edit)
+			.focused($gridFocused)
+			.onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
+				let step = switch press.key {
+				case .leftArrow: -1
+				case .rightArrow: 1
+				case .upArrow: -Self.columns
+				default: Self.columns
+				}
+				let current = selected.flatMap { value in entries.firstIndex { $0.value == value } }
+				guard !entries.isEmpty else { return .ignored }
+				let next = current.map { min(max($0 + step, 0), entries.count - 1) } ?? 0
+				select(entries[next].value)
+				return .handled
+			}
+			.onChange(of: selected) { _, value in
+				if let value { proxy.scrollTo(value) }
+			}
+			.accessibilityElement(children: .contain)
+			.accessibilityLabel(tab == .icons ? "Symbols" : "Emoji")
 		}
-		.frame(height: height)
 	}
 
 	private var monogramRow: some View {
@@ -243,8 +289,10 @@ struct VaultProjectIconPicker: View {
 		}
 	}
 
+	/// Uses the choice, once: Return can reach both a field and Use Icon.
 	private func use() {
-		guard let choice else { return }
+		guard !isUsed, let choice else { return }
+		isUsed = true
 		onUse(choice)
 		dismiss()
 	}
@@ -252,7 +300,7 @@ struct VaultProjectIconPicker: View {
 
 private struct VaultIconPickerCell<Glyph: View>: View {
 	let selected: Bool
-	let help: String
+	let title: String
 	@ViewBuilder let glyph: Glyph
 	let action: () -> Void
 
@@ -273,8 +321,9 @@ private struct VaultIconPickerCell<Glyph: View>: View {
 				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
-		.help(help)
-		.accessibilityLabel(help)
+		.focusable(false)
+		.help(title)
+		.accessibilityLabel(title)
 		.accessibilityAddTraits(selected ? .isSelected : [])
 		.onHover { hovering = $0 }
 	}

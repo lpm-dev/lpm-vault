@@ -1,12 +1,14 @@
 import AppKit
 import SwiftUI
 
-private enum VaultSidebarLayout {
+enum VaultSidebarLayout {
 	static let projectInset: CGFloat = 6
 	static let rowInset: CGFloat = 8
 	static let rowHeight: CGFloat = 31
 	/// The project icon's slot, which the grip takes over on hover.
 	static let projectIconWidth: CGFloat = 16
+	/// How far the grip slides in. No farther than the row's padding, so it stays on the row's background.
+	static let gripSlide = rowInset
 	static let projectSpacing: CGFloat = 8
 	static let approvalWidth: CGFloat = 11
 	static let countMinimumWidth: CGFloat = 16
@@ -44,7 +46,6 @@ struct VaultSidebarView: View {
 
 	@FocusState private var searchFocused: Bool
 	@State private var collapsedProjectIds: Set<String> = []
-	@State private var hoveredProjectId: String?
 	@GestureState private var isReordering = false
 
 	private var visibleProjects: [VaultProject] {
@@ -254,48 +255,8 @@ struct VaultSidebarView: View {
 		let expanded = store.selectedProjectId == project.id
 			&& !collapsedProjectIds.contains(project.id)
 		let lifted = reorder.lift?.projectId == project.id
-		return Button {
-			if store.selectedProjectId == project.id, expanded {
-				collapsedProjectIds.insert(project.id)
-			} else {
-				collapsedProjectIds.remove(project.id)
-			}
-			store.openProject(id: project.id)
-			mode = .matrix
-			filter = .all
-		} label: {
-			HStack(spacing: VaultSidebarLayout.projectSpacing) {
-				VaultSidebarProjectSlot(
-					icon: store.projectIcons.appearance(for: project.id),
-					showsGrip: lifted || (hoveredProjectId == project.id && reorder.lift == nil),
-					reorder: reorder,
-					projectId: project.id
-				)
-				Text(project.name)
-					.font(.system(size: 13, weight: selected ? .semibold : .regular))
-					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
-					.lineLimit(1)
-					.frame(maxWidth: .infinity, alignment: .leading)
-				VaultSidebarApprovalIndicator(access: cliAccess, selected: selected)
-				Text("\(project.secretCount)")
-					.font(VaultTypography.mono(10.5))
-					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textTertiary)
-					.frame(minWidth: VaultSidebarLayout.countMinimumWidth, alignment: .trailing)
-			}
-			.padding(.horizontal, VaultSidebarLayout.rowInset)
-			.frame(height: VaultSidebarLayout.rowHeight)
-			.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.accentTint : .clear))
-			.contentShape(Rectangle())
-		}
-		.buttonStyle(.plain)
-		.padding(.horizontal, VaultSidebarLayout.projectInset)
-		.highPriorityGesture(reorderGesture(for: project.id, in: order))
-		.onHover { inside in
-			if inside {
-				hoveredProjectId = project.id
-			} else if hoveredProjectId == project.id {
-				hoveredProjectId = nil
-			}
+		return VaultSidebarHoverReader { hovered in
+			projectButton(project, selected: selected, expanded: expanded, lifted: lifted, hovered: hovered, cliAccess: cliAccess, order: order)
 		}
 		.help(project.name)
 		.accessibilityLabel("\(project.name), \(project.secretCount) secrets, \(approvalDescription)")
@@ -328,6 +289,47 @@ struct VaultSidebarView: View {
 		}
 	}
 
+	private func projectButton(_ project: VaultProject, selected: Bool, expanded: Bool, lifted: Bool, hovered: Bool,
+		cliAccess: VaultCliAccess?, order: [String]) -> some View
+	{
+		Button {
+			if store.selectedProjectId == project.id, expanded {
+				collapsedProjectIds.insert(project.id)
+			} else {
+				collapsedProjectIds.remove(project.id)
+			}
+			store.openProject(id: project.id)
+			mode = .matrix
+			filter = .all
+		} label: {
+			HStack(spacing: VaultSidebarLayout.projectSpacing) {
+				VaultSidebarProjectSlot(
+					icon: store.projectIcons.appearance(for: project.id),
+					showsGrip: lifted || (hovered && reorder.lift == nil),
+					reorder: reorder,
+					projectId: project.id
+				)
+				Text(project.name)
+					.font(.system(size: 13, weight: selected ? .semibold : .regular))
+					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
+					.lineLimit(1)
+					.frame(maxWidth: .infinity, alignment: .leading)
+				VaultSidebarApprovalIndicator(access: cliAccess, selected: selected)
+				Text("\(project.secretCount)")
+					.font(VaultTypography.mono(10.5))
+					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textTertiary)
+					.frame(minWidth: VaultSidebarLayout.countMinimumWidth, alignment: .trailing)
+			}
+			.padding(.horizontal, VaultSidebarLayout.rowInset)
+			.frame(height: VaultSidebarLayout.rowHeight)
+			.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.accentTint : .clear))
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.padding(.horizontal, VaultSidebarLayout.projectInset)
+		.highPriorityGesture(reorderGesture(for: project.id, in: order))
+	}
+
 	private func environmentRows(_ project: VaultProject) -> some View {
 		let environments = store.orderedEnvironmentNames(for: project)
 		return LazyVStack(spacing: 1) {
@@ -356,7 +358,7 @@ struct VaultSidebarView: View {
 			}
 		}
 		.padding(.leading, VaultSidebarLayout.childInset)
-		.padding(.trailing, 8)
+		.padding(.trailing, VaultSidebarLayout.projectInset)
 		.padding(.top, 2)
 		.padding(.bottom, 6)
 	}
@@ -548,6 +550,18 @@ struct VaultSidebarView: View {
 	}
 }
 
+/// Whether the pointer is over `content`. Each row keeps its own, so moving
+/// between rows redraws only the two, and a row that goes away takes its
+/// hover with it.
+private struct VaultSidebarHoverReader<Content: View>: View {
+	@ViewBuilder let content: (Bool) -> Content
+	@State private var isHovered = false
+
+	var body: some View {
+		content(isHovered).onHover { isHovered = $0 }
+	}
+}
+
 /// A project's icon, which the grip replaces while the pointer is over the
 /// row or the project is being dragged.
 private struct VaultSidebarProjectSlot: View {
@@ -565,7 +579,7 @@ private struct VaultSidebarProjectSlot: View {
 				.animation(.easeOut(duration: reduceMotion ? 0.1 : 0.14), value: showsGrip)
 			VaultSidebarGrip(reorder: reorder, projectId: projectId)
 				.opacity(showsGrip ? 1 : 0)
-				.offset(x: showsGrip || reduceMotion ? 0 : -VaultSidebarLayout.projectIconWidth)
+				.offset(x: showsGrip || reduceMotion ? 0 : -VaultSidebarLayout.gripSlide)
 				.animation(.easeOut(duration: reduceMotion ? 0.1 : 0.16), value: showsGrip)
 		}
 		.frame(width: VaultSidebarLayout.projectIconWidth, height: VaultSidebarLayout.projectIconWidth)

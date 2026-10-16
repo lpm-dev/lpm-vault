@@ -93,8 +93,8 @@ struct VaultContentView: View {
 	}
 
 	/// The first row is about the project: what it is, its CLI approval, the
-	/// inspector, its other actions, and a new key. The second is about what is on screen: how it is
-	/// filtered or shown, and the actions on those values.
+	/// inspector, its other actions, and a new key. The second is about what
+	/// is on screen: how it is filtered or shown, and the actions on those values.
 	private func header(_ derived: VaultContentDerivation) -> some View {
 		VStack(alignment: .leading, spacing: 12) {
 			ViewThatFits(in: .horizontal) {

@@ -675,6 +675,11 @@ final class SheetTestHost<V: View> {
 		return nil
 	}
 
+	/// The editable text field showing `placeholder`.
+	func textField(placeholder: String) -> NSTextField? {
+		textFields(in: view).first { $0.placeholderString == placeholder }
+	}
+
 	/// Editable text fields in reading order: top to bottom, then left to right.
 	/// Labels inside AppKit controls are text fields too, so they are skipped.
 	private func textFields(in view: NSView) -> [NSTextField] {

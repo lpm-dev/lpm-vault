@@ -15,11 +15,11 @@ struct VaultProjectSettingsView: View {
 
 	@Environment(\.vaultContentObscured) private var isObscured
 	@FocusState private var nameFocused: Bool
+	@AccessibilityFocusState private var titleFocused: Bool
 	@State private var showsIconPicker = false
-	@State private var isImporting = false
-	@State private var importFailure: String?
 
-	private var settings: ProjectSettingsDraft { store.projectSettings(for: project) }
+	private var settings: ProjectSettingsValues { store.projectSettings(for: project) }
+	private var isImporting: Bool { store.projectIcons.isImporting(project.id) }
 	private var isEdited: Bool { store.projectSettingsDrafts[project.id] != nil }
 	private var isSaving: Bool { store.savingProjectSettings.contains(project.id) }
 	private var nameIsValid: Bool { VaultProjectRenamePolicy.normalizedName(settings.name) != nil }
@@ -50,18 +50,15 @@ struct VaultProjectSettingsView: View {
 			}
 		}
 		.background(VaultPalette.content)
-		.onAppear { store.projectIcons.setDetailedProject(project.id) }
-		.onDisappear { store.projectIcons.setDetailedProject(nil) }
-		.onChange(of: project.id) { _, id in
-			importFailure = nil
-			store.projectIcons.setDetailedProject(id)
-		}
+		.onAppear { store.projectIcons.beginDetailing(project.id) }
+		.onDisappear { store.projectIcons.endDetailing(project.id) }
 		.task(id: nameFocusRequest) {
-			if nameFocusRequest != nil { nameFocused = true }
+			// VoiceOver lands on the page's title, or follows focus to the name Rename edits.
+			if nameFocusRequest != nil { nameFocused = true } else { titleFocused = true }
 		}
 		.sheet(isPresented: $showsIconPicker) {
 			VaultProjectIconPicker(projectName: settings.name, initial: settings.icon) { choice in
-				importFailure = nil
+				store.projectIcons.clearImportFailure(for: project.id)
 				store.editProjectSettings(of: project) { $0.icon = choice }
 			}
 			.vaultPrivacyProtected(isObscured)
@@ -84,10 +81,13 @@ struct VaultProjectSettingsView: View {
 			.vaultPointingHand()
 			.accessibilityLabel("Back to all variables")
 			Text("/").font(.system(size: 12.5)).foregroundStyle(VaultPalette.textTertiary)
+				.accessibilityHidden(true)
 			Text("Project Settings")
 				.font(.system(size: 19, weight: .bold))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.lineLimit(1)
+				.accessibilityAddTraits(.isHeader)
+				.accessibilityFocused($titleFocused)
 			Spacer(minLength: 12)
 			if let error = store.projectSettingsErrors[project.id] {
 				Text(error)
@@ -102,10 +102,10 @@ struct VaultProjectSettingsView: View {
 			}
 			if isEdited {
 				VaultBarButton(title: "Revert", disabled: isSaving, height: 28) {
-					importFailure = nil
+					store.projectIcons.clearImportFailure(for: project.id)
 					store.revertProjectSettings(of: project.id)
 				}
-				VaultBarButton(title: "Save", filled: true, disabled: isSaving || !nameIsValid, height: 28, action: save)
+				VaultBarButton(title: "Save", filled: true, disabled: isSaving || isImporting || !nameIsValid, height: 28, action: save)
 					.keyboardShortcut("s", modifiers: .command)
 			}
 		}
@@ -161,8 +161,8 @@ struct VaultProjectSettingsView: View {
 
 	private var iconRow: some View {
 		row("Project icon") {
-			if let importFailure {
-				Text(importFailure).foregroundStyle(VaultPalette.redText)
+			if let failure = store.projectIcons.importFailure(for: project.id) {
+				Text(Self.message(for: failure)).foregroundStyle(VaultPalette.redText)
 			} else {
 				iconCaption
 			}
@@ -175,7 +175,7 @@ struct VaultProjectSettingsView: View {
 			VaultBarButton(title: isImporting ? "Choosing…" : "Choose file…", disabled: isSaving || isImporting, height: 28, action: chooseFile)
 			if !settings.icon.isAutomatic {
 				VaultBarButton(title: "Reset", disabled: isSaving, height: 28) {
-					importFailure = nil
+					store.projectIcons.clearImportFailure(for: project.id)
 					store.editProjectSettings(of: project) { $0.icon = .automatic }
 				}
 				.help("Reset to Automatic")
@@ -185,27 +185,40 @@ struct VaultProjectSettingsView: View {
 
 	private var iconCaption: Text {
 		let icons = store.projectIcons
-		let mono = { (text: String) in Text(text).font(VaultTypography.mono(11.5)) }
-		switch settings.icon {
+		let parts = Self.iconCaption(for: settings.icon, detection: icons.detection(for: project.id),
+			fileFailed: icons.chosenFileFailed(settings.icon, for: project.id))
+		return parts.reduce(Text("")) { caption, part in
+			caption + (part.isPath ? Text(part.text).font(VaultTypography.mono(11.5)) : Text(part.text))
+		}
+	}
+
+	struct CaptionPart: Equatable {
+		let text: String
+		var isPath = false
+	}
+
+	/// What the icon row says the icon is, with names of files and symbols set apart.
+	static func iconCaption(for icon: ProjectIconChoice, detection: ProjectIconDetection, fileFailed: Bool) -> [CaptionPart] {
+		switch icon {
 		case .automatic:
-			switch icons.detection(for: project.id) {
-			case .searching: return Text("Automatic")
-			case .found(let path): return Text("Automatic · ") + mono(path)
-			case .notFound: return Text("Automatic · no icon found")
-			case .folderMissing: return Text("Automatic · folder not found")
+			switch detection {
+			case .searching: return [.init(text: "Automatic")]
+			case .found(let path): return [.init(text: "Automatic · "), .init(text: path, isPath: true)]
+			case .notFound: return [.init(text: "Automatic · no icon found")]
+			case .folderMissing: return [.init(text: "Automatic · folder not found")]
 			}
 		case .symbol(let name, let color):
-			return Text("Icon · ") + mono(name) + Text(" · \(color.title)")
+			return [.init(text: "Icon · "), .init(text: name, isPath: true), .init(text: " · \(color.title)")]
 		case .emoji(let emoji):
-			return Text("Emoji · \(emoji)")
+			return [.init(text: "Emoji · \(emoji)")]
 		case .monogram(let letters, let color):
-			return Text("Monogram · \(letters) · \(color.title)")
+			return [.init(text: "Monogram · \(letters) · \(color.title)")]
 		case .projectFile(let path):
-			let caption = Text("Image · ") + mono(path)
-			return icons.chosenFileFailed(settings.icon, for: project.id) ? caption + Text(" · can't be read, so the automatic icon shows") : caption
+			let caption: [CaptionPart] = [.init(text: "Image · "), .init(text: path, isPath: true)]
+			return fileFailed ? caption + [.init(text: " · can't be read, so the automatic icon shows")] : caption
 		case .storedImage(_, let name):
-			let caption = Text("Image · \(name)")
-			return icons.chosenFileFailed(settings.icon, for: project.id) ? caption + Text(" · missing, so the automatic icon shows") : caption
+			let caption: [CaptionPart] = [.init(text: "Image · \(name)")]
+			return fileFailed ? caption + [.init(text: " · missing, so the automatic icon shows")] : caption
 		}
 	}
 
@@ -257,7 +270,7 @@ struct VaultProjectSettingsView: View {
 
 	private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
 		VStack(alignment: .leading, spacing: 7) {
-			Text(title).vaultSectionLabel()
+			Text(title).vaultSectionLabel().accessibilityAddTraits(.isHeader)
 			VStack(spacing: 0) { content() }
 				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.sidebar))
 				.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
@@ -314,25 +327,22 @@ struct VaultProjectSettingsView: View {
 		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
 		let projectID = project.id
 		let folder = project.path
-		isImporting = true
-		importFailure = nil
+		let store = store
 		Task {
-			let result = await store.projectIcons.importImage(at: url, projectFolder: folder)
-			isImporting = false
-			switch result {
-			case .success(let choice):
-				guard let current = store.projects.first(where: { $0.id == projectID }), store.isUnlocked else {
-					store.projectIcons.discardPreview(of: choice)
-					return
-				}
+			guard case .success(let choice) = await store.projectIcons.importImage(at: url, projectFolder: folder, for: projectID) else { return }
+			// The project may be gone, locked or saving by now; a choice it can't take drops its copy.
+			let applied = store.projects.first { $0.id == projectID }.map { current in
 				store.editProjectSettings(of: current) { $0.icon = choice }
-			case .failure(.unreadable):
-				importFailure = "That file can't be read."
-			case .failure(.notAnImage):
-				importFailure = "That file isn't an image LPM Vault can show."
-			case .failure(.couldNotSave):
-				importFailure = "The image couldn't be copied into LPM Vault."
-			}
+			} ?? false
+			if !applied { store.projectIcons.discardPreview(of: choice, for: projectID) }
+		}
+	}
+
+	static func message(for failure: ProjectIconStore.ImportFailure) -> String {
+		switch failure {
+		case .unreadable: "That file can't be read."
+		case .notAnImage: "That file isn't an image LPM Vault can show."
+		case .couldNotSave: "The image couldn't be copied into LPM Vault."
 		}
 	}
 }

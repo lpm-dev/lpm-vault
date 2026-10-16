@@ -149,6 +149,7 @@ struct VaultMenuButton: View {
 		.background(VaultMenuAnchorView(anchor: anchor))
 		.help(help)
 		.accessibilityLabel(help)
+		.accessibilityHint("Opens a menu")
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
 	}

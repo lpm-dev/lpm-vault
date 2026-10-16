@@ -260,7 +260,6 @@ struct VaultBarButton: View {
 	var leadingDot: Color?
 	var filled = false
 	var invertsOnHover = false
-	/// Draws the title in red, for an action that removes something.
 	var destructive = false
 	var disabled = false
 	var height: CGFloat = 26

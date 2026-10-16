@@ -2898,17 +2898,18 @@ final class VaultStore {
     }
   }
 
-  /// Renames a project and returns once the rename is saved or can't be.
+  /// Renames a project from `expectedName`, and returns once the rename is
+  /// saved or can't be; `.changed` when the name isn't `expectedName` anymore.
   /// The name is in the index the LPM CLI shares, so its folder and CLI
   /// connection stay as they are.
-  func renameProject(_ project: VaultProject, to name: String) async -> ProjectMutationOutcome {
+  func renameProject(_ project: VaultProject, from expectedName: String, to name: String) async -> ProjectMutationOutcome {
     guard isUnlocked, let normalizedName = EnvValidation.normalizedProjectName(name),
       let current = projects.first(where: { $0.id == project.id })
     else { return .unavailable }
     return await withCheckedContinuation { continuation in
       enqueueProjectMutation(
         base: current,
-        mutation: .renameProject(expectedName: current.name, replacement: normalizedName),
+        mutation: .renameProject(expectedName: expectedName, replacement: normalizedName),
         reportsFailures: false,
         afterCompletion: { continuation.resume(returning: $0) }
       )

@@ -60,20 +60,23 @@ enum ProjectIconChoice: Equatable, Hashable, Sendable {
 		}
 	}
 
-	/// A single emoji, as one character that shows as an emoji.
+	/// A single emoji, as one character that shows as an emoji: one that does
+	/// by default, or one that asks to with the emoji variation selector or as
+	/// a keycap. Text with an accent, or a request for text presentation, isn't.
 	static func isEmoji(_ text: String) -> Bool {
 		guard text.count == 1, text.utf8.count <= 64, let character = text.first else { return false }
 		let scalars = character.unicodeScalars
-		guard let first = scalars.first else { return false }
-		return first.properties.isEmojiPresentation
-			|| (first.properties.isEmoji && scalars.count > 1)
+		guard let first = scalars.first, !scalars.contains("\u{FE0E}") else { return false }
+		if first.properties.isEmojiPresentation { return true }
+		return first.properties.isEmoji && (scalars.contains("\u{FE0F}") || scalars.contains("\u{20E3}"))
 	}
 
-	/// One or two letters or digits, as typed, or nil when there are none.
+	/// One or two uppercase letters or digits, or nil when there are none.
+	/// Uppercasing comes first, since it can lengthen a letter, as ß becomes SS.
 	static func normalizedMonogram(_ text: String) -> String? {
-		let characters = text.filter { $0.isLetter || $0.isNumber }
+		let characters = text.uppercased().filter { $0.isLetter || $0.isNumber }
 		guard !characters.isEmpty else { return nil }
-		return String(characters.prefix(maximumMonogramLength)).uppercased()
+		return String(characters.prefix(maximumMonogramLength))
 	}
 
 	/// The monogram a project's name suggests: the first letters of its first
@@ -190,8 +193,16 @@ enum ProjectIconPath {
 	}
 
 	static func isImage(_ path: String) -> Bool {
-		guard let dot = path.lastIndex(of: "."), path[dot...].count > 1 else { return false }
-		return imageExtensions.contains(path[path.index(after: dot)...].lowercased())
+		pathExtension(path).map(imageExtensions.contains) ?? false
+	}
+
+	static func isSVG(_ path: String) -> Bool {
+		pathExtension(path) == "svg"
+	}
+
+	private static func pathExtension(_ path: String) -> String? {
+		guard let dot = path.lastIndex(of: "."), path[dot...].count > 1 else { return nil }
+		return path[path.index(after: dot)...].lowercased()
 	}
 
 	/// An existing file's path in `folder`, both resolved through any links,

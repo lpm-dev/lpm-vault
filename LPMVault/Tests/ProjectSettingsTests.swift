@@ -49,7 +49,7 @@ struct ProjectSettingsTests {
 		defer { fixture.tearDown() }
 		let store = fixture.store
 		store.editProjectSettings(of: try project(store)) { $0.name = "demo-api-v2" }
-		#expect(store.projectSettingsDrafts["demo"] == ProjectSettingsDraft(name: "demo-api-v2", icon: .automatic))
+		#expect(store.projectSettingsDrafts["demo"] == ProjectSettingsDraft(name: .init(text: "demo-api-v2", base: "demo-api")))
 		store.editProjectSettings(of: try project(store)) { $0.icon = .symbol("bolt.fill", .indigo) }
 		store.editProjectSettings(of: try project(store)) { $0.name = "demo-api" }
 		#expect(store.projectSettingsDrafts["demo"]?.icon == .symbol("bolt.fill", .indigo))
@@ -78,7 +78,7 @@ struct ProjectSettingsTests {
 		#expect(fixture.keychain.envStorage["demo"]?.name == "demo-api-v2")
 		#expect(fixture.keychain.envStorage["demo"]?.path == "/tmp/demo-api")
 		#expect(ProjectCLILink.folder(vaultId: "demo", projectPath: "/tmp/demo-api", defaults: fixture.preferences) == "/tmp/demo-api")
-		#expect(store.projectIcons.choices["demo"] == .symbol("bolt.fill", .indigo))
+		#expect(store.projectIcons.choice(for: "demo") == .symbol("bolt.fill", .indigo))
 		#expect(fixture.preferences.data(forKey: ProjectIconStore.preferencePrefix + "demo") != nil)
 	}
 
@@ -90,7 +90,7 @@ struct ProjectSettingsTests {
 		store.editProjectSettings(of: try project(store)) { $0.icon = .emoji("🚀") }
 		fixture.keychain.shouldFail = true
 		await store.saveProjectSettings(of: "demo")
-		#expect(store.projectIcons.choices["demo"] == .emoji("🚀"))
+		#expect(store.projectIcons.choice(for: "demo") == .emoji("🚀"))
 		#expect(store.projectSettingsDrafts["demo"] == nil)
 	}
 
@@ -105,11 +105,11 @@ struct ProjectSettingsTests {
 		}
 		fixture.keychain.failNextSaveEnvironments = true
 		await store.saveProjectSettings(of: "demo")
-		#expect(store.projectSettingsDrafts["demo"] == ProjectSettingsDraft(name: "renamed", icon: .emoji("🚀")))
+		#expect(store.projectSettingsDrafts["demo"] == ProjectSettingsDraft(name: .init(text: "renamed", base: "demo-api"), icon: .emoji("🚀")))
 		#expect(store.projectSettingsErrors["demo"] != nil)
 		#expect(store.error == nil, "The page shows the reason; no alert")
 		#expect(try project(store).name == "demo-api")
-		#expect(store.projectIcons.choices["demo"] == nil)
+		#expect(store.projectIcons.choice(for: "demo") == nil)
 		#expect(!store.savingProjectSettings.contains("demo"))
 		await store.saveProjectSettings(of: "demo")
 		#expect(try project(store).name == "renamed")
@@ -136,8 +136,11 @@ struct ProjectSettingsTests {
 		let outside = try ProjectIconFixture.folder()
 		defer { try? FileManager.default.removeItem(at: outside) }
 		try ProjectIconFixture.write(try ProjectIconFixture.png(red: 255, green: 0, blue: 0), to: "logo.png", in: outside)
-		let choice = try #require(try? await store.projectIcons.importImage(at: outside.appending(path: "logo.png"), projectFolder: "/tmp/demo-api").get())
-		guard case .storedImage(let file, _) = choice else { return }
+		let choice = try #require(try? await store.projectIcons.importImage(at: outside.appending(path: "logo.png"), projectFolder: "/tmp/demo-api", for: "demo").get())
+		guard case .storedImage(let file, _) = choice else {
+			Issue.record("An image outside the folder is copied")
+			return
+		}
 		store.editProjectSettings(of: try project(store)) { $0.icon = choice }
 		switch event {
 		case "lock": store.lock()
@@ -177,6 +180,104 @@ struct ProjectSettingsTests {
 		#expect(!unlinkedMenu.items[2].isEnabled && !unlinkedMenu.items[3].isEnabled)
 	}
 
+	private func renameElsewhere(_ fixture: Fixture, to name: String) throws {
+		fixture.keychain.envStorage["demo"]?.name = name
+		var renamed = try project(fixture.store)
+		renamed.name = name
+		fixture.store.projects = fixture.store.projects.map { $0.id == "demo" ? renamed : $0 }
+	}
+
+	@Test("an icon-only save keeps a name the LPM CLI changed meanwhile")
+	func iconOnlySaveKeepsExternalRename() async throws {
+		let fixture = try makeFixture()
+		defer { fixture.tearDown() }
+		let store = fixture.store
+		store.editProjectSettings(of: try project(store)) { $0.icon = .emoji("🚀") }
+		try renameElsewhere(fixture, to: "renamed-by-cli")
+		#expect(store.projectSettings(for: try project(store)).name == "renamed-by-cli", "An untouched name follows the saved one")
+		await store.saveProjectSettings(of: "demo")
+		#expect(fixture.keychain.envStorage["demo"]?.name == "renamed-by-cli")
+		#expect(store.projectIcons.choice(for: "demo") == .emoji("🚀"))
+		#expect(store.projectSettingsDrafts["demo"] == nil)
+	}
+
+	@Test("a name typed over one the LPM CLI changed meanwhile isn't saved over it")
+	func editedNameConflictsWithExternalRename() async throws {
+		let fixture = try makeFixture()
+		defer { fixture.tearDown() }
+		let store = fixture.store
+		store.editProjectSettings(of: try project(store)) { $0.name = "mine" }
+		try renameElsewhere(fixture, to: "theirs")
+		#expect(store.projectSettings(for: try project(store)).name == "mine")
+		await store.saveProjectSettings(of: "demo")
+		#expect(fixture.keychain.envStorage["demo"]?.name == "theirs")
+		#expect(store.projectSettingsErrors["demo"] != nil)
+		#expect(store.projectSettingsDrafts["demo"] != nil, "The typed name stays to review")
+	}
+
+	@Test("an icon that can't be saved keeps the draft and says why")
+	func unsavableIconKeepsDraft() async throws {
+		let fixture = try makeFixture()
+		defer { fixture.tearDown() }
+		let store = fixture.store
+		store.editProjectSettings(of: try project(store)) { $0.icon = .symbol("not.a.symbol", .red) }
+		await store.saveProjectSettings(of: "demo")
+		#expect(store.projectSettingsDrafts["demo"] != nil)
+		#expect(store.projectSettingsErrors["demo"] != nil)
+		#expect(store.projectIcons.choice(for: "demo") == nil)
+	}
+
+	@Test("an edit refused while saving reports it, so a copied image can be dropped")
+	func editRefusedWhileSaving() throws {
+		let fixture = try makeFixture()
+		defer { fixture.tearDown() }
+		let store = fixture.store
+		store.savingProjectSettings.insert("demo")
+		defer { store.savingProjectSettings.remove("demo") }
+		#expect(!store.editProjectSettings(of: try project(store)) { $0.icon = .emoji("🚀") })
+		#expect(store.projectSettingsDrafts["demo"] == nil)
+	}
+
+	@Test("switching accounts while a save runs still saves the icon with the name")
+	func accountSwitchDuringSave() async throws {
+		let fixture = try makeFixture()
+		defer { fixture.tearDown() }
+		let store = fixture.store
+		store.editProjectSettings(of: try project(store)) {
+			$0.name = "renamed"
+			$0.icon = .emoji("🚀")
+		}
+		let gate = DispatchSemaphore(value: 0)
+		fixture.keychain.blockNextSaveEnvironments = { gate.wait() }
+		let save = Task { await store.saveProjectSettings(of: "demo") }
+		let deadline = ContinuousClock.now + .seconds(5)
+		while fixture.keychain.saveEnvironmentsCallCount == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+		store.selectedAccount = .org("acme")
+		gate.signal()
+		await save.value
+		#expect(fixture.keychain.envStorage["demo"]?.name == "renamed")
+		#expect(store.projectIcons.choice(for: "demo") == .emoji("🚀"))
+	}
+
+	@Test("the icon row names each kind of icon, sets file and symbol names apart, and says when a chosen file can't show", arguments: [
+		(ProjectIconChoice.automatic, ProjectIconDetection.searching, false, "Automatic", [String]()),
+		(.automatic, .found("public/favicon.png"), false, "Automatic · public/favicon.png", ["public/favicon.png"]),
+		(.automatic, .notFound, false, "Automatic · no icon found", []),
+		(.automatic, .folderMissing, false, "Automatic · folder not found", []),
+		(.symbol("cylinder.split.1x2", .indigo), .notFound, false, "Icon · cylinder.split.1x2 · Indigo", ["cylinder.split.1x2"]),
+		(.emoji("🚀"), .notFound, false, "Emoji · 🚀", []),
+		(.monogram("DA", .teal), .notFound, false, "Monogram · DA · Teal", []),
+		(.projectFile("assets/icon.png"), .notFound, false, "Image · assets/icon.png", ["assets/icon.png"]),
+		(.projectFile("assets/icon.png"), .notFound, true, "Image · assets/icon.png · can't be read, so the automatic icon shows", ["assets/icon.png"]),
+		(.storedImage(file: "\(UUID().uuidString).png", name: "brand.png"), .notFound, false, "Image · brand.png", []),
+		(.storedImage(file: "\(UUID().uuidString).png", name: "brand.png"), .notFound, true, "Image · brand.png · missing, so the automatic icon shows", []),
+	])
+	func iconCaption(sample: (ProjectIconChoice, ProjectIconDetection, Bool, String, [String])) {
+		let parts = VaultProjectSettingsView.iconCaption(for: sample.0, detection: sample.1, fileFailed: sample.2)
+		#expect(parts.map(\.text).joined() == sample.3)
+		#expect(parts.filter(\.isPath).map(\.text) == sample.4)
+	}
+
 	@Test("a rename the store can't make reports why instead of hanging")
 	func unavailableRename() async throws {
 		let fixture = try makeFixture()
@@ -184,6 +285,6 @@ struct ProjectSettingsTests {
 		let store = fixture.store
 		let project = try project(store)
 		store.lock()
-		#expect(await store.renameProject(project, to: "new") == .unavailable)
+		#expect(await store.renameProject(project, from: project.name, to: "new") == .unavailable)
 	}
 }
