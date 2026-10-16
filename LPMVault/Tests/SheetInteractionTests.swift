@@ -1,4 +1,5 @@
 import AppKit
+import os
 import SwiftUI
 import Testing
 
@@ -10,8 +11,23 @@ import Testing
 enum UITestSuite {
 	static let name = "SheetInteractionTests"
 
+	/// Whether the suite is running, and the last of its tests to open a window.
+	fileprivate static let running = OSAllocatedUnfairLock<(isRunning: Bool, test: String?)>(initialState: (false, nil))
+
+	/// Prints where the process exits from when it ends while the suite runs,
+	/// which otherwise ends the run with an incomplete report and no reason.
+	static func reportExitsDuringTests() {
+		atexit {
+			let state = UITestSuite.running.withLock { $0 }
+			guard state.isRunning else { return }
+			print("The test process exited during \"\(state.test ?? "the UI suite")\":\n" + Thread.callStackSymbols.joined(separator: "\n"))
+			fflush(stdout)
+		}
+	}
+
 	/// Records an issue when the running test isn't in the suite or a suite nested in it.
 	static func require(sourceLocation: SourceLocation = #_sourceLocation) {
+		running.withLock { $0.test = Test.current.map { $0.displayName ?? $0.name } }
 		guard let test = Test.current, test.id.nameComponents.first != name else { return }
 		Issue.record("Native UI tests belong in \(name) or a suite nested in it, which runs them one at a time", sourceLocation: sourceLocation)
 	}
@@ -720,7 +736,20 @@ final class SheetTestHost<V: View> {
 	}
 }
 
-@Suite("Sheet interaction regressions", .serialized)
+/// Notes that the UI suite is running, for an exit during it to be reported.
+struct RunningUITest: SuiteTrait, TestScoping {
+	func provideScope(for test: Test, testCase: Test.Case?, performing function: @Sendable () async throws -> Void) async throws {
+		UITestSuite.running.withLock { $0.isRunning = true }
+		defer { UITestSuite.running.withLock { $0 = (false, nil) } }
+		try await function()
+	}
+}
+
+extension Trait where Self == RunningUITest {
+	static var notesRunningTest: Self { RunningUITest() }
+}
+
+@Suite("Sheet interaction regressions", .serialized, .notesRunningTest)
 @MainActor
 struct SheetInteractionTests {
 	private func makeStore(path: String = "", environments: [String: [String: String]] = ["default": [:]], preferences: UserDefaults = .standard) -> (VaultStore, MockKeychainService) {

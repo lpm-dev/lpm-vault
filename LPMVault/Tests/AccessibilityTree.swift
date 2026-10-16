@@ -124,6 +124,10 @@ enum AccessibilityTree {
 		guard !isActive else { return }
 		isActive = true
 		NSApplication.shared.delegate = TestProcessDelegate.shared
+		// A launched app can also be ended by the system without being asked.
+		ProcessInfo.processInfo.disableAutomaticTermination("Native UI tests are running")
+		ProcessInfo.processInfo.disableSuddenTermination()
+		UITestSuite.reportExitsDuringTests()
 		// A test process never finishes launching on its own, and until it has,
 		// it can't answer an accessibility request, even its own.
 		NSApplication.shared.finishLaunching()
