@@ -39,6 +39,8 @@ final class ManualQuitClock {
 @Suite("Quit shortcut")
 @MainActor
 struct VaultQuitGateTests {
+	private let timing = VaultQuitGate.Timing()
+
 	private final class Recorder {
 		var quits = 0
 		var hints: [VaultQuitGate.Hint?] = []
@@ -82,7 +84,7 @@ struct VaultQuitGateTests {
 		#expect(press(gate, clock), "⌘Q never reaches the Quit menu item")
 		#expect(recorder.quits == 0)
 		#expect(gate.hint == .pressAgain)
-		clock.advance(by: 1.9)
+		clock.advance(by: timing.doublePressWindow - 0.1)
 		press(gate, clock)
 		#expect(recorder.quits == 1)
 		#expect(gate.hint == nil)
@@ -92,7 +94,7 @@ struct VaultQuitGateTests {
 	func doublePressTimesOut() {
 		let (gate, clock, recorder) = makeGate(.doublePress)
 		press(gate, clock)
-		clock.advance(by: 2.05)
+		clock.advance(by: timing.doublePressWindow + 0.05)
 		#expect(gate.hint == nil)
 		#expect(recorder.hints == [.pressAgain, nil])
 		press(gate, clock)
@@ -109,7 +111,7 @@ struct VaultQuitGateTests {
 			#expect(press(gate, clock, repeat: true), "Repeats are used up so they can't reach the menu")
 		}
 		#expect(recorder.quits == 0)
-		clock.advance(by: 1.5)
+		clock.advance(by: timing.doublePressWindow)
 		#expect(gate.hint == nil)
 	}
 
@@ -143,23 +145,25 @@ struct VaultQuitGateTests {
 		arguments: ["command released", "repeats stop", "Q released"])
 	func hold(release: String) {
 		let (gate, clock, recorder) = makeGate(.hold)
+		let start = clock.now
 		press(gate, clock)
-		#expect(gate.hint == .hold(1))
+		#expect(gate.hint == .hold(timing.holdDuration))
 		clock.advance(by: 0.5)
-		while clock.now < 1_001 {
-			press(gate, clock, repeat: true)
+		while clock.now < start + timing.holdDuration {
+			#expect(press(gate, clock, repeat: true))
 			clock.advance(by: 0.05)
 		}
-		press(gate, clock, repeat: true)
+		#expect(press(gate, clock, repeat: true))
 		#expect(recorder.quits == 0, "A finished hold waits for the key to be let go")
+		#expect(press(gate, clock, repeat: true), "Its repeats are still used up, so the menu never sees them")
 		switch release {
 		case "command released":
 			gate.handle(.commandReleased, at: clock.now)
-			clock.advance(by: 0.59)
+			clock.advance(by: timing.releaseGrace - 0.01)
 			#expect(recorder.quits == 0)
 			clock.advance(by: 0.02)
 		case "repeats stop":
-			clock.advance(by: 0.61)
+			clock.advance(by: timing.releaseGrace + 0.01)
 		default:
 			gate.handle(.quitKeyUp, at: clock.now)
 		}
@@ -185,7 +189,7 @@ struct VaultQuitGateTests {
 		press(gate, clock)
 		clock.advance(by: 0.5)
 		press(gate, clock, repeat: true)
-		clock.advance(by: 0.61)
+		clock.advance(by: timing.releaseGrace + 0.01)
 		#expect(gate.hint == nil)
 		clock.advance(by: 3)
 		#expect(recorder.quits == 0)
@@ -193,10 +197,11 @@ struct VaultQuitGateTests {
 
 	@Test("a tap in Hold mode shows the hint until the repeat delay passes, then hides it")
 	func holdTap() {
-		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: 0.5)
+		let delay = 0.5
+		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: delay)
 		press(gate, clock)
-		clock.advance(by: 1.05)
-		#expect(gate.hint == .hold(1), "Repeats may still start")
+		clock.advance(by: delay + timing.releaseGrace - 0.05)
+		#expect(gate.hint == .hold(timing.holdDuration), "Repeats may still start")
 		clock.advance(by: 0.1)
 		#expect(gate.hint == nil)
 		#expect(recorder.quits == 0)
@@ -204,11 +209,12 @@ struct VaultQuitGateTests {
 
 	@Test("a long system repeat delay still lets a hold finish once repeats start")
 	func holdWithSlowRepeats() {
-		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: 1.5)
+		let delay = timing.holdDuration + 0.5
+		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: delay)
 		press(gate, clock)
-		clock.advance(by: 1.5)
+		clock.advance(by: delay)
 		press(gate, clock, repeat: true)
-		clock.advance(by: 0.61)
+		clock.advance(by: timing.releaseGrace + 0.01)
 		#expect(recorder.quits == 1)
 	}
 
@@ -276,11 +282,12 @@ struct VaultQuitGateTests {
 
 	@Test("with key repeat off, Hold takes two presses instead, as its hint says")
 	func holdWithoutKeyRepeat() {
-		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: 300, keyRepeatInterval: 300)
+		let off = timing.longestRepeatDelay + 1
+		let (gate, clock, recorder) = makeGate(.hold, keyRepeatDelay: off, keyRepeatInterval: off)
 		press(gate, clock)
 		#expect(gate.hint == .pressAgain)
 		gate.handle(.commandReleased, at: clock.now)
-		clock.advance(by: 1.5)
+		clock.advance(by: timing.doublePressWindow - 0.5)
 		press(gate, clock)
 		#expect(recorder.quits == 1)
 	}
@@ -299,11 +306,12 @@ struct VaultQuitGateTests {
 		#expect(gate.hint != nil)
 	}
 
-	@Test("Hold also quits on two quick presses, but not two slow ones", arguments: [(0.3, 1), (0.7, 0)])
-	func holdDoublePress(sample: (TimeInterval, Int)) {
+	@Test("Hold also quits on two quick presses, but not two slow ones, whether ⌘ is let go between them or held",
+		arguments: [VaultQuitGate.Input.commandReleased, .quitKeyUp], [(VaultQuitGate.Timing().quickPressWindow - 0.2, 1), (VaultQuitGate.Timing().quickPressWindow + 0.2, 0)])
+	func holdDoublePress(between: VaultQuitGate.Input, sample: (TimeInterval, Int)) {
 		let (gate, clock, recorder) = makeGate(.hold)
 		press(gate, clock)
-		gate.handle(.commandReleased, at: clock.now)
+		gate.handle(between, at: clock.now)
 		clock.advance(by: sample.0)
 		press(gate, clock)
 		#expect(recorder.quits == sample.1)
