@@ -1,19 +1,24 @@
 import AppKit
 import SwiftUI
 
-private enum VaultSidebarLayout {
-	static let projectInset: CGFloat = 8
-	static let rowInset: CGFloat = 9
-	static let projectIconWidth: CGFloat = 14
-	static let projectSpacing: CGFloat = 9
+enum VaultSidebarLayout {
+	static let projectInset: CGFloat = 6
+	static let rowInset: CGFloat = 8
+	static let rowHeight: CGFloat = 31
+	/// The project icon's slot, which the grip takes over on hover.
+	static let projectIconWidth: CGFloat = 16
+	/// How far the grip slides in. No farther than the row's padding, so it stays on the row's background.
+	static let gripSlide = rowInset
+	static let projectSpacing: CGFloat = 8
+	static let approvalWidth: CGFloat = 11
+	static let countMinimumWidth: CGFloat = 16
 	static let childIconWidth: CGFloat = 12
 	static let environmentSwatchSize: CGFloat = 6
 	static let childIconOffset = (environmentSwatchSize - childIconWidth) / 2
 	static let environmentTextOffset: CGFloat = -2
 	static let childSpacing: CGFloat = 7
 	static let childInset: CGFloat = 26
-	static let projectLabelInset = projectInset + rowInset + VaultSidebarReorder.gripWidth + projectSpacing
-		+ projectIconWidth + projectSpacing
+	static let projectLabelInset = projectInset + rowInset + projectIconWidth + projectSpacing
 	static let childRowLeadingInset = projectLabelInset - childInset
 	static let landingLineInset = projectInset + rowInset
 }
@@ -29,6 +34,7 @@ struct VaultSidebarView: View {
 	let onNewProject: () -> Void
 	let onCloudProjects: () -> Void
 	let onNewEnvironment: () -> Void
+	let onProjectSettings: (VaultProject) -> Void
 	let onRenameProject: (VaultProject) -> Void
 	let onDeleteProject: (VaultProject) -> Void
 	let onRenameEnvironment: (VaultEnvironmentTarget) -> Void
@@ -243,11 +249,50 @@ struct VaultSidebarView: View {
 		let cliAccess = store.projectCliAccess[project.id]
 		let approvalDescription = cliAccess.map {
 			$0 == .requireApproval ? "CLI approval required" : "CLI access automatic"
-		} ?? "CLI approval unavailable"
-		let selected = !store.isShowingAccountPage && store.selectedProjectId == project.id && mode == .matrix
+		} ?? "CLI approval policy can't be read"
+		let selected = !store.isShowingAccountPage && store.selectedProjectId == project.id
+			&& (mode == .matrix || mode == .projectSettings)
 		let expanded = store.selectedProjectId == project.id
 			&& !collapsedProjectIds.contains(project.id)
-		return Button {
+		let lifted = reorder.lift?.projectId == project.id
+		return VaultSidebarHoverReader { hovered in
+			projectButton(project, selected: selected, expanded: expanded, lifted: lifted, hovered: hovered, cliAccess: cliAccess, order: order)
+		}
+		.help(project.name)
+		.accessibilityLabel("\(project.name), \(project.secretCount) secrets, \(approvalDescription)")
+		.accessibilityValue(expanded ? "Expanded" : "Collapsed")
+		.accessibilityAddTraits(selected ? .isSelected : [])
+		.accessibilityAction(named: "Project Settings") { onProjectSettings(project) }
+		.accessibilityAction(named: "Move Up") {
+			if let previous { store.moveProject(id: project.id, relativeTo: previous, placement: .before) }
+		}
+		.accessibilityAction(named: "Move Down") {
+			if let next { store.moveProject(id: project.id, relativeTo: next, placement: .after) }
+		}
+		.contextMenu {
+			Button("Project Settings…") { onProjectSettings(project) }
+				.keyboardShortcut("i", modifiers: .command)
+			Divider()
+			Button("Rename…") { onRenameProject(project) }
+			Button("Move Up") {
+				if let previous { store.moveProject(id: project.id, relativeTo: previous, placement: .before) }
+			}
+			.keyboardShortcut(.upArrow, modifiers: .option)
+			.disabled(previous == nil)
+			Button("Move Down") {
+				if let next { store.moveProject(id: project.id, relativeTo: next, placement: .after) }
+			}
+			.keyboardShortcut(.downArrow, modifiers: .option)
+			.disabled(next == nil)
+			Divider()
+			Button("Delete Locally…", role: .destructive) { onDeleteProject(project) }
+		}
+	}
+
+	private func projectButton(_ project: VaultProject, selected: Bool, expanded: Bool, lifted: Bool, hovered: Bool,
+		cliAccess: VaultCliAccess?, order: [String]) -> some View
+	{
+		Button {
 			if store.selectedProjectId == project.id, expanded {
 				collapsedProjectIds.insert(project.id)
 			} else {
@@ -258,52 +303,31 @@ struct VaultSidebarView: View {
 			filter = .all
 		} label: {
 			HStack(spacing: VaultSidebarLayout.projectSpacing) {
-				VaultSidebarGrip(reorder: reorder, projectId: project.id)
-				Image(systemName: cliAccess.map { $0 == .requireApproval ? "lock" : "folder" } ?? "questionmark.folder")
-					.font(.system(size: 11, weight: .medium))
-					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
-					.frame(width: VaultSidebarLayout.projectIconWidth)
+				VaultSidebarProjectSlot(
+					icon: store.projectIcons.appearance(for: project.id),
+					showsGrip: lifted || (hovered && reorder.lift == nil),
+					reorder: reorder,
+					projectId: project.id
+				)
 				Text(project.name)
 					.font(.system(size: 13, weight: selected ? .semibold : .regular))
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
 					.lineLimit(1)
-				Spacer(minLength: 4)
+					.frame(maxWidth: .infinity, alignment: .leading)
+				VaultSidebarApprovalIndicator(access: cliAccess, selected: selected)
 				Text("\(project.secretCount)")
 					.font(VaultTypography.mono(10.5))
-					.foregroundStyle(VaultPalette.textTertiary)
+					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textTertiary)
+					.frame(minWidth: VaultSidebarLayout.countMinimumWidth, alignment: .trailing)
 			}
 			.padding(.horizontal, VaultSidebarLayout.rowInset)
-			.padding(.vertical, 7)
+			.frame(height: VaultSidebarLayout.rowHeight)
 			.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.accentTint : .clear))
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
 		.padding(.horizontal, VaultSidebarLayout.projectInset)
 		.highPriorityGesture(reorderGesture(for: project.id, in: order))
-		.help(approvalDescription)
-		.accessibilityLabel("\(project.name), \(project.secretCount) secrets, \(approvalDescription)")
-		.accessibilityValue(expanded ? "Expanded" : "Collapsed")
-		.accessibilityAddTraits(selected ? .isSelected : [])
-		.accessibilityAction(named: "Move Up") {
-			if let previous { store.moveProject(id: project.id, relativeTo: previous, placement: .before) }
-		}
-		.accessibilityAction(named: "Move Down") {
-			if let next { store.moveProject(id: project.id, relativeTo: next, placement: .after) }
-		}
-		.contextMenu {
-			Button("Rename…") { onRenameProject(project) }
-			Divider()
-			Button("Move Up") {
-				if let previous { store.moveProject(id: project.id, relativeTo: previous, placement: .before) }
-			}
-			.disabled(previous == nil)
-			Button("Move Down") {
-				if let next { store.moveProject(id: project.id, relativeTo: next, placement: .after) }
-			}
-			.disabled(next == nil)
-			Divider()
-			Button("Delete Locally", role: .destructive) { onDeleteProject(project) }
-		}
 	}
 
 	private func environmentRows(_ project: VaultProject) -> some View {
@@ -334,7 +358,7 @@ struct VaultSidebarView: View {
 			}
 		}
 		.padding(.leading, VaultSidebarLayout.childInset)
-		.padding(.trailing, 8)
+		.padding(.trailing, VaultSidebarLayout.projectInset)
 		.padding(.top, 2)
 		.padding(.bottom, 6)
 	}
@@ -523,6 +547,70 @@ struct VaultSidebarView: View {
 		let words = accountName.split(separator: " ")
 		let result = words.prefix(2).compactMap(\.first).map(String.init).joined()
 		return result.isEmpty ? "LP" : result.uppercased()
+	}
+}
+
+/// Whether the pointer is over `content`. Each row keeps its own, so moving
+/// between rows redraws only the two, and a row that goes away takes its
+/// hover with it.
+private struct VaultSidebarHoverReader<Content: View>: View {
+	@ViewBuilder let content: (Bool) -> Content
+	@State private var isHovered = false
+
+	var body: some View {
+		content(isHovered).onHover { isHovered = $0 }
+	}
+}
+
+/// A project's icon, which the grip replaces while the pointer is over the
+/// row or the project is being dragged.
+private struct VaultSidebarProjectSlot: View {
+	let icon: ProjectIconAppearance
+	let showsGrip: Bool
+	let reorder: VaultSidebarReorder
+	let projectId: String
+
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+	var body: some View {
+		ZStack {
+			VaultProjectIconView(appearance: icon, size: VaultSidebarLayout.projectIconWidth)
+				.opacity(showsGrip ? 0 : 1)
+				.animation(.easeOut(duration: reduceMotion ? 0.1 : 0.14), value: showsGrip)
+			VaultSidebarGrip(reorder: reorder, projectId: projectId)
+				.opacity(showsGrip ? 1 : 0)
+				.offset(x: showsGrip || reduceMotion ? 0 : -VaultSidebarLayout.gripSlide)
+				.animation(.easeOut(duration: reduceMotion ? 0.1 : 0.16), value: showsGrip)
+		}
+		.frame(width: VaultSidebarLayout.projectIconWidth, height: VaultSidebarLayout.projectIconWidth)
+	}
+}
+
+/// The lock of a project whose CLI access needs approval, or the warning
+/// that its policy can't be read; nothing when access is automatic.
+private struct VaultSidebarApprovalIndicator: View {
+	let access: VaultCliAccess?
+	let selected: Bool
+
+	var body: some View {
+		switch access {
+		case .requireApproval?:
+			Image(systemName: "lock")
+				.font(.system(size: 10, weight: .medium))
+				.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textTertiary)
+				.frame(width: VaultSidebarLayout.approvalWidth)
+				.help("CLI approval required")
+				.accessibilityHidden(true)
+		case .automatic?:
+			EmptyView()
+		case nil:
+			Image(systemName: "questionmark.circle")
+				.font(.system(size: 10, weight: .medium))
+				.foregroundStyle(VaultPalette.orangeTintText)
+				.frame(width: VaultSidebarLayout.approvalWidth)
+				.help("CLI approval policy can't be read")
+				.accessibilityHidden(true)
+		}
 	}
 }
 

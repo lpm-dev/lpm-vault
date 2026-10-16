@@ -118,6 +118,7 @@ struct LPMVaultApp: App {
 					updateChecker.start()
 					await store.loadAccount()
 				}
+				.task { await store.projectIcons.collectUnusedImages() }
 				.onAppear {
 					appDelegate.openWindow = { [openWindow] in
 						openWindow(id: "main")
@@ -151,6 +152,12 @@ struct LPMVaultApp: App {
 				.keyboardShortcut("f", modifiers: .command)
 				.disabled(!store.isUnlocked || store.selectedProject == nil)
 
+				Button("Project Settings…") {
+					NotificationCenter.default.post(name: .showProjectSettings, object: nil)
+				}
+				.keyboardShortcut("i", modifiers: .command)
+				.disabled(!store.isUnlocked || store.selectedProject == nil)
+
 				Divider()
 
 				Button(store.isUnlocked ? "Lock LPM Vault" : "Unlock LPM Vault") {
@@ -171,5 +178,6 @@ struct LPMVaultApp: App {
 extension Notification.Name {
 	static let newSecret = Notification.Name("dev.lpm.vault.new-secret")
 	static let findSecrets = Notification.Name("dev.lpm.vault.find-secrets")
+	static let showProjectSettings = Notification.Name("dev.lpm.vault.show-project-settings")
 	static let dismissVaultSearch = Notification.Name("dev.lpm.vault.dismiss-search")
 }

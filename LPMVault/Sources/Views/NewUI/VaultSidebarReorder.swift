@@ -361,7 +361,7 @@ struct VaultSidebarGrip: View {
 		}
 		.frame(width: VaultSidebarReorder.gripWidth)
 		.foregroundStyle(VaultPalette.textTertiary)
-		.opacity(reorder.lift?.projectId == projectId ? 1 : 0.45)
+		.opacity(reorder.lift?.projectId == projectId ? 1 : 0.7)
 		.accessibilityHidden(true)
 	}
 }

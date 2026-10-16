@@ -1,9 +1,9 @@
 import Darwin
 import Foundation
 
-/// Reports changes to a project folder's lpm.json and to the schemas it
-/// imports, `imports` being their paths in the folder, whether a file is
-/// written in place or replaced, as editors, the LPM CLI and git save it.
+/// Reports changes to files in a project folder, such as its lpm.json and
+/// the schemas it imports, or its icon files, whether a file is written in
+/// place or replaced, as editors, the LPM CLI and git save it.
 /// Changes in quick succession arrive as one, and at least every
 /// `maximumDelay` while they continue. A folder that's missing, or deleted
 /// and made again, is watched once it's at its path.
@@ -12,8 +12,16 @@ enum ProjectConfigWatcher {
 		inFolder folder: String, imports: [String] = [], settling: DispatchTimeInterval = .milliseconds(250),
 		maximumDelay: DispatchTimeInterval = .seconds(1), retryingEvery retry: DispatchTimeInterval = .seconds(1)
 	) -> AsyncStream<Void> {
+		changes(inFolder: folder, watching: ["lpm.json"] + imports, settling: settling, maximumDelay: maximumDelay, retryingEvery: retry)
+	}
+
+	/// Reports changes to `files`, paths in the project folder, as `changes(inFolder:imports:)` does to lpm.json.
+	static func changes(
+		inFolder folder: String, watching files: [String], settling: DispatchTimeInterval = .milliseconds(250),
+		maximumDelay: DispatchTimeInterval = .seconds(1), retryingEvery retry: DispatchTimeInterval = .seconds(1)
+	) -> AsyncStream<Void> {
 		AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
-			let watch = Watch(root: folder, files: ["lpm.json"] + imports, settling: settling, maximumDelay: maximumDelay, retry: retry) {
+			let watch = Watch(root: folder, files: files, settling: settling, maximumDelay: maximumDelay, retry: retry) {
 				continuation.yield()
 			}
 			watch.start()

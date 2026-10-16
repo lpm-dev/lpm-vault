@@ -260,6 +260,7 @@ struct VaultBarButton: View {
 	var leadingDot: Color?
 	var filled = false
 	var invertsOnHover = false
+	var destructive = false
 	var disabled = false
 	var height: CGFloat = 26
 	let action: () -> Void
@@ -269,6 +270,7 @@ struct VaultBarButton: View {
 	private var foreground: Color {
 		if disabled { return VaultPalette.textFaint }
 		if filled { return .white }
+		if destructive { return VaultPalette.redText }
 		return invertsOnHover && hovering ? .white : VaultPalette.textSecondary
 	}
 

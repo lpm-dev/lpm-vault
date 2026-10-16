@@ -1159,6 +1159,10 @@ final class VaultStore {
         let projectIDs = Set(projects.lazy.map(\.id))
         projectCliAccess = projectCliAccess.filter { projectIDs.contains($0.key) }
         cliAccessProjectRevisions = cliAccessProjectRevisions.filter { projectIDs.contains($0.key) }
+        pruneProjectSettingsDrafts(keeping: projectIDs)
+      }
+      if !projects.elementsEqual(oldValue, by: { $0.id == $1.id && $0.path == $1.path }) {
+        projectIcons.follow(projects.map { ProjectIconStore.Target(id: $0.id, folder: $0.path) })
       }
       pruneSchemaDrafts()
       refreshValueChecks()
@@ -1203,6 +1207,14 @@ final class VaultStore {
   }
   /// Unsaved key edits of this session; cleared on lock and account changes.
   let keyDrafts = VaultKeyDrafts()
+  /// Each project's icon, chosen or found in its folder.
+  let projectIcons: ProjectIconStore
+  /// Unsaved Project Settings edits by project ID; cleared on lock and account changes.
+  var projectSettingsDrafts: [String: ProjectSettingsDraft] = [:]
+  /// Projects whose Project Settings are being saved.
+  var savingProjectSettings: Set<String> = []
+  /// Why each project's Project Settings couldn't be saved.
+  var projectSettingsErrors: [String: String] = [:]
   /// Key descriptions from each project's `lpm.json`, by project ID.
   private(set) var keyDescriptions: [String: ProjectKeyDescriptions] = [:] {
     didSet {
@@ -1313,6 +1325,7 @@ final class VaultStore {
       lastSyncWarnings = []
       invalidateLocalStateRefresh()
       keyDrafts.discardAll()
+      discardAllProjectSettings()
       clearKeyDescriptions()
     }
   }
@@ -1930,9 +1943,11 @@ final class VaultStore {
     autoLockNow: @escaping @Sendable () -> TimeInterval = {
       ProcessInfo.processInfo.systemUptime
     },
-    autoLockDuration: TimeInterval = VaultConstants.vaultAutoLockDuration
+    autoLockDuration: TimeInterval = VaultConstants.vaultAutoLockDuration,
+    projectIconsDirectory: URL = ProjectIconStore.defaultImagesDirectory
   ) {
     self.keychainService = keychainService
+    self.projectIcons = ProjectIconStore(preferences: preferences, imagesDirectory: projectIconsDirectory)
     self.persistence = VaultPersistenceCoordinator(service: keychainService)
     self.publishing = PublishingStore(service: keychainService)
     self.platformConnect = platformConnect
@@ -2035,6 +2050,7 @@ final class VaultStore {
   /// the idle deadline. Concurrent requests share one refresh, and a request
   /// made during a CLI approval change runs when that change finishes.
   func refreshLocalState() async {
+    if isUnlocked { projectIcons.revalidate() }
     await startLocalStateRefresh()?.value
   }
 
@@ -2882,14 +2898,22 @@ final class VaultStore {
     }
   }
 
-  func renameProject(_ project: VaultProject, to name: String) {
-    guard let normalizedName = EnvValidation.normalizedProjectName(name),
+  /// Renames a project from `expectedName`, and returns once the rename is
+  /// saved or can't be; `.changed` when the name isn't `expectedName` anymore.
+  /// The name is in the index the LPM CLI shares, so its folder and CLI
+  /// connection stay as they are.
+  func renameProject(_ project: VaultProject, from expectedName: String, to name: String) async -> ProjectMutationOutcome {
+    guard isUnlocked, let normalizedName = EnvValidation.normalizedProjectName(name),
       let current = projects.first(where: { $0.id == project.id })
-    else { return }
-    enqueueProjectMutation(
-      base: current,
-      mutation: .renameProject(expectedName: current.name, replacement: normalizedName)
-    )
+    else { return .unavailable }
+    return await withCheckedContinuation { continuation in
+      enqueueProjectMutation(
+        base: current,
+        mutation: .renameProject(expectedName: expectedName, replacement: normalizedName),
+        reportsFailures: false,
+        afterCompletion: { continuation.resume(returning: $0) }
+      )
+    }
   }
 
   /// Remove from sidebar only — Keychain data stays.
@@ -5048,6 +5072,7 @@ final class VaultStore {
     lastSyncWarnings = []
     unlockFailure = nil
     keyDrafts.discardAll()
+    discardAllProjectSettings()
     clearKeyDescriptions()
     cancelCliAccessChange()
     cliAccessLoadTask?.cancel()
@@ -7563,6 +7588,7 @@ final class VaultStore {
     environmentOrders.removeValue(forKey: vaultId)
     preferences.removeObject(forKey: Self.envOrderPrefix + vaultId)
     ProjectCLILink.forgetFolder(vaultId: vaultId, defaults: preferences)
+    projectIcons.forget(vaultId)
   }
 
   /// Removes preferences of vaults that are no longer on this Mac, such as
@@ -7581,6 +7607,7 @@ final class VaultStore {
       else { continue }
       preferences.removeObject(forKey: key)
     }
+    projectIcons.forget(keeping: vaultIds)
   }
 
   private func loadEnvironmentOrders() {

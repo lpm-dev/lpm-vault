@@ -6,12 +6,15 @@ enum VaultWorkspaceMode: Equatable {
   case environment(String)
   /// The project's env rules from lpm.json.
   case schema
+  /// The project's name, icon, folder, CLI approval and deletion.
+  case projectSettings
 
   func synchronized(to selectedEnvironment: String) -> Self {
     switch self {
     case .matrix: .matrix
     case .environment: .environment(selectedEnvironment)
     case .schema: .schema
+    case .projectSettings: .projectSettings
     }
   }
 }
@@ -716,7 +719,7 @@ struct VaultContentDerivation: Equatable {
       environmentDriftingKeyCount = environmentKeys.reduce(into: 0) { count, key in
         if snapshot.hasDrift(for: key) { count += 1 }
       }
-    case .schema:
+    case .schema, .projectSettings:
       allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
       environmentKeys = []

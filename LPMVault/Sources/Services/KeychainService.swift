@@ -227,6 +227,10 @@ enum VaultKeychainTransactionLock {
 protocol KeychainServiceProtocol: Sendable {
 	func cliAccessResult(vaultId: String) -> Result<VaultCliAccess, KeychainError>
 	func cliAccessResults(vaultIds: [String]) -> Result<[String: VaultCliAccess], KeychainError>
+	/// The policies among `vaultIds` that can be read. One project's unreadable
+	/// metadata leaves it out instead of failing the others; the read fails only
+	/// when the Keychain can't be read at all.
+	func readableCliAccess(vaultIds: [String]) -> Result<[String: VaultCliAccess], KeychainError>
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError>
 	func setAuthenticationContext(_ context: LAContext?)
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError>
@@ -288,6 +292,14 @@ extension KeychainServiceProtocol {
 			case .success(let access): values[id] = access
 			case .failure(let error): return .failure(error)
 			}
+		}
+		return .success(values)
+	}
+
+	func readableCliAccess(vaultIds: [String]) -> Result<[String: VaultCliAccess], KeychainError> {
+		var values = [String: VaultCliAccess](minimumCapacity: vaultIds.count)
+		for id in vaultIds {
+			if case .success(let access) = cliAccessResult(vaultId: id) { values[id] = access }
 		}
 		return .success(values)
 	}
@@ -396,6 +408,8 @@ enum KeychainStoreError: Error, LocalizedError, Equatable, Sendable {
 protocol KeychainStoreBackend {
 	func cliAccess(service: String, account: String) throws -> VaultCliAccess
 	func cliAccess(service: String, accounts: [String]) throws -> [String: VaultCliAccess]
+	/// Each requested account's policy, or why its metadata can't be read.
+	func cliAccessReadings(service: String, accounts: [String]) throws -> [String: Result<VaultCliAccess, KeychainStoreError>]
 	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess
 	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws
 	func setAuthenticationContext(_ context: LAContext?)
@@ -412,6 +426,14 @@ extension KeychainStoreBackend {
 		var values = [String: VaultCliAccess](minimumCapacity: accounts.count)
 		for account in accounts { values[account] = try cliAccess(service: service, account: account) }
 		return values
+	}
+	func cliAccessReadings(service: String, accounts: [String]) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
+		var readings = [String: Result<VaultCliAccess, KeychainStoreError>](minimumCapacity: accounts.count)
+		for account in accounts {
+			do { readings[account] = .success(try cliAccess(service: service, account: account)) }
+			catch let error as KeychainStoreError { readings[account] = .failure(error) }
+		}
+		return readings
 	}
 	func setAuthenticationContext(_ context: LAContext?) {}
 	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess {
@@ -533,17 +555,46 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend {
 		return try Self.cliAccess(accounts: accounts, records: records)
 	}
 
+	func cliAccessReadings(service: String, accounts: [String]) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
+		guard !accounts.isEmpty else { return [:] }
+		var query = Self.scopedQuery(service: service)
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitAll
+		query[kSecUseAuthenticationContext as String] = authentication.current()
+		var result: CFTypeRef?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		if status == errSecItemNotFound { return [:] }
+		guard status == errSecSuccess else {
+			throw KeychainStoreError.status(operation: "read project CLI approval", code: status)
+		}
+		guard let records = result as? [[String: Any]] else {
+			throw KeychainStoreError.integrityValidationFailed
+		}
+		return Self.cliAccessReadings(accounts: accounts, records: records)
+	}
+
 	static func cliAccess(accounts: [String], records: [[String: Any]]) throws -> [String: VaultCliAccess] {
+		try cliAccessReadings(accounts: accounts, records: records).mapValues { try $0.get() }
+	}
+
+	/// Each requested account's policy among `records`. An account whose
+	/// metadata is malformed, or that two records claim, can't be read; the
+	/// others still can.
+	static func cliAccessReadings(accounts: [String], records: [[String: Any]]) -> [String: Result<VaultCliAccess, KeychainStoreError>] {
 		let requested = Set(accounts)
-		var values = [String: VaultCliAccess](minimumCapacity: requested.count)
+		var readings = [String: Result<VaultCliAccess, KeychainStoreError>](minimumCapacity: requested.count)
 		for attributes in records {
 			guard let account = attributes[kSecAttrAccount as String] as? String,
 				requested.contains(account)
 			else { continue }
-			guard values[account] == nil else { throw KeychainStoreError.integrityValidationFailed }
-			values[account] = try cliAccess(attributes: attributes)
+			guard readings[account] == nil else {
+				readings[account] = .failure(.integrityValidationFailed)
+				continue
+			}
+			do { readings[account] = .success(try cliAccess(attributes: attributes)) }
+			catch { readings[account] = .failure(.integrityValidationFailed) }
 		}
-		return values
+		return readings
 	}
 	private static func scopedQuery(service: String) -> [String: Any] {
 		[
@@ -1657,6 +1708,13 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
+	func cliAccessReadings(accounts: [String]) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			return try backend.cliAccessReadings(service: service, accounts: accounts)
+		}
+	}
+
 	func setCliAccess(account: String, access: VaultCliAccess) throws -> VaultCliAccess {
 		try VaultKeychainTransactionLock.withLock {
 			try ensureRecoveredUnlocked()
@@ -1915,6 +1973,13 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	func cliAccessResults(vaultIds: [String]) -> Result<[String: VaultCliAccess], KeychainError> {
 		guard vaultIds.allSatisfy(EnvValidation.isSafeVaultId) else { return .failure(.accessDenied) }
 		do { return .success(try store.cliAccess(accounts: vaultIds)) }
+		catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
+		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
+	}
+
+	func readableCliAccess(vaultIds: [String]) -> Result<[String: VaultCliAccess], KeychainError> {
+		let safe = vaultIds.filter(EnvValidation.isSafeVaultId)
+		do { return .success(try store.cliAccessReadings(accounts: safe).compactMapValues { try? $0.get() }) }
 		catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
 		catch { return .failure(.unexpectedStatus(errSecInternalComponent)) }
 	}

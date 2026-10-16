@@ -402,17 +402,148 @@ extension SheetInteractionTests {
 			let bands = try labelBands(in: host)
 			try #require(bands.count == 5, "Expected the project label and four child labels, got \(bands)")
 			let project = bands[0]
-			let projectStart = try inkStart(in: host, band: project, columns: 55..<150)
+			let projectStart = try inkStart(in: host, band: project, columns: 32..<150)
 			var labelStarts: [CGFloat] = []
 			for (label, band) in zip(["Schema", "New environment", ".env", ".env.staging"], bands.dropFirst()) {
-				let icon = try inkBounds(in: host, band: band, columns: 48..<71)
+				let icon = try inkBounds(in: host, band: band, columns: 32..<52)
 				#expect(abs(icon.midX - projectStart - 3) <= 0.5, "\(label) icon center is \(icon.midX), expected \(projectStart + 3)")
-				labelStarts.append(try inkStart(in: host, band: band, columns: 71..<200))
+				labelStarts.append(try inkStart(in: host, band: band, columns: 52..<200))
 			}
 			let spread = try #require(labelStarts.max()) - #require(labelStarts.min())
 			#expect(spread <= 1, "Visible label starts: \(labelStarts)")
 			let image = NSBitmapImageRep(cgImage: try host.snapshot(host.view))
 			Attachment.record(try #require(image.representation(using: .png, properties: [:])), named: "sidebar-\(Int(width)).png")
+		}
+
+		@Test("a selected environment or Schema row's background ends where a selected project row's does", arguments: [VaultWorkspaceMode.schema, .environment("default")])
+		func childRowBackgroundEdge(mode: VaultWorkspaceMode) async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			store.openProject(id: "alpha")
+			func selectedEdge(_ mode: VaultWorkspaceMode, row: Int) async throws -> CGFloat {
+				let host = sidebarHost(store, mode: mode)
+				defer { host.window.close() }
+				try await host.settle()
+				let bands = try labelBands(in: host)
+				try #require(bands.count == 5, "Expected the project label and four child labels, got \(bands)")
+				return try backgroundEdge(in: host, band: bands[row])
+			}
+			let project = try await selectedEdge(.matrix, row: 0)
+			let child = try await selectedEdge(mode, row: mode == .schema ? 1 : 3)
+			#expect(abs(child - project) <= 0.5, "The child row's background ends at \(child), the project row's at \(project)")
+		}
+
+		@Test("a trailing lock marks projects whose CLI access needs approval, and an orange mark those whose policy can't be read")
+		func approvalIndicators() async throws {
+			let (store, keychain, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			keychain.cliAccessPolicies["alpha"] = .requireApproval
+			keychain.unreadableCliAccess = ["zulu"]
+			#expect(await store.loadProjects())
+			store.isUnlocked = true
+			#expect(store.projectCliAccess == ["alpha": .requireApproval, "middle": .automatic])
+			let host = sidebarHost(store)
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count == 3, "Expected three project rows, got \(rows)")
+			let indicatorColumns = SidebarRowColumns(width: host.view.bounds.width).indicator
+			#expect((try? inkBounds(in: host, band: rows[0], columns: indicatorColumns)) != nil, "Alpha needs approval")
+			#expect((try? inkBounds(in: host, band: rows[1], columns: indicatorColumns)) == nil, "Middle's access is automatic")
+			let (red, green, blue) = try strongestInk(in: host, band: rows[2], columns: indicatorColumns)
+			#expect(red > green + 30 && green > blue, "Zulu's unreadable policy is marked in orange, read \((red, green, blue))")
+			let (lockRed, lockGreen, lockBlue) = try strongestInk(in: host, band: rows[0], columns: indicatorColumns)
+			#expect(abs(lockRed - lockBlue) < 30 && abs(lockRed - lockGreen) < 30, "The lock is gray, not a warning")
+		}
+
+		@Test("a selected project's lock takes the selection's color, and its row stays highlighted on its settings page")
+		func selectedRow() async throws {
+			let (store, keychain, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			keychain.cliAccessPolicies["alpha"] = .requireApproval
+			#expect(await store.loadProjects())
+			store.isUnlocked = true
+			store.openProject(id: "alpha")
+			func row(_ mode: VaultWorkspaceMode) async throws -> (lock: (Int, Int, Int), edge: CGFloat) {
+				let host = sidebarHost(store, mode: mode)
+				defer { host.window.close() }
+				try await host.settle()
+				let bands = try labelBands(in: host)
+				try #require(!bands.isEmpty)
+				return (try strongestInk(in: host, band: bands[0], columns: SidebarRowColumns(width: host.view.bounds.width).indicator),
+					try backgroundEdge(in: host, band: bands[0]))
+			}
+			let matrix = try await row(.matrix)
+			let (red, green, blue) = matrix.lock
+			#expect(blue - red > 15 && blue - green > 15, "The selected row's lock is in the selection's color, read \((red, green, blue))")
+			let settings = try await row(.projectSettings)
+			#expect(abs(settings.edge - matrix.edge) <= 0.5, "The row is highlighted on its settings page as on its variables")
+			let schema = try await row(.schema)
+			#expect(abs(schema.edge - matrix.edge) > 2, "On the Schema page the Schema row is highlighted instead")
+		}
+
+		@Test("a project's icon shows in its row, and the grip takes its place while it's dragged")
+		func gripReplacesIconWhileDragging() async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			store.projectIcons.save(.symbol("bolt.fill", .red), for: "alpha")
+			let reorder = VaultSidebarReorder()
+			let host = sidebarHost(store, reorder: reorder)
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count == 3, "Expected three project rows, got \(rows)")
+			let slot = SidebarRowColumns(width: host.view.bounds.width).slot
+			#expect(try redPixels(in: host, band: rows[0], columns: slot) > 20, "Alpha's red icon tile shows at rest")
+			let start = NSPoint(x: 140, y: rows[0].midY)
+			try drag(in: host, from: start, to: NSPoint(x: 140, y: start.y - 6), release: false)
+			#expect(reorder.lift?.projectId == "alpha")
+			#expect(try await host.waitUntil { try redPixels(in: host, band: rows[0].offsetBy(dx: 0, dy: -6), columns: slot) == 0 },
+				"The grip replaces the icon while dragging")
+			var grip = CGRect.null
+			#expect(try await host.waitUntil {
+				grip = try inkBounds(in: host, band: rows[0].offsetBy(dx: 0, dy: -6), columns: slot)
+				return grip.minX - VaultSidebarLayout.gripSlide >= VaultSidebarLayout.projectInset
+			}, "The grip slides in from \(grip.minX - VaultSidebarLayout.gripSlide), on the row's background, which starts at \(VaultSidebarLayout.projectInset)")
+			try mouse(.leftMouseUp, at: NSPoint(x: 140, y: start.y - 6), in: host)
+			#expect(try await host.waitUntil { try redPixels(in: host, band: rows[0], columns: slot) > 20 }, "The icon returns once the drag ends")
+		}
+
+		@Test("a project row's menu opens Project Settings first, then Rename, the moves and Delete Locally, and its shortcuts work only from the menu")
+		func rowMenu() async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			var opened: [String] = []
+			var renamed: [String] = []
+			var deleted: [String] = []
+			let host = sidebarHost(store, onProjectSettings: { opened.append($0.id) }, onRenameProject: { renamed.append($0.id) },
+				onDeleteProject: { deleted.append($0.id) })
+			defer { host.window.close() }
+			try await host.settle()
+			let rows = try labelBands(in: host)
+			try #require(rows.count == 3)
+			let point = NSPoint(x: 140, y: rows[1].midY)
+			let event = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [],
+				timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber, context: nil,
+				eventNumber: 0, clickCount: 1, pressure: 1))
+			let target = try #require(host.view.hitTest(host.view.convert(point, from: nil)))
+			let menu = try #require(target.menu(for: event) ?? host.view.menu(for: event), "The row has a context menu")
+			let titles = menu.items.map { $0.isSeparatorItem ? "—" : $0.title }
+			#expect(titles == ["Project Settings…", "—", "Rename…", "Move Up", "Move Down", "—", "Delete Locally…"])
+			let settings = try #require(menu.items.first)
+			#expect(settings.keyEquivalent == "i" && settings.keyEquivalentModifierMask == .command)
+			let up = String(UnicodeScalar(UInt16(NSUpArrowFunctionKey))!), down = String(UnicodeScalar(UInt16(NSDownArrowFunctionKey))!)
+			#expect(menu.items[3].keyEquivalent == up && menu.items[3].keyEquivalentModifierMask == .option)
+			#expect(menu.items[4].keyEquivalent == down && menu.items[4].keyEquivalentModifierMask == .option)
+			menu.performActionForItem(at: 6)
+			#expect(try await host.waitUntil { deleted == ["middle"] })
+			menu.performActionForItem(at: 0)
+			#expect(try await host.waitUntil { opened == ["middle"] })
+			menu.performActionForItem(at: 2)
+			#expect(try await host.waitUntil { renamed == ["middle"] })
+			try host.key("i", code: 34, modifiers: .command, in: host.window)
+			try await host.settle()
+			#expect(opened == ["middle"], "⌘I outside the menu belongs to the app's command, not to every row's menu")
 		}
 
 		@Test("new projects appear at the top before and after manual reordering")
@@ -569,11 +700,14 @@ extension SheetInteractionTests {
 		}
 
 		private func sidebarHost(_ store: VaultStore, width: CGFloat = 280, height: CGFloat = 500,
-			mode: VaultWorkspaceMode = .matrix, reorder: VaultSidebarReorder = VaultSidebarReorder()) -> SheetTestHost<some View> {
+			mode: VaultWorkspaceMode = .matrix, reorder: VaultSidebarReorder = VaultSidebarReorder(),
+			onProjectSettings: @escaping (VaultProject) -> Void = { _ in }, onRenameProject: @escaping (VaultProject) -> Void = { _ in },
+			onDeleteProject: @escaping (VaultProject) -> Void = { _ in }
+		) -> SheetTestHost<some View> {
 			SheetTestHost(VaultSidebarView(store: store, snapshots: [:], mode: .constant(mode),
 				filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
-				onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onRenameProject: { _ in },
-				onDeleteProject: { _ in }, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
+				onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onProjectSettings: onProjectSettings, onRenameProject: onRenameProject,
+				onDeleteProject: onDeleteProject, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
 				onClearEnvironment: { _ in }, onDeleteEnvironment: { _ in }, reorder: reorder),
 				size: NSSize(width: width, height: height), keepsRequestedSize: true, usesHostingView: true)
 		}
@@ -648,7 +782,7 @@ extension SheetInteractionTests {
 			var bands: [CGRect] = []
 			var first: Int?
 			for row in Int(80 * scale)..<min(Int(215 * scale), image.height) {
-				let background = (row * image.width + Int(220 * scale)) * 4
+				let background = (row * image.width + Int(CGFloat(SidebarRowColumns(width: host.view.bounds.width).background) * scale)) * 4
 				let hasInk = (Int(55 * scale)..<Int(190 * scale)).contains { column in
 					let pixel = (row * image.width + column) * 4
 					return (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[background + $1])) } > 55
@@ -675,7 +809,7 @@ extension SheetInteractionTests {
 			for column in Int(CGFloat(columns.lowerBound) * scale)..<Int(CGFloat(columns.upperBound) * scale) {
 				for row in top..<bottom {
 					let pixel = (row * image.width + column) * 4
-					let background = (row * image.width + Int(220 * scale)) * 4
+					let background = (row * image.width + Int(CGFloat(SidebarRowColumns(width: host.view.bounds.width).background) * scale)) * 4
 					let contrast = (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[background + $1])) }
 					if contrast > 55 {
 						if first == nil { first = column }
@@ -689,6 +823,60 @@ extension SheetInteractionTests {
 				width: CGFloat(last - first + 1) / scale, height: band.height)
 		}
 
+		/// Where a highlighted row's background ends on the right, in window coordinates.
+		private func backgroundEdge<V: View>(in host: SheetTestHost<V>, band: CGRect) throws -> CGFloat {
+			let image = try host.snapshot(host.view)
+			let context = try pixelContext(image)
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / host.view.bounds.width
+			let row = Int((host.view.bounds.height - band.midY) * scale)
+			let sidebar = (row * image.width + image.width - 1) * 4
+			let column = try #require((0..<image.width).reversed().first { column in
+				let pixel = (row * image.width + column) * 4
+				return (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[sidebar + $1])) } > 6
+			})
+			return CGFloat(column + 1) / scale
+		}
+
+		/// The pixel in `band` and `columns` that differs most from the sidebar background, as red, green and blue.
+		private func strongestInk<V: View>(in host: SheetTestHost<V>, band: CGRect, columns: Range<Int>) throws -> (Int, Int, Int) {
+			let image = try host.snapshot(host.view)
+			let context = try pixelContext(image)
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / host.view.bounds.width
+			let top = Int((host.view.bounds.height - band.maxY - 3) * scale), bottom = Int((host.view.bounds.height - band.minY + 3) * scale)
+			var best = (0, 0, 0), bestContrast = 0
+			for row in top..<bottom {
+				let background = (row * image.width + Int(CGFloat(SidebarRowColumns(width: host.view.bounds.width).background) * scale)) * 4
+				for column in Int(CGFloat(columns.lowerBound) * scale)..<Int(CGFloat(columns.upperBound) * scale) {
+					let pixel = (row * image.width + column) * 4
+					let contrast = (0..<3).reduce(0) { $0 + abs(Int(pixels[pixel + $1]) - Int(pixels[background + $1])) }
+					if contrast > bestContrast {
+						bestContrast = contrast
+						best = (Int(pixels[pixel]), Int(pixels[pixel + 1]), Int(pixels[pixel + 2]))
+					}
+				}
+			}
+			return best
+		}
+
+		/// How many strongly red pixels `band` and `columns` hold.
+		private func redPixels<V: View>(in host: SheetTestHost<V>, band: CGRect, columns: Range<Int>) throws -> Int {
+			let image = try host.snapshot(host.view)
+			let context = try pixelContext(image)
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / host.view.bounds.width
+			let top = max(0, Int((host.view.bounds.height - band.maxY - 3) * scale)), bottom = min(image.height, Int((host.view.bounds.height - band.minY + 3) * scale))
+			var count = 0
+			for row in top..<bottom {
+				for column in Int(CGFloat(columns.lowerBound) * scale)..<Int(CGFloat(columns.upperBound) * scale) {
+					let pixel = (row * image.width + column) * 4
+					if pixels[pixel] > 200, pixels[pixel + 1] < 90, pixels[pixel + 2] < 90 { count += 1 }
+				}
+			}
+			return count
+		}
+
 		private func pixelContext(_ image: CGImage) throws -> CGContext {
 			let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
 				bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
@@ -698,6 +886,23 @@ extension SheetInteractionTests {
 
 		/// Alpha, Middle and Zulu, each with `.env` and `.env.staging`, then
 		/// `count - 3` more projects named so they sort after them.
+		/// Where a project row draws its parts in a sidebar `width` points wide.
+		private struct SidebarRowColumns {
+			let slot: Range<Int>
+			let indicator: Range<Int>
+			/// A column of the row's own background, between its name and its lock.
+			let background: Int
+
+			init(width: CGFloat) {
+				let leading = VaultSidebarLayout.projectInset + VaultSidebarLayout.rowInset
+				slot = Int(leading)..<Int(leading + VaultSidebarLayout.projectIconWidth) + 1
+				let indicatorEnd = width - leading - VaultSidebarLayout.countMinimumWidth - VaultSidebarLayout.projectSpacing
+				let indicatorStart = indicatorEnd - VaultSidebarLayout.approvalWidth
+				indicator = Int(indicatorStart) - 4..<Int(indicatorEnd) + 4
+				background = Int(indicatorStart - VaultSidebarLayout.projectSpacing)
+			}
+		}
+
 		private func fixture(count: Int = 3) throws -> (VaultStore, MockKeychainService, UserDefaults, String) {
 			let domain = "sidebar-project-order-" + UUID().uuidString
 			let preferences = try #require(UserDefaults(suiteName: domain))

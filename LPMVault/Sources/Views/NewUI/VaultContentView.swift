@@ -42,6 +42,8 @@ struct VaultContentView: View {
 	let onCopyAll: () -> Void
 	let onImport: () -> Void
 	let onExport: () -> Void
+	/// The "…" menu's items: the project's settings, folder and other actions.
+	var moreActions: () -> [VaultMenuItem] = { [] }
 	/// Keys with unsaved edits in this project.
 	var editedKeys: Set<String> = []
 	/// Keys whose rules make them public; their values show unmasked.
@@ -79,8 +81,8 @@ struct VaultContentView: View {
 				matrix(derived)
 			case .environment:
 				environmentDetail(derived)
-			case .schema:
-				// The workspace shows the Schema page instead of this view.
+			case .schema, .projectSettings:
+				// The workspace shows the Schema or Project Settings page instead of this view.
 				Spacer(minLength: 0)
 			}
 
@@ -91,19 +93,19 @@ struct VaultContentView: View {
 	}
 
 	/// The first row is about the project: what it is, its CLI approval, the
-	/// inspector, and a new key. The second is about what is on screen: how it is
-	/// filtered or shown, and the actions on those values.
+	/// inspector, its other actions, and a new key. The second is about what
+	/// is on screen: how it is filtered or shown, and the actions on those values.
 	private func header(_ derived: VaultContentDerivation) -> some View {
 		VStack(alignment: .leading, spacing: 12) {
 			ViewThatFits(in: .horizontal) {
 				HStack(spacing: 10) {
 					headerIdentity(derived)
 					Spacer(minLength: 8)
-					projectActions
+					projectButtons
 				}
 				VStack(alignment: .leading, spacing: 10) {
 					headerIdentity(derived)
-					projectActions.frame(maxWidth: .infinity, alignment: .trailing)
+					projectButtons.frame(maxWidth: .infinity, alignment: .trailing)
 				}
 			}
 
@@ -203,13 +205,14 @@ struct VaultContentView: View {
 		.fixedSize(horizontal: true, vertical: false)
 	}
 
-	private var projectActions: some View {
+	private var projectButtons: some View {
 		HStack(spacing: 6) {
 			VaultOutlineButton(
 				systemImage: "sidebar.right",
 				help: showsInspector ? "Hide inspector" : "Show inspector",
 				active: showsInspector
 			) { showsInspector.toggle() }
+			VaultMenuButton(systemImage: "ellipsis", help: "More actions", items: moreActions)
 			VaultBarButton(
 				systemImage: "plus",
 				title: "New key",

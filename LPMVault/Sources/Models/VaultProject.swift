@@ -108,8 +108,4 @@ struct VaultProject: Identifiable, Hashable, Sendable {
 		hasLoadedEnvironments ? environments[env]?.count ?? 0 : environmentKeyCounts[env] ?? 0
 	}
 
-	var pathExists: Bool {
-		FileManager.default.fileExists(atPath: path)
-	}
-
 }
