@@ -426,6 +426,19 @@ struct VaultStoreTests {
 		#expect(store.projectCliAccess.isEmpty)
 	}
 
+	@Test("one project's unreadable approval metadata leaves the other projects' policies known")
+	func oneUnreadablePolicyKeepsTheOthers() async {
+		let (store, keychain, _, _) = makeStore(projects: [
+			(id: "first", name: "First", path: "", secrets: [:]),
+			(id: "second", name: "Second", path: "", secrets: [:]),
+			(id: "third", name: "Third", path: "", secrets: [:]),
+		])
+		keychain.cliAccessPolicies["third"] = .requireApproval
+		keychain.unreadableCliAccess = ["second"]
+		#expect(await store.loadProjects())
+		#expect(store.projectCliAccess == ["first": .automatic, "third": .requireApproval])
+	}
+
 	@Test("locking the UI preserves the persisted CLI approval policy")
 	func uiLockDoesNotChangeCliApprovalPolicy() async {
 		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: [:])])

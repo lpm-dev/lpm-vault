@@ -272,6 +272,25 @@ struct KeychainServiceTests {
 		}
 	}
 
+	@Test("batch approval readings keep each project's policy apart from one whose metadata is malformed or claimed twice")
+	func batchCliApprovalReadingsIsolateInvalidMetadata() throws {
+		var required = try SecurityKeychainStoreBackend.approvalAttributes(.requireApproval)
+		required[kSecAttrAccount as String] = "protected"
+		let readings = SecurityKeychainStoreBackend.cliAccessReadings(
+			accounts: ["protected", "automatic", "malformed", "duplicated", "missing"],
+			records: [required,
+				[kSecAttrAccount as String: "automatic"],
+				[kSecAttrAccount as String: "malformed", kSecAttrGeneric as String: Data("unknown".utf8)],
+				[kSecAttrAccount as String: "duplicated"],
+				[kSecAttrAccount as String: "duplicated"]]
+		)
+		#expect(try readings["protected"]?.get() == .requireApproval)
+		#expect(try readings["automatic"]?.get() == .automatic)
+		#expect(readings["malformed"].map { if case .failure(.integrityValidationFailed) = $0 { true } else { false } } == true)
+		#expect(readings["duplicated"].map { if case .failure(.integrityValidationFailed) = $0 { true } else { false } } == true)
+		#expect(readings["missing"] == nil)
+	}
+
 	@Test("round-trip: create then read returns the same environments")
 	func roundTrip() {
 		let service = makeService()

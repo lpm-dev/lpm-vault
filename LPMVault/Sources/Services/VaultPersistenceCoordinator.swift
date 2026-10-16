@@ -215,11 +215,13 @@ actor VaultPersistenceCoordinator {
 		}
 		if strictPolicies && Task.isCancelled { return .failure(.accessDenied) }
 		let policies: [String: VaultCliAccess]
-		switch service.cliAccessResults(vaultIds: projects.map(\.id)) {
-		case .success(let loaded): policies = loaded
-		case .failure(let error):
-			if strictPolicies { return .failure(error) }
-			policies = [:]
+		if strictPolicies {
+			switch service.cliAccessResults(vaultIds: projects.map(\.id)) {
+			case .success(let loaded): policies = loaded
+			case .failure(let error): return .failure(error)
+			}
+		} else {
+			policies = (try? service.readableCliAccess(vaultIds: projects.map(\.id)).get()) ?? [:]
 		}
 		if strictPolicies && Task.isCancelled { return .failure(.accessDenied) }
 		if let selectedProjectID, let index = projects.firstIndex(where: { $0.id == selectedProjectID }) {
@@ -989,7 +991,7 @@ actor VaultPersistenceCoordinator {
 				},
 				syncMetadata: remainingMetadata,
 				orgAssociations: associations,
-				cliAccess: (try? service.cliAccessResults(vaultIds: remainingProjects.map(\.id)).get()) ?? [:]
+				cliAccess: (try? service.readableCliAccess(vaultIds: remainingProjects.map(\.id)).get()) ?? [:]
 			)
 		)
 	}

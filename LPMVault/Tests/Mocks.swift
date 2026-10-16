@@ -8,6 +8,8 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var cliAccessPolicies: [String: VaultCliAccess] = [:]
 	var cliAccessChangeCount = 0
 	var failCliAccess = false
+	/// Projects whose approval metadata can't be read, while the others' can.
+	var unreadableCliAccess: Set<String> = []
 	var afterCliAccessCommit: (@Sendable () -> Void)?
 	var beforeCliAccessRead: (@Sendable () -> Void)?
 	var failCliAccessChange = false
@@ -18,7 +20,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	func cliAccessResult(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
 		beforeCliAccessRead?()
 		return lock.withLock {
-			if shouldFail || failCliAccess { return .failure(failureError) }
+			if shouldFail || failCliAccess || unreadableCliAccess.contains(vaultId) { return .failure(failureError) }
 			return .success(cliAccessPolicies[vaultId] ?? .automatic)
 		}
 	}
