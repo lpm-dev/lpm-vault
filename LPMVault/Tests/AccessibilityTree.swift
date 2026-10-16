@@ -128,12 +128,33 @@ enum AccessibilityTree {
 		ProcessInfo.processInfo.disableAutomaticTermination("Native UI tests are running")
 		ProcessInfo.processInfo.disableSuddenTermination()
 		UITestSuite.reportExitsDuringTests()
+		keepMainRunLoopRunning()
 		// A test process never finishes launching on its own, and until it has,
 		// it can't answer an accessibility request, even its own.
 		NSApplication.shared.finishLaunching()
 		var role: CFTypeRef?
 		let result = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()), kAXRoleAttribute as CFString, &role)
 		if result != .success { Issue.record("Accessibility didn't answer this process's request: \(result.rawValue)") }
+	}
+
+	/// Runs the main run loop again when its outermost run is stopped. Swift's
+	/// async `main` runs that loop and exits when it returns, and a launched
+	/// app's frameworks can stop it as if a modal loop of theirs were running,
+	/// which ended runs before their reports were written. A stop then ends
+	/// only the nested runs it can be meant for.
+	private static func keepMainRunLoopRunning() {
+		var nested = 0
+		let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.entry.rawValue | CFRunLoopActivity.exit.rawValue, true, 0) {
+			_, activity in
+			if activity == .entry {
+				nested += 1
+			} else if nested > 0 {
+				nested -= 1
+			} else {
+				CFRunLoopRun()
+			}
+		}
+		CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
 	}
 
 	/// Every element in `root`, a window or a view, in the tree's reading order.
