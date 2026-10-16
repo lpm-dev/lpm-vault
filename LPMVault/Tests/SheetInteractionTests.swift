@@ -106,6 +106,14 @@ enum NativeTestClick {
 	}
 }
 
+/// Where the workspace header's controls are drawn in an 800-point-tall window.
+enum WorkspaceHeaderGeometry {
+	/// The inspector toggle's center: left of the More actions button and New key, from the content's right edge.
+	static func inspectorToggle(contentRightEdge: CGFloat) -> NSPoint {
+		NSPoint(x: contentRightEdge - 162.5, y: 723.5)
+	}
+}
+
 @MainActor
 final class SheetTestHost<V: View> {
 	let view: NSView

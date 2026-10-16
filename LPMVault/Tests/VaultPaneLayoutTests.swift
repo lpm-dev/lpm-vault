@@ -244,7 +244,7 @@ struct VaultPaneLayoutTests {
 	}
 
 	private func clickInspectorToggle(in window: NSWindow, contentRightEdge: CGFloat) throws {
-		let location = NSPoint(x: contentRightEdge - 129.5, y: 723.5)
+		let location = WorkspaceHeaderGeometry.inspectorToggle(contentRightEdge: contentRightEdge)
 		try NativeTestClick.send(to: window, at: location)
 	}
 

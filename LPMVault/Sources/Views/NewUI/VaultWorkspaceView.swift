@@ -33,9 +33,11 @@ struct VaultWorkspaceView: View {
 	@State private var renameEnvironmentTarget: VaultEnvironmentTarget?
 	@State private var duplicateEnvironmentTarget: VaultEnvironmentTarget?
 	@State private var environmentNameDraft = ""
-	@State private var projectToRename: VaultProject?
-	@State private var projectNameDraft = ""
 	@State private var projectToDelete: VaultProject?
+	/// The project whose settings open once it's selected.
+	@State private var pendingProjectSettings: String?
+	/// Focuses the Project Settings name field each time it changes.
+	@State private var projectNameFocusRequest: UUID?
 
 	@State private var showPushConfirmation = false
 	@State private var showPullConfirmation = false
@@ -61,6 +63,27 @@ struct VaultWorkspaceView: View {
 	private struct SchemaWatch: Hashable {
 		let folder: String
 		let imports: [String]
+	}
+
+	/// What the selected project's icon depends on in its folder.
+	private struct IconWatch: Hashable {
+		let projectID: String
+		let folder: String
+		let paths: [String]
+	}
+
+	private var iconWatch: IconWatch? {
+		guard store.isUnlocked, let project, !project.path.isEmpty else { return nil }
+		return IconWatch(projectID: project.id, folder: project.path, paths: store.projectIcons.watchedPaths(for: project.id))
+	}
+
+	/// Redraws the selected project's icon whenever a file it can come from changes.
+	private func watchIconFiles() async {
+		guard let watch = iconWatch else { return }
+		for await _ in ProjectConfigWatcher.changes(inFolder: watch.folder, watching: watch.paths) {
+			guard !Task.isCancelled else { return }
+			store.projectIcons.revalidate(watch.projectID)
+		}
 	}
 
 	/// What the Schema page watches; nil off the page.
@@ -161,6 +184,7 @@ struct VaultWorkspaceView: View {
 		guard !store.isShowingAccountPage else { return false }
 		if hasUnsavedRecovery { return true }
 		if mode == .schema { return schemaPanelVisible }
+		if mode == .projectSettings { return false }
 		guard showsInspector, let project else { return false }
 		return store.workspaceSnapshots[project.id] != nil
 	}
@@ -180,9 +204,13 @@ struct VaultWorkspaceView: View {
 	var body: some View {
 		workspaceDialogs
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
+		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
+			if let project { openProjectSettings(project, focusingName: false) }
+		}
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
 		.task(id: schemaWatch) { await watchSchemaFolder() }
+		.task(id: iconWatch) { await watchIconFiles() }
 		.onChange(of: store.selectedEnvironment) { _, environment in
 			resetCopyPresentation()
 			importReview = nil
@@ -270,7 +298,8 @@ struct VaultWorkspaceView: View {
 							onNewProject: { showNewProject = true },
 							onCloudProjects: { showCloudProjects = true },
 							onNewEnvironment: { showNewEnvironment = true },
-							onRenameProject: beginRenameProject,
+							onProjectSettings: { openProjectSettings($0, focusingName: false) },
+							onRenameProject: { openProjectSettings($0, focusingName: true) },
 							onDeleteProject: { projectToDelete = $0 },
 							onRenameEnvironment: beginRenameEnvironment,
 							onDuplicateEnvironment: beginDuplicateEnvironment,
@@ -288,6 +317,15 @@ struct VaultWorkspaceView: View {
 							PlatformsView(store: store)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
+						} else if let project, mode == .projectSettings {
+							VaultProjectSettingsView(
+								store: store,
+								project: project,
+								nameFocusRequest: projectNameFocusRequest,
+								onBack: { mode = .matrix },
+								onDelete: { projectToDelete = project }
+							)
+							.frame(maxWidth: .infinity, maxHeight: .infinity)
 						} else if let failure = store.selectedProjectLoadFailure {
 							VaultLoadErrorView(failure: failure, retry: store.retrySelectedProjectLoad)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -381,6 +419,7 @@ struct VaultWorkspaceView: View {
 								onCopyAll: copyAll,
 								onImport: importCurrentEnvironment,
 								onExport: exportCurrentEnvironment,
+								moreActions: { projectMenuItems(project) },
 								editedKeys: store.keyDrafts.editedKeys(in: project.id),
 								publicKeys: store.publicKeys(in: project.id),
 								valueChecks: VaultValueCheckPresentation(
@@ -561,15 +600,6 @@ struct VaultWorkspaceView: View {
 
 	private var workspaceDialogs: some View {
 		workspaceSheets
-		.alert("Rename Env Project", isPresented: Binding(
-			get: { projectToRename != nil },
-			set: { if !$0 { projectToRename = nil } }
-		)) {
-			TextField("Project name", text: $projectNameDraft)
-			Button("Cancel", role: .cancel) { projectToRename = nil }
-			Button("Rename", action: renameProject)
-				.disabled(VaultProjectRenamePolicy.normalizedName(projectNameDraft) == nil)
-		}
 		.alert("Rename Environment", isPresented: Binding(
 			get: { renameEnvironmentTarget != nil },
 			set: { if !$0 { renameEnvironmentTarget = nil } }
@@ -742,8 +772,6 @@ struct VaultWorkspaceView: View {
 		currentImportTask?.cancel()
 		currentImportTask = nil
 		currentImportID = nil
-		projectToRename = nil
-		projectNameDraft = ""
 		renameEnvironmentTarget = nil
 		duplicateEnvironmentTarget = nil
 		environmentNameDraft = ""
@@ -968,17 +996,24 @@ struct VaultWorkspaceView: View {
 		}
 	}
 
-	private func beginRenameProject(_ project: VaultProject) {
-		projectToRename = project
-		projectNameDraft = project.name
+	/// Opens a project's settings, selecting it first; Rename also focuses its name.
+	private func openProjectSettings(_ target: VaultProject, focusingName: Bool) {
+		guard store.isUnlocked else { return }
+		// Selecting another project resets the page, so it reopens on this one once selected.
+		pendingProjectSettings = store.selectedProjectId == target.id ? nil : target.id
+		store.openProject(id: target.id)
+		mode = .projectSettings
+		if focusingName { projectNameFocusRequest = UUID() }
 	}
 
-	private func renameProject() {
-		guard let project = projectToRename,
-			let normalizedName = VaultProjectRenamePolicy.normalizedName(projectNameDraft)
-		else { return }
-		store.renameProject(project, to: normalizedName)
-		projectToRename = nil
+	private func projectMenuItems(_ project: VaultProject) -> [VaultMenuItem] {
+		VaultProjectMenu.headerItems(
+			for: project,
+			folderExists: project.pathExists,
+			openSettings: { openProjectSettings(project, focusingName: false) },
+			rename: { openProjectSettings(project, focusingName: true) },
+			delete: { projectToDelete = project }
+		)
 	}
 
 	private func beginRenameEnvironment(_ target: VaultEnvironmentTarget) {
@@ -1013,7 +1048,8 @@ struct VaultWorkspaceView: View {
 
 	private func resetProjectPresentation() {
 		importReview = nil
-		mode = .matrix
+		mode = pendingProjectSettings != nil && pendingProjectSettings == store.selectedProjectId ? .projectSettings : .matrix
+		pendingProjectSettings = nil
 		filter = .all
 		environmentViewMode = .table
 		selectedKey = nil
