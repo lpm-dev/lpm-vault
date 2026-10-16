@@ -59,6 +59,24 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 		limited += 1
 		return .rateLimited(until: Date().addingTimeInterval(0.01))
 	}
+	/// Refuses the next write with a rate limit lifting at once, after running
+	/// this as someone changing Netlify while the limit is waited out would.
+	var rateLimitNextWrite: (@Sendable (FakeNetlifyAPI) -> Void)? {
+		get { lock.withLock { nextWriteLimit } }
+		set { lock.withLock { nextWriteLimit = newValue } }
+	}
+	private var nextWriteLimit: (@Sendable (FakeNetlifyAPI) -> Void)?
+
+	/// The rate limit for the next write, once, after running its hook.
+	private func limitedWrite() -> NetlifyAPIError? {
+		guard let hook = lock.withLock({ () -> (@Sendable (FakeNetlifyAPI) -> Void)? in
+			defer { nextWriteLimit = nil }
+			return nextWriteLimit
+		}) else { return nil }
+		hook(self)
+		lock.withLock { limited += 1 }
+		return .rateLimited(until: Date().addingTimeInterval(0.01))
+	}
 	/// Runs before each listing after the first, as someone changing Netlify meanwhile would.
 	var beforeLaterListing: (@Sendable (FakeNetlifyAPI) -> Void)?
 	/// Runs once, right after the next listing is answered, as someone changing Netlify just then would.
@@ -154,7 +172,8 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 	}
 
 	func create(_ write: NetlifyVariableWrite, siteID: String, teamID: String) async -> Result<NetlifyVariable, NetlifyAPIError> {
-		lock.withLock {
+		if let limit = limitedWrite() { return .failure(limit) }
+		return lock.withLock {
 			if let limit = rateLimited() { return .failure(limit) }
 			sent.append(Write(method: "POST", key: write.key, value: write.value, context: write.context.identifier, isSecret: write.isSecret))
 			if let refusal = refusals[write.key] { return .failure(refusal) }
@@ -168,7 +187,8 @@ final class FakeNetlifyAPI: NetlifyClientProtocol, @unchecked Sendable {
 	}
 
 	func setValue(_ write: NetlifyVariableWrite, siteID: String, teamID: String) async -> Result<NetlifyVariable, NetlifyAPIError> {
-		lock.withLock {
+		if let limit = limitedWrite() { return .failure(limit) }
+		return lock.withLock {
 			if let limit = rateLimited() { return .failure(limit) }
 			sent.append(Write(method: "PATCH", key: write.key, value: write.value, context: write.context.identifier, isSecret: write.isSecret))
 			if let refusal = refusals[write.key] { return .failure(refusal) }
@@ -426,6 +446,68 @@ struct NetlifyPublishingTests {
 		#expect(api.value(of: "API_TOKEN", in: .deployPreview) == "someone")
 		let advanced = previewHistory.advancing(report.advances)
 		#expect(advanced.keys["API_TOKEN"]?.remoteUpdatedAt == seen, "Deploy Previews still sees its variable changed on Netlify")
+	}
+
+	@Test(
+		"an edit to another context made while a rate limit on the write is waited out still shows for that context",
+		arguments: [(false, false), (false, true), (true, false), (true, true)]
+	)
+	func siblingEditDuringRateLimit(replaces: Bool, renewsValueIDs: Bool) async throws {
+		let api = FakeNetlifyAPI()
+		api.renewsValueIDs = renewsValueIDs
+		api.seed("API_TOKEN", replaces ? [.production: "old", .deployPreview: "p"] : [.deployPreview: "p"], secret: true)
+		let listed = try await api.variables(siteID: "site-storefront", teamID: "team_northwind").get()
+		let preview = try #require(listed.first?.values.first { $0.context == .deployPreview })
+		let seen = try #require(listed.first?.updatedAt)
+		let previewHistory = PublishHistory(publishedAt: seen, keys: ["API_TOKEN": PublishHistory.Key(
+			fingerprint: Data(repeating: 1, count: PublishFingerprint.byteCount), publishedAt: seen, remoteID: preview.id,
+			remoteUpdatedAt: seen, publishedAsSecret: true)])
+
+		let reviewed = try await snapshot(api)
+		let values = ["API_TOKEN": "new"]
+		let plan = plan(values, snapshot: reviewed)
+		api.rateLimitNextWrite = { $0.edit("API_TOKEN", in: .deployPreview, value: "someone") }
+		let report = await NetlifyPublishing.publish(try changes(plan, values), to: netlifyTarget(), reviewed: reviewed, using: api)
+		#expect(api.rateLimitedCount == 1)
+		#expect(api.value(of: "API_TOKEN", in: .deployPreview) == "someone")
+		let advanced = previewHistory.advancing(report.advances)
+		#expect(advanced.keys["API_TOKEN"]?.remoteUpdatedAt == seen, "Deploy Previews still sees its variable changed on Netlify")
+		if replaces {
+			#expect(report.outcomes["API_TOKEN"] == .failed("Changed on Netlify since this review. Review again."),
+				"Netlify's one change time can't tell which context changed")
+		} else {
+			#expect(report.outcomes["API_TOKEN"] == .published && api.value(of: "API_TOKEN", in: .production) == "new")
+		}
+	}
+
+	@Test(
+		"a key changed or added on Netlify while a rate limit on its write is waited out isn't sent again",
+		arguments: ["edited", "added"]
+	)
+	func driftDuringRateLimit(change: String) async throws {
+		let api = FakeNetlifyAPI()
+		api.seed("OWN_ONLY", [.production: "old"], secret: true)
+		let key = change == "edited" ? "OWN_ONLY" : "NEW"
+		let values = [key: "new"]
+		let reviewed = try await snapshot(api)
+		let plan = plan(values, snapshot: reviewed)
+		api.rateLimitNextWrite = { $0.seed(key, [.production: "someone"], secret: true) }
+		let report = await NetlifyPublishing.publish(try changes(plan, values), to: netlifyTarget(), reviewed: reviewed, using: api)
+		#expect(api.value(of: key, in: .production) == "someone")
+		#expect(report.outcomes[key] == .failed(change == "edited"
+			? "Changed on Netlify since this review. Review again." : "Added on Netlify since this review. Review again."))
+		#expect(api.rateLimitedCount == 1 && api.writes.isEmpty, "Nothing is written once the limit lifts")
+	}
+
+	@Test("a rate limit whose reset is far off, infinite or malformed ends the publish with the limit, never a crash", arguments: ["1e20", "inf", "-inf", "nan"])
+	func unusableRateLimitReset(reset: String) async throws {
+		let route = PlatformHTTPStub.platform { _ in .json(429, ["code": 429], headers: ["X-RateLimit-Reset": reset]) }
+		let client = NetlifyClient(token: "nfo_secret", baseURL: route.baseURL, session: route.session)
+		let reviewed = NetlifyRemoteSnapshot(variables: [:], keys: [:])
+		let values = ["API_TOKEN": "v"]
+		let report = await NetlifyPublishing.publish(try changes(plan(values, snapshot: reviewed), values), to: netlifyTarget(), reviewed: reviewed, using: client)
+		#expect(report.outcomes["API_TOKEN"] == .failed(NetlifyPublishing.message(.rateLimited(until: nil))))
+		#expect(route.requests.count == 1)
 	}
 
 	@Test("only a variable that other contexts share is read again right before its write")

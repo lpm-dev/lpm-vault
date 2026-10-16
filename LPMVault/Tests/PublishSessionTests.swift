@@ -996,6 +996,17 @@ struct NetlifyPublishSessionTests {
 		#expect(confirmations.reasons == ["Publish 2 variables to storefront / Branch staging on Netlify"])
 	}
 
+	@Test("a branch name typed again in another Unicode composition names another branch, so its review is cleared")
+	func branchRecomposed() async throws {
+		try await connect()
+		let session = session()
+		try await choose(session, .branch, branch: "caf\u{00E9}")
+		#expect(session.review != nil)
+		session.netlify?.branch = "cafe\u{0301}"
+		#expect(session.review == nil, "The review was of the other spelling's branch")
+		#expect(session.netlify?.context?.branch.map { Array($0.utf8) } == Array("cafe\u{0301}".utf8))
+	}
+
 	@Test("a saved Netlify destination opens on its review without listing sites")
 	func savedSkipsDiscovery() async throws {
 		try await connect()

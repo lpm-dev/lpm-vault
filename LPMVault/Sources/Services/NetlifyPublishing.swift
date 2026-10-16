@@ -37,10 +37,9 @@ enum NetlifyPublishing {
 	static let maximumValueCharacters = 5_000
 	/// How many variables are written at once.
 	static let writeConcurrency = 4
-	/// How many times a request Netlify refused with a rate limit is sent again.
+	/// How many rate limits the listing, or one write with its reads, waits
+	/// out before giving up.
 	static let rateLimitRetries = 3
-	/// The longest wait for a rate limit to lift; Netlify's window is a minute.
-	static let maximumRateLimitWait: Duration = .seconds(65)
 
 	/// What Netlify accepts. It decides whether a whole variable is a secret,
 	/// so every value of it is stored that way.
@@ -101,8 +100,9 @@ enum NetlifyPublishing {
 	/// made a secret on Netlify since the review isn't sent. A variable that
 	/// also holds other contexts' values is read once more right before its
 	/// write, so the time other destinations' histories move forward from is
-	/// the one this write replaces. A refused token, a role that can't change
-	/// variables, or a rate limit stops what hasn't been sent yet.
+	/// the one this write replaces; so is any variable whose write waited out
+	/// a rate limit. A refused token, a role that can't change variables, or
+	/// a rate limit that doesn't lift stops what hasn't been sent yet.
 	static func publish(
 		_ changes: [PublishPlan.Change],
 		to target: NetlifyPublishTarget,
@@ -116,7 +116,8 @@ enum NetlifyPublishing {
 		}
 		let current: NetlifyRemoteSnapshot
 		let listed: [String: NetlifyVariable]
-		switch await afterRateLimits({ await client.variables(siteID: target.siteID, teamID: target.teamID) }) {
+		var waits = 0
+		switch await afterRateLimits(waits: &waits, { await client.variables(siteID: target.siteID, teamID: target.teamID) }) {
 		case .success(let list):
 			switch snapshot(list, for: target.context) {
 			case .success(let value):
@@ -194,40 +195,49 @@ enum NetlifyPublishing {
 	}
 
 	/// Sends one write. A variable other contexts share is read again first
-	/// and must still be as the review saw it.
+	/// and must still be as the review saw it, and so must any variable
+	/// before its write is sent again after a rate limit lifts.
 	private static func send(
 		_ write: Write,
 		to target: NetlifyPublishTarget,
 		reviewed: NetlifyRemoteSnapshot,
 		using client: any NetlifyClientProtocol
 	) async -> Answer {
+		let key = write.change.key
 		var write = write
-		if write.sharesVariable(with: target.context) {
-			let fresh: NetlifyVariable?
-			switch await afterRateLimits({ await client.variable(write.change.key, siteID: target.siteID, teamID: target.teamID) }) {
-			case .success(let value): fresh = value
-			case .failure(let error): return .failed(error)
+		var readsFirst = write.sharesVariable(with: target.context)
+		var waits = 0
+		while true {
+			if readsFirst {
+				let fresh: NetlifyVariable?
+				switch await afterRateLimits(waits: &waits, { await client.variable(key, siteID: target.siteID, teamID: target.teamID) }) {
+				case .success(let value): fresh = value
+				case .failure(let error): return .failed(error)
+				}
+				let current: NetlifyRemoteSnapshot
+				switch snapshot(fresh.map { [$0] } ?? [], for: target.context) {
+				case .success(let value): current = value
+				case .failure(let error): return .refused(error.message)
+				}
+				switch self.write(for: write.change, reviewed: reviewed, current: current, listed: fresh) {
+				case .success(let confirmed): write = confirmed
+				case .failure(let refusal): return .refused(refusal.text)
+				}
 			}
-			let current: NetlifyRemoteSnapshot
-			switch snapshot(fresh.map { [$0] } ?? [], for: target.context) {
-			case .success(let value): current = value
-			case .failure(let error): return .refused(error.message)
-			}
-			switch self.write(for: write.change, reviewed: reviewed, current: current, listed: fresh) {
-			case .success(let confirmed): write = confirmed
-			case .failure(let refusal): return .refused(refusal.text)
-			}
-		}
-		let request = NetlifyVariableWrite(
-			key: write.change.key, value: write.change.value, context: target.context, isSecret: write.change.publishesAsSecret)
-		let answer = await afterRateLimits {
-			write.createsVariable
+			let request = NetlifyVariableWrite(
+				key: key, value: write.change.value, context: target.context, isSecret: write.change.publishesAsSecret)
+			let answer = write.createsVariable
 				? await client.create(request, siteID: target.siteID, teamID: target.teamID)
 				: await client.setValue(request, siteID: target.siteID, teamID: target.teamID)
-		}
-		switch answer {
-		case .success(let variable): return .written(variable, write)
-		case .failure(let error): return .failed(error)
+			switch answer {
+			case .success(let variable):
+				return .written(variable, write)
+			case .failure(.rateLimited(let reset)):
+				if let error = await waitOut(until: reset, waits: &waits) { return .failed(error) }
+				readsFirst = true
+			case .failure(let error):
+				return .failed(error)
+			}
 		}
 	}
 
@@ -318,21 +328,26 @@ enum NetlifyPublishing {
 	}
 
 	/// The request's answer, sending it again once a rate limit lifts:
-	/// Netlify applies nothing it refuses that way, so sending again is
-	/// safe. A limit lifting later than the longest wait is the answer.
+	/// Netlify applies nothing it refuses that way, so sending again is safe.
 	private static func afterRateLimits<Value>(
+		waits: inout Int,
 		_ request: () async -> Result<Value, NetlifyAPIError>
 	) async -> Result<Value, NetlifyAPIError> {
-		var attempt = 0
 		while true {
 			let answer = await request()
-			guard case .failure(.rateLimited(let until)) = answer, attempt < rateLimitRetries else { return answer }
-			let seconds = until.map { $0.timeIntervalSinceNow } ?? 60
-			let wait: Duration = .milliseconds(Int64(max(0, seconds) * 1_000))
-			guard seconds.isFinite, wait <= maximumRateLimitWait else { return answer }
-			do { try await Task.sleep(for: wait) } catch { return .failure(.cancelled) }
-			attempt += 1
+			guard case .failure(.rateLimited(let reset)) = answer else { return answer }
+			if let error = await waitOut(until: reset, waits: &waits) { return .failure(error) }
 		}
+	}
+
+	/// Waits until a rate limit lifts, counting the wait in `waits`. Returns
+	/// the error to answer with instead: the limit when no more waits are
+	/// allowed or it lifts after the longest wait, or a cancellation.
+	private static func waitOut(until reset: Date?, waits: inout Int) async -> NetlifyAPIError? {
+		guard waits < rateLimitRetries, let wait = NetlifyHTTP.rateLimitWait(until: reset) else { return .rateLimited(until: reset) }
+		waits += 1
+		do { try await Task.sleep(for: wait) } catch { return .cancelled }
+		return nil
 	}
 
 	/// Refusals that every later request would meet too.

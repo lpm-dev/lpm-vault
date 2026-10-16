@@ -142,9 +142,10 @@ final class NetlifyDestinationForm {
 	var contextChoice: ContextChoice? {
 		didSet { if contextChoice != oldValue { didChange() } }
 	}
-	/// The branch's name as typed, for a branch's deploys.
+	/// The branch's name as typed, for a branch's deploys. Compared by bytes,
+	/// as Git and Netlify tell branches apart.
 	var branch: String {
-		didSet { if branch != oldValue, contextChoice == .branch { didChange() } }
+		didSet { if !branch.utf8.elementsEqual(oldValue.utf8), contextChoice == .branch { didChange() } }
 	}
 	/// In Netlify's order: by team, then name.
 	var sites: PublishSession.Loadable<[NetlifySite]> = .idle
