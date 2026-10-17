@@ -291,15 +291,25 @@ final class GitHubDestinationForm {
 		}
 	}
 
-	/// The scope choices, each one the person can't change saying why.
+	/// The scope choices, each one the person can't change saying why, and
+	/// each environment whose name looks like another's showing its ID.
 	var scopeOptions: [Option] {
 		let repository = self.repository
-		return scopeChoices.map { scope in
+		let choices = scopeChoices
+		let keys = choices.map { scope -> String? in
+			guard case .environment(_, let name) = scope else { return nil }
+			return GitHubPublishTarget.Scope.lookalikeKey(name)
+		}
+		var lookalikes: [String: Int] = [:]
+		lookalikes.reserveCapacity(choices.count)
+		for case let key? in keys { lookalikes[key, default: 0] += 1 }
+		return zip(choices, keys).map { scope, key in
+			let name = scope.displayName(showingID: key.map { lookalikes[$0, default: 0] > 1 } ?? false)
 			guard let repository, !repository.canChange(scope) else {
-				return Option(id: scope.identifier, label: scope.displayName, isAvailable: true)
+				return Option(id: scope.identifier, label: name, isAvailable: true)
 			}
 			let reason = repository.isArchived ? "Archived" : repository.permission == .read ? "Read-only" : "Needs admin access"
-			return Option(id: scope.identifier, label: "\(scope.displayName) · \(reason)", isAvailable: false)
+			return Option(id: scope.identifier, label: "\(name) · \(reason)", isAvailable: false)
 		}
 	}
 

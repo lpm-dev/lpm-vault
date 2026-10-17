@@ -503,6 +503,21 @@ struct GitHubDestinationFormTests {
 		#expect(form.scopeOptions.map(\.label).first == "Repository · Read-only" && form.scopeOptions.allSatisfy { !$0.isAvailable })
 	}
 
+	@Test("environments whose plain names look alike in the menu's font each show their ID; one that looks like no other doesn't")
+	func scopeOptionsShowLookalikes() {
+		let form = GitHubDestinationForm()
+		form.repositories = .loaded([GitHubRepository(id: "1", fullName: "northwind/api", isPrivate: true, permission: .admin)])
+		form.repositoryID = "1"
+		let names = ["staging-I", "staging-l", "prod0", "prodO", "production", "learn", "leam", "clone", "done", "vvest", "west", "build-1", "Build-|"]
+		form.environments = .loaded(names.enumerated().map { GitHubEnvironment(id: String(10 + $0.offset), name: $0.element) })
+		#expect(form.scopeOptions.map(\.label) == [
+			"Repository",
+			"Environment staging-I (ID 10)", "Environment staging-l (ID 11)", "Environment prod0 (ID 12)", "Environment prodO (ID 13)",
+			"Environment production", "Environment learn (ID 15)", "Environment leam (ID 16)", "Environment clone (ID 17)", "Environment done (ID 18)",
+			"Environment vvest (ID 19)", "Environment west (ID 20)", "Environment build-1 (ID 21)", "Environment Build-| (ID 22)",
+		])
+	}
+
 	@Test("the scope choices of a repository among many, with many environments, are made in one pass", .timeLimit(.minutes(1)))
 	func scopeOptionsScale() {
 		let form = GitHubDestinationForm()
