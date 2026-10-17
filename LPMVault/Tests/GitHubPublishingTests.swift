@@ -1692,7 +1692,8 @@ struct GitHubClientListTests {
 		#expect(GitHubPublishing.message(.tooLarge(.repositories))
 			== "GitHub listed more repositories than LPM Vault reads at once. Install LPM Vault's GitHub App only on the repositories it publishes to.")
 		#expect(GitHubPublishing.message(.timedOut(.environments)) == "GitHub took too long to list the repository's environments. Try again.")
-		#expect(GitHubPublishing.message(.timedOut(.repositories)) == "GitHub took too long to list the repositories. Try again.")
+		#expect(GitHubPublishing.message(.timedOut(.repositories))
+			== "GitHub took too long to list the repositories. Try again. If it keeps taking too long, install LPM Vault's GitHub App only on the repositories it publishes to.")
 	}
 
 	@Test("a listing that runs out of time after reading pages says GitHub took too long, though the late page is another installation's first")

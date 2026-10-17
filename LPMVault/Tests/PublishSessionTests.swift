@@ -1176,6 +1176,23 @@ struct GitHubPublishSessionTests {
 		#expect(flipped != results, "Results sent as the other kind aren't the same results")
 	}
 
+	@Test("the results header says to redeploy only when something was published")
+	func resultsHeaderRedeploysOnlyWhatWasPublished() throws {
+		let destination = PublishDestination(
+			sourceEnvironment: "production",
+			target: .github(GitHubPublishTarget(
+				userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront", scope: .repository)),
+			createdAt: Date(timeIntervalSince1970: 1_760_000_000))
+		let failed = PublishSession.Results(
+			destination: destination, rows: [.init(key: "A", outcome: .failed("GitHub couldn't be reached."), isSecret: true)],
+			needsReconnect: false, recordFailure: nil)
+		#expect(PublishSheet.resultsHeader(for: failed) == "Published 0 of 1 secret.")
+		let published = PublishSession.Results(
+			destination: destination, rows: [.init(key: "A", outcome: .published, isSecret: true)], needsReconnect: false, recordFailure: nil)
+		#expect(PublishSheet.resultsHeader(for: published)
+			== "Published 1 of 1 secret. Workflow runs that start from now on get the new values. Re-run a workflow to use them now.")
+	}
+
 	@Test("a row's details call GitHub's secrets secrets, in lowercase, when one stays a secret or will be stored as one")
 	func detailsNameSecrets() async throws {
 		try await connect()
@@ -1310,10 +1327,11 @@ struct GitHubPublishSessionTests {
 		let refused = { GitHubSkippedInstallation(account: $0, isSuspended: false) }
 		#expect(PublishSheet.skippedInstallationNotes([]) == [])
 		#expect(PublishSheet.skippedInstallationNotes([suspended("acme")]) == [
-			"LPM Vault's GitHub App is suspended on acme, so GitHub left out its repositories. An owner of acme can unsuspend it in its settings on GitHub, under GitHub Apps.",
+			"LPM Vault's GitHub App is suspended on acme, so its repositories aren't listed. Whoever suspended it can unsuspend it in acme's settings on GitHub.",
 		])
+		#expect(PublishSheet.skippedInstallationNotes([suspended(nil)]).first?.hasSuffix("in the account's settings on GitHub.") == true)
 		#expect(PublishSheet.skippedInstallationNotes([suspended("acme"), suspended("northwind"), refused(nil)]) == [
-			"LPM Vault's GitHub App is suspended on acme and northwind, so GitHub left out their repositories. An owner of each can unsuspend it in its settings on GitHub, under GitHub Apps.",
+			"LPM Vault's GitHub App is suspended on acme and northwind, so their repositories aren't listed. Whoever suspended it can unsuspend it in each account's settings on GitHub.",
 			"GitHub refused to list the repositories of LPM Vault's GitHub App on an account, as when it was uninstalled meanwhile. Refresh, or install the app there again.",
 		])
 		let joined = ListFormatter.localizedString(byJoining: ["a", "b", "c", "2 other accounts"])
@@ -1321,7 +1339,7 @@ struct GitHubPublishSessionTests {
 			"GitHub refused to list the repositories of LPM Vault's GitHub App on \(joined), as when it was uninstalled meanwhile. Refresh, or install the app there again.",
 		])
 		#expect(PublishSheet.skippedInstallationNotes([suspended(nil), suspended(nil)]).first?.hasPrefix(
-			"LPM Vault's GitHub App is suspended on 2 accounts, so GitHub left out their repositories.") == true)
+			"LPM Vault's GitHub App is suspended on 2 accounts, so their repositories aren't listed.") == true)
 	}
 
 	@Test("environments of a repository moved since it was listed say to refresh, not to review again")

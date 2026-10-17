@@ -35,8 +35,9 @@ enum GitHubAPIError: Error, Equatable, Sendable {
 	case tooLarge(Listing)
 	/// GitHub took longer to list than LPM Vault waits, once it had answered.
 	case timedOut(Listing)
-	/// GitHub refused the token, which another renewal had already replaced;
-	/// GitHub applied nothing, and the next request uses the new token.
+	/// The request wasn't applied, and the next one uses a renewed token:
+	/// GitHub refused the token, which another renewal had replaced, or the
+	/// token changed since the last request, which wasn't sent.
 	case renewed
 	/// The connection's token couldn't be renewed, or read, for the request.
 	case credentials(PlatformCredentialError)

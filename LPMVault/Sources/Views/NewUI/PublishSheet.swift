@@ -549,7 +549,7 @@ struct PublishSheet: View {
 	private var resultsStep: some View {
 		if let results = session.results {
 			VStack(alignment: .leading, spacing: 10) {
-				Text("\(results.summary) \(Self.redeployNote(for: results.destination.target.platform))")
+				Text(Self.resultsHeader(for: results))
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -582,15 +582,22 @@ struct PublishSheet: View {
 		}
 	}
 
+	/// How much was published, and, when anything was, how the platform starts using it.
+	static func resultsHeader(for results: PublishSession.Results) -> String {
+		guard results.publishedCount > 0 else { return results.summary }
+		return "\(results.summary) \(redeployNote(for: results.destination.target.platform))"
+	}
+
 	/// What to say of the installations GitHub left out: the suspended ones, then those whose repositories it refused to list.
 	static func skippedInstallationNotes(_ skipped: [GitHubSkippedInstallation]) -> [String] {
 		var notes: [String] = []
 		let suspended = skipped.filter(\.isSuspended)
 		if let first = suspended.first {
 			let one = suspended.count == 1
-			let owner = one ? "An owner of \(first.account ?? "the account")" : "An owner of each"
+			// GitHub lets an installation be unsuspended only the way it was suspended.
+			let settings = one ? first.account.map { "\($0)'s settings" } ?? "the account's settings" : "each account's settings"
 			notes.append(
-				"LPM Vault's GitHub App is suspended on \(accounts(suspended)), so GitHub left out \(one ? "its" : "their") repositories. \(owner) can unsuspend it in its settings on GitHub, under GitHub Apps."
+				"LPM Vault's GitHub App is suspended on \(accounts(suspended)), so \(one ? "its" : "their") repositories aren't listed. Whoever suspended it can unsuspend it in \(settings) on GitHub."
 			)
 		}
 		let refused = skipped.filter { !$0.isSuspended }

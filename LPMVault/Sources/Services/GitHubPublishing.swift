@@ -135,8 +135,8 @@ enum GitHubPublishing {
 	/// reviewed ones, by ID under the reviewed names. A rename or a replacement
 	/// since the review stops what hasn't been sent; a key added, changed,
 	/// removed or moved between secrets and variables isn't sent. A rate
-	/// limit waited out, or a token renewed after GitHub refused it, starts
-	/// those checks over. Each write is read back once for the time GitHub
+	/// limit waited out, or a token renewed meanwhile, starts those checks
+	/// over. Each write is read back once for the time GitHub
 	/// gave it; a read-back that can't answer at once leaves the time
 	/// unknown, rather than take someone's later change for this one. A
 	/// refused token, missing access, or a rate limit that doesn't lift stops
@@ -327,9 +327,9 @@ enum GitHubPublishing {
 	}
 
 	/// `.waited` once a request GitHub held up can be sent again: after its
-	/// rate limit lifts, or at once when it was refused with a token another
-	/// renewal replaced, which GitHub applied nothing of. Any other error, or
-	/// a wait that can't be made, is the answer.
+	/// rate limit lifts, or at once when it wasn't applied for a renewed
+	/// token, as `.renewed` says. Any other error, or a wait that can't be
+	/// made, is the answer.
 	private static func pause(after error: GitHubAPIError, waits: inout Int, renewals: inout Int, pacing: Pacing) async -> Attempt {
 		switch error {
 		case .rateLimited(let reset):
@@ -468,7 +468,7 @@ enum GitHubPublishing {
 			(wait, lifts) = limit
 		} else {
 			guard waits < unannouncedLimitWaits else { return .rateLimited(until: nil) }
-			wait = .seconds(60 << waits)
+			wait = GitHubHTTP.unannouncedLimitWait(after: waits)
 		}
 		waits += 1
 		do {
@@ -546,6 +546,8 @@ enum GitHubPublishing {
 		case .tooLarge(.environments): "GitHub listed more environments for the repository than LPM Vault reads at once."
 		case .tooLarge(.secrets): "GitHub listed more secrets than LPM Vault reads at once."
 		case .tooLarge(.variables): "GitHub listed more variables than LPM Vault reads at once."
+		case .timedOut(.repositories):
+			"GitHub took too long to list the repositories. Try again. If it keeps taking too long, install LPM Vault's GitHub App only on the repositories it publishes to."
 		case .timedOut(let listing): "GitHub took too long to list \(listed(listing)). Try again."
 		}
 	}
