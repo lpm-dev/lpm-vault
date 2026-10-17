@@ -1075,16 +1075,18 @@ struct GitHubPublishSessionTests {
 		saved: PublishDestination? = nil,
 		source: String = "production",
 		tokens: TokenLog? = nil,
-		credentials: PlatformCredentials? = nil
+		credentials: PlatformCredentials? = nil,
+		rules: ProjectEnvSchemaOverview? = nil
 	) -> PublishSession {
 		let values = values
 		let confirmations = confirmations
 		let api = api
+		let rules = rules ?? self.rules
 		return PublishSession(
 			vaultID: vault, projectName: "demo-api", environments: ["production", "staging"], sourceEnvironment: source,
 			saved: saved,
 			dependencies: .init(
-				snapshot: { [rules] environment, _ in values.get(environment).map { .init(values: $0, rules: .known(rules), check: nil) } },
+				snapshot: { environment, _ in values.get(environment).map { .init(values: $0, rules: .known(rules), check: nil) } },
 				confirm: { confirmations.ask($0) },
 				publishing: publishing,
 				connections: connections, credentials: credentials ?? PlatformCredentials(store: connections, session: { nil }),
@@ -1153,6 +1155,51 @@ struct GitHubPublishSessionTests {
 		reopened.loadReview()
 		#expect(try await waitUntil { reopened.review != nil && !reopened.isLoadingReview })
 		#expect(reopened.review?.plan.row("API_TOKEN")?.holds == [.changedOnPlatform])
+	}
+
+	@Test("with both kinds sent, the results count each kind apart, and a publish that couldn't be recorded names what went out")
+	func countsResultsByKind() async throws {
+		try await connect()
+		let session = session()
+		try await choose(session)
+		#expect(session.set("NEXT_PUBLIC_URL", selected: false))
+		api.fail(.createVariable, with: .server(502))
+		keychain.failAppItemWrites = ["destinations.\(vault)"]
+		try await publish(session)
+		let results = try #require(session.results)
+		#expect(results.summary == "Published 1 of 1 secret and 0 of 1 variable.")
+		#expect(results.rows.map(\.isSecret) == [true, false])
+		#expect(results.recordFailure?.hasPrefix("The secret was published, but the destination couldn't be saved.") == true)
+		let flipped = PublishSession.Results(
+			destination: results.destination, rows: results.rows.map { .init(key: $0.key, outcome: $0.outcome, isSecret: !$0.isSecret) },
+			needsReconnect: results.needsReconnect, recordFailure: results.recordFailure)
+		#expect(flipped != results, "Results sent as the other kind aren't the same results")
+	}
+
+	@Test("a row's details call GitHub's secrets secrets, in lowercase, when one stays a secret or will be stored as one")
+	func detailsNameSecrets() async throws {
+		try await connect()
+		api.edit("LOG_LEVEL", secret: true, in: repositoryScope)
+		let first = session()
+		try await choose(first)
+		let review = try #require(first.review)
+		let staying = try #require(review.plan.row("LOG_LEVEL"))
+		#expect(staying.staysSecret)
+		#expect(PublishSheet.detail(staying, review: review).contains("stays a secret on GitHub"))
+
+		api.remove("LOG_LEVEL", secret: true, in: repositoryScope)
+		first.loadReview()
+		#expect(try await waitUntil { first.review != nil && !first.isLoadingReview })
+		try await publish(first)
+		let saved = try #require(try await publishing.destinations(of: vault).get().first)
+		api.remove("LOG_LEVEL", secret: false, in: repositoryScope)
+		let unruled = session(saved: saved, rules: ProjectEnvSchemaOverview(rules: [], groups: []))
+		unruled.start()
+		#expect(try await waitUntil { unruled.review != nil || unruled.reviewError != nil })
+		let reviewed = try #require(unruled.review)
+		let protecting = try #require(reviewed.plan.row("LOG_LEVEL"))
+		#expect(protecting.publishesAsSecret && protecting.status.protectionChanged)
+		#expect(PublishSheet.detail(protecting, review: reviewed).contains("will be stored as a secret"))
 	}
 
 	@Test("refreshing the repositories lists the chosen one's environments again, by the name GitHub gives it now")

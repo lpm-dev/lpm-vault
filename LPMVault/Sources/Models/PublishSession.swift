@@ -108,20 +108,37 @@ final class PublishSession: Identifiable {
 	}
 
 	struct Results: Equatable {
+		struct Row: Equatable {
+			let key: String
+			let outcome: PublishOutcome
+			/// Whether the key was sent as a secret.
+			let isSecret: Bool
+		}
+
 		let destination: PublishDestination
 		/// Each sent key with its outcome, in the review's order.
-		let rows: [(key: String, outcome: PublishOutcome)]
-		/// How many of the keys were sent as secrets.
-		var secrets = 0
+		let rows: [Row]
 		let needsReconnect: Bool
 		/// Why the publish couldn't be recorded, when it couldn't.
 		let recordFailure: String?
 
 		var publishedCount: Int { rows.lazy.filter { $0.outcome == .published }.count }
 
-		static func == (lhs: Results, rhs: Results) -> Bool {
-			lhs.destination == rhs.destination && lhs.rows.elementsEqual(rhs.rows) { $0.key == $1.key && $0.outcome == $1.outcome }
-				&& lhs.needsReconnect == rhs.needsReconnect && lhs.recordFailure == rhs.recordFailure
+		/// How much of what was sent was published, as the platform counts it.
+		var summary: String {
+			var secrets = (published: 0, sent: 0)
+			var variables = (published: 0, sent: 0)
+			for row in rows {
+				let published = row.outcome == .published ? 1 : 0
+				if row.isSecret {
+					secrets.sent += 1
+					secrets.published += published
+				} else {
+					variables.sent += 1
+					variables.published += published
+				}
+			}
+			return "Published \(destination.target.platform.countedPublished(secrets: secrets, variables: variables))."
 		}
 	}
 
@@ -1065,8 +1082,7 @@ final class PublishSession: Identifiable {
 		dependencies.didChange()
 		results = Results(
 			destination: review.destination,
-			rows: changes.map { ($0.key, report.outcomes[$0.key] ?? .notSent) },
-			secrets: changes.lazy.filter(\.publishesAsSecret).count,
+			rows: changes.map { Results.Row(key: $0.key, outcome: report.outcomes[$0.key] ?? .notSent, isSecret: $0.publishesAsSecret) },
 			needsReconnect: report.needsReconnect,
 			recordFailure: recordFailure)
 		step = .results
@@ -1085,6 +1101,9 @@ final class PublishSession: Identifiable {
 		let publishing = dependencies.publishing
 		var destination = review.destination
 		var choices = review.plan.choices(for: review.selection)
+		let secrets = published.lazy.filter(\.publishedAsSecret).count
+		let sent = review.platform.named(secrets: secrets, variables: published.count - secrets)
+		let wasPublished = "The \(sent) \(published.count == 1 ? "was" : "were") published"
 		if review.needsSave {
 			// Saved only over the destination the review read, so a change made meanwhile isn't lost.
 			switch await publishing.save(destination, to: vaultID, replacing: review.stored) {
@@ -1093,9 +1112,9 @@ final class PublishSession: Identifiable {
 				destination = stored
 				choices = choices.made(at: stored.updatedAt)
 			case .failure(.destinationChanged), .failure(.destinationRemoved):
-				return "The variables were published, but the destination changed on this Mac meanwhile, so this publish wasn't recorded. Review again."
+				return "\(wasPublished), but the destination changed on this Mac meanwhile, so this publish wasn't recorded. Review again."
 			case .failure(let error):
-				return "The variables were published, but the destination couldn't be saved. \(error)"
+				return "\(wasPublished), but the destination couldn't be saved. \(error)"
 			}
 		}
 		switch await publishing.recordPublish(
@@ -1106,7 +1125,7 @@ final class PublishSession: Identifiable {
 			saved = recorded
 			return nil
 		case .failure(let error):
-			return "The variables were published, but this Mac couldn't record it. \(error)"
+			return "\(wasPublished), but this Mac couldn't record it. \(error)"
 		}
 	}
 }

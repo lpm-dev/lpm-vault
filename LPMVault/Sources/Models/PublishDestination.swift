@@ -91,6 +91,33 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 		}
 	}
 
+	/// How much of what a publish sent was published, counted as
+	/// `countedValues` counts: "1 of 2 variables", or on GitHub with both
+	/// kinds, each apart: "1 of 1 secret and 0 of 1 variable".
+	func countedPublished(secrets: (published: Int, sent: Int), variables: (published: Int, sent: Int)) -> String {
+		guard self == .github else {
+			return Self.counted(secrets.published + variables.published, of: secrets.sent + variables.sent, "variable")
+		}
+		switch (secrets.sent, variables.sent) {
+		case (0, 0): return "0 of 0 secrets or variables"
+		case (_, 0): return Self.counted(secrets.published, of: secrets.sent, "secret")
+		case (0, _): return Self.counted(variables.published, of: variables.sent, "variable")
+		default:
+			return "\(Self.counted(secrets.published, of: secrets.sent, "secret")) and \(Self.counted(variables.published, of: variables.sent, "variable"))"
+		}
+	}
+
+	/// What a publish sent, named as the platform calls it: GitHub's secrets
+	/// and variables by kind, every other platform's as variables.
+	func named(secrets: Int, variables: Int) -> String {
+		guard self == .github else { return secrets + variables == 1 ? "variable" : "variables" }
+		switch (secrets, variables) {
+		case (0, _): return variables == 1 ? "variable" : "variables"
+		case (_, 0): return secrets == 1 ? "secret" : "secrets"
+		default: return "secrets and variables"
+		}
+	}
+
 	/// What the platform keeps, as a noun for `count` of them: GitHub's
 	/// secrets and variables, every other platform's variables.
 	func valuesNoun(count: Int) -> String {
@@ -102,6 +129,10 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 
 	private static func counted(_ count: Int, _ noun: String) -> String {
 		"\(count) \(noun)\(count == 1 ? "" : "s")"
+	}
+
+	private static func counted(_ published: Int, of sent: Int, _ noun: String) -> String {
+		"\(published) of \(counted(sent, noun))"
 	}
 }
 

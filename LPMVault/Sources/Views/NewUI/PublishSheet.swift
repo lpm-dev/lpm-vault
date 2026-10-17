@@ -360,7 +360,7 @@ struct PublishSheet: View {
 						.truncationMode(.middle)
 					if row.kind == .public { VaultPublicBadge() }
 				}
-				Text(detail(row, review: review))
+				Text(Self.detail(row, review: review))
 					.font(.system(size: 11.5))
 					.foregroundStyle(noteColor(row))
 					.fixedSize(horizontal: false, vertical: true)
@@ -397,10 +397,12 @@ struct PublishSheet: View {
 		}
 	}
 
-	private func detail(_ row: PublishPlan.Row, review: PublishSession.Review) -> String {
+	static func detail(_ row: PublishPlan.Row, review: PublishSession.Review) -> String {
 		let platform = review.platform.displayName
+		// GitHub's kinds are its own words, "secret" and "variable", not LPM Vault's Secret and Config.
+		let secret = review.platform == .github ? "secret" : "Secret"
 		var parts = [row.publishesAsSecret ? "Secret" : review.platform == .github ? "Variable" : "Config"]
-		if row.staysSecret { parts.append("stays a Secret on \(platform)") }
+		if row.staysSecret { parts.append("stays a \(secret) on \(platform)") }
 		if let hold = row.holds.first {
 			parts.append(Self.holdNote(hold, row: row, review: review))
 		} else if let publishedAt = row.status.publishedAt {
@@ -412,7 +414,7 @@ struct PublishSheet: View {
 			parts.append("Replaces a \(kind) already on \(platform)")
 		}
 		if row.status.protectionChanged {
-			parts.append(row.publishesAsSecret ? "will be stored as a Secret" : "will be stored readable")
+			parts.append(row.publishesAsSecret ? "will be stored as a \(secret)" : "will be stored readable")
 		}
 		return parts.joined(separator: " · ")
 	}
@@ -547,7 +549,7 @@ struct PublishSheet: View {
 	private var resultsStep: some View {
 		if let results = session.results {
 			VStack(alignment: .leading, spacing: 10) {
-				Text("Published \(results.publishedCount) of \(results.destination.target.platform.countedValues(secrets: results.secrets, variables: results.rows.count - results.secrets)). \(Self.redeployNote(for: results.destination.target.platform))")
+				Text("\(results.summary) \(Self.redeployNote(for: results.destination.target.platform))")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.fixedSize(horizontal: false, vertical: true)
