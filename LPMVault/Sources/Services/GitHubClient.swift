@@ -489,6 +489,7 @@ enum GitHubHTTP {
 						value = String(decoding: quoted, as: UTF8.self)
 					} else {
 						value = token()
+						guard !value.isEmpty else { return nil }
 					}
 				}
 				// Only a link's first rel counts, as RFC 8288 says.

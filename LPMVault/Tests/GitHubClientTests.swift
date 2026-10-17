@@ -76,7 +76,9 @@ struct GitHubHTTPTests {
 		#expect(next(#"<a>; rel="prev"; rel="next""#) == .some(nil), "A rel after the first is ignored")
 		#expect(next(#" , <a>; rel=next ,, "#) == .some("a"))
 		#expect(next("") == .some(nil))
-		for malformed in [#"<a; rel="next""#, #"<a>; rel="next"#, "garbage", "<a> junk", #"<a>; ="next""#, #"<a>; rel="next" <b>"#] {
+		for malformed in [
+			#"<a; rel="next""#, #"<a>; rel="next"#, "garbage", "<a> junk", #"<a>; ="next""#, #"<a>; rel="next" <b>"#, "<a>; rel=", "<a>; rel= , <b>; rel=next",
+		] {
 			#expect(next(malformed) == nil, "\(malformed)")
 		}
 	}
