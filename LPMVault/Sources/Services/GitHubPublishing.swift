@@ -46,7 +46,10 @@ enum GitHubPublishing {
 	private struct RateLimitWaits: Sendable {
 		var announced = 0
 		var unannounced = 0
-		var total: Int { announced + unannounced }
+		/// Waits made before this write's, as for the key before it, which
+		/// lengthen its next wait without using up its own.
+		var earlier = 0
+		var total: Int { earlier + announced + unannounced }
 	}
 	/// How many times one write starts over for a token renewed meanwhile.
 	static let renewalRetries = 3
@@ -193,16 +196,23 @@ enum GitHubPublishing {
 				report.outcomes[change.key] = readBack == .gone
 					? .failed("GitHub accepted it, but it was gone when LPM Vault read it back. Check it on GitHub.")
 					: .published
+				let isLast = index == changes.index(before: changes.endIndex)
 				switch readBack {
 				case .unknown(.rateLimited(let reset)?):
 					// GitHub asks for no request until a limit lifts, so the next key, when there is one, waits for it.
-					guard index < changes.index(before: changes.endIndex) else { break }
+					guard !isLast else { break }
+					carriedWaits = RateLimitWaits(earlier: waits.total)
 					if let error = await waitOut(until: reset, waits: &carriedWaits, pacing: pacing) {
 						return finish { _ in .failed(message(error, now: pacing.date())) }
 					}
 				case .unknown(let error?):
 					report.needsReconnect = report.needsReconnect || needsReconnect(error)
-					return finish { _ in .failed(message(error, now: pacing.date())) }
+					var reason = message(error, now: pacing.date())
+					// A move is explained by the scope, as one found before a write is.
+					if !isLast, pointsAtScope(error), case .failure(.replaced(let replaced)) = await reviewedScope(of: target, using: client) {
+						reason = replaced
+					}
+					return finish { _ in .failed(reason) }
 				case .record, .gone, .unknown(nil):
 					break
 				}
@@ -584,7 +594,7 @@ enum GitHubPublishing {
 		case .invalidResponse: "GitHub's answer couldn't be read."
 		case .server(let status): "GitHub answered with HTTP \(status)."
 		case .credentials(let error): error.message(for: .github)
-		case .moved: "The repository was renamed or moved on GitHub. Review again."
+		case .moved: "The repository was renamed or transferred on GitHub. Review again."
 		case .renewed:
 			"The GitHub connection was renewed again and again while this was sent. Try again, and if it keeps happening, connect GitHub again on the Platforms page."
 		case .ssoRequired:

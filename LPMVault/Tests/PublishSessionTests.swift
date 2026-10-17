@@ -1371,7 +1371,7 @@ struct GitHubPublishSessionTests {
 		#expect(try await waitUntil { session.github?.repositories.value != nil })
 		session.github?.repositoryID = "1296269"
 		#expect(try await waitUntil { if case .failed? = session.github?.environments { true } else { false } })
-		#expect(session.github?.environments == .failed("The repository was renamed or moved on GitHub. Refresh to list it again."))
+		#expect(session.github?.environments == .failed("The repository was renamed or transferred on GitHub. Refresh to list it again."))
 	}
 
 	@Test("a publish that would take the repository past GitHub's secrets isn't sent, and asks nothing")

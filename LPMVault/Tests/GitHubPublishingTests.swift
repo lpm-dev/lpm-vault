@@ -1120,6 +1120,32 @@ struct GitHubPublishTests {
 		#expect(pacing.sleeps == [.seconds(60), .seconds(120)])
 	}
 
+	@Test("a limit a read-back meets after its write waited out others backs off from where the write got to")
+	func readBackLimitAfterWaits() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		let pacing = TestPacing()
+		api.fail(.setSecret, with: .rateLimited(until: nil), .rateLimited(until: nil))
+		api.fail(.secret, after: 3, with: .rateLimited(until: nil))
+		let report = await publish([change("A", "1"), change("B", "2")], with: api, reviewed: reviewed, pacing: pacing)
+		#expect(report.outcomes == ["A": .published, "B": .published])
+		#expect(pacing.sleeps == [.seconds(60), .seconds(120), .seconds(120)])
+	}
+
+	@Test("a read-back GitHub answers moved fails what's left with the repository's new name, as a move found before a write does")
+	func explainsMovedReadBack() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		api.fail(.secret, after: 1, with: .moved) { api.rename("1296269", to: "northwind/shop") }
+		let report = await publish([change("A", "1"), change("B", "2")], with: api, reviewed: reviewed)
+		#expect(report.outcomes == [
+			"A": .published,
+			"B": .failed("northwind/storefront was renamed or transferred to northwind/shop on GitHub since this review. Review again."),
+		])
+		#expect(api.writeCount == 1)
+		#expect(GitHubPublishing.message(.moved) == "The repository was renamed or transferred on GitHub. Review again.")
+	}
+
 	@Test("a renewed token starts a write over without using its waits for rate limits, which back off from a minute")
 	func renewalsApartFromLimits() async throws {
 		let api = FakeGitHubAPI()

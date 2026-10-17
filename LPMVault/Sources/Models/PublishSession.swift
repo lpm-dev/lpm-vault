@@ -645,7 +645,7 @@ final class PublishSession: Identifiable {
 			.mapError { error in
 				// On the destination step, listing the repositories again is what helps.
 				PublishSessionError(error == .moved
-					? "The repository was renamed or moved on GitHub. Refresh to list it again."
+					? "The repository was renamed or transferred on GitHub. Refresh to list it again."
 					: GitHubPublishing.message(error))
 			}
 	}
