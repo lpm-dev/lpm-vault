@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum GitHubAPIError: Error, Equatable, Sendable {
@@ -94,13 +95,18 @@ struct GitHubSkippedInstallation: Equatable, Sendable {
 
 /// GitHub's answers to reads LPM Vault repeats, kept by their `ETag` so the
 /// next read asks conditionally: GitHub doesn't count a 304 against the
-/// token's hourly limit. Answers are kept by URL alone, as GitHub compares
-/// an `ETag` with what it would answer the token asking, so a kept answer
-/// stands for another token only when GitHub says it's the same.
+/// token's hourly limit. Answers are kept by URL and the token that read
+/// them, so one connection's answer is never sent or taken for another's,
+/// whatever answers 304; a renewed token reads each URL afresh once.
 final class GitHubConditionalCache: @unchecked Sendable {
 	struct Entry: Sendable {
 		let etag: String
 		let body: Data
+	}
+
+	private struct Key: Hashable {
+		let url: URL
+		let token: SHA256.Digest
 	}
 
 	static let shared = GitHubConditionalCache()
@@ -110,22 +116,25 @@ final class GitHubConditionalCache: @unchecked Sendable {
 	static let maximumBodyBytes = 128 * 1024
 
 	private let lock = NSLock()
-	private var entries: [URL: Entry] = [:]
+	private var entries: [Key: Entry] = [:]
 
-	func entry(for url: URL) -> Entry? {
-		lock.withLock { entries[url] }
+	/// The answer kept for `url` as read with the token `token` is the digest of.
+	func entry(for url: URL, token: SHA256.Digest) -> Entry? {
+		lock.withLock { entries[Key(url: url, token: token)] }
 	}
 
-	/// Keeps `body` under GitHub's `etag` for `url`, or forgets `url` when
-	/// GitHub gave no `ETag` LPM Vault sends back, or the body is too large to keep.
-	func keep(_ body: Data, etag: String?, for url: URL) {
+	/// Keeps `body` under GitHub's `etag` for `url` read with `token`, or
+	/// forgets it when GitHub gave no `ETag` LPM Vault sends back, or the
+	/// body is too large to keep.
+	func keep(_ body: Data, etag: String?, for url: URL, token: SHA256.Digest) {
+		let key = Key(url: url, token: token)
 		lock.withLock {
 			guard let etag, Self.isEntityTag(etag), body.count <= Self.maximumBodyBytes else {
-				entries[url] = nil
+				entries[key] = nil
 				return
 			}
-			if entries[url] == nil, entries.count >= Self.capacity { entries.removeAll(keepingCapacity: true) }
-			entries[url] = Entry(etag: etag, body: body)
+			if entries[key] == nil, entries.count >= Self.capacity { entries.removeAll(keepingCapacity: true) }
+			entries[key] = Entry(etag: etag, body: body)
 		}
 	}
 
@@ -297,23 +306,25 @@ enum GitHubHTTP {
 		await loadCounted(request, using: session, limit: limit).result
 	}
 
-	/// `load` for a read whose answer `cache` keeps: asked with the `ETag`
-	/// kept for it, a 304 answers with the kept body.
+	/// `load` for a read whose answer `cache` keeps for the token `token` is
+	/// the digest of: asked with the `ETag` kept for it, a 304 answers with
+	/// the kept body.
 	static func loadConditionally(
 		_ request: URLRequest,
 		using session: URLSession,
-		cache: GitHubConditionalCache
+		cache: GitHubConditionalCache,
+		token: SHA256.Digest
 	) async -> Result<(data: Data, response: HTTPURLResponse), GitHubAPIError> {
 		guard let url = request.url else { return .failure(.invalidResponse) }
 		var conditional = request
-		let kept = cache.entry(for: url)
+		let kept = cache.entry(for: url, token: token)
 		if let kept { conditional.setValue(kept.etag, forHTTPHeaderField: "If-None-Match") }
 		switch await load(conditional, using: session) {
 		case .success(let loaded) where loaded.response.statusCode == 304:
 			guard let kept else { return .failure(.invalidResponse) }
 			return .success((kept.body, loaded.response))
 		case .success(let loaded):
-			cache.keep(loaded.data, etag: loaded.response.value(forHTTPHeaderField: "ETag"), for: url)
+			cache.keep(loaded.data, etag: loaded.response.value(forHTTPHeaderField: "ETag"), for: url, token: token)
 			return .success(loaded)
 		case .failure(let error):
 			return .failure(error)
@@ -558,6 +569,8 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	private let baseURL: URL
 	private let limits: Limits
 	private let conditional: GitHubConditionalCache
+	/// Which token answers were kept for, without keeping the token itself again.
+	private let tokenDigest: SHA256.Digest
 	let session: URLSession
 
 	init(
@@ -572,6 +585,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		self.session = session ?? GitHubHTTP.sharedSession
 		self.limits = limits
 		self.conditional = conditional
+		tokenDigest = SHA256.hash(data: Data(token.utf8))
 	}
 
 	var description: String { "GitHubClient(\(baseURL.host() ?? "?"), token: <redacted>)" }
@@ -635,7 +649,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> {
 		guard GitHubHTTP.isValidID(id), let url = GitHubHTTP.url(baseURL, ["repositories", id]) else { return .failure(.invalidResponse) }
 		let request = GitHubHTTP.request("GET", url, token: token)
-		return await GitHubHTTP.loadConditionally(request, using: session, cache: conditional).flatMap { loaded in
+		return await GitHubHTTP.loadConditionally(request, using: session, cache: conditional, token: tokenDigest).flatMap { loaded in
 			guard let repository = (try? JSONDecoder().decode(RawRepository.self, from: loaded.data))?.repository, repository.id == id else {
 				return .failure(.invalidResponse)
 			}
@@ -647,7 +661,8 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		guard GitHubPublishTarget.isValidFullName(repository), GitHubPublishTarget.Scope.isValidEnvironmentName(name),
 			let url = GitHubHTTP.url(baseURL, ["repos"] + repository.split(separator: "/").map(String.init) + ["environments", name])
 		else { return .failure(.invalidResponse) }
-		switch await GitHubHTTP.loadConditionally(GitHubHTTP.request("GET", url, token: token), using: session, cache: conditional) {
+		let request = GitHubHTTP.request("GET", url, token: token)
+		switch await GitHubHTTP.loadConditionally(request, using: session, cache: conditional, token: tokenDigest) {
 		case .success(let loaded):
 			guard let environment = (try? JSONDecoder().decode(RawEnvironment.self, from: loaded.data))?.environment else {
 				return .failure(.invalidResponse)
