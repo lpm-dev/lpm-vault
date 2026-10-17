@@ -1326,14 +1326,15 @@ struct GitHubPublishRenewalTests {
 		await GitHubPublishing.publish(changes, to: target, reviewed: reviewed, using: client, seal: testGitHubSeal, pacing: TestPacing().pacing)
 	}
 
-	@Test("a token renewed as a request reads it, with nothing refused, starts the checks over: an environment replaced meanwhile gets nothing")
+	@Test("a token renewed as the write reads it, with nothing refused, starts the checks over: an environment replaced meanwhile gets nothing")
 	func checksAfterRenewalOnRead() async throws {
 		let github = TokenGatedGitHub(valid: "ghu_1")
 		let api = github.api
 		let reviewed = try await reviewed(api, in: production)
 		let clock = TestDate(start)
 		let due = start.addingTimeInterval(8 * 3_600 - 60)
-		api.onRequest = { operation in if operation == .variable { clock.date = due } }
+		// Due once the identity checks are done, so only starting them over can catch the replacement.
+		api.onRequest = { operation in if operation == .environment { clock.date = due } }
 		let (client, refresher) = try await client(github, clock: clock) {
 			api.replaceEnvironment(of: "northwind/storefront", name: "production", withID: "999")
 			github.accept("ghu_2")
