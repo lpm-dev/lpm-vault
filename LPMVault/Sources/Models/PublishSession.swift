@@ -425,8 +425,8 @@ final class PublishSession: Identifiable {
 		case .netlify(let form)?:
 			loadSites(form)
 		case .github(let form)?:
+			// Environments are listed once the repositories say the chosen one's current name.
 			loadRepositories(form)
-			loadEnvironments(form)
 		case nil:
 			break
 		}
@@ -548,23 +548,24 @@ final class PublishSession: Identifiable {
 
 	private func loadRepositories(_ form: GitHubDestinationForm) {
 		guard let connectionID else { return }
+		environmentsTask?.cancel()
 		form.repositories = .loading
-		choicesTask = Task { [weak self, weak form, dependencies] in
-			let result: Result<[GitHubRepository], PublishSessionError>
-			switch await self?.token(for: connectionID, on: .github) {
-			case .success(let token)? where !Task.isCancelled:
-				result = await Self.sortedRepositories(from: dependencies.github(token))
-			case .failure(let error)? where !Task.isCancelled:
-				result = .failure(error)
-			case .success?, .failure?, nil:
-				return
-			}
+		let client = githubClient(for: connectionID)
+		choicesTask = Task { [weak self, weak form] in
+			let result = await Self.sortedRepositories(from: client)
 			guard let self, let form, !Task.isCancelled, self.github === form else { return }
 			switch result {
-			case .success(let list): form.repositories = .loaded(list)
+			case .success(let list):
+				form.repositories = .loaded(list)
+				if form.repositoryID != nil { self.loadEnvironments(form) }
 			case .failure(let error): form.repositories = .failed(error.message)
 			}
 		}
+	}
+
+	/// GitHub's API for the connection, with its token renewed whenever GitHub refuses it.
+	private func githubClient(for connectionID: PlatformConnection.ID, token: String? = nil) -> RenewingGitHubClient {
+		RenewingGitHubClient(connectionID: connectionID, credentials: dependencies.credentials, token: token, make: dependencies.github)
 	}
 
 	/// The client's repositories in the menu's order, listed and sorted off the main actor.
@@ -574,31 +575,35 @@ final class PublishSession: Identifiable {
 			.mapError { PublishSessionError(GitHubPublishing.message($0)) }
 	}
 
+	/// Lists the chosen repository's environments, by the name the repositories
+	/// just listed give it; nothing while they're still listed, as their
+	/// listing lists the environments when it ends.
 	private func loadEnvironments(_ form: GitHubDestinationForm) {
 		environmentsTask?.cancel()
-		guard let connectionID, let repositoryID = form.repositoryID, let repository = githubRepositoryName(form) else {
+		guard let connectionID, let repositoryID = form.repositoryID, let repository = form.repository?.fullName else {
 			form.environments = .idle
 			return
 		}
 		form.environments = .loading
-		environmentsTask = Task { [weak self, weak form, dependencies] in
-			let result: Result<[GitHubEnvironment], PublishSessionError>
-			switch await self?.token(for: connectionID, on: .github) {
-			case .success(let token)? where !Task.isCancelled:
-				result = await dependencies.github(token).environments(of: repository)
-					.map { $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
-					.mapError { PublishSessionError(GitHubPublishing.message($0)) }
-			case .failure(let error)? where !Task.isCancelled:
-				result = .failure(error)
-			case .success?, .failure?, nil:
-				return
-			}
+		let client = githubClient(for: connectionID)
+		environmentsTask = Task { [weak self, weak form] in
+			let result = await Self.sortedEnvironments(of: repository, from: client)
 			guard let self, let form, !Task.isCancelled, self.github === form, form.repositoryID == repositoryID else { return }
 			switch result {
 			case .success(let list): form.environments = .loaded(list)
 			case .failure(let error): form.environments = .failed(error.message)
 			}
 		}
+	}
+
+	/// The repository's environments by name, listed and sorted off the main actor.
+	private nonisolated static func sortedEnvironments(
+		of repository: String,
+		from client: any GitHubClientProtocol
+	) async -> Result<[GitHubEnvironment], PublishSessionError> {
+		await client.environments(of: repository)
+			.map { $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
+			.mapError { PublishSessionError(GitHubPublishing.message($0)) }
 	}
 
 	/// The chosen repository's `owner/name`: as listed, or as the saved destination names it.
@@ -757,7 +762,8 @@ final class PublishSession: Identifiable {
 				return .failure(PublishSessionError(NetlifyPublishing.message(error)))
 			}
 		case .github(let target):
-			return await Self.githubRemote(of: target, using: dependencies.github(token), readableKeys: rules.ciVariableKeys)
+			return await Self.githubRemote(
+				of: target, using: githubClient(for: target.connectionID, token: token), readableKeys: rules.ciVariableKeys)
 		}
 	}
 
@@ -1018,9 +1024,8 @@ final class PublishSession: Identifiable {
 				using: dependencies.netlify(token))
 		case .github(let target):
 			report = await GitHubPublishing.publish(
-				changes, to: GitHubScope(repository: target.repositoryName, environment: target.scope.environmentName),
-				reviewed: GitHubRemoteSnapshot(variables: review.remote, keys: review.remoteKeys),
-				using: dependencies.github(token))
+				changes, to: target, reviewed: GitHubRemoteSnapshot(variables: review.remote, keys: review.remoteKeys),
+				using: githubClient(for: target.connectionID, token: token))
 		}
 		var recordFailure: String?
 		if !report.published.isEmpty {

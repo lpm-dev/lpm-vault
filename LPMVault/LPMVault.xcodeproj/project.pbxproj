@@ -193,6 +193,7 @@
 		C52BAEA7C3E78D971EA17BD0 /* SecureFileWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58E4E4C897F8E4401D882AF6 /* SecureFileWriter.swift */; };
 		C5751C2178DD4E40A71D7227 /* PinnedSessionDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69E5C843D5E284E813E58B4F /* PinnedSessionDelegate.swift */; };
 		C6896B6C44E9A15A012DC7F7 /* EnvFileImportReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E51C884F46360759CD84ED /* EnvFileImportReviewSheet.swift */; };
+		C74BAD9310A8EB81710D983E /* RenewingGitHubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 042A5B7493608D54BEBEE398 /* RenewingGitHubClient.swift */; };
 		C7B7CE1D990AA3A0D98996A5 /* ConnectCLITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DA1AF3AA82DFB003362A6D3 /* ConnectCLITests.swift */; };
 		C8E80FE68059A0B62D6C252D /* VaultPaneLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71CA242B35FE5366BF3AAF1B /* VaultPaneLayoutTests.swift */; };
 		C9350649A7097AED2D9830A3 /* PersonalKeyEnvelopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F375377661ADD940B7762CFC /* PersonalKeyEnvelopeTests.swift */; };
@@ -266,6 +267,7 @@
 		031C570F6BF94FC959CB4D89 /* AuthSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionCoordinator.swift; sourceTree = "<group>"; };
 		03D4738882967FABB536A563 /* PlatformTokenRefreshTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformTokenRefreshTests.swift; sourceTree = "<group>"; };
 		0401251686E34C8D7EA23B1E /* VaultProjectIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultProjectIconView.swift; sourceTree = "<group>"; };
+		042A5B7493608D54BEBEE398 /* RenewingGitHubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenewingGitHubClient.swift; sourceTree = "<group>"; };
 		05BF0E7D2234A6C4C92BE40F /* SchemaReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaReviewTests.swift; sourceTree = "<group>"; };
 		0631260A130D30932AA85D3A /* PublishReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishReport.swift; sourceTree = "<group>"; };
 		06490EEFC05413818E516BC3 /* AppDelegateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegateTests.swift; sourceTree = "<group>"; };
@@ -829,6 +831,7 @@
 				ED95F9C05233C4E3966922C9 /* ProjectIconStore.swift */,
 				3E0C6799A6B6B51E02C3C6AB /* PublishingRecords.swift */,
 				1CF5B21607448F6903C717F3 /* PublishingStore.swift */,
+				042A5B7493608D54BEBEE398 /* RenewingGitHubClient.swift */,
 				2CF8F96F4A89D571DCC742B9 /* SecureAvatarLoader.swift */,
 				ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */,
 				36365D62B5851474D2DC178D /* UpdateChecker.swift */,
@@ -1135,6 +1138,7 @@
 				F3DC4D077377B4236C33711F /* PublishingRecords.swift in Sources */,
 				C46383485858FC91B9D910AF /* PublishingStore.swift in Sources */,
 				FF555B1BC9D2473E43906281 /* RelativeTimestampFormatter.swift in Sources */,
+				C74BAD9310A8EB81710D983E /* RenewingGitHubClient.swift in Sources */,
 				586A14395A9C62885C8CA315 /* RustSchemaEngine.swift in Sources */,
 				632EF4880D2F69CBBC5F2FDD /* SealedBox.swift in Sources */,
 				EE7CE280B060E9EAF0449829 /* SecretGeneratorButton.swift in Sources */,

@@ -1153,6 +1153,42 @@ struct GitHubPublishSessionTests {
 		#expect(reopened.review?.plan.row("API_TOKEN")?.holds == [.changedOnPlatform])
 	}
 
+	@Test("refreshing the repositories lists the chosen one's environments again, by the name GitHub gives it now")
+	func refreshKeepsEnvironments() async throws {
+		try await connect()
+		let session = session()
+		session.start()
+		#expect(try await waitUntil { session.github?.repositories.value != nil })
+		session.github?.repositoryID = "1296269"
+		#expect(try await waitUntil { session.github?.environments.value != nil })
+		api.rename("1296269", to: "northwind/shop")
+		session.reloadChoices()
+		#expect(try await waitUntil { session.github?.repository?.fullName == "northwind/shop" && session.github?.environments.value != nil })
+		#expect(session.github?.scopeChoices.map(\.displayName) == ["Repository", "Environment production", "Environment staging/eu"])
+		#expect(api.requests.filter { $0.0 == .environments }.map(\.1) == ["northwind/storefront", "northwind/shop"])
+	}
+
+	@Test("a saved destination whose repository was renamed lists its environments under the new name")
+	func renamedSavedRepository() async throws {
+		try await connect()
+		let saved = PublishDestination(
+			sourceEnvironment: "production",
+			target: .github(GitHubPublishTarget(
+				userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront",
+				scope: .environment(id: "161088068", name: "production"))),
+			createdAt: Date(timeIntervalSince1970: 1_760_000_000))
+		_ = try await publishing.save(saved, to: vault).get()
+		api.rename("1296269", to: "northwind/shop")
+		let session = session(saved: saved)
+		session.start()
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
+		session.showDestination()
+		#expect(try await waitUntil { session.github?.environments.value != nil })
+		#expect(session.github?.repository?.fullName == "northwind/shop")
+		#expect(session.github?.scopeChoices.count == 3)
+		#expect(!api.requests.contains { $0.0 == .environments && $0.1 == "northwind/storefront" }, "The old name isn't used")
+	}
+
 	@Test("an environment's destination writes the environment's secrets, and a review says only its jobs get them")
 	func environmentScope() async throws {
 		try await connect()

@@ -15,6 +15,8 @@ enum GitHubAPIError: Error, Equatable, Sendable {
 	case cancelled
 	case invalidResponse
 	case server(Int)
+	/// The connection's token couldn't be renewed, or read, for the request.
+	case credentials(PlatformCredentialError)
 }
 
 /// The GitHub user a connection's token belongs to.
@@ -329,8 +331,11 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 		var repositories: [GitHubRepository] = []
 		var seen: Set<String> = []
+		var listed: Set<String> = []
 		for installation in installations {
 			guard let id = GitHubHTTP.id(installation.id) else { return .failure(.invalidResponse) }
+			// An installation a shifting list repeats is read once.
+			guard listed.insert(id).inserted else { continue }
 			switch await list(["user", "installations", id, "repositories"], field: "repositories", perPage: 100, budget: &budget, as: RawRepository.self) {
 			case .success(let raws):
 				for raw in raws {
