@@ -294,6 +294,7 @@ struct PlatformTokenRefreshClientTests {
 			(403, [:], .forbidden),
 			(429, ["code": "rate_limited"], .rateLimited),
 			(503, ["code": "platform_unavailable"], .unavailable),
+			(503, ["code": "platform_refused"], .platformRefused),
 			(404, ["error": "Not found"], .server(404)),
 			(500, [:], .server(500)),
 		]
@@ -684,6 +685,17 @@ struct PlatformCredentialsTests {
 		#expect(await credentials.accessToken(for: lasting.id, replacing: "nfo_lasting") == .failure(.expired))
 		let id = try await connect()
 		#expect(await credentials.accessToken(for: id, replacing: "nfo_access_old") == .failure(.expired))
+	}
+
+	@Test("a renewal the platform refused for the app, not the token, says so and leaves the connection to try again")
+	func platformRefused() async throws {
+		let id = try await connect()
+		let refresher = ScriptedTokenRefresher { _, _ in .failure(.platformRefused) }
+		let credentials = credentials(refresher, at: TestDate(start.addingTimeInterval(8 * 3_600 - 60)))
+		#expect(await credentials.accessToken(for: id) == .failure(.refused))
+		#expect(try await store.record(for: id).get().refresh?.isRejected == false, "Nothing was used up")
+		#expect(PlatformCredentialError.refused.message(for: .netlify)
+			== "Netlify refused to renew the connection right now. Try again later. If it keeps refusing, connect Netlify again on the Platforms page.")
 	}
 
 	@Test("each failure says what to do, naming the platform")

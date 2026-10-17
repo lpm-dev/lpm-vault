@@ -13,6 +13,8 @@ enum PlatformCredentialError: Error, Equatable, Sendable {
 	/// lpm.dev or the platform couldn't be reached, or another request is
 	/// still renewing the token. Asking again later finishes the renewal.
 	case unavailable
+	/// The platform refused lpm.dev's request to renew, not the token; asking again later can work.
+	case refused
 	case rateLimited
 	/// lpm.dev answered in a way LPM Vault couldn't verify.
 	case invalidResponse
@@ -25,6 +27,7 @@ enum PlatformCredentialError: Error, Equatable, Sendable {
 		case .otherAccount: "\(name) was connected while signed in to another LPM account. Sign in with that account, or connect \(name) again on the Platforms page."
 		case .expired: "The \(name) connection expired. Connect \(name) again on the Platforms page."
 		case .unavailable: "The \(name) connection couldn't be renewed right now. Check your network and try again."
+		case .refused: "\(name) refused to renew the connection right now. Try again later. If it keeps refusing, connect \(name) again on the Platforms page."
 		case .rateLimited: "The \(name) connection was renewed too often. Wait a minute, then try again."
 		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn't verify. Try again."
 		}
@@ -183,6 +186,8 @@ actor PlatformCredentials {
 				return .done(.failure(.signedOut))
 			case .failure(.rateLimited):
 				return .done(.failure(.rateLimited))
+			case .failure(.platformRefused):
+				return .done(.failure(.refused))
 			case .failure(.invalidResponse):
 				return .done(.failure(.invalidResponse))
 			case .failure(.unavailable), .failure(.transport), .failure(.server), .failure(.tooManyOpen), .failure(.cancelled):

@@ -47,6 +47,8 @@ enum PlatformAuthorizationError: Error, Equatable, Sendable {
 	case forbidden
 	/// The Registry can't connect this platform right now.
 	case unavailable
+	/// The platform answered, but refused the app's own request; asking again later can work.
+	case platformRefused
 	case rateLimited
 	/// Too many connections are already open; finish or cancel them first.
 	case tooManyOpen
@@ -341,6 +343,7 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 		case (401, _): return .signedOut
 		case (403, _): return .forbidden
 		case (503, "platform_unavailable"): return .unavailable
+		case (503, "platform_refused"): return .platformRefused
 		case (429, "too_many_authorizations"): return .tooManyOpen
 		case (429, _): return .rateLimited
 		default: return .server(status)
