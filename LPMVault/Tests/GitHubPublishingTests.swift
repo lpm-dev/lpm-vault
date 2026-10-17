@@ -1145,6 +1145,19 @@ struct GitHubPublishTests {
 		#expect(still.sleeps == [.seconds(60), .seconds(120)])
 	}
 
+	@Test("limits GitHub times don't use up the waits for limits it doesn't, which back off to two minutes at most")
+	func countsLimitsByKind() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		let pacing = TestPacing()
+		api.fail(
+			.setSecret, with: .rateLimited(until: TestPacing.start.addingTimeInterval(10)), .rateLimited(until: TestPacing.start.addingTimeInterval(22)),
+			.rateLimited(until: nil), .rateLimited(until: nil))
+		let report = await publish([change("A", "1")], with: api, reviewed: reviewed, pacing: pacing)
+		#expect(report.outcomes == ["A": .published])
+		#expect(pacing.sleeps == [.seconds(11), .seconds(12), .seconds(120), .seconds(120)])
+	}
+
 	@Test("an announced limit is waited out a second past its reset, by the wall clock; one too far off, or a fourth in a row, isn't")
 	func waitsOutAnnouncedLimits() async throws {
 		let api = FakeGitHubAPI()

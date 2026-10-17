@@ -37,9 +37,17 @@ enum GitHubPublishing {
 	/// How many announced rate limits one write with its reads waits out
 	/// before giving up.
 	static let rateLimitRetries = 3
-	/// How many limits GitHub doesn't say the end of one write waits out: a
-	/// minute, then twice that, as GitHub asks while a limit continues.
+	/// How many limits GitHub doesn't say the end of one write waits out,
+	/// besides announced ones: a minute at first, then two, as GitHub asks
+	/// for longer waits while limits continue.
 	static let unannouncedLimitWaits = 2
+
+	/// The rate limits one write has waited out, by whether GitHub said when each lifts.
+	private struct RateLimitWaits: Sendable {
+		var announced = 0
+		var unannounced = 0
+		var total: Int { announced + unannounced }
+	}
 	/// How many times one write starts over for a token renewed meanwhile.
 	static let renewalRetries = 3
 	/// What GitHub keeps in a repository's own secrets and variables, and in an environment's.
@@ -157,11 +165,11 @@ enum GitHubPublishing {
 		var publicKey: GitHubPublicKey?
 		var lastWrite: ContinuousClock.Instant?
 		// Waits for a limit met by a read-back, which the next key's waits go on from.
-		var carriedWaits = 0
+		var carriedWaits = RateLimitWaits()
 		for (index, change) in changes.enumerated() {
 			guard !Task.isCancelled else { break }
 			var waits = carriedWaits
-			carriedWaits = 0
+			carriedWaits = RateLimitWaits()
 			var renewals = 0
 			let answer: Answer
 			attempts: while true {
@@ -267,7 +275,7 @@ enum GitHubPublishing {
 		publicKey: inout GitHubPublicKey?,
 		using client: any GitHubClientProtocol,
 		seal: @Sendable (String, Data) -> Data?,
-		waits: inout Int,
+		waits: inout RateLimitWaits,
 		renewals: inout Int,
 		pacing: Pacing,
 		lastWrite: inout ContinuousClock.Instant?
@@ -351,7 +359,7 @@ enum GitHubPublishing {
 		_ unexplained: Unexplained,
 		of target: GitHubPublishTarget,
 		using client: any GitHubClientProtocol,
-		waits: inout Int,
+		waits: inout RateLimitWaits,
 		renewals: inout Int,
 		pacing: Pacing
 	) async -> Attempt {
@@ -378,7 +386,7 @@ enum GitHubPublishing {
 	/// rate limit lifts, or at once when it wasn't applied for a renewed
 	/// token, as `.renewed` says. Any other error, or a wait that can't be
 	/// made, is the answer.
-	private static func pause(after error: GitHubAPIError, waits: inout Int, renewals: inout Int, pacing: Pacing) async -> Attempt {
+	private static func pause(after error: GitHubAPIError, waits: inout RateLimitWaits, renewals: inout Int, pacing: Pacing) async -> Attempt {
 		switch error {
 		case .rateLimited(let reset):
 			if let error = await waitOut(until: reset, waits: &waits, pacing: pacing) { return .done(.failed(error)) }
@@ -493,22 +501,23 @@ enum GitHubPublishing {
 
 	/// Waits until a rate limit lifts, a moment past its announced reset,
 	/// counting the wait in `waits`. A limit GitHub doesn't say the end of is
-	/// waited out a minute, then twice that. Returns the error to answer with
-	/// instead: the limit when no more waits are allowed or it lifts after the
-	/// longest wait, or a cancellation.
-	private static func waitOut(until reset: Date?, waits: inout Int, pacing: Pacing) async -> GitHubAPIError? {
+	/// waited out a minute, or two after any wait before it. Returns the
+	/// error to answer with instead: the limit when no more waits of its kind
+	/// are allowed or it lifts after the longest wait, or a cancellation.
+	private static func waitOut(until reset: Date?, waits: inout RateLimitWaits, pacing: Pacing) async -> GitHubAPIError? {
 		let wait: Duration
 		var lifts: Date?
 		if reset != nil {
-			guard waits < rateLimitRetries, let limit = GitHubHTTP.rateLimitWait(until: reset, now: pacing.date()) else {
+			guard waits.announced < rateLimitRetries, let limit = GitHubHTTP.rateLimitWait(until: reset, now: pacing.date()) else {
 				return .rateLimited(until: reset)
 			}
 			(wait, lifts) = limit
+			waits.announced += 1
 		} else {
-			guard waits < unannouncedLimitWaits else { return .rateLimited(until: nil) }
-			wait = GitHubHTTP.unannouncedLimitWait(after: waits)
+			guard waits.unannounced < unannouncedLimitWaits else { return .rateLimited(until: nil) }
+			wait = GitHubHTTP.unannouncedLimitWait(after: waits.total)
+			waits.unannounced += 1
 		}
-		waits += 1
 		do {
 			try await PlatformRateLimit.waitOut(wait, until: lifts, atMost: GitHubHTTP.longestRateLimitWait, date: pacing.date, sleep: pacing.sleep)
 		} catch {
