@@ -46,10 +46,11 @@ actor PlatformCredentials {
 
 	/// How many more times a request still pending at the Registry is asked again.
 	static let pendingRetries = 10
-	/// How long after a refresh token arrives the Registry may not know it
-	/// yet: when keeping the renewal that issued it failed, the Registry
-	/// records the token over minutes.
-	static let unknownTokenGrace: TimeInterval = 15 * 60
+	/// How long either side of a refresh token's arrival the Registry may not
+	/// know it yet: when keeping the renewal that issued it failed, the
+	/// Registry records the token within about 25 minutes. A clock set back
+	/// further than this leaves no grace.
+	static let unknownTokenGrace: TimeInterval = 30 * 60
 
 	private let store: PlatformConnectionStore
 	private let refresher: any PlatformTokenRefreshing
@@ -182,8 +183,13 @@ actor PlatformCredentials {
 			case .success(.pending):
 				guard round < Self.pendingRetries else { return .done(.failure(.unavailable)) }
 				do { try await Task.sleep(for: pendingDelay) } catch { return .done(.failure(.unavailable)) }
-			case .success(.unknown) where now().timeIntervalSince(receivedAt) < Self.unknownTokenGrace:
-				return .done(.failure(.unavailable))
+			case .success(.unknown) where abs(now().timeIntervalSince(receivedAt)) < Self.unknownTokenGrace:
+				// A connection connected again meanwhile has a token of its own to give.
+				switch await store.record(for: connectionID) {
+				case .success(let record) where record.refresh?.attempt?.id == attempt.id: return .done(.failure(.unavailable))
+				case .success: return .again
+				case .failure(let error): return .done(.failure(.store(error)))
+				}
 			case .success(.failed), .success(.expired), .success(.unknown):
 				switch await store.rejectRefresh(of: connectionID, attempt: attempt.id) {
 				// The connection was connected again meanwhile; the refusal was of its old token.

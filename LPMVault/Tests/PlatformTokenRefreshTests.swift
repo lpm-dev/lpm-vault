@@ -705,9 +705,34 @@ struct PlatformCredentialsTests {
 		let soon = credentials(refresher, at: TestDate(start.addingTimeInterval(60)))
 		#expect(await soon.accessToken(for: id, replacing: "nfo_access_old") == .failure(.unavailable))
 		#expect(try await store.record(for: id).get().refresh?.isRejected == false)
-		let later = credentials(refresher, at: TestDate(start.addingTimeInterval(16 * 60)))
+		let stillRecording = credentials(refresher, at: TestDate(start.addingTimeInterval(29 * 60)))
+		#expect(await stillRecording.accessToken(for: id, replacing: "nfo_access_old") == .failure(.unavailable),
+			"lpm.dev records a token it handed over within about 25 minutes")
+		let later = credentials(refresher, at: TestDate(start.addingTimeInterval(31 * 60)))
 		#expect(await later.accessToken(for: id, replacing: "nfo_access_old") == .failure(.expired))
 		#expect(try await store.record(for: id).get().refresh?.isRejected == true)
+	}
+
+	@Test("a clock set back far doesn't stretch the wait for a token lpm.dev doesn't know: only a moment either side of its arrival counts")
+	func unknownAfterClockSetBack() async throws {
+		let id = try await connect()
+		let refresher = ScriptedTokenRefresher { _, _ in .success(.unknown) }
+		#expect(await credentials(refresher, at: TestDate(start.addingTimeInterval(-60))).accessToken(for: id) == .failure(.unavailable))
+		#expect(await credentials(refresher, at: TestDate(start.addingTimeInterval(-86_400))).accessToken(for: id) == .failure(.expired))
+	}
+
+	@Test("a connection connected again while lpm.dev answered its just-received token unknown gives the new token")
+	func reconnectedDuringUnknown() async throws {
+		let id = try await connect()
+		let store = store
+		let account = account
+		let start = start
+		let refresher = ScriptedTokenRefresher { _, _ in
+			_ = await store.save(account, accessToken: "nfo_reconnected", at: start)
+			return .success(.unknown)
+		}
+		let credentials = credentials(refresher, at: TestDate(start.addingTimeInterval(60)))
+		#expect(await credentials.accessToken(for: id, replacing: "nfo_access_old") == .success("nfo_reconnected"))
 	}
 
 	@Test("each failure says what to do, naming the platform")
