@@ -31,6 +31,7 @@ struct PlatformsView: View {
 
 					vercelSection
 					netlifySection
+					githubSection
 					coolifySection
 
 					if let notice = platforms.notice {
@@ -50,7 +51,7 @@ struct PlatformsView: View {
 						.accessibilityElement(children: .combine)
 					}
 
-					Text("Disconnecting forgets a token on this Mac only. To remove LPM Vault's access to Vercel, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values. To remove its access to Netlify, revoke LPM Vault under Applications → Authorized applications in your Netlify user settings. To remove its access to Coolify, delete its API token in Coolify's Keys & Tokens.")
+					Text("Disconnecting forgets a token on this Mac only. To remove LPM Vault's access to Vercel, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values. To remove its access to Netlify, revoke LPM Vault under Applications → Authorized applications in your Netlify user settings. To remove its access to GitHub, revoke it under Applications → Authorized GitHub Apps in your GitHub settings, and uninstall it under Installed GitHub Apps in your settings; an organization's owner uninstalls it in the organization's settings. To remove its access to Coolify, delete its API token in Coolify's Keys & Tokens.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
@@ -77,6 +78,8 @@ struct PlatformsView: View {
 				Text("LPM Vault forgets its token on this Mac. The token keeps working in Coolify until you delete it there, and variables already published stay as they are.")
 			case .netlify:
 				Text("LPM Vault forgets its token on this Mac. LPM Vault stays authorized on Netlify until you revoke it there, and variables already published stay as they are.")
+			case .github:
+				Text("LPM Vault forgets its token on this Mac. The LPM Vault app stays authorized and installed on GitHub until you revoke or uninstall it there, and secrets and variables already published stay as they are.")
 			}
 		}
 		.sheet(isPresented: $connectingCoolify) {
@@ -96,6 +99,10 @@ struct PlatformsView: View {
 
 	private var netlifySection: some View {
 		section(.netlify, empty: "No Netlify accounts connected yet.") { browserConnectControls(.netlify) }
+	}
+
+	private var githubSection: some View {
+		section(.github, empty: "No GitHub accounts connected yet.") { browserConnectControls(.github) }
 	}
 
 	private var coolifySection: some View {
@@ -155,8 +162,17 @@ struct PlatformsView: View {
 				Text(subtitle(connection))
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
+				if platforms.expired.contains(connection.id) {
+					Text("Expired. Connect \(connection.platform.displayName) again to keep publishing.")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.orangeTintText)
+				}
 			}
 			Spacer(minLength: 8)
+			if connection.platform == .github {
+				VaultBarButton(title: "Install on GitHub") { platforms.openInstallPage(for: connection) }
+					.accessibilityLabel("Install on GitHub for \(connection.name)")
+			}
 			VaultBarButton(
 				title: platforms.disconnecting.contains(connection.id) ? "Disconnecting…" : "Disconnect",
 				disabled: platforms.disconnecting.contains(connection.id)
@@ -186,6 +202,7 @@ struct PlatformsView: View {
 					switch platform {
 					case .vercel: platforms.connectVercel()
 					case .netlify: platforms.connectNetlify()
+					case .github: platforms.connectGitHub()
 					}
 				}
 				if isConnectingHere {
@@ -222,6 +239,10 @@ struct PlatformsView: View {
 			"Opens Netlify in your browser to authorize LPM Vault. It reaches the sites of every team your Netlify account belongs to."
 		case (.vercel, false):
 			"Opens Vercel in your browser to install the LPM Vault integration for a team or your personal account."
+		case (.github, true):
+			"Finish in your browser: authorize LPM Vault on GitHub, then come back here."
+		case (.github, false):
+			"Opens GitHub in your browser to authorize LPM Vault. It reaches the repositories you can reach on the accounts where its GitHub App is installed."
 		}
 	}
 
@@ -234,6 +255,8 @@ struct PlatformsView: View {
 			kind = account.instance.address
 		case .netlify(let account):
 			kind = account.email ?? "Netlify account"
+		case .github(let account):
+			kind = "@\(account.login)"
 		}
 		let connected = connection.connectedAt.formatted(date: .abbreviated, time: .omitted)
 		return "\(kind) · Connected \(connected)"

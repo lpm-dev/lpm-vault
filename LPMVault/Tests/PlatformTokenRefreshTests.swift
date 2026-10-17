@@ -233,6 +233,45 @@ struct PlatformTokenRefreshClientTests {
 		}
 	}
 
+	@Test("a GitHub connection renews through the Registry's GitHub route, and keeps the tokens GitHub issued")
+	func renewsGitHub() async throws {
+		let store = PlatformConnectionStore(service: MockKeychainService())
+		let start = Date(timeIntervalSince1970: 1_760_000_000)
+		let id = try await store.save(
+			.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: nil, appSlug: "lpm-vault")),
+			accessToken: "ghu_old",
+			refresh: PlatformTokenRefresh(
+				token: "ghr_old", accessTokenExpiresAt: start.addingTimeInterval(28_800), expiresAt: start.addingTimeInterval(15_897_600),
+				obtainedAt: start, principalID: platformTestPrincipal),
+			at: start
+		).get().id
+		let route = PlatformHTTPStub.registry { request in
+			guard let body = request.json, let refreshID = body["refreshId"] as? String,
+				let key = (body["publicKey"] as? String).flatMap({ Data(base64Encoded: $0) }),
+				let sealed = try? RegistryTestSealer.seal(
+					[
+						"platform": "github", "accessToken": "ghu_new", "accessTokenExpiresIn": 28_800,
+						"refreshToken": "ghr_new", "refreshTokenExpiresIn": 15_897_600,
+					],
+					authorizationID: refreshID, to: key, domain: PlatformAuthorizationEnvelope.refreshDomain)
+			else { return .json(400, [:]) }
+			return RegistryTestSigner.signed(200, [
+				"requestNonce": request.header(PlatformAuthorizationClient.nonceHeader) ?? "", "principalId": platformTestPrincipal,
+				"platform": "github", "refreshId": refreshID, "status": "ready", "envelope": sealed.json, "ageSeconds": 0,
+			])
+		}
+		let now = start.addingTimeInterval(28_800 - 60)
+		let credentials = PlatformCredentials(
+			store: store, refresher: PlatformAuthorizationClient(session: route.session), session: { platformTestSession(route.baseURL) },
+			now: { now })
+		#expect(await credentials.accessToken(for: id) == .success("ghu_new"))
+		let request = try #require(route.requests.first)
+		#expect(request.url.path == "/api/vault/platforms/github/tokens" && request.json?["refreshToken"] as? String == "ghr_old")
+		let record = try await store.record(for: id).get()
+		#expect(record.accessToken == "ghu_new" && record.refresh?.token == "ghr_new")
+		#expect(record.refresh?.accessTokenExpiresAt == now.addingTimeInterval(28_800))
+	}
+
 	@Test("a refresh sends the token, the attempt's key and its ID to the platform's route, with the session and a nonce")
 	func sendsRefresh() async throws {
 		let route = answering(202, ["status": "pending"])

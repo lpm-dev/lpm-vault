@@ -282,6 +282,70 @@ struct PlatformConnectionStoreTests {
 		keychain.failPlatformConnectionAccounts = ["*"]
 		#expect(await store.connections() == .failure(.keychain(.accessDenied)))
 	}
+
+	private func github(name: String? = "The Octocat", login: String = "octocat") -> PlatformConnection.Account {
+		.github(GitHubConnectionAccount(userID: "583231", login: login, name: name, appSlug: "lpm-vault"))
+	}
+
+	private func renewal() -> PlatformTokenRefresh {
+		PlatformTokenRefresh(
+			token: "ghr_refresh", accessTokenExpiresAt: connectedAt.addingTimeInterval(28_800),
+			expiresAt: connectedAt.addingTimeInterval(15_897_600), obtainedAt: connectedAt, principalID: platformTestPrincipal)
+	}
+
+	@Test("a GitHub user is saved by its numeric ID with how its token renews, listed by name or else login, and told apart by login")
+	func savesGitHub() async throws {
+		let store = store
+		let saved = try await store.save(github(), accessToken: "ghu_access", refresh: renewal(), at: connectedAt).get()
+		#expect(saved.id == "github.583231" && saved.platform == .github && saved.name == "The Octocat" && saved.detail == "@octocat")
+		let record = try await store.record(for: saved.id).get()
+		#expect(record.accessToken == "ghu_access" && record.refresh == renewal())
+		let renamed = try await store.save(github(name: nil, login: "octo-renamed"), accessToken: "ghu_again", at: connectedAt).get()
+		#expect(renamed.id == saved.id && renamed.name == "octo-renamed")
+		#expect(try await store.record(for: saved.id).get().refresh == nil, "Connecting again replaces how the token renewed")
+	}
+
+	@Test("a GitHub record round-trips exactly; one with an unknown field, an unsafe ID, login or slug isn't read")
+	func gitHubRecords() throws {
+		for account in [github(), github(name: nil)] {
+			let record = PlatformConnectionStore.Record(
+				connection: PlatformConnection(account: account, connectedAt: PublishTimestamp.normalized(connectedAt)),
+				accessToken: "ghu_token", refresh: renewal())
+			let data = try #require(PlatformConnectionStore.encode(record))
+			#expect(PlatformConnectionStore.decode(data, account: record.connection.id) == .success(record))
+		}
+		let record = PlatformConnectionStore.Record(
+			connection: PlatformConnection(account: github(), connectedAt: connectedAt), accessToken: "ghu_token")
+		let id = record.connection.id
+		let data = try #require(PlatformConnectionStore.encode(record))
+		func altered(_ change: (inout [String: Any]) -> Void) throws -> Data {
+			var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+			change(&object)
+			return try JSONSerialization.data(withJSONObject: object)
+		}
+		#expect(PlatformConnectionStore.decode(try altered { $0["extra"] = 1 }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0.removeValue(forKey: "appSlug") }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["appSlug"] = "LPM Vault" }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["login"] = "octo cat" }, account: id) == .failure(.unreadable))
+		#expect(PlatformConnectionStore.decode(try altered { $0["userId"] = "0583231" }, account: "github.0583231") == .failure(.unreadable))
+		#expect(PlatformConnectionStore.encode(.init(connection: PlatformConnection(account: github(), connectedAt: connectedAt), accessToken: "ghu x")) == nil)
+	}
+
+	@Test("the listing names connections whose token can't be renewed any more")
+	func listsExpired() async throws {
+		let store = store
+		let current = try await store.save(github(), accessToken: "ghu_current", refresh: renewal(), at: connectedAt).get()
+		var refused = renewal()
+		refused.isRejected = true
+		let other = try await store.save(
+			.github(GitHubConnectionAccount(userID: "1", login: "other", name: nil, appSlug: "lpm-vault")),
+			accessToken: "ghu_other", refresh: refused, at: connectedAt).get()
+		let lasting = try await store.save(netlify(), accessToken: "nfo_lasting", at: connectedAt).get()
+		let listing = try await store.listing(at: connectedAt).get()
+		#expect(Set(listing.connections.map(\.id)) == [current.id, other.id, lasting.id])
+		#expect(listing.expired == [other.id])
+		#expect(try await store.listing(at: connectedAt.addingTimeInterval(15_897_600)).get().expired == [current.id, other.id])
+	}
 }
 
 @MainActor
@@ -293,6 +357,7 @@ struct PlatformConnectionsModelTests {
 		connect: @escaping @Sendable () async -> Result<(grant: VercelGrant, account: VercelAccount), BrowserConnectError> = { .failure(.cancelled) },
 		connectCoolify: @escaping PlatformConnections.ConnectCoolify = { _, _ in .failure(.cancelled) },
 		connectNetlify: @escaping @Sendable () async -> Result<NetlifyConnection, BrowserConnectError> = { .failure(.cancelled) },
+		connectGitHub: @escaping @Sendable (PlatformSession) async -> Result<GitHubConnection, BrowserConnectError> = { _ in .failure(.cancelled) },
 		opened: OpenedLinks? = nil,
 		session: PlatformSession? = platformTestSession(URL(string: "https://lpm.dev")!)
 	) -> PlatformConnections {
@@ -307,12 +372,17 @@ struct PlatformConnectionsModelTests {
 				await open(Self.netlifyAuthorizePage)
 				return await connectNetlify()
 			},
+			connectGitHub: { session, open in
+				await open(Self.githubAuthorizePage)
+				return await connectGitHub(session)
+			},
 			session: { session },
 			openURL: { opened?.append($0) },
 			now: { Date(timeIntervalSince1970: 1_760_000_000) })
 	}
 
 	private nonisolated static let netlifyAuthorizePage = URL(string: "https://app.netlify.com/authorize?client_id=lpm_vault&response_type=code")!
+	private nonisolated static let githubAuthorizePage = URL(string: "https://github.com/login/oauth/authorize?client_id=Iv23li")!
 
 	private func waitUntilIdle(_ model: PlatformConnections) async throws {
 		#expect(try await waitUntil { !model.isConnecting && !model.isLoading }, "The connection or the listing ended")
@@ -629,6 +699,54 @@ struct PlatformConnectionsModelTests {
 		#expect(try await PlatformConnectionStore(service: keychain).record(for: connection.id).map(\.accessToken).get() == "nfo_tolga")
 	}
 
+	private nonisolated static let octocat = GitHubConnection(
+		user: GitHubUser(id: "583231", login: "octocat", name: "The Octocat"),
+		tokens: PlatformTokens(accessToken: "ghu_octocat", expiry: .init(accessTokenLifetime: 28_800, refreshToken: "ghr_octocat", refreshTokenLifetime: 15_897_600))!,
+		appSlug: "lpm-vault",
+		receivedAt: Date(timeIntervalSince1970: 1_760_000_050))
+
+	@Test("connecting GitHub saves the user with how its token renews, for the LPM account that connected it")
+	func connectsGitHub() async throws {
+		let opened = OpenedLinks()
+		let model = model(connectGitHub: { session in
+			#expect(session.principalID == platformTestPrincipal)
+			return .success(Self.octocat)
+		}, opened: opened)
+		model.connectGitHub()
+		#expect(model.connecting == .github)
+		try await waitUntilIdle(model)
+		#expect(opened.urls == [Self.githubAuthorizePage])
+		let connection = try #require(model.connections.first)
+		#expect(connection.id == "github.583231" && connection.name == "The Octocat" && connection.detail == "@octocat")
+		#expect(model.notice == .init(message: "Connected The Octocat on GitHub.", isError: false))
+		let record = try await PlatformConnectionStore(service: keychain).record(for: connection.id).get()
+		#expect(record.accessToken == "ghu_octocat")
+		#expect(record.refresh == PlatformTokenRefresh(
+			token: "ghr_octocat", accessTokenExpiresAt: Self.octocat.receivedAt.addingTimeInterval(28_800),
+			expiresAt: Self.octocat.receivedAt.addingTimeInterval(15_897_600), obtainedAt: Self.octocat.receivedAt,
+			principalID: platformTestPrincipal))
+		#expect(model.expired.isEmpty)
+	}
+
+	@Test("loading names expired connections, and connecting one again clears it")
+	func expiredConnections() async throws {
+		var refused = PlatformTokenRefresh(
+			token: "ghr_old", accessTokenExpiresAt: Date(timeIntervalSince1970: 1_760_000_000),
+			expiresAt: Date(timeIntervalSince1970: 1_770_000_000), obtainedAt: Date(timeIntervalSince1970: 1_759_990_000),
+			principalID: platformTestPrincipal)
+		refused.isRejected = true
+		_ = try await PlatformConnectionStore(service: keychain).save(
+			.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: nil, appSlug: "lpm-vault")),
+			accessToken: "ghu_old", refresh: refused, at: Date(timeIntervalSince1970: 1_759_990_000)).get()
+		let model = model(connectGitHub: { _ in .success(Self.octocat) })
+		model.load()
+		try await waitUntilIdle(model)
+		#expect(model.expired == ["github.583231"])
+		model.connectGitHub()
+		try await waitUntilIdle(model)
+		#expect(model.expired.isEmpty)
+	}
+
 	@Test("without an LPM session Netlify doesn't start, no page opens, and the page says to sign in")
 	func netlifyNeedsSession() async throws {
 		let opened = OpenedLinks()
@@ -932,9 +1050,11 @@ extension SheetInteractionTests {
 				accessToken: "3|coolify", at: Date()).get()
 			let (store, host) = try await page()
 			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("No Vercel accounts connected yet"))
+			#expect(try await host.waitUntil { !store.platforms.isLoading && store.platforms.connections.count == 1 })
+			try host.scrollToEnd()
 			#expect(try await host.waitForText("Northwind"))
 			#expect(try await host.waitForText("coolify.northwind.dev"))
-			#expect(try await host.waitForText("No Vercel accounts connected yet"))
 			try await host.click("Connect Coolify")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Connect Coolify opens its sheet")
 			let sheet = try #require(host.window.sheets.first)
@@ -1015,6 +1135,84 @@ extension SheetInteractionTests {
 			try host.clickAlertButton("Disconnect", in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
 			#expect(try await host.waitForText("No Netlify accounts connected yet"))
+		}
+	}
+
+	@Suite("Platforms page GitHub section, rendered")
+	@MainActor
+	struct GitHubSectionRenderingTests {
+		private let keychain = MockKeychainService()
+		private let opened = OpenedURLs()
+
+		private func page(connectGitHub: @escaping PlatformConnections.ConnectGitHub) -> (VaultStore, SheetTestHost<PlatformsView>) {
+			let opened = opened
+			let store = VaultStore(
+				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
+				authTokenProvider: { _, _ in "lpm_session" }, githubConnect: connectGitHub,
+				platformURLOpener: { opened.append($0) })
+			store.isUnlocked = true
+			store.currentUser = LPMUser(id: "lpm_user_1", username: "tolga", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
+			store.showPlatforms()
+			let host = SheetTestHost(PlatformsView(store: store), size: NSSize(width: 760, height: 720), keepsRequestedSize: true, usesHostingView: true)
+			return (store, host)
+		}
+
+		@Test("Connect GitHub opens GitHub's page with the LPM session, says where to finish, and Cancel stops it")
+		func connectsAndCancels() async throws {
+			let authorize = URL(string: "https://github.com/login/oauth/authorize?client_id=Iv23li")!
+			let (store, host) = page(connectGitHub: { session, open in
+				#expect(session.principalID == "lpm_user_1")
+				await open(authorize)
+				try? await Task.sleep(for: .seconds(60))
+				return .failure(.cancelled)
+			})
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("No GitHub accounts connected yet"))
+			try await host.click("Connect GitHub")
+			#expect(try await host.waitForText("authorize LPM Vault on GitHub"))
+			#expect(store.platforms.connecting == .github)
+			#expect(opened.urls == [authorize])
+			try await host.click("Cancel")
+			#expect(try await host.waitUntil { !store.platforms.isConnecting })
+			#expect(try await host.waitForTextToDisappear("authorize LPM Vault on GitHub"))
+		}
+
+		@Test("a connected GitHub user's row opens the page installing LPM Vault's app on more accounts, and the page says where organizations remove it")
+		func linksToInstall() async throws {
+			_ = try await PlatformConnectionStore(service: keychain).save(
+				.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")),
+				accessToken: "ghu_access", at: Date()).get()
+			let (store, host) = page(connectGitHub: { _, _ in .failure(.cancelled) })
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("The Octocat"))
+			try await host.click("Install on GitHub for The Octocat")
+			#expect(try await host.waitUntil { !opened.urls.isEmpty })
+			#expect(opened.urls == [URL(string: "https://github.com/apps/lpm-vault/installations/new")!])
+			try host.scrollToEnd()
+			#expect(try await host.waitForText("an organization's owner uninstalls it in the organization's settings"))
+		}
+
+		@Test("a connected GitHub user shows with its login, an expired one says to connect again, and Disconnect explains what stays on GitHub")
+		func showsAndDisconnects() async throws {
+			var refused = PlatformTokenRefresh(
+				token: "ghr_old", accessTokenExpiresAt: Date(), expiresAt: Date().addingTimeInterval(86_400), obtainedAt: Date(),
+				principalID: "lpm_user_1")
+			refused.isRejected = true
+			_ = try await PlatformConnectionStore(service: keychain).save(
+				.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")),
+				accessToken: "ghu_old", refresh: refused, at: Date()).get()
+			let (store, host) = page(connectGitHub: { _, _ in .failure(.cancelled) })
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("The Octocat"))
+			#expect(try await host.waitForText("@octocat"))
+			#expect(try await host.waitForText("Expired. Connect GitHub again to keep publishing."))
+			try await host.click("Disconnect The Octocat")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
+			let dialog = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("until you revoke or uninstall it there", in: dialog))
+			try host.clickAlertButton("Disconnect", in: dialog)
+			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
+			#expect(try await host.waitForText("No GitHub accounts connected yet"))
 		}
 	}
 

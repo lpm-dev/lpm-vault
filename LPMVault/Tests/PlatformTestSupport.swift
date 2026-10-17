@@ -226,3 +226,34 @@ let platformTestRegistry = URL(string: "http://127.0.0.1:3000")!
 func platformTestOneTimeValue() -> String {
 	PlatformAuthorizationClient.base64URL(SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) })
 }
+
+/// A wall clock that moves only while a test's waits sleep, recording each sleep.
+final class SleepingTestClock: @unchecked Sendable {
+	static let start = Date(timeIntervalSince1970: 1_760_000_000)
+
+	private let lock = NSLock()
+	private var current: Date
+	private var slept: [Duration] = []
+	/// How far the wall clock moves for each second slept.
+	private let rate: Double
+
+	init(_ start: Date = SleepingTestClock.start, rate: Double = 1) {
+		current = start
+		self.rate = rate
+	}
+
+	var date: Date { lock.withLock { current } }
+	var sleeps: [Duration] { lock.withLock { slept } }
+	var totalSlept: Duration { sleeps.reduce(.zero, +) }
+
+	func setBack(by seconds: TimeInterval) {
+		lock.withLock { current -= seconds }
+	}
+
+	func sleep(_ duration: Duration) {
+		lock.withLock {
+			slept.append(duration)
+			current += (Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18) * rate
+		}
+	}
+}

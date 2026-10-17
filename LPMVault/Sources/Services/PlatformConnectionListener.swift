@@ -6,6 +6,8 @@ enum PlatformConnectFailure: Equatable, Sendable {
 	case cancelledOnPlatform
 	case differentInstallation
 	case alreadyUsed
+	/// The platform's approval expired, or was used, before the Registry exchanged it.
+	case approvalExpired
 	case platformUnavailable
 	case platformRefused
 	case other
@@ -15,6 +17,7 @@ enum PlatformConnectFailure: Equatable, Sendable {
 		case "authorization_cancelled": self = .cancelledOnPlatform
 		case "installation_mismatch": self = .differentInstallation
 		case "authorization_used": self = .alreadyUsed
+		case "authorization_expired": self = .approvalExpired
 		case "platform_unavailable": self = .platformUnavailable
 		case "platform_rejected", "invalid_code", "invalid_platform_response": self = .platformRefused
 		default: self = .other
@@ -27,6 +30,7 @@ enum PlatformConnectFailure: Equatable, Sendable {
 		case .cancelledOnPlatform: "The connection was cancelled on \(name)."
 		case .differentInstallation: "\(name) answered for a different installation. Connect again."
 		case .alreadyUsed: "This connection link was already used. Connect again from LPM Vault."
+		case .approvalExpired: "Your approval on \(name) expired before it could be used. Connect again."
 		case .platformUnavailable: "\(name) isn't reachable right now. Try again later."
 		case .platformRefused: "\(name) didn't accept the connection. Connect again."
 		case .other: "\(name) couldn't be connected. Try again."
