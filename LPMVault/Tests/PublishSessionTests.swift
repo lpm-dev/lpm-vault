@@ -43,7 +43,7 @@ struct PublishSessionTests {
 				},
 				confirm: { confirmations.ask($0) },
 				publishing: publishing,
-				connections: connections,
+				connections: connections, credentials: PlatformCredentials(store: connections, session: { nil }),
 				vercel: client ?? { _ in api },
 				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
 	}
@@ -300,7 +300,7 @@ struct PublishSessionTests {
 					return .init(values: current.values, rules: .known(rules), check: current.check)
 				},
 				confirm: { _ in true },
-				publishing: publishing, connections: connections,
+				publishing: publishing, connections: connections, credentials: PlatformCredentials(store: connections, session: { nil }),
 				vercel: { [api] _ in api }))
 		session.start()
 		#expect(try await waitUntil { session.vercel?.projects.value != nil })
@@ -496,7 +496,7 @@ struct PublishSessionTests {
 			dependencies: .init(
 				snapshot: { environment, _ in values.get(environment).map { .init(values: $0, rules: current.rules, check: nil) } },
 				confirm: { [confirmations] in confirmations.ask($0) },
-				publishing: publishing, connections: connections,
+				publishing: publishing, connections: connections, credentials: PlatformCredentials(store: connections, session: { nil }),
 				vercel: { [api] _ in api }))
 		try await chooseProduction(session)
 		#expect(session.review?.plan.row("SITE_URL")?.publishesAsSecret == false)
@@ -540,7 +540,7 @@ struct PublishSessionTests {
 			dependencies: .init(
 				snapshot: { environment, _ in values.get(environment).map { .init(values: $0, rules: .known(rules), check: failing) } },
 				confirm: { _ in true },
-				publishing: publishing, connections: connections,
+				publishing: publishing, connections: connections, credentials: PlatformCredentials(store: connections, session: { nil }),
 				vercel: { [api] _ in api }))
 		try await chooseProduction(session)
 		let review = try #require(session.review)
@@ -655,7 +655,7 @@ struct CoolifyPublishSessionTests {
 				snapshot: { [rules] environment, _ in values.get(environment).map { .init(values: $0, rules: .known(rules), check: nil) } },
 				confirm: { confirmations.ask($0) },
 				publishing: publishing,
-				connections: connections,
+				connections: connections, credentials: PlatformCredentials(store: connections, session: { nil }),
 				vercel: { _ in FakeVercelAPI() },
 				coolify: { instance, token in
 					#expect(instance.origin == "https://coolify.example.com" && token == "3|coolify")
@@ -822,7 +822,7 @@ struct CoolifyPublishSessionTests {
 			dependencies: .init(
 				snapshot: { environment, _ in values.get(environment).map { .init(values: $0, rules: .none, check: nil) } },
 				confirm: { confirmations.ask($0) },
-				publishing: publishing, connections: connections,
+				publishing: publishing, connections: connections, credentials: PlatformCredentials(store: connections, session: { nil }),
 				vercel: { token in
 					vercelTokens.append(token)
 					return FakeVercelAPI()
@@ -884,7 +884,7 @@ struct NetlifyPublishSessionTests {
 				snapshot: { [rules] environment, _ in values.get(environment).map { .init(values: $0, rules: .known(rules), check: nil) } },
 				confirm: { confirmations.ask($0) },
 				publishing: publishing,
-				connections: connections,
+				connections: connections, credentials: PlatformCredentials(store: connections, session: { nil }),
 				vercel: { _ in
 					tokens?.append("vercel")
 					return FakeVercelAPI()

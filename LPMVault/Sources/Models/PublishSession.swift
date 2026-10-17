@@ -37,6 +37,8 @@ final class PublishSession: Identifiable {
 		var confirm: @MainActor (_ reason: String) async -> Bool
 		var publishing: PublishingStore
 		var connections: PlatformConnectionStore
+		/// The connections' access tokens, renewed when a platform's tokens expire.
+		var credentials: PlatformCredentials
 		var vercel: @Sendable (_ token: String) -> any VercelClientProtocol
 		var coolify: CoolifyConnector.ClientFactory = { CoolifyClient(instance: $0, token: $1) }
 		var netlify: NetlifyConnector.ClientFactory = { NetlifyClient(token: $0) }
@@ -410,10 +412,10 @@ final class PublishSession: Identifiable {
 		}
 	}
 
-	/// The chosen connection's token, read when a request needs it.
-	private func token(for connectionID: PlatformConnection.ID) async -> Result<String, PublishSessionError> {
-		await dependencies.connections.accessToken(for: connectionID)
-			.mapError { "The connection's token can't be read. \($0)" }
+	/// The connection's token, read when a request needs it, and renewed first when it's about to expire.
+	private func token(for connectionID: PlatformConnection.ID, on platform: PublishPlatform) async -> Result<String, PublishSessionError> {
+		await dependencies.credentials.accessToken(for: connectionID)
+			.mapError { PublishSessionError($0.message(for: platform)) }
 	}
 
 	private func loadProjects(_ form: VercelDestinationForm) {
@@ -422,7 +424,7 @@ final class PublishSession: Identifiable {
 		let teamID = vercelTeamID()
 		choicesTask = Task { [weak self, weak form, dependencies] in
 			let result: Result<[VercelProject], PublishSessionError>
-			switch await self?.token(for: connectionID) {
+			switch await self?.token(for: connectionID, on: .vercel) {
 			case .success(let token)? where !Task.isCancelled:
 				result = await dependencies.vercel(token).projects(teamID: teamID)
 					.map { $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
@@ -450,7 +452,7 @@ final class PublishSession: Identifiable {
 		let teamID = vercelTeamID()
 		environmentsTask = Task { [weak self, weak form, dependencies] in
 			let result: Result<[VercelCustomEnvironment], PublishSessionError>
-			switch await self?.token(for: connectionID) {
+			switch await self?.token(for: connectionID, on: .vercel) {
 			case .success(let token)? where !Task.isCancelled:
 				result = await dependencies.vercel(token).customEnvironments(projectID: projectID, teamID: teamID)
 					.mapError { PublishSessionError(VercelPublishing.message($0)) }
@@ -472,7 +474,7 @@ final class PublishSession: Identifiable {
 		form.resources = .loading
 		choicesTask = Task { [weak self, weak form, dependencies] in
 			let result: Result<[CoolifyResource], PublishSessionError>
-			switch await self?.token(for: connectionID) {
+			switch await self?.token(for: connectionID, on: .coolify) {
 			case .success(let token)? where !Task.isCancelled:
 				result = await dependencies.coolify(instance, token).resources()
 					.map(CoolifyDestinationForm.sorted)
@@ -495,7 +497,7 @@ final class PublishSession: Identifiable {
 		form.sites = .loading
 		choicesTask = Task { [weak self, weak form, dependencies] in
 			let result: Result<[NetlifySite], PublishSessionError>
-			switch await self?.token(for: connectionID) {
+			switch await self?.token(for: connectionID, on: .netlify) {
 			case .success(let token)? where !Task.isCancelled:
 				result = await Self.sortedSites(from: dependencies.netlify(token))
 			case .failure(let error)? where !Task.isCancelled:
@@ -707,7 +709,7 @@ final class PublishSession: Identifiable {
 		case .failure(let error): return .failure("LPM Vault's publish key can't be read. \(error)")
 		}
 		let token: String
-		switch await self.token(for: target.connectionID) {
+		switch await self.token(for: target.connectionID, on: target.platform) {
 		case .success(let value) where !Task.isCancelled: token = value
 		case .failure(let error) where !Task.isCancelled: return .failure(error)
 		case .success, .failure: return .failure(.cancelled)
@@ -841,7 +843,7 @@ final class PublishSession: Identifiable {
 		guard await dependencies.confirm(reason), !Task.isCancelled else { return }
 
 		let token: String
-		switch await self.token(for: review.destination.target.connectionID) {
+		switch await self.token(for: review.destination.target.connectionID, on: review.platform) {
 		case .success(let value): token = value
 		case .failure(let error):
 			reviewError = error.message

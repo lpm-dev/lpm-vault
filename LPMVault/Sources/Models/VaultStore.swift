@@ -1393,6 +1393,13 @@ final class VaultStore {
   /// while unlocked; nil until read, and again once the connections change.
   @ObservationIgnored private var connectionDetails: [PlatformConnection.ID: String]?
   @ObservationIgnored private var connectionDetailsGeneration = 0
+  /// The connections' access tokens, renewed through lpm.dev for a platform
+  /// whose tokens expire. One instance serves every Publish sheet, so a
+  /// token is renewed by one request at a time.
+  @ObservationIgnored private(set) lazy var platformCredentials = PlatformCredentials(
+    store: platformConnectionStore,
+    session: { [weak self] in await self?.platformSession() }
+  )
   @ObservationIgnored private(set) lazy var platforms = PlatformConnections(
     store: platformConnectionStore,
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
@@ -1712,6 +1719,7 @@ final class VaultStore {
       confirm: { [weak self] reason in await self?.authenticateForSensitiveAction(reason: reason, reusingRecent: false) ?? false },
       publishing: publishing,
       connections: platformConnectionStore,
+      credentials: platformCredentials,
       vercel: platformClient,
       coolify: coolifyClient,
       netlify: netlifyClient,

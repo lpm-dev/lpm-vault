@@ -160,7 +160,7 @@ struct BrowserAuthorization: Sendable {
 		switch error {
 		case .signedOut: .signedOut
 		case .forbidden: .forbidden
-		case .unavailable: .unavailable
+		case .unavailable, .platformRefused: .unavailable
 		case .rateLimited: .rateLimited
 		case .tooManyOpen: .tooManyOpen
 		case .transport: .transport
