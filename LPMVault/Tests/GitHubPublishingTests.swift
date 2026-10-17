@@ -1381,7 +1381,8 @@ struct GitHubClientListTests {
 				let repositories: [[String: Any]] = page == 1
 					? (0..<100).map { ["id": 1_000 + $0, "full_name": "northwind/repo-\($0)", "private": true] }
 					: [["id": 1_100, "full_name": "northwind/last", "private": false]]
-				return .json(200, ["total_count": 101, "repositories": repositories])
+				return .json(200, ["total_count": 101, "repositories": repositories],
+					headers: page == 1 ? nextPageLink(after: request, query: "per_page=100&page=2") : [:])
 			case "/user/installations/12/repositories":
 				return .json(200, ["total_count": 1, "repositories": [["id": 1_100, "full_name": "northwind/last", "private": false]]])
 			default:
@@ -1416,13 +1417,15 @@ struct GitHubClientListTests {
 						repository(2_000, "not a name"), repository(2_001, "northwind/readonly", push: false),
 						repository(2_002, "northwind/old", archived: true),
 					]
+					let second = stubURL(request, query: "per_page=100&page=2")
 					return .json(200, ["total_count": 150, "repositories": repositories], headers: [
-						"Link": "<https://api.github.com/user/installations/11/repositories?per_page=100&page=2>; rel=\"next\", <https://api.github.com/user/installations/11/repositories?per_page=100&page=2>; rel=\"last\"",
+						"Link": "<\(second)>; rel=\"next\", <\(second)>; rel=\"last\"",
 					])
 				}
 				let rest = (0..<98).map { repository(3_000 + $0, "northwind/more-\($0)") }
+				let first = stubURL(request, query: "per_page=100&page=1")
 				return .json(200, ["total_count": 200, "repositories": [repository(2_003, "mona-cat_octo/admin", admin: true), ["id": 2_004]] + rest], headers: [
-					"Link": "<https://api.github.com/user/installations/11/repositories?per_page=100&page=1>; rel=\"prev\", <https://api.github.com/user/installations/11/repositories?per_page=100&page=1>; rel=\"first\"",
+					"Link": "<\(first)>; rel=\"prev\", <\(first)>; rel=\"first\"",
 				])
 			default:
 				return .json(404, [:])
@@ -1448,7 +1451,7 @@ struct GitHubClientListTests {
 			default:
 				let page = Int(request.query["page"] ?? "1") ?? 1
 				return .json(200, ["total_count": 1_000_000, "repositories": (0..<100).map { ["id": page * 1_000 + $0, "full_name": "n/r\(page)-\($0)"] }],
-					headers: ["Link": "<https://api.github.com/x?page=\(page + 1)>; rel=\"next\""])
+					headers: nextPageLink(after: request, query: "per_page=100&page=\(page + 1)"))
 			}
 		}
 		var limits = GitHubClient.Limits()
@@ -1544,8 +1547,10 @@ struct GitHubClientListTests {
 			switch request.url.path {
 			case "/user/installations": return .json(200, ["total_count": 1, "installations": [["id": 11]]])
 			default:
+				let page = Int(request.query["page"] ?? "1") ?? 1
 				return PlatformHTTPStub.Reply(
-					status: 200, headers: ["Content-Type": "application/json", "Link": "<https://api.github.com/x?page=2>; rel=\"next\""], body: body)
+					status: 200, headers: nextPageLink(after: request, query: "per_page=100&page=\(page + 1)").merging(["Content-Type": "application/json"]) { $1 },
+					body: body)
 			}
 		}
 		var limits = GitHubClient.Limits()
@@ -1570,7 +1575,10 @@ struct GitHubClientListTests {
 	@Test("a list longer than LPM Vault reads names the list, and only the repositories' advice is to install the app on fewer")
 	func namesWhatRanOver() async throws {
 		let page = (0..<30).map { ["name": "VARIABLE_\($0)", "value": String(repeating: "v", count: 1_000), "updated_at": "2026-10-17T10:00:00Z"] }
-		let route = PlatformHTTPStub.platform { _ in .json(200, ["total_count": 500, "variables": page]) }
+		let route = PlatformHTTPStub.platform { request in
+			let number = Int(request.query["page"] ?? "1") ?? 1
+			return .json(200, ["total_count": 500, "variables": page], headers: nextPageLink(after: request, query: "per_page=30&page=\(number + 1)"))
+		}
 		var limits = GitHubClient.Limits()
 		limits.listBytes = 40_000
 		let result = await client(route, limits: limits).variables(in: GitHubScope(repository: "a/b", environment: nil))
@@ -1627,7 +1635,7 @@ struct GitHubClientListTests {
 			case ("/user/installations", _): return .json(200, ["total_count": 1, "installations": [["id": 11]]])
 			case (_, 1):
 				return .json(200, ["total_count": 3, "repositories": [["id": 1, "full_name": "n/a"], ["id": 2, "full_name": "n/b"]]],
-					headers: ["Link": "<https://api.github.com/x?page=2>; rel=\"next\""])
+					headers: nextPageLink(after: request, query: "per_page=100&page=2"))
 			default:
 				return .json(200, ["total_count": 3, "repositories": [["id": 3, "full_name": "n/c"]]])
 			}
@@ -1668,20 +1676,65 @@ struct GitHubClientListTests {
 	func refusesInconsistentLists() async {
 		let changing = PlatformHTTPStub.platform { request in
 			let page = Int(request.query["page"] ?? "1") ?? 1
-			return .json(200, ["total_count": page == 1 ? 31 : 32, "variables": (0..<(page == 1 ? 30 : 1)).map { ["name": "V\($0)", "value": "x", "updated_at": "2026-10-17T10:00:00Z"] }])
+			return .json(200, ["total_count": page == 1 ? 31 : 32, "variables": (0..<(page == 1 ? 30 : 1)).map { ["name": "V\($0)", "value": "x", "updated_at": "2026-10-17T10:00:00Z"] }],
+				headers: page == 1 ? nextPageLink(after: request, query: "per_page=30&page=2") : [:])
 		}
 		#expect(await client(changing).variables(in: GitHubScope(repository: "a/b", environment: nil)) == .failure(.invalidResponse))
 		let overfull = PlatformHTTPStub.platform { _ in
 			.json(200, ["total_count": 1, "secrets": [["name": "A", "updated_at": "2026-10-17T10:00:00Z"], ["name": "B", "updated_at": "2026-10-17T10:00:00Z"]]])
 		}
 		#expect(await client(overfull).secrets(in: GitHubScope(repository: "a/b", environment: nil)) == .failure(.invalidResponse))
-		let endless = PlatformHTTPStub.platform { _ in
-			.json(200, ["total_count": 1_000_000, "secrets": (0..<100).map { ["name": "S\($0)", "updated_at": "2026-10-17T10:00:00Z"] }])
+		let endless = PlatformHTTPStub.platform { request in
+			let page = Int(request.query["page"] ?? "1") ?? 1
+			return .json(200, ["total_count": 1_000_000, "secrets": (0..<100).map { ["name": "S\(page)_\($0)", "updated_at": "2026-10-17T10:00:00Z"] }],
+				headers: nextPageLink(after: request, query: "per_page=100&page=\(page + 1)"))
 		}
 		var limits = GitHubClient.Limits()
 		limits.maximumPages = 3
 		#expect(await client(endless, limits: limits).secrets(in: GitHubScope(repository: "a/b", environment: nil)) == .failure(.tooLarge(.secrets)))
 		#expect(endless.requests.count == 3)
+		let unfinished = PlatformHTTPStub.platform { _ in
+			.json(200, ["total_count": 150, "secrets": (0..<100).map { ["name": "S\($0)", "updated_at": "2026-10-17T10:00:00Z"] }])
+		}
+		#expect(await client(unfinished).secrets(in: GitHubScope(repository: "a/b", environment: nil)) == .failure(.invalidResponse))
+		#expect(unfinished.requests.count == 1, "GitHub named no next page of the 150 it counted")
+	}
+
+	@Test("the next page is the one GitHub's Link names, cursor and all, read at LPM Vault's own path; without a Link, a full page is the last")
+	func followsNextPage() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			if request.query["after"] == "Y3Vy,c29y" {
+				return .json(200, ["total_count": 101, "environments": [["id": 2_000, "name": "staging"]]])
+			}
+			let next = stubURL(request, path: "/repositories/1296269/environments", query: "per_page=100&after=Y3Vy,c29y")
+			let last = stubURL(request, path: "/repositories/1296269/environments", query: "per_page=100&after=bGFzdA")
+			return .json(200, ["total_count": 101, "environments": (0..<100).map { ["id": 1_000 + $0, "name": "e\($0)"] }],
+				headers: ["Link": "<\(last)>; rel=\"last\", <\(next)>; rel=\"next\""])
+		}
+		#expect(try await client(route).environments(of: "northwind/storefront").get().count == 101)
+		#expect(route.requests.map(\.url.path) == ["/repos/northwind/storefront/environments", "/repos/northwind/storefront/environments"])
+		#expect(route.requests.last?.query == ["per_page": "100", "after": "Y3Vy,c29y"])
+
+		let single = PlatformHTTPStub.platform { _ in .json(200, ["total_count": 100, "environments": (0..<100).map { ["id": 1_000 + $0, "name": "e\($0)"] }]) }
+		#expect(try await client(single).environments(of: "northwind/storefront").get().count == 100)
+		#expect(single.requests.count == 1, "Without a Link, GitHub sent the only page")
+	}
+
+	@Test("a next page GitHub names on another host or scheme, of another list, or already read, fails the list without being asked for")
+	func refusesForeignNextPages() async throws {
+		let links: [@Sendable (PlatformHTTPStub.Request) -> [String: String]] = [
+			{ nextPageLink(after: $0, query: "per_page=100&page=2", host: "api.example.com") },
+			{ nextPageLink(after: $0, query: "per_page=100&page=2", scheme: "http") },
+			{ nextPageLink(after: $0, path: "/repositories/1296269/secrets", query: "per_page=100&page=2") },
+			{ nextPageLink(after: $0, query: "per_page=100&page=1") },
+		]
+		for link in links {
+			let route = PlatformHTTPStub.platform { request in
+				.json(200, ["total_count": 200, "environments": (0..<100).map { ["id": 1_000 + $0, "name": "e\($0)"] }], headers: link(request))
+			}
+			#expect(await client(route).environments(of: "northwind/storefront") == .failure(.invalidResponse))
+			#expect(route.requests.count == 1)
+		}
 	}
 
 	@Test("an environment's secrets and variables are read under its escaped name, a variable's value never decoded")
@@ -1767,6 +1820,27 @@ struct CountedItem: Decodable {
 	init(from decoder: any Decoder) throws {
 		Self.lock.withLock { Self.count += 1 }
 	}
+}
+
+/// The URL of a stubbed list on the request's own host: at `path`, or the request's, with `query`.
+func stubURL(_ request: PlatformHTTPStub.Request, path: String? = nil, query: String, scheme: String? = nil, host: String? = nil) -> String {
+	var components = URLComponents(url: request.url, resolvingAgainstBaseURL: false)!
+	if let path { components.percentEncodedPath = path }
+	if let scheme { components.scheme = scheme }
+	if let host { components.host = host }
+	components.percentEncodedQuery = query
+	return components.url!.absoluteString
+}
+
+/// A `Link` naming the next page of a stubbed list, as `stubURL` builds it.
+func nextPageLink(
+	after request: PlatformHTTPStub.Request,
+	path: String? = nil,
+	query: String,
+	scheme: String? = nil,
+	host: String? = nil
+) -> [String: String] {
+	["Link": "<\(stubURL(request, path: path, query: query, scheme: scheme, host: host))>; rel=\"next\""]
 }
 
 /// A listing's deadline a test passes by hand. Waiting for it returns once

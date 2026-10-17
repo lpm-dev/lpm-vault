@@ -330,6 +330,26 @@ enum GitHubHTTP {
 		return message.range(of: "rate limit", options: .caseInsensitive) != nil
 	}
 
+	/// The target of the first link in a `Link` header with `relation`
+	/// among its relations, as RFC 8288 writes them: `<target>; rel="next", …`.
+	static func linkTarget(_ header: String, relation: String) -> String? {
+		var rest = Substring(header)
+		while let open = rest.firstIndex(of: "<") {
+			guard let close = rest[open...].firstIndex(of: ">") else { return nil }
+			let target = rest[rest.index(after: open)..<close]
+			rest = rest[rest.index(after: close)...]
+			let parameters = rest.prefix { $0 != "<" }
+			rest = rest[parameters.endIndex...]
+			for parameter in parameters.split(separator: ";") {
+				let pair = parameter.split(separator: "=", maxSplits: 1)
+				guard pair.count == 2, pair[0].trimmingCharacters(in: .whitespaces).lowercased() == "rel" else { continue }
+				let relations = pair[1].trimmingCharacters(in: CharacterSet.whitespaces.union([","])).trimmingCharacters(in: ["\""])
+				if relations.lowercased().split(separator: " ").contains(Substring(relation)) { return String(target) }
+			}
+		}
+		return nil
+	}
+
 	/// GitHub's numeric IDs, as decimal text without a sign or leading zero.
 	static func isValidID(_ text: String) -> Bool {
 		!text.isEmpty && text.utf8.count <= 20 && text.first != "0" && text.utf8.allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
@@ -577,12 +597,12 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	///
 	/// A strict list, as of secrets or variables, must agree with itself: a
 	/// page with more items than asked for, more items than the total GitHub
-	/// gave, or a total that changes between pages fails it. A lenient one, as
-	/// of repositories, reads what GitHub lists: an item it can't decode is
-	/// nil, a total that shifts while it's read is followed, and a missing
-	/// list with no total is empty. Either ends at a short page, or when
-	/// GitHub's `Link` names no next page; LPM Vault builds each page's URL
-	/// itself, so the token never follows one GitHub sends.
+	/// gave, or a total that changes between pages fails it, and it ends once
+	/// it holds its total. A lenient one, as of repositories, reads what
+	/// GitHub lists: an item it can't decode is nil, a total that shifts while
+	/// it's read is followed, and a missing list with no total is empty.
+	/// Either goes on to the page GitHub's `Link` names next, as GitHub asks
+	/// lists be followed, and ends when it names none.
 	private func list<Item: Decodable & Sendable>(
 		_ path: [String],
 		field: String,
@@ -594,11 +614,12 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	) async -> Result<Listed<Item?>, GitHubAPIError> {
 		var listed = Listed<Item?>()
 		var total: Int?
-		for page in 1...limits.maximumPages {
+		let firstPage = [URLQueryItem(name: "per_page", value: String(perPage)), URLQueryItem(name: "page", value: "1")]
+		guard var url = GitHubHTTP.url(baseURL, path, query: firstPage) else { return .failure(.invalidResponse) }
+		var requested: Set<URL> = [url]
+		for _ in 1...limits.maximumPages {
 			guard budget.bytes > 0 else { return .failure(.tooLarge(listing)) }
 			guard budget.pagesRead == 0 || ContinuousClock.now < budget.deadline else { return .failure(budget.timedOut(listing)) }
-			let query = [URLQueryItem(name: "per_page", value: String(perPage)), URLQueryItem(name: "page", value: String(page))]
-			guard let url = GitHubHTTP.url(baseURL, path, query: query) else { return .failure(.invalidResponse) }
 			let request = GitHubHTTP.request("GET", url, token: token)
 			let budgetBinds = budget.bytes <= limits.pageBytes
 			guard let loaded = await Self.load(
@@ -627,23 +648,48 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 					return .failure(.invalidResponse)
 				}
 				total = pageTotal
-				if listed.items.count == pageTotal || decoded.items.count < perPage {
-					return listed.items.count == pageTotal ? .success(listed) : .failure(.invalidResponse)
-				}
-			} else if !Self.hasNextPage(response, itemCount: decoded.items.count, perPage: perPage) {
-				return .success(listed)
+				if listed.items.count == pageTotal { return .success(listed) }
+			}
+			switch Self.nextPage(response, after: url) {
+			case .success(let next?):
+				// A page named again would be read again, and again.
+				guard requested.insert(next).inserted else { return .failure(.invalidResponse) }
+				url = next
+			case .success(nil):
+				// A strict list GitHub ends short of its total doesn't agree with itself.
+				return lenient ? .success(listed) : .failure(.invalidResponse)
+			case .failure(let error):
+				return .failure(error)
 			}
 		}
 		return .failure(.tooLarge(listing))
 	}
 
-	/// Whether a list goes on past this page: as its `Link` says, as GitHub
-	/// asks lists be followed, and without one, when the page was full.
-	private static func hasNextPage(_ response: HTTPURLResponse, itemCount: Int, perPage: Int) -> Bool {
-		guard let link = response.value(forHTTPHeaderField: "Link") else { return itemCount == perPage }
-		return link.split(separator: ",").contains { part in
-			part.split(separator: ";").dropFirst().contains { $0.trimmingCharacters(in: .whitespaces) == #"rel="next""# }
+	/// The next page of the list read at `url`, as GitHub's `Link` names it,
+	/// or nil when it names none. Only the link's query is taken, and read at
+	/// `url`'s own path: GitHub can name a repository's list by the
+	/// repository's ID, and the token never goes to a URL GitHub sends. A
+	/// link to another scheme, host or port, or to another kind of list, is
+	/// `.invalidResponse`.
+	private static func nextPage(_ response: HTTPURLResponse, after url: URL) -> Result<URL?, GitHubAPIError> {
+		guard let link = response.value(forHTTPHeaderField: "Link"), let target = GitHubHTTP.linkTarget(link, relation: "next") else {
+			return .success(nil)
 		}
+		guard let current = URLComponents(url: url, resolvingAgainstBaseURL: false),
+			let named = URL(string: target, relativeTo: url).flatMap({ URLComponents(url: $0.absoluteURL, resolvingAgainstBaseURL: false) }),
+			named.scheme?.lowercased() == current.scheme?.lowercased(),
+			named.host?.lowercased() == current.host?.lowercased(),
+			port(of: named) == port(of: current),
+			named.user == nil, named.password == nil,
+			named.path.split(separator: "/").last == current.path.split(separator: "/").last
+		else { return .failure(.invalidResponse) }
+		var next = current
+		next.percentEncodedQuery = named.percentEncodedQuery
+		return next.url.map { .success($0) } ?? .failure(.invalidResponse)
+	}
+
+	private static func port(of components: URLComponents) -> Int? {
+		components.port ?? ["https": 443, "http": 80][components.scheme?.lowercased() ?? ""]
 	}
 
 	/// The load's answer as `loadCounted` gives it, or nil once `deadline` passes first, which cancels the load.
