@@ -267,6 +267,45 @@ final class GitHubDestinationForm {
 		return scopeChoices.contains { $0.identifier == scope.identifier }
 	}
 
+	/// A choice in one of the form's menus: what it says, and whether it can be chosen.
+	struct Option: Equatable, Sendable {
+		let id: String
+		let label: String
+		let isAvailable: Bool
+	}
+
+	/// The repositories, each saying whether it's private, as its icon
+	/// alone doesn't to VoiceOver, and why the person can't change its
+	/// secrets and variables when they can't.
+	var repositoryOptions: [Option] {
+		(repositories.value ?? []).map { repository in
+			var label = "\(repository.fullName) · \(repository.isPrivate ? "Private" : "Public")"
+			if repository.isArchived {
+				label += " · Archived"
+			} else if !repository.canChange(.repository) {
+				label += " · Read-only"
+			}
+			return Option(id: repository.id, label: label, isAvailable: repository.canChange(.repository))
+		}
+	}
+
+	/// The scope choices, an environment named by its ID too when its name
+	/// shows as another's, and one the person needs admin access for saying so.
+	var scopeOptions: [Option] {
+		let choices = scopeChoices
+		var shown: [String: Int] = [:]
+		for scope in choices { shown[scope.displayName, default: 0] += 1 }
+		return choices.map { scope in
+			var label = scope.displayName
+			let isAvailable = repository?.canChange(scope) ?? true
+			if case .environment(let id, _) = scope {
+				if shown[label, default: 0] > 1 { label += " (ID \(id))" }
+				if !isAvailable { label += " · Needs admin access" }
+			}
+			return Option(id: scope.identifier, label: label, isAvailable: isAvailable)
+		}
+	}
+
 	/// Repositories sorted by `owner/name`. Nonisolated, so a long list is sorted off the main actor.
 	nonisolated static func sorted(_ repositories: [GitHubRepository]) -> [GitHubRepository] {
 		repositories.sorted { lhs, rhs in

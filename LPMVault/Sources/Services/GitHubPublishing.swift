@@ -557,6 +557,14 @@ enum GitHubPublishing {
 		}
 	}
 
+	/// Why the chosen keys don't fit in the scope: GitHub keeps only so many
+	/// secrets, and readable variables, in a repository and in an environment.
+	static func overflowMessage(_ overflow: PublishPlan.Overflow, scope: GitHubPublishTarget.Scope) -> String {
+		let kind = overflow.isSecrets ? "secrets" : "variables"
+		let place = scope == .repository ? "a repository's own" : "an environment's"
+		return "GitHub keeps at most \(overflow.limit) of \(place) \(kind), and this would make \(overflow.existing + overflow.adding). Leave out \(overflow.excess) new \(overflow.excess == 1 ? String(kind.dropLast()) : kind)."
+	}
+
 	/// Why the person can't change the scope's secrets and variables, as the
 	/// repository's role and archived state say; nil when nothing says they can't.
 	static func accessRefusal(_ repository: GitHubRepository, for scope: GitHubPublishTarget.Scope) -> String? {

@@ -250,7 +250,9 @@ struct PublishSheet: View {
 		case .netlify(let form)?: if case .failed(let message) = form.sites { return message }
 		case .github(let form)?:
 			if case .failed(let message) = form.repositories { return message }
-			if case .failed(let message) = form.environments { return message }
+			if case .failed(let message) = form.environments {
+				return "\(form.repository?.fullName ?? "The repository")'s environments couldn't be listed. \(message) Its own secrets and variables can still be chosen."
+			}
 		case nil: break
 		}
 		return nil
@@ -269,7 +271,7 @@ struct PublishSheet: View {
 		if session.isLoadingReview {
 			HStack(spacing: 8) {
 				ProgressView().controlSize(.small)
-				Text("Reading the variables on \(platformName)…").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
+				Text("Reading the \(platform?.valuesNoun(count: 2) ?? "variables") on \(platformName)…").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
 			}
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		} else if let review = session.review {
@@ -515,12 +517,12 @@ struct PublishSheet: View {
 			case .repository:
 				notes.append("A job that uses a deployment environment gets that environment's secret or variable instead, when it has one with the same name.")
 			case .environment(_, let name):
-				notes.append("Only jobs that use the \(name.escapingDirectionControls) environment get these values, over the repository's with the same name.")
+				notes.append("Only jobs that use the \(name.escapingInvisibleCharacters) environment get these values, over the repository's with the same name.")
 			}
 		}
 		let remoteOnly = review.plan.remoteOnlyCount
 		if remoteOnly > 0 {
-			notes.append("\(remoteOnly) \(remoteOnly == 1 ? "variable" : "variables") only on \(platform) stay as they are.")
+			notes.append("\(remoteOnly) \(review.platform.valuesNoun(count: remoteOnly)) only on \(platform) stay as they are.")
 		}
 		let readable = review.platform == .github ? "" : " unless their prefix makes them public"
 		switch review.rules {
@@ -543,7 +545,7 @@ struct PublishSheet: View {
 	private var resultsStep: some View {
 		if let results = session.results {
 			VStack(alignment: .leading, spacing: 10) {
-				Text("Published \(results.publishedCount) of \(results.rows.count) \(results.rows.count == 1 ? "variable" : "variables"). \(Self.redeployNote(for: results.destination.target.platform))")
+				Text("Published \(results.publishedCount) of \(results.rows.count) \(results.destination.target.platform.valuesNoun(count: results.rows.count)). \(Self.redeployNote(for: results.destination.target.platform))")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -623,9 +625,16 @@ struct PublishSheet: View {
 					Text("Choose a destination").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
 				}
 			case .review:
-				Label("Touch ID confirms before anything is sent", systemImage: "touchid")
-					.font(.system(size: 12))
-					.foregroundStyle(VaultPalette.textTertiary)
+				if let overflow = overflowMessage {
+					Text(overflow)
+						.font(.system(size: 12))
+						.foregroundStyle(VaultPalette.orangeTintText)
+						.fixedSize(horizontal: false, vertical: true)
+				} else {
+					Label("Touch ID confirms before anything is sent", systemImage: "touchid")
+						.font(.system(size: 12))
+						.foregroundStyle(VaultPalette.textTertiary)
+				}
 			case .results:
 				EmptyView()
 			}
@@ -633,13 +642,15 @@ struct PublishSheet: View {
 			switch session.step {
 			case .destination:
 				VaultBarButton(title: "Cancel", height: 28, action: close)
-				VaultBarButton(title: "Review variables", filled: true, disabled: !session.canReview, height: 28, action: session.loadReview)
+				VaultBarButton(
+					title: "Review \(platform?.valuesNoun(count: 2) ?? "variables")", filled: true, disabled: !session.canReview, height: 28,
+					action: session.loadReview)
 			case .review:
 				VaultBarButton(title: "Back", disabled: session.isPublishing, height: 28, action: session.showDestination)
 				VaultBarButton(
-					title: session.isPublishing ? "Publishing…" : "Publish \(publishCount) \(publishCount == 1 ? "variable" : "variables")",
+					title: session.isPublishing ? "Publishing…" : "Publish \(publishedValues)",
 					filled: true,
-					disabled: publishCount == 0 || session.isPublishing || session.isLoadingReview,
+					disabled: publishCount == 0 || overflowMessage != nil || session.isPublishing || session.isLoadingReview,
 					height: 28,
 					action: session.publish)
 			case .results:
@@ -652,6 +663,21 @@ struct PublishSheet: View {
 	}
 
 	private var publishCount: Int { session.review?.selection.keys.count ?? 0 }
+
+	/// What the publish sends, counted as the platform calls it.
+	private var publishedValues: String {
+		guard let review = session.review else { return "variables" }
+		let summary = review.summary
+		return review.platform.countedValues(secrets: summary.secrets, variables: summary.variables)
+	}
+
+	/// Why the chosen keys don't fit where they'd go, when they don't.
+	private var overflowMessage: String? {
+		guard let review = session.review, let overflow = review.plan.overflows(of: review.selection).first,
+			case .github(let target) = review.destination.target
+		else { return nil }
+		return GitHubPublishing.overflowMessage(overflow, scope: target.scope)
+	}
 
 	/// Forgets the destination, and closes once it's gone; a failure stays
 	/// shown so forgetting can be tried again.
@@ -824,8 +850,10 @@ private struct GitHubDestinationFields: View {
 			PublishDestinationField("Repository") {
 				VaultMenuField(
 					title: "Repository",
-					options: (form.repositories.value ?? []).map {
-						VaultMenuOption(value: $0.id, label: $0.fullName, systemImage: $0.isPrivate ? "lock" : "book.closed")
+					options: zip(form.repositories.value ?? [], form.repositoryOptions).map { repository, option in
+						VaultMenuOption(
+							value: option.id, label: option.label, systemImage: repository.isPrivate ? "lock" : "book.closed",
+							disabled: !option.isAvailable)
 					},
 					selection: $form.repositoryID,
 					placeholder: placeholder,
@@ -834,7 +862,7 @@ private struct GitHubDestinationFields: View {
 			PublishDestinationField("Secrets and variables") {
 				VaultMenuField(
 					title: "Secrets and variables",
-					options: form.scopeChoices.map { VaultMenuOption(value: $0.identifier, label: $0.displayName) },
+					options: form.scopeOptions.map { VaultMenuOption(value: $0.id, label: $0.label, disabled: !$0.isAvailable) },
 					selection: Binding(
 						get: { form.scope?.identifier },
 						set: { identifier in form.scope = form.scopeChoices.first { $0.identifier == identifier } }),
@@ -844,7 +872,7 @@ private struct GitHubDestinationFields: View {
 		}
 		GridRow {
 			HStack(spacing: 8) {
-				Text("A repository that isn't listed needs LPM Vault's GitHub App.")
+				Text(form.environments == .loading ? "Loading environments…" : "A repository that isn't listed needs LPM Vault's GitHub App.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 				if let installURL {
@@ -858,8 +886,18 @@ private struct GitHubDestinationFields: View {
 					.font(.system(size: 11.5, weight: .medium))
 					.foregroundStyle(VaultPalette.accentForeground)
 					.disabled(form.repositories == .loading)
+					.accessibilityLabel("Refresh repositories")
 			}
 			.gridCellColumns(2)
+		}
+		GridRow {
+			Text(form.hidesSSORepositories
+				? "GitHub left out repositories of an organization with single sign-on. Sign in to it on GitHub, then connect GitHub again on the Platforms page."
+				: "An organization with single sign-on lists its repositories only when GitHub was connected while you were signed in to it.")
+				.font(.system(size: 11.5))
+				.foregroundStyle(form.hidesSSORepositories ? VaultPalette.orangeTintText : VaultPalette.textTertiary)
+				.fixedSize(horizontal: false, vertical: true)
+				.gridCellColumns(2)
 		}
 	}
 

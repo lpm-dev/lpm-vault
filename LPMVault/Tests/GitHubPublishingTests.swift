@@ -30,6 +30,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	]
 	private var scopes: [String: Scope] = [:]
 	private var formerNames: Set<String> = []
+	private var access: [String: (isArchived: Bool, permission: GitHubRepository.Permission?)] = [:]
 	private var clock = Date(timeIntervalSince1970: 1_760_000_000)
 	/// Each operation's scripted answers, in order: a failure, or nil to answer as usual.
 	private var failures: [Operation: [(error: GitHubAPIError, then: (@Sendable () -> Void)?)?]] = [:]
@@ -70,6 +71,11 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 				scopes[name + key.dropFirst(old?.count ?? 0)] = scope
 			}
 		}
+	}
+
+	/// Sets what the person may do with the repository, as GitHub lists it.
+	func setAccess(of id: String, archived: Bool = false, permission: GitHubRepository.Permission?) {
+		lock.withLock { access[id] = (archived, permission) }
 	}
 
 	func removeEnvironments(of repository: String) {
@@ -145,8 +151,9 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> {
 		if let error = begin(.repository, id) { return .failure(error) }
-		guard let name = lock.withLock({ repositoryNames[id] }) else { return .failure(.notFound) }
-		return .success(GitHubRepository(id: id, fullName: name, isPrivate: true))
+		guard let (name, access) = lock.withLock({ repositoryNames[id].map { ($0, access[id]) } }) else { return .failure(.notFound) }
+		return .success(GitHubRepository(
+			id: id, fullName: name, isPrivate: true, isArchived: access?.isArchived ?? false, permission: access?.permission))
 	}
 
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
@@ -324,6 +331,8 @@ struct GitHubPlanTests {
 		var selection = PublishPlan.Selection(defaultsOf: plan)
 		#expect(plan.overflows(of: selection) == [PublishPlan.Overflow(isSecrets: true, limit: 100, existing: 99, adding: 5)])
 		#expect(plan.overflows(of: selection).first?.excess == 4, "97 secrets, the replaced one and the one beside a variable, with 5 new")
+		#expect(GitHubPublishing.overflowMessage(try #require(plan.overflows(of: selection).first), scope: .repository)
+			== "GitHub keeps at most 100 of a repository's own secrets, and this would make 104. Leave out 4 new secrets.")
 		let summary = plan.summary(of: selection)
 		#expect(summary.publishing == 7 && summary.secrets == 6 && summary.variables == 1)
 		for key in ["NEW_0", "NEW_1", "NEW_2"] { selection.set(key, selected: false, in: plan) }
@@ -380,6 +389,45 @@ struct GitHubPlanTests {
 		#expect(plan.rows.allSatisfy { !$0.isPublishable })
 		#expect(plan.remoteOnlyCount == 0)
 		#expect(self.plan([:], remoteKeys: ["BOTH": .init(kind: .duplicated, storedAsSecret: true, updatedAt: Date())]).remoteOnlyCount == 2)
+	}
+}
+
+@MainActor
+struct GitHubDestinationFormTests {
+	@Test("each repository says whether it's private, and one whose secrets the person can't change says why and can't be chosen")
+	func repositoryOptions() {
+		let form = GitHubDestinationForm()
+		form.repositories = .loaded([
+			GitHubRepository(id: "1", fullName: "northwind/api", isPrivate: true, permission: .write),
+			GitHubRepository(id: "2", fullName: "northwind/site", isPrivate: false),
+			GitHubRepository(id: "3", fullName: "northwind/old", isPrivate: true, isArchived: true, permission: .admin),
+			GitHubRepository(id: "4", fullName: "northwind/docs", isPrivate: false, permission: .read),
+		])
+		#expect(form.repositoryOptions == [
+			.init(id: "1", label: "northwind/api · Private", isAvailable: true),
+			.init(id: "2", label: "northwind/site · Public", isAvailable: true),
+			.init(id: "3", label: "northwind/old · Private · Archived", isAvailable: false),
+			.init(id: "4", label: "northwind/docs · Public · Read-only", isAvailable: false),
+		])
+	}
+
+	@Test("an environment whose name shows as another's is named by its ID too, and one needing admin access says so and can't be chosen")
+	func scopeOptions() {
+		let form = GitHubDestinationForm()
+		form.repositories = .loaded([GitHubRepository(id: "1", fullName: "northwind/api", isPrivate: true, permission: .write)])
+		form.repositoryID = "1"
+		form.environments = .loaded([
+			GitHubEnvironment(id: "10", name: "production"), GitHubEnvironment(id: "11", name: "staging\u{200B}"),
+			GitHubEnvironment(id: "12", name: "staging\\u{200b}"),
+		])
+		#expect(form.scopeOptions == [
+			.init(id: "repository", label: "Repository", isAvailable: true),
+			.init(id: "environment:10", label: "Environment production · Needs admin access", isAvailable: false),
+			.init(id: "environment:11", label: "Environment staging\\u{200b} (ID 11) · Needs admin access", isAvailable: false),
+			.init(id: "environment:12", label: "Environment staging\\u{200b} (ID 12) · Needs admin access", isAvailable: false),
+		])
+		form.repositories = .loaded([GitHubRepository(id: "1", fullName: "northwind/api", isPrivate: true, permission: .admin)])
+		#expect(form.scopeOptions.allSatisfy(\.isAvailable) && form.scopeOptions[1].label == "Environment production")
 	}
 }
 

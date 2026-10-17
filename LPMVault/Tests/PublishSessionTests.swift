@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import os
+import SwiftUI
 import Testing
 @testable import LPMVault
 
@@ -1189,6 +1190,33 @@ struct GitHubPublishSessionTests {
 		#expect(!api.requests.contains { $0.0 == .environments && $0.1 == "northwind/storefront" }, "The old name isn't used")
 	}
 
+	@Test("a review of a repository the person can't change says why, before reading its secrets", arguments: [
+		(true, GitHubRepository.Permission.admin, GitHubPublishTarget.Scope.repository, "northwind/storefront is archived on GitHub, so its secrets and variables can't change."),
+		(false, .read, .repository, "Your role on northwind/storefront can't change its secrets and variables. That needs write access."),
+		(false, .write, .environment(id: "161088068", name: "production"), "Changing an environment's secrets and variables needs admin access to northwind/storefront."),
+	])
+	func refusesWithoutAccess(archived: Bool, permission: GitHubRepository.Permission, scope: GitHubPublishTarget.Scope, refusal: String) async throws {
+		try await connect()
+		api.setAccess(of: "1296269", archived: archived, permission: permission)
+		let session = session()
+		try await choose(session, scope: scope)
+		#expect(session.reviewError == refusal)
+		#expect(!api.requests.contains { $0.0 == .listSecrets || $0.0 == .listVariables })
+	}
+
+	@Test("a publish that would take the repository past GitHub's secrets isn't sent, and asks nothing")
+	func refusesOverflow() async throws {
+		try await connect()
+		for index in 0..<99 { api.edit("OLD_\(index)", secret: true, in: repositoryScope) }
+		let session = session()
+		try await choose(session)
+		let review = try #require(session.review)
+		#expect(review.plan.overflows(of: review.selection).first?.excess == 1)
+		session.publish()
+		#expect(!session.isPublishing && session.step == .review, "Publishing starts at once when it starts at all")
+		#expect(confirmations.reasons.isEmpty)
+	}
+
 	@Test("an environment's destination writes the environment's secrets, and a review says only its jobs get them")
 	func environmentScope() async throws {
 		try await connect()
@@ -1628,7 +1656,7 @@ extension SheetInteractionTests {
 			#expect(session.step == .destination && session.canReview)
 		}
 
-		@Test("a GitHub publish chooses a repository, offers installing the app on more, and says new workflow runs get the values")
+		@Test("a GitHub publish says whether the repository is private, installs the app on more, lists them again, and counts secrets and variables apart")
 		func publishesToGitHub() async throws {
 			let environments = ["production": ["API_TOKEN": "tok", "SHARED_KEY": "s"]]
 			keychain.envStorage["project"] = (name: "demo-api", path: "", environments: environments)
@@ -1644,19 +1672,34 @@ extension SheetInteractionTests {
 				.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")),
 				accessToken: "ghu_1", at: Date()).get()
 			let session = try #require(store.makePublishSession())
-			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 640),
-				keepsRequestedSize: true, usesHostingView: true)
+			let opened = OpenedURLs()
+			let sheet = PublishSheet(store: store, session: session)
+				.environment(\.openURL, OpenURLAction { url in
+					opened.append(url)
+					return .handled
+				})
+			let host = SheetTestHost(sheet, size: NSSize(width: 640, height: 640), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitUntil { session.github?.repositories.value != nil })
 			#expect(try await host.waitForText("Secrets and variables"))
 			#expect(try await host.waitForText("needs LPM Vault's GitHub App"))
-			#expect(try await host.waitForText("Install on GitHub"))
+			try await host.click("Install on GitHub")
+			#expect(try await host.waitUntil { !opened.urls.isEmpty })
+			#expect(opened.urls == [URL(string: "https://github.com/apps/lpm-vault/installations/new")!])
+
 			session.github?.repositoryID = "1296269"
-			#expect(try await host.waitForText("northwind/storefront / Repository"))
-			try await host.click("Review variables")
-			#expect(try await host.waitForText("Publish 2 variables"))
-			try await host.click("Publish 2 variables")
-			#expect(try await host.waitForText("Published 2 of 2 variables"))
+			#expect(try await host.waitForText("northwind/storefront · Private"), "The chosen repository says it's private in words")
+			#expect(try await host.waitUntil { session.github?.environments.value != nil })
+			let listings = { github.requests.filter { $0.0 == .repository && $0.1 == "*" }.count }
+			#expect(listings() == 1)
+			try await host.click("Refresh repositories")
+			#expect(try await host.waitUntil { listings() == 2 && session.github?.environments.value != nil })
+			#expect(github.requests.filter { $0.0 == .environments }.count == 2, "The chosen repository's environments are listed again")
+
+			try await host.click("Review secrets and variables")
+			#expect(try await host.waitForText("Publish 2 secrets", exactly: true))
+			try await host.click("Publish 2 secrets")
+			#expect(try await host.waitForText("Published 2 of 2 secrets and variables"))
 			#expect(try await host.waitForText("Workflow runs that start from now on get the new values"))
 			#expect(biometric.confirmationReasons == ["Publish 2 secrets to northwind/storefront / Repository on GitHub"])
 			#expect(github.names(in: GitHubScope(repository: "northwind/storefront", environment: nil)).secrets == ["API_TOKEN", "SHARED_KEY"])
