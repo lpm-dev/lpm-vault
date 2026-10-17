@@ -162,13 +162,20 @@ enum RegistryTestSigner {
 	}
 }
 
-/// Seals a grant the way the Registry's `sealAuthorizationResult` does.
+/// Seals a grant the way the Registry's `sealToClientKey` does: as
+/// `sealAuthorizationResult` does by default, or under another domain, as
+/// `sealRefreshResult` seals a refresh's result.
 enum RegistryTestSealer {
-	static func seal(_ payload: [String: Any], authorizationID: String, to clientPublicKey: Data) throws -> PlatformAuthorizationEnvelope.Sealed {
+	static func seal(
+		_ payload: [String: Any],
+		authorizationID: String,
+		to clientPublicKey: Data,
+		domain domainName: String = PlatformAuthorizationEnvelope.domain
+	) throws -> PlatformAuthorizationEnvelope.Sealed {
 		let client = try P256.KeyAgreement.PublicKey(x963Representation: clientPublicKey)
 		let ephemeral = P256.KeyAgreement.PrivateKey()
 		let shared = try ephemeral.sharedSecretFromKeyAgreement(with: client)
-		let domain = Data(PlatformAuthorizationEnvelope.domain.utf8) + [0]
+		let domain = Data(domainName.utf8) + [0]
 		let key = shared.hkdfDerivedSymmetricKey(
 			using: SHA256.self,
 			salt: Data(authorizationID.utf8),

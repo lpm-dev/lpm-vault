@@ -11,8 +11,11 @@ import Foundation
 ///     AES-256-GCM(key, 12-byte nonce, aad: DOMAIN || 0x00 || authorizationID)
 ///
 /// Keys are uncompressed SEC1 points, and the ciphertext ends with the 16-byte tag.
+/// A refresh's result comes in the same envelope under `refreshDomain`, with
+/// the refresh ID in place of the authorization ID, so neither opens as the other.
 enum PlatformAuthorizationEnvelope {
 	static let domain = "lpm-vault:platform-authorization:v1"
+	static let refreshDomain = "lpm-vault:platform-token-refresh:v1"
 
 	enum OpenError: Error, Equatable, Sendable {
 		/// The envelope isn't one this version reads.
@@ -41,6 +44,22 @@ enum PlatformAuthorizationEnvelope {
 		authorizationID: String,
 		clientKey: P256.KeyAgreement.PrivateKey
 	) -> Result<Grant, OpenError> {
+		open(sealed, id: authorizationID, clientKey: clientKey, domain: domain) { payload in
+			guard payload["platform"] as? String == Grant.platform.rawValue else { return nil }
+			return Grant(payload: payload)
+		}
+	}
+
+	/// What `read` makes of the payload inside `sealed`, decrypted with
+	/// `clientKey` for `id` under `domain`; `read` returns nil for a payload
+	/// this version doesn't accept.
+	static func open<Value>(
+		_ sealed: Sealed,
+		id: String,
+		clientKey: P256.KeyAgreement.PrivateKey,
+		domain: String,
+		read: ([String: Any]) -> Value?
+	) -> Result<Value, OpenError> {
 		guard sealed.version == 1,
 			let ephemeralBytes = Data(base64Encoded: sealed.ephemeralPublicKey), ephemeralBytes.count == 65,
 			let nonceBytes = Data(base64Encoded: sealed.nonce), nonceBytes.count == 12,
@@ -51,7 +70,7 @@ enum PlatformAuthorizationEnvelope {
 		else { return .failure(.malformed) }
 
 		let domainPrefix = Data(domain.utf8) + [0]
-		let authorization = Data(authorizationID.utf8)
+		let authorization = Data(id.utf8)
 		var plaintext: Data
 		do {
 			let shared = try clientKey.sharedSecretFromKeyAgreement(with: ephemeralKey)
@@ -72,10 +91,9 @@ enum PlatformAuthorizationEnvelope {
 		}
 		defer { plaintext.resetBytes(in: plaintext.startIndex..<plaintext.endIndex) }
 		guard let payload = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
-			payload["platform"] as? String == Grant.platform.rawValue,
-			let grant = Grant(payload: payload)
+			let value = read(payload)
 		else { return .failure(.invalidGrant) }
-		return .success(grant)
+		return .success(value)
 	}
 }
 

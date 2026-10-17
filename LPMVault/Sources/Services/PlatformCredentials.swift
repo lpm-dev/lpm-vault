@@ -1,0 +1,174 @@
+import Foundation
+
+/// Why a connection's access token can't be used now.
+enum PlatformCredentialError: Error, Equatable, Sendable {
+	case store(PlatformConnectionStoreError)
+	/// Renewing the token needs an LPM sign-in.
+	case signedOut
+	/// The LPM account signed in isn't the one the platform was connected with,
+	/// which alone can renew its token.
+	case otherAccount
+	/// The token can't be renewed any more, so the platform must be connected again.
+	case expired
+	/// lpm.dev or the platform couldn't be reached, or another request is
+	/// still renewing the token. Asking again later finishes the renewal.
+	case unavailable
+	case rateLimited
+	/// lpm.dev answered in a way LPM Vault couldn't verify.
+	case invalidResponse
+
+	func message(for platform: PublishPlatform) -> String {
+		let name = platform.displayName
+		return switch self {
+		case .store(let error): "The connection's token can't be read. \(error)"
+		case .signedOut: "Sign in to LPM to keep publishing to \(name). Its connection renews through lpm.dev."
+		case .otherAccount: "\(name) was connected while signed in to another LPM account. Sign in with that account, or connect \(name) again on the Platforms page."
+		case .expired: "The \(name) connection expired. Connect \(name) again on the Platforms page."
+		case .unavailable: "The \(name) connection couldn't be renewed right now. Check your network and try again."
+		case .rateLimited: "The \(name) connection was renewed too often. Wait a minute, then try again."
+		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn't verify. Try again."
+		}
+	}
+}
+
+/// The access tokens publishing uses, renewed through the Registry for a
+/// platform whose tokens expire. One connection's token is renewed by one
+/// request at a time, however many reviews and publishes ask for it, and each
+/// step is saved before the next: the request before it's sent, and the new
+/// tokens as soon as they arrive. The platform replaces a refresh token as
+/// soon as it's used, so a request whose answer was lost, or the app quit
+/// during, is sent again and collects the same tokens.
+actor PlatformCredentials {
+	typealias SessionProvider = @Sendable () async -> PlatformSession?
+
+	/// How many more times a request still pending at the Registry is asked again.
+	static let pendingRetries = 10
+
+	private let store: PlatformConnectionStore
+	private let refresher: any PlatformTokenRefreshing
+	private let session: SessionProvider
+	private let now: @Sendable () -> Date
+	private let pendingDelay: Duration
+	private var running: [PlatformConnection.ID: Task<Result<String, PlatformCredentialError>, Never>] = [:]
+	/// How many callers have shared a read, with any renewal, another caller started; it only grows.
+	private(set) var sharedReads = 0
+
+	init(
+		store: PlatformConnectionStore,
+		refresher: any PlatformTokenRefreshing = PlatformAuthorizationClient(),
+		session: @escaping SessionProvider,
+		now: @escaping @Sendable () -> Date = { Date() },
+		pendingDelay: Duration = .seconds(1)
+	) {
+		self.store = store
+		self.refresher = refresher
+		self.session = session
+		self.now = now
+		self.pendingDelay = pendingDelay
+	}
+
+	/// The connection's access token, renewed first when it's about to expire
+	/// or a renewal is unfinished. Callers asking while a renewal runs share it.
+	func accessToken(for connectionID: PlatformConnection.ID) async -> Result<String, PlatformCredentialError> {
+		if let task = running[connectionID] {
+			sharedReads += 1
+			return await task.value
+		}
+		let task = Task { await self.resolve(connectionID) }
+		running[connectionID] = task
+		let result = await task.value
+		if running[connectionID] == task { running[connectionID] = nil }
+		return result
+	}
+
+	private enum Step {
+		case done(Result<String, PlatformCredentialError>)
+		/// The connection changed meanwhile, as when it was connected again: read it once more.
+		case again
+	}
+
+	private func resolve(_ connectionID: PlatformConnection.ID) async -> Result<String, PlatformCredentialError> {
+		for _ in 0..<3 {
+			switch await step(connectionID) {
+			case .done(let result): return result
+			case .again: continue
+			}
+		}
+		return .failure(.unavailable)
+	}
+
+	private func step(_ connectionID: PlatformConnection.ID) async -> Step {
+		let record: PlatformConnectionStore.Record
+		switch await store.record(for: connectionID) {
+		case .success(let value): record = value
+		case .failure(let error): return .done(.failure(.store(error)))
+		}
+		guard let refresh = record.refresh else { return .done(.success(record.accessToken)) }
+		guard !refresh.isRejected else { return .done(.failure(.expired)) }
+		let date = now()
+		guard refresh.isDue(at: date) else { return .done(.success(record.accessToken)) }
+		// A request already sent may have renewed the token, so it's finished even past the refresh token's expiry.
+		guard refresh.attempt != nil || date < refresh.expiresAt,
+			let platform = BrowserPlatform(record.connection.platform)
+		else { return .done(.failure(.expired)) }
+		guard let session = await session() else { return .done(.failure(.signedOut)) }
+		guard session.principalID == refresh.principalID else { return .done(.failure(.otherAccount)) }
+
+		let attempt: PlatformTokenRefresh.Attempt
+		if let pending = refresh.attempt {
+			attempt = pending
+		} else {
+			let made = PlatformTokenRefresh.Attempt.make(at: date)
+			switch await store.beginRefresh(of: connectionID, token: refresh.token, attempt: made) {
+			case .success(true): attempt = made
+			case .success(false): return .again
+			case .failure(let error): return .done(.failure(.store(error)))
+			}
+		}
+		return await renew(connectionID, on: platform, token: refresh.token, attempt: attempt, session: session)
+	}
+
+	private func renew(
+		_ connectionID: PlatformConnection.ID,
+		on platform: BrowserPlatform,
+		token: String,
+		attempt: PlatformTokenRefresh.Attempt,
+		session: PlatformSession
+	) async -> Step {
+		guard let key = attempt.privateKey else { return .done(.failure(.store(.unreadable))) }
+		for round in 0...Self.pendingRetries {
+			let answer = await refresher.refresh(
+				platform, refreshToken: token, clientPublicKey: key.publicKey.x963Representation,
+				refreshID: attempt.id, session: session)
+			switch answer {
+			case .success(.ready(let sealed)):
+				let opened = PlatformAuthorizationEnvelope.open(
+					sealed, id: attempt.id, clientKey: key, domain: PlatformAuthorizationEnvelope.refreshDomain
+				) { payload in
+					payload["platform"] as? String == platform.rawValue ? PlatformTokens(payload: payload) : nil
+				}
+				guard case .success(let tokens) = opened else { return .done(.failure(.invalidResponse)) }
+				switch await store.completeRefresh(of: connectionID, attempt: attempt.id, with: tokens, at: now()) {
+				case .success(true): return .done(.success(tokens.accessToken))
+				case .success(false): return .again
+				case .failure(let error): return .done(.failure(.store(error)))
+				}
+			case .success(.pending):
+				guard round < Self.pendingRetries else { return .done(.failure(.unavailable)) }
+				do { try await Task.sleep(for: pendingDelay) } catch { return .done(.failure(.unavailable)) }
+			case .success(.failed), .success(.expired), .success(.unknown):
+				_ = await store.rejectRefresh(of: connectionID, attempt: attempt.id)
+				return .done(.failure(.expired))
+			case .failure(.signedOut), .failure(.forbidden):
+				return .done(.failure(.signedOut))
+			case .failure(.rateLimited):
+				return .done(.failure(.rateLimited))
+			case .failure(.invalidResponse):
+				return .done(.failure(.invalidResponse))
+			case .failure(.unavailable), .failure(.transport), .failure(.server), .failure(.tooManyOpen), .failure(.cancelled):
+				return .done(.failure(.unavailable))
+			}
+		}
+		return .done(.failure(.unavailable))
+	}
+}

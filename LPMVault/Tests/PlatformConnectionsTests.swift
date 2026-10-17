@@ -19,7 +19,7 @@ struct PlatformConnectionStoreTests {
 		let saved = try await store.save(grant(), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt).get()
 		#expect(saved.id == "vercel.team_acme" && saved.name == "Acme" && saved.platform == .vercel)
 		#expect(try await store.connections().get() == [saved])
-		#expect(try await store.accessToken(for: saved.id).get() == "vca_token_1")
+		#expect(try await store.record(for: saved.id).map(\.accessToken).get() == "vca_token_1")
 		#expect(keychain.platformConnectionStorage.keys.sorted() == ["vercel.team_acme"])
 		#expect(keychain.publishingStorage.isEmpty, "Tokens never share the publishing records' service")
 	}
@@ -34,7 +34,7 @@ struct PlatformConnectionStoreTests {
 		let personal = try await store.save(grant(team: nil), account: VercelAccount(name: "Tolga", slug: "tolga"), at: connectedAt).get()
 		#expect(personal.id == "vercel.u_tolga")
 		#expect(try await store.connections().get().map(\.name) == ["Acme Inc", "Tolga"])
-		#expect(try await store.accessToken(for: again.id).get() == "vca_token_2")
+		#expect(try await store.record(for: again.id).map(\.accessToken).get() == "vca_token_2")
 	}
 
 	@Test("removing forgets the connection and its token")
@@ -43,7 +43,7 @@ struct PlatformConnectionStoreTests {
 		let saved = try await store.save(grant(), account: VercelAccount(name: "Acme", slug: nil), at: connectedAt).get()
 		_ = try await store.remove(saved.id).get()
 		#expect(try await store.connections().get().isEmpty)
-		#expect(await store.accessToken(for: saved.id) == .failure(.notFound))
+		#expect(await store.record(for: saved.id).map(\.accessToken) == .failure(.notFound))
 		#expect(keychain.platformConnectionStorage.isEmpty)
 	}
 
@@ -57,8 +57,8 @@ struct PlatformConnectionStoreTests {
 		let newer = Data(#"{"version":2,"anything":"new"}"#.utf8)
 		keychain.platformConnectionStorage["vercel.team_newer"] = newer
 		#expect(try await store.connections().get().map(\.id) == [saved.id])
-		#expect(await store.accessToken(for: "vercel.team_other") == .failure(.unreadable))
-		#expect(await store.accessToken(for: "vercel.team_newer") == .failure(.newerVersion))
+		#expect(await store.record(for: "vercel.team_other").map(\.accessToken) == .failure(.unreadable))
+		#expect(await store.record(for: "vercel.team_newer").map(\.accessToken) == .failure(.newerVersion))
 		#expect(keychain.platformConnectionStorage["vercel.team_newer"] == newer)
 	}
 
@@ -87,10 +87,10 @@ struct PlatformConnectionStoreTests {
 		#expect(Set([saved.id, elsewhere.id, otherTeam.id]).count == 3)
 		_ = try await store.save(grant(), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt).get()
 		#expect(try await store.connections().get().map(\.name) == ["Acme", "Northwind", "Root Team", "Root Team"])
-		#expect(try await store.accessToken(for: saved.id).get() == "3|coolify")
+		#expect(try await store.record(for: saved.id).map(\.accessToken).get() == "3|coolify")
 		let again = try await store.save(coolify(name: "Root"), accessToken: "6|new", at: connectedAt).get()
 		#expect(again.id == saved.id)
-		#expect(try await store.accessToken(for: saved.id).get() == "6|new")
+		#expect(try await store.record(for: saved.id).map(\.accessToken).get() == "6|new")
 	}
 
 	@Test("a Coolify record round-trips exactly; one with an unknown field or a changed address isn't read")
@@ -154,7 +154,7 @@ struct PlatformConnectionStoreTests {
 		keychain.failAppItemReads = ["vercel.team_acme"]
 		let saved = try await store.save(grant(), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt).get()
 		keychain.failAppItemReads = []
-		#expect(try await store.accessToken(for: saved.id).get() == "vca_token_1")
+		#expect(try await store.record(for: saved.id).map(\.accessToken).get() == "vca_token_1")
 	}
 
 	@Test("a save cancelled while it writes, whose earlier token can't be written back, keeps no token")
@@ -233,7 +233,7 @@ struct PlatformConnectionStoreTests {
 		let again = try await store.save(netlify(name: "Tolga"), accessToken: "nfo_second", at: connectedAt).get()
 		#expect(again.id == saved.id)
 		#expect(try await store.connections().get().map(\.name) == ["Acme", "Tolga"])
-		#expect(try await store.accessToken(for: saved.id).get() == "nfo_second")
+		#expect(try await store.record(for: saved.id).map(\.accessToken).get() == "nfo_second")
 	}
 
 	@Test("a Netlify record round-trips exactly, with or without an email; one with an unknown field, an unsafe user or token isn't read")
@@ -399,7 +399,7 @@ struct PlatformConnectionsModelTests {
 		#expect(outcome == .connected(connection) && connection.name == "Root Team" && connection.platform == .coolify)
 		#expect(model.notice == .init(message: "Connected Root Team on Coolify.", isError: false))
 		#expect(keychain.platformConnectionStorage.keys.sorted() == ["coolify.0.https://coolify.example.com"])
-		#expect(try await PlatformConnectionStore(service: keychain).accessToken(for: connection.id).get() == "3|coolify")
+		#expect(try await PlatformConnectionStore(service: keychain).record(for: connection.id).map(\.accessToken).get() == "3|coolify")
 	}
 
 	@Test("a refused Coolify token is explained, and nothing is saved")
@@ -626,7 +626,7 @@ struct PlatformConnectionsModelTests {
 		#expect(connection.id == "netlify.5f1a2b3c4d5e6f7a8b9c0d1e" && connection.name == "Tolga Ergin" && connection.detail == "tolga@example.com")
 		#expect(model.notice == .init(message: "Connected Tolga Ergin on Netlify.", isError: false))
 		#expect(model.connecting == nil && model.phase == .idle)
-		#expect(try await PlatformConnectionStore(service: keychain).accessToken(for: connection.id).get() == "nfo_tolga")
+		#expect(try await PlatformConnectionStore(service: keychain).record(for: connection.id).map(\.accessToken).get() == "nfo_tolga")
 	}
 
 	@Test("without an LPM session Netlify doesn't start, no page opens, and the page says to sign in")
