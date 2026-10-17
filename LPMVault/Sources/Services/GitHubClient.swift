@@ -123,6 +123,13 @@ enum GitHubHTTP {
 		return (wait + .seconds(resetMargin), reset.addingTimeInterval(resetMargin))
 	}
 
+	/// How long to wait out a limit GitHub doesn't say the end of, after
+	/// `count` such limits in a row: a minute, then twice as long each time,
+	/// as GitHub asks while a limit continues.
+	static func unannouncedLimitWait(after count: Int) -> Duration {
+		.seconds(60 << count)
+	}
+
 	/// A refusal, read the way GitHub documents its limits: a primary limit
 	/// spent says when it resets, on GitHub's clock, a secondary one how many
 	/// seconds to wait, and one that says neither means a minute. A 403

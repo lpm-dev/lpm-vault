@@ -1006,6 +1006,16 @@ struct GitHubConnectorTests {
 		#expect(clock.sleeps == [.milliseconds(5), .seconds(1)], "A limit that has just lifted is still given a moment")
 	}
 
+	@Test("a rate limit on reading the user that GitHub doesn't say the end of is waited out a minute, then twice that, as GitHub asks")
+	func backsOffUnannouncedLimits() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let clock = SleepingTestClock()
+		let github = ScriptedGitHub([.failure(.rateLimited(until: nil)), .failure(.rateLimited(until: nil)), .success(Self.octocat)])
+		#expect(try await connect(authorizations, github: github, clock: clock).get().user == Self.octocat)
+		#expect(clock.sleeps == [.seconds(60), .seconds(120)])
+	}
+
 	@Test("a rate limit on reading the user is waited out a moment past its reset, even one that lifts at the longest wait")
 	func waitsOutUserRateLimit() async throws {
 		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)

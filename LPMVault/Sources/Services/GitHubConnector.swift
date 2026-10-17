@@ -53,6 +53,7 @@ struct GitHubConnector: Sendable {
 		let receivedAt = now()
 
 		let github = client(grant.tokens.accessToken)
+		var unannouncedLimits = 0
 		for attempt in 0...userRetries {
 			let wait: Duration
 			var lifts: Date?
@@ -64,6 +65,10 @@ struct GitHubConnector: Sendable {
 				return .failure(.tokenRejected)
 			case .failure(.cancelled):
 				return .failure(.cancelled)
+			case .failure(.rateLimited(nil)):
+				wait = GitHubHTTP.unannouncedLimitWait(after: unannouncedLimits)
+				unannouncedLimits += 1
+				giveUp = .platformRateLimited
 			case .failure(.rateLimited(let reset)):
 				guard let limit = GitHubHTTP.rateLimitWait(until: reset, now: now()) else { return .failure(.platformRateLimited) }
 				wait = limit.wait
