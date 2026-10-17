@@ -102,10 +102,21 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 		}
 	}
 
-	/// Deletes the repository's environment and makes another with the same name.
+	/// Deletes the repository's environment, with its secrets and variables,
+	/// as GitHub does, and makes another with the same name.
 	func replaceEnvironment(of repository: String, name: String, withID id: String) {
 		lock.withLock {
 			environmentLists[repository] = (environmentLists[repository] ?? []).map { $0.name == name ? GitHubEnvironment(id: id, name: name) : $0 }
+			scopes.removeValue(forKey: repository + "|" + name)
+		}
+	}
+
+	/// Deletes the repository, or takes the app's access to it away: nothing of it can be read.
+	func removeRepository(_ id: String) {
+		lock.withLock {
+			guard let name = repositoryNames.removeValue(forKey: id) else { return }
+			environmentLists.removeValue(forKey: name)
+			for key in scopes.keys where key.hasPrefix(name + "|") { scopes.removeValue(forKey: key) }
 		}
 	}
 
@@ -762,6 +773,33 @@ struct GitHubPublishTests {
 		#expect(recased.writeCount == 0)
 	}
 
+	@Test("a key that reads as removed or moved because its scope changed is reported as the scope's change: an environment replaced, a repository renamed or gone")
+	func reportsScopeChanges() async throws {
+		let environments = FakeGitHubAPI()
+		environments.edit("A", secret: true, in: production)
+		let reviewedEnvironment = try await reviewed(environments, in: production)
+		environments.replaceEnvironment(of: "northwind/storefront", name: "production", withID: "999")
+		let replaced = await publish(
+			[change("A", "1", .replace(remoteID: "secret"))], with: environments, reviewed: reviewedEnvironment, to: productionTarget)
+		#expect(replaced.outcomes == ["A": .failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")])
+
+		let renamed = FakeGitHubAPI()
+		let reviewedRepository = try await reviewed(renamed)
+		renamed.rename("1296269", to: "northwind/shop")
+		let moved = await publish([change("A", "1"), change("B", "2")], with: renamed, reviewed: reviewedRepository)
+		let reason = "northwind/storefront was renamed northwind/shop on GitHub since this review. Review again."
+		#expect(moved.outcomes == ["A": .failed(reason), "B": .failed(reason)])
+
+		let gone = FakeGitHubAPI()
+		let storefront = GitHubScope(repository: "northwind/storefront", environment: nil)
+		gone.edit("A", secret: true, in: storefront)
+		let reviewedGone = try await reviewed(gone)
+		gone.removeRepository("1296269")
+		let unreachable = await publish([change("A", "1", .replace(remoteID: "secret"))], with: gone, reviewed: reviewedGone)
+		#expect(unreachable.outcomes == ["A": .failed("northwind/storefront isn't reachable on GitHub any more. Review again.")])
+		#expect(environments.writeCount == 0 && renamed.writeCount == 0 && gone.writeCount == 0)
+	}
+
 	@Test("an environment replaced, or a repository's name reused, while its key or public key is read gets nothing: the check comes last", arguments: [
 		FakeGitHubAPI.Operation.secret, .variable, .publicKey,
 	])
@@ -809,7 +847,7 @@ struct GitHubPublishTests {
 			pacing: replacing)
 		let gone = PublishOutcome.failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")
 		#expect(replaced.outcomes == ["A": .published, "B": gone, "C": gone])
-		#expect(environments.names(in: production).secrets == ["A"])
+		#expect(environments.writeCount == 1, "Only A, written before the environment was replaced, which took A with it")
 	}
 
 	@Test("a write held up by a rate limit is sent once it lifts, after checking the repository and reading the key from both kinds again")

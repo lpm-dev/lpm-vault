@@ -282,8 +282,12 @@ enum GitHubPublishing {
 		let write: Write
 		switch await reread(change, in: scope, reviewed: reviewed, using: client) {
 		case .success(let value): write = value
-		case .failure(.refused(let reason)): return .done(.refused(reason))
-		case .failure(.api(let error)): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
+		case .failure(.refused(let reason)):
+			if let replaced = await replacement(of: target, using: client) { return .replaced(replaced) }
+			return .done(.refused(reason))
+		case .failure(.api(let error)):
+			if error == .moved || error == .notFound, let replaced = await replacement(of: target, using: client) { return .replaced(replaced) }
+			return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 		}
 		if write.isSecret, publicKey == nil {
 			switch await client.publicKey(of: scope) {
@@ -339,6 +343,16 @@ enum GitHubPublishing {
 		default:
 			return .done(.failed(error))
 		}
+	}
+
+	/// Why the reviewed scope isn't there any more, when it isn't: a key that
+	/// reads as removed, changed or moved can be the whole scope replaced, as
+	/// an environment's deletion takes its secrets and variables with it,
+	/// and that's the reason to give. Checked only then, so the identity
+	/// check before each write stays last.
+	private static func replacement(of target: GitHubPublishTarget, using client: any GitHubClientProtocol) async -> String? {
+		guard case .failure(.replaced(let reason)) = await reviewedScope(of: target, using: client) else { return nil }
+		return reason
 	}
 
 	/// The reviewed scope, by the names GitHub's paths use, once the
