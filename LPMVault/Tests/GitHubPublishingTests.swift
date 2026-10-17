@@ -268,6 +268,19 @@ struct SealedBoxTests {
 		#expect(SealedBox.seal(String(repeating: "x", count: SealedBox.maximumPlaintextBytes + 1), to: key) == nil)
 		#expect(SealedBox.seal(String(repeating: "x", count: SealedBox.maximumPlaintextBytes), to: key) != nil)
 	}
+
+	@Test("a low-order key, which anyone could open a box for and libsodium refuses, isn't sealed to")
+	func refusesLowOrderKeys() {
+		var zero = Data(repeating: 0, count: 32)
+		#expect(SealedBox.seal("x", to: zero) == nil)
+		zero[31] = 0x80
+		#expect(SealedBox.seal("x", to: zero) == nil, "X25519 ignores the top bit")
+		let order8 = Data([
+			0xE0, 0xEB, 0x7A, 0x7C, 0x3B, 0x41, 0xB8, 0xAE, 0x16, 0x56, 0xE3, 0xFA, 0xF1, 0x9F, 0xC4, 0x6A,
+			0xDA, 0x09, 0x8D, 0xEB, 0x9C, 0x32, 0xB1, 0xFD, 0x86, 0x62, 0x05, 0x16, 0x5F, 0x49, 0xB8, 0x00,
+		])
+		#expect(SealedBox.seal("x", to: order8) == nil)
+	}
 }
 
 struct GitHubPublishingRulesTests {
