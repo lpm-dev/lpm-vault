@@ -408,7 +408,8 @@ struct PublishSheet: View {
 				? "Changed since last publish"
 				: "Unchanged since you published \(RelativeTimestampFormatter.string(from: publishedAt))")
 		} else if case .replace = row.operation {
-			parts.append("Replaces a variable already on \(platform)")
+			let kind = review.platform == .github && row.publishesAsSecret ? "secret" : "variable"
+			parts.append("Replaces a \(kind) already on \(platform)")
 		}
 		if row.status.protectionChanged {
 			parts.append(row.publishesAsSecret ? "will be stored as a Secret" : "will be stored readable")
@@ -516,8 +517,8 @@ struct PublishSheet: View {
 			switch target.scope {
 			case .repository:
 				notes.append("A job that uses a deployment environment gets that environment's secret or variable instead, when it has one with the same name.")
-			case .environment(_, let name):
-				notes.append("Only jobs that use the \(name.escapingInvisibleCharacters) environment get these values, over the repository's with the same name.")
+			case .environment(let id, let name):
+				notes.append("Only jobs that use the \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) environment get these values, over the repository's with the same name.")
 			}
 		}
 		let remoteOnly = review.plan.remoteOnlyCount
@@ -525,9 +526,10 @@ struct PublishSheet: View {
 			notes.append("\(remoteOnly) \(review.platform.valuesNoun(count: remoteOnly)) only on \(platform) stay as they are.")
 		}
 		let readable = review.platform == .github ? "" : " unless their prefix makes them public"
+		let secrets = review.platform == .github ? "secrets" : "Secrets"
 		switch review.rules {
-		case .unreadable: notes.append("lpm.json's rules can't be read, so values aren't checked, and keys publish as Secrets\(readable).")
-		case .none: notes.append("This project has no rules, so keys publish as Secrets\(readable).")
+		case .unreadable: notes.append("lpm.json's rules can't be read, so values aren't checked, and keys publish as \(secrets)\(readable).")
+		case .none: notes.append("This project has no rules, so keys publish as \(secrets)\(readable).")
 		case .known:
 			if !review.hasValueCheck {
 				notes.append("The values haven't been checked against lpm.json's rules yet, so rule failures don't show.")
@@ -545,7 +547,7 @@ struct PublishSheet: View {
 	private var resultsStep: some View {
 		if let results = session.results {
 			VStack(alignment: .leading, spacing: 10) {
-				Text("Published \(results.publishedCount) of \(results.rows.count) \(results.destination.target.platform.valuesNoun(count: results.rows.count)). \(Self.redeployNote(for: results.destination.target.platform))")
+				Text("Published \(results.publishedCount) of \(results.destination.target.platform.countedValues(secrets: results.secrets, variables: results.rows.count - results.secrets)). \(Self.redeployNote(for: results.destination.target.platform))")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -653,6 +655,7 @@ struct PublishSheet: View {
 					disabled: publishCount == 0 || overflowMessage != nil || session.isPublishing || session.isLoadingReview,
 					height: 28,
 					action: session.publish)
+				.accessibilityHint(overflowMessage ?? "")
 			case .results:
 				if session.results?.rows.contains(where: { $0.outcome != .published }) == true {
 					VaultBarButton(title: "Review Again", height: 28, action: session.reviewAgain)
@@ -671,12 +674,12 @@ struct PublishSheet: View {
 		return review.platform.countedValues(secrets: summary.secrets, variables: summary.variables)
 	}
 
-	/// Why the chosen keys don't fit where they'd go, when they don't.
+	/// Why the chosen keys don't fit where they'd go, when they don't: every kind that wouldn't fit.
 	private var overflowMessage: String? {
-		guard let review = session.review, let overflow = review.plan.overflows(of: review.selection).first,
-			case .github(let target) = review.destination.target
-		else { return nil }
-		return GitHubPublishing.overflowMessage(overflow, scope: target.scope)
+		guard let review = session.review, case .github(let target) = review.destination.target else { return nil }
+		let overflows = review.plan.overflows(of: review.selection)
+		guard !overflows.isEmpty else { return nil }
+		return overflows.map { GitHubPublishing.overflowMessage($0, scope: target.scope) }.joined(separator: " ")
 	}
 
 	/// Forgets the destination, and closes once it's gone; a failure stays
@@ -872,7 +875,7 @@ private struct GitHubDestinationFields: View {
 		}
 		GridRow {
 			HStack(spacing: 8) {
-				Text(form.environments == .loading ? "Loading environments…" : "A repository that isn't listed needs LPM Vault's GitHub App.")
+				Text("A repository that isn't listed needs LPM Vault's GitHub App.\(form.environments == .loading ? " Loading environments…" : "")")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 				if let installURL {
@@ -891,13 +894,19 @@ private struct GitHubDestinationFields: View {
 			.gridCellColumns(2)
 		}
 		GridRow {
-			Text(form.hidesSSORepositories
-				? "GitHub left out repositories of an organization with single sign-on. Sign in to it on GitHub, then connect GitHub again on the Platforms page."
-				: "An organization with single sign-on lists its repositories only when GitHub was connected while you were signed in to it.")
-				.font(.system(size: 11.5))
-				.foregroundStyle(form.hidesSSORepositories ? VaultPalette.orangeTintText : VaultPalette.textTertiary)
-				.fixedSize(horizontal: false, vertical: true)
-				.gridCellColumns(2)
+			VStack(alignment: .leading, spacing: 4) {
+				Text(form.hidesSSORepositories
+					? "GitHub left out repositories of an organization with single sign-on. Sign in to it on GitHub, then connect GitHub again on the Platforms page."
+					: "An organization with single sign-on lists its repositories only when GitHub was connected while you were signed in to it.")
+					.foregroundStyle(form.hidesSSORepositories ? VaultPalette.orangeTintText : VaultPalette.textTertiary)
+				if form.skipsInstallations {
+					Text("GitHub left out an installation of LPM Vault's GitHub App that's suspended or couldn't list its repositories.")
+						.foregroundStyle(VaultPalette.orangeTintText)
+				}
+			}
+			.font(.system(size: 11.5))
+			.fixedSize(horizontal: false, vertical: true)
+			.gridCellColumns(2)
 		}
 	}
 

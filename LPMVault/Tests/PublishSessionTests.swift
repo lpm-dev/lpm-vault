@@ -1205,6 +1205,32 @@ struct GitHubPublishSessionTests {
 		#expect(!api.requests.contains { $0.0 == .listSecrets || $0.0 == .listVariables })
 	}
 
+	@Test("what GitHub left out of a listing, single sign-on or a refused installation, is carried to the sheet, and gone after a listing without it")
+	func carriesListingNotes() async throws {
+		try await connect()
+		api.setListing(hidesSSO: true, skips: true)
+		let session = session()
+		session.start()
+		#expect(try await waitUntil { session.github?.repositories.value != nil })
+		#expect(session.github?.hidesSSORepositories == true && session.github?.skipsInstallations == true)
+		api.setListing(hidesSSO: false, skips: false)
+		session.reloadChoices()
+		#expect(try await waitUntil { session.github?.repositories.value != nil && session.github?.hidesSSORepositories == false })
+		#expect(session.github?.skipsInstallations == false)
+	}
+
+	@Test("environments of a repository moved since it was listed say to refresh, not to review again")
+	func movedEnvironments() async throws {
+		try await connect()
+		api.fail(.environments, with: .moved)
+		let session = session()
+		session.start()
+		#expect(try await waitUntil { session.github?.repositories.value != nil })
+		session.github?.repositoryID = "1296269"
+		#expect(try await waitUntil { if case .failed? = session.github?.environments { true } else { false } })
+		#expect(session.github?.environments == .failed("The repository was renamed or moved on GitHub. Refresh to list it again."))
+	}
+
 	@Test("a publish that would take the repository past GitHub's secrets isn't sent, and asks nothing")
 	func refusesOverflow() async throws {
 		try await connect()
@@ -1697,13 +1723,53 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { listings() == 2 && session.github?.environments.value != nil })
 			#expect(github.requests.filter { $0.0 == .environments }.count == 2, "The chosen repository's environments are listed again")
 
+			github.edit("SHARED_KEY", secret: true, in: GitHubScope(repository: "northwind/storefront", environment: nil))
 			try await host.click("Review secrets and variables")
 			#expect(try await host.waitForText("Publish 2 secrets", exactly: true))
+			#expect(try await host.waitForText("Replaces a secret already on GitHub"), "A secret isn't called a variable")
 			try await host.click("Publish 2 secrets")
-			#expect(try await host.waitForText("Published 2 of 2 secrets and variables"))
+			#expect(try await host.waitForText("Published 2 of 2 secrets."))
 			#expect(try await host.waitForText("Workflow runs that start from now on get the new values"))
 			#expect(biometric.confirmationReasons == ["Publish 2 secrets to northwind/storefront / Repository on GitHub"])
 			#expect(github.names(in: GitHubScope(repository: "northwind/storefront", environment: nil)).secrets == ["API_TOKEN", "SHARED_KEY"])
+		}
+
+		@Test("a GitHub publish past what GitHub keeps says how many to leave out and can't be sent; the sheet says while environments load, and what GitHub left out")
+		func blocksOverflow() async throws {
+			let environments = ["production": ["API_TOKEN": "tok", "SHARED_KEY": "s"]]
+			keychain.envStorage["project"] = (name: "demo-api", path: "", environments: environments)
+			let github = FakeGitHubAPI()
+			let repository = GitHubScope(repository: "northwind/storefront", environment: nil)
+			for index in 0..<99 { github.edit("OLD_\(index)", secret: true, in: repository) }
+			github.setListing(hidesSSO: true, skips: true)
+			let gate = TestGate()
+			github.environmentsGate = gate
+			let store = VaultStore(
+				keychainService: keychain, biometricService: biometric, apiService: MockAPIService(),
+				authTokenProvider: { _, _ in nil }, githubClient: { _ in github })
+			store.projects = [VaultProject(id: "project", name: "demo-api", path: "", environments: environments)]
+			store.isUnlocked = true
+			store.openProject(id: "project")
+			store.selectEnvironment("production")
+			_ = try await store.platformConnectionStore.save(
+				.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")),
+				accessToken: "ghu_1", at: Date()).get()
+			let session = try #require(store.makePublishSession())
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 640),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("GitHub left out repositories of an organization with single sign-on"))
+			#expect(try await host.waitForText("GitHub left out an installation of LPM Vault's GitHub App"))
+			session.github?.repositoryID = "1296269"
+			#expect(try await host.waitForText("Loading environments…"))
+			await gate.open()
+			#expect(try await host.waitForTextToDisappear("Loading environments…"))
+			try await host.click("Review secrets and variables")
+			let overflow = "GitHub keeps at most 100 of a repository's own secrets, and this would make 101. Leave out 1 new secret."
+			#expect(try await host.waitForText(overflow))
+			let publish = try await host.waitForElement(saying: "Publish 2 secrets")
+			#expect(!publish.isEnabledNow, "Publish can't be pressed until a new secret is left out")
+			#expect(biometric.confirmationReasons.isEmpty)
 		}
 
 		@Test("a Coolify publish names the application and its deployments, explains a value Coolify would break, and says to redeploy")

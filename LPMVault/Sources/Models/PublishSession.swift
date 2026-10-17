@@ -111,6 +111,8 @@ final class PublishSession: Identifiable {
 		let destination: PublishDestination
 		/// Each sent key with its outcome, in the review's order.
 		let rows: [(key: String, outcome: PublishOutcome)]
+		/// How many of the keys were sent as secrets.
+		var secrets = 0
 		let needsReconnect: Bool
 		/// Why the publish couldn't be recorded, when it couldn't.
 		let recordFailure: String?
@@ -552,6 +554,8 @@ final class PublishSession: Identifiable {
 		guard let connectionID else { return }
 		environmentsTask?.cancel()
 		form.repositories = .loading
+		form.hidesSSORepositories = false
+		form.skipsInstallations = false
 		let client = githubClient(for: connectionID)
 		choicesTask = Task { [weak self, weak form] in
 			let result = await Self.sortedRepositories(from: client)
@@ -560,6 +564,7 @@ final class PublishSession: Identifiable {
 			case .success(let list):
 				form.repositories = .loaded(list.repositories)
 				form.hidesSSORepositories = list.hidesSSORepositories
+				form.skipsInstallations = list.skipsInstallations
 				if form.repositoryID != nil { self.loadEnvironments(form) }
 			case .failure(let error): form.repositories = .failed(error.message)
 			}
@@ -582,7 +587,11 @@ final class PublishSession: Identifiable {
 	/// The client's repositories in the menu's order, listed and sorted off the main actor.
 	private nonisolated static func sortedRepositories(from client: any GitHubClientProtocol) async -> Result<GitHubRepositoryList, PublishSessionError> {
 		await client.repositories()
-			.map { GitHubRepositoryList(repositories: GitHubDestinationForm.sorted($0.repositories), hidesSSORepositories: $0.hidesSSORepositories) }
+			.map { list in
+				var sorted = list
+				sorted.repositories = GitHubDestinationForm.sorted(list.repositories)
+				return sorted
+			}
 			.mapError { PublishSessionError(GitHubPublishing.message($0)) }
 	}
 
@@ -614,7 +623,12 @@ final class PublishSession: Identifiable {
 	) async -> Result<[GitHubEnvironment], PublishSessionError> {
 		await client.environments(of: repository)
 			.map { $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
-			.mapError { PublishSessionError(GitHubPublishing.message($0)) }
+			.mapError { error in
+				// On the destination step, listing the repositories again is what helps.
+				PublishSessionError(error == .moved
+					? "The repository was renamed or moved on GitHub. Refresh to list it again."
+					: GitHubPublishing.message(error))
+			}
 	}
 
 	/// The chosen repository's `owner/name`: as listed, or as the saved destination names it.
@@ -802,7 +816,7 @@ final class PublishSession: Identifiable {
 			switch await client.environments(of: current.repositoryName) {
 			case .success(let environments):
 				guard let environment = environments.first(where: { $0.id == id }) else {
-					return .failure("The environment \(name.escapingInvisibleCharacters) isn't in \(current.repositoryName) any more. Choose another destination.")
+					return .failure("The environment \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) isn't in \(current.repositoryName) any more. Choose another destination.")
 				}
 				current.scope = .environment(id: id, name: environment.name)
 			case .failure(let error): return failure(error)
@@ -1052,6 +1066,7 @@ final class PublishSession: Identifiable {
 		results = Results(
 			destination: review.destination,
 			rows: changes.map { ($0.key, report.outcomes[$0.key] ?? .notSent) },
+			secrets: changes.lazy.filter(\.publishesAsSecret).count,
 			needsReconnect: report.needsReconnect,
 			recordFailure: recordFailure)
 		step = .results

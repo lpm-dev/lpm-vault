@@ -354,7 +354,7 @@ enum GitHubPublishing {
 			return .success(GitHubScope(repository: repository.fullName, environment: name))
 		case .success:
 			return .failure(.replaced(
-				"The environment \(name.escapingInvisibleCharacters) was renamed, removed or replaced on GitHub since this review. Review again."))
+				"The environment \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) was renamed, removed or replaced on GitHub since this review. Review again."))
 		case .failure(let error): return .failure(.api(error))
 		}
 	}
@@ -482,7 +482,12 @@ enum GitHubPublishing {
 	static func overflowMessage(_ overflow: PublishPlan.Overflow, scope: GitHubPublishTarget.Scope) -> String {
 		let kind = overflow.isSecrets ? "secrets" : "variables"
 		let place = scope == .repository ? "a repository's own" : "an environment's"
-		return "GitHub keeps at most \(overflow.limit) of \(place) \(kind), and this would make \(overflow.existing + overflow.adding). Leave out \(overflow.excess) new \(overflow.excess == 1 ? String(kind.dropLast()) : kind)."
+		let one = String(kind.dropLast())
+		guard overflow.existing < overflow.limit else {
+			let new = overflow.adding == 1 ? "the new \(one)" : "the \(overflow.adding) new \(kind)"
+			return "GitHub keeps at most \(overflow.limit) of \(place) \(kind), and has \(overflow.existing) already. Leave out \(new), or remove some on GitHub."
+		}
+		return "GitHub keeps at most \(overflow.limit) of \(place) \(kind), and this would make \(overflow.existing + overflow.adding). Leave out \(overflow.excess) new \(overflow.excess == 1 ? one : kind)."
 	}
 
 	/// Why the person can't change the scope's secrets and variables, as the

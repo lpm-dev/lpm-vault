@@ -686,7 +686,8 @@ private extension Unicode.Scalar {
 		switch properties.generalCategory {
 		case .control, .format, .lineSeparator, .paragraphSeparator: true
 		case .spaceSeparator: value != 0x20
-		default: properties.isDefaultIgnorableCodePoint
+		// The blank Braille cell draws nothing, though it's a symbol.
+		default: properties.isDefaultIgnorableCodePoint || value == 0x2800
 		}
 	}
 

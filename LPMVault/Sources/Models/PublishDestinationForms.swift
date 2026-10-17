@@ -239,6 +239,8 @@ final class GitHubDestinationForm {
 	var repositories: PublishSession.Loadable<[GitHubRepository]> = .idle
 	/// Whether GitHub left out an organization's repositories until the person signs in with its single sign-on.
 	var hidesSSORepositories = false
+	/// Whether an installation of the app was left out, as when it's suspended.
+	var skipsInstallations = false
 	/// The chosen repository's deployment environments.
 	var environments: PublishSession.Loadable<[GitHubEnvironment]> = .idle
 	@ObservationIgnored var didChange: (Field) -> Void = { _ in }
@@ -289,20 +291,15 @@ final class GitHubDestinationForm {
 		}
 	}
 
-	/// The scope choices, an environment named by its ID too when its name
-	/// shows as another's, and one the person needs admin access for saying so.
+	/// The scope choices, each one the person can't change saying why.
 	var scopeOptions: [Option] {
-		let choices = scopeChoices
-		var shown: [String: Int] = [:]
-		for scope in choices { shown[scope.displayName, default: 0] += 1 }
-		return choices.map { scope in
-			var label = scope.displayName
-			let isAvailable = repository?.canChange(scope) ?? true
-			if case .environment(let id, _) = scope {
-				if shown[label, default: 0] > 1 { label += " (ID \(id))" }
-				if !isAvailable { label += " · Needs admin access" }
+		let repository = self.repository
+		return scopeChoices.map { scope in
+			guard let repository, !repository.canChange(scope) else {
+				return Option(id: scope.identifier, label: scope.displayName, isAvailable: true)
 			}
-			return Option(id: scope.identifier, label: label, isAvailable: isAvailable)
+			let reason = repository.isArchived ? "Archived" : repository.permission == .read ? "Read-only" : "Needs admin access"
+			return Option(id: scope.identifier, label: "\(scope.displayName) · \(reason)", isAvailable: false)
 		}
 	}
 

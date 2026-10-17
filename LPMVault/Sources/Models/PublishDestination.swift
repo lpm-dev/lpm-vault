@@ -540,8 +540,19 @@ struct GitHubPublishTarget: Hashable, Sendable {
 		var displayName: String {
 			switch self {
 			case .repository: "Repository"
-			case .environment(_, let name): "Environment \(name.escapingInvisibleCharacters)"
+			case .environment(let id, let name): "Environment \(Self.shownName(id: id, name: name))"
 			}
+		}
+
+		/// An environment's name as LPM Vault shows it: escaped, and followed
+		/// by its ID when the name could pass for another's, as one with any
+		/// character beyond printable ASCII, a backslash or "(ID" that an
+		/// escape or an ID shows, or a space at either end could. A shown ID
+		/// is read back from the end, so no two environments show alike.
+		static func shownName(id: String, name: String) -> String {
+			let plain = name.utf8.allSatisfy { $0 >= 0x20 && $0 <= 0x7E } && !name.contains("\\")
+				&& name.range(of: "(id", options: .caseInsensitive) == nil && name.first != " " && name.last != " "
+			return plain ? name : "\(name.escapingInvisibleCharacters) (ID \(id))"
 		}
 
 		/// The environment's name in GitHub's paths; nil for the repository's own.

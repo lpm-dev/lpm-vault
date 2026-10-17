@@ -31,6 +31,9 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	private var scopes: [String: Scope] = [:]
 	private var formerNames: Set<String> = []
 	private var access: [String: (isArchived: Bool, permission: GitHubRepository.Permission?)] = [:]
+	private var listing = (hidesSSO: false, skips: false)
+	/// Holds environment listings until a test opens it.
+	var environmentsGate: TestGate?
 	private var clock = Date(timeIntervalSince1970: 1_760_000_000)
 	/// Each operation's scripted answers, in order: a failure, or nil to answer as usual.
 	private var failures: [Operation: [(error: GitHubAPIError, then: (@Sendable () -> Void)?)?]] = [:]
@@ -79,6 +82,11 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	/// Sets what the person may do with the repository, as GitHub lists it.
 	func setAccess(of id: String, archived: Bool = false, permission: GitHubRepository.Permission?) {
 		lock.withLock { access[id] = (archived, permission) }
+	}
+
+	/// Sets what the next repository listings say GitHub left out.
+	func setListing(hidesSSO: Bool, skips: Bool) {
+		lock.withLock { listing = (hidesSSO, skips) }
 	}
 
 	func removeEnvironments(of repository: String) {
@@ -148,8 +156,15 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 
 	func repositories() async -> Result<GitHubRepositoryList, GitHubAPIError> {
 		if let error = begin(.repository, "*") { return .failure(error) }
-		return .success(GitHubRepositoryList(
-			repositories: lock.withLock { repositoryNames.map { GitHubRepository(id: $0.key, fullName: $0.value, isPrivate: true) } }))
+		return .success(lock.withLock {
+			GitHubRepositoryList(
+				repositories: repositoryNames.map {
+					GitHubRepository(
+						id: $0.key, fullName: $0.value, isPrivate: true, isArchived: access[$0.key]?.isArchived ?? false,
+						permission: access[$0.key]?.permission)
+				},
+				hidesSSORepositories: listing.hidesSSO, skipsInstallations: listing.skips)
+		})
 	}
 
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> {
@@ -166,6 +181,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	}
 
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
+		await environmentsGate?.wait()
 		if let error = begin(.environments, repository) { return .failure(error) }
 		if moved(repository) { return .failure(.moved) }
 		return .success(lock.withLock { environmentLists[repository] ?? [] })
@@ -371,6 +387,8 @@ struct GitHubPlanTests {
 		#expect(plan.overflows(of: selection).first?.excess == 4, "97 secrets, the replaced one and the one beside a variable, with 5 new")
 		#expect(GitHubPublishing.overflowMessage(try #require(plan.overflows(of: selection).first), scope: .repository)
 			== "GitHub keeps at most 100 of a repository's own secrets, and this would make 104. Leave out 4 new secrets.")
+		#expect(GitHubPublishing.overflowMessage(.init(isSecrets: true, limit: 100, existing: 120, adding: 1), scope: .environment(id: "1", name: "p"))
+			== "GitHub keeps at most 100 of an environment's secrets, and has 120 already. Leave out the new secret, or remove some on GitHub.")
 		let summary = plan.summary(of: selection)
 		#expect(summary.publishing == 7 && summary.secrets == 6 && summary.variables == 1)
 		for key in ["NEW_0", "NEW_1", "NEW_2"] { selection.set(key, selected: false, in: plan) }
@@ -449,23 +467,35 @@ struct GitHubDestinationFormTests {
 		])
 	}
 
-	@Test("an environment whose name shows as another's is named by its ID too, and one needing admin access says so and can't be chosen")
+	@Test("each scope the person can't change says why: archived, read-only, or needing admin access")
 	func scopeOptions() {
 		let form = GitHubDestinationForm()
 		form.repositories = .loaded([GitHubRepository(id: "1", fullName: "northwind/api", isPrivate: true, permission: .write)])
 		form.repositoryID = "1"
-		form.environments = .loaded([
-			GitHubEnvironment(id: "10", name: "production"), GitHubEnvironment(id: "11", name: "staging\u{200B}"),
-			GitHubEnvironment(id: "12", name: "staging\\u{200b}"),
-		])
+		form.environments = .loaded([GitHubEnvironment(id: "10", name: "production"), GitHubEnvironment(id: "11", name: "staging\u{200B}")])
 		#expect(form.scopeOptions == [
 			.init(id: "repository", label: "Repository", isAvailable: true),
 			.init(id: "environment:10", label: "Environment production · Needs admin access", isAvailable: false),
 			.init(id: "environment:11", label: "Environment staging\\u{200b} (ID 11) · Needs admin access", isAvailable: false),
-			.init(id: "environment:12", label: "Environment staging\\u{200b} (ID 12) · Needs admin access", isAvailable: false),
 		])
 		form.repositories = .loaded([GitHubRepository(id: "1", fullName: "northwind/api", isPrivate: true, permission: .admin)])
 		#expect(form.scopeOptions.allSatisfy(\.isAvailable) && form.scopeOptions[1].label == "Environment production")
+		form.repositories = .loaded([GitHubRepository(id: "1", fullName: "northwind/api", isPrivate: true, isArchived: true, permission: .admin)])
+		#expect(form.scopeOptions.map(\.label) == [
+			"Repository · Archived", "Environment production · Archived", "Environment staging\\u{200b} (ID 11) · Archived",
+		])
+		form.repositories = .loaded([GitHubRepository(id: "1", fullName: "northwind/api", isPrivate: true, permission: .read)])
+		#expect(form.scopeOptions.map(\.label).first == "Repository · Read-only" && form.scopeOptions.allSatisfy { !$0.isAvailable })
+	}
+
+	@Test("the scope choices of a repository among many, with many environments, are made in one pass", .timeLimit(.minutes(1)))
+	func scopeOptionsScale() {
+		let form = GitHubDestinationForm()
+		form.repositories = .loaded((0..<50_000).map { GitHubRepository(id: String($0 + 1), fullName: "northwind/repo-\($0)", isPrivate: true, permission: .write) })
+		form.repositoryID = "50000"
+		form.environments = .loaded((0..<50_000).map { GitHubEnvironment(id: String($0 + 1), name: "environment-\($0)") })
+		let options = form.scopeOptions
+		#expect(options.count == 50_001 && options.dropFirst().allSatisfy { !$0.isAvailable })
 	}
 }
 
@@ -491,15 +521,34 @@ struct GitHubDestinationTests {
 	@Test("an environment's name shows every character that could hide in it, so one can't pass for another")
 	func showsHiddenCharacters() {
 		for (name, shown) in [
-			("production\u{200B}", "Environment production\\u{200b}"),
-			("prod\u{00AD}uction", "Environment prod\\u{ad}uction"),
-			("pro\u{FE0F}duction", "Environment pro\\u{fe0f}duction"),
-			("production\u{00A0}eu", "Environment production\\u{a0}eu"),
-			(" production ", "Environment \\u{20}production\\u{20}"),
+			("production\u{200B}", "Environment production\\u{200b} (ID 1)"),
+			("prod\u{00AD}uction", "Environment prod\\u{ad}uction (ID 1)"),
+			("pro\u{FE0F}duction", "Environment pro\\u{fe0f}duction (ID 1)"),
+			("production\u{00A0}eu", "Environment production\\u{a0}eu (ID 1)"),
+			(" production ", "Environment \\u{20}production\\u{20} (ID 1)"),
+			("production\u{3164}", "Environment production\\u{3164} (ID 1)"),
+			("production\u{FFA0}", "Environment production\\u{ffa0} (ID 1)"),
+			("production\u{2800}", "Environment production\\u{2800} (ID 1)"),
+			("pr\u{043E}duction", "Environment pr\u{043E}duction (ID 1)"),
+			("staging\\u{200b} (ID 11)", "Environment staging\\u{200b} (ID 11) (ID 1)"),
+			("production (ID 3)", "Environment production (ID 3) (ID 1)"),
+			("production (id 3)", "Environment production (id 3) (ID 1)"),
 			("staging/eu", "Environment staging/eu"),
-			("é-ünïcode prod", "Environment é-ünïcode prod"),
+			("é-ünïcode prod", "Environment é-ünïcode prod (ID 1)"),
 		] {
 			#expect(GitHubPublishTarget.Scope.environment(id: "1", name: name).displayName == shown)
+		}
+	}
+
+	@Test("no two environments show alike, whatever their names copy of an escape or an ID", arguments: [
+		[("11", "staging\u{200B}"), ("12", "staging\\u{200b}"), ("13", "staging\\u{200b} (ID 11)")],
+		[("1", "production"), ("2", "production\u{3164}"), ("3", "pr\u{043E}duction"), ("4", "production (ID 3)"), ("5", "production\u{2800}")],
+	])
+	func showsEveryEnvironmentApart(_ environments: [(String, String)]) {
+		let shown = environments.map { GitHubPublishTarget.Scope.environment(id: $0.0, name: $0.1).displayName }
+		#expect(Set(shown).count == shown.count, "\(shown)")
+		for (environment, label) in zip(environments, shown) where environment.1.contains(where: { !$0.isASCII }) {
+			#expect(label.hasSuffix(" (ID \(environment.0))"), "A name that could pass for another shows its own ID last: \(label)")
 		}
 	}
 
