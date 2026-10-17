@@ -34,8 +34,8 @@ enum GitHubPublishing {
 	static let reservedPrefixes = ["GITHUB_"]
 	/// GitHub's limit on a secret's or a variable's value.
 	static let maximumValueBytes = 48 * 1024
-	/// How many rate limits the listing, or one write with its reads, waits
-	/// out before giving up.
+	/// How many announced rate limits one write with its reads waits out
+	/// before giving up.
 	static let rateLimitRetries = 3
 	/// How many limits GitHub doesn't say the end of one write waits out: a
 	/// minute, then twice that, as GitHub asks while a limit continues.
@@ -333,7 +333,7 @@ enum GitHubPublishing {
 			return .waited
 		case .renewed:
 			// Counted apart from rate limits: a renewal says nothing of GitHub's limits.
-			guard renewals < renewalRetries else { return .done(.failed(.unauthorized)) }
+			guard renewals < renewalRetries else { return .done(.failed(.renewed)) }
 			renewals += 1
 			return .waited
 		default:
@@ -523,7 +523,8 @@ enum GitHubPublishing {
 		case .server(let status): "GitHub answered with HTTP \(status)."
 		case .credentials(let error): error.message(for: .github)
 		case .moved: "The repository was renamed or moved on GitHub. Review again."
-		case .renewed: "The GitHub connection was renewed while this was sent. Try again."
+		case .renewed:
+			"The GitHub connection was renewed again and again while this was sent. Try again, and if it keeps happening, connect GitHub again on the Platforms page."
 		case .ssoRequired:
 			"An organization's single sign-on keeps LPM Vault out. Sign in to the organization on GitHub, then connect GitHub again on the Platforms page."
 		case .tooLarge(.repositories):

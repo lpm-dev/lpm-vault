@@ -95,6 +95,13 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 		lock.withLock { environmentLists[repository] = [] }
 	}
 
+	/// Renames the repository's environment, which keeps its ID.
+	func renameEnvironment(of repository: String, from name: String, to newName: String) {
+		lock.withLock {
+			environmentLists[repository] = (environmentLists[repository] ?? []).map { $0.name == name ? GitHubEnvironment(id: $0.id, name: newName) : $0 }
+		}
+	}
+
 	/// Deletes the repository's environment and makes another with the same name.
 	func replaceEnvironment(of repository: String, name: String, withID id: String) {
 		lock.withLock {
@@ -180,7 +187,8 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	func environment(named name: String, of repository: String) async -> Result<GitHubEnvironment?, GitHubAPIError> {
 		if let error = begin(.environment, name) { return .failure(error) }
 		if moved(repository) { return .failure(.moved) }
-		return .success(lock.withLock { environmentLists[repository]?.first { $0.name == name } })
+		// GitHub finds an environment by its name ignoring case.
+		return .success(lock.withLock { environmentLists[repository]?.first { $0.name.lowercased() == name.lowercased() } })
 	}
 
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
@@ -744,6 +752,14 @@ struct GitHubPublishTests {
 			"API_TOKEN": .failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again."),
 		])
 		#expect(replaced.writeCount == 0)
+
+		let recased = FakeGitHubAPI()
+		recased.renameEnvironment(of: "northwind/storefront", from: "production", to: "Production")
+		let renamedEnvironment = await publish([change("API_TOKEN", "t")], with: recased, reviewed: reviewed, to: productionTarget)
+		#expect(renamedEnvironment.outcomes == [
+			"API_TOKEN": .failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again."),
+		], "GitHub finds it under its old name, ignoring case, but the name it gives is no longer the reviewed one")
+		#expect(recased.writeCount == 0)
 	}
 
 	@Test("an environment replaced, or a repository's name reused, while its key or public key is read gets nothing: the check comes last", arguments: [
@@ -966,6 +982,17 @@ struct GitHubPublishTests {
 		let after = await publish([change("A", "1")], with: renewed, reviewed: reviewed, pacing: pacing)
 		#expect(after.outcomes == ["A": .published])
 		#expect(pacing.sleeps.contains(.seconds(60)) && !pacing.sleeps.contains(.seconds(120)))
+	}
+
+	@Test("a write whose token is renewed again and again gives up saying so, without calling the connection gone")
+	func renewalsRunOut() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		api.fail(.setSecret, with: .renewed, .renewed, .renewed, .renewed)
+		let report = await publish([change("A", "1")], with: api, reviewed: reviewed)
+		#expect(report.outcomes == ["A": .failed(GitHubPublishing.message(.renewed))] && !report.needsReconnect)
+		#expect(GitHubPublishing.message(.renewed)
+			== "The GitHub connection was renewed again and again while this was sent. Try again, and if it keeps happening, connect GitHub again on the Platforms page.")
 	}
 
 	@Test("writes are a second apart, as GitHub asks of a batch of writes")
