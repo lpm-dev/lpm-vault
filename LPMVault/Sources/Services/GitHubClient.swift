@@ -428,8 +428,12 @@ enum GitHubHTTP {
 
 	/// The links of a `Link` header as RFC 8288 writes them,
 	/// `<target>; rel="next last"; title="…", …`, where a quoted parameter
-	/// may hold `<`, `>`, `;`, `,` and escaped quotes. Nil when the header
-	/// isn't one, so a list can't take an unreadable header for its end.
+	/// may hold `<`, `>`, `;`, `,` and escaped quotes. An unquoted value runs
+	/// to the next `;` or `,`, as RFC 8288's parsing reads it, but holds only
+	/// visible characters other than quotes and angle brackets, as any other
+	/// means a comma or quote went missing and could hide a link. Nil when
+	/// the header isn't one, so a list can't take an unreadable header for
+	/// its end.
 	static func links(_ header: String) -> [Link]? {
 		let bytes = Array(header.utf8)
 		var index = 0
@@ -490,11 +494,10 @@ enum GitHubHTTP {
 						guard closed else { return nil }
 						value = String(decoding: quoted, as: UTF8.self)
 					} else {
-						// Unquoted, a value runs to the next ; or , as RFC 8288's parsing reads it.
 						let start = index
-						while index < bytes.count, bytes[index] != UInt8(ascii: ";"), bytes[index] != UInt8(ascii: ",") { index += 1 }
-						value = String(decoding: bytes[start..<index], as: UTF8.self).trimmingCharacters(in: .whitespaces)
-						guard !value.isEmpty else { return nil }
+						while index < bytes.count, isBareValueByte(bytes[index]) { index += 1 }
+						guard index > start else { return nil }
+						value = String(decoding: bytes[start..<index], as: UTF8.self)
 					}
 				}
 				// Only a link's first rel counts, as RFC 8288 says.
@@ -508,7 +511,16 @@ enum GitHubHTTP {
 		}
 	}
 
-	/// A byte of a token, as a parameter's name or bare value: RFC 9110's tchar.
+	/// A byte of an unquoted parameter value: visible ASCII other than the
+	/// quote, the angle brackets and the `;` and `,` that end it.
+	private static func isBareValueByte(_ byte: UInt8) -> Bool {
+		switch byte {
+		case 0x21...0x7E: !#""<>;,"#.utf8.contains(byte)
+		default: false
+		}
+	}
+
+	/// A byte of a parameter's name: RFC 9110's tchar.
 	private static func isTokenByte(_ byte: UInt8) -> Bool {
 		switch byte {
 		case UInt8(ascii: "a")...UInt8(ascii: "z"), UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "0")...UInt8(ascii: "9"): true
