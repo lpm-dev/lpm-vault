@@ -120,7 +120,7 @@ final class GitHubConditionalCache: @unchecked Sendable {
 	/// GitHub gave no `ETag` LPM Vault sends back, or the body is too large to keep.
 	func keep(_ body: Data, etag: String?, for url: URL) {
 		lock.withLock {
-			guard let etag, Self.isSendable(etag), body.count <= Self.maximumBodyBytes else {
+			guard let etag, Self.isEntityTag(etag), body.count <= Self.maximumBodyBytes else {
 				entries[url] = nil
 				return
 			}
@@ -129,9 +129,17 @@ final class GitHubConditionalCache: @unchecked Sendable {
 		}
 	}
 
-	/// An `ETag` that can go back in a header as GitHub sent it.
-	private static func isSendable(_ etag: String) -> Bool {
-		!etag.isEmpty && etag.utf8.count <= 256 && etag.utf8.allSatisfy { $0 >= 0x20 && $0 < 0x7F }
+	/// One entity tag, strong or weak, as RFC 9110 writes it: `"…"` or
+	/// `W/"…"`, of visible ASCII without a quote inside. Anything else, as
+	/// `*`, which matches whatever GitHub would answer, or a list of tags,
+	/// isn't sent back.
+	private static func isEntityTag(_ etag: String) -> Bool {
+		var bytes = etag.utf8[...]
+		if bytes.starts(with: "W/".utf8) { bytes = bytes.dropFirst(2) }
+		guard bytes.count >= 2, bytes.count <= 256, bytes.first == UInt8(ascii: "\""), bytes.last == UInt8(ascii: "\"") else {
+			return false
+		}
+		return bytes.dropFirst().dropLast().allSatisfy { $0 == 0x21 || (0x23...0x7E).contains($0) }
 	}
 }
 
@@ -399,24 +407,95 @@ enum GitHubHTTP {
 		return message.range(of: "rate limit", options: .caseInsensitive) != nil
 	}
 
-	/// The target of the first link in a `Link` header with `relation`
-	/// among its relations, as RFC 8288 writes them: `<target>; rel="next", …`.
-	static func linkTarget(_ header: String, relation: String) -> String? {
-		var rest = Substring(header)
-		while let open = rest.firstIndex(of: "<") {
-			guard let close = rest[open...].firstIndex(of: ">") else { return nil }
-			let target = rest[rest.index(after: open)..<close]
-			rest = rest[rest.index(after: close)...]
-			let parameters = rest.prefix { $0 != "<" }
-			rest = rest[parameters.endIndex...]
-			for parameter in parameters.split(separator: ";") {
-				let pair = parameter.split(separator: "=", maxSplits: 1)
-				guard pair.count == 2, pair[0].trimmingCharacters(in: .whitespaces).lowercased() == "rel" else { continue }
-				let relations = pair[1].trimmingCharacters(in: CharacterSet.whitespaces.union([","])).trimmingCharacters(in: ["\""])
-				if relations.lowercased().split(separator: " ").contains(Substring(relation)) { return String(target) }
-			}
+	/// One link of a `Link` header: its target, and the relations its first
+	/// `rel` names, in lowercase.
+	struct Link: Equatable, Sendable {
+		let target: String
+		let relations: Set<String>
+	}
+
+	/// The links of a `Link` header as RFC 8288 writes them,
+	/// `<target>; rel="next last"; title="…", …`, where a quoted parameter
+	/// may hold `<`, `>`, `;`, `,` and escaped quotes. Nil when the header
+	/// isn't one, so a list can't take an unreadable header for its end.
+	static func links(_ header: String) -> [Link]? {
+		let bytes = Array(header.utf8)
+		var index = 0
+		func skipWhitespace() {
+			while index < bytes.count, bytes[index] == 0x20 || bytes[index] == 0x09 { index += 1 }
 		}
-		return nil
+		func token() -> String {
+			let start = index
+			while index < bytes.count, isTokenByte(bytes[index]) { index += 1 }
+			return String(decoding: bytes[start..<index], as: UTF8.self)
+		}
+		var links: [Link] = []
+		while true {
+			skipWhitespace()
+			while index < bytes.count, bytes[index] == UInt8(ascii: ",") {
+				index += 1
+				skipWhitespace()
+			}
+			guard index < bytes.count else { return links }
+			guard bytes[index] == UInt8(ascii: "<"), let close = bytes[index...].firstIndex(of: UInt8(ascii: ">")),
+				let target = String(bytes: bytes[(index + 1)..<close], encoding: .utf8)
+			else { return nil }
+			index = close + 1
+			var relations: Set<String>?
+			while true {
+				skipWhitespace()
+				guard index < bytes.count, bytes[index] == UInt8(ascii: ";") else { break }
+				index += 1
+				skipWhitespace()
+				let name = token().lowercased()
+				guard !name.isEmpty else { return nil }
+				skipWhitespace()
+				var value = ""
+				if index < bytes.count, bytes[index] == UInt8(ascii: "=") {
+					index += 1
+					skipWhitespace()
+					if index < bytes.count, bytes[index] == UInt8(ascii: "\"") {
+						index += 1
+						var quoted: [UInt8] = []
+						var closed = false
+						while index < bytes.count {
+							let byte = bytes[index]
+							index += 1
+							if byte == UInt8(ascii: "\"") {
+								closed = true
+								break
+							}
+							if byte == UInt8(ascii: "\\") {
+								guard index < bytes.count else { return nil }
+								quoted.append(bytes[index])
+								index += 1
+							} else {
+								quoted.append(byte)
+							}
+						}
+						guard closed else { return nil }
+						value = String(decoding: quoted, as: UTF8.self)
+					} else {
+						value = token()
+					}
+				}
+				// Only a link's first rel counts, as RFC 8288 says.
+				if name == "rel", relations == nil {
+					relations = Set(value.lowercased().split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init))
+				}
+			}
+			links.append(Link(target: target, relations: relations ?? []))
+			skipWhitespace()
+			guard index == bytes.count || bytes[index] == UInt8(ascii: ",") else { return nil }
+		}
+	}
+
+	/// A byte of a token, as a parameter's name or bare value: RFC 9110's tchar.
+	private static func isTokenByte(_ byte: UInt8) -> Bool {
+		switch byte {
+		case UInt8(ascii: "a")...UInt8(ascii: "z"), UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "0")...UInt8(ascii: "9"): true
+		default: "!#$%&'*+-.^_`|~".utf8.contains(byte)
+		}
 	}
 
 	/// GitHub's numeric IDs, as decimal text without a sign or leading zero.
@@ -747,12 +826,12 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	/// or nil when it names none. Only the link's query is taken, and read at
 	/// `url`'s own path: GitHub can name a repository's list by the
 	/// repository's ID, and the token never goes to a URL GitHub sends. A
-	/// link to another scheme, host or port, or to another kind of list, is
-	/// `.invalidResponse`.
+	/// `Link` that can't be read, or a link to another scheme, host or port,
+	/// or to another kind of list, is `.invalidResponse`.
 	private static func nextPage(_ response: HTTPURLResponse, after url: URL) -> Result<URL?, GitHubAPIError> {
-		guard let link = response.value(forHTTPHeaderField: "Link"), let target = GitHubHTTP.linkTarget(link, relation: "next") else {
-			return .success(nil)
-		}
+		guard let header = response.value(forHTTPHeaderField: "Link") else { return .success(nil) }
+		guard let links = GitHubHTTP.links(header) else { return .failure(.invalidResponse) }
+		guard let target = links.first(where: { $0.relations.contains("next") })?.target else { return .success(nil) }
 		guard let current = URLComponents(url: url, resolvingAgainstBaseURL: false),
 			let named = URL(string: target, relativeTo: url).flatMap({ URLComponents(url: $0.absoluteURL, resolvingAgainstBaseURL: false) }),
 			named.scheme?.lowercased() == current.scheme?.lowercased(),

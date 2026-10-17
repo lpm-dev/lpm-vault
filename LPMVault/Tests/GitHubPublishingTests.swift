@@ -1700,6 +1700,20 @@ struct GitHubClientListTests {
 		#expect(await fresh.repository(id: "7") == .failure(.invalidResponse), "A 304 to a request that didn't ask conditionally can't be read")
 	}
 
+	@Test("an ETag that isn't one entity tag, as *, which matches any answer, is never sent back: a replaced environment is read in full")
+	func refusesWildcardValidators() async throws {
+		let replaced = Locked(false)
+		let route = PlatformHTTPStub.platform { request in
+			if request.header("If-None-Match") == "*" { return PlatformHTTPStub.Reply(status: 304, headers: [:], body: Data()) }
+			return .json(200, ["id": replaced.value ? 71 : 70, "name": "production"], headers: ["ETag": "*"])
+		}
+		let client = GitHubClient(token: "ghu_1", baseURL: route.baseURL, session: route.session, conditional: GitHubConditionalCache())
+		#expect(try await client.environment(named: "production", of: "northwind/api").get()?.id == "70")
+		replaced.value = true
+		#expect(try await client.environment(named: "production", of: "northwind/api").get()?.id == "71")
+		#expect(route.requests.allSatisfy { $0.header("If-None-Match") == nil })
+	}
+
 	@Test("the conditional cache keeps only an ETag that goes back to GitHub as it is, only small answers, and only so many")
 	func conditionalCacheBounds() throws {
 		let cache = GitHubConditionalCache()
@@ -1710,6 +1724,15 @@ struct GitHubClientListTests {
 		#expect(cache.entry(for: url) == nil, "An ETag that can't go back in a header as it is forgets the answer kept before")
 		cache.keep(Data(count: GitHubConditionalCache.maximumBodyBytes + 1), etag: "W/\"2\"", for: url)
 		#expect(cache.entry(for: url) == nil)
+		for tag in ["\"a\"", "W/\"a\"", "\"\""] {
+			cache.keep(Data("a".utf8), etag: tag, for: url)
+			#expect(cache.entry(for: url)?.etag == tag)
+		}
+		for tag in ["*", "\"a\", \"b\"", "abc", "W/abc", "\"a\"b\"", "w/\"a\"", "\"a", " \"a\"", "\"a b\""] {
+			cache.keep(Data("a".utf8), etag: "\"kept\"", for: url)
+			cache.keep(Data("a".utf8), etag: tag, for: url)
+			#expect(cache.entry(for: url) == nil, "Only one entity tag is sent back, never \(tag)")
+		}
 		let urls = try (0...GitHubConditionalCache.capacity).map { try #require(URL(string: "https://api.github.com/repositories/\($0 + 10)")) }
 		for (index, url) in urls.enumerated() { cache.keep(Data(), etag: "\"\(index)\"", for: url) }
 		#expect(cache.entry(for: urls[0]) == nil && cache.entry(for: urls[urls.count - 1])?.etag == "\"\(GitHubConditionalCache.capacity)\"")
@@ -1823,6 +1846,21 @@ struct GitHubClientListTests {
 		#expect(single.requests.count == 1, "Without a Link, GitHub sent the only page")
 	}
 
+	@Test("a next page named in a Link with quoted parameters is followed, and a Link that can't be read fails the list instead of ending it")
+	func readsQuotedLinks() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			if request.query["page"] == "2" { return .json(200, ["total_count": 2, "environments": [["id": 2, "name": "staging"]]]) }
+			let next = stubURL(request, query: "per_page=100&page=2")
+			return .json(200, ["total_count": 2, "environments": [["id": 1, "name": "production"]]], headers: ["Link": "<\(next)>; title=\"page < 3\"; rel=\"next\""])
+		}
+		#expect(try await client(route).environments(of: "northwind/storefront").get().map(\.name) == ["production", "staging"])
+
+		let unreadable = PlatformHTTPStub.platform { request in
+			.json(200, ["total_count": 2, "environments": [["id": 1, "name": "production"]]], headers: ["Link": "<\(stubURL(request, query: "page=2"))>; rel=\"next"])
+		}
+		#expect(await client(unreadable).environments(of: "northwind/storefront") == .failure(.invalidResponse))
+	}
+
 	@Test("a next page GitHub names on another host or scheme, of another list, or already read, fails the list without being asked for")
 	func refusesForeignNextPages() async throws {
 		let links: [@Sendable (PlatformHTTPStub.Request) -> [String: String]] = [
@@ -1922,6 +1960,19 @@ struct CountedItem: Decodable {
 
 	init(from decoder: any Decoder) throws {
 		Self.lock.withLock { Self.count += 1 }
+	}
+}
+
+/// A value a test changes while a stub's handler reads it.
+private final class Locked<Value: Sendable>: @unchecked Sendable {
+	private let lock = NSLock()
+	private var current: Value
+
+	init(_ value: Value) { current = value }
+
+	var value: Value {
+		get { lock.withLock { current } }
+		set { lock.withLock { current = newValue } }
 	}
 }
 

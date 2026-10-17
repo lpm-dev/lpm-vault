@@ -63,6 +63,24 @@ struct GitHubHTTPTests {
 		#expect(GitHubHTTP.unannouncedLimitWait(after: 4) == .seconds(120))
 	}
 
+	@Test("a Link header is read as RFC 8288 writes it: quoted parameters may hold <, >, ; and , and only a link's first rel counts")
+	func readsLinks() {
+		func next(_ header: String) -> String?? {
+			GitHubHTTP.links(header).map { $0.first { $0.relations.contains("next") }?.target }
+		}
+		#expect(next(#"<?page=2>; title="page < 3"; rel="next""#) == .some("?page=2"))
+		#expect(next(#"<a>; rel="prev"; title="x; rel=next, <b>", <c>; rel=next"#) == .some("c"))
+		#expect(next(#"<a>; rel="next last""#) == .some("a"))
+		#expect(next(#"<a>; REL = "NEXT""#) == .some("a"))
+		#expect(next(#"<a>; title="say \"next\""; rel=last"#) == .some(nil))
+		#expect(next(#"<a>; rel="prev"; rel="next""#) == .some(nil), "A rel after the first is ignored")
+		#expect(next(#" , <a>; rel=next ,, "#) == .some("a"))
+		#expect(next("") == .some(nil))
+		for malformed in [#"<a; rel="next""#, #"<a>; rel="next"#, "garbage", "<a> junk", #"<a>; ="next""#, #"<a>; rel="next" <b>"#] {
+			#expect(next(malformed) == nil, "\(malformed)")
+		}
+	}
+
 	@Test("IDs, logins, app slugs and client IDs take only GitHub's forms")
 	func validatesNames() {
 		#expect(GitHubHTTP.isValidID("583231") && !GitHubHTTP.isValidID("0583") && !GitHubHTTP.isValidID("-1") && !GitHubHTTP.isValidID(""))
