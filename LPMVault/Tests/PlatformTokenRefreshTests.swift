@@ -143,6 +143,16 @@ struct PlatformTokensTests {
 		#expect(refresh.isDue(at: obtained), "An unfinished renewal may already have replaced the token")
 	}
 
+	@Test("a token just received isn't due, though its time is kept to the millisecond", arguments: [0.000_4, 0.000_6, 0.999_6])
+	func freshTokenIsntDue(fraction: TimeInterval) {
+		let received = Date(timeIntervalSince1970: 1_760_000_000 + fraction)
+		let refresh = PlatformTokenRefresh(
+			token: "r", accessTokenExpiresAt: received.addingTimeInterval(8 * 3_600), expiresAt: received.addingTimeInterval(86_400),
+			obtainedAt: received, principalID: "user_1")
+		#expect(!refresh.isDue(at: received))
+		#expect(refresh.isDue(at: received.addingTimeInterval(-0.002)), "A clock set back past the stored precision still counts")
+	}
+
 	@Test("tokens, refresh tokens and an attempt's key never print")
 	func redacted() throws {
 		let tokens = try #require(PlatformTokens(

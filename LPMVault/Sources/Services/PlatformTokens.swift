@@ -150,9 +150,12 @@ struct PlatformTokenRefresh: Equatable, Sendable, CustomStringConvertible, Custo
 
 	/// Whether the access token must be renewed before it's used at `date`:
 	/// it's about to expire, the clock went back since it was received, or a
-	/// request that may already have replaced it hasn't been finished.
+	/// request that may already have replaced it hasn't been finished. The
+	/// clock is compared at the millisecond `obtainedAt` is kept to, which
+	/// can round it past the moment it was received.
 	func isDue(at date: Date) -> Bool {
-		attempt != nil || date < obtainedAt || date >= accessTokenExpiresAt.addingTimeInterval(-Self.renewalMargin)
+		attempt != nil || PublishTimestamp.normalized(date) < obtainedAt
+			|| date >= accessTokenExpiresAt.addingTimeInterval(-Self.renewalMargin)
 	}
 
 	var description: String {
