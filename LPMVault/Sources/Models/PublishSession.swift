@@ -556,7 +556,8 @@ final class PublishSession: Identifiable {
 			guard let self, let form, !Task.isCancelled, self.github === form else { return }
 			switch result {
 			case .success(let list):
-				form.repositories = .loaded(list)
+				form.repositories = .loaded(list.repositories)
+				form.hidesSSORepositories = list.hidesSSORepositories
 				if form.repositoryID != nil { self.loadEnvironments(form) }
 			case .failure(let error): form.repositories = .failed(error.message)
 			}
@@ -569,9 +570,9 @@ final class PublishSession: Identifiable {
 	}
 
 	/// The client's repositories in the menu's order, listed and sorted off the main actor.
-	private nonisolated static func sortedRepositories(from client: any GitHubClientProtocol) async -> Result<[GitHubRepository], PublishSessionError> {
+	private nonisolated static func sortedRepositories(from client: any GitHubClientProtocol) async -> Result<GitHubRepositoryList, PublishSessionError> {
 		await client.repositories()
-			.map(GitHubDestinationForm.sorted)
+			.map { GitHubRepositoryList(repositories: GitHubDestinationForm.sorted($0.repositories), hidesSSORepositories: $0.hidesSSORepositories) }
 			.mapError { PublishSessionError(GitHubPublishing.message($0)) }
 	}
 

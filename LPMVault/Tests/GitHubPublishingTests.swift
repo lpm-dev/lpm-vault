@@ -126,9 +126,10 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 
 	func user() async -> Result<GitHubUser, GitHubAPIError> { .success(GitHubUser(id: "583231", login: "octocat", name: nil)) }
 
-	func repositories() async -> Result<[GitHubRepository], GitHubAPIError> {
+	func repositories() async -> Result<GitHubRepositoryList, GitHubAPIError> {
 		if let error = begin(.repository, "*") { return .failure(error) }
-		return .success(lock.withLock { repositoryNames.map { GitHubRepository(id: $0.key, fullName: $0.value, isPrivate: true) } })
+		return .success(GitHubRepositoryList(
+			repositories: lock.withLock { repositoryNames.map { GitHubRepository(id: $0.key, fullName: $0.value, isPrivate: true) } }))
 	}
 
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> {
@@ -358,6 +359,7 @@ struct GitHubDestinationTests {
 			return PublishDestination(sourceEnvironment: "staging", target: .github(changed), createdAt: Date()).invalidity
 		}
 		#expect(invalidity { _ in } == nil)
+		#expect(invalidity { $0.repositoryName = "mona-cat_octo/infra" } == nil, "A managed user owns it")
 		#expect(invalidity { $0 = GitHubPublishTarget(userID: "x", userLogin: $0.userLogin, repositoryID: $0.repositoryID, repositoryName: $0.repositoryName, scope: $0.scope) } == .targetIdentifier)
 		#expect(invalidity { $0.scope = .environment(id: "01", name: "prod") } == .targetIdentifier)
 		#expect(invalidity { $0.repositoryName = "northwind" } == .targetName)
@@ -666,7 +668,7 @@ final class TokenGatedGitHub: @unchecked Sendable {
 		}
 
 		func user() async -> Result<GitHubUser, GitHubAPIError> { await gated { await owner.api.user() } }
-		func repositories() async -> Result<[GitHubRepository], GitHubAPIError> { await gated { await owner.api.repositories() } }
+		func repositories() async -> Result<GitHubRepositoryList, GitHubAPIError> { await gated { await owner.api.repositories() } }
 		func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> { await gated { await owner.api.repository(id: id) } }
 		func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
 			await gated { await owner.api.environments(of: repository) }
@@ -796,10 +798,108 @@ struct GitHubClientListTests {
 				return .json(404, [:])
 			}
 		}
-		let repositories = try await client(route).repositories().get()
+		let repositories = try await client(route).repositories().get().repositories
 		#expect(repositories.count == 101 && Set(repositories.map(\.id)).count == 101)
 		#expect(repositories.first { $0.id == "1100" } == GitHubRepository(id: "1100", fullName: "northwind/last", isPrivate: false))
 		#expect(route.requests.allSatisfy { $0.header("Authorization") == "Bearer ghu_token" })
+	}
+
+	@Test("repositories are listed leniently: a malformed one is skipped, a shifting total is followed to GitHub's last page, and each says what the person may change")
+	func listsRepositoriesLeniently() async throws {
+		@Sendable func repository(_ id: Int, _ name: String, push: Bool = true, admin: Bool = false, archived: Bool = false) -> [String: Any] {
+			[
+				"id": id, "full_name": name, "private": true, "archived": archived,
+				"permissions": ["admin": admin, "maintain": false, "push": push, "triage": true, "pull": true],
+			]
+		}
+		let route = PlatformHTTPStub.platform { request in
+			let page = Int(request.query["page"] ?? "1") ?? 1
+			switch request.url.path {
+			case "/user/installations":
+				#expect(request.query["per_page"] == "100")
+				return .json(200, ["total_count": 1, "installations": [["id": 11]]])
+			case "/user/installations/11/repositories":
+				#expect(request.query["per_page"] == "100")
+				if page == 1 {
+					var repositories = (0..<97).map { repository(1_000 + $0, "northwind/repo-\($0)") }
+					repositories += [
+						repository(2_000, "not a name"), repository(2_001, "northwind/readonly", push: false),
+						repository(2_002, "northwind/old", archived: true),
+					]
+					return .json(200, ["total_count": 150, "repositories": repositories], headers: [
+						"Link": "<https://api.github.com/user/installations/11/repositories?per_page=100&page=2>; rel=\"next\", <https://api.github.com/user/installations/11/repositories?per_page=100&page=2>; rel=\"last\"",
+					])
+				}
+				let rest = (0..<98).map { repository(3_000 + $0, "northwind/more-\($0)") }
+				return .json(200, ["total_count": 200, "repositories": [repository(2_003, "mona-cat_octo/admin", admin: true), ["id": 2_004]] + rest], headers: [
+					"Link": "<https://api.github.com/user/installations/11/repositories?per_page=100&page=1>; rel=\"prev\", <https://api.github.com/user/installations/11/repositories?per_page=100&page=1>; rel=\"first\"",
+				])
+			default:
+				return .json(404, [:])
+			}
+		}
+		let listed = try await client(route).repositories().get()
+		#expect(listed.repositories.count == 198 && !listed.hidesSSORepositories)
+		let byName = Dictionary(uniqueKeysWithValues: listed.repositories.map { ($0.fullName, $0) })
+		#expect(byName["northwind/repo-0"]?.permission == .write && byName["northwind/repo-0"]?.canChange(.repository) == true)
+		#expect(byName["northwind/readonly"]?.permission == .read && byName["northwind/readonly"]?.canChange(.repository) == false)
+		#expect(byName["northwind/old"]?.isArchived == true && byName["northwind/old"]?.canChange(.repository) == false)
+		let admin = try #require(byName["mona-cat_octo/admin"], "A managed user owns it")
+		#expect(admin.permission == .admin && admin.canChange(.environment(id: "1", name: "production")))
+		#expect(byName["northwind/repo-0"]?.canChange(.environment(id: "1", name: "production")) == false, "An environment's secrets need admin")
+		#expect(route.requests.count == 3, "GitHub's Link said the full page 2 was the last")
+	}
+
+	@Test("a list longer than LPM Vault reads says so, and one GitHub cut short for single sign-on says that")
+	func reportsTooLongAndSSO() async throws {
+		let endless = PlatformHTTPStub.platform { request in
+			switch request.url.path {
+			case "/user/installations": return .json(200, ["total_count": 1, "installations": [["id": 11]]])
+			default:
+				let page = Int(request.query["page"] ?? "1") ?? 1
+				return .json(200, ["total_count": 1_000_000, "repositories": (0..<100).map { ["id": page * 1_000 + $0, "full_name": "n/r\(page)-\($0)"] }],
+					headers: ["Link": "<https://api.github.com/x?page=\(page + 1)>; rel=\"next\""])
+			}
+		}
+		var limits = GitHubClient.Limits()
+		limits.maximumPages = 3
+		#expect(await client(endless, limits: limits).repositories() == .failure(.tooLarge))
+
+		let partial = PlatformHTTPStub.platform { request in
+			switch request.url.path {
+			case "/user/installations":
+				return .json(200, ["total_count": 1, "installations": [["id": 11]]], headers: ["X-GitHub-SSO": "partial-results; organizations=21955855"])
+			default: return .json(200, ["total_count": 0, "repositories": []])
+			}
+		}
+		#expect(try await client(partial).repositories().get() == GitHubRepositoryList(repositories: [], hidesSSORepositories: true))
+		let required = PlatformHTTPStub.platform { _ in
+			.json(403, ["message": "Resource protected by organization SAML enforcement."], headers: [
+				"X-GitHub-SSO": "required; url=https://github.com/orgs/acme/sso?authorization_request=AZSCKtL4U8yX1H3sCQIVnVgmjmon5fWxks5YrqhJgah0b2tlbl9pZM4EuMz4",
+			])
+		}
+		#expect(await client(required).secrets(in: GitHubScope(repository: "acme/api", environment: nil)) == .failure(.ssoRequired))
+		#expect(await client(required).secret("API_TOKEN", in: GitHubScope(repository: "acme/api", environment: nil)) == .failure(.ssoRequired))
+	}
+
+	@Test("a redirect, as for a repository renamed since its name was read, reads as moved")
+	func readsRedirectsAsMoved() async {
+		for status in [301, 302, 307, 308] {
+			let route = PlatformHTTPStub.platform { _ in PlatformHTTPStub.Reply(status: status, headers: ["Location": "/repositories/1296269/environments"], body: Data()) }
+			#expect(await client(route).environments(of: "northwind/storefront") == .failure(.moved))
+			#expect(route.requests.count == 1)
+		}
+	}
+
+	@Test("a repository without environments may answer without the list, and that's no environments")
+	func readsMissingEnvironments() async throws {
+		for body: [String: Any] in [["total_count": 0], [:], ["total_count": 0, "environments": []]] {
+			let data = try JSONSerialization.data(withJSONObject: body)
+			let route = PlatformHTTPStub.platform { _ in PlatformHTTPStub.Reply(status: 200, body: data) }
+			#expect(try await client(route).environments(of: "northwind/storefront").get().isEmpty)
+		}
+		let missing = PlatformHTTPStub.platform { _ in .json(200, ["total_count": 2]) }
+		#expect(await client(missing).environments(of: "northwind/storefront") == .failure(.invalidResponse))
 	}
 
 	@Test("an installation a shifting list repeats is listed once")
@@ -816,11 +916,11 @@ struct GitHubClientListTests {
 				return .json(404, [:])
 			}
 		}
-		#expect(try await client(route).repositories().get().map(\.id) == ["1000", "1001"])
+		#expect(try await client(route).repositories().get().repositories.map(\.id) == ["1000", "1001"])
 		#expect(route.requests.map(\.url.path) == ["/user/installations", "/user/installations/11/repositories", "/user/installations/12/repositories"])
 	}
 
-	@Test("a list whose total changes between pages, or holds more than it says, or never ends, fails")
+	@Test("a list of secrets or variables whose total changes between pages, or holds more than it says, fails, and one that never ends is too large")
 	func refusesInconsistentLists() async {
 		let changing = PlatformHTTPStub.platform { request in
 			let page = Int(request.query["page"] ?? "1") ?? 1
@@ -836,7 +936,7 @@ struct GitHubClientListTests {
 		}
 		var limits = GitHubClient.Limits()
 		limits.maximumPages = 3
-		#expect(await client(endless, limits: limits).secrets(in: GitHubScope(repository: "a/b", environment: nil)) == .failure(.invalidResponse))
+		#expect(await client(endless, limits: limits).secrets(in: GitHubScope(repository: "a/b", environment: nil)) == .failure(.tooLarge))
 		#expect(endless.requests.count == 3)
 	}
 
@@ -845,6 +945,7 @@ struct GitHubClientListTests {
 		let route = PlatformHTTPStub.platform { request in
 			switch URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.percentEncodedPath {
 			case "/repos/northwind/storefront/environments/staging%2Feu/secrets":
+				#expect(request.query["per_page"] == "100")
 				return .json(200, ["total_count": 1, "secrets": [["name": "API_TOKEN", "created_at": "2026-10-17T09:00:00Z", "updated_at": "2026-10-17T10:00:00Z"]]])
 			case "/repos/northwind/storefront/environments/staging%2Feu/variables":
 				#expect(request.query["per_page"] == "30")
@@ -883,9 +984,10 @@ struct GitHubClientListTests {
 		try await client.createVariable("PUBLIC_URL", value: "https://x", in: scope).get()
 		try await client.updateVariable("LOG_LEVEL", value: "info", in: scope).get()
 		#expect(try await client.secret("MISSING", in: scope).get() == nil)
-		let bodies = route.requests.compactMap(\.json)
-		#expect(bodies.contains { $0["encrypted_value"] as? String == Data([1, 2, 3]).base64EncodedString() && $0["key_id"] as? String == key.id })
-		#expect(bodies.contains { $0["name"] as? String == "PUBLIC_URL" && $0["value"] as? String == "https://x" })
+		let bodies = Dictionary(route.requests.compactMap { request in request.json.map { (request.method, $0) } }, uniquingKeysWith: { first, _ in first })
+		#expect(bodies["PUT"]?["encrypted_value"] as? String == Data([1, 2, 3]).base64EncodedString() && bodies["PUT"]?["key_id"] as? String == key.id)
+		#expect(bodies["POST"]?["name"] as? String == "PUBLIC_URL" && bodies["POST"]?["value"] as? String == "https://x")
+		#expect(bodies["PATCH"]?["name"] as? String == "LOG_LEVEL" && bodies["PATCH"]?["value"] as? String == "info")
 		let refused = await client.setSecret("api_token", to: GitHubSealedSecret(ciphertext: Data(), keyID: "1"), in: scope)
 		guard case .failure(.invalidResponse) = refused else {
 			Issue.record("A name GitHub would change is never sent")

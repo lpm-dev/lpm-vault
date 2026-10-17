@@ -121,7 +121,7 @@ struct GitHubClientTests {
 		let route = PlatformHTTPStub.platform { _ in
 			PlatformHTTPStub.Reply(status: 302, headers: ["Location": "/elsewhere"], body: Data())
 		}
-		#expect(await GitHubClient(token: "ghu_token", baseURL: route.baseURL, session: route.session).user() == .failure(.server(302)))
+		#expect(await GitHubClient(token: "ghu_token", baseURL: route.baseURL, session: route.session).user() == .failure(.moved))
 		#expect(route.requests.map(\.url.path) == ["/user"])
 	}
 

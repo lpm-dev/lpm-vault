@@ -496,7 +496,7 @@ enum GitHubPublishing {
 	/// Refusals that every later request would meet too.
 	private static func stops(_ error: GitHubAPIError) -> Bool {
 		switch error {
-		case .unauthorized, .forbidden, .rateLimited, .cancelled, .credentials: true
+		case .unauthorized, .forbidden, .rateLimited, .cancelled, .credentials, .moved, .ssoRequired, .tooLarge: true
 		case .notFound, .rejected, .transport, .invalidResponse, .server: false
 		}
 	}
@@ -504,7 +504,7 @@ enum GitHubPublishing {
 	/// Refusals that mean connecting GitHub again.
 	private static func needsReconnect(_ error: GitHubAPIError) -> Bool {
 		switch error {
-		case .unauthorized, .credentials(.expired): true
+		case .unauthorized, .credentials(.expired), .ssoRequired: true
 		default: false
 		}
 	}
@@ -513,7 +513,7 @@ enum GitHubPublishing {
 		switch error {
 		case .unauthorized: "GitHub no longer accepts this connection. Connect GitHub again on the Platforms page."
 		case .forbidden:
-			"GitHub refused access. LPM Vault's GitHub App may not be installed on this repository, or your role can't change its secrets and variables."
+			"GitHub refused access. Changing a repository's secrets and variables needs write access to it, and an environment's needs admin access, with LPM Vault's GitHub App installed on the repository."
 		case .notFound: "GitHub couldn't find the repository, the environment or the secret. LPM Vault's GitHub App may not be installed on it."
 		case .rateLimited: "GitHub is limiting requests. Try again in a minute."
 		case .rejected(let status): "GitHub refused it (HTTP \(status))."
@@ -522,6 +522,10 @@ enum GitHubPublishing {
 		case .invalidResponse: "GitHub's answer couldn't be read."
 		case .server(let status): "GitHub answered with HTTP \(status)."
 		case .credentials(let error): error.message(for: .github)
+		case .moved: "The repository was renamed or moved on GitHub. Review again."
+		case .ssoRequired:
+			"An organization's single sign-on keeps LPM Vault out. Sign in to the organization on GitHub, then connect GitHub again on the Platforms page."
+		case .tooLarge: "GitHub listed more than LPM Vault reads at once. Install LPM Vault's GitHub App only on the repositories it publishes to."
 		}
 	}
 }

@@ -15,6 +15,14 @@ enum GitHubAPIError: Error, Equatable, Sendable {
 	case cancelled
 	case invalidResponse
 	case server(Int)
+	/// GitHub redirected the request, as for a repository renamed or
+	/// transferred since its name was read. A redirect is never followed.
+	case moved
+	/// An organization's single sign-on keeps the token out until the person
+	/// signs in with it and connects GitHub again.
+	case ssoRequired
+	/// GitHub's list was longer than LPM Vault reads.
+	case tooLarge
 	/// The connection's token couldn't be renewed, or read, for the request.
 	case credentials(PlatformCredentialError)
 }
@@ -30,11 +38,42 @@ struct GitHubUser: Equatable, Sendable {
 
 /// A repository a GitHub connection reaches through an installation of LPM Vault's app.
 struct GitHubRepository: Identifiable, Equatable, Sendable {
+	/// The person's role on a repository, as far as secrets and variables go.
+	enum Permission: Equatable, Sendable {
+		/// Changes the repository's secrets and variables, and its environments'.
+		case admin
+		/// Changes the repository's own secrets and variables.
+		case write
+		case read
+	}
+
 	/// GitHub's numeric ID, which outlasts a rename or a transfer.
 	let id: String
 	/// `owner/name`.
 	let fullName: String
 	let isPrivate: Bool
+	/// An archived repository is read-only.
+	var isArchived = false
+	/// Nil when GitHub didn't say.
+	var permission: Permission?
+
+	/// Whether the person can change the scope's secrets and variables, as
+	/// far as GitHub said: a repository's need write access, an environment's
+	/// admin, and an archived repository's can't change.
+	func canChange(_ scope: GitHubPublishTarget.Scope) -> Bool {
+		guard !isArchived else { return false }
+		switch (scope, permission) {
+		case (_, nil), (_, .admin?), (.repository, .write?): return true
+		case (.environment, .write?), (_, .read?): return false
+		}
+	}
+}
+
+/// The repositories a GitHub connection reaches.
+struct GitHubRepositoryList: Equatable, Sendable {
+	var repositories: [GitHubRepository]
+	/// Whether GitHub left out an organization's repositories until the person signs in with its single sign-on.
+	var hidesSSORepositories = false
 }
 
 /// One of a repository's deployment environments.
@@ -90,7 +129,7 @@ protocol GitHubClientProtocol: Sendable {
 	/// The user the token belongs to.
 	func user() async -> Result<GitHubUser, GitHubAPIError>
 	/// Every repository the token reaches through installations of the app.
-	func repositories() async -> Result<[GitHubRepository], GitHubAPIError>
+	func repositories() async -> Result<GitHubRepositoryList, GitHubAPIError>
 	/// The repository with the ID, as it's named now.
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError>
 	/// The repository's deployment environments.
@@ -214,10 +253,17 @@ enum GitHubHTTP {
 	/// A refusal, read the way GitHub documents its limits: a primary limit
 	/// spent says when it resets, on GitHub's clock, a secondary one how many
 	/// seconds to wait, and one that says neither means a minute. A 403
-	/// that's no limit is the token lacking access; its message is read only
-	/// to tell the two apart.
+	/// that's no limit is the token lacking access, or kept out by an
+	/// organization's single sign-on when GitHub says so; its message is read
+	/// only to tell a limit apart.
 	static func failure(_ http: HTTPURLResponse, body: Data, now: Date = Date()) -> GitHubAPIError {
 		let status = http.statusCode
+		if (300..<400).contains(status) { return .moved }
+		if status == 403 || status == 404,
+			http.value(forHTTPHeaderField: "X-GitHub-SSO")?.lowercased().hasPrefix("required") == true
+		{
+			return .ssoRequired
+		}
 		if status == 403 || status == 429 {
 			if let seconds = http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init), seconds.isFinite, seconds >= 0 {
 				return .rateLimited(until: now.addingTimeInterval(seconds))
@@ -322,31 +368,35 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 	}
 
-	func repositories() async -> Result<[GitHubRepository], GitHubAPIError> {
+	/// Installations and their repositories are listed leniently: one GitHub
+	/// lists in a form LPM Vault doesn't read is left out, rather than the list.
+	func repositories() async -> Result<GitHubRepositoryList, GitHubAPIError> {
 		var budget = Budget(limits)
-		let installations: [Installation]
-		switch await list(["user", "installations"], field: "installations", perPage: 100, budget: &budget, as: Installation.self) {
+		let installations: Listed<Installation?>
+		switch await list(["user", "installations"], field: "installations", perPage: 100, lenient: true, budget: &budget, as: Installation.self) {
 		case .success(let value): installations = value
 		case .failure(let error): return .failure(error)
 		}
-		var repositories: [GitHubRepository] = []
+		var listed = GitHubRepositoryList(repositories: [], hidesSSORepositories: installations.hidesSSOResults)
 		var seen: Set<String> = []
-		var listed: Set<String> = []
-		for installation in installations {
-			guard let id = GitHubHTTP.id(installation.id) else { return .failure(.invalidResponse) }
-			// An installation a shifting list repeats is read once.
-			guard listed.insert(id).inserted else { continue }
-			switch await list(["user", "installations", id, "repositories"], field: "repositories", perPage: 100, budget: &budget, as: RawRepository.self) {
+		var read: Set<String> = []
+		for installation in installations.items {
+			guard let id = installation.flatMap({ GitHubHTTP.id($0.id) }),
+				// An installation a shifting list repeats is read once.
+				read.insert(id).inserted
+			else { continue }
+			let path = ["user", "installations", id, "repositories"]
+			switch await list(path, field: "repositories", perPage: 100, lenient: true, budget: &budget, as: RawRepository.self) {
 			case .success(let raws):
-				for raw in raws {
-					guard let repository = raw.repository else { return .failure(.invalidResponse) }
-					// One repository can't be in two installations, but a list never shows it twice.
-					if seen.insert(repository.id).inserted { repositories.append(repository) }
+				listed.hidesSSORepositories = listed.hidesSSORepositories || raws.hidesSSOResults
+				// One repository can't be in two installations, but a list never shows it twice.
+				for repository in raws.items.lazy.compactMap({ $0?.repository }) where seen.insert(repository.id).inserted {
+					listed.repositories.append(repository)
 				}
 			case .failure(let error): return .failure(error)
 			}
 		}
-		return .success(repositories)
+		return .success(listed)
 	}
 
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> {
@@ -359,19 +409,14 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 	}
 
+	/// Listed leniently: an environment whose name LPM Vault doesn't take is
+	/// left out. A repository without environments may answer without the list.
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
 		guard GitHubPublishTarget.isValidFullName(repository) else { return .failure(.invalidResponse) }
 		var budget = Budget(limits)
 		let path = ["repos"] + repository.split(separator: "/").map(String.init) + ["environments"]
-		return await list(path, field: "environments", perPage: 100, budget: &budget, as: RawEnvironment.self).flatMap { raws in
-			var environments: [GitHubEnvironment] = []
-			environments.reserveCapacity(raws.count)
-			for raw in raws {
-				guard let environment = raw.environment else { return .failure(.invalidResponse) }
-				environments.append(environment)
-			}
-			return .success(environments)
-		}
+		return await list(path, field: "environments", perPage: 100, lenient: true, budget: &budget, as: RawEnvironment.self)
+			.map { $0.items.compactMap { $0?.environment } }
 	}
 
 	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> {
@@ -434,56 +479,92 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 	}
 
-	/// Every item of a paged list, read page by page within `budget`. A page
-	/// with more items than asked for, more items than the total GitHub gave,
-	/// or a total that changes between pages fails the listing, as does
-	/// running out of pages, bytes or time.
+	/// A list's items, and whether GitHub said it left out results an
+	/// organization's single sign-on hides.
+	private struct Listed<Item: Sendable>: Sendable {
+		var items: [Item] = []
+		var hidesSSOResults = false
+	}
+
+	/// Every item of a paged list, read page by page within `budget`. Running
+	/// out of pages or bytes is `.tooLarge`, and of time `.transport`.
+	///
+	/// A strict list, as of secrets or variables, must agree with itself: a
+	/// page with more items than asked for, more items than the total GitHub
+	/// gave, or a total that changes between pages fails it. A lenient one, as
+	/// of repositories, reads what GitHub lists: an item it can't decode is
+	/// nil, a total that shifts while it's read is followed, and a missing
+	/// list with no total is empty. Either ends at a short page, or when
+	/// GitHub's `Link` names no next page; LPM Vault builds each page's URL
+	/// itself, so the token never follows one GitHub sends.
 	private func list<Item: Decodable & Sendable>(
 		_ path: [String],
 		field: String,
 		perPage: Int,
+		lenient: Bool = false,
 		budget: inout Budget,
 		as _: Item.Type
-	) async -> Result<[Item], GitHubAPIError> {
-		var items: [Item] = []
+	) async -> Result<Listed<Item?>, GitHubAPIError> {
+		var listed = Listed<Item?>()
 		var total: Int?
 		for page in 1...limits.maximumPages {
-			guard budget.bytes > 0, page == 1 || ContinuousClock.now < budget.deadline else { return .failure(.invalidResponse) }
+			guard budget.bytes > 0 else { return .failure(.tooLarge) }
+			guard page == 1 || ContinuousClock.now < budget.deadline else { return .failure(.transport) }
 			let query = [URLQueryItem(name: "per_page", value: String(perPage)), URLQueryItem(name: "page", value: String(page))]
 			guard let url = GitHubHTTP.url(baseURL, path, query: query) else { return .failure(.invalidResponse) }
 			let request = GitHubHTTP.request("GET", url, token: token)
 			guard let loaded = await Self.load(request, using: session, limit: min(GitHubHTTP.maximumResponseBytes * 4, budget.bytes), until: budget.deadline)
-			else { return .failure(Task.isCancelled ? .cancelled : .invalidResponse) }
+			else { return .failure(Task.isCancelled ? .cancelled : .transport) }
 			let data: Data
+			let response: HTTPURLResponse
 			switch loaded {
-			case .success(let value): data = value
+			case .success(let value): (data, response) = value
 			case .failure(let error): return .failure(error)
 			}
 			budget.bytes -= data.count
+			if response.value(forHTTPHeaderField: "X-GitHub-SSO")?.lowercased().hasPrefix("partial-results") == true {
+				listed.hidesSSOResults = true
+			}
 			let decoder = JSONDecoder()
 			decoder.userInfo[Page<Item>.fieldKey] = field
-			guard let decoded = try? decoder.decode(Page<Item>.self, from: data), decoded.items.count <= perPage,
-				decoded.totalCount >= 0, total == nil || total == decoded.totalCount
-			else { return .failure(.invalidResponse) }
-			total = decoded.totalCount
-			items.append(contentsOf: decoded.items)
-			guard items.count <= decoded.totalCount else { return .failure(.invalidResponse) }
-			if items.count == decoded.totalCount || decoded.items.count < perPage {
-				return items.count == decoded.totalCount ? .success(items) : .failure(.invalidResponse)
+			decoder.userInfo[Page<Item>.lenientKey] = lenient
+			guard let decoded = try? decoder.decode(Page<Item>.self, from: data), decoded.items.count <= perPage else {
+				return .failure(.invalidResponse)
+			}
+			listed.items.append(contentsOf: decoded.items)
+			if !lenient {
+				guard let pageTotal = decoded.totalCount, pageTotal >= 0, total == nil || total == pageTotal, listed.items.count <= pageTotal else {
+					return .failure(.invalidResponse)
+				}
+				total = pageTotal
+				if listed.items.count == pageTotal || decoded.items.count < perPage {
+					return listed.items.count == pageTotal ? .success(listed) : .failure(.invalidResponse)
+				}
+			} else if decoded.items.count < perPage || !Self.namesNextPage(response) {
+				return .success(listed)
 			}
 		}
-		return .failure(.invalidResponse)
+		return .failure(.tooLarge)
 	}
 
-	/// The load's body, or nil once `deadline` passes first, which cancels the load.
+	/// Whether the answer's `Link` names a next page; an answer without one
+	/// is read as having more only when its page was full.
+	private static func namesNextPage(_ response: HTTPURLResponse) -> Bool {
+		guard let link = response.value(forHTTPHeaderField: "Link") else { return true }
+		return link.split(separator: ",").contains { part in
+			part.split(separator: ";").dropFirst().contains { $0.trimmingCharacters(in: .whitespaces) == #"rel="next""# }
+		}
+	}
+
+	/// The load's body and headers, or nil once `deadline` passes first, which cancels the load.
 	private static func load(
 		_ request: URLRequest,
 		using session: URLSession,
 		limit: Int,
 		until deadline: ContinuousClock.Instant
-	) async -> Result<Data, GitHubAPIError>? {
-		await withTaskGroup(of: Result<Data, GitHubAPIError>?.self) { group in
-			group.addTask { await GitHubHTTP.load(request, using: session, limit: limit).map(\.data) }
+	) async -> Result<(Data, HTTPURLResponse), GitHubAPIError>? {
+		await withTaskGroup(of: Result<(Data, HTTPURLResponse), GitHubAPIError>?.self) { group in
+			group.addTask { await GitHubHTTP.load(request, using: session, limit: limit).map { ($0.data, $0.response) } }
 			group.addTask {
 				try? await Task.sleep(until: deadline, clock: .continuous)
 				return nil
@@ -498,9 +579,9 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		var budget = Budget(limits)
 		return await list(path, field: field, perPage: perPage, budget: &budget, as: RawRecord.self).flatMap { raws in
 			var records: [GitHubValueRecord] = []
-			records.reserveCapacity(raws.count)
-			for raw in raws {
-				guard let record = raw.record else { return .failure(.invalidResponse) }
+			records.reserveCapacity(raws.items.count)
+			for raw in raws.items {
+				guard let record = raw?.record else { return .failure(.invalidResponse) }
 				records.append(record)
 			}
 			return .success(records)
@@ -524,12 +605,15 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 
 	// MARK: - Answers
 
-	/// One page of a list GitHub answers with its total and the items under `field`.
+	/// One page of a list GitHub answers with its total and the items under
+	/// `field`. On a lenient list an item that doesn't decode is nil, and a
+	/// page without the list is empty when its total is missing or zero.
 	private struct Page<Item: Decodable>: Decodable {
 		static var fieldKey: CodingUserInfoKey { CodingUserInfoKey(rawValue: "field")! }
+		static var lenientKey: CodingUserInfoKey { CodingUserInfoKey(rawValue: "lenient")! }
 
-		let totalCount: Int
-		let items: [Item]
+		let totalCount: Int?
+		let items: [Item?]
 
 		private struct Key: CodingKey {
 			let stringValue: String
@@ -538,13 +622,32 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 			init?(intValue: Int) { nil }
 		}
 
+		/// An item that's nil when it doesn't decode.
+		private struct Lenient: Decodable {
+			let item: Item?
+			init(from decoder: any Decoder) throws { item = try? Item(from: decoder) }
+		}
+
 		init(from decoder: any Decoder) throws {
 			guard let field = decoder.userInfo[Self.fieldKey] as? String else {
 				throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "No field"))
 			}
+			let lenient = decoder.userInfo[Self.lenientKey] as? Bool ?? false
 			let container = try decoder.container(keyedBy: Key.self)
-			totalCount = try container.decode(Int.self, forKey: Key(stringValue: "total_count"))
-			items = try container.decode([Item].self, forKey: Key(stringValue: field))
+			let itemsKey = Key(stringValue: field)
+			if lenient {
+				totalCount = try container.decodeIfPresent(Int.self, forKey: Key(stringValue: "total_count"))
+				if container.contains(itemsKey) {
+					items = try container.decode([Lenient].self, forKey: itemsKey).map(\.item)
+				} else if (totalCount ?? 0) == 0 {
+					items = []
+				} else {
+					throw DecodingError.keyNotFound(itemsKey, .init(codingPath: [], debugDescription: "No items"))
+				}
+			} else {
+				totalCount = try container.decode(Int.self, forKey: Key(stringValue: "total_count"))
+				items = try container.decode([Item].self, forKey: itemsKey)
+			}
 		}
 	}
 
@@ -559,19 +662,34 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	}
 
 	private struct RawRepository: Decodable, Sendable {
+		/// The person's roles on the repository, as GitHub lists them.
+		struct Permissions: Decodable, Sendable {
+			let admin: Bool?
+			let maintain: Bool?
+			let push: Bool?
+		}
+
 		let id: Int64
 		let fullName: String
 		let isPrivate: Bool?
+		let archived: Bool?
+		let permissions: Permissions?
 
 		private enum CodingKeys: String, CodingKey {
 			case id
 			case fullName = "full_name"
 			case isPrivate = "private"
+			case archived
+			case permissions
 		}
 
 		var repository: GitHubRepository? {
 			guard let id = GitHubHTTP.id(id), GitHubPublishTarget.isValidFullName(fullName) else { return nil }
-			return GitHubRepository(id: id, fullName: fullName, isPrivate: isPrivate ?? true)
+			let permission: GitHubRepository.Permission? = permissions.map { roles in
+				if roles.admin == true { return .admin }
+				return roles.push == true || roles.maintain == true ? .write : .read
+			}
+			return GitHubRepository(id: id, fullName: fullName, isPrivate: isPrivate ?? true, isArchived: archived ?? false, permission: permission)
 		}
 	}
 

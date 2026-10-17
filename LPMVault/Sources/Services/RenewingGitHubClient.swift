@@ -47,7 +47,7 @@ actor RenewingGitHubClient: GitHubClientProtocol {
 	}
 
 	func user() async -> Result<GitHubUser, GitHubAPIError> { await send { await $0.user() } }
-	func repositories() async -> Result<[GitHubRepository], GitHubAPIError> { await send { await $0.repositories() } }
+	func repositories() async -> Result<GitHubRepositoryList, GitHubAPIError> { await send { await $0.repositories() } }
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> { await send { await $0.repository(id: id) } }
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
 		await send { await $0.environments(of: repository) }

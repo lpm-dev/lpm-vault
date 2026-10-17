@@ -237,6 +237,8 @@ final class GitHubDestinationForm {
 	}
 	/// By `owner/name`.
 	var repositories: PublishSession.Loadable<[GitHubRepository]> = .idle
+	/// Whether GitHub left out an organization's repositories until the person signs in with its single sign-on.
+	var hidesSSORepositories = false
 	/// The chosen repository's deployment environments.
 	var environments: PublishSession.Loadable<[GitHubEnvironment]> = .idle
 	@ObservationIgnored var didChange: (Field) -> Void = { _ in }

@@ -948,7 +948,7 @@ private final class ScriptedGitHub: GitHubClientProtocol, @unchecked Sendable {
 			return answers.count > 1 ? answers.removeFirst() : answers[0]
 		}
 	}
-	func repositories() async -> Result<[GitHubRepository], GitHubAPIError> { .failure(.notFound) }
+	func repositories() async -> Result<GitHubRepositoryList, GitHubAPIError> { .failure(.notFound) }
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> { .failure(.notFound) }
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> { .failure(.notFound) }
 	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> { .failure(.notFound) }
