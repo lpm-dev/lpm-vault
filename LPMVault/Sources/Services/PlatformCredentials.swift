@@ -73,7 +73,8 @@ actor PlatformCredentials {
 	/// `rejected` is a token the platform just refused. Its connection's token
 	/// is renewed even when it looks current, as when the clock is wrong; a
 	/// refused token already replaced, as by another renewal, is answered with
-	/// its replacement. A refused token that doesn't renew means connecting again.
+	/// its replacement, renewed first as any token is when that's due. A
+	/// refused token that doesn't renew means connecting again.
 	func accessToken(for connectionID: PlatformConnection.ID, replacing rejected: String? = nil) async -> Result<String, PlatformCredentialError> {
 		if let task = running[connectionID] {
 			sharedReads += 1
@@ -110,13 +111,14 @@ actor PlatformCredentials {
 		case .success(let value): record = value
 		case .failure(let error): return .done(.failure(.store(error)))
 		}
-		if let rejected, rejected != record.accessToken { return .done(.success(record.accessToken)) }
+		// Only the refused token itself is renewed for the refusal; a replacement is read as any token is.
+		let refused = rejected == record.accessToken
 		guard let refresh = record.refresh else {
-			return .done(rejected == nil ? .success(record.accessToken) : .failure(.expired))
+			return .done(refused ? .failure(.expired) : .success(record.accessToken))
 		}
 		guard !refresh.isRejected else { return .done(.failure(.expired)) }
 		let date = now()
-		guard rejected != nil || refresh.isDue(at: date) else { return .done(.success(record.accessToken)) }
+		guard refused || refresh.isDue(at: date) else { return .done(.success(record.accessToken)) }
 		// A request already sent may have renewed the token, so it's finished even past the refresh token's expiry.
 		guard refresh.attempt != nil || date < refresh.expiresAt,
 			let platform = BrowserPlatform(record.connection.platform)

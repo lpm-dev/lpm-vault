@@ -481,17 +481,31 @@ struct PlatformCredentialsTests {
 			expiresAt: issued.addingTimeInterval(15_897_600), obtainedAt: issued, principalID: platformTestPrincipal))
 	}
 
-	@Test("tokens collected after their access token expired are saved, then renewed again with the refresh token they carry")
-	func renewsLateResult() async throws {
+	@Test("tokens collected after their access token expired are saved, then renewed again with the refresh token they carry, whether or not the old one was refused", arguments: [false, true])
+	func renewsLateResult(refused: Bool) async throws {
 		let id = try await connect()
-		let clock = TestDate(start.addingTimeInterval(8 * 3_600 - 60))
+		let clock = TestDate(start.addingTimeInterval(refused ? 60 : 8 * 3_600 - 60))
 		let refresher = ScriptedTokenRefresher { call, index in
 			index == 0
 				? ScriptedTokenRefresher.renewed(call, access: "nfo_stale_access", refresh: "nfo_stale_refresh", age: 30_000)
 				: ScriptedTokenRefresher.renewed(call)
 		}
-		#expect(await credentials(refresher, at: clock).accessToken(for: id) == .success("nfo_renewed_access"))
+		let credentials = credentials(refresher, at: clock)
+		let token = await credentials.accessToken(for: id, replacing: refused ? "nfo_access_old" : nil)
+		#expect(token == .success("nfo_renewed_access"))
 		#expect(refresher.calls.map(\.refreshToken) == ["nfo_refresh_old", "nfo_stale_refresh"])
+	}
+
+	@Test("a refusal of a token already replaced is answered with the replacement only when it's usable; one due, or with an unfinished renewal, is renewed first")
+	func refusedTokenReplacedByDueOne() async throws {
+		let attempt = PlatformTokenRefresh.Attempt.make(at: start)
+		for (lifetime, pending) in [(TimeInterval(60), nil), (8 * 3_600, attempt)] {
+			let id = try await connect(lifetime: lifetime, attempt: pending)
+			let refresher = ScriptedTokenRefresher { call, _ in ScriptedTokenRefresher.renewed(call) }
+			let credentials = credentials(refresher, at: TestDate(start.addingTimeInterval(30)))
+			#expect(await credentials.accessToken(for: id, replacing: "nfo_some_older_token") == .success("nfo_renewed_access"))
+			#expect(refresher.calls.map(\.refreshToken) == ["nfo_refresh_old"])
+		}
 	}
 
 	@Test("callers asking while a renewal runs share it", .timeLimit(.minutes(1)))
