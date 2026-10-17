@@ -2,20 +2,20 @@
   "abiVersion": 1,
   "artifacts": {
     "LPMEnv.xcframework/Info.plist": "c79b361b7c42646d976e8da63552bbffd4e896cc6bb98da4dd465d911fe498e2",
-    "LPMEnv.xcframework/macos-arm64_x86_64/Headers/lpm_env.h": "94a8291864420f4feb3e69881840d1d5334caa66bcbd58a307472032953c432b",
+    "LPMEnv.xcframework/macos-arm64_x86_64/Headers/lpm_env.h": "695aadbcd8fdfc65034e419aac3209e5711fe6665d258aeca730b71740844264",
     "LPMEnv.xcframework/macos-arm64_x86_64/Headers/module.modulemap": "17af0dabb7c84e8389670547eb7e75e8de0025d0995933f66eaaa7f7b060ec21",
-    "LPMEnv.xcframework/macos-arm64_x86_64/libLPMEnv.a": "cc95c5ff310ab4a55f52871c778477e35e4c857136f74aab91c7e9a52c711352"
+    "LPMEnv.xcframework/macos-arm64_x86_64/libLPMEnv.a": "9c690de26b8c7fd4a016b0324f714bc31e7423bab278569e46f01bfa247a79b1"
   },
   "repository": "https://github.com/lpm-dev/rust-client",
-  "revision": "34f1465d5eb9dffccf47df5351cfb138f3c54738",
+  "revision": "f5d62fc97e757a6687e02d97414a5058d5939945",
   "sources": {
     ".cargo/config.toml": "fccee23445e297786f527a4c0ae0b0171ba8bc5bf7c3ce001fd1f2c81f624ece",
-    "Cargo.lock": "915a17ad8bb43442067ce7f7e8c5443bcc81a5755e326f8d4a320111bdbf6616",
-    "Cargo.toml": "de2a239396a4281470f7c7301915d5bfb9b0f23f1cb5a85a2ac3b1f98c89f392",
-    "crates/lpm-env-ffi/Cargo.toml": "b1718673c5e15465999aa5e91b0426047053c5033c460aa05a47755c0452032f",
-    "crates/lpm-env-ffi/include/lpm_env.h": "94a8291864420f4feb3e69881840d1d5334caa66bcbd58a307472032953c432b",
+    "Cargo.lock": "d468288c5ffb5c5ca6a46f17de5fcb06cf7b179d242e49e405056efbb4c419dd",
+    "Cargo.toml": "e9b8628511c0176ac775cfd9e492863462c1d70d37131f52f43a027db6b4597e",
+    "crates/lpm-env-ffi/Cargo.toml": "baaa7748883d6ad2dedf3d306aa0163e6ef1fedac4e4db230ad54bd4c3715721",
+    "crates/lpm-env-ffi/include/lpm_env.h": "695aadbcd8fdfc65034e419aac3209e5711fe6665d258aeca730b71740844264",
     "crates/lpm-env-ffi/include/module.modulemap": "17af0dabb7c84e8389670547eb7e75e8de0025d0995933f66eaaa7f7b060ec21",
-    "crates/lpm-env-ffi/src/lib.rs": "cb095f4994a6692f94eaffc9299ea3e9f662d957cfa032e1e8dbc90eecaad4a9",
+    "crates/lpm-env-ffi/src/lib.rs": "c8342d8686f539c3214f67a20a0ee156c136b58990eed01b46cf2f7038066b29",
     "crates/lpm-env-source/Cargo.toml": "f13f89c25252bfc34ccacdaea6b0e40ae65e81b70f0d5bbb6627991ca294e9bc",
     "crates/lpm-env-source/src/graph.rs": "df930bb9c92eafe65c532cf303047dc0e53ba7b3b613ab00f8ed42a6d391ed8f",
     "crates/lpm-env-source/src/lib.rs": "28669f5bbb6394c46df5d8de4adf05e8de57590507b2653089b876ee9836d1c9",

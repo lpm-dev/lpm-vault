@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import os
+import SwiftUI
 import Testing
 @testable import LPMVault
 
@@ -79,25 +80,6 @@ struct PublishSessionTests {
 		let history = try await publishing.history(of: try #require(saved.first).id, in: vault).get()
 		#expect(Set(history.keys.keys) == ["API_TOKEN", "NEXT_PUBLIC_URL"] && history.keys["NEXT_PUBLIC_URL"]?.publishedAsSecret == false)
 		#expect(session.saved?.id == saved.first?.id)
-	}
-
-	@Test("a GitHub connection isn't offered for publishing yet, so its token never reaches another platform's client")
-	func gitHubNotOffered() async throws {
-		try await connect()
-		_ = try await connections.save(
-			.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: nil, appSlug: "lpm-vault")),
-			accessToken: "ghu_secret", at: Date()).get()
-		let tokens = TokenLog()
-		let api = api
-		let session = session(client: { token in
-			tokens.append(token)
-			return api
-		})
-		session.start()
-		#expect(try await waitUntil { session.vercel?.projects.value != nil })
-		#expect(session.connections.value?.map(\.id) == ["vercel.team_acme"])
-		#expect(session.connectionID == "vercel.team_acme", "The only connection that can publish is chosen")
-		#expect(Set(tokens.values) == ["vca_1"])
 	}
 
 	@Test("a saved destination opens on its review, with what this Mac published there")
@@ -1063,6 +1045,441 @@ struct NetlifyPublishSessionTests {
 }
 
 @MainActor
+struct GitHubPublishSessionTests {
+	private let keychain = MockKeychainService()
+	private let api = FakeGitHubAPI()
+	private let vault = "publish-session-vault"
+	private let values = ValuesBox([
+		"production": ["API_TOKEN": "tok", "LOG_LEVEL": "info", "NEXT_PUBLIC_URL": "https://x"],
+		"staging": ["API_TOKEN": "staging-tok"],
+	])
+	private let confirmations = Confirmations()
+	private let rules = ProjectEnvSchemaOverview(
+		rules: [
+			ProjectEnvSchemaOverview.Rule(key: "NEXT_PUBLIC_URL", isPublic: true, source: nil, badges: []),
+			ProjectEnvSchemaOverview.Rule(key: "LOG_LEVEL", isPublic: false, source: nil, badges: [], isCIVariable: true),
+		],
+		groups: [])
+	private let repositoryScope = GitHubScope(repository: "northwind/storefront", environment: nil)
+
+	private var publishing: PublishingStore { PublishingStore(service: keychain) }
+	private var connections: PlatformConnectionStore { PlatformConnectionStore(service: keychain) }
+
+	private func connect(refresh: PlatformTokenRefresh? = nil) async throws {
+		_ = try await connections.save(
+			.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")),
+			accessToken: "ghu_1", refresh: refresh, at: Date()).get()
+	}
+
+	private func session(
+		saved: PublishDestination? = nil,
+		source: String = "production",
+		tokens: TokenLog? = nil,
+		credentials: PlatformCredentials? = nil,
+		rules: PublishSession.Rules? = nil
+	) -> PublishSession {
+		let values = values
+		let confirmations = confirmations
+		let api = api
+		let rules = rules ?? .known(self.rules)
+		return PublishSession(
+			vaultID: vault, projectName: "demo-api", environments: ["production", "staging"], sourceEnvironment: source,
+			saved: saved,
+			dependencies: .init(
+				snapshot: { environment, _ in values.get(environment).map { .init(values: $0, rules: rules, check: nil) } },
+				confirm: { confirmations.ask($0) },
+				publishing: publishing,
+				connections: connections, credentials: credentials ?? PlatformCredentials(store: connections, session: { nil }),
+				vercel: { _ in
+					tokens?.append("vercel")
+					return FakeVercelAPI()
+				},
+				github: { token in
+					tokens?.append(token)
+					return api
+				},
+				githubPacing: TestPacing().pacing,
+				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
+	}
+
+	private func choose(_ session: PublishSession, repository: String = "1296269", scope: GitHubPublishTarget.Scope? = nil) async throws {
+		session.start()
+		#expect(try await waitUntil { session.github?.repositories.value != nil })
+		session.github?.repositoryID = repository
+		#expect(try await waitUntil { session.github?.environments.value != nil })
+		if let scope { session.github?.scope = scope }
+		#expect(session.canReview)
+		session.loadReview()
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
+	}
+
+	private func publish(_ session: PublishSession) async throws {
+		session.publish()
+		#expect(try await waitUntil { session.step == .results })
+	}
+
+	@Test("a GitHub repository is chosen, reviewed, published with Touch ID, and saved by its IDs with its names")
+	func publishesNewDestination() async throws {
+		try await connect()
+		let tokens = TokenLog()
+		let session = session(tokens: tokens)
+		try await choose(session)
+		#expect(session.github?.repositories.value?.map(\.fullName) == ["northwind/api", "northwind/storefront"])
+		#expect(session.github?.scope == .repository)
+		#expect(session.github?.scopeChoices.map(\.displayName) == ["Repository", "Environment production", "Environment staging/eu"])
+		let review = try #require(session.review)
+		#expect(review.platform == .github && review.selection.keys == ["API_TOKEN", "LOG_LEVEL", "NEXT_PUBLIC_URL"])
+		#expect(review.plan.row("LOG_LEVEL")?.publishesAsSecret == false && review.plan.row("NEXT_PUBLIC_URL")?.publishesAsSecret == true)
+		let notes = PublishSheet.notes(for: review)
+		#expect(notes.contains("Workflows read secrets as ${{ secrets.NAME }} and variables as ${{ vars.NAME }}."))
+		#expect(notes.contains { $0.contains("deployment environment gets that environment's secret or variable instead") })
+		try await publish(session)
+		#expect(confirmations.reasons == ["Publish 2 secrets and 1 variable to northwind/storefront / Repository on GitHub"])
+		#expect(session.results?.publishedCount == 3)
+		let names = api.names(in: repositoryScope)
+		#expect(names.secrets == ["API_TOKEN", "NEXT_PUBLIC_URL"] && names.variables == ["LOG_LEVEL"])
+		#expect(api.secretValue("API_TOKEN", in: repositoryScope)?.count == "tok".utf8.count + SealedBox.overheadBytes, "The value went sealed")
+		#expect(api.variableValue("LOG_LEVEL", in: repositoryScope) == "info")
+		let saved = try #require(try await publishing.destinations(of: vault).get().first)
+		#expect(saved.target == .github(GitHubPublishTarget(
+			userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront", scope: .repository)))
+		let history = try await publishing.history(of: saved.id, in: vault).get()
+		#expect(history.keys["LOG_LEVEL"]?.remoteID == "variable" && history.keys["API_TOKEN"]?.remoteID == "secret")
+		#expect(Set(tokens.values) == ["ghu_1"], "Only GitHub's client gets the token")
+
+		let reopened = self.session(saved: saved)
+		reopened.start()
+		#expect(try await waitUntil { reopened.review != nil || reopened.reviewError != nil })
+		#expect(reopened.review?.plan.rows.allSatisfy { $0.status.isUpToDate } == true)
+		api.edit("API_TOKEN", secret: true, in: repositoryScope)
+		reopened.loadReview()
+		#expect(try await waitUntil { reopened.review != nil && !reopened.isLoadingReview })
+		#expect(reopened.review?.plan.row("API_TOKEN")?.holds == [.changedOnPlatform])
+	}
+
+	@Test("with both kinds sent, the results count each kind apart, and a publish that couldn't be recorded names what went out")
+	func countsResultsByKind() async throws {
+		try await connect()
+		let session = session()
+		try await choose(session)
+		#expect(session.set("NEXT_PUBLIC_URL", selected: false))
+		api.fail(.createVariable, with: .server(502))
+		keychain.failAppItemWrites = ["destinations.\(vault)"]
+		try await publish(session)
+		let results = try #require(session.results)
+		#expect(results.summary == "Published 1 of 1 secret and 0 of 1 variable.")
+		#expect(results.rows.map(\.isSecret) == [true, false])
+		#expect(results.recordFailure?.hasPrefix("The secret was published, but the destination couldn't be saved.") == true)
+		let flipped = PublishSession.Results(
+			destination: results.destination,
+			rows: results.rows.map { .init(key: $0.key, outcome: $0.outcome, isSecret: !$0.isSecret, isStored: $0.isStored) },
+			needsReconnect: results.needsReconnect, recordFailure: results.recordFailure)
+		#expect(flipped != results, "Results sent as the other kind aren't the same results")
+	}
+
+	@Test("a write gone when it was read back is kept in the history but isn't a value to redeploy")
+	func goneWriteIsntStored() async throws {
+		try await connect()
+		let session = session()
+		try await choose(session)
+		#expect(session.set("LOG_LEVEL", selected: false) && session.set("NEXT_PUBLIC_URL", selected: false))
+		api.dropWrites(of: "API_TOKEN")
+		try await publish(session)
+		let results = try #require(session.results)
+		#expect(results.rows.map(\.isStored) == [false])
+		#expect(PublishSheet.resultsHeader(for: results) == "Published 0 of 1 secret.")
+	}
+
+	@Test("the results header says to redeploy only when something was published")
+	func resultsHeaderRedeploysOnlyWhatWasPublished() throws {
+		let destination = PublishDestination(
+			sourceEnvironment: "production",
+			target: .github(GitHubPublishTarget(
+				userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront", scope: .repository)),
+			createdAt: Date(timeIntervalSince1970: 1_760_000_000))
+		let failed = PublishSession.Results(
+			destination: destination, rows: [.init(key: "A", outcome: .failed("GitHub couldn't be reached."), isSecret: true, isStored: false)],
+			needsReconnect: false, recordFailure: nil)
+		#expect(PublishSheet.resultsHeader(for: failed) == "Published 0 of 1 secret.")
+		let stored = PublishSession.Results(
+			destination: destination, rows: [.init(key: "A", outcome: .failed("Stored, but not as sent."), isSecret: true, isStored: true)],
+			needsReconnect: false, recordFailure: nil)
+		#expect(PublishSheet.resultsHeader(for: stored).hasSuffix("Re-run a workflow to use them now."), "The platform has a new value, though its row failed")
+		let published = PublishSession.Results(
+			destination: destination, rows: [.init(key: "A", outcome: .published, isSecret: true, isStored: true)], needsReconnect: false,
+			recordFailure: nil)
+		#expect(PublishSheet.resultsHeader(for: published)
+			== "Published 1 of 1 secret. Workflow runs that start from now on get the new values. Re-run a workflow to use them now.")
+	}
+
+	@Test("a row's details call GitHub's secrets secrets, in lowercase, when one stays a secret or will be stored as one")
+	func detailsNameSecrets() async throws {
+		try await connect()
+		api.edit("LOG_LEVEL", secret: true, in: repositoryScope)
+		let first = session()
+		try await choose(first)
+		let review = try #require(first.review)
+		let staying = try #require(review.plan.row("LOG_LEVEL"))
+		#expect(staying.staysSecret)
+		#expect(PublishSheet.detail(staying, review: review).contains("stays a secret on GitHub"))
+
+		api.remove("LOG_LEVEL", secret: true, in: repositoryScope)
+		first.loadReview()
+		#expect(try await waitUntil { first.review != nil && !first.isLoadingReview })
+		try await publish(first)
+		let saved = try #require(try await publishing.destinations(of: vault).get().first)
+		api.remove("LOG_LEVEL", secret: false, in: repositoryScope)
+		let unruled = session(saved: saved, rules: .known(ProjectEnvSchemaOverview(rules: [], groups: [])))
+		unruled.start()
+		#expect(try await waitUntil { unruled.review != nil || unruled.reviewError != nil })
+		let reviewed = try #require(unruled.review)
+		let protecting = try #require(reviewed.plan.row("LOG_LEVEL"))
+		#expect(protecting.publishesAsSecret && protecting.status.protectionChanged)
+		#expect(PublishSheet.detail(protecting, review: reviewed).contains("will be stored as a secret"))
+	}
+
+	@Test("refreshing the repositories lists the chosen one's environments again, by the name GitHub gives it now")
+	func refreshKeepsEnvironments() async throws {
+		try await connect()
+		let session = session()
+		session.start()
+		#expect(try await waitUntil { session.github?.repositories.value != nil })
+		session.github?.repositoryID = "1296269"
+		#expect(try await waitUntil { session.github?.environments.value != nil })
+		api.rename("1296269", to: "northwind/shop")
+		session.reloadChoices()
+		#expect(try await waitUntil { session.github?.repository?.fullName == "northwind/shop" && session.github?.environments.value != nil })
+		#expect(session.github?.scopeChoices.map(\.displayName) == ["Repository", "Environment production", "Environment staging/eu"])
+		#expect(api.requests.filter { $0.0 == .environments }.map(\.1) == ["northwind/storefront", "northwind/shop"])
+	}
+
+	@Test("a saved destination whose repository was renamed lists its environments under the new name")
+	func renamedSavedRepository() async throws {
+		try await connect()
+		let saved = PublishDestination(
+			sourceEnvironment: "production",
+			target: .github(GitHubPublishTarget(
+				userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront",
+				scope: .environment(id: "161088068", name: "production"))),
+			createdAt: Date(timeIntervalSince1970: 1_760_000_000))
+		_ = try await publishing.save(saved, to: vault).get()
+		api.rename("1296269", to: "northwind/shop")
+		let session = session(saved: saved)
+		session.start()
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
+		session.showDestination()
+		#expect(try await waitUntil { session.github?.environments.value != nil })
+		#expect(session.github?.repository?.fullName == "northwind/shop")
+		#expect(session.github?.scopeChoices.count == 3)
+		#expect(!api.requests.contains { $0.0 == .environments && $0.1 == "northwind/storefront" }, "The old name isn't used")
+	}
+
+	@Test("a review of a repository the person can't change says why, before reading its secrets", arguments: [
+		(true, GitHubRepository.Permission.admin, GitHubPublishTarget.Scope.repository, "northwind/storefront is archived on GitHub, so its secrets and variables can't change."),
+		(false, .read, .repository, "Your role on northwind/storefront can't change its secrets and variables. That needs write access."),
+		(false, .write, .environment(id: "161088068", name: "production"), "Changing an environment's secrets and variables needs admin access to northwind/storefront."),
+	])
+	func refusesWithoutAccess(archived: Bool, permission: GitHubRepository.Permission, scope: GitHubPublishTarget.Scope, refusal: String) async throws {
+		try await connect()
+		api.setAccess(of: "1296269", archived: archived, permission: permission)
+		let session = session()
+		try await choose(session, scope: scope)
+		#expect(session.reviewError == refusal)
+		#expect(!api.requests.contains { $0.0 == .listSecrets || $0.0 == .listVariables })
+	}
+
+	@Test("what GitHub left out of a listing, single sign-on or a refused installation, is carried to the sheet, and gone after a listing without it")
+	func carriesListingNotes() async throws {
+		try await connect()
+		let skipped = [GitHubSkippedInstallation(account: "acme", isSuspended: true)]
+		api.setListing(hidesSSO: true, skipped: skipped)
+		let session = session()
+		session.start()
+		#expect(try await waitUntil { session.github?.repositories.value != nil })
+		#expect(session.github?.hidesSSORepositories == true && session.github?.skippedInstallations == skipped)
+		api.setListing(hidesSSO: false)
+		session.reloadChoices()
+		#expect(try await waitUntil { session.github?.repositories.value != nil && session.github?.hidesSSORepositories == false })
+		#expect(session.github?.skippedInstallations == [])
+
+		api.setListing(hidesSSO: true, skipped: skipped)
+		session.reloadChoices()
+		#expect(try await waitUntil { session.github?.hidesSSORepositories == true })
+		api.fail(.repository, with: .server(502))
+		session.reloadChoices()
+		#expect(try await waitUntil {
+			if case .failed? = session.github?.repositories { return true }
+			return false
+		})
+		#expect(session.github?.hidesSSORepositories == false && session.github?.skippedInstallations == [], "A listing that fails says nothing GitHub left out")
+	}
+
+	@Test("a review over both of GitHub's limits on a repository says both, one after the other")
+	func joinsOverflows() async throws {
+		try await connect()
+		for index in 0..<99 { api.edit("OLD_SECRET_\(index)", secret: true, in: repositoryScope) }
+		for index in 0..<500 { api.edit("OLD_VARIABLE_\(index)", secret: false, in: repositoryScope) }
+		let session = session()
+		try await choose(session)
+		let review = try #require(session.review)
+		#expect(PublishSheet.overflowMessage(for: review) == [
+			"GitHub keeps at most 100 of a repository's own secrets, and this would make 101. Leave out 1 new secret.",
+			"GitHub keeps at most 500 of a repository's own variables, and has 500 already. Leave out the new variable, or remove some on GitHub.",
+		].joined(separator: " "))
+	}
+
+	@Test("the rules note calls GitHub's secrets secrets, in lowercase, whether the project has no rules or they can't be read")
+	func rulesNoteNamesSecrets() async throws {
+		try await connect()
+		let none = session(rules: PublishSession.Rules.none)
+		try await choose(none)
+		#expect(PublishSheet.notes(for: try #require(none.review)).contains("This project has no rules, so keys publish as secrets."))
+		let unreadable = session(rules: .unreadable)
+		try await choose(unreadable)
+		#expect(PublishSheet.notes(for: try #require(unreadable.review))
+			.contains("lpm.json's rules can't be read, so values aren't checked, and keys publish as secrets."))
+	}
+
+	@Test("the note on skipped installations names their accounts, in the plural for several, and says what to do")
+	func notesSkippedInstallations() {
+		let suspended = { GitHubSkippedInstallation(account: $0, isSuspended: true) }
+		let refused = { GitHubSkippedInstallation(account: $0, isSuspended: false) }
+		#expect(PublishSheet.skippedInstallationNotes([]) == [])
+		#expect(PublishSheet.skippedInstallationNotes([suspended("acme")]) == [
+			"LPM Vault's GitHub App is suspended on acme, so its repositories aren't listed. An owner of acme can unsuspend it in acme's settings on GitHub, unless LPM Vault suspended it.",
+		])
+		#expect(PublishSheet.skippedInstallationNotes([suspended(nil)]).first?.hasSuffix(
+			"An owner of the account can unsuspend it in its settings on GitHub, unless LPM Vault suspended it.") == true)
+		#expect(PublishSheet.skippedInstallationNotes([suspended("acme"), suspended("northwind"), refused(nil)]) == [
+			"LPM Vault's GitHub App is suspended on acme and northwind, so their repositories aren't listed. An owner of each account can unsuspend it in its settings on GitHub, unless LPM Vault suspended it.",
+			"GitHub refused to list the repositories of LPM Vault's GitHub App on an account, as when it was uninstalled meanwhile. Refresh, or install the app there again.",
+		])
+		let joined = ListFormatter.localizedString(byJoining: ["a", "b", "c", "2 other accounts"])
+		#expect(PublishSheet.skippedInstallationNotes([refused("a"), refused("b"), refused("c"), refused("d"), refused(nil)]) == [
+			"GitHub refused to list the repositories of LPM Vault's GitHub App on \(joined), as when it was uninstalled meanwhile. Refresh, or install the app there again.",
+		])
+		#expect(PublishSheet.skippedInstallationNotes([suspended(nil), suspended(nil)]).first?.hasPrefix(
+			"LPM Vault's GitHub App is suspended on 2 accounts, so their repositories aren't listed.") == true)
+	}
+
+	@Test("environments of a repository moved since it was listed say to refresh, not to review again")
+	func movedEnvironments() async throws {
+		try await connect()
+		api.fail(.environments, with: .moved)
+		let session = session()
+		session.start()
+		#expect(try await waitUntil { session.github?.repositories.value != nil })
+		session.github?.repositoryID = "1296269"
+		#expect(try await waitUntil { if case .failed? = session.github?.environments { true } else { false } })
+		#expect(session.github?.environments == .failed("The repository was renamed or transferred on GitHub. Refresh to list it again."))
+	}
+
+	@Test("a publish that would take the repository past GitHub's secrets isn't sent, and asks nothing")
+	func refusesOverflow() async throws {
+		try await connect()
+		for index in 0..<99 { api.edit("OLD_\(index)", secret: true, in: repositoryScope) }
+		let session = session()
+		try await choose(session)
+		let review = try #require(session.review)
+		#expect(review.plan.overflows(of: review.selection).first?.excess == 1)
+		session.publish()
+		#expect(!session.isPublishing && session.step == .review, "Publishing starts at once when it starts at all")
+		#expect(confirmations.reasons.isEmpty)
+	}
+
+	@Test("an environment's destination writes the environment's secrets, and a review says only its jobs get them")
+	func environmentScope() async throws {
+		try await connect()
+		let session = session(source: "staging")
+		try await choose(session, scope: .environment(id: "161088069", name: "staging/eu"))
+		let review = try #require(session.review)
+		#expect(PublishSheet.notes(for: review).contains { $0.contains("Only jobs that use the staging/eu environment get these values") })
+		try await publish(session)
+		#expect(api.names(in: GitHubScope(repository: "northwind/storefront", environment: "staging/eu")).secrets == ["API_TOKEN"])
+		#expect(api.names(in: repositoryScope).secrets.isEmpty)
+	}
+
+	@Test("a saved destination follows its repository's rename, and is saved with the new name when it publishes")
+	func followsRename() async throws {
+		try await connect()
+		let saved = PublishDestination(
+			sourceEnvironment: "production",
+			target: .github(GitHubPublishTarget(
+				userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront",
+				scope: .environment(id: "161088068", name: "production"))),
+			createdAt: Date(timeIntervalSince1970: 1_759_000_000))
+		_ = try await publishing.save(saved, to: vault).get()
+		api.rename("1296269", to: "northwind/shop")
+		let session = session(saved: saved)
+		session.start()
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
+		let review = try #require(session.review)
+		guard case .github(let target) = review.destination.target else { Issue.record("Not a GitHub destination"); return }
+		#expect(target.repositoryName == "northwind/shop" && review.needsSave)
+		try await publish(session)
+		#expect(api.names(in: GitHubScope(repository: "northwind/shop", environment: "production")).secrets == ["API_TOKEN", "NEXT_PUBLIC_URL"])
+		guard case .github(let stored)? = try await publishing.destinations(of: vault).get().first?.target else {
+			Issue.record("Not saved")
+			return
+		}
+		#expect(stored.repositoryName == "northwind/shop")
+	}
+
+	@Test("a saved destination whose environment is gone says so instead of reviewing")
+	func missingEnvironment() async throws {
+		try await connect()
+		let saved = PublishDestination(
+			sourceEnvironment: "production",
+			target: .github(GitHubPublishTarget(
+				userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront",
+				scope: .environment(id: "161088068", name: "production"))),
+			createdAt: Date(timeIntervalSince1970: 1_759_000_000))
+		_ = try await publishing.save(saved, to: vault).get()
+		api.removeEnvironments(of: "northwind/storefront")
+		let session = session(saved: saved)
+		session.start()
+		#expect(try await waitUntil { session.reviewError != nil })
+		#expect(session.reviewError == "The environment production isn't in northwind/storefront any more. Choose another destination.")
+	}
+
+	@Test("a GitHub token about to expire is renewed through lpm.dev before the repositories are listed, and the review uses the new one")
+	func renewsToken() async throws {
+		let now = Date()
+		try await connect(refresh: PlatformTokenRefresh(
+			token: "ghr_1", accessTokenExpiresAt: now.addingTimeInterval(60), expiresAt: now.addingTimeInterval(86_400),
+			obtainedAt: now.addingTimeInterval(-28_000), principalID: platformTestPrincipal))
+		let refresher = ScriptedTokenRefresher { call, _ in
+			ScriptedTokenRefresher.renewed(call, access: "ghu_2", refresh: "ghr_2", platform: "github")
+		}
+		let credentials = PlatformCredentials(
+			store: connections, refresher: refresher, session: { platformTestSession(URL(string: "http://localhost:3000")!) })
+		let tokens = TokenLog()
+		let session = session(tokens: tokens, credentials: credentials)
+		try await choose(session)
+		#expect(session.review != nil)
+		#expect(refresher.calls.map(\.refreshToken) == ["ghr_1"])
+		#expect(refresher.calls.first?.platform == .github)
+		#expect(Set(tokens.values) == ["ghu_2"], "Every request after the renewal uses the new token")
+		#expect(try await connections.record(for: "github.583231").get().refresh?.token == "ghr_2")
+	}
+
+	@Test("a GitHub connection whose token lpm.dev won't renew says to connect GitHub again")
+	func expiredConnection() async throws {
+		let now = Date()
+		try await connect(refresh: PlatformTokenRefresh(
+			token: "ghr_1", accessTokenExpiresAt: now.addingTimeInterval(60), expiresAt: now.addingTimeInterval(86_400),
+			obtainedAt: now.addingTimeInterval(-28_000), principalID: platformTestPrincipal))
+		let refresher = ScriptedTokenRefresher { _, _ in .success(.failed(code: "refresh_rejected")) }
+		let credentials = PlatformCredentials(
+			store: connections, refresher: refresher, session: { platformTestSession(URL(string: "http://localhost:3000")!) })
+		let session = session(credentials: credentials)
+		session.start()
+		#expect(try await waitUntil { if case .failed? = session.github?.repositories { true } else { false } })
+		#expect(session.github?.repositories == .failed("The GitHub connection expired. Connect GitHub again on the Platforms page."))
+	}
+}
+
+@MainActor
 private final class ValuesBox {
 	private var environments: [String: [String: String]]
 	init(_ environments: [String: [String: String]]) { self.environments = environments }
@@ -1407,6 +1824,97 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("forgotten on this Mac"))
 			#expect(try await host.waitForText("storefront / Production"))
 			#expect(session.step == .destination && session.canReview)
+		}
+
+		@Test("a GitHub publish says whether the repository is private, installs the app on more, lists them again, and counts secrets and variables apart")
+		func publishesToGitHub() async throws {
+			let environments = ["production": ["API_TOKEN": "tok", "SHARED_KEY": "s"]]
+			keychain.envStorage["project"] = (name: "demo-api", path: "", environments: environments)
+			let github = FakeGitHubAPI()
+			let store = VaultStore(
+				keychainService: keychain, biometricService: biometric, apiService: MockAPIService(),
+				authTokenProvider: { _, _ in nil }, githubClient: { _ in github })
+			store.projects = [VaultProject(id: "project", name: "demo-api", path: "", environments: environments)]
+			store.isUnlocked = true
+			store.openProject(id: "project")
+			store.selectEnvironment("production")
+			_ = try await store.platformConnectionStore.save(
+				.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")),
+				accessToken: "ghu_1", at: Date()).get()
+			let session = try #require(store.makePublishSession())
+			let opened = OpenedURLs()
+			let sheet = PublishSheet(store: store, session: session)
+				.environment(\.openURL, OpenURLAction { url in
+					opened.append(url)
+					return .handled
+				})
+			let host = SheetTestHost(sheet, size: NSSize(width: 640, height: 640), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitUntil { session.github?.repositories.value != nil })
+			#expect(try await host.waitForText("Secrets and variables"))
+			#expect(try await host.waitForText("needs LPM Vault's GitHub App"))
+			try await host.click("Install on GitHub")
+			#expect(try await host.waitUntil { !opened.urls.isEmpty })
+			#expect(opened.urls == [URL(string: "https://github.com/apps/lpm-vault/installations/new")!])
+
+			session.github?.repositoryID = "1296269"
+			#expect(try await host.waitForText("northwind/storefront · Private"), "The chosen repository says it's private in words")
+			#expect(try await host.waitUntil { session.github?.environments.value != nil })
+			let listings = { github.requests.filter { $0.0 == .repository && $0.1 == "*" }.count }
+			#expect(listings() == 1)
+			try await host.click("Refresh repositories")
+			#expect(try await host.waitUntil { listings() == 2 && session.github?.environments.value != nil })
+			#expect(github.requests.filter { $0.0 == .environments }.count == 2, "The chosen repository's environments are listed again")
+
+			github.edit("SHARED_KEY", secret: true, in: GitHubScope(repository: "northwind/storefront", environment: nil))
+			try await host.click("Review secrets and variables")
+			#expect(try await host.waitForText("Publish 2 secrets", exactly: true))
+			#expect(try await host.waitForText("Replaces a secret already on GitHub"), "A secret isn't called a variable")
+			try await host.click("Publish 2 secrets")
+			#expect(try await host.waitForText("Published 2 of 2 secrets."))
+			#expect(try await host.waitForText("Workflow runs that start from now on get the new values"))
+			#expect(biometric.confirmationReasons == ["Publish 2 secrets to northwind/storefront / Repository on GitHub"])
+			#expect(github.names(in: GitHubScope(repository: "northwind/storefront", environment: nil)).secrets == ["API_TOKEN", "SHARED_KEY"])
+		}
+
+		@Test("a GitHub publish past what GitHub keeps says how many to leave out and can't be sent; the sheet says while environments load, and what GitHub left out")
+		func blocksOverflow() async throws {
+			let environments = ["production": ["API_TOKEN": "tok", "SHARED_KEY": "s"]]
+			keychain.envStorage["project"] = (name: "demo-api", path: "", environments: environments)
+			let github = FakeGitHubAPI()
+			let repository = GitHubScope(repository: "northwind/storefront", environment: nil)
+			for index in 0..<99 { github.edit("OLD_\(index)", secret: true, in: repository) }
+			github.setListing(hidesSSO: true, skipped: [GitHubSkippedInstallation(account: "acme", isSuspended: true)])
+			let gate = TestGate()
+			github.environmentsGate = gate
+			let store = VaultStore(
+				keychainService: keychain, biometricService: biometric, apiService: MockAPIService(),
+				authTokenProvider: { _, _ in nil }, githubClient: { _ in github })
+			store.projects = [VaultProject(id: "project", name: "demo-api", path: "", environments: environments)]
+			store.isUnlocked = true
+			store.openProject(id: "project")
+			store.selectEnvironment("production")
+			_ = try await store.platformConnectionStore.save(
+				.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")),
+				accessToken: "ghu_1", at: Date()).get()
+			let session = try #require(store.makePublishSession())
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 640),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("GitHub left out repositories of an organization with single sign-on"))
+			#expect(try await host.waitForText("LPM Vault's GitHub App is suspended on acme"))
+			session.github?.repositoryID = "1296269"
+			#expect(try await host.waitForText("Loading environments…"))
+			#expect(try await host.waitForText("A repository that isn't listed needs LPM Vault's GitHub App."), "The hint stays while environments load")
+			await gate.open()
+			#expect(try await host.waitForTextToDisappear("Loading environments…"))
+			try await host.click("Review secrets and variables")
+			let overflow = "GitHub keeps at most 100 of a repository's own secrets, and this would make 101. Leave out 1 new secret."
+			#expect(try await host.waitForText(overflow))
+			let publish = try await host.waitForElement(saying: "Publish 2 secrets")
+			#expect(!publish.isEnabledNow, "Publish can't be pressed until a new secret is left out")
+			#expect(publish.help == overflow, "VoiceOver says why Publish can't be pressed")
+			#expect(biometric.confirmationReasons.isEmpty)
 		}
 
 		@Test("a Coolify publish names the application and its deployments, explains a value Coolify would break, and says to redeploy")

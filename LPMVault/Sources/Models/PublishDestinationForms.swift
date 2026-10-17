@@ -6,6 +6,7 @@ enum PublishDestinationForm {
 	case vercel(VercelDestinationForm)
 	case coolify(CoolifyDestinationForm)
 	case netlify(NetlifyDestinationForm)
+	case github(GitHubDestinationForm)
 }
 
 /// A Vercel project and one of its environments.
@@ -209,6 +210,128 @@ final class NetlifyDestinationForm {
 				}
 			}
 			return lhs.id < rhs.id
+		}
+	}
+}
+
+/// A GitHub repository, and whether its own secrets and variables are
+/// written or one deployment environment's.
+@MainActor
+@Observable
+final class GitHubDestinationForm {
+	enum Field {
+		case repository
+		case scope
+	}
+
+	var repositoryID: String? {
+		didSet {
+			guard repositoryID != oldValue else { return }
+			environments = .idle
+			scope = repositoryID == nil ? nil : .repository
+			didChange(.repository)
+		}
+	}
+	var scope: GitHubPublishTarget.Scope? {
+		didSet { if scope?.identifier != oldValue?.identifier { didChange(.scope) } }
+	}
+	/// By `owner/name`.
+	var repositories: PublishSession.Loadable<[GitHubRepository]> = .idle {
+		didSet { lookalikeRepositories = Self.lookalikes((repositories.value ?? []).map { ($0.id, $0.fullName) }) }
+	}
+	/// Whether GitHub left out an organization's repositories until the person signs in with its single sign-on.
+	var hidesSSORepositories = false
+	/// Installations of the app GitHub left out, as when one is suspended.
+	var skippedInstallations: [GitHubSkippedInstallation] = []
+	/// The chosen repository's deployment environments.
+	var environments: PublishSession.Loadable<[GitHubEnvironment]> = .idle {
+		didSet { lookalikeEnvironments = Self.lookalikes((environments.value ?? []).map { ($0.id, $0.name) }) }
+	}
+	@ObservationIgnored var didChange: (Field) -> Void = { _ in }
+	/// The IDs of listed repositories, and environments, whose names look like another's, worked out once a listing.
+	@ObservationIgnored private var lookalikeRepositories: Set<String> = []
+	@ObservationIgnored private var lookalikeEnvironments: Set<String> = []
+
+	init(repositoryID: String? = nil, scope: GitHubPublishTarget.Scope? = nil) {
+		self.repositoryID = repositoryID
+		self.scope = scope
+	}
+
+	var repository: GitHubRepository? {
+		repositories.value?.first { $0.id == repositoryID }
+	}
+
+	/// The repository's own secrets and variables, then each environment's.
+	/// A chosen environment stays a choice until the environments are listed.
+	var scopeChoices: [GitHubPublishTarget.Scope] {
+		if let environments = environments.value {
+			return [.repository] + environments.map { .environment(id: $0.id, name: $0.name) }
+		}
+		if let scope, case .environment = scope { return [.repository, scope] }
+		return [.repository]
+	}
+
+	var isComplete: Bool {
+		guard repository != nil, let scope else { return false }
+		return scopeChoices.contains { $0.identifier == scope.identifier }
+	}
+
+	/// A choice in one of the form's menus: what it says, and whether it can be chosen.
+	struct Option: Equatable, Sendable {
+		let id: String
+		let label: String
+		let isAvailable: Bool
+	}
+
+	/// The repositories, each saying whether it's private, as its icon
+	/// alone doesn't to VoiceOver, why the person can't change its secrets
+	/// and variables when they can't, and its ID when its name looks like
+	/// another's.
+	var repositoryOptions: [Option] {
+		(repositories.value ?? []).map { repository in
+			let name = lookalikeRepositories.contains(repository.id) ? "\(repository.fullName) (ID \(repository.id))" : repository.fullName
+			var label = "\(name) · \(repository.isPrivate ? "Private" : "Public")"
+			if repository.isArchived {
+				label += " · Archived"
+			} else if !repository.canChange(.repository) {
+				label += " · Read-only"
+			}
+			return Option(id: repository.id, label: label, isAvailable: repository.canChange(.repository))
+		}
+	}
+
+	/// The scope choices, each one the person can't change saying why, and
+	/// each environment whose name looks like another's showing its ID.
+	var scopeOptions: [Option] {
+		let repository = self.repository
+		return scopeChoices.map { scope in
+			var showingID = false
+			if case .environment(let id, _) = scope { showingID = lookalikeEnvironments.contains(id) }
+			let name = scope.displayName(showingID: showingID)
+			guard let repository, !repository.canChange(scope) else {
+				return Option(id: scope.identifier, label: name, isAvailable: true)
+			}
+			let reason = repository.isArchived ? "Archived" : repository.permission == .read ? "Read-only" : "Needs admin access"
+			return Option(id: scope.identifier, label: "\(name) · \(reason)", isAvailable: false)
+		}
+	}
+
+	/// The IDs of the named items whose names fold like another's.
+	private static func lookalikes(_ named: [(id: String, name: String)]) -> Set<String> {
+		var byKey: [String: [String]] = [:]
+		byKey.reserveCapacity(named.count)
+		for (id, name) in named { byKey[GitHubPublishTarget.lookalikeKey(name), default: []].append(id) }
+		return Set(byKey.values.lazy.filter { $0.count > 1 }.joined())
+	}
+
+	/// Repositories sorted by `owner/name`. Nonisolated, so a long list is sorted off the main actor.
+	nonisolated static func sorted(_ repositories: [GitHubRepository]) -> [GitHubRepository] {
+		repositories.sorted { lhs, rhs in
+			switch lhs.fullName.localizedStandardCompare(rhs.fullName) {
+			case .orderedAscending: true
+			case .orderedDescending: false
+			case .orderedSame: lhs.id < rhs.id
+			}
 		}
 	}
 }

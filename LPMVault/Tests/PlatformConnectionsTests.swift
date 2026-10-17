@@ -1281,7 +1281,8 @@ extension SheetInteractionTests {
 }
 
 
-private final class OpenedURLs: @unchecked Sendable {
+/// The URLs a test's view opened, in order.
+final class OpenedURLs: @unchecked Sendable {
 	private let lock = NSLock()
 	private var opened: [URL] = []
 

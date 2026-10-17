@@ -77,6 +77,8 @@ struct VaultMenuOption<Value: Hashable>: Identifiable {
 	let value: Value
 	let label: String
 	var systemImage: String?
+	/// Shown, but not chosen, as when the label says why it can't be.
+	var disabled = false
 
 	var id: Value { value }
 }
@@ -105,6 +107,7 @@ struct VaultMenuField<Value: Hashable>: View {
 						Text(option.label)
 					}
 				}
+				.disabled(option.disabled)
 			}
 		} label: {
 			HStack(spacing: 7) {

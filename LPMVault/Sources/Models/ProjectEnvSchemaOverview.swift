@@ -21,6 +21,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		/// The rule bounds the value's length.
 		var hasLengthRule = false
 		var isSecret = false
+		/// GitHub Actions keeps it in a readable variable, as `ci: variable`
+		/// asks; a secret's rule never does.
+		var isCIVariable = false
 		/// The imported file whose declaration lpm.json overrides; nil when
 		/// lpm.json declares the key or doesn't override it.
 		var overrides: String?
@@ -106,6 +109,8 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	let publicKeys: Set<String>
 	/// Declared keys whose values are secret.
 	let secretKeys: Set<String>
+	/// Declared keys GitHub Actions keeps in readable variables rather than secrets.
+	let ciVariableKeys: Set<String>
 	let declaredKeys: Set<String>
 	/// Prefixes that make a key public besides the frameworks', from lpm.json
 	/// and the schemas it imports.
@@ -134,6 +139,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		self.groups = groups.sorted { $0.name < $1.name }
 		publicKeys = Set(rules.lazy.filter(\.isPublic).map(\.key))
 		secretKeys = Set(rules.lazy.filter(\.isSecret).map(\.key))
+		ciVariableKeys = Set(rules.lazy.filter { $0.isCIVariable && !$0.isSecret }.map(\.key))
 		declaredKeys = Set(rules.lazy.map(\.key))
 		foldedKeys = Dictionary(grouping: self.rules.lazy.map(\.key), by: { $0.uppercased() })
 		self.clientPrefixes = clientPrefixes
@@ -200,6 +206,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 					},
 					hasLengthRule: declaration.value["minLength"] != nil || declaration.value["maxLength"] != nil,
 					isSecret: declaration.value["secret"] == .bool(true),
+					isCIVariable: declaration.value["ci"] == .string("variable"),
 					overrides: overridden[declaration.key]?.escapingDirectionControls,
 					sourcePath: source == "lpm.json" ? nil : source,
 					overridesPath: overridden[declaration.key],
@@ -480,6 +487,7 @@ extension ProjectEnvSchemaOverview.Rule {
 			},
 			hasLengthRule: declaration["minLength"] != nil || declaration["maxLength"] != nil,
 			isSecret: declaration["secret"] == .bool(true),
+			isCIVariable: declaration["ci"] == .string("variable"),
 			overrides: isOverride ? saved?.overrides ?? saved?.source : nil
 		)
 	}
@@ -644,7 +652,45 @@ extension String {
 	}
 }
 
+extension String {
+	/// The text with every character that could hide in it, or make it pass
+	/// for other text, written as an escape: controls, format characters such
+	/// as zero-width and direction marks, other default-ignorable ones such as
+	/// variation selectors and fillers, line and paragraph separators, spaces
+	/// other than the plain space, and a plain space at either end. For names
+	/// a platform sends that a person tells apart by sight, such as a GitHub
+	/// environment's.
+	var escapingInvisibleCharacters: String {
+		let scalars = unicodeScalars
+		let last = scalars.isEmpty ? nil : scalars.index(before: scalars.endIndex)
+		func escapes(_ scalar: Unicode.Scalar, at index: String.UnicodeScalarView.Index) -> Bool {
+			scalar.isInvisible || (scalar == " " && (index == scalars.startIndex || index == last))
+		}
+		guard scalars.indices.contains(where: { escapes(scalars[$0], at: $0) }) else { return self }
+		var escaped = ""
+		escaped.reserveCapacity(utf8.count + 8)
+		for index in scalars.indices {
+			let scalar = scalars[index]
+			if escapes(scalar, at: index) {
+				escaped += "\\u{\(String(scalar.value, radix: 16))}"
+			} else {
+				escaped.unicodeScalars.append(scalar)
+			}
+		}
+		return escaped
+	}
+}
+
 private extension Unicode.Scalar {
+	var isInvisible: Bool {
+		switch properties.generalCategory {
+		case .control, .format, .lineSeparator, .paragraphSeparator: true
+		case .spaceSeparator: value != 0x20
+		// The blank Braille cell draws nothing, though it's a symbol.
+		default: properties.isDefaultIgnorableCodePoint || value == 0x2800
+		}
+	}
+
 	/// Matches the characters the LPM CLI escapes in its diagnostics.
 	var hidesOrReordersText: Bool {
 		properties.generalCategory == .control

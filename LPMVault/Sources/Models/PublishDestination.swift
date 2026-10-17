@@ -79,12 +79,68 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 		case .github: "chevron.left.forwardslash.chevron.right"
 		}
 	}
+	/// What a publish sends, counted as the platform calls it: GitHub's
+	/// secrets and variables by kind, every other platform's as variables.
+	func countedValues(secrets: Int, variables: Int) -> String {
+		guard self == .github else { return Self.counted(secrets + variables, "variable") }
+		switch (secrets, variables) {
+		case (0, 0): return "0 secrets or variables"
+		case (_, 0): return Self.counted(secrets, "secret")
+		case (0, _): return Self.counted(variables, "variable")
+		default: return "\(Self.counted(secrets, "secret")) and \(Self.counted(variables, "variable"))"
+		}
+	}
+
+	/// How much of what a publish sent was published, counted as
+	/// `countedValues` counts: "1 of 2 variables", or on GitHub with both
+	/// kinds, each apart: "1 of 1 secret and 0 of 1 variable".
+	func countedPublished(secrets: (published: Int, sent: Int), variables: (published: Int, sent: Int)) -> String {
+		guard self == .github else {
+			return Self.counted(secrets.published + variables.published, of: secrets.sent + variables.sent, "variable")
+		}
+		switch (secrets.sent, variables.sent) {
+		case (0, 0): return "0 of 0 secrets or variables"
+		case (_, 0): return Self.counted(secrets.published, of: secrets.sent, "secret")
+		case (0, _): return Self.counted(variables.published, of: variables.sent, "variable")
+		default:
+			return "\(Self.counted(secrets.published, of: secrets.sent, "secret")) and \(Self.counted(variables.published, of: variables.sent, "variable"))"
+		}
+	}
+
+	/// What a publish sent, named as the platform calls it: GitHub's secrets
+	/// and variables by kind, every other platform's as variables.
+	func named(secrets: Int, variables: Int) -> String {
+		guard self == .github else { return secrets + variables == 1 ? "variable" : "variables" }
+		switch (secrets, variables) {
+		case (0, _): return variables == 1 ? "variable" : "variables"
+		case (_, 0): return secrets == 1 ? "secret" : "secrets"
+		default: return "secrets and variables"
+		}
+	}
+
+	/// What the platform keeps, as a noun for `count` of them: GitHub's
+	/// secrets and variables, every other platform's variables.
+	func valuesNoun(count: Int) -> String {
+		switch self {
+		case .github: count == 1 ? "secret or variable" : "secrets and variables"
+		default: count == 1 ? "variable" : "variables"
+		}
+	}
+
+	private static func counted(_ count: Int, _ noun: String) -> String {
+		"\(count) \(noun)\(count == 1 ? "" : "s")"
+	}
+
+	private static func counted(_ published: Int, of sent: Int, _ noun: String) -> String {
+		"\(published) of \(counted(sent, noun))"
+	}
 }
 
 enum PublishTarget: Hashable, Sendable {
 	case vercel(VercelPublishTarget)
 	case coolify(CoolifyPublishTarget)
 	case netlify(NetlifyPublishTarget)
+	case github(GitHubPublishTarget)
 
 	/// Where a publish writes. Two destinations with the same location would
 	/// overwrite each other's values, so a vault keeps at most one per location.
@@ -92,6 +148,7 @@ enum PublishTarget: Hashable, Sendable {
 		case vercel(teamID: String?, projectID: String, environment: String)
 		case coolify(instance: String, resource: CoolifyPublishTarget.Resource, resourceID: String, deployments: CoolifyPublishTarget.Deployments)
 		case netlify(siteID: String, context: String)
+		case github(repositoryID: String, scope: String)
 
 		/// The places, beside this one, whose values the platform keeps in the
 		/// same records, as a Netlify variable keeps its value for every deploy
@@ -99,7 +156,7 @@ enum PublishTarget: Hashable, Sendable {
 		/// records forward for the others too; nil when no other place shares them.
 		var sharedRecords: SharedRecords? {
 			switch self {
-			case .vercel, .coolify: nil
+			case .vercel, .coolify, .github: nil
 			case .netlify(let siteID, _): SharedRecords(platform: .netlify, ownerID: siteID)
 			}
 		}
@@ -118,6 +175,7 @@ enum PublishTarget: Hashable, Sendable {
 		case .vercel: .vercel
 		case .coolify: .coolify
 		case .netlify: .netlify
+		case .github: .github
 		}
 	}
 
@@ -129,6 +187,8 @@ enum PublishTarget: Hashable, Sendable {
 			.coolify(instance: target.instance.origin, resource: target.resource, resourceID: target.resourceID, deployments: target.deployments)
 		case .netlify(let target):
 			.netlify(siteID: target.siteID, context: target.context.identifier)
+		case .github(let target):
+			.github(repositoryID: target.repositoryID, scope: target.scope.identifier)
 		}
 	}
 
@@ -138,6 +198,7 @@ enum PublishTarget: Hashable, Sendable {
 		case .vercel(let target): target.connectionID
 		case .coolify(let target): target.connectionID
 		case .netlify(let target): target.connectionID
+		case .github(let target): target.connectionID
 		}
 	}
 
@@ -147,16 +208,18 @@ enum PublishTarget: Hashable, Sendable {
 		case .vercel(let target): target.teamName
 		case .coolify(let target): target.teamName
 		case .netlify(let target): target.teamName
+		case .github(let target): target.ownerLogin
 		}
 	}
 
 	/// The name of the connection that publishes here when the destination
-	/// was saved: the team's for Vercel and Coolify, the user's for Netlify.
+	/// was saved: the team's for Vercel and Coolify, the user's for Netlify and GitHub.
 	var connectionName: String {
 		switch self {
 		case .vercel(let target): target.teamName
 		case .coolify(let target): target.teamName
 		case .netlify(let target): target.userName
+		case .github(let target): target.userLogin
 		}
 	}
 
@@ -166,6 +229,7 @@ enum PublishTarget: Hashable, Sendable {
 		case .vercel(let target): "\(target.projectName) / \(target.environment.displayName)"
 		case .coolify(let target): "\(target.resourceName) / \(target.deployments.displayName)"
 		case .netlify(let target): "\(target.siteName) / \(target.context.displayName)"
+		case .github(let target): "\(target.repositoryName) / \(target.scope.displayName)"
 		}
 	}
 
@@ -173,7 +237,7 @@ enum PublishTarget: Hashable, Sendable {
 	/// the Coolify project, environment and instance holding a resource.
 	var placeDetail: String? {
 		switch self {
-		case .vercel, .netlify: return nil
+		case .vercel, .netlify, .github: return nil
 		case .coolify(let target):
 			let place = [target.projectName, target.environmentName].compactMap { $0 }.joined(separator: " / ")
 			return place.isEmpty ? target.instance.address : "\(place) on \(target.instance.address)"
@@ -185,6 +249,7 @@ enum PublishTarget: Hashable, Sendable {
 		case .vercel(let target): target.invalidity
 		case .coolify(let target): target.invalidity
 		case .netlify(let target): target.invalidity
+		case .github(let target): target.invalidity
 		}
 	}
 }
@@ -481,6 +546,139 @@ struct NetlifyPublishTarget: Hashable, Sendable {
 		else { return .targetIdentifier }
 		guard [userName, teamName, siteName].allSatisfy(PlatformIdentifier.isValidName) else { return .targetName }
 		return nil
+	}
+}
+
+/// A GitHub repository's Actions secrets and variables: the repository's
+/// own, which every workflow gets, or one deployment environment's, which only
+/// jobs that name the environment get, over the repository's.
+struct GitHubPublishTarget: Hashable, Sendable {
+	enum Scope: Hashable, Sendable {
+		case repository
+		/// A deployment environment, by GitHub's numeric ID, which outlasts the
+		/// environment being shown under another name; its name is what
+		/// GitHub's paths use.
+		case environment(id: String, name: String)
+
+		/// The scope's stable identity on GitHub.
+		var identifier: String {
+			switch self {
+			case .repository: "repository"
+			case .environment(let id, _): "environment:\(id)"
+			}
+		}
+
+		var displayName: String { displayName(showingID: false) }
+
+		/// The scope's name, an environment's with its ID when `showingID`,
+		/// as for one whose name looks like another's.
+		func displayName(showingID: Bool) -> String {
+			switch self {
+			case .repository: "Repository"
+			case .environment(let id, let name): "Environment \(Self.shownName(id: id, name: name, showingID: showingID))"
+			}
+		}
+
+		/// An environment's name as LPM Vault shows it: escaped, and followed
+		/// by its ID when `showingID`, or when the name could pass for
+		/// another's, as one with any character beyond printable ASCII, a
+		/// backslash or "(ID" that an escape or an ID shows, or a space at
+		/// either end could. A shown ID is read back from the end, so no two
+		/// environments show alike.
+		static func shownName(id: String, name: String, showingID: Bool = false) -> String {
+			let plain = name.utf8.allSatisfy { $0 >= 0x20 && $0 <= 0x7E } && !name.contains("\\")
+				&& name.range(of: "(id", options: .caseInsensitive) == nil && name.first != " " && name.last != " "
+			return plain && !showingID ? name : "\(name.escapingInvisibleCharacters) (ID \(id))"
+		}
+
+		/// The environment's name in GitHub's paths; nil for the repository's own.
+		var environmentName: String? {
+			if case .environment(_, let name) = self { return name }
+			return nil
+		}
+
+		/// The longest environment name GitHub accepts.
+		static let maximumEnvironmentNameCharacters = 255
+
+		/// An environment's name as GitHub accepts it: up to 255 characters,
+		/// none of them a control character.
+		static func isValidEnvironmentName(_ name: String) -> Bool {
+			!name.isEmpty && name.count <= maximumEnvironmentNameCharacters
+				&& !name.unicodeScalars.contains { $0.properties.generalCategory == .control }
+		}
+	}
+
+	/// `name` folded so names that look alike in a menu's proportional
+	/// font fold alike: GitHub's names ignore case, I, l, 1 and |, 0 and
+	/// O, ` and ', rn and m, cl and d, vv and w, and '' and " pass for
+	/// each other, and so does a run of spaces for one.
+	static func lookalikeKey(_ name: String) -> String {
+		// I folds to l before case folding would make it i.
+		var mapped = String.UnicodeScalarView()
+		var afterSpace = false
+		for scalar in name.unicodeScalars {
+			if scalar == " " {
+				if !afterSpace { mapped.append(scalar) }
+				afterSpace = true
+				continue
+			}
+			afterSpace = false
+			switch scalar {
+			case "I", "1", "|": mapped.append("l")
+			case "0": mapped.append("o")
+			case "`": mapped.append("'")
+			default: mapped.append(scalar)
+			}
+		}
+		// A letter that passes for two is spelled as the two, so overlapping runs, as vvv and vw, fold alike.
+		var key = String.UnicodeScalarView()
+		for scalar in String(mapped).lowercased().unicodeScalars {
+			switch scalar {
+			case "w": key.append(contentsOf: "vv".unicodeScalars)
+			case "m": key.append(contentsOf: "rn".unicodeScalars)
+			case "d": key.append(contentsOf: "cl".unicodeScalars)
+			case "\"": key.append(contentsOf: "''".unicodeScalars)
+			default: key.append(scalar)
+			}
+		}
+		return String(key)
+	}
+
+	/// The GitHub user whose connection publishes here.
+	let userID: String
+	/// The user's login when the destination was saved, for display.
+	var userLogin: String
+	/// GitHub's numeric ID for the repository, which outlasts a rename or a transfer.
+	let repositoryID: String
+	/// The repository's `owner/name` when the destination was saved. GitHub's
+	/// paths use it, so a review reads the current one first.
+	var repositoryName: String
+	var scope: Scope
+
+	/// The connection that publishes here.
+	var connectionID: PlatformConnection.ID { PlatformConnection.githubID(userID: userID) }
+
+	/// The account that owns the repository, from its full name.
+	var ownerLogin: String { String(repositoryName.prefix { $0 != "/" }) }
+
+	fileprivate var invalidity: PublishDestinationInvalidity? {
+		var identifiers = [userID, repositoryID]
+		if case .environment(let id, _) = scope { identifiers.append(id) }
+		guard identifiers.allSatisfy(GitHubHTTP.isValidID) else { return .targetIdentifier }
+		guard GitHubHTTP.isValidLogin(userLogin), Self.isValidFullName(repositoryName),
+			scope.environmentName.map(Scope.isValidEnvironmentName) ?? true
+		else { return .targetName }
+		return nil
+	}
+
+	/// A repository's `owner/name`: the owner's login, then letters, digits,
+	/// `.`, `-` and `_`, as GitHub names repositories.
+	static func isValidFullName(_ text: String) -> Bool {
+		let parts = text.split(separator: "/", omittingEmptySubsequences: false)
+		guard parts.count == 2, GitHubHTTP.isValidLogin(String(parts[0])) else { return false }
+		let name = parts[1]
+		return !name.isEmpty && name.utf8.count <= 100 && name != "." && name != ".."
+			&& name.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2E || $0 == 0x2D || $0 == 0x5F }
 	}
 }
 
