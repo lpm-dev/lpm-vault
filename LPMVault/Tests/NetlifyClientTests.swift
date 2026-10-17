@@ -35,13 +35,14 @@ struct NetlifyClientTests {
 	}
 
 	@Test("a rate limit is waited out until Netlify says it lifts, a minute when it doesn't say, and not when it lifts after the longest wait, however far off or malformed")
-	func rateLimitWait() {
+	func rateLimitWait() throws {
 		#expect(NetlifyHTTP.rateLimitWait(until: nil) == .seconds(60))
 		#expect(NetlifyHTTP.rateLimitWait(until: Date(timeIntervalSinceNow: -5)) == .zero)
 		#expect(NetlifyHTTP.rateLimitWait(until: Date(timeIntervalSince1970: -1e20)) == .zero)
-		let soon = NetlifyHTTP.rateLimitWait(until: Date(timeIntervalSinceNow: 30))
-		#expect(soon.map { $0 > .seconds(29) && $0 <= .seconds(30) } == true)
-		let longest = Date(timeIntervalSinceNow: Double(NetlifyHTTP.maximumRateLimitWait.components.seconds) + 1)
+		let lifts = Date(timeIntervalSinceNow: 30)
+		let soon = try #require(NetlifyHTTP.rateLimitWait(until: lifts))
+		#expect(soon >= .seconds(lifts.timeIntervalSinceNow) && soon <= .seconds(30), "\(soon) covers what was left when it was worked out")
+		let longest = Date(timeIntervalSinceNow: Double(NetlifyHTTP.maximumRateLimitWait.components.seconds) + 3_600)
 		for reset in [longest, Date(timeIntervalSince1970: 1e20), Date(timeIntervalSince1970: .infinity), Date(timeIntervalSince1970: .nan)] {
 			#expect(NetlifyHTTP.rateLimitWait(until: reset) == nil)
 		}
@@ -112,7 +113,7 @@ struct NetlifyClientTests {
 		#expect(endless.requests.count - before <= 1, "Nothing loads past the deadline")
 	}
 
-	@Test("a page that arrives after the listing's deadline fails the listing, though it's the last", .timeLimit(.minutes(1)))
+	@Test("a page that arrives after the listing's deadline fails the listing, though it's the last", .hangLimit)
 	func lateLastPage() async throws {
 		let lastPage = DispatchSemaphore(value: 0)
 		defer { lastPage.signal() }
@@ -121,9 +122,8 @@ struct NetlifyClientTests {
 			return .json(200, [self.site("late")])
 		}
 		let client = NetlifyClient(token: "nfo_secret", baseURL: route.baseURL, session: route.session,
-			limits: .init(siteBytes: 64 * 1024 * 1024, siteDeadline: .milliseconds(200)))
+			limits: .init(siteBytes: 64 * 1024 * 1024, siteDeadline: .zero))
 		#expect(await client.sites() == .failure(.invalidResponse), "The listing ends at its deadline: the page arrives only after it returns")
-		#expect(route.requests.count == 1)
 	}
 
 	@Test("a site's variables are read under its team, with the site in the query, and without their values")

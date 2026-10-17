@@ -192,28 +192,20 @@ struct EnvSchemaCompositionTests {
             do { _ = try ProjectEnvSchemaFile.apply(.init(description:.init(key:"A",text:"New")),inFolder:root.path,vaultID:"project"); completion.withLock { $0.succeeded = true } } catch {}
             completion.withLock { $0.finished = true }
         }.start()
-        let deadline = ContinuousClock.now + .seconds(10)
-        var rootIsLocked = false
-        while ContinuousClock.now < deadline {
+        let rootIsLocked = try await waitUntil {
             let rootLock = open(root.appendingPathComponent(".lpm/.config.lock").path,O_RDWR)
-            if rootLock >= 0 {
-                if flock(rootLock,LOCK_EX|LOCK_NB) == 0 { flock(rootLock,LOCK_UN) }
-                else { rootIsLocked = errno == EWOULDBLOCK }
-                close(rootLock)
+            guard rootLock >= 0 else { return false }
+            defer { close(rootLock) }
+            if flock(rootLock,LOCK_EX|LOCK_NB) == 0 {
+                flock(rootLock,LOCK_UN)
+                return false
             }
-            if rootIsLocked { break }
-            try await Task.sleep(for:.milliseconds(10))
+            return errno == EWOULDBLOCK
         }
         #expect(rootIsLocked)
         #expect(!completion.withLock { $0.finished })
         flock(lock,LOCK_UN)
-        let completionDeadline = ContinuousClock.now + .seconds(10)
-        var completed = false
-        while ContinuousClock.now < completionDeadline {
-            if completion.withLock({ $0.finished }) { completed = true; break }
-            try await Task.sleep(for:.milliseconds(10))
-        }
-        #expect(completed)
+        #expect(try await waitUntil { completion.withLock { $0.finished } })
         #expect(completion.withLock { $0.succeeded })
         if deeper { #expect(!FileManager.default.fileExists(atPath: target.appendingPathComponent(".lpm").path)) }
     }

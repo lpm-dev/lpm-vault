@@ -161,12 +161,12 @@ struct VaultStoreTests {
 	}
 
 	@Test("a refresh requested during a CLI approval change runs once the change finishes")
-	func refreshDuringCliApprovalChangeRunsAfterIt() async {
+	func refreshDuringCliApprovalChangeRunsAfterIt() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: ["TOKEN": "old"])])
 		store.isUnlocked = true
 		store.selectedProjectId = "first"
 		await store.refreshCliAccess()
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
@@ -367,7 +367,7 @@ struct VaultStoreTests {
 		await store.unlock()
 		store.selectedProjectId = "first"
 		await store.refreshCliAccess()
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		let count = biometric.authenticateCallCount
 		await store.changeCliAccess(to: .requireApproval)
 		#expect(store.selectedProjectCliAccess == .requireApproval)
@@ -383,12 +383,12 @@ struct VaultStoreTests {
 	}
 
 	@Test("a locked app cannot change CLI approval")
-	func lockedAppCannotChangeCliApproval() async {
+	func lockedAppCannotChangeCliApproval() async throws {
 		let (store, keychain, biometric, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: [:])])
 		store.isUnlocked = true
 		store.selectedProjectId = "first"
 		await store.refreshCliAccess()
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		store.lock()
 		await store.changeCliAccess(to: .requireApproval)
 		#expect(store.selectedProjectCliAccess == nil)
@@ -398,7 +398,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("sidebar policies load for unselected projects without reading secret values")
-	func sidebarPoliciesLoadWithoutReadingUnselectedSecrets() async {
+	func sidebarPoliciesLoadWithoutReadingUnselectedSecrets() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "first", name: "First", path: "", secrets: ["TOKEN": "synthetic"]),
 			(id: "second", name: "Second", path: "", secrets: [:]),
@@ -411,7 +411,7 @@ struct VaultStoreTests {
 		#expect(store.projects.allSatisfy { !$0.hasLoadedEnvironments })
 		store.isUnlocked = true
 		store.selectedProjectId = "second"
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		#expect(store.projectCliAccess["first"] == .requireApproval)
 		store.lock()
 		#expect(store.projectCliAccess.isEmpty)
@@ -440,13 +440,13 @@ struct VaultStoreTests {
 	}
 
 	@Test("locking the UI preserves the persisted CLI approval policy")
-	func uiLockDoesNotChangeCliApprovalPolicy() async {
+	func uiLockDoesNotChangeCliApprovalPolicy() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: [:])])
 		keychain.cliAccessPolicies["first"] = .requireApproval
 		store.isUnlocked = true
 		store.selectedProjectId = "first"
 		await store.refreshCliAccess()
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		store.lock()
 		#expect(keychain.cliAccessPolicies["first"] == .requireApproval)
 		#expect(store.selectedProjectCliAccess == nil)
@@ -468,7 +468,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("a project switch while waiting for persistence prevents the old project policy change")
-	func switchingProjectsDuringCliApprovalCannotPersist() async {
+	func switchingProjectsDuringCliApprovalCannotPersist() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "first", name: "First", path: "", secrets: [:]),
 			(id: "second", name: "Second", path: "", secrets: [:]),
@@ -476,7 +476,7 @@ struct VaultStoreTests {
 		store.isUnlocked = true
 		store.selectedProjectId = "first"
 		await store.refreshCliAccess()
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
@@ -488,19 +488,19 @@ struct VaultStoreTests {
 		keychain.beforeKeychainTransaction = nil
 		release.signal()
 		await change.value
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		#expect(keychain.cliAccessChangeCount == 0)
 		#expect(store.selectedProjectCliAccess == .automatic)
 		#expect(!store.isChangingCliAccess)
 	}
 
 	@Test("locking while waiting for persistence prevents a policy change")
-	func lockingDuringCliApprovalCannotPersist() async {
+	func lockingDuringCliApprovalCannotPersist() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: [:])])
 		store.isUnlocked = true
 		store.selectedProjectId = "first"
 		await store.refreshCliAccess()
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
@@ -533,7 +533,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("committed CLI approval changes update unselected sidebar policies", arguments: [VaultCliAccess.automatic, .requireApproval], [false, true])
-	func committedCliApprovalChangeSurvivesNavigation(initial: VaultCliAccess, revisit: Bool) async {
+	func committedCliApprovalChangeSurvivesNavigation(initial: VaultCliAccess, revisit: Bool) async throws {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "first", name: "First", path: "", secrets: [:]),
 			(id: "second", name: "Second", path: "", secrets: [:]),
@@ -541,7 +541,7 @@ struct VaultStoreTests {
 		keychain.cliAccessPolicies["first"] = initial
 		store.isUnlocked = true
 		store.selectedProjectId = "first"
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		keychain.afterCliAccessCommit = { entered.signal(); release.wait() }
@@ -566,18 +566,18 @@ struct VaultStoreTests {
 		release.signal()
 		await change.value
 		await refresh?.value
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		#expect(keychain.cliAccessPolicies["first"] == replacement)
 		#expect(store.projectCliAccess["first"] == replacement)
 		#expect(store.selectedProjectCliAccess == .automatic)
 	}
 
 	@Test("CLI approval failure recovery cannot publish errors after invalidation", arguments: [false, true])
-	func cliApprovalRecoveryDoesNotPublishObsoleteError(lockSession: Bool) async {
+	func cliApprovalRecoveryDoesNotPublishObsoleteError(lockSession: Bool) async throws {
 		let (store, keychain, _, _) = makeStore(projects: [(id: "first", name: "First", path: "", secrets: [:])])
 		store.isUnlocked = true
 		store.selectedProjectId = "first"
-		await waitForCliApprovalLoad(store)
+		try await waitForCliApprovalLoad(store)
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		keychain.failCliAccessChange = true
@@ -627,12 +627,8 @@ struct VaultStoreTests {
 		#expect(store.projectCliAccess == ["second": .automatic])
 	}
 
-	private func waitForCliApprovalLoad(_ store: VaultStore) async {
-		let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-		while store.selectedProjectCliAccess == nil, ContinuousClock.now < deadline {
-			await Task.yield()
-		}
-		#expect(store.selectedProjectCliAccess != nil)
+	private func waitForCliApprovalLoad(_ store: VaultStore) async throws {
+		#expect(try await waitUntil { store.selectedProjectCliAccess != nil })
 	}
 
 	@Test("load projects from keychain")
@@ -741,14 +737,14 @@ struct VaultStoreTests {
 	// MARK: - Delete Project
 
 	@Test("remove from sidebar removes the project from the list")
-	func removeFromSidebar() async {
+	func removeFromSidebar() async throws {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: [:])
 		])
 		store.selectedProjectId = "id-1"
 
 		store.removeFromSidebar(store.projects[0])
-		await waitUntil { store.projects.isEmpty }
+		#expect(try await waitUntil { store.projects.isEmpty })
 
 		#expect(store.projects.isEmpty)
 		#expect(store.selectedProjectId == nil)
@@ -868,7 +864,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("deleting another project reloads the selected survivor")
-	func localDeletionPreservesNewerSelection() async {
+	func localDeletionPreservesNewerSelection() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "alpha", path: "", secrets: ["ONE": "secret"]),
 			(id: "id-2", name: "bravo", path: "", secrets: ["TWO": "secret"]),
@@ -895,10 +891,10 @@ struct VaultStoreTests {
 
 		#expect(await deletion.value)
 		#expect(store.selectedProjectId == "id-3")
-		await waitUntil {
+		#expect(try await waitUntil {
 			store.projects.first(where: { $0.id == "id-3" })?
 				.secrets(for: "default")["THREE"] == "secret"
-		}
+		})
 		#expect(
 			store.projects.first(where: { $0.id == "id-3" })?
 				.secrets(for: "default")["THREE"] == "secret"
@@ -981,7 +977,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("removing an active project never selects another account")
-	func removalFallbackIsAccountScoped() async {
+	func removalFallbackIsAccountScoped() async throws {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "personal", name: "a-personal", path: "", secrets: [:]),
 			(id: "org-one", name: "b-org", path: "", secrets: [:]),
@@ -992,7 +988,7 @@ struct VaultStoreTests {
 		store.openProject(id: "org-one")
 
 		store.removeFromSidebar(store.projects.first { $0.id == "org-one" }!)
-		await waitUntil { store.projects.allSatisfy { $0.id != "org-one" } }
+		#expect(try await waitUntil { store.projects.allSatisfy { $0.id != "org-one" } })
 
 		#expect(store.selectedAccount == .org("acme"))
 		#expect(store.selectedProjectId == "org-two")
@@ -1615,7 +1611,7 @@ struct VaultStoreTests {
 			#expect(await store.deleteLocalVault(removed))
 		} else {
 			store.removeFromSidebar(removed)
-			await waitUntil { !store.projects.contains { $0.id == "removed" } }
+			#expect(try await waitUntil { !store.projects.contains { $0.id == "removed" } })
 		}
 		#expect(defaults.object(forKey: "lpm-vault-env-order-removed") == nil)
 		#expect(ProjectCLILink.folder(vaultId: "removed", projectPath: "", defaults: defaults) == "")
@@ -1663,7 +1659,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("copied environment appears once after its source")
-	func duplicateEnvironmentKeepsUniqueOrder() async {
+	func duplicateEnvironmentKeepsUniqueOrder() async throws {
 		let projectId = "copied-environment-order-\(UUID().uuidString)"
 		defer {
 			UserDefaults.standard.removeObject(forKey: "lpm-vault-env-order-\(projectId)")
@@ -1678,10 +1674,10 @@ struct VaultStoreTests {
 
 		store.duplicateEnvironment(in: projectId, from: "local", to: "staging")
 
-		await waitUntil {
+		#expect(try await waitUntil {
 			store.projects[0].environments["staging"] != nil
 				&& store.environmentOrders[projectId]?.contains("staging") == true
-		}
+		})
 		#expect(store.environmentOrders[projectId] == ["default", "local", "staging"])
 		#expect(
 			store.orderedEnvironmentNames(for: store.projects[0]) == [
@@ -2104,7 +2100,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("sidebar removal publishes only after the index update succeeds")
-	func failedSidebarRemovalKeepsProjectVisible() async {
+	func failedSidebarRemovalKeepsProjectVisible() async throws {
 		let (store, keychain, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project", path: "", secrets: ["TOKEN": "secret"])
 		])
@@ -2112,7 +2108,7 @@ struct VaultStoreTests {
 		keychain.shouldFail = true
 
 		store.removeFromSidebar(store.projects[0])
-		await waitUntil { store.error != nil }
+		#expect(try await waitUntil { store.error != nil })
 
 		#expect(store.projects.map(\.id) == ["id-1"])
 		#expect(store.selectedProjectId == "id-1")
@@ -2239,14 +2235,14 @@ struct VaultStoreTests {
 
 		store.deleteSecret(from: "id-1", key: "A")
 
-		await waitUntil { store.projects[0].secrets(for: "default")["A"] == nil }
+		#expect(try await waitUntil { store.projects[0].secrets(for: "default")["A"] == nil })
 		#expect(store.projects[0].secrets(for: "default")["A"] == nil)
 		#expect(store.projects[0].secrets(for: "default")["B"] == "2")
 		#expect(keychain.storage["id-1"]?.secrets["A"] == nil)
 	}
 
 	@Test("delete uses the captured environment instead of current navigation")
-	func deleteCapturedEnvironment() async {
+	func deleteCapturedEnvironment() async throws {
 		let (store, keychain, _, _) = makeStore()
 		store.projects = [
 			VaultProject(
@@ -2270,7 +2266,7 @@ struct VaultStoreTests {
 
 		store.deleteSecret(from: "id-1", environment: "staging", key: "KEY")
 
-		await waitUntil { store.projects[0].environments["staging"]?["KEY"] == nil }
+		#expect(try await waitUntil { store.projects[0].environments["staging"]?["KEY"] == nil })
 		#expect(store.projects[0].environments["default"]?["KEY"] == "default")
 		#expect(store.projects[0].environments["staging"]?["KEY"] == nil)
 	}
@@ -2326,7 +2322,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("search filters by secret key name")
-	func searchBySecretKey() async {
+	func searchBySecretKey() async throws {
 		let (store, _, _, _) = makeStore(projects: [
 			(id: "id-1", name: "project-a", path: "/tmp/a", secrets: ["DATABASE_URL": "pg://..."]),
 			(
@@ -2334,7 +2330,7 @@ struct VaultStoreTests {
 				secrets: ["API_KEY": "sk-123"]
 			),
 		])
-		await waitForWorkspaceSnapshots(store, count: 2)
+		try await waitForWorkspaceSnapshots(store, count: 2)
 
 		let visible = store.visibleVaults(matching: "database")
 
@@ -2343,7 +2339,7 @@ struct VaultStoreTests {
 	}
 
 	@Test("search includes keys from every environment")
-	func searchAcrossAllEnvironments() async {
+	func searchAcrossAllEnvironments() async throws {
 		let (store, _, _, _) = makeStore()
 		store.projects = [
 			VaultProject(
@@ -2356,7 +2352,7 @@ struct VaultStoreTests {
 				]
 			)
 		]
-		await waitForWorkspaceSnapshots(store, count: 1)
+		try await waitForWorkspaceSnapshots(store, count: 1)
 		#expect(store.visibleVaults(matching: "database").map(\.id) == ["id-1"])
 	}
 
@@ -2457,21 +2453,17 @@ struct VaultStoreTests {
 		let api = MockAPIService()
 		let oldLoadGate = AsyncGate()
 		api.blockNextCurrentUserFetch = { await oldLoadGate.arriveAndWait() }
-		api.userResponses = [
-			(delay: nil, user: testUser(id: "old", username: "old")),
-			(delay: nil, user: testUser(id: "new", username: "new")),
-		]
-		api.personalTokenResponses = [
-			(delay: .milliseconds(150), tokens: []),
-			(delay: .milliseconds(100), tokens: []),
-		]
+		api.userResponses = [testUser(id: "old", username: "old"), testUser(id: "new", username: "new")]
 		let (store, _, _, _) = makeStore(apiService: api)
 
 		let oldLoad = Task { await store.loadTokens() }
 		await oldLoadGate.waitUntilArrived()
+		let newTokensGate = AsyncGate()
+		api.blockNextPersonalTokenFetch = { await newTokensGate.arriveAndWait() }
 		let newLoad = Task { await store.loadTokens() }
-		try await Task.sleep(for: .milliseconds(40))
+		await newTokensGate.waitUntilArrived()
 		#expect(store.isLoadingTokens)
+		await newTokensGate.release()
 		await newLoad.value
 		#expect(store.currentUser?.username == "new")
 		#expect(!store.isLoadingTokens)
@@ -2484,12 +2476,14 @@ struct VaultStoreTests {
 	func logoutInvalidatesTokenLoad() async throws {
 		let api = MockAPIService()
 		api.user = testUser(id: "u1", username: "late")
-		api.delay = .milliseconds(150)
+		let userGate = AsyncGate()
+		api.blockNextCurrentUserFetch = { await userGate.arriveAndWait() }
 		let (store, _, _, _) = makeStore(apiService: api)
 
 		let load = Task { await store.loadTokens() }
-		try await Task.sleep(for: .milliseconds(20))
+		await userGate.waitUntilArrived()
 		await store.logout()
+		await userGate.release()
 		await load.value
 
 		#expect(store.currentUser == nil)
@@ -2774,7 +2768,6 @@ struct VaultStoreTests {
 	func replacedSessionCannotPublishInventory() async {
 		let api = MockAPIService()
 		api.user = testUserWithOrganizations(count: 1)
-		api.orgTokensDelay = .milliseconds(30)
 		let session = SequencedAuthTokenProvider(tokens: ["old-bearer", "new-bearer"])
 		let store = VaultStore(
 			keychainService: MockKeychainService(),
@@ -2848,16 +2841,20 @@ struct VaultStoreTests {
 	}
 
 	@Test("organization token inventory uses a four-request sliding window")
-	func organizationTokenInventoryIsBounded() async {
+	func organizationTokenInventoryIsBounded() async throws {
 		let api = MockAPIService()
 		api.user = testUserWithOrganizations(count: 12)
-		api.orgTokensDelay = .milliseconds(30)
+		let window = AsyncGate()
+		api.duringOrgTokenFetch = { await window.arriveAndWait() }
 		for index in 0..<12 {
 			api.orgTokensMap["org-\(index)"] = [testToken(id: "token-\(index)")]
 		}
 		let (store, _, _, _) = makeStore(apiService: api)
 
-		await store.loadTokens()
+		let load = Task { await store.loadTokens() }
+		try #require(try await waitUntil { api.inFlightOrgRequests == 4 })
+		await window.release()
+		await load.value
 
 		#expect(api.maximumActiveOrgRequests == 4)
 		#expect(api.requestedOrgSlugs.count == 12)
@@ -2995,17 +2992,17 @@ struct VaultStoreTests {
 	@Test("cancelling token inventory stops admitting organization requests")
 	func cancellingInventoryStopsAdmission() async throws {
 		let api = MockAPIService()
-		api.user = testUserWithOrganizations(count: 1_000)
-		api.orgTokensDelay = .seconds(1)
+		api.user = testUserWithOrganizations(count: 12)
+		api.orgTokensDelay = testWaitLimit
 		let (store, _, _, _) = makeStore(apiService: api)
 
 		let load = Task { await store.loadTokens() }
-		try await Task.sleep(for: .milliseconds(30))
+		try #require(try await waitUntil { api.inFlightOrgRequests == 4 })
 		await store.logout()
 		await load.value
 
-		#expect(api.maximumActiveOrgRequests <= 4)
-		#expect(api.requestedOrgSlugs.count <= 4)
+		#expect(api.maximumActiveOrgRequests == 4)
+		#expect(api.requestedOrgSlugs.count == 4, "Only the first four organizations were asked for")
 		#expect(store.currentUser == nil)
 		#expect(!store.isLoadingTokens)
 	}
@@ -3092,7 +3089,7 @@ struct VaultStoreTests {
 		}
 
 		@Test("logout cannot be overtaken by a suspended login session write")
-		func logoutWinsAgainstSuspendedLoginWrite() async {
+		func logoutWinsAgainstSuspendedLoginWrite() async throws {
 			let api = MockAPIService()
 			api.user = testUserWithOrganizations(count: 0)
 			let writerGate = AsyncGate()
@@ -3114,7 +3111,7 @@ struct VaultStoreTests {
 			let login = Task { await store.login() }
 			await writerGate.waitUntilArrived()
 			let logout = Task { await store.logout() }
-			await waitUntil { !store.isLoggingIn }
+			#expect(try await waitUntil { !store.isLoggingIn })
 			await writerGate.release()
 			await logout.value
 			let succeeded = await login.value
@@ -3129,7 +3126,7 @@ struct VaultStoreTests {
 
 		#if DEBUG
 			@Test("an old-environment logout cannot clear the new environment identity")
-			func environmentSwitchWinsAgainstSuspendedLogout() async {
+			func environmentSwitchWinsAgainstSuspendedLogout() async throws {
 				let clearerGate = AsyncGate()
 				let api = MockAPIService()
 				api.user = LPMUser(
@@ -3155,7 +3152,7 @@ struct VaultStoreTests {
 				let logout = Task { await store.logout() }
 				await clearerGate.waitUntilArrived()
 				store.switchEnvironment(to: .development)
-				await waitUntil { store.currentUser?.id == "development-user" }
+				#expect(try await waitUntil { store.currentUser?.id == "development-user" })
 				await clearerGate.release()
 				await logout.value
 
@@ -3167,12 +3164,10 @@ struct VaultStoreTests {
 		@Test("environment switches discard personal and organization revocations")
 		func environmentSwitchInvalidatesRevocations() async throws {
 			let api = MockAPIService()
-			api.personalRevokeDelay = .milliseconds(150)
-			api.orgRevokeDelay = .milliseconds(150)
-			let personalStarted = AsyncSignal()
-			let organizationStarted = AsyncSignal()
-			api.onPersonalRevokeStart = { Task { await personalStarted.send() } }
-			api.onOrgRevokeStart = { Task { await organizationStarted.send() } }
+			let personalRevoking = AsyncGate()
+			let organizationRevoking = AsyncGate()
+			api.blockNextPersonalRevoke = { await personalRevoking.arriveAndWait() }
+			api.blockNextOrgRevoke = { await organizationRevoking.arriveAndWait() }
 			let store = VaultStore(
 				keychainService: MockKeychainService(),
 				biometricService: MockBiometricService(),
@@ -3187,10 +3182,11 @@ struct VaultStoreTests {
 			store.orgTokens = ["acme": [organization]]
 
 			let personalRevoke = Task { await store.revokePersonalToken(personal) }
-			await personalStarted.wait()
+			await personalRevoking.waitUntilArrived()
 			store.switchEnvironment(to: .development)
 			await store.environmentLoadTask?.value
 			store.personalTokens = [personal]
+			await personalRevoking.release()
 			await personalRevoke.value
 			#expect(store.personalTokens.map(\.id) == [personal.id])
 
@@ -3200,10 +3196,11 @@ struct VaultStoreTests {
 			let organizationRevoke = Task {
 				await store.revokeOrgToken(organization, orgSlug: "acme")
 			}
-			await organizationStarted.wait()
+			await organizationRevoking.waitUntilArrived()
 			store.switchEnvironment(to: .development)
 			await store.environmentLoadTask?.value
 			store.orgTokens = ["acme": [organization]]
+			await organizationRevoking.release()
 			await organizationRevoke.value
 			#expect(store.orgTokens["acme"]?.map(\.id) == [organization.id])
 		}
@@ -3424,13 +3421,16 @@ struct VaultStoreTests {
 		let api = MockAPIService()
 		api.user = testUser(id: "u1", username: "test")
 		let revoked = testToken(id: "t1")
-		api.personalTokenResponses = [(.milliseconds(100), [revoked])]
+		api.personalTokenResponses = [[revoked]]
+		let tokensGate = AsyncGate()
+		api.blockNextPersonalTokenFetch = { await tokensGate.arriveAndWait() }
 		let (store, _, _, _) = makeStore(apiService: api)
 		store.personalTokens = [revoked]
 
 		let load = Task { await store.loadTokens() }
-		try await Task.sleep(for: .milliseconds(20))
+		await tokensGate.waitUntilArrived()
 		await store.revokePersonalToken(revoked)
+		await tokensGate.release()
 		await load.value
 
 		#expect(store.personalTokens.isEmpty)
@@ -6098,12 +6098,8 @@ struct VaultStoreTests {
 		return store
 	}
 
-	private func waitForWorkspaceSnapshots(_ store: VaultStore, count: Int) async {
-		for _ in 0..<1_000 {
-			if store.workspaceSnapshots.count == count { return }
-			try? await Task.sleep(for: .milliseconds(10))
-		}
-		Issue.record("Workspace snapshots did not reach count \(count)")
+	private func waitForWorkspaceSnapshots(_ store: VaultStore, count: Int) async throws {
+		#expect(try await waitUntil { store.workspaceSnapshots.count == count }, "Workspace snapshots did not reach count \(count)")
 	}
 
 	private func userWithOrganization(slug: String) -> LPMUser {
@@ -6480,18 +6476,6 @@ struct VaultStoreTests {
 	}
 }
 
-@MainActor
-private func waitUntil(
-	maximumYields: Int = 100_000,
-	_ condition: @MainActor () -> Bool
-) async {
-	for _ in 0..<maximumYields {
-		if condition() { return }
-		await Task.yield()
-	}
-	Issue.record("Timed out while waiting for an asynchronous test condition.")
-}
-
 private final class LockedCounter: @unchecked Sendable {
 	private let lock = NSLock()
 	private var storage = 0
@@ -6688,22 +6672,6 @@ private actor AsyncGate {
 		released = true
 		releaseWaiters.forEach { $0.resume() }
 		releaseWaiters.removeAll()
-	}
-}
-
-private actor AsyncSignal {
-	private var signalled = false
-	private var waiters: [CheckedContinuation<Void, Never>] = []
-
-	func wait() async {
-		guard !signalled else { return }
-		await withCheckedContinuation { waiters.append($0) }
-	}
-
-	func send() {
-		signalled = true
-		waiters.forEach { $0.resume() }
-		waiters.removeAll()
 	}
 }
 

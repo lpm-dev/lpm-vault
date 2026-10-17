@@ -58,7 +58,7 @@ struct VaultQuitCoordinatorTests {
 		let outcome: Outcome
 	}
 
-	private func makeFixture(timing: VaultQuitCoordinator.Timing = .init(finishingDelay: .seconds(30))) async throws -> Fixture {
+	private func makeFixture(timing: VaultQuitCoordinator.Timing = .init(finishingDelay: .seconds(30), projectLoadLimit: testWaitLimit)) async throws -> Fixture {
 		let keychain = MockKeychainService()
 		keychain.envStorage["first"] = (name: "First", path: "", environments: ["default": ["TOKEN": "one", "PORT": "80"]])
 		keychain.envStorage["second"] = (name: "Second", path: "", environments: ["default": ["URL": "a"]])
@@ -67,7 +67,7 @@ struct VaultQuitCoordinatorTests {
 		store.isUnlocked = true
 		#expect(await store.loadProjects())
 		store.isUnlocked = true
-		#expect(await store.openProjectForSaving("first"))
+		#expect(await store.openProjectForSaving("first", timeout: testWaitLimit))
 		let outcome = Outcome()
 		let presenter = RecordingQuitPresenter()
 		let coordinator = VaultQuitCoordinator(store: store, presenter: presenter, timing: timing,
@@ -80,28 +80,17 @@ struct VaultQuitCoordinatorTests {
 		store.keyDrafts.edit(project, key: key) { $0.setValue(value, in: "default") }
 	}
 
-	private func waitUntil(_ condition: () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
-		let deadline = ContinuousClock.now + .seconds(10)
-		while !condition() {
-			guard ContinuousClock.now < deadline else {
-				Issue.record("Timed out", sourceLocation: sourceLocation)
-				return
-			}
-			try await Task.sleep(for: .milliseconds(5))
-		}
-	}
-
 	@Test("opening a project to save it waits until it's loaded, for each project in turn")
 	func opensProjects() async throws {
 		let fixture = try await makeFixture()
 		defer { fixture.store.lock() }
 		for projectID in ["second", "first", "second"] {
-			#expect(await fixture.store.openProjectForSaving(projectID))
+			#expect(await fixture.store.openProjectForSaving(projectID, timeout: testWaitLimit))
 			#expect(fixture.store.selectedProjectId == projectID)
 			#expect(fixture.store.selectedProject?.hasLoadedEnvironments == true)
 			#expect(!fixture.store.isReloadingKeyDescriptions)
 		}
-		#expect(await !fixture.store.openProjectForSaving("missing"))
+		#expect(await !fixture.store.openProjectForSaving("missing", timeout: testWaitLimit))
 	}
 
 	@Test("with nothing unsaved and nothing being written, quitting goes ahead at once, with no sheet")
@@ -122,10 +111,10 @@ struct VaultQuitCoordinatorTests {
 		try edit(fixture.store, "first", "TOKEN", to: "two")
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
 		#expect(fixture.coordinator.isQuitting)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel, "Asking again while it's decided changes nothing")
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.outcome.terminations == 1 }
+		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(fixture.outcome.replies.isEmpty)
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateNow, "The quit asked for again goes ahead")
 	}
@@ -137,11 +126,11 @@ struct VaultQuitCoordinatorTests {
 		try edit(fixture.store, "first", "TOKEN", to: "two")
 		if joining {
 			#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-			try await waitUntil { fixture.coordinator.phase == .reviewing }
+			#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		}
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: true) == .terminateLater)
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: true) == .terminateCancel, "A second logout's request waits on the same answer")
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		fixture.coordinator.cancel()
 		#expect(fixture.outcome.replies == [false])
 		#expect(fixture.outcome.terminations == 0)
@@ -155,12 +144,12 @@ struct VaultQuitCoordinatorTests {
 		let store = fixture.store
 		try edit(store, "first", "TOKEN", to: "two")
 		try edit(store, "first", "PORT", to: "81")
-		#expect(await store.openProjectForSaving("second"))
+		#expect(await store.openProjectForSaving("second", timeout: testWaitLimit))
 		try edit(store, "second", "URL", to: "b")
-		#expect(await store.openProjectForSaving("first"))
+		#expect(await store.openProjectForSaving("first", timeout: testWaitLimit))
 
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		#expect(fixture.presenter.presented == [.reviewing])
 		let items = fixture.coordinator.items
 		#expect(items.map(\.projectName) == ["First", "Second"], "The selected project comes first")
@@ -170,7 +159,7 @@ struct VaultQuitCoordinatorTests {
 		#expect(VaultQuitSheet.summary(of: items) == "3 edits in 2 projects haven't been saved to the Keychain.")
 
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.outcome.terminations == 1 }
+		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"] == ["TOKEN": "two", "PORT": "81"])
 		#expect(fixture.keychain.envStorage["second"]?.environments["default"] == ["URL": "b"])
 		#expect(fixture.presenter.dismissals == 1)
@@ -207,10 +196,10 @@ struct VaultQuitCoordinatorTests {
 		try edit(store, "first", "PORT", to: "81")
 		try edit(store, "first", "TOKEN", to: "two")
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		fixture.keychain.nextVaultTransactionError = .unexpectedStatus(-25293)
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.coordinator.phase == .failed }
+		#expect(try await waitUntil { fixture.coordinator.phase == .failed })
 		let items = fixture.coordinator.items
 		#expect(items.map(\.state.isSaved) == [true, false])
 		#expect(items.map(\.detail) == ["TOKEN · inspector edit", "PORT · inspector edit"])
@@ -222,7 +211,7 @@ struct VaultQuitCoordinatorTests {
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["TOKEN"] == "two")
 		#expect(fixture.outcome.terminations == 0)
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.outcome.terminations == 1 }
+		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"] == ["TOKEN": "two", "PORT": "81"])
 	}
 
@@ -232,18 +221,18 @@ struct VaultQuitCoordinatorTests {
 		defer { fixture.store.lock() }
 		let store = fixture.store
 		try edit(store, "first", "TOKEN", to: "two")
-		#expect(await store.openProjectForSaving("second"))
+		#expect(await store.openProjectForSaving("second", timeout: testWaitLimit))
 		try edit(store, "second", "URL", to: "b")
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		fixture.keychain.nextVaultTransactionError = .unexpectedStatus(-25293)
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.coordinator.phase == .failed }
+		#expect(try await waitUntil { fixture.coordinator.phase == .failed })
 		#expect(fixture.coordinator.failedItems.map(\.projectName) == ["Second"], "The selected project, Second, saves first and fails")
 		#expect(fixture.coordinator.savedCount == 1)
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["TOKEN"] == "two")
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.outcome.terminations == 1 }
+		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(fixture.keychain.envStorage["second"]?.environments["default"] == ["URL": "b"])
 	}
 
@@ -255,11 +244,11 @@ struct VaultQuitCoordinatorTests {
 		try edit(store, "first", "PORT", to: "81")
 		try edit(store, "first", "TOKEN", to: "two")
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		// The CLI changes TOKEN after the list was shown; PORT's save reads it back, before TOKEN's turn.
 		fixture.keychain.envStorage["first"]?.environments["default"]?["TOKEN"] = "changed-by-cli"
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.coordinator.phase == .failed }
+		#expect(try await waitUntil { fixture.coordinator.phase == .failed })
 		#expect(fixture.outcome.terminations == 0)
 		#expect(fixture.coordinator.items.map(\.subject) == ["1 key", "1 key needs review"])
 		#expect(fixture.coordinator.failedItems.isEmpty)
@@ -270,24 +259,24 @@ struct VaultQuitCoordinatorTests {
 
 	@Test("Cancel while saving stops after the key being written, and a new quit waits for that write")
 	func cancelWhileSaving() async throws {
-		let fixture = try await makeFixture(timing: .init(finishingDelay: .milliseconds(10)))
+		let fixture = try await makeFixture(timing: .init(finishingDelay: .milliseconds(10), projectLoadLimit: testWaitLimit))
 		defer { fixture.store.lock() }
 		let store = fixture.store
 		try edit(store, "first", "PORT", to: "81")
 		try edit(store, "first", "TOKEN", to: "two")
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		let gate = KeychainWriteGate()
 		gate.hold(fixture.keychain)
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { gate.isHolding }
+		#expect(try await waitUntil { gate.isHolding })
 		fixture.coordinator.cancel()
 		#expect(fixture.coordinator.phase == .idle)
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .finishing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .finishing })
 		#expect(fixture.coordinator.items.isEmpty, "The new quit waits for PORT's write before listing anything")
 		gate.open()
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["PORT"] == "81")
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["TOKEN"] == "one", "TOKEN wasn't saved after Cancel")
 		#expect(fixture.coordinator.items.map(\.detail) == ["TOKEN · inspector edit"])
@@ -302,7 +291,7 @@ struct VaultQuitCoordinatorTests {
 		try edit(fixture.store, "first", "TOKEN", to: "two")
 
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		fixture.coordinator.cancel()
 		#expect(fixture.outcome.terminations == 0)
 		#expect(fixture.coordinator.phase == .idle)
@@ -310,7 +299,7 @@ struct VaultQuitCoordinatorTests {
 		#expect(fixture.store.keyDrafts.editedKeys(in: "first") == ["TOKEN"])
 
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel, "Quitting can be asked again after a cancel")
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		fixture.coordinator.discardAndQuit()
 		#expect(fixture.outcome.terminations == 1)
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["TOKEN"] == "one")
@@ -327,18 +316,18 @@ struct VaultQuitCoordinatorTests {
 		changed.environments["default"]?["TOKEN"] = "changed-by-cli"
 		store.projects = store.projects.map { $0.id == "first" ? changed : $0 }
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		#expect(fixture.coordinator.items.map(\.subject) == ["1 key", "1 key needs review"])
 		#expect(fixture.coordinator.needsReviewCount == 1)
 		#expect(VaultQuitSheet.summary(of: fixture.coordinator.items) == "2 edits in 1 project haven't been saved to the Keychain.")
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.outcome.terminations == 1 }
+		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["PORT"] == "81")
 	}
 
 	@Test("a write already running finishes before quitting, with a sheet when it takes a moment")
 	func finishesRunningWrites() async throws {
-		let fixture = try await makeFixture(timing: .init(finishingDelay: .milliseconds(20)))
+		let fixture = try await makeFixture(timing: .init(finishingDelay: .milliseconds(20), projectLoadLimit: testWaitLimit))
 		defer { fixture.store.lock() }
 		let store = fixture.store
 		let gate = KeychainWriteGate()
@@ -346,27 +335,27 @@ struct VaultQuitCoordinatorTests {
 		try edit(store, "first", "TOKEN", to: "two")
 		let id = VaultKeyDraft.ID(projectID: "first", key: "TOKEN")
 		let save = Task { try await store.saveKeyDraft(id) }
-		try await waitUntil { gate.isHolding }
+		#expect(try await waitUntil { gate.isHolding })
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.presenter.presented == [.finishing] }
+		#expect(try await waitUntil { fixture.presenter.presented == [.finishing] })
 		#expect(fixture.outcome.terminations == 0)
 		gate.open()
 		try await save.value
-		try await waitUntil { fixture.outcome.terminations == 1 }
+		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["TOKEN"] == "two")
 		#expect(fixture.presenter.dismissals == 1)
 	}
 
 	@Test("a write that takes too long offers to quit without it, and keeps waiting until then")
 	func overdueWrite() async throws {
-		let fixture = try await makeFixture(timing: .init(finishingDelay: .milliseconds(10), overdueAfter: .milliseconds(50)))
+		let fixture = try await makeFixture(timing: .init(finishingDelay: .milliseconds(10), overdueAfter: .milliseconds(50), projectLoadLimit: testWaitLimit))
 		defer { fixture.store.lock() }
 		let gate = KeychainWriteGate()
 		gate.hold(fixture.keychain)
 		let added = Task { await fixture.store.addSecret(to: "first", environment: "default", key: "ADDED", value: "v") }
-		try await waitUntil { gate.isHolding }
+		#expect(try await waitUntil { gate.isHolding })
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.isFinishingOverdue }
+		#expect(try await waitUntil { fixture.coordinator.isFinishingOverdue })
 		#expect(fixture.coordinator.phase == .finishing)
 		fixture.coordinator.discardAndQuit()
 		#expect(fixture.outcome.terminations == 1)
@@ -390,21 +379,21 @@ struct VaultQuitCoordinatorTests {
 		store.isUnlocked = true
 		store.selectedProjectId = "project"
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil }
+		#expect(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil })
 		store.editSchemaDraft(in: "project") {
 			$0.set(.declared(try! LPMConfigJSON(parsing: Data(#"{"format":"integer"}"#.utf8), rejectDuplicateKeys: true)), for: .key("RETRY"))
 		}
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		#expect(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		let outcome = Outcome()
-		let coordinator = VaultQuitCoordinator(store: store, presenter: RecordingQuitPresenter(),
+		let coordinator = VaultQuitCoordinator(store: store, presenter: RecordingQuitPresenter(), timing: .init(projectLoadLimit: testWaitLimit),
 			reply: { outcome.replies.append($0) }, terminate: { outcome.terminations += 1 })
 		#expect(coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { coordinator.phase == .reviewing }
+		#expect(try await waitUntil { coordinator.phase == .reviewing })
 		#expect(coordinator.items.map(\.subject) == ["Schema draft"])
 		#expect(coordinator.items.first?.detail == "1 rule change · lpm.json not written")
 		#expect(VaultQuitSheet.summary(of: coordinator.items) == "A schema draft hasn't been written to lpm.json.")
 		coordinator.saveAndQuit()
-		try await waitUntil { outcome.terminations == 1 }
+		#expect(try await waitUntil { outcome.terminations == 1 })
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""RETRY""#))
 	}
 
@@ -415,12 +404,12 @@ struct VaultQuitCoordinatorTests {
 		let project = try #require(fixture.store.projects.first { $0.id == "first" })
 		#expect(fixture.store.editProjectSettings(of: project) { $0.name = "first-renamed" })
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel, "An unsaved name is something to lose")
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		#expect(fixture.coordinator.items.map(\.subject) == ["Project settings"])
 		#expect(fixture.coordinator.items.first?.detail == "Name first-renamed · not saved")
 		#expect(VaultQuitSheet.summary(of: fixture.coordinator.items) == "Project settings for 1 project haven't been saved.")
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.outcome.terminations == 1 }
+		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(fixture.keychain.envStorage["first"]?.name == "first-renamed")
 		#expect(fixture.store.projectSettingsDrafts.isEmpty)
 	}
@@ -432,9 +421,9 @@ struct VaultQuitCoordinatorTests {
 		let project = try #require(fixture.store.projects.first { $0.id == "first" })
 		#expect(fixture.store.editProjectSettings(of: project) { $0.name = "   " })
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		fixture.coordinator.saveAndQuit()
-		try await waitUntil { fixture.coordinator.phase == .failed }
+		#expect(try await waitUntil { fixture.coordinator.phase == .failed })
 		#expect(fixture.coordinator.failedItems.first?.state == .failed("Enter a name for the project."))
 		#expect(fixture.outcome.terminations == 0)
 		#expect(!fixture.store.projectSettingsDrafts.isEmpty, "The edit stays")
@@ -448,7 +437,7 @@ struct VaultQuitCoordinatorTests {
 		let sheet = VaultUnsavedWork.OpenSheet(id: UUID(), projectID: "first", projectName: "First", title: "Add variable", detail: "NEW_KEY")
 		fixture.store.holdSheetWork(sheet)
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		#expect(fixture.coordinator.items.map(\.subject) == ["Add variable"])
 		#expect(fixture.coordinator.needsReviewCount == 1)
 		fixture.coordinator.cancel()
@@ -463,7 +452,7 @@ struct VaultQuitCoordinatorTests {
 		fixture.presenter.canPresent = false
 		try edit(fixture.store, "first", "TOKEN", to: "two")
 		_ = fixture.coordinator.shouldTerminate(sessionEnding: sessionEnding)
-		try await waitUntil { !fixture.coordinator.isQuitting }
+		#expect(try await waitUntil { !fixture.coordinator.isQuitting })
 		#expect(fixture.outcome.terminations == 0)
 		#expect(fixture.outcome.replies == (sessionEnding ? [false] : []))
 		#expect(fixture.store.keyDrafts.editedKeys(in: "first") == ["TOKEN"])
@@ -474,10 +463,10 @@ struct VaultQuitCoordinatorTests {
 		let fixture = try await makeFixture()
 		try edit(fixture.store, "first", "TOKEN", to: "two")
 		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		try await waitUntil { fixture.coordinator.phase == .reviewing }
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
 		#expect(fixture.presenter.isShowing)
 		fixture.store.lock()
-		try await waitUntil { fixture.outcome.terminations == 1 }
+		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
 		#expect(!fixture.presenter.isShowing)
 		#expect(fixture.coordinator.items.isEmpty)
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["TOKEN"] == "one")
@@ -501,10 +490,9 @@ struct VaultQuitSheetSizeTests {
 		store.isUnlocked = true
 		defer { store.lock() }
 		for project in store.projects { store.keyDrafts.edit(project, key: "TOKEN") { $0.setValue("two", in: "default") } }
-		let coordinator = VaultQuitCoordinator(store: store, presenter: RecordingQuitPresenter(), terminate: {})
+		let coordinator = VaultQuitCoordinator(store: store, presenter: RecordingQuitPresenter(), timing: .init(projectLoadLimit: testWaitLimit), terminate: {})
 		#expect(coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
-		let deadline = ContinuousClock.now + .seconds(10)
-		while coordinator.phase != .reviewing, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+		try #require(try await waitUntil { coordinator.phase == .reviewing })
 		#expect(coordinator.items.count == count)
 		let view = NSHostingView(rootView: VaultQuitSheet(coordinator: coordinator))
 		let elapsed = ContinuousClock().measure { view.layoutSubtreeIfNeeded() }

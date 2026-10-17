@@ -344,7 +344,7 @@ struct VaultKeyDescriptionStoreTests {
 		store.keyDrafts.edit(project, key: "STRIPE_KEY") { $0.setKeyDescription("Mine", saved: "Old") }
 		try #"{"envSchema": {"vars": {"STRIPE_KEY": {"description": "Theirs"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"]?.description(of: "STRIPE_KEY") == "Theirs" }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.description(of: "STRIPE_KEY") == "Theirs" })
 		let draft = try #require(store.keyDrafts.draft(id))
 		#expect(draft.keyDescription?.hasExternalConflict == true)
 		#expect(draft.keyDescriptionChange == "Mine")
@@ -419,7 +419,7 @@ struct VaultKeyDescriptionStoreTests {
 		}
 		let save = Task { try? await store.saveKeyDraft(id) }
 		// The key write's completion must land before the transition, so only the schema save is old.
-		try await waitUntil { store.selectedProject?.environments["default"]?[id.key] == "committed" }
+		try #require(try await waitUntil { store.selectedProject?.environments["default"]?[id.key] == "committed" })
 		#expect(keychain.envStorage["project"]?.environments["default"]?[id.key] == "committed")
 		if transition == "lock" { store.lock(); store.isUnlocked = true } else {
 			store.selectedAccount = .org("other"); store.selectedAccount = .personal
@@ -519,10 +519,10 @@ struct VaultKeyDescriptionStoreTests {
 		await withCheckedContinuation { continuation in Thread.detachNewThread { entered.wait(); continuation.resume() } }
 		let edit = VaultKeyEdit(key: id.key, environments: environments, values: ["default": "later"])
 		let later = Task { try? await store.saveKeyEdit(edit, in: "project") }
-		DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) {
-			observed.withLock { $0.released = true }
-			flock(descriptor, LOCK_UN)
-		}
+		// An edit that overtook the rename would reach the Keychain while the lock is still held.
+		try await quietPeriod()
+		observed.withLock { $0.released = true }
+		flock(descriptor, LOCK_UN)
 		try await rename.value
 		await later.value
 		#expect(!observed.withLock { $0.overtaken })
@@ -557,12 +557,12 @@ struct VaultKeyDescriptionStoreTests {
 		} else { otherFolder = nil }
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
-		keychain.blockNextSaveEnvironments = { entered.signal(); #expect(release.wait(timeout: .now() + 5) == .success) }
+		keychain.blockNextSaveEnvironments = { entered.signal(); #expect(release.wait(timeout: .now() + testWaitSeconds) == .success) }
 		defer { release.signal() }
 		let earlier = Task { try await store.saveKeyEdit(.init(key: "OTHER", environments: environments, values: ["default": "later"]), in: "project") }
 		let rename: Task<Void, Error>? = await withCheckedContinuation { continuation in
 			Thread.detachNewThread {
-				let didEnter = entered.wait(timeout: .now() + 5) == .success
+				let didEnter = entered.wait(timeout: .now() + testWaitSeconds) == .success
 				DispatchQueue.main.async {
 					guard didEnter else {
 						Issue.record("Earlier mutation did not enter its save")
@@ -676,7 +676,7 @@ struct VaultKeyDescriptionStoreTests {
 		let entered = DispatchSemaphore(value: 0)
 		let release = DispatchSemaphore(value: 0)
 		defer { release.signal() }
-		keychain.blockNextListProjectMetadata = { entered.signal(); _ = release.wait(timeout: .now() + 10) }
+		keychain.blockNextListProjectMetadata = { entered.signal(); _ = release.wait(timeout: .now() + testWaitSeconds) }
 		keychain.nextVaultTransactionError = .transactionOutcomeIndeterminate
 		store.keyDrafts.edit(try #require(store.selectedProject), key: id.key) { $0.name = "NEW" }
 		let rename = Task { try? await store.saveKeyDraft(id) }
@@ -744,12 +744,12 @@ struct VaultKeyDescriptionStoreTests {
 			#expect(flock(descriptor, LOCK_EX) == 0)
 			try #"{"envSchema":{"vars":{"STRIPE_KEY":{"description":"Theirs"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 			save = Task { try? await store.saveKeyDraft(id) }
-			try await waitUntil { keychain.envStorage["project"]?.environments["default"]?[id.key] == "committed" }
+			try #require(try await waitUntil { keychain.envStorage["project"]?.environments["default"]?[id.key] == "committed" })
 		}
 		ProjectCLILink.rememberFolder(other, vaultId: "project", defaults: store.preferences)
 		if inFlight {
 			store.reloadKeyDescriptions()
-			try await waitUntil { store.keyDescriptions["project"]?.folder == other }
+			try #require(try await waitUntil { store.keyDescriptions["project"]?.folder == other })
 			flock(descriptor, LOCK_UN)
 			await save?.value
 			#expect(store.keyDescriptions["project"]?.folder == other)
@@ -841,23 +841,15 @@ struct VaultKeyDescriptionStoreTests {
 		store.isUnlocked = true
 		store.selectedProjectId = "project"
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"] != nil }
+		try #require(try await waitUntil { store.keyDescriptions["project"] != nil })
 		return (store, keychain, folder)
-	}
-
-	private func waitUntil(_ condition: () -> Bool) async throws {
-		for _ in 0..<1000 {
-			if condition() { return }
-			try await Task.sleep(for: .milliseconds(5))
-		}
-		try #require(condition(), "Timed out")
 	}
 }
 
 @MainActor
 private func observeOnMainQueue(
 	until condition: @escaping @MainActor @Sendable () -> Bool,
-	deadline: ContinuousClock.Instant = .now + .seconds(5),
+	deadline: ContinuousClock.Instant = .now + testWaitLimit,
 	completion: @escaping @MainActor @Sendable () -> Void
 ) {
 	if condition() { completion(); return }

@@ -48,19 +48,14 @@ struct PublishSessionTests {
 				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
 	}
 
-	private func waitUntil(_ condition: () -> Bool) async throws {
-		for _ in 0..<400 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
-		#expect(condition())
-	}
-
 	private func chooseProduction(_ session: PublishSession) async throws {
 		session.start()
-		try await waitUntil { session.connectionID != nil && session.vercel?.projects.value != nil }
+		#expect(try await waitUntil { session.connectionID != nil && session.vercel?.projects.value != nil })
 		session.vercel?.projectID = "prj_api"
 		session.vercel?.environment = .production
 		#expect(session.canReview)
 		session.loadReview()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 	}
 
 	@Test("a new destination is chosen, reviewed, confirmed, published, and saved with what was published")
@@ -72,7 +67,7 @@ struct PublishSessionTests {
 		#expect(!review.isSaved && review.plan.rows.map(\.key) == ["API_TOKEN", "NEXT_PUBLIC_URL"])
 		#expect(review.selection.keys == ["API_TOKEN", "NEXT_PUBLIC_URL"])
 		session.publish()
-		try await waitUntil { session.step == .results }
+		#expect(try await waitUntil { session.step == .results })
 		#expect(confirmations.reasons == ["Publish 2 variables to demo-api / Production on Vercel"])
 		#expect(reads.contents == [.checked, .unchecked], "The publish compares the values and rules with its review's, without checking them again")
 		#expect(Set(api.createdWrites.map(\.key)) == ["API_TOKEN", "NEXT_PUBLIC_URL"])
@@ -92,14 +87,14 @@ struct PublishSessionTests {
 		let first = session()
 		try await chooseProduction(first)
 		first.publish()
-		try await waitUntil { first.step == .results }
+		#expect(try await waitUntil { first.step == .results })
 		let saved = try #require(try await publishing.destinations(of: vault).get().first)
 
 		api.variableList = VercelVariableList(variables: [vercelVariable("API_TOKEN", updatedAt: Date(timeIntervalSince1970: 1_760_000_100))], hiddenProductionCount: 0)
 		let again = session(saved: saved)
 		#expect(again.step == .review)
 		again.start()
-		try await waitUntil { again.review != nil || again.reviewError != nil }
+		#expect(try await waitUntil { again.review != nil || again.reviewError != nil })
 		let review = try #require(again.review)
 		#expect(review.isSaved && !review.needsSave && review.lastPublishedAt != nil)
 		#expect(review.plan.row("API_TOKEN")?.status.isUpToDate == true, "Vercel has the value this Mac published")
@@ -113,7 +108,7 @@ struct PublishSessionTests {
 		try await chooseProduction(session)
 		values.set("production", ["API_TOKEN": "rotated", "NEXT_PUBLIC_URL": "https://x"])
 		session.publish()
-		try await waitUntil { !session.isPublishing }
+		#expect(try await waitUntil { !session.isPublishing })
 		#expect(session.reviewError?.contains("API_TOKEN changed since this review") == true)
 		#expect(confirmations.reasons.isEmpty && api.createdWrites.isEmpty)
 		#expect(try await publishing.destinations(of: vault).get().isEmpty)
@@ -126,7 +121,7 @@ struct PublishSessionTests {
 		let session = session()
 		try await chooseProduction(session)
 		session.publish()
-		try await waitUntil { !session.isPublishing }
+		#expect(try await waitUntil { !session.isPublishing })
 		#expect(confirmations.reasons.count == 1 && api.createdWrites.isEmpty && session.step == .review)
 	}
 
@@ -137,7 +132,7 @@ struct PublishSessionTests {
 		let session = session()
 		try await chooseProduction(session)
 		session.publish()
-		try await waitUntil { session.step == .results }
+		#expect(try await waitUntil { session.step == .results })
 		#expect(session.results?.needsReconnect == true && session.results?.publishedCount == 0)
 		#expect(try await publishing.destinations(of: vault).get().isEmpty)
 	}
@@ -186,11 +181,11 @@ struct PublishSessionTests {
 		_ = try await publishing.save(preview, to: vault).get()
 		let session = session(saved: preview)
 		session.start()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		session.showDestination()
 		session.vercel?.environment = .production
 		session.loadReview()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		#expect(session.reviewError?.contains("Another saved destination already publishes") == true)
 	}
 
@@ -204,7 +199,7 @@ struct PublishSessionTests {
 		_ = try await publishing.save(saved, to: vault).get()
 		let session = session(saved: saved)
 		session.start()
-		try await waitUntil { session.reviewError != nil }
+		#expect(try await waitUntil { session.reviewError != nil })
 		#expect(session.reviewError?.contains("Other Inc on Vercel, which isn't connected on this Mac") == true)
 	}
 
@@ -223,12 +218,12 @@ struct PublishSessionTests {
 		let route = PlatformHTTPStub.platform { _ in VercelPublishingTests.revokedToken }
 		let session = session(client: { VercelClient(token: $0, baseURL: route.baseURL, session: route.session) })
 		session.start()
-		try await waitUntil { session.vercel.map { $0.projects != .idle && $0.projects != .loading } == true }
+		#expect(try await waitUntil { session.vercel.map { $0.projects != .idle && $0.projects != .loading } == true })
 		#expect(session.vercel?.projects == .failed(VercelPublishing.message(.unauthorized)))
 		session.vercel?.projectID = "prj_api"
 		session.vercel?.environment = .production
 		session.loadReview()
-		try await waitUntil { session.reviewError != nil }
+		#expect(try await waitUntil { session.reviewError != nil })
 		#expect(session.reviewError == VercelPublishing.message(.unauthorized))
 	}
 
@@ -238,15 +233,15 @@ struct PublishSessionTests {
 		let first = session()
 		try await chooseProduction(first)
 		first.publish()
-		try await waitUntil { first.step == .results }
+		#expect(try await waitUntil { first.step == .results })
 		let saved = try #require(try await publishing.destinations(of: vault).get().first)
 		let before = api.projectListingCount
 		let again = session(saved: saved)
 		again.start()
-		try await waitUntil { again.review != nil || again.reviewError != nil }
+		#expect(try await waitUntil { again.review != nil || again.reviewError != nil })
 		#expect(api.projectListingCount == before)
 		again.showDestination()
-		try await waitUntil { again.vercel?.projects.value != nil }
+		#expect(try await waitUntil { again.vercel?.projects.value != nil })
 		#expect(api.projectListingCount == before + 1)
 	}
 
@@ -263,28 +258,28 @@ struct PublishSessionTests {
 		_ = try await publishing.save(existing, to: vault).get()
 		let session = session(saved: existing)
 		session.start()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		session.sourceEnvironment = "production"
 		session.loadReview()
-		try await waitUntil { session.review != nil && !session.isLoadingReview }
+		#expect(try await waitUntil { session.review != nil && !session.isLoadingReview })
 		session.publish()
-		try await waitUntil { session.step == .results }
+		#expect(try await waitUntil { session.step == .results })
 		#expect(session.results?.recordFailure == nil)
 		#expect(try await publishing.destinations(of: vault).get().first?.excludedKeys == [])
 
 		let stored = try #require(try await publishing.destinations(of: vault).get().first)
 		let again = self.session(saved: stored)
 		again.start()
-		try await waitUntil { again.review != nil || again.reviewError != nil }
+		#expect(try await waitUntil { again.review != nil || again.reviewError != nil })
 		again.sourceEnvironment = "staging"
 		again.loadReview()
-		try await waitUntil { again.review != nil && !again.isLoadingReview }
+		#expect(try await waitUntil { again.review != nil && !again.isLoadingReview })
 		var changed = try #require(try await publishing.destinations(of: vault).get().first)
 		changed.excludedKeys = ["MEANWHILE"]
 		changed.updatedAt = Date(timeIntervalSince1970: 1_770_000_000)
 		_ = try await publishing.save(changed, to: vault).get()
 		again.publish()
-		try await waitUntil { again.step == .results }
+		#expect(try await waitUntil { again.step == .results })
 		#expect(again.results?.recordFailure?.contains("changed") == true)
 		#expect(try await publishing.destinations(of: vault).get().first?.excludedKeys == ["MEANWHILE"])
 	}
@@ -293,12 +288,14 @@ struct PublishSessionTests {
 	func reviewReadsOneSnapshot() async throws {
 		try await connect()
 		let gate = AsyncFlag()
+		let asked = AsyncFlag()
 		let current = SnapshotBox(values: ["PORT": "8080"], check: .init(problems: [:]))
 		let failing = ProjectEnvValueCheck.Environment(problems: ["PORT": [.init(key: "PORT", kind: .format("port"))]])
 		let session = PublishSession(
 			vaultID: vault, projectName: "demo-api", environments: ["production"], sourceEnvironment: "production",
 			dependencies: .init(
 				snapshot: { [rules] _, _ in
+					await asked.open()
 					await gate.wait()
 					return .init(values: current.values, rules: .known(rules), check: current.check)
 				},
@@ -306,15 +303,15 @@ struct PublishSessionTests {
 				publishing: publishing, connections: connections,
 				vercel: { [api] _ in api }))
 		session.start()
-		try await waitUntil { session.vercel?.projects.value != nil }
+		#expect(try await waitUntil { session.vercel?.projects.value != nil })
 		session.vercel?.projectID = "prj_api"
 		session.vercel?.environment = .production
 		session.loadReview()
-		try await Task.sleep(for: .milliseconds(30))
+		await asked.wait()
 		current.values = ["PORT": "not-a-port"]
 		current.check = failing
 		await gate.open()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		let row = try #require(session.review?.plan.row("PORT"))
 		#expect(row.holds.contains { if case .failsRules = $0 { true } else { false } } && !row.isSelectedByDefault)
 	}
@@ -332,20 +329,20 @@ struct PublishSessionTests {
 		let held = DispatchSemaphore(value: 0)
 		keychain.beforeAppItemListing = {
 			entered.signal()
-			_ = held.wait(timeout: .now() + 30)
+			_ = held.wait(timeout: .now() + testWaitSeconds)
 		}
 		let session = session(saved: saved)
 		session.start()
 		await withCheckedContinuation { continuation in
 			Thread.detachNewThread {
-				_ = entered.wait(timeout: .now() + 30)
+				_ = entered.wait(timeout: .now() + testWaitSeconds)
 				continuation.resume()
 			}
 		}
 		keychain.beforeAppItemListing = nil
 		session.cancel()
 		held.signal()
-		try await Task.sleep(for: .milliseconds(100))
+		await session.waitUntilIdle()
 		#expect(api.listingCount == 0 && api.projectListingCount == 0 && api.customListingCount == 0)
 		#expect(session.review == nil && session.connections.value == nil)
 	}
@@ -359,15 +356,15 @@ struct PublishSessionTests {
 		], hiddenProductionCount: 0)
 		let session = session()
 		session.start()
-		try await waitUntil { session.vercel?.projects.value != nil }
+		#expect(try await waitUntil { session.vercel?.projects.value != nil })
 		session.vercel?.projectID = "prj_api"
 		session.vercel?.environment = .preview
 		session.loadReview()
-		try await waitUntil { session.review != nil }
+		#expect(try await waitUntil { session.review != nil })
 		for key in ["SHARED", "RENAMED", "EDITED", "ADDED"] { session.set(key, selected: true, confirmed: true) }
 		session.vercel?.environment = .production
 		session.loadReview()
-		try await waitUntil { session.review != nil && !session.isLoadingReview }
+		#expect(try await waitUntil { session.review != nil && !session.isLoadingReview })
 		for key in ["SHARED", "RENAMED", "EDITED", "ADDED"] { session.set(key, selected: true, confirmed: true) }
 		api.variableList = VercelVariableList(variables: [
 			vercelVariable("SHARED", targets: [.production, .preview]),
@@ -377,7 +374,7 @@ struct PublishSessionTests {
 			vercelVariable("ADDED"),
 		], hiddenProductionCount: 0)
 		session.publish()
-		try await waitUntil { session.step == .results }
+		#expect(try await waitUntil { session.step == .results })
 		let outcomes = Dictionary(uniqueKeysWithValues: session.results?.rows.map { ($0.key, $0.outcome) } ?? [])
 		#expect(outcomes["RENAMED"] == .failed("Removed on Vercel since this review. Review again."))
 		#expect(outcomes["EDITED"] == .failed("Changed on Vercel since this review. Review again."))
@@ -392,12 +389,12 @@ struct PublishSessionTests {
 		let first = session()
 		try await chooseProduction(first)
 		first.publish()
-		try await waitUntil { first.step == .results }
+		#expect(try await waitUntil { first.step == .results })
 		let saved = try #require(try await publishing.destinations(of: vault).get().first)
 		let (projects, customs) = (api.projectListingCount, api.customListingCount)
 		let again = session(saved: saved)
 		again.start()
-		try await waitUntil { again.review != nil || again.reviewError != nil }
+		#expect(try await waitUntil { again.review != nil || again.reviewError != nil })
 		#expect(api.projectListingCount == projects && api.customListingCount == customs + 1)
 	}
 
@@ -414,11 +411,11 @@ struct PublishSessionTests {
 			return api
 		})
 		session.start()
-		try await waitUntil { session.connections.value?.count == 2 }
+		#expect(try await waitUntil { session.connections.value?.count == 2 })
 		let labels = (session.connections.value ?? []).map(PublishSheet.connectionLabel)
 		#expect(Set(labels) == ["Vercel · Acme · acme", "Vercel · Acme · acme-eu"])
 		session.connectionID = "vercel.team_acme_eu"
-		try await waitUntil { session.vercel?.projects != nil && session.vercel?.projects != .loading }
+		#expect(try await waitUntil { session.vercel?.projects != nil && session.vercel?.projects != .loading })
 		#expect(tokens.values == ["vca_eu"])
 	}
 
@@ -453,9 +450,9 @@ struct PublishSessionTests {
 		_ = try await publishing.save(moved, to: vault).get()
 		let session = session(saved: opened)
 		session.start()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		#expect(session.connectionID == "vercel.team_acme_eu" && session.review != nil)
-		try await Task.sleep(for: .milliseconds(50))
+		await session.waitUntilIdle()
 		#expect(api.projectListingCount == 0)
 	}
 
@@ -464,13 +461,13 @@ struct PublishSessionTests {
 		try await connect()
 		let session = session(saved: savedProduction())
 		session.start()
-		try await waitUntil { session.step == .destination && session.vercel?.projects.value != nil }
+		#expect(try await waitUntil { session.step == .destination && session.vercel?.projects.value != nil })
 		#expect(session.saved == nil && session.review == nil && api.listingCount == 0)
 		#expect(session.destinationError?.contains("forgotten") == true)
 		#expect(session.vercel?.projectID == "prj_api" && session.vercel?.environment == .production)
 		#expect(session.canReview)
 		session.loadReview()
-		try await waitUntil { session.review != nil }
+		#expect(try await waitUntil { session.review != nil })
 		#expect(session.destinationError == nil && session.review?.isSaved == false)
 	}
 
@@ -482,8 +479,8 @@ struct PublishSessionTests {
 		let session = session(saved: saved)
 		session.start()
 		session.showDestination()
-		try await waitUntil { session.vercel?.projects.value != nil }
-		try await Task.sleep(for: .milliseconds(50))
+		#expect(try await waitUntil { session.vercel?.projects.value != nil })
+		await session.waitUntilIdle()
 		#expect(session.step == .destination && !session.isLoadingReview && api.listingCount == 0)
 	}
 
@@ -506,7 +503,7 @@ struct PublishSessionTests {
 		current.rules = .known(ProjectEnvSchemaOverview(
 			rules: [ProjectEnvSchemaOverview.Rule(key: "SITE_URL", isPublic: false, source: nil, badges: [])], groups: []))
 		session.publish()
-		try await waitUntil { !session.isPublishing }
+		#expect(try await waitUntil { !session.isPublishing })
 		#expect(session.reviewError?.contains("lpm.json") == true)
 		#expect(confirmations.reasons.isEmpty && api.createdWrites.isEmpty)
 	}
@@ -518,11 +515,11 @@ struct PublishSessionTests {
 		try await chooseProduction(session)
 		api.variableList = VercelVariableList(variables: [vercelVariable("API_TOKEN")], hiddenProductionCount: 0)
 		session.publish()
-		try await waitUntil { session.step == .results }
+		#expect(try await waitUntil { session.step == .results })
 		#expect(session.results?.rows.first { $0.key == "API_TOKEN" }?.outcome == .failed("Added on Vercel since this review. Review again."))
 		session.reviewAgain()
 		#expect(session.step == .review && session.results == nil)
-		try await waitUntil { session.review != nil && !session.isLoadingReview }
+		#expect(try await waitUntil { session.review != nil && !session.isLoadingReview })
 		#expect(session.review?.plan.row("API_TOKEN")?.operation == .replace(remoteID: "env_API_TOKEN"))
 		#expect(session.review?.isSaved == true, "The publish saved the destination for what Vercel accepted")
 	}
@@ -573,12 +570,12 @@ struct PublishSessionTests {
 		session.sourceEnvironment = "staging"
 		#expect(session.review == nil)
 		session.loadReview()
-		try await waitUntil { session.review != nil }
+		#expect(try await waitUntil { session.review != nil })
 		session.vercel?.projectID = "prj_web"
 		#expect(session.review == nil, "A review of another project")
 		session.vercel?.environment = .production
 		session.loadReview()
-		try await waitUntil { session.review != nil }
+		#expect(try await waitUntil { session.review != nil })
 		session.vercel?.environment = .preview
 		#expect(session.review == nil)
 	}
@@ -667,19 +664,14 @@ struct CoolifyPublishSessionTests {
 				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
 	}
 
-	private func waitUntil(_ condition: () -> Bool) async throws {
-		for _ in 0..<400 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
-		#expect(condition())
-	}
-
 	private func chooseApplication(_ session: PublishSession) async throws {
 		session.start()
-		try await waitUntil { session.coolify?.resources.value != nil }
+		#expect(try await waitUntil { session.coolify?.resources.value != nil })
 		session.coolify?.resourceID = "app-api"
 		#expect(session.coolify?.deployments == .production, "An application starts on its production deployments")
 		#expect(session.canReview)
 		session.loadReview()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 	}
 
 	@Test("a Coolify application is chosen, reviewed, published with Touch ID, and saved with its names")
@@ -690,7 +682,7 @@ struct CoolifyPublishSessionTests {
 		let review = try #require(session.review)
 		#expect(review.platform == .coolify && review.selection.keys == ["API_TOKEN", "NEXT_PUBLIC_URL"])
 		session.publish()
-		try await waitUntil { session.step == .results }
+		#expect(try await waitUntil { session.step == .results })
 		#expect(confirmations.reasons == ["Publish 2 variables to api / Production on Coolify"])
 		#expect(session.results?.publishedCount == 2)
 		let saved = try #require(try await publishing.destinations(of: vault).get().first)
@@ -710,20 +702,20 @@ struct CoolifyPublishSessionTests {
 		let first = session()
 		try await chooseApplication(first)
 		first.publish()
-		try await waitUntil { first.step == .results }
+		#expect(try await waitUntil { first.step == .results })
 		let saved = try #require(try await publishing.destinations(of: vault).get().first)
 
 		let again = session(saved: saved)
 		#expect(again.step == .review && again.coolify?.resourceID == "app-api")
 		again.start()
-		try await waitUntil { again.review != nil || again.reviewError != nil }
+		#expect(try await waitUntil { again.review != nil || again.reviewError != nil })
 		let review = try #require(again.review)
 		#expect(review.isSaved && !review.needsSave)
 		let upToDate = review.plan.rows.allSatisfy { $0.status.isUpToDate }
 		#expect(upToDate, "Coolify has the values this Mac published")
 		api.edit("API_TOKEN")
 		again.loadReview()
-		try await waitUntil { again.review != nil && !again.isLoadingReview }
+		#expect(try await waitUntil { again.review != nil && !again.isLoadingReview })
 		#expect(again.review?.plan.row("API_TOKEN")?.holds == [.changedOnPlatform])
 	}
 
@@ -734,12 +726,12 @@ struct CoolifyPublishSessionTests {
 		values.set("production", ["SERVICE_PASSWORD_DB": "x", "APP_KEY": "k"])
 		let session = session()
 		session.start()
-		try await waitUntil { session.coolify?.resources.value != nil }
+		#expect(try await waitUntil { session.coolify?.resources.value != nil })
 		session.coolify?.deployments = .preview
 		session.coolify?.resourceID = "svc-db"
 		#expect(session.coolify?.deployments == .production && session.coolify?.deploymentChoices == [.production])
 		session.loadReview()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		#expect(session.review?.plan.row("SERVICE_PASSWORD_DB")?.holds.first == .reserved)
 		#expect(session.review?.selection.keys == ["APP_KEY"])
 	}
@@ -752,7 +744,7 @@ struct CoolifyPublishSessionTests {
 			account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
 		let session = session()
 		session.start()
-		try await waitUntil { session.connections.value?.count == 2 }
+		#expect(try await waitUntil { session.connections.value?.count == 2 })
 		#expect(session.form == nil, "With two connections, none is chosen for the person")
 		session.connectionID = "coolify.0.https://coolify.example.com"
 		try await chooseApplication(session)
@@ -768,15 +760,15 @@ struct CoolifyPublishSessionTests {
 		_ = try await publishing.save(saved, to: vault).get()
 		let session = session(saved: saved)
 		session.start()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		#expect(session.review != nil && api.resourceListingCount == 0)
 		session.showDestination()
-		try await waitUntil { session.coolify?.resources.value != nil }
+		#expect(try await waitUntil { session.coolify?.resources.value != nil })
 		session.showDestination()
 		session.loadReview()
-		try await waitUntil { session.review != nil && !session.isLoadingReview }
+		#expect(try await waitUntil { session.review != nil && !session.isLoadingReview })
 		session.showDestination()
-		try await Task.sleep(for: .milliseconds(20))
+		await session.waitUntilIdle()
 		#expect(api.resourceListingCount == 1)
 	}
 
@@ -840,11 +832,11 @@ struct CoolifyPublishSessionTests {
 					return api
 				}))
 		session.start()
-		try await waitUntil { session.connections.value?.count == 2 }
+		#expect(try await waitUntil { session.connections.value?.count == 2 })
 		session.connectionID = "coolify.0.https://coolify.example.com"
-		try await waitUntil { session.coolify?.resources.value != nil }
+		#expect(try await waitUntil { session.coolify?.resources.value != nil })
 		session.connectionID = "vercel.team_acme"
-		try await waitUntil { session.vercel?.projects.value != nil }
+		#expect(try await waitUntil { session.vercel?.projects.value != nil })
 		#expect(Set(vercelTokens.values) == ["vca_1"] && Set(coolifyTokens.values) == ["3|coolify"])
 	}
 
@@ -854,7 +846,7 @@ struct CoolifyPublishSessionTests {
 		_ = try await publishing.save(saved, to: vault).get()
 		let session = session(saved: saved)
 		session.start()
-		try await waitUntil { session.reviewError != nil }
+		#expect(try await waitUntil { session.reviewError != nil })
 		#expect(session.reviewError?.contains("Root Team on Coolify, which isn't connected on this Mac") == true)
 	}
 }
@@ -904,25 +896,20 @@ struct NetlifyPublishSessionTests {
 				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
 	}
 
-	private func waitUntil(_ condition: () -> Bool) async throws {
-		for _ in 0..<400 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
-		#expect(condition())
-	}
-
 	private func choose(_ session: PublishSession, _ context: NetlifyDestinationForm.ContextChoice, branch: String = "") async throws {
 		session.start()
-		try await waitUntil { session.netlify?.sites.value != nil }
+		#expect(try await waitUntil { session.netlify?.sites.value != nil })
 		session.netlify?.siteID = "site-storefront"
 		session.netlify?.contextChoice = context
 		session.netlify?.branch = branch
 		#expect(session.canReview)
 		session.loadReview()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 	}
 
 	private func publish(_ session: PublishSession) async throws {
 		session.publish()
-		try await waitUntil { session.step == .results }
+		#expect(try await waitUntil { session.step == .results })
 	}
 
 	@Test("a Netlify site's context is chosen, reviewed, published with Touch ID, and saved with its names")
@@ -966,12 +953,12 @@ struct NetlifyPublishSessionTests {
 		let productionDestination = try #require(saved.first { $0.sourceEnvironment == "production" })
 		let reopened = session(saved: productionDestination)
 		reopened.start()
-		try await waitUntil { reopened.review != nil || reopened.reviewError != nil }
+		#expect(try await waitUntil { reopened.review != nil || reopened.reviewError != nil })
 		#expect(reopened.review?.plan.rows.allSatisfy(\.status.isUpToDate) == true, "Deploy Previews' publish isn't someone else's change")
 
 		api.edit("API_TOKEN", in: .deployPreview)
 		reopened.loadReview()
-		try await waitUntil { reopened.review != nil && !reopened.isLoadingReview }
+		#expect(try await waitUntil { reopened.review != nil && !reopened.isLoadingReview })
 		#expect(reopened.review?.plan.row("API_TOKEN")?.holds == [.changedOnPlatform],
 			"Netlify keeps one change time per variable, so an edit to another context's value reads as a change")
 	}
@@ -981,7 +968,7 @@ struct NetlifyPublishSessionTests {
 		try await connect()
 		let session = session()
 		session.start()
-		try await waitUntil { session.netlify?.sites.value != nil }
+		#expect(try await waitUntil { session.netlify?.sites.value != nil })
 		session.netlify?.siteID = "site-storefront"
 		session.netlify?.contextChoice = .branch
 		#expect(!session.canReview)
@@ -990,7 +977,7 @@ struct NetlifyPublishSessionTests {
 		session.netlify?.branch = " staging "
 		#expect(session.canReview && session.netlify?.context == .branch("staging"))
 		session.loadReview()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		try await publish(session)
 		#expect(api.writes.allSatisfy { $0.context == "branch:staging" } && api.writes.count == 2)
 		#expect(confirmations.reasons == ["Publish 2 variables to storefront / Branch staging on Netlify"])
@@ -1015,7 +1002,7 @@ struct NetlifyPublishSessionTests {
 		let session = session(saved: saved)
 		#expect(session.step == .review && session.netlify?.siteID == "site-storefront" && session.netlify?.context == .production)
 		session.start()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		#expect(session.review != nil && api.siteListingCount == 0)
 	}
 
@@ -1025,7 +1012,7 @@ struct NetlifyPublishSessionTests {
 		_ = try await publishing.save(saved, to: vault).get()
 		let session = session(saved: saved)
 		session.start()
-		try await waitUntil { session.reviewError != nil }
+		#expect(try await waitUntil { session.reviewError != nil })
 		#expect(session.reviewError?.contains("Tolga on Netlify, which isn't connected on this Mac") == true)
 	}
 
@@ -1065,6 +1052,11 @@ private final class ValuesBox {
 }
 
 @MainActor
+private final class ReviewProgress {
+	var readValues = false
+}
+
+@MainActor
 private final class Confirmations {
 	var approve = true
 	private(set) var reasons: [String] = []
@@ -1097,11 +1089,6 @@ struct PublishStoreTests {
 		return store
 	}
 
-	private func waitUntil(_ condition: () -> Bool) async throws {
-		for _ in 0..<400 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
-		#expect(condition())
-	}
-
 	@Test("publishing from the store asks for Touch ID even right after an approval, and refreshes the Publish menu")
 	func publishesThroughStore() async throws {
 		let store = try await makeStore()
@@ -1109,17 +1096,17 @@ struct PublishStoreTests {
 		let project = try #require(store.selectedProject)
 		#expect(session.sourceEnvironment == "production" && session.environments == store.orderedEnvironmentNames(for: project))
 		session.start()
-		try await waitUntil { session.connectionID != nil && session.vercel?.projects.value != nil }
+		#expect(try await waitUntil { session.connectionID != nil && session.vercel?.projects.value != nil })
 		session.vercel?.projectID = "prj_api"
 		session.vercel?.environment = .production
 		session.loadReview()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		#expect(session.review?.rules == .unreadable, "Rules not read yet publish everything as a Secret")
 		_ = await store.authenticateForSensitiveAction(reason: "an earlier approval")
 		session.publish()
-		try await waitUntil { session.step == .results }
+		#expect(try await waitUntil { session.step == .results })
 		#expect(biometric.confirmationReasons == ["Publish 1 variable to demo-api / Production on Vercel"])
-		try await waitUntil { store.publishDestinations["project"]?.count == 1 }
+		#expect(try await waitUntil { store.publishDestinations["project"]?.count == 1 })
 		#expect(store.publishDestinations["project"]?.first?.lastPublishedAt != nil)
 	}
 
@@ -1166,8 +1153,7 @@ struct PublishStoreTests {
 		store.selectEnvironment("production")
 		defer { store.lock() }
 		store.reloadKeyDescriptions()
-		for _ in 0..<500 where store.valueChecks["project"] == nil { try await Task.sleep(for: .milliseconds(10)) }
-		_ = try #require(store.valueChecks["project"])
+		try #require(try await waitUntil { store.valueChecks["project"] != nil })
 		_ = try await store.platformConnectionStore.save(
 			VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_acme", userID: "u_1")!,
 			account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
@@ -1176,11 +1162,11 @@ struct PublishStoreTests {
 		store.projects = [VaultProject(id: "project", name: "demo-api", path: folder.path, environments: changed)]
 		let session = try #require(store.makePublishSession())
 		session.start()
-		try await waitUntil { session.vercel?.projects.value != nil }
+		#expect(try await waitUntil { session.vercel?.projects.value != nil })
 		session.vercel?.projectID = "prj_api"
 		session.vercel?.environment = .production
 		session.loadReview()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		let row = try #require(session.review?.plan.row("PORT"))
 		#expect(row.holds.contains { if case .failsRules = $0 { true } else { false } })
 		#expect(!row.isSelectedByDefault)
@@ -1202,7 +1188,7 @@ struct PublishStoreTests {
 			authTokenProvider: { _, _ in nil }, platformClient: { _ in api },
 			valueChecker: { rules, environments in
 				checks.withLock { $0 += 1 }
-				_ = release.wait(timeout: .now() + 30)
+				_ = release.wait(timeout: .now() + testWaitSeconds)
 				return rules.check(environments)
 			})
 		store.projects = [VaultProject(id: "project", name: "demo-api", path: folder.path, environments: environments)]
@@ -1217,18 +1203,28 @@ struct PublishStoreTests {
 			VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_acme", userID: "u_1")!,
 			account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
 		store.reloadKeyDescriptions()
-		for _ in 0..<500 where checks.withLock({ $0 }) == 0 { try await Task.sleep(for: .milliseconds(10)) }
+		try #require(try await waitUntil { checks.withLock { $0 } > 0 })
 		#expect(checks.withLock { $0 } == 1)
-		let session = try #require(store.makePublishSession())
+		var dependencies = store.publishDependencies(for: "project")
+		let snapshot = dependencies.snapshot
+		let asked = ReviewProgress()
+		dependencies.snapshot = { environment, contents in
+			asked.readValues = true
+			return await snapshot(environment, contents)
+		}
+		let session = PublishSession(vaultID: "project", projectName: "demo-api", environments: ["production"],
+			sourceEnvironment: "production", dependencies: dependencies)
 		session.start()
-		try await waitUntil { session.vercel?.projects.value != nil }
+		#expect(try await waitUntil { session.vercel?.projects.value != nil })
 		session.vercel?.projectID = "prj_api"
 		session.vercel?.environment = .production
+		try #require(try await waitUntil { !store.isRefreshingLocalState })
 		session.loadReview()
-		try await Task.sleep(for: .milliseconds(100))
+		// The store's snapshot runs on the main actor until it waits for the check, so it's waiting once it has begun.
+		try #require(try await waitUntil { asked.readValues })
 		release.signal()
 		release.signal()
-		try await waitUntil { session.review != nil || session.reviewError != nil }
+		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		#expect(checks.withLock { $0 } == 1)
 		#expect(session.review?.plan.row("PORT")?.holds.contains { if case .failsRules = $0 { true } else { false } } == true)
 	}
@@ -1245,11 +1241,11 @@ struct PublishStoreTests {
 		store.selectEnvironment("production")
 		let session = try #require(store.makePublishSession())
 		session.start()
-		try await waitUntil { session.vercel?.projects.value != nil }
+		#expect(try await waitUntil { session.vercel?.projects.value != nil })
 		session.vercel?.projectID = "prj_api"
 		session.vercel?.environment = .production
 		session.loadReview()
-		try await waitUntil { session.review != nil }
+		#expect(try await waitUntil { session.review != nil })
 		for index in 1...6 { session.set("KEY_\(index)", selected: true) }
 		let replacing = AsyncFlag()
 		let released = AsyncFlag()
@@ -1262,7 +1258,7 @@ struct PublishStoreTests {
 		#expect(api.replacedValues.isEmpty && session.isPublishing)
 		store.lock()
 		await released.open()
-		try await waitUntil { !session.isPublishing }
+		#expect(try await waitUntil { !session.isPublishing })
 		#expect(api.replacedValues.count <= VercelPublishing.replaceConcurrency, "No replacement after the first batch")
 		let replaced = Set(api.replacedValues.map { String($0.id.dropFirst("env_".count)) })
 		let recorded = try #require(try await store.publishing.destinations(of: "project").get().first)
@@ -1271,20 +1267,25 @@ struct PublishStoreTests {
 
 		let second = try await makeStore()
 		let held = AsyncFlag()
-		biometric.authenticateHandlers = [{ await held.wait(); return true }]
+		let asking = AsyncFlag()
+		biometric.authenticateHandlers = [{
+			await asking.open()
+			await held.wait()
+			return true
+		}]
 		let waiting = try #require(second.makePublishSession())
 		waiting.start()
-		try await waitUntil { waiting.vercel?.projects.value != nil }
+		#expect(try await waitUntil { waiting.vercel?.projects.value != nil })
 		waiting.vercel?.projectID = "prj_api"
 		waiting.vercel?.environment = .production
 		waiting.loadReview()
-		try await waitUntil { waiting.review != nil }
+		#expect(try await waitUntil { waiting.review != nil })
 		let creates = api.createdWrites.count
 		waiting.publish()
-		try await Task.sleep(for: .milliseconds(50))
+		await asking.wait()
 		second.lock()
 		await held.open()
-		try await waitUntil { !waiting.isPublishing }
+		#expect(try await waitUntil { !waiting.isPublishing })
 		#expect(api.createdWrites.count == creates)
 	}
 

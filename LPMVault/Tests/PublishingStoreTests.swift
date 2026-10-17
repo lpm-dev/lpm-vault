@@ -336,13 +336,10 @@ struct PublishDestinationFollowTests {
 		let cached = try #require(store.publishDestinations["project"]?.first?.destination)
 		store.renameEnvironment(in: "project", from: "staging", to: "qa")
 		try await waitForSource("qa", of: destination.id, in: store)
-		for _ in 0..<1000 where store.publishDestinations["project"]?.first?.destination.sourceEnvironment != "qa" {
-			try await Task.sleep(for: .milliseconds(5))
-		}
-		#expect(store.publishDestinations["project"]?.first?.destination.sourceEnvironment == "qa")
+		#expect(try await waitUntil { store.publishDestinations["project"]?.first?.destination.sourceEnvironment == "qa" })
 		let session = try #require(store.makePublishSession(for: cached))
 		session.start()
-		for _ in 0..<1000 where session.reviewError == nil && session.review == nil { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(try await waitUntil { session.reviewError != nil || session.review != nil })
 		#expect(session.sourceEnvironment == "qa" && session.saved?.sourceEnvironment == "qa")
 	}
 
@@ -355,17 +352,16 @@ struct PublishDestinationFollowTests {
 		await store.loadPublishDestinations(for: "project")
 		let cached = try #require(store.publishDestinations["project"]?.first?.destination)
 		store.deleteEnvironment(from: "project", name: "staging")
-		for _ in 0..<1000 where !(try await store.publishing.destinations(of: "project").get().isEmpty) { try await Task.sleep(for: .milliseconds(5)) }
-		for _ in 0..<1000 where store.publishDestinations["project"]?.isEmpty == false { try await Task.sleep(for: .milliseconds(5)) }
-		#expect(store.publishDestinations["project"]?.isEmpty == true)
+		#expect(try await waitUntil { try await store.publishing.destinations(of: "project").get().isEmpty })
+		#expect(try await waitUntil { store.publishDestinations["project"]?.isEmpty == true })
 		#expect(await store.addEnvironment(to: "project", name: "staging", secrets: ["STRIPE_KEY": "sk_new"]))
 		let session = try #require(store.makePublishSession(for: cached))
 		session.start()
-		for _ in 0..<1000 where session.step != .destination { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(try await waitUntil { session.step == .destination })
 		#expect(session.step == .destination && session.saved == nil && session.review == nil)
 		#expect(session.destinationError?.contains("forgotten") == true)
 		session.cancel()
-		try await Task.sleep(for: .milliseconds(50))
+		await session.waitUntilIdle()
 		#expect(try await store.publishing.destinations(of: "project").get().isEmpty)
 	}
 
@@ -438,7 +434,7 @@ struct PublishDestinationFollowTests {
 		let (store, keychain) = makeStore(path: folder)
 		defer { store.lock() }
 		store.reloadKeyDescriptions()
-		for _ in 0..<1000 where store.keyDescriptions["project"] == nil { try await Task.sleep(for: .milliseconds(5)) }
+		try #require(try await waitUntil { store.keyDescriptions["project"] != nil })
 		let destination = vercelDestination(source: "default", excluded: ["STRIPE_KEY"])
 		_ = try await store.publishing.save(destination, to: "project").get()
 		let project = try #require(store.selectedProject)
@@ -470,7 +466,7 @@ struct PublishDestinationFollowTests {
 		_ = try await store.publishing.save(vercelDestination(), to: "project").get()
 		let project = try #require(store.selectedProject)
 		store.removeFromSidebar(project)
-		for _ in 0..<1000 where store.projects.contains(where: { $0.id == "project" }) { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(try await waitUntil { !store.projects.contains { $0.id == "project" } })
 		#expect(keychain.publishingStorage["destinations.project"] != nil)
 	}
 
@@ -485,13 +481,9 @@ struct PublishDestinationFollowTests {
 	}
 
 	private func waitForSource(_ source: String, of id: UUID, in store: VaultStore) async throws {
-		for _ in 0..<1000 {
-			if try await store.publishing.destinations(of: "project").get().first(where: { $0.id == id })?.sourceEnvironment == source {
-				return
-			}
-			try await Task.sleep(for: .milliseconds(5))
-		}
-		Issue.record("The destination didn't follow the rename")
+		#expect(try await waitUntil {
+			try await store.publishing.destinations(of: "project").get().first { $0.id == id }?.sourceEnvironment == source
+		}, "The destination didn't follow the rename")
 	}
 }
 
@@ -855,8 +847,8 @@ struct PublishingRecordFindingTests {
 		await waitOffPool(for: entered)
 		keychain.envStorage["recreated"] = (name: "Recreated", path: "", environments: ["default": ["A": "1"]])
 		let fresh = vercelDestination(source: "default")
+		// The cleanup holds the publishing store while it's paused, so the save waits for it to end.
 		let save = Task { try await vault.publishing.save(fresh, to: "recreated").get() }
-		try await Task.sleep(for: .milliseconds(100))
 		gate.signal()
 		await cleanup.value
 		_ = try await save.value

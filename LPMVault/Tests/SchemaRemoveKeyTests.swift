@@ -293,9 +293,7 @@ struct SchemaRemoveKeyStoreTests {
 		try #"{"envSchema":{"vars":{"PASSWORD":{"secret":true,"minLength":20},"OAUTH_TOKEN":{"secret":true},"OTHER":{}},"groups":{"auth":{"mode":"allOrNone","vars":["PASSWORD","OAUTH_TOKEN","OTHER"]}}}}"#
 			.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		for _ in 0..<1000 where store.keyDescriptions["project"]?.schema?.overview?.rule(for: "PASSWORD")?.hasLengthRule != true {
-			try await Task.sleep(for: .milliseconds(5))
-		}
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview?.rule(for: "PASSWORD")?.hasLengthRule == true })
 		#expect(store.schemaDraft(for: "project")?.conflicts.map(\.item) == [.key("PASSWORD")])
 		store.keepSchemaKey("PASSWORD", in: "project")
 		let draft = store.schemaDraft(for: "project")
@@ -329,7 +327,7 @@ struct SchemaRemoveKeyStoreTests {
 		store.isUnlocked = true
 		store.selectedProjectId = "project"
 		store.reloadKeyDescriptions()
-		for _ in 0..<1000 where store.keyDescriptions["project"]?.schema?.overview == nil { try await Task.sleep(for: .milliseconds(5)) }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil })
 		return (store, folder)
 	}
 }

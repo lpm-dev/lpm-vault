@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
+import os
 
 @testable import LPMVault
 
@@ -193,15 +194,16 @@ struct SchemaReviewTests {
 		#expect(prefixes.summary.mine == "none")
 	}
 
-	@Test("long values are cut before they're escaped, so an escape is never cut in half, and stay quick to describe")
+	@Test("long values are cut before they're escaped, so an escape is never cut in half, and stay quick to describe", .hangLimit)
 	func boundedSummaries() throws {
 		let long = String(repeating: "a", count: 23) + "\u{202E}" + String(repeating: "b", count: 40)
 		let conflict = Draft.Conflict(item: .key("K"), mine: .declared(.object([.init(key: "default", value: .string(long))])), theirs: .declared(.object([])))
 		#expect(conflict.summary.mine == "default " + String(repeating: "a", count: 23) + "\\u{202e}…")
-		let huge = LPMConfigJSON.object([.init(key: "enum", value: .array((0..<150_000).map { .string("value-\($0)") }))])
-		let start = ContinuousClock.now
-		_ = Draft.Conflict(item: .key("K"), mine: .declared(huge), theirs: .declared(.object([]))).summary
-		#expect(ContinuousClock.now - start < .milliseconds(50))
+		// A billion values that share their storage: describing every one couldn't finish within the time limit.
+		let thousand = LPMConfigJSON.array((0..<1_000).map { .string("value-\($0)") })
+		let billion = LPMConfigJSON.array(Array(repeating: .array(Array(repeating: thousand, count: 1_000)), count: 1_000))
+		let summary = Draft.Conflict(item: .key("K"), mine: .declared(.object([.init(key: "enum", value: billion)])), theirs: .declared(.object([]))).summary
+		#expect(summary.mine.hasPrefix("enum value-0") && summary.mine.count < 60)
 	}
 
 	@Test("the note of changes on disk names what changed outside", arguments: [
@@ -237,11 +239,11 @@ struct SchemaSaveFailureTests {
 		store.isUnlocked = true
 		store.selectedProjectId = "project"
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil })
 		try FileManager.default.createDirectory(atPath: folder + "/.lpm", withIntermediateDirectories: true)
 
 		store.editSchemaDraft(in: "project") { $0.set(.declared(.object([.init(key: "format", value: .string("url"))])), for: .key("PORT")) }
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		chmod(folder, 0o555)
 		await #expect { try await store.saveSchemaDraft(in: "project") } throws: { error in
 			if case .file(.writeFailed) = error as? ProjectEnvSchemaFile.DraftSaveError { true } else { false }
@@ -260,13 +262,13 @@ struct SchemaSaveFailureTests {
 		let (store, folder) = try await makeStore(#"{"envSchema":{"vars":{"PORT":{"format":"port"},"RETRY":{}}}}"#)
 		defer { chmod(folder, 0o755); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		store.editSchemaDraft(in: "project") { $0.set(.declared(.object([.init(key: "format", value: .string("url"))])), for: .key("PORT")) }
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		try #"{"envSchema":{"vars":{"RETRY":{},"PORT":{"format":"port"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		chmod(folder, 0o555)
 		await #expect { try await store.saveSchemaDraft(in: "project") } throws: { error in
 			if case .file(.writeFailed) = error as? ProjectEnvSchemaFile.DraftSaveError { true } else { false }
 		}
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		guard case .file(.writeFailed)? = store.schemaDraftSaveFailure(for: "project") else {
 			Issue.record("The failure of the merged draft is kept")
 			return
@@ -278,14 +280,14 @@ struct SchemaSaveFailureTests {
 		let (store, folder) = try await makeStore(#"{"envSchema":{"extends":["base.json"],"vars":{"PORT":{"format":"port"}}}}"#, files: ["base.json": #"{"vars":{"A":{}}}"#])
 		defer { chmod(folder, 0o755); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		store.editSchemaDraft(in: "project") { $0.set(.declared(.object([.init(key: "format", value: .string("url"))])), for: .key("PORT")) }
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		chmod(folder, 0o555)
 		_ = try? await store.saveSchemaDraft(in: "project")
 		#expect(store.schemaDraftSaveFailure(for: "project") != nil)
 		chmod(folder, 0o755)
 		try #"{"vars":{"A":{"required":true}}}"#.write(toFile: folder + "/base.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project")?.overview?.rule(for: "A")?.badges.isEmpty == false }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project")?.overview?.rule(for: "A")?.badges.isEmpty == false })
 		#expect(store.schemaDraftSaveFailure(for: "project") == nil, "The imports changed, so the draft needs another review")
 	}
 
@@ -296,12 +298,12 @@ struct SchemaSaveFailureTests {
 		try FileManager.default.createDirectory(atPath: other, withIntermediateDirectories: true)
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder); try? FileManager.default.removeItem(atPath: other) }
 		store.editSchemaDraft(in: "project") { $0.set(.declared(.object([.init(key: "format", value: .string("url"))])), for: .key("PORT")) }
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		let gate = DispatchSemaphore(value: 0)
 		ProjectConfigFile.editQueue.async { gate.wait() }
 		defer { gate.signal() }
 		let save = Task { @MainActor in try await store.saveSchemaDraft(in: "project") }
-		try await waitUntil { store.savingSchemaDrafts.contains("project") }
+		try #require(try await waitUntil { store.savingSchemaDrafts.contains("project") })
 		let project = try #require(store.projects.first)
 		store.projects = [VaultProject(id: project.id, name: project.name, path: other, environments: project.environments)]
 		gate.signal()
@@ -317,20 +319,20 @@ struct SchemaSaveFailureTests {
 			values: ["PORT": "3000", "RETRY": "3"])
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		store.editSchemaDraft(in: "project") { $0.set(.declared(.object([.init(key: "format", value: .string("url"))])), for: .key("PORT")) }
-		let written = DispatchSemaphore(value: 0)
+		let written = OSAllocatedUnfairLock(initialState: false)
 		let release = DispatchSemaphore(value: 0)
-		keychain.afterKeychainTransaction = { written.signal(); release.wait() }
+		keychain.afterKeychainTransaction = { written.withLock { $0 = true }; release.wait() }
 		defer { release.signal() }
 		let project = try #require(store.projects.first)
 		store.keyDrafts.edit(project, key: "RETRY") { $0.name = "RETRIES" }
 		let rename = Task { @MainActor in try await store.saveKeyDraft(.init(projectID: "project", key: "RETRY")) }
-		try await waitUntil { written.wait(timeout: .now()) == .success }
+		try #require(try await waitUntil { written.withLock { $0 } })
 		keychain.afterKeychainTransaction = nil
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"]?.rootSchema?["vars"]?["RETRIES"] != nil }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.rootSchema?["vars"]?["RETRIES"] != nil })
 		release.signal()
 		try await rename.value
-		try await waitUntil { !store.isReloadingKeyDescriptions }
+		try #require(try await waitUntil { !store.isReloadingKeyDescriptions })
 		#expect(store.schemaDraftRebases["project"] == nil, "The app's own rename isn't noted as a change on disk")
 		#expect(store.schemaDraft(for: "project")?.changedItems == [.key("PORT")])
 	}
@@ -356,17 +358,10 @@ struct SchemaSaveFailureTests {
 		store.isUnlocked = true
 		store.selectedProjectId = "project"
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil })
 		return (store, folder, keychain)
 	}
 
-	private func waitUntil(_ condition: () -> Bool) async throws {
-		for _ in 0..<1000 {
-			if condition() { return }
-			try await Task.sleep(for: .milliseconds(5))
-		}
-		try #require(condition(), "Timed out")
-	}
 }
 
 extension SheetInteractionTests {
@@ -486,11 +481,10 @@ extension SheetInteractionTests {
 				$0.set(.declared(.object([.init(key: "format", value: .string("port")), .init(key: "default", value: .string("8080"))])), for: .key("PORT"))
 			}
 			try await host.click("Drift between envs")
-			try await host.settle()
+			#expect(try await host.waitUntil { openDescriptors(at: folder + "/lpm.json") == 0 }, "Nothing watches lpm.json while another page shows")
 			try #"{"envSchema":{"vars":{"PORT":{"format":"port","default":"3000"},"RETRY_COUNT":{"format":"integer","min":0,"max":3}}}}"#
 				.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-			try await Task.sleep(for: .milliseconds(400))
-			#expect(store.schemaDraftRebases["schema-review"] == nil, "Nothing watches lpm.json while another page shows")
+			#expect(store.schemaDraftRebases["schema-review"] == nil)
 			try await host.click("Schema")
 			#expect(try await host.waitForText("RETRY_COUNT changed outside"))
 		}

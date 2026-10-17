@@ -31,9 +31,9 @@ struct BlockingWorkTests {
 		let released = DispatchSemaphore(value: 0)
 		async let waited = BlockingWork.run {
 			started.signal()
-			return released.wait(timeout: .now() + 10) == .success
+			return released.wait(timeout: .now() + testWaitSeconds) == .success
 		}
-		let sawStart = await BlockingWork.run { started.wait(timeout: .now() + 10) == .success }
+		let sawStart = await BlockingWork.run { started.wait(timeout: .now() + testWaitSeconds) == .success }
 		_ = await BlockingWork.run { released.signal() }
 		#expect(sawStart)
 		#expect(await waited)

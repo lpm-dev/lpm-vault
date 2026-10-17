@@ -78,7 +78,7 @@ final class PlatformHTTPStub: URLProtocol {
 	}
 
 	private static func register(_ baseURL: URL, delegate: BoundedHTTPResponseDelegate, _ handler: @escaping Handler) -> Route {
-		let configuration = BoundedHTTPResponse.ephemeralConfiguration(requestTimeout: 5, resourceTimeout: 10)
+		let configuration = BoundedHTTPResponse.ephemeralConfiguration(requestTimeout: testWaitSeconds, resourceTimeout: testWaitSeconds)
 		configuration.protocolClasses = [PlatformHTTPStub.self]
 		let route = Route(
 			baseURL: baseURL,

@@ -6,32 +6,32 @@ import Testing
 
 @Suite("Project config watcher", .serialized)
 struct ProjectConfigWatcherTests {
-	@Test("the watcher reports lpm.json written in place or replaced, once per burst")
+	@Test("the watcher begins with a report, then reports lpm.json written in place, replaced, and written in place again")
 	func reportsChanges() async throws {
 		let folder = try makeFolder()
 		defer { try? FileManager.default.removeItem(atPath: folder) }
 		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
-		let changes = ChangeCounter()
-		let watching = watch(folder, into: changes)
-		defer { watching.cancel() }
-		try await Task.sleep(for: .milliseconds(100))
+		let watch = try await startWatching(folder)
+		defer { watch.cancel() }
+		try writeInPlace(#"{"a":1}"#, to: folder + "/lpm.json")
+		#expect(try await waitUntil { watch.changes == 1 }, "Written in place")
+		try #"{"b":1}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+		#expect(try await waitUntil { watch.changes == 2 }, "Replaced, as editors save it")
+		try writeInPlace(#"{"c":1}"#, to: folder + "/lpm.json")
+		#expect(try await waitUntil { watch.changes == 3 }, "The watcher follows the replaced file")
+	}
 
-		let handle = try #require(FileHandle(forWritingAtPath: folder + "/lpm.json"))
-		handle.write(Data(#"{"a":1}"#.utf8))
-		try handle.close()
-		#expect(try await eventually { changes.count == 1 })
-
+	@Test("a burst of saves is reported")
+	func reportsBursts() async throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(atPath: folder) }
+		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
+		let watch = try await startWatching(folder)
+		defer { watch.cancel() }
 		for value in 0..<5 {
 			try #"{"b":\#(value)}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		}
-		#expect(try await eventually { changes.count == 2 })
-		try await Task.sleep(for: .milliseconds(300))
-		#expect(changes.count == 2, "A burst of saves is one change")
-
-		let replaced = try #require(FileHandle(forWritingAtPath: folder + "/lpm.json"))
-		replaced.write(Data(#"{"c":1}"#.utf8))
-		try replaced.close()
-		#expect(try await eventually { changes.count == 3 }, "The watcher follows the replaced file")
+		#expect(try await waitUntil { watch.changes >= 1 })
 	}
 
 	@Test("a schema lpm.json imports, written in place or replaced, is a change too")
@@ -41,24 +41,15 @@ struct ProjectConfigWatcherTests {
 		try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
 		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
 		try "{}".write(toFile: folder + "/schemas/base.json", atomically: false, encoding: .utf8)
-		let changes = ChangeCounter()
-		let watching = Task {
-			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: ["schemas/base.json"], settling: .milliseconds(100),
-				maximumDelay: .milliseconds(600), retryingEvery: .milliseconds(200)) {
-				changes.increment()
-			}
-		}
-		defer { watching.cancel() }
-		try await Task.sleep(for: .milliseconds(100))
-		let handle = try #require(FileHandle(forWritingAtPath: folder + "/schemas/base.json"))
-		handle.write(Data(#"{"vars":{"A":{"secret":true}}}"#.utf8))
-		try handle.close()
-		#expect(try await eventually { changes.count == 1 }, "An import written in place")
+		let watch = try await startWatching(folder, imports: ["schemas/base.json"])
+		defer { watch.cancel() }
+		try writeInPlace(#"{"vars":{"A":{"secret":true}}}"#, to: folder + "/schemas/base.json")
+		#expect(try await waitUntil { watch.changes == 1 }, "An import written in place")
 		try "{}".write(toFile: folder + "/schemas/other.json", atomically: true, encoding: .utf8)
-		try await Task.sleep(for: .milliseconds(400))
-		#expect(changes.count == 1, "A file lpm.json doesn't import isn't a change")
+		try await quietPeriod()
+		#expect(watch.changes == 1, "A file lpm.json doesn't import isn't a change")
 		try #"{"vars":{"A":{}}}"#.write(toFile: folder + "/schemas/base.json", atomically: true, encoding: .utf8)
-		#expect(try await eventually { changes.count == 2 }, "An import replaced, as git does")
+		#expect(try await waitUntil { watch.changes == 2 }, "An import replaced, as git does")
 	}
 
 	@Test("other files changing in the folder aren't changes to lpm.json")
@@ -66,58 +57,50 @@ struct ProjectConfigWatcherTests {
 		let folder = try makeFolder()
 		defer { try? FileManager.default.removeItem(atPath: folder) }
 		try "{}".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-		let changes = ChangeCounter()
-		let watching = watch(folder, into: changes)
-		defer { watching.cancel() }
-		try await Task.sleep(for: .milliseconds(100))
+		let watch = try await startWatching(folder)
+		defer { watch.cancel() }
 		for value in 0..<5 {
 			try "\(value)".write(toFile: folder + "/.eslintcache", atomically: true, encoding: .utf8)
-			try await Task.sleep(for: .milliseconds(20))
 		}
-		try await Task.sleep(for: .milliseconds(400))
-		#expect(changes.count == 0)
+		try await quietPeriod()
+		#expect(watch.changes == 0)
 	}
 
-	@Test("a change keeps arriving while another file churns, and lpm.json edits during churn arrive within a second")
+	@Test("lpm.json that keeps changing is still reported, though it never settles")
 	func boundedDelay() async throws {
 		let folder = try makeFolder()
 		defer { try? FileManager.default.removeItem(atPath: folder) }
 		try "{}".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-		let changes = ChangeCounter()
-		let watching = watch(folder, into: changes)
-		defer { watching.cancel() }
-		try await Task.sleep(for: .milliseconds(100))
-		let start = ContinuousClock.now
+		let watch = try await startWatching(folder)
+		defer { watch.cancel() }
 		var index = 0
-		while ContinuousClock.now - start < .milliseconds(1800) {
+		// Each save comes well within the watcher's settling time of the last.
+		let reported = try await waitUntil {
 			try #"{"n":\#(index)}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 			index += 1
-			try await Task.sleep(for: .milliseconds(20))
+			return watch.changes >= 1
 		}
-		#expect(changes.count >= 1, "Continuous writes still report within the maximum delay")
+		#expect(reported, "Saves every few milliseconds are still reported within the maximum delay")
 	}
 
-	@Test("a folder that's missing at first, or deleted and made again, is watched once it's there")
+	@Test("a folder that's missing at first, or replaced, is watched once it's there")
 	func followsTheFolder() async throws {
 		let parent = try makeFolder()
 		defer { try? FileManager.default.removeItem(atPath: parent) }
 		let folder = parent + "/project"
-		let changes = ChangeCounter()
-		let watching = watch(folder, into: changes)
-		defer { watching.cancel() }
-		try await Task.sleep(for: .milliseconds(100))
-		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
-		try "{}".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-		#expect(try await eventually { changes.count >= 1 }, "A folder made after the watch started is watched")
+		let watch = try await startWatching(folder)
+		defer { watch.cancel() }
+		try FileManager.default.createDirectory(atPath: folder + "-new", withIntermediateDirectories: true)
+		try "{}".write(toFile: folder + "-new/lpm.json", atomically: true, encoding: .utf8)
+		try FileManager.default.moveItem(atPath: folder + "-new", toPath: folder)
+		#expect(try await waitUntil { watch.changes == 1 }, "A folder made after the watch began is watched")
 
-		let seen = changes.count
-		try FileManager.default.removeItem(atPath: folder)
-		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
-		try #"{"again":true}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-		#expect(try await eventually { changes.count > seen }, "A folder made again is watched")
-		let recreated = changes.count
-		try #"{"edited":true}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-		#expect(try await eventually { changes.count > recreated })
+		try FileManager.default.createDirectory(atPath: folder + "-new", withIntermediateDirectories: true)
+		try #"{"again":true}"#.write(toFile: folder + "-new/lpm.json", atomically: true, encoding: .utf8)
+		#expect(renamex_np(folder + "-new", folder, UInt32(RENAME_SWAP)) == 0)
+		#expect(try await waitUntil { watch.changes == 2 }, "A folder replaced at its path is watched")
+		try writeInPlace(#"{"edited":true}"#, to: folder + "/lpm.json")
+		#expect(try await waitUntil { watch.changes == 3 }, "The replacing folder's lpm.json is the one watched")
 	}
 
 	@Test("lpm.json that's a pipe or a link isn't opened, and the watch still ends and follows a real file", arguments: [false, true])
@@ -132,20 +115,15 @@ struct ProjectConfigWatcherTests {
 		try #require(mkfifo(pipe, 0o600) == 0)
 		if throughLink { try FileManager.default.createSymbolicLink(atPath: folder + "/lpm.json", withDestinationPath: pipe) }
 		for _ in 0..<10 {
-			let changes = ChangeCounter()
-			let watching = watch(folder, into: changes)
-			try await Task.sleep(for: .milliseconds(30))
-			watching.cancel()
+			try await startWatching(folder).cancel()
 		}
-		#expect(try await eventually { descriptors(in: folder) + descriptors(in: outside) == 0 }, "Every watch closes what it opened")
+		#expect(try await waitUntil { openDescriptors(at: folder) + openDescriptors(at: outside) == 0 }, "Every watch closes what it opened")
 
-		let changes = ChangeCounter()
-		let watching = watch(folder, into: changes)
-		defer { watching.cancel() }
-		try await Task.sleep(for: .milliseconds(100))
+		let watch = try await startWatching(folder)
+		defer { watch.cancel() }
 		try FileManager.default.removeItem(atPath: folder + "/lpm.json")
 		try "{}".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
-		#expect(try await eventually { changes.count >= 1 }, "The watch isn't stuck on the pipe")
+		#expect(try await waitUntil { watch.changes == 1 }, "The watch isn't stuck on the pipe")
 	}
 
 	@Test("a file lpm.json links to outside the project isn't watched")
@@ -158,18 +136,10 @@ struct ProjectConfigWatcherTests {
 		}
 		try "{}".write(toFile: outside + "/target.json", atomically: false, encoding: .utf8)
 		try FileManager.default.createSymbolicLink(atPath: folder + "/lpm.json", withDestinationPath: outside + "/target.json")
-		let changes = ChangeCounter()
-		let watching = watch(folder, into: changes)
-		defer { watching.cancel() }
-		try await Task.sleep(for: .milliseconds(100))
-		for value in 0..<3 {
-			let handle = try #require(FileHandle(forWritingAtPath: outside + "/target.json"))
-			handle.write(Data(#"{"v":\#(value)}"#.utf8))
-			try handle.close()
-			try await Task.sleep(for: .milliseconds(50))
-		}
-		try await Task.sleep(for: .milliseconds(400))
-		#expect(changes.count == 0)
+		let watch = try await startWatching(folder)
+		defer { watch.cancel() }
+		#expect(openDescriptors(at: outside) == 0, "Nothing outside the project is open, so its writes can't be reported")
+		#expect(openDescriptors(at: folder) == 1, "Only the project folder is open")
 	}
 
 	@Test("imports in one folder share its descriptor: one for each folder and one for each file")
@@ -186,15 +156,11 @@ struct ProjectConfigWatcherTests {
 				imports.append(path)
 			}
 		}
-		let changes = ChangeCounter()
-		let watching = Task {
-			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: imports, settling: .milliseconds(100)) { changes.increment() }
-		}
-		defer { watching.cancel() }
+		let watch = try await startWatching(folder, imports: imports)
 		let files = imports.count + 1
-		#expect(try await eventually { descriptors(in: folder) == files + 3 }, "\(descriptors(in: folder)) descriptors for \(files) files in 3 folders")
-		watching.cancel()
-		#expect(try await eventually { descriptors(in: folder) == 0 })
+		#expect(openDescriptors(at: folder) == files + 3, "\(openDescriptors(at: folder)) descriptors for \(files) files in 3 folders")
+		watch.cancel()
+		#expect(try await waitUntil { openDescriptors(at: folder) == 0 })
 	}
 
 	@Test("an import stays watched when a folder above it is moved aside and made again", arguments: [
@@ -208,33 +174,21 @@ struct ProjectConfigWatcherTests {
 		try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
 		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
 		try "{}".write(toFile: file, atomically: false, encoding: .utf8)
-		let changes = ChangeCounter()
-		let watching = Task {
-			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: [path], settling: .milliseconds(100),
-				maximumDelay: .milliseconds(600), retryingEvery: .milliseconds(200)) {
-				changes.increment()
-			}
-		}
-		defer { watching.cancel() }
-		try await Task.sleep(for: .milliseconds(100))
+		let watch = try await startWatching(folder, imports: [path])
+		defer { watch.cancel() }
 		let aside = folder + "/" + replaced + "-old"
 		try FileManager.default.moveItem(atPath: folder + "/" + replaced, toPath: aside)
-		#expect(try await eventually { changes.count == 1 }, "The import left with its folder")
+		#expect(try await waitUntil { watch.changes == 1 }, "The import left with its folder")
 		try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
-		try #"{"vars":{}}"#.write(toFile: file, atomically: false, encoding: .utf8)
-		#expect(try await eventually { changes.count == 2 }, "The import made again at its path")
-		try await Task.sleep(for: .milliseconds(200))
-		let handle = try #require(FileHandle(forWritingAtPath: file))
-		handle.write(Data(#"{"vars":{"A":{}}}"#.utf8))
-		try handle.close()
-		#expect(try await eventually { changes.count == 3 }, "The new file is the one watched")
-		try #"{"vars":{"B":{}}}"#.write(toFile: aside + path.dropFirst(replaced.count), atomically: false, encoding: .utf8)
-		try await Task.sleep(for: .milliseconds(400))
-		#expect(changes.count == 3, "The file moved aside isn't")
+		try #"{"vars":{}}"#.write(toFile: file, atomically: true, encoding: .utf8)
+		#expect(try await waitUntil { watch.changes == 2 }, "The import made again at its path")
+		try writeInPlace(#"{"vars":{"A":{}}}"#, to: file)
+		#expect(try await waitUntil { watch.changes == 3 }, "The new file is the one watched")
 		let watched = path.split(separator: "/").count + 2
-		#expect(descriptors(in: folder) == watched, "One for each folder on the import's path and one for each file, none on what moved aside")
-		watching.cancel()
-		#expect(try await eventually { descriptors(in: folder) == 0 })
+		#expect(try await waitUntil { openDescriptors(at: aside) == 0 }, "Nothing that moved aside is watched, so its writes can't be reported")
+		#expect(openDescriptors(at: folder) == watched, "One for each folder on the import's path and one for each file")
+		watch.cancel()
+		#expect(try await waitUntil { openDescriptors(at: folder) == 0 })
 	}
 
 	@Test("an import whose folder is a link out of the project isn't watched")
@@ -248,21 +202,41 @@ struct ProjectConfigWatcherTests {
 		try "{}".write(toFile: folder + "/lpm.json", atomically: false, encoding: .utf8)
 		try "{}".write(toFile: outside + "/base.json", atomically: false, encoding: .utf8)
 		try FileManager.default.createSymbolicLink(atPath: folder + "/schemas", withDestinationPath: outside)
-		let changes = ChangeCounter()
-		let watching = Task {
-			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: ["schemas/base.json"], settling: .milliseconds(100),
+		let watch = try await startWatching(folder, imports: ["schemas/base.json"])
+		defer { watch.cancel() }
+		#expect(openDescriptors(at: outside) == 0, "Nothing outside the project is open, so its writes can't be reported")
+		#expect(openDescriptors(at: folder) == 2, "Only the project folder and lpm.json are open")
+	}
+
+	/// A watch a test began, and the changes reported since.
+	private struct Watch {
+		let reports: ChangeCounter
+		let task: Task<Void, Never>
+
+		/// The reports after the first, which says watching has begun.
+		var changes: Int { reports.count - 1 }
+
+		func cancel() { task.cancel() }
+	}
+
+	/// Watches `folder`, returning once the watcher has begun.
+	private func startWatching(_ folder: String, imports: [String] = []) async throws -> Watch {
+		let reports = ChangeCounter()
+		let task = Task {
+			for await _ in ProjectConfigWatcher.changes(inFolder: folder, imports: imports, settling: .milliseconds(100),
 				maximumDelay: .milliseconds(600), retryingEvery: .milliseconds(200)) {
-				changes.increment()
+				reports.increment()
 			}
 		}
-		defer { watching.cancel() }
-		try await Task.sleep(for: .milliseconds(100))
-		for value in 0..<3 {
-			try #"{"v":\#(value)}"#.write(toFile: outside + "/base.json", atomically: true, encoding: .utf8)
-			try await Task.sleep(for: .milliseconds(50))
-		}
-		try await Task.sleep(for: .milliseconds(400))
-		#expect(changes.count == 0)
+		try #require(try await waitUntil { reports.count >= 1 }, "The watcher reports once it has begun")
+		return Watch(reports: reports, task: task)
+	}
+
+	/// Writes the file without replacing it.
+	private func writeInPlace(_ text: String, to path: String) throws {
+		let handle = try #require(FileHandle(forWritingAtPath: path))
+		handle.write(Data(text.utf8))
+		try handle.close()
 	}
 
 	private func makeFolder() throws -> String {
@@ -271,38 +245,34 @@ struct ProjectConfigWatcherTests {
 		return folder
 	}
 
-	private func watch(_ folder: String, into changes: ChangeCounter) -> Task<Void, Never> {
-		Task {
-			for await _ in ProjectConfigWatcher.changes(inFolder: folder, settling: .milliseconds(100), maximumDelay: .milliseconds(600), retryingEvery: .milliseconds(200)) {
-				changes.increment()
-			}
-		}
+}
+
+@Suite("Settling changes")
+struct ChangeSettlingTests {
+	private func at(_ milliseconds: UInt64) -> DispatchTime {
+		DispatchTime(uptimeNanoseconds: 1_000_000_000 + milliseconds * 1_000_000)
 	}
 
-	/// The process's descriptors open on `folder` or anything in it, which
-	/// other tests running at the same time don't change.
-	private func descriptors(in folder: String) -> Int {
-		guard let resolved = realpath(folder, nil) else { return 0 }
-		let root = String(cString: resolved)
-		free(resolved)
-		let entries = (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd")) ?? []
-		var buffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN))
-		return entries.lazy.compactMap(Int32.init).filter { descriptor in
-			guard fcntl(descriptor, F_GETPATH, &buffer) != -1 else { return false }
-			let path = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
-			return path == root || path.hasPrefix(root + "/")
-		}.count
+	@Test("changes in quick succession are reported once, when the last has settled")
+	func settles() {
+		var bursts = ChangeSettling(settling: .milliseconds(100), maximumDelay: .milliseconds(600))
+		#expect(bursts.reportTime(forChangeAt: at(0)) == at(100))
+		#expect(bursts.reportTime(forChangeAt: at(50)) == at(150), "A change before the report moves it")
+		#expect(bursts.reportTime(forChangeAt: at(149)) == at(249))
+		bursts.reported()
+		#expect(bursts.reportTime(forChangeAt: at(400)) == at(500), "A change after the report begins another burst")
 	}
 
-	/// The deadline only bounds a failure: a busy runner can take seconds to
-	/// deliver a file event and schedule the task that counts it.
-	private func eventually(seconds: Double = 30, _ condition: () -> Bool) async throws -> Bool {
-		let deadline = ContinuousClock.now + .seconds(seconds)
-		while ContinuousClock.now < deadline {
-			if condition() { return true }
-			try await Task.sleep(for: .milliseconds(10))
+	@Test("changes that never settle are reported once they've gone on for the maximum delay")
+	func boundsTheDelay() {
+		var bursts = ChangeSettling(settling: .milliseconds(100), maximumDelay: .milliseconds(600))
+		var due: DispatchTime?
+		for time in stride(from: UInt64(0), through: 580, by: 20) {
+			due = bursts.reportTime(forChangeAt: at(time))
 		}
-		return condition()
+		#expect(due == at(600), "A change every 20 ms is reported 600 ms after the first")
+		bursts.reported()
+		#expect(bursts.reportTime(forChangeAt: at(600)) == at(700), "The next burst has its own maximum delay")
 	}
 }
 

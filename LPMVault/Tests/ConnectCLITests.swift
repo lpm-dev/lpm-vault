@@ -303,8 +303,8 @@ struct ProjectCLILinkTests {
 		#expect(flock(lock, LOCK_EX) == 0)
 		let vaultId = vaultId
 		let link = Task { await ProjectCLILink.linkInBackground(vaultId: vaultId, folder: folder.path) }
-		try await Task.sleep(for: .milliseconds(200))
-		#expect(try readConfig(in: folder)["vault"] == nil)
+		try await quietPeriod()
+		#expect(try readConfig(in: folder)["vault"] == nil, "Nothing is written while the LPM CLI holds the lock")
 		flock(lock, LOCK_UN)
 		close(lock)
 		#expect(await link.value == nil)

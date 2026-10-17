@@ -352,12 +352,18 @@ extension SheetInteractionTests {
 				if let picker = view as? NSSegmentedControl, picker.segmentCount == 2 { return picker }
 				return view.subviews.lazy.compactMap { channelPicker($0) }.first
 			}
-			for _ in 0..<100 {
+			try #require(try await waitUntil {
 				host.layoutSubtreeIfNeeded()
-				if channelPicker(host) != nil { break }
-				try await Task.sleep(for: .milliseconds(10))
-			}
+				return channelPicker(host) != nil
+			})
 			let picker = try #require(channelPicker(host))
+			/// Whether the picker comes to say what the checker does about changing channel.
+			func pickerFollowsChecker() async throws -> Bool {
+				try await waitUntil {
+					host.layoutSubtreeIfNeeded()
+					return picker.isEnabled == checker.canChangeChannel
+				}
+			}
 			#expect(picker.label(forSegment: 0) == "Stable")
 			#expect(picker.label(forSegment: 1) == "Nightly")
 			picker.selectedSegment = 1
@@ -372,9 +378,9 @@ extension SheetInteractionTests {
 			#expect(text.contains("Installed version") && text.contains("Check for Updates"))
 			driver.availableUpdateVersion = "A newer nightly"
 			driver.sessionInProgress = true
-			try await Task.sleep(for: .milliseconds(20))
 			#expect(checker.canCheckForUpdates)
-			#expect(!picker.isEnabled)
+			#expect(!checker.canChangeChannel)
+			#expect(try await pickerFollowsChecker())
 			checker.channel = .stable
 			#expect(checker.channel == .nightly)
 			#expect(checker.availableUpdateVersion == "A newer nightly")
@@ -383,19 +389,19 @@ extension SheetInteractionTests {
 			#expect(driver.checks == 1)
 			driver.sessionInProgress = false
 			driver.hasPendingUpdate = true
-			try await Task.sleep(for: .milliseconds(20))
-			#expect(!picker.isEnabled)
+			#expect(!checker.canChangeChannel)
+			#expect(try await pickerFollowsChecker())
 			#expect(checker.canCheckForUpdates)
 			driver.hasPendingUpdate = false
-			try await Task.sleep(for: .milliseconds(20))
-			#expect(picker.isEnabled)
+			#expect(checker.canChangeChannel)
+			#expect(try await pickerFollowsChecker())
 			checker.channel = .stable
 			checker.checkForUpdates()
 			#expect(driver.channels.last == .stable)
 			#expect(driver.checks == 2)
 			driver.canCheckForUpdates = false
-			try await Task.sleep(for: .milliseconds(20))
-			#expect(!picker.isEnabled)
+			#expect(!checker.canChangeChannel)
+			#expect(try await pickerFollowsChecker())
 		}
 
 		@Test("the title bar shows an update reminder beside Lock only while an update is offered", arguments: [1040.0, 1200.0])
@@ -429,7 +435,7 @@ extension SheetInteractionTests {
 			for (version, canCheck) in states {
 				driver.availableUpdateVersion = version
 				driver.canCheckForUpdates = canCheck
-				let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+				let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 				var bitmap: NSBitmapImageRep
 				var updateBounds: CGRect?
 				repeat {

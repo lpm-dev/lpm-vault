@@ -82,6 +82,8 @@ final class VaultQuitCoordinator {
 		var finishingDelay: Duration = .milliseconds(150)
 		/// How long writes run before the sheet offers to quit without them.
 		var overdueAfter: Duration = .seconds(10)
+		/// How long a project may take to load before its edits are listed as not saved.
+		var projectLoadLimit: Duration = .seconds(15)
 	}
 
 	/// Shows and hides the sheet, which is attached to the app's window.
@@ -268,7 +270,7 @@ final class VaultQuitCoordinator {
 					index += 1
 					continue
 				}
-				let loaded = await store.openProjectForSaving(item.projectID)
+				let loaded = await store.openProjectForSaving(item.projectID, timeout: timing.projectLoadLimit)
 				guard self.run == run, phase == .saving else { return }
 				guard loaded else {
 					items[index].state = .failed("\(item.projectName) couldn't be loaded to save it.")

@@ -364,7 +364,7 @@ struct PlatformAuthorizationClientTests {
 struct PlatformConnectionListenerTests {
 	private func get(_ port: UInt16, _ query: String, on platform: BrowserPlatform = .vercel) async throws -> (Int, String) {
 		let url = try #require(URL(string: "http://127.0.0.1:\(port)\(PlatformConnectionListener.path(for: platform))?\(query)"))
-		let (data, response) = try await URLSession(configuration: .ephemeral).data(from: url)
+		let (data, response) = try await URLSession(configuration: testSessionConfiguration()).data(from: url)
 		return ((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: data, as: UTF8.self))
 	}
 
@@ -377,7 +377,7 @@ struct PlatformConnectionListenerTests {
 		let proof = platformTestOneTimeValue()
 		let other = try await get(listener.port, platformTestReturn(authorization: UUID().uuidString.lowercased(), proof: proof))
 		#expect(other.0 == 400 && other.1.contains("Start from LPM Vault"))
-		async let completion = listener.completion(until: Date(timeIntervalSinceNow: 5))
+		async let completion = listener.completion(until: Date(timeIntervalSinceNow: testWaitSeconds))
 		let page = try await get(listener.port, platformTestReturn(authorization: id, proof: proof, next: "https://vercel.com/dashboard"))
 		#expect(page.0 == 200 && page.1.contains("Return to LPM Vault") && page.1.contains("href=\"https://vercel.com/dashboard\""))
 		#expect(try await completion == .proof(proof))
@@ -389,13 +389,14 @@ struct PlatformConnectionListenerTests {
 		defer { listener.stop() }
 		let id = UUID().uuidString.lowercased()
 		listener.expect(id, from: platformTestRegistry)
-		let completion = Task { try await listener.completion(until: Date(timeIntervalSinceNow: 1)) }
+		let completion = Task { try await listener.completion(until: Date(timeIntervalSinceNow: testWaitSeconds)) }
 		let forgedFailure = try await get(listener.port, "authorization=\(id)&error=authorization_cancelled")
 		let forgedProof = try await get(listener.port, "authorization=\(id)&proof=\(platformTestOneTimeValue())")
 		let signed = platformTestReturn(authorization: id, error: "authorization_cancelled")
 		let swapped = try await get(listener.port, signed.replacingOccurrences(of: "authorization_cancelled", with: "platform_rejected"))
 		#expect([forgedFailure, forgedProof, swapped].allSatisfy { $0.1.contains("Start from LPM Vault") })
-		await #expect(throws: PlatformConnectionListener.ListenerError.timedOut) { try await completion.value }
+		completion.cancel()
+		await #expect(throws: CancellationError.self, "Still waiting, so only cancelling ends it") { try await completion.value }
 	}
 
 	@Test("the Registry's signature, made as its tests make it, is accepted for a local Registry and not for lpm.dev")
@@ -421,7 +422,7 @@ struct PlatformConnectionListenerTests {
 		listener.expect(id, from: platformTestRegistry)
 		let page = try await get(listener.port, platformTestReturn(authorization: id, error: "authorization_cancelled"))
 		#expect(page.0 == 400 && page.1.contains("cancelled on Vercel"))
-		#expect(try await listener.completion(until: Date(timeIntervalSinceNow: 5)) == .failure(.cancelledOnPlatform))
+		#expect(try await listener.completion(until: Date(timeIntervalSinceNow: testWaitSeconds)) == .failure(.cancelledOnPlatform))
 	}
 
 	@Test("waiting ends at the deadline, or when the task is cancelled")
@@ -431,8 +432,8 @@ struct PlatformConnectionListenerTests {
 			try await listener.completion(until: Date(timeIntervalSinceNow: 0.2))
 		}
 		let waiting = try await PlatformConnectionListener.start(for: .vercel)
-		let task = Task { try await waiting.completion(until: Date(timeIntervalSinceNow: 30)) }
-		try await Task.sleep(for: .milliseconds(50))
+		let task = Task { try await waiting.completion(until: Date(timeIntervalSinceNow: testWaitSeconds)) }
+		try #require(try await waitUntil { waiting.isWaiting })
 		task.cancel()
 		await #expect(throws: CancellationError.self) { try await task.value }
 	}
@@ -444,7 +445,7 @@ struct PlatformConnectionListenerTests {
 		let id = UUID().uuidString.lowercased()
 		listener.expect(id, from: platformTestRegistry)
 		let proof = platformTestOneTimeValue()
-		let completion = Task { try await listener.completion(until: Date(timeIntervalSinceNow: 5)) }
+		let completion = Task { try await listener.completion(until: Date(timeIntervalSinceNow: testWaitSeconds)) }
 		let atVercel = try await get(listener.port, platformTestReturn(authorization: id, proof: proof), on: .vercel)
 		#expect(atVercel.0 == 400 && atVercel.1.contains("Connect Netlify from"))
 		let page = try await get(listener.port, platformTestReturn(authorization: id, proof: proof, next: "https://vercel.com/dashboard"), on: .netlify)
@@ -571,7 +572,7 @@ private func browser(
 		Task.detached {
 			try? await Task.sleep(for: delay)
 			let url = URL(string: "http://127.0.0.1:\(port)\(PlatformConnectionListener.path(for: platform))?\(query)")!
-			_ = try? await URLSession(configuration: .ephemeral).data(from: url)
+			_ = try? await URLSession(configuration: testSessionConfiguration()).data(from: url)
 		}
 	}
 }
@@ -583,18 +584,20 @@ private func failure<Value>(of result: Result<Value, BrowserConnectError>) -> Br
 
 private final class Port: @unchecked Sendable {
 	private let lock = NSLock()
-	private var value: UInt16?
-	var port: UInt16? {
-		get { lock.withLock { value } }
-		set { lock.withLock { value = newValue } }
+	private var started: PlatformConnectionListener?
+	/// The listener the connection started, once it has.
+	var listener: PlatformConnectionListener? {
+		get { lock.withLock { started } }
+		set { lock.withLock { started = newValue } }
 	}
+	var port: UInt16? { listener?.port }
 }
 
 /// A browser authorization against `authorizations` whose listener's port lands in `port`.
 private func browserAuthorization(_ authorizations: FakeAuthorizations, port: Port) -> BrowserAuthorization {
 	var authorization = BrowserAuthorization(authorizations: authorizations, listen: { platform in
 		let listener = try await PlatformConnectionListener.start(for: platform)
-		port.port = listener.port
+		port.listener = listener
 		return listener
 	})
 	authorization.pendingDelay = .milliseconds(10)
@@ -617,16 +620,15 @@ struct VercelConnectorTests {
 		let authorizations = FakeAuthorizations()
 		authorizations.outcome = authorizations.readyGrant()
 		let port = Port()
-		let opened = Port()
+		let opened = OpenedPages()
 		let id = authorizations.id
 		let proof = platformTestOneTimeValue()
 		let result = await connector(authorizations, port: port).connect(session: session) { url in
-			#expect(url == authorizations.pageURL)
-			opened.port = 1
+			opened.append(url)
 			await browser(returning: platformTestReturn(authorization: id, proof: proof), listener: { port.port })(url)
 		}
 		let connected = try result.get()
-		#expect(opened.port == 1)
+		#expect(opened.urls == [authorizations.pageURL])
 		#expect(connected.grant.accessToken == "vca_granted" && connected.grant.teamID == "team_acme")
 		#expect(connected.account == VercelAccount(name: "Acme", slug: "acme"))
 		#expect(authorizations.cancelledIDs.isEmpty)
@@ -649,7 +651,7 @@ struct VercelConnectorTests {
 		"each way a connection can end early says why, and the authorization is cancelled when it wasn't collected",
 		arguments: ["platform", "proof", "expired", "token", "signedOut"]
 	)
-	func endsEarly(path: String) async {
+	func endsEarly(path: String) async throws {
 		let authorizations = FakeAuthorizations()
 		var vercel = FakeVercel()
 		var query = platformTestReturn(authorization: authorizations.id, proof: platformTestOneTimeValue())
@@ -677,9 +679,12 @@ struct VercelConnectorTests {
 		let result = await connector(authorizations, vercel: vercel, port: port).connect(
 			session: session, open: browser(returning: finalQuery, listener: { port.port }))
 		#expect(failure(of: result) == expected)
-		try? await Task.sleep(for: .milliseconds(50))
-		let shouldCancel = ["platform", "proof", "expired"].contains(path)
-		#expect(authorizations.cancelledIDs == (shouldCancel ? [authorizations.id] : []))
+		if ["platform", "proof", "expired"].contains(path) {
+			#expect(try await waitUntil { authorizations.cancelledIDs == [authorizations.id] })
+		} else {
+			try await quietPeriod()
+			#expect(authorizations.cancelledIDs.isEmpty)
+		}
 	}
 
 	@Test("a name Vercel can't return right now doesn't lose a grant that can't be collected again")
@@ -701,12 +706,10 @@ struct VercelConnectorTests {
 		let authorizations = FakeAuthorizations()
 		let port = Port()
 		let task = Task { await connector(authorizations, port: port).connect(session: session) { _ in } }
-		while port.port == nil { try await Task.sleep(for: .milliseconds(10)) }
-		try await Task.sleep(for: .milliseconds(50))
+		try #require(try await waitUntil { port.listener?.isWaiting == true })
 		task.cancel()
 		#expect(failure(of: await task.value) == .cancelled)
-		try await Task.sleep(for: .milliseconds(50))
-		#expect(authorizations.cancelledIDs == [authorizations.id])
+		#expect(try await waitUntil { authorizations.cancelledIDs == [authorizations.id] })
 	}
 }
 
@@ -818,8 +821,7 @@ struct NetlifyConnectorTests {
 		let result = await connect(authorizations, query: { platformTestReturn(authorization: $0, error: "authorization_cancelled") })
 		#expect(failure(of: result) == .platform(.cancelledOnPlatform))
 		#expect(failure(of: result)?.message(for: .netlify) == "The connection was cancelled on Netlify.")
-		for _ in 0..<100 where authorizations.cancelledIDs.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
-		#expect(authorizations.cancelledIDs == [authorizations.id])
+		#expect(try await waitUntil { authorizations.cancelledIDs == [authorizations.id] })
 		#expect(authorizations.platformCalls == ["start netlify", "cancel netlify"])
 	}
 
@@ -881,18 +883,18 @@ struct NetlifyConnectorTests {
 		#expect(stays.userReads == 3)
 	}
 
-	@Test("cancelling while the user is about to be read again, or a rate limit is waited out, stops at once")
+	@Test("cancelling while the user is about to be read again, or a rate limit is waited out, stops at once", .hangLimit)
 	func cancelWhileRetrying() async throws {
-		for answer: NetlifyAPIError in [.transport, .rateLimited(until: Date(timeIntervalSinceNow: 30))] {
+		// Each wait outlasts the test's time limit, or ends in a second read, unless cancelling stops it.
+		let longestRateLimit = Double(NetlifyHTTP.maximumRateLimitWait.components.seconds) - 1
+		for answer: NetlifyAPIError in [.transport, .rateLimited(until: Date(timeIntervalSinceNow: longestRateLimit))] {
 			let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
 			authorizations.outcome = authorizations.readyNetlifyGrant()
 			let netlify = ScriptedNetlify([.failure(answer)])
-			let task = Task { await connect(authorizations, netlify: netlify, retryDelay: .seconds(30)) }
-			for _ in 0..<400 where netlify.userReads == 0 { try await Task.sleep(for: .milliseconds(5)) }
-			let cancelled = ContinuousClock.now
+			let task = Task { await connect(authorizations, netlify: netlify, retryDelay: .seconds(3_600)) }
+			try #require(try await waitUntil { netlify.userReads == 1 })
 			task.cancel()
 			#expect(failure(of: await task.value) == .cancelled)
-			#expect(ContinuousClock.now - cancelled < .seconds(5))
 			#expect(netlify.userReads == 1)
 		}
 	}

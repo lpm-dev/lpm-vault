@@ -149,6 +149,9 @@ final class PlatformConnectionListener: @unchecked Sendable {
 		}
 	}
 
+	/// Whether a caller is waiting for the browser's return.
+	var isWaiting: Bool { lock.withLock { waiter != nil } }
+
 	func stop() {
 		finish(.failure(CancellationError()))
 	}

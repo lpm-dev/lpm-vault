@@ -1231,6 +1231,9 @@ final class VaultStore {
   /// lpm.json's rules as a draft without changes, parsed once per project
   /// while its descriptions stay the same.
   @ObservationIgnored private var schemaBases: [String: ProjectEnvSchemaDraft] = [:]
+  /// How often lpm.json's rules have been read into a project's draft base,
+  /// which every read reuses until the rules change.
+  @ObservationIgnored private(set) var schemaBaseBuilds = 0
   /// What the bundled engine finds in each project's stored values, by
   /// project ID; absent while a project's rules are unknown or unreadable.
   private(set) var valueChecks: [String: ProjectEnvValueCheck] = [:] { didSet { schemaReviews = [:] } }
@@ -1444,6 +1447,8 @@ final class VaultStore {
   private let authSessionMutationQueue = AuthSessionMutationQueue()
   private let autoLockSleep: @Sendable (Duration) async throws -> Void
   private let autoLockNow: @Sendable () -> TimeInterval
+  /// When a schema edit is made, for undoing typing in one field together.
+  private let schemaEditNow: @Sendable () -> ContinuousClock.Instant
   private var autoLockTask: Task<Void, Never>?
   private var autoLockDeadline: TimeInterval?
   private var autoLockTaskGeneration = 0
@@ -1686,8 +1691,21 @@ final class VaultStore {
   /// review when it's a saved one.
   func makePublishSession(for destination: PublishDestination? = nil) -> PublishSession? {
     guard isUnlocked, let project = selectedProject else { return nil }
-    let projectID = project.id
-    let dependencies = PublishSession.Dependencies(
+    let session = PublishSession(
+      vaultID: project.id,
+      projectName: project.name,
+      environments: orderedEnvironmentNames(for: project),
+      sourceEnvironment: selectedEnvironment,
+      saved: destination,
+      dependencies: publishDependencies(for: project.id))
+    publishSessions.removeAll { $0.session == nil }
+    publishSessions.append(WeakPublishSession(session: session))
+    return session
+  }
+
+  /// What a Publish sheet for the project reads its values with, and publishes through.
+  func publishDependencies(for projectID: String) -> PublishSession.Dependencies {
+    PublishSession.Dependencies(
       snapshot: { [weak self] environment, contents in
         await self?.publishSnapshot(projectID: projectID, environment: environment, contents: contents)
       },
@@ -1698,16 +1716,6 @@ final class VaultStore {
       coolify: coolifyClient,
       netlify: netlifyClient,
       didChange: { [weak self] in Task { await self?.loadPublishDestinations(for: projectID) } })
-    let session = PublishSession(
-      vaultID: projectID,
-      projectName: project.name,
-      environments: orderedEnvironmentNames(for: project),
-      sourceEnvironment: selectedEnvironment,
-      saved: destination,
-      dependencies: dependencies)
-    publishSessions.removeAll { $0.session == nil }
-    publishSessions.append(WeakPublishSession(session: session))
-    return session
   }
 
   /// The environment's saved values once local changes are read, with
@@ -1950,6 +1958,7 @@ final class VaultStore {
       ProcessInfo.processInfo.systemUptime
     },
     autoLockDuration: TimeInterval = VaultConstants.vaultAutoLockDuration,
+    schemaEditNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     projectIconsDirectory: URL = ProjectIconStore.defaultImagesDirectory,
     clipboard: ClipboardManager = ClipboardManager()
   ) {
@@ -2003,6 +2012,7 @@ final class VaultStore {
     self.autoLockSleep = autoLockSleep
     self.autoLockNow = autoLockNow
     self.autoLockDuration = autoLockDuration
+    self.schemaEditNow = schemaEditNow
 
     #if DEBUG
       // Local-server selection is a debug-only developer convenience.
@@ -3910,6 +3920,7 @@ final class VaultStore {
     let descriptions = keyDescriptions[projectID]
     if let base = schemaBases[projectID] { return base }
     let base = ProjectEnvSchemaDraft(schema: descriptions?.rootSchema)
+    schemaBaseBuilds += 1
     schemaBases[projectID] = base
     return base
   }
@@ -3991,7 +4002,7 @@ final class VaultStore {
     settleSchemaDraft(&draft, since: previous, for: projectID)
     guard draft != previous else { return }
     if current == nil { schemaDraftHistory[projectID] = nil }
-    schemaDraftHistory[projectID, default: SchemaDraftHistory()].record(previous, coalescing: coalescing, at: .now)
+    schemaDraftHistory[projectID, default: SchemaDraftHistory()].record(previous, coalescing: coalescing, at: schemaEditNow())
     schemaDraftFolders[projectID] = folder
     if coalescing != nil { debouncedSchemaDrafts.insert(projectID) }
     setSchemaDraft(draft, for: projectID)
@@ -4000,7 +4011,7 @@ final class VaultStore {
   /// Ends the project's unsaved schema edits, also while its rules can't be read.
   func discardSchemaDraft(in projectID: String) {
     guard var draft = schemaDrafts[projectID], !draft.isEmpty, !savingSchemaDrafts.contains(projectID) else { return }
-    schemaDraftHistory[projectID, default: SchemaDraftHistory()].record(draft, coalescing: nil, at: .now)
+    schemaDraftHistory[projectID, default: SchemaDraftHistory()].record(draft, coalescing: nil, at: schemaEditNow())
     draft.discardAll()
     setSchemaDraft(draft, for: projectID)
   }
@@ -4022,7 +4033,7 @@ final class VaultStore {
 
   func redoSchemaDraft(in projectID: String) {
     guard canEditSchema(of: projectID), let draft = schemaDrafts[projectID],
-      let restored = schemaDraftHistory[projectID]?.redo(from: draft)
+      let restored = schemaDraftHistory[projectID]?.redo(from: draft, at: schemaEditNow())
     else { return }
     setSchemaDraft(restored, for: projectID)
   }
@@ -4291,9 +4302,9 @@ final class VaultStore {
       return entry.draft
     }
 
-    mutating func redo(from current: ProjectEnvSchemaDraft) -> ProjectEnvSchemaDraft? {
+    mutating func redo(from current: ProjectEnvSchemaDraft, at time: ContinuousClock.Instant) -> ProjectEnvSchemaDraft? {
       guard let draft = redoEntries.popLast() else { return nil }
-      undoEntries.append(Entry(draft: current, coalescing: nil, time: .now))
+      undoEntries.append(Entry(draft: current, coalescing: nil, time: time))
       return draft
     }
   }
@@ -7575,7 +7586,7 @@ final class VaultStore {
 
   /// Selects a project and waits until its values and rules are loaded, so
   /// its unsaved edits can be saved; false when it can't be loaded.
-  func openProjectForSaving(_ projectID: String, timeout: Duration = .seconds(15)) async -> Bool {
+  func openProjectForSaving(_ projectID: String, timeout: Duration) async -> Bool {
     guard isUnlocked, projects.contains(where: { $0.id == projectID }) else { return false }
     if selectedProjectId != projectID || isShowingAccountPage { openProject(id: projectID) }
     guard selectedProjectId == projectID else { return false }

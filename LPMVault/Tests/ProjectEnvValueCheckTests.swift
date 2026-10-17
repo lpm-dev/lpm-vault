@@ -105,14 +105,14 @@ struct ProjectEnvValueCheckTests {
 			let call = calls.withLock { count in count += 1; return count }
 			if call == 1 {
 				entered.signal()
-				_ = release.wait(timeout: .now() + 30)
+				_ = release.wait(timeout: .now() + testWaitSeconds)
 			}
 			return nil
 		}
 		let first = Task { await worker.check(rules: .empty, environments: [:]) }
 		// The deadline only bounds a failure: a busy runner can take seconds to start the first check.
 		let started = await withCheckedContinuation { continuation in
-			Thread.detachNewThread { continuation.resume(returning: entered.wait(timeout: .now() + 30) == .success) }
+			Thread.detachNewThread { continuation.resume(returning: entered.wait(timeout: .now() + testWaitSeconds) == .success) }
 		}
 		#expect(started)
 		let cancelled = Task { await worker.check(rules: .empty, environments: [:]) }
@@ -225,10 +225,7 @@ struct ValueCheckStoreTests {
         store.openProject(id:project.id)
         defer { store.lock() }
         store.reloadKeyDescriptions()
-        for _ in 0..<500 {
-            if store.valueChecks[project.id] != nil { break }
-            try await Task.sleep(for:.milliseconds(10))
-        }
+        try #require(try await waitUntil { store.valueChecks[project.id] != nil })
         let previous = try #require(store.valueChecks[project.id])
         #expect(previous.problems(of:"PORT",in:"default").isEmpty)
         store.projects[0].environments["default"]?["PORT"] = "bad"
@@ -253,26 +250,19 @@ struct ValueCheckStoreTests {
 		defer { store.lock() }
 		store.reloadKeyDescriptions()
 
-		func eventually(_ condition: () -> Bool) async throws -> Bool {
-			for _ in 0..<500 {
-				if condition() { return true }
-				try await Task.sleep(for: .milliseconds(10))
-			}
-			return condition()
-		}
 		typealias Problem = ProjectEnvValueCheck.Problem
-		#expect(try await eventually { store.valueChecks[project.id]?.problems(of: "PORT", in: "default") == [Problem(key: "PORT", kind: .format("port"))] })
+		#expect(try await waitUntil { store.valueChecks[project.id]?.problems(of: "PORT", in: "default") == [Problem(key: "PORT", kind: .format("port"))] })
 
 		#expect(await store.addSecret(to: project.id, environment: "default", key: "WORKERS", value: "many") == .success)
-		#expect(try await eventually { store.valueChecks[project.id]?.problems(of: "WORKERS", in: "default") == [Problem(key: "WORKERS", kind: .format("integer"))] })
+		#expect(try await waitUntil { store.valueChecks[project.id]?.problems(of: "WORKERS", in: "default") == [Problem(key: "WORKERS", kind: .format("integer"))] })
 
 		try "{not json".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		#expect(try await eventually { store.valueChecks[project.id] == nil }, "Nothing is checked while lpm.json can't be read")
+		#expect(try await waitUntil { store.valueChecks[project.id] == nil }, "Nothing is checked while lpm.json can't be read")
 
 		try #"{"envSchema":{"vars":{"PORT":{"format":"port"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		#expect(try await eventually { store.valueChecks[project.id] != nil })
+		#expect(try await waitUntil { store.valueChecks[project.id] != nil })
 		store.lock()
 		#expect(store.valueChecks.isEmpty)
 	}

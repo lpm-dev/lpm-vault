@@ -144,26 +144,6 @@ struct SchemaSuggestionTests {
 @Suite("Stored keys lpm.json doesn't declare", .serialized)
 @MainActor
 struct UndeclaredSchemaKeyTests {
-	@Test("only the stored keys on screen are built, so thousands of them lay out about as fast as a few")
-	func rowsAreLazy() {
-		let overview = ProjectEnvSchemaOverview(rules: [.init(key: "PORT", isPublic: false, source: nil, badges: [])], groups: [])
-		func layout(_ count: Int) -> Duration {
-			let keys = (0..<count).map { VaultStore.StoredSchemaKey(key: "KEY_\($0)", environments: 1) }
-			let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760), styleMask: [.borderless], backing: .buffered, defer: false)
-			window.isReleasedWhenClosed = false
-			defer { window.close() }
-			return ContinuousClock().measure {
-				window.contentView = NSHostingView(rootView: VaultSchemaView(state: .loaded(overview, file: nil), folder: nil, descriptions: [:],
-					sortOrder: .constant(.ascending), undeclared: keys, onConnectCLI: {}, onRecheck: {}))
-				window.contentView?.layoutSubtreeIfNeeded()
-			}
-		}
-		_ = layout(10)
-		let few = (0..<3).map { _ in layout(10) }.min() ?? .zero
-		let many = (0..<3).map { _ in layout(4096) }.min() ?? .zero
-		#expect(many < few * 10 + .milliseconds(60), "4096 rows took \(many), 10 took \(few)")
-	}
-
 	@Test("a stored key that differs only in letter case from a declared one can't be declared, and a draft can't add one")
 	func caseConflicts() async throws {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "undeclared-case-\(UUID().uuidString)").path
@@ -180,13 +160,11 @@ struct UndeclaredSchemaKeyTests {
 		store.isUnlocked = true
 		store.selectedProjectId = "project"
 		store.reloadKeyDescriptions()
-		for _ in 0..<1000 where store.keyDescriptions["project"]?.schema?.overview == nil || store.workspaceSnapshots["project"] == nil {
-			try await Task.sleep(for: .milliseconds(5))
-		}
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil && store.workspaceSnapshots["project"] != nil })
 		#expect(store.undeclaredSchemaKeys(for: "project") == [.init(key: "port", environments: 1, conflict: "PORT")])
 
 		store.editSchemaDraft(in: "project") { $0.set(.declared(.object([])), for: .key("port")) }
-		for _ in 0..<1000 where store.currentSchemaDraftEvaluation(for: "project") == nil { try await Task.sleep(for: .milliseconds(5)) }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		await #expect(throws: ProjectEnvSchemaFile.DraftSaveError.unavailable("PORT and port differ only in letter case, which Windows reads as one name. Rename one of them.")) {
 			try await store.saveSchemaDraft(in: "project")
 		}
@@ -213,11 +191,10 @@ struct UndeclaredSchemaKeyTests {
 		store.isUnlocked = true
 		store.selectedProjectId = "project"
 		store.reloadKeyDescriptions()
-		for _ in 0..<1000 where store.keyDescriptions["project"]?.schema?.overview == nil || store.workspaceSnapshots["project"] == nil
-			|| store.valueChecks["project"] == nil
-		{
-			try await Task.sleep(for: .milliseconds(5))
-		}
+		try #require(try await waitUntil {
+			store.keyDescriptions["project"]?.schema?.overview != nil && store.workspaceSnapshots["project"] != nil
+				&& store.valueChecks["project"] != nil
+		})
 		#expect(store.undeclaredSchemaKeys(for: "project") == [
 			.init(key: "KEY_2", environments: 2), .init(key: "KEY_10", environments: 1),
 			.init(key: "NODE_OPTIONS", environments: 1, isIgnored: true), .init(key: "SMTP_HOST", environments: 1),
@@ -235,6 +212,19 @@ extension SheetInteractionTests {
 	@Suite("Adding and declaring keys", .serialized)
 	@MainActor
 	struct SchemaAddKeyInteractionTests {
+		@Test("only the stored keys on screen are built, however many there are")
+		func undeclaredRowsAreLazy() async throws {
+			let overview = ProjectEnvSchemaOverview(rules: [.init(key: "PORT", isPublic: false, source: nil, badges: [])], groups: [])
+			let keys = (0..<4096).map { VaultStore.StoredSchemaKey(key: "KEY_\($0)", environments: 1) }
+			let host = SheetTestHost(VaultSchemaView(state: .loaded(overview, file: nil), folder: nil, descriptions: [:],
+				sortOrder: .constant(.ascending), undeclared: keys, onConnectCLI: {}, onRecheck: {}),
+				size: NSSize(width: 1000, height: 760), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			#expect(try await host.waitForText("KEY_0", exactly: true))
+			let built = AccessibilityTree.elements(in: host.window).filter { $0.texts.contains { $0.hasPrefix("KEY_") } }.count
+			#expect(built > 0 && built < 100, "\(built) of 4096 stored keys' rows were built")
+		}
+
 		static let sample = #"""
 			{"envSchema":{"extends":["schemas/base.json"],"vars":{
 				"PORT":{"format":"port","default":"3000"}
@@ -362,14 +352,15 @@ extension SheetInteractionTests {
 
 		@Test("undo takes a new key back to its earlier name, and the panel follows it")
 		func undoFollowsNewKey() async throws {
-			let (store, host, folder) = try await workspace()
+			let editClock = ManualClock()
+			let (store, host, folder) = try await workspace(editClock: editClock)
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			try await host.click("Add key")
 			// A new key's panel, not the one it replaces: a click lands on a display pass.
 			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try await host.typeCharacters("SMTP_HOST", placeholder: "KEY_NAME")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.changedItems == [.key("SMTP_HOST")] })
-			try await Task.sleep(for: .milliseconds(1200))
+			editClock.advance(by: .seconds(2))
 			try await host.typeCharacters("MAIL_HOST", placeholder: "KEY_NAME")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.changedItems == [.key("MAIL_HOST")] })
 			host.window.makeFirstResponder(nil)
@@ -444,7 +435,7 @@ extension SheetInteractionTests {
 
 		private func workspace(
 			_ sample: String = Self.sample, values: [String: [String: String]]? = nil, order: VaultKeySortOrder = .ascending,
-			shows: String = "by LPM CLI"
+			shows: String = "by LPM CLI", editClock: ManualClock = ManualClock()
 		) async throws -> (VaultStore, SheetTestHost<some View>, String) {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "schema-add-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder + "/schemas", withIntermediateDirectories: true)
@@ -456,8 +447,9 @@ extension SheetInteractionTests {
 				"staging": ["PORT": "3001", "REDIS_URL": "redis://cache.internal:6379"],
 			])
 			keychain.envStorage[project.id] = (name: project.name, path: folder, environments: project.environments)
+			// The clock moves only when a test moves it, so a field's typing always undoes together.
 			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
-				apiService: MockAPIService(), authTokenProvider: { _, _ in nil })
+				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }, schemaEditNow: { editClock.now })
 			store.isUnlocked = true
 			store.projects = [project]
 			store.openProject(id: project.id)

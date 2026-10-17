@@ -473,7 +473,8 @@ struct AuthSessionCoordinatorTests {
 				baseURL: baseURL
 			)
 		}
-		try await Task.sleep(for: .milliseconds(50))
+		let sessionLock = secondCoordinator.sessionLockURL(registryURL: registryURL)
+		try #require(try await waitUntil { await CrossProcessFileLock.waitingTasks(at: sessionLock) == 1 })
 		await gate.release()
 
 		let values = try await [first.value, second.value]
@@ -761,7 +762,8 @@ struct AuthSessionCoordinatorTests {
 		let logout = Task {
 			try await bootstrap.clear(registryURL: registryURL)
 		}
-		try await Task.sleep(for: .milliseconds(50))
+		let sessionLock = refresher.sessionLockURL(registryURL: registryURL)
+		try #require(try await waitUntil { await CrossProcessFileLock.waitingTasks(at: sessionLock) == 1 })
 
 		#expect(
 			backend.value(
@@ -985,14 +987,7 @@ struct AuthSessionCoordinatorTests {
 		await refreshControl.waitUntilEntered()
 		#expect(try independentExclusiveLockStatus(at: credentialLockURL) == 0)
 		await refreshControl.release()
-		var observedCredentialLock = false
-		for _ in 0..<100 {
-			if try independentExclusiveLockStatus(at: credentialLockURL) == 42 {
-				observedCredentialLock = true
-				break
-			}
-			try await Task.sleep(for: .milliseconds(5))
-		}
+		let observedCredentialLock = try await waitUntil { try independentExclusiveLockStatus(at: credentialLockURL) == 42 }
 		guard observedCredentialLock else {
 			await expiryControl.release()
 			try await expiryHolder.value
@@ -1324,7 +1319,7 @@ struct AuthSessionCoordinatorTests {
 				await execution.record()
 			}
 		}
-		try await Task.sleep(for: .milliseconds(20))
+		try #require(try await waitUntil { await CrossProcessFileLock.waitingTasks(at: lockURL) == 1 })
 
 		waiter.cancel()
 
@@ -1371,7 +1366,7 @@ struct AuthSessionCoordinatorTests {
 				try await CrossProcessFileLock.withExclusive(at: lockURL) { value }
 			}
 		}
-		try await Task.sleep(for: .milliseconds(50))
+		try #require(try await waitUntil { await CrossProcessFileLock.waitingTasks(at: lockURL) == waiters.count })
 
 		await control.release()
 		try await holder.value

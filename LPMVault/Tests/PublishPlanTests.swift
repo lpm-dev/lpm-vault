@@ -421,15 +421,14 @@ struct PublishPlanFindingTests {
 		#expect(PublishPlan.Selection(defaultsOf: plan).keys == ["B"])
 	}
 
-	@Test("row lookups stay fast for large environments")
+	@Test("row lookups stay fast for large environments", .hangLimit)
 	func largePlan() {
-		let values = Dictionary(uniqueKeysWithValues: (0..<5_000).map { ("KEY_\($0)", "value") })
+		// Looking each row up by going over the rows would compare billions of keys here, which takes minutes.
+		let values = Dictionary(uniqueKeysWithValues: (0..<100_000).map { ("KEY_\($0)", "value") })
 		let plan = plan(values: values)
 		var selection = PublishPlan.Selection(defaultsOf: plan)
-		let start = ContinuousClock.now
 		for key in values.keys { selection.set(key, selected: false, in: plan) }
 		#expect(selection.keys.isEmpty)
-		#expect(ContinuousClock.now - start < .milliseconds(500))
 	}
 
 	private func plan(values: [String: String], remote: [String: PublishPlan.RemoteVariable] = [:]) -> PublishPlan {

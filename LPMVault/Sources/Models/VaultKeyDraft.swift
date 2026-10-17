@@ -252,6 +252,9 @@ final class VaultKeyDrafts {
 	private(set) var editedKeysByProject: [String: Set<String>] = [:]
 	/// Drafts that can no longer be saved because their project or key is gone.
 	private(set) var orphanIDs: [VaultKeyDraft.ID] = []
+	/// How often the summaries above have been worked out again from every
+	/// draft, which receiving the latest projects does once, not once a draft.
+	@ObservationIgnored private(set) var summaryPasses = 0
 
 	func draft(_ id: VaultKeyDraft.ID) -> VaultKeyDraft? { drafts[id] }
 
@@ -355,6 +358,7 @@ final class VaultKeyDrafts {
 	}
 
 	private func publishSummaries() {
+		summaryPasses += 1
 		var edited: [String: Set<String>] = [:]
 		var orphans: [VaultKeyDraft.ID] = []
 		for draft in drafts.values {

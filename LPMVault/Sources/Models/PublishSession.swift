@@ -204,6 +204,18 @@ final class PublishSession: Identifiable {
 		}
 	}
 
+	/// Returns once everything the session has started has ended, including
+	/// what that work started in turn.
+	func waitUntilIdle() async {
+		var awaited: [Task<Void, Never>?]
+		repeat {
+			awaited = tasks
+			for task in awaited { await task?.value }
+		} while awaited != tasks
+	}
+
+	private var tasks: [Task<Void, Never>?] { [startTask, reviewTask, choicesTask, environmentsTask, publishTask] }
+
 	/// Stops everything the session runs, for good.
 	func cancel() {
 		isCancelled = true

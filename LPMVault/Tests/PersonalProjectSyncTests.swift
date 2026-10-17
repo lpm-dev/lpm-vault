@@ -393,7 +393,7 @@ private final class PersonalSyncFixture: @unchecked Sendable {
     }
   ) -> SyncService {
     PersonalSyncURLProtocol.routes.set(origin: origin) { [self] request in try reply(request) }
-    let configuration = URLSessionConfiguration.ephemeral
+    let configuration = testSessionConfiguration()
     configuration.protocolClasses = [PersonalSyncURLProtocol.self]
     let keys = PersonalProjectKeyStore(
       root: { [self] requestedOrigin, principal, create in

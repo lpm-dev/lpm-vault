@@ -217,11 +217,10 @@ final class ProjectIconStore {
 		enqueue(projectID)
 	}
 
-	/// Checks the project's icon files as watching starts, which catches a
-	/// change made before the watch began, then again whenever one changes.
+	/// Checks the project's icon files once watching has begun, which catches
+	/// a change made before, then again whenever one changes.
 	func watch(_ projectID: String) async {
 		guard let target = entries[projectID]?.target else { return }
-		revalidate(projectID)
 		for await _ in ProjectConfigWatcher.changes(inFolder: target.folder, watching: watchedPaths(for: projectID)) {
 			guard !Task.isCancelled else { return }
 			revalidate(projectID)

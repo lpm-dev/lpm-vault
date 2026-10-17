@@ -167,7 +167,7 @@ struct PlatformConnectionStoreTests {
 		keychain.beforeAppItemWrite = { [keychain] in
 			if writes.withLock({ $0 += 1; return $0 }) == 1 {
 				entered.signal()
-				_ = held.wait(timeout: .now() + 30)
+				_ = held.wait(timeout: .now() + testWaitSeconds)
 			} else {
 				keychain.failAppItemWrites = ["vercel.team_acme"]
 			}
@@ -175,7 +175,7 @@ struct PlatformConnectionStoreTests {
 		let save = Task { await store.save(grant(token: "vca_token_2"), account: VercelAccount(name: "Acme", slug: "acme"), at: connectedAt) }
 		await withCheckedContinuation { continuation in
 			Thread.detachNewThread {
-				_ = entered.wait(timeout: .now() + 30)
+				_ = entered.wait(timeout: .now() + testWaitSeconds)
 				continuation.resume()
 			}
 		}
@@ -314,8 +314,8 @@ struct PlatformConnectionsModelTests {
 
 	private nonisolated static let netlifyAuthorizePage = URL(string: "https://app.netlify.com/authorize?client_id=lpm_vault&response_type=code")!
 
-	private func waitUntilIdle(_ model: PlatformConnections) async {
-		for _ in 0..<500 where model.isConnecting || model.isLoading { try? await Task.sleep(for: .milliseconds(5)) }
+	private func waitUntilIdle(_ model: PlatformConnections) async throws {
+		#expect(try await waitUntil { !model.isConnecting && !model.isLoading }, "The connection or the listing ended")
 	}
 
 	private nonisolated static let acme = (
@@ -326,46 +326,48 @@ struct PlatformConnectionsModelTests {
 	func connects() async throws {
 		let model = model { .success(Self.acme) }
 		model.connectVercel()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		#expect(model.connections.map(\.name) == ["Acme"])
 		#expect(model.notice == .init(message: "Connected Acme on Vercel.", isError: false))
 		#expect(keychain.platformConnectionStorage.keys.sorted() == ["vercel.team_acme"])
 	}
 
 	@Test("without an LPM session nothing starts, and the page says to sign in")
-	func needsSession() async {
+	func needsSession() async throws {
 		let model = model(connect: { Issue.record("Started without a session"); return .failure(.cancelled) }, session: nil)
 		model.connectVercel()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		#expect(model.notice == .init(message: "Sign in to LPM to connect Vercel.", isError: true))
 	}
 
 	@Test("a failed connection shows why; a cancelled one shows nothing")
-	func failures() async {
+	func failures() async throws {
 		let failed = model { .failure(.platform(.cancelledOnPlatform)) }
 		failed.connectVercel()
-		await waitUntilIdle(failed)
+		try await waitUntilIdle(failed)
 		#expect(failed.notice?.isError == true && failed.notice?.message == "The connection was cancelled on Vercel.")
 		let cancelled = model { .failure(.cancelled) }
 		cancelled.connectVercel()
-		await waitUntilIdle(cancelled)
+		try await waitUntilIdle(cancelled)
 		#expect(cancelled.notice == nil)
 	}
 
 	@Test("locking mid-connection drops it, and a grant that arrives afterward isn't saved")
 	func resetDropsLateGrant() async throws {
 		let gate = AsyncGate()
+		let connecting = AsyncGate()
 		let model = model {
+			await connecting.open()
 			await gate.wait()
 			return .success(Self.acme)
 		}
 		model.connectVercel()
-		try await Task.sleep(for: .milliseconds(30))
+		await connecting.wait()
 		#expect(model.isConnecting)
 		model.reset()
 		#expect(!model.isConnecting)
 		await gate.open()
-		try await Task.sleep(for: .milliseconds(50))
+		try await quietPeriod()
 		#expect(model.connections.isEmpty && model.notice == nil)
 		#expect(keychain.platformConnectionStorage.isEmpty)
 	}
@@ -374,10 +376,10 @@ struct PlatformConnectionsModelTests {
 	func disconnects() async throws {
 		let model = model { .success(Self.acme) }
 		model.connectVercel()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		let connection = try #require(model.connections.first)
 		model.disconnect(connection)
-		for _ in 0..<200 where !model.disconnecting.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(try await waitUntil { model.disconnecting.isEmpty })
 		#expect(model.connections.isEmpty)
 		#expect(keychain.platformConnectionStorage.isEmpty)
 		#expect(model.notice?.isError == false)
@@ -410,12 +412,14 @@ struct PlatformConnectionsModelTests {
 	@Test("locking while Coolify checks the token drops the connection unsaved")
 	func coolifyDroppedOnLock() async throws {
 		let gate = AsyncGate()
+		let checking = AsyncGate()
 		let model = model(connectCoolify: { _, _ in
+			await checking.open()
 			await gate.wait()
 			return .success(Self.rootTeam)
 		})
 		let outcome = Task { await model.connectCoolify(address: "coolify.example.com", token: "3|coolify") }
-		try await Task.sleep(for: .milliseconds(30))
+		await checking.wait()
 		model.reset()
 		await gate.open()
 		#expect(await outcome.value == .dropped)
@@ -430,12 +434,12 @@ struct PlatformConnectionsModelTests {
 		let held = DispatchSemaphore(value: 0)
 		keychain.beforeAppItemListing = {
 			entered.signal()
-			_ = held.wait(timeout: .now() + 30)
+			_ = held.wait(timeout: .now() + testWaitSeconds)
 		}
 		Task.detached { _ = await store.connections() }
 		await withCheckedContinuation { continuation in
 			Thread.detachNewThread {
-				_ = entered.wait(timeout: .now() + 30)
+				_ = entered.wait(timeout: .now() + testWaitSeconds)
 				continuation.resume()
 			}
 		}
@@ -449,7 +453,7 @@ struct PlatformConnectionsModelTests {
 		let model = model(store: store, connectCoolify: { _, _ in .success(Self.rootTeam) })
 		let release = await holdStore(store)
 		let outcome = Task { await model.connectCoolify(address: "coolify.example.com", token: "3|coolify") }
-		try await Task.sleep(for: .milliseconds(50))
+		try await letStartedWorkGetAhead()
 		if locks { model.reset() } else { outcome.cancel() }
 		release()
 		#expect(await outcome.value == .dropped)
@@ -464,10 +468,10 @@ struct PlatformConnectionsModelTests {
 		let model = model(store: store, connect: { .success(Self.acme) })
 		let release = await holdStore(store)
 		model.connectVercel()
-		try await Task.sleep(for: .milliseconds(50))
+		try await letStartedWorkGetAhead()
 		model.cancelConnecting()
 		release()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		_ = await store.connections()
 		#expect(keychain.platformConnectionStorage.isEmpty)
 		#expect(model.notice == nil && model.connections.isEmpty)
@@ -476,15 +480,17 @@ struct PlatformConnectionsModelTests {
 	@Test("a grant that arrives after Cancel is never saved")
 	func vercelSuccessAfterCancel() async throws {
 		let gate = AsyncGate()
+		let connecting = AsyncGate()
 		let model = model(connect: {
+			await connecting.open()
 			await gate.wait()
 			return .success(Self.acme)
 		})
 		model.connectVercel()
-		try await Task.sleep(for: .milliseconds(30))
+		await connecting.wait()
 		model.cancelConnecting()
 		await gate.open()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		#expect(keychain.platformConnectionStorage.isEmpty)
 		#expect(model.notice == nil && model.connections.isEmpty)
 	}
@@ -500,7 +506,7 @@ struct PlatformConnectionsModelTests {
 		let held = DispatchSemaphore(value: 0)
 		keychain.beforeAppItemWrite = {
 			entered.signal()
-			_ = held.wait(timeout: .now() + 30)
+			_ = held.wait(timeout: .now() + testWaitSeconds)
 		}
 		let replacement = (
 			grant: VercelGrant(accessToken: "vca_replacement", installationID: "icfg_2", teamID: "team_acme", userID: "u_1")!,
@@ -509,15 +515,14 @@ struct PlatformConnectionsModelTests {
 		model.connectVercel()
 		await withCheckedContinuation { continuation in
 			Thread.detachNewThread {
-				_ = entered.wait(timeout: .now() + 30)
+				_ = entered.wait(timeout: .now() + testWaitSeconds)
 				continuation.resume()
 			}
 		}
 		keychain.beforeAppItemWrite = nil
 		model.reset()
 		held.signal()
-		_ = await store.connections()
-		#expect(keychain.platformConnectionStorage == earlier)
+		#expect(try await waitUntil { keychain.platformConnectionStorage == earlier }, "The token written is taken back")
 	}
 
 	@Test("a token saved just before the vault locks is taken back, though the save itself had finished")
@@ -529,7 +534,7 @@ struct PlatformConnectionsModelTests {
 		let held = DispatchSemaphore(value: 0)
 		keychain.beforeAppItemWrite = {
 			entered.signal()
-			_ = held.wait(timeout: .now() + 30)
+			_ = held.wait(timeout: .now() + testWaitSeconds)
 		}
 		let replacement = (
 			grant: VercelGrant(accessToken: "vca_replacement", installationID: "icfg_2", teamID: "team_acme", userID: "u_1")!,
@@ -538,17 +543,20 @@ struct PlatformConnectionsModelTests {
 		model.connectVercel()
 		await withCheckedContinuation { continuation in
 			Thread.detachNewThread {
-				_ = entered.wait(timeout: .now() + 30)
+				_ = entered.wait(timeout: .now() + testWaitSeconds)
 				continuation.resume()
 			}
 		}
 		keychain.beforeAppItemWrite = nil
 		held.signal()
-		// Holding the main actor lets the store finish and return before the lock, and the lock land before the caller resumes.
-		usleep(200_000)
+		// Holding the main actor until the token is written lets the save finish before the lock, and the lock land
+		// before the caller resumes, which it does on the main actor. It's held a moment at most, since every other
+		// test on the main actor waits meanwhile; under load the lock may then land while the save runs, which
+		// takes the token back too.
+		let holdEnds = ContinuousClock.now + .milliseconds(200)
+		while keychain.platformConnectionStorage == earlier, ContinuousClock.now < holdEnds { usleep(1_000) }
 		model.reset()
-		for _ in 0..<400 where keychain.platformConnectionStorage != earlier { try await Task.sleep(for: .milliseconds(5)) }
-		#expect(keychain.platformConnectionStorage == earlier)
+		#expect(try await waitUntil { keychain.platformConnectionStorage == earlier }, "The token written is taken back")
 		#expect(model.connections.isEmpty && model.notice == nil)
 	}
 
@@ -572,7 +580,7 @@ struct PlatformConnectionsModelTests {
 			now: { Date() })
 		current.model = model
 		model.connectVercel()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		#expect(opened.urls.count == 1)
 		#expect(onMain.withLock { $0 } == true)
 	}
@@ -580,22 +588,26 @@ struct PlatformConnectionsModelTests {
 	@Test("a connection reset before Vercel's page opens never opens it")
 	func resetBeforeOpen() async throws {
 		let gate = AsyncGate()
+		let connecting = AsyncGate()
+		let asked = AsyncGate()
 		let opened = OpenedLinks()
 		let model = PlatformConnections(
 			store: PlatformConnectionStore(service: keychain),
 			connect: { _, open in
+				await connecting.open()
 				await gate.wait()
 				await open(URL(string: "https://vercel.com/integrations/lpm-vault/new")!)
+				await asked.open()
 				return .failure(.cancelled)
 			},
 			session: { platformTestSession(URL(string: "https://lpm.dev")!) },
 			openURL: { opened.append($0) },
 			now: { Date() })
 		model.connectVercel()
-		try await Task.sleep(for: .milliseconds(30))
+		await connecting.wait()
 		model.reset()
 		await gate.open()
-		try await Task.sleep(for: .milliseconds(50))
+		await asked.wait()
 		#expect(opened.urls.isEmpty && model.phase == .idle)
 	}
 
@@ -608,7 +620,7 @@ struct PlatformConnectionsModelTests {
 		let model = model(connectNetlify: { .success(Self.tolga) }, opened: opened)
 		model.connectNetlify()
 		#expect(model.connecting == .netlify)
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		#expect(opened.urls == [Self.netlifyAuthorizePage])
 		let connection = try #require(model.connections.first)
 		#expect(connection.id == "netlify.5f1a2b3c4d5e6f7a8b9c0d1e" && connection.name == "Tolga Ergin" && connection.detail == "tolga@example.com")
@@ -618,11 +630,11 @@ struct PlatformConnectionsModelTests {
 	}
 
 	@Test("without an LPM session Netlify doesn't start, no page opens, and the page says to sign in")
-	func netlifyNeedsSession() async {
+	func netlifyNeedsSession() async throws {
 		let opened = OpenedLinks()
 		let model = model(connectNetlify: { Issue.record("Started without a session"); return .failure(.cancelled) }, opened: opened, session: nil)
 		model.connectNetlify()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		#expect(opened.urls.isEmpty)
 		#expect(model.notice == .init(message: "Sign in to LPM to connect Netlify.", isError: true))
 	}
@@ -634,27 +646,28 @@ struct PlatformConnectionsModelTests {
 		for (connection, name, detail) in [(unnamed, "tolga@example.com", "tolga@example.com"), (anonymous, "Netlify account", "user u2")] {
 			let model = model(connectNetlify: { .success(connection) })
 			model.connectNetlify()
-			await waitUntilIdle(model)
+			try await waitUntilIdle(model)
 			let saved = try #require(model.connections.first { $0.id == "netlify.\(connection.user.id)" })
 			#expect(saved.name == name && saved.detail == detail)
 		}
 	}
 
 	@Test("a refused Netlify connection shows why, and a cancelled one shows nothing")
-	func netlifyFailures() async {
+	func netlifyFailures() async throws {
 		let failed = model(connectNetlify: { .failure(.platform(.cancelledOnPlatform)) })
 		failed.connectNetlify()
-		await waitUntilIdle(failed)
+		try await waitUntilIdle(failed)
 		#expect(failed.notice == .init(message: "The connection was cancelled on Netlify.", isError: true))
 		let cancelled = model(connectNetlify: { .failure(.cancelled) })
 		cancelled.connectNetlify()
-		await waitUntilIdle(cancelled)
+		try await waitUntilIdle(cancelled)
 		#expect(cancelled.notice == nil && keychain.platformConnectionStorage.isEmpty)
 	}
 
 	@Test("one browser connection runs at a time, so Vercel doesn't start while Netlify connects")
 	func oneBrowserConnection() async throws {
 		let gate = AsyncGate()
+		let netlifyConnecting = AsyncGate()
 		let vercelStarted = OSAllocatedUnfairLock(initialState: false)
 		let model = model(
 			connect: {
@@ -662,33 +675,37 @@ struct PlatformConnectionsModelTests {
 				return .failure(.cancelled)
 			},
 			connectNetlify: {
+				await netlifyConnecting.open()
 				await gate.wait()
 				return .failure(.cancelled)
 			})
 		model.connectNetlify()
+		await netlifyConnecting.wait()
 		model.connectVercel()
-		try await Task.sleep(for: .milliseconds(30))
+		try await quietPeriod()
 		#expect(model.connecting == .netlify && !vercelStarted.withLock { $0 })
 		await gate.open()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		model.connectVercel()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		#expect(vercelStarted.withLock { $0 })
 	}
 
 	@Test("locking while Netlify connects drops it, and a token that arrives afterward isn't saved")
 	func netlifyDroppedOnLock() async throws {
 		let gate = AsyncGate()
+		let connecting = AsyncGate()
 		let model = model(connectNetlify: {
+			await connecting.open()
 			await gate.wait()
 			return .success(Self.tolga)
 		})
 		model.connectNetlify()
-		try await Task.sleep(for: .milliseconds(30))
+		await connecting.wait()
 		model.reset()
 		#expect(!model.isConnecting && model.connecting == nil)
 		await gate.open()
-		try await Task.sleep(for: .milliseconds(50))
+		try await quietPeriod()
 		#expect(model.connections.isEmpty && model.notice == nil)
 		#expect(keychain.platformConnectionStorage.isEmpty)
 	}
@@ -699,10 +716,10 @@ struct PlatformConnectionsModelTests {
 		let model = model(store: store, connectNetlify: { .success(Self.tolga) })
 		let release = await holdStore(store)
 		model.connectNetlify()
-		try await Task.sleep(for: .milliseconds(50))
+		try await letStartedWorkGetAhead()
 		model.cancelConnecting()
 		release()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		_ = await store.connections()
 		#expect(keychain.platformConnectionStorage.isEmpty)
 		#expect(model.notice == nil && model.connections.isEmpty)
@@ -714,7 +731,7 @@ struct PlatformConnectionsModelTests {
 			Self.acme.grant, account: Self.acme.account, at: Date()).get()
 		let model = model { .failure(.cancelled) }
 		model.load()
-		await waitUntilIdle(model)
+		try await waitUntilIdle(model)
 		#expect(model.connections.map(\.id) == ["vercel.team_acme"])
 	}
 }
@@ -810,7 +827,7 @@ struct PlatformsPageStoreTests {
 			VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_a", userID: "u_1")!,
 			account: VercelAccount(name: "Acme", slug: nil), at: Date()).get()
 		store.showPlatforms()
-		for _ in 0..<200 where store.platforms.isLoading { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(try await waitUntil { !store.platforms.isLoading })
 		#expect(store.platforms.connections.map(\.name) == ["Acme"])
 		store.platforms.connectVercel()
 		#expect(store.platforms.isConnecting)
@@ -829,7 +846,7 @@ struct PlatformsPageStoreTests {
 		store.lock()
 		await store.unlock()
 		#expect(store.isUnlocked && store.accountPage == .platforms)
-		for _ in 0..<200 where store.platforms.connections.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(try await waitUntil { !store.platforms.connections.isEmpty })
 		#expect(store.platforms.connections.map(\.name) == ["Acme"])
 	}
 }

@@ -262,9 +262,7 @@ struct SchemaClientPrefixTests {
 		#expect(store.schemaPrefixAvailability(for: "schema-prefixes").context?.draft.isEmpty == true, "Without a draft, lpm.json's rules")
 		store.editSchemaDraft(in: "schema-prefixes") { $0.set(.declared(.object([.init(key: "pattern", value: .string("("))])), for: .key("API_TOKEN")) }
 		#expect(store.schemaPrefixAvailability(for: "schema-prefixes") == .checking)
-		let clock = ContinuousClock()
-		let deadline = clock.now.advanced(by: .seconds(10))
-		while store.currentSchemaDraftEvaluation(for: "schema-prefixes") == nil, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "schema-prefixes") != nil })
 		#expect(store.schemaPrefixAvailability(for: "schema-prefixes") == .rejected)
 		#expect(store.schemaPrefixAvailability(for: "schema-prefixes").reason != nil)
 	}
@@ -307,7 +305,7 @@ struct SchemaClientPrefixTests {
 		try Self.lpmJSON.replacingOccurrences(of: #""clientPrefixes":["WIDGET_"]"#, with: #""clientPrefixes":["WIDGET_","OTHER_"]"#)
 			.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		#expect(try await Self.waitUntil { store.schemaDraft(for: Self.id)?.conflicts.contains { $0.item == .clientPrefixes } == true })
+		#expect(try await waitUntil { store.schemaDraft(for: Self.id)?.conflicts.contains { $0.item == .clientPrefixes } == true })
 		store.editSchemaDraft(in: Self.id) { $0.resolveConflict(.clientPrefixes, keepingMine: false) }
 		#expect(store.schemaDraft(for: Self.id) == nil, "The override only marked the key, so nothing is left")
 	}
@@ -322,7 +320,7 @@ struct SchemaClientPrefixTests {
 		try Self.lpmJSON.replacingOccurrences(of: #""ACME_PUBLIC_FLAGS":{},"#, with: #""ACME_PUBLIC_FLAGS":{},"ACME_PUBLIC_NEW":{},"#)
 			.write(toFile: added + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		#expect(try await Self.waitUntil { store.schemaDraft(for: Self.id)?.declaration(of: .key("ACME_PUBLIC_NEW")).json?["client"] == .bool(true) },
+		#expect(try await waitUntil { store.schemaDraft(for: Self.id)?.declaration(of: .key("ACME_PUBLIC_NEW")).json?["client"] == .bool(true) },
 			"A key lpm.json gains under the draft's prefix")
 		#expect(try await Self.accepted(store))
 
@@ -334,7 +332,7 @@ struct SchemaClientPrefixTests {
 			.replacingOccurrences(of: #""API_TOKEN":{"secret":true},"#, with: #""API_TOKEN":{"secret":true},"THEIRS_X":{"client":true},"#)
 			.write(toFile: kept + "/lpm.json", atomically: true, encoding: .utf8)
 		other.reloadKeyDescriptions()
-		#expect(try await Self.waitUntil { other.schemaDraft(for: Self.id)?.conflicts.contains { $0.item == .clientPrefixes } == true })
+		#expect(try await waitUntil { other.schemaDraft(for: Self.id)?.conflicts.contains { $0.item == .clientPrefixes } == true })
 		other.editSchemaDraft(in: Self.id) { $0.resolveConflict(.clientPrefixes, keepingMine: true) }
 		#expect(other.schemaDraft(for: Self.id)?.declaration(of: .key("THEIRS_X")).json?["client"] == nil, "Keeping mine drops THEIRS_")
 		#expect(try await Self.accepted(other))
@@ -347,10 +345,10 @@ struct SchemaClientPrefixTests {
 		defer { try? FileManager.default.removeItem(atPath: folder) }
 		let store = try await Self.store(folder: folder)
 		store.editSchemaDraft(in: Self.id) { $0.set(.declared(.object([.init(key: "pattern", value: .string("("))])), for: .key("API_TOKEN")) }
-		#expect(try await Self.waitUntil { store.currentSchemaDraftEvaluation(for: Self.id)?.rejection != nil })
+		#expect(try await waitUntil { store.currentSchemaDraftEvaluation(for: Self.id)?.rejection != nil })
 		try "{".write(toFile: folder + "/base.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		#expect(try await Self.waitUntil { if case .unreadable? = store.keyDescriptions[Self.id]?.schema { true } else { false } })
+		#expect(try await waitUntil { if case .unreadable? = store.keyDescriptions[Self.id]?.schema { true } else { false } })
 		store.discardSchemaDraft(in: Self.id)
 		#expect(store.schemaDraft(for: Self.id) == nil)
 	}
@@ -362,7 +360,7 @@ struct SchemaClientPrefixTests {
 		defer { try? FileManager.default.removeItem(atPath: folder) }
 		let store = try await Self.store(folder: folder)
 		store.editSchemaDraft(in: Self.id) { $0.set(.declared(.object([.init(key: "client", value: .bool(true)), .init(key: "description", value: .string("Theme"))])), for: .key("WIDGET_THEME")) }
-		#expect(try await Self.waitUntil { store.currentSchemaDraftEvaluation(for: Self.id) != nil })
+		#expect(try await waitUntil { store.currentSchemaDraftEvaluation(for: Self.id) != nil })
 		let before = store.keyDescriptions[Self.id]?.dependencies
 		let gate = EvaluationGate()
 		defer { gate.open() }
@@ -370,11 +368,11 @@ struct SchemaClientPrefixTests {
 		try Self.base.replacingOccurrences(of: #""ACME_PUBLIC_REGION":{"default":"eu"}"#, with: #""ACME_PUBLIC_REGION":{"secret":true}"#)
 			.write(toFile: folder + "/base.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		#expect(try await Self.waitUntil { store.keyDescriptions[Self.id]?.dependencies != before })
+		#expect(try await waitUntil { store.keyDescriptions[Self.id]?.dependencies != before })
 		#expect(store.currentSchemaDraftEvaluation(for: Self.id) == nil)
 		#expect(store.schemaPrefixAvailability(for: Self.id) == .checking)
 		gate.open()
-		#expect(try await Self.waitUntil { store.schemaPrefixAvailability(for: Self.id).context != nil })
+		#expect(try await waitUntil { store.schemaPrefixAvailability(for: Self.id).context != nil })
 		let context = try #require(store.schemaPrefixAvailability(for: Self.id).context)
 		#expect(Prefixes.issue(adding: "ACME_PUBLIC_", in: context) == .secret(key: "ACME_PUBLIC_REGION"))
 	}
@@ -390,7 +388,7 @@ struct SchemaClientPrefixTests {
 		try await store.saveKeyDraft(.init(projectID: Self.id, key: "WIDGET_THEME"))
 		#expect(store.schemaPrefixAvailability(for: Self.id) == .checking)
 		#expect(store.keyDescriptions[Self.id]?.dependencies?.isEmpty == false)
-		#expect(try await Self.waitUntil { store.schemaPrefixAvailability(for: Self.id).context != nil })
+		#expect(try await waitUntil { store.schemaPrefixAvailability(for: Self.id).context != nil })
 	}
 
 	@Test("an import that can't be read stays watched, so fixing it is noticed")
@@ -402,7 +400,7 @@ struct SchemaClientPrefixTests {
 		#expect(store.keyDescriptions[Self.id]?.importPaths == ["base.json"])
 		try "{".write(toFile: folder + "/base.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		#expect(try await Self.waitUntil { if case .unreadable? = store.keyDescriptions[Self.id]?.schema { true } else { false } })
+		#expect(try await waitUntil { if case .unreadable? = store.keyDescriptions[Self.id]?.schema { true } else { false } })
 		#expect(store.keyDescriptions[Self.id]?.importPaths == ["base.json"])
 	}
 
@@ -425,17 +423,6 @@ struct SchemaClientPrefixTests {
 	}
 
 	@MainActor
-	private static func waitUntil(_ condition: () -> Bool) async throws -> Bool {
-		let clock = ContinuousClock()
-		let deadline = clock.now.advanced(by: .seconds(10))
-		while !condition() {
-			guard clock.now < deadline else { return false }
-			try await Task.sleep(for: .milliseconds(10))
-		}
-		return true
-	}
-
-	@MainActor
 	static func store(folder: String) async throws -> VaultStore {
 		let keychain = MockKeychainService()
 		let project = VaultProject(id: "schema-prefixes", name: "billing-app", path: folder, environments: ["default": ["WIDGET_THEME": "dark"]])
@@ -447,10 +434,7 @@ struct SchemaClientPrefixTests {
 		store.openProject(id: project.id)
 		await store.refreshCliAccess()
 		store.reloadKeyDescriptions()
-		let clock = ContinuousClock()
-		let deadline = clock.now.advanced(by: .seconds(10))
-		while store.keyDescriptions[project.id]?.schema?.overview == nil, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-		try #require(store.keyDescriptions[project.id]?.schema?.overview != nil)
+		try #require(try await waitUntil { store.keyDescriptions[project.id]?.schema?.overview != nil })
 		return store
 	}
 }
@@ -707,7 +691,7 @@ private final class EvaluationGate: @unchecked Sendable {
 	private func wait() {
 		condition.lock()
 		defer { condition.unlock() }
-		let deadline = Date(timeIntervalSinceNow: 120)
+		let deadline = Date(timeIntervalSinceNow: testWaitSeconds)
 		while !isOpen, condition.wait(until: deadline) {}
 	}
 }

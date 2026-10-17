@@ -394,16 +394,15 @@ struct CoolifyPublishingTests {
 		#expect(record.remoteUpdatedAt == variable.createdAt)
 	}
 
-	@Test("finding references takes time in proportion to a value's length, even full of unclosed ones")
+	@Test("finding references takes time in proportion to a value's length, even full of unclosed ones", .hangLimit)
 	func referenceScanIsLinear() {
-		func time(_ count: Int) -> Duration {
-			let value = String(repeating: "{{team.", count: count)
-			return (0..<5).map { _ in ContinuousClock().measure { _ = CoolifyPublishing.valueIssues(value) } }.min() ?? .zero
-		}
-		_ = time(1_000)
-		let small = time(2_000)
-		let large = time(8_000)
-		#expect(large < small * 10, "8000 openers took \(large), 2000 took \(small)")
+		// A quarter of a million openings: a scan that looks for a closing after each one reads
+		// the rest of the value each time, and takes over an hour; one that reads it once, a moment.
+		let unclosed = String(repeating: "{{team.", count: 250_000)
+		#expect(!CoolifyPublishing.containsReference(unclosed))
+		let closedAtTheEnd = String(repeating: "{{team ", count: 250_000) + "}}"
+		#expect(!CoolifyPublishing.containsReference(closedAtTheEnd), "Each opening before the closing is checked, and none starts a reference")
+		#expect(CoolifyPublishing.containsReference(String(closedAtTheEnd.dropLast(2)) + "{{team.NAME}}"))
 	}
 
 	@Test("a refusal that echoes the value or the token shows neither")

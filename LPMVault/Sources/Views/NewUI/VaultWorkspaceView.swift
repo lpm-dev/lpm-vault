@@ -157,12 +157,11 @@ struct VaultWorkspaceView: View {
 		selectSchema(.key(key))
 	}
 
-	/// Rereads the rules when the Schema page starts showing them, which picks
+	/// Rereads the rules once the Schema page is watching them, which picks
 	/// up edits made meanwhile, and whenever lpm.json or a schema it imports
 	/// changes while it does.
 	private func watchSchemaFolder() async {
 		guard let watch = schemaWatch else { return }
-		store.reloadKeyDescriptions()
 		for await _ in ProjectConfigWatcher.changes(inFolder: watch.folder, imports: watch.imports) {
 			guard !Task.isCancelled else { return }
 			store.reloadKeyDescriptions()

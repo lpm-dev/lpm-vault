@@ -395,7 +395,7 @@ extension VaultStoreTests {
 
 	@Test("a queued duplicate for another project cannot change the current environment")
 	@MainActor
-	func staleEnvironmentMutationPreservesCurrentSelection() async {
+	func staleEnvironmentMutationPreservesCurrentSelection() async throws {
 		let keychain = MockKeychainService()
 		keychain.envStorage["project-a"] = (
 			name: "A", path: "", environments: ["default": ["TOKEN": "a"]]
@@ -432,10 +432,10 @@ extension VaultStoreTests {
 			store.openProject(id: "project-b")
 			release.signal()
 		}
-		await waitUntil {
+		#expect(try await waitUntil {
 			store.projects.first(where: { $0.id == "project-a" })?
 				.environments["staging"] != nil
-		}
+		})
 
 		#expect(store.selectedProjectId == "project-b")
 		#expect(store.selectedEnvironment == "default")
@@ -1800,7 +1800,7 @@ extension VaultStoreTests {
 
 	@Test("login admits only one browser flow at a time")
 	@MainActor
-	func loginAdmissionIsSingleFlight() async {
+	func loginAdmissionIsSingleFlight() async throws {
 		let gate = Round4AsyncGate()
 		let providerCalls = Round4Counter()
 		let secondStarted = Round4Counter()
@@ -1826,7 +1826,7 @@ extension VaultStoreTests {
 			secondStarted.increment()
 			return await store.login()
 		}
-		await waitUntil { secondStarted.value == 1 }
+		#expect(try await waitUntil { secondStarted.value == 1 })
 
 		#expect(providerCalls.value == 1)
 		await gate.release()
@@ -1837,7 +1837,7 @@ extension VaultStoreTests {
 
 	@Test("failed login ownership is released for retry")
 	@MainActor
-	func failedLoginReleasesAdmissionForRetry() async {
+	func failedLoginReleasesAdmissionForRetry() async throws {
 		let gate = Round4AsyncGate()
 		let providerCalls = Round4Counter()
 		let secondStarted = Round4Counter()
@@ -1866,7 +1866,7 @@ extension VaultStoreTests {
 			secondStarted.increment()
 			return await store.login()
 		}
-		await waitUntil { secondStarted.value == 1 }
+		#expect(try await waitUntil { secondStarted.value == 1 })
 
 		#expect(providerCalls.value == 1)
 		await gate.release()
@@ -1956,7 +1956,7 @@ extension VaultStoreTests {
 
 	@Test("unlock waits for every admitted pre-lock project mutation")
 	@MainActor
-	func unlockIncludesQueuedPreLockProjectMutations() async {
+	func unlockIncludesQueuedPreLockProjectMutations() async throws {
 		let projectID = "queued-pre-lock-mutations"
 		let original = ["FIRST": "old-first", "SECOND": "old-second"]
 		func edit(_ key: String) -> VaultKeyEdit {
@@ -2005,18 +2005,18 @@ extension VaultStoreTests {
 		_ = await startedIterator.next()
 		store.lock()
 		let unlock = Task { await store.unlock() }
-		await waitUntil { store.isUnlocking }
+		#expect(try await waitUntil { store.isUnlocking })
 		firstMutationRelease.signal()
 		await unlock.value
 		_ = await (first.value, second.value)
-		await waitUntil {
+		#expect(try await waitUntil {
 			keychain.envStorage[projectID]?.environments["default"]?["SECOND"]
 				== "new-second"
-		}
-		await waitUntil {
+		})
+		#expect(try await waitUntil {
 			store.projects.first?.environments
 				== keychain.envStorage[projectID]?.environments
-		}
+		})
 
 		#expect(store.isUnlocked)
 		#expect(
@@ -2224,7 +2224,7 @@ extension VaultStoreTests {
 				await admission.release()
 			}
 		}
-		await waitUntilAsync { await admission.queuedNodeCount == waiters.count }
+		#expect(try await waitUntil { await admission.queuedNodeCount == waiters.count })
 
 		waiters.forEach { $0.cancel() }
 		for waiter in waiters {
@@ -2236,7 +2236,7 @@ extension VaultStoreTests {
 			try await admission.acquire()
 			await admission.release()
 		}
-		await waitUntilAsync { await admission.queuedNodeCount == 1 }
+		#expect(try await waitUntil { await admission.queuedNodeCount == 1 })
 		await admission.release()
 		try await next.value
 		#expect(await admission.queuedNodeCount == 0)
@@ -2265,7 +2265,7 @@ extension VaultStoreTests {
 				await gate.release(path: path, id: id)
 			}
 		}
-		await waitUntilAsync { await gate.queuedNodeCount(path: path) == waiters.count }
+		#expect(try await waitUntil { await gate.queuedNodeCount(path: path) == waiters.count })
 
 		waiters.forEach { $0.cancel() }
 		for waiter in waiters {
@@ -2282,7 +2282,7 @@ extension VaultStoreTests {
 			)
 			await gate.release(path: path, id: nextID)
 		}
-		await waitUntilAsync { await gate.queuedNodeCount(path: path) == 1 }
+		#expect(try await waitUntil { await gate.queuedNodeCount(path: path) == 1 })
 		await gate.release(path: path, id: owner)
 		try await next.value
 		#expect(await gate.queuedNodeCount(path: path) == 0)
@@ -2299,7 +2299,7 @@ extension VaultStoreTests {
 		let release = DispatchSemaphore(value: 0)
 		let service = EnvFileExportService { secrets, destination, authorization in
 			entered.signal()
-			#expect(release.wait(timeout: .now() + 5) == .success)
+			#expect(release.wait(timeout: .now() + testWaitSeconds) == .success)
 			let content = EnvFileCodec.format(secrets)
 			try SecureFileWriter.write(
 				Data(content.utf8),
@@ -2475,9 +2475,9 @@ extension VaultStoreTests {
 	@Test("sidebar removal fallback cancels an admitted plaintext export")
 	@MainActor
 	func sidebarRemovalFallbackCancelsDotenvExport() async throws {
-		try await verifyProjectTransitionCancelsExport { store, project in
+		try await verifyProjectTransitionCancelsExport { (store, project) async throws in
 			store.removeFromSidebar(project)
-			await waitUntil { store.selectedProjectId == "project-b" }
+			#expect(try await waitUntil { store.selectedProjectId == "project-b" })
 		}
 	}
 
@@ -2491,7 +2491,7 @@ extension VaultStoreTests {
 
 	@MainActor
 	private func verifyProjectTransitionCancelsExport(
-		_ transition: @MainActor (VaultStore, VaultProject) async -> Void
+		_ transition: @MainActor (VaultStore, VaultProject) async throws -> Void
 	) async throws {
 		let directory = FileManager.default.temporaryDirectory
 			.appendingPathComponent("round4-project-export-\(UUID().uuidString)", isDirectory: true)
@@ -2550,7 +2550,7 @@ extension VaultStoreTests {
 			)
 		}
 		await waitForSemaphore(entered)
-		await transition(store, projectA)
+		try await transition(store, projectA)
 		release.signal()
 
 		await #expect(throws: CancellationError.self) { try await operation.value }
@@ -2927,7 +2927,7 @@ extension VaultStoreTests {
 
 	@Test("a cancelled committed import cannot override newer navigation")
 	@MainActor
-	func cancelledCommittedImportPreservesNewerNavigation() async {
+	func cancelledCommittedImportPreservesNewerNavigation() async throws {
 		let authority = round4AuthorityGeneration(seed: 41)
 		let gate = Round4AsyncGate()
 		let keychain = MockKeychainService()
@@ -2969,10 +2969,7 @@ extension VaultStoreTests {
 		#expect(await store.loadProjects())
 		store.openProject(id: "remote")
 		await store.refreshCliAccess()
-		let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-		while store.selectedProjectCliAccess == nil, ContinuousClock.now < deadline {
-			await Task.yield()
-		}
+		try #require(try await waitUntil { store.selectedProjectCliAccess != nil })
 		await store.changeCliAccess(to: .requireApproval)
 		#expect(keychain.cliAccessPolicies["remote"] == .requireApproval)
 		operation.cancel()
@@ -5012,7 +5009,7 @@ struct LazyLocalProjectLoadingRegressionTests {
 
 	@Test("selecting a project loads exactly that payload")
 	@MainActor
-	func selectedProjectLoadsOnDemand() async {
+	func selectedProjectLoadsOnDemand() async throws {
 		let keychain = MockKeychainService()
 		keychain.envStorage["first"] = (
 			name: "First",
@@ -5034,9 +5031,9 @@ struct LazyLocalProjectLoadingRegressionTests {
 		keychain.projectReadCount = 0
 
 		store.openProject(id: "second")
-		await waitUntil {
+		#expect(try await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "second-secret"
-		}
+		})
 
 		#expect(keychain.projectReadCount == 1)
 		#expect(store.selectedProject?.hasLoadedEnvironments == true)
@@ -5045,7 +5042,7 @@ struct LazyLocalProjectLoadingRegressionTests {
 
 	@Test("the plaintext project cache stays bounded to the current selection")
 	@MainActor
-	func navigationEvictsThePreviousPlaintext() async {
+	func navigationEvictsThePreviousPlaintext() async throws {
 		let keychain = MockKeychainService()
 		keychain.envStorage["first"] = (
 			name: "First",
@@ -5066,13 +5063,13 @@ struct LazyLocalProjectLoadingRegressionTests {
 		store.isUnlocked = true
 
 		store.openProject(id: "first")
-		await waitUntil {
+		#expect(try await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "first-secret"
-		}
+		})
 		store.openProject(id: "second")
-		await waitUntil {
+		#expect(try await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "second-secret"
-		}
+		})
 
 		#expect(store.projects.filter(\.hasLoadedEnvironments).map(\.id) == ["second"])
 		#expect(store.projects.first(where: { $0.id == "first" })?.environments.isEmpty == true)
@@ -5081,7 +5078,7 @@ struct LazyLocalProjectLoadingRegressionTests {
 
 	@Test("a stale selected-project load cannot publish after navigation")
 	@MainActor
-	func navigationRejectsAStaleProjectLoad() async {
+	func navigationRejectsAStaleProjectLoad() async throws {
 		let keychain = MockKeychainService()
 		keychain.envStorage["first"] = (
 			name: "First",
@@ -5112,9 +5109,9 @@ struct LazyLocalProjectLoadingRegressionTests {
 			store.openProject(id: "second")
 			releaseFirstLoad.signal()
 		}
-		await waitUntil {
+		#expect(try await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "second-secret"
-		}
+		})
 
 		#expect(store.selectedProjectId == "second")
 		#expect(store.projects.filter(\.hasLoadedEnvironments).map(\.id) == ["second"])
@@ -5123,7 +5120,7 @@ struct LazyLocalProjectLoadingRegressionTests {
 
 	@Test("locking clears payloads and all derived plaintext snapshots")
 	@MainActor
-	func lockClearsEveryLoadedPlaintextArtifact() async {
+	func lockClearsEveryLoadedPlaintextArtifact() async throws {
 		let keychain = MockKeychainService()
 		keychain.envStorage["project"] = (
 			name: "Project",
@@ -5138,9 +5135,9 @@ struct LazyLocalProjectLoadingRegressionTests {
 		#expect(await store.loadProjects())
 		store.isUnlocked = true
 		store.openProject(id: "project")
-		await waitUntil {
+		#expect(try await waitUntil {
 			store.selectedProject?.secrets(for: "default")["TOKEN"] == "secret"
-		}
+		})
 
 		store.lock()
 
@@ -5151,36 +5148,13 @@ struct LazyLocalProjectLoadingRegressionTests {
 }
 
 @MainActor
-private func waitUntil(
-	maximumYields: Int = 100_000,
-	_ condition: @MainActor () -> Bool
-) async {
-	for _ in 0..<maximumYields {
-		if condition() { return }
-		await Task.yield()
-	}
-	Issue.record("Timed out while waiting for an asynchronous test condition.")
-}
-
-private func waitUntilAsync(
-	maximumYields: Int = 100_000,
-	_ condition: @Sendable () async -> Bool
-) async {
-	for _ in 0..<maximumYields {
-		if await condition() { return }
-		await Task.yield()
-	}
-	Issue.record("Timed out while waiting for an asynchronous test condition.")
-}
-
-@MainActor
 private func performAfterSemaphore(
 	_ semaphore: DispatchSemaphore,
 	action: @escaping @MainActor @Sendable () -> Void
 ) async {
 	let didEnter = await withCheckedContinuation { continuation in
 		Thread.detachNewThread {
-			let didEnter = semaphore.wait(timeout: .now() + 5) == .success
+			let didEnter = semaphore.wait(timeout: .now() + testWaitSeconds) == .success
 			DispatchQueue.main.async {
 				// Release blocked work before resuming, which can require a cooperative worker.
 				action()
@@ -5848,7 +5822,7 @@ private final class Round4ExportTracker: @unchecked Sendable {
 	/// Bounded by elapsed time: workers wait for free cooperative threads,
 	/// which parallel suites can hold far longer than a fixed count of yields.
 	func waitUntilStarted(_ count: Int) async {
-		let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+		let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 		while ContinuousClock.now < deadline {
 			if lock.withLock({ started >= count }) { return }
 			try? await Task.sleep(for: .milliseconds(1))

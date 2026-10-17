@@ -141,7 +141,7 @@ struct ProjectIconDiscoveryTests {
 		#expect(try ProjectIconFixture.isBlue(second.automatic?.image))
 	}
 
-	@Test("links, pipes, oversized files and enormous images in the project are never read or decoded")
+	@Test("links, pipes, oversized files and enormous images in the project are never read or decoded", .hangLimit)
 	func untrustedFiles() async throws {
 		let folder = try ProjectIconFixture.folder()
 		let outside = try ProjectIconFixture.folder()
@@ -158,9 +158,8 @@ struct ProjectIconDiscoveryTests {
 		try ProjectIconFixture.write(Data(count: ProjectIconFile.maximumImageBytes + 1), to: "app/icon.png", in: folder)
 		try ProjectIconFixture.write(try ProjectIconFixture.png(red: 0, green: 0, blue: 255, size: 2049), to: "src/favicon.ico", in: folder)
 		try ProjectIconFixture.write(try ProjectIconFixture.png(red: 255, green: 0, blue: 0), to: "AppIcon.icns", in: folder)
-		let started = ContinuousClock.now
+		// Opening the pipe to read it would wait for a writer that never comes.
 		let resolution = ProjectIconFixture.resolve(folder)
-		#expect(ContinuousClock.now - started < .seconds(5), "A pipe must not block")
 		#expect(resolution.detection == .found("AppIcon.icns"))
 		#expect(try ProjectIconFixture.isRed(resolution.automatic?.image))
 	}
@@ -236,14 +235,12 @@ struct ProjectIconDiscoveryTests {
 		#expect(ProjectIconDiscovery.linkedPaths(in: source).isEmpty)
 	}
 
-	@Test("sources without an icon link, including unclosed tags, are scanned in linear time",
+	@Test("sources without an icon link, including unclosed tags, are scanned in linear time", .hangLimit,
 		arguments: ["{ rel: 'stylesheet', href: '/a.css' } <link rel=preload href=x> ", "<link ", "<link rel='icon' href='", "{ rel: 'icon' "])
 	func largeSourceScan(fragment: String) {
-		let source = String(repeating: fragment, count: ProjectIconFile.maximumSourceBytes / fragment.utf8.count)
-		let started = ContinuousClock.now
-		#expect(ProjectIconDiscovery.iconHref(in: source) == nil)
 		// A quadratic scan of half a megabyte takes minutes; a linear one, milliseconds.
-		#expect(ContinuousClock.now - started < .seconds(3))
+		let source = String(repeating: fragment, count: ProjectIconFile.maximumSourceBytes / fragment.utf8.count)
+		#expect(ProjectIconDiscovery.iconHref(in: source) == nil)
 	}
 
 	@Test("a file's content, not its name, decides whether it's drawn as an SVG, and an SVG too large to draw cheaply isn't drawn")
@@ -533,7 +530,7 @@ struct ProjectIconStoreTests {
 			Issue.record("The copy previews before it's saved")
 		}
 		store.discardPreview(of: copied, for: "project")
-		try await waitUntil { !FileManager.default.fileExists(atPath: copy.path) }
+		#expect(try await waitUntil { !FileManager.default.fileExists(atPath: copy.path) })
 
 		let saved = try #require(try? await store.importImage(at: outside.appending(path: "brand.svg"), projectFolder: folder.path, for: "project").get())
 		guard case .storedImage(let savedFile, _) = saved else {
@@ -544,7 +541,7 @@ struct ProjectIconStoreTests {
 		await store.waitUntilIdle()
 		#expect(FileManager.default.fileExists(atPath: images.appending(path: savedFile).path))
 		store.save(.emoji("🚀"), for: "project")
-		try await waitUntil { !FileManager.default.fileExists(atPath: images.appending(path: savedFile).path) }
+		#expect(try await waitUntil { !FileManager.default.fileExists(atPath: images.appending(path: savedFile).path) })
 	}
 
 	@Test("forgetting a project removes its choice and copied image; copies no choice uses are collected")
@@ -572,7 +569,7 @@ struct ProjectIconStoreTests {
 		store.forget(keeping: ["kept"])
 		#expect(preferences.data(forKey: ProjectIconStore.preferencePrefix + "gone") == nil)
 		#expect(preferences.data(forKey: ProjectIconStore.preferencePrefix + "kept") != nil)
-		try await waitUntil { !FileManager.default.fileExists(atPath: images.appending(path: file).path) }
+		#expect(try await waitUntil { !FileManager.default.fileExists(atPath: images.appending(path: file).path) })
 	}
 
 	@Test("copied images are kept only in LPM Vault's own folder: one reached through a link is never written, read or deleted")
@@ -755,7 +752,7 @@ struct ProjectIconStoreTests {
 		try ProjectIconFixture.write(try ProjectIconFixture.png(red: 0, green: 0, blue: 255, size: 40), to: "favicon.png", in: folder)
 		let watch = Task { await store.watch("p") }
 		defer { watch.cancel() }
-		try await waitUntil { (try? ProjectIconFixture.isBlue(store.resolution(for: "p")?.automatic?.image)) == true }
+		#expect(try await waitUntil { (try? ProjectIconFixture.isBlue(store.resolution(for: "p")?.automatic?.image)) == true })
 	}
 
 	@Test("one project's new icon leaves the other projects' rows alone")
@@ -813,16 +810,6 @@ struct ProjectIconStoreTests {
 		#expect((1..<12).allSatisfy { store.resolution(for: "p\($0)") == nil }, "Projects no longer followed are forgotten")
 	}
 
-	private func waitUntil(_ condition: () -> Bool) async throws {
-		let deadline = ContinuousClock.now + .seconds(5)
-		while !condition() {
-			guard ContinuousClock.now < deadline else {
-				Issue.record("Timed out")
-				return
-			}
-			try await Task.sleep(for: .milliseconds(10))
-		}
-	}
 }
 
 final class InvalidationCounter: @unchecked Sendable {

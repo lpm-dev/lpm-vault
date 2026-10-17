@@ -52,8 +52,7 @@ struct AuditRegressionTests {
     let context = HeldContext()
     let service = BiometricService(makeContext: { context })
     let outcome = Task { await service.confirm(reason: "Publish 1 variable to demo-api / Production on Vercel") }
-    for _ in 0..<400 where !context.isShowing { try await Task.sleep(for: .milliseconds(5)) }
-    #expect(context.isShowing)
+    try #require(try await waitUntil { context.isShowing })
     service.resetCache()
     #expect(await outcome.value == .cancelled)
     #expect(context.wasInvalidated)
@@ -430,9 +429,9 @@ struct AuditRegressionTests {
       biometricService: MockBiometricService(),
       apiService: MockAPIService()
     )
-    store.projects = (0..<100).map { projectIndex in
+    store.projects = (0..<50).map { projectIndex in
       let secrets = Dictionary(
-        uniqueKeysWithValues: (0..<6_000).map { keyIndex in
+        uniqueKeysWithValues: (0..<100).map { keyIndex in
           ("KEY_\(keyIndex)", "VALUE_\(projectIndex)_\(keyIndex)")
         })
       return VaultProject(
@@ -442,14 +441,12 @@ struct AuditRegressionTests {
         environments: ["default": secrets]
       )
     }
-    try await waitForWorkspaceSnapshots(store, count: 100)
+    try await waitForWorkspaceSnapshots(store, count: 50)
 
     let baseline = store.workspaceSnapshotBuildCount
-    let start = ContinuousClock.now
     store.projects[42].environments["default"]?["KEY_42"] = "changed"
-    let assignmentDuration = start.duration(to: .now)
-
-    #expect(assignmentDuration < .milliseconds(20))
+    // Builds are counted on the main actor once published, so a build inside the assignment would show here.
+    #expect(store.workspaceSnapshotBuildCount == baseline, "The assignment returns before the snapshot is rebuilt")
     try await waitForWorkspaceSnapshotBuilds(store, count: baseline + 1)
     #expect(store.workspaceSnapshots["project-42"]?.summaries["KEY_42"] != nil)
   }
@@ -464,7 +461,7 @@ struct AuditRegressionTests {
       defer { tracker.end() }
       if project.id == "superseded" {
         started.signal()
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + testWaitLimit
         while !Task.isCancelled && ContinuousClock.now < deadline {
           Thread.sleep(forTimeInterval: 0.001)
         }
@@ -491,7 +488,7 @@ struct AuditRegressionTests {
     defer { first.cancel() }
     let second = await withCheckedContinuation { continuation in
       Thread.detachNewThread {
-        let didStart = started.wait(timeout: .now() + 5) == .success
+        let didStart = started.wait(timeout: .now() + testWaitSeconds) == .success
         let replacementBuild = didStart ? Task { await builder.buildAll([replacement]) } : nil
         first.cancel()
         continuation.resume(returning: replacementBuild)
@@ -1153,11 +1150,7 @@ struct AuditRegressionTests {
 
   @MainActor
   private func waitForAuditCondition(_ condition: () -> Bool) async throws {
-    for _ in 0..<1_000 {
-      if condition() { return }
-      try await Task.sleep(for: .milliseconds(10))
-    }
-    throw AuditWaitError.timedOut
+    guard try await waitUntil(condition) else { throw AuditWaitError.timedOut }
   }
 
   private func syncStatus(
@@ -1278,9 +1271,7 @@ struct ClipboardOwnershipTests {
 		manager.copy("lpm-secret")
 		pasteboard.clearContents()
 		pasteboard.setString("newer-owner", forType: .string)
-
-		try await Task.sleep(for: .milliseconds(80))
-
+		#expect(try await waitUntil { !manager.isClearScheduled }, "The clear came due")
 		#expect(pasteboard.string(forType: .string) == "newer-owner")
 		manager.clearClipboard()
 		#expect(pasteboard.string(forType: .string) == "newer-owner")
@@ -1335,7 +1326,7 @@ private final class HeldContext: LAContext, @unchecked Sendable {
     reply: @escaping @Sendable (Bool, (any Error)?) -> Void
   ) {
     lock.withLock { pendingReply = reply }
-    DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in self?.finish(true, nil) }
+    DispatchQueue.global().asyncAfter(deadline: .now() + testWaitSeconds) { [weak self] in self?.finish(true, nil) }
   }
 
   override func invalidate() {

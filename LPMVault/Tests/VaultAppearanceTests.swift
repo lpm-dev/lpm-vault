@@ -106,11 +106,10 @@ struct VaultAppearanceTests {
 		window.contentView = host
 		window.orderBack(nil)
 		defer { window.close() }
-		for _ in 0..<100 {
+		try #require(try await waitUntil {
 			host.layoutSubtreeIfNeeded()
-			if segmentedControl(in: host) != nil { break }
-			try await Task.sleep(for: .milliseconds(10))
-		}
+			return segmentedControl(in: host) != nil
+		})
 		let picker = try #require(segmentedControl(in: host))
 		#expect(picker.segmentCount == 3)
 		for (index, choice) in VaultAppearance.allCases.enumerated() {
@@ -221,11 +220,7 @@ extension SheetInteractionTests {
 			store.selectedEnvironment = "development"
 			#expect(await store.loadProjects())
 			defer { store.lock() }
-			for _ in 0..<500 {
-				if store.workspaceSnapshots[project.id] != nil { break }
-				try await Task.sleep(for: .milliseconds(10))
-			}
-			_ = try #require(store.workspaceSnapshots[project.id])
+			try #require(try await waitUntil { store.workspaceSnapshots[project.id] != nil })
 			await store.refreshCliAccess()
 			#expect(store.selectedProjectCliAccess == .automatic)
 			let suffix = scheme == .dark ? "dark" : "light"
