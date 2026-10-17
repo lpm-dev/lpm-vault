@@ -75,6 +75,8 @@ struct GitHubHTTPTests {
 		#expect(next(#"<a>; title="say \"next\""; rel=last"#) == .some(nil))
 		#expect(next(#"<a>; rel="prev"; rel="next""#) == .some(nil), "A rel after the first is ignored")
 		#expect(next(#" , <a>; rel=next ,, "#) == .some("a"))
+		#expect(next("<a>; type=text/html; rel=next") == .some("a"), "An unquoted value runs to the next ; or , as RFC 8288's parsing reads it")
+		#expect(next("<a>; rel=next;, <b>; rel=last;") == .some("a"), "A trailing ; is no parameter")
 		#expect(next("") == .some(nil))
 		for malformed in [
 			#"<a; rel="next""#, #"<a>; rel="next"#, "garbage", "<a> junk", #"<a>; ="next""#, #"<a>; rel="next" <b>"#, "<a>; rel=", "<a>; rel= , <b>; rel=next",

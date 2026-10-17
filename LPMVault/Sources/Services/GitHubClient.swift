@@ -459,6 +459,8 @@ enum GitHubHTTP {
 				guard index < bytes.count, bytes[index] == UInt8(ascii: ";") else { break }
 				index += 1
 				skipWhitespace()
+				// A trailing ; names no parameter.
+				if index == bytes.count || bytes[index] == UInt8(ascii: ",") { break }
 				let name = token().lowercased()
 				guard !name.isEmpty else { return nil }
 				skipWhitespace()
@@ -488,7 +490,10 @@ enum GitHubHTTP {
 						guard closed else { return nil }
 						value = String(decoding: quoted, as: UTF8.self)
 					} else {
-						value = token()
+						// Unquoted, a value runs to the next ; or , as RFC 8288's parsing reads it.
+						let start = index
+						while index < bytes.count, bytes[index] != UInt8(ascii: ";"), bytes[index] != UInt8(ascii: ",") { index += 1 }
+						value = String(decoding: bytes[start..<index], as: UTF8.self).trimmingCharacters(in: .whitespaces)
 						guard !value.isEmpty else { return nil }
 					}
 				}
