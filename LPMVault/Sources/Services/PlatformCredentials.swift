@@ -27,7 +27,7 @@ enum PlatformCredentialError: Error, Equatable, Sendable {
 		case .otherAccount: "\(name) was connected while signed in to another LPM account. Sign in with that account, or connect \(name) again on the Platforms page."
 		case .expired: "The \(name) connection expired. Connect \(name) again on the Platforms page."
 		case .unavailable: "The \(name) connection couldn't be renewed right now. Check your network and try again."
-		case .refused: "\(name) refused to renew the connection right now. Try again later. If it keeps refusing, connect \(name) again on the Platforms page."
+		case .refused: "\(name) refused to renew the connection right now. Try again later."
 		case .rateLimited: "The \(name) connection was renewed too often. Wait a minute, then try again."
 		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn't verify. Try again."
 		}
@@ -46,6 +46,10 @@ actor PlatformCredentials {
 
 	/// How many more times a request still pending at the Registry is asked again.
 	static let pendingRetries = 10
+	/// How long after a refresh token arrives the Registry may not know it
+	/// yet: when keeping the renewal that issued it failed, the Registry
+	/// records the token over minutes.
+	static let unknownTokenGrace: TimeInterval = 15 * 60
 
 	private let store: PlatformConnectionStore
 	private let refresher: any PlatformTokenRefreshing
@@ -140,13 +144,15 @@ actor PlatformCredentials {
 			case .failure(let error): return .done(.failure(.store(error)))
 			}
 		}
-		return await renew(connectionID, on: platform, token: refresh.token, attempt: attempt, session: session)
+		return await renew(
+			connectionID, on: platform, token: refresh.token, receivedAt: refresh.obtainedAt, attempt: attempt, session: session)
 	}
 
 	private func renew(
 		_ connectionID: PlatformConnection.ID,
 		on platform: BrowserPlatform,
 		token: String,
+		receivedAt: Date,
 		attempt: PlatformTokenRefresh.Attempt,
 		session: PlatformSession
 	) async -> Step {
@@ -176,6 +182,8 @@ actor PlatformCredentials {
 			case .success(.pending):
 				guard round < Self.pendingRetries else { return .done(.failure(.unavailable)) }
 				do { try await Task.sleep(for: pendingDelay) } catch { return .done(.failure(.unavailable)) }
+			case .success(.unknown) where now().timeIntervalSince(receivedAt) < Self.unknownTokenGrace:
+				return .done(.failure(.unavailable))
 			case .success(.failed), .success(.expired), .success(.unknown):
 				switch await store.rejectRefresh(of: connectionID, attempt: attempt.id) {
 				// The connection was connected again meanwhile; the refusal was of its old token.

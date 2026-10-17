@@ -694,8 +694,20 @@ struct PlatformCredentialsTests {
 		let credentials = credentials(refresher, at: TestDate(start.addingTimeInterval(8 * 3_600 - 60)))
 		#expect(await credentials.accessToken(for: id) == .failure(.refused))
 		#expect(try await store.record(for: id).get().refresh?.isRejected == false, "Nothing was used up")
-		#expect(PlatformCredentialError.refused.message(for: .netlify)
-			== "Netlify refused to renew the connection right now. Try again later. If it keeps refusing, connect Netlify again on the Platforms page.")
+		#expect(PlatformCredentialError.refused.message(for: .netlify) == "Netlify refused to renew the connection right now. Try again later.",
+			"Connecting again uses the same app, which the platform refused")
+	}
+
+	@Test("a refresh token received moments ago that lpm.dev doesn't know, as while it's still recording it after trouble, is asked about again later, not taken as expired")
+	func unknownJustReceived() async throws {
+		let id = try await connect()
+		let refresher = ScriptedTokenRefresher { _, _ in .success(.unknown) }
+		let soon = credentials(refresher, at: TestDate(start.addingTimeInterval(60)))
+		#expect(await soon.accessToken(for: id, replacing: "nfo_access_old") == .failure(.unavailable))
+		#expect(try await store.record(for: id).get().refresh?.isRejected == false)
+		let later = credentials(refresher, at: TestDate(start.addingTimeInterval(16 * 60)))
+		#expect(await later.accessToken(for: id, replacing: "nfo_access_old") == .failure(.expired))
+		#expect(try await store.record(for: id).get().refresh?.isRejected == true)
 	}
 
 	@Test("each failure says what to do, naming the platform")
