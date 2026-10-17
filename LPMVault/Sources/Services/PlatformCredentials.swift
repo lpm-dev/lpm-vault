@@ -47,19 +47,23 @@ actor PlatformCredentials {
 	/// How many more times a request still pending at the Registry is asked again.
 	static let pendingRetries = 10
 	/// How long pending answers are waited out in all, as one can take the
-	/// Registry's whole deadline when its database is slow.
-	static let pendingPatience: TimeInterval = 40
+	/// Registry's whole deadline when its database is slow: no request starts
+	/// after it, its backoff included.
+	static let pendingPatience: Duration = .seconds(40)
 	/// How long either side of a refresh token's arrival the Registry may not
 	/// know it yet: when keeping the renewal that issued it failed, the
-	/// Registry records the token within about 25 minutes. A clock set back
-	/// further than this leaves no grace.
-	static let unknownTokenGrace: TimeInterval = 30 * 60
+	/// Registry records the token within its refresh's five minutes. A clock
+	/// set back further than this leaves no grace.
+	static let unknownTokenGrace: TimeInterval = 10 * 60
 
 	private let store: PlatformConnectionStore
 	private let refresher: any PlatformTokenRefreshing
 	private let session: SessionProvider
 	private let now: @Sendable () -> Date
 	private let pendingDelay: Duration
+	/// A clock no change to the wall clock moves, which pending answers are waited out by.
+	private let uptime: @Sendable () -> ContinuousClock.Instant
+	private let sleep: @Sendable (Duration) async throws -> Void
 	private var running: [PlatformConnection.ID: Task<Result<String, PlatformCredentialError>, Never>] = [:]
 	/// How many callers have shared a read, with any renewal, another caller started; it only grows.
 	private(set) var sharedReads = 0
@@ -69,13 +73,17 @@ actor PlatformCredentials {
 		refresher: any PlatformTokenRefreshing = PlatformAuthorizationClient(),
 		session: @escaping SessionProvider,
 		now: @escaping @Sendable () -> Date = { Date() },
-		pendingDelay: Duration = .seconds(1)
+		pendingDelay: Duration = .seconds(1),
+		uptime: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+		sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
 	) {
 		self.store = store
 		self.refresher = refresher
 		self.session = session
 		self.now = now
 		self.pendingDelay = pendingDelay
+		self.uptime = uptime
+		self.sleep = sleep
 	}
 
 	/// The connection's access token, renewed first when it's about to expire
@@ -161,7 +169,7 @@ actor PlatformCredentials {
 		session: PlatformSession
 	) async -> Step {
 		guard let key = attempt.privateKey else { return .done(.failure(.store(.unreadable))) }
-		let started = now()
+		let patience = uptime() + Self.pendingPatience
 		for round in 0...Self.pendingRetries {
 			let answer = await refresher.refresh(
 				platform, refreshToken: token, clientPublicKey: key.publicKey.x963Representation,
@@ -185,12 +193,10 @@ actor PlatformCredentials {
 				case .failure(let error): return .done(.failure(.store(error)))
 				}
 			case .success(.pending):
-				guard round < Self.pendingRetries, now().timeIntervalSince(started) < Self.pendingPatience else {
-					return .done(.failure(.unavailable))
-				}
 				// Backing off, up to eight times the delay: a pending answer can mean the Registry's database is slow.
 				let delay = pendingDelay * (1 << min(round, 3))
-				do { try await Task.sleep(for: delay) } catch { return .done(.failure(.unavailable)) }
+				guard round < Self.pendingRetries, uptime() + delay < patience else { return .done(.failure(.unavailable)) }
+				do { try await sleep(delay) } catch { return .done(.failure(.unavailable)) }
 			case .success(.unknown) where abs(now().timeIntervalSince(receivedAt)) < Self.unknownTokenGrace:
 				// A connection connected again meanwhile has a token of its own to give.
 				switch await store.record(for: connectionID) {

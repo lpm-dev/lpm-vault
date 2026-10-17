@@ -16,6 +16,15 @@ final class TestDate: @unchecked Sendable {
 	}
 }
 
+/// When a test's requests started, in order.
+final class LockedStarts: @unchecked Sendable {
+	private let lock = NSLock()
+	private var started: [Duration] = []
+
+	var values: [Duration] { lock.withLock { started } }
+	func append(_ start: Duration) { lock.withLock { started.append(start) } }
+}
+
 /// A Registry that answers token refreshes as a test scripts it, recording each request.
 final class ScriptedTokenRefresher: PlatformTokenRefreshing, @unchecked Sendable {
 	struct Call: Sendable {
@@ -429,10 +438,16 @@ struct PlatformCredentialsTests {
 	private func credentials(
 		_ refresher: ScriptedTokenRefresher,
 		at clock: TestDate,
-		session: PlatformSession?? = nil
+		session: PlatformSession?? = nil,
+		waits: ManualClock? = nil
 	) -> PlatformCredentials {
 		let chosen = session ?? .some(platformTestSession(registry))
-		return PlatformCredentials(store: store, refresher: refresher, session: { chosen }, now: { clock.date }, pendingDelay: .zero)
+		guard let waits else {
+			return PlatformCredentials(store: store, refresher: refresher, session: { chosen }, now: { clock.date }, pendingDelay: .zero)
+		}
+		return PlatformCredentials(
+			store: store, refresher: refresher, session: { chosen }, now: { clock.date }, pendingDelay: .seconds(1),
+			uptime: { waits.now }, sleep: { waits.advance(by: $0) })
 	}
 
 	@Test("a token that doesn't expire, or isn't about to, is read without asking lpm.dev")
@@ -578,17 +593,20 @@ struct PlatformCredentialsTests {
 		#expect(try await store.record(for: id).get().refresh?.attempt != nil)
 	}
 
-	@Test("pending answers that each take lpm.dev's whole deadline are waited out 40 seconds in all, not ten times over")
+	@Test("pending answers that each take lpm.dev's whole deadline are waited out 40 seconds in all: no request starts after, backoff included")
 	func boundsSlowPending() async throws {
 		let id = try await connect()
-		let clock = TestDate(start.addingTimeInterval(8 * 3_600))
+		let waits = ManualClock()
+		let began = waits.now
+		let starts = LockedStarts()
 		let refresher = ScriptedTokenRefresher { _, _ in
-			clock.date = clock.date.addingTimeInterval(12)
+			starts.append(began.duration(to: waits.now))
+			waits.advance(by: .seconds(12))
 			return .success(.pending)
 		}
-		let credentials = credentials(refresher, at: clock)
+		let credentials = credentials(refresher, at: TestDate(start.addingTimeInterval(8 * 3_600)), waits: waits)
 		#expect(await credentials.accessToken(for: id) == .failure(.unavailable))
-		#expect(refresher.calls.count == 4, "Asked again only while 40 seconds hadn't passed")
+		#expect(starts.values == [.zero, .seconds(13), .seconds(27)], "The next ask would start past 40 seconds, after its 4-second backoff")
 		#expect(try await store.record(for: id).get().refresh?.attempt != nil)
 	}
 
@@ -719,10 +737,10 @@ struct PlatformCredentialsTests {
 		let soon = credentials(refresher, at: TestDate(start.addingTimeInterval(60)))
 		#expect(await soon.accessToken(for: id, replacing: "nfo_access_old") == .failure(.unavailable))
 		#expect(try await store.record(for: id).get().refresh?.isRejected == false)
-		let stillRecording = credentials(refresher, at: TestDate(start.addingTimeInterval(29 * 60)))
+		let stillRecording = credentials(refresher, at: TestDate(start.addingTimeInterval(9 * 60)))
 		#expect(await stillRecording.accessToken(for: id, replacing: "nfo_access_old") == .failure(.unavailable),
-			"lpm.dev records a token it handed over within about 25 minutes")
-		let later = credentials(refresher, at: TestDate(start.addingTimeInterval(31 * 60)))
+			"lpm.dev records a token it handed over within its refresh's five minutes")
+		let later = credentials(refresher, at: TestDate(start.addingTimeInterval(11 * 60)))
 		#expect(await later.accessToken(for: id, replacing: "nfo_access_old") == .failure(.expired))
 		#expect(try await store.record(for: id).get().refresh?.isRejected == true)
 	}
