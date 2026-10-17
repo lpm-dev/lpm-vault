@@ -40,6 +40,8 @@ enum GitHubPublishing {
 	/// How many limits GitHub doesn't say the end of one write waits out: a
 	/// minute, then twice that, as GitHub asks while a limit continues.
 	static let unannouncedLimitWaits = 2
+	/// How many times one write starts over for a token renewed meanwhile.
+	static let renewalRetries = 3
 	/// What GitHub keeps in a repository's own secrets and variables, and in an environment's.
 	static let repositoryCapacity = PublishPlan.Capacity(secrets: 100, variables: 500)
 	static let environmentCapacity = PublishPlan.Capacity(secrets: 100, variables: 100)
@@ -157,14 +159,18 @@ enum GitHubPublishing {
 		}
 		var publicKey: GitHubPublicKey?
 		var lastWrite: ContinuousClock.Instant?
-		for change in changes {
+		// Waits for a limit met by a read-back, which the next key's waits go on from.
+		var carriedWaits = 0
+		for (index, change) in changes.enumerated() {
 			guard !Task.isCancelled else { break }
-			var waits = 0
+			var waits = carriedWaits
+			carriedWaits = 0
+			var renewals = 0
 			let answer: Answer
 			attempts: while true {
 				switch await attempt(
 					change, to: target, reviewed: reviewed, publicKey: &publicKey, using: client, seal: seal, waits: &waits,
-					pacing: pacing, lastWrite: &lastWrite)
+					renewals: &renewals, pacing: pacing, lastWrite: &lastWrite)
 				{
 				case .done(let value):
 					answer = value
@@ -183,9 +189,9 @@ enum GitHubPublishing {
 					: .published
 				switch readBack {
 				case .unknown(.rateLimited(let reset)?):
-					// GitHub asks for no request until a limit lifts, so the next key waits for it.
-					var limitWaits = 0
-					if let error = await waitOut(until: reset, waits: &limitWaits, pacing: pacing) {
+					// GitHub asks for no request until a limit lifts, so the next key, when there is one, waits for it.
+					guard index < changes.index(before: changes.endIndex) else { break }
+					if let error = await waitOut(until: reset, waits: &carriedWaits, pacing: pacing) {
 						return finish { _ in .failed(message(error, now: pacing.date())) }
 					}
 				case .unknown(let error?):
@@ -265,6 +271,7 @@ enum GitHubPublishing {
 		using client: any GitHubClientProtocol,
 		seal: @Sendable (String, Data) -> Data?,
 		waits: inout Int,
+		renewals: inout Int,
 		pacing: Pacing,
 		lastWrite: inout ContinuousClock.Instant?
 	) async -> Attempt {
@@ -278,18 +285,18 @@ enum GitHubPublishing {
 		switch await reviewedScope(of: target, using: client) {
 		case .success(let value): scope = value
 		case .failure(.replaced(let reason)): return .replaced(reason)
-		case .failure(.api(let error)): return await pause(after: error, waits: &waits, pacing: pacing)
+		case .failure(.api(let error)): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 		}
 		let write: Write
 		switch await reread(change, in: scope, reviewed: reviewed, using: client) {
 		case .success(let value): write = value
 		case .failure(.refused(let reason)): return .done(.refused(reason))
-		case .failure(.api(let error)): return await pause(after: error, waits: &waits, pacing: pacing)
+		case .failure(.api(let error)): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 		}
 		if write.isSecret, publicKey == nil {
 			switch await client.publicKey(of: scope) {
 			case .success(let key): publicKey = key
-			case .failure(let error): return await pause(after: error, waits: &waits, pacing: pacing)
+			case .failure(let error): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 			}
 		}
 		let answer: Result<Void, GitHubAPIError>
@@ -311,7 +318,7 @@ enum GitHubPublishing {
 			// GitHub answers a variable created meanwhile with a conflict.
 			return .done(.refused(Refusal.added.text))
 		case .failure(let error):
-			return await pause(after: error, waits: &waits, pacing: pacing)
+			return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 		}
 	}
 
@@ -319,14 +326,15 @@ enum GitHubPublishing {
 	/// rate limit lifts, or at once when it was refused with a token another
 	/// renewal replaced, which GitHub applied nothing of. Any other error, or
 	/// a wait that can't be made, is the answer.
-	private static func pause(after error: GitHubAPIError, waits: inout Int, pacing: Pacing) async -> Attempt {
+	private static func pause(after error: GitHubAPIError, waits: inout Int, renewals: inout Int, pacing: Pacing) async -> Attempt {
 		switch error {
 		case .rateLimited(let reset):
 			if let error = await waitOut(until: reset, waits: &waits, pacing: pacing) { return .done(.failed(error)) }
 			return .waited
 		case .renewed:
-			guard waits < rateLimitRetries else { return .done(.failed(.unauthorized)) }
-			waits += 1
+			// Counted apart from rate limits: a renewal says nothing of GitHub's limits.
+			guard renewals < renewalRetries else { return .done(.failed(.unauthorized)) }
+			renewals += 1
 			return .waited
 		default:
 			return .done(.failed(error))

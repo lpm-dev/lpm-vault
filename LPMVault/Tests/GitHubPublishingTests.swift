@@ -41,6 +41,8 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	private var log: [(Operation, String)] = []
 	/// Runs before each write, as when someone edits on GitHub at that moment.
 	var beforeWrite: (@Sendable (FakeGitHubAPI, String) -> Void)?
+	/// Runs as each request arrives, before it's answered.
+	var onRequest: (@Sendable (Operation) -> Void)?
 	let publicKey = GitHubPublicKey(id: "568250167242549743", key: Data((0..<32).map { UInt8($0 * 3 + 1) }))
 
 	private static func key(_ scope: GitHubScope) -> String { scope.repository + "|" + (scope.environment ?? "") }
@@ -141,6 +143,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	}
 
 	private func begin(_ operation: Operation, _ name: String) -> GitHubAPIError? {
+		onRequest?(operation)
 		let failure = lock.withLock { () -> (error: GitHubAPIError, then: (@Sendable () -> Void)?)? in
 			log.append((operation, name))
 			guard var pending = failures[operation], !pending.isEmpty else { return nil }
@@ -870,6 +873,46 @@ struct GitHubPublishTests {
 		#expect(far.requests.map(\.0) == [.repository, .secret, .variable, .publicKey, .setSecret, .secret], "Nothing is asked of GitHub after the limit")
 	}
 
+	@Test("a limit on the last key's read-back doesn't hold the results up: nothing is left to send")
+	func lastReadBackLimit() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		let pacing = TestPacing()
+		api.fail(.secret, after: 1, with: .rateLimited(until: nil))
+		let report = await publish([change("A", "1")], with: api, reviewed: reviewed, pacing: pacing)
+		#expect(report.outcomes == ["A": .published] && report.published.first?.remoteUpdatedAt == nil)
+		#expect(pacing.sleeps.isEmpty)
+	}
+
+	@Test("a limit a read-back met that goes on at the next key backs off from where it got to")
+	func readBackLimitBacksOff() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		let pacing = TestPacing()
+		api.fail(.secret, after: 1, with: .rateLimited(until: nil))
+		api.fail(.repository, after: 1, with: .rateLimited(until: nil))
+		let report = await publish([change("A", "1"), change("B", "2")], with: api, reviewed: reviewed, pacing: pacing)
+		#expect(report.outcomes == ["A": .published, "B": .published])
+		#expect(pacing.sleeps == [.seconds(60), .seconds(120)])
+	}
+
+	@Test("a renewed token starts a write over without using its waits for rate limits, which back off from a minute")
+	func renewalsApartFromLimits() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		let soon = TestPacing.start.addingTimeInterval(1)
+		api.fail(.setSecret, with: .rateLimited(until: soon), .rateLimited(until: soon), .rateLimited(until: soon), .renewed)
+		let report = await publish([change("A", "1")], with: api, reviewed: reviewed)
+		#expect(report.outcomes == ["A": .published] && !report.needsReconnect)
+
+		let renewed = FakeGitHubAPI()
+		let pacing = TestPacing()
+		renewed.fail(.setSecret, with: .renewed, .rateLimited(until: nil))
+		let after = await publish([change("A", "1")], with: renewed, reviewed: reviewed, pacing: pacing)
+		#expect(after.outcomes == ["A": .published])
+		#expect(pacing.sleeps.contains(.seconds(60)) && !pacing.sleeps.contains(.seconds(120)))
+	}
+
 	@Test("writes are a second apart, as GitHub asks of a batch of writes")
 	func pacesWrites() async throws {
 		let api = FakeGitHubAPI()
@@ -1152,7 +1195,11 @@ struct GitHubPublishRenewalTests {
 	}
 
 	/// A publishing client for a GitHub connection whose token lpm.dev renews to `ghu_2`.
-	private func client(_ github: TokenGatedGitHub) async throws -> (RenewingGitHubClient, ScriptedTokenRefresher) {
+	private func client(
+		_ github: TokenGatedGitHub,
+		clock: TestDate? = nil,
+		whileRenewing: @escaping @Sendable () -> Void = {}
+	) async throws -> (RenewingGitHubClient, ScriptedTokenRefresher) {
 		let store = PlatformConnectionStore(service: keychain)
 		let refresh = PlatformTokenRefresh(
 			token: "ghr_1", accessTokenExpiresAt: start.addingTimeInterval(8 * 3_600), expiresAt: start.addingTimeInterval(86_400),
@@ -1161,10 +1208,12 @@ struct GitHubPublishRenewalTests {
 			.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: nil, appSlug: "lpm-vault")),
 			accessToken: "ghu_1", refresh: refresh, at: start).get().id
 		let refresher = ScriptedTokenRefresher { call, _ in
-			ScriptedTokenRefresher.renewed(call, access: "ghu_2", refresh: "ghr_2", platform: "github")
+			whileRenewing()
+			return ScriptedTokenRefresher.renewed(call, access: "ghu_2", refresh: "ghr_2", platform: "github")
 		}
+		let clock = clock ?? TestDate(start)
 		let credentials = PlatformCredentials(
-			store: store, refresher: refresher, session: { platformTestSession(URL(string: "http://localhost:3000")!) }, now: { [start] in start })
+			store: store, refresher: refresher, session: { platformTestSession(URL(string: "http://localhost:3000")!) }, now: { clock.date })
 		return (RenewingGitHubClient(connectionID: id, credentials: credentials, resendsAfterRenewal: false, make: github.client), refresher)
 	}
 
@@ -1174,6 +1223,42 @@ struct GitHubPublishRenewalTests {
 
 	private func publish(_ changes: [PublishPlan.Change], to target: GitHubPublishTarget, reviewed: GitHubRemoteSnapshot, using client: RenewingGitHubClient) async -> PublishReport {
 		await GitHubPublishing.publish(changes, to: target, reviewed: reviewed, using: client, seal: testGitHubSeal, pacing: TestPacing().pacing)
+	}
+
+	@Test("a token renewed as a request reads it, with nothing refused, starts the checks over: an environment replaced meanwhile gets nothing")
+	func checksAfterRenewalOnRead() async throws {
+		let github = TokenGatedGitHub(valid: "ghu_1")
+		let api = github.api
+		let reviewed = try await reviewed(api, in: production)
+		let clock = TestDate(start)
+		let due = start.addingTimeInterval(8 * 3_600 - 60)
+		api.onRequest = { operation in if operation == .variable { clock.date = due } }
+		let (client, refresher) = try await client(github, clock: clock) {
+			api.replaceEnvironment(of: "northwind/storefront", name: "production", withID: "999")
+			github.accept("ghu_2")
+		}
+		let report = await publish([change("A")], to: target(.environment(id: "161088068", name: "production")), reviewed: reviewed, using: client)
+		#expect(report.outcomes == ["A": .failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")])
+		#expect(api.names(in: production) == ([], []) && refresher.calls.count == 1 && github.refusals == 0)
+	}
+
+	@Test("a token renewed as a read-back reads it leaves the write's time unknown, as someone may have changed it meanwhile")
+	func readBackAfterRenewalOnRead() async throws {
+		let github = TokenGatedGitHub(valid: "ghu_1")
+		let api = github.api
+		let reviewed = try await reviewed(api, in: scope)
+		let clock = TestDate(start)
+		let due = start.addingTimeInterval(8 * 3_600 - 60)
+		let scope = scope
+		api.onRequest = { operation in if operation == .setSecret { clock.date = due } }
+		let (client, _) = try await client(github, clock: clock) {
+			api.edit("A", secret: true, value: "theirs", in: scope)
+			github.accept("ghu_2")
+		}
+		let report = await publish([change("A"), change("B")], to: target(), reviewed: reviewed, using: client)
+		#expect(report.outcomes == ["A": .published, "B": .published])
+		#expect(report.published.first { $0.key == "A" }?.remoteUpdatedAt == nil)
+		#expect(github.refusals == 0)
 	}
 
 	@Test("an environment replaced while the token renewed, after GitHub refused it for the scope's key, gets nothing")
@@ -1408,6 +1493,26 @@ struct GitHubClientListTests {
 		#expect(await client(route, limits: limits).repositories() == .failure(.tooLarge))
 	}
 
+	@Test("a listing that runs out of time after reading pages is too large, though the late page is another installation's first")
+	func runsOutOfTime() async throws {
+		let deadline = TestDeadline()
+		let held = DispatchSemaphore(value: 0)
+		let route = PlatformHTTPStub.platform { request in
+			switch request.url.path {
+			case "/user/installations": return .json(200, ["total_count": 1, "installations": [["id": 11]]])
+			default:
+				deadline.pass()
+				held.wait()
+				return .json(500, [:])
+			}
+		}
+		var limits = GitHubClient.Limits()
+		limits.deadlinePasses = { _ in await deadline.wait() }
+		let result = await client(route, limits: limits).repositories()
+		held.signal()
+		#expect(result == .failure(.tooLarge))
+	}
+
 	@Test("GitHub's Link decides whether a list goes on, even past a short page")
 	func followsLink() async throws {
 		let route = PlatformHTTPStub.platform { request in
@@ -1555,5 +1660,39 @@ struct CountedItem: Decodable {
 
 	init(from decoder: any Decoder) throws {
 		Self.lock.withLock { Self.count += 1 }
+	}
+}
+
+/// A listing's deadline a test passes by hand. Waiting for it returns once
+/// it's passed, or when the waiting task is cancelled, as the real deadline's
+/// sleep does.
+final class TestDeadline: @unchecked Sendable {
+	private let lock = NSLock()
+	private var passed = false
+	private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+	func pass() {
+		let waiting = lock.withLock {
+			passed = true
+			defer { waiters = [:] }
+			return Array(waiters.values)
+		}
+		for waiter in waiting { waiter.resume() }
+	}
+
+	func wait() async {
+		let id = UUID()
+		await withTaskCancellationHandler {
+			await withCheckedContinuation { continuation in
+				let resumeNow = lock.withLock {
+					if passed || Task.isCancelled { return true }
+					waiters[id] = continuation
+					return false
+				}
+				if resumeNow { continuation.resume() }
+			}
+		} onCancel: {
+			lock.withLock { waiters.removeValue(forKey: id) }?.resume()
+		}
 	}
 }

@@ -350,6 +350,10 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		var listDeadline: Duration = .seconds(120)
 		/// The most pages one list is read in.
 		var maximumPages = 100
+		/// Returns once a listing's deadline passes; a test stands in its own moment.
+		var deadlinePasses: @Sendable (ContinuousClock.Instant) async -> Void = { deadline in
+			try? await Task.sleep(until: deadline, clock: .continuous)
+		}
 	}
 
 	private let token: String
@@ -509,11 +513,18 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	private struct Budget {
 		var bytes: Int
 		let deadline: ContinuousClock.Instant
+		let deadlinePasses: @Sendable (ContinuousClock.Instant) async -> Void
+		/// Pages read so far by every list sharing the budget.
+		var pagesRead = 0
 
 		init(_ limits: Limits) {
 			bytes = limits.listBytes
 			deadline = ContinuousClock.now.advanced(by: limits.listDeadline)
+			deadlinePasses = limits.deadlinePasses
 		}
+
+		/// What running out of time means: a listing too long when it had read anything, and GitHub unreachable when not.
+		var timedOut: GitHubAPIError { pagesRead > 0 ? .tooLarge : .transport }
 	}
 
 	/// A list's items, and whether GitHub said it left out results an
@@ -545,13 +556,15 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		var listed = Listed<Item?>()
 		var total: Int?
 		for page in 1...limits.maximumPages {
-			// Pages already read and none left to read in means the list is longer than LPM Vault reads.
-			guard budget.bytes > 0, page == 1 || ContinuousClock.now < budget.deadline else { return .failure(.tooLarge) }
+			guard budget.bytes > 0 else { return .failure(.tooLarge) }
+			guard budget.pagesRead == 0 || ContinuousClock.now < budget.deadline else { return .failure(budget.timedOut) }
 			let query = [URLQueryItem(name: "per_page", value: String(perPage)), URLQueryItem(name: "page", value: String(page))]
 			guard let url = GitHubHTTP.url(baseURL, path, query: query) else { return .failure(.invalidResponse) }
 			let request = GitHubHTTP.request("GET", url, token: token)
-			guard let loaded = await Self.load(request, using: session, limit: min(GitHubHTTP.maximumResponseBytes * 4, budget.bytes), until: budget.deadline)
-			else { return .failure(Task.isCancelled ? .cancelled : page == 1 ? .transport : .tooLarge) }
+			guard let loaded = await Self.load(
+				request, using: session, limit: min(GitHubHTTP.maximumResponseBytes * 4, budget.bytes), until: budget.deadline,
+				deadlinePasses: budget.deadlinePasses)
+			else { return .failure(Task.isCancelled ? .cancelled : budget.timedOut) }
 			let data: Data
 			let response: HTTPURLResponse
 			switch loaded {
@@ -559,6 +572,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 			case .failure(let error): return .failure(error)
 			}
 			budget.bytes -= data.count
+			budget.pagesRead += 1
 			if response.value(forHTTPHeaderField: "X-GitHub-SSO")?.lowercased().hasPrefix("partial-results") == true {
 				listed.hidesSSOResults = true
 			}
@@ -595,12 +609,13 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		_ request: URLRequest,
 		using session: URLSession,
 		limit: Int,
-		until deadline: ContinuousClock.Instant
+		until deadline: ContinuousClock.Instant,
+		deadlinePasses: @escaping @Sendable (ContinuousClock.Instant) async -> Void
 	) async -> Result<(Data, HTTPURLResponse), GitHubAPIError>? {
 		await withTaskGroup(of: Result<(Data, HTTPURLResponse), GitHubAPIError>?.self) { group in
 			group.addTask { await GitHubHTTP.load(request, using: session, limit: limit).map { ($0.data, $0.response) } }
 			group.addTask {
-				try? await Task.sleep(until: deadline, clock: .continuous)
+				await deadlinePasses(deadline)
 				return nil
 			}
 			let first = await group.next() ?? nil
