@@ -342,6 +342,9 @@ enum GitHubPublishing {
 		case .failure(.rejected(status: 409)) where write.creates && !write.isSecret:
 			// GitHub answers a variable created meanwhile with a conflict.
 			return .done(.refused(Refusal.added.text))
+		case .failure(.notFound) where !write.creates && !write.isSecret:
+			// And an update to one removed meanwhile as not found, unless its scope went with it.
+			return await explain(.refused(Refusal.removed.text), of: target, using: client, waits: &waits, renewals: &renewals, pacing: pacing)
 		case .failure(let error) where pointsAtScope(error):
 			return await explain(.failed(error), of: target, using: client, waits: &waits, renewals: &renewals, pacing: pacing)
 		case .failure(let error):

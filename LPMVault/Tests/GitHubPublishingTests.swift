@@ -1146,6 +1146,31 @@ struct GitHubPublishTests {
 		#expect(GitHubPublishing.message(.moved) == "The repository was renamed or transferred on GitHub. Review again.")
 	}
 
+	@Test("an update GitHub answers not found once the scope checks out was to a variable removed meanwhile, and says so")
+	func updateToRemovedVariable() async throws {
+		let api = FakeGitHubAPI()
+		api.edit("B", secret: false, in: scope)
+		let reviewed = try await reviewed(api)
+		let scope = scope
+		api.beforeWrite = { api, name in
+			if name == "B" { api.remove("B", secret: false, in: scope) }
+		}
+		let report = await publish(
+			[change("B", "2", .replace(remoteID: "variable"), secret: false), change("C", "3")], with: api, reviewed: reviewed)
+		#expect(report.outcomes == ["B": .failed("Removed on GitHub since this review. Review again."), "C": .published])
+		#expect(api.variableValue("B", in: scope) == nil)
+
+		let environments = FakeGitHubAPI()
+		environments.edit("B", secret: false, in: production)
+		let reviewedEnvironment = try await self.reviewed(environments, in: production)
+		environments.beforeWrite = { api, _ in api.removeEnvironments(of: "northwind/storefront") }
+		let removed = await publish(
+			[change("B", "2", .replace(remoteID: "variable"), secret: false), change("C", "3")],
+			with: environments, reviewed: reviewedEnvironment, to: productionTarget)
+		let reason = PublishOutcome.failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")
+		#expect(removed.outcomes == ["B": reason, "C": reason], "The scope's reason, when it went with the variable")
+	}
+
 	@Test("a renewed token starts a write over without using its waits for rate limits, which back off from a minute")
 	func renewalsApartFromLimits() async throws {
 		let api = FakeGitHubAPI()
