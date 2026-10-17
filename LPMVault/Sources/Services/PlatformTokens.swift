@@ -65,7 +65,7 @@ struct PlatformTokens: Equatable, Sendable, CustomStringConvertible, CustomDebug
 	}
 
 	/// A JSON integer, never a Boolean or a fraction.
-	private static func integer(_ value: Any?) -> Int? {
+	static func integer(_ value: Any?) -> Int? {
 		guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
 			let integer = Int(exactly: number.doubleValue)
 		else { return nil }

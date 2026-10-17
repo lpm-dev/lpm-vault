@@ -82,8 +82,9 @@ enum PlatformAuthorizationOutcome: Equatable, Sendable {
 
 /// Where a token refresh stands, as the Registry answers it.
 enum PlatformTokenRefreshOutcome: Equatable, Sendable {
-	/// The new tokens, sealed to the attempt's key.
-	case ready(PlatformAuthorizationEnvelope.Sealed)
+	/// The new tokens, sealed to the attempt's key, issued `age` seconds ago:
+	/// a retry collects the tokens a lost answer carried.
+	case ready(PlatformAuthorizationEnvelope.Sealed, age: Int)
 	/// Another request of the same attempt is still refreshing the token.
 	case pending
 	/// The platform or the Registry refused it, or the token was already used, with the Registry's code.
@@ -257,7 +258,10 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 					let envelopeData = try? JSONSerialization.data(withJSONObject: envelope),
 					let sealed = try? JSONDecoder().decode(PlatformAuthorizationEnvelope.Sealed.self, from: envelopeData)
 				else { return .failure(.invalidResponse) }
-				return .success(.ready(sealed))
+				guard let age = PlatformTokens.integer(object["ageSeconds"]), age >= 0, age <= PlatformTokens.maximumLifetime else {
+					return .failure(.invalidResponse)
+				}
+				return .success(.ready(sealed, age: age))
 			case (202, "pending"): return .success(.pending)
 			case (409, "failed"):
 				let code = (object["code"] as? String).flatMap { Self.isFailureCode($0) ? $0 : nil } ?? "server_error"

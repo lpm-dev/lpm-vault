@@ -151,15 +151,20 @@ actor PlatformCredentials {
 				platform, refreshToken: token, clientPublicKey: key.publicKey.x963Representation,
 				refreshID: attempt.id, session: session)
 			switch answer {
-			case .success(.ready(let sealed)):
+			case .success(.ready(let sealed, let age)):
 				let opened = PlatformAuthorizationEnvelope.open(
 					sealed, id: attempt.id, clientKey: key, domain: PlatformAuthorizationEnvelope.refreshDomain
 				) { payload in
 					payload["platform"] as? String == platform.rawValue ? PlatformTokens(payload: payload) : nil
 				}
 				guard case .success(let tokens) = opened else { return .done(.failure(.invalidResponse)) }
-				switch await store.completeRefresh(of: connectionID, attempt: attempt.id, with: tokens, at: now()) {
-				case .success(true): return .done(.success(tokens.accessToken))
+				let date = now()
+				let issued = date.addingTimeInterval(-TimeInterval(age))
+				switch await store.completeRefresh(of: connectionID, attempt: attempt.id, with: tokens, at: issued) {
+				case .success(true):
+					// Tokens a retry collected late may be due already; their refresh token renews them.
+					let due = tokens.refresh(receivedAt: issued, principalID: session.principalID)?.isDue(at: date) ?? false
+					return due ? .again : .done(.success(tokens.accessToken))
 				case .success(false): return .again
 				case .failure(let error): return .done(.failure(.store(error)))
 				}

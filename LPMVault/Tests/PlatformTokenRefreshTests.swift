@@ -63,14 +63,15 @@ final class ScriptedTokenRefresher: PlatformTokenRefreshing, @unchecked Sendable
 		accessLifetime: Int = 28_800,
 		refreshLifetime: Int = 15_897_600,
 		platform: String = "netlify",
-		domain: String = PlatformAuthorizationEnvelope.refreshDomain
+		domain: String = PlatformAuthorizationEnvelope.refreshDomain,
+		age: Int = 0
 	) -> Result<PlatformTokenRefreshOutcome, PlatformAuthorizationError> {
 		let payload: [String: Any] = [
 			"platform": platform, "accessToken": access, "accessTokenExpiresIn": accessLifetime,
 			"refreshToken": refresh, "refreshTokenExpiresIn": refreshLifetime,
 		]
 		let sealed = try! RegistryTestSealer.seal(payload, authorizationID: call.refreshID, to: call.clientPublicKey, domain: domain)
-		return .success(.ready(sealed))
+		return .success(.ready(sealed, age: age))
 	}
 }
 
@@ -235,7 +236,8 @@ struct PlatformTokenRefreshClientTests {
 			["platform": "netlify", "accessToken": "a"], authorizationID: refreshID, to: key.publicKey.x963Representation,
 			domain: PlatformAuthorizationEnvelope.refreshDomain)
 		let cases: [(Int, [String: Any], PlatformTokenRefreshOutcome)] = [
-			(200, ["status": "ready", "envelope": sealed.json], .ready(sealed)),
+			(200, ["status": "ready", "envelope": sealed.json, "ageSeconds": 0], .ready(sealed, age: 0)),
+			(200, ["status": "ready", "envelope": sealed.json, "ageSeconds": 5_400], .ready(sealed, age: 5_400)),
 			(202, ["status": "pending"], .pending),
 			(409, ["status": "failed", "code": "refresh_rejected"], .failed(code: "refresh_rejected")),
 			(409, ["status": "failed", "code": "Not A Code!"], .failed(code: "server_error")),
@@ -244,6 +246,19 @@ struct PlatformTokenRefreshClientTests {
 		]
 		for (status, fields, outcome) in cases {
 			#expect(await refresh(answering(status, fields)) == .success(outcome))
+		}
+	}
+
+	@Test("a ready answer that doesn't say how long ago its tokens were issued, as a whole number of seconds within a token's life, isn't believed")
+	func refusesReadyWithoutAge() async throws {
+		let sealed = try RegistryTestSealer.seal(
+			["platform": "netlify", "accessToken": "a"], authorizationID: refreshID, to: key.publicKey.x963Representation,
+			domain: PlatformAuthorizationEnvelope.refreshDomain)
+		let ages: [Any?] = [nil, -1, 1.5, true, "60", PlatformTokens.maximumLifetime + 1]
+		for age in ages {
+			var fields: [String: Any] = ["status": "ready", "envelope": sealed.json]
+			fields["ageSeconds"] = age
+			#expect(await refresh(answering(200, fields)) == .failure(.invalidResponse), "ageSeconds \(String(describing: age))")
 		}
 	}
 
@@ -442,6 +457,31 @@ struct PlatformCredentialsTests {
 			expiresAt: clock.date.addingTimeInterval(15_897_600), obtainedAt: clock.date, principalID: platformTestPrincipal))
 		#expect(await credentials.accessToken(for: id) == .success("nfo_renewed_access"))
 		#expect(refresher.calls.count == 1, "The renewed token is used until it's about to expire")
+	}
+
+	@Test("tokens a retry collected late count their lifetimes from when they were issued")
+	func countsFromIssue() async throws {
+		let id = try await connect()
+		let clock = TestDate(start.addingTimeInterval(8 * 3_600 - 60))
+		let refresher = ScriptedTokenRefresher { call, _ in ScriptedTokenRefresher.renewed(call, age: 7_200) }
+		#expect(await credentials(refresher, at: clock).accessToken(for: id) == .success("nfo_renewed_access"))
+		let issued = clock.date.addingTimeInterval(-7_200)
+		#expect(try await store.record(for: id).get().refresh == PlatformTokenRefresh(
+			token: "nfo_renewed_refresh", accessTokenExpiresAt: issued.addingTimeInterval(28_800),
+			expiresAt: issued.addingTimeInterval(15_897_600), obtainedAt: issued, principalID: platformTestPrincipal))
+	}
+
+	@Test("tokens collected after their access token expired are saved, then renewed again with the refresh token they carry")
+	func renewsLateResult() async throws {
+		let id = try await connect()
+		let clock = TestDate(start.addingTimeInterval(8 * 3_600 - 60))
+		let refresher = ScriptedTokenRefresher { call, index in
+			index == 0
+				? ScriptedTokenRefresher.renewed(call, access: "nfo_stale_access", refresh: "nfo_stale_refresh", age: 30_000)
+				: ScriptedTokenRefresher.renewed(call)
+		}
+		#expect(await credentials(refresher, at: clock).accessToken(for: id) == .success("nfo_renewed_access"))
+		#expect(refresher.calls.map(\.refreshToken) == ["nfo_refresh_old", "nfo_stale_refresh"])
 	}
 
 	@Test("callers asking while a renewal runs share it", .timeLimit(.minutes(1)))
