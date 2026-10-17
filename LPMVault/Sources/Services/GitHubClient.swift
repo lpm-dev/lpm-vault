@@ -1,6 +1,15 @@
 import Foundation
 
 enum GitHubAPIError: Error, Equatable, Sendable {
+	/// What a listing lists, so its failures can say which list it was.
+	enum Listing: Sendable {
+		/// The installations of LPM Vault's app, and their repositories.
+		case repositories
+		case environments
+		case secrets
+		case variables
+	}
+
 	/// The token no longer works, as after it expired or the person revoked LPM Vault.
 	case unauthorized
 	/// The token can't reach this, as when the person's role on a repository
@@ -22,7 +31,9 @@ enum GitHubAPIError: Error, Equatable, Sendable {
 	/// signs in with it and connects GitHub again.
 	case ssoRequired
 	/// GitHub's list was longer than LPM Vault reads.
-	case tooLarge
+	case tooLarge(Listing)
+	/// GitHub took longer to list than LPM Vault waits, once it had answered.
+	case timedOut(Listing)
 	/// GitHub refused the token, which another renewal had already replaced;
 	/// GitHub applied nothing, and the next request uses the new token.
 	case renewed
@@ -229,27 +240,27 @@ enum GitHubHTTP {
 	}
 
 	/// `load`'s answer, with how many bytes GitHub's body took, accepted or
-	/// refused: `limit` for one cut off at it.
+	/// refused, and whether it was cut off at `limit`, which reads as unreadable.
 	static func loadCounted(
 		_ request: URLRequest,
 		using session: URLSession,
 		limit: Int = maximumResponseBytes
-	) async -> (result: Result<(data: Data, response: HTTPURLResponse), GitHubAPIError>, bytes: Int) {
+	) async -> (result: Result<(data: Data, response: HTTPURLResponse), GitHubAPIError>, bytes: Int, cutOff: Bool) {
 		do {
 			let (data, response) = try await BoundedHTTPResponse.load(for: request, using: session, maximumBytes: limit)
-			guard let http = response as? HTTPURLResponse else { return (.failure(.invalidResponse), data.count) }
-			guard (200..<300).contains(http.statusCode) else { return (.failure(failure(http, body: data)), data.count) }
-			return (.success((data, http)), data.count)
+			guard let http = response as? HTTPURLResponse else { return (.failure(.invalidResponse), data.count, false) }
+			guard (200..<300).contains(http.statusCode) else { return (.failure(failure(http, body: data)), data.count, false) }
+			return (.success((data, http)), data.count, false)
 		} catch BoundedHTTPResponse.LoadError.responseTooLarge {
-			return (.failure(.tooLarge), limit)
+			return (.failure(.invalidResponse), limit, true)
 		} catch is BoundedHTTPResponse.LoadError {
-			return (.failure(.invalidResponse), 0)
+			return (.failure(.invalidResponse), 0, false)
 		} catch is CancellationError {
-			return (.failure(.cancelled), 0)
+			return (.failure(.cancelled), 0, false)
 		} catch let error as URLError where error.code == .cancelled {
-			return (.failure(.cancelled), 0)
+			return (.failure(.cancelled), 0, false)
 		} catch {
-			return (.failure(.transport), 0)
+			return (.failure(.transport), 0, false)
 		}
 	}
 
@@ -356,6 +367,8 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	struct Limits: Sendable {
 		/// Everything one listing reads, every page included, in bytes.
 		var listBytes = 64 * 1024 * 1024
+		/// The most one page of a list may take, in bytes.
+		var pageBytes = GitHubHTTP.maximumResponseBytes * 4
 		/// How long one listing may take, every page included.
 		var listDeadline: Duration = .seconds(120)
 		/// The most pages one list is read in.
@@ -397,7 +410,10 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	func repositories() async -> Result<GitHubRepositoryList, GitHubAPIError> {
 		var budget = Budget(limits)
 		let installations: Listed<Installation?>
-		switch await list(["user", "installations"], field: "installations", perPage: 100, lenient: true, budget: &budget, as: Installation.self) {
+		switch await list(
+			["user", "installations"], field: "installations", listing: .repositories, perPage: 100, lenient: true, budget: &budget,
+			as: Installation.self)
+		{
 		case .success(let value): installations = value
 		case .failure(let error): return .failure(error)
 		}
@@ -414,7 +430,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 				continue
 			}
 			let path = ["user", "installations", id, "repositories"]
-			switch await list(path, field: "repositories", perPage: 100, lenient: true, budget: &budget, as: RawRepository.self) {
+			switch await list(path, field: "repositories", listing: .repositories, perPage: 100, lenient: true, budget: &budget, as: RawRepository.self) {
 			case .success(let raws):
 				listed.hidesSSORepositories = listed.hidesSSORepositories || raws.hidesSSOResults
 				// One repository can't be in two installations, but a list never shows it twice.
@@ -466,12 +482,12 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		guard GitHubPublishTarget.isValidFullName(repository) else { return .failure(.invalidResponse) }
 		var budget = Budget(limits)
 		let path = ["repos"] + repository.split(separator: "/").map(String.init) + ["environments"]
-		return await list(path, field: "environments", perPage: 100, lenient: true, budget: &budget, as: RawEnvironment.self)
+		return await list(path, field: "environments", listing: .environments, perPage: 100, lenient: true, budget: &budget, as: RawEnvironment.self)
 			.map { $0.items.compactMap { $0?.environment } }
 	}
 
 	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> {
-		await records(scope.path("secrets"), field: "secrets", perPage: 100)
+		await records(scope.path("secrets"), field: "secrets", listing: .secrets, perPage: 100)
 	}
 
 	func secret(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {
@@ -496,7 +512,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	}
 
 	func variables(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> {
-		await records(scope.path("variables"), field: "variables", perPage: 30)
+		await records(scope.path("variables"), field: "variables", listing: .variables, perPage: 30)
 	}
 
 	func variable(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {
@@ -533,8 +549,11 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 			deadlinePasses = limits.deadlinePasses
 		}
 
-		/// What running out of time means: a listing too long when it had read anything, and GitHub unreachable when not.
-		var timedOut: GitHubAPIError { pagesRead > 0 ? .tooLarge : .transport }
+		/// What running out of time means for `listing`: GitHub too slow once
+		/// it had answered, and unreachable when it hadn't.
+		func timedOut(_ listing: GitHubAPIError.Listing) -> GitHubAPIError {
+			pagesRead > 0 ? .timedOut(listing) : .transport
+		}
 	}
 
 	/// A list's items, and whether GitHub said it left out results an
@@ -545,7 +564,9 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	}
 
 	/// Every item of a paged list, read page by page within `budget`. Running
-	/// out of pages or bytes is `.tooLarge`, and of time `.transport`.
+	/// out of pages or bytes is `.tooLarge`, and of time `.timedOut`, or
+	/// `.transport` before GitHub answered; a page cut off at its own limit
+	/// is unreadable.
 	///
 	/// A strict list, as of secrets or variables, must agree with itself: a
 	/// page with more items than asked for, more items than the total GitHub
@@ -558,6 +579,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	private func list<Item: Decodable & Sendable>(
 		_ path: [String],
 		field: String,
+		listing: GitHubAPIError.Listing,
 		perPage: Int,
 		lenient: Bool = false,
 		budget: inout Budget,
@@ -566,17 +588,19 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		var listed = Listed<Item?>()
 		var total: Int?
 		for page in 1...limits.maximumPages {
-			guard budget.bytes > 0 else { return .failure(.tooLarge) }
-			guard budget.pagesRead == 0 || ContinuousClock.now < budget.deadline else { return .failure(budget.timedOut) }
+			guard budget.bytes > 0 else { return .failure(.tooLarge(listing)) }
+			guard budget.pagesRead == 0 || ContinuousClock.now < budget.deadline else { return .failure(budget.timedOut(listing)) }
 			let query = [URLQueryItem(name: "per_page", value: String(perPage)), URLQueryItem(name: "page", value: String(page))]
 			guard let url = GitHubHTTP.url(baseURL, path, query: query) else { return .failure(.invalidResponse) }
 			let request = GitHubHTTP.request("GET", url, token: token)
+			let budgetBinds = budget.bytes <= limits.pageBytes
 			guard let loaded = await Self.load(
-				request, using: session, limit: min(GitHubHTTP.maximumResponseBytes * 4, budget.bytes), until: budget.deadline,
+				request, using: session, limit: min(limits.pageBytes, budget.bytes), until: budget.deadline,
 				deadlinePasses: budget.deadlinePasses)
-			else { return .failure(Task.isCancelled ? .cancelled : budget.timedOut) }
+			else { return .failure(Task.isCancelled ? .cancelled : budget.timedOut(listing)) }
 			// A refusal's body counts too, as one installation's refusal leaves the listing going.
 			budget.bytes -= loaded.bytes
+			if loaded.cutOff, budgetBinds { return .failure(.tooLarge(listing)) }
 			let data: Data
 			let response: HTTPURLResponse
 			switch loaded.result {
@@ -603,7 +627,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 				return .success(listed)
 			}
 		}
-		return .failure(.tooLarge)
+		return .failure(.tooLarge(listing))
 	}
 
 	/// Whether a list goes on past this page: as its `Link` says, as GitHub
@@ -615,18 +639,18 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 	}
 
-	/// The load's answer with the bytes its body took, or nil once `deadline` passes first, which cancels the load.
+	/// The load's answer as `loadCounted` gives it, or nil once `deadline` passes first, which cancels the load.
 	private static func load(
 		_ request: URLRequest,
 		using session: URLSession,
 		limit: Int,
 		until deadline: ContinuousClock.Instant,
 		deadlinePasses: @escaping @Sendable (ContinuousClock.Instant) async -> Void
-	) async -> (result: Result<(Data, HTTPURLResponse), GitHubAPIError>, bytes: Int)? {
-		await withTaskGroup(of: (result: Result<(Data, HTTPURLResponse), GitHubAPIError>, bytes: Int)?.self) { group in
+	) async -> (result: Result<(Data, HTTPURLResponse), GitHubAPIError>, bytes: Int, cutOff: Bool)? {
+		await withTaskGroup(of: (result: Result<(Data, HTTPURLResponse), GitHubAPIError>, bytes: Int, cutOff: Bool)?.self) { group in
 			group.addTask {
 				let loaded = await GitHubHTTP.loadCounted(request, using: session, limit: limit)
-				return (loaded.result.map { ($0.data, $0.response) }, loaded.bytes)
+				return (loaded.result.map { ($0.data, $0.response) }, loaded.bytes, loaded.cutOff)
 			}
 			group.addTask {
 				await deadlinePasses(deadline)
@@ -638,9 +662,14 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 	}
 
-	private func records(_ path: [String], field: String, perPage: Int) async -> Result<[GitHubValueRecord], GitHubAPIError> {
+	private func records(
+		_ path: [String],
+		field: String,
+		listing: GitHubAPIError.Listing,
+		perPage: Int
+	) async -> Result<[GitHubValueRecord], GitHubAPIError> {
 		var budget = Budget(limits)
-		return await list(path, field: field, perPage: perPage, budget: &budget, as: RawRecord.self).flatMap { raws in
+		return await list(path, field: field, listing: listing, perPage: perPage, budget: &budget, as: RawRecord.self).flatMap { raws in
 			var records: [GitHubValueRecord] = []
 			records.reserveCapacity(raws.items.count)
 			for raw in raws.items {

@@ -469,7 +469,7 @@ enum GitHubPublishing {
 	private static func stops(_ error: GitHubAPIError) -> Bool {
 		switch error {
 		case .unauthorized, .forbidden, .rateLimited, .cancelled, .credentials, .moved, .ssoRequired, .tooLarge: true
-		case .notFound, .rejected, .transport, .invalidResponse, .server, .renewed: false
+		case .notFound, .rejected, .transport, .timedOut, .invalidResponse, .server, .renewed: false
 		}
 	}
 
@@ -526,7 +526,21 @@ enum GitHubPublishing {
 		case .renewed: "The GitHub connection was renewed while this was sent. Try again."
 		case .ssoRequired:
 			"An organization's single sign-on keeps LPM Vault out. Sign in to the organization on GitHub, then connect GitHub again on the Platforms page."
-		case .tooLarge: "GitHub listed more than LPM Vault reads at once. Install LPM Vault's GitHub App only on the repositories it publishes to."
+		case .tooLarge(.repositories):
+			"GitHub listed more repositories than LPM Vault reads at once. Install LPM Vault's GitHub App only on the repositories it publishes to."
+		case .tooLarge(.environments): "GitHub listed more environments for the repository than LPM Vault reads at once."
+		case .tooLarge(.secrets): "GitHub listed more secrets than LPM Vault reads at once."
+		case .tooLarge(.variables): "GitHub listed more variables than LPM Vault reads at once."
+		case .timedOut(let listing): "GitHub took too long to list \(listed(listing)). Try again."
+		}
+	}
+
+	private static func listed(_ listing: GitHubAPIError.Listing) -> String {
+		switch listing {
+		case .repositories: "the repositories"
+		case .environments: "the repository's environments"
+		case .secrets: "the secrets"
+		case .variables: "the variables"
 		}
 	}
 }

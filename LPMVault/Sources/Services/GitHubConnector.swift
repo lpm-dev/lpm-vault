@@ -76,7 +76,7 @@ struct GitHubConnector: Sendable {
 				lifts = limit.lifts
 				rateLimitWaits += 1
 				giveUp = .platformRateLimited(until: reset)
-			case .failure(.transport), .failure(.server):
+			case .failure(.transport), .failure(.timedOut), .failure(.server):
 				wait = retryDelay * (attempt + 1)
 				giveUp = .transport
 			case .failure(.notFound), .failure(.rejected), .failure(.invalidResponse), .failure(.moved), .failure(.tooLarge):

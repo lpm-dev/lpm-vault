@@ -1453,7 +1453,7 @@ struct GitHubClientListTests {
 		}
 		var limits = GitHubClient.Limits()
 		limits.maximumPages = 3
-		#expect(await client(endless, limits: limits).repositories() == .failure(.tooLarge))
+		#expect(await client(endless, limits: limits).repositories() == .failure(.tooLarge(.repositories)))
 
 		let partial = PlatformHTTPStub.platform { request in
 			switch request.url.path {
@@ -1543,10 +1543,41 @@ struct GitHubClientListTests {
 		}
 		var limits = GitHubClient.Limits()
 		limits.listBytes = pageBytes * 3 / 2 + 200
-		#expect(await client(route, limits: limits).repositories() == .failure(.tooLarge))
+		#expect(await client(route, limits: limits).repositories() == .failure(.tooLarge(.repositories)))
 	}
 
-	@Test("a listing that runs out of time after reading pages is too large, though the late page is another installation's first")
+	@Test("one answer larger than LPM Vault reads is unreadable, not a list too long: a resource's, or a page's beyond its own limit")
+	func oversizedAnswers() async throws {
+		let huge = String(repeating: "x", count: GitHubHTTP.maximumResponseBytes)
+		let repository = PlatformHTTPStub.platform { _ in .json(200, ["id": 7, "full_name": "n/\(huge)"]) }
+		#expect(await client(repository).repository(id: "7") == .failure(.invalidResponse))
+
+		let page = PlatformHTTPStub.platform { _ in
+			.json(200, ["total_count": 1, "variables": [["name": "BIG", "value": huge, "updated_at": "2026-10-17T10:00:00Z"]]])
+		}
+		var limits = GitHubClient.Limits()
+		limits.pageBytes = 64 * 1024
+		#expect(await client(page, limits: limits).variables(in: GitHubScope(repository: "a/b", environment: nil)) == .failure(.invalidResponse))
+	}
+
+	@Test("a list longer than LPM Vault reads names the list, and only the repositories' advice is to install the app on fewer")
+	func namesWhatRanOver() async throws {
+		let page = (0..<30).map { ["name": "VARIABLE_\($0)", "value": String(repeating: "v", count: 1_000), "updated_at": "2026-10-17T10:00:00Z"] }
+		let route = PlatformHTTPStub.platform { _ in .json(200, ["total_count": 500, "variables": page]) }
+		var limits = GitHubClient.Limits()
+		limits.listBytes = 40_000
+		let result = await client(route, limits: limits).variables(in: GitHubScope(repository: "a/b", environment: nil))
+		#expect(result == .failure(.tooLarge(.variables)))
+		#expect(GitHubPublishing.message(.tooLarge(.variables)) == "GitHub listed more variables than LPM Vault reads at once.")
+		#expect(GitHubPublishing.message(.tooLarge(.secrets)) == "GitHub listed more secrets than LPM Vault reads at once.")
+		#expect(GitHubPublishing.message(.tooLarge(.environments)) == "GitHub listed more environments for the repository than LPM Vault reads at once.")
+		#expect(GitHubPublishing.message(.tooLarge(.repositories))
+			== "GitHub listed more repositories than LPM Vault reads at once. Install LPM Vault's GitHub App only on the repositories it publishes to.")
+		#expect(GitHubPublishing.message(.timedOut(.environments)) == "GitHub took too long to list the repository's environments. Try again.")
+		#expect(GitHubPublishing.message(.timedOut(.repositories)) == "GitHub took too long to list the repositories. Try again.")
+	}
+
+	@Test("a listing that runs out of time after reading pages says GitHub took too long, though the late page is another installation's first")
 	func runsOutOfTime() async throws {
 		let deadline = TestDeadline()
 		let held = DispatchSemaphore(value: 0)
@@ -1563,7 +1594,7 @@ struct GitHubClientListTests {
 		limits.deadlinePasses = { _ in await deadline.wait() }
 		let result = await client(route, limits: limits).repositories()
 		held.signal()
-		#expect(result == .failure(.tooLarge))
+		#expect(result == .failure(.timedOut(.repositories)))
 	}
 
 	@Test("the bodies of installations that refuse their repositories count against what a listing reads")
@@ -1577,7 +1608,7 @@ struct GitHubClientListTests {
 		}
 		var limits = GitHubClient.Limits()
 		limits.listBytes = 1_000_000
-		#expect(await client(route, limits: limits).repositories() == .failure(.tooLarge))
+		#expect(await client(route, limits: limits).repositories() == .failure(.tooLarge(.repositories)))
 		#expect(route.requests.filter { $0.url.path.hasSuffix("/repositories") }.count == 4, "Four refusals spend the budget, and nothing is asked after")
 	}
 
@@ -1642,7 +1673,7 @@ struct GitHubClientListTests {
 		}
 		var limits = GitHubClient.Limits()
 		limits.maximumPages = 3
-		#expect(await client(endless, limits: limits).secrets(in: GitHubScope(repository: "a/b", environment: nil)) == .failure(.tooLarge))
+		#expect(await client(endless, limits: limits).secrets(in: GitHubScope(repository: "a/b", environment: nil)) == .failure(.tooLarge(.secrets)))
 		#expect(endless.requests.count == 3)
 	}
 
