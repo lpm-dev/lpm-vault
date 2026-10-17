@@ -56,6 +56,13 @@ struct GitHubHTTPTests {
 			"A reset this Mac's clock is past, with no Date to measure it from, says nothing of when the limit lifts")
 	}
 
+	@Test("a limit GitHub doesn't time is waited out a minute at first, then two, however many limits came before")
+	func unannouncedLimitWaits() {
+		#expect(GitHubHTTP.unannouncedLimitWait(after: 0) == .seconds(60))
+		#expect(GitHubHTTP.unannouncedLimitWait(after: 1) == .seconds(120))
+		#expect(GitHubHTTP.unannouncedLimitWait(after: 4) == .seconds(120))
+	}
+
 	@Test("IDs, logins, app slugs and client IDs take only GitHub's forms")
 	func validatesNames() {
 		#expect(GitHubHTTP.isValidID("583231") && !GitHubHTTP.isValidID("0583") && !GitHubHTTP.isValidID("-1") && !GitHubHTTP.isValidID(""))

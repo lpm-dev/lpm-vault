@@ -124,10 +124,11 @@ enum GitHubHTTP {
 	}
 
 	/// How long to wait out a limit GitHub doesn't say the end of, after
-	/// `count` such limits in a row: a minute, then twice as long each time,
-	/// as GitHub asks while a limit continues.
+	/// `count` earlier waits for limits: a minute at first, then two, as
+	/// GitHub asks for longer waits while limits continue. Two minutes is
+	/// the longest, as a request waits out only a few.
 	static func unannouncedLimitWait(after count: Int) -> Duration {
-		.seconds(60 << count)
+		.seconds(count == 0 ? 60 : 120)
 	}
 
 	/// A refusal, read the way GitHub documents its limits: a primary limit
