@@ -77,6 +77,9 @@ struct GitHubRepositoryList: Equatable, Sendable {
 	var repositories: [GitHubRepository]
 	/// Whether GitHub left out an organization's repositories until the person signs in with its single sign-on.
 	var hidesSSORepositories = false
+	/// Whether an installation of the app is left out because it's suspended,
+	/// or GitHub refused to list its repositories, as when it was removed meanwhile.
+	var skipsInstallations = false
 }
 
 /// One of a repository's deployment environments.
@@ -137,6 +140,8 @@ protocol GitHubClientProtocol: Sendable {
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError>
 	/// The repository's deployment environments.
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError>
+	/// The repository's environment with the name; nil when it has none.
+	func environment(named name: String, of repository: String) async -> Result<GitHubEnvironment?, GitHubAPIError>
 	/// The scope's secrets, without their values.
 	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError>
 	/// One secret of the scope; nil when it has none with the name.
@@ -225,6 +230,8 @@ enum GitHubHTTP {
 			guard let http = response as? HTTPURLResponse else { return .failure(.invalidResponse) }
 			guard (200..<300).contains(http.statusCode) else { return .failure(failure(http, body: data)) }
 			return .success((data, http))
+		} catch BoundedHTTPResponse.LoadError.responseTooLarge {
+			return .failure(.tooLarge)
 		} catch is BoundedHTTPResponse.LoadError {
 			return .failure(.invalidResponse)
 		} catch is CancellationError {
@@ -384,10 +391,14 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		var seen: Set<String> = []
 		var read: Set<String> = []
 		for installation in installations.items {
-			guard let id = installation.flatMap({ GitHubHTTP.id($0.id) }),
+			guard let installation, let id = GitHubHTTP.id(installation.id),
 				// An installation a shifting list repeats is read once.
 				read.insert(id).inserted
 			else { continue }
+			guard installation.suspendedAt == nil else {
+				listed.skipsInstallations = true
+				continue
+			}
 			let path = ["user", "installations", id, "repositories"]
 			switch await list(path, field: "repositories", perPage: 100, lenient: true, budget: &budget, as: RawRepository.self) {
 			case .success(let raws):
@@ -396,7 +407,13 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 				for repository in raws.items.lazy.compactMap({ $0?.repository }) where seen.insert(repository.id).inserted {
 					listed.repositories.append(repository)
 				}
-			case .failure(let error): return .failure(error)
+			case .failure(.ssoRequired):
+				listed.hidesSSORepositories = true
+			case .failure(.forbidden), .failure(.notFound):
+				// One installation's refusal leaves the others' repositories.
+				listed.skipsInstallations = true
+			case .failure(let error):
+				return .failure(error)
 			}
 		}
 		return .success(listed)
@@ -409,6 +426,23 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 				return .failure(.invalidResponse)
 			}
 			return .success(repository)
+		}
+	}
+
+	func environment(named name: String, of repository: String) async -> Result<GitHubEnvironment?, GitHubAPIError> {
+		guard GitHubPublishTarget.isValidFullName(repository), GitHubPublishTarget.Scope.isValidEnvironmentName(name),
+			let url = GitHubHTTP.url(baseURL, ["repos"] + repository.split(separator: "/").map(String.init) + ["environments", name])
+		else { return .failure(.invalidResponse) }
+		switch await GitHubHTTP.load(GitHubHTTP.request("GET", url, token: token), using: session) {
+		case .success(let loaded):
+			guard let environment = (try? JSONDecoder().decode(RawEnvironment.self, from: loaded.data))?.environment else {
+				return .failure(.invalidResponse)
+			}
+			return .success(environment)
+		case .failure(.notFound):
+			return .success(nil)
+		case .failure(let error):
+			return .failure(error)
 		}
 	}
 
@@ -511,13 +545,13 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		var listed = Listed<Item?>()
 		var total: Int?
 		for page in 1...limits.maximumPages {
-			guard budget.bytes > 0 else { return .failure(.tooLarge) }
-			guard page == 1 || ContinuousClock.now < budget.deadline else { return .failure(.transport) }
+			// Pages already read and none left to read in means the list is longer than LPM Vault reads.
+			guard budget.bytes > 0, page == 1 || ContinuousClock.now < budget.deadline else { return .failure(.tooLarge) }
 			let query = [URLQueryItem(name: "per_page", value: String(perPage)), URLQueryItem(name: "page", value: String(page))]
 			guard let url = GitHubHTTP.url(baseURL, path, query: query) else { return .failure(.invalidResponse) }
 			let request = GitHubHTTP.request("GET", url, token: token)
 			guard let loaded = await Self.load(request, using: session, limit: min(GitHubHTTP.maximumResponseBytes * 4, budget.bytes), until: budget.deadline)
-			else { return .failure(Task.isCancelled ? .cancelled : .transport) }
+			else { return .failure(Task.isCancelled ? .cancelled : page == 1 ? .transport : .tooLarge) }
 			let data: Data
 			let response: HTTPURLResponse
 			switch loaded {
@@ -528,10 +562,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 			if response.value(forHTTPHeaderField: "X-GitHub-SSO")?.lowercased().hasPrefix("partial-results") == true {
 				listed.hidesSSOResults = true
 			}
-			let decoder = JSONDecoder()
-			decoder.userInfo[Page<Item>.fieldKey] = field
-			decoder.userInfo[Page<Item>.lenientKey] = lenient
-			guard let decoded = try? decoder.decode(Page<Item>.self, from: data), decoded.items.count <= perPage else {
+			guard let decoded = try? GitHubListPage<Item>.decode(data, field: field, lenient: lenient, maximumItems: perPage) else {
 				return .failure(.invalidResponse)
 			}
 			listed.items.append(contentsOf: decoded.items)
@@ -543,17 +574,17 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 				if listed.items.count == pageTotal || decoded.items.count < perPage {
 					return listed.items.count == pageTotal ? .success(listed) : .failure(.invalidResponse)
 				}
-			} else if decoded.items.count < perPage || !Self.namesNextPage(response) {
+			} else if !Self.hasNextPage(response, itemCount: decoded.items.count, perPage: perPage) {
 				return .success(listed)
 			}
 		}
 		return .failure(.tooLarge)
 	}
 
-	/// Whether the answer's `Link` names a next page; an answer without one
-	/// is read as having more only when its page was full.
-	private static func namesNextPage(_ response: HTTPURLResponse) -> Bool {
-		guard let link = response.value(forHTTPHeaderField: "Link") else { return true }
+	/// Whether a list goes on past this page: as its `Link` says, as GitHub
+	/// asks lists be followed, and without one, when the page was full.
+	private static func hasNextPage(_ response: HTTPURLResponse, itemCount: Int, perPage: Int) -> Bool {
+		guard let link = response.value(forHTTPHeaderField: "Link") else { return itemCount == perPage }
 		return link.split(separator: ",").contains { part in
 			part.split(separator: ";").dropFirst().contains { $0.trimmingCharacters(in: .whitespaces) == #"rel="next""# }
 		}
@@ -608,52 +639,6 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 
 	// MARK: - Answers
 
-	/// One page of a list GitHub answers with its total and the items under
-	/// `field`. On a lenient list an item that doesn't decode is nil, and a
-	/// page without the list is empty when its total is missing or zero.
-	private struct Page<Item: Decodable>: Decodable {
-		static var fieldKey: CodingUserInfoKey { CodingUserInfoKey(rawValue: "field")! }
-		static var lenientKey: CodingUserInfoKey { CodingUserInfoKey(rawValue: "lenient")! }
-
-		let totalCount: Int?
-		let items: [Item?]
-
-		private struct Key: CodingKey {
-			let stringValue: String
-			var intValue: Int? { nil }
-			init(stringValue: String) { self.stringValue = stringValue }
-			init?(intValue: Int) { nil }
-		}
-
-		/// An item that's nil when it doesn't decode.
-		private struct Lenient: Decodable {
-			let item: Item?
-			init(from decoder: any Decoder) throws { item = try? Item(from: decoder) }
-		}
-
-		init(from decoder: any Decoder) throws {
-			guard let field = decoder.userInfo[Self.fieldKey] as? String else {
-				throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "No field"))
-			}
-			let lenient = decoder.userInfo[Self.lenientKey] as? Bool ?? false
-			let container = try decoder.container(keyedBy: Key.self)
-			let itemsKey = Key(stringValue: field)
-			if lenient {
-				totalCount = try container.decodeIfPresent(Int.self, forKey: Key(stringValue: "total_count"))
-				if container.contains(itemsKey) {
-					items = try container.decode([Lenient].self, forKey: itemsKey).map(\.item)
-				} else if (totalCount ?? 0) == 0 {
-					items = []
-				} else {
-					throw DecodingError.keyNotFound(itemsKey, .init(codingPath: [], debugDescription: "No items"))
-				}
-			} else {
-				totalCount = try container.decode(Int.self, forKey: Key(stringValue: "total_count"))
-				items = try container.decode([Item].self, forKey: itemsKey)
-			}
-		}
-	}
-
 	private struct User: Decodable {
 		let id: Int64
 		let login: String
@@ -662,6 +647,12 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 
 	private struct Installation: Decodable, Sendable {
 		let id: Int64
+		let suspendedAt: String?
+
+		private enum CodingKeys: String, CodingKey {
+			case id
+			case suspendedAt = "suspended_at"
+		}
 	}
 
 	private struct RawRepository: Decodable, Sendable {
@@ -730,5 +721,73 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 			case keyID = "key_id"
 			case key
 		}
+	}
+}
+
+/// One page of a list GitHub answers with its total and the items under
+/// `field`. The page's item count is checked before any item is decoded, so
+/// an overlong page costs nothing more than its parsing. On a lenient list
+/// an item that doesn't decode is nil, and a page without the list is empty
+/// when its total is missing or zero.
+struct GitHubListPage<Item: Decodable>: Decodable {
+	let totalCount: Int?
+	let items: [Item?]
+
+	private static var fieldKey: CodingUserInfoKey { CodingUserInfoKey(rawValue: "field")! }
+	private static var lenientKey: CodingUserInfoKey { CodingUserInfoKey(rawValue: "lenient")! }
+	private static var maximumItemsKey: CodingUserInfoKey { CodingUserInfoKey(rawValue: "maximumItems")! }
+
+	static func decode(_ data: Data, field: String, lenient: Bool, maximumItems: Int) throws -> Self {
+		let decoder = JSONDecoder()
+		decoder.userInfo[fieldKey] = field
+		decoder.userInfo[lenientKey] = lenient
+		decoder.userInfo[maximumItemsKey] = maximumItems
+		return try decoder.decode(Self.self, from: data)
+	}
+
+	private struct Key: CodingKey {
+		let stringValue: String
+		var intValue: Int? { nil }
+		init(stringValue: String) { self.stringValue = stringValue }
+		init?(intValue: Int) { nil }
+	}
+
+	/// An item that's nil when it doesn't decode, so a list reads past it.
+	private struct Lenient: Decodable {
+		let item: Item?
+		init(from decoder: any Decoder) throws { item = try? Item(from: decoder) }
+	}
+
+	init(from decoder: any Decoder) throws {
+		guard let field = decoder.userInfo[Self.fieldKey] as? String, let maximumItems = decoder.userInfo[Self.maximumItemsKey] as? Int else {
+			throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "No field"))
+		}
+		let lenient = decoder.userInfo[Self.lenientKey] as? Bool ?? false
+		let container = try decoder.container(keyedBy: Key.self)
+		let itemsKey = Key(stringValue: field)
+		totalCount = lenient
+			? try container.decodeIfPresent(Int.self, forKey: Key(stringValue: "total_count"))
+			: try container.decode(Int.self, forKey: Key(stringValue: "total_count"))
+		guard container.contains(itemsKey) else {
+			guard lenient, (totalCount ?? 0) == 0 else {
+				throw DecodingError.keyNotFound(itemsKey, .init(codingPath: [], debugDescription: "No items"))
+			}
+			items = []
+			return
+		}
+		var list = try container.nestedUnkeyedContainer(forKey: itemsKey)
+		guard let count = list.count, count <= maximumItems else {
+			throw DecodingError.dataCorrupted(.init(codingPath: [itemsKey], debugDescription: "More items than a page holds"))
+		}
+		var items: [Item?] = []
+		items.reserveCapacity(count)
+		while !list.isAtEnd {
+			if lenient {
+				items.append(try list.decode(Lenient.self).item)
+			} else {
+				items.append(try list.decode(Item.self))
+			}
+		}
+		self.items = items
 	}
 }

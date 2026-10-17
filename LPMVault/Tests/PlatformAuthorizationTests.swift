@@ -951,6 +951,7 @@ private final class ScriptedGitHub: GitHubClientProtocol, @unchecked Sendable {
 	func repositories() async -> Result<GitHubRepositoryList, GitHubAPIError> { .failure(.notFound) }
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> { .failure(.notFound) }
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> { .failure(.notFound) }
+	func environment(named name: String, of repository: String) async -> Result<GitHubEnvironment?, GitHubAPIError> { .failure(.notFound) }
 	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> { .failure(.notFound) }
 	func secret(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> { .failure(.notFound) }
 	func publicKey(of scope: GitHubScope) async -> Result<GitHubPublicKey, GitHubAPIError> { .failure(.notFound) }

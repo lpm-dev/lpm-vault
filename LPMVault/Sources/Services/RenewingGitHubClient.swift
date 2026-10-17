@@ -1,17 +1,19 @@
 import Foundation
 
-/// GitHub's API for one connection, with the token it holds now. The token is
-/// read once; when GitHub refuses it, as after another review renewed it or
-/// once it expired early by a wrong clock, the connection's current token is
-/// asked for, renewed when it must be, and the request is sent once more.
-/// GitHub applies nothing it refuses that way, so sending again is safe. A
-/// publish, which checks GitHub again after any wait, is told `.renewed`
-/// instead of the request being sent again.
+/// GitHub's API for one connection. The connection's token is read for each
+/// request, so it's renewed before it expires rather than after GitHub
+/// refuses it partway through a list. When GitHub refuses it anyway, as after
+/// another renewal replaced it or once it expired early by a wrong clock, the
+/// connection's current token is asked for, renewed when it must be, and the
+/// request is sent once more. GitHub applies nothing it refuses that way, so
+/// sending again is safe. A publish, which checks GitHub again after any
+/// wait, is told `.renewed` instead of the request being sent again.
 actor RenewingGitHubClient: GitHubClientProtocol {
 	private let connectionID: PlatformConnection.ID
 	private let credentials: PlatformCredentials
 	private let make: GitHubConnector.ClientFactory
 	private let resendsAfterRenewal: Bool
+	/// A token just read for the connection, which the first request uses.
 	private var token: String?
 
 	/// `token` is one just read for the connection, when there is one.
@@ -35,18 +37,17 @@ actor RenewingGitHubClient: GitHubClientProtocol {
 		let current: String
 		if let token {
 			current = token
+			self.token = nil
 		} else {
 			switch await credentials.accessToken(for: connectionID) {
 			case .success(let value): current = value
 			case .failure(let error): return .failure(.credentials(error))
 			}
-			token = current
 		}
 		let answer = await request(make(current))
 		guard case .failure(.unauthorized) = answer else { return answer }
 		switch await credentials.accessToken(for: connectionID, replacing: current) {
 		case .success(let renewed) where renewed != current:
-			token = renewed
 			guard resendsAfterRenewal else { return .failure(.renewed) }
 			return await request(make(renewed))
 		case .success, .failure(.expired):
@@ -62,6 +63,9 @@ actor RenewingGitHubClient: GitHubClientProtocol {
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> { await send { await $0.repository(id: id) } }
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
 		await send { await $0.environments(of: repository) }
+	}
+	func environment(named name: String, of repository: String) async -> Result<GitHubEnvironment?, GitHubAPIError> {
+		await send { await $0.environment(named: name, of: repository) }
 	}
 	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> { await send { await $0.secrets(in: scope) } }
 	func secret(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {

@@ -48,8 +48,13 @@ enum GitHubPublishing {
 	struct Pacing: Sendable {
 		/// The least time GitHub asks to leave between two writes of a batch.
 		static let writeInterval: Duration = .seconds(1)
+		/// How long after a limit's announced reset the next request goes, as
+		/// the Mac's clock can run ahead of GitHub's.
+		static let resetMargin: TimeInterval = 1
 
 		var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
+		/// The wall clock, which GitHub's announced resets are on.
+		var date: @Sendable () -> Date = { Date() }
 		var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
 	}
 
@@ -180,17 +185,19 @@ enum GitHubPublishing {
 				case .unknown(.rateLimited(let reset)?):
 					// GitHub asks for no request until a limit lifts, so the next key waits for it.
 					var limitWaits = 0
-					if await waitOut(until: reset, waits: &limitWaits, pacing: pacing) != nil { return finish() }
+					if let error = await waitOut(until: reset, waits: &limitWaits, pacing: pacing) {
+						return finish { _ in .failed(message(error, now: pacing.date())) }
+					}
 				case .unknown(let error?):
 					report.needsReconnect = report.needsReconnect || needsReconnect(error)
-					return finish()
+					return finish { _ in .failed(message(error, now: pacing.date())) }
 				case .record, .gone, .unknown(nil):
 					break
 				}
 			case .refused(let reason):
 				report.outcomes[change.key] = .failed(reason)
 			case .failed(let error):
-				report.outcomes[change.key] = .failed(message(error))
+				report.outcomes[change.key] = .failed(message(error, now: pacing.date()))
 				report.needsReconnect = report.needsReconnect || needsReconnect(error)
 				if stops(error) { return finish() }
 			}
@@ -342,13 +349,12 @@ enum GitHubPublishing {
 		guard case .environment(let id, let name) = target.scope else {
 			return .success(GitHubScope(repository: repository.fullName, environment: nil))
 		}
-		switch await client.environments(of: repository.fullName) {
-		case .success(let environments):
-			guard environments.contains(where: { $0.id == id && $0.name == name }) else {
-				return .failure(.replaced(
-					"The environment \(name.escapingInvisibleCharacters) was renamed, removed or replaced on GitHub since this review. Review again."))
-			}
+		switch await client.environment(named: name, of: repository.fullName) {
+		case .success(let environment?) where environment.id == id && environment.name == name:
 			return .success(GitHubScope(repository: repository.fullName, environment: name))
+		case .success:
+			return .failure(.replaced(
+				"The environment \(name.escapingInvisibleCharacters) was renamed, removed or replaced on GitHub since this review. Review again."))
 		case .failure(let error): return .failure(.api(error))
 		}
 	}
@@ -425,14 +431,18 @@ enum GitHubPublishing {
 		}
 	}
 
-	/// Waits until a rate limit lifts, counting the wait in `waits`. A limit
-	/// GitHub doesn't say the end of is waited out a minute, then twice that.
-	/// Returns the error to answer with instead: the limit when no more waits
-	/// are allowed or it lifts after the longest wait, or a cancellation.
+	/// Waits until a rate limit lifts, a moment past its announced reset,
+	/// counting the wait in `waits`. A limit GitHub doesn't say the end of is
+	/// waited out a minute, then twice that. Returns the error to answer with
+	/// instead: the limit when no more waits are allowed or it lifts after the
+	/// longest wait, or a cancellation.
 	private static func waitOut(until reset: Date?, waits: inout Int, pacing: Pacing) async -> GitHubAPIError? {
 		let wait: Duration
-		if let reset {
-			guard waits < rateLimitRetries, let limit = GitHubHTTP.rateLimitWait(until: reset) else { return .rateLimited(until: reset) }
+		let lifts = reset?.addingTimeInterval(Pacing.resetMargin)
+		if let lifts {
+			guard waits < rateLimitRetries, let limit = GitHubHTTP.rateLimitWait(until: lifts, now: pacing.date()) else {
+				return .rateLimited(until: reset)
+			}
 			wait = limit
 		} else {
 			guard waits < unannouncedLimitWaits else { return .rateLimited(until: nil) }
@@ -442,7 +452,7 @@ enum GitHubPublishing {
 		do {
 			try await pacing.sleep(wait)
 			// The sleep's clock can run ahead of the wall clock GitHub's reset is on.
-			while let left = reset?.timeIntervalSinceNow, left > 0 {
+			while let left = lifts?.timeIntervalSince(pacing.date()), left > 0 {
 				try await pacing.sleep(.milliseconds(Int64((left * 1_000).rounded(.up))))
 			}
 		} catch {
@@ -462,7 +472,7 @@ enum GitHubPublishing {
 	/// Refusals that mean connecting GitHub again.
 	private static func needsReconnect(_ error: GitHubAPIError) -> Bool {
 		switch error {
-		case .unauthorized, .credentials(.expired), .ssoRequired: true
+		case .unauthorized, .credentials(.expired): true
 		default: false
 		}
 	}
@@ -491,7 +501,8 @@ enum GitHubPublishing {
 		case .unauthorized: "GitHub no longer accepts this connection. Connect GitHub again on the Platforms page."
 		case .forbidden:
 			"GitHub refused access. Changing a repository's secrets and variables needs write access to it, and an environment's needs admin access, with LPM Vault's GitHub App installed on the repository."
-		case .notFound: "GitHub couldn't find the repository, the environment or the secret. LPM Vault's GitHub App may not be installed on it."
+		case .notFound:
+			"GitHub couldn't find the repository, the environment, or the secret or variable. LPM Vault's GitHub App may not be installed on the repository."
 		case .rateLimited(let reset?) where reset.timeIntervalSince(now) > 90:
 			"GitHub is limiting requests until \(reset.formatted(date: .omitted, time: .shortened)). Try again then."
 		case .rateLimited(nil): "GitHub is limiting requests. Try again in a few minutes."

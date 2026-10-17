@@ -10,7 +10,7 @@ import Testing
 /// secret's sealed value is kept as sent.
 final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	enum Operation: Hashable, Sendable {
-		case listSecrets, listVariables, secret, variable, publicKey, setSecret, createVariable, updateVariable, repository, environments
+		case listSecrets, listVariables, secret, variable, publicKey, setSecret, createVariable, updateVariable, repository, environments, environment
 	}
 
 	struct Record: Sendable {
@@ -159,6 +159,12 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 			id: id, fullName: name, isPrivate: true, isArchived: access?.isArchived ?? false, permission: access?.permission))
 	}
 
+	func environment(named name: String, of repository: String) async -> Result<GitHubEnvironment?, GitHubAPIError> {
+		if let error = begin(.environment, name) { return .failure(error) }
+		if moved(repository) { return .failure(.moved) }
+		return .success(lock.withLock { environmentLists[repository]?.first { $0.name == name } })
+	}
+
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
 		if let error = begin(.environments, repository) { return .failure(error) }
 		if moved(repository) { return .failure(.moved) }
@@ -238,19 +244,27 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 /// each sleep and running `whileAsleep` during it, as when someone edits on
 /// GitHub meanwhile.
 final class TestPacing: @unchecked Sendable {
+	/// The wall clock's time before anything sleeps.
+	static let start = Date(timeIntervalSince1970: 1_760_000_000)
+
 	private let lock = NSLock()
 	private let clock = ManualClock()
+	private let started: ContinuousClock.Instant
 	private let whileAsleep: @Sendable () -> Void
 	private var slept: [Duration] = []
 
 	init(whileAsleep: @escaping @Sendable () -> Void = {}) {
 		self.whileAsleep = whileAsleep
+		started = clock.now
 	}
 
 	var sleeps: [Duration] { lock.withLock { slept } }
 
 	var pacing: GitHubPublishing.Pacing {
-		GitHubPublishing.Pacing(now: { [clock] in clock.now }, sleep: { [self] duration in
+		GitHubPublishing.Pacing(now: { [clock] in clock.now }, date: { [clock, started] in
+			let elapsed = started.duration(to: clock.now)
+			return Self.start.addingTimeInterval(Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
+		}, sleep: { [self] duration in
 			lock.withLock { slept.append(duration) }
 			whileAsleep()
 			clock.advance(by: duration)
@@ -588,7 +602,7 @@ struct GitHubPublishTests {
 		}
 	}
 
-	@Test("an environment is checked by its ID under its name before each write")
+	@Test("an environment is checked by its ID under its name before each write, without listing the others")
 	func checksEnvironmentEachWrite() async throws {
 		let api = FakeGitHubAPI()
 		let reviewed = try await reviewed(api, in: production)
@@ -596,8 +610,8 @@ struct GitHubPublishTests {
 		let report = await publish([change("A", "1", secret: false), change("B", "2", secret: false)], with: api, reviewed: reviewed, to: productionTarget)
 		#expect(report.outcomes == ["A": .published, "B": .published])
 		#expect(operations(api, after: before) == [
-			.repository, .environments, .secret, .variable, .createVariable, .variable,
-			.repository, .environments, .secret, .variable, .createVariable, .variable,
+			.repository, .environment, .secret, .variable, .createVariable, .variable,
+			.repository, .environment, .secret, .variable, .createVariable, .variable,
 		])
 	}
 
@@ -680,7 +694,7 @@ struct GitHubPublishTests {
 		let api = FakeGitHubAPI()
 		let reviewed = try await reviewed(api)
 		let before = api.requests.count
-		api.fail(.setSecret, with: .rateLimited(until: Date()))
+		api.fail(.setSecret, with: .rateLimited(until: TestPacing.start))
 		let report = await publish([change("API_TOKEN", "t")], with: api, reviewed: reviewed)
 		#expect(report.outcomes == ["API_TOKEN": .published])
 		#expect(operations(api, after: before) == [
@@ -694,7 +708,7 @@ struct GitHubPublishTests {
 	func checksIdentityAfterWait(_ limited: FakeGitHubAPI.Operation) async throws {
 		let api = FakeGitHubAPI()
 		let reviewed = try await reviewed(api)
-		api.fail(limited, with: .rateLimited(until: Date())) {
+		api.fail(limited, with: .rateLimited(until: TestPacing.start)) {
 			api.rename("1296269", to: "northwind/shop")
 			api.rename("88", to: "northwind/storefront")
 		}
@@ -706,7 +720,7 @@ struct GitHubPublishTests {
 
 		let environments = FakeGitHubAPI()
 		let environmentReview = try await self.reviewed(environments, in: production)
-		environments.fail(limited == .repository ? .environments : limited, with: .rateLimited(until: Date())) {
+		environments.fail(limited == .repository ? .environment : limited, with: .rateLimited(until: TestPacing.start)) {
 			environments.replaceEnvironment(of: "northwind/storefront", name: "production", withID: "999")
 		}
 		let replaced = await publish([change("A", "1"), change("B", "2")], with: environments, reviewed: environmentReview, to: productionTarget)
@@ -721,7 +735,7 @@ struct GitHubPublishTests {
 		api.edit("B", secret: true, in: scope)
 		let reviewed = try await reviewed(api)
 		let scope = scope
-		api.fail(.publicKey, with: .rateLimited(until: Date())) { api.edit("B", secret: true, value: "theirs", in: scope) }
+		api.fail(.publicKey, with: .rateLimited(until: TestPacing.start)) { api.edit("B", secret: true, value: "theirs", in: scope) }
 		let report = await publish(
 			[change("B", "2", .replace(remoteID: "secret")), change("C", "3")], with: api, reviewed: reviewed)
 		#expect(report.outcomes == ["B": .failed("Changed on GitHub since this review. Review again."), "C": .published])
@@ -734,7 +748,7 @@ struct GitHubPublishTests {
 		api.edit("A", secret: true, in: scope)
 		let reviewed = try await reviewed(api)
 		let scope = scope
-		api.fail(.variable, with: .rateLimited(until: Date())) { api.edit("A", secret: true, value: "theirs", in: scope) }
+		api.fail(.variable, with: .rateLimited(until: TestPacing.start)) { api.edit("A", secret: true, value: "theirs", in: scope) }
 		let report = await publish([change("A", "1", .replace(remoteID: "secret"))], with: api, reviewed: reviewed)
 		#expect(report.outcomes == ["A": .failed("Changed on GitHub since this review. Review again.")])
 		#expect(api.secretValue("A", in: scope) == Data("theirs".utf8))
@@ -774,7 +788,7 @@ struct GitHubPublishTests {
 			let refusing = FakeGitHubAPI()
 			refusing.fail(.secret, after: 1, with: error)
 			let stopped = await publish([change("A", "1"), change("B", "2")], with: refusing, reviewed: reviewed)
-			#expect(stopped.outcomes == ["A": .published, "B": .notSent])
+			#expect(stopped.outcomes == ["A": .published, "B": .failed(GitHubPublishing.message(error))], "What's left says why it wasn't sent")
 			#expect(stopped.published.map(\.key) == ["A"] && stopped.needsReconnect == reconnects)
 			#expect(refusing.requests.map(\.0) == [.repository, .secret, .variable, .publicKey, .setSecret, .secret])
 		}
@@ -798,9 +812,12 @@ struct GitHubPublishTests {
 		#expect(pacing.sleeps == [.seconds(60)], "A minute for the limit GitHub didn't say the end of, which also spaces the writes")
 
 		let far = FakeGitHubAPI()
-		far.fail(.secret, after: 1, with: .rateLimited(until: Date().addingTimeInterval(3_600)))
+		let reset = TestPacing.start.addingTimeInterval(3_600)
+		far.fail(.secret, after: 1, with: .rateLimited(until: reset))
 		let stopped = await publish([change("A", "1"), change("B", "2")], with: far, reviewed: reviewed)
-		#expect(stopped.outcomes == ["A": .published, "B": .notSent])
+		#expect(stopped.outcomes == [
+			"A": .published, "B": .failed(GitHubPublishing.message(.rateLimited(until: reset), now: TestPacing.start)),
+		])
 		#expect(far.requests.map(\.0) == [.repository, .secret, .variable, .publicKey, .setSecret, .secret], "Nothing is asked of GitHub after the limit")
 	}
 
@@ -832,6 +849,43 @@ struct GitHubPublishTests {
 		let given = await publish([change("A", "1"), change("B", "2")], with: limited, reviewed: reviewed, pacing: still)
 		#expect(given.outcomes == ["A": .failed("GitHub is limiting requests. Try again in a few minutes."), "B": .notSent])
 		#expect(still.sleeps == [.seconds(60), .seconds(120)])
+	}
+
+	@Test("an announced limit is waited out a second past its reset, by the wall clock; one too far off, or a fourth in a row, isn't")
+	func waitsOutAnnouncedLimits() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		let pacing = TestPacing()
+		api.fail(.setSecret, with: .rateLimited(until: TestPacing.start.addingTimeInterval(30)))
+		let report = await publish([change("A", "1")], with: api, reviewed: reviewed, pacing: pacing)
+		#expect(report.outcomes == ["A": .published])
+		#expect(pacing.sleeps == [.seconds(31)], "A second past the reset, as the Mac's clock can run ahead of GitHub's")
+
+		let far = FakeGitHubAPI()
+		let farOff = TestPacing()
+		let reset = TestPacing.start.addingTimeInterval(600)
+		far.fail(.setSecret, with: .rateLimited(until: reset))
+		let refused = await publish([change("A", "1")], with: far, reviewed: reviewed, pacing: farOff)
+		#expect(refused.outcomes == ["A": .failed(GitHubPublishing.message(.rateLimited(until: reset), now: TestPacing.start))])
+		#expect(farOff.sleeps.isEmpty)
+
+		let repeated = FakeGitHubAPI()
+		let again = TestPacing()
+		let soon = TestPacing.start.addingTimeInterval(1)
+		repeated.fail(.setSecret, with: .rateLimited(until: soon), .rateLimited(until: soon), .rateLimited(until: soon), .rateLimited(until: soon))
+		let given = await publish([change("A", "1")], with: repeated, reviewed: reviewed, pacing: again)
+		#expect(repeated.requests.filter { $0.0 == .setSecret }.count == 4, "Three limits waited out, and the fourth stops it")
+		#expect(given.outcomes["A"] == .failed("GitHub is limiting requests. Try again in a minute."))
+	}
+
+	@Test("an organization's single sign-on stops the publish, saying so, without calling the connection gone")
+	func stopsForSSO() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		api.fail(.repository, with: .ssoRequired)
+		let report = await publish([change("A", "1"), change("B", "2")], with: api, reviewed: reviewed)
+		#expect(report.outcomes == ["A": .failed(GitHubPublishing.message(.ssoRequired)), "B": .notSent])
+		#expect(!report.needsReconnect)
 	}
 
 	@Test("a rate limit's message says when it lifts, when that's more than a moment away")
@@ -875,7 +929,11 @@ final class TokenGatedGitHub: @unchecked Sendable {
 		self.api = api
 	}
 
+	private var refused = 0
+
 	var tokens: [String] { lock.withLock { seen } }
+	/// How many requests GitHub refused for their token.
+	var refusals: Int { lock.withLock { refused } }
 	func accept(_ token: String) { lock.withLock { valid = token } }
 
 	func client(_ token: String) -> any GitHubClientProtocol {
@@ -887,7 +945,13 @@ final class TokenGatedGitHub: @unchecked Sendable {
 		let token: String
 		let owner: TokenGatedGitHub
 
-		private func allowed() -> Bool { owner.lock.withLock { owner.valid == token } }
+		private func allowed() -> Bool {
+			owner.lock.withLock {
+				if owner.valid == token { return true }
+				owner.refused += 1
+				return false
+			}
+		}
 		private func gated<Value>(_ body: () async -> Result<Value, GitHubAPIError>) async -> Result<Value, GitHubAPIError> {
 			allowed() ? await body() : .failure(.unauthorized)
 		}
@@ -897,6 +961,9 @@ final class TokenGatedGitHub: @unchecked Sendable {
 		func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> { await gated { await owner.api.repository(id: id) } }
 		func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
 			await gated { await owner.api.environments(of: repository) }
+		}
+		func environment(named name: String, of repository: String) async -> Result<GitHubEnvironment?, GitHubAPIError> {
+			await gated { await owner.api.environment(named: name, of: repository) }
 		}
 		func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> { await gated { await owner.api.secrets(in: scope) } }
 		func secret(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {
@@ -939,7 +1006,7 @@ struct RenewingGitHubClientTests {
 		}
 	}
 
-	@Test("a request GitHub refuses after another review renewed the token is sent again with the new token, without renewing twice")
+	@Test("a token another review renewed is used by the next request, without renewing twice")
 	func followsAnotherRenewal() async throws {
 		let store = PlatformConnectionStore(service: keychain)
 		let id = try await connect(store)
@@ -955,7 +1022,7 @@ struct RenewingGitHubClientTests {
 		#expect(await credentials.accessToken(for: id) == .success("ghu_2"), "Another review renews the token")
 		github.accept("ghu_2")
 		#expect(try await publishing.secrets(in: scope).get().isEmpty)
-		#expect(github.tokens == ["ghu_1", "ghu_1", "ghu_2"])
+		#expect(github.tokens == ["ghu_1", "ghu_2"] && github.refusals == 0, "Each request reads the connection's token now")
 		#expect(refresher.calls.count == 1)
 	}
 
@@ -970,6 +1037,23 @@ struct RenewingGitHubClientTests {
 		let publishing = RenewingGitHubClient(connectionID: id, credentials: credentials, make: github.client)
 		#expect(try await publishing.secrets(in: scope).get().isEmpty)
 		#expect(github.tokens == ["ghu_1", "ghu_2"] && refresher.calls.count == 1)
+	}
+
+	@Test("a token about to expire between two requests is renewed before the second, so GitHub never refuses it")
+	func renewsBeforeExpiry() async throws {
+		let store = PlatformConnectionStore(service: keychain)
+		let id = try await connect(store)
+		let refresher = renewing(to: ["ghu_2"])
+		let clock = TestDate(start.addingTimeInterval(60))
+		let credentials = PlatformCredentials(
+			store: store, refresher: refresher, session: { platformTestSession(URL(string: "http://localhost:3000")!) }, now: { clock.date })
+		let github = TokenGatedGitHub(valid: "ghu_1")
+		let client = RenewingGitHubClient(connectionID: id, credentials: credentials, make: github.client)
+		#expect(try await client.secrets(in: scope).get().isEmpty)
+		clock.date = start.addingTimeInterval(8 * 3_600 - 60)
+		github.accept("ghu_2")
+		#expect(try await client.secrets(in: scope).get().isEmpty)
+		#expect(github.tokens == ["ghu_1", "ghu_2"] && github.refusals == 0 && refresher.calls.count == 1)
 	}
 
 	@Test("a refused token that can't be renewed answers as GitHub refused it")
@@ -1221,6 +1305,87 @@ struct GitHubClientListTests {
 		#expect(await client(missing).environments(of: "northwind/storefront") == .failure(.invalidResponse))
 	}
 
+	@Test("an environment is read by its escaped name, and one GitHub doesn't have is none")
+	func readsEnvironmentByName() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			switch URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.percentEncodedPath {
+			case "/repos/northwind/storefront/environments/staging%2Feu": return .json(200, ["id": 161_088_069, "name": "staging/eu"])
+			default: return .json(404, ["message": "Not Found"])
+			}
+		}
+		#expect(try await client(route).environment(named: "staging/eu", of: "northwind/storefront").get()
+			== GitHubEnvironment(id: "161088069", name: "staging/eu"))
+		#expect(try await client(route).environment(named: "production", of: "northwind/storefront").get() == nil)
+	}
+
+	@Test("an installation that's suspended, or refuses its repositories, is left out, saying so, and the others are listed")
+	func skipsRefusedInstallations() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			switch request.url.path {
+			case "/user/installations":
+				return .json(200, ["total_count": 5, "installations": [
+					["id": 11, "suspended_at": "2026-10-01T10:00:00Z"], ["id": 12], ["id": 13], ["id": 14], ["id": 15],
+				]])
+			case "/user/installations/12/repositories": return .json(403, ["message": "This installation has been suspended"])
+			case "/user/installations/13/repositories": return .json(404, ["message": "Not Found"])
+			case "/user/installations/14/repositories":
+				return .json(200, ["total_count": 1, "repositories": [["id": 1_000, "full_name": "northwind/api", "private": true]]])
+			case "/user/installations/15/repositories":
+				return .json(403, ["message": "Resource protected by organization SAML enforcement."], headers: ["X-GitHub-SSO": "required; url=https://github.com/orgs/acme/sso"])
+			default: return .json(500, [:])
+			}
+		}
+		let listed = try await client(route).repositories().get()
+		#expect(listed.repositories.map(\.fullName) == ["northwind/api"])
+		#expect(listed.skipsInstallations && listed.hidesSSORepositories)
+		#expect(!route.requests.contains { $0.url.path == "/user/installations/11/repositories" }, "A suspended installation isn't asked")
+	}
+
+	@Test("a list that runs out of the bytes LPM Vault reads is too large, not unreadable")
+	func runsOutOfBytes() async {
+		let page = (0..<100).map { ["id": 1_000 + $0, "full_name": "northwind/repository-with-a-longer-name-\($0)", "private": true] as [String: Any] }
+		let body = (try? JSONSerialization.data(withJSONObject: ["total_count": 1_000, "repositories": page])) ?? Data()
+		let pageBytes = body.count
+		let route = PlatformHTTPStub.platform { request in
+			switch request.url.path {
+			case "/user/installations": return .json(200, ["total_count": 1, "installations": [["id": 11]]])
+			default:
+				return PlatformHTTPStub.Reply(
+					status: 200, headers: ["Content-Type": "application/json", "Link": "<https://api.github.com/x?page=2>; rel=\"next\""], body: body)
+			}
+		}
+		var limits = GitHubClient.Limits()
+		limits.listBytes = pageBytes * 3 / 2 + 200
+		#expect(await client(route, limits: limits).repositories() == .failure(.tooLarge))
+	}
+
+	@Test("GitHub's Link decides whether a list goes on, even past a short page")
+	func followsLink() async throws {
+		let route = PlatformHTTPStub.platform { request in
+			let page = Int(request.query["page"] ?? "1") ?? 1
+			switch (request.url.path, page) {
+			case ("/user/installations", _): return .json(200, ["total_count": 1, "installations": [["id": 11]]])
+			case (_, 1):
+				return .json(200, ["total_count": 3, "repositories": [["id": 1, "full_name": "n/a"], ["id": 2, "full_name": "n/b"]]],
+					headers: ["Link": "<https://api.github.com/x?page=2>; rel=\"next\""])
+			default:
+				return .json(200, ["total_count": 3, "repositories": [["id": 3, "full_name": "n/c"]]])
+			}
+		}
+		#expect(try await client(route).repositories().get().repositories.map(\.id) == ["1", "2", "3"])
+	}
+
+	@Test("a page holding more items than asked for is refused before any item is decoded")
+	func boundsPageBeforeDecoding() throws {
+		let data = try JSONSerialization.data(withJSONObject: ["total_count": 3_000, "repositories": (0..<3_000).map { ["id": $0] }])
+		CountedItem.reset()
+		#expect(throws: DecodingError.self) { try GitHubListPage<CountedItem>.decode(data, field: "repositories", lenient: true, maximumItems: 100) }
+		#expect(CountedItem.decoded == 0)
+		let fits = try JSONSerialization.data(withJSONObject: ["total_count": 2, "repositories": [["id": 1], ["id": 2]]])
+		#expect(try GitHubListPage<CountedItem>.decode(fits, field: "repositories", lenient: false, maximumItems: 100).items.count == 2)
+		#expect(CountedItem.decoded == 2)
+	}
+
 	@Test("an installation a shifting list repeats is listed once")
 	func repeatedInstallation() async throws {
 		let route = PlatformHTTPStub.platform { request in
@@ -1328,5 +1493,18 @@ struct GitHubClientListTests {
 		#expect(repository == GitHubRepository(id: "1296269", fullName: "northwind/shop", isPrivate: true))
 		#expect(try await client(route).environments(of: "northwind/shop").get() == [GitHubEnvironment(id: "161088068", name: "production")])
 		#expect(await client(route).repository(id: "../x") == .failure(.invalidResponse))
+	}
+}
+
+/// A list item that counts how many were decoded.
+struct CountedItem: Decodable {
+	private static let lock = NSLock()
+	nonisolated(unsafe) private static var count = 0
+
+	static var decoded: Int { lock.withLock { count } }
+	static func reset() { lock.withLock { count = 0 } }
+
+	init(from decoder: any Decoder) throws {
+		Self.lock.withLock { Self.count += 1 }
 	}
 }
