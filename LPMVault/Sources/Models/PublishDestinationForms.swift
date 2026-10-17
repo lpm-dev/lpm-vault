@@ -236,14 +236,21 @@ final class GitHubDestinationForm {
 		didSet { if scope?.identifier != oldValue?.identifier { didChange(.scope) } }
 	}
 	/// By `owner/name`.
-	var repositories: PublishSession.Loadable<[GitHubRepository]> = .idle
+	var repositories: PublishSession.Loadable<[GitHubRepository]> = .idle {
+		didSet { lookalikeRepositories = Self.lookalikes((repositories.value ?? []).map { ($0.id, $0.fullName) }) }
+	}
 	/// Whether GitHub left out an organization's repositories until the person signs in with its single sign-on.
 	var hidesSSORepositories = false
 	/// Installations of the app GitHub left out, as when one is suspended.
 	var skippedInstallations: [GitHubSkippedInstallation] = []
 	/// The chosen repository's deployment environments.
-	var environments: PublishSession.Loadable<[GitHubEnvironment]> = .idle
+	var environments: PublishSession.Loadable<[GitHubEnvironment]> = .idle {
+		didSet { lookalikeEnvironments = Self.lookalikes((environments.value ?? []).map { ($0.id, $0.name) }) }
+	}
 	@ObservationIgnored var didChange: (Field) -> Void = { _ in }
+	/// The IDs of listed repositories, and environments, whose names look like another's, worked out once a listing.
+	@ObservationIgnored private var lookalikeRepositories: Set<String> = []
+	@ObservationIgnored private var lookalikeEnvironments: Set<String> = []
 
 	init(repositoryID: String? = nil, scope: GitHubPublishTarget.Scope? = nil) {
 		self.repositoryID = repositoryID
@@ -281,13 +288,8 @@ final class GitHubDestinationForm {
 	/// and variables when they can't, and its ID when its name looks like
 	/// another's.
 	var repositoryOptions: [Option] {
-		let repositories = repositories.value ?? []
-		let keys = repositories.map { GitHubPublishTarget.lookalikeKey($0.fullName) }
-		var lookalikes: [String: Int] = [:]
-		lookalikes.reserveCapacity(repositories.count)
-		for key in keys { lookalikes[key, default: 0] += 1 }
-		return zip(repositories, keys).map { repository, key in
-			let name = lookalikes[key, default: 0] > 1 ? "\(repository.fullName) (ID \(repository.id))" : repository.fullName
+		(repositories.value ?? []).map { repository in
+			let name = lookalikeRepositories.contains(repository.id) ? "\(repository.fullName) (ID \(repository.id))" : repository.fullName
 			var label = "\(name) · \(repository.isPrivate ? "Private" : "Public")"
 			if repository.isArchived {
 				label += " · Archived"
@@ -302,22 +304,24 @@ final class GitHubDestinationForm {
 	/// each environment whose name looks like another's showing its ID.
 	var scopeOptions: [Option] {
 		let repository = self.repository
-		let choices = scopeChoices
-		let keys = choices.map { scope -> String? in
-			guard case .environment(_, let name) = scope else { return nil }
-			return GitHubPublishTarget.lookalikeKey(name)
-		}
-		var lookalikes: [String: Int] = [:]
-		lookalikes.reserveCapacity(choices.count)
-		for case let key? in keys { lookalikes[key, default: 0] += 1 }
-		return zip(choices, keys).map { scope, key in
-			let name = scope.displayName(showingID: key.map { lookalikes[$0, default: 0] > 1 } ?? false)
+		return scopeChoices.map { scope in
+			var showingID = false
+			if case .environment(let id, _) = scope { showingID = lookalikeEnvironments.contains(id) }
+			let name = scope.displayName(showingID: showingID)
 			guard let repository, !repository.canChange(scope) else {
 				return Option(id: scope.identifier, label: name, isAvailable: true)
 			}
 			let reason = repository.isArchived ? "Archived" : repository.permission == .read ? "Read-only" : "Needs admin access"
 			return Option(id: scope.identifier, label: "\(name) · \(reason)", isAvailable: false)
 		}
+	}
+
+	/// The IDs of the named items whose names fold like another's.
+	private static func lookalikes(_ named: [(id: String, name: String)]) -> Set<String> {
+		var byKey: [String: [String]] = [:]
+		byKey.reserveCapacity(named.count)
+		for (id, name) in named { byKey[GitHubPublishTarget.lookalikeKey(name), default: []].append(id) }
+		return Set(byKey.values.lazy.filter { $0.count > 1 }.joined())
 	}
 
 	/// Repositories sorted by `owner/name`. Nonisolated, so a long list is sorted off the main actor.

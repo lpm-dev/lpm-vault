@@ -113,6 +113,8 @@ final class PublishSession: Identifiable {
 			let outcome: PublishOutcome
 			/// Whether the key was sent as a secret.
 			let isSecret: Bool
+			/// Whether the platform kept the new value, though the outcome can be a failure, as for a value stored otherwise than sent.
+			let isStored: Bool
 		}
 
 		let destination: PublishDestination
@@ -1080,9 +1082,13 @@ final class PublishSession: Identifiable {
 			recordFailure = await record(report.published, advancing: report.advances, of: review)
 		}
 		dependencies.didChange()
+		let stored = Set(report.published.lazy.map(\.key))
 		results = Results(
 			destination: review.destination,
-			rows: changes.map { Results.Row(key: $0.key, outcome: report.outcomes[$0.key] ?? .notSent, isSecret: $0.publishesAsSecret) },
+			rows: changes.map {
+				Results.Row(
+					key: $0.key, outcome: report.outcomes[$0.key] ?? .notSent, isSecret: $0.publishesAsSecret, isStored: stored.contains($0.key))
+			},
 			needsReconnect: report.needsReconnect,
 			recordFailure: recordFailure)
 		step = .results

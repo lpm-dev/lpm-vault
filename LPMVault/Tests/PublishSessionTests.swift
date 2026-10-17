@@ -1171,7 +1171,8 @@ struct GitHubPublishSessionTests {
 		#expect(results.rows.map(\.isSecret) == [true, false])
 		#expect(results.recordFailure?.hasPrefix("The secret was published, but the destination couldn't be saved.") == true)
 		let flipped = PublishSession.Results(
-			destination: results.destination, rows: results.rows.map { .init(key: $0.key, outcome: $0.outcome, isSecret: !$0.isSecret) },
+			destination: results.destination,
+			rows: results.rows.map { .init(key: $0.key, outcome: $0.outcome, isSecret: !$0.isSecret, isStored: $0.isStored) },
 			needsReconnect: results.needsReconnect, recordFailure: results.recordFailure)
 		#expect(flipped != results, "Results sent as the other kind aren't the same results")
 	}
@@ -1184,11 +1185,16 @@ struct GitHubPublishSessionTests {
 				userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront", scope: .repository)),
 			createdAt: Date(timeIntervalSince1970: 1_760_000_000))
 		let failed = PublishSession.Results(
-			destination: destination, rows: [.init(key: "A", outcome: .failed("GitHub couldn't be reached."), isSecret: true)],
+			destination: destination, rows: [.init(key: "A", outcome: .failed("GitHub couldn't be reached."), isSecret: true, isStored: false)],
 			needsReconnect: false, recordFailure: nil)
 		#expect(PublishSheet.resultsHeader(for: failed) == "Published 0 of 1 secret.")
+		let stored = PublishSession.Results(
+			destination: destination, rows: [.init(key: "A", outcome: .failed("Stored, but not as sent."), isSecret: true, isStored: true)],
+			needsReconnect: false, recordFailure: nil)
+		#expect(PublishSheet.resultsHeader(for: stored).hasSuffix("Re-run a workflow to use them now."), "The platform has a new value, though its row failed")
 		let published = PublishSession.Results(
-			destination: destination, rows: [.init(key: "A", outcome: .published, isSecret: true)], needsReconnect: false, recordFailure: nil)
+			destination: destination, rows: [.init(key: "A", outcome: .published, isSecret: true, isStored: true)], needsReconnect: false,
+			recordFailure: nil)
 		#expect(PublishSheet.resultsHeader(for: published)
 			== "Published 1 of 1 secret. Workflow runs that start from now on get the new values. Re-run a workflow to use them now.")
 	}
@@ -1327,11 +1333,12 @@ struct GitHubPublishSessionTests {
 		let refused = { GitHubSkippedInstallation(account: $0, isSuspended: false) }
 		#expect(PublishSheet.skippedInstallationNotes([]) == [])
 		#expect(PublishSheet.skippedInstallationNotes([suspended("acme")]) == [
-			"LPM Vault's GitHub App is suspended on acme, so its repositories aren't listed. Whoever suspended it can unsuspend it in acme's settings on GitHub.",
+			"LPM Vault's GitHub App is suspended on acme, so its repositories aren't listed. An owner of acme can unsuspend it in acme's settings on GitHub, unless LPM Vault suspended it.",
 		])
-		#expect(PublishSheet.skippedInstallationNotes([suspended(nil)]).first?.hasSuffix("in the account's settings on GitHub.") == true)
+		#expect(PublishSheet.skippedInstallationNotes([suspended(nil)]).first?.hasSuffix(
+			"An owner of the account can unsuspend it in its settings on GitHub, unless LPM Vault suspended it.") == true)
 		#expect(PublishSheet.skippedInstallationNotes([suspended("acme"), suspended("northwind"), refused(nil)]) == [
-			"LPM Vault's GitHub App is suspended on acme and northwind, so their repositories aren't listed. Whoever suspended it can unsuspend it in each account's settings on GitHub.",
+			"LPM Vault's GitHub App is suspended on acme and northwind, so their repositories aren't listed. An owner of each account can unsuspend it in its settings on GitHub, unless LPM Vault suspended it.",
 			"GitHub refused to list the repositories of LPM Vault's GitHub App on an account, as when it was uninstalled meanwhile. Refresh, or install the app there again.",
 		])
 		let joined = ListFormatter.localizedString(byJoining: ["a", "b", "c", "2 other accounts"])

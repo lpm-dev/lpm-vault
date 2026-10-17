@@ -525,6 +525,11 @@ struct GitHubDestinationFormTests {
 			GitHubRepository(id: "3", fullName: "acme/web", isPrivate: false),
 		])
 		#expect(form.repositoryOptions.map(\.label) == ["acme/api (ID 1) · Private", "acrne/api (ID 2) · Private", "acme/web · Public"])
+		form.repositories = .loaded([
+			GitHubRepository(id: "1", fullName: "acme/api", isPrivate: true),
+			GitHubRepository(id: "3", fullName: "acme/web", isPrivate: false),
+		])
+		#expect(form.repositoryOptions.map(\.label) == ["acme/api · Private", "acme/web · Public"], "A new listing folds its own names")
 	}
 
 	@Test("each scope the person can't change says why: archived, read-only, or needing admin access")
@@ -555,7 +560,7 @@ struct GitHubDestinationFormTests {
 		form.repositoryID = "1"
 		let names = [
 			"staging-I", "staging-l", "prod0", "prodO", "production", "learn", "leam", "clone", "done", "vvest", "west", "build-1", "Build-|",
-			"prod east", "prod  east", "a''b", "a\"b", "a`b", "a'b",
+			"prod east", "prod  east", "a''b", "a\"b", "a`b", "a'b", "vvv", "vw", "x'''", "x'\"",
 		]
 		form.environments = .loaded(names.enumerated().map { GitHubEnvironment(id: String(10 + $0.offset), name: $0.element) })
 		#expect(form.scopeOptions.map(\.label) == [
@@ -564,7 +569,8 @@ struct GitHubDestinationFormTests {
 			"Environment production", "Environment learn (ID 15)", "Environment leam (ID 16)", "Environment clone (ID 17)", "Environment done (ID 18)",
 			"Environment vvest (ID 19)", "Environment west (ID 20)", "Environment build-1 (ID 21)", "Environment Build-| (ID 22)",
 			"Environment prod east (ID 23)", "Environment prod  east (ID 24)", "Environment a''b (ID 25)", "Environment a\"b (ID 26)",
-			"Environment a`b (ID 27)", "Environment a'b (ID 28)",
+			"Environment a`b (ID 27)", "Environment a'b (ID 28)", "Environment vvv (ID 29)", "Environment vw (ID 30)",
+			"Environment x''' (ID 31)", "Environment x'\" (ID 32)",
 		])
 	}
 

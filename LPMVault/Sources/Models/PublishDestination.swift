@@ -613,6 +613,7 @@ struct GitHubPublishTarget: Hashable, Sendable {
 	/// O, ` and ', rn and m, cl and d, vv and w, and '' and " pass for
 	/// each other, and so does a run of spaces for one.
 	static func lookalikeKey(_ name: String) -> String {
+		// I folds to l before case folding would make it i.
 		var mapped = String.UnicodeScalarView()
 		var afterSpace = false
 		for scalar in name.unicodeScalars {
@@ -629,8 +630,18 @@ struct GitHubPublishTarget: Hashable, Sendable {
 			default: mapped.append(scalar)
 			}
 		}
-		return String(mapped).lowercased().replacingOccurrences(of: "rn", with: "m").replacingOccurrences(of: "cl", with: "d")
-			.replacingOccurrences(of: "vv", with: "w").replacingOccurrences(of: "''", with: "\"")
+		// A letter that passes for two is spelled as the two, so overlapping runs, as vvv and vw, fold alike.
+		var key = String.UnicodeScalarView()
+		for scalar in String(mapped).lowercased().unicodeScalars {
+			switch scalar {
+			case "w": key.append(contentsOf: "vv".unicodeScalars)
+			case "m": key.append(contentsOf: "rn".unicodeScalars)
+			case "d": key.append(contentsOf: "cl".unicodeScalars)
+			case "\"": key.append(contentsOf: "''".unicodeScalars)
+			default: key.append(scalar)
+			}
+		}
+		return String(key)
 	}
 
 	/// The GitHub user whose connection publishes here.
