@@ -93,8 +93,7 @@ extension SheetInteractionTests {
 		func liveValueCheck() async throws {
 			let (store, folder) = try await makeStore(lpmJSON: #"{"envSchema":{"vars":{"DATABASE_URL":{"format":"url"},"API_TOKEN":{"secret":true,"minLength":12}}}}"#)
 			defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			for _ in 0..<200 where store.valueChecks["suggestions"] == nil { try await Task.sleep(for: .milliseconds(10)) }
-			try #require(store.valueChecks["suggestions"] != nil)
+			try #require(try await waitUntil { store.valueChecks["suggestions"] != nil })
 
 			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "DATABASE_URL"), size: NSSize(width: 560, height: 560))
 			defer { host.window.close() }
@@ -123,8 +122,7 @@ extension SheetInteractionTests {
 		func emptyValueCheck() async throws {
 			let (store, folder) = try await makeStore(lpmJSON: #"{"envSchema":{"vars":{"EMPTY":{"empty":"reject"}}}}"#)
 			defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			for _ in 0..<200 where store.valueChecks["suggestions"] == nil { try await Task.sleep(for: .milliseconds(10)) }
-			try #require(store.valueChecks["suggestions"] != nil)
+			try #require(try await waitUntil { store.valueChecks["suggestions"] != nil })
 			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "EMPTY"), size: NSSize(width: 560, height: 560))
 			defer { host.window.close() }
 
@@ -136,8 +134,7 @@ extension SheetInteractionTests {
 		func schemaChangeRechecksValue() async throws {
 			let (store, folder) = try await makeStore(lpmJSON: #"{"envSchema":{"vars":{"DATABASE_URL":{"format":"url"}}}}"#)
 			defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			for _ in 0..<200 where store.valueChecks["suggestions"] == nil { try await Task.sleep(for: .milliseconds(10)) }
-			try #require(store.valueChecks["suggestions"] != nil)
+			try #require(try await waitUntil { store.valueChecks["suggestions"] != nil })
 			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "DATABASE_URL"), size: NSSize(width: 560, height: 560))
 			defer { host.window.close() }
 			try host.enterValue("https://db.example.com")
@@ -153,8 +150,7 @@ extension SheetInteractionTests {
 		func lengthCounterUsesUnicodeScalars() async throws {
 			let (store, folder) = try await makeStore(lpmJSON: #"{"envSchema":{"vars":{"TOKEN":{"minLength":3}}}}"#)
 			defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			for _ in 0..<200 where store.valueChecks["suggestions"] == nil { try await Task.sleep(for: .milliseconds(10)) }
-			try #require(store.valueChecks["suggestions"] != nil)
+			try #require(try await waitUntil { store.valueChecks["suggestions"] != nil })
 			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "TOKEN"), size: NSSize(width: 560, height: 560))
 			defer { host.window.close() }
 			try host.enterValue("e\u{301}")
@@ -176,10 +172,7 @@ extension SheetInteractionTests {
 			store.projects = [project]
 			store.openProject(id: project.id)
 			store.reloadKeyDescriptions()
-			for _ in 0..<200 where store.keyDescriptions[project.id]?.schema?.overview == nil {
-				try await Task.sleep(for: .milliseconds(10))
-			}
-			try #require(store.keyDescriptions[project.id]?.schema?.overview != nil)
+			try #require(try await waitUntil { store.keyDescriptions[project.id]?.schema?.overview != nil })
 			return (store, folder)
 		}
 	}

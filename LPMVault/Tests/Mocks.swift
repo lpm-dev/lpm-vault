@@ -64,7 +64,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	}
 	var shouldFail = false
 	var failureError: KeychainError = .accessDenied
-	var listProjectsDelay: Duration?
 	var failProjectReads = false
 	var projectReadCount = 0
 	var projectMetadataReadCount = 0
@@ -126,7 +125,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		blockNextListProjects = nil
 		lock.unlock()
 		blocker?()
-		if let listProjectsDelay { Thread.sleep(forTimeInterval: listProjectsDelay.timeInterval) }
 		lock.lock()
 		defer { lock.unlock() }
 		return envStorage.map { vaultId, data in
@@ -161,7 +159,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			return blocker
 		}
 		blocker?()
-		if let listProjectsDelay { Thread.sleep(forTimeInterval: listProjectsDelay.timeInterval) }
 		return .success(lock.withLock {
 			projectMetadataReadCount += envStorage.count
 			return envStorage.map { vaultId, data in
@@ -184,7 +181,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			return blocker
 		}
 		blocker?()
-		if let listProjectsDelay { Thread.sleep(forTimeInterval: listProjectsDelay.timeInterval) }
 
 		return lock.withLock {
 			if failProjectReads { return .failure(failureError) }
@@ -610,14 +606,6 @@ extension MockKeychainService {
 	}
 }
 
-private extension Duration {
-	var timeInterval: TimeInterval {
-		let components = self.components
-		return TimeInterval(components.seconds)
-			+ TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
-	}
-}
-
 // MARK: - Mock Biometric Service
 
 final class MockBiometricService: BiometricServiceProtocol, @unchecked Sendable {
@@ -670,18 +658,14 @@ final class MockBiometricService: BiometricServiceProtocol, @unchecked Sendable 
 final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	private let lock = NSLock()
 	var user: LPMUser?
-	var userResponses: [(delay: Duration?, user: LPMUser?)] = []
+	var userResponses: [LPMUser?] = []
 	var personalTokens: [LPMToken] = []
 	var orgTokensMap: [String: [LPMToken]] = [:]
 	var orgTokenErrors: [String: LPMAPIError] = [:]
 	var revokedTokenIds: [String] = []
-	var delay: Duration?
-	var personalTokensDelay: Duration?
-	var personalTokenResponses: [(delay: Duration?, tokens: [LPMToken])] = []
+	var personalTokenResponses: [[LPMToken]] = []
 	var orgTokensDelay: Duration?
 	var personalTokensError: LPMAPIError?
-	var personalRevokeDelay: Duration?
-	var orgRevokeDelay: Duration?
 	var personalRevokeError: LPMAPIError?
 	var orgRevokeError: LPMAPIError?
 	var requestedOrgSlugs: [String] = []
@@ -690,51 +674,43 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 	var personalTokenFetchCount = 0
 	var orgTokenFetchCount = 0
 	var activeOrgRequests = 0
+	/// The organization token reads under way now.
+	var inFlightOrgRequests: Int { lock.withLock { activeOrgRequests } }
 	var maximumActiveOrgRequests = 0
 	var blockNextCurrentUserFetch: (@Sendable () async -> Void)?
+	/// Runs in every organization token read, while it counts as under way.
+	var duringOrgTokenFetch: (@Sendable () async -> Void)?
 	var blockNextPersonalTokenFetch: (@Sendable () async -> Void)?
 	var blockNextPersonalRevoke: (@Sendable () async -> Void)?
 	var blockNextOrgRevoke: (@Sendable () async -> Void)?
-	var onPersonalRevokeStart: (() -> Void)?
-	var onOrgRevokeStart: (() -> Void)?
 
 	func fetchCurrentUser(authToken: String) async -> LPMAPIResult<LPMUser> {
-		let (response, blocker): (
-			(delay: Duration?, user: LPMUser?),
-			(@Sendable () async -> Void)?
-		) = lock.withLock {
+		let (response, blocker): (LPMUser?, (@Sendable () async -> Void)?) = lock.withLock {
 			receivedAuthTokens.append(authToken)
 			currentUserFetchCount += 1
-			let response = !userResponses.isEmpty ? userResponses.removeFirst() : (delay, user)
+			let response = !userResponses.isEmpty ? userResponses.removeFirst() : user
 			let blocker = blockNextCurrentUserFetch
 			blockNextCurrentUserFetch = nil
 			return (response, blocker)
 		}
 		await blocker?()
-		if let delay = response.delay { try? await Task.sleep(for: delay) }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
-		return response.user.map(LPMAPIResult.success) ?? .failure(.unauthorized)
+		return response.map(LPMAPIResult.success) ?? .failure(.unauthorized)
 	}
 
 	func fetchPersonalTokens(authToken: String) async -> LPMAPIResult<[LPMToken]> {
-		let (response, blocker): (
-			(delay: Duration?, tokens: [LPMToken]),
-			(@Sendable () async -> Void)?
-		) = lock.withLock {
+		let (tokens, blocker): ([LPMToken], (@Sendable () async -> Void)?) = lock.withLock {
 			receivedAuthTokens.append(authToken)
 			personalTokenFetchCount += 1
-			let response = !personalTokenResponses.isEmpty
-				? personalTokenResponses.removeFirst()
-				: (personalTokensDelay, personalTokens)
+			let tokens = !personalTokenResponses.isEmpty ? personalTokenResponses.removeFirst() : personalTokens
 			let blocker = blockNextPersonalTokenFetch
 			blockNextPersonalTokenFetch = nil
-			return (response, blocker)
+			return (tokens, blocker)
 		}
 		await blocker?()
-		if let delay = response.delay { try? await Task.sleep(for: delay) }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
 		if let personalTokensError { return .failure(personalTokensError) }
-		return .success(response.tokens)
+		return .success(tokens)
 	}
 
 	func revokePersonalToken(id: String, authToken: String) async -> LPMAPIResult<Void> {
@@ -745,16 +721,14 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 			blockNextPersonalRevoke = nil
 			return blocker
 		}
-		onPersonalRevokeStart?()
 		await blocker?()
-		if let personalRevokeDelay { try? await Task.sleep(for: personalRevokeDelay) }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
 		if let personalRevokeError { return .failure(personalRevokeError) }
 		return .success(())
 	}
 
 	func fetchOrgTokens(orgSlug: String, authToken: String) async -> LPMAPIResult<[LPMToken]> {
-		let response: (delay: Duration?, result: LPMAPIResult<[LPMToken]>) = lock.withLock {
+		let response: (delay: Duration?, result: LPMAPIResult<[LPMToken]>, hold: (@Sendable () async -> Void)?) = lock.withLock {
 			receivedAuthTokens.append(authToken)
 			orgTokenFetchCount += 1
 			requestedOrgSlugs.append(orgSlug)
@@ -762,8 +736,9 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 			maximumActiveOrgRequests = max(maximumActiveOrgRequests, activeOrgRequests)
 			let result = orgTokenErrors[orgSlug].map(LPMAPIResult.failure)
 				?? .success(orgTokensMap[orgSlug] ?? [])
-			return (orgTokensDelay, result)
+			return (orgTokensDelay, result, duringOrgTokenFetch)
 		}
+		await response.hold?()
 		if let delay = response.delay { try? await Task.sleep(for: delay) }
 		lock.withLock { activeOrgRequests -= 1 }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
@@ -778,9 +753,7 @@ final class MockAPIService: LPMAPIServiceProtocol, @unchecked Sendable {
 			blockNextOrgRevoke = nil
 			return blocker
 		}
-		onOrgRevokeStart?()
 		await blocker?()
-		if let orgRevokeDelay { try? await Task.sleep(for: orgRevokeDelay) }
 		guard !Task.isCancelled else { return .failure(.cancelled) }
 		if let orgRevokeError { return .failure(orgRevokeError) }
 		return .success(())

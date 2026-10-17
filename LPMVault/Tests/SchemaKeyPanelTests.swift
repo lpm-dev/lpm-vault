@@ -45,7 +45,7 @@ struct SchemaDraftHistoryTests {
 
 		try #"{"envSchema":{"vars":{"PORT":{"format":"port"},"A":{}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.schemaDraft(for: "project")?.schema?["vars"]?["A"] != nil }
+		try #require(try await waitUntil { store.schemaDraft(for: "project")?.schema?["vars"]?["A"] != nil })
 		#expect(!store.canUndoSchemaDraft(in: "project"), "Earlier versions were made against the old file")
 	}
 
@@ -57,7 +57,7 @@ struct SchemaDraftHistoryTests {
 		let renamed = try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8)
 		#expect(renamed.contains(#""SPARE""#) && !renamed.contains(#""UNUSED""#))
 
-		try await waitUntil { store.keyDescriptions["project"]?.schema?.overview?.rule(for: "SPARE") != nil && !store.isReloadingKeyDescriptions }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview?.rule(for: "SPARE") != nil && !store.isReloadingKeyDescriptions })
 		try await store.renameDeclaredKey("PORT", to: "HTTP_PORT", in: "project")
 		#expect(store.projects.first?.environments["default"]?["HTTP_PORT"] == "3000")
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""HTTP_PORT""#))
@@ -125,14 +125,15 @@ struct SchemaDraftHistoryTests {
 		let (store, folder) = try await makeStore(#"{"envSchema":{"vars":{\#(vars)}}}"#)
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		#expect(store.schemaDraftOrBase(for: "project").declaration(of: .key("KEY_7")).json?["default"] == .string("8"))
-		let start = ContinuousClock.now
+		let builds = store.schemaBaseBuilds
 		for index in 0..<500 { _ = store.schemaDraftOrBase(for: "project").declaration(of: .key("KEY_\(index)")) }
-		#expect(ContinuousClock.now - start < .seconds(1), "Reading the rules parses lpm.json again")
+		#expect(store.schemaBaseBuilds == builds, "Reading the rules parses lpm.json again")
 
 		try #"{"envSchema":{"vars":{"OTHER":{}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"]?.schema?.overview?.rule(for: "OTHER") != nil }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview?.rule(for: "OTHER") != nil })
 		#expect(store.schemaDraftOrBase(for: "project").declaration(of: .key("OTHER")) == .declared(.object([])), "New rules replace the parsed ones")
+		#expect(store.schemaBaseBuilds == builds + 1, "New rules are parsed once")
 	}
 
 	@Test("errors that name an imported schema escape characters that hide or reorder text")
@@ -163,22 +164,18 @@ struct SchemaDraftHistoryTests {
 		let keychain = MockKeychainService()
 		keychain.envStorage["project"] = (name: "Project", path: folder, environments: environments)
 		let preferences = try #require(UserDefaults(suiteName: "schema-history-\(UUID().uuidString)"))
-		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(), preferences: preferences)
+		// The clock stands still, so edits typed in one field always undo together.
+		let editClock = ManualClock()
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(), preferences: preferences,
+			schemaEditNow: { editClock.now })
 		store.projects = [VaultProject(id: "project", name: "Project", path: folder, environments: environments)]
 		store.isUnlocked = true
 		store.selectedProjectId = "project"
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil })
 		return (store, folder, keychain)
 	}
 
-	private func waitUntil(_ condition: () -> Bool) async throws {
-		for _ in 0..<1000 {
-			if condition() { return }
-			try await Task.sleep(for: .milliseconds(5))
-		}
-		try #require(condition(), "Timed out")
-	}
 }
 
 extension SheetInteractionTests {

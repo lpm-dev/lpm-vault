@@ -110,8 +110,6 @@ enum NativeTestClick {
 final class SheetTestHost<V: View> {
 	let view: NSView
 	let window: NSWindow
-	/// Generous for loaded CI runners; successful waits return as soon as their condition holds.
-	private static var timeout: Duration { .seconds(10) }
 
 	/// `keepsRequestedSize` stops the hosting view from shrinking to the content's minimum size.
 	init(_ root: V, size: NSSize, keepsRequestedSize: Bool = false, usesHostingView: Bool = false) {
@@ -160,10 +158,10 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
-	/// Returns as soon as `condition` holds, or `false` after the timeout.
+	/// Returns as soon as `condition` holds, or `false` after `testWaitLimit`.
 	@discardableResult
 	func waitUntil(_ condition: () throws -> Bool) async throws -> Bool {
-		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 		while true {
 			view.layoutSubtreeIfNeeded()
 			if try condition() { return true }
@@ -176,7 +174,7 @@ final class SheetTestHost<V: View> {
 	/// some event actions, such as a field's Esc, only on a display pass.
 	@discardableResult
 	func waitUntilRendered(_ condition: () throws -> Bool) async throws -> Bool {
-		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 		while true {
 			_ = try snapshot(view)
 			if try condition() { return true }
@@ -193,8 +191,8 @@ final class SheetTestHost<V: View> {
 		return AccessibilityTree.text(in: target, root: window)
 	}
 
-	/// Returns as soon as the window says `expected`, or `false` after the
-	/// timeout. `footer` limits the search to the bottom points of the window.
+	/// Returns as soon as the window says `expected`, or `false` after
+	/// `testWaitLimit`. `footer` limits the search to the bottom points of the window.
 	/// `exactly` waits for an element saying all of `expected` and nothing
 	/// else, such as a section's label, which a longer label holding the same
 	/// words can't stand in for.
@@ -204,7 +202,7 @@ final class SheetTestHost<V: View> {
 		let window = targetWindow ?? self.window
 		let target = try #require(targetWindow?.contentView ?? view)
 		let area = footer.map { bottomBand(of: target, height: $0) }
-		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 		while true {
 			target.layoutSubtreeIfNeeded()
 			let text = AccessibilityTree.text(in: target, root: window, area: area)
@@ -220,9 +218,9 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
-	/// Returns as soon as `unexpected` is no longer said, or `false` after the timeout.
+	/// Returns as soon as `unexpected` is no longer said, or `false` after `testWaitLimit`.
 	func waitForTextToDisappear(_ unexpected: String) async throws -> Bool {
-		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 		while true {
 			if try await !text().contains(unexpected) { return true }
 			guard ContinuousClock.now < deadline else { return false }
@@ -277,7 +275,7 @@ final class SheetTestHost<V: View> {
 	private func waitForElement(saying label: String, in window: NSWindow, of target: NSView, region: CGRect?,
 		options: String.CompareOptions) async throws -> AccessibilityTree.Element
 	{
-		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 		while true {
 			target.layoutSubtreeIfNeeded()
 			if let element = Self.element(saying: label, in: window, of: target, region: region, options: options) { return element }
@@ -641,7 +639,7 @@ final class SheetTestHost<V: View> {
 	}
 
 	func generatorWindow() async throws -> NSWindow {
-		let deadline = ContinuousClock.now.advanced(by: Self.timeout)
+		let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 		while true {
 			if let panel = try await visibleGeneratorWindow() {
 				try await settle()
@@ -820,7 +818,7 @@ struct SheetInteractionTests {
 		try await host.settle()
 		try await host.click("Add to")
 		let didEnter = await withCheckedContinuation { continuation in
-			DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 3) == .success) }
+			DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + testWaitSeconds) == .success) }
 		}
 		try #require(didEnter)
 		try await host.settle()
@@ -848,7 +846,7 @@ struct SheetInteractionTests {
 		defer { release.signal() }
 		try await host.click("Add to")
 		let didEnter = await withCheckedContinuation { continuation in
-			DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 3) == .success) }
+			DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + testWaitSeconds) == .success) }
 		}
 		try #require(didEnter)
 		if changeProject { store.selectedProjectId = nil } else { store.lock() }

@@ -40,14 +40,14 @@ struct ObservedWaitTests {
 				return model.value == 3 ? model.value : nil
 			}
 		}
-		try await Task.sleep(for: .milliseconds(150))
+		try #require(try await waitUntil { reads.count == 1 })
+		try await quietPeriod()
 		#expect(reads.count == 1, "Nothing it read changed, so it wasn't read again")
 		model.other += 1
-		try await Task.sleep(for: .milliseconds(20))
+		try await quietPeriod()
 		#expect(reads.count == 1, "A change to what it didn't read doesn't wake it")
 		model.value = 1
-		try await Task.sleep(for: .milliseconds(20))
-		#expect(reads.count == 2)
+		#expect(try await waitUntil { reads.count == 2 })
 		model.value = 3
 		#expect(await waiting.value == 3)
 		#expect(reads.count == 3)
@@ -57,8 +57,14 @@ struct ObservedWaitTests {
 	func givesUp() async throws {
 		let model = Model()
 		#expect(await ObservedWait.value(within: .milliseconds(20)) { model.value == 1 ? true : nil } == nil)
-		let waiting = Task { await ObservedWait.value { model.value == 1 ? true : nil } }
-		try await Task.sleep(for: .milliseconds(20))
+		let reads = Reads()
+		let waiting = Task {
+			await ObservedWait.value { () -> Bool? in
+				reads.count += 1
+				return model.value == 1 ? true : nil
+			}
+		}
+		try #require(try await waitUntil { reads.count == 1 }, "It's waiting for a change")
 		waiting.cancel()
 		#expect(await waiting.value == nil)
 	}

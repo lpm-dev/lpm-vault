@@ -75,6 +75,8 @@ Native UI tests belong in `SheetInteractionTests` or a suite nested in it; a tes
 
 UI tests find and read views through the accessibility tree, as VoiceOver does: `waitForText`, `text()`, `click`, `waitForElement(saying:)` and `lines(in:)` on `SheetTestHost`, built on `AccessibilityTree`. Match what a view says, its accessibility label or text; letter case doesn't count, since some text is drawn uppercased. A control that shows only an icon needs a label, which is also how VoiceOver users know it. Don't read text from pixels: check pixels only for what's visual, such as color, alignment or overlap. Secret values are kept out of the tree by design, so assert what their labels say, such as "Current value for TOKEN revealed visually" or "values hidden", rather than the value.
 
+Every test waits for the state its next step needs, never for a length of time; a loaded runner can pause the test process for tens of seconds, and a test has to pass then too. `waitUntil` in `LPMVault/Tests/Waiting.swift` checks a condition until it holds; its limit, `testWaitLimit`, only bounds a failure. Better still is a gate the test controls, such as a mock that holds a request until the test releases it, which says exactly when each step happens. Code that measures the time between events takes a clock, and a test moves a `ManualClock` by hand. Check that something doesn't happen with `quietPeriod()` only when no state says the work that could do it is over. Don't assert how long something took: count what a fast path does differently, such as how often it rebuilds an index, or give it an input that a slower algorithm couldn't finish within the test's time limit.
+
 Before you open a pull request, also run the rest of the CI checks from the repository root:
 
 ```sh

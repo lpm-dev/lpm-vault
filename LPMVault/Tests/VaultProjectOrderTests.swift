@@ -144,20 +144,19 @@ extension SheetInteractionTests {
 			#expect(reorder.lift?.projectId == (up ? "zz-01" : "alpha"))
 			#expect(reorder.target == 2)
 			#expect(reorder.shift(at: 2) == (up ? 1 : -1) * (reorder.lift?.height ?? 0), "Zulu makes room for the dragged project")
-			try await settleAnimations(in: host)
-			let markers = try markerRows(in: host)
-			if markers.isEmpty { try host.attachSnapshot(named: "sidebar-drag-\(direction)") }
-			#expect((1...4).contains(markers.count), """
-				One 2-point landing line marks the drop; offset \(reorder.offset), \
+			// Zulu slides into the dragged project's place, so the line comes to sit where that place met Zulu.
+			let (below, above) = up ? (rows[3], rows[2]) : (rows[2], rows[1])
+			let placed = try await host.waitUntil {
+				guard (1...4).contains(try markerRows(in: host).count), let line = try lineCenter(in: host) else { return false }
+				return line > below.maxY && line < above.minY
+			}
+			if !placed { try host.attachSnapshot(named: "sidebar-drag-\(direction)") }
+			#expect(placed, """
+				One 2-point landing line marks the drop, between \(below) and \(above); offset \(reorder.offset), \
 				frames \((reorder.lift?.order ?? []).compactMap { reorder.frames[$0] }), rows \(rows)
 				""")
-			let line = try lineCenter(in: host)
-			// Zulu slides into the dragged project's place, so the line sits where that place met Zulu.
-			let (below, above) = up ? (rows[3], rows[2]) : (rows[2], rows[1])
-			#expect(line > below.maxY && line < above.minY, "Line at \(line) must fall between \(below) and \(above)")
 			try mouse(.leftMouseUp, at: end, in: host)
-			try await settleAnimations(in: host)
-			#expect(try markerRows(in: host).isEmpty, "The landing line must not outlive the drag")
+			#expect(try await host.waitUntil { try markerRows(in: host).isEmpty }, "The landing line must not outlive the drag")
 			#expect(reorder.lift == nil)
 			let expected = up ? ["alpha", "middle", "zz-01", "zulu", "zz-00"] : ["middle", "zulu", "alpha", "zz-00", "zz-01"]
 			#expect(store.visibleVaults(matching: "").map(\.id) == expected)
@@ -179,8 +178,7 @@ extension SheetInteractionTests {
 			#expect(reorder.target == 0)
 			try drag(in: host, from: nil, to: NSPoint(x: 140, y: rows[1].midY + 6), release: false)
 			#expect(reorder.target == 1)
-			try await settleAnimations(in: host)
-			#expect(try markerRows(in: host).isEmpty)
+			#expect(try await host.waitUntil { try markerRows(in: host).isEmpty })
 			try mouse(.leftMouseUp, at: NSPoint(x: 140, y: rows[1].midY + 6), in: host)
 			try await host.settle()
 			#expect(store.visibleVaults(matching: "").map(\.id) == ["alpha", "middle", "zulu"])
@@ -202,8 +200,7 @@ extension SheetInteractionTests {
 			try host.sendEscape()
 			#expect(reorder.lift == nil)
 			try drag(in: host, from: nil, to: NSPoint(x: 140, y: rows[0].midY + 12), release: true)
-			try await settleAnimations(in: host)
-			#expect(try markerRows(in: host).isEmpty)
+			#expect(try await host.waitUntil { try markerRows(in: host).isEmpty })
 			#expect(store.visibleVaults(matching: "").map(\.id) == ["alpha", "middle", "zulu"])
 			#expect(preferences.stringArray(forKey: VaultStore.projectOrderKey) == ["alpha", "middle", "zulu"])
 		}
@@ -222,8 +219,7 @@ extension SheetInteractionTests {
 			#expect(reorder.target == 0)
 			try drag(in: host, from: nil, to: NSPoint(x: -60, y: rows[0].midY + 8), release: false)
 			#expect(reorder.target == 2)
-			try await settleAnimations(in: host)
-			#expect(try markerRows(in: host).isEmpty)
+			#expect(try await host.waitUntil { try markerRows(in: host).isEmpty })
 			try mouse(.leftMouseUp, at: NSPoint(x: -60, y: rows[0].midY + 8), in: host)
 			try await host.settle()
 			#expect(reorder.lift == nil)
@@ -266,14 +262,13 @@ extension SheetInteractionTests {
 			try drag(in: host, from: NSPoint(x: 140, y: rows[0].midY), to: end, release: false)
 			#expect(reorder.target == 2)
 			#expect(reorder.landingEdge(at: 2) == .bottom)
-			try await settleAnimations(in: host)
-			let line = try lineCenter(in: host)
 			// Alpha's label sits at the middle of its row, which tells where list coordinates fall in the window.
 			let expected = rows[0].midY - (zulu.maxY - alpha.height - alpha.midY)
-			#expect(abs(line - expected) <= 1.5, "Line at \(line), expected below Zulu's environments at \(expected)")
+			let placed = try await host.waitUntil { try lineCenter(in: host).map { abs($0 - expected) <= 1.5 } ?? false }
+			let line = try lineCenter(in: host)
+			#expect(placed, "The line comes to sit below Zulu's environments, at \(expected); it's at \(line.map(String.init(describing:)) ?? "nowhere")")
 			try mouse(.leftMouseUp, at: end, in: host)
-			try await settleAnimations(in: host)
-			#expect(store.visibleVaults(matching: "").map(\.id) == ["middle", "zulu", "alpha", "zz-00", "zz-01"])
+			#expect(try await host.waitUntil { store.visibleVaults(matching: "").map(\.id) == ["middle", "zulu", "alpha", "zz-00", "zz-01"] })
 		}
 
 		@Test("dragging to an edge scrolls the list, and the project lands beyond what was visible")
@@ -304,12 +299,10 @@ extension SheetInteractionTests {
 			#expect(scrollView.contentView.bounds.origin.y >= end - 1, "The list should scroll to its end while the pointer holds at the edge")
 			try mouse(.leftMouseDragged, at: edge, in: host)
 			try mouse(.leftMouseUp, at: edge, in: host)
-			try await settleAnimations(in: host)
-			let order = store.visibleVaults(matching: "").map(\.id)
-			let landing = try #require(order.firstIndex(of: first))
-			#expect(landing == order.count - 1, "\(first) landed at \(landing) of \(order.count)")
+			#expect(try await host.waitUntil { store.visibleVaults(matching: "").map(\.id).last == first },
+				"\(first) lands last; the list reads \(store.visibleVaults(matching: "").map(\.id))")
 			#expect(reorder.autoscrollVelocity == 0)
-			#expect(!scroller.isScrolling)
+			#expect(try await host.waitUntil { !scroller.isScrolling })
 		}
 
 		@Test("a drag ends when the projects it began with change", arguments: ["refresh", "account", "lock"])
@@ -339,8 +332,7 @@ extension SheetInteractionTests {
 			try await host.settle()
 			#expect(reorder.lift == nil)
 			try drag(in: host, from: nil, to: NSPoint(x: 140, y: end.y + 4), release: true)
-			try await settleAnimations(in: host)
-			#expect(try markerRows(in: host).isEmpty)
+			#expect(try await host.waitUntil { try markerRows(in: host).isEmpty })
 			let saved = preferences.stringArray(forKey: VaultStore.projectOrderKey) ?? []
 			#expect(saved.filter { ["alpha", "middle", "zulu"].contains($0) } == ["alpha", "middle", "zulu"])
 		}
@@ -736,16 +728,10 @@ extension SheetInteractionTests {
 			host.window.sendEvent(event)
 		}
 
-		/// Lets the 160-millisecond slides and fades of a drag finish, then settles.
-		private func settleAnimations<V: View>(in host: SheetTestHost<V>) async throws {
-			try await Task.sleep(for: .milliseconds(250))
-			try await host.settle()
-		}
-
-		/// The landing line's center, in window coordinates.
-		private func lineCenter<V: View>(in host: SheetTestHost<V>) throws -> CGFloat {
+		/// The landing line's center, in window coordinates; nil while none is drawn.
+		private func lineCenter<V: View>(in host: SheetTestHost<V>) throws -> CGFloat? {
 			let rows = try markerRows(in: host)
-			let first = try #require(rows.first), last = try #require(rows.last)
+			guard let first = rows.first, let last = rows.last else { return nil }
 			return host.view.bounds.height - CGFloat(first + last + 1) / 4
 		}
 

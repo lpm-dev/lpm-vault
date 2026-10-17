@@ -132,11 +132,7 @@ extension SheetInteractionTests {
 			store.openProject(id: project.id)
 			defer { store.lock() }
 			store.reloadKeyDescriptions()
-			for _ in 0..<500 {
-				if store.valueChecks[project.id] != nil { break }
-				try await Task.sleep(for: .milliseconds(10))
-			}
-			_ = try #require(store.valueChecks[project.id])
+			try #require(try await waitUntil { store.valueChecks[project.id] != nil })
 			let host = SheetTestHost(
 				VaultInspectorView(
 					store: store, project: project, environments: ["default"],
@@ -315,22 +311,13 @@ extension SheetInteractionTests {
 			#expect(try await inspectorText().contains("production"))
 
 			try host.enterValue("https://db.example.com", at: 1)
-			var cleared = false
-			for _ in 0..<100 where !cleared {
-				cleared = try await !inspectorText().contains("Not a valid URL")
-				if !cleared { try await Task.sleep(for: .milliseconds(20)) }
-			}
-			#expect(cleared, "The fixed value passes before it is saved")
+			#expect(try await waitUntil { try await !inspectorText().contains("Not a valid URL") }, "The fixed value passes before it is saved")
 			#expect(store.valueChecks[project.id]?.problems(of: "DATABASE_URL", in: "production").isEmpty == false, "The saved value still fails until it is saved")
 
 			try #"{"envSchema":{"vars":{"DATABASE_URL":{"format":"email"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 			store.reloadKeyDescriptions()
-			var rechecked = false
-			for _ in 0..<100 where !rechecked {
-				rechecked = try await inspectorText().contains("Not a valid email address")
-				if !rechecked { try await Task.sleep(for: .milliseconds(20)) }
-			}
-			#expect(rechecked, "Changing lpm.json rechecks the unchanged unsaved value")
+			#expect(try await waitUntil { try await inspectorText().contains("Not a valid email address") },
+				"Changing lpm.json rechecks the unchanged unsaved value")
 		}
 	}
 }

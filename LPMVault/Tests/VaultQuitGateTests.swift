@@ -382,8 +382,7 @@ struct VaultQuitGateTests {
 		#expect(delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 0), "⌘Q is used up, so the Quit command doesn't see it")
 		deciding = false
 		#expect(delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 1))
-		let deadline = ContinuousClock.now + .seconds(5)
-		while terminations == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+		#expect(try await waitUntil { terminations > 0 })
 		#expect(terminations == 1)
 	}
 
@@ -498,7 +497,7 @@ extension SheetInteractionTests {
 				wait.terminated = true
 				// AppKit waits for a later answer in a modal run loop, and the answer comes from main-actor work.
 				Task { @MainActor in wait.answered = true }
-				let deadline = Date(timeIntervalSinceNow: 2)
+				let deadline = Date(timeIntervalSinceNow: testWaitSeconds)
 				while !wait.answered, Date() < deadline {
 					_ = RunLoop.current.run(mode: .modalPanel, before: Date(timeIntervalSinceNow: 0.01))
 				}
@@ -506,9 +505,7 @@ extension SheetInteractionTests {
 			}
 			// The gate's timers run as blocks on the main queue.
 			DispatchQueue.main.async { delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 0) }
-			let deadline = ContinuousClock.now + .seconds(5)
-			while !wait.terminated, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-			#expect(wait.terminated)
+			#expect(try await waitUntil { wait.terminated })
 			#expect(wait.answeredWhileWaiting, "Main-actor work runs while AppKit waits for the answer")
 		}
 	}

@@ -149,11 +149,7 @@ struct ProjectSettingsTests {
 		}
 		#expect(store.projectSettingsDrafts.isEmpty)
 		let copy = fixture.images.appending(path: file)
-		let deadline = ContinuousClock.now + .seconds(5)
-		while FileManager.default.fileExists(atPath: copy.path), ContinuousClock.now < deadline {
-			try await Task.sleep(for: .milliseconds(10))
-		}
-		#expect(!FileManager.default.fileExists(atPath: copy.path))
+		#expect(try await waitUntil { !FileManager.default.fileExists(atPath: copy.path) })
 	}
 
 	@Test("the header's … menu opens settings, offers the folder's actions only when there is one, and renames and deletes")
@@ -253,8 +249,7 @@ struct ProjectSettingsTests {
 		let gate = DispatchSemaphore(value: 0)
 		fixture.keychain.blockNextSaveEnvironments = { gate.wait() }
 		let save = Task { await store.saveProjectSettings(of: "demo") }
-		let deadline = ContinuousClock.now + .seconds(5)
-		while fixture.keychain.saveEnvironmentsCallCount == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+		try #require(try await waitUntil { fixture.keychain.saveEnvironmentsCallCount > 0 })
 		store.selectedAccount = .org("acme")
 		gate.signal()
 		await save.value

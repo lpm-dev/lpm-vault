@@ -19,6 +19,9 @@ final class ClipboardManager {
 		self.clearDelay = clearDelay
 	}
 
+	/// Whether a copied secret is still to be cleared once its time is up.
+	var isClearScheduled: Bool { clearTask != nil }
+
 	nonisolated static func dotenvText(for secrets: [String: String]) -> String {
 		EnvFileCodec.format(secrets)
 	}

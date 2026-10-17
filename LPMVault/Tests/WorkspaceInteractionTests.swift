@@ -61,8 +61,7 @@ extension SheetInteractionTests {
 				}
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
 				divider.onDragEnded?(-2000)
-				try await host.settle()
-				#expect(divider.accessibilityValue() as? String == "160 points")
+				#expect(try await host.waitUntil { divider.accessibilityValue() as? String == "160 points" })
 				store.showAccount()
 				#expect(try await host.waitUntil { !resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
 				store.openProject(id: "workspace")
@@ -72,7 +71,7 @@ extension SheetInteractionTests {
 				let gate = DispatchSemaphore(value: 0)
 				defer { gate.signal() }
 				store.selectedProjectId = nil
-				keychain.blockNextListProjects = { _ = gate.wait(timeout: .now() + 15) }
+				keychain.blockNextListProjects = { _ = gate.wait(timeout: .now() + testWaitSeconds) }
 				store.openProject(id: "workspace")
 				#expect(try await host.waitForText("Loading Workspace"))
 				gate.signal()
@@ -310,8 +309,12 @@ extension SheetInteractionTests {
 			if edited { try host.enterValue("unsaved-workspace-draft") }
 			keychain.simulateCLISet(vaultId: "workspace", environment: "default", key: "TOKEN", value: "current-cli-value")
 			await store.refreshLocalState()
-			try await host.settle()
-			#expect(host.value == (edited ? "unsaved-workspace-draft" : "current-cli-value"))
+			if edited {
+				try await host.settle()
+				#expect(host.value == "unsaved-workspace-draft", "The unsaved edit stays")
+			} else {
+				#expect(try await host.waitUntil { host.value == "current-cli-value" })
+			}
 			try host.click(.copy)
 			#expect(try await host.waitUntil {
 				store.clipboard.pasteboard.string(forType: .string) == (edited ? "unsaved-workspace-draft" : "current-cli-value")
@@ -867,7 +870,7 @@ extension SheetInteractionTests {
 				let header = try await host.drawnFrame(saying: "KEY", region: CGRect(x: 0.15, y: 0.75, width: 0.5, height: 0.1))
 				keyRegion = keyColumnRegion(header: header, size: host.view.bounds.size)
 			}
-			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+			let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 			while true {
 				let lines = host.lines(in: keyRegion)
 				if keysFromTop(expected, lines: lines) == expected { return true }

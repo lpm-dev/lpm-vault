@@ -75,11 +75,7 @@ struct VaultPaneLayoutTests {
 		defer { store.lock() }
 		store.projects = [project]
 		store.selectedProjectId = project.id
-		for _ in 0..<1000 {
-			if store.workspaceSnapshots[project.id] != nil { break }
-			try await Task.sleep(for: .milliseconds(10))
-		}
-		_ = try #require(store.workspaceSnapshots[project.id])
+		try #require(try await waitUntil { store.workspaceSnapshots[project.id] != nil })
 		let host = NSHostingView(rootView: VaultWorkspaceView(store: store)
 			.environment(UpdateChecker())
 			.environment(\.colorScheme, .light))
@@ -166,10 +162,7 @@ struct VaultPaneLayoutTests {
 		defer { store.lock() }
 		store.projects = [project]
 		store.selectedProjectId = project.id
-		for _ in 0..<1000 {
-			if store.workspaceSnapshots[project.id] != nil { break }
-			try await Task.sleep(for: .milliseconds(10))
-		}
+		try #require(try await waitUntil { store.workspaceSnapshots[project.id] != nil })
 		let host = NSHostingView(rootView: VaultWorkspaceView(store: store)
 			.environment(UpdateChecker())
 			.environment(\.colorScheme, .light))
@@ -219,7 +212,7 @@ struct VaultPaneLayoutTests {
 	/// Checks after every sleep, including one that a busy main thread stalls
 	/// past the deadline, before giving up.
 	private func waitForLayout<V: View>(_ host: NSHostingView<V>, until condition: () -> Bool) async throws {
-		let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+		let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 		while true {
 			host.layoutSubtreeIfNeeded()
 			host.displayIfNeeded()

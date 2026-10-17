@@ -433,8 +433,8 @@ struct ProjectEnvSchemaFileTests {
 		let edit = Task {
 			await ProjectEnvSchemaFile.save(.init(description: .init(key: "A", text: "Locked")), inFolder: folder, vaultID: vaultID)
 		}
-		try await Task.sleep(for: .milliseconds(200))
-		#expect(try contents(folder) == #"{"vault": "\#(vaultID)"}"#)
+		try await quietPeriod()
+		#expect(try contents(folder) == #"{"vault": "\#(vaultID)"}"#, "Nothing is written while the LPM CLI holds the lock")
 		flock(lock, LOCK_UN)
 		close(lock)
 		#expect(try await edit.value.get().rules.descriptions == ["A": "Locked"])

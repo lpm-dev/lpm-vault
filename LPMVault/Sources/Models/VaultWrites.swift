@@ -17,6 +17,9 @@ final class VaultWrites {
 
 	var isWriting: Bool { !running.isEmpty }
 
+	/// Whether something is waiting for the writes to finish.
+	var hasWaiters: Bool { !waiters.isEmpty }
+
 	func begin() -> Write {
 		nextID += 1
 		running.insert(nextID)

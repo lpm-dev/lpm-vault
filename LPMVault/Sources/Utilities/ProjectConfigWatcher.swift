@@ -4,6 +4,8 @@ import Foundation
 /// Reports changes to files in a project folder, such as its lpm.json and
 /// the schemas it imports, or its icon files, whether a file is written in
 /// place or replaced, as editors, the LPM CLI and git save it.
+/// The first element arrives once watching has begun, so a caller that reads
+/// the files on every element, the first included, misses no change.
 /// Changes in quick succession arrive as one, and at least every
 /// `maximumDelay` while they continue. A folder that's missing, or deleted
 /// and made again, is watched once it's at its path.
@@ -93,14 +95,11 @@ private final class Watch: @unchecked Sendable {
 	private let root: String
 	/// The project folder, then the others, each after the folder it's in.
 	private let folders: [Folder]
-	private let settling: DispatchTimeInterval
-	private let maximumDelay: DispatchTimeInterval
+	private var bursts: ChangeSettling
 	private let retry: DispatchTimeInterval
 	private let onChange: @Sendable () -> Void
 	private let queue = DispatchQueue(label: "dev.lpm.vault.lpm-json-watch")
 	private var pending: DispatchWorkItem?
-	/// When the first change of the burst being settled arrived.
-	private var burstStart: DispatchTime?
 	private var stopped = false
 
 	/// `files` are paths in the project folder `root`; one that leaves the
@@ -126,14 +125,17 @@ private final class Watch: @unchecked Sendable {
 			folder(at: components).files[name] = File()
 		}
 		folders = order
-		self.settling = settling
-		self.maximumDelay = maximumDelay
+		bursts = ChangeSettling(settling: settling, maximumDelay: maximumDelay)
 		self.retry = retry
 		self.onChange = onChange
 	}
 
+	/// Watches every folder and file, then reports once, as watching has begun.
 	func start() {
-		queue.async { [self] in watch(folders[0]) }
+		queue.async { [self] in
+			watch(folders[0])
+			if !stopped { onChange() }
+		}
 	}
 
 	func stop() {
@@ -286,15 +288,39 @@ private final class Watch: @unchecked Sendable {
 	private func changed() {
 		guard !stopped else { return }
 		pending?.cancel()
-		let now = DispatchTime.now()
-		let start = burstStart ?? now
-		burstStart = start
 		let work = DispatchWorkItem { [weak self] in
 			guard let self, !stopped else { return }
-			burstStart = nil
+			bursts.reported()
 			onChange()
 		}
 		pending = work
-		queue.asyncAfter(deadline: min(now + settling, start + maximumDelay), execute: work)
+		queue.asyncAfter(deadline: bursts.reportTime(forChangeAt: .now()), execute: work)
+	}
+}
+
+/// When a burst of changes is reported: once no change has followed for
+/// `settling`, or `maximumDelay` after the burst began, whichever is sooner.
+struct ChangeSettling {
+	let settling: DispatchTimeInterval
+	let maximumDelay: DispatchTimeInterval
+	/// When the first change of the burst being settled arrived.
+	private var burstStart: DispatchTime?
+
+	init(settling: DispatchTimeInterval, maximumDelay: DispatchTimeInterval) {
+		self.settling = settling
+		self.maximumDelay = maximumDelay
+	}
+
+	/// When to report the burst that a change at `now` joins, or begins;
+	/// this replaces the time given for the burst's earlier changes.
+	mutating func reportTime(forChangeAt now: DispatchTime) -> DispatchTime {
+		let start = burstStart ?? now
+		burstStart = start
+		return min(now + settling, start + maximumDelay)
+	}
+
+	/// Ends the burst, once it's reported; the next change begins another.
+	mutating func reported() {
+		burstStart = nil
 	}
 }

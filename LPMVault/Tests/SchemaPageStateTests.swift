@@ -85,9 +85,7 @@ struct SchemaPageStateTests {
 		defer { try? FileManager.default.removeItem(atPath: folder) }
 		try #"{"envSchema":{"vars":{"PORT":{"format":"port"},"Api_Url":{}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		let store = try await Self.store(folder: folder, values: ["PORT": "3000", "API_URL": "x", "EXTRA": "y", "Extra2": "z"])
-		let clock = ContinuousClock()
-		let deadline = clock.now.advanced(by: .seconds(10))
-		while store.undeclaredSchemaKeys(for: "schema-page-state").isEmpty, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+		try #require(try await waitUntil { !store.undeclaredSchemaKeys(for: "schema-page-state").isEmpty })
 		store.editSchemaDraft(in: "schema-page-state") { $0.set(.declared(.object([])), for: .key("extra2")) }
 		let listed = store.undeclaredSchemaKeys(for: "schema-page-state")
 		#expect(listed.map(\.key).sorted() == ["API_URL", "EXTRA", "Extra2"])
@@ -127,10 +125,7 @@ struct SchemaPageStateTests {
 
 	@MainActor
 	static func waitForEvaluation(_ store: VaultStore) async throws {
-		let clock = ContinuousClock()
-		let deadline = clock.now.advanced(by: .seconds(10))
-		while store.currentSchemaDraftEvaluation(for: "schema-page-state") == nil, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-		try #require(store.currentSchemaDraftEvaluation(for: "schema-page-state") != nil)
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "schema-page-state") != nil })
 	}
 
 	@MainActor
@@ -145,10 +140,7 @@ struct SchemaPageStateTests {
 		store.openProject(id: project.id)
 		await store.refreshCliAccess()
 		store.reloadKeyDescriptions()
-		let clock = ContinuousClock()
-		let deadline = clock.now.advanced(by: .seconds(10))
-		while store.keyDescriptions[project.id]?.schema?.overview == nil, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-		try #require(store.keyDescriptions[project.id]?.schema?.overview != nil)
+		try #require(try await waitUntil { store.keyDescriptions[project.id]?.schema?.overview != nil })
 		return store
 	}
 }
@@ -460,7 +452,7 @@ extension SheetInteractionTests {
 		}
 
 		private func panelShows(_ text: String, in host: SheetTestHost<some View>) async throws -> Bool {
-			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+			let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 			while ContinuousClock.now < deadline {
 				let lines = host.lines(in: Self.panel)
 				if AccessibleText(lines.map(\.text)).contains(text) { return true }
@@ -487,7 +479,7 @@ extension SheetInteractionTests {
 		}
 
 		private func waitForStatusBar(in host: SheetTestHost<some View>, _ condition: (AccessibleText) -> Bool) async throws -> Bool {
-			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+			let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 			while ContinuousClock.now < deadline {
 				if try await condition(statusBarText(in: host)) { return true }
 				try await Task.sleep(for: .milliseconds(20))
@@ -505,7 +497,7 @@ extension SheetInteractionTests {
 		}
 
 		private func waitForTable(in host: SheetTestHost<some View>, _ condition: (AccessibleText) -> Bool) async throws -> Bool {
-			let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+			let deadline = ContinuousClock.now.advanced(by: testWaitLimit)
 			while ContinuousClock.now < deadline {
 				if try await condition(tableText(in: host)) { return true }
 				try await Task.sleep(for: .milliseconds(20))

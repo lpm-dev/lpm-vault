@@ -495,7 +495,7 @@ struct BoundedHTTPResponseTests {
 		let body = Data("four".utf8)
 		BoundedResponseRoutes.shared.register(host: host, body: body)
 
-		let configuration = URLSessionConfiguration.ephemeral
+		let configuration = testSessionConfiguration()
 		configuration.protocolClasses = [BoundedResponseURLProtocol.self]
 		let session = URLSession(
 			configuration: configuration,
@@ -529,7 +529,7 @@ struct BoundedHTTPResponseTests {
 		let body = Data("delegate-body".utf8)
 		BoundedResponseRoutes.shared.register(host: host, body: body)
 
-		let configuration = URLSessionConfiguration.ephemeral
+		let configuration = testSessionConfiguration()
 		configuration.protocolClasses = [BoundedResponseURLProtocol.self]
 		let session = URLSession(
 			configuration: configuration,
@@ -565,7 +565,7 @@ struct BoundedHTTPResponseTests {
 		)
 		BoundedResponseRoutes.shared.register(host: validHost, body: validBody)
 
-		let configuration = URLSessionConfiguration.ephemeral
+		let configuration = testSessionConfiguration()
 		configuration.protocolClasses = [BoundedResponseURLProtocol.self]
 		let session = URLSession(
 			configuration: configuration,

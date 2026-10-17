@@ -97,6 +97,9 @@ struct ProjectEnvSchemaDraft: Sendable {
 	/// Where each item is in `changes` and `conflicts`, kept as they change.
 	private var changePositions: [Item: Int] = [:]
 	private var conflictPositions: [Item: Int] = [:]
+	/// How often the positions have been built again from every change or
+	/// conflict, the one step of an edit whose work grows with the draft.
+	private(set) var positionRebuilds = 0
 
 	init(schema: LPMConfigJSON?) {
 		let schema = schema == .null ? nil : schema
@@ -293,11 +296,13 @@ struct ProjectEnvSchemaDraft: Sendable {
 	private mutating func replaceChanges(_ new: [Change]) {
 		changes = new
 		changePositions = Self.positions(of: new.map(\.item))
+		positionRebuilds += 1
 	}
 
 	private mutating func replaceConflicts(_ new: [Conflict]) {
 		conflicts = new
 		conflictPositions = Self.positions(of: new.map(\.item))
+		positionRebuilds += 1
 	}
 
 	/// Points the draft's references to `key`, in Required when and in group
@@ -779,7 +784,7 @@ private struct MemberName: Hashable {
 }
 
 extension ProjectEnvSchemaDraft: Equatable {
-	/// The indexes follow from the schema and the changes, so they don't take part.
+	/// The indexes follow from the schema and the changes, so they don't take part, nor does how often they were built.
 	static func == (lhs: Self, rhs: Self) -> Bool {
 		lhs.changes == rhs.changes && lhs.conflicts == rhs.conflicts && lhs.schema == rhs.schema && lhs.removals == rhs.removals
 			&& lhs.renamedGroups == rhs.renamedGroups

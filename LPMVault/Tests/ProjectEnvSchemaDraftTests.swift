@@ -65,22 +65,17 @@ struct ProjectEnvSchemaDraftTests {
 
 	@Test("setting items one at a time, or dropping many at once, takes time in proportion to how many")
 	func setScalesLinearly() {
-		func time(_ count: Int) -> Duration {
-			let items = (0..<count).map { Draft.Item.key("KEY_\($0)") }
-			return (0..<5).map { _ in
-				ContinuousClock().measure {
-					var draft = Draft(schema: nil)
-					for item in items { draft.set(.declared(.object([])), for: item) }
-					draft.set(items.map { ($0, .absent) })
-				}
-			}.min() ?? .zero
-		}
-		// Long enough runs, best of several, that a busy runner's pauses don't decide it:
-		// four times the items takes about four times as long, and sixteen if it were quadratic.
-		_ = time(1000)
-		let small = time(4000)
-		let large = time(16000)
-		#expect(large < small * 10, "16000 items took \(large), 4000 took \(small)")
+		let items = (0..<4_000).map { Draft.Item.key("KEY_\($0)") }
+		var draft = Draft(schema: nil)
+		for item in items { draft.set(.declared(.object([])), for: item) }
+		#expect(draft.changeCount == items.count)
+		#expect(draft.positionRebuilds == 0, "Each item set keeps the positions current without going over every change")
+		draft.set(items.map { ($0, .absent) })
+		#expect(draft.isEmpty)
+		#expect(draft.positionRebuilds == 1, "Dropping every item goes over the changes once")
+		draft.set(.declared(.object([])), for: items[0])
+		draft.set(.absent, for: items[0])
+		#expect(draft.positionRebuilds == 2, "Dropping one item goes over the changes once more")
 	}
 
 	// MARK: - Applying
@@ -708,7 +703,7 @@ struct SchemaDraftStoreTests {
 
 		store.editSchemaDraft(in: "project") { $0.set(.declared(try! self.json(#"{"format":"integer","max":"5"}"#)), for: .key("RETRY")) }
 		#expect(store.schemaDraft(for: "project")?.changedItems == [.key("RETRY")])
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		let evaluation = try #require(store.currentSchemaDraftEvaluation(for: "project"))
 		#expect(evaluation.overview?.rule(for: "RETRY")?.badges.map(\.text) == ["Integer", "≤ 5"])
 		#expect(evaluation.check?.problems(of: "RETRY", in: "default") == [.init(key: "RETRY", kind: .constraint("max"))])
@@ -717,7 +712,7 @@ struct SchemaDraftStoreTests {
 		#expect(store.schemaDraft(for: "project") == nil)
 		#expect(store.schemaDraftEvaluations["project"] == nil)
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""RETRY""#))
-		try await waitUntil { store.keyDescriptions["project"]?.schema?.overview?.rule(for: "RETRY") != nil }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview?.rule(for: "RETRY") != nil })
 		#expect(store.schemaDraftRebases["project"] == nil, "The app's own save isn't a change on disk")
 	}
 
@@ -729,7 +724,7 @@ struct SchemaDraftStoreTests {
 
 		try #"{"envSchema":{"vars":{"PORT":{"format":"port"},"RETRY":{"format":"integer","max":"3"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.schemaDraftRebases["project"] != nil }
+		try #require(try await waitUntil { store.schemaDraftRebases["project"] != nil })
 		#expect(store.schemaDraftRebases["project"]?.changedItems == [.key("RETRY")])
 		#expect(store.schemaDraft(for: "project")?.changedItems == [.key("PORT")])
 		store.dismissSchemaDraftRebase(in: "project")
@@ -756,7 +751,7 @@ struct SchemaDraftStoreTests {
 		let project = try #require(store.projects.first)
 		store.keyDrafts.edit(project, key: "TOKEN") { $0.setKeyDescription("Bearer token", saved: "") }
 		try await store.saveKeyDraft(.init(projectID: "project", key: "TOKEN"))
-		try await waitUntil { store.schemaDraft(for: "project")?.schema?["vars"]?["TOKEN"]?["description"] != nil }
+		try #require(try await waitUntil { store.schemaDraft(for: "project")?.schema?["vars"]?["TOKEN"]?["description"] != nil })
 		#expect(store.schemaDraftRebases["project"] == nil)
 		#expect(store.schemaDraft(for: "project")?.changedItems == [.key("PORT")])
 	}
@@ -766,14 +761,14 @@ struct SchemaDraftStoreTests {
 		let (store, folder) = try await makeStore(#"{"envSchema":{"extends":["base.json"],"vars":{"PORT":{"format":"port"}}}}"#, files: ["base.json": #"{"vars":{"A":{}}}"#])
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		store.editSchemaDraft(in: "project") { $0.set(.declared(try! self.json(#"{"format":"url"}"#)), for: .key("PORT")) }
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		let before = store.currentSchemaDraftEvaluation(for: "project")?.dependencies
 		try #"{ "vars": { "A": {} } }"#.write(toFile: folder + "/base.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil {
+		try #require(try await waitUntil {
 			guard let current = store.currentSchemaDraftEvaluation(for: "project") else { return false }
 			return current.dependencies != before
-		}
+		})
 		try await store.saveSchemaDraft(in: "project")
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""url""#))
 	}
@@ -784,16 +779,16 @@ struct SchemaDraftStoreTests {
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		let original = try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8)
 		store.editSchemaDraft(in: "project") { $0.set(.declared(try! self.json(#"{"format":"url"}"#)), for: .key("PORT")) }
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		let reviewed = store.currentSchemaDraftEvaluation(for: "project")?.dependencies
 		try #"{"vars":{"A":{"required":true}}}"#.write(toFile: folder + "/base.json", atomically: true, encoding: .utf8)
 		await #expect(throws: ProjectEnvSchemaFile.DraftSaveError.importsChanged) { try await store.saveSchemaDraft(in: "project") }
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8) == original)
 		#expect(ProjectEnvSchemaFile.DraftSaveError.importsChanged.message == "An imported schema changed after you reviewed the rules. Check the changes again, then save.")
-		try await waitUntil {
+		try #require(try await waitUntil {
 			guard let current = store.currentSchemaDraftEvaluation(for: "project") else { return false }
 			return current.dependencies != reviewed
-		}
+		})
 		try await store.saveSchemaDraft(in: "project")
 		#expect(try String(contentsOfFile: folder + "/lpm.json", encoding: .utf8).contains(#""url""#))
 	}
@@ -803,7 +798,7 @@ struct SchemaDraftStoreTests {
 		let (store, folder) = try await makeStore(#"{"envSchema":{"extends":["base.json"],"vars":{"PORT":{"format":"port"},"RETRY":{}}}}"#, files: ["base.json": #"{"vars":{"A":{}}}"#])
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		store.editSchemaDraft(in: "project") { $0.set(.declared(try! self.json(#"{"format":"url"}"#)), for: .key("PORT")) }
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		try #"{"envSchema":{"extends":["base.json"],"vars":{"RETRY":{},"PORT":{"format":"port"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		try #"{"vars":{"A":{"required":true}}}"#.write(toFile: folder + "/base.json", atomically: true, encoding: .utf8)
 		await #expect(throws: ProjectEnvSchemaFile.DraftSaveError.importsChanged) { try await store.saveSchemaDraft(in: "project") }
@@ -844,9 +839,9 @@ struct SchemaDraftStoreTests {
 		// The queue is shared by every test; a failure must not leave it blocked.
 		defer { gate.signal() }
 		let save = Task { @MainActor in try await store.saveSchemaDraft(in: "project") }
-		try await waitUntil { store.savingSchemaDrafts.contains("project") }
+		try #require(try await waitUntil { store.savingSchemaDrafts.contains("project") })
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"]?.rootSchema?["vars"]?["RETRY"]?["max"] != nil }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.rootSchema?["vars"]?["RETRY"]?["max"] != nil })
 		gate.signal()
 		await #expect(throws: ProjectEnvSchemaFile.DraftSaveError.file(.changed)) { try await save.value }
 		#expect(store.schemaDraft(for: "project")?.schema == store.keyDescriptions["project"]?.rootSchema)
@@ -864,7 +859,7 @@ struct SchemaDraftStoreTests {
 		let project = try #require(store.projects.first)
 		store.keyDrafts.edit(project, key: "PORT") { $0.setKeyDescription("HTTP port", saved: "") }
 		try await store.saveKeyDraft(.init(projectID: "project", key: "PORT"))
-		try await waitUntil { store.keyDescriptions["project"]?.rootSchema?["vars"]?["PORT"]?["description"] != nil && !store.isReloadingKeyDescriptions }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.rootSchema?["vars"]?["PORT"]?["description"] != nil && !store.isReloadingKeyDescriptions })
 		#expect(store.schemaDraft(for: "project")?.conflicts.isEmpty == true)
 		#expect(store.schemaDraftRebases["project"] == nil)
 		try await evaluated(store)
@@ -883,10 +878,10 @@ struct SchemaDraftStoreTests {
 		store.keyDrafts.edit(project, key: "TOKEN") { $0.setKeyDescription("Bearer token", saved: "") }
 		try await store.saveKeyDraft(.init(projectID: "project", key: "TOKEN"))
 		#expect(try String(contentsOfFile: folder + "/schemas/base.json", encoding: .utf8).contains("Bearer token"))
-		try await waitUntil { !store.isReloadingKeyDescriptions }
+		try #require(try await waitUntil { !store.isReloadingKeyDescriptions })
 		try #"{"envSchema":{"extends":["schemas/base.json"],"vars":{"PORT":{"format":"port"},"RETRY":{"format":"integer"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.schemaDraftRebases["project"] != nil }
+		try #require(try await waitUntil { store.schemaDraftRebases["project"] != nil })
 		#expect(store.schemaDraftRebases["project"]?.changedItems == [.key("RETRY")])
 	}
 
@@ -895,11 +890,11 @@ struct SchemaDraftStoreTests {
 		let (store, folder) = try await makeStore(#"{"envSchema":{"vars":{"PORT":{"format":"port"}}}}"#)
 		defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 		store.editSchemaDraft(in: "project") { $0.set(.declared(try! self.json(#"{"secret":true,"default":"x"}"#)), for: .key("TOKEN")) }
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		#expect(store.currentSchemaDraftEvaluation(for: "project")?.rejection?.item == .key("TOKEN"))
 		store.editSchemaDraft(in: "project") { $0.set(.declared(try! self.json(#"{"secret":true}"#)), for: .key("TOKEN")) }
 		#expect(store.currentSchemaDraftEvaluation(for: "project") == nil, "The previous draft's rejection doesn't apply")
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		#expect(store.currentSchemaDraftEvaluation(for: "project")?.rejection == nil)
 	}
 
@@ -910,7 +905,7 @@ struct SchemaDraftStoreTests {
 		store.editSchemaDraft(in: "project") { $0.set(.absent, for: .key("PORT")) }
 		try "{not json".write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil { if case .unreadable? = store.keyDescriptions["project"]?.schema { true } else { false } }
+		try #require(try await waitUntil { if case .unreadable? = store.keyDescriptions["project"]?.schema { true } else { false } })
 		await #expect(throws: ProjectEnvSchemaFile.DraftSaveError.unavailable("lpm.json can't be read. Fix it, then save.")) { try await store.saveSchemaDraft(in: "project") }
 		store.discardSchemaDraft(in: "project")
 		#expect(store.schemaDraft(for: "project") == nil)
@@ -927,7 +922,7 @@ struct SchemaDraftStoreTests {
 		// The queue is shared by every test; a failure must not leave it blocked.
 		defer { gate.signal() }
 		let first = Task { @MainActor in try await store.saveSchemaDraft(in: "project") }
-		try await waitUntil { store.savingSchemaDrafts.contains("project") }
+		try #require(try await waitUntil { store.savingSchemaDrafts.contains("project") })
 		await #expect(throws: ProjectEnvSchemaFile.DraftSaveError.inProgress) { try await store.saveSchemaDraft(in: "project") }
 		gate.signal()
 		try await first.value
@@ -952,10 +947,10 @@ struct SchemaDraftStoreTests {
 		store.editSchemaDraft(in: "project") { $0.set(.declared(try! self.json(#"{"format":"port","default":"8080"}"#)), for: .key("PORT")) }
 		try #"{"envSchema":{"vars":{"PORT":{"format":"port"},"A":{}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.schemaDraftRebases["project"] != nil }
+		try #require(try await waitUntil { store.schemaDraftRebases["project"] != nil })
 		try #"{"envSchema":{"vars":{"PORT":{"format":"port"},"A":{},"B":{}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.schemaDraftRebases["project"]?.changedItems.count == 2 }
+		try #require(try await waitUntil { store.schemaDraftRebases["project"]?.changedItems.count == 2 })
 		#expect(store.schemaDraftRebases["project"]?.changedItems == [.key("A"), .key("B")])
 		store.editSchemaDraft(in: "project") { $0.discard(.key("PORT")) }
 		#expect(store.schemaDraftRebases["project"] == nil)
@@ -975,12 +970,12 @@ struct SchemaDraftStoreTests {
 				$0.set(.declared(.object([.init(key: "format", value: .string("port")), .init(key: "default", value: .string("30\(digit)"))])), for: .key("PORT"))
 			}
 		}
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		#expect(calls.count == 1)
 		for value in ["url", "port", "email", "hostname", "ip"] {
 			store.editSchemaDraft(in: "project") { $0.set(.declared(.object([.init(key: "format", value: .string(value))])), for: .key("PORT")) }
 		}
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 		#expect(calls.count <= 3, "Evaluations superseded while waiting don't run")
 	}
 
@@ -1007,7 +1002,7 @@ struct SchemaDraftStoreTests {
 		// The queue is shared by every test; a failure must not leave it blocked.
 		defer { gate.signal() }
 		let save = Task { @MainActor in try await store.saveSchemaDraft(in: "project") }
-		try await waitUntil { store.savingSchemaDrafts.contains("project") }
+		try #require(try await waitUntil { store.savingSchemaDrafts.contains("project") })
 		store.selectedAccount = .org("acme")
 		gate.signal()
 		_ = await save.result
@@ -1033,21 +1028,13 @@ struct SchemaDraftStoreTests {
 		store.isUnlocked = true
 		store.selectedProjectId = "project"
 		store.reloadKeyDescriptions()
-		try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil }
+		try #require(try await waitUntil { store.keyDescriptions["project"]?.schema?.overview != nil })
 		return (store, folder)
 	}
 
 	/// Waits for the draft as it is now to be evaluated, which saving requires.
 	private func evaluated(_ store: VaultStore) async throws {
-		try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil }
-	}
-
-	private func waitUntil(_ condition: () -> Bool) async throws {
-		for _ in 0..<1000 {
-			if condition() { return }
-			try await Task.sleep(for: .milliseconds(5))
-		}
-		try #require(condition(), "Timed out")
+		try #require(try await waitUntil { store.currentSchemaDraftEvaluation(for: "project") != nil })
 	}
 }
 

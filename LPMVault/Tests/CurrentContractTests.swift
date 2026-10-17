@@ -2189,7 +2189,7 @@ struct CurrentContractTests {
       recorder.record(request)
       return try handler(request)
     }
-    let configuration = URLSessionConfiguration.ephemeral
+    let configuration = testSessionConfiguration()
     configuration.protocolClasses = [MockURLProtocol.self]
     return LPMAPIService(
       baseURL: URL(string: "https://\(host)")!,
@@ -2215,7 +2215,7 @@ struct CurrentContractTests {
       recorder.record(request)
       return try handler(request)
     }
-    let configuration = URLSessionConfiguration.ephemeral
+    let configuration = testSessionConfiguration()
     configuration.protocolClasses = [MockURLProtocol.self]
     return SyncService(
       baseURL: URL(string: "https://\(host)")!,

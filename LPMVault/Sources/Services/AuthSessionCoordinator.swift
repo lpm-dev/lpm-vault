@@ -1066,6 +1066,11 @@ enum CrossProcessFileLock {
 		}
 	}
 
+	/// How many tasks in this process are waiting for the lock at `path`.
+	static func waitingTasks(at path: URL) async -> Int {
+		await processGate.queuedNodeCount(path: path.standardizedFileURL.path)
+	}
+
 	static func withExclusive<T: Sendable>(
 		at path: URL,
 		operation: @escaping @Sendable () async throws -> T

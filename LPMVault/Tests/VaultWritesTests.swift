@@ -20,11 +20,11 @@ struct VaultWritesTests {
 	func waitsForTheLast() async throws {
 		let writes = VaultWrites()
 		let first = writes.begin(), second = writes.begin()
-		let finished = Task { await writes.finish(within: .seconds(30)) }
+		let finished = Task { await writes.finish(within: testWaitLimit) }
 		writes.end(first)
 		writes.end(first)
 		#expect(writes.isWriting)
-		try await Task.sleep(for: .milliseconds(20))
+		try #require(try await waitUntil { writes.hasWaiters })
 		writes.end(second)
 		#expect(await finished.value)
 	}
@@ -34,8 +34,8 @@ struct VaultWritesTests {
 		let writes = VaultWrites()
 		let write = writes.begin()
 		#expect(await !writes.finish(within: .milliseconds(20)))
-		let waiting = Task { await writes.finish(within: .seconds(30)) }
-		try await Task.sleep(for: .milliseconds(20))
+		let waiting = Task { await writes.finish(within: testWaitLimit) }
+		try #require(try await waitUntil { writes.hasWaiters })
 		waiting.cancel()
 		#expect(await !waiting.value)
 		writes.end(write)
@@ -55,7 +55,7 @@ struct VaultWritesTests {
 		store.isUnlocked = true
 		#expect(await store.loadProjects())
 		store.isUnlocked = true
-		#expect(await store.openProjectForSaving("first"))
+		#expect(await store.openProjectForSaving("first", timeout: testWaitLimit))
 		defer { store.lock() }
 		let project = try #require(store.projects.first { $0.id == "first" })
 		let entered = OSAllocatedUnfairLock(initialState: false), release = DispatchSemaphore(value: 0)
@@ -79,18 +79,14 @@ struct VaultWritesTests {
 				}
 			}
 		}
-		let deadline = ContinuousClock.now + .seconds(10)
-		while !entered.withLock({ $0 }) {
-			guard ContinuousClock.now < deadline else {
-				release.signal()
-				Issue.record("\(kind) never reached the Keychain")
-				return
-			}
-			try await Task.sleep(for: .milliseconds(5))
+		guard try await waitUntil({ entered.withLock { $0 } }) else {
+			release.signal()
+			Issue.record("\(kind) never reached the Keychain")
+			return
 		}
 		#expect(await !store.finishWritesInProgress(within: .milliseconds(100)), "\(kind) is still being written")
 		release.signal()
-		#expect(await store.finishWritesInProgress(within: .seconds(10)))
+		#expect(await store.finishWritesInProgress(within: testWaitLimit))
 		#expect(await write.value)
 	}
 }

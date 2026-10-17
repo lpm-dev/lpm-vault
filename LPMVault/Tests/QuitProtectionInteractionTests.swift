@@ -22,7 +22,7 @@ extension SheetInteractionTests {
 			store.isUnlocked = true
 			#expect(await store.loadProjects())
 			store.isUnlocked = true
-			#expect(await store.openProjectForSaving("demo"))
+			#expect(await store.openProjectForSaving("demo", timeout: testWaitLimit))
 			return (store, keychain)
 		}
 
@@ -36,7 +36,8 @@ extension SheetInteractionTests {
 		}
 
 		private func coordinator(_ store: VaultStore, presenter: some VaultQuitCoordinator.Presenter, outcome: Outcome) -> VaultQuitCoordinator {
-			VaultQuitCoordinator(store: store, presenter: presenter, reply: { outcome.replies.append($0) }, terminate: { outcome.terminations += 1 })
+			VaultQuitCoordinator(store: store, presenter: presenter, timing: .init(projectLoadLimit: testWaitLimit),
+				reply: { outcome.replies.append($0) }, terminate: { outcome.terminations += 1 })
 		}
 
 		/// Waits for the presenter's sheet, which starts hidden while the app is
@@ -71,24 +72,17 @@ extension SheetInteractionTests {
 			#expect(panel.isVisible)
 			#expect(panel.ignoresMouseEvents)
 			func says(_ expected: [String]) async throws -> Bool {
-				let deadline = ContinuousClock.now + .seconds(5)
-				while AccessibilityTree.strings(in: content) != expected {
-					guard ContinuousClock.now < deadline else { return false }
-					try await Task.sleep(for: .milliseconds(10))
-				}
-				return true
+				try await waitUntil { AccessibilityTree.strings(in: content) == expected }
 			}
 			#expect(try await says(["Press ⌘Q again to quit"]), "The keycap isn't read as well: \(AccessibilityTree.strings(in: content))")
 			controller.show(.hold(1))
 			#expect(try await says(["Hold ⌘Q to quit"]))
 			controller.hide()
 			#expect(!controller.isShowing)
-			let deadline = ContinuousClock.now + .seconds(5)
-			while panel.isVisible, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-			#expect(!panel.isVisible)
+			#expect(try await waitUntil { !panel.isVisible })
 			controller.show(.pressAgain)
 			controller.hide()
-			try await Task.sleep(for: .milliseconds(50))
+			try await quietPeriod()
 			#expect(!panel.isVisible, "A hint hidden before it appears never shows")
 		}
 

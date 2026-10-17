@@ -61,10 +61,7 @@ extension SheetInteractionTests {
 			#expect(store.publicKeys(in: "public-review").isEmpty)
 			store.reloadKeyDescriptions()
 			#expect(store.publicKeys(in: "public-review").isEmpty)
-			for _ in 0..<200 where store.keyDescriptions["public-review"]?.folder != other.path {
-				try await Task.sleep(for: .milliseconds(10))
-			}
-			#expect(store.keyDescriptions["public-review"]?.folder == other.path)
+			#expect(try await waitUntil { store.keyDescriptions["public-review"]?.folder == other.path })
 			#expect(store.publicKeys(in: "public-review").isEmpty)
 		}
 
@@ -126,10 +123,7 @@ extension SheetInteractionTests {
 		}
 
 		private func waitForPublicRules(_ store: VaultStore) async throws {
-			for _ in 0..<200 where store.publicKeys(in: "public-review") != ["APP_ENDPOINT"] {
-				try await Task.sleep(for: .milliseconds(10))
-			}
-			try #require(store.publicKeys(in: "public-review") == ["APP_ENDPOINT"])
+			try #require(try await waitUntil { store.publicKeys(in: "public-review") == ["APP_ENDPOINT"] })
 		}
 
 		private func cleanUp(_ store: VaultStore, folder: URL) {

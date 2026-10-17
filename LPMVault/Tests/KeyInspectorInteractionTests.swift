@@ -156,7 +156,7 @@ extension SheetInteractionTests {
 				keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
 				try await host.click("Save")
 				let didEnter = await withCheckedContinuation { continuation in
-					DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 3) == .success) }
+					DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + testWaitSeconds) == .success) }
 				}
 				try #require(didEnter)
 			} else {

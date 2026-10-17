@@ -146,7 +146,8 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			for _ in 0..<3 {
 				CFRunLoopStop(CFRunLoopGetMain())
-				try await Task.sleep(for: .milliseconds(30))
+				// Each stop, apart, can land on the run loop started again after the one before.
+				try await letStartedWorkGetAhead()
 			}
 			#expect(try await host.waitForText("Still here"))
 		}
