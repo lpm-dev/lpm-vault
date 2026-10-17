@@ -48,6 +48,14 @@ struct GitHubHTTPTests {
 		#expect(failure(403, headers: ["X-RateLimit-Remaining": "12"]) == .forbidden)
 	}
 
+	@Test("a spent limit's reset is read on GitHub's clock, from its answer's Date, so a Mac clock running ahead doesn't ask while it's limited")
+	func readsResetOnGitHubsClock() {
+		#expect(failure(403, headers: ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1760000000", "Date": "Thu, 09 Oct 2025 08:52:50 GMT"])
+			== .rateLimited(until: Date(timeIntervalSince1970: 1_760_000_030)))
+		#expect(failure(403, headers: ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1759999999"]) == .rateLimited(until: nil),
+			"A reset this Mac's clock is past, with no Date to measure it from, says nothing of when the limit lifts")
+	}
+
 	@Test("IDs, logins, app slugs and client IDs take only GitHub's forms")
 	func validatesNames() {
 		#expect(GitHubHTTP.isValidID("583231") && !GitHubHTTP.isValidID("0583") && !GitHubHTTP.isValidID("-1") && !GitHubHTTP.isValidID(""))

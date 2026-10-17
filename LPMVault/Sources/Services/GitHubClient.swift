@@ -41,9 +41,14 @@ enum GitHubHTTP {
 	/// GitHub refuses requests that don't name their client.
 	static let userAgent = "LPM-Vault (https://vault.lpm.dev)"
 	static let maximumResponseBytes = 2 * 1024 * 1024
-	/// The longest wait for a rate limit to lift. GitHub asks for at least a
-	/// minute when it doesn't say how long.
+	/// The latest a rate limit can lift for a request to wait for it. GitHub
+	/// asks for at least a minute when it doesn't say how long.
 	static let maximumRateLimitWait: Duration = .seconds(65)
+	/// How long after a limit's announced reset the next request goes, so it
+	/// doesn't arrive a moment before the limit has lifted.
+	static let resetMargin: TimeInterval = 1
+	/// The longest a request waits for a limit, its margin included.
+	static let longestRateLimitWait = maximumRateLimitWait + .seconds(resetMargin)
 
 	/// The session clients use unless given one; it keeps no cookies, cache or credentials.
 	static let sharedSession = URLSession(
@@ -109,16 +114,20 @@ enum GitHubHTTP {
 		}
 	}
 
-	/// How long to wait for a rate limit that lifts at `reset`; nil when it
-	/// lifts after the longest wait.
-	static func rateLimitWait(until reset: Date?) -> Duration? {
-		PlatformRateLimit.wait(until: reset, maximum: maximumRateLimitWait)
+	/// How long to wait at `now` for a rate limit that lifts at `reset`, and
+	/// the moment past it the next request may go; a minute when GitHub
+	/// doesn't say. Nil when it lifts later than a request waits for.
+	static func rateLimitWait(until reset: Date?, now: Date = Date()) -> (wait: Duration, lifts: Date?)? {
+		guard let wait = PlatformRateLimit.wait(until: reset, maximum: maximumRateLimitWait, now: now) else { return nil }
+		guard let reset else { return (wait, nil) }
+		return (wait + .seconds(resetMargin), reset.addingTimeInterval(resetMargin))
 	}
 
 	/// A refusal, read the way GitHub documents its limits: a primary limit
-	/// spent says when it resets, a secondary one how many seconds to wait,
-	/// and one that says neither means a minute. A 403 that's no limit is the
-	/// token lacking access; its message is read only to tell the two apart.
+	/// spent says when it resets, on GitHub's clock, a secondary one how many
+	/// seconds to wait, and one that says neither means a minute. A 403
+	/// that's no limit is the token lacking access; its message is read only
+	/// to tell the two apart.
 	static func failure(_ http: HTTPURLResponse, body: Data, now: Date = Date()) -> GitHubAPIError {
 		let status = http.statusCode
 		if status == 403 || status == 429 {
@@ -127,7 +136,9 @@ enum GitHubHTTP {
 			}
 			if http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0" {
 				return .rateLimited(
-					until: http.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap(TimeInterval.init).map(Date.init(timeIntervalSince1970:)))
+					until: http.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap(TimeInterval.init).flatMap {
+						PlatformRateLimit.lifts(atReset: $0, answered: http, now: now)
+					})
 			}
 			if status == 429 || mentionsRateLimit(body) { return .rateLimited(until: nil) }
 			return .forbidden

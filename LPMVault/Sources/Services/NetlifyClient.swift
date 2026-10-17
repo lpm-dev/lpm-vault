@@ -231,7 +231,7 @@ enum NetlifyHTTP {
 
 	/// Sleeps `wait`, then on until the wall clock passes `reset`.
 	static func waitOut(_ wait: Duration, until reset: Date?) async throws {
-		try await PlatformRateLimit.waitOut(wait, until: reset)
+		try await PlatformRateLimit.waitOut(wait, until: reset, atMost: maximumRateLimitWait)
 	}
 
 	private static func failure(_ http: HTTPURLResponse) -> NetlifyAPIError {

@@ -22,7 +22,9 @@ struct GitHubConnector: Sendable {
 
 	var authorization: BrowserAuthorization
 	let client: ClientFactory
+	/// The wall clock, which the grant's arrival and rate limits are read on.
 	var now: @Sendable () -> Date = { Date() }
+	var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
 	/// How many more times the user is read after GitHub couldn't answer or
 	/// was limiting requests. A connection is saved under its user, and its
 	/// grant can't be collected again.
@@ -63,9 +65,9 @@ struct GitHubConnector: Sendable {
 			case .failure(.cancelled):
 				return .failure(.cancelled)
 			case .failure(.rateLimited(let reset)):
-				guard let limit = GitHubHTTP.rateLimitWait(until: reset) else { return .failure(.platformRateLimited) }
-				wait = limit
-				lifts = reset
+				guard let limit = GitHubHTTP.rateLimitWait(until: reset, now: now()) else { return .failure(.platformRateLimited) }
+				wait = limit.wait
+				lifts = limit.lifts
 				giveUp = .platformRateLimited
 			case .failure(.transport), .failure(.server):
 				wait = retryDelay * (attempt + 1)
@@ -74,7 +76,11 @@ struct GitHubConnector: Sendable {
 				return .failure(.accountUnreadable)
 			}
 			guard attempt < userRetries else { return .failure(giveUp) }
-			do { try await PlatformRateLimit.waitOut(wait, until: lifts) } catch { return .failure(.cancelled) }
+			do {
+				try await PlatformRateLimit.waitOut(wait, until: lifts, atMost: GitHubHTTP.longestRateLimitWait, date: now, sleep: sleep)
+			} catch {
+				return .failure(.cancelled)
+			}
 		}
 		return .failure(.transport)
 	}

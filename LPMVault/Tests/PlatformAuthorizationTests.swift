@@ -953,12 +953,13 @@ struct GitHubConnectorTests {
 		_ authorizations: FakeAuthorizations,
 		github: ScriptedGitHub = ScriptedGitHub([.success(octocat)]),
 		query: ((String) -> String)? = nil,
-		now: Date = Date(timeIntervalSince1970: 1_760_000_000)
+		clock: SleepingTestClock = SleepingTestClock()
 	) async -> Result<GitHubConnection, BrowserConnectError> {
 		let port = Port()
 		var connector = GitHubConnector(authorization: browserAuthorization(authorizations, port: port), client: github.client)
 		connector.retryDelay = .milliseconds(5)
-		connector.now = { now }
+		connector.now = { clock.date }
+		connector.sleep = { clock.sleep($0) }
 		let returning = query?(authorizations.id) ?? platformTestReturn(authorization: authorizations.id, proof: platformTestOneTimeValue())
 		return await connector.connect(session: session, open: browser(returning: returning, on: .github, listener: { port.port }))
 	}
@@ -969,7 +970,7 @@ struct GitHubConnectorTests {
 		authorizations.outcome = authorizations.readyGitHubGrant()
 		let github = ScriptedGitHub([.success(Self.octocat)])
 		let received = Date(timeIntervalSince1970: 1_760_000_123)
-		let connection = try await connect(authorizations, github: github, now: received).get()
+		let connection = try await connect(authorizations, github: github, clock: SleepingTestClock(received)).get()
 		#expect(connection.user == Self.octocat && connection.appSlug == "lpm-vault" && connection.receivedAt == received)
 		#expect(connection.tokens.accessToken == "ghu_granted")
 		#expect(connection.tokens.expiry == .init(accessTokenLifetime: 28_800, refreshToken: "ghr_granted", refreshTokenLifetime: 15_897_600))
@@ -998,9 +999,22 @@ struct GitHubConnectorTests {
 	func retriesUser() async throws {
 		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
 		authorizations.outcome = authorizations.readyGitHubGrant()
-		let github = ScriptedGitHub([.failure(.transport), .failure(.rateLimited(until: Date())), .success(Self.octocat)])
-		#expect(try await connect(authorizations, github: github).get().user == Self.octocat)
+		let github = ScriptedGitHub([.failure(.transport), .failure(.rateLimited(until: SleepingTestClock.start)), .success(Self.octocat)])
+		let clock = SleepingTestClock()
+		#expect(try await connect(authorizations, github: github, clock: clock).get().user == Self.octocat)
 		#expect(github.userReads == 3)
+		#expect(clock.sleeps == [.milliseconds(5), .seconds(1)], "A limit that has just lifted is still given a moment")
+	}
+
+	@Test("a rate limit on reading the user is waited out a moment past its reset, even one that lifts at the longest wait")
+	func waitsOutUserRateLimit() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let clock = SleepingTestClock()
+		let github = ScriptedGitHub([.failure(.rateLimited(until: clock.date.addingTimeInterval(65))), .success(Self.octocat)])
+		#expect(try await connect(authorizations, github: github, clock: clock).get().user == Self.octocat)
+		#expect(clock.sleeps == [.seconds(66)])
+		#expect(github.userReads == 2)
 	}
 
 	@Test(
@@ -1008,7 +1022,7 @@ struct GitHubConnectorTests {
 		arguments: [
 			(GitHubAPIError.unauthorized, BrowserConnectError.tokenRejected), (.forbidden, .tokenRejected),
 			(.invalidResponse, .accountUnreadable), (.notFound, .accountUnreadable),
-			(.rateLimited(until: Date(timeIntervalSinceNow: 3_600)), .platformRateLimited),
+			(.rateLimited(until: SleepingTestClock.start.addingTimeInterval(66)), .platformRateLimited),
 		]
 	)
 	func refusedUser(error: GitHubAPIError, expected: BrowserConnectError) async {
