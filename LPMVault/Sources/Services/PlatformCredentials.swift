@@ -46,6 +46,9 @@ actor PlatformCredentials {
 
 	/// How many more times a request still pending at the Registry is asked again.
 	static let pendingRetries = 10
+	/// How long pending answers are waited out in all, as one can take the
+	/// Registry's whole deadline when its database is slow.
+	static let pendingPatience: TimeInterval = 40
 	/// How long either side of a refresh token's arrival the Registry may not
 	/// know it yet: when keeping the renewal that issued it failed, the
 	/// Registry records the token within about 25 minutes. A clock set back
@@ -158,6 +161,7 @@ actor PlatformCredentials {
 		session: PlatformSession
 	) async -> Step {
 		guard let key = attempt.privateKey else { return .done(.failure(.store(.unreadable))) }
+		let started = now()
 		for round in 0...Self.pendingRetries {
 			let answer = await refresher.refresh(
 				platform, refreshToken: token, clientPublicKey: key.publicKey.x963Representation,
@@ -181,8 +185,12 @@ actor PlatformCredentials {
 				case .failure(let error): return .done(.failure(.store(error)))
 				}
 			case .success(.pending):
-				guard round < Self.pendingRetries else { return .done(.failure(.unavailable)) }
-				do { try await Task.sleep(for: pendingDelay) } catch { return .done(.failure(.unavailable)) }
+				guard round < Self.pendingRetries, now().timeIntervalSince(started) < Self.pendingPatience else {
+					return .done(.failure(.unavailable))
+				}
+				// Backing off, up to eight times the delay: a pending answer can mean the Registry's database is slow.
+				let delay = pendingDelay * (1 << min(round, 3))
+				do { try await Task.sleep(for: delay) } catch { return .done(.failure(.unavailable)) }
 			case .success(.unknown) where abs(now().timeIntervalSince(receivedAt)) < Self.unknownTokenGrace:
 				// A connection connected again meanwhile has a token of its own to give.
 				switch await store.record(for: connectionID) {

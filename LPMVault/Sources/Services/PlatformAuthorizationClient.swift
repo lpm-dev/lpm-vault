@@ -87,7 +87,9 @@ enum PlatformTokenRefreshOutcome: Equatable, Sendable {
 	/// The new tokens, sealed to the attempt's key, issued `age` seconds ago:
 	/// a retry collects the tokens a lost answer carried.
 	case ready(PlatformAuthorizationEnvelope.Sealed, age: Int)
-	/// Another request of the same attempt is still refreshing the token.
+	/// The attempt isn't finished: another request of it is still refreshing
+	/// the token, or this one ran past the Registry's deadline and goes on
+	/// for a retry to collect.
 	case pending
 	/// The platform or the Registry refused it, or the token was already used, with the Registry's code.
 	case failed(code: String)

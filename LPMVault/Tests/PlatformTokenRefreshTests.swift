@@ -578,6 +578,20 @@ struct PlatformCredentialsTests {
 		#expect(try await store.record(for: id).get().refresh?.attempt != nil)
 	}
 
+	@Test("pending answers that each take lpm.dev's whole deadline are waited out 40 seconds in all, not ten times over")
+	func boundsSlowPending() async throws {
+		let id = try await connect()
+		let clock = TestDate(start.addingTimeInterval(8 * 3_600))
+		let refresher = ScriptedTokenRefresher { _, _ in
+			clock.date = clock.date.addingTimeInterval(12)
+			return .success(.pending)
+		}
+		let credentials = credentials(refresher, at: clock)
+		#expect(await credentials.accessToken(for: id) == .failure(.unavailable))
+		#expect(refresher.calls.count == 4, "Asked again only while 40 seconds hadn't passed")
+		#expect(try await store.record(for: id).get().refresh?.attempt != nil)
+	}
+
 	@Test(
 		"a token lpm.dev won't renew marks the connection expired, and isn't sent again",
 		arguments: [
