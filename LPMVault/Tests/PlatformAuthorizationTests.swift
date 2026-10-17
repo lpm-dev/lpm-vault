@@ -1014,6 +1014,16 @@ struct GitHubConnectorTests {
 		let github = ScriptedGitHub([.failure(.rateLimited(until: nil)), .failure(.rateLimited(until: nil)), .success(Self.octocat)])
 		#expect(try await connect(authorizations, github: github, clock: clock).get().user == Self.octocat)
 		#expect(clock.sleeps == [.seconds(60), .seconds(120)])
+
+		let announced = FakeAuthorizations(pageURL: Self.authorizePage)
+		announced.outcome = announced.readyGitHubGrant()
+		let counting = SleepingTestClock()
+		let limits = ScriptedGitHub([
+			.failure(.rateLimited(until: counting.date.addingTimeInterval(10))), .failure(.rateLimited(until: nil)), .success(Self.octocat),
+		])
+		#expect(try await connect(announced, github: limits, clock: counting).get().user == Self.octocat)
+		#expect(counting.sleeps == [.seconds(11), .seconds(120)], "Every limit waited out counts toward the next one's backoff")
+		#expect(BrowserConnectError.platformRateLimited.message(for: .github) == "GitHub is limiting requests. Wait a few minutes, then connect again.")
 	}
 
 	@Test("a rate limit on reading the user is waited out a moment past its reset, even one that lifts at the longest wait")

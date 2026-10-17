@@ -53,7 +53,7 @@ struct GitHubConnector: Sendable {
 		let receivedAt = now()
 
 		let github = client(grant.tokens.accessToken)
-		var unannouncedLimits = 0
+		var rateLimitWaits = 0
 		for attempt in 0...userRetries {
 			let wait: Duration
 			var lifts: Date?
@@ -66,13 +66,15 @@ struct GitHubConnector: Sendable {
 			case .failure(.cancelled):
 				return .failure(.cancelled)
 			case .failure(.rateLimited(nil)):
-				wait = GitHubHTTP.unannouncedLimitWait(after: unannouncedLimits)
-				unannouncedLimits += 1
+				// Every limit waited out counts, as GitHub asks for longer waits while one continues.
+				wait = GitHubHTTP.unannouncedLimitWait(after: rateLimitWaits)
+				rateLimitWaits += 1
 				giveUp = .platformRateLimited
 			case .failure(.rateLimited(let reset)):
 				guard let limit = GitHubHTTP.rateLimitWait(until: reset, now: now()) else { return .failure(.platformRateLimited) }
 				wait = limit.wait
 				lifts = limit.lifts
+				rateLimitWaits += 1
 				giveUp = .platformRateLimited
 			case .failure(.transport), .failure(.server):
 				wait = retryDelay * (attempt + 1)

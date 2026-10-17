@@ -41,7 +41,8 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 		case .expired: "This connection expired. Connect again."
 		case .tokenRejected: "\(name) didn't accept the new connection. Connect again."
 		case .accountUnreadable: "\(name) didn't say which account was connected. Connect again."
-		case .platformRateLimited: "\(name) is limiting requests. Wait a minute, then connect again."
+		// GitHub's limits back off for minutes; Netlify's window is a minute.
+		case .platformRateLimited: "\(name) is limiting requests. Wait \(platform == .github ? "a few minutes" : "a minute"), then connect again."
 		case .transport: "The connection couldn't reach lpm.dev or \(name). Check your network and try again."
 		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn't verify. Try again."
 		}
