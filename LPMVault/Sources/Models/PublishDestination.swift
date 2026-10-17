@@ -60,12 +60,14 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 	case vercel
 	case coolify
 	case netlify
+	case github
 
 	var displayName: String {
 		switch self {
 		case .vercel: "Vercel"
 		case .coolify: "Coolify"
 		case .netlify: "Netlify"
+		case .github: "GitHub"
 		}
 	}
 
@@ -74,6 +76,7 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 		case .vercel: "triangle.fill"
 		case .coolify: "server.rack"
 		case .netlify: "diamond.fill"
+		case .github: "chevron.left.forwardslash.chevron.right"
 		}
 	}
 }

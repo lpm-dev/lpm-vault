@@ -1379,6 +1379,7 @@ final class VaultStore {
   let publishing: PublishingStore
   private let platformConnect: PlatformConnections.Connect?
   private let netlifyConnect: PlatformConnections.ConnectNetlify?
+  private let githubConnect: PlatformConnections.ConnectGitHub?
   private let platformURLOpener: (@MainActor @Sendable (URL) -> Void)?
   /// The platform accounts this Mac publishes to, for the Platforms page.
   let platformConnectionStore: PlatformConnectionStore
@@ -1405,6 +1406,7 @@ final class VaultStore {
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
     connectCoolify: { [coolifyClient] in await CoolifyConnector(client: coolifyClient).connect(address: $0, token: $1) },
     connectNetlify: netlifyConnect ?? { [netlifyClient] in await NetlifyConnector(client: netlifyClient).connect(session: $0, open: $1) },
+    connectGitHub: githubConnect ?? { await GitHubConnector().connect(session: $0, open: $1) },
     session: { [weak self] in await self?.platformSession() },
     openURL: platformURLOpener ?? PlatformConnections.openInBrowser,
     didChange: { [weak self] in self?.forgetConnectionDetails() }
@@ -1911,6 +1913,7 @@ final class VaultStore {
     authTokenProvider: (@Sendable (String, URL) async throws -> String?)? = nil,
     platformConnect: PlatformConnections.Connect? = nil,
     netlifyConnect: PlatformConnections.ConnectNetlify? = nil,
+    githubConnect: PlatformConnections.ConnectGitHub? = nil,
     platformClient: (@Sendable (String) -> any VercelClientProtocol)? = nil,
     coolifyClient: CoolifyConnector.ClientFactory? = nil,
     netlifyClient: NetlifyConnector.ClientFactory? = nil,
@@ -1977,6 +1980,7 @@ final class VaultStore {
     self.publishing = PublishingStore(service: keychainService)
     self.platformConnect = platformConnect
     self.netlifyConnect = netlifyConnect
+    self.githubConnect = githubConnect
     self.platformConnectionStore = PlatformConnectionStore(service: keychainService)
     self.platformClient = platformClient ?? { VercelClient(token: $0) }
     self.coolifyClient = coolifyClient ?? { CoolifyClient(instance: $0, token: $1) }

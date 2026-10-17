@@ -81,6 +81,25 @@ struct PublishSessionTests {
 		#expect(session.saved?.id == saved.first?.id)
 	}
 
+	@Test("a GitHub connection isn't offered for publishing yet, so its token never reaches another platform's client")
+	func gitHubNotOffered() async throws {
+		try await connect()
+		_ = try await connections.save(
+			.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: nil, appSlug: "lpm-vault")),
+			accessToken: "ghu_secret", at: Date()).get()
+		let tokens = TokenLog()
+		let api = api
+		let session = session(client: { token in
+			tokens.append(token)
+			return api
+		})
+		session.start()
+		#expect(try await waitUntil { session.vercel?.projects.value != nil })
+		#expect(session.connections.value?.map(\.id) == ["vercel.team_acme"])
+		#expect(session.connectionID == "vercel.team_acme", "The only connection that can publish is chosen")
+		#expect(Set(tokens.values) == ["vca_1"])
+	}
+
 	@Test("a saved destination opens on its review, with what this Mac published there")
 	func savedOpensOnReview() async throws {
 		try await connect()

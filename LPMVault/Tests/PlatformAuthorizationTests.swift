@@ -541,6 +541,13 @@ private final class FakeAuthorizations: PlatformAuthorizationClientProtocol, @un
 		ready(["platform": "netlify", "accessToken": "nfp_granted"])
 	}
 
+	func readyGitHubGrant() -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
+		ready([
+			"platform": "github", "accessToken": "ghu_granted", "accessTokenExpiresIn": 28_800,
+			"refreshToken": "ghr_granted", "refreshTokenExpiresIn": 15_897_600, "appSlug": "lpm-vault",
+		])
+	}
+
 	private func ready(_ payload: [String: Any]) -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
 		let json = try! JSONSerialization.data(withJSONObject: payload)
 		return { _, id, key in
@@ -907,6 +914,109 @@ struct NetlifyConnectorTests {
 		let connection = try await connect(authorizations, browserDelay: .milliseconds(300)).get()
 		#expect(connection.user == Self.tolga)
 		#expect(authorizations.cancelledIDs.isEmpty)
+	}
+}
+
+/// A GitHub that answers each read of the user from a script, whose last answer repeats.
+private final class ScriptedGitHub: GitHubClientProtocol, @unchecked Sendable {
+	private let lock = NSLock()
+	private var answers: [Result<GitHubUser, GitHubAPIError>]
+	private var reads = 0
+	private var received: [String] = []
+
+	init(_ answers: [Result<GitHubUser, GitHubAPIError>]) {
+		self.answers = answers
+	}
+
+	var userReads: Int { lock.withLock { reads } }
+	var tokens: [String] { lock.withLock { received } }
+
+	func client(_ token: String) -> any GitHubClientProtocol {
+		lock.withLock { received.append(token) }
+		return self
+	}
+
+	func user() async -> Result<GitHubUser, GitHubAPIError> {
+		lock.withLock {
+			reads += 1
+			return answers.count > 1 ? answers.removeFirst() : answers[0]
+		}
+	}
+}
+
+struct GitHubConnectorTests {
+	private static let octocat = GitHubUser(id: "583231", login: "octocat", name: "The Octocat")
+	private static let authorizePage = URL(string: "https://github.com/login/oauth/authorize?client_id=Iv23li&state=\(platformTestOneTimeValue())")!
+	private let session = platformTestSession(URL(string: "http://localhost:1")!)
+
+	private func connect(
+		_ authorizations: FakeAuthorizations,
+		github: ScriptedGitHub = ScriptedGitHub([.success(octocat)]),
+		query: ((String) -> String)? = nil,
+		now: Date = Date(timeIntervalSince1970: 1_760_000_000)
+	) async -> Result<GitHubConnection, BrowserConnectError> {
+		let port = Port()
+		var connector = GitHubConnector(authorization: browserAuthorization(authorizations, port: port), client: github.client)
+		connector.retryDelay = .milliseconds(5)
+		connector.now = { now }
+		let returning = query?(authorizations.id) ?? platformTestReturn(authorization: authorizations.id, proof: platformTestOneTimeValue())
+		return await connector.connect(session: session, open: browser(returning: returning, on: .github, listener: { port.port }))
+	}
+
+	@Test("connecting opens GitHub's page, waits for the browser at GitHub's path, collects the tokens once and reads whose they are")
+	func connects() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let github = ScriptedGitHub([.success(Self.octocat)])
+		let received = Date(timeIntervalSince1970: 1_760_000_123)
+		let connection = try await connect(authorizations, github: github, now: received).get()
+		#expect(connection.user == Self.octocat && connection.appSlug == "lpm-vault" && connection.receivedAt == received)
+		#expect(connection.tokens.accessToken == "ghu_granted")
+		#expect(connection.tokens.expiry == .init(accessTokenLifetime: 28_800, refreshToken: "ghr_granted", refreshTokenLifetime: 15_897_600))
+		#expect(github.tokens == ["ghu_granted"])
+		#expect(authorizations.platformCalls == ["start github", "redeem github"])
+	}
+
+	@Test("another platform's grant can't complete a GitHub connection, and its token is never used")
+	func refusesOtherGrant() async {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyNetlifyGrant()
+		let github = ScriptedGitHub([.success(Self.octocat)])
+		#expect(failure(of: await connect(authorizations, github: github)) == .invalidResponse)
+		#expect(github.tokens.isEmpty)
+	}
+
+	@Test("an approval that expired before the Registry exchanged it says so, naming GitHub")
+	func approvalExpired() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		let result = await connect(authorizations, query: { platformTestReturn(authorization: $0, error: "authorization_expired") })
+		#expect(failure(of: result) == .platform(.approvalExpired))
+		#expect(failure(of: result)?.message(for: .github) == "Your approval on GitHub expired before it could be used. Connect again.")
+	}
+
+	@Test("the user is read again when GitHub couldn't answer or was limiting requests, since the tokens can't be collected again")
+	func retriesUser() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let github = ScriptedGitHub([.failure(.transport), .failure(.rateLimited(until: Date())), .success(Self.octocat)])
+		#expect(try await connect(authorizations, github: github).get().user == Self.octocat)
+		#expect(github.userReads == 3)
+	}
+
+	@Test(
+		"a token GitHub refuses at once isn't kept, and neither is one whose user GitHub doesn't say",
+		arguments: [
+			(GitHubAPIError.unauthorized, BrowserConnectError.tokenRejected), (.forbidden, .tokenRejected),
+			(.invalidResponse, .accountUnreadable), (.notFound, .accountUnreadable),
+			(.rateLimited(until: Date(timeIntervalSinceNow: 3_600)), .platformRateLimited),
+		]
+	)
+	func refusedUser(error: GitHubAPIError, expected: BrowserConnectError) async {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let github = ScriptedGitHub([.failure(error)])
+		#expect(failure(of: await connect(authorizations, github: github)) == expected)
+		#expect(github.userReads == 1)
 	}
 }
 

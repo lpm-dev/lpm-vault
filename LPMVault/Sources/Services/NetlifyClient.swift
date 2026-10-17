@@ -226,20 +226,12 @@ enum NetlifyHTTP {
 	/// How long to wait for a rate limit Netlify says lifts at `reset`, or a
 	/// minute when it doesn't say; nil when it lifts after the longest wait.
 	static func rateLimitWait(until reset: Date?) -> Duration? {
-		let seconds = reset?.timeIntervalSinceNow ?? 60
-		// Compared as a number first: a far-off or infinite reset traps as a duration.
-		guard seconds.isFinite, seconds <= Double(maximumRateLimitWait.components.seconds) else { return nil }
-		// Rounded up: a wait cut short asks again just before the limit lifts.
-		return .milliseconds(Int64((max(0, seconds) * 1_000).rounded(.up)))
+		PlatformRateLimit.wait(until: reset, maximum: maximumRateLimitWait)
 	}
 
-	/// Sleeps `wait`, then on until the wall clock passes `reset`, which the
-	/// sleep's own clock can run ahead of.
+	/// Sleeps `wait`, then on until the wall clock passes `reset`.
 	static func waitOut(_ wait: Duration, until reset: Date?) async throws {
-		try await Task.sleep(for: wait)
-		while let left = reset?.timeIntervalSinceNow, left > 0 {
-			try await Task.sleep(for: .milliseconds(Int64((left * 1_000).rounded(.up))))
-		}
+		try await PlatformRateLimit.waitOut(wait, until: reset)
 	}
 
 	private static func failure(_ http: HTTPURLResponse) -> NetlifyAPIError {

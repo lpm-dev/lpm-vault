@@ -313,7 +313,9 @@ final class PublishSession: Identifiable {
 		let result = await dependencies.connections.connections()
 		guard !Task.isCancelled else { return }
 		switch result {
-		case .success(let list):
+		case .success(let all):
+			// GitHub connections publish once destinations can name a repository.
+			let list = all.filter { $0.platform != .github }
 			connections = .loaded(list)
 			if connectionID == nil, list.count == 1 { connectionID = list[0].id }
 		case .failure(let error):
@@ -330,6 +332,7 @@ final class PublishSession: Identifiable {
 		case .vercel: form = .vercel(VercelDestinationForm())
 		case .coolify: form = .coolify(CoolifyDestinationForm())
 		case .netlify: form = .netlify(NetlifyDestinationForm())
+		case .github: return nil
 		}
 		observe(form)
 		return form

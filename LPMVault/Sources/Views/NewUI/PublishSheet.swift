@@ -467,6 +467,8 @@ struct PublishSheet: View {
 				notes.append("Existing variables will be replaced. LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten.")
 			case .netlify:
 				notes.append("Values will be written to variables Netlify already has. LPM Vault doesn't read Netlify's current values to compare, and Netlify writes a value without checking it, so a change made on Netlify moments before publishing can still be overwritten, and a change to another deploy context at that moment can't be told apart from this publish.")
+			case .github:
+				notes.append("Existing secrets and variables will be replaced. GitHub never shows a secret's value, and replaces one without checking it, so a change made on GitHub moments before publishing can still be overwritten.")
 			}
 		}
 		if case .coolify(let target) = review.destination.target, target.resource == .application, target.deployments == .production,
@@ -539,6 +541,7 @@ struct PublishSheet: View {
 		case .vercel: "Redeploy on Vercel to use the new values."
 		case .coolify: "Redeploy in Coolify to use the new values."
 		case .netlify: "Redeploy on Netlify to use the new values."
+		case .github: "Workflow runs that start from now on get the new values. Re-run a workflow to use them now."
 		}
 	}
 

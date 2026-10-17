@@ -158,6 +158,28 @@ final class SheetTestHost<V: View> {
 		}
 	}
 
+	/// Scrolls the view's first scroll view to its end, as a person scrolls
+	/// to the bottom of a page taller than the window. Only what's on screen
+	/// is read, as VoiceOver reads it.
+	func scrollToEnd() throws {
+		view.layoutSubtreeIfNeeded()
+		let scrollView = try #require(Self.firstScrollView(in: view), "The view has a scroll view")
+		let clip = scrollView.contentView
+		let documentHeight = scrollView.documentView?.frame.height ?? 0
+		let end = clip.isFlipped ? max(0, documentHeight - clip.bounds.height) : 0
+		clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: end))
+		scrollView.reflectScrolledClipView(clip)
+		view.layoutSubtreeIfNeeded()
+	}
+
+	private static func firstScrollView(in view: NSView) -> NSScrollView? {
+		if let scrollView = view as? NSScrollView { return scrollView }
+		for subview in view.subviews {
+			if let found = firstScrollView(in: subview) { return found }
+		}
+		return nil
+	}
+
 	/// Returns as soon as `condition` holds, or `false` after `testWaitLimit`.
 	@discardableResult
 	func waitUntil(_ condition: () throws -> Bool) async throws -> Bool {
