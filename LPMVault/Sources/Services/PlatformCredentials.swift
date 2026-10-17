@@ -69,12 +69,19 @@ actor PlatformCredentials {
 
 	/// The connection's access token, renewed first when it's about to expire
 	/// or a renewal is unfinished. Callers asking while a renewal runs share it.
-	func accessToken(for connectionID: PlatformConnection.ID) async -> Result<String, PlatformCredentialError> {
+	///
+	/// `rejected` is a token the platform just refused. Its connection's token
+	/// is renewed even when it looks current, as when the clock is wrong; a
+	/// refused token already replaced, as by another renewal, is answered with
+	/// its replacement. A refused token that doesn't renew means connecting again.
+	func accessToken(for connectionID: PlatformConnection.ID, replacing rejected: String? = nil) async -> Result<String, PlatformCredentialError> {
 		if let task = running[connectionID] {
 			sharedReads += 1
-			return await task.value
+			let result = await task.value
+			// A read that ended with the refused token itself can't answer this caller.
+			guard let rejected, case .success(rejected) = result else { return result }
 		}
-		let task = Task { await self.resolve(connectionID) }
+		let task = Task { await self.resolve(connectionID, replacing: rejected) }
 		running[connectionID] = task
 		let result = await task.value
 		if running[connectionID] == task { running[connectionID] = nil }
@@ -87,9 +94,9 @@ actor PlatformCredentials {
 		case again
 	}
 
-	private func resolve(_ connectionID: PlatformConnection.ID) async -> Result<String, PlatformCredentialError> {
+	private func resolve(_ connectionID: PlatformConnection.ID, replacing rejected: String?) async -> Result<String, PlatformCredentialError> {
 		for _ in 0..<3 {
-			switch await step(connectionID) {
+			switch await step(connectionID, replacing: rejected) {
 			case .done(let result): return result
 			case .again: continue
 			}
@@ -97,16 +104,19 @@ actor PlatformCredentials {
 		return .failure(.unavailable)
 	}
 
-	private func step(_ connectionID: PlatformConnection.ID) async -> Step {
+	private func step(_ connectionID: PlatformConnection.ID, replacing rejected: String?) async -> Step {
 		let record: PlatformConnectionStore.Record
 		switch await store.record(for: connectionID) {
 		case .success(let value): record = value
 		case .failure(let error): return .done(.failure(.store(error)))
 		}
-		guard let refresh = record.refresh else { return .done(.success(record.accessToken)) }
+		if let rejected, rejected != record.accessToken { return .done(.success(record.accessToken)) }
+		guard let refresh = record.refresh else {
+			return .done(rejected == nil ? .success(record.accessToken) : .failure(.expired))
+		}
 		guard !refresh.isRejected else { return .done(.failure(.expired)) }
 		let date = now()
-		guard refresh.isDue(at: date) else { return .done(.success(record.accessToken)) }
+		guard rejected != nil || refresh.isDue(at: date) else { return .done(.success(record.accessToken)) }
 		// A request already sent may have renewed the token, so it's finished even past the refresh token's expiry.
 		guard refresh.attempt != nil || date < refresh.expiresAt,
 			let platform = BrowserPlatform(record.connection.platform)
@@ -157,8 +167,11 @@ actor PlatformCredentials {
 				guard round < Self.pendingRetries else { return .done(.failure(.unavailable)) }
 				do { try await Task.sleep(for: pendingDelay) } catch { return .done(.failure(.unavailable)) }
 			case .success(.failed), .success(.expired), .success(.unknown):
-				_ = await store.rejectRefresh(of: connectionID, attempt: attempt.id)
-				return .done(.failure(.expired))
+				switch await store.rejectRefresh(of: connectionID, attempt: attempt.id) {
+				// The connection was connected again meanwhile; the refusal was of its old token.
+				case .success(false): return .again
+				case .success(true), .failure: return .done(.failure(.expired))
+				}
 			case .failure(.signedOut), .failure(.forbidden):
 				return .done(.failure(.signedOut))
 			case .failure(.rateLimited):

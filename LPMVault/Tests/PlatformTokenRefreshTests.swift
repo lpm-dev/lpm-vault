@@ -575,18 +575,51 @@ struct PlatformCredentialsTests {
 		#expect(record.accessToken == "nfo_access_old" && record.refresh?.attempt != nil)
 	}
 
-	@Test("a connection connected again during a renewal keeps its new token")
-	func reconnectedMeanwhile() async throws {
+	@Test(
+		"a connection connected again during a renewal keeps its new token, whatever lpm.dev answers the old attempt",
+		arguments: ["renewed", "failed", "expired", "unknown"]
+	)
+	func reconnectedMeanwhile(answer: String) async throws {
 		let id = try await connect()
 		let store = store
 		let account = account
 		let start = start
 		let refresher = ScriptedTokenRefresher { call, _ in
 			_ = await store.save(account, accessToken: "nfo_reconnected", at: start)
-			return ScriptedTokenRefresher.renewed(call)
+			switch answer {
+			case "failed": return .success(.failed(code: "refresh_token_used"))
+			case "expired": return .success(.expired)
+			case "unknown": return .success(.unknown)
+			default: return ScriptedTokenRefresher.renewed(call)
+			}
 		}
 		#expect(await credentials(refresher, at: TestDate(start.addingTimeInterval(8 * 3_600))).accessToken(for: id) == .success("nfo_reconnected"))
-		#expect(try await store.record(for: id).get().accessToken == "nfo_reconnected")
+		let record = try await store.record(for: id).get()
+		#expect(record.accessToken == "nfo_reconnected" && record.refresh == nil)
+	}
+
+	@Test("a token the platform refused is renewed even while it looks current, as when the clock is wrong")
+	func renewsRefusedToken() async throws {
+		let id = try await connect()
+		let refresher = ScriptedTokenRefresher { call, _ in ScriptedTokenRefresher.renewed(call) }
+		let credentials = credentials(refresher, at: TestDate(start.addingTimeInterval(60)))
+		#expect(await credentials.accessToken(for: id) == .success("nfo_access_old"))
+		#expect(refresher.calls.isEmpty)
+		#expect(await credentials.accessToken(for: id, replacing: "nfo_access_old") == .success("nfo_renewed_access"))
+		#expect(refresher.calls.count == 1)
+		#expect(await credentials.accessToken(for: id, replacing: "nfo_access_old") == .success("nfo_renewed_access"),
+			"A refusal of a token already replaced is answered with its replacement")
+		#expect(refresher.calls.count == 1)
+	}
+
+	@Test("a refused token that doesn't renew, or a renewal lpm.dev refuses, means connecting again")
+	func refusedTokenWithoutRenewal() async throws {
+		let lasting = try await store.save(account, accessToken: "nfo_lasting", at: start).get()
+		let refresher = ScriptedTokenRefresher { _, _ in .success(.failed(code: "refresh_rejected")) }
+		let credentials = credentials(refresher, at: TestDate(start.addingTimeInterval(60)))
+		#expect(await credentials.accessToken(for: lasting.id, replacing: "nfo_lasting") == .failure(.expired))
+		let id = try await connect()
+		#expect(await credentials.accessToken(for: id, replacing: "nfo_access_old") == .failure(.expired))
 	}
 
 	@Test("each failure says what to do, naming the platform")
