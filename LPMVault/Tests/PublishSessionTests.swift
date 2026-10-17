@@ -1255,15 +1255,36 @@ struct GitHubPublishSessionTests {
 	@Test("what GitHub left out of a listing, single sign-on or a refused installation, is carried to the sheet, and gone after a listing without it")
 	func carriesListingNotes() async throws {
 		try await connect()
-		api.setListing(hidesSSO: true, skips: true)
+		let skipped = [GitHubSkippedInstallation(account: "acme", isSuspended: true)]
+		api.setListing(hidesSSO: true, skipped: skipped)
 		let session = session()
 		session.start()
 		#expect(try await waitUntil { session.github?.repositories.value != nil })
-		#expect(session.github?.hidesSSORepositories == true && session.github?.skipsInstallations == true)
-		api.setListing(hidesSSO: false, skips: false)
+		#expect(session.github?.hidesSSORepositories == true && session.github?.skippedInstallations == skipped)
+		api.setListing(hidesSSO: false)
 		session.reloadChoices()
 		#expect(try await waitUntil { session.github?.repositories.value != nil && session.github?.hidesSSORepositories == false })
-		#expect(session.github?.skipsInstallations == false)
+		#expect(session.github?.skippedInstallations == [])
+	}
+
+	@Test("the note on skipped installations names their accounts, in the plural for several, and says what to do")
+	func notesSkippedInstallations() {
+		let suspended = { GitHubSkippedInstallation(account: $0, isSuspended: true) }
+		let refused = { GitHubSkippedInstallation(account: $0, isSuspended: false) }
+		#expect(PublishSheet.skippedInstallationNotes([]) == [])
+		#expect(PublishSheet.skippedInstallationNotes([suspended("acme")]) == [
+			"LPM Vault's GitHub App is suspended on acme, so GitHub left out its repositories. An owner of acme can unsuspend it in its settings on GitHub, under GitHub Apps.",
+		])
+		#expect(PublishSheet.skippedInstallationNotes([suspended("acme"), suspended("northwind"), refused(nil)]) == [
+			"LPM Vault's GitHub App is suspended on acme and northwind, so GitHub left out their repositories. An owner of each can unsuspend it in its settings on GitHub, under GitHub Apps.",
+			"GitHub refused to list the repositories of LPM Vault's GitHub App on an account, as when it was uninstalled meanwhile. Refresh, or install the app there again.",
+		])
+		let joined = ListFormatter.localizedString(byJoining: ["a", "b", "c", "2 other accounts"])
+		#expect(PublishSheet.skippedInstallationNotes([refused("a"), refused("b"), refused("c"), refused("d"), refused(nil)]) == [
+			"GitHub refused to list the repositories of LPM Vault's GitHub App on \(joined), as when it was uninstalled meanwhile. Refresh, or install the app there again.",
+		])
+		#expect(PublishSheet.skippedInstallationNotes([suspended(nil), suspended(nil)]).first?.hasPrefix(
+			"LPM Vault's GitHub App is suspended on 2 accounts, so GitHub left out their repositories.") == true)
 	}
 
 	@Test("environments of a repository moved since it was listed say to refresh, not to review again")
@@ -1788,7 +1809,7 @@ extension SheetInteractionTests {
 			let github = FakeGitHubAPI()
 			let repository = GitHubScope(repository: "northwind/storefront", environment: nil)
 			for index in 0..<99 { github.edit("OLD_\(index)", secret: true, in: repository) }
-			github.setListing(hidesSSO: true, skips: true)
+			github.setListing(hidesSSO: true, skipped: [GitHubSkippedInstallation(account: "acme", isSuspended: true)])
 			let gate = TestGate()
 			github.environmentsGate = gate
 			let store = VaultStore(
@@ -1806,7 +1827,7 @@ extension SheetInteractionTests {
 				keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("GitHub left out repositories of an organization with single sign-on"))
-			#expect(try await host.waitForText("GitHub left out an installation of LPM Vault's GitHub App"))
+			#expect(try await host.waitForText("LPM Vault's GitHub App is suspended on acme"))
 			session.github?.repositoryID = "1296269"
 			#expect(try await host.waitForText("Loading environments…"))
 			await gate.open()

@@ -239,8 +239,8 @@ final class GitHubDestinationForm {
 	var repositories: PublishSession.Loadable<[GitHubRepository]> = .idle
 	/// Whether GitHub left out an organization's repositories until the person signs in with its single sign-on.
 	var hidesSSORepositories = false
-	/// Whether an installation of the app was left out, as when it's suspended.
-	var skipsInstallations = false
+	/// Installations of the app GitHub left out, as when one is suspended.
+	var skippedInstallations: [GitHubSkippedInstallation] = []
 	/// The chosen repository's deployment environments.
 	var environments: PublishSession.Loadable<[GitHubEnvironment]> = .idle
 	@ObservationIgnored var didChange: (Field) -> Void = { _ in }

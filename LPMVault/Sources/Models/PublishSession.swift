@@ -572,7 +572,7 @@ final class PublishSession: Identifiable {
 		environmentsTask?.cancel()
 		form.repositories = .loading
 		form.hidesSSORepositories = false
-		form.skipsInstallations = false
+		form.skippedInstallations = []
 		let client = githubClient(for: connectionID)
 		choicesTask = Task { [weak self, weak form] in
 			let result = await Self.sortedRepositories(from: client)
@@ -581,7 +581,7 @@ final class PublishSession: Identifiable {
 			case .success(let list):
 				form.repositories = .loaded(list.repositories)
 				form.hidesSSORepositories = list.hidesSSORepositories
-				form.skipsInstallations = list.skipsInstallations
+				form.skippedInstallations = list.skippedInstallations
 				if form.repositoryID != nil { self.loadEnvironments(form) }
 			case .failure(let error): form.repositories = .failed(error.message)
 			}

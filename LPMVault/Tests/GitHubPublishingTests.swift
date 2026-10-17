@@ -31,7 +31,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	private var scopes: [String: Scope] = [:]
 	private var formerNames: Set<String> = []
 	private var access: [String: (isArchived: Bool, permission: GitHubRepository.Permission?)] = [:]
-	private var listing = (hidesSSO: false, skips: false)
+	private var listing = (hidesSSO: false, skipped: [GitHubSkippedInstallation]())
 	/// Holds environment listings until a test opens it.
 	var environmentsGate: TestGate?
 	private var clock = Date(timeIntervalSince1970: 1_760_000_000)
@@ -87,8 +87,8 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	}
 
 	/// Sets what the next repository listings say GitHub left out.
-	func setListing(hidesSSO: Bool, skips: Bool) {
-		lock.withLock { listing = (hidesSSO, skips) }
+	func setListing(hidesSSO: Bool, skipped: [GitHubSkippedInstallation] = []) {
+		lock.withLock { listing = (hidesSSO, skipped) }
 	}
 
 	func removeEnvironments(of repository: String) {
@@ -166,7 +166,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 						id: $0.key, fullName: $0.value, isPrivate: true, isArchived: access[$0.key]?.isArchived ?? false,
 						permission: access[$0.key]?.permission)
 				},
-				hidesSSORepositories: listing.hidesSSO, skipsInstallations: listing.skips)
+				hidesSSORepositories: listing.hidesSSO, skippedInstallations: listing.skipped)
 		})
 	}
 
@@ -1505,13 +1505,15 @@ struct GitHubClientListTests {
 		#expect(try await client(route).environment(named: "production", of: "northwind/storefront").get() == nil)
 	}
 
-	@Test("an installation that's suspended, or refuses its repositories, is left out, saying so, and the others are listed")
+	@Test("an installation that's suspended, or refuses its repositories, is left out, naming its account, and the others are listed")
 	func skipsRefusedInstallations() async throws {
 		let route = PlatformHTTPStub.platform { request in
 			switch request.url.path {
 			case "/user/installations":
-				return .json(200, ["total_count": 5, "installations": [
-					["id": 11, "suspended_at": "2026-10-01T10:00:00Z"], ["id": 12], ["id": 13], ["id": 14], ["id": 15],
+				return .json(200, ["total_count": 6, "installations": [
+					["id": 11, "suspended_at": "2026-10-01T10:00:00Z", "account": ["login": "acme", "type": "Organization"]],
+					["id": 12, "account": ["login": "northwind"]], ["id": 13, "account": ["login": "not a login"]], ["id": 14, "account": "octocat"],
+					["id": 15], ["id": 16, "account": ["slug": "enterprise"]],
 				]])
 			case "/user/installations/12/repositories": return .json(403, ["message": "This installation has been suspended"])
 			case "/user/installations/13/repositories": return .json(404, ["message": "Not Found"])
@@ -1519,12 +1521,17 @@ struct GitHubClientListTests {
 				return .json(200, ["total_count": 1, "repositories": [["id": 1_000, "full_name": "northwind/api", "private": true]]])
 			case "/user/installations/15/repositories":
 				return .json(403, ["message": "Resource protected by organization SAML enforcement."], headers: ["X-GitHub-SSO": "required; url=https://github.com/orgs/acme/sso"])
+			case "/user/installations/16/repositories": return .json(403, [:])
 			default: return .json(500, [:])
 			}
 		}
 		let listed = try await client(route).repositories().get()
-		#expect(listed.repositories.map(\.fullName) == ["northwind/api"])
-		#expect(listed.skipsInstallations && listed.hidesSSORepositories)
+		#expect(listed.repositories.map(\.fullName) == ["northwind/api"], "An account GitHub gives in another form doesn't drop its installation")
+		#expect(listed.skippedInstallations == [
+			GitHubSkippedInstallation(account: "acme", isSuspended: true), GitHubSkippedInstallation(account: "northwind", isSuspended: false),
+			GitHubSkippedInstallation(account: nil, isSuspended: false), GitHubSkippedInstallation(account: nil, isSuspended: false),
+		])
+		#expect(listed.hidesSSORepositories)
 		#expect(!route.requests.contains { $0.url.path == "/user/installations/11/repositories" }, "A suspended installation isn't asked")
 	}
 

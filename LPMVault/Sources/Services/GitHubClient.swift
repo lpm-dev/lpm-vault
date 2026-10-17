@@ -83,14 +83,21 @@ struct GitHubRepository: Identifiable, Equatable, Sendable {
 	}
 }
 
+/// An installation of LPM Vault's app whose repositories GitHub left out.
+struct GitHubSkippedInstallation: Equatable, Sendable {
+	/// The login of the account it's installed on, when GitHub gave one LPM Vault reads.
+	let account: String?
+	/// Whether it's suspended; otherwise GitHub refused to list its
+	/// repositories, as when it was removed meanwhile.
+	let isSuspended: Bool
+}
+
 /// The repositories a GitHub connection reaches.
 struct GitHubRepositoryList: Equatable, Sendable {
 	var repositories: [GitHubRepository]
 	/// Whether GitHub left out an organization's repositories until the person signs in with its single sign-on.
 	var hidesSSORepositories = false
-	/// Whether an installation of the app is left out because it's suspended,
-	/// or GitHub refused to list its repositories, as when it was removed meanwhile.
-	var skipsInstallations = false
+	var skippedInstallations: [GitHubSkippedInstallation] = []
 }
 
 /// One of a repository's deployment environments.
@@ -426,7 +433,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 				read.insert(id).inserted
 			else { continue }
 			guard installation.suspendedAt == nil else {
-				listed.skipsInstallations = true
+				listed.skippedInstallations.append(GitHubSkippedInstallation(account: installation.account, isSuspended: true))
 				continue
 			}
 			let path = ["user", "installations", id, "repositories"]
@@ -441,7 +448,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 				listed.hidesSSORepositories = true
 			case .failure(.forbidden), .failure(.notFound):
 				// One installation's refusal leaves the others' repositories.
-				listed.skipsInstallations = true
+				listed.skippedInstallations.append(GitHubSkippedInstallation(account: installation.account, isSuspended: false))
 			case .failure(let error):
 				return .failure(error)
 			}
@@ -704,12 +711,27 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	}
 
 	private struct Installation: Decodable, Sendable {
+		private struct Account: Decodable {
+			let login: String?
+		}
+
 		let id: Int64
+		/// The login of the account it's installed on, when GitHub gave a valid one.
+		let account: String?
 		let suspendedAt: String?
 
 		private enum CodingKeys: String, CodingKey {
 			case id
+			case account
 			case suspendedAt = "suspended_at"
+		}
+
+		init(from decoder: any Decoder) throws {
+			let container = try decoder.container(keyedBy: CodingKeys.self)
+			id = try container.decode(Int64.self, forKey: .id)
+			suspendedAt = try container.decodeIfPresent(String.self, forKey: .suspendedAt)
+			// An account in another form, as an enterprise's, leaves the installation unnamed rather than unlisted.
+			account = (try? container.decodeIfPresent(Account.self, forKey: .account))?.login.flatMap { GitHubHTTP.isValidLogin($0) ? $0 : nil }
 		}
 	}
 

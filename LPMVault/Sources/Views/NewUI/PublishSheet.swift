@@ -582,6 +582,40 @@ struct PublishSheet: View {
 		}
 	}
 
+	/// What to say of the installations GitHub left out: the suspended ones, then those whose repositories it refused to list.
+	static func skippedInstallationNotes(_ skipped: [GitHubSkippedInstallation]) -> [String] {
+		var notes: [String] = []
+		let suspended = skipped.filter(\.isSuspended)
+		if let first = suspended.first {
+			let one = suspended.count == 1
+			let owner = one ? "An owner of \(first.account ?? "the account")" : "An owner of each"
+			notes.append(
+				"LPM Vault's GitHub App is suspended on \(accounts(suspended)), so GitHub left out \(one ? "its" : "their") repositories. \(owner) can unsuspend it in its settings on GitHub, under GitHub Apps."
+			)
+		}
+		let refused = skipped.filter { !$0.isSuspended }
+		if !refused.isEmpty {
+			notes.append(
+				"GitHub refused to list the repositories of LPM Vault's GitHub App on \(accounts(refused)), as when it was uninstalled meanwhile. Refresh, or install the app there again."
+			)
+		}
+		return notes
+	}
+
+	/// The installations' accounts: the first few by name, then how many others.
+	private static func accounts(_ installations: [GitHubSkippedInstallation]) -> String {
+		let named = installations.compactMap(\.account)
+		let shown = named.prefix(3)
+		let others = installations.count - shown.count
+		var parts = Array(shown)
+		if others > 0 {
+			parts.append(shown.isEmpty
+				? (others == 1 ? "an account" : "\(others) accounts")
+				: "\(others) other account\(others == 1 ? "" : "s")")
+		}
+		return ListFormatter.localizedString(byJoining: parts)
+	}
+
 	static func redeployNote(for platform: PublishPlatform) -> String {
 		switch platform {
 		case .vercel: "Redeploy on Vercel to use the new values."
@@ -901,9 +935,8 @@ private struct GitHubDestinationFields: View {
 					? "GitHub left out repositories of an organization with single sign-on. Sign in to it on GitHub, then connect GitHub again on the Platforms page."
 					: "An organization with single sign-on lists its repositories only when GitHub was connected while you were signed in to it.")
 					.foregroundStyle(form.hidesSSORepositories ? VaultPalette.orangeTintText : VaultPalette.textTertiary)
-				if form.skipsInstallations {
-					Text("GitHub left out an installation of LPM Vault's GitHub App that's suspended or couldn't list its repositories.")
-						.foregroundStyle(VaultPalette.orangeTintText)
+				ForEach(PublishSheet.skippedInstallationNotes(form.skippedInstallations), id: \.self) { note in
+					Text(note).foregroundStyle(VaultPalette.orangeTintText)
 				}
 			}
 			.font(.system(size: 11.5))
