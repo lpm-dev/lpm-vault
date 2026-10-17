@@ -1082,7 +1082,7 @@ final class PublishSession: Identifiable {
 			recordFailure = await record(report.published, advancing: report.advances, of: review)
 		}
 		dependencies.didChange()
-		let stored = Set(report.published.lazy.map(\.key))
+		let stored = Set(report.published.lazy.map(\.key)).subtracting(report.gone)
 		results = Results(
 			destination: review.destination,
 			rows: changes.map {

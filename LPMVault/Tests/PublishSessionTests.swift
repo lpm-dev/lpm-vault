@@ -1177,6 +1177,19 @@ struct GitHubPublishSessionTests {
 		#expect(flipped != results, "Results sent as the other kind aren't the same results")
 	}
 
+	@Test("a write gone when it was read back is kept in the history but isn't a value to redeploy")
+	func goneWriteIsntStored() async throws {
+		try await connect()
+		let session = session()
+		try await choose(session)
+		#expect(session.set("LOG_LEVEL", selected: false) && session.set("NEXT_PUBLIC_URL", selected: false))
+		api.dropWrites(of: "API_TOKEN")
+		try await publish(session)
+		let results = try #require(session.results)
+		#expect(results.rows.map(\.isStored) == [false])
+		#expect(PublishSheet.resultsHeader(for: results) == "Published 0 of 1 secret.")
+	}
+
 	@Test("the results header says to redeploy only when something was published")
 	func resultsHeaderRedeploysOnlyWhatWasPublished() throws {
 		let destination = PublishDestination(

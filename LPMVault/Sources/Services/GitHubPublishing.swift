@@ -189,6 +189,7 @@ enum GitHubPublishing {
 			switch answer {
 			case .written(let write, let readBack):
 				report.published.append(change.published(remoteID: remoteID(isSecret: write.isSecret), remoteUpdatedAt: readBack.record?.updatedAt))
+				if readBack == .gone { report.gone.insert(change.key) }
 				report.outcomes[change.key] = readBack == .gone
 					? .failed("GitHub accepted it, but it was gone when LPM Vault read it back. Check it on GitHub.")
 					: .published
