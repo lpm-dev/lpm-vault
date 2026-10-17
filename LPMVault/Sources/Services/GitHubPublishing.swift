@@ -50,9 +50,6 @@ enum GitHubPublishing {
 	struct Pacing: Sendable {
 		/// The least time GitHub asks to leave between two writes of a batch.
 		static let writeInterval: Duration = .seconds(1)
-		/// How long after a limit's announced reset the next request goes, as
-		/// the Mac's clock can run ahead of GitHub's.
-		static let resetMargin: TimeInterval = 1
 
 		var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
 		/// The wall clock, which GitHub's announced resets are on.
@@ -449,23 +446,19 @@ enum GitHubPublishing {
 	/// longest wait, or a cancellation.
 	private static func waitOut(until reset: Date?, waits: inout Int, pacing: Pacing) async -> GitHubAPIError? {
 		let wait: Duration
-		let lifts = reset?.addingTimeInterval(Pacing.resetMargin)
-		if let lifts {
-			guard waits < rateLimitRetries, let limit = GitHubHTTP.rateLimitWait(until: lifts, now: pacing.date()) else {
+		var lifts: Date?
+		if reset != nil {
+			guard waits < rateLimitRetries, let limit = GitHubHTTP.rateLimitWait(until: reset, now: pacing.date()) else {
 				return .rateLimited(until: reset)
 			}
-			wait = limit
+			(wait, lifts) = limit
 		} else {
 			guard waits < unannouncedLimitWaits else { return .rateLimited(until: nil) }
 			wait = .seconds(60 << waits)
 		}
 		waits += 1
 		do {
-			try await pacing.sleep(wait)
-			// The sleep's clock can run ahead of the wall clock GitHub's reset is on.
-			while let left = lifts?.timeIntervalSince(pacing.date()), left > 0 {
-				try await pacing.sleep(.milliseconds(Int64((left * 1_000).rounded(.up))))
-			}
+			try await PlatformRateLimit.waitOut(wait, until: lifts, atMost: GitHubHTTP.longestRateLimitWait, date: pacing.date, sleep: pacing.sleep)
 		} catch {
 			return .cancelled
 		}

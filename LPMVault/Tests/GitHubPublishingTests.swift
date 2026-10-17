@@ -271,6 +271,8 @@ final class TestPacing: @unchecked Sendable {
 	private let started: ContinuousClock.Instant
 	private let whileAsleep: @Sendable () -> Void
 	private var slept: [Duration] = []
+	private var setBack: TimeInterval = 0
+	private var nextSetBack: TimeInterval = 0
 
 	init(whileAsleep: @escaping @Sendable () -> Void = {}) {
 		self.whileAsleep = whileAsleep
@@ -279,12 +281,22 @@ final class TestPacing: @unchecked Sendable {
 
 	var sleeps: [Duration] { lock.withLock { slept } }
 
+	/// Sets the wall clock back by `seconds` during the next sleep, as when the Mac corrects its clock meanwhile.
+	func setBackDuringNextSleep(by seconds: TimeInterval) {
+		lock.withLock { nextSetBack = seconds }
+	}
+
 	var pacing: GitHubPublishing.Pacing {
-		GitHubPublishing.Pacing(now: { [clock] in clock.now }, date: { [clock, started] in
+		GitHubPublishing.Pacing(now: { [clock] in clock.now }, date: { [self] in
 			let elapsed = started.duration(to: clock.now)
-			return Self.start.addingTimeInterval(Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
+			return Self.start.addingTimeInterval(
+				Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18 - lock.withLock { setBack })
 		}, sleep: { [self] duration in
-			lock.withLock { slept.append(duration) }
+			lock.withLock {
+				slept.append(duration)
+				setBack += nextSetBack
+				nextSetBack = 0
+			}
 			whileAsleep()
 			clock.advance(by: duration)
 		})
@@ -979,7 +991,20 @@ struct GitHubPublishTests {
 		api.fail(.setSecret, with: .rateLimited(until: TestPacing.start.addingTimeInterval(30)))
 		let report = await publish([change("A", "1")], with: api, reviewed: reviewed, pacing: pacing)
 		#expect(report.outcomes == ["A": .published])
-		#expect(pacing.sleeps == [.seconds(31)], "A second past the reset, as the Mac's clock can run ahead of GitHub's")
+		#expect(pacing.sleeps == [.seconds(31)], "A second past the reset, so the next request doesn't arrive just before it")
+
+		let longest = FakeGitHubAPI()
+		let lastMoment = TestPacing()
+		longest.fail(.setSecret, with: .rateLimited(until: TestPacing.start.addingTimeInterval(65)))
+		#expect(await publish([change("A", "1")], with: longest, reviewed: reviewed, pacing: lastMoment).outcomes == ["A": .published])
+		#expect(lastMoment.sleeps == [.seconds(66)], "The margin doesn't push a limit inside the longest wait past it")
+
+		let corrected = FakeGitHubAPI()
+		let setBack = TestPacing()
+		setBack.setBackDuringNextSleep(by: 3_600)
+		corrected.fail(.setSecret, with: .rateLimited(until: TestPacing.start.addingTimeInterval(30)))
+		#expect(await publish([change("A", "1")], with: corrected, reviewed: reviewed, pacing: setBack).outcomes == ["A": .published])
+		#expect(setBack.sleeps.reduce(.zero, +) == GitHubHTTP.longestRateLimitWait, "A wall clock set back an hour holds the wait no longer than the longest")
 
 		let far = FakeGitHubAPI()
 		let farOff = TestPacing()
