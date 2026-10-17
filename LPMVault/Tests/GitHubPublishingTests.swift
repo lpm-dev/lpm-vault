@@ -5,9 +5,10 @@ import Testing
 
 /// GitHub's Actions API for tests: repositories with environments, and each
 /// scope's secrets and variables with the second GitHub last wrote them.
-/// Names are kept in capitals, as GitHub keeps them, and a request to a
-/// repository's former name is redirected, as GitHub redirects it. A
-/// secret's sealed value is kept as sent.
+/// Names are kept in capitals, as GitHub keeps them, and environments are
+/// found ignoring case. A request to a repository's former name is
+/// redirected, and one to a repository or environment that's gone is not
+/// found, as GitHub answers them. A secret's sealed value is kept as sent.
 final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	enum Operation: Hashable, Sendable {
 		case listSecrets, listVariables, secret, variable, publicKey, setSecret, createVariable, updateVariable, repository, environments, environment
@@ -45,7 +46,8 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	var onRequest: (@Sendable (Operation) -> Void)?
 	let publicKey = GitHubPublicKey(id: "568250167242549743", key: Data((0..<32).map { UInt8($0 * 3 + 1) }))
 
-	private static func key(_ scope: GitHubScope) -> String { scope.repository + "|" + (scope.environment ?? "") }
+	private static func key(_ scope: GitHubScope) -> String { key(scope.repository, scope.environment) }
+	private static func key(_ repository: String, _ environment: String?) -> String { repository + "|" + (environment?.lowercased() ?? "") }
 
 	/// Each request, as the operation and the name it was about, in order.
 	var requests: [(Operation, String)] { lock.withLock { log } }
@@ -91,14 +93,19 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 		lock.withLock { listing = (hidesSSO, skipped) }
 	}
 
+	/// Deletes the repository's environments, with their secrets and variables.
 	func removeEnvironments(of repository: String) {
-		lock.withLock { environmentLists[repository] = [] }
+		lock.withLock {
+			environmentLists[repository] = []
+			for key in scopes.keys where key.hasPrefix(repository + "|") && key != Self.key(repository, nil) { scopes.removeValue(forKey: key) }
+		}
 	}
 
-	/// Renames the repository's environment, which keeps its ID.
+	/// Renames the repository's environment, which keeps its ID, secrets and variables.
 	func renameEnvironment(of repository: String, from name: String, to newName: String) {
 		lock.withLock {
 			environmentLists[repository] = (environmentLists[repository] ?? []).map { $0.name == name ? GitHubEnvironment(id: $0.id, name: newName) : $0 }
+			if let records = scopes.removeValue(forKey: Self.key(repository, name)) { scopes[Self.key(repository, newName)] = records }
 		}
 	}
 
@@ -107,7 +114,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	func replaceEnvironment(of repository: String, name: String, withID id: String) {
 		lock.withLock {
 			environmentLists[repository] = (environmentLists[repository] ?? []).map { $0.name == name ? GitHubEnvironment(id: id, name: name) : $0 }
-			scopes.removeValue(forKey: repository + "|" + name)
+			scopes.removeValue(forKey: Self.key(repository, name))
 		}
 	}
 
@@ -155,17 +162,20 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 		lock.withLock { _ = dropped.insert(name) }
 	}
 
-	/// Whether `repository` is a name a repository had before it was renamed.
-	private func moved(_ repository: String) -> Bool {
-		lock.withLock { formerNames.contains(repository) }
+	/// How GitHub answers a request to a repository that isn't there: a
+	/// former name redirects, and one gone is not found.
+	private func missing(_ repository: String) -> GitHubAPIError? {
+		lock.withLock {
+			if formerNames.contains(repository) { return .moved }
+			return repositoryNames.values.contains(repository) ? nil : .notFound
+		}
 	}
 
 	/// How GitHub answers a request to a scope that isn't there: a former
 	/// name redirects, and a repository or environment gone is not found.
 	private func missing(_ scope: GitHubScope) -> GitHubAPIError? {
-		lock.withLock {
-			if formerNames.contains(scope.repository) { return .moved }
-			guard repositoryNames.values.contains(scope.repository) else { return .notFound }
+		if let error = missing(scope.repository) { return error }
+		return lock.withLock {
 			if let environment = scope.environment,
 				!(environmentLists[scope.repository] ?? []).contains(where: { $0.name.lowercased() == environment.lowercased() })
 			{
@@ -212,7 +222,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 
 	func environment(named name: String, of repository: String) async -> Result<GitHubEnvironment?, GitHubAPIError> {
 		if let error = begin(.environment, name) { return .failure(error) }
-		if moved(repository) { return .failure(.moved) }
+		if missing(repository) == .moved { return .failure(.moved) }
 		// GitHub finds an environment by its name ignoring case.
 		return .success(lock.withLock { environmentLists[repository]?.first { $0.name.lowercased() == name.lowercased() } })
 	}
@@ -220,19 +230,19 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
 		await environmentsGate?.wait()
 		if let error = begin(.environments, repository) { return .failure(error) }
-		if moved(repository) { return .failure(.moved) }
+		if let error = missing(repository) { return .failure(error) }
 		return .success(lock.withLock { environmentLists[repository] ?? [] })
 	}
 
 	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> {
 		if let error = begin(.listSecrets, Self.key(scope)) { return .failure(error) }
-		if moved(scope.repository) { return .failure(.moved) }
+		if let error = missing(scope) { return .failure(error) }
 		return .success(lock.withLock { (scopes[Self.key(scope)]?.secrets ?? [:]).map { GitHubValueRecord(name: $0.key, updatedAt: $0.value.updatedAt) } })
 	}
 
 	func secret(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {
 		if let error = begin(.secret, name) { return .failure(error) }
-		if moved(scope.repository) { return .failure(.moved) }
+		if let error = missing(scope) { return error == .notFound ? .success(nil) : .failure(error) }
 		return .success(lock.withLock { scopes[Self.key(scope)]?.secrets[name].map { GitHubValueRecord(name: name, updatedAt: $0.updatedAt) } })
 	}
 
@@ -253,13 +263,13 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 
 	func variables(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> {
 		if let error = begin(.listVariables, Self.key(scope)) { return .failure(error) }
-		if moved(scope.repository) { return .failure(.moved) }
+		if let error = missing(scope) { return .failure(error) }
 		return .success(lock.withLock { (scopes[Self.key(scope)]?.variables ?? [:]).map { GitHubValueRecord(name: $0.key, updatedAt: $0.value.updatedAt) } })
 	}
 
 	func variable(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {
 		if let error = begin(.variable, name) { return .failure(error) }
-		if moved(scope.repository) { return .failure(.moved) }
+		if let error = missing(scope) { return error == .notFound ? .success(nil) : .failure(error) }
 		return .success(lock.withLock { scopes[Self.key(scope)]?.variables[name].map { GitHubValueRecord(name: name, updatedAt: $0.updatedAt) } })
 	}
 
@@ -886,6 +896,23 @@ struct GitHubPublishTests {
 		let removed = PublishOutcome.failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")
 		#expect(deleted.outcomes == ["A": removed, "B": removed])
 		#expect(environments.writeCount == 0)
+	}
+
+	@Test("changes to keys of an environment removed since the review read as gone, as GitHub answers them, and get the environment's reason with no public key asked")
+	func reportsRemovedEnvironmentOnReread() async throws {
+		let api = FakeGitHubAPI()
+		api.edit("A", secret: true, in: production)
+		api.edit("B", secret: false, in: production)
+		let reviewed = try await reviewed(api, in: production)
+		api.removeEnvironments(of: "northwind/storefront")
+		let report = await publish(
+			[change("A", "1", .replace(remoteID: "secret")), change("B", "2", .replace(remoteID: "variable"), secret: false)],
+			with: api, reviewed: reviewed, to: productionTarget)
+		let removed = PublishOutcome.failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")
+		#expect(report.outcomes == ["A": removed, "B": removed])
+		#expect(!api.requests.contains { $0.0 == .publicKey }, "A key that reads as gone is refused before its public key is asked")
+		#expect(api.writeCount == 0)
+		#expect(api.names(in: production) == ([], []), "Removing an environment removes its secrets and variables")
 	}
 
 	@Test("an environment replaced, or a repository's name reused, while its key or public key is read gets nothing: the check comes last", arguments: [
