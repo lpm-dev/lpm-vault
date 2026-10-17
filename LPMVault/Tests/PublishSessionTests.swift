@@ -1130,7 +1130,7 @@ struct GitHubPublishSessionTests {
 		#expect(notes.contains("Workflows read secrets as ${{ secrets.NAME }} and variables as ${{ vars.NAME }}."))
 		#expect(notes.contains { $0.contains("deployment environment gets that environment's secret or variable instead") })
 		try await publish(session)
-		#expect(confirmations.reasons == ["Publish 3 variables to northwind/storefront / Repository on GitHub"])
+		#expect(confirmations.reasons == ["Publish 2 secrets and 1 variable to northwind/storefront / Repository on GitHub"])
 		#expect(session.results?.publishedCount == 3)
 		let names = api.names(in: repositoryScope)
 		#expect(names.secrets == ["API_TOKEN", "NEXT_PUBLIC_URL"] && names.variables == ["LOG_LEVEL"])
@@ -1259,7 +1259,8 @@ struct GitHubPublishSessionTests {
 		let session = session(tokens: tokens, credentials: credentials)
 		try await choose(session)
 		#expect(session.review != nil)
-		#expect(refresher.calls.map(\.refreshToken) == ["ghr_1"] && refresher.calls.first?.platform == .github)
+		#expect(refresher.calls.map(\.refreshToken) == ["ghr_1"])
+		#expect(refresher.calls.first?.platform == .github)
 		#expect(Set(tokens.values) == ["ghu_2"], "Every request after the renewal uses the new token")
 		#expect(try await connections.record(for: "github.583231").get().refresh?.token == "ghr_2")
 	}
@@ -1657,7 +1658,7 @@ extension SheetInteractionTests {
 			try await host.click("Publish 2 variables")
 			#expect(try await host.waitForText("Published 2 of 2 variables"))
 			#expect(try await host.waitForText("Workflow runs that start from now on get the new values"))
-			#expect(biometric.confirmationReasons == ["Publish 2 variables to northwind/storefront / Repository on GitHub"])
+			#expect(biometric.confirmationReasons == ["Publish 2 secrets to northwind/storefront / Repository on GitHub"])
 			#expect(github.names(in: GitHubScope(repository: "northwind/storefront", environment: nil)).secrets == ["API_TOKEN", "SHARED_KEY"])
 		}
 

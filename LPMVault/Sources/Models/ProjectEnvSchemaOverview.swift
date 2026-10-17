@@ -652,7 +652,44 @@ extension String {
 	}
 }
 
+extension String {
+	/// The text with every character that could hide in it, or make it pass
+	/// for other text, written as an escape: controls, format characters such
+	/// as zero-width and direction marks, other default-ignorable ones such as
+	/// variation selectors and fillers, line and paragraph separators, spaces
+	/// other than the plain space, and a plain space at either end. For names
+	/// a platform sends that a person tells apart by sight, such as a GitHub
+	/// environment's.
+	var escapingInvisibleCharacters: String {
+		let scalars = unicodeScalars
+		let last = scalars.isEmpty ? nil : scalars.index(before: scalars.endIndex)
+		func escapes(_ scalar: Unicode.Scalar, at index: String.UnicodeScalarView.Index) -> Bool {
+			scalar.isInvisible || (scalar == " " && (index == scalars.startIndex || index == last))
+		}
+		guard scalars.indices.contains(where: { escapes(scalars[$0], at: $0) }) else { return self }
+		var escaped = ""
+		escaped.reserveCapacity(utf8.count + 8)
+		for index in scalars.indices {
+			let scalar = scalars[index]
+			if escapes(scalar, at: index) {
+				escaped += "\\u{\(String(scalar.value, radix: 16))}"
+			} else {
+				escaped.unicodeScalars.append(scalar)
+			}
+		}
+		return escaped
+	}
+}
+
 private extension Unicode.Scalar {
+	var isInvisible: Bool {
+		switch properties.generalCategory {
+		case .control, .format, .lineSeparator, .paragraphSeparator: true
+		case .spaceSeparator: value != 0x20
+		default: properties.isDefaultIgnorableCodePoint
+		}
+	}
+
 	/// Matches the characters the LPM CLI escapes in its diagnostics.
 	var hidesOrReordersText: Bool {
 		properties.generalCategory == .control

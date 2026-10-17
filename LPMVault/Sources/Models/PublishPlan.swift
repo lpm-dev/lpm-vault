@@ -172,6 +172,9 @@ struct PublishPlan: Equatable, Sendable {
 		var protectionFollowsVariable = false
 		/// What the platform would do to a value, most serious first.
 		var valueIssues: @Sendable (String) -> [ValueIssue] = { _ in [] }
+		/// How many secrets and readable variables the platform keeps at one
+		/// place; nil when it doesn't limit them.
+		var capacity: Capacity?
 
 		func isReserved(_ key: String) -> Bool {
 			reservedKeys.contains(key) || reservedPrefixes.contains { key.hasPrefix($0) }
@@ -253,6 +256,26 @@ struct PublishPlan: Equatable, Sendable {
 		}
 	}
 
+	/// How many secrets and how many readable variables a platform keeps at one place.
+	struct Capacity: Equatable, Sendable {
+		var secrets: Int
+		var variables: Int
+	}
+
+	/// Where a selection would take a place past what the platform keeps there.
+	struct Overflow: Equatable, Sendable {
+		/// Whether it's the secrets that would be too many, not the readable variables.
+		let isSecrets: Bool
+		let limit: Int
+		/// How many the place has now.
+		let existing: Int
+		/// How many new ones the selection adds.
+		let adding: Int
+
+		/// How many new ones must be left out.
+		var excess: Int { existing + adding - limit }
+	}
+
 	/// Tells this plan apart from any other, so a selection can't be used with another plan.
 	let id = UUID()
 	let destination: UUID
@@ -271,6 +294,10 @@ struct PublishPlan: Equatable, Sendable {
 	/// This Mac's records of keys the source no longer has, by when each was published.
 	let staleHistory: [String: Date]
 	private let rowIndex: [String: Int]
+	private let capacity: Capacity?
+	/// The secrets and readable variables at the destination's place, counted when the platform limits them.
+	private let existingSecrets: Int
+	private let existingVariables: Int
 
 	/// - Parameters:
 	///   - values: The source environment's stored values.
@@ -353,6 +380,16 @@ struct PublishPlan: Equatable, Sendable {
 				case .elsewhere: count
 				}
 			}
+		capacity = platform.capacity
+		if platform.capacity != nil {
+			let secrets = remote.values.lazy.filter { $0.storedAsSecret == true }.count
+			let duplicated = remoteKeys.values.lazy.filter { $0.kind == .duplicated }.count
+			existingSecrets = secrets + duplicated
+			existingVariables = remote.count - secrets + duplicated
+		} else {
+			existingSecrets = 0
+			existingVariables = 0
+		}
 		destinationUpdatedAt = destination.updatedAt
 		staleExclusions = destination.excludedKeys.filter { values[$0] == nil }
 		staleHistory = history?.keys.filter { values[$0.key] == nil }.mapValues(\.publishedAt) ?? [:]
@@ -446,8 +483,12 @@ extension PublishPlan {
 		var upToDate = 0
 		/// Not chosen for any other reason.
 		var skipped = 0
+		/// How many of those published are published as secrets.
+		var secrets = 0
 
 		var publishing: Int { adding + replacing }
+		/// How many of those published are published readable.
+		var variables: Int { publishing - secrets }
 	}
 
 	func summary(of selection: Selection) -> Summary {
@@ -458,6 +499,7 @@ extension PublishPlan {
 				case .add: summary.adding += 1
 				case .replace: summary.replacing += 1
 				}
+				if row.publishesAsSecret { summary.secrets += 1 }
 			} else if row.status.isUpToDate {
 				summary.upToDate += 1
 			} else {
@@ -465,6 +507,22 @@ extension PublishPlan {
 			}
 		}
 		return summary
+	}
+
+	/// Where `selection` would take the destination's place past what the
+	/// platform keeps there, secrets first; empty when it fits. Only new
+	/// names count: a replaced one keeps its place.
+	func overflows(of selection: Selection) -> [Overflow] {
+		guard let capacity, selection.planID == id else { return [] }
+		var secrets = 0
+		var variables = 0
+		for row in rows where row.operation == .add && selection.keys.contains(row.key) {
+			if row.publishesAsSecret { secrets += 1 } else { variables += 1 }
+		}
+		return [
+			Overflow(isSecrets: true, limit: capacity.secrets, existing: existingSecrets, adding: secrets),
+			Overflow(isSecrets: false, limit: capacity.variables, existing: existingVariables, adding: variables),
+		].filter { $0.adding > 0 && $0.excess > 0 }
 	}
 
 	/// One variable a publish sends. Its value never appears when it's

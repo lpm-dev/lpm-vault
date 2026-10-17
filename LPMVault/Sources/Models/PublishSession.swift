@@ -781,7 +781,9 @@ final class PublishSession: Identifiable {
 		}
 		var current = target
 		switch await client.repository(id: target.repositoryID) {
-		case .success(let repository): current.repositoryName = repository.fullName
+		case .success(let repository):
+			current.repositoryName = repository.fullName
+			if let refusal = GitHubPublishing.accessRefusal(repository, for: target.scope) { return .failure(PublishSessionError(refusal)) }
 		case .failure(.notFound):
 			return .failure("\(target.repositoryName) isn't reachable on GitHub any more. Install LPM Vault's GitHub App on it, or choose another destination.")
 		case .failure(let error): return failure(error)
@@ -790,7 +792,7 @@ final class PublishSession: Identifiable {
 			switch await client.environments(of: current.repositoryName) {
 			case .success(let environments):
 				guard let environment = environments.first(where: { $0.id == id }) else {
-					return .failure("The environment \(name.escapingDirectionControls) isn't in \(current.repositoryName) any more. Choose another destination.")
+					return .failure("The environment \(name.escapingInvisibleCharacters) isn't in \(current.repositoryName) any more. Choose another destination.")
 				}
 				current.scope = .environment(id: id, name: environment.name)
 			case .failure(let error): return failure(error)
@@ -813,7 +815,8 @@ final class PublishSession: Identifiable {
 		return GitHubPublishing.snapshot(secrets: secrets, variables: variables)
 			.map { snapshot in
 				Remote(
-					variables: snapshot.variables, keys: snapshot.keys, platform: GitHubPublishing.platform(readableKeys: readableKeys),
+					variables: snapshot.variables, keys: snapshot.keys,
+					platform: GitHubPublishing.platform(readableKeys: readableKeys, scope: current.scope),
 					target: current == target ? nil : .github(current))
 			}
 			.mapError { PublishSessionError($0.message) }
@@ -964,7 +967,9 @@ final class PublishSession: Identifiable {
 	/// Checks the chosen values are still the reviewed ones, asks for Touch
 	/// ID, sends them, and records what the platform accepted.
 	func publish() {
-		guard !isCancelled, publishTask == nil, let review, !review.selection.keys.isEmpty else { return }
+		guard !isCancelled, publishTask == nil, let review, !review.selection.keys.isEmpty,
+			review.plan.overflows(of: review.selection).isEmpty
+		else { return }
 		reviewError = nil
 		isPublishing = true
 		publishTask = Task { [weak self] in
@@ -999,9 +1004,10 @@ final class PublishSession: Identifiable {
 			reviewError = "This review is out of date. Review again."
 			return
 		}
-		let count = changes.count
+		let secrets = changes.lazy.filter(\.publishesAsSecret).count
 		let place = review.destination.target.placeName
-		let reason = "Publish \(count) \(count == 1 ? "variable" : "variables") to \(place) on \(review.platform.displayName)"
+		let counted = review.platform.countedValues(secrets: secrets, variables: changes.count - secrets)
+		let reason = "Publish \(counted) to \(place) on \(review.platform.displayName)"
 		guard await dependencies.confirm(reason), !Task.isCancelled else { return }
 
 		let token: String

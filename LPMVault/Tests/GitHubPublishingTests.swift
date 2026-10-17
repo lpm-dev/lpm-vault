@@ -5,8 +5,9 @@ import Testing
 
 /// GitHub's Actions API for tests: repositories with environments, and each
 /// scope's secrets and variables with the second GitHub last wrote them.
-/// A secret's sealed value is kept as sent; `opened` reads it when the
-/// publish sealed it with a test sealer.
+/// Names are kept in capitals, as GitHub keeps them, and a request to a
+/// repository's former name is redirected, as GitHub redirects it. A
+/// secret's sealed value is kept as sent.
 final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	enum Operation: Hashable, Sendable {
 		case listSecrets, listVariables, secret, variable, publicKey, setSecret, createVariable, updateVariable, repository, environments
@@ -28,6 +29,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 		"northwind/storefront": [GitHubEnvironment(id: "161088068", name: "production"), GitHubEnvironment(id: "161088069", name: "staging/eu")],
 	]
 	private var scopes: [String: Scope] = [:]
+	private var formerNames: Set<String> = []
 	private var clock = Date(timeIntervalSince1970: 1_760_000_000)
 	/// Each operation's scripted answers, in order: a failure, or nil to answer as usual.
 	private var failures: [Operation: [(error: GitHubAPIError, then: (@Sendable () -> Void)?)?]] = [:]
@@ -60,6 +62,8 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 		lock.withLock {
 			let old = repositoryNames[id]
 			repositoryNames[id] = name
+			if let old { formerNames.insert(old) }
+			formerNames.remove(name)
 			if let old, let environments = environmentLists.removeValue(forKey: old) { environmentLists[name] = environments }
 			for (key, scope) in scopes where key.hasPrefix((old ?? "") + "|") {
 				scopes.removeValue(forKey: key)
@@ -81,6 +85,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 
 	/// Sets a secret or a variable as someone on GitHub would, one second later.
 	func edit(_ name: String, secret: Bool, value: String = "edited", in scope: GitHubScope) {
+		let name = name.uppercased()
 		lock.withLock {
 			clock.addTimeInterval(1)
 			var current = scopes[Self.key(scope)] ?? Scope()
@@ -91,6 +96,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	}
 
 	func remove(_ name: String, secret: Bool, in scope: GitHubScope) {
+		let name = name.uppercased()
 		lock.withLock {
 			if secret { scopes[Self.key(scope)]?.secrets[name] = nil } else { scopes[Self.key(scope)]?.variables[name] = nil }
 		}
@@ -110,6 +116,11 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	/// Names whose writes GitHub accepts but that are gone by the time they're read back.
 	func dropWrites(of name: String) {
 		lock.withLock { _ = dropped.insert(name) }
+	}
+
+	/// Whether `repository` is a name a repository had before it was renamed.
+	private func moved(_ repository: String) -> Bool {
+		lock.withLock { formerNames.contains(repository) }
 	}
 
 	private func begin(_ operation: Operation, _ name: String) -> GitHubAPIError? {
@@ -140,27 +151,32 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 
 	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
 		if let error = begin(.environments, repository) { return .failure(error) }
+		if moved(repository) { return .failure(.moved) }
 		return .success(lock.withLock { environmentLists[repository] ?? [] })
 	}
 
 	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> {
 		if let error = begin(.listSecrets, Self.key(scope)) { return .failure(error) }
+		if moved(scope.repository) { return .failure(.moved) }
 		return .success(lock.withLock { (scopes[Self.key(scope)]?.secrets ?? [:]).map { GitHubValueRecord(name: $0.key, updatedAt: $0.value.updatedAt) } })
 	}
 
 	func secret(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {
 		if let error = begin(.secret, name) { return .failure(error) }
+		if moved(scope.repository) { return .failure(.moved) }
 		return .success(lock.withLock { scopes[Self.key(scope)]?.secrets[name].map { GitHubValueRecord(name: name, updatedAt: $0.updatedAt) } })
 	}
 
 	func publicKey(of scope: GitHubScope) async -> Result<GitHubPublicKey, GitHubAPIError> {
 		if let error = begin(.publicKey, Self.key(scope)) { return .failure(error) }
+		if moved(scope.repository) { return .failure(.moved) }
 		return .success(publicKey)
 	}
 
 	func setSecret(_ name: String, to sealed: GitHubSealedSecret, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> {
 		beforeWrite?(self, name)
 		if let error = begin(.setSecret, name) { return .failure(error) }
+		if moved(scope.repository) { return .failure(.moved) }
 		guard sealed.keyID == publicKey.id else { return .failure(.rejected(status: 422)) }
 		write(name, secret: true, value: sealed.ciphertext, in: scope)
 		return .success(())
@@ -168,17 +184,20 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 
 	func variables(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> {
 		if let error = begin(.listVariables, Self.key(scope)) { return .failure(error) }
+		if moved(scope.repository) { return .failure(.moved) }
 		return .success(lock.withLock { (scopes[Self.key(scope)]?.variables ?? [:]).map { GitHubValueRecord(name: $0.key, updatedAt: $0.value.updatedAt) } })
 	}
 
 	func variable(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {
 		if let error = begin(.variable, name) { return .failure(error) }
+		if moved(scope.repository) { return .failure(.moved) }
 		return .success(lock.withLock { scopes[Self.key(scope)]?.variables[name].map { GitHubValueRecord(name: name, updatedAt: $0.updatedAt) } })
 	}
 
 	func createVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> {
 		beforeWrite?(self, name)
 		if let error = begin(.createVariable, name) { return .failure(error) }
+		if moved(scope.repository) { return .failure(.moved) }
 		guard lock.withLock({ scopes[Self.key(scope)]?.variables[name] }) == nil else { return .failure(.rejected(status: 409)) }
 		write(name, secret: false, value: Data(value.utf8), in: scope)
 		return .success(())
@@ -187,6 +206,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	func updateVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> {
 		beforeWrite?(self, name)
 		if let error = begin(.updateVariable, name) { return .failure(error) }
+		if moved(scope.repository) { return .failure(.moved) }
 		guard lock.withLock({ scopes[Self.key(scope)]?.variables[name] }) != nil else { return .failure(.notFound) }
 		write(name, secret: false, value: Data(value.utf8), in: scope)
 		return .success(())
@@ -201,6 +221,22 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 			if secret { current.secrets[name] = record } else { current.variables[name] = record }
 			scopes[Self.key(scope)] = current
 		}
+	}
+}
+
+/// A publish's pacing on a clock that moves only as it sleeps, recording each sleep.
+final class TestPacing: @unchecked Sendable {
+	private let lock = NSLock()
+	private let clock = ManualClock()
+	private var slept: [Duration] = []
+
+	var sleeps: [Duration] { lock.withLock { slept } }
+
+	var pacing: GitHubPublishing.Pacing {
+		GitHubPublishing.Pacing(now: { [clock] in clock.now }, sleep: { [self] duration in
+			lock.withLock { slept.append(duration) }
+			clock.advance(by: duration)
+		})
 	}
 }
 
@@ -232,7 +268,7 @@ struct GitHubPublishingRulesTests {
 	func acceptsNames() {
 		for name in ["API_TOKEN", "_PRIVATE", "A1", "X"] { #expect(GitHubPublishing.isAcceptedKey(name)) }
 		for name in ["api_token", "Api_Token", "1API", "API-TOKEN", "API TOKEN", ""] { #expect(!GitHubPublishing.isAcceptedKey(name)) }
-		let platform = GitHubPublishing.platform(readableKeys: [])
+		let platform = GitHubPublishing.platform(readableKeys: [], scope: .repository)
 		#expect(platform.isReserved("GITHUB_TOKEN") && !platform.isReserved("MY_GITHUB_TOKEN"))
 		#expect(platform.maximumValueBytes == 48 * 1_024 && platform.protectionFollowsVariable)
 	}
@@ -267,11 +303,38 @@ struct GitHubPlanTests {
 		ciVariables: Set<String> = [],
 		rules: ProjectEnvSchemaOverview = .empty,
 		remote: [String: PublishPlan.RemoteVariable] = [:],
-		remoteKeys: [String: PublishPlan.RemoteKey] = [:]
+		remoteKeys: [String: PublishPlan.RemoteKey] = [:],
+		scope: GitHubPublishTarget.Scope = .repository
 	) -> PublishPlan {
 		PublishPlan(
 			destination: destination, values: values, rules: rules, check: nil, remote: remote, remoteKeys: remoteKeys,
-			platform: GitHubPublishing.platform(readableKeys: ciVariables), history: nil, fingerprintKey: key)
+			platform: GitHubPublishing.platform(readableKeys: ciVariables, scope: scope), history: nil, fingerprintKey: key)
+	}
+
+	@Test("a publish that would take a scope past the secrets or variables GitHub keeps there can't be sent until enough new ones are left out")
+	func capacity() throws {
+		let at = Date(timeIntervalSince1970: 1_760_000_100)
+		var remote: [String: PublishPlan.RemoteVariable] = [:]
+		for index in 0..<97 { remote["OLD_\(index)"] = .init(id: "secret", updatedAt: at, storedAsSecret: true) }
+		remote["REPLACED"] = .init(id: "secret", updatedAt: at, storedAsSecret: true)
+		var values = Dictionary(uniqueKeysWithValues: (0..<5).map { ("NEW_\($0)", "v") })
+		values["REPLACED"] = "v"
+		values["LEVEL"] = "info"
+		let plan = plan(values, ciVariables: ["LEVEL"], remote: remote, remoteKeys: ["BOTH": .init(kind: .duplicated, storedAsSecret: true, updatedAt: at)])
+		var selection = PublishPlan.Selection(defaultsOf: plan)
+		#expect(plan.overflows(of: selection) == [PublishPlan.Overflow(isSecrets: true, limit: 100, existing: 99, adding: 5)])
+		#expect(plan.overflows(of: selection).first?.excess == 4, "97 secrets, the replaced one and the one beside a variable, with 5 new")
+		let summary = plan.summary(of: selection)
+		#expect(summary.publishing == 7 && summary.secrets == 6 && summary.variables == 1)
+		for key in ["NEW_0", "NEW_1", "NEW_2"] { selection.set(key, selected: false, in: plan) }
+		#expect(plan.overflows(of: selection).first?.excess == 1)
+		selection.set("NEW_3", selected: false, in: plan)
+		#expect(plan.overflows(of: selection).isEmpty)
+
+		let environment = self.plan(Dictionary(uniqueKeysWithValues: (0..<101).map { ("V_\($0)", "v") }), ciVariables: Set((0..<101).map { "V_\($0)" }), scope: .environment(id: "1", name: "production"))
+		#expect(environment.overflows(of: .init(defaultsOf: environment)) == [PublishPlan.Overflow(isSecrets: false, limit: 100, existing: 0, adding: 101)])
+		let repository = self.plan(Dictionary(uniqueKeysWithValues: (0..<101).map { ("V_\($0)", "v") }), ciVariables: Set((0..<101).map { "V_\($0)" }))
+		#expect(repository.overflows(of: .init(defaultsOf: repository)).isEmpty, "A repository keeps 500 variables")
 	}
 
 	@Test("keys publish as secrets unless the rules keep them in CI variables, whatever makes them public")
@@ -337,6 +400,21 @@ struct GitHubDestinationTests {
 		#expect(PublishTarget.github(target).placeName == "northwind/storefront / Environment staging/eu")
 		#expect(PublishTarget.github(target).accountName == "northwind" && PublishTarget.github(target).connectionName == "octocat")
 		#expect(target.connectionID == "github.583231")
+	}
+
+	@Test("an environment's name shows every character that could hide in it, so one can't pass for another")
+	func showsHiddenCharacters() {
+		for (name, shown) in [
+			("production\u{200B}", "Environment production\\u{200b}"),
+			("prod\u{00AD}uction", "Environment prod\\u{ad}uction"),
+			("pro\u{FE0F}duction", "Environment pro\\u{fe0f}duction"),
+			("production\u{00A0}eu", "Environment production\\u{a0}eu"),
+			(" production ", "Environment \\u{20}production\\u{20}"),
+			("staging/eu", "Environment staging/eu"),
+			("é-ünïcode prod", "Environment é-ünïcode prod"),
+		] {
+			#expect(GitHubPublishTarget.Scope.environment(id: "1", name: name).displayName == shown)
+		}
 	}
 
 	@Test("a destination round-trips through the stored records, with either scope")
@@ -627,6 +705,57 @@ struct GitHubPublishTests {
 		let gone = await publish([change("B", "2")], with: vanishing, reviewed: reviewed)
 		#expect(gone.outcomes == ["B": .failed("GitHub accepted it, but it was gone when LPM Vault read it back. Check it on GitHub.")])
 		#expect(gone.published.map(\.key) == ["B"], "GitHub took the value, so the next review knows this Mac sent it")
+	}
+
+	@Test("writes are a second apart, as GitHub asks of a batch of writes")
+	func pacesWrites() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		let pacing = TestPacing()
+		let report = await GitHubPublishing.publish(
+			[change("A", "1", secret: false), change("B", "2", secret: false), change("C", "3", secret: false)],
+			to: target, reviewed: reviewed, using: api, seal: testGitHubSeal, pacing: pacing.pacing)
+		#expect(report.outcomes.values.allSatisfy { $0 == .published })
+		#expect(pacing.sleeps == [.seconds(1), .seconds(1)], "Nothing else took time, so each later write waited a full second")
+	}
+
+	@Test("a limit GitHub doesn't say the end of is waited out a minute, then twice that, then given up")
+	func backsOff() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		let pacing = TestPacing()
+		api.fail(.setSecret, with: .rateLimited(until: nil), .rateLimited(until: nil))
+		let report = await GitHubPublishing.publish([change("A", "1")], to: target, reviewed: reviewed, using: api, seal: testGitHubSeal, pacing: pacing.pacing)
+		#expect(report.outcomes == ["A": .published])
+		#expect(pacing.sleeps == [.seconds(60), .seconds(120)])
+
+		let limited = FakeGitHubAPI()
+		let still = TestPacing()
+		limited.fail(.setSecret, with: .rateLimited(until: nil), .rateLimited(until: nil), .rateLimited(until: nil))
+		let given = await GitHubPublishing.publish(
+			[change("A", "1"), change("B", "2")], to: target, reviewed: reviewed, using: limited, seal: testGitHubSeal, pacing: still.pacing)
+		#expect(given.outcomes == ["A": .failed("GitHub is limiting requests. Try again in a few minutes."), "B": .notSent])
+		#expect(still.sleeps == [.seconds(60), .seconds(120)])
+	}
+
+	@Test("a rate limit's message says when it lifts, when that's more than a moment away")
+	func rateLimitMessages() {
+		let now = Date(timeIntervalSince1970: 1_760_000_000)
+		let later = now.addingTimeInterval(40 * 60)
+		#expect(GitHubPublishing.message(.rateLimited(until: later), now: now)
+			== "GitHub is limiting requests until \(later.formatted(date: .omitted, time: .shortened)). Try again then.")
+		#expect(GitHubPublishing.message(.rateLimited(until: now.addingTimeInterval(30)), now: now) == "GitHub is limiting requests. Try again in a minute.")
+		#expect(GitHubPublishing.message(.rateLimited(until: nil), now: now) == "GitHub is limiting requests. Try again in a few minutes.")
+	}
+
+	@Test("a repository renamed between the check and a write gets a redirect, which stops the publish without writing to the name")
+	func stopsOnRedirect() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		api.beforeWrite = { api, _ in api.rename("1296269", to: "northwind/shop") }
+		let report = await publish([change("A", "1"), change("B", "2")], with: api, reviewed: reviewed)
+		#expect(report.outcomes == ["A": .failed("The repository was renamed or moved on GitHub. Review again."), "B": .notSent])
+		#expect(api.names(in: GitHubScope(repository: "northwind/shop", environment: nil)) == ([], []))
 	}
 
 	@Test("a value that can't be sealed isn't sent")

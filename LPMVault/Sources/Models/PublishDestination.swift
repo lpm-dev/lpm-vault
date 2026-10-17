@@ -79,6 +79,30 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 		case .github: "chevron.left.forwardslash.chevron.right"
 		}
 	}
+	/// What a publish sends, counted as the platform calls it: GitHub's
+	/// secrets and variables by kind, every other platform's as variables.
+	func countedValues(secrets: Int, variables: Int) -> String {
+		guard self == .github else { return Self.counted(secrets + variables, "variable") }
+		switch (secrets, variables) {
+		case (0, 0): return "0 secrets or variables"
+		case (_, 0): return Self.counted(secrets, "secret")
+		case (0, _): return Self.counted(variables, "variable")
+		default: return "\(Self.counted(secrets, "secret")) and \(Self.counted(variables, "variable"))"
+		}
+	}
+
+	/// What the platform keeps, as a noun for `count` of them: GitHub's
+	/// secrets and variables, every other platform's variables.
+	func valuesNoun(count: Int) -> String {
+		switch self {
+		case .github: count == 1 ? "secret or variable" : "secrets and variables"
+		default: count == 1 ? "variable" : "variables"
+		}
+	}
+
+	private static func counted(_ count: Int, _ noun: String) -> String {
+		"\(count) \(noun)\(count == 1 ? "" : "s")"
+	}
 }
 
 enum PublishTarget: Hashable, Sendable {
@@ -516,7 +540,7 @@ struct GitHubPublishTarget: Hashable, Sendable {
 		var displayName: String {
 			switch self {
 			case .repository: "Repository"
-			case .environment(_, let name): "Environment \(name.escapingDirectionControls)"
+			case .environment(_, let name): "Environment \(name.escapingInvisibleCharacters)"
 			}
 		}
 
