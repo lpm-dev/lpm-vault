@@ -948,6 +948,17 @@ private final class ScriptedGitHub: GitHubClientProtocol, @unchecked Sendable {
 			return answers.count > 1 ? answers.removeFirst() : answers[0]
 		}
 	}
+	func repositories() async -> Result<[GitHubRepository], GitHubAPIError> { .failure(.notFound) }
+	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> { .failure(.notFound) }
+	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> { .failure(.notFound) }
+	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> { .failure(.notFound) }
+	func secret(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> { .failure(.notFound) }
+	func publicKey(of scope: GitHubScope) async -> Result<GitHubPublicKey, GitHubAPIError> { .failure(.notFound) }
+	func setSecret(_ name: String, to sealed: GitHubSealedSecret, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> { .failure(.notFound) }
+	func variables(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> { .failure(.notFound) }
+	func variable(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> { .failure(.notFound) }
+	func createVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> { .failure(.notFound) }
+	func updateVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> { .failure(.notFound) }
 }
 
 struct GitHubConnectorTests {

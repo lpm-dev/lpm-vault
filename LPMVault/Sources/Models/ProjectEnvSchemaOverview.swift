@@ -21,6 +21,9 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		/// The rule bounds the value's length.
 		var hasLengthRule = false
 		var isSecret = false
+		/// GitHub Actions keeps it in a readable variable, as `ci: variable`
+		/// asks; a secret's rule never does.
+		var isCIVariable = false
 		/// The imported file whose declaration lpm.json overrides; nil when
 		/// lpm.json declares the key or doesn't override it.
 		var overrides: String?
@@ -106,6 +109,8 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 	let publicKeys: Set<String>
 	/// Declared keys whose values are secret.
 	let secretKeys: Set<String>
+	/// Declared keys GitHub Actions keeps in readable variables rather than secrets.
+	let ciVariableKeys: Set<String>
 	let declaredKeys: Set<String>
 	/// Prefixes that make a key public besides the frameworks', from lpm.json
 	/// and the schemas it imports.
@@ -134,6 +139,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 		self.groups = groups.sorted { $0.name < $1.name }
 		publicKeys = Set(rules.lazy.filter(\.isPublic).map(\.key))
 		secretKeys = Set(rules.lazy.filter(\.isSecret).map(\.key))
+		ciVariableKeys = Set(rules.lazy.filter { $0.isCIVariable && !$0.isSecret }.map(\.key))
 		declaredKeys = Set(rules.lazy.map(\.key))
 		foldedKeys = Dictionary(grouping: self.rules.lazy.map(\.key), by: { $0.uppercased() })
 		self.clientPrefixes = clientPrefixes
@@ -200,6 +206,7 @@ struct ProjectEnvSchemaOverview: Equatable, Sendable {
 					},
 					hasLengthRule: declaration.value["minLength"] != nil || declaration.value["maxLength"] != nil,
 					isSecret: declaration.value["secret"] == .bool(true),
+					isCIVariable: declaration.value["ci"] == .string("variable"),
 					overrides: overridden[declaration.key]?.escapingDirectionControls,
 					sourcePath: source == "lpm.json" ? nil : source,
 					overridesPath: overridden[declaration.key],
@@ -480,6 +487,7 @@ extension ProjectEnvSchemaOverview.Rule {
 			},
 			hasLengthRule: declaration["minLength"] != nil || declaration["maxLength"] != nil,
 			isSecret: declaration["secret"] == .bool(true),
+			isCIVariable: declaration["ci"] == .string("variable"),
 			overrides: isOverride ? saved?.overrides ?? saved?.source : nil
 		)
 	}

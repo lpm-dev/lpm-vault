@@ -42,6 +42,7 @@ final class PublishSession: Identifiable {
 		var vercel: @Sendable (_ token: String) -> any VercelClientProtocol
 		var coolify: CoolifyConnector.ClientFactory = { CoolifyClient(instance: $0, token: $1) }
 		var netlify: NetlifyConnector.ClientFactory = { NetlifyClient(token: $0) }
+		var github: GitHubConnector.ClientFactory = { GitHubClient(token: $0) }
 		var now: @Sendable () -> Date = { Date() }
 		/// Called after destinations or history change.
 		var didChange: @MainActor () -> Void = {}
@@ -162,7 +163,7 @@ final class PublishSession: Identifiable {
 	private(set) var isCancelled = false
 	private var startTask: Task<Void, Never>?
 	private var reviewTask: Task<Void, Never>?
-	/// Loads the form's choices: a Vercel project list, Coolify's resources or Netlify's sites.
+	/// Loads the form's choices: a Vercel project list, Coolify's resources, Netlify's sites or GitHub's repositories.
 	private var choicesTask: Task<Void, Never>?
 	private var environmentsTask: Task<Void, Never>?
 	private var publishTask: Task<Void, Never>?
@@ -240,6 +241,7 @@ final class PublishSession: Identifiable {
 		case .vercel?: .vercel
 		case .coolify?: .coolify
 		case .netlify?: .netlify
+		case .github?: .github
 		case nil: nil
 		}
 	}
@@ -259,11 +261,17 @@ final class PublishSession: Identifiable {
 		return nil
 	}
 
+	var github: GitHubDestinationForm? {
+		if case .github(let form)? = form { return form }
+		return nil
+	}
+
 	var canReview: Bool {
 		let isComplete = switch form {
 		case .vercel(let form)?: form.isComplete
 		case .coolify(let form)?: form.isComplete
 		case .netlify(let form)?: form.isComplete
+		case .github(let form)?: form.isComplete
 		case nil: false
 		}
 		return environments.contains(sourceEnvironment) && connection != nil && isComplete && !isLoadingReview && !isPublishing
@@ -283,6 +291,7 @@ final class PublishSession: Identifiable {
 		case .vercel(let form)?: form.projects == .idle
 		case .coolify(let form)?: form.resources == .idle
 		case .netlify(let form)?: form.sites == .idle
+		case .github(let form)?: form.repositories == .idle
 		case nil: false
 		}
 	}
@@ -313,9 +322,7 @@ final class PublishSession: Identifiable {
 		let result = await dependencies.connections.connections()
 		guard !Task.isCancelled else { return }
 		switch result {
-		case .success(let all):
-			// GitHub connections publish once destinations can name a repository.
-			let list = all.filter { $0.platform != .github }
+		case .success(let list):
 			connections = .loaded(list)
 			if connectionID == nil, list.count == 1 { connectionID = list[0].id }
 		case .failure(let error):
@@ -332,7 +339,7 @@ final class PublishSession: Identifiable {
 		case .vercel: form = .vercel(VercelDestinationForm())
 		case .coolify: form = .coolify(CoolifyDestinationForm())
 		case .netlify: form = .netlify(NetlifyDestinationForm())
-		case .github: return nil
+		case .github: form = .github(GitHubDestinationForm())
 		}
 		observe(form)
 		return form
@@ -378,6 +385,7 @@ final class PublishSession: Identifiable {
 		case .vercel(let target): .vercel(VercelDestinationForm(projectID: target.projectID, environment: target.environment))
 		case .coolify(let target): .coolify(CoolifyDestinationForm(resourceID: target.resourceID, deployments: target.deployments))
 		case .netlify(let target): .netlify(NetlifyDestinationForm(siteID: target.siteID, context: target.context))
+		case .github(let target): .github(GitHubDestinationForm(repositoryID: target.repositoryID, scope: target.scope))
 		}
 	}
 
@@ -393,6 +401,12 @@ final class PublishSession: Identifiable {
 			form.didChange = { [weak self] in self?.invalidateReview() }
 		case .netlify(let form)?:
 			form.didChange = { [weak self] in self?.invalidateReview() }
+		case .github(let form)?:
+			form.didChange = { [weak self, weak form] field in
+				guard let self, let form else { return }
+				self.invalidateReview()
+				if field == .repository { self.loadEnvironments(form) }
+			}
 		case nil:
 			break
 		}
@@ -410,9 +424,18 @@ final class PublishSession: Identifiable {
 			loadResources(form)
 		case .netlify(let form)?:
 			loadSites(form)
+		case .github(let form)?:
+			loadRepositories(form)
+			loadEnvironments(form)
 		case nil:
 			break
 		}
+	}
+
+	/// Lists the form's choices again, as after installing LPM Vault's GitHub App on more repositories.
+	func reloadChoices() {
+		guard !isCancelled, step == .destination, !isPublishing else { return }
+		loadForm()
 	}
 
 	/// The connection's token, read when a request needs it, and renewed first when it's about to expire.
@@ -523,6 +546,68 @@ final class PublishSession: Identifiable {
 			.mapError { PublishSessionError(NetlifyPublishing.message($0)) }
 	}
 
+	private func loadRepositories(_ form: GitHubDestinationForm) {
+		guard let connectionID else { return }
+		form.repositories = .loading
+		choicesTask = Task { [weak self, weak form, dependencies] in
+			let result: Result<[GitHubRepository], PublishSessionError>
+			switch await self?.token(for: connectionID, on: .github) {
+			case .success(let token)? where !Task.isCancelled:
+				result = await Self.sortedRepositories(from: dependencies.github(token))
+			case .failure(let error)? where !Task.isCancelled:
+				result = .failure(error)
+			case .success?, .failure?, nil:
+				return
+			}
+			guard let self, let form, !Task.isCancelled, self.github === form else { return }
+			switch result {
+			case .success(let list): form.repositories = .loaded(list)
+			case .failure(let error): form.repositories = .failed(error.message)
+			}
+		}
+	}
+
+	/// The client's repositories in the menu's order, listed and sorted off the main actor.
+	private nonisolated static func sortedRepositories(from client: any GitHubClientProtocol) async -> Result<[GitHubRepository], PublishSessionError> {
+		await client.repositories()
+			.map(GitHubDestinationForm.sorted)
+			.mapError { PublishSessionError(GitHubPublishing.message($0)) }
+	}
+
+	private func loadEnvironments(_ form: GitHubDestinationForm) {
+		environmentsTask?.cancel()
+		guard let connectionID, let repositoryID = form.repositoryID, let repository = githubRepositoryName(form) else {
+			form.environments = .idle
+			return
+		}
+		form.environments = .loading
+		environmentsTask = Task { [weak self, weak form, dependencies] in
+			let result: Result<[GitHubEnvironment], PublishSessionError>
+			switch await self?.token(for: connectionID, on: .github) {
+			case .success(let token)? where !Task.isCancelled:
+				result = await dependencies.github(token).environments(of: repository)
+					.map { $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
+					.mapError { PublishSessionError(GitHubPublishing.message($0)) }
+			case .failure(let error)? where !Task.isCancelled:
+				result = .failure(error)
+			case .success?, .failure?, nil:
+				return
+			}
+			guard let self, let form, !Task.isCancelled, self.github === form, form.repositoryID == repositoryID else { return }
+			switch result {
+			case .success(let list): form.environments = .loaded(list)
+			case .failure(let error): form.environments = .failed(error.message)
+			}
+		}
+	}
+
+	/// The chosen repository's `owner/name`: as listed, or as the saved destination names it.
+	private func githubRepositoryName(_ form: GitHubDestinationForm) -> String? {
+		if let repository = form.repository { return repository.fullName }
+		if case .github(let target)? = saved?.target, target.repositoryID == form.repositoryID { return target.repositoryName }
+		return nil
+	}
+
 	/// The Vercel team the chosen connection reaches; nil for a personal account.
 	private func vercelTeamID() -> String? {
 		if case .vercel(let account)? = connection?.account { return account.teamID }
@@ -581,6 +666,13 @@ final class PublishSession: Identifiable {
 				teamID: teamID, teamName: site?.teamName ?? savedTarget?.teamName ?? teamID,
 				siteID: siteID, siteName: site?.name ?? savedTarget?.siteName ?? siteID,
 				context: context)))
+		case (.github(let account)?, .github(let form)?):
+			guard let repositoryID = form.repositoryID, let repositoryName = githubRepositoryName(form), let scope = form.scope else {
+				return .failure("Choose a destination first.")
+			}
+			return .success(.github(GitHubPublishTarget(
+				userID: account.userID, userLogin: account.login,
+				repositoryID: repositoryID, repositoryName: repositoryName, scope: scope)))
 		default:
 			return .failure("Choose a destination first.")
 		}
@@ -616,9 +708,12 @@ final class PublishSession: Identifiable {
 		let variables: [String: PublishPlan.RemoteVariable]
 		var keys: [String: PublishPlan.RemoteKey] = [:]
 		let platform: PublishPlan.Platform
+		/// The target as the platform names its places now, when that differs
+		/// from how it was saved, as after a repository is renamed.
+		var target: PublishTarget?
 	}
 
-	private func remote(of target: PublishTarget, token: String) async -> Result<Remote, PublishSessionError> {
+	private func remote(of target: PublishTarget, token: String, rules: ProjectEnvSchemaOverview) async -> Result<Remote, PublishSessionError> {
 		switch target {
 		case .vercel(let target):
 			let client = dependencies.vercel(token)
@@ -661,7 +756,60 @@ final class PublishSession: Identifiable {
 			case .failure(let error):
 				return .failure(PublishSessionError(NetlifyPublishing.message(error)))
 			}
+		case .github(let target):
+			return await Self.githubRemote(of: target, using: dependencies.github(token), readableKeys: rules.ciVariableKeys)
 		}
+	}
+
+	/// A GitHub destination's secrets and variables, read by the repository's
+	/// and environment's current names, which GitHub's paths use: the
+	/// repository by its ID, and the environment by its ID among the repository's.
+	private nonisolated static func githubRemote(
+		of target: GitHubPublishTarget,
+		using client: any GitHubClientProtocol,
+		readableKeys: Set<String>
+	) async -> Result<Remote, PublishSessionError> {
+		func failure(_ error: GitHubAPIError) -> Result<Remote, PublishSessionError> {
+			.failure(PublishSessionError(GitHubPublishing.message(error)))
+		}
+		var current = target
+		switch await client.repository(id: target.repositoryID) {
+		case .success(let repository): current.repositoryName = repository.fullName
+		case .failure(.notFound):
+			return .failure("\(target.repositoryName) isn't reachable on GitHub any more. Install LPM Vault's GitHub App on it, or choose another destination.")
+		case .failure(let error): return failure(error)
+		}
+		if case .environment(let id, let name) = target.scope {
+			switch await client.environments(of: current.repositoryName) {
+			case .success(let environments):
+				guard let environment = environments.first(where: { $0.id == id }) else {
+					return .failure("The environment \(name.escapingDirectionControls) isn't in \(current.repositoryName) any more. Choose another destination.")
+				}
+				current.scope = .environment(id: id, name: environment.name)
+			case .failure(let error): return failure(error)
+			}
+		}
+		let scope = GitHubScope(repository: current.repositoryName, environment: current.scope.environmentName)
+		async let secretList = client.secrets(in: scope)
+		let variables: [GitHubValueRecord]
+		switch await client.variables(in: scope) {
+		case .success(let value): variables = value
+		case .failure(let error):
+			_ = await secretList
+			return failure(error)
+		}
+		let secrets: [GitHubValueRecord]
+		switch await secretList {
+		case .success(let value): secrets = value
+		case .failure(let error): return failure(error)
+		}
+		return GitHubPublishing.snapshot(secrets: secrets, variables: variables)
+			.map { snapshot in
+				Remote(
+					variables: snapshot.variables, keys: snapshot.keys, platform: GitHubPublishing.platform(readableKeys: readableKeys),
+					target: current == target ? nil : .github(current))
+			}
+			.mapError { PublishSessionError($0.message) }
 	}
 
 	/// The review of the destination the fields describe. Nothing more is
@@ -680,7 +828,7 @@ final class PublishSession: Identifiable {
 		}
 		let (values, rules, check) = (snapshot.values, snapshot.rules, snapshot.check)
 		let publishing = dependencies.publishing
-		let destination: PublishDestination
+		var destination: PublishDestination
 		let stored: PublishDestination?
 		let destinations = await publishing.destinations(of: vaultID)
 		guard !Task.isCancelled else { return .failure(.cancelled) }
@@ -718,9 +866,13 @@ final class PublishSession: Identifiable {
 		case .success, .failure: return .failure(.cancelled)
 		}
 		let remote: Remote
-		switch await self.remote(of: target, token: token) {
+		switch await self.remote(of: target, token: token, rules: rules.overview) {
 		case .success(let value): remote = value
 		case .failure(let error): return .failure(error)
+		}
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+		if let current = remote.target, current.location == destination.target.location {
+			destination.target = current
 		}
 		let plan = PublishPlan(
 			destination: destination,
@@ -864,6 +1016,11 @@ final class PublishSession: Identifiable {
 			report = await NetlifyPublishing.publish(
 				changes, to: target, reviewed: NetlifyRemoteSnapshot(variables: review.remote, keys: review.remoteKeys),
 				using: dependencies.netlify(token))
+		case .github(let target):
+			report = await GitHubPublishing.publish(
+				changes, to: GitHubScope(repository: target.repositoryName, environment: target.scope.environmentName),
+				reviewed: GitHubRemoteSnapshot(variables: review.remote, keys: review.remoteKeys),
+				using: dependencies.github(token))
 		}
 		var recordFailure: String?
 		if !report.published.isEmpty {

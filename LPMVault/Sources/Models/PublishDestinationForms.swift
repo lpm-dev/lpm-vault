@@ -6,6 +6,7 @@ enum PublishDestinationForm {
 	case vercel(VercelDestinationForm)
 	case coolify(CoolifyDestinationForm)
 	case netlify(NetlifyDestinationForm)
+	case github(GitHubDestinationForm)
 }
 
 /// A Vercel project and one of its environments.
@@ -209,6 +210,69 @@ final class NetlifyDestinationForm {
 				}
 			}
 			return lhs.id < rhs.id
+		}
+	}
+}
+
+/// A GitHub repository, and whether its own secrets and variables are
+/// written or one deployment environment's.
+@MainActor
+@Observable
+final class GitHubDestinationForm {
+	enum Field {
+		case repository
+		case scope
+	}
+
+	var repositoryID: String? {
+		didSet {
+			guard repositoryID != oldValue else { return }
+			environments = .idle
+			scope = repositoryID == nil ? nil : .repository
+			didChange(.repository)
+		}
+	}
+	var scope: GitHubPublishTarget.Scope? {
+		didSet { if scope?.identifier != oldValue?.identifier { didChange(.scope) } }
+	}
+	/// By `owner/name`.
+	var repositories: PublishSession.Loadable<[GitHubRepository]> = .idle
+	/// The chosen repository's deployment environments.
+	var environments: PublishSession.Loadable<[GitHubEnvironment]> = .idle
+	@ObservationIgnored var didChange: (Field) -> Void = { _ in }
+
+	init(repositoryID: String? = nil, scope: GitHubPublishTarget.Scope? = nil) {
+		self.repositoryID = repositoryID
+		self.scope = scope
+	}
+
+	var repository: GitHubRepository? {
+		repositories.value?.first { $0.id == repositoryID }
+	}
+
+	/// The repository's own secrets and variables, then each environment's.
+	/// A chosen environment stays a choice until the environments are listed.
+	var scopeChoices: [GitHubPublishTarget.Scope] {
+		if let environments = environments.value {
+			return [.repository] + environments.map { .environment(id: $0.id, name: $0.name) }
+		}
+		if let scope, case .environment = scope { return [.repository, scope] }
+		return [.repository]
+	}
+
+	var isComplete: Bool {
+		guard repository != nil, let scope else { return false }
+		return scopeChoices.contains { $0.identifier == scope.identifier }
+	}
+
+	/// Repositories sorted by `owner/name`. Nonisolated, so a long list is sorted off the main actor.
+	nonisolated static func sorted(_ repositories: [GitHubRepository]) -> [GitHubRepository] {
+		repositories.sorted { lhs, rhs in
+			switch lhs.fullName.localizedStandardCompare(rhs.fullName) {
+			case .orderedAscending: true
+			case .orderedDescending: false
+			case .orderedSame: lhs.id < rhs.id
+			}
 		}
 	}
 }

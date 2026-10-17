@@ -78,10 +78,15 @@ struct PublishPlan: Equatable, Sendable {
 		case changesValue(ValueIssue)
 		/// The value is longer than the platform accepts, in characters.
 		case valueTooLong(limit: Int)
+		/// The value is larger than the platform accepts, in UTF-8 bytes.
+		case valueTooLarge(bytes: Int)
 		/// The platform gives every environment the variable's one value, so
 		/// the destination can't get a value of its own until the variable
 		/// has one per environment there.
 		case sameValueEverywhere
+		/// The platform has two variables with the name, which an app could
+		/// read either of, so there's no telling which to write.
+		case duplicatedOnPlatform
 		/// The platform doesn't say when its variable last changed, so a
 		/// publish can't make sure it isn't overwriting a change made since the review.
 		case unknownChangeTime
@@ -108,7 +113,9 @@ struct PublishPlan: Equatable, Sendable {
 		/// Whether the key can't be published even when the person chooses it.
 		var blocksPublishing: Bool {
 			switch self {
-			case .reserved, .nameTooLong, .nameNotAccepted, .unusableValue, .valueTooLong, .sameValueEverywhere, .unknownChangeTime: true
+			case .reserved, .nameTooLong, .nameNotAccepted, .unusableValue, .valueTooLong, .valueTooLarge, .sameValueEverywhere,
+				.duplicatedOnPlatform, .unknownChangeTime:
+				true
 			case .changesValue(let issue): !issue.allowsPublishing
 			case .sharedWith, .staysReadable, .failsRules, .ignoredByLPM, .excluded, .changedOnPlatform, .unknownSincePublish, .upToDate:
 				false
@@ -150,6 +157,12 @@ struct PublishPlan: Equatable, Sendable {
 		var acceptsKey: @Sendable (String) -> Bool = { _ in true }
 		/// The longest value the platform accepts, in characters.
 		var maximumValueCharacters: Int?
+		/// The largest value the platform accepts, in UTF-8 bytes.
+		var maximumValueBytes: Int?
+		/// The keys the platform stores readable, when the project's rules
+		/// choose that rather than each key's kind, as GitHub Actions' CI
+		/// storage does; nil when the kind decides.
+		var readableKeys: Set<String>?
 		/// The platform can't make a variable it stores as a secret readable
 		/// again, so one stays a secret.
 		var secretsStaySecret = false
@@ -168,11 +181,13 @@ struct PublishPlan: Equatable, Sendable {
 	struct Row: Equatable, Sendable, Identifiable {
 		let key: String
 		let kind: Kind
+		/// Whether the rules want it stored so its value can't be read back.
+		let wantsSecret: Bool
 		/// Whether the publish stores it so its value can't be read back.
 		let publishesAsSecret: Bool
-		/// Its kind says readable, but the platform keeps it a secret, as it
-		/// already stores it as one.
-		var staysSecret: Bool { publishesAsSecret && !kind.publishesAsSecret }
+		/// The rules want it readable, but the platform keeps it a secret, as
+		/// it already stores it as one.
+		var staysSecret: Bool { publishesAsSecret && !wantsSecret }
 		let operation: Operation
 		let status: Status
 		/// Why it isn't published by default, most important first; empty when it is.
@@ -211,15 +226,19 @@ struct PublishPlan: Equatable, Sendable {
 		}
 	}
 
-	/// A variable the platform has at the destination's place without a value
-	/// of the destination's own, such as a Netlify variable with values for
-	/// other deploy contexts only.
+	/// A key the platform has at the destination's place without one value of
+	/// the destination's own, such as a Netlify variable with values for other
+	/// deploy contexts only, or a GitHub secret and variable sharing a name.
 	struct RemoteKey: Equatable, Sendable {
 		enum Kind: Equatable, Sendable {
 			/// Only other environments have values, so a publish adds one for the destination.
 			case elsewhere
 			/// One value serves every environment, the destination's included.
 			case sameValueEverywhere
+			/// The platform has two variables with the key, as GitHub can have a
+			/// secret and a readable variable with one name, which an app could
+			/// read either of.
+			case duplicated
 		}
 
 		let kind: Kind
@@ -241,8 +260,9 @@ struct PublishPlan: Equatable, Sendable {
 	let location: PublishTarget.Location
 	/// In the key table's order.
 	let rows: [Row]
-	/// Variables only on the platform that apply to the destination, its own
-	/// or one value every environment uses. A publish leaves them as they are.
+	/// Variables only on the platform that apply to the destination: its own,
+	/// one value every environment uses, or each of two sharing a name. A
+	/// publish leaves them as they are.
 	let remoteOnlyCount: Int
 	/// When the destination the plan was made from last changed.
 	let destinationUpdatedAt: Date
@@ -279,9 +299,10 @@ struct PublishPlan: Equatable, Sendable {
 			let remoteVariable = remote[key]
 			let remoteKey = remoteVariable == nil ? remoteKeys[key] : nil
 			let kind = Self.kind(of: key, in: rules)
+			let wantsSecret = platform.readableKeys.map { !$0.contains(key) } ?? kind.publishesAsSecret
 			let variableProtection = platform.protectionFollowsVariable ? remoteVariable?.storedAsSecret ?? remoteKey?.storedAsSecret : nil
 			let publishesAsSecret = variableProtection
-				?? (kind.publishesAsSecret || (platform.secretsStaySecret && remoteVariable?.storedAsSecret == true))
+				?? (wantsSecret || (platform.secretsStaySecret && remoteVariable?.storedAsSecret == true))
 			let status = Self.status(
 				fingerprint: fingerprint, publishesAsSecret: publishesAsSecret, remote: remoteVariable, record: history?.keys[key])
 			let problems = check?.problems[key] ?? []
@@ -296,10 +317,12 @@ struct PublishPlan: Equatable, Sendable {
 				holds.append(contentsOf: platform.valueIssues(value).map(Hold.changesValue))
 			}
 			if let limit = platform.maximumValueCharacters, value.unicodeScalars.count > limit { holds.append(.valueTooLong(limit: limit)) }
+			if let limit = platform.maximumValueBytes, value.utf8.count > limit { holds.append(.valueTooLarge(bytes: limit)) }
 			if remoteKey?.kind == .sameValueEverywhere { holds.append(.sameValueEverywhere) }
+			if remoteKey?.kind == .duplicated { holds.append(.duplicatedOnPlatform) }
 			if let remoteVariable, remoteVariable.updatedAt == nil { holds.append(.unknownChangeTime) }
 			if let shared = remoteVariable?.sharedWith, !shared.isEmpty { holds.append(.sharedWith(shared)) }
-			if kind.publishesAsSecret, !publishesAsSecret { holds.append(.staysReadable) }
+			if wantsSecret, !publishesAsSecret { holds.append(.staysReadable) }
 			let failures = problems.filter { $0.kind != .unusableValue }
 			if !failures.isEmpty { holds.append(.failsRules(failures)) }
 			if check?.ignored.contains(key) == true { holds.append(.ignoredByLPM) }
@@ -313,6 +336,7 @@ struct PublishPlan: Equatable, Sendable {
 			return Row(
 				key: key,
 				kind: kind,
+				wantsSecret: wantsSecret,
 				publishesAsSecret: publishesAsSecret,
 				operation: remoteVariable.map { .replace(remoteID: $0.id) } ?? .add,
 				status: status,
@@ -322,7 +346,13 @@ struct PublishPlan: Equatable, Sendable {
 		}
 		rowIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.key, $0) })
 		remoteOnlyCount = remote.keys.reduce(0) { count, key in values[key] == nil ? count + 1 : count }
-			+ remoteKeys.reduce(0) { count, entry in entry.value.kind == .sameValueEverywhere && values[entry.key] == nil ? count + 1 : count }
+			+ remoteKeys.reduce(0) { count, entry in
+				switch entry.value.kind {
+				case .sameValueEverywhere: values[entry.key] == nil ? count + 1 : count
+				case .duplicated: values[entry.key] == nil ? count + 2 : count
+				case .elsewhere: count
+				}
+			}
 		destinationUpdatedAt = destination.updatedAt
 		staleExclusions = destination.excludedKeys.filter { values[$0] == nil }
 		staleHistory = history?.keys.filter { values[$0.key] == nil }.mapValues(\.publishedAt) ?? [:]

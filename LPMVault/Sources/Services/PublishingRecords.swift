@@ -98,6 +98,20 @@ enum PublishingRecords {
 				.init(key: "siteName", value: .string(netlify.siteName)),
 				.init(key: "context", value: .object(context)),
 			])
+		case .github(let github):
+			let scope: [LPMConfigJSON.Member] = switch github.scope {
+			case .repository:
+				[.init(key: "kind", value: .string("repository"))]
+			case .environment(let id, let name):
+				[.init(key: "kind", value: .string("environment")), .init(key: "id", value: .string(id)), .init(key: "name", value: .string(name))]
+			}
+			target = .object([
+				.init(key: "userId", value: .string(github.userID)),
+				.init(key: "userLogin", value: .string(github.userLogin)),
+				.init(key: "repositoryId", value: .string(github.repositoryID)),
+				.init(key: "repositoryName", value: .string(github.repositoryName)),
+				.init(key: "scope", value: .object(scope)),
+			])
 		}
 		return .object([
 			.init(key: "id", value: .string(destination.id.uuidString.lowercased())),
@@ -131,7 +145,7 @@ enum PublishingRecords {
 		case .netlify:
 			target = .netlify(try netlifyTarget(fields.value("target")))
 		case .github:
-			throw DecodingError.newerVersion
+			target = .github(try githubTarget(fields.value("target")))
 		}
 		guard case .array(let excluded) = try fields.value("excludedKeys"),
 			excluded.count <= PublishDestination.maximumExcludedKeys
@@ -171,6 +185,31 @@ enum PublishingRecords {
 			projectName: try fields.optionalString("projectName")?.escapingDirectionControls,
 			environmentName: try fields.optionalString("environmentName")?.escapingDirectionControls,
 			deployments: deployments
+		)
+	}
+
+	private static func githubTarget(_ json: LPMConfigJSON) throws -> GitHubPublishTarget {
+		guard case .object = json, let scopeJSON = json["scope"], case .string(let kind)? = scopeJSON["kind"] else {
+			throw DecodingError.unreadable
+		}
+		let scope: GitHubPublishTarget.Scope
+		switch kind {
+		case "repository":
+			_ = try Fields(scopeJSON, ["kind"])
+			scope = .repository
+		case "environment":
+			let environment = try Fields(scopeJSON, ["kind", "id", "name"])
+			scope = .environment(id: try environment.string("id"), name: try environment.string("name"))
+		default:
+			throw DecodingError.newerVersion
+		}
+		let fields = try Fields(json, ["userId", "userLogin", "repositoryId", "repositoryName", "scope"])
+		return GitHubPublishTarget(
+			userID: try fields.string("userId"),
+			userLogin: try fields.string("userLogin"),
+			repositoryID: try fields.string("repositoryId"),
+			repositoryName: try fields.string("repositoryName"),
+			scope: scope
 		)
 	}
 

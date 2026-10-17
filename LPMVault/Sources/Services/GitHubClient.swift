@@ -26,9 +26,87 @@ struct GitHubUser: Equatable, Sendable {
 	let name: String?
 }
 
+/// A repository a GitHub connection reaches through an installation of LPM Vault's app.
+struct GitHubRepository: Identifiable, Equatable, Sendable {
+	/// GitHub's numeric ID, which outlasts a rename or a transfer.
+	let id: String
+	/// `owner/name`.
+	let fullName: String
+	let isPrivate: Bool
+}
+
+/// One of a repository's deployment environments.
+struct GitHubEnvironment: Identifiable, Equatable, Sendable {
+	let id: String
+	/// GitHub's name for it, as its paths use it; shown escaped.
+	let name: String
+}
+
+/// Where Actions secrets and variables are written: a repository's own, or
+/// one of its deployment environments'.
+struct GitHubScope: Equatable, Sendable {
+	/// `owner/name`.
+	let repository: String
+	let environment: String?
+
+	/// The path of the scope's secrets or variables, `kind` being either.
+	func path(_ kind: String, _ name: String? = nil) -> [String] {
+		let owner = String(repository.prefix { $0 != "/" })
+		let repo = String(repository.drop { $0 != "/" }.dropFirst())
+		let base = ["repos", owner, repo] + (environment.map { ["environments", $0] } ?? ["actions"])
+		return base + [kind] + (name.map { [$0] } ?? [])
+	}
+}
+
+/// A secret or variable of a scope, without its value: GitHub never shows a
+/// secret's, and a variable's isn't needed.
+struct GitHubValueRecord: Equatable, Sendable {
+	let name: String
+	/// When GitHub last wrote it, to the second.
+	let updatedAt: Date
+}
+
+/// The key a scope's secrets are sealed to.
+struct GitHubPublicKey: Equatable, Sendable {
+	let id: String
+	/// A 32-byte Curve25519 public key.
+	let key: Data
+}
+
+/// A secret's value sealed to a scope's key. The ciphertext isn't secret,
+/// but it's kept out of printing like a value.
+struct GitHubSealedSecret: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	let ciphertext: Data
+	let keyID: String
+
+	var description: String { "GitHubSealedSecret(key: \(keyID), ciphertext: <redacted>)" }
+	var debugDescription: String { description }
+	var customMirror: Mirror { Mirror(self, children: ["keyID": keyID]) }
+}
+
 protocol GitHubClientProtocol: Sendable {
 	/// The user the token belongs to.
 	func user() async -> Result<GitHubUser, GitHubAPIError>
+	/// Every repository the token reaches through installations of the app.
+	func repositories() async -> Result<[GitHubRepository], GitHubAPIError>
+	/// The repository with the ID, as it's named now.
+	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError>
+	/// The repository's deployment environments.
+	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError>
+	/// The scope's secrets, without their values.
+	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError>
+	/// One secret of the scope; nil when it has none with the name.
+	func secret(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError>
+	/// The key the scope's secrets are sealed to.
+	func publicKey(of scope: GitHubScope) async -> Result<GitHubPublicKey, GitHubAPIError>
+	/// Creates or replaces the scope's secret with a sealed value.
+	func setSecret(_ name: String, to sealed: GitHubSealedSecret, in scope: GitHubScope) async -> Result<Void, GitHubAPIError>
+	/// The scope's variables, without their values.
+	func variables(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError>
+	/// One variable of the scope, without its value; nil when it has none with the name.
+	func variable(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError>
+	func createVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError>
+	func updateVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError>
 }
 
 /// Requests to GitHub's REST API. They go only to `baseURL`, redirects are
@@ -206,14 +284,26 @@ enum GitHubHTTP {
 /// GitHub's REST API with one connection's access token. Requests go only to
 /// `baseURL`, and redirects are refused so the token never follows one.
 struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	/// How much one listing may read.
+	struct Limits: Sendable {
+		/// Everything one listing reads, every page included, in bytes.
+		var listBytes = 64 * 1024 * 1024
+		/// How long one listing may take, every page included.
+		var listDeadline: Duration = .seconds(120)
+		/// The most pages one list is read in.
+		var maximumPages = 100
+	}
+
 	private let token: String
 	private let baseURL: URL
+	private let limits: Limits
 	let session: URLSession
 
-	init(token: String, baseURL: URL = GitHubHTTP.defaultBaseURL, session: URLSession? = nil) {
+	init(token: String, baseURL: URL = GitHubHTTP.defaultBaseURL, session: URLSession? = nil, limits: Limits = Limits()) {
 		self.token = token
 		self.baseURL = baseURL
 		self.session = session ?? GitHubHTTP.sharedSession
+		self.limits = limits
 	}
 
 	var description: String { "GitHubClient(\(baseURL.host() ?? "?"), token: <redacted>)" }
@@ -230,9 +320,289 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 	}
 
+	func repositories() async -> Result<[GitHubRepository], GitHubAPIError> {
+		var budget = Budget(limits)
+		let installations: [Installation]
+		switch await list(["user", "installations"], field: "installations", perPage: 100, budget: &budget, as: Installation.self) {
+		case .success(let value): installations = value
+		case .failure(let error): return .failure(error)
+		}
+		var repositories: [GitHubRepository] = []
+		var seen: Set<String> = []
+		for installation in installations {
+			guard let id = GitHubHTTP.id(installation.id) else { return .failure(.invalidResponse) }
+			switch await list(["user", "installations", id, "repositories"], field: "repositories", perPage: 100, budget: &budget, as: RawRepository.self) {
+			case .success(let raws):
+				for raw in raws {
+					guard let repository = raw.repository else { return .failure(.invalidResponse) }
+					// One repository can't be in two installations, but a list never shows it twice.
+					if seen.insert(repository.id).inserted { repositories.append(repository) }
+				}
+			case .failure(let error): return .failure(error)
+			}
+		}
+		return .success(repositories)
+	}
+
+	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> {
+		guard GitHubHTTP.isValidID(id), let url = GitHubHTTP.url(baseURL, ["repositories", id]) else { return .failure(.invalidResponse) }
+		return await GitHubHTTP.load(GitHubHTTP.request("GET", url, token: token), using: session).flatMap { loaded in
+			guard let repository = (try? JSONDecoder().decode(RawRepository.self, from: loaded.data))?.repository, repository.id == id else {
+				return .failure(.invalidResponse)
+			}
+			return .success(repository)
+		}
+	}
+
+	func environments(of repository: String) async -> Result<[GitHubEnvironment], GitHubAPIError> {
+		guard GitHubPublishTarget.isValidFullName(repository) else { return .failure(.invalidResponse) }
+		var budget = Budget(limits)
+		let path = ["repos"] + repository.split(separator: "/").map(String.init) + ["environments"]
+		return await list(path, field: "environments", perPage: 100, budget: &budget, as: RawEnvironment.self).flatMap { raws in
+			var environments: [GitHubEnvironment] = []
+			environments.reserveCapacity(raws.count)
+			for raw in raws {
+				guard let environment = raw.environment else { return .failure(.invalidResponse) }
+				environments.append(environment)
+			}
+			return .success(environments)
+		}
+	}
+
+	func secrets(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> {
+		await records(scope.path("secrets"), field: "secrets", perPage: 100)
+	}
+
+	func secret(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {
+		await record(scope.path("secrets", name), named: name)
+	}
+
+	func publicKey(of scope: GitHubScope) async -> Result<GitHubPublicKey, GitHubAPIError> {
+		guard let url = GitHubHTTP.url(baseURL, scope.path("secrets", "public-key")) else { return .failure(.invalidResponse) }
+		return await GitHubHTTP.load(GitHubHTTP.request("GET", url, token: token), using: session).flatMap { loaded in
+			guard let raw = try? JSONDecoder().decode(RawPublicKey.self, from: loaded.data), PlatformIdentifier.isValid(raw.keyID),
+				let key = Data(base64Encoded: raw.key), key.count == SealedBox.publicKeyBytes
+			else { return .failure(.invalidResponse) }
+			return .success(GitHubPublicKey(id: raw.keyID, key: key))
+		}
+	}
+
+	func setSecret(_ name: String, to sealed: GitHubSealedSecret, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> {
+		guard GitHubPublishing.isAcceptedKey(name), let url = GitHubHTTP.url(baseURL, scope.path("secrets", name)),
+			let body = try? JSONSerialization.data(withJSONObject: ["encrypted_value": sealed.ciphertext.base64EncodedString(), "key_id": sealed.keyID])
+		else { return .failure(.invalidResponse) }
+		return await GitHubHTTP.load(GitHubHTTP.request("PUT", url, token: token, body: body), using: session).map { _ in () }
+	}
+
+	func variables(in scope: GitHubScope) async -> Result<[GitHubValueRecord], GitHubAPIError> {
+		await records(scope.path("variables"), field: "variables", perPage: 30)
+	}
+
+	func variable(_ name: String, in scope: GitHubScope) async -> Result<GitHubValueRecord?, GitHubAPIError> {
+		await record(scope.path("variables", name), named: name)
+	}
+
+	func createVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> {
+		guard GitHubPublishing.isAcceptedKey(name), let url = GitHubHTTP.url(baseURL, scope.path("variables")),
+			let body = try? JSONSerialization.data(withJSONObject: ["name": name, "value": value])
+		else { return .failure(.invalidResponse) }
+		return await GitHubHTTP.load(GitHubHTTP.request("POST", url, token: token, body: body), using: session).map { _ in () }
+	}
+
+	func updateVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> {
+		guard GitHubPublishing.isAcceptedKey(name), let url = GitHubHTTP.url(baseURL, scope.path("variables", name)),
+			let body = try? JSONSerialization.data(withJSONObject: ["name": name, "value": value])
+		else { return .failure(.invalidResponse) }
+		return await GitHubHTTP.load(GitHubHTTP.request("PATCH", url, token: token, body: body), using: session).map { _ in () }
+	}
+
+	// MARK: - Lists
+
+	/// What a listing may still read, shared by every page of it.
+	private struct Budget {
+		var bytes: Int
+		let deadline: ContinuousClock.Instant
+
+		init(_ limits: Limits) {
+			bytes = limits.listBytes
+			deadline = ContinuousClock.now.advanced(by: limits.listDeadline)
+		}
+	}
+
+	/// Every item of a paged list, read page by page within `budget`. A page
+	/// with more items than asked for, more items than the total GitHub gave,
+	/// or a total that changes between pages fails the listing, as does
+	/// running out of pages, bytes or time.
+	private func list<Item: Decodable & Sendable>(
+		_ path: [String],
+		field: String,
+		perPage: Int,
+		budget: inout Budget,
+		as _: Item.Type
+	) async -> Result<[Item], GitHubAPIError> {
+		var items: [Item] = []
+		var total: Int?
+		for page in 1...limits.maximumPages {
+			guard budget.bytes > 0, page == 1 || ContinuousClock.now < budget.deadline else { return .failure(.invalidResponse) }
+			let query = [URLQueryItem(name: "per_page", value: String(perPage)), URLQueryItem(name: "page", value: String(page))]
+			guard let url = GitHubHTTP.url(baseURL, path, query: query) else { return .failure(.invalidResponse) }
+			let request = GitHubHTTP.request("GET", url, token: token)
+			guard let loaded = await Self.load(request, using: session, limit: min(GitHubHTTP.maximumResponseBytes * 4, budget.bytes), until: budget.deadline)
+			else { return .failure(Task.isCancelled ? .cancelled : .invalidResponse) }
+			let data: Data
+			switch loaded {
+			case .success(let value): data = value
+			case .failure(let error): return .failure(error)
+			}
+			budget.bytes -= data.count
+			let decoder = JSONDecoder()
+			decoder.userInfo[Page<Item>.fieldKey] = field
+			guard let decoded = try? decoder.decode(Page<Item>.self, from: data), decoded.items.count <= perPage,
+				decoded.totalCount >= 0, total == nil || total == decoded.totalCount
+			else { return .failure(.invalidResponse) }
+			total = decoded.totalCount
+			items.append(contentsOf: decoded.items)
+			guard items.count <= decoded.totalCount else { return .failure(.invalidResponse) }
+			if items.count == decoded.totalCount || decoded.items.count < perPage {
+				return items.count == decoded.totalCount ? .success(items) : .failure(.invalidResponse)
+			}
+		}
+		return .failure(.invalidResponse)
+	}
+
+	/// The load's body, or nil once `deadline` passes first, which cancels the load.
+	private static func load(
+		_ request: URLRequest,
+		using session: URLSession,
+		limit: Int,
+		until deadline: ContinuousClock.Instant
+	) async -> Result<Data, GitHubAPIError>? {
+		await withTaskGroup(of: Result<Data, GitHubAPIError>?.self) { group in
+			group.addTask { await GitHubHTTP.load(request, using: session, limit: limit).map(\.data) }
+			group.addTask {
+				try? await Task.sleep(until: deadline, clock: .continuous)
+				return nil
+			}
+			let first = await group.next() ?? nil
+			group.cancelAll()
+			return first
+		}
+	}
+
+	private func records(_ path: [String], field: String, perPage: Int) async -> Result<[GitHubValueRecord], GitHubAPIError> {
+		var budget = Budget(limits)
+		return await list(path, field: field, perPage: perPage, budget: &budget, as: RawRecord.self).flatMap { raws in
+			var records: [GitHubValueRecord] = []
+			records.reserveCapacity(raws.count)
+			for raw in raws {
+				guard let record = raw.record else { return .failure(.invalidResponse) }
+				records.append(record)
+			}
+			return .success(records)
+		}
+	}
+
+	private func record(_ path: [String], named name: String) async -> Result<GitHubValueRecord?, GitHubAPIError> {
+		guard GitHubPublishing.isAcceptedKey(name), let url = GitHubHTTP.url(baseURL, path) else { return .failure(.invalidResponse) }
+		switch await GitHubHTTP.load(GitHubHTTP.request("GET", url, token: token), using: session) {
+		case .success(let loaded):
+			guard let record = (try? JSONDecoder().decode(RawRecord.self, from: loaded.data))?.record, record.name == name else {
+				return .failure(.invalidResponse)
+			}
+			return .success(record)
+		case .failure(.notFound):
+			return .success(nil)
+		case .failure(let error):
+			return .failure(error)
+		}
+	}
+
+	// MARK: - Answers
+
+	/// One page of a list GitHub answers with its total and the items under `field`.
+	private struct Page<Item: Decodable>: Decodable {
+		static var fieldKey: CodingUserInfoKey { CodingUserInfoKey(rawValue: "field")! }
+
+		let totalCount: Int
+		let items: [Item]
+
+		private struct Key: CodingKey {
+			let stringValue: String
+			var intValue: Int? { nil }
+			init(stringValue: String) { self.stringValue = stringValue }
+			init?(intValue: Int) { nil }
+		}
+
+		init(from decoder: any Decoder) throws {
+			guard let field = decoder.userInfo[Self.fieldKey] as? String else {
+				throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "No field"))
+			}
+			let container = try decoder.container(keyedBy: Key.self)
+			totalCount = try container.decode(Int.self, forKey: Key(stringValue: "total_count"))
+			items = try container.decode([Item].self, forKey: Key(stringValue: field))
+		}
+	}
+
 	private struct User: Decodable {
 		let id: Int64
 		let login: String
 		let name: String?
+	}
+
+	private struct Installation: Decodable, Sendable {
+		let id: Int64
+	}
+
+	private struct RawRepository: Decodable, Sendable {
+		let id: Int64
+		let fullName: String
+		let isPrivate: Bool?
+
+		private enum CodingKeys: String, CodingKey {
+			case id
+			case fullName = "full_name"
+			case isPrivate = "private"
+		}
+
+		var repository: GitHubRepository? {
+			guard let id = GitHubHTTP.id(id), GitHubPublishTarget.isValidFullName(fullName) else { return nil }
+			return GitHubRepository(id: id, fullName: fullName, isPrivate: isPrivate ?? true)
+		}
+	}
+
+	private struct RawEnvironment: Decodable, Sendable {
+		let id: Int64
+		let name: String
+
+		var environment: GitHubEnvironment? {
+			guard let id = GitHubHTTP.id(id), GitHubPublishTarget.Scope.isValidEnvironmentName(name) else { return nil }
+			return GitHubEnvironment(id: id, name: name)
+		}
+	}
+
+	/// A secret or variable as GitHub lists it. A variable's value is never decoded.
+	private struct RawRecord: Decodable, Sendable {
+		let name: String
+		let updatedAt: String
+
+		private enum CodingKeys: String, CodingKey {
+			case name
+			case updatedAt = "updated_at"
+		}
+
+		var record: GitHubValueRecord? {
+			guard GitHubPublishing.isRemoteName(name), let date = PlatformTimestamp.utc(updatedAt) else { return nil }
+			return GitHubValueRecord(name: name, updatedAt: date)
+		}
+	}
+
+	private struct RawPublicKey: Decodable {
+		let keyID: String
+		let key: String
+
+		private enum CodingKeys: String, CodingKey {
+			case keyID = "key_id"
+			case key
+		}
 	}
 }
