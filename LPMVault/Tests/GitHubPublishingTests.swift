@@ -53,10 +53,13 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 		}
 	}
 
-	/// Fails the operation's next request with `error`, running `then` as it
-	/// answers, as when someone edits on GitHub while a rate limit is waited out.
-	func fail(_ operation: Operation, with error: GitHubAPIError, then: @escaping @Sendable () -> Void) {
-		lock.withLock { failures[operation, default: []].append((error, then)) }
+	/// Fails the operation's next request, after answering `passing` of them
+	/// as usual, with `error`, running `then` as it answers, as when someone
+	/// edits on GitHub while a rate limit is waited out.
+	func fail(_ operation: Operation, after passing: Int = 0, with error: GitHubAPIError, then: @escaping @Sendable () -> Void) {
+		lock.withLock {
+			failures[operation, default: []].append(contentsOf: Array(repeating: nil, count: passing) + [(error, then)])
+		}
 	}
 
 	func rename(_ id: String, to name: String) {
@@ -231,17 +234,25 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	}
 }
 
-/// A publish's pacing on a clock that moves only as it sleeps, recording each sleep.
+/// A publish's pacing on a clock that moves only as it sleeps, recording
+/// each sleep and running `whileAsleep` during it, as when someone edits on
+/// GitHub meanwhile.
 final class TestPacing: @unchecked Sendable {
 	private let lock = NSLock()
 	private let clock = ManualClock()
+	private let whileAsleep: @Sendable () -> Void
 	private var slept: [Duration] = []
+
+	init(whileAsleep: @escaping @Sendable () -> Void = {}) {
+		self.whileAsleep = whileAsleep
+	}
 
 	var sleeps: [Duration] { lock.withLock { slept } }
 
 	var pacing: GitHubPublishing.Pacing {
 		GitHubPublishing.Pacing(now: { [clock] in clock.now }, sleep: { [self] duration in
 			lock.withLock { slept.append(duration) }
+			whileAsleep()
 			clock.advance(by: duration)
 		})
 	}
@@ -511,9 +522,16 @@ struct GitHubDestinationTests {
 
 struct GitHubPublishTests {
 	private let scope = GitHubScope(repository: "northwind/storefront", environment: nil)
+	private let production = GitHubScope(repository: "northwind/storefront", environment: "production")
 	private let target = GitHubPublishTarget(
 		userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront", scope: .repository)
 	private let fingerprintKey = SymmetricKey(size: .bits256)
+
+	private var productionTarget: GitHubPublishTarget {
+		var target = target
+		target.scope = .environment(id: "161088068", name: "production")
+		return target
+	}
 
 	private func change(_ key: String, _ value: String, _ operation: PublishPlan.Operation = .add, secret: Bool = true) -> PublishPlan.Change {
 		PublishPlan.Change(
@@ -521,17 +539,20 @@ struct GitHubPublishTests {
 			fingerprint: PublishFingerprint.of(value: value, key: key, destination: UUID(), using: fingerprintKey))
 	}
 
-	private func reviewed(_ api: FakeGitHubAPI) async throws -> GitHubRemoteSnapshot {
-		try GitHubPublishing.snapshot(secrets: await api.secrets(in: scope).get(), variables: await api.variables(in: scope).get()).get()
+	private func reviewed(_ api: FakeGitHubAPI, in scope: GitHubScope? = nil) async throws -> GitHubRemoteSnapshot {
+		let scope = scope ?? self.scope
+		return try GitHubPublishing.snapshot(secrets: await api.secrets(in: scope).get(), variables: await api.variables(in: scope).get()).get()
 	}
 
+	/// A publish whose pauses between writes take no time unless `pacing` says otherwise.
 	private func publish(
 		_ changes: [PublishPlan.Change],
 		with api: FakeGitHubAPI,
 		reviewed: GitHubRemoteSnapshot,
-		to target: GitHubPublishTarget? = nil
+		to target: GitHubPublishTarget? = nil,
+		pacing: TestPacing = TestPacing()
 	) async -> PublishReport {
-		await GitHubPublishing.publish(changes, to: target ?? self.target, reviewed: reviewed, using: api, seal: testGitHubSeal)
+		await GitHubPublishing.publish(changes, to: target ?? self.target, reviewed: reviewed, using: api, seal: testGitHubSeal, pacing: pacing.pacing)
 	}
 
 	/// The operations a publish made after `before` requests.
@@ -539,7 +560,7 @@ struct GitHubPublishTests {
 		api.requests.dropFirst(before).map(\.0)
 	}
 
-	@Test("secrets are sealed to the scope's key and variables written as they are, one at a time, each read back for its time")
+	@Test("each write is preceded by checking the repository and reading the key from both kinds, and read back for its time; the scope is never listed")
 	func publishes() async throws {
 		let api = FakeGitHubAPI()
 		api.edit("LOG_LEVEL", secret: false, value: "debug", in: scope)
@@ -554,8 +575,10 @@ struct GitHubPublishTests {
 		#expect(api.secretValue("API_TOKEN", in: scope) == Data("sealed:\(api.publicKey.key[0]):t0k3n".utf8))
 		#expect(api.variableValue("LOG_LEVEL", in: scope) == "info" && api.variableValue("PUBLIC_URL", in: scope) == "https://x")
 		#expect(operations(api, after: before) == [
-			.repository, .listSecrets, .listVariables, .publicKey, .setSecret, .secret, .updateVariable, .variable, .createVariable, .variable,
-		], "Two list pages cost less than reading three keys each from both kinds")
+			.repository, .secret, .variable, .publicKey, .setSecret, .secret,
+			.repository, .secret, .variable, .updateVariable, .variable,
+			.repository, .secret, .variable, .createVariable, .variable,
+		])
 		let records = Dictionary(uniqueKeysWithValues: report.published.map { ($0.key, $0) })
 		#expect(records["API_TOKEN"]?.remoteID == "secret" && records["API_TOKEN"]?.publishedAsSecret == true)
 		#expect(records["LOG_LEVEL"]?.remoteID == "variable" && records["LOG_LEVEL"]?.publishedAsSecret == false)
@@ -565,21 +588,22 @@ struct GitHubPublishTests {
 		}
 	}
 
-	@Test("a few keys in a large scope are each read from both kinds before they're written, instead of listing every page")
-	func readsChosenKeys() async throws {
+	@Test("an environment is checked by its ID under its name before each write")
+	func checksEnvironmentEachWrite() async throws {
 		let api = FakeGitHubAPI()
-		for index in 0..<500 { api.edit("VAR_\(index)", secret: false, in: scope) }
-		let reviewed = try await reviewed(api)
+		let reviewed = try await reviewed(api, in: production)
 		let before = api.requests.count
-		let report = await publish([change("API_TOKEN", "t")], with: api, reviewed: reviewed)
-		#expect(report.outcomes == ["API_TOKEN": .published])
-		#expect(operations(api, after: before) == [.repository, .secret, .variable, .publicKey, .setSecret, .secret])
+		let report = await publish([change("A", "1", secret: false), change("B", "2", secret: false)], with: api, reviewed: reviewed, to: productionTarget)
+		#expect(report.outcomes == ["A": .published, "B": .published])
+		#expect(operations(api, after: before) == [
+			.repository, .environments, .secret, .variable, .createVariable, .variable,
+			.repository, .environments, .secret, .variable, .createVariable, .variable,
+		])
 	}
 
-	@Test("a key added, changed, removed or moved on GitHub since the review isn't sent, whether listed or read on its own", arguments: [false, true])
-	func refusesDrift(large: Bool) async throws {
+	@Test("a key added, changed, removed or moved on GitHub since the review isn't sent")
+	func refusesDrift() async throws {
 		let api = FakeGitHubAPI()
-		if large { for index in 0..<600 { api.edit("VAR_\(index)", secret: false, in: scope) } }
 		for name in ["CHANGED", "REMOVED", "MOVED"] { api.edit(name, secret: true, in: scope) }
 		let reviewed = try await reviewed(api)
 		api.edit("CHANGED", secret: true, in: scope)
@@ -606,7 +630,6 @@ struct GitHubPublishTests {
 		])
 		#expect(api.writeCount == 0 && report.published.isEmpty)
 		#expect(!operations(api, after: before).contains(.publicKey), "Nothing to seal, so no key is read")
-		#expect(operations(api, after: before).contains(.listVariables) == !large, "A large scope isn't listed for five keys")
 	}
 
 	@Test("a repository renamed, or an environment replaced, since the review stops the publish before anything is sent")
@@ -623,13 +646,33 @@ struct GitHubPublishTests {
 
 		let replaced = FakeGitHubAPI()
 		replaced.replaceEnvironment(of: "northwind/storefront", name: "production", withID: "999")
-		var environment = target
-		environment.scope = .environment(id: "161088068", name: "production")
-		let report = await publish([change("API_TOKEN", "t")], with: replaced, reviewed: reviewed, to: environment)
+		let report = await publish([change("API_TOKEN", "t")], with: replaced, reviewed: reviewed, to: productionTarget)
 		#expect(report.outcomes == [
 			"API_TOKEN": .failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again."),
 		])
 		#expect(replaced.writeCount == 0)
+	}
+
+	@Test("a key changed, or the environment replaced, during the pause before its write isn't written over")
+	func checksAfterPause() async throws {
+		let api = FakeGitHubAPI()
+		api.edit("B", secret: true, in: scope)
+		let reviewed = try await reviewed(api)
+		let scope = scope
+		let editing = TestPacing { api.edit("B", secret: true, value: "theirs", in: scope) }
+		let report = await publish([change("A", "1"), change("B", "2", .replace(remoteID: "secret"))], with: api, reviewed: reviewed, pacing: editing)
+		#expect(report.outcomes == ["A": .published, "B": .failed("Changed on GitHub since this review. Review again.")])
+		#expect(api.secretValue("B", in: scope) == Data("theirs".utf8) && editing.sleeps == [.seconds(1)])
+
+		let environments = FakeGitHubAPI()
+		let environmentReview = try await self.reviewed(environments, in: production)
+		let replacing = TestPacing { environments.replaceEnvironment(of: "northwind/storefront", name: "production", withID: "999") }
+		let replaced = await publish(
+			[change("A", "1"), change("B", "2"), change("C", "3")], with: environments, reviewed: environmentReview, to: productionTarget,
+			pacing: replacing)
+		let gone = PublishOutcome.failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")
+		#expect(replaced.outcomes == ["A": .published, "B": gone, "C": gone])
+		#expect(environments.names(in: production).secrets == ["A"])
 	}
 
 	@Test("a write held up by a rate limit is sent once it lifts, after checking the repository and reading the key from both kinds again")
@@ -646,7 +689,7 @@ struct GitHubPublishTests {
 	}
 
 	@Test("a repository or environment replaced under its name while a rate limit is waited out gets nothing", arguments: [
-		FakeGitHubAPI.Operation.setSecret, .publicKey, .listSecrets, .secret,
+		FakeGitHubAPI.Operation.setSecret, .publicKey, .repository, .secret, .variable,
 	])
 	func checksIdentityAfterWait(_ limited: FakeGitHubAPI.Operation) async throws {
 		let api = FakeGitHubAPI()
@@ -655,31 +698,24 @@ struct GitHubPublishTests {
 			api.rename("1296269", to: "northwind/shop")
 			api.rename("88", to: "northwind/storefront")
 		}
-		let changes = limited == .listSecrets ? [change("A", "1"), change("B", "2")] : [change("A", "1")]
-		let report = await publish(changes, with: api, reviewed: reviewed)
-		let renamed = "northwind/storefront was renamed northwind/shop on GitHub since this review. Review again."
-		#expect(report.outcomes.values.allSatisfy { $0 == .failed(renamed) } && report.outcomes.count == changes.count)
+		let report = await publish([change("A", "1"), change("B", "2")], with: api, reviewed: reviewed)
+		let renamed = PublishOutcome.failed("northwind/storefront was renamed northwind/shop on GitHub since this review. Review again.")
+		#expect(report.outcomes == ["A": renamed, "B": renamed])
 		#expect(api.names(in: scope) == ([], []), "Repository 88 now has the reviewed name, and gets nothing")
 		#expect(api.names(in: GitHubScope(repository: "northwind/shop", environment: nil)) == ([], []))
 
 		let environments = FakeGitHubAPI()
-		var target = target
-		target.scope = .environment(id: "161088068", name: "production")
-		let production = GitHubScope(repository: "northwind/storefront", environment: "production")
-		let environmentReview = try GitHubPublishing.snapshot(
-			secrets: await environments.secrets(in: production).get(), variables: await environments.variables(in: production).get()
-		).get()
-		environments.fail(limited, with: .rateLimited(until: Date())) {
+		let environmentReview = try await self.reviewed(environments, in: production)
+		environments.fail(limited == .repository ? .environments : limited, with: .rateLimited(until: Date())) {
 			environments.replaceEnvironment(of: "northwind/storefront", name: "production", withID: "999")
 		}
-		let replaced = await publish(changes, with: environments, reviewed: environmentReview, to: target)
-		#expect(replaced.outcomes == Dictionary(uniqueKeysWithValues: changes.map {
-			($0.key, PublishOutcome.failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again."))
-		}))
+		let replaced = await publish([change("A", "1"), change("B", "2")], with: environments, reviewed: environmentReview, to: productionTarget)
+		let gone = PublishOutcome.failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")
+		#expect(replaced.outcomes == ["A": gone, "B": gone])
 		#expect(environments.names(in: production) == ([], []))
 	}
 
-	@Test("a key the listing cleared is read again before its write once a rate limit was waited out, and refused when it changed meanwhile")
+	@Test("a key is read again before its write once a rate limit was waited out, and refused when it changed meanwhile")
 	func rereadsAfterAnyWait() async throws {
 		let api = FakeGitHubAPI()
 		api.edit("B", secret: true, in: scope)
@@ -687,8 +723,8 @@ struct GitHubPublishTests {
 		let scope = scope
 		api.fail(.publicKey, with: .rateLimited(until: Date())) { api.edit("B", secret: true, value: "theirs", in: scope) }
 		let report = await publish(
-			[change("A", "1"), change("B", "2", .replace(remoteID: "secret")), change("C", "3")], with: api, reviewed: reviewed)
-		#expect(report.outcomes == ["A": .published, "B": .failed("Changed on GitHub since this review. Review again."), "C": .published])
+			[change("B", "2", .replace(remoteID: "secret")), change("C", "3")], with: api, reviewed: reviewed)
+		#expect(report.outcomes == ["B": .failed("Changed on GitHub since this review. Review again."), "C": .published])
 		#expect(api.secretValue("B", in: scope) == Data("theirs".utf8))
 	}
 
@@ -702,19 +738,6 @@ struct GitHubPublishTests {
 		let report = await publish([change("A", "1", .replace(remoteID: "secret"))], with: api, reviewed: reviewed)
 		#expect(report.outcomes == ["A": .failed("Changed on GitHub since this review. Review again.")])
 		#expect(api.secretValue("A", in: scope) == Data("theirs".utf8))
-	}
-
-	@Test("a listing a rate limit interrupts isn't started again; each key is read on its own instead")
-	func listingIsNotRepeated() async throws {
-		let api = FakeGitHubAPI()
-		let reviewed = try await reviewed(api)
-		let before = api.requests.count
-		api.fail(.listVariables, with: .rateLimited(until: Date()))
-		let report = await publish([change("A", "1"), change("B", "2", secret: false)], with: api, reviewed: reviewed)
-		#expect(report.outcomes == ["A": .published, "B": .published])
-		let made = operations(api, after: before)
-		#expect(made.filter { $0 == .listSecrets }.count == 1 && made.filter { $0 == .listVariables }.count == 1)
-		#expect(made.filter { $0 == .variable }.count == 3, "Each key is read from both kinds, and B is read back")
 	}
 
 	@Test("a token GitHub refuses stops the publish and asks to connect again; missing access stops it too")
@@ -737,28 +760,23 @@ struct GitHubPublishTests {
 		#expect(partial.outcomes == ["A": .failed("GitHub answered with HTTP 502."), "B": .published], "A server error affects only its own write")
 	}
 
-	@Test("a write is read back once and at once: a rate limit leaves its time unknown, and a refused read-back stops what's left")
+	@Test("a write is read back once and at once: a failure leaves its time unknown, and a refused read-back stops what's left")
 	func readBack() async throws {
 		let api = FakeGitHubAPI()
 		let reviewed = try await reviewed(api)
 		api.fail(.secret, after: 1, with: .transport)
-		var report = await publish([change("A", "1")], with: api, reviewed: reviewed)
+		let report = await publish([change("A", "1")], with: api, reviewed: reviewed)
 		#expect(report.outcomes == ["A": .published])
 		#expect(report.published.first?.remoteUpdatedAt == nil && report.published.first?.remoteID == "secret")
-
-		let limited = FakeGitHubAPI()
-		limited.fail(.secret, after: 1, with: .rateLimited(until: Date()))
-		report = await publish([change("A", "1")], with: limited, reviewed: reviewed)
-		#expect(report.outcomes == ["A": .published] && report.published.first?.remoteUpdatedAt == nil)
-		#expect(limited.requests.filter { $0.0 == .secret }.count == 2, "The read before the write, then one read-back that isn't retried")
+		#expect(api.requests.filter { $0.0 == .secret }.count == 2, "The read before the write, then one read-back that isn't retried")
 
 		for (error, reconnects) in [(GitHubAPIError.unauthorized, true), (.forbidden, false)] {
 			let refusing = FakeGitHubAPI()
-			refusing.fail(.secret, with: error)
+			refusing.fail(.secret, after: 1, with: error)
 			let stopped = await publish([change("A", "1"), change("B", "2")], with: refusing, reviewed: reviewed)
 			#expect(stopped.outcomes == ["A": .published, "B": .notSent])
 			#expect(stopped.published.map(\.key) == ["A"] && stopped.needsReconnect == reconnects)
-			#expect(refusing.requests.map(\.0) == [.repository, .listSecrets, .listVariables, .publicKey, .setSecret, .secret], "Two keys list the scope, so the first read is A's read-back")
+			#expect(refusing.requests.map(\.0) == [.repository, .secret, .variable, .publicKey, .setSecret, .secret])
 		}
 
 		let vanishing = FakeGitHubAPI()
@@ -768,14 +786,32 @@ struct GitHubPublishTests {
 		#expect(gone.published.map(\.key) == ["B"], "GitHub took the value, so the next review knows this Mac sent it")
 	}
 
+	@Test("a read-back held up by a rate limit leaves its time unknown, and the next key waits for the limit, or isn't sent when it lifts too late")
+	func readBackRateLimit() async throws {
+		let api = FakeGitHubAPI()
+		let reviewed = try await reviewed(api)
+		let pacing = TestPacing()
+		api.fail(.secret, after: 1, with: .rateLimited(until: nil))
+		let report = await publish([change("A", "1"), change("B", "2")], with: api, reviewed: reviewed, pacing: pacing)
+		#expect(report.outcomes == ["A": .published, "B": .published])
+		#expect(report.published.first { $0.key == "A" }?.remoteUpdatedAt == nil)
+		#expect(pacing.sleeps == [.seconds(60)], "A minute for the limit GitHub didn't say the end of, which also spaces the writes")
+
+		let far = FakeGitHubAPI()
+		far.fail(.secret, after: 1, with: .rateLimited(until: Date().addingTimeInterval(3_600)))
+		let stopped = await publish([change("A", "1"), change("B", "2")], with: far, reviewed: reviewed)
+		#expect(stopped.outcomes == ["A": .published, "B": .notSent])
+		#expect(far.requests.map(\.0) == [.repository, .secret, .variable, .publicKey, .setSecret, .secret], "Nothing is asked of GitHub after the limit")
+	}
+
 	@Test("writes are a second apart, as GitHub asks of a batch of writes")
 	func pacesWrites() async throws {
 		let api = FakeGitHubAPI()
 		let reviewed = try await reviewed(api)
 		let pacing = TestPacing()
-		let report = await GitHubPublishing.publish(
-			[change("A", "1", secret: false), change("B", "2", secret: false), change("C", "3", secret: false)],
-			to: target, reviewed: reviewed, using: api, seal: testGitHubSeal, pacing: pacing.pacing)
+		let report = await publish(
+			[change("A", "1", secret: false), change("B", "2", secret: false), change("C", "3", secret: false)], with: api, reviewed: reviewed,
+			pacing: pacing)
 		#expect(report.outcomes.values.allSatisfy { $0 == .published })
 		#expect(pacing.sleeps == [.seconds(1), .seconds(1)], "Nothing else took time, so each later write waited a full second")
 	}
@@ -786,15 +822,14 @@ struct GitHubPublishTests {
 		let reviewed = try await reviewed(api)
 		let pacing = TestPacing()
 		api.fail(.setSecret, with: .rateLimited(until: nil), .rateLimited(until: nil))
-		let report = await GitHubPublishing.publish([change("A", "1")], to: target, reviewed: reviewed, using: api, seal: testGitHubSeal, pacing: pacing.pacing)
+		let report = await publish([change("A", "1")], with: api, reviewed: reviewed, pacing: pacing)
 		#expect(report.outcomes == ["A": .published])
 		#expect(pacing.sleeps == [.seconds(60), .seconds(120)])
 
 		let limited = FakeGitHubAPI()
 		let still = TestPacing()
 		limited.fail(.setSecret, with: .rateLimited(until: nil), .rateLimited(until: nil), .rateLimited(until: nil))
-		let given = await GitHubPublishing.publish(
-			[change("A", "1"), change("B", "2")], to: target, reviewed: reviewed, using: limited, seal: testGitHubSeal, pacing: still.pacing)
+		let given = await publish([change("A", "1"), change("B", "2")], with: limited, reviewed: reviewed, pacing: still)
 		#expect(given.outcomes == ["A": .failed("GitHub is limiting requests. Try again in a few minutes."), "B": .notSent])
 		#expect(still.sleeps == [.seconds(60), .seconds(120)])
 	}
@@ -961,6 +996,100 @@ struct RenewingGitHubClientTests {
 		#expect(await publishing.secrets(in: scope) == .failure(.credentials(.signedOut)))
 		#expect(github.tokens == ["ghu_1"] && refresher.calls.isEmpty)
 		#expect(GitHubPublishing.message(.credentials(.signedOut)) == PlatformCredentialError.signedOut.message(for: .github))
+	}
+}
+
+/// Publishes through the renewing client, where GitHub refuses the token at
+/// some request and lpm.dev renews it while someone changes GitHub.
+struct GitHubPublishRenewalTests {
+	private let keychain = MockKeychainService()
+	private let start = Date(timeIntervalSince1970: 1_760_000_000)
+	private let scope = GitHubScope(repository: "northwind/storefront", environment: nil)
+	private let production = GitHubScope(repository: "northwind/storefront", environment: "production")
+	private let fingerprintKey = SymmetricKey(size: .bits256)
+
+	private func target(_ scope: GitHubPublishTarget.Scope = .repository) -> GitHubPublishTarget {
+		GitHubPublishTarget(userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront", scope: scope)
+	}
+
+	private func change(_ key: String, _ operation: PublishPlan.Operation = .add) -> PublishPlan.Change {
+		PublishPlan.Change(
+			key: key, value: "v", operation: operation, publishesAsSecret: true,
+			fingerprint: PublishFingerprint.of(value: "v", key: key, destination: UUID(), using: fingerprintKey))
+	}
+
+	/// A publishing client for a GitHub connection whose token lpm.dev renews to `ghu_2`.
+	private func client(_ github: TokenGatedGitHub) async throws -> (RenewingGitHubClient, ScriptedTokenRefresher) {
+		let store = PlatformConnectionStore(service: keychain)
+		let refresh = PlatformTokenRefresh(
+			token: "ghr_1", accessTokenExpiresAt: start.addingTimeInterval(8 * 3_600), expiresAt: start.addingTimeInterval(86_400),
+			obtainedAt: start, principalID: platformTestPrincipal)
+		let id = try await store.save(
+			.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: nil, appSlug: "lpm-vault")),
+			accessToken: "ghu_1", refresh: refresh, at: start).get().id
+		let refresher = ScriptedTokenRefresher { call, _ in
+			ScriptedTokenRefresher.renewed(call, access: "ghu_2", refresh: "ghr_2", platform: "github")
+		}
+		let credentials = PlatformCredentials(
+			store: store, refresher: refresher, session: { platformTestSession(URL(string: "http://localhost:3000")!) }, now: { [start] in start })
+		return (RenewingGitHubClient(connectionID: id, credentials: credentials, resendsAfterRenewal: false, make: github.client), refresher)
+	}
+
+	private func reviewed(_ api: FakeGitHubAPI, in scope: GitHubScope) async throws -> GitHubRemoteSnapshot {
+		try GitHubPublishing.snapshot(secrets: await api.secrets(in: scope).get(), variables: await api.variables(in: scope).get()).get()
+	}
+
+	private func publish(_ changes: [PublishPlan.Change], to target: GitHubPublishTarget, reviewed: GitHubRemoteSnapshot, using client: RenewingGitHubClient) async -> PublishReport {
+		await GitHubPublishing.publish(changes, to: target, reviewed: reviewed, using: client, seal: testGitHubSeal, pacing: TestPacing().pacing)
+	}
+
+	@Test("an environment replaced while the token renewed, after GitHub refused it for the scope's key, gets nothing")
+	func checksScopeAfterRenewal() async throws {
+		let github = TokenGatedGitHub(valid: "ghu_1")
+		let api = github.api
+		let reviewed = try await reviewed(api, in: production)
+		api.fail(.publicKey, with: .unauthorized) {
+			github.accept("ghu_2")
+			api.replaceEnvironment(of: "northwind/storefront", name: "production", withID: "999")
+		}
+		let (client, refresher) = try await client(github)
+		let report = await publish([change("A")], to: target(.environment(id: "161088068", name: "production")), reviewed: reviewed, using: client)
+		#expect(report.outcomes == ["A": .failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")])
+		#expect(api.names(in: production) == ([], []) && refresher.calls.count == 1)
+	}
+
+	@Test("a key changed while the token renewed, after GitHub refused its write, isn't written over")
+	func rereadsAfterRenewal() async throws {
+		let github = TokenGatedGitHub(valid: "ghu_1")
+		let api = github.api
+		api.edit("A", secret: true, in: scope)
+		let reviewed = try await reviewed(api, in: scope)
+		let scope = scope
+		api.fail(.setSecret, with: .unauthorized) {
+			github.accept("ghu_2")
+			api.edit("A", secret: true, value: "theirs", in: scope)
+		}
+		let (client, _) = try await client(github)
+		let report = await publish([change("A", .replace(remoteID: "secret"))], to: target(), reviewed: reviewed, using: client)
+		#expect(report.outcomes == ["A": .failed("Changed on GitHub since this review. Review again.")])
+		#expect(api.secretValue("A", in: scope) == Data("theirs".utf8))
+	}
+
+	@Test("a read-back GitHub refused until the token renewed leaves the write's time unknown, as someone may have changed it meanwhile")
+	func readBackAfterRenewal() async throws {
+		let github = TokenGatedGitHub(valid: "ghu_1")
+		let api = github.api
+		let reviewed = try await reviewed(api, in: scope)
+		let scope = scope
+		api.fail(.secret, after: 1, with: .unauthorized) {
+			github.accept("ghu_2")
+			api.edit("A", secret: true, value: "theirs", in: scope)
+		}
+		let (client, _) = try await client(github)
+		let report = await publish([change("A"), change("B")], to: target(), reviewed: reviewed, using: client)
+		#expect(report.outcomes == ["A": .published, "B": .published])
+		#expect(report.published.first { $0.key == "A" }?.remoteUpdatedAt == nil)
+		#expect(report.published.first { $0.key == "B" }?.remoteUpdatedAt != nil, "The renewed token carries on")
 	}
 }
 

@@ -43,6 +43,8 @@ final class PublishSession: Identifiable {
 		var coolify: CoolifyConnector.ClientFactory = { CoolifyClient(instance: $0, token: $1) }
 		var netlify: NetlifyConnector.ClientFactory = { NetlifyClient(token: $0) }
 		var github: GitHubConnector.ClientFactory = { GitHubClient(token: $0) }
+		/// How a GitHub publish leaves time between writes.
+		var githubPacing = GitHubPublishing.Pacing()
 		var now: @Sendable () -> Date = { Date() }
 		/// Called after destinations or history change.
 		var didChange: @MainActor () -> Void = {}
@@ -564,9 +566,17 @@ final class PublishSession: Identifiable {
 		}
 	}
 
-	/// GitHub's API for the connection, with its token renewed whenever GitHub refuses it.
-	private func githubClient(for connectionID: PlatformConnection.ID, token: String? = nil) -> RenewingGitHubClient {
-		RenewingGitHubClient(connectionID: connectionID, credentials: dependencies.credentials, token: token, make: dependencies.github)
+	/// GitHub's API for the connection, with its token renewed whenever GitHub
+	/// refuses it. A publish is told of a renewal instead of a request being
+	/// sent again, so it checks GitHub again first.
+	private func githubClient(
+		for connectionID: PlatformConnection.ID,
+		token: String? = nil,
+		publishing: Bool = false
+	) -> RenewingGitHubClient {
+		RenewingGitHubClient(
+			connectionID: connectionID, credentials: dependencies.credentials, token: token, resendsAfterRenewal: !publishing,
+			make: dependencies.github)
 	}
 
 	/// The client's repositories in the menu's order, listed and sorted off the main actor.
@@ -1032,7 +1042,7 @@ final class PublishSession: Identifiable {
 		case .github(let target):
 			report = await GitHubPublishing.publish(
 				changes, to: target, reviewed: GitHubRemoteSnapshot(variables: review.remote, keys: review.remoteKeys),
-				using: githubClient(for: target.connectionID, token: token))
+				using: githubClient(for: target.connectionID, token: token, publishing: true), pacing: dependencies.githubPacing)
 		}
 		var recordFailure: String?
 		if !report.published.isEmpty {

@@ -1096,6 +1096,7 @@ struct GitHubPublishSessionTests {
 					tokens?.append(token)
 					return api
 				},
+				githubPacing: TestPacing().pacing,
 				now: { Date(timeIntervalSince1970: 1_760_000_000) }))
 	}
 

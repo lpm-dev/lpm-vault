@@ -23,6 +23,9 @@ enum GitHubAPIError: Error, Equatable, Sendable {
 	case ssoRequired
 	/// GitHub's list was longer than LPM Vault reads.
 	case tooLarge
+	/// GitHub refused the token, which another renewal had already replaced;
+	/// GitHub applied nothing, and the next request uses the new token.
+	case renewed
 	/// The connection's token couldn't be renewed, or read, for the request.
 	case credentials(PlatformCredentialError)
 }

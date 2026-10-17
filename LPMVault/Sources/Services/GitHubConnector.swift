@@ -61,7 +61,7 @@ struct GitHubConnector: Sendable {
 			switch await github.user() {
 			case .success(let user):
 				return .success(GitHubConnection(user: user, tokens: grant.tokens, appSlug: grant.appSlug, receivedAt: receivedAt))
-			case .failure(.unauthorized), .failure(.forbidden), .failure(.credentials), .failure(.ssoRequired):
+			case .failure(.unauthorized), .failure(.forbidden), .failure(.credentials), .failure(.ssoRequired), .failure(.renewed):
 				return .failure(.tokenRejected)
 			case .failure(.cancelled):
 				return .failure(.cancelled)

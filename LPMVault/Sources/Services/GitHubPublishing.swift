@@ -124,20 +124,19 @@ enum GitHubPublishing {
 
 	/// Sends `changes` to the reviewed target. Each key gets an outcome.
 	///
-	/// The repository, and the environment, are first checked to still be the
-	/// reviewed ones, by ID under the reviewed names, and again after every
-	/// rate limit waited out, so a rename or a replacement since the review
-	/// stops what hasn't been sent. Each key is then
-	/// checked to be as the review saw it: by listing the scope once, when
-	/// that takes fewer requests than reading each chosen key, and otherwise,
-	/// as for every key written after a rate limit was waited out, by reading
-	/// the key's secret and variable right before it's written. A key added,
-	/// changed, removed or moved between secrets and variables since the
-	/// review isn't sent. Writes go one at a time, a second apart, as GitHub
-	/// asks of a batch of writes. Each is read back once for the time GitHub gave it; a read-back that can't
-	/// answer at once leaves the time unknown, rather than take someone's
-	/// later change for this one. A refused token, missing access, or a rate
-	/// limit that doesn't lift stops what hasn't been sent.
+	/// Writes go one at a time, a second apart, as GitHub asks of a batch of
+	/// writes. Right before each one, after that pause, the repository and
+	/// the environment are checked to still be the reviewed ones, by ID under
+	/// the reviewed names, and the key is read from the scope's secrets and
+	/// variables and must be as the review saw it. A rename or a replacement
+	/// since the review stops what hasn't been sent; a key added, changed,
+	/// removed or moved between secrets and variables isn't sent. A rate
+	/// limit waited out, or a token renewed after GitHub refused it, starts
+	/// those checks over. Each write is read back once for the time GitHub
+	/// gave it; a read-back that can't answer at once leaves the time
+	/// unknown, rather than take someone's later change for this one. A
+	/// refused token, missing access, or a rate limit that doesn't lift stops
+	/// what hasn't been sent.
 	static func publish(
 		_ changes: [PublishPlan.Change],
 		to target: GitHubPublishTarget,
@@ -151,74 +150,24 @@ enum GitHubPublishing {
 			for change in changes where report.outcomes[change.key] == nil { report.outcomes[change.key] = reason(change) }
 			return report
 		}
-		func fail(_ error: GitHubAPIError) -> PublishReport {
-			report.needsReconnect = report.needsReconnect || needsReconnect(error)
-			return finish { _ in .failed(message(error)) }
-		}
-		guard !Task.isCancelled else { return finish() }
-
-		var waits = 0
-		var scope: GitHubScope
-		switch await reviewedScope(of: target, using: client, waits: &waits, pacing: pacing) {
-		case .success(let value): scope = value
-		case .failure(.api(let error)): return fail(error)
-		case .failure(.replaced(let reason)): return finish { _ in .failed(reason) }
-		}
-
-		var current: GitHubRemoteSnapshot?
-		if listingRequests(for: reviewed) < 2 * changes.count {
-			switch await listing(scope, using: client) {
-			case .success(let snapshot): current = snapshot
-			case .failure(.api(.rateLimited(let reset))):
-				// Listing again would read every page again; each key is read right before its write instead.
-				if let error = await waitOut(until: reset, waits: &waits, pacing: pacing) { return fail(error) }
-				switch await reviewedScope(of: target, using: client, waits: &waits, pacing: pacing) {
-				case .success(let value): scope = value
-				case .failure(.api(let error)): return fail(error)
-				case .failure(.replaced(let reason)): return finish { _ in .failed(reason) }
-				}
-			case .failure(.api(let error)): return fail(error)
-			case .failure(.snapshot(let error)): return finish { _ in .failed(error.message) }
-			}
-		}
-		var cleared: [String: Write] = [:]
-		if let current {
-			for change in changes {
-				switch write(for: change, reviewed: reviewed, current: current) {
-				case .success(let write): cleared[change.key] = write
-				case .failure(let refusal): report.outcomes[change.key] = .failed(refusal.text)
-				}
-			}
-		}
-
-		// Whether the listing still describes GitHub: no rate limit was waited out since it was read.
-		var fresh = current != nil
 		var publicKey: GitHubPublicKey?
 		var lastWrite: ContinuousClock.Instant?
-		for change in changes where report.outcomes[change.key] == nil {
+		for change in changes {
 			guard !Task.isCancelled else { break }
 			var waits = 0
-			var write = fresh ? cleared[change.key] : nil
-			var answer: Answer
+			let answer: Answer
 			attempts: while true {
-				switch await send(
-					change, cleared: write, to: scope, reviewed: reviewed, publicKey: &publicKey, using: client, seal: seal, waits: &waits,
+				switch await attempt(
+					change, to: target, reviewed: reviewed, publicKey: &publicKey, using: client, seal: seal, waits: &waits,
 					pacing: pacing, lastWrite: &lastWrite)
 				{
 				case .done(let value):
 					answer = value
 					break attempts
 				case .waited:
-					// GitHub may have changed anything while the limit was waited out.
-					fresh = false
-					write = nil
-					switch await reviewedScope(of: target, using: client, waits: &waits, pacing: pacing) {
-					case .success(let value): scope = value
-					case .failure(.api(let error)):
-						answer = .failed(error)
-						break attempts
-					case .failure(.replaced(let reason)): return finish { _ in .failed(reason) }
-					}
+					continue
+				case .replaced(let reason):
+					return finish { _ in .failed(reason) }
 				}
 			}
 			switch answer {
@@ -227,9 +176,16 @@ enum GitHubPublishing {
 				report.outcomes[change.key] = readBack == .gone
 					? .failed("GitHub accepted it, but it was gone when LPM Vault read it back. Check it on GitHub.")
 					: .published
-				if case .unknown(let error?) = readBack {
+				switch readBack {
+				case .unknown(.rateLimited(let reset)?):
+					// GitHub asks for no request until a limit lifts, so the next key waits for it.
+					var limitWaits = 0
+					if await waitOut(until: reset, waits: &limitWaits, pacing: pacing) != nil { return finish() }
+				case .unknown(let error?):
 					report.needsReconnect = report.needsReconnect || needsReconnect(error)
 					return finish()
+				case .record, .gone, .unknown(nil):
+					break
 				}
 			case .refused(let reason):
 				report.outcomes[change.key] = .failed(reason)
@@ -255,7 +211,7 @@ enum GitHubPublishing {
 		/// Something removed it right after the write.
 		case gone
 		/// It couldn't be read at once, so its time isn't known; with the
-		/// refusal that stops the publish, when it was one.
+		/// refusal or limit that stops or holds up the publish, when it was one.
 		case unknown(GitHubAPIError?)
 
 		var record: GitHubValueRecord? {
@@ -273,96 +229,30 @@ enum GitHubPublishing {
 	/// One try at sending a change.
 	private enum Attempt: Sendable {
 		case done(Answer)
-		/// A rate limit was waited out before anything was written, so the change is tried again.
+		/// A rate limit was waited out, or the token renewed, before anything
+		/// was written, so the change is tried again with every check.
 		case waited
-	}
-
-	private enum ListingFailure: Error, Equatable {
-		case api(GitHubAPIError)
-		case snapshot(GitHubSnapshotError)
-	}
-
-	private enum ScopeFailure: Error, Equatable {
-		case api(GitHubAPIError)
 		/// The repository or environment isn't the reviewed one any more, with why.
 		case replaced(String)
 	}
 
-	/// The reviewed scope, by the names GitHub's paths use, once the
-	/// repository with the reviewed ID still has the reviewed name, and so
-	/// does the environment with the reviewed ID.
-	/// A rate limit met on the way starts the check over once it lifts.
-	private static func reviewedScope(
-		of target: GitHubPublishTarget,
-		using client: any GitHubClientProtocol,
-		waits: inout Int,
-		pacing: Pacing
-	) async -> Result<GitHubScope, ScopeFailure> {
-		while true {
-			let repository: GitHubRepository
-			switch await client.repository(id: target.repositoryID) {
-			case .success(let value): repository = value
-			case .failure(.notFound):
-				return .failure(.replaced("\(target.repositoryName) isn't reachable on GitHub any more. Review again."))
-			case .failure(.rateLimited(let reset)):
-				if let error = await waitOut(until: reset, waits: &waits, pacing: pacing) { return .failure(.api(error)) }
-				continue
-			case .failure(let error): return .failure(.api(error))
-			}
-			guard repository.fullName == target.repositoryName else {
-				return .failure(.replaced("\(target.repositoryName) was renamed \(repository.fullName) on GitHub since this review. Review again."))
-			}
-			guard case .environment(let id, let name) = target.scope else {
-				return .success(GitHubScope(repository: repository.fullName, environment: nil))
-			}
-			switch await client.environments(of: repository.fullName) {
-			case .success(let environments):
-				guard environments.contains(where: { $0.id == id && $0.name == name }) else {
-					return .failure(.replaced(
-						"The environment \(name.escapingInvisibleCharacters) was renamed, removed or replaced on GitHub since this review. Review again."))
-				}
-				return .success(GitHubScope(repository: repository.fullName, environment: name))
-			case .failure(.rateLimited(let reset)):
-				// The repository was checked before the wait, so it's checked again.
-				if let error = await waitOut(until: reset, waits: &waits, pacing: pacing) { return .failure(.api(error)) }
-			case .failure(let error): return .failure(.api(error))
-			}
-		}
+	private enum ScopeFailure: Error, Equatable {
+		case api(GitHubAPIError)
+		case replaced(String)
 	}
 
-	/// How many requests listing the scope takes, by how many secrets and
-	/// variables the review saw: GitHub lists 100 secrets, or 30 variables, a page.
-	private static func listingRequests(for reviewed: GitHubRemoteSnapshot) -> Int {
-		let duplicated = reviewed.keys.count
-		let secrets = reviewed.variables.values.lazy.filter { $0.storedAsSecret == true }.count
-		let variables = reviewed.variables.count - secrets
-		return max(1, (secrets + duplicated + 99) / 100) + max(1, (variables + duplicated + 29) / 30)
+	private enum RereadFailure: Error, Equatable {
+		case api(GitHubAPIError)
+		/// The key isn't as the review saw it, with why.
+		case refused(String)
 	}
 
-	/// The scope's secrets and variables, listed once: a rate limit isn't
-	/// waited out here, so pages already read aren't read again.
-	private static func listing(_ scope: GitHubScope, using client: any GitHubClientProtocol) async -> Result<GitHubRemoteSnapshot, ListingFailure> {
-		let secrets: [GitHubValueRecord]
-		switch await client.secrets(in: scope) {
-		case .success(let value): secrets = value
-		case .failure(let error): return .failure(.api(error))
-		}
-		let variables: [GitHubValueRecord]
-		switch await client.variables(in: scope) {
-		case .success(let value): variables = value
-		case .failure(let error): return .failure(.api(error))
-		}
-		return snapshot(secrets: secrets, variables: variables).mapError(ListingFailure.snapshot)
-	}
-
-	/// Sends one change and reads it back. A change the listing didn't clear
-	/// is read again first, from both secrets and variables, and must still be
-	/// as the review saw it. A rate limit met before the write is waited out
-	/// and answered as `.waited`.
-	private static func send(
+	/// Sends one change, once the pause since the last write is over and,
+	/// right after it, the scope is still the reviewed one and the key as the
+	/// review saw it; then reads it back.
+	private static func attempt(
 		_ change: PublishPlan.Change,
-		cleared: Write?,
-		to scope: GitHubScope,
+		to target: GitHubPublishTarget,
 		reviewed: GitHubRemoteSnapshot,
 		publicKey: inout GitHubPublicKey?,
 		using client: any GitHubClientProtocol,
@@ -371,26 +261,28 @@ enum GitHubPublishing {
 		pacing: Pacing,
 		lastWrite: inout ContinuousClock.Instant?
 	) async -> Attempt {
-		let write: Write
-		if let cleared {
-			write = cleared
-		} else {
-			switch await reread(change, in: scope, reviewed: reviewed, using: client, waits: &waits, pacing: pacing) {
-			case .cleared(let value): write = value
-			case .attempt(let attempt): return attempt
-			}
-		}
-		if write.isSecret, publicKey == nil {
-			switch await client.publicKey(of: scope) {
-			case .success(let key): publicKey = key
-			case .failure(.rateLimited(let reset)): return await waited(until: reset, waits: &waits, pacing: pacing)
-			case .failure(let error): return .done(.failed(error))
-			}
-		}
 		if let lastWrite {
 			let since = pacing.now() - lastWrite
 			if since < Pacing.writeInterval {
 				do { try await pacing.sleep(Pacing.writeInterval - since) } catch { return .done(.failed(.cancelled)) }
+			}
+		}
+		let scope: GitHubScope
+		switch await reviewedScope(of: target, using: client) {
+		case .success(let value): scope = value
+		case .failure(.replaced(let reason)): return .replaced(reason)
+		case .failure(.api(let error)): return await pause(after: error, waits: &waits, pacing: pacing)
+		}
+		let write: Write
+		switch await reread(change, in: scope, reviewed: reviewed, using: client) {
+		case .success(let value): write = value
+		case .failure(.refused(let reason)): return .done(.refused(reason))
+		case .failure(.api(let error)): return await pause(after: error, waits: &waits, pacing: pacing)
+		}
+		if write.isSecret, publicKey == nil {
+			switch await client.publicKey(of: scope) {
+			case .success(let key): publicKey = key
+			case .failure(let error): return await pause(after: error, waits: &waits, pacing: pacing)
 			}
 		}
 		let answer: Result<Void, GitHubAPIError>
@@ -408,73 +300,96 @@ enum GitHubPublishing {
 		switch answer {
 		case .success:
 			return .done(.written(write, await readBack(write, in: scope, using: client)))
-		case .failure(.rateLimited(let reset)):
-			return await waited(until: reset, waits: &waits, pacing: pacing)
 		case .failure(.rejected(status: 409)) where write.creates && !write.isSecret:
 			// GitHub answers a variable created meanwhile with a conflict.
 			return .done(.refused(Refusal.added.text))
 		case .failure(let error):
+			return await pause(after: error, waits: &waits, pacing: pacing)
+		}
+	}
+
+	/// `.waited` once a request GitHub held up can be sent again: after its
+	/// rate limit lifts, or at once when it was refused with a token another
+	/// renewal replaced, which GitHub applied nothing of. Any other error, or
+	/// a wait that can't be made, is the answer.
+	private static func pause(after error: GitHubAPIError, waits: inout Int, pacing: Pacing) async -> Attempt {
+		switch error {
+		case .rateLimited(let reset):
+			if let error = await waitOut(until: reset, waits: &waits, pacing: pacing) { return .done(.failed(error)) }
+			return .waited
+		case .renewed:
+			guard waits < rateLimitRetries else { return .done(.failed(.unauthorized)) }
+			waits += 1
+			return .waited
+		default:
 			return .done(.failed(error))
 		}
 	}
 
-	/// `.waited` once the rate limit lifts, or the error that ends the wait instead.
-	private static func waited(until reset: Date?, waits: inout Int, pacing: Pacing) async -> Attempt {
-		if let error = await waitOut(until: reset, waits: &waits, pacing: pacing) { return .done(.failed(error)) }
-		return .waited
+	/// The reviewed scope, by the names GitHub's paths use, once the
+	/// repository with the reviewed ID still has the reviewed name, and so
+	/// does the environment with the reviewed ID.
+	private static func reviewedScope(of target: GitHubPublishTarget, using client: any GitHubClientProtocol) async -> Result<GitHubScope, ScopeFailure> {
+		let repository: GitHubRepository
+		switch await client.repository(id: target.repositoryID) {
+		case .success(let value): repository = value
+		case .failure(.notFound): return .failure(.replaced("\(target.repositoryName) isn't reachable on GitHub any more. Review again."))
+		case .failure(let error): return .failure(.api(error))
+		}
+		guard repository.fullName == target.repositoryName else {
+			return .failure(.replaced("\(target.repositoryName) was renamed \(repository.fullName) on GitHub since this review. Review again."))
+		}
+		guard case .environment(let id, let name) = target.scope else {
+			return .success(GitHubScope(repository: repository.fullName, environment: nil))
+		}
+		switch await client.environments(of: repository.fullName) {
+		case .success(let environments):
+			guard environments.contains(where: { $0.id == id && $0.name == name }) else {
+				return .failure(.replaced(
+					"The environment \(name.escapingInvisibleCharacters) was renamed, removed or replaced on GitHub since this review. Review again."))
+			}
+			return .success(GitHubScope(repository: repository.fullName, environment: name))
+		case .failure(let error): return .failure(.api(error))
+		}
 	}
 
-	/// Reads a write back, once and at once. A rate limit isn't waited out:
-	/// a time read after a wait could be someone else's change.
+	/// Reads a write back, once and at once: a time read after a wait or a
+	/// renewal could be someone else's change.
 	private static func readBack(_ write: Write, in scope: GitHubScope, using client: any GitHubClientProtocol) async -> ReadBack {
 		let key = write.change.key
 		let answer = write.isSecret ? await client.secret(key, in: scope) : await client.variable(key, in: scope)
 		switch answer {
 		case .success(let record?): return .record(record)
 		case .success(nil): return .gone
-		case .failure(let error): return .unknown(stops(error) && !isRateLimit(error) ? error : nil)
+		case .failure(let error): return .unknown(stops(error) ? error : nil)
 		}
 	}
 
-	private enum Reread {
-		case cleared(Write)
-		case attempt(Attempt)
-	}
-
-	/// Reads the change's key from the scope's secrets and variables, and
-	/// clears the change when the key is still as the review saw it. A rate
-	/// limit on either read is waited out and answered as `.waited`, so both
-	/// are read again after it.
+	/// The change, cleared to send, when the scope's secret and variable for
+	/// its key are as the review saw them.
 	private static func reread(
 		_ change: PublishPlan.Change,
 		in scope: GitHubScope,
 		reviewed: GitHubRemoteSnapshot,
-		using client: any GitHubClientProtocol,
-		waits: inout Int,
-		pacing: Pacing
-	) async -> Reread {
+		using client: any GitHubClientProtocol
+	) async -> Result<Write, RereadFailure> {
 		let key = change.key
 		let secret: GitHubValueRecord?
 		switch await client.secret(key, in: scope) {
 		case .success(let value): secret = value
-		case .failure(.rateLimited(let reset)): return .attempt(await waited(until: reset, waits: &waits, pacing: pacing))
-		case .failure(let error): return .attempt(.done(.failed(error)))
+		case .failure(let error): return .failure(.api(error))
 		}
 		let variable: GitHubValueRecord?
 		switch await client.variable(key, in: scope) {
 		case .success(let value): variable = value
-		case .failure(.rateLimited(let reset)): return .attempt(await waited(until: reset, waits: &waits, pacing: pacing))
-		case .failure(let error): return .attempt(.done(.failed(error)))
+		case .failure(let error): return .failure(.api(error))
 		}
 		let current: GitHubRemoteSnapshot
 		switch snapshot(secrets: secret.map { [$0] } ?? [], variables: variable.map { [$0] } ?? []) {
 		case .success(let value): current = value
-		case .failure(let error): return .attempt(.done(.refused(error.message)))
+		case .failure(let error): return .failure(.refused(error.message))
 		}
-		switch write(for: change, reviewed: reviewed, current: current) {
-		case .success(let write): return .cleared(write)
-		case .failure(let refusal): return .attempt(.done(.refused(refusal.text)))
-		}
+		return write(for: change, reviewed: reviewed, current: current).mapError { .refused($0.text) }
 	}
 
 	private struct Refusal: Error {
@@ -536,16 +451,11 @@ enum GitHubPublishing {
 		return nil
 	}
 
-	private static func isRateLimit(_ error: GitHubAPIError) -> Bool {
-		if case .rateLimited = error { return true }
-		return false
-	}
-
 	/// Refusals that every later request would meet too.
 	private static func stops(_ error: GitHubAPIError) -> Bool {
 		switch error {
 		case .unauthorized, .forbidden, .rateLimited, .cancelled, .credentials, .moved, .ssoRequired, .tooLarge: true
-		case .notFound, .rejected, .transport, .invalidResponse, .server: false
+		case .notFound, .rejected, .transport, .invalidResponse, .server, .renewed: false
 		}
 	}
 
@@ -593,6 +503,7 @@ enum GitHubPublishing {
 		case .server(let status): "GitHub answered with HTTP \(status)."
 		case .credentials(let error): error.message(for: .github)
 		case .moved: "The repository was renamed or moved on GitHub. Review again."
+		case .renewed: "The GitHub connection was renewed while this was sent. Try again."
 		case .ssoRequired:
 			"An organization's single sign-on keeps LPM Vault out. Sign in to the organization on GitHub, then connect GitHub again on the Platforms page."
 		case .tooLarge: "GitHub listed more than LPM Vault reads at once. Install LPM Vault's GitHub App only on the repositories it publishes to."

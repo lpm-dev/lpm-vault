@@ -4,18 +4,28 @@ import Foundation
 /// read once; when GitHub refuses it, as after another review renewed it or
 /// once it expired early by a wrong clock, the connection's current token is
 /// asked for, renewed when it must be, and the request is sent once more.
-/// GitHub applies nothing it refuses that way, so sending again is safe.
+/// GitHub applies nothing it refuses that way, so sending again is safe. A
+/// publish, which checks GitHub again after any wait, is told `.renewed`
+/// instead of the request being sent again.
 actor RenewingGitHubClient: GitHubClientProtocol {
 	private let connectionID: PlatformConnection.ID
 	private let credentials: PlatformCredentials
 	private let make: GitHubConnector.ClientFactory
+	private let resendsAfterRenewal: Bool
 	private var token: String?
 
 	/// `token` is one just read for the connection, when there is one.
-	init(connectionID: PlatformConnection.ID, credentials: PlatformCredentials, token: String? = nil, make: @escaping GitHubConnector.ClientFactory) {
+	init(
+		connectionID: PlatformConnection.ID,
+		credentials: PlatformCredentials,
+		token: String? = nil,
+		resendsAfterRenewal: Bool = true,
+		make: @escaping GitHubConnector.ClientFactory
+	) {
 		self.connectionID = connectionID
 		self.credentials = credentials
 		self.token = token
+		self.resendsAfterRenewal = resendsAfterRenewal
 		self.make = make
 	}
 
@@ -37,6 +47,7 @@ actor RenewingGitHubClient: GitHubClientProtocol {
 		switch await credentials.accessToken(for: connectionID, replacing: current) {
 		case .success(let renewed) where renewed != current:
 			token = renewed
+			guard resendsAfterRenewal else { return .failure(.renewed) }
 			return await request(make(renewed))
 		case .success, .failure(.expired):
 			// GitHub's own refusal says the connection must be connected again.
