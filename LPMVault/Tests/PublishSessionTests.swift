@@ -1076,17 +1076,17 @@ struct GitHubPublishSessionTests {
 		source: String = "production",
 		tokens: TokenLog? = nil,
 		credentials: PlatformCredentials? = nil,
-		rules: ProjectEnvSchemaOverview? = nil
+		rules: PublishSession.Rules? = nil
 	) -> PublishSession {
 		let values = values
 		let confirmations = confirmations
 		let api = api
-		let rules = rules ?? self.rules
+		let rules = rules ?? .known(self.rules)
 		return PublishSession(
 			vaultID: vault, projectName: "demo-api", environments: ["production", "staging"], sourceEnvironment: source,
 			saved: saved,
 			dependencies: .init(
-				snapshot: { environment, _ in values.get(environment).map { .init(values: $0, rules: .known(rules), check: nil) } },
+				snapshot: { environment, _ in values.get(environment).map { .init(values: $0, rules: rules, check: nil) } },
 				confirm: { confirmations.ask($0) },
 				publishing: publishing,
 				connections: connections, credentials: credentials ?? PlatformCredentials(store: connections, session: { nil }),
@@ -1193,7 +1193,7 @@ struct GitHubPublishSessionTests {
 		try await publish(first)
 		let saved = try #require(try await publishing.destinations(of: vault).get().first)
 		api.remove("LOG_LEVEL", secret: false, in: repositoryScope)
-		let unruled = session(saved: saved, rules: ProjectEnvSchemaOverview(rules: [], groups: []))
+		let unruled = session(saved: saved, rules: .known(ProjectEnvSchemaOverview(rules: [], groups: [])))
 		unruled.start()
 		#expect(try await waitUntil { unruled.review != nil || unruled.reviewError != nil })
 		let reviewed = try #require(unruled.review)
@@ -1265,6 +1265,43 @@ struct GitHubPublishSessionTests {
 		session.reloadChoices()
 		#expect(try await waitUntil { session.github?.repositories.value != nil && session.github?.hidesSSORepositories == false })
 		#expect(session.github?.skippedInstallations == [])
+
+		api.setListing(hidesSSO: true, skipped: skipped)
+		session.reloadChoices()
+		#expect(try await waitUntil { session.github?.hidesSSORepositories == true })
+		api.fail(.repository, with: .server(502))
+		session.reloadChoices()
+		#expect(try await waitUntil {
+			if case .failed? = session.github?.repositories { return true }
+			return false
+		})
+		#expect(session.github?.hidesSSORepositories == false && session.github?.skippedInstallations == [], "A listing that fails says nothing GitHub left out")
+	}
+
+	@Test("a review over both of GitHub's limits on a repository says both, one after the other")
+	func joinsOverflows() async throws {
+		try await connect()
+		for index in 0..<99 { api.edit("OLD_SECRET_\(index)", secret: true, in: repositoryScope) }
+		for index in 0..<500 { api.edit("OLD_VARIABLE_\(index)", secret: false, in: repositoryScope) }
+		let session = session()
+		try await choose(session)
+		let review = try #require(session.review)
+		#expect(PublishSheet.overflowMessage(for: review) == [
+			"GitHub keeps at most 100 of a repository's own secrets, and this would make 101. Leave out 1 new secret.",
+			"GitHub keeps at most 500 of a repository's own variables, and has 500 already. Leave out the new variable, or remove some on GitHub.",
+		].joined(separator: " "))
+	}
+
+	@Test("the rules note calls GitHub's secrets secrets, in lowercase, whether the project has no rules or they can't be read")
+	func rulesNoteNamesSecrets() async throws {
+		try await connect()
+		let none = session(rules: PublishSession.Rules.none)
+		try await choose(none)
+		#expect(PublishSheet.notes(for: try #require(none.review)).contains("This project has no rules, so keys publish as secrets."))
+		let unreadable = session(rules: .unreadable)
+		try await choose(unreadable)
+		#expect(PublishSheet.notes(for: try #require(unreadable.review))
+			.contains("lpm.json's rules can't be read, so values aren't checked, and keys publish as secrets."))
 	}
 
 	@Test("the note on skipped installations names their accounts, in the plural for several, and says what to do")
@@ -1830,6 +1867,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("LPM Vault's GitHub App is suspended on acme"))
 			session.github?.repositoryID = "1296269"
 			#expect(try await host.waitForText("Loading environments…"))
+			#expect(try await host.waitForText("A repository that isn't listed needs LPM Vault's GitHub App."), "The hint stays while environments load")
 			await gate.open()
 			#expect(try await host.waitForTextToDisappear("Loading environments…"))
 			try await host.click("Review secrets and variables")
@@ -1837,6 +1875,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText(overflow))
 			let publish = try await host.waitForElement(saying: "Publish 2 secrets")
 			#expect(!publish.isEnabledNow, "Publish can't be pressed until a new secret is left out")
+			#expect(publish.help == overflow, "VoiceOver says why Publish can't be pressed")
 			#expect(biometric.confirmationReasons.isEmpty)
 		}
 

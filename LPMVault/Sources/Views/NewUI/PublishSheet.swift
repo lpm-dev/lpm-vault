@@ -710,9 +710,11 @@ struct PublishSheet: View {
 		return review.platform.countedValues(secrets: summary.secrets, variables: summary.variables)
 	}
 
+	private var overflowMessage: String? { session.review.flatMap(Self.overflowMessage(for:)) }
+
 	/// Why the chosen keys don't fit where they'd go, when they don't: every kind that wouldn't fit.
-	private var overflowMessage: String? {
-		guard let review = session.review, case .github(let target) = review.destination.target else { return nil }
+	static func overflowMessage(for review: PublishSession.Review) -> String? {
+		guard case .github(let target) = review.destination.target else { return nil }
 		let overflows = review.plan.overflows(of: review.selection)
 		guard !overflows.isEmpty else { return nil }
 		return overflows.map { GitHubPublishing.overflowMessage($0, scope: target.scope) }.joined(separator: " ")

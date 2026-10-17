@@ -1075,6 +1075,12 @@ struct GitHubPublishTests {
 		#expect(!report.needsReconnect)
 	}
 
+	@Test("a refusal for something missing names a secret or a variable, not just a secret")
+	func notFoundMessage() {
+		#expect(GitHubPublishing.message(.notFound)
+			== "GitHub couldn't find the repository, the environment, or the secret or variable. LPM Vault's GitHub App may not be installed on the repository.")
+	}
+
 	@Test("a rate limit's message says when it lifts, when that's more than a moment away")
 	func rateLimitMessages() {
 		let now = Date(timeIntervalSince1970: 1_760_000_000)
