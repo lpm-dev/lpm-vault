@@ -20,12 +20,13 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 	case tokenRejected
 	/// The platform didn't say whose the token it had just granted is.
 	case accountUnreadable
-	/// The platform was limiting requests when the new connection was read.
-	case platformRateLimited
+	/// The platform was limiting requests when the new connection was read,
+	/// until the time it said, when it did.
+	case platformRateLimited(until: Date?)
 	case transport
 	case invalidResponse
 
-	func message(for platform: BrowserPlatform) -> String {
+	func message(for platform: BrowserPlatform, now: Date = Date()) -> String {
 		let name = platform.displayName
 		return switch self {
 		case .signedOut: "Sign in to LPM to connect \(name)."
@@ -41,8 +42,11 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 		case .expired: "This connection expired. Connect again."
 		case .tokenRejected: "\(name) didn't accept the new connection. Connect again."
 		case .accountUnreadable: "\(name) didn't say which account was connected. Connect again."
-		// GitHub's limits back off for minutes; Netlify's window is a minute.
-		case .platformRateLimited: "\(name) is limiting requests. Wait \(platform == .github ? "a few minutes" : "a minute"), then connect again."
+		case .platformRateLimited(let reset?) where reset.timeIntervalSince(now) > 90:
+			"\(name) is limiting requests until \(reset.formatted(date: .omitted, time: .shortened)). Connect again then."
+		// GitHub backs off for minutes from limits it doesn't time; Netlify's window is a minute.
+		case .platformRateLimited(nil) where platform == .github: "\(name) is limiting requests. Wait a few minutes, then connect again."
+		case .platformRateLimited: "\(name) is limiting requests. Wait a minute, then connect again."
 		case .transport: "The connection couldn't reach lpm.dev or \(name). Check your network and try again."
 		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn't verify. Try again."
 		}

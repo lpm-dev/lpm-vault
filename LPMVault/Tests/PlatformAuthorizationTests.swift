@@ -873,20 +873,26 @@ struct NetlifyConnectorTests {
 		#expect(netlify.userReads == 2)
 	}
 
-	@Test("a rate limit that lifts later than LPM Vault waits, or keeps applying, says Netlify is limiting requests")
+	@Test("a rate limit that lifts later than LPM Vault waits, or keeps applying, says Netlify is limiting requests, and until when")
 	func userRateLimited() async {
 		let later = FakeAuthorizations(pageURL: Self.authorizePage)
 		later.outcome = later.readyNetlifyGrant()
-		let limited = ScriptedNetlify([.failure(.rateLimited(until: Date(timeIntervalSinceNow: 3_600)))])
+		let lifts = Date(timeIntervalSinceNow: 3_600)
+		let limited = ScriptedNetlify([.failure(.rateLimited(until: lifts))])
 		let result = await connect(later, netlify: limited)
-		#expect(failure(of: result) == .platformRateLimited)
-		#expect(failure(of: result)?.message(for: .netlify) == "Netlify is limiting requests. Wait a minute, then connect again.")
+		#expect(failure(of: result) == .platformRateLimited(until: lifts))
+		#expect(
+			failure(of: result)?.message(for: .netlify)
+				== "Netlify is limiting requests until \(lifts.formatted(date: .omitted, time: .shortened)). Connect again then.")
 		#expect(limited.userReads == 1)
 
 		let again = FakeAuthorizations(pageURL: Self.authorizePage)
 		again.outcome = again.readyNetlifyGrant()
-		let stays = ScriptedNetlify([.failure(.rateLimited(until: Date()))])
-		#expect(failure(of: await connect(again, netlify: stays)) == .platformRateLimited)
+		let lifted = Date()
+		let stays = ScriptedNetlify([.failure(.rateLimited(until: lifted))])
+		let kept = await connect(again, netlify: stays)
+		#expect(failure(of: kept) == .platformRateLimited(until: lifted))
+		#expect(failure(of: kept)?.message(for: .netlify) == "Netlify is limiting requests. Wait a minute, then connect again.")
 		#expect(stays.userReads == 3)
 	}
 
@@ -1023,7 +1029,7 @@ struct GitHubConnectorTests {
 		])
 		#expect(try await connect(announced, github: limits, clock: counting).get().user == Self.octocat)
 		#expect(counting.sleeps == [.seconds(11), .seconds(120)], "Every limit waited out counts toward the next one's backoff")
-		#expect(BrowserConnectError.platformRateLimited.message(for: .github) == "GitHub is limiting requests. Wait a few minutes, then connect again.")
+		#expect(BrowserConnectError.platformRateLimited(until: nil).message(for: .github) == "GitHub is limiting requests. Wait a few minutes, then connect again.")
 	}
 
 	@Test("a rate limit on reading the user is waited out a moment past its reset, even one that lifts at the longest wait")
@@ -1037,12 +1043,31 @@ struct GitHubConnectorTests {
 		#expect(github.userReads == 2)
 	}
 
+	@Test("a limit GitHub says lifts much later says until when, as an hour's limit shared with the person's other apps can")
+	func namesWhenLongLimitLifts() async {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let clock = SleepingTestClock()
+		let lifts = clock.date.addingTimeInterval(40 * 60)
+		let github = ScriptedGitHub([.failure(.rateLimited(until: lifts))])
+		let error = failure(of: await connect(authorizations, github: github, clock: clock))
+		#expect(error == .platformRateLimited(until: lifts))
+		#expect(
+			error?.message(for: .github, now: clock.date)
+				== "GitHub is limiting requests until \(lifts.formatted(date: .omitted, time: .shortened)). Connect again then.")
+		#expect(
+			BrowserConnectError.platformRateLimited(until: clock.date.addingTimeInterval(80)).message(for: .github, now: clock.date)
+				== "GitHub is limiting requests. Wait a minute, then connect again.")
+		#expect(clock.sleeps.isEmpty)
+		#expect(github.userReads == 1)
+	}
+
 	@Test(
 		"a token GitHub refuses at once isn't kept, and neither is one whose user GitHub doesn't say",
 		arguments: [
 			(GitHubAPIError.unauthorized, BrowserConnectError.tokenRejected), (.forbidden, .tokenRejected),
 			(.invalidResponse, .accountUnreadable), (.notFound, .accountUnreadable),
-			(.rateLimited(until: SleepingTestClock.start.addingTimeInterval(66)), .platformRateLimited),
+			(.rateLimited(until: SleepingTestClock.start.addingTimeInterval(66)), .platformRateLimited(until: SleepingTestClock.start.addingTimeInterval(66))),
 		]
 	)
 	func refusedUser(error: GitHubAPIError, expected: BrowserConnectError) async {

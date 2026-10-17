@@ -69,13 +69,13 @@ struct GitHubConnector: Sendable {
 				// Every limit waited out counts, as GitHub asks for longer waits while one continues.
 				wait = GitHubHTTP.unannouncedLimitWait(after: rateLimitWaits)
 				rateLimitWaits += 1
-				giveUp = .platformRateLimited
+				giveUp = .platformRateLimited(until: nil)
 			case .failure(.rateLimited(let reset)):
-				guard let limit = GitHubHTTP.rateLimitWait(until: reset, now: now()) else { return .failure(.platformRateLimited) }
+				guard let limit = GitHubHTTP.rateLimitWait(until: reset, now: now()) else { return .failure(.platformRateLimited(until: reset)) }
 				wait = limit.wait
 				lifts = limit.lifts
 				rateLimitWaits += 1
-				giveUp = .platformRateLimited
+				giveUp = .platformRateLimited(until: reset)
 			case .failure(.transport), .failure(.server):
 				wait = retryDelay * (attempt + 1)
 				giveUp = .transport

@@ -230,7 +230,7 @@ final class PlatformConnections {
 			case .failure(.cancelled):
 				self.notice = nil
 			case .failure(let error):
-				self.notice = Notice(message: error.message(for: platform), isError: true)
+				self.notice = Notice(message: error.message(for: platform, now: self.now()), isError: true)
 			}
 		}
 	}
