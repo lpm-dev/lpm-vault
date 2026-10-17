@@ -626,7 +626,7 @@ struct GitHubPublishTests {
 		api.requests.dropFirst(before).map(\.0)
 	}
 
-	@Test("each write is preceded by checking the repository and reading the key from both kinds, and read back for its time; the scope is never listed")
+	@Test("each write is preceded by reading the key from both kinds and, last, checking the repository, and read back for its time; the scope is never listed")
 	func publishes() async throws {
 		let api = FakeGitHubAPI()
 		api.edit("LOG_LEVEL", secret: false, value: "debug", in: scope)
@@ -641,10 +641,10 @@ struct GitHubPublishTests {
 		#expect(api.secretValue("API_TOKEN", in: scope) == Data("sealed:\(api.publicKey.key[0]):t0k3n".utf8))
 		#expect(api.variableValue("LOG_LEVEL", in: scope) == "info" && api.variableValue("PUBLIC_URL", in: scope) == "https://x")
 		#expect(operations(api, after: before) == [
-			.repository, .secret, .variable, .publicKey, .setSecret, .secret,
-			.repository, .secret, .variable, .updateVariable, .variable,
-			.repository, .secret, .variable, .createVariable, .variable,
-		])
+			.secret, .variable, .publicKey, .repository, .setSecret, .secret,
+			.secret, .variable, .repository, .updateVariable, .variable,
+			.secret, .variable, .repository, .createVariable, .variable,
+		], "The repository is checked last before each write")
 		let records = Dictionary(uniqueKeysWithValues: report.published.map { ($0.key, $0) })
 		#expect(records["API_TOKEN"]?.remoteID == "secret" && records["API_TOKEN"]?.publishedAsSecret == true)
 		#expect(records["LOG_LEVEL"]?.remoteID == "variable" && records["LOG_LEVEL"]?.publishedAsSecret == false)
@@ -662,8 +662,8 @@ struct GitHubPublishTests {
 		let report = await publish([change("A", "1", secret: false), change("B", "2", secret: false)], with: api, reviewed: reviewed, to: productionTarget)
 		#expect(report.outcomes == ["A": .published, "B": .published])
 		#expect(operations(api, after: before) == [
-			.repository, .environment, .secret, .variable, .createVariable, .variable,
-			.repository, .environment, .secret, .variable, .createVariable, .variable,
+			.secret, .variable, .repository, .environment, .createVariable, .variable,
+			.secret, .variable, .repository, .environment, .createVariable, .variable,
 		])
 	}
 
@@ -719,6 +719,34 @@ struct GitHubPublishTests {
 		#expect(replaced.writeCount == 0)
 	}
 
+	@Test("an environment replaced, or a repository's name reused, while its key or public key is read gets nothing: the check comes last", arguments: [
+		FakeGitHubAPI.Operation.secret, .variable, .publicKey,
+	])
+	func checksIdentityLast(_ during: FakeGitHubAPI.Operation) async throws {
+		let environments = FakeGitHubAPI()
+		let reviewed = try await self.reviewed(environments, in: production)
+		environments.onRequest = { operation in
+			if operation == during { environments.replaceEnvironment(of: "northwind/storefront", name: "production", withID: "999") }
+		}
+		let replaced = await publish([change("A", "1")], with: environments, reviewed: reviewed, to: productionTarget)
+		#expect(replaced.outcomes == [
+			"A": .failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again."),
+		])
+		#expect(environments.writeCount == 0)
+
+		let repositories = FakeGitHubAPI()
+		let repositoryReview = try await self.reviewed(repositories)
+		repositories.onRequest = { operation in
+			if operation == during {
+				repositories.rename("1296269", to: "northwind/shop")
+				repositories.rename("88", to: "northwind/storefront")
+			}
+		}
+		let reused = await publish([change("A", "1")], with: repositories, reviewed: repositoryReview)
+		#expect(reused.outcomes == ["A": .failed("northwind/storefront was renamed northwind/shop on GitHub since this review. Review again.")])
+		#expect(repositories.writeCount == 0)
+	}
+
 	@Test("a key changed, or the environment replaced, during the pause before its write isn't written over")
 	func checksAfterPause() async throws {
 		let api = FakeGitHubAPI()
@@ -750,7 +778,7 @@ struct GitHubPublishTests {
 		let report = await publish([change("API_TOKEN", "t")], with: api, reviewed: reviewed)
 		#expect(report.outcomes == ["API_TOKEN": .published])
 		#expect(operations(api, after: before) == [
-			.repository, .secret, .variable, .publicKey, .setSecret, .repository, .secret, .variable, .setSecret, .secret,
+			.secret, .variable, .publicKey, .repository, .setSecret, .secret, .variable, .repository, .setSecret, .secret,
 		])
 	}
 
@@ -842,7 +870,7 @@ struct GitHubPublishTests {
 			let stopped = await publish([change("A", "1"), change("B", "2")], with: refusing, reviewed: reviewed)
 			#expect(stopped.outcomes == ["A": .published, "B": .failed(GitHubPublishing.message(error))], "What's left says why it wasn't sent")
 			#expect(stopped.published.map(\.key) == ["A"] && stopped.needsReconnect == reconnects)
-			#expect(refusing.requests.map(\.0) == [.repository, .secret, .variable, .publicKey, .setSecret, .secret])
+			#expect(refusing.requests.map(\.0) == [.secret, .variable, .publicKey, .repository, .setSecret, .secret])
 		}
 
 		let vanishing = FakeGitHubAPI()
@@ -870,7 +898,7 @@ struct GitHubPublishTests {
 		#expect(stopped.outcomes == [
 			"A": .published, "B": .failed(GitHubPublishing.message(.rateLimited(until: reset), now: TestPacing.start)),
 		])
-		#expect(far.requests.map(\.0) == [.repository, .secret, .variable, .publicKey, .setSecret, .secret], "Nothing is asked of GitHub after the limit")
+		#expect(far.requests.map(\.0) == [.secret, .variable, .publicKey, .repository, .setSecret, .secret], "Nothing is asked of GitHub after the limit")
 	}
 
 	@Test("a limit on the last key's read-back doesn't hold the results up: nothing is left to send")
@@ -1511,6 +1539,21 @@ struct GitHubClientListTests {
 		let result = await client(route, limits: limits).repositories()
 		held.signal()
 		#expect(result == .failure(.tooLarge))
+	}
+
+	@Test("the bodies of installations that refuse their repositories count against what a listing reads")
+	func countsRefusalBodies() async {
+		let refusal = String(repeating: "x", count: 300_000)
+		let route = PlatformHTTPStub.platform { request in
+			switch request.url.path {
+			case "/user/installations": return .json(200, ["total_count": 10, "installations": (11...20).map { ["id": $0] }])
+			default: return .json(403, ["message": refusal])
+			}
+		}
+		var limits = GitHubClient.Limits()
+		limits.listBytes = 1_000_000
+		#expect(await client(route, limits: limits).repositories() == .failure(.tooLarge))
+		#expect(route.requests.filter { $0.url.path.hasSuffix("/repositories") }.count == 4, "Four refusals spend the budget, and nothing is asked after")
 	}
 
 	@Test("GitHub's Link decides whether a list goes on, even past a short page")

@@ -225,21 +225,31 @@ enum GitHubHTTP {
 		using session: URLSession,
 		limit: Int = maximumResponseBytes
 	) async -> Result<(data: Data, response: HTTPURLResponse), GitHubAPIError> {
+		await loadCounted(request, using: session, limit: limit).result
+	}
+
+	/// `load`'s answer, with how many bytes GitHub's body took, accepted or
+	/// refused: `limit` for one cut off at it.
+	static func loadCounted(
+		_ request: URLRequest,
+		using session: URLSession,
+		limit: Int = maximumResponseBytes
+	) async -> (result: Result<(data: Data, response: HTTPURLResponse), GitHubAPIError>, bytes: Int) {
 		do {
 			let (data, response) = try await BoundedHTTPResponse.load(for: request, using: session, maximumBytes: limit)
-			guard let http = response as? HTTPURLResponse else { return .failure(.invalidResponse) }
-			guard (200..<300).contains(http.statusCode) else { return .failure(failure(http, body: data)) }
-			return .success((data, http))
+			guard let http = response as? HTTPURLResponse else { return (.failure(.invalidResponse), data.count) }
+			guard (200..<300).contains(http.statusCode) else { return (.failure(failure(http, body: data)), data.count) }
+			return (.success((data, http)), data.count)
 		} catch BoundedHTTPResponse.LoadError.responseTooLarge {
-			return .failure(.tooLarge)
+			return (.failure(.tooLarge), limit)
 		} catch is BoundedHTTPResponse.LoadError {
-			return .failure(.invalidResponse)
+			return (.failure(.invalidResponse), 0)
 		} catch is CancellationError {
-			return .failure(.cancelled)
+			return (.failure(.cancelled), 0)
 		} catch let error as URLError where error.code == .cancelled {
-			return .failure(.cancelled)
+			return (.failure(.cancelled), 0)
 		} catch {
-			return .failure(.transport)
+			return (.failure(.transport), 0)
 		}
 	}
 
@@ -565,13 +575,14 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 				request, using: session, limit: min(GitHubHTTP.maximumResponseBytes * 4, budget.bytes), until: budget.deadline,
 				deadlinePasses: budget.deadlinePasses)
 			else { return .failure(Task.isCancelled ? .cancelled : budget.timedOut) }
+			// A refusal's body counts too, as one installation's refusal leaves the listing going.
+			budget.bytes -= loaded.bytes
 			let data: Data
 			let response: HTTPURLResponse
-			switch loaded {
+			switch loaded.result {
 			case .success(let value): (data, response) = value
 			case .failure(let error): return .failure(error)
 			}
-			budget.bytes -= data.count
 			budget.pagesRead += 1
 			if response.value(forHTTPHeaderField: "X-GitHub-SSO")?.lowercased().hasPrefix("partial-results") == true {
 				listed.hidesSSOResults = true
@@ -604,16 +615,19 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		}
 	}
 
-	/// The load's body and headers, or nil once `deadline` passes first, which cancels the load.
+	/// The load's answer with the bytes its body took, or nil once `deadline` passes first, which cancels the load.
 	private static func load(
 		_ request: URLRequest,
 		using session: URLSession,
 		limit: Int,
 		until deadline: ContinuousClock.Instant,
 		deadlinePasses: @escaping @Sendable (ContinuousClock.Instant) async -> Void
-	) async -> Result<(Data, HTTPURLResponse), GitHubAPIError>? {
-		await withTaskGroup(of: Result<(Data, HTTPURLResponse), GitHubAPIError>?.self) { group in
-			group.addTask { await GitHubHTTP.load(request, using: session, limit: limit).map { ($0.data, $0.response) } }
+	) async -> (result: Result<(Data, HTTPURLResponse), GitHubAPIError>, bytes: Int)? {
+		await withTaskGroup(of: (result: Result<(Data, HTTPURLResponse), GitHubAPIError>, bytes: Int)?.self) { group in
+			group.addTask {
+				let loaded = await GitHubHTTP.loadCounted(request, using: session, limit: limit)
+				return (loaded.result.map { ($0.data, $0.response) }, loaded.bytes)
+			}
 			group.addTask {
 				await deadlinePasses(deadline)
 				return nil

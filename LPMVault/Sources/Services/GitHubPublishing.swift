@@ -132,10 +132,10 @@ enum GitHubPublishing {
 	/// Sends `changes` to the reviewed target. Each key gets an outcome.
 	///
 	/// Writes go one at a time, a second apart, as GitHub asks of a batch of
-	/// writes. Right before each one, after that pause, the repository and
-	/// the environment are checked to still be the reviewed ones, by ID under
-	/// the reviewed names, and the key is read from the scope's secrets and
-	/// variables and must be as the review saw it. A rename or a replacement
+	/// writes. After that pause, the key is read from the scope's secrets and
+	/// variables and must be as the review saw it, and right before the write
+	/// the repository and the environment are checked to still be the
+	/// reviewed ones, by ID under the reviewed names. A rename or a replacement
 	/// since the review stops what hasn't been sent; a key added, changed,
 	/// removed or moved between secrets and variables isn't sent. A rate
 	/// limit waited out, or a token renewed after GitHub refused it, starts
@@ -281,12 +281,7 @@ enum GitHubPublishing {
 				do { try await pacing.sleep(Pacing.writeInterval - since) } catch { return .done(.failed(.cancelled)) }
 			}
 		}
-		let scope: GitHubScope
-		switch await reviewedScope(of: target, using: client) {
-		case .success(let value): scope = value
-		case .failure(.replaced(let reason)): return .replaced(reason)
-		case .failure(.api(let error)): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
-		}
+		let scope = GitHubScope(repository: target.repositoryName, environment: target.scope.environmentName)
 		let write: Write
 		switch await reread(change, in: scope, reviewed: reviewed, using: client) {
 		case .success(let value): write = value
@@ -298,6 +293,14 @@ enum GitHubPublishing {
 			case .success(let key): publicKey = key
 			case .failure(let error): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 			}
+		}
+		// Checked last, so only the write itself follows the check. A secret is
+		// also sealed to the key of the scope checked first, which GitHub refuses
+		// for any scope that replaced it.
+		switch await reviewedScope(of: target, using: client) {
+		case .success: break
+		case .failure(.replaced(let reason)): return .replaced(reason)
+		case .failure(.api(let error)): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 		}
 		let answer: Result<Void, GitHubAPIError>
 		if write.isSecret {
