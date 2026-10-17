@@ -79,6 +79,7 @@ extension SheetInteractionTests {
 			gate.continuation.yield(())
 			#expect(try await host.waitForText("Copied all .env values", exactly: true))
 			#expect(fixture.store.clipboard.pasteboard.string(forType: .string)?.contains("PORT=") == true)
+			#expect(try await host.waitUntil { copyFeedback.started == 1 }, "The confirmation starts waiting just after Copied shows")
 			copyFeedback.expire()
 			#expect(try await host.waitForText("Copy all .env values", exactly: true))
 		}

@@ -702,6 +702,7 @@ extension SheetInteractionTests {
 			try await host.settle()
 			#expect(try await host.waitForText("Copied"))
 			#expect(abs(try inkBounds(in: host.snapshot(host.view), region: revealRegion).minX - revealFrame.minX) * size.width < 0.75)
+			#expect(try await host.waitUntil { copyFeedback.started == 1 }, "The confirmation starts waiting just after Copied shows")
 			copyFeedback.expire()
 			#expect(try await host.waitForText("Copy all"))
 		}
@@ -718,6 +719,7 @@ extension SheetInteractionTests {
 			try host.click(.copy)
 			#expect(try await host.waitUntil { store.clipboard.pasteboard.string(forType: .string) == "fixture-value" })
 			#expect(try await host.waitForText("Copied"))
+			#expect(try await host.waitUntil { copyFeedback.started == 1 }, "The confirmation starts waiting just after Copied shows")
 			copyFeedback.expire()
 			#expect(try await host.waitForTextToDisappear("Copied"))
 		}

@@ -1102,7 +1102,8 @@ final class ManualCopyFeedbackTimer: @unchecked Sendable {
 		}
 	}
 
-	/// Ends every confirmation still waiting.
+	/// Ends every confirmation waiting now. A view starts its confirmation just
+	/// after it shows Copied, so wait for `started` before ending it.
 	func expire() {
 		let continuations = lock.withLock { () -> [CheckedContinuation<Void, Error>] in
 			defer { waiting.removeAll() }
