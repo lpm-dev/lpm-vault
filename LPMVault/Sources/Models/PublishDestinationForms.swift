@@ -277,11 +277,18 @@ final class GitHubDestinationForm {
 	}
 
 	/// The repositories, each saying whether it's private, as its icon
-	/// alone doesn't to VoiceOver, and why the person can't change its
-	/// secrets and variables when they can't.
+	/// alone doesn't to VoiceOver, why the person can't change its secrets
+	/// and variables when they can't, and its ID when its name looks like
+	/// another's.
 	var repositoryOptions: [Option] {
-		(repositories.value ?? []).map { repository in
-			var label = "\(repository.fullName) · \(repository.isPrivate ? "Private" : "Public")"
+		let repositories = repositories.value ?? []
+		let keys = repositories.map { GitHubPublishTarget.lookalikeKey($0.fullName) }
+		var lookalikes: [String: Int] = [:]
+		lookalikes.reserveCapacity(repositories.count)
+		for key in keys { lookalikes[key, default: 0] += 1 }
+		return zip(repositories, keys).map { repository, key in
+			let name = lookalikes[key, default: 0] > 1 ? "\(repository.fullName) (ID \(repository.id))" : repository.fullName
+			var label = "\(name) · \(repository.isPrivate ? "Private" : "Public")"
 			if repository.isArchived {
 				label += " · Archived"
 			} else if !repository.canChange(.repository) {
@@ -298,7 +305,7 @@ final class GitHubDestinationForm {
 		let choices = scopeChoices
 		let keys = choices.map { scope -> String? in
 			guard case .environment(_, let name) = scope else { return nil }
-			return GitHubPublishTarget.Scope.lookalikeKey(name)
+			return GitHubPublishTarget.lookalikeKey(name)
 		}
 		var lookalikes: [String: Int] = [:]
 		lookalikes.reserveCapacity(choices.count)

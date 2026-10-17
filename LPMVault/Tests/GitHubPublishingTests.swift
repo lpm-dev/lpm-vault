@@ -501,6 +501,17 @@ struct GitHubDestinationFormTests {
 		])
 	}
 
+	@Test("repositories whose names look alike in the menu's font each show their ID; one that looks like no other doesn't")
+	func repositoryOptionsShowLookalikes() {
+		let form = GitHubDestinationForm()
+		form.repositories = .loaded([
+			GitHubRepository(id: "1", fullName: "acme/api", isPrivate: true),
+			GitHubRepository(id: "2", fullName: "acrne/api", isPrivate: true),
+			GitHubRepository(id: "3", fullName: "acme/web", isPrivate: false),
+		])
+		#expect(form.repositoryOptions.map(\.label) == ["acme/api (ID 1) · Private", "acrne/api (ID 2) · Private", "acme/web · Public"])
+	}
+
 	@Test("each scope the person can't change says why: archived, read-only, or needing admin access")
 	func scopeOptions() {
 		let form = GitHubDestinationForm()
@@ -527,13 +538,18 @@ struct GitHubDestinationFormTests {
 		let form = GitHubDestinationForm()
 		form.repositories = .loaded([GitHubRepository(id: "1", fullName: "northwind/api", isPrivate: true, permission: .admin)])
 		form.repositoryID = "1"
-		let names = ["staging-I", "staging-l", "prod0", "prodO", "production", "learn", "leam", "clone", "done", "vvest", "west", "build-1", "Build-|"]
+		let names = [
+			"staging-I", "staging-l", "prod0", "prodO", "production", "learn", "leam", "clone", "done", "vvest", "west", "build-1", "Build-|",
+			"prod east", "prod  east", "a''b", "a\"b", "a`b", "a'b",
+		]
 		form.environments = .loaded(names.enumerated().map { GitHubEnvironment(id: String(10 + $0.offset), name: $0.element) })
 		#expect(form.scopeOptions.map(\.label) == [
 			"Repository",
 			"Environment staging-I (ID 10)", "Environment staging-l (ID 11)", "Environment prod0 (ID 12)", "Environment prodO (ID 13)",
 			"Environment production", "Environment learn (ID 15)", "Environment leam (ID 16)", "Environment clone (ID 17)", "Environment done (ID 18)",
 			"Environment vvest (ID 19)", "Environment west (ID 20)", "Environment build-1 (ID 21)", "Environment Build-| (ID 22)",
+			"Environment prod east (ID 23)", "Environment prod  east (ID 24)", "Environment a''b (ID 25)", "Environment a\"b (ID 26)",
+			"Environment a`b (ID 27)", "Environment a'b (ID 28)",
 		])
 	}
 

@@ -591,22 +591,6 @@ struct GitHubPublishTarget: Hashable, Sendable {
 			return plain && !showingID ? name : "\(name.escapingInvisibleCharacters) (ID \(id))"
 		}
 
-		/// `name` folded so names that look alike in a menu's proportional
-		/// font fold alike: GitHub's names ignore case, and I, l, 1 and |, 0
-		/// and O, rn and m, cl and d, and vv and w pass for each other.
-		static func lookalikeKey(_ name: String) -> String {
-			var mapped = String.UnicodeScalarView()
-			mapped.append(contentsOf: name.unicodeScalars.lazy.map { scalar -> Unicode.Scalar in
-				switch scalar {
-				case "I", "1", "|": "l"
-				case "0": "o"
-				default: scalar
-				}
-			})
-			return String(mapped).lowercased().replacingOccurrences(of: "rn", with: "m").replacingOccurrences(of: "cl", with: "d")
-				.replacingOccurrences(of: "vv", with: "w")
-		}
-
 		/// The environment's name in GitHub's paths; nil for the repository's own.
 		var environmentName: String? {
 			if case .environment(_, let name) = self { return name }
@@ -622,6 +606,31 @@ struct GitHubPublishTarget: Hashable, Sendable {
 			!name.isEmpty && name.count <= maximumEnvironmentNameCharacters
 				&& !name.unicodeScalars.contains { $0.properties.generalCategory == .control }
 		}
+	}
+
+	/// `name` folded so names that look alike in a menu's proportional
+	/// font fold alike: GitHub's names ignore case, I, l, 1 and |, 0 and
+	/// O, ` and ', rn and m, cl and d, vv and w, and '' and " pass for
+	/// each other, and so does a run of spaces for one.
+	static func lookalikeKey(_ name: String) -> String {
+		var mapped = String.UnicodeScalarView()
+		var afterSpace = false
+		for scalar in name.unicodeScalars {
+			if scalar == " " {
+				if !afterSpace { mapped.append(scalar) }
+				afterSpace = true
+				continue
+			}
+			afterSpace = false
+			switch scalar {
+			case "I", "1", "|": mapped.append("l")
+			case "0": mapped.append("o")
+			case "`": mapped.append("'")
+			default: mapped.append(scalar)
+			}
+		}
+		return String(mapped).lowercased().replacingOccurrences(of: "rn", with: "m").replacingOccurrences(of: "cl", with: "d")
+			.replacingOccurrences(of: "vv", with: "w").replacingOccurrences(of: "''", with: "\"")
 	}
 
 	/// The GitHub user whose connection publishes here.
