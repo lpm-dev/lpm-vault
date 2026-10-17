@@ -816,6 +816,29 @@ struct GitHubPublishTests {
 		#expect(environments.writeCount == 0 && renamed.writeCount == 0 && gone.writeCount == 0)
 	}
 
+	@Test("the scope check a refused key makes waits out its own limits and stops on its own refusals, as every check does")
+	func scopeCheckFailures() async throws {
+		let limited = FakeGitHubAPI()
+		limited.edit("A", secret: true, in: scope)
+		let reviewed = try await reviewed(limited)
+		limited.edit("A", secret: true, value: "theirs", in: scope)
+		limited.fail(.repository, with: .rateLimited(until: nil))
+		let pacing = TestPacing()
+		let report = await publish(
+			[change("A", "1", .replace(remoteID: "secret")), change("B", "2")], with: limited, reviewed: reviewed, pacing: pacing)
+		#expect(report.outcomes == ["A": .failed("Changed on GitHub since this review. Review again."), "B": .published])
+		#expect(pacing.sleeps.contains(.seconds(60)), "The limit is waited out before anything else is asked")
+
+		let refused = FakeGitHubAPI()
+		refused.edit("A", secret: true, in: scope)
+		let reviewedRefused = try await self.reviewed(refused)
+		refused.edit("A", secret: true, value: "theirs", in: scope)
+		refused.fail(.repository, with: .unauthorized)
+		let stopped = await publish([change("A", "1", .replace(remoteID: "secret")), change("B", "2")], with: refused, reviewed: reviewedRefused)
+		#expect(stopped.outcomes["B"] == .notSent && stopped.needsReconnect)
+		#expect(refused.writeCount == 0)
+	}
+
 	@Test("an environment replaced, or a repository's name reused, while its key or public key is read gets nothing: the check comes last", arguments: [
 		FakeGitHubAPI.Operation.secret, .variable, .publicKey,
 	])
