@@ -1660,6 +1660,61 @@ struct GitHubClientListTests {
 		#expect(result == .failure(.timedOut(.repositories)))
 	}
 
+	@Test("an identity check is asked again with the ETag GitHub gave, and a 304, which GitHub doesn't count against the hourly limit, is taken as unchanged")
+	func checksIdentityConditionally() async throws {
+		let repositoryTag = "W/\"repository-1\""
+		let environmentTag = "W/\"environment-1\""
+		let renamed = PlatformHTTPStub.Reply.json(200, ["id": 7, "full_name": "northwind/shop", "private": true], headers: ["ETag": "W/\"repository-2\""])
+		let route = PlatformHTTPStub.platform { request in
+			let asked = request.header("If-None-Match")
+			switch request.url.path {
+			case "/repositories/7":
+				if request.header("Authorization") == "Bearer ghu_3" { return renamed }
+				if let asked, [repositoryTag, "W/\"repository-2\""].contains(asked) {
+					return PlatformHTTPStub.Reply(status: 304, headers: ["ETag": asked], body: Data())
+				}
+				return .json(200, ["id": 7, "full_name": "northwind/api", "private": true], headers: ["ETag": repositoryTag])
+			case "/repos/northwind/api/environments/production":
+				if asked == environmentTag { return PlatformHTTPStub.Reply(status: 304, headers: ["ETag": environmentTag], body: Data()) }
+				return .json(200, ["id": 70, "name": "production"], headers: ["ETag": environmentTag])
+			default:
+				return .json(404, [:])
+			}
+		}
+		let cache = GitHubConditionalCache()
+		let client = GitHubClient(token: "ghu_1", baseURL: route.baseURL, session: route.session, conditional: cache)
+		let renewed = GitHubClient(token: "ghu_2", baseURL: route.baseURL, session: route.session, conditional: cache)
+		let repository = try await client.repository(id: "7").get()
+		#expect(try await renewed.repository(id: "7").get() == repository, "A renewed token's client asks conditionally too")
+		#expect(try await client.environment(named: "production", of: "northwind/api").get() == GitHubEnvironment(id: "70", name: "production"))
+		#expect(try await client.environment(named: "production", of: "northwind/api").get() == GitHubEnvironment(id: "70", name: "production"))
+		#expect(route.requests.map { $0.header("If-None-Match") } == [nil, repositoryTag, nil, environmentTag])
+
+		let changed = GitHubClient(token: "ghu_3", baseURL: route.baseURL, session: route.session, conditional: cache)
+		#expect(try await changed.repository(id: "7").get().fullName == "northwind/shop", "A changed repository is read as it is now")
+		#expect(try await client.repository(id: "7").get().fullName == "northwind/shop", "and kept under GitHub's new ETag")
+		#expect(route.requests.last?.header("If-None-Match") == "W/\"repository-2\"")
+
+		let unasked = PlatformHTTPStub.platform { _ in PlatformHTTPStub.Reply(status: 304, headers: [:], body: Data()) }
+		let fresh = GitHubClient(token: "ghu_1", baseURL: unasked.baseURL, session: unasked.session, conditional: GitHubConditionalCache())
+		#expect(await fresh.repository(id: "7") == .failure(.invalidResponse), "A 304 to a request that didn't ask conditionally can't be read")
+	}
+
+	@Test("the conditional cache keeps only an ETag that goes back to GitHub as it is, only small answers, and only so many")
+	func conditionalCacheBounds() throws {
+		let cache = GitHubConditionalCache()
+		let url = try #require(URL(string: "https://api.github.com/repositories/1"))
+		cache.keep(Data("a".utf8), etag: "W/\"1\"", for: url)
+		#expect(cache.entry(for: url)?.etag == "W/\"1\"")
+		cache.keep(Data("a".utf8), etag: "W/\"1\"\r\nX-Injected: 1", for: url)
+		#expect(cache.entry(for: url) == nil, "An ETag that can't go back in a header as it is forgets the answer kept before")
+		cache.keep(Data(count: GitHubConditionalCache.maximumBodyBytes + 1), etag: "W/\"2\"", for: url)
+		#expect(cache.entry(for: url) == nil)
+		let urls = try (0...GitHubConditionalCache.capacity).map { try #require(URL(string: "https://api.github.com/repositories/\($0 + 10)")) }
+		for (index, url) in urls.enumerated() { cache.keep(Data(), etag: "\"\(index)\"", for: url) }
+		#expect(cache.entry(for: urls[0]) == nil && cache.entry(for: urls[urls.count - 1])?.etag == "\"\(GitHubConditionalCache.capacity)\"")
+	}
+
 	@Test("the bodies of installations that refuse their repositories count against what a listing reads")
 	func countsRefusalBodies() async {
 		let refusal = String(repeating: "x", count: 300_000)

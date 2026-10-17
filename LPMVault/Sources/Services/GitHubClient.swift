@@ -92,6 +92,49 @@ struct GitHubSkippedInstallation: Equatable, Sendable {
 	let isSuspended: Bool
 }
 
+/// GitHub's answers to reads LPM Vault repeats, kept by their `ETag` so the
+/// next read asks conditionally: GitHub doesn't count a 304 against the
+/// token's hourly limit. Answers are kept by URL alone, as GitHub compares
+/// an `ETag` with what it would answer the token asking, so a kept answer
+/// stands for another token only when GitHub says it's the same.
+final class GitHubConditionalCache: @unchecked Sendable {
+	struct Entry: Sendable {
+		let etag: String
+		let body: Data
+	}
+
+	static let shared = GitHubConditionalCache()
+	/// The most answers kept; a new one past it starts the cache afresh.
+	static let capacity = 64
+	/// The largest answer kept, as the reads repeated are a repository's and an environment's.
+	static let maximumBodyBytes = 128 * 1024
+
+	private let lock = NSLock()
+	private var entries: [URL: Entry] = [:]
+
+	func entry(for url: URL) -> Entry? {
+		lock.withLock { entries[url] }
+	}
+
+	/// Keeps `body` under GitHub's `etag` for `url`, or forgets `url` when
+	/// GitHub gave no `ETag` LPM Vault sends back, or the body is too large to keep.
+	func keep(_ body: Data, etag: String?, for url: URL) {
+		lock.withLock {
+			guard let etag, Self.isSendable(etag), body.count <= Self.maximumBodyBytes else {
+				entries[url] = nil
+				return
+			}
+			if entries[url] == nil, entries.count >= Self.capacity { entries.removeAll(keepingCapacity: true) }
+			entries[url] = Entry(etag: etag, body: body)
+		}
+	}
+
+	/// An `ETag` that can go back in a header as GitHub sent it.
+	private static func isSendable(_ etag: String) -> Bool {
+		!etag.isEmpty && etag.utf8.count <= 256 && etag.utf8.allSatisfy { $0 >= 0x20 && $0 < 0x7F }
+	}
+}
+
 /// The repositories a GitHub connection reaches.
 struct GitHubRepositoryList: Equatable, Sendable {
 	var repositories: [GitHubRepository]
@@ -246,6 +289,29 @@ enum GitHubHTTP {
 		await loadCounted(request, using: session, limit: limit).result
 	}
 
+	/// `load` for a read whose answer `cache` keeps: asked with the `ETag`
+	/// kept for it, a 304 answers with the kept body.
+	static func loadConditionally(
+		_ request: URLRequest,
+		using session: URLSession,
+		cache: GitHubConditionalCache
+	) async -> Result<(data: Data, response: HTTPURLResponse), GitHubAPIError> {
+		guard let url = request.url else { return .failure(.invalidResponse) }
+		var conditional = request
+		let kept = cache.entry(for: url)
+		if let kept { conditional.setValue(kept.etag, forHTTPHeaderField: "If-None-Match") }
+		switch await load(conditional, using: session) {
+		case .success(let loaded) where loaded.response.statusCode == 304:
+			guard let kept else { return .failure(.invalidResponse) }
+			return .success((kept.body, loaded.response))
+		case .success(let loaded):
+			cache.keep(loaded.data, etag: loaded.response.value(forHTTPHeaderField: "ETag"), for: url)
+			return .success(loaded)
+		case .failure(let error):
+			return .failure(error)
+		}
+	}
+
 	/// `load`'s answer, with how many bytes GitHub's body took, accepted or
 	/// refused, and whether it was cut off at `limit`, which reads as unreadable.
 	static func loadCounted(
@@ -256,7 +322,8 @@ enum GitHubHTTP {
 		do {
 			let (data, response) = try await BoundedHTTPResponse.load(for: request, using: session, maximumBytes: limit)
 			guard let http = response as? HTTPURLResponse else { return (.failure(.invalidResponse), data.count, false) }
-			guard (200..<300).contains(http.statusCode) else { return (.failure(failure(http, body: data)), data.count, false) }
+			let notModified = http.statusCode == 304 && request.value(forHTTPHeaderField: "If-None-Match") != nil
+			guard (200..<300).contains(http.statusCode) || notModified else { return (.failure(failure(http, body: data)), data.count, false) }
 			return (.success((data, http)), data.count, false)
 		} catch BoundedHTTPResponse.LoadError.responseTooLarge {
 			return (.failure(.invalidResponse), limit, true)
@@ -296,6 +363,8 @@ enum GitHubHTTP {
 	/// only to tell a limit apart.
 	static func failure(_ http: HTTPURLResponse, body: Data, now: Date = Date()) -> GitHubAPIError {
 		let status = http.statusCode
+		// Not modified, when nothing was asked conditionally, says nothing LPM Vault can read.
+		if status == 304 { return .invalidResponse }
 		if (300..<400).contains(status) { return .moved }
 		if status == 403 || status == 404,
 			http.value(forHTTPHeaderField: "X-GitHub-SSO")?.lowercased().hasPrefix("required") == true
@@ -409,13 +478,21 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 	private let token: String
 	private let baseURL: URL
 	private let limits: Limits
+	private let conditional: GitHubConditionalCache
 	let session: URLSession
 
-	init(token: String, baseURL: URL = GitHubHTTP.defaultBaseURL, session: URLSession? = nil, limits: Limits = Limits()) {
+	init(
+		token: String,
+		baseURL: URL = GitHubHTTP.defaultBaseURL,
+		session: URLSession? = nil,
+		limits: Limits = Limits(),
+		conditional: GitHubConditionalCache = .shared
+	) {
 		self.token = token
 		self.baseURL = baseURL
 		self.session = session ?? GitHubHTTP.sharedSession
 		self.limits = limits
+		self.conditional = conditional
 	}
 
 	var description: String { "GitHubClient(\(baseURL.host() ?? "?"), token: <redacted>)" }
@@ -478,7 +555,8 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 
 	func repository(id: String) async -> Result<GitHubRepository, GitHubAPIError> {
 		guard GitHubHTTP.isValidID(id), let url = GitHubHTTP.url(baseURL, ["repositories", id]) else { return .failure(.invalidResponse) }
-		return await GitHubHTTP.load(GitHubHTTP.request("GET", url, token: token), using: session).flatMap { loaded in
+		let request = GitHubHTTP.request("GET", url, token: token)
+		return await GitHubHTTP.loadConditionally(request, using: session, cache: conditional).flatMap { loaded in
 			guard let repository = (try? JSONDecoder().decode(RawRepository.self, from: loaded.data))?.repository, repository.id == id else {
 				return .failure(.invalidResponse)
 			}
@@ -490,7 +568,7 @@ struct GitHubClient: GitHubClientProtocol, CustomStringConvertible, CustomDebugS
 		guard GitHubPublishTarget.isValidFullName(repository), GitHubPublishTarget.Scope.isValidEnvironmentName(name),
 			let url = GitHubHTTP.url(baseURL, ["repos"] + repository.split(separator: "/").map(String.init) + ["environments", name])
 		else { return .failure(.invalidResponse) }
-		switch await GitHubHTTP.load(GitHubHTTP.request("GET", url, token: token), using: session) {
+		switch await GitHubHTTP.loadConditionally(GitHubHTTP.request("GET", url, token: token), using: session, cache: conditional) {
 		case .success(let loaded):
 			guard let environment = (try? JSONDecoder().decode(RawEnvironment.self, from: loaded.data))?.environment else {
 				return .failure(.invalidResponse)
