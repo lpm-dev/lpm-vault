@@ -52,9 +52,11 @@ struct GitHubHTTPTests {
 	func validatesNames() {
 		#expect(GitHubHTTP.isValidID("583231") && !GitHubHTTP.isValidID("0583") && !GitHubHTTP.isValidID("-1") && !GitHubHTTP.isValidID(""))
 		#expect(!GitHubHTTP.isValidID(String(repeating: "9", count: 21)))
-		#expect(GitHubHTTP.isValidLogin("octo-cat") && !GitHubHTTP.isValidLogin("octo_cat") && !GitHubHTTP.isValidLogin(String(repeating: "a", count: 40)))
+		#expect(GitHubHTTP.isValidLogin("octo-cat") && GitHubHTTP.isValidLogin("mona-cat_octo"), "A managed user's login ends in _ and the enterprise's short code")
+		for login in ["", "octo cat", "octo/cat", "octö", String(repeating: "a", count: 40)] { #expect(!GitHubHTTP.isValidLogin(login)) }
 		#expect(GitHubHTTP.isValidAppSlug("lpm-vault") && !GitHubHTTP.isValidAppSlug("LPM-Vault") && !GitHubHTTP.isValidAppSlug("lpm/vault"))
-		#expect(GitHubHTTP.isValidClientID("Iv23liTestClient01") && !GitHubHTTP.isValidClientID("Iv23 li"))
+		#expect(GitHubHTTP.isValidClientID("Iv23liTestClient01") && GitHubHTTP.isValidClientID("Iv1.8a61f9b3a7aba766"))
+		for clientID in ["Iv23 li", ".Iv1", "Iv1..8a61", "Iv1/abc", String(repeating: "x", count: 129)] { #expect(!GitHubHTTP.isValidClientID(clientID)) }
 	}
 }
 
@@ -86,14 +88,33 @@ struct GitHubClientTests {
 		}
 	}
 
-	@Test("a redirect isn't followed, so the token never goes elsewhere")
+	@Test("the client's session refuses redirects, so the token never follows one, and a redirect reads as a failure")
 	func refusesRedirects() async throws {
-		let route = PlatformHTTPStub.platform { _ in
-			PlatformHTTPStub.Reply(status: 302, headers: ["Location": "https://elsewhere.example/user"], body: Data())
+		let client = GitHubClient(token: "ghu_token")
+		#expect(client.session === GitHubHTTP.sharedSession)
+		let delegate = try #require(GitHubHTTP.sharedSession.delegate as? RedirectRefusingHTTPDelegate)
+		let url = URL(string: "https://api.github.com/user")!
+		let response = try #require(HTTPURLResponse(url: url, statusCode: 302, httpVersion: nil, headerFields: ["Location": "https://evil.example/"]))
+		let followed = await withCheckedContinuation { continuation in
+			delegate.urlSession(
+				GitHubHTTP.sharedSession, task: GitHubHTTP.sharedSession.dataTask(with: url), willPerformHTTPRedirection: response,
+				newRequest: URLRequest(url: URL(string: "https://evil.example/")!)
+			) { continuation.resume(returning: $0) }
 		}
-		let result = await GitHubClient(token: "ghu_token", baseURL: route.baseURL, session: route.session).user()
-		#expect(result != .success(GitHubUser(id: "1", login: "x", name: nil)))
-		#expect(route.requests.count == 1)
+		#expect(followed == nil)
+
+		let route = PlatformHTTPStub.platform { _ in
+			PlatformHTTPStub.Reply(status: 302, headers: ["Location": "/elsewhere"], body: Data())
+		}
+		#expect(await GitHubClient(token: "ghu_token", baseURL: route.baseURL, session: route.session).user() == .failure(.server(302)))
+		#expect(route.requests.map(\.url.path) == ["/user"])
+	}
+
+	@Test("a managed user's login, with its underscore, is read")
+	func readsManagedUser() async {
+		let route = PlatformHTTPStub.platform { _ in .json(200, ["id": 7, "login": "mona-cat_octo", "name": "Mona"]) }
+		#expect(await GitHubClient(token: "ghu_token", baseURL: route.baseURL, session: route.session).user()
+			== .success(GitHubUser(id: "7", login: "mona-cat_octo", name: "Mona")))
 	}
 
 	@Test("the client never prints its token")
@@ -163,9 +184,10 @@ struct GitHubAuthorizePageTests {
 		return components.string!
 	}
 
-	@Test("GitHub's authorize page for the app, returning to the Registry with PKCE, is opened")
+	@Test("GitHub's authorize page for the app, returning to the Registry with PKCE, is opened, for a classic app too")
 	func acceptsPage() {
 		#expect(PlatformAuthorizationClient.validatedPageURL(page(), for: .github, registry: registry) != nil)
+		#expect(PlatformAuthorizationClient.validatedPageURL(page(["client_id": "Iv1.8a61f9b3a7aba766"]), for: .github, registry: registry) != nil)
 	}
 
 	@Test("any other page, or one changed in any way, isn't", arguments: [

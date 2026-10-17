@@ -152,10 +152,13 @@ enum GitHubHTTP {
 		!text.isEmpty && text.utf8.count <= 20 && text.first != "0" && text.utf8.allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
 	}
 
-	/// A user's or organization's login: letters, digits and hyphens, up to 39.
+	/// A user's or organization's login: letters, digits, hyphens and, for a
+	/// managed user of an enterprise, the underscore before its short code; up to 39.
 	static func isValidLogin(_ text: String) -> Bool {
 		!text.isEmpty && text.utf8.count <= 39
-			&& text.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D }
+			&& text.utf8.allSatisfy {
+				($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D || $0 == 0x5F
+			}
 	}
 
 	/// A GitHub App's slug: lowercase letters, digits and hyphens.
@@ -164,9 +167,15 @@ enum GitHubHTTP {
 			&& text.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D }
 	}
 
-	/// A GitHub App's client ID, such as `Iv23li…`.
+	/// A GitHub App's client ID: `Iv23li…`, or `Iv1.…` for an older app.
+	/// Letters, digits, dots, underscores and hyphens, starting with a letter
+	/// or digit, without two dots together; up to 128, as the Registry takes it.
 	static func isValidClientID(_ text: String) -> Bool {
-		PlatformIdentifier.isValid(text)
+		let bytes = text.utf8
+		guard let first = bytes.first, bytes.count <= 128, first != 0x2E, first != 0x5F, first != 0x2D, !text.contains("..") else { return false }
+		return bytes.allSatisfy {
+			($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2E || $0 == 0x5F || $0 == 0x2D
+		}
 	}
 
 	/// A numeric ID as JSON carries it, as decimal text.

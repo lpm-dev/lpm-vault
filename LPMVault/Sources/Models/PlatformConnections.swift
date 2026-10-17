@@ -144,6 +144,13 @@ final class PlatformConnections {
 		}
 	}
 
+	/// Opens the page installing LPM Vault's GitHub App on more accounts and
+	/// repositories, for a GitHub connection.
+	func openInstallPage(for connection: PlatformConnection) {
+		guard case .github(let account) = connection.account, let url = account.installURL else { return }
+		openURL(url)
+	}
+
 	/// Connects a GitHub account in the browser; does nothing while a browser connection runs.
 	func connectGitHub() {
 		connectInBrowser(.github) { [connectGitHubAccount] session, open in

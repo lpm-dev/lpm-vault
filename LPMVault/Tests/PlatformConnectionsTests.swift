@@ -1177,6 +1177,21 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForTextToDisappear("authorize LPM Vault on GitHub"))
 		}
 
+		@Test("a connected GitHub user's row opens the page installing LPM Vault's app on more accounts, and the page says where organizations remove it")
+		func linksToInstall() async throws {
+			_ = try await PlatformConnectionStore(service: keychain).save(
+				.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")),
+				accessToken: "ghu_access", at: Date()).get()
+			let (store, host) = page(connectGitHub: { _, _ in .failure(.cancelled) })
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("The Octocat"))
+			try await host.click("Install on GitHub for The Octocat")
+			#expect(try await host.waitUntil { !opened.urls.isEmpty })
+			#expect(opened.urls == [URL(string: "https://github.com/apps/lpm-vault/installations/new")!])
+			try host.scrollToEnd()
+			#expect(try await host.waitForText("an organization's owner uninstalls it in the organization's settings"))
+		}
+
 		@Test("a connected GitHub user shows with its login, an expired one says to connect again, and Disconnect explains what stays on GitHub")
 		func showsAndDisconnects() async throws {
 			var refused = PlatformTokenRefresh(

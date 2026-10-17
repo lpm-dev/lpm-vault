@@ -51,7 +51,7 @@ struct PlatformsView: View {
 						.accessibilityElement(children: .combine)
 					}
 
-					Text("Disconnecting forgets a token on this Mac only. To remove LPM Vault's access to Vercel, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values. To remove its access to Netlify, revoke LPM Vault under Applications → Authorized applications in your Netlify user settings. To remove its access to GitHub, revoke it under Applications → Authorized GitHub Apps in your GitHub settings, and uninstall it under Installed GitHub Apps from the accounts it's installed on. To remove its access to Coolify, delete its API token in Coolify's Keys & Tokens.")
+					Text("Disconnecting forgets a token on this Mac only. To remove LPM Vault's access to Vercel, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values. To remove its access to Netlify, revoke LPM Vault under Applications → Authorized applications in your Netlify user settings. To remove its access to GitHub, revoke it under Applications → Authorized GitHub Apps in your GitHub settings, and uninstall it under Installed GitHub Apps in your settings; an organization's owner uninstalls it in the organization's settings. To remove its access to Coolify, delete its API token in Coolify's Keys & Tokens.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
@@ -169,6 +169,10 @@ struct PlatformsView: View {
 				}
 			}
 			Spacer(minLength: 8)
+			if connection.platform == .github {
+				VaultBarButton(title: "Install on GitHub") { platforms.openInstallPage(for: connection) }
+					.accessibilityLabel("Install on GitHub for \(connection.name)")
+			}
 			VaultBarButton(
 				title: platforms.disconnecting.contains(connection.id) ? "Disconnecting…" : "Disconnect",
 				disabled: platforms.disconnecting.contains(connection.id)
