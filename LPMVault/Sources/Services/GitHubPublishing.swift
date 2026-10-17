@@ -283,25 +283,17 @@ enum GitHubPublishing {
 		switch await reread(change, in: scope, reviewed: reviewed, using: client) {
 		case .success(let value): write = value
 		case .failure(.refused(let reason)):
-			// A key that reads as removed, changed or moved can be its whole scope replaced, as an
-			// environment's deletion takes its secrets and variables with it: that's the reason to give.
-			switch await reviewedScope(of: target, using: client) {
-			case .success: return .done(.refused(reason))
-			case .failure(.replaced(let replaced)): return .replaced(replaced)
-			case .failure(.api(let error)): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
-			}
-		case .failure(.api(let error)) where error == .moved || error == .notFound:
-			switch await reviewedScope(of: target, using: client) {
-			case .success: return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
-			case .failure(.replaced(let replaced)): return .replaced(replaced)
-			case .failure(.api(let checkError)): return await pause(after: checkError, waits: &waits, renewals: &renewals, pacing: pacing)
-			}
+			return await explain(.refused(reason), of: target, using: client, waits: &waits, renewals: &renewals, pacing: pacing)
+		case .failure(.api(let error)) where pointsAtScope(error):
+			return await explain(.failed(error), of: target, using: client, waits: &waits, renewals: &renewals, pacing: pacing)
 		case .failure(.api(let error)):
 			return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 		}
 		if write.isSecret, publicKey == nil {
 			switch await client.publicKey(of: scope) {
 			case .success(let key): publicKey = key
+			case .failure(let error) where pointsAtScope(error):
+				return await explain(.failed(error), of: target, using: client, waits: &waits, renewals: &renewals, pacing: pacing)
 			case .failure(let error): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 			}
 		}
@@ -331,9 +323,55 @@ enum GitHubPublishing {
 		case .failure(.rejected(status: 409)) where write.creates && !write.isSecret:
 			// GitHub answers a variable created meanwhile with a conflict.
 			return .done(.refused(Refusal.added.text))
+		case .failure(let error) where pointsAtScope(error):
+			return await explain(.failed(error), of: target, using: client, waits: &waits, renewals: &renewals, pacing: pacing)
 		case .failure(let error):
 			return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
 		}
+	}
+
+	/// What a request found, or a key's refusal, that its scope's replacement may explain.
+	private enum Unexplained {
+		case refused(String)
+		case failed(GitHubAPIError)
+	}
+
+	/// Whether GitHub's answer can mean the scope itself is gone or renamed.
+	private static func pointsAtScope(_ error: GitHubAPIError) -> Bool {
+		error == .moved || error == .notFound
+	}
+
+	/// A key that reads as removed, changed or moved, or a request GitHub
+	/// answered moved or not found, can be its whole scope replaced, as an
+	/// environment's deletion takes its secrets and variables with it: the
+	/// replacement is the reason given then. A limit, a renewal or a refusal
+	/// the check meets is waited out or stops, as anywhere; any other trouble
+	/// with the check leaves what was found.
+	private static func explain(
+		_ unexplained: Unexplained,
+		of target: GitHubPublishTarget,
+		using client: any GitHubClientProtocol,
+		waits: inout Int,
+		renewals: inout Int,
+		pacing: Pacing
+	) async -> Attempt {
+		switch await reviewedScope(of: target, using: client) {
+		case .failure(.replaced(let reason)):
+			return .replaced(reason)
+		case .failure(.api(let error)) where holdsUp(error):
+			return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
+		case .success, .failure(.api):
+			switch unexplained {
+			case .refused(let reason): return .done(.refused(reason))
+			case .failed(let error): return await pause(after: error, waits: &waits, renewals: &renewals, pacing: pacing)
+			}
+		}
+	}
+
+	/// Whether every request waits out the error or stops at it, whatever it asked.
+	private static func holdsUp(_ error: GitHubAPIError) -> Bool {
+		if case .rateLimited = error { return true }
+		return error == .renewed || stops(error)
 	}
 
 	/// `.waited` once a request GitHub held up can be sent again: after its
@@ -366,7 +404,7 @@ enum GitHubPublishing {
 		case .failure(let error): return .failure(.api(error))
 		}
 		guard repository.fullName == target.repositoryName else {
-			return .failure(.replaced("\(target.repositoryName) was renamed \(repository.fullName) on GitHub since this review. Review again."))
+			return .failure(.replaced("\(target.repositoryName) was renamed or transferred to \(repository.fullName) on GitHub since this review. Review again."))
 		}
 		guard case .environment(let id, let name) = target.scope else {
 			return .success(GitHubScope(repository: repository.fullName, environment: nil))

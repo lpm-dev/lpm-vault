@@ -160,6 +160,21 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 		lock.withLock { formerNames.contains(repository) }
 	}
 
+	/// How GitHub answers a request to a scope that isn't there: a former
+	/// name redirects, and a repository or environment gone is not found.
+	private func missing(_ scope: GitHubScope) -> GitHubAPIError? {
+		lock.withLock {
+			if formerNames.contains(scope.repository) { return .moved }
+			guard repositoryNames.values.contains(scope.repository) else { return .notFound }
+			if let environment = scope.environment,
+				!(environmentLists[scope.repository] ?? []).contains(where: { $0.name.lowercased() == environment.lowercased() })
+			{
+				return .notFound
+			}
+			return nil
+		}
+	}
+
 	private func begin(_ operation: Operation, _ name: String) -> GitHubAPIError? {
 		onRequest?(operation)
 		let failure = lock.withLock { () -> (error: GitHubAPIError, then: (@Sendable () -> Void)?)? in
@@ -223,14 +238,14 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 
 	func publicKey(of scope: GitHubScope) async -> Result<GitHubPublicKey, GitHubAPIError> {
 		if let error = begin(.publicKey, Self.key(scope)) { return .failure(error) }
-		if moved(scope.repository) { return .failure(.moved) }
+		if let error = missing(scope) { return .failure(error) }
 		return .success(publicKey)
 	}
 
 	func setSecret(_ name: String, to sealed: GitHubSealedSecret, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> {
 		beforeWrite?(self, name)
 		if let error = begin(.setSecret, name) { return .failure(error) }
-		if moved(scope.repository) { return .failure(.moved) }
+		if let error = missing(scope) { return .failure(error) }
 		guard sealed.keyID == publicKey.id else { return .failure(.rejected(status: 422)) }
 		write(name, secret: true, value: sealed.ciphertext, in: scope)
 		return .success(())
@@ -251,7 +266,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	func createVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> {
 		beforeWrite?(self, name)
 		if let error = begin(.createVariable, name) { return .failure(error) }
-		if moved(scope.repository) { return .failure(.moved) }
+		if let error = missing(scope) { return .failure(error) }
 		guard lock.withLock({ scopes[Self.key(scope)]?.variables[name] }) == nil else { return .failure(.rejected(status: 409)) }
 		write(name, secret: false, value: Data(value.utf8), in: scope)
 		return .success(())
@@ -260,7 +275,7 @@ final class FakeGitHubAPI: GitHubClientProtocol, @unchecked Sendable {
 	func updateVariable(_ name: String, value: String, in scope: GitHubScope) async -> Result<Void, GitHubAPIError> {
 		beforeWrite?(self, name)
 		if let error = begin(.updateVariable, name) { return .failure(error) }
-		if moved(scope.repository) { return .failure(.moved) }
+		if let error = missing(scope) { return .failure(error) }
 		guard lock.withLock({ scopes[Self.key(scope)]?.variables[name] }) != nil else { return .failure(.notFound) }
 		write(name, secret: false, value: Data(value.utf8), in: scope)
 		return .success(())
@@ -768,7 +783,7 @@ struct GitHubPublishTests {
 		api.rename("88", to: "northwind/storefront")
 		let renamed = await publish([change("API_TOKEN", "t")], with: api, reviewed: reviewed)
 		#expect(renamed.outcomes == [
-			"API_TOKEN": .failed("northwind/storefront was renamed northwind/shop on GitHub since this review. Review again."),
+			"API_TOKEN": .failed("northwind/storefront was renamed or transferred to northwind/shop on GitHub since this review. Review again."),
 		])
 		#expect(api.writeCount == 0)
 
@@ -803,7 +818,7 @@ struct GitHubPublishTests {
 		let reviewedRepository = try await reviewed(renamed)
 		renamed.rename("1296269", to: "northwind/shop")
 		let moved = await publish([change("A", "1"), change("B", "2")], with: renamed, reviewed: reviewedRepository)
-		let reason = "northwind/storefront was renamed northwind/shop on GitHub since this review. Review again."
+		let reason = "northwind/storefront was renamed or transferred to northwind/shop on GitHub since this review. Review again."
 		#expect(moved.outcomes == ["A": .failed(reason), "B": .failed(reason)])
 
 		let gone = FakeGitHubAPI()
@@ -837,6 +852,34 @@ struct GitHubPublishTests {
 		let stopped = await publish([change("A", "1", .replace(remoteID: "secret")), change("B", "2")], with: refused, reviewed: reviewedRefused)
 		#expect(stopped.outcomes["B"] == .notSent && stopped.needsReconnect)
 		#expect(refused.writeCount == 0)
+
+		let transient = FakeGitHubAPI()
+		transient.edit("A", secret: true, in: scope)
+		let reviewedTransient = try await self.reviewed(transient)
+		transient.edit("A", secret: true, value: "theirs", in: scope)
+		transient.fail(.repository, with: .transport)
+		let kept = await publish([change("A", "1", .replace(remoteID: "secret")), change("B", "2")], with: transient, reviewed: reviewedTransient)
+		#expect(kept.outcomes == ["A": .failed("Changed on GitHub since this review. Review again."), "B": .published],
+			"A check that can't answer leaves the key's own reason")
+	}
+
+	@Test("new secrets for a repository or environment that's gone are reported as the scope's change, from the public key's answer, and nothing more is asked")
+	func reportsScopeGoneOnPublicKey() async throws {
+		let gone = FakeGitHubAPI()
+		let reviewedGone = try await reviewed(gone)
+		gone.removeRepository("1296269")
+		let unreachable = await publish([change("A", "1"), change("B", "2")], with: gone, reviewed: reviewedGone)
+		let reason = PublishOutcome.failed("northwind/storefront isn't reachable on GitHub any more. Review again.")
+		#expect(unreachable.outcomes == ["A": reason, "B": reason])
+		#expect(!gone.requests.contains { $0.1 == "B" }, "Nothing is asked for B once the scope is gone")
+
+		let environments = FakeGitHubAPI()
+		let reviewedEnvironment = try await reviewed(environments, in: production)
+		environments.removeEnvironments(of: "northwind/storefront")
+		let deleted = await publish([change("A", "1"), change("B", "2")], with: environments, reviewed: reviewedEnvironment, to: productionTarget)
+		let removed = PublishOutcome.failed("The environment production was renamed, removed or replaced on GitHub since this review. Review again.")
+		#expect(deleted.outcomes == ["A": removed, "B": removed])
+		#expect(environments.writeCount == 0)
 	}
 
 	@Test("an environment replaced, or a repository's name reused, while its key or public key is read gets nothing: the check comes last", arguments: [
@@ -863,7 +906,7 @@ struct GitHubPublishTests {
 			}
 		}
 		let reused = await publish([change("A", "1")], with: repositories, reviewed: repositoryReview)
-		#expect(reused.outcomes == ["A": .failed("northwind/storefront was renamed northwind/shop on GitHub since this review. Review again.")])
+		#expect(reused.outcomes == ["A": .failed("northwind/storefront was renamed or transferred to northwind/shop on GitHub since this review. Review again.")])
 		#expect(repositories.writeCount == 0)
 	}
 
@@ -913,7 +956,7 @@ struct GitHubPublishTests {
 			api.rename("88", to: "northwind/storefront")
 		}
 		let report = await publish([change("A", "1"), change("B", "2")], with: api, reviewed: reviewed)
-		let renamed = PublishOutcome.failed("northwind/storefront was renamed northwind/shop on GitHub since this review. Review again.")
+		let renamed = PublishOutcome.failed("northwind/storefront was renamed or transferred to northwind/shop on GitHub since this review. Review again.")
 		#expect(report.outcomes == ["A": renamed, "B": renamed])
 		#expect(api.names(in: scope) == ([], []), "Repository 88 now has the reviewed name, and gets nothing")
 		#expect(api.names(in: GitHubScope(repository: "northwind/shop", environment: nil)) == ([], []))
@@ -1174,7 +1217,8 @@ struct GitHubPublishTests {
 		let reviewed = try await reviewed(api)
 		api.beforeWrite = { api, _ in api.rename("1296269", to: "northwind/shop") }
 		let report = await publish([change("A", "1"), change("B", "2")], with: api, reviewed: reviewed)
-		#expect(report.outcomes == ["A": .failed("The repository was renamed or moved on GitHub. Review again."), "B": .notSent])
+		let moved = PublishOutcome.failed("northwind/storefront was renamed or transferred to northwind/shop on GitHub since this review. Review again.")
+		#expect(report.outcomes == ["A": moved, "B": moved], "The redirect is explained by the repository's new name")
 		#expect(api.names(in: GitHubScope(repository: "northwind/shop", environment: nil)) == ([], []))
 	}
 
