@@ -263,25 +263,9 @@ enum GitHubHTTP {
 		delegateQueue: nil
 	)
 
-	/// The characters a path segment keeps as they are; everything else is
-	/// percent-escaped, so a name can't add a segment or a query.
-	private static let segmentCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-
 	/// The API URL for `path`, each segment escaped on its own.
 	static func url(_ baseURL: URL, _ path: [String], query: [URLQueryItem] = []) -> URL? {
-		guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false), !path.isEmpty else { return nil }
-		var segments: [String] = []
-		segments.reserveCapacity(path.count)
-		for segment in path {
-			guard !segment.isEmpty, segment != ".", segment != "..",
-				let escaped = segment.addingPercentEncoding(withAllowedCharacters: segmentCharacters)
-			else { return nil }
-			segments.append(escaped)
-		}
-		components.percentEncodedPath = "/" + segments.joined(separator: "/")
-		components.queryItems = query.isEmpty ? nil : query
-		components.fragment = nil
-		return components.url
+		PlatformURL.url(baseURL, path, query: query)
 	}
 
 	static func request(_ method: String, _ url: URL, token: String, body: Data? = nil) -> URLRequest {

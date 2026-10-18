@@ -12,6 +12,7 @@
 		04C520D3876DE81AFCE34669 /* VaultAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71D148247E7A2F250DA161CD /* VaultAppearance.swift */; };
 		05A7826076A2DCF3CA6EB450 /* EnvSchemaScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 237FE9B740DFACF0D52C8353 /* EnvSchemaScopeTests.swift */; };
 		05F8B08121A9FDBB332690DC /* EnvFileImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E7E17CFD8A20E12558CD8E0 /* EnvFileImportTests.swift */; };
+		06C190F44DC237DAC175850C /* PublishRevisionPlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D737AE65488CDD5BB94A0DF /* PublishRevisionPlanTests.swift */; };
 		06F2A10ECDC146991E96109E /* VaultDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18DEAAFEE6A92D4350A97363 /* VaultDesignSystem.swift */; };
 		085CD6308F8C164498EEA3D5 /* NetlifyPublishing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AE891AEC9FEED4DF4C84CF4 /* NetlifyPublishing.swift */; };
 		08F37F300A8B755593460DB4 /* PublishSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47A81DE99D02A3D02E6022EE /* PublishSheet.swift */; };
@@ -115,9 +116,11 @@
 		65B22C8424ECBC6F7060DE63 /* VaultQuitCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCE17900DAC1D1D1255644A4 /* VaultQuitCoordinator.swift */; };
 		6627ADDBD5EA83D7F247FAFA /* PlatformAuthorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D6199E770D8BCE8E4C9EE4A /* PlatformAuthorizationTests.swift */; };
 		683ACA166A8ACAD4FEBE60B8 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD36FC36544BE6FFD8DE1C5 /* SyncService.swift */; };
+		6ADBB5A09CA615BF7CDDAF33 /* CloudflareClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66FB19C101D595F17AD790CB /* CloudflareClientTests.swift */; };
 		6CCEDC914C33070A2489CA21 /* VaultSchemaReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D487550C0437B4F55F50D03C /* VaultSchemaReviewSheet.swift */; };
 		6ED4D87B9BD3A139401AFBCD /* EnvSchemaCompositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6AC2FB02EDCD85F6095DAE /* EnvSchemaCompositionTests.swift */; };
 		7037E1423C720FF964CE88C7 /* CountedNoun.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF02796887E7ECB5B31624FB /* CountedNoun.swift */; };
+		72028FA9E5E2BF02C929F58F /* CloudflareClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBC286E274ECE32DCB1DA016 /* CloudflareClient.swift */; };
 		72A556D5F4A968AFC33FE63D /* NetlifyClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C7F37326D9E2F264CAC1E42 /* NetlifyClientTests.swift */; };
 		7302132FAB90E538507C530F /* AccessibilityTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = 011E191D4571C3B1A4F17C66 /* AccessibilityTree.swift */; };
 		7627BBC2CFC099173303EE50 /* PublishDestinationForms.swift in Sources */ = {isa = PBXBuildFile; fileRef = 837EB7065CA0617259762054 /* PublishDestinationForms.swift */; };
@@ -130,6 +133,7 @@
 		7C22D1931ED78343F78572C0 /* PlatformTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B4B1E110BB6BF664F8C0A7 /* PlatformTestSupport.swift */; };
 		7C888FB45E91E3B493974FE9 /* VaultProjectOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E346C66B96EDD8D6801FA0D9 /* VaultProjectOrderTests.swift */; };
 		7CAA4D38C926E8B7ABFD88BC /* Round2BenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537598A780D1FDFFB63DC4BF /* Round2BenchmarkTests.swift */; };
+		7E5B048396B6D4D9BA84298E /* CloudflarePublishingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E9A56D911EA3978257179C9 /* CloudflarePublishingTests.swift */; };
 		7E94DCCF74319B7C90010E02 /* SchemaGroupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 611A7B19E28DAEAEE9A0EFD6 /* SchemaGroupTests.swift */; };
 		7EAFBEE098294770876D6112 /* AuthenticatedVaultEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 065A04BEECB8985219C44409 /* AuthenticatedVaultEnvelope.swift */; };
 		7F2412E5898FC8E0F23A225D /* VercelClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F28D6BF566B58E792D967F9 /* VercelClient.swift */; };
@@ -170,6 +174,7 @@
 		AF7635B9CCD5B83A6E4FEC15 /* PlatformAuthorizationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5471F56B8470AA2D08698F06 /* PlatformAuthorizationClient.swift */; };
 		AFDB64DB0C06E90C68BACE8A /* OrganizationProjectImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B525DD1074B0316F4375CFB8 /* OrganizationProjectImportTests.swift */; };
 		B0588531F28B98022123B87B /* ProjectIconStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED95F9C05233C4E3966922C9 /* ProjectIconStore.swift */; };
+		B0EB3E0B5473A6A9415F5CBE /* PlatformURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A22283423D6601501014252 /* PlatformURL.swift */; };
 		B18071E270ACCC1AB6FEC2C7 /* KeySuggestionInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82C79372371909ADC82616B7 /* KeySuggestionInteractionTests.swift */; };
 		B18AB2542827B31B262B7B9A /* SecurityHardeningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 080B6FDC9A11DF58CBDE4C6C /* SecurityHardeningTests.swift */; };
 		B2A852F546218B41B5CEA658 /* LPMAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD63E21E1A132277BDAE5506 /* LPMAPIService.swift */; };
@@ -188,6 +193,7 @@
 		C0B04034B6FD027CBA9DA679 /* ProjectEnvSchemaReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ECA3896A678B7DAEF3EE2A3 /* ProjectEnvSchemaReview.swift */; };
 		C0C74215949BB6F292A5B7A7 /* VaultSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48EB6076BE1D9B99D613E398 /* VaultSettingsView.swift */; };
 		C11C5AC5140ACFB4E86A5501 /* PlatformConnectionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B2ACF6C2FF1577ADB967ABF /* PlatformConnectionsTests.swift */; };
+		C2501FAC79BA7770EB0B1C36 /* CloudflarePublishing.swift in Sources */ = {isa = PBXBuildFile; fileRef = C73D28E2D226A96AFDA3DBFA /* CloudflarePublishing.swift */; };
 		C46383485858FC91B9D910AF /* PublishingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CF5B21607448F6903C717F3 /* PublishingStore.swift */; };
 		C4B286ED9317086608538575 /* ProjectEnvSchemaDraftTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FCE3BF1BA2251ECF6B28588 /* ProjectEnvSchemaDraftTests.swift */; };
 		C52BAEA7C3E78D971EA17BD0 /* SecureFileWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58E4E4C897F8E4401D882AF6 /* SecureFileWriter.swift */; };
@@ -345,6 +351,7 @@
 		47A81DE99D02A3D02E6022EE /* PublishSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishSheet.swift; sourceTree = "<group>"; };
 		48EB6076BE1D9B99D613E398 /* VaultSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSettingsView.swift; sourceTree = "<group>"; };
 		4A343F879F1020A725DDFDEF /* VaultKeyEditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultKeyEditTests.swift; sourceTree = "<group>"; };
+		4D737AE65488CDD5BB94A0DF /* PublishRevisionPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishRevisionPlanTests.swift; sourceTree = "<group>"; };
 		4E9AF1DB6216DC5E2907A5B3 /* PublicKeyRevealTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicKeyRevealTests.swift; sourceTree = "<group>"; };
 		5341C27392F778A739AC74DA /* lpm-json-edit-input.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "lpm-json-edit-input.json"; sourceTree = "<group>"; };
 		537598A780D1FDFFB63DC4BF /* Round2BenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round2BenchmarkTests.swift; sourceTree = "<group>"; };
@@ -373,6 +380,7 @@
 		623FE311DD484D349571A459 /* ProjectConfigOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectConfigOpener.swift; sourceTree = "<group>"; };
 		639C6432C2667DC16F75B730 /* WorkspaceInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceInteractionTests.swift; sourceTree = "<group>"; };
 		63C91F636E4DF09BA177F24F /* Mocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Mocks.swift; sourceTree = "<group>"; };
+		66FB19C101D595F17AD790CB /* CloudflareClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudflareClientTests.swift; sourceTree = "<group>"; };
 		678F37650ABEEBAF7CCA6AE6 /* PlatformTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformTokens.swift; sourceTree = "<group>"; };
 		68512736946FD506A8B4F28C /* PlatformConnectionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformConnectionStore.swift; sourceTree = "<group>"; };
 		6925747E8E9D7994BC3E6DA8 /* LPMEnv.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = LPMEnv.xcframework; path = Vendor/EnvEngine/LPMEnv.xcframework; sourceTree = "<group>"; };
@@ -408,6 +416,7 @@
 		86A2CFC76C772E1EEFD41581 /* ProjectEnvSchemaFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaFile.swift; sourceTree = "<group>"; };
 		86F43E0E40227FB457075755 /* ProjectSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSettingsTests.swift; sourceTree = "<group>"; };
 		8781D80F04E7286497DDF325 /* NewVaultSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewVaultSheet.swift; sourceTree = "<group>"; };
+		8A22283423D6601501014252 /* PlatformURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformURL.swift; sourceTree = "<group>"; };
 		8AE891AEC9FEED4DF4C84CF4 /* NetlifyPublishing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetlifyPublishing.swift; sourceTree = "<group>"; };
 		8DE1DD0A95404298E92B60F9 /* EnvFileImportReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReviewTests.swift; sourceTree = "<group>"; };
 		8F5EBA8FE3F0077FCAA53B63 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -423,6 +432,7 @@
 		983443571C69A2E11CCEEAFF /* VaultSchemaEditorFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaEditorFooter.swift; sourceTree = "<group>"; };
 		9C7F580906FEE1F330D9AC18 /* GitHubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubClient.swift; sourceTree = "<group>"; };
 		9D2B5D52C25E20909157D918 /* ProjectIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectIcon.swift; sourceTree = "<group>"; };
+		9E9A56D911EA3978257179C9 /* CloudflarePublishingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudflarePublishingTests.swift; sourceTree = "<group>"; };
 		A014620EBD5FF6A03AA4DEDC /* PlatformRateLimit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformRateLimit.swift; sourceTree = "<group>"; };
 		A075C7BA1C52515081F1A50F /* KeyInspectorInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyInspectorInteractionTests.swift; sourceTree = "<group>"; };
 		A2AB1D6BA22486C9CB6D596E /* VercelPublishingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VercelPublishingTests.swift; sourceTree = "<group>"; };
@@ -458,6 +468,7 @@
 		C3AEEC3080528D1137551395 /* VaultSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSidebarView.swift; sourceTree = "<group>"; };
 		C56F1C37E8DD2602669FD237 /* ProjectEnvValueCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvValueCheckTests.swift; sourceTree = "<group>"; };
 		C68A0B5B65065CE20F58D81F /* VaultResizablePane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultResizablePane.swift; sourceTree = "<group>"; };
+		C73D28E2D226A96AFDA3DBFA /* CloudflarePublishing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudflarePublishing.swift; sourceTree = "<group>"; };
 		C7E51C884F46360759CD84ED /* EnvFileImportReviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReviewSheet.swift; sourceTree = "<group>"; };
 		C9C4F938186221E2BF4E04C9 /* Round4BenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round4BenchmarkTests.swift; sourceTree = "<group>"; };
 		CAE5A4A3721AD4F9A18CDD9A /* KeyApprovalSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyApprovalSheet.swift; sourceTree = "<group>"; };
@@ -477,6 +488,7 @@
 		DA185E326FAD6E725BDC009E /* VaultPersistenceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultPersistenceCoordinator.swift; sourceTree = "<group>"; };
 		DA31CAE9BF2A0CCEE6F18C60 /* GitHubClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubClientTests.swift; sourceTree = "<group>"; };
 		DA8EA707752049B451C924F7 /* LPMVaultTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LPMVaultTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DBC286E274ECE32DCB1DA016 /* CloudflareClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudflareClient.swift; sourceTree = "<group>"; };
 		DC603D98BBFFDD181A88AAD2 /* PublishDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishDestination.swift; sourceTree = "<group>"; };
 		DCE17900DAC1D1D1255644A4 /* VaultQuitCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultQuitCoordinator.swift; sourceTree = "<group>"; };
 		DD382178E5B936352E5D8275 /* VaultWrites.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultWrites.swift; sourceTree = "<group>"; };
@@ -636,6 +648,7 @@
 				A9F299C0796F0A1335370EBB /* LPMConfigJSON.swift */,
 				AE03BDCB3BDAEDDF155A0998 /* ObservedWait.swift */,
 				CE7189FA596408E53283745A /* PlatformTimestamp.swift */,
+				8A22283423D6601501014252 /* PlatformURL.swift */,
 				7FA4AF9738D049CABAD6AFA1 /* ProcessLimits.swift */,
 				AA15A85B7406128FB479BB79 /* ProjectCLILink.swift */,
 				2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */,
@@ -661,6 +674,8 @@
 				ABA50696ECCA4608639D0C28 /* AuditRegressionTests.swift */,
 				B1CF37F3E1D21EFC23D1163B /* AuthSessionCoordinatorTests.swift */,
 				BC1454DBB5C406F654AA9519 /* BlockingWorkTests.swift */,
+				66FB19C101D595F17AD790CB /* CloudflareClientTests.swift */,
+				9E9A56D911EA3978257179C9 /* CloudflarePublishingTests.swift */,
 				7DA1AF3AA82DFB003362A6D3 /* ConnectCLITests.swift */,
 				B4BA8451CDCC17A9CECEB040 /* CoolifyClientTests.swift */,
 				2B36ADA90129E79376810409 /* CoolifyPublishingTests.swift */,
@@ -708,6 +723,7 @@
 				7E914551BC84B4D97373CA2B /* PublishDestinationTests.swift */,
 				20622573A99168AA26552B08 /* PublishingStoreTests.swift */,
 				54B2B378136A9AF7AF30122D /* PublishPlanTests.swift */,
+				4D737AE65488CDD5BB94A0DF /* PublishRevisionPlanTests.swift */,
 				3005A677D1BA50A8A6A05456 /* PublishSessionTests.swift */,
 				590AE059B00FEF459BB3496E /* QuitProtectionInteractionTests.swift */,
 				537598A780D1FDFFB63DC4BF /* Round2BenchmarkTests.swift */,
@@ -802,6 +818,8 @@
 				09F3D97EC4B3C023F301406F /* BiometricService.swift */,
 				266550AAF7BE0ECE87C3EF15 /* BrowserAuthorization.swift */,
 				AA17FB26EDFE51906892C132 /* ClipboardManager.swift */,
+				DBC286E274ECE32DCB1DA016 /* CloudflareClient.swift */,
+				C73D28E2D226A96AFDA3DBFA /* CloudflarePublishing.swift */,
 				1537A923FE9D31FAE64204AD /* CoolifyClient.swift */,
 				5B29E80D234EA32595E080E5 /* CoolifyConnector.swift */,
 				2965F7490F3928DA989BBC43 /* CoolifyPublishing.swift */,
@@ -956,6 +974,8 @@
 				FACB80DACEE686DECB8B4B33 /* AuditRegressionTests.swift in Sources */,
 				38289D7C13B7A79B92794FC0 /* AuthSessionCoordinatorTests.swift in Sources */,
 				DD91B85B21E7B169BB79EB04 /* BlockingWorkTests.swift in Sources */,
+				6ADBB5A09CA615BF7CDDAF33 /* CloudflareClientTests.swift in Sources */,
+				7E5B048396B6D4D9BA84298E /* CloudflarePublishingTests.swift in Sources */,
 				C7B7CE1D990AA3A0D98996A5 /* ConnectCLITests.swift in Sources */,
 				B8B66270D4576E8D1883A112 /* CoolifyClientTests.swift in Sources */,
 				3BD75D7FD714BC2FA731A882 /* CoolifyPublishingTests.swift in Sources */,
@@ -1002,6 +1022,7 @@
 				1BAA3CBB12E0F7974FC2F3C0 /* PublicKeyRevealTests.swift in Sources */,
 				FC121E25188D9AE430A40675 /* PublishDestinationTests.swift in Sources */,
 				0B368F7BDF4F094BE0CD619B /* PublishPlanTests.swift in Sources */,
+				06C190F44DC237DAC175850C /* PublishRevisionPlanTests.swift in Sources */,
 				9D50B3DBE1FFD9F68914AEA5 /* PublishSessionTests.swift in Sources */,
 				D033533DFAC3D3B5AC564ADB /* PublishingStoreTests.swift in Sources */,
 				61B0C606816201F2218AAD96 /* QuitProtectionInteractionTests.swift in Sources */,
@@ -1062,6 +1083,8 @@
 				613EDF78FC1B9CFC1E22F759 /* BrowserAuthorization.swift in Sources */,
 				1502B1EBDA3730B341AC1C18 /* ClipboardManager.swift in Sources */,
 				0AE7F8802E0EAB9364630CBC /* CloudVaultsSheet.swift in Sources */,
+				72028FA9E5E2BF02C929F58F /* CloudflareClient.swift in Sources */,
+				C2501FAC79BA7770EB0B1C36 /* CloudflarePublishing.swift in Sources */,
 				14E8D1B3AC9A80878E1E69A4 /* ConnectCLISheet.swift in Sources */,
 				31C37550C9C66D1D977DA12E /* ConnectCoolifySheet.swift in Sources */,
 				85D8879B93AEABF31B2C941C /* Constants.swift in Sources */,
@@ -1106,6 +1129,7 @@
 				F1CA35C1FCBD287A94BB645E /* PlatformRateLimit.swift in Sources */,
 				4D0C2A52B3180DA0EC23D5A7 /* PlatformTimestamp.swift in Sources */,
 				97B62C0D8945A7B4AB1BDF04 /* PlatformTokens.swift in Sources */,
+				B0EB3E0B5473A6A9415F5CBE /* PlatformURL.swift in Sources */,
 				3B6F87818D760ED5C4D182F2 /* PlatformsView.swift in Sources */,
 				CBBD41BF3BC64015F7580499 /* ProcessLimits.swift in Sources */,
 				8317184044046DED39284AA1 /* ProjectCLILink.swift in Sources */,
