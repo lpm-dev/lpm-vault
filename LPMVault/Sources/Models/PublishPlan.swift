@@ -87,6 +87,10 @@ struct PublishPlan: Equatable, Sendable {
 		/// The platform has two variables with the name, which an app could
 		/// read either of, so there's no telling which to write.
 		case duplicatedOnPlatform
+		/// The platform uses the name for another kind of binding, such as a
+		/// Cloudflare Worker's plain variable or storage binding, and refuses a
+		/// secret beside it.
+		case nameTaken
 		/// The platform doesn't say when its variable last changed, so a
 		/// publish can't make sure it isn't overwriting a change made since the review.
 		case unknownChangeTime
@@ -107,17 +111,32 @@ struct PublishPlan: Equatable, Sendable {
 		case changedOnPlatform
 		/// Whether someone changed it on the platform since this Mac published it can't be told.
 		case unknownSincePublish
+		/// This Mac sent it and got no answer, so whether the platform took it isn't known.
+		case unconfirmedPublish
 		/// The platform already has the value this Mac published.
 		case upToDate
+
+		/// Whether publishing the key could replace a change made on the
+		/// platform since this Mac published it.
+		var risksOverwrite: Bool {
+			switch self {
+			case .changedOnPlatform, .unknownSincePublish, .unconfirmedPublish: true
+			case .reserved, .nameTooLong, .nameNotAccepted, .unusableValue, .changesValue, .valueTooLong, .valueTooLarge,
+				.sameValueEverywhere, .duplicatedOnPlatform, .nameTaken, .unknownChangeTime, .sharedWith, .staysReadable, .failsRules,
+				.ignoredByLPM, .excluded, .upToDate:
+				false
+			}
+		}
 
 		/// Whether the key can't be published even when the person chooses it.
 		var blocksPublishing: Bool {
 			switch self {
 			case .reserved, .nameTooLong, .nameNotAccepted, .unusableValue, .valueTooLong, .valueTooLarge, .sameValueEverywhere,
-				.duplicatedOnPlatform, .unknownChangeTime:
+				.duplicatedOnPlatform, .nameTaken, .unknownChangeTime:
 				true
 			case .changesValue(let issue): !issue.allowsPublishing
-			case .sharedWith, .staysReadable, .failsRules, .ignoredByLPM, .excluded, .changedOnPlatform, .unknownSincePublish, .upToDate:
+			case .sharedWith, .staysReadable, .failsRules, .ignoredByLPM, .excluded, .changedOnPlatform, .unknownSincePublish,
+				.unconfirmedPublish, .upToDate:
 				false
 			}
 		}
@@ -145,8 +164,27 @@ struct PublishPlan: Equatable, Sendable {
 		}
 	}
 
+	/// How a platform tells whether its variables changed since this Mac published them.
+	enum Freshness: Sendable {
+		/// Each variable has an ID and a time it last changed.
+		case perVariable
+		/// Only the place as a whole is versioned, as a Cloudflare Worker is:
+		/// every variable carries the newest version's ID. A key is known
+		/// unchanged only while the version this Mac's publish made is the
+		/// newest; after any later version, whether it changed can't be told.
+		case revision
+	}
+
+	/// Secrets and readable variables a platform keeps within one limit together.
+	struct CombinedCapacity: Equatable, Sendable {
+		let limit: Int
+		/// The room the place's other records take within the limit, such as a Worker's plain variables.
+		let occupied: Int
+	}
+
 	/// What one platform accepts, and what it does to values on their way to an app.
 	struct Platform: Sendable {
+		var freshness: Freshness = .perVariable
 		/// Names the platform sets itself.
 		var reservedKeys: Set<String> = []
 		/// Prefixes of names the platform sets itself.
@@ -175,6 +213,12 @@ struct PublishPlan: Equatable, Sendable {
 		/// How many secrets and readable variables the platform keeps at one
 		/// place; nil when it doesn't limit them.
 		var capacity: Capacity?
+		/// How many secrets and readable variables the platform keeps at one
+		/// place together; nil when it doesn't count them together.
+		var combinedCapacity: CombinedCapacity?
+		/// The most keys one publish can change, as the platform applies them
+		/// all at once only up to that; nil when it doesn't limit them.
+		var maximumChanges: Int?
 
 		func isReserved(_ key: String) -> Bool {
 			reservedKeys.contains(key) || reservedPrefixes.contains { key.hasPrefix($0) }
@@ -242,6 +286,9 @@ struct PublishPlan: Equatable, Sendable {
 			/// secret and a readable variable with one name, which an app could
 			/// read either of.
 			case duplicated
+			/// The platform uses the name for another kind of binding, which a
+			/// publish leaves alone and doesn't count as a variable.
+			case otherBinding
 		}
 
 		let kind: Kind
@@ -271,13 +318,32 @@ struct PublishPlan: Equatable, Sendable {
 		let existing: Int
 		/// How many new ones the selection adds.
 		let adding: Int
+		/// Whether the limit counts secrets, readable variables and the place's
+		/// other records together.
+		var isCombined = false
 
 		/// How many new ones must be left out.
 		var excess: Int { existing + adding - limit }
 	}
 
+	/// Why nothing can be published to the destination's place right now.
+	enum PlaceHold: Equatable, Sendable {
+		/// An earlier version serves the place, as after a rollback.
+		case earlierVersionLive
+		/// Traffic is split between versions.
+		case versionsSplit
+		/// The newest version was uploaded but doesn't serve the place.
+		case newestVersionNotLive
+	}
+
+	/// The remote ID recorded for a key this Mac sent without an answer, so
+	/// a later review knows the platform may or may not have it.
+	static let unconfirmedRemoteID = "unconfirmed"
+
 	/// Tells this plan apart from any other, so a selection can't be used with another plan.
 	let id = UUID()
+	/// Why nothing can be published now; nil when keys can be.
+	let placeHold: PlaceHold?
 	let destination: UUID
 	/// Where the destination published when the plan was made.
 	let location: PublishTarget.Location
@@ -295,6 +361,10 @@ struct PublishPlan: Equatable, Sendable {
 	let staleHistory: [String: Date]
 	private let rowIndex: [String: Int]
 	private let capacity: Capacity?
+	private let combinedCapacity: CombinedCapacity?
+	private let maximumChanges: Int?
+	/// Whether more keys are published by default than one publish can change.
+	private let defaultsExceedChangeLimit: Bool
 	/// The secrets and readable variables at the destination's place, counted when the platform limits them.
 	private let existingSecrets: Int
 	private let existingVariables: Int
@@ -316,9 +386,11 @@ struct PublishPlan: Equatable, Sendable {
 		remoteKeys: [String: RemoteKey] = [:],
 		platform: Platform = Platform(),
 		history: PublishHistory?,
+		placeHold: PlaceHold? = nil,
 		fingerprintKey: SymmetricKey
 	) {
 		self.destination = destination.id
+		self.placeHold = placeHold
 		location = destination.target.location
 		rows = VaultKeySortOrder.sortedAscending(values.keys).map { key in
 			let value = values[key] ?? ""
@@ -331,7 +403,9 @@ struct PublishPlan: Equatable, Sendable {
 			let publishesAsSecret = variableProtection
 				?? (wantsSecret || (platform.secretsStaySecret && remoteVariable?.storedAsSecret == true))
 			let status = Self.status(
-				fingerprint: fingerprint, publishesAsSecret: publishesAsSecret, remote: remoteVariable, record: history?.keys[key])
+				fingerprint: fingerprint, publishesAsSecret: publishesAsSecret, remote: remoteVariable, record: history?.keys[key],
+				freshness: platform.freshness)
+			let isUnconfirmed = history?.keys[key]?.remoteID == Self.unconfirmedRemoteID
 			let problems = check?.problems[key] ?? []
 			var holds: [Hold] = []
 			if platform.isReserved(key) { holds.append(.reserved) }
@@ -347,7 +421,8 @@ struct PublishPlan: Equatable, Sendable {
 			if let limit = platform.maximumValueBytes, value.utf8.count > limit { holds.append(.valueTooLarge(bytes: limit)) }
 			if remoteKey?.kind == .sameValueEverywhere { holds.append(.sameValueEverywhere) }
 			if remoteKey?.kind == .duplicated { holds.append(.duplicatedOnPlatform) }
-			if let remoteVariable, remoteVariable.updatedAt == nil { holds.append(.unknownChangeTime) }
+			if remoteKey?.kind == .otherBinding { holds.append(.nameTaken) }
+			if platform.freshness == .perVariable, let remoteVariable, remoteVariable.updatedAt == nil { holds.append(.unknownChangeTime) }
 			if let shared = remoteVariable?.sharedWith, !shared.isEmpty { holds.append(.sharedWith(shared)) }
 			if wantsSecret, !publishesAsSecret { holds.append(.staysReadable) }
 			let failures = problems.filter { $0.kind != .unusableValue }
@@ -356,7 +431,7 @@ struct PublishPlan: Equatable, Sendable {
 			if destination.excludedKeys.contains(key) { holds.append(.excluded) }
 			switch status.platform {
 			case .changed, .removed: holds.append(.changedOnPlatform)
-			case .unknown: holds.append(.unknownSincePublish)
+			case .unknown: holds.append(isUnconfirmed ? .unconfirmedPublish : .unknownSincePublish)
 			case .unchanged: break
 			}
 			if status.isUpToDate { holds.append(.upToDate) }
@@ -377,11 +452,13 @@ struct PublishPlan: Equatable, Sendable {
 				switch entry.value.kind {
 				case .sameValueEverywhere: values[entry.key] == nil ? count + 1 : count
 				case .duplicated: values[entry.key] == nil ? count + 2 : count
-				case .elsewhere: count
+				case .elsewhere, .otherBinding: count
 				}
 			}
 		capacity = platform.capacity
-		if platform.capacity != nil {
+		combinedCapacity = platform.combinedCapacity
+		maximumChanges = platform.maximumChanges
+		if platform.capacity != nil || platform.combinedCapacity != nil {
 			let secrets = remote.values.lazy.filter { $0.storedAsSecret == true }.count
 			let duplicated = remoteKeys.values.lazy.filter { $0.kind == .duplicated }.count
 			existingSecrets = secrets + duplicated
@@ -391,6 +468,13 @@ struct PublishPlan: Equatable, Sendable {
 			existingVariables = 0
 		}
 		destinationUpdatedAt = destination.updatedAt
+		if let limit = platform.maximumChanges, placeHold == nil {
+			var selectedByDefault = 0
+			for row in rows where row.isSelectedByDefault { selectedByDefault += 1 }
+			defaultsExceedChangeLimit = selectedByDefault > limit
+		} else {
+			defaultsExceedChangeLimit = false
+		}
 		staleExclusions = destination.excludedKeys.filter { values[$0] == nil }
 		staleHistory = history?.keys.filter { values[$0.key] == nil }.mapValues(\.publishedAt) ?? [:]
 	}
@@ -416,17 +500,28 @@ struct PublishPlan: Equatable, Sendable {
 	/// earlier one, counts as changed; an ID or time that isn't known on
 	/// either side leaves it unknown. How the platform stores the key comes
 	/// from the platform when it says, else from this Mac's last publish.
+	///
+	/// A platform that versions the place as a whole gives every variable the
+	/// newest version's ID: the key is unchanged only while that's the version
+	/// this Mac recorded, and unknown otherwise, as a later version may or may
+	/// not have changed it. A key this Mac sent without an answer is unknown
+	/// on any platform.
 	private static func status(
 		fingerprint: Data,
 		publishesAsSecret: Bool,
 		remote: RemoteVariable?,
-		record: PublishHistory.Key?
+		record: PublishHistory.Key?,
+		freshness: Freshness
 	) -> Status {
 		guard let record else { return .notPublished }
 		let platform: Status.Platform
 		switch (remote, record.remoteID) {
 		case (nil, _):
 			platform = .removed
+		case (_?, unconfirmedRemoteID?):
+			platform = .unknown
+		case (let remote?, let recordedID?) where freshness == .revision:
+			platform = recordedID == remote.id ? .unchanged : .unknown
 		case (let remote?, let recordedID?) where recordedID != remote.id:
 			platform = .changed
 		case (let remote?, _?):
@@ -454,10 +549,10 @@ extension PublishPlan {
 		let planID: UUID
 		private(set) var keys: Set<String>
 
-		/// The keys published by default.
+		/// The keys published by default; none while the place is held.
 		init(defaultsOf plan: PublishPlan) {
 			planID = plan.id
-			keys = Set(plan.rows.lazy.filter(\.isSelectedByDefault).map(\.key))
+			keys = plan.placeHold == nil ? Set(plan.rows.lazy.filter(\.isSelectedByDefault).map(\.key)) : []
 		}
 
 		/// Chooses or drops `key`. Choosing fails when the plan can't publish
@@ -470,7 +565,7 @@ extension PublishPlan {
 				keys.remove(key)
 				return true
 			}
-			guard row.isPublishable, !row.needsConfirmation || confirmed else { return false }
+			guard plan.placeHold == nil, row.isPublishable, !row.needsConfirmation || confirmed else { return false }
 			keys.insert(key)
 			return true
 		}
@@ -513,16 +608,31 @@ extension PublishPlan {
 	/// platform keeps there, secrets first; empty when it fits. Only new
 	/// names count: a replaced one keeps its place.
 	func overflows(of selection: Selection) -> [Overflow] {
-		guard let capacity, selection.planID == id else { return [] }
+		guard capacity != nil || combinedCapacity != nil, selection.planID == id else { return [] }
 		var secrets = 0
 		var variables = 0
 		for row in rows where row.operation == .add && selection.keys.contains(row.key) {
 			if row.publishesAsSecret { secrets += 1 } else { variables += 1 }
 		}
-		return [
-			Overflow(isSecrets: true, limit: capacity.secrets, existing: existingSecrets, adding: secrets),
-			Overflow(isSecrets: false, limit: capacity.variables, existing: existingVariables, adding: variables),
-		].filter { $0.adding > 0 && $0.excess > 0 }
+		var overflows: [Overflow] = []
+		if let capacity {
+			overflows.append(Overflow(isSecrets: true, limit: capacity.secrets, existing: existingSecrets, adding: secrets))
+			overflows.append(Overflow(isSecrets: false, limit: capacity.variables, existing: existingVariables, adding: variables))
+		}
+		if let combinedCapacity {
+			overflows.append(Overflow(
+				isSecrets: variables == 0, limit: combinedCapacity.limit,
+				existing: existingSecrets + existingVariables + combinedCapacity.occupied, adding: secrets + variables, isCombined: true))
+		}
+		return overflows.filter { $0.adding > 0 && $0.excess > 0 }
+	}
+
+	/// How many more keys `selection` changes than the platform changes in
+	/// one publish; nil when it fits.
+	func changeLimitExcess(of selection: Selection) -> Int? {
+		guard let maximumChanges, selection.planID == id else { return nil }
+		let excess = rows.lazy.filter { selection.keys.contains($0.key) }.count - maximumChanges
+		return excess > 0 ? excess : nil
 	}
 
 	/// One variable a publish sends. Its value never appears when it's
@@ -650,7 +760,9 @@ extension PublishPlan {
 	}
 
 	/// The choices `selection` makes. Keys held back for another reason
-	/// aren't remembered as choices.
+	/// aren't remembered as choices, nor are keys left out when more were
+	/// published by default than one publish can change: those were left out
+	/// to fit, not to stay out of later publishes.
 	func choices(for selection: Selection) -> Choices {
 		guard selection.planID == id else { return Choices(leftOut: [], chosen: []) }
 		var leftOut: Set<String> = []
@@ -658,7 +770,7 @@ extension PublishPlan {
 		for row in rows where row.isPublishable {
 			if selection.keys.contains(row.key) {
 				chosen.insert(row.key)
-			} else if row.isSelectedByDefault {
+			} else if row.isSelectedByDefault, !defaultsExceedChangeLimit {
 				leftOut.insert(row.key)
 			}
 		}

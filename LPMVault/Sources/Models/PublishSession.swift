@@ -125,8 +125,11 @@ final class PublishSession: Identifiable {
 		let recordFailure: String?
 
 		var publishedCount: Int { rows.lazy.filter { $0.outcome == .published }.count }
+		/// How many keys were sent without an answer.
+		var unconfirmedCount: Int { rows.lazy.filter { if case .unconfirmed = $0.outcome { true } else { false } }.count }
 
-		/// How much of what was sent was published, as the platform counts it.
+		/// How much of what was sent was published, as the platform counts it,
+		/// and how much may have been, when answers didn't come back.
 		var summary: String {
 			var secrets = (published: 0, sent: 0)
 			var variables = (published: 0, sent: 0)
@@ -140,7 +143,12 @@ final class PublishSession: Identifiable {
 					variables.published += published
 				}
 			}
-			return "Published \(destination.target.platform.countedPublished(secrets: secrets, variables: variables))."
+			let platform = destination.target.platform
+			let published = "Published \(platform.countedPublished(secrets: secrets, variables: variables))."
+			let unconfirmed = unconfirmedCount
+			guard unconfirmed > 0 else { return published }
+			let them = unconfirmed == 1 ? "it" : "them"
+			return "\(published) \(unconfirmed) more \(unconfirmed == 1 ? "was" : "were") sent without an answer, so \(platform.displayName) may have \(them). Review again to see."
 		}
 	}
 

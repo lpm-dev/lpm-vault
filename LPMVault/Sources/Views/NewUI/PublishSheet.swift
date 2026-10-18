@@ -405,6 +405,10 @@ struct PublishSheet: View {
 		if row.staysSecret { parts.append("stays a \(secret) on \(platform)") }
 		if let hold = row.holds.first {
 			parts.append(Self.holdNote(hold, row: row, review: review))
+			// Choosing the key could overwrite a change made on the platform, which it says whatever comes first.
+			if row.isPublishable, let risk = row.holds.dropFirst().first(where: \.risksOverwrite) {
+				parts.append(Self.holdNote(risk, row: row, review: review))
+			}
 		} else if let publishedAt = row.status.publishedAt {
 			parts.append(row.status.valueChanged
 				? "Changed since last publish"
@@ -438,6 +442,8 @@ struct PublishSheet: View {
 		case .changesValue(let issue): return Self.note(for: issue, on: platform)
 		case .valueTooLong(let limit): return "\(platform) accepts values up to \(limit.formatted()) characters"
 		case .valueTooLarge(let bytes): return "\(platform) accepts values up to \((bytes / 1_024).formatted()) KB"
+		case .nameTaken:
+			return "\(platform) uses this name for another variable or binding here. Rename one of them, then review again"
 		case .duplicatedOnPlatform:
 			return "\(platform) has both a secret and a variable with this name, which a workflow could read either of. Remove one \(onPlatform), then review again"
 		case .sameValueEverywhere:
@@ -458,7 +464,9 @@ struct PublishSheet: View {
 		case .changedOnPlatform:
 			return row.status.platform == .removed ? "Removed \(onPlatform) since you published it" : "Changed \(onPlatform) since you published it"
 		case .unknownSincePublish:
-			return "\(platform) doesn't say whether it changed since you published it"
+			return "\(platform) doesn't say whether it changed since you published it. Publishing replaces whatever it has now"
+		case .unconfirmedPublish:
+			return "This Mac sent it, but no answer came back, so \(platform) may or may not have it. Publishing sends it again"
 		case .upToDate:
 			return "Unchanged since you published \(row.status.publishedAt.map { RelativeTimestampFormatter.string(from: $0) } ?? "it")"
 		}
@@ -641,6 +649,9 @@ struct PublishSheet: View {
 				.font(.system(size: 12))
 		case .failed(let message):
 			Text(message).foregroundStyle(VaultPalette.redText).font(.system(size: 12))
+				.multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
+		case .unconfirmed(let message):
+			Text(message).foregroundStyle(VaultPalette.orangeTintText).font(.system(size: 12))
 				.multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
 		case .notSent:
 			Text("Not sent").foregroundStyle(VaultPalette.textTertiary).font(.system(size: 12))
