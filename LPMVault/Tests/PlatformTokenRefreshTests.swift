@@ -152,6 +152,18 @@ struct PlatformTokensTests {
 		#expect(refresh.isDue(at: obtained), "An unfinished renewal may already have replaced the token")
 	}
 
+	@Test("a token that lasts less than twice the margin is renewed halfway through its life, not as soon as it's received",
+		arguments: [5 * 60.0, 10 * 60.0, 20 * 60.0])
+	func shortLivedTokenIsntDueAtOnce(lifetime: TimeInterval) {
+		let obtained = Date(timeIntervalSince1970: 1_760_000_000)
+		let refresh = PlatformTokenRefresh(
+			token: "r", accessTokenExpiresAt: obtained.addingTimeInterval(lifetime), expiresAt: obtained.addingTimeInterval(86_400),
+			obtainedAt: obtained, principalID: "user_1")
+		#expect(!refresh.isDue(at: obtained), "A renewed token due at once would be renewed again, spending refresh tokens")
+		#expect(!refresh.isDue(at: obtained.addingTimeInterval(lifetime / 2 - 1)))
+		#expect(refresh.isDue(at: obtained.addingTimeInterval(lifetime / 2)))
+	}
+
 	@Test("a token just received isn't due, though its time is kept to the millisecond", arguments: [0.000_4, 0.000_6, 0.999_6])
 	func freshTokenIsntDue(fraction: TimeInterval) {
 		let received = Date(timeIntervalSince1970: 1_760_000_000 + fraction)

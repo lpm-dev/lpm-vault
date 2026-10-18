@@ -135,7 +135,8 @@ struct PlatformTokenRefresh: Equatable, Sendable, CustomStringConvertible, Custo
 	var isRejected = false
 
 	/// How long before it expires an access token is renewed, so a review and
-	/// the publish after it don't outlive it.
+	/// the publish after it don't outlive it; half its life for a token that
+	/// lasts less than twice that, so a renewed token isn't due at once.
 	static let renewalMargin: TimeInterval = 10 * 60
 
 	init(token: String, accessTokenExpiresAt: Date, expiresAt: Date, obtainedAt: Date, principalID: String, attempt: Attempt? = nil, isRejected: Bool = false) {
@@ -154,8 +155,9 @@ struct PlatformTokenRefresh: Equatable, Sendable, CustomStringConvertible, Custo
 	/// clock is compared at the millisecond `obtainedAt` is kept to, which
 	/// can round it past the moment it was received.
 	func isDue(at date: Date) -> Bool {
-		attempt != nil || PublishTimestamp.normalized(date) < obtainedAt
-			|| date >= accessTokenExpiresAt.addingTimeInterval(-Self.renewalMargin)
+		let margin = min(Self.renewalMargin, max(0, accessTokenExpiresAt.timeIntervalSince(obtainedAt)) / 2)
+		return attempt != nil || PublishTimestamp.normalized(date) < obtainedAt
+			|| date >= accessTokenExpiresAt.addingTimeInterval(-margin)
 	}
 
 	var description: String {
