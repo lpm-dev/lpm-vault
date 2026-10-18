@@ -13,6 +13,9 @@ struct PublishReport: Equatable, Sendable {
 	var outcomes: [String: PublishOutcome] = [:]
 	/// The history records of the keys the platform accepted.
 	var published: [PublishHistory.Published] = []
+	/// Keys the platform accepted but no longer had when they were read back,
+	/// recorded in the history all the same.
+	var gone: Set<String> = []
 	/// The connection's token was refused, so it needs connecting again.
 	var needsReconnect = false
 	/// Platform records the publish moved forward that other places share,

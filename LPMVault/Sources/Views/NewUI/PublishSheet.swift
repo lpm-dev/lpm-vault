@@ -138,6 +138,12 @@ struct PublishSheet: View {
 				return nil
 			}()
 			return (site, form.context?.displayName)
+		case .github(let form)?:
+			let repository = form.repository?.fullName ?? {
+				if case .github(let target)? = session.saved?.target, target.repositoryID == form.repositoryID { return target.repositoryName }
+				return nil
+			}()
+			return (repository, form.scope?.displayName)
 		case nil:
 			return (nil, nil)
 		}
@@ -167,7 +173,7 @@ struct PublishSheet: View {
 				Text("No platform account is connected on this Mac.")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("Connect Vercel, Netlify or Coolify on the Platforms page, then publish from here.")
+				Text("Connect Vercel, Netlify, GitHub or Coolify on the Platforms page, then publish from here.")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.textTertiary)
 				VaultBarButton(systemImage: "square.stack.3d.up", title: "Open Platforms") {
@@ -206,6 +212,8 @@ struct PublishSheet: View {
 						CoolifyDestinationFields(form: form)
 					case .netlify(let form)?:
 						NetlifyDestinationFields(form: form)
+					case .github(let form)?:
+						GitHubDestinationFields(form: form, installURL: githubInstallURL, reload: session.reloadChoices)
 					case nil:
 						GridRow {
 							PublishDestinationField("Destination") {
@@ -240,8 +248,19 @@ struct PublishSheet: View {
 		case .vercel(let form)?: if case .failed(let message) = form.projects { return message }
 		case .coolify(let form)?: if case .failed(let message) = form.resources { return message }
 		case .netlify(let form)?: if case .failed(let message) = form.sites { return message }
+		case .github(let form)?:
+			if case .failed(let message) = form.repositories { return message }
+			if case .failed(let message) = form.environments {
+				return "\(form.repository?.fullName ?? "The repository")'s environments couldn't be listed. \(message) Its own secrets and variables can still be chosen."
+			}
 		case nil: break
 		}
+		return nil
+	}
+
+	/// The page that installs the chosen GitHub connection's app on more repositories.
+	private var githubInstallURL: URL? {
+		if case .github(let account)? = session.connection?.account { return account.installURL }
 		return nil
 	}
 
@@ -252,7 +271,7 @@ struct PublishSheet: View {
 		if session.isLoadingReview {
 			HStack(spacing: 8) {
 				ProgressView().controlSize(.small)
-				Text("Reading the variables on \(platformName)…").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
+				Text("Reading the \(platform?.valuesNoun(count: 2) ?? "variables") on \(platformName)…").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
 			}
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		} else if let review = session.review {
@@ -341,7 +360,7 @@ struct PublishSheet: View {
 						.truncationMode(.middle)
 					if row.kind == .public { VaultPublicBadge() }
 				}
-				Text(detail(row, review: review))
+				Text(Self.detail(row, review: review))
 					.font(.system(size: 11.5))
 					.foregroundStyle(noteColor(row))
 					.fixedSize(horizontal: false, vertical: true)
@@ -378,10 +397,12 @@ struct PublishSheet: View {
 		}
 	}
 
-	private func detail(_ row: PublishPlan.Row, review: PublishSession.Review) -> String {
+	static func detail(_ row: PublishPlan.Row, review: PublishSession.Review) -> String {
 		let platform = review.platform.displayName
-		var parts = [row.publishesAsSecret ? "Secret" : "Config"]
-		if row.staysSecret { parts.append("stays a Secret on \(platform)") }
+		// GitHub's kinds are its own words, "secret" and "variable", not LPM Vault's Secret and Config.
+		let secret = review.platform == .github ? "secret" : "Secret"
+		var parts = [row.publishesAsSecret ? "Secret" : review.platform == .github ? "Variable" : "Config"]
+		if row.staysSecret { parts.append("stays a \(secret) on \(platform)") }
 		if let hold = row.holds.first {
 			parts.append(Self.holdNote(hold, row: row, review: review))
 		} else if let publishedAt = row.status.publishedAt {
@@ -389,10 +410,11 @@ struct PublishSheet: View {
 				? "Changed since last publish"
 				: "Unchanged since you published \(RelativeTimestampFormatter.string(from: publishedAt))")
 		} else if case .replace = row.operation {
-			parts.append("Replaces a variable already on \(platform)")
+			let kind = review.platform == .github && row.publishesAsSecret ? "secret" : "variable"
+			parts.append("Replaces a \(kind) already on \(platform)")
 		}
 		if row.status.protectionChanged {
-			parts.append(row.publishesAsSecret ? "will be stored as a Secret" : "will be stored readable")
+			parts.append(row.publishesAsSecret ? "will be stored as a \(secret)" : "will be stored readable")
 		}
 		return parts.joined(separator: " · ")
 	}
@@ -401,16 +423,29 @@ struct PublishSheet: View {
 		let platform = review.platform.displayName
 		let onPlatform = review.platform == .coolify ? "in \(platform)" : "on \(platform)"
 		switch hold {
-		case .reserved: return review.platform == .vercel ? "Vercel reserves this name" : "\(platform) sets this name itself"
+		case .reserved:
+			return switch review.platform {
+			case .vercel: "Vercel reserves this name"
+			case .github: "GitHub reserves names starting with GITHUB_"
+			default: "\(platform) sets this name itself"
+			}
 		case .nameTooLong(let limit): return "\(platform) accepts names up to \(limit) characters"
-		case .nameNotAccepted: return "\(platform) accepts only names that start with a letter and use letters, digits and underscores"
+		case .nameNotAccepted:
+			return review.platform == .github
+				? "GitHub keeps names in capital letters, digits and underscores, not starting with a digit. Rename the key to publish it"
+				: "\(platform) accepts only names that start with a letter and use letters, digits and underscores"
 		case .unusableValue: return "No process can receive this value"
 		case .changesValue(let issue): return Self.note(for: issue, on: platform)
 		case .valueTooLong(let limit): return "\(platform) accepts values up to \(limit.formatted()) characters"
+		case .valueTooLarge(let bytes): return "\(platform) accepts values up to \((bytes / 1_024).formatted()) KB"
+		case .duplicatedOnPlatform:
+			return "\(platform) has both a secret and a variable with this name, which a workflow could read either of. Remove one \(onPlatform), then review again"
 		case .sameValueEverywhere:
 			return "\(platform) uses one value for all deploy contexts here. Give it a value per deploy context \(onPlatform), then review again"
 		case .staysReadable:
-			return "\(platform) keeps this variable readable, so the value would be too. Mark it as containing secret values \(onPlatform) to keep it write-only"
+			return review.platform == .github
+				? "GitHub keeps this as a readable variable, so the value would be readable too. Delete the variable on GitHub to publish it as a secret"
+				: "\(platform) keeps this variable readable, so the value would be too. Mark it as containing secret values \(onPlatform) to keep it write-only"
 		case .unknownChangeTime:
 			return "\(platform) doesn't say when this variable last changed, so a change made meanwhile can't be caught. Edit it once \(onPlatform), then review again"
 		case .sharedWith(let names):
@@ -479,13 +514,24 @@ struct PublishSheet: View {
 		if review.platform == .netlify {
 			notes.append("Values set in the site's netlify.toml override published ones. A site's variables also override the team's shared variables with the same name.")
 		}
+		if case .github(let target) = review.destination.target {
+			notes.append("Workflows read secrets as ${{ secrets.NAME }} and variables as ${{ vars.NAME }}.")
+			switch target.scope {
+			case .repository:
+				notes.append("A job that uses a deployment environment gets that environment's secret or variable instead, when it has one with the same name.")
+			case .environment(let id, let name):
+				notes.append("Only jobs that use the \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) environment get these values, over the repository's with the same name.")
+			}
+		}
 		let remoteOnly = review.plan.remoteOnlyCount
 		if remoteOnly > 0 {
-			notes.append("\(remoteOnly) \(remoteOnly == 1 ? "variable" : "variables") only on \(platform) stay as they are.")
+			notes.append("\(remoteOnly) \(review.platform.valuesNoun(count: remoteOnly)) only on \(platform) stay as they are.")
 		}
+		let readable = review.platform == .github ? "" : " unless their prefix makes them public"
+		let secrets = review.platform == .github ? "secrets" : "Secrets"
 		switch review.rules {
-		case .unreadable: notes.append("lpm.json's rules can't be read, so values aren't checked, and keys publish as Secrets unless their prefix makes them public.")
-		case .none: notes.append("This project has no rules, so keys publish as Secrets unless their prefix makes them public.")
+		case .unreadable: notes.append("lpm.json's rules can't be read, so values aren't checked, and keys publish as \(secrets)\(readable).")
+		case .none: notes.append("This project has no rules, so keys publish as \(secrets)\(readable).")
 		case .known:
 			if !review.hasValueCheck {
 				notes.append("The values haven't been checked against lpm.json's rules yet, so rule failures don't show.")
@@ -503,7 +549,7 @@ struct PublishSheet: View {
 	private var resultsStep: some View {
 		if let results = session.results {
 			VStack(alignment: .leading, spacing: 10) {
-				Text("Published \(results.publishedCount) of \(results.rows.count) \(results.rows.count == 1 ? "variable" : "variables"). \(Self.redeployNote(for: results.destination.target.platform))")
+				Text(Self.resultsHeader(for: results))
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -534,6 +580,48 @@ struct PublishSheet: View {
 				}
 			}
 		}
+	}
+
+	/// How much was published, and, when the platform kept any new value, as it can with its row failed, how it starts using it.
+	static func resultsHeader(for results: PublishSession.Results) -> String {
+		guard results.rows.contains(where: \.isStored) else { return results.summary }
+		return "\(results.summary) \(redeployNote(for: results.destination.target.platform))"
+	}
+
+	/// What to say of the installations GitHub left out: the suspended ones, then those whose repositories it refused to list.
+	static func skippedInstallationNotes(_ skipped: [GitHubSkippedInstallation]) -> [String] {
+		var notes: [String] = []
+		let suspended = skipped.filter(\.isSuspended)
+		if let first = suspended.first {
+			let one = suspended.count == 1
+			let owner = one ? "An owner of \(first.account ?? "the account")" : "An owner of each account"
+			let settings = one ? first.account.map { "\($0)'s settings" } ?? "its settings" : "its settings"
+			// GitHub lets an installation be unsuspended only the way it was suspended: an app's own suspension, only by the app.
+			notes.append(
+				"LPM Vault's GitHub App is suspended on \(accounts(suspended)), so \(one ? "its" : "their") repositories aren't listed. \(owner) can unsuspend it in \(settings) on GitHub, unless LPM Vault suspended it."
+			)
+		}
+		let refused = skipped.filter { !$0.isSuspended }
+		if !refused.isEmpty {
+			notes.append(
+				"GitHub refused to list the repositories of LPM Vault's GitHub App on \(accounts(refused)), as when it was uninstalled meanwhile. Refresh, or install the app there again."
+			)
+		}
+		return notes
+	}
+
+	/// The installations' accounts: the first few by name, then how many others.
+	private static func accounts(_ installations: [GitHubSkippedInstallation]) -> String {
+		let named = installations.compactMap(\.account)
+		let shown = named.prefix(3)
+		let others = installations.count - shown.count
+		var parts = Array(shown)
+		if others > 0 {
+			parts.append(shown.isEmpty
+				? (others == 1 ? "an account" : "\(others) accounts")
+				: "\(others) other account\(others == 1 ? "" : "s")")
+		}
+		return ListFormatter.localizedString(byJoining: parts)
 	}
 
 	static func redeployNote(for platform: PublishPlatform) -> String {
@@ -583,9 +671,16 @@ struct PublishSheet: View {
 					Text("Choose a destination").font(.system(size: 12)).foregroundStyle(VaultPalette.textTertiary)
 				}
 			case .review:
-				Label("Touch ID confirms before anything is sent", systemImage: "touchid")
-					.font(.system(size: 12))
-					.foregroundStyle(VaultPalette.textTertiary)
+				if let overflow = overflowMessage {
+					Text(overflow)
+						.font(.system(size: 12))
+						.foregroundStyle(VaultPalette.orangeTintText)
+						.fixedSize(horizontal: false, vertical: true)
+				} else {
+					Label("Touch ID confirms before anything is sent", systemImage: "touchid")
+						.font(.system(size: 12))
+						.foregroundStyle(VaultPalette.textTertiary)
+				}
 			case .results:
 				EmptyView()
 			}
@@ -593,15 +688,18 @@ struct PublishSheet: View {
 			switch session.step {
 			case .destination:
 				VaultBarButton(title: "Cancel", height: 28, action: close)
-				VaultBarButton(title: "Review variables", filled: true, disabled: !session.canReview, height: 28, action: session.loadReview)
+				VaultBarButton(
+					title: "Review \(platform?.valuesNoun(count: 2) ?? "variables")", filled: true, disabled: !session.canReview, height: 28,
+					action: session.loadReview)
 			case .review:
 				VaultBarButton(title: "Back", disabled: session.isPublishing, height: 28, action: session.showDestination)
 				VaultBarButton(
-					title: session.isPublishing ? "Publishing…" : "Publish \(publishCount) \(publishCount == 1 ? "variable" : "variables")",
+					title: session.isPublishing ? "Publishing…" : "Publish \(publishedValues)",
 					filled: true,
-					disabled: publishCount == 0 || session.isPublishing || session.isLoadingReview,
+					disabled: publishCount == 0 || overflowMessage != nil || session.isPublishing || session.isLoadingReview,
 					height: 28,
 					action: session.publish)
+				.accessibilityHint(overflowMessage ?? "")
 			case .results:
 				if session.results?.rows.contains(where: { $0.outcome != .published }) == true {
 					VaultBarButton(title: "Review Again", height: 28, action: session.reviewAgain)
@@ -612,6 +710,23 @@ struct PublishSheet: View {
 	}
 
 	private var publishCount: Int { session.review?.selection.keys.count ?? 0 }
+
+	/// What the publish sends, counted as the platform calls it.
+	private var publishedValues: String {
+		guard let review = session.review else { return "variables" }
+		let summary = review.summary
+		return review.platform.countedValues(secrets: summary.secrets, variables: summary.variables)
+	}
+
+	private var overflowMessage: String? { session.review.flatMap(Self.overflowMessage(for:)) }
+
+	/// Why the chosen keys don't fit where they'd go, when they don't: every kind that wouldn't fit.
+	static func overflowMessage(for review: PublishSession.Review) -> String? {
+		guard case .github(let target) = review.destination.target else { return nil }
+		let overflows = review.plan.overflows(of: review.selection)
+		guard !overflows.isEmpty else { return nil }
+		return overflows.map { GitHubPublishing.overflowMessage($0, scope: target.scope) }.joined(separator: " ")
+	}
 
 	/// Forgets the destination, and closes once it's gone; a failure stays
 	/// shown so forgetting can be tried again.
@@ -766,6 +881,85 @@ private struct NetlifyDestinationFields: View {
 		case .loading: "Loading sites…"
 		case .loaded(let sites) where sites.isEmpty: "No sites this connection can reach"
 		default: "Choose site…"
+		}
+	}
+}
+
+/// A GitHub destination's repository, and the repository's own secrets and
+/// variables or one environment's. Repositories come from installations of
+/// LPM Vault's GitHub App, so installing it on more lists them after Refresh.
+private struct GitHubDestinationFields: View {
+	@Bindable var form: GitHubDestinationForm
+	let installURL: URL?
+	let reload: () -> Void
+	@Environment(\.openURL) private var openURL
+
+	var body: some View {
+		GridRow {
+			PublishDestinationField("Repository") {
+				VaultMenuField(
+					title: "Repository",
+					options: zip(form.repositories.value ?? [], form.repositoryOptions).map { repository, option in
+						VaultMenuOption(
+							value: option.id, label: option.label, systemImage: repository.isPrivate ? "lock" : "book.closed",
+							disabled: !option.isAvailable)
+					},
+					selection: $form.repositoryID,
+					placeholder: placeholder,
+					disabled: form.repositories.value?.isEmpty ?? true)
+			}
+			PublishDestinationField("Secrets and variables") {
+				VaultMenuField(
+					title: "Secrets and variables",
+					options: form.scopeOptions.map { VaultMenuOption(value: $0.id, label: $0.label, disabled: !$0.isAvailable) },
+					selection: Binding(
+						get: { form.scope?.identifier },
+						set: { identifier in form.scope = form.scopeChoices.first { $0.identifier == identifier } }),
+					placeholder: form.environments == .loading ? "Loading environments…" : "Choose…",
+					disabled: form.repository == nil)
+			}
+		}
+		GridRow {
+			HStack(spacing: 8) {
+				Text("A repository that isn't listed needs LPM Vault's GitHub App.\(form.environments == .loading ? " Loading environments…" : "")")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+				if let installURL {
+					Button("Install on GitHub") { openURL(installURL) }
+						.buttonStyle(.plain)
+						.font(.system(size: 11.5, weight: .medium))
+						.foregroundStyle(VaultPalette.accentForeground)
+				}
+				Button("Refresh", action: reload)
+					.buttonStyle(.plain)
+					.font(.system(size: 11.5, weight: .medium))
+					.foregroundStyle(VaultPalette.accentForeground)
+					.disabled(form.repositories == .loading)
+					.accessibilityLabel("Refresh repositories")
+			}
+			.gridCellColumns(2)
+		}
+		GridRow {
+			VStack(alignment: .leading, spacing: 4) {
+				Text(form.hidesSSORepositories
+					? "GitHub left out repositories of an organization with single sign-on. Sign in to it on GitHub, then connect GitHub again on the Platforms page."
+					: "An organization with single sign-on lists its repositories only when GitHub was connected while you were signed in to it.")
+					.foregroundStyle(form.hidesSSORepositories ? VaultPalette.orangeTintText : VaultPalette.textTertiary)
+				ForEach(PublishSheet.skippedInstallationNotes(form.skippedInstallations), id: \.self) { note in
+					Text(note).foregroundStyle(VaultPalette.orangeTintText)
+				}
+			}
+			.font(.system(size: 11.5))
+			.fixedSize(horizontal: false, vertical: true)
+			.gridCellColumns(2)
+		}
+	}
+
+	private var placeholder: String {
+		switch form.repositories {
+		case .loading: "Loading repositories…"
+		case .loaded(let repositories) where repositories.isEmpty: "No repositories have LPM Vault's GitHub App"
+		default: "Choose repository…"
 		}
 	}
 }

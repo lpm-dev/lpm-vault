@@ -1386,6 +1386,7 @@ final class VaultStore {
   private let platformClient: @Sendable (String) -> any VercelClientProtocol
   private let coolifyClient: CoolifyConnector.ClientFactory
   private let netlifyClient: NetlifyConnector.ClientFactory
+  private let githubClient: GitHubConnector.ClientFactory
   /// Each project's saved publish destinations, for the Publish menu.
   private(set) var publishDestinations: [String: [PublishDestinationSummary]] = [:]
   /// Open Publish sheets' sessions, which locking stops.
@@ -1406,7 +1407,7 @@ final class VaultStore {
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
     connectCoolify: { [coolifyClient] in await CoolifyConnector(client: coolifyClient).connect(address: $0, token: $1) },
     connectNetlify: netlifyConnect ?? { [netlifyClient] in await NetlifyConnector(client: netlifyClient).connect(session: $0, open: $1) },
-    connectGitHub: githubConnect ?? { await GitHubConnector().connect(session: $0, open: $1) },
+    connectGitHub: githubConnect ?? { [githubClient] in await GitHubConnector(client: githubClient).connect(session: $0, open: $1) },
     session: { [weak self] in await self?.platformSession() },
     openURL: platformURLOpener ?? PlatformConnections.openInBrowser,
     didChange: { [weak self] in self?.forgetConnectionDetails() }
@@ -1725,6 +1726,7 @@ final class VaultStore {
       vercel: platformClient,
       coolify: coolifyClient,
       netlify: netlifyClient,
+      github: githubClient,
       didChange: { [weak self] in Task { await self?.loadPublishDestinations(for: projectID) } })
   }
 
@@ -1917,6 +1919,7 @@ final class VaultStore {
     platformClient: (@Sendable (String) -> any VercelClientProtocol)? = nil,
     coolifyClient: CoolifyConnector.ClientFactory? = nil,
     netlifyClient: NetlifyConnector.ClientFactory? = nil,
+    githubClient: GitHubConnector.ClientFactory? = nil,
     platformURLOpener: (@MainActor @Sendable (URL) -> Void)? = nil,
     valueChecker: ProjectEnvValueCheckWorker.Checker? = nil,
     authAuthorizationProvider:
@@ -1985,6 +1988,7 @@ final class VaultStore {
     self.platformClient = platformClient ?? { VercelClient(token: $0) }
     self.coolifyClient = coolifyClient ?? { CoolifyClient(instance: $0, token: $1) }
     self.netlifyClient = netlifyClient ?? { NetlifyClient(token: $0) }
+    self.githubClient = githubClient ?? { GitHubClient(token: $0) }
     self.platformURLOpener = platformURLOpener
     self.valueCheckWorker = valueChecker.map(ProjectEnvValueCheckWorker.init(checker:)) ?? ProjectEnvValueCheckWorker()
     self.biometricService = biometricService

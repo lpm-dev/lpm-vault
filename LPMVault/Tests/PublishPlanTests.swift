@@ -83,7 +83,7 @@ struct PublishPlanTests {
 
 		#expect(plan.remoteOnlyCount == 4)
 		let summary = plan.summary(of: PublishPlan.Selection(defaultsOf: plan))
-		#expect(summary == PublishPlan.Summary(adding: 2, replacing: 1, upToDate: 1, skipped: 2))
+		#expect(summary == PublishPlan.Summary(adding: 2, replacing: 1, upToDate: 1, skipped: 2, secrets: 3))
 		#expect(summary.publishing == 3)
 	}
 
@@ -100,7 +100,7 @@ struct PublishPlanTests {
 			("API_TOKEN", true, false), ("NEXT_PUBLIC_API_URL", true, true), ("DATABASE_URL", false, false),
 		].map { selection.set($0.0, selected: $0.1, confirmed: $0.2, in: plan) }
 		#expect(accepted == [false, false, false, true, true, true])
-		#expect(plan.summary(of: selection) == PublishPlan.Summary(adding: 1, replacing: 2, upToDate: 0, skipped: 3))
+		#expect(plan.summary(of: selection) == PublishPlan.Summary(adding: 1, replacing: 2, upToDate: 0, skipped: 3, secrets: 2))
 	}
 
 	@Test("a key someone changed, replaced or removed on the platform since this Mac published it waits for a choice")

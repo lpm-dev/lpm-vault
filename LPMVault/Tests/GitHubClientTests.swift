@@ -63,6 +63,31 @@ struct GitHubHTTPTests {
 		#expect(GitHubHTTP.unannouncedLimitWait(after: 4) == .seconds(120))
 	}
 
+	@Test("a Link header is read as RFC 8288 writes it: quoted parameters may hold <, >, ; and , and only a link's first rel counts")
+	func readsLinks() {
+		func next(_ header: String) -> String?? {
+			GitHubHTTP.links(header).map { $0.first { $0.relations.contains("next") }?.target }
+		}
+		#expect(next(#"<?page=2>; title="page < 3"; rel="next""#) == .some("?page=2"))
+		#expect(next(#"<a>; rel="prev"; title="x; rel=next, <b>", <c>; rel=next"#) == .some("c"))
+		#expect(next(#"<a>; rel="next last""#) == .some("a"))
+		#expect(next(#"<a>; REL = "NEXT""#) == .some("a"))
+		#expect(next(#"<a>; title="say \"next\""; rel=last"#) == .some(nil))
+		#expect(next(#"<a>; rel="prev"; rel="next""#) == .some(nil), "A rel after the first is ignored")
+		#expect(next(#" , <a>; rel=next ,, "#) == .some("a"))
+		#expect(next("<a>; type=text/html; rel=next") == .some("a"), "An unquoted value runs to the next ; or , as RFC 8288's parsing reads it")
+		#expect(next("<a>; rel=next ;, <b>; rel=last;") == .some("a"), "A trailing ; is no parameter, and space may come before one")
+		for damaged in ["<a>; rel=prev <b>; rel=next", "<a>; rel=next prev", #"<a>; title=x"y; rel=next"#, "<a>; title=x>y; rel=next"] {
+			#expect(next(damaged) == nil, "An unquoted value with a space, quote or angle bracket lost a comma or quote, which could hide a link: \(damaged)")
+		}
+		#expect(next("") == .some(nil))
+		for malformed in [
+			#"<a; rel="next""#, #"<a>; rel="next"#, "garbage", "<a> junk", #"<a>; ="next""#, #"<a>; rel="next" <b>"#, "<a>; rel=", "<a>; rel= , <b>; rel=next",
+		] {
+			#expect(next(malformed) == nil, "\(malformed)")
+		}
+	}
+
 	@Test("IDs, logins, app slugs and client IDs take only GitHub's forms")
 	func validatesNames() {
 		#expect(GitHubHTTP.isValidID("583231") && !GitHubHTTP.isValidID("0583") && !GitHubHTTP.isValidID("-1") && !GitHubHTTP.isValidID(""))
@@ -121,7 +146,7 @@ struct GitHubClientTests {
 		let route = PlatformHTTPStub.platform { _ in
 			PlatformHTTPStub.Reply(status: 302, headers: ["Location": "/elsewhere"], body: Data())
 		}
-		#expect(await GitHubClient(token: "ghu_token", baseURL: route.baseURL, session: route.session).user() == .failure(.server(302)))
+		#expect(await GitHubClient(token: "ghu_token", baseURL: route.baseURL, session: route.session).user() == .failure(.moved))
 		#expect(route.requests.map(\.url.path) == ["/user"])
 	}
 

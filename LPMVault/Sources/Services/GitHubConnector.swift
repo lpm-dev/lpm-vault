@@ -61,7 +61,7 @@ struct GitHubConnector: Sendable {
 			switch await github.user() {
 			case .success(let user):
 				return .success(GitHubConnection(user: user, tokens: grant.tokens, appSlug: grant.appSlug, receivedAt: receivedAt))
-			case .failure(.unauthorized), .failure(.forbidden):
+			case .failure(.unauthorized), .failure(.forbidden), .failure(.credentials), .failure(.ssoRequired), .failure(.renewed):
 				return .failure(.tokenRejected)
 			case .failure(.cancelled):
 				return .failure(.cancelled)
@@ -76,10 +76,10 @@ struct GitHubConnector: Sendable {
 				lifts = limit.lifts
 				rateLimitWaits += 1
 				giveUp = .platformRateLimited(until: reset)
-			case .failure(.transport), .failure(.server):
+			case .failure(.transport), .failure(.timedOut), .failure(.server):
 				wait = retryDelay * (attempt + 1)
 				giveUp = .transport
-			case .failure(.notFound), .failure(.rejected), .failure(.invalidResponse):
+			case .failure(.notFound), .failure(.rejected), .failure(.invalidResponse), .failure(.moved), .failure(.tooLarge):
 				return .failure(.accountUnreadable)
 			}
 			guard attempt < userRetries else { return .failure(giveUp) }
