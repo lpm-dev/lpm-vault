@@ -28,6 +28,15 @@ enum BrowserPlatform: String, CaseIterable, Sendable {
 		}
 	}
 
+	/// The browser platform `platform` is, or nil for one connected otherwise, such as Coolify with a token.
+	init?(_ platform: PublishPlatform) {
+		switch platform {
+		case .vercel: self = .vercel
+		case .netlify: self = .netlify
+		case .coolify: return nil
+		}
+	}
+
 	var displayName: String { publishPlatform.displayName }
 }
 
@@ -38,6 +47,8 @@ enum PlatformAuthorizationError: Error, Equatable, Sendable {
 	case forbidden
 	/// The Registry can't connect this platform right now.
 	case unavailable
+	/// The platform answered, but refused the app's own request; asking again later can work.
+	case platformRefused
 	case rateLimited
 	/// Too many connections are already open; finish or cancel them first.
 	case tooManyOpen
@@ -71,6 +82,38 @@ enum PlatformAuthorizationOutcome: Equatable, Sendable {
 	case missing
 }
 
+/// Where a token refresh stands, as the Registry answers it.
+enum PlatformTokenRefreshOutcome: Equatable, Sendable {
+	/// The new tokens, sealed to the attempt's key, issued `age` seconds ago:
+	/// a retry collects the tokens a lost answer carried.
+	case ready(PlatformAuthorizationEnvelope.Sealed, age: Int)
+	/// The attempt isn't finished: another request of it is still refreshing
+	/// the token, or this one ran past the Registry's deadline and goes on
+	/// for a retry to collect.
+	case pending
+	/// The platform or the Registry refused it, or the token was already used, with the Registry's code.
+	case failed(code: String)
+	/// The refresh token expired.
+	case expired
+	/// The Registry didn't issue the token to the signed-in person, or no longer knows it.
+	case unknown
+}
+
+/// Refreshes an expiring platform token through the Registry, which holds
+/// the client secret the platform's refresh needs.
+protocol PlatformTokenRefreshing: Sendable {
+	/// Sends `refreshToken` for one attempt, named by `refreshID`, whose
+	/// result is sealed to `clientPublicKey`. Sending the same attempt again
+	/// collects the result the first request got, for a while.
+	func refresh(
+		_ platform: BrowserPlatform,
+		refreshToken: String,
+		clientPublicKey: Data,
+		refreshID: String,
+		session: PlatformSession
+	) async -> Result<PlatformTokenRefreshOutcome, PlatformAuthorizationError>
+}
+
 protocol PlatformAuthorizationClientProtocol: Sendable {
 	func start(
 		_ platform: BrowserPlatform,
@@ -91,7 +134,7 @@ protocol PlatformAuthorizationClientProtocol: Sendable {
 /// result must be signed by the Registry and name this request's nonce, the
 /// signed-in person, the platform and the connection, so nothing another
 /// request, another person or another platform caused is accepted.
-struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
+struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, PlatformTokenRefreshing {
 	static let nonceHeader = "x-lpm-platform-request-nonce"
 	private static let maximumResponseBytes = 64 * 1024
 
@@ -186,6 +229,54 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 		}
 	}
 
+	func refresh(
+		_ platform: BrowserPlatform,
+		refreshToken: String,
+		clientPublicKey: Data,
+		refreshID: String,
+		session platformSession: PlatformSession
+	) async -> Result<PlatformTokenRefreshOutcome, PlatformAuthorizationError> {
+		guard clientPublicKey.count == 65, clientPublicKey.first == 0x04, Self.isCanonicalUUID(refreshID),
+			PlatformTokens.isValidToken(refreshToken),
+			let url = URL(string: "/api/vault/platforms/\(platform.rawValue)/tokens", relativeTo: platformSession.baseURL),
+			let body = try? JSONSerialization.data(withJSONObject: [
+				"refreshToken": refreshToken,
+				"publicKey": clientPublicKey.base64EncodedString(),
+				"refreshId": refreshID,
+			])
+		else { return .failure(.invalidResponse) }
+		let nonce = Self.makeNonce()
+		return await send(url: url, body: body, nonce: nonce, session: platformSession).flatMap { http, data in
+			guard [200, 202, 404, 409, 410].contains(http.statusCode) else {
+				return .failure(Self.failure(status: http.statusCode, body: data))
+			}
+			// An unsigned 404 comes from a Registry without the route, before anything is signed.
+			guard let object = Self.signedObject(
+				http, data, nonce: nonce, principalID: platformSession.principalID, platform: platform),
+				object["refreshId"] as? String == refreshID,
+				let status = object["status"] as? String
+			else { return .failure(http.statusCode == 404 ? .server(404) : .invalidResponse) }
+			switch (http.statusCode, status) {
+			case (200, "ready"):
+				guard let envelope = object["envelope"],
+					let envelopeData = try? JSONSerialization.data(withJSONObject: envelope),
+					let sealed = try? JSONDecoder().decode(PlatformAuthorizationEnvelope.Sealed.self, from: envelopeData)
+				else { return .failure(.invalidResponse) }
+				guard let age = PlatformTokens.integer(object["ageSeconds"]), age >= 0, age <= PlatformTokens.maximumLifetime else {
+					return .failure(.invalidResponse)
+				}
+				return .success(.ready(sealed, age: age))
+			case (202, "pending"): return .success(.pending)
+			case (409, "failed"):
+				let code = (object["code"] as? String).flatMap { Self.isFailureCode($0) ? $0 : nil } ?? "server_error"
+				return .success(.failed(code: code))
+			case (410, "expired"): return .success(.expired)
+			case (404, "unknown"): return .success(.unknown)
+			default: return .failure(.invalidResponse)
+			}
+		}
+	}
+
 	func cancel(_ authorizationID: String, on platform: BrowserPlatform, session platformSession: PlatformSession) async {
 		guard Self.isCanonicalUUID(authorizationID),
 			let url = URL(
@@ -254,6 +345,7 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol {
 		case (401, _): return .signedOut
 		case (403, _): return .forbidden
 		case (503, "platform_unavailable"): return .unavailable
+		case (503, "platform_refused"): return .platformRefused
 		case (429, "too_many_authorizations"): return .tooManyOpen
 		case (429, _): return .rateLimited
 		default: return .server(status)

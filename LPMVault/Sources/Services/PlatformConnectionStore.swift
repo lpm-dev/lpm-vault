@@ -101,12 +101,18 @@ actor PlatformConnectionStore {
 		)
 	}
 
-	/// Saves the account with its token, replacing any earlier connection to
-	/// the same account. Nothing is saved once the calling task is cancelled,
-	/// as when the vault locks while the save waits its turn; one cancelled
-	/// while the Keychain writes is taken back.
-	func save(_ account: PlatformConnection.Account, accessToken: String, at date: Date) -> Result<PlatformConnection, PlatformConnectionStoreError> {
-		saveUndoably(account, accessToken: accessToken, at: date).map(\.connection)
+	/// Saves the account with its token, and how the token renews when it
+	/// expires, replacing any earlier connection to the same account. Nothing
+	/// is saved once the calling task is cancelled, as when the vault locks
+	/// while the save waits its turn; one cancelled while the Keychain writes
+	/// is taken back.
+	func save(
+		_ account: PlatformConnection.Account,
+		accessToken: String,
+		refresh: PlatformTokenRefresh? = nil,
+		at date: Date
+	) -> Result<PlatformConnection, PlatformConnectionStoreError> {
+		saveUndoably(account, accessToken: accessToken, refresh: refresh, at: date).map(\.connection)
 	}
 
 	/// Saves the account as `save` does, keeping what's needed to take the
@@ -114,12 +120,13 @@ actor PlatformConnectionStore {
 	func saveUndoably(
 		_ account: PlatformConnection.Account,
 		accessToken: String,
+		refresh: PlatformTokenRefresh? = nil,
 		at date: Date
 	) -> Result<SavedConnection, PlatformConnectionStoreError> {
 		Result {
 			guard !Task.isCancelled else { throw PlatformConnectionStoreError.cancelled }
 			let connection = PlatformConnection(account: account, connectedAt: PublishTimestamp.normalized(date))
-			guard let data = Self.encode(Record(connection: connection, accessToken: accessToken)) else {
+			guard let data = Self.encode(Record(connection: connection, accessToken: accessToken, refresh: refresh)) else {
 				throw PlatformConnectionStoreError.unreadable
 			}
 			// A record the Keychain can't read is still replaced: connecting again is how one is mended.
@@ -153,13 +160,82 @@ actor PlatformConnectionStore {
 		try service.deleteAppItem(.platformConnections, account: saved.connection.id).get()
 	}
 
-	/// The connection's access token, read when a request needs it.
-	func accessToken(for connectionID: PlatformConnection.ID) -> Result<String, PlatformConnectionStoreError> {
+	/// The connection's record, with its token and how it renews, read when a request needs it.
+	func record(for connectionID: PlatformConnection.ID) -> Result<Record, PlatformConnectionStoreError> {
 		Result {
 			guard let data = try service.readAppItem(.platformConnections, account: connectionID).get() else {
 				throw PlatformConnectionStoreError.notFound
 			}
-			return try Self.decode(data, account: connectionID).get().accessToken
+			return try Self.decode(data, account: connectionID).get()
+		}.mapError(Self.storeError)
+	}
+
+	/// Saves `attempt` as the request renewing the connection's `token`,
+	/// before it's sent. False when the connection holds another token now, or
+	/// already has a request to finish.
+	func beginRefresh(
+		of connectionID: PlatformConnection.ID,
+		token: String,
+		attempt: PlatformTokenRefresh.Attempt
+	) -> Result<Bool, PlatformConnectionStoreError> {
+		update(connectionID) { record in
+			guard var refresh = record.refresh, refresh.token == token, refresh.attempt == nil, !refresh.isRejected else { return nil }
+			refresh.attempt = attempt
+			var record = record
+			record.refresh = refresh
+			return record
+		}
+	}
+
+	/// Saves the tokens `attemptID` renewed the connection's token to,
+	/// received at `date`. False when the connection no longer waits on that
+	/// request, as when it was connected again meanwhile.
+	func completeRefresh(
+		of connectionID: PlatformConnection.ID,
+		attempt attemptID: String,
+		with tokens: PlatformTokens,
+		at date: Date
+	) -> Result<Bool, PlatformConnectionStoreError> {
+		update(connectionID) { record in
+			guard let refresh = record.refresh, refresh.attempt?.id == attemptID else { return nil }
+			return Record(
+				connection: record.connection,
+				accessToken: tokens.accessToken,
+				refresh: tokens.refresh(receivedAt: date, principalID: refresh.principalID))
+		}
+	}
+
+	/// Marks the connection's token as one that can't be renewed, after the
+	/// Registry refused `attemptID`; the platform must be connected again.
+	/// False when the connection no longer waits on that request.
+	func rejectRefresh(
+		of connectionID: PlatformConnection.ID,
+		attempt attemptID: String
+	) -> Result<Bool, PlatformConnectionStoreError> {
+		update(connectionID) { record in
+			guard var refresh = record.refresh, refresh.attempt?.id == attemptID else { return nil }
+			refresh.attempt = nil
+			refresh.isRejected = true
+			var record = record
+			record.refresh = refresh
+			return record
+		}
+	}
+
+	/// Rewrites the connection's record as `change` makes it; false when
+	/// `change` leaves it alone by returning nil.
+	private func update(
+		_ connectionID: PlatformConnection.ID,
+		_ change: (Record) -> Record?
+	) -> Result<Bool, PlatformConnectionStoreError> {
+		Result {
+			guard let data = try service.readAppItem(.platformConnections, account: connectionID).get() else {
+				throw PlatformConnectionStoreError.notFound
+			}
+			guard let changed = change(try Self.decode(data, account: connectionID).get()) else { return false }
+			guard let encoded = Self.encode(changed) else { throw PlatformConnectionStoreError.unreadable }
+			try service.writeAppItem(.platformConnections, account: connectionID, data: encoded).get()
+			return true
 		}.mapError(Self.storeError)
 	}
 
@@ -174,6 +250,14 @@ actor PlatformConnectionStore {
 	struct Record: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
 		let connection: PlatformConnection
 		let accessToken: String
+		/// How the token renews, for a platform whose tokens expire; nil for one that doesn't.
+		var refresh: PlatformTokenRefresh?
+
+		init(connection: PlatformConnection, accessToken: String, refresh: PlatformTokenRefresh? = nil) {
+			self.connection = connection
+			self.accessToken = accessToken
+			self.refresh = refresh
+		}
 
 		var description: String { "Record(\(connection.id), accessToken: <redacted>)" }
 		var debugDescription: String { description }
@@ -222,10 +306,78 @@ actor PlatformConnectionStore {
 				"email": netlify.email ?? NSNull(),
 			]) { _, new in new }
 		}
+		if let refresh = record.refresh {
+			guard BrowserPlatform(record.connection.platform) != nil, let encoded = encode(refresh) else { return nil }
+			object["refresh"] = encoded
+		}
 		guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
 			data.count <= maximumRecordBytes
 		else { return nil }
 		return data
+	}
+
+	private static func encode(_ refresh: PlatformTokenRefresh) -> [String: Any]? {
+		guard PlatformTokens.isValidToken(refresh.token), isValidPrincipal(refresh.principalID) else { return nil }
+		var attempt: Any = NSNull()
+		if let pending = refresh.attempt {
+			guard PlatformAuthorizationClient.isCanonicalUUID(pending.id), pending.privateKey != nil else { return nil }
+			attempt = [
+				"id": pending.id,
+				"key": pending.key.base64EncodedString(),
+				"startedAt": PublishTimestamp.milliseconds(pending.startedAt),
+			]
+		}
+		return [
+			"token": refresh.token,
+			"accessTokenExpiresAt": PublishTimestamp.milliseconds(refresh.accessTokenExpiresAt),
+			"expiresAt": PublishTimestamp.milliseconds(refresh.expiresAt),
+			"obtainedAt": PublishTimestamp.milliseconds(refresh.obtainedAt),
+			"principalId": refresh.principalID,
+			"rejected": refresh.isRejected,
+			"attempt": attempt,
+		]
+	}
+
+	/// The refresh state in a record, or `.some(nil)` when it has none; nil when it's malformed.
+	private static func decodeRefresh(_ value: Any?) -> PlatformTokenRefresh?? {
+		guard let value else { return .some(nil) }
+		guard let object = value as? [String: Any],
+			Set(object.keys) == ["token", "accessTokenExpiresAt", "expiresAt", "obtainedAt", "principalId", "rejected", "attempt"],
+			let token = object["token"] as? String, PlatformTokens.isValidToken(token),
+			let accessTokenExpiresAt = date(object["accessTokenExpiresAt"]),
+			let expiresAt = date(object["expiresAt"]),
+			let obtainedAt = date(object["obtainedAt"]),
+			let principalID = object["principalId"] as? String, isValidPrincipal(principalID),
+			let rejected = object["rejected"] as? NSNumber, CFGetTypeID(rejected) == CFBooleanGetTypeID()
+		else { return nil }
+		var attempt: PlatformTokenRefresh.Attempt?
+		switch object["attempt"] {
+		case is NSNull:
+			attempt = nil
+		case let pending as [String: Any]:
+			guard Set(pending.keys) == ["id", "key", "startedAt"],
+				let id = pending["id"] as? String, PlatformAuthorizationClient.isCanonicalUUID(id),
+				let keyText = pending["key"] as? String, let key = Data(base64Encoded: keyText),
+				let startedAt = date(pending["startedAt"])
+			else { return nil }
+			attempt = PlatformTokenRefresh.Attempt(id: id, key: key, startedAt: startedAt)
+			guard attempt?.privateKey != nil else { return nil }
+		default:
+			return nil
+		}
+		return .some(PlatformTokenRefresh(
+			token: token, accessTokenExpiresAt: accessTokenExpiresAt, expiresAt: expiresAt, obtainedAt: obtainedAt,
+			principalID: principalID, attempt: attempt, isRejected: rejected.boolValue))
+	}
+
+	private static func date(_ value: Any?) -> Date? {
+		guard let milliseconds = value as? Int64, (0...PublishTimestamp.maximumMilliseconds).contains(milliseconds) else { return nil }
+		return PublishTimestamp.date(milliseconds: milliseconds)
+	}
+
+	/// An LPM account's ID, as the Registry issues it.
+	private static func isValidPrincipal(_ text: String) -> Bool {
+		!text.isEmpty && text.utf8.count <= 128 && text.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7E }
 	}
 
 	/// The record in `data`, which must belong under `account`. A platform
@@ -244,10 +396,12 @@ actor PlatformConnectionStore {
 			(0...PublishTimestamp.maximumMilliseconds).contains(milliseconds)
 		else { return .failure(.unreadable) }
 		let connectedAt = PublishTimestamp.date(milliseconds: milliseconds)
-		let record: Record
+		guard case .some(let refresh) = decodeRefresh(object["refresh"]) else { return .failure(.unreadable) }
+		let keys = Set(object.keys).subtracting(["refresh"])
+		var record: Record
 		switch PublishPlatform(rawValue: platform) {
 		case .vercel?:
-			guard Set(object.keys) == ["version", "platform", "accessToken", "connectedAt", "installationId", "teamId", "userId", "name", "slug"],
+			guard keys == ["version", "platform", "accessToken", "connectedAt", "installationId", "teamId", "userId", "name", "slug"],
 				let installationID = object["installationId"] as? String,
 				let userID = object["userId"] as? String,
 				let name = (object["name"] as? String)?.escapingDirectionControls, isValidName(name),
@@ -263,7 +417,7 @@ actor PlatformConnectionStore {
 					connectedAt: connectedAt),
 				accessToken: grant.accessToken)
 		case .coolify?:
-			guard Set(object.keys) == ["version", "platform", "accessToken", "connectedAt", "instance", "teamId", "teamName"],
+			guard keys == ["version", "platform", "accessToken", "connectedAt", "instance", "teamId", "teamName"],
 				let origin = object["instance"] as? String, let instance = CoolifyInstance(origin: origin),
 				let teamID = object["teamId"] as? String, CoolifyTeam.isValidID(teamID),
 				let teamName = (object["teamName"] as? String)?.escapingDirectionControls, isValidName(teamName),
@@ -275,7 +429,7 @@ actor PlatformConnectionStore {
 					connectedAt: connectedAt),
 				accessToken: accessToken)
 		case .netlify?:
-			guard Set(object.keys) == ["version", "platform", "accessToken", "connectedAt", "userId", "name", "email"],
+			guard keys == ["version", "platform", "accessToken", "connectedAt", "userId", "name", "email"],
 				let userID = object["userId"] as? String, NetlifyHTTP.isValidIdentifier(userID),
 				let name = (object["name"] as? String)?.escapingDirectionControls, isValidName(name),
 				let email = optionalString(object["email"]).map({ $0?.escapingDirectionControls }),
@@ -291,6 +445,10 @@ actor PlatformConnectionStore {
 			return .failure(.newerVersion)
 		}
 		guard record.connection.id == account else { return .failure(.unreadable) }
+		if let refresh {
+			guard BrowserPlatform(record.connection.platform) != nil else { return .failure(.unreadable) }
+			record.refresh = refresh
+		}
 		return .success(record)
 	}
 
