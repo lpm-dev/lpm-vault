@@ -58,10 +58,10 @@ struct NetlifyConnector: Sendable {
 			case .failure(.cancelled):
 				return .failure(.cancelled)
 			case .failure(.rateLimited(let reset)):
-				guard let limit = NetlifyHTTP.rateLimitWait(until: reset) else { return .failure(.platformRateLimited) }
+				guard let limit = NetlifyHTTP.rateLimitWait(until: reset) else { return .failure(.platformRateLimited(until: reset)) }
 				wait = limit
 				lifts = reset
-				giveUp = .platformRateLimited
+				giveUp = .platformRateLimited(until: reset)
 			case .failure(.transport), .failure(.server):
 				wait = retryDelay * (attempt + 1)
 				giveUp = .transport

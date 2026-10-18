@@ -33,6 +33,12 @@ final class PlatformConnections {
 		_ open: @escaping @Sendable (URL) async -> Void
 	) async -> Result<NetlifyConnection, BrowserConnectError>
 
+	/// One run of connecting GitHub; see `GitHubConnector.connect`.
+	typealias ConnectGitHub = @Sendable (
+		_ session: PlatformSession,
+		_ open: @escaping @Sendable (URL) async -> Void
+	) async -> Result<GitHubConnection, BrowserConnectError>
+
 	enum CoolifyOutcome: Equatable {
 		case connected(PlatformConnection)
 		case failed(String)
@@ -41,6 +47,8 @@ final class PlatformConnections {
 	}
 
 	private(set) var connections: [PlatformConnection] = []
+	/// Connections whose token can't be renewed any more, which must be connected again.
+	private(set) var expired: Set<PlatformConnection.ID> = []
 	private(set) var phase: Phase = .idle
 	/// The platform connecting in the browser, one at a time.
 	private(set) var connecting: PublishPlatform?
@@ -53,6 +61,7 @@ final class PlatformConnections {
 	private let connect: Connect
 	private let connectCoolifyTeam: ConnectCoolify
 	private let connectNetlifyAccount: ConnectNetlify
+	private let connectGitHubAccount: ConnectGitHub
 	private let session: SessionProvider
 	private let openURL: @MainActor @Sendable (URL) -> Void
 	private let now: @Sendable () -> Date
@@ -68,6 +77,7 @@ final class PlatformConnections {
 		connect: @escaping Connect = { await VercelConnector().connect(session: $0, open: $1) },
 		connectCoolify: @escaping ConnectCoolify = { await CoolifyConnector().connect(address: $0, token: $1) },
 		connectNetlify: @escaping ConnectNetlify = { await NetlifyConnector().connect(session: $0, open: $1) },
+		connectGitHub: @escaping ConnectGitHub = { await GitHubConnector().connect(session: $0, open: $1) },
 		session: @escaping SessionProvider,
 		openURL: @escaping @MainActor @Sendable (URL) -> Void = PlatformConnections.openInBrowser,
 		now: @escaping @Sendable () -> Date = { Date() },
@@ -77,6 +87,7 @@ final class PlatformConnections {
 		self.connect = connect
 		self.connectCoolifyTeam = connectCoolify
 		self.connectNetlifyAccount = connectNetlify
+		self.connectGitHubAccount = connectGitHub
 		self.session = session
 		self.openURL = openURL
 		self.now = now
@@ -93,13 +104,15 @@ final class PlatformConnections {
 		loadTask?.cancel()
 		let generation = generation
 		isLoading = true
-		loadTask = Task { [weak self, store] in
-			let result = await store.connections()
+		loadTask = Task { [weak self, store, now] in
+			let result = await store.listing(at: now())
 			guard let self, generation == self.generation, !Task.isCancelled else { return }
 			self.isLoading = false
 			self.loadTask = nil
 			switch result {
-			case .success(let connections): self.connections = connections
+			case .success(let listing):
+				self.connections = listing.connections
+				self.expired = listing.expired
 			case .failure(let error): self.notice = Notice(message: "Platform connections couldn't be read. \(error)", isError: true)
 			}
 		}
@@ -131,10 +144,32 @@ final class PlatformConnections {
 		}
 	}
 
-	/// What a browser connection connected, ready to save.
+	/// Opens the page installing LPM Vault's GitHub App on more accounts and
+	/// repositories, for a GitHub connection.
+	func openInstallPage(for connection: PlatformConnection) {
+		guard case .github(let account) = connection.account, let url = account.installURL else { return }
+		openURL(url)
+	}
+
+	/// Connects a GitHub account in the browser; does nothing while a browser connection runs.
+	func connectGitHub() {
+		connectInBrowser(.github) { [connectGitHubAccount] session, open in
+			await connectGitHubAccount(session, open).map { connected in
+				let user = connected.user
+				return BrowserConnected(
+					account: .github(GitHubConnectionAccount(userID: user.id, login: user.login, name: user.name, appSlug: connected.appSlug)),
+					token: connected.tokens.accessToken,
+					refresh: connected.tokens.refresh(receivedAt: connected.receivedAt, principalID: session.principalID))
+			}
+		}
+	}
+
+	/// What a browser connection connected, ready to save: the token, and
+	/// how it renews when the platform's tokens expire.
 	private struct BrowserConnected: Sendable {
 		let account: PlatformConnection.Account
 		let token: String
+		var refresh: PlatformTokenRefresh?
 	}
 
 	/// Runs `run` with the LPM session, which opens the platform's page with
@@ -180,7 +215,7 @@ final class PlatformConnections {
 			guard generation == self.generation else { return }
 			switch outcome {
 			case .success(let connected):
-				switch await self.store.saveUndoably(connected.account, accessToken: connected.token, at: self.now()) {
+				switch await self.store.saveUndoably(connected.account, accessToken: connected.token, refresh: connected.refresh, at: self.now()) {
 				case .success(let saved):
 					guard await self.keep(saved, generation: generation) else { return }
 					let connection = saved.connection
@@ -195,7 +230,7 @@ final class PlatformConnections {
 			case .failure(.cancelled):
 				self.notice = nil
 			case .failure(let error):
-				self.notice = Notice(message: error.message(for: platform), isError: true)
+				self.notice = Notice(message: error.message(for: platform, now: self.now()), isError: true)
 			}
 		}
 	}
@@ -255,6 +290,7 @@ final class PlatformConnections {
 
 	private func insert(_ connection: PlatformConnection) {
 		connections.removeAll { $0.id == connection.id }
+		expired.remove(connection.id)
 		connections.append(connection)
 		connections.sort(by: PlatformConnectionStore.displayOrder)
 	}
@@ -276,6 +312,7 @@ final class PlatformConnections {
 			switch result {
 			case .success:
 				self.connections.removeAll { $0.id == connection.id }
+				self.expired.remove(connection.id)
 				self.notice = Notice(message: "Disconnected \(connection.name). Its token was removed from this Mac.", isError: false)
 			case .failure(let error):
 				self.notice = Notice(message: "\(connection.name) couldn't be disconnected. \(error)", isError: true)
@@ -299,6 +336,7 @@ final class PlatformConnections {
 		loadTask = nil
 		phase = .idle
 		connections = []
+		expired = []
 		notice = nil
 		isLoading = false
 		disconnecting = []

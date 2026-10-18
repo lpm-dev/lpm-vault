@@ -182,3 +182,30 @@ struct NetlifyGrant: PlatformGrant, Equatable, CustomStringConvertible, CustomDe
 	var debugDescription: String { description }
 	var customMirror: Mirror { Mirror(self, children: [:]) }
 }
+
+/// What connecting a GitHub account grants: a user token for LPM Vault's
+/// GitHub App, which reaches the repositories the app is installed on that
+/// the person can reach. It expires after eight hours and renews through the
+/// Registry. Tokens never appear when the grant is printed, logged or dumped.
+struct GitHubGrant: PlatformGrant, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	static let platform = BrowserPlatform.github
+
+	let tokens: PlatformTokens
+	/// The app's slug, whose page installs it on more accounts and repositories.
+	let appSlug: String
+
+	init?(tokens: PlatformTokens, appSlug: String) {
+		guard GitHubHTTP.isValidAppSlug(appSlug) else { return nil }
+		self.tokens = tokens
+		self.appSlug = appSlug
+	}
+
+	init?(payload: [String: Any]) {
+		guard let tokens = PlatformTokens(payload: payload), let appSlug = payload["appSlug"] as? String else { return nil }
+		self.init(tokens: tokens, appSlug: appSlug)
+	}
+
+	var description: String { "GitHubGrant(app: \(appSlug), tokens: <redacted>)" }
+	var debugDescription: String { description }
+	var customMirror: Mirror { Mirror(self, children: ["appSlug": appSlug]) }
+}

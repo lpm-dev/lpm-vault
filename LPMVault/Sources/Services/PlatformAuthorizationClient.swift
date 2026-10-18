@@ -20,11 +20,13 @@ struct PlatformSession: Sendable, CustomStringConvertible, CustomDebugStringConv
 enum BrowserPlatform: String, CaseIterable, Sendable {
 	case vercel
 	case netlify
+	case github
 
 	var publishPlatform: PublishPlatform {
 		switch self {
 		case .vercel: .vercel
 		case .netlify: .netlify
+		case .github: .github
 		}
 	}
 
@@ -33,6 +35,7 @@ enum BrowserPlatform: String, CaseIterable, Sendable {
 		switch platform {
 		case .vercel: self = .vercel
 		case .netlify: self = .netlify
+		case .github: self = .github
 		case .coolify: return nil
 		}
 	}
@@ -401,6 +404,7 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 		let isValid = switch platform {
 		case .vercel: isVercelInstallPage(components, query: query)
 		case .netlify: isNetlifyAuthorizePage(components, query: query, registry: registry)
+		case .github: isGitHubAuthorizePage(components, query: query, registry: registry)
 		}
 		return isValid ? components.url : nil
 	}
@@ -421,6 +425,21 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 			&& query["response_type"] == "code"
 			&& query["redirect_uri"] == callback
 			&& query["state"].map(isOneTimeValue) == true
+	}
+
+	/// GitHub's page for authorizing LPM Vault's GitHub App: an expiring token,
+	/// the account picker, and the PKCE challenge of the verifier the Registry keeps.
+	private static func isGitHubAuthorizePage(_ components: URLComponents, query: [String: String], registry: URL) -> Bool {
+		guard let callback = callbackURL(for: .github, registry: registry)?.absoluteString else { return false }
+		return components.host == "github.com" && components.path == "/login/oauth/authorize"
+			&& query.count == 7
+			&& query["client_id"].map(GitHubHTTP.isValidClientID) == true
+			&& query["redirect_uri"] == callback
+			&& query["state"].map(isOneTimeValue) == true
+			&& query["scope"] == "offline_access"
+			&& query["prompt"] == "select_account"
+			&& query["code_challenge"].map(isOneTimeValue) == true
+			&& query["code_challenge_method"] == "S256"
 	}
 
 	/// Where the platform returns the browser with its code: `registry`'s

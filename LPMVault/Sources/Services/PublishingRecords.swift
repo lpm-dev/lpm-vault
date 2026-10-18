@@ -130,6 +130,8 @@ enum PublishingRecords {
 			target = .coolify(try coolifyTarget(fields.value("target")))
 		case .netlify:
 			target = .netlify(try netlifyTarget(fields.value("target")))
+		case .github:
+			throw DecodingError.newerVersion
 		}
 		guard case .array(let excluded) = try fields.value("excludedKeys"),
 			excluded.count <= PublishDestination.maximumExcludedKeys

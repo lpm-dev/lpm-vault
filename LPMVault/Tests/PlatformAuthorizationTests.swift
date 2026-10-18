@@ -541,6 +541,13 @@ private final class FakeAuthorizations: PlatformAuthorizationClientProtocol, @un
 		ready(["platform": "netlify", "accessToken": "nfp_granted"])
 	}
 
+	func readyGitHubGrant() -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
+		ready([
+			"platform": "github", "accessToken": "ghu_granted", "accessTokenExpiresIn": 28_800,
+			"refreshToken": "ghr_granted", "refreshTokenExpiresIn": 15_897_600, "appSlug": "lpm-vault",
+		])
+	}
+
 	private func ready(_ payload: [String: Any]) -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
 		let json = try! JSONSerialization.data(withJSONObject: payload)
 		return { _, id, key in
@@ -866,20 +873,26 @@ struct NetlifyConnectorTests {
 		#expect(netlify.userReads == 2)
 	}
 
-	@Test("a rate limit that lifts later than LPM Vault waits, or keeps applying, says Netlify is limiting requests")
+	@Test("a rate limit that lifts later than LPM Vault waits, or keeps applying, says Netlify is limiting requests, and until when")
 	func userRateLimited() async {
 		let later = FakeAuthorizations(pageURL: Self.authorizePage)
 		later.outcome = later.readyNetlifyGrant()
-		let limited = ScriptedNetlify([.failure(.rateLimited(until: Date(timeIntervalSinceNow: 3_600)))])
+		let lifts = Date(timeIntervalSinceNow: 3_600)
+		let limited = ScriptedNetlify([.failure(.rateLimited(until: lifts))])
 		let result = await connect(later, netlify: limited)
-		#expect(failure(of: result) == .platformRateLimited)
-		#expect(failure(of: result)?.message(for: .netlify) == "Netlify is limiting requests. Wait a minute, then connect again.")
+		#expect(failure(of: result) == .platformRateLimited(until: lifts))
+		#expect(
+			failure(of: result)?.message(for: .netlify)
+				== "Netlify is limiting requests until \(lifts.formatted(date: .omitted, time: .shortened)). Connect again then.")
 		#expect(limited.userReads == 1)
 
 		let again = FakeAuthorizations(pageURL: Self.authorizePage)
 		again.outcome = again.readyNetlifyGrant()
-		let stays = ScriptedNetlify([.failure(.rateLimited(until: Date()))])
-		#expect(failure(of: await connect(again, netlify: stays)) == .platformRateLimited)
+		let lifted = Date()
+		let stays = ScriptedNetlify([.failure(.rateLimited(until: lifted))])
+		let kept = await connect(again, netlify: stays)
+		#expect(failure(of: kept) == .platformRateLimited(until: lifted))
+		#expect(failure(of: kept)?.message(for: .netlify) == "Netlify is limiting requests. Wait a minute, then connect again.")
 		#expect(stays.userReads == 3)
 	}
 
@@ -907,6 +920,162 @@ struct NetlifyConnectorTests {
 		let connection = try await connect(authorizations, browserDelay: .milliseconds(300)).get()
 		#expect(connection.user == Self.tolga)
 		#expect(authorizations.cancelledIDs.isEmpty)
+	}
+}
+
+/// A GitHub that answers each read of the user from a script, whose last answer repeats.
+private final class ScriptedGitHub: GitHubClientProtocol, @unchecked Sendable {
+	private let lock = NSLock()
+	private var answers: [Result<GitHubUser, GitHubAPIError>]
+	private var reads = 0
+	private var received: [String] = []
+
+	init(_ answers: [Result<GitHubUser, GitHubAPIError>]) {
+		self.answers = answers
+	}
+
+	var userReads: Int { lock.withLock { reads } }
+	var tokens: [String] { lock.withLock { received } }
+
+	func client(_ token: String) -> any GitHubClientProtocol {
+		lock.withLock { received.append(token) }
+		return self
+	}
+
+	func user() async -> Result<GitHubUser, GitHubAPIError> {
+		lock.withLock {
+			reads += 1
+			return answers.count > 1 ? answers.removeFirst() : answers[0]
+		}
+	}
+}
+
+struct GitHubConnectorTests {
+	private static let octocat = GitHubUser(id: "583231", login: "octocat", name: "The Octocat")
+	private static let authorizePage = URL(string: "https://github.com/login/oauth/authorize?client_id=Iv23li&state=\(platformTestOneTimeValue())")!
+	private let session = platformTestSession(URL(string: "http://localhost:1")!)
+
+	private func connect(
+		_ authorizations: FakeAuthorizations,
+		github: ScriptedGitHub = ScriptedGitHub([.success(octocat)]),
+		query: ((String) -> String)? = nil,
+		clock: SleepingTestClock = SleepingTestClock()
+	) async -> Result<GitHubConnection, BrowserConnectError> {
+		let port = Port()
+		var connector = GitHubConnector(authorization: browserAuthorization(authorizations, port: port), client: github.client)
+		connector.retryDelay = .milliseconds(5)
+		connector.now = { clock.date }
+		connector.sleep = { clock.sleep($0) }
+		let returning = query?(authorizations.id) ?? platformTestReturn(authorization: authorizations.id, proof: platformTestOneTimeValue())
+		return await connector.connect(session: session, open: browser(returning: returning, on: .github, listener: { port.port }))
+	}
+
+	@Test("connecting opens GitHub's page, waits for the browser at GitHub's path, collects the tokens once and reads whose they are")
+	func connects() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let github = ScriptedGitHub([.success(Self.octocat)])
+		let received = Date(timeIntervalSince1970: 1_760_000_123)
+		let connection = try await connect(authorizations, github: github, clock: SleepingTestClock(received)).get()
+		#expect(connection.user == Self.octocat && connection.appSlug == "lpm-vault" && connection.receivedAt == received)
+		#expect(connection.tokens.accessToken == "ghu_granted")
+		#expect(connection.tokens.expiry == .init(accessTokenLifetime: 28_800, refreshToken: "ghr_granted", refreshTokenLifetime: 15_897_600))
+		#expect(github.tokens == ["ghu_granted"])
+		#expect(authorizations.platformCalls == ["start github", "redeem github"])
+	}
+
+	@Test("another platform's grant can't complete a GitHub connection, and its token is never used")
+	func refusesOtherGrant() async {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyNetlifyGrant()
+		let github = ScriptedGitHub([.success(Self.octocat)])
+		#expect(failure(of: await connect(authorizations, github: github)) == .invalidResponse)
+		#expect(github.tokens.isEmpty)
+	}
+
+	@Test("an approval that expired before the Registry exchanged it says so, naming GitHub")
+	func approvalExpired() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		let result = await connect(authorizations, query: { platformTestReturn(authorization: $0, error: "authorization_expired") })
+		#expect(failure(of: result) == .platform(.approvalExpired))
+		#expect(failure(of: result)?.message(for: .github) == "Your approval on GitHub expired before it could be used. Connect again.")
+	}
+
+	@Test("the user is read again when GitHub couldn't answer or was limiting requests, since the tokens can't be collected again")
+	func retriesUser() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let github = ScriptedGitHub([.failure(.transport), .failure(.rateLimited(until: SleepingTestClock.start)), .success(Self.octocat)])
+		let clock = SleepingTestClock()
+		#expect(try await connect(authorizations, github: github, clock: clock).get().user == Self.octocat)
+		#expect(github.userReads == 3)
+		#expect(clock.sleeps == [.milliseconds(5), .seconds(1)], "A limit that has just lifted is still given a moment")
+	}
+
+	@Test("a rate limit on reading the user that GitHub doesn't say the end of is waited out a minute, then twice that, as GitHub asks")
+	func backsOffUnannouncedLimits() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let clock = SleepingTestClock()
+		let github = ScriptedGitHub([.failure(.rateLimited(until: nil)), .failure(.rateLimited(until: nil)), .success(Self.octocat)])
+		#expect(try await connect(authorizations, github: github, clock: clock).get().user == Self.octocat)
+		#expect(clock.sleeps == [.seconds(60), .seconds(120)])
+
+		let announced = FakeAuthorizations(pageURL: Self.authorizePage)
+		announced.outcome = announced.readyGitHubGrant()
+		let counting = SleepingTestClock()
+		let limits = ScriptedGitHub([
+			.failure(.rateLimited(until: counting.date.addingTimeInterval(10))), .failure(.rateLimited(until: nil)), .success(Self.octocat),
+		])
+		#expect(try await connect(announced, github: limits, clock: counting).get().user == Self.octocat)
+		#expect(counting.sleeps == [.seconds(11), .seconds(120)], "Every limit waited out counts toward the next one's backoff")
+		#expect(BrowserConnectError.platformRateLimited(until: nil).message(for: .github) == "GitHub is limiting requests. Wait a few minutes, then connect again.")
+	}
+
+	@Test("a rate limit on reading the user is waited out a moment past its reset, even one that lifts at the longest wait")
+	func waitsOutUserRateLimit() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let clock = SleepingTestClock()
+		let github = ScriptedGitHub([.failure(.rateLimited(until: clock.date.addingTimeInterval(65))), .success(Self.octocat)])
+		#expect(try await connect(authorizations, github: github, clock: clock).get().user == Self.octocat)
+		#expect(clock.sleeps == [.seconds(66)])
+		#expect(github.userReads == 2)
+	}
+
+	@Test("a limit GitHub says lifts much later says until when, as an hour's limit shared with the person's other apps can")
+	func namesWhenLongLimitLifts() async {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let clock = SleepingTestClock()
+		let lifts = clock.date.addingTimeInterval(40 * 60)
+		let github = ScriptedGitHub([.failure(.rateLimited(until: lifts))])
+		let error = failure(of: await connect(authorizations, github: github, clock: clock))
+		#expect(error == .platformRateLimited(until: lifts))
+		#expect(
+			error?.message(for: .github, now: clock.date)
+				== "GitHub is limiting requests until \(lifts.formatted(date: .omitted, time: .shortened)). Connect again then.")
+		#expect(
+			BrowserConnectError.platformRateLimited(until: clock.date.addingTimeInterval(80)).message(for: .github, now: clock.date)
+				== "GitHub is limiting requests. Wait a minute, then connect again.")
+		#expect(clock.sleeps.isEmpty)
+		#expect(github.userReads == 1)
+	}
+
+	@Test(
+		"a token GitHub refuses at once isn't kept, and neither is one whose user GitHub doesn't say",
+		arguments: [
+			(GitHubAPIError.unauthorized, BrowserConnectError.tokenRejected), (.forbidden, .tokenRejected),
+			(.invalidResponse, .accountUnreadable), (.notFound, .accountUnreadable),
+			(.rateLimited(until: SleepingTestClock.start.addingTimeInterval(66)), .platformRateLimited(until: SleepingTestClock.start.addingTimeInterval(66))),
+		]
+	)
+	func refusedUser(error: GitHubAPIError, expected: BrowserConnectError) async {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant()
+		let github = ScriptedGitHub([.failure(error)])
+		#expect(failure(of: await connect(authorizations, github: github)) == expected)
+		#expect(github.userReads == 1)
 	}
 }
 

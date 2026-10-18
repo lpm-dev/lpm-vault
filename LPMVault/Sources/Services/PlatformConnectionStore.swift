@@ -45,15 +45,25 @@ actor PlatformConnectionStore {
 	/// The connections this Mac holds, by platform and name. Records it can't
 	/// read are left out; connecting that account again replaces them.
 	func connections() -> Result<[PlatformConnection], PlatformConnectionStoreError> {
+		listing(at: Date()).map(\.connections)
+	}
+
+	/// The connections, as `connections()` lists them, with those whose
+	/// token can't be renewed at `date` any more, which must be connected again.
+	func listing(at date: Date) -> Result<(connections: [PlatformConnection], expired: Set<PlatformConnection.ID>), PlatformConnectionStoreError> {
 		Result {
 			var connections: [PlatformConnection] = []
+			var expired: Set<PlatformConnection.ID> = []
 			for account in try service.appItemAccounts(.platformConnections).get() {
 				guard let data = try service.readAppItem(.platformConnections, account: account).get(),
 					case .success(let record) = Self.decode(data, account: account)
 				else { continue }
 				connections.append(record.connection)
+				if let refresh = record.refresh, refresh.isRejected || (refresh.attempt == nil && date >= refresh.expiresAt) {
+					expired.insert(record.connection.id)
+				}
 			}
-			return connections.sorted(by: Self.displayOrder)
+			return (connections.sorted(by: Self.displayOrder), expired)
 		}.mapError(Self.storeError)
 	}
 
@@ -305,6 +315,17 @@ actor PlatformConnectionStore {
 				"name": netlify.name,
 				"email": netlify.email ?? NSNull(),
 			]) { _, new in new }
+		case .github(let github):
+			guard PlatformTokens.isValidToken(record.accessToken), GitHubHTTP.isValidID(github.userID),
+				GitHubHTTP.isValidLogin(github.login), github.name.map(isValidName) ?? true, GitHubHTTP.isValidAppSlug(github.appSlug)
+			else { return nil }
+			object.merge([
+				"platform": "github",
+				"userId": github.userID,
+				"login": github.login,
+				"name": github.name ?? NSNull(),
+				"appSlug": github.appSlug,
+			]) { _, new in new }
 		}
 		if let refresh = record.refresh {
 			guard BrowserPlatform(record.connection.platform) != nil, let encoded = encode(refresh) else { return nil }
@@ -439,6 +460,20 @@ actor PlatformConnectionStore {
 			record = Record(
 				connection: PlatformConnection(
 					account: .netlify(NetlifyConnectionAccount(userID: userID, name: name, email: email)),
+					connectedAt: connectedAt),
+				accessToken: accessToken)
+		case .github?:
+			guard keys == ["version", "platform", "accessToken", "connectedAt", "userId", "login", "name", "appSlug"],
+				let userID = object["userId"] as? String, GitHubHTTP.isValidID(userID),
+				let login = object["login"] as? String, GitHubHTTP.isValidLogin(login),
+				let name = optionalString(object["name"]).map({ $0?.escapingDirectionControls }),
+				name.map(isValidName) ?? true,
+				let appSlug = object["appSlug"] as? String, GitHubHTTP.isValidAppSlug(appSlug),
+				PlatformTokens.isValidToken(accessToken)
+			else { return .failure(.unreadable) }
+			record = Record(
+				connection: PlatformConnection(
+					account: .github(GitHubConnectionAccount(userID: userID, login: login, name: name, appSlug: appSlug)),
 					connectedAt: connectedAt),
 				accessToken: accessToken)
 		case nil:
