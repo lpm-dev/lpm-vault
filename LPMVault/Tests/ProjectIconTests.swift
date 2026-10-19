@@ -409,11 +409,13 @@ struct ProjectIconChoiceTests {
 @Suite("Project icon store", .serialized)
 @MainActor
 struct ProjectIconStoreTests {
-	private func makeStore() throws -> (ProjectIconStore, UserDefaults, String, URL) {
+	private func makeStore(prepareImport: @escaping ProjectIconStore.PrepareImport = ProjectIconStore.prepareImport) throws
+		-> (ProjectIconStore, UserDefaults, String, URL)
+	{
 		let domain = "project-icons-\(UUID().uuidString)"
 		let preferences = try #require(UserDefaults(suiteName: domain))
 		let images = FileManager.default.temporaryDirectory.appending(path: "project-icon-images-\(UUID().uuidString)", directoryHint: .isDirectory)
-		return (ProjectIconStore(preferences: preferences, imagesDirectory: images), preferences, domain, images)
+		return (ProjectIconStore(preferences: preferences, imagesDirectory: images, prepareImport: prepareImport), preferences, domain, images)
 	}
 
 	@Test("a chosen icon outranks the folder's, persists, and Automatic removes it")
@@ -699,7 +701,12 @@ struct ProjectIconStoreTests {
 
 	@Test("an image import belongs to its project, and so does its failure")
 	func importStatePerProject() async throws {
-		let (store, preferences, domain, images) = try makeStore()
+		// Each import waits here for the test to let it read, so it's in progress for as long as the test looks.
+		let gate = DispatchSemaphore(value: 0)
+		let (store, preferences, domain, images) = try makeStore { url, folder, directory in
+			gate.wait()
+			return ProjectIconStore.prepareImport(url, projectFolder: folder, directory: directory)
+		}
 		let outside = try ProjectIconFixture.folder()
 		defer {
 			preferences.removePersistentDomain(forName: domain)
@@ -709,11 +716,12 @@ struct ProjectIconStoreTests {
 		try ProjectIconFixture.write(try ProjectIconFixture.png(red: 255, green: 0, blue: 0), to: "logo.png", in: outside)
 		try ProjectIconFixture.write(Data("not an image".utf8), to: "broken.png", in: outside)
 		let running = Task { await store.importImage(at: outside.appending(path: "logo.png"), projectFolder: "/nonexistent", for: "a") }
-		await Task.yield()
-		#expect(store.isImporting("a"))
+		#expect(try await waitUntil { store.isImporting("a") })
 		#expect(!store.isImporting("b"))
+		gate.signal()
 		_ = await running.value
 		#expect(!store.isImporting("a"))
+		gate.signal()
 		_ = await store.importImage(at: outside.appending(path: "broken.png"), projectFolder: "/nonexistent", for: "a")
 		#expect(store.importFailures["a"] == .notAnImage)
 		#expect(store.importFailures["b"] == nil)

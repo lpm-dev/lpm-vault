@@ -93,9 +93,18 @@ final class ProjectIconStore {
 	@ObservationIgnored private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 	@ObservationIgnored private var fileWork: Task<Void, Never>?
 
-	init(preferences: UserDefaults, imagesDirectory: URL = ProjectIconStore.defaultImagesDirectory) {
+	/// Reads and copies the image an import chose, off the main actor.
+	typealias PrepareImport = @Sendable (_ url: URL, _ projectFolder: String, _ directory: URL)
+		-> Result<(choice: ProjectIconChoice, image: ProjectIconImage), ImportFailure>
+	@ObservationIgnored private let prepareImport: PrepareImport
+
+	init(
+		preferences: UserDefaults, imagesDirectory: URL = ProjectIconStore.defaultImagesDirectory,
+		prepareImport: @escaping PrepareImport = ProjectIconStore.prepareImport
+	) {
 		self.preferences = preferences
 		self.imagesDirectory = imagesDirectory
+		self.prepareImport = prepareImport
 	}
 
 	// MARK: - Appearance
@@ -441,7 +450,8 @@ final class ProjectIconStore {
 		entry.isImporting = true
 		entry.importFailure = nil
 		let directory = imagesDirectory
-		let result = await BlockingWork.run { Self.prepareImport(url, projectFolder: projectFolder, directory: directory) }
+		let prepare = prepareImport
+		let result = await BlockingWork.run { prepare(url, projectFolder, directory) }
 		entry.isImporting = false
 		switch result {
 		case .success(let prepared):
@@ -565,7 +575,7 @@ final class ProjectIconStore {
 		return trimmed.isEmpty ? "Image" : String(trimmed)
 	}
 
-	nonisolated private static func prepareImport(
+	nonisolated static func prepareImport(
 		_ url: URL, projectFolder: String, directory: URL
 	) -> Result<(choice: ProjectIconChoice, image: ProjectIconImage), ImportFailure> {
 		if let path = ProjectIconPath.relativePath(of: url, in: projectFolder), ProjectIconPath.isImage(path),
