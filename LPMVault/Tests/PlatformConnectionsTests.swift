@@ -1275,14 +1275,23 @@ extension SheetInteractionTests {
 			#expect(!store.platforms.isConnecting && opened.urls.isEmpty)
 		}
 
+		/// Where the control saying `name` is laid out, in the page's points from its bottom-left. Its
+		/// frame, not its ink: a bordered button's drawn ink is its border or only its title by turns.
+		private func layoutFrame<V: View>(of name: String, in host: SheetTestHost<V>) async throws -> CGRect {
+			let bounds = AccessibilityTree.normalizedBounds(of: try await host.waitForElement(saying: name), in: host.view)
+			let size = host.view.bounds.size
+			return CGRect(x: bounds.minX * size.width, y: bounds.minY * size.height, width: bounds.width * size.width, height: bounds.height * size.height)
+		}
+
+		// The windows fit CI's 1024 × 768 screen, which moves a window that doesn't.
 		@Test("tiles in a row are as tall as each other, so their Connect buttons line up though their descriptions don't")
 		func tilesLineUp() async throws {
-			let (store, host) = try await page(size: NSSize(width: 1_000, height: 1_000))
+			let (store, host) = try await page(size: NSSize(width: 1_000, height: 700))
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitUntil { !store.platforms.isLoading })
 			var buttons: [CGRect] = []
 			for platform in ["Vercel", "Netlify", "GitHub", "Coolify"] {
-				buttons.append(try await host.drawnFrame(saying: "Connect \(platform)"))
+				buttons.append(try await layoutFrame(of: "Connect \(platform)", in: host))
 			}
 			#expect(buttons.allSatisfy { abs($0.minY - buttons[0].minY) < 0.5 }, "One row, every Connect on one line: \(buttons)")
 			#expect(zip(buttons, buttons.dropFirst()).allSatisfy { $0.maxX < $1.minX }, "In the page's order: \(buttons)")
@@ -1290,16 +1299,16 @@ extension SheetInteractionTests {
 
 		@Test("tiles that don't fit one row wrap into rows as even as they can be, never leaving one tile alone")
 		func tilesBalanceRows() async throws {
-			let (store, host) = try await page(size: NSSize(width: 760, height: 1_000))
+			let (store, host) = try await page(size: NSSize(width: 760, height: 700))
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitUntil { !store.platforms.isLoading })
-			let vercel = try await host.drawnFrame(saying: "Connect Vercel")
-			let netlify = try await host.drawnFrame(saying: "Connect Netlify")
-			let github = try await host.drawnFrame(saying: "Connect GitHub")
-			let coolify = try await host.drawnFrame(saying: "Connect Coolify")
-			#expect(abs(vercel.minY - netlify.minY) < 0.5 && netlify.minX > vercel.maxX, "Vercel and Netlify share the first row")
+			let vercel = try await layoutFrame(of: "Connect Vercel", in: host)
+			let netlify = try await layoutFrame(of: "Connect Netlify", in: host)
+			let github = try await layoutFrame(of: "Connect GitHub", in: host)
+			let coolify = try await layoutFrame(of: "Connect Coolify", in: host)
+			#expect(abs(vercel.minY - netlify.minY) < 0.5 && netlify.minX > vercel.maxX, "Vercel and Netlify share the first row: \(vercel) \(netlify)")
 			#expect(github.maxY < vercel.minY && abs(github.minX - vercel.minX) < 0.5, "GitHub starts the second row, under Vercel: \(github) \(vercel)")
-			#expect(abs(coolify.minY - github.minY) < 0.5 && abs(coolify.minX - netlify.minX) < 0.5, "Coolify sits beside it, under Netlify")
+			#expect(abs(coolify.minY - github.minY) < 0.5 && abs(coolify.minX - netlify.minX) < 0.5, "Coolify sits beside it, under Netlify: \(coolify)")
 		}
 
 		@Test("on a wide window the list and the tiles use its whole width")
@@ -1307,14 +1316,15 @@ extension SheetInteractionTests {
 			_ = try await PlatformConnectionStore(service: keychain).save(
 				VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_acme", userID: "u_1")!,
 				account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
-			let width: CGFloat = 1_600
-			let (store, host) = try await page(size: NSSize(width: width, height: 900))
+			// Wider than the 900 points the page was once held to, and as wide as CI's screen allows.
+			let width: CGFloat = 1_020
+			let (store, host) = try await page(size: NSSize(width: width, height: 700))
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("Acme"))
-			let disconnect = try await host.drawnFrame(saying: "Disconnect Acme")
-			#expect(disconnect.maxX > width - 80, "The row's buttons reach the window's right edge: \(disconnect)")
-			let vercel = try await host.drawnFrame(saying: "Connect Vercel")
-			let coolify = try await host.drawnFrame(saying: "Connect Coolify")
+			let disconnect = try await layoutFrame(of: "Disconnect Acme", in: host)
+			#expect(disconnect.maxX > width - 60, "The row's buttons reach the window's right edge: \(disconnect)")
+			let vercel = try await layoutFrame(of: "Connect Vercel", in: host)
+			let coolify = try await layoutFrame(of: "Connect Coolify", in: host)
 			#expect(abs(coolify.minY - vercel.minY) < 0.5 && coolify.minX > width * 0.7, "Every tile fits one row across the window: \(coolify)")
 		}
 
