@@ -2299,7 +2299,7 @@ struct CloudflarePublishSessionTests {
 		session.cloudflare?.accountID = CloudflareLoginFixture.acme.id
 		#expect(try await waitUntil { session.cloudflare?.workers != .loading && session.cloudflare?.workers != .idle })
 		#expect(session.cloudflare?.workers == .failed(
-			"Work can't list the Workers in Acme. Its role there may not reach Workers, or Acme wasn't chosen when Work was connected."))
+			"Work can't list the Workers in Acme. Its role there may not reach Workers."))
 		session.reloadChoices()
 		#expect(try await waitUntil { session.cloudflare?.workers.value != nil })
 	}

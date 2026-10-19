@@ -128,7 +128,7 @@ protocol CloudflareIdentityProtocol: Sendable {
 	/// Whose the token is, when Cloudflare's userinfo names Cloudflare as its
 	/// issuer and `clientID` among its audience.
 	func userInfo(clientID: String) async -> Result<CloudflareUserInfo, CloudflareAPIError>
-	/// The accounts the token reaches, from the login's accepted memberships, by name.
+	/// The accounts the token reaches, the ones the person chose when approving LPM Vault, by name.
 	func accounts() async -> Result<[CloudflareAccount], CloudflareAPIError>
 }
 
@@ -359,10 +359,9 @@ struct CloudflareClient: CloudflareClientProtocol, CloudflareIdentityProtocol, C
 	}
 
 	func accounts() async -> Result<[CloudflareAccount], CloudflareAPIError> {
-		await pages(["memberships"]) { (item: Any) -> CloudflareAccount? in
-			guard let membership = item as? [String: Any], membership["status"] as? String == "accepted",
-				let account = membership["account"] as? [String: Any], let id = account["id"] as? String, CloudflareHTTP.isValidID(id)
-			else { return nil }
+		// Not `/memberships`, which lists every account the login belongs to, chosen or not.
+		await pages(["accounts"]) { (item: Any) -> CloudflareAccount? in
+			guard let account = item as? [String: Any], let id = account["id"] as? String, CloudflareHTTP.isValidID(id) else { return nil }
 			return CloudflareAccount(id: id, name: ProviderName.distinguishable(account["name"] as? String) ?? "Account \(id.prefix(8))")
 		}
 		.map { found in

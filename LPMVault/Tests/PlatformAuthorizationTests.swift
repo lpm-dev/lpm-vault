@@ -1189,7 +1189,7 @@ struct CloudflareAuthorizationClientTests {
 	func startsCloudflare() async throws {
 		let started = try await start { cloudflarePage($0) }.get()
 		#expect(PlatformAuthorizationClient.cloudflareClientID(of: started.pageURL) == CloudflareLoginFixture.clientID)
-		#expect(started.pageURL.absoluteString.contains("scope=offline_access+memberships.read+workers-scripts.write"))
+		#expect(started.pageURL.absoluteString.contains("scope=offline_access+workers-scripts.write&"))
 	}
 
 	@Test(
@@ -1201,7 +1201,7 @@ struct CloudflareAuthorizationClientTests {
 			switch change {
 			case "host": cloudflarePage(registry, host: "dash.cloudflare.com.example")
 			case "path": cloudflarePage(registry, path: "/oauth2/auth/other")
-			case "scope": cloudflarePage(registry, scope: "offline_access memberships.read")
+			case "scope": cloudflarePage(registry, scope: "offline_access memberships.read workers-scripts.write")
 			case "method": cloudflarePage(registry, method: "plain")
 			case "redirect": cloudflarePage(registry, redirect: "https://elsewhere.example/api/vault/platforms/cloudflare/callback")
 			case "extra": cloudflarePage(registry, extra: "&prompt=none")
@@ -1348,7 +1348,7 @@ struct CloudflareAuthorizationClientTests {
 	}
 }
 
-/// Cloudflare's userinfo and memberships for a new token, answering as a test scripts them.
+/// Cloudflare's userinfo and accounts for a new token, answering as a test scripts them.
 private final class FakeCloudflareIdentity: CloudflareIdentityProtocol, @unchecked Sendable {
 	private let lock = NSLock()
 	private var log: [String] = []
@@ -1553,26 +1553,49 @@ struct CloudflareIdentityClientTests {
 		#expect(await client.userInfo(clientID: "lpm-vault-development") == .failure(.invalidResponse))
 	}
 
-	@Test("accounts are the accepted memberships' accounts, read page by page, by name, with hostile names escaped")
+	@Test("accounts are the ones the person chose when approving LPM Vault, not every account the login belongs to")
+	func readsGrantedAccounts() async throws {
+		let ungranted = "908a63130bdb365833c077c0efbf73d6"
+		let (client, _) = client { request in
+			// As Cloudflare answered a token granted one of a login's two accounts.
+			if request.url.path().hasSuffix("/memberships") {
+				return .json(200, CloudflareFixture.envelope([CloudflareLoginFixture.acme.id, ungranted].map { id in
+					["id": "m-\(id)", "status": "accepted", "account": ["id": id, "name": id == ungranted ? "Ungranted" : "Acme"]]
+				}))
+			}
+			if request.url.path().hasSuffix("/accounts") {
+				return .json(200, CloudflareFixture.envelope([Self.account(CloudflareLoginFixture.acme.id, name: "Acme")]))
+			}
+			return .json(403, CloudflareFixture.refusal([9109]))
+		}
+		let accounts = try await client.accounts().get()
+		#expect(accounts == [CloudflareLoginFixture.acme])
+	}
+
+	/// An account as Cloudflare's `/accounts` lists it.
+	private static func account(_ id: String, name: Any) -> [String: Any] {
+		[
+			"id": id, "name": name, "type": "standard", "created_on": "2026-08-09T12:20:00.000000Z",
+			"settings": ["enforce_twofactor": false, "use_account_custom_ns_by_default": false], "legacy_flags": [:],
+		]
+	}
+
+	@Test("accounts are read page by page, by name, with hostile names escaped, and one without a usable ID left out")
 	func readsAccounts() async throws {
 		let (client, route) = client { request in
 			let page = Int(request.query["page"] ?? "1") ?? 1
 			if page == 1 {
-				var list: [[String: Any]] = (0..<49).map { index in
-					["id": "m\(index)", "status": "accepted", "account": ["id": String(format: "%032x", index + 1), "name": "Account \(index)"], "roles": []]
-				}
-				list.append(["id": "pending", "status": "pending", "account": ["id": String(repeating: "f", count: 32), "name": "Invited"]])
+				var list = (0..<49).map { Self.account(String(format: "%032x", $0 + 1), name: "Account \($0)") }
+				list.append(Self.account("not-an-id", name: "Unusable"))
 				return .json(200, CloudflareFixture.envelope(list))
 			}
-			return .json(200, CloudflareFixture.envelope([
-				["id": "last", "status": "accepted", "account": ["id": CloudflareLoginFixture.acme.id, "name": "Acme\u{202E}"]],
-			]))
+			return .json(200, CloudflareFixture.envelope([Self.account(CloudflareLoginFixture.acme.id, name: "Acme\u{202E}")]))
 		}
 		let accounts = try await client.accounts().get()
-		#expect(accounts.count == 50 && !accounts.contains { $0.name == "Invited" })
+		#expect(accounts.count == 50 && !accounts.contains { $0.name == "Unusable" })
 		#expect(accounts.first?.name == "Account 0")
 		#expect(accounts.contains(CloudflareAccount(id: CloudflareLoginFixture.acme.id, name: "Acme\\u{202e}")))
-		#expect(route.requests.map { $0.query["page"] } == ["1", "2"] && route.requests.allSatisfy { $0.url.path().hasSuffix("/memberships") })
+		#expect(route.requests.map { $0.query["page"] } == ["1", "2"] && route.requests.allSatisfy { $0.url.path().hasSuffix("/client/v4/accounts") })
 	}
 
 	@Test("Workers are paged in name order, which a deploy during the listing doesn't move, and one listed twice is kept once")
@@ -1604,9 +1627,7 @@ struct CloudflareIdentityClientTests {
 	func distinguishesAccounts() async throws {
 		let ids = (1...4).map { String(format: "%032x", $0 * 0x1111) }
 		let (client, _) = client { _ in
-			.json(200, CloudflareFixture.envelope(zip(["Prod", "prod", "Pro\u{200B}d", "Staging"], ids).map { name, id in
-				["id": "m-\(id)", "status": "accepted", "account": ["id": id, "name": name]]
-			}))
+			.json(200, CloudflareFixture.envelope(zip(["Prod", "prod", "Pro\u{200B}d", "Staging"], ids).map { name, id in Self.account(id, name: name) }))
 		}
 		let names = Set(try await client.accounts().get().map(\.name))
 		#expect(names == ["Prod (\(ids[0].prefix(8)))", "prod (\(ids[1].prefix(8)))", "Pro\\u{200b}d", "Staging"])

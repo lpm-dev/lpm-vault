@@ -18,7 +18,7 @@ enum CloudflareOAuth {
 	/// it's set, Cloudflare can't be connected through lpm.dev.
 	static let productionClientID: String? = nil
 	/// The scopes LPM Vault asks for, in the order the Registry sends them.
-	static let scope = "offline_access memberships.read workers-scripts.write"
+	static let scope = "offline_access workers-scripts.write"
 	/// The issuer Cloudflare's userinfo names.
 	static let issuer = "https://dash.cloudflare.com"
 	static let authorizeURL = URL(string: "https://dash.cloudflare.com/oauth2/auth")!

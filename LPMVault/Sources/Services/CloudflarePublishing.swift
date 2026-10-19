@@ -371,7 +371,7 @@ enum CloudflarePublishing {
 	static func listingMessage(_ error: CloudflareAPIError, account: String, login: String) -> String {
 		switch error {
 		case .forbidden:
-			"\(login) can't list the Workers in \(account). Its role there may not reach Workers, or \(account) wasn't chosen when \(login) was connected."
+			"\(login) can't list the Workers in \(account). Its role there may not reach Workers."
 		case .notFound:
 			"Cloudflare doesn't know \(account) any more."
 		default:
