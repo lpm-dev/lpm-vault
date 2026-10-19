@@ -8,6 +8,7 @@ struct PlatformConnection: Identifiable, Hashable, Sendable {
 		case coolify(CoolifyConnectionAccount)
 		case netlify(NetlifyConnectionAccount)
 		case github(GitHubConnectionAccount)
+		case cloudflare(CloudflareConnectionAccount)
 	}
 
 	/// The same for every connection to one platform account, so connecting
@@ -22,23 +23,27 @@ struct PlatformConnection: Identifiable, Hashable, Sendable {
 		case .coolify: .coolify
 		case .netlify: .netlify
 		case .github: .github
+		case .cloudflare: .cloudflare
 		}
 	}
 
-	/// The account's name, such as a Vercel or Coolify team's, or a Netlify or GitHub user's.
+	/// The account's name, such as a Vercel or Coolify team's, a Netlify or
+	/// GitHub user's, or a Cloudflare login's label.
 	var name: String {
 		switch account {
 		case .vercel(let vercel): vercel.name
 		case .coolify(let coolify): coolify.teamName
 		case .netlify(let netlify): netlify.name
 		case .github(let github): github.name ?? github.login
+		case .cloudflare(let cloudflare): cloudflare.label
 		}
 	}
 
 	/// What tells the account apart from another with the same name: a
 	/// Vercel team's slug, a personal account's username or else its user,
 	/// the Coolify instance's address and the team's ID there, a Netlify
-	/// user's email or else its ID, or a GitHub user's login.
+	/// user's email or else its ID, a GitHub user's login, or the accounts a
+	/// Cloudflare login reaches.
 	var detail: String {
 		switch account {
 		case .vercel(let vercel) where vercel.isTeam: vercel.slug ?? vercel.ownerID
@@ -46,6 +51,7 @@ struct PlatformConnection: Identifiable, Hashable, Sendable {
 		case .coolify(let coolify): "\(coolify.instance.address) · team \(coolify.teamID)"
 		case .netlify(let netlify): netlify.email ?? "user \(netlify.userID)"
 		case .github(let github): "@\(github.login)"
+		case .cloudflare(let cloudflare): cloudflare.accountsSummary
 		}
 	}
 
@@ -55,6 +61,7 @@ struct PlatformConnection: Identifiable, Hashable, Sendable {
 		case .coolify(let coolify): coolifyID(instance: coolify.instance, teamID: coolify.teamID)
 		case .netlify(let netlify): netlifyID(userID: netlify.userID)
 		case .github(let github): githubID(userID: github.userID)
+		case .cloudflare(let cloudflare): cloudflareID(issuer: cloudflare.issuer, login: cloudflare.login)
 		}
 	}
 
@@ -76,6 +83,18 @@ struct PlatformConnection: Identifiable, Hashable, Sendable {
 	/// The connection to the GitHub user with this numeric ID.
 	static func githubID(userID: String) -> String {
 		"github.\(userID)"
+	}
+
+	/// The connection to the Cloudflare login with this key, through the
+	/// Registry `issuer`: each Registry issues a login's tokens apart.
+	static func cloudflareID(issuer: PlatformIssuer, login: String) -> String {
+		"cloudflare.\(issuer.rawValue).\(login)"
+	}
+
+	/// The Cloudflare connection's generation; nil for another platform's.
+	var generation: String? {
+		if case .cloudflare(let cloudflare) = account { return cloudflare.generation }
+		return nil
 	}
 }
 

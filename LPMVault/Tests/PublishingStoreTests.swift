@@ -204,6 +204,7 @@ struct PublishingStoreTests {
 		arguments: [
 			(AppKeychainStore.publishing, "dev.lpm.vault.publishing"),
 			(AppKeychainStore.platformConnections, "dev.lpm.vault.platforms"),
+			(AppKeychainStore.platformCleanup, "dev.lpm.vault.platform-cleanup"),
 		]
 	)
 	func appOnlyItems(store: AppKeychainStore, service: String) {

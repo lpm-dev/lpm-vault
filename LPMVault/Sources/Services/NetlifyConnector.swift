@@ -41,7 +41,7 @@ struct NetlifyConnector: Sendable {
 	) async -> Result<NetlifyConnection, BrowserConnectError> {
 		let grant: NetlifyGrant
 		switch await authorization.grant(NetlifyGrant.self, session: session, open: open) {
-		case .success(let value): grant = value
+		case .success(let value): grant = value.grant
 		case .failure(let error): return .failure(error)
 		}
 

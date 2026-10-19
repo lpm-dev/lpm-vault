@@ -56,6 +56,8 @@ enum CloudflarePublishing {
 	static let reviewAttempts = 3
 	/// How many rate limits one publish waits out before giving up.
 	static let rateLimitRetries = 3
+	/// How many renewals of the connection's token one publish checks the Worker again after.
+	static let maximumRenewals = 2
 	/// The longest a rate limit can last for a publish to wait for it.
 	static let maximumRateLimitWait: Duration = .seconds(65)
 	/// How far apart Cloudflare's clock and a version's time may be when
@@ -196,6 +198,7 @@ enum CloudflarePublishing {
 			return finish(.failed("Cloudflare changes at most \(maximumChanges) secrets at once. Choose fewer, then publish again."))
 		}
 		var waits = 0
+		var renewals = 0
 		while true {
 			guard !Task.isCancelled else { return finish(.notSent) }
 			let checkedAt: Date?
@@ -204,9 +207,14 @@ enum CloudflarePublishing {
 			case .failure(.api(.rateLimited(let until))):
 				guard await wait(until: until, waits: &waits, pacing: pacing) else { return finish(.failed(message(.rateLimited(until: until)))) }
 				continue
-			case .failure(.api(.unauthorized)):
+			case .failure(.api(.renewed)):
+				// The token was renewed during the check: the Worker is checked again with the new one.
+				renewals += 1
+				guard renewals <= maximumRenewals else { return finish(.failed(message(.renewed))) }
+				continue
+			case .failure(.api(let error)) where needsReconnect(error):
 				report.needsReconnect = true
-				return finish(.failed(message(.unauthorized)))
+				return finish(.failed(message(error)))
 			case .failure(let error):
 				return finish(.failed(error.message))
 			}
@@ -218,9 +226,14 @@ enum CloudflarePublishing {
 			case .failure(.rateLimited(let until)):
 				guard await wait(until: until, waits: &waits, pacing: pacing) else { return finish(.failed(message(.rateLimited(until: until)))) }
 				continue
-			case .failure(.unauthorized):
+			case .failure(.renewed):
+				// Not sent: the token changed since the check, which is made again with the new one.
+				renewals += 1
+				guard renewals <= maximumRenewals else { return finish(.failed(message(.renewed))) }
+				continue
+			case .failure(let error) where needsReconnect(error):
 				report.needsReconnect = true
-				return finish(.failed(message(.unauthorized)))
+				return finish(.failed(message(error)))
 			case .failure(.transport), .failure(.cancelled), .failure(.server), .failure(.invalidResponse):
 				report.unconfirmed = changes.map { $0.published(remoteID: PublishPlan.unconfirmedRemoteID, remoteUpdatedAt: nil) }
 				return finish(.unconfirmed("No answer came back from Cloudflare, so it may or may not have the new value. Review again."))
@@ -341,6 +354,15 @@ enum CloudflarePublishing {
 		return version
 	}
 
+	/// Whether a failure means the connection must be connected again: Cloudflare
+	/// refused its token, or the token can't be renewed or used any more.
+	private static func needsReconnect(_ error: CloudflareAPIError) -> Bool {
+		switch error {
+		case .unauthorized, .credentials(.expired), .credentials(.retired), .credentials(.store(.retired)): true
+		default: false
+		}
+	}
+
 	/// Waits out a rate limit that lifts soon enough; false when it doesn't,
 	/// or the publish has waited out enough already.
 	private static func wait(until: Date?, waits: inout Int, pacing: Pacing) async -> Bool {
@@ -358,6 +380,15 @@ enum CloudflarePublishing {
 
 	// MARK: - Messages
 
+	/// Why more secrets than one publish changes can't be chosen.
+	static let changeLimitMessage =
+		"Cloudflare can change at most \(maximumChanges) secrets in one step. Publishing fewer leaves the rest as they are, so your Worker runs with a mix until they're published too."
+
+	/// Why the chosen new secrets don't fit the Worker's limit on text bindings.
+	static func capacityMessage(_ overflow: PublishPlan.Overflow) -> String {
+		"The Worker can hold \(overflow.limit) secrets and variables together, and these would make \(overflow.existing + overflow.adding). Choose \(overflow.excess) fewer new \(overflow.excess == 1 ? "one" : "ones")."
+	}
+
 	static func holdMessage(_ hold: PublishPlan.PlaceHold) -> String {
 		let state = switch hold {
 		case .earlierVersionLive: "An earlier version of the Worker is serving its traffic, as after a rollback."
@@ -369,7 +400,8 @@ enum CloudflarePublishing {
 
 	static func message(_ error: CloudflareAPIError) -> String {
 		switch error {
-		case .unauthorized: return "Cloudflare no longer accepts this connection. Connect Cloudflare again on the Platforms page."
+		case .unauthorized:
+			return "Cloudflare no longer accepts this connection, as when LPM Vault was removed under Connected Applications on Cloudflare. Connect Cloudflare again on the Platforms page."
 		case .forbidden: return "This Cloudflare connection can't change this Worker, as when your role on the account doesn't allow it."
 		case .notFound: return "The Worker isn't on Cloudflare any more."
 		case .rateLimited(let until?) where until.timeIntervalSinceNow > 90:
@@ -389,6 +421,8 @@ enum CloudflarePublishing {
 		case .invalidResponse: return "Cloudflare returned an answer LPM Vault couldn't read."
 		case .server(let status): return "Cloudflare had a problem (HTTP \(status)). Try again in a moment."
 		case .moved: return "Cloudflare redirected the request, which LPM Vault doesn't follow."
+		case .credentials(let error): return error.message(for: .cloudflare)
+		case .renewed: return "The Cloudflare connection was renewed more than once while publishing. Review again."
 		}
 	}
 }

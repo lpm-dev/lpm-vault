@@ -808,6 +808,16 @@ enum AppEnvironment: String, Sendable {
     AuthSessionStore.registryURL(for: baseURL)
   }
 
+  /// The Registry a platform connection made in this environment belongs to.
+  var issuer: PlatformIssuer {
+    switch self {
+    case .production: .production
+    #if DEBUG
+      case .development: .development
+    #endif
+    }
+  }
+
   var label: String {
     switch self {
     case .production: "Live"
@@ -1387,6 +1397,9 @@ final class VaultStore {
   private let coolifyClient: CoolifyConnector.ClientFactory
   private let netlifyClient: NetlifyConnector.ClientFactory
   private let githubClient: GitHubConnector.ClientFactory
+  private let cloudflareClient: RenewingCloudflareClient.ClientFactory
+  private let cloudflareConnect: PlatformConnections.ConnectCloudflare?
+  private let platformRevoker: (any PlatformTokenRevoking)?
   /// Each project's saved publish destinations, for the Publish menu.
   private(set) var publishDestinations: [String: [PublishDestinationSummary]] = [:]
   /// Open Publish sheets' sessions, which locking stops.
@@ -1400,7 +1413,9 @@ final class VaultStore {
   /// token is renewed by one request at a time.
   @ObservationIgnored private(set) lazy var platformCredentials = PlatformCredentials(
     store: platformConnectionStore,
-    session: { [weak self] in await self?.platformSession() }
+    revoker: platformRevoker ?? PlatformAuthorizationClient(),
+    session: { [weak self] in await self?.platformSession() },
+    cleanupChanged: { [weak self] in Task { @MainActor in self?.platformCleanupChanged() } }
   )
   @ObservationIgnored private(set) lazy var platforms = PlatformConnections(
     store: platformConnectionStore,
@@ -1408,6 +1423,8 @@ final class VaultStore {
     connectCoolify: { [coolifyClient] in await CoolifyConnector(client: coolifyClient).connect(address: $0, token: $1) },
     connectNetlify: netlifyConnect ?? { [netlifyClient] in await NetlifyConnector(client: netlifyClient).connect(session: $0, open: $1) },
     connectGitHub: githubConnect ?? { [githubClient] in await GitHubConnector(client: githubClient).connect(session: $0, open: $1) },
+    connectCloudflare: cloudflareConnect,
+    credentials: platformCredentials,
     session: { [weak self] in await self?.platformSession() },
     openURL: platformURLOpener ?? PlatformConnections.openInBrowser,
     didChange: { [weak self] in self?.forgetConnectionDetails() }
@@ -1660,7 +1677,8 @@ final class VaultStore {
       let history = try? await publishing.history(of: destination.id, in: projectID).get()
       summaries.append(PublishDestinationSummary(
         destination: destination, lastPublishedAt: history?.publishedAt,
-        accountDetail: details[destination.target.connectionID]))
+        accountDetail: destination.target.connectionID.flatMap { details[$0] }
+          ?? (destination.target.platform == .cloudflare ? destination.target.accountName : nil)))
     }
     guard isUnlocked, generation == vaultSessionGeneration else { return }
     publishDestinations[projectID] = summaries.sorted {
@@ -1727,7 +1745,15 @@ final class VaultStore {
       coolify: coolifyClient,
       netlify: netlifyClient,
       github: githubClient,
+      cloudflare: cloudflareClient,
+      issuer: { [weak self] in self?.appEnvironment.issuer },
       didChange: { [weak self] in Task { await self?.loadPublishDestinations(for: projectID) } })
+  }
+
+  /// A cleanup of a retired platform connection changed what the Platforms page shows.
+  private func platformCleanupChanged() {
+    forgetConnectionDetails()
+    if isUnlocked, accountPage == .platforms { platforms.load() }
   }
 
   /// The environment's saved values once local changes are read, with
@@ -1784,7 +1810,7 @@ final class VaultStore {
     guard let token = resolution.token, isUnlocked, generation == vaultSessionGeneration,
       environment == appEnvironment, currentUser?.id == user.id
     else { return nil }
-    return PlatformSession(token: token, principalID: user.id, baseURL: environment.baseURL)
+    return PlatformSession(token: token, principalID: user.id, baseURL: environment.baseURL, issuer: environment.issuer)
   }
 
   /// Repairs restored/background state without extending the auto-lock timer.
@@ -1916,10 +1942,13 @@ final class VaultStore {
     platformConnect: PlatformConnections.Connect? = nil,
     netlifyConnect: PlatformConnections.ConnectNetlify? = nil,
     githubConnect: PlatformConnections.ConnectGitHub? = nil,
+    cloudflareConnect: PlatformConnections.ConnectCloudflare? = nil,
     platformClient: (@Sendable (String) -> any VercelClientProtocol)? = nil,
     coolifyClient: CoolifyConnector.ClientFactory? = nil,
     netlifyClient: NetlifyConnector.ClientFactory? = nil,
     githubClient: GitHubConnector.ClientFactory? = nil,
+    cloudflareClient: RenewingCloudflareClient.ClientFactory? = nil,
+    platformRevoker: (any PlatformTokenRevoking)? = nil,
     platformURLOpener: (@MainActor @Sendable (URL) -> Void)? = nil,
     valueChecker: ProjectEnvValueCheckWorker.Checker? = nil,
     authAuthorizationProvider:
@@ -1984,11 +2013,14 @@ final class VaultStore {
     self.platformConnect = platformConnect
     self.netlifyConnect = netlifyConnect
     self.githubConnect = githubConnect
+    self.cloudflareConnect = cloudflareConnect
+    self.platformRevoker = platformRevoker
     self.platformConnectionStore = PlatformConnectionStore(service: keychainService)
     self.platformClient = platformClient ?? { VercelClient(token: $0) }
     self.coolifyClient = coolifyClient ?? { CoolifyClient(instance: $0, token: $1) }
     self.netlifyClient = netlifyClient ?? { NetlifyClient(token: $0) }
     self.githubClient = githubClient ?? { GitHubClient(token: $0) }
+    self.cloudflareClient = cloudflareClient ?? { CloudflareClient(token: $0) }
     self.platformURLOpener = platformURLOpener
     self.valueCheckWorker = valueChecker.map(ProjectEnvValueCheckWorker.init(checker:)) ?? ProjectEnvValueCheckWorker()
     self.biometricService = biometricService
@@ -4581,6 +4613,7 @@ final class VaultStore {
       case .success(let inventory):
         self.currentUser = inventory.user
         self.currentIdentityAuthorityGeneration = authResolution.authorityGeneration
+        Task { [platformCredentials] in await platformCredentials.resumeCleanup(now: true) }
         self.personalTokens = inventory.personalTokens
         self.orgTokens = inventory.organizationTokens
         self.error = nil
@@ -4954,6 +4987,7 @@ final class VaultStore {
       invalidateTokenLoad()
       currentUser = authenticatedUser
       currentIdentityAuthorityGeneration = storedAuthorization.authorityGeneration
+      Task { [platformCredentials] in await platformCredentials.resumeCleanup(now: true) }
       personalTokens = []
       orgTokens = [:]
       error = nil
@@ -5063,6 +5097,7 @@ final class VaultStore {
     if accountPage == .platforms { platforms.load() }
     isUnlocking = false
     scheduleAutoLock()
+    Task { [platformCredentials] in await platformCredentials.resumeCleanup(now: true) }
     Task { [weak self] in await self?.reconcilePublishingRecords() }
   }
 

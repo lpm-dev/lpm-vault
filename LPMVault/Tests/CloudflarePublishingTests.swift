@@ -100,6 +100,11 @@ final class CloudflareWorkerSimulator: CloudflareClientProtocol, @unchecked Send
 
 	private var answeredAt: Date? { answersWithDate ? lock.withLock { state.clock } : nil }
 
+	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError> {
+		if let failure = record("workers \(account)") { return .failure(failure) }
+		return lock.withLock { .success(([state.worker] + state.others.values).sorted { $0.name < $1.name }) }
+	}
+
 	func worker(_ idOrName: String, in account: String) async -> Result<CloudflareWorker, CloudflareAPIError> {
 		if let failure = record("worker \(idOrName)") { return .failure(failure) }
 		return lock.withLock {
@@ -501,6 +506,10 @@ private final class FlakySimulator: CloudflareClientProtocol, @unchecked Sendabl
 		self.changingReads = changingReads
 	}
 
+	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError> {
+		await base.workers(in: account)
+	}
+
 	func worker(_ idOrName: String, in account: String) async -> Result<CloudflareWorker, CloudflareAPIError> {
 		await base.worker(idOrName, in: account)
 	}
@@ -551,6 +560,10 @@ private final class AfterSimulator: CloudflareClientProtocol, @unchecked Sendabl
 		self.failsIdentityAfterUpdate = failsIdentityAfterUpdate
 		self.takesNameAfterUpdate = takesNameAfterUpdate
 		self.limitsFirstUpdate = limitsFirstUpdate
+	}
+
+	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError> {
+		await base.workers(in: account)
 	}
 
 	func worker(_ idOrName: String, in account: String) async -> Result<CloudflareWorker, CloudflareAPIError> {

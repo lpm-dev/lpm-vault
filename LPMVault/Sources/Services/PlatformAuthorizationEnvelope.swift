@@ -209,3 +209,29 @@ struct GitHubGrant: PlatformGrant, Equatable, CustomStringConvertible, CustomDeb
 	var debugDescription: String { description }
 	var customMirror: Mirror { Mirror(self, children: ["appSlug": appSlug]) }
 }
+
+/// What connecting a Cloudflare login grants: tokens for the accounts the
+/// person chose, whose access token lasts about an hour and renews through
+/// the Registry. Tokens never appear when the grant is printed, logged or dumped.
+struct CloudflareGrant: PlatformGrant, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	static let platform = BrowserPlatform.cloudflare
+
+	let tokens: PlatformTokens
+	/// What renews the access token; Cloudflare's always expire.
+	let expiry: PlatformTokens.Expiry
+
+	init?(tokens: PlatformTokens) {
+		guard let expiry = tokens.expiry else { return nil }
+		self.tokens = tokens
+		self.expiry = expiry
+	}
+
+	init?(payload: [String: Any]) {
+		guard let tokens = PlatformTokens(payload: payload) else { return nil }
+		self.init(tokens: tokens)
+	}
+
+	var description: String { "CloudflareGrant(tokens: <redacted>)" }
+	var debugDescription: String { description }
+	var customMirror: Mirror { Mirror(self, children: [:]) }
+}

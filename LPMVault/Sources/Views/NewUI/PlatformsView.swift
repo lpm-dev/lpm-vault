@@ -6,6 +6,9 @@ struct PlatformsView: View {
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var pendingDisconnect: PlatformConnection?
 	@State private var connectingCoolify = false
+	@State private var renaming: PlatformConnection?
+	@State private var renameDraft = ""
+	@State private var renameError: String?
 
 	private var platforms: PlatformConnections { store.platforms }
 
@@ -32,6 +35,7 @@ struct PlatformsView: View {
 					vercelSection
 					netlifySection
 					githubSection
+					if offersCloudflare { cloudflareSection }
 					coolifySection
 
 					if let notice = platforms.notice {
@@ -51,7 +55,7 @@ struct PlatformsView: View {
 						.accessibilityElement(children: .combine)
 					}
 
-					Text("Disconnecting forgets a token on this Mac only. To remove LPM Vault's access to Vercel, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values. To remove its access to Netlify, revoke LPM Vault under Applications → Authorized applications in your Netlify user settings. To remove its access to GitHub, revoke it under Applications → Authorized GitHub Apps in your GitHub settings, and uninstall it under Installed GitHub Apps in your settings; an organization's owner uninstalls it in the organization's settings. To remove its access to Coolify, delete its API token in Coolify's Keys & Tokens.")
+					Text("Disconnecting forgets a token on this Mac only, except for Cloudflare, whose access LPM Vault revokes as it disconnects. To remove LPM Vault's access to Vercel, uninstall the integration from your Vercel team's Integrations settings. Uninstalling deletes the variables LPM Vault created there; variables that already existed keep their last published values. To remove its access to Netlify, revoke LPM Vault under Applications → Authorized applications in your Netlify user settings. To remove its access to GitHub, revoke it under Applications → Authorized GitHub Apps in your GitHub settings, and uninstall it under Installed GitHub Apps in your settings; an organization's owner uninstalls it in the organization's settings. To remove its access to Coolify, delete its API token in Coolify's Keys & Tokens.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
@@ -80,13 +84,47 @@ struct PlatformsView: View {
 				Text("LPM Vault forgets its token on this Mac. LPM Vault stays authorized on Netlify until you revoke it there, and variables already published stay as they are.")
 			case .github:
 				Text("LPM Vault forgets its token on this Mac. The LPM Vault app stays authorized and installed on GitHub until you revoke or uninstall it there, and secrets and variables already published stay as they are.")
+			case .cloudflare:
+				Text(Self.cloudflareDisconnectMessage(connection, others: platforms.otherLogins(reaching: connection)))
 			}
+		}
+		.confirmationDialog(
+			Self.cloudflarePromptTitle(platforms.cloudflarePrompt),
+			isPresented: Binding(get: { platforms.cloudflarePrompt != nil }, set: { if !$0 { platforms.answerCloudflare(.cancel) } }),
+			titleVisibility: .visible,
+			presenting: platforms.cloudflarePrompt
+		) { prompt in
+			switch prompt {
+			case .otherLogin(let reconnecting):
+				Button("Add It Separately") { platforms.answerCloudflare(.addSeparately) }
+				Button("Replace \(reconnecting)", role: .destructive) { platforms.answerCloudflare(.replace) }
+				Button("Cancel", role: .cancel) { platforms.answerCloudflare(.cancel) }
+			case .losesAccounts:
+				Button("Connect Anyway", role: .destructive) { platforms.answerCloudflare(.proceed) }
+				Button("Cancel", role: .cancel) { platforms.answerCloudflare(.cancel) }
+			}
+		} message: { prompt in
+			Text(Self.cloudflarePromptMessage(prompt))
+		}
+		.alert(
+			"Rename \(renaming?.name ?? "login")",
+			isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }),
+			presenting: renaming
+		) { connection in
+			TextField("Name", text: $renameDraft)
+			Button("Rename") { rename(connection) }
+			Button("Cancel", role: .cancel) {}
+		} message: { _ in
+			Text(renameError ?? "LPM Vault shows this name for the Cloudflare login on this Mac, in reviews and in confirmations.")
 		}
 		.sheet(isPresented: $connectingCoolify) {
 			ConnectCoolifySheet(platforms: platforms, store: store)
 		}
 		.onChange(of: isObscured) { _, obscured in
-			if obscured { pendingDisconnect = nil }
+			if obscured {
+				pendingDisconnect = nil
+				renaming = nil
+			}
 		}
 		.onChange(of: store.isUnlocked) { _, unlocked in
 			if !unlocked { connectingCoolify = false }
@@ -103,6 +141,88 @@ struct PlatformsView: View {
 
 	private var githubSection: some View {
 		section(.github, empty: "No GitHub accounts connected yet.") { browserConnectControls(.github) }
+	}
+
+	/// Whether Cloudflare can be connected through the Registry the app is signed in to.
+	private var offersCloudflare: Bool {
+		CloudflareOAuth.isAvailable(through: store.appEnvironment.issuer) || platforms.connections.contains { $0.platform == .cloudflare }
+	}
+
+	private var cloudflareSection: some View {
+		section(.cloudflare, empty: "No Cloudflare logins connected yet.") {
+			VStack(alignment: .leading, spacing: 10) {
+				if !platforms.retiring.isEmpty {
+					cleanupNote(
+						systemImage: "hourglass",
+						text: Self.retiringMessage(count: platforms.retiring.count),
+						isError: false)
+				}
+				ForEach(platforms.markers) { marker in
+					HStack(alignment: .firstTextBaseline, spacing: 8) {
+						cleanupNote(systemImage: "exclamationmark.triangle.fill", text: PlatformConnections.unrevokedMessage, isError: true)
+						Spacer(minLength: 4)
+						Button("Dismiss") { platforms.dismiss(marker) }
+							.buttonStyle(.plain)
+							.font(.system(size: 11.5))
+							.foregroundStyle(VaultPalette.textTertiary)
+							.accessibilityLabel("Dismiss the note about an unconfirmed revocation")
+					}
+				}
+				browserConnectControls(.cloudflare)
+			}
+		}
+	}
+
+	private func cleanupNote(systemImage: String, text: String, isError: Bool) -> some View {
+		HStack(alignment: .firstTextBaseline, spacing: 8) {
+			Image(systemName: systemImage).font(.system(size: 11)).accessibilityHidden(true)
+			Text(text).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
+		}
+		.foregroundStyle(isError ? VaultPalette.orangeTintText : VaultPalette.textTertiary)
+		.accessibilityElement(children: .combine)
+	}
+
+	static func retiringMessage(count: Int) -> String {
+		count == 1
+			? "LPM Vault is still revoking a disconnected Cloudflare login's access. It finishes once lpm.dev confirms it."
+			: "LPM Vault is still revoking the access of \(count) disconnected Cloudflare logins. It finishes once lpm.dev confirms it."
+	}
+
+	static func cloudflareDisconnectMessage(_ connection: PlatformConnection, others: [(account: String, logins: [String])]) -> String {
+		var message = "LPM Vault revokes its access to \(connection.name) on Cloudflare, through lpm.dev, and forgets it on this Mac. Secrets already published stay as they are."
+		for other in others {
+			message += " Destinations in \(other.account) go on publishing through \(other.logins.joined(separator: " or "))."
+		}
+		return message
+	}
+
+	static func cloudflarePromptTitle(_ prompt: PlatformConnections.CloudflarePrompt?) -> String {
+		switch prompt {
+		case .otherLogin(let reconnecting)?: "You approved another Cloudflare login than \(reconnecting)"
+		case .losesAccounts(let label, _)?: "\(label) would reach fewer accounts"
+		case nil: ""
+		}
+	}
+
+	static func cloudflarePromptMessage(_ prompt: PlatformConnections.CloudflarePrompt) -> String {
+		switch prompt {
+		case .otherLogin(let reconnecting):
+			"Add the login you approved beside \(reconnecting), or put it in \(reconnecting)'s place, which revokes \(reconnecting)'s access. Destinations stay with their Cloudflare accounts either way."
+		case .losesAccounts(let label, let accounts):
+			"LPM Vault would no longer reach \(ListFormatter.localizedString(byJoining: accounts)) through \(label), so destinations there stop publishing until a login that reaches them is connected."
+		}
+	}
+
+	private func rename(_ connection: PlatformConnection) {
+		let draft = renameDraft
+		Task {
+			if let error = await platforms.rename(connection, to: draft) {
+				renameError = error
+				renaming = connection
+			} else {
+				renameError = nil
+			}
+		}
 	}
 
 	private var coolifySection: some View {
@@ -163,7 +283,9 @@ struct PlatformsView: View {
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 				if platforms.expired.contains(connection.id) {
-					Text("Expired. Connect \(connection.platform.displayName) again to keep publishing.")
+					Text(connection.platform == .cloudflare
+						? "No longer works. Reconnect to keep publishing through it."
+						: "Expired. Connect \(connection.platform.displayName) again to keep publishing.")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.orangeTintText)
 				}
@@ -172,6 +294,21 @@ struct PlatformsView: View {
 			if connection.platform == .github {
 				VaultBarButton(title: "Install on GitHub") { platforms.openInstallPage(for: connection) }
 					.accessibilityLabel("Install on GitHub for \(connection.name)")
+			}
+			if connection.platform == .cloudflare {
+				if platforms.expired.contains(connection.id) {
+					VaultBarButton(
+						title: platforms.reconnecting == connection.id ? "Reconnecting…" : "Reconnect",
+						disabled: platforms.isConnecting || !store.isLoggedIn
+					) { platforms.reconnectCloudflare(connection) }
+						.accessibilityLabel("Reconnect \(connection.name)")
+				}
+				VaultBarButton(title: "Rename") {
+					renameDraft = connection.name
+					renameError = nil
+					renaming = connection
+				}
+				.accessibilityLabel("Rename \(connection.name)")
 			}
 			VaultBarButton(
 				title: platforms.disconnecting.contains(connection.id) ? "Disconnecting…" : "Disconnect",
@@ -203,6 +340,7 @@ struct PlatformsView: View {
 					case .vercel: platforms.connectVercel()
 					case .netlify: platforms.connectNetlify()
 					case .github: platforms.connectGitHub()
+					case .cloudflare: platforms.connectCloudflare()
 					}
 				}
 				if isConnectingHere {
@@ -243,6 +381,10 @@ struct PlatformsView: View {
 			"Finish in your browser: authorize LPM Vault on GitHub, then come back here."
 		case (.github, false):
 			"Opens GitHub in your browser to authorize LPM Vault. It reaches the repositories you can reach on the accounts where its GitHub App is installed."
+		case (.cloudflare, true):
+			"Finish in your browser: choose the Cloudflare accounts LPM Vault can reach, approve it, then come back here."
+		case (.cloudflare, false):
+			"Opens Cloudflare in your browser to approve LPM Vault for the accounts you choose. It publishes your Workers' runtime secrets."
 		}
 	}
 
@@ -257,6 +399,8 @@ struct PlatformsView: View {
 			kind = account.email ?? "Netlify account"
 		case .github(let account):
 			kind = "@\(account.login)"
+		case .cloudflare(let account):
+			kind = account.accountsSummary
 		}
 		let connected = connection.connectedAt.formatted(date: .abbreviated, time: .omitted)
 		return "\(kind) · Connected \(connected)"

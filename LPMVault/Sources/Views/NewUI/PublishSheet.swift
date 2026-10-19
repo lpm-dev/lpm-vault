@@ -144,6 +144,12 @@ struct PublishSheet: View {
 				return nil
 			}()
 			return (repository, form.scope?.displayName)
+		case .cloudflare(let form)?:
+			let worker = form.worker?.name ?? {
+				if case .cloudflare(let target)? = session.saved?.target, target.workerID == form.workerID { return target.workerName }
+				return nil
+			}()
+			return (worker, worker == nil ? nil : CloudflarePublishTarget.placeKind)
 		case nil:
 			return (nil, nil)
 		}
@@ -173,7 +179,7 @@ struct PublishSheet: View {
 				Text("No platform account is connected on this Mac.")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("Connect Vercel, Netlify, GitHub or Coolify on the Platforms page, then publish from here.")
+				Text("Connect Vercel, Netlify, GitHub, Cloudflare or Coolify on the Platforms page, then publish from here.")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.textTertiary)
 				VaultBarButton(systemImage: "square.stack.3d.up", title: "Open Platforms") {
@@ -214,6 +220,8 @@ struct PublishSheet: View {
 						NetlifyDestinationFields(form: form)
 					case .github(let form)?:
 						GitHubDestinationFields(form: form, installURL: githubInstallURL, reload: session.reloadChoices)
+					case .cloudflare(let form)?:
+						CloudflareDestinationFields(form: form, accounts: cloudflareAccounts)
 					case nil:
 						GridRow {
 							PublishDestinationField("Destination") {
@@ -253,9 +261,16 @@ struct PublishSheet: View {
 			if case .failed(let message) = form.environments {
 				return "\(form.repository?.fullName ?? "The repository")'s environments couldn't be listed. \(message) Its own secrets and variables can still be chosen."
 			}
+		case .cloudflare(let form)?: if case .failed(let message) = form.workers { return message }
 		case nil: break
 		}
 		return nil
+	}
+
+	/// The accounts the chosen Cloudflare login reaches.
+	private var cloudflareAccounts: [CloudflareAccount] {
+		if case .cloudflare(let login)? = session.connection?.account { return login.accounts }
+		return []
 	}
 
 	/// The page that installs the chosen GitHub connection's app on more repositories.
@@ -279,6 +294,14 @@ struct PublishSheet: View {
 		} else if let error = session.reviewError {
 			VStack(alignment: .leading, spacing: 10) {
 				Text(error).font(.system(size: 12)).foregroundStyle(VaultPalette.redText).fixedSize(horizontal: false, vertical: true)
+				if let choices = session.loginChoices, !choices.isEmpty {
+					VStack(alignment: .leading, spacing: 6) {
+						ForEach(choices) { login in
+							VaultBarButton(title: "Publish through \(login.name)") { session.chooseLogin(login.id) }
+								.accessibilityLabel("Publish through \(login.name), which reaches \(login.detail)")
+						}
+					}
+				}
 				HStack(spacing: 8) {
 					VaultBarButton(title: "Review Again", action: session.loadReview)
 					VaultBarButton(title: "Change Destination", action: session.showDestination)
@@ -401,7 +424,13 @@ struct PublishSheet: View {
 		let platform = review.platform.displayName
 		// GitHub's kinds are its own words, "secret" and "variable", not LPM Vault's Secret and Config.
 		let secret = review.platform == .github ? "secret" : "Secret"
-		var parts = [row.publishesAsSecret ? "Secret" : review.platform == .github ? "Variable" : "Config"]
+		// A Worker keeps every value as a secret its code reads at runtime.
+		var parts = [row.publishesAsSecret || review.platform == .cloudflare ? "Secret" : review.platform == .github ? "Variable" : "Config"]
+		if review.platform == .cloudflare,
+			ProjectEnvSchemaRule.publicPrefix(of: row.key, clientPrefixes: review.rules.overview.clientPrefixes) != nil
+		{
+			parts.append("frontend code reads it at build time, from the build's own variables")
+		}
 		if row.staysSecret { parts.append("stays a \(secret) on \(platform)") }
 		if let hold = row.holds.first {
 			parts.append(Self.holdNote(hold, row: row, review: review))
@@ -414,10 +443,14 @@ struct PublishSheet: View {
 				? "Changed since last publish"
 				: "Unchanged since you published \(RelativeTimestampFormatter.string(from: publishedAt))")
 		} else if case .replace = row.operation {
-			let kind = review.platform == .github && row.publishesAsSecret ? "secret" : "variable"
-			parts.append("Replaces a \(kind) already on \(platform)")
+			if review.platform == .cloudflare {
+				parts.append("Replaces the value Cloudflare has now")
+			} else {
+				let kind = review.platform == .github && row.publishesAsSecret ? "secret" : "variable"
+				parts.append("Replaces a \(kind) already on \(platform)")
+			}
 		}
-		if row.status.protectionChanged {
+		if row.status.protectionChanged, review.platform != .cloudflare {
 			parts.append(row.publishesAsSecret ? "will be stored as a \(secret)" : "will be stored readable")
 		}
 		return parts.joined(separator: " · ")
@@ -512,6 +545,22 @@ struct PublishSheet: View {
 				notes.append("Values will be written to variables Netlify already has. LPM Vault doesn't read Netlify's current values to compare, and Netlify writes a value without checking it, so a change made on Netlify moments before publishing can still be overwritten, and a change to another deploy context at that moment can't be told apart from this publish.")
 			case .github:
 				notes.append("Existing secrets and variables will be replaced. GitHub never shows a secret's value, and replaces one without checking it, so a change made on GitHub moments before publishing can still be overwritten.")
+			case .cloudflare:
+				notes.append("Existing secrets will be replaced. Cloudflare never shows a secret's value. LPM Vault checks the Worker's newest version right before sending, but Cloudflare replaces secrets without a check of its own, so a change made moments before publishing can still be overwritten.")
+			}
+		}
+		if case .cloudflare(let target) = review.destination.target {
+			if let login = review.login {
+				notes.append("Publishing to the Cloudflare account \(target.accountName), as \(login.label).")
+			}
+			if let hold = review.plan.placeHold { notes.append(CloudflarePublishing.holdMessage(hold)) }
+			notes.append("Cloudflare makes a new version of the Worker with the secrets, and deploys it at once.")
+			let clientPrefixes = review.rules.overview.clientPrefixes
+			let frontend = review.plan.rows.lazy.map(\.key).filter { ProjectEnvSchemaRule.publicPrefix(of: $0, clientPrefixes: clientPrefixes) != nil }
+			if let first = frontend.first {
+				let others = frontend.dropFirst().count
+				let named = others == 0 ? first : "\(first) and \(others) more"
+				notes.append("\(named) \(others == 0 ? "is" : "are") read by frontend code at build time. A Worker's secrets reach only the Worker at runtime, so set them as the build's own variables and rebuild.")
 			}
 		}
 		if case .coolify(let target) = review.destination.target, target.resource == .application, target.deployments == .production,
@@ -535,8 +584,9 @@ struct PublishSheet: View {
 		if remoteOnly > 0 {
 			notes.append("\(remoteOnly) \(review.platform.valuesNoun(count: remoteOnly)) only on \(platform) stay as they are.")
 		}
-		let readable = review.platform == .github ? "" : " unless their prefix makes them public"
-		let secrets = review.platform == .github ? "secrets" : "Secrets"
+		// GitHub's and Cloudflare's secrets stay secrets whatever their prefix.
+		let readable = review.platform == .github || review.platform == .cloudflare ? "" : " unless their prefix makes them public"
+		let secrets = review.platform == .github || review.platform == .cloudflare ? "secrets" : "Secrets"
 		switch review.rules {
 		case .unreadable: notes.append("lpm.json's rules can't be read, so values aren't checked, and keys publish as \(secrets)\(readable).")
 		case .none: notes.append("This project has no rules, so keys publish as \(secrets)\(readable).")
@@ -638,6 +688,7 @@ struct PublishSheet: View {
 		case .coolify: "Redeploy in Coolify to use the new values."
 		case .netlify: "Redeploy on Netlify to use the new values."
 		case .github: "Workflow runs that start from now on get the new values. Re-run a workflow to use them now."
+		case .cloudflare: "The Worker uses them at once: Cloudflare deployed a new version with them."
 		}
 	}
 
@@ -731,12 +782,27 @@ struct PublishSheet: View {
 
 	private var overflowMessage: String? { session.review.flatMap(Self.overflowMessage(for:)) }
 
-	/// Why the chosen keys don't fit where they'd go, when they don't: every kind that wouldn't fit.
+	/// Why the chosen keys can't be published as they are, when they can't:
+	/// every kind that wouldn't fit, or what holds a Cloudflare Worker.
 	static func overflowMessage(for review: PublishSession.Review) -> String? {
-		guard case .github(let target) = review.destination.target else { return nil }
-		let overflows = review.plan.overflows(of: review.selection)
-		guard !overflows.isEmpty else { return nil }
-		return overflows.map { GitHubPublishing.overflowMessage($0, scope: target.scope) }.joined(separator: " ")
+		switch review.destination.target {
+		case .github(let target):
+			let overflows = review.plan.overflows(of: review.selection)
+			guard !overflows.isEmpty else { return nil }
+			return overflows.map { GitHubPublishing.overflowMessage($0, scope: target.scope) }.joined(separator: " ")
+		case .cloudflare:
+			if let hold = review.plan.placeHold { return CloudflarePublishing.holdMessage(hold) }
+			var messages: [String] = []
+			if review.plan.changeLimitExcess(of: review.selection) != nil {
+				messages.append(CloudflarePublishing.changeLimitMessage)
+			}
+			for overflow in review.plan.overflows(of: review.selection) {
+				messages.append(CloudflarePublishing.capacityMessage(overflow))
+			}
+			return messages.isEmpty ? nil : messages.joined(separator: " ")
+		case .vercel, .coolify, .netlify:
+			return nil
+		}
 	}
 
 	/// Forgets the destination, and closes once it's gone; a failure stays
@@ -761,6 +827,42 @@ struct PublishSheet: View {
 		guard !session.isPublishing else { return }
 		session.cancel()
 		dismiss()
+	}
+}
+
+/// A Cloudflare destination's account, from those the chosen login reaches, and Worker.
+private struct CloudflareDestinationFields: View {
+	@Bindable var form: CloudflareDestinationForm
+	let accounts: [CloudflareAccount]
+
+	var body: some View {
+		GridRow {
+			PublishDestinationField("Cloudflare account") {
+				VaultMenuField(
+					title: "Cloudflare account",
+					options: accounts.map { VaultMenuOption(value: $0.id, label: $0.name) },
+					selection: $form.accountID,
+					placeholder: accounts.isEmpty ? "Choose a login first" : "Choose account…",
+					disabled: accounts.isEmpty)
+			}
+			PublishDestinationField("Worker") {
+				VaultMenuField(
+					title: "Worker",
+					options: (form.workers.value ?? []).map { VaultMenuOption(value: $0.id, label: $0.name) },
+					selection: $form.workerID,
+					placeholder: placeholder,
+					disabled: form.workers.value?.isEmpty ?? true)
+			}
+		}
+	}
+
+	private var placeholder: String {
+		switch form.workers {
+		case .loading: "Loading Workers…"
+		case .loaded(let workers) where workers.isEmpty: "No Workers in this account"
+		case .idle where form.accountID == nil: "Choose an account first"
+		default: "Choose Worker…"
+		}
 	}
 }
 

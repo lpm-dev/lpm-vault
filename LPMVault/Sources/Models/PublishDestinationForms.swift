@@ -7,6 +7,7 @@ enum PublishDestinationForm {
 	case coolify(CoolifyDestinationForm)
 	case netlify(NetlifyDestinationForm)
 	case github(GitHubDestinationForm)
+	case cloudflare(CloudflareDestinationForm)
 }
 
 /// A Vercel project and one of its environments.
@@ -333,5 +334,46 @@ final class GitHubDestinationForm {
 			case .orderedSame: lhs.id < rhs.id
 			}
 		}
+	}
+}
+
+/// A Cloudflare account the chosen login reaches, and one of its Workers,
+/// whose runtime secrets are written.
+@MainActor
+@Observable
+final class CloudflareDestinationForm {
+	enum Field {
+		case account
+		case worker
+	}
+
+	var accountID: String? {
+		didSet {
+			guard accountID != oldValue else { return }
+			workerID = nil
+			workers = .idle
+			didChange(.account)
+		}
+	}
+	var workerID: String? {
+		didSet { if workerID != oldValue { didChange(.worker) } }
+	}
+	/// The chosen account's Workers, by name.
+	var workers: PublishSession.Loadable<[CloudflareWorker]> = .idle
+	@ObservationIgnored var didChange: (Field) -> Void = { _ in }
+
+	init(accountID: String? = nil, workerID: String? = nil) {
+		self.accountID = accountID
+		self.workerID = workerID
+	}
+
+	var worker: CloudflareWorker? {
+		workers.value?.first { $0.id == workerID }
+	}
+
+	/// A saved destination's Worker counts as chosen before its account's Workers are listed.
+	var isComplete: Bool {
+		guard accountID != nil, let workerID else { return false }
+		return workers.value.map { $0.contains { $0.id == workerID } } ?? true
 	}
 }

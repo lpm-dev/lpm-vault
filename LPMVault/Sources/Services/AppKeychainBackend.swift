@@ -7,11 +7,14 @@ enum AppKeychainStore: CaseIterable, Sendable {
 	case publishing
 	/// Platform connections and their access tokens.
 	case platformConnections
+	/// Tokens of retired platform connections still being revoked, and notes of those that couldn't be.
+	case platformCleanup
 
 	var service: String {
 		switch self {
 		case .publishing: VaultConstants.publishingKeychainService
 		case .platformConnections: VaultConstants.platformConnectionsKeychainService
+		case .platformCleanup: VaultConstants.platformCleanupKeychainService
 		}
 	}
 }

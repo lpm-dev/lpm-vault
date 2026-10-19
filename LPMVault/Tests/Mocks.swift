@@ -482,6 +482,16 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		set { lock.withLock { failingAppItems[.platformConnections] = newValue } }
 	}
 
+	var platformCleanupStorage: [String: Data] {
+		get { lock.withLock { appItems[.platformCleanup] ?? [:] } }
+		set { lock.withLock { appItems[.platformCleanup] = newValue } }
+	}
+	/// Accounts whose operations fail; "*" also fails the listing.
+	var failPlatformCleanupAccounts: Set<String> {
+		get { lock.withLock { failingAppItems[.platformCleanup] ?? [] } }
+		set { lock.withLock { failingAppItems[.platformCleanup] = newValue } }
+	}
+
 	func readAppItem(_ store: AppKeychainStore, account: String) -> Result<Data?, KeychainError> {
 		lock.withLock {
 			appItemReadCounts[store, default: 0] += 1

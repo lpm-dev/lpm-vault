@@ -61,6 +61,7 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 	case coolify
 	case netlify
 	case github
+	case cloudflare
 
 	var displayName: String {
 		switch self {
@@ -68,6 +69,7 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 		case .coolify: "Coolify"
 		case .netlify: "Netlify"
 		case .github: "GitHub"
+		case .cloudflare: "Cloudflare"
 		}
 	}
 
@@ -77,12 +79,26 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 		case .coolify: "server.rack"
 		case .netlify: "diamond.fill"
 		case .github: "chevron.left.forwardslash.chevron.right"
+		case .cloudflare: "cloud.fill"
 		}
 	}
+
+	/// The one noun the platform has for what it keeps, or nil for GitHub,
+	/// which keeps secrets and variables apart: a Cloudflare Worker's
+	/// secrets, every other platform's variables.
+	private var singleNoun: String? {
+		switch self {
+		case .github: nil
+		case .cloudflare: "secret"
+		case .vercel, .coolify, .netlify: "variable"
+		}
+	}
+
 	/// What a publish sends, counted as the platform calls it: GitHub's
-	/// secrets and variables by kind, every other platform's as variables.
+	/// secrets and variables by kind, a Cloudflare Worker's as secrets, every
+	/// other platform's as variables.
 	func countedValues(secrets: Int, variables: Int) -> String {
-		guard self == .github else { return Self.counted(secrets + variables, "variable") }
+		if let noun = singleNoun { return Self.counted(secrets + variables, noun) }
 		switch (secrets, variables) {
 		case (0, 0): return "0 secrets or variables"
 		case (_, 0): return Self.counted(secrets, "secret")
@@ -95,8 +111,8 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 	/// `countedValues` counts: "1 of 2 variables", or on GitHub with both
 	/// kinds, each apart: "1 of 1 secret and 0 of 1 variable".
 	func countedPublished(secrets: (published: Int, sent: Int), variables: (published: Int, sent: Int)) -> String {
-		guard self == .github else {
-			return Self.counted(secrets.published + variables.published, of: secrets.sent + variables.sent, "variable")
+		if let noun = singleNoun {
+			return Self.counted(secrets.published + variables.published, of: secrets.sent + variables.sent, noun)
 		}
 		switch (secrets.sent, variables.sent) {
 		case (0, 0): return "0 of 0 secrets or variables"
@@ -108,9 +124,10 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 	}
 
 	/// What a publish sent, named as the platform calls it: GitHub's secrets
-	/// and variables by kind, every other platform's as variables.
+	/// and variables by kind, a Cloudflare Worker's as secrets, every other
+	/// platform's as variables.
 	func named(secrets: Int, variables: Int) -> String {
-		guard self == .github else { return secrets + variables == 1 ? "variable" : "variables" }
+		if let noun = singleNoun { return secrets + variables == 1 ? noun : "\(noun)s" }
 		switch (secrets, variables) {
 		case (0, _): return variables == 1 ? "variable" : "variables"
 		case (_, 0): return secrets == 1 ? "secret" : "secrets"
@@ -119,12 +136,11 @@ enum PublishPlatform: String, CaseIterable, Sendable {
 	}
 
 	/// What the platform keeps, as a noun for `count` of them: GitHub's
-	/// secrets and variables, every other platform's variables.
+	/// secrets and variables, a Cloudflare Worker's secrets, every other
+	/// platform's variables.
 	func valuesNoun(count: Int) -> String {
-		switch self {
-		case .github: count == 1 ? "secret or variable" : "secrets and variables"
-		default: count == 1 ? "variable" : "variables"
-		}
+		guard let noun = singleNoun else { return count == 1 ? "secret or variable" : "secrets and variables" }
+		return count == 1 ? noun : "\(noun)s"
 	}
 
 	private static func counted(_ count: Int, _ noun: String) -> String {
@@ -141,6 +157,7 @@ enum PublishTarget: Hashable, Sendable {
 	case coolify(CoolifyPublishTarget)
 	case netlify(NetlifyPublishTarget)
 	case github(GitHubPublishTarget)
+	case cloudflare(CloudflarePublishTarget)
 
 	/// Where a publish writes. Two destinations with the same location would
 	/// overwrite each other's values, so a vault keeps at most one per location.
@@ -149,6 +166,7 @@ enum PublishTarget: Hashable, Sendable {
 		case coolify(instance: String, resource: CoolifyPublishTarget.Resource, resourceID: String, deployments: CoolifyPublishTarget.Deployments)
 		case netlify(siteID: String, context: String)
 		case github(repositoryID: String, scope: String)
+		case cloudflare(accountID: String, workerID: String)
 
 		/// The places, beside this one, whose values the platform keeps in the
 		/// same records, as a Netlify variable keeps its value for every deploy
@@ -156,7 +174,7 @@ enum PublishTarget: Hashable, Sendable {
 		/// records forward for the others too; nil when no other place shares them.
 		var sharedRecords: SharedRecords? {
 			switch self {
-			case .vercel, .coolify, .github: nil
+			case .vercel, .coolify, .github, .cloudflare: nil
 			case .netlify(let siteID, _): SharedRecords(platform: .netlify, ownerID: siteID)
 			}
 		}
@@ -176,6 +194,7 @@ enum PublishTarget: Hashable, Sendable {
 		case .coolify: .coolify
 		case .netlify: .netlify
 		case .github: .github
+		case .cloudflare: .cloudflare
 		}
 	}
 
@@ -189,16 +208,21 @@ enum PublishTarget: Hashable, Sendable {
 			.netlify(siteID: target.siteID, context: target.context.identifier)
 		case .github(let target):
 			.github(repositoryID: target.repositoryID, scope: target.scope.identifier)
+		case .cloudflare(let target):
+			.cloudflare(accountID: target.accountID, workerID: target.workerID)
 		}
 	}
 
-	/// The connection that publishes here.
-	var connectionID: PlatformConnection.ID {
+	/// The connection that publishes here; nil for a Cloudflare Worker, which
+	/// any connected login that reaches its account can publish to, chosen
+	/// when it's reviewed.
+	var connectionID: PlatformConnection.ID? {
 		switch self {
 		case .vercel(let target): target.connectionID
 		case .coolify(let target): target.connectionID
 		case .netlify(let target): target.connectionID
 		case .github(let target): target.connectionID
+		case .cloudflare: nil
 		}
 	}
 
@@ -209,17 +233,20 @@ enum PublishTarget: Hashable, Sendable {
 		case .coolify(let target): target.teamName
 		case .netlify(let target): target.teamName
 		case .github(let target): target.ownerLogin
+		case .cloudflare(let target): target.accountName
 		}
 	}
 
 	/// The name of the connection that publishes here when the destination
-	/// was saved: the team's for Vercel and Coolify, the user's for Netlify and GitHub.
+	/// was saved: the team's for Vercel and Coolify, the user's for Netlify
+	/// and GitHub, and the account's for Cloudflare, which any login reaching it publishes through.
 	var connectionName: String {
 		switch self {
 		case .vercel(let target): target.teamName
 		case .coolify(let target): target.teamName
 		case .netlify(let target): target.userName
 		case .github(let target): target.userLogin
+		case .cloudflare(let target): target.accountName
 		}
 	}
 
@@ -230,6 +257,7 @@ enum PublishTarget: Hashable, Sendable {
 		case .coolify(let target): "\(target.resourceName) / \(target.deployments.displayName)"
 		case .netlify(let target): "\(target.siteName) / \(target.context.displayName)"
 		case .github(let target): "\(target.repositoryName) / \(target.scope.displayName)"
+		case .cloudflare(let target): "\(target.workerName) / \(CloudflarePublishTarget.placeKind)"
 		}
 	}
 
@@ -237,7 +265,7 @@ enum PublishTarget: Hashable, Sendable {
 	/// the Coolify project, environment and instance holding a resource.
 	var placeDetail: String? {
 		switch self {
-		case .vercel, .netlify, .github: return nil
+		case .vercel, .netlify, .github, .cloudflare: return nil
 		case .coolify(let target):
 			let place = [target.projectName, target.environmentName].compactMap { $0 }.joined(separator: " / ")
 			return place.isEmpty ? target.instance.address : "\(place) on \(target.instance.address)"
@@ -250,6 +278,7 @@ enum PublishTarget: Hashable, Sendable {
 		case .coolify(let target): target.invalidity
 		case .netlify(let target): target.invalidity
 		case .github(let target): target.invalidity
+		case .cloudflare(let target): target.invalidity
 		}
 	}
 }
@@ -679,6 +708,38 @@ struct GitHubPublishTarget: Hashable, Sendable {
 		let name = parts[1]
 		return !name.isEmpty && name.utf8.count <= 100 && name != "." && name != ".."
 			&& name.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2E || $0 == 0x2D || $0 == 0x5F }
+	}
+}
+
+/// A Cloudflare Worker's secrets, which its code reads at runtime. The
+/// destination is the account and the Worker, by Cloudflare's IDs, never a
+/// login: any connected login that reaches the account can publish here, and
+/// the review names the one it uses.
+struct CloudflarePublishTarget: Hashable, Sendable {
+	/// What a Worker destination is called: its runtime secrets, which a
+	/// build's own variables aren't.
+	static let placeKind = "Worker secrets (runtime)"
+
+	/// Cloudflare's ID for the account holding the Worker.
+	let accountID: String
+	/// The account's name when the destination was saved, for display.
+	var accountName: String
+	/// Cloudflare's ID for the Worker, which outlasts a rename.
+	let workerID: String
+	/// The Worker's script name when the destination was saved. Cloudflare's
+	/// paths use it, so a review reads the current one first.
+	var workerName: String
+	/// The login a review publishes through while it reaches the account, by
+	/// its key; see `CloudflareLogin.key(subject:)`. It's a preference, not
+	/// part of where the destination is.
+	var preferredLogin: String
+
+	fileprivate var invalidity: PublishDestinationInvalidity? {
+		guard CloudflareHTTP.isValidID(accountID), CloudflareHTTP.isValidID(workerID), CloudflareLogin.isValidKey(preferredLogin) else {
+			return .targetIdentifier
+		}
+		guard CloudflareHTTP.isValidScriptName(workerName), PlatformIdentifier.isValidName(accountName) else { return .targetName }
+		return nil
 	}
 }
 

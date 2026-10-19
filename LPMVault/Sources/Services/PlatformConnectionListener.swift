@@ -10,6 +10,11 @@ enum PlatformConnectFailure: Equatable, Sendable {
 	case approvalExpired
 	case platformUnavailable
 	case platformRefused
+	/// The platform's answer to the code exchange was lost, so whether it
+	/// granted anything isn't known; a new approval starts over.
+	case exchangeUncertain
+	/// The platform granted less access than LPM Vault needs.
+	case insufficientScope
 	case other
 
 	init(code: String) {
@@ -20,6 +25,8 @@ enum PlatformConnectFailure: Equatable, Sendable {
 		case "authorization_expired": self = .approvalExpired
 		case "platform_unavailable": self = .platformUnavailable
 		case "platform_rejected", "invalid_code", "invalid_platform_response": self = .platformRefused
+		case "exchange_uncertain": self = .exchangeUncertain
+		case "insufficient_scope": self = .insufficientScope
 		default: self = .other
 		}
 	}
@@ -33,6 +40,8 @@ enum PlatformConnectFailure: Equatable, Sendable {
 		case .approvalExpired: "Your approval on \(name) expired before it could be used. Connect again."
 		case .platformUnavailable: "\(name) isn't reachable right now. Try again later."
 		case .platformRefused: "\(name) didn't accept the connection. Connect again."
+		case .exchangeUncertain: "\(name)'s answer didn't come back, so the connection couldn't be finished. Connect again."
+		case .insufficientScope: "\(name) didn't grant all the access LPM Vault needs. Connect again, and approve every permission it asks for."
 		case .other: "\(name) couldn't be connected. Try again."
 		}
 	}

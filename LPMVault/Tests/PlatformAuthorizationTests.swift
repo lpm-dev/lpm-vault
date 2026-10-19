@@ -210,7 +210,8 @@ struct PlatformAuthorizationClientTests {
 	func redeemOutcomes() async throws {
 		let sealed = PlatformAuthorizationEnvelope.Sealed(version: 1, ephemeralPublicKey: "e", nonce: "n", ciphertext: "c")
 		let cases: [(Int, [String: Any], PlatformAuthorizationOutcome)] = [
-			(200, ["status": "ready", "envelope": sealed.json], .ready(sealed)),
+			(200, ["status": "ready", "envelope": sealed.json], .ready(sealed, age: 0)),
+			(200, ["status": "ready", "envelope": sealed.json, "ageSeconds": 42], .ready(sealed, age: 42)),
 			(202, ["status": "pending"], .pending),
 			(409, ["status": "failed", "code": "authorization_cancelled"], .failed(code: "authorization_cancelled")),
 			(409, ["status": "failed", "code": "<script>"], .failed(code: "server_error")),
@@ -541,18 +542,25 @@ private final class FakeAuthorizations: PlatformAuthorizationClientProtocol, @un
 		ready(["platform": "netlify", "accessToken": "nfp_granted"])
 	}
 
-	func readyGitHubGrant() -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
+	func readyGitHubGrant(age: Int = 0) -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
 		ready([
 			"platform": "github", "accessToken": "ghu_granted", "accessTokenExpiresIn": 28_800,
 			"refreshToken": "ghr_granted", "refreshTokenExpiresIn": 15_897_600, "appSlug": "lpm-vault",
-		])
+		], age: age)
 	}
 
-	private func ready(_ payload: [String: Any]) -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
+	func readyCloudflareGrant(age: Int = 0) -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
+		ready([
+			"platform": "cloudflare", "accessToken": "cf_granted_access", "accessTokenExpiresIn": 3_600,
+			"refreshToken": "cf_granted_refresh", "refreshTokenExpiresIn": 31_536_000,
+		], age: age)
+	}
+
+	private func ready(_ payload: [String: Any], age: Int = 0) -> @Sendable (Int, String, Data) -> Result<PlatformAuthorizationOutcome, PlatformAuthorizationError> {
 		let json = try! JSONSerialization.data(withJSONObject: payload)
 		return { _, id, key in
 			let payload = try! JSONSerialization.jsonObject(with: json) as! [String: Any]
-			return .success(.ready(try! RegistryTestSealer.seal(payload, authorizationID: id, to: key)))
+			return .success(.ready(try! RegistryTestSealer.seal(payload, authorizationID: id, to: key), age: age))
 		}
 	}
 }
@@ -996,6 +1004,15 @@ struct GitHubConnectorTests {
 		#expect(authorizations.platformCalls == ["start github", "redeem github"])
 	}
 
+	@Test("a grant collected late counts its tokens' lifetimes from when the Registry completed it, not from when it arrived")
+	func countsAgeOfLateGrant() async throws {
+		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
+		authorizations.outcome = authorizations.readyGitHubGrant(age: 600)
+		let received = Date(timeIntervalSince1970: 1_760_000_123)
+		let connection = try await connect(authorizations, clock: SleepingTestClock(received)).get()
+		#expect(connection.receivedAt == received.addingTimeInterval(-600))
+	}
+
 	@Test("another platform's grant can't complete a GitHub connection, and its token is never used")
 	func refusesOtherGrant() async {
 		let authorizations = FakeAuthorizations(pageURL: Self.authorizePage)
@@ -1098,5 +1115,439 @@ struct PlatformAuthorizationSessionTests {
 		#expect(PlatformAuthorizationClient().session === PlatformAuthorizationClient().session)
 		let injected = URLSession(configuration: .ephemeral)
 		#expect(PlatformAuthorizationClient(session: injected).session === injected)
+	}
+}
+
+/// Text as a form encodes it, as the Registry's `URLSearchParams` writes a query: spaces as `+`.
+private func formEncoded(_ text: String) -> String {
+	let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789*-._ ")
+	return text.addingPercentEncoding(withAllowedCharacters: allowed)!.replacingOccurrences(of: " ", with: "+")
+}
+
+/// Cloudflare's approval page as the Registry's `cloudflareAuthorizeUrl` makes it, for a Registry at `registry`.
+private func cloudflarePage(
+	_ registry: URL,
+	host: String = "dash.cloudflare.com",
+	path: String = "/oauth2/auth",
+	clientID: String = CloudflareLoginFixture.clientID,
+	scope: String = CloudflareOAuth.scope,
+	method: String = "S256",
+	redirect: String? = nil,
+	extra: String = ""
+) -> String {
+	let callback = redirect ?? "\(registry.absoluteString)/api/vault/platforms/cloudflare/callback"
+	return "https://\(host)\(path)?response_type=code&client_id=\(formEncoded(clientID))&redirect_uri=\(formEncoded(callback))"
+		+ "&scope=\(formEncoded(scope))&state=\(platformTestOneTimeValue())&code_challenge=\(platformTestOneTimeValue())"
+		+ "&code_challenge_method=\(method)\(extra)"
+}
+
+struct CloudflareAuthorizationClientTests {
+	private let authorizationID = UUID().uuidString.lowercased()
+	private let revocationID = UUID().uuidString.lowercased()
+
+	private func registry(of request: PlatformHTTPStub.Request) -> URL {
+		URL(string: "http://\(request.url.host() ?? ""):\(request.url.port ?? 0)")!
+	}
+
+	private func startReply(_ request: PlatformHTTPStub.Request, page: String) -> PlatformHTTPStub.Reply {
+		RegistryTestSigner.signed(201, [
+			"requestNonce": request.header(PlatformAuthorizationClient.nonceHeader) ?? "", "principalId": platformTestPrincipal,
+			"platform": "cloudflare", "authorizationId": authorizationID, "installUrl": page, "expiresAt": "2026-10-14T10:00:00.000Z",
+		])
+	}
+
+	private func start(_ page: @escaping @Sendable (URL) -> String) async -> Result<StartedPlatformAuthorization, PlatformAuthorizationError> {
+		let route = PlatformHTTPStub.registry { request in startReply(request, page: page(registry(of: request))) }
+		return await PlatformAuthorizationClient(session: route.session).start(
+			.cloudflare, clientPublicKey: P256.KeyAgreement.PrivateKey().publicKey.x963Representation, loopbackPort: 50_000,
+			session: platformTestSession(route.baseURL))
+	}
+
+	@Test("starting opens Cloudflare's approval page as the Registry writes it, with the scopes LPM Vault needs and S256 PKCE, returning to this Registry")
+	func startsCloudflare() async throws {
+		let started = try await start { cloudflarePage($0) }.get()
+		#expect(PlatformAuthorizationClient.cloudflareClientID(of: started.pageURL) == CloudflareLoginFixture.clientID)
+		#expect(started.pageURL.absoluteString.contains("scope=offline_access+memberships.read+workers-scripts.write"))
+	}
+
+	@Test(
+		"a Cloudflare page that isn't LPM Vault's approval page, as it asks for, returning the code to this Registry, is refused",
+		arguments: ["host", "path", "scope", "method", "redirect", "extra", "client-id"]
+	)
+	func refusesUntrustedPages(change: String) async {
+		let result = await start { registry in
+			switch change {
+			case "host": cloudflarePage(registry, host: "dash.cloudflare.com.example")
+			case "path": cloudflarePage(registry, path: "/oauth2/auth/other")
+			case "scope": cloudflarePage(registry, scope: "offline_access memberships.read")
+			case "method": cloudflarePage(registry, method: "plain")
+			case "redirect": cloudflarePage(registry, redirect: "https://elsewhere.example/api/vault/platforms/cloudflare/callback")
+			case "extra": cloudflarePage(registry, extra: "&prompt=none")
+			default: cloudflarePage(registry, clientID: "a/b")
+			}
+		}
+		#expect(result == .failure(.invalidResponse))
+	}
+
+	@Test("a redemption whose age isn't a whole number of seconds within a token's life isn't believed", arguments: ["-1", "1.5", "99999999", "true"])
+	func refusesRedemptionAge(age: String) async {
+		let sealed = PlatformAuthorizationEnvelope.Sealed(version: 1, ephemeralPublicKey: "e", nonce: "n", ciphertext: "c")
+		let route = PlatformHTTPStub.registry { [authorizationID] request in
+			RegistryTestSigner.signed(200, [
+				"requestNonce": request.header(PlatformAuthorizationClient.nonceHeader) ?? "", "principalId": platformTestPrincipal,
+				"platform": "cloudflare", "authorizationId": authorizationID, "status": "ready", "envelope": sealed.json,
+				"ageSeconds": try! JSONSerialization.jsonObject(with: Data(age.utf8), options: .fragmentsAllowed),
+			])
+		}
+		let outcome = await PlatformAuthorizationClient(session: route.session).redeem(
+			authorizationID, on: .cloudflare, proof: platformTestOneTimeValue(), session: platformTestSession(route.baseURL))
+		#expect(outcome == .failure(.invalidResponse))
+	}
+
+	private func revoke(
+		attempt: (id: String, publicKey: Data)? = nil,
+		_ reply: @escaping @Sendable (PlatformHTTPStub.Request, [String: Any]) -> PlatformHTTPStub.Reply
+	) async -> (Result<PlatformTokenRevocationOutcome, PlatformAuthorizationError>, PlatformHTTPStub.Route) {
+		let route = PlatformHTTPStub.registry { [revocationID] request in
+			reply(request, [
+				"requestNonce": request.header(PlatformAuthorizationClient.nonceHeader) ?? "", "principalId": platformTestPrincipal,
+				"platform": "cloudflare", "revocationId": revocationID,
+			])
+		}
+		let outcome = await PlatformAuthorizationClient(session: route.session).revoke(
+			.cloudflare, token: "cf_refresh_1", revocationID: revocationID, attempt: attempt, session: platformTestSession(route.baseURL))
+		return (outcome, route)
+	}
+
+	@Test("revoking sends the token, the cleanup's ID and any renewal's key to Cloudflare's route, with the session and a nonce")
+	func sendsRevocation() async throws {
+		let key = P256.KeyAgreement.PrivateKey().publicKey.x963Representation
+		let refreshID = UUID().uuidString.lowercased()
+		let (outcome, route) = await revoke(attempt: (refreshID, key)) { _, signed in
+			var body = signed
+			body["status"] = "accepted"
+			return RegistryTestSigner.signed(200, body)
+		}
+		#expect(outcome == .success(.accepted))
+		let request = try #require(route.requests.first)
+		#expect(request.method == "POST" && request.url.path() == "/api/vault/platforms/cloudflare/revocations")
+		#expect(request.header("Authorization") == "Bearer lpm_session_token")
+		#expect(request.header(PlatformAuthorizationClient.nonceHeader)?.utf8.count == 43)
+		#expect(request.json?["token"] as? String == "cf_refresh_1" && request.json?["revocationId"] as? String == revocationID)
+		let attempt = try #require(request.json?["attempt"] as? [String: Any])
+		#expect(attempt["refreshId"] as? String == refreshID && attempt["publicKey"] as? String == key.base64EncodedString())
+	}
+
+	@Test("each signed answer about the cleanup is read as the Registry means it")
+	func readsAnswers() async throws {
+		let key = P256.KeyAgreement.PrivateKey()
+		let sealed = CloudflareLoginFixture.successor(for: (UUID().uuidString.lowercased(), key.publicKey.x963Representation))
+		let cases: [(Int, [String: Any], PlatformTokenRevocationOutcome)] = [
+			(200, ["status": "accepted"], .accepted),
+			(200, ["status": "unconfirmed"], .unconfirmed),
+			(200, ["status": "superseded", "envelope": sealed.json, "ageSeconds": 4], .superseded(sealed, age: 4)),
+			(202, ["status": "busy"], .busy),
+			(503, ["status": "retry", "retryAfterSeconds": 30], .retry(after: 30)),
+		]
+		for (status, fields, expected) in cases {
+			let fieldData = try JSONSerialization.data(withJSONObject: fields)
+			let (outcome, _) = await revoke(attempt: (UUID().uuidString.lowercased(), key.publicKey.x963Representation)) { _, signed in
+				var body = signed
+				body.merge(try! JSONSerialization.jsonObject(with: fieldData) as! [String: Any]) { _, new in new }
+				return RegistryTestSigner.signed(status, body)
+			}
+			#expect(outcome == .success(expected), "HTTP \(status)")
+		}
+	}
+
+	@Test("a request refused before its body is read waits as the Registry asks; Cloudflare unavailable waits too")
+	func readsUnsignedRefusals() async {
+		let (limited, _) = await revoke { _, _ in .json(429, ["code": "rate_limited"], headers: ["Retry-After": "12"]) }
+		#expect(limited == .success(.retry(after: 12)))
+		let (unavailable, _) = await revoke { _, _ in .json(503, ["code": "platform_unavailable"]) }
+		#expect(unavailable == .failure(.unavailable))
+	}
+
+	@Test("an answer about another cleanup, unsigned, or handing over a successor nobody asked for isn't believed")
+	func refusesForeignAnswers() async {
+		let replies: [@Sendable (PlatformHTTPStub.Request, [String: Any]) -> PlatformHTTPStub.Reply] = [
+			{ _, signed in
+				var body = signed
+				body["revocationId"] = UUID().uuidString.lowercased()
+				body["status"] = "accepted"
+				return RegistryTestSigner.signed(200, body)
+			},
+			{ _, signed in
+				var body = signed
+				body["status"] = "accepted"
+				return .json(200, body)
+			},
+			{ _, signed in
+				var body = signed
+				body["status"] = "superseded"
+				body["envelope"] = PlatformAuthorizationEnvelope.Sealed(version: 1, ephemeralPublicKey: "e", nonce: "n", ciphertext: "c").json
+				body["ageSeconds"] = 1
+				return RegistryTestSigner.signed(200, body)
+			},
+		]
+		for reply in replies {
+			let (outcome, _) = await revoke(reply)
+			#expect(outcome == .failure(.invalidResponse))
+		}
+	}
+
+	@Test("a malformed revocation is refused before anything is sent")
+	func refusesMalformed() async {
+		let route = PlatformHTTPStub.registry { _ in
+			Issue.record("Sent a malformed revocation")
+			return .json(200, [:])
+		}
+		let client = PlatformAuthorizationClient(session: route.session)
+		let session = platformTestSession(route.baseURL)
+		#expect(await client.revoke(.cloudflare, token: "a b", revocationID: revocationID, attempt: nil, session: session) == .failure(.invalidResponse))
+		#expect(await client.revoke(.cloudflare, token: "cf", revocationID: "X", attempt: nil, session: session) == .failure(.invalidResponse))
+		#expect(await client.revoke(.cloudflare, token: "cf", revocationID: revocationID, attempt: ("x", Data([4])), session: session) == .failure(.invalidResponse))
+	}
+}
+
+/// Cloudflare's userinfo and memberships for a new token, answering as a test scripts them.
+private final class FakeCloudflareIdentity: CloudflareIdentityProtocol, @unchecked Sendable {
+	private let lock = NSLock()
+	private var log: [String] = []
+	var userInfo: Result<CloudflareUserInfo, CloudflareAPIError> = .success(CloudflareUserInfo(subject: CloudflareLoginFixture.subject))
+	var accounts: Result<[CloudflareAccount], CloudflareAPIError> = .success([CloudflareLoginFixture.acme, CloudflareLoginFixture.beta])
+
+	var calls: [String] { lock.withLock { log } }
+	func record(_ call: String) { lock.withLock { log.append(call) } }
+
+	func userInfo(clientID: String) async -> Result<CloudflareUserInfo, CloudflareAPIError> {
+		record("userinfo \(clientID)")
+		return userInfo
+	}
+
+	func accounts() async -> Result<[CloudflareAccount], CloudflareAPIError> {
+		record("accounts")
+		return accounts
+	}
+}
+
+/// The grants a connector discarded, by refresh token and the connection they were for.
+private final class Discarded: @unchecked Sendable {
+	private let lock = NSLock()
+	private var log: [(token: String, connectionID: String, issuer: PlatformIssuer, clientID: String)] = []
+
+	var grants: [(token: String, connectionID: String, issuer: PlatformIssuer, clientID: String)] { lock.withLock { log } }
+
+	var discard: CloudflareConnector.Discard {
+		{ [self] token, connectionID, _, issuer, clientID in lock.withLock { log.append((token, connectionID, issuer, clientID)) } }
+	}
+}
+
+private final class TaskHolder: @unchecked Sendable {
+	private let lock = NSLock()
+	private var held: Task<Result<CloudflareConnection, BrowserConnectError>, Never>?
+	var task: Task<Result<CloudflareConnection, BrowserConnectError>, Never>? {
+		get { lock.withLock { held } }
+		set { lock.withLock { held = newValue } }
+	}
+}
+
+struct CloudflareConnectorTests {
+	private let registry = URL(string: "http://localhost:3000")!
+	private var session: PlatformSession { platformTestSession(registry) }
+	private let now = Date(timeIntervalSince1970: 1_792_300_000)
+
+	private func connector(
+		_ authorizations: FakeAuthorizations,
+		identity: FakeCloudflareIdentity,
+		discarded: Discarded,
+		port: Port,
+		productionClientID: String? = "lpm-vault-production"
+	) -> CloudflareConnector {
+		var connector = CloudflareConnector(
+			authorization: browserAuthorization(authorizations, port: port), identity: { _ in identity }, discard: discarded.discard)
+		connector.now = { [now] in now }
+		connector.retryDelay = .zero
+		connector.productionClientID = productionClientID
+		return connector
+	}
+
+	private func page(clientID: String = CloudflareLoginFixture.clientID) -> URL {
+		URL(string: cloudflarePage(registry, clientID: clientID))!
+	}
+
+	private func connect(_ connector: CloudflareConnector, _ authorizations: FakeAuthorizations, port: Port) async -> Result<CloudflareConnection, BrowserConnectError> {
+		let id = authorizations.id
+		let proof = platformTestOneTimeValue()
+		return await connector.connect(session: session, open: browser(returning: platformTestReturn(authorization: id, proof: proof), on: .cloudflare, listener: { port.port }))
+	}
+
+	@Test("connecting collects the grant, checks whose it is for this client, and reads the accounts it reaches, counting its age")
+	func connects() async throws {
+		let authorizations = FakeAuthorizations(pageURL: page())
+		authorizations.outcome = authorizations.readyCloudflareGrant(age: 90)
+		let identity = FakeCloudflareIdentity()
+		let discarded = Discarded()
+		let port = Port()
+		let connected = try await connect(connector(authorizations, identity: identity, discarded: discarded, port: port), authorizations, port: port).get()
+		#expect(connected.login == CloudflareLogin.key(subject: CloudflareLoginFixture.subject))
+		#expect(connected.accounts == [CloudflareLoginFixture.acme, CloudflareLoginFixture.beta])
+		#expect(connected.clientID == CloudflareLoginFixture.clientID && connected.issuer == .development)
+		#expect(PlatformAuthorizationClient.isCanonicalUUID(connected.generation))
+		#expect(connected.receivedAt == now.addingTimeInterval(-90))
+		#expect(connected.grant.tokens.accessToken == "cf_granted_access" && connected.grant.expiry.refreshToken == "cf_granted_refresh")
+		#expect(identity.calls == ["userinfo \(CloudflareLoginFixture.clientID)", "accounts"], "It never reads /user")
+		#expect(discarded.grants.isEmpty && authorizations.platformCalls.first == "start cloudflare")
+	}
+
+	@Test("a token whose identity or accounts don't check out is revoked, and the connection fails with why")
+	func discardsUnusable() async throws {
+		for (userInfo, accounts, expected) in [
+			(Result<CloudflareUserInfo, CloudflareAPIError>.failure(.invalidResponse), Result<[CloudflareAccount], CloudflareAPIError>.success([CloudflareLoginFixture.acme]), BrowserConnectError.accountUnreadable),
+			(.failure(.unauthorized), .success([CloudflareLoginFixture.acme]), .tokenRejected),
+			(.success(CloudflareUserInfo(subject: CloudflareLoginFixture.subject)), .success([]), .noAccounts),
+			(.success(CloudflareUserInfo(subject: CloudflareLoginFixture.subject)), .failure(.forbidden), .tokenRejected),
+		] {
+			let authorizations = FakeAuthorizations(pageURL: page())
+			authorizations.outcome = authorizations.readyCloudflareGrant()
+			let identity = FakeCloudflareIdentity()
+			identity.userInfo = userInfo
+			identity.accounts = accounts
+			let discarded = Discarded()
+			let port = Port()
+			let result = await connect(connector(authorizations, identity: identity, discarded: discarded, port: port), authorizations, port: port)
+			#expect(failure(of: result) == expected)
+			#expect(discarded.grants.map(\.token) == ["cf_granted_refresh"] && discarded.grants.first?.issuer == .development)
+		}
+	}
+
+	@Test("a page for a client this Registry mustn't run is never opened, and nothing is granted")
+	func refusesOtherClients() async throws {
+		let authorizations = FakeAuthorizations(pageURL: page(clientID: "lpm-vault-production"))
+		let discarded = Discarded()
+		let port = Port()
+		let opened = OpenedPages()
+		let result = await connector(authorizations, identity: FakeCloudflareIdentity(), discarded: discarded, port: port)
+			.connect(session: session) { opened.append($0) }
+		#expect(failure(of: result) == .invalidResponse)
+		#expect(opened.urls.isEmpty && discarded.grants.isEmpty)
+		#expect(try await waitUntil { authorizations.cancelledIDs == [authorizations.id] })
+	}
+
+	@Test("cancelling after the browser came back still collects the grant, then revokes it")
+	func cancelAfterReturn() async throws {
+		let authorizations = FakeAuthorizations(pageURL: page())
+		let ready = authorizations.readyCloudflareGrant()
+		let holder = TaskHolder()
+		authorizations.outcome = { attempt, id, key in
+			guard attempt > 0 else {
+				holder.task?.cancel()
+				return .success(.pending)
+			}
+			return ready(attempt, id, key)
+		}
+		let discarded = Discarded()
+		let port = Port()
+		let connector = connector(authorizations, identity: FakeCloudflareIdentity(), discarded: discarded, port: port)
+		holder.task = Task { await connect(connector, authorizations, port: port) }
+		let result = await holder.task!.value
+		#expect(failure(of: result) == .cancelled)
+		#expect(discarded.grants.map(\.token) == ["cf_granted_refresh"])
+		#expect(authorizations.cancelledIDs.isEmpty, "A collected grant isn't cancelled; it's revoked")
+	}
+
+	@Test("a grant whose access token expired before it was collected is revoked")
+	func expiredOnArrival() async throws {
+		let authorizations = FakeAuthorizations(pageURL: page())
+		authorizations.outcome = authorizations.readyCloudflareGrant(age: 3_600)
+		let discarded = Discarded()
+		let port = Port()
+		let result = await connect(connector(authorizations, identity: FakeCloudflareIdentity(), discarded: discarded, port: port), authorizations, port: port)
+		#expect(failure(of: result) == .expired)
+		#expect(discarded.grants.map(\.token) == ["cf_granted_refresh"])
+	}
+
+	@Test("Cloudflare isn't offered through a Registry that can't connect it")
+	func unavailable() async throws {
+		let authorizations = FakeAuthorizations(pageURL: page())
+		let port = Port()
+		let result = await connector(authorizations, identity: FakeCloudflareIdentity(), discarded: Discarded(), port: port, productionClientID: nil)
+			.connect(session: platformTestSession(registry, issuer: .production)) { _ in }
+		#expect(failure(of: result) == .unavailable)
+		#expect(authorizations.platformCalls.isEmpty)
+	}
+}
+
+/// Cloudflare's identity and list answers, in the shapes probe O recorded.
+struct CloudflareIdentityClientTests {
+	private func client(_ handler: @escaping PlatformHTTPStub.Handler) -> (CloudflareClient, PlatformHTTPStub.Route) {
+		let route = PlatformHTTPStub.platform(handler)
+		let client = CloudflareClient(
+			token: "cf_access", baseURL: route.baseURL.appending(path: "client/v4"), userInfoURL: route.baseURL.appending(path: "oauth2/userinfo"),
+			session: route.session)
+		return (client, route)
+	}
+
+	private static func userInfo(iss: Any = "https://dash.cloudflare.com", aud: Any = ["lpm-vault-development"], sub: Any = CloudflareLoginFixture.subject) -> [String: Any] {
+		["sub": sub, "iss": iss, "aud": aud, "iat": 1_792_300_000, "auth_time": 1_792_299_990, "rat": 1_792_299_980]
+	}
+
+	@Test("userinfo names the login when Cloudflare is its issuer and this client is among its audience, as a list or alone")
+	func readsUserInfo() async throws {
+		for aud in [["lpm-vault-development"], "lpm-vault-development"] as [Any] {
+			let audData = try JSONSerialization.data(withJSONObject: [aud])
+			let (client, route) = client { _ in .json(200, Self.userInfo(aud: (try! JSONSerialization.jsonObject(with: audData) as! [Any])[0])) }
+			#expect(try await client.userInfo(clientID: "lpm-vault-development").get().subject == CloudflareLoginFixture.subject)
+			#expect(route.requests.first?.url.path() == "/oauth2/userinfo" && route.requests.first?.header("Authorization") == "Bearer cf_access")
+		}
+	}
+
+	@Test("userinfo from another issuer, for another client, or naming no usable sub isn't believed", arguments: ["iss", "aud", "sub", "empty-sub"])
+	func refusesUserInfo(change: String) async {
+		let (client, _) = client { _ in
+			switch change {
+			case "iss": .json(200, Self.userInfo(iss: "https://dash.cloudflare.com.example"))
+			case "aud": .json(200, Self.userInfo(aud: ["another-client"]))
+			case "sub": .json(200, Self.userInfo(sub: 42))
+			default: .json(200, Self.userInfo(sub: ""))
+			}
+		}
+		#expect(await client.userInfo(clientID: "lpm-vault-development") == .failure(.invalidResponse))
+	}
+
+	@Test("accounts are the accepted memberships' accounts, read page by page, by name, with hostile names escaped")
+	func readsAccounts() async throws {
+		let (client, route) = client { request in
+			let page = Int(request.query["page"] ?? "1") ?? 1
+			if page == 1 {
+				var list: [[String: Any]] = (0..<49).map { index in
+					["id": "m\(index)", "status": "accepted", "account": ["id": String(format: "%032x", index + 1), "name": "Account \(index)"], "roles": []]
+				}
+				list.append(["id": "pending", "status": "pending", "account": ["id": String(repeating: "f", count: 32), "name": "Invited"]])
+				return .json(200, CloudflareFixture.envelope(list))
+			}
+			return .json(200, CloudflareFixture.envelope([
+				["id": "last", "status": "accepted", "account": ["id": CloudflareLoginFixture.acme.id, "name": "Acme\u{202E}"]],
+			]))
+		}
+		let accounts = try await client.accounts().get()
+		#expect(accounts.count == 50 && !accounts.contains { $0.name == "Invited" })
+		#expect(accounts.first?.name == "Account 0")
+		#expect(accounts.contains(CloudflareAccount(id: CloudflareLoginFixture.acme.id, name: "Acme\\u{202e}")))
+		#expect(route.requests.map { $0.query["page"] } == ["1", "2"] && route.requests.allSatisfy { $0.url.path().hasSuffix("/memberships") })
+	}
+
+	@Test("an account's Workers are listed by their permanent ID and name, page by page")
+	func listsWorkers() async throws {
+		let (client, route) = client { _ in
+			.json(200, CloudflareFixture.envelope([
+				CloudflareFixture.worker(id: CloudflareFixture.workerID, name: "zeta"),
+				CloudflareFixture.worker(id: "0123456789abcdef0123456789abcdef", name: "alpha"),
+				["id": "bad", "name": "skip-me"],
+			]))
+		}
+		let workers = try await client.workers(in: CloudflareFixture.account).get()
+		#expect(workers.map(\.name) == ["alpha", "zeta"])
+		#expect(route.requests.first?.url.path().hasSuffix("/accounts/\(CloudflareFixture.account)/workers/workers") == true)
 	}
 }

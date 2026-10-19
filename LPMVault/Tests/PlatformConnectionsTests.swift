@@ -112,7 +112,7 @@ struct PlatformConnectionStoreTests {
 		#expect(PlatformConnectionStore.decode(try altered { $0["teamId"] = "0x" }, account: id) == .failure(.unreadable))
 		#expect(PlatformConnectionStore.decode(try altered { $0["accessToken"] = "has space" }, account: id) == .failure(.unreadable))
 		#expect(PlatformConnectionStore.decode(data, account: "coolify.1.https://coolify.example.com") == .failure(.unreadable))
-		#expect(PlatformConnectionStore.decode(try altered { $0["platform"] = "cloudflare" }, account: id) == .failure(.newerVersion))
+		#expect(PlatformConnectionStore.decode(try altered { $0["platform"] = "render" }, account: id) == .failure(.newerVersion))
 	}
 
 	@Test("a Coolify connection that couldn't be read back isn't stored")
@@ -133,7 +133,8 @@ struct PlatformConnectionStoreTests {
 			labels.withLock { $0.append(label) }
 		}
 		_ = await store.connections()
-		#expect(labels.withLock { $0 }.count == 1)
+		// The cleanup entries are listed first, as they decide which connections are retired.
+		#expect(labels.withLock { $0 }.count == 2)
 		#expect(labels.withLock { $0 }.allSatisfy { !$0.contains("cooperative") }, "\(labels.withLock { $0 })")
 	}
 
@@ -1288,4 +1289,111 @@ final class OpenedURLs: @unchecked Sendable {
 
 	var urls: [URL] { lock.withLock { opened } }
 	func append(_ url: URL) { lock.withLock { opened.append(url) } }
+}
+
+extension SheetInteractionTests {
+	@Suite("Platforms page Cloudflare section, rendered")
+	@MainActor
+	struct CloudflareSectionRenderingTests {
+		private let keychain = MockKeychainService()
+		private let opened = OpenedURLs()
+		private let revoker = ScriptedRevoker()
+
+		private func page(
+			connectCloudflare: @escaping PlatformConnections.ConnectCloudflare = { _, _ in .failure(.cancelled) }
+		) -> (VaultStore, SheetTestHost<PlatformsView>) {
+			let opened = opened
+			let store = VaultStore(
+				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
+				authTokenProvider: { _, _ in "lpm_session" }, cloudflareConnect: connectCloudflare, platformRevoker: revoker,
+				platformURLOpener: { opened.append($0) })
+			store.appEnvironment = .development
+			store.isUnlocked = true
+			store.currentUser = LPMUser(id: platformTestPrincipal, username: "tolga", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
+			store.showPlatforms()
+			let host = SheetTestHost(PlatformsView(store: store), size: NSSize(width: 760, height: 1_000), keepsRequestedSize: true, usesHostingView: true)
+			return (store, host)
+		}
+
+		/// A login saved now, with `accounts`, whose renewal the Registry refused when `rejected`.
+		@discardableResult
+		private func save(label: String = "Work", accounts: [CloudflareAccount] = [CloudflareLoginFixture.acme], rejected: Bool = false) async throws -> PlatformConnection {
+			var refresh = CloudflareLoginFixture.refresh(at: Date())
+			refresh.isRejected = rejected
+			return try await CloudflareLoginFixture.save(
+				CloudflareLoginFixture.account(label: label, accounts: accounts), in: PlatformConnectionStore(service: keychain), refresh: refresh)
+		}
+
+		@Test("Connect Cloudflare opens Cloudflare's page with the LPM session, says where to finish, and Cancel stops it")
+		func connectsAndCancels() async throws {
+			let authorize = URL(string: "https://dash.cloudflare.com/oauth2/auth?client_id=lpm-vault-development")!
+			let (store, host) = page(connectCloudflare: { session, open in
+				#expect(session.principalID == platformTestPrincipal && session.issuer == .development)
+				await open(authorize)
+				try? await Task.sleep(for: .seconds(60))
+				return .failure(.cancelled)
+			})
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("No Cloudflare logins connected yet"))
+			try await host.click("Connect Cloudflare")
+			#expect(try await host.waitForText("choose the Cloudflare accounts LPM Vault can reach"))
+			#expect(store.platforms.connecting == .cloudflare && opened.urls == [authorize])
+			try await host.click("Cancel")
+			#expect(try await host.waitUntil { !store.platforms.isConnecting })
+		}
+
+		@Test("a connected login shows with its label and accounts, and Disconnect says LPM Vault revokes its access, then does")
+		func showsAndDisconnects() async throws {
+			try await save(accounts: [CloudflareLoginFixture.acme, CloudflareLoginFixture.beta])
+			let (store, host) = page()
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Work"))
+			#expect(try await host.waitForText("Acme and Beta"))
+			try await host.click("Disconnect Work")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
+			let dialog = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("LPM Vault revokes its access to Work on Cloudflare", in: dialog))
+			try host.clickAlertButton("Disconnect", in: dialog)
+			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
+			#expect(revoker.calls.map(\.token) == ["cf_refresh_1"])
+			#expect(try await host.waitForText("LPM Vault's access to it on Cloudflare has ended"))
+		}
+
+		@Test("a login that no longer works offers Reconnect, which asks before losing an account, and declining keeps it as it was")
+		func reconnectAsksBeforeLosingAccounts() async throws {
+			let connection = try await save(accounts: [CloudflareLoginFixture.acme, CloudflareLoginFixture.beta], rejected: true)
+			let tokens = PlatformTokens(
+				accessToken: "cf_new_access", expiry: .init(accessTokenLifetime: 3_600, refreshToken: "cf_new_refresh", refreshTokenLifetime: 31_536_000))!
+			let approved = CloudflareConnection(
+				login: CloudflareLogin.key(subject: CloudflareLoginFixture.subject), accounts: [CloudflareLoginFixture.acme],
+				grant: CloudflareGrant(tokens: tokens)!, issuer: .development, clientID: CloudflareLoginFixture.clientID,
+				generation: CloudflareConnectionAccount.makeGeneration(), receivedAt: Date())
+			let (store, host) = page(connectCloudflare: { _, _ in .success(approved) })
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("No longer works. Reconnect to keep publishing through it."))
+			try await host.click("Reconnect Work")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Reconnecting asks before losing an account")
+			let dialog = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("Work would reach fewer accounts", in: dialog))
+			#expect(try await host.waitForText("would no longer reach Beta through Work", in: dialog))
+			try host.clickAlertButton("Cancel", in: dialog)
+			#expect(try await host.waitUntil { revoker.calls.map(\.token) == ["cf_new_refresh"] }, "Only the new grant is revoked")
+			guard case .cloudflare(let kept) = try await store.platformConnectionStore.record(for: connection.id).get().connection.account,
+				case .cloudflare(let original) = connection.account
+			else { return }
+			#expect(kept.generation == original.generation)
+		}
+
+		@Test("a note of an unconfirmed revocation says how to remove LPM Vault on Cloudflare, until it's dismissed")
+		func showsMarker() async throws {
+			let marker = PlatformCleanupMarker(platform: .cloudflare, generation: CloudflareConnectionAccount.makeGeneration(), createdAt: Date())
+			_ = await PlatformConnectionStore(service: keychain).mark(marker)
+			try await save()
+			let (store, host) = page()
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Connected Applications on Cloudflare"))
+			try await host.click("Dismiss the note about an unconfirmed revocation")
+			#expect(try await host.waitForTextToDisappear("Connected Applications on Cloudflare"))
+		}
+	}
 }
