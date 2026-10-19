@@ -75,7 +75,7 @@ struct ContentView: View {
 		.frame(minWidth: 1040, minHeight: 640)
 		.overlay(alignment: .bottom) {
 			Text("Values stay encrypted on this Mac until you unlock.")
-				.font(VaultTypography.mono(10.5))
+				.font(VaultTypography.tabular(10.5))
 				.foregroundStyle(VaultPalette.textFaint)
 				.padding(.bottom, 18)
 		}

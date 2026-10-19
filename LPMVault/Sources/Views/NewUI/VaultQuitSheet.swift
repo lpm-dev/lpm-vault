@@ -165,7 +165,7 @@ struct VaultQuitSheet: View {
 		HStack(spacing: 10) {
 			Group {
 				switch item.kind {
-				case .schema: Text("{}").font(VaultTypography.mono(11, .bold))
+				case .schema: Text("{}").font(VaultTypography.tabular(11, .bold))
 				case .settings: Image(systemName: "gearshape").font(.system(size: 12, weight: .medium))
 				case .sheet: Image(systemName: "macwindow").font(.system(size: 12, weight: .medium))
 				case .keys, .review: Image(systemName: "folder").font(.system(size: 12, weight: .medium))

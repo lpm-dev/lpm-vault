@@ -144,7 +144,7 @@ struct AuthStatusView: View {
 					Text(store.appEnvironment == .production ? "Production" : "Local development")
 						.font(.system(size: 13, weight: .semibold))
 					Text(store.appEnvironment == .production ? "lpm.dev" : "localhost:3000")
-						.font(VaultTypography.mono(11))
+						.font(VaultTypography.tabular(11))
 						.foregroundStyle(VaultPalette.textTertiary)
 				}
 				Spacer()

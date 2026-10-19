@@ -46,11 +46,11 @@ struct NewEnvironmentSheet: View {
 					HStack(spacing: 8) {
 						VaultEnvSwatch(color: VaultPalette.environment(project.environments.count))
 						Text(".env.")
-							.font(VaultTypography.mono(12.5))
+							.font(VaultTypography.tabular(12.5))
 							.foregroundStyle(VaultPalette.textTertiary)
 						TextField("staging", text: $name)
 							.textFieldStyle(.plain)
-							.font(VaultTypography.mono(12.5))
+							.font(VaultTypography.tabular(12.5))
 							.foregroundStyle(VaultPalette.textPrimary)
 							.focused($nameFocused)
 							.onSubmit(create)

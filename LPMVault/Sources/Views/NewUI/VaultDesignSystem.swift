@@ -2,24 +2,25 @@ import AppKit
 import SwiftUI
 
 enum VaultPalette {
-	static let titleBar = adaptive(light: 0xF2F1F5, dark: 0x181818)
-	static let titleBarBorder = adaptive(light: 0xDEDDE3, dark: 0x2B2B2B)
-	static let sidebar = adaptive(light: 0xF7F7FA, dark: 0x232323)
-	static let sidebarBorder = adaptive(light: 0xE4E3E9, dark: 0x2B2B2B)
-	static let content = adaptive(light: 0xFFFFFF, dark: 0x181818)
-	static let control = adaptive(light: 0xFFFFFF, dark: 0x292929)
-	static let inspector = adaptive(light: 0xFAFAFC, dark: 0x232323)
+	static let titleBar = adaptive(light: 0xF2F1F5, dark: 0x101010)
+	static let titleBarBorder = adaptive(light: 0xDEDDE3, dark: 0x262626)
+	static let sidebar = adaptive(light: 0xF7F7FA, dark: 0x101010)
+	static let sidebarBorder = adaptive(light: 0xE4E3E9, dark: 0x262626)
+	static let content = adaptive(light: 0xFFFFFF, dark: 0x0A0A0A)
+	static let control = adaptive(light: 0xFFFFFF, dark: 0x101010)
+	static let inspector = adaptive(light: 0xFAFAFC, dark: 0x101010)
 
-	static let textPrimary = adaptive(light: 0x1C1C1E, dark: 0xFFFFFF)
-	static let textSecondary = adaptive(light: 0x3C3C43, dark: 0xA3A3A3)
-	static let textTertiary = adaptive(light: 0x6F6F75, dark: 0xA3A3A3)
-	static let textQuaternary = adaptive(light: 0x717178, dark: 0xA3A3A3)
-	static let textFaint = adaptive(light: 0x73737A, dark: 0xA3A3A3)
-	static let masked = adaptive(light: 0x6B6B72, dark: 0xA3A3A3)
+	// Dark text is white at two strengths, so it takes on the tint of what it sits on.
+	static let textPrimary = adaptive(light: 0x1C1C1E, dark: 0xFFFFFF, darkOpacity: 0.8)
+	static let textSecondary = adaptive(light: 0x3C3C43, dark: 0xFFFFFF, darkOpacity: 0.55)
+	static let textTertiary = adaptive(light: 0x6F6F75, dark: 0xFFFFFF, darkOpacity: 0.55)
+	static let textQuaternary = adaptive(light: 0x717178, dark: 0xFFFFFF, darkOpacity: 0.55)
+	static let textFaint = adaptive(light: 0x73737A, dark: 0xFFFFFF, darkOpacity: 0.55)
+	static let masked = adaptive(light: 0x6B6B72, dark: 0xFFFFFF, darkOpacity: 0.55)
 
-	static let border = adaptive(light: 0xDCDBE2, dark: 0x2B2B2B)
-	static let divider = adaptive(light: 0xECEAF0, dark: 0x2B2B2B)
-	static let rowDivider = adaptive(light: 0xF0EFF4, dark: 0x2B2B2B)
+	static let border = adaptive(light: 0xDCDBE2, dark: 0x262626)
+	static let divider = adaptive(light: 0xECEAF0, dark: 0x262626)
+	static let rowDivider = adaptive(light: 0xF0EFF4, dark: 0x191919)
 
 	static let accent = Color(hex: 0x5E5CE6)
 	static let accentForeground = adaptive(light: 0x5E5CE6, dark: 0xB9B8FF)
@@ -27,8 +28,8 @@ enum VaultPalette {
 	static let accentTint = adaptive(light: 0xECEAFC, dark: 0x29263D)
 	static let accentText = adaptive(light: 0x2C2B4A, dark: 0xD5D4FF)
 	static let accentDeep = adaptive(light: 0x4B48D6, dark: 0xB9B8FF)
-	static let vaultChip = adaptive(light: 0xE7E6EE, dark: 0x292929)
-	static let vaultChipText = adaptive(light: 0x5B5A6E, dark: 0xA3A3A3)
+	static let vaultChip = adaptive(light: 0xE7E6EE, dark: 0x262626)
+	static let vaultChipText = adaptive(light: 0x5B5A6E, dark: 0xFFFFFF, darkOpacity: 0.55)
 
 	static let green = Color(hex: 0x34C759)
 	static let orange = Color(hex: 0xFF9F0A)
@@ -39,33 +40,33 @@ enum VaultPalette {
 	static let orangeTint = adaptive(light: 0xFFF1DE, dark: 0x3B3020)
 	static let orangeTintText = adaptive(light: 0xA05A12, dark: 0xFFC06A)
 	static let redTint = adaptive(light: 0xFFE9E7, dark: 0x3D2423)
-	static let neutralTint = adaptive(light: 0xECEAF0, dark: 0x292929)
+	static let neutralTint = adaptive(light: 0xECEAF0, dark: 0x262626)
 	static let publicTint = adaptive(light: 0xE3F2FA, dark: 0x173140)
 	static let publicText = adaptive(light: 0x0B6A96, dark: 0x6CCFF6)
 
-	static let rowSelected = adaptive(light: 0xF6F5FD, dark: 0x292929)
-	static let rowHover = adaptive(light: 0xFAFAFC, dark: 0x232323)
-	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x232323)
-	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x292929)
-	static let sidebarHover = adaptive(light: 0xEEEDF3, dark: 0x292929)
+	static let rowSelected = adaptive(light: 0xF6F5FD, dark: 0x191919)
+	static let rowHover = adaptive(light: 0xFAFAFC, dark: 0x101010)
+	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x101010)
+	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x262626)
+	static let sidebarHover = adaptive(light: 0xEEEDF3, dark: 0x191919)
 	static let selectedEnvHeader = adaptive(light: 0xF3F1FF, dark: 0x29263D)
 	static let selectedEnvCell = adaptive(light: 0xFAF9FF, dark: 0x211F2E)
 
 	static let strongFill = adaptive(light: 0x1C1C1E, dark: 0x5E5CE6)
 	static let shadow = adaptive(light: 0x1C1C1E, dark: 0x000000)
 
-	static let avatarNeutral = adaptive(light: 0xD9D8E4, dark: 0x292929)
-	static let avatarNeutralForeground = adaptive(light: 0x5B5A6E, dark: 0xA3A3A3)
-	static let terminal = adaptive(light: 0x1C1C1E, dark: 0x181818)
+	static let avatarNeutral = adaptive(light: 0xD9D8E4, dark: 0x262626)
+	static let avatarNeutralForeground = adaptive(light: 0x5B5A6E, dark: 0xFFFFFF, darkOpacity: 0.55)
+	static let terminal = adaptive(light: 0x1C1C1E, dark: 0x101010)
 	static let terminalText = Color(hex: 0xE8E8ED)
 
-	private static func adaptive(light: UInt, dark: UInt) -> Color {
-		func color(_ hex: UInt) -> NSColor {
+	private static func adaptive(light: UInt, dark: UInt, darkOpacity: Double = 1) -> Color {
+		func color(_ hex: UInt, alpha: Double) -> NSColor {
 			NSColor(srgbRed: Double((hex >> 16) & 0xFF) / 255,
-				green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255, alpha: 1)
+				green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255, alpha: alpha)
 		}
-		let lightColor = color(light)
-		let darkColor = color(dark)
+		let lightColor = color(light, alpha: 1)
+		let darkColor = color(dark, alpha: darkOpacity)
 		return Color(nsColor: NSColor(name: nil) { appearance in
 			appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
 		})
@@ -102,7 +103,13 @@ enum VaultMetrics {
 }
 
 enum VaultTypography {
-	static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+	/// Names, paths, counts and shortcuts: the system font, with digits of one width so numbers line up.
+	static func tabular(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+		.system(size: size, weight: weight).monospacedDigit()
+	}
+
+	/// Revealed secret values and shell commands, where every character has to read unambiguously.
+	static func code(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
 		.system(size: size, weight: weight, design: .monospaced)
 	}
 
@@ -316,7 +323,7 @@ struct VaultBarButton: View {
 				}
 				if let shortcut {
 					Text(shortcut)
-						.font(VaultTypography.mono(10))
+						.font(VaultTypography.tabular(10))
 						.foregroundStyle(!disabled && (filled || (invertsOnHover && hovering)) ? .white.opacity(0.7) : VaultPalette.textFaint)
 				}
 			}
@@ -482,7 +489,7 @@ struct VaultFilterChip: View {
 				if let dot { VaultStatusDot(color: dot) }
 				if let symbol { Image(systemName: symbol).font(.system(size: 10.5, weight: .semibold)) }
 				Text(title).font(.system(size: 12, weight: selected || alert ? .semibold : .regular))
-				if let trailing { Text(trailing).font(VaultTypography.mono(11)) }
+				if let trailing { Text(trailing).font(VaultTypography.tabular(11)) }
 			}
 			.foregroundStyle(selected ? .white : (alert ? VaultPalette.redText : VaultPalette.textSecondary))
 			.padding(.horizontal, 11)
@@ -544,8 +551,8 @@ struct VaultCheckedValue: View {
 					.overlay(alignment: .bottom) { underline }
 					.help(problem ?? "Required")
 			} else if let defaultValue {
-				(Text(defaultValue).font(VaultTypography.mono(size)).foregroundColor(VaultPalette.textTertiary)
-					+ Text("  (default)").font(VaultTypography.mono(size - 1)).foregroundColor(VaultPalette.textFaint))
+				(Text(defaultValue).font(VaultTypography.tabular(size)).foregroundColor(VaultPalette.textTertiary)
+					+ Text("  (default)").font(VaultTypography.tabular(size - 1)).foregroundColor(VaultPalette.textFaint))
 					.lineLimit(1)
 					.truncationMode(.middle)
 					.overlay(alignment: .bottom) { if problem != nil { underline } }
@@ -568,7 +575,7 @@ struct VaultValueText: View {
 
 	var body: some View {
 		Text(text)
-			.font(VaultTypography.mono(size))
+			.font(masked ? VaultTypography.tabular(size) : VaultTypography.code(size))
 			.tracking(masked ? 1.2 : 0)
 			.foregroundStyle(masked ? VaultPalette.masked : VaultPalette.textSecondary)
 			.lineLimit(1)

@@ -169,7 +169,7 @@ struct AddVariableSheet: View {
 			}
 			TextField("DATABASE_URL", text: $draft.key)
 				.textFieldStyle(.plain)
-				.font(VaultTypography.mono(13))
+				.font(VaultTypography.tabular(13))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.autocorrectionDisabled()
 				.focused($focusedField, equals: .key)
@@ -248,7 +248,7 @@ struct AddVariableSheet: View {
 				SuggestionButton(isHighlighted: index == highlightedSuggestion) { pickSuggestion(rule.key) } label: {
 					HStack(spacing: 8) {
 						Text(rule.key)
-							.font(VaultTypography.mono(12.5, .semibold))
+							.font(VaultTypography.tabular(12.5, .semibold))
 							.foregroundStyle(VaultPalette.textPrimary)
 							.lineLimit(1)
 							.truncationMode(.middle)
@@ -305,7 +305,7 @@ struct AddVariableSheet: View {
 					}
 				}
 				.textFieldStyle(.plain)
-				.font(VaultTypography.mono(12.5))
+				.font(VaultTypography.code(12.5))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.autocorrectionDisabled()
 				.focused($focusedField, equals: .value)
@@ -667,7 +667,7 @@ private struct EnvironmentChipToggleStyle: ToggleStyle {
 				.frame(width: 15, height: 15)
 				VaultEnvSwatch(color: color, size: 6)
 				configuration.label
-					.font(VaultTypography.mono(12))
+					.font(VaultTypography.tabular(12))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 					.truncationMode(.middle)

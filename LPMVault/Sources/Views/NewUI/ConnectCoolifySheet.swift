@@ -41,7 +41,7 @@ struct ConnectCoolifySheet: View {
 				field("Coolify address") {
 					TextField("https://coolify.example.com", text: $address)
 						.textFieldStyle(.plain)
-						.font(VaultTypography.mono(12.5))
+						.font(VaultTypography.tabular(12.5))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.autocorrectionDisabled()
 						.focused($focusedField, equals: .address)
@@ -53,7 +53,7 @@ struct ConnectCoolifySheet: View {
 				field("API token") {
 					SecureField("Paste the token", text: $token)
 						.textFieldStyle(.plain)
-						.font(VaultTypography.mono(12.5))
+						.font(VaultTypography.tabular(12.5))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.focused($focusedField, equals: .token)
 						.onSubmit(connect)

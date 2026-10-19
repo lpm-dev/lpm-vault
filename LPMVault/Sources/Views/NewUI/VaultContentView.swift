@@ -178,7 +178,7 @@ struct VaultContentView: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 			} else {
 				Text(VaultProject.displayName(for: selectedEnvironment))
-					.font(VaultTypography.mono(19, .bold))
+					.font(VaultTypography.tabular(19, .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				VaultTagBadge(
 					text: selectedEnvironment == "default" ? "LOCAL" : selectedEnvironment.uppercased(),
@@ -416,7 +416,7 @@ struct VaultContentView: View {
 					let isRevealed = isShown(key)
 					let rendered = isRevealed ? (project.value(for: key, in: selectedEnvironment) ?? "") : "••••••••••••"
 					Text("\(key)=\(rendered)")
-						.font(VaultTypography.mono(12))
+						.font(isRevealed ? VaultTypography.code(12) : VaultTypography.tabular(12))
 						.foregroundStyle(VaultPalette.textSecondary)
 						.accessibilityLabel("\(key), value \(isRevealed ? "revealed visually" : "hidden")")
 				}
@@ -516,7 +516,7 @@ private struct VaultMatrixHeader: View {
 				HStack(spacing: 6) {
 					VaultEnvSwatch(color: VaultPalette.environment(index))
 					Text(VaultProject.displayName(for: environment))
-						.font(VaultTypography.mono(11.5, .bold))
+						.font(VaultTypography.tabular(11.5, .bold))
 						.foregroundStyle(VaultPalette.textSecondary)
 						.lineLimit(1)
 					Spacer(minLength: 2)
@@ -555,7 +555,7 @@ private struct VaultMatrixRow: View {
 			HStack(spacing: 0) {
 				HStack(spacing: 8) {
 					Text(key)
-						.font(VaultTypography.mono(13, isSelected ? .bold : .regular))
+						.font(VaultTypography.tabular(13, isSelected ? .bold : .regular))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.lineLimit(1)
 					if isPublic { VaultPublicBadge(compact: true) }
@@ -731,7 +731,7 @@ private struct VaultEnvironmentRow: View {
 	private func keyLabel(compact: Bool) -> some View {
 		HStack(spacing: 8) {
 			Text(key)
-				.font(VaultTypography.mono(13, isSelected ? .bold : .regular))
+				.font(VaultTypography.tabular(13, isSelected ? .bold : .regular))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.lineLimit(1)
 				.layoutPriority(1)

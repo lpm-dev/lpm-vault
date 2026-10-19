@@ -133,7 +133,7 @@ struct CloudVaultsSheet: View {
 
 			VStack(alignment: .leading, spacing: 2) {
 				Text(vault.name ?? vault.vaultId)
-					.font(.system(.body, design: .monospaced))
+					.font(.body.monospacedDigit())
 					.lineLimit(1)
 
 				HStack(spacing: 8) {

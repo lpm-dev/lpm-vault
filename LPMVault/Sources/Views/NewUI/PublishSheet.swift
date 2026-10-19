@@ -86,7 +86,7 @@ struct PublishSheet: View {
 			VStack(alignment: .leading, spacing: 4) {
 				Text("FROM VAULT").vaultSectionLabel()
 				Text("\(session.projectName) / \(VaultProject.displayName(for: session.sourceEnvironment))")
-					.font(VaultTypography.mono(12.5, .semibold))
+					.font(VaultTypography.tabular(12.5, .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -102,7 +102,7 @@ struct PublishSheet: View {
 					.lineLimit(1)
 					.truncationMode(.middle)
 				Text("\(place.name ?? "—") / \(place.part ?? "—")")
-					.font(VaultTypography.mono(12.5, .semibold))
+					.font(VaultTypography.tabular(12.5, .semibold))
 					.foregroundStyle(place.part == nil ? VaultPalette.textTertiary : VaultPalette.accentForeground)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -386,7 +386,7 @@ struct PublishSheet: View {
 			VStack(alignment: .leading, spacing: 4) {
 				HStack(spacing: 8) {
 					Text(row.key)
-						.font(VaultTypography.mono(12.5, .semibold))
+						.font(VaultTypography.tabular(12.5, .semibold))
 						.foregroundStyle(failsRules ? VaultPalette.redText : VaultPalette.textPrimary)
 						.lineLimit(1)
 						.truncationMode(.middle)
@@ -626,7 +626,7 @@ struct PublishSheet: View {
 						ForEach(Array(results.rows.enumerated()), id: \.offset) { index, row in
 							if index > 0 { VaultHairline(color: VaultPalette.rowDivider) }
 							HStack(alignment: .firstTextBaseline, spacing: 10) {
-								Text(row.key).font(VaultTypography.mono(12.5, .semibold)).foregroundStyle(VaultPalette.textPrimary)
+								Text(row.key).font(VaultTypography.tabular(12.5, .semibold)).foregroundStyle(VaultPalette.textPrimary)
 									.lineLimit(1).truncationMode(.middle)
 								Spacer(minLength: 8)
 								outcome(row.outcome)
@@ -1002,7 +1002,7 @@ private struct NetlifyDestinationFields: View {
 					VStack(alignment: .leading, spacing: 4) {
 						TextField("staging", text: $form.branch)
 							.textFieldStyle(.plain)
-							.font(VaultTypography.mono(12.5))
+							.font(VaultTypography.tabular(12.5))
 							.foregroundStyle(VaultPalette.textPrimary)
 							.autocorrectionDisabled()
 							.focused($editingBranch)

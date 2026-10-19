@@ -277,7 +277,7 @@ private struct VaultKeyEditor: View {
 			HStack(spacing: 6) {
 				TextField("KEY_NAME", text: nameBinding)
 					.textFieldStyle(.plain)
-					.font(VaultTypography.mono(14, .bold))
+					.font(VaultTypography.tabular(14, .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.autocorrectionDisabled()
 					.focused($focus, equals: .name)
@@ -310,7 +310,7 @@ private struct VaultKeyEditor: View {
 					Image(systemName: "arrow.right").font(.system(size: 8, weight: .bold))
 					Text(name).foregroundStyle(VaultPalette.textSecondary)
 				}
-				.font(VaultTypography.mono(10.5))
+				.font(VaultTypography.tabular(10.5))
 				.foregroundStyle(VaultPalette.textFaint)
 				.lineLimit(1)
 				.truncationMode(.middle)
@@ -393,7 +393,7 @@ private struct VaultKeyEditor: View {
 			HStack(spacing: 6) {
 				VaultEnvSwatch(color: environments.firstIndex(of: environment).map(VaultPalette.environment) ?? VaultPalette.textFaint)
 				Text(displayName)
-					.font(VaultTypography.mono(11.5, .bold))
+					.font(VaultTypography.tabular(11.5, .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -465,7 +465,7 @@ private struct VaultKeyEditor: View {
 			}
 		}
 		.textFieldStyle(.plain)
-		.font(VaultTypography.mono(11.5))
+		.font(VaultTypography.code(11.5))
 		.foregroundStyle(VaultPalette.textPrimary)
 		.autocorrectionDisabled()
 		.focused($focus, equals: .value(environment))
@@ -651,7 +651,7 @@ private struct VaultKeyEditor: View {
 		HStack(alignment: .firstTextBaseline, spacing: 6) {
 			VaultEnvSwatch(color: environments.firstIndex(of: environment).map(VaultPalette.environment) ?? VaultPalette.textFaint)
 			Text(VaultProject.displayName(for: environment))
-				.font(VaultTypography.mono(11, .semibold))
+				.font(VaultTypography.tabular(11, .semibold))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.lineLimit(1)
 			Text(reason)
@@ -914,7 +914,7 @@ struct VaultKeyRecoveryView: View {
 		VStack(alignment: .leading, spacing: 10) {
 			Text("UNSAVED EDITS").vaultSectionLabel()
 			Text(draft.isRenamed ? "\(draft.key) → \(draft.name)" : draft.key)
-				.font(VaultTypography.mono(14, .bold))
+				.font(VaultTypography.tabular(14, .bold))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.fixedSize(horizontal: false, vertical: true)
 			Text(draft.projectName)
@@ -927,7 +927,7 @@ struct VaultKeyRecoveryView: View {
 			ForEach(draft.changedEnvironments, id: \.self) { environment in
 				HStack(spacing: 8) {
 					Text(VaultProject.displayName(for: environment))
-						.font(VaultTypography.mono(11.5, .bold))
+						.font(VaultTypography.tabular(11.5, .bold))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.lineLimit(1)
 						.truncationMode(.middle)

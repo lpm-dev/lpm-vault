@@ -40,29 +40,36 @@ struct VaultAppearanceTests {
 		#expect(VaultAppearance.dark.nativeAppearance?.name == .darkAqua)
 	}
 
-	@Test("the palette preserves light colors and resolves the requested dark colors")
+	@Test("the palette keeps its light colors and resolves the near-black dark theme, with text as translucent white")
 	func paletteColors() {
-		let colors: [(Color, UInt, UInt)] = [
-			(VaultPalette.content, 0xFFFFFF, 0x181818),
-			(VaultPalette.titleBar, 0xF2F1F5, 0x181818),
-			(VaultPalette.sidebar, 0xF7F7FA, 0x232323),
-			(VaultPalette.inspector, 0xFAFAFC, 0x232323),
-			(VaultPalette.control, 0xFFFFFF, 0x292929),
-			(VaultPalette.border, 0xDCDBE2, 0x2B2B2B),
-			(VaultPalette.titleBarBorder, 0xDEDDE3, 0x2B2B2B),
-			(VaultPalette.sidebarBorder, 0xE4E3E9, 0x2B2B2B),
-			(VaultPalette.textPrimary, 0x1C1C1E, 0xFFFFFF),
-			(VaultPalette.textSecondary, 0x3C3C43, 0xA3A3A3),
-			(VaultPalette.accent, 0x5E5CE6, 0x5E5CE6),
+		let colors: [(color: Color, light: UInt, dark: UInt, darkOpacity: Float)] = [
+			(VaultPalette.content, 0xFFFFFF, 0x0A0A0A, 1),
+			(VaultPalette.titleBar, 0xF2F1F5, 0x101010, 1),
+			(VaultPalette.sidebar, 0xF7F7FA, 0x101010, 1),
+			(VaultPalette.inspector, 0xFAFAFC, 0x101010, 1),
+			(VaultPalette.control, 0xFFFFFF, 0x101010, 1),
+			(VaultPalette.border, 0xDCDBE2, 0x262626, 1),
+			(VaultPalette.titleBarBorder, 0xDEDDE3, 0x262626, 1),
+			(VaultPalette.sidebarBorder, 0xE4E3E9, 0x262626, 1),
+			(VaultPalette.divider, 0xECEAF0, 0x262626, 1),
+			(VaultPalette.rowDivider, 0xF0EFF4, 0x191919, 1),
+			(VaultPalette.headerHover, 0xF0EFF4, 0x262626, 1),
+			(VaultPalette.textPrimary, 0x1C1C1E, 0xFFFFFF, 0.8),
+			(VaultPalette.textSecondary, 0x3C3C43, 0xFFFFFF, 0.55),
+			(VaultPalette.textTertiary, 0x6F6F75, 0xFFFFFF, 0.55),
+			(VaultPalette.accentTint, 0xECEAFC, 0x29263D, 1),
+			(VaultPalette.accentText, 0x2C2B4A, 0xD5D4FF, 1),
+			(VaultPalette.accent, 0x5E5CE6, 0x5E5CE6, 1),
 		]
-		for (color, light, dark) in colors {
-			for (scheme, hex) in [(ColorScheme.light, light), (.dark, dark)] {
+		for entry in colors {
+			for (scheme, hex, opacity) in [(ColorScheme.light, entry.light, Float(1)), (.dark, entry.dark, entry.darkOpacity)] {
 				var environment = EnvironmentValues()
 				environment.colorScheme = scheme
-				let resolved = color.resolve(in: environment)
-				#expect(abs(resolved.red - Float((hex >> 16) & 0xFF) / 255) < 0.001)
-				#expect(abs(resolved.green - Float((hex >> 8) & 0xFF) / 255) < 0.001)
-				#expect(abs(resolved.blue - Float(hex & 0xFF) / 255) < 0.001)
+				let resolved = entry.color.resolve(in: environment)
+				#expect(abs(resolved.red - Float((hex >> 16) & 0xFF) / 255) < 0.001, "\(entry.color) \(scheme)")
+				#expect(abs(resolved.green - Float((hex >> 8) & 0xFF) / 255) < 0.001, "\(entry.color) \(scheme)")
+				#expect(abs(resolved.blue - Float(hex & 0xFF) / 255) < 0.001, "\(entry.color) \(scheme)")
+				#expect(abs(resolved.opacity - opacity) < 0.001, "\(entry.color) \(scheme)")
 			}
 		}
 	}
@@ -71,17 +78,24 @@ struct VaultAppearanceTests {
 	func darkTextContrast() {
 		var environment = EnvironmentValues()
 		environment.colorScheme = .dark
-		func luminance(_ color: Color) -> Double {
+		func linear(_ value: Double) -> Double {
+			value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+		}
+		/// The luminance of `color` as it's drawn over `background`, which a translucent color shows through.
+		func luminance(_ color: Color, over background: Color.Resolved? = nil) -> Double {
 			let resolved = color.resolve(in: environment)
-			func linear(_ value: Float) -> Double {
-				let value = Double(value)
-				return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+			let alpha = Double(resolved.opacity)
+			func channel(_ value: Float, _ under: Float?) -> Double {
+				linear(Double(value) * alpha + Double(under ?? 0) * (1 - alpha))
 			}
-			return 0.2126 * linear(resolved.red) + 0.7152 * linear(resolved.green) + 0.0722 * linear(resolved.blue)
+			return 0.2126 * channel(resolved.red, background?.red) + 0.7152 * channel(resolved.green, background?.green)
+				+ 0.0722 * channel(resolved.blue, background?.blue)
 		}
 		for (foreground, background) in [
 			(VaultPalette.textPrimary, VaultPalette.content),
 			(VaultPalette.textSecondary, VaultPalette.control),
+			(VaultPalette.textTertiary, VaultPalette.sidebar),
+			(VaultPalette.textTertiary, VaultPalette.content),
 			(VaultPalette.accentForeground, VaultPalette.accentTint),
 			(VaultPalette.greenTintText, VaultPalette.greenTint),
 			(VaultPalette.orangeTintText, VaultPalette.orangeTint),
@@ -89,8 +103,8 @@ struct VaultAppearanceTests {
 			(Color.white, VaultPalette.strongFill),
 			(Color.white, VaultPalette.accentHover),
 		] {
-			let values = [luminance(foreground), luminance(background)].sorted()
-			#expect((values[1] + 0.05) / (values[0] + 0.05) >= 4.5)
+			let values = [luminance(foreground, over: background.resolve(in: environment)), luminance(background)].sorted()
+			#expect((values[1] + 0.05) / (values[0] + 0.05) >= 4.5, "\(foreground) on \(background)")
 		}
 	}
 

@@ -123,7 +123,7 @@ struct VaultProjectSettingsView: View {
 					.lineLimit(1)
 				HStack(spacing: 6) {
 					Text(displayPath)
-						.font(VaultTypography.mono(11.5))
+						.font(VaultTypography.tabular(11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.lineLimit(1)
 						.truncationMode(.middle)
@@ -197,7 +197,7 @@ struct VaultProjectSettingsView: View {
 		let parts = Self.iconCaption(for: settings.icon, detection: icons.detection(for: project.id),
 			fileFailed: icons.chosenFileFailed(settings.icon, for: project.id))
 		return parts.reduce(Text("")) { caption, part in
-			caption + (part.isPath ? Text(part.text).font(VaultTypography.mono(11.5)) : Text(part.text))
+			caption + (part.isPath ? Text(part.text).font(VaultTypography.tabular(11.5)) : Text(part.text))
 		}
 	}
 
@@ -234,7 +234,7 @@ struct VaultProjectSettingsView: View {
 	private var folderRow: some View {
 		row("Folder") {
 			if folderExists {
-				Text(displayPath).font(VaultTypography.mono(11.5)).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+				Text(displayPath).font(VaultTypography.tabular(11.5)).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
 			} else {
 				Text(project.path.isEmpty ? "This project isn't linked to a folder." : "\(displayPath) can't be found.")
 					.foregroundStyle(VaultPalette.redText)

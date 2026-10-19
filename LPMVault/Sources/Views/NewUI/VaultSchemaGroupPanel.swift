@@ -219,7 +219,7 @@ struct VaultSchemaGroupEditor: View {
 			default:
 				HStack(spacing: 4) {
 					Image(systemName: "doc").font(.system(size: 10))
-					Text("lpm.json").font(VaultTypography.mono(11))
+					Text("lpm.json").font(VaultTypography.tabular(11))
 				}
 				.foregroundStyle(VaultPalette.textTertiary)
 			}
@@ -288,7 +288,7 @@ struct VaultSchemaGroupEditor: View {
 				if renamable {
 					TextField("group_name", text: $field)
 						.textFieldStyle(.plain)
-						.font(VaultTypography.mono(13.5, .bold))
+						.font(VaultTypography.tabular(13.5, .bold))
 						.autocorrectionDisabled()
 						.focused($nameFocused)
 						.onSubmit { if !isNew, field != name, status == .available { rename() } }
@@ -296,7 +296,7 @@ struct VaultSchemaGroupEditor: View {
 					Text("name").font(.system(size: 11)).foregroundStyle(VaultPalette.textFaint)
 				} else {
 					Text(name.escapingDirectionControls)
-						.font(VaultTypography.mono(13.5, .bold))
+						.font(VaultTypography.tabular(13.5, .bold))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.lineLimit(1)
 						.truncationMode(.middle)
@@ -519,7 +519,7 @@ struct VaultSchemaGroupEditor: View {
 			if isLarge {
 				TextField("Filter \(group.members.count.formatted()) members", text: $memberFilter)
 					.textFieldStyle(.roundedBorder)
-					.font(VaultTypography.mono(12))
+					.font(VaultTypography.tabular(12))
 					.accessibilityLabel("Filter the group's members")
 				Group {
 					if matching.count > shown.count {
@@ -925,7 +925,7 @@ private struct VaultGroupMemberChips: View {
 				let isDeclared = !undeclared.contains(member)
 				HStack(spacing: 5) {
 					Text(shown)
-						.font(VaultTypography.mono(11.5, .medium))
+						.font(VaultTypography.tabular(11.5, .medium))
 						.foregroundStyle(isDeclared ? VaultPalette.textPrimary : VaultPalette.redText)
 						.lineLimit(1)
 					if isEditable {

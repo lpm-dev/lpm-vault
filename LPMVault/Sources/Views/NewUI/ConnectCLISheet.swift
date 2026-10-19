@@ -122,7 +122,7 @@ struct ConnectCLISheet: View {
 			}
 			HStack(spacing: 8) {
 				Text(projectId)
-					.font(VaultTypography.mono(12.5))
+					.font(VaultTypography.tabular(12.5))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -150,7 +150,7 @@ struct ConnectCLISheet: View {
 			VStack(alignment: .leading, spacing: 0) {
 				HStack(spacing: 8) {
 					Text(setupMode == .copyJSON ? "./lpm.json" : displayPath)
-						.font(VaultTypography.mono(11))
+						.font(VaultTypography.code(11))
 						.foregroundStyle(Color(hex: 0xAEAEB2))
 						.lineLimit(1)
 						.truncationMode(.head)
@@ -192,7 +192,7 @@ struct ConnectCLISheet: View {
 			}
 			"""
 		)
-		.font(VaultTypography.mono(12))
+		.font(VaultTypography.code(12))
 		.foregroundStyle(VaultPalette.terminalText)
 		.lineSpacing(4)
 		.textSelection(.enabled)
@@ -213,13 +213,13 @@ struct ConnectCLISheet: View {
 							.font(.system(size: 11.5)).foregroundStyle(VaultPalette.textSecondary)
 						VStack(alignment: .leading, spacing: 8) {
 							HStack {
-								Text("Example · lpm.json").font(VaultTypography.mono(11))
+								Text("Example · lpm.json").font(VaultTypography.tabular(11))
 								Spacer()
 								TerminalBarButton(title: copiedItem == "task-example" ? "Copied" : "Copy example", systemImage: "doc.on.doc") {
 									copy(example.json, as: "task-example")
 								}
 							}
-							Text(example.json).font(VaultTypography.mono(12)).textSelection(.enabled)
+							Text(example.json).font(VaultTypography.code(12)).textSelection(.enabled)
 						}
 						.padding(12).foregroundStyle(VaultPalette.terminalText)
 						.frame(maxWidth: .infinity, alignment: .leading)
@@ -523,7 +523,7 @@ private struct CommandCard: View {
 		Button(action: action) {
 			VStack(alignment: .leading, spacing: 6) {
 				Text(command)
-					.font(VaultTypography.mono(12, .bold))
+					.font(VaultTypography.code(12, .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.fixedSize(horizontal: false, vertical: true)
 				Text(detail)
@@ -570,7 +570,7 @@ private struct SegmentedPicker<Option: Hashable>: View {
 				let selected = option == selection
 				Button { selection = option } label: {
 					Text(title(option))
-						.font(VaultTypography.mono(11, selected ? .bold : .regular))
+						.font(VaultTypography.tabular(11, selected ? .bold : .regular))
 						.foregroundStyle(selected ? .white : VaultPalette.masked)
 						.padding(.horizontal, 9)
 						.padding(.vertical, 3)

@@ -145,7 +145,7 @@ struct VaultSchemaView: View {
 			} else {
 				HStack(spacing: 5) {
 					Image(systemName: "doc").font(.system(size: 11))
-					Text("lpm.json › envSchema").font(VaultTypography.mono(11.5))
+					Text("lpm.json › envSchema").font(VaultTypography.tabular(11.5))
 					Text("· plain text, shared with the team").font(.system(size: 12.5))
 				}
 				.foregroundStyle(VaultPalette.textTertiary)
@@ -230,7 +230,7 @@ struct VaultSchemaView: View {
 					HStack(spacing: 10) {
 						VStack(alignment: .leading, spacing: 2) {
 							Text(ProjectEnvSchemaReview.title(of: conflict.item))
-								.font(VaultTypography.mono(12, .semibold))
+								.font(VaultTypography.tabular(12, .semibold))
 								.foregroundStyle(VaultPalette.textPrimary)
 							Text("Yours: \(summary.mine) · Theirs: \(summary.theirs)")
 								.font(.system(size: 11))
@@ -323,7 +323,7 @@ struct VaultSchemaView: View {
 
 	private var example: some View {
 		Text(Self.example)
-			.font(VaultTypography.mono(11.5))
+			.font(VaultTypography.tabular(11.5))
 			.foregroundStyle(VaultPalette.textSecondary)
 			.textSelection(.enabled)
 			.padding(14)
@@ -371,7 +371,7 @@ struct VaultSchemaView: View {
 				Text("Schema can't be read")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				(Text(problem.location).font(VaultTypography.mono(11.5)).foregroundColor(VaultPalette.accentForeground)
+				(Text(problem.location).font(VaultTypography.tabular(11.5)).foregroundColor(VaultPalette.accentForeground)
 					+ Text(": " + problem.reason).font(.system(size: 12)).foregroundColor(VaultPalette.textSecondary))
 					.textSelection(.enabled)
 				Text("Values are unaffected; checks are paused until lpm.json can be read.")
@@ -608,7 +608,7 @@ struct VaultSchemaView: View {
 							.accessibilitySortPriority(-1)
 					}
 					Text(rule.key)
-						.font(VaultTypography.mono(12.5, .semibold))
+						.font(VaultTypography.tabular(12.5, .semibold))
 						.foregroundStyle(state == .removed ? VaultPalette.textFaint : VaultPalette.textPrimary)
 						.strikethrough(state == .removed)
 						.lineLimit(1)
@@ -690,7 +690,7 @@ struct VaultSchemaView: View {
 		HStack(spacing: 0) {
 			HStack(spacing: 8) {
 				Text(stored.key.escapingDirectionControls)
-					.font(VaultTypography.mono(12.5))
+					.font(VaultTypography.tabular(12.5))
 					.foregroundStyle(VaultPalette.textSecondary)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -774,13 +774,13 @@ struct VaultSchemaView: View {
 			HStack(spacing: 8) {
 				Image(systemName: "square.stack.3d.up").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
 				Text(group.name.escapingDirectionControls)
-					.font(VaultTypography.mono(12.5, .semibold))
+					.font(VaultTypography.tabular(12.5, .semibold))
 					.foregroundStyle(state == .removed ? VaultPalette.textFaint : VaultPalette.textPrimary)
 					.strikethrough(state == .removed)
 					.lineLimit(1)
 				Text("·").foregroundStyle(VaultPalette.textFaint)
 				(Text(mode?.title ?? group.mode).font(.system(size: 12)).foregroundColor(VaultPalette.textTertiary)
-					+ Text(" " + group.memberPreview).font(VaultTypography.mono(12)).foregroundColor(VaultPalette.textSecondary))
+					+ Text(" " + group.memberPreview).font(VaultTypography.tabular(12)).foregroundColor(VaultPalette.textSecondary))
 					.lineLimit(1)
 					.truncationMode(.tail)
 					.opacity(state == .removed ? 0.6 : 1)

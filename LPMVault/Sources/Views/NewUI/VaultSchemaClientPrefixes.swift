@@ -32,7 +32,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Client prefixes").font(.system(size: 13, weight: .semibold)).foregroundStyle(VaultPalette.textPrimary)
-				(Text("Keys starting with these are public. ") + Text("lpm.json › envSchema.clientPrefixes").font(VaultTypography.mono(11)))
+				(Text("Keys starting with these are public. ") + Text("lpm.json › envSchema.clientPrefixes").font(VaultTypography.tabular(11)))
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -94,7 +94,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 				VaultFlowLayout(spacing: 5, lineSpacing: 5) {
 					ForEach(ProjectEnvSchemaRule.frameworkPrefixes, id: \.self) { prefix in
 						Text(prefix)
-							.font(VaultTypography.mono(11))
+							.font(VaultTypography.tabular(11))
 							.foregroundStyle(VaultPalette.textSecondary)
 							.padding(.horizontal, 6)
 							.frame(height: 20)
@@ -118,7 +118,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		return HStack(spacing: 7) {
 			Image(systemName: "globe").font(.system(size: 10)).foregroundStyle(VaultPalette.publicText).accessibilityHidden(true)
 			Text(shown)
-				.font(VaultTypography.mono(12, .semibold))
+				.font(VaultTypography.tabular(12, .semibold))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.lineLimit(1)
 				.truncationMode(.middle)
@@ -126,7 +126,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 			if let source {
 				let file = source.escapingDirectionControls
 				Text(removable ? "also imported" : "imported")
-					.font(VaultTypography.mono(10.5))
+					.font(VaultTypography.tabular(10.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.padding(.horizontal, 5)
 					.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
@@ -162,7 +162,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		VStack(alignment: .leading, spacing: 8) {
 			HStack(spacing: 7) {
 				Image(systemName: "globe").font(.system(size: 10)).foregroundStyle(VaultPalette.publicText).accessibilityHidden(true)
-				Text(prefix.escapingDirectionControls).font(VaultTypography.mono(12, .semibold)).foregroundStyle(VaultPalette.textPrimary)
+				Text(prefix.escapingDirectionControls).font(VaultTypography.tabular(12, .semibold)).foregroundStyle(VaultPalette.textPrimary)
 				Spacer(minLength: 8)
 			}
 			HStack(alignment: .top, spacing: 6) {
@@ -224,7 +224,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		VaultFlowLayout(spacing: 5, lineSpacing: 5) {
 			ForEach(keys.prefix(shownKeys), id: \.self) { key in
 				Text(key.escapingDirectionControls)
-					.font(VaultTypography.mono(11))
+					.font(VaultTypography.tabular(11))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 					.padding(.horizontal, 6)
@@ -282,7 +282,7 @@ private struct VaultSchemaPrefixField: View {
 			HStack(spacing: 6) {
 				TextField("NEW_PREFIX_", text: $entry)
 					.textFieldStyle(.plain)
-					.font(VaultTypography.mono(12))
+					.font(VaultTypography.tabular(12))
 					.autocorrectionDisabled()
 					.focused($entryFocused)
 					.onSubmit { if let change { add(prefix, shown: change) } }
