@@ -240,7 +240,12 @@ struct VaultProjectSettingsView: View {
 					.foregroundStyle(VaultPalette.redText)
 			}
 		} controls: {
-			VaultBarButton(systemImage: "folder", title: "Show in Finder", disabled: !folderExists, height: 28) { showInFinder() }
+			HStack(spacing: 6) {
+				VaultBarButton(systemImage: "doc.on.doc", title: "Copy Path", disabled: project.path.isEmpty, height: 28) {
+					store.clipboard.copyText(project.path)
+				}
+				VaultBarButton(systemImage: "folder", title: "Show in Finder", disabled: !folderExists, height: 28) { showInFinder() }
+			}
 		}
 	}
 

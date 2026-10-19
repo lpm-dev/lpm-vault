@@ -43,7 +43,7 @@ struct VaultContentView: View {
 	let onImport: () -> Void
 	let onExport: () -> Void
 	/// The "…" menu's items: the project's settings, folder and other actions.
-	var moreActions: () -> [VaultMenuItem] = { [] }
+	var onProjectSettings: () -> Void = {}
 	/// Keys with unsaved edits in this project.
 	var editedKeys: Set<String> = []
 	/// Keys whose rules make them public; their values show unmasked.
@@ -109,7 +109,13 @@ struct VaultContentView: View {
 				}
 			}
 
+			// Import and Export lose their names first, then Reveal and Copy all.
 			ViewThatFits(in: .horizontal) {
+				HStack(spacing: 6) {
+					viewControls
+					Spacer(minLength: 8)
+					valueActions(compact: false, namesTransfers: true, derived: derived)
+				}
 				HStack(spacing: 6) {
 					viewControls
 					Spacer(minLength: 8)
@@ -211,7 +217,8 @@ struct VaultContentView: View {
 				help: showsInspector ? "Hide inspector" : "Show inspector",
 				active: showsInspector
 			) { showsInspector.toggle() }
-			VaultMenuButton(systemImage: "ellipsis", help: "More actions", items: moreActions)
+			VaultOutlineButton(systemImage: "gearshape", title: "Settings", help: "Project Settings (⌘I)", label: "Project Settings",
+				action: onProjectSettings)
 			VaultBarButton(
 				systemImage: "plus",
 				title: "New key",
@@ -225,7 +232,7 @@ struct VaultContentView: View {
 
 	/// Reveal acts on the keys in view; copying, importing, and exporting act on
 	/// the selected environment, which their help names.
-	private func valueActions(compact: Bool, derived: VaultContentDerivation) -> some View {
+	private func valueActions(compact: Bool, namesTransfers: Bool = false, derived: VaultContentDerivation) -> some View {
 		let environmentName = VaultProject.displayName(for: selectedEnvironment)
 		let copyTitle = isCopyingAll ? "Copying…" : (isCopiedAll ? "Copied" : "Copy all")
 		let copyHelp = isCopyingAll
@@ -234,6 +241,8 @@ struct VaultContentView: View {
 		let copyLabel = isCopyingAll
 			? "Copying all \(environmentName) values"
 			: (isCopiedAll ? "Copied all \(environmentName) values" : "Copy all \(environmentName) values")
+		let importName = isImporting ? "Importing into \(environmentName)" : "Import a .env file into \(environmentName)"
+		let exportName = "Export \(environmentName)"
 		return HStack(spacing: 6) {
 			VaultOutlineButton(
 				systemImage: derived.allVisibleRevealed ? "eye.slash" : "eye",
@@ -257,11 +266,20 @@ struct VaultContentView: View {
 			)
 			VaultOutlineButton(
 				systemImage: "square.and.arrow.down",
-				help: isImporting ? "Importing into \(environmentName)" : "Import a .env file into \(environmentName)",
+				title: namesTransfers ? "Import" : nil,
+				help: importName,
+				label: importName,
 				disabled: isImporting,
 				action: onImport
 			)
-			VaultOutlineButton(systemImage: "square.and.arrow.up", help: "Export \(environmentName)", disabled: !canUseSecrets, action: onExport)
+			VaultOutlineButton(
+				systemImage: "square.and.arrow.up",
+				title: namesTransfers ? "Export" : nil,
+				help: exportName,
+				label: exportName,
+				disabled: !canUseSecrets,
+				action: onExport
+			)
 		}
 		.fixedSize()
 	}

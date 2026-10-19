@@ -11,8 +11,6 @@ struct VaultTitleBarView: View {
 	/// Opens the Publish sheet, on a saved destination's review or for a new one.
 	var onPublish: (PublishDestination?) -> Void = { _ in }
 
-	@State private var connectChipHovering = false
-
 	private var project: VaultProject? { store.selectedProject }
 
 	private var syncLabel: String {
@@ -49,34 +47,6 @@ struct VaultTitleBarView: View {
 			VaultTrafficLights()
 			breadcrumb.padding(.leading, 8)
 
-			if let project {
-				let highlighted = connectChipHovering || isConnectSheetPresented
-				Button(action: onConnectCLI) {
-					HStack(spacing: 6) {
-						Image(systemName: "link")
-							.font(.system(size: 9, weight: .bold))
-							.foregroundStyle(VaultPalette.accentForeground)
-						Text("Connect CLI")
-							.font(.system(size: 11, weight: .semibold))
-							.foregroundStyle(isConnectSheetPresented ? VaultPalette.accentDeep : VaultPalette.vaultChipText)
-							.fixedSize()
-					}
-					.padding(.horizontal, 8)
-					.frame(height: 22)
-					.background(RoundedRectangle(cornerRadius: 6).fill(highlighted ? VaultPalette.accentTint : VaultPalette.vaultChip))
-					.overlay {
-						RoundedRectangle(cornerRadius: 6)
-							.stroke(highlighted ? VaultPalette.accent.opacity(0.35) : VaultPalette.border, lineWidth: 1)
-					}
-				}
-				.buttonStyle(.plain)
-				.onHover { connectChipHovering = $0 }
-				.help("Connect \(project.name) to the LPM CLI")
-				.vaultPointingHand()
-			}
-
-			Spacer(minLength: 8)
-
 			VaultBarButton(
 				systemImage: "arrow.clockwise",
 				title: "Refresh",
@@ -84,6 +54,13 @@ struct VaultTitleBarView: View {
 			) { Task { await store.refreshLocalState() } }
 			.help("Reload local changes from the LPM CLI")
 			.accessibilityIdentifier("vault-refresh-local-state")
+
+			Spacer(minLength: 8)
+
+			if let project {
+				VaultBarButton(systemImage: "link", title: "Connect CLI", active: isConnectSheetPresented, action: onConnectCLI)
+					.help("Connect \(project.name) to the LPM CLI")
+			}
 
 			syncMenu
 
@@ -165,7 +142,7 @@ struct VaultTitleBarView: View {
 			} else {
 				VaultStatusDot(color: syncColor)
 			}
-			Text(syncLabel).font(.system(size: 12))
+			Text(syncLabel).font(.system(size: 12.5))
 		}
 		.disabled(store.isSyncing || (store.isLoggedIn && project == nil))
 	}
@@ -191,7 +168,7 @@ struct VaultTitleBarView: View {
 						Button("New destination…") { onPublish(nil) }
 					} label: {
 						Image(systemName: "arrow.up.to.line").font(.system(size: 11, weight: .medium))
-						Text("Publish").font(.system(size: 12))
+						Text("Publish").font(.system(size: 12.5))
 					}
 				}
 			}

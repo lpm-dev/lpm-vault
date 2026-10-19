@@ -19,7 +19,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			let expected: [(String, NSAccessibility.Role)] = [
 				("Connect CLI", .button), ("Refresh", .button), ("Publish…", .button), ("Lock LPM Vault", .button),
-				("CLI approval", .checkBox), ("Show inspector", .button), ("More actions", .button), ("New key", .button),
+				("CLI approval", .checkBox), ("Show inspector", .button), ("Project Settings", .button), ("New key", .button),
 				("Reveal all values", .checkBox), ("Copy all .env values", .button),
 				("Import a .env file into .env", .button), ("Export .env", .button),
 			]
@@ -31,6 +31,52 @@ extension SheetInteractionTests {
 				#expect(!elements.contains { $0.says(symbolName) }, "A control is named \(symbolName)")
 			}
 			#expect(elements.first { $0.role == .checkBox && $0.title == "CLI approval" }?.value == "Automatic")
+		}
+
+		@Test("Refresh sits beside the project's name, and Connect CLI leads the actions on the right, before Publish and Lock")
+		func titleBarOrder() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture.store)
+			defer { host.window.close() }
+			let name = try await host.drawnFrame(saying: "— billing-app")
+			let refresh = try await host.drawnFrame(saying: "Refresh")
+			let connect = try await host.drawnFrame(saying: "Connect CLI")
+			let publish = try await host.drawnFrame(saying: "Publish…")
+			let lock = try await host.drawnFrame(saying: "Lock LPM Vault")
+			#expect(name.maxX < refresh.minX && refresh.minX - name.maxX < 40, "Refresh follows the name: \(name) \(refresh)")
+			#expect(connect.minX > host.view.bounds.width / 2, "Connect CLI is with the actions on the right: \(connect)")
+			#expect(refresh.maxX < connect.minX && connect.maxX < publish.minX && publish.maxX < lock.minX)
+		}
+
+		@Test("the header's Settings button opens the project's settings")
+		func settingsButton() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture.store)
+			defer { host.window.close() }
+			let button = try await host.waitForElement(saying: "Project Settings")
+			#expect(button.role == .button && button.help == "Project Settings (⌘I)")
+			try await host.click("Project Settings")
+			#expect(try await host.waitForText("Delete Locally"))
+		}
+
+		@Test("Import and Export show their names where there's room, and only their icons where there isn't, keeping what they're called")
+		func importExportLabels() async throws {
+			for (width, inspector, labeled) in [(CGFloat(1400), false, true), (1040, true, false)] {
+				let fixture = try makeFixture()
+				defer { fixture.tearDown() }
+				let host = try await workspace(fixture.store, width: width)
+				defer { host.window.close() }
+				if inspector {
+					try await host.click("Show inspector")
+					#expect(try await host.waitForText("Hide inspector", exactly: true))
+				}
+				for name in ["Import a .env file into .env", "Export .env"] {
+					let drawn = try await host.drawnFrame(saying: name)
+					#expect((drawn.width > 30) == labeled, "\(name) at \(width) points draws \(drawn)")
+				}
+			}
 		}
 
 		@Test("the inspector toggle says whether it shows or hides the inspector")
@@ -194,7 +240,7 @@ extension SheetInteractionTests {
 			return Fixture(store: store, biometric: biometric, folder: folder)
 		}
 
-		private func workspace(_ store: VaultStore, copyFeedback: ManualCopyFeedbackTimer = ManualCopyFeedbackTimer())
+		private func workspace(_ store: VaultStore, width: CGFloat = 1400, copyFeedback: ManualCopyFeedbackTimer = ManualCopyFeedbackTimer())
 			async throws -> SheetTestHost<some View>
 		{
 			await store.refreshCliAccess()
@@ -203,7 +249,7 @@ extension SheetInteractionTests {
 				.environment(VaultAppearanceSettings(defaults: defaults))
 				.environment(\.vaultCopyFeedbackTimer, copyFeedback.timer)
 				.defaultAppStorage(defaults),
-				size: NSSize(width: 1400, height: 800), keepsRequestedSize: true, usesHostingView: true)
+				size: NSSize(width: width, height: 800), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.workspaceSnapshots["header"] != nil })
 			#expect(try await host.waitForText("Invalid, 1"))
 			try await host.settle()
