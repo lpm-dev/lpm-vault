@@ -4,6 +4,8 @@ import Foundation
 enum PublishOutcome: Equatable, Sendable {
 	case published
 	case failed(String)
+	/// Sent, but no answer came back, so whether the platform took it isn't known.
+	case unconfirmed(String)
 	/// Not sent, because an earlier refusal stopped the publish.
 	case notSent
 }
@@ -13,6 +15,9 @@ struct PublishReport: Equatable, Sendable {
 	var outcomes: [String: PublishOutcome] = [:]
 	/// The history records of the keys the platform accepted.
 	var published: [PublishHistory.Published] = []
+	/// The history records of the keys sent without an answer, recorded so
+	/// a later review knows the platform may have them.
+	var unconfirmed: [PublishHistory.Published] = []
 	/// Keys the platform accepted but no longer had when they were read back,
 	/// recorded in the history all the same.
 	var gone: Set<String> = []
