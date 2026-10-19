@@ -275,7 +275,7 @@ struct CloudflarePlatformsTests {
 		let held = DispatchSemaphore(value: 0)
 		let once = OSAllocatedUnfairLock(initialState: false)
 		keychain.beforeAppItemRead = { store, account in
-			guard store == .platformConnections, account == connection.id, once.withLock({ defer { $0 = true }; return !$0 }) else { return }
+			guard store == .platformConnections, account == connection.id, once.withLock({ seen in defer { seen = true }; return !seen }) else { return }
 			entered.signal()
 			_ = held.wait(timeout: .now() + testWaitSeconds)
 		}
