@@ -343,11 +343,12 @@ struct CloudflareClient: CloudflareClientProtocol, CustomStringConvertible, Cust
 		return await CloudflareHTTP.load(request, using: session).flatMap { loaded in
 			guard let result = loaded.result as? [String: Any] else { return .failure(.invalidResponse) }
 			var names: Set<String> = []
+			// The answer lists the Worker's plain and JSON variables beside its secrets.
 			for (key, value) in result {
-				guard let secret = value as? [String: Any], secret["name"] as? String == key, secret["type"] is String else {
+				guard let binding = value as? [String: Any], binding["name"] as? String == key, let type = binding["type"] as? String else {
 					return .failure(.invalidResponse)
 				}
-				names.insert(key)
+				if CloudflareBindingKind(type: type) == .secretText { names.insert(key) }
 			}
 			return .success(CloudflareSecretsUpdate(names: names, answeredAt: PlatformRateLimit.date(of: loaded.response)))
 		}

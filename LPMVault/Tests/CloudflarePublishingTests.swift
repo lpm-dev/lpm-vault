@@ -255,6 +255,19 @@ struct CloudflarePublishingTests {
 		])
 	}
 
+	@Test("a publish to a Worker with plain and JSON variables records the version it made, read from Cloudflare's own answers")
+	func publishBesideOtherTextBindings() async throws {
+		let api = CloudflareHTTPWorker()
+		let client = CloudflareClient(token: "cf_token", baseURL: api.route.baseURL.appending(path: "client/v4"), session: api.route.session)
+		let reviewed = try await CloudflarePublishing.review(workerID: CloudflareFixture.workerID, in: account, using: client).get()
+		#expect(reviewed.otherTextBindings == 2)
+		let report = await CloudflarePublishing.publish([change("NEW_KEY", "fresh")], to: account, reviewed: reviewed, using: client)
+		#expect(report.outcomes == ["NEW_KEY": .published])
+		#expect(report.published.map(\.remoteID) == [CloudflareHTTPWorker.madeVersionID])
+		#expect(report.advances.map(\.key) == ["API_TOKEN"], "The secret the publish left alone kept its value in the new version")
+		#expect(api.patches == 1)
+	}
+
 	@Test("a publish over a key known at the reviewed version keeps it known, and one left out stays known too")
 	func historyFollowsPublishes() async throws {
 		let worker = Simulator()
@@ -571,5 +584,65 @@ private final class AfterSimulator: CloudflareClientProtocol, @unchecked Sendabl
 		lock.withLock { updated = true }
 		afterUpdate(base)
 		return result
+	}
+}
+
+/// A Worker with a secret beside a plain and a JSON variable, answering over
+/// HTTP as Cloudflare does: a secrets change makes the next version, deployed
+/// at once, and its answer lists the Worker's plain and JSON variables too.
+private final class CloudflareHTTPWorker: Sendable {
+	static let madeVersionID = "5f0e3c1a-7b2d-4e8f-9a6b-1c2d3e4f5a6b"
+	private static let madeDeploymentID = "0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e"
+
+	private final class Patches: @unchecked Sendable {
+		private let lock = NSLock()
+		private var count = 0
+		var value: Int { lock.withLock { count } }
+		func add() { lock.withLock { count += 1 } }
+	}
+
+	private let patched = Patches()
+	let route: PlatformHTTPStub.Route
+
+	var patches: Int { patched.value }
+
+	init() {
+		route = PlatformHTTPStub.platform { [patched] request in Self.answer(request, patched: patched) }
+	}
+
+	private static func answer(_ request: PlatformHTTPStub.Request, patched: Patches) -> PlatformHTTPStub.Reply {
+		typealias Fixture = CloudflareFixture
+		let path = request.url.path()
+		let workers = "/client/v4/accounts/\(Fixture.account)/workers/workers/"
+		let script = "/client/v4/accounts/\(Fixture.account)/workers/scripts/\(Fixture.workerName)/"
+		var bindings: [[String: Any]] = [
+			["name": "API_TOKEN", "type": "secret_text"], ["name": "CLASH_VAR", "type": "plain_text", "text": "plain"],
+			["name": "JSON_VAR", "type": "json", "json": ["a": 1]],
+		]
+		func reply(_ result: Any) -> PlatformHTTPStub.Reply {
+			.json(200, Fixture.envelope(result), headers: ["Date": patched.value == 0 ? "Sun, 18 Oct 2026 04:20:00 GMT" : "Sun, 18 Oct 2026 04:20:01 GMT"])
+		}
+		switch (request.method, path) {
+		case ("GET", workers + Fixture.workerID), ("GET", workers + Fixture.workerName):
+			return reply(Fixture.worker())
+		case ("GET", workers + Fixture.workerID + "/versions"):
+			guard patched.value > 0 else { return reply([Fixture.version(bindings: bindings)]) }
+			bindings.append(["name": "NEW_KEY", "type": "secret_text"])
+			return reply([Fixture.version(id: madeVersionID, number: 26, createdOn: "2026-10-18T04:20:00.612345Z", bindings: bindings)])
+		case ("GET", script + "deployments"):
+			guard patched.value > 0 else { return reply(["deployments": [Fixture.deployment()]]) }
+			return reply(["deployments": [
+				Fixture.deployment(id: madeDeploymentID, createdOn: "2026-10-18T04:20:00.698765Z", versions: [(madeVersionID, 100)]),
+				Fixture.deployment(),
+			]])
+		case ("PATCH", script + "secrets-bulk"):
+			patched.add()
+			return reply([
+				"API_TOKEN": ["name": "API_TOKEN", "type": "secret_text"], "NEW_KEY": ["name": "NEW_KEY", "type": "secret_text"],
+				"CLASH_VAR": ["name": "CLASH_VAR", "type": "plain_text"], "JSON_VAR": ["name": "JSON_VAR", "type": "json"],
+			])
+		default:
+			return .json(404, Fixture.refusal([7003]))
+		}
 	}
 }

@@ -206,6 +206,20 @@ struct CloudflareClientTests {
 		#expect(request.json?.count == 1, "Nothing but the secrets is sent: Cloudflare ignores version tags here")
 	}
 
+	@Test("a secrets answer lists the Worker's plain and JSON variables too, which aren't its secrets")
+	func secretsAnswerListsOtherTextBindings() async throws {
+		let route = PlatformHTTPStub.platform { _ in
+			.json(
+				200,
+				Fixture.envelope([
+					"API_TOKEN": ["name": "API_TOKEN", "type": "secret_text"], "CLASH_VAR": ["name": "CLASH_VAR", "type": "plain_text"],
+					"JSON_VAR": ["name": "JSON_VAR", "type": "json"],
+				]))
+		}
+		let update = try await client(route).updateSecrets(["API_TOKEN": "tok"], ofScript: Fixture.workerName, in: Fixture.account).get()
+		#expect(update.names == ["API_TOKEN"])
+	}
+
 	@Test("a secrets answer whose entries don't name themselves is unreadable")
 	func refusesMalformedSecretsAnswer() async {
 		for result in [["A": ["name": "B", "type": "secret_text"]], ["A": "secret_text"], ["A": ["name": "A"]]] as [[String: Any]] {
