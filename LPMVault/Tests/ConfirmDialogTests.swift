@@ -72,15 +72,14 @@ extension SheetInteractionTests {
 
 		private func pressReturn(in sheet: NSWindow) throws -> Bool { try press("\r", code: 36, in: sheet) }
 
-		/// Presses Return in the field being edited, which submits it. The key goes
-		/// to the field's editor as a key press does: macOS 15 submits a field only
-		/// through the key's command, not when its editor inserts a newline directly.
+		/// Presses Return in the field being edited, which submits it. The field's
+		/// editor runs Return's command, as a key press does once AppKit has read
+		/// it: the field's delegate, SwiftUI's submit, sees it first. Sending the
+		/// key event itself depends on which window is key, which CI's runner
+		/// doesn't keep; inserting a newline directly skips the delegate.
 		private func submitField(in sheet: NSWindow) throws {
 			let editor = try #require(sheet.firstResponder as? NSTextView, "A field is being edited")
-			let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
-				timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: sheet.windowNumber, context: nil,
-				characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
-			editor.keyDown(with: event)
+			editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
 		}
 
 		private func isEnabled(_ title: String, in sheet: NSWindow) -> Bool {
