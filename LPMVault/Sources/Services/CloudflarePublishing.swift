@@ -212,10 +212,8 @@ enum CloudflarePublishing {
 				renewals += 1
 				guard renewals <= maximumRenewals else { return finish(.failed(message(.renewed))) }
 				continue
-			case .failure(.api(let error)) where needsReconnect(error):
-				report.needsReconnect = true
-				return finish(.failed(message(error)))
 			case .failure(let error):
+				// A row's message says what to do, a reconnect included, so the results add nothing that could contradict it.
 				return finish(.failed(error.message))
 			}
 			guard !Task.isCancelled else { return finish(.notSent) }
@@ -231,9 +229,6 @@ enum CloudflarePublishing {
 				renewals += 1
 				guard renewals <= maximumRenewals else { return finish(.failed(message(.renewed))) }
 				continue
-			case .failure(let error) where needsReconnect(error):
-				report.needsReconnect = true
-				return finish(.failed(message(error)))
 			case .failure(.transport), .failure(.cancelled), .failure(.server), .failure(.invalidResponse):
 				report.unconfirmed = changes.map { $0.published(remoteID: PublishPlan.unconfirmedRemoteID, remoteUpdatedAt: nil) }
 				return finish(.unconfirmed("No answer came back from Cloudflare, so it may or may not have the new value. Review again."))
@@ -354,15 +349,6 @@ enum CloudflarePublishing {
 		return version
 	}
 
-	/// Whether a failure means the connection must be connected again: Cloudflare
-	/// refused its token, or the token can't be renewed or used any more.
-	private static func needsReconnect(_ error: CloudflareAPIError) -> Bool {
-		switch error {
-		case .unauthorized, .credentials(.expired), .credentials(.retired), .credentials(.store(.retired)): true
-		default: false
-		}
-	}
-
 	/// Waits out a rate limit that lifts soon enough; false when it doesn't,
 	/// or the publish has waited out enough already.
 	private static func wait(until: Date?, waits: inout Int, pacing: Pacing) async -> Bool {
@@ -381,8 +367,22 @@ enum CloudflarePublishing {
 	// MARK: - Messages
 
 	/// Why more secrets than one publish changes can't be chosen.
-	static let changeLimitMessage =
-		"Cloudflare can change at most \(maximumChanges) secrets in one step. Publishing fewer leaves the rest as they are, so your Worker runs with a mix until they're published too."
+	/// Why an account's Workers couldn't be listed through the login labelled `login`.
+	static func listingMessage(_ error: CloudflareAPIError, account: String, login: String) -> String {
+		switch error {
+		case .forbidden:
+			"\(login) can't list the Workers in \(account). Its role there may not reach Workers, or \(account) wasn't chosen when \(login) was connected."
+		case .notFound:
+			"Cloudflare doesn't know \(account) any more."
+		default:
+			message(error)
+		}
+	}
+
+	/// Why `excess` more secrets are chosen than Cloudflare changes in one step.
+	static func changeLimitMessage(excess: Int) -> String {
+		"Cloudflare can change at most \(maximumChanges) secrets in one step. Choose \(excess) fewer. Publishing fewer leaves the rest as they are, so your Worker runs with a mix until they're published too."
+	}
 
 	/// Why the chosen new secrets don't fit the Worker's limit on text bindings.
 	static func capacityMessage(_ overflow: PublishPlan.Overflow) -> String {

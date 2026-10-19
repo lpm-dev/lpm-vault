@@ -163,7 +163,8 @@ struct BrowserAuthorization: Sendable {
 		case .proof(let value): proof = value
 		}
 
-		let redeeming = redeem(started.id, on: platform, proof: proof, session: session)
+		let redeeming = redeem(
+			started.id, on: platform, proof: proof, session: session, until: started.expiresAt.addingTimeInterval(Self.exchangeWindow))
 		let redeemed: Result<(PlatformAuthorizationEnvelope.Sealed, age: Int), BrowserConnectError>
 		if collectsAfterReturn {
 			// Its own task, so cancelling the connection doesn't abandon a grant the platform already issued.
@@ -188,29 +189,50 @@ struct BrowserAuthorization: Sendable {
 		}
 	}
 
-	/// Collects the grant with the browser's proof, asking again while it's pending.
+	/// Collects the grant with the browser's proof, asking again while it's
+	/// pending. An answer that was lost, or refused for now, is asked for
+	/// again with the same proof until `deadline`, for as long as the
+	/// Registry keeps the result: the platform may have issued the grant
+	/// already, and one never collected can't be revoked.
 	private func redeem(
 		_ id: String,
 		on platform: BrowserPlatform,
 		proof: String,
-		session: PlatformSession
+		session: PlatformSession,
+		until deadline: Date
 	) -> @Sendable () async -> Result<(PlatformAuthorizationEnvelope.Sealed, age: Int), BrowserConnectError> {
 		{ [authorizations, pendingDelay] in
-			for attempt in 0...Self.pendingRetries {
+			var pending = 0
+			var lost = 0
+			while true {
+				let delay: Duration
+				let failure: BrowserConnectError
 				switch await authorizations.redeem(id, on: platform, proof: proof, session: session) {
 				case .success(.ready(let sealed, let age)):
 					return .success((sealed, age))
-				case .success(.pending) where attempt < Self.pendingRetries:
-					do { try await Task.sleep(for: pendingDelay) } catch { return .failure(.cancelled) }
-				case .success(.pending): return .failure(.invalidResponse)
+				case .success(.pending):
+					guard pending < Self.pendingRetries else { return .failure(.invalidResponse) }
+					pending += 1
+					delay = pendingDelay
+					failure = .invalidResponse
 				case .success(.failed(let code)): return .failure(.platform(PlatformConnectFailure(code: code)))
 				case .success(.expired), .success(.missing): return .failure(.expired)
 				case .success(.proofMismatch): return .failure(.proofRejected)
+				case .failure(let error) where [.transport, .rateLimited, .unavailable].contains(error) || Self.isServerError(error):
+					// Backing off, up to eight times the delay.
+					delay = pendingDelay * (1 << min(lost, 3))
+					lost += 1
+					failure = Self.connectError(error)
 				case .failure(let error): return .failure(Self.connectError(error))
 				}
+				guard Date().addingTimeInterval(delay / .seconds(1)) < deadline else { return .failure(failure) }
+				do { try await Task.sleep(for: delay) } catch { return .failure(.cancelled) }
 			}
-			return .failure(.invalidResponse)
 		}
+	}
+
+	private static func isServerError(_ error: PlatformAuthorizationError) -> Bool {
+		if case .server = error { true } else { false }
 	}
 
 	private static func connectError(_ error: PlatformAuthorizationError) -> BrowserConnectError {

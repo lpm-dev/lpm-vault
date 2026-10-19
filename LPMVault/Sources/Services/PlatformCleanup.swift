@@ -21,6 +21,9 @@ struct PlatformCleanupEntry: Equatable, Sendable, CustomStringConvertible, Custo
 	/// A renewal of the generation that may have been sent. Its key collects
 	/// the tokens it issued, which are revoked in turn.
 	var attempt: PlatformTokenRefresh.Attempt?
+	/// LPM's eligibility for the login's tokens ended, rather than the person
+	/// retiring it: once they're revoked, the login stays, as one to reconnect.
+	let asksToReconnect: Bool
 	let createdAt: Date
 
 	init(
@@ -32,6 +35,7 @@ struct PlatformCleanupEntry: Equatable, Sendable, CustomStringConvertible, Custo
 		revocationID: String = UUID().uuidString.lowercased(),
 		refreshToken: String,
 		attempt: PlatformTokenRefresh.Attempt?,
+		asksToReconnect: Bool = false,
 		createdAt: Date
 	) {
 		self.platform = platform
@@ -42,6 +46,7 @@ struct PlatformCleanupEntry: Equatable, Sendable, CustomStringConvertible, Custo
 		self.revocationID = revocationID
 		self.refreshToken = refreshToken
 		self.attempt = attempt
+		self.asksToReconnect = asksToReconnect
 		self.createdAt = PublishTimestamp.normalized(createdAt)
 	}
 
@@ -118,6 +123,7 @@ enum PlatformCleanupRecords {
 			"revocationId": entry.revocationID,
 			"refreshToken": entry.refreshToken,
 			"attempt": attempt,
+			"asksToReconnect": entry.asksToReconnect,
 			"createdAt": PublishTimestamp.milliseconds(entry.createdAt),
 		]
 		return bounded(object)
@@ -127,7 +133,11 @@ enum PlatformCleanupRecords {
 	static func decodeEntry(_ data: Data, generation expected: String) -> Result<PlatformCleanupEntry, DecodingError> {
 		guard let object = header(data, kind: "entry") else { return .failure(.unreadable) }
 		if let newer = newer(object) { return .failure(newer) }
-		guard Set(object.keys) == ["version", "kind", "platform", "connectionId", "generation", "issuer", "clientId", "revocationId", "refreshToken", "attempt", "createdAt"],
+		guard Set(object.keys) == [
+			"version", "kind", "platform", "connectionId", "generation", "issuer", "clientId", "revocationId", "refreshToken", "attempt",
+			"asksToReconnect", "createdAt",
+		],
+			let asksToReconnect = object["asksToReconnect"] as? NSNumber, CFGetTypeID(asksToReconnect) == CFBooleanGetTypeID(),
 			object["platform"] as? String == BrowserPlatform.cloudflare.rawValue,
 			let connectionID = object["connectionId"] as? String, !connectionID.isEmpty, connectionID.utf8.count <= 256,
 			let generation = object["generation"] as? String, generation == expected,
@@ -156,7 +166,8 @@ enum PlatformCleanupRecords {
 		}
 		return .success(PlatformCleanupEntry(
 			platform: .cloudflare, connectionID: connectionID, generation: generation, issuer: issuer, clientID: clientID,
-			revocationID: revocationID, refreshToken: refreshToken, attempt: attempt, createdAt: createdAt))
+			revocationID: revocationID, refreshToken: refreshToken, attempt: attempt, asksToReconnect: asksToReconnect.boolValue,
+			createdAt: createdAt))
 	}
 
 	static func encode(_ marker: PlatformCleanupMarker) -> Data? {
@@ -185,14 +196,14 @@ enum PlatformCleanupRecords {
 	private static func header(_ data: Data, kind: String) -> [String: Any]? {
 		guard data.count <= maximumBytes,
 			let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-			object["version"] is Int, object["kind"] as? String == kind
+			PlatformTokens.integer(object["version"]) != nil, object["kind"] as? String == kind
 		else { return nil }
 		return object
 	}
 
 	/// Why a record isn't this version's; nil when it is.
 	private static func newer(_ object: [String: Any]) -> DecodingError? {
-		guard let recordVersion = object["version"] as? Int else { return .unreadable }
+		guard let recordVersion = PlatformTokens.integer(object["version"]) else { return .unreadable }
 		if recordVersion > version { return .newerVersion }
 		return recordVersion == version ? nil : .unreadable
 	}
@@ -205,7 +216,8 @@ enum PlatformCleanupRecords {
 	}
 
 	private static func date(_ value: Any?) -> Date? {
-		guard let milliseconds = value as? Int64, (0...PublishTimestamp.maximumMilliseconds).contains(milliseconds) else { return nil }
+		guard let milliseconds = PlatformTokens.integer(value).map(Int64.init), (0...PublishTimestamp.maximumMilliseconds).contains(milliseconds)
+		else { return nil }
 		return PublishTimestamp.date(milliseconds: milliseconds)
 	}
 }

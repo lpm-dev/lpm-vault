@@ -163,4 +163,13 @@ enum ProviderName {
 		let shown = trimmed.escapingDirectionControls
 		return shown.utf8.count <= maximumBytes ? shown : nil
 	}
+
+	/// As `display`, with every character that could hide in the name, or
+	/// make it pass for another, written as an escape: for names a person
+	/// tells apart by sight before publishing to one.
+	static func distinguishable(_ text: String?) -> String? {
+		guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+		let shown = trimmed.escapingInvisibleCharacters
+		return shown.utf8.count <= maximumBytes ? shown : nil
+	}
 }

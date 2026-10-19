@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import os
+import SwiftUI
 import Testing
 @testable import LPMVault
 
@@ -1300,28 +1301,43 @@ extension SheetInteractionTests {
 		private let revoker = ScriptedRevoker()
 
 		private func page(
+			environment: AppEnvironment = .development,
 			connectCloudflare: @escaping PlatformConnections.ConnectCloudflare = { _, _ in .failure(.cancelled) }
 		) -> (VaultStore, SheetTestHost<PlatformsView>) {
+			let store = makeStore(environment: environment, connectCloudflare: connectCloudflare)
+			let host = SheetTestHost(PlatformsView(store: store), size: NSSize(width: 760, height: 1_000), keepsRequestedSize: true, usesHostingView: true)
+			return (store, host)
+		}
+
+		private func makeStore(
+			environment: AppEnvironment = .development,
+			connectCloudflare: @escaping PlatformConnections.ConnectCloudflare = { _, _ in .failure(.cancelled) }
+		) -> VaultStore {
 			let opened = opened
 			let store = VaultStore(
 				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 				authTokenProvider: { _, _ in "lpm_session" }, cloudflareConnect: connectCloudflare, platformRevoker: revoker,
 				platformURLOpener: { opened.append($0) })
-			store.appEnvironment = .development
+			store.appEnvironment = environment
 			store.isUnlocked = true
 			store.currentUser = LPMUser(id: platformTestPrincipal, username: "tolga", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
 			store.showPlatforms()
-			let host = SheetTestHost(PlatformsView(store: store), size: NSSize(width: 760, height: 1_000), keepsRequestedSize: true, usesHostingView: true)
-			return (store, host)
+			return store
 		}
 
 		/// A login saved now, with `accounts`, whose renewal the Registry refused when `rejected`.
 		@discardableResult
-		private func save(label: String = "Work", accounts: [CloudflareAccount] = [CloudflareLoginFixture.acme], rejected: Bool = false) async throws -> PlatformConnection {
+		private func save(
+			subject: String = CloudflareLoginFixture.subject,
+			label: String = "Work",
+			accounts: [CloudflareAccount] = [CloudflareLoginFixture.acme],
+			rejected: Bool = false
+		) async throws -> PlatformConnection {
 			var refresh = CloudflareLoginFixture.refresh(at: Date())
 			refresh.isRejected = rejected
 			return try await CloudflareLoginFixture.save(
-				CloudflareLoginFixture.account(label: label, accounts: accounts), in: PlatformConnectionStore(service: keychain), refresh: refresh)
+				CloudflareLoginFixture.account(subject: subject, label: label, accounts: accounts), in: PlatformConnectionStore(service: keychain),
+				refresh: refresh)
 		}
 
 		@Test("Connect Cloudflare opens Cloudflare's page with the LPM session, says where to finish, and Cancel stops it")
@@ -1378,10 +1394,141 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("would no longer reach Beta through Work", in: dialog))
 			try host.clickAlertButton("Cancel", in: dialog)
 			#expect(try await host.waitUntil { revoker.calls.map(\.token) == ["cf_new_refresh"] }, "Only the new grant is revoked")
-			guard case .cloudflare(let kept) = try await store.platformConnectionStore.record(for: connection.id).get().connection.account,
-				case .cloudflare(let original) = connection.account
-			else { return }
-			#expect(kept.generation == original.generation)
+			#expect(try await store.platformConnectionStore.record(for: connection.id).get().connection.generation == connection.generation)
+		}
+
+		@Test("reconnecting one login but approving another offers to add it beside it or put it in its place", arguments: ["Add It Separately", "Replace Work"])
+		func otherLoginButtons(button: String) async throws {
+			let work = try await save(rejected: true)
+			let tokens = PlatformTokens(
+				accessToken: "cf_new_access", expiry: .init(accessTokenLifetime: 3_600, refreshToken: "cf_new_refresh", refreshTokenLifetime: 31_536_000))!
+			let approved = CloudflareConnection(
+				login: CloudflareLogin.key(subject: CloudflareLoginFixture.otherSubject), accounts: [CloudflareLoginFixture.acme],
+				grant: CloudflareGrant(tokens: tokens)!, issuer: .development, clientID: CloudflareLoginFixture.clientID,
+				generation: CloudflareConnectionAccount.makeGeneration(), receivedAt: Date())
+			let (store, host) = page(connectCloudflare: { _, _ in .success(approved) })
+			defer { host.window.close(); store.lock() }
+			try await host.click("Reconnect Work")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Approving another login asks first")
+			let dialog = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("You approved a different Cloudflare login, not Work", in: dialog))
+			try host.clickAlertButton(button, in: dialog)
+			#expect(try await host.waitUntil { keychain.platformConnectionStorage[approved.connectionID] != nil })
+			#expect((keychain.platformConnectionStorage[work.id] != nil) == (button == "Add It Separately"))
+		}
+
+		@Test("Rename gives a login the name typed, and when another login has it, says so and asks again")
+		func renamesThroughAlert() async throws {
+			try await save()
+			try await save(subject: CloudflareLoginFixture.otherSubject, label: "Home")
+			let (store, host) = page()
+			defer { host.window.close(); store.lock() }
+			try await host.click("Rename Work")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Rename asks for the name")
+			let alert = try #require(host.window.sheets.first)
+			try host.typeText("Home", placeholder: "Name", in: alert)
+			try host.clickAlertButton("Rename", in: alert)
+			#expect(try await host.waitUntil { host.window.sheets.first.map { $0 !== alert } ?? false }, "The name taken asks again")
+			let again = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("Another connected Cloudflare login is called Home. Choose another name.", in: again))
+			try host.typeText("Clients", placeholder: "Name", in: again)
+			try host.clickAlertButton("Rename", in: again)
+			#expect(try await host.waitForText("Clients"))
+			#expect(store.platforms.connections.map(\.name).sorted() == ["Clients", "Home"])
+		}
+
+		@Test("a question about a login just approved hides behind the privacy curtain unanswered, comes back with it, and Connect Anyway goes on")
+		func promptHidesBehindCurtain() async throws {
+			let connection = try await save(accounts: [CloudflareLoginFixture.acme, CloudflareLoginFixture.beta])
+			let tokens = PlatformTokens(
+				accessToken: "cf_new_access", expiry: .init(accessTokenLifetime: 3_600, refreshToken: "cf_new_refresh", refreshTokenLifetime: 31_536_000))!
+			let approved = CloudflareConnection(
+				login: CloudflareLogin.key(subject: CloudflareLoginFixture.subject), accounts: [CloudflareLoginFixture.acme],
+				grant: CloudflareGrant(tokens: tokens)!, issuer: .development, clientID: CloudflareLoginFixture.clientID,
+				generation: CloudflareConnectionAccount.makeGeneration(), receivedAt: Date())
+			let store = makeStore(connectCloudflare: { _, _ in .success(approved) })
+			let curtain = Curtain()
+			let host = SheetTestHost(
+				CurtainedPlatforms(store: store, curtain: curtain), size: NSSize(width: 760, height: 1_000), keepsRequestedSize: true,
+				usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			try await host.click("Connect Cloudflare")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Connecting asks before losing an account")
+			curtain.isObscured = true
+			#expect(try await host.waitUntil { host.window.sheets.isEmpty }, "The question hides behind the curtain")
+			#expect(store.platforms.cloudflarePrompt != nil)
+			curtain.isObscured = false
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "The question comes back")
+			let dialog = try #require(host.window.sheets.first)
+			try host.clickAlertButton("Connect Anyway", in: dialog)
+			#expect(try await waitUntil {
+				await (try? store.platformConnectionStore.record(for: connection.id).get())?.connection.generation == approved.generation
+			})
+		}
+
+		@Test("where Cloudflare can't be connected, notes of its unconfirmed revocations still show, as one note that dismisses them all")
+		func notesWithoutCloudflare() async throws {
+			let connections = PlatformConnectionStore(service: keychain)
+			for _ in 0..<2 {
+				_ = await connections.mark(PlatformCleanupMarker(platform: .cloudflare, generation: CloudflareConnectionAccount.makeGeneration(), createdAt: Date()))
+			}
+			let (store, host) = page(environment: .production)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("couldn't confirm that the access of 2 Cloudflare logins was revoked"))
+			try await host.click("Dismiss the note about unconfirmed revocations")
+			#expect(try await host.waitForTextToDisappear("Connected Applications on Cloudflare"))
+			#expect(try await waitUntil {
+				!keychain.platformCleanupStorage.keys.contains { $0.hasPrefix(PlatformCleanupRecords.markerPrefix) }
+			})
+		}
+
+		@Test("a login reaching more accounts than its row names lists them all on the row's help")
+		func namesEveryAccount() async throws {
+			let gamma = CloudflareAccount(id: "2c3d4e5f60718293a4b5c6d7e8f90a1b", name: "Gamma")
+			try await save(accounts: [CloudflareLoginFixture.acme, CloudflareLoginFixture.beta, gamma])
+			let (store, host) = page()
+			defer { host.window.close(); store.lock() }
+			let summary = try await host.waitForElement(saying: "Acme and 2 more")
+			#expect(summary.help == "Reaches " + ListFormatter.localizedString(byJoining: ["Acme", "Beta", "Gamma"]))
+		}
+
+		@Test("while a login reconnects, its button's accessible name says what it shows")
+		func reconnectingName() async throws {
+			try await save(rejected: true)
+			let (store, host) = page(connectCloudflare: { _, open in
+				await open(URL(string: "https://dash.cloudflare.com/oauth2/auth")!)
+				try? await Task.sleep(for: .seconds(60))
+				return .failure(.cancelled)
+			})
+			defer { host.window.close(); store.lock() }
+			try await host.click("Reconnect Work")
+			let button = try await host.waitForElement(saying: "Reconnecting…")
+			#expect(button.label?.contains("Reconnecting…") == true && button.label?.contains("Work") == true)
+			try await host.click("Cancel")
+			#expect(try await host.waitUntil { !store.platforms.isConnecting })
+		}
+
+		@Test("where Cloudflare can't be connected, the page doesn't mention it")
+		func noCloudflareCopy() async throws {
+			let (store, host) = page(environment: .production)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Disconnecting forgets a token on this Mac only"))
+			#expect(!host.lines().contains { $0.text.contains("Cloudflare") })
+		}
+
+		@Test("a login disconnected while signed out says signing in finishes revoking its access")
+		func revocationAwaitsSignIn() async throws {
+			try await save()
+			let (store, host) = page()
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Work"))
+			store.currentUser = nil
+			try await host.click("Disconnect Work")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
+			let dialog = try #require(host.window.sheets.first)
+			try host.clickAlertButton("Disconnect", in: dialog)
+			#expect(try await host.waitForText("Sign in to LPM to finish revoking Cloudflare access LPM Vault no longer uses."))
+			#expect(revoker.calls.isEmpty)
 		}
 
 		@Test("a note of an unconfirmed revocation says how to remove LPM Vault on Cloudflare, until it's dismissed")
@@ -1395,5 +1542,20 @@ extension SheetInteractionTests {
 			try await host.click("Dismiss the note about an unconfirmed revocation")
 			#expect(try await host.waitForTextToDisappear("Connected Applications on Cloudflare"))
 		}
+	}
+}
+
+/// Whether the privacy curtain is up over the window, as a test raises it.
+@Observable @MainActor
+private final class Curtain {
+	var isObscured = false
+}
+
+/// The Platforms page under a privacy curtain the test raises.
+private struct CurtainedPlatforms: View {
+	let store: VaultStore
+	var curtain: Curtain
+	var body: some View {
+		PlatformsView(store: store).environment(\.vaultContentObscured, curtain.isObscured)
 	}
 }

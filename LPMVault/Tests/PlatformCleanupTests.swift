@@ -11,18 +11,28 @@ struct CloudflareCredentialsTests {
 
 	private func credentials(
 		refresher: ScriptedTokenRefresher = ScriptedTokenRefresher { _, _ in .failure(.transport) },
-		revoker: ScriptedRevoker = ScriptedRevoker(),
+		revoker: any PlatformTokenRevoking = ScriptedRevoker(),
 		at clock: TestDate = TestDate(CloudflareLoginFixture.start),
 		session: PlatformSession?? = nil,
+		sessions: (@Sendable () -> PlatformSession?)? = nil,
 		waits: RecordedWaits = RecordedWaits(),
-		productionClientID: String? = "lpm-vault-production"
+		sleep: (@Sendable (Duration) async throws -> Void)? = nil,
+		productionClientID: String? = "lpm-vault-production",
+		changed: @escaping @Sendable () -> Void = {}
 	) -> PlatformCredentials {
 		let chosen = session ?? .some(platformTestSession(registry))
 		// Cleanups wait on a clock that only the test moves, so the waits they ask for are exact.
 		let uptime = ManualClock()
 		return PlatformCredentials(
-			store: store, refresher: refresher, revoker: revoker, session: { chosen }, now: { clock.date }, pendingDelay: .zero,
-			uptime: { uptime.now }, sleep: waits.sleep, productionClientID: productionClientID)
+			store: store, refresher: refresher, revoker: revoker, session: { sessions.map { $0() } ?? chosen }, now: { clock.date }, pendingDelay: .zero,
+			uptime: { uptime.now }, sleep: sleep ?? waits.sleep, productionClientID: productionClientID, cleanupChanged: changed)
+	}
+
+	/// Retires a newly connected login's generation, as disconnecting does, leaving its entry.
+	@discardableResult
+	private func retired(_ account: CloudflareConnectionAccount = CloudflareLoginFixture.account()) async throws -> PlatformCleanupEntry {
+		let connection = try await CloudflareLoginFixture.save(account, in: store)
+		return try #require(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get().entry)
 	}
 
 	/// A login whose access token is due when the clock reads `CloudflareLoginFixture.start` plus an hour.
@@ -114,7 +124,7 @@ struct CloudflareCredentialsTests {
 		#expect(try await store.record(for: id).get().refresh?.attempt != nil)
 	}
 
-	@Test("when LPM's eligibility for the token ends, at the Registry or on this Mac, it's retired and revoked before connecting again")
+	@Test("when LPM's eligibility for the token ends, at the Registry or on this Mac, it's revoked, and the login stays to be connected again")
 	func eligibilityEnds() async throws {
 		let (id, account) = try await connect()
 		let revoker = ScriptedRevoker()
@@ -122,7 +132,7 @@ struct CloudflareCredentialsTests {
 		#expect(await registryEnded.accessToken(for: id) == .failure(.expired))
 		await registryEnded.cleanupSettled()
 		#expect(revoker.calls.map(\.token) == ["cf_refresh_1"] && revoker.calls.first?.attempt != nil)
-		#expect(keychain.platformConnectionStorage.isEmpty && keychain.platformCleanupStorage.isEmpty)
+		#expect(try await store.listing(at: due.date).get().expired == [id] && keychain.platformCleanupStorage.isEmpty)
 		_ = account
 
 		let (ended, _) = try await connect(eligibility: 600)
@@ -133,7 +143,8 @@ struct CloudflareCredentialsTests {
 		let locally = credentials(refresher: refresher, revoker: revoker, at: due)
 		#expect(await locally.accessToken(for: ended) == .failure(.expired))
 		await locally.cleanupSettled()
-		#expect(revoker.calls.count == 2 && keychain.platformConnectionStorage.isEmpty)
+		#expect(revoker.calls.count == 2 && keychain.platformCleanupStorage.isEmpty)
+		#expect(try await store.listing(at: due.date).get().expired == [ended])
 	}
 
 	@Test("a token asked for by its generation isn't given once the login was connected again")
@@ -163,7 +174,7 @@ struct CloudflareCredentialsTests {
 		try await letStartedWorkGetAhead()
 		await gate.open()
 		#expect(await renewal == .success("cf_access_2"))
-		let entry = try #require(try await retirement.get())
+		let entry = try #require(try await retirement.get().entry)
 		#expect(entry.refreshToken == "cf_refresh_2" && entry.attempt == nil)
 		#expect(await credentials.accessToken(for: id) == .failure(.retired))
 	}
@@ -173,8 +184,8 @@ struct CloudflareCredentialsTests {
 		let (id, account) = try await connect()
 		let revoker = ScriptedRevoker()
 		let credentials = credentials(revoker: revoker)
-		let entry = try #require(try await credentials.retire(id, generation: account.generation).get())
-		#expect(await credentials.revokeNow(entry))
+		let entry = try #require(try await credentials.retire(id, generation: account.generation).get().entry)
+		#expect(await credentials.revokeNow(entry) == .revoked)
 		#expect(revoker.calls.map(\.revocationID) == [entry.revocationID] && revoker.calls.first?.issuer == .development)
 		#expect(keychain.platformConnectionStorage.isEmpty && keychain.platformCleanupStorage.isEmpty)
 	}
@@ -183,8 +194,8 @@ struct CloudflareCredentialsTests {
 	func unconfirmed() async throws {
 		let (id, account) = try await connect()
 		let credentials = credentials(revoker: ScriptedRevoker { _, _ in .success(.unconfirmed) })
-		let entry = try #require(try await credentials.retire(id, generation: account.generation).get())
-		#expect(await credentials.revokeNow(entry))
+		let entry = try #require(try await credentials.retire(id, generation: account.generation).get().entry)
+		#expect(await credentials.revokeNow(entry) == .unconfirmed)
 		#expect(keychain.platformConnectionStorage.isEmpty)
 		#expect(Array(keychain.platformCleanupStorage.keys) == [PlatformCleanupRecords.markerAccount(account.generation)])
 	}
@@ -198,8 +209,8 @@ struct CloudflareCredentialsTests {
 			return .success(.superseded(CloudflareLoginFixture.successor(for: pending), age: 3))
 		}
 		let credentials = credentials(revoker: revoker)
-		let entry = try #require(try await credentials.retire(id, generation: account.generation).get())
-		#expect(await credentials.revokeNow(entry))
+		let entry = try #require(try await credentials.retire(id, generation: account.generation).get().entry)
+		#expect(await credentials.revokeNow(entry) == .revoked)
 		#expect(revoker.calls.map(\.token) == ["cf_refresh_1", "cf_refresh_2"])
 		#expect(revoker.calls[0].attempt?.id == attempt.id && revoker.calls[1].attempt == nil)
 		#expect(Set(revoker.calls.map(\.revocationID)) == [entry.revocationID])
@@ -245,6 +256,32 @@ struct CloudflareCredentialsTests {
 			#expect(waits.values == [PlatformCredentials.sessionCleanupDelay])
 		}
 		#expect(keychain.platformCleanupStorage.count == 1)
+
+		// A production client lpm.dev doesn't run any more, as after it changed, is never sent, cleaning up or discarding.
+		keychain.platformCleanupStorage = [:]
+		try await retired(CloudflareLoginFixture.account(issuer: .production, clientID: "lpm-vault-old-production"))
+		let live = platformTestSession(registry, issuer: .production)
+		let waits = RecordedWaits()
+		let otherClient = credentials(revoker: revoker, session: .some(live), waits: waits)
+		await otherClient.resumeCleanup()
+		await otherClient.cleanupSettled()
+		#expect(waits.values == [PlatformCredentials.sessionCleanupDelay])
+		#expect(await otherClient.discard(
+			refreshToken: "cf_new", connectionID: "cloudflare.unknown", generation: CloudflareConnectionAccount.makeGeneration(),
+			issuer: .production, clientID: "lpm-vault-old-production") == .waitingForSignIn)
+	}
+
+	@Test("an entry that can't be read is written again from its generation's record when that's still stored, and revoked")
+	func rebuildsUnreadableEntry() async throws {
+		let (id, account) = try await connect()
+		let revoker = ScriptedRevoker()
+		let credentials = credentials(revoker: revoker)
+		_ = try await credentials.retire(id, generation: account.generation).get()
+		keychain.platformCleanupStorage[PlatformCleanupRecords.entryAccount(account.generation)] = Data("{".utf8)
+		await credentials.resumeCleanup()
+		await credentials.cleanupSettled()
+		#expect(revoker.calls.map(\.token) == ["cf_refresh_1"])
+		#expect(keychain.platformConnectionStorage.isEmpty && keychain.platformCleanupStorage.isEmpty)
 	}
 
 	@Test("an entry that can't be read becomes a marker, and a newer version's is left for it")
@@ -279,9 +316,252 @@ struct CloudflareCredentialsTests {
 		#expect(Array(keychain.platformCleanupStorage.keys) == [PlatformCleanupRecords.entryAccount(generation)])
 
 		keychain.platformCleanupStorage = [:]
-		let locked = credentials(session: .some(nil))
-		#expect(await locked.discard(
+		let signedOut = credentials(session: .some(nil))
+		#expect(await signedOut.discard(
 			refreshToken: "cf_new", connectionID: "cloudflare.unknown", generation: generation, issuer: .development,
-			clientID: CloudflareLoginFixture.clientID) == .pending)
+			clientID: CloudflareLoginFixture.clientID) == .waitingForSignIn)
+		#expect(await signedOut.waitingForSignIn == [generation])
+	}
+
+	@Test("a cleanup waiting for a sign-in looks again as soon as one arrives", .timeLimit(.minutes(5)))
+	func wakesForSignIn() async throws {
+		try await retired()
+		let signedIn = TestValue<PlatformSession?>(nil)
+		let revoker = ScriptedRevoker()
+		let waits = HeldWaits()
+		let credentials = credentials(revoker: revoker, sessions: { signedIn.value }, sleep: waits.sleep)
+		await credentials.resumeCleanup()
+		#expect(try await waitUntil { waits.values == [PlatformCredentials.sessionCleanupDelay] })
+		signedIn.value = platformTestSession(registry)
+		await credentials.resumeCleanup(now: true)
+		try #require(try await waitUntil { revoker.calls.count == 1 }, "The sleeping cleanup woke")
+		await credentials.cleanupSettled()
+		#expect(keychain.platformCleanupStorage.isEmpty)
+	}
+
+	@Test("a cleanup the Keychain fails, listing entries or mending one, is tried again after a backoff")
+	func keychainFailuresRetry() async throws {
+		let entry = try await retired()
+		keychain.failPlatformCleanupAccounts = ["*"]
+		let listing = RecordedWaits()
+		let unlisted = credentials(waits: listing)
+		await unlisted.resumeCleanup()
+		await unlisted.cleanupSettled()
+		#expect(listing.values == [PlatformCredentials.firstCleanupDelay])
+
+		keychain.failPlatformCleanupAccounts = []
+		keychain.platformCleanupStorage[PlatformCleanupRecords.entryAccount(entry.generation)] = Data("{".utf8)
+		keychain.failPlatformConnectionAccounts = ["*"]
+		let mending = RecordedWaits()
+		let unmended = credentials(waits: mending)
+		await unmended.resumeCleanup()
+		await unmended.cleanupSettled()
+		#expect(mending.values == [PlatformCredentials.firstCleanupDelay])
+	}
+
+	@Test("a revocation the Registry asks to try later, during a disconnect or a discard, isn't sent again before then")
+	func keepsRetryAfter() async throws {
+		let entry = try await retired()
+		let revoker = ScriptedRevoker { _, index in index == 0 ? .success(.retry(after: 30)) : .success(.accepted) }
+		let waits = RecordedWaits()
+		let credentials = credentials(revoker: revoker, waits: waits)
+		_ = await credentials.revokeNow(entry)
+		await credentials.cleanupSettled()
+		#expect(revoker.calls.count == 1 && waits.values == [.seconds(30)])
+
+		keychain.platformCleanupStorage = [:]
+		let discarding = ScriptedRevoker { _, index in index == 0 ? .success(.retry(after: 30)) : .success(.accepted) }
+		let discardWaits = RecordedWaits()
+		let discarder = self.credentials(revoker: discarding, waits: discardWaits)
+		_ = await discarder.discard(
+			refreshToken: "cf_new", connectionID: "cloudflare.unknown", generation: CloudflareConnectionAccount.makeGeneration(),
+			issuer: .development, clientID: CloudflareLoginFixture.clientID)
+		await discarder.cleanupSettled()
+		#expect(discarding.calls.count == 1 && discardWaits.values == [.seconds(30)])
+	}
+
+	@Test("the Registry's limit on one person's revocations holds back every cleanup until it lifts, not only the one refused")
+	func perPersonLimitPausesAll() async throws {
+		try await retired()
+		try await retired()
+		let route = PlatformHTTPStub.registry { _ in .json(429, ["code": "rate_limited"], headers: ["Retry-After": "12"]) }
+		let waits = RecordedWaits()
+		let credentials = credentials(
+			revoker: PlatformAuthorizationClient(session: route.session), sessions: { platformTestSession(route.baseURL) }, waits: waits)
+		await credentials.resumeCleanup()
+		await credentials.cleanupSettled()
+		#expect(route.requests.count == 1)
+		#expect(waits.values == [.seconds(12)])
+	}
+
+	@Test("callers asking for one generation's token while it's read share that read", .timeLimit(.minutes(5)))
+	func sharesGenerationBoundReads() async throws {
+		let (id, account) = try await connect()
+		let credentials = credentials()
+		let reads = keychain.appItemReadCount(.platformConnections)
+		let entered = DispatchSemaphore(value: 0)
+		let held = DispatchSemaphore(value: 0)
+		let once = TestValue(false)
+		keychain.beforeAppItemRead = { store, read in
+			guard store == .platformConnections, read == id else { return }
+			var first = false
+			once.update { held in
+				first = !held
+				held = true
+			}
+			guard first else { return }
+			entered.signal()
+			_ = held.wait(timeout: .now() + testWaitSeconds)
+		}
+		async let first = credentials.accessToken(for: id, generation: account.generation)
+		await withCheckedContinuation { continuation in
+			Thread.detachNewThread {
+				_ = entered.wait(timeout: .now() + testWaitSeconds)
+				continuation.resume()
+			}
+		}
+		async let second = credentials.accessToken(for: id, generation: account.generation)
+		#expect(try await waitUntil { await credentials.sharedReads == 1 })
+		held.signal()
+		#expect(await first == .success("cf_access_1"))
+		#expect(await second == .success("cf_access_1"))
+		#expect(keychain.appItemReadCount(.platformConnections) - reads == 1)
+		keychain.beforeAppItemRead = nil
+	}
+
+	@Test("a cleanup pass that finishes several entries tells the page once")
+	func notifiesOncePerPass() async throws {
+		for _ in 0..<3 { try await retired() }
+		let changes = TestValue(0)
+		let credentials = credentials(changed: { changes.update { $0 += 1 } })
+		await credentials.resumeCleanup()
+		await credentials.cleanupSettled()
+		#expect(keychain.platformCleanupStorage.isEmpty)
+		#expect(changes.value == 1)
+	}
+
+	@Test("listing connections reads no cleanup item, and a pass reads only the entries due, never the markers")
+	func readsOnlyWhatItNeeds() async throws {
+		try await retired()
+		for _ in 0..<3 {
+			_ = await store.mark(PlatformCleanupMarker(
+				platform: .cloudflare, generation: CloudflareConnectionAccount.makeGeneration(), createdAt: CloudflareLoginFixture.start))
+		}
+		let before = keychain.appItemReadCount(.platformCleanup)
+		_ = try await store.connections().get()
+		#expect(keychain.appItemReadCount(.platformCleanup) == before)
+
+		let credentials = credentials(revoker: ScriptedRevoker { _, _ in .success(.retry(after: 30)) })
+		await credentials.resumeCleanup()
+		await credentials.cleanupSettled()
+		let afterFirst = keychain.appItemReadCount(.platformCleanup)
+		#expect(afterFirst - before == 1)
+		await credentials.resumeCleanup()
+		await credentials.cleanupSettled()
+		#expect(keychain.appItemReadCount(.platformCleanup) == afterFirst)
+	}
+
+	@Test("a pass asks for the LPM session once, and not at all for entries of a client this Registry doesn't run")
+	func resolvesSessionOnce() async throws {
+		try await retired(CloudflareLoginFixture.account(issuer: .production, clientID: "lpm-vault-old-production"))
+		let ineligible = TestValue(0)
+		let unasked = credentials(sessions: {
+			ineligible.update { $0 += 1 }
+			return platformTestSession(self.registry, issuer: .production)
+		})
+		await unasked.resumeCleanup()
+		await unasked.cleanupSettled()
+		#expect(ineligible.value == 0)
+
+		keychain.platformCleanupStorage = [:]
+		keychain.platformConnectionStorage = [:]
+		try await retired()
+		try await retired(CloudflareLoginFixture.account(subject: CloudflareLoginFixture.otherSubject))
+		let asked = TestValue(0)
+		let credentials = credentials(revoker: ScriptedRevoker { _, _ in .success(.retry(after: 30)) }, sessions: {
+			asked.update { $0 += 1 }
+			return platformTestSession(self.registry)
+		})
+		await credentials.resumeCleanup()
+		await credentials.cleanupSettled()
+		#expect(asked.value == 1)
+	}
+
+	@Test("a discarded grant whose revocation isn't confirmed, and whose entry can't be saved, still leaves a note")
+	func discardLeavesNote() async throws {
+		let generation = CloudflareConnectionAccount.makeGeneration()
+		keychain.failAppItemWrites = [PlatformCleanupRecords.entryAccount(generation)]
+		let credentials = credentials(revoker: ScriptedRevoker { _, _ in .failure(.transport) })
+		#expect(await credentials.discard(
+			refreshToken: "cf_new", connectionID: "cloudflare.unknown", generation: generation, issuer: .development,
+			clientID: CloudflareLoginFixture.clientID) == .unconfirmed)
+		#expect(Array(keychain.platformCleanupStorage.keys) == [PlatformCleanupRecords.markerAccount(generation)])
+	}
+
+	@Test("this Mac sends one revocation at a time, as lpm.dev takes one of a person's at a time, so a disconnect waits its turn rather than being refused", .timeLimit(.minutes(5)))
+	func revocationsTakeTurns() async throws {
+		let waiting = try await retired()
+		let gate = TestGate()
+		let inFlight = TestValue(0)
+		let revoker = ScriptedRevoker { call, _ in
+			var admitted = false
+			inFlight.update { count in
+				admitted = count == 0
+				if admitted { count += 1 }
+			}
+			guard admitted else { return .success(.throttled(after: 30)) }
+			if call.revocationID == waiting.revocationID { await gate.wait() }
+			inFlight.update { $0 -= 1 }
+			return .success(.accepted)
+		}
+		let credentials = credentials(revoker: revoker)
+		// The background cleanup holds the one revocation lpm.dev takes at a time.
+		await credentials.resumeCleanup()
+		#expect(try await waitUntil { revoker.calls.count == 1 })
+		let disconnected = try await retired(CloudflareLoginFixture.account(subject: CloudflareLoginFixture.otherSubject))
+		async let revocation = credentials.revokeNow(disconnected)
+		try await letStartedWorkGetAhead()
+		await gate.open()
+		#expect(await revocation == .revoked)
+		await credentials.cleanupSettled()
+		#expect(keychain.platformCleanupStorage.isEmpty)
+	}
+
+	@Test("a login whose eligibility ended is revoked, then stays listed under its label as one to reconnect")
+	func endedLoginAsksToReconnect() async throws {
+		let (id, account) = try await connect()
+		let revoker = ScriptedRevoker()
+		let credentials = credentials(refresher: ScriptedTokenRefresher { _, _ in .success(.expired) }, revoker: revoker, at: due)
+		#expect(await credentials.accessToken(for: id) == .failure(.expired))
+		await credentials.cleanupSettled()
+		#expect(revoker.calls.map(\.token) == ["cf_refresh_1"])
+		let listing = try await store.listing(at: due.date).get()
+		#expect(listing.connections.map(\.id) == [id] && listing.expired == [id])
+		#expect(listing.connections.first?.name == account.label && listing.retiring.isEmpty && listing.markers.isEmpty)
+		#expect(await credentials.accessToken(for: id) == .failure(.expired))
+	}
+
+	@Test("a login whose tokens the platform already ended has nothing to revoke: disconnecting or replacing it only removes it")
+	func endedFamilyNeedsNoRevocation() async throws {
+		let (id, account) = try await connect()
+		let revoker = ScriptedRevoker()
+		let credentials = credentials(
+			refresher: ScriptedTokenRefresher { _, _ in .success(.failed(code: PlatformCredentials.familyEndedCode)) }, revoker: revoker, at: due)
+		#expect(await credentials.accessToken(for: id) == .failure(.expired))
+		#expect(try await credentials.retire(id, generation: account.generation).get() == .ended)
+		#expect(revoker.calls.isEmpty && keychain.platformConnectionStorage.isEmpty && keychain.platformCleanupStorage.isEmpty)
+	}
+
+	@Test("stopping the cleanup, as locking does, ends one that's waiting, and keeps its entry for when it resumes", .timeLimit(.minutes(5)))
+	func stopsCleanup() async throws {
+		try await retired()
+		let waits = HeldWaits()
+		let credentials = credentials(session: .some(nil), sleep: waits.sleep)
+		await credentials.resumeCleanup()
+		#expect(try await waitUntil { waits.values == [PlatformCredentials.sessionCleanupDelay] })
+		await credentials.stopCleanup()
+		await credentials.cleanupSettled()
+		#expect(keychain.platformCleanupStorage.count == 1)
 	}
 }
+

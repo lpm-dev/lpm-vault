@@ -1677,8 +1677,7 @@ final class VaultStore {
       let history = try? await publishing.history(of: destination.id, in: projectID).get()
       summaries.append(PublishDestinationSummary(
         destination: destination, lastPublishedAt: history?.publishedAt,
-        accountDetail: destination.target.connectionID.flatMap { details[$0] }
-          ?? (destination.target.platform == .cloudflare ? destination.target.accountName : nil)))
+        accountDetail: destination.target.connectionID.flatMap { details[$0] }))
     }
     guard isUnlocked, generation == vaultSessionGeneration else { return }
     publishDestinations[projectID] = summaries.sorted {
@@ -5198,6 +5197,8 @@ final class VaultStore {
     projects = projects.map { VaultProject(metadata: $0.metadata) }
     workspaceSnapshots = [:]
     platforms.reset()
+    // Nothing can be sent without a session while locked; unlocking resumes it.
+    Task { [platformCredentials] in await platformCredentials.stopCleanup() }
     for entry in publishSessions { entry.session?.cancel() }
     publishSessions = []
     publishDestinations = [:]

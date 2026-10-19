@@ -9,6 +9,10 @@ import Foundation
 /// renewal, is told `.renewed` instead of the request being sent again, and
 /// whenever the token changed since its last request.
 ///
+/// A token Cloudflare refuses again right after a renewal issued it can't
+/// reach what was asked, as Cloudflare refuses a token outside its grant the
+/// same way: that's `.forbidden`, and it isn't renewed again.
+///
 /// The token is the reviewed generation's only: a connection connected again
 /// since fails as `.credentials(.replaced)`, so a review's login can't change
 /// under it.
@@ -22,6 +26,8 @@ actor RenewingCloudflareClient: CloudflareClientProtocol {
 	private let resendsAfterRenewal: Bool
 	/// The token the last request went with.
 	private var lastToken: String?
+	/// A token a renewal issued after Cloudflare refused the one before it.
+	private var renewedToken: String?
 
 	init(
 		connectionID: PlatformConnection.ID,
@@ -50,11 +56,15 @@ actor RenewingCloudflareClient: CloudflareClientProtocol {
 		if changed, !resendsAfterRenewal { return .failure(.renewed) }
 		let answer = await request(make(current))
 		guard case .failure(.unauthorized) = answer else { return answer }
+		guard current != renewedToken else { return .failure(.forbidden) }
 		switch await credentials.accessToken(for: connectionID, replacing: current, generation: generation) {
 		case .success(let renewed) where renewed != current:
 			lastToken = renewed
+			renewedToken = renewed
 			guard resendsAfterRenewal else { return .failure(.renewed) }
-			return await request(make(renewed))
+			let again = await request(make(renewed))
+			guard case .failure(.unauthorized) = again else { return again }
+			return .failure(.forbidden)
 		case .success, .failure(.expired):
 			// Cloudflare's own refusal says the connection must be connected again.
 			return answer

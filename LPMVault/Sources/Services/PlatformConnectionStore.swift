@@ -54,7 +54,9 @@ actor PlatformConnectionStore {
 	/// The connections this Mac holds, by platform and name. Records it can't
 	/// read are left out; connecting that account again replaces them.
 	func connections() -> Result<[PlatformConnection], PlatformConnectionStoreError> {
-		listing(at: Date()).map(\.connections)
+		Result {
+			try readConnections(at: Date(), retired: Self.entryGenerations(try service.appItemAccounts(.platformCleanup).get())).connections
+		}.mapError(Self.storeError)
 	}
 
 	/// What the Platforms page shows of this Mac's connections.
@@ -62,38 +64,55 @@ actor PlatformConnectionStore {
 		var connections: [PlatformConnection] = []
 		/// Connections whose token can't be renewed any more, which must be connected again.
 		var expired: Set<PlatformConnection.ID> = []
-		/// Cleanups still revoking a retired connection's tokens.
-		var retiring: [PlatformCleanupEntry] = []
+		/// The generations whose cleanups are still revoking a retired connection's tokens.
+		var retiring: [String] = []
 		/// Cleanups whose revocation couldn't be confirmed, until they're dismissed.
 		var markers: [PlatformCleanupMarker] = []
 	}
 
 	/// The connections, as `connections()` lists them, with those whose
-	/// token can't be renewed at `date` any more, and the cleanups of retired
-	/// ones. Cleanup entries are read first: a connection whose generation
-	/// has one is retired, and isn't listed.
+	/// token can't be renewed at `date` any more, the retired generations
+	/// still being cleaned up, and the notes of those whose revocation
+	/// couldn't be confirmed. A connection whose generation has a cleanup
+	/// entry is retired, and isn't listed; an entry's account names its
+	/// generation, so no entry is read for this.
 	func listing(at date: Date) -> Result<Listing, PlatformConnectionStoreError> {
 		Result {
-			let cleanup = try readCleanup()
-			var listing = Listing(
-				retiring: cleanup.entries.compactMap { if case .readable(let entry) = $0 { entry } else { nil } },
-				markers: cleanup.markers)
-			let retired = Set(cleanup.entries.map(\.generation))
-			for account in try service.appItemAccounts(.platformConnections).get() {
-				guard let data = try service.readAppItem(.platformConnections, account: account).get(),
-					case .success(let record) = Self.decode(data, account: account)
+			let accounts = try service.appItemAccounts(.platformCleanup).get()
+			let retired = Self.entryGenerations(accounts)
+			var listing = try readConnections(at: date, retired: retired)
+			listing.retiring = retired.sorted()
+			for account in accounts {
+				guard let generation = PlatformCleanupRecords.generation(ofAccount: account, prefix: PlatformCleanupRecords.markerPrefix),
+					let data = try service.readAppItem(.platformCleanup, account: account).get(),
+					case .success(let marker) = PlatformCleanupRecords.decodeMarker(data, generation: generation)
 				else { continue }
-				if let generation = record.connection.generation, retired.contains(generation) { continue }
-				listing.connections.append(record.connection)
-				if let refresh = record.refresh, refresh.isRejected || (refresh.attempt == nil && date >= refresh.expiresAt) {
-					listing.expired.insert(record.connection.id)
-				}
+				listing.markers.append(marker)
 			}
-			listing.connections.sort(by: Self.displayOrder)
-			listing.retiring.sort { $0.createdAt < $1.createdAt }
 			listing.markers.sort { $0.createdAt < $1.createdAt }
 			return listing
 		}.mapError(Self.storeError)
+	}
+
+	private func readConnections(at date: Date, retired: Set<String>) throws -> Listing {
+		var listing = Listing()
+		for account in try service.appItemAccounts(.platformConnections).get() {
+			guard let data = try service.readAppItem(.platformConnections, account: account).get(),
+				case .success(let record) = Self.decode(data, account: account)
+			else { continue }
+			if let generation = record.connection.generation, retired.contains(generation) { continue }
+			listing.connections.append(record.connection)
+			if let refresh = record.refresh, refresh.isRejected || (refresh.attempt == nil && date >= refresh.expiresAt) {
+				listing.expired.insert(record.connection.id)
+			}
+		}
+		listing.connections.sort(by: Self.displayOrder)
+		return listing
+	}
+
+	/// The generations the cleanup store's `accounts` hold entries for.
+	private static func entryGenerations(_ accounts: [String]) -> Set<String> {
+		Set(accounts.compactMap { PlatformCleanupRecords.generation(ofAccount: $0, prefix: PlatformCleanupRecords.entryPrefix) })
 	}
 
 	/// By name, then by ID, so connections with the same name keep one order.
@@ -164,7 +183,17 @@ actor PlatformConnectionStore {
 	) -> Result<SavedConnection, PlatformConnectionStoreError> {
 		Result {
 			guard !Task.isCancelled else { throw PlatformConnectionStoreError.cancelled }
-			let connection = PlatformConnection(account: account, connectedAt: PublishTimestamp.normalized(date))
+			var connection = PlatformConnection(account: account, connectedAt: PublishTimestamp.normalized(date))
+			// Checked here, with the save, so a rename meanwhile can't give two logins one label.
+			if case .cloudflare(let cloudflare) = account {
+				let taken = try takenLabels(except: connection.id)
+				let label = CloudflareLogin.comparable(cloudflare.label)
+				if taken.contains(where: { CloudflareLogin.comparable($0) == label }) {
+					let fallback = CloudflareLogin.defaultLabel(
+						for: cloudflare.login, accounts: cloudflare.accounts, salt: try labelSalt(), taken: taken)
+					connection = PlatformConnection(account: .cloudflare(cloudflare.labelled(fallback)), connectedAt: connection.connectedAt)
+				}
+			}
 			guard let data = Self.encode(Record(connection: connection, accessToken: accessToken, refresh: refresh)) else {
 				throw PlatformConnectionStoreError.unreadable
 			}
@@ -189,14 +218,20 @@ actor PlatformConnectionStore {
 
 	/// Puts back the record `saved` replaced, or none. One that couldn't be
 	/// read, or written back, is deleted instead, so the saved token never
-	/// outlives the save being taken back.
+	/// outlives the save being taken back. A Cloudflare record is never put
+	/// back: its generation was retired before another replaced it, and its
+	/// cleanup may have finished since.
 	private func restore(before saved: SavedConnection) throws {
-		if case let replaced?? = saved.replaced,
+		if case let replaced?? = saved.replaced, !Self.isCloudflare(replaced),
 			case .success = service.writeAppItem(.platformConnections, account: saved.connection.id, data: replaced)
 		{
 			return
 		}
 		try service.deleteAppItem(.platformConnections, account: saved.connection.id).get()
+	}
+
+	private static func isCloudflare(_ data: Data) -> Bool {
+		(try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["platform"] as? String == PublishPlatform.cloudflare.rawValue
 	}
 
 	/// The connection's record, with its token and how it renews, read when
@@ -309,14 +344,11 @@ actor PlatformConnectionStore {
 			guard case .cloudflare(let account) = record.connection.account else { throw PlatformConnectionStoreError.notFound }
 			if let generation = record.connection.generation, try isRetired(generation) { throw PlatformConnectionStoreError.retired }
 			let wanted = CloudflareLogin.comparable(label)
-			if try cloudflareLabels(except: connectionID).contains(where: { CloudflareLogin.comparable($0) == wanted }) {
+			if try takenLabels(except: connectionID).contains(where: { CloudflareLogin.comparable($0) == wanted }) {
 				throw PlatformConnectionStoreError.labelTaken
 			}
-			let relabeled = CloudflareConnectionAccount(
-				login: account.login, label: label, accounts: account.accounts, issuer: account.issuer, clientID: account.clientID,
-				generation: account.generation)
 			let changed = Record(
-				connection: PlatformConnection(account: .cloudflare(relabeled), connectedAt: record.connection.connectedAt),
+				connection: PlatformConnection(account: .cloudflare(account.labelled(label)), connectedAt: record.connection.connectedAt),
 				accessToken: record.accessToken, refresh: record.refresh)
 			guard let encoded = Self.encode(changed) else { throw PlatformConnectionStoreError.unreadable }
 			try service.writeAppItem(.platformConnections, account: connectionID, data: encoded).get()
@@ -327,17 +359,18 @@ actor PlatformConnectionStore {
 	/// The labels of the Cloudflare logins connected now, but `connectionID`'s.
 	/// Retired logins' labels are free again.
 	func cloudflareLabels(except connectionID: PlatformConnection.ID? = nil) -> Result<Set<String>, PlatformConnectionStoreError> {
-		Result { try cloudflareLabels(except: connectionID) }.mapError(Self.storeError)
+		Result { try takenLabels(except: connectionID) }.mapError(Self.storeError)
 	}
 
-	private func cloudflareLabels(except connectionID: PlatformConnection.ID?) throws -> Set<String> {
+	private func takenLabels(except connectionID: PlatformConnection.ID?) throws -> Set<String> {
 		var labels: Set<String> = []
+		let retired = Self.entryGenerations(try service.appItemAccounts(.platformCleanup).get())
 		for account in try service.appItemAccounts(.platformConnections).get() where account != connectionID {
 			guard account.hasPrefix("cloudflare."),
 				let data = try service.readAppItem(.platformConnections, account: account).get(),
 				case .success(let record) = Self.decode(data, account: account),
 				case .cloudflare(let cloudflare) = record.connection.account,
-				try !isRetired(cloudflare.generation)
+				!retired.contains(cloudflare.generation)
 			else { continue }
 			labels.insert(cloudflare.label)
 		}
@@ -360,30 +393,23 @@ actor PlatformConnectionStore {
 		}
 	}
 
-	/// The cleanup entries and markers this Mac holds.
-	func cleanup() -> Result<(entries: [StoredEntry], markers: [PlatformCleanupMarker]), PlatformConnectionStoreError> {
-		Result { try readCleanup() }.mapError(Self.storeError)
+	/// The generations this Mac holds cleanup entries for, from the entries' accounts alone.
+	func cleanupGenerations() -> Result<[String], PlatformConnectionStoreError> {
+		Result { Self.entryGenerations(try service.appItemAccounts(.platformCleanup).get()).sorted() }.mapError(Self.storeError)
 	}
 
-	private func readCleanup() throws -> (entries: [StoredEntry], markers: [PlatformCleanupMarker]) {
-		var entries: [StoredEntry] = []
-		var markers: [PlatformCleanupMarker] = []
-		for account in try service.appItemAccounts(.platformCleanup).get() {
-			if let generation = PlatformCleanupRecords.generation(ofAccount: account, prefix: PlatformCleanupRecords.entryPrefix) {
-				guard let data = try service.readAppItem(.platformCleanup, account: account).get() else { continue }
-				switch PlatformCleanupRecords.decodeEntry(data, generation: generation) {
-				case .success(let entry): entries.append(.readable(entry))
-				case .failure(.newerVersion): entries.append(.unreadable(generation: generation, isNewer: true))
-				case .failure(.unreadable): entries.append(.unreadable(generation: generation, isNewer: false))
-				}
-			} else if let generation = PlatformCleanupRecords.generation(ofAccount: account, prefix: PlatformCleanupRecords.markerPrefix) {
-				guard let data = try service.readAppItem(.platformCleanup, account: account).get(),
-					case .success(let marker) = PlatformCleanupRecords.decodeMarker(data, generation: generation)
-				else { continue }
-				markers.append(marker)
+	/// The cleanup entry of `generation`, as it's stored; nil when there's none.
+	func cleanupEntry(of generation: String) -> Result<StoredEntry?, PlatformConnectionStoreError> {
+		Result {
+			guard let data = try service.readAppItem(.platformCleanup, account: PlatformCleanupRecords.entryAccount(generation)).get() else {
+				return nil
 			}
-		}
-		return (entries, markers)
+			return switch PlatformCleanupRecords.decodeEntry(data, generation: generation) {
+			case .success(let entry): .readable(entry)
+			case .failure(.newerVersion): .unreadable(generation: generation, isNewer: true)
+			case .failure(.unreadable): .unreadable(generation: generation, isNewer: false)
+			}
+		}.mapError(Self.storeError)
 	}
 
 	/// Writes a cleanup entry for tokens that were never installed, as a new
@@ -395,37 +421,56 @@ actor PlatformConnectionStore {
 		}.mapError(Self.storeError)
 	}
 
+	/// What retiring a generation came to.
+	enum Retirement: Equatable, Sendable {
+		/// The cleanup entry that keeps the generation's tokens until they're revoked.
+		case entry(PlatformCleanupEntry)
+		/// The platform had ended the generation's tokens already, as when it
+		/// refused their renewal for good: its record was removed, with nothing to revoke.
+		case ended
+		/// The connection holds another generation now, or none.
+		case gone
+	}
+
 	/// Retires the connection's `generation` by writing its cleanup entry:
 	/// its latest refresh token and any renewal of it that may have been
-	/// sent. The entry already written for it when there is one; nil when the
-	/// connection holds another generation now, or none.
+	/// sent, or the entry already written for it. With `asksToReconnect`,
+	/// as when LPM's eligibility for the tokens ended, the login stays once
+	/// they're revoked, as one to reconnect.
 	func retire(
 		_ connectionID: PlatformConnection.ID,
 		generation: String,
+		asksToReconnect: Bool = false,
 		at date: Date
-	) -> Result<PlatformCleanupEntry?, PlatformConnectionStoreError> {
+	) -> Result<Retirement, PlatformConnectionStoreError> {
 		Result {
 			let account = PlatformCleanupRecords.entryAccount(generation)
 			if let data = try service.readAppItem(.platformCleanup, account: account).get(),
 				case .success(let existing) = PlatformCleanupRecords.decodeEntry(data, generation: generation)
 			{
-				return existing
+				return .entry(existing)
 			}
 			let record: Record
 			do {
 				record = try storedRecord(connectionID)
 			} catch PlatformConnectionStoreError.notFound {
-				return nil
+				return .gone
 			}
 			guard case .cloudflare(let cloudflare) = record.connection.account, cloudflare.generation == generation,
 				let refresh = record.refresh
-			else { return nil }
+			else { return .gone }
+			// A refusal that ended the family dropped the renewal's key; such tokens have nothing left to revoke.
+			if refresh.isRejected, refresh.attempt == nil {
+				try service.deleteAppItem(.platformConnections, account: connectionID).get()
+				return .ended
+			}
 			let entry = PlatformCleanupEntry(
 				platform: .cloudflare, connectionID: connectionID, generation: generation, issuer: cloudflare.issuer,
-				clientID: cloudflare.clientID, refreshToken: refresh.token, attempt: refresh.attempt, createdAt: date)
+				clientID: cloudflare.clientID, refreshToken: refresh.token, attempt: refresh.attempt, asksToReconnect: asksToReconnect,
+				createdAt: date)
 			guard let data = PlatformCleanupRecords.encode(entry) else { throw PlatformConnectionStoreError.unreadable }
 			try service.writeAppItem(.platformCleanup, account: account, data: data).get()
-			return entry
+			return .entry(entry)
 		}.mapError(Self.storeError)
 	}
 
@@ -453,15 +498,26 @@ actor PlatformConnectionStore {
 
 	/// Ends the cleanup of `entry`: deletes the connection's record if it
 	/// still holds the entry's generation, never a newer one, then the entry.
-	/// With `unconfirmed`, a marker takes the entry's place, as the
-	/// generation's tokens may still work.
+	/// A login that asks to be reconnected keeps its record, as one whose
+	/// tokens ended, so it's listed to reconnect under its label. With
+	/// `unconfirmed`, a marker takes the entry's place, as the generation's
+	/// tokens may still work.
 	func finishCleanup(_ entry: PlatformCleanupEntry, unconfirmed: Bool, at date: Date) -> Result<Void, PlatformConnectionStoreError> {
 		Result {
 			if let data = try service.readAppItem(.platformConnections, account: entry.connectionID).get(),
 				case .success(let record) = Self.decode(data, account: entry.connectionID),
 				record.connection.generation == entry.generation
 			{
-				try service.deleteAppItem(.platformConnections, account: entry.connectionID).get()
+				if entry.asksToReconnect, var refresh = record.refresh {
+					refresh.attempt = nil
+					refresh.isRejected = true
+					guard let ended = Self.encode(Record(connection: record.connection, accessToken: record.accessToken, refresh: refresh)) else {
+						throw PlatformConnectionStoreError.unreadable
+					}
+					try service.writeAppItem(.platformConnections, account: entry.connectionID, data: ended).get()
+				} else {
+					try service.deleteAppItem(.platformConnections, account: entry.connectionID).get()
+				}
 			}
 			if unconfirmed {
 				try writeMarker(PlatformCleanupMarker(platform: entry.platform, generation: entry.generation, createdAt: date))
@@ -470,12 +526,28 @@ actor PlatformConnectionStore {
 		}.mapError(Self.storeError)
 	}
 
-	/// Turns an entry that can't be read into a marker: its tokens can't be
-	/// revoked, so the connection may still be authorized.
-	func abandonCleanup(of generation: String, platform: BrowserPlatform, at date: Date) -> Result<Void, PlatformConnectionStoreError> {
+	/// Mends an entry that can't be read. While its generation's record is
+	/// still stored, the entry is written again from it, so its tokens can
+	/// still be revoked, and that entry is returned. Otherwise its tokens
+	/// are lost: a marker takes its place, as the login may still be authorized.
+	func recoverCleanup(of generation: String, at date: Date) -> Result<PlatformCleanupEntry?, PlatformConnectionStoreError> {
 		Result {
-			try writeMarker(PlatformCleanupMarker(platform: platform, generation: generation, createdAt: date))
+			for account in try service.appItemAccounts(.platformConnections).get() where account.hasPrefix("cloudflare.") {
+				guard let data = try service.readAppItem(.platformConnections, account: account).get(),
+					case .success(let record) = Self.decode(data, account: account),
+					case .cloudflare(let cloudflare) = record.connection.account, cloudflare.generation == generation,
+					let refresh = record.refresh
+				else { continue }
+				let entry = PlatformCleanupEntry(
+					platform: .cloudflare, connectionID: account, generation: generation, issuer: cloudflare.issuer,
+					clientID: cloudflare.clientID, refreshToken: refresh.token, attempt: refresh.attempt, createdAt: date)
+				guard let encoded = PlatformCleanupRecords.encode(entry) else { throw PlatformConnectionStoreError.unreadable }
+				try service.writeAppItem(.platformCleanup, account: PlatformCleanupRecords.entryAccount(generation), data: encoded).get()
+				return entry
+			}
+			try writeMarker(PlatformCleanupMarker(platform: .cloudflare, generation: generation, createdAt: date))
 			try service.deleteAppItem(.platformCleanup, account: PlatformCleanupRecords.entryAccount(generation)).get()
+			return nil
 		}.mapError(Self.storeError)
 	}
 
@@ -499,15 +571,17 @@ actor PlatformConnectionStore {
 	/// first time it's needed. The item is always the raw 32 bytes; a damaged
 	/// one is replaced, which only changes the codes of labels made after.
 	func loginLabelSalt() -> Result<Data, PlatformConnectionStoreError> {
-		Result {
-			let account = PlatformCleanupRecords.labelSaltAccount
-			if let data = try service.readAppItem(.platformCleanup, account: account).get(), data.count == 32 { return data }
-			let salt = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
-			if try service.insertAppItem(.platformCleanup, account: account, data: salt).get() { return salt }
-			if let data = try service.readAppItem(.platformCleanup, account: account).get(), data.count == 32 { return data }
-			try service.writeAppItem(.platformCleanup, account: account, data: salt).get()
-			return salt
-		}.mapError(Self.storeError)
+		Result { try labelSalt() }.mapError(Self.storeError)
+	}
+
+	private func labelSalt() throws -> Data {
+		let account = PlatformCleanupRecords.labelSaltAccount
+		if let data = try service.readAppItem(.platformCleanup, account: account).get(), data.count == 32 { return data }
+		let salt = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+		if try service.insertAppItem(.platformCleanup, account: account, data: salt).get() { return salt }
+		if let data = try service.readAppItem(.platformCleanup, account: account).get(), data.count == 32 { return data }
+		try service.writeAppItem(.platformCleanup, account: account, data: salt).get()
+		return salt
 	}
 
 	// MARK: - Records
@@ -660,7 +734,8 @@ actor PlatformConnectionStore {
 	}
 
 	private static func date(_ value: Any?) -> Date? {
-		guard let milliseconds = value as? Int64, (0...PublishTimestamp.maximumMilliseconds).contains(milliseconds) else { return nil }
+		guard let milliseconds = PlatformTokens.integer(value).map(Int64.init), (0...PublishTimestamp.maximumMilliseconds).contains(milliseconds)
+		else { return nil }
 		return PublishTimestamp.date(milliseconds: milliseconds)
 	}
 
@@ -675,16 +750,14 @@ actor PlatformConnectionStore {
 	static func decode(_ data: Data, account: String) -> Result<Record, PlatformConnectionStoreError> {
 		guard data.count <= maximumRecordBytes,
 			let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-			let version = object["version"] as? Int
+			let version = PlatformTokens.integer(object["version"])
 		else { return .failure(.unreadable) }
 		guard version <= Self.version else { return .failure(.newerVersion) }
 		guard version == Self.version,
 			let platform = object["platform"] as? String,
 			let accessToken = object["accessToken"] as? String,
-			let milliseconds = object["connectedAt"] as? Int64,
-			(0...PublishTimestamp.maximumMilliseconds).contains(milliseconds)
+			let connectedAt = date(object["connectedAt"])
 		else { return .failure(.unreadable) }
-		let connectedAt = PublishTimestamp.date(milliseconds: milliseconds)
 		guard case .some(let refresh) = decodeRefresh(object["refresh"]) else { return .failure(.unreadable) }
 		let keys = Set(object.keys).subtracting(["refresh"])
 		var record: Record

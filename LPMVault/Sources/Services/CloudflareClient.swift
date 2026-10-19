@@ -363,23 +363,43 @@ struct CloudflareClient: CloudflareClientProtocol, CloudflareIdentityProtocol, C
 			guard let membership = item as? [String: Any], membership["status"] as? String == "accepted",
 				let account = membership["account"] as? [String: Any], let id = account["id"] as? String, CloudflareHTTP.isValidID(id)
 			else { return nil }
-			return CloudflareAccount(id: id, name: ProviderName.display(account["name"] as? String) ?? "Account \(id.prefix(8))")
+			return CloudflareAccount(id: id, name: ProviderName.distinguishable(account["name"] as? String) ?? "Account \(id.prefix(8))")
 		}
 		.map { found in
 			var seen: Set<String> = []
-			return Array(found.filter { seen.insert($0.id).inserted }.sorted(by: Self.byName).prefix(CloudflareAccount.maximumCount))
+			let accounts = found.filter { seen.insert($0.id).inserted }
+			// Accounts whose names read alike are told apart by their IDs, wherever they're named.
+			var named: [String: Int] = [:]
+			for account in accounts { named[CloudflareLogin.comparable(account.name), default: 0] += 1 }
+			let distinct = accounts.map { account in
+				named[CloudflareLogin.comparable(account.name), default: 0] > 1 ? Self.withID(account) : account
+			}
+			return Array(distinct.sorted(by: Self.byName).prefix(CloudflareAccount.maximumCount))
 		}
+	}
+
+	/// The account named with the start of its ID, its name cut short where both wouldn't fit a name.
+	private static func withID(_ account: CloudflareAccount) -> CloudflareAccount {
+		let suffix = " (\(account.id.prefix(8)))"
+		var name = Substring(account.name)
+		while name.utf8.count + suffix.utf8.count > ProviderName.maximumBytes { name = name.dropLast() }
+		return CloudflareAccount(id: account.id, name: name + suffix)
 	}
 
 	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError> {
 		guard CloudflareHTTP.isValidID(account) else { return .failure(.invalidResponse) }
-		return await pages(["accounts", account, "workers", "workers"]) { (item: Any) -> CloudflareWorker? in
+		// By name, which a deploy during the listing doesn't change, unlike the default order by deploy time.
+		let order = [URLQueryItem(name: "order_by", value: "name"), URLQueryItem(name: "order", value: "asc")]
+		return await pages(["accounts", account, "workers", "workers"], query: order) { (item: Any) -> CloudflareWorker? in
 			guard let worker = item as? [String: Any], let id = worker["id"] as? String, CloudflareHTTP.isValidID(id),
 				let name = worker["name"] as? String, CloudflareHTTP.isValidScriptName(name)
 			else { return nil }
 			return CloudflareWorker(id: id, name: name)
 		}
-		.map { $0.sorted { $0.name == $1.name ? $0.id < $1.id : $0.name < $1.name } }
+		.map { found in
+			var seen: Set<String> = []
+			return found.filter { seen.insert($0.id).inserted }.sorted { $0.name == $1.name ? $0.id < $1.id : $0.name < $1.name }
+		}
 	}
 
 	private static func byName(_ lhs: CloudflareAccount, _ rhs: CloudflareAccount) -> Bool {
@@ -391,17 +411,22 @@ struct CloudflareClient: CloudflareClientProtocol, CloudflareIdentityProtocol, C
 	}
 
 	/// Every item of a paged list, as `read` makes them; an item it can't
-	/// read is left out. A page shorter than a full one is the last.
-	private func pages<Item>(_ path: [String], _ read: (Any) -> Item?) async -> Result<[Item], CloudflareAPIError> {
+	/// read is left out. A page shorter than a full one is the last, and one
+	/// longer than asked for isn't Cloudflare's answer, so the list isn't read.
+	private func pages<Item>(
+		_ path: [String],
+		query: [URLQueryItem] = [],
+		_ read: (Any) -> Item?
+	) async -> Result<[Item], CloudflareAPIError> {
 		var items: [Item] = []
 		for page in 1...Self.maximumPages {
 			guard let url = PlatformURL.url(
 				baseURL, path,
-				query: [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "per_page", value: String(Self.pageSize))])
+				query: query + [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "per_page", value: String(Self.pageSize))])
 			else { return .failure(.invalidResponse) }
 			switch await CloudflareHTTP.load(CloudflareHTTP.request("GET", url, token: token), using: session) {
 			case .success(let loaded):
-				guard let list = loaded.result as? [Any] else { return .failure(.invalidResponse) }
+				guard let list = loaded.result as? [Any], list.count <= Self.pageSize else { return .failure(.invalidResponse) }
 				items.append(contentsOf: list.compactMap(read))
 				if list.count < Self.pageSize { return .success(items) }
 			case .failure(let error):

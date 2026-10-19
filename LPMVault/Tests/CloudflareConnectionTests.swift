@@ -43,13 +43,38 @@ struct CloudflareLoginTests {
 		#expect(grown == "Acme · \(CloudflareLogin.code(for: login, salt: salt, length: 5))")
 	}
 
-	@Test("a name a person gives a login is trimmed, bounded and free of controls, with direction controls escaped")
+	@Test("a default label made from a long account name is shortened to fit a label, and the login saves with it")
+	func longAccountName() async throws {
+		let login = CloudflareLogin.key(subject: CloudflareLoginFixture.subject)
+		let salt = Data(repeating: 1, count: 32)
+		let code = CloudflareLogin.code(for: login, salt: salt)
+		for name in [String(repeating: "a", count: 512), String(repeating: "\u{00E9}", count: 256), "Acme"] {
+			let account = CloudflareAccount(id: CloudflareLoginFixture.acme.id, name: name)
+			let label = CloudflareLogin.defaultLabel(for: login, accounts: [account], salt: salt, taken: [])
+			#expect(label.count <= CloudflareLogin.maximumLabelCharacters && label.hasSuffix(" · \(code)"))
+			#expect(CloudflareLogin.label(from: label) == .success(label))
+			let store = PlatformConnectionStore(service: MockKeychainService())
+			_ = try await CloudflareLoginFixture.save(CloudflareLoginFixture.account(label: label, accounts: [account]), in: store)
+		}
+		let long = CloudflareLogin.defaultLabel(
+			for: login, accounts: [CloudflareAccount(id: CloudflareLoginFixture.acme.id, name: String(repeating: "a", count: 512))], salt: salt, taken: [])
+		#expect(long == String(repeating: "a", count: CloudflareLogin.maximumLabelCharacters - 4 - code.count) + "… · \(code)")
+	}
+
+	@Test("a name a person gives a login is trimmed and bounded, and holds nothing invisible, so no two names look alike that differ")
 	func givenLabels() {
-		#expect(CloudflareLogin.label(from: "  Work  ") == "Work")
-		#expect(CloudflareLogin.label(from: "   ") == nil)
-		#expect(CloudflareLogin.label(from: String(repeating: "a", count: 65)) == nil)
-		#expect(CloudflareLogin.label(from: "a\u{0}b") == nil)
-		#expect(CloudflareLogin.label(from: "Work\u{202E}") == "Work\\u{202e}")
+		#expect(CloudflareLogin.label(from: "  Work  ") == .success("Work"))
+		#expect(CloudflareLogin.label(from: "   ") == .failure(.empty))
+		#expect(CloudflareLogin.label(from: String(repeating: "a", count: 65)) == .failure(.tooLong))
+		#expect(CloudflareLogin.label(from: "e" + String(repeating: "\u{0301}", count: 300)) == .failure(.tooLong), "One character, too many bytes to store")
+		for invisible in ["a\u{0}b", "Work\u{202E}", "W\u{200B}ork", "Wo\u{00AD}rk", "Wo\u{2060}rk", "Work\u{FE0F}", "\u{3164}Work"] {
+			#expect(CloudflareLogin.label(from: invisible) == .failure(.invisible), "\(invisible.unicodeScalars.map { String($0.value, radix: 16) })")
+		}
+		#expect(CloudflareLogin.label(from: "Team \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}") == .success("Team \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"))
+		#expect(CloudflareLogin.label(from: "Ops \u{2764}\u{FE0F}") == .success("Ops \u{2764}\u{FE0F}"))
+		#expect(CloudflareLogin.comparable("Work") == CloudflareLogin.comparable("\u{FF37}\u{FF4F}\u{FF52}\u{FF4B}"))
+		#expect(CloudflareLogin.comparable("Work") == CloudflareLogin.comparable("W\u{00F6}rk"))
+		#expect(CloudflareLogin.comparable("My Work") == CloudflareLogin.comparable("my\u{00A0}work"))
 	}
 }
 
@@ -151,6 +176,19 @@ struct CloudflareConnectionStoreTests {
 		#expect(try await store.relabel(second.id, to: "Work").get().name == "Work")
 	}
 
+	@Test("saving a login whose label another login took meanwhile, as by a rename during a reconnect, gives it a default label instead")
+	func saveKeepsLabelsUnique() async throws {
+		let work = CloudflareLoginFixture.account(label: "Work")
+		let first = try await CloudflareLoginFixture.save(work, in: store)
+		_ = try await store.retire(first.id, generation: work.generation, at: CloudflareLoginFixture.start).get()
+		let second = try await CloudflareLoginFixture.save(
+			CloudflareLoginFixture.account(subject: CloudflareLoginFixture.otherSubject, label: "Home"), in: store)
+		#expect(try await store.relabel(second.id, to: "Work").get().name == "Work")
+		let again = try await CloudflareLoginFixture.save(CloudflareLoginFixture.account(label: "Work"), in: store)
+		#expect(again.name.hasPrefix("Acme · "))
+		#expect(Set(try await store.connections().get().map(\.name)) == ["Work", again.name])
+	}
+
 	@Test("the label salt is made once and kept")
 	func salt() async throws {
 		let salt = try await store.loginLabelSalt().get()
@@ -175,12 +213,12 @@ struct PlatformCleanupStoreTests {
 	func retires() async throws {
 		let attempt = PlatformTokenRefresh.Attempt.make(at: CloudflareLoginFixture.start)
 		let (connection, account) = try await saved(attempt: attempt)
-		let entry = try #require(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get())
+		let entry = try #require(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get().entry)
 		#expect(entry.refreshToken == "cf_refresh_1" && entry.attempt == attempt)
 		#expect(entry.issuer == .development && entry.clientID == CloudflareLoginFixture.clientID && entry.connectionID == connection.id)
 		#expect(PlatformAuthorizationClient.isCanonicalUUID(entry.revocationID))
-		#expect(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get() == entry)
-		#expect(try await store.retire(connection.id, generation: CloudflareConnectionAccount.makeGeneration(), at: CloudflareLoginFixture.start).get() == nil)
+		#expect(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get() == .entry(entry))
+		#expect(try await store.retire(connection.id, generation: CloudflareConnectionAccount.makeGeneration(), at: CloudflareLoginFixture.start).get() == .gone)
 	}
 
 	@Test("a retired generation is never listed, read or renewed, even when its entry can't be read, and the listing says it's being revoked")
@@ -188,7 +226,7 @@ struct PlatformCleanupStoreTests {
 		let (connection, account) = try await saved()
 		_ = try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get()
 		let listing = try await store.listing(at: CloudflareLoginFixture.start).get()
-		#expect(listing.connections.isEmpty && listing.retiring.map(\.generation) == [account.generation])
+		#expect(listing.connections.isEmpty && listing.retiring == [account.generation])
 		#expect(await store.record(for: connection.id) == .failure(.retired))
 		let attempt = PlatformTokenRefresh.Attempt.make(at: CloudflareLoginFixture.start)
 		#expect(await store.beginRefresh(of: connection.id, token: "cf_refresh_1", attempt: attempt) == .failure(.retired))
@@ -200,22 +238,36 @@ struct PlatformCleanupStoreTests {
 	@Test("finishing a cleanup deletes the record only while it holds the entry's generation, never a newer one, then the entry")
 	func finishesWithoutTouchingNewerGenerations() async throws {
 		let (connection, account) = try await saved()
-		let entry = try #require(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get())
+		let entry = try #require(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get().entry)
 		let newer = CloudflareLoginFixture.account(generation: CloudflareConnectionAccount.makeGeneration())
 		try await CloudflareLoginFixture.save(newer, in: store, access: "cf_access_new")
 		try await store.finishCleanup(entry, unconfirmed: false, at: CloudflareLoginFixture.start).get()
 		#expect(try await store.record(for: connection.id).get().accessToken == "cf_access_new")
 		#expect(keychain.platformCleanupStorage.isEmpty)
 
-		let current = try #require(try await store.retire(connection.id, generation: newer.generation, at: CloudflareLoginFixture.start).get())
+		let current = try #require(try await store.retire(connection.id, generation: newer.generation, at: CloudflareLoginFixture.start).get().entry)
 		try await store.finishCleanup(current, unconfirmed: false, at: CloudflareLoginFixture.start).get()
 		#expect(keychain.platformConnectionStorage.isEmpty)
+	}
+
+	@Test("taking back a save never brings back a generation that was retired, even once its cleanup finished")
+	func undoNeverRestoresRetired() async throws {
+		let (connection, account) = try await saved()
+		let entry = try #require(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get().entry)
+		let newer = CloudflareLoginFixture.account()
+		let replacement = try await store.saveUndoably(
+			.cloudflare(newer), accessToken: "cf_access_new", refresh: CloudflareLoginFixture.refresh(token: "cf_refresh_new"),
+			at: CloudflareLoginFixture.start).get()
+		try await store.finishCleanup(entry, unconfirmed: false, at: CloudflareLoginFixture.start).get()
+		try await store.undo(replacement).get()
+		#expect(await store.record(for: connection.id) == .failure(.notFound))
+		#expect(try await store.connections().get().isEmpty)
 	}
 
 	@Test("an unconfirmed cleanup leaves a marker that holds nothing that names or reaches the connection, until it's dismissed")
 	func marksUnconfirmed() async throws {
 		let (connection, account) = try await saved()
-		let entry = try #require(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get())
+		let entry = try #require(try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get().entry)
 		try await store.finishCleanup(entry, unconfirmed: true, at: CloudflareLoginFixture.start).get()
 		let markers = try await store.listing(at: CloudflareLoginFixture.start).get().markers
 		#expect(markers == [PlatformCleanupMarker(platform: .cloudflare, generation: account.generation, createdAt: CloudflareLoginFixture.start)])
@@ -234,7 +286,7 @@ struct PlatformCleanupStoreTests {
 		_ = try await store.retire(connection.id, generation: account.generation, at: CloudflareLoginFixture.start).get()
 		#expect(try await store.replaceCleanupToken(of: account.generation, renewedBy: "00000000-0000-4000-8000-000000000000", with: "x").get() == false)
 		#expect(try await store.replaceCleanupToken(of: account.generation, renewedBy: attempt.id, with: "cf_refresh_2").get())
-		guard case .readable(let entry)? = try await store.cleanup().get().entries.first else {
+		guard case .readable(let entry)? = try await store.cleanupEntry(of: account.generation).get() else {
 			Issue.record("The entry isn't readable")
 			return
 		}
@@ -261,5 +313,31 @@ struct PlatformCleanupStoreTests {
 		object["issuer"] = "staging"
 		#expect(PlatformCleanupRecords.decodeEntry(try JSONSerialization.data(withJSONObject: object), generation: entry.generation) == .failure(.newerVersion))
 		#expect(!"\(entry)".contains("cf_refresh") && !String(reflecting: entry).contains("cf_refresh"))
+	}
+
+	@Test("a Boolean is never read as a record's version or time, in a cleanup record or a connection's")
+	func booleansAreNotNumbers() async throws {
+		let entry = PlatformCleanupEntry(
+			platform: .cloudflare, connectionID: "cloudflare.development.x", generation: CloudflareConnectionAccount.makeGeneration(),
+			issuer: .development, clientID: "c", refreshToken: "cf_refresh", attempt: nil, createdAt: CloudflareLoginFixture.start)
+		let marker = PlatformCleanupMarker(platform: .cloudflare, generation: entry.generation, createdAt: CloudflareLoginFixture.start)
+		let entryData = try #require(PlatformCleanupRecords.encode(entry))
+		let markerData = try #require(PlatformCleanupRecords.encode(marker))
+		for field in ["version", "createdAt"] {
+			var object = try #require(try JSONSerialization.jsonObject(with: entryData) as? [String: Any])
+			object[field] = true
+			#expect(PlatformCleanupRecords.decodeEntry(try JSONSerialization.data(withJSONObject: object), generation: entry.generation) == .failure(.unreadable), "\(field)")
+			var markerObject = try #require(try JSONSerialization.jsonObject(with: markerData) as? [String: Any])
+			markerObject[field] = true
+			#expect(PlatformCleanupRecords.decodeMarker(try JSONSerialization.data(withJSONObject: markerObject), generation: marker.generation) == .failure(.unreadable), "\(field)")
+		}
+		let (connection, _) = try await saved()
+		for field in ["version", "connectedAt"] {
+			let data = try #require(keychain.platformConnectionStorage[connection.id])
+			var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+			object[field] = true
+			let changed = try JSONSerialization.data(withJSONObject: object)
+			if case .success = PlatformConnectionStore.decode(changed, account: connection.id) { Issue.record("\(field) read from a Boolean") }
+		}
 	}
 }

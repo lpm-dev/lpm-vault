@@ -179,7 +179,10 @@ struct PublishSheet: View {
 				Text("No platform account is connected on this Mac.")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("Connect Vercel, Netlify, GitHub, Cloudflare or Coolify on the Platforms page, then publish from here.")
+				Text(
+					CloudflareOAuth.isAvailable(through: store.appEnvironment.issuer)
+						? "Connect Vercel, Netlify, GitHub, Cloudflare or Coolify on the Platforms page, then publish from here."
+						: "Connect Vercel, Netlify, GitHub or Coolify on the Platforms page, then publish from here.")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.textTertiary)
 				VaultBarButton(systemImage: "square.stack.3d.up", title: "Open Platforms") {
@@ -221,7 +224,7 @@ struct PublishSheet: View {
 					case .github(let form)?:
 						GitHubDestinationFields(form: form, installURL: githubInstallURL, reload: session.reloadChoices)
 					case .cloudflare(let form)?:
-						CloudflareDestinationFields(form: form, accounts: cloudflareAccounts)
+						CloudflareDestinationFields(form: form, accounts: cloudflareAccounts, reload: session.reloadChoices)
 					case nil:
 						GridRow {
 							PublishDestinationField("Destination") {
@@ -292,13 +295,16 @@ struct PublishSheet: View {
 		} else if let review = session.review {
 			reviewContent(review)
 		} else if let error = session.reviewError {
+			let choices = session.loginChoices ?? []
 			VStack(alignment: .leading, spacing: 10) {
-				Text(error).font(.system(size: 12)).foregroundStyle(VaultPalette.redText).fixedSize(horizontal: false, vertical: true)
-				if let choices = session.loginChoices, !choices.isEmpty {
+				// A login to pick is a question, not a failure.
+				Text(error).font(.system(size: 12)).foregroundStyle(choices.isEmpty ? VaultPalette.redText : VaultPalette.textPrimary)
+					.fixedSize(horizontal: false, vertical: true)
+				if !choices.isEmpty {
 					VStack(alignment: .leading, spacing: 6) {
 						ForEach(choices) { login in
-							VaultBarButton(title: "Publish through \(login.name)") { session.chooseLogin(login.id) }
-								.accessibilityLabel("Publish through \(login.name), which reaches \(login.detail)")
+							VaultBarButton(title: "Review through \(login.name)") { session.chooseLogin(login.id) }
+								.accessibilityLabel("Review through \(login.name), which reaches \(login.detail)")
 						}
 					}
 				}
@@ -372,7 +378,7 @@ struct PublishSheet: View {
 				set: { session.set(row.key, selected: $0) }))
 				.toggleStyle(.checkbox)
 				.labelsHidden()
-				.disabled(!row.isPublishable || (row.needsConfirmation && !selected))
+				.disabled(review.plan.placeHold != nil || !row.isPublishable || (row.needsConfirmation && !selected))
 				.padding(.top, 1)
 			VStack(alignment: .leading, spacing: 4) {
 				HStack(spacing: 8) {
@@ -389,20 +395,21 @@ struct PublishSheet: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 			Spacer(minLength: 8)
-			action(row, selected: selected)
+			action(row, selected: selected, held: review.plan.placeHold != nil)
 		}
 		.padding(.horizontal, 14)
 		.padding(.vertical, 10)
 		.accessibilityElement(children: .contain)
 	}
 
+	/// What the row does when published; `held` when nothing can be published to the place now.
 	@ViewBuilder
-	private func action(_ row: PublishPlan.Row, selected: Bool) -> some View {
+	private func action(_ row: PublishPlan.Row, selected: Bool, held: Bool) -> some View {
 		if selected {
 			Text(row.operation == .add ? "Add" : "Replace existing")
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textPrimary)
-		} else if !row.isPublishable {
+		} else if held || !row.isPublishable {
 			Text("Can't publish").font(.system(size: 12.5)).foregroundStyle(VaultPalette.textTertiary)
 		} else if row.needsConfirmation {
 			HStack(spacing: 8) {
@@ -553,12 +560,12 @@ struct PublishSheet: View {
 			if let login = review.login {
 				notes.append("Publishing to the Cloudflare account \(target.accountName), as \(login.label).")
 			}
-			if let hold = review.plan.placeHold { notes.append(CloudflarePublishing.holdMessage(hold)) }
-			notes.append("Cloudflare makes a new version of the Worker with the secrets, and deploys it at once.")
-			let clientPrefixes = review.rules.overview.clientPrefixes
-			let frontend = review.plan.rows.lazy.map(\.key).filter { ProjectEnvSchemaRule.publicPrefix(of: $0, clientPrefixes: clientPrefixes) != nil }
-			if let first = frontend.first {
-				let others = frontend.dropFirst().count
+			// A hold is said in the footer, and nothing is deployed while it lasts.
+			if review.plan.placeHold == nil {
+				notes.append("Cloudflare makes a new version of the Worker with the secrets, and deploys it at once.")
+			}
+			if let first = review.frontendKeys.first {
+				let others = review.frontendKeys.count - 1
 				let named = others == 0 ? first : "\(first) and \(others) more"
 				notes.append("\(named) \(others == 0 ? "is" : "are") read by frontend code at build time. A Worker's secrets reach only the Worker at runtime, so set them as the build's own variables and rebuild.")
 			}
@@ -712,7 +719,9 @@ struct PublishSheet: View {
 	// MARK: - Footer
 
 	private var footer: some View {
-		VaultSheetFooter {
+		// Read once a render: it reads the whole plan.
+		let overflowMessage = overflowMessage
+		return VaultSheetFooter {
 			switch session.step {
 			case .destination:
 				if session.saved != nil {
@@ -793,8 +802,8 @@ struct PublishSheet: View {
 		case .cloudflare:
 			if let hold = review.plan.placeHold { return CloudflarePublishing.holdMessage(hold) }
 			var messages: [String] = []
-			if review.plan.changeLimitExcess(of: review.selection) != nil {
-				messages.append(CloudflarePublishing.changeLimitMessage)
+			if let excess = review.plan.changeLimitExcess(of: review.selection) {
+				messages.append(CloudflarePublishing.changeLimitMessage(excess: excess))
 			}
 			for overflow in review.plan.overflows(of: review.selection) {
 				messages.append(CloudflarePublishing.capacityMessage(overflow))
@@ -834,6 +843,8 @@ struct PublishSheet: View {
 private struct CloudflareDestinationFields: View {
 	@Bindable var form: CloudflareDestinationForm
 	let accounts: [CloudflareAccount]
+	/// Lists the account's Workers again, as after deploying one or a listing that failed.
+	let reload: () -> Void
 
 	var body: some View {
 		GridRow {
@@ -854,6 +865,22 @@ private struct CloudflareDestinationFields: View {
 					disabled: form.workers.value?.isEmpty ?? true)
 			}
 		}
+		if form.accountID != nil {
+			GridRow {
+				HStack(spacing: 8) {
+					Text("A Worker deployed since it was listed shows after Refresh.")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+					Button("Refresh", action: reload)
+						.buttonStyle(.plain)
+						.font(.system(size: 11.5, weight: .medium))
+						.foregroundStyle(VaultPalette.accentForeground)
+						.disabled(form.workers == .loading)
+						.accessibilityLabel("Refresh Workers")
+				}
+				.gridCellColumns(2)
+			}
+		}
 	}
 
 	private var placeholder: String {
@@ -861,6 +888,7 @@ private struct CloudflareDestinationFields: View {
 		case .loading: "Loading Workers…"
 		case .loaded(let workers) where workers.isEmpty: "No Workers in this account"
 		case .idle where form.accountID == nil: "Choose an account first"
+		case .failed: "Workers couldn't be listed"
 		default: "Choose Worker…"
 		}
 	}

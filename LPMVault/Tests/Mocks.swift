@@ -492,8 +492,16 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		set { lock.withLock { failingAppItems[.platformCleanup] = newValue } }
 	}
 
+	/// Runs before each app item read, outside the mock's lock, so a test can hold a chosen read there.
+	var beforeAppItemRead: (@Sendable (AppKeychainStore, String) -> Void)? {
+		get { lock.withLock { readHook } }
+		set { lock.withLock { readHook = newValue } }
+	}
+	private var readHook: (@Sendable (AppKeychainStore, String) -> Void)?
+
 	func readAppItem(_ store: AppKeychainStore, account: String) -> Result<Data?, KeychainError> {
-		lock.withLock {
+		lock.withLock { readHook }?(store, account)
+		return lock.withLock {
 			appItemReadCounts[store, default: 0] += 1
 			if failingAppItems[store]?.contains(account) == true || readFailures.contains(account) { return .failure(failureError) }
 			return .success(appItems[store]?[account])

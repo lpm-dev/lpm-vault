@@ -2191,12 +2191,18 @@ struct CloudflarePublishSessionTests {
 				now: { CloudflareLoginFixture.start }))
 	}
 
+	/// A login saved now, with `accounts`, whose renewal the Registry refused for good when `rejected`.
 	@discardableResult
-	private func login(subject: String = CloudflareLoginFixture.subject, label: String, accounts: [CloudflareAccount] = [CloudflareLoginFixture.acme]) async throws
-		-> (PlatformConnection, CloudflareConnectionAccount)
-	{
+	private func login(
+		subject: String = CloudflareLoginFixture.subject,
+		label: String,
+		accounts: [CloudflareAccount] = [CloudflareLoginFixture.acme],
+		rejected: Bool = false
+	) async throws -> (PlatformConnection, CloudflareConnectionAccount) {
 		let account = CloudflareLoginFixture.account(subject: subject, label: label, accounts: accounts)
-		return (try await CloudflareLoginFixture.save(account, in: connections), account)
+		var refresh = CloudflareLoginFixture.refresh()
+		refresh.isRejected = rejected
+		return (try await CloudflareLoginFixture.save(account, in: connections, refresh: refresh), account)
 	}
 
 	/// A Worker destination saved before, preferring `login`.
@@ -2236,8 +2242,10 @@ struct CloudflarePublishSessionTests {
 		#expect(review.login?.label == "Work" && review.login?.generation == account.generation)
 		#expect(PublishSheet.notes(for: review).contains("Publishing to the Cloudflare account Acme, as Work."))
 		#expect(PublishSheet.notes(for: review).contains { $0.hasPrefix("VITE_URL is read by frontend code at build time.") })
-		#expect(review.selection.keys == ["API_TOKEN", "VITE_URL"])
+		#expect(review.selection.keys == ["API_TOKEN", "VITE_URL"] && review.frontendKeys == ["VITE_URL"])
 		#expect(PublishSheet.detail(try #require(review.plan.row("API_TOKEN")), review: review) == "Secret · Replaces the value Cloudflare has now")
+		#expect(PublishSheet.detail(try #require(review.plan.row("VITE_URL")), review: review)
+			.hasPrefix("Secret · frontend code reads it at build time, from the build's own variables"))
 		try await publish(session)
 		#expect(confirmations.reasons == ["Publish 2 secrets to api / Worker secrets (runtime) in the Cloudflare account Acme, as Work"])
 		#expect(session.results?.rows.map(\.outcome) == [.published, .published])
@@ -2247,6 +2255,21 @@ struct CloudflarePublishSessionTests {
 			accountID: CloudflareLoginFixture.acme.id, accountName: "Acme", workerID: CloudflareWorkerSimulator.workerID, workerName: "api",
 			preferredLogin: account.login)))
 		#expect(try await publishing.history(of: stored.id, in: vault).get().keys["VITE_URL"]?.remoteID == simulator.newest.id)
+	}
+
+	@Test("a Worker listing Cloudflare refuses says what the login can't reach, and listing again tries once more")
+	func workerListingFails() async throws {
+		try await login(label: "Work")
+		simulator.readFailures["workers"] = [.forbidden]
+		let session = session()
+		session.start()
+		#expect(try await waitUntil { session.cloudflare != nil })
+		session.cloudflare?.accountID = CloudflareLoginFixture.acme.id
+		#expect(try await waitUntil { session.cloudflare?.workers != .loading && session.cloudflare?.workers != .idle })
+		#expect(session.cloudflare?.workers == .failed(
+			"Work can't list the Workers in Acme. Its role there may not reach Workers, or Acme wasn't chosen when Work was connected."))
+		session.reloadChoices()
+		#expect(try await waitUntil { session.cloudflare?.workers.value != nil })
 	}
 
 	@Test("a saved Worker destination publishes through the login it was set up with while that login reaches its account")
@@ -2282,6 +2305,27 @@ struct CloudflarePublishSessionTests {
 		#expect(target.preferredLogin == homeAccount.login)
 	}
 
+	@Test("when the login a destination was set up with no longer works, the review says to reconnect it and offers the working logins that reach the account")
+	func preferredLoginNoLongerWorks() async throws {
+		let (_, work) = try await login(label: "Work", rejected: true)
+		let (home, _) = try await login(subject: CloudflareLoginFixture.otherSubject, label: "Home")
+		let session = session(saved: try await saved(preferring: work.login))
+		session.start()
+		#expect(try await waitUntil { session.reviewError != nil })
+		#expect(session.reviewError == "Work no longer works. Reconnect it on the Platforms page, or choose which connected login publishes to Acme.")
+		#expect(session.loginChoices?.map(\.id) == [home.id])
+	}
+
+	@Test("a login that no longer works is never offered to publish to an account")
+	func deadLoginsAreNotOffered() async throws {
+		try await login(label: "Work", rejected: true)
+		let (home, _) = try await login(subject: CloudflareLoginFixture.otherSubject, label: "Home")
+		let session = session(saved: try await saved(preferring: CloudflareLogin.key(subject: "someone-removed")))
+		session.start()
+		#expect(try await waitUntil { session.reviewError != nil })
+		#expect(session.loginChoices?.map(\.id) == [home.id])
+	}
+
 	@Test("when no connected login reaches the account any more, the review says so")
 	func noLoginReaches() async throws {
 		try await login(label: "Work", accounts: [CloudflareLoginFixture.beta])
@@ -2303,6 +2347,36 @@ struct CloudflarePublishSessionTests {
 		let changed = PublishOutcome.failed("The Cloudflare connection changed since this review. Review again.")
 		#expect(session.results?.rows.map(\.outcome) == [changed, changed])
 		#expect(!tokens.values.contains { $0.hasPrefix("update") })
+	}
+
+	@Test("reviewing again once the login was connected again reviews through its new connection, named as it's named now")
+	func reviewAgainUsesReconnectedLogin() async throws {
+		let (connection, work) = try await login(label: "Work")
+		let session = session(saved: try await saved(preferring: work.login))
+		session.start()
+		_ = try await review(session)
+		let renewed = CloudflareLoginFixture.account(label: "Work")
+		try await CloudflareLoginFixture.save(renewed, in: connections, access: "cf_access_new")
+		_ = try await connections.relabel(connection.id, to: "Office").get()
+		try await publish(session)
+		session.reviewAgain()
+		let again = try await review(session)
+		#expect(again.login == PublishSession.ReviewLogin(connectionID: connection.id, generation: renewed.generation, label: "Office"))
+		try await publish(session)
+		#expect(session.results?.rows.map(\.outcome) == [.published, .published])
+		#expect(confirmations.reasons.last == "Publish 2 secrets to api / Worker secrets (runtime) in the Cloudflare account Acme, as Office")
+	}
+
+	@Test("a login connected again without the destination's account isn't reviewed through, and the review says why")
+	func reviewAgainWithoutAccount() async throws {
+		let (_, work) = try await login(label: "Work")
+		let session = session(saved: try await saved(preferring: work.login))
+		session.start()
+		_ = try await review(session)
+		try await CloudflareLoginFixture.save(CloudflareLoginFixture.account(label: "Work", accounts: [CloudflareLoginFixture.beta]), in: connections)
+		session.loadReview()
+		#expect(try await waitUntil { session.reviewError != nil })
+		#expect(session.reviewError == "Work no longer reaches Acme. Choose another destination, or connect a login that reaches it on the Platforms page.")
 	}
 
 	@Test("while the Worker's newest version doesn't serve all its traffic, nothing is chosen and nothing can be published")
@@ -2329,7 +2403,7 @@ struct CloudflarePublishSessionTests {
 		session.start()
 		let review = try await review(session)
 		#expect(review.selection.keys.count == 101)
-		#expect(PublishSheet.overflowMessage(for: review) == CloudflarePublishing.changeLimitMessage)
+		#expect(PublishSheet.overflowMessage(for: review) == "Cloudflare can change at most 100 secrets in one step. Choose 1 fewer. Publishing fewer leaves the rest as they are, so your Worker runs with a mix until they're published too.")
 		session.publish()
 		#expect(confirmations.reasons.isEmpty)
 
@@ -2436,6 +2510,62 @@ extension SheetInteractionTests {
 			#expect(biometric.confirmationReasons == ["Publish 1 secret to api / Worker secrets (runtime) in the Cloudflare account Acme, as Work"])
 		}
 
+		@Test("a new Worker destination's menus say what to choose, say when Workers can't be listed until Refresh, and keep the account and Worker for another login that reaches it")
+		func newDestinationMenus() async throws {
+			let store = makeStore()
+			let work = try await login(store, label: "Work")
+			let home = try await login(store, subject: CloudflareLoginFixture.otherSubject, label: "Home")
+			simulator.readFailures["workers"] = [.forbidden]
+			let session = try #require(store.makePublishSession())
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 720),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitUntil { session.connections.value != nil })
+			session.connectionID = PlatformConnection(account: .cloudflare(work), connectedAt: Date()).id
+			#expect(try await host.waitForText("Choose account…"))
+			#expect(try await host.waitForText("Choose an account first"))
+			session.cloudflare?.accountID = CloudflareLoginFixture.acme.id
+			#expect(try await host.waitForText("Work can't list the Workers in Acme."))
+			#expect(try await host.waitForText("Workers couldn't be listed"))
+			try await host.click("Refresh Workers")
+			#expect(try await host.waitForText("Choose Worker…"))
+			session.cloudflare?.workerID = CloudflareWorkerSimulator.workerID
+			#expect(try await host.waitForText("api"))
+			session.connectionID = PlatformConnection(account: .cloudflare(home), connectedAt: Date()).id
+			#expect(try await host.waitUntil { session.cloudflare?.workers.value != nil })
+			#expect(session.cloudflare?.accountID == CloudflareLoginFixture.acme.id && session.cloudflare?.workerID == CloudflareWorkerSimulator.workerID)
+			#expect(session.canReview)
+		}
+
+		@Test("with nothing connected, the sheet names only the platforms this build can connect")
+		func emptyStateNamesOfferedPlatforms() async throws {
+			let store = makeStore()
+			store.appEnvironment = .production
+			let session = try #require(store.makePublishSession())
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 720),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Connect Vercel, Netlify, GitHub or Coolify on the Platforms page, then publish from here."))
+		}
+
+		@Test("while the Worker's newest version doesn't serve all its traffic, its rows can't be chosen and say so, and the hold is said once")
+		func heldWorker() async throws {
+			let store = makeStore()
+			simulator.addVersion()
+			simulator.rollBack()
+			let work = try await login(store, label: "Work")
+			let session = try #require(store.makePublishSession(for: try await destination(store, preferring: work.login)))
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 720),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			let hold = CloudflarePublishing.holdMessage(.earlierVersionLive)
+			#expect(try await host.waitForText(hold))
+			#expect(try await !host.waitForElement(saying: "Publish API_TOKEN").isEnabled)
+			#expect(try await host.waitForText("Can't publish"))
+			#expect(host.lines().filter { $0.text.contains(hold) }.count == 1)
+			#expect(!host.lines().contains { $0.text.contains("deploys it at once") })
+		}
+
 		@Test("when the login a destination was set up with no longer reaches its account, the person picks one that does")
 		func picksLogin() async throws {
 			let store = makeStore()
@@ -2445,7 +2575,7 @@ extension SheetInteractionTests {
 				keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("no longer reaches Acme. Choose which connected login publishes to it."))
-			try await host.click("Publish through Home, which reaches Acme")
+			try await host.click("Review through Home, which reaches Acme")
 			#expect(try await host.waitForText("Publishing to the Cloudflare account Acme, as Home."))
 		}
 	}

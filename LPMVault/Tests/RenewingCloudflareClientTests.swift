@@ -10,13 +10,14 @@ private final class SentTokens: @unchecked Sendable {
 	func append(_ token: String) { lock.withLock { sent.append(token) } }
 }
 
-/// Cloudflare's API that refuses one token, recording the token each request went with.
+/// Cloudflare's API that refuses one token, or every token when `refused`
+/// is nil, recording the token each request went with.
 private final class RefusingCloudflare: CloudflareClientProtocol, @unchecked Sendable {
 	let token: String
-	let refused: String
+	let refused: String?
 	let sent: SentTokens
 
-	init(token: String, refused: String, sent: SentTokens) {
+	init(token: String, refused: String?, sent: SentTokens) {
 		self.token = token
 		self.refused = refused
 		self.sent = sent
@@ -24,7 +25,7 @@ private final class RefusingCloudflare: CloudflareClientProtocol, @unchecked Sen
 
 	private func answer<Value>(_ value: Value) -> Result<Value, CloudflareAPIError> {
 		sent.append(token)
-		return token == refused ? .failure(.unauthorized) : .success(value)
+		return refused.map { $0 == token } ?? true ? .failure(.unauthorized) : .success(value)
 	}
 
 	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError> { answer([]) }
@@ -49,11 +50,14 @@ struct RenewingCloudflareClientTests {
 	private let keychain = MockKeychainService()
 	private var store: PlatformConnectionStore { PlatformConnectionStore(service: keychain) }
 
+	private let refresher = ScriptedTokenRefresher { call, index in
+		ScriptedTokenRefresher.renewed(
+			call, access: "cf_access_\(index + 2)", refresh: "cf_refresh_\(index + 2)", accessLifetime: 3_600, refreshLifetime: 31_536_000,
+			platform: "cloudflare")
+	}
+
 	private func credentials() -> PlatformCredentials {
-		let refresher = ScriptedTokenRefresher { call, _ in
-			ScriptedTokenRefresher.renewed(call, access: "cf_access_2", refresh: "cf_refresh_2", accessLifetime: 3_600, refreshLifetime: 31_536_000, platform: "cloudflare")
-		}
-		return PlatformCredentials(
+		PlatformCredentials(
 			store: store, refresher: refresher, session: { platformTestSession(URL(string: "http://localhost:3000")!) },
 			now: { CloudflareLoginFixture.start })
 	}
@@ -92,4 +96,30 @@ struct RenewingCloudflareClientTests {
 		#expect(await client.workers(in: CloudflareFixture.account) == .failure(.credentials(.replaced)))
 		#expect(sent.values.isEmpty)
 	}
+
+	@Test("a token Cloudflare refuses again just after it was renewed can't reach what was asked: it isn't renewed again, nor read as a connection to reconnect")
+	func refusedAfterRenewal() async throws {
+		let account = CloudflareLoginFixture.account()
+		let connection = try await CloudflareLoginFixture.save(account, in: store)
+		let client = RenewingCloudflareClient(
+			connectionID: connection.id, generation: account.generation, credentials: credentials(),
+			make: { [sent] in RefusingCloudflare(token: $0, refused: nil, sent: sent) })
+		#expect(await client.workers(in: CloudflareFixture.account) == .failure(.forbidden))
+		#expect(await client.workers(in: CloudflareFixture.account) == .failure(.forbidden))
+		#expect(refresher.calls.count == 1)
+		#expect(sent.values == ["cf_access_1", "cf_access_2", "cf_access_2"])
+	}
+
+	@Test("a publish whose renewed token Cloudflare refuses again is told it can't reach the Worker, without another renewal")
+	func publishRefusedAfterRenewal() async throws {
+		let account = CloudflareLoginFixture.account()
+		let connection = try await CloudflareLoginFixture.save(account, in: store)
+		let client = RenewingCloudflareClient(
+			connectionID: connection.id, generation: account.generation, credentials: credentials(), resendsAfterRenewal: false,
+			make: { [sent] in RefusingCloudflare(token: $0, refused: nil, sent: sent) })
+		#expect(await client.updateSecrets(["A": "1"], ofScript: "api", in: CloudflareFixture.account) == .failure(.renewed))
+		#expect(await client.updateSecrets(["A": "1"], ofScript: "api", in: CloudflareFixture.account) == .failure(.forbidden))
+		#expect(refresher.calls.count == 1)
+	}
 }
+

@@ -100,6 +100,48 @@ final class ScriptedRevoker: PlatformTokenRevoking, @unchecked Sendable {
 	}
 }
 
+extension PlatformConnectionStore.Retirement {
+	/// The cleanup entry the retirement wrote or found; nil when there's none.
+	var entry: PlatformCleanupEntry? {
+		if case .entry(let entry) = self { entry } else { nil }
+	}
+}
+
+/// A value tests change while the code under test reads it from another task.
+final class TestValue<Value: Sendable>: @unchecked Sendable {
+	private let lock = NSLock()
+	private var stored: Value
+
+	init(_ value: Value) {
+		stored = value
+	}
+
+	var value: Value {
+		get { lock.withLock { stored } }
+		set { lock.withLock { stored = newValue } }
+	}
+
+	func update(_ change: (inout Value) -> Void) {
+		lock.withLock { change(&stored) }
+	}
+}
+
+/// The waits a cleanup asked for, each held until the cleanup is woken,
+/// which cancels it: only waking it ends a wait.
+final class HeldWaits: @unchecked Sendable {
+	private let lock = NSLock()
+	private var waits: [Duration] = []
+
+	var values: [Duration] { lock.withLock { waits } }
+
+	var sleep: @Sendable (Duration) async throws -> Void {
+		{ [self] duration in
+			lock.withLock { waits.append(duration) }
+			try await Task.sleep(for: .seconds(365 * 86_400))
+		}
+	}
+}
+
 /// The waits a cleanup asked for. Each wait ends the cleanup's run, as
 /// cancelling it would, so a test reads what it asked for and resumes it by hand.
 final class RecordedWaits: @unchecked Sendable {

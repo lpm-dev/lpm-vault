@@ -81,12 +81,16 @@ final class PlatformConnections {
 	private(set) var isLoading = false
 	/// Connections whose disconnect is still running.
 	private(set) var disconnecting: Set<PlatformConnection.ID> = []
-	/// Cleanups still revoking a retired Cloudflare login's tokens.
-	private(set) var retiring: [PlatformCleanupEntry] = []
+	/// The generations of retired Cloudflare logins whose tokens are still being revoked.
+	private(set) var retiring: [String] = []
+	/// Some of `retiring` wait for a sign-in to the Registry that issued their tokens.
+	private(set) var retiringAwaitsSignIn = false
 	/// Cleanups whose revocation couldn't be confirmed, until the person dismisses them.
 	private(set) var markers: [PlatformCleanupMarker] = []
 	/// The question about a Cloudflare login just approved, while it waits for an answer.
 	private(set) var cloudflarePrompt: CloudflarePrompt?
+	/// Counts the questions asked, so an answer meant for one never answers the next.
+	private(set) var cloudflarePromptNumber = 0
 	/// The Cloudflare connection being connected again, while it is.
 	private(set) var reconnecting: PlatformConnection.ID?
 
@@ -106,6 +110,8 @@ final class PlatformConnections {
 	private var connectTask: Task<Void, Never>?
 	private var coolifyTask: Task<CoolifyOutcome, Never>?
 	private var loadTask: Task<Void, Never>?
+	/// Forgetting dismissed notes, which a listing waits for so they don't come back.
+	private var dismissing: Task<Void, Never>?
 	private var generation = 0
 	private var promptAnswer: CheckedContinuation<CloudflarePromptAnswer, Never>?
 
@@ -150,8 +156,11 @@ final class PlatformConnections {
 		loadTask?.cancel()
 		let generation = generation
 		isLoading = true
-		loadTask = Task { [weak self, store, now] in
+		loadTask = Task { [weak self, store, credentials, dismissing, now] in
+			await dismissing?.value
 			let result = await store.listing(at: now())
+			let unsaved = await credentials?.unsavedMarkers ?? []
+			let awaitingSignIn = await credentials?.waitingForSignIn ?? []
 			guard let self, generation == self.generation, !Task.isCancelled else { return }
 			self.isLoading = false
 			self.loadTask = nil
@@ -160,7 +169,9 @@ final class PlatformConnections {
 				self.connections = listing.connections
 				self.expired = listing.expired
 				self.retiring = listing.retiring
-				self.markers = listing.markers
+				self.retiringAwaitsSignIn = listing.retiring.contains(where: awaitingSignIn.contains)
+				let saved = Set(listing.markers.map(\.generation))
+				self.markers = listing.markers + unsaved.filter { !saved.contains($0.generation) }
 			case .failure(let error): self.notice = Notice(message: "Platform connections couldn't be read. \(error)", isError: true)
 			}
 		}
@@ -225,19 +236,31 @@ final class PlatformConnections {
 		startCloudflare(reconnecting: connection)
 	}
 
-	/// Answers the question about the Cloudflare login just approved.
-	func answerCloudflare(_ answer: CloudflarePromptAnswer) {
+	/// Answers the question about the Cloudflare login just approved; with
+	/// `number`, only while that question is the one waiting.
+	func answerCloudflare(_ answer: CloudflarePromptAnswer, to number: Int? = nil) {
+		guard number.map({ $0 == cloudflarePromptNumber }) ?? true else { return }
 		let waiting = promptAnswer
 		promptAnswer = nil
 		cloudflarePrompt = nil
 		waiting?.resume(returning: answer)
 	}
 
-	private func ask(_ prompt: CloudflarePrompt) async -> CloudflarePromptAnswer {
-		await withCheckedContinuation { continuation in
-			promptAnswer?.resume(returning: .cancel)
-			promptAnswer = continuation
-			cloudflarePrompt = prompt
+	/// Asks `prompt` while the connection started in `generation` still
+	/// runs; a cancelled or locked connection is answered `.cancel`, as is a
+	/// question waiting when it's cancelled.
+	private func ask(_ prompt: CloudflarePrompt, generation: Int) async -> CloudflarePromptAnswer {
+		guard generation == self.generation, !Task.isCancelled else { return .cancel }
+		cloudflarePromptNumber &+= 1
+		let number = cloudflarePromptNumber
+		return await withTaskCancellationHandler {
+			await withCheckedContinuation { continuation in
+				promptAnswer?.resume(returning: .cancel)
+				promptAnswer = continuation
+				cloudflarePrompt = prompt
+			}
+		} onCancel: {
+			Task { @MainActor [weak self] in self?.answerCloudflare(.cancel, to: number) }
 		}
 	}
 
@@ -274,7 +297,7 @@ final class PlatformConnections {
 			switch result {
 			case .success(let connected):
 				guard generation == self.generation, !Task.isCancelled else {
-					await self.discardCloudflare(connected, credentials: credentials, showing: false)
+					await self.discardCloudflare(connected, credentials: credentials)
 					return
 				}
 				self.phase = .idle
@@ -306,18 +329,26 @@ final class PlatformConnections {
 			replacing.append(own)
 		case .unreadable:
 			// It can't be revoked; connecting again mends it, and a note says it may still be authorized.
-			_ = await store.mark(PlatformCleanupMarker(platform: .cloudflare, generation: CloudflareConnectionAccount.makeGeneration(), createdAt: now()))
+			await credentials.note(PlatformCleanupMarker(platform: .cloudflare, generation: CloudflareConnectionAccount.makeGeneration(), createdAt: now()))
 		case .absent:
 			break
 		case .failed(let message):
 			notice = Notice(message: message, isError: true)
-			return await discardCloudflare(new, credentials: credentials, showing: true)
+			return await discardCloudflare(new, credentials: credentials)
 		}
-		if replacing.isEmpty, let target, target.id != new.connectionID, case .connection(let current) = await stored(target.id) {
-			switch await ask(.otherLogin(reconnecting: current.name)) {
-			case .addSeparately: break
-			case .replace: replacing.append(current)
-			case .proceed, .cancel: return await discardCloudflare(new, credentials: credentials, showing: false)
+		// The login being reconnected, when the person approved another: what became of it is said once the new one is saved.
+		var other: (name: String, replaced: Bool)?
+		if let target, target.id != new.connectionID, case .connection(let current) = await stored(target.id) {
+			other = (current.name, false)
+			// A login that has its own connection is connected again there, asking nothing.
+			if replacing.isEmpty {
+				switch await ask(.otherLogin(reconnecting: current.name), generation: generation) {
+				case .addSeparately: break
+				case .replace:
+					replacing.append(current)
+					other = (current.name, true)
+				case .proceed, .cancel: return await discardCloudflare(new, credentials: credentials)
+				}
 			}
 		}
 		let reached = Set(new.accounts.map(\.id))
@@ -325,11 +356,11 @@ final class PlatformConnections {
 			guard case .cloudflare(let account) = old.account else { continue }
 			let lost = account.accounts.filter { !reached.contains($0.id) }.map(\.name)
 			guard !lost.isEmpty else { continue }
-			guard await ask(.losesAccounts(label: old.name, accounts: lost)) == .proceed else {
-				return await discardCloudflare(new, credentials: credentials, showing: false)
+			guard await ask(.losesAccounts(label: old.name, accounts: lost), generation: generation) == .proceed else {
+				return await discardCloudflare(new, credentials: credentials)
 			}
 		}
-		guard generation == self.generation, !Task.isCancelled else { return await discardCloudflare(new, credentials: credentials, showing: false) }
+		guard generation == self.generation, !Task.isCancelled else { return await discardCloudflare(new, credentials: credentials) }
 
 		let label: String
 		if let own = replacing.first(where: { $0.id == new.connectionID }), case .cloudflare(let account) = own.account {
@@ -339,15 +370,24 @@ final class PlatformConnections {
 				case .success(let taken) = await store.cloudflareLabels(except: new.connectionID)
 			else {
 				self.notice = Notice(message: "Cloudflare connected, but the connection couldn't be saved.", isError: true)
-				return await discardCloudflare(new, credentials: credentials, showing: true)
+				return await discardCloudflare(new, credentials: credentials)
 			}
 			label = CloudflareLogin.defaultLabel(for: new.login, accounts: new.accounts, salt: salt, taken: taken)
 		}
 		// The generations it replaces are revoked first: a crash before the save costs one more approval, never an unrevoked family.
 		for old in replacing {
 			guard case .cloudflare(let account) = old.account else { continue }
-			if case .success(let entry?) = await credentials.retire(old.id, generation: account.generation) {
+			switch await credentials.retire(old.id, generation: account.generation) {
+			case .success(.entry(let entry)):
 				_ = await credentials.revokeNow(entry)
+			case .success(.ended), .success(.gone):
+				break
+			case .failure(let error):
+				// Saving over a generation nothing will revoke would strand it: nothing changes, and the new grant goes.
+				notice = Notice(
+					message: "Cloudflare connected, but \(old.name)'s earlier connection couldn't be set aside to revoke, so nothing changed. \(error.message(for: .cloudflare))",
+					isError: true)
+				return await discardCloudflare(new, credentials: credentials)
 			}
 		}
 		let account = CloudflareConnectionAccount(
@@ -355,15 +395,24 @@ final class PlatformConnections {
 		let refresh = new.grant.tokens.refresh(receivedAt: new.receivedAt, principalID: session.principalID)
 		switch await store.saveUndoably(.cloudflare(account), accessToken: new.grant.tokens.accessToken, refresh: refresh, at: now()) {
 		case .success(let saved):
-			guard await keep(saved, generation: generation) else { return await discardCloudflare(new, credentials: credentials, showing: false) }
+			guard await keep(saved, generation: generation) else { return await discardCloudflare(new, credentials: credentials) }
 			for old in replacing { connections.removeAll { $0.id == old.id } }
 			insert(saved.connection)
-			notice = Notice(message: "Connected \(saved.connection.name) on Cloudflare.", isError: false)
+			let name = saved.connection.name
+			let again = replacing.contains { $0.id == new.connectionID }
+			notice = switch other {
+			case nil: Notice(message: "Connected \(name) on Cloudflare.", isError: false)
+			case (let target, true)?: Notice(message: "Connected \(name) on Cloudflare in \(target)'s place.", isError: false)
+			case (let target, false)? where again:
+				Notice(message: "Connected \(name) on Cloudflare again. You approved \(name), not \(target), which still needs reconnecting.", isError: false)
+			case (let target, false)?:
+				Notice(message: "Connected \(name) on Cloudflare, beside \(target), which still needs reconnecting.", isError: false)
+			}
 		case .failure(.cancelled):
-			await discardCloudflare(new, credentials: credentials, showing: false)
+			await discardCloudflare(new, credentials: credentials)
 		case .failure(let error):
 			notice = Notice(message: "Cloudflare connected, but the connection couldn't be saved. \(error)", isError: true)
-			await discardCloudflare(new, credentials: credentials, showing: true)
+			await discardCloudflare(new, credentials: credentials)
 		}
 	}
 
@@ -386,24 +435,29 @@ final class PlatformConnections {
 		}
 	}
 
-	/// Revokes a Cloudflare grant that won't be kept, saying so when `showing`.
-	private func discardCloudflare(_ new: CloudflareConnection, credentials: PlatformCredentials, showing: Bool) async {
-		let outcome = await credentials.discard(
+	/// Revokes a Cloudflare grant that won't be kept. One whose revocation
+	/// isn't confirmed leaves a note on the page, which says what to do.
+	private func discardCloudflare(_ new: CloudflareConnection, credentials: PlatformCredentials) async {
+		_ = await credentials.discard(
 			refreshToken: new.grant.expiry.refreshToken, connectionID: new.connectionID, generation: new.generation,
 			issuer: new.issuer, clientID: new.clientID)
-		guard showing, outcome == .unconfirmed else { return }
-		notice = Notice(message: Self.unrevokedMessage, isError: true)
 	}
 
-	/// What to do about a Cloudflare login whose access LPM Vault couldn't confirm it revoked.
-	static let unrevokedMessage =
-		"LPM Vault couldn't confirm that a Cloudflare login's access was revoked, so it may still be authorized. To end it, remove LPM Vault under My Profile → Access Management → Connected Applications on Cloudflare. That also ends its access from other Macs, and any connection made since."
+	/// What to do about `count` Cloudflare logins whose access LPM Vault couldn't confirm it revoked.
+	static func unrevokedMessage(count: Int) -> String {
+		let which = count == 1
+			? "a Cloudflare login's access was revoked, so it may still be authorized"
+			: "the access of \(count) Cloudflare logins was revoked, so they may still be authorized"
+		return "LPM Vault couldn't confirm that \(which). To end it, remove LPM Vault under My Profile → Access Management → Connected Applications on Cloudflare. That also ends its access from other Macs, and any connection made since."
+	}
 
 	/// Gives a Cloudflare login a name the person chose, unique among connected logins.
 	func rename(_ connection: PlatformConnection, to text: String) async -> String? {
 		guard case .cloudflare = connection.account else { return nil }
-		guard let label = CloudflareLogin.label(from: text) else {
-			return "Use a name of up to \(CloudflareLogin.maximumLabelCharacters) characters."
+		let label: String
+		switch CloudflareLogin.label(from: text) {
+		case .success(let value): label = value
+		case .failure(let problem): return problem.message
 		}
 		switch await store.relabel(connection.id, to: label) {
 		case .success(let relabeled):
@@ -421,21 +475,25 @@ final class PlatformConnections {
 	/// by account name, which go on publishing there once it's disconnected.
 	func otherLogins(reaching connection: PlatformConnection) -> [(account: String, logins: [String])] {
 		guard case .cloudflare(let login) = connection.account else { return [] }
-		return login.accounts.compactMap { account in
-			let others = connections.compactMap { other -> String? in
-				guard other.id != connection.id, case .cloudflare(let otherLogin) = other.account, otherLogin.issuer == login.issuer,
-					otherLogin.reaches(account.id)
-				else { return nil }
-				return other.name
-			}
-			return others.isEmpty ? nil : (account.name, others)
+		var reaching: [String: [String]] = [:]
+		// One that no longer works publishes nowhere.
+		for other in connections where other.id != connection.id && !expired.contains(other.id) {
+			guard case .cloudflare(let otherLogin) = other.account, otherLogin.issuer == login.issuer else { continue }
+			for account in otherLogin.accounts { reaching[account.id, default: []].append(other.name) }
 		}
+		return login.accounts.compactMap { account in reaching[account.id].map { (account.name, $0) } }
 	}
 
-	/// Forgets a note of a Cloudflare login whose revocation couldn't be confirmed.
-	func dismiss(_ marker: PlatformCleanupMarker) {
-		markers.removeAll { $0.id == marker.id }
-		Task { [store] in _ = await store.dismissMarker(marker.generation) }
+	/// Forgets the notes of Cloudflare logins whose revocation couldn't be confirmed.
+	func dismissMarkers() {
+		let generations = Set(markers.map(\.generation))
+		guard !generations.isEmpty else { return }
+		markers = []
+		dismissing = Task { [store, credentials, dismissing] in
+			await dismissing?.value
+			await credentials?.forgetUnsavedMarkers(generations)
+			for generation in generations { _ = await store.dismissMarker(generation) }
+		}
 	}
 
 	/// What a browser connection connected, ready to save: the token, and
@@ -584,24 +642,37 @@ final class PlatformConnections {
 		if case .cloudflare(let login) = connection.account, let credentials {
 			Task { [weak self] in
 				let retired = await credentials.retire(connection.id, generation: login.generation)
-				var revoked = false
-				if case .success(let entry?) = retired { revoked = await credentials.revokeNow(entry) }
+				var revocation = PlatformRevocation.revoked
+				if case .success(.entry(let entry)) = retired { revocation = await credentials.revokeNow(entry) }
 				guard let self else { return }
 				self.didChange()
 				guard generation == self.generation else { return }
 				self.disconnecting.remove(connection.id)
 				switch retired {
-				case .success(nil):
+				case .success(.gone):
 					// It was connected again meanwhile, or disconnected already: what's stored now is shown.
 					break
-				case .success:
+				case .success(.ended):
 					self.connections.removeAll { $0.id == connection.id }
 					self.expired.remove(connection.id)
-					self.notice = Notice(
-						message: revoked
-							? "Disconnected \(connection.name). LPM Vault's access to it on Cloudflare has ended."
-							: "Disconnected \(connection.name). LPM Vault goes on revoking its access on Cloudflare until lpm.dev confirms it.",
-						isError: false)
+					self.notice = Notice(message: "Disconnected \(connection.name). Cloudflare had already ended LPM Vault's access to it.", isError: false)
+				case .success(.entry):
+					self.connections.removeAll { $0.id == connection.id }
+					self.expired.remove(connection.id)
+					self.notice = switch revocation {
+					case .revoked:
+						Notice(message: "Disconnected \(connection.name). LPM Vault's access to it on Cloudflare has ended.", isError: false)
+					case .pending:
+						Notice(
+							message: "Disconnected \(connection.name). LPM Vault goes on revoking its access on Cloudflare until lpm.dev confirms it.",
+							isError: false)
+					case .waitingForSignIn:
+						Notice(message: "Disconnected \(connection.name). Sign in to LPM to finish revoking its access on Cloudflare.", isError: false)
+					case .unconfirmed:
+						Notice(
+							message: "Disconnected \(connection.name), but lpm.dev couldn't confirm that LPM Vault's access to it on Cloudflare ended.",
+							isError: true)
+					}
 				case .failure(let error):
 					self.notice = Notice(message: "\(connection.name) couldn't be disconnected. \(error.message(for: .cloudflare))", isError: true)
 				}
@@ -636,6 +707,7 @@ final class PlatformConnections {
 		answerCloudflare(.cancel)
 		reconnecting = nil
 		retiring = []
+		retiringAwaitsSignIn = false
 		markers = []
 		connectTask?.cancel()
 		connectTask = nil

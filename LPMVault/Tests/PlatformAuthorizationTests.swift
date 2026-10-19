@@ -662,6 +662,28 @@ struct VercelConnectorTests {
 		#expect(try result.get().grant.installationID == "icfg_acme")
 	}
 
+	@Test("collecting the grant again after its answer was lost, or refused for now, uses the same proof, as the Registry keeps the result")
+	func retriesLostRedemption() async throws {
+		let authorizations = FakeAuthorizations()
+		let ready = authorizations.readyGrant()
+		authorizations.outcome = { attempt, id, key in
+			switch attempt {
+			case 0: .failure(.transport)
+			case 1: .failure(.server(502))
+			case 2: .failure(.rateLimited)
+			default: ready(attempt, id, key)
+			}
+		}
+		let port = Port()
+		let id = authorizations.id
+		let proof = platformTestOneTimeValue()
+		let result = await connector(authorizations, port: port).connect(
+			session: session, open: browser(returning: platformTestReturn(authorization: id, proof: proof), listener: { port.port }))
+		#expect(try result.get().grant.installationID == "icfg_acme")
+		#expect(authorizations.platformCalls.filter { $0.hasPrefix("redeem") }.count == 4)
+		#expect(authorizations.cancelledIDs.isEmpty)
+	}
+
 	@Test(
 		"each way a connection can end early says why, and the authorization is cancelled when it wasn't collected",
 		arguments: ["platform", "proof", "expired", "token", "signedOut"]
@@ -1260,10 +1282,26 @@ struct CloudflareAuthorizationClientTests {
 		}
 	}
 
-	@Test("a request refused before its body is read waits as the Registry asks; Cloudflare unavailable waits too")
+	@Test("a renewal's successor is handed over however long ago it was issued, as a cleanup can wait past a token's whole life")
+	func readsOldSuccessor() async throws {
+		let key = P256.KeyAgreement.PrivateKey()
+		let refreshID = UUID().uuidString.lowercased()
+		let sealed = CloudflareLoginFixture.successor(for: (refreshID, key.publicKey.x963Representation))
+		let age = PlatformTokens.maximumLifetime + 86_400
+		let (outcome, _) = await revoke(attempt: (refreshID, key.publicKey.x963Representation)) { _, signed in
+			var body = signed
+			body["status"] = "superseded"
+			body["envelope"] = sealed.json
+			body["ageSeconds"] = age
+			return RegistryTestSigner.signed(200, body)
+		}
+		#expect(outcome == .success(.superseded(sealed, age: age)))
+	}
+
+	@Test("a request the per-person limit refused before its body was read holds every revocation back as long as the Registry asks; Cloudflare unavailable waits too")
 	func readsUnsignedRefusals() async {
 		let (limited, _) = await revoke { _, _ in .json(429, ["code": "rate_limited"], headers: ["Retry-After": "12"]) }
-		#expect(limited == .success(.retry(after: 12)))
+		#expect(limited == .success(.throttled(after: 12)))
 		let (unavailable, _) = await revoke { _, _ in .json(503, ["code": "platform_unavailable"]) }
 		#expect(unavailable == .failure(.unavailable))
 	}
@@ -1535,6 +1573,43 @@ struct CloudflareIdentityClientTests {
 		#expect(accounts.first?.name == "Account 0")
 		#expect(accounts.contains(CloudflareAccount(id: CloudflareLoginFixture.acme.id, name: "Acme\\u{202e}")))
 		#expect(route.requests.map { $0.query["page"] } == ["1", "2"] && route.requests.allSatisfy { $0.url.path().hasSuffix("/memberships") })
+	}
+
+	@Test("Workers are paged in name order, which a deploy during the listing doesn't move, and one listed twice is kept once")
+	func pagesWorkersByName() async throws {
+		let (client, route) = client { request in
+			let page = Int(request.query["page"] ?? "1") ?? 1
+			let names = page == 1 ? (0..<CloudflareClient.pageSize).map { "worker-\(1_000 + $0)" } : ["worker-1049", "worker-2000"]
+			return .json(200, CloudflareFixture.envelope(names.map { name in
+				CloudflareFixture.worker(id: String(format: "%032x", Int(name.dropFirst(7))!), name: name)
+			}))
+		}
+		let workers = try await client.workers(in: CloudflareFixture.account).get()
+		#expect(workers.count == CloudflareClient.pageSize + 1 && Set(workers.map(\.id)).count == workers.count)
+		#expect(route.requests.allSatisfy { $0.query["order_by"] == "name" && $0.query["order"] == "asc" })
+	}
+
+	@Test("a page holding more items than asked for isn't read, nor the pages after it")
+	func refusesOversizedPage() async throws {
+		let (client, route) = client { _ in
+			.json(200, CloudflareFixture.envelope((0...CloudflareClient.pageSize).map { index in
+				CloudflareFixture.worker(id: String(format: "%032x", index + 1), name: "worker-\(index)")
+			}))
+		}
+		#expect(await client.workers(in: CloudflareFixture.account) == .failure(.invalidResponse))
+		#expect(route.requests.count == 1)
+	}
+
+	@Test("accounts whose names read alike are told apart by their IDs, and nothing invisible in a name is hidden")
+	func distinguishesAccounts() async throws {
+		let ids = (1...4).map { String(format: "%032x", $0 * 0x1111) }
+		let (client, _) = client { _ in
+			.json(200, CloudflareFixture.envelope(zip(["Prod", "prod", "Pro\u{200B}d", "Staging"], ids).map { name, id in
+				["id": "m-\(id)", "status": "accepted", "account": ["id": id, "name": name]]
+			}))
+		}
+		let names = Set(try await client.accounts().get().map(\.name))
+		#expect(names == ["Prod (\(ids[0].prefix(8)))", "prod (\(ids[1].prefix(8)))", "Pro\\u{200b}d", "Staging"])
 	}
 
 	@Test("an account's Workers are listed by their permanent ID and name, page by page")

@@ -95,6 +95,11 @@ struct CloudflareConnectionAccount: Hashable, Sendable {
 		accounts.contains { $0.id == accountID }
 	}
 
+	/// The same login and generation under another label.
+	func labelled(_ label: String) -> CloudflareConnectionAccount {
+		CloudflareConnectionAccount(login: login, label: label, accounts: accounts, issuer: issuer, clientID: clientID, generation: generation)
+	}
+
 	/// The accounts it reaches, shortly: "Acme", "Acme and Beta", or "Acme and 2 more".
 	var accountsSummary: String {
 		switch accounts.count {
@@ -121,6 +126,8 @@ enum CloudflareLogin {
 	static let codeLength = 4
 	/// The longest label a person gives a login, in characters.
 	static let maximumLabelCharacters = 64
+	/// The most bytes a label is stored in.
+	static let maximumLabelBytes = 512
 
 	/// A `sub` as LPM Vault accepts one: 1 to 255 printable ASCII characters.
 	static func isValidSubject(_ subject: String) -> Bool {
@@ -158,31 +165,74 @@ enum CloudflareLogin {
 		return code
 	}
 
-	/// The label a new login gets: its first account's name and a code,
-	/// whose code grows until no label in `taken` matches it.
+	/// The label a new login gets: its first account's name, shortened to
+	/// fit a label, and a code, which grows until no label in `taken` matches it.
 	static func defaultLabel(for login: String, accounts: [CloudflareAccount], salt: Data, taken: Set<String>) -> String {
 		let name = accounts.first?.name ?? "Cloudflare"
 		let used = Set(taken.map(comparable))
 		// The digest gives 51 characters, far more than unique labels among connected logins ever need.
+		var label = ""
 		for length in codeLength...51 {
-			let label = "\(name) · \(code(for: login, salt: salt, length: length))"
-			if !used.contains(comparable(label)) { return label }
+			label = labelled(name, code: code(for: login, salt: salt, length: length))
+			if !used.contains(comparable(label)) { break }
 		}
-		return "\(name) · \(code(for: login, salt: salt, length: 51))"
+		return label
 	}
 
-	/// A label a person gave a login, trimmed; nil when it's empty, too long or holds control characters.
-	static func label(from text: String) -> String? {
+	/// `name` and `code` as a label, the name cut short, with an ellipsis,
+	/// where the whole wouldn't fit a label's characters or bytes.
+	private static func labelled(_ name: String, code: String) -> String {
+		let suffix = " · \(code)"
+		guard name.count + suffix.count > maximumLabelCharacters || name.utf8.count + suffix.utf8.count > maximumLabelBytes else {
+			return name + suffix
+		}
+		let ellipsis = "…"
+		var kept = name.prefix(maximumLabelCharacters - suffix.count - ellipsis.count)
+		let bytes = maximumLabelBytes - suffix.utf8.count - ellipsis.utf8.count
+		while kept.utf8.count > bytes { kept = kept.dropLast() }
+		while kept.last?.isWhitespace == true { kept = kept.dropLast() }
+		return kept + ellipsis + suffix
+	}
+
+	/// Why a name a person gave a login can't be its label.
+	enum LabelProblem: Error, Equatable {
+		case empty
+		case tooLong
+		/// It holds a control or another character that shows nothing, so it could look like another name.
+		case invisible
+
+		var message: String {
+			switch self {
+			case .empty, .tooLong: "Enter a name of 1 to \(CloudflareLogin.maximumLabelCharacters) characters."
+			case .invisible: "Use a name without invisible characters."
+			}
+		}
+	}
+
+	/// A label a person gave a login, trimmed. It holds nothing that shows
+	/// nothing, such as a zero-width space or a direction control, but the
+	/// joiner and variation selector of an emoji.
+	static func label(from text: String) -> Result<String, LabelProblem> {
 		let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-		guard !trimmed.isEmpty, trimmed.count <= maximumLabelCharacters,
-			!trimmed.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
-		else { return nil }
-		return trimmed.escapingDirectionControls
+		guard !trimmed.isEmpty else { return .failure(.empty) }
+		guard trimmed.count <= maximumLabelCharacters, trimmed.utf8.count <= maximumLabelBytes else { return .failure(.tooLong) }
+		var previous: Unicode.Scalar?
+		for scalar in trimmed.unicodeScalars {
+			let properties = scalar.properties
+			let joinsEmoji = (scalar == "\u{200D}" || scalar == "\u{FE0F}") && previous?.properties.isEmoji == true
+			if properties.generalCategory == .control || (properties.isDefaultIgnorableCodePoint && !joinsEmoji) {
+				return .failure(.invisible)
+			}
+			previous = scalar
+		}
+		return .success(trimmed)
 	}
 
-	/// Whether two labels would read as one: case and runs of spaces aside.
+	/// Whether two labels would read as one: case, accents, full-width
+	/// forms and runs of spaces aside.
 	static func comparable(_ label: String) -> String {
-		label.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+		label.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+			.split(whereSeparator: \.isWhitespace).joined(separator: " ")
 	}
 
 	private static func hex<Digest: Sequence>(_ digest: Digest) -> String where Digest.Element == UInt8 {

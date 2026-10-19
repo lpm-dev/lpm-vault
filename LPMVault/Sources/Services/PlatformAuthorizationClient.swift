@@ -138,6 +138,9 @@ enum PlatformTokenRevocationOutcome: Equatable, Sendable {
 	case busy
 	/// Not done now; ask again after `seconds`.
 	case retry(after: Int)
+	/// Refused, unread, by the limit on this person's revocations: none is
+	/// taken from them for `seconds`, whichever token it's for.
+	case throttled(after: Int)
 }
 
 /// Revokes a platform refresh token through the Registry, which holds the
@@ -334,8 +337,8 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 		else { return .failure(.invalidResponse) }
 		let nonce = Self.makeNonce()
 		return await send(url: url, body: body, nonce: nonce, session: platformSession).flatMap { http, data in
-			// Refused before its body is read, as by the per-person limit, a request is unsigned and only waits.
-			if http.statusCode == 429 { return .success(.retry(after: Self.retryAfter(http) ?? 60)) }
+			// Refused before its body is read, by the per-person limit, a request is unsigned and only waits.
+			if http.statusCode == 429 { return .success(.throttled(after: Self.retryAfter(http) ?? 60)) }
 			guard [200, 202, 503].contains(http.statusCode) else { return .failure(Self.failure(status: http.statusCode, body: data)) }
 			guard let object = Self.signedObject(
 				http, data, nonce: nonce, principalID: platformSession.principalID, platform: platform),
@@ -346,9 +349,9 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 			case (200, "accepted"): return .success(.accepted)
 			case (200, "unconfirmed"): return .success(.unconfirmed)
 			case (200, "superseded"):
-				guard attempt != nil, let sealed = Self.sealed(object["envelope"]), let age = Self.age(object["ageSeconds"]) else {
-					return .failure(.invalidResponse)
-				}
+				// A cleanup can wait longer than a token lives, so a successor's age has no ceiling.
+				guard attempt != nil, let sealed = Self.sealed(object["envelope"]), let age = PlatformTokens.integer(object["ageSeconds"]), age >= 0
+				else { return .failure(.invalidResponse) }
 				return .success(.superseded(sealed, age: age))
 			case (202, "busy"): return .success(.busy)
 			case (503, "retry"):

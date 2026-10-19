@@ -48,13 +48,17 @@ enum PlatformCredentialError: Error, Equatable, Sendable {
 	}
 }
 
-/// What became of a new grant LPM Vault won't keep.
-enum PlatformGrantDiscard: Equatable, Sendable {
-	/// The platform ended its tokens.
+/// What became of tokens LPM Vault set out to revoke.
+enum PlatformRevocation: Equatable, Sendable {
+	/// The platform ended them.
 	case revoked
-	/// A cleanup entry goes on revoking its tokens.
+	/// A cleanup entry goes on revoking them in the background.
 	case pending
-	/// Its tokens may still work: their revocation couldn't be confirmed, nor saved to try again.
+	/// A cleanup entry keeps them, but nothing is sent until LPM is signed
+	/// in through the Registry that issued them.
+	case waitingForSignIn
+	/// They may still work: lpm.dev couldn't confirm their revocation, or it
+	/// couldn't be saved to try again. A note on the Platforms page says so.
 	case unconfirmed
 }
 
@@ -105,20 +109,44 @@ actor PlatformCredentials {
 	private let productionClientID: String?
 	/// Called after a cleanup changed what the Platforms page shows.
 	private let cleanupChanged: @Sendable () -> Void
-	private var running: [PlatformConnection.ID: Task<Result<String, PlatformCredentialError>, Never>] = [:]
+	/// A read of a connection's token in flight, which callers asking meanwhile share.
+	private struct Read {
+		let task: Task<Result<String, PlatformCredentialError>, Never>
+		/// The generation the read holds the connection to, if any.
+		let generation: String?
+	}
+
+	private var running: [PlatformConnection.ID: Read] = [:]
 	/// Connections a retirement is waiting on, whose tokens nobody reads meanwhile.
 	private var retiring: [PlatformConnection.ID: Int] = [:]
 	/// How many callers have shared a read, with any renewal, another caller started; it only grows.
 	private(set) var sharedReads = 0
 
 	private var cleanupTask: Task<Void, Never>?
+	/// The cleanup's wait until an entry is due, which `resumeCleanup` cuts short.
+	private var cleanupNap: Task<Void, any Error>?
 	/// Cleanup was asked for while it ran, so it looks at the entries once more.
 	private var cleanupWanted = false
+	/// Until when no revocation is sent, as lpm.dev limits this person's or
+	/// couldn't be reached, and how long the next such pause lasts.
+	private var cleanupPause: ContinuousClock.Instant?
+	private var pauseDelay: Duration?
+	/// How long cleanup waits before listing its entries again, after the Keychain failed to.
+	private var listingDelay: Duration?
+	/// Notes of revocations lpm.dev couldn't confirm that the Keychain
+	/// couldn't save either, shown until they're dismissed or the app quits.
+	private(set) var unsavedMarkers: [PlatformCleanupMarker] = []
+	/// Generations whose cleanup waits for a sign-in to the Registry that issued their tokens.
+	private(set) var waitingForSignIn: Set<String> = []
 	/// When each waiting cleanup is due, and how long it waits next time, by generation.
 	private var cleanupDue: [String: ContinuousClock.Instant] = [:]
 	private var cleanupDelays: [String: Duration] = [:]
 	/// Generations whose cleanup is running now, which nothing else starts meanwhile.
 	private var cleaning: Set<String> = []
+	/// lpm.dev takes one of a person's revocations at a time, so this Mac
+	/// sends one at a time: the rest wait their turn here, in order.
+	private var revocationInFlight = false
+	private var revocationTurns: [CheckedContinuation<Void, Never>] = []
 
 	init(
 		store: PlatformConnectionStore,
@@ -161,19 +189,20 @@ actor PlatformCredentials {
 		generation: String? = nil
 	) async -> Result<String, PlatformCredentialError> {
 		guard retiring[connectionID] == nil else { return .failure(.retired) }
-		while let task = running[connectionID] {
+		while let read = running[connectionID] {
 			sharedReads += 1
-			let result = await task.value
-			if running[connectionID] == task { running[connectionID] = nil }
-			// A read that ended with the refused token itself can't answer this caller, nor
-			// can one that didn't check the generation this caller holds to.
-			if generation == nil, rejected.map({ result != .success($0) }) ?? true { return result }
+			let result = await read.task.value
+			if running[connectionID]?.task == read.task { running[connectionID] = nil }
+			// A read held to another generation than this caller's, or to none when this caller holds to one,
+			// can't answer it, nor can one that ended with the refused token itself.
+			let answers = generation == nil ? result != .failure(.replaced) : read.generation == generation
+			if answers, rejected.map({ result != .success($0) }) ?? true { return result }
 			guard retiring[connectionID] == nil else { return .failure(.retired) }
 		}
 		let task = Task { await self.resolve(connectionID, replacing: rejected, generation: generation) }
-		running[connectionID] = task
+		running[connectionID] = Read(task: task, generation: generation)
 		let result = await task.value
-		if running[connectionID] == task { running[connectionID] = nil }
+		if running[connectionID]?.task == task { running[connectionID] = nil }
 		return result
 	}
 
@@ -338,100 +367,158 @@ actor PlatformCredentials {
 	/// replaced: once any renewal of it in flight ends, writes its cleanup
 	/// entry, which from then on keeps its tokens and retires its record. The
 	/// caller revokes it with `revokeNow`, which leaves it to the background
-	/// when it can't finish. Nil when the connection holds another generation now, or none.
-	func retire(_ connectionID: PlatformConnection.ID, generation: String) async -> Result<PlatformCleanupEntry?, PlatformCredentialError> {
+	/// when it can't finish.
+	func retire(
+		_ connectionID: PlatformConnection.ID,
+		generation: String
+	) async -> Result<PlatformConnectionStore.Retirement, PlatformCredentialError> {
 		retiring[connectionID, default: 0] += 1
 		defer {
 			retiring[connectionID, default: 1] -= 1
 			if retiring[connectionID] == 0 { retiring[connectionID] = nil }
 		}
-		while let task = running[connectionID] {
-			_ = await task.value
-			if running[connectionID] == task { running[connectionID] = nil }
+		while let read = running[connectionID] {
+			_ = await read.task.value
+			if running[connectionID]?.task == read.task { running[connectionID] = nil }
 		}
 		return await store.retire(connectionID, generation: generation, at: now()).mapError(PlatformCredentialError.store)
 	}
 
 	/// Retires a generation whose eligibility ended, from within its own read,
-	/// which a retirement would otherwise wait for.
+	/// which a retirement would otherwise wait for. Once its tokens are
+	/// revoked, the login stays, as one to reconnect.
 	private func retireEnded(_ connectionID: PlatformConnection.ID, generation: String) async {
-		if case .success(_?) = await store.retire(connectionID, generation: generation, at: now()) {
+		if case .success(.entry) = await store.retire(connectionID, generation: generation, asksToReconnect: true, at: now()) {
 			resumeCleanup()
 			cleanupChanged()
 		}
 	}
 
 	/// Tries once, now, to finish the cleanup of `entry`, as a disconnect or
-	/// a reconnect does before going on; true when it's finished. One that
-	/// isn't goes on in the background.
-	func revokeNow(_ entry: PlatformCleanupEntry) async -> Bool {
-		guard cleaning.insert(entry.generation).inserted else { return false }
+	/// a reconnect does before going on, even when the caller is cancelled.
+	/// One that isn't finished goes on in the background, no sooner than lpm.dev asked.
+	func revokeNow(_ entry: PlatformCleanupEntry) async -> PlatformRevocation {
+		// Its own task, so a cancelled caller still sends it.
+		await Task { await self.revoking(entry) }.value
+	}
+
+	private func revoking(_ entry: PlatformCleanupEntry) async -> PlatformRevocation {
+		guard cleaning.insert(entry.generation).inserted else { return .pending }
 		defer { cleaning.remove(entry.generation) }
-		var current = entry
-		// A renewal's successor is revoked in turn, within the same try.
-		for _ in 0..<3 {
-			switch await clean(current) {
-			case .done:
-				cleanupDue[entry.generation] = nil
-				cleanupDelays[entry.generation] = nil
-				return true
-			case .again(let next):
-				current = next
-			case .wait, .waitForSession:
-				resumeCleanup()
-				return false
-			}
+		// While lpm.dev takes none of this person's revocations, the background tries it once the pause ends.
+		guard !isPaused else {
+			resumeCleanup()
+			return .pending
 		}
-		resumeCleanup()
-		return false
+		var step = CleanupStep.waitForSession
+		if let session = await session(for: entry) {
+			step = await clean(entry, session: session)
+			// A renewal's successor is revoked in turn; it has no renewal of its own to hand over.
+			while case .again(let next) = step { step = await clean(next, session: session) }
+		}
+		postpone(entry.generation, after: step)
+		switch step {
+		case .done(let outcome):
+			return outcome
+		case .waitForSession:
+			resumeCleanup()
+			return .waitingForSignIn
+		case .again, .wait, .pause:
+			resumeCleanup()
+			return .pending
+		}
 	}
 
 	/// Revokes a new grant LPM Vault won't keep, with its tokens in memory,
-	/// as when connecting was cancelled or its checks failed. A revocation
-	/// that isn't confirmed now writes a cleanup entry, which goes on trying.
+	/// as when connecting was cancelled or its checks failed, even when the
+	/// caller is cancelled. A revocation that isn't confirmed now writes a
+	/// cleanup entry, which goes on trying; one whose entry can't be saved
+	/// either leaves a note.
 	func discard(
 		refreshToken: String,
 		connectionID: PlatformConnection.ID,
 		generation: String,
 		issuer: PlatformIssuer,
 		clientID: String
-	) async -> PlatformGrantDiscard {
+	) async -> PlatformRevocation {
+		// Its own task, so a cancelled connection still sends it.
+		await Task {
+			await self.discarding(
+				refreshToken: refreshToken, connectionID: connectionID, generation: generation, issuer: issuer, clientID: clientID)
+		}.value
+	}
+
+	private func discarding(
+		refreshToken: String,
+		connectionID: PlatformConnection.ID,
+		generation: String,
+		issuer: PlatformIssuer,
+		clientID: String
+	) async -> PlatformRevocation {
 		let entry = PlatformCleanupEntry(
 			platform: .cloudflare, connectionID: connectionID, generation: generation, issuer: issuer, clientID: clientID,
 			refreshToken: refreshToken, attempt: nil, createdAt: now())
-		if let session = await session(), session.issuer == issuer,
-			CloudflareOAuth.accepts(clientID, for: issuer, productionClientID: productionClientID)
-		{
-			switch await revoker.revoke(.cloudflare, token: refreshToken, revocationID: entry.revocationID, attempt: nil, session: session) {
-			case .success(.accepted):
-				return .revoked
-			case .success(.unconfirmed):
-				_ = await store.mark(PlatformCleanupMarker(platform: .cloudflare, generation: generation, createdAt: now()))
-				cleanupChanged()
-				return .unconfirmed
-			case .success, .failure:
-				break
+		// Not tried while lpm.dev takes none of this person's revocations: the entry waits for the pause to end.
+		var step: CleanupStep?
+		if !isPaused {
+			if let session = await session(for: entry) {
+				step = await clean(entry, session: session, stored: false)
+			} else {
+				step = .waitForSession
 			}
 		}
-		guard case .success = await store.writeCleanup(entry) else { return .unconfirmed }
+		if case .done(let outcome)? = step { return outcome }
+		guard case .success = await store.writeCleanup(entry) else {
+			await note(PlatformCleanupMarker(platform: .cloudflare, generation: generation, createdAt: now()))
+			return .unconfirmed
+		}
+		if let step { postpone(generation, after: step) }
 		resumeCleanup()
 		cleanupChanged()
+		if case .waitForSession? = step { return .waitingForSignIn }
 		return .pending
+	}
+
+	/// Leaves a note that a Cloudflare login's tokens may still work. One the
+	/// Keychain can't save is kept in memory until it's dismissed.
+	func note(_ marker: PlatformCleanupMarker) async {
+		if case .failure = await store.mark(marker), !unsavedMarkers.contains(where: { $0.generation == marker.generation }) {
+			unsavedMarkers.append(marker)
+		}
+		cleanupChanged()
+	}
+
+	/// Forgets the notes of `generations` kept in memory, which the person dismissed.
+	func forgetUnsavedMarkers(_ generations: Set<String>) {
+		unsavedMarkers.removeAll { generations.contains($0.generation) }
 	}
 
 	// MARK: - Cleanup
 
 	/// Starts revoking what cleanup entries hold, in the background, as when
-	/// an entry is written. With `now`, entries waiting for a sign-in or a
-	/// backoff are tried at once, as when the vault unlocks, LPM signs in, or
-	/// the app switches its Registry. Nothing is sent while there's no session.
+	/// an entry is written, and wakes a cleanup waiting to try again. With
+	/// `now`, entries waiting for a sign-in or a backoff are tried at once,
+	/// as when the vault unlocks, LPM signs in, or the app switches its
+	/// Registry. Nothing is sent while there's no session.
 	func resumeCleanup(now: Bool = false) {
-		if now { cleanupDue = [:] }
+		if now {
+			cleanupDue = [:]
+			cleanupPause = nil
+		}
 		guard cleanupTask == nil else {
 			cleanupWanted = true
+			cleanupNap?.cancel()
 			return
 		}
 		cleanupTask = Task { await self.runCleanup() }
+	}
+
+	/// Stops the cleanup in the background, as when the vault locks, when
+	/// nothing could be sent anyway; `resumeCleanup` starts it again.
+	func stopCleanup() {
+		cleanupWanted = false
+		cleanupTask?.cancel()
+		cleanupNap?.cancel()
 	}
 
 	/// Waits until the cleanup in the background has nothing to do now; for tests.
@@ -440,13 +527,30 @@ actor PlatformCredentials {
 	}
 
 	private enum CleanupStep {
-		case done
+		/// The cleanup ended: the tokens were revoked, or lpm.dev couldn't confirm it and a note says so.
+		case done(PlatformRevocation)
 		/// The entry now holds a renewal's successor, to revoke next.
 		case again(PlatformCleanupEntry)
-		/// Not done; try again after the delay.
+		/// Not done; this entry is tried again after the delay, or its backoff when that's longer.
 		case wait(Duration?)
+		/// No entry is tried until the delay, or the pause's backoff, passes:
+		/// lpm.dev takes no revocations from this person now, or can't be reached.
+		case pause(Duration?)
 		/// It needs a sign-in to its own Registry, with its own client.
 		case waitForSession
+	}
+
+	private var isPaused: Bool {
+		cleanupPause.map { $0 > uptime() } ?? false
+	}
+
+	/// The session `entry` is revoked with: one signed in to its own
+	/// Registry, which must still run its client. Nil sends nothing.
+	private func session(for entry: PlatformCleanupEntry) async -> PlatformSession? {
+		guard CloudflareOAuth.accepts(entry.clientID, for: entry.issuer, productionClientID: productionClientID),
+			let session = await session(), session.issuer == entry.issuer
+		else { return nil }
+		return session
 	}
 
 	private func runCleanup() async {
@@ -459,101 +563,214 @@ actor PlatformCredentials {
 		}
 		while !Task.isCancelled {
 			cleanupWanted = false
-			guard case .success(let stored) = await store.cleanup() else { return }
-			var wake: ContinuousClock.Instant?
-			for item in stored.entries {
-				guard !Task.isCancelled else { return }
-				switch item {
-				case .unreadable(_, isNewer: true):
-					// A newer LPM Vault wrote it; it's left for that version.
-					continue
-				case .unreadable(let generation, isNewer: false):
-					_ = await store.abandonCleanup(of: generation, platform: .cloudflare, at: now())
-					cleanupChanged()
-				case .readable(var entry):
-					if let due = cleanupDue[entry.generation], due > uptime() {
-						wake = min(wake ?? due, due)
-						continue
-					}
-					// Another try of it is running, as a disconnect's, which resumes this when it can't finish.
-					guard cleaning.insert(entry.generation).inserted else { continue }
-					var step = await clean(entry)
-					while case .again(let next) = step, !Task.isCancelled {
-						entry = next
-						step = await clean(entry)
-					}
-					cleaning.remove(entry.generation)
-					let delay: Duration
-					switch step {
-					case .done, .again:
-						cleanupDue[entry.generation] = nil
-						cleanupDelays[entry.generation] = nil
-						continue
-					case .wait(let asked):
-						let backoff = cleanupDelays[entry.generation] ?? Self.firstCleanupDelay
-						cleanupDelays[entry.generation] = min(backoff * 2, Self.longestCleanupDelay)
-						delay = max(asked ?? .zero, backoff)
-					case .waitForSession:
-						delay = Self.sessionCleanupDelay
-					}
-					let due = uptime() + delay
-					cleanupDue[entry.generation] = due
-					wake = min(wake ?? due, due)
-				}
-			}
+			let wake = await cleanupPass()
 			guard !cleanupWanted else { continue }
 			guard let wake else { return }
-			do { try await sleep(max(.zero, wake - uptime())) } catch { return }
+			let nap = Task { [sleep, delay = max(.zero, wake - uptime())] in try await sleep(delay) }
+			cleanupNap = nap
+			let slept = await nap.result
+			cleanupNap = nil
+			// A wait cut short by `resumeCleanup` looks again at once; one that failed by itself ends the cleanup.
+			if case .failure = slept, !nap.isCancelled { return }
 		}
 	}
 
-	/// One request revoking what `entry` holds, and what its answer does to the entry.
-	private func clean(_ entry: PlatformCleanupEntry) async -> CleanupStep {
-		guard let session = await session(), session.issuer == entry.issuer,
-			CloudflareOAuth.accepts(entry.clientID, for: entry.issuer, productionClientID: productionClientID)
-		else { return .waitForSession }
+	/// Tries each cleanup entry that's due, telling the Platforms page once
+	/// if any changed; when the next waiting one is due.
+	private func cleanupPass() async -> ContinuousClock.Instant? {
+		let generations: [String]
+		switch await store.cleanupGenerations() {
+		case .success(let listed):
+			generations = listed
+			listingDelay = nil
+		case .failure:
+			let delay = listingDelay ?? Self.firstCleanupDelay
+			listingDelay = min(delay * 2, Self.longestCleanupDelay)
+			return uptime() + delay
+		}
+		var wake: ContinuousClock.Instant?
+		let wereWaitingForSignIn = waitingForSignIn
+		var changed = false
+		// Asked for once in a pass, when an entry first needs it.
+		var session: PlatformSession??
+		for generation in generations where !Task.isCancelled {
+			if let due = cleanupDue[generation], due > uptime() {
+				wake = min(wake ?? due, due)
+				continue
+			}
+			if let pause = cleanupPause, pause > uptime() {
+				wake = min(wake ?? pause, pause)
+				break
+			}
+			// Another try of it is running, as a disconnect's, which resumes cleanup when it can't finish.
+			guard cleaning.insert(generation).inserted else { continue }
+			let taken = await turn(of: generation, session: &session)
+			cleaning.remove(generation)
+			changed = changed || taken.changed
+			if let next = taken.next { wake = min(wake ?? next, next) }
+		}
+		waitingForSignIn.formIntersection(generations)
+		if changed || waitingForSignIn != wereWaitingForSignIn { cleanupChanged() }
+		return wake
+	}
+
+	/// One entry's turn in a pass: whether what the Platforms page shows
+	/// changed, and when this entry, or every entry, is due next.
+	private func turn(of generation: String, session: inout PlatformSession??) async -> (changed: Bool, next: ContinuousClock.Instant?) {
+		var entry: PlatformCleanupEntry
+		var changed = false
+		switch await store.cleanupEntry(of: generation) {
+		case .success(.readable(let stored)?):
+			entry = stored
+		case .success(.unreadable(_, isNewer: false)?):
+			// Rebuilt from its generation's record, it's revoked now; without one, a marker takes its place.
+			guard case .success(let rebuilt) = await store.recoverCleanup(of: generation, at: now()) else {
+				return (false, postpone(generation, after: .wait(nil)))
+			}
+			guard let rebuilt else { return (true, nil) }
+			entry = rebuilt
+			changed = true
+		case .success(.unreadable(_, isNewer: true)?), .success(nil):
+			// A newer LPM Vault's entry is left for it, and one gone since the listing is done.
+			return (false, nil)
+		case .failure:
+			return (false, postpone(generation, after: .wait(nil)))
+		}
+		guard CloudflareOAuth.accepts(entry.clientID, for: entry.issuer, productionClientID: productionClientID) else {
+			return (changed, postpone(generation, after: .waitForSession))
+		}
+		if session == nil { session = .some(await self.session()) }
+		guard case let current?? = session, current.issuer == entry.issuer else {
+			return (changed, postpone(generation, after: .waitForSession))
+		}
+		var step = await clean(entry, session: current)
+		while case .again(let next) = step, !Task.isCancelled {
+			entry = next
+			step = await clean(entry, session: current)
+		}
+		switch step {
+		case .done: changed = true
+		// lpm.dev didn't take the session: the rest of the pass waits for a sign-in too.
+		case .waitForSession: session = .some(nil)
+		case .again, .wait, .pause: break
+		}
+		return (changed, postpone(generation, after: step))
+	}
+
+	/// Schedules the next try of `generation`'s cleanup after `step`; when
+	/// it, or every cleanup when lpm.dev paused them all, is due. Nil when
+	/// its cleanup ended.
+	@discardableResult
+	private func postpone(_ generation: String, after step: CleanupStep) -> ContinuousClock.Instant? {
+		if case .waitForSession = step {
+			waitingForSignIn.insert(generation)
+		} else {
+			waitingForSignIn.remove(generation)
+		}
+		let delay: Duration
+		switch step {
+		case .done, .again:
+			cleanupDue[generation] = nil
+			cleanupDelays[generation] = nil
+			return nil
+		case .wait(let asked):
+			let backoff = cleanupDelays[generation] ?? Self.firstCleanupDelay
+			cleanupDelays[generation] = min(backoff * 2, Self.longestCleanupDelay)
+			delay = max(asked ?? .zero, backoff)
+		case .waitForSession:
+			delay = Self.sessionCleanupDelay
+		case .pause(let asked):
+			let backoff = pauseDelay ?? Self.firstCleanupDelay
+			pauseDelay = min(backoff * 2, Self.longestCleanupDelay)
+			let until = uptime() + max(asked ?? .zero, backoff)
+			cleanupPause = until
+			return until
+		}
+		let due = uptime() + delay
+		cleanupDue[generation] = due
+		return due
+	}
+
+	/// One request revoking what `entry` holds, and what its answer does to
+	/// the entry. An entry that isn't `stored`, as a new grant being
+	/// discarded, only leaves a note when its revocation isn't confirmed.
+	private func clean(_ entry: PlatformCleanupEntry, session: PlatformSession, stored: Bool = true) async -> CleanupStep {
 		let key = entry.attempt?.privateKey
 		let attempt = entry.attempt.flatMap { attempt in key.map { (id: attempt.id, publicKey: $0.publicKey.x963Representation) } }
-		switch await revoker.revoke(entry.platform, token: entry.refreshToken, revocationID: entry.revocationID, attempt: attempt, session: session) {
-		case .success(.accepted):
-			return finished(await store.finishCleanup(entry, unconfirmed: false, at: now()))
-		case .success(.unconfirmed):
-			return finished(await store.finishCleanup(entry, unconfirmed: true, at: now()))
-		case .success(.superseded(let sealed, _)):
-			guard let pending = entry.attempt, let key,
+		let outcome: PlatformTokenRevocationOutcome
+		await takeRevocationTurn()
+		let answer = await revoker.revoke(
+			entry.platform, token: entry.refreshToken, revocationID: entry.revocationID, attempt: attempt, session: session)
+		endRevocationTurn()
+		switch answer {
+		case .success(.throttled(let seconds)):
+			return .pause(.seconds(seconds))
+		case .success(let answer):
+			outcome = answer
+		case .failure(.signedOut), .failure(.forbidden):
+			return .waitForSession
+		case .failure(.rateLimited):
+			return .pause(.seconds(60))
+		case .failure(.transport), .failure(.unavailable), .failure(.server):
+			return .pause(nil)
+		case .failure:
+			return .wait(nil)
+		}
+		// lpm.dev answered about this entry, so it takes revocations again.
+		cleanupPause = nil
+		pauseDelay = nil
+		switch outcome {
+		case .accepted:
+			guard stored else { return .done(.revoked) }
+			return finished(await store.finishCleanup(entry, unconfirmed: false, at: now()), as: .revoked)
+		case .unconfirmed:
+			guard stored else {
+				await note(PlatformCleanupMarker(platform: entry.platform, generation: entry.generation, createdAt: now()))
+				return .done(.unconfirmed)
+			}
+			return finished(await store.finishCleanup(entry, unconfirmed: true, at: now()), as: .unconfirmed)
+		case .superseded(let sealed, _):
+			guard stored, let pending = entry.attempt, let key,
 				case .success(let tokens) = PlatformAuthorizationEnvelope.open(
 					sealed, id: pending.id, clientKey: key, domain: PlatformAuthorizationEnvelope.refreshDomain,
 					read: { $0["platform"] as? String == entry.platform.rawValue ? PlatformTokens(payload: $0) : nil }),
 				let successor = tokens.expiry?.refreshToken
 			else { return .wait(nil) }
-			switch await store.replaceCleanupToken(of: entry.generation, renewedBy: pending.id, with: successor) {
-			case .success(true):
-				var next = entry
-				next.refreshToken = successor
-				next.attempt = nil
-				return .again(next)
-			case .success(false):
-				return .done
-			case .failure:
+			guard case .success(true) = await store.replaceCleanupToken(of: entry.generation, renewedBy: pending.id, with: successor) else {
 				return .wait(nil)
 			}
-		case .success(.busy):
+			var next = entry
+			next.refreshToken = successor
+			next.attempt = nil
+			return .again(next)
+		case .busy, .throttled:
 			return .wait(nil)
-		case .success(.retry(let seconds)):
+		case .retry(let seconds):
 			return .wait(.seconds(seconds))
-		case .failure(.signedOut), .failure(.forbidden):
-			return .waitForSession
-		case .failure(.rateLimited):
-			return .wait(.seconds(60))
-		case .failure:
-			return .wait(nil)
+		}
+	}
+
+	/// Waits until this Mac may send a revocation.
+	private func takeRevocationTurn() async {
+		guard revocationInFlight else {
+			revocationInFlight = true
+			return
+		}
+		await withCheckedContinuation { revocationTurns.append($0) }
+	}
+
+	/// Hands the turn to the next revocation waiting, or frees it.
+	private func endRevocationTurn() {
+		if revocationTurns.isEmpty {
+			revocationInFlight = false
+		} else {
+			revocationTurns.removeFirst().resume()
 		}
 	}
 
 	/// What ending a cleanup in the store leaves: done, or the same answer asked for again later.
-	private func finished(_ result: Result<Void, PlatformConnectionStoreError>) -> CleanupStep {
+	private func finished(_ result: Result<Void, PlatformConnectionStoreError>, as outcome: PlatformRevocation) -> CleanupStep {
 		guard case .success = result else { return .wait(nil) }
-		cleanupChanged()
-		return .done
+		return .done(outcome)
 	}
 }
