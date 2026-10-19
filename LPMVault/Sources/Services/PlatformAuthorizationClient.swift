@@ -7,10 +7,12 @@ struct PlatformSession: Sendable, CustomStringConvertible, CustomDebugStringConv
 	/// The LPM user the Registry must sign its answers for.
 	let principalID: String
 	let baseURL: URL
+	/// The Registry the session is signed in to, which issues what's connected through it.
+	let issuer: PlatformIssuer
 
-	var description: String { "PlatformSession(principal: \(principalID), token: <redacted>)" }
+	var description: String { "PlatformSession(principal: \(principalID), issuer: \(issuer.rawValue), token: <redacted>)" }
 	var debugDescription: String { description }
-	var customMirror: Mirror { Mirror(self, children: ["principalID": principalID, "baseURL": baseURL]) }
+	var customMirror: Mirror { Mirror(self, children: ["principalID": principalID, "baseURL": baseURL, "issuer": issuer]) }
 }
 
 /// A platform LPM Vault connects in the browser through the Registry, whose
@@ -21,12 +23,14 @@ enum BrowserPlatform: String, CaseIterable, Sendable {
 	case vercel
 	case netlify
 	case github
+	case cloudflare
 
 	var publishPlatform: PublishPlatform {
 		switch self {
 		case .vercel: .vercel
 		case .netlify: .netlify
 		case .github: .github
+		case .cloudflare: .cloudflare
 		}
 	}
 
@@ -36,6 +40,7 @@ enum BrowserPlatform: String, CaseIterable, Sendable {
 		case .vercel: self = .vercel
 		case .netlify: self = .netlify
 		case .github: self = .github
+		case .cloudflare: self = .cloudflare
 		case .coolify: return nil
 		}
 	}
@@ -73,7 +78,9 @@ struct StartedPlatformAuthorization: Equatable, Sendable {
 
 /// Where a connection stands when this Mac asks for its result.
 enum PlatformAuthorizationOutcome: Equatable, Sendable {
-	case ready(PlatformAuthorizationEnvelope.Sealed)
+	/// The grant, sealed to the connection's key, completed `age` seconds ago,
+	/// so its tokens' lifetimes count from then; 0 from a Registry that doesn't say.
+	case ready(PlatformAuthorizationEnvelope.Sealed, age: Int)
 	/// The browser hasn't finished on the Registry yet.
 	case pending
 	/// The platform or the Registry refused it, with the Registry's code.
@@ -117,6 +124,41 @@ protocol PlatformTokenRefreshing: Sendable {
 	) async -> Result<PlatformTokenRefreshOutcome, PlatformAuthorizationError>
 }
 
+/// What the Registry did with a token LPM Vault asked it to revoke.
+enum PlatformTokenRevocationOutcome: Equatable, Sendable {
+	/// The platform ended the token's family, or already had.
+	case accepted
+	/// Whether the family ended can't be told: the token isn't one the
+	/// Registry can still end, as one already spent or unknown to it.
+	case unconfirmed
+	/// The token was renewed by the attempt the request named: its result,
+	/// sealed to the attempt's key, issued `age` seconds ago, is what to revoke.
+	case superseded(PlatformAuthorizationEnvelope.Sealed, age: Int)
+	/// A renewal of the token is still running; asking again later finishes the revocation.
+	case busy
+	/// Not done now; ask again after `seconds`.
+	case retry(after: Int)
+	/// Refused, unread, by the limit on this person's revocations: none is
+	/// taken from them for `seconds`, whichever token it's for.
+	case throttled(after: Int)
+}
+
+/// Revokes a platform refresh token through the Registry, which holds the
+/// client secret revoking needs. Holding the token is the authority; the
+/// LPM session only authenticates and rate-limits the request.
+protocol PlatformTokenRevoking: Sendable {
+	/// Revokes `token` for the cleanup `revocationID` names. With `attempt`,
+	/// a renewal of the token that may have been sent, the Registry can hand
+	/// over the tokens that renewal issued.
+	func revoke(
+		_ platform: BrowserPlatform,
+		token: String,
+		revocationID: String,
+		attempt: (id: String, publicKey: Data)?,
+		session: PlatformSession
+	) async -> Result<PlatformTokenRevocationOutcome, PlatformAuthorizationError>
+}
+
 protocol PlatformAuthorizationClientProtocol: Sendable {
 	func start(
 		_ platform: BrowserPlatform,
@@ -137,7 +179,7 @@ protocol PlatformAuthorizationClientProtocol: Sendable {
 /// result must be signed by the Registry and name this request's nonce, the
 /// signed-in person, the platform and the connection, so nothing another
 /// request, another person or another platform caused is accepted.
-struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, PlatformTokenRefreshing {
+struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, PlatformTokenRefreshing, PlatformTokenRevoking {
 	static let nonceHeader = "x-lpm-platform-request-nonce"
 	private static let maximumResponseBytes = 64 * 1024
 
@@ -215,11 +257,10 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 			}
 			switch (http.statusCode, status) {
 			case (200, "ready"):
-				guard let envelope = object["envelope"],
-					let envelopeData = try? JSONSerialization.data(withJSONObject: envelope),
-					let sealed = try? JSONDecoder().decode(PlatformAuthorizationEnvelope.Sealed.self, from: envelopeData)
-				else { return .failure(.invalidResponse) }
-				return .success(.ready(sealed))
+				guard let sealed = Self.sealed(object["envelope"]) else { return .failure(.invalidResponse) }
+				// A Registry from before redemptions said their age gives none; one that says must say it well.
+				guard object["ageSeconds"] == nil || Self.age(object["ageSeconds"]) != nil else { return .failure(.invalidResponse) }
+				return .success(.ready(sealed, age: Self.age(object["ageSeconds"]) ?? 0))
 			case (202, "pending"): return .success(.pending)
 			case (409, "failed"):
 				let code = (object["code"] as? String).flatMap { Self.isFailureCode($0) ? $0 : nil } ?? "server_error"
@@ -261,11 +302,7 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 			else { return .failure(http.statusCode == 404 ? .server(404) : .invalidResponse) }
 			switch (http.statusCode, status) {
 			case (200, "ready"):
-				guard let envelope = object["envelope"],
-					let envelopeData = try? JSONSerialization.data(withJSONObject: envelope),
-					let sealed = try? JSONDecoder().decode(PlatformAuthorizationEnvelope.Sealed.self, from: envelopeData)
-				else { return .failure(.invalidResponse) }
-				guard let age = PlatformTokens.integer(object["ageSeconds"]), age >= 0, age <= PlatformTokens.maximumLifetime else {
+				guard let sealed = Self.sealed(object["envelope"]), let age = Self.age(object["ageSeconds"]) else {
 					return .failure(.invalidResponse)
 				}
 				return .success(.ready(sealed, age: age))
@@ -275,6 +312,53 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 				return .success(.failed(code: code))
 			case (410, "expired"): return .success(.expired)
 			case (404, "unknown"): return .success(.unknown)
+			default: return .failure(.invalidResponse)
+			}
+		}
+	}
+
+	func revoke(
+		_ platform: BrowserPlatform,
+		token: String,
+		revocationID: String,
+		attempt: (id: String, publicKey: Data)?,
+		session platformSession: PlatformSession
+	) async -> Result<PlatformTokenRevocationOutcome, PlatformAuthorizationError> {
+		var fields: [String: Any] = ["token": token, "revocationId": revocationID]
+		if let attempt {
+			guard Self.isCanonicalUUID(attempt.id), attempt.publicKey.count == 65, attempt.publicKey.first == 0x04 else {
+				return .failure(.invalidResponse)
+			}
+			fields["attempt"] = ["refreshId": attempt.id, "publicKey": attempt.publicKey.base64EncodedString()]
+		}
+		guard PlatformTokens.isValidToken(token), Self.isCanonicalUUID(revocationID),
+			let url = URL(string: "/api/vault/platforms/\(platform.rawValue)/revocations", relativeTo: platformSession.baseURL),
+			let body = try? JSONSerialization.data(withJSONObject: fields)
+		else { return .failure(.invalidResponse) }
+		let nonce = Self.makeNonce()
+		return await send(url: url, body: body, nonce: nonce, session: platformSession).flatMap { http, data in
+			// Refused before its body is read, by the per-person limit, a request is unsigned and only waits.
+			if http.statusCode == 429 { return .success(.throttled(after: Self.retryAfter(http) ?? 60)) }
+			guard [200, 202, 503].contains(http.statusCode) else { return .failure(Self.failure(status: http.statusCode, body: data)) }
+			guard let object = Self.signedObject(
+				http, data, nonce: nonce, principalID: platformSession.principalID, platform: platform),
+				object["revocationId"] as? String == revocationID,
+				let status = object["status"] as? String
+			else { return .failure(http.statusCode == 503 ? Self.failure(status: 503, body: data) : .invalidResponse) }
+			switch (http.statusCode, status) {
+			case (200, "accepted"): return .success(.accepted)
+			case (200, "unconfirmed"): return .success(.unconfirmed)
+			case (200, "superseded"):
+				// A cleanup can wait longer than a token lives, so a successor's age has no ceiling.
+				guard attempt != nil, let sealed = Self.sealed(object["envelope"]), let age = PlatformTokens.integer(object["ageSeconds"]), age >= 0
+				else { return .failure(.invalidResponse) }
+				return .success(.superseded(sealed, age: age))
+			case (202, "busy"): return .success(.busy)
+			case (503, "retry"):
+				guard let seconds = PlatformTokens.integer(object["retryAfterSeconds"]), (1...86_400).contains(seconds) else {
+					return .failure(.invalidResponse)
+				}
+				return .success(.retry(after: seconds))
 			default: return .failure(.invalidResponse)
 			}
 		}
@@ -355,6 +439,26 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 		}
 	}
 
+	/// A sealed result as an answer carries it.
+	private static func sealed(_ value: Any?) -> PlatformAuthorizationEnvelope.Sealed? {
+		guard let value, let data = try? JSONSerialization.data(withJSONObject: value) else { return nil }
+		return try? JSONDecoder().decode(PlatformAuthorizationEnvelope.Sealed.self, from: data)
+	}
+
+	/// How long ago a result was issued, in whole seconds within a token's life.
+	private static func age(_ value: Any?) -> Int? {
+		guard let age = PlatformTokens.integer(value), age >= 0, age <= PlatformTokens.maximumLifetime else { return nil }
+		return age
+	}
+
+	/// The seconds `Retry-After` asks to wait, within a day.
+	private static func retryAfter(_ http: HTTPURLResponse) -> Int? {
+		guard let text = http.value(forHTTPHeaderField: "Retry-After"), text.utf8.count <= 6,
+			text.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }), let seconds = Int(text), (1...86_400).contains(seconds)
+		else { return nil }
+		return seconds
+	}
+
 	// MARK: - Validation
 
 	/// 32 random bytes as unpadded base64url, which the Registry requires.
@@ -405,6 +509,7 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 		case .vercel: isVercelInstallPage(components, query: query)
 		case .netlify: isNetlifyAuthorizePage(components, query: query, registry: registry)
 		case .github: isGitHubAuthorizePage(components, query: query, registry: registry)
+		case .cloudflare: isCloudflareAuthorizePage(components, query: query, registry: registry)
 		}
 		return isValid ? components.url : nil
 	}
@@ -440,6 +545,29 @@ struct PlatformAuthorizationClient: PlatformAuthorizationClientProtocol, Platfor
 			&& query["prompt"] == "select_account"
 			&& query["code_challenge"].map(isOneTimeValue) == true
 			&& query["code_challenge_method"] == "S256"
+	}
+
+	/// Cloudflare's page for approving LPM Vault for the accounts the person
+	/// picks: the scopes LPM Vault needs, and the PKCE challenge of the
+	/// verifier the Registry keeps. Which client may ask is checked against
+	/// the Registry's issuer; see `CloudflareOAuth.accepts`.
+	private static func isCloudflareAuthorizePage(_ components: URLComponents, query: [String: String], registry: URL) -> Bool {
+		guard let callback = callbackURL(for: .cloudflare, registry: registry)?.absoluteString else { return false }
+		return components.host == CloudflareOAuth.authorizeURL.host() && components.path == CloudflareOAuth.authorizeURL.path()
+			&& query.count == 7
+			&& query["response_type"] == "code"
+			&& query["client_id"].map(CloudflareOAuth.isValidClientID) == true
+			&& query["redirect_uri"] == callback
+			// The Registry writes the query as a form does, so the scopes' spaces arrive as `+`, which no scope contains.
+			&& query["scope"]?.replacingOccurrences(of: "+", with: " ") == CloudflareOAuth.scope
+			&& query["state"].map(isOneTimeValue) == true
+			&& query["code_challenge"].map(isOneTimeValue) == true
+			&& query["code_challenge_method"] == "S256"
+	}
+
+	/// The client a page asks Cloudflare to approve, as its `client_id` names it.
+	static func cloudflareClientID(of page: URL) -> String? {
+		URLComponents(url: page, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "client_id" }?.value
 	}
 
 	/// Where the platform returns the browser with its code: `registry`'s

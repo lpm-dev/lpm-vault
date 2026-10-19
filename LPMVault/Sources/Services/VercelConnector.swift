@@ -24,7 +24,7 @@ struct VercelConnector: Sendable {
 	) async -> Result<(grant: VercelGrant, account: VercelAccount), BrowserConnectError> {
 		let grant: VercelGrant
 		switch await authorization.grant(VercelGrant.self, session: session, open: open) {
-		case .success(let value): grant = value
+		case .success(let value): grant = value.grant
 		case .failure(let error): return .failure(error)
 		}
 

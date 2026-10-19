@@ -43,8 +43,14 @@ final class PublishSession: Identifiable {
 		var coolify: CoolifyConnector.ClientFactory = { CoolifyClient(instance: $0, token: $1) }
 		var netlify: NetlifyConnector.ClientFactory = { NetlifyClient(token: $0) }
 		var github: GitHubConnector.ClientFactory = { GitHubClient(token: $0) }
+		var cloudflare: RenewingCloudflareClient.ClientFactory = { CloudflareClient(token: $0) }
 		/// How a GitHub publish leaves time between writes.
 		var githubPacing = GitHubPublishing.Pacing()
+		/// How a Cloudflare publish waits out rate limits.
+		var cloudflarePacing = CloudflarePublishing.Pacing()
+		/// The Registry the app is signed in to now, which alone renews what's
+		/// connected through it; nil when that isn't known.
+		var issuer: @MainActor () -> PlatformIssuer? = { nil }
 		var now: @Sendable () -> Date = { Date() }
 		/// Called after destinations or history change.
 		var didChange: @MainActor () -> Void = {}
@@ -82,6 +88,15 @@ final class PublishSession: Identifiable {
 		}
 	}
 
+	/// The Cloudflare login a review publishes through: the connection, at the
+	/// generation the review read with, so a login connected again since
+	/// can't publish what it didn't review.
+	struct ReviewLogin: Equatable {
+		let connectionID: PlatformConnection.ID
+		let generation: String
+		let label: String
+	}
+
 	struct Review {
 		let destination: PublishDestination
 		/// The destination as it was stored when the review was made.
@@ -102,6 +117,13 @@ final class PublishSession: Identifiable {
 		let remote: [String: PublishPlan.RemoteVariable]
 		/// The platform's variables without a value of the destination's own the plan was made from, by key.
 		let remoteKeys: [String: PublishPlan.RemoteKey]
+		/// The login a Cloudflare review was made through.
+		var login: ReviewLogin?
+		/// The Worker as a Cloudflare review read it, which a publish checks before sending.
+		var cloudflare: CloudflareRemoteSnapshot?
+		/// For a Cloudflare review, the keys frontend code reads at build time,
+		/// in the plan's order, which a Worker's secrets never reach.
+		var frontendKeys: [String] = []
 
 		var summary: PublishPlan.Summary { plan.summary(of: selection) }
 		var platform: PublishPlatform { destination.target.platform }
@@ -164,20 +186,36 @@ final class PublishSession: Identifiable {
 
 	var sourceEnvironment: String { didSet { if sourceEnvironment != oldValue { invalidateReview() } } }
 	private(set) var connections: Loadable<[PlatformConnection]> = .idle
-	/// The chosen connection. Choosing another starts its fields afresh.
+	/// The chosen connection. Choosing another starts its fields afresh,
+	/// but another Cloudflare login keeps the account and Worker it reaches.
 	var connectionID: PlatformConnection.ID? {
 		get { chosenConnectionID }
 		set {
 			guard newValue != chosenConnectionID else { return }
 			chosenConnectionID = newValue
+			loginChoices = nil
 			invalidateReview()
-			form = makeForm()
+			if case .cloudflare(let form)? = form, case .cloudflare(let login)? = connection?.account {
+				if let accountID = form.accountID, !login.reaches(accountID) { form.accountID = nil }
+				form.workers = .idle
+			} else {
+				form = makeForm()
+			}
 			loadForm()
 		}
 	}
 	private var chosenConnectionID: PlatformConnection.ID?
 	/// The chosen connection's fields.
 	private(set) var form: PublishDestinationForm?
+	/// For a saved Cloudflare destination whose preferred login no longer
+	/// reaches its account, the connected logins that do, one of which the
+	/// person picks before it's reviewed; nil while there's nothing to pick.
+	private(set) var loginChoices: [PlatformConnection]?
+	/// The saved Cloudflare destination's preferred login, while it reaches
+	/// the account but no longer works and other logins that do are offered.
+	private var preferredNeedsReconnect: PlatformConnection?
+	/// Connections whose token can't be renewed any more, as the sheet read them.
+	private var unrenewable: Set<PlatformConnection.ID> = []
 	/// Why the destination step opened in place of the review, as when the
 	/// saved destination was forgotten meanwhile.
 	private(set) var destinationError: String?
@@ -214,6 +252,7 @@ final class PublishSession: Identifiable {
 		self.saved = saved
 		if let saved {
 			self.sourceEnvironment = saved.sourceEnvironment
+			// A Cloudflare destination's login is chosen once the connections are read.
 			self.chosenConnectionID = saved.target.connectionID
 			self.form = Self.form(for: saved.target)
 			self.step = .review
@@ -273,6 +312,7 @@ final class PublishSession: Identifiable {
 		case .coolify?: .coolify
 		case .netlify?: .netlify
 		case .github?: .github
+		case .cloudflare?: .cloudflare
 		case nil: nil
 		}
 	}
@@ -297,12 +337,18 @@ final class PublishSession: Identifiable {
 		return nil
 	}
 
+	var cloudflare: CloudflareDestinationForm? {
+		if case .cloudflare(let form)? = form { return form }
+		return nil
+	}
+
 	var canReview: Bool {
 		let isComplete = switch form {
 		case .vercel(let form)?: form.isComplete
 		case .coolify(let form)?: form.isComplete
 		case .netlify(let form)?: form.isComplete
 		case .github(let form)?: form.isComplete
+		case .cloudflare(let form)?: form.isComplete
 		case nil: false
 		}
 		return environments.contains(sourceEnvironment) && connection != nil && isComplete && !isLoadingReview && !isPublishing
@@ -323,6 +369,7 @@ final class PublishSession: Identifiable {
 		case .coolify(let form)?: form.resources == .idle
 		case .netlify(let form)?: form.sites == .idle
 		case .github(let form)?: form.repositories == .idle
+		case .cloudflare(let form)?: form.accountID != nil && form.workers == .idle
 		case nil: false
 		}
 	}
@@ -350,12 +397,18 @@ final class PublishSession: Identifiable {
 
 	private func loadConnections() async {
 		connections = .loading
-		let result = await dependencies.connections.connections()
+		let result = await dependencies.connections.listing(at: dependencies.now())
 		guard !Task.isCancelled else { return }
 		switch result {
-		case .success(let list):
+		case .success(let listing):
+			let list = listing.connections
+			unrenewable = listing.expired
 			connections = .loaded(list)
-			if connectionID == nil, list.count == 1 { connectionID = list[0].id }
+			if case .cloudflare(let target)? = saved?.target {
+				chooseLogin(for: target)
+			} else if connectionID == nil, list.count == 1 {
+				connectionID = list[0].id
+			}
 		case .failure(let error):
 			connections = .failed("Platform connections couldn't be read. \(error)")
 		}
@@ -371,9 +424,52 @@ final class PublishSession: Identifiable {
 		case .coolify: form = .coolify(CoolifyDestinationForm())
 		case .netlify: form = .netlify(NetlifyDestinationForm())
 		case .github: form = .github(GitHubDestinationForm())
+		case .cloudflare: form = .cloudflare(CloudflareDestinationForm())
 		}
 		observe(form)
 		return form
+	}
+
+	/// The Cloudflare logins connected through the Registry the app is signed
+	/// in to now, which alone can renew their tokens, that reach `accountID`,
+	/// whether they still work or not.
+	private func logins(reaching accountID: String) -> [PlatformConnection] {
+		let issuer = dependencies.issuer()
+		return (connections.value ?? []).filter { connection in
+			guard case .cloudflare(let login) = connection.account else { return false }
+			return (issuer.map { login.issuer == $0 } ?? true) && login.reaches(accountID)
+		}
+	}
+
+	/// Chooses the login a saved Cloudflare destination publishes through:
+	/// the one it was set up with while it reaches the account, unless it no
+	/// longer works and another that does reaches it. Otherwise the person
+	/// picks a working one that reaches it; nothing is chosen for them.
+	private func chooseLogin(for target: CloudflarePublishTarget) {
+		let reaching = logins(reaching: target.accountID)
+		let working = reaching.filter { !unrenewable.contains($0.id) }
+		let preferred = reaching.first { if case .cloudflare(let login) = $0.account { login.login == target.preferredLogin } else { false } }
+		if let preferred, !unrenewable.contains(preferred.id) || working.isEmpty {
+			// One that no longer works, with nothing else to offer, reviews to say it must be reconnected.
+			chosenConnectionID = preferred.id
+			loginChoices = nil
+			preferredNeedsReconnect = nil
+		} else {
+			chosenConnectionID = nil
+			loginChoices = working
+			preferredNeedsReconnect = preferred
+		}
+	}
+
+	/// Picks the login a saved Cloudflare destination publishes through, from
+	/// `loginChoices`; it becomes the destination's preference once it publishes.
+	func chooseLogin(_ connectionID: PlatformConnection.ID) {
+		guard loginChoices?.contains(where: { $0.id == connectionID }) == true, !isPublishing, !isCancelled else { return }
+		chosenConnectionID = connectionID
+		loginChoices = nil
+		preferredNeedsReconnect = nil
+		invalidateReview()
+		if step == .review { loadReview() }
 	}
 
 	/// Reads the saved destination as it's stored now, following a rename of
@@ -403,6 +499,7 @@ final class PublishSession: Identifiable {
 				form = Self.form(for: stored.target)
 				observe(form)
 				invalidateReview()
+				if case .cloudflare(let target) = stored.target { chooseLogin(for: target) }
 			}
 			return true
 		case .failure(let error):
@@ -417,6 +514,7 @@ final class PublishSession: Identifiable {
 		case .coolify(let target): .coolify(CoolifyDestinationForm(resourceID: target.resourceID, deployments: target.deployments))
 		case .netlify(let target): .netlify(NetlifyDestinationForm(siteID: target.siteID, context: target.context))
 		case .github(let target): .github(GitHubDestinationForm(repositoryID: target.repositoryID, scope: target.scope))
+		case .cloudflare(let target): .cloudflare(CloudflareDestinationForm(accountID: target.accountID, workerID: target.workerID))
 		}
 	}
 
@@ -438,6 +536,12 @@ final class PublishSession: Identifiable {
 				self.invalidateReview()
 				if field == .repository { self.loadEnvironments(form) }
 			}
+		case .cloudflare(let form)?:
+			form.didChange = { [weak self, weak form] field in
+				guard let self, let form else { return }
+				self.invalidateReview()
+				if field == .account { self.loadWorkers(form) }
+			}
 		case nil:
 			break
 		}
@@ -458,6 +562,8 @@ final class PublishSession: Identifiable {
 		case .github(let form)?:
 			// Environments are listed once the repositories say the chosen one's current name.
 			loadRepositories(form)
+		case .cloudflare(let form)?:
+			loadWorkers(form)
 		case nil:
 			break
 		}
@@ -470,9 +576,72 @@ final class PublishSession: Identifiable {
 	}
 
 	/// The connection's token, read when a request needs it, and renewed first when it's about to expire.
-	private func token(for connectionID: PlatformConnection.ID, on platform: PublishPlatform) async -> Result<String, PublishSessionError> {
-		await dependencies.credentials.accessToken(for: connectionID)
+	private func token(for connectionID: PlatformConnection.ID?, on platform: PublishPlatform) async -> Result<String, PublishSessionError> {
+		guard let connectionID else { return .failure("Choose a destination first.") }
+		return await dependencies.credentials.accessToken(for: connectionID)
 			.mapError { PublishSessionError($0.message(for: platform)) }
+	}
+
+	/// The chosen Cloudflare login as it's stored now, which a review
+	/// freezes, while it reaches the account `accountID` names: one
+	/// connected again since the sheet read the connections has a new
+	/// generation, and maybe a new label, which the sheet shows from then on.
+	private func currentLogin(reaching accountID: String, named accountName: String) async -> Result<ReviewLogin, PublishSessionError> {
+		guard let connectionID else { return .failure("Choose a destination first.") }
+		let read = await dependencies.connections.record(for: connectionID)
+		guard !Task.isCancelled else { return .failure(.cancelled) }
+		switch read {
+		case .success(let record):
+			guard case .cloudflare(let login) = record.connection.account else { return .failure("Choose a destination first.") }
+			if case .loaded(var list) = connections, let index = list.firstIndex(where: { $0.id == connectionID }), list[index] != record.connection {
+				list[index] = record.connection
+				connections = .loaded(list)
+			}
+			guard login.reaches(accountID) else {
+				return .failure(
+					"\(login.label) no longer reaches \(accountName). Choose another destination, or connect a login that reaches it on the Platforms page.")
+			}
+			return .success(ReviewLogin(connectionID: connectionID, generation: login.generation, label: login.label))
+		case .failure(.notFound), .failure(.retired):
+			return .failure("This Cloudflare login was disconnected. Connect it again on the Platforms page, or choose another destination.")
+		case .failure(let error):
+			return .failure("The Cloudflare login's connection can't be read. \(error)")
+		}
+	}
+
+	/// Cloudflare's API through `login`'s generation. A publish is told of a
+	/// renewal instead of a request being sent again, so it checks the Worker again first.
+	private func cloudflareClient(for login: ReviewLogin, publishing: Bool = false) -> RenewingCloudflareClient {
+		RenewingCloudflareClient(
+			connectionID: login.connectionID, generation: login.generation, credentials: dependencies.credentials,
+			resendsAfterRenewal: !publishing, make: dependencies.cloudflare)
+	}
+
+	/// Lists the chosen account's Workers through the chosen login.
+	private func loadWorkers(_ form: CloudflareDestinationForm) {
+		choicesTask?.cancel()
+		guard case .cloudflare(let chosen)? = connection?.account, let accountID = form.accountID else {
+			form.workers = .idle
+			return
+		}
+		form.workers = .loading
+		choicesTask = Task { [weak self, weak form] in
+			guard let self else { return }
+			let result: Result<[CloudflareWorker], PublishSessionError>
+			let accountName = chosen.accounts.first { $0.id == accountID }?.name ?? accountID
+			switch await self.currentLogin(reaching: accountID, named: accountName) {
+			case .success(let login):
+				result = await self.cloudflareClient(for: login).workers(in: accountID)
+					.mapError { PublishSessionError(CloudflarePublishing.listingMessage($0, account: accountName, login: login.label)) }
+			case .failure(let error):
+				result = .failure(error)
+			}
+			guard let form, !Task.isCancelled, self.cloudflare === form, form.accountID == accountID else { return }
+			switch result {
+			case .success(let list): form.workers = .loaded(list)
+			case .failure(let error): form.workers = .failed(error.message)
+			}
+		}
 	}
 
 	private func loadProjects(_ form: VercelDestinationForm) {
@@ -681,7 +850,17 @@ final class PublishSession: Identifiable {
 
 	/// Where the fields say to publish, from the chosen connection.
 	private func target() -> Result<PublishTarget, PublishSessionError> {
-		if connection == nil, let saved, connectionID == saved.target.connectionID, connections.value != nil {
+		if connection == nil, case .cloudflare(let target)? = saved?.target, connections.value != nil {
+			if let choices = loginChoices, !choices.isEmpty {
+				if let preferred = preferredNeedsReconnect {
+					return .failure(
+						"\(preferred.name) no longer works. Reconnect it on the Platforms page, or choose which connected login publishes to \(target.accountName).")
+				}
+				return .failure("The Cloudflare login this destination was set up with no longer reaches \(target.accountName). Choose which connected login publishes to it.")
+			}
+			return .failure("No Cloudflare login connected on this Mac reaches \(target.accountName) any more. Connect one that does on the Platforms page.")
+		}
+		if connection == nil, let saved, let savedID = saved.target.connectionID, connectionID == savedID, connections.value != nil {
 			return .failure("This destination publishes through \(saved.target.connectionName) on \(saved.target.platform.displayName), which isn't connected on this Mac. Connect it on the Platforms page.")
 		}
 		switch (connection?.account, form) {
@@ -730,6 +909,16 @@ final class PublishSession: Identifiable {
 			return .success(.github(GitHubPublishTarget(
 				userID: account.userID, userLogin: account.login,
 				repositoryID: repositoryID, repositoryName: repositoryName, scope: scope)))
+		case (.cloudflare(let login)?, .cloudflare(let form)?):
+			guard let accountID = form.accountID, let workerID = form.workerID else { return .failure("Choose a destination first.") }
+			guard let account = login.accounts.first(where: { $0.id == accountID }) else {
+				return .failure("\(login.label) doesn't reach this Cloudflare account. Choose another login or account.")
+			}
+			var savedTarget: CloudflarePublishTarget?
+			if case .cloudflare(let target)? = saved?.target, target.accountID == accountID, target.workerID == workerID { savedTarget = target }
+			guard let workerName = form.worker?.name ?? savedTarget?.workerName else { return .failure("Choose a destination first.") }
+			return .success(.cloudflare(CloudflarePublishTarget(
+				accountID: accountID, accountName: account.name, workerID: workerID, workerName: workerName, preferredLogin: login.login)))
 		default:
 			return .failure("Choose a destination first.")
 		}
@@ -768,9 +957,23 @@ final class PublishSession: Identifiable {
 		/// The target as the platform names its places now, when that differs
 		/// from how it was saved, as after a repository is renamed.
 		var target: PublishTarget?
+		/// Why nothing can be published there now; nil when keys can be.
+		var placeHold: PublishPlan.PlaceHold?
+		/// The Worker as a Cloudflare review read it.
+		var cloudflare: CloudflareRemoteSnapshot?
 	}
 
-	private func remote(of target: PublishTarget, token: String, rules: ProjectEnvSchemaOverview) async -> Result<Remote, PublishSessionError> {
+	private func remote(
+		of target: PublishTarget,
+		token: String?,
+		login: ReviewLogin?,
+		rules: ProjectEnvSchemaOverview
+	) async -> Result<Remote, PublishSessionError> {
+		if case .cloudflare(let target) = target {
+			guard let login else { return .failure("Choose a destination first.") }
+			return await Self.cloudflareRemote(of: target, using: cloudflareClient(for: login))
+		}
+		guard let token else { return .failure("Choose a destination first.") }
 		switch target {
 		case .vercel(let target):
 			let client = dependencies.vercel(token)
@@ -816,6 +1019,29 @@ final class PublishSession: Identifiable {
 		case .github(let target):
 			return await Self.githubRemote(
 				of: target, using: githubClient(for: target.connectionID, token: token), readableKeys: rules.ciVariableKeys)
+		case .cloudflare:
+			return .failure("Choose a destination first.")
+		}
+	}
+
+	/// A Cloudflare Worker's secrets, from its newest version, read by its ID,
+	/// with the Worker's current name, which Cloudflare's paths use.
+	private nonisolated static func cloudflareRemote(
+		of target: CloudflarePublishTarget,
+		using client: any CloudflareClientProtocol
+	) async -> Result<Remote, PublishSessionError> {
+		switch await CloudflarePublishing.review(workerID: target.workerID, in: target.accountID, using: client) {
+		case .success(let snapshot):
+			var current = target
+			current.workerName = snapshot.worker.name
+			return .success(Remote(
+				variables: snapshot.variables, keys: snapshot.keys,
+				platform: CloudflarePublishing.platform(otherTextBindings: snapshot.otherTextBindings),
+				target: current == target ? nil : .cloudflare(current), placeHold: snapshot.hold, cloudflare: snapshot))
+		case .failure(.api(.notFound)):
+			return .failure("The Worker \(target.workerName) isn't in \(target.accountName) on Cloudflare any more. Choose another destination.")
+		case .failure(let error):
+			return .failure(PublishSessionError(error.message))
 		}
 	}
 
@@ -920,14 +1146,24 @@ final class PublishSession: Identifiable {
 		case .success(let value): fingerprintKey = value
 		case .failure(let error): return .failure("LPM Vault's publish key can't be read. \(error)")
 		}
-		let token: String
-		switch await self.token(for: target.connectionID, on: target.platform) {
-		case .success(let value) where !Task.isCancelled: token = value
-		case .failure(let error) where !Task.isCancelled: return .failure(error)
-		case .success, .failure: return .failure(.cancelled)
+		// A Cloudflare review reads through the chosen login, whose token its client reads for each request.
+		var login: ReviewLogin?
+		if case .cloudflare(let place) = target {
+			switch await currentLogin(reaching: place.accountID, named: place.accountName) {
+			case .success(let current): login = current
+			case .failure(let error): return .failure(error)
+			}
+		}
+		var token: String?
+		if target.connectionID != nil {
+			switch await self.token(for: target.connectionID, on: target.platform) {
+			case .success(let value) where !Task.isCancelled: token = value
+			case .failure(let error) where !Task.isCancelled: return .failure(error)
+			case .success, .failure: return .failure(.cancelled)
+			}
 		}
 		let remote: Remote
-		switch await self.remote(of: target, token: token, rules: rules.overview) {
+		switch await self.remote(of: target, token: token, login: login, rules: rules.overview) {
 		case .success(let value): remote = value
 		case .failure(let error): return .failure(error)
 		}
@@ -944,6 +1180,7 @@ final class PublishSession: Identifiable {
 			remoteKeys: remote.keys,
 			platform: remote.platform,
 			history: history,
+			placeHold: remote.placeHold,
 			fingerprintKey: fingerprintKey)
 		return .success(Review(
 			destination: destination,
@@ -958,7 +1195,12 @@ final class PublishSession: Identifiable {
 			hasValueCheck: check != nil,
 			ruleNotes: Self.ruleNotes(for: plan, values: values, rules: rules, check: check, in: source),
 			remote: remote.variables,
-			remoteKeys: remote.keys))
+			remoteKeys: remote.keys,
+			login: login,
+			cloudflare: remote.cloudflare,
+			frontendKeys: target.platform == .cloudflare
+				? plan.rows.map(\.key).filter { ProjectEnvSchemaRule.publicPrefix(of: $0, clientPrefixes: rules.overview.clientPrefixes) != nil }
+				: []))
 	}
 
 	/// Why each key failing the project's rules fails, from the values and check `plan` was made from.
@@ -1019,7 +1261,8 @@ final class PublishSession: Identifiable {
 	/// ID, sends them, and records what the platform accepted.
 	func publish() {
 		guard !isCancelled, publishTask == nil, let review, !review.selection.keys.isEmpty,
-			review.plan.overflows(of: review.selection).isEmpty
+			review.plan.overflows(of: review.selection).isEmpty, review.plan.placeHold == nil,
+			review.plan.changeLimitExcess(of: review.selection) == nil
 		else { return }
 		reviewError = nil
 		isPublishing = true
@@ -1056,17 +1299,17 @@ final class PublishSession: Identifiable {
 			return
 		}
 		let secrets = changes.lazy.filter(\.publishesAsSecret).count
-		let place = review.destination.target.placeName
 		let counted = review.platform.countedValues(secrets: secrets, variables: changes.count - secrets)
-		let reason = "Publish \(counted) to \(place) on \(review.platform.displayName)"
-		guard await dependencies.confirm(reason), !Task.isCancelled else { return }
+		guard await dependencies.confirm(Self.confirmation(of: counted, for: review)), !Task.isCancelled else { return }
 
-		let token: String
-		switch await self.token(for: review.destination.target.connectionID, on: review.platform) {
-		case .success(let value): token = value
-		case .failure(let error):
-			reviewError = error.message
-			return
+		var token = ""
+		if review.destination.target.connectionID != nil {
+			switch await self.token(for: review.destination.target.connectionID, on: review.platform) {
+			case .success(let value): token = value
+			case .failure(let error):
+				reviewError = error.message
+				return
+			}
 		}
 		guard !Task.isCancelled else { return }
 		let report: PublishReport
@@ -1084,10 +1327,20 @@ final class PublishSession: Identifiable {
 			report = await GitHubPublishing.publish(
 				changes, to: target, reviewed: GitHubRemoteSnapshot(variables: review.remote, keys: review.remoteKeys),
 				using: githubClient(for: target.connectionID, token: token, publishing: true), pacing: dependencies.githubPacing)
+		case .cloudflare(let target):
+			guard let login = review.login, let reviewed = review.cloudflare else {
+				reviewError = "This review is out of date. Review again."
+				return
+			}
+			report = await CloudflarePublishing.publish(
+				changes, to: target.accountID, reviewed: reviewed, using: cloudflareClient(for: login, publishing: true),
+				pacing: dependencies.cloudflarePacing)
 		}
 		var recordFailure: String?
-		if !report.published.isEmpty {
-			recordFailure = await record(report.published, advancing: report.advances, of: review)
+		// Keys sent without an answer are recorded too, so the next review knows the platform may have them.
+		let recorded = report.published + report.unconfirmed
+		if !recorded.isEmpty {
+			recordFailure = await record(recorded, advancing: report.advances, of: review)
 		}
 		dependencies.didChange()
 		let stored = Set(report.published.lazy.map(\.key)).subtracting(report.gone)
@@ -1100,6 +1353,16 @@ final class PublishSession: Identifiable {
 			needsReconnect: report.needsReconnect,
 			recordFailure: recordFailure)
 		step = .results
+	}
+
+	/// What Touch ID asks to confirm: what's sent where, and for a Cloudflare
+	/// Worker the account and the login it's sent through.
+	static func confirmation(of counted: String, for review: Review) -> String {
+		let place = review.destination.target.placeName
+		guard case .cloudflare(let target) = review.destination.target, let login = review.login else {
+			return "Publish \(counted) to \(place) on \(review.platform.displayName)"
+		}
+		return "Publish \(counted) to \(place) in the Cloudflare account \(target.accountName), as \(login.label)"
 	}
 
 	/// Saves the destination when it's new or changed, then records the
@@ -1117,7 +1380,9 @@ final class PublishSession: Identifiable {
 		var choices = review.plan.choices(for: review.selection)
 		let secrets = published.lazy.filter(\.publishedAsSecret).count
 		let sent = review.platform.named(secrets: secrets, variables: published.count - secrets)
-		let wasPublished = "The \(sent) \(published.count == 1 ? "was" : "were") published"
+		// Keys sent without an answer are recorded too, though not known to be published.
+		let answered = published.contains { $0.remoteID != PublishPlan.unconfirmedRemoteID }
+		let wasPublished = "The \(sent) \(published.count == 1 ? "was" : "were") \(answered ? "published" : "sent")"
 		if review.needsSave {
 			// Saved only over the destination the review read, so a change made meanwhile isn't lost.
 			switch await publishing.save(destination, to: vaultID, replacing: review.stored) {

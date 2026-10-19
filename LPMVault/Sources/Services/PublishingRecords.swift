@@ -112,6 +112,14 @@ enum PublishingRecords {
 				.init(key: "repositoryName", value: .string(github.repositoryName)),
 				.init(key: "scope", value: .object(scope)),
 			])
+		case .cloudflare(let cloudflare):
+			target = .object([
+				.init(key: "accountId", value: .string(cloudflare.accountID)),
+				.init(key: "accountName", value: .string(cloudflare.accountName)),
+				.init(key: "workerId", value: .string(cloudflare.workerID)),
+				.init(key: "workerName", value: .string(cloudflare.workerName)),
+				.init(key: "preferredLogin", value: .string(cloudflare.preferredLogin)),
+			])
 		}
 		return .object([
 			.init(key: "id", value: .string(destination.id.uuidString.lowercased())),
@@ -146,6 +154,15 @@ enum PublishingRecords {
 			target = .netlify(try netlifyTarget(fields.value("target")))
 		case .github:
 			target = .github(try githubTarget(fields.value("target")))
+		case .cloudflare:
+			let cloudflare = try Fields(fields.value("target"), ["accountId", "accountName", "workerId", "workerName", "preferredLogin"])
+			target = .cloudflare(CloudflarePublishTarget(
+				accountID: try cloudflare.string("accountId"),
+				accountName: try cloudflare.name("accountName"),
+				workerID: try cloudflare.string("workerId"),
+				workerName: try cloudflare.string("workerName"),
+				preferredLogin: try cloudflare.string("preferredLogin")
+			))
 		}
 		guard case .array(let excluded) = try fields.value("excludedKeys"),
 			excluded.count <= PublishDestination.maximumExcludedKeys

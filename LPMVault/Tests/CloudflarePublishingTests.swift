@@ -100,6 +100,11 @@ final class CloudflareWorkerSimulator: CloudflareClientProtocol, @unchecked Send
 
 	private var answeredAt: Date? { answersWithDate ? lock.withLock { state.clock } : nil }
 
+	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError> {
+		if let failure = record("workers \(account)") { return .failure(failure) }
+		return lock.withLock { .success(([state.worker] + state.others.values).sorted { $0.name < $1.name }) }
+	}
+
 	func worker(_ idOrName: String, in account: String) async -> Result<CloudflareWorker, CloudflareAPIError> {
 		if let failure = record("worker \(idOrName)") { return .failure(failure) }
 		return lock.withLock {
@@ -422,18 +427,19 @@ struct CloudflarePublishingTests {
 		#expect(worker.calls.filter { $0.hasPrefix("update") }.count == 1)
 	}
 
-	@Test("refusals change nothing and say why; a refused token asks to connect again; a connection never made sent nothing")
+	@Test("refusals change nothing and say why; a refused token asks, in its row, to connect again; a connection never made sent nothing")
 	func refusals() async throws {
-		let expectations: [(CloudflareAPIError, String, Bool)] = [
-			(.refused(status: 400, codes: [10_215]), "newest version serves all its traffic", false),
-			(.refused(status: 400, codes: [10_053]), "another variable or binding", false),
-			(.refused(status: 400, codes: [10_055]), "more secrets and variables than its plan allows", false),
-			(.refused(status: 400, codes: [10_100]), "error 10100", false),
-			(.unauthorized, "Connect Cloudflare again", true),
-			(.forbidden, "can't change this Worker", false),
-			(.unreachable, "nothing was sent", false),
+		let expectations: [(CloudflareAPIError, String)] = [
+			(.refused(status: 400, codes: [10_215]), "newest version serves all its traffic"),
+			(.refused(status: 400, codes: [10_053]), "another variable or binding"),
+			(.refused(status: 400, codes: [10_055]), "more secrets and variables than its plan allows"),
+			(.refused(status: 400, codes: [10_100]), "error 10100"),
+			(.unauthorized, "Connect Cloudflare again"),
+			(.credentials(.retired), "is being disconnected"),
+			(.forbidden, "can't change this Worker"),
+			(.unreachable, "nothing was sent"),
 		]
-		for (error, text, reconnect) in expectations {
+		for (error, text) in expectations {
 			let worker = Simulator(secrets: ["A"])
 			let reviewed = try await review(worker)
 			worker.updateFailure = error
@@ -443,7 +449,8 @@ struct CloudflarePublishingTests {
 				continue
 			}
 			#expect(message.contains(text), "\(error): \(message)")
-			#expect(report.needsReconnect == reconnect)
+			// Each row says what to do; the results add no line of their own that could contradict it.
+			#expect(!report.needsReconnect)
 			#expect(report.published.isEmpty && report.unconfirmed.isEmpty)
 		}
 	}
@@ -501,6 +508,10 @@ private final class FlakySimulator: CloudflareClientProtocol, @unchecked Sendabl
 		self.changingReads = changingReads
 	}
 
+	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError> {
+		await base.workers(in: account)
+	}
+
 	func worker(_ idOrName: String, in account: String) async -> Result<CloudflareWorker, CloudflareAPIError> {
 		await base.worker(idOrName, in: account)
 	}
@@ -551,6 +562,10 @@ private final class AfterSimulator: CloudflareClientProtocol, @unchecked Sendabl
 		self.failsIdentityAfterUpdate = failsIdentityAfterUpdate
 		self.takesNameAfterUpdate = takesNameAfterUpdate
 		self.limitsFirstUpdate = limitsFirstUpdate
+	}
+
+	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError> {
+		await base.workers(in: account)
 	}
 
 	func worker(_ idOrName: String, in account: String) async -> Result<CloudflareWorker, CloudflareAPIError> {

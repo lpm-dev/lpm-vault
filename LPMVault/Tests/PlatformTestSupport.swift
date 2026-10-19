@@ -200,8 +200,8 @@ extension PlatformAuthorizationEnvelope.Sealed {
 
 let platformTestPrincipal = "user_lpm_0001"
 
-func platformTestSession(_ baseURL: URL) -> PlatformSession {
-	PlatformSession(token: "lpm_session_token", principalID: platformTestPrincipal, baseURL: baseURL)
+func platformTestSession(_ baseURL: URL, issuer: PlatformIssuer = .development) -> PlatformSession {
+	PlatformSession(token: "lpm_session_token", principalID: platformTestPrincipal, baseURL: baseURL, issuer: issuer)
 }
 
 /// The query of a return to the Mac's listener, signed as a local Registry

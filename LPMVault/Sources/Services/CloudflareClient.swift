@@ -22,6 +22,11 @@ enum CloudflareAPIError: Error, Equatable, Sendable {
 	case server(Int)
 	/// Cloudflare redirected the request. A redirect is never followed.
 	case moved
+	/// The connection's token couldn't be read or renewed, so nothing was sent.
+	case credentials(PlatformCredentialError)
+	/// The connection's token was renewed since the last request, so a
+	/// publish checks the Worker again before sending; nothing was sent.
+	case renewed
 
 	/// Cloudflare's code for a Worker that doesn't exist.
 	static let workerMissingCode = 10_007
@@ -112,7 +117,24 @@ struct CloudflareSecretsUpdate: Equatable, Sendable {
 	let answeredAt: Date?
 }
 
+/// Who a token belongs to, as Cloudflare's userinfo answers.
+struct CloudflareUserInfo: Equatable, Sendable {
+	/// The login's `sub`, which LPM Vault keeps only as a key; see `CloudflareLogin.key(subject:)`.
+	let subject: String
+}
+
+/// Who a new Cloudflare token belongs to, and what it reaches.
+protocol CloudflareIdentityProtocol: Sendable {
+	/// Whose the token is, when Cloudflare's userinfo names Cloudflare as its
+	/// issuer and `clientID` among its audience.
+	func userInfo(clientID: String) async -> Result<CloudflareUserInfo, CloudflareAPIError>
+	/// The accounts the token reaches, the ones the person chose when approving LPM Vault, by name.
+	func accounts() async -> Result<[CloudflareAccount], CloudflareAPIError>
+}
+
 protocol CloudflareClientProtocol: Sendable {
+	/// The account's Workers, by name.
+	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError>
 	/// The Worker with the ID or script name, as Cloudflare names it now.
 	func worker(_ idOrName: String, in account: String) async -> Result<CloudflareWorker, CloudflareAPIError>
 	/// The Worker's newest version, by the Worker's ID.
@@ -275,16 +297,142 @@ enum CloudflareHTTP {
 }
 
 /// Cloudflare's API with one connection's access token. Requests go only
-/// to `baseURL`, and redirects are refused so the token never follows one.
-struct CloudflareClient: CloudflareClientProtocol, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+/// to `baseURL`, and userinfo's, and redirects are refused so the token
+/// never follows one.
+struct CloudflareClient: CloudflareClientProtocol, CloudflareIdentityProtocol, CustomStringConvertible, CustomDebugStringConvertible,
+	CustomReflectable
+{
+	/// How many items a page of a list asks for.
+	static let pageSize = 50
+	/// The most pages of a list read: a login's accounts, or an account's Workers.
+	static let maximumPages = 20
+
 	private let token: String
 	private let baseURL: URL
+	private let userInfoURL: URL
 	let session: URLSession
 
-	init(token: String, baseURL: URL = CloudflareHTTP.defaultBaseURL, session: URLSession? = nil) {
+	init(
+		token: String,
+		baseURL: URL = CloudflareHTTP.defaultBaseURL,
+		userInfoURL: URL = CloudflareOAuth.userInfoURL,
+		session: URLSession? = nil
+	) {
 		self.token = token
 		self.baseURL = baseURL
+		self.userInfoURL = userInfoURL
 		self.session = session ?? CloudflareHTTP.sharedSession
+	}
+
+	func userInfo(clientID: String) async -> Result<CloudflareUserInfo, CloudflareAPIError> {
+		let data: Data
+		do {
+			let (body, response) = try await BoundedHTTPResponse.load(
+				for: CloudflareHTTP.request("GET", userInfoURL, token: token), using: session, maximumBytes: 16 * 1024)
+			guard let http = response as? HTTPURLResponse else { return .failure(.invalidResponse) }
+			guard (200..<300).contains(http.statusCode) else { return .failure(CloudflareHTTP.failure(http, body: body)) }
+			data = body
+		} catch is BoundedHTTPResponse.LoadError {
+			return .failure(.invalidResponse)
+		} catch is CancellationError {
+			return .failure(.cancelled)
+		} catch let error as URLError {
+			return .failure(CloudflareHTTP.failure(error))
+		} catch {
+			return .failure(.transport)
+		}
+		guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+			object["iss"] as? String == CloudflareOAuth.issuer,
+			Self.audience(object["aud"]).contains(clientID),
+			let subject = object["sub"] as? String, CloudflareLogin.isValidSubject(subject)
+		else { return .failure(.invalidResponse) }
+		return .success(CloudflareUserInfo(subject: subject))
+	}
+
+	/// The audience a token names: one client ID, or a list of them.
+	private static func audience(_ value: Any?) -> [String] {
+		switch value {
+		case let single as String: [single]
+		case let list as [Any]: list.compactMap { $0 as? String }
+		default: []
+		}
+	}
+
+	func accounts() async -> Result<[CloudflareAccount], CloudflareAPIError> {
+		// Not `/memberships`, which lists every account the login belongs to, chosen or not.
+		await pages(["accounts"]) { (item: Any) -> CloudflareAccount? in
+			guard let account = item as? [String: Any], let id = account["id"] as? String, CloudflareHTTP.isValidID(id) else { return nil }
+			return CloudflareAccount(id: id, name: ProviderName.distinguishable(account["name"] as? String) ?? "Account \(id.prefix(8))")
+		}
+		.map { found in
+			var seen: Set<String> = []
+			let accounts = found.filter { seen.insert($0.id).inserted }
+			// Accounts whose names read alike are told apart by their IDs, wherever they're named.
+			var named: [String: Int] = [:]
+			for account in accounts { named[CloudflareLogin.comparable(account.name), default: 0] += 1 }
+			let distinct = accounts.map { account in
+				named[CloudflareLogin.comparable(account.name), default: 0] > 1 ? Self.withID(account) : account
+			}
+			return Array(distinct.sorted(by: Self.byName).prefix(CloudflareAccount.maximumCount))
+		}
+	}
+
+	/// The account named with the start of its ID, its name cut short where both wouldn't fit a name.
+	private static func withID(_ account: CloudflareAccount) -> CloudflareAccount {
+		let suffix = " (\(account.id.prefix(8)))"
+		var name = Substring(account.name)
+		while name.utf8.count + suffix.utf8.count > ProviderName.maximumBytes { name = name.dropLast() }
+		return CloudflareAccount(id: account.id, name: name + suffix)
+	}
+
+	func workers(in account: String) async -> Result<[CloudflareWorker], CloudflareAPIError> {
+		guard CloudflareHTTP.isValidID(account) else { return .failure(.invalidResponse) }
+		// By name, which a deploy during the listing doesn't change, unlike the default order by deploy time.
+		let order = [URLQueryItem(name: "order_by", value: "name"), URLQueryItem(name: "order", value: "asc")]
+		return await pages(["accounts", account, "workers", "workers"], query: order) { (item: Any) -> CloudflareWorker? in
+			guard let worker = item as? [String: Any], let id = worker["id"] as? String, CloudflareHTTP.isValidID(id),
+				let name = worker["name"] as? String, CloudflareHTTP.isValidScriptName(name)
+			else { return nil }
+			return CloudflareWorker(id: id, name: name)
+		}
+		.map { found in
+			var seen: Set<String> = []
+			return found.filter { seen.insert($0.id).inserted }.sorted { $0.name == $1.name ? $0.id < $1.id : $0.name < $1.name }
+		}
+	}
+
+	private static func byName(_ lhs: CloudflareAccount, _ rhs: CloudflareAccount) -> Bool {
+		switch lhs.name.localizedStandardCompare(rhs.name) {
+		case .orderedAscending: true
+		case .orderedDescending: false
+		case .orderedSame: lhs.id < rhs.id
+		}
+	}
+
+	/// Every item of a paged list, as `read` makes them; an item it can't
+	/// read is left out. A page shorter than a full one is the last, and one
+	/// longer than asked for isn't Cloudflare's answer, so the list isn't read.
+	private func pages<Item>(
+		_ path: [String],
+		query: [URLQueryItem] = [],
+		_ read: (Any) -> Item?
+	) async -> Result<[Item], CloudflareAPIError> {
+		var items: [Item] = []
+		for page in 1...Self.maximumPages {
+			guard let url = PlatformURL.url(
+				baseURL, path,
+				query: query + [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "per_page", value: String(Self.pageSize))])
+			else { return .failure(.invalidResponse) }
+			switch await CloudflareHTTP.load(CloudflareHTTP.request("GET", url, token: token), using: session) {
+			case .success(let loaded):
+				guard let list = loaded.result as? [Any], list.count <= Self.pageSize else { return .failure(.invalidResponse) }
+				items.append(contentsOf: list.compactMap(read))
+				if list.count < Self.pageSize { return .success(items) }
+			case .failure(let error):
+				return .failure(error)
+			}
+		}
+		return .success(items)
 	}
 
 	var description: String { "CloudflareClient(\(baseURL.host() ?? "?"), token: <redacted>)" }

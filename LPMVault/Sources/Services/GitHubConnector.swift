@@ -6,7 +6,7 @@ struct GitHubConnection: Equatable, Sendable, CustomStringConvertible, CustomDeb
 	let user: GitHubUser
 	let tokens: PlatformTokens
 	let appSlug: String
-	/// When the grant was opened, which the tokens' lifetimes count from.
+	/// When the Registry completed the grant, which the tokens' lifetimes count from.
 	let receivedAt: Date
 
 	var description: String { "GitHubConnection(user: \(user.id), app: \(appSlug), tokens: <redacted>)" }
@@ -46,11 +46,14 @@ struct GitHubConnector: Sendable {
 		open: @escaping @Sendable (URL) async -> Void
 	) async -> Result<GitHubConnection, BrowserConnectError> {
 		let grant: GitHubGrant
+		let receivedAt: Date
 		switch await authorization.grant(GitHubGrant.self, session: session, open: open) {
-		case .success(let value): grant = value
+		case .success(let value):
+			grant = value.grant
+			// A grant collected late, as after its answer was lost, is as old as the Registry says.
+			receivedAt = now().addingTimeInterval(-TimeInterval(value.age))
 		case .failure(let error): return .failure(error)
 		}
-		let receivedAt = now()
 
 		let github = client(grant.tokens.accessToken)
 		var rateLimitWaits = 0

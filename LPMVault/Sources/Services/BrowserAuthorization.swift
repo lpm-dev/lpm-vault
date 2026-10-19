@@ -20,6 +20,8 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 	case tokenRejected
 	/// The platform didn't say whose the token it had just granted is.
 	case accountUnreadable
+	/// The person approved LPM Vault for no account it can reach.
+	case noAccounts
 	/// The platform was limiting requests when the new connection was read,
 	/// until the time it said, when it did.
 	case platformRateLimited(until: Date?)
@@ -42,6 +44,7 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 		case .expired: "This connection expired. Connect again."
 		case .tokenRejected: "\(name) didn't accept the new connection. Connect again."
 		case .accountUnreadable: "\(name) didn't say which account was connected. Connect again."
+		case .noAccounts: "\(name) gave LPM Vault no account to reach. Connect again, and choose the accounts whose Workers it publishes to."
 		case .platformRateLimited(let reset?) where reset.timeIntervalSince(now) > 90:
 			"\(name) is limiting requests until \(reset.formatted(date: .omitted, time: .shortened)). Connect again then."
 		// GitHub backs off for minutes from limits it doesn't time; Netlify's window is a minute.
@@ -51,6 +54,19 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 		case .invalidResponse: "lpm.dev returned an answer LPM Vault couldn't verify. Try again."
 		}
 	}
+}
+
+/// A grant a browser connection collected.
+struct BrowserGrant<Grant: PlatformGrant>: Sendable {
+	let grant: Grant
+	/// How many seconds before it was collected the Registry completed it,
+	/// which its tokens' lifetimes count from.
+	let age: Int
+	/// The platform's page the person approved it on, as the Registry gave it.
+	let pageURL: URL
+	/// The connection was cancelled after the browser came back, so the grant
+	/// was collected only to be revoked.
+	let wasCancelled: Bool
 }
 
 /// Connects a platform account in the browser through the Registry, up to
@@ -85,11 +101,21 @@ struct BrowserAuthorization: Sendable {
 	/// Runs one connection: `open` shows the platform's page, then this
 	/// waits for the browser and collects the grant, once. An authorization
 	/// that ends without being collected is cancelled on the Registry.
+	///
+	/// With `collectsAfterReturn`, for a platform whose grant LPM Vault can
+	/// revoke, a connection cancelled once the browser has come back still
+	/// collects its grant, marked as cancelled: the platform has issued its
+	/// tokens by then, and only whoever holds them can end them.
+	///
+	/// `acceptsPage` checks the page the Registry gave before it's opened; a
+	/// page it refuses is never opened, and the connection ends.
 	func grant<Grant: PlatformGrant>(
 		_: Grant.Type,
 		session: PlatformSession,
+		collectsAfterReturn: Bool = false,
+		acceptsPage: @escaping @Sendable (URL) -> Bool = { _ in true },
 		open: @escaping @Sendable (URL) async -> Void
-	) async -> Result<Grant, BrowserConnectError> {
+	) async -> Result<BrowserGrant<Grant>, BrowserConnectError> {
 		let platform = Grant.platform
 		let key = P256.KeyAgreement.PrivateKey()
 		let listener: PlatformConnectionListener
@@ -115,6 +141,7 @@ struct BrowserAuthorization: Sendable {
 			}
 		}
 
+		guard acceptsPage(started.pageURL) else { return .failure(.invalidResponse) }
 		listener.expect(started.id, from: session.baseURL)
 		guard !Task.isCancelled else { return .failure(.cancelled) }
 		await open(started.pageURL)
@@ -136,29 +163,76 @@ struct BrowserAuthorization: Sendable {
 		case .proof(let value): proof = value
 		}
 
-		var sealed: PlatformAuthorizationEnvelope.Sealed?
-		for attempt in 0...Self.pendingRetries {
-			switch await authorizations.redeem(started.id, on: platform, proof: proof, session: session) {
-			case .success(.ready(let value)):
-				collected = true
-				sealed = value
-			case .success(.pending) where attempt < Self.pendingRetries:
-				do { try await Task.sleep(for: pendingDelay) } catch { return .failure(.cancelled) }
-				continue
-			case .success(.pending): return .failure(.invalidResponse)
-			case .success(.failed(let code)): return .failure(.platform(PlatformConnectFailure(code: code)))
-			case .success(.expired), .success(.missing): return .failure(.expired)
-			case .success(.proofMismatch): return .failure(.proofRejected)
-			case .failure(let error): return .failure(Self.connectError(error))
-			}
-			break
+		let redeeming = redeem(
+			started.id, on: platform, proof: proof, session: session, until: started.expiresAt.addingTimeInterval(Self.exchangeWindow))
+		let redeemed: Result<(PlatformAuthorizationEnvelope.Sealed, age: Int), BrowserConnectError>
+		if collectsAfterReturn {
+			// Its own task, so cancelling the connection doesn't abandon a grant the platform already issued.
+			redeemed = await Task { await redeeming() }.value
+		} else {
+			redeemed = await redeeming()
 		}
-		guard let sealed else { return .failure(.invalidResponse) }
+		let sealed: PlatformAuthorizationEnvelope.Sealed
+		let age: Int
+		switch redeemed {
+		case .success(let value):
+			collected = true
+			(sealed, age) = value
+		case .failure(let error):
+			return .failure(error)
+		}
 
 		switch PlatformAuthorizationEnvelope.open(sealed, as: Grant.self, authorizationID: started.id, clientKey: key) {
-		case .success(let grant): return .success(grant)
+		case .success(let grant):
+			return .success(BrowserGrant(grant: grant, age: age, pageURL: started.pageURL, wasCancelled: Task.isCancelled))
 		case .failure: return .failure(.invalidResponse)
 		}
+	}
+
+	/// Collects the grant with the browser's proof, asking again while it's
+	/// pending. An answer that was lost, or refused for now, is asked for
+	/// again with the same proof until `deadline`, for as long as the
+	/// Registry keeps the result: the platform may have issued the grant
+	/// already, and one never collected can't be revoked.
+	private func redeem(
+		_ id: String,
+		on platform: BrowserPlatform,
+		proof: String,
+		session: PlatformSession,
+		until deadline: Date
+	) -> @Sendable () async -> Result<(PlatformAuthorizationEnvelope.Sealed, age: Int), BrowserConnectError> {
+		{ [authorizations, pendingDelay] in
+			var pending = 0
+			var lost = 0
+			while true {
+				let delay: Duration
+				let failure: BrowserConnectError
+				switch await authorizations.redeem(id, on: platform, proof: proof, session: session) {
+				case .success(.ready(let sealed, let age)):
+					return .success((sealed, age))
+				case .success(.pending):
+					guard pending < Self.pendingRetries else { return .failure(.invalidResponse) }
+					pending += 1
+					delay = pendingDelay
+					failure = .invalidResponse
+				case .success(.failed(let code)): return .failure(.platform(PlatformConnectFailure(code: code)))
+				case .success(.expired), .success(.missing): return .failure(.expired)
+				case .success(.proofMismatch): return .failure(.proofRejected)
+				case .failure(let error) where [.transport, .rateLimited, .unavailable].contains(error) || Self.isServerError(error):
+					// Backing off, up to eight times the delay.
+					delay = pendingDelay * (1 << min(lost, 3))
+					lost += 1
+					failure = Self.connectError(error)
+				case .failure(let error): return .failure(Self.connectError(error))
+				}
+				guard Date().addingTimeInterval(delay / .seconds(1)) < deadline else { return .failure(failure) }
+				do { try await Task.sleep(for: delay) } catch { return .failure(.cancelled) }
+			}
+		}
+	}
+
+	private static func isServerError(_ error: PlatformAuthorizationError) -> Bool {
+		if case .server = error { true } else { false }
 	}
 
 	private static func connectError(_ error: PlatformAuthorizationError) -> BrowserConnectError {

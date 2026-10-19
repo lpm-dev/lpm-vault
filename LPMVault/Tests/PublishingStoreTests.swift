@@ -204,6 +204,7 @@ struct PublishingStoreTests {
 		arguments: [
 			(AppKeychainStore.publishing, "dev.lpm.vault.publishing"),
 			(AppKeychainStore.platformConnections, "dev.lpm.vault.platforms"),
+			(AppKeychainStore.platformCleanup, "dev.lpm.vault.platform-cleanup"),
 		]
 	)
 	func appOnlyItems(store: AppKeychainStore, service: String) {
@@ -402,6 +403,23 @@ struct PublishDestinationFollowTests {
 		await store.loadPublishDestinations(for: "project")
 		#expect(keychain.appItemReadCount(.platformConnections) == reads)
 		#expect(store.publishDestinations["project"]?.first?.accountDetail == "acme")
+	}
+
+	@Test("a Worker destination's menu item names its account once: the title does, so the subtitle doesn't")
+	func cloudflareMenuNamesAccountOnce() async throws {
+		let (store, _) = makeStore()
+		defer { store.lock() }
+		let destination = PublishDestination(
+			sourceEnvironment: "staging",
+			target: .cloudflare(CloudflarePublishTarget(
+				accountID: CloudflareLoginFixture.acme.id, accountName: "Acme", workerID: CloudflareFixture.workerID, workerName: "api",
+				preferredLogin: CloudflareLogin.key(subject: CloudflareLoginFixture.subject))),
+			createdAt: Date())
+		_ = try await store.publishing.save(destination, to: "project").get()
+		await store.loadPublishDestinations(for: "project")
+		let summary = try #require(store.publishDestinations["project"]?.first)
+		#expect(VaultTitleBarView.title(of: summary.destination) == "api / Worker secrets (runtime) — Cloudflare · Acme")
+		#expect(!VaultTitleBarView.subtitle(of: summary).contains("Acme"))
 	}
 
 	@Test("an environment rename saved as the vault locks still moves its destinations")

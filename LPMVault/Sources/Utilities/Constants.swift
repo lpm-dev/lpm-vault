@@ -22,6 +22,11 @@ enum VaultConstants {
 	/// kept in `appKeychainAccessGroup`.
 	static let platformConnectionsKeychainService = "dev.lpm.vault.platforms"
 
+	/// Keychain service for the cleanup of platform connections LPM Vault
+	/// retired: the tokens it's still revoking, the notes of those it couldn't
+	/// confirm, and the salt of Cloudflare logins' labels, kept in `appKeychainAccessGroup`.
+	static let platformCleanupKeychainService = "dev.lpm.vault.platform-cleanup"
+
 	/// Maximum recommended vault size in bytes (90KB warning threshold)
 	static let maxVaultSizeWarning = 90 * 1024
 

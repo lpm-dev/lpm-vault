@@ -687,7 +687,7 @@ struct PlatformCredentialsTests {
 		let clock = TestDate(start.addingTimeInterval(8 * 3_600))
 		let refresher = ScriptedTokenRefresher { _, _ in .failure(.transport) }
 		#expect(await credentials(refresher, at: clock, session: .some(nil)).accessToken(for: id) == .failure(.signedOut))
-		let other = PlatformSession(token: "lpm_other", principalID: "user_someone_else", baseURL: registry)
+		let other = PlatformSession(token: "lpm_other", principalID: "user_someone_else", baseURL: registry, issuer: .development)
 		#expect(await credentials(refresher, at: clock, session: other).accessToken(for: id) == .failure(.otherAccount))
 		#expect(refresher.calls.isEmpty)
 		#expect(try await store.record(for: id).get().refresh?.attempt == nil, "Nothing is begun without the account that can finish it")
