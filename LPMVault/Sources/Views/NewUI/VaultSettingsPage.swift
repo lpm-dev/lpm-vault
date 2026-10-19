@@ -100,13 +100,15 @@ struct VaultSettingsPage: View {
 			}
 		}
 		.background(VaultPalette.content)
-		.confirmationDialog("Sign out?", isPresented: $showLogoutConfirmation, titleVisibility: .visible) {
-			Button("Sign Out", role: .destructive) {
-				Task { await store.logout() }
-			}
-			Button("Cancel", role: .cancel) {}
-		} message: {
-			Text("Your local env data stays in Keychain. You can sign in again anytime.")
+		.vaultConfirmation(isPresented: $showLogoutConfirmation) {
+			VaultConfirmation(
+				symbol: "rectangle.portrait.and.arrow.right",
+				title: "Sign out of LPM?",
+				message: "Your local env data stays in Keychain. You can sign in again anytime.",
+				subject: store.currentUser.map { user in
+					.init(mark: .initials(String(user.username.prefix(1)).uppercased()), name: "@\(user.username)", detail: user.email)
+				},
+				actions: [.init(title: "Sign Out") { Task { await store.logout() } }])
 		}
 		.onChange(of: isObscured) { _, obscured in
 			if obscured { showLogoutConfirmation = false }

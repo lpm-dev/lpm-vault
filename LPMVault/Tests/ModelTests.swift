@@ -40,6 +40,32 @@ extension SheetInteractionTests {
 			#expect(!labels.contains("Use local"))
 			#endif
 		}
+
+		@Test("Sign out asks first, naming the account in a card, and Esc keeps it signed in")
+		func signOutAsks() async throws {
+			let store = VaultStore(
+				keychainService: MockKeychainService(),
+				biometricService: MockBiometricService(),
+				apiService: MockAPIService(),
+				authTokenProvider: { _, _ in nil }
+			)
+			store.currentUser = LPMUser(id: "u1", username: "tolga", name: nil, email: "tolga@example.com", avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
+			let host = SheetTestHost(AuthStatusView(store: store).environment(VaultAppearanceSettings())
+				.environment(UpdateChecker()), size: NSSize(width: 700, height: 700), keepsRequestedSize: true)
+			defer { host.window.close() }
+			try await host.click("Sign out")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Signing out asks first")
+			let dialog = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("Sign out of LPM?", exactly: true, in: dialog))
+			#expect(try await host.waitForText("@tolga", in: dialog))
+			#expect(try await host.waitForText("tolga@example.com", in: dialog))
+			let escape = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+				timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: dialog.windowNumber, context: nil,
+				characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+			#expect(dialog.performKeyEquivalent(with: escape))
+			#expect(try await host.waitUntil { host.window.sheets.isEmpty })
+			#expect(store.currentUser != nil)
+		}
 	}
 }
 

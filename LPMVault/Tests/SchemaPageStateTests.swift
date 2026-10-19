@@ -322,7 +322,8 @@ extension SheetInteractionTests {
 			try await host.click("Discard")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Discarding that can't be undone asks first")
 			#expect(store.schemaDraft(for: "schema-keys") != nil)
-			try host.clickAlertButton("Discard", in: try #require(host.window.sheets.first))
+			let dialog = try #require(host.window.sheets.first)
+			try await host.click("Discard", in: dialog)
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-keys") == nil })
 		}
 

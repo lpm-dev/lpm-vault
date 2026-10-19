@@ -38,11 +38,17 @@ struct PublishSheet: View {
 		.onChange(of: store.selectedProjectId) { _, id in if id != session.vaultID { close() } }
 		.onChange(of: store.selectedAccount) { _, _ in close() }
 		.onChange(of: isObscured) { _, obscured in if obscured { confirmingForget = false } }
-		.confirmationDialog("Forget this destination?", isPresented: $confirmingForget, titleVisibility: .visible) {
-			Button("Forget Destination", role: .destructive) { forget() }
-			Button("Cancel", role: .cancel) {}
-		} message: {
-			Text("LPM Vault forgets where this environment publishes and what it published there. Nothing changes on \(platformName).")
+		.vaultConfirmation(isPresented: $confirmingForget) {
+			VaultConfirmation(
+				symbol: "trash",
+				title: "Forget this destination?",
+				message: "LPM Vault forgets where this environment publishes and what it published there. Nothing changes on \(platformName).",
+				subject: session.saved.map { saved in
+					.init(
+						mark: .platform(saved.target.platform), name: saved.target.placeName,
+						detail: "\(saved.target.platform.displayName) · \(saved.target.accountName) · from \(VaultProject.displayName(for: saved.sourceEnvironment))")
+				},
+				actions: [.init(title: "Forget Destination") { forget() }])
 		}
 	}
 

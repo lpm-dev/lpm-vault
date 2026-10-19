@@ -594,85 +594,103 @@ struct VaultWorkspaceView: View {
 
 	private var workspaceDialogs: some View {
 		workspaceSheets
-		.alert("Rename Environment", isPresented: Binding(
-			get: { renameEnvironmentTarget != nil },
-			set: { if !$0 { renameEnvironmentTarget = nil } }
-		)) {
-			TextField("Environment name", text: $environmentNameDraft)
-			Button("Cancel", role: .cancel) { renameEnvironmentTarget = nil }
-			Button("Rename", action: renameEnvironment)
-				.disabled(!validEnvironmentDraft)
+		.vaultPrompt(item: $renameEnvironmentTarget) { target in
+			VaultPrompt(
+				symbol: "pencil",
+				title: "Rename \(VaultProject.displayName(for: target.environment))",
+				message: "The environment keeps its keys and values.",
+				problem: environmentNameProblem(renaming: target.environment),
+				placeholder: "Environment name",
+				text: $environmentNameDraft,
+				confirmTitle: "Rename",
+				canConfirm: validEnvironmentDraft,
+				confirm: renameEnvironment)
 		}
-		.alert("Duplicate Environment", isPresented: Binding(
-			get: { duplicateEnvironmentTarget != nil },
-			set: { if !$0 { duplicateEnvironmentTarget = nil } }
-		)) {
-			TextField("New environment name", text: $environmentNameDraft)
-			Button("Cancel", role: .cancel) { duplicateEnvironmentTarget = nil }
-			Button("Duplicate", action: duplicateEnvironment)
-				.disabled(!validEnvironmentDraft)
+		.vaultPrompt(item: $duplicateEnvironmentTarget) { target in
+			VaultPrompt(
+				symbol: "plus.square.on.square",
+				title: "Duplicate \(VaultProject.displayName(for: target.environment))",
+				message: "The copy starts with the same keys and values.",
+				problem: environmentNameProblem(renaming: nil),
+				placeholder: "New environment name",
+				text: $environmentNameDraft,
+				confirmTitle: "Duplicate",
+				canConfirm: validEnvironmentDraft,
+				confirm: duplicateEnvironment)
 		}
-		.confirmationDialog("Delete local env project?", isPresented: Binding(
-			get: { projectToDelete != nil },
-			set: { if !$0 { projectToDelete = nil } }
-		), titleVisibility: .visible) {
-			if let projectToDelete {
-				Button("Delete \"\(projectToDelete.name)\" Locally", role: .destructive) {
-					Task { _ = await store.deleteLocalVault(projectToDelete); self.projectToDelete = nil }
-				}
-			}
-			Button("Cancel", role: .cancel) { projectToDelete = nil }
-		} message: {
-			Text("This removes the local Keychain copy. A synced cloud copy is not deleted.")
+		.vaultConfirmation(item: $projectToDelete) { project in
+			VaultConfirmation(
+				symbol: "trash",
+				title: "Delete this project locally?",
+				message: "Removes the project and its Keychain values from this Mac. Its folder, its lpm.json and a synced cloud copy stay.",
+				subject: .init(
+					mark: .project(store.projectIcons.appearance(for: project.id)), name: project.name,
+					detail: project.path.isEmpty ? nil : (project.path as NSString).abbreviatingWithTildeInPath),
+				actions: [.init(title: "Delete Locally") { Task { _ = await store.deleteLocalVault(project) } }])
 		}
-		.confirmationDialog("Delete environment?", isPresented: Binding(
-			get: { deleteEnvironmentTarget != nil },
-			set: { if !$0 { deleteEnvironmentTarget = nil } }
-		), titleVisibility: .visible) {
-			if let target = deleteEnvironmentTarget {
-				Button("Delete \"\(VaultProject.displayName(for: target.environment))\"", role: .destructive) {
-					store.deleteEnvironment(from: target.projectId, name: target.environment)
-					deleteEnvironmentTarget = nil
-				}
-			}
-			Button("Cancel", role: .cancel) { deleteEnvironmentTarget = nil }
+		.vaultConfirmation(item: $deleteEnvironmentTarget) { target in
+			VaultConfirmation(
+				symbol: "trash",
+				title: "Delete this environment?",
+				message: "The environment and its values leave this Mac's Keychain. The project's other environments stay as they are.",
+				subject: environmentSubject(target),
+				actions: [.init(title: "Delete Environment") { store.deleteEnvironment(from: target.projectId, name: target.environment) }])
 		}
-		.confirmationDialog("Clear all secrets?", isPresented: Binding(
-			get: { clearEnvironmentTarget != nil },
-			set: { if !$0 { clearEnvironmentTarget = nil } }
-		), titleVisibility: .visible) {
-			if let target = clearEnvironmentTarget {
-				Button("Clear All Secrets", role: .destructive) {
-					store.clearEnvironment(in: target.projectId, name: target.environment)
-					clearEnvironmentTarget = nil
-				}
-			}
-			Button("Cancel", role: .cancel) { clearEnvironmentTarget = nil }
+		.vaultConfirmation(item: $clearEnvironmentTarget) { target in
+			VaultConfirmation(
+				symbol: "eraser",
+				title: "Clear every key from this environment?",
+				message: "Its keys and values leave this Mac's Keychain, and the environment stays, empty. The project's other environments stay as they are.",
+				subject: environmentSubject(target),
+				actions: [.init(title: "Clear All Secrets") { store.clearEnvironment(in: target.projectId, name: target.environment) }])
 		}
-		.confirmationDialog("Delete secret?", isPresented: Binding(
-			get: { deleteSecretTarget != nil },
-			set: { if !$0 { deleteSecretTarget = nil } }
-		), titleVisibility: .visible) {
-			if let target = deleteSecretTarget {
-				Button("Delete \"\(target.key)\" from \(VaultProject.displayName(for: target.environment))", role: .destructive) {
-					deleteSecret(target)
-					deleteSecretTarget = nil
-				}
-			}
-			Button("Cancel", role: .cancel) { deleteSecretTarget = nil }
-		} message: {
-			if let target = deleteSecretTarget {
-				Text("Only \(VaultProject.displayName(for: target.environment)) is changed.")
-			}
+		.vaultConfirmation(item: $deleteSecretTarget) { target in
+			VaultConfirmation(
+				symbol: "trash",
+				title: "Delete this key?",
+				message: "Only \(VaultProject.displayName(for: target.environment)) is changed.",
+				subject: .init(
+					mark: .symbol("key"), name: target.key,
+					detail: "\(VaultProject.displayName(for: target.environment)) · \(store.projects.first { $0.id == target.projectId }?.name ?? "")"),
+				actions: [.init(title: "Delete Key") { deleteSecret(target) }])
 		}
-		.alert("LPM Vault", isPresented: Binding(
-			get: { store.error != nil },
-			set: { if !$0 { store.error = nil } }
-		)) {
-			Button("OK", role: .cancel) { store.error = nil }
-		} message: {
-			Text(store.error ?? "An unexpected error occurred.")
+		.vaultConfirmation(item: Binding(
+			get: { store.error.map(ShownError.init) },
+			set: { if $0 == nil { store.error = nil } }
+		)) { shown in
+			VaultConfirmation(
+				symbol: "exclamationmark.triangle",
+				tone: .warning,
+				title: "LPM Vault couldn't finish that",
+				message: shown.message,
+				cancelTitle: nil,
+				actions: [.init(title: "OK") {}])
 		}
+	}
+
+	private struct ShownError: Identifiable {
+		let message: String
+		var id: String { message }
+	}
+
+	/// An environment the confirmation acts on, as the sidebar shows it: its color, its name, its keys and its project.
+	private func environmentSubject(_ target: VaultEnvironmentTarget) -> VaultConfirmation.Subject {
+		let project = store.projects.first { $0.id == target.projectId }
+		let index = project.flatMap { store.orderedEnvironmentNames(for: $0).firstIndex(of: target.environment) } ?? 0
+		let keys = project?.secretCount(for: target.environment).counted("key")
+		return .init(
+			mark: .environment(VaultPalette.environment(index)), name: VaultProject.displayName(for: target.environment),
+			detail: [keys, project?.name].compactMap { $0 }.joined(separator: " · "))
+	}
+
+	/// Why the name typed can't be used, if it can't; a rename's own name isn't taken.
+	private func environmentNameProblem(renaming current: String?) -> String? {
+		let candidate = environmentNameDraft.trimmingCharacters(in: .whitespaces)
+		if !candidate.isEmpty, !EnvValidation.isValidEnvironmentName(candidate) {
+			return "Use 1–64 ASCII letters, numbers, dots, dashes, or underscores. Do not use __index__ or '..'."
+		}
+		if candidate != current, project?.environments[candidate] != nil { return "That environment already exists." }
+		return nil
 	}
 
 	@ViewBuilder

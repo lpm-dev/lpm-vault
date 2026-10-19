@@ -850,11 +850,13 @@ struct VaultSchemaView: View {
 		.padding(.horizontal, 20)
 		.frame(height: VaultMetrics.statusBar)
 		.background(VaultPalette.headerRow)
-		.confirmationDialog("Discard your unsaved changes?", isPresented: $confirmsDiscard, titleVisibility: .visible) {
-			Button("Discard", role: .destructive, action: onDiscardAll)
-			Button("Cancel", role: .cancel) {}
-		} message: {
-			Text("lpm.json can't be read, so discarding can't be undone.")
+		.vaultConfirmation(isPresented: $confirmsDiscard) {
+			VaultConfirmation(
+				symbol: "exclamationmark.triangle",
+				title: "Discard your unsaved changes?",
+				message: "lpm.json can't be read, so discarding can't be undone.",
+				cancelTitle: "Keep Editing",
+				actions: [.init(title: "Discard", perform: onDiscardAll)])
 		}
 	}
 
