@@ -34,7 +34,6 @@ struct PlatformsView: View {
 				.padding(.horizontal, 24)
 				.padding(.top, 16)
 				.padding(.bottom, 18)
-				.frame(maxWidth: 900, alignment: .leading)
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
 		}
@@ -624,21 +623,20 @@ extension View {
 }
 
 /// Lays tiles out in as many columns at least `minimumColumnWidth` wide as
-/// fit, up to `maximumColumns`, with every tile in a row as tall as the
-/// row's tallest, so their bottom edges, and what they pin there, line up.
+/// fit, in rows as even as they can be, with every tile in a row as tall as
+/// the row's tallest, so their bottom edges, and what they pin there, line up.
 struct PlatformTileGrid: Layout {
 	var minimumColumnWidth: CGFloat = 220
-	var maximumColumns = 3
 	var spacing: CGFloat = 12
 
 	func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-		let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? idealWidth
+		let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? idealWidth(tiles: subviews.count)
 		let heights = rowHeights(subviews, width: width)
 		return CGSize(width: width, height: heights.reduce(0, +) + spacing * CGFloat(max(heights.count - 1, 0)))
 	}
 
 	func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-		let columns = columnCount(for: bounds.width)
+		let columns = columnCount(for: bounds.width, tiles: subviews.count)
 		let width = columnWidth(bounds.width, columns: columns)
 		var y = bounds.minY
 		for (row, height) in rowHeights(subviews, width: bounds.width).enumerated() {
@@ -653,12 +651,18 @@ struct PlatformTileGrid: Layout {
 		}
 	}
 
-	private var idealWidth: CGFloat {
-		minimumColumnWidth * CGFloat(maximumColumns) + spacing * CGFloat(maximumColumns - 1)
+	private func idealWidth(tiles: Int) -> CGFloat {
+		let columns = CGFloat(max(tiles, 1))
+		return minimumColumnWidth * columns + spacing * (columns - 1)
 	}
 
-	func columnCount(for width: CGFloat) -> Int {
-		max(1, min(maximumColumns, Int((width + spacing) / (minimumColumnWidth + spacing))))
+	/// The columns for `tiles` across `width`: as few rows as fit, then as
+	/// few columns as keep that many rows, so five tiles wrap as three and two, never four and one.
+	func columnCount(for width: CGFloat, tiles: Int) -> Int {
+		let fitting = max(1, Int((width + spacing) / (minimumColumnWidth + spacing)))
+		guard tiles > 0 else { return 1 }
+		let rows = (tiles + fitting - 1) / fitting
+		return (tiles + rows - 1) / rows
 	}
 
 	private func columnWidth(_ width: CGFloat, columns: Int) -> CGFloat {
@@ -666,7 +670,7 @@ struct PlatformTileGrid: Layout {
 	}
 
 	private func rowHeights(_ subviews: Subviews, width: CGFloat) -> [CGFloat] {
-		let columns = columnCount(for: width)
+		let columns = columnCount(for: width, tiles: subviews.count)
 		let proposal = ProposedViewSize(width: columnWidth(width, columns: columns), height: nil)
 		return stride(from: 0, to: subviews.count, by: columns).map { start in
 			subviews[start..<min(start + columns, subviews.count)].map { $0.sizeThatFits(proposal).height }.max() ?? 0

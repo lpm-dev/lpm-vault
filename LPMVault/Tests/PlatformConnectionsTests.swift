@@ -1033,12 +1033,13 @@ struct PlatformsPagePresentationTests {
 		#expect(PlatformsView.expiredNote(.coolify, signedIn: false) == "Reconnect to keep publishing through it.")
 	}
 
-	@Test("tiles take as many columns at least 220 points wide as fit, from one up to three")
+	@Test("tiles take as many columns at least 220 points wide as fit, then even out the rows")
 	func tileColumns() {
 		let grid = PlatformTileGrid()
-		#expect([0, 219, 372, 451].map(grid.columnCount(for:)) == [1, 1, 1, 1])
-		#expect([452, 600, 683].map(grid.columnCount(for:)) == [2, 2, 2])
-		#expect([684, 852, 4_000].map(grid.columnCount(for:)) == [3, 3, 3])
+		let widths: [CGFloat] = [0, 451, 452, 683, 684, 915, 916, 1_147, 1_148, 4_000]
+		#expect(widths.map { grid.columnCount(for: $0, tiles: 5) } == [1, 1, 2, 2, 3, 3, 3, 3, 5, 5], "3 and 2, never 4 and 1")
+		#expect(widths.map { grid.columnCount(for: $0, tiles: 4) } == [1, 1, 2, 2, 2, 2, 4, 4, 4, 4], "2 and 2, never 3 and 1")
+		#expect(grid.columnCount(for: 4_000, tiles: 0) == 1)
 	}
 
 	@Test("every platform's mark is bundled as a 24-point vector drawn in its tile's color")
@@ -1276,15 +1277,45 @@ extension SheetInteractionTests {
 
 		@Test("tiles in a row are as tall as each other, so their Connect buttons line up though their descriptions don't")
 		func tilesLineUp() async throws {
+			let (store, host) = try await page(size: NSSize(width: 1_000, height: 1_000))
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitUntil { !store.platforms.isLoading })
+			var buttons: [CGRect] = []
+			for platform in ["Vercel", "Netlify", "GitHub", "Coolify"] {
+				buttons.append(try await host.drawnFrame(saying: "Connect \(platform)"))
+			}
+			#expect(buttons.allSatisfy { abs($0.minY - buttons[0].minY) < 0.5 }, "One row, every Connect on one line: \(buttons)")
+			#expect(zip(buttons, buttons.dropFirst()).allSatisfy { $0.maxX < $1.minX }, "In the page's order: \(buttons)")
+		}
+
+		@Test("tiles that don't fit one row wrap into rows as even as they can be, never leaving one tile alone")
+		func tilesBalanceRows() async throws {
 			let (store, host) = try await page(size: NSSize(width: 760, height: 1_000))
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitUntil { !store.platforms.isLoading })
 			let vercel = try await host.drawnFrame(saying: "Connect Vercel")
+			let netlify = try await host.drawnFrame(saying: "Connect Netlify")
 			let github = try await host.drawnFrame(saying: "Connect GitHub")
 			let coolify = try await host.drawnFrame(saying: "Connect Coolify")
-			#expect(abs(vercel.minY - github.minY) < 0.5 && abs(vercel.height - github.height) < 0.5, "\(vercel) \(github)")
-			#expect(github.minX > vercel.maxX, "Vercel and GitHub share a row")
-			#expect(coolify.maxY < vercel.minY && abs(coolify.minX - vercel.minX) < 0.5, "Coolify starts the next row, under Vercel: \(coolify) \(vercel)")
+			#expect(abs(vercel.minY - netlify.minY) < 0.5 && netlify.minX > vercel.maxX, "Vercel and Netlify share the first row")
+			#expect(github.maxY < vercel.minY && abs(github.minX - vercel.minX) < 0.5, "GitHub starts the second row, under Vercel: \(github) \(vercel)")
+			#expect(abs(coolify.minY - github.minY) < 0.5 && abs(coolify.minX - netlify.minX) < 0.5, "Coolify sits beside it, under Netlify")
+		}
+
+		@Test("on a wide window the list and the tiles use its whole width")
+		func usesFullWidth() async throws {
+			_ = try await PlatformConnectionStore(service: keychain).save(
+				VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_acme", userID: "u_1")!,
+				account: VercelAccount(name: "Acme", slug: "acme"), at: Date()).get()
+			let width: CGFloat = 1_600
+			let (store, host) = try await page(size: NSSize(width: width, height: 900))
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Acme"))
+			let disconnect = try await host.drawnFrame(saying: "Disconnect Acme")
+			#expect(disconnect.maxX > width - 80, "The row's buttons reach the window's right edge: \(disconnect)")
+			let vercel = try await host.drawnFrame(saying: "Connect Vercel")
+			let coolify = try await host.drawnFrame(saying: "Connect Coolify")
+			#expect(abs(coolify.minY - vercel.minY) < 0.5 && coolify.minX > width * 0.7, "Every tile fits one row across the window: \(coolify)")
 		}
 
 		@Test("a connected team shows with its slug, and Disconnect asks first, then forgets it on this Mac")
