@@ -119,7 +119,7 @@ struct KeyApprovalSheet: View {
 					.foregroundStyle(approval.isNewMember ? .blue : .orange)
 
 				Text(approval.memberId)
-					.font(.subheadline.monospaced())
+					.font(.subheadline.monospacedDigit())
 
 				Spacer()
 
@@ -133,16 +133,21 @@ struct KeyApprovalSheet: View {
 					)
 			}
 
-			// Fingerprint
-			Text("Fingerprint: \(formatFingerprint(approval.fingerprint))")
-				.font(.caption.monospaced())
+			Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 6, verticalSpacing: 2) {
+				GridRow {
+					Text("Fingerprint:")
+					Text(formatFingerprint(approval.fingerprint))
+				}
 				.foregroundStyle(.secondary)
-
-			if let old = approval.oldFingerprint {
-				Text("Previous:    \(formatFingerprint(old))")
-					.font(.caption.monospaced())
+				if let old = approval.oldFingerprint {
+					GridRow {
+						Text("Previous:")
+						Text(formatFingerprint(old))
+					}
 					.foregroundStyle(.red.opacity(0.7))
+				}
 			}
+			.font(.caption.monospacedDigit())
 		}
 		.padding(8)
 		.background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))

@@ -27,7 +27,7 @@ struct VaultSourceBadge: View {
 
 	var body: some View {
 		Text(isOverridden ? "overrides \(source)" : source)
-			.font(VaultTypography.mono(10.5))
+			.font(VaultTypography.tabular(10.5))
 			.foregroundStyle(VaultPalette.textTertiary)
 			.lineLimit(1)
 			.padding(.horizontal, 6)

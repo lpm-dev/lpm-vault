@@ -119,7 +119,7 @@ private struct VaultSettingsRow<Control: View>: View {
 					.foregroundStyle(VaultPalette.textPrimary)
 				if detailIsSelectable {
 					Text(detail)
-						.font(VaultTypography.mono(11))
+						.font(VaultTypography.tabular(11))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.textSelection(.enabled)
 				} else {

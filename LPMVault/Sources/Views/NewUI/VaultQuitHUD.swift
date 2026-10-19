@@ -17,7 +17,7 @@ struct VaultQuitHUD: View {
 			switch hint {
 			case .pressAgain:
 				Text("⌘Q")
-					.font(VaultTypography.mono(11.5, .semibold))
+					.font(VaultTypography.tabular(11.5, .semibold))
 					.foregroundStyle(VaultPalette.textSecondary)
 					.padding(.horizontal, 5)
 					.padding(.vertical, 1)

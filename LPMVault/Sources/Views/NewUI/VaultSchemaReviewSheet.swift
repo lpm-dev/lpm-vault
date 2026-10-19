@@ -191,11 +191,11 @@ struct VaultSchemaReviewSheet: View {
 				case .key: EmptyView()
 				}
 				Text(item.title)
-					.font(VaultTypography.mono(12.5, .bold))
+					.font(VaultTypography.tabular(12.5, .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				stateBadge(item.state)
 				Text(item.diff.path)
-					.font(VaultTypography.mono(10.5))
+					.font(VaultTypography.tabular(10.5))
 					.foregroundStyle(VaultPalette.textFaint)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -273,7 +273,7 @@ struct VaultSchemaReviewSheet: View {
 						.italic(line.kind == .omitted)
 						.fixedSize(horizontal: false, vertical: true)
 				}
-				.font(VaultTypography.mono(11))
+				.font(VaultTypography.tabular(11))
 				.padding(.horizontal, 10)
 				.padding(.vertical, 1.5)
 				.frame(maxWidth: .infinity, alignment: .leading)
@@ -341,7 +341,7 @@ struct VaultSchemaReviewSheet: View {
 				HStack(alignment: .top, spacing: 8) {
 					VaultStatusDot(color: environmentColor(effect.environment)).padding(.top, 5)
 					Text(VaultProject.displayName(for: effect.environment))
-						.font(VaultTypography.mono(11))
+						.font(VaultTypography.tabular(11))
 						.foregroundStyle(VaultPalette.textSecondary)
 						.frame(width: 96, alignment: .leading)
 						.lineLimit(1)

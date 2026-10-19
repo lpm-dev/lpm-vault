@@ -56,7 +56,7 @@ struct EnvFileImportReviewSheet: View {
 				Text(completedReplacements == nil ? "Review import" : "Import complete")
 					.font(.system(size: 17, weight: .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("\(Text(review.sourceURL.lastPathComponent).font(VaultTypography.mono(12)).foregroundStyle(VaultPalette.textSecondary)) into \(Text(review.projectName).fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) · \(VaultProject.displayName(for: review.environment))")
+				Text("\(Text(review.sourceURL.lastPathComponent).font(VaultTypography.tabular(12)).foregroundStyle(VaultPalette.textSecondary)) into \(Text(review.projectName).fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) · \(VaultProject.displayName(for: review.environment))")
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
@@ -115,7 +115,7 @@ struct EnvFileImportReviewSheet: View {
 		return VStack(alignment: .leading, spacing: 8) {
 			HStack(spacing: 10) {
 				Text(row.key)
-					.font(VaultTypography.mono(12.5, .semibold))
+					.font(VaultTypography.tabular(12.5, .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -172,7 +172,7 @@ struct EnvFileImportReviewSheet: View {
 				.foregroundStyle(VaultPalette.textTertiary)
 				.frame(width: 60, alignment: .leading)
 			Text(revealed ? (value.isEmpty ? "(empty)" : value) : "••••••••")
-				.font(VaultTypography.mono(12))
+				.font(revealed ? VaultTypography.code(12) : VaultTypography.tabular(12))
 				.foregroundStyle(superseded ? VaultPalette.textFaint : (revealed ? VaultPalette.textPrimary : VaultPalette.masked))
 				.frame(maxWidth: .infinity, alignment: .leading)
 				.fixedSize(horizontal: false, vertical: true)

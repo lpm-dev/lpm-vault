@@ -429,7 +429,7 @@ private struct VaultSchemaKeyEditor: View {
 			default:
 				HStack(spacing: 4) {
 					Image(systemName: "doc").font(.system(size: 10))
-					Text("lpm.json").font(VaultTypography.mono(11))
+					Text("lpm.json").font(VaultTypography.tabular(11))
 				}
 				.foregroundStyle(VaultPalette.textTertiary)
 			}
@@ -571,14 +571,14 @@ private struct VaultSchemaKeyEditor: View {
 				if renamable {
 					TextField("KEY_NAME", text: $name)
 						.textFieldStyle(.plain)
-						.font(VaultTypography.mono(13.5, .bold))
+						.font(VaultTypography.tabular(13.5, .bold))
 						.autocorrectionDisabled()
 						.disabled(!canEdit || renaming)
 						.onSubmit { if changed, issue == nil, canRename { rename() } }
 						.accessibilityLabel("Key name")
 				} else {
 					Text(key)
-						.font(VaultTypography.mono(13.5, .bold))
+						.font(VaultTypography.tabular(13.5, .bold))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.lineLimit(1)
 						.truncationMode(.middle)
@@ -743,7 +743,7 @@ private struct VaultSchemaKeyEditor: View {
 			HStack(spacing: 6) {
 				TextField("KEY_NAME", text: $name)
 					.textFieldStyle(.plain)
-					.font(VaultTypography.mono(13.5, .bold))
+					.font(VaultTypography.tabular(13.5, .bold))
 					.autocorrectionDisabled()
 					.focused($nameFocused)
 					.disabled(!canEdit)
@@ -1269,7 +1269,7 @@ private struct VaultSchemaKeyEditor: View {
 	private func textField(_ placeholder: String, label: String, text: WritableKeyPath<Rule, String?>, field: String) -> some View {
 		TextField(placeholder, text: textBinding(text, field: field))
 			.textFieldStyle(.plain)
-			.font(VaultTypography.mono(12))
+			.font(VaultTypography.tabular(12))
 			.autocorrectionDisabled()
 			.padding(.horizontal, 9)
 			.frame(height: 28)
@@ -1334,7 +1334,7 @@ private struct VaultSchemaKeyEditor: View {
 							}
 						))
 						.textFieldStyle(.plain)
-						.font(VaultTypography.mono(12))
+						.font(VaultTypography.tabular(12))
 						.padding(.horizontal, 9)
 						.frame(height: 28)
 						.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
@@ -1369,12 +1369,12 @@ private struct VaultSchemaKeyEditor: View {
 				HStack(alignment: .top, spacing: 4) {
 					VStack(alignment: .leading, spacing: 2) {
 						Text(line.scope.summary.escapingDirectionControls)
-							.font(VaultTypography.mono(11.5))
+							.font(VaultTypography.tabular(11.5))
 							.foregroundStyle(VaultPalette.textPrimary)
 							.fixedSize(horizontal: false, vertical: true)
 						if field == .defaultsIn {
 							Text("→ " + (line.value.isEmpty ? "\"\"" : line.value.escapingDirectionControls))
-								.font(VaultTypography.mono(11))
+								.font(VaultTypography.tabular(11))
 								.foregroundStyle(VaultPalette.textSecondary)
 								.lineLimit(2)
 						}
@@ -1610,7 +1610,7 @@ private struct VaultSchemaKeyEditor: View {
 			case .inherited(let source):
 				HStack(spacing: 5) {
 					Image(systemName: "lock").font(.system(size: 10))
-					Text("Declared in ").font(.system(size: 11.5)) + Text(source).font(VaultTypography.mono(11))
+					Text("Declared in ").font(.system(size: 11.5)) + Text(source).font(VaultTypography.tabular(11))
 				}
 				.foregroundStyle(VaultPalette.textSecondary)
 				Text("Overriding saves a copy in lpm.json that replaces this rule. The key can't be renamed or removed here.")
@@ -1888,7 +1888,7 @@ struct VaultSchemaStoredValues: View {
 						VaultStatusDot(color: VaultPalette.environment(index))
 							.padding(.top, 4)
 						Text(VaultProject.displayName(for: environment))
-							.font(VaultTypography.mono(11))
+							.font(VaultTypography.tabular(11))
 							.foregroundStyle(VaultPalette.textSecondary)
 							.frame(width: 86, alignment: .leading)
 							.lineLimit(1)
@@ -2035,7 +2035,7 @@ private struct VaultScopeEditor: View {
 					Text("Value").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary)
 					TextField("value", text: $value)
 						.textFieldStyle(.roundedBorder)
-						.font(VaultTypography.mono(12))
+						.font(VaultTypography.tabular(12))
 						.accessibilityLabel("Scoped default value")
 					if value.hasHiddenCharacters {
 						Text("Has hidden or reordering characters: \(value.escapingDirectionControls)")
@@ -2088,7 +2088,7 @@ private struct VaultScopeEditor: View {
 					let on = selected.contains(option)
 					Button { toggle(option) } label: {
 						Text(option.escapingDirectionControls)
-							.font(VaultTypography.mono(11))
+							.font(VaultTypography.tabular(11))
 							.foregroundStyle(on ? VaultPalette.accentText : VaultPalette.textSecondary)
 							.padding(.horizontal, 7)
 							.frame(height: 22)
@@ -2158,7 +2158,7 @@ struct VaultChipField: View {
 				ForEach(Array(values.enumerated()), id: \.offset) { index, value in
 					HStack(spacing: 4) {
 						Text(Self.display(value))
-							.font(VaultTypography.mono(11))
+							.font(VaultTypography.tabular(11))
 							.foregroundStyle(VaultPalette.textPrimary)
 							.lineLimit(1)
 						Button {
@@ -2178,7 +2178,7 @@ struct VaultChipField: View {
 				}
 				TextField(values.isEmpty ? placeholder : "Add", text: $entry)
 					.textFieldStyle(.plain)
-					.font(VaultTypography.mono(11))
+					.font(VaultTypography.tabular(11))
 					.frame(width: 110, height: 22)
 					.padding(.horizontal, 6)
 					.overlay { RoundedRectangle(cornerRadius: 5).stroke(problem == nil ? VaultPalette.border : VaultPalette.red, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
@@ -2238,7 +2238,7 @@ struct VaultKeyPicker: View {
 		VStack(alignment: .leading, spacing: 6) {
 			TextField("Search keys", text: $query)
 				.textFieldStyle(.roundedBorder)
-				.font(VaultTypography.mono(12))
+				.font(VaultTypography.tabular(12))
 				.onSubmit { if let first = matches.first { onPick(first) } }
 				.accessibilityLabel("Search keys")
 			ScrollView {
@@ -2246,7 +2246,7 @@ struct VaultKeyPicker: View {
 					ForEach(matches.prefix(Self.shownLimit), id: \.self) { key in
 						Button { onPick(key) } label: {
 							HStack(spacing: 6) {
-								Text(key).font(VaultTypography.mono(12)).foregroundStyle(VaultPalette.textPrimary).lineLimit(1).truncationMode(.middle)
+								Text(key).font(VaultTypography.tabular(12)).foregroundStyle(VaultPalette.textPrimary).lineLimit(1).truncationMode(.middle)
 								Spacer(minLength: 4)
 								if secretKeys.contains(key) {
 									Text("secret").font(.system(size: 10.5)).foregroundStyle(VaultPalette.textFaint)

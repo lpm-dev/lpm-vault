@@ -62,7 +62,7 @@ struct VaultSchemaRemoveSheet: View {
 		let stored = project.environments.values.filter { $0[key] != nil }.count
 		VStack(alignment: .leading, spacing: 0) {
 			VStack(alignment: .leading, spacing: 6) {
-				(Text("Remove ") + Text(key.escapingDirectionControls).font(VaultTypography.mono(16, .bold)) + Text(" from the schema?"))
+				(Text("Remove ") + Text(key.escapingDirectionControls).font(VaultTypography.tabular(16, .bold)) + Text(" from the schema?"))
 					.font(.system(size: 16, weight: .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.fixedSize(horizontal: false, vertical: true)
@@ -194,7 +194,7 @@ struct VaultSchemaRemoveSheet: View {
 					.truncationMode(.tail)
 					.help(reference.title)
 				Text(reference.location)
-					.font(VaultTypography.mono(10.5))
+					.font(VaultTypography.tabular(10.5))
 					.foregroundStyle(VaultPalette.textFaint)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -298,7 +298,7 @@ struct VaultSchemaElsewhereSheet: View {
 					.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.neutralTint))
 					.accessibilityHidden(true)
 				VStack(alignment: .leading, spacing: 5) {
-					(Text(name.escapingDirectionControls).font(VaultTypography.mono(14, .bold)) + Text(" can't be removed here").font(.system(size: 14, weight: .bold)))
+					(Text(name.escapingDirectionControls).font(VaultTypography.tabular(14, .bold)) + Text(" can't be removed here").font(.system(size: 14, weight: .bold)))
 						.foregroundStyle(VaultPalette.textPrimary)
 						.fixedSize(horizontal: false, vertical: true)
 					Text(explanation)

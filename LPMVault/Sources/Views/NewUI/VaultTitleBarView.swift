@@ -138,7 +138,7 @@ struct VaultTitleBarView: View {
 					Text("/")
 						.foregroundStyle(VaultPalette.textTertiary)
 					Text(VaultProject.displayName(for: environment))
-						.font(VaultTypography.mono(12))
+						.font(VaultTypography.tabular(12))
 						.foregroundStyle(VaultPalette.textTertiary)
 				}
 			}

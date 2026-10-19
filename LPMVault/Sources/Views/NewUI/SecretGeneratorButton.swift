@@ -74,7 +74,6 @@ struct SecretGeneratorPanel: View {
 					tag: candidate.tag,
 					title: candidate.title,
 					subtitle: candidate.subtitle(length: length),
-					usesMonospacedSubtitle: candidate.hasCommandSubtitle,
 					selected: candidate == kind
 				) {
 					kind = candidate
@@ -167,7 +166,7 @@ struct SecretGeneratorPanel: View {
 
 	private func segmentLabel(_ text: String, selected: Bool) -> some View {
 		Text(text)
-			.font(VaultTypography.mono(11, selected ? .bold : .regular))
+			.font(VaultTypography.tabular(11, selected ? .bold : .regular))
 			.foregroundStyle(selected ? .white : VaultPalette.masked)
 			.padding(.horizontal, 8)
 			.frame(height: 20)
@@ -185,7 +184,6 @@ private struct GeneratorKindRow: View {
 	let tag: String
 	let title: String
 	let subtitle: String
-	let usesMonospacedSubtitle: Bool
 	let selected: Bool
 	let action: () -> Void
 
@@ -195,7 +193,7 @@ private struct GeneratorKindRow: View {
 		Button(action: action) {
 			HStack(spacing: 10) {
 				Text(tag)
-					.font(VaultTypography.mono(10, .bold))
+					.font(VaultTypography.tabular(10, .bold))
 					.foregroundStyle(selected ? VaultPalette.accentDeep : VaultPalette.masked)
 					.frame(width: 30)
 				VStack(alignment: .leading, spacing: 1) {
@@ -203,7 +201,7 @@ private struct GeneratorKindRow: View {
 						.font(.system(size: 12.5, weight: selected ? .semibold : .regular))
 						.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textPrimary)
 					Text(subtitle)
-						.font(usesMonospacedSubtitle ? VaultTypography.mono(10.5) : .system(size: 10.5))
+						.font(.system(size: 10.5))
 						.foregroundStyle(VaultPalette.textFaint)
 						.lineLimit(1)
 				}
@@ -256,10 +254,6 @@ private extension SecretValueKind {
 		case .alphanumeric: "Alphanumeric"
 		case .password: "Password"
 		}
-	}
-
-	var hasCommandSubtitle: Bool {
-		self == .base64 || self == .hex
 	}
 
 	func subtitle(length: Int) -> String {

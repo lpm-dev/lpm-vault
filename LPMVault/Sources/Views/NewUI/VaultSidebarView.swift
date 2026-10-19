@@ -15,7 +15,6 @@ enum VaultSidebarLayout {
 	static let childIconWidth: CGFloat = 12
 	static let environmentSwatchSize: CGFloat = 6
 	static let childIconOffset = (environmentSwatchSize - childIconWidth) / 2
-	static let environmentTextOffset: CGFloat = -2
 	static let childSpacing: CGFloat = 7
 	static let childInset: CGFloat = 26
 	static let projectLabelInset = projectInset + rowInset + projectIconWidth + projectSpacing
@@ -141,7 +140,7 @@ struct VaultSidebarView: View {
 
 			if searchText.isEmpty {
 				Text("⌘F")
-					.font(VaultTypography.mono(10))
+					.font(VaultTypography.tabular(10))
 					.foregroundStyle(VaultPalette.textFaint)
 			} else {
 				Button { searchText = "" } label: {
@@ -316,7 +315,7 @@ struct VaultSidebarView: View {
 					.frame(maxWidth: .infinity, alignment: .leading)
 				VaultSidebarApprovalIndicator(access: cliAccess, selected: selected)
 				Text("\(project.secretCount)")
-					.font(VaultTypography.mono(10.5))
+					.font(VaultTypography.tabular(10.5))
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textTertiary)
 					.frame(minWidth: VaultSidebarLayout.countMinimumWidth, alignment: .trailing)
 			}
@@ -394,7 +393,7 @@ struct VaultSidebarView: View {
 						.help("lpm.json can't be read")
 				} else if let count, count > 0 {
 					Text("\(count)")
-						.font(VaultTypography.mono(10.5))
+						.font(VaultTypography.tabular(10.5))
 						.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 				}
 			}
@@ -426,13 +425,12 @@ struct VaultSidebarView: View {
 					.frame(width: VaultSidebarLayout.childIconWidth)
 					.offset(x: VaultSidebarLayout.childIconOffset)
 				Text(VaultProject.displayName(for: environment))
-					.font(VaultTypography.mono(11.5, selected ? .bold : .regular))
+					.font(VaultTypography.tabular(11.5, selected ? .bold : .regular))
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
 					.lineLimit(1)
-					.offset(x: VaultSidebarLayout.environmentTextOffset)
 				Spacer(minLength: 4)
 				Text("\(project.secretCount(for: environment))")
-					.font(VaultTypography.mono(10.5))
+					.font(VaultTypography.tabular(10.5))
 					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 			}
 			.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
@@ -748,7 +746,7 @@ struct VaultAccountSwitcher: View {
 				Text(title).font(.system(size: 12.5)).foregroundStyle(VaultPalette.textSecondary)
 				Spacer(minLength: 4)
 				if let shortcut {
-					Text(shortcut).font(VaultTypography.mono(10)).foregroundStyle(VaultPalette.textFaint)
+					Text(shortcut).font(VaultTypography.tabular(10)).foregroundStyle(VaultPalette.textFaint)
 				}
 			}
 			.padding(.horizontal, 8)
