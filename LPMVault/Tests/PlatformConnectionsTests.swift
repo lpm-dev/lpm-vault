@@ -749,6 +749,101 @@ struct PlatformConnectionsModelTests {
 		#expect(model.expired.isEmpty)
 	}
 
+	/// A personal Vercel account saved with a renewal the Registry refused, so it lists as expired.
+	private func saveExpiredVercel() async throws -> PlatformConnection {
+		var refused = PlatformTokenRefresh(
+			token: "vcr_old", accessTokenExpiresAt: Date(timeIntervalSince1970: 1_760_000_000),
+			expiresAt: Date(timeIntervalSince1970: 1_770_000_000), obtainedAt: Date(timeIntervalSince1970: 1_759_990_000),
+			principalID: platformTestPrincipal)
+		refused.isRejected = true
+		return try await PlatformConnectionStore(service: keychain).save(
+			.vercel(VercelConnectionAccount(installationID: "icfg_old", teamID: nil, userID: "u_tolga", name: "tolga", slug: "tolga")),
+			accessToken: "vca_old", refresh: refused, at: Date(timeIntervalSince1970: 1_759_990_000)).get()
+	}
+
+	private nonisolated static let tolgaPersonal = (
+		grant: VercelGrant(accessToken: "vca_new", installationID: "icfg_new", teamID: nil, userID: "u_tolga")!,
+		account: VercelAccount(name: "tolga", slug: "tolga"))
+
+	@Test("reconnecting an expired account names it while the browser connects, then puts the new token in its place")
+	func reconnectsInPlace() async throws {
+		let expired = try await saveExpiredVercel()
+		let gate = AsyncGate()
+		let connecting = AsyncGate()
+		let model = model {
+			await connecting.open()
+			await gate.wait()
+			return .success(Self.tolgaPersonal)
+		}
+		model.load()
+		try await waitUntilIdle(model)
+		#expect(model.expired == [expired.id])
+		model.reconnect(expired)
+		await connecting.wait()
+		#expect(model.reconnecting == expired.id && model.connecting == .vercel)
+		await gate.open()
+		try await waitUntilIdle(model)
+		#expect(model.reconnecting == nil && model.expired.isEmpty)
+		#expect(model.connections.map(\.id) == [expired.id])
+		#expect(model.notice == .init(message: "Connected tolga on Vercel again.", isError: false))
+		#expect(try await PlatformConnectionStore(service: keychain).record(for: expired.id).map(\.accessToken).get() == "vca_new")
+	}
+
+	@Test("reconnecting but approving another account adds it beside the expired one, which still needs reconnecting")
+	func reconnectsAnotherAccount() async throws {
+		let expired = try await saveExpiredVercel()
+		let model = model { .success(Self.acme) }
+		model.load()
+		try await waitUntilIdle(model)
+		model.reconnect(expired)
+		try await waitUntilIdle(model)
+		#expect(model.connections.map(\.name) == ["Acme", "tolga"])
+		#expect(model.expired == [expired.id] && model.reconnecting == nil)
+		#expect(model.notice == .init(message: "Connected Acme on Vercel, beside tolga, which still needs reconnecting.", isError: false))
+	}
+
+	@Test("a reconnect cancelled or refused leaves the expired account as it was, and names nothing")
+	func reconnectCancelled() async throws {
+		let expired = try await saveExpiredVercel()
+		for result: Result<(grant: VercelGrant, account: VercelAccount), BrowserConnectError> in [.failure(.cancelled), .failure(.platform(.cancelledOnPlatform))] {
+			let model = model { result }
+			model.load()
+			try await waitUntilIdle(model)
+			model.reconnect(expired)
+			try await waitUntilIdle(model)
+			#expect(model.reconnecting == nil && model.expired == [expired.id])
+			#expect(try await PlatformConnectionStore(service: keychain).record(for: expired.id).map(\.accessToken).get() == "vca_old")
+		}
+	}
+
+	@Test("reconnecting a Netlify or GitHub account connects that platform again")
+	func reconnectsEachBrowserPlatform() async throws {
+		let opened = OpenedLinks()
+		let model = model(
+			connectNetlify: { .success(Self.tolga) }, connectGitHub: { _ in .success(Self.octocat) }, opened: opened)
+		let netlify = PlatformConnection(
+			account: .netlify(NetlifyConnectionAccount(userID: Self.tolga.user.id, name: "Tolga Ergin", email: nil)), connectedAt: Date())
+		model.reconnect(netlify)
+		#expect(model.connecting == .netlify && model.reconnecting == netlify.id)
+		try await waitUntilIdle(model)
+		#expect(model.notice == .init(message: "Connected Tolga Ergin on Netlify again.", isError: false))
+		let github = PlatformConnection(
+			account: .github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")), connectedAt: Date())
+		model.reconnect(github)
+		#expect(model.connecting == .github && model.reconnecting == github.id)
+		try await waitUntilIdle(model)
+		#expect(model.notice == .init(message: "Connected The Octocat on GitHub again.", isError: false))
+		#expect(opened.urls == [Self.netlifyAuthorizePage, Self.githubAuthorizePage])
+	}
+
+	@Test("a Coolify team isn't reconnected in the browser: its token is replaced on its sheet")
+	func coolifyDoesNotReconnectInBrowser() async throws {
+		let model = model()
+		let team = CoolifyConnectionAccount(instance: Self.rootTeam.instance, teamID: Self.rootTeam.team.id, teamName: Self.rootTeam.team.name)
+		model.reconnect(PlatformConnection(account: .coolify(team), connectedAt: Date()))
+		#expect(!model.isConnecting && model.reconnecting == nil)
+	}
+
 	@Test("without an LPM session Netlify doesn't start, no page opens, and the page says to sign in")
 	func netlifyNeedsSession() async throws {
 		let opened = OpenedLinks()
@@ -887,6 +982,76 @@ private actor AsyncGate {
 }
 
 @MainActor
+struct PlatformsPagePresentationTests {
+	private func connection(_ account: PlatformConnection.Account) -> PlatformConnection {
+		PlatformConnection(account: account, connectedAt: Date(timeIntervalSince1970: 1_760_000_000))
+	}
+
+	@Test("connections are grouped by platform in the tiles' order, keeping each platform's own order")
+	func groupsByPlatform() {
+		let coolify = connection(.coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.example.com")!, teamID: "0", teamName: "Alpha")))
+		let github = connection(.github(GitHubConnectionAccount(userID: "1", login: "bob", name: "Bob", appSlug: "lpm-vault")))
+		let cloudflare = connection(.cloudflare(CloudflareLoginFixture.account(label: "Carol")))
+		let netlify = connection(.netlify(NetlifyConnectionAccount(userID: "2", name: "Mallory", email: nil)))
+		let zephyr = connection(.vercel(VercelConnectionAccount(installationID: "i1", teamID: "t1", userID: "u1", name: "Zephyr", slug: nil)))
+		let acme = connection(.vercel(VercelConnectionAccount(installationID: "i2", teamID: "t2", userID: "u1", name: "Acme", slug: nil)))
+		let grouped = PlatformsView.grouped([coolify, github, zephyr, cloudflare, netlify, acme])
+		#expect(grouped.map(\.name) == ["Zephyr", "Acme", "Mallory", "Bob", "Carol", "Alpha"])
+	}
+
+	@Test("the note on removing access names each platform in the page's order, and Cloudflare only where it's offered")
+	func revocationNote() {
+		#expect(PlatformsView.revocationSteps(offersCloudflare: true).map(\.platform) == [.vercel, .netlify, .github, .cloudflare, .coolify])
+		#expect(PlatformsView.revocationSteps(offersCloudflare: false).map(\.platform) == [.vercel, .netlify, .github, .coolify])
+		let note = String(PlatformsView.revocationNote(offersCloudflare: false).characters)
+		#expect(note.hasPrefix("To remove LPM Vault's access entirely, revoke it on the platform: Vercel → Integrations settings, where uninstalling deletes the variables LPM Vault created · "))
+		#expect(note.contains(" · GitHub → Authorized GitHub Apps and Installed GitHub Apps; an organization's owner uninstalls it in the organization's settings · "))
+		#expect(note.hasSuffix(" · Coolify → Keys & Tokens.") && !note.contains("Cloudflare"))
+		#expect(String(PlatformsView.revocationNote(offersCloudflare: true).characters).contains(" · Cloudflare → disconnecting here revokes it · "))
+	}
+
+	@Test("the note on disconnecting names Cloudflare's exception only when a Cloudflare login is listed")
+	func disconnectingNote() {
+		#expect(PlatformsView.disconnectingNote(revokesCloudflare: false) == "Disconnecting forgets a token on this Mac only")
+		#expect(PlatformsView.disconnectingNote(revokesCloudflare: true)
+			== "Disconnecting forgets a token on this Mac only, except for Cloudflare, whose access LPM Vault revokes as it disconnects")
+	}
+
+	@Test("signing in is asked for the browser platforms offered, never for Coolify")
+	func signInNames() {
+		#expect(PlatformsView.browserPlatformNames(PlatformsView.pageOrder) == "Vercel, Netlify, GitHub or Cloudflare")
+		#expect(PlatformsView.browserPlatformNames([.vercel, .netlify, .github, .coolify]) == "Vercel, Netlify or GitHub")
+		#expect(PlatformsView.browserPlatformNames([.github, .coolify]) == "GitHub")
+		#expect(PlatformsView.browserPlatformNames([.coolify]) == "")
+	}
+
+	@Test("an expired row says why and what to do, asking a browser platform's to sign in first")
+	func expiredCopy() {
+		#expect(PlatformsView.expiredStatus(.vercel) == "Expired" && PlatformsView.expiredStatus(.cloudflare) == "No longer works")
+		#expect(PlatformsView.expiredNote(.github, signedIn: true) == "Reconnect to keep publishing through it.")
+		#expect(PlatformsView.expiredNote(.github, signedIn: false) == "Sign in to LPM, then reconnect to keep publishing through it.")
+		#expect(PlatformsView.expiredNote(.coolify, signedIn: false) == "Reconnect to keep publishing through it.")
+	}
+
+	@Test("tiles take as many columns at least 220 points wide as fit, from one up to three")
+	func tileColumns() {
+		let grid = PlatformTileGrid()
+		#expect([0, 219, 372, 451].map(grid.columnCount(for:)) == [1, 1, 1, 1])
+		#expect([452, 600, 683].map(grid.columnCount(for:)) == [2, 2, 2])
+		#expect([684, 852, 4_000].map(grid.columnCount(for:)) == [3, 3, 3])
+	}
+
+	@Test("every platform's mark is bundled as a 24-point vector drawn in its tile's color")
+	func marks() {
+		for platform in PublishPlatform.allCases {
+			let mark = VaultBranding.platformMark(platform)
+			#expect(mark.isTemplate && mark.size == NSSize(width: 24, height: 24), "\(platform)")
+			#expect(mark.representations.contains { $0.className.contains("SVG") }, "\(platform) stays a vector: \(mark.representations)")
+		}
+	}
+}
+
+@MainActor
 struct PlatformsPageStoreTests {
 	private let keychain = MockKeychainService()
 
@@ -983,20 +1148,143 @@ extension SheetInteractionTests {
 		private func page(
 			signedIn: Bool = true,
 			connect: PlatformConnections.Connect? = nil,
-			connectNetlify: PlatformConnections.ConnectNetlify? = nil
+			connectNetlify: PlatformConnections.ConnectNetlify? = nil,
+			size: NSSize = NSSize(width: 760, height: 560)
 		) async throws -> (VaultStore, SheetTestHost<PlatformsView>) {
 			let opened = opened
 			let store = VaultStore(
 				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 				authTokenProvider: { _, _ in "lpm_session" }, platformConnect: connect, netlifyConnect: connectNetlify,
 				platformURLOpener: { opened.append($0) })
+			// A debug build's saved choice of server would otherwise decide whether Cloudflare is offered.
+			store.appEnvironment = .production
 			store.isUnlocked = true
 			if signedIn {
 				store.currentUser = LPMUser(id: "lpm_user_1", username: "tolga", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
 			}
 			store.showPlatforms()
-			let host = SheetTestHost(PlatformsView(store: store), size: NSSize(width: 760, height: 560), keepsRequestedSize: true, usesHostingView: true)
+			let host = SheetTestHost(PlatformsView(store: store), size: size, keepsRequestedSize: true, usesHostingView: true)
 			return (store, host)
+		}
+
+		/// A personal Vercel account whose renewal the Registry refused, so the page lists it as expired.
+		@discardableResult
+		private func saveExpiredVercel() async throws -> PlatformConnection {
+			var refused = PlatformTokenRefresh(
+				token: "vcr_old", accessTokenExpiresAt: Date(), expiresAt: Date().addingTimeInterval(86_400), obtainedAt: Date(),
+				principalID: "lpm_user_1")
+			refused.isRejected = true
+			return try await PlatformConnectionStore(service: keychain).save(
+				.vercel(VercelConnectionAccount(installationID: "icfg_old", teamID: nil, userID: "u_tolga", name: "tolga", slug: "tolga")),
+				accessToken: "vca_old", refresh: refused, at: Date()).get()
+		}
+
+		@Test("accounts on every platform show in one list, by platform in the tiles' order, each saying where it is and that it's connected")
+		func oneListAcrossPlatforms() async throws {
+			let connections = PlatformConnectionStore(service: keychain)
+			_ = try await connections.save(
+				VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_zephyr", userID: "u_1")!,
+				account: VercelAccount(name: "Zephyr", slug: "zephyr"), at: Date()).get()
+			_ = try await connections.save(
+				.netlify(NetlifyConnectionAccount(userID: "5f1a2b3c4d5e6f7a8b9c0d1e", name: "Mallory", email: "mallory@northwind.test")),
+				accessToken: "nfo_1", at: Date()).get()
+			_ = try await connections.save(
+				.github(GitHubConnectionAccount(userID: "583231", login: "bob", name: "Bob", appSlug: "lpm-vault")), accessToken: "ghu_1", at: Date()).get()
+			_ = try await connections.save(
+				.coolify(CoolifyConnectionAccount(instance: CoolifyInstance(origin: "https://coolify.northwind.dev")!, teamID: "0", teamName: "Alpha")),
+				accessToken: "3|coolify", at: Date()).get()
+			let (store, host) = try await page(size: NSSize(width: 760, height: 1_000))
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("CONNECTED · 4", exactly: true))
+			for place in ["on Vercel", "on Netlify", "on GitHub", "on Coolify"] {
+				#expect(try await host.waitForText(place, exactly: true))
+			}
+			let lines = host.lines().map(\.text)
+			let rows = ["Zephyr", "Mallory", "Bob", "Alpha"].map { name in lines.firstIndex { $0.hasPrefix(name) } }
+			#expect(rows.allSatisfy { $0 != nil } && rows == rows.sorted { ($0 ?? 0) < ($1 ?? 0) }, "\(lines)")
+			let elements = AccessibilityTree.visibleElements(in: host.window, of: host.view)
+			#expect(elements.filter { $0.says("Connected") }.count == 4, "Every row says it's connected")
+			#expect(elements.filter { $0.says("1 connected") }.count == 4, "Every platform's tile counts its account")
+			#expect(lines.contains { $0.contains("Disconnecting forgets a token on this Mac only") })
+		}
+
+		@Test("with nothing connected, the list says so and how publishing is confirmed, and every tile says it isn't connected")
+		func emptyState() async throws {
+			let (store, host) = try await page(size: NSSize(width: 760, height: 1_000))
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("No platforms connected"))
+			#expect(try await host.waitForText("Touch ID or your password confirms every publish."))
+			#expect(try await host.waitForText("CONNECTED", exactly: true))
+			let states = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.says("Not connected") }
+			#expect(states.count == 4, "\(states.map(\.texts))")
+			#expect(!host.lines().contains { $0.text.contains("Disconnecting forgets") }, "Nothing listed, nothing to disconnect")
+		}
+
+		@Test("an expired account offers Reconnect, which shows its progress and Cancel on its own row, then connects it again in its place")
+		func reconnectsExpiredRow() async throws {
+			let expired = try await saveExpiredVercel()
+			let gate = AsyncGate()
+			let (store, host) = try await page(connect: { _, open in
+				await open(URL(string: "https://vercel.com/integrations/lpm-vault/new")!)
+				await gate.wait()
+				return .success((
+					grant: VercelGrant(accessToken: "vca_new", installationID: "icfg_new", teamID: nil, userID: "u_tolga")!,
+					account: VercelAccount(name: "tolga", slug: "tolga")))
+			})
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Expired", exactly: true))
+			#expect(try await host.waitForText("Reconnect to keep publishing through it."))
+			try await host.click("Reconnect tolga")
+			let reconnecting = try await host.waitForElement(saying: "Reconnecting…")
+			#expect(reconnecting.label?.contains("tolga") == true)
+			#expect(try await host.waitForText("Finish in your browser: choose the Vercel team"))
+			#expect(try await host.waitForText("Cancel reconnecting tolga"))
+			#expect(!host.lines().contains { $0.text.hasPrefix("Connecting") }, "The Vercel tile doesn't show the reconnect as its own")
+			await gate.open()
+			#expect(try await host.waitForText("Connected tolga on Vercel again."))
+			#expect(try await host.waitForTextToDisappear("Reconnect to keep publishing through it."))
+			#expect(keychain.platformConnectionStorage.keys.sorted() == [expired.id])
+			#expect(try await store.platformConnectionStore.record(for: expired.id).map(\.accessToken).get() == "vca_new")
+		}
+
+		@Test("Cancel on a reconnecting row stops it, and the account stays expired")
+		func cancelsReconnect() async throws {
+			try await saveExpiredVercel()
+			let (store, host) = try await page(connect: { _, open in
+				await open(URL(string: "https://vercel.com/integrations/lpm-vault/new")!)
+				try? await Task.sleep(for: .seconds(60))
+				return .failure(.cancelled)
+			})
+			defer { host.window.close(); store.lock() }
+			try await host.click("Reconnect tolga")
+			try await host.click("Cancel reconnecting tolga")
+			#expect(try await host.waitUntil { !store.platforms.isConnecting })
+			#expect(try await host.waitForElement(saying: "Reconnect tolga").isEnabledNow)
+			#expect(try await host.waitForText("Expired", exactly: true))
+		}
+
+		@Test("signed out, an expired row says to sign in first, and its Reconnect does nothing")
+		func reconnectNeedsSignIn() async throws {
+			try await saveExpiredVercel()
+			let (store, host) = try await page(signedIn: false)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Sign in to LPM, then reconnect to keep publishing through it."))
+			try await host.click("Reconnect tolga")
+			try await host.settle()
+			#expect(!store.platforms.isConnecting && opened.urls.isEmpty)
+		}
+
+		@Test("tiles in a row are as tall as each other, so their Connect buttons line up though their descriptions don't")
+		func tilesLineUp() async throws {
+			let (store, host) = try await page(size: NSSize(width: 760, height: 1_000))
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitUntil { !store.platforms.isLoading })
+			let vercel = try await host.drawnFrame(saying: "Connect Vercel")
+			let github = try await host.drawnFrame(saying: "Connect GitHub")
+			let coolify = try await host.drawnFrame(saying: "Connect Coolify")
+			#expect(abs(vercel.minY - github.minY) < 0.5 && abs(vercel.height - github.height) < 0.5, "\(vercel) \(github)")
+			#expect(github.minX > vercel.maxX, "Vercel and GitHub share a row")
+			#expect(coolify.maxY < vercel.minY && abs(coolify.minX - vercel.minX) < 0.5, "Coolify starts the next row, under Vercel: \(coolify) \(vercel)")
 		}
 
 		@Test("a connected team shows with its slug, and Disconnect asks first, then forgets it on this Mac")
@@ -1015,7 +1303,7 @@ extension SheetInteractionTests {
 			#expect(keychain.platformConnectionStorage.count == 1)
 			try host.clickAlertButton("Disconnect", in: try #require(host.window.sheets.first))
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
-			#expect(try await host.waitForText("No Vercel accounts connected yet"))
+			#expect(try await host.waitForText("No platforms connected"))
 		}
 
 		@Test("connecting shows where to finish, and Cancel stops it")
@@ -1039,7 +1327,7 @@ extension SheetInteractionTests {
 		func signedOut() async throws {
 			let (store, host) = try await page(signedIn: false)
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("Sign in to LPM to connect Vercel"))
+			#expect(try await host.waitForText("Sign in to LPM to connect Vercel, Netlify or GitHub."))
 			try await host.click("Connect Vercel")
 			try await host.settle()
 			#expect(!store.platforms.isConnecting)
@@ -1052,11 +1340,11 @@ extension SheetInteractionTests {
 				accessToken: "3|coolify", at: Date()).get()
 			let (store, host) = try await page()
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("No Vercel accounts connected yet"))
 			#expect(try await host.waitUntil { !store.platforms.isLoading && store.platforms.connections.count == 1 })
-			try host.scrollToEnd()
 			#expect(try await host.waitForText("Northwind"))
+			#expect(try await host.waitForText("on Coolify"))
 			#expect(try await host.waitForText("coolify.northwind.dev"))
+			try host.scrollToEnd()
 			try await host.click("Connect Coolify")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Connect Coolify opens its sheet")
 			let sheet = try #require(host.window.sheets.first)
@@ -1079,6 +1367,7 @@ extension SheetInteractionTests {
 				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 				authTokenProvider: { _, _ in signedIn ? "lpm_session" : nil }, netlifyConnect: connectNetlify,
 				platformURLOpener: { opened.append($0) })
+			store.appEnvironment = .production
 			store.isUnlocked = true
 			if signedIn {
 				store.currentUser = LPMUser(id: "lpm_user_1", username: "tolga", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
@@ -1098,7 +1387,7 @@ extension SheetInteractionTests {
 				return .failure(.cancelled)
 			})
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("No Netlify accounts connected yet"))
+			#expect(try await host.waitForText("No platforms connected"))
 			try await host.click("Connect Netlify")
 			#expect(try await host.waitForText("authorize LPM Vault on Netlify"))
 			#expect(store.platforms.connecting == .netlify)
@@ -1115,7 +1404,7 @@ extension SheetInteractionTests {
 				return .failure(.cancelled)
 			})
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("Sign in to LPM to connect Netlify"))
+			#expect(try await host.waitForText("Sign in to LPM to connect Vercel, Netlify or GitHub."))
 			try await host.click("Connect Netlify")
 			try await host.settle()
 			#expect(!store.platforms.isConnecting && opened.urls.isEmpty)
@@ -1136,7 +1425,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("until you revoke it", in: dialog))
 			try host.clickAlertButton("Disconnect", in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
-			#expect(try await host.waitForText("No Netlify accounts connected yet"))
+			#expect(try await host.waitForText("No platforms connected"))
 		}
 	}
 
@@ -1152,6 +1441,7 @@ extension SheetInteractionTests {
 				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 				authTokenProvider: { _, _ in "lpm_session" }, githubConnect: connectGitHub,
 				platformURLOpener: { opened.append($0) })
+			store.appEnvironment = .production
 			store.isUnlocked = true
 			store.currentUser = LPMUser(id: "lpm_user_1", username: "tolga", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
 			store.showPlatforms()
@@ -1169,7 +1459,7 @@ extension SheetInteractionTests {
 				return .failure(.cancelled)
 			})
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("No GitHub accounts connected yet"))
+			#expect(try await host.waitForText("No platforms connected"))
 			try await host.click("Connect GitHub")
 			#expect(try await host.waitForText("authorize LPM Vault on GitHub"))
 			#expect(store.platforms.connecting == .github)
@@ -1207,14 +1497,15 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("The Octocat"))
 			#expect(try await host.waitForText("@octocat"))
-			#expect(try await host.waitForText("Expired. Connect GitHub again to keep publishing."))
+			#expect(try await host.waitForText("Expired", exactly: true))
+			#expect(try await host.waitForText("Reconnect to keep publishing through it."))
 			try await host.click("Disconnect The Octocat")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
 			let dialog = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("until you revoke or uninstall it there", in: dialog))
 			try host.clickAlertButton("Disconnect", in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
-			#expect(try await host.waitForText("No GitHub accounts connected yet"))
+			#expect(try await host.waitForText("No platforms connected"))
 		}
 	}
 
@@ -1350,7 +1641,7 @@ extension SheetInteractionTests {
 				return .failure(.cancelled)
 			})
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("No Cloudflare logins connected yet"))
+			#expect(try await host.waitForText("No platforms connected"))
 			try await host.click("Connect Cloudflare")
 			#expect(try await host.waitForText("choose the Cloudflare accounts LPM Vault can reach"))
 			#expect(store.platforms.connecting == .cloudflare && opened.urls == [authorize])
@@ -1386,7 +1677,8 @@ extension SheetInteractionTests {
 				generation: CloudflareConnectionAccount.makeGeneration(), receivedAt: Date())
 			let (store, host) = page(connectCloudflare: { _, _ in .success(approved) })
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("No longer works. Reconnect to keep publishing through it."))
+			#expect(try await host.waitForText("No longer works", exactly: true))
+			#expect(try await host.waitForText("Reconnect to keep publishing through it."))
 			try await host.click("Reconnect Work")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Reconnecting asks before losing an account")
 			let dialog = try #require(host.window.sheets.first)
@@ -1512,7 +1804,8 @@ extension SheetInteractionTests {
 		func noCloudflareCopy() async throws {
 			let (store, host) = page(environment: .production)
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("Disconnecting forgets a token on this Mac only"))
+			#expect(try await host.waitForText("No platforms connected"))
+			#expect(try await host.waitForText("Coolify → Keys & Tokens."))
 			#expect(!host.lines().contains { $0.text.contains("Cloudflare") })
 		}
 

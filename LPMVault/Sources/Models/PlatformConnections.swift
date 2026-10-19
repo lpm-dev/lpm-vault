@@ -91,7 +91,7 @@ final class PlatformConnections {
 	private(set) var cloudflarePrompt: CloudflarePrompt?
 	/// Counts the questions asked, so an answer meant for one never answers the next.
 	private(set) var cloudflarePromptNumber = 0
-	/// The Cloudflare connection being connected again, while it is.
+	/// The connection being connected again, while it is.
 	private(set) var reconnecting: PlatformConnection.ID?
 
 	private let store: PlatformConnectionStore
@@ -179,7 +179,11 @@ final class PlatformConnections {
 
 	/// Connects a Vercel account in the browser; does nothing while a browser connection runs.
 	func connectVercel() {
-		connectInBrowser(.vercel) { [connect] session, open in
+		connectInBrowser(.vercel, vercelConnection)
+	}
+
+	private var vercelConnection: BrowserConnection {
+		{ [connect] session, open in
 			await connect(session, open).map { connected in
 				let grant = connected.grant
 				return BrowserConnected(
@@ -193,7 +197,11 @@ final class PlatformConnections {
 
 	/// Connects a Netlify account in the browser; does nothing while a browser connection runs.
 	func connectNetlify() {
-		connectInBrowser(.netlify) { [connectNetlifyAccount] session, open in
+		connectInBrowser(.netlify, netlifyConnection)
+	}
+
+	private var netlifyConnection: BrowserConnection {
+		{ [connectNetlifyAccount] session, open in
 			await connectNetlifyAccount(session, open).map { connected in
 				let user = connected.user
 				return BrowserConnected(
@@ -212,7 +220,11 @@ final class PlatformConnections {
 
 	/// Connects a GitHub account in the browser; does nothing while a browser connection runs.
 	func connectGitHub() {
-		connectInBrowser(.github) { [connectGitHubAccount] session, open in
+		connectInBrowser(.github, githubConnection)
+	}
+
+	private var githubConnection: BrowserConnection {
+		{ [connectGitHubAccount] session, open in
 			await connectGitHubAccount(session, open).map { connected in
 				let user = connected.user
 				return BrowserConnected(
@@ -226,6 +238,21 @@ final class PlatformConnections {
 	/// Connects a Cloudflare login in the browser; does nothing while a browser connection runs.
 	func connectCloudflare() {
 		startCloudflare(reconnecting: nil)
+	}
+
+	/// Connects an expired connection again in the browser, while
+	/// `reconnecting` names it: a Cloudflare login as `reconnectCloudflare`
+	/// does, and an account on another browser platform by connecting that
+	/// platform again, which replaces the connection when the person approves
+	/// the same account. A Coolify team connects again with a token, on its sheet.
+	func reconnect(_ connection: PlatformConnection) {
+		switch connection.account {
+		case .vercel: connectInBrowser(.vercel, reconnecting: connection, vercelConnection)
+		case .netlify: connectInBrowser(.netlify, reconnecting: connection, netlifyConnection)
+		case .github: connectInBrowser(.github, reconnecting: connection, githubConnection)
+		case .cloudflare: reconnectCloudflare(connection)
+		case .coolify: break
+		}
 	}
 
 	/// Connects a Cloudflare login again, as one that expired: a login
@@ -504,21 +531,23 @@ final class PlatformConnections {
 		var refresh: PlatformTokenRefresh?
 	}
 
-	/// Runs `run` with the LPM session, which opens the platform's page with
-	/// the `open` it's given, then saves what it connected. Without a session
-	/// nothing starts. The page opens only while the connection is still
-	/// wanted, and a connection the vault locked or the person cancelled
+	/// One run of connecting a platform in the browser, which opens the
+	/// platform's page with the `open` it's given.
+	private typealias BrowserConnection = @Sendable (
+		_ session: PlatformSession,
+		_ open: @escaping @Sendable (URL) async -> Void
+	) async -> Result<BrowserConnected, BrowserConnectError>
+
+	/// Runs `run` with the LPM session, then saves what it connected, in
+	/// `target`'s place when the person approved its account again. Without
+	/// a session nothing starts. The page opens only while the connection is
+	/// still wanted, and a connection the vault locked or the person cancelled
 	/// before it could be used is never kept.
-	private func connectInBrowser(
-		_ platform: BrowserPlatform,
-		_ run: @escaping @Sendable (
-			_ session: PlatformSession,
-			_ open: @escaping @Sendable (URL) async -> Void
-		) async -> Result<BrowserConnected, BrowserConnectError>
-	) {
+	private func connectInBrowser(_ platform: BrowserPlatform, reconnecting target: PlatformConnection? = nil, _ run: @escaping BrowserConnection) {
 		guard connectTask == nil else { return }
 		notice = nil
 		connecting = platform.publishPlatform
+		reconnecting = target?.id
 		let generation = generation
 		connectTask = Task { [weak self] in
 			guard let self else { return }
@@ -526,6 +555,7 @@ final class PlatformConnections {
 				if generation == self.generation {
 					self.connectTask = nil
 					self.connecting = nil
+					self.reconnecting = nil
 					self.phase = .idle
 				}
 			}
@@ -552,7 +582,7 @@ final class PlatformConnections {
 					guard await self.keep(saved, generation: generation) else { return }
 					let connection = saved.connection
 					self.insert(connection)
-					self.notice = Notice(message: "Connected \(connection.name) on \(platform.displayName).", isError: false)
+					self.notice = Notice(message: Self.connectedMessage(connection, on: platform, reconnecting: target), isError: false)
 				case .failure(.cancelled):
 					self.notice = nil
 				case .failure(let error):
@@ -564,6 +594,16 @@ final class PlatformConnections {
 			case .failure(let error):
 				self.notice = Notice(message: error.message(for: platform, now: self.now()), isError: true)
 			}
+		}
+	}
+
+	/// What connecting `connection` in the browser says, naming the
+	/// connection being reconnected when the person approved another account.
+	private static func connectedMessage(_ connection: PlatformConnection, on platform: BrowserPlatform, reconnecting target: PlatformConnection?) -> String {
+		switch target {
+		case nil: "Connected \(connection.name) on \(platform.displayName)."
+		case let target? where target.id == connection.id: "Connected \(connection.name) on \(platform.displayName) again."
+		case let target?: "Connected \(connection.name) on \(platform.displayName), beside \(target.name), which still needs reconnecting."
 		}
 	}
 

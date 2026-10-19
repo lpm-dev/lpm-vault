@@ -179,6 +179,29 @@ enum VaultBranding {
 	static let logo = loadImage(name: "lpm-vault", extension: "svg")
 	static let appIcon = loadImage(name: "LPMVault", extension: "icns")
 
+	private static let vercelMark = loadMark(.vercel)
+	private static let netlifyMark = loadMark(.netlify)
+	private static let githubMark = loadMark(.github)
+	private static let cloudflareMark = loadMark(.cloudflare)
+	private static let coolifyMark = loadMark(.coolify)
+
+	/// The platform's mark, one color, to draw in whatever color its tile needs.
+	static func platformMark(_ platform: PublishPlatform) -> NSImage {
+		switch platform {
+		case .vercel: vercelMark
+		case .netlify: netlifyMark
+		case .github: githubMark
+		case .cloudflare: cloudflareMark
+		case .coolify: coolifyMark
+		}
+	}
+
+	private static func loadMark(_ platform: PublishPlatform) -> NSImage {
+		let mark = loadImage(name: "platform-\(platform.rawValue)", extension: "svg")
+		mark.isTemplate = true
+		return mark
+	}
+
 	private static func loadImage(name: String, extension fileExtension: String) -> NSImage {
 		guard let url = bundle.url(forResource: name, withExtension: fileExtension, subdirectory: "Resources"),
 			let image = NSImage(contentsOf: url)
