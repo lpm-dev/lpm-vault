@@ -514,6 +514,8 @@ struct PublishPlan: Equatable, Sendable {
 		freshness: Freshness
 	) -> Status {
 		guard let record else { return .notPublished }
+		// A send that got no answer, of a key the platform doesn't have, either never took or was undone: it's new there.
+		if remote == nil, record.remoteID == unconfirmedRemoteID { return .notPublished }
 		let platform: Status.Platform
 		switch (remote, record.remoteID) {
 		case (nil, _):

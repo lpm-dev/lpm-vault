@@ -62,6 +62,18 @@ struct PublishRevisionPlanTests {
 		}
 	}
 
+	@Test("a key this Mac sent without an answer that the platform doesn't have reads as not yet published, not as removed there", arguments: [true, false])
+	func unconfirmedAndAbsent(revisionFreshness: Bool) throws {
+		let plan = makePlan(
+			values: ["SENT": "new"],
+			remote: [:],
+			platform: revisionFreshness ? revision : PublishPlan.Platform(),
+			history: record([("SENT", "new", PublishPlan.unconfirmedRemoteID)]))
+		let row = try #require(plan.row("SENT"))
+		#expect(row.status == .notPublished && row.operation == .add)
+		#expect(row.holds.isEmpty && row.isSelectedByDefault)
+	}
+
 	@Test("nothing is chosen or chosen later while another version serves the place")
 	func placeHoldStopsEveryKey() throws {
 		for hold in [PublishPlan.PlaceHold.earlierVersionLive, .versionsSplit, .newestVersionNotLive] {
