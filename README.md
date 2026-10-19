@@ -87,7 +87,7 @@ The local callback page provides retry instructions if verification fails. It lo
 Click anywhere in a key cell to open its inspector.
 Drag a column boundary in the table header to resize the column.
 Both **All variables** and each environment table support this gesture.
-Each project keeps its column widths during the session, including visits to the Account page and project reloads.
+Each project keeps its column widths during the session, including visits to the Settings page and project reloads.
 
 Select **Schema** under a project to see and edit the rules its `lpm.json` declares for each key, such as required keys, formats, defaults, and keys exposed to the browser. The LPM CLI enforces them.
 Rules inherited from another schema file or a preset show where they come from.

@@ -1,28 +1,12 @@
 import SwiftUI
 
-/// The app's own settings, in the Settings window (⌘,). Nothing here needs
-/// the vault unlocked or an account, so it all works on the lock screen and
-/// signed out; the account and server are on the in-window Account page.
-struct VaultSettingsView: View {
-	var body: some View {
-		TabView {
-			VaultGeneralSettingsPane()
-				.tabItem { Label("General", systemImage: "gearshape") }
-			VaultAppearanceSettingsPane()
-				.tabItem { Label("Appearance", systemImage: "paintpalette") }
-			VaultUpdateSettingsPane()
-				.tabItem { Label("Updates", systemImage: "arrow.down.circle") }
-		}
-		.frame(width: 520)
-	}
-}
-
-struct VaultGeneralSettingsPane: View {
+/// The quit shortcut, as the Settings page's General card shows it.
+struct VaultGeneralSettingsSection: View {
 	@Environment(VaultQuitSettings.self) private var quitSettings
 
 	var body: some View {
 		@Bindable var quitSettings = quitSettings
-		VaultSettingsPane {
+		VaultSettingsRows {
 			VaultSettingsRow(title: "Quit shortcut", detail: quitSettings.selection.explanation) {
 				Picker("Quit shortcut", selection: $quitSettings.selection) {
 					ForEach(VaultQuitShortcut.allCases) { Text($0.title).tag($0) }
@@ -36,14 +20,15 @@ struct VaultGeneralSettingsPane: View {
 	}
 }
 
-struct VaultAppearanceSettingsPane: View {
+/// The theme, as the Settings page's Appearance card shows it.
+struct VaultAppearanceSettingsSection: View {
 	@Environment(VaultAppearanceSettings.self) private var appearanceSettings
 
 	private static let themeExplanation = "System follows macOS. Light and Dark apply only to Vault."
 
 	var body: some View {
 		@Bindable var appearanceSettings = appearanceSettings
-		VaultSettingsPane {
+		VaultSettingsRows {
 			VaultSettingsRow(title: "Theme", detail: Self.themeExplanation) {
 				Picker("Appearance", selection: $appearanceSettings.selection) {
 					ForEach(VaultAppearance.allCases) { Text($0.title).tag($0) }
@@ -57,12 +42,13 @@ struct VaultAppearanceSettingsPane: View {
 	}
 }
 
-struct VaultUpdateSettingsPane: View {
+/// The installed version and the update channel, as the Settings page's Updates card shows them.
+struct VaultUpdateSettingsSection: View {
 	@Environment(UpdateChecker.self) private var updateChecker
 
 	var body: some View {
 		@Bindable var updates = updateChecker
-		VaultSettingsPane {
+		VaultSettingsRows {
 			VaultSettingsRow(title: "Installed version", detail: updates.buildInfo.displayVersion, detailIsSelectable: true) {
 				VaultBarButton(title: "Check for Updates…", disabled: !updates.canCheckForUpdates, height: 28) {
 					updates.checkForUpdates()
@@ -89,17 +75,13 @@ struct VaultUpdateSettingsPane: View {
 	}
 }
 
-/// A Settings tab's rows, with the spacing every tab shares.
-private struct VaultSettingsPane<Content: View>: View {
+/// A settings card's rows, with the spacing every card shares.
+private struct VaultSettingsRows<Content: View>: View {
 	@ViewBuilder let content: Content
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 14) { content }
-			.padding(.horizontal, 20)
-			.padding(.top, 18)
-			.padding(.bottom, 20)
+		VStack(alignment: .leading, spacing: 12) { content }
 			.frame(maxWidth: .infinity, alignment: .leading)
-			.background(VaultPalette.content)
 	}
 }
 

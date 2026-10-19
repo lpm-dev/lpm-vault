@@ -434,7 +434,7 @@ struct PlatformsView: View {
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
-					Button("Open Account", action: store.showAccount)
+					Button("Open Account", action: store.showSettings)
 						.buttonStyle(.plain)
 						.font(.system(size: 11.5, weight: .medium))
 						.foregroundStyle(VaultPalette.accentForeground)

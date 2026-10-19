@@ -62,7 +62,7 @@ extension SheetInteractionTests {
 				let divider = try #require(resizeViews(in: host.view).first { $0.accessibilityLabel() == "Resize Key column" })
 				divider.onDragEnded?(-2000)
 				#expect(try await host.waitUntil { divider.accessibilityValue() as? String == "160 points" })
-				store.showAccount()
+				store.showSettings()
 				#expect(try await host.waitUntil { !resizeViews(in: host.view).contains { $0.accessibilityLabel() == "Resize Key column" } })
 				store.openProject(id: "workspace")
 				try await host.settle()
@@ -343,7 +343,8 @@ extension SheetInteractionTests {
 			])
 			defer { store.lock() }
 			await store.refreshCliAccess()
-			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!)),
+			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!))
+				.environment(VaultQuitSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!)),
 				size: NSSize(width: 1040, height: 700), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
 			#expect(try await host.waitUntil { store.workspaceSnapshots["workspace"] != nil })
@@ -562,7 +563,7 @@ extension SheetInteractionTests {
 			try await host.settle()
 			try host.enterValue("unsaved-removed-project")
 			try await host.settle()
-			if hiddenInSettings { store.showAccount(); try await host.settle() }
+			if hiddenInSettings { store.showSettings(); try await host.settle() }
 			let saved = keychain.envStorage.removeValue(forKey: "workspace")
 			await store.refreshLocalState()
 			try await host.settle()
@@ -609,7 +610,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			#expect(biometric.authenticationReasons == ["Copy your unsaved value"])
 			switch transition {
-			case "settings": store.showAccount()
+			case "settings": store.showSettings()
 			case "discard": try await host.click("Discard")
 			case "account": store.selectedAccount = .org("other")
 			default: store.lock()
@@ -738,7 +739,7 @@ extension SheetInteractionTests {
 			try await host.click("Copy all")
 			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			switch transition {
-			case "settings": store.showAccount()
+			case "settings": store.showSettings()
 			case "environment": store.selectEnvironment("production")
 			case "project": store.openProject(id: "other")
 			case "lock": store.lock()
@@ -779,7 +780,8 @@ extension SheetInteractionTests {
 			defer { store.lock() }
 			#expect(store.workspaceSnapshots["workspace"] == nil)
 			#expect(!store.isLoadingSelectedProject)
-			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!)),
+			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!))
+				.environment(VaultQuitSettings(defaults: UserDefaults(suiteName: "workspace-interaction")!)),
 				size: NSSize(width: 1600, height: 800), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close() }
 			#expect(!host.lines().contains { $0.text.contains("Select an env project") })
@@ -800,7 +802,7 @@ extension SheetInteractionTests {
 				try await host.settle()
 			}
 			#expect(try host.rowIsHighlighted(inset: inset, rowMidY: rowMidY))
-			store.showAccount()
+			store.showSettings()
 			try await host.settle()
 			#expect(try !host.rowIsHighlighted(inset: inset, rowMidY: rowMidY))
 			#expect(store.selectedProjectId == "workspace")
@@ -832,7 +834,7 @@ extension SheetInteractionTests {
 		private func workspace(_ store: VaultStore, size: NSSize = NSSize(width: 1600, height: 800), copyFeedback: ManualCopyFeedbackTimer = ManualCopyFeedbackTimer(), defaults: UserDefaults? = nil) async throws -> SheetTestHost<some View> {
 			await store.refreshCliAccess()
 			let defaults = try defaults ?? #require(UserDefaults(suiteName: "workspace-interaction"))
-			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: defaults))
+			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: defaults)).environment(VaultQuitSettings(defaults: defaults))
 				.environment(\.vaultCopyFeedbackTimer, copyFeedback.timer)
 				.defaultAppStorage(defaults),
 				size: size, keepsRequestedSize: true, usesHostingView: true)

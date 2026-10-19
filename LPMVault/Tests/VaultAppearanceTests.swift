@@ -108,12 +108,12 @@ struct VaultAppearanceTests {
 		}
 	}
 
-	@Test("the Settings window's Appearance tab exposes a working picker, locked or signed out")
+	@Test("the Settings page's Appearance card exposes a working picker")
 	func appearancePicker() async throws {
 		let (defaults, domain) = try Self.isolatedDefaults()
 		defer { defaults.removePersistentDomain(forName: domain) }
 		let settings = VaultAppearanceSettings(defaults: defaults)
-		let host = NSHostingView(rootView: VaultAppearanceSettingsPane().environment(settings))
+		let host = NSHostingView(rootView: VaultAppearanceSettingsSection().environment(settings))
 		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
 			styleMask: [.titled], backing: .buffered, defer: false)
 		window.isReleasedWhenClosed = false
@@ -241,18 +241,19 @@ extension SheetInteractionTests {
 			try await render(ContentView(store: store).environment(UpdateChecker()).environment(settings),
 				size: CGSize(width: 1200, height: 760), scheme: scheme, name: "workspace-\(suffix)",
 				expectedText: ["All variables", "CLI", "API_URL", "PORT", "protected-api"])
-			try await render(VaultAppearanceSettingsPane().environment(settings),
+			try await render(VaultAppearanceSettingsSection().environment(settings),
 				size: CGSize(width: 520, height: 120), scheme: scheme, name: "settings-appearance-\(suffix)",
 				expectedText: ["Theme", "System", "Light", "Dark"])
-			try await render(VaultUpdateSettingsPane().environment(UpdateChecker()),
+			try await render(VaultUpdateSettingsSection().environment(UpdateChecker()),
 				size: CGSize(width: 520, height: 200), scheme: scheme, name: "settings-updates-\(suffix)",
 				expectedText: ["Installed version", "Update channel", "Stable", "Nightly"])
-			try await render(VaultGeneralSettingsPane().environment(VaultQuitSettings(defaults: defaults)),
+			try await render(VaultGeneralSettingsSection().environment(VaultQuitSettings(defaults: defaults)),
 				size: CGSize(width: 520, height: 120), scheme: scheme, name: "settings-general-\(suffix)",
 				expectedText: ["Quit shortcut", "Direct", "Double press", "Hold"])
-			try await render(AuthStatusView(store: store).environment(settings),
-				size: CGSize(width: 700, height: 700), scheme: scheme, name: "account-\(suffix)",
-				expectedText: ["Account", "SERVER", "APP SETTINGS", "Open Settings"])
+			try await render(VaultSettingsPage(store: store).environment(settings).environment(UpdateChecker())
+				.environment(VaultQuitSettings(defaults: defaults)),
+				size: CGSize(width: 700, height: 900), scheme: scheme, name: "settings-\(suffix)",
+				expectedText: ["Settings", "SERVER", "GENERAL", "Quit shortcut", "APPEARANCE", "Theme", "UPDATES", "Installed version"])
 			try await render(AddVariableSheet(store: store, projectId: project.id, environment: "development"),
 				size: CGSize(width: 560, height: 520), scheme: scheme, name: "add-variable-\(suffix)",
 				expectedText: ["Add variable", "Key", "Value", "Environments", "Cancel"])

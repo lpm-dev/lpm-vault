@@ -1624,7 +1624,7 @@ final class VaultStore {
   }
 
   /// Selects a project after switching to its owning account, and always
-  /// leaves the Account page.
+  /// leaves the Settings or Platforms page.
   func openProject(id projectId: String) {
     guard projects.contains(where: { $0.id == projectId }) else {
       reconcileNavigationState()
@@ -1654,9 +1654,22 @@ final class VaultStore {
     resetAutoLock()
   }
 
-  func showAccount() {
-    accountPage = .account
+  /// The page on lpm.dev that manages the signed-in account, for the server in use.
+  var accountManagementURL: URL? {
+    URL(string: "/dashboard/settings", relativeTo: appEnvironment.baseURL)?.absoluteURL
+  }
+
+  func showSettings() {
+    accountPage = .settings
     resetAutoLock()
+  }
+
+  /// Shows the Settings page, unlocking first when the vault is locked:
+  /// the settings live in the window, behind the lock.
+  func showSettingsUnlockingFirst() async {
+    if !isUnlocked { await unlock() }
+    guard isUnlocked else { return }
+    showSettings()
   }
 
   func showPlatforms() {
