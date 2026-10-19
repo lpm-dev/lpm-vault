@@ -119,34 +119,37 @@ struct PublishSheet: View {
 	/// Where the fields say to publish: the platform's project or resource,
 	/// then the part of it written to, each nil until it's chosen.
 	private var place: (name: String?, part: String?) {
+		// Until the fields' choices load, a place is named as the review read
+		// it, which follows a rename on the platform, or else as it was saved.
+		let known = session.review?.destination.target ?? session.saved?.target
 		switch session.form {
 		case .vercel(let form)?:
 			let project = form.project?.name ?? {
-				if case .vercel(let target)? = session.saved?.target, target.projectID == form.projectID { return target.projectName }
+				if case .vercel(let target)? = known, target.projectID == form.projectID { return target.projectName }
 				return nil
 			}()
 			return (project, form.environment?.displayName)
 		case .coolify(let form)?:
 			let resource = form.resource?.name ?? {
-				if case .coolify(let target)? = session.saved?.target, target.resourceID == form.resourceID { return target.resourceName }
+				if case .coolify(let target)? = known, target.resourceID == form.resourceID { return target.resourceName }
 				return nil
 			}()
 			return (resource, form.deployments?.displayName)
 		case .netlify(let form)?:
 			let site = form.site?.name ?? {
-				if case .netlify(let target)? = session.saved?.target, target.siteID == form.siteID { return target.siteName }
+				if case .netlify(let target)? = known, target.siteID == form.siteID { return target.siteName }
 				return nil
 			}()
 			return (site, form.context?.displayName)
 		case .github(let form)?:
 			let repository = form.repository?.fullName ?? {
-				if case .github(let target)? = session.saved?.target, target.repositoryID == form.repositoryID { return target.repositoryName }
+				if case .github(let target)? = known, target.repositoryID == form.repositoryID { return target.repositoryName }
 				return nil
 			}()
 			return (repository, form.scope?.displayName)
 		case .cloudflare(let form)?:
 			let worker = form.worker?.name ?? {
-				if case .cloudflare(let target)? = session.saved?.target, target.workerID == form.workerID { return target.workerName }
+				if case .cloudflare(let target)? = known, target.workerID == form.workerID { return target.workerName }
 				return nil
 			}()
 			return (worker, worker == nil ? nil : CloudflarePublishTarget.placeKind)

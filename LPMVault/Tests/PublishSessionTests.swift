@@ -1877,6 +1877,38 @@ extension SheetInteractionTests {
 			#expect(github.names(in: GitHubScope(repository: "northwind/storefront", environment: nil)).secrets == ["API_TOKEN", "SHARED_KEY"])
 		}
 
+		@Test("a saved GitHub destination whose repository was renamed is headed with the new name as soon as it's reviewed, before repositories are listed")
+		func namesRenamedRepository() async throws {
+			let environments = ["production": ["API_TOKEN": "tok"]]
+			keychain.envStorage["project"] = (name: "demo-api", path: "", environments: environments)
+			let github = FakeGitHubAPI()
+			let store = VaultStore(
+				keychainService: keychain, biometricService: biometric, apiService: MockAPIService(),
+				authTokenProvider: { _, _ in nil }, githubClient: { _ in github })
+			store.projects = [VaultProject(id: "project", name: "demo-api", path: "", environments: environments)]
+			store.isUnlocked = true
+			store.openProject(id: "project")
+			store.selectEnvironment("production")
+			_ = try await store.platformConnectionStore.save(
+				.github(GitHubConnectionAccount(userID: "583231", login: "octocat", name: "The Octocat", appSlug: "lpm-vault")),
+				accessToken: "ghu_1", at: Date()).get()
+			let saved = PublishDestination(
+				sourceEnvironment: "production",
+				target: .github(GitHubPublishTarget(
+					userID: "583231", userLogin: "octocat", repositoryID: "1296269", repositoryName: "northwind/storefront", scope: .repository)),
+				createdAt: Date())
+			_ = try await store.publishing.save(saved, to: "project").get()
+			github.rename("1296269", to: "northwind/shop")
+			let session = try #require(store.makePublishSession(for: saved))
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 640),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitUntil { session.review != nil })
+			#expect(session.github?.repositories.value == nil, "The repositories aren't listed for a saved destination's review")
+			#expect(try await host.waitForText("northwind/shop / Repository"))
+			#expect(try await !host.text().contains("northwind/storefront / Repository"))
+		}
+
 		@Test("a GitHub publish past what GitHub keeps says how many to leave out and can't be sent; the sheet says while environments load, and what GitHub left out")
 		func blocksOverflow() async throws {
 			let environments = ["production": ["API_TOKEN": "tok", "SHARED_KEY": "s"]]
@@ -2272,6 +2304,26 @@ struct CloudflarePublishSessionTests {
 		#expect(try await waitUntil { session.cloudflare?.workers.value != nil })
 	}
 
+	@Test("a saved Worker destination follows its Worker's rename, publishes to it, and is saved with the new name")
+	func followsRename() async throws {
+		let (_, work) = try await login(label: "Work")
+		simulator.edit { state in state.worker = CloudflareWorker(id: state.worker.id, name: "api-renamed") }
+		let session = session(saved: try await saved(preferring: work.login))
+		session.start()
+		let review = try await review(session)
+		guard case .cloudflare(let target) = review.destination.target else { Issue.record("Not a Cloudflare destination"); return }
+		#expect(target.workerName == "api-renamed" && review.needsSave)
+		try await publish(session)
+		#expect(session.reviewError == nil)
+		#expect(confirmations.reasons == ["Publish 2 secrets to api-renamed / Worker secrets (runtime) in the Cloudflare account Acme, as Work"])
+		#expect(session.results?.rows.map(\.outcome) == [.published, .published])
+		guard case .cloudflare(let stored)? = try await publishing.destinations(of: vault).get().first?.target else {
+			Issue.record("Not saved")
+			return
+		}
+		#expect(stored.workerName == "api-renamed")
+	}
+
 	@Test("a saved Worker destination publishes through the login it was set up with while that login reaches its account")
 	func usesPreferredLogin() async throws {
 		let (_, work) = try await login(label: "Work")
@@ -2508,6 +2560,24 @@ extension SheetInteractionTests {
 			try await host.click("Publish 1 secret")
 			#expect(try await host.waitForText("Published 1 of 1 secret"))
 			#expect(biometric.confirmationReasons == ["Publish 1 secret to api / Worker secrets (runtime) in the Cloudflare account Acme, as Work"])
+		}
+
+		@Test("a saved Worker destination renamed on Cloudflare is headed with its new name as soon as it's reviewed, before Workers are listed")
+		func namesRenamedWorker() async throws {
+			let store = makeStore()
+			let work = try await login(store, label: "Work")
+			simulator.edit { state in state.worker = CloudflareWorker(id: state.worker.id, name: "api-renamed") }
+			let session = try #require(store.makePublishSession(for: try await destination(store, preferring: work.login)))
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 720),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitForText("Publishing to the Cloudflare account Acme, as Work."))
+			#expect(session.cloudflare?.workers.value == nil, "The Workers aren't listed for a saved destination's review")
+			#expect(try await host.waitForText("api-renamed / Worker secrets (runtime)"))
+			#expect(try await !host.text().contains("api / Worker secrets (runtime)"))
+			try await host.click("Publish 1 secret")
+			#expect(try await host.waitForText("Published 1 of 1 secret"))
+			#expect(biometric.confirmationReasons == ["Publish 1 secret to api-renamed / Worker secrets (runtime) in the Cloudflare account Acme, as Work"])
 		}
 
 		@Test("a new Worker destination's menus say what to choose, say when Workers can't be listed until Refresh, and keep the account and Worker for another login that reaches it")
