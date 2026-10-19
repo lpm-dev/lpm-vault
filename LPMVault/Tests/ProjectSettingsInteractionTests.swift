@@ -17,6 +17,7 @@ extension SheetInteractionTests {
 
 			@MainActor func tearDown() {
 				store.lock()
+				store.clipboard.pasteboard.releaseGlobally()
 				preferences.removePersistentDomain(forName: domain)
 				try? FileManager.default.removeItem(at: images)
 			}
@@ -29,7 +30,8 @@ extension SheetInteractionTests {
 			let keychain = MockKeychainService()
 			keychain.envStorage["demo"] = (name: "demo-api", path: path, environments: ["default": ["TOKEN": "x"]])
 			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
-				preferences: preferences, authTokenProvider: { _, _ in nil }, projectIconsDirectory: images)
+				preferences: preferences, authTokenProvider: { _, _ in nil }, projectIconsDirectory: images,
+				clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 			store.projects = [VaultProject(id: "demo", name: "demo-api", path: path, environments: ["default": ["TOKEN": "x"]])]
 			if otherProject {
 				keychain.envStorage["other"] = (name: "web-dashboard", path: "", environments: ["default": [:]])
@@ -66,6 +68,19 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForTextToDisappear("Unsaved changes"))
 			try await host.click("All variables")
 			#expect(try await host.waitForText("New key", exactly: true))
+		}
+
+		@Test("the folder row copies the project's folder path")
+		func copiesFolderPath() async throws {
+			let folder = try ProjectIconFixture.folder()
+			defer { try? FileManager.default.removeItem(at: folder) }
+			let fixture = try makeFixture(path: folder.path)
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture)
+			defer { host.window.close() }
+			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
+			try await host.click("Copy Path")
+			#expect(try await host.waitUntil { fixture.store.clipboard.pasteboard.string(forType: .string) == folder.path })
 		}
 
 		private func workspace(_ fixture: Fixture) async throws -> SheetTestHost<some View> {
@@ -150,7 +165,7 @@ extension SheetInteractionTests {
 			try await host.settle()
 			#expect(fixture.store.selectedProjectId == "demo")
 			#expect(try await host.waitForText("New key", exactly: true))
-			#expect(try await !host.text().contains("Project Settings"))
+			#expect(try await !host.text().contains("Delete Locally"), "The page didn't open")
 		}
 
 		@Test("Revert ends the edits, and Reset shows only while an icon is chosen")

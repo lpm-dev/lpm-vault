@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 enum VaultPalette {
-	static let titleBar = adaptive(light: 0xF2F1F5, dark: 0x101010)
-	static let titleBarBorder = adaptive(light: 0xDEDDE3, dark: 0x262626)
+	static let titleBar = adaptive(light: 0xFAFAFC, dark: 0x101010)
+	static let titleBarBorder = adaptive(light: 0xDCDBE2, dark: 0x262626)
 	static let sidebar = adaptive(light: 0xF7F7FA, dark: 0x101010)
 	static let sidebarBorder = adaptive(light: 0xE4E3E9, dark: 0x262626)
 	static let content = adaptive(light: 0xFFFFFF, dark: 0x0A0A0A)
@@ -28,8 +28,6 @@ enum VaultPalette {
 	static let accentTint = adaptive(light: 0xECEAFC, dark: 0x29263D)
 	static let accentText = adaptive(light: 0x2C2B4A, dark: 0xD5D4FF)
 	static let accentDeep = adaptive(light: 0x4B48D6, dark: 0xB9B8FF)
-	static let vaultChip = adaptive(light: 0xE7E6EE, dark: 0x262626)
-	static let vaultChipText = adaptive(light: 0x5B5A6E, dark: 0xFFFFFF, darkOpacity: 0.55)
 
 	static let green = Color(hex: 0x34C759)
 	static let orange = Color(hex: 0xFF9F0A)
@@ -291,6 +289,8 @@ struct VaultBarButton: View {
 	var filled = false
 	var invertsOnHover = false
 	var destructive = false
+	/// Drawn in the accent tint, as while the sheet it opens is showing.
+	var active = false
 	var disabled = false
 	var height: CGFloat = 26
 	let action: () -> Void
@@ -301,14 +301,21 @@ struct VaultBarButton: View {
 		if disabled { return VaultPalette.textFaint }
 		if filled { return .white }
 		if destructive { return VaultPalette.redText }
-		return invertsOnHover && hovering ? .white : VaultPalette.textSecondary
+		if active { return VaultPalette.accentText }
+		return invertsOnHover && hovering ? .white : VaultPalette.textPrimary
 	}
 
 	private var background: Color {
 		if disabled { return filled ? VaultPalette.accent.opacity(0.35) : VaultPalette.control.opacity(0.7) }
 		if filled { return hovering ? VaultPalette.accentHover : VaultPalette.accent }
+		if active { return VaultPalette.accentTint }
 		if invertsOnHover && hovering { return VaultPalette.strongFill }
 		return hovering ? VaultPalette.sidebar : VaultPalette.control
+	}
+
+	private var border: Color {
+		if filled { return .clear }
+		return active ? VaultPalette.accent.opacity(0.35) : VaultPalette.border
 	}
 
 	var body: some View {
@@ -319,7 +326,7 @@ struct VaultBarButton: View {
 					Image(systemName: systemImage).font(.system(size: 11, weight: .medium))
 				}
 				if let title {
-					Text(title).font(.system(size: 12, weight: filled ? .semibold : .regular))
+					Text(title).font(.system(size: 12.5, weight: filled ? .semibold : .regular))
 				}
 				if let shortcut {
 					Text(shortcut)
@@ -328,12 +335,12 @@ struct VaultBarButton: View {
 				}
 			}
 			.foregroundStyle(foreground)
-			.padding(.horizontal, filled ? 11 : 10)
+			.padding(.horizontal, filled ? 12 : 11)
 			.frame(height: height)
 			.background(RoundedRectangle(cornerRadius: 7).fill(background))
 			.overlay {
 				RoundedRectangle(cornerRadius: 7)
-					.stroke(filled ? .clear : VaultPalette.border, lineWidth: 1)
+					.stroke(border, lineWidth: 1)
 			}
 			.fixedSize()
 		}
@@ -366,8 +373,8 @@ struct VaultBarMenu<Items: View, Label: View>: View {
 					.font(.system(size: 8, weight: .bold))
 					.foregroundStyle(VaultPalette.textQuaternary)
 			}
-			.foregroundStyle(VaultPalette.textSecondary)
-			.padding(.horizontal, 10)
+			.foregroundStyle(VaultPalette.textPrimary)
+			.padding(.horizontal, 11)
 			.frame(height: 26)
 			.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
 			.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
@@ -411,15 +418,15 @@ struct VaultOutlineButton: View {
 						ForEach(reservedTitles, id: \.self) { Text($0).hidden().accessibilityHidden(true) }
 						Text(title)
 					}
-					.font(.system(size: 12))
+					.font(.system(size: 12.5))
 				}
 			}
-			.foregroundStyle(disabled ? VaultPalette.textFaint : (active ? VaultPalette.accentForeground : VaultPalette.textSecondary))
-			.padding(.horizontal, title == nil ? 0 : 10)
+			.foregroundStyle(disabled ? VaultPalette.textFaint : (active ? VaultPalette.accentForeground : VaultPalette.textPrimary))
+			.padding(.horizontal, title == nil ? 0 : 11)
 			.frame(width: title == nil ? 27 : nil, height: 27)
 			.background {
 				RoundedRectangle(cornerRadius: 7)
-					.fill(active ? VaultPalette.accentTint : (hovering ? VaultPalette.sidebar : .clear))
+					.fill(active ? VaultPalette.accentTint : (hovering ? VaultPalette.sidebar : VaultPalette.control))
 			}
 			.overlay {
 				RoundedRectangle(cornerRadius: 7)

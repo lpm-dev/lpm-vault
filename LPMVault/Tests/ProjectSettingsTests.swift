@@ -152,33 +152,6 @@ struct ProjectSettingsTests {
 		#expect(try await waitUntil { !FileManager.default.fileExists(atPath: copy.path) })
 	}
 
-	@Test("the header's … menu opens settings, offers the folder's actions only when there is one, and renames and deletes")
-	func headerMenu() throws {
-		// Menu items send their actions through the application.
-		_ = NSApplication.shared
-		var opened = 0, renamed = 0, deleted = 0
-		var copied: [String] = []
-		let project = VaultProject(id: "demo", name: "demo-api", path: "/tmp/demo-api", environments: [:])
-		let items = VaultProjectMenu.headerItems(for: project, folderExists: false,
-			openSettings: { opened += 1 }, rename: { renamed += 1 }, delete: { deleted += 1 }, copyText: { copied.append($0) })
-		#expect(items.map { $0.title ?? "—" } == ["Project Settings…", "—", "Show in Finder", "Copy folder path", "—", "Rename…", "Delete Locally…"])
-		let menu = VaultMenuAnchor().menu(for: items)
-		#expect(menu.items[0].keyEquivalent == "i" && menu.items[0].keyEquivalentModifierMask == .command)
-		#expect(menu.items[1].isSeparatorItem && menu.items[4].isSeparatorItem)
-		#expect(!menu.items[2].isEnabled, "Show in Finder needs the folder to be there")
-		#expect(menu.items[3].isEnabled)
-		menu.performActionForItem(at: 0)
-		menu.performActionForItem(at: 3)
-		menu.performActionForItem(at: 5)
-		menu.performActionForItem(at: 6)
-		#expect(opened == 1 && renamed == 1 && deleted == 1)
-		#expect(copied == ["/tmp/demo-api"])
-		let unlinked = VaultProjectMenu.headerItems(for: VaultProject(id: "x", name: "x", path: "", environments: [:]), folderExists: true,
-			openSettings: {}, rename: {}, delete: {}, copyText: { _ in })
-		let unlinkedMenu = VaultMenuAnchor().menu(for: unlinked)
-		#expect(!unlinkedMenu.items[2].isEnabled && !unlinkedMenu.items[3].isEnabled)
-	}
-
 	private func renameElsewhere(_ fixture: Fixture, to name: String) throws {
 		fixture.keychain.envStorage["demo"]?.name = name
 		var renamed = try project(fixture.store)

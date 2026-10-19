@@ -237,10 +237,13 @@ struct VaultPaneLayoutTests {
 	}
 
 	/// Clicks where the inspector toggle is drawn in an 800-point-tall window: left of
-	/// More actions and New key, from the content's right edge. This suite isn't
-	/// a UI suite, so it can't find the toggle by its name.
+	/// Settings and New key, from the content's right edge, past the header's 20-point
+	/// inset and the 6 points between its buttons. This suite isn't a UI suite, so it
+	/// can't find the toggle by its name; the buttons' widths are measured as drawn.
 	private func clickInspectorToggle(in window: NSWindow, contentRightEdge: CGFloat) throws {
-		try NativeTestClick.send(to: window, at: NSPoint(x: contentRightEdge - 162.5, y: 723.5))
+		let newKey = NSHostingView(rootView: VaultBarButton(systemImage: "plus", title: "New key", filled: true, height: 27) {}).fittingSize.width
+		let settings = NSHostingView(rootView: VaultOutlineButton(systemImage: "gearshape", title: "Settings") {}).fittingSize.width
+		try NativeTestClick.send(to: window, at: NSPoint(x: contentRightEdge - 20 - newKey - 6 - settings - 6 - 13.5, y: 723.5))
 	}
 
 	private func event(_ type: NSEvent.EventType, x: CGFloat) throws -> NSEvent {

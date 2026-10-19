@@ -413,7 +413,7 @@ struct VaultWorkspaceView: View {
 								onCopyAll: copyAll,
 								onImport: importCurrentEnvironment,
 								onExport: exportCurrentEnvironment,
-								moreActions: { projectMenuItems(project) },
+								onProjectSettings: { openProjectSettings(project, focusingName: false) },
 								editedKeys: store.keyDrafts.editedKeys(in: project.id),
 								publicKeys: store.publicKeys(in: project.id),
 								valueChecks: VaultValueCheckPresentation(
@@ -1002,17 +1002,6 @@ struct VaultWorkspaceView: View {
 		}
 		projectNameFocusRequest = focusingName ? UUID() : nil
 		mode = .projectSettings
-	}
-
-	private func projectMenuItems(_ project: VaultProject) -> [VaultMenuItem] {
-		VaultProjectMenu.headerItems(
-			for: project,
-			folderExists: store.projectIcons.detection(for: project.id) != .folderMissing,
-			openSettings: { openProjectSettings(project, focusingName: false) },
-			rename: { openProjectSettings(project, focusingName: true) },
-			delete: { projectToDelete = project },
-			copyText: { store.clipboard.copyText($0) }
-		)
 	}
 
 	private func beginRenameEnvironment(_ target: VaultEnvironmentTarget) {

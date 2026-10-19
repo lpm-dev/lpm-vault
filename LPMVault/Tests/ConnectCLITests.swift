@@ -378,8 +378,8 @@ extension SheetInteractionTests {
 			#expect(text.contains("Run from the linked project folder"))
 		}
 
-		@Test("the title bar chip offers to connect the project to the LPM CLI")
-		func rendersTitleBarChip() async throws {
+		@Test("the title bar's Connect CLI button offers to connect the project to the LPM CLI")
+		func rendersTitleBarButton() async throws {
 			let store = makeStore(path: "")
 			let host = SheetTestHost(
 				VaultTitleBarView(store: store, mode: .matrix, onConnectCLI: {}, onPull: {}, onPush: {})
@@ -389,9 +389,9 @@ extension SheetInteractionTests {
 			try await host.settle()
 			try host.attachSnapshot(named: "title-bar-connect-cli")
 
-			let chip = try await host.waitForElement(saying: "Connect CLI")
-			#expect(chip.role == .button && chip.label == "Connect CLI")
-			#expect(chip.help == "Connect my-api-server to the LPM CLI")
+			let button = try await host.waitForElement(saying: "Connect CLI")
+			#expect(button.role == .button && button.label == "Connect CLI")
+			#expect(button.help == "Connect my-api-server to the LPM CLI")
 			#expect(try await !host.text().contains("vault 7f3a1e2c"))
 		}
 

@@ -44,12 +44,12 @@ struct VaultAppearanceTests {
 	func paletteColors() {
 		let colors: [(color: Color, light: UInt, dark: UInt, darkOpacity: Float)] = [
 			(VaultPalette.content, 0xFFFFFF, 0x0A0A0A, 1),
-			(VaultPalette.titleBar, 0xF2F1F5, 0x101010, 1),
+			(VaultPalette.titleBar, 0xFAFAFC, 0x101010, 1),
 			(VaultPalette.sidebar, 0xF7F7FA, 0x101010, 1),
 			(VaultPalette.inspector, 0xFAFAFC, 0x101010, 1),
 			(VaultPalette.control, 0xFFFFFF, 0x101010, 1),
 			(VaultPalette.border, 0xDCDBE2, 0x262626, 1),
-			(VaultPalette.titleBarBorder, 0xDEDDE3, 0x262626, 1),
+			(VaultPalette.titleBarBorder, 0xDCDBE2, 0x262626, 1),
 			(VaultPalette.sidebarBorder, 0xE4E3E9, 0x262626, 1),
 			(VaultPalette.divider, 0xECEAF0, 0x262626, 1),
 			(VaultPalette.rowDivider, 0xF0EFF4, 0x191919, 1),
