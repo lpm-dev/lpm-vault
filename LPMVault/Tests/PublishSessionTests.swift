@@ -2153,7 +2153,10 @@ extension SheetInteractionTests {
 				createdAt: Date())
 			_ = try await store.publishing.save(saved, to: "project").get()
 			await store.loadPublishDestinations(for: "project")
-			#expect(try await host.waitForElement(saying: "Publish…").help == "Publish to a saved destination or a new one")
+			#expect(try await host.waitUntil {
+				AccessibilityTree.visibleElements(in: host.window, of: host.view)
+					.contains { $0.says("Publish…") && $0.help == "Publish to a saved destination or a new one" }
+			}, "Publish… shows the saved destinations once they're read")
 			try await host.click("Publish…")
 			#expect(showsMenu && opened.values.count == 1, "The menu shows, and no sheet opens")
 			try await host.click("Publish…")

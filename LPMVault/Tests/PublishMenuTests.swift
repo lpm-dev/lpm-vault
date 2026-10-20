@@ -255,13 +255,20 @@ extension SheetInteractionTests {
 			_ = try await fixture.store.publishing.save(destination, to: WorkspaceFixture.projectID).get()
 			let host = try await fixture.workspace()
 			defer { host.window.close() }
-			#expect(try await host.waitUntil { fixture.store.publishDestinations[WorkspaceFixture.projectID]?.count == 1 })
+			#expect(try await host.waitUntil {
+				AccessibilityTree.visibleElements(in: host.window, of: host.view)
+					.contains { $0.says("Publish…") && $0.help == "Publish to a saved destination or a new one" }
+			}, "Publish… shows the saved destination once it's read")
 			try await host.click("Publish…")
 			#expect(try await host.waitForText("SAVED DESTINATIONS · 1"))
+			// The menu slides in, so its place is checked once it has arrived.
+			let placed = try await host.waitUntil {
+				guard let button = frame(of: "Publish…", in: host), let menu = frame(of: "Saved destinations", in: host) else { return false }
+				return abs(menu.maxX - button.maxX) <= 1 && abs(button.minY - menu.maxY - 6) <= 1
+			}
 			let button = try await layoutFrame(of: "Publish…", in: host)
 			let menu = try await layoutFrame(of: "Saved destinations", in: host)
-			#expect(abs(menu.maxX - button.maxX) <= 1, "The menu ends where Publish… does: \(menu) under \(button)")
-			#expect(abs(button.minY - menu.maxY - 6) <= 1, "The menu opens 6 points under Publish…: \(menu) under \(button)")
+			#expect(placed, "The menu ends where Publish… does, 6 points under it: \(menu) under \(button)")
 			#expect(abs(menu.width - VaultPublishMenu.width) <= 1)
 			let actions = try await layoutFrame(of: "Platforms", in: host)
 			#expect(menu.minY < actions.minY && actions.minY - menu.minY < 12, "The menu is as tall as what it lists: \(menu), \(actions)")
@@ -317,6 +324,15 @@ extension SheetInteractionTests {
 				AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.says("site-12, Production", as: .leading) && !$0.visibleFrame.isEmpty }
 			}, "Highlighting the last row scrolls it into view")
 			#expect(shown)
+		}
+
+		/// Where the element saying exactly `name` is in the host's view, from its bottom-left; nil while it isn't shown.
+		private func frame<V: View>(of name: String, in host: SheetTestHost<V>) -> CGRect? {
+			guard let element = AccessibilityTree.visibleElements(in: host.window, of: host.view).first(where: { $0.says(name, as: .exact) })
+			else { return nil }
+			let bounds = AccessibilityTree.normalizedBounds(of: element, in: host.view)
+			let size = host.view.bounds.size
+			return CGRect(x: bounds.minX * size.width, y: bounds.minY * size.height, width: bounds.width * size.width, height: bounds.height * size.height)
 		}
 
 		private func layoutFrame<V: View>(of name: String, in host: SheetTestHost<V>) async throws -> CGRect {
