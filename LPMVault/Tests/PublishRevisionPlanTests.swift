@@ -83,7 +83,8 @@ struct PublishRevisionPlanTests {
 			#expect(selection.keys.isEmpty)
 			let chose = selection.set("A", selected: true, in: plan)
 			#expect(!chose)
-			#expect(plan.summary(of: selection).publishing == 0)
+			#expect(plan.rows.allSatisfy { plan.action(for: $0, in: selection) == .cantPublish })
+			#expect(plan.summary(of: selection) == PublishPlan.Summary(blocked: 2))
 		}
 	}
 

@@ -253,11 +253,39 @@ enum PublishTarget: Hashable, Sendable {
 	/// What the platform calls the place, such as a project, then the part of it written to.
 	var placeName: String {
 		switch self {
-		case .vercel(let target): "\(target.projectName) / \(target.environment.displayName)"
-		case .coolify(let target): "\(target.resourceName) / \(target.deployments.displayName)"
-		case .netlify(let target): "\(target.siteName) / \(target.context.displayName)"
-		case .github(let target): "\(target.repositoryName) / \(target.scope.displayName)"
 		case .cloudflare(let target): "\(target.workerName) / \(CloudflarePublishTarget.placeKind)"
+		case .vercel, .coolify, .netlify, .github: "\(placeTitle) / \(placePart)"
+		}
+	}
+
+	/// The place alone, such as a Vercel project or a Worker.
+	var placeTitle: String {
+		switch self {
+		case .vercel(let target): target.projectName
+		case .coolify(let target): target.resourceName
+		case .netlify(let target): target.siteName
+		case .github(let target): target.repositoryName
+		case .cloudflare(let target): target.workerName
+		}
+	}
+
+	/// The part of the place written to, in a word or two, such as Production.
+	var placePart: String {
+		switch self {
+		case .vercel(let target): target.environment.displayName
+		case .coolify(let target): target.deployments.displayName
+		case .netlify(let target): target.context.displayName
+		case .github(let target): target.scope.displayName
+		case .cloudflare: CloudflarePublishTarget.placePart
+		}
+	}
+
+	/// The account holding the place; nil for a GitHub repository, whose
+	/// name already starts with its owner.
+	var placeAccountName: String? {
+		switch self {
+		case .github: nil
+		case .vercel, .coolify, .netlify, .cloudflare: accountName
 		}
 	}
 
@@ -719,6 +747,8 @@ struct CloudflarePublishTarget: Hashable, Sendable {
 	/// What a Worker destination is called: its runtime secrets, which a
 	/// build's own variables aren't.
 	static let placeKind = "Worker secrets (runtime)"
+	/// The kind in a word, beside the Worker's name.
+	static let placePart = "runtime"
 
 	/// Cloudflare's ID for the account holding the Worker.
 	let accountID: String

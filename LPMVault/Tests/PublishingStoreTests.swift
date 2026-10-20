@@ -405,7 +405,7 @@ struct PublishDestinationFollowTests {
 		#expect(store.publishDestinations["project"]?.first?.accountDetail == "acme")
 	}
 
-	@Test("a Worker destination's menu item names its account once: the title does, so the subtitle doesn't")
+	@Test("a Worker destination's menu row names its Worker, then its account once")
 	func cloudflareMenuNamesAccountOnce() async throws {
 		let (store, _) = makeStore()
 		defer { store.lock() }
@@ -418,8 +418,9 @@ struct PublishDestinationFollowTests {
 		_ = try await store.publishing.save(destination, to: "project").get()
 		await store.loadPublishDestinations(for: "project")
 		let summary = try #require(store.publishDestinations["project"]?.first)
-		#expect(VaultTitleBarView.title(of: summary.destination) == "api / Worker secrets (runtime) — Cloudflare · Acme")
-		#expect(!VaultTitleBarView.subtitle(of: summary).contains("Acme"))
+		let entry = VaultPublishMenu.Entry(summary, now: Date())
+		#expect(entry.title == "api" && entry.part == "runtime")
+		#expect(entry.detail == "from .env.staging · Acme")
 	}
 
 	@Test("an environment rename saved as the vault locks still moves its destinations")

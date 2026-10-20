@@ -10,6 +10,8 @@ struct VaultTitleBarView: View {
 	var isConnectSheetPresented = false
 	/// Opens the Publish sheet, on a saved destination's review or for a new one.
 	var onPublish: (PublishDestination?) -> Void = { _ in }
+	/// Whether the menu of saved destinations shows under Publish….
+	var showsPublishMenu: Binding<Bool> = .constant(false)
 
 	private var project: VaultProject? { store.selectedProject }
 
@@ -150,43 +152,18 @@ struct VaultTitleBarView: View {
 	@ViewBuilder
 	private var publishControl: some View {
 		if let project, !store.isShowingAccountPage {
-			let saved = store.publishDestinations[project.id] ?? []
-			Group {
-				if saved.isEmpty {
-					VaultBarButton(systemImage: "arrow.up.to.line", title: "Publish…") { onPublish(nil) }
+			let hasSaved = !(store.publishDestinations[project.id] ?? []).isEmpty
+			VaultBarButton(systemImage: "arrow.up.to.line", title: "Publish…", active: showsPublishMenu.wrappedValue) {
+				if hasSaved {
+					showsPublishMenu.wrappedValue.toggle()
 				} else {
-					VaultBarMenu(accessibilityLabel: "Publish") {
-						Section("Saved destinations") {
-							ForEach(saved) { summary in
-								Button { onPublish(summary.destination) } label: {
-									Text(Self.title(of: summary.destination))
-									Text(Self.subtitle(of: summary))
-								}
-							}
-						}
-						Divider()
-						Button("New destination…") { onPublish(nil) }
-					} label: {
-						Image(systemName: "arrow.up.to.line").font(.system(size: 11, weight: .medium))
-						Text("Publish").font(.system(size: 12.5))
-					}
+					onPublish(nil)
 				}
 			}
-			.help("Publish an environment to a platform")
+			.anchorPreference(key: VaultPublishButtonAnchor.self, value: .bounds) { $0 }
+			.help(hasSaved ? "Publish to a saved destination or a new one" : "Publish an environment to a platform")
 			.task(id: project.id) { await store.loadPublishDestinations(for: project.id) }
 		}
-	}
-
-	static func title(of destination: PublishDestination) -> String {
-		let target = destination.target
-		return "\(target.placeName) — \(target.platform.displayName) · \(target.accountName)"
-	}
-
-	static func subtitle(of summary: PublishDestinationSummary) -> String {
-		let source = "from \(VaultProject.displayName(for: summary.destination.sourceEnvironment))"
-		let when = summary.lastPublishedAt.map { RelativeTimestampFormatter.string(from: $0) } ?? "not published yet"
-		let parts = [summary.destination.target.placeDetail ?? summary.accountDetail, source, when]
-		return parts.compactMap { $0 }.joined(separator: " · ")
 	}
 
 	private var isOrganization: Bool {

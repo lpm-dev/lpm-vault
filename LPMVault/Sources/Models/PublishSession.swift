@@ -305,6 +305,66 @@ final class PublishSession: Identifiable {
 		connections.value?.first { $0.id == connectionID }
 	}
 
+	/// Where the fields say to publish, each part nil until it's chosen.
+	struct Place: Equatable {
+		/// The platform's project or resource.
+		var title: String?
+		/// The part of it written to.
+		var part: String?
+		/// The account holding it; never set for a GitHub repository, whose name starts with its owner.
+		var account: String?
+	}
+
+	var place: Place {
+		// Until the fields' choices load, a place is named as the review read
+		// it, which follows a rename on the platform, or else as it was saved.
+		let known = review?.destination.target ?? saved?.target
+		switch form {
+		case .vercel(let form)?:
+			var place = Place(title: form.project?.name, part: form.environment?.displayName)
+			if case .vercel(let target)? = known {
+				if place.title == nil, target.projectID == form.projectID { place.title = target.projectName }
+				place.account = target.teamName
+			}
+			if case .vercel(let account)? = connection?.account { place.account = account.name }
+			return place
+		case .coolify(let form)?:
+			var place = Place(title: form.resource?.name, part: form.deployments?.displayName)
+			if case .coolify(let target)? = known {
+				if place.title == nil, target.resourceID == form.resourceID { place.title = target.resourceName }
+				place.account = target.teamName
+			}
+			if case .coolify(let account)? = connection?.account { place.account = account.teamName }
+			return place
+		case .netlify(let form)?:
+			var place = Place(title: form.site?.name, part: form.context?.displayName, account: form.site?.teamName)
+			if case .netlify(let target)? = known, target.siteID == form.siteID {
+				place.title = place.title ?? target.siteName
+				place.account = place.account ?? target.teamName
+			}
+			return place
+		case .github(let form)?:
+			var place = Place(title: form.repository?.fullName, part: form.scope?.displayName)
+			if place.title == nil, case .github(let target)? = known, target.repositoryID == form.repositoryID {
+				place.title = target.repositoryName
+			}
+			return place
+		case .cloudflare(let form)?:
+			var place = Place(title: form.worker?.name)
+			if case .cloudflare(let target)? = known, target.accountID == form.accountID {
+				if place.title == nil, target.workerID == form.workerID { place.title = target.workerName }
+				place.account = target.accountName
+			}
+			if case .cloudflare(let login)? = connection?.account, let account = login.accounts.first(where: { $0.id == form.accountID }) {
+				place.account = account.name
+			}
+			if place.title != nil { place.part = CloudflarePublishTarget.placeKind }
+			return place
+		case nil:
+			return Place()
+		}
+	}
+
 	/// The platform the destination publishes to, once a connection is chosen.
 	var platform: PublishPlatform? {
 		switch form {

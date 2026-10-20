@@ -548,7 +548,7 @@ final class SheetTestHost<V: View> {
 	/// Sends a key with no modifiers, such as an arrow, through the
 	/// application, so event monitors see it as they would a real key press.
 	func press(_ key: Key) throws {
-		let flags: NSEvent.ModifierFlags = key == .escape ? [] : [.numericPad, .function]
+		let flags: NSEvent.ModifierFlags = key == .escape || key == .return ? [] : [.numericPad, .function]
 		let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: key.characters, charactersIgnoringModifiers: key.characters, isARepeat: false, keyCode: key.rawValue))
 		NSApplication.shared.sendEvent(event)
 	}
@@ -557,12 +557,14 @@ final class SheetTestHost<V: View> {
 		case escape = 53
 		case up = 126
 		case down = 125
+		case `return` = 36
 
 		var characters: String {
 			switch self {
 			case .escape: "\u{1b}"
 			case .up: "\u{f700}"
 			case .down: "\u{f701}"
+			case .return: "\r"
 			}
 		}
 	}

@@ -19,6 +19,7 @@ struct VaultWorkspaceView: View {
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
 	@State private var showsAccountSwitcher = false
+	@State private var showsPublishMenu = false
 	@State private var sidebarWidth = VaultMetrics.sidebar
 	@State private var inspectorWidth = VaultMetrics.inspector
 	@State private var tableColumnWidths: [String: VaultProjectTableColumnWidths] = [:]
@@ -229,6 +230,10 @@ struct VaultWorkspaceView: View {
 		.onChange(of: store.selectedAccount) { _, _ in
 			conflictTarget = nil
 			showsAccountSwitcher = false
+			showsPublishMenu = false
+		}
+		.onChange(of: publishMenuDestinations.isEmpty) { _, empty in
+			if empty { showsPublishMenu = false }
 		}
 		.onChange(of: store.lastSyncStatus) { _, value in
 			if value == "conflict", let project = store.selectedProject {
@@ -260,7 +265,8 @@ struct VaultWorkspaceView: View {
 				onPull: { showPullConfirmation = true },
 				onPush: { showPushConfirmation = true },
 				isConnectSheetPresented: showConnectCLISheet,
-				onPublish: { publishSession = store.makePublishSession(for: $0) }
+				onPublish: { publishSession = store.makePublishSession(for: $0) },
+				showsPublishMenu: $showsPublishMenu
 			)
 			.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 			VaultHairline(color: VaultPalette.titleBarBorder)
@@ -515,15 +521,11 @@ struct VaultWorkspaceView: View {
 		}
 		.background(VaultPalette.content)
 		.frame(minWidth: 1040, minHeight: 640)
-		.environment(\.vaultSchemaKeysSuspended, showsAccountSwitcher)
+		.environment(\.vaultSchemaKeysSuspended, showsAccountSwitcher || showsPublishMenu)
 		.overlay {
 			if showsAccountSwitcher {
 				ZStack(alignment: .bottomLeading) {
-					Rectangle()
-						.fill(.clear)
-						.contentShape(Rectangle())
-						.onTapGesture { showsAccountSwitcher = false }
-						.accessibilityHidden(true)
+					VaultClickCatcher { showsAccountSwitcher = false }
 
 					VaultAccountSwitcher(
 						store: store,
@@ -540,8 +542,35 @@ struct VaultWorkspaceView: View {
 				}
 			}
 		}
+		.overlayPreferenceValue(VaultPublishButtonAnchor.self) { anchor in
+			if showsPublishMenu, let anchor, !publishMenuDestinations.isEmpty {
+				GeometryReader { proxy in
+					let button = proxy[anchor]
+					ZStack(alignment: .topLeading) {
+						VaultClickCatcher { showsPublishMenu = false }
+
+						VaultPublishMenu(
+							summaries: publishMenuDestinations,
+							isPresented: $showsPublishMenu,
+							onPublish: { publishSession = store.makePublishSession(for: $0) },
+							onPlatforms: { store.showPlatforms() }
+						)
+						.padding(.leading, max(8, min(button.maxX, proxy.size.width - 8) - VaultPublishMenu.width))
+						.padding(.top, button.maxY + 6)
+						.transition(.opacity.combined(with: .offset(y: -4)))
+					}
+				}
+			}
+		}
 		.ignoresSafeArea(.container, edges: .top)
 		.animation(.easeOut(duration: 0.14), value: showsAccountSwitcher)
+		.animation(.easeOut(duration: 0.12), value: showsPublishMenu)
+	}
+
+	/// The saved destinations the Publish menu lists: the selected project's, while Publish… shows.
+	private var publishMenuDestinations: [PublishDestinationSummary] {
+		guard let project, !store.isShowingAccountPage else { return [] }
+		return store.publishDestinations[project.id] ?? []
 	}
 
 	private var workspaceSheets: some View {
@@ -1063,6 +1092,7 @@ struct VaultWorkspaceView: View {
 		schemaReview = nil
 		revealedKeys.removeAll()
 		showsInspector = false
+		showsPublishMenu = false
 		conflictTarget = nil
 		currentImportTask?.cancel()
 		currentImportTask = nil
