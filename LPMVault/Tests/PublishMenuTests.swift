@@ -249,18 +249,11 @@ extension SheetInteractionTests {
 
 		@Test("in the workspace, Publish… opens the menu under itself, ending where it ends; a click outside closes it, and a row opens its review")
 		func inWorkspace() async throws {
-			let fixture = try WorkspaceFixture()
+			let fixture = try WorkspaceFixture(savingDestination: true)
 			defer { fixture.tearDown() }
-			let destination = vercel(team: "team_northwind", project: "storefront")
-			_ = try await fixture.store.publishing.save(destination, to: WorkspaceFixture.projectID).get()
 			let host = try await fixture.workspace()
 			defer { host.window.close() }
-			#expect(try await host.waitUntil {
-				AccessibilityTree.visibleElements(in: host.window, of: host.view)
-					.contains { $0.says("Publish…") && $0.help == "Publish to a saved destination or a new one" }
-			}, "Publish… shows the saved destination once it's read")
-			try await host.click("Publish…")
-			#expect(try await host.waitForText("SAVED DESTINATIONS · 1"))
+			try await fixture.openPublishMenu(in: host)
 			// The menu slides in, so its place is checked once it has arrived.
 			let placed = try await host.waitUntil {
 				guard let button = frame(of: "Publish…", in: host), let menu = frame(of: "Saved destinations", in: host) else { return false }
@@ -296,6 +289,87 @@ extension SheetInteractionTests {
 			try NativeTestClick.send(to: host.window, at: NSPoint(x: 700, y: 120))
 			#expect(try await host.waitForTextToDisappear("VAULTS"))
 			#expect(fixture.store.isUnlocked && fixture.store.selectedProjectId == WorkspaceFixture.projectID)
+		}
+
+		@Test("New key and ⌘N close the menu as the Add variable sheet opens, and Cancel doesn't bring it back", arguments: ["New key", "⌘N"])
+		func sheetClosesMenu(trigger: String) async throws {
+			let fixture = try WorkspaceFixture(savingDestination: true)
+			defer { fixture.tearDown() }
+			let host = try await fixture.workspace()
+			defer { host.window.close() }
+			try await fixture.openPublishMenu(in: host)
+			if trigger == "New key" {
+				try await host.click("New key")
+			} else {
+				// What Env Project › New Secret sends.
+				NotificationCenter.default.post(name: .newSecret, object: nil)
+			}
+			#expect(try await host.waitUntil { host.window.attachedSheet != nil })
+			let sheet = try #require(host.window.attachedSheet)
+			#expect(try await host.waitForText("Add variable", in: sheet))
+			#expect(try await host.waitForTextToDisappear("SAVED DESTINATIONS · 1"), "The menu closes as the sheet opens")
+			try await host.click("Cancel", in: sheet)
+			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
+			try await host.settle()
+			#expect(try await !host.text().contains("SAVED DESTINATIONS"))
+		}
+
+		enum Takeover: String, CaseIterable, CustomTestStringConvertible, Sendable {
+			case command = "a menu command"
+			case otherWindow = "another window or app"
+			case accountMenu = "the account menu"
+			case page = "another page"
+			case environment = "another environment"
+
+			var testDescription: String { rawValue }
+		}
+
+		@Test("the menu closes as anything else takes the window", arguments: Takeover.allCases)
+		func takeover(_ takeover: Takeover) async throws {
+			let fixture = try WorkspaceFixture(savingDestination: true)
+			defer { fixture.tearDown() }
+			let host = try await fixture.workspace()
+			defer { host.window.close() }
+			try await fixture.openPublishMenu(in: host)
+			switch takeover {
+			case .command:
+				let command = MenuCommand()
+				let menu = NSMenu()
+				menu.addItem(withTitle: "Find Secrets", action: #selector(MenuCommand.run(_:)), keyEquivalent: "f").target = command
+				menu.performActionForItem(at: 0)
+				#expect(command.runs == 1, "The command still runs")
+			case .otherWindow:
+				// A test window never becomes key, so this posts what AppKit does as another window or app takes the keyboard.
+				NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: host.window)
+			case .accountMenu:
+				try await host.click("Account menu")
+				#expect(try await host.waitForText("VAULTS"))
+			case .page:
+				try await host.click("Project Settings")
+			case .environment:
+				let sidebar = CGRect(x: 0, y: 0, width: (VaultMetrics.sidebar + 20) / host.view.bounds.width, height: 1)
+				try await host.click("Production", region: sidebar)
+			}
+			#expect(try await host.waitForTextToDisappear("SAVED DESTINATIONS · 1"))
+		}
+
+		@Test("the account menu closes as a sheet opens, and as Publish… opens its menu instead", arguments: ["New key", "Publish…"])
+		func accountMenuTakeover(trigger: String) async throws {
+			let fixture = try WorkspaceFixture(savingDestination: true)
+			defer { fixture.tearDown() }
+			let host = try await fixture.workspace()
+			defer { host.window.close() }
+			try await fixture.openPublishMenu(in: host)
+			try await host.click("Account menu")
+			#expect(try await host.waitForText("VAULTS"))
+			#expect(try await host.waitForTextToDisappear("SAVED DESTINATIONS · 1"))
+			try await host.click(trigger)
+			#expect(try await host.waitForTextToDisappear("VAULTS"))
+			if trigger == "Publish…" {
+				#expect(try await host.waitForText("SAVED DESTINATIONS · 1"))
+			} else {
+				#expect(try await host.waitUntil { host.window.attachedSheet != nil })
+			}
 		}
 
 		@Test("with more destinations than fit, the list scrolls under a fixed header and actions, and ↑ and ↓ scroll to the highlighted row")
@@ -364,8 +438,11 @@ private struct WorkspaceFixture {
 
 	let store: VaultStore
 	let folder: String
+	private let savesDestination: Bool
 
-	init() throws {
+	/// `savingDestination` saves a Vercel destination for the project, which Publish… then lists.
+	init(savingDestination: Bool = false) throws {
+		savesDestination = savingDestination
 		folder = FileManager.default.temporaryDirectory.appending(path: "publish-menu-\(UUID().uuidString)").path
 		try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
 		let keychain = MockKeychainService()
@@ -380,6 +457,9 @@ private struct WorkspaceFixture {
 	}
 
 	func workspace() async throws -> SheetTestHost<some View> {
+		if savesDestination {
+			_ = try await store.publishing.save(vercel(team: "team_northwind", project: "storefront"), to: Self.projectID).get()
+		}
 		await store.refreshCliAccess()
 		let defaults = try #require(UserDefaults(suiteName: "publish-menu"))
 		let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
@@ -392,8 +472,26 @@ private struct WorkspaceFixture {
 		return host
 	}
 
+	/// Opens the Publish menu once Publish… shows the saved destination.
+	func openPublishMenu<V: View>(in host: SheetTestHost<V>) async throws {
+		#expect(try await host.waitUntil {
+			AccessibilityTree.visibleElements(in: host.window, of: host.view)
+				.contains { $0.says("Publish…") && $0.help == "Publish to a saved destination or a new one" }
+		}, "Publish… shows the saved destination once it's read")
+		try await host.click("Publish…")
+		#expect(try await host.waitForText("SAVED DESTINATIONS · 1"))
+	}
+
 	func tearDown() {
 		store.lock()
 		try? FileManager.default.removeItem(atPath: folder)
 	}
+}
+
+/// A command in a menu, as the menu bar holds them.
+@MainActor
+private final class MenuCommand: NSObject {
+	private(set) var runs = 0
+
+	@objc func run(_ sender: Any?) { runs += 1 }
 }

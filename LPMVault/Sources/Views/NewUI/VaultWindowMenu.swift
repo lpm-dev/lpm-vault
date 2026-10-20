@@ -55,23 +55,43 @@ struct VaultMenuKeys: NSViewRepresentable {
 	}
 }
 
-/// Behind a menu shown over the window: a click anywhere else closes the
-/// menu, and goes no further, as a click outside a menu does.
-struct VaultClickCatcher: NSViewRepresentable {
-	let onClick: () -> Void
+/// Behind a menu shown over the window: the menu closes as anything else
+/// takes the window, as a menu does. That's a click anywhere else, which goes
+/// no further; a sheet; another window or app; or a command, chosen from a
+/// menu or by its shortcut.
+struct VaultMenuBackdrop: NSViewRepresentable {
+	let onDismiss: () -> Void
 
-	func makeNSView(context: Context) -> CatcherView { CatcherView() }
+	func makeNSView(context: Context) -> BackdropView { BackdropView() }
 
-	func updateNSView(_ view: CatcherView, context: Context) {
-		view.onClick = onClick
+	func updateNSView(_ view: BackdropView, context: Context) {
+		view.onDismiss = onDismiss
 	}
 
-	final class CatcherView: NSView {
-		var onClick: () -> Void = {}
+	final class BackdropView: NSView {
+		var onDismiss: () -> Void = {}
+		private var observers: [any NSObjectProtocol] = []
 
 		override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-		override func mouseDown(with event: NSEvent) { onClick() }
-		override func rightMouseDown(with event: NSEvent) { onClick() }
-		override func otherMouseDown(with event: NSEvent) { onClick() }
+		override func mouseDown(with event: NSEvent) { onDismiss() }
+		override func rightMouseDown(with event: NSEvent) { onDismiss() }
+		override func otherMouseDown(with event: NSEvent) { onDismiss() }
+
+		override func viewDidMoveToWindow() {
+			super.viewDidMoveToWindow()
+			observers.forEach(NotificationCenter.default.removeObserver)
+			observers.removeAll()
+			guard let window else { return }
+			let takeovers: [(Notification.Name, NSObject?)] = [
+				(NSWindow.willBeginSheetNotification, window),
+				(NSWindow.didResignKeyNotification, window),
+				(NSMenu.willSendActionNotification, nil),
+			]
+			observers = takeovers.map { name, object in
+				NotificationCenter.default.addObserver(forName: name, object: object, queue: nil) { [weak self] _ in
+					MainActor.assumeIsolated { self?.onDismiss() }
+				}
+			}
+		}
 	}
 }
