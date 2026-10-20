@@ -3,8 +3,33 @@ import Foundation
 
 struct ImportedEnvFile: Sendable, Equatable {
 	let secrets: [String: String]
+	/// The bytes read: the file's size, or the pasted text's length in UTF-8.
+	var byteCount = 0
+	/// Lines holding something other than an assignment, a comment or blank
+	/// space, which an import leaves out, and the first of them.
+	var skippedLineCount = 0
+	var firstSkippedLine: Int?
 
 	var count: Int { secrets.count }
+}
+
+/// What an import reads its variables from.
+enum EnvImportInput: Sendable {
+	case file(URL)
+	case text(String)
+}
+
+/// Where imported variables came from, as a review names it.
+enum EnvImportSource: Sendable, Equatable {
+	case file(URL)
+	case pastedText
+
+	var name: String {
+		switch self {
+		case .file(let url): url.lastPathComponent
+		case .pastedText: "Pasted text"
+		}
+	}
 }
 
 struct EnvFileImportLimits: Sendable {
@@ -37,8 +62,16 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 	case caseInsensitiveCollisionWithExisting
 	case persistence(String)
 
-	var errorDescription: String? {
-		switch self {
+	var errorDescription: String? { description(pasted: false) }
+
+	/// What went wrong, naming pasted text as such rather than as a file.
+	func description(for source: EnvImportSource) -> String {
+		description(pasted: source == .pastedText)
+	}
+
+	private func description(pasted: Bool) -> String {
+		let subject = pasted ? "The pasted text" : "The .env file"
+		return switch self {
 		case .cancelled:
 			"Import cancelled."
 		case .fileNotFound:
@@ -46,9 +79,9 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 		case .notRegularFile:
 			"Select a regular .env file."
 		case .tooLarge(let limit):
-			"The .env file exceeds the \(Self.byteCount(limit)) limit."
+			"\(subject) exceeds the \(Self.byteCount(limit)) limit."
 		case .invalidUTF8:
-			"The .env file is not valid UTF-8."
+			"\(subject) is not valid UTF-8."
 		case .readFailed:
 			"The .env file could not be read."
 		case .invalidVariableName(let line):
@@ -56,19 +89,21 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 		case .caseInsensitiveCollision(let line, let existingKey, let incomingKey):
 			"Line \(line) defines \(incomingKey), which differs from \(existingKey) only by letter case. Rename one key for Windows compatibility."
 		case .tooManyAssignments(let limit):
-			"The .env file contains more than \(limit) assignments."
+			"\(subject) contains more than \(limit) assignments."
 		case .parsedDataTooLarge(let limit):
-			"The parsed .env data exceeds the \(Self.byteCount(limit)) import limit."
+			pasted
+				? "The pasted variables exceed the \(Self.byteCount(limit)) import limit."
+				: "The parsed .env data exceeds the \(Self.byteCount(limit)) import limit."
 		case .noValidSecrets:
-			"The .env file does not contain any valid secrets."
+			pasted ? "The pasted text has no KEY=value lines." : "The .env file does not contain any valid secrets."
 		case .vaultLocked:
 			"Unlock LPM Vault before importing secrets."
 		case .targetUnavailable:
 			"The target env project or environment changed before the import completed."
 		case .reviewChanged:
-			"The environment changed after this review. Review the file again before importing."
+			"The environment changed after this review. Review it again before importing."
 		case .caseInsensitiveCollisionWithExisting:
-			"A key in this file differs only by letter case from an existing key. Rename one key for Windows compatibility."
+			"An imported key differs only by letter case from an existing key. Rename one key for Windows compatibility."
 		case .persistence(let message):
 			"Import failed. \(message)"
 		}
@@ -80,13 +115,19 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 }
 
 protocol EnvFileImportServiceProtocol: Sendable {
-	func load(at url: URL) async throws -> ImportedEnvFile
+	func load(_ input: EnvImportInput) async throws -> ImportedEnvFile
+}
+
+extension EnvFileImportServiceProtocol {
+	func load(at url: URL) async throws -> ImportedEnvFile {
+		try await load(.file(url))
+	}
 }
 
 /// Bounds all local dotenv work behind one shared admission pool. File reads
 /// and parsing run off the cooperative pool; callers only publish the result.
 final class EnvFileImportService: EnvFileImportServiceProtocol, @unchecked Sendable {
-	typealias Worker = @Sendable (URL, EnvFileImportLimits) throws -> ImportedEnvFile
+	typealias Worker = @Sendable (EnvImportInput, EnvFileImportLimits) throws -> ImportedEnvFile
 	static let shared = EnvFileImportService()
 
 	private let limits: EnvFileImportLimits
@@ -103,7 +144,7 @@ final class EnvFileImportService: EnvFileImportServiceProtocol, @unchecked Senda
 		self.worker = worker
 	}
 
-	func load(at url: URL) async throws -> ImportedEnvFile {
+	func load(_ input: EnvImportInput) async throws -> ImportedEnvFile {
 		do {
 			try await admission.acquire()
 		} catch is CancellationError {
@@ -113,7 +154,7 @@ final class EnvFileImportService: EnvFileImportServiceProtocol, @unchecked Senda
 		do {
 			let imported = try await BlockingWork.run { [limits, worker] in
 				try Task.checkCancellation()
-				return try worker(url, limits)
+				return try worker(input, limits)
 			}
 			await admission.release()
 			return imported
@@ -219,23 +260,38 @@ private actor EnvFileImportAdmission {
 }
 
 enum EnvFileImportWorker {
-	static func load(at url: URL, limits: EnvFileImportLimits) throws -> ImportedEnvFile {
+	static func load(_ input: EnvImportInput, limits: EnvFileImportLimits) throws -> ImportedEnvFile {
 		var parser = StreamingEnvFileParser(limits: limits)
-		try BoundedEnvFileReader.forEachLine(
-			at: url,
-			maximumBytes: limits.maximumInputBytes,
-			parsedDataLimit: limits.maximumParsedBytes,
-			maximumRetainedLineBytes: min(
-				limits.maximumInputBytes,
-				limits.maximumParsedBytes * 2 + 1_024
-			),
-			preservePhysicalLine: { parser.hasPendingQuotedAssignment }
-		) { line, lineNumber in
-			try parser.consume(line, lineNumber: lineNumber)
+		let maximumRetainedLineBytes = min(limits.maximumInputBytes, limits.maximumParsedBytes * 2 + 1_024)
+		let byteCount = switch input {
+		case .file(let url):
+			try BoundedEnvFileReader.forEachLine(
+				at: url,
+				maximumBytes: limits.maximumInputBytes,
+				parsedDataLimit: limits.maximumParsedBytes,
+				maximumRetainedLineBytes: maximumRetainedLineBytes,
+				preservePhysicalLine: { parser.hasPendingQuotedAssignment },
+				skipped: { parser.skip(line: $0) }
+			) { line, lineNumber in
+				try parser.consume(line, lineNumber: lineNumber)
+			}
+		case .text(let text):
+			try BoundedEnvFileReader.forEachLine(
+				in: text,
+				maximumBytes: limits.maximumInputBytes,
+				parsedDataLimit: limits.maximumParsedBytes,
+				maximumRetainedLineBytes: maximumRetainedLineBytes,
+				preservePhysicalLine: { parser.hasPendingQuotedAssignment },
+				skipped: { parser.skip(line: $0) }
+			) { line, lineNumber in
+				try parser.consume(line, lineNumber: lineNumber)
+			}
 		}
 		let secrets = try parser.finish()
 		guard !secrets.isEmpty else { throw EnvFileImportError.noValidSecrets }
-		return ImportedEnvFile(secrets: secrets)
+		return ImportedEnvFile(
+			secrets: secrets, byteCount: byteCount,
+			skippedLineCount: parser.skippedLineCount, firstSkippedLine: parser.firstSkippedLine)
 	}
 }
 
@@ -249,6 +305,8 @@ private struct StreamingEnvFileParser {
 	private var pendingQuotedAssignmentBytes = 0
 	private var pendingAssignmentLine: Int?
 	private var pendingQuote: Character?
+	private(set) var skippedLineCount = 0
+	private(set) var firstSkippedLine: Int?
 
 	init(limits: EnvFileImportLimits) {
 		self.limits = limits
@@ -256,6 +314,11 @@ private struct StreamingEnvFileParser {
 
 	var hasPendingQuotedAssignment: Bool {
 		pendingQuotedAssignment != nil
+	}
+
+	mutating func skip(line: Int) {
+		skippedLineCount += 1
+		if firstSkippedLine == nil { firstSkippedLine = line }
 	}
 
 	mutating func consume(_ line: String, lineNumber: Int) throws {
@@ -335,7 +398,10 @@ private struct StreamingEnvFileParser {
 				incomingKey: incomingKey
 			)
 		}
-		guard let (key, value) = parsed.first else { return }
+		guard let (key, value) = parsed.first else {
+			if !EnvFileCodec.isBlankOrComment(assignment) { skip(line: sourceLine) }
+			return
+		}
 		assignmentCount += 1
 		guard assignmentCount <= limits.maximumAssignments else {
 			throw EnvFileImportError.tooManyAssignments(limit: limits.maximumAssignments)
@@ -426,14 +492,19 @@ enum BoundedEnvFileReader {
 		return data
 	}
 
+	/// Calls `body` with each line that isn't blank or a comment, and its
+	/// number, and `skipped` with the number of each line too long to keep that
+	/// holds no assignment. Returns the bytes read.
+	@discardableResult
 	static func forEachLine(
 		at url: URL,
 		maximumBytes: Int,
 		parsedDataLimit: Int? = nil,
 		maximumRetainedLineBytes: Int? = nil,
 		preservePhysicalLine: () -> Bool = { false },
+		skipped: (Int) -> Void = { _ in },
 		_ body: (String, Int) throws -> Void
-	) throws {
+	) throws -> Int {
 		guard url.isFileURL, maximumBytes >= 0, maximumBytes < Int.max else {
 			throw EnvFileImportError.readFailed
 		}
@@ -460,21 +531,122 @@ enum BoundedEnvFileReader {
 			throw EnvFileImportError.tooLarge(limit: maximumBytes)
 		}
 
-		let retainedLimit = max(0, min(maximumRetainedLineBytes ?? maximumBytes, maximumBytes))
-		let reportedParsedDataLimit = parsedDataLimit ?? retainedLimit
-		var totalBytes = 0
-		var lineNumber = 0
-		var line = Data()
-		line.reserveCapacity(min(256, retainedLimit))
+		var scanner = LineScanner(
+			maximumBytes: maximumBytes, parsedDataLimit: parsedDataLimit,
+			maximumRetainedLineBytes: maximumRetainedLineBytes, preservesFirstLine: preservePhysicalLine())
 		var buffer = [UInt8](repeating: 0, count: chunkSize)
-		var validator = StreamingUTF8Validator()
-		var classification = ASCIILineClassification.undecided
-		var hasPhysicalBytes = false
-		var lineWasTruncated = false
-		var sawEquals = false
-		var preservesCurrentLine = preservePhysicalLine()
+		while true {
+			try Task.checkCancellation()
+			let count = buffer.withUnsafeMutableBytes { bytes in
+				Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+			}
+			if count == 0 { break }
+			if count < 0 {
+				if errno == EINTR { continue }
+				throw EnvFileImportError.readFailed
+			}
+			try buffer.withUnsafeBufferPointer { bytes in
+				try scanner.scan(
+					UnsafeBufferPointer(rebasing: bytes.prefix(count)),
+					preservePhysicalLine: preservePhysicalLine, skipped: skipped, body)
+			}
+		}
+		return try scanner.finish(preservePhysicalLine: preservePhysicalLine, skipped: skipped, body)
+	}
 
-		func finishLine(terminatedByNewline: Bool) throws {
+	/// Reads pasted text as `forEachLine(at:)` reads a file, under the same limits.
+	@discardableResult
+	static func forEachLine(
+		in text: String,
+		maximumBytes: Int,
+		parsedDataLimit: Int? = nil,
+		maximumRetainedLineBytes: Int? = nil,
+		preservePhysicalLine: () -> Bool = { false },
+		skipped: (Int) -> Void = { _ in },
+		_ body: (String, Int) throws -> Void
+	) throws -> Int {
+		guard maximumBytes >= 0, maximumBytes < Int.max else { throw EnvFileImportError.readFailed }
+		guard text.utf8.count <= maximumBytes else { throw EnvFileImportError.tooLarge(limit: maximumBytes) }
+		var text = text
+		text.makeContiguousUTF8()
+		var scanner = LineScanner(
+			maximumBytes: maximumBytes, parsedDataLimit: parsedDataLimit,
+			maximumRetainedLineBytes: maximumRetainedLineBytes, preservesFirstLine: preservePhysicalLine())
+		func scan(_ bytes: UnsafeBufferPointer<UInt8>) throws {
+			var start = 0
+			while start < bytes.count {
+				try Task.checkCancellation()
+				let end = min(start + chunkSize, bytes.count)
+				try scanner.scan(
+					UnsafeBufferPointer(rebasing: bytes[start..<end]),
+					preservePhysicalLine: preservePhysicalLine, skipped: skipped, body)
+				start = end
+			}
+		}
+		if try text.utf8.withContiguousStorageIfAvailable(scan) == nil {
+			try Array(text.utf8).withUnsafeBufferPointer(scan)
+		}
+		return try scanner.finish(preservePhysicalLine: preservePhysicalLine, skipped: skipped, body)
+	}
+
+	/// Splits bytes into lines, as both front ends hand them over, keeping
+	/// what it has seen of the line it's in.
+	private struct LineScanner {
+		private let maximumBytes: Int
+		private let retainedLimit: Int
+		private let reportedParsedDataLimit: Int
+		private var totalBytes = 0
+		private var lineNumber = 0
+		private var line = Data()
+		private var validator = StreamingUTF8Validator()
+		private var classification = ASCIILineClassification.undecided
+		private var hasPhysicalBytes = false
+		private var lineWasTruncated = false
+		private var sawEquals = false
+		private var preservesCurrentLine: Bool
+
+		init(maximumBytes: Int, parsedDataLimit: Int?, maximumRetainedLineBytes: Int?, preservesFirstLine: Bool) {
+			self.maximumBytes = maximumBytes
+			retainedLimit = max(0, min(maximumRetainedLineBytes ?? maximumBytes, maximumBytes))
+			reportedParsedDataLimit = parsedDataLimit ?? retainedLimit
+			line.reserveCapacity(min(256, retainedLimit))
+			preservesCurrentLine = preservesFirstLine
+		}
+
+		mutating func scan(
+			_ chunk: UnsafeBufferPointer<UInt8>,
+			preservePhysicalLine: () -> Bool,
+			skipped: (Int) -> Void,
+			_ body: (String, Int) throws -> Void
+		) throws {
+			totalBytes += chunk.count
+			guard totalBytes <= maximumBytes else {
+				throw EnvFileImportError.tooLarge(limit: maximumBytes)
+			}
+			for byte in chunk {
+				try consume(byte, preservePhysicalLine: preservePhysicalLine, skipped: skipped, body)
+			}
+		}
+
+		/// Ends the last line and returns the bytes read.
+		mutating func finish(
+			preservePhysicalLine: () -> Bool,
+			skipped: (Int) -> Void,
+			_ body: (String, Int) throws -> Void
+		) throws -> Int {
+			guard validator.isComplete else { throw EnvFileImportError.invalidUTF8 }
+			if hasPhysicalBytes {
+				try finishLine(terminatedByNewline: false, preservePhysicalLine: preservePhysicalLine, skipped: skipped, body)
+			}
+			return totalBytes
+		}
+
+		private mutating func finishLine(
+			terminatedByNewline: Bool,
+			preservePhysicalLine: () -> Bool,
+			skipped: (Int) -> Void,
+			_ body: (String, Int) throws -> Void
+		) throws {
 			lineNumber += 1
 			defer {
 				line.removeAll(keepingCapacity: true)
@@ -486,13 +658,14 @@ enum BoundedEnvFileReader {
 			}
 			guard classification == .significant || preservesCurrentLine else { return }
 			if lineWasTruncated {
-				// A newline-free non-assignment is ignored by the dotenv grammar.
-				// It does not need a second full-size Data/String representation.
+				// A line too long to keep that holds no assignment is skipped,
+				// without a second full-size Data/String representation.
 				guard !sawEquals, !preservesCurrentLine else {
 					throw EnvFileImportError.parsedDataTooLarge(
 						limit: reportedParsedDataLimit
 					)
 				}
+				skipped(lineNumber)
 				return
 			}
 			if terminatedByNewline, line.last == 0x0D { line.removeLast() }
@@ -502,10 +675,15 @@ enum BoundedEnvFileReader {
 			try body(decoded, lineNumber)
 		}
 
-		func consume(_ byte: UInt8) throws {
+		private mutating func consume(
+			_ byte: UInt8,
+			preservePhysicalLine: () -> Bool,
+			skipped: (Int) -> Void,
+			_ body: (String, Int) throws -> Void
+		) throws {
 			guard validator.consume(byte) else { throw EnvFileImportError.invalidUTF8 }
 			if byte == 0x0A {
-				try finishLine(terminatedByNewline: true)
+				try finishLine(terminatedByNewline: true, preservePhysicalLine: preservePhysicalLine, skipped: skipped, body)
 				return
 			}
 			hasPhysicalBytes = true
@@ -549,26 +727,6 @@ enum BoundedEnvFileReader {
 			}
 			line.append(byte)
 		}
-
-		while true {
-			try Task.checkCancellation()
-			let count = buffer.withUnsafeMutableBytes { bytes in
-				Darwin.read(descriptor, bytes.baseAddress, bytes.count)
-			}
-			if count == 0 { break }
-			if count < 0 {
-				if errno == EINTR { continue }
-				throw EnvFileImportError.readFailed
-			}
-			totalBytes += count
-			guard totalBytes <= maximumBytes else {
-				throw EnvFileImportError.tooLarge(limit: maximumBytes)
-			}
-
-			for byte in buffer.prefix(count) { try consume(byte) }
-		}
-		guard validator.isComplete else { throw EnvFileImportError.invalidUTF8 }
-		if hasPhysicalBytes { try finishLine(terminatedByNewline: false) }
 	}
 
 	private enum ASCIILineClassification {
@@ -644,6 +802,11 @@ enum EnvFileCodec {
 			.trimmingLeadingWhitespace()
 		guard let quote = value.first, quote == "\"" || quote == "'" else { return nil }
 		return closingQuote(in: String(value.dropFirst()), quote: quote) == nil ? quote : nil
+	}
+
+	static func isBlankOrComment(_ line: String) -> Bool {
+		let trimmed = line.trimmingCharacters(in: .whitespaces)
+		return trimmed.isEmpty || trimmed.hasPrefix("#")
 	}
 
 	static func containsClosingQuote(in value: String, quote: Character) -> Bool {

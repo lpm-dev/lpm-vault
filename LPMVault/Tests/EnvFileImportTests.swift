@@ -361,15 +361,133 @@ struct EnvFileImportTests {
 		#expect(formattedData == Data(formatted.utf8))
 	}
 
-	@Test("a failed replacement preview clears previously imported secrets")
-	func failedReplacementPreviewClearsSecrets() {
-		var secrets = EnvFilePreviewPresentation.replacementSecrets(
-			for: .success(ImportedEnvFile(secrets: ["OLD": "secret"]))
-		)
-		#expect(secrets == ["OLD": "secret"])
+	private func read(_ input: EnvImportInput, with service: EnvFileImportService) async -> Result<ImportedEnvFile, EnvFileImportError> {
+		do { return .success(try await service.load(input)) }
+		catch let error as EnvFileImportError { return .failure(error) }
+		catch { return .failure(.readFailed) }
+	}
 
-		secrets = EnvFilePreviewPresentation.replacementSecrets(for: .failure(.invalidUTF8))
-		#expect(secrets.isEmpty)
+	@Test("pasted text reads as the same file does: values, line numbers, errors, skipped lines and size")
+	func pastedTextMatchesFile() async throws {
+		let service = EnvFileImportService()
+		let samples = [
+			"# comment\r\nDOUBLE=\"first\r\nsecond\"\r\nPLAIN=value\r\n",
+			"KEY=\"first\n#\n\n  indented\nlast\"\nNEXT=value\n",
+			"export TOKEN='single quoted'\nEMPTY=\nnot an assignment\n=no key\n\u{00A0}# a comment after a no-break space\nLAST=1",
+			"# comment\n\nBAD-NAME=value\n",
+			"# comment\nUPPER=one\nUpper=two\n",
+			"# only comments\n\n",
+			"KEY=caf\u{00E9} \u{1F510}\n",
+		]
+		for (index, sample) in samples.enumerated() {
+			let file = try temporaryFile(Data(sample.utf8), name: "sample-\(index).env")
+			let fromFile = await read(.file(file), with: service)
+			let fromText = await read(.text(sample), with: service)
+			#expect(fromText == fromFile, "Sample \(index) reads the same pasted as from a file")
+		}
+		let imported = try await service.load(.text(samples[2]))
+		#expect(imported.secrets == ["TOKEN": "single quoted", "EMPTY": "", "LAST": "1"])
+		#expect(imported.skippedLineCount == 2 && imported.firstSkippedLine == 3, "A comment after a no-break space isn't skipped as a non-assignment")
+		#expect(imported.byteCount == samples[2].utf8.count)
+		#expect(try await service.load(.text(samples[6])).byteCount == samples[6].utf8.count, "Size counts bytes, not characters")
+	}
+
+	@Test("a line too long to keep that isn't an assignment is skipped and said, not dropped quietly")
+	func longNonAssignmentIsSkipped() async throws {
+		let limits = EnvFileImportLimits(maximumInputBytes: 4_096, maximumAssignments: 10, maximumParsedBytes: 100)
+		let content = "A=1\n" + String(repeating: "x", count: 1_300) + "\nB=2\n"
+		let imported = try await EnvFileImportService(limits: limits).load(.text(content))
+		#expect(imported.secrets == ["A": "1", "B": "2"])
+		#expect(imported.skippedLineCount == 1 && imported.firstSkippedLine == 2)
+		#expect(imported.skippedLinesDescription == "Line 2 isn't KEY=value, so it's left out.")
+		let several = try await EnvFileImportService(limits: limits).load(.text("A=1\nfirst\nsecond\nthird"))
+		#expect(several.skippedLinesDescription == "3 lines aren't KEY=value, so they're left out, starting at line 2.")
+		#expect(try await EnvFileImportService(limits: limits).load(.text("A=1")).skippedLinesDescription == nil)
+	}
+
+	@Test("pasted text keeps to the file limits, and its problems name it as pasted text")
+	func pastedTextLimits() async throws {
+		let content = "KEY=value\n#padding"
+		let limits = EnvFileImportLimits(maximumInputBytes: content.utf8.count, maximumAssignments: 1, maximumParsedBytes: 64)
+		let service = EnvFileImportService(limits: limits)
+		#expect(try await service.load(.text(content)).secrets == ["KEY": "value"])
+		await #expect(throws: EnvFileImportError.tooLarge(limit: limits.maximumInputBytes)) {
+			try await service.load(.text(content + "x"))
+		}
+		await #expect(throws: EnvFileImportError.tooManyAssignments(limit: 1)) {
+			try await service.load(.text("A=1\nB=2"))
+		}
+		await #expect(throws: EnvFileImportError.noValidSecrets) {
+			try await service.load(.text("# nothing here"))
+		}
+		#expect(EnvFileImportError.tooLarge(limit: 1_024).description(for: .pastedText) == "The pasted text exceeds the 1 KB limit.")
+		#expect(EnvFileImportError.noValidSecrets.description(for: .pastedText) == "The pasted text has no KEY=value lines.")
+		#expect(EnvFileImportError.noValidSecrets.description(for: .file(URL(fileURLWithPath: "/tmp/.env"))) == "The .env file does not contain any valid secrets.")
+		#expect(EnvFileImportError.tooManyAssignments(limit: 2).description(for: .pastedText) == "The pasted text contains more than 2 assignments.")
+		#expect(EnvFileImportError.parsedDataTooLarge(limit: 1_024).description(for: .pastedText) == "The pasted variables exceed the 1 KB import limit.")
+	}
+
+	@Test("text as large as the limit allows reads in one pass")
+	func largestPastedText() async throws {
+		let limit = EnvFileImportLimits.standard.maximumInputBytes
+		let assignment = "KEY=value\n"
+		let content = assignment + String(repeating: "#", count: limit - assignment.utf8.count)
+		let imported = try await EnvFileImportService().load(.text(content))
+		#expect(imported.secrets == ["KEY": "value"] && imported.byteCount == limit)
+	}
+
+	@Test("a failed or unfinished read never imports what an earlier one read")
+	func failedReadImportsNothing() {
+		let file = URL(fileURLWithPath: "/tmp/.env.staging")
+		var state = EnvImportSourceState(file: file)
+		#expect(state.isReading && state.imported == nil)
+		state.finishReading(file, revision: state.fileRevision, .success(ImportedEnvFile(secrets: ["OLD": "secret"])))
+		#expect(state.imported?.secrets == ["OLD": "secret"] && state.source == .file(file))
+
+		state.choose(file)
+		#expect(state.imported == nil, "Choosing the file again reads it again")
+		state.finishReading(file, revision: state.fileRevision, .failure(.invalidUTF8))
+		#expect(state.imported == nil && state.problem == "The .env file is not valid UTF-8.")
+
+		state.mode = .text
+		#expect(state.isEmpty && state.source == nil && state.imported == nil, "Only the shown mode's input is imported")
+		state.setText("A=1")
+		let first = state.textRevision
+		state.finishReadingText(revision: first, .success(ImportedEnvFile(secrets: ["A": "1"])))
+		#expect(state.imported?.secrets == ["A": "1"] && state.source == .pastedText)
+		state.setText("A=1\nB=2")
+		#expect(state.imported == nil, "Text that's changed since its read imports nothing until it's read again")
+		#expect((try? state.shownRead?.get())?.secrets == ["A": "1"], "The last read stays shown meanwhile")
+		state.finishReadingText(revision: first, .success(ImportedEnvFile(secrets: ["STALE": "x"])))
+		#expect(state.imported == nil, "A read of older text never counts")
+		state.finishReadingText(revision: state.textRevision, .failure(.cancelled))
+		#expect(state.imported == nil && state.isReading)
+		state.finishReadingText(revision: state.textRevision, .failure(.noValidSecrets))
+		#expect(state.imported == nil && state.problem == "The pasted text has no KEY=value lines.")
+		state.setText("  \n\t")
+		#expect(state.isEmpty && !state.isReading && state.problem == nil, "Blank text holds nothing to read")
+	}
+
+	@Test("a drop holds one file, not several, a folder or a link")
+	func dropHoldsOneFile() throws {
+		let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let file = try temporaryFile(Data("A=1".utf8), name: ".env.preview")
+		#expect(EnvImportDrop.file(in: [file]) == .success(file))
+		#expect(EnvImportDrop.file(in: [file, file]) == .failure(.several))
+		#expect(EnvImportDrop.file(in: [folder]) == .failure(.folder))
+		#expect(EnvImportDrop.file(in: [try #require(URL(string: "https://example.com/.env"))]) == .failure(.notAFile))
+		#expect(EnvImportDrop.file(in: []) == .failure(.notAFile))
+
+		var state = EnvImportSourceState(file: file)
+		state.mode = .text
+		let droppedFolder = state.drop([folder])
+		#expect(!droppedFolder)
+		#expect(state.mode == .file && state.file == file && state.problem == "Drop a file, not a folder.",
+			"A drop that's turned down shows why, and keeps the chosen file")
+		let droppedFile = state.drop([file])
+		#expect(droppedFile && state.problem == nil)
 	}
 
 	@Test("global admission never exceeds two workers")
@@ -397,7 +515,8 @@ struct EnvFileImportTests {
 	@Test("cancelled queued imports are never admitted")
 	func queuedCancellation() async {
 		let tracker = ImportWorkerTracker()
-		let service = EnvFileImportService(maximumConcurrentImports: 2) { url, _ in
+		let service = EnvFileImportService(maximumConcurrentImports: 2) { input, _ in
+			guard case .file(let url) = input else { throw EnvFileImportError.readFailed }
 			tracker.enter(index: Int(url.lastPathComponent) ?? -1)
 			defer { tracker.leave() }
 			tracker.waitForRelease()

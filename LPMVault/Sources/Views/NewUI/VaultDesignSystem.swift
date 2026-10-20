@@ -114,6 +114,11 @@ enum VaultTypography {
 		.system(size: size, weight: weight, design: .monospaced)
 	}
 
+	/// The code font in AppKit text, such as the box pasted variables are edited in.
+	static func codeNSFont(_ size: CGFloat) -> NSFont {
+		.monospacedSystemFont(ofSize: size, weight: .regular)
+	}
+
 	static let sectionLabel = Font.system(size: 10.5, weight: .bold)
 }
 

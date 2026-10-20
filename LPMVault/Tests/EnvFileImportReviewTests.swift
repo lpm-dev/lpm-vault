@@ -88,9 +88,9 @@ extension SheetInteractionTests {
 		}
 
 		private func review(_ store: VaultStore) async throws -> EnvFileImportReview {
-			try await store.prepareEnvFileImport(
-				at: URL(fileURLWithPath: "/tmp/dummy.env"), to: "project", environment: "default"
-			).get()
+			let file = URL(fileURLWithPath: "/tmp/dummy.env")
+			let imported = try await store.loadEnvImport(.file(file), for: "project").get()
+			return try await store.prepareEnvImport(imported, from: .file(file), to: "project", environment: "default").get()
 		}
 
 		@Test("review classifies each key without writing secrets") func reviewClassifiesChanges() async throws {

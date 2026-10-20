@@ -104,6 +104,40 @@ struct VaultWindowConfigurator: NSViewRepresentable {
 	}
 }
 
+/// The window a view is in, for what SwiftUI doesn't say about it, such as
+/// whether a sheet is attached to it.
+@MainActor
+final class VaultHostWindow {
+	fileprivate(set) weak var window: NSWindow?
+
+	var hasAttachedSheet: Bool { window?.attachedSheet != nil }
+}
+
+struct VaultHostWindowReader: NSViewRepresentable {
+	let host: VaultHostWindow
+
+	func makeNSView(context: Context) -> NSView { ReaderView(host: host) }
+	func updateNSView(_ nsView: NSView, context: Context) {}
+
+	private final class ReaderView: NSView {
+		let host: VaultHostWindow
+
+		init(host: VaultHostWindow) {
+			self.host = host
+			super.init(frame: .zero)
+		}
+
+		required init?(coder: NSCoder) { nil }
+
+		override func viewDidMoveToWindow() {
+			super.viewDidMoveToWindow()
+			host.window = window
+		}
+
+		override func hitTest(_ point: NSPoint) -> NSView? { nil }
+	}
+}
+
 struct VaultWindowDragArea: NSViewRepresentable {
 	func makeNSView(context: Context) -> NSView { DragView() }
 	func updateNSView(_ nsView: NSView, context: Context) {}

@@ -2,7 +2,10 @@ import SwiftUI
 
 struct EnvFileImportReviewSheet: View {
 	@Bindable var store: VaultStore
-	@State var review: EnvFileImportReview
+	@State private var review: EnvFileImportReview
+	/// The import was applied without a review, keeping every existing value,
+	/// so the sheet opens on what it did.
+	private let importedWithoutReview: Bool
 	@Environment(\.dismiss) private var dismiss
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var revealedKeys: Set<String> = []
@@ -12,6 +15,13 @@ struct EnvFileImportReviewSheet: View {
 	@State private var task: Task<Void, Never>?
 	@State private var failure: String?
 	@State private var completedReplacements: Set<String>?
+
+	init(store: VaultStore, review: EnvFileImportReview, importedWithoutReview: Bool = false) {
+		_store = Bindable(wrappedValue: store)
+		_review = State(initialValue: review)
+		self.importedWithoutReview = importedWithoutReview
+		_completedReplacements = State(initialValue: importedWithoutReview ? [] : nil)
+	}
 
 	private var isWorking: Bool { task != nil }
 
@@ -27,12 +37,13 @@ struct EnvFileImportReviewSheet: View {
 			}
 			footer
 		}
-		.frame(width: 600)
+		// An import without a review stays as wide as the import sheet it was made from.
+		.frame(width: importedWithoutReview ? 520 : 600)
 		.frame(height: completedReplacements == nil ? 510 : nil)
 		.background(VaultPalette.content)
 		.vaultUnsavedSheetWork(store, projectID: review.projectId, projectName: review.projectName, title: "Import review",
 			detail: completedReplacements == nil
-				? "\(review.sourceURL.lastPathComponent) into \(VaultProject.displayName(for: review.environment))" : nil)
+				? "\(review.source.name) into \(VaultProject.displayName(for: review.environment))" : nil)
 		.onDisappear {
 			task?.cancel()
 			task = nil
@@ -56,7 +67,7 @@ struct EnvFileImportReviewSheet: View {
 				Text(completedReplacements == nil ? "Review import" : "Import complete")
 					.font(.system(size: 17, weight: .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("\(Text(review.sourceURL.lastPathComponent).font(VaultTypography.tabular(12)).foregroundStyle(VaultPalette.textSecondary)) into \(Text(review.projectName).fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) · \(VaultProject.displayName(for: review.environment))")
+				Text("\(Text(review.source.name).font(VaultTypography.tabular(12)).foregroundStyle(VaultPalette.textSecondary)) into \(Text(review.projectName).fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) · \(VaultProject.displayName(for: review.environment))")
 					.font(.system(size: 12.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.lineLimit(1)
@@ -196,6 +207,14 @@ struct EnvFileImportReviewSheet: View {
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textSecondary)
 				.textSelection(.enabled)
+			if importedWithoutReview, !review.changedKeys.isEmpty {
+				Text(review.changedKeys.count == 1
+					? "1 existing value differs and was kept. To replace it, import again with Review before applying on."
+					: "\(review.changedKeys.count) existing values differ and were kept. To replace them, import again with Review before applying on.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
 		}
 		.padding(.horizontal, 24)
 		.padding(.vertical, 20)
@@ -290,7 +309,7 @@ struct EnvFileImportReviewSheet: View {
 			switch result {
 			case .success: completedReplacements = keys
 			case .failure(.cancelled), .failure(.vaultLocked): dismiss()
-			case .failure(let error): failure = error.localizedDescription
+			case .failure(let error): failure = error.description(for: review.source)
 			}
 		}
 	}
@@ -298,8 +317,8 @@ struct EnvFileImportReviewSheet: View {
 	private func reload() {
 		hideValues()
 		task = Task {
-			let result = await store.prepareEnvFileImport(
-				at: review.sourceURL, to: review.projectId, environment: review.environment)
+			let result = await store.prepareEnvImport(
+				review.imported, from: review.source, to: review.projectId, environment: review.environment)
 			guard !Task.isCancelled else { return }
 			task = nil
 			switch result {
@@ -308,7 +327,7 @@ struct EnvFileImportReviewSheet: View {
 				replacingKeys.removeAll()
 				failure = nil
 			case .failure(.cancelled), .failure(.vaultLocked): dismiss()
-			case .failure(let error): failure = error.localizedDescription
+			case .failure(let error): failure = error.description(for: review.source)
 			}
 		}
 	}

@@ -62,7 +62,7 @@ See [Release channels](docs/release-channels.md) for the publishing and recovery
 
 - Manage project variables across multiple environments.
 - Compare values and find missing keys in the environment matrix.
-- Review `.env` imports with values hidden. Keep existing values or select individual replacements.
+- Import variables from an `.env` file, dropped on the window or chosen, or from pasted text. Review them with values hidden, keeping existing values or choosing individual replacements.
 - Export `.env` files.
 - Unlock with Touch ID or your Mac login password.
 - Use local values from `lpm env`, `lpm dev`, and `lpm run`.
@@ -80,7 +80,7 @@ The local callback page provides retry instructions if verification fails. It lo
 
 1. Unlock the app.
 2. Create an env project.
-3. Add environments, then add variables or import an `.env` file into each environment.
+3. Add environments, then add variables, or import them into each environment from an `.env` file or pasted text.
 4. Use **All variables** to compare environments.
 5. To connect the CLI, use **Connect CLI** for the selected project.
 

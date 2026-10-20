@@ -1059,8 +1059,12 @@ actor MockEnvFileImportService: EnvFileImportServiceProtocol {
 	)
 	var usesGate = false
 
-	func load(at url: URL) async throws -> ImportedEnvFile {
-		let key = url.lastPathComponent
+	/// A file is known by its name, and pasted text as "pasted text".
+	func load(_ input: EnvImportInput) async throws -> ImportedEnvFile {
+		let key = switch input {
+		case .file(let url): url.lastPathComponent
+		case .text: "pasted text"
+		}
 		if !usesGate { return try immediateResult.get() }
 		started.insert(key)
 		return try await withCheckedThrowingContinuation { continuation in

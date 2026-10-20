@@ -18,7 +18,7 @@ struct EnvFileImportReview: Identifiable, Sendable {
 	let projectName: String
 	let projectPath: String
 	let environment: String
-	let sourceURL: URL
+	let source: EnvImportSource
 	let sessionGeneration: Int
 	let imported: ImportedEnvFile
 	let baseline: [String: String]
@@ -28,7 +28,7 @@ struct EnvFileImportReview: Identifiable, Sendable {
 	let unchangedCount: Int
 
 	init(
-		id: UUID, project: VaultProject, environment: String, sourceURL: URL, sessionGeneration: Int,
+		id: UUID, project: VaultProject, environment: String, source: EnvImportSource, sessionGeneration: Int,
 		imported: ImportedEnvFile
 	) throws {
 		guard let baseline = project.environments[environment] else {
@@ -45,7 +45,7 @@ struct EnvFileImportReview: Identifiable, Sendable {
 		self.projectName = project.name
 		self.projectPath = project.path
 		self.environment = environment
-		self.sourceURL = sourceURL
+		self.source = source
 		self.sessionGeneration = sessionGeneration
 		self.imported = imported
 		self.baseline = baseline

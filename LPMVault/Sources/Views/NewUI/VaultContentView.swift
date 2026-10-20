@@ -32,7 +32,6 @@ struct VaultContentView: View {
 	@Binding var revealedKeys: Set<String>
 	@Binding var showsInspector: Bool
 	@Binding var columnWidths: VaultProjectTableColumnWidths
-	let isImporting: Bool
 	let isCopyingAll: Bool
 	var isCopiedAll = false
 	var canUseSecrets = true
@@ -241,7 +240,7 @@ struct VaultContentView: View {
 		let copyLabel = isCopyingAll
 			? "Copying all \(environmentName) values"
 			: (isCopiedAll ? "Copied all \(environmentName) values" : "Copy all \(environmentName) values")
-		let importName = isImporting ? "Importing into \(environmentName)" : "Import a .env file into \(environmentName)"
+		let importName = "Import variables into \(environmentName)"
 		let exportName = "Export \(environmentName)"
 		return HStack(spacing: 6) {
 			VaultOutlineButton(
@@ -269,7 +268,6 @@ struct VaultContentView: View {
 				title: namesTransfers ? "Import" : nil,
 				help: importName,
 				label: importName,
-				disabled: isImporting,
 				action: onImport
 			)
 			VaultOutlineButton(

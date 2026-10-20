@@ -4,14 +4,16 @@ import Testing
 @Suite("Vault typography")
 struct VaultTypographyTests {
 	/// The views that may set text in the code font, and how many times:
-	/// revealed secret values and the fields that edit them, and Connect CLI's
-	/// commands and lpm.json. Everything else uses the system font.
+	/// revealed secret values and the fields that edit them, such as the box
+	/// pasted variables are edited in, and Connect CLI's commands and
+	/// lpm.json. Everything else uses the system font.
 	private static let codeFontUses: [String: Int] = [
 		"VaultDesignSystem.swift": 1,
 		"VaultContentView.swift": 1,
 		"AddVariableSheet.swift": 1,
 		"VaultInspectorView.swift": 1,
 		"EnvFileImportReviewSheet.swift": 1,
+		"EnvImportSource.swift": 2,
 		"ConnectCLISheet.swift": 4,
 	]
 
@@ -26,11 +28,11 @@ struct VaultTypographyTests {
 		for file in files {
 			let text = try String(contentsOf: file, encoding: .utf8)
 			let name = file.lastPathComponent
-			uses[name] = text.components(separatedBy: "VaultTypography.code(").count - 1
+			uses[name] = ["VaultTypography.code(", "VaultTypography.codeNSFont("].reduce(0) { $0 + text.components(separatedBy: $1).count - 1 }
 			for pattern in ["design: .monospaced", ".monospaced()", "monospacedSystemFont", "VaultTypography.mono("] {
 				let count = text.components(separatedBy: pattern).count - 1
-				// The code font's own definition is the one monospaced font the app makes.
-				let allowed = name == "VaultDesignSystem.swift" && pattern == "design: .monospaced" ? 1 : 0
+				// The code font's own definitions, for SwiftUI and for AppKit, are the monospaced fonts the app makes.
+				let allowed = name == "VaultDesignSystem.swift" && ["design: .monospaced", "monospacedSystemFont"].contains(pattern) ? 1 : 0
 				if count != allowed { monospacedFonts.append("\(name): \(pattern) ×\(count)") }
 			}
 		}

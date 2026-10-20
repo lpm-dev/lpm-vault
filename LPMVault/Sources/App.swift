@@ -241,6 +241,12 @@ struct LPMVaultApp: App {
 				.keyboardShortcut("n", modifiers: .command)
 				.disabled(!store.isUnlocked || store.selectedProject == nil)
 
+				Button("Import Variables…") {
+					NotificationCenter.default.post(name: .importVariables, object: nil)
+				}
+				.keyboardShortcut("i", modifiers: [.command, .shift])
+				.disabled(!store.isUnlocked || store.selectedProject == nil)
+
 				Button("Find Secrets") {
 					NotificationCenter.default.post(name: .findSecrets, object: nil)
 				}
@@ -273,6 +279,7 @@ struct LPMVaultApp: App {
 
 extension Notification.Name {
 	static let newSecret = Notification.Name("dev.lpm.vault.new-secret")
+	static let importVariables = Notification.Name("dev.lpm.vault.import-variables")
 	static let findSecrets = Notification.Name("dev.lpm.vault.find-secrets")
 	static let showProjectSettings = Notification.Name("dev.lpm.vault.show-project-settings")
 	static let dismissVaultSearch = Notification.Name("dev.lpm.vault.dismiss-search")

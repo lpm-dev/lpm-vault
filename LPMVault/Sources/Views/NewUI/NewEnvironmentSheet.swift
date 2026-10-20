@@ -5,25 +5,22 @@ struct NewEnvironmentSheet: View {
 	@Bindable var store: VaultStore
 	let project: VaultProject
 	@Environment(\.dismiss) private var dismiss
-
 	@State private var name = ""
-	@State private var importedSecrets: [String: String] = [:]
-	@State private var previewTask: Task<Void, Never>?
-	@State private var previewID: UUID?
+	@State private var source = EnvImportSourceState()
 	@State private var creationTask: Task<Void, Never>?
 	@State private var creationID: UUID?
-	@FocusState private var nameFocused: Bool
 
-	private var candidate: String { name.trimmingCharacters(in: .whitespaces) }
-	private var isValid: Bool {
-		EnvValidation.isValidEnvironmentName(candidate) && project.environments[candidate] == nil
-	}
+	private var existing: Set<String> { Set(project.environments.keys) }
+	private var isValid: Bool { VaultEnvironmentNameField.isValid(name, existing: existing) }
+	/// The values the environment starts with: none, or what the file or text
+	/// holds once it's read without a problem.
+	private var values: [String: String]? { source.isEmpty ? [:] : source.imported?.secrets }
 
-	/// What quitting would discard: the environment's name, or that variables were imported for it.
+	/// What quitting would discard: the environment's name, or the variables chosen for it.
 	private var unsavedWork: String? {
 		let name = name.trimmingCharacters(in: .whitespaces)
 		if !name.isEmpty { return name }
-		return importedSecrets.isEmpty ? nil : "Variables imported from a file"
+		return source.source.map { $0 == .pastedText ? "Pasted variables" : "Variables from \($0.name)" }
 	}
 
 	var body: some View {
@@ -37,70 +34,27 @@ struct NewEnvironmentSheet: View {
 					.foregroundStyle(VaultPalette.textTertiary)
 			}
 			.padding(20)
-
 			VaultHairline()
-
-			VStack(alignment: .leading, spacing: 14) {
+			VStack(alignment: .leading, spacing: 18) {
 				VStack(alignment: .leading, spacing: 7) {
 					Text("ENVIRONMENT NAME").vaultSectionLabel()
-					HStack(spacing: 8) {
-						VaultEnvSwatch(color: VaultPalette.environment(project.environments.count))
-						Text(".env.")
-							.font(VaultTypography.tabular(12.5))
-							.foregroundStyle(VaultPalette.textTertiary)
-						TextField("staging", text: $name)
-							.textFieldStyle(.plain)
-							.font(VaultTypography.tabular(12.5))
-							.foregroundStyle(VaultPalette.textPrimary)
-							.focused($nameFocused)
-							.onSubmit(create)
-							.disabled(isBusy)
-					}
-					.padding(.horizontal, 11)
-					.frame(height: 34)
-					.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-					.overlay { RoundedRectangle(cornerRadius: 8).stroke(nameFocused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
-
-					if !candidate.isEmpty, !EnvValidation.isValidEnvironmentName(candidate) {
-						Text("Use 1–64 ASCII letters, numbers, dots, dashes, or underscores. Do not use __index__ or '..'.")
-							.font(.system(size: 11.5))
-							.foregroundStyle(VaultPalette.redText)
-					}
-					if project.environments[candidate] != nil {
-						Text("That environment already exists.")
-							.font(.system(size: 11.5))
-							.foregroundStyle(VaultPalette.redText)
-					}
+					VaultEnvironmentNameField(
+						name: $name, existing: existing, swatch: VaultPalette.environment(project.environments.count),
+						focusesOnAppear: true, disabled: creationTask != nil, onSubmit: create)
 				}
-
-				Button(action: importFile) {
+				VStack(alignment: .leading, spacing: 7) {
 					HStack(spacing: 8) {
-						Image(systemName: previewTask == nil ? "doc.badge.plus" : "hourglass")
-						Text(previewTask == nil ? "Import values from an .env file" : "Reading .env file…")
+						Text("VALUES").vaultSectionLabel()
 						Spacer()
-						if !importedSecrets.isEmpty {
-							VaultTagBadge(
-								text: "\(importedSecrets.count) KEYS",
-								foreground: VaultPalette.greenTintText,
-								background: VaultPalette.greenTint
-							)
-						}
+						Text("optional")
+							.font(.system(size: 11))
+							.foregroundStyle(VaultPalette.textFaint)
 					}
-					.font(.system(size: 12.5))
-					.foregroundStyle(VaultPalette.textSecondary)
-					.padding(.horizontal, 12)
-					.frame(height: 38)
-					.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.sidebar))
-					.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+					EnvImportSourcePicker(store: store, projectID: project.id, state: $source, disabled: creationTask != nil)
 				}
-				.buttonStyle(.plain)
-				.disabled(isBusy)
-				.accessibilityLabel(importedSecrets.isEmpty ? "Import values from env file" : "\(importedSecrets.count) values imported")
 			}
 			.padding(20)
-
 			VaultHairline()
-
 			HStack(spacing: 8) {
 				Spacer()
 				VaultBarButton(title: "Cancel") {
@@ -111,27 +65,28 @@ struct NewEnvironmentSheet: View {
 				VaultBarButton(
 					title: creationTask == nil ? "Create environment" : "Creating…",
 					filled: true,
-					disabled: !isValid || isBusy,
+					disabled: !isValid || values == nil || creationTask != nil,
 					action: create
 				)
 			}
 			.padding(16)
 		}
-		.frame(width: 440)
+		.frame(width: 520)
 		.background(VaultPalette.content)
 		.vaultUnsavedSheetWork(store, projectID: project.id, projectName: project.name, title: "New environment", detail: unsavedWork)
-		.onAppear { nameFocused = true }
+		.onChange(of: source.file) { _, file in
+			if let file, name.trimmingCharacters(in: .whitespaces).isEmpty {
+				name = VaultEnvironmentNameField.suggestedName(forFile: file)
+			}
+		}
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { cancelWork(); dismiss() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != project.id { cancelWork(); dismiss() } }
 		.onDisappear(perform: cancelWork)
 	}
 
-	private var isBusy: Bool { previewTask != nil || creationTask != nil }
-
 	private func create() {
-		guard isValid, !isBusy else { return }
-		let resolvedName = candidate
-		let values = importedSecrets
+		guard isValid, creationTask == nil, let values else { return }
+		let resolvedName = name.trimmingCharacters(in: .whitespaces)
 		let requestID = UUID()
 		creationID = requestID
 		creationTask = Task {
@@ -140,67 +95,83 @@ struct NewEnvironmentSheet: View {
 			creationTask = nil
 			creationID = nil
 			if added, store.isUnlocked, store.selectedProjectId == project.id {
-				cancelPreview()
 				dismiss()
 			}
 		}
-	}
-
-	private func importFile() {
-		guard !isBusy else { return }
-		let panel = NSOpenPanel()
-		panel.canChooseFiles = true
-		panel.canChooseDirectories = false
-		panel.allowsMultipleSelection = false
-		panel.message = "Select an .env file to import"
-		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
-
-		if candidate.isEmpty {
-			let fileName = url.lastPathComponent
-			if fileName == ".env" { name = "default" }
-			else if fileName.hasPrefix(".env.") { name = String(fileName.dropFirst(".env.".count)) }
-			else { name = fileName }
-		}
-
-		let requestID = UUID()
-		previewID = requestID
-		importedSecrets = [:]
-		previewTask = Task {
-			let result = await store.loadEnvFilePreview(at: url, for: project.id)
-			guard previewID == requestID,
-				store.isUnlocked,
-				store.selectedProjectId == project.id
-			else { return }
-			previewTask = nil
-			previewID = nil
-			importedSecrets = EnvFilePreviewPresentation.replacementSecrets(for: result)
-			if case .failure(let error) = result, error != .cancelled {
-				store.error = error.localizedDescription
-			}
-		}
-	}
-
-	private func cancelPreview() {
-		previewTask?.cancel()
-		previewTask = nil
-		previewID = nil
 	}
 
 	private func cancelWork() {
 		creationTask?.cancel()
 		creationTask = nil
 		creationID = nil
-		cancelPreview()
-		importedSecrets = [:]
+		source = EnvImportSourceState()
 	}
 }
 
-enum EnvFilePreviewPresentation {
-	/// A failed preview clears earlier values so a stale file is never imported.
-	static func replacementSecrets(
-		for result: Result<ImportedEnvFile, EnvFileImportError>
-	) -> [String: String] {
-		guard case .success(let imported) = result else { return [:] }
-		return imported.secrets
+/// A new environment's name, after the `.env.` its file starts with, and
+/// what's wrong with it, said under it.
+struct VaultEnvironmentNameField: View {
+	@Binding var name: String
+	let existing: Set<String>
+	let swatch: Color
+	var focusesOnAppear = false
+	var disabled = false
+	var onSubmit: () -> Void = {}
+
+	@FocusState private var focused: Bool
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 7) {
+			HStack(spacing: 8) {
+				VaultEnvSwatch(color: swatch)
+				Text(".env.")
+					.font(VaultTypography.tabular(12.5))
+					.foregroundStyle(VaultPalette.textTertiary)
+				TextField("staging", text: $name)
+					.textFieldStyle(.plain)
+					.font(VaultTypography.tabular(12.5))
+					.foregroundStyle(VaultPalette.textPrimary)
+					.autocorrectionDisabled()
+					.focused($focused)
+					.onSubmit(onSubmit)
+					.disabled(disabled)
+					.accessibilityLabel("Environment name")
+			}
+			.padding(.horizontal, 11)
+			.frame(height: 34)
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
+			.overlay { RoundedRectangle(cornerRadius: 8).stroke(focused ? VaultPalette.accent : VaultPalette.border, lineWidth: 1) }
+			if let problem = Self.problem(with: name, existing: existing) {
+				Text(problem)
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.redText)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+		}
+		.onAppear { if focusesOnAppear { focused = true } }
+	}
+
+	static func isValid(_ name: String, existing: Set<String>) -> Bool {
+		let candidate = name.trimmingCharacters(in: .whitespaces)
+		return EnvValidation.isValidEnvironmentName(candidate) && !existing.contains(candidate)
+	}
+
+	/// Nothing until there's a name to check.
+	static func problem(with name: String, existing: Set<String>) -> String? {
+		let candidate = name.trimmingCharacters(in: .whitespaces)
+		guard !candidate.isEmpty else { return nil }
+		guard EnvValidation.isValidEnvironmentName(candidate) else {
+			return "Use 1–64 ASCII letters, numbers, dots, dashes, or underscores. Do not use __index__ or '..'."
+		}
+		return existing.contains(candidate) ? "That environment already exists." : nil
+	}
+
+	/// The environment a file's name suggests: `.env` is the default one, and
+	/// `.env.staging` is staging.
+	static func suggestedName(forFile url: URL) -> String {
+		let fileName = url.lastPathComponent
+		if fileName == ".env" { return "default" }
+		if fileName.hasPrefix(".env.") { return String(fileName.dropFirst(".env.".count)) }
+		return fileName
 	}
 }
