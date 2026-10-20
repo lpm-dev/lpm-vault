@@ -1,6 +1,25 @@
 import SwiftUI
 
+/// What an import changes, grouped as new, changed and unchanged keys, each
+/// with its decision: new keys are added unless left out, and existing values
+/// are kept unless replaced. Then what the import did, with a short while to
+/// undo it.
 struct EnvFileImportReviewSheet: View {
+	private enum Filter: CaseIterable {
+		case all, added, changed, unchanged
+	}
+
+	private struct Completion {
+		enum Undo: Equatable {
+			case available, undoing, undone, expired
+			case failed(String)
+		}
+
+		let receipt: EnvImportReceipt
+		let outcome: EnvFileImportReview.Outcome
+		var undo: Undo
+	}
+
 	@Bindable var store: VaultStore
 	@State private var review: EnvFileImportReview
 	/// The import was applied without a review, keeping every existing value,
@@ -8,46 +27,59 @@ struct EnvFileImportReviewSheet: View {
 	private let importedWithoutReview: Bool
 	@Environment(\.dismiss) private var dismiss
 	@Environment(\.vaultContentObscured) private var isObscured
-	@State private var revealedKeys: Set<String> = []
+	@Environment(\.vaultImportUndoTimer) private var undoTimer
+	@State private var filter = Filter.all
+	@State private var revealed = false
 	@State private var revealTask: Task<Void, Never>?
 	@State private var revealRequestID: UUID?
 	@State private var replacingKeys: Set<String> = []
+	@State private var skippingKeys: Set<String> = []
 	@State private var task: Task<Void, Never>?
 	@State private var failure: String?
-	@State private var completedReplacements: Set<String>?
+	@State private var completion: Completion?
 
-	init(store: VaultStore, review: EnvFileImportReview, importedWithoutReview: Bool = false) {
+	/// `receipt` is what an import without a review did, which the sheet opens on.
+	init(store: VaultStore, review: EnvFileImportReview, importedWithoutReview receipt: EnvImportReceipt? = nil) {
 		_store = Bindable(wrappedValue: store)
 		_review = State(initialValue: review)
-		self.importedWithoutReview = importedWithoutReview
-		_completedReplacements = State(initialValue: importedWithoutReview ? [] : nil)
+		importedWithoutReview = receipt != nil
+		_completion = State(initialValue: receipt.map {
+			Completion(receipt: $0, outcome: review.outcome(), undo: $0.changed ? .available : .expired)
+		})
 	}
 
 	private var isWorking: Bool { task != nil }
+	private var outcome: EnvFileImportReview.Outcome { review.outcome(replacing: replacingKeys, skipping: skippingKeys) }
 
 	var body: some View {
 		let isCurrent = store.isCurrentEnvFileImportReview(review)
 		VStack(alignment: .leading, spacing: 0) {
 			header
 			VaultHairline()
-			if let completedReplacements {
-				completion(replacing: completedReplacements)
+			if let completion {
+				completionBody(completion)
 			} else {
 				reviewBody(isCurrent: isCurrent)
 			}
 			footer
 		}
 		// An import without a review stays as wide as the import sheet it was made from.
-		.frame(width: importedWithoutReview ? 520 : 600)
-		.frame(height: completedReplacements == nil ? 510 : nil)
+		.frame(width: importedWithoutReview ? 520 : 640)
+		.frame(height: completion == nil ? 560 : nil)
 		.background(VaultPalette.content)
 		.vaultUnsavedSheetWork(store, projectID: review.projectId, projectName: review.projectName, title: "Import review",
-			detail: completedReplacements == nil
+			detail: completion == nil
 				? "\(review.source.name) into \(VaultProject.displayName(for: review.environment))" : nil)
+		.task(id: completion?.undo == .available) {
+			guard completion?.undo == .available else { return }
+			do { try await undoTimer.wait() } catch { return }
+			if completion?.undo == .available { completion?.undo = .expired }
+		}
 		.onDisappear {
 			task?.cancel()
 			task = nil
 			replacingKeys.removeAll()
+			skippingKeys.removeAll()
 			hideValues()
 		}
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { close() } }
@@ -59,19 +91,36 @@ struct EnvFileImportReviewSheet: View {
 		.onChange(of: review.id) { _, _ in hideValues() }
 	}
 
-	// MARK: - Sections
+	// MARK: - Header
 
 	private var header: some View {
-		HStack(alignment: .top, spacing: 12) {
-			VStack(alignment: .leading, spacing: 3) {
-				Text(completedReplacements == nil ? "Review import" : "Import complete")
+		HStack(alignment: .top, spacing: 14) {
+			Image(systemName: completion?.undo == .undone ? "arrow.uturn.backward" : "square.and.arrow.down")
+				.font(.system(size: 15, weight: .semibold))
+				.foregroundStyle(VaultPalette.accentForeground)
+				.frame(width: 38, height: 38)
+				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.accentTint))
+				.accessibilityHidden(true)
+			VStack(alignment: .leading, spacing: 4) {
+				Text(title)
 					.font(.system(size: 17, weight: .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text("\(Text(review.source.name).font(VaultTypography.tabular(12)).foregroundStyle(VaultPalette.textSecondary)) into \(Text(review.projectName).fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) · \(VaultProject.displayName(for: review.environment))")
-					.font(.system(size: 12.5))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.lineLimit(1)
-					.truncationMode(.middle)
+				HStack(spacing: 6) {
+					Text(sourceDescription)
+						.font(VaultTypography.tabular(12.5))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.lineLimit(1)
+						.truncationMode(.head)
+					Image(systemName: "arrow.right")
+						.font(.system(size: 9, weight: .semibold))
+						.foregroundStyle(VaultPalette.textFaint)
+						.accessibilityLabel("into")
+					Text("\(review.projectName) / \(Text(VaultProject.displayName(for: review.environment)).font(VaultTypography.tabular(12.5)).foregroundStyle(VaultPalette.textSecondary))")
+						.font(.system(size: 12.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.lineLimit(1)
+						.fixedSize()
+				}
 			}
 			Spacer(minLength: 12)
 			VaultSheetCloseButton(action: cancel)
@@ -81,31 +130,44 @@ struct EnvFileImportReviewSheet: View {
 		.padding(.bottom, 16)
 	}
 
+	private var title: String {
+		switch completion?.undo {
+		case nil: "Review import"
+		case .undone?: "Import undone"
+		default: "Import complete"
+		}
+	}
+
+	/// The file the variables came from, as its folder and name, or pasted text.
+	private var sourceDescription: String {
+		switch review.source {
+		case .file(let url): (url.path as NSString).abbreviatingWithTildeInPath
+		case .pastedText: review.source.name
+		}
+	}
+
+	/// What the review calls the incoming value, after where it came from.
+	private var incomingName: String {
+		review.source == .pastedText ? "Pasted" : "File"
+	}
+
+	// MARK: - Review
+
 	private func reviewBody(isCurrent: Bool) -> some View {
-		VStack(alignment: .leading, spacing: 12) {
-			HStack(spacing: 6) {
-				VaultTagBadge(text: "\(review.addedCount) new", foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint, size: 11)
-				VaultTagBadge(text: "\(review.changedKeys.count) different", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 11)
-				VaultTagBadge(text: "\(review.unchangedCount) unchanged", foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint, size: 11)
-			}
-			Text("Existing values stay unless you choose a replacement. Comparing values asks for macOS authentication.")
-				.font(.system(size: 11.5))
-				.foregroundStyle(VaultPalette.textTertiary)
-				.fixedSize(horizontal: false, vertical: true)
+		VStack(alignment: .leading, spacing: 0) {
+			filters(isCurrent: isCurrent)
+				.padding(.horizontal, 24)
+				.padding(.top, 14)
 			ScrollView {
-				LazyVStack(spacing: 0) {
-					ForEach(review.rows) { row in
-						reviewRow(row, isCurrent: isCurrent)
-						if row.id != review.rows.last?.id {
-							VaultHairline(color: VaultPalette.rowDivider)
-						}
-					}
+				LazyVStack(alignment: .leading, spacing: 14) {
+					if shows(.added), !review.added.isEmpty { addedSection(isCurrent: isCurrent) }
+					if shows(.changed), !review.changed.isEmpty { changedSection(isCurrent: isCurrent) }
+					if shows(.unchanged), !review.unchanged.isEmpty { unchangedSection(isCurrent: isCurrent) }
 				}
+				.padding(.horizontal, 24)
+				.padding(.vertical, 14)
 			}
 			.frame(maxHeight: .infinity, alignment: .top)
-			.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
-			.clipShape(RoundedRectangle(cornerRadius: 10))
-			.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
 			.disabled(isWorking)
 			if let failure {
 				Text(failure)
@@ -113,107 +175,226 @@ struct EnvFileImportReviewSheet: View {
 					.foregroundStyle(VaultPalette.redText)
 					.lineLimit(3)
 					.fixedSize(horizontal: false, vertical: true)
+					.padding(.horizontal, 24)
+					.padding(.bottom, 12)
 			}
 		}
-		.padding(.horizontal, 24)
-		.padding(.vertical, 18)
 		.frame(maxHeight: .infinity, alignment: .top)
 	}
 
-	private func reviewRow(_ row: EnvFileImportReview.Row, isCurrent: Bool) -> some View {
-		let revealed = isCurrent && !isObscured && revealedKeys.contains(row.key)
-		let replacing = replacingKeys.contains(row.key)
-		return VStack(alignment: .leading, spacing: 8) {
-			HStack(spacing: 10) {
-				Text(row.key)
-					.font(VaultTypography.tabular(12.5, .semibold))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.lineLimit(1)
-					.truncationMode(.middle)
-				changeBadge(row.change)
+	private func shows(_ section: Filter) -> Bool { filter == .all || filter == section }
+
+	private func filters(isCurrent: Bool) -> some View {
+		HStack(spacing: 6) {
+			VaultFilterChip(title: "All · \(review.rows.count)", selected: filter == .all) { filter = .all }
+			filterChip(.added, "New", count: review.addedCount, dot: VaultPalette.green)
+			filterChip(.changed, "Changed", count: review.changedKeys.count, dot: VaultPalette.orange)
+			filterChip(.unchanged, "Unchanged", count: review.unchangedCount, dot: nil)
+			Spacer(minLength: 8)
+			Button(action: toggleReveal) {
+				Label(revealed ? "Hide values" : "Reveal values", systemImage: revealed ? "eye.slash" : "eye")
+					.font(.system(size: 11.5, weight: .medium))
+					.foregroundStyle(VaultPalette.textTertiary)
+			}
+			.buttonStyle(.plain)
+			.vaultPointingHand()
+			.disabled((!revealed && revealTask != nil) || failure != nil || isObscured || !isCurrent || isWorking)
+			.help(revealed ? "Hide the values" : "Show the values to compare them, after macOS authentication")
+		}
+	}
+
+	private func filterChip(_ section: Filter, _ title: String, count: Int, dot: Color?) -> some View {
+		VaultFilterChip(title: "\(title) · \(count)", dot: dot, selected: filter == section) { filter = section }
+			.disabled(count == 0)
+			.opacity(count == 0 ? 0.5 : 1)
+	}
+
+	private func sectionHeader(_ title: String, count: Int, dot: Color, caption: String) -> some View {
+		HStack(spacing: 8) {
+			VaultStatusDot(color: dot)
+			Text("\(title) · \(count)").vaultSectionLabel()
+			Text(caption)
+				.font(.system(size: 11))
+				.foregroundStyle(VaultPalette.textFaint)
+				.lineLimit(1)
+		}
+		.padding(.horizontal, 2)
+	}
+
+	private func rows<Content: View>(_ rows: [EnvFileImportReview.Row], @ViewBuilder row: @escaping (EnvFileImportReview.Row) -> Content) -> some View {
+		LazyVStack(spacing: 0) {
+			ForEach(rows) { item in
+				row(item)
+				if item.id != rows.last?.id {
+					VaultHairline(color: VaultPalette.rowDivider)
+				}
+			}
+		}
+		.background(RoundedRectangle(cornerRadius: 9).fill(VaultPalette.control))
+		.clipShape(RoundedRectangle(cornerRadius: 9))
+		.overlay { RoundedRectangle(cornerRadius: 9).stroke(VaultPalette.border, lineWidth: 1) }
+	}
+
+	private func addedSection(isCurrent: Bool) -> some View {
+		VStack(alignment: .leading, spacing: 6) {
+			sectionHeader("NEW", count: review.addedCount, dot: VaultPalette.green,
+				caption: skippingKeys.isEmpty ? "will be added" : "will be added, except those you turn off")
+			rows(review.added) { row in
+				let skipped = skippingKeys.contains(row.key)
+				HStack(spacing: 12) {
+					keyText(row.key, faded: skipped)
+					value(review.imported.secrets[row.key] ?? "", named: incomingName, of: row.key, isCurrent: isCurrent, faded: skipped, labeled: false)
+					Toggle("Add", isOn: inclusion(of: row.key))
+						.toggleStyle(AddToggleStyle())
+						.accessibilityLabel("Add \(row.key)")
+						.frame(width: 120, alignment: .trailing)
+				}
+				.padding(.horizontal, 12)
+				.frame(minHeight: 42)
+			}
+		}
+	}
+
+	private func changedSection(isCurrent: Bool) -> some View {
+		let replacesAll = review.changedKeys.isSubset(of: replacingKeys)
+		return VStack(alignment: .leading, spacing: 6) {
+			HStack(spacing: 8) {
+				sectionHeader("CHANGED", count: review.changedKeys.count, dot: VaultPalette.orange,
+					caption: "existing value kept unless you choose Replace")
 				Spacer(minLength: 8)
-				VaultOutlineButton(
-					systemImage: revealed ? "eye.slash" : "eye",
-					title: revealed ? "Hide" : "Reveal",
-					reservedTitles: ["Reveal", "Hide"],
-					help: revealed ? "Hide values for \(row.key)" : "Compare values for \(row.key)",
-					disabled: (!revealed && revealTask != nil) || failure != nil || isObscured || !isCurrent
-				) { toggleReveal(row.key) }
-				.accessibilityLabel("\(revealed ? "Hide" : "Reveal") values for \(row.key)")
-				if row.change == .changed {
-					Toggle("Replace", isOn: replacementBinding(for: row.key))
-						.toggleStyle(ReplaceToggleStyle())
-						.accessibilityLabel("Replace existing value for \(row.key)")
+				Button(replacesAll ? "Keep all" : "Replace all") {
+					replacingKeys = replacesAll ? [] : review.changedKeys
 				}
+				.buttonStyle(.plain)
+				.font(.system(size: 11, weight: .semibold))
+				.foregroundStyle(VaultPalette.accentForeground)
+				.vaultPointingHand()
+				.help(replacesAll ? "Keep every existing value" : "Replace every existing value that differs")
 			}
-			VStack(alignment: .leading, spacing: 4) {
-				if row.change == .changed {
-					valueLine("Current", of: row.key, value: review.baseline[row.key] ?? "", revealed: revealed, superseded: replacing)
+			rows(review.changed) { row in
+				let replacing = replacingKeys.contains(row.key)
+				HStack(spacing: 12) {
+					keyText(row.key, faded: false)
+					VStack(alignment: .leading, spacing: 3) {
+						value(review.baseline[row.key] ?? "", named: "Vault", of: row.key, isCurrent: isCurrent, faded: replacing, struck: replacing)
+						value(review.imported.secrets[row.key] ?? "", named: incomingName, of: row.key, isCurrent: isCurrent, faded: !replacing,
+							emphasized: replacing)
+					}
+					.frame(maxWidth: .infinity, alignment: .leading)
+					KeepReplaceControl(key: row.key, replacing: replacement(of: row.key))
+						.frame(width: 120, alignment: .trailing)
 				}
-				valueLine(
-					"Incoming",
-					of: row.key,
-					value: review.imported.secrets[row.key] ?? "",
-					revealed: revealed,
-					superseded: row.change == .changed && !replacing
-				)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 8)
+				.frame(minHeight: 56)
+				.background(replacing ? VaultPalette.accent.opacity(0.08) : .clear)
 			}
 		}
-		.padding(.horizontal, 14)
-		.padding(.vertical, 12)
-		.background(replacing ? VaultPalette.rowSelected : .clear)
 	}
 
-	private func changeBadge(_ change: EnvFileImportReview.Change) -> some View {
-		switch change {
-		case .added:
-			VaultTagBadge(text: change.rawValue, foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint)
-		case .changed:
-			VaultTagBadge(text: change.rawValue, foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint)
-		case .unchanged:
-			VaultTagBadge(text: change.rawValue, foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint)
+	private func unchangedSection(isCurrent: Bool) -> some View {
+		VStack(alignment: .leading, spacing: 6) {
+			sectionHeader("UNCHANGED", count: review.unchangedCount, dot: VaultPalette.textFaint.opacity(0.5),
+				caption: "identical, skipped")
+			rows(review.unchanged) { row in
+				HStack(spacing: 12) {
+					keyText(row.key, faded: true)
+					value(review.imported.secrets[row.key] ?? "", named: incomingName, of: row.key, isCurrent: isCurrent, faded: true, labeled: false)
+					Text("Skip")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textFaint)
+						.frame(width: 120, alignment: .trailing)
+				}
+				.padding(.horizontal, 12)
+				.frame(minHeight: 42)
+				.opacity(0.75)
+			}
 		}
 	}
 
-	/// One labeled value. A superseded value is the one the import will not keep.
-	private func valueLine(_ label: String, of key: String, value: String, revealed: Bool, superseded: Bool) -> some View {
-		HStack(alignment: .firstTextBaseline, spacing: 12) {
-			Text(label)
-				.font(.system(size: 11, weight: .medium))
-				.foregroundStyle(VaultPalette.textTertiary)
-				.frame(width: 60, alignment: .leading)
-			Text(revealed ? (value.isEmpty ? "(empty)" : value) : "••••••••")
-				.font(revealed ? VaultTypography.code(12) : VaultTypography.tabular(12))
-				.foregroundStyle(superseded ? VaultPalette.textFaint : (revealed ? VaultPalette.textPrimary : VaultPalette.masked))
-				.frame(maxWidth: .infinity, alignment: .leading)
-				.fixedSize(horizontal: false, vertical: true)
-				.accessibilityLabel("\(label) value for \(key) \(revealed ? "revealed visually" : "hidden")")
-		}
+	private func keyText(_ key: String, faded: Bool) -> some View {
+		Text(key)
+			.font(VaultTypography.tabular(12.5, .semibold))
+			.foregroundStyle(faded ? VaultPalette.textTertiary : VaultPalette.textPrimary)
+			.lineLimit(1)
+			.truncationMode(.middle)
+			.frame(maxWidth: .infinity, alignment: .leading)
 	}
 
-	private func completion(replacing keys: Set<String>) -> some View {
-		let replaced = review.changedKeys.intersection(keys).count
-		let wroteChanges = review.addedCount + replaced > 0
+	/// A value, hidden until the person reveals the review's values. `named`
+	/// says whose it is, the vault's or the import's, which a changed key,
+	/// showing both, labels.
+	private func value(
+		_ value: String, named name: String, of key: String, isCurrent: Bool,
+		faded: Bool, struck: Bool = false, emphasized: Bool = false, labeled: Bool = true
+	) -> some View {
+		let shown = revealed && isCurrent && !isObscured
+		return HStack(spacing: 6) {
+			if labeled {
+				Text(name.uppercased())
+					.font(.system(size: 10, weight: .bold))
+					.tracking(0.5)
+					.foregroundStyle(emphasized ? VaultPalette.accentForeground : VaultPalette.textFaint)
+					.frame(width: 44, alignment: .leading)
+					.accessibilityHidden(true)
+			}
+			Text(shown ? (value.isEmpty ? "(empty)" : value) : "••••••••••")
+				.font(shown ? VaultTypography.code(12) : VaultTypography.tabular(12))
+				.tracking(shown ? 0 : 1.5)
+				.strikethrough(struck)
+				.foregroundStyle(faded ? VaultPalette.textFaint : (shown ? VaultPalette.textPrimary : VaultPalette.masked))
+				.lineLimit(1)
+				.truncationMode(.tail)
+				.accessibilityLabel("\(name) value for \(key) \(shown ? "revealed visually" : "hidden")")
+		}
+		.frame(maxWidth: .infinity, alignment: .leading)
+	}
+
+	// MARK: - Completion
+
+	private func completionBody(_ completion: Completion) -> some View {
+		let outcome = completion.outcome
 		return VStack(alignment: .leading, spacing: 12) {
 			Label {
-				Text(wroteChanges ? "Imported into \(review.projectName) · \(VaultProject.displayName(for: review.environment))" : "Nothing needed to change")
+				Text(completionHeadline(completion))
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 			} icon: {
-				Image(systemName: "checkmark.circle.fill")
-					.foregroundStyle(VaultPalette.green)
+				Image(systemName: completion.undo == .undone ? "arrow.uturn.backward.circle.fill" : "checkmark.circle.fill")
+					.foregroundStyle(completion.undo == .undone ? VaultPalette.accentForeground : VaultPalette.green)
 			}
-			Text(review.summary(replacing: keys))
-				.font(.system(size: 12.5))
-				.foregroundStyle(VaultPalette.textSecondary)
-				.textSelection(.enabled)
-			if importedWithoutReview, !review.changedKeys.isEmpty {
-				Text(review.changedKeys.count == 1
+			if completion.undo != .undone {
+				Text(outcome.summary)
+					.font(.system(size: 12.5))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.textSelection(.enabled)
+			}
+			if importedWithoutReview, completion.undo != .undone, outcome.kept > 0 {
+				Text(outcome.kept == 1
 					? "1 existing value differs and was kept. To replace it, import again with Review before applying on."
-					: "\(review.changedKeys.count) existing values differ and were kept. To replace them, import again with Review before applying on.")
+					: "\(outcome.kept) existing values differ and were kept. To replace them, import again with Review before applying on.")
 					.font(.system(size: 11.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.fixedSize(horizontal: false, vertical: true)
+			}
+			switch completion.undo {
+			case .available, .undoing:
+				HStack(spacing: 10) {
+					VaultBarButton(
+						systemImage: "arrow.uturn.backward", title: completion.undo == .undoing ? "Undoing…" : "Undo import",
+						disabled: completion.undo == .undoing, height: 28, action: undo)
+					Text("Puts \(VaultProject.displayName(for: review.environment)) back as it was. Available for 30 seconds.")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textFaint)
+						.fixedSize(horizontal: false, vertical: true)
+				}
+			case .failed(let message):
+				Text(message)
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.redText)
+					.fixedSize(horizontal: false, vertical: true)
+			case .undone, .expired:
+				EmptyView()
 			}
 		}
 		.padding(.horizontal, 24)
@@ -221,17 +402,32 @@ struct EnvFileImportReviewSheet: View {
 		.frame(maxWidth: .infinity, alignment: .leading)
 	}
 
+	private func completionHeadline(_ completion: Completion) -> String {
+		let environment = VaultProject.displayName(for: review.environment)
+		if completion.undo == .undone { return "\(environment) is back as it was before the import" }
+		return completion.receipt.changed ? "Imported into \(review.projectName) · \(environment)" : "Nothing needed to change"
+	}
+
+	// MARK: - Footer
+
 	private var footer: some View {
 		VaultSheetFooter {
-			if completedReplacements == nil {
-				Text("\(replacingKeys.count) \(replacingKeys.count == 1 ? "replacement" : "replacements") selected")
-					.font(.system(size: 11.5))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.lineLimit(1)
+			if completion == nil {
+				VStack(alignment: .leading, spacing: 2) {
+					outcomeSummary(outcome)
+						.font(.system(size: 12))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.lineLimit(1)
+					Text("Values stay hidden and are encrypted on import. Undo available for 30s.")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textFaint)
+						.lineLimit(2)
+						.fixedSize(horizontal: false, vertical: true)
+				}
 			}
 		} actions: {
-			if completedReplacements != nil {
-				VaultBarButton(title: "Done", filled: true, height: 30) { dismiss() }
+			if completion != nil {
+				VaultBarButton(title: "Done", filled: true, disabled: completion?.undo == .undoing, height: 30) { dismiss() }
 					.keyboardShortcut(.defaultAction)
 			} else {
 				VaultBarButton(title: "Cancel", height: 30, action: cancel)
@@ -240,16 +436,37 @@ struct EnvFileImportReviewSheet: View {
 					VaultBarButton(title: isWorking ? "Reviewing…" : "Review again", filled: true, disabled: isWorking, height: 30, action: reload)
 						.keyboardShortcut(.defaultAction)
 				} else {
-					VaultBarButton(title: isWorking ? "Importing…" : "Import", shortcut: "⏎", filled: true, disabled: isWorking, height: 30, action: apply)
+					VaultBarButton(title: importTitle, shortcut: "⏎", filled: true, disabled: isWorking || outcome.changes == 0, height: 30, action: apply)
 						.keyboardShortcut(.defaultAction)
 				}
 			}
 		}
 	}
 
+	private var importTitle: String {
+		if isWorking { return "Importing…" }
+		let changes = outcome.changes
+		return changes == 0 ? "Nothing to import" : "Import \(changes) \(changes == 1 ? "change" : "changes")"
+	}
+
+	private func outcomeSummary(_ outcome: EnvFileImportReview.Outcome) -> Text {
+		let added = Text("+\(outcome.added) added").fontWeight(.semibold).foregroundStyle(outcome.added > 0 ? VaultPalette.greenTintText : VaultPalette.textSecondary)
+		let replaced = Text("\(outcome.replaced) replaced").fontWeight(.semibold).foregroundStyle(outcome.replaced > 0 ? VaultPalette.orangeTintText : VaultPalette.textSecondary)
+		return Text("\(added) · \(replaced) · \(outcome.kept) kept · \(outcome.skipped) skipped")
+	}
+
 	// MARK: - Actions
 
-	private func replacementBinding(for key: String) -> Binding<Bool> {
+	private func inclusion(of key: String) -> Binding<Bool> {
+		Binding(
+			get: { !skippingKeys.contains(key) },
+			set: { included in
+				if included { skippingKeys.remove(key) } else { skippingKeys.insert(key) }
+			}
+		)
+	}
+
+	private func replacement(of key: String) -> Binding<Bool> {
 		Binding(
 			get: { replacingKeys.contains(key) },
 			set: { replacing in
@@ -258,9 +475,9 @@ struct EnvFileImportReviewSheet: View {
 		)
 	}
 
-	private func toggleReveal(_ key: String) {
-		if revealedKeys.remove(key) != nil { return }
-		guard revealTask == nil, task == nil, completedReplacements == nil, failure == nil, !isObscured,
+	private func toggleReveal() {
+		if revealed { return hideValues() }
+		guard revealTask == nil, task == nil, completion == nil, failure == nil, !isObscured,
 			store.isCurrentEnvFileImportReview(review)
 		else { return }
 		let requestID = UUID()
@@ -275,9 +492,9 @@ struct EnvFileImportReviewSheet: View {
 			}
 			let approved = await store.authenticateForSensitiveAction(reason: "Compare imported secret values")
 			guard approved, !Task.isCancelled, revealRequestID == requestID, review.id == reviewID,
-				!isObscured, task == nil, completedReplacements == nil, store.isCurrentEnvFileImportReview(review)
+				!isObscured, task == nil, completion == nil, store.isCurrentEnvFileImportReview(review)
 			else { return }
-			revealedKeys.insert(key)
+			revealed = true
 		}
 	}
 
@@ -285,7 +502,7 @@ struct EnvFileImportReviewSheet: View {
 		revealTask?.cancel()
 		revealTask = nil
 		revealRequestID = nil
-		revealedKeys.removeAll()
+		revealed = false
 	}
 
 	private func cancel() {
@@ -300,16 +517,36 @@ struct EnvFileImportReviewSheet: View {
 	}
 
 	private func apply() {
+		guard outcome.changes > 0 else { return }
 		hideValues()
-		let keys = replacingKeys
+		let replacing = replacingKeys
+		let skipping = skippingKeys
+		let outcome = outcome
 		task = Task {
-			let result = await store.applyEnvFileImport(review, replacingKeys: keys)
+			let result = await store.applyEnvFileImport(review, replacingKeys: replacing, skippingKeys: skipping)
 			guard !Task.isCancelled else { return }
 			task = nil
 			switch result {
-			case .success: completedReplacements = keys
+			case .success(let receipt): completion = Completion(receipt: receipt, outcome: outcome, undo: receipt.changed ? .available : .expired)
 			case .failure(.cancelled), .failure(.vaultLocked): dismiss()
 			case .failure(let error): failure = error.description(for: review.source)
+			}
+		}
+	}
+
+	private func undo() {
+		guard let receipt = completion?.receipt, completion?.undo == .available else { return }
+		completion?.undo = .undoing
+		task = Task {
+			let outcome = await store.undoEnvImport(receipt)
+			guard !Task.isCancelled else { return }
+			task = nil
+			switch outcome {
+			case .saved: completion?.undo = .undone
+			case .changed:
+				completion?.undo = .failed("\(VaultProject.displayName(for: receipt.environment)) changed after the import, so it can't be undone.")
+			case .unavailable: completion?.undo = .failed("The import can't be undone now.")
+			case .failed(let message): completion?.undo = .failed("The import couldn't be undone. \(message)")
 			}
 		}
 	}
@@ -325,6 +562,7 @@ struct EnvFileImportReviewSheet: View {
 			case .success(let updated):
 				review = updated
 				replacingKeys.removeAll()
+				skippingKeys.removeAll()
 				failure = nil
 			case .failure(.cancelled), .failure(.vaultLocked): dismiss()
 			case .failure(let error): failure = error.description(for: review.source)
@@ -333,31 +571,58 @@ struct EnvFileImportReviewSheet: View {
 	}
 }
 
-/// Checkbox matching the environment chips in the add-variable sheet.
-private struct ReplaceToggleStyle: ToggleStyle {
+/// Add, with a check while the key is added, as the review's new keys show it.
+private struct AddToggleStyle: ToggleStyle {
 	func makeBody(configuration: Configuration) -> some View {
-		let selected = configuration.isOn
+		let on = configuration.isOn
 		return Button { configuration.isOn.toggle() } label: {
-			HStack(spacing: 6) {
-				ZStack {
-					RoundedRectangle(cornerRadius: 4)
-						.fill(selected ? VaultPalette.accent : VaultPalette.control)
-					RoundedRectangle(cornerRadius: 4)
-						.stroke(selected ? VaultPalette.accent : VaultPalette.textFaint.opacity(0.6), lineWidth: 1.5)
-					if selected {
-						Image(systemName: "checkmark")
-							.font(.system(size: 8, weight: .heavy))
-							.foregroundStyle(.white)
-					}
-				}
-				.frame(width: 15, height: 15)
+			HStack(spacing: 5) {
+				Image(systemName: on ? "checkmark" : "plus")
+					.font(.system(size: 9, weight: .bold))
 				configuration.label
-					.font(.system(size: 12, weight: .medium))
-					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textSecondary)
+					.font(.system(size: 11, weight: .semibold))
 			}
-			.padding(.horizontal, 4)
-			.frame(height: 27)
+			.foregroundStyle(on ? VaultPalette.greenTintText : VaultPalette.textTertiary)
+			.padding(.horizontal, 8)
+			.frame(height: 24)
+			.background(RoundedRectangle(cornerRadius: 6).fill(on ? VaultPalette.greenTint : .clear))
+			.overlay { RoundedRectangle(cornerRadius: 6).stroke(on ? .clear : VaultPalette.border, lineWidth: 1) }
 			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.vaultPointingHand()
+		.accessibilityAddTraits(on ? .isSelected : [])
+		.help(on ? "Leave this key out of the import" : "Add this key")
+	}
+}
+
+/// Keep or Replace an existing value that differs, as two halves of one control.
+private struct KeepReplaceControl: View {
+	let key: String
+	@Binding var replacing: Bool
+
+	var body: some View {
+		HStack(spacing: 0) {
+			half("Keep", selected: !replacing, filled: VaultPalette.neutralTint, foreground: VaultPalette.textPrimary) { replacing = false }
+				.accessibilityLabel("Keep \(key)")
+			Rectangle().fill(VaultPalette.border).frame(width: 1)
+			half("Replace", selected: replacing, filled: VaultPalette.accent, foreground: .white) { replacing = true }
+				.accessibilityLabel("Replace \(key)")
+		}
+		.fixedSize()
+		.clipShape(RoundedRectangle(cornerRadius: 6))
+		.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
+	}
+
+	private func half(_ title: String, selected: Bool, filled: Color, foreground: Color, action: @escaping () -> Void) -> some View {
+		Button(action: action) {
+			Text(title)
+				.font(.system(size: 11, weight: selected ? .semibold : .regular))
+				.foregroundStyle(selected ? foreground : VaultPalette.textTertiary)
+				.padding(.horizontal, 8)
+				.frame(height: 24)
+				.background(selected ? filled : .clear)
+				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
 		.vaultPointingHand()

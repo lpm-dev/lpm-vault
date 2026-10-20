@@ -21,7 +21,7 @@ struct EnvImportSheet: View {
 	private enum Step {
 		case choosing
 		case reviewing(EnvFileImportReview)
-		case imported(EnvFileImportReview)
+		case imported(EnvFileImportReview, EnvImportReceipt)
 	}
 
 	private enum Work {
@@ -57,7 +57,7 @@ struct EnvImportSheet: View {
 			switch step {
 			case .choosing: choosing
 			case .reviewing(let review): EnvFileImportReviewSheet(store: store, review: review)
-			case .imported(let review): EnvFileImportReviewSheet(store: store, review: review, importedWithoutReview: true)
+			case .imported(let review, let receipt): EnvFileImportReviewSheet(store: store, review: review, importedWithoutReview: receipt)
 			}
 		}
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { close() } }
@@ -279,7 +279,7 @@ struct EnvImportSheet: View {
 				let applied = await store.applyEnvFileImport(review, replacingKeys: [])
 				guard !Task.isCancelled else { return }
 				switch applied {
-				case .success: show(.imported(review))
+				case .success(let receipt): show(.imported(review, receipt))
 				case .failure(let error): fail(error, from: origin)
 				}
 			}

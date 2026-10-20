@@ -1073,9 +1073,9 @@ private struct AddVariablePresentedFixture: View {
 	}
 }
 
-/// Copy confirmations that end when a test says, so assertions about them
-/// don't race a two-second timer.
-final class ManualCopyFeedbackTimer: @unchecked Sendable {
+/// Feedback, such as a copy confirmation or an import's undo, that ends when
+/// a test says, so assertions about it don't race a timer.
+final class ManualFeedbackTimer: @unchecked Sendable {
 	private final class Wait: @unchecked Sendable {
 		var continuation: CheckedContinuation<Void, Error>?
 		var isCancelled = false
@@ -1088,8 +1088,8 @@ final class ManualCopyFeedbackTimer: @unchecked Sendable {
 	/// How many confirmations have started waiting.
 	var started: Int { lock.withLock { startedCount } }
 
-	var timer: VaultCopyFeedbackTimer {
-		VaultCopyFeedbackTimer { [self] in
+	var timer: VaultFeedbackTimer {
+		VaultFeedbackTimer { [self] in
 			let wait = Wait()
 			try await withTaskCancellationHandler {
 				try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

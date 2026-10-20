@@ -105,6 +105,8 @@ enum VaultProjectMutation: Sendable {
 		destination: String
 	)
 	case clearEnvironment(name: String, expectedSecrets: [String: String])
+	/// Sets an environment back to `restored`, as an undone import does.
+	case restoreEnvironment(name: String, expectedSecrets: [String: String], restored: [String: String])
 	case deleteSecret(environment: String, key: String, expectedValue: String)
 	case editKey(VaultKeyEdit)
 }
@@ -646,6 +648,9 @@ actor VaultPersistenceCoordinator {
 		case .clearEnvironment(let name, let expectedSecrets):
 			mutationApplies = project.environments[name] == expectedSecrets
 			if mutationApplies { project.environments[name] = [:] }
+		case .restoreEnvironment(let name, let expectedSecrets, let restored):
+			mutationApplies = project.environments[name] == expectedSecrets
+			if mutationApplies { project.environments[name] = restored }
 		case .deleteSecret(let environment, let key, let expectedValue):
 			mutationApplies = project.environments[environment]?[key] == expectedValue
 			if mutationApplies { project.environments[environment]?.removeValue(forKey: key) }

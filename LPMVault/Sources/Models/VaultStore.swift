@@ -3302,16 +3302,19 @@ final class VaultStore {
       && projects.contains { $0.id == review.projectId && $0.environments[review.environment] != nil }
   }
 
+  /// Imports what `review` compared, keeping existing values except
+  /// `replacingKeys`, and leaving out the new keys in `skippingKeys`.
   func applyEnvFileImport(
-    _ review: EnvFileImportReview, replacingKeys: Set<String>
-  ) async -> Result<ImportedEnvFile, EnvFileImportError> {
+    _ review: EnvFileImportReview, replacingKeys: Set<String>, skippingKeys: Set<String> = []
+  ) async -> Result<EnvImportReceipt, EnvFileImportError> {
     let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
     guard isUnlocked else { return .failure(.vaultLocked) }
     guard review.sessionGeneration == vaultSessionGeneration,
       localEnvReviewIDs[target] == review.id,
-      replacingKeys.isSubset(of: review.changedKeys)
+      replacingKeys.isSubset(of: review.changedKeys),
+      skippingKeys.isSubset(of: review.addedKeys)
     else { return .failure(.cancelled) }
-    let result = await commitEnvFileImport(review, replacingKeys: replacingKeys)
+    let result = await commitEnvFileImport(review, replacingKeys: replacingKeys, skippingKeys: skippingKeys)
     if case .success = result, localEnvReviewIDs[target] == review.id {
       localEnvReviewIDs.removeValue(forKey: target)
     }
@@ -3323,8 +3326,8 @@ final class VaultStore {
   /// The commit fails with `reviewChanged` when the destination no longer
   /// matches the reviewed baseline, so concurrent CLI edits are never replaced.
   private func commitEnvFileImport(
-    _ review: EnvFileImportReview, replacingKeys: Set<String>
-  ) async -> Result<ImportedEnvFile, EnvFileImportError> {
+    _ review: EnvFileImportReview, replacingKeys: Set<String>, skippingKeys: Set<String>
+  ) async -> Result<EnvImportReceipt, EnvFileImportError> {
     let write = writes.begin()
     defer { writes.end(write) }
     let projectId = review.projectId
@@ -3353,7 +3356,7 @@ final class VaultStore {
         projectName: review.projectName,
         projectPath: review.projectPath,
         environment: environment,
-        secrets: review.imported.secrets,
+        secrets: skippingKeys.isEmpty ? review.imported.secrets : review.imported.secrets.filter { !skippingKeys.contains($0.key) },
         expectedSecrets: review.baseline,
         replacingKeys: replacingKeys,
         requestId: requestId,
@@ -3365,13 +3368,16 @@ final class VaultStore {
 
     switch commit {
     case .success(let persisted):
+      let receipt = EnvImportReceipt(
+        projectId: projectId, environment: environment, before: review.baseline,
+        after: persisted.project.environments[environment] ?? [:])
       guard sessionGeneration == vaultSessionGeneration,
         isUnlocked,
         projects.contains(where: { $0.id == projectId })
       else {
         // The transaction crossed its synchronous commit point. Keep
         // locked/stale UI clear, but report the durable success.
-        return .success(review.imported)
+        return .success(receipt)
       }
       updateProjectInPlace(persisted.project)
       applySyncMetadata(persisted.syncMetadata, for: persisted.project.id)
@@ -3382,7 +3388,7 @@ final class VaultStore {
       {
         error = persisted.warning
       }
-      return .success(review.imported)
+      return .success(receipt)
     case .targetUnavailable:
       return .failure(.targetUnavailable)
     case .reviewChanged:
@@ -3406,6 +3412,23 @@ final class VaultStore {
 
   /// Reads variables from a file or pasted text for the selected project,
   /// off the main actor; a lock or another project cancels the read.
+  /// Puts the environment an import changed back as it was, as long as
+  /// nothing has changed it since, as the LPM CLI could have.
+  func undoEnvImport(_ receipt: EnvImportReceipt) async -> ProjectMutationOutcome {
+    guard isUnlocked, receipt.changed, selectedProjectId == receipt.projectId,
+      let project = projects.first(where: { $0.id == receipt.projectId }),
+      project.environments[receipt.environment] != nil
+    else { return .unavailable }
+    recordUserActivity()
+    return await withCheckedContinuation { continuation in
+      enqueueProjectMutation(
+        base: project,
+        mutation: .restoreEnvironment(name: receipt.environment, expectedSecrets: receipt.after, restored: receipt.before),
+        reportsFailures: false
+      ) { continuation.resume(returning: $0) }
+    }
+  }
+
   func loadEnvImport(
     _ input: EnvImportInput,
     for projectId: String

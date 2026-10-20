@@ -104,7 +104,7 @@ struct VaultStoreTests {
 	private func reviewAndImport(
 		_ store: VaultStore, _ url: URL, to projectId: String, environment: String,
 		replacing: Set<String> = []
-	) async -> Result<ImportedEnvFile, EnvFileImportError> {
+	) async -> Result<EnvImportReceipt, EnvFileImportError> {
 		switch await review(store, url, to: projectId, environment: environment) {
 		case .success(let review): await store.applyEnvFileImport(review, replacingKeys: replacing)
 		case .failure(let error): .failure(error)
@@ -1708,7 +1708,8 @@ struct VaultStoreTests {
 
 		let result = await reviewAndImport(store, URL(fileURLWithPath: "/tmp/import.env"), to: "id-1", environment: "default")
 
-		#expect(result == .success(ImportedEnvFile(secrets: ["IMPORTED": "value"])))
+		#expect(result == .success(EnvImportReceipt(
+			projectId: "id-1", environment: "default", before: ["OLD": "value"], after: ["OLD": "value", "IMPORTED": "value"])))
 		#expect(
 			store.projects[0].secrets(for: "default") == [
 				"OLD": "value", "IMPORTED": "value",
@@ -1729,7 +1730,8 @@ struct VaultStoreTests {
 		store.isUnlocked = true
 		store.openProject(id: "id-1")
 		let result = await reviewAndImport(store, URL(fileURLWithPath: "/tmp/import.env"), to: "id-1", environment: "default")
-		#expect(result == .success(ImportedEnvFile(secrets: ["TOKEN": "incoming", "NEW": "added"])))
+		#expect(result == .success(EnvImportReceipt(
+			projectId: "id-1", environment: "default", before: ["TOKEN": "existing"], after: ["TOKEN": "existing", "NEW": "added"])))
 		#expect(keychain.storage["id-1"]?.secrets == ["TOKEN": "existing", "NEW": "added"])
 		#expect(store.projects[0].secrets(for: "default") == ["TOKEN": "existing", "NEW": "added"])
 		store.lock()
@@ -1803,7 +1805,7 @@ struct VaultStoreTests {
 		let newerReview = try await newer.value.get()
 
 		#expect(await store.applyEnvFileImport(olderReview, replacingKeys: []) == .failure(.cancelled))
-		#expect(await store.applyEnvFileImport(newerReview, replacingKeys: []) == .success(ImportedEnvFile(secrets: ["KEY": "new"])))
+		#expect(await store.applyEnvFileImport(newerReview, replacingKeys: []).map(\.after) == .success(["KEY": "new"]))
 		#expect(store.projects[0].secrets(for: "default")["KEY"] == "new")
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
 	}
@@ -1871,11 +1873,7 @@ struct VaultStoreTests {
 		release.signal()
 
 		#expect(await older.value == .failure(.cancelled))
-		#expect(
-			await newer.value
-				== .success(
-					ImportedEnvFile(secrets: ["FRESH_ONLY": "new"])
-				))
+		#expect(await newer.value.map(\.after) == .success(["FRESH_ONLY": "new"]))
 		#expect(store.projects[0].secrets(for: "default") == ["FRESH_ONLY": "new"])
 		#expect(keychain.storage["id-1"]?.secrets == ["FRESH_ONLY": "new"])
 	}
