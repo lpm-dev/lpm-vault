@@ -580,6 +580,7 @@ struct PlatformsView: View {
 	/// Renames the login, keeping the prompt open with the reason when the name can't be used.
 	private func rename(_ connection: PlatformConnection) {
 		let draft = renameDraft
+		guard Self.canRename(connection, to: draft) else { return }
 		Task {
 			if let error = await platforms.rename(connection, to: draft) {
 				renameError = error

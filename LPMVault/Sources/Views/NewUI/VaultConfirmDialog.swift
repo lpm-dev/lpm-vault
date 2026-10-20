@@ -63,8 +63,11 @@ struct VaultPrompt {
 	let placeholder: String
 	let text: Binding<String>
 	let confirmTitle: String
+	/// Whether the confirm button is on.
 	var canConfirm = true
-	/// Runs on the confirm button or Return; the caller ends the prompt when the name is taken.
+	/// Runs on the confirm button or Return, and checks the name as it is
+	/// then: Return can come before the field shows the name's last edit.
+	/// The caller ends the prompt once the name is taken.
 	let confirm: () -> Void
 	var onCancel: () -> Void = {}
 }
@@ -142,7 +145,7 @@ struct VaultPromptDialog: View {
 				.foregroundStyle(VaultPalette.textPrimary)
 				.autocorrectionDisabled()
 				.focused($focused)
-				.onSubmit { if prompt.canConfirm { prompt.confirm() } }
+				.onSubmit(prompt.confirm)
 				.padding(.horizontal, 10)
 				.frame(height: 30)
 				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.content))
