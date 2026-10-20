@@ -100,7 +100,25 @@ struct PublishPlanTests {
 			("API_TOKEN", true, false), ("NEXT_PUBLIC_API_URL", true, true), ("DATABASE_URL", false, false),
 		].map { selection.set($0.0, selected: $0.1, confirmed: $0.2, in: plan) }
 		#expect(accepted == [false, false, false, true, true, true])
-		#expect(plan.summary(of: selection) == PublishPlan.Summary(adding: 1, replacing: 2, upToDate: 0, skipped: 3, secrets: 2))
+		#expect(plan.summary(of: selection) == PublishPlan.Summary(adding: 1, replacing: 2, blocked: 2, upToDate: 0, skipped: 1, secrets: 2))
+	}
+
+	@Test("each row's planned action is what the summary counts: chosen keys add or replace, and the rest say why they're left")
+	func plannedActions() throws {
+		let check = ProjectEnvValueCheck.Environment(problems: ["LOG_LEVEL": [.init(key: "LOG_LEVEL", kind: .unusableValue)]])
+		let plan = makePlan(check: check)
+		var selection = PublishPlan.Selection(defaultsOf: plan)
+		let dropped = selection.set("DATABASE_URL", selected: false, in: plan)
+		#expect(dropped)
+		let actions = Dictionary(uniqueKeysWithValues: plan.rows.map { ($0.key, plan.action(for: $0, in: selection)) })
+		#expect(actions == [
+			"SESSION_SECRET": .add, "STRIPE_WEBHOOK_SECRET": .add, "DATABASE_URL": .skip, "API_TOKEN": .upToDate,
+			"LOG_LEVEL": .cantPublish, "NEXT_PUBLIC_API_URL": .needsConfirmation,
+		])
+		let confirmed = selection.set("NEXT_PUBLIC_API_URL", selected: true, confirmed: true, in: plan)
+		#expect(confirmed)
+		#expect(plan.action(for: try #require(plan.row("NEXT_PUBLIC_API_URL")), in: selection) == .replace)
+		#expect(plan.summary(of: selection) == PublishPlan.Summary(adding: 2, replacing: 1, blocked: 1, upToDate: 1, skipped: 1, secrets: 2))
 	}
 
 	@Test("a key someone changed, replaced or removed on the platform since this Mac published it waits for a choice")

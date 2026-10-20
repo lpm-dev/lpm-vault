@@ -573,9 +573,33 @@ extension PublishPlan {
 		}
 	}
 
+	/// What publishing `selection` does with a row, as its Planned Action says.
+	enum Action: Equatable, Sendable {
+		case add
+		case replace
+		/// Not chosen, and it can't be: the platform wouldn't take it, or the place is held.
+		case cantPublish
+		/// Not chosen until the person confirms that publishing it changes other environments.
+		case needsConfirmation
+		/// Not chosen, and the platform already has the value.
+		case upToDate
+		case skip
+	}
+
+	func action(for row: Row, in selection: Selection) -> Action {
+		if selection.planID == id, selection.keys.contains(row.key) {
+			return row.operation == .add ? .add : .replace
+		}
+		if placeHold != nil || !row.isPublishable { return .cantPublish }
+		if row.needsConfirmation { return .needsConfirmation }
+		return row.status.isUpToDate ? .upToDate : .skip
+	}
+
 	struct Summary: Equatable, Sendable {
 		var adding = 0
 		var replacing = 0
+		/// Not chosen, and it can't be.
+		var blocked = 0
 		/// Not chosen, and the platform already has the value.
 		var upToDate = 0
 		/// Not chosen for any other reason.
@@ -591,17 +615,14 @@ extension PublishPlan {
 	func summary(of selection: Selection) -> Summary {
 		var summary = Summary()
 		for row in rows {
-			if selection.planID == id, selection.keys.contains(row.key) {
-				switch row.operation {
-				case .add: summary.adding += 1
-				case .replace: summary.replacing += 1
-				}
-				if row.publishesAsSecret { summary.secrets += 1 }
-			} else if row.status.isUpToDate {
-				summary.upToDate += 1
-			} else {
-				summary.skipped += 1
+			switch action(for: row, in: selection) {
+			case .add: summary.adding += 1
+			case .replace: summary.replacing += 1
+			case .cantPublish: summary.blocked += 1
+			case .upToDate: summary.upToDate += 1
+			case .needsConfirmation, .skip: summary.skipped += 1
 			}
+			if selection.planID == id, selection.keys.contains(row.key), row.publishesAsSecret { summary.secrets += 1 }
 		}
 		return summary
 	}

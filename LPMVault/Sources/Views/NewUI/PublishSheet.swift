@@ -88,94 +88,41 @@ struct PublishSheet: View {
 	private var platformName: String { platform?.displayName ?? "the platform" }
 
 	private var route: some View {
-		HStack(spacing: 14) {
-			VStack(alignment: .leading, spacing: 4) {
-				Text("FROM VAULT").vaultSectionLabel()
-				Text("\(session.projectName) / \(VaultProject.displayName(for: session.sourceEnvironment))")
-					.font(VaultTypography.tabular(12.5, .semibold))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.lineLimit(1)
-					.truncationMode(.middle)
-			}
-			.frame(maxWidth: .infinity, alignment: .leading)
-			Image(systemName: "arrow.right")
-				.font(.system(size: 11, weight: .semibold))
-				.foregroundStyle(VaultPalette.textTertiary)
-				.accessibilityHidden(true)
-			VStack(alignment: .leading, spacing: 4) {
-				Text("TO \(platform?.displayName.uppercased() ?? "PLATFORM")\(session.connection.map { " · \($0.name.uppercased()) (\($0.detail))" } ?? "")")
-					.vaultSectionLabel()
-					.lineLimit(1)
-					.truncationMode(.middle)
-				Text("\(place.name ?? "—") / \(place.part ?? "—")")
-					.font(VaultTypography.tabular(12.5, .semibold))
-					.foregroundStyle(place.part == nil ? VaultPalette.textTertiary : VaultPalette.accentForeground)
-					.lineLimit(1)
-					.truncationMode(.middle)
-			}
-			.frame(maxWidth: .infinity, alignment: .leading)
-		}
-		.padding(.horizontal, 16)
-		.padding(.vertical, 12)
-		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.headerRow))
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
-		.accessibilityElement(children: .combine)
-	}
-
-	/// Where the fields say to publish: the platform's project or resource,
-	/// then the part of it written to, each nil until it's chosen.
-	private var place: (name: String?, part: String?) {
-		// Until the fields' choices load, a place is named as the review read
-		// it, which follows a rename on the platform, or else as it was saved.
-		let known = session.review?.destination.target ?? session.saved?.target
-		switch session.form {
-		case .vercel(let form)?:
-			let project = form.project?.name ?? {
-				if case .vercel(let target)? = known, target.projectID == form.projectID { return target.projectName }
-				return nil
-			}()
-			return (project, form.environment?.displayName)
-		case .coolify(let form)?:
-			let resource = form.resource?.name ?? {
-				if case .coolify(let target)? = known, target.resourceID == form.resourceID { return target.resourceName }
-				return nil
-			}()
-			return (resource, form.deployments?.displayName)
-		case .netlify(let form)?:
-			let site = form.site?.name ?? {
-				if case .netlify(let target)? = known, target.siteID == form.siteID { return target.siteName }
-				return nil
-			}()
-			return (site, form.context?.displayName)
-		case .github(let form)?:
-			let repository = form.repository?.fullName ?? {
-				if case .github(let target)? = known, target.repositoryID == form.repositoryID { return target.repositoryName }
-				return nil
-			}()
-			return (repository, form.scope?.displayName)
-		case .cloudflare(let form)?:
-			let worker = form.worker?.name ?? {
-				if case .cloudflare(let target)? = known, target.workerID == form.workerID { return target.workerName }
-				return nil
-			}()
-			return (worker, worker == nil ? nil : CloudflarePublishTarget.placeKind)
-		case nil:
-			return (nil, nil)
-		}
+		let place = session.place
+		let keyCount = store.selectedProject.flatMap { $0.id == session.vaultID ? $0.environmentKeyCounts[session.sourceEnvironment] : nil }
+		return PublishRoute(
+			source: .init(
+				title: session.projectName,
+				detail: [VaultProject.displayName(for: session.sourceEnvironment), keyCount?.counted("key")].compactMap { $0 }.joined(separator: " · ")),
+			sourceIcon: store.projectIcons.appearance(for: session.vaultID),
+			platform: platform,
+			destination: .init(
+				title: place.title ?? "Not chosen yet",
+				detail: [place.part, place.account].compactMap { $0 }.joined(separator: " · ")),
+			isChosen: place.title != nil,
+			connection: session.connection.map(Self.connectionLabel))
 	}
 
 	private var steps: some View {
-		HStack(spacing: 8) {
-			Button("Destination") { session.showDestination() }
-				.buttonStyle(.plain)
-				.foregroundStyle(session.step == .destination ? VaultPalette.accentForeground : VaultPalette.textSecondary)
-				.disabled(session.isPublishing)
-			Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(VaultPalette.textFaint)
-				.accessibilityHidden(true)
-			Text("Review")
-				.foregroundStyle(session.step == .review ? VaultPalette.accentForeground : VaultPalette.textSecondary)
+		HStack(spacing: 10) {
+			HStack(spacing: 10) {
+				Button("Destination") { session.showDestination() }
+					.buttonStyle(.plain)
+					.font(.system(size: 12.5, weight: session.step == .destination ? .semibold : .regular))
+					.foregroundStyle(session.step == .destination ? VaultPalette.accentText : VaultPalette.textTertiary)
+					.disabled(session.isPublishing)
+				Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(VaultPalette.textTertiary)
+					.accessibilityHidden(true)
+				Text("Review")
+					.font(.system(size: 12.5, weight: session.step == .review ? .semibold : .regular))
+					.foregroundStyle(session.step == .review ? VaultPalette.accentText : VaultPalette.textTertiary)
+			}
+			.fixedSize()
+			Spacer(minLength: 8)
+			if session.step == .review, !session.isLoadingReview, let review = session.review {
+				PublishSummaryPills(summary: review.summary)
+			}
 		}
-		.font(.system(size: 12.5, weight: .semibold))
 	}
 
 	// MARK: - Destination
@@ -326,23 +273,11 @@ struct PublishSheet: View {
 	}
 
 	private func reviewContent(_ review: PublishSession.Review) -> some View {
-		let summary = review.summary
-		return VStack(alignment: .leading, spacing: 10) {
-			HStack(spacing: 6) {
-				VaultTagBadge(text: "\(summary.adding) add", foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint, size: 11)
-				VaultTagBadge(text: "\(summary.replacing) replace", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 11)
-				if summary.upToDate > 0 {
-					VaultTagBadge(text: "\(summary.upToDate) up to date", foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint, size: 11)
-				}
-				VaultTagBadge(text: "\(summary.skipped) skipped", foreground: VaultPalette.textTertiary, background: VaultPalette.neutralTint, size: 11)
-				Spacer(minLength: 8)
-				Label("Values hidden", systemImage: "lock")
-					.font(.system(size: 11.5))
-					.foregroundStyle(VaultPalette.textTertiary)
-			}
+		VStack(alignment: .leading, spacing: 12) {
 			ScrollView {
 				LazyVStack(alignment: .leading, spacing: 0) {
-					HStack {
+					HStack(spacing: 12) {
+						Color.clear.frame(width: 16, height: 1)
 						Text("VARIABLE").vaultSectionLabel()
 						Spacer()
 						Text("PLANNED ACTION").vaultSectionLabel()
@@ -356,7 +291,7 @@ struct PublishSheet: View {
 							.padding(14)
 					}
 					ForEach(review.plan.rows) { row in
-						VaultHairline(color: VaultPalette.rowDivider)
+						VaultHairline(color: VaultPalette.border)
 						reviewRow(row, review: review)
 					}
 				}
@@ -365,22 +300,14 @@ struct PublishSheet: View {
 			.clipShape(RoundedRectangle(cornerRadius: 10))
 			.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
 			.disabled(session.isPublishing)
-			VStack(alignment: .leading, spacing: 3) {
-				ForEach(Self.notes(for: review), id: \.self) { note in
-					Text(note).font(.system(size: 11.5)).foregroundStyle(VaultPalette.textTertiary)
-						.fixedSize(horizontal: false, vertical: true)
-				}
-				if let error = session.reviewError {
-					Text(error).font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
-						.fixedSize(horizontal: false, vertical: true)
-				}
-			}
+			PublishNoteList(notes: Self.notes(for: review), error: session.reviewError)
 		}
 	}
 
 	private func reviewRow(_ row: PublishPlan.Row, review: PublishSession.Review) -> some View {
 		let selected = session.isSelected(row.key)
 		let failsRules = row.holds.contains { if case .failsRules = $0 { true } else { false } }
+		let detail = Self.detail(row, review: review)
 		return HStack(alignment: .top, spacing: 12) {
 			Toggle("Publish \(row.key)", isOn: Binding(
 				get: { session.isSelected(row.key) },
@@ -389,38 +316,43 @@ struct PublishSheet: View {
 				.labelsHidden()
 				.disabled(review.plan.placeHold != nil || !row.isPublishable || (row.needsConfirmation && !selected))
 				.padding(.top, 1)
-			VStack(alignment: .leading, spacing: 4) {
+			VStack(alignment: .leading, spacing: 3) {
 				HStack(spacing: 8) {
 					Text(row.key)
-						.font(VaultTypography.tabular(12.5, .semibold))
+						.font(VaultTypography.tabular(12, .semibold))
 						.foregroundStyle(failsRules ? VaultPalette.redText : VaultPalette.textPrimary)
 						.lineLimit(1)
 						.truncationMode(.middle)
+					VaultTagBadge(text: Self.kind(row, on: review.platform), foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint, size: 11)
 					if row.kind == .public { VaultPublicBadge() }
 				}
-				Text(Self.detail(row, review: review))
-					.font(.system(size: 11.5))
-					.foregroundStyle(noteColor(row))
-					.fixedSize(horizontal: false, vertical: true)
+				if !detail.isEmpty {
+					Text(detail)
+						.font(.system(size: 11.5))
+						.foregroundStyle(noteColor(row))
+						.lineSpacing(2)
+						.fixedSize(horizontal: false, vertical: true)
+				}
 			}
 			Spacer(minLength: 8)
-			action(row, selected: selected, held: review.plan.placeHold != nil)
+			action(row, review: review)
 		}
 		.padding(.horizontal, 14)
-		.padding(.vertical, 10)
+		.padding(.vertical, 11)
 		.accessibilityElement(children: .contain)
 	}
 
-	/// What the row does when published; `held` when nothing can be published to the place now.
+	/// What the row does when published, as the plan says.
 	@ViewBuilder
-	private func action(_ row: PublishPlan.Row, selected: Bool, held: Bool) -> some View {
-		if selected {
+	private func action(_ row: PublishPlan.Row, review: PublishSession.Review) -> some View {
+		switch review.plan.action(for: row, in: review.selection) {
+		case .add, .replace:
 			Text(row.operation == .add ? "Add" : "Replace existing")
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textPrimary)
-		} else if held || !row.isPublishable {
+		case .cantPublish:
 			Text("Can't publish").font(.system(size: 12.5)).foregroundStyle(VaultPalette.textTertiary)
-		} else if row.needsConfirmation {
+		case .needsConfirmation:
 			HStack(spacing: 8) {
 				VaultTagBadge(text: "Blocked", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint, size: 11)
 				Button("Publish anyway") { session.set(row.key, selected: true, confirmed: true) }
@@ -429,19 +361,25 @@ struct PublishSheet: View {
 					.foregroundStyle(VaultPalette.accentForeground)
 					.accessibilityLabel("Publish \(row.key) anyway")
 			}
-		} else if row.status.isUpToDate {
+		case .upToDate:
 			Text("Up to date").font(.system(size: 12.5)).foregroundStyle(VaultPalette.textTertiary)
-		} else {
+		case .skip:
 			Text("Skip").font(.system(size: 12.5)).foregroundStyle(VaultPalette.textTertiary)
 		}
 	}
 
+	/// What the key is stored as on the platform, in its words: GitHub's are "secret" and "variable", not LPM Vault's Secret and Config.
+	static func kind(_ row: PublishPlan.Row, on platform: PublishPlatform) -> String {
+		// A Worker keeps every value as a secret its code reads at runtime.
+		if row.publishesAsSecret || platform == .cloudflare { return "Secret" }
+		return platform == .github ? "Variable" : "Config"
+	}
+
+	/// What else to know about the row, beside its kind; empty when there's nothing.
 	static func detail(_ row: PublishPlan.Row, review: PublishSession.Review) -> String {
 		let platform = review.platform.displayName
-		// GitHub's kinds are its own words, "secret" and "variable", not LPM Vault's Secret and Config.
 		let secret = review.platform == .github ? "secret" : "Secret"
-		// A Worker keeps every value as a secret its code reads at runtime.
-		var parts = [row.publishesAsSecret || review.platform == .cloudflare ? "Secret" : review.platform == .github ? "Variable" : "Config"]
+		var parts: [String] = []
 		if review.platform == .cloudflare,
 			ProjectEnvSchemaRule.publicPrefix(of: row.key, clientPrefixes: review.rules.overview.clientPrefixes) != nil
 		{
@@ -469,7 +407,8 @@ struct PublishSheet: View {
 		if row.status.protectionChanged, review.platform != .cloudflare {
 			parts.append(row.publishesAsSecret ? "will be stored as a \(secret)" : "will be stored readable")
 		}
-		return parts.joined(separator: " · ")
+		let detail = parts.joined(separator: " · ")
+		return detail.prefix(1).uppercased() + detail.dropFirst()
 	}
 
 	static func holdNote(_ hold: PublishPlan.Hold, row: PublishPlan.Row, review: PublishSession.Review) -> String {
@@ -546,73 +485,85 @@ struct PublishSheet: View {
 		"\(connection.platform.displayName) · \(connection.name) · \(connection.detail)"
 	}
 
-	static func notes(for review: PublishSession.Review) -> [String] {
+	static func notes(for review: PublishSession.Review) -> [PublishNote] {
 		let platform = review.platform.displayName
-		var notes: [String] = []
+		var notes: [PublishNote] = []
 		// A value added to a variable the platform already has is written over whatever that variable holds for it then.
 		let writesExistingVariables = review.summary.replacing > 0 || review.selection.keys.contains { review.remoteKeys[$0] != nil }
 		if writesExistingVariables {
+			let replaced = "arrow.left.arrow.right"
 			switch review.platform {
 			case .vercel:
-				notes.append("Existing variables will be replaced. Vercel's current values can't be read to compare, and Vercel replaces a variable without checking it, so a change made on Vercel moments before publishing can still be overwritten.")
+				notes.append(PublishNote(.risk, replaced, lead: "Existing variables will be replaced.",
+					"Vercel's current values can't be read to compare, and Vercel replaces a variable without checking it, so a change made on Vercel moments before publishing can still be overwritten."))
 			case .coolify:
-				notes.append("Existing variables will be replaced. LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten.")
+				notes.append(PublishNote(.risk, replaced, lead: "Existing variables will be replaced.",
+					"LPM Vault doesn't read Coolify's current values to compare, and Coolify replaces a variable without checking it, so a change made in Coolify moments before publishing can still be overwritten."))
 			case .netlify:
-				notes.append("Values will be written to variables Netlify already has. LPM Vault doesn't read Netlify's current values to compare, and Netlify writes a value without checking it, so a change made on Netlify moments before publishing can still be overwritten, and a change to another deploy context at that moment can't be told apart from this publish.")
+				notes.append(PublishNote(.risk, replaced, lead: "Values will be written to variables Netlify already has.",
+					"LPM Vault doesn't read Netlify's current values to compare, and Netlify writes a value without checking it, so a change made on Netlify moments before publishing can still be overwritten, and a change to another deploy context at that moment can't be told apart from this publish."))
 			case .github:
-				notes.append("Existing secrets and variables will be replaced. GitHub never shows a secret's value, and replaces one without checking it, so a change made on GitHub moments before publishing can still be overwritten.")
+				notes.append(PublishNote(.risk, replaced, lead: "Existing secrets and variables will be replaced.",
+					"GitHub never shows a secret's value, and replaces one without checking it, so a change made on GitHub moments before publishing can still be overwritten."))
 			case .cloudflare:
-				notes.append("Existing secrets will be replaced. Cloudflare never shows a secret's value. LPM Vault checks the Worker's newest version right before sending, but Cloudflare replaces secrets without a check of its own, so a change made moments before publishing can still be overwritten.")
+				notes.append(PublishNote(.risk, replaced, lead: "Existing secrets will be replaced.",
+					"Cloudflare never shows a secret's value. LPM Vault checks the Worker's newest version right before sending, but Cloudflare replaces secrets without a check of its own, so a change made moments before publishing can still be overwritten."))
 			}
 		}
 		if case .cloudflare(let target) = review.destination.target {
 			if let login = review.login {
-				notes.append("Publishing to the Cloudflare account \(target.accountName), as \(login.label).")
+				notes.append(PublishNote(.info, "person.crop.circle", "Publishing to the Cloudflare account \(target.accountName), as \(login.label)."))
 			}
 			// A hold is said in the footer, and nothing is deployed while it lasts.
 			if review.plan.placeHold == nil {
-				notes.append("Cloudflare makes a new version of the Worker with the secrets, and deploys it at once.")
+				notes.append(PublishNote(.info, "paperplane", "Cloudflare makes a new version of the Worker with the secrets, and deploys it at once."))
 			}
 			if let first = review.frontendKeys.first {
 				let others = review.frontendKeys.count - 1
 				let named = others == 0 ? first : "\(first) and \(others) more"
-				notes.append("\(named) \(others == 0 ? "is" : "are") read by frontend code at build time. A Worker's secrets reach only the Worker at runtime, so set them as the build's own variables and rebuild.")
+				notes.append(PublishNote(.risk, "hammer",
+					"\(named) \(others == 0 ? "is" : "are") read by frontend code at build time. A Worker's secrets reach only the Worker at runtime, so set them as the build's own variables and rebuild."))
 			}
 		}
 		if case .coolify(let target) = review.destination.target, target.resource == .application, target.deployments == .production,
 			review.summary.adding > 0
 		{
-			notes.append("Coolify also copies new variables to the application's preview deployments. LPM Vault locks the copies of Secrets.")
+			notes.append(PublishNote(.info, "doc.on.doc", "Coolify also copies new variables to the application's preview deployments. LPM Vault locks the copies of Secrets."))
 		}
 		if review.platform == .netlify {
-			notes.append("Values set in the site's netlify.toml override published ones. A site's variables also override the team's shared variables with the same name.")
+			notes.append(PublishNote(.info, "square.3.layers.3d",
+				"Values set in the site's netlify.toml override published ones. A site's variables also override the team's shared variables with the same name."))
 		}
 		if case .github(let target) = review.destination.target {
-			notes.append("Workflows read secrets as ${{ secrets.NAME }} and variables as ${{ vars.NAME }}.")
+			notes.append(PublishNote(.info, "curlybraces", "Workflows read secrets as ${{ secrets.NAME }} and variables as ${{ vars.NAME }}."))
 			switch target.scope {
 			case .repository:
-				notes.append("A job that uses a deployment environment gets that environment's secret or variable instead, when it has one with the same name.")
+				notes.append(PublishNote(.info, "square.3.layers.3d",
+					"A job that uses a deployment environment gets that environment's secret or variable instead, when it has one with the same name."))
 			case .environment(let id, let name):
-				notes.append("Only jobs that use the \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) environment get these values, over the repository's with the same name.")
+				notes.append(PublishNote(.info, "square.3.layers.3d",
+					"Only jobs that use the \(GitHubPublishTarget.Scope.shownName(id: id, name: name)) environment get these values, over the repository's with the same name."))
 			}
 		}
 		let remoteOnly = review.plan.remoteOnlyCount
 		if remoteOnly > 0 {
-			notes.append("\(remoteOnly) \(review.platform.valuesNoun(count: remoteOnly)) only on \(platform) stay as they are.")
+			notes.append(PublishNote(.info, "tray", "\(remoteOnly) \(review.platform.valuesNoun(count: remoteOnly)) only on \(platform) stay as they are."))
 		}
 		// GitHub's and Cloudflare's secrets stay secrets whatever their prefix.
 		let readable = review.platform == .github || review.platform == .cloudflare ? "" : " unless their prefix makes them public"
 		let secrets = review.platform == .github || review.platform == .cloudflare ? "secrets" : "Secrets"
 		switch review.rules {
-		case .unreadable: notes.append("lpm.json's rules can't be read, so values aren't checked, and keys publish as \(secrets)\(readable).")
-		case .none: notes.append("This project has no rules, so keys publish as \(secrets)\(readable).")
+		case .unreadable:
+			notes.append(PublishNote(.risk, "exclamationmark.triangle", "lpm.json's rules can't be read, so values aren't checked, and keys publish as \(secrets)\(readable)."))
+		case .none:
+			notes.append(PublishNote(.info, "doc.text", "This project has no rules, so keys publish as \(secrets)\(readable)."))
 		case .known:
 			if !review.hasValueCheck {
-				notes.append("The values haven't been checked against lpm.json's rules yet, so rule failures don't show.")
+				notes.append(PublishNote(.risk, "checklist", "The values haven't been checked against lpm.json's rules yet, so rule failures don't show."))
 			}
 		}
 		if let lastPublishedAt = review.lastPublishedAt {
-			notes.append("Last published \(RelativeTimestampFormatter.string(from: lastPublishedAt)).")
+			notes.append(PublishNote(.info, "clock", "Last published \(RelativeTimestampFormatter.string(from: lastPublishedAt))."))
 		}
 		return notes
 	}
@@ -774,6 +725,7 @@ struct PublishSheet: View {
 			case .review:
 				VaultBarButton(title: "Back", disabled: session.isPublishing, height: 28, action: session.showDestination)
 				VaultBarButton(
+					systemImage: "arrow.up.to.line",
 					title: session.isPublishing ? "Publishing…" : "Publish \(publishedValues)",
 					filled: true,
 					disabled: publishCount == 0 || overflowMessage != nil || session.isPublishing || session.isLoadingReview,

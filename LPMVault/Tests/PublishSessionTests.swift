@@ -427,7 +427,7 @@ struct PublishSessionTests {
 		let session = session()
 		try await chooseProduction(session)
 		let review = try #require(session.review)
-		#expect(PublishSheet.notes(for: review).contains { $0.contains("moments before publishing can still be overwritten") })
+		#expect(PublishSheet.notes(for: review).map(\.text).contains { $0.contains("moments before publishing can still be overwritten") })
 	}
 
 	private func savedProduction(team: String = "team_acme", teamName: String = "Acme") -> PublishDestination {
@@ -694,7 +694,8 @@ struct CoolifyPublishSessionTests {
 		#expect(history.keys["API_TOKEN"]?.publishedAsSecret == true && history.keys["NEXT_PUBLIC_URL"]?.publishedAsSecret == false)
 		#expect(history.keys["API_TOKEN"]?.remoteID == api.variables.first { $0.key == "API_TOKEN" && !$0.isPreview }?.id)
 		#expect(api.variables.first { $0.key == "API_TOKEN" && $0.isPreview }?.isLocked == true, "The secret's preview copy is locked")
-		#expect(VaultTitleBarView.title(of: saved) == "api / Production — Coolify · Root Team")
+		let entry = VaultPublishMenu.Entry(PublishDestinationSummary(destination: saved, lastPublishedAt: nil), now: Date())
+		#expect(entry.title == "api" && entry.part == "Production" && entry.detail.contains("Root Team"))
 	}
 
 	@Test("a saved Coolify destination opens on its review, up to date with what this Mac published")
@@ -793,8 +794,9 @@ struct CoolifyPublishSessionTests {
 		#expect(labels["0f0f0f0f0f0f"] == "api — Storefront / staging")
 		#expect(labels["a1b2c3d4e5f6"] == "api — Storefront / production · a1b2c3d4")
 		let destination = coolifyDestination()
-		#expect(VaultTitleBarView.subtitle(of: PublishDestinationSummary(destination: destination, lastPublishedAt: nil))
-			== "Storefront / production on coolify.example.com · from .env.production · not published yet")
+		let entry = VaultPublishMenu.Entry(PublishDestinationSummary(destination: destination, lastPublishedAt: nil), now: Date())
+		#expect(entry.detail == "from .env.production · Root Team · Storefront / production on coolify.example.com")
+		#expect(entry.when == "Never")
 	}
 
 	@Test("a Coolify review that replaces variables says a change made in Coolify moments before can still be overwritten")
@@ -804,7 +806,7 @@ struct CoolifyPublishSessionTests {
 		let session = session()
 		try await chooseApplication(session)
 		let review = try #require(session.review)
-		#expect(PublishSheet.notes(for: review).contains { $0.contains("moments before publishing can still be overwritten") })
+		#expect(PublishSheet.notes(for: review).map(\.text).contains { $0.contains("moments before publishing can still be overwritten") })
 	}
 
 	@Test("each connection's token reaches only its own platform's client")
@@ -930,7 +932,8 @@ struct NetlifyPublishSessionTests {
 		#expect(target == netlifyTarget(.production))
 		let history = try await publishing.history(of: saved.id, in: vault).get()
 		#expect(history.keys["API_TOKEN"]?.publishedAsSecret == true && history.keys["NEXT_PUBLIC_URL"]?.publishedAsSecret == false)
-		#expect(VaultTitleBarView.title(of: saved) == "storefront / Production — Netlify · Northwind")
+		let entry = VaultPublishMenu.Entry(PublishDestinationSummary(destination: saved, lastPublishedAt: nil), now: Date())
+		#expect(entry.title == "storefront" && entry.part == "Production" && entry.detail.hasSuffix(" · Northwind"))
 		#expect(Set(tokens.values) == ["nfo_1"], "Only Netlify's client gets the token")
 	}
 
@@ -1025,11 +1028,11 @@ struct NetlifyPublishSessionTests {
 		try await choose(session, .production)
 		let review = try #require(session.review)
 		#expect(review.summary.replacing == 0 && review.summary.adding == 2)
-		#expect(PublishSheet.notes(for: review).contains { $0.contains("moments before publishing can still be overwritten") })
-		#expect(PublishSheet.notes(for: review).contains { $0.contains("another deploy context at that moment can't be told apart from this publish") })
+		#expect(PublishSheet.notes(for: review).map(\.text).contains { $0.contains("moments before publishing can still be overwritten") })
+		#expect(PublishSheet.notes(for: review).map(\.text).contains { $0.contains("another deploy context at that moment can't be told apart from this publish") })
 		review.selection.keys.forEach { if $0 == "API_TOKEN" { session.set($0, selected: false) } }
 		let onlyNew = try #require(session.review)
-		#expect(!PublishSheet.notes(for: onlyNew).contains { $0.contains("moments before publishing") }, "A new variable can't overwrite anything")
+		#expect(!PublishSheet.notes(for: onlyNew).map(\.text).contains { $0.contains("moments before publishing") }, "A new variable can't overwrite anything")
 	}
 
 	@Test("a Netlify review notes that netlify.toml and site variables take precedence")
@@ -1038,7 +1041,7 @@ struct NetlifyPublishSessionTests {
 		api.seed("API_TOKEN", [.production: "old"], secret: true)
 		let session = session()
 		try await choose(session, .production)
-		let notes = PublishSheet.notes(for: try #require(session.review))
+		let notes = PublishSheet.notes(for: try #require(session.review)).map(\.text)
 		#expect(notes.contains { $0.contains("netlify.toml") })
 		#expect(notes.contains { $0.contains("moments before publishing can still be overwritten") })
 	}
@@ -1130,8 +1133,9 @@ struct GitHubPublishSessionTests {
 		let review = try #require(session.review)
 		#expect(review.platform == .github && review.selection.keys == ["API_TOKEN", "LOG_LEVEL", "NEXT_PUBLIC_URL"])
 		#expect(review.plan.row("LOG_LEVEL")?.publishesAsSecret == false && review.plan.row("NEXT_PUBLIC_URL")?.publishesAsSecret == true)
-		let notes = PublishSheet.notes(for: review)
+		let notes = PublishSheet.notes(for: review).map(\.text)
 		#expect(notes.contains("Workflows read secrets as ${{ secrets.NAME }} and variables as ${{ vars.NAME }}."))
+		#expect(session.place == PublishSession.Place(title: "northwind/storefront", part: "Repository"), "The owner is in the repository's name")
 		#expect(notes.contains { $0.contains("deployment environment gets that environment's secret or variable instead") })
 		try await publish(session)
 		#expect(confirmations.reasons == ["Publish 2 secrets and 1 variable to northwind/storefront / Repository on GitHub"])
@@ -1221,7 +1225,8 @@ struct GitHubPublishSessionTests {
 		let review = try #require(first.review)
 		let staying = try #require(review.plan.row("LOG_LEVEL"))
 		#expect(staying.staysSecret)
-		#expect(PublishSheet.detail(staying, review: review).contains("stays a secret on GitHub"))
+		#expect(PublishSheet.kind(staying, on: .github) == "Secret")
+		#expect(PublishSheet.detail(staying, review: review).localizedCaseInsensitiveContains("stays a secret on GitHub"))
 
 		api.remove("LOG_LEVEL", secret: true, in: repositoryScope)
 		first.loadReview()
@@ -1235,7 +1240,7 @@ struct GitHubPublishSessionTests {
 		let reviewed = try #require(unruled.review)
 		let protecting = try #require(reviewed.plan.row("LOG_LEVEL"))
 		#expect(protecting.publishesAsSecret && protecting.status.protectionChanged)
-		#expect(PublishSheet.detail(protecting, review: reviewed).contains("will be stored as a secret"))
+		#expect(PublishSheet.detail(protecting, review: reviewed).localizedCaseInsensitiveContains("will be stored as a secret"))
 	}
 
 	@Test("refreshing the repositories lists the chosen one's environments again, by the name GitHub gives it now")
@@ -1333,10 +1338,10 @@ struct GitHubPublishSessionTests {
 		try await connect()
 		let none = session(rules: PublishSession.Rules.none)
 		try await choose(none)
-		#expect(PublishSheet.notes(for: try #require(none.review)).contains("This project has no rules, so keys publish as secrets."))
+		#expect(PublishSheet.notes(for: try #require(none.review)).map(\.text).contains("This project has no rules, so keys publish as secrets."))
 		let unreadable = session(rules: .unreadable)
 		try await choose(unreadable)
-		#expect(PublishSheet.notes(for: try #require(unreadable.review))
+		#expect(PublishSheet.notes(for: try #require(unreadable.review)).map(\.text)
 			.contains("lpm.json's rules can't be read, so values aren't checked, and keys publish as secrets."))
 	}
 
@@ -1393,7 +1398,7 @@ struct GitHubPublishSessionTests {
 		let session = session(source: "staging")
 		try await choose(session, scope: .environment(id: "161088069", name: "staging/eu"))
 		let review = try #require(session.review)
-		#expect(PublishSheet.notes(for: review).contains { $0.contains("Only jobs that use the staging/eu environment get these values") })
+		#expect(PublishSheet.notes(for: review).map(\.text).contains { $0.contains("Only jobs that use the staging/eu environment get these values") })
 		try await publish(session)
 		#expect(api.names(in: GitHubScope(repository: "northwind/storefront", environment: "staging/eu")).secrets == ["API_TOKEN"])
 		#expect(api.names(in: repositoryScope).secrets.isEmpty)
@@ -1770,10 +1775,12 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("Publish environment"))
 			#expect(try await host.waitForText("Choose a destination"))
+			#expect(try await host.waitForText("Not chosen yet"))
 			#expect(try await host.waitUntil { session.vercel?.projects.value != nil })
 			session.vercel?.projectID = "prj_api"
 			session.vercel?.environment = .production
-			#expect(try await host.waitForText("storefront / Production"))
+			#expect(try await host.waitForText("Production · Northwind"))
+			#expect(session.place == PublishSession.Place(title: "storefront", part: "Production", account: "Northwind"))
 			try await host.click("Review variables")
 			#expect(try await host.waitForText("Publish SHARED_KEY anyway"))
 			#expect(try await host.waitForText("Shared with Preview on Vercel"))
@@ -1784,6 +1791,38 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Published 2 of 2 variables"))
 			#expect(biometric.confirmationReasons == ["Publish 2 variables to storefront / Production on Vercel"])
 			#expect(Set(api.createdWrites.map(\.key)) == ["API_TOKEN"] && api.replacedValues.map(\.id) == ["env_SHARED_KEY"])
+		}
+
+		@Test("the review names both ends in two lines, counts the planned actions beside the steps, and sets its notes beside icons")
+		func reviewLayout() async throws {
+			let store = try await makeStore()
+			api.projectList = [VercelProject(id: "prj_api", name: "storefront", accountID: "team_northwind")]
+			api.variableList = VercelVariableList(
+				variables: [vercelVariable("SHARED_KEY", targets: [.production, .preview])], hiddenProductionCount: 0)
+			let session = try #require(store.makePublishSession())
+			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 640),
+				keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close(); store.lock() }
+			#expect(try await host.waitUntil { session.vercel?.projects.value != nil })
+			session.vercel?.projectID = "prj_api"
+			session.vercel?.environment = .production
+			try await host.click("Review variables")
+			#expect(try await host.waitForText("Publish 1 variable"))
+			for text in ["FROM VAULT", "demo-api", ".env.production · 2 keys", "TO VERCEL", "storefront", "Production · Northwind"] {
+				#expect(try await host.waitForText(text), "The route says \(text)")
+			}
+			let destination = try await host.waitForElement(saying: "TO VERCEL")
+			#expect(destination.help == "storefront\nProduction · Northwind\nThrough Vercel · Northwind · northwind")
+			let step = try await host.waitForElement(saying: "Review").frame
+			let added = try await host.waitForElement(saying: "1 add").frame
+			#expect(abs(added.midY - step.midY) <= 2 && added.minX > step.maxX, "The pills sit beside the steps: \(added), \(step)")
+			#expect(try await host.waitForText("1 skipped"))
+			#expect(try await host.waitForText("Values hidden"))
+			#expect(try await host.waitForText("lpm.json's rules can't be read, so values aren't checked, and keys publish as Secrets"))
+			try await host.click("Publish SHARED_KEY anyway")
+			#expect(try await host.waitForText("1 replace"))
+			#expect(try await host.waitForTextToDisappear("1 skipped"))
+			#expect(try await host.waitForText("Existing variables will be replaced. Vercel's current values can't be read to compare"))
 		}
 
 		@Test("a publish Vercel refused part of offers Review Again, which reviews the same destination")
@@ -1822,7 +1861,7 @@ extension SheetInteractionTests {
 				keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("forgotten on this Mac"))
-			#expect(try await host.waitForText("storefront / Production"))
+			#expect(try await host.waitForText("TO VERCEL, storefront, Production · Northwind"))
 			#expect(session.step == .destination && session.canReview)
 		}
 
@@ -1905,8 +1944,8 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitUntil { session.review != nil })
 			#expect(session.github?.repositories.value == nil, "The repositories aren't listed for a saved destination's review")
-			#expect(try await host.waitForText("northwind/shop / Repository"))
-			#expect(try await !host.text().contains("northwind/storefront / Repository"))
+			#expect(try await host.waitForText("TO GITHUB, northwind/shop, Repository"))
+			#expect(try await !host.text().contains("northwind/storefront"))
 		}
 
 		@Test("a GitHub publish past what GitHub keeps says how many to leave out and can't be sent; the sheet says while environments load, and what GitHub left out")
@@ -1971,8 +2010,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { session.coolify?.resources.value != nil })
 			#expect(try await host.waitForText("Application or service"))
 			session.coolify?.resourceID = "app-api"
-			#expect(try await host.waitForText("api / Production"))
-			#expect(try await host.waitForText("TO COOLIFY"))
+			#expect(try await host.waitForText("TO COOLIFY, api, Production · Northwind"))
 			try await host.click("Review variables")
 			#expect(try await host.waitForText("single quote"))
 			#expect(try await host.waitForText("Can't publish"))
@@ -2007,7 +2045,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Deploy context"))
 			session.netlify?.siteID = "site-storefront"
 			session.netlify?.contextChoice = .production
-			#expect(try await host.waitForText("storefront / Production"))
+			#expect(try await host.waitForText("TO NETLIFY, storefront, Production"))
 			#expect(try await host.waitForText("TO NETLIFY"))
 			try await host.click("Review variables")
 			#expect(try await host.waitForText("one value for all deploy contexts"))
@@ -2047,7 +2085,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Enter a branch name Git accepts"))
 			#expect(!session.canReview)
 			try host.enterText("staging", at: 0)
-			#expect(try await host.waitForText("storefront / Branch staging"))
+			#expect(try await host.waitForText("TO NETLIFY, storefront, Branch staging"))
 			#expect(try await host.waitUntil { session.canReview })
 		}
 
@@ -2081,20 +2119,6 @@ extension SheetInteractionTests {
 			#expect(try await store.publishing.destinations(of: "project").get().isEmpty)
 		}
 
-		@Test("a saved Vercel destination names its team's slug, so two teams with one name are told apart")
-		func vercelDetail() async throws {
-			let store = try await makeStore()
-			let saved = PublishDestination(
-				sourceEnvironment: "production",
-				target: .vercel(VercelPublishTarget(teamID: "team_northwind", accountID: "team_northwind", teamName: "Northwind",
-					projectID: "prj_api", projectName: "storefront", environment: .production)),
-				createdAt: Date())
-			_ = try await store.publishing.save(saved, to: "project").get()
-			await store.loadPublishDestinations(for: "project")
-			let summary = try #require(store.publishDestinations["project"]?.first)
-			#expect(VaultTitleBarView.subtitle(of: summary) == "northwind · from .env.production · not published yet")
-		}
-
 		@Test("with no platform account connected, the sheet points to Platforms")
 		func noConnection() async throws {
 			let store = try await makeStore()
@@ -2108,19 +2132,20 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { store.accountPage == .platforms })
 		}
 
-		@Test("the title bar offers Publish… until the project has saved destinations, then a Publish menu")
+		@Test("Publish… opens a new destination until the project has saved ones, then shows them")
 		func titleBar() async throws {
 			let store = try await makeStore()
 			let opened = OpenedDestinations()
+			var showsMenu = false
 			let host = SheetTestHost(
 				VaultTitleBarView(store: store, mode: .environment("production"), onConnectCLI: {}, onPull: {}, onPush: {},
-					onPublish: { opened.values.append($0) })
+					onPublish: { opened.values.append($0) }, showsPublishMenu: Binding(get: { showsMenu }, set: { showsMenu = $0 }))
 					.environment(UpdateChecker()),
 				size: NSSize(width: 1200, height: VaultMetrics.titleBar), keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("Publish…"))
 			try await host.click("Publish…")
-			#expect(opened.values.count == 1 && opened.values.first! == nil)
+			#expect(opened.values.count == 1 && opened.values.first! == nil && !showsMenu)
 			let saved = PublishDestination(
 				sourceEnvironment: "production",
 				target: .vercel(VercelPublishTarget(teamID: "team_northwind", accountID: "team_northwind", teamName: "Northwind",
@@ -2128,11 +2153,14 @@ extension SheetInteractionTests {
 				createdAt: Date())
 			_ = try await store.publishing.save(saved, to: "project").get()
 			await store.loadPublishDestinations(for: "project")
-			#expect(try await host.waitForTextToDisappear("Publish…"))
-			#expect(try await host.waitForText("Publish"))
-			#expect(VaultTitleBarView.title(of: saved) == "storefront / Production — Vercel · Northwind")
-			#expect(VaultTitleBarView.subtitle(of: PublishDestinationSummary(destination: saved, lastPublishedAt: nil))
-				== "from .env.production · not published yet")
+			#expect(try await host.waitUntil {
+				AccessibilityTree.visibleElements(in: host.window, of: host.view)
+					.contains { $0.says("Publish…") && $0.help == "Publish to a saved destination or a new one" }
+			}, "Publish… shows the saved destinations once they're read")
+			try await host.click("Publish…")
+			#expect(showsMenu && opened.values.count == 1, "The menu shows, and no sheet opens")
+			try await host.click("Publish…")
+			#expect(!showsMenu)
 		}
 	}
 }
@@ -2274,12 +2302,17 @@ struct CloudflarePublishSessionTests {
 		session.loadReview()
 		let review = try await review(session)
 		#expect(review.login?.label == "Work" && review.login?.generation == account.generation)
-		#expect(PublishSheet.notes(for: review).contains("Publishing to the Cloudflare account Acme, as Work."))
-		#expect(PublishSheet.notes(for: review).contains { $0.hasPrefix("VITE_URL is read by frontend code at build time.") })
+		#expect(PublishSheet.notes(for: review).map(\.text).contains("Publishing to the Cloudflare account Acme, as Work."))
+		#expect(session.place == PublishSession.Place(title: "api", part: "Worker secrets (runtime)", account: "Acme"))
+		let notes = PublishSheet.notes(for: review)
+		#expect(notes.first { $0.text.hasPrefix("VITE_URL is read by frontend code at build time.") }?.kind == .risk)
+		#expect(notes.first { $0.text.hasPrefix("Publishing to the Cloudflare account") }?.kind == .info)
 		#expect(review.selection.keys == ["API_TOKEN", "VITE_URL"] && review.frontendKeys == ["VITE_URL"])
-		#expect(PublishSheet.detail(try #require(review.plan.row("API_TOKEN")), review: review) == "Secret · Replaces the value Cloudflare has now")
-		#expect(PublishSheet.detail(try #require(review.plan.row("VITE_URL")), review: review)
-			.hasPrefix("Secret · frontend code reads it at build time, from the build's own variables"))
+		let token = try #require(review.plan.row("API_TOKEN"))
+		let frontend = try #require(review.plan.row("VITE_URL"))
+		#expect(PublishSheet.kind(token, on: .cloudflare) == "Secret" && PublishSheet.kind(frontend, on: .cloudflare) == "Secret")
+		#expect(PublishSheet.detail(token, review: review) == "Replaces the value Cloudflare has now")
+		#expect(PublishSheet.detail(frontend, review: review).hasPrefix("Frontend code reads it at build time, from the build's own variables"))
 		try await publish(session)
 		#expect(confirmations.reasons == ["Publish 2 secrets to api / Worker secrets (runtime) in the Cloudflare account Acme, as Work"])
 		#expect(session.results?.rows.map(\.outcome) == [.published, .published])
@@ -2558,7 +2591,7 @@ extension SheetInteractionTests {
 				keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("Publishing to the Cloudflare account Acme, as Work."))
-			#expect(try await host.waitForText("api / Worker secrets (runtime)"))
+			#expect(try await host.waitForText("TO CLOUDFLARE, api, Worker secrets (runtime) · Acme"))
 			try await host.click("Publish 1 secret")
 			#expect(try await host.waitForText("Published 1 of 1 secret"))
 			#expect(biometric.confirmationReasons == ["Publish 1 secret to api / Worker secrets (runtime) in the Cloudflare account Acme, as Work"])
@@ -2575,8 +2608,8 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitForText("Publishing to the Cloudflare account Acme, as Work."))
 			#expect(session.cloudflare?.workers.value == nil, "The Workers aren't listed for a saved destination's review")
-			#expect(try await host.waitForText("api-renamed / Worker secrets (runtime)"))
-			#expect(try await !host.text().contains("api / Worker secrets (runtime)"))
+			#expect(try await host.waitForText("TO CLOUDFLARE, api-renamed, Worker secrets (runtime) · Acme"))
+			#expect(try await !host.text().contains("TO CLOUDFLARE, api,"))
 			try await host.click("Publish 1 secret")
 			#expect(try await host.waitForText("Published 1 of 1 secret"))
 			#expect(biometric.confirmationReasons == ["Publish 1 secret to api-renamed / Worker secrets (runtime) in the Cloudflare account Acme, as Work"])
