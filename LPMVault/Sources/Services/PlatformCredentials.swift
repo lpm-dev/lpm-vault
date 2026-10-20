@@ -106,7 +106,7 @@ actor PlatformCredentials {
 	/// A clock no change to the wall clock moves, which pending answers and cleanups are waited out by.
 	private let uptime: @Sendable () -> ContinuousClock.Instant
 	private let sleep: @Sendable (Duration) async throws -> Void
-	private let productionClientID: String?
+	private let productionClientID: String
 	/// Called after a cleanup changed what the Platforms page shows.
 	private let cleanupChanged: @Sendable () -> Void
 	/// A read of a connection's token in flight, which callers asking meanwhile share.
@@ -157,7 +157,7 @@ actor PlatformCredentials {
 		pendingDelay: Duration = .seconds(1),
 		uptime: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
 		sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-		productionClientID: String? = CloudflareOAuth.productionClientID,
+		productionClientID: String = CloudflareOAuth.productionClientID,
 		cleanupChanged: @escaping @Sendable () -> Void = {}
 	) {
 		self.store = store

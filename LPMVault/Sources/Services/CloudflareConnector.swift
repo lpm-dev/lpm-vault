@@ -44,7 +44,7 @@ struct CloudflareConnector: Sendable {
 	/// couldn't answer or was limiting requests: the grant can't be collected again.
 	var readRetries = 2
 	var retryDelay: Duration = .seconds(1)
-	var productionClientID: String? = CloudflareOAuth.productionClientID
+	var productionClientID = CloudflareOAuth.productionClientID
 
 	init(
 		authorization: BrowserAuthorization = BrowserAuthorization(),
@@ -64,7 +64,6 @@ struct CloudflareConnector: Sendable {
 		open: @escaping @Sendable (URL) async -> Void
 	) async -> Result<CloudflareConnection, BrowserConnectError> {
 		let issuer = session.issuer
-		guard CloudflareOAuth.isAvailable(through: issuer, productionClientID: productionClientID) else { return .failure(.unavailable) }
 		let productionClientID = productionClientID
 		let collected: BrowserGrant<CloudflareGrant>
 		switch await authorization.grant(

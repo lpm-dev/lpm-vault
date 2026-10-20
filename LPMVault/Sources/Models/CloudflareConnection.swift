@@ -14,9 +14,8 @@ enum PlatformIssuer: String, CaseIterable, Sendable {
 
 /// LPM Vault's OAuth client at Cloudflare, which the Registry runs.
 enum CloudflareOAuth {
-	/// The production client's ID, which the Registry checks in too. Until
-	/// it's set, Cloudflare can't be connected through lpm.dev.
-	static let productionClientID: String? = nil
+	/// The production client's ID, which the Registry checks in too.
+	static let productionClientID = "3ffa60cf0c6483c948115e7d2a93cbaa"
 	/// The scopes LPM Vault asks for, in the order the Registry sends them.
 	static let scope = "offline_access workers-scripts.write"
 	/// The issuer Cloudflare's userinfo names.
@@ -33,7 +32,7 @@ enum CloudflareOAuth {
 	/// Whether a connection through `issuer` may use the client `clientID`:
 	/// lpm.dev runs only the production client, and no other Registry runs it.
 	/// Only debug builds use the local Registry's client.
-	static func accepts(_ clientID: String, for issuer: PlatformIssuer, productionClientID: String? = productionClientID) -> Bool {
+	static func accepts(_ clientID: String, for issuer: PlatformIssuer, productionClientID: String = productionClientID) -> Bool {
 		guard isValidClientID(clientID) else { return false }
 		switch issuer {
 		case .production:
@@ -41,20 +40,6 @@ enum CloudflareOAuth {
 		case .development:
 			#if DEBUG
 				return clientID != productionClientID
-			#else
-				return false
-			#endif
-		}
-	}
-
-	/// Whether Cloudflare can be connected through `issuer`.
-	static func isAvailable(through issuer: PlatformIssuer, productionClientID: String? = productionClientID) -> Bool {
-		switch issuer {
-		case .production:
-			return productionClientID != nil
-		case .development:
-			#if DEBUG
-				return true
 			#else
 				return false
 			#endif

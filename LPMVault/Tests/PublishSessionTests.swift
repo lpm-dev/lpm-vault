@@ -2650,7 +2650,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(PublishSheet(store: store, session: session), size: NSSize(width: 640, height: 720),
 				keepsRequestedSize: true, usesHostingView: true)
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("Connect Vercel, Netlify, GitHub or Coolify on the Platforms page, then publish from here."))
+			#expect(try await host.waitForText("Connect Vercel, Netlify, GitHub, Cloudflare or Coolify on the Platforms page, then publish from here."))
 		}
 
 		@Test("while the Worker's newest version doesn't serve all its traffic, its rows can't be chosen and say so, and the hold is said once")

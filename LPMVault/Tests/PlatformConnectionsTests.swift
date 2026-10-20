@@ -999,15 +999,13 @@ struct PlatformsPagePresentationTests {
 		#expect(grouped.map(\.name) == ["Zephyr", "Acme", "Mallory", "Bob", "Carol", "Alpha"])
 	}
 
-	@Test("the note on removing access names each platform in the page's order, and Cloudflare only where it's offered")
+	@Test("the note on removing access names each platform in the page's order")
 	func revocationNote() {
-		#expect(PlatformsView.revocationSteps(offersCloudflare: true).map(\.platform) == [.vercel, .netlify, .github, .cloudflare, .coolify])
-		#expect(PlatformsView.revocationSteps(offersCloudflare: false).map(\.platform) == [.vercel, .netlify, .github, .coolify])
-		let note = String(PlatformsView.revocationNote(offersCloudflare: false).characters)
+		#expect(PlatformsView.revocationSteps.map(\.platform) == PlatformsView.pageOrder)
+		let note = String(PlatformsView.revocationNote.characters)
 		#expect(note.hasPrefix("To remove LPM Vault's access entirely, revoke it on the platform: Vercel → Integrations settings, where uninstalling deletes the variables LPM Vault created · "))
 		#expect(note.contains(" · GitHub → Authorized GitHub Apps and Installed GitHub Apps; an organization's owner uninstalls it in the organization's settings · "))
-		#expect(note.hasSuffix(" · Coolify → Keys & Tokens.") && !note.contains("Cloudflare"))
-		#expect(String(PlatformsView.revocationNote(offersCloudflare: true).characters).contains(" · Cloudflare → disconnecting here revokes it · "))
+		#expect(note.hasSuffix(" · Cloudflare → disconnecting here revokes it · Coolify → Keys & Tokens."))
 	}
 
 	@Test("the note on disconnecting names Cloudflare's exception only when a Cloudflare login is listed")
@@ -1157,7 +1155,7 @@ extension SheetInteractionTests {
 				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
 				authTokenProvider: { _, _ in "lpm_session" }, platformConnect: connect, netlifyConnect: connectNetlify,
 				platformURLOpener: { opened.append($0) })
-			// A debug build's saved choice of server would otherwise decide whether Cloudflare is offered.
+			// A debug build's saved choice of server would otherwise decide which Registry the page connects through.
 			store.appEnvironment = .production
 			store.isUnlocked = true
 			if signedIn {
@@ -1217,7 +1215,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Touch ID or your password confirms every publish."))
 			#expect(try await host.waitForText("CONNECTED", exactly: true))
 			let states = AccessibilityTree.visibleElements(in: host.window, of: host.view).filter { $0.says("Not connected") }
-			#expect(states.count == 4, "\(states.map(\.texts))")
+			#expect(states.count == 5, "\(states.map(\.texts))")
 			#expect(!host.lines().contains { $0.text.contains("Disconnecting forgets") }, "Nothing listed, nothing to disconnect")
 		}
 
@@ -1286,29 +1284,33 @@ extension SheetInteractionTests {
 		// The windows fit CI's 1024 × 768 screen, which moves a window that doesn't.
 		@Test("tiles in a row are as tall as each other, so their Connect buttons line up though their descriptions don't")
 		func tilesLineUp() async throws {
-			let (store, host) = try await page(size: NSSize(width: 1_000, height: 700))
+			let (store, host) = try await page(size: NSSize(width: 760, height: 700))
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitUntil { !store.platforms.isLoading })
-			var buttons: [CGRect] = []
-			for platform in ["Vercel", "Netlify", "GitHub", "Coolify"] {
-				buttons.append(try await layoutFrame(of: "Connect \(platform)", in: host))
+			for row in [["Vercel", "Netlify", "GitHub"], ["Cloudflare", "Coolify"]] {
+				var buttons: [CGRect] = []
+				for platform in row {
+					buttons.append(try await layoutFrame(of: "Connect \(platform)", in: host))
+				}
+				#expect(buttons.allSatisfy { abs($0.minY - buttons[0].minY) < 0.5 }, "Every Connect in \(row) on one line: \(buttons)")
+				#expect(zip(buttons, buttons.dropFirst()).allSatisfy { $0.maxX < $1.minX }, "In the page's order: \(buttons)")
 			}
-			#expect(buttons.allSatisfy { abs($0.minY - buttons[0].minY) < 0.5 }, "One row, every Connect on one line: \(buttons)")
-			#expect(zip(buttons, buttons.dropFirst()).allSatisfy { $0.maxX < $1.minX }, "In the page's order: \(buttons)")
 		}
 
 		@Test("tiles that don't fit one row wrap into rows as even as they can be, never leaving one tile alone")
 		func tilesBalanceRows() async throws {
-			let (store, host) = try await page(size: NSSize(width: 760, height: 700))
+			// Four tiles fit across, so a row of four would leave Coolify alone under it.
+			let (store, host) = try await page(size: NSSize(width: 1_000, height: 700))
 			defer { host.window.close(); store.lock() }
 			#expect(try await host.waitUntil { !store.platforms.isLoading })
 			let vercel = try await layoutFrame(of: "Connect Vercel", in: host)
 			let netlify = try await layoutFrame(of: "Connect Netlify", in: host)
 			let github = try await layoutFrame(of: "Connect GitHub", in: host)
+			let cloudflare = try await layoutFrame(of: "Connect Cloudflare", in: host)
 			let coolify = try await layoutFrame(of: "Connect Coolify", in: host)
-			#expect(abs(vercel.minY - netlify.minY) < 0.5 && netlify.minX > vercel.maxX, "Vercel and Netlify share the first row: \(vercel) \(netlify)")
-			#expect(github.maxY < vercel.minY && abs(github.minX - vercel.minX) < 0.5, "GitHub starts the second row, under Vercel: \(github) \(vercel)")
-			#expect(abs(coolify.minY - github.minY) < 0.5 && abs(coolify.minX - netlify.minX) < 0.5, "Coolify sits beside it, under Netlify: \(coolify)")
+			#expect([netlify, github].allSatisfy { abs($0.minY - vercel.minY) < 0.5 }, "Vercel, Netlify and GitHub share the first row: \(vercel) \(netlify) \(github)")
+			#expect(cloudflare.maxY < vercel.minY && abs(cloudflare.minX - vercel.minX) < 0.5, "Cloudflare starts the second row, under Vercel: \(cloudflare) \(vercel)")
+			#expect(abs(coolify.minY - cloudflare.minY) < 0.5 && abs(coolify.minX - netlify.minX) < 0.5, "Coolify sits beside it, under Netlify: \(coolify)")
 		}
 
 		@Test("on a wide window the list and the tiles use its whole width")
@@ -1324,8 +1326,10 @@ extension SheetInteractionTests {
 			let disconnect = try await layoutFrame(of: "Disconnect Acme", in: host)
 			#expect(disconnect.maxX > width - 60, "The row's buttons reach the window's right edge: \(disconnect)")
 			let vercel = try await layoutFrame(of: "Connect Vercel", in: host)
-			let coolify = try await layoutFrame(of: "Connect Coolify", in: host)
-			#expect(abs(coolify.minY - vercel.minY) < 0.5 && coolify.minX > width * 0.7, "Every tile fits one row across the window: \(coolify)")
+			let github = try await layoutFrame(of: "Connect GitHub", in: host)
+			// Held to 900 points, the third column would start about 580 points after the first.
+			#expect(abs(github.minY - vercel.minY) < 0.5 && github.minX - vercel.minX > width * 0.6,
+				"Three columns spread across the window: \(vercel) \(github)")
 		}
 
 		@Test("a connected team shows with its slug, and Disconnect asks first, then forgets it on this Mac")
@@ -1393,7 +1397,7 @@ extension SheetInteractionTests {
 		func signedOut() async throws {
 			let (store, host) = try await page(signedIn: false)
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("Sign in to LPM to connect Vercel, Netlify or GitHub."))
+			#expect(try await host.waitForText("Sign in to LPM to connect Vercel, Netlify, GitHub or Cloudflare."))
 			try await host.click("Connect Vercel")
 			try await host.settle()
 			#expect(!store.platforms.isConnecting)
@@ -1470,7 +1474,7 @@ extension SheetInteractionTests {
 				return .failure(.cancelled)
 			})
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("Sign in to LPM to connect Vercel, Netlify or GitHub."))
+			#expect(try await host.waitForText("Sign in to LPM to connect Vercel, Netlify, GitHub or Cloudflare."))
 			try await host.click("Connect Netlify")
 			try await host.settle()
 			#expect(!store.platforms.isConnecting && opened.urls.isEmpty)
@@ -1839,8 +1843,8 @@ extension SheetInteractionTests {
 			})
 		}
 
-		@Test("where Cloudflare can't be connected, notes of its unconfirmed revocations still show, as one note that dismisses them all")
-		func notesWithoutCloudflare() async throws {
+		@Test("through lpm.dev, unconfirmed Cloudflare revocations show as one note that dismisses them all")
+		func unconfirmedRevocationNotes() async throws {
 			let connections = PlatformConnectionStore(service: keychain)
 			for _ in 0..<2 {
 				_ = await connections.mark(PlatformCleanupMarker(platform: .cloudflare, generation: CloudflareConnectionAccount.makeGeneration(), createdAt: Date()))
@@ -1879,15 +1883,6 @@ extension SheetInteractionTests {
 			#expect(button.label?.contains("Reconnecting…") == true && button.label?.contains("Work") == true)
 			try await host.click("Cancel")
 			#expect(try await host.waitUntil { !store.platforms.isConnecting })
-		}
-
-		@Test("where Cloudflare can't be connected, the page doesn't mention it")
-		func noCloudflareCopy() async throws {
-			let (store, host) = page(environment: .production)
-			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitForText("No platforms connected"))
-			#expect(try await host.waitForText("Coolify → Keys & Tokens."))
-			#expect(!host.lines().contains { $0.text.contains("Cloudflare") })
 		}
 
 		@Test("a login disconnected while signed out says signing in finishes revoking its access")

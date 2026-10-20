@@ -1400,7 +1400,7 @@ struct CloudflareConnectorTests {
 		identity: FakeCloudflareIdentity,
 		discarded: Discarded,
 		port: Port,
-		productionClientID: String? = "lpm-vault-production"
+		productionClientID: String = "lpm-vault-production"
 	) -> CloudflareConnector {
 		var connector = CloudflareConnector(
 			authorization: browserAuthorization(authorizations, port: port), identity: { _ in identity }, discard: discarded.discard)
@@ -1503,16 +1503,6 @@ struct CloudflareConnectorTests {
 		let result = await connect(connector(authorizations, identity: FakeCloudflareIdentity(), discarded: discarded, port: port), authorizations, port: port)
 		#expect(failure(of: result) == .expired)
 		#expect(discarded.grants.map(\.token) == ["cf_granted_refresh"])
-	}
-
-	@Test("Cloudflare isn't offered through a Registry that can't connect it")
-	func unavailable() async throws {
-		let authorizations = FakeAuthorizations(pageURL: page())
-		let port = Port()
-		let result = await connector(authorizations, identity: FakeCloudflareIdentity(), discarded: Discarded(), port: port, productionClientID: nil)
-			.connect(session: platformTestSession(registry, issuer: .production)) { _ in }
-		#expect(failure(of: result) == .unavailable)
-		#expect(authorizations.platformCalls.isEmpty)
 	}
 }
 

@@ -100,7 +100,7 @@ final class PlatformConnections {
 	private let connectNetlifyAccount: ConnectNetlify
 	private let connectGitHubAccount: ConnectGitHub
 	private let connectCloudflareLogin: ConnectCloudflare
-	/// Retires, revokes and discards Cloudflare logins' tokens; nil where Cloudflare isn't offered.
+	/// Retires, revokes and discards Cloudflare logins' tokens; without it, there are none to clean up.
 	private let credentials: PlatformCredentials?
 	private let session: SessionProvider
 	private let openURL: @MainActor @Sendable (URL) -> Void
