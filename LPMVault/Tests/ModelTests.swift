@@ -50,9 +50,10 @@ extension SheetInteractionTests {
 				authTokenProvider: { _, _ in nil }
 			)
 			store.currentUser = LPMUser(id: "u1", username: "tolga", name: nil, email: "tolga@example.com", avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
-			let host = SheetTestHost(AuthStatusView(store: store).environment(VaultAppearanceSettings())
-				.environment(UpdateChecker()), size: NSSize(width: 700, height: 700), keepsRequestedSize: true)
+			let host = SheetTestHost(VaultSettingsPage(store: store).environment(VaultAppearanceSettings())
+				.environment(UpdateChecker()).environment(VaultQuitSettings()), size: NSSize(width: 700, height: 700), keepsRequestedSize: true)
 			defer { host.window.close() }
+			try host.scrollToEnd()
 			try await host.click("Sign out")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Signing out asks first")
 			let dialog = try #require(host.window.sheets.first)
