@@ -199,6 +199,39 @@ extension SheetInteractionTests {
 			#expect(review.contains(".env.local") && review.contains("NEW_KEY") && review.contains("Unchanged"))
 		}
 
+		@Test("a new file's name follows the file chosen last, none comes from pasted text, and a typed name stays")
+		func newFileNameFollowsFile() async throws {
+			let fixture = try ImportWorkspace()
+			defer { fixture.tearDown() }
+			let files = ChosenFiles([
+				try fixture.file(".env.local", "A=1\n"), try fixture.file(".env.preview", "A=2\n"), try fixture.file(".env.test", "A=3\n"),
+			])
+			let host = SheetTestHost(
+				EnvImportSheet(store: fixture.store, projectID: ImportWorkspace.projectID, environment: "default")
+					.environment(\.vaultEnvFileChooser, files.chooser)
+					.environment(\.colorScheme, .light),
+				size: NSSize(width: 640, height: 640), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			try await host.click("Choose File…")
+			#expect(try await host.waitForText(".env.local"))
+			try await host.click("Change")
+			#expect(try await host.waitForText(".env.preview"))
+			try await host.click("New file")
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "staging") == "preview" }, "The name comes from the file shown, not the first one chosen")
+			try await host.click("Paste text")
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "staging") == "" }, "Pasted text has no name to suggest")
+			try await host.click("From file")
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "staging") == "preview" })
+			try host.typeText("qa", placeholder: "staging")
+			try await host.click("Change")
+			#expect(try await host.waitForText(".env.test"))
+			try await host.settle()
+			#expect(host.fieldText(placeholder: "staging") == "qa", "A typed name stays")
+			try await clickEnabled("Create .env.qa, ⏎", in: host.window, of: host)
+			#expect(try await host.waitUntil { fixture.stored("qa") != nil })
+			#expect(fixture.stored("qa") == ["A": "3"])
+		}
+
 		@Test("Env Project › Import Variables… opens the sheet, unless another sheet is showing")
 		func menuCommand() async throws {
 			let fixture = try ImportWorkspace()
@@ -263,6 +296,47 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { fixture.stored("staging") != nil })
 			#expect(fixture.stored("staging") == ["A": "1", "B": "2"])
 		}
+
+		@Test("a new environment's name follows the file chosen last until a name is typed")
+		func newEnvironmentNameFollowsFile() async throws {
+			let fixture = try ImportWorkspace()
+			defer { fixture.tearDown() }
+			let project = try #require(fixture.store.selectedProject)
+			let files = ChosenFiles([
+				try fixture.file(".env.local", "A=1\n"), try fixture.file(".env.preview", "A=2\n"), try fixture.file(".env.test", "A=3\n"),
+			])
+			let host = SheetTestHost(
+				NewEnvironmentSheet(store: fixture.store, project: project)
+					.environment(\.vaultEnvFileChooser, files.chooser)
+					.environment(\.colorScheme, .light),
+				size: NSSize(width: 520, height: 520), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			try await host.click("Choose File…")
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "staging") == "local" })
+			try await host.click("Change")
+			#expect(try await host.waitUntil { host.fieldText(placeholder: "staging") == "preview" }, "The name comes from the file shown, not the first one chosen")
+			try host.typeText("qa", placeholder: "staging")
+			try await host.click("Change")
+			#expect(try await host.waitForText(".env.test"))
+			try await host.settle()
+			#expect(host.fieldText(placeholder: "staging") == "qa", "A typed name stays")
+			try await clickEnabled("Create environment", in: host.window, of: host)
+			#expect(try await host.waitUntil { fixture.stored("qa") != nil })
+			#expect(fixture.stored("qa") == ["A": "3"])
+		}
+	}
+}
+
+/// Answers Choose File… and Change with `files`, one at a time, as a person
+/// picks them in the open panel.
+@MainActor
+private final class ChosenFiles {
+	private var files: [URL]
+
+	init(_ files: [URL]) { self.files = files }
+
+	var chooser: VaultEnvFileChooser {
+		VaultEnvFileChooser { [self] in files.isEmpty ? nil : files.removeFirst() }
 	}
 }
 

@@ -157,6 +157,7 @@ struct EnvImportSourcePicker: View {
 	@Binding var state: EnvImportSourceState
 	var disabled = false
 
+	@Environment(\.vaultEnvFileChooser) private var fileChooser
 	@State private var isDropTargeted = false
 	@State private var editorFocused = false
 
@@ -316,7 +317,18 @@ struct EnvImportSourcePicker: View {
 	}
 
 	private func chooseFile() {
-		guard !disabled else { return }
+		guard !disabled, let url = fileChooser.choose() else { return }
+		store.recordUserActivity()
+		state.choose(url)
+	}
+}
+
+/// Asks which env file to import. Tests replace it, since nothing answers an
+/// open panel in a test.
+struct VaultEnvFileChooser: Sendable {
+	let choose: @MainActor @Sendable () -> URL?
+
+	static let openPanel = VaultEnvFileChooser {
 		let panel = NSOpenPanel()
 		panel.canChooseFiles = true
 		panel.canChooseDirectories = false
@@ -325,10 +337,13 @@ struct EnvImportSourcePicker: View {
 		panel.showsHiddenFiles = true
 		panel.message = "Choose an .env file to import"
 		panel.prompt = "Choose"
-		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
-		store.recordUserActivity()
-		state.choose(url)
+		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
+		return panel.url
 	}
+}
+
+extension EnvironmentValues {
+	@Entry var vaultEnvFileChooser = VaultEnvFileChooser.openPanel
 }
 
 /// From file or Paste text, drawn as one control the sheet's width.

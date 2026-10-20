@@ -490,6 +490,31 @@ struct EnvFileImportTests {
 		#expect(droppedFile && state.problem == nil)
 	}
 
+	@Test("a new environment's name follows the file it imports, none comes from pasted text, and a typed name stays")
+	func environmentNameFollowsSource() {
+		let local = URL(filePath: "/tmp/.env.local"), preview = URL(filePath: "/tmp/.env.preview")
+		var draft = VaultEnvironmentNameDraft()
+		draft.follow(.file(local))
+		#expect(draft.name == "local")
+		draft.follow(.file(preview))
+		#expect(draft.name == "preview", "A suggestion that wasn't typed over follows the next file")
+		draft.follow(.file(URL(filePath: "/tmp/.env")))
+		#expect(draft.name == "default")
+		draft.follow(.pastedText)
+		#expect(draft.name.isEmpty, "Pasted text has no name to suggest")
+		draft.follow(.file(local))
+		#expect(draft.name == "local")
+
+		draft.name = "qa"
+		draft.follow(.file(preview))
+		draft.follow(.pastedText)
+		draft.follow(nil)
+		#expect(draft.name == "qa", "A typed name stays")
+		draft.name = " "
+		draft.follow(.file(local))
+		#expect(draft.name == "local", "A blank name is no name")
+	}
+
 	@Test("global admission never exceeds two workers")
 	func concurrencyIsBounded() async {
 		let tracker = ImportWorkerTracker()

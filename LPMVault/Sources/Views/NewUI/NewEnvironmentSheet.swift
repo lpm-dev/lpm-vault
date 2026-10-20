@@ -5,11 +5,12 @@ struct NewEnvironmentSheet: View {
 	@Bindable var store: VaultStore
 	let project: VaultProject
 	@Environment(\.dismiss) private var dismiss
-	@State private var name = ""
+	@State private var nameDraft = VaultEnvironmentNameDraft()
 	@State private var source = EnvImportSourceState()
 	@State private var creationTask: Task<Void, Never>?
 	@State private var creationID: UUID?
 
+	private var name: String { nameDraft.name }
 	private var existing: Set<String> { Set(project.environments.keys) }
 	private var isValid: Bool { VaultEnvironmentNameField.isValid(name, existing: existing) }
 	/// The values the environment starts with: none, or what the file or text
@@ -39,7 +40,7 @@ struct NewEnvironmentSheet: View {
 				VStack(alignment: .leading, spacing: 7) {
 					Text("ENVIRONMENT NAME").vaultSectionLabel()
 					VaultEnvironmentNameField(
-						name: $name, existing: existing, swatch: VaultPalette.environment(project.environments.count),
+						name: $nameDraft.name, existing: existing, swatch: VaultPalette.environment(project.environments.count),
 						focusesOnAppear: true, disabled: creationTask != nil, onSubmit: create)
 				}
 				VStack(alignment: .leading, spacing: 7) {
@@ -74,11 +75,7 @@ struct NewEnvironmentSheet: View {
 		.frame(width: 520)
 		.background(VaultPalette.content)
 		.vaultUnsavedSheetWork(store, projectID: project.id, projectName: project.name, title: "New environment", detail: unsavedWork)
-		.onChange(of: source.file) { _, file in
-			if let file, name.trimmingCharacters(in: .whitespaces).isEmpty {
-				name = VaultEnvironmentNameField.suggestedName(forFile: file)
-			}
-		}
+		.onChange(of: source.source) { _, source in nameDraft.follow(source) }
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { cancelWork(); dismiss() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != project.id { cancelWork(); dismiss() } }
 		.onDisappear(perform: cancelWork)
@@ -165,10 +162,26 @@ struct VaultEnvironmentNameField: View {
 		}
 		return existing.contains(candidate) ? "That environment already exists." : nil
 	}
+}
+
+/// A new environment's name, which follows the file its values come from
+/// until a name is typed.
+struct VaultEnvironmentNameDraft: Equatable {
+	var name = ""
+	/// What the source suggested last; `name` still holds it unless one was typed.
+	private var suggestion: String?
+
+	/// Takes the name `source` suggests, a file's or none for pasted text, in
+	/// place of the one suggested before. A typed name stays.
+	mutating func follow(_ source: EnvImportSource?) {
+		let next: String? = if case .file(let url) = source { Self.suggestedName(forFile: url) } else { nil }
+		if name.trimmingCharacters(in: .whitespaces).isEmpty || name == suggestion { name = next ?? "" }
+		suggestion = next
+	}
 
 	/// The environment a file's name suggests: `.env` is the default one, and
 	/// `.env.staging` is staging.
-	static func suggestedName(forFile url: URL) -> String {
+	private static func suggestedName(forFile url: URL) -> String {
 		let fileName = url.lastPathComponent
 		if fileName == ".env" { return "default" }
 		if fileName.hasPrefix(".env.") { return String(fileName.dropFirst(".env.".count)) }

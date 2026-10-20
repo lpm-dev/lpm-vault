@@ -34,7 +34,7 @@ struct EnvImportSheet: View {
 
 	@State private var source: EnvImportSourceState
 	@State private var target: Target
-	@State private var newName = ""
+	@State private var nameDraft = VaultEnvironmentNameDraft()
 	@State private var reviewsFirst = true
 	@State private var step = Step.choosing
 	@State private var work: Work?
@@ -98,11 +98,8 @@ struct EnvImportSheet: View {
 		.background(VaultPalette.content)
 		.vaultUnsavedSheetWork(store, projectID: projectID, projectName: project?.name ?? "", title: "Import variables",
 			detail: source.source.map { "\($0.name) into \(targetName)" })
-		.onChange(of: source.file) { _, file in suggestName(from: file) }
-		.onChange(of: target) { _, target in
-			failure = nil
-			if target == .newEnvironment { suggestName(from: source.file) }
-		}
+		.onChange(of: source.source, initial: true) { _, source in nameDraft.follow(source) }
+		.onChange(of: target) { _, _ in failure = nil }
 		.onChange(of: source.textRevision) { _, _ in failure = nil }
 		.onChange(of: source.fileRevision) { _, _ in failure = nil }
 		.onChange(of: environments) { _, names in
@@ -162,7 +159,7 @@ struct EnvImportSheet: View {
 			.accessibilityLabel("Import into")
 			if target == .newEnvironment {
 				VaultEnvironmentNameField(
-					name: $newName, existing: Set(names), swatch: VaultPalette.environment(names.count),
+					name: $nameDraft.name, existing: Set(names), swatch: VaultPalette.environment(names.count),
 					focusesOnAppear: true, disabled: work != nil, onSubmit: submit)
 			}
 		}
@@ -212,7 +209,7 @@ struct EnvImportSheet: View {
 	}
 
 	private var newEnvironmentName: String? {
-		let name = newName.trimmingCharacters(in: .whitespaces)
+		let name = nameDraft.name.trimmingCharacters(in: .whitespaces)
 		return VaultEnvironmentNameField.isValid(name, existing: Set(environments)) ? name : nil
 	}
 
@@ -244,11 +241,6 @@ struct EnvImportSheet: View {
 	}
 
 	// MARK: - Actions
-
-	private func suggestName(from file: URL?) {
-		guard let file, newName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-		newName = VaultEnvironmentNameField.suggestedName(forFile: file)
-	}
 
 	private func submit() {
 		guard canSubmit, let imported = source.imported, let origin = source.source else { return }
