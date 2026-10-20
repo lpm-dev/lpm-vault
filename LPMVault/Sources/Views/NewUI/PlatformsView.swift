@@ -38,65 +38,40 @@ struct PlatformsView: View {
 			}
 		}
 		.background(VaultPalette.content)
-		.confirmationDialog(
-			"Disconnect \(pendingDisconnect?.name ?? "this account")?",
-			isPresented: Binding(get: { pendingDisconnect != nil }, set: { if !$0 { pendingDisconnect = nil } }),
-			titleVisibility: .visible,
-			presenting: pendingDisconnect
-		) { connection in
-			Button("Disconnect", role: .destructive) { platforms.disconnect(connection) }
-			Button("Cancel", role: .cancel) {}
-		} message: { connection in
-			switch connection.platform {
-			case .vercel:
-				Text("LPM Vault forgets its token on this Mac. The integration stays installed on Vercel, and variables already published stay as they are.")
-			case .coolify:
-				Text("LPM Vault forgets its token on this Mac. The token keeps working in Coolify until you delete it there, and variables already published stay as they are.")
-			case .netlify:
-				Text("LPM Vault forgets its token on this Mac. LPM Vault stays authorized on Netlify until you revoke it there, and variables already published stay as they are.")
-			case .github:
-				Text("LPM Vault forgets its token on this Mac. The LPM Vault app stays authorized and installed on GitHub until you revoke or uninstall it there, and secrets and variables already published stay as they are.")
-			case .cloudflare:
-				Text(Self.cloudflareDisconnectMessage(connection, others: platforms.otherLogins(reaching: connection)))
-			}
+		.vaultConfirmation(item: $pendingDisconnect) { connection in
+			VaultConfirmation(
+				symbol: "personalhotspot.slash",
+				title: Self.disconnectTitle(connection.platform),
+				message: Self.disconnectMessage(connection, others: platforms.otherLogins(reaching: connection)),
+				subject: .init(mark: .platform(connection.platform), name: connection.name, detail: "\(connection.platform.displayName) · \(connection.detail)"),
+				actions: [.init(title: "Disconnect") { platforms.disconnect(connection) }])
 		}
-		.confirmationDialog(
-			Self.cloudflarePromptTitle(platforms.cloudflarePrompt),
-			// Behind the privacy curtain the question waits, unanswered, and shows again with the page.
-			// A dismissal cancels only the question it dismissed, never one asked after it.
-			isPresented: Binding(
-				get: { platforms.cloudflarePrompt != nil && !isObscured },
-				set: { [number = platforms.cloudflarePromptNumber] shown in
-					if !shown, !promptCurtained { platforms.answerCloudflare(.cancel, to: number) }
-				}),
-			titleVisibility: .visible,
-			presenting: platforms.cloudflarePrompt.map { (number: platforms.cloudflarePromptNumber, prompt: $0) }
+		// Behind the privacy curtain the question waits, unanswered, and shows again with the page.
+		// A dismissal cancels only the question it dismissed, never one asked after it.
+		.vaultConfirmation(item: Binding(
+			get: { isObscured ? nil : platforms.cloudflarePrompt.map { ShownCloudflarePrompt(id: platforms.cloudflarePromptNumber, prompt: $0) } },
+			set: { [number = platforms.cloudflarePromptNumber] shown in
+				if shown == nil, !promptCurtained { platforms.answerCloudflare(.cancel, to: number) }
+			})
 		) { shown in
-			// Dismissing the dialog runs its Cancel button, which the curtain going up mustn't.
-			let cancel = { if !promptCurtained { platforms.answerCloudflare(.cancel, to: shown.number) } }
-			switch shown.prompt {
-			case .otherLogin(let reconnecting):
-				Button("Add It Separately") { platforms.answerCloudflare(.addSeparately, to: shown.number) }
-				Button("Replace \(reconnecting)", role: .destructive) { platforms.answerCloudflare(.replace, to: shown.number) }
-				Button("Cancel", role: .cancel, action: cancel)
-			case .losesAccounts:
-				Button("Connect Anyway", role: .destructive) { platforms.answerCloudflare(.proceed, to: shown.number) }
-				Button("Cancel", role: .cancel, action: cancel)
+			Self.cloudflareConfirmation(shown.prompt) { answer in
+				// Closing the question answers Cancel, which the curtain going up mustn't.
+				if answer != .cancel || !promptCurtained { platforms.answerCloudflare(answer, to: shown.id) }
 			}
-		} message: { shown in
-			Text(Self.cloudflarePromptMessage(shown.prompt))
 		}
-		.alert(
-			"Rename \(renaming?.name ?? "login")",
-			isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }),
-			presenting: renaming
-		) { connection in
-			TextField("Name", text: $renameDraft)
-			Button("Rename") { rename(connection) }
-			Button("Cancel", role: .cancel) {}
-		} message: { _ in
-			Text(renameError ?? "LPM Vault shows this name for the Cloudflare login on this Mac, in reviews and in confirmations.")
+		.vaultPrompt(item: $renaming) { connection in
+			VaultPrompt(
+				symbol: "pencil",
+				title: "Rename \(connection.name)",
+				message: "LPM Vault shows this name for the Cloudflare login on this Mac, in reviews and in confirmations.",
+				problem: renameError,
+				placeholder: "Name",
+				text: $renameDraft,
+				confirmTitle: "Rename",
+				canConfirm: Self.canRename(connection, to: renameDraft)
+			) { rename(connection) }
 		}
+		.onChange(of: renameDraft) { renameError = nil }
 		.sheet(isPresented: $connectingCoolify) {
 			ConnectCoolifySheet(platforms: platforms, store: store)
 		}
@@ -602,15 +577,80 @@ struct PlatformsView: View {
 		}
 	}
 
+	/// Renames the login, keeping the prompt open with the reason when the name can't be used.
 	private func rename(_ connection: PlatformConnection) {
 		let draft = renameDraft
+		guard Self.canRename(connection, to: draft) else { return }
 		Task {
 			if let error = await platforms.rename(connection, to: draft) {
 				renameError = error
-				renaming = connection
 			} else {
 				renameError = nil
+				renaming = nil
 			}
+		}
+	}
+
+	/// Whether `draft` names the login anew: a name left as it is renames nothing.
+	static func canRename(_ connection: PlatformConnection, to draft: String) -> Bool {
+		let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+		return !name.isEmpty && name != connection.name
+	}
+
+	private struct ShownCloudflarePrompt: Identifiable {
+		/// The question's number, so a new question opens a sheet of its own.
+		let id: Int
+		let prompt: PlatformConnections.CloudflarePrompt
+	}
+
+	static func disconnectTitle(_ platform: PublishPlatform) -> String {
+		switch platform {
+		case .cloudflare: "Disconnect this Cloudflare login?"
+		case .coolify: "Disconnect this Coolify team?"
+		case .vercel, .netlify, .github: "Disconnect this \(platform.displayName) account?"
+		}
+	}
+
+	/// What disconnecting does on the connection's platform, and for a
+	/// Cloudflare login, which other logins go on publishing to its accounts.
+	static func disconnectMessage(_ connection: PlatformConnection, others: [(account: String, logins: [String])]) -> String {
+		switch connection.platform {
+		case .vercel:
+			"LPM Vault forgets its token on this Mac. The integration stays installed on Vercel, and variables already published stay as they are."
+		case .coolify:
+			"LPM Vault forgets its token on this Mac. The token keeps working in Coolify until you delete it there, and variables already published stay as they are."
+		case .netlify:
+			"LPM Vault forgets its token on this Mac. LPM Vault stays authorized on Netlify until you revoke it there, and variables already published stay as they are."
+		case .github:
+			"LPM Vault forgets its token on this Mac. The LPM Vault app stays authorized and installed on GitHub until you revoke or uninstall it there, and secrets and variables already published stay as they are."
+		case .cloudflare:
+			cloudflareDisconnectMessage(connection, others: others)
+		}
+	}
+
+	/// The question about a Cloudflare login just approved; `answer` gets the person's choice, Cancel included.
+	static func cloudflareConfirmation(
+		_ prompt: PlatformConnections.CloudflarePrompt,
+		answer: @escaping (PlatformConnections.CloudflarePromptAnswer) -> Void
+	) -> VaultConfirmation {
+		switch prompt {
+		case .otherLogin(let reconnecting):
+			VaultConfirmation(
+				symbol: "arrow.triangle.swap",
+				title: cloudflarePromptTitle(prompt),
+				message: cloudflarePromptMessage(prompt),
+				actions: [
+					.init(title: "Add It Separately", role: .secondary) { answer(.addSeparately) },
+					.init(title: "Replace \(reconnecting)") { answer(.replace) },
+				],
+				onCancel: { answer(.cancel) })
+		case .losesAccounts:
+			VaultConfirmation(
+				symbol: "exclamationmark.triangle",
+				title: cloudflarePromptTitle(prompt),
+				message: cloudflarePromptMessage(prompt),
+				actions: [.init(title: "Connect Anyway") { answer(.proceed) }],
+				onCancel: { answer(.cancel) })
 		}
 	}
 }

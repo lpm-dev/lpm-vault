@@ -61,15 +61,25 @@ struct VaultSchemaRemoveSheet: View {
 		let left = references.count - settled.count
 		let stored = project.environments.values.filter { $0[key] != nil }.count
 		VStack(alignment: .leading, spacing: 0) {
-			VStack(alignment: .leading, spacing: 6) {
-				(Text("Remove ") + Text(key.escapingDirectionControls).font(VaultTypography.tabular(16, .bold)) + Text(" from the schema?"))
-					.font(.system(size: 16, weight: .bold))
-					.foregroundStyle(VaultPalette.textPrimary)
-					.fixedSize(horizontal: false, vertical: true)
-				Text(Self.consequence(stored: stored))
-					.font(.system(size: 12.5))
-					.foregroundStyle(VaultPalette.textTertiary)
-					.fixedSize(horizontal: false, vertical: true)
+			HStack(alignment: .top, spacing: 14) {
+				Image(systemName: "doc.text")
+					.font(.system(size: 17, weight: .medium))
+					.foregroundStyle(VaultPalette.accentText)
+					.frame(width: 40, height: 40)
+					.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.accentTint))
+					.accessibilityHidden(true)
+				VStack(alignment: .leading, spacing: 6) {
+					(Text("Remove ") + Text(key.escapingDirectionControls).font(VaultTypography.tabular(14, .bold)) + Text(" from the schema?"))
+						.font(.system(size: 14, weight: .bold))
+						.foregroundStyle(VaultPalette.textPrimary)
+						.fixedSize(horizontal: false, vertical: true)
+						.accessibilityAddTraits(.isHeader)
+					Text(Self.consequence(stored: stored))
+						.font(.system(size: 12.5))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.lineSpacing(3)
+						.fixedSize(horizontal: false, vertical: true)
+				}
 			}
 			.padding(20)
 

@@ -1342,9 +1342,34 @@ extension SheetInteractionTests {
 			try await host.click("Disconnect")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
 			#expect(keychain.platformConnectionStorage.count == 1)
-			try host.clickAlertButton("Disconnect", in: try #require(host.window.sheets.first))
+			let dialog = try #require(host.window.sheets.first)
+			try await host.click("Disconnect", in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
 			#expect(try await host.waitForText("No platforms connected"))
+		}
+
+		@Test("Disconnect asks a short question, names the account in a card, and Return doesn't disconnect")
+		func disconnectQuestion() async throws {
+			_ = try await PlatformConnectionStore(service: keychain).save(
+				VercelGrant(accessToken: "vca_1", installationID: "icfg_1", teamID: "team_northwind", userID: "u_1")!,
+				account: VercelAccount(name: "Northwind", slug: "northwind"), at: Date()).get()
+			let (store, host) = try await page()
+			defer { host.window.close(); store.lock() }
+			try await host.click("Disconnect Northwind")
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
+			let dialog = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("Disconnect this Vercel account?", exactly: true, in: dialog))
+			#expect(try await host.waitForText("Northwind", in: dialog))
+			#expect(try await host.waitForText("Vercel · northwind", in: dialog))
+			let returnKey = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+				timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: dialog.windowNumber, context: nil,
+				characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+			_ = dialog.performKeyEquivalent(with: returnKey)
+			try await host.settle()
+			#expect(keychain.platformConnectionStorage.count == 1 && host.window.sheets.first === dialog, "Return never disconnects")
+			try await host.click("Cancel", in: dialog)
+			#expect(try await host.waitUntil { host.window.sheets.isEmpty })
+			#expect(keychain.platformConnectionStorage.count == 1)
 		}
 
 		@Test("connecting shows where to finish, and Cancel stops it")
@@ -1464,7 +1489,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
 			let dialog = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("until you revoke it", in: dialog))
-			try host.clickAlertButton("Disconnect", in: dialog)
+			try await host.click("Disconnect", in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
 			#expect(try await host.waitForText("No platforms connected"))
 		}
@@ -1544,7 +1569,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
 			let dialog = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("until you revoke or uninstall it there", in: dialog))
-			try host.clickAlertButton("Disconnect", in: dialog)
+			try await host.click("Disconnect", in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
 			#expect(try await host.waitForText("No platforms connected"))
 		}
@@ -1701,7 +1726,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
 			let dialog = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("LPM Vault revokes its access to Work on Cloudflare", in: dialog))
-			try host.clickAlertButton("Disconnect", in: dialog)
+			try await host.click("Disconnect", in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage.isEmpty })
 			#expect(revoker.calls.map(\.token) == ["cf_refresh_1"])
 			#expect(try await host.waitForText("LPM Vault's access to it on Cloudflare has ended"))
@@ -1725,7 +1750,7 @@ extension SheetInteractionTests {
 			let dialog = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Work would reach fewer accounts", in: dialog))
 			#expect(try await host.waitForText("would no longer reach Beta through Work", in: dialog))
-			try host.clickAlertButton("Cancel", in: dialog)
+			try await host.click("Cancel", in: dialog)
 			#expect(try await host.waitUntil { revoker.calls.map(\.token) == ["cf_new_refresh"] }, "Only the new grant is revoked")
 			#expect(try await store.platformConnectionStore.record(for: connection.id).get().connection.generation == connection.generation)
 		}
@@ -1745,29 +1770,44 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Approving another login asks first")
 			let dialog = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("You approved a different Cloudflare login, not Work", in: dialog))
-			try host.clickAlertButton(button, in: dialog)
+			try await host.click(button, in: dialog)
 			#expect(try await host.waitUntil { keychain.platformConnectionStorage[approved.connectionID] != nil })
 			#expect((keychain.platformConnectionStorage[work.id] != nil) == (button == "Add It Separately"))
 		}
 
-		@Test("Rename gives a login the name typed, and when another login has it, says so and asks again")
-		func renamesThroughAlert() async throws {
+		@Test("Rename gives a login the name typed, and when another login has it, says so in the open prompt")
+		func renamesThroughPrompt() async throws {
 			try await save()
 			try await save(subject: CloudflareLoginFixture.otherSubject, label: "Home")
 			let (store, host) = page()
 			defer { host.window.close(); store.lock() }
 			try await host.click("Rename Work")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Rename asks for the name")
-			let alert = try #require(host.window.sheets.first)
-			try host.typeText("Home", placeholder: "Name", in: alert)
-			try host.clickAlertButton("Rename", in: alert)
-			#expect(try await host.waitUntil { host.window.sheets.first.map { $0 !== alert } ?? false }, "The name taken asks again")
-			let again = try #require(host.window.sheets.first)
-			#expect(try await host.waitForText("Another connected Cloudflare login is called Home. Choose another name.", in: again))
-			try host.typeText("Clients", placeholder: "Name", in: again)
-			try host.clickAlertButton("Rename", in: again)
+			let prompt = try #require(host.window.sheets.first)
+			#expect(try await host.waitForText("Rename Work", in: prompt))
+			#expect(!renameEnabled(in: prompt), "Its own name renames nothing")
+			try host.typeText("Home", placeholder: "Name", in: prompt)
+			#expect(try await host.waitUntil { renameEnabled(in: prompt) })
+			try await host.click("Rename", in: prompt)
+			let taken = "Another connected Cloudflare login is called Home. Choose another name."
+			#expect(try await host.waitForText(taken, in: prompt))
+			#expect(host.window.sheets.first === prompt, "The prompt stays open with the reason")
+			try host.typeText("Clients", placeholder: "Name", in: prompt)
+			#expect(try await host.waitUntil { !says(taken, in: prompt) }, "Editing the name clears the reason")
+			try await host.click("Rename", in: prompt)
+			#expect(try await host.waitUntil { host.window.sheets.isEmpty })
 			#expect(try await host.waitForText("Clients"))
 			#expect(store.platforms.connections.map(\.name).sorted() == ["Clients", "Home"])
+		}
+
+		private func renameEnabled(in prompt: NSWindow) -> Bool {
+			guard let content = prompt.contentView else { return false }
+			return AccessibilityTree.visibleElements(in: prompt, of: content).first { $0.role == .button && $0.says("Rename") }?.isEnabledNow == true
+		}
+
+		private func says(_ text: String, in window: NSWindow) -> Bool {
+			guard let content = window.contentView else { return false }
+			return AccessibilityTree.text(in: content, root: window).contains(text)
 		}
 
 		@Test("a question about a login just approved hides behind the privacy curtain unanswered, comes back with it, and Connect Anyway goes on")
@@ -1793,7 +1833,7 @@ extension SheetInteractionTests {
 			curtain.isObscured = false
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "The question comes back")
 			let dialog = try #require(host.window.sheets.first)
-			try host.clickAlertButton("Connect Anyway", in: dialog)
+			try await host.click("Connect Anyway", in: dialog)
 			#expect(try await waitUntil {
 				await (try? store.platformConnectionStore.record(for: connection.id).get())?.connection.generation == approved.generation
 			})
@@ -1860,7 +1900,7 @@ extension SheetInteractionTests {
 			try await host.click("Disconnect Work")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Disconnecting asks first")
 			let dialog = try #require(host.window.sheets.first)
-			try host.clickAlertButton("Disconnect", in: dialog)
+			try await host.click("Disconnect", in: dialog)
 			#expect(try await host.waitForText("Sign in to LPM to finish revoking Cloudflare access LPM Vault no longer uses."))
 			#expect(revoker.calls.isEmpty)
 		}

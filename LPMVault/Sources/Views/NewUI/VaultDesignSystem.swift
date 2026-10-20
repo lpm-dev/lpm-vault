@@ -33,6 +33,9 @@ enum VaultPalette {
 	static let orange = Color(hex: 0xFF9F0A)
 	static let red = Color(hex: 0xFF3B30)
 	static let redText = adaptive(light: 0xC8342B, dark: 0xFF847D)
+	/// A destructive action's solid button.
+	static let destructiveFill = adaptive(light: 0xE5342A, dark: 0xFF453A)
+	static let destructiveFillHover = adaptive(light: 0xCC2B22, dark: 0xFF5F55)
 	static let greenTint = adaptive(light: 0xE4F7E8, dark: 0x233528)
 	static let greenTintText = adaptive(light: 0x1A7F37, dark: 0x75DB94)
 	static let orangeTint = adaptive(light: 0xFFF1DE, dark: 0x3B3020)
@@ -298,7 +301,7 @@ struct VaultBarButton: View {
 	@State private var hovering = false
 
 	private var foreground: Color {
-		if disabled { return VaultPalette.textFaint }
+		if disabled { return filled && destructive ? .white.opacity(0.7) : VaultPalette.textFaint }
 		if filled { return .white }
 		if destructive { return VaultPalette.redText }
 		if active { return VaultPalette.accentText }
@@ -306,7 +309,9 @@ struct VaultBarButton: View {
 	}
 
 	private var background: Color {
+		if disabled && filled && destructive { return VaultPalette.destructiveFill.opacity(0.35) }
 		if disabled { return filled ? VaultPalette.accent.opacity(0.35) : VaultPalette.control.opacity(0.7) }
+		if filled && destructive { return hovering ? VaultPalette.destructiveFillHover : VaultPalette.destructiveFill }
 		if filled { return hovering ? VaultPalette.accentHover : VaultPalette.accent }
 		if active { return VaultPalette.accentTint }
 		if invertsOnHover && hovering { return VaultPalette.strongFill }

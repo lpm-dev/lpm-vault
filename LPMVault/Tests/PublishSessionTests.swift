@@ -2069,12 +2069,14 @@ extension SheetInteractionTests {
 			try await host.click("Destination")
 			try await host.click("Forget destination")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
-			try host.clickAlertButton("Forget Destination", in: try #require(host.window.sheets.first))
+			let dialog = try #require(host.window.sheets.first)
+			try await host.click("Forget Destination", in: dialog)
 			#expect(try await host.waitForText("couldn't be forgotten"))
 			keychain.failAppItemDeletes = []
 			try await host.click("Forget destination")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil })
-			try host.clickAlertButton("Forget Destination", in: try #require(host.window.sheets.first))
+			let again = try #require(host.window.sheets.first)
+			try await host.click("Forget Destination", in: again)
 			#expect(try await host.waitUntil { keychain.publishingStorage[history] == nil && keychain.publishingStorage["destinations.project"] == nil })
 			#expect(try await store.publishing.destinations(of: "project").get().isEmpty)
 		}

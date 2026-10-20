@@ -43,12 +43,14 @@
 		235B145D124AB17033C2979E /* VaultCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF8259DCF0973664EDEE6EA /* VaultCrypto.swift */; };
 		240D88387605D52E821B9352 /* RenewingCloudflareClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F43C0B708F1D777CF8AD8245 /* RenewingCloudflareClientTests.swift */; };
 		244FF73911575D8E7904FE72 /* lpm-json-edit-expected.json in Resources */ = {isa = PBXBuildFile; fileRef = BC6202E0BC76FCCD7043054E /* lpm-json-edit-expected.json */; };
+		24D3D4A9E0C8E1FDA0B51B05 /* ConfirmDialogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98580AC2C140CBEBB957A12E /* ConfirmDialogTests.swift */; };
 		27447FD6BA072FEA0D48D8FD /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A457BD449E91D4CB9859C4BC /* Sparkle */; };
 		28110C97F5768C223A92AED9 /* SchemaClientPrefixTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E1922750CFA7B974B824160 /* SchemaClientPrefixTests.swift */; };
 		292CA418679C93A21914393C /* CoolifyPublishing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2965F7490F3928DA989BBC43 /* CoolifyPublishing.swift */; };
 		2B2B19A794629264CAEB0D0E /* CoolifyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1537A923FE9D31FAE64204AD /* CoolifyClient.swift */; };
 		2B86293F0EFF24BA77BD932D /* VaultSchemaClientPrefixes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E19BECC3EE6A24B2A9E3C04 /* VaultSchemaClientPrefixes.swift */; };
 		2C9BFF224E5A877F47F53B59 /* ProjectEnvSchemaSuggestion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B9BC57D99FCBC544AA8B129 /* ProjectEnvSchemaSuggestion.swift */; };
+		2CEB55DF6C83628CD0B40A98 /* VaultConfirmDialog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED1EBE65DAC64E3E442E1A8 /* VaultConfirmDialog.swift */; };
 		2D6EBDFCA06410DB1D7EEA90 /* PlatformCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = D035F0E0F268F143493AB9F6 /* PlatformCleanup.swift */; };
 		2D9C4E8154216B37BD6EFE27 /* PlatformTokenRefreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03D4738882967FABB536A563 /* PlatformTokenRefreshTests.swift */; };
 		2DEAEBDD924683D9D5E1236D /* NewEnvironmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD952D6C2614FAF3EF8B184F /* NewEnvironmentSheet.swift */; };
@@ -301,6 +303,7 @@
 		0C6AC2FB02EDCD85F6095DAE /* EnvSchemaCompositionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvSchemaCompositionTests.swift; sourceTree = "<group>"; };
 		0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CryptoInteropTests.swift; sourceTree = "<group>"; };
 		0D0B2CD3E26188E14F6418FB /* EnvFileImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportService.swift; sourceTree = "<group>"; };
+		0ED1EBE65DAC64E3E442E1A8 /* VaultConfirmDialog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultConfirmDialog.swift; sourceTree = "<group>"; };
 		10F9038EDB0DF8525A388573 /* ModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelTests.swift; sourceTree = "<group>"; };
 		132B8BB771BBAB418793A322 /* ProjectEnvValueCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvValueCheck.swift; sourceTree = "<group>"; };
 		14A975FA422FF69083251C6F /* VaultQuitCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultQuitCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -451,6 +454,7 @@
 		97946FB8C45280CA8369DB72 /* VaultQuitShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultQuitShortcut.swift; sourceTree = "<group>"; };
 		983443571C69A2E11CCEEAFF /* VaultSchemaEditorFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaEditorFooter.swift; sourceTree = "<group>"; };
 		984149D1A9C192CCCAB69CD6 /* VaultSettingsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSettingsPage.swift; sourceTree = "<group>"; };
+		98580AC2C140CBEBB957A12E /* ConfirmDialogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmDialogTests.swift; sourceTree = "<group>"; };
 		9C7F580906FEE1F330D9AC18 /* GitHubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubClient.swift; sourceTree = "<group>"; };
 		9D2B5D52C25E20909157D918 /* ProjectIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectIcon.swift; sourceTree = "<group>"; };
 		9E9A56D911EA3978257179C9 /* CloudflarePublishingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudflarePublishingTests.swift; sourceTree = "<group>"; };
@@ -590,6 +594,7 @@
 				47A81DE99D02A3D02E6022EE /* PublishSheet.swift */,
 				B0B4A1CD668920BA64DC898F /* SecretGeneratorButton.swift */,
 				9441FBED8241DB5E18E4374A /* SyncConfirmationSheet.swift */,
+				0ED1EBE65DAC64E3E442E1A8 /* VaultConfirmDialog.swift */,
 				CEDE6264C2563EEC4611935A /* VaultContentView.swift */,
 				18DEAAFEE6A92D4350A97363 /* VaultDesignSystem.swift */,
 				17BF48E7FA6D4713B74FA496 /* VaultInspectorView.swift */,
@@ -705,6 +710,7 @@
 				424C32604575F65BEF4E4366 /* CloudflarePlatformsTests.swift */,
 				9E9A56D911EA3978257179C9 /* CloudflarePublishingTests.swift */,
 				A574932C149C6A42AFC92B25 /* CloudflareTestSupport.swift */,
+				98580AC2C140CBEBB957A12E /* ConfirmDialogTests.swift */,
 				7DA1AF3AA82DFB003362A6D3 /* ConnectCLITests.swift */,
 				B4BA8451CDCC17A9CECEB040 /* CoolifyClientTests.swift */,
 				2B36ADA90129E79376810409 /* CoolifyPublishingTests.swift */,
@@ -1015,6 +1021,7 @@
 				EE6F7BFE1577F3AE5EF9C2BA /* CloudflarePlatformsTests.swift in Sources */,
 				7E5B048396B6D4D9BA84298E /* CloudflarePublishingTests.swift in Sources */,
 				E5941D88B010C15D47B3E4EC /* CloudflareTestSupport.swift in Sources */,
+				24D3D4A9E0C8E1FDA0B51B05 /* ConfirmDialogTests.swift in Sources */,
 				C7B7CE1D990AA3A0D98996A5 /* ConnectCLITests.swift in Sources */,
 				B8B66270D4576E8D1883A112 /* CoolifyClientTests.swift in Sources */,
 				3BD75D7FD714BC2FA731A882 /* CoolifyPublishingTests.swift in Sources */,
@@ -1221,6 +1228,7 @@
 				683ACA166A8ACAD4FEBE60B8 /* SyncService.swift in Sources */,
 				DF99157CC6CB92499358AC6E /* UpdateChecker.swift in Sources */,
 				04C520D3876DE81AFCE34669 /* VaultAppearance.swift in Sources */,
+				2CEB55DF6C83628CD0B40A98 /* VaultConfirmDialog.swift in Sources */,
 				624242199ADD00465D0F54A5 /* VaultContentView.swift in Sources */,
 				235B145D124AB17033C2979E /* VaultCrypto.swift in Sources */,
 				06F2A10ECDC146991E96109E /* VaultDesignSystem.swift in Sources */,
