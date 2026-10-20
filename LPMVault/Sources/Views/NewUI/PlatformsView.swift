@@ -25,7 +25,7 @@ struct PlatformsView: View {
 					if let notice = platforms.notice { noticeBanner(notice) }
 					connectedSection
 					addPlatformSection
-					Text(Self.revocationNote(offersCloudflare: offersCloudflare))
+					Text(Self.revocationNote)
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.lineSpacing(2)
@@ -125,7 +125,7 @@ struct PlatformsView: View {
 
 	// MARK: Connected
 
-	/// The order the page lists platforms in, Cloudflare's place kept where it isn't offered.
+	/// The order the page lists platforms in.
 	static let pageOrder: [PublishPlatform] = [.vercel, .netlify, .github, .cloudflare, .coolify]
 
 	/// Connections grouped by platform, in the page's order, each platform's in the order they're given.
@@ -388,15 +388,7 @@ struct PlatformsView: View {
 
 	// MARK: Adding a platform
 
-	/// Whether Cloudflare can be connected through the Registry the app is
-	/// signed in to, or this Mac has Cloudflare logins, or cleanups of them, to show.
-	private var offersCloudflare: Bool {
-		CloudflareOAuth.isAvailable(through: store.appEnvironment.issuer) || platforms.connections.contains { $0.platform == .cloudflare }
-			|| !platforms.retiring.isEmpty || !platforms.markers.isEmpty
-	}
-
 	private var addPlatformSection: some View {
-		let offered = Self.pageOrder.filter { $0 != .cloudflare || offersCloudflare }
 		var counts: [PublishPlatform: Int] = [:]
 		for connection in platforms.connections { counts[connection.platform, default: 0] += 1 }
 		return VStack(alignment: .leading, spacing: 7) {
@@ -405,7 +397,7 @@ struct PlatformsView: View {
 				.accessibilityAddTraits(.isHeader)
 			if !store.isLoggedIn {
 				HStack(alignment: .firstTextBaseline, spacing: 6) {
-					Text("Sign in to LPM to connect \(Self.browserPlatformNames(offered)).")
+					Text("Sign in to LPM to connect \(Self.browserPlatformNames(Self.pageOrder)).")
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
@@ -418,7 +410,7 @@ struct PlatformsView: View {
 				.padding(.bottom, 2)
 			}
 			PlatformTileGrid {
-				ForEach(offered, id: \.self) { platform in
+				ForEach(Self.pageOrder, id: \.self) { platform in
 					tile(platform, connected: counts[platform] ?? 0)
 				}
 			}
@@ -509,21 +501,18 @@ struct PlatformsView: View {
 
 	// MARK: Removing access
 
-	/// Where to end LPM Vault's access on each platform, in the page's order, naming Cloudflare only where it's offered.
-	static func revocationSteps(offersCloudflare: Bool) -> [(platform: PublishPlatform, step: String)] {
-		var steps: [(platform: PublishPlatform, step: String)] = [
-			(.vercel, "Integrations settings, where uninstalling deletes the variables LPM Vault created"),
-			(.netlify, "Authorized applications"),
-			(.github, "Authorized GitHub Apps and Installed GitHub Apps; an organization's owner uninstalls it in the organization's settings"),
-		]
-		if offersCloudflare { steps.append((.cloudflare, "disconnecting here revokes it")) }
-		steps.append((.coolify, "Keys & Tokens"))
-		return steps
-	}
+	/// Where to end LPM Vault's access on each platform, in the page's order.
+	static let revocationSteps: [(platform: PublishPlatform, step: String)] = [
+		(.vercel, "Integrations settings, where uninstalling deletes the variables LPM Vault created"),
+		(.netlify, "Authorized applications"),
+		(.github, "Authorized GitHub Apps and Installed GitHub Apps; an organization's owner uninstalls it in the organization's settings"),
+		(.cloudflare, "disconnecting here revokes it"),
+		(.coolify, "Keys & Tokens"),
+	]
 
-	static func revocationNote(offersCloudflare: Bool) -> AttributedString {
+	static var revocationNote: AttributedString {
 		var note = AttributedString("To remove LPM Vault's access entirely, revoke it on the platform: ")
-		for (index, step) in revocationSteps(offersCloudflare: offersCloudflare).enumerated() {
+		for (index, step) in revocationSteps.enumerated() {
 			if index > 0 { note += AttributedString(" · ") }
 			var name = AttributedString(step.platform.displayName)
 			name.swiftUI.font = .system(size: 11.5, weight: .semibold)

@@ -81,15 +81,20 @@ struct CloudflareLoginTests {
 struct CloudflareOAuthTests {
 	@Test("lpm.dev runs only the production client, no other Registry runs it, and the local one is offered in debug builds")
 	func clients() {
-		#expect(!CloudflareOAuth.accepts("prod-client", for: .production, productionClientID: nil))
 		#expect(CloudflareOAuth.accepts("prod-client", for: .production, productionClientID: "prod-client"))
 		#expect(!CloudflareOAuth.accepts("other-client", for: .production, productionClientID: "prod-client"))
 		#expect(!CloudflareOAuth.accepts("prod-client", for: .development, productionClientID: "prod-client"))
 		#expect(CloudflareOAuth.accepts("dev-client", for: .development, productionClientID: "prod-client"))
-		#expect(!CloudflareOAuth.accepts("dev client", for: .development, productionClientID: nil))
-		#expect(!CloudflareOAuth.isAvailable(through: .production, productionClientID: nil))
-		#expect(CloudflareOAuth.isAvailable(through: .production, productionClientID: "prod-client"))
-		#expect(CloudflareOAuth.isAvailable(through: .development, productionClientID: nil))
+		#expect(!CloudflareOAuth.accepts("dev client", for: .development, productionClientID: "prod-client"))
+	}
+
+	@Test("the production client is the one the Registry checks in, so Cloudflare connects through lpm.dev with it alone")
+	func productionClient() {
+		let registryClientID = "3ffa60cf0c6483c948115e7d2a93cbaa"
+		#expect(CloudflareOAuth.productionClientID == registryClientID)
+		#expect(CloudflareOAuth.accepts(registryClientID, for: .production))
+		#expect(!CloudflareOAuth.accepts(registryClientID, for: .development))
+		#expect(!CloudflareOAuth.accepts("0123456789abcdefghijklmnopqrstuv", for: .production))
 	}
 }
 

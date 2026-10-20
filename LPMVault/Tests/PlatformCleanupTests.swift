@@ -17,7 +17,7 @@ struct CloudflareCredentialsTests {
 		sessions: (@Sendable () -> PlatformSession?)? = nil,
 		waits: RecordedWaits = RecordedWaits(),
 		sleep: (@Sendable (Duration) async throws -> Void)? = nil,
-		productionClientID: String? = "lpm-vault-production",
+		productionClientID: String = "lpm-vault-production",
 		changed: @escaping @Sendable () -> Void = {}
 	) -> PlatformCredentials {
 		let chosen = session ?? .some(platformTestSession(registry))

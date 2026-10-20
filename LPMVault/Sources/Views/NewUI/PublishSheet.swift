@@ -135,10 +135,7 @@ struct PublishSheet: View {
 				Text("No platform account is connected on this Mac.")
 					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
-				Text(
-					CloudflareOAuth.isAvailable(through: store.appEnvironment.issuer)
-						? "Connect Vercel, Netlify, GitHub, Cloudflare or Coolify on the Platforms page, then publish from here."
-						: "Connect Vercel, Netlify, GitHub or Coolify on the Platforms page, then publish from here.")
+				Text("Connect Vercel, Netlify, GitHub, Cloudflare or Coolify on the Platforms page, then publish from here.")
 					.font(.system(size: 12))
 					.foregroundStyle(VaultPalette.textTertiary)
 				VaultBarButton(systemImage: "square.stack.3d.up", title: "Open Platforms") {
