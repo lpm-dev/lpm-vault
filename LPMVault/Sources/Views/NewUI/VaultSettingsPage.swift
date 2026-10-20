@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// The Account page: who's signed in, the server, and the actions on the
-/// account. The app's own settings are in the Settings window.
-struct AuthStatusView: View {
+/// The Settings page: who's signed in and the server, the app's own
+/// settings, and the actions on the account. It's in the window, behind the
+/// lock, so ⌘, unlocks first.
+struct VaultSettingsPage: View {
 	@Bindable var store: VaultStore
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var showLogoutConfirmation = false
@@ -10,9 +11,10 @@ struct AuthStatusView: View {
 	var body: some View {
 		VStack(spacing: 0) {
 			HStack {
-				Text("Account")
+				Text("Settings")
 					.font(.system(size: 19, weight: .bold))
 					.foregroundStyle(VaultPalette.textPrimary)
+					.accessibilityAddTraits(.isHeader)
 				Spacer()
 			}
 			.padding(.horizontal, 20)
@@ -42,14 +44,12 @@ struct AuthStatusView: View {
 						}
 
 						serverSettings
-						appSettingsSection
+						appSettings
 
 						settingsSection("ACTIONS") {
 							HStack(spacing: 8) {
 								VaultBarButton(systemImage: "globe", title: "Manage on lpm.dev") {
-									if let url = URL(string: "/dashboard/settings", relativeTo: store.appEnvironment.baseURL)?.absoluteURL {
-										NSWorkspace.shared.open(url)
-									}
+									if let url = store.accountManagementURL { NSWorkspace.shared.open(url) }
 								}
 								VaultBarButton(systemImage: "rectangle.portrait.and.arrow.right", title: "Sign out") {
 									showLogoutConfirmation = true
@@ -86,10 +86,12 @@ struct AuthStatusView: View {
 								.frame(maxWidth: 320)
 						}
 
-						serverSettings
-							.frame(maxWidth: 360)
-						appSettingsSection
-							.frame(maxWidth: 360)
+						VStack(alignment: .leading, spacing: 18) {
+							serverSettings
+							appSettings
+						}
+						.frame(maxWidth: 520)
+						.padding(.top, 6)
 
 					}
 					.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -111,28 +113,12 @@ struct AuthStatusView: View {
 		}
 	}
 
-	private var appSettingsSection: some View {
-		settingsSection("APP SETTINGS") {
-			HStack(spacing: 12) {
-				Text("The quit shortcut, appearance and updates are in Settings.")
-					.font(.system(size: 12.5))
-					.foregroundStyle(VaultPalette.textSecondary)
-					.fixedSize(horizontal: false, vertical: true)
-				Spacer(minLength: 8)
-				SettingsLink {
-					Text("Open Settings…")
-						.font(.system(size: 12))
-						.foregroundStyle(VaultPalette.textSecondary)
-						.padding(.horizontal, 10)
-						.frame(height: 26)
-						.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-						.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
-						.fixedSize()
-				}
-				.buttonStyle(.plain)
-				.help("Open the Settings window (⌘,)")
-			}
-		}
+	/// The app's own settings, which need no account.
+	@ViewBuilder
+	private var appSettings: some View {
+		settingsSection("GENERAL") { VaultGeneralSettingsSection() }
+		settingsSection("APPEARANCE") { VaultAppearanceSettingsSection() }
+		settingsSection("UPDATES") { VaultUpdateSettingsSection() }
 	}
 
 	private var serverSettings: some View {

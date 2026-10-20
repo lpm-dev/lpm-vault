@@ -32,7 +32,7 @@ enum BrowserConnectError: Error, Equatable, Sendable {
 		let name = platform.displayName
 		return switch self {
 		case .signedOut: "Sign in to LPM to connect \(name)."
-		case .forbidden: "This LPM sign-in can't connect platforms. Sign in again from the Account page."
+		case .forbidden: "This LPM sign-in can't connect platforms. Sign in again from Settings."
 		case .unavailable: "Connecting \(name) isn't available right now. Try again later."
 		case .rateLimited: "Too many connection attempts. Wait a minute, then try again."
 		case .tooManyOpen: "Finish or cancel the platform connections already open in your browser first."

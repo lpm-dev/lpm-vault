@@ -341,7 +341,7 @@ extension SheetInteractionTests {
 			let checker = UpdateChecker(driver: driver, defaults: defaults,
 				buildInfo: VaultBuildInfo(info: ["CFBundleShortVersionString": "1.0.1", "CFBundleVersion": "6"]))
 			checker.start()
-			let host = NSHostingView(rootView: VaultUpdateSettingsPane().environment(checker).environment(\.colorScheme, .light))
+			let host = NSHostingView(rootView: VaultUpdateSettingsSection().environment(checker).environment(\.colorScheme, .light))
 			let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 700),
 				styleMask: [.titled], backing: .buffered, defer: false)
 			window.isReleasedWhenClosed = false

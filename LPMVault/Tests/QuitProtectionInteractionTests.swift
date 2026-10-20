@@ -291,13 +291,13 @@ extension SheetInteractionTests {
 			host.window.close()
 		}
 
-		@Test("Settings' General tab chooses the quit shortcut, Double press by default, and its picker carries the explanation")
+		@Test("Settings' General card chooses the quit shortcut, Double press by default, and its picker carries the explanation")
 		func generalPane() async throws {
 			let domain = "quit-settings-ui-\(UUID().uuidString)"
 			let defaults = try #require(UserDefaults(suiteName: domain))
 			defer { defaults.removePersistentDomain(forName: domain) }
 			let settings = VaultQuitSettings(defaults: defaults)
-			let host = SheetTestHost(VaultGeneralSettingsPane().environment(settings),
+			let host = SheetTestHost(VaultGeneralSettingsSection().environment(settings),
 				size: NSSize(width: 520, height: 120), keepsRequestedSize: true)
 			defer { host.window.close() }
 			#expect(try await host.waitForText(VaultQuitShortcut.doublePress.explanation))
@@ -312,22 +312,25 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText(VaultQuitShortcut.hold.explanation))
 		}
 
-		@Test("the lock screen offers Settings, named for VoiceOver, and the Account page points to it")
-		func settingsEntryPoints() async throws {
+		@Test("Settings is a page behind the lock: the lock screen offers no way into it, and the page holds the quit shortcut")
+		func settingsBehindTheLock() async throws {
 			let (store, _) = try await makeStore()
 			store.lock()
 			let host = SheetTestHost(ContentView(store: store), size: NSSize(width: 1040, height: 640), keepsRequestedSize: true)
 			defer { host.window.close() }
-			let gear = try await host.waitForElement(saying: "Settings")
-			#expect(gear.role == .button)
-			let bounds = AccessibilityTree.normalizedBounds(of: gear, in: host.view)
-			#expect(bounds.minX > 0.9 && bounds.maxY < 0.1, "The Settings button sits in the lock screen's bottom-right corner")
+			#expect(try await host.waitForText("Unlock"))
+			#expect(!AccessibilityTree.visibleElements(in: host.window, of: host.view).contains { $0.role == .button && $0.says("Settings") })
 
-			let account = SheetTestHost(AuthStatusView(store: store), size: NSSize(width: 700, height: 640), keepsRequestedSize: true)
-			defer { account.window.close() }
-			#expect(try await account.waitForText("Account"))
-			#expect(try await account.waitForText("APP SETTINGS"))
-			#expect(try await account.waitForText("Open Settings"))
+			let domain = "quit-settings-page-\(UUID().uuidString)"
+			let defaults = try #require(UserDefaults(suiteName: domain))
+			defer { defaults.removePersistentDomain(forName: domain) }
+			let page = SheetTestHost(VaultSettingsPage(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: defaults))
+				.environment(VaultQuitSettings(defaults: defaults)), size: NSSize(width: 700, height: 900), keepsRequestedSize: true)
+			defer { page.window.close() }
+			#expect(try await page.waitForText("Settings", exactly: true))
+			#expect(try await page.waitForText("Quit shortcut"))
+			#expect(try await !page.text().contains("Open Settings"))
 		}
+
 	}
 }

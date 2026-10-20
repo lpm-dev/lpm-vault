@@ -668,41 +668,48 @@ private struct VaultSidebarProjectGroup<Row: View, Environments: View>: View {
 struct VaultAccountSwitcher: View {
 	@Bindable var store: VaultStore
 	@Binding var isPresented: Bool
-	@Environment(\.openSettings) private var openSettings
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 1) {
-			Text("VAULTS")
-				.vaultSectionLabel()
-				.padding(.horizontal, 8)
-				.padding(.top, 4)
-				.padding(.bottom, 5)
+		VStack(alignment: .leading, spacing: 0) {
+			identity
+				.padding(EdgeInsets(top: 12, leading: 12, bottom: 10, trailing: 12))
+			divider
 
-			accountRow(name: "Personal vault", initials: personalInitials, account: .personal, square: false)
-			ForEach(store.userOrgs) { org in
-				accountRow(name: org.name, initials: initials(org.name), account: .org(org.slug), square: true)
+			VStack(alignment: .leading, spacing: 1) {
+				Text("VAULTS")
+					.vaultSectionLabel()
+					.padding(.horizontal, 8)
+					.padding(.bottom, 4)
+				accountRow(name: "Personal vault", detail: Self.personalDetail(signedIn: store.isLoggedIn, projects: projectCount(of: .personal)),
+					initials: personalInitials, account: .personal)
+				ForEach(store.userOrgs) { org in
+					accountRow(
+						name: org.name, detail: Self.organizationDetail(role: org.role, projects: projectCount(of: .org(org.slug))),
+						initials: initials(org.name), account: .org(org.slug))
+				}
 			}
+			.padding(EdgeInsets(top: 8, leading: 6, bottom: 4, trailing: 6))
 
-			VaultHairline().padding(.horizontal, 4).padding(.vertical, 5)
-
-			menuRow(icon: "person.crop.circle", title: "Account") {
-				store.showAccount()
-				isPresented = false
+			divider.padding(.vertical, 4)
+			VStack(alignment: .leading, spacing: 0) {
+				menuRow(icon: "gearshape", title: "Settings…", trailing: .shortcut("⌘,")) {
+					store.showSettings()
+					isPresented = false
+				}
+				menuRow(icon: "square.stack.3d.up", title: "Platforms", trailing: .chevron) {
+					store.showPlatforms()
+					isPresented = false
+				}
 			}
-			menuRow(icon: "gearshape", title: "Settings…", shortcut: "⌘,") {
-				isPresented = false
-				openSettings()
-			}
-			menuRow(icon: "square.stack.3d.up", title: "Platforms") {
-				store.showPlatforms()
-				isPresented = false
-			}
-			menuRow(icon: "lock", title: "Lock vault", shortcut: "⌘L") {
+			.padding(.horizontal, 6)
+			.padding(.bottom, 4)
+			divider
+			menuRow(icon: "lock", title: "Lock vault", trailing: .shortcut("⌘L")) {
 				store.lock()
 				isPresented = false
 			}
+			.padding(6)
 		}
-		.padding(6)
 		.background {
 			RoundedRectangle(cornerRadius: 10)
 				.fill(VaultPalette.control)
@@ -712,45 +719,150 @@ struct VaultAccountSwitcher: View {
 		.onExitCommand { isPresented = false }
 	}
 
-	private func accountRow(name: String, initials: String, account: SelectedAccount, square: Bool) -> some View {
+	/// Who's signed in, with their account on lpm.dev a click away; signed out, where to sign in.
+	@ViewBuilder
+	private var identity: some View {
+		HStack(spacing: 10) {
+			if let user = store.currentUser {
+				initialsCircle(String(user.username.prefix(1)).uppercased())
+				VStack(alignment: .leading, spacing: 1) {
+					Text(user.name ?? user.username)
+						.font(.system(size: 13, weight: .semibold))
+						.foregroundStyle(VaultPalette.textPrimary)
+						.lineLimit(1)
+					Text(user.email ?? "@\(user.username)")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.lineLimit(1)
+						.truncationMode(.middle)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				VaultBarButton(title: "Manage", height: 24) {
+					if let url = store.accountManagementURL { NSWorkspace.shared.open(url) }
+					isPresented = false
+				}
+				.help("Manage your account on lpm.dev")
+				.accessibilityLabel("Manage account")
+			} else {
+				Image(systemName: "person.crop.circle")
+					.font(.system(size: 17))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.frame(width: 34, height: 34)
+					.background(Circle().fill(VaultPalette.neutralTint))
+					.accessibilityHidden(true)
+				VStack(alignment: .leading, spacing: 1) {
+					Text("Not signed in")
+						.font(.system(size: 13, weight: .semibold))
+						.foregroundStyle(VaultPalette.textPrimary)
+					Text("Local projects stay on this Mac.")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textTertiary)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				VaultBarButton(title: "Sign In…", height: 24) {
+					store.showSettings()
+					isPresented = false
+				}
+			}
+		}
+	}
+
+	private func initialsCircle(_ initials: String) -> some View {
+		Text(initials)
+			.font(.system(size: 13, weight: .bold))
+			.foregroundStyle(VaultPalette.accentText)
+			.frame(width: 34, height: 34)
+			.background(Circle().fill(VaultPalette.accentTint))
+			.accessibilityHidden(true)
+	}
+
+	private var divider: some View {
+		VaultHairline(color: VaultPalette.rowDivider).padding(.horizontal, 10)
+	}
+
+	/// How many projects the vault has, known only for the one open now.
+	private func projectCount(of account: SelectedAccount) -> Int? {
+		store.selectedAccount == account ? store.projects.count : nil
+	}
+
+	/// What a personal vault's row says under its name, with its projects when they're known.
+	static func personalDetail(signedIn: Bool, projects: Int?) -> String {
+		[signedIn ? "Personal" : "Local only", projects?.counted("project")].compactMap { $0 }.joined(separator: " · ")
+	}
+
+	/// What an organization's row says under its name: the person's role
+	/// there, when lpm.dev sends one, and its projects when they're known.
+	static func organizationDetail(role: String?, projects: Int?) -> String {
+		let trimmed = role?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+		let role = trimmed.isEmpty ? nil : trimmed.prefix(1).uppercased() + trimmed.dropFirst()
+		return ["Organization", role, projects?.counted("project")].compactMap { $0 }.joined(separator: " · ")
+	}
+
+	private func accountRow(name: String, detail: String, initials: String, account: SelectedAccount) -> some View {
 		let selected = store.selectedAccount == account && !store.isShowingAccountPage
 		return Button {
 			store.selectAccount(account)
 			isPresented = false
 		} label: {
-			HStack(spacing: 9) {
-				VaultInitialsAvatar(initials: initials, size: 22, square: square)
-				Text(name)
-					.font(.system(size: 12.5, weight: selected ? .semibold : .regular))
-					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textPrimary)
+			HStack(spacing: 10) {
+				Text(initials)
+					.font(.system(size: 10.5, weight: .bold))
+					.foregroundStyle(selected ? .white : VaultPalette.textSecondary)
+					.frame(width: 22, height: 22)
+					.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.accent : VaultPalette.neutralTint))
+					.accessibilityHidden(true)
+				VStack(alignment: .leading, spacing: 0) {
+					Text(name)
+						.font(.system(size: 12.5, weight: selected ? .semibold : .regular))
+						.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textPrimary)
+						.lineLimit(1)
+					Text(detail)
+						.font(.system(size: 10.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.lineLimit(1)
+				}
 				Spacer(minLength: 4)
 				if selected {
 					Image(systemName: "checkmark")
 						.font(.system(size: 10, weight: .bold))
 						.foregroundStyle(VaultPalette.accentForeground)
+						.accessibilityHidden(true)
 				}
 			}
 			.padding(.horizontal, 8)
-			.padding(.vertical, 6)
+			.frame(height: 36)
 			.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.accentTint : .clear))
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
+		.accessibilityElement(children: .combine)
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 
-	private func menuRow(icon: String, title: String, shortcut: String? = nil, action: @escaping () -> Void) -> some View {
+	private enum Trailing {
+		case shortcut(String)
+		/// The row opens a page, as a menu item that leads elsewhere does.
+		case chevron
+	}
+
+	private func menuRow(icon: String, title: String, trailing: Trailing, action: @escaping () -> Void) -> some View {
 		Button(action: action) {
 			HStack(spacing: 9) {
-				Image(systemName: icon).font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary).frame(width: 14)
-				Text(title).font(.system(size: 12.5)).foregroundStyle(VaultPalette.textSecondary)
+				Image(systemName: icon).font(.system(size: 11)).foregroundStyle(VaultPalette.textSecondary).frame(width: 16)
+				Text(title).font(.system(size: 12.5)).foregroundStyle(VaultPalette.textPrimary)
 				Spacer(minLength: 4)
-				if let shortcut {
-					Text(shortcut).font(VaultTypography.tabular(10)).foregroundStyle(VaultPalette.textFaint)
+				switch trailing {
+				case .shortcut(let shortcut):
+					Text(shortcut).font(VaultTypography.tabular(10.5)).foregroundStyle(VaultPalette.textTertiary)
+				case .chevron:
+					Image(systemName: "chevron.right")
+						.font(.system(size: 9, weight: .semibold))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.accessibilityHidden(true)
 				}
 			}
 			.padding(.horizontal, 8)
-			.padding(.vertical, 6)
+			.frame(height: 28)
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)

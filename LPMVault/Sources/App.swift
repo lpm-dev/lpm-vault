@@ -180,6 +180,7 @@ struct LPMVaultApp: App {
 			ContentView(store: store)
 				.environment(updateChecker)
 				.environment(appearanceSettings)
+				.environment(quitSettings)
 				.environment(\.vaultContentObscured, isObscured)
 				.vaultAppearance(appearanceSettings.selection)
 				.tint(VaultPalette.accent)
@@ -224,6 +225,15 @@ struct LPMVaultApp: App {
 				Button("Check for Updates…") { updateChecker.checkForUpdates() }
 					.disabled(!updateChecker.canCheckForUpdates)
 			}
+			// Settings are a page in the window, behind the lock.
+			CommandGroup(replacing: .appSettings) {
+				Button("Settings…") {
+					openWindow(id: "main")
+					Task { await store.showSettingsUnlockingFirst() }
+				}
+				.keyboardShortcut(",")
+				.disabled(store.isUnlocking)
+			}
 			CommandMenu("Env Project") {
 				Button("New Secret") {
 					NotificationCenter.default.post(name: .newSecret, object: nil)
@@ -257,14 +267,6 @@ struct LPMVaultApp: App {
 			}
 		}
 
-		Settings {
-			VaultSettingsView()
-				.environment(updateChecker)
-				.environment(appearanceSettings)
-				.environment(quitSettings)
-				.vaultAppearance(appearanceSettings.selection)
-				.tint(VaultPalette.accent)
-		}
 	}
 
 }

@@ -7,8 +7,8 @@ import SwiftUI
 extension SheetInteractionTests {
 	@Suite("Account settings presentation")
 	@MainActor
-	struct AuthStatusViewTests {
-		@Test("the signed-out Account page offers local server selection only in debug builds, and points to Settings")
+	struct SettingsPagePresentationTests {
+		@Test("the signed-out Settings page offers local server selection only in debug builds, with the app's settings below")
 		func signedOutSettingsOfferLocalServerSelection() async throws {
 			let store = VaultStore(
 				keychainService: MockKeychainService(),
@@ -17,16 +17,17 @@ extension SheetInteractionTests {
 				authTokenProvider: { _, _ in nil }
 			)
 			store.appEnvironment = .production
-			let host = SheetTestHost(AuthStatusView(store: store).environment(VaultAppearanceSettings())
-				.environment(UpdateChecker()).environment(\.colorScheme, .light), size: NSSize(width: 700, height: 700), keepsRequestedSize: true)
+			let host = SheetTestHost(VaultSettingsPage(store: store).environment(VaultAppearanceSettings())
+				.environment(UpdateChecker()).environment(VaultQuitSettings()).environment(\.colorScheme, .light),
+				size: NSSize(width: 700, height: 1000), keepsRequestedSize: true)
 			defer { host.window.close() }
 			try await host.settle()
 			let labels = try await host.text()
 			#expect(labels.contains("Not logged in"))
-			#expect(labels.contains("APP SETTINGS"))
-			#expect(labels.contains("Open Settings"))
-			#expect(!AccessibilityTree.elements(in: host.window).contains { $0.says("Updates", options: .caseInsensitive) },
-				"Updates are in the Settings window")
+			for section in ["GENERAL", "APPEARANCE", "UPDATES"] {
+				#expect(AccessibilityTree.elements(in: host.window).contains { $0.says(section, options: .caseInsensitive) }, "\(section) is on the page")
+			}
+			#expect(!labels.contains("Open Settings"))
 			let lines = AccessibilityTree.lines(in: host.view)
 			let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
 			let signIn = try #require(lines.first { $0.text.contains("Sign in with browser") })
