@@ -42,6 +42,8 @@ final class VaultQuitCoordinator {
 			case schema(changes: Int)
 			/// The project's unsaved Project Settings.
 			case settings(newName: String?, changesIcon: Bool)
+			/// An environment edited as Raw text, with what saving it would change.
+			case rawText(environment: String, summary: String)
 			/// A sheet still open, with what it does and what's typed into it.
 			case sheet(title: String, detail: String)
 		}
@@ -56,7 +58,7 @@ final class VaultQuitCoordinator {
 		var editCount: Int {
 			switch kind {
 			case .keys(let keys), .review(let keys): keys.reduce(0) { $0 + $1.edits }
-			case .schema, .settings, .sheet: 0
+			case .schema, .settings, .rawText, .sheet: 0
 			}
 		}
 
@@ -71,7 +73,7 @@ final class VaultQuitCoordinator {
 		/// Whether this sheet can save it, unlike edits that need a review or an open sheet's.
 		var isSaveable: Bool {
 			switch kind {
-			case .keys, .schema, .settings: true
+			case .keys, .schema, .settings, .rawText: true
 			case .review, .sheet: false
 			}
 		}
@@ -284,9 +286,14 @@ final class VaultQuitCoordinator {
 				if !outcome.review.isEmpty { changedWhileSaving = true }
 				index += replace(at: index, with: outcome)
 			} else {
-				let state = if case .settings = item.kind { await saveSettings(item, in: store) } else { await saveSchema(item, in: store) }
+				let state = switch item.kind {
+				case .settings: await saveSettings(item, in: store)
+				case .rawText(let environment, _): await saveRawText(item, environment: environment, in: store)
+				default: await saveSchema(item, in: store)
+				}
 				guard self.run == run, phase == .saving else { return }
 				items[index].state = state
+				if case .needsReview = state { changedWhileSaving = true }
 				index += 1
 			}
 		}
@@ -387,6 +394,15 @@ final class VaultQuitCoordinator {
 		}
 	}
 
+	private func saveRawText(_ item: Item, environment: String, in store: VaultStore) async -> ItemState {
+		switch await store.saveRawTextDraft(VaultEnvironmentTarget(projectId: item.projectID, environment: environment)) {
+		case .saved: .saved
+		case .changed: .needsReview("It changed elsewhere since the edit; compare it in Raw text. Quitting discards it.")
+		case .unavailable: .failed("\(VaultProject.displayName(for: environment)) couldn't be saved.")
+		case .failed(let message): .failed(message)
+		}
+	}
+
 	private func saveSettings(_ item: Item, in store: VaultStore) async -> ItemState {
 		await store.saveProjectSettings(of: item.projectID)
 		guard store.projectSettingsDrafts[item.projectID] != nil else { return .saved }
@@ -421,11 +437,13 @@ final class VaultQuitCoordinator {
 	}
 
 	/// The sheet's rows, a project's together: its keys, the keys it can't
-	/// save, its schema draft, its Project Settings, then its open sheets.
+	/// save, its schema draft, its Project Settings, its Raw text edits, then
+	/// its open sheets.
 	static func items(for work: VaultUnsavedWork) -> [Item] {
 		let keyEdits = Dictionary(work.keyEdits.map { ($0.projectID, $0) }, uniquingKeysWith: { first, _ in first })
 		let drafts = Dictionary(work.schemaDrafts.map { ($0.projectID, $0) }, uniquingKeysWith: { first, _ in first })
 		let settings = Dictionary(work.projectSettings.map { ($0.projectID, $0) }, uniquingKeysWith: { first, _ in first })
+		let rawTexts = Dictionary(grouping: work.rawTexts, by: \.target.projectId)
 		let sheets = Dictionary(grouping: work.openSheets.filter { $0.projectID != nil }, by: { $0.projectID ?? "" })
 		var items: [Item] = []
 		func sheetItem(_ sheet: VaultUnsavedWork.OpenSheet) -> Item {
@@ -450,6 +468,17 @@ final class VaultQuitCoordinator {
 			if let edit = settings[projectID] {
 				items.append(Item(id: "settings:" + projectID, projectID: projectID, projectName: edit.projectName,
 					kind: .settings(newName: edit.newName, changesIcon: edit.changesIcon), state: .waiting))
+			}
+			for edit in rawTexts[projectID] ?? [] {
+				let state: ItemState = if !edit.environmentExists {
+					.needsReview("Its environment is gone, so quitting discards it.")
+				} else if edit.problemCount > 0 {
+					.needsReview("Fix \(edit.problemCount == 1 ? "its problem line" : "its \(edit.problemCount) problem lines") in Raw text, or quitting discards it.")
+				} else {
+					.waiting
+				}
+				items.append(Item(id: "raw:\(projectID)/\(edit.target.environment)", projectID: projectID, projectName: edit.projectName,
+					kind: .rawText(environment: edit.target.environment, summary: edit.summary), state: state))
 			}
 			items += (sheets[projectID] ?? []).map(sheetItem)
 		}

@@ -183,6 +183,136 @@ extension SheetInteractionTests {
 			#expect(!textView.isEditable)
 		}
 
+		@Test("Edit shows every key with its real value; Save writes the edit, and Undo puts it back")
+		func editSaveAndUndo() async throws {
+			let (store, _, keychain) = makeStore()
+			defer { store.lock() }
+			let undoWindow = ManualFeedbackTimer()
+			let host = try await rawText(store, undoWindow: undoWindow)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			let editor = try await editorView(in: host)
+			#expect(editor.string == "API_TOKEN=\"tok en\"\nDATABASE_URL=postgres://app:pw@db:5432/demo\nLOG_LEVEL=info\n")
+			for text in ["Editing · real values shown", "No changes yet", "Comments, blank lines and line order aren't kept.", "4 lines"] {
+				#expect(try await host.waitForText(text), "The editor says \(text)")
+			}
+			#expect(try await host.waitUntil { element("Save", in: host)?.isEnabled == false })
+			try type("debug", over: "info", in: editor)
+			try type("NEW_KEY=added\n", at: (editor.string as NSString).length, in: editor)
+			#expect(try await host.waitForText("1 added · 1 changed"))
+			#expect(try await host.waitUntil { element("Save", in: host)?.isEnabled == true })
+			try record(host, named: "raw-text-editing")
+			try await host.click("Save")
+			#expect(try await host.waitUntil {
+				keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["LOG_LEVEL": "debug", "NEW_KEY": "added"]) { $1 }
+			})
+			#expect(try await host.waitForText("Saved .env · 1 added, 1 changed"))
+			#expect(try await host.waitForText("NEW_KEY=\(VaultRawText.mask)"), "Saving ends the edit, and shows the saved lines")
+			try record(host, named: "raw-text-saved")
+			try await host.click("Undo")
+			#expect(try await host.waitUntil { keychain.envStorage["raw"]?.environments["default"] == Self.values })
+			#expect(try await host.waitForText("Put .env back as it was"))
+		}
+
+		@Test("a line that can't be saved is marked with why, by its number, and keeps Save off until it's fixed")
+		func problemLines() async throws {
+			let (store, _, _) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			let editor = try await editorView(in: host)
+			try type("bad key=1\nLOG_LEVEL=warn\n", at: (editor.string as NSString).length, in: editor)
+			#expect(try await host.waitForText("2 problems · Save is available once every line is valid"))
+			let footer = try await host.waitForElement(saying: "2 problems · Save is available once every line is valid")
+			#expect(footer.value?.contains("Line 4: invalid key name — use letters, digits and _, not starting with a digit") == true)
+			#expect(footer.value?.contains("Line 5: duplicate of line 3") == true)
+			#expect(try await host.waitUntil { element("Save", in: host)?.isEnabled == false })
+			try record(host, named: "raw-text-problems")
+			try type("BAD_KEY", over: "bad key", in: editor)
+			try type("", over: "LOG_LEVEL=warn\n", in: editor)
+			#expect(try await host.waitForText("1 added"))
+			#expect(try await host.waitUntil { element("Save", in: host)?.isEnabled == true })
+		}
+
+		@Test("text copied or cut in the editor goes to the clipboard as every copy of values does")
+		func editorCopiesLikeEveryCopy() async throws {
+			let waits = ClipboardClearWaits()
+			defer { waits.elapse() }
+			let (store, _, _) = makeStore(clearWaits: waits)
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			let editor = try await editorView(in: host)
+			let lines = editor.string as NSString
+			editor.setSelectedRange(lines.range(of: "LOG_LEVEL=info"))
+			NSApp.sendAction(#selector(NSText.copy(_:)), to: editor, from: nil)
+			let pasteboard = store.clipboard.pasteboard
+			#expect(pasteboard.string(forType: .string) == "LOG_LEVEL=info")
+			#expect(pasteboard.types?.contains(ClipboardManager.concealedType) == true)
+			#expect(try await host.waitUntil { waits.durations == [.seconds(10)] })
+			editor.setSelectedRange((editor.string as NSString).range(of: "API_TOKEN=\"tok en\"\n"))
+			NSApp.sendAction(#selector(NSText.cut(_:)), to: editor, from: nil)
+			#expect(pasteboard.string(forType: .string) == "API_TOKEN=\"tok en\"\n")
+			#expect(!editor.string.contains("API_TOKEN"))
+			#expect(try await host.waitForText("1 removed"))
+		}
+
+		@Test("a save that finds the environment changed meanwhile writes nothing, says so, and saves once compared")
+		func changedMeanwhile() async throws {
+			let (store, _, keychain) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			let editor = try await editorView(in: host)
+			try type("debug", over: "info", in: editor)
+			keychain.simulateCLISet(vaultId: "raw", environment: "default", key: "API_TOKEN", value: "from-cli")
+			try await host.click("Save")
+			#expect(try await host.waitForText(".env changed meanwhile, as by the LPM CLI, so nothing was saved."))
+			#expect(keychain.envStorage["raw"]?.environments["default"]?["LOG_LEVEL"] == "info")
+			try await host.click("Compare with current values")
+			#expect(try await host.waitForText("2 changed"), "The edit puts back the token the CLI changed, and says so")
+			try await host.click("Save")
+			#expect(try await host.waitUntil {
+				keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["LOG_LEVEL": "debug"]) { $1 }
+			})
+		}
+
+		@Test("an edit stays while the table is shown, and Cancel discards it")
+		func editStaysUntilCancelled() async throws {
+			let (store, _, keychain) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			let editor = try await editorView(in: host)
+			try type("debug", over: "info", in: editor)
+			#expect(try await host.waitForText("1 changed"))
+			try await host.click("Table")
+			#expect(try await host.waitForText("KEY", exactly: true))
+			#expect(try await host.waitForText("Raw text edit not saved"))
+			try await host.click("Raw text")
+			#expect(try await editorView(in: host).string.contains("LOG_LEVEL=debug"))
+			try await host.click("Cancel")
+			#expect(try await host.waitForText("API_TOKEN=\(VaultRawText.mask)"))
+			#expect(store.rawTextDraft(for: VaultEnvironmentTarget(projectId: "raw", environment: "default")) == nil)
+			#expect(keychain.envStorage["raw"]?.environments["default"] == Self.values)
+		}
+
+		@Test("Edit waits while keys have unsaved edits, and says so")
+		func editWaitsForKeyEdits() async throws {
+			let (store, _, _) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			let project = try #require(store.selectedProject)
+			store.keyDrafts.edit(project, key: "LOG_LEVEL") { $0.setValue("debug", in: "default") }
+			#expect(try await host.waitUntil { element("Edit .env as text", in: host)?.isEnabled == false })
+			#expect(element("Edit .env as text", in: host)?.help == "Save or discard the unsaved edits of 1 key first")
+		}
+
 		@Test("Fix in table, on a failed group's banner, shows the table")
 		func fixInTable() async throws {
 			let project = VaultProject(id: "p", name: "p", path: "", environments: ["default": ["SAVED": "x"]])
@@ -216,13 +346,16 @@ extension SheetInteractionTests {
 		}
 
 		/// The workspace showing the project's .env as Raw text. Copy
-		/// confirmations stay until the test is over.
-		private func rawText(_ store: VaultStore) async throws -> SheetTestHost<some View> {
+		/// confirmations, and a save's chance to undo, stay until the test ends them.
+		private func rawText(_ store: VaultStore, undoWindow: ManualFeedbackTimer = ManualFeedbackTimer()) async throws
+			-> SheetTestHost<some View>
+		{
 			await store.refreshCliAccess()
 			let defaults = try #require(UserDefaults(suiteName: "raw-text-interaction"))
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
 				.environment(VaultAppearanceSettings(defaults: defaults)).environment(VaultQuitSettings(defaults: defaults))
 				.environment(\.vaultCopyFeedbackTimer, ManualFeedbackTimer().timer)
+				.environment(\.vaultImportUndoTimer, undoWindow.timer)
 				.defaultAppStorage(defaults),
 				size: NSSize(width: 1300, height: 700), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.workspaceSnapshots["raw"] != nil })
@@ -231,6 +364,36 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("API_TOKEN="))
 			try await host.settle()
 			return host
+		}
+
+		private func editorView<V: View>(in host: SheetTestHost<V>) async throws -> VaultRawTextEditor.EditorTextView {
+			func find(_ view: NSView) -> VaultRawTextEditor.EditorTextView? {
+				if let editor = view as? VaultRawTextEditor.EditorTextView { return editor }
+				return view.subviews.lazy.compactMap(find).first
+			}
+			var editor: VaultRawTextEditor.EditorTextView?
+			#expect(try await host.waitUntil {
+				editor = find(host.view)
+				return editor != nil
+			}, "Raw text shows its editor")
+			return try #require(editor)
+		}
+
+		/// Types `text` over the first `old` in the editor, as a person selecting it and typing would.
+		private func type(_ text: String, over old: String, in editor: NSTextView) throws {
+			let range = (editor.string as NSString).range(of: old)
+			try #require(range.location != NSNotFound, "The editor holds \(old)")
+			editor.setSelectedRange(range)
+			editor.insertText(text, replacementRange: range)
+		}
+
+		private func type(_ text: String, at location: Int, in editor: NSTextView) throws {
+			editor.setSelectedRange(NSRange(location: location, length: 0))
+			editor.insertText(text, replacementRange: NSRange(location: location, length: 0))
+		}
+
+		private func element<V: View>(_ label: String, in host: SheetTestHost<V>) -> AccessibilityTree.Element? {
+			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.isInteractive && $0.says(label, as: .leading) }
 		}
 
 		private func codeView<V: View>(in host: SheetTestHost<V>) throws -> VaultRawTextView.CodeTextView {

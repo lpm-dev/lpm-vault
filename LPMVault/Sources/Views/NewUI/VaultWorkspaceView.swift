@@ -5,6 +5,7 @@ struct VaultWorkspaceView: View {
 	@Bindable var store: VaultStore
 	@Environment(\.vaultContentObscured) private var isObscured
 	@Environment(\.vaultCopyFeedbackTimer) private var copyFeedbackTimer
+	@Environment(\.vaultImportUndoTimer) private var undoTimer
 
 	@State private var mode: VaultWorkspaceMode = .matrix
 	@State private var filter: VaultWorkspaceFilter = .all
@@ -52,6 +53,9 @@ struct VaultWorkspaceView: View {
 	@State private var copyAllTask: Task<Void, Never>?
 	@State private var copyAllID: UUID?
 	@State private var copyLinesTask: Task<Void, Never>?
+	/// Why the last save of each Raw text edit wrote nothing.
+	@State private var rawTextFailures: [VaultEnvironmentTarget: VaultRawTextFailure] = [:]
+	@State private var rawTextSaved: VaultRawTextSaved?
 	@State private var copyFeedback: VaultCopyFeedback?
 
 	private var project: VaultProject? { store.selectedProject }
@@ -206,6 +210,7 @@ struct VaultWorkspaceView: View {
 		}
 		.onChange(of: store.selectedEnvironment) { _, environment in
 			resetCopyPresentation()
+			rawTextSaved = nil
 			exportTask?.cancel()
 			exportTask = nil
 			exportID = nil
@@ -220,6 +225,18 @@ struct VaultWorkspaceView: View {
 		.onChange(of: store.isShowingAccountPage) { _, showingAccount in
 			shownMenu = nil
 			if showingAccount { resetCopyPresentation() }
+		}
+		.task(id: rawTextSaved.map { RawTextSavedPhase(id: $0.id, undo: $0.undo) }) {
+			guard let saved = rawTextSaved else { return }
+			let timer = switch saved.undo {
+			case .available, .failed: undoTimer
+			case .undone: copyFeedbackTimer
+			case .undoing: nil as VaultFeedbackTimer?
+			}
+			guard let timer else { return }
+			do { try await timer.wait() } catch { return }
+			guard !Task.isCancelled, rawTextSaved?.id == saved.id, rawTextSaved?.undo == saved.undo else { return }
+			rawTextSaved = nil
 		}
 		.task(id: copyFeedback?.id) {
 			guard let feedbackID = copyFeedback?.id else { return }
@@ -428,7 +445,12 @@ struct VaultWorkspaceView: View {
 								onDeleteSecret: requestDeleteSecret,
 								onResizeColumns: { store.recordUserActivity() },
 								onCopyLines: copyLines,
-								copiedLineCount: copiedLineCount(in: project)
+								copiedLineCount: copiedLineCount(in: project),
+								rawEditing: rawTextEditing(in: project),
+								rawEditBlocker: store.rawTextEditBlocker,
+								onEditRaw: { store.beginRawTextEdit(order: $0) },
+								rawSaved: rawTextSaved,
+								onUndoRawSave: undoRawTextSave
 							)
 						} else {
 							VaultWorkspaceEmptyView(
@@ -1021,6 +1043,69 @@ struct VaultWorkspaceView: View {
 		copyFeedback = VaultCopyFeedback(target: .lines(context, count: lines.count))
 	}
 
+	private func rawTextEditing(in project: VaultProject) -> VaultRawTextEditing? {
+		let target = VaultEnvironmentTarget(projectId: project.id, environment: store.selectedEnvironment)
+		guard let draft = store.rawTextDraft(for: target) else { return nil }
+		return VaultRawTextEditing(
+			draft: draft,
+			isSaving: store.isSavingRawText(target),
+			failure: rawTextFailures[target],
+			onChange: { store.updateRawTextDraft(target, text: $0) },
+			onCancel: {
+				store.discardRawTextDraft(target)
+				rawTextFailures[target] = nil
+			},
+			onSave: { saveRawText(target) },
+			onCompare: {
+				store.rebaseRawTextDraft(target)
+				rawTextFailures[target] = nil
+			},
+			onCopy: { copyEditedText($0, in: target) }
+		)
+	}
+
+	/// Saves a Raw text edit, then offers to undo it for a short while.
+	private func saveRawText(_ target: VaultEnvironmentTarget) {
+		guard let draft = store.rawTextDraft(for: target), draft.canSave, !store.isSavingRawText(target) else { return }
+		rawTextFailures[target] = nil
+		rawTextSaved = nil
+		copyFeedback = nil
+		let summary = draft.changes.summary
+		Task { @MainActor in
+			switch await store.saveRawTextDraft(target) {
+			case .saved(let receipt): rawTextSaved = VaultRawTextSaved(receipt: receipt, summary: summary, savedAt: Date())
+			case .changed: rawTextFailures[target] = .changed
+			case .unavailable: break
+			case .failed(let message): rawTextFailures[target] = .failed(message)
+			}
+		}
+	}
+
+	private func undoRawTextSave() {
+		guard var saved = rawTextSaved, saved.undo == .available else { return }
+		saved.undo = .undoing
+		rawTextSaved = saved
+		let name = VaultProject.displayName(for: saved.receipt.environment)
+		Task { @MainActor in
+			let outcome = await store.undoEnvironmentChange(saved.receipt)
+			guard rawTextSaved?.id == saved.id else { return }
+			switch outcome {
+			case .saved: rawTextSaved?.undo = .undone
+			case .changed: rawTextSaved?.undo = .failed("\(name) changed after the save, so it can't be undone.")
+			case .unavailable: rawTextSaved = nil
+			case .failed(let message): rawTextSaved?.undo = .failed(message)
+			}
+		}
+	}
+
+	/// Copies what was cut or copied in Raw text's editor, as every copy of values is.
+	private func copyEditedText(_ text: String, in target: VaultEnvironmentTarget) {
+		guard store.isUnlocked, !text.isEmpty, store.clipboard.copy(text) else { return }
+		let lines = text.split(separator: "\n", omittingEmptySubsequences: true).count
+		copyFeedback = VaultCopyFeedback(target: .lines(VaultSensitiveActionContext(projectID: target.projectId,
+			environment: target.environment), count: max(1, lines)))
+	}
+
 	private func copiedLineCount(in project: VaultProject) -> Int? {
 		guard case .lines(let context, let count) = copyFeedback?.target,
 			context.projectID == project.id, context.environment == store.selectedEnvironment
@@ -1147,6 +1232,7 @@ struct VaultWorkspaceView: View {
 
 	private func resetProjectPresentation() {
 		importRequest = nil
+		rawTextSaved = nil
 		mode = pendingProjectSettings != nil && pendingProjectSettings == store.selectedProjectId ? .projectSettings : .matrix
 		pendingProjectSettings = nil
 		filter = .all

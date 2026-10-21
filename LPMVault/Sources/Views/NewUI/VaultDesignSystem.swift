@@ -64,6 +64,8 @@ enum VaultPalette {
 	static let toast = adaptive(light: 0x1C1C1E, dark: 0x1E1E20)
 	static let toastSecondaryText = Color.white.opacity(0.55)
 	static let toastConfirmation = Color(hex: 0x75DB94)
+	static let toastAction = Color(hex: 0xB9B8FF)
+	static let toastDivider = Color.white.opacity(0.2)
 
 	private static func adaptive(light: UInt, dark: UInt, darkOpacity: Double = 1) -> Color {
 		func color(_ hex: UInt, alpha: Double) -> NSColor {
@@ -229,8 +231,10 @@ enum VaultBranding {
 	}
 }
 
-/// A short note floating over the content, such as what a copy took.
+/// A short note floating over the content, such as what a copy took. One
+/// with a button keeps its parts apart for accessibility, so the button can be pressed.
 struct VaultToast<Content: View>: View {
+	var hasButton = false
 	@ViewBuilder let content: Content
 
 	var body: some View {
@@ -242,7 +246,7 @@ struct VaultToast<Content: View>: View {
 			.frame(height: 30)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.toast))
 			.shadow(color: .black.opacity(0.35), radius: 12, y: 8)
-			.accessibilityElement(children: .combine)
+			.accessibilityElement(children: hasButton ? .contain : .combine)
 	}
 }
 

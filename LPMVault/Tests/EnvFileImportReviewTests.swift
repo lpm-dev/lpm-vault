@@ -135,7 +135,7 @@ extension SheetInteractionTests {
 			let receipt = try await store.applyEnvFileImport(preview, replacingKeys: ["TOKEN"], skippingKeys: ["LEFT_OUT"]).get()
 			let imported = ["TOKEN": "new", "KEEP": "old", "SAME": "same", "NEW": "added"]
 			#expect(keychain.envStorage["project"]?.environments["default"] == imported)
-			#expect(receipt == EnvImportReceipt(projectId: "project", environment: "default",
+			#expect(receipt == EnvironmentChangeReceipt(projectId: "project", environment: "default",
 				before: ["TOKEN": "old", "KEEP": "old", "SAME": "same"], after: imported))
 			#expect(preview.outcome(replacing: ["TOKEN"], skipping: ["LEFT_OUT"]).summary == "1 added · 1 replaced · 1 kept · 2 skipped")
 			#expect(keychain.storedSyncMetadata(vaultId: "project")?.isDirty == true)
@@ -179,17 +179,17 @@ extension SheetInteractionTests {
 			defer { store.lock() }
 			let receipt = try await store.applyEnvFileImport(try await review(store), replacingKeys: ["TOKEN"]).get()
 			#expect(keychain.envStorage["project"]?.environments["default"] == ["TOKEN": "incoming", "SAME": "same", "NEW": "added"])
-			#expect(await store.undoEnvImport(receipt) == .saved)
+			#expect(await store.undoEnvironmentChange(receipt) == .saved)
 			#expect(keychain.envStorage["project"]?.environments["default"] == ["TOKEN": "existing", "SAME": "same"])
 			#expect(store.projects[0].environments["default"] == ["TOKEN": "existing", "SAME": "same"])
 			#expect(keychain.envStorage["project"]?.environments["staging"] == [:], "Other environments are left alone")
 
 			let again = try await store.applyEnvFileImport(try await review(store), replacingKeys: []).get()
 			keychain.envStorage["project"]?.environments["default"]?["FROM_CLI"] = "1"
-			#expect(await store.undoEnvImport(again) == .changed)
+			#expect(await store.undoEnvironmentChange(again) == .changed)
 			#expect(keychain.envStorage["project"]?.environments["default"]?["NEW"] == "added", "An environment changed since isn't undone")
-			let nothing = EnvImportReceipt(projectId: "project", environment: "default", before: [:], after: [:])
-			#expect(await store.undoEnvImport(nothing) == .unavailable, "An import that changed nothing has nothing to undo")
+			let nothing = EnvironmentChangeReceipt(projectId: "project", environment: "default", before: [:], after: [:])
+			#expect(await store.undoEnvironmentChange(nothing) == .unavailable, "An import that changed nothing has nothing to undo")
 		}
 
 		@Test(

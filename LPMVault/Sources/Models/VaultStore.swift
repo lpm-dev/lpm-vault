@@ -1258,6 +1258,10 @@ final class VaultStore {
   /// Projects with unsaved schema edits, which changes only when a draft
   /// starts or ends, so views that show it skip keystroke updates.
   private(set) var projectsWithSchemaDrafts: Set<String> = []
+  /// Raw text edits not saved yet, by environment. Locking or another account discards them.
+  private(set) var rawTextDrafts: [VaultEnvironmentTarget: VaultRawTextDraft] = [:]
+  /// The Raw text drafts being saved, each with its save's own number.
+  private var rawTextSaves: [VaultEnvironmentTarget: UUID] = [:]
   /// The folder each draft's rules were read from.
   @ObservationIgnored private var schemaDraftFolders: [String: SchemaDraftFolder] = [:]
   /// Counts each project's draft changes, so an evaluation is matched to its draft cheaply.
@@ -1340,6 +1344,7 @@ final class VaultStore {
       lastSyncWarnings = []
       invalidateLocalStateRefresh()
       keyDrafts.discardAll()
+      rawTextDrafts.removeAll()
       discardAllProjectSettings()
       clearKeyDescriptions()
     }
@@ -3203,6 +3208,7 @@ final class VaultStore {
       mutation: .deleteEnvironment(name: name, expectedSecrets: expectedSecrets)
     ) { [weak self] persisted in
       guard let self else { return }
+      rawTextDrafts.removeValue(forKey: VaultEnvironmentTarget(projectId: projectId, environment: name))
       var order = orderedEnvironmentNames(for: persisted)
       order.removeAll { $0 == name }
       saveEnvironmentOrder(for: projectId, order: order)
@@ -3256,6 +3262,9 @@ final class VaultStore {
       )
     ) { [weak self] persisted in
       guard let self else { return }
+      if let draft = rawTextDrafts.removeValue(forKey: VaultEnvironmentTarget(projectId: projectId, environment: oldName)) {
+        rawTextDrafts[VaultEnvironmentTarget(projectId: projectId, environment: newName)] = draft.renamed(to: newName)
+      }
       var order = orderedEnvironmentNames(for: persisted)
       if let idx = order.firstIndex(of: oldName) {
         order[idx] = newName
@@ -3351,7 +3360,7 @@ final class VaultStore {
   /// environment's review is created with `createEnvironment(from:skippingKeys:)`.
   func applyEnvFileImport(
     _ review: EnvFileImportReview, replacingKeys: Set<String>, skippingKeys: Set<String> = []
-  ) async -> Result<EnvImportReceipt, EnvFileImportError> {
+  ) async -> Result<EnvironmentChangeReceipt, EnvFileImportError> {
     let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
     guard isUnlocked else { return .failure(.vaultLocked) }
     guard !review.createsEnvironment, review.sessionGeneration == vaultSessionGeneration,
@@ -3372,7 +3381,7 @@ final class VaultStore {
   /// matches the reviewed baseline, so concurrent CLI edits are never replaced.
   private func commitEnvFileImport(
     _ review: EnvFileImportReview, replacingKeys: Set<String>, skippingKeys: Set<String>
-  ) async -> Result<EnvImportReceipt, EnvFileImportError> {
+  ) async -> Result<EnvironmentChangeReceipt, EnvFileImportError> {
     let write = writes.begin()
     defer { writes.end(write) }
     let projectId = review.projectId
@@ -3413,7 +3422,7 @@ final class VaultStore {
 
     switch commit {
     case .success(let persisted):
-      let receipt = EnvImportReceipt(
+      let receipt = EnvironmentChangeReceipt(
         projectId: projectId, environment: environment, before: review.baseline,
         after: persisted.project.environments[environment] ?? [:])
       guard sessionGeneration == vaultSessionGeneration,
@@ -3455,11 +3464,9 @@ final class VaultStore {
     }
   }
 
-  /// Reads variables from a file or pasted text for the selected project,
-  /// off the main actor; a lock or another project cancels the read.
-  /// Puts the environment an import changed back as it was, as long as
-  /// nothing has changed it since, as the LPM CLI could have.
-  func undoEnvImport(_ receipt: EnvImportReceipt) async -> ProjectMutationOutcome {
+  /// Puts an environment that an import or a Raw text save changed back as
+  /// it was, as long as nothing has changed it since, as the LPM CLI could have.
+  func undoEnvironmentChange(_ receipt: EnvironmentChangeReceipt) async -> ProjectMutationOutcome {
     guard isUnlocked, receipt.changed, selectedProjectId == receipt.projectId,
       let project = projects.first(where: { $0.id == receipt.projectId }),
       project.environments[receipt.environment] != nil
@@ -3474,6 +3481,92 @@ final class VaultStore {
     }
   }
 
+  // MARK: - Raw text editing
+
+  /// Why the selected environment can't be edited as Raw text now, or nil when it can.
+  var rawTextEditBlocker: String? {
+    guard canUseLocalSecrets, let project = selectedProject, project.environments[selectedEnvironment] != nil else {
+      return "Values can't be edited right now"
+    }
+    // A key's edit can rename it or change it in every environment, which
+    // the text, written from the saved values, would put back.
+    let edited = keyDrafts.editedKeys(in: project.id).count
+    guard edited == 0 else { return "Save or discard the unsaved edits of \(edited.counted("key")) first" }
+    return nil
+  }
+
+  func rawTextDraft(for target: VaultEnvironmentTarget) -> VaultRawTextDraft? {
+    rawTextDrafts[target]
+  }
+
+  /// Edits the selected environment as Raw text, from a line for each of its
+  /// keys in `order`, or goes back to the edit that's already there.
+  @discardableResult
+  func beginRawTextEdit(order: [String]) -> Bool {
+    guard rawTextEditBlocker == nil, let project = selectedProject, let values = project.environments[selectedEnvironment] else {
+      return false
+    }
+    let target = VaultEnvironmentTarget(projectId: project.id, environment: selectedEnvironment)
+    if rawTextDrafts[target] == nil {
+      rawTextDrafts[target] = VaultRawTextDraft(target: target, baseline: values, order: order)
+    }
+    return true
+  }
+
+  func updateRawTextDraft(_ target: VaultEnvironmentTarget, text: String) {
+    guard isUnlocked, rawTextSaves[target] == nil else { return }
+    rawTextDrafts[target]?.text = text
+  }
+
+  func discardRawTextDraft(_ target: VaultEnvironmentTarget) {
+    guard rawTextSaves[target] == nil else { return }
+    rawTextDrafts.removeValue(forKey: target)
+  }
+
+  /// Compares a draft with its environment's values now, as after the LPM CLI changed them.
+  func rebaseRawTextDraft(_ target: VaultEnvironmentTarget) {
+    guard rawTextSaves[target] == nil,
+      let values = projects.first(where: { $0.id == target.projectId })?.environments[target.environment]
+    else { return }
+    rawTextDrafts[target]?.baseline = values
+  }
+
+  /// Whether a draft is being saved, when it can't be changed.
+  func isSavingRawText(_ target: VaultEnvironmentTarget) -> Bool {
+    rawTextSaves[target] != nil
+  }
+
+  /// Writes a draft's values as its environment's, as long as the
+  /// environment still has the values the draft was compared with.
+  func saveRawTextDraft(_ target: VaultEnvironmentTarget) async -> VaultRawTextSaveOutcome {
+    guard isUnlocked, let draft = rawTextDrafts[target], draft.canSave, rawTextSaves[target] == nil else { return .unavailable }
+    guard let project = projects.first(where: { $0.id == target.projectId }), project.environments[target.environment] != nil else {
+      return .unavailable
+    }
+    let saveID = UUID()
+    rawTextSaves[target] = saveID
+    defer { if rawTextSaves[target] == saveID { rawTextSaves.removeValue(forKey: target) } }
+    recordUserActivity()
+    let values = draft.check.values
+    let outcome = await withCheckedContinuation { continuation in
+      enqueueProjectMutation(
+        base: project,
+        mutation: .restoreEnvironment(name: target.environment, expectedSecrets: draft.baseline, restored: values),
+        reportsFailures: false
+      ) { continuation.resume(returning: $0) }
+    }
+    switch outcome {
+    case .saved:
+      rawTextDrafts.removeValue(forKey: target)
+      return .saved(EnvironmentChangeReceipt(projectId: target.projectId, environment: target.environment, before: draft.baseline, after: values))
+    case .changed: return .changed
+    case .unavailable: return .unavailable
+    case .failed(let message): return .failed(message)
+    }
+  }
+
+  /// Reads variables from a file or pasted text for the selected project,
+  /// off the main actor; a lock or another project cancels the read.
   func loadEnvImport(
     _ input: EnvImportInput,
     for projectId: String
@@ -5246,6 +5339,7 @@ final class VaultStore {
     lastSyncWarnings = []
     unlockFailure = nil
     keyDrafts.discardAll()
+    rawTextDrafts.removeAll()
     discardAllProjectSettings()
     openSheetWork.removeAll()
     clearKeyDescriptions()

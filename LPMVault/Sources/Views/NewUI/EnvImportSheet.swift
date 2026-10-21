@@ -21,7 +21,7 @@ struct EnvImportSheet: View {
 	private enum Step {
 		case choosing
 		case reviewing(EnvFileImportReview)
-		case imported(EnvFileImportReview, EnvImportReceipt)
+		case imported(EnvFileImportReview, EnvironmentChangeReceipt)
 	}
 
 	private enum Work {
