@@ -3251,8 +3251,10 @@ final class VaultStore {
 
   // MARK: - Bounded Local Dotenv Imports
 
-  func prepareEnvFileImport(
-    at url: URL, to projectId: String, environment: String
+  /// Compares `imported`, read for the selected environment, with the
+  /// environment's durable values, which the review keeps as its baseline.
+  func prepareEnvImport(
+    _ imported: ImportedEnvFile, from source: EnvImportSource, to projectId: String, environment: String
   ) async -> Result<EnvFileImportReview, EnvFileImportError> {
     guard isUnlocked else { return .failure(.vaultLocked) }
     guard selectedProjectId == projectId, selectedEnvironment == environment,
@@ -3264,11 +3266,6 @@ final class VaultStore {
     let session = vaultSessionGeneration
     cancelLocalEnvImport(projectId: projectId, environment: environment)
     localEnvReviewIDs[target] = reviewID
-    let imported: ImportedEnvFile
-    switch await loadEnvFilePreview(at: url, for: projectId) {
-    case .success(let file): imported = file
-    case .failure(let failure): return .failure(failure)
-    }
     let durable = await persistence.loadProject(vaultId: projectId)
     guard isUnlocked, session == vaultSessionGeneration,
       localEnvReviewIDs[target] == reviewID, selectedProjectId == projectId,
@@ -3282,7 +3279,7 @@ final class VaultStore {
       do {
         let review = try await Task.detached(priority: .userInitiated) {
           try EnvFileImportReview(id: reviewID, project: current, environment: environment,
-            sourceURL: url, sessionGeneration: session, imported: imported)
+            source: source, sessionGeneration: session, imported: imported)
         }.value
         guard isUnlocked, session == vaultSessionGeneration,
           localEnvReviewIDs[target] == reviewID, selectedProjectId == projectId,
@@ -3407,8 +3404,10 @@ final class VaultStore {
     }
   }
 
-  func loadEnvFilePreview(
-    at url: URL,
+  /// Reads variables from a file or pasted text for the selected project,
+  /// off the main actor; a lock or another project cancels the read.
+  func loadEnvImport(
+    _ input: EnvImportInput,
     for projectId: String
   ) async -> Result<ImportedEnvFile, EnvFileImportError> {
     guard isUnlocked else { return .failure(.vaultLocked) }
@@ -3418,7 +3417,7 @@ final class VaultStore {
     let requestId = UUID()
     let sessionGeneration = vaultSessionGeneration
     let task = Task { [envFileImportService] in
-      let imported = try await envFileImportService.load(at: url)
+      let imported = try await envFileImportService.load(input)
       try Task.checkCancellation()
       return imported
     }

@@ -89,13 +89,23 @@ struct VaultStoreTests {
 		return (store, keychain, biometric, api)
 	}
 
+	/// Reads a dotenv file and reviews it for the selected destination, as the import sheet does.
+	private func review(
+		_ store: VaultStore, _ url: URL, to projectId: String, environment: String
+	) async -> Result<EnvFileImportReview, EnvFileImportError> {
+		switch await store.loadEnvImport(.file(url), for: projectId) {
+		case .success(let imported): await store.prepareEnvImport(imported, from: .file(url), to: projectId, environment: environment)
+		case .failure(let error): .failure(error)
+		}
+	}
+
 	/// Reviews a dotenv file for the selected destination, then imports it
 	/// keeping existing values except `replacing`.
 	private func reviewAndImport(
 		_ store: VaultStore, _ url: URL, to projectId: String, environment: String,
 		replacing: Set<String> = []
 	) async -> Result<ImportedEnvFile, EnvFileImportError> {
-		switch await store.prepareEnvFileImport(at: url, to: projectId, environment: environment) {
+		switch await review(store, url, to: projectId, environment: environment) {
 		case .success(let review): await store.applyEnvFileImport(review, replacingKeys: replacing)
 		case .failure(let error): .failure(error)
 		}
@@ -1725,7 +1735,26 @@ struct VaultStoreTests {
 		store.lock()
 	}
 
-	@Test("tab changes cancel a pending dotenv import instead of redirecting it")
+	@Test("pasted text reads for the selected project, reviews as pasted text and imports like a file")
+	func pastedTextImport() async throws {
+		let (store, keychain, _, _) = makeStore(
+			projects: [(id: "id-1", name: "project", path: "", secrets: ["OLD": "value"])],
+			envFileImportService: EnvFileImportService()
+		)
+		store.isUnlocked = true
+		store.openProject(id: "id-1")
+		let imported = try await store.loadEnvImport(.text("NEW=1\nOLD=changed\n"), for: "id-1").get()
+		let review = try await store.prepareEnvImport(imported, from: .pastedText, to: "id-1", environment: "default").get()
+		#expect(review.source == .pastedText && review.source.name == "Pasted text")
+		#expect(review.rows.map(\.change) == [.added, .changed])
+		_ = try await store.applyEnvFileImport(review, replacingKeys: ["OLD"]).get()
+		#expect(keychain.envStorage["id-1"]?.environments["default"] == ["NEW": "1", "OLD": "changed"])
+		#expect(await store.loadEnvImport(.text("A=1"), for: "another") == .failure(.targetUnavailable))
+		store.lock()
+		#expect(await store.loadEnvImport(.text("A=1"), for: "id-1") == .failure(.vaultLocked))
+	}
+
+	@Test("a tab change during a dotenv read refuses its review instead of redirecting it")
 	func localEnvImportCannotFollowTabSelection() async {
 		let importer = MockEnvFileImportService()
 		await importer.enableGate()
@@ -1747,14 +1776,14 @@ struct VaultStoreTests {
 		await importer.resolve(
 			"slow.env", with: .success(ImportedEnvFile(secrets: ["STALE": "secret"])))
 
-		#expect(await task.value == .failure(.cancelled))
+		#expect(await task.value == .failure(.targetUnavailable))
 		#expect(store.projects[0].environments["default"] == ["OLD": "value"])
 		#expect(store.projects[0].environments["staging"]?.isEmpty == true)
 		#expect(keychain.envStorage["id-1"]?.environments["default"] == ["OLD": "value"])
 	}
 
-	@Test("a newer dotenv import supersedes an older request to the same destination")
-	func newestLocalEnvImportWins() async {
+	@Test("a newer review of the same destination supersedes an older one, whichever read finished first")
+	func newestLocalEnvImportWins() async throws {
 		let importer = MockEnvFileImportService()
 		await importer.enableGate()
 		let (store, keychain, _, _) = makeStore(
@@ -1764,22 +1793,17 @@ struct VaultStoreTests {
 		store.isUnlocked = true
 		store.openProject(id: "id-1")
 
-		let older = Task {
-			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/older.env"), to: "id-1", environment: "default")
-		}
+		let older = Task { await review(store, URL(fileURLWithPath: "/tmp/older.env"), to: "id-1", environment: "default") }
 		while !(await importer.hasStarted("older.env")) { await Task.yield() }
-		let newer = Task {
-			await reviewAndImport(store, URL(fileURLWithPath: "/tmp/newer.env"), to: "id-1", environment: "default")
-		}
+		await importer.resolve("older.env", with: .success(ImportedEnvFile(secrets: ["KEY": "old"])))
+		let olderReview = try await older.value.get()
+		let newer = Task { await review(store, URL(fileURLWithPath: "/tmp/newer.env"), to: "id-1", environment: "default") }
 		while !(await importer.hasStarted("newer.env")) { await Task.yield() }
+		await importer.resolve("newer.env", with: .success(ImportedEnvFile(secrets: ["KEY": "new"])))
+		let newerReview = try await newer.value.get()
 
-		await importer.resolve(
-			"newer.env", with: .success(ImportedEnvFile(secrets: ["KEY": "new"])))
-		await importer.resolve(
-			"older.env", with: .success(ImportedEnvFile(secrets: ["KEY": "old"])))
-
-		#expect(await newer.value == .success(ImportedEnvFile(secrets: ["KEY": "new"])))
-		#expect(await older.value == .failure(.cancelled))
+		#expect(await store.applyEnvFileImport(olderReview, replacingKeys: []) == .failure(.cancelled))
+		#expect(await store.applyEnvFileImport(newerReview, replacingKeys: []) == .success(ImportedEnvFile(secrets: ["KEY": "new"])))
 		#expect(store.projects[0].secrets(for: "default")["KEY"] == "new")
 		#expect(keychain.storage["id-1"]?.secrets["KEY"] == "new")
 	}
@@ -1889,8 +1913,8 @@ struct VaultStoreTests {
 		)
 		store.isUnlocked = true
 		store.openProject(id: "id-1")
-		guard case .success(let review) = await store.prepareEnvFileImport(
-			at: URL(fileURLWithPath: "/tmp/failure.env"), to: "id-1", environment: "default"
+		guard case .success(let review) = await review(
+			store, URL(fileURLWithPath: "/tmp/failure.env"), to: "id-1", environment: "default"
 		) else {
 			Issue.record("Expected a review before the failing commit")
 			return
@@ -2129,8 +2153,8 @@ struct VaultStoreTests {
 		store.openProject(id: "id-1")
 
 		let preview = Task {
-			await store.loadEnvFilePreview(
-				at: URL(fileURLWithPath: "/tmp/project-one.env"),
+			await store.loadEnvImport(
+				.file(URL(fileURLWithPath: "/tmp/project-one.env")),
 				for: "id-1"
 			)
 		}

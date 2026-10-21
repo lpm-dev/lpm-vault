@@ -44,9 +44,9 @@ struct VaultWorkspaceView: View {
 	@State private var conflictTarget: VaultSyncTarget?
 	@State private var showConnectCLISheet = false
 	@State private var publishSession: PublishSession?
-	@State private var importReview: EnvFileImportReview?
-	@State private var currentImportTask: Task<Void, Never>?
-	@State private var currentImportID: UUID?
+	@State private var importRequest: EnvImportRequest?
+	@State private var isImportDropTargeted = false
+	@State private var hostWindow = VaultHostWindow()
 	@State private var exportTask: Task<Void, Never>?
 	@State private var exportID: UUID?
 	@State private var copyAllTask: Task<Void, Never>?
@@ -194,6 +194,7 @@ struct VaultWorkspaceView: View {
 	var body: some View {
 		workspaceDialogs
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
+		.onReceive(NotificationCenter.default.publisher(for: .importVariables)) { _ in presentImport() }
 		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
 			if let project { openProjectSettings(project, focusingName: false) }
 		}
@@ -206,10 +207,6 @@ struct VaultWorkspaceView: View {
 		}
 		.onChange(of: store.selectedEnvironment) { _, environment in
 			resetCopyPresentation()
-			importReview = nil
-			currentImportTask?.cancel()
-			currentImportTask = nil
-			currentImportID = nil
 			exportTask?.cancel()
 			exportTask = nil
 			exportID = nil
@@ -247,9 +244,6 @@ struct VaultWorkspaceView: View {
 			if obscured { dismissNativeDialogsForPrivacy() }
 		}
 		.onDisappear {
-			currentImportTask?.cancel()
-			currentImportTask = nil
-			currentImportID = nil
 			exportTask?.cancel()
 			exportTask = nil
 			exportID = nil
@@ -410,7 +404,6 @@ struct VaultWorkspaceView: View {
 									get: { tableColumnWidths[project.id] ?? VaultProjectTableColumnWidths() },
 									set: { tableColumnWidths[project.id] = $0 }
 								),
-								isImporting: currentImportTask != nil,
 								isCopyingAll: copyAllTask != nil,
 								isCopiedAll: copyFeedback?.target == .all(VaultSensitiveActionContext(
 									projectID: project.id, environment: store.selectedEnvironment
@@ -420,7 +413,7 @@ struct VaultWorkspaceView: View {
 								isChangingCliAccess: store.isChangingCliAccess,
 								onChangeCliAccess: { access in Task { await store.changeCliAccess(to: access) } },
 								onCopyAll: copyAll,
-								onImport: importCurrentEnvironment,
+								onImport: { presentImport() },
 								onExport: exportCurrentEnvironment,
 								onProjectSettings: { openProjectSettings(project, focusingName: false) },
 								editedKeys: store.keyDrafts.editedKeys(in: project.id),
@@ -525,6 +518,14 @@ struct VaultWorkspaceView: View {
 		.background(VaultPalette.content)
 		.frame(minWidth: 1040, minHeight: 640)
 		.environment(\.vaultSchemaKeysSuspended, shownMenu != nil)
+		.background(VaultHostWindowReader(host: hostWindow))
+		.dropDestination(for: URL.self) { urls, _ in importDropped(urls) } isTargeted: { isImportDropTargeted = $0 }
+		.overlay {
+			if isImportDropTargeted, canPresentImport, let project {
+				importDropHighlight(into: project)
+			}
+		}
+		.animation(.easeOut(duration: 0.12), value: isImportDropTargeted)
 		.overlay {
 			if shownMenu == .account {
 				ZStack(alignment: .bottomLeading) {
@@ -596,8 +597,9 @@ struct VaultWorkspaceView: View {
 
 	private var workspaceSheets: some View {
 		workspaceLayout
-		.sheet(item: $importReview) { review in
-			EnvFileImportReviewSheet(store: store, review: review).vaultPrivacyProtected(isObscured)
+		.sheet(item: $importRequest) { request in
+			EnvImportSheet(store: store, projectID: request.projectID, environment: request.environment, file: request.file)
+				.vaultPrivacyProtected(isObscured)
 		}
 		.sheet(isPresented: $showNewProject) {
 			NewVaultSheet(store: store).vaultPrivacyProtected(isObscured)
@@ -830,10 +832,6 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func dismissNativeDialogsForPrivacy() {
-		importReview = nil
-		currentImportTask?.cancel()
-		currentImportTask = nil
-		currentImportID = nil
 		renameEnvironmentTarget = nil
 		duplicateEnvironmentTarget = nil
 		environmentNameDraft = ""
@@ -998,29 +996,42 @@ struct VaultWorkspaceView: View {
 		}
 	}
 
-	private func importCurrentEnvironment() {
-		guard let project, currentImportTask == nil, importReview == nil else { return }
-		let environment = store.selectedEnvironment
-		let panel = NSOpenPanel()
-		panel.canChooseFiles = true
-		panel.canChooseDirectories = false
-		panel.allowsMultipleSelection = false
-		panel.message = "Import secrets into \"\(VaultProject.displayName(for: environment))\""
-		guard runVaultPrivacyAwareModal(panel) == .OK, let url = panel.url else { return }
+	/// Whether Import opens: on a project's page, with nothing else in front of the window.
+	private var canPresentImport: Bool {
+		store.isUnlocked && !store.isShowingAccountPage && project != nil && importRequest == nil && !hostWindow.hasAttachedSheet
+	}
 
-		let requestID = UUID()
-		currentImportID = requestID
-		currentImportTask = Task {
-			let result = await store.prepareEnvFileImport(at: url, to: project.id, environment: environment)
-			guard currentImportID == requestID else { return }
-			currentImportTask = nil
-			currentImportID = nil
-			switch result {
-			case .success(let review): importReview = review
-			case .failure(.cancelled): break
-			case .failure(let error): store.error = error.localizedDescription
-			}
+	/// Opens the import sheet for the selected environment, reading `file` when one was dropped.
+	private func presentImport(file: URL? = nil) {
+		guard canPresentImport, let project else { return }
+		store.recordUserActivity()
+		shownMenu = nil
+		importRequest = EnvImportRequest(projectID: project.id, environment: store.selectedEnvironment, file: file)
+	}
+
+	/// A file dropped anywhere on the window opens the import sheet reading it.
+	private func importDropped(_ urls: [URL]) -> Bool {
+		guard canPresentImport, case .success(let file) = EnvImportDrop.file(in: urls) else { return false }
+		presentImport(file: file)
+		return true
+	}
+
+	private func importDropHighlight(into project: VaultProject) -> some View {
+		ZStack {
+			RoundedRectangle(cornerRadius: 12)
+				.fill(VaultPalette.accent.opacity(0.06))
+			RoundedRectangle(cornerRadius: 12)
+				.strokeBorder(VaultPalette.accent.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+			Label("Import into \(project.name)", systemImage: "arrow.down.doc")
+				.font(.system(size: 13, weight: .semibold))
+				.foregroundStyle(.white)
+				.padding(.horizontal, 14)
+				.padding(.vertical, 9)
+				.background(Capsule().fill(VaultPalette.accent))
 		}
+		.padding(10)
+		.allowsHitTesting(false)
+		.transition(.opacity)
 	}
 
 	private func exportCurrentEnvironment() {
@@ -1103,7 +1114,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func resetProjectPresentation() {
-		importReview = nil
+		importRequest = nil
 		mode = pendingProjectSettings != nil && pendingProjectSettings == store.selectedProjectId ? .projectSettings : .matrix
 		pendingProjectSettings = nil
 		filter = .all
@@ -1115,9 +1126,6 @@ struct VaultWorkspaceView: View {
 		showsInspector = false
 		shownMenu = nil
 		conflictTarget = nil
-		currentImportTask?.cancel()
-		currentImportTask = nil
-		currentImportID = nil
 		exportTask?.cancel()
 		exportTask = nil
 		exportID = nil

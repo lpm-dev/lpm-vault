@@ -21,7 +21,7 @@ extension SheetInteractionTests {
 				("Connect CLI", .button), ("Refresh", .button), ("Publish…", .button), ("Lock LPM Vault", .button),
 				("CLI approval", .checkBox), ("Show inspector", .button), ("Project Settings", .button), ("New key", .button),
 				("Reveal all values", .checkBox), ("Copy all .env values", .button),
-				("Import a .env file into .env", .button), ("Export .env", .button),
+				("Import variables into .env", .button), ("Export .env", .button),
 			]
 			let elements = AccessibilityTree.visibleElements(in: host.window, of: host.view)
 			for (name, role) in expected {
@@ -72,7 +72,7 @@ extension SheetInteractionTests {
 					try await host.click("Show inspector")
 					#expect(try await host.waitForText("Hide inspector", exactly: true))
 				}
-				for name in ["Import a .env file into .env", "Export .env"] {
+				for name in ["Import variables into .env", "Export .env"] {
 					let drawn = try await host.drawnFrame(saying: name)
 					#expect((drawn.width > 30) == labeled, "\(name) at \(width) points draws \(drawn)")
 				}

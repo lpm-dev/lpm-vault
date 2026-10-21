@@ -38,6 +38,7 @@
 		1D5BFD9F340551A837E53B17 /* ProjectIconImageFolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 750551C202070054AE904168 /* ProjectIconImageFolder.swift */; };
 		1DA17DD2292B9A6630D4BD1E /* NetlifyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 458FE25088254AA68B9EDEE1 /* NetlifyClient.swift */; };
 		1DE21B8419F44BB534C03C30 /* PublishHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FEFF73DB71597834B779F2 /* PublishHistory.swift */; };
+		1E57F9952FCF2A218E053C7A /* EnvImportSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92AD9FEEEB5692EB4CAD28D /* EnvImportSource.swift */; };
 		1F1703A5C68145FAB01857A6 /* VercelClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38F25A372F8AAC1E6FD1C755 /* VercelClientTests.swift */; };
 		219330ADC46327384FBA61A1 /* GitHubConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 556FDB4B6F03372C309D8A10 /* GitHubConnector.swift */; };
 		22DCA3EED52A65557FAAE649 /* ModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10F9038EDB0DF8525A388573 /* ModelTests.swift */; };
@@ -47,6 +48,7 @@
 		24D3D4A9E0C8E1FDA0B51B05 /* ConfirmDialogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98580AC2C140CBEBB957A12E /* ConfirmDialogTests.swift */; };
 		27447FD6BA072FEA0D48D8FD /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A457BD449E91D4CB9859C4BC /* Sparkle */; };
 		28110C97F5768C223A92AED9 /* SchemaClientPrefixTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E1922750CFA7B974B824160 /* SchemaClientPrefixTests.swift */; };
+		290FD907B22A1C8D82B7C27F /* EnvImportSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF425741AB4318D4F884CC2C /* EnvImportSheetTests.swift */; };
 		292CA418679C93A21914393C /* CoolifyPublishing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2965F7490F3928DA989BBC43 /* CoolifyPublishing.swift */; };
 		2B2B19A794629264CAEB0D0E /* CoolifyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1537A923FE9D31FAE64204AD /* CoolifyClient.swift */; };
 		2B86293F0EFF24BA77BD932D /* VaultSchemaClientPrefixes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E19BECC3EE6A24B2A9E3C04 /* VaultSchemaClientPrefixes.swift */; };
@@ -166,6 +168,7 @@
 		941460F227C1E7E8B4D20F20 /* ProjectEnvSchemaOverview.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE4036BEAE9D18D531B8B023 /* ProjectEnvSchemaOverview.swift */; };
 		944FFE2B1896AE3C17197674 /* VaultSheetChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 928F7EC25905ABD41EAD3431 /* VaultSheetChrome.swift */; };
 		94CE98228716C7DC2F4FDD6B /* NetlifyPublishingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E3F7B9D7D51756CEBF3BDB /* NetlifyPublishingTests.swift */; };
+		951307774BC5CE6E1CF0591B /* EnvImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01D3798174BCEF3FD9DC5CE2 /* EnvImportSheet.swift */; };
 		97B62C0D8945A7B4AB1BDF04 /* PlatformTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 678F37650ABEEBAF7CCA6AE6 /* PlatformTokens.swift */; };
 		98E999243060235FCAE05FFF /* ProjectConfigWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4BA60E4876BDA7818D1F5A /* ProjectConfigWatcher.swift */; };
 		9985BDBA7A430BE63659F484 /* OrgVaultsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0682E805810ACD18F61FEDF2 /* OrgVaultsSheet.swift */; };
@@ -287,6 +290,7 @@
 /* Begin PBXFileReference section */
 		0031F9F691CEFB97DCB58694 /* VaultWritesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultWritesTests.swift; sourceTree = "<group>"; };
 		011E191D4571C3B1A4F17C66 /* AccessibilityTree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityTree.swift; sourceTree = "<group>"; };
+		01D3798174BCEF3FD9DC5CE2 /* EnvImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvImportSheet.swift; sourceTree = "<group>"; };
 		0215A91F1A80E56B5A6DFB1B /* ProjectEnvSchemaFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaFileTests.swift; sourceTree = "<group>"; };
 		031C570F6BF94FC959CB4D89 /* AuthSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionCoordinator.swift; sourceTree = "<group>"; };
 		03D4738882967FABB536A563 /* PlatformTokenRefreshTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformTokenRefreshTests.swift; sourceTree = "<group>"; };
@@ -503,6 +507,7 @@
 		C68A0B5B65065CE20F58D81F /* VaultResizablePane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultResizablePane.swift; sourceTree = "<group>"; };
 		C73D28E2D226A96AFDA3DBFA /* CloudflarePublishing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudflarePublishing.swift; sourceTree = "<group>"; };
 		C7E51C884F46360759CD84ED /* EnvFileImportReviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReviewSheet.swift; sourceTree = "<group>"; };
+		C92AD9FEEEB5692EB4CAD28D /* EnvImportSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvImportSource.swift; sourceTree = "<group>"; };
 		C96D5EC68C7C4002C97583C4 /* VaultWindowMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultWindowMenu.swift; sourceTree = "<group>"; };
 		C9C4F938186221E2BF4E04C9 /* Round4BenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round4BenchmarkTests.swift; sourceTree = "<group>"; };
 		CAE5A4A3721AD4F9A18CDD9A /* KeyApprovalSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyApprovalSheet.swift; sourceTree = "<group>"; };
@@ -527,6 +532,7 @@
 		DCE17900DAC1D1D1255644A4 /* VaultQuitCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultQuitCoordinator.swift; sourceTree = "<group>"; };
 		DD382178E5B936352E5D8275 /* VaultWrites.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultWrites.swift; sourceTree = "<group>"; };
 		DD74662E9FB71D3D0F42C06B /* ProjectIconCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectIconCatalog.swift; sourceTree = "<group>"; };
+		DF425741AB4318D4F884CC2C /* EnvImportSheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvImportSheetTests.swift; sourceTree = "<group>"; };
 		E193FA88E1F59BB173A56569 /* LoopbackHTTP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackHTTP.swift; sourceTree = "<group>"; };
 		E22643ECC7E5386112087259 /* RustSchemaEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustSchemaEngine.swift; sourceTree = "<group>"; };
 		E346C66B96EDD8D6801FA0D9 /* VaultProjectOrderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultProjectOrderTests.swift; sourceTree = "<group>"; };
@@ -593,6 +599,8 @@
 				3D68AD6FA56F164F0BD68DAC /* ConnectCLISheet.swift */,
 				275BE1DCB4AC27367E4E71F9 /* ConnectCoolifySheet.swift */,
 				C7E51C884F46360759CD84ED /* EnvFileImportReviewSheet.swift */,
+				01D3798174BCEF3FD9DC5CE2 /* EnvImportSheet.swift */,
+				C92AD9FEEEB5692EB4CAD28D /* EnvImportSource.swift */,
 				CAE5A4A3721AD4F9A18CDD9A /* KeyApprovalSheet.swift */,
 				AD952D6C2614FAF3EF8B184F /* NewEnvironmentSheet.swift */,
 				8781D80F04E7286497DDF325 /* NewVaultSheet.swift */,
@@ -730,6 +738,7 @@
 				90D1C40E7E961D8CEC22A477 /* EmptyEnvironmentSyncTests.swift */,
 				8DE1DD0A95404298E92B60F9 /* EnvFileImportReviewTests.swift */,
 				7E7E17CFD8A20E12558CD8E0 /* EnvFileImportTests.swift */,
+				DF425741AB4318D4F884CC2C /* EnvImportSheetTests.swift */,
 				0C6AC2FB02EDCD85F6095DAE /* EnvSchemaCompositionTests.swift */,
 				237FE9B740DFACF0D52C8353 /* EnvSchemaScopeTests.swift */,
 				DA31CAE9BF2A0CCEE6F18C60 /* GitHubClientTests.swift */,
@@ -1042,6 +1051,7 @@
 				D3CCA5F863C9FCB583CC9049 /* EmptyEnvironmentSyncTests.swift in Sources */,
 				CEC59A25D9383F881DEEA76A /* EnvFileImportReviewTests.swift in Sources */,
 				05F8B08121A9FDBB332690DC /* EnvFileImportTests.swift in Sources */,
+				290FD907B22A1C8D82B7C27F /* EnvImportSheetTests.swift in Sources */,
 				6ED4D87B9BD3A139401AFBCD /* EnvSchemaCompositionTests.swift in Sources */,
 				05A7826076A2DCF3CA6EB450 /* EnvSchemaScopeTests.swift in Sources */,
 				18D14FDF4E02AABB85B21335 /* GitHubClientTests.swift in Sources */,
@@ -1160,6 +1170,8 @@
 				8CA56038EA5DD843D6D0CBAE /* EnvFileImportReview.swift in Sources */,
 				C6896B6C44E9A15A012DC7F7 /* EnvFileImportReviewSheet.swift in Sources */,
 				79314C80BEC853A4C3E50B77 /* EnvFileImportService.swift in Sources */,
+				951307774BC5CE6E1CF0591B /* EnvImportSheet.swift in Sources */,
+				1E57F9952FCF2A218E053C7A /* EnvImportSource.swift in Sources */,
 				F768C8B5AFC0FD0D55134D08 /* EnvProjectImportService.swift in Sources */,
 				3866F82E3E1C3D5EA8C33910 /* EnvValidation.swift in Sources */,
 				8E44C6420C37DB4635B5E95C /* GitHubClient.swift in Sources */,
