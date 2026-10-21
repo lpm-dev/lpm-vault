@@ -360,7 +360,9 @@ struct VaultRawTextEditing {
   let failure: VaultRawTextFailure?
   let onChange: (String) -> Void
   let onCancel: () -> Void
+  /// Shows what the edit changes, or saves it at once when its review is off.
   let onSave: () -> Void
+  let onReviewChange: (Bool) -> Void
   /// Compares the edit with the environment's values now, after they changed.
   let onCompare: () -> Void
   /// Copies text cut or copied in the editor.

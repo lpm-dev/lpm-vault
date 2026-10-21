@@ -59,6 +59,39 @@ struct RawTextStoreTests {
 		#expect(keychain.envStorage["p"]?.environments["default"] == ["A": "edited", "B": "2"])
 	}
 
+	@Test("applying a review makes the changes left on, against the values it was made with, and ends the edit")
+	func applyReview() async throws {
+		let (store, keychain) = try await makeStore()
+		defer { store.lock() }
+		#expect(store.beginRawTextEdit(order: ["A", "B"]))
+		store.updateRawTextDraft(target(), text: "A=edited\nC=3\n")
+		let review = try #require(store.reviewRawTextDraft(target()))
+		#expect(review.changes.added == ["C"] && review.changes.changed == ["A"] && review.changes.removed == ["B"])
+		#expect(await store.applyRawTextReview(review, skipping: ["B"]) == .saved(EnvironmentChangeReceipt(
+			projectId: "p", environment: "default", before: ["A": "1", "B": "2"], after: ["A": "edited", "B": "2", "C": "3"])))
+		#expect(keychain.envStorage["p"]?.environments["default"] == ["A": "edited", "B": "2", "C": "3"])
+		#expect(store.rawTextDraft(for: target()) == nil)
+	}
+
+	@Test("a review applies only to the edit and the values it was made with")
+	func staleReview() async throws {
+		let (store, keychain) = try await makeStore()
+		defer { store.lock() }
+		#expect(store.beginRawTextEdit(order: ["A", "B"]))
+		store.updateRawTextDraft(target(), text: "A=edited\nB=2\n")
+		let review = try #require(store.reviewRawTextDraft(target()))
+		store.updateRawTextDraft(target(), text: "A=other\nB=2\n")
+		#expect(await store.applyRawTextReview(review, skipping: []) == .unavailable, "The edit changed since it was reviewed")
+		let fresh = try #require(store.reviewRawTextDraft(target()))
+		keychain.simulateCLISet(vaultId: "p", environment: "default", key: "B", value: "from-cli")
+		#expect(await store.applyRawTextReview(fresh, skipping: []) == .changed)
+		#expect(keychain.envStorage["p"]?.environments["default"] == ["A": "1", "B": "from-cli"])
+		#expect(store.rawTextDraft(for: target()) != nil)
+		#expect(await store.applyRawTextReview(fresh, skipping: ["A"]) == .unavailable, "Leaving every change out applies nothing")
+		store.updateRawTextDraft(target(), text: "A=other\nbad line\n")
+		#expect(store.reviewRawTextDraft(target()) == nil, "An edit with a problem line can't be reviewed")
+	}
+
 	@Test("an edit with nothing to save, or a problem line, saves nothing")
 	func unsaveable() async throws {
 		let (store, keychain) = try await makeStore()

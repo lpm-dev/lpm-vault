@@ -89,6 +89,22 @@ struct RawTextEditTests {
 		#expect(draft.changes.added == ["DROP", "EDIT"], "Comparing with other values counts against them")
 	}
 
+	@Test("a review compares the edit with the environment as it is now, and leaves out the changes switched off")
+	func review() {
+		var draft = VaultRawTextDraft(target: target, baseline: ["KEEP": "1", "EDIT": "old", "DROP": "x"], order: ["DROP", "EDIT", "KEEP"])
+		draft.text = "EDIT=new\nKEEP=1\nNEW=added\n"
+		// Since the edit began, the LPM CLI changed KEEP and added CLI.
+		let review = VaultRawTextReview(draft: draft, current: ["KEEP": "2", "EDIT": "old", "DROP": "x", "CLI": "c"])
+		#expect(review.changes.added == ["NEW"])
+		#expect(review.changes.changed == ["EDIT", "KEEP"], "Writing the edit would put KEEP back")
+		#expect(review.changes.removed == ["CLI", "DROP"])
+		#expect(review.lines == ["EDIT": 1, "KEEP": 2, "NEW": 3])
+		#expect(review.values(skipping: []) == ["EDIT": "new", "KEEP": "1", "NEW": "added"])
+		#expect(review.values(skipping: ["KEEP", "CLI"]) == ["EDIT": "new", "KEEP": "2", "NEW": "added", "CLI": "c"])
+		#expect(review.applied(skipping: ["KEEP", "CLI"]).summary == "1 added, 1 changed, 1 removed")
+		#expect(review.applied(skipping: ["NEW", "EDIT", "KEEP", "CLI", "DROP"]).count == 0)
+	}
+
 	@Test("a text past the import's limits says which line goes over")
 	func limits() {
 		let limits = EnvFileImportLimits(maximumInputBytes: 1_000, maximumAssignments: 2, maximumParsedBytes: 12)

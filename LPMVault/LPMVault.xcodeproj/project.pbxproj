@@ -89,6 +89,7 @@
 		40BC09F7A05CDB6B2C13FE43 /* RawTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1164D09508447235F037F931 /* RawTextTests.swift */; };
 		4183C63D9ECD97870BB9BAE4 /* SidebarItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72C3FAD279B500DCF05CDFC0 /* SidebarItem.swift */; };
 		4207B8276428EB5364562DA3 /* CoolifyConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B29E80D234EA32595E080E5 /* CoolifyConnector.swift */; };
+		428543EC7438F78024203BEE /* VaultRawTextReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61CF76EDE50097C1932648A8 /* VaultRawTextReviewSheet.swift */; };
 		42EEE8EBFA308F538C18BC23 /* OpenDescriptors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 837A32E1FEC7112393F59090 /* OpenDescriptors.swift */; };
 		4665BADF8DFF17EB3A7B97FE /* PlatformCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE26E66042EC147C1CEBC13F /* PlatformCredentials.swift */; };
 		49208572B2677AAF550F893E /* VaultProject.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69F8D1CB69E6B442457DAE3C /* VaultProject.swift */; };
@@ -412,6 +413,7 @@
 		606A4D6D619C63A269BDD1D1 /* ProjectEnvSchemaRuleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaRuleTests.swift; sourceTree = "<group>"; };
 		611A7B19E28DAEAEE9A0EFD6 /* SchemaGroupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaGroupTests.swift; sourceTree = "<group>"; };
 		614C541032B4C27C2966138F /* EnvValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvValidation.swift; sourceTree = "<group>"; };
+		61CF76EDE50097C1932648A8 /* VaultRawTextReviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultRawTextReviewSheet.swift; sourceTree = "<group>"; };
 		61F6C9EE8B916ECE78400C09 /* VaultPaneBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultPaneBudgetTests.swift; sourceTree = "<group>"; };
 		621C09DBB341EAA1AA6C9DB1 /* VaultKeyEdit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultKeyEdit.swift; sourceTree = "<group>"; };
 		623FE311DD484D349571A459 /* ProjectConfigOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectConfigOpener.swift; sourceTree = "<group>"; };
@@ -635,6 +637,7 @@
 				BC3C6AFA2ED63B743ADFB326 /* VaultPublishMenu.swift */,
 				FC8F78B4292032B8160B8A5A /* VaultQuitHUD.swift */,
 				56EDAD1416DB8AA9695355DA /* VaultQuitSheet.swift */,
+				61CF76EDE50097C1932648A8 /* VaultRawTextReviewSheet.swift */,
 				BB32425D42965CC8126796A9 /* VaultRawTextView.swift */,
 				C68A0B5B65065CE20F58D81F /* VaultResizablePane.swift */,
 				A92B9253F0D8553F9082E72F /* VaultRuleBadges.swift */,
@@ -1299,6 +1302,7 @@
 				624506854C9F8EBA3CA0D6D3 /* VaultQuitShortcut.swift in Sources */,
 				38246F407C17550BA753C249 /* VaultRawText.swift in Sources */,
 				1B056271E3962D1199BDDB40 /* VaultRawTextDraft.swift in Sources */,
+				428543EC7438F78024203BEE /* VaultRawTextReviewSheet.swift in Sources */,
 				F86C7DBD4C745D757DF9AD25 /* VaultRawTextView.swift in Sources */,
 				4C947C17C89E0B20D6EE3EF9 /* VaultResizablePane.swift in Sources */,
 				E64821F8E84FBF80C038B7E3 /* VaultRuleBadges.swift in Sources */,
