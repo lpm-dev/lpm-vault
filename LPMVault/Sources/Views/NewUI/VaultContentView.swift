@@ -55,6 +55,12 @@ struct VaultContentView: View {
 	let onCopySecret: (String, String) -> Void
 	let onDeleteSecret: (String, String) -> Void
 	let onResizeColumns: () -> Void
+	/// Copies the selected environment's lines of these keys, in Raw text.
+	var onCopyLines: ([String]) -> Void = { _ in }
+	/// How many lines Raw text just copied, while it says so.
+	var copiedLineCount: Int?
+
+	@State private var rawSelectedLineCount = 0
 
 	var body: some View {
 		let derived = VaultContentDerivation(
@@ -71,6 +77,7 @@ struct VaultContentView: View {
 			unstoredKeys: mode == .matrix ? valueChecks.unstoredInvalidKeys()
 				: (environmentViewMode == .table ? valueChecks.unstoredKeys(in: selectedEnvironment) : [])
 		)
+		let raw = showsRawText ? rawText(derived) : nil
 		VStack(spacing: 0) {
 			header(derived)
 			VaultHairline()
@@ -79,14 +86,14 @@ struct VaultContentView: View {
 			case .matrix:
 				matrix(derived)
 			case .environment:
-				environmentDetail(derived)
+				environmentDetail(derived, raw: raw)
 			case .schema, .projectSettings:
 				// The workspace shows the Schema or Project Settings page instead of this view.
 				Spacer(minLength: 0)
 			}
 
 			VaultHairline()
-			statusBar(derived)
+			statusBar(derived, raw: raw)
 		}
 		.background(VaultPalette.content)
 	}
@@ -108,8 +115,22 @@ struct VaultContentView: View {
 				}
 			}
 
-			// Import and Export lose their names first, then Reveal and Copy all.
+			// Raw text's hint goes first, then Import and Export lose their
+			// names, then Reveal and Copy all.
 			ViewThatFits(in: .horizontal) {
+				if showsRawText {
+					HStack(spacing: 6) {
+						viewControls
+						Text("One KEY=value per line · select and ⌘C copies real values")
+							.font(.system(size: 12))
+							.foregroundStyle(VaultPalette.textTertiary)
+							.lineLimit(1)
+							.fixedSize()
+							.padding(.leading, 6)
+						Spacer(minLength: 8)
+						valueActions(compact: false, namesTransfers: true, derived: derived)
+					}
+				}
 				HStack(spacing: 6) {
 					viewControls
 					Spacer(minLength: 8)
@@ -235,7 +256,7 @@ struct VaultContentView: View {
 		let environmentName = VaultProject.displayName(for: selectedEnvironment)
 		let copyTitle = isCopyingAll ? "Copying…" : (isCopiedAll ? "Copied" : "Copy all")
 		let copyHelp = isCopyingAll
-			? "Authenticating to copy all \(environmentName) values"
+			? "Copying all \(environmentName) values once they're reloaded"
 			: (isCopiedAll ? "All \(environmentName) values copied" : "Copy all \(environmentName) values")
 		let copyLabel = isCopyingAll
 			? "Copying all \(environmentName) values"
@@ -346,9 +367,9 @@ struct VaultContentView: View {
 	}
 
 	@ViewBuilder
-	private func environmentDetail(_ derived: VaultContentDerivation) -> some View {
-		if environmentViewMode == .raw {
-			rawEnvironment(derived)
+	private func environmentDetail(_ derived: VaultContentDerivation, raw: VaultRawText?) -> some View {
+		if let raw {
+			rawEnvironment(raw)
 		} else {
 			GeometryReader { geometry in
 				let layout = VaultTableColumnLayout(columns: [.key, .value, .actions],
@@ -409,27 +430,50 @@ struct VaultContentView: View {
 		}
 	}
 
-	private func rawEnvironment(_ derived: VaultContentDerivation) -> some View {
+	private var showsRawText: Bool {
+		if case .environment = mode { return environmentViewMode == .raw }
+		return false
+	}
+
+	private func rawText(_ derived: VaultContentDerivation) -> VaultRawText {
+		VaultRawText(keys: derived.environmentKeys, isShown: isShown, value: { project.value(for: $0, in: selectedEnvironment) })
+	}
+
+	private func rawEnvironment(_ text: VaultRawText) -> some View {
 		GeometryReader { geometry in
-			ScrollView {
-				VStack(alignment: .leading, spacing: 0) {
-					environmentNotes(width: geometry.size.width)
-					if derived.environmentKeys.isEmpty {
-						VaultTableEmptyRow(message: emptyEnvironmentMessage, width: geometry.size.width)
-					} else {
-						LazyVStack(alignment: .leading, spacing: 7) {
-							ForEach(derived.environmentKeys, id: \.self) { key in
-								let isRevealed = isShown(key)
-								let rendered = isRevealed ? (project.value(for: key, in: selectedEnvironment) ?? "") : "••••••••••••"
-								Text("\(key)=\(rendered)")
-									.font(isRevealed ? VaultTypography.code(12) : VaultTypography.tabular(12))
-									.foregroundStyle(VaultPalette.textSecondary)
-									.accessibilityLabel("\(key), value \(isRevealed ? "revealed visually" : "hidden")")
+			VStack(alignment: .leading, spacing: 0) {
+				environmentNotes(width: geometry.size.width)
+				if text.lines.isEmpty {
+					VaultTableEmptyRow(message: emptyEnvironmentMessage, width: geometry.size.width)
+					Spacer(minLength: 0)
+				} else {
+					VaultRawTextView(
+						text: text,
+						label: "\(VaultProject.displayName(for: selectedEnvironment)) as text",
+						selectedLineCount: $rawSelectedLineCount,
+						onCopy: onCopyLines
+					)
+					// Another environment starts unselected, at its top.
+					.id("\(project.id)/\(selectedEnvironment)")
+					.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
+					.clipShape(RoundedRectangle(cornerRadius: 10))
+					.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
+					.overlay(alignment: .bottom) {
+						if let copiedLineCount {
+							VaultToast {
+								Image(systemName: "checkmark")
+									.font(.system(size: 11, weight: .bold))
+									.foregroundStyle(VaultPalette.toastConfirmation)
+									.accessibilityHidden(true)
+								Text("Copied \(copiedLineCount.counted("line")) ")
+									+ Text("· clears in \(Int(VaultConstants.clipboardClearDelay))s").foregroundStyle(VaultPalette.toastSecondaryText)
 							}
+							.padding(.bottom, 14)
 						}
-						.frame(maxWidth: .infinity, alignment: .leading)
-						.padding(20)
 					}
+					.padding(.horizontal, 20)
+					.padding(.top, 12)
+					.padding(.bottom, 14)
 				}
 			}
 		}
@@ -448,7 +492,8 @@ struct VaultContentView: View {
 				.frame(width: width, height: 34, alignment: .leading)
 		}
 		ForEach(valueChecks.groupFailures(in: selectedEnvironment)) { failure in
-			VaultGroupFailureBanner(failure: failure, width: width)
+			VaultGroupFailureBanner(failure: failure, width: width,
+				onFixInTable: environmentViewMode == .raw ? { environmentViewMode = .table } : nil)
 		}
 	}
 
@@ -459,10 +504,51 @@ struct VaultContentView: View {
 			: "No secrets in this environment"
 	}
 
+	private func statusBar(_ derived: VaultContentDerivation, raw: VaultRawText?) -> some View {
+		let unsaved = editedKeys.isEmpty
+			? nil
+			: (editedKeys.count == 1 ? "1 key with unsaved changes" : "\(editedKeys.count) keys with unsaved changes")
+		return Group {
+			if let raw {
+				rawStatus(raw, unsaved: unsaved)
+			} else {
+				tableStatus(derived, unsaved: unsaved)
+			}
+		}
+		.font(.system(size: 11))
+		.foregroundStyle(VaultPalette.textTertiary)
+		.lineLimit(1)
+		.padding(.horizontal, 20)
+		.frame(height: VaultMetrics.statusBar)
+		.background(VaultPalette.headerRow)
+	}
+
+	/// Raw text counts lines, says whether their values show, and what's
+	/// selected; a narrow bar keeps the count and unsaved changes.
+	private func rawStatus(_ raw: VaultRawText, unsaved: String?) -> some View {
+		let lines = raw.lines
+		let maskable = lines.filter { !shownPublicKeys.contains($0.key) }
+		let revealed = maskable.lazy.filter(\.isShown).count
+		var items = [Text(lines.count.counted("line"))]
+		if !maskable.isEmpty {
+			items.append(revealed == 0
+				? Text("values masked")
+				: Text(revealed == maskable.count ? "values revealed" : "some values revealed").foregroundStyle(VaultPalette.orangeTintText))
+		}
+		if !lines.isEmpty {
+			items.append(Text(rawSelectedLineCount > 0 ? "\(rawSelectedLineCount.counted("line")) selected" : "⌘A selects all"))
+		}
+		return ViewThatFits(in: .horizontal) {
+			statusLine(items, unsaved: unsaved)
+			statusLine(Array(items.prefix(2)), unsaved: unsaved)
+			statusLine(Array(items.prefix(1)), unsaved: unsaved)
+		}
+	}
+
 	/// A narrow bar drops the sort order first, which the KEY header also shows,
 	/// then the details the filter chips and row badges also show. The key count
 	/// and unsaved changes always stay.
-	private func statusBar(_ derived: VaultContentDerivation) -> some View {
+	private func tableStatus(_ derived: VaultContentDerivation, unsaved: String?) -> some View {
 		let declaredOnly = mode == .matrix ? 0 : derived.environmentKeys.lazy.filter { project.value(for: $0, in: selectedEnvironment) == nil }.count
 		let count = Text(mode == .matrix
 			? "\(derived.filteredKeys.count) of \(derived.allKeys.count.counted("key")) shown"
@@ -477,20 +563,11 @@ struct VaultContentView: View {
 			let text = "\(invalid) invalid" + (groups == 0 ? "" : " · \(groups.counted("group"))")
 			details.insert(Text(text).foregroundStyle(invalid == 0 ? VaultPalette.textTertiary : VaultPalette.redText), at: mode == .matrix ? 2 : 1)
 		}
-		let unsaved = editedKeys.isEmpty
-			? nil
-			: (editedKeys.count == 1 ? "1 key with unsaved changes" : "\(editedKeys.count) keys with unsaved changes")
 		return ViewThatFits(in: .horizontal) {
 			statusLine([count, sort] + details, unsaved: unsaved)
 			statusLine([count] + details, unsaved: unsaved)
 			statusLine([count], unsaved: unsaved)
 		}
-		.font(.system(size: 11))
-		.foregroundStyle(VaultPalette.textTertiary)
-		.lineLimit(1)
-		.padding(.horizontal, 20)
-		.frame(height: VaultMetrics.statusBar)
-		.background(VaultPalette.headerRow)
 	}
 
 	private func statusLine(_ items: [Text], unsaved: String?) -> some View {
@@ -836,25 +913,37 @@ private struct VaultProblemMarker: View {
 private struct VaultGroupFailureBanner: View {
 	let failure: VaultValueCheckPresentation.GroupFailure
 	let width: CGFloat
+	/// Shows the table, where the group's keys can be fixed, from Raw text.
+	var onFixInTable: (() -> Void)?
 
 	var body: some View {
 		HStack(spacing: 8) {
-			Image(systemName: "xmark.circle")
-				.font(.system(size: 11, weight: .semibold))
-				.foregroundStyle(VaultPalette.redText)
-			Text(failure.message)
-				.font(.system(size: 12))
-				.foregroundStyle(VaultPalette.textSecondary)
-				.lineLimit(1)
-				.truncationMode(.middle)
+			HStack(spacing: 8) {
+				Image(systemName: "xmark.circle")
+					.font(.system(size: 11, weight: .semibold))
+					.foregroundStyle(VaultPalette.redText)
+				Text(failure.message)
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.lineLimit(1)
+					.truncationMode(.middle)
+			}
+			.accessibilityElement(children: .combine)
+			.help(failure.message)
 			Spacer(minLength: 0)
+			if let onFixInTable {
+				Button("Fix in table", action: onFixInTable)
+					.buttonStyle(.plain)
+					.font(.system(size: 11.5, weight: .medium))
+					.foregroundStyle(VaultPalette.accentForeground)
+					.vaultPointingHand()
+					.help("Show this environment as a table, to change its values")
+			}
 		}
 		.padding(.horizontal, 20)
 		.frame(width: width, height: 34, alignment: .leading)
 		.background(VaultPalette.redTint.opacity(0.6))
 		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
-		.accessibilityElement(children: .combine)
-		.help(failure.message)
 	}
 }
 

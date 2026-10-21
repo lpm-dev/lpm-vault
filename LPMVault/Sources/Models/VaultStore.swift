@@ -1749,7 +1749,7 @@ final class VaultStore {
       snapshot: { [weak self] environment, contents in
         await self?.publishSnapshot(projectID: projectID, environment: environment, contents: contents)
       },
-      confirm: { [weak self] reason in await self?.authenticateForSensitiveAction(reason: reason, reusingRecent: false) ?? false },
+      confirm: { [weak self] reason in await self?.confirmSensitiveAction(reason: reason) ?? false },
       publishing: publishing,
       connections: platformConnectionStore,
       credentials: platformCredentials,
@@ -5180,12 +5180,13 @@ final class VaultStore {
     Task { [weak self] in await self?.reconcilePublishingRecords() }
   }
 
-  func authenticateForSensitiveAction(reason: String, reusingRecent: Bool = true) async -> Bool {
+  /// Asks the person to authenticate for an action that sends values off the
+  /// Mac, every time, however recently they unlocked. Reading and copying
+  /// values on the Mac asks nothing more than unlocking did.
+  func confirmSensitiveAction(reason: String) async -> Bool {
     guard isUnlocked else { return false }
     let sessionGeneration = vaultSessionGeneration
-    let outcome = reusingRecent
-      ? await biometricService.authenticate(reason: reason)
-      : await biometricService.confirm(reason: reason)
+    let outcome = await biometricService.confirm(reason: reason)
     let approved = !Task.isCancelled
       && outcome == .authenticated
       && isUnlocked

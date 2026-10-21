@@ -51,8 +51,7 @@ struct VaultWorkspaceView: View {
 	@State private var exportID: UUID?
 	@State private var copyAllTask: Task<Void, Never>?
 	@State private var copyAllID: UUID?
-	@State private var copyUnsavedTask: Task<Void, Never>?
-	@State private var copyUnsavedID: UUID?
+	@State private var copyLinesTask: Task<Void, Never>?
 	@State private var copyFeedback: VaultCopyFeedback?
 
 	private var project: VaultProject? { store.selectedProject }
@@ -427,7 +426,9 @@ struct VaultWorkspaceView: View {
 								onAddKey: { presentAddSecret(key: $0, environment: store.selectedEnvironment) },
 								onCopySecret: copySecret,
 								onDeleteSecret: requestDeleteSecret,
-								onResizeColumns: { store.recordUserActivity() }
+								onResizeColumns: { store.recordUserActivity() },
+								onCopyLines: copyLines,
+								copiedLineCount: copiedLineCount(in: project)
 							)
 						} else {
 							VaultWorkspaceEmptyView(
@@ -963,12 +964,15 @@ struct VaultWorkspaceView: View {
 		return environment
 	}
 
+	/// Copies the selected environment as a .env file, at once, or once a
+	/// refresh in progress publishes current values.
 	private func copyAll() {
 		guard store.canUseLocalSecrets, !store.isShowingAccountPage, copyAllTask == nil, let project else { return }
 		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
+		copyFeedback = nil
+		guard store.isRefreshingLocalState else { return copyCurrentEnvironment(context) }
 		let requestID = UUID()
 		copyAllID = requestID
-		copyFeedback = nil
 		copyAllTask = Task { @MainActor in
 			defer {
 				if copyAllID == requestID {
@@ -976,24 +980,52 @@ struct VaultWorkspaceView: View {
 					copyAllID = nil
 				}
 			}
-			let success = await store.authenticateForSensitiveAction(
-				reason: "Copy all secrets to clipboard"
-			)
-			guard success else { return }
-			// Returning from the macOS prompt can trigger a refresh; copy what it publishes.
 			await store.waitForLocalStateRefresh()
-			guard !store.isShowingAccountPage,
-				copyAllID == requestID,
-				context.isCurrent(in: store),
-				let current = store.selectedProject
-			else { return }
-			let contents = ClipboardManager.dotenvText(
-				for: current.secrets(for: context.environment)
-			)
-			if store.clipboard.copy(contents, clearAfter: 15) {
-				copyFeedback = VaultCopyFeedback(target: .all(context))
-			}
+			guard copyAllID == requestID else { return }
+			copyCurrentEnvironment(context)
 		}
+	}
+
+	private func copyCurrentEnvironment(_ context: VaultSensitiveActionContext) {
+		guard store.canUseLocalSecrets, !store.isShowingAccountPage, context.isCurrent(in: store),
+			let current = store.selectedProject,
+			store.clipboard.copy(ClipboardManager.dotenvText(for: current.secrets(for: context.environment)))
+		else { return }
+		copyFeedback = VaultCopyFeedback(target: .all(context))
+	}
+
+	/// Copies Raw text's lines of `keys`, with their current values, at once
+	/// or once a refresh in progress publishes them.
+	private func copyLines(_ keys: [String]) {
+		guard store.canUseLocalSecrets, !store.isShowingAccountPage, !keys.isEmpty, let project else { return }
+		let context = VaultSensitiveActionContext(projectID: project.id, environment: store.selectedEnvironment)
+		copyLinesTask?.cancel()
+		copyLinesTask = nil
+		guard store.isRefreshingLocalState else { return copyCurrentLines(keys, context) }
+		copyLinesTask = Task { @MainActor in
+			await store.waitForLocalStateRefresh()
+			guard !Task.isCancelled else { return }
+			copyLinesTask = nil
+			copyCurrentLines(keys, context)
+		}
+	}
+
+	private func copyCurrentLines(_ keys: [String], _ context: VaultSensitiveActionContext) {
+		guard store.canUseLocalSecrets, !store.isShowingAccountPage, context.isCurrent(in: store),
+			let current = store.selectedProject
+		else { return }
+		let lines = keys.compactMap { key in
+			current.value(for: key, in: context.environment).map { EnvFileCodec.formatLine(key: key, value: $0) + "\n" }
+		}
+		guard !lines.isEmpty, store.clipboard.copy(lines.joined()) else { return }
+		copyFeedback = VaultCopyFeedback(target: .lines(context, count: lines.count))
+	}
+
+	private func copiedLineCount(in project: VaultProject) -> Int? {
+		guard case .lines(let context, let count) = copyFeedback?.target,
+			context.projectID == project.id, context.environment == store.selectedEnvironment
+		else { return nil }
+		return count
 	}
 
 	/// Whether Import opens: on a project's page, with nothing else in front of the window.
@@ -1132,29 +1164,13 @@ struct VaultWorkspaceView: View {
 		resetCopyPresentation()
 	}
 
-	/// Copies a value of an unsaved edit whose project or key is gone, after the
-	/// person authenticates, as long as that edit is still shown.
+	/// Copies a value of an unsaved edit whose project or key is gone.
 	private func copyUnsavedValue(_ id: VaultKeyDraft.ID, _ environment: String) {
-		guard store.isUnlocked, !store.isShowingAccountPage, copyUnsavedTask == nil,
-			store.keyDrafts.orphanIDs.contains(id) else { return }
-		let requestID = UUID()
-		copyUnsavedID = requestID
-		copyFeedback = nil
-		copyUnsavedTask = Task { @MainActor in
-			defer {
-				if copyUnsavedID == requestID {
-					copyUnsavedTask = nil
-					copyUnsavedID = nil
-				}
-			}
-			guard await store.authenticateForSensitiveAction(reason: "Copy your unsaved value"),
-				!Task.isCancelled, copyUnsavedID == requestID,
-				store.isUnlocked, !store.isShowingAccountPage, store.keyDrafts.orphanIDs.contains(id),
-				let value = store.keyDrafts.draft(id)?.value(in: environment),
-				store.clipboard.copy(value)
-			else { return }
-			copyFeedback = VaultCopyFeedback(target: .unsaved(id, environment: environment))
-		}
+		guard store.isUnlocked, !store.isShowingAccountPage, store.keyDrafts.orphanIDs.contains(id),
+			let value = store.keyDrafts.draft(id)?.value(in: environment),
+			store.clipboard.copy(value)
+		else { return }
+		copyFeedback = VaultCopyFeedback(target: .unsaved(id, environment: environment))
 	}
 
 	private func discardUnsaved(_ id: VaultKeyDraft.ID) {
@@ -1163,9 +1179,8 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func resetCopyPresentation() {
-		copyUnsavedTask?.cancel()
-		copyUnsavedTask = nil
-		copyUnsavedID = nil
+		copyLinesTask?.cancel()
+		copyLinesTask = nil
 		copyAllTask?.cancel()
 		copyAllTask = nil
 		copyAllID = nil
