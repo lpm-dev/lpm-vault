@@ -166,21 +166,23 @@ struct EnvImportSheet: View {
 	}
 
 	private var reviewOption: some View {
-		let isNew = target == .newEnvironment
-		let caption = isNew
-			? "A new file has nothing to compare, so it's created as it is"
-			: reviewsFirst ? "See new, changed and unchanged keys first" : "Adds new keys and keeps every existing value"
+		let caption = switch (target == .newEnvironment, reviewsFirst) {
+		case (true, true): "See its keys first, and leave out any you don't want"
+		case (true, false): "Creates it with every key"
+		case (false, true): "See new, changed and unchanged keys first"
+		case (false, false): "Adds new keys and keeps every existing value"
+		}
 		return HStack(spacing: 10) {
-			Toggle("Review before applying", isOn: isNew ? .constant(false) : $reviewsFirst)
+			Toggle("Review before applying", isOn: $reviewsFirst)
 				.toggleStyle(.switch)
 				.controlSize(.small)
 				.labelsHidden()
-				.disabled(isNew || work != nil)
+				.disabled(work != nil)
 			VStack(alignment: .leading, spacing: 1) {
 				// The switch says its name.
 				Text("Review before applying")
 					.font(.system(size: 12, weight: .semibold))
-					.foregroundStyle(isNew ? VaultPalette.textTertiary : VaultPalette.textPrimary)
+					.foregroundStyle(VaultPalette.textPrimary)
 					.accessibilityHidden(true)
 				Text(caption)
 					.font(.system(size: 11))
@@ -229,7 +231,7 @@ struct EnvImportSheet: View {
 		}
 		// The count read last stays while newer pasted text is read, so it doesn't flicker as it's typed.
 		let count = (try? source.shownRead?.get()).map { " \($0.countDescription)" } ?? ""
-		if target == .newEnvironment {
+		if target == .newEnvironment, !reviewsFirst {
 			return newEnvironmentName.map { "Create \(VaultProject.displayName(for: $0))" } ?? "Create file"
 		}
 		return (reviewsFirst ? "Review" : "Import") + count
@@ -249,6 +251,7 @@ struct EnvImportSheet: View {
 		switch target {
 		case .newEnvironment:
 			guard let name = newEnvironmentName else { return }
+			guard !reviewsFirst else { return prepare(imported, from: origin, into: name, creating: true) }
 			work = .creating
 			task = Task {
 				let added = await store.addEnvironment(to: projectID, name: name, secrets: imported.secrets)
@@ -265,23 +268,31 @@ struct EnvImportSheet: View {
 				failure = EnvFileImportError.targetUnavailable.description(for: origin)
 				return
 			}
-			let reviews = reviewsFirst
-			work = reviews ? .reviewing : .importing
-			task = Task {
-				let prepared = await store.prepareEnvImport(imported, from: origin, to: projectID, environment: environment)
-				guard !Task.isCancelled else { return }
-				let review: EnvFileImportReview
-				switch prepared {
-				case .success(let prepared): review = prepared
-				case .failure(let error): return fail(error, from: origin)
-				}
-				guard !reviews else { return show(.reviewing(review)) }
-				let applied = await store.applyEnvFileImport(review, replacingKeys: [])
-				guard !Task.isCancelled else { return }
-				switch applied {
-				case .success(let receipt): show(.imported(review, receipt))
-				case .failure(let error): fail(error, from: origin)
-				}
+			prepare(imported, from: origin, into: environment, creating: false)
+		}
+	}
+
+	/// Compares `imported` with `environment`, or with nothing for a new one
+	/// it's `creating`, then reviews it. Into an environment that exists, it's
+	/// imported with no review when Review before applying is off.
+	private func prepare(_ imported: ImportedEnvFile, from origin: EnvImportSource, into environment: String, creating: Bool) {
+		let reviews = creating || reviewsFirst
+		work = reviews ? .reviewing : .importing
+		task = Task {
+			let prepared = await store.prepareEnvImport(
+				imported, from: origin, to: projectID, environment: environment, creating: creating)
+			guard !Task.isCancelled else { return }
+			let review: EnvFileImportReview
+			switch prepared {
+			case .success(let prepared): review = prepared
+			case .failure(let error): return fail(error, from: origin)
+			}
+			guard !reviews else { return show(.reviewing(review)) }
+			let applied = await store.applyEnvFileImport(review, replacingKeys: [])
+			guard !Task.isCancelled else { return }
+			switch applied {
+			case .success(let receipt): show(.imported(review, receipt))
+			case .failure(let error): fail(error, from: origin)
 			}
 		}
 	}

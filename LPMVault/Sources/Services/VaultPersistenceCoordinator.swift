@@ -75,6 +75,8 @@ enum LocalEnvImportPersistenceResult: Sendable {
 	case targetUnavailable
 	case caseInsensitiveCollision
 	case reviewChanged
+	/// The new environment's name was taken first.
+	case environmentExists
 	case cancelled
 	case failure(KeychainError)
 }
@@ -1249,12 +1251,9 @@ actor VaultPersistenceCoordinator {
 		case .success(nil): return .targetUnavailable
 		case .failure(let error): return .failure(error)
 		}
-		guard
-			storedProject.name == projectName,
-			storedProject.path == projectPath,
-			var environments = Optional(storedProject.environments),
-			environments[environment] == nil
-		else { return .targetUnavailable }
+		guard storedProject.name == projectName, storedProject.path == projectPath else { return .targetUnavailable }
+		var environments = storedProject.environments
+		guard environments[environment] == nil else { return .environmentExists }
 		environments[environment] = secrets
 		let project = VaultProject(
 			id: projectId,

@@ -93,6 +93,15 @@ extension SheetInteractionTests {
 			return try await store.prepareEnvImport(imported, from: .file(file), to: "project", environment: "default").get()
 		}
 
+		/// The review of the fixture's file as `environment`, a new environment, as New file makes it.
+		private func newFileReview(
+			_ store: VaultStore, named environment: String = "preview"
+		) async throws -> Result<EnvFileImportReview, EnvFileImportError> {
+			let file = URL(fileURLWithPath: "/tmp/dummy.env")
+			let imported = try await store.loadEnvImport(.file(file), for: "project").get()
+			return await store.prepareEnvImport(imported, from: .file(file), to: "project", environment: environment, creating: true)
+		}
+
 		@Test("review classifies each key without writing secrets") func reviewClassifiesChanges() async throws {
 			let (store, keychain) = await fixture()
 			defer { store.lock() }
@@ -205,6 +214,135 @@ extension SheetInteractionTests {
 			let result = await store.applyEnvFileImport(preview, replacingKeys: ["TOKEN"])
 			#expect(result == .failure(transition == "lock" ? .vaultLocked : .cancelled))
 			#expect(keychain.updateEnvironmentsCallCount == 0)
+		}
+
+		@Test("a new file's review has every key as new, and creates the environment with the keys left on")
+		func newFileCreatesEnvironment() async throws {
+			let (store, keychain) = await fixture()
+			defer { store.lock() }
+			let preview = try await newFileReview(store).get()
+			#expect(preview.createsEnvironment && preview.baseline.isEmpty)
+			#expect(preview.rows.map(\.key) == ["NEW", "SAME", "TOKEN"] && preview.rows.allSatisfy { $0.change == .added })
+			#expect(preview.outcome(skipping: ["TOKEN"]) == .init(added: 2, replaced: 0, kept: 0, skipped: 1))
+			#expect(store.isCurrentEnvFileImportReview(preview), "A new environment needn't be the one shown")
+			#expect(await store.applyEnvFileImport(preview, replacingKeys: []) == .failure(.cancelled), "Nothing is imported into a new environment")
+			let unknownKey = await store.createEnvironment(from: preview, skippingKeys: ["OTHER"])
+			#expect(throws: EnvFileImportError.cancelled, "Only the review's keys can be left out") { try unknownKey.get() }
+			#expect(keychain.updateEnvironmentsCallCount == 0)
+
+			try await store.createEnvironment(from: preview, skippingKeys: ["TOKEN"]).get()
+			#expect(keychain.envStorage["project"]?.environments["preview"] == ["NEW": "added", "SAME": "same"])
+			#expect(keychain.envStorage["project"]?.environments["default"] == ["TOKEN": "existing", "SAME": "same"])
+			#expect(store.projects[0].environments["preview"] == ["NEW": "added", "SAME": "same"])
+			#expect(store.selectedEnvironment == "preview")
+			#expect(keychain.storedSyncMetadata(vaultId: "project")?.isDirty == true)
+			#expect(!store.isCurrentEnvFileImportReview(preview), "The review ends with the environment it made")
+			let again = await store.createEnvironment(from: preview)
+			#expect(throws: EnvFileImportError.cancelled) { try again.get() }
+			store.selectedEnvironment = "default"
+			let existing = await store.createEnvironment(from: try await review(store))
+			#expect(throws: EnvFileImportError.cancelled, "An environment that exists isn't made again") { try existing.get() }
+		}
+
+		@Test("a new file's name taken first, as by the LPM CLI, stops its review and its creation")
+		func newFileNameTaken() async throws {
+			let (store, keychain) = await fixture()
+			defer { store.lock() }
+			let shown = try await newFileReview(store, named: "staging")
+			#expect(throws: EnvFileImportError.environmentExists("staging")) { try shown.get() }
+			keychain.envStorage["project"]?.environments["cli"] = ["FROM_CLI": "1"]
+			let unseen = try await newFileReview(store, named: "cli")
+			#expect(throws: EnvFileImportError.environmentExists("cli"), "The vault's own environments count, not only those shown") { try unseen.get() }
+
+			let preview = try await newFileReview(store).get()
+			keychain.envStorage["project"]?.environments["preview"] = ["FROM_CLI": "1"]
+			let created = await store.createEnvironment(from: preview)
+			#expect(throws: EnvFileImportError.environmentExists("preview")) { try created.get() }
+			#expect(keychain.envStorage["project"]?.environments["preview"] == ["FROM_CLI": "1"], "What the CLI made stays")
+			#expect(store.projects[0].environments["preview"] == nil)
+			#expect(!store.isCurrentEnvFileImportReview(preview))
+			#expect(EnvFileImportError.environmentExists("preview").description(for: .pastedText)
+				== ".env.preview was created meanwhile, as by the LPM CLI. Choose another name for this one.")
+
+			let late = try await newFileReview(store, named: "late").get()
+			store.projects = [VaultProject(id: "project", name: "Dummy Project", path: "",
+				environments: store.projects[0].environments.merging(["late": ["FROM_CLI": "1"]]) { $1 })]
+			#expect(!store.isCurrentEnvFileImportReview(late), "A name the window shows as taken ends the review")
+			let shownLate = await store.createEnvironment(from: late)
+			#expect(throws: EnvFileImportError.environmentExists("late")) { try shownLate.get() }
+			#expect(keychain.envStorage["project"]?.environments["late"] == nil)
+		}
+
+		@Test(
+			"a new file's review outlives a change of the environment shown, but not a lock, another project or a newer review",
+			arguments: ["environment", "project", "lock", "newer"])
+		func newFileReviewContext(transition: String) async throws {
+			let (store, keychain) = await fixture()
+			defer { store.lock() }
+			let preview = try await newFileReview(store).get()
+			switch transition {
+			case "environment": store.selectedEnvironment = "staging"
+			case "project":
+				store.selectedProjectId = nil
+				store.openProject(id: "project")
+			case "lock": store.lock()
+			default: _ = try await newFileReview(store).get()
+			}
+			let result = await store.createEnvironment(from: preview)
+			if transition == "environment" {
+				try result.get()
+				#expect(keychain.envStorage["project"]?.environments["preview"] == ["TOKEN": "incoming", "SAME": "same", "NEW": "added"])
+			} else {
+				#expect(throws: transition == "lock" ? EnvFileImportError.vaultLocked : .cancelled) { try result.get() }
+				#expect(keychain.envStorage["project"]?.environments["preview"] == nil)
+			}
+		}
+
+		@Test("a new file's review lists only new keys, any of which can be left out, and Create makes the environment with the rest")
+		func newFileReviewSheet() async throws {
+			let (store, keychain) = await fixture(incoming: ["ALPHA": "AlphaIncoming", "BETA": "2", "GAMMA": "3"])
+			defer { store.lock() }
+			let host = try await sheet(store, try await newFileReview(store).get())
+			defer { host.window.close() }
+			for text in ["Review new file", "/tmp/dummy.env", "Dummy Project", ".env.preview", "NEW · 3", "will be added",
+				"+3 added · 0 skipped", "Values stay hidden and are encrypted on import.", "Create .env.preview"]
+			{
+				#expect(try await host.waitForText(text), "The review says \(text)")
+			}
+			let text = try await host.text()
+			#expect(!text.contains("All · 3") && !text.contains("Changed") && !text.contains("Undo"), "A new file has nothing to compare or undo")
+			try await host.click("Reveal values")
+			#expect(try await host.waitForText("File value for ALPHA revealed visually"))
+			for key in ["ALPHA", "BETA", "GAMMA"] { try await host.click("Add \(key)") }
+			#expect(try await host.waitForText("+0 added · 3 skipped"))
+			#expect(try await host.waitUntil { element("Nothing to import, ⏎", in: host)?.isEnabled == false })
+			try await host.click("Add BETA")
+			#expect(try await host.waitForText("+1 added · 2 skipped"))
+			try record(host, named: "new-file-review")
+			try await host.click("Add ALPHA")
+			#expect(try await host.waitForText("Create .env.preview"))
+			try submitImport(in: host)
+			#expect(try await host.waitUntil { keychain.envStorage["project"]?.environments["preview"] != nil })
+			#expect(keychain.envStorage["project"]?.environments["preview"] == ["ALPHA": "AlphaIncoming", "BETA": "2"])
+			#expect(store.selectedEnvironment == "preview")
+		}
+
+		@Test("a new file whose name is taken meanwhile says so, and Review again checks the name again")
+		func newFileReviewNameTaken() async throws {
+			let (store, keychain) = await fixture(incoming: ["NEW": "added"])
+			defer { store.lock() }
+			let host = try await sheet(store, try await newFileReview(store).get())
+			defer { host.window.close() }
+			#expect(try await host.waitForText("Create .env.preview"))
+			keychain.envStorage["project"]?.environments["preview"] = ["FROM_CLI": "1"]
+			try submitImport(in: host)
+			#expect(try await host.waitForText(".env.preview was created meanwhile, as by the LPM CLI. Choose another name for this one."))
+			#expect(try await host.waitUntil { element("Reveal values", in: host)?.isEnabled == false })
+			keychain.envStorage["project"]?.environments["preview"] = nil
+			try await host.click("Review again")
+			#expect(try await host.waitForText("Create .env.preview"), "The name is free again")
+			try submitImport(in: host)
+			#expect(try await host.waitUntil { keychain.envStorage["project"]?.environments["preview"] == ["NEW": "added"] })
 		}
 
 		@Test("the review groups new, changed and unchanged keys, which the filters show one at a time")

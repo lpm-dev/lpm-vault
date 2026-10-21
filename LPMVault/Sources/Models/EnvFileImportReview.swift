@@ -18,6 +18,9 @@ struct EnvFileImportReview: Identifiable, Sendable {
 	let projectName: String
 	let projectPath: String
 	let environment: String
+	/// The review is of `environment` as a new environment, which every key is
+	/// new to, rather than of an import into one that exists.
+	let createsEnvironment: Bool
 	let source: EnvImportSource
 	let sessionGeneration: Int
 	let imported: ImportedEnvFile
@@ -32,12 +35,18 @@ struct EnvFileImportReview: Identifiable, Sendable {
 	var addedCount: Int { added.count }
 	var unchangedCount: Int { unchanged.count }
 
+	/// `creating` reviews `environment` as a new environment, which `project`
+	/// mustn't have yet.
 	init(
-		id: UUID, project: VaultProject, environment: String, source: EnvImportSource, sessionGeneration: Int,
-		imported: ImportedEnvFile
+		id: UUID, project: VaultProject, environment: String, creating: Bool = false, source: EnvImportSource,
+		sessionGeneration: Int, imported: ImportedEnvFile
 	) throws {
-		guard let baseline = project.environments[environment] else {
-			throw EnvFileImportError.targetUnavailable
+		let baseline: [String: String]
+		switch (creating, project.environments[environment]) {
+		case (false, let existing?): baseline = existing
+		case (false, nil): throw EnvFileImportError.targetUnavailable
+		case (true, nil): baseline = [:]
+		case (true, _?): throw EnvFileImportError.environmentExists(environment)
 		}
 		let foldedKeys = Set(baseline.keys.map { $0.lowercased() })
 		for key in imported.secrets.keys where baseline[key] == nil {
@@ -50,6 +59,7 @@ struct EnvFileImportReview: Identifiable, Sendable {
 		self.projectName = project.name
 		self.projectPath = project.path
 		self.environment = environment
+		self.createsEnvironment = creating
 		self.source = source
 		self.sessionGeneration = sessionGeneration
 		self.imported = imported

@@ -3,7 +3,8 @@ import SwiftUI
 /// What an import changes, grouped as new, changed and unchanged keys, each
 /// with its decision: new keys are added unless left out, and existing values
 /// are kept unless replaced. Then what the import did, with a short while to
-/// undo it.
+/// undo it. A new environment's review has only new keys, and closes once
+/// the environment is created.
 struct EnvFileImportReviewSheet: View {
 	private enum Filter: CaseIterable {
 		case all, added, changed, unchanged
@@ -84,7 +85,10 @@ struct EnvFileImportReviewSheet: View {
 		}
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { close() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != review.projectId { close() } }
-		.onChange(of: store.selectedEnvironment) { _, name in if name != review.environment { close() } }
+		.onChange(of: store.selectedEnvironment) { _, name in
+			// A new environment's review doesn't depend on the environment shown.
+			if !review.createsEnvironment, name != review.environment { close() }
+		}
 		.onChange(of: store.selectedAccount) { _, _ in close() }
 		.onChange(of: store.isShowingAccountPage) { _, showing in if showing { close() } }
 		.onChange(of: isObscured) { _, obscured in if obscured { hideValues() } }
@@ -132,7 +136,7 @@ struct EnvFileImportReviewSheet: View {
 
 	private var title: String {
 		switch completion?.undo {
-		case nil: "Review import"
+		case nil: review.createsEnvironment ? "Review new file" : "Review import"
 		case .undone?: "Import undone"
 		default: "Import complete"
 		}
@@ -186,10 +190,13 @@ struct EnvFileImportReviewSheet: View {
 
 	private func filters(isCurrent: Bool) -> some View {
 		HStack(spacing: 6) {
-			VaultFilterChip(title: "All · \(review.rows.count)", selected: filter == .all) { filter = .all }
-			filterChip(.added, "New", count: review.addedCount, dot: VaultPalette.green)
-			filterChip(.changed, "Changed", count: review.changedKeys.count, dot: VaultPalette.orange)
-			filterChip(.unchanged, "Unchanged", count: review.unchangedCount, dot: nil)
+			// Every key of a new environment is new, so there's nothing to filter.
+			if !review.createsEnvironment {
+				VaultFilterChip(title: "All · \(review.rows.count)", selected: filter == .all) { filter = .all }
+				filterChip(.added, "New", count: review.addedCount, dot: VaultPalette.green)
+				filterChip(.changed, "Changed", count: review.changedKeys.count, dot: VaultPalette.orange)
+				filterChip(.unchanged, "Unchanged", count: review.unchangedCount, dot: nil)
+			}
 			Spacer(minLength: 8)
 			Button(action: toggleReveal) {
 				Label(revealed ? "Hide values" : "Reveal values", systemImage: revealed ? "eye.slash" : "eye")
@@ -418,7 +425,9 @@ struct EnvFileImportReviewSheet: View {
 						.font(.system(size: 12))
 						.foregroundStyle(VaultPalette.textSecondary)
 						.lineLimit(1)
-					Text("Values stay hidden and are encrypted on import. Undo available for 30s.")
+					Text(review.createsEnvironment
+						? "Values stay hidden and are encrypted on import."
+						: "Values stay hidden and are encrypted on import. Undo available for 30s.")
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textFaint)
 						.lineLimit(2)
@@ -444,13 +453,16 @@ struct EnvFileImportReviewSheet: View {
 	}
 
 	private var importTitle: String {
-		if isWorking { return "Importing…" }
+		if isWorking { return review.createsEnvironment ? "Creating…" : "Importing…" }
 		let changes = outcome.changes
-		return changes == 0 ? "Nothing to import" : "Import \(changes) \(changes == 1 ? "change" : "changes")"
+		if changes == 0 { return "Nothing to import" }
+		if review.createsEnvironment { return "Create \(VaultProject.displayName(for: review.environment))" }
+		return "Import \(changes) \(changes == 1 ? "change" : "changes")"
 	}
 
 	private func outcomeSummary(_ outcome: EnvFileImportReview.Outcome) -> Text {
 		let added = Text("+\(outcome.added) added").fontWeight(.semibold).foregroundStyle(outcome.added > 0 ? VaultPalette.greenTintText : VaultPalette.textSecondary)
+		if review.createsEnvironment { return Text("\(added) · \(outcome.skipped) skipped") }
 		let replaced = Text("\(outcome.replaced) replaced").fontWeight(.semibold).foregroundStyle(outcome.replaced > 0 ? VaultPalette.orangeTintText : VaultPalette.textSecondary)
 		return Text("\(added) · \(replaced) · \(outcome.kept) kept · \(outcome.skipped) skipped")
 	}
@@ -519,6 +531,7 @@ struct EnvFileImportReviewSheet: View {
 	private func apply() {
 		guard outcome.changes > 0 else { return }
 		hideValues()
+		if review.createsEnvironment { return create() }
 		let replacing = replacingKeys
 		let skipping = skippingKeys
 		let outcome = outcome
@@ -529,6 +542,19 @@ struct EnvFileImportReviewSheet: View {
 			switch result {
 			case .success(let receipt): completion = Completion(receipt: receipt, outcome: outcome, undo: receipt.changed ? .available : .expired)
 			case .failure(.cancelled), .failure(.vaultLocked): dismiss()
+			case .failure(let error): failure = error.description(for: review.source)
+			}
+		}
+	}
+
+	private func create() {
+		let skipping = skippingKeys
+		task = Task {
+			let result = await store.createEnvironment(from: review, skippingKeys: skipping)
+			guard !Task.isCancelled else { return }
+			task = nil
+			switch result {
+			case .success, .failure(.cancelled), .failure(.vaultLocked): dismiss()
 			case .failure(let error): failure = error.description(for: review.source)
 			}
 		}
@@ -555,7 +581,8 @@ struct EnvFileImportReviewSheet: View {
 		hideValues()
 		task = Task {
 			let result = await store.prepareEnvImport(
-				review.imported, from: review.source, to: review.projectId, environment: review.environment)
+				review.imported, from: review.source, to: review.projectId, environment: review.environment,
+				creating: review.createsEnvironment)
 			guard !Task.isCancelled else { return }
 			task = nil
 			switch result {
