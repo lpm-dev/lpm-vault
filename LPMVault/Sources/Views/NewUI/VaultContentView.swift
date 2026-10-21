@@ -59,6 +59,15 @@ struct VaultContentView: View {
 	var onCopyLines: ([String]) -> Void = { _ in }
 	/// How many lines Raw text just copied, while it says so.
 	var copiedLineCount: Int?
+	/// Raw text's edit of the selected environment, while there is one.
+	var rawEditing: VaultRawTextEditing?
+	/// Why the selected environment can't be edited as Raw text, or nil when it can.
+	var rawEditBlocker: String?
+	/// Edits the selected environment as Raw text, from its keys in the order given.
+	var onEditRaw: ([String]) -> Void = { _ in }
+	/// The last Raw text save, while it can be undone or says how undoing went.
+	var rawSaved: VaultRawTextSaved?
+	var onUndoRawSave: () -> Void = {}
 
 	@State private var rawSelectedLineCount = 0
 
@@ -77,7 +86,8 @@ struct VaultContentView: View {
 			unstoredKeys: mode == .matrix ? valueChecks.unstoredInvalidKeys()
 				: (environmentViewMode == .table ? valueChecks.unstoredKeys(in: selectedEnvironment) : [])
 		)
-		let raw = showsRawText ? rawText(derived) : nil
+		let editing = showsRawText ? rawEditing : nil
+		let raw = showsRawText && editing == nil ? rawText(derived) : nil
 		VStack(spacing: 0) {
 			header(derived)
 			VaultHairline()
@@ -86,14 +96,14 @@ struct VaultContentView: View {
 			case .matrix:
 				matrix(derived)
 			case .environment:
-				environmentDetail(derived, raw: raw)
+				environmentDetail(derived, raw: raw, editing: editing)
 			case .schema, .projectSettings:
 				// The workspace shows the Schema or Project Settings page instead of this view.
 				Spacer(minLength: 0)
 			}
 
 			VaultHairline()
-			statusBar(derived, raw: raw)
+			statusBar(derived, raw: raw, editing: editing)
 		}
 		.background(VaultPalette.content)
 	}
@@ -115,46 +125,84 @@ struct VaultContentView: View {
 				}
 			}
 
-			// Raw text's hint goes first, then Import and Export lose their
-			// names, then Reveal and Copy all.
-			ViewThatFits(in: .horizontal) {
-				if showsRawText {
+			if showsRawText, let rawEditing {
+				ViewThatFits(in: .horizontal) {
 					HStack(spacing: 6) {
 						viewControls
-						Text("One KEY=value per line · select and ⌘C copies real values")
-							.font(.system(size: 12))
-							.foregroundStyle(VaultPalette.textTertiary)
-							.lineLimit(1)
-							.fixedSize()
-							.padding(.leading, 6)
+						hint("Editing · real values shown")
 						Spacer(minLength: 8)
-						valueActions(compact: false, namesTransfers: true, derived: derived)
+						rawEditActions(rawEditing)
+					}
+					HStack(spacing: 6) {
+						viewControls
+						Spacer(minLength: 8)
+						rawEditActions(rawEditing)
 					}
 				}
-				HStack(spacing: 6) {
-					viewControls
-					Spacer(minLength: 8)
-					valueActions(compact: false, namesTransfers: true, derived: derived)
-				}
-				HStack(spacing: 6) {
-					viewControls
-					Spacer(minLength: 8)
-					valueActions(compact: false, derived: derived)
-				}
-				HStack(spacing: 6) {
-					viewControls
-					Spacer(minLength: 8)
-					valueActions(compact: true, derived: derived)
-				}
-				VStack(alignment: .leading, spacing: 10) {
-					HStack(spacing: 6) { viewControls }
-					valueActions(compact: true, derived: derived).frame(maxWidth: .infinity, alignment: .trailing)
-				}
+			} else {
+				valueRow(derived)
 			}
 		}
 		.padding(.horizontal, 20)
 		.padding(.top, 16)
 		.padding(.bottom, 12)
+	}
+
+	private func hint(_ text: String) -> some View {
+		Text(text)
+			.font(.system(size: 12))
+			.foregroundStyle(VaultPalette.textTertiary)
+			.lineLimit(1)
+			.fixedSize()
+			.padding(.leading, 6)
+	}
+
+	private func rawEditActions(_ editing: VaultRawTextEditing) -> some View {
+		HStack(spacing: 6) {
+			VaultBarButton(title: "Cancel", disabled: editing.isSaving, height: 28, action: editing.onCancel)
+				.help("Discard this edit")
+			VaultBarButton(title: editing.isSaving ? "Saving…" : "Save", shortcut: "⌘S", filled: true,
+				disabled: !editing.draft.canSave || editing.isSaving, height: 28, action: editing.onSave)
+				.keyboardShortcut("s", modifiers: .command)
+				.help(editing.draft.check.problems.isEmpty
+					? (editing.draft.changes.count == 0 ? "Nothing has changed yet" : "Save \(editing.draft.changes.summary)")
+					: "Fix every problem line first")
+		}
+		.fixedSize()
+	}
+
+	/// Raw text's hint goes first, then Import and Export lose their names,
+	/// then Reveal and Copy all.
+	private func valueRow(_ derived: VaultContentDerivation) -> some View {
+		ViewThatFits(in: .horizontal) {
+			if showsRawText {
+				HStack(spacing: 6) {
+					viewControls
+					hint("One KEY=value per line · select and ⌘C copies real values")
+					Spacer(minLength: 8)
+					valueActions(compact: false, namesTransfers: true, derived: derived)
+				}
+			}
+			HStack(spacing: 6) {
+				viewControls
+				Spacer(minLength: 8)
+				valueActions(compact: false, namesTransfers: true, derived: derived)
+			}
+			HStack(spacing: 6) {
+				viewControls
+				Spacer(minLength: 8)
+				valueActions(compact: false, derived: derived)
+			}
+			HStack(spacing: 6) {
+				viewControls
+				Spacer(minLength: 8)
+				valueActions(compact: true, derived: derived)
+			}
+			VStack(alignment: .leading, spacing: 10) {
+				HStack(spacing: 6) { viewControls }
+				valueActions(compact: true, derived: derived).frame(maxWidth: .infinity, alignment: .trailing)
+			}
+		}
 	}
 
 	@ViewBuilder
@@ -284,6 +332,16 @@ struct VaultContentView: View {
 				disabled: isCopyingAll || !canUseSecrets,
 				action: onCopyAll
 			)
+			if showsRawText {
+				VaultOutlineButton(
+					systemImage: "pencil",
+					title: compact ? nil : "Edit",
+					help: rawEditBlocker ?? "Edit \(environmentName) as text, with real values",
+					label: "Edit \(environmentName) as text",
+					disabled: rawEditBlocker != nil || !canUseSecrets,
+					action: { onEditRaw(rawEditOrder) }
+				)
+			}
 			VaultOutlineButton(
 				systemImage: "square.and.arrow.down",
 				title: namesTransfers ? "Import" : nil,
@@ -367,8 +425,10 @@ struct VaultContentView: View {
 	}
 
 	@ViewBuilder
-	private func environmentDetail(_ derived: VaultContentDerivation, raw: VaultRawText?) -> some View {
-		if let raw {
+	private func environmentDetail(_ derived: VaultContentDerivation, raw: VaultRawText?, editing: VaultRawTextEditing?) -> some View {
+		if let editing {
+			rawEditor(editing)
+		} else if let raw {
 			rawEnvironment(raw)
 		} else {
 			GeometryReader { geometry in
@@ -435,6 +495,12 @@ struct VaultContentView: View {
 		return false
 	}
 
+	/// Every stored key of the environment, whatever the search shows, in the table's order.
+	private var rawEditOrder: [String] {
+		let ascending = VaultKeySortOrder.sortedAscending(project.environments[selectedEnvironment].map { Array($0.keys) } ?? [])
+		return sortOrder == .ascending ? ascending : ascending.reversed()
+	}
+
 	private func rawText(_ derived: VaultContentDerivation) -> VaultRawText {
 		VaultRawText(keys: derived.environmentKeys, isShown: isShown, value: { project.value(for: $0, in: selectedEnvironment) })
 	}
@@ -447,34 +513,192 @@ struct VaultContentView: View {
 					VaultTableEmptyRow(message: emptyEnvironmentMessage, width: geometry.size.width)
 					Spacer(minLength: 0)
 				} else {
-					VaultRawTextView(
-						text: text,
-						label: "\(VaultProject.displayName(for: selectedEnvironment)) as text",
-						selectedLineCount: $rawSelectedLineCount,
-						onCopy: onCopyLines
-					)
-					// Another environment starts unselected, at its top.
-					.id("\(project.id)/\(selectedEnvironment)")
-					.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
-					.clipShape(RoundedRectangle(cornerRadius: 10))
-					.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
-					.overlay(alignment: .bottom) {
-						if let copiedLineCount {
-							VaultToast {
-								Image(systemName: "checkmark")
-									.font(.system(size: 11, weight: .bold))
-									.foregroundStyle(VaultPalette.toastConfirmation)
-									.accessibilityHidden(true)
-								Text("Copied \(copiedLineCount.counted("line")) ")
-									+ Text("· clears in \(Int(VaultConstants.clipboardClearDelay))s").foregroundStyle(VaultPalette.toastSecondaryText)
-							}
-							.padding(.bottom, 14)
-						}
+					rawCard(editing: false) {
+						VaultRawTextView(
+							text: text,
+							label: "\(VaultProject.displayName(for: selectedEnvironment)) as text",
+							selectedLineCount: $rawSelectedLineCount,
+							onCopy: onCopyLines
+						)
+						// Another environment starts unselected, at its top.
+						.id("\(project.id)/\(selectedEnvironment)")
 					}
-					.padding(.horizontal, 20)
-					.padding(.top, 12)
-					.padding(.bottom, 14)
 				}
+			}
+		}
+	}
+
+	private func rawEditor(_ editing: VaultRawTextEditing) -> some View {
+		let draft = editing.draft
+		let name = VaultProject.displayName(for: selectedEnvironment)
+		return GeometryReader { geometry in
+			VStack(alignment: .leading, spacing: 0) {
+				environmentNotes(width: geometry.size.width)
+				if let failure = editing.failure {
+					rawFailureBanner(failure, editing: editing, width: geometry.size.width)
+				}
+				rawCard(editing: true) {
+					VStack(spacing: 0) {
+						VaultRawTextEditor(
+							text: draft.text,
+							problems: draft.check.problems,
+							problemLines: draft.check.problemLines,
+							label: "\(name) as text, editing",
+							isEditable: !editing.isSaving,
+							onChange: editing.onChange,
+							onCopy: editing.onCopy
+						)
+						.id("\(project.id)/\(selectedEnvironment)")
+						VaultHairline()
+						rawEditorFooter(draft)
+					}
+				}
+			}
+		}
+	}
+
+	private func rawEditorFooter(_ draft: VaultRawTextDraft) -> some View {
+		let problems = draft.check.problems
+		let state = problems.isEmpty
+			? (draft.changes.count == 0 ? "No changes yet" : "Ready to save: \(draft.changes.summary)")
+			: "\(problems.count.counted("problem")) · Save is available once every line is valid"
+		let note = "Comments, blank lines and line order aren't kept."
+		return HStack(spacing: 8) {
+			if problems.isEmpty {
+				Text(state)
+			} else {
+				HStack(spacing: 5) {
+					Image(systemName: "exclamationmark.circle.fill").accessibilityHidden(true)
+					Text(problems.count.counted("problem"))
+				}
+				.fontWeight(.semibold)
+				.foregroundStyle(VaultPalette.redText)
+				Text("·")
+				Text("Save is available once every line is valid")
+			}
+			Spacer(minLength: 12)
+			Text(note)
+		}
+		.font(.system(size: 11.5))
+		.foregroundStyle(VaultPalette.textTertiary)
+		.lineLimit(1)
+		.padding(.horizontal, 14)
+		.frame(height: 30)
+		.background(VaultPalette.headerRow)
+		.accessibilityElement(children: .ignore)
+		.accessibilityLabel("\(state). \(note)")
+		// The reasons are drawn beside their lines, which VoiceOver reads as plain text.
+		.accessibilityValue(problems.map(\.message).joined(separator: ". "))
+	}
+
+	private func rawFailureBanner(_ failure: VaultRawTextFailure, editing: VaultRawTextEditing, width: CGFloat) -> some View {
+		let name = VaultProject.displayName(for: selectedEnvironment)
+		return HStack(spacing: 8) {
+			Image(systemName: "exclamationmark.triangle")
+				.font(.system(size: 11, weight: .semibold))
+				.foregroundStyle(VaultPalette.redText)
+				.accessibilityHidden(true)
+			switch failure {
+			case .changed:
+				Text("\(name) changed meanwhile, as by the LPM CLI, so nothing was saved. Compare your edit with its current values to save over them.")
+					.lineLimit(2)
+				Spacer(minLength: 8)
+				Button("Compare with current values", action: editing.onCompare)
+					.buttonStyle(.plain)
+					.font(.system(size: 11.5, weight: .medium))
+					.foregroundStyle(VaultPalette.accentForeground)
+					.vaultPointingHand()
+					.disabled(editing.isSaving)
+			case .failed(let message):
+				Text(message).lineLimit(2)
+				Spacer(minLength: 0)
+			}
+		}
+		.font(.system(size: 12))
+		.foregroundStyle(VaultPalette.textSecondary)
+		.padding(.horizontal, 20)
+		.padding(.vertical, 8)
+		.frame(width: width, alignment: .leading)
+		.background(VaultPalette.redTint.opacity(0.6))
+		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+	}
+
+	/// Raw text's card, with what was just copied or saved floating at its foot.
+	private func rawCard<Content: View>(editing: Bool, @ViewBuilder content: () -> Content) -> some View {
+		content()
+			.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
+			.clipShape(RoundedRectangle(cornerRadius: 10))
+			.overlay {
+				RoundedRectangle(cornerRadius: 10)
+					.strokeBorder(editing ? VaultPalette.accent : VaultPalette.border, lineWidth: editing ? 1.5 : 1)
+			}
+			.overlay(alignment: .bottom) {
+				rawToast
+					.padding(.bottom, editing ? 44 : 14)
+			}
+			.padding(.horizontal, 20)
+			.padding(.top, 12)
+			.padding(.bottom, 14)
+	}
+
+	@ViewBuilder
+	private var rawToast: some View {
+		if let copiedLineCount {
+			VaultToast {
+				Image(systemName: "checkmark")
+					.font(.system(size: 11, weight: .bold))
+					.foregroundStyle(VaultPalette.toastConfirmation)
+					.accessibilityHidden(true)
+				Text("Copied \(copiedLineCount.counted("line")) ")
+					+ Text("· clears in \(Int(VaultConstants.clipboardClearDelay))s").foregroundStyle(VaultPalette.toastSecondaryText)
+			}
+		} else if let rawSaved, rawSaved.receipt.projectId == project.id, rawSaved.receipt.environment == selectedEnvironment {
+			savedToast(rawSaved)
+		}
+	}
+
+	private func savedToast(_ saved: VaultRawTextSaved) -> some View {
+		let name = VaultProject.displayName(for: saved.receipt.environment)
+		return VaultToast(hasButton: saved.undo == .available || saved.undo == .undoing) {
+			switch saved.undo {
+			case .available, .undoing:
+				Image(systemName: "checkmark")
+					.font(.system(size: 11, weight: .bold))
+					.foregroundStyle(VaultPalette.toastConfirmation)
+					.accessibilityHidden(true)
+				Text("Saved \(name) · \(saved.summary)")
+				Button(action: onUndoRawSave) {
+					Label(saved.undo == .undoing ? "Undoing…" : "Undo", systemImage: "arrow.uturn.backward")
+						.font(.system(size: 12, weight: .semibold))
+						.foregroundStyle(VaultPalette.toastAction)
+				}
+				.buttonStyle(.plain)
+				.vaultPointingHand()
+				.disabled(saved.undo == .undoing)
+				.help("Put \(name) back as it was")
+				Rectangle()
+					.fill(VaultPalette.toastDivider)
+					.frame(width: 1, height: 16)
+					.accessibilityHidden(true)
+				TimelineView(.periodic(from: saved.savedAt, by: 1)) { context in
+					let left = VaultFeedbackTimer.undoSeconds - Int(context.date.timeIntervalSince(saved.savedAt))
+					Text("\(max(0, left))s")
+						.font(VaultTypography.tabular(11))
+						.foregroundStyle(VaultPalette.toastSecondaryText)
+						.accessibilityLabel("\(max(0, left)) seconds left to undo")
+				}
+			case .undone:
+				Image(systemName: "arrow.uturn.backward")
+					.font(.system(size: 11, weight: .bold))
+					.foregroundStyle(VaultPalette.toastConfirmation)
+					.accessibilityHidden(true)
+				Text("Put \(name) back as it was")
+			case .failed(let message):
+				Image(systemName: "exclamationmark.triangle.fill")
+					.font(.system(size: 11, weight: .bold))
+					.foregroundStyle(VaultPalette.orange)
+					.accessibilityHidden(true)
+				Text(message)
 			}
 		}
 	}
@@ -504,12 +728,20 @@ struct VaultContentView: View {
 			: "No secrets in this environment"
 	}
 
-	private func statusBar(_ derived: VaultContentDerivation, raw: VaultRawText?) -> some View {
-		let unsaved = editedKeys.isEmpty
-			? nil
-			: (editedKeys.count == 1 ? "1 key with unsaved changes" : "\(editedKeys.count) keys with unsaved changes")
+	private func statusBar(_ derived: VaultContentDerivation, raw: VaultRawText?, editing: VaultRawTextEditing?) -> some View {
+		var unsavedParts: [String] = []
+		if !editedKeys.isEmpty {
+			unsavedParts.append(editedKeys.count == 1 ? "1 key with unsaved changes" : "\(editedKeys.count) keys with unsaved changes")
+		}
+		// The table shows saved values; an edit of them as Raw text waits there.
+		if let draft = rawEditing?.draft, editing == nil, draft.changes.count > 0 || !draft.check.problems.isEmpty {
+			unsavedParts.append("Raw text edit not saved")
+		}
+		let unsaved = unsavedParts.isEmpty ? nil : unsavedParts.joined(separator: " · ")
 		return Group {
-			if let raw {
+			if let editing {
+				editStatus(editing.draft)
+			} else if let raw {
 				rawStatus(raw, unsaved: unsaved)
 			} else {
 				tableStatus(derived, unsaved: unsaved)
@@ -521,6 +753,21 @@ struct VaultContentView: View {
 		.padding(.horizontal, 20)
 		.frame(height: VaultMetrics.statusBar)
 		.background(VaultPalette.headerRow)
+	}
+
+	/// An edit counts its lines, what saving would change and its problems.
+	private func editStatus(_ draft: VaultRawTextDraft) -> some View {
+		var items = [Text(draft.check.lineCount.counted("line"))]
+		if draft.changes.count > 0 {
+			items.append(Text(draft.changes.parts.joined(separator: " · ")))
+		}
+		if !draft.check.problems.isEmpty {
+			items.append(Text(draft.check.problems.count.counted("problem")).foregroundStyle(VaultPalette.redText))
+		}
+		return ViewThatFits(in: .horizontal) {
+			statusLine(items, unsaved: nil)
+			statusLine(Array(items.prefix(1)) + Array(items.dropFirst(2)), unsaved: nil)
+		}
 	}
 
 	/// Raw text counts lines, says whether their values show, and what's

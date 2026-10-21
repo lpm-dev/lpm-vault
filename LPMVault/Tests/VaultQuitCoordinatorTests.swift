@@ -471,6 +471,45 @@ struct VaultQuitCoordinatorTests {
 		#expect(fixture.coordinator.items.isEmpty)
 		#expect(fixture.keychain.envStorage["first"]?.environments["default"]?["TOKEN"] == "one")
 	}
+
+	@Test("an environment edited as Raw text is listed and saved with the rest; one with a problem line is left for quitting to discard")
+	func savesRawText() async throws {
+		let fixture = try await makeFixture()
+		defer { fixture.store.lock() }
+		let store = fixture.store
+		#expect(store.beginRawTextEdit(order: ["PORT", "TOKEN"]))
+		store.updateRawTextDraft(VaultEnvironmentTarget(projectId: "first", environment: "default"), text: "PORT=81\nTOKEN=one\n")
+		#expect(await store.openProjectForSaving("second", timeout: testWaitLimit))
+		#expect(store.beginRawTextEdit(order: ["URL"]))
+		store.updateRawTextDraft(VaultEnvironmentTarget(projectId: "second", environment: "default"), text: "URL=b\nbad key=1\n")
+		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
+		let rows = fixture.coordinator.items.map { "\($0.projectName) · \($0.subject) · \($0.detail)" }
+		#expect(rows == ["Second · .env as Raw text · 1 changed · not saved", "First · .env as Raw text · 1 changed · not saved"])
+		#expect(fixture.coordinator.items.first?.state == .needsReview("Fix its problem line in Raw text, or quitting discards it."))
+		fixture.coordinator.saveAndQuit()
+		#expect(try await waitUntil { fixture.outcome.terminations == 1 })
+		#expect(fixture.keychain.envStorage["first"]?.environments["default"] == ["PORT": "81", "TOKEN": "one"])
+		#expect(fixture.keychain.envStorage["second"]?.environments["default"] == ["URL": "a"])
+	}
+
+	@Test("a Raw text edit the LPM CLI changed under it isn't written over, and quitting waits")
+	func rawTextChangedElsewhere() async throws {
+		let fixture = try await makeFixture()
+		defer { fixture.store.lock() }
+		#expect(fixture.store.beginRawTextEdit(order: ["PORT", "TOKEN"]))
+		fixture.store.updateRawTextDraft(VaultEnvironmentTarget(projectId: "first", environment: "default"), text: "PORT=81\nTOKEN=one\n")
+		#expect(fixture.coordinator.shouldTerminate(sessionEnding: false) == .terminateCancel)
+		#expect(try await waitUntil { fixture.coordinator.phase == .reviewing })
+		fixture.keychain.simulateCLISet(vaultId: "first", environment: "default", key: "TOKEN", value: "from-cli")
+		fixture.coordinator.saveAndQuit()
+		#expect(try await waitUntil { fixture.coordinator.phase == .failed })
+		#expect(fixture.coordinator.items.first?.state
+			== .needsReview("It changed elsewhere since the edit; compare it in Raw text. Quitting discards it."))
+		#expect(fixture.keychain.envStorage["first"]?.environments["default"] == ["PORT": "80", "TOKEN": "from-cli"])
+		#expect(fixture.outcome.terminations == 0)
+		fixture.coordinator.cancel()
+	}
 }
 
 @Suite("Quit sheet with many projects")

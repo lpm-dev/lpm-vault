@@ -168,6 +168,7 @@ struct VaultQuitSheet: View {
 				case .schema: Text("{}").font(VaultTypography.tabular(11, .bold))
 				case .settings: Image(systemName: "gearshape").font(.system(size: 12, weight: .medium))
 				case .sheet: Image(systemName: "macwindow").font(.system(size: 12, weight: .medium))
+				case .rawText: Image(systemName: "doc.plaintext").font(.system(size: 12, weight: .medium))
 				case .keys, .review: Image(systemName: "folder").font(.system(size: 12, weight: .medium))
 				}
 			}
@@ -340,6 +341,7 @@ extension VaultQuitCoordinator.Item {
 		case .review(let keys): keys.count == 1 ? "1 key needs review" : "\(keys.count) keys need review"
 		case .schema: "Schema draft"
 		case .settings: "Project settings"
+		case .rawText(let environment, _): "\(VaultProject.displayName(for: environment)) as Raw text"
 		case .sheet(let title, _): title
 		}
 	}
@@ -355,6 +357,8 @@ extension VaultQuitCoordinator.Item {
 		case .settings(let newName, let changesIcon):
 			[newName.map { "Name \($0)" }, changesIcon ? (newName == nil ? "Icon" : "icon") : nil]
 				.compactMap { $0 }.joined(separator: " and ") + " · not saved"
+		case .rawText(_, let summary):
+			(summary.isEmpty ? "No value changes" : summary) + " · not saved"
 		case .sheet(_, let detail):
 			detail
 		}
@@ -363,7 +367,7 @@ extension VaultQuitCoordinator.Item {
 	var badge: String {
 		switch kind {
 		case .keys, .review: editCount == 1 ? "1 edit" : "\(editCount) edits"
-		case .schema, .settings: "draft"
+		case .schema, .settings, .rawText: "draft"
 		case .sheet: "open"
 		}
 	}

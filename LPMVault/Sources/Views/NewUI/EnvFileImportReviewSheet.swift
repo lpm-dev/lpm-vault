@@ -16,7 +16,7 @@ struct EnvFileImportReviewSheet: View {
 			case failed(String)
 		}
 
-		let receipt: EnvImportReceipt
+		let receipt: EnvironmentChangeReceipt
 		let outcome: EnvFileImportReview.Outcome
 		var undo: Undo
 	}
@@ -38,7 +38,7 @@ struct EnvFileImportReviewSheet: View {
 	@State private var completion: Completion?
 
 	/// `receipt` is what an import without a review did, which the sheet opens on.
-	init(store: VaultStore, review: EnvFileImportReview, importedWithoutReview receipt: EnvImportReceipt? = nil) {
+	init(store: VaultStore, review: EnvFileImportReview, importedWithoutReview receipt: EnvironmentChangeReceipt? = nil) {
 		_store = Bindable(wrappedValue: store)
 		_review = State(initialValue: review)
 		importedWithoutReview = receipt != nil
@@ -388,7 +388,7 @@ struct EnvFileImportReviewSheet: View {
 					VaultBarButton(
 						systemImage: "arrow.uturn.backward", title: completion.undo == .undoing ? "Undoing…" : "Undo import",
 						disabled: completion.undo == .undoing, height: 28, action: undo)
-					Text("Puts \(VaultProject.displayName(for: review.environment)) back as it was. Available for 30 seconds.")
+					Text("Puts \(VaultProject.displayName(for: review.environment)) back as it was. Available for \(VaultFeedbackTimer.undoSeconds) seconds.")
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textFaint)
 						.fixedSize(horizontal: false, vertical: true)
@@ -542,7 +542,7 @@ struct EnvFileImportReviewSheet: View {
 		guard let receipt = completion?.receipt, completion?.undo == .available else { return }
 		completion?.undo = .undoing
 		task = Task {
-			let outcome = await store.undoEnvImport(receipt)
+			let outcome = await store.undoEnvironmentChange(receipt)
 			guard !Task.isCancelled else { return }
 			task = nil
 			switch outcome {

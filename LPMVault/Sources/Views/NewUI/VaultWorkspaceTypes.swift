@@ -217,7 +217,8 @@ struct VaultSecretDeleteTarget: Identifiable {
   let key: String
 }
 
-struct VaultEnvironmentTarget: Identifiable {
+/// An environment, by its project and name.
+struct VaultEnvironmentTarget: Identifiable, Hashable, Sendable {
   var id: String { "\(projectId)-\(environment)" }
   let projectId: String
   let environment: String
@@ -334,18 +335,65 @@ struct VaultValueCopy: Equatable, Sendable {
 }
 
 /// How long feedback stays before it clears: a copy confirmation, or the
-/// chance to undo an import. Tests replace it to end the feedback on demand
-/// instead of after a delay.
+/// chance to undo an import or a Raw text save. Tests replace it to end the
+/// feedback on demand instead of after a delay.
 struct VaultFeedbackTimer: Sendable {
   let wait: @Sendable () async throws -> Void
 
+  /// How long a change to an environment can be undone.
+  static let undoSeconds = 30
+
   static let copyConfirmation = VaultFeedbackTimer { try await Task.sleep(for: .seconds(2)) }
-  static let importUndo = VaultFeedbackTimer { try await Task.sleep(for: .seconds(30)) }
+  static let importUndo = VaultFeedbackTimer { try await Task.sleep(for: .seconds(undoSeconds)) }
 }
 
 extension EnvironmentValues {
   @Entry var vaultCopyFeedbackTimer = VaultFeedbackTimer.copyConfirmation
   @Entry var vaultImportUndoTimer = VaultFeedbackTimer.importUndo
+}
+
+/// Raw text's edit of the selected environment, as the content view shows it.
+struct VaultRawTextEditing {
+  let draft: VaultRawTextDraft
+  let isSaving: Bool
+  /// Why the last save wrote nothing, until the next.
+  let failure: VaultRawTextFailure?
+  let onChange: (String) -> Void
+  let onCancel: () -> Void
+  let onSave: () -> Void
+  /// Compares the edit with the environment's values now, after they changed.
+  let onCompare: () -> Void
+  /// Copies text cut or copied in the editor.
+  let onCopy: (String) -> Void
+}
+
+enum VaultRawTextFailure: Equatable {
+  /// Something else, as the LPM CLI, changed the environment since the edit began.
+  case changed
+  case failed(String)
+}
+
+/// A Raw text save, which a short while can undo.
+struct VaultRawTextSaved: Equatable {
+  enum Undo: Equatable {
+    case available
+    case undoing
+    case undone
+    case failed(String)
+  }
+
+  let id = UUID()
+  let receipt: EnvironmentChangeReceipt
+  /// Such as "1 added, 2 changed".
+  let summary: String
+  let savedAt: Date
+  var undo = Undo.available
+}
+
+/// Which part of a Raw text save's feedback is showing, which decides how long it stays.
+struct RawTextSavedPhase: Equatable {
+  let id: UUID
+  let undo: VaultRawTextSaved.Undo
 }
 
 struct VaultCopyFeedback: Equatable {

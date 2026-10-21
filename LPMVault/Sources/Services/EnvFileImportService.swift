@@ -1111,7 +1111,7 @@ private struct EnvLineIterator {
 	}
 }
 
-private extension String {
+extension String {
 	func trimmingLeadingWhitespace() -> String {
 		let index = firstIndex { !$0.isWhitespace } ?? endIndex
 		return String(self[index...])

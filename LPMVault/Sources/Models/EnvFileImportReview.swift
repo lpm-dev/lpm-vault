@@ -98,8 +98,8 @@ struct EnvFileImportReview: Identifiable, Sendable {
 	}
 }
 
-/// What an import did to an environment, which undoing it reverses.
-struct EnvImportReceipt: Sendable, Equatable {
+/// What an import or a Raw text save did to an environment, which undoing it reverses.
+struct EnvironmentChangeReceipt: Sendable, Equatable {
 	let projectId: String
 	let environment: String
 	let before: [String: String]

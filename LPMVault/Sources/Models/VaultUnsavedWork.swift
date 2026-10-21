@@ -1,7 +1,8 @@
 import Foundation
 
 /// What quitting would lose: each project's unsaved key edits, its unsaved
-/// schema draft, and what sheets still open hold.
+/// schema draft, its environments edited as Raw text, and what sheets still
+/// open hold.
 struct VaultUnsavedWork: Equatable {
 	/// A key's draft and how many unsaved changes it holds.
 	struct KeyEdit: Hashable {
@@ -36,6 +37,18 @@ struct VaultUnsavedWork: Equatable {
 		let changesIcon: Bool
 	}
 
+	/// An environment edited as Raw text and not saved.
+	struct RawText: Equatable {
+		let target: VaultEnvironmentTarget
+		let projectName: String
+		/// What saving it would change, such as "1 added, 2 changed".
+		let summary: String
+		/// How many of its lines can't be saved as they are.
+		let problemCount: Int
+		/// Whether its environment is still there to save it to.
+		let environmentExists: Bool
+	}
+
 	/// A sheet still open with something typed into it, which only it can save.
 	struct OpenSheet: Equatable, Identifiable {
 		let id: UUID
@@ -52,11 +65,12 @@ struct VaultUnsavedWork: Equatable {
 	var keyEdits: [KeyEdits] = []
 	var schemaDrafts: [SchemaDraft] = []
 	var projectSettings: [ProjectSettings] = []
+	var rawTexts: [RawText] = []
 	var openSheets: [OpenSheet] = []
 	/// The projects with unsaved work, the selected one first, then in the sidebar's order.
 	var projectOrder: [String] = []
 
-	var isEmpty: Bool { keyEdits.isEmpty && schemaDrafts.isEmpty && projectSettings.isEmpty && openSheets.isEmpty }
+	var isEmpty: Bool { keyEdits.isEmpty && schemaDrafts.isEmpty && projectSettings.isEmpty && rawTexts.isEmpty && openSheets.isEmpty }
 }
 
 extension VaultStore {
@@ -98,6 +112,22 @@ extension VaultStore {
 			return VaultUnsavedWork.ProjectSettings(projectID: projectID, projectName: name, newName: draft.name?.text, changesIcon: draft.icon != nil)
 		}
 		.sorted { ranked($0.projectID, $0.projectName) < ranked($1.projectID, $1.projectName) }
+		let projectsByID = Dictionary(projects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+		// A draft that changes no value and has no problem line holds nothing to lose.
+		work.rawTexts = rawTextDrafts.values.compactMap { draft in
+			guard draft.changes.count > 0 || !draft.check.problems.isEmpty else { return nil }
+			let project = projectsByID[draft.target.projectId]
+			// A project not shown hasn't loaded its environments, which saving it opens to.
+			let exists = project.map { !$0.hasLoadedEnvironments || $0.environments[draft.target.environment] != nil } ?? false
+			return VaultUnsavedWork.RawText(
+				target: draft.target, projectName: project?.name ?? draft.target.projectId, summary: draft.changes.summary,
+				problemCount: draft.check.problems.count, environmentExists: exists)
+		}
+		.sorted {
+			let first = ranked($0.target.projectId, $0.projectName)
+			let second = ranked($1.target.projectId, $1.projectName)
+			return first != second ? first < second : $0.target.environment < $1.target.environment
+		}
 		work.openSheets = openSheetWork.values
 			.map { sheet in
 				VaultUnsavedWork.OpenSheet(id: sheet.id, projectID: sheet.projectID,
@@ -111,7 +141,7 @@ extension VaultStore {
 			}
 		var seen = Set<String>()
 		for projectID in work.keyEdits.map(\.projectID) + work.schemaDrafts.map(\.projectID) + work.projectSettings.map(\.projectID)
-			+ work.openSheets.compactMap(\.projectID)
+			+ work.rawTexts.map(\.target.projectId) + work.openSheets.compactMap(\.projectID)
 		{
 			seen.insert(projectID)
 		}
