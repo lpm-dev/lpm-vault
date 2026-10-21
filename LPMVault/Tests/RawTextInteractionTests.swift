@@ -183,12 +183,11 @@ extension SheetInteractionTests {
 			#expect(!textView.isEditable)
 		}
 
-		@Test("Edit shows every key with its real value; Save writes the edit, and Undo puts it back")
-		func editSaveAndUndo() async throws {
-			let (store, _, keychain) = makeStore()
+		@Test("Edit shows every key with its real value; Save reviews the changes, Apply makes them, and Undo puts them back")
+		func editReviewApplyAndUndo() async throws {
+			let (store, biometric, keychain) = makeStore()
 			defer { store.lock() }
-			let undoWindow = ManualFeedbackTimer()
-			let host = try await rawText(store, undoWindow: undoWindow)
+			let host = try await rawText(store)
 			defer { host.window.close() }
 			try await host.click("Edit")
 			let editor = try await editorView(in: host)
@@ -196,21 +195,128 @@ extension SheetInteractionTests {
 			for text in ["Editing · real values shown", "No changes yet", "Comments, blank lines and line order aren't kept.", "4 lines"] {
 				#expect(try await host.waitForText(text), "The editor says \(text)")
 			}
+			#expect(element("Review before saving", in: host)?.isOn == true, "Save reviews unless that's turned off")
 			#expect(try await host.waitUntil { element("Save", in: host)?.isEnabled == false })
 			try type("debug", over: "info", in: editor)
 			try type("NEW_KEY=added\n", at: (editor.string as NSString).length, in: editor)
 			#expect(try await host.waitForText("1 added · 1 changed"))
 			try record(host, named: "raw-text-editing")
 			try await save(in: host)
-			#expect(try await host.waitUntil {
-				keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["LOG_LEVEL": "debug", "NEW_KEY": "added"]) { $1 }
-			})
+			let sheet = try await reviewSheet(of: host)
+			for text in ["Review changes to .env", "Values stay hidden.", "1 new", "1 changed", "2 unchanged", "NEW_KEY", "Line 4",
+				"LOG_LEVEL", "Line 3 · was a different value", "Reveal values", "Apply 2 changes"]
+			{
+				#expect(try await host.waitForText(text, in: sheet), "The review says \(text)")
+			}
+			#expect(try await !host.text(in: sheet).contains("debug"), "Values stay hidden until revealed")
+			try await host.click("Reveal values", in: sheet)
+			#expect(try await host.waitForText("Edited value for LOG_LEVEL, debug", in: sheet))
+			#expect(biometric.authenticateCallCount == 0)
+			try recordWindow(sheet, named: "raw-text-review")
+			try await host.click("Apply 2 changes", in: sheet)
+			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
+			#expect(keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["LOG_LEVEL": "debug", "NEW_KEY": "added"]) { $1 })
 			#expect(try await host.waitForText("Saved .env · 1 added, 1 changed"))
-			#expect(try await host.waitForText("NEW_KEY=\(VaultRawText.mask)"), "Saving ends the edit, and shows the saved lines")
+			#expect(try await host.waitForText("NEW_KEY=\(VaultRawText.mask)"), "Applying ends the edit, and shows the saved lines")
 			try record(host, named: "raw-text-saved")
 			try await host.click("Undo")
 			#expect(try await host.waitUntil { keychain.envStorage["raw"]?.environments["default"] == Self.values })
 			#expect(try await host.waitForText("Put .env back as it was"))
+		}
+
+		@Test("a change switched off is left out, and Back to editor keeps the edit as it is")
+		func reviewLeavesOut() async throws {
+			let (store, _, keychain) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			let editor = try await editorView(in: host)
+			try type("debug", over: "info", in: editor)
+			try type("", over: "DATABASE_URL=postgres://app:pw@db:5432/demo\n", in: editor)
+			try await save(in: host)
+			var sheet = try await reviewSheet(of: host)
+			#expect(try await host.waitForText("Line deleted · the key leaves .env and the Keychain", in: sheet))
+			try await host.click("Apply DATABASE_URL", in: sheet)
+			#expect(try await host.waitForText("Apply 1 change", in: sheet))
+			try await host.click("Back to editor", in: sheet)
+			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
+			#expect(!editor.string.contains("DATABASE_URL"), "The edit is as it was")
+			try await save(in: host)
+			sheet = try await reviewSheet(of: host)
+			#expect(try await host.waitForText("Apply 2 changes", in: sheet), "A new review chooses every change again")
+			try await host.click("Apply DATABASE_URL", in: sheet)
+			try await host.click("Apply 1 change", in: sheet)
+			#expect(try await host.waitUntil {
+				keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["LOG_LEVEL": "debug"]) { $1 }
+			})
+			// The store ends the edit once the Keychain write returns.
+			#expect(try await host.waitUntil { store.rawTextDraft(for: VaultEnvironmentTarget(projectId: "raw", environment: "default")) == nil })
+		}
+
+		@Test("a review of values the LPM CLI changed shows the change the edit would undo, and that can be left out")
+		func reviewShowsChangesSinceEditing() async throws {
+			let (store, _, keychain) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			try type("debug", over: "info", in: try await editorView(in: host))
+			keychain.simulateCLISet(vaultId: "raw", environment: "default", key: "API_TOKEN", value: "from-cli")
+			await store.refreshLocalState()
+			try await save(in: host)
+			let sheet = try await reviewSheet(of: host)
+			#expect(try await host.waitForText("2 changed", in: sheet))
+			#expect(try await host.waitForText("API_TOKEN", in: sheet))
+			try await host.click("Apply API_TOKEN", in: sheet)
+			try await host.click("Apply 1 change", in: sheet)
+			#expect(try await host.waitUntil {
+				keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["API_TOKEN": "from-cli", "LOG_LEVEL": "debug"]) { $1 }
+			})
+		}
+
+		@Test("a review that finds the values changed while it showed writes nothing, and can review again")
+		func reviewChangedWhileShowing() async throws {
+			let (store, _, keychain) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			try type("debug", over: "info", in: try await editorView(in: host))
+			try await save(in: host)
+			let sheet = try await reviewSheet(of: host)
+			#expect(try await host.waitForText("Apply 1 change", in: sheet))
+			keychain.simulateCLISet(vaultId: "raw", environment: "default", key: "API_TOKEN", value: "from-cli")
+			try await host.click("Apply 1 change", in: sheet)
+			#expect(try await host.waitForText(".env changed meanwhile, as by the LPM CLI, so nothing was saved.", in: sheet))
+			#expect(keychain.envStorage["raw"]?.environments["default"]?["LOG_LEVEL"] == "info")
+			try await host.click("Review again", in: sheet)
+			#expect(try await host.waitForText("Apply 2 changes", in: sheet), "The token the CLI changed is now a change the edit makes")
+			try await host.click("Apply API_TOKEN", in: sheet)
+			try await host.click("Apply 1 change", in: sheet)
+			#expect(try await host.waitUntil {
+				keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["API_TOKEN": "from-cli", "LOG_LEVEL": "debug"]) { $1 }
+			})
+		}
+
+		@Test("with Review before saving off, Save writes the edit at once, which Undo puts back")
+		func saveWithoutReview() async throws {
+			let (store, _, keychain) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			try type("debug", over: "info", in: try await editorView(in: host))
+			try await host.click("Review before saving")
+			#expect(try await host.waitUntil { element("Review before saving", in: host)?.isOn == false })
+			try await save(in: host)
+			#expect(try await host.waitUntil {
+				keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["LOG_LEVEL": "debug"]) { $1 }
+			})
+			#expect(host.window.attachedSheet == nil)
+			#expect(try await host.waitForText("Saved .env · 1 changed"))
+			try await host.click("Undo")
+			#expect(try await host.waitUntil { keychain.envStorage["raw"]?.environments["default"] == Self.values })
 		}
 
 		@Test("a line that can't be saved is marked with why, by its number, and keeps Save off until it's fixed")
@@ -258,7 +364,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("1 removed"))
 		}
 
-		@Test("a save that finds the environment changed meanwhile writes nothing, says so, and saves once compared")
+		@Test("a save without review that finds the environment changed meanwhile writes nothing, says so, and saves once compared")
 		func changedMeanwhile() async throws {
 			let (store, _, keychain) = makeStore()
 			defer { store.lock() }
@@ -267,6 +373,7 @@ extension SheetInteractionTests {
 			try await host.click("Edit")
 			let editor = try await editorView(in: host)
 			try type("debug", over: "info", in: editor)
+			try await host.click("Review before saving")
 			keychain.simulateCLISet(vaultId: "raw", environment: "default", key: "API_TOKEN", value: "from-cli")
 			try await save(in: host)
 			#expect(try await host.waitForText(".env changed meanwhile, as by the LPM CLI, so nothing was saved."))
@@ -346,15 +453,13 @@ extension SheetInteractionTests {
 
 		/// The workspace showing the project's .env as Raw text. Copy
 		/// confirmations, and a save's chance to undo, stay until the test ends them.
-		private func rawText(_ store: VaultStore, undoWindow: ManualFeedbackTimer = ManualFeedbackTimer()) async throws
-			-> SheetTestHost<some View>
-		{
+		private func rawText(_ store: VaultStore) async throws -> SheetTestHost<some View> {
 			await store.refreshCliAccess()
 			let defaults = try #require(UserDefaults(suiteName: "raw-text-interaction"))
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker())
 				.environment(VaultAppearanceSettings(defaults: defaults)).environment(VaultQuitSettings(defaults: defaults))
 				.environment(\.vaultCopyFeedbackTimer, ManualFeedbackTimer().timer)
-				.environment(\.vaultImportUndoTimer, undoWindow.timer)
+				.environment(\.vaultImportUndoTimer, ManualFeedbackTimer().timer)
 				.defaultAppStorage(defaults),
 				size: NSSize(width: 1300, height: 700), keepsRequestedSize: true, usesHostingView: true)
 			#expect(try await host.waitUntil { store.workspaceSnapshots["raw"] != nil })
@@ -400,6 +505,18 @@ extension SheetInteractionTests {
 
 		private func element<V: View>(_ label: String, in host: SheetTestHost<V>) -> AccessibilityTree.Element? {
 			AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.isInteractive && $0.says(label, as: .leading) }
+		}
+
+		private func reviewSheet<V: View>(of host: SheetTestHost<V>) async throws -> NSWindow {
+			#expect(try await host.waitUntil { host.window.attachedSheet != nil }, "Save shows the review")
+			return try #require(host.window.attachedSheet)
+		}
+
+		private func recordWindow(_ window: NSWindow, named name: String) throws {
+			let view = try #require(window.contentView)
+			let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+			view.cacheDisplay(in: view.bounds, to: bitmap)
+			Attachment.record(try #require(bitmap.representation(using: .png, properties: [:])), named: name + ".png")
 		}
 
 		private func codeView<V: View>(in host: SheetTestHost<V>) throws -> VaultRawTextView.CodeTextView {

@@ -3539,26 +3539,56 @@ final class VaultStore {
   /// Writes a draft's values as its environment's, as long as the
   /// environment still has the values the draft was compared with.
   func saveRawTextDraft(_ target: VaultEnvironmentTarget) async -> VaultRawTextSaveOutcome {
-    guard isUnlocked, let draft = rawTextDrafts[target], draft.canSave, rawTextSaves[target] == nil else { return .unavailable }
-    guard let project = projects.first(where: { $0.id == target.projectId }), project.environments[target.environment] != nil else {
-      return .unavailable
-    }
+    guard isUnlocked, let draft = rawTextDrafts[target], draft.canSave else { return .unavailable }
+    return await writeRawText(target, expected: draft.baseline, values: draft.check.values)
+  }
+
+  func setRawTextReview(_ target: VaultEnvironmentTarget, on reviews: Bool) {
+    guard rawTextSaves[target] == nil else { return }
+    rawTextDrafts[target]?.reviewsBeforeSaving = reviews
+  }
+
+  /// What a draft with no problem line changes in its environment's values now.
+  func reviewRawTextDraft(_ target: VaultEnvironmentTarget) -> VaultRawTextReview? {
+    guard isUnlocked, let draft = rawTextDrafts[target], draft.check.problems.isEmpty,
+      let current = projects.first(where: { $0.id == target.projectId })?.environments[target.environment]
+    else { return nil }
+    return VaultRawTextReview(draft: draft, current: current)
+  }
+
+  /// Makes a review's changes, but those of `skipping`, as long as the edit
+  /// is still the one reviewed and the environment still has the values it
+  /// was reviewed against.
+  func applyRawTextReview(_ review: VaultRawTextReview, skipping: Set<String>) async -> VaultRawTextSaveOutcome {
+    guard isUnlocked, let draft = rawTextDrafts[review.target], draft.check.values == review.edited else { return .unavailable }
+    let values = review.values(skipping: skipping)
+    guard values != review.current else { return .unavailable }
+    return await writeRawText(review.target, expected: review.current, values: values)
+  }
+
+  /// Replaces an environment's values with `values` if it still has
+  /// `expected`, which ends the environment's Raw text edit.
+  private func writeRawText(_ target: VaultEnvironmentTarget, expected: [String: String], values: [String: String]) async
+    -> VaultRawTextSaveOutcome
+  {
+    guard rawTextSaves[target] == nil,
+      let project = projects.first(where: { $0.id == target.projectId }), project.environments[target.environment] != nil
+    else { return .unavailable }
     let saveID = UUID()
     rawTextSaves[target] = saveID
     defer { if rawTextSaves[target] == saveID { rawTextSaves.removeValue(forKey: target) } }
     recordUserActivity()
-    let values = draft.check.values
     let outcome = await withCheckedContinuation { continuation in
       enqueueProjectMutation(
         base: project,
-        mutation: .restoreEnvironment(name: target.environment, expectedSecrets: draft.baseline, restored: values),
+        mutation: .restoreEnvironment(name: target.environment, expectedSecrets: expected, restored: values),
         reportsFailures: false
       ) { continuation.resume(returning: $0) }
     }
     switch outcome {
     case .saved:
       rawTextDrafts.removeValue(forKey: target)
-      return .saved(EnvironmentChangeReceipt(projectId: target.projectId, environment: target.environment, before: draft.baseline, after: values))
+      return .saved(EnvironmentChangeReceipt(projectId: target.projectId, environment: target.environment, before: expected, after: values))
     case .changed: return .changed
     case .unavailable: return .unavailable
     case .failed(let message): return .failed(message)

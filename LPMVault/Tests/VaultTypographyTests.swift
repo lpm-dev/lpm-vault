@@ -10,6 +10,7 @@ struct VaultTypographyTests {
 	private static let codeFontUses: [String: Int] = [
 		"VaultDesignSystem.swift": 1,
 		"VaultRawTextView.swift": 2,
+		"VaultRawTextReviewSheet.swift": 1,
 		"AddVariableSheet.swift": 1,
 		"VaultInspectorView.swift": 1,
 		"EnvFileImportReviewSheet.swift": 1,

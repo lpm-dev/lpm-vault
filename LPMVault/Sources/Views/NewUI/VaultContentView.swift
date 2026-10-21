@@ -159,6 +159,24 @@ struct VaultContentView: View {
 
 	private func rawEditActions(_ editing: VaultRawTextEditing) -> some View {
 		HStack(spacing: 6) {
+			let reviews = editing.draft.reviewsBeforeSaving
+			HStack(spacing: 6) {
+				// The switch says its name; the text beside it flips it too.
+				Text("Review before saving")
+					.font(.system(size: 12))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.accessibilityHidden(true)
+					.onTapGesture { if !editing.isSaving { editing.onReviewChange(!reviews) } }
+				Toggle("Review before saving", isOn: Binding(get: { reviews }, set: { editing.onReviewChange($0) }))
+					.toggleStyle(.switch)
+					.controlSize(.mini)
+					.labelsHidden()
+					.disabled(editing.isSaving)
+			}
+			.help(reviews
+				? "Save shows what changes first, and lets you leave any of it out"
+				: "Save writes the edit at once, which can be undone for \(VaultFeedbackTimer.undoSeconds) seconds")
+			.padding(.trailing, 6)
 			VaultBarButton(title: "Cancel", disabled: editing.isSaving, height: 28, action: editing.onCancel)
 				.help("Discard this edit")
 			VaultBarButton(title: editing.isSaving ? "Saving…" : "Save", shortcut: "⌘S", filled: true,

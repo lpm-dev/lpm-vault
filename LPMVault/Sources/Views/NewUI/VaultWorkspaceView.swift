@@ -56,6 +56,7 @@ struct VaultWorkspaceView: View {
 	/// Why the last save of each Raw text edit wrote nothing.
 	@State private var rawTextFailures: [VaultEnvironmentTarget: VaultRawTextFailure] = [:]
 	@State private var rawTextSaved: VaultRawTextSaved?
+	@State private var rawTextReview: VaultRawTextReview?
 	@State private var copyFeedback: VaultCopyFeedback?
 
 	private var project: VaultProject? { store.selectedProject }
@@ -624,6 +625,12 @@ struct VaultWorkspaceView: View {
 			EnvImportSheet(store: store, projectID: request.projectID, environment: request.environment, file: request.file)
 				.vaultPrivacyProtected(isObscured)
 		}
+		.sheet(item: $rawTextReview) { review in
+			VaultRawTextReviewSheet(store: store, review: review) { receipt, summary in
+				rawTextSaved = VaultRawTextSaved(receipt: receipt, summary: summary, savedAt: Date())
+			}
+			.vaultPrivacyProtected(isObscured)
+		}
 		.sheet(isPresented: $showNewProject) {
 			NewVaultSheet(store: store).vaultPrivacyProtected(isObscured)
 		}
@@ -1056,6 +1063,7 @@ struct VaultWorkspaceView: View {
 				rawTextFailures[target] = nil
 			},
 			onSave: { saveRawText(target) },
+			onReviewChange: { store.setRawTextReview(target, on: $0) },
 			onCompare: {
 				store.rebaseRawTextDraft(target)
 				rawTextFailures[target] = nil
@@ -1064,12 +1072,18 @@ struct VaultWorkspaceView: View {
 		)
 	}
 
-	/// Saves a Raw text edit, then offers to undo it for a short while.
+	/// Shows what a Raw text edit changes, or saves it at once when its review
+	/// is turned off; then offers to undo it for a short while.
 	private func saveRawText(_ target: VaultEnvironmentTarget) {
 		guard let draft = store.rawTextDraft(for: target), draft.canSave, !store.isSavingRawText(target) else { return }
 		rawTextFailures[target] = nil
 		rawTextSaved = nil
 		copyFeedback = nil
+		if draft.reviewsBeforeSaving {
+			guard !hostWindow.hasAttachedSheet else { return }
+			rawTextReview = store.reviewRawTextDraft(target)
+			return
+		}
 		let summary = draft.changes.summary
 		Task { @MainActor in
 			switch await store.saveRawTextDraft(target) {

@@ -169,6 +169,8 @@ struct VaultRawTextDraft: Equatable, Sendable {
 	}
 	private(set) var check: VaultEnvTextCheck
 	private(set) var changes: VaultEnvChanges
+	/// Whether Save shows what the edit changes first, as it does unless turned off.
+	var reviewsBeforeSaving = true
 
 	/// Starts from `baseline`, a line for each key in `order` and an empty line to add on.
 	init(target: VaultEnvironmentTarget, baseline: [String: String], order: [String]) {
@@ -187,6 +189,44 @@ struct VaultRawTextDraft: Equatable, Sendable {
 		var draft = self
 		draft.target = VaultEnvironmentTarget(projectId: target.projectId, environment: environment)
 		return draft
+	}
+}
+
+/// What a Raw text edit changes in its environment as it is now, key by key,
+/// any of which can be left out. It compares with the values the environment
+/// has when it's made, so a change the LPM CLI made since the edit began
+/// shows as one the edit would undo.
+struct VaultRawTextReview: Identifiable, Equatable, Sendable {
+	let id: UUID
+	let target: VaultEnvironmentTarget
+	/// The environment's values when the review was made, which applying expects to find.
+	let current: [String: String]
+	/// The edit's values.
+	let edited: [String: String]
+	/// The line each of the edit's keys is set on.
+	let lines: [String: Int]
+	let changes: VaultEnvChanges
+
+	init(id: UUID = UUID(), draft: VaultRawTextDraft, current: [String: String]) {
+		self.id = id
+		target = draft.target
+		self.current = current
+		edited = draft.check.values
+		lines = draft.check.lines
+		changes = VaultEnvChanges(from: current, to: edited)
+	}
+
+	/// The environment's values once every change but those of `skipping` is made.
+	func values(skipping: Set<String>) -> [String: String] {
+		var values = current
+		for key in changes.added + changes.changed where !skipping.contains(key) { values[key] = edited[key] }
+		for key in changes.removed where !skipping.contains(key) { values.removeValue(forKey: key) }
+		return values
+	}
+
+	/// What applying does when the keys in `skipping` are left out.
+	func applied(skipping: Set<String>) -> VaultEnvChanges {
+		VaultEnvChanges(from: current, to: values(skipping: skipping))
 	}
 }
 
