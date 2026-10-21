@@ -218,6 +218,51 @@ extension SheetInteractionTests {
 			#expect(!containsUnstoredPort)
 		}
 
+		@Test("raw text says why it shows no keys, and the notes the table shows above them",
+			arguments: ["empty", "search", "fallback", "group"])
+		func rawTextNotes(situation: String) async throws {
+			let project = VaultProject(
+				id: "p", name: "p", path: "", environments: ["default": ["SAVED": "x"], "staging": [:]])
+			let check: ProjectEnvValueCheck? = switch situation {
+			case "fallback": ProjectEnvValueCheck(environments: ["staging": .init(readsDefaultEnvironment: true)])
+			case "group": ProjectEnvValueCheck(environments: [
+				"default": .init(problems: ["SAVED": [.init(key: "SAVED", kind: .group(name: "credentials", mode: "exactlyOne"))]])
+			])
+			default: nil
+			}
+			let environment = situation == "empty" || situation == "fallback" ? "staging" : "default"
+			let host = SheetTestHost(
+				VaultContentView(
+					project: project, snapshot: VaultWorkspaceSnapshot(project: project),
+					environments: ["default", "staging"], selectedEnvironment: environment,
+					mode: .constant(.environment(environment)), filter: .constant(.all),
+					environmentViewMode: .constant(.raw), sortOrder: .constant(.ascending),
+					searchText: situation == "search" ? "missing" : "",
+					selectedKey: .constant(nil), revealedKeys: .constant([]),
+					showsInspector: .constant(false),
+					columnWidths: .constant(VaultProjectTableColumnWidths()),
+					isCopyingAll: false, cliAccess: nil,
+					isChangingCliAccess: false, onChangeCliAccess: { _ in }, onCopyAll: {},
+					onImport: {}, onExport: {},
+					valueChecks: VaultValueCheckPresentation(check: check, rules: nil, project: project),
+					onAddSecret: {}, onCopySecret: { _, _ in },
+					onDeleteSecret: { _, _ in }, onResizeColumns: {}
+				), size: NSSize(width: 950, height: 550), keepsRequestedSize: true)
+			defer { host.window.close() }
+			switch situation {
+			case "empty":
+				#expect(try await host.waitForText("No secrets in this environment"))
+			case "search":
+				#expect(try await host.waitForText("No keys match your search"))
+			case "fallback":
+				#expect(try await host.waitForText("The LPM CLI reads values from .env and checks this environment's rules."))
+				#expect(try await host.waitForText("No values here. The LPM CLI uses .env's values for this environment."))
+			default:
+				#expect(try await host.waitForText("Group credentials fails"))
+				#expect(try await host.waitForText("SAVED"), "The keys still show under the note")
+			}
+		}
+
 		@Test("the tables mark failing values, show required and default values, and the Invalid view lists only failing keys")
 		func tablesShowChecks() async throws {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "value-check-tables-\(UUID().uuidString)").path
