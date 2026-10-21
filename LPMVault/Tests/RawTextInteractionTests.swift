@@ -200,9 +200,8 @@ extension SheetInteractionTests {
 			try type("debug", over: "info", in: editor)
 			try type("NEW_KEY=added\n", at: (editor.string as NSString).length, in: editor)
 			#expect(try await host.waitForText("1 added · 1 changed"))
-			#expect(try await host.waitUntil { element("Save", in: host)?.isEnabled == true })
 			try record(host, named: "raw-text-editing")
-			try await host.click("Save")
+			try await save(in: host)
 			#expect(try await host.waitUntil {
 				keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["LOG_LEVEL": "debug", "NEW_KEY": "added"]) { $1 }
 			})
@@ -269,12 +268,12 @@ extension SheetInteractionTests {
 			let editor = try await editorView(in: host)
 			try type("debug", over: "info", in: editor)
 			keychain.simulateCLISet(vaultId: "raw", environment: "default", key: "API_TOKEN", value: "from-cli")
-			try await host.click("Save")
+			try await save(in: host)
 			#expect(try await host.waitForText(".env changed meanwhile, as by the LPM CLI, so nothing was saved."))
 			#expect(keychain.envStorage["raw"]?.environments["default"]?["LOG_LEVEL"] == "info")
 			try await host.click("Compare with current values")
 			#expect(try await host.waitForText("2 changed"), "The edit puts back the token the CLI changed, and says so")
-			try await host.click("Save")
+			try await save(in: host)
 			#expect(try await host.waitUntil {
 				keychain.envStorage["raw"]?.environments["default"] == Self.values.merging(["LOG_LEVEL": "debug"]) { $1 }
 			})
@@ -377,6 +376,13 @@ extension SheetInteractionTests {
 				return editor != nil
 			}, "Raw text shows its editor")
 			return try #require(editor)
+		}
+
+		/// Clicks Save once an edit has enabled it, which takes a render; a
+		/// click on a Save still disabled would do nothing.
+		private func save<V: View>(in host: SheetTestHost<V>) async throws {
+			#expect(try await host.waitUntil { element("Save", in: host)?.isEnabled == true }, "Save is enabled")
+			try await host.click("Save")
 		}
 
 		/// Types `text` over the first `old` in the editor, as a person selecting it and typing would.
