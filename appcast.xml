@@ -2,12 +2,12 @@
 IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
 --><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0"><channel><title>LPM Vault updates</title><link>https://vault.lpm.dev/</link><item>
             <title>1.1.0</title>
-            <pubDate>Mon, 19 Oct 2026 11:41:12 +0000</pubDate>
+            <pubDate>Wed, 21 Oct 2026 09:11:12 +0000</pubDate>
             <link>https://vault.lpm.dev/</link>
-            <sparkle:version>7.0.6</sparkle:version>
-            <sparkle:shortVersionString>1.1.0 Nightly · 2026-10-19 · 0409639</sparkle:shortVersionString>
+            <sparkle:version>7.0.7</sparkle:version>
+            <sparkle:shortVersionString>1.1.0 Nightly · 2026-10-21 · 393d91a</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://vault.lpm.dev/releases/v1.1.0-nightly.20261019.15.g0409639/LPM-Vault-1.1.0-nightly.20261019.15.g0409639.dmg" length="20708118" type="application/octet-stream" sparkle:edSignature="Z07EKZaW49T5MQ2g5C7V8XrKZrvw9A+y6Rl6NhrRyWxyoMOzoCt1Vg6LcaJqNFz0PpMUGCWxpu40AOZagWhLAQ=="></enclosure>
+            <enclosure url="https://vault.lpm.dev/releases/v1.1.0-nightly.20261021.17.393d91a/LPM-Vault-1.1.0-nightly.20261021.17.393d91a.dmg" length="22568212" type="application/octet-stream" sparkle:edSignature="MVkuDTOOh8rvRtZdv0RHJ8mv7tOso+3aSWmijC4HlKrUYqqFBhLXGPaw+Rvhakb2kybieqyDG4QzC2G0/DBvCg=="></enclosure>
         <sparkle:channel>nightly</sparkle:channel></item>
     <item>
             <title>1.0.2</title>
@@ -19,6 +19,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <enclosure url="https://vault.lpm.dev/releases/v1.0.2/LPM-Vault-1.0.2.dmg" length="10917719" type="application/octet-stream" sparkle:edSignature="ynBkEFvPRq59Fq9qz9ZTyHENWFOBQKLVzDbc0Nv6Mgu309z/aXOxOGGAZGPQVPyDzpsf5KFDXFwLf+abji51CA=="></enclosure>
         </item>
     </channel></rss><!-- sparkle-signatures:
-edSignature: lgf2ouZHAN5M45VRx1gezlCUsSOaxBrlgbv9uv9zcO5oh6DFm0RS58p5fOzH5X1gEnlt5ztNViFGj2kHc77OAw==
-length: 1875
+edSignature: NCxzGiN52415kaMKkdNFbR6aY0pngj4YOfuF8lZ+O2V7pKfdK7dvDcbbLB/B7zOuTfwVXwl25tg1s02AvxmHAw==
+length: 1873
 -->
