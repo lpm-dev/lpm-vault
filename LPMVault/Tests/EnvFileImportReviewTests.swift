@@ -322,9 +322,9 @@ extension SheetInteractionTests {
 			try await host.click("Add ALPHA")
 			#expect(try await host.waitForText("Create .env.preview"))
 			try submitImport(in: host)
-			#expect(try await host.waitUntil { keychain.envStorage["project"]?.environments["preview"] != nil })
+			// The store selects the new environment only after its Keychain write returns.
+			#expect(try await host.waitUntil { store.selectedEnvironment == "preview" })
 			#expect(keychain.envStorage["project"]?.environments["preview"] == ["ALPHA": "AlphaIncoming", "BETA": "2"])
-			#expect(store.selectedEnvironment == "preview")
 		}
 
 		@Test("a new file whose name is taken meanwhile says so, and Review again checks the name again")
