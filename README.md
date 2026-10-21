@@ -62,7 +62,7 @@ See [Release channels](docs/release-channels.md) for the publishing and recovery
 
 - Manage project variables across multiple environments.
 - Compare values and find missing keys in the environment matrix.
-- Import variables from an `.env` file, dropped on the window or chosen, or from pasted text. Review them with values hidden, keeping existing values or choosing individual replacements.
+- Import variables from an `.env` file, dropped on the window or chosen, or from pasted text. Review them with values hidden: keep existing values or replace them, leave new keys out, and undo the import for 30 seconds afterward.
 - Export `.env` files.
 - Unlock with Touch ID or your Mac login password.
 - Use local values from `lpm env`, `lpm dev`, and `lpm run`.

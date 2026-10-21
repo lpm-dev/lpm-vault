@@ -687,7 +687,7 @@ extension SheetInteractionTests {
 				return false
 			}]
 			defer { gate.continuation.finish(); store.lock() }
-			let copyFeedback = ManualCopyFeedbackTimer()
+			let copyFeedback = ManualFeedbackTimer()
 			let host = try await workspace(store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
 			let revealLabel = try await host.labelFrame("Reveal")
@@ -712,7 +712,7 @@ extension SheetInteractionTests {
 		func inspectorCopyFeedback() async throws {
 			let (store, _) = makeStore()
 			defer { store.lock() }
-			let copyFeedback = ManualCopyFeedbackTimer()
+			let copyFeedback = ManualFeedbackTimer()
 			let host = try await workspace(store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
 			try selectRow(0, in: host)
@@ -760,7 +760,7 @@ extension SheetInteractionTests {
 		func repeatedCopyRestartsFeedback() async throws {
 			let (store, _) = makeStore()
 			defer { store.lock() }
-			let copyFeedback = ManualCopyFeedbackTimer()
+			let copyFeedback = ManualFeedbackTimer()
 			let host = try await workspace(store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
 			try selectRow(0, in: host)
@@ -831,7 +831,7 @@ extension SheetInteractionTests {
 
 		/// Copy confirmations stay until `copyFeedback` ends them. Preferences such
 		/// as the key order are read from and saved to `defaults`.
-		private func workspace(_ store: VaultStore, size: NSSize = NSSize(width: 1600, height: 800), copyFeedback: ManualCopyFeedbackTimer = ManualCopyFeedbackTimer(), defaults: UserDefaults? = nil) async throws -> SheetTestHost<some View> {
+		private func workspace(_ store: VaultStore, size: NSSize = NSSize(width: 1600, height: 800), copyFeedback: ManualFeedbackTimer = ManualFeedbackTimer(), defaults: UserDefaults? = nil) async throws -> SheetTestHost<some View> {
 			await store.refreshCliAccess()
 			let defaults = try defaults ?? #require(UserDefaults(suiteName: "workspace-interaction"))
 			let host = SheetTestHost(VaultWorkspaceView(store: store).environment(UpdateChecker()).environment(VaultAppearanceSettings(defaults: defaults)).environment(VaultQuitSettings(defaults: defaults))

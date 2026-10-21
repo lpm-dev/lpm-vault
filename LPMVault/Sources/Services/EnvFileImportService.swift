@@ -59,6 +59,8 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 	case vaultLocked
 	case targetUnavailable
 	case reviewChanged
+	/// A new environment's name was taken first, as by the LPM CLI.
+	case environmentExists(String)
 	case caseInsensitiveCollisionWithExisting
 	case persistence(String)
 
@@ -102,6 +104,8 @@ enum EnvFileImportError: LocalizedError, Sendable, Equatable {
 			"The target env project or environment changed before the import completed."
 		case .reviewChanged:
 			"The environment changed after this review. Review it again before importing."
+		case .environmentExists(let environment):
+			"\(VaultProject.displayName(for: environment)) was created meanwhile, as by the LPM CLI. Choose another name for this one."
 		case .caseInsensitiveCollisionWithExisting:
 			"An imported key differs only by letter case from an existing key. Rename one key for Windows compatibility."
 		case .persistence(let message):

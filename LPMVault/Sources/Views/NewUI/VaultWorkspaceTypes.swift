@@ -333,16 +333,19 @@ struct VaultValueCopy: Equatable, Sendable {
   let format: VaultCopyFormat
 }
 
-/// How long a copy confirmation stays before it clears. Tests replace it to
-/// end confirmations on demand instead of after a delay.
-struct VaultCopyFeedbackTimer: Sendable {
+/// How long feedback stays before it clears: a copy confirmation, or the
+/// chance to undo an import. Tests replace it to end the feedback on demand
+/// instead of after a delay.
+struct VaultFeedbackTimer: Sendable {
   let wait: @Sendable () async throws -> Void
 
-  static let standard = VaultCopyFeedbackTimer { try await Task.sleep(for: .seconds(2)) }
+  static let copyConfirmation = VaultFeedbackTimer { try await Task.sleep(for: .seconds(2)) }
+  static let importUndo = VaultFeedbackTimer { try await Task.sleep(for: .seconds(30)) }
 }
 
 extension EnvironmentValues {
-  @Entry var vaultCopyFeedbackTimer = VaultCopyFeedbackTimer.standard
+  @Entry var vaultCopyFeedbackTimer = VaultFeedbackTimer.copyConfirmation
+  @Entry var vaultImportUndoTimer = VaultFeedbackTimer.importUndo
 }
 
 struct VaultCopyFeedback: Equatable {

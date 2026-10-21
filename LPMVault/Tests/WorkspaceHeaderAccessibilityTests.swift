@@ -117,7 +117,7 @@ extension SheetInteractionTests {
 				return false
 			}]
 			defer { gate.continuation.finish(); fixture.tearDown() }
-			let copyFeedback = ManualCopyFeedbackTimer()
+			let copyFeedback = ManualFeedbackTimer()
 			let host = try await workspace(fixture.store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
 			try await host.click("Copy all .env values")
@@ -240,7 +240,7 @@ extension SheetInteractionTests {
 			return Fixture(store: store, biometric: biometric, folder: folder)
 		}
 
-		private func workspace(_ store: VaultStore, width: CGFloat = 1400, copyFeedback: ManualCopyFeedbackTimer = ManualCopyFeedbackTimer())
+		private func workspace(_ store: VaultStore, width: CGFloat = 1400, copyFeedback: ManualFeedbackTimer = ManualFeedbackTimer())
 			async throws -> SheetTestHost<some View>
 		{
 			await store.refreshCliAccess()

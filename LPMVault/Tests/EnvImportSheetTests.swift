@@ -39,7 +39,7 @@ extension SheetInteractionTests {
 			try await clickEnabled("Review 2 variables, ⏎", in: sheet, of: host)
 			#expect(try await host.waitForText("Review import", in: sheet))
 			let review = try await host.text(in: sheet)
-			#expect(review.contains("Pasted text") && review.contains("NEW_KEY") && review.contains("Different value"))
+			#expect(review.contains("Pasted text") && review.contains("NEW_KEY") && review.contains("CHANGED · 1"))
 			try pressReturn(in: sheet)
 			#expect(try await host.waitForText("Import complete", in: sheet))
 			#expect(fixture.stored("default") == ["TOKEN": "a", "NEW_KEY": "hello world"], "The review keeps existing values unless Replace is chosen")
@@ -105,7 +105,8 @@ extension SheetInteractionTests {
 			try await clickEnabled("Import 2 variables, ⏎", in: sheet, of: host)
 			#expect(try await host.waitForText("Import complete", in: sheet))
 			#expect(try await host.waitForText("1 existing value differs and was kept. To replace it, import again with Review before applying on.", in: sheet))
-			#expect(try await host.waitForText("1 added · 0 replaced · 1 kept · 0 unchanged", in: sheet))
+			#expect(try await host.waitForText("1 added · 0 replaced · 1 kept · 0 skipped", in: sheet))
+			#expect(try await host.waitForText("Undo import", in: sheet), "An import without a review can be undone too")
 			#expect(fixture.stored("default") == ["TOKEN": "a", "NEW_KEY": "1"])
 			try await host.click("Done", in: sheet)
 			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
@@ -133,7 +134,7 @@ extension SheetInteractionTests {
 			#expect(fixture.stored("default") == ["TOKEN": "a"])
 		}
 
-		@Test("New file creates an environment holding the variables, once it has a name no environment has")
+		@Test("New file reviews its keys once it has a name no environment has, and creates the environment with those left on")
 		func newFile() async throws {
 			let fixture = try ImportWorkspace()
 			defer { fixture.tearDown() }
@@ -143,13 +144,42 @@ extension SheetInteractionTests {
 			try await host.click("Paste text", in: sheet)
 			try paste("A=1\nB=2", into: sheet)
 			try await host.click("New file", in: sheet)
-			#expect(try await host.waitForText("A new file has nothing to compare, so it's created as it is", in: sheet))
-			#expect(element("Review before applying", in: sheet)?.isEnabled == false)
-			#expect(element("Create file, ⏎", in: sheet)?.isEnabled == false, "A new file needs a name")
+			#expect(try await host.waitForText("See its keys first, and leave out any you don't want", in: sheet))
+			#expect(element("Review before applying", in: sheet)?.isOn == true)
+			#expect(try await host.waitUntil { element("Review 2 variables", in: sheet)?.isEnabled == false }, "A new file needs a name")
 			try host.typeText("production", placeholder: "staging", in: sheet)
 			#expect(try await host.waitForText("That environment already exists.", in: sheet))
 			try host.typeText("preview", placeholder: "staging", in: sheet)
-			try await clickEnabled("Create .env.preview, ⏎", in: sheet, of: host)
+			try await clickEnabled("Review 2 variables", in: sheet, of: host)
+			#expect(try await host.waitForText("Review new file", in: sheet))
+			for text in [".env.preview", "NEW · 2", "+2 added · 0 skipped", "Create .env.preview"] {
+				#expect(try await host.waitForText(text, in: sheet), "The review says \(text)")
+			}
+			#expect(fixture.store.selectedEnvironment == "default", "The window shows its environment until the new one exists")
+			#expect(fixture.stored("preview") == nil)
+			try await host.click("Add B", in: sheet)
+			#expect(try await host.waitForText("+1 added · 1 skipped", in: sheet))
+			try pressReturn(in: sheet)
+			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
+			#expect(fixture.stored("preview") == ["A": "1"])
+			#expect(fixture.store.selectedEnvironment == "preview")
+		}
+
+		@Test("with Review before applying off, New file creates the environment with every key")
+		func newFileWithoutReview() async throws {
+			let fixture = try ImportWorkspace()
+			defer { fixture.tearDown() }
+			let host = try await fixture.workspace()
+			defer { host.window.close() }
+			let sheet = try await fixture.openImport(in: host)
+			try await host.click("Paste text", in: sheet)
+			try paste("A=1\nB=2", into: sheet)
+			try await host.click("New file", in: sheet)
+			try await host.click("Review before applying", in: sheet)
+			#expect(try await host.waitForText("Creates it with every key", in: sheet))
+			#expect(element("Create file", in: sheet)?.isEnabled == false, "A new file needs a name")
+			try host.typeText("preview", placeholder: "staging", in: sheet)
+			try await clickEnabled("Create .env.preview", in: sheet, of: host)
 			#expect(try await host.waitUntil { host.window.attachedSheet == nil })
 			#expect(fixture.stored("preview") == ["A": "1", "B": "2"])
 			#expect(fixture.store.selectedEnvironment == "preview")
@@ -227,7 +257,8 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText(".env.test"))
 			try await host.settle()
 			#expect(host.fieldText(placeholder: "staging") == "qa", "A typed name stays")
-			try await clickEnabled("Create .env.qa, ⏎", in: host.window, of: host)
+			try await host.click("Review before applying")
+			try await clickEnabled("Create .env.qa", in: host.window, of: host)
 			#expect(try await host.waitUntil { fixture.stored("qa") != nil })
 			#expect(fixture.stored("qa") == ["A": "3"])
 		}

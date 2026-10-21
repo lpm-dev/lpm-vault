@@ -75,6 +75,8 @@ enum LocalEnvImportPersistenceResult: Sendable {
 	case targetUnavailable
 	case caseInsensitiveCollision
 	case reviewChanged
+	/// The new environment's name was taken first.
+	case environmentExists
 	case cancelled
 	case failure(KeychainError)
 }
@@ -105,6 +107,8 @@ enum VaultProjectMutation: Sendable {
 		destination: String
 	)
 	case clearEnvironment(name: String, expectedSecrets: [String: String])
+	/// Sets an environment back to `restored`, as an undone import does.
+	case restoreEnvironment(name: String, expectedSecrets: [String: String], restored: [String: String])
 	case deleteSecret(environment: String, key: String, expectedValue: String)
 	case editKey(VaultKeyEdit)
 }
@@ -646,6 +650,9 @@ actor VaultPersistenceCoordinator {
 		case .clearEnvironment(let name, let expectedSecrets):
 			mutationApplies = project.environments[name] == expectedSecrets
 			if mutationApplies { project.environments[name] = [:] }
+		case .restoreEnvironment(let name, let expectedSecrets, let restored):
+			mutationApplies = project.environments[name] == expectedSecrets
+			if mutationApplies { project.environments[name] = restored }
 		case .deleteSecret(let environment, let key, let expectedValue):
 			mutationApplies = project.environments[environment]?[key] == expectedValue
 			if mutationApplies { project.environments[environment]?.removeValue(forKey: key) }
@@ -1244,12 +1251,9 @@ actor VaultPersistenceCoordinator {
 		case .success(nil): return .targetUnavailable
 		case .failure(let error): return .failure(error)
 		}
-		guard
-			storedProject.name == projectName,
-			storedProject.path == projectPath,
-			var environments = Optional(storedProject.environments),
-			environments[environment] == nil
-		else { return .targetUnavailable }
+		guard storedProject.name == projectName, storedProject.path == projectPath else { return .targetUnavailable }
+		var environments = storedProject.environments
+		guard environments[environment] == nil else { return .environmentExists }
 		environments[environment] = secrets
 		let project = VaultProject(
 			id: projectId,

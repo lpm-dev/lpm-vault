@@ -3081,16 +3081,57 @@ final class VaultStore {
     name: String,
     secrets: [String: String] = [:]
   ) async -> Bool {
-    let write = writes.begin()
-    defer { writes.end(write) }
     guard isUnlocked else {
       error = EnvFileImportError.vaultLocked.localizedDescription
       return false
     }
-    let sessionGeneration = vaultSessionGeneration
     guard selectedProjectId == projectId,
-      let project = projects.first(where: { $0.id == projectId })
+      let project = projects.first(where: { $0.id == projectId }),
+      EnvValidation.isValidEnvironmentName(name),
+      secrets.keys.allSatisfy(EnvValidation.isValidVariableName),
+      project.environments[name] == nil
     else { return false }
+    switch await insertEnvironment(name, secrets: secrets, into: project) {
+    case .success: return true
+    case .failure(.cancelled): return false
+    case .failure(.persistence(let message)): error = message
+    case .failure(let failure): error = failure.localizedDescription
+    }
+    return false
+  }
+
+  /// Creates the new environment `review` shows, leaving out the keys in
+  /// `skippingKeys`, unless its name was taken meanwhile.
+  func createEnvironment(
+    from review: EnvFileImportReview, skippingKeys: Set<String> = []
+  ) async -> Result<Void, EnvFileImportError> {
+    guard isUnlocked else { return .failure(.vaultLocked) }
+    let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
+    guard review.createsEnvironment, review.sessionGeneration == vaultSessionGeneration,
+      localEnvReviewIDs[target] == review.id,
+      skippingKeys.isSubset(of: review.addedKeys)
+    else { return .failure(.cancelled) }
+    guard selectedProjectId == review.projectId,
+      let project = projects.first(where: { $0.id == review.projectId }),
+      project.name == review.projectName, project.path == review.projectPath
+    else { return .failure(.targetUnavailable) }
+    guard project.environments[review.environment] == nil else {
+      return .failure(.environmentExists(review.environment))
+    }
+    let secrets = skippingKeys.isEmpty
+      ? review.imported.secrets : review.imported.secrets.filter { !skippingKeys.contains($0.key) }
+    return await insertEnvironment(review.environment, secrets: secrets, into: project)
+  }
+
+  /// Persists `name`, a new environment holding `secrets`, in `project`, then
+  /// shows it. A review of that environment ends here, whatever the outcome.
+  private func insertEnvironment(
+    _ name: String, secrets: [String: String], into project: VaultProject
+  ) async -> Result<Void, EnvFileImportError> {
+    let write = writes.begin()
+    defer { writes.end(write) }
+    let projectId = project.id
+    let sessionGeneration = vaultSessionGeneration
     let target = LocalEnvImportTarget(projectId: projectId, environment: name)
     let requestId = UUID()
     localEnvCreationRequests[target] = requestId
@@ -3102,10 +3143,6 @@ final class VaultStore {
       }
       localEnvImportAuthority.complete(target, requestId: requestId)
     }
-    guard EnvValidation.isValidEnvironmentName(name),
-      secrets.keys.allSatisfy(EnvValidation.isValidVariableName)
-    else { return false }
-    guard project.environments[name] == nil else { return false }
     invalidateProjectLoad()
     let commit = await withTaskCancellationHandler {
       await persistence.addEnvironment(
@@ -3120,20 +3157,14 @@ final class VaultStore {
     } onCancel: { [localEnvImportAuthority] in
       localEnvImportAuthority.cancel(target, requestId: requestId)
     }
-    guard case .success(let persisted) = commit else {
-      switch commit {
-      case .failure(let persistenceError):
-        error = persistenceError.description
-      case .targetUnavailable, .reviewChanged:
-        error = EnvFileImportError.targetUnavailable.localizedDescription
-      case .caseInsensitiveCollision:
-        error = EnvFileImportError.caseInsensitiveCollisionWithExisting.localizedDescription
-      case .cancelled:
-        return false
-      case .success:
-        break
-      }
-      return false
+    let persisted: LocalEnvImportPersistenceCommit
+    switch commit {
+    case .success(let commit): persisted = commit
+    case .failure(let persistenceError): return .failure(.persistence(persistenceError.description))
+    case .targetUnavailable, .reviewChanged: return .failure(.targetUnavailable)
+    case .environmentExists: return .failure(.environmentExists(name))
+    case .caseInsensitiveCollision: return .failure(.caseInsensitiveCollisionWithExisting)
+    case .cancelled: return .failure(.cancelled)
     }
     guard sessionGeneration == vaultSessionGeneration, isUnlocked,
       projects.contains(where: { $0.id == projectId }),
@@ -3141,7 +3172,7 @@ final class VaultStore {
     else {
       // Persistence is intentionally non-cancellable. Report its durable
       // success without republishing plaintext into stale or locked UI.
-      return true
+      return .success(())
     }
     updateProjectInPlace(persisted.project)
     applySyncMetadata(persisted.syncMetadata, for: persisted.project.id)
@@ -3157,7 +3188,7 @@ final class VaultStore {
       error = persisted.warning
       selectedEnvironment = name
     }
-    return true
+    return .success(())
   }
 
   /// Delete an environment tab from a project. Cannot delete the last environment.
@@ -3253,24 +3284,34 @@ final class VaultStore {
 
   /// Compares `imported`, read for the selected environment, with the
   /// environment's durable values, which the review keeps as its baseline.
+  /// `creating` reviews it as `environment`, a new environment, instead, which
+  /// needn't be the one shown.
   func prepareEnvImport(
-    _ imported: ImportedEnvFile, from source: EnvImportSource, to projectId: String, environment: String
+    _ imported: ImportedEnvFile, from source: EnvImportSource, to projectId: String, environment: String,
+    creating: Bool = false
   ) async -> Result<EnvFileImportReview, EnvFileImportError> {
     guard isUnlocked else { return .failure(.vaultLocked) }
-    guard selectedProjectId == projectId, selectedEnvironment == environment,
-      let project = projects.first(where: { $0.id == projectId }),
-      project.environments[environment] != nil
+    guard selectedProjectId == projectId,
+      let project = projects.first(where: { $0.id == projectId })
     else { return .failure(.targetUnavailable) }
+    if creating {
+      guard EnvValidation.isValidEnvironmentName(environment) else { return .failure(.targetUnavailable) }
+      guard project.environments[environment] == nil else { return .failure(.environmentExists(environment)) }
+    } else {
+      guard selectedEnvironment == environment, project.environments[environment] != nil
+      else { return .failure(.targetUnavailable) }
+    }
     let target = LocalEnvImportTarget(projectId: projectId, environment: environment)
     let reviewID = UUID()
     let session = vaultSessionGeneration
+    func isWanted() -> Bool {
+      isUnlocked && session == vaultSessionGeneration && localEnvReviewIDs[target] == reviewID
+        && selectedProjectId == projectId && (creating || selectedEnvironment == environment) && !Task.isCancelled
+    }
     cancelLocalEnvImport(projectId: projectId, environment: environment)
     localEnvReviewIDs[target] = reviewID
     let durable = await persistence.loadProject(vaultId: projectId)
-    guard isUnlocked, session == vaultSessionGeneration,
-      localEnvReviewIDs[target] == reviewID, selectedProjectId == projectId,
-      selectedEnvironment == environment, !Task.isCancelled
-    else { return .failure(.cancelled) }
+    guard isWanted() else { return .failure(.cancelled) }
     switch durable {
     case .success(let current?):
       guard current.name == project.name, current.path == project.path else {
@@ -3278,13 +3319,10 @@ final class VaultStore {
       }
       do {
         let review = try await Task.detached(priority: .userInitiated) {
-          try EnvFileImportReview(id: reviewID, project: current, environment: environment,
+          try EnvFileImportReview(id: reviewID, project: current, environment: environment, creating: creating,
             source: source, sessionGeneration: session, imported: imported)
         }.value
-        guard isUnlocked, session == vaultSessionGeneration,
-          localEnvReviewIDs[target] == reviewID, selectedProjectId == projectId,
-          selectedEnvironment == environment, !Task.isCancelled
-        else { return .failure(.cancelled) }
+        guard isWanted() else { return .failure(.cancelled) }
         return .success(review)
       } catch let failure as EnvFileImportError { return .failure(failure) }
       catch { return .failure(.readFailed) }
@@ -3293,25 +3331,35 @@ final class VaultStore {
     }
   }
 
+  /// Whether `review` still holds: a new environment's while its name is
+  /// free, and an import's while the environment it goes into is shown.
   func isCurrentEnvFileImportReview(_ review: EnvFileImportReview) -> Bool {
     let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
-    return isUnlocked && !isShowingAccountPage
-      && review.sessionGeneration == vaultSessionGeneration
-      && localEnvReviewIDs[target] == review.id
-      && selectedProjectId == review.projectId && selectedEnvironment == review.environment
-      && projects.contains { $0.id == review.projectId && $0.environments[review.environment] != nil }
+    guard isUnlocked, !isShowingAccountPage,
+      review.sessionGeneration == vaultSessionGeneration,
+      localEnvReviewIDs[target] == review.id,
+      selectedProjectId == review.projectId,
+      let project = projects.first(where: { $0.id == review.projectId })
+    else { return false }
+    return review.createsEnvironment
+      ? project.environments[review.environment] == nil
+      : selectedEnvironment == review.environment && project.environments[review.environment] != nil
   }
 
+  /// Imports what `review` compared, keeping existing values except
+  /// `replacingKeys`, and leaving out the new keys in `skippingKeys`. A new
+  /// environment's review is created with `createEnvironment(from:skippingKeys:)`.
   func applyEnvFileImport(
-    _ review: EnvFileImportReview, replacingKeys: Set<String>
-  ) async -> Result<ImportedEnvFile, EnvFileImportError> {
+    _ review: EnvFileImportReview, replacingKeys: Set<String>, skippingKeys: Set<String> = []
+  ) async -> Result<EnvImportReceipt, EnvFileImportError> {
     let target = LocalEnvImportTarget(projectId: review.projectId, environment: review.environment)
     guard isUnlocked else { return .failure(.vaultLocked) }
-    guard review.sessionGeneration == vaultSessionGeneration,
+    guard !review.createsEnvironment, review.sessionGeneration == vaultSessionGeneration,
       localEnvReviewIDs[target] == review.id,
-      replacingKeys.isSubset(of: review.changedKeys)
+      replacingKeys.isSubset(of: review.changedKeys),
+      skippingKeys.isSubset(of: review.addedKeys)
     else { return .failure(.cancelled) }
-    let result = await commitEnvFileImport(review, replacingKeys: replacingKeys)
+    let result = await commitEnvFileImport(review, replacingKeys: replacingKeys, skippingKeys: skippingKeys)
     if case .success = result, localEnvReviewIDs[target] == review.id {
       localEnvReviewIDs.removeValue(forKey: target)
     }
@@ -3323,8 +3371,8 @@ final class VaultStore {
   /// The commit fails with `reviewChanged` when the destination no longer
   /// matches the reviewed baseline, so concurrent CLI edits are never replaced.
   private func commitEnvFileImport(
-    _ review: EnvFileImportReview, replacingKeys: Set<String>
-  ) async -> Result<ImportedEnvFile, EnvFileImportError> {
+    _ review: EnvFileImportReview, replacingKeys: Set<String>, skippingKeys: Set<String>
+  ) async -> Result<EnvImportReceipt, EnvFileImportError> {
     let write = writes.begin()
     defer { writes.end(write) }
     let projectId = review.projectId
@@ -3353,7 +3401,7 @@ final class VaultStore {
         projectName: review.projectName,
         projectPath: review.projectPath,
         environment: environment,
-        secrets: review.imported.secrets,
+        secrets: skippingKeys.isEmpty ? review.imported.secrets : review.imported.secrets.filter { !skippingKeys.contains($0.key) },
         expectedSecrets: review.baseline,
         replacingKeys: replacingKeys,
         requestId: requestId,
@@ -3365,13 +3413,16 @@ final class VaultStore {
 
     switch commit {
     case .success(let persisted):
+      let receipt = EnvImportReceipt(
+        projectId: projectId, environment: environment, before: review.baseline,
+        after: persisted.project.environments[environment] ?? [:])
       guard sessionGeneration == vaultSessionGeneration,
         isUnlocked,
         projects.contains(where: { $0.id == projectId })
       else {
         // The transaction crossed its synchronous commit point. Keep
         // locked/stale UI clear, but report the durable success.
-        return .success(review.imported)
+        return .success(receipt)
       }
       updateProjectInPlace(persisted.project)
       applySyncMetadata(persisted.syncMetadata, for: persisted.project.id)
@@ -3382,8 +3433,8 @@ final class VaultStore {
       {
         error = persisted.warning
       }
-      return .success(review.imported)
-    case .targetUnavailable:
+      return .success(receipt)
+    case .targetUnavailable, .environmentExists:
       return .failure(.targetUnavailable)
     case .reviewChanged:
       return .failure(.reviewChanged)
@@ -3406,6 +3457,23 @@ final class VaultStore {
 
   /// Reads variables from a file or pasted text for the selected project,
   /// off the main actor; a lock or another project cancels the read.
+  /// Puts the environment an import changed back as it was, as long as
+  /// nothing has changed it since, as the LPM CLI could have.
+  func undoEnvImport(_ receipt: EnvImportReceipt) async -> ProjectMutationOutcome {
+    guard isUnlocked, receipt.changed, selectedProjectId == receipt.projectId,
+      let project = projects.first(where: { $0.id == receipt.projectId }),
+      project.environments[receipt.environment] != nil
+    else { return .unavailable }
+    recordUserActivity()
+    return await withCheckedContinuation { continuation in
+      enqueueProjectMutation(
+        base: project,
+        mutation: .restoreEnvironment(name: receipt.environment, expectedSecrets: receipt.after, restored: receipt.before),
+        reportsFailures: false
+      ) { continuation.resume(returning: $0) }
+    }
+  }
+
   func loadEnvImport(
     _ input: EnvImportInput,
     for projectId: String
