@@ -357,25 +357,9 @@ struct VaultContentView: View {
 				ScrollView([.horizontal, .vertical]) {
 					LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
 						Section {
-							if valueChecks.readsDefaultEnvironment(selectedEnvironment) {
-								Text("The LPM CLI reads values from .env and checks this environment's rules.")
-									.font(.system(size: 12))
-									.foregroundStyle(VaultPalette.textTertiary)
-									.padding(.horizontal, 20)
-									.frame(width: tableWidth, height: 34, alignment: .leading)
-							}
-							ForEach(valueChecks.groupFailures(in: selectedEnvironment)) { failure in
-								VaultGroupFailureBanner(failure: failure, width: tableWidth)
-							}
+							environmentNotes(width: tableWidth)
 							if derived.environmentKeys.isEmpty {
-								VaultTableEmptyRow(
-									message: !searchText.isEmpty
-										? "No keys match your search"
-										: (valueChecks.readsDefaultEnvironment(selectedEnvironment)
-											? "No values here. The LPM CLI uses \(VaultProject.displayName(for: "default"))'s values for this environment."
-											: "No secrets in this environment"),
-									width: tableWidth
-								)
+								VaultTableEmptyRow(message: emptyEnvironmentMessage, width: tableWidth)
 							} else {
 								ForEach(derived.environmentKeys, id: \.self) { key in
 									let stored = project.value(for: key, in: selectedEnvironment)
@@ -426,20 +410,53 @@ struct VaultContentView: View {
 	}
 
 	private func rawEnvironment(_ derived: VaultContentDerivation) -> some View {
-		ScrollView {
-			LazyVStack(alignment: .leading, spacing: 7) {
-				ForEach(derived.environmentKeys, id: \.self) { key in
-					let isRevealed = isShown(key)
-					let rendered = isRevealed ? (project.value(for: key, in: selectedEnvironment) ?? "") : "••••••••••••"
-					Text("\(key)=\(rendered)")
-						.font(isRevealed ? VaultTypography.code(12) : VaultTypography.tabular(12))
-						.foregroundStyle(VaultPalette.textSecondary)
-						.accessibilityLabel("\(key), value \(isRevealed ? "revealed visually" : "hidden")")
+		GeometryReader { geometry in
+			ScrollView {
+				VStack(alignment: .leading, spacing: 0) {
+					environmentNotes(width: geometry.size.width)
+					if derived.environmentKeys.isEmpty {
+						VaultTableEmptyRow(message: emptyEnvironmentMessage, width: geometry.size.width)
+					} else {
+						LazyVStack(alignment: .leading, spacing: 7) {
+							ForEach(derived.environmentKeys, id: \.self) { key in
+								let isRevealed = isShown(key)
+								let rendered = isRevealed ? (project.value(for: key, in: selectedEnvironment) ?? "") : "••••••••••••"
+								Text("\(key)=\(rendered)")
+									.font(isRevealed ? VaultTypography.code(12) : VaultTypography.tabular(12))
+									.foregroundStyle(VaultPalette.textSecondary)
+									.accessibilityLabel("\(key), value \(isRevealed ? "revealed visually" : "hidden")")
+							}
+						}
+						.frame(maxWidth: .infinity, alignment: .leading)
+						.padding(20)
+					}
 				}
 			}
-			.frame(maxWidth: .infinity, alignment: .leading)
-			.padding(20)
 		}
+	}
+
+	/// What the environment's keys come with, in the table and in raw text:
+	/// that the LPM CLI reads another environment's values, and its rules'
+	/// failed groups.
+	@ViewBuilder
+	private func environmentNotes(width: CGFloat) -> some View {
+		if valueChecks.readsDefaultEnvironment(selectedEnvironment) {
+			Text("The LPM CLI reads values from .env and checks this environment's rules.")
+				.font(.system(size: 12))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.padding(.horizontal, 20)
+				.frame(width: width, height: 34, alignment: .leading)
+		}
+		ForEach(valueChecks.groupFailures(in: selectedEnvironment)) { failure in
+			VaultGroupFailureBanner(failure: failure, width: width)
+		}
+	}
+
+	private var emptyEnvironmentMessage: String {
+		if !searchText.isEmpty { return "No keys match your search" }
+		return valueChecks.readsDefaultEnvironment(selectedEnvironment)
+			? "No values here. The LPM CLI uses \(VaultProject.displayName(for: "default"))'s values for this environment."
+			: "No secrets in this environment"
 	}
 
 	/// A narrow bar drops the sort order first, which the KEY header also shows,
