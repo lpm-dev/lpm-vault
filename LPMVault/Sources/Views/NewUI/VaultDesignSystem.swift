@@ -60,6 +60,10 @@ enum VaultPalette {
 	static let avatarNeutralForeground = adaptive(light: 0x5B5A6E, dark: 0xFFFFFF, darkOpacity: 0.55)
 	static let terminal = adaptive(light: 0x1C1C1E, dark: 0x101010)
 	static let terminalText = Color(hex: 0xE8E8ED)
+	/// A toast is dark in both appearances, with white text.
+	static let toast = adaptive(light: 0x1C1C1E, dark: 0x1E1E20)
+	static let toastSecondaryText = Color.white.opacity(0.55)
+	static let toastConfirmation = Color(hex: 0x75DB94)
 
 	private static func adaptive(light: UInt, dark: UInt, darkOpacity: Double = 1) -> Color {
 		func color(_ hex: UInt, alpha: Double) -> NSColor {
@@ -115,8 +119,8 @@ enum VaultTypography {
 	}
 
 	/// The code font in AppKit text, such as the box pasted variables are edited in.
-	static func codeNSFont(_ size: CGFloat) -> NSFont {
-		.monospacedSystemFont(ofSize: size, weight: .regular)
+	static func codeNSFont(_ size: CGFloat, _ weight: NSFont.Weight = .regular) -> NSFont {
+		.monospacedSystemFont(ofSize: size, weight: weight)
 	}
 
 	static let sectionLabel = Font.system(size: 10.5, weight: .bold)
@@ -222,6 +226,23 @@ enum VaultBranding {
 			preconditionFailure("Missing bundled LPM Vault artwork: \(name).\(fileExtension)")
 		}
 		return image
+	}
+}
+
+/// A short note floating over the content, such as what a copy took.
+struct VaultToast<Content: View>: View {
+	@ViewBuilder let content: Content
+
+	var body: some View {
+		HStack(spacing: 8) { content }
+			.font(.system(size: 12))
+			.foregroundStyle(.white)
+			.lineLimit(1)
+			.padding(.horizontal, 12)
+			.frame(height: 30)
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.toast))
+			.shadow(color: .black.opacity(0.35), radius: 12, y: 8)
+			.accessibilityElement(children: .combine)
 	}
 }
 

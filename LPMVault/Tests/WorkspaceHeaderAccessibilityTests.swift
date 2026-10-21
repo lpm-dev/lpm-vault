@@ -108,21 +108,26 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { revealToggle(in: host)?.isOn == false })
 		}
 
-		@Test("Copy all's name begins with the words it shows, while it copies and once it has")
+		@Test("Copy all's name begins with the words it shows, while it waits for a refresh to copy and once it has")
 		func copyAllNames() async throws {
 			let fixture = try makeFixture()
-			let gate = AsyncStream<Void>.makeStream()
-			fixture.biometric.authenticateHandlers = [{
-				for await _ in gate.stream { return true }
-				return false
-			}]
-			defer { gate.continuation.finish(); fixture.tearDown() }
+			defer { fixture.tearDown() }
 			let copyFeedback = ManualFeedbackTimer()
 			let host = try await workspace(fixture.store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
+			// A refresh held before it reads the Keychain keeps Copy all copying.
+			let entered = DispatchSemaphore(value: 0)
+			let release = DispatchSemaphore(value: 0)
+			fixture.keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
+			let refresh = Task { await fixture.store.refreshLocalState() }
+			await withCheckedContinuation { continuation in
+				DispatchQueue.global().async { entered.wait(); continuation.resume() }
+			}
+			fixture.keychain.beforeKeychainTransaction = nil
 			try await host.click("Copy all .env values")
 			#expect(try await host.waitForText("Copying all .env values", exactly: true))
-			gate.continuation.yield(())
+			release.signal()
+			await refresh.value
 			#expect(try await host.waitForText("Copied all .env values", exactly: true))
 			#expect(fixture.store.clipboard.pasteboard.string(forType: .string)?.contains("PORT=") == true)
 			#expect(try await host.waitUntil { copyFeedback.started == 1 }, "The confirmation starts waiting just after Copied shows")
@@ -208,7 +213,7 @@ extension SheetInteractionTests {
 
 		private struct Fixture {
 			let store: VaultStore
-			let biometric: MockBiometricService
+			let keychain: MockKeychainService
 			let folder: String
 
 			@MainActor func tearDown() {
@@ -225,19 +230,18 @@ extension SheetInteractionTests {
 			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
 			try #"{"envSchema":{"vars":{"PORT":{"format":"port"}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
 			let keychain = MockKeychainService()
-			let biometric = MockBiometricService()
 			let project = VaultProject(id: "header", name: "billing-app", path: folder,
 				environments: ["default": ["PORT": "not-a-port", "TOKEN": "a"], "production": ["PORT": "443"]])
 			let solo = VaultProject(id: "solo", name: "solo", path: "", environments: ["default": ["ONLY": "x"]])
 			for project in [project, solo] {
 				keychain.envStorage[project.id] = (name: project.name, path: project.path, environments: project.environments)
 			}
-			let store = VaultStore(keychainService: keychain, biometricService: biometric,
+			let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(),
 				apiService: MockAPIService(), authTokenProvider: { _, _ in nil }, clipboard: ClipboardManager(pasteboard: .withUniqueName()))
 			store.isUnlocked = true
 			store.projects = [project, solo]
 			store.openProject(id: project.id)
-			return Fixture(store: store, biometric: biometric, folder: folder)
+			return Fixture(store: store, keychain: keychain, folder: folder)
 		}
 
 		private func workspace(_ store: VaultStore, width: CGFloat = 1400, copyFeedback: ManualFeedbackTimer = ManualFeedbackTimer())

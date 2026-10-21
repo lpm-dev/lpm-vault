@@ -894,6 +894,29 @@ enum EnvFileCodec {
 		return output
 	}
 
+	/// One variable as a line that reads back as the same value: bare when
+	/// every character means only itself, here and when a POSIX shell sources
+	/// it, and otherwise double-quoted as `format` writes it. Either way it's
+	/// a single line, as newlines are escaped.
+	static func formatLine(key: String, value: String) -> String {
+		guard value.unicodeScalars.allSatisfy(isBareValueScalar) else {
+			var line = key + "=\""
+			appendEscaped(value, to: &line)
+			line.append("\"")
+			return line
+		}
+		return key + "=" + value
+	}
+
+	/// Letters, digits, and the punctuation of URLs, paths and tokens that
+	/// neither this parser nor a shell assignment reads specially.
+	private static func isBareValueScalar(_ scalar: Unicode.Scalar) -> Bool {
+		switch scalar {
+		case "0"..."9", "A"..."Z", "a"..."z", "%", "+", ",", "-", ".", "/", ":", "=", "@", "_": true
+		default: false
+		}
+	}
+
 	static func formatData(_ secrets: [String: String]) -> Data {
 		let entries = secrets.sorted { $0.key < $1.key }
 		var output = Data(count: formattedDataCapacity(entries))

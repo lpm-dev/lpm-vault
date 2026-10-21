@@ -66,6 +66,7 @@
 		344DD51687F0F91489EA72AD /* PlatformConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68512736946FD506A8B4F28C /* PlatformConnectionStore.swift */; };
 		34DEFD39A6B2DDEA18AAD05D /* AuthSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 031C570F6BF94FC959CB4D89 /* AuthSessionCoordinator.swift */; };
 		36C0755D785CA0709C67EC3D /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE075C602D66BE2D2585F9A4 /* ContentView.swift */; };
+		38246F407C17550BA753C249 /* VaultRawText.swift in Sources */ = {isa = PBXBuildFile; fileRef = A535C9C4A235386D0EE51121 /* VaultRawText.swift */; };
 		38289D7C13B7A79B92794FC0 /* AuthSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1CF37F3E1D21EFC23D1163B /* AuthSessionCoordinatorTests.swift */; };
 		3866F82E3E1C3D5EA8C33910 /* EnvValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 614C541032B4C27C2966138F /* EnvValidation.swift */; };
 		38AFEC6E457B9C83373C397F /* BiometricService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09F3D97EC4B3C023F301406F /* BiometricService.swift */; };
@@ -83,6 +84,7 @@
 		3FE30DB5733578F8E3E98BFA /* Resources in Resources */ = {isa = PBXBuildFile; fileRef = 408CB91D419B483C1DED72C5 /* Resources */; };
 		3FF9073E2F92A03458224E81 /* VaultSettingsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 984149D1A9C192CCCAB69CD6 /* VaultSettingsPage.swift */; };
 		409BEB02E667884D93A7D0DB /* VaultSchemaEditorFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 983443571C69A2E11CCEEAFF /* VaultSchemaEditorFooter.swift */; };
+		40BC09F7A05CDB6B2C13FE43 /* RawTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1164D09508447235F037F931 /* RawTextTests.swift */; };
 		4183C63D9ECD97870BB9BAE4 /* SidebarItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72C3FAD279B500DCF05CDFC0 /* SidebarItem.swift */; };
 		4207B8276428EB5364562DA3 /* CoolifyConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B29E80D234EA32595E080E5 /* CoolifyConnector.swift */; };
 		42EEE8EBFA308F538C18BC23 /* OpenDescriptors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 837A32E1FEC7112393F59090 /* OpenDescriptors.swift */; };
@@ -131,6 +133,7 @@
 		6CCEDC914C33070A2489CA21 /* VaultSchemaReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D487550C0437B4F55F50D03C /* VaultSchemaReviewSheet.swift */; };
 		6ED4D87B9BD3A139401AFBCD /* EnvSchemaCompositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6AC2FB02EDCD85F6095DAE /* EnvSchemaCompositionTests.swift */; };
 		7037E1423C720FF964CE88C7 /* CountedNoun.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF02796887E7ECB5B31624FB /* CountedNoun.swift */; };
+		716B544D2E58105C930AD616 /* RawTextInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1A485A681571FC075279A1B /* RawTextInteractionTests.swift */; };
 		72028FA9E5E2BF02C929F58F /* CloudflareClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBC286E274ECE32DCB1DA016 /* CloudflareClient.swift */; };
 		72A556D5F4A968AFC33FE63D /* NetlifyClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C7F37326D9E2F264CAC1E42 /* NetlifyClientTests.swift */; };
 		7302132FAB90E538507C530F /* AccessibilityTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = 011E191D4571C3B1A4F17C66 /* AccessibilityTree.swift */; };
@@ -268,6 +271,7 @@
 		F3E30AC0F9D7412BA7438A9A /* VaultQuitCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14A975FA422FF69083251C6F /* VaultQuitCoordinatorTests.swift */; };
 		F68A2909B02F5B1881F8D26F /* ProjectEnvSchemaReferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = E66574D8B70EDA392CAC3BCA /* ProjectEnvSchemaReferences.swift */; };
 		F768C8B5AFC0FD0D55134D08 /* EnvProjectImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 547D88A2D08665F045A7D27C /* EnvProjectImportService.swift */; };
+		F86C7DBD4C745D757DF9AD25 /* VaultRawTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB32425D42965CC8126796A9 /* VaultRawTextView.swift */; };
 		F8A7C128DA66E5D1C401AE73 /* VaultWorkspaceTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72073FDF6E5C1FDFD99BF330 /* VaultWorkspaceTypes.swift */; };
 		F96532FA20358135BF9072D0 /* ProjectEnvSchemaFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0215A91F1A80E56B5A6DFB1B /* ProjectEnvSchemaFileTests.swift */; };
 		FA4DEF51394119E89AF0B36E /* ProjectEnvSchemaRuleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 606A4D6D619C63A269BDD1D1 /* ProjectEnvSchemaRuleTests.swift */; };
@@ -313,6 +317,7 @@
 		0D0B2CD3E26188E14F6418FB /* EnvFileImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportService.swift; sourceTree = "<group>"; };
 		0ED1EBE65DAC64E3E442E1A8 /* VaultConfirmDialog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultConfirmDialog.swift; sourceTree = "<group>"; };
 		10F9038EDB0DF8525A388573 /* ModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelTests.swift; sourceTree = "<group>"; };
+		1164D09508447235F037F931 /* RawTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawTextTests.swift; sourceTree = "<group>"; };
 		132B8BB771BBAB418793A322 /* ProjectEnvValueCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvValueCheck.swift; sourceTree = "<group>"; };
 		14A975FA422FF69083251C6F /* VaultQuitCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultQuitCoordinatorTests.swift; sourceTree = "<group>"; };
 		1537A923FE9D31FAE64204AD /* CoolifyClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoolifyClient.swift; sourceTree = "<group>"; };
@@ -469,7 +474,9 @@
 		9E9A56D911EA3978257179C9 /* CloudflarePublishingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudflarePublishingTests.swift; sourceTree = "<group>"; };
 		A014620EBD5FF6A03AA4DEDC /* PlatformRateLimit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformRateLimit.swift; sourceTree = "<group>"; };
 		A075C7BA1C52515081F1A50F /* KeyInspectorInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyInspectorInteractionTests.swift; sourceTree = "<group>"; };
+		A1A485A681571FC075279A1B /* RawTextInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawTextInteractionTests.swift; sourceTree = "<group>"; };
 		A2AB1D6BA22486C9CB6D596E /* VercelPublishingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VercelPublishingTests.swift; sourceTree = "<group>"; };
+		A535C9C4A235386D0EE51121 /* VaultRawText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultRawText.swift; sourceTree = "<group>"; };
 		A574932C149C6A42AFC92B25 /* CloudflareTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudflareTestSupport.swift; sourceTree = "<group>"; };
 		A6C87067D273C91F49ACAC02 /* SchemaDraftBenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaDraftBenchmarkTests.swift; sourceTree = "<group>"; };
 		A8F081BA9831B63073D2F4BF /* ProjectConfigWatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectConfigWatcherTests.swift; sourceTree = "<group>"; };
@@ -493,6 +500,7 @@
 		B7818555ADC9CFF5B987A748 /* project-index-v3.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "project-index-v3.json"; sourceTree = "<group>"; };
 		B9198E040EEBC0EC72052477 /* ProjectEnvSchemaOverviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaOverviewTests.swift; sourceTree = "<group>"; };
 		B93FF58179E5B6CF737002F6 /* EnvFileImportReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportReview.swift; sourceTree = "<group>"; };
+		BB32425D42965CC8126796A9 /* VaultRawTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultRawTextView.swift; sourceTree = "<group>"; };
 		BB40CA66BB61A66922B80DB4 /* PublishPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishPlan.swift; sourceTree = "<group>"; };
 		BBB55A757FA0068F1A7D2568 /* NetlifyConnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetlifyConnector.swift; sourceTree = "<group>"; };
 		BC1454DBB5C406F654AA9519 /* BlockingWorkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockingWorkTests.swift; sourceTree = "<group>"; };
@@ -621,6 +629,7 @@
 				BC3C6AFA2ED63B743ADFB326 /* VaultPublishMenu.swift */,
 				FC8F78B4292032B8160B8A5A /* VaultQuitHUD.swift */,
 				56EDAD1416DB8AA9695355DA /* VaultQuitSheet.swift */,
+				BB32425D42965CC8126796A9 /* VaultRawTextView.swift */,
 				C68A0B5B65065CE20F58D81F /* VaultResizablePane.swift */,
 				A92B9253F0D8553F9082E72F /* VaultRuleBadges.swift */,
 				5E19BECC3EE6A24B2A9E3C04 /* VaultSchemaClientPrefixes.swift */,
@@ -680,6 +689,7 @@
 				621C09DBB341EAA1AA6C9DB1 /* VaultKeyEdit.swift */,
 				69F8D1CB69E6B442457DAE3C /* VaultProject.swift */,
 				97946FB8C45280CA8369DB72 /* VaultQuitShortcut.swift */,
+				A535C9C4A235386D0EE51121 /* VaultRawText.swift */,
 				FFE4B46C5693219A4558C620 /* VaultStore.swift */,
 				27CF35B91CFDCB52E6AEE84F /* VaultUnsavedWork.swift */,
 				DD382178E5B936352E5D8275 /* VaultWrites.swift */,
@@ -783,6 +793,8 @@
 				4D737AE65488CDD5BB94A0DF /* PublishRevisionPlanTests.swift */,
 				3005A677D1BA50A8A6A05456 /* PublishSessionTests.swift */,
 				590AE059B00FEF459BB3496E /* QuitProtectionInteractionTests.swift */,
+				A1A485A681571FC075279A1B /* RawTextInteractionTests.swift */,
+				1164D09508447235F037F931 /* RawTextTests.swift */,
 				F43C0B708F1D777CF8AD8245 /* RenewingCloudflareClientTests.swift */,
 				537598A780D1FDFFB63DC4BF /* Round2BenchmarkTests.swift */,
 				4087411C6D51EB8AFBC77E53 /* Round3BenchmarkTests.swift */,
@@ -1096,6 +1108,8 @@
 				9D50B3DBE1FFD9F68914AEA5 /* PublishSessionTests.swift in Sources */,
 				D033533DFAC3D3B5AC564ADB /* PublishingStoreTests.swift in Sources */,
 				61B0C606816201F2218AAD96 /* QuitProtectionInteractionTests.swift in Sources */,
+				716B544D2E58105C930AD616 /* RawTextInteractionTests.swift in Sources */,
+				40BC09F7A05CDB6B2C13FE43 /* RawTextTests.swift in Sources */,
 				240D88387605D52E821B9352 /* RenewingCloudflareClientTests.swift in Sources */,
 				7CAA4D38C926E8B7ABFD88BC /* Round2BenchmarkTests.swift in Sources */,
 				E2C5F6C51F13DD357B21740F /* Round3BenchmarkTests.swift in Sources */,
@@ -1272,6 +1286,8 @@
 				039E67D66853DA285AD91BC3 /* VaultQuitHUD.swift in Sources */,
 				870484B40B31126A8A6056AE /* VaultQuitSheet.swift in Sources */,
 				624506854C9F8EBA3CA0D6D3 /* VaultQuitShortcut.swift in Sources */,
+				38246F407C17550BA753C249 /* VaultRawText.swift in Sources */,
+				F86C7DBD4C745D757DF9AD25 /* VaultRawTextView.swift in Sources */,
 				4C947C17C89E0B20D6EE3EF9 /* VaultResizablePane.swift in Sources */,
 				E64821F8E84FBF80C038B7E3 /* VaultRuleBadges.swift in Sources */,
 				2B86293F0EFF24BA77BD932D /* VaultSchemaClientPrefixes.swift in Sources */,

@@ -351,6 +351,8 @@ extension EnvironmentValues {
 struct VaultCopyFeedback: Equatable {
   enum Target: Equatable {
     case all(VaultSensitiveActionContext)
+    /// Raw text's selected lines.
+    case lines(VaultSensitiveActionContext, count: Int)
     case secret(projectID: String, environment: String, key: String)
     case unsaved(VaultKeyDraft.ID, environment: String)
   }

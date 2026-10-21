@@ -1543,7 +1543,7 @@ struct PublishStoreTests {
 		session.loadReview()
 		#expect(try await waitUntil { session.review != nil || session.reviewError != nil })
 		#expect(session.review?.rules == .unreadable, "Rules not read yet publish everything as a Secret")
-		_ = await store.authenticateForSensitiveAction(reason: "an earlier approval")
+		_ = await biometric.authenticate(reason: "an earlier approval")
 		session.publish()
 		#expect(try await waitUntil { session.step == .results })
 		#expect(biometric.confirmationReasons == ["Publish 1 variable to demo-api / Production on Vercel"])

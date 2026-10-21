@@ -31,8 +31,6 @@ struct EnvFileImportReviewSheet: View {
 	@Environment(\.vaultImportUndoTimer) private var undoTimer
 	@State private var filter = Filter.all
 	@State private var revealed = false
-	@State private var revealTask: Task<Void, Never>?
-	@State private var revealRequestID: UUID?
 	@State private var replacingKeys: Set<String> = []
 	@State private var skippingKeys: Set<String> = []
 	@State private var task: Task<Void, Never>?
@@ -205,8 +203,8 @@ struct EnvFileImportReviewSheet: View {
 			}
 			.buttonStyle(.plain)
 			.vaultPointingHand()
-			.disabled((!revealed && revealTask != nil) || failure != nil || isObscured || !isCurrent || isWorking)
-			.help(revealed ? "Hide the values" : "Show the values to compare them, after macOS authentication")
+			.disabled(failure != nil || isObscured || !isCurrent || isWorking)
+			.help(revealed ? "Hide the values" : "Show the values to compare them")
 		}
 	}
 
@@ -489,31 +487,11 @@ struct EnvFileImportReviewSheet: View {
 
 	private func toggleReveal() {
 		if revealed { return hideValues() }
-		guard revealTask == nil, task == nil, completion == nil, failure == nil, !isObscured,
-			store.isCurrentEnvFileImportReview(review)
-		else { return }
-		let requestID = UUID()
-		let reviewID = review.id
-		revealRequestID = requestID
-		revealTask = Task {
-			defer {
-				if revealRequestID == requestID {
-					revealTask = nil
-					revealRequestID = nil
-				}
-			}
-			let approved = await store.authenticateForSensitiveAction(reason: "Compare imported secret values")
-			guard approved, !Task.isCancelled, revealRequestID == requestID, review.id == reviewID,
-				!isObscured, task == nil, completion == nil, store.isCurrentEnvFileImportReview(review)
-			else { return }
-			revealed = true
-		}
+		guard task == nil, completion == nil, failure == nil, !isObscured, store.isCurrentEnvFileImportReview(review) else { return }
+		revealed = true
 	}
 
 	private func hideValues() {
-		revealTask?.cancel()
-		revealTask = nil
-		revealRequestID = nil
 		revealed = false
 	}
 

@@ -12,11 +12,17 @@ final class ClipboardManager {
 	let pasteboard: NSPasteboard
 	private var clearTask: Task<Void, Never>?
 	private let clearDelay: TimeInterval
+	private let sleep: @Sendable (Duration) async throws -> Void
 	private var ownedChangeCount: Int?
 
-	init(pasteboard: NSPasteboard = .general, clearDelay: TimeInterval = VaultConstants.clipboardClearDelay) {
+	/// `sleep` waits out the time before a copy is cleared.
+	init(
+		pasteboard: NSPasteboard = .general, clearDelay: TimeInterval = VaultConstants.clipboardClearDelay,
+		sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+	) {
 		self.pasteboard = pasteboard
 		self.clearDelay = clearDelay
+		self.sleep = sleep
 	}
 
 	/// Whether a copied secret is still to be cleared once its time is up.
@@ -26,11 +32,10 @@ final class ClipboardManager {
 		EnvFileCodec.format(secrets)
 	}
 
-	/// Copies a value and schedules auto-clear. Returns whether the clipboard accepted the value.
+	/// Copies a value, marked for clipboard managers to skip, and clears it
+	/// after `clearDelay`. Returns whether the clipboard accepted the value.
 	@discardableResult
-	func copy(_ value: String, clearAfter: TimeInterval? = nil) -> Bool {
-		let delay = clearAfter ?? clearDelay
-
+	func copy(_ value: String) -> Bool {
 		pasteboard.clearContents()
 		guard pasteboard.setString(value, forType: .string) else {
 			ownedChangeCount = nil
@@ -46,8 +51,8 @@ final class ClipboardManager {
 		clearTask?.cancel()
 
 		// Schedule new clear
-		clearTask = Task {
-			try? await Task.sleep(for: .seconds(delay))
+		clearTask = Task { [sleep] in
+			try? await sleep(.seconds(clearDelay))
 			if !Task.isCancelled {
 				clearClipboardIfOwned()
 			}

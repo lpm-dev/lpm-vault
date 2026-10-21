@@ -462,7 +462,7 @@ extension SheetInteractionTests {
 			#expect(otherKeychain.envStorage["project"]?.environments["default"]?["NEW"] == "added")
 		}
 
-		@Test("revealing values compares both of a changed key without approving replacement")
+		@Test("revealing values compares both of a changed key, without Touch ID or approving replacement")
 		func revealComparesWithoutApproving() async throws {
 			let biometric = MockBiometricService()
 			let (store, keychain) = await fixture(existing: ["TOKEN": "ExistingValue"], incoming: ["TOKEN": "IncomingValue"], biometric: biometric)
@@ -471,14 +471,12 @@ extension SheetInteractionTests {
 			let host = try await sheet(store, preview)
 			defer { host.window.close() }
 			try #require(store.isCurrentEnvFileImportReview(preview))
-			#expect(biometric.authenticateCallCount == 0)
 			try await host.click("Reveal values")
-			try #require(try await host.waitUntil { biometric.authenticateCallCount == 1 })
 			#expect(try await host.waitForText("Vault value for TOKEN revealed visually"))
 			let text = try await host.text()
 			#expect(text.contains("File value for TOKEN revealed visually"))
 			#expect(text.contains("0 replaced"))
-			#expect(biometric.authenticateCallCount == 1)
+			#expect(biometric.authenticateCallCount == 0, "Revealing asks nothing more than unlocking did")
 			try await host.click("Hide values")
 			#expect(try await host.waitForText("Vault value for TOKEN hidden"))
 			#expect(try await host.text().contains("File value for TOKEN hidden"))
@@ -506,56 +504,6 @@ extension SheetInteractionTests {
 			#expect(try await !host.text().contains("Vault value"), "A new key has no value in the vault to compare")
 		}
 
-		@Test("unsuccessful authentication keeps values hidden")
-		func unsuccessfulRevealIsMasked() async throws {
-			let biometric = MockBiometricService()
-			biometric.shouldSucceed = false
-			let (store, _) = await fixture(existing: ["TOKEN": "ExistingValue"], incoming: ["TOKEN": "IncomingValue"], biometric: biometric)
-			defer { store.lock() }
-			let host = try await sheet(store)
-			defer { host.window.close() }
-			try await host.click("Reveal values")
-			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
-			try await host.settle()
-			let text = try await host.text()
-			#expect(!text.contains("revealed visually"))
-			#expect(!text.contains("Authentication failed"))
-		}
-
-		@Test("late authentication cannot reveal values after context changes", arguments: ["environment", "project", "lock", "newer", "dismiss", "privacy", "apply"])
-		func staleRevealStaysMasked(transition: String) async throws {
-			let biometric = MockBiometricService()
-			let gate = AsyncStream<Void>.makeStream()
-			biometric.authenticateHandlers = [{
-				for await _ in gate.stream { return true }
-				return false
-			}]
-			let (store, _) = await fixture(existing: ["TOKEN": "ExistingValue"], incoming: ["TOKEN": "IncomingValue", "NEW": "added"], biometric: biometric)
-			defer { gate.continuation.finish(); store.lock() }
-			let preview = try await review(store)
-			let presentation = ImportReviewPresentation()
-			let host = SheetTestHost(ImportReviewTestView(store: store, review: preview, presentation: presentation), size: reviewSize, keepsRequestedSize: true, usesHostingView: true)
-			defer { host.window.close() }
-			try await host.click("Reveal values")
-			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
-			switch transition {
-			case "environment": store.selectedEnvironment = "staging"
-			case "project": store.selectedProjectId = nil
-			case "lock": store.lock()
-			case "newer": _ = try await review(store)
-			case "dismiss": presentation.isPresented = false
-			case "privacy": presentation.isObscured = true
-			default: try submitImport(in: host)
-			}
-			try await host.settle()
-			gate.continuation.yield(())
-			try await host.settle()
-			if transition == "privacy" { presentation.isObscured = false }
-			if transition == "dismiss" { presentation.isPresented = true }
-			try await host.settle()
-			#expect(try await !host.text().contains("revealed visually"))
-		}
-
 		@Test("visible values hide after privacy or dismissal", arguments: ["privacy", "dismiss"])
 		func visibleComparisonResets(transition: String) async throws {
 			let (store, _) = await fixture(existing: [:], incoming: ["NEW": "IncomingValue"])
@@ -572,7 +520,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("File value for NEW hidden"))
 		}
 
-		@Test("one authentication reveals every value, and Hide values hides them all")
+		@Test("Reveal values shows every value, and Hide values hides them all")
 		func revealAll() async throws {
 			let biometric = MockBiometricService()
 			let (store, _) = await fixture(existing: ["TOKEN": "old"], incoming: ["ALPHA": "AlphaIncoming", "BETA": "BetaIncoming", "TOKEN": "new"], biometric: biometric)
@@ -585,7 +533,7 @@ extension SheetInteractionTests {
 			for label in ["File value for BETA revealed visually", "Vault value for TOKEN revealed visually", "File value for TOKEN revealed visually"] {
 				#expect(text.contains(label))
 			}
-			#expect(biometric.authenticateCallCount == 1)
+			#expect(biometric.authenticateCallCount == 0)
 			try await host.click("Hide values")
 			#expect(try await host.waitForText("File value for ALPHA hidden"))
 			#expect(try await !host.text().contains("revealed visually"))

@@ -575,10 +575,8 @@ extension SheetInteractionTests {
 			store.clipboard.pasteboard.clearContents()
 			store.clipboard.pasteboard.setString("unsaved-removed-project", forType: .string)
 			try await host.click("Copy value")
-			#expect(try await host.waitUntil {
-				biometric.authenticationReasons == ["Copy your unsaved value"]
-					&& store.clipboard.pasteboard.string(forType: .string) == "unsaved-removed-project"
-			})
+			#expect(try await host.waitUntil { store.clipboard.pasteboard.string(forType: .string) == "unsaved-removed-project" })
+			#expect(biometric.authenticateCallCount == 0, "Copying asks nothing more than unlocking did")
 			#expect(try await host.waitForText("Copied"))
 			#expect(keychain.envStorage["workspace"]?.environments["default"]?["TOKEN"] == "fixture-value")
 			try await host.click("Discard")
@@ -587,60 +585,22 @@ extension SheetInteractionTests {
 			#expect(store.keyDrafts.drafts.isEmpty)
 		}
 
-		@Test("copying a recovered edit cancels when its context disappears", arguments: ["settings", "discard", "account", "lock"])
-		func recoveredCopyCancelsOnContextChange(transition: String) async throws {
+		@Test("copy all during a refresh copies the values it publishes, without Touch ID")
+		func copyAllWaitsForRefresh() async throws {
 			let keychain = MockKeychainService()
 			let (store, biometric) = makeStore(keychain: keychain)
-			let gate = AsyncStream<Void>.makeStream()
-			biometric.authenticateHandlers = [{
-				for await _ in gate.stream { return true }
-				return false
-			}]
-			defer { gate.continuation.finish(); store.lock() }
+			defer { store.lock() }
 			let host = try await workspace(store)
 			defer { host.window.close() }
-			try selectRow(0, in: host)
-			try await host.settle()
-			try host.enterValue("draft-must-not-copy")
-			try await host.settle()
-			keychain.envStorage.removeValue(forKey: "workspace")
-			await store.refreshLocalState()
-			#expect(try await host.waitForText("UNSAVED EDITS", exactly: true))
-			try await host.click("Copy value")
-			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
-			#expect(biometric.authenticationReasons == ["Copy your unsaved value"])
-			switch transition {
-			case "settings": store.showSettings()
-			case "discard": try await host.click("Discard")
-			case "account": store.selectedAccount = .org("other")
-			default: store.lock()
-			}
-			gate.continuation.yield(())
-			try await host.settle()
-			#expect(store.clipboard.pasteboard.string(forType: .string) != "draft-must-not-copy")
-		}
-
-		@Test("copy all copies refreshed values when authentication reactivates the app")
-		func copyAllWaitsForRefreshDuringAuthentication() async throws {
-			let keychain = MockKeychainService()
-			let (store, biometric) = makeStore(keychain: keychain)
-			let gate = AsyncStream<Void>.makeStream()
-			biometric.authenticateHandlers = [{
-				for await _ in gate.stream { return true }
-				return false
-			}]
-			defer { gate.continuation.finish(); store.lock() }
-			let host = try await workspace(store)
-			defer { host.window.close() }
-			try await host.click("Copy all")
-			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
-			// The macOS prompt can deactivate the app; returning from it refreshes local state.
+			let release = try await holdRefresh(of: store, keychain: keychain)
 			keychain.simulateCLISet(vaultId: "workspace", environment: "default", key: "TOKEN", value: "cli-updated")
-			let refresh = Task { await store.refreshLocalState() }
-			gate.continuation.yield(())
-			await refresh.value
+			try await host.click("Copy all")
+			#expect(try await host.waitForText("Copying all .env values"))
+			#expect(store.clipboard.pasteboard.string(forType: .string) == nil)
+			await release()
 			#expect(try await host.waitUntil { store.clipboard.pasteboard.string(forType: .string) == "TOKEN=\"cli-updated\"\n" })
 			#expect(try await host.waitForText("Copied"))
+			#expect(biometric.authenticateCallCount == 0)
 		}
 
 		@Test("a failed refresh pauses secret actions behind a retry banner")
@@ -680,13 +640,9 @@ extension SheetInteractionTests {
 
 		@Test("copy all keeps the toolbar stationary and confirms success")
 		func copyAllFeedbackAndLayout() async throws {
-			let (store, biometric) = makeStore()
-			let gate = AsyncStream<Void>.makeStream()
-			biometric.authenticateHandlers = [{
-				for await _ in gate.stream { return true }
-				return false
-			}]
-			defer { gate.continuation.finish(); store.lock() }
+			let keychain = MockKeychainService()
+			let (store, _) = makeStore(keychain: keychain)
+			defer { store.lock() }
 			let copyFeedback = ManualFeedbackTimer()
 			let host = try await workspace(store, copyFeedback: copyFeedback)
 			defer { host.window.close() }
@@ -695,11 +651,12 @@ extension SheetInteractionTests {
 			let revealRegion = CGRect(x: (revealLabel.minX - 4) / size.width, y: (revealLabel.minY - 2) / size.height,
 				width: (revealLabel.width + 8) / size.width, height: (revealLabel.height + 4) / size.height)
 			let revealFrame = try inkBounds(in: host.snapshot(host.view), region: revealRegion)
+			let release = try await holdRefresh(of: store, keychain: keychain)
 			try await host.click("Copy all")
-			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
+			#expect(try await host.waitForText("Copying all .env values"))
 			try await host.settle()
 			#expect(abs(try inkBounds(in: host.snapshot(host.view), region: revealRegion).minX - revealFrame.minX) * size.width < 0.75)
-			gate.continuation.yield(())
+			await release()
 			try await host.settle()
 			#expect(try await host.waitForText("Copied"))
 			#expect(abs(try inkBounds(in: host.snapshot(host.view), region: revealRegion).minX - revealFrame.minX) * size.width < 0.75)
@@ -725,29 +682,28 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForTextToDisappear("Copied"))
 		}
 
-		@Test("denied or cancelled copy all never confirms success", arguments: ["denied", "settings", "environment", "project", "lock"])
-		func unsuccessfulCopyHasNoSuccessFeedback(transition: String) async throws {
-			let (store, biometric) = makeStore(environments: ["default": ["TOKEN": "fixture-value"], "production": ["TOKEN": "other-value"]], additionalProject: true)
-			let gate = AsyncStream<Void>.makeStream()
-			biometric.authenticateHandlers = [{
-				for await _ in gate.stream { return transition != "denied" }
-				return false
-			}]
-			defer { gate.continuation.finish(); store.lock() }
+		@Test("a copy all waiting for a refresh copies nothing once its environment isn't shown",
+			arguments: ["settings", "environment", "project", "lock"])
+		func copyAllEndsWithItsContext(transition: String) async throws {
+			let keychain = MockKeychainService()
+			let (store, _) = makeStore(environments: ["default": ["TOKEN": "fixture-value"], "production": ["TOKEN": "other-value"]],
+				additionalProject: true, keychain: keychain)
+			defer { store.lock() }
 			let host = try await workspace(store)
 			defer { host.window.close() }
+			let release = try await holdRefresh(of: store, keychain: keychain)
 			try await host.click("Copy all")
-			#expect(try await host.waitUntil { biometric.authenticateCallCount == 1 })
+			#expect(try await host.waitForText("Copying all .env values"))
 			switch transition {
 			case "settings": store.showSettings()
 			case "environment": store.selectEnvironment("production")
 			case "project": store.openProject(id: "other")
-			case "lock": store.lock()
-			default: break
+			default: store.lock()
 			}
 			try await host.settle()
-			gate.continuation.yield(())
+			await release()
 			try await host.settle()
+			#expect(store.clipboard.pasteboard.string(forType: .string) == nil)
 			#expect(try await !host.text().contains("Copied"))
 			if transition == "settings" {
 				store.openProject(id: "workspace")
@@ -827,6 +783,24 @@ extension SheetInteractionTests {
 			}
 			store.openProject(id: project.id)
 			return (store, biometric)
+		}
+
+		/// Starts a refresh and holds it before it reads the Keychain, until the
+		/// returned function lets it finish.
+		private func holdRefresh(of store: VaultStore, keychain: MockKeychainService) async throws -> () async -> Void {
+			let entered = DispatchSemaphore(value: 0)
+			let release = DispatchSemaphore(value: 0)
+			keychain.beforeKeychainTransaction = { entered.signal(); release.wait() }
+			let refresh = Task { await store.refreshLocalState() }
+			await withCheckedContinuation { continuation in
+				DispatchQueue.global().async { entered.wait(); continuation.resume() }
+			}
+			keychain.beforeKeychainTransaction = nil
+			#expect(store.isRefreshingLocalState)
+			return {
+				release.signal()
+				await refresh.value
+			}
 		}
 
 		/// Copy confirmations stay until `copyFeedback` ends them. Preferences such
