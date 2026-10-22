@@ -23,6 +23,7 @@ enum PersonalProjectCrypto {
     case invalidCheckpoint
     case downgrade
     case storage
+    case homeInRepository(String)
 
     var errorDescription: String? {
       switch self {
@@ -34,6 +35,7 @@ enum PersonalProjectCrypto {
       case .invalidCheckpoint: "The personal env key checkpoint is invalid."
       case .downgrade: "The cloud personal env key is older than the trusted local checkpoint."
       case .storage: "Could not read or save the protected personal env key checkpoint."
+      case .homeInRepository(let explanation): explanation
       }
     }
   }
@@ -247,6 +249,14 @@ enum PersonalProjectCrypto {
       guard let next = advanceTo else { return floor }
       guard next >= floor, next > 0, next <= Int32.max else { throw KeyError.downgrade }
       if next > floor {
+        let lpmHome = LPMHome(url: homeURL.appendingPathComponent(".lpm", isDirectory: true), userHome: homeURL)
+        do {
+          if let exposure = try CLIFiles.prepareHome(lpmHome) {
+            throw KeyError.homeInRepository(exposure.explanation(of: "personal env key checkpoints"))
+          }
+        } catch let refusal as CLIFiles.Refusal {
+          throw KeyError.homeInRepository(refusal.message)
+        }
         let temporary = name + "." + UUID().uuidString
         let file = Darwin.openat(
           directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
@@ -255,6 +265,7 @@ enum PersonalProjectCrypto {
           Darwin.close(file)
           Darwin.unlinkat(directory, temporary, 0)
         }
+        guard SecureFileWriter.removeExtendedACL(from: file) == nil else { throw KeyError.storage }
         let bytes = Data(String(next).utf8)
         try bytes.withUnsafeBytes { buffer in
           var offset = 0

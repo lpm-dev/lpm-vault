@@ -370,6 +370,9 @@ struct AuthSessionCoordinator: Sendable {
 
 	func persist(_ credentials: AuthSessionCredentials, registryURL: String) async throws {
 		try validate(credentials)
+		if let exposure = try prepareLPMHome() {
+			throw AuthSessionCoordinatorError.stateFile(exposure.explanation(of: "login"))
+		}
 		try await CrossProcessFileLock.withExclusive(
 			at: sessionLockURL(registryURL: registryURL)
 		) {
@@ -422,10 +425,13 @@ struct AuthSessionCoordinator: Sendable {
 		}
 	}
 
+	/// The device identifier the LPM home holds, created there when missing. A
+	/// home git could commit gets none, as the CLI gives it none: each call
+	/// then returns a new identifier, which the server takes for a new device.
 	func deviceFingerprint() throws -> String {
 		if let existing = try? readDeviceIdentifier() { return existing }
 
-		try ensurePrivateDirectory(lpmDirectory)
+		if try prepareLPMHome() != nil { return Self.randomIdentifier() }
 		return try CrossProcessFileLock.withSingleExclusive(
 			at: lpmDirectory.appendingPathComponent("device-id.lock")
 		) {
@@ -911,9 +917,14 @@ struct AuthSessionCoordinator: Sendable {
 		return value.lowercased()
 	}
 
-	private func ensurePrivateDirectory(_ directory: URL) throws {
-		let descriptor = try SecureDirectory.openOrCreate(directory)
-		_ = Darwin.close(descriptor)
+	/// Readies the LPM home for login state as the CLI does: created
+	/// owner-only and kept out of git. Returns why git could commit it anyway.
+	private func prepareLPMHome() throws -> CLIFiles.HomeExposure? {
+		do {
+			return try CLIFiles.prepareHome(LPMHome(url: lpmDirectory, userHome: homeDirectory))
+		} catch {
+			throw AuthSessionCoordinatorError.stateFile(error.message)
+		}
 	}
 
 	private static func randomIdentifier() -> String {
@@ -1519,6 +1530,7 @@ private enum SecureStateFile {
 			(temporaryMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
 			temporaryMetadata.st_uid == Darwin.geteuid(),
 			temporaryMetadata.st_nlink == 1,
+			SecureFileWriter.removeExtendedACL(from: descriptor) == nil,
 			Darwin.fchmod(descriptor, 0o600) == 0
 		else {
 			let message = errnoDescription()

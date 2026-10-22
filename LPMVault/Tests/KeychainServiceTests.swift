@@ -583,6 +583,54 @@ struct SharedKeychainMigrationTests {
 		#expect(permissions.intValue & 0o777 == 0o640)
 	}
 
+	@Test("the transaction lock keeps the LPM home out of git, and is taken where git could commit it")
+	func transactionLockKeepsHomeOutOfGit() throws {
+		let home = FileManager.default.temporaryDirectory
+			.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: home) }
+
+		let descriptor = try VaultKeychainTransactionLock.openLockFile(homeURL: home)
+		_ = flock(descriptor, LOCK_UN)
+		_ = Darwin.close(descriptor)
+		let directory = home.appendingPathComponent(".lpm", isDirectory: true)
+		#expect(try String(contentsOf: directory.appendingPathComponent(".gitignore"), encoding: .utf8)
+			== "# LPM's machine-local state. Nothing here belongs in git.\n*\n")
+		#expect((try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int) == 0o700)
+
+		try FileManager.default.createDirectory(at: directory.appendingPathComponent(".git"), withIntermediateDirectories: true)
+		let exposed = try VaultKeychainTransactionLock.openLockFile(homeURL: home)
+		_ = flock(exposed, LOCK_UN)
+		_ = Darwin.close(exposed)
+	}
+
+	@Test("the transaction lock takes from the LPM home the access entries it inherited, as the CLI does")
+	func transactionLockDropsInheritedAccess() throws {
+		let home = FileManager.default.temporaryDirectory
+			.appendingPathComponent(UUID().uuidString, isDirectory: true)
+		let directory = home.appendingPathComponent(".lpm", isDirectory: true)
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: home) }
+		let chmod = Process()
+		chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+		chmod.arguments = ["+a", "group:everyone allow read,list,file_inherit,directory_inherit", directory.path]
+		try chmod.run()
+		chmod.waitUntilExit()
+		try #require(chmod.terminationStatus == 0)
+		func hasExtendedACL() -> Bool {
+			guard let acl = acl_get_file(directory.path, ACL_TYPE_EXTENDED) else { return false }
+			acl_free(UnsafeMutableRawPointer(acl))
+			return true
+		}
+		try #require(hasExtendedACL())
+
+		let descriptor = try VaultKeychainTransactionLock.openLockFile(homeURL: home)
+		_ = flock(descriptor, LOCK_UN)
+		_ = Darwin.close(descriptor)
+
+		#expect(!hasExtendedACL())
+	}
+
 	@Test("transaction locks reject pathname replacement before admission")
 	func transactionLockRejectsPathReplacement() throws {
 		let home = FileManager.default.temporaryDirectory

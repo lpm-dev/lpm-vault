@@ -89,6 +89,17 @@ enum VaultKeychainTransactionLock {
 		}
 	}
 
+	/// Removes the access entries the LPM home has, such as those it took from
+	/// its folder, which would pass on to everything written there, as the CLI
+	/// does in every transaction. A volume without access lists has none.
+	private static func dropExtendedACL(_ descriptor: Int32) -> Bool {
+		guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else {
+			return [ENOENT, ENOTSUP, EOPNOTSUPP].contains(errno)
+		}
+		acl_free(UnsafeMutableRawPointer(acl))
+		return SecureFileWriter.removeExtendedACL(from: descriptor) == nil
+	}
+
 	static func withLock<T>(_ operation: () throws -> T) throws -> T {
 		state.processLock.lock()
 		if state.depth == 0 {
@@ -124,10 +135,18 @@ enum VaultKeychainTransactionLock {
 		state.recoveredStores.insert(ObjectIdentifier(store))
 	}
 
+	/// Opens and locks the transaction lock the CLI shares, in the LPM home in
+	/// `homeURL`, which is first kept out of git as the CLI keeps it. The lock
+	/// holds nothing, so it is taken where git could commit the home too.
 	static func openLockFile(
 		homeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
 		beforeLock: () throws -> Void = {}
 	) throws -> Int32 {
+		do {
+			_ = try CLIFiles.prepareHome(LPMHome(url: homeURL.appendingPathComponent(directoryName, isDirectory: true), userHome: homeURL))
+		} catch {
+			throw KeychainStoreError.status(operation: "prepare the LPM home: \(error.message)", code: OSStatus(EPERM))
+		}
 		let homeDescriptor = homeURL.withUnsafeFileSystemRepresentation { path in
 			guard let path else { return Int32(-1) }
 			return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
@@ -156,7 +175,8 @@ enum VaultKeychainTransactionLock {
 		guard Darwin.fstat(directoryDescriptor, &directoryMetadata) == 0,
 			(directoryMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
 			directoryMetadata.st_uid == Darwin.geteuid(),
-			Darwin.fchmod(directoryDescriptor, 0o700) == 0
+			Darwin.fchmod(directoryDescriptor, 0o700) == 0,
+			dropExtendedACL(directoryDescriptor)
 		else {
 			let code = errno == 0 ? EPERM : errno
 			throw KeychainStoreError.status(

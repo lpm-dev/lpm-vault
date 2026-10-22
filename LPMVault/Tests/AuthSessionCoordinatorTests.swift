@@ -52,6 +52,59 @@ struct AuthSessionCoordinatorTests {
 		#expect(record["otp_required"] as? Bool == false)
 	}
 
+	@Test("a login keeps the LPM home out of git, and its files take no access entries from the home")
+	func loginKeepsHomeOutOfGitWithoutInheritedAccess() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let lpmDirectory = home.appendingPathComponent(".lpm", isDirectory: true)
+		try FileManager.default.createDirectory(at: lpmDirectory, withIntermediateDirectories: true)
+		try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: lpmDirectory.path)
+		try grantInheritedRead(on: lpmDirectory)
+		let coordinator = makeCoordinator(home: home, backend: MemoryAuthCredentialBackend())
+
+		try await coordinator.persist(
+			session(access: "access-one", refresh: "refresh-one", expiresAt: fixedNow.addingTimeInterval(3_600)),
+			registryURL: registryURL
+		)
+		_ = try coordinator.deviceFingerprint()
+
+		#expect(try String(contentsOf: lpmDirectory.appendingPathComponent(".gitignore"), encoding: .utf8)
+			== "# LPM's machine-local state. Nothing here belongs in git.\n*\n")
+		for name in [".credential-authority.json", ".token-expiry.json", "device-id"] {
+			#expect(!hasExtendedACL(lpmDirectory.appendingPathComponent(name)), "\(name)")
+		}
+	}
+
+	@Test("an LPM home git could commit takes no login, and gives the device no stored identity")
+	func homeInRepositoryRefusesLogin() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let lpmDirectory = home.appendingPathComponent(".lpm", isDirectory: true)
+		// The home is a repository's root, which no ignore file in it keeps out of git.
+		try FileManager.default.createDirectory(at: lpmDirectory.appendingPathComponent(".git"), withIntermediateDirectories: true)
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+
+		let error = await #expect(throws: AuthSessionCoordinatorError.self) {
+			try await coordinator.persist(
+				session(access: "access-one", refresh: "refresh-one", expiresAt: fixedNow.addingTimeInterval(3_600)),
+				registryURL: registryURL
+			)
+		}
+		let message = try #require(error?.localizedDescription)
+		#expect(message.contains("git could commit the login saved there"), "\(message)")
+		#expect(message.contains("Use an LPM home outside the repository."), "\(message)")
+		#expect(backend.writeAccounts.isEmpty)
+		#expect(!FileManager.default.fileExists(atPath: lpmDirectory.appendingPathComponent(".credential-authority.json").path))
+
+		let first = try coordinator.deviceFingerprint()
+		let second = try coordinator.deviceFingerprint()
+		#expect(first.count == 64 && second.count == 64 && first != second)
+		#expect(!FileManager.default.fileExists(atPath: lpmDirectory.appendingPathComponent("device-id").path))
+		#expect(!FileManager.default.fileExists(atPath: lpmDirectory.appendingPathComponent(".gitignore").path),
+			"A repository's own root gets no ignore file, which would hide the repository")
+	}
+
 	@Test("server RFC 3339 expiry with milliseconds is accepted")
 	func fractionalSecondExpiryIsAccepted() async throws {
 		let home = try temporaryHome()
@@ -1632,6 +1685,25 @@ struct AuthSessionCoordinatorTests {
 			expiresIn: 3_600,
 			expiresAt: ISO8601DateFormatter().string(from: expiresAt)
 		)
+	}
+
+	private func grantInheritedRead(on directory: URL) throws {
+		let chmod = Process()
+		chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+		chmod.arguments = ["+a", "group:everyone allow read,file_inherit", directory.path]
+		try chmod.run()
+		chmod.waitUntilExit()
+		try #require(chmod.terminationStatus == 0)
+	}
+
+	private func hasExtendedACL(_ url: URL) -> Bool {
+		let acl = url.withUnsafeFileSystemRepresentation { path in
+			guard let path else { return acl_t?.none }
+			return acl_get_file(path, ACL_TYPE_EXTENDED)
+		}
+		guard let acl else { return false }
+		acl_free(UnsafeMutableRawPointer(acl))
+		return true
 	}
 
 	private func temporaryHome() throws -> URL {
