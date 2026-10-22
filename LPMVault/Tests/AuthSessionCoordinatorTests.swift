@@ -75,6 +75,30 @@ struct AuthSessionCoordinatorTests {
 		}
 	}
 
+	@Test("a login readies the LPM home off the cooperative pool, which blocking file work must never hold")
+	func loginPreparesHomeOffPool() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let pool = PoolObservation()
+		let coordinator = AuthSessionCoordinator(
+			homeDirectory: home,
+			credentialBackend: MemoryAuthCredentialBackend(),
+			refreshOperation: { _, _, _ in throw AuthSessionRefreshError.invalidResponse },
+			now: { fixedNow },
+			homePreparer: { home in
+				pool.record()
+				return try CLIFiles.prepareHome(home)
+			}
+		)
+
+		try await coordinator.persist(
+			session(access: "access-one", refresh: "refresh-one", expiresAt: fixedNow.addingTimeInterval(3_600)),
+			registryURL: registryURL
+		)
+
+		#expect(pool.stayedOffPool)
+	}
+
 	@Test("an LPM home git could commit takes no login, and gives the device no stored identity")
 	func homeInRepositoryRefusesLogin() async throws {
 		let home = try temporaryHome()

@@ -209,21 +209,28 @@ struct AuthSessionCoordinator: Sendable {
 	private static let refreshWindow: TimeInterval = 5 * 60
 	private static let credentialStoreRegistry = "lpm-auth://credential-store"
 
+	/// Creates the LPM home owner-only and keeps it out of git, returning why
+	/// git could commit it anyway. Blocking file work.
+	typealias HomePreparer = @Sendable (LPMHome) throws -> CLIFiles.HomeExposure?
+
 	let homeDirectory: URL
 	let credentialBackend: any AuthCredentialBackend
 	let refreshOperation: RefreshOperation
 	let now: @Sendable () -> Date
+	let homePreparer: HomePreparer
 
 	init(
 		homeDirectory: URL,
 		credentialBackend: any AuthCredentialBackend,
 		refreshOperation: @escaping RefreshOperation,
-		now: @escaping @Sendable () -> Date = Date.init
+		now: @escaping @Sendable () -> Date = Date.init,
+		homePreparer: @escaping HomePreparer = { try CLIFiles.prepareHome($0) }
 	) {
 		self.homeDirectory = homeDirectory
 		self.credentialBackend = credentialBackend
 		self.refreshOperation = refreshOperation
 		self.now = now
+		self.homePreparer = homePreparer
 	}
 
 	static func accessAccount(registryURL: String) -> String {
@@ -370,7 +377,7 @@ struct AuthSessionCoordinator: Sendable {
 
 	func persist(_ credentials: AuthSessionCredentials, registryURL: String) async throws {
 		try validate(credentials)
-		if let exposure = try prepareLPMHome() {
+		if let exposure = try await BlockingWork.run({ try prepareLPMHome() }) {
 			throw AuthSessionCoordinatorError.stateFile(exposure.explanation(of: "login"))
 		}
 		try await CrossProcessFileLock.withExclusive(
@@ -921,9 +928,9 @@ struct AuthSessionCoordinator: Sendable {
 	/// owner-only and kept out of git. Returns why git could commit it anyway.
 	private func prepareLPMHome() throws -> CLIFiles.HomeExposure? {
 		do {
-			return try CLIFiles.prepareHome(LPMHome(url: lpmDirectory, userHome: homeDirectory))
-		} catch {
-			throw AuthSessionCoordinatorError.stateFile(error.message)
+			return try homePreparer(LPMHome(url: lpmDirectory, userHome: homeDirectory))
+		} catch let refusal as CLIFiles.Refusal {
+			throw AuthSessionCoordinatorError.stateFile(refusal.message)
 		}
 	}
 
