@@ -304,7 +304,6 @@ struct VaultWorkspaceView: View {
 					VaultResizablePane(width: budget.sidebar.width, edge: .trailing) {
 						VaultSidebarView(
 							store: store,
-							snapshots: store.workspaceSnapshots,
 							mode: $mode,
 							filter: $filter,
 							searchText: $searchText,
@@ -387,6 +386,14 @@ struct VaultWorkspaceView: View {
 								onDismissRebase: { store.dismissSchemaDraftRebase(in: project.id) },
 								onResolveConflict: { item, keepingMine in
 									store.editSchemaDraft(in: project.id) { $0.resolveConflict(item, keepingMine: keepingMine) }
+								},
+								smartViews: store.workspaceSnapshots[project.id].map {
+									VaultSmartViewCounts(snapshot: $0,
+										checks: VaultValueCheckPresentation(check: store.valueChecks[project.id], rules: nil, project: project))
+								},
+								onOpenSmartView: { view in
+									mode = .matrix
+									filter = view.filter
 								},
 								onConnectCLI: { showConnectCLISheet = true },
 								onRecheck: store.reloadKeyDescriptions

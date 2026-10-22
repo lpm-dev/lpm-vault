@@ -480,7 +480,7 @@ extension SheetInteractionTests {
 			store.editSchemaDraft(in: "schema-review") {
 				$0.set(.declared(.object([.init(key: "format", value: .string("port")), .init(key: "default", value: .string("8080"))])), for: .key("PORT"))
 			}
-			try await host.click("Drift between envs")
+			try await host.click("0 drifting")
 			#expect(try await host.waitUntil { openDescriptors(at: folder + "/lpm.json") == 0 }, "Nothing watches lpm.json while another page shows")
 			try #"{"envSchema":{"vars":{"PORT":{"format":"port","default":"3000"},"RETRY_COUNT":{"format":"integer","min":0,"max":3}}}}"#
 				.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)

@@ -62,6 +62,9 @@ struct VaultSchemaView: View {
 	var onDismissRebase: () -> Void = {}
 	/// Settles a conflict, keeping the draft's version or the file's.
 	var onResolveConflict: (ProjectEnvSchemaDraft.Item, _ keepingMine: Bool) -> Void = { _, _ in }
+	/// The project's smart views, which the status bar links to once its keys are read.
+	var smartViews: VaultSmartViewCounts? = nil
+	var onOpenSmartView: (VaultSmartView) -> Void = { _ in }
 	let onConnectCLI: () -> Void
 	let onRecheck: () -> Void
 
@@ -653,7 +656,7 @@ struct VaultSchemaView: View {
 			.opacity(state == .removed ? 0.6 : 1)
 		}
 		.padding(.vertical, 10)
-		.background(selected ? VaultPalette.selectedEnvCell : .clear)
+		.background(selected ? VaultPalette.schemaRowSelected : .clear)
 		.overlay(alignment: .leading) {
 			if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
 		}
@@ -799,7 +802,7 @@ struct VaultSchemaView: View {
 			}
 			.padding(.horizontal, 20)
 			.frame(minHeight: 38)
-			.background(selected ? VaultPalette.selectedEnvCell : .clear)
+			.background(selected ? VaultPalette.schemaRowSelected : .clear)
 			.overlay(alignment: .leading) {
 				if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
 			}
@@ -812,7 +815,29 @@ struct VaultSchemaView: View {
 
 	// MARK: - Status bar
 
+	/// A narrow bar names only the smart views' counts.
 	private func statusBar(_ listed: Listed?) -> some View {
+		ViewThatFits(in: .horizontal) {
+			statusLine(listed, compactLinks: false)
+			statusLine(listed, compactLinks: true)
+		}
+		.font(.system(size: 11))
+		.foregroundStyle(VaultPalette.textTertiary)
+		.lineLimit(1)
+		.padding(.horizontal, 20)
+		.frame(height: VaultMetrics.statusBar)
+		.background(VaultPalette.headerRow)
+		.vaultConfirmation(isPresented: $confirmsDiscard) {
+			VaultConfirmation(
+				symbol: "exclamationmark.triangle",
+				title: "Discard your unsaved changes?",
+				message: "lpm.json can't be read, so discarding can't be undone.",
+				cancelTitle: "Keep Editing",
+				actions: [.init(title: "Discard", perform: onDiscardAll)])
+		}
+	}
+
+	private func statusLine(_ listed: Listed?, compactLinks: Bool) -> some View {
 		HStack(spacing: 12) {
 			HStack(spacing: 12) {
 				switch state {
@@ -842,21 +867,10 @@ struct VaultSchemaView: View {
 				}
 			}
 			Spacer(minLength: 0)
+			if let smartViews {
+				VaultSmartViewLinks(counts: smartViews, compact: compactLinks, open: onOpenSmartView)
+			}
 			draftActions
-		}
-		.font(.system(size: 11))
-		.foregroundStyle(VaultPalette.textTertiary)
-		.lineLimit(1)
-		.padding(.horizontal, 20)
-		.frame(height: VaultMetrics.statusBar)
-		.background(VaultPalette.headerRow)
-		.vaultConfirmation(isPresented: $confirmsDiscard) {
-			VaultConfirmation(
-				symbol: "exclamationmark.triangle",
-				title: "Discard your unsaved changes?",
-				message: "lpm.json can't be read, so discarding can't be undone.",
-				cancelTitle: "Keep Editing",
-				actions: [.init(title: "Discard", perform: onDiscardAll)])
 		}
 	}
 

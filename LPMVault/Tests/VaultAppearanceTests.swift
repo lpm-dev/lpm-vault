@@ -43,9 +43,10 @@ struct VaultAppearanceTests {
 	@Test("the palette keeps its light colors and resolves the near-black dark theme, with text as translucent white")
 	func paletteColors() {
 		let colors: [(color: Color, light: UInt, dark: UInt, darkOpacity: Float)] = [
-			(VaultPalette.content, 0xFFFFFF, 0x0A0A0A, 1),
+			(VaultPalette.content, 0xFFFFFF, 0x121212, 1),
 			(VaultPalette.titleBar, 0xFAFAFC, 0x101010, 1),
 			(VaultPalette.sidebar, 0xF7F7FA, 0x101010, 1),
+			(VaultPalette.sidebarSelection, 0xEAEAEA, 0x1C1C1E, 1),
 			(VaultPalette.inspector, 0xFAFAFC, 0x101010, 1),
 			(VaultPalette.control, 0xFFFFFF, 0x101010, 1),
 			(VaultPalette.border, 0xDCDBE2, 0x262626, 1),
@@ -53,6 +54,7 @@ struct VaultAppearanceTests {
 			(VaultPalette.sidebarBorder, 0xE4E3E9, 0x262626, 1),
 			(VaultPalette.divider, 0xECEAF0, 0x262626, 1),
 			(VaultPalette.rowDivider, 0xF0EFF4, 0x191919, 1),
+			(VaultPalette.rowHover, 0xFAFAFC, 0x161616, 1),
 			(VaultPalette.headerHover, 0xF0EFF4, 0x262626, 1),
 			(VaultPalette.textPrimary, 0x1C1C1E, 0xFFFFFF, 0.8),
 			(VaultPalette.textSecondary, 0x3C3C43, 0xFFFFFF, 0.55),
@@ -72,6 +74,21 @@ struct VaultAppearanceTests {
 				#expect(abs(resolved.opacity - opacity) < 0.001, "\(entry.color) \(scheme)")
 			}
 		}
+	}
+
+	@Test("a hovered row steps away from the content the way a selected row does, but less", arguments: [ColorScheme.light, .dark])
+	func rowStatesStepFromContent(scheme: ColorScheme) {
+		var environment = EnvironmentValues()
+		environment.colorScheme = scheme
+		func lightness(_ color: Color) -> Float {
+			let resolved = color.resolve(in: environment)
+			return 0.2126 * resolved.linearRed + 0.7152 * resolved.linearGreen + 0.0722 * resolved.linearBlue
+		}
+		let content = lightness(VaultPalette.content)
+		let hover = lightness(VaultPalette.rowHover) - content
+		let selected = lightness(VaultPalette.rowSelected) - content
+		#expect(hover != 0 && (hover > 0) == (selected > 0), "Hover moves \(hover) from the content, selection \(selected)")
+		#expect(abs(hover) < abs(selected), "Hover moves \(hover) from the content, selection \(selected)")
 	}
 
 	@Test("dark text and status labels retain readable contrast")
@@ -97,6 +114,8 @@ struct VaultAppearanceTests {
 			(VaultPalette.textTertiary, VaultPalette.sidebar),
 			(VaultPalette.textTertiary, VaultPalette.content),
 			(VaultPalette.accentForeground, VaultPalette.accentTint),
+			(VaultPalette.accentText, VaultPalette.sidebarSelection),
+			(VaultPalette.accentForeground, VaultPalette.sidebarSelection),
 			(VaultPalette.greenTintText, VaultPalette.greenTint),
 			(VaultPalette.orangeTintText, VaultPalette.orangeTint),
 			(VaultPalette.redText, VaultPalette.redTint),

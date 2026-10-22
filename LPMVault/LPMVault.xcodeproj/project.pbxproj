@@ -268,6 +268,7 @@
 		E85EDB2503341B5328BF927A /* PersonalProjectReadErrorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9581DE9E52A6C30E2F1CE82F /* PersonalProjectReadErrorTests.swift */; };
 		E86F773021FC6A17A1E1467B /* ProjectConfigFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */; };
 		E8A8CDBF05BF844F6451A15C /* CloudflareConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C8D763AC89B67160C1E2386 /* CloudflareConnector.swift */; };
+		EA1C30880BFC914F606EA1AF /* VaultSmartViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84728C111810FE8A95A0E782 /* VaultSmartViews.swift */; };
 		EA97AC63D83D1D87B237EB95 /* ProjectSettingsDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F76B7B804D0A2CF7F2E851 /* ProjectSettingsDraft.swift */; };
 		EE6F7BFE1577F3AE5EF9C2BA /* CloudflarePlatformsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 424C32604575F65BEF4E4366 /* CloudflarePlatformsTests.swift */; };
 		EE7CE280B060E9EAF0449829 /* SecretGeneratorButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0B4A1CD668920BA64DC898F /* SecretGeneratorButton.swift */; };
@@ -466,6 +467,7 @@
 		837A32E1FEC7112393F59090 /* OpenDescriptors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenDescriptors.swift; sourceTree = "<group>"; };
 		837EB7065CA0617259762054 /* PublishDestinationForms.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishDestinationForms.swift; sourceTree = "<group>"; };
 		83825F3745E80FDAF2139DF1 /* ProjectEnvSchemaClientPrefixes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaClientPrefixes.swift; sourceTree = "<group>"; };
+		84728C111810FE8A95A0E782 /* VaultSmartViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSmartViews.swift; sourceTree = "<group>"; };
 		86A2CFC76C772E1EEFD41581 /* ProjectEnvSchemaFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaFile.swift; sourceTree = "<group>"; };
 		86F43E0E40227FB457075755 /* ProjectSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSettingsTests.swift; sourceTree = "<group>"; };
 		8781D80F04E7286497DDF325 /* NewVaultSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewVaultSheet.swift; sourceTree = "<group>"; };
@@ -665,6 +667,7 @@
 				928F7EC25905ABD41EAD3431 /* VaultSheetChrome.swift */,
 				970B099ABE327DE2C7F8A410 /* VaultSidebarReorder.swift */,
 				C3AEEC3080528D1137551395 /* VaultSidebarView.swift */,
+				84728C111810FE8A95A0E782 /* VaultSmartViews.swift */,
 				1E9F20B5CB6FFB4B7CBFD25A /* VaultTitleBarView.swift */,
 				80577EEE6278D3E10CBC8986 /* VaultValueCheckPresentation.swift */,
 				C96D5EC68C7C4002C97583C4 /* VaultWindowMenu.swift */,
@@ -1342,6 +1345,7 @@
 				944FFE2B1896AE3C17197674 /* VaultSheetChrome.swift in Sources */,
 				AA85CD46D8D22AE61040251B /* VaultSidebarReorder.swift in Sources */,
 				CDE077E3A94AF3438A936E5C /* VaultSidebarView.swift in Sources */,
+				EA1C30880BFC914F606EA1AF /* VaultSmartViews.swift in Sources */,
 				CD366278CA66735CA979B005 /* VaultStore.swift in Sources */,
 				B47DF5E0B8720BF7BCA80E43 /* VaultTitleBarView.swift in Sources */,
 				62F686E49DE1FA689A89F65D /* VaultUnsavedWork.swift in Sources */,

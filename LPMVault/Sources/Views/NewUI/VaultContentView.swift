@@ -400,7 +400,6 @@ struct VaultContentView: View {
 									project: project,
 									snapshot: snapshot,
 									environments: environments,
-									selectedEnvironment: selectedEnvironment,
 									layout: layout,
 									tableWidth: tableWidth,
 									isSelected: selectedKey == key,
@@ -424,7 +423,6 @@ struct VaultContentView: View {
 					} header: {
 						VaultMatrixHeader(
 							environments: environments,
-							selectedEnvironment: selectedEnvironment,
 							layout: layout,
 							tableWidth: tableWidth,
 							sortOrder: $sortOrder,
@@ -756,13 +754,14 @@ struct VaultContentView: View {
 			unsavedParts.append("Raw text edit not saved")
 		}
 		let unsaved = unsavedParts.isEmpty ? nil : unsavedParts.joined(separator: " · ")
+		let counts = VaultSmartViewCounts(snapshot: snapshot, checks: valueChecks)
 		return Group {
 			if let editing {
-				editStatus(editing.draft)
+				editStatus(editing.draft, counts: counts)
 			} else if let raw {
-				rawStatus(raw, unsaved: unsaved)
+				rawStatus(raw, unsaved: unsaved, counts: counts)
 			} else {
-				tableStatus(derived, unsaved: unsaved)
+				tableStatus(derived, unsaved: unsaved, counts: counts)
 			}
 		}
 		.font(.system(size: 11))
@@ -774,7 +773,7 @@ struct VaultContentView: View {
 	}
 
 	/// An edit counts its lines, what saving would change and its problems.
-	private func editStatus(_ draft: VaultRawTextDraft) -> some View {
+	private func editStatus(_ draft: VaultRawTextDraft, counts: VaultSmartViewCounts) -> some View {
 		var items = [Text(draft.check.lineCount.counted("line"))]
 		if draft.changes.count > 0 {
 			items.append(Text(draft.changes.parts.joined(separator: " · ")))
@@ -782,15 +781,18 @@ struct VaultContentView: View {
 		if !draft.check.problems.isEmpty {
 			items.append(Text(draft.check.problems.count.counted("problem")).foregroundStyle(VaultPalette.redText))
 		}
+		let essential = Array(items.prefix(1)) + Array(items.dropFirst(2))
 		return ViewThatFits(in: .horizontal) {
-			statusLine(items, unsaved: nil)
-			statusLine(Array(items.prefix(1)) + Array(items.dropFirst(2)), unsaved: nil)
+			statusLine(items, unsaved: nil, links: .full, counts: counts)
+			statusLine(essential, unsaved: nil, links: .full, counts: counts)
+			statusLine(essential, unsaved: nil, links: .compact, counts: counts)
+			statusLine(essential, unsaved: nil, links: .hidden, counts: counts)
 		}
 	}
 
 	/// Raw text counts lines, says whether their values show, and what's
 	/// selected; a narrow bar keeps the count and unsaved changes.
-	private func rawStatus(_ raw: VaultRawText, unsaved: String?) -> some View {
+	private func rawStatus(_ raw: VaultRawText, unsaved: String?, counts: VaultSmartViewCounts) -> some View {
 		let lines = raw.lines
 		let maskable = lines.filter { !shownPublicKeys.contains($0.key) }
 		let revealed = maskable.lazy.filter(\.isShown).count
@@ -804,38 +806,40 @@ struct VaultContentView: View {
 			items.append(Text(rawSelectedLineCount > 0 ? "\(rawSelectedLineCount.counted("line")) selected" : "⌘A selects all"))
 		}
 		return ViewThatFits(in: .horizontal) {
-			statusLine(items, unsaved: unsaved)
-			statusLine(Array(items.prefix(2)), unsaved: unsaved)
-			statusLine(Array(items.prefix(1)), unsaved: unsaved)
+			statusLine(items, unsaved: unsaved, links: .full, counts: counts)
+			statusLine(Array(items.prefix(2)), unsaved: unsaved, links: .full, counts: counts)
+			statusLine(Array(items.prefix(1)), unsaved: unsaved, links: .full, counts: counts)
+			statusLine(Array(items.prefix(1)), unsaved: unsaved, links: .compact, counts: counts)
+			statusLine(Array(items.prefix(1)), unsaved: unsaved, links: .hidden, counts: counts)
 		}
 	}
 
 	/// A narrow bar drops the sort order first, which the KEY header also shows,
-	/// then the details the filter chips and row badges also show. The key count
-	/// and unsaved changes always stay.
-	private func tableStatus(_ derived: VaultContentDerivation, unsaved: String?) -> some View {
+	/// then names only the smart views' counts, then leaves them out. The key
+	/// count and unsaved changes always stay.
+	private func tableStatus(_ derived: VaultContentDerivation, unsaved: String?, counts: VaultSmartViewCounts) -> some View {
 		let declaredOnly = mode == .matrix ? 0 : derived.environmentKeys.lazy.filter { project.value(for: $0, in: selectedEnvironment) == nil }.count
 		let count = Text(mode == .matrix
 			? "\(derived.filteredKeys.count) of \(derived.allKeys.count.counted("key")) shown"
 			: (derived.environmentKeys.count - declaredOnly).counted("key") + (declaredOnly == 0 ? "" : " · \(declaredOnly) from lpm.json"))
 		let sort = Text("sorted \(sortOrder.title)").accessibilityLabel("sorted \(sortOrder.spokenTitle)")
-		var details = mode == .matrix
-			? [Text("\(snapshot.driftingKeyCount) drifting"), Text("\(snapshot.missingKeyCount) missing")]
-			: [Text("\(derived.environmentDriftingKeyCount) differ across environments"), Text("encrypted locally")]
-		if valueChecks.hasCheck {
-			let invalid = mode == .matrix ? valueChecks.invalidKeys.count : valueChecks.invalidKeys(in: selectedEnvironment).count
-			let groups = mode == .matrix ? 0 : valueChecks.groupFailures(in: selectedEnvironment).count
-			let text = "\(invalid) invalid" + (groups == 0 ? "" : " · \(groups.counted("group"))")
-			details.insert(Text(text).foregroundStyle(invalid == 0 ? VaultPalette.textTertiary : VaultPalette.redText), at: mode == .matrix ? 2 : 1)
-		}
+		let details = mode == .matrix ? [] : [Text("encrypted locally")]
 		return ViewThatFits(in: .horizontal) {
-			statusLine([count, sort] + details, unsaved: unsaved)
-			statusLine([count] + details, unsaved: unsaved)
-			statusLine([count], unsaved: unsaved)
+			statusLine([count, sort] + details, unsaved: unsaved, links: .full, counts: counts)
+			statusLine([count], unsaved: unsaved, links: .full, counts: counts)
+			statusLine([count], unsaved: unsaved, links: .compact, counts: counts)
+			statusLine([count], unsaved: unsaved, links: .hidden, counts: counts)
 		}
 	}
 
-	private func statusLine(_ items: [Text], unsaved: String?) -> some View {
+	/// How a status line shows its links to the smart views.
+	private enum StatusLinks {
+		case full, compact, hidden
+	}
+
+	/// What's on the page, then the project's smart views at the trailing end,
+	/// in the same place on every page.
+	private func statusLine(_ items: [Text], unsaved: String?, links: StatusLinks, counts: VaultSmartViewCounts) -> some View {
 		HStack(spacing: 12) {
 			ForEach(items.indices, id: \.self) { index in
 				if index > 0 { Text("·") }
@@ -846,6 +850,12 @@ struct VaultContentView: View {
 				Text(unsaved).foregroundStyle(VaultPalette.orangeTintText)
 			}
 			Spacer(minLength: 0)
+			if links != .hidden {
+				VaultSmartViewLinks(counts: counts, current: mode == .matrix ? filter : nil, compact: links == .compact) { view in
+					mode = .matrix
+					filter = view.filter
+				}
+			}
 		}
 	}
 
@@ -874,7 +884,6 @@ struct VaultContentView: View {
 
 private struct VaultMatrixHeader: View {
 	let environments: [String]
-	let selectedEnvironment: String
 	let layout: VaultTableColumnLayout
 	let tableWidth: CGFloat
 	@Binding var sortOrder: VaultKeySortOrder
@@ -884,10 +893,10 @@ private struct VaultMatrixHeader: View {
 	var body: some View {
 		HStack(spacing: 0) {
 			VaultKeySortHeader(order: $sortOrder)
-				.frame(width: layout[.key], height: VaultMetrics.tableHeader)
+				.frame(width: layout[.key])
+			VaultTableColumnLine()
 
 			ForEach(Array(environments.enumerated()), id: \.element) { index, environment in
-				VaultHairline(axis: .vertical)
 				HStack(spacing: 6) {
 					VaultEnvSwatch(color: VaultPalette.environment(index))
 					Text(VaultProject.displayName(for: environment))
@@ -897,13 +906,21 @@ private struct VaultMatrixHeader: View {
 					Spacer(minLength: 2)
 				}
 				.padding(.horizontal, 12)
-				.frame(width: layout[.environment(environment)] - 1, height: VaultMetrics.tableHeader)
-				.background(environment == selectedEnvironment ? VaultPalette.selectedEnvHeader : .clear)
-				.accessibilityLabel("\(VaultProject.displayName(for: environment))\(environment == selectedEnvironment ? ", current environment" : "")")
+				.frame(width: layout[.environment(environment)] - 1)
+				.accessibilityLabel(VaultProject.displayName(for: environment))
+				VaultTableColumnLine()
 			}
 		}
-		.frame(width: tableWidth, alignment: .leading)
+		.frame(width: tableWidth, height: VaultMetrics.tableHeader, alignment: .leading)
 		.overlay { VaultTableResizeHandles(layout: layout, onResize: onResize, onActivity: onResizeActivity) }
+	}
+}
+
+/// The line after a table column, drawn alike in the header and the rows so
+/// each column's edge runs straight down the table.
+private struct VaultTableColumnLine: View {
+	var body: some View {
+		VaultHairline(color: VaultPalette.rowDivider, axis: .vertical)
 	}
 }
 
@@ -912,7 +929,6 @@ private struct VaultMatrixRow: View {
 	let project: VaultProject
 	let snapshot: VaultWorkspaceSnapshot
 	let environments: [String]
-	let selectedEnvironment: String
 	let layout: VaultTableColumnLayout
 	let tableWidth: CGFloat
 	let isSelected: Bool
@@ -944,9 +960,9 @@ private struct VaultMatrixRow: View {
 				.overlay(alignment: .leading) {
 					if checks.invalidKeys.contains(key) { VaultProblemMarker().padding(.leading, 8) }
 				}
+				VaultTableColumnLine()
 
 				ForEach(environments, id: \.self) { environment in
-					VaultHairline(color: VaultPalette.rowDivider, axis: .vertical)
 					HStack(spacing: 6) {
 						let stored = project.value(for: key, in: environment)
 						VaultCheckedValue(
@@ -961,7 +977,7 @@ private struct VaultMatrixRow: View {
 					}
 					.padding(.horizontal, 12)
 					.frame(width: layout[.environment(environment)] - 1, height: VaultMetrics.matrixRow)
-					.background(environment == selectedEnvironment ? VaultPalette.selectedEnvCell : .clear)
+					VaultTableColumnLine()
 				}
 			}
 			.frame(width: tableWidth, height: VaultMetrics.matrixRow, alignment: .leading)
@@ -991,8 +1007,11 @@ private struct VaultEnvironmentHeader: View {
 	var body: some View {
 		HStack(spacing: 0) {
 			VaultKeySortHeader(order: $sortOrder).frame(width: layout[.key])
-			Text("VALUE").vaultSectionLabel().padding(.horizontal, 12).frame(width: layout[.value], alignment: .leading)
-			Text("ACTIONS").vaultSectionLabel().padding(.trailing, 20).frame(width: layout[.actions], alignment: .trailing)
+			VaultTableColumnLine()
+			Text("VALUE").vaultSectionLabel().padding(.horizontal, 12).frame(width: layout[.value] - 1, alignment: .leading)
+			VaultTableColumnLine()
+			Text("ACTIONS").vaultSectionLabel().padding(.trailing, 20).frame(width: layout[.actions] - 1, alignment: .trailing)
+			VaultTableColumnLine()
 		}
 		.frame(width: tableWidth, height: VaultMetrics.tableHeader, alignment: .leading)
 		.overlay { VaultTableResizeHandles(layout: layout, onResize: onResize, onActivity: onResizeActivity) }
@@ -1015,9 +1034,9 @@ private struct VaultTableResizeHandles: View {
 					accessibilityLabel: "Resize \(boundary.id.title) column",
 					onResize: onActivity
 				)
-				.background { VaultHairline(axis: .vertical).allowsHitTesting(false) }
 				.frame(height: VaultMetrics.tableHeader)
-				.offset(x: boundary.position - VaultMetrics.paneDividerHitWidth / 2)
+				// Centered on the column's line, which starts at the boundary.
+				.offset(x: boundary.position - (VaultMetrics.paneDividerHitWidth - VaultMetrics.paneDivider) / 2)
 			}
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1058,11 +1077,13 @@ private struct VaultEnvironmentRow: View {
 			.padding(.trailing, 12)
 			.frame(width: layout[.key], alignment: .leading)
 			.overlay(alignment: .leading) { if problem != nil { VaultProblemMarker().padding(.leading, 8) } }
+			VaultTableColumnLine()
 
 			VaultCheckedValue(value: value, isRevealed: isRevealed, problem: problem, defaultValue: defaultValue,
 				isRequired: isRequired, showsNotSet: false, size: 12)
 				.padding(.horizontal, 12)
-				.frame(width: layout[.value], alignment: .leading)
+				.frame(width: layout[.value] - 1, alignment: .leading)
+			VaultTableColumnLine()
 
 			HStack(spacing: 2) {
 				if value == nil {
@@ -1076,7 +1097,8 @@ private struct VaultEnvironmentRow: View {
 				}
 			}
 			.padding(.trailing, 16)
-			.frame(width: layout[.actions], alignment: .trailing)
+			.frame(width: layout[.actions] - 1, alignment: .trailing)
+			VaultTableColumnLine()
 		}
 		.frame(width: tableWidth, height: VaultMetrics.fileRow, alignment: .leading)
 		.background(isSelected ? VaultPalette.rowSelected : (hovering ? VaultPalette.rowHover : .clear))

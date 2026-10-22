@@ -6,7 +6,7 @@ enum VaultPalette {
 	static let titleBarBorder = adaptive(light: 0xDCDBE2, dark: 0x262626)
 	static let sidebar = adaptive(light: 0xF7F7FA, dark: 0x101010)
 	static let sidebarBorder = adaptive(light: 0xE4E3E9, dark: 0x262626)
-	static let content = adaptive(light: 0xFFFFFF, dark: 0x0A0A0A)
+	static let content = adaptive(light: 0xFFFFFF, dark: 0x121212)
 	static let control = adaptive(light: 0xFFFFFF, dark: 0x101010)
 	static let inspector = adaptive(light: 0xFAFAFC, dark: 0x101010)
 
@@ -46,12 +46,12 @@ enum VaultPalette {
 	static let publicText = adaptive(light: 0x0B6A96, dark: 0x6CCFF6)
 
 	static let rowSelected = adaptive(light: 0xF6F5FD, dark: 0x191919)
-	static let rowHover = adaptive(light: 0xFAFAFC, dark: 0x101010)
+	static let rowHover = adaptive(light: 0xFAFAFC, dark: 0x161616)
 	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x101010)
 	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x262626)
 	static let sidebarHover = adaptive(light: 0xEEEDF3, dark: 0x191919)
-	static let selectedEnvHeader = adaptive(light: 0xF3F1FF, dark: 0x29263D)
-	static let selectedEnvCell = adaptive(light: 0xFAF9FF, dark: 0x211F2E)
+	static let sidebarSelection = adaptive(light: 0xEAEAEA, dark: 0x1C1C1E)
+	static let schemaRowSelected = adaptive(light: 0xFAF9FF, dark: 0x211F2E)
 
 	static let strongFill = adaptive(light: 0x1C1C1E, dark: 0x5E5CE6)
 	static let shadow = adaptive(light: 0x1C1C1E, dark: 0x000000)

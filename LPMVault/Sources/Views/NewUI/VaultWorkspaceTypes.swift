@@ -680,7 +680,6 @@ struct VaultContentDerivation: Equatable {
   let allKeys: [String]
   let filteredKeys: [String]
   let environmentKeys: [String]
-  let environmentDriftingKeyCount: Int
   /// Every visible value that can be masked is revealed.
   let allVisibleRevealed: Bool
   /// Some visible value can be masked; public values always show.
@@ -738,7 +737,6 @@ struct VaultContentDerivation: Equatable {
         filteredKeys = matchingKeys
       }
       environmentKeys = []
-      environmentDriftingKeyCount = 0
     case .environment:
       allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
@@ -771,14 +769,10 @@ struct VaultContentDerivation: Equatable {
         if sortOrder == .descending { matchingKeys.reverse() }
         environmentKeys = matchingKeys
       }
-      environmentDriftingKeyCount = environmentKeys.reduce(into: 0) { count, key in
-        if snapshot.hasDrift(for: key) { count += 1 }
-      }
     case .schema, .projectSettings:
       allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
       environmentKeys = []
-      environmentDriftingKeyCount = 0
     }
     let visibleKeys = mode == .matrix ? filteredKeys : environmentKeys
     hasMaskableValues = visibleKeys.contains { !publicKeys.contains($0) }
