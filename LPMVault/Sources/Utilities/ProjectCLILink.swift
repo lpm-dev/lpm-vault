@@ -16,6 +16,8 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 	case tooLarge
 	case writeFailed
 	case vaultChanged
+	case unsafeStateDirectory
+	case folderIsLPMHome
 
 	var errorDescription: String? {
 		switch self {
@@ -31,6 +33,10 @@ enum ProjectCLILinkError: LocalizedError, Equatable, Sendable {
 			"Could not write lpm.json."
 		case .vaultChanged:
 			"lpm.json changed. Check the link and try again."
+		case .unsafeStateDirectory:
+			".lpm in this folder is a symbolic link or not a folder, so the CLI won't use it. Remove it or copy the JSON instead."
+		case .folderIsLPMHome:
+			"This folder's .lpm is where LPM keeps your login and env secrets, so it can't hold a project. Choose the folder that contains your project's package.json."
 		}
 	}
 }
@@ -92,12 +98,13 @@ enum ProjectCLILink {
 	}
 
 	/// Adds or replaces the `vault` field in the folder's `lpm.json`, keeping other settings.
-	static func link(vaultId: String, folder: String, replacingVaultId: String? = nil) throws(ProjectCLILinkError) {
+	static func link(vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .standard) throws(ProjectCLILinkError) {
 		guard folderExists(folder) else { throw .noFolder }
 		do {
 			try ProjectConfigFile.writeVaultID(
 				vaultId, to: configURL(inFolder: folder),
-				policy: replacingVaultId.map(ProjectConfigFile.VaultWritePolicy.replacing) ?? .unlinked
+				policy: replacingVaultId.map(ProjectConfigFile.VaultWritePolicy.replacing) ?? .unlinked,
+				home: home
 			)
 		} catch let error as ProjectConfigFile.FileError {
 			switch error {
@@ -106,6 +113,8 @@ enum ProjectCLILink {
 			case .tooLarge: throw .tooLarge
 			case .notFound, .readFailed, .writeFailed: throw .writeFailed
 			case .changed: throw .vaultChanged
+			case .unsafeStateDirectory: throw .unsafeStateDirectory
+			case .stateIsLPMHome: throw .folderIsLPMHome
 			}
 		} catch {
 			throw .writeFailed
@@ -114,11 +123,11 @@ enum ProjectCLILink {
 
 	/// `link(vaultId:folder:replacingVaultId:)` on the queue that orders the app's
 	/// `lpm.json` edits, returning why it failed.
-	static func linkInBackground(vaultId: String, folder: String, replacingVaultId: String? = nil) async -> ProjectCLILinkError? {
+	static func linkInBackground(vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .standard) async -> ProjectCLILinkError? {
 		await withCheckedContinuation { continuation in
 			ProjectConfigFile.editQueue.async {
 				do throws(ProjectCLILinkError) {
-					try link(vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId)
+					try link(vaultId: vaultId, folder: folder, replacingVaultId: replacingVaultId, home: home)
 					continuation.resume(returning: nil)
 				} catch {
 					continuation.resume(returning: error)

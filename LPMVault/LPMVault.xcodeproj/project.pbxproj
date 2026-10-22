@@ -204,6 +204,7 @@
 		B47DF5E0B8720BF7BCA80E43 /* VaultTitleBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E9F20B5CB6FFB4B7CBFD25A /* VaultTitleBarView.swift */; };
 		B5698C32AC0DD87892CE5A02 /* BoundedHTTPResponse.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35D4657C31CF1A081D03F682 /* BoundedHTTPResponse.swift */; };
 		B6C198E9CD546CD61DCAE2DA /* CloudflareConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55740ED45D46218CDDE5AFA2 /* CloudflareConnection.swift */; };
+		B6EBC420BA8919D322A2AD09 /* CLIFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18B46BFC626BB38E8EA48E68 /* CLIFiles.swift */; };
 		B8B66270D4576E8D1883A112 /* CoolifyClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4BA8451CDCC17A9CECEB040 /* CoolifyClientTests.swift */; };
 		BB6132BF45F229CF6A1EFF86 /* AuthSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4688C3AA94245B231B939F2F /* AuthSessionStore.swift */; };
 		BB969C6F8AD19DCF9326EDC8 /* VaultInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17BF48E7FA6D4713B74FA496 /* VaultInspectorView.swift */; };
@@ -330,6 +331,7 @@
 		176F614BCA46D100B0DFE439 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		178A6AD4D7254CB4955C912E /* LPMToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LPMToken.swift; sourceTree = "<group>"; };
 		17BF48E7FA6D4713B74FA496 /* VaultInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultInspectorView.swift; sourceTree = "<group>"; };
+		18B46BFC626BB38E8EA48E68 /* CLIFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIFiles.swift; sourceTree = "<group>"; };
 		18DEAAFEE6A92D4350A97363 /* VaultDesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultDesignSystem.swift; sourceTree = "<group>"; };
 		1A7E71F6BD229A4826782EC4 /* VaultSchemaRemoveSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaRemoveSheet.swift; sourceTree = "<group>"; };
 		1B9BC57D99FCBC544AA8B129 /* ProjectEnvSchemaSuggestion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaSuggestion.swift; sourceTree = "<group>"; };
@@ -712,6 +714,7 @@
 			children = (
 				1FBE437C5B6386ECCA2D40B1 /* BlockingWork.swift */,
 				35D4657C31CF1A081D03F682 /* BoundedHTTPResponse.swift */,
+				18B46BFC626BB38E8EA48E68 /* CLIFiles.swift */,
 				F9FF906993D46DE0663FDBE6 /* Constants.swift */,
 				CF02796887E7ECB5B31624FB /* CountedNoun.swift */,
 				614C541032B4C27C2966138F /* EnvValidation.swift */,
@@ -1181,6 +1184,7 @@
 				AB3D53CC0B3F588FF516B71E /* BlockingWork.swift in Sources */,
 				B5698C32AC0DD87892CE5A02 /* BoundedHTTPResponse.swift in Sources */,
 				613EDF78FC1B9CFC1E22F759 /* BrowserAuthorization.swift in Sources */,
+				B6EBC420BA8919D322A2AD09 /* CLIFiles.swift in Sources */,
 				1502B1EBDA3730B341AC1C18 /* ClipboardManager.swift in Sources */,
 				0AE7F8802E0EAB9364630CBC /* CloudVaultsSheet.swift in Sources */,
 				72028FA9E5E2BF02C929F58F /* CloudflareClient.swift in Sources */,

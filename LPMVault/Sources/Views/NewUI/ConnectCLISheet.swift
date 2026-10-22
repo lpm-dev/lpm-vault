@@ -15,6 +15,8 @@ struct ConnectCLISheet: View {
 	@State private var status: ProjectCLILinkStatus?
 	@State private var chosenFolder: String?
 	@State private var linkError: ProjectCLILinkError?
+	/// The folder chosen in the panel when the project around it was taken instead.
+	@State private var choiceInsideProject: URL?
 	@State private var isLinking = false
 	@State private var copiedItem: String?
 	@State private var copyResetTask: Task<Void, Never>?
@@ -272,6 +274,10 @@ struct ConnectCLISheet: View {
 				}
 				.disabled(isLinking)
 			}
+			if let choiceInsideProject, linkError == nil {
+				Text("Using the project folder around \(choiceInsideProject.lastPathComponent), as the LPM CLI does.")
+					.foregroundStyle(VaultPalette.terminalText)
+			}
 			if let linkError {
 				Text(linkError.localizedDescription)
 					.foregroundStyle(Color(hex: 0xFF847D))
@@ -413,8 +419,9 @@ struct ConnectCLISheet: View {
 		isLinking = true
 		linkError = nil
 		let vaultId = projectId
+		let home = store.lpmHome
 		Task {
-			let failure = await ProjectCLILink.linkInBackground(vaultId: vaultId, folder: target, replacingVaultId: replacingVaultId)
+			let failure = await ProjectCLILink.linkInBackground(vaultId: vaultId, folder: target, replacingVaultId: replacingVaultId, home: home)
 			isLinking = false
 			linkError = failure
 			refreshStatus()
@@ -422,14 +429,31 @@ struct ConnectCLISheet: View {
 		}
 	}
 
+	/// Takes the project the CLI would act on for the chosen folder: the nearest
+	/// folder at or above it with a package.json or lpm.json. A folder whose
+	/// .lpm is the LPM home is refused.
 	private func chooseFolder() {
 		guard let url = folderPicker() else { return }
 		guard store.isUnlocked, store.selectedProjectId == projectId else { return }
-		chosenFolder = url.path
-		ProjectCLILink.rememberFolder(url.path, vaultId: projectId, defaults: store.preferences)
-		store.reloadKeyDescriptions()
-		linkError = nil
-		refreshStatus()
+		let home = store.lpmHome
+		isLinking = true
+		Task {
+			let root = await BlockingWork.run { CLIFiles.projectRoot(for: url, home: home) }
+			isLinking = false
+			guard store.isUnlocked, store.selectedProjectId == projectId else { return }
+			if root?.stateIsHome == true {
+				choiceInsideProject = nil
+				linkError = .folderIsLPMHome
+				return
+			}
+			let folder = root?.url ?? url
+			choiceInsideProject = folder.standardizedFileURL.path == url.standardizedFileURL.path ? nil : url
+			chosenFolder = folder.path
+			ProjectCLILink.rememberFolder(folder.path, vaultId: projectId, defaults: store.preferences)
+			store.reloadKeyDescriptions()
+			linkError = nil
+			refreshStatus()
+		}
 	}
 
 	private static func pickFolder() -> URL? {
