@@ -203,7 +203,7 @@ struct PersonalKeyEnvelopeTests {
       _ vault: String = "project-a", _ next: Int? = nil
     ) throws -> Int {
       try PersonalProjectCrypto.checkpoint(
-        registryURL: origin, principalID: principal, vaultID: vault, advanceTo: next, homeURL: home)
+        registryURL: origin, principalID: principal, vaultID: vault, advanceTo: next, home: LPMHome(defaultIn: home))
     }
     #expect(try checkpoint() == 0)
     #expect(try checkpoint("https://lpm.dev", "user-a", "project-a", 2) == 2)
@@ -227,7 +227,7 @@ struct PersonalKeyEnvelopeTests {
     func advance(to next: Int) throws -> Int {
       try PersonalProjectCrypto.checkpoint(
         registryURL: "https://lpm.dev", principalID: "user-a", vaultID: "project-a", advanceTo: next,
-        homeURL: home)
+        home: LPMHome(defaultIn: home))
     }
     #expect(try advance(to: 2) == 2)
     let lpmDirectory = home.appendingPathComponent(".lpm")
@@ -244,7 +244,7 @@ struct PersonalKeyEnvelopeTests {
       return explanation.contains("git could commit the personal env key checkpoints saved there")
     }
     #expect(try PersonalProjectCrypto.checkpoint(
-      registryURL: "https://lpm.dev", principalID: "user-a", vaultID: "project-a", homeURL: home) == 2)
+      registryURL: "https://lpm.dev", principalID: "user-a", vaultID: "project-a", home: LPMHome(defaultIn: home)) == 2)
   }
 
   @Test(
@@ -255,7 +255,7 @@ struct PersonalKeyEnvelopeTests {
     defer { try? FileManager.default.removeItem(at: home) }
     _ = try PersonalProjectCrypto.checkpoint(
       registryURL: "https://lpm.dev", principalID: "user-a", vaultID: "project-a", advanceTo: 1,
-      homeURL: home)
+      home: LPMHome(defaultIn: home))
     let directory = home.appendingPathComponent(".lpm")
     let floor = try #require(
       FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first
@@ -279,7 +279,7 @@ struct PersonalKeyEnvelopeTests {
     }
     #expect(throws: (any Error).self) {
       try PersonalProjectCrypto.checkpoint(
-        registryURL: "https://lpm.dev", principalID: "user-a", vaultID: "project-a", homeURL: home)
+        registryURL: "https://lpm.dev", principalID: "user-a", vaultID: "project-a", home: LPMHome(defaultIn: home))
     }
   }
 

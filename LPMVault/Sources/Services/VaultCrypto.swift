@@ -461,10 +461,10 @@ enum VaultCrypto {
 
 	private static let scopedX25519AccountPrefix = "__x25519_private_key__."
 	private static let x25519Service = VaultConstants.keychainService
-	private static let wrappingKeyService = "dev.lpm.vault-key"
+	static let wrappingKeyService = "dev.lpm.vault-key"
 	private static let wrappingKeyAccount = "wrapping-key"
-	private static let x25519KeyStore = SharedKeychainStore(service: x25519Service)
-	private static let wrappingKeyStore = SharedKeychainStore(service: wrappingKeyService)
+	private static let x25519KeyStore = SharedKeychainStore(service: LPMHome.current.service(x25519Service))
+	private static let wrappingKeyStore = SharedKeychainStore(service: LPMHome.current.service(wrappingKeyService))
 
 	private static func stableWrappingKey() throws -> SymmetricKey {
 		try VaultKeychainTransactionLock.withLock {

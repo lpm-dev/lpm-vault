@@ -957,7 +957,7 @@ struct SheetInteractionTests {
 		try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)
 		defer { try? FileManager.default.removeItem(at: user) }
 		let (store, _) = makeStore(preferences: defaults)
-		store.lpmHome = LPMHome(url: user.appendingPathComponent(".lpm", isDirectory: true), userHome: user)
+		store.lpmHome = LPMHome(defaultIn: user)
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { user }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
@@ -967,6 +967,46 @@ struct SheetInteractionTests {
 		#expect(try await !host.text().contains("Write lpm.json"))
 		#expect(ProjectCLILink.folder(vaultId: "sheet-regression", projectPath: "", defaults: defaults) != user.path)
 		#expect(try FileManager.default.contentsOfDirectory(atPath: user.path).isEmpty)
+	}
+
+	@Test("choosing another LPM home in Settings offers to move the current home's data there, then relaunches")
+	func lpmHomeMoveFromSettings() async throws {
+		let domain = "lpm-sheet-test-" + UUID().uuidString
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let user = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: user) }
+		let (store, _) = makeStore(preferences: defaults)
+		store.lpmHome = LPMHome(defaultIn: user)
+		let keychain = MemoryLPMHomeKeychain()
+		keychain.store("{}", service: "dev.lpm.vault", account: VaultKeychainRecordContract.projectMetadataPrefix + "vault-a")
+		keychain.store("token", service: "lpm-cli", account: "auth-token:abc")
+		store.lpmHomeMove = { _ in LPMHomeMove(shared: keychain, app: keychain) }
+		let placed = PoolObservation()
+		store.lpmHomeResolver = { url, userHome in
+			placed.record()
+			return LPMHome.at(url, userHome: userHome)
+		}
+		var relaunched = false
+		store.relaunch = { relaunched = true }
+		let chosen = user.appendingPathComponent("tools/lpm", isDirectory: true)
+		let host = SheetTestHost(VaultLPMHomeSettingsSection(store: store, folderPicker: { chosen }), size: NSSize(width: 600, height: 200))
+		defer { host.window.close() }
+		try await host.settle()
+		#expect(try await host.waitForText("(default)"))
+
+		try await host.click("Choose Folder…")
+		#expect(try await host.waitUntil { host.window.sheets.first != nil })
+		let sheet = try #require(host.window.sheets.first)
+		#expect(try await host.waitForText("moves 1 env project and a login from", in: sheet))
+		try await host.click("Move and Relaunch", in: sheet)
+
+		#expect(try await host.waitUntil { relaunched })
+		#expect(placed.stayedOffMainAndPool, "The chosen folder is placed off the main thread")
+		let target = try #require(LPMHome.at(chosen, userHome: user))
+		#expect(keychain.services == [target.service("dev.lpm.vault"), target.service("lpm-cli")].sorted())
+		#expect(defaults.string(forKey: LPMHome.preferenceKey) == target.url.path)
 	}
 
 	@Test("the connect sheet names LPM CLI after checking its link status")

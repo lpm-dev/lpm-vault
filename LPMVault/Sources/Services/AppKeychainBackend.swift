@@ -17,6 +17,13 @@ enum AppKeychainStore: CaseIterable, Sendable {
 		case .platformCleanup: VaultConstants.platformCleanupKeychainService
 		}
 	}
+
+	/// The service in `home`. Publishing records belong to the home's env
+	/// projects, so another home's take its suffix, as the CLI's services do;
+	/// platform connections belong to the account and are the same in every home.
+	func service(in home: LPMHome) -> String {
+		self == .publishing ? home.service(service) : service
+	}
 }
 
 /// The items of one Keychain service.

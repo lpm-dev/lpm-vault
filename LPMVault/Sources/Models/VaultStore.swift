@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import LocalAuthentication
 
 // MARK: - Strict Key Trust for Org Members
 
@@ -1372,7 +1373,28 @@ final class VaultStore {
   let preferences: UserDefaults
 
   /// Where the LPM CLI keeps login and env state, which no project's state may be.
-  var lpmHome = LPMHome.standard
+  var lpmHome = LPMHome.current
+  /// A move between LPM homes through the credential stores, given the
+  /// authentication that reads items whose CLI access asks for approval.
+  @ObservationIgnored var lpmHomeMove: @Sendable (LAContext?) -> LPMHomeMove = { context in
+    let shared = SecurityKeychainStoreBackend()
+    shared.setAuthenticationContext(context)
+    return LPMHomeMove(shared: shared, app: AppGroupKeychain())
+  }
+  /// Where an LPM home keeps its login credentials, including those an older
+  /// LPM version kept in the login keychain, which a move upgrades first.
+  @ObservationIgnored var lpmHomeCredentials: @Sendable (LPMHome) -> any AuthCredentialBackend = { home in
+    KeychainAuthCredentialBackend(service: home.service(VaultConstants.cliAuthService))
+  }
+  /// Places a folder as an LPM home for the user whose home folder is given.
+  /// Blocking file work.
+  @ObservationIgnored var lpmHomeResolver: @Sendable (URL, URL) -> LPMHome? = { url, userHome in
+    LPMHome.at(url, userHome: userHome)
+  }
+  /// Removes the copies a move that didn't end left, once an unlock starts it.
+  private var lpmHomeMoveRecovery: Task<Void, Never>?
+  /// Quits the app and opens it again, as using another LPM home takes.
+  @ObservationIgnored var relaunch: @MainActor () -> Void = AppRelaunch.relaunch
   static let projectOrderKey = "lpm-vault-project-order"
   private var projectOrder: [String]
 
@@ -5304,6 +5326,12 @@ final class VaultStore {
     scheduleAutoLock()
     Task { [platformCredentials] in await platformCredentials.resumeCleanup(now: true) }
     Task { [weak self] in await self?.reconcilePublishingRecords() }
+    if lpmHomeMoveRecovery == nil, LPMHome.unfinishedMove(in: preferences) != nil {
+      lpmHomeMoveRecovery = Task { [weak self] in
+        try? await self?.finishUnfinishedLPMHomeMove()
+        self?.lpmHomeMoveRecovery = nil
+      }
+    }
   }
 
   /// Asks the person to authenticate for an action that sends values off the
@@ -5364,6 +5392,118 @@ final class VaultStore {
       authorization.invalidate()
       task.cancel()
     }
+  }
+
+  /// What `home` holds that moving it would take; nil when it can't be read.
+  func lpmHomeContents(_ home: LPMHome) async -> LPMHomeMove.Contents? {
+    let move = lpmHomeMove(nil)
+    return await BlockingWork.run { try? move.contents(of: home) }
+  }
+
+  /// The LPM home at `url`, as the CLI with `LPM_HOME` set to it would use
+  /// it; nil when the engine can't place it.
+  func lpmHome(at url: URL) async -> LPMHome? {
+    let resolve = lpmHomeResolver
+    let userHome = lpmHome.userHome
+    return await BlockingWork.run { resolve(url, userHome) }
+  }
+
+  /// Makes `target` the LPM home and relaunches the app, which then uses it.
+  /// With `moving`, what the current home holds moves there first, once the
+  /// user confirms with Touch ID or their password, holding both homes' login
+  /// and transaction locks, so neither the CLI nor this app changes either
+  /// meanwhile. Removes what a move that didn't end left first, as changing
+  /// homes would lose which home holds its copies.
+  func changeLPMHome(to target: LPMHome, moving: Bool) async throws {
+    guard isUnlocked, target.scope != lpmHome.scope else { throw CancellationError() }
+    let source = lpmHome
+    let preferences = ThreadSafeDefaults(defaults: preferences)
+    let exposure = try await BlockingWork.run {
+      do throws(CLIFiles.Refusal) { return try CLIFiles.prepareHome(target) } catch { throw LPMHomeMoveError.copyFailed(error.message) }
+    }
+    if let exposure { throw LPMHomeMoveError.targetExposed(exposure.explanation(of: "login and env secrets")) }
+    if moving {
+      guard await confirmSensitiveAction(reason: "move your env projects and sign-in to \(target.displayPath)") else {
+        throw CancellationError()
+      }
+    }
+    let write = writes.begin()
+    do {
+      await lpmHomeMoveRecovery?.value
+      try await finishUnfinishedLPMHomeMove()
+      if moving {
+        try await move(from: source, to: target, preferences: preferences)
+      } else {
+        LPMHome.choose(target, in: preferences.defaults)
+      }
+      writes.end(write)
+    } catch {
+      writes.end(write)
+      throw error
+    }
+    lock()
+    relaunch()
+  }
+
+  private func move(from source: LPMHome, to target: LPMHome, preferences: ThreadSafeDefaults) async throws {
+    let move = lpmHomeMove(biometricService.keychainAuthenticationContext)
+    let logins = AuthSessionCoordinator(
+      home: source, credentialBackend: lpmHomeCredentials(source),
+      refreshOperation: { _, _, _ in throw AuthSessionRefreshError.invalidResponse })
+    LPMHome.beginMove(from: source, to: target, in: preferences.defaults)
+    let leftovers: [String]
+    do {
+      leftovers = try await AuthSessionCoordinator.withLoginLocks(of: source) {
+        try await AuthSessionCoordinator.withLoginLocks(of: target) {
+          try await BlockingWork.run {
+            try move.move(from: source, to: target, prepareSource: { try logins.upgradeLegacyCredentialsHoldingLocks() }) {
+              LPMHome.choose(target, in: preferences.defaults)
+              VaultKeychainTransactionLock.retire(source)
+            }
+          }
+        }
+      }
+    } catch {
+      if (error as? LPMHomeMoveError)?.leftCopies != true { LPMHome.endMove(in: preferences.defaults) }
+      throw error
+    }
+    LPMHome.recordLeftovers(leftovers, of: source, in: preferences.defaults)
+    LPMHome.endMove(in: preferences.defaults)
+  }
+
+  /// Removes the copies a move that didn't end left in whichever of its two
+  /// homes the app doesn't use, holding both homes' login locks, and keeps
+  /// what couldn't be removed for Settings to show. A move between homes the
+  /// engine can no longer place, or neither of which the app uses, ends
+  /// without removing anything.
+  func finishUnfinishedLPMHomeMove() async throws {
+    guard let record = LPMHome.unfinishedMove(in: preferences) else { return }
+    let write = writes.begin()
+    defer { writes.end(write) }
+    let current = lpmHome
+    let resolve = lpmHomeResolver
+    let preferences = ThreadSafeDefaults(defaults: preferences)
+    let homes = await BlockingWork.run { () -> (from: LPMHome, to: LPMHome)? in
+      guard let from = resolve(record.from, current.userHome), let to = resolve(record.to, current.userHome),
+        current.scope == from.scope || current.scope == to.scope
+      else { return nil }
+      return (from, to)
+    }
+    guard let homes else {
+      LPMHome.endMove(in: preferences.defaults)
+      return
+    }
+    let switched = current.scope == homes.to.scope
+    let move = lpmHomeMove(biometricService.keychainAuthenticationContext)
+    let left = try await AuthSessionCoordinator.withLoginLocks(of: homes.from) {
+      try await AuthSessionCoordinator.withLoginLocks(of: homes.to) {
+        try await BlockingWork.run { try move.removeCopies(between: homes.from, and: homes.to, switched: switched) }
+      }
+    }
+    if !left.isEmpty {
+      LPMHome.recordLeftovers(left, of: switched ? homes.from : homes.to, in: preferences.defaults)
+    }
+    LPMHome.endMove(in: preferences.defaults)
   }
 
   private func cancelExports() {

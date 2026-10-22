@@ -93,7 +93,7 @@ enum ProjectConfigFile {
 		_ vaultId: String,
 		to url: URL,
 		policy: VaultWritePolicy = .replaceAny,
-		home: LPMHome = .standard,
+		home: LPMHome = .current,
 		fileWriter: FileWriter = writeSecurely
 	) throws {
 		try update(at: url, home: home, fileWriter: fileWriter) { document in
@@ -124,7 +124,7 @@ enum ProjectConfigFile {
 	/// home, where no project's state may be kept.
 	static func update<T>(
 		at url: URL,
-		home: LPMHome = .standard,
+		home: LPMHome = .current,
 		fileWriter: FileWriter = writeSecurely,
 		rejectDuplicateKeys: Bool = false,
 		requiresUniqueKeys: ((LPMConfigJSON) throws -> Bool)? = nil,
@@ -286,7 +286,7 @@ enum ProjectConfigFile {
 	/// Runs `body` under the CLI's config lock with lpm.json as read then.
 	/// `rejectingDuplicateKeys` fails on a repeated member as the read parses,
 	/// instead of a later `requireUniqueKeys()`.
-	static func withRootTransaction<T>(at url: URL, home: LPMHome = .standard, rejectingDuplicateKeys: Bool = false, _ body: (RootTransaction) throws -> T) throws -> T {
+	static func withRootTransaction<T>(at url: URL, home: LPMHome = .current, rejectingDuplicateKeys: Bool = false, _ body: (RootTransaction) throws -> T) throws -> T {
 		let directory = try DirectorySnapshot(url.deletingLastPathComponent())
 		return try withConfigLock(in: directory, home: home) {
 			try directory.verifySelection()

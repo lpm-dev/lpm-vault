@@ -574,7 +574,7 @@ struct SharedKeychainMigrationTests {
 		#expect(Darwin.link(target.path, lock.path) == 0)
 
 		#expect(throws: KeychainStoreError.self) {
-			let descriptor = try VaultKeychainTransactionLock.openLockFile(homeURL: home)
+			let descriptor = try VaultKeychainTransactionLock.openLockFile(home: LPMHome(defaultIn: home))
 			_ = Darwin.close(descriptor)
 		}
 		let permissions = try #require(
@@ -590,7 +590,7 @@ struct SharedKeychainMigrationTests {
 		try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
 		defer { try? FileManager.default.removeItem(at: home) }
 
-		let descriptor = try VaultKeychainTransactionLock.openLockFile(homeURL: home)
+		let descriptor = try VaultKeychainTransactionLock.openLockFile(home: LPMHome(defaultIn: home))
 		_ = flock(descriptor, LOCK_UN)
 		_ = Darwin.close(descriptor)
 		let directory = home.appendingPathComponent(".lpm", isDirectory: true)
@@ -599,7 +599,7 @@ struct SharedKeychainMigrationTests {
 		#expect((try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int) == 0o700)
 
 		try FileManager.default.createDirectory(at: directory.appendingPathComponent(".git"), withIntermediateDirectories: true)
-		let exposed = try VaultKeychainTransactionLock.openLockFile(homeURL: home)
+		let exposed = try VaultKeychainTransactionLock.openLockFile(home: LPMHome(defaultIn: home))
 		_ = flock(exposed, LOCK_UN)
 		_ = Darwin.close(exposed)
 	}
@@ -624,7 +624,7 @@ struct SharedKeychainMigrationTests {
 		}
 		try #require(hasExtendedACL())
 
-		let descriptor = try VaultKeychainTransactionLock.openLockFile(homeURL: home)
+		let descriptor = try VaultKeychainTransactionLock.openLockFile(home: LPMHome(defaultIn: home))
 		_ = flock(descriptor, LOCK_UN)
 		_ = Darwin.close(descriptor)
 
@@ -645,7 +645,7 @@ struct SharedKeychainMigrationTests {
 
 		#expect(throws: KeychainStoreError.self) {
 			let descriptor = try VaultKeychainTransactionLock.openLockFile(
-				homeURL: home,
+				home: LPMHome(defaultIn: home),
 				beforeLock: {
 					try FileManager.default.moveItem(at: lock, to: displaced)
 					try Data("replacement".utf8).write(to: lock)
@@ -674,7 +674,7 @@ struct SharedKeychainMigrationTests {
 
 		#expect(throws: KeychainStoreError.self) {
 			let descriptor = try VaultKeychainTransactionLock.openLockFile(
-				homeURL: home,
+				home: LPMHome(defaultIn: home),
 				beforeLock: {
 					try FileManager.default.moveItem(at: directory, to: displaced)
 					try FileManager.default.createDirectory(

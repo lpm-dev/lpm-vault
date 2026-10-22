@@ -161,7 +161,7 @@ enum PersonalProjectCrypto {
   static func rootKey(registryURL: String, principalID: String, create: Bool) throws -> SymmetricKey
   {
     let account = try rootAccount(origin: registryOrigin(registryURL), principalID: principalID)
-    let store = SharedKeychainStore(service: "dev.lpm.env-personal-root-v2")
+    let store = SharedKeychainStore(service: LPMHome.current.service(rootService))
     return try VaultKeychainTransactionLock.withLock {
       if let encoded = try store.read(account: account) { return try decodeRoot(encoded) }
       guard create else { throw KeyError.missingRoot }
@@ -190,25 +190,31 @@ enum PersonalProjectCrypto {
     return SymmetricKey(data: bytes)
   }
 
+  /// The credential-store service of personal env root keys, shared with the CLI.
+  static let rootService = "dev.lpm.env-personal-root-v2"
+
+  /// The trusted checkpoint for a project's personal key, kept in `home`,
+  /// advanced to `advanceTo` when that's given.
   static func checkpoint(
     registryURL: String, principalID: String, vaultID: String, advanceTo: Int? = nil,
-    homeURL: URL = FileManager.default.homeDirectoryForCurrentUser
+    home lpmHome: LPMHome = .current
   ) throws -> Int {
     let account = try rootAccount(origin: registryOrigin(registryURL), principalID: principalID)
     guard !vaultID.isEmpty, vaultID.utf8.count <= 256 else { throw KeyError.invalidContext }
     let name =
       ".env-project-key-floor-" + hex(Data(SHA256.hash(data: Data((account + vaultID).utf8))))
+    let directoryName = lpmHome.url.lastPathComponent
     let operation = {
-      let home = homeURL.withUnsafeFileSystemRepresentation { path in
+      let home = lpmHome.url.deletingLastPathComponent().withUnsafeFileSystemRepresentation { path in
         guard let path else { return Int32(-1) }
         return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
       }
       guard home >= 0 else { throw KeyError.storage }
       defer { Darwin.close(home) }
-      let directory = Darwin.openat(home, ".lpm", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+      let directory = Darwin.openat(home, directoryName, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
       guard directory >= 0 else { throw KeyError.storage }
       defer { Darwin.close(directory) }
-      try validateDirectory(directory, home: home)
+      try validateDirectory(directory, named: directoryName, in: home)
       let descriptor = Darwin.openat(
         directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
       let floor: Int
@@ -245,11 +251,10 @@ enum PersonalProjectCrypto {
         else { throw KeyError.invalidCheckpoint }
         floor = value
       }
-      try validateDirectory(directory, home: home)
+      try validateDirectory(directory, named: directoryName, in: home)
       guard let next = advanceTo else { return floor }
       guard next >= floor, next > 0, next <= Int32.max else { throw KeyError.downgrade }
       if next > floor {
-        let lpmHome = LPMHome(url: homeURL.appendingPathComponent(".lpm", isDirectory: true), userHome: homeURL)
         do {
           if let exposure = try CLIFiles.prepareHome(lpmHome) {
             throw KeyError.homeInRepository(exposure.explanation(of: "personal env key checkpoints"))
@@ -278,18 +283,18 @@ enum PersonalProjectCrypto {
           }
         }
         guard Darwin.fsync(file) == 0 else { throw KeyError.storage }
-        try validateDirectory(directory, home: home)
+        try validateDirectory(directory, named: directoryName, in: home)
         guard Darwin.renameat(directory, temporary, directory, name) == 0,
           Darwin.fsync(directory) == 0
         else { throw KeyError.storage }
-        try validateDirectory(directory, home: home)
+        try validateDirectory(directory, named: directoryName, in: home)
       }
       return next
     }
-    if homeURL == FileManager.default.homeDirectoryForCurrentUser {
+    if lpmHome == .current {
       return try VaultKeychainTransactionLock.withLock(operation)
     }
-    let lock = try VaultKeychainTransactionLock.openLockFile(homeURL: homeURL)
+    let lock = try VaultKeychainTransactionLock.openLockFile(home: lpmHome)
     defer {
       _ = flock(lock, LOCK_UN)
       _ = Darwin.close(lock)
@@ -297,11 +302,11 @@ enum PersonalProjectCrypto {
     return try operation()
   }
 
-  private static func validateDirectory(_ directory: Int32, home: Int32) throws {
+  private static func validateDirectory(_ directory: Int32, named name: String, in home: Int32) throws {
     var actual = stat()
     var path = stat()
     guard Darwin.fstat(directory, &actual) == 0,
-      Darwin.fstatat(home, ".lpm", &path, AT_SYMLINK_NOFOLLOW) == 0,
+      Darwin.fstatat(home, name, &path, AT_SYMLINK_NOFOLLOW) == 0,
       actual.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
       path.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
       actual.st_uid == Darwin.geteuid(), actual.st_mode & 0o777 == 0o700,

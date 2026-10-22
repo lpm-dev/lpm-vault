@@ -335,7 +335,7 @@ struct ProjectCLILinkTests {
 	func linkRefusesTheLPMHome() throws {
 		let user = try makeFolder()
 		defer { try? FileManager.default.removeItem(at: user) }
-		let home = LPMHome(url: user.appendingPathComponent(".lpm", isDirectory: true), userHome: user)
+		let home = LPMHome(defaultIn: user)
 
 		#expect(throws: ProjectCLILinkError.folderIsLPMHome) {
 			try ProjectCLILink.link(vaultId: vaultId, folder: user.path, home: home)
@@ -396,7 +396,7 @@ struct ProjectCLILinkTests {
 	func projectRootFollowsTheCLI() throws {
 		let user = try makeFolder()
 		defer { try? FileManager.default.removeItem(at: user) }
-		let home = LPMHome(url: user.appendingPathComponent(".lpm", isDirectory: true), userHome: user)
+		let home = LPMHome(defaultIn: user)
 		let project = user.appendingPathComponent("work/app", isDirectory: true)
 		try FileManager.default.createDirectory(at: project.appendingPathComponent("src/deep"), withIntermediateDirectories: true)
 		try Data("{}".utf8).write(to: project.appendingPathComponent("package.json"))

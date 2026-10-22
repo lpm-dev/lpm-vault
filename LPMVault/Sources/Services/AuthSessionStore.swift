@@ -36,9 +36,9 @@ enum AuthSessionStore {
 		)
 	}()
 	private static let live = AuthSessionCoordinator(
-		homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+		home: .current,
 		credentialBackend: KeychainAuthCredentialBackend(
-			service: VaultConstants.cliAuthService
+			service: LPMHome.current.service(VaultConstants.cliAuthService)
 		),
 		refreshOperation: performRefresh
 	)

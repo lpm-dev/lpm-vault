@@ -98,7 +98,7 @@ enum ProjectCLILink {
 	}
 
 	/// Adds or replaces the `vault` field in the folder's `lpm.json`, keeping other settings.
-	static func link(vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .standard) throws(ProjectCLILinkError) {
+	static func link(vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .current) throws(ProjectCLILinkError) {
 		guard folderExists(folder) else { throw .noFolder }
 		do {
 			try ProjectConfigFile.writeVaultID(
@@ -123,7 +123,7 @@ enum ProjectCLILink {
 
 	/// `link(vaultId:folder:replacingVaultId:)` on the queue that orders the app's
 	/// `lpm.json` edits, returning why it failed.
-	static func linkInBackground(vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .standard) async -> ProjectCLILinkError? {
+	static func linkInBackground(vaultId: String, folder: String, replacingVaultId: String? = nil, home: LPMHome = .current) async -> ProjectCLILinkError? {
 		await withCheckedContinuation { continuation in
 			ProjectConfigFile.editQueue.async {
 				do throws(ProjectCLILinkError) {

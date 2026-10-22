@@ -99,6 +99,63 @@ struct AuthSessionCoordinatorTests {
 		#expect(pool.stayedOffPool)
 	}
 
+	@Test("logins an older LPM version kept in the login keychain move into the shared Keychain, so a moved home takes them")
+	func legacyLoginsUpgradeBeforeAMove() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await seedLegacySession(home: home, backend: backend, coordinator: coordinator)
+		let accounts = [AuthSessionCoordinator.accessAccount(registryURL: "https://lpm.dev"), AuthSessionCoordinator.refreshAccount(registryURL: "https://lpm.dev")]
+
+		try coordinator.upgradeLegacyCredentialsHoldingLocks()
+
+		#expect(accounts.map { backend.value(for: $0) } == ["legacy-access", "legacy-refresh"])
+		#expect(try backend.legacyAccounts().isEmpty)
+		let records = try authorityRecords(home: home)
+		#expect(records.values.allSatisfy { $0["backend"] as? String == "shared_keychain" })
+		#expect(records.values.allSatisfy { $0["legacy_keychain_cleanup_pending"] as? Bool == false })
+		try coordinator.upgradeLegacyCredentialsHoldingLocks()
+		#expect(accounts.map { backend.value(for: $0) } == ["legacy-access", "legacy-refresh"])
+	}
+
+	@Test("a legacy login whose credential is gone from the login keychain stops a move")
+	func missingLegacyLoginStopsAMove() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let backend = MemoryAuthCredentialBackend()
+		let coordinator = makeCoordinator(home: home, backend: backend)
+		try await seedLegacySession(home: home, backend: backend, coordinator: coordinator)
+		try backend.deleteLegacy(account: AuthSessionCoordinator.refreshAccount(registryURL: "https://lpm.dev"))
+
+		#expect(throws: AuthSessionCoordinatorError.self) { try coordinator.upgradeLegacyCredentialsHoldingLocks() }
+		#expect(backend.writeAccounts.isEmpty, "Nothing is half upgraded")
+	}
+
+	@Test("the login locks wait for a refresh holding its session lock")
+	func loginLocksWaitForARefresh() async throws {
+		let user = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: user) }
+		let coordinator = makeCoordinator(home: user, backend: MemoryAuthCredentialBackend())
+		let sessionLock = coordinator.sessionLockURL(registryURL: registryURL)
+		let refresh = LockBodyControl()
+		let holder = Task {
+			try await CrossProcessFileLock.withExclusive(at: sessionLock) { await refresh.hold() }
+		}
+		await refresh.waitUntilEntered()
+		let execution = ExecutionRecorder()
+		let move = Task {
+			try await AuthSessionCoordinator.withLoginLocks(of: LPMHome(defaultIn: user)) { await execution.record() }
+		}
+		try #require(try await waitUntil { await CrossProcessFileLock.waitingTasks(at: sessionLock) == 1 })
+		#expect(await !execution.didRun, "No move starts while a refresh holds its session lock")
+
+		await refresh.release()
+		try await holder.value
+		try await move.value
+		#expect(await execution.didRun)
+	}
+
 	@Test("an LPM home git could commit takes no login, and gives the device no stored identity")
 	func homeInRepositoryRefusesLogin() async throws {
 		let home = try temporaryHome()
@@ -1378,6 +1435,31 @@ struct AuthSessionCoordinatorTests {
 		#expect(status == 42)
 	}
 
+	@Test("in-process waiters for a lock queue together, though its path has a /private prefix the file's creation makes removable")
+	func lockQueueKeepsOnePathPerLock() async throws {
+		let home = try temporaryHome()
+		defer { try? FileManager.default.removeItem(at: home) }
+		let resolved = try #require(realpath(home.path, nil).map { String(cString: $0) })
+		try #require(resolved.hasPrefix("/private/"))
+		let lockURL = URL(fileURLWithPath: resolved).appendingPathComponent("locks/session.lock")
+		let control = LockBodyControl()
+		let holder = Task {
+			try await CrossProcessFileLock.withExclusive(at: lockURL) { await control.hold() }
+		}
+		await control.waitUntilEntered()
+		let execution = ExecutionRecorder()
+		let waiter = Task {
+			try await CrossProcessFileLock.withExclusive(at: lockURL) { await execution.record() }
+		}
+
+		#expect(try await waitUntil { await CrossProcessFileLock.waitingTasks(at: lockURL) == 1 })
+		#expect(await !execution.didRun)
+		await control.release()
+		try await holder.value
+		try await waiter.value
+		#expect(await execution.didRun)
+	}
+
 	@Test("a cancelled in-process waiter never enters the critical section")
 	func cancelledLockWaiterDoesNotRun() async throws {
 		let home = try temporaryHome()
@@ -1666,21 +1748,10 @@ struct AuthSessionCoordinatorTests {
 	}
 
 	private func seedLegacySession(home: URL, backend: MemoryAuthCredentialBackend, coordinator: AuthSessionCoordinator) async throws {
-		try await coordinator.persist(session(access: "legacy-access", refresh: "legacy-refresh", expiresAt: fixedNow.addingTimeInterval(3600)), registryURL: "https://lpm.dev")
-		for account in [AuthSessionCoordinator.accessAccount(registryURL: "https://lpm.dev"), AuthSessionCoordinator.refreshAccount(registryURL: "https://lpm.dev")] {
-			backend.setLegacy(try #require(backend.value(for: account)), account: account)
-			try backend.delete(account: account)
-		}
-		let path = home.appendingPathComponent(".lpm/.credential-authority.json")
-		var object = try jsonObject(at: path)
-		var records = try #require(object["credentials"] as? [String: [String: Any]])
-		for key in records.keys {
-			records[key]?["backend"] = "keychain"
-			records[key]?.removeValue(forKey: "legacy_keychain_cleanup_pending")
-		}
-		object["credentials"] = records
-		try JSONSerialization.data(withJSONObject: object).write(to: path)
-		backend.resetWriteLog()
+		try await seedLegacyLogin(
+			session(access: "legacy-access", refresh: "legacy-refresh", expiresAt: fixedNow.addingTimeInterval(3600)),
+			registryURL: "https://lpm.dev", coordinator: coordinator, backend: backend,
+			authority: home.appendingPathComponent(".lpm/.credential-authority.json"))
 	}
 
 	private func makeCoordinator(
@@ -1760,7 +1831,29 @@ struct AuthSessionCoordinatorTests {
 	}
 }
 
-private final class MemoryAuthCredentialBackend: AuthCredentialBackend, @unchecked Sendable {
+/// Keeps a login as an older LPM version did: its credentials in the login
+/// keychain, which the records in `authority` name.
+func seedLegacyLogin(
+	_ credentials: AuthSessionCredentials, registryURL: String, coordinator: AuthSessionCoordinator,
+	backend: MemoryAuthCredentialBackend, authority: URL
+) async throws {
+	try await coordinator.persist(credentials, registryURL: registryURL)
+	for account in [AuthSessionCoordinator.accessAccount(registryURL: registryURL), AuthSessionCoordinator.refreshAccount(registryURL: registryURL)] {
+		backend.setLegacy(try #require(backend.value(for: account)), account: account)
+		try backend.delete(account: account)
+	}
+	var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: authority)) as? [String: Any])
+	var records = try #require(object["credentials"] as? [String: [String: Any]])
+	for key in records.keys {
+		records[key]?["backend"] = "keychain"
+		records[key]?.removeValue(forKey: "legacy_keychain_cleanup_pending")
+	}
+	object["credentials"] = records
+	try JSONSerialization.data(withJSONObject: object).write(to: authority)
+	backend.resetWriteLog()
+}
+
+final class MemoryAuthCredentialBackend: AuthCredentialBackend, @unchecked Sendable {
 	private let lock = NSLock()
 	private var credentials: [String: String] = [:]
 	private var legacyCredentials: [String: String] = [:]
@@ -1780,6 +1873,8 @@ private final class MemoryAuthCredentialBackend: AuthCredentialBackend, @uncheck
 	func readLegacy(account: String) throws -> String? { lock.withLock { legacyCredentials[account] } }
 
 	func setLegacy(_ value: String, account: String) { lock.withLock { legacyCredentials[account] = value } }
+
+	func legacyAccounts() throws -> [String] { lock.withLock { legacyCredentials.keys.sorted() } }
 
 	func deleteLegacy(account: String) throws {
 		try lock.withLock {

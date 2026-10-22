@@ -4,6 +4,8 @@ import Security
 protocol AuthCredentialBackend: Sendable {
 	func read(account: String) throws -> String?
 	func readLegacy(account: String) throws -> String?
+	/// The accounts an older LPM version saved in the login keychain.
+	func legacyAccounts() throws -> [String]
 	func deleteLegacy(account: String) throws
 	func write(_ credential: String, account: String) throws
 	func delete(account: String) throws
@@ -81,6 +83,20 @@ struct KeychainAuthCredentialBackend: AuthCredentialBackend {
 
 	func deleteLegacy(account: String) throws {
 		try delete(account: account, legacy: true)
+	}
+
+	func legacyAccounts() throws -> [String] {
+		var query = baseQuery(account: "", legacy: true)
+		query.removeValue(forKey: kSecAttrAccount as String)
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitAll
+		var result: CFTypeRef?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		if status == errSecItemNotFound { return [] }
+		guard status == errSecSuccess, let items = result as? [[String: Any]] else {
+			throw AuthSessionCoordinatorError.credentialStorage("Keychain listing returned status \(status).")
+		}
+		return items.compactMap { $0[kSecAttrAccount as String] as? String }
 	}
 
 	private func delete(account: String, legacy: Bool) throws {
