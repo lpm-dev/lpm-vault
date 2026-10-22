@@ -19,6 +19,18 @@ struct ProjectEnvValueCheckTests {
 			== "The LPM CLI never passes NODE_OPTIONS to commands.")
 	}
 
+	@Test("LPM_HOME is a key the CLI never passes to commands")
+	func lpmHomeIsIgnored() throws {
+		let rules = try overview(#"{"vars":{"PORT":{}}}"#)
+		let project = VaultProject(id: "p", name: "p", path: "",
+			environments: ["default": ["LPM_HOME": "/Volumes/Data/lpm", "PORT": "3000"]])
+		let check = try #require(rules.check(project.environments))
+		#expect(check.environments["default"]?.ignored == ["LPM_HOME"])
+		let presentation = VaultValueCheckPresentation(check: check, rules: rules, project: project)
+		#expect(presentation.reason(for: "LPM_HOME", in: "default")
+			== "The LPM CLI never passes LPM_HOME to commands.")
+	}
+
 	@Test("a declared-key rename preview matches the saved rules and values")
 	func renamePreviewMatchesSavedState() async throws {
 		let folder = FileManager.default.temporaryDirectory.appending(path: "rename-preview-\(UUID().uuidString)")
