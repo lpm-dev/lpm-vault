@@ -923,6 +923,52 @@ struct SheetInteractionTests {
 		#expect(try Data(contentsOf: config) == original)
 	}
 
+	@Test("choosing a folder inside a project links the project, as the LPM CLI acts on it")
+	func chosenSubfolderLinksItsProject() async throws {
+		let domain = "lpm-sheet-test-" + UUID().uuidString
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let project = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		let source = project.appendingPathComponent("src")
+		try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: project) }
+		try Data("{}".utf8).write(to: project.appendingPathComponent("package.json"))
+		let (store, _) = makeStore(preferences: defaults)
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { source }), size: NSSize(width: 600, height: 560))
+		defer { host.window.close() }
+		try await host.settle()
+		try await host.click("write file")
+		try await host.click("Choose folder")
+		#expect(try await host.waitForText("Using the project folder around src, as the LPM CLI does."))
+		// The "write file" segment also says Write until the folder's status loads.
+		try #require(try await host.waitForText("Write lpm.json"))
+		try await host.click("Write lpm.json")
+		try #require(try await host.waitForText("Linked in lpm.json"))
+		#expect(FileManager.default.fileExists(atPath: project.appendingPathComponent("lpm.json").path))
+		#expect(!FileManager.default.fileExists(atPath: source.appendingPathComponent("lpm.json").path))
+	}
+
+	@Test("the folder whose .lpm is the LPM home can't be chosen")
+	func homeFolderIsRefused() async throws {
+		let domain = "lpm-sheet-test-" + UUID().uuidString
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let user = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+		try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: user) }
+		let (store, _) = makeStore(preferences: defaults)
+		store.lpmHome = LPMHome(url: user.appendingPathComponent(".lpm", isDirectory: true), userHome: user)
+		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { user }), size: NSSize(width: 600, height: 560))
+		defer { host.window.close() }
+		try await host.settle()
+		try await host.click("write file")
+		try await host.click("Choose folder")
+		#expect(try await host.waitForText("so it can't hold a project"))
+		#expect(try await !host.text().contains("Write lpm.json"))
+		#expect(ProjectCLILink.folder(vaultId: "sheet-regression", projectPath: "", defaults: defaults) != user.path)
+		#expect(try FileManager.default.contentsOfDirectory(atPath: user.path).isEmpty)
+	}
+
 	@Test("the connect sheet names LPM CLI after checking its link status")
 	func connectProductNames() async throws {
 		let (store, _) = makeStore()

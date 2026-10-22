@@ -1370,6 +1370,9 @@ final class VaultStore {
 
   /// Local display preferences and folders linked for the CLI.
   let preferences: UserDefaults
+
+  /// Where the LPM CLI keeps login and env state, which no project's state may be.
+  var lpmHome = LPMHome.standard
   static let projectOrderKey = "lpm-vault-project-order"
   private var projectOrder: [String]
 

@@ -15,6 +15,10 @@ enum ProjectConfigFile {
 		/// The file changed while it was being updated, or no longer matches what the edit expects.
 		case changed
 		case writeFailed(String)
+		/// The project's `.lpm` is a symbolic link or not a directory.
+		case unsafeStateDirectory
+		/// The project's `.lpm` is the LPM home, which keeps no project state.
+		case stateIsLPMHome
 	}
 
 	/// A directory's device and inode, which tell a folder apart from another
@@ -82,14 +86,17 @@ enum ProjectConfigFile {
 	}
 
 	/// Adds or replaces the vault ID, keeping the rest of the file. Like the CLI,
-	/// a new `vault` field goes last and an existing one keeps its place.
+	/// a new `vault` field goes last and an existing one keeps its place. A new
+	/// vault drops the legacy `vaultSync` field, which holds another vault's sync
+	/// state that the CLI would otherwise read as this one's.
 	static func writeVaultID(
 		_ vaultId: String,
 		to url: URL,
 		policy: VaultWritePolicy = .replaceAny,
+		home: LPMHome = .standard,
 		fileWriter: FileWriter = writeSecurely
 	) throws {
-		try update(at: url, fileWriter: fileWriter) { document in
+		try update(at: url, home: home, fileWriter: fileWriter) { document in
 			if case .replaceAny = policy {} else {
 				let linked: String?
 				switch document["vault"] {
@@ -105,6 +112,7 @@ enum ProjectConfigFile {
 					guard linked == expected || linked == vaultId else { throw FileError.changed }
 				}
 			}
+			if document["vault"] != .string(vaultId) { while document.removeValue(forKey: "vaultSync") != nil {} }
 			document.set(.string(vaultId), forKey: "vault")
 		}
 	}
@@ -112,9 +120,11 @@ enum ProjectConfigFile {
 	/// Changes the `lpm.json` at `url` the way the CLI does: under its config
 	/// lock, keeping member order, rendered like serde_json, and written only
 	/// when the content changes. `change` gets the document, or an empty object
-	/// when the file is missing; its errors pass through.
+	/// when the file is missing; its errors pass through. `home` is the LPM
+	/// home, where no project's state may be kept.
 	static func update<T>(
 		at url: URL,
+		home: LPMHome = .standard,
 		fileWriter: FileWriter = writeSecurely,
 		rejectDuplicateKeys: Bool = false,
 		requiresUniqueKeys: ((LPMConfigJSON) throws -> Bool)? = nil,
@@ -124,7 +134,7 @@ enum ProjectConfigFile {
 		_ change: (inout LPMConfigJSON) throws -> T
 	) throws -> T {
 		let directory = try DirectorySnapshot(url.deletingLastPathComponent())
-		return try withConfigLock(in: directory) {
+		return try withConfigLock(in: directory, home: home) {
 			try updateInDirectory(at: url, directory: directory, fileWriter: fileWriter, rejectDuplicateKeys: rejectDuplicateKeys, requiresUniqueKeys: requiresUniqueKeys, validateSources: validateSources, beforeWrite: beforeWrite, onWriteFailure: onWriteFailure, change)
 		}
 	}
@@ -208,14 +218,16 @@ enum ProjectConfigFile {
 
 	final class RootTransaction {
 		fileprivate let directory: DirectorySnapshot
+		private let home: LPMHome
 		let document: LPMConfigJSON
 		private let original: Data?
 
 		/// The project folder the transaction holds the lock in.
 		var directoryIdentity: DirectoryIdentity { directory.identity }
 
-		fileprivate init(directory: DirectorySnapshot, rejectingDuplicateKeys: Bool) throws {
+		fileprivate init(directory: DirectorySnapshot, home: LPMHome, rejectingDuplicateKeys: Bool) throws {
 			self.directory = directory
+			self.home = home
 			do { original = try readRegularFile(in: directory, name: "lpm.json") } catch FileError.notFound { original = nil }
 			if let original {
 				do {
@@ -262,7 +274,7 @@ enum ProjectConfigFile {
 					additionalCheck: { try self.verify() }, preservingMemberAt: preservingMemberAt, validateSources: validateSources,
 					beforeWrite: beforeWrite, onWriteFailure: onWriteFailure, change)
 			}
-			return try withConfigLock(in: project) {
+			return try withConfigLock(in: project, home: home) {
 				return try updateInDirectory(at: url, directory: target, fileWriter: fileWriter, rejectDuplicateKeys: rejectDuplicateKeys,
 					maximumOutputBytes: relativePath == "lpm.json" ? maximumBytes : 2 * 1024 * 1024,
 					additionalCheck: { try self.verify() }, preservingMemberAt: preservingMemberAt, validateSources: validateSources,
@@ -274,11 +286,11 @@ enum ProjectConfigFile {
 	/// Runs `body` under the CLI's config lock with lpm.json as read then.
 	/// `rejectingDuplicateKeys` fails on a repeated member as the read parses,
 	/// instead of a later `requireUniqueKeys()`.
-	static func withRootTransaction<T>(at url: URL, rejectingDuplicateKeys: Bool = false, _ body: (RootTransaction) throws -> T) throws -> T {
+	static func withRootTransaction<T>(at url: URL, home: LPMHome = .standard, rejectingDuplicateKeys: Bool = false, _ body: (RootTransaction) throws -> T) throws -> T {
 		let directory = try DirectorySnapshot(url.deletingLastPathComponent())
-		return try withConfigLock(in: directory) {
+		return try withConfigLock(in: directory, home: home) {
 			try directory.verifySelection()
-			return try body(RootTransaction(directory: directory, rejectingDuplicateKeys: rejectingDuplicateKeys))
+			return try body(RootTransaction(directory: directory, home: home, rejectingDuplicateKeys: rejectingDuplicateKeys))
 		}
 	}
 
@@ -342,12 +354,20 @@ enum ProjectConfigFile {
 		}
 	}
 
-	private static func withConfigLock<T>(in directory: DirectorySnapshot, _ body: () throws -> T) throws -> T {
-		if mkdirat(directory.descriptor, ".lpm", 0o755) != 0, errno != EEXIST {
-			throw FileError.writeFailed(String(cString: strerror(errno)))
+	/// Runs `body` holding the CLI's config lock, in the project's `.lpm`, which
+	/// is opened as the CLI opens it: created owner-only, kept out of git, and
+	/// refused where it would be `home`, the LPM home.
+	private static func withConfigLock<T>(in directory: DirectorySnapshot, home: LPMHome, _ body: () throws -> T) throws -> T {
+		let state: Int32
+		do {
+			state = try CLIFiles.openProjectState(in: directory.descriptor, at: directory.url, home: home)
+		} catch {
+			switch error.code {
+			case "env.project_state_is_home": throw FileError.stateIsLPMHome
+			case "env.project_state_link": throw FileError.unsafeStateDirectory
+			default: throw FileError.writeFailed(error.message)
+			}
 		}
-		let state = openat(directory.descriptor, ".lpm", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-		guard state >= 0 else { throw FileError.unsafeFile }
 		defer { close(state) }
 		let descriptor = openat(state, ".config.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
 		guard descriptor >= 0 else {

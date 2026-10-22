@@ -311,6 +311,110 @@ struct ProjectCLILinkTests {
 		#expect(try readConfig(in: folder)["vault"] as? String == vaultId)
 	}
 
+	@Test("linking makes the project's .lpm the way the CLI does: owner-only and ignored by git")
+	func linkCreatesStateDirectoryAsCLI() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path)
+		let state = folder.appendingPathComponent(".lpm")
+		let attributes = try FileManager.default.attributesOfItem(atPath: state.path)
+		#expect((attributes[.posixPermissions] as? Int) == 0o700)
+		#expect(try String(contentsOf: state.appendingPathComponent(".gitignore"), encoding: .utf8)
+			== "# LPM's machine-local state. Nothing here belongs in git.\n*\n")
+
+		// One an older version made open to everyone is closed on the next edit.
+		try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: state.path)
+		try FileManager.default.removeItem(at: state.appendingPathComponent(".gitignore"))
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path)
+		#expect((try FileManager.default.attributesOfItem(atPath: state.path)[.posixPermissions] as? Int) == 0o700)
+		#expect(FileManager.default.fileExists(atPath: state.appendingPathComponent(".gitignore").path))
+	}
+
+	@Test("a folder whose .lpm is the LPM home is never linked")
+	func linkRefusesTheLPMHome() throws {
+		let user = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: user) }
+		let home = LPMHome(url: user.appendingPathComponent(".lpm", isDirectory: true), userHome: user)
+
+		#expect(throws: ProjectCLILinkError.folderIsLPMHome) {
+			try ProjectCLILink.link(vaultId: vaultId, folder: user.path, home: home)
+		}
+		#expect(!FileManager.default.fileExists(atPath: user.appendingPathComponent("lpm.json").path))
+		#expect(!FileManager.default.fileExists(atPath: home.url.path), "Nothing is created in the LPM home")
+
+		try FileManager.default.createDirectory(at: home.url, withIntermediateDirectories: true)
+		let alias = user.appendingPathComponent("alias")
+		try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: user)
+		#expect(throws: ProjectCLILinkError.folderIsLPMHome) {
+			try ProjectCLILink.link(vaultId: vaultId, folder: alias.path, home: home)
+		}
+		#expect(!FileManager.default.fileExists(atPath: home.url.appendingPathComponent(".config.lock").path))
+	}
+
+	@Test("a linked .lpm that is a symbolic link is refused without following it")
+	func linkRefusesLinkedStateDirectory() throws {
+		let folder = try makeFolder()
+		let elsewhere = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder); try? FileManager.default.removeItem(at: elsewhere) }
+		try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent(".lpm"), withDestinationURL: elsewhere)
+
+		#expect(throws: ProjectCLILinkError.unsafeStateDirectory) { try ProjectCLILink.link(vaultId: vaultId, folder: folder.path) }
+		#expect(try FileManager.default.contentsOfDirectory(atPath: elsewhere.path).isEmpty)
+		#expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("lpm.json").path))
+	}
+
+	@Test("linking another vault drops the legacy sync state, which belongs to the vault it replaces", arguments: [
+		#"{"vault":"other-vault","vaultSync":{"revision":4},"runtime":{"node":"22"}}"#,
+		#"{"vaultSync":{"revision":4},"runtime":{"node":"22"}}"#,
+		#"{"vault":null,"vaultSync":{"revision":4},"vaultSync":{"revision":5},"runtime":{"node":"22"}}"#,
+	])
+	func linkDropsLegacySyncState(original: String) throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		try writeConfig(original, in: folder)
+
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path, replacingVaultId: original.contains("other-vault") ? "other-vault" : nil)
+		let config = try readConfig(in: folder)
+		#expect(config["vault"] as? String == vaultId)
+		#expect(config["vaultSync"] == nil)
+		#expect(config["runtime"] != nil)
+	}
+
+	@Test("relinking the same vault keeps its sync state")
+	func relinkKeepsLegacySyncState() throws {
+		let folder = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: folder) }
+		let original = #"{"vault":"\#(vaultId)","vaultSync":{"revision":4}}"#
+		try writeConfig(original, in: folder)
+
+		try ProjectCLILink.link(vaultId: vaultId, folder: folder.path)
+		#expect(try String(contentsOf: folder.appendingPathComponent("lpm.json"), encoding: .utf8) == original)
+	}
+
+	@Test("a folder inside a project resolves to the project, and the home folder stays a folder of its own")
+	func projectRootFollowsTheCLI() throws {
+		let user = try makeFolder()
+		defer { try? FileManager.default.removeItem(at: user) }
+		let home = LPMHome(url: user.appendingPathComponent(".lpm", isDirectory: true), userHome: user)
+		let project = user.appendingPathComponent("work/app", isDirectory: true)
+		try FileManager.default.createDirectory(at: project.appendingPathComponent("src/deep"), withIntermediateDirectories: true)
+		try Data("{}".utf8).write(to: project.appendingPathComponent("package.json"))
+		try Data("{}".utf8).write(to: user.appendingPathComponent("package.json"))
+
+		let inside = try #require(CLIFiles.projectRoot(for: project.appendingPathComponent("src/deep"), home: home))
+		#expect(inside.url.standardizedFileURL == project.standardizedFileURL)
+		#expect(inside.isProject && !inside.stateIsHome)
+
+		let loose = user.appendingPathComponent("work", isDirectory: true)
+		let outside = try #require(CLIFiles.projectRoot(for: loose, home: home))
+		#expect(outside.url.standardizedFileURL == loose.standardizedFileURL, "The home folder's package.json makes no project")
+		#expect(!outside.isProject)
+
+		let homeFolder = try #require(CLIFiles.projectRoot(for: user, home: home))
+		#expect(homeFolder.stateIsHome)
+	}
+
 	@Test("linking leaves malformed lpm.json untouched")
 	func linkRefusesMalformedConfig() throws {
 		let folder = try makeFolder()
