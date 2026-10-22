@@ -103,7 +103,7 @@ struct VaultLPMHomeSettingsSection: View {
 				HStack(spacing: 8) {
 					if !store.lpmHome.isDefault {
 						VaultBarButton(title: "Use Default", disabled: isWorking, height: 28) {
-							consider(LPMHome(defaultIn: store.lpmHome.userHome))
+							begin { await consider(LPMHome(defaultIn: store.lpmHome.userHome)) }
 						}
 					}
 					VaultBarButton(title: "Choose Folder…", disabled: isWorking, height: 28) { chooseFolder() }
@@ -135,32 +135,38 @@ struct VaultLPMHomeSettingsSection: View {
 
 	private func chooseFolder() {
 		guard let url = folderPicker() else { return }
-		guard let target = LPMHome.at(url, userHome: store.lpmHome.userHome) else {
-			problem = "LPM Vault can't use \((url.path as NSString).abbreviatingWithTildeInPath) as an LPM home."
-			return
+		begin {
+			guard let target = await store.lpmHome(at: url) else {
+				problem = "LPM Vault can't use \((url.path as NSString).abbreviatingWithTildeInPath) as an LPM home."
+				return
+			}
+			await consider(target)
 		}
-		consider(target)
+	}
+
+	/// Runs `work` with the buttons disabled, clearing the last problem first.
+	private func begin(_ work: @escaping @MainActor () async -> Void) {
+		problem = nil
+		isWorking = true
+		Task {
+			await work()
+			isWorking = false
+		}
 	}
 
 	/// Reads what the current home and `target` hold, then asks how to change to it.
-	private func consider(_ target: LPMHome) {
-		problem = nil
+	private func consider(_ target: LPMHome) async {
 		guard target.scope != store.lpmHome.scope else {
 			problem = "\(target.displayPath) is the LPM home LPM Vault uses already."
 			return
 		}
-		isWorking = true
-		let current = store.lpmHome
-		Task {
-			let found = await store.lpmHomeContents(target)
-			let held = await store.lpmHomeContents(current)
-			isWorking = false
-			guard let found, let held else {
-				problem = "LPM Vault couldn't read what the LPM homes hold, so it changed nothing."
-				return
-			}
-			change = Change(target: target, current: held, found: found)
+		let found = await store.lpmHomeContents(target)
+		let held = await store.lpmHomeContents(store.lpmHome)
+		guard let found, let held else {
+			problem = "LPM Vault couldn't read what the LPM homes hold, so it changed nothing."
+			return
 		}
+		change = Change(target: target, current: held, found: found)
 	}
 
 	private func confirmation(for change: Change) -> VaultConfirmation {
@@ -199,13 +205,10 @@ struct VaultLPMHomeSettingsSection: View {
 	}
 
 	private func apply(_ target: LPMHome, moving: Bool) {
-		isWorking = true
-		Task {
-			defer { isWorking = false }
+		begin {
 			do {
 				try await store.changeLPMHome(to: target, moving: moving)
 			} catch is CancellationError {
-				return
 			} catch {
 				problem = error.localizedDescription
 			}

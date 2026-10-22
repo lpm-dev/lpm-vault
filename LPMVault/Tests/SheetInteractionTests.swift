@@ -982,7 +982,12 @@ struct SheetInteractionTests {
 		let keychain = MemoryLPMHomeKeychain()
 		keychain.store("{}", service: "dev.lpm.vault", account: VaultKeychainRecordContract.projectMetadataPrefix + "vault-a")
 		keychain.store("token", service: "lpm-cli", account: "auth-token:abc")
-		store.lpmHomeKeychain = { _ in keychain }
+		store.lpmHomeMove = { _ in LPMHomeMove(shared: keychain, app: keychain) }
+		let placed = PoolObservation()
+		store.lpmHomeResolver = { url, userHome in
+			placed.record()
+			return LPMHome.at(url, userHome: userHome)
+		}
 		var relaunched = false
 		store.relaunch = { relaunched = true }
 		let chosen = user.appendingPathComponent("tools/lpm", isDirectory: true)
@@ -998,6 +1003,7 @@ struct SheetInteractionTests {
 		try await host.click("Move and Relaunch", in: sheet)
 
 		#expect(try await host.waitUntil { relaunched })
+		#expect(placed.stayedOffMainAndPool, "The chosen folder is placed off the main thread")
 		let target = try #require(LPMHome.at(chosen, userHome: user))
 		#expect(keychain.services == [target.service("dev.lpm.vault"), target.service("lpm-cli")].sorted())
 		#expect(defaults.string(forKey: LPMHome.preferenceKey) == target.url.path)

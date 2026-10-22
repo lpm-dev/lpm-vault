@@ -1105,13 +1105,18 @@ func isOnCooperativePool() -> Bool {
 /// Where blocking work ran, each time a test recorded it.
 final class PoolObservation: @unchecked Sendable {
 	private let lock = NSLock()
-	private var observations: [Bool] = []
+	private var observations: [(onPool: Bool, onMain: Bool)] = []
 
 	func record() {
-		let onPool = isOnCooperativePool()
-		lock.withLock { observations.append(onPool) }
+		let observation = (onPool: isOnCooperativePool(), onMain: pthread_main_np() != 0)
+		lock.withLock { observations.append(observation) }
 	}
 
 	/// Recorded at least once, and never on the cooperative pool.
-	var stayedOffPool: Bool { lock.withLock { !observations.isEmpty && !observations.contains(true) } }
+	var stayedOffPool: Bool { lock.withLock { !observations.isEmpty && !observations.contains { $0.onPool } } }
+
+	/// Recorded at least once, and never on the main thread or the cooperative pool.
+	var stayedOffMainAndPool: Bool {
+		lock.withLock { !observations.isEmpty && !observations.contains { $0.onPool || $0.onMain } }
+	}
 }

@@ -52,20 +52,24 @@ enum CLIFiles {
 
 	private static let maximumOutputBytes = 1024 * 1024
 
-	/// The suffix the CLI appends to its credential-store service names in the
-	/// LPM home at `url`, for the user whose home folder is `userHome`: nil for
-	/// that user's default home, `.lpm` in `userHome` however it's reached.
-	static func credentialScope(ofHomeAt url: URL, userHome: URL) throws(Refusal) -> String? {
+	/// The LPM home at `url`, for the user whose home folder is `userHome`, as the
+	/// CLI places it: where it is once links on the way are followed, and the
+	/// suffix the CLI appends to its credential-store service names there, nil
+	/// for that user's default home, `.lpm` in `userHome` however it's reached.
+	static func describeHome(at url: URL, userHome: URL) throws(Refusal) -> (identity: String, scope: String?) {
 		let result = url.path.withEngineBytes { home in
 			userHome.path.withEngineBytes { userHome in
 				lpm_env_describe_home(home.baseAddress, home.count, userHome.baseAddress, userHome.count)
 			}
 		}
 		let output = try decode(result).get()
+		guard case .string(let identity)? = output["identity"], identity.hasPrefix("/") else {
+			throw Refusal(code: "env.engine_internal", message: "The LPM engine returned an unreadable answer.")
+		}
 		switch (output["isDefault"], output["scope"]) {
-		case (.bool(true)?, .null?): return nil
+		case (.bool(true)?, .null?): return (identity, nil)
 		case (.bool(false)?, .string(let scope)?) where scope.utf8.count == 16 && scope.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }):
-			return scope
+			return (identity, scope)
 		default: throw Refusal(code: "env.engine_internal", message: "The LPM engine returned an unreadable answer.")
 		}
 	}

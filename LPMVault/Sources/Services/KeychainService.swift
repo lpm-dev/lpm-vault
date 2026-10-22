@@ -26,6 +26,19 @@ enum VaultKeychainTransactionLock {
 
 	private static let state = State()
 	private static let lockName = ".vault-keychain.lock"
+	private static let retirement = NSLock()
+	nonisolated(unsafe) private static var retiredHomes = Set<String>()
+
+	/// Makes every transaction lock taken in `home` from now on refuse, as one
+	/// that waited out a move must not write into the home the app left. Called
+	/// while the move still holds the home's lock.
+	static func retire(_ home: LPMHome) {
+		retirement.withLock { _ = retiredHomes.insert(home.url.path) }
+	}
+
+	private static func isRetired(_ home: LPMHome) -> Bool {
+		retirement.withLock { retiredHomes.contains(home.url.path) }
+	}
 
 	private static func validateDirectory(
 		_ descriptor: Int32,
@@ -234,6 +247,7 @@ enum VaultKeychainTransactionLock {
 				in: directoryDescriptor,
 				requireSecurePermissions: true
 			)
+			if isRetired(home) { throw KeychainStoreError.homeRetired }
 			return descriptor
 		} catch {
 			if isLocked { _ = flock(descriptor, LOCK_UN) }
@@ -400,6 +414,8 @@ enum KeychainStoreError: Error, LocalizedError, Equatable, Sendable {
 	case projectDiscoveryCapacity
 	case dataTooLarge(Int)
 	case transactionOutcomeIndeterminate
+	/// The app moved to another LPM home, whose relaunch hasn't happened yet.
+	case homeRetired
 
 	var errorDescription: String? {
 		switch self {
@@ -417,6 +433,8 @@ enum KeychainStoreError: Error, LocalizedError, Equatable, Sendable {
 			"Env project data too large: \(byteCount) bytes (Keychain limit ~100KB)."
 		case .transactionOutcomeIndeterminate:
 			"The Keychain transaction may have committed and must be recovered before another write."
+		case .homeRetired:
+			"LPM Vault moved to another LPM home and is relaunching to use it, so nothing was saved here."
 		}
 	}
 
@@ -1984,7 +2002,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	init() {
 		self.store = SharedKeychainStore(service: LPMHome.current.service(VaultConstants.keychainService))
 		self.appItemBackends = Dictionary(uniqueKeysWithValues: AppKeychainStore.allCases.map {
-			($0, AppKeychainBackend(service: $0.service))
+			($0, AppKeychainBackend(service: $0.service(in: .current)))
 		})
 	}
 

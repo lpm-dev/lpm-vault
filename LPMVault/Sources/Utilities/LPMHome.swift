@@ -26,14 +26,14 @@ struct LPMHome: Equatable, Sendable {
 	}
 
 	/// The home at `url`, an absolute path, as the CLI with `LPM_HOME` set to it
-	/// would use it; nil when the engine can't place it.
+	/// would use it, kept where it is once links on the way are followed, as the
+	/// CLI opens it; nil when the engine can't place it. Blocking file work.
 	static func at(_ url: URL, userHome: URL = FileManager.default.homeDirectoryForCurrentUser) -> LPMHome? {
 		guard url.isFileURL, url.path.hasPrefix("/") else { return nil }
-		let directory = URL(fileURLWithPath: url.standardized.path, isDirectory: true)
-		let scope: String?
-		do { scope = try CLIFiles.credentialScope(ofHomeAt: directory, userHome: userHome) } catch { return nil }
-		guard let scope else { return LPMHome(defaultIn: userHome) }
-		return LPMHome(url: directory, userHome: userHome, scope: scope)
+		let description: (identity: String, scope: String?)
+		do { description = try CLIFiles.describeHome(at: url, userHome: userHome) } catch { return nil }
+		guard let scope = description.scope else { return LPMHome(defaultIn: userHome) }
+		return LPMHome(url: URL(fileURLWithPath: description.identity, isDirectory: true), userHome: userHome, scope: scope)
 	}
 
 	/// `~/.lpm`.
@@ -83,6 +83,28 @@ struct LPMHome: Equatable, Sendable {
 			let home = record["home"] as? String, let items = record["items"] as? [String], !items.isEmpty
 		else { return nil }
 		return (home, items)
+	}
+
+	/// The preference that names the homes a move runs between until it ends,
+	/// so an unlock after one that didn't removes the copies it left.
+	static let moveKey = "lpm-vault-lpm-home-move"
+
+	/// Keeps, until `endMove(in:)`, that a move from `source` to `target` runs.
+	static func beginMove(from source: LPMHome, to target: LPMHome, in preferences: UserDefaults) {
+		preferences.set(["from": source.url.path, "to": target.url.path], forKey: moveKey)
+	}
+
+	static func endMove(in preferences: UserDefaults) {
+		preferences.removeObject(forKey: moveKey)
+	}
+
+	/// The folders of the homes a move ran between, when one didn't end.
+	static func unfinishedMove(in preferences: UserDefaults) -> (from: URL, to: URL)? {
+		guard let record = preferences.dictionary(forKey: moveKey),
+			let from = record["from"] as? String, let to = record["to"] as? String,
+			from.hasPrefix("/"), to.hasPrefix("/")
+		else { return nil }
+		return (URL(fileURLWithPath: from, isDirectory: true), URL(fileURLWithPath: to, isDirectory: true))
 	}
 
 	var isDefault: Bool { scope == nil }

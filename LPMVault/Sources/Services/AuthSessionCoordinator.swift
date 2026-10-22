@@ -265,16 +265,71 @@ struct AuthSessionCoordinator: Sendable {
 		return kind.authorityID(registryURL: registryURL)
 	}
 
-	/// Runs `operation` holding the credential-store lock of `home`, which the
-	/// app and the CLI take to change the login state there.
-	static func withCredentialStoreLock<T: Sendable>(
-		in home: LPMHome,
+	/// Runs `operation` holding every login lock of `home`, so no sign-in,
+	/// refresh or sign-out there runs meanwhile: each registry's session lock,
+	/// which a refresh holds across its request to the server, then the
+	/// credential-store lock, in the order the app and the CLI take them.
+	static func withLoginLocks<T: Sendable>(
+		of home: LPMHome,
 		_ operation: @escaping @Sendable () async throws -> T
 	) async throws -> T {
-		let lock = home.url
-			.appendingPathComponent("locks", isDirectory: true)
-			.appendingPathComponent(sessionLockName(registryURL: credentialStoreRegistry))
-		return try await CrossProcessFileLock.withExclusive(at: lock, operation: operation)
+		let folder = home.url.appendingPathComponent("locks", isDirectory: true)
+		let store = sessionLockName(registryURL: credentialStoreRegistry)
+		let names: [String]
+		do {
+			names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+		} catch CocoaError.fileReadNoSuchFile {
+			names = []
+		} catch {
+			throw AuthSessionCoordinatorError.stateFile("Could not list the login locks in \(home.displayPath).")
+		}
+		let sessions = names.filter { $0.hasPrefix("auth-session-") && $0.hasSuffix(".lock") && $0 != store }.sorted()
+		return try await holding((sessions + [store]).map { folder.appendingPathComponent($0) }, operation)
+	}
+
+	private static func holding<T: Sendable>(
+		_ locks: [URL],
+		_ operation: @escaping @Sendable () async throws -> T
+	) async throws -> T {
+		guard let first = locks.first else { return try await operation() }
+		let rest = Array(locks.dropFirst())
+		return try await CrossProcessFileLock.withExclusive(at: first) { try await holding(rest, operation) }
+	}
+
+	/// Moves each login an older LPM version kept in the login keychain into
+	/// the shared Keychain, as reading one does, so a move of the home takes
+	/// them all. A login whose credential can't be found there is an error.
+	/// Run while holding the home's login locks.
+	func upgradeLegacyCredentialsHoldingLocks() throws {
+		var store = try readAuthorityStoreChecked()
+		let legacy = store.credentials.filter { $0.value.state == "active" && $0.value.backend == "keychain" }
+		guard !legacy.isEmpty else { return }
+		var byDigest: [String: (account: String, credential: String)] = [:]
+		for account in try credentialBackend.legacyAccounts() {
+			guard let credential = try credentialBackend.readLegacy(account: account) else { continue }
+			byDigest[SHA256.hash(data: Data(credential.utf8)).hexString] = (account, credential)
+		}
+		var upgraded: [(id: String, account: String, credential: String, cleanupPending: Bool)] = []
+		for (id, record) in legacy.sorted(by: { $0.key < $1.key }) {
+			guard let digest = record.credentialDigest, let found = byDigest[digest] else {
+				throw AuthSessionCoordinatorError.credentialStorage(
+					"A login an older LPM version saved is missing from the login keychain. Sign out and back in, then move the LPM home."
+				)
+			}
+			try credentialBackend.write(found.credential, account: found.account)
+			guard try credentialBackend.read(account: found.account) == found.credential else {
+				throw AuthSessionCoordinatorError.credentialStorage("Shared Keychain migration verification failed.")
+			}
+			let cleanupPending = record.staleFileCleanupPending == true
+			store.credentials[id] = .activeKeychain(found.credential, cleanupPending: cleanupPending, legacyCleanupPending: true)
+			upgraded.append((id, found.account, found.credential, cleanupPending))
+		}
+		try writeAuthorityStore(store)
+		for login in upgraded {
+			try credentialBackend.deleteLegacy(account: login.account)
+			store.credentials[login.id] = .activeKeychain(login.credential, cleanupPending: login.cleanupPending)
+		}
+		try writeAuthorityStore(store)
 	}
 
 	func sessionLockURL(registryURL: String) -> URL {
@@ -1110,7 +1165,14 @@ enum CrossProcessFileLock {
 
 	/// How many tasks in this process are waiting for the lock at `path`.
 	static func waitingTasks(at path: URL) async -> Int {
-		await processGate.queuedNodeCount(path: path.standardizedFileURL.path)
+		await processGate.queuedNodeCount(path: gateKey(path))
+	}
+
+	/// The in-process queue `path` waits in. Lexical, unlike
+	/// `standardizedFileURL`, which drops a `/private` prefix only once the
+	/// file exists, so waiters before and after its creation would queue apart.
+	private static func gateKey(_ path: URL) -> String {
+		path.standardized.path
 	}
 
 	static func withExclusive<T: Sendable>(
@@ -1118,7 +1180,7 @@ enum CrossProcessFileLock {
 		operation: @escaping @Sendable () async throws -> T
 	) async throws -> T {
 		let gateID = UUID()
-		let gatePath = path.standardizedFileURL.path
+		let gatePath = gateKey(path)
 		let gateCancellation = LockAcquisitionCancellation()
 		try await withTaskCancellationHandler {
 			try await processGate.acquire(
