@@ -49,6 +49,7 @@ struct VaultWorkspaceView: View {
 	@State private var isImportDropTargeted = false
 	@State private var hostWindow = VaultHostWindow()
 	@State private var exportTask: Task<Void, Never>?
+	@State private var exportNotice: ExportNotice?
 	@State private var exportID: UUID?
 	@State private var copyAllTask: Task<Void, Never>?
 	@State private var copyAllID: UUID?
@@ -748,11 +749,27 @@ struct VaultWorkspaceView: View {
 				cancelTitle: nil,
 				actions: [.init(title: "OK") {}])
 		}
+		.vaultConfirmation(item: $exportNotice) { notice in
+			VaultConfirmation(
+				symbol: "exclamationmark.triangle",
+				tone: .warning,
+				title: "Exported \(notice.file), but check git",
+				message: notice.warnings.joined(separator: "\n"),
+				cancelTitle: nil,
+				actions: [.init(title: "OK") {}])
+		}
 	}
 
 	private struct ShownError: Identifiable {
 		let message: String
 		var id: String { message }
+	}
+
+	/// What the user should know about a finished export, such as an ignore rule git couldn't confirm.
+	private struct ExportNotice: Identifiable {
+		let file: String
+		let warnings: [String]
+		var id: String { file + warnings.joined() }
 	}
 
 	/// An environment the confirmation acts on, as the sidebar shows it: its color, its name, its keys and its project.
@@ -1184,11 +1201,15 @@ struct VaultWorkspaceView: View {
 				}
 			}
 			do {
-				try await store.exportEnvironment(
+				let warnings = try await store.exportEnvironment(
 					projectId: context.projectID,
 					environment: environment,
 					to: url
 				)
+				guard !warnings.isEmpty, VaultTaskOwnership.owns(current: exportID, request: requestID),
+					context.isCurrent(in: store)
+				else { return }
+				exportNotice = ExportNotice(file: url.lastPathComponent, warnings: warnings)
 			} catch is CancellationError {
 				return
 			} catch {

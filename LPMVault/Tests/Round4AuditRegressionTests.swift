@@ -521,7 +521,7 @@ extension VaultStoreTests {
 	@Test("dotenv export work runs off the cooperative pool, which blocking work must never hold")
 	func dotenvExportIsOffCooperativePool() async throws {
 		let pool = PoolObservation()
-		let service = EnvFileExportService { _, _, _ in pool.record() }
+		let service = EnvFileExportService(worker: { _, _, _ in pool.record() }, preparer: { _, _ in [] })
 		try await service.export(
 			secrets: ["TOKEN": "secret"],
 			to: FileManager.default.temporaryDirectory.appendingPathComponent("unused.env")
@@ -533,9 +533,9 @@ extension VaultStoreTests {
 	@MainActor
 	func dotenvExportDoesNotBlockMainActor() async throws {
 		let observation = Round4ThreadObservation()
-		let service = EnvFileExportService { _, _, _ in
+		let service = EnvFileExportService(worker: { _, _, _ in
 			observation.recordMainThread(Thread.isMainThread)
-		}
+		}, preparer: { _, _ in [] })
 
 		try await service.export(
 			secrets: ["TOKEN": "secret"],
@@ -2193,14 +2193,14 @@ extension VaultStoreTests {
 	@Test("dotenv exports use bounded background admission")
 	func dotenvExportAdmissionIsBounded() async {
 		let tracker = Round4ExportTracker()
-		let service = EnvFileExportService { _, destination, _ in
+		let service = EnvFileExportService(worker: { _, destination, _ in
 			tracker.enter(index: Int(destination.lastPathComponent) ?? -1)
 			defer { tracker.leave() }
 			tracker.waitForRelease()
-		}
+		}, preparer: { _, _ in [] })
 		let tasks = (0..<12).map { index in
 			Task {
-				try? await service.export(
+				_ = try? await service.export(
 					secrets: ["TOKEN": "secret"],
 					to: URL(fileURLWithPath: "/tmp/\(index)")
 				)

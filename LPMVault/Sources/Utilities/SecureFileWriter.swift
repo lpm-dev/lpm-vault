@@ -23,13 +23,47 @@ final class EnvFileExportAuthorization: @unchecked Sendable {
 	}
 }
 
+/// Why an export wrote nothing: git would have committed the file.
+enum EnvFileExportError: LocalizedError, Equatable, Sendable {
+	/// Git tracks the file; `untrack` holds the commands that untrack it.
+	case trackedByGit(file: String, untrack: String)
+	/// The file couldn't be kept out of git, for `reason`.
+	case notKeptOutOfGit(reason: String)
+
+	var errorDescription: String? {
+		switch self {
+		case .trackedByGit(let file, let untrack):
+			"Git tracks \(file), so the secrets exported there would be committed. Untrack it with \(untrack), then export again."
+		case .notKeptOutOfGit(let reason):
+			"\(reason.prefix(1).uppercased())\(reason.dropFirst()). Nothing was exported."
+		}
+	}
+}
+
 struct EnvFileExportService: Sendable {
 	typealias Worker =
 		@Sendable ([String: String], URL, EnvFileExportAuthorization) throws -> Void
+	/// Keeps the destination out of git before anything is written, given the
+	/// project folder; returns what the user should know.
+	typealias Preparer = @Sendable (_ destination: URL, _ project: URL) throws -> [String]
 	static let shared = EnvFileExportService()
 
 	private let admission: EnvFileExportAdmission
+	private let preparer: Preparer
 	private let worker: Worker
+
+	/// Readies the destination as `lpm env export` does, through the CLI's own
+	/// code: git is made to ignore it, and a file git tracks is refused.
+	static let keepOutOfGit: Preparer = { destination, project in
+		do throws(CLIFiles.Refusal) {
+			return try CLIFiles.prepareSecretFile(at: destination, project: project).warnings
+		} catch {
+			if error.code == "env.secret_tracked" {
+				throw EnvFileExportError.trackedByGit(file: destination.lastPathComponent, untrack: error.untrack ?? "`git rm --cached`")
+			}
+			throw EnvFileExportError.notKeptOutOfGit(reason: error.message)
+		}
+	}
 
 	init(
 		maximumConcurrentExports: Int = 2,
@@ -42,17 +76,24 @@ struct EnvFileExportService: Sendable {
 				to: destination,
 				authorization: authorization
 			)
-		}
+		},
+		preparer: @escaping Preparer = keepOutOfGit
 	) {
 		self.admission = EnvFileExportAdmission(limit: maximumConcurrentExports)
+		self.preparer = preparer
 		self.worker = worker
 	}
 
+	/// Writes `secrets` to `destination`, kept out of git first for the project
+	/// in `projectFolder`, or else for the destination's own folder, as `lpm
+	/// env export` run there would be. Returns what the user should know.
+	@discardableResult
 	func export(
 		secrets: [String: String],
 		to destination: URL,
+		projectFolder: String = "",
 		authorization: EnvFileExportAuthorization = EnvFileExportAuthorization()
-	) async throws {
+	) async throws -> [String] {
 		try authorization.check()
 		try await admission.acquire()
 		do {
@@ -63,15 +104,24 @@ struct EnvFileExportService: Sendable {
 		}
 
 		do {
-			try await withTaskCancellationHandler {
-				try await BlockingWork.run { [worker] in
+			let warnings = try await withTaskCancellationHandler {
+				try await BlockingWork.run { [preparer, worker] in
+					try authorization.check()
+					var isDirectory: ObjCBool = false
+					let project = !projectFolder.isEmpty
+						&& FileManager.default.fileExists(atPath: projectFolder, isDirectory: &isDirectory) && isDirectory.boolValue
+						? URL(fileURLWithPath: projectFolder, isDirectory: true)
+						: destination.deletingLastPathComponent()
+					let warnings = try preparer(destination, project)
 					try authorization.check()
 					try worker(secrets, destination, authorization)
+					return warnings
 				}
 			} onCancel: {
 				authorization.invalidate()
 			}
 			await admission.release()
+			return warnings
 		} catch {
 			authorization.invalidate()
 			await admission.release()
