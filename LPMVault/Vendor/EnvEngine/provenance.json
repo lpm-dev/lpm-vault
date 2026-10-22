@@ -7,7 +7,7 @@
     "LPMEnv.xcframework/macos-arm64_x86_64/libLPMEnv.a": "0318a1d63c40deefc7e02ca989171850ca02ff3419f6fb77b6f0700c3e654eb9"
   },
   "repository": "https://github.com/lpm-dev/rust-client",
-  "revision": "fd03fd16e9a325a73c32e04a6f7eefe2e9e68521",
+  "revision": "5972fb8ddefc2515824f9f48ed8cb18ae4e9d402",
   "sources": {
     ".cargo/config.toml": "fccee23445e297786f527a4c0ae0b0171ba8bc5bf7c3ce001fd1f2c81f624ece",
     "Cargo.lock": "9d3c00f6af4109e74db91a4981ab9fab54eb3be01e58ec7d0e73ee8d553a6460",
