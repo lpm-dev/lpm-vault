@@ -36,7 +36,43 @@ enum CLIFiles {
 		let stateIsHome: Bool
 	}
 
+	/// Why git could commit what an LPM home holds.
+	struct HomeExposure: Equatable, Sendable {
+		let reason: String
+		/// Whether the home is a repository's root, which only moving the home keeps out of git.
+		let atRepositoryRoot: Bool
+
+		/// Why the `contents` saved in the home could be committed, and what keeps them out.
+		func explanation(of contents: String) -> String {
+			let remedy = atRepositoryRoot
+				? "Use an LPM home outside the repository."
+				: "Give it a .gitignore that ignores everything (*), or use an LPM home outside the repository."
+			return "\(reason), so git could commit the \(contents) saved there. \(remedy)"
+		}
+	}
+
 	private static let maximumOutputBytes = 1024 * 1024
+
+	/// Creates `home` owner-only where it is missing and keeps it out of git
+	/// with a `.gitignore` that ignores everything, as the CLI does before it
+	/// writes login or env state there. Returns why git could still commit
+	/// what the home holds, where a repository around it could; nothing that
+	/// adds login or env state may be written there then.
+	static func prepareHome(_ home: LPMHome) throws(Refusal) -> HomeExposure? {
+		let result = home.url.path.withEngineBytes { home in
+			lpm_env_prepare_home(home.baseAddress, home.count)
+		}
+		switch decode(result) {
+		case .success(let output):
+			guard let exposed = output["exposed"], exposed != .null else { return nil }
+			guard case .string(let reason)? = exposed["reason"], case .bool(let atRoot)? = exposed["atRepositoryRoot"] else {
+				throw Refusal(code: "env.engine_internal", message: "The LPM engine returned an unreadable answer.")
+			}
+			return HomeExposure(reason: reason, atRepositoryRoot: atRoot)
+		case .failure(let refusal):
+			throw refusal
+		}
+	}
 
 	/// The project the CLI acts on for `folder`, with `home` as the LPM home;
 	/// nil when the engine can't tell.

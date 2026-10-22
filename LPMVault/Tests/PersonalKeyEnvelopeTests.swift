@@ -220,6 +220,33 @@ struct PersonalKeyEnvelopeTests {
     #expect(files.filter { $0.lastPathComponent.hasPrefix(".env-project-key-floor-") }.count == 1)
   }
 
+  @Test("checkpoints are kept out of git, and an LPM home git could commit takes no new one")
+  func keyCheckpointsStayOutOfGit() throws {
+    let home = try temporaryHome()
+    defer { try? FileManager.default.removeItem(at: home) }
+    func advance(to next: Int) throws -> Int {
+      try PersonalProjectCrypto.checkpoint(
+        registryURL: "https://lpm.dev", principalID: "user-a", vaultID: "project-a", advanceTo: next,
+        homeURL: home)
+    }
+    #expect(try advance(to: 2) == 2)
+    let lpmDirectory = home.appendingPathComponent(".lpm")
+    #expect(try String(contentsOf: lpmDirectory.appendingPathComponent(".gitignore"), encoding: .utf8)
+      == "# LPM's machine-local state. Nothing here belongs in git.\n*\n")
+
+    // A repository around the home whose ignore file there doesn't ignore everything.
+    try FileManager.default.createDirectory(at: home.appendingPathComponent(".git"), withIntermediateDirectories: true)
+    try Data("cache/\n".utf8).write(to: lpmDirectory.appendingPathComponent(".gitignore"))
+    #expect {
+      try advance(to: 3)
+    } throws: { error in
+      guard case PersonalProjectCrypto.KeyError.homeInRepository(let explanation) = error else { return false }
+      return explanation.contains("git could commit the personal env key checkpoints saved there")
+    }
+    #expect(try PersonalProjectCrypto.checkpoint(
+      registryURL: "https://lpm.dev", principalID: "user-a", vaultID: "project-a", homeURL: home) == 2)
+  }
+
   @Test(
     "checkpoints reject symlinks, hard links, malformed data, and loose file permissions",
     arguments: ["symlink", "hardlink", "mode", "malformed", "directory", "fifo"])

@@ -324,7 +324,9 @@ enum SecureFileWriter {
 		return nil
 	}
 
-	private static func removeExtendedACL(from descriptor: Int32) -> Int32? {
+	/// Removes every extended access list entry from an open file, such as
+	/// those it inherited from its directory; returns the errno on failure.
+	static func removeExtendedACL(from descriptor: Int32) -> Int32? {
 		guard let acl = acl_init(0) else { return errno }
 		defer { acl_free(UnsafeMutableRawPointer(acl)) }
 		guard acl_set_fd_np(descriptor, acl, ACL_TYPE_EXTENDED) == 0 else { return errno }
