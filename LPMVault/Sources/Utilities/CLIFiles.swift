@@ -1,20 +1,6 @@
 import Foundation
 import LPMEnv
 
-/// The LPM home: the directory where the LPM CLI keeps login and env state.
-struct LPMHome: Equatable, Sendable {
-	let url: URL
-	/// The home folder of the user it belongs to. The CLI never takes it, or a
-	/// folder above it, for a project.
-	let userHome: URL
-
-	/// `~/.lpm`, the home the CLI uses unless `LPM_HOME` names another.
-	static var standard: LPMHome {
-		let userHome = FileManager.default.homeDirectoryForCurrentUser
-		return LPMHome(url: userHome.appendingPathComponent(".lpm", isDirectory: true), userHome: userHome)
-	}
-}
-
 /// The LPM home and project files, handled by the LPM CLI's own code in the
 /// bundled engine, so the app keeps them exactly as the CLI does.
 enum CLIFiles {
@@ -65,6 +51,24 @@ enum CLIFiles {
 	}
 
 	private static let maximumOutputBytes = 1024 * 1024
+
+	/// The suffix the CLI appends to its credential-store service names in the
+	/// LPM home at `url`, for the user whose home folder is `userHome`: nil for
+	/// that user's default home, `.lpm` in `userHome` however it's reached.
+	static func credentialScope(ofHomeAt url: URL, userHome: URL) throws(Refusal) -> String? {
+		let result = url.path.withEngineBytes { home in
+			userHome.path.withEngineBytes { userHome in
+				lpm_env_describe_home(home.baseAddress, home.count, userHome.baseAddress, userHome.count)
+			}
+		}
+		let output = try decode(result).get()
+		switch (output["isDefault"], output["scope"]) {
+		case (.bool(true)?, .null?): return nil
+		case (.bool(false)?, .string(let scope)?) where scope.utf8.count == 16 && scope.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }):
+			return scope
+		default: throw Refusal(code: "env.engine_internal", message: "The LPM engine returned an unreadable answer.")
+		}
+	}
 
 	/// Creates `home` owner-only where it is missing and keeps it out of git
 	/// with a `.gitignore` that ignores everything, as the CLI does before it

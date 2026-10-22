@@ -26,10 +26,10 @@ enum VaultKeychainTransactionLock {
 
 	private static let state = State()
 	private static let lockName = ".vault-keychain.lock"
-	private static let directoryName = ".lpm"
 
 	private static func validateDirectory(
 		_ descriptor: Int32,
+		named directoryName: String,
 		in homeDescriptor: Int32
 	) throws {
 		var descriptorMetadata = stat()
@@ -135,24 +135,25 @@ enum VaultKeychainTransactionLock {
 		state.recoveredStores.insert(ObjectIdentifier(store))
 	}
 
-	/// Opens and locks the transaction lock the CLI shares, in the LPM home in
-	/// `homeURL`, which is first kept out of git as the CLI keeps it. The lock
-	/// holds nothing, so it is taken where git could commit the home too.
+	/// Opens and locks the transaction lock the CLI shares, in `home`, which is
+	/// first kept out of git as the CLI keeps it. The lock holds nothing, so it
+	/// is taken where git could commit the home too.
 	static func openLockFile(
-		homeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+		home: LPMHome = .current,
 		beforeLock: () throws -> Void = {}
 	) throws -> Int32 {
 		do {
-			_ = try CLIFiles.prepareHome(LPMHome(url: homeURL.appendingPathComponent(directoryName, isDirectory: true), userHome: homeURL))
+			_ = try CLIFiles.prepareHome(home)
 		} catch {
 			throw KeychainStoreError.status(operation: "prepare the LPM home: \(error.message)", code: OSStatus(EPERM))
 		}
-		let homeDescriptor = homeURL.withUnsafeFileSystemRepresentation { path in
+		let directoryName = home.url.lastPathComponent
+		let homeDescriptor = home.url.deletingLastPathComponent().withUnsafeFileSystemRepresentation { path in
 			guard let path else { return Int32(-1) }
 			return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
 		}
 		guard homeDescriptor >= 0 else {
-			throw KeychainStoreError.status(operation: "open home directory", code: OSStatus(errno))
+			throw KeychainStoreError.status(operation: "open the LPM home's folder", code: OSStatus(errno))
 		}
 		defer { _ = Darwin.close(homeDescriptor) }
 
@@ -191,7 +192,7 @@ enum VaultKeychainTransactionLock {
 				0o600
 			)
 		}
-		try validateDirectory(directoryDescriptor, in: homeDescriptor)
+		try validateDirectory(directoryDescriptor, named: directoryName, in: homeDescriptor)
 		guard descriptor >= 0 else {
 			throw KeychainStoreError.status(
 				operation: "open transaction lock", code: OSStatus(errno))
@@ -213,9 +214,9 @@ enum VaultKeychainTransactionLock {
 				in: directoryDescriptor,
 				requireSecurePermissions: true
 			)
-			try validateDirectory(directoryDescriptor, in: homeDescriptor)
+			try validateDirectory(directoryDescriptor, named: directoryName, in: homeDescriptor)
 			try beforeLock()
-			try validateDirectory(directoryDescriptor, in: homeDescriptor)
+			try validateDirectory(directoryDescriptor, named: directoryName, in: homeDescriptor)
 			try validateLockFile(
 				descriptor,
 				in: directoryDescriptor,
@@ -227,7 +228,7 @@ enum VaultKeychainTransactionLock {
 					operation: "acquire transaction lock", code: OSStatus(errno))
 			}
 			isLocked = true
-			try validateDirectory(directoryDescriptor, in: homeDescriptor)
+			try validateDirectory(directoryDescriptor, named: directoryName, in: homeDescriptor)
 			try validateLockFile(
 				descriptor,
 				in: directoryDescriptor,
@@ -491,7 +492,7 @@ private final class KeychainAuthenticationContext: @unchecked Sendable {
 	}
 }
 
-struct SecurityKeychainStoreBackend: KeychainStoreBackend {
+struct SecurityKeychainStoreBackend: KeychainStoreBackend, LPMHomeKeychain {
 	private let authentication = KeychainAuthenticationContext()
 
 	func setAuthenticationContext(_ context: LAContext?) {
@@ -616,6 +617,32 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend {
 		}
 		return readings
 	}
+	/// Every account of `service` in the shared group with its CLI access, read
+	/// from item attributes alone, so no value is read and no approval asked.
+	func accounts(service: String) throws -> [String: VaultCliAccess] {
+		var query = Self.scopedQuery(service: service)
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitAll
+		query[kSecUseAuthenticationContext as String] = authentication.current()
+		var result: CFTypeRef?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		if status == errSecItemNotFound { return [:] }
+		guard status == errSecSuccess else {
+			throw KeychainStoreError.status(operation: "list \(service)", code: status)
+		}
+		guard let records = result as? [[String: Any]] else {
+			throw KeychainStoreError.integrityValidationFailed
+		}
+		var accounts = [String: VaultCliAccess](minimumCapacity: records.count)
+		for attributes in records {
+			guard let account = attributes[kSecAttrAccount as String] as? String, accounts[account] == nil else {
+				throw KeychainStoreError.integrityValidationFailed
+			}
+			accounts[account] = try Self.cliAccess(attributes: attributes)
+		}
+		return accounts
+	}
+
 	private static func scopedQuery(service: String) -> [String: Any] {
 		[
 			kSecClass as String: kSecClassGenericPassword,
@@ -1955,7 +1982,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	private let appItemBackends: [AppKeychainStore: any AppKeychainItemBackend]
 
 	init() {
-		self.store = SharedKeychainStore(service: VaultConstants.keychainService)
+		self.store = SharedKeychainStore(service: LPMHome.current.service(VaultConstants.keychainService))
 		self.appItemBackends = Dictionary(uniqueKeysWithValues: AppKeychainStore.allCases.map {
 			($0, AppKeychainBackend(service: $0.service))
 		})

@@ -119,6 +119,7 @@ struct VaultSettingsPage: View {
 	@ViewBuilder
 	private var appSettings: some View {
 		settingsSection("GENERAL") { VaultGeneralSettingsSection() }
+		settingsSection("LPM HOME") { VaultLPMHomeSettingsSection(store: store) }
 		settingsSection("APPEARANCE") { VaultAppearanceSettingsSection() }
 		settingsSection("UPDATES") { VaultUpdateSettingsSection() }
 	}

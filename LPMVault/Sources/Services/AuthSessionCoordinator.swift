@@ -213,12 +213,28 @@ struct AuthSessionCoordinator: Sendable {
 	/// git could commit it anyway. Blocking file work.
 	typealias HomePreparer = @Sendable (LPMHome) throws -> CLIFiles.HomeExposure?
 
-	let homeDirectory: URL
+	/// The LPM home whose login state this coordinates.
+	let home: LPMHome
 	let credentialBackend: any AuthCredentialBackend
 	let refreshOperation: RefreshOperation
 	let now: @Sendable () -> Date
 	let homePreparer: HomePreparer
 
+	init(
+		home: LPMHome,
+		credentialBackend: any AuthCredentialBackend,
+		refreshOperation: @escaping RefreshOperation,
+		now: @escaping @Sendable () -> Date = Date.init,
+		homePreparer: @escaping HomePreparer = { try CLIFiles.prepareHome($0) }
+	) {
+		self.home = home
+		self.credentialBackend = credentialBackend
+		self.refreshOperation = refreshOperation
+		self.now = now
+		self.homePreparer = homePreparer
+	}
+
+	/// The coordinator of `homeDirectory`'s default LPM home, `.lpm` in it.
 	init(
 		homeDirectory: URL,
 		credentialBackend: any AuthCredentialBackend,
@@ -226,11 +242,9 @@ struct AuthSessionCoordinator: Sendable {
 		now: @escaping @Sendable () -> Date = Date.init,
 		homePreparer: @escaping HomePreparer = { try CLIFiles.prepareHome($0) }
 	) {
-		self.homeDirectory = homeDirectory
-		self.credentialBackend = credentialBackend
-		self.refreshOperation = refreshOperation
-		self.now = now
-		self.homePreparer = homePreparer
+		self.init(
+			home: LPMHome(defaultIn: homeDirectory), credentialBackend: credentialBackend,
+			refreshOperation: refreshOperation, now: now, homePreparer: homePreparer)
 	}
 
 	static func accessAccount(registryURL: String) -> String {
@@ -249,6 +263,18 @@ struct AuthSessionCoordinator: Sendable {
 	static func authorityID(kind: String, registryURL: String) -> String? {
 		guard let kind = CredentialKind(rawValue: kind) else { return nil }
 		return kind.authorityID(registryURL: registryURL)
+	}
+
+	/// Runs `operation` holding the credential-store lock of `home`, which the
+	/// app and the CLI take to change the login state there.
+	static func withCredentialStoreLock<T: Sendable>(
+		in home: LPMHome,
+		_ operation: @escaping @Sendable () async throws -> T
+	) async throws -> T {
+		let lock = home.url
+			.appendingPathComponent("locks", isDirectory: true)
+			.appendingPathComponent(sessionLockName(registryURL: credentialStoreRegistry))
+		return try await CrossProcessFileLock.withExclusive(at: lock, operation: operation)
 	}
 
 	func sessionLockURL(registryURL: String) -> URL {
@@ -482,9 +508,7 @@ struct AuthSessionCoordinator: Sendable {
 			registryURL: registryURL
 		)
 	}
-	private var lpmDirectory: URL {
-		homeDirectory.appendingPathComponent(".lpm", isDirectory: true)
-	}
+	private var lpmDirectory: URL { home.url }
 
 	private var authorityURL: URL {
 		lpmDirectory.appendingPathComponent(".credential-authority.json")
@@ -928,7 +952,7 @@ struct AuthSessionCoordinator: Sendable {
 	/// owner-only and kept out of git. Returns why git could commit it anyway.
 	private func prepareLPMHome() throws -> CLIFiles.HomeExposure? {
 		do {
-			return try homePreparer(LPMHome(url: lpmDirectory, userHome: homeDirectory))
+			return try homePreparer(home)
 		} catch let refusal as CLIFiles.Refusal {
 			throw AuthSessionCoordinatorError.stateFile(refusal.message)
 		}

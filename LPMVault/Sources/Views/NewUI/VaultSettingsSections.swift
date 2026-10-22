@@ -75,6 +75,156 @@ struct VaultUpdateSettingsSection: View {
 	}
 }
 
+/// Where the LPM CLI keeps login and env projects, as the Settings page's LPM
+/// Home card shows it, and the change to another home, which moves what the
+/// current one holds there and relaunches the app.
+struct VaultLPMHomeSettingsSection: View {
+	@Bindable var store: VaultStore
+	var folderPicker: @MainActor () -> URL? = Self.pickFolder
+
+	/// A home to change to, with what it and the current one hold.
+	struct Change: Identifiable {
+		let target: LPMHome
+		let current: LPMHomeMove.Contents
+		let found: LPMHomeMove.Contents
+		var id: String { target.url.path + (target.scope ?? "") }
+	}
+
+	@State private var change: Change?
+	@State private var problem: String?
+	@State private var isWorking = false
+	@State private var leftovers: (home: String, items: [String])?
+
+	private static let explanation = "Where the LPM CLI keeps your login and env projects. If your shell sets LPM_HOME, use the same folder."
+
+	var body: some View {
+		VaultSettingsRows {
+			VaultSettingsRow(title: store.lpmHome.displayPath + (store.lpmHome.isDefault ? " (default)" : ""), detail: Self.explanation, detailIsSelectable: false) {
+				HStack(spacing: 8) {
+					if !store.lpmHome.isDefault {
+						VaultBarButton(title: "Use Default", disabled: isWorking, height: 28) {
+							consider(LPMHome(defaultIn: store.lpmHome.userHome))
+						}
+					}
+					VaultBarButton(title: "Choose Folder…", disabled: isWorking, height: 28) { chooseFolder() }
+				}
+			}
+			if let problem {
+				Text(problem)
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.redText)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			if let leftovers {
+				HStack(alignment: .firstTextBaseline, spacing: 8) {
+					Text("The last move couldn't remove \(leftovers.items.count.counted("item")) from \(leftovers.home). They are copies of what moved.")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.orange)
+						.fixedSize(horizontal: false, vertical: true)
+					Spacer(minLength: 8)
+					VaultBarButton(title: "Dismiss", height: 26) {
+						LPMHome.recordLeftovers([], of: store.lpmHome, in: store.preferences)
+						self.leftovers = nil
+					}
+				}
+			}
+		}
+		.vaultConfirmation(item: $change) { change in confirmation(for: change) }
+		.onAppear { leftovers = LPMHome.leftovers(in: store.preferences) }
+	}
+
+	private func chooseFolder() {
+		guard let url = folderPicker() else { return }
+		guard let target = LPMHome.at(url, userHome: store.lpmHome.userHome) else {
+			problem = "LPM Vault can't use \((url.path as NSString).abbreviatingWithTildeInPath) as an LPM home."
+			return
+		}
+		consider(target)
+	}
+
+	/// Reads what the current home and `target` hold, then asks how to change to it.
+	private func consider(_ target: LPMHome) {
+		problem = nil
+		guard target.scope != store.lpmHome.scope else {
+			problem = "\(target.displayPath) is the LPM home LPM Vault uses already."
+			return
+		}
+		isWorking = true
+		let current = store.lpmHome
+		Task {
+			let found = await store.lpmHomeContents(target)
+			let held = await store.lpmHomeContents(current)
+			isWorking = false
+			guard let found, let held else {
+				problem = "LPM Vault couldn't read what the LPM homes hold, so it changed nothing."
+				return
+			}
+			change = Change(target: target, current: held, found: found)
+		}
+	}
+
+	private func confirmation(for change: Change) -> VaultConfirmation {
+		let target = change.target.displayPath
+		let current = store.lpmHome.displayPath
+		let relaunches = "LPM Vault then relaunches to use it."
+		if !change.found.isEmpty {
+			return VaultConfirmation(
+				symbol: "folder", tone: .standard,
+				title: "Use \(target)?",
+				message: "It already holds \(Self.describe(change.found)). \(relaunches) What \(current) holds stays there.",
+				actions: [.init(title: "Use and Relaunch") { apply(change.target, moving: false) }])
+		}
+		if change.current.isEmpty {
+			return VaultConfirmation(
+				symbol: "folder", tone: .standard,
+				title: "Use \(target)?",
+				message: "Neither home holds a login or env projects. \(relaunches)",
+				actions: [.init(title: "Use and Relaunch") { apply(change.target, moving: false) }])
+		}
+		return VaultConfirmation(
+			symbol: "folder", tone: .standard,
+			title: "Move to \(target)?",
+			message: "LPM Vault moves \(Self.describe(change.current)) from \(current) there, where the LPM CLI finds them, and asks you to confirm first. \(relaunches)",
+			actions: [
+				.init(title: "Use Without Moving", role: .secondary) { apply(change.target, moving: false) },
+				.init(title: "Move and Relaunch") { apply(change.target, moving: true) },
+			])
+	}
+
+	private static func describe(_ contents: LPMHomeMove.Contents) -> String {
+		var parts: [String] = []
+		if contents.projects > 0 { parts.append(contents.projects.counted("env project")) }
+		if contents.signedIn { parts.append("a login") }
+		return parts.isEmpty ? "login and env data" : parts.joined(separator: " and ")
+	}
+
+	private func apply(_ target: LPMHome, moving: Bool) {
+		isWorking = true
+		Task {
+			defer { isWorking = false }
+			do {
+				try await store.changeLPMHome(to: target, moving: moving)
+			} catch is CancellationError {
+				return
+			} catch {
+				problem = error.localizedDescription
+			}
+		}
+	}
+
+	private static func pickFolder() -> URL? {
+		let panel = NSOpenPanel()
+		panel.canChooseFiles = false
+		panel.canChooseDirectories = true
+		panel.canCreateDirectories = true
+		panel.allowsMultipleSelection = false
+		panel.prompt = "Use as LPM Home"
+		panel.message = "Choose the folder your shell's LPM_HOME names"
+		guard runVaultPrivacyAwareModal(panel) == .OK else { return nil }
+		return panel.url
+	}
+}
+
 /// A settings card's rows, with the spacing every card shares.
 private struct VaultSettingsRows<Content: View>: View {
 	@ViewBuilder let content: Content

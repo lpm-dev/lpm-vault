@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import LocalAuthentication
 
 // MARK: - Strict Key Trust for Org Members
 
@@ -1372,7 +1373,16 @@ final class VaultStore {
   let preferences: UserDefaults
 
   /// Where the LPM CLI keeps login and env state, which no project's state may be.
-  var lpmHome = LPMHome.standard
+  var lpmHome = LPMHome.current
+  /// The credential store an LPM home's items move through, given the
+  /// authentication that reads items whose CLI access asks for approval.
+  @ObservationIgnored var lpmHomeKeychain: @Sendable (LAContext?) -> any LPMHomeKeychain = { context in
+    let keychain = SecurityKeychainStoreBackend()
+    keychain.setAuthenticationContext(context)
+    return keychain
+  }
+  /// Quits the app and opens it again, as using another LPM home takes.
+  @ObservationIgnored var relaunch: @MainActor () -> Void = AppRelaunch.relaunch
   static let projectOrderKey = "lpm-vault-project-order"
   private var projectOrder: [String]
 
@@ -5364,6 +5374,46 @@ final class VaultStore {
       authorization.invalidate()
       task.cancel()
     }
+  }
+
+  /// What `home` holds that moving it would take; nil when it can't be read.
+  func lpmHomeContents(_ home: LPMHome) async -> LPMHomeMove.Contents? {
+    let keychain = lpmHomeKeychain(nil)
+    return await BlockingWork.run { try? LPMHomeMove(keychain: keychain).contents(of: home) }
+  }
+
+  /// Makes `target` the LPM home and relaunches the app, which then uses it.
+  /// With `moving`, what the current home holds moves there first, once the
+  /// user confirms with Touch ID or their password; holding both homes' locks,
+  /// so neither the CLI nor this app changes either meanwhile.
+  func changeLPMHome(to target: LPMHome, moving: Bool) async throws {
+    guard isUnlocked, target.scope != lpmHome.scope else { throw CancellationError() }
+    let source = lpmHome
+    let preferences = ThreadSafeDefaults(defaults: preferences)
+    let exposure = try await BlockingWork.run {
+      do throws(CLIFiles.Refusal) { return try CLIFiles.prepareHome(target) } catch { throw LPMHomeMoveError.copyFailed(error.message) }
+    }
+    if let exposure { throw LPMHomeMoveError.targetExposed(exposure.explanation(of: "login and env secrets")) }
+    if moving {
+      guard await confirmSensitiveAction(reason: "move your env projects and sign-in to \(target.displayPath)") else {
+        throw CancellationError()
+      }
+      let keychain = lpmHomeKeychain(biometricService.keychainAuthenticationContext)
+      let leftovers = try await AuthSessionCoordinator.withCredentialStoreLock(in: source) {
+        try await AuthSessionCoordinator.withCredentialStoreLock(in: target) {
+          try await BlockingWork.run {
+            try LPMHomeMove(keychain: keychain).move(from: source, to: target) {
+              LPMHome.choose(target, in: preferences.defaults)
+            }
+          }
+        }
+      }
+      LPMHome.recordLeftovers(leftovers, of: source, in: preferences.defaults)
+    } else {
+      LPMHome.choose(target, in: preferences.defaults)
+    }
+    lock()
+    relaunch()
   }
 
   private func cancelExports() {
