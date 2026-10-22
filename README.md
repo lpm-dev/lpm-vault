@@ -61,7 +61,7 @@ See [Release channels](docs/release-channels.md) for the publishing and recovery
 ## What you can do
 
 - Manage project variables across multiple environments.
-- Compare values and find missing keys in the environment matrix.
+- Compare values and find missing keys in the environment matrix. The status bar of every project page counts the keys that drift between environments, are missing from one, or fail their rules, and each count opens the matrix filtered to those keys.
 - Import variables from an `.env` file, dropped on the window or chosen, or from pasted text. Review them with values hidden: keep existing values or replace them, leave new keys out, and undo the import for 30 seconds afterward.
 - Export `.env` files.
 - Unlock with Touch ID or your Mac login password.
@@ -109,7 +109,7 @@ A declared key's value is checked as you type: a value that fails a rule is outl
 LPM Vault checks each environment's stored values against these rules with the same engine the LPM CLI uses.
 A value that fails a rule gets a red marker and an underline. Its tooltip shows the reason.
 A missing required value reads Required. A value that the CLI fills from a schema default reads (default).
-The Invalid chip and the Invalid values smart view list the keys that fail.
+The Invalid chip and the status bar's invalid count list the keys that fail.
 An environment's table shows a banner for each failing group.
 An environment without values of its own uses `.env`'s values in the LPM CLI. The app checks those values against the requested environment's rules and shows any failures.
 Raw text shows stored assignments. Required keys and schema defaults also appear in the table.

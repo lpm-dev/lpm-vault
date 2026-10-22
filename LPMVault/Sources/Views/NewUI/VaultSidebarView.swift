@@ -24,7 +24,6 @@ enum VaultSidebarLayout {
 
 struct VaultSidebarView: View {
 	@Bindable var store: VaultStore
-	let snapshots: [String: VaultWorkspaceSnapshot]
 	@Binding var mode: VaultWorkspaceMode
 	@Binding var filter: VaultWorkspaceFilter
 	@Binding var searchText: String
@@ -73,10 +72,6 @@ struct VaultSidebarView: View {
 								.padding(.vertical, 12)
 						} else {
 							projectGroups(derivedProjects, order: order)
-						}
-
-						if let project = store.selectedProject {
-							smartViews(project)
 						}
 					}
 					.frame(maxWidth: .infinity, alignment: .leading)
@@ -166,16 +161,17 @@ struct VaultSidebarView: View {
 			Text("PROJECTS").vaultSectionLabel()
 			Spacer(minLength: 4)
 
-			Button(action: onCloudProjects) {
-				Image(systemName: "cloud")
-					.font(.system(size: 10, weight: .semibold))
-					.foregroundStyle(VaultPalette.accentForeground)
-					.frame(width: 20, height: 20)
+			if store.isLoggedIn {
+				Button(action: onCloudProjects) {
+					Image(systemName: "cloud")
+						.font(.system(size: 10, weight: .semibold))
+						.foregroundStyle(VaultPalette.accentForeground)
+						.frame(width: 20, height: 20)
+				}
+				.buttonStyle(.plain)
+				.help("Import from lpm.dev")
+				.accessibilityLabel("Import env project from lpm.dev")
 			}
-			.buttonStyle(.plain)
-			.help("Import from lpm.dev")
-			.accessibilityLabel("Import env project from lpm.dev")
-			.disabled(!store.isLoggedIn)
 
 			Button(action: onNewProject) {
 				HStack(spacing: 4) {
@@ -313,7 +309,7 @@ struct VaultSidebarView: View {
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
 					.lineLimit(1)
 					.frame(maxWidth: .infinity, alignment: .leading)
-				VaultSidebarApprovalIndicator(access: cliAccess, selected: selected)
+				VaultSidebarApprovalIndicator(access: cliAccess)
 				Text("\(project.secretCount)")
 					.font(VaultTypography.tabular(10.5))
 					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textTertiary)
@@ -321,7 +317,7 @@ struct VaultSidebarView: View {
 			}
 			.padding(.horizontal, VaultSidebarLayout.rowInset)
 			.frame(height: VaultSidebarLayout.rowHeight)
-			.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.accentTint : .clear))
+			.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.sidebarSelection : .clear))
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
@@ -400,10 +396,7 @@ struct VaultSidebarView: View {
 			.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
 			.padding(.trailing, VaultSidebarLayout.rowInset)
 			.padding(.vertical, 5)
-			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.accentTint : .clear))
-			.overlay(alignment: .leading) {
-				if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
-			}
+			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.sidebarSelection : .clear))
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
@@ -436,10 +429,7 @@ struct VaultSidebarView: View {
 			.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
 			.padding(.trailing, VaultSidebarLayout.rowInset)
 			.padding(.vertical, 5)
-			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.accentTint : .clear))
-			.overlay(alignment: .leading) {
-				if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
-			}
+			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.sidebarSelection : .clear))
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
@@ -456,54 +446,6 @@ struct VaultSidebarView: View {
 				Button("Delete Environment", role: .destructive) { onDeleteEnvironment(target) }
 			}
 		}
-	}
-
-	private func smartViews(_ project: VaultProject) -> some View {
-		let drift = snapshots[project.id]?.driftingKeyCount ?? 0
-		let missing = snapshots[project.id]?.missingKeyCount ?? 0
-		return VStack(alignment: .leading, spacing: 1) {
-			Text("SMART VIEWS")
-				.vaultSectionLabel()
-				.padding(.horizontal, 16)
-				.padding(.top, 16)
-				.padding(.bottom, 6)
-
-			smartViewRow(title: "Drift between envs", symbol: "diamond.fill", count: drift, tint: VaultPalette.orange, target: .drift)
-				.padding(.horizontal, 8)
-			smartViewRow(title: "Missing in an environment", symbol: "exclamationmark.triangle.fill", count: missing, tint: VaultPalette.red, target: .missing)
-				.padding(.horizontal, 8)
-			if let check = store.valueChecks[project.id] {
-				let invalid = VaultValueCheckPresentation(check: check, rules: nil, project: project).invalidKeys.count
-				smartViewRow(title: "Invalid values", symbol: "xmark.circle.fill", count: invalid, tint: VaultPalette.red, target: .invalid)
-					.padding(.horizontal, 8)
-					.help("Keys whose values fail their lpm.json rules")
-			}
-		}
-	}
-
-	private func smartViewRow(
-		title: String,
-		symbol: String,
-		count: Int,
-		tint: Color,
-		target: VaultWorkspaceFilter
-	) -> some View {
-		Button {
-			mode = .matrix
-			filter = target
-		} label: {
-			HStack(spacing: 9) {
-				Image(systemName: symbol).font(.system(size: 10)).foregroundStyle(tint).frame(width: 14)
-				Text(title).font(.system(size: 13)).foregroundStyle(VaultPalette.textSecondary)
-				Spacer(minLength: 4)
-				VaultCountPill(count: count, tint: tint)
-			}
-			.padding(.horizontal, 9)
-			.padding(.vertical, 7)
-			.contentShape(Rectangle())
-		}
-		.buttonStyle(.plain)
-		.accessibilityLabel("\(title), \(count)")
 	}
 
 	private var accountFooter: some View {
@@ -588,14 +530,13 @@ private struct VaultSidebarProjectSlot: View {
 /// that its policy can't be read; nothing when access is automatic.
 private struct VaultSidebarApprovalIndicator: View {
 	let access: VaultCliAccess?
-	let selected: Bool
 
 	var body: some View {
 		switch access {
 		case .requireApproval?:
-			Image(systemName: "lock")
+			Image(systemName: "lock.fill")
 				.font(.system(size: 10, weight: .medium))
-				.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textTertiary)
+				.foregroundStyle(VaultPalette.accentForeground)
 				.frame(width: VaultSidebarLayout.approvalWidth)
 				.help("CLI approval required")
 				.accessibilityHidden(true)

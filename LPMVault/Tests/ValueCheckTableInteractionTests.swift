@@ -300,11 +300,11 @@ extension SheetInteractionTests {
 
 			// The matrix says a row's key and how many environments set it; the
 			// environment table below says each value's Required or default.
-			#expect(try await host.waitForText("Invalid values"))
+			#expect(try await host.waitForText("4 invalid", footer: VaultMetrics.statusBar + 4))
 			var text = try await host.text()
 			#expect(text.contains("API_TOKEN"))
 
-			try await host.click("Invalid values")
+			try await host.click("4 invalid")
 			#expect(try await host.waitForTextToDisappear("NODE_ENV"))
 			text = try await host.text()
 			for expected in ["API_TOKEN", "DATABASE_URL", "PASSWORD", "OAUTH_TOKEN"] {

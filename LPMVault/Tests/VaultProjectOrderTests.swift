@@ -425,6 +425,30 @@ extension SheetInteractionTests {
 			#expect(abs(child - project) <= 0.5, "The child row's background ends at \(child), the project row's at \(project)")
 		}
 
+		@Test("a selected environment or Schema row is the selected project row's gray, edge to edge",
+			arguments: [VaultAppearance.light, .dark], [VaultWorkspaceMode.schema, .environment("default")])
+		func childRowSelectionColor(appearance: VaultAppearance, mode: VaultWorkspaceMode) async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			store.openProject(id: "alpha")
+			func colors(_ mode: VaultWorkspaceMode, row: Int, at columns: [CGFloat]) async throws -> [(Int, Int, Int)] {
+				let host = sidebarHost(store, mode: mode)
+				defer { host.window.close() }
+				host.window.appearance = appearance.nativeAppearance
+				try await host.settle()
+				let bands = try labelBands(in: host)
+				try #require(bands.count == 5, "Expected the project label and four child labels, got \(bands)")
+				return try columns.map { try pixel(in: host, at: NSPoint(x: $0, y: bands[row].midY)) }
+			}
+			let reference = try await colors(.matrix, row: 0, at: [VaultSidebarLayout.projectInset + 3])
+			let project = try #require(reference.first)
+			let columns = [VaultSidebarLayout.childInset + 1, VaultSidebarLayout.childInset + 5]
+			for (x, color) in zip(columns, try await colors(mode, row: mode == .schema ? 1 : 3, at: columns)) {
+				let difference = abs(color.0 - project.0) + abs(color.1 - project.1) + abs(color.2 - project.2)
+				#expect(difference <= 4, "At x \(x) the selected child row reads \(color), a selected project row \(project)")
+			}
+		}
+
 		@Test("a trailing lock marks projects whose CLI access needs approval, and an orange mark those whose policy can't be read")
 		func approvalIndicators() async throws {
 			let (store, keychain, preferences, domain) = try fixture()
@@ -445,33 +469,87 @@ extension SheetInteractionTests {
 			let (red, green, blue) = try strongestInk(in: host, band: rows[2], columns: indicatorColumns)
 			#expect(red > green + 30 && green > blue, "Zulu's unreadable policy is marked in orange, read \((red, green, blue))")
 			let (lockRed, lockGreen, lockBlue) = try strongestInk(in: host, band: rows[0], columns: indicatorColumns)
-			#expect(abs(lockRed - lockBlue) < 30 && abs(lockRed - lockGreen) < 30, "The lock is gray, not a warning")
+			#expect(lockBlue - lockRed > 40 && lockBlue - lockGreen > 40, "The lock is in the accent color, not a warning, read \((lockRed, lockGreen, lockBlue))")
 		}
 
-		@Test("a selected project's lock takes the selection's color, and its row stays highlighted on its settings page")
-		func selectedRow() async throws {
+		@Test("the approval lock is filled, in the accent color, whether its project is selected or not", arguments: [VaultAppearance.light, .dark])
+		func filledAccentLock(appearance: VaultAppearance) async throws {
+			let (store, keychain, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			keychain.cliAccessPolicies["alpha"] = .requireApproval
+			#expect(await store.loadProjects())
+			store.isUnlocked = true
+			for selected in [false, true] {
+				if selected { store.openProject(id: "alpha") }
+				let host = sidebarHost(store)
+				defer { host.window.close() }
+				host.window.appearance = appearance.nativeAppearance
+				try await host.settle()
+				let alpha = try #require(try labelBands(in: host).first)
+				let lock = try accentInk(in: host, band: alpha, columns: SidebarRowColumns(width: host.view.bounds.width).indicator)
+				#expect(lock.pixels > 20, "The lock is drawn in the accent color (selected: \(selected))")
+				#expect(lock.bodyFill > 0.85, "The lock is filled, not outlined: \(lock.bodyFill) of its body is ink (selected: \(selected))")
+			}
+		}
+
+		@Test("a selected project's row is a neutral gray, and it stays highlighted on its settings page", arguments: [VaultAppearance.light, .dark])
+		func selectedRow(appearance: VaultAppearance) async throws {
 			let (store, keychain, preferences, domain) = try fixture()
 			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
 			keychain.cliAccessPolicies["alpha"] = .requireApproval
 			#expect(await store.loadProjects())
 			store.isUnlocked = true
 			store.openProject(id: "alpha")
-			func row(_ mode: VaultWorkspaceMode) async throws -> (lock: (Int, Int, Int), edge: CGFloat) {
+			func row(_ mode: VaultWorkspaceMode) async throws -> (background: (Int, Int, Int), sidebar: (Int, Int, Int), edge: CGFloat) {
 				let host = sidebarHost(store, mode: mode)
 				defer { host.window.close() }
+				host.window.appearance = appearance.nativeAppearance
 				try await host.settle()
 				let bands = try labelBands(in: host)
 				try #require(!bands.isEmpty)
-				return (try strongestInk(in: host, band: bands[0], columns: SidebarRowColumns(width: host.view.bounds.width).indicator),
+				let inset = VaultSidebarLayout.projectInset
+				return (try pixel(in: host, at: NSPoint(x: inset + 3, y: bands[0].midY)),
+					try pixel(in: host, at: NSPoint(x: inset / 2, y: bands[0].midY)),
 					try backgroundEdge(in: host, band: bands[0]))
 			}
 			let matrix = try await row(.matrix)
-			let (red, green, blue) = matrix.lock
-			#expect(blue - red > 15 && blue - green > 15, "The selected row's lock is in the selection's color, read \((red, green, blue))")
+			let (red, green, blue) = matrix.background
+			#expect(abs(red - green) <= 3 && abs(blue - red) <= 4, "The selected row is gray, not tinted, read \((red, green, blue))")
+			let contrast = abs(red - matrix.sidebar.0) + abs(green - matrix.sidebar.1) + abs(blue - matrix.sidebar.2)
+			#expect(contrast > 20, "The selected row stands out from the sidebar, read \((red, green, blue)) on \(matrix.sidebar)")
 			let settings = try await row(.projectSettings)
 			#expect(abs(settings.edge - matrix.edge) <= 0.5, "The row is highlighted on its settings page as on its variables")
 			let schema = try await row(.schema)
 			#expect(abs(schema.edge - matrix.edge) > 2, "On the Schema page the Schema row is highlighted instead")
+		}
+
+		@Test("the lpm.dev import button shows only while signed in")
+		func importNeedsSignIn() async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			let host = sidebarHost(store)
+			defer { host.window.close() }
+			#expect(try await host.waitForText("Create env project"))
+			#expect(try await !host.text().contains("Import env project from lpm.dev"), "Signed out, there's nothing on lpm.dev to import")
+			store.currentUser = LPMUser(id: "user", username: "user", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
+			#expect(try await host.waitForText("Import env project from lpm.dev"))
+			store.currentUser = nil
+			#expect(try await host.waitForTextToDisappear("Import env project from lpm.dev"))
+		}
+
+		@Test("the sidebar lists a project's schema and environments, and no smart views")
+		func noSmartViews() async throws {
+			let (store, _, preferences, domain) = try fixture()
+			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
+			store.openProject(id: "alpha")
+			let host = sidebarHost(store)
+			defer { host.window.close() }
+			#expect(try await host.waitForText(".env.staging"))
+			let text = try await host.text()
+			#expect(text.contains("Schema"))
+			for removed in ["Smart views", "Drift between envs", "Missing in an environment", "Invalid values"] {
+				#expect(!text.contains(removed), "The sidebar says \(removed); the status bar links to the smart views now")
+			}
 		}
 
 		@Test("a project's icon shows in its row, and the grip takes its place while it's dragged")
@@ -696,7 +774,7 @@ extension SheetInteractionTests {
 			onProjectSettings: @escaping (VaultProject) -> Void = { _ in }, onRenameProject: @escaping (VaultProject) -> Void = { _ in },
 			onDeleteProject: @escaping (VaultProject) -> Void = { _ in }
 		) -> SheetTestHost<some View> {
-			SheetTestHost(VaultSidebarView(store: store, snapshots: [:], mode: .constant(mode),
+			SheetTestHost(VaultSidebarView(store: store, mode: .constant(mode),
 				filter: .constant(.all), searchText: .constant(""), showsAccountSwitcher: .constant(false),
 				onNewProject: {}, onCloudProjects: {}, onNewEnvironment: {}, onProjectSettings: onProjectSettings, onRenameProject: onRenameProject,
 				onDeleteProject: onDeleteProject, onRenameEnvironment: { _ in }, onDuplicateEnvironment: { _ in },
@@ -861,6 +939,40 @@ extension SheetInteractionTests {
 				}
 			}
 			return count
+		}
+
+		/// The color drawn at `point`, in window coordinates, as red, green and blue.
+		private func pixel<V: View>(in host: SheetTestHost<V>, at point: NSPoint) throws -> (Int, Int, Int) {
+			let image = try host.snapshot(host.view)
+			let context = try pixelContext(image)
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / host.view.bounds.width
+			let offset = (Int((host.view.bounds.height - point.y) * scale) * image.width + Int(point.x * scale)) * 4
+			return (Int(pixels[offset]), Int(pixels[offset + 1]), Int(pixels[offset + 2]))
+		}
+
+		/// How many pixels in `band` and `columns` are drawn in the accent's purple, and how much of
+		/// the lower middle of their bounds they cover: the body of a lock, solid when it's filled.
+		private func accentInk<V: View>(in host: SheetTestHost<V>, band: CGRect, columns: Range<Int>) throws -> (pixels: Int, bodyFill: Double) {
+			let image = try host.snapshot(host.view)
+			let context = try pixelContext(image)
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / host.view.bounds.width
+			let rows = max(0, Int((host.view.bounds.height - band.maxY - 3) * scale))..<min(image.height, Int((host.view.bounds.height - band.minY + 3) * scale))
+			let span = Int(CGFloat(columns.lowerBound) * scale)..<Int(CGFloat(columns.upperBound) * scale)
+			func isAccent(_ row: Int, _ column: Int) -> Bool {
+				let pixel = (row * image.width + column) * 4
+				return Int(pixels[pixel + 2]) - max(Int(pixels[pixel]), Int(pixels[pixel + 1])) > 40
+			}
+			var ink: [(row: Int, column: Int)] = []
+			for row in rows { for column in span where isAccent(row, column) { ink.append((row, column)) } }
+			guard let top = ink.map(\.row).min(), let bottom = ink.map(\.row).max(),
+				let left = ink.map(\.column).min(), let right = ink.map(\.column).max() else { return (0, 0) }
+			let height = bottom - top + 1, width = right - left + 1
+			let body = (bottom - height * 2 / 5 + 1)...bottom
+			let middle = (left + width / 4)...(right - width / 4)
+			let filled = body.reduce(0) { count, row in count + middle.filter { isAccent(row, $0) }.count }
+			return (ink.count, Double(filled) / Double(body.count * middle.count))
 		}
 
 		private func pixelContext(_ image: CGImage) throws -> CGContext {

@@ -220,6 +220,100 @@ extension SheetInteractionTests {
 				#expect(abs(header.minX - VaultMetrics.sidebar - VaultMetrics.paneDivider - 20) < 3)
 			}
 
+			@Test("the header's column lines continue the rows' lines, in the same place and color",
+				arguments: [false, true], [VaultAppearance.light, .dark])
+			func columnLinesMatchRows(singleEnvironment: Bool, appearance: VaultAppearance) async throws {
+				let (store, _) = makeStore(environments: ["default": ["ALPHA": "a", "BETA": "b"], "production": ["ALPHA": "z"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				host.window.appearance = appearance.nativeAppearance
+				if singleEnvironment {
+					try await host.clickSidebarEnvironment(".env")
+					#expect(try await host.waitForText("ACTIONS", exactly: true))
+				}
+				try await host.settle()
+				let image = try host.snapshot(host.view)
+				Attachment.record(try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])),
+					named: "column-lines-\(singleEnvironment ? "environment" : "matrix")-\(appearance.rawValue).png")
+				let rowHeight = singleEnvironment ? VaultMetrics.fileRow : VaultMetrics.matrixRow
+				let boundaries = resizeViews(in: host.view).filter { $0.accessibilityLabel()?.hasSuffix(" column") == true }
+				try #require(boundaries.count == 3, "The key column and two more")
+				for boundary in boundaries {
+					let frame = boundary.convert(boundary.bounds, to: nil)
+					let header = try horizontalPixels(in: image, size: host.view.bounds.size, y: frame.midY, from: frame.midX - 4, width: 8)
+					let row = try horizontalPixels(in: image, size: host.view.bounds.size, y: frame.minY - rowHeight / 2, from: frame.midX - 4, width: 8)
+					let name = boundary.accessibilityLabel() ?? ""
+					let headerLine = lineColumns(header), rowLine = lineColumns(row)
+					#expect(!rowLine.isEmpty, "The rows draw a line at \(name)")
+					#expect(headerLine == rowLine, "At \(name) the header's line covers pixels \(headerLine), the rows' \(rowLine)")
+					for column in headerLine.intersection(rowLine) {
+						let difference = zip(header[column], row[column]).map { abs(Int($0) - Int($1)) }.max() ?? 0
+						#expect(difference <= 3, "At \(name) the header's line is \(header[column]), the rows' \(row[column])")
+					}
+				}
+			}
+
+			@Test("no environment column is tinted, whichever environment was selected last", arguments: [VaultAppearance.light, .dark])
+			func untintedEnvironmentColumns(appearance: VaultAppearance) async throws {
+				let (store, _) = makeStore(environments: ["default": ["ALPHA": "a"], "production": ["ALPHA": "z"], "staging": ["ALPHA": "a"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				host.window.appearance = appearance.nativeAppearance
+				for afterEnvironment in [false, true] {
+					if afterEnvironment {
+						try await host.clickSidebarEnvironment(".env.production")
+						#expect(try await host.waitForText("ACTIONS", exactly: true))
+						try await host.click("Workspace")
+						#expect(try await host.waitForText("All variables"))
+					}
+					try await host.settle()
+					let image = try host.snapshot(host.view)
+					let size = host.view.bounds.size
+					let boundaries = resizeViews(in: host.view).filter { $0.accessibilityLabel()?.hasSuffix(" column") == true }
+						.map { $0.convert($0.bounds, to: nil) }
+					try #require(boundaries.count == 4, "The key column and three environments")
+					// Each column's last points are empty: values and names start at its leading edge.
+					let headers = try boundaries.map { try horizontalPixels(in: image, size: size, y: $0.midY, from: $0.midX - 10, width: 1)[0] }
+					let cells = try boundaries.map {
+						try horizontalPixels(in: image, size: size, y: $0.minY - VaultMetrics.matrixRow / 2, from: $0.midX - 10, width: 1)[0]
+					}
+					#expect(Set(headers).count == 1, "Every header cell has the key header's background, read \(headers) (after .env.production: \(afterEnvironment))")
+					#expect(Set(cells).count == 1, "Every cell has the key cell's background, read \(cells) (after .env.production: \(afterEnvironment))")
+				}
+			}
+
+			@Test("the status bar of every page links to the smart views, and each opens All variables showing only its keys")
+			func statusBarSmartViews() async throws {
+				let (store, _) = makeStore(environments: ["default": ["DRIFTS": "a", "LACKS": "b"], "production": ["DRIFTS": "z"]])
+				defer { store.lock() }
+				let host = try await workspace(store)
+				defer { host.window.close() }
+				let footer = VaultMetrics.statusBar + 4
+				#expect(try await host.waitForText("1 drifting", footer: footer))
+				#expect(try await host.waitForText("1 missing", footer: footer))
+				try await host.click("1 missing")
+				#expect(try await host.waitForTextToDisappear("DRIFTS"))
+				#expect(try await host.text().contains("LACKS"))
+
+				try await host.clickSidebarEnvironment(".env.production")
+				#expect(try await host.waitForText("ACTIONS", exactly: true))
+				#expect(try await host.waitForText("1 missing", footer: footer))
+				try await host.click("1 drifting")
+				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForTextToDisappear("LACKS"))
+				#expect(try await host.text().contains("DRIFTS"))
+
+				try await host.click("Schema")
+				#expect(try await host.waitForText("editing unavailable", footer: footer))
+				#expect(try await host.waitForText("1 drifting", footer: footer))
+				try await host.click("1 missing")
+				#expect(try await host.waitForText("All variables"))
+				#expect(try await host.waitForTextToDisappear("DRIFTS"))
+				#expect(try await host.text().contains("LACKS"))
+			}
+
 		@Test("blank space across a matrix key cell opens its inspector", arguments: [CGFloat(5), 205])
 		func matrixKeyCellBlankSpace(offset: CGFloat) async throws {
 			let (store, _) = makeStore()
@@ -919,6 +1013,29 @@ extension SheetInteractionTests {
 				let offset = (row * image.width + column) * 4
 				return Array(UnsafeBufferPointer(start: pixels + offset, count: 3))
 			}
+		}
+
+		/// Each pixel's red, green and blue across `width` points from `x`, along the line `y`, in window coordinates.
+		private func horizontalPixels(in image: CGImage, size: NSSize, y: CGFloat, from x: CGFloat, width: CGFloat) throws -> [[UInt8]] {
+			let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+				bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / size.width
+			let row = Int((size.height - y) * scale)
+			let first = Int((x * scale).rounded(.down)), count = max(1, Int((width * scale).rounded()))
+			try #require(row >= 0 && row < image.height && first >= 0 && first + count <= image.width)
+			return (first..<(first + count)).map { column in
+				let offset = (row * image.width + column) * 4
+				return Array(UnsafeBufferPointer(start: pixels + offset, count: 3))
+			}
+		}
+
+		/// Which of `pixels` differ from the first, the background a line is drawn over.
+		private func lineColumns(_ pixels: [[UInt8]]) -> Set<Int> {
+			Set(pixels.indices.filter { index in
+				zip(pixels[index], pixels[0]).contains { abs(Int($0) - Int($1)) > 3 }
+			})
 		}
 
 		private func keyBadgeGap(in image: CGImage, size: NSSize, region: CGRect) throws -> CGFloat {
