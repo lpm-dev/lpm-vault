@@ -1512,7 +1512,7 @@ final class VaultStore {
   private var localEnvCreationRequests: [LocalEnvImportTarget: UUID] = [:]
   private var localEnvReviewIDs: [LocalEnvImportTarget: UUID] = [:]
   private var localEnvPreviewTasks: [UUID: Task<ImportedEnvFile, Error>] = [:]
-  private var exportTasks: [UUID: Task<Void, Error>] = [:]
+  private var exportTasks: [UUID: Task<[String], Error>] = [:]
   private var exportAuthorizations: [UUID: EnvFileExportAuthorization] = [:]
   private let localEnvImportAuthority = LocalEnvImportAuthority()
   private let autoLockDuration: TimeInterval
@@ -5323,11 +5323,14 @@ final class VaultStore {
     return approved
   }
 
+  /// Writes the environment's values to `destination`, kept out of git first
+  /// as `lpm env export` keeps one; returns what the user should know.
+  @discardableResult
   func exportEnvironment(
     projectId: String,
     environment: String,
     to destination: URL
-  ) async throws {
+  ) async throws -> [String] {
     let write = writes.begin()
     defer { writes.end(write) }
     await waitForLocalStateRefresh()
@@ -5339,10 +5342,12 @@ final class VaultStore {
     let requestId = UUID()
     let authorization = EnvFileExportAuthorization()
     let secrets = project.secrets(for: environment)
+    let projectFolder = ProjectCLILink.folder(vaultId: project.id, projectPath: project.path, defaults: preferences)
     let task = Task { [envFileExportService] in
       try await envFileExportService.export(
         secrets: secrets,
         to: destination,
+        projectFolder: projectFolder,
         authorization: authorization
       )
     }
@@ -5353,7 +5358,7 @@ final class VaultStore {
       exportTasks.removeValue(forKey: requestId)
     }
 
-    try await withTaskCancellationHandler {
+    return try await withTaskCancellationHandler {
       try await task.value
     } onCancel: {
       authorization.invalidate()

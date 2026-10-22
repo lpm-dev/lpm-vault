@@ -248,7 +248,7 @@ struct VaultStoreTests {
 		release.signal()
 		await first.value
 		await second.value
-		try await export.value
+		_ = try await export.value
 		#expect(keychain.projectReadCount == 1)
 		#expect(!store.isRefreshingLocalState)
 		let exported = try String(contentsOf: destination, encoding: .utf8)

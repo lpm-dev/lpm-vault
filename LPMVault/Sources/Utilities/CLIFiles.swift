@@ -23,6 +23,19 @@ enum CLIFiles {
 	struct Refusal: Error, Equatable, Sendable {
 		let code: String
 		let message: String
+		/// For a file of secrets git tracks, the commands that untrack it, each quoted in backticks.
+		var untrack: String? = nil
+	}
+
+	/// How a file of secrets was kept out of git before it was written.
+	struct SecretFile: Equatable, Sendable {
+		/// The engine's account of it: `outsideProject`, `alreadyIgnored`,
+		/// `added`, `noRepository`, `unverified`, or `failed`.
+		let ignore: String
+		/// The ignore files that took a rule for it.
+		let ignoreFiles: [String]
+		/// What the user should know, such as a rule git couldn't confirm.
+		let warnings: [String]
 	}
 
 	/// The project the CLI's env commands act on for a folder.
@@ -113,6 +126,25 @@ enum CLIFiles {
 		}
 	}
 
+	/// Readies `path` for a file of secrets the caller then writes, as `lpm env
+	/// export` readies one for the project at `project`: git is made to ignore
+	/// it, by a rule in the `.gitignore` of the project or of the repository
+	/// that holds it, and a file git tracks is refused (`env.secret_tracked`).
+	/// Runs git, so it blocks.
+	static func prepareSecretFile(at path: URL, project: URL) throws(Refusal) -> SecretFile {
+		let result = project.path.withEngineBytes { project in
+			path.path.withEngineBytes { path in
+				lpm_env_prepare_secret_file(project.baseAddress, project.count, path.baseAddress, path.count)
+			}
+		}
+		let output = try decode(result).get()
+		guard case .object? = output["ignore"], case .string(let kind)? = output["ignore"]?["kind"],
+			case .array(let files)? = output["ignore"]?["files"], case .array(let warnings)? = output["warnings"]
+		else { throw Refusal(code: "env.engine_internal", message: "The LPM engine returned an unreadable answer.") }
+		let strings = { (values: [LPMConfigJSON]) in values.compactMap { if case .string(let text) = $0 { text } else { nil } } }
+		return SecretFile(ignore: kind, ignoreFiles: strings(files), warnings: strings(warnings))
+	}
+
 	/// The output of an engine call, which this releases: its JSON object when
 	/// it succeeded, else why it didn't.
 	private static func decode(_ result: LPMEnvResult) -> Result<LPMConfigJSON, Refusal> {
@@ -134,7 +166,9 @@ enum CLIFiles {
 		if case .string(let text)? = output["message"], !text.isEmpty { message = text } else {
 			message = result.status == 2 ? "The LPM engine was given an invalid path." : "The LPM engine failed (\(code))."
 		}
-		return .failure(Refusal(code: code, message: message))
+		var untrack: String?
+		if case .string(let commands)? = output["untrack"] { untrack = commands }
+		return .failure(Refusal(code: code, message: message, untrack: untrack))
 	}
 }
 
