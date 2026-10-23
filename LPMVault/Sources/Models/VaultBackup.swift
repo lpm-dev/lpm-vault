@@ -90,7 +90,19 @@ struct BackupRestoreReview: Sendable {
 	let fileBytes: Int
 	let fileModified: Date
 	let plan: BackupRestorePlan
+	/// How restoring the backup's sync keys would go on this Mac.
+	var keys = BackupKeyStore.Review()
+	/// Which synced projects have their key on this Mac as it is.
+	var coverage = BackupKeyStore.Coverage()
+	/// Which synced projects have their key once the backup's keys are added.
+	var coverageAddingKeys = BackupKeyStore.Coverage()
 	let sessionGeneration: Int
+
+	/// Whether a project that syncs as `sync` will have its key once the
+	/// backup is restored, adding its keys when `restoringKeys`.
+	func hasKey(for sync: BackupPayload.Sync, restoringKeys: Bool) -> Bool {
+		(restoringKeys ? coverageAddingKeys : coverage).hasKey(for: sync)
+	}
 }
 
 /// The person's choices in a restore review.
@@ -102,6 +114,8 @@ struct BackupRestoreChoices: Equatable, Sendable {
 	/// The keys whose backup value replaces this Mac's, by vault ID.
 	var replacing: [String: Set<BackupRestorePlan.KeyDifference>] = [:]
 	var applySettings: Bool
+	/// Whether to add the backup's lpm.dev sync keys where this Mac has none.
+	var restoreKeys = false
 
 	/// Every project that can be restored except those the backup's Mac had
 	/// removed from its sidebar; settings only on a Mac with no projects yet,
@@ -114,7 +128,9 @@ struct BackupRestoreChoices: Equatable, Sendable {
 			case .unusable: false
 			}
 		}.map(\.id)
-		return Self(included: Set(included), applySettings: !hasLocalProjects && plan.contents.app?.settings != nil)
+		return Self(
+			included: Set(included), applySettings: !hasLocalProjects && plan.contents.app?.settings != nil,
+			restoreKeys: !plan.contents.keys.isEmpty)
 	}
 }
 
@@ -139,6 +155,10 @@ struct BackupRestoreResult: Sendable {
 
 	let items: [Item]
 	let destinations: Int
+	/// What restoring the sync keys did, when they were restored.
+	var keys: BackupKeyStore.Review? = nil
+	/// Why the sync keys couldn't all be restored, when they couldn't.
+	var keyFailure: String? = nil
 	/// The backup's settings, when the person chose to use them, for the app
 	/// settings the store doesn't own.
 	let settings: BackupAppSection.Settings?
@@ -150,6 +170,7 @@ enum BackupRestoreFailure: Error, Equatable, Sendable {
 	case engine(BackupEngine.Failure)
 	case contents(BackupContents.DecodingError)
 	case unreadableProjects
+	case unreadableKeys
 
 	var message: String {
 		switch self {
@@ -158,6 +179,7 @@ enum BackupRestoreFailure: Error, Equatable, Sendable {
 		case .contents(.newerApp): "A newer LPM Vault made this backup. Update LPM Vault to restore it."
 		case .contents(.unreadable): "This backup opened, but LPM Vault can’t read what it holds."
 		case .unreadableProjects: "Your env projects on this Mac couldn’t be read to compare. Try again."
+		case .unreadableKeys: "This Mac’s lpm.dev sync keys couldn’t be read to compare. Try again."
 		}
 	}
 }

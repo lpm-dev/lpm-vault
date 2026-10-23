@@ -26,6 +26,8 @@ struct BackupContents: Sendable {
 	let deviceName: String?
 	let projects: [Project]
 	let app: BackupAppSection?
+	/// The sync keys the backup carries, taken out of the payload by the engine.
+	var keys = BackupKeys()
 
 	/// The payload's contents. The engine already checked it, so a payload
 	/// that doesn't read is one this version and that engine disagree on.

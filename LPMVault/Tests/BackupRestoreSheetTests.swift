@@ -29,7 +29,8 @@ extension SheetInteractionTests {
 			for (id, environments) in local { keychain.envStorage[id] = (name: id, path: "", environments: environments) }
 			let store = VaultStore(
 				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(), preferences: defaults,
-				projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory))
+				projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory),
+				backupKeys: .inMemory(InMemoryKeychainBackend(), home: try testLPMHome(in: folder)))
 			store.projects = local.keys.sorted().map { VaultProject(id: $0, name: $0, path: "", environments: local[$0] ?? [:]) }
 			store.isUnlocked = true
 			return Fixture(store: store, keychain: keychain, defaults: defaults, folder: folder)
@@ -96,7 +97,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { element("Continue", in: host.window)?.isEnabled == true })
 			try await host.click("Continue")
 			#expect(try await host.waitForText("Review what comes in"))
-			for text in ["1 new", "1 already here", "Values hidden", "Made on Studio", "fresh", "syncs with lpm.dev — paused until its keys are recovered",
+			for text in ["1 new", "1 already here", "Values hidden", "Made on Studio", "fresh", "syncs with lpm.dev — paused: this Mac doesn’t have its key",
 				"shared", "1 key differs — choose per key", "Platform logins aren’t in backups.", "Touch ID or your Mac password, just before writing"]
 			{
 				#expect(try await host.waitForText(text), "The review says \(text)")
@@ -107,7 +108,7 @@ extension SheetInteractionTests {
 			try await host.click("Restore 2 items")
 			#expect(try await host.waitForText("Restore finished"))
 			for text in ["1 restored", "1 merged", "Restored · 1 key · 1 env · needs a folder", "Merged · 0 keys added, 1 replaced",
-				"Synced projects keep their sync paused until their keys can be recovered."]
+				"1 synced project keeps sync paused: this Mac doesn’t have its keys."]
 			{
 				#expect(try await host.waitForText(text), "The summary says \(text)")
 			}

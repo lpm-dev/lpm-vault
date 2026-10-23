@@ -133,6 +133,56 @@ struct BackupFormatTests {
 		struct Failure: Error {}
 		#expect(throws: Failure.self) { _ = try SecretBytes(count: 4) { _ in throw Failure() } }
 	}
+	@Test("opening split gives the payload without its sync keys, and the keys as their stores keep them")
+	func openSplit() throws {
+		func secret(_ text: String) -> SecretBytes { SecretBytes(count: text.utf8.count) { $0.copyBytes(from: Array(text.utf8)) } }
+		var keys = BackupKeys()
+		keys.personalRoots = [.init(account: BackupKeysTests.rootAccount, key: secret(BackupKeysTests.rootKey))]
+		keys.sharingKeys = [.init(account: BackupKeysTests.sharingAccount, live: secret(BackupKeysTests.liveKey), pending: secret(BackupKeysTests.pendingKey))]
+		keys.wrappingKey = secret(BackupKeysTests.wrappingKey)
+		keys.floors = [.init(digest: BackupKeysTests.floor, version: 9)]
+		let payload = BackupPayload(createdAt: Date(timeIntervalSince1970: 0), producerVersion: "1", deviceName: nil, projects: [], app: nil, keys: keys)
+		let encoded = try #require(payload.encoded())
+		let file = try BackupEngine.seal(payload: encoded.bytes, passphrase: "harbor velvet ninety cactus orbit maple").get()
+
+		let opened = try BackupEngine.openSplit(file, passphrase: "harbor velvet ninety cactus orbit maple").get()
+		let text = opened.payload.withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
+		#expect(!text.contains("keys"))
+		#expect(!text.contains(BackupKeysTests.rootKey))
+		#expect(opened.keys.personalRoots.map(\.account) == [BackupKeysTests.rootAccount])
+		#expect(BackupKeysTests.text(opened.keys.personalRoots.first?.key) == BackupKeysTests.rootKey)
+		#expect(opened.keys.sharingKeys.map(\.account) == [BackupKeysTests.sharingAccount])
+		#expect(BackupKeysTests.text(opened.keys.sharingKeys.first?.live) == BackupKeysTests.liveKey)
+		#expect(BackupKeysTests.text(opened.keys.sharingKeys.first?.pending) == BackupKeysTests.pendingKey)
+		#expect(BackupKeysTests.text(opened.keys.wrappingKey) == BackupKeysTests.wrappingKey)
+		#expect(opened.keys.floors == [.init(digest: BackupKeysTests.floor, version: 9)])
+	}
+
+	@Test("key records the engine didn't lay out are refused: an unknown kind, a cut record, a key named twice")
+	func keyRecords() {
+		func records(_ bytes: [UInt8]) -> BackupKeys? { bytes.withUnsafeBytes { BackupEngine.keyRecords($0) } }
+		let digest = [UInt8](repeating: 0xab, count: 32)
+		let root = [1] + digest + Array(BackupKeysTests.rootKey.utf8)
+		let live = [2] + digest + Array(BackupKeysTests.liveKey.utf8)
+		let pending = [3] + digest + Array(BackupKeysTests.pendingKey.utf8)
+		let wrapping = [4] + Array(BackupKeysTests.wrappingKey.utf8)
+		let floor = [5] + digest + [0, 0, 1, 2]
+
+		let keys = records(root + live + pending + wrapping + floor)
+		#expect(keys?.personalRoots.map(\.account) == [String(repeating: "ab", count: 32)])
+		#expect(keys?.sharingKeys.count == 1, "A sharing key's two halves are one entry")
+		#expect(keys?.floors == [.init(digest: String(repeating: "ab", count: 32), version: 258)])
+		#expect(records([])?.isEmpty == true)
+		#expect(records([9]) == nil, "An unknown record kind is refused")
+		#expect(records(Array(root.dropLast())) == nil, "A cut record is refused")
+		for (name, twice) in [("root", root + root), ("live sharing key", live + live), ("pending sharing key", pending + pending),
+			("wrapping key", wrapping + wrapping), ("floor", floor + floor)]
+		{
+			#expect(records(twice) == nil, "A \(name) named twice is refused")
+		}
+		#expect(records([5] + digest + [0, 0, 0, 0]) == nil, "A floor at version 0 is refused")
+		#expect(records([5] + digest + [0x80, 0, 0, 0]) == nil, "A floor past Int32.max is refused")
+	}
 }
 
 @Suite("Backup app section")
@@ -227,4 +277,5 @@ extension Result {
 		if case .failure(let failure) = self { return failure }
 		return nil
 	}
+
 }

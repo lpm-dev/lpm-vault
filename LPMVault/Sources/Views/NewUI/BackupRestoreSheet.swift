@@ -223,6 +223,12 @@ struct BackupRestoreSheet: View {
 		}.count
 	}
 
+	/// Whether restoring writes a sync key or raises a floor this Mac lacks.
+	private var restoresKeys: Bool {
+		guard choices.restoreKeys, let keys = review?.keys else { return false }
+		return keys.added > 0 || keys.floorsRaised > 0
+	}
+
 	private var reviewer: some View {
 		VStack(alignment: .leading, spacing: 0) {
 			ScrollView {
@@ -266,7 +272,8 @@ struct BackupRestoreSheet: View {
 				}
 				VaultBarButton(
 					title: restoreCount == 0 ? "Restore" : "Restore \(restoreCount.counted("item"))", filled: true,
-					disabled: restoreCount == 0 && !choices.applySettings, height: 28, action: restore)
+					disabled: restoreCount == 0 && !choices.applySettings && !restoresKeys,
+					height: 28, action: restore)
 			}
 		}
 	}
@@ -319,7 +326,11 @@ struct BackupRestoreSheet: View {
 		var details = ["\(project.keyCount.counted("key")) · \(backup.environments.count.counted("env"))"]
 		if backup.hidden { details.append("removed from the sidebar on the Mac it came from") }
 		if let hint = backup.folder, !backup.hidden { details.append("backup folder \(Self.abbreviated(hint))") }
-		if backup.sync != nil { details.append("syncs with lpm.dev — paused until its keys are recovered") }
+		if let sync = backup.sync {
+			details.append(review?.hasKey(for: sync, restoringKeys: choices.restoreKeys) == true
+				? "syncs with lpm.dev"
+				: "syncs with lpm.dev — paused: this Mac doesn’t have its key")
+		}
 		return VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 12) {
 				Toggle(isOn: include(project.id)) { Text(backup.name.escapingDirectionControls) }
@@ -489,6 +500,40 @@ struct BackupRestoreSheet: View {
 				}
 				.toggleStyle(.checkbox)
 			}
+			if let review, !review.plan.contents.keys.isEmpty {
+				Text("LPM.DEV SYNC KEYS").vaultSectionLabel()
+				Toggle(isOn: $choices.restoreKeys) {
+					VStack(alignment: .leading, spacing: 2) {
+						Text("Add the backup’s sync keys")
+							.font(.system(size: 13))
+							.foregroundStyle(VaultPalette.textPrimary)
+						Text(Self.keysDetail(review.keys))
+							.font(.system(size: 11.5))
+							.foregroundStyle(VaultPalette.textTertiary)
+							.fixedSize(horizontal: false, vertical: true)
+					}
+				}
+				.toggleStyle(.checkbox)
+			}
+		}
+	}
+
+	/// What adding a backup's sync keys does here: "2 to add · 1 already on
+	/// this Mac · 1 differs, this Mac’s kept".
+	static func keysDetail(_ keys: BackupKeyStore.Review) -> String {
+		var parts: [String] = []
+		if keys.added > 0 { parts.append("\(keys.added) to add") }
+		if keys.alreadyHere > 0 { parts.append("\(keys.alreadyHere) already on this Mac") }
+		if keys.differing > 0 { parts.append(keys.differing == 1 ? "1 differs, this Mac’s kept" : "\(keys.differing) differ, this Mac’s kept") }
+		if parts.isEmpty { return "Synced projects keep syncing with lpm.dev on this Mac" }
+		return parts.joined(separator: " · ")
+	}
+
+	/// The restored projects whose sync stayed paused, because this Mac doesn't have their keys.
+	private var pausedCount: Int {
+		finished.count { item in
+			guard case .restored = item.outcome else { return false }
+			return store.syncPauses[item.vaultId] != nil
 		}
 	}
 
@@ -528,8 +573,20 @@ struct BackupRestoreSheet: View {
 								.font(.system(size: 11.5))
 								.foregroundStyle(VaultPalette.textTertiary)
 						}
-						if review?.plan.projects.contains(where: { $0.backup.sync != nil && $0.status == .new && choices.included.contains($0.id) }) == true {
-							Text("Synced projects keep their sync paused until their keys can be recovered. Their values work on this Mac.")
+						if let keys = result?.keys, keys.added > 0 {
+							Text("\(keys.added.counted("sync key")) added. Synced projects pull lpm.dev’s latest values when you sync.")
+								.font(.system(size: 11.5))
+								.foregroundStyle(VaultPalette.textTertiary)
+								.fixedSize(horizontal: false, vertical: true)
+						}
+						if let keyFailure = result?.keyFailure {
+							Text(keyFailure)
+								.font(.system(size: 11.5))
+								.foregroundStyle(VaultPalette.redText)
+								.fixedSize(horizontal: false, vertical: true)
+						}
+						if pausedCount > 0 {
+							Text("\(pausedCount.counted("synced project")) keep\(pausedCount == 1 ? "s" : "") sync paused: this Mac doesn’t have \(pausedCount == 1 ? "its" : "their") keys. Their values work on this Mac.")
 								.font(.system(size: 11.5))
 								.foregroundStyle(VaultPalette.orangeTintText)
 								.fixedSize(horizontal: false, vertical: true)

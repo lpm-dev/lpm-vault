@@ -5443,12 +5443,16 @@ final class VaultStore {
     let opened = try await BlockingWork.run { () throws -> (file: BackupFileReader.File, contents: BackupContents) in
       let file: BackupFileReader.File
       do throws(BackupFileReader.Failure) { file = try BackupFileReader.read(url) } catch { throw BackupRestoreFailure.file(error) }
-      let payload: SecretBytes
-      switch BackupEngine.open(file.data, passphrase: passphrase) {
-      case .success(let value): payload = value
+      let opened: (payload: SecretBytes, keys: BackupKeys)
+      switch BackupEngine.openSplit(file.data, passphrase: passphrase) {
+      case .success(let value): opened = value
       case .failure(let failure): throw BackupRestoreFailure.engine(failure)
       }
-      do throws(BackupContents.DecodingError) { return (file, try BackupContents.decode(payload)) } catch {
+      do throws(BackupContents.DecodingError) {
+        var contents = try BackupContents.decode(opened.payload)
+        contents.keys = opened.keys
+        return (file, contents)
+      } catch {
         throw BackupRestoreFailure.contents(error)
       }
     }
@@ -5458,12 +5462,23 @@ final class VaultStore {
     case .success(let snapshot): local = snapshot.inventory
     case .failure: throw BackupRestoreFailure.unreadableProjects
     }
+    let keyStore = backupKeys
+    let backupKeys = opened.contents.keys
+    let comparison = await BlockingWork.run { () -> (review: BackupKeyStore.Review, present: BackupKeyStore.Present)? in
+      guard let present = try? keyStore.presentKeys() else { return nil }
+      if backupKeys.isEmpty { return (BackupKeyStore.Review(), present) }
+      return (try? keyStore.review(backupKeys)).map { ($0, present) }
+    }
+    guard let (keyReview, present) = comparison else { throw BackupRestoreFailure.unreadableKeys }
     guard isUnlocked, sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
     return BackupRestoreReview(
       fileName: opened.file.name,
       fileBytes: opened.file.data.count,
       fileModified: opened.file.modified,
       plan: BackupRestorePlan.make(opened.contents, local: local),
+      keys: keyReview,
+      coverage: BackupKeyStore.Coverage(present: present, review: keyReview, backup: backupKeys),
+      coverageAddingKeys: BackupKeyStore.Coverage(present: present.adding(backupKeys), review: keyReview, backup: backupKeys),
       sessionGeneration: sessionGeneration)
   }
 
@@ -5471,10 +5486,12 @@ final class VaultStore {
   /// project by project, telling `progress` as each one ends. A project that
   /// changed here since the review is left as it is. Cancelling stops after
   /// the current project. New projects require approval before the CLI reads
-  /// them, and a synced one, listed or not, keeps its sync paused until its
-  /// keys are recovered. Pauses are saved before any project is written, so
-  /// no crash leaves a restored project syncing with keys this Mac doesn't
-  /// have; the projects that weren't written are unpaused after.
+  /// them. The backup's sync keys are added first where this Mac has none;
+  /// a new synced project whose key this Mac still lacks, listed or not,
+  /// keeps its sync paused. Pauses, and a new organization project's
+  /// association, are saved before any project is written, so no crash leaves
+  /// a restored project syncing with keys this Mac doesn't have, or as a
+  /// personal one; those of projects that weren't written are removed after.
   func restoreBackup(
     _ review: BackupRestoreReview,
     choices: BackupRestoreChoices,
@@ -5491,16 +5508,45 @@ final class VaultStore {
       writes.end(write)
     }
     let restoredAt = Date()
+    let keyStore = backupKeys
+    let backupKeys = review.plan.contents.keys
+    var installedKeys: BackupKeyStore.Review?
+    var keyFailure: String?
+    if choices.restoreKeys, !backupKeys.isEmpty {
+      switch await BlockingWork.run({ Result { () throws(BackupKeyStore.Failure) in try keyStore.install(backupKeys) } }) {
+      case .success(let installed): installedKeys = installed
+      case .failure(let failure): keyFailure = failure.message
+      }
+    }
+    let present = await BlockingWork.run { try? keyStore.presentKeys() }
+    let coverage = present.map { BackupKeyStore.Coverage(present: $0, review: installedKeys ?? review.keys, backup: backupKeys) }
+    func hasKey(for sync: BackupPayload.Sync) -> Bool { coverage?.hasKey(for: sync) ?? false }
+
     var items: [BackupRestoreResult.Item] = []
     var kept: [String] = []
-    var pausedHere = Set<String>()
-    for project in review.plan.projects
-    where project.status == .new && choices.included.contains(project.id) && syncPauses[project.id] == nil {
+    var created = Set<String>()
+    var pausing: [String: VaultSyncPause] = [:]
+    var organizations: [String: (slug: String, sync: BackupPayload.Sync)] = [:]
+    for project in review.plan.projects where project.status == .new && choices.included.contains(project.id) {
       guard let sync = project.backup.sync else { continue }
-      syncPauses[project.id] = VaultSyncPause(sync, restoredAt: restoredAt)
-      pausedHere.insert(project.id)
+      if case .organization(let slug) = sync.scope { organizations[project.id] = (slug, sync) }
+      if syncPauses[project.id] == nil, !hasKey(for: sync) { pausing[project.id] = VaultSyncPause(sync, restoredAt: restoredAt) }
     }
-    if !pausedHere.isEmpty { VaultSyncPause.save(syncPauses, to: preferences) }
+    var associatedHere = Set<String>()
+    if !organizations.isEmpty {
+      if let added = await persistence.addOrgAssociations(organizations.mapValues(\.slug)) {
+        associatedHere = added
+      } else {
+        for (id, organization) in organizations where syncPauses[id] == nil {
+          pausing[id] = VaultSyncPause(organization.sync, restoredAt: restoredAt)
+        }
+      }
+    }
+    var pausedHere = Set(pausing.keys)
+    if !pausing.isEmpty {
+      syncPauses.merge(pausing) { current, _ in current }
+      VaultSyncPause.save(syncPauses, to: preferences)
+    }
     for project in review.plan.projects {
       guard !Task.isCancelled, isUnlocked, review.sessionGeneration == vaultSessionGeneration else { break }
       let id = project.id
@@ -5521,6 +5567,7 @@ final class VaultStore {
         case .written:
           outcome = .restored(keys: project.keyCount, environments: project.backup.environments.count, needsFolder: listed && folder.isEmpty)
           kept.append(id)
+          created.insert(id)
           pausedHere.remove(id)
         case .changedSinceReview, .failure(.duplicateItem):
           outcome = .changedSinceReview
@@ -5554,6 +5601,8 @@ final class VaultStore {
       for id in pausedHere { syncPauses[id] = nil }
       VaultSyncPause.save(syncPauses, to: preferences)
     }
+    let unwrittenAssociations = associatedHere.subtracting(created)
+    if !unwrittenAssociations.isEmpty { await persistence.removeOrgAssociations(unwrittenAssociations) }
     await refreshLocalState()
 
     var destinations = 0
@@ -5570,7 +5619,8 @@ final class VaultStore {
         if let icon = app?.icons[id] { _ = await projectIcons.restore(icon, for: id) }
       }
     }
-    return BackupRestoreResult(items: items, destinations: destinations, settings: settings)
+    return BackupRestoreResult(
+      items: items, destinations: destinations, keys: installedKeys, keyFailure: keyFailure, settings: settings)
   }
 
   /// Adds the destinations a backup held for a project that this Mac's don't

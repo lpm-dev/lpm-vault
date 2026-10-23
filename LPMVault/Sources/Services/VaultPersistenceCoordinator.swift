@@ -1007,6 +1007,40 @@ actor VaultPersistenceCoordinator {
 		return associations
 	}
 
+	/// Associates each vault in `slugs` with its organization where it has
+	/// none, in one write. Returns the vaults it associated, or nil when the
+	/// associations couldn't be saved.
+	func addOrgAssociations(_ slugs: [String: String]) -> Set<String>? {
+		switch service.withKeychainTransaction({ () -> Set<String>? in
+			guard case .success(var associations) = loadOrgAssociationsResult() else { return nil }
+			let added = Set(slugs.keys.filter { associations[$0] == nil })
+			guard !added.isEmpty else { return [] }
+			for vaultId in added { associations[vaultId] = slugs[vaultId] }
+			guard let data = try? JSONEncoder().encode(associations),
+				service.writeData(account: "__org_associations__", data: data)
+			else { return nil }
+			return added
+		}) {
+		case .success(let added): added
+		case .failure: nil
+		}
+	}
+
+	/// Removes the organization associations of `vaultIds`, in one write.
+	@discardableResult
+	func removeOrgAssociations(_ vaultIds: Set<String>) -> Bool {
+		guard !vaultIds.isEmpty else { return true }
+		return switch service.withKeychainTransaction({ () -> Bool in
+			guard case .success(var associations) = loadOrgAssociationsResult() else { return false }
+			for vaultId in vaultIds { associations.removeValue(forKey: vaultId) }
+			guard let data = try? JSONEncoder().encode(associations) else { return false }
+			return service.writeData(account: "__org_associations__", data: data)
+		}) {
+		case .success(let removed): removed
+		case .failure: false
+		}
+	}
+
 	func deleteProjectAndMetadata(vaultId: String) -> DeleteProjectPersistenceResult {
 		switch service.withKeychainTransaction({
 			deleteProjectAndMetadataUnlocked(vaultId: vaultId)

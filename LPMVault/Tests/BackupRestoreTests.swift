@@ -12,6 +12,9 @@ struct BackupRestoreTests {
 	private struct Fixture {
 		let store: VaultStore
 		let keychain: MockKeychainService
+		/// This Mac's sync key stores.
+		let keys: InMemoryKeychainBackend
+		let home: LPMHome
 		let biometric: MockBiometricService
 		let defaults: UserDefaults
 		let folder: URL
@@ -30,12 +33,15 @@ struct BackupRestoreTests {
 		let keychain = MockKeychainService()
 		for (id, environments) in local { keychain.envStorage[id] = (name: id, path: "", environments: environments) }
 		let biometric = MockBiometricService()
+		let keys = InMemoryKeychainBackend()
+		let home = try testLPMHome(in: folder)
 		let store = VaultStore(
 			keychainService: keychain, biometricService: biometric, apiService: MockAPIService(), preferences: defaults,
-			projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory))
+			projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory),
+			backupKeys: .inMemory(keys, home: home))
 		store.projects = local.keys.sorted().map { VaultProject(id: $0, name: $0, path: "", environments: local[$0] ?? [:]) }
 		store.isUnlocked = true
-		return Fixture(store: store, keychain: keychain, biometric: biometric, defaults: defaults, folder: folder)
+		return Fixture(store: store, keychain: keychain, keys: keys, home: home, biometric: biometric, defaults: defaults, folder: folder)
 	}
 
 	private func project(
@@ -46,9 +52,12 @@ struct BackupRestoreTests {
 	}
 
 	/// A backup file of `projects`, sealed by the engine.
-	private func backup(_ projects: [BackupPayload.Project], app: BackupAppSection? = nil, in folder: URL) throws -> URL {
+	private func backup(
+		_ projects: [BackupPayload.Project], app: BackupAppSection? = nil, keys: BackupKeys? = nil, in folder: URL
+	) throws -> URL {
 		let payload = BackupPayload(
-			createdAt: Date(timeIntervalSince1970: 1_761_171_075), producerVersion: "1.0.2", deviceName: "Studio", projects: projects, app: app)
+			createdAt: Date(timeIntervalSince1970: 1_761_171_075), producerVersion: "1.0.2", deviceName: "Studio", projects: projects, app: app,
+			keys: keys)
 		let encoded = try #require(payload.encoded())
 		let file = try BackupEngine.seal(payload: encoded.bytes, passphrase: Self.passphrase).get()
 		let url = folder.appending(path: "backup-\(UUID().uuidString).lpmbackup")
@@ -152,6 +161,109 @@ struct BackupRestoreTests {
 		await fixture.store.loadProjects()
 		#expect(fixture.store.syncPauses.isEmpty)
 		#expect(VaultSyncPause.load(from: fixture.defaults).isEmpty)
+	}
+
+	private func secret(_ text: String) -> SecretBytes {
+		SecretBytes(count: text.utf8.count) { $0.copyBytes(from: Array(text.utf8)) }
+	}
+
+	private static let personalSync = BackupPayload.Sync(registry: "https://lpm.dev", principalId: "usr_1", scope: .personal)
+	private static let organizationSync = BackupPayload.Sync(registry: "https://lpm.dev", principalId: "org_1", scope: .organization(slug: "acme"))
+
+	/// The root key account of `personalSync`.
+	private func personalRootAccount() throws -> String {
+		try PersonalProjectCrypto.rootAccount(origin: "https://lpm.dev", principalID: "usr_1")
+	}
+
+	private func stored(_ fixture: Fixture, _ service: String, _ account: String) throws -> String? {
+		try fixture.keys.read(service: service, account: account).map { String(decoding: $0, as: UTF8.self) }
+	}
+
+	@Test("a backup's sync keys are added where this Mac has none, so its synced projects sync, an organization's associated")
+	func syncKeysRestore() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let account = try personalRootAccount()
+		var keys = BackupKeys()
+		keys.personalRoots = [.init(account: account, key: secret(BackupKeysTests.rootKey))]
+		keys.sharingKeys = [.init(account: BackupKeysTests.sharingAccount, live: secret(BackupKeysTests.liveKey), pending: nil)]
+		keys.floors = [.init(digest: BackupKeysTests.floor, version: 4)]
+		let url = try backup([
+			project("personal", environments: ["default": ["A": "1"]], sync: Self.personalSync),
+			project("team", environments: ["default": ["B": "2"]], sync: Self.organizationSync),
+		], keys: keys, in: fixture.folder)
+
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		#expect(review.keys == BackupKeyStore.Review(added: 2, floorsRaised: 1))
+		#expect(review.hasKey(for: Self.personalSync, restoringKeys: true))
+		#expect(!review.hasKey(for: Self.personalSync, restoringKeys: false), "Without the backup's keys, this Mac has none")
+		let choices = BackupRestoreChoices.defaults(for: review.plan, hasLocalProjects: false)
+		#expect(choices.restoreKeys)
+
+		let result = try await fixture.store.restoreBackup(review, choices: choices)
+		#expect(result.keys?.added == 2)
+		#expect(result.keyFailure == nil)
+		#expect(try stored(fixture, BackupKeyStore.testRootService, account) == BackupKeysTests.rootKey)
+		#expect(
+			try stored(fixture, BackupKeyStore.testSharingService, VaultCrypto.scopedX25519AccountPrefix + BackupKeysTests.sharingAccount)
+				== BackupKeysTests.liveKey)
+		#expect(try PersonalProjectCrypto.floor(digest: BackupKeysTests.floor, home: fixture.home) == 4)
+		#expect(fixture.store.syncPauses.isEmpty, "Both projects have their keys, so neither waits")
+		let associations = try #require(fixture.keychain.dataStorage["__org_associations__"])
+		#expect(try JSONDecoder().decode([String: String].self, from: associations) == ["team": "acme"])
+	}
+
+	@Test("a key this Mac holds differently is kept and the project it opens stays paused; left out, no key is added")
+	func differingKeys() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let account = try personalRootAccount()
+		let local = String(repeating: "c3", count: 32)
+		try fixture.keys.add(service: BackupKeyStore.testRootService, account: account, data: Data(local.utf8))
+		var keys = BackupKeys()
+		keys.personalRoots = [.init(account: account, key: secret(BackupKeysTests.rootKey))]
+		keys.wrappingKey = secret(BackupKeysTests.wrappingKey)
+		let url = try backup([project("personal", environments: ["default": ["A": "1"]], sync: Self.personalSync)], keys: keys, in: fixture.folder)
+
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		#expect(review.keys.added == 1)
+		#expect(review.keys.differing == 1)
+		#expect(review.keys.differingRoots == [account])
+		#expect(!review.hasKey(for: Self.personalSync, restoringKeys: true), "This Mac's own key can't open the backup's copy")
+
+		var choices = BackupRestoreChoices.defaults(for: review.plan, hasLocalProjects: false)
+		choices.restoreKeys = false
+		_ = try await fixture.store.restoreBackup(review, choices: choices)
+		#expect(try stored(fixture, BackupKeyStore.testWrappingService, VaultCrypto.wrappingKeyAccount) == nil, "Left out, no key is added")
+		#expect(fixture.store.syncPauses["personal"] != nil)
+
+		let again = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		let result = try await fixture.store.restoreBackup(again, choices: BackupRestoreChoices.defaults(for: again.plan, hasLocalProjects: true))
+		#expect(result.keys?.added == 1)
+		#expect(result.keys?.differing == 1)
+		#expect(try stored(fixture, BackupKeyStore.testRootService, account) == local, "A key this Mac has is never replaced")
+		#expect(try stored(fixture, BackupKeyStore.testWrappingService, VaultCrypto.wrappingKeyAccount) == BackupKeysTests.wrappingKey)
+		#expect(fixture.store.syncPauses["personal"] != nil)
+	}
+
+	@Test("an organization's project has its key when every live sharing key the backup carries is here as it has it, or, carrying none, this Mac has one")
+	func organizationCoverage() {
+		typealias Coverage = BackupKeyStore.Coverage
+		let carried = BackupKeysTests.sharingAccount
+		let other = String(repeating: "0f", count: 32)
+		var backup = BackupKeys()
+		backup.sharingKeys = [.init(account: carried, live: secret(BackupKeysTests.liveKey), pending: nil)]
+		let sync = Self.organizationSync
+
+		#expect(!Coverage(present: .init(liveSharingKeys: [other]), review: .init(), backup: backup).hasKey(for: sync), "Another account's key isn't the backup's")
+		#expect(Coverage(present: .init(liveSharingKeys: [carried, other]), review: .init(), backup: backup).hasKey(for: sync))
+		#expect(
+			!Coverage(present: .init(liveSharingKeys: [carried]), review: .init(differingLiveSharingKeys: [carried]), backup: backup).hasKey(for: sync),
+			"This Mac's own key for the account can't open what the backup's opened")
+		#expect(Coverage(present: BackupKeyStore.Present().adding(backup), review: .init(), backup: backup).hasKey(for: sync))
+		#expect(Coverage(present: .init(liveSharingKeys: [other]), review: .init(), backup: BackupKeys()).hasKey(for: sync))
+		#expect(!Coverage(present: .init(), review: .init(), backup: BackupKeys()).hasKey(for: sync))
+		#expect(!Coverage().hasKey(for: Self.personalSync), "A Mac whose keys couldn't be read has none")
 	}
 
 	@Test("a project already here is merged: this Mac's values kept unless replaced, the backup's other keys added")
