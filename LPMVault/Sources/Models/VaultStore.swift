@@ -1401,6 +1401,8 @@ final class VaultStore {
   private var projectOrder: [String]
   /// The last backup this Mac exported.
   private(set) var lastBackup: VaultBackupRecord?
+  /// Restored projects whose sync stays paused until their keys are recovered.
+  private(set) var syncPauses: [String: VaultSyncPause]
 
   // SECURITY NOTE: Environment tab ordering is stored in UserDefaults (not Keychain).
   // This is intentional — it contains only the display order of environment names
@@ -2083,6 +2085,7 @@ final class VaultStore {
     self.preferences = preferences
     self.projectOrder = preferences.stringArray(forKey: Self.projectOrderKey) ?? []
     self.lastBackup = VaultBackupRecord(defaults: preferences)
+    self.syncPauses = VaultSyncPause.load(from: preferences)
     if let sharingKeypairProvider {
       self.sharingKeypairProvider = { _, _, _, _ in
         try sharingKeypairProvider()
@@ -5426,6 +5429,170 @@ final class VaultStore {
     return total
   }
 
+  /// Opens the backup at `url` with `passphrase` and plans restoring it
+  /// against what this Mac holds. Nothing is written. The file is read and
+  /// decrypted off the main actor; this Mac's values are read as unlocking
+  /// allows, with no prompt of their own.
+  func openBackup(at url: URL, passphrase: String) async throws -> BackupRestoreReview {
+    guard canUseLocalSecrets else { throw CancellationError() }
+    let sessionGeneration = vaultSessionGeneration
+    let opened = try await BlockingWork.run { () throws -> (file: BackupFileReader.File, contents: BackupContents) in
+      let file: BackupFileReader.File
+      do throws(BackupFileReader.Failure) { file = try BackupFileReader.read(url) } catch { throw BackupRestoreFailure.file(error) }
+      let payload: SecretBytes
+      switch BackupEngine.open(file.data, passphrase: passphrase) {
+      case .success(let value): payload = value
+      case .failure(let failure): throw BackupRestoreFailure.engine(failure)
+      }
+      do throws(BackupContents.DecodingError) { return (file, try BackupContents.decode(payload)) } catch {
+        throw BackupRestoreFailure.contents(error)
+      }
+    }
+    guard isUnlocked, sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
+    let local: VaultBackupInventory
+    switch await persistence.backupSnapshot() {
+    case .success(let snapshot): local = snapshot.inventory
+    case .failure: throw BackupRestoreFailure.unreadableProjects
+    }
+    guard isUnlocked, sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
+    return BackupRestoreReview(
+      fileName: opened.file.name,
+      fileBytes: opened.file.data.count,
+      fileModified: opened.file.modified,
+      plan: BackupRestorePlan.make(opened.contents, local: local),
+      sessionGeneration: sessionGeneration)
+  }
+
+  /// Restores what the person chose from `review`, once they authenticate,
+  /// project by project, telling `progress` as each one ends. A project that
+  /// changed here since the review is left as it is. Cancelling stops after
+  /// the current project. New projects require approval before the CLI reads
+  /// them, and a synced one keeps its sync paused until its keys are recovered.
+  func restoreBackup(
+    _ review: BackupRestoreReview,
+    choices: BackupRestoreChoices,
+    progress: @MainActor (BackupRestoreResult.Item) -> Void = { _ in }
+  ) async throws -> BackupRestoreResult {
+    guard isUnlocked, review.sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
+    guard await confirmSensitiveAction(reason: "restore a backup into your env projects"),
+      review.sessionGeneration == vaultSessionGeneration
+    else { throw CancellationError() }
+    let write = writes.begin()
+    defer { writes.end(write) }
+    let restoredAt = Date()
+    var items: [BackupRestoreResult.Item] = []
+    var kept: [String] = []
+    var pauses = syncPauses
+    for project in review.plan.projects {
+      guard !Task.isCancelled, isUnlocked, review.sessionGeneration == vaultSessionGeneration else { break }
+      let id = project.id
+      let outcome: BackupRestoreOutcome
+      switch project.status {
+      case .unusable(let reason):
+        outcome = .unusable(reason: reason)
+      case .identical:
+        outcome = choices.included.contains(id) ? .identical : .notChosen
+        if choices.included.contains(id) { kept.append(id) }
+      case .new where !choices.included.contains(id), .merge where !choices.included.contains(id):
+        outcome = .notChosen
+      case .new:
+        let listed = !project.backup.hidden
+        let folder = listed ? choices.folders[id] ?? "" : ""
+        let restored = VaultProject(id: id, name: project.backup.name, path: folder, environments: project.backup.environments)
+        switch await persistence.restoreProject(.create(restored, listed: listed)) {
+        case .written:
+          if listed, let sync = project.backup.sync { pauses[id] = VaultSyncPause(sync, restoredAt: restoredAt) }
+          outcome = .restored(keys: project.keyCount, environments: project.backup.environments.count, needsFolder: listed && folder.isEmpty)
+          kept.append(id)
+        case .changedSinceReview, .failure(.duplicateItem):
+          outcome = .changedSinceReview
+        case .failure(let error):
+          outcome = .failed(error.description)
+        }
+      case .merge(let added, let differing):
+        guard let local = project.local else {
+          outcome = .changedSinceReview
+          break
+        }
+        let replacing = (choices.replacing[id] ?? []).intersection(differing)
+        let merged = BackupRestorePlan.merged(project.backup.environments, into: local, replacing: replacing)
+        switch await persistence.restoreProject(.merge(vaultId: id, expected: local, merged: merged)) {
+        case .written:
+          outcome = .merged(added: added, replaced: replacing.count)
+          kept.append(id)
+        case .changedSinceReview:
+          outcome = .changedSinceReview
+        case .failure(.dataTooLarge):
+          outcome = .failed("Merged, it would be larger than an env project can be.")
+        case .failure(let error):
+          outcome = .failed(error.description)
+        }
+      }
+      let item = BackupRestoreResult.Item(vaultId: id, name: project.localName ?? project.backup.name, outcome: outcome)
+      items.append(item)
+      progress(item)
+    }
+    if pauses != syncPauses {
+      syncPauses = pauses
+      VaultSyncPause.save(pauses, to: preferences)
+    }
+    await refreshLocalState()
+
+    var destinations = 0
+    let app = review.plan.contents.app
+    for id in kept {
+      guard let list = app?.destinations[id] else { continue }
+      destinations += await restoreDestinations(list, into: id)
+    }
+    var settings: BackupAppSection.Settings?
+    if choices.applySettings, let restored = app?.settings {
+      settings = restored
+      applyRestoredSettings(restored, to: kept)
+      for id in kept {
+        if let icon = app?.icons[id] { _ = await projectIcons.restore(icon, for: id) }
+      }
+    }
+    return BackupRestoreResult(items: items, destinations: destinations, settings: settings)
+  }
+
+  /// Adds the destinations a backup held for a project that this Mac's don't
+  /// already cover, by ID or by where they publish; returns how many.
+  private func restoreDestinations(_ destinations: [PublishDestination], into vaultId: String) async -> Int {
+    guard case .success(let existing) = await publishing.destinations(of: vaultId) else { return 0 }
+    var ids = Set(existing.map(\.id))
+    var locations = Set(existing.map(\.target.location))
+    var added = 0
+    for destination in destinations where !ids.contains(destination.id) && !locations.contains(destination.target.location) {
+      guard case .success = await publishing.save(destination, to: vaultId) else { continue }
+      ids.insert(destination.id)
+      locations.insert(destination.target.location)
+      added += 1
+    }
+    return added
+  }
+
+  /// The backup's sidebar order first, then this Mac's other projects; the
+  /// environment orders and key sort of the projects it restored.
+  private func applyRestoredSettings(_ settings: BackupAppSection.Settings, to restored: [String]) {
+    let present = Set(projects.map(\.id))
+    var seen = Set<String>()
+    let order = (settings.projectOrder + projectOrder).filter { present.contains($0) && seen.insert($0).inserted }
+    projectOrder = order
+    preferences.set(order, forKey: Self.projectOrderKey)
+    for id in restored {
+      if let environments = settings.environmentOrders[id] { saveEnvironmentOrder(for: id, order: environments) }
+    }
+    preferences.set(settings.keySort.rawValue, forKey: VaultKeySortOrder.defaultsKey)
+  }
+
+  /// Says why `project` doesn't sync while a restore left its sync paused;
+  /// true when it is.
+  private func refuseSyncIfPaused(_ project: VaultProject) -> Bool {
+    guard syncPauses[project.id] != nil else { return false }
+    error = "Sync is paused for \(project.name.escapingDirectionControls): the backup it came from didn’t carry its keys. Its values work on this Mac."
+    return true
+  }
+
   /// The settings a backup carries, as this Mac has them.
   private func backupSettings() -> BackupAppSection.Settings {
     BackupAppSection.Settings(
@@ -5748,6 +5915,7 @@ final class VaultStore {
     guard isUnlocked, selectedAccount == .personal, let project = selectedProject else {
       return
     }
+    guard !refuseSyncIfPaused(project) else { return }
     syncOperationGeneration &+= 1
     let operationGeneration = syncOperationGeneration
     let sessionGeneration = vaultSessionGeneration
@@ -6062,6 +6230,7 @@ final class VaultStore {
     guard isUnlocked, selectedAccount == .personal, let project = selectedProject else {
       return false
     }
+    guard !refuseSyncIfPaused(project) else { return false }
     syncOperationGeneration &+= 1
     let operationGeneration = syncOperationGeneration
     let sessionGeneration = vaultSessionGeneration
@@ -6322,6 +6491,7 @@ final class VaultStore {
     guard isUnlocked, selectedAccount == .org(orgSlug), let project = selectedProject else {
       return .failed
     }
+    guard !refuseSyncIfPaused(project) else { return .failed }
     syncOperationGeneration &+= 1
     let operationGeneration = syncOperationGeneration
     let environment = appEnvironment
@@ -7302,6 +7472,7 @@ final class VaultStore {
     guard isUnlocked, selectedAccount == .org(orgSlug), let project = selectedProject else {
       return
     }
+    guard !refuseSyncIfPaused(project) else { return }
     syncOperationGeneration &+= 1
     let operationGeneration = syncOperationGeneration
     let sessionGeneration = vaultSessionGeneration
@@ -8194,6 +8365,11 @@ final class VaultStore {
       preferences.removeObject(forKey: key)
     }
     projectIcons.forget(keeping: vaultIds)
+    let keptPauses = syncPauses.filter { vaultIds.contains($0.key) }
+    if keptPauses != syncPauses {
+      syncPauses = keptPauses
+      VaultSyncPause.save(keptPauses, to: preferences)
+    }
   }
 
   private func loadEnvironmentOrders() {

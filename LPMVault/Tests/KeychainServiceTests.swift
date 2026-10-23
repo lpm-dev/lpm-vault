@@ -86,6 +86,23 @@ private final class KeychainServiceTestBackend: KeychainStoreBackend, @unchecked
 
 	var recordedAccessReadCount: Int { lock.withLock { accessReadCount } }
 	var recordedAccessWrites: [(String, VaultCliAccess)] { lock.withLock { accessWrites } }
+	/// Writes to accounts starting with this fail, as a crash or a full Keychain would stop them.
+	var failingWritePrefix: String? {
+		get { lock.withLock { failingPrefix } }
+		set { lock.withLock { failingPrefix = newValue } }
+	}
+	private var failingPrefix: String?
+
+	func accounts(service: String) throws -> [String: VaultCliAccess] {
+		lock.withLock {
+			let prefix = "\(service)\u{0}"
+			var accounts: [String: VaultCliAccess] = [:]
+			for storageKey in storage.keys where storageKey.hasPrefix(prefix) {
+				accounts[String(storageKey.dropFirst(prefix.count))] = policies[storageKey] ?? .automatic
+			}
+			return accounts
+		}
+	}
 
 	func cliAccess(service: String, account: String) throws -> VaultCliAccess {
 		lock.withLock {
@@ -125,7 +142,12 @@ private final class KeychainServiceTestBackend: KeychainStoreBackend, @unchecked
 	}
 
 	func write(service: String, account: String, data: Data) throws {
-		lock.withLock { storage[key(service: service, account: account)] = data }
+		try lock.withLock {
+			if let failingPrefix, account.hasPrefix(failingPrefix) {
+				throw KeychainStoreError.status(operation: "write", code: errSecIO)
+			}
+			storage[key(service: service, account: account)] = data
+		}
 	}
 
 	func add(service: String, account: String, data: Data) throws {
@@ -166,6 +188,92 @@ struct KeychainServiceTests {
 		case .success, .successWithWarning: true
 		case .failure: false
 		}
+	}
+
+	// MARK: - Backups
+
+	@Test("a backup reads every vault, listed or removed from the sidebar, with its CLI approval, and leaves the store's records out")
+	func backupInventory() throws {
+		let backend = KeychainServiceTestBackend()
+		let service = KeychainService(testingService: "backup-inventory", backend: backend)
+		#expect(succeeded(service.createEnvironments(vaultId: "listed", projectName: "Listed", projectPath: "/tmp/listed", environments: ["default": ["A": "1"]])))
+		#expect(succeeded(service.createEnvironments(vaultId: "removed", projectName: "Removed", projectPath: "", environments: ["staging": ["B": "2"]])))
+		#expect(try service.setCliAccess(vaultId: "listed", access: .requireApproval).get() == .requireApproval)
+		#expect(service.removeFromSidebar(vaultId: "removed"))
+		try backend.write(service: "backup-inventory", account: "bad\u{200E}id", data: Data(#"{"environments":{}}"#.utf8))
+
+		let inventory = try service.backupInventoryResult().get()
+		#expect(inventory.projects == [
+			VaultBackupProject(vaultId: "listed", listing: .init(name: "Listed", folder: "/tmp/listed"), environments: ["default": ["A": "1"]], cliAccess: .requireApproval),
+			VaultBackupProject(vaultId: "removed", listing: nil, environments: ["staging": ["B": "2"]], cliAccess: .automatic),
+		])
+		#expect(inventory.unusableItems == 1)
+
+		try backend.write(service: "backup-inventory", account: "removed", data: Data("not a payload".utf8))
+		#expect(throws: KeychainError.self) { try service.backupInventoryResult().get() }
+	}
+
+	@Test("a restored project requires approval from the start, listed or not, and one already here is refused")
+	func restoredProjectRequiresApproval() throws {
+		let service = makeService()
+		let project = VaultProject(id: "restored", name: "Restored", path: "", environments: ["default": ["TOKEN": "a"]])
+		#expect(succeeded(service.createRestoredProjectResult(project, listed: true)))
+		#expect(try service.cliAccessResult(vaultId: "restored").get() == .requireApproval)
+		#expect(try service.listProjectMetadataResult().get().map(\.id) == ["restored"])
+		#expect(service.getEnvironments(vaultId: "restored") == ["default": ["TOKEN": "a"]])
+
+		let hidden = VaultProject(id: "hidden", name: "hidden", path: "", environments: ["default": ["OLD": "x"]])
+		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false)))
+		#expect(try service.cliAccessResult(vaultId: "hidden").get() == .requireApproval)
+		#expect(try service.listProjectMetadataResult().get().map(\.id) == ["restored"])
+		#expect(try service.backupInventoryResult().get().projects.map(\.vaultId) == ["hidden", "restored"])
+
+		guard case .failure(.duplicateItem) = service.createRestoredProjectResult(project, listed: true) else {
+			Issue.record("a project already here was created again")
+			return
+		}
+		cleanup(service: service, vaultIds: ["restored", "hidden"])
+	}
+
+	@Test("a restored project whose indexing fails is left unlisted, still requiring approval")
+	func restoredProjectFailsClosed() throws {
+		let backend = KeychainServiceTestBackend()
+		let service = KeychainService(testingService: "restore-fails-closed", backend: backend)
+		backend.failingWritePrefix = "__vault_transaction"
+		let project = VaultProject(id: "restored", name: "Restored", path: "", environments: ["default": ["TOKEN": "a"]])
+		guard case .failure = service.createRestoredProjectResult(project, listed: true) else {
+			Issue.record("the restore reported success")
+			return
+		}
+		backend.failingWritePrefix = nil
+		#expect(try service.cliAccessResult(vaultId: "restored").get() == .requireApproval)
+		#expect(try service.listProjectMetadataResult().get().isEmpty)
+		#expect(try service.backupInventoryResult().get().projects.map(\.vaultId) == ["restored"])
+	}
+
+	@Test("a merge writes only over the values the review read, listed or not, and within the size limit")
+	func restoredMerge() throws {
+		let service = makeService()
+		#expect(succeeded(service.createEnvironments(vaultId: "listed", projectName: "Listed", projectPath: "", environments: ["default": ["A": "1"]])))
+		#expect(try service.setCliAccess(vaultId: "listed", access: .requireApproval).get() == .requireApproval)
+		#expect(service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1"]], merged: ["default": ["A": "1", "B": "2"]], additionalMutations: []) == .written(warning: nil))
+		#expect(service.getEnvironments(vaultId: "listed") == ["default": ["A": "1", "B": "2"]])
+		#expect(try service.cliAccessResult(vaultId: "listed").get() == .requireApproval, "A merge keeps this Mac's CLI approval")
+		#expect(try service.listProjectMetadataResult().get().first?.environmentSummaries.first?.keyCount == 2)
+
+		#expect(service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1"]], merged: ["default": [:]], additionalMutations: []) == .changedSinceReview)
+
+		let hidden = VaultProject(id: "hidden", name: "hidden", path: "", environments: ["default": ["OLD": "x"]])
+		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false)))
+		#expect(service.mergeRestoredProjectResult(vaultId: "hidden", expected: ["default": ["OLD": "x"]], merged: ["default": ["OLD": "y"]], additionalMutations: []) == .written(warning: nil))
+		#expect(service.getEnvironments(vaultId: "hidden") == ["default": ["OLD": "y"]])
+
+		let big = ["default": ["BIG": String(repeating: "x", count: VaultConstants.maxVaultSizeWarning)]]
+		guard case .failure(.dataTooLarge) = service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1", "B": "2"]], merged: big, additionalMutations: []) else {
+			Issue.record("a merge past the size limit was written")
+			return
+		}
+		cleanup(service: service, vaultIds: ["listed", "hidden"])
 	}
 
 	// MARK: - CRUD

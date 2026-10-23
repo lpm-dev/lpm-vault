@@ -32,6 +32,14 @@ struct VaultBackupSnapshot: Sendable {
 	let orgAssociations: [String: String]
 }
 
+/// What restoring one project from a backup writes.
+enum VaultRestoreAction: Sendable {
+	/// A project not on this Mac, requiring approval before the CLI reads it.
+	case create(VaultProject, listed: Bool)
+	/// A project on this Mac, whose values become `merged` when they're still `expected`.
+	case merge(vaultId: String, expected: [String: [String: String]], merged: [String: [String: String]])
+}
+
 struct ProjectCreationRecord: Sendable {
 	let cliAccess: VaultCliAccess?
 	let project: VaultProject?
@@ -272,6 +280,40 @@ actor VaultPersistenceCoordinator {
 				return .failure(error)
 			}
 		}.flatMap { $0 }
+	}
+
+	/// Restores one project from a backup. A merge into a synced project marks
+	/// it changed, so its next sync pushes what the backup brought.
+	func restoreProject(_ action: VaultRestoreAction) -> VaultRestoreWriteResult {
+		switch service.withKeychainTransaction({ restoreProjectUnlocked(action) }) {
+		case .success(let result): result
+		case .failure(let error): .failure(error)
+		}
+	}
+
+	private func restoreProjectUnlocked(_ action: VaultRestoreAction) -> VaultRestoreWriteResult {
+		guard !Task.isCancelled else { return .failure(.accessDenied) }
+		switch action {
+		case .create(let project, let listed):
+			switch service.createRestoredProjectResult(project, listed: listed) {
+			case .success: return .written(warning: nil)
+			case .successWithWarning(let warning): return .written(warning: warning)
+			case .failure(let error): return .failure(error)
+			}
+		case .merge(let vaultId, let expected, let merged):
+			var mutations: [VaultKeychainMutation] = []
+			switch loadSyncMetadataRecordSnapshotResult(vaultId: vaultId) {
+			case .success(let snapshot):
+				if var metadata = snapshot.metadata {
+					metadata.isDirty = true
+					guard let mutation = syncMetadataMutation(metadata, vaultId: vaultId) else { return .failure(.encodingFailed) }
+					mutations.append(mutation)
+				}
+			case .failure(let error):
+				return .failure(error)
+			}
+			return service.mergeRestoredProjectResult(vaultId: vaultId, expected: expected, merged: merged, additionalMutations: mutations)
+		}
 	}
 
 	func loadProject(vaultId: String) -> Result<VaultProject?, KeychainError> {

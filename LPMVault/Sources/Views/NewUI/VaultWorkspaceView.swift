@@ -25,6 +25,7 @@ struct VaultWorkspaceView: View {
 	@State private var tableColumnWidths: [String: VaultProjectTableColumnWidths] = [:]
 
 	@State private var showNewProject = false
+	@State private var showBackupRestore = false
 	@State private var showCloudProjects = false
 	@State private var showNewEnvironment = false
 	@State private var addSecretTarget: VaultSecretTarget?
@@ -291,6 +292,9 @@ struct VaultWorkspaceView: View {
 			if let refreshError = store.localStateRefreshError {
 				localStateRefreshBanner(refreshError)
 			}
+			if !isObscured, !store.isShowingAccountPage, let project, store.syncPauses[project.id] != nil {
+				syncPausedBanner
+			}
 
 			GeometryReader { geometry in
 				let budget = VaultPaneBudget(
@@ -464,8 +468,10 @@ struct VaultWorkspaceView: View {
 						} else {
 							VaultWorkspaceEmptyView(
 								isSearching: !searchText.isEmpty,
+								hasProjects: !store.projects.isEmpty,
 								onCreate: { showNewProject = true },
-								onImport: { showCloudProjects = true }
+								onImport: { showCloudProjects = true },
+								onRestore: { showBackupRestore = true }
 							)
 						}
 					}
@@ -641,6 +647,12 @@ struct VaultWorkspaceView: View {
 		}
 		.sheet(isPresented: $showNewProject) {
 			NewVaultSheet(store: store).vaultPrivacyProtected(isObscured)
+		}
+		.sheet(isPresented: $showBackupRestore) {
+			VaultBackupRestorePresentation(store: store).vaultPrivacyProtected(isObscured)
+		}
+		.onChange(of: store.isUnlocked) { _, unlocked in
+			if !unlocked { showBackupRestore = false }
 		}
 		.sheet(isPresented: $showCloudProjects) {
 			cloudProjectSheet.vaultPrivacyProtected(isObscured)
@@ -932,6 +944,30 @@ struct VaultWorkspaceView: View {
 		.padding(.horizontal, 16)
 		.padding(.vertical, 8)
 		.background(VaultPalette.redTint)
+	}
+
+	private var syncPausedBanner: some View {
+		VStack(spacing: 0) {
+			HStack(spacing: 10) {
+				Image(systemName: "pause.circle.fill")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.orange)
+					.accessibilityHidden(true)
+				VStack(alignment: .leading, spacing: 2) {
+					Text("Sync paused: keys not recovered · values work locally")
+						.font(.system(size: 12, weight: .semibold))
+					Text("This project came from a backup without its sync keys. Syncing comes back once LPM Vault can recover them from lpm.dev.")
+						.font(.system(size: 11.5))
+				}
+				.foregroundStyle(VaultPalette.orangeTintText)
+				Spacer(minLength: 12)
+			}
+			.padding(.horizontal, 16)
+			.padding(.vertical, 8)
+			.background(VaultPalette.orangeTint)
+			.accessibilityElement(children: .combine)
+			VaultHairline(color: VaultPalette.titleBarBorder)
+		}
 	}
 
 	private func localStateRefreshBanner(_ message: String) -> some View {

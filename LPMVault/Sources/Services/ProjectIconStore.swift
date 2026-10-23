@@ -490,6 +490,28 @@ final class ProjectIconStore {
 		return choices
 	}
 
+	/// Keeps an icon a backup carried, for a project with no icon chosen here:
+	/// a choice as it is, an image drawn again and copied into LPM Vault's
+	/// folder under a new name. False when the project has one, or it couldn't
+	/// be kept.
+	func restore(_ icon: BackupAppSection.Icon, for projectID: String) async -> Bool {
+		guard savedChoices(for: [projectID]).isEmpty else { return false }
+		switch icon {
+		case .choice(let choice):
+			return save(choice, for: projectID)
+		case .image(let name, let png):
+			let directory = imagesDirectory
+			let choice = await BlockingWork.run { () -> ProjectIconChoice? in
+				guard let copy = ProjectIconRenderer.copy(from: png) else { return nil }
+				let file = UUID().uuidString + ".png"
+				guard ProjectIconImageFolder.write(copy.png, named: file, in: directory) else { return nil }
+				return .storedImage(file: file, name: Self.storedImageDisplayName(name))
+			}
+			guard let choice, savedChoices(for: [projectID]).isEmpty else { return false }
+			return save(choice, for: projectID)
+		}
+	}
+
 	/// Forgets a project's chosen icon and its copied image, as when it's deleted.
 	func forget(_ projectID: String) {
 		forget([projectID])

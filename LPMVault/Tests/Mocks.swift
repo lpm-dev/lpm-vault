@@ -342,6 +342,45 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var failBackupInventory = false
 	var backupInventoryReadCount = 0
 
+	var failRestoreWrites = false
+
+	func createRestoredProjectResult(_ project: VaultProject, listed: Bool) -> KeychainResult {
+		lock.withLock {
+			if shouldFail || failRestoreWrites { return .failure(failureError) }
+			guard envStorage[project.id] == nil, hiddenPayloads[project.id] == nil else { return .failure(.duplicateItem) }
+			let environments = project.environments.isEmpty ? ["default": [:]] : project.environments
+			if listed {
+				envStorage[project.id] = (name: project.name, path: project.path, environments: environments)
+			} else {
+				hiddenPayloads[project.id] = environments
+			}
+			cliAccessPolicies[project.id] = .requireApproval
+			return .success
+		}
+	}
+
+	func mergeRestoredProjectResult(
+		vaultId: String,
+		expected: [String: [String: String]],
+		merged: [String: [String: String]],
+		additionalMutations: [VaultKeychainMutation]
+	) -> VaultRestoreWriteResult {
+		lock.withLock {
+			if shouldFail || failRestoreWrites { return .failure(failureError) }
+			if let listed = envStorage[vaultId] {
+				guard listed.environments == expected else { return .changedSinceReview }
+				envStorage[vaultId]?.environments = merged
+			} else if let hidden = hiddenPayloads[vaultId] {
+				guard hidden == expected else { return .changedSinceReview }
+				hiddenPayloads[vaultId] = merged
+			} else {
+				return .failure(.itemNotFound)
+			}
+			for mutation in additionalMutations { dataStorage[mutation.account] = mutation.data }
+			return .written(warning: nil)
+		}
+	}
+
 	func backupInventoryResult() -> Result<VaultBackupInventory, KeychainError> {
 		lock.withLock {
 			backupInventoryReadCount += 1
