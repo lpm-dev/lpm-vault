@@ -36,6 +36,9 @@ struct VaultWorkspaceView: View {
 	@State private var duplicateEnvironmentTarget: VaultEnvironmentTarget?
 	@State private var environmentNameDraft = ""
 	@State private var projectToDelete: VaultProject?
+	/// An exit from a restore's sync pause, waiting for the person to confirm it.
+	@State private var pauseExit: VaultSyncPauseExit?
+	@State private var isCheckingSharingKey = false
 	/// The project whose settings open once it's selected.
 	@State private var pendingProjectSettings: String?
 	/// Focuses the Project Settings name field each time it changes.
@@ -292,8 +295,8 @@ struct VaultWorkspaceView: View {
 			if let refreshError = store.localStateRefreshError {
 				localStateRefreshBanner(refreshError)
 			}
-			if !isObscured, !store.isShowingAccountPage, let project, store.syncPauses[project.id] != nil {
-				syncPausedBanner
+			if !isObscured, !store.isShowingAccountPage, let project, let pause = store.syncPauses[project.id] {
+				syncPausedBanner(project, pause)
 			}
 
 			GeometryReader { geometry in
@@ -730,6 +733,9 @@ struct VaultWorkspaceView: View {
 					detail: project.path.isEmpty ? nil : (project.path as NSString).abbreviatingWithTildeInPath),
 				actions: [.init(title: "Delete Locally") { Task { _ = await store.deleteLocalVault(project) } }])
 		}
+		.vaultConfirmation(item: $pauseExit) { exit in
+			pauseExitConfirmation(exit)
+		}
 		.vaultConfirmation(item: $deleteEnvironmentTarget) { target in
 			VaultConfirmation(
 				symbol: "trash",
@@ -777,6 +783,19 @@ struct VaultWorkspaceView: View {
 				cancelTitle: nil,
 				actions: [.init(title: "OK") {}])
 		}
+	}
+
+	/// An exit from a restore's sync pause for one project.
+	private struct VaultSyncPauseExit: Identifiable {
+		enum Choice {
+			/// Replace lpm.dev's copy under this Mac's keys.
+			case reconnect
+			case keepOnThisMac
+		}
+
+		let projectId: String
+		let choice: Choice
+		var id: String { "\(projectId)/\(choice)" }
 	}
 
 	private struct ShownError: Identifiable {
@@ -946,7 +965,7 @@ struct VaultWorkspaceView: View {
 		.background(VaultPalette.redTint)
 	}
 
-	private var syncPausedBanner: some View {
+	private func syncPausedBanner(_ project: VaultProject, _ pause: VaultSyncPause) -> some View {
 		VStack(spacing: 0) {
 			HStack(spacing: 10) {
 				Image(systemName: "pause.circle.fill")
@@ -954,19 +973,69 @@ struct VaultWorkspaceView: View {
 					.foregroundStyle(VaultPalette.orange)
 					.accessibilityHidden(true)
 				VStack(alignment: .leading, spacing: 2) {
-					Text("Sync paused: keys not recovered · values work locally")
+					Text("Sync paused · values work on this Mac")
 						.font(.system(size: 12, weight: .semibold))
-					Text("This project came from a backup without its sync keys. Syncing comes back once LPM Vault can recover them from lpm.dev.")
+					Text(pause.scope == "organization"
+						? VaultStore.missingSharingKeyGuidance
+						: "This Mac doesn’t have the key to lpm.dev’s copy. Reconnect replaces that copy with this Mac’s values, under this Mac’s keys.")
 						.font(.system(size: 11.5))
+						.fixedSize(horizontal: false, vertical: true)
 				}
 				.foregroundStyle(VaultPalette.orangeTintText)
+				.accessibilityElement(children: .combine)
 				Spacer(minLength: 12)
+				VaultBarButton(title: "Keep on this Mac only…", height: 24) {
+					pauseExit = VaultSyncPauseExit(projectId: project.id, choice: .keepOnThisMac)
+				}
+				if pause.scope == "organization" {
+					VaultBarButton(title: isCheckingSharingKey ? "Checking…" : "Check again", disabled: isCheckingSharingKey, height: 24) {
+						checkSharingKey(for: project.id)
+					}
+				} else {
+					VaultBarButton(title: "Reconnect…", filled: true, disabled: store.isSyncing, height: 24) {
+						pauseExit = VaultSyncPauseExit(projectId: project.id, choice: .reconnect)
+					}
+				}
 			}
 			.padding(.horizontal, 16)
 			.padding(.vertical, 8)
 			.background(VaultPalette.orangeTint)
-			.accessibilityElement(children: .combine)
 			VaultHairline(color: VaultPalette.titleBarBorder)
+		}
+	}
+
+	private func checkSharingKey(for projectId: String) {
+		isCheckingSharingKey = true
+		Task {
+			await store.resumePausedOrganizationProject(projectId: projectId)
+			isCheckingSharingKey = false
+		}
+	}
+
+	private func pauseExitConfirmation(_ exit: VaultSyncPauseExit) -> VaultConfirmation {
+		let project = store.projects.first { $0.id == exit.projectId }
+		let name = project?.name ?? exit.projectId
+		let subject = VaultConfirmation.Subject(
+			mark: .project(store.projectIcons.appearance(for: exit.projectId)), name: name,
+			detail: project.map { $0.secretCount.counted("key") })
+		switch exit.choice {
+		case .reconnect:
+			return VaultConfirmation(
+				symbol: "arrow.triangle.2.circlepath",
+				title: "Replace lpm.dev’s copy of this project?",
+				message: "This Mac can’t open lpm.dev’s copy, so this Mac’s values replace it, under this Mac’s keys. Changes made on lpm.dev or another device since the backup are lost. Other devices that sync it need this Mac’s keys, which a backup from this Mac carries. CI loses access: lpm.dev revokes the project’s read tokens and turns off its OIDC policies.",
+				subject: subject,
+				actions: [.init(title: "Replace and Reconnect") { Task { await store.reconnectPausedProject(projectId: exit.projectId) } }])
+		case .keepOnThisMac:
+			let organization = store.syncPauses[exit.projectId]?.orgSlug
+			return VaultConfirmation(
+				symbol: "laptopcomputer",
+				tone: .standard,
+				title: "Keep this project on this Mac only?",
+				message: organization.map { "It leaves \($0.escapingDirectionControls) on this Mac and stops syncing. The organization’s copy on lpm.dev stays as it is." }
+					?? "It stops syncing with lpm.dev. lpm.dev’s copy stays as it is, and this Mac keeps its values.",
+				subject: subject,
+				actions: [.init(title: "Keep on This Mac Only") { Task { await store.keepOnThisMacOnly(projectId: exit.projectId) } }])
 		}
 	}
 

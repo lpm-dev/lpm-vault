@@ -194,7 +194,9 @@ struct BackupRestoreTests {
 		], keys: keys, in: fixture.folder)
 
 		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
-		#expect(review.keys == BackupKeyStore.Review(added: 2, floorsRaised: 1))
+		#expect(
+			review.keys
+				== BackupKeyStore.Review(added: 2, floorsRaised: 1, addedRoots: [account], addedLiveSharingKeys: [BackupKeysTests.sharingAccount]))
 		#expect(review.hasKey(for: Self.personalSync, restoringKeys: true))
 		#expect(!review.hasKey(for: Self.personalSync, restoringKeys: false), "Without the backup's keys, this Mac has none")
 		let choices = BackupRestoreChoices.defaults(for: review.plan, hasLocalProjects: false)
@@ -264,6 +266,103 @@ struct BackupRestoreTests {
 		#expect(Coverage(present: .init(liveSharingKeys: [other]), review: .init(), backup: BackupKeys()).hasKey(for: sync))
 		#expect(!Coverage(present: .init(), review: .init(), backup: BackupKeys()).hasKey(for: sync))
 		#expect(!Coverage().hasKey(for: Self.personalSync), "A Mac whose keys couldn't be read has none")
+	}
+
+	@Test("a restore that adds a paused project's missing key ends its pause; a key this Mac already had doesn't")
+	func addedKeyEndsEarlierPause() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let account = try personalRootAccount()
+		var keys = BackupKeys()
+		keys.personalRoots = [.init(account: account, key: secret(BackupKeysTests.rootKey))]
+		let url = try backup([project("personal", environments: ["default": ["A": "1"]], sync: Self.personalSync)], keys: keys, in: fixture.folder)
+
+		let first = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		var choices = BackupRestoreChoices.defaults(for: first.plan, hasLocalProjects: false)
+		choices.restoreKeys = false
+		_ = try await fixture.store.restoreBackup(first, choices: choices)
+		#expect(fixture.store.syncPauses["personal"] != nil)
+
+		let again = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		let result = try await fixture.store.restoreBackup(again, choices: .defaults(for: again.plan, hasLocalProjects: true))
+		#expect(result.keys?.addedRoots == [account])
+		#expect(fixture.store.syncPauses.isEmpty, "The key the project lacked arrived")
+		#expect(VaultSyncPause.load(from: fixture.defaults).isEmpty)
+	}
+
+	@Test("a pause from a differing root stays when a later backup carries the root this Mac already has")
+	func heldKeyKeepsEarlierPause() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let account = try personalRootAccount()
+		let local = String(repeating: "c3", count: 32)
+		try fixture.keys.add(service: BackupKeyStore.testRootService, account: account, data: Data(local.utf8))
+		var theirs = BackupKeys()
+		theirs.personalRoots = [.init(account: account, key: secret(BackupKeysTests.rootKey))]
+		let url = try backup([project("personal", environments: ["default": ["A": "1"]], sync: Self.personalSync)], keys: theirs, in: fixture.folder)
+		let first = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		_ = try await fixture.store.restoreBackup(first, choices: .defaults(for: first.plan, hasLocalProjects: false))
+		#expect(fixture.store.syncPauses["personal"] != nil)
+
+		var ours = BackupKeys()
+		ours.personalRoots = [.init(account: account, key: secret(local))]
+		let own = try backup([], keys: ours, in: fixture.folder)
+		let second = try await fixture.store.openBackup(at: own, passphrase: Self.passphrase)
+		_ = try await fixture.store.restoreBackup(second, choices: .defaults(for: second.plan, hasLocalProjects: true))
+		#expect(fixture.store.syncPauses["personal"] != nil, "This Mac's own root still can't open what the first backup's did")
+	}
+
+	@Test("Keep on this Mac only ends a pause; an organization's project leaves the organization here")
+	func keepOnThisMacOnly() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let url = try backup([
+			project("personal", environments: ["default": ["A": "1"]], sync: Self.personalSync),
+			project("team", environments: ["default": ["B": "2"]], sync: Self.organizationSync),
+		], in: fixture.folder)
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		_ = try await fixture.store.restoreBackup(review, choices: .defaults(for: review.plan, hasLocalProjects: false))
+		#expect(Set(fixture.store.syncPauses.keys) == ["personal", "team"])
+		#expect(fixture.store.vaultOrgAssociations["team"] == "acme")
+
+		#expect(await fixture.store.keepOnThisMacOnly(projectId: "personal"))
+		#expect(fixture.store.syncPauses["personal"] == nil)
+		#expect(await fixture.store.keepOnThisMacOnly(projectId: "team"))
+		#expect(fixture.store.syncPauses.isEmpty)
+		#expect(VaultSyncPause.load(from: fixture.defaults).isEmpty)
+		#expect(fixture.store.vaultOrgAssociations["team"] == nil)
+		let associations = try #require(fixture.keychain.dataStorage["__org_associations__"])
+		#expect(try JSONDecoder().decode([String: String].self, from: associations).isEmpty)
+		#expect(fixture.keychain.envStorage["team"]?.environments == ["default": ["B": "2"]], "Its values stay")
+		#expect(!(await fixture.store.keepOnThisMacOnly(projectId: "team")), "A project that isn't paused has nothing to end")
+	}
+
+	@Test("Check again ends an organization project's pause once this Mac holds the signed-in account's sharing key")
+	func resumeOrganizationProject() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		fixture.store.appEnvironment = .production
+		let registry = AppEnvironment.production.registryURL
+		let sync = BackupPayload.Sync(registry: registry, principalId: "org_1", scope: .organization(slug: "acme"))
+		let url = try backup([project("team", environments: ["default": ["B": "2"]], sync: sync)], in: fixture.folder)
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		_ = try await fixture.store.restoreBackup(review, choices: .defaults(for: review.plan, hasLocalProjects: false))
+		#expect(fixture.store.syncPauses["team"] != nil)
+
+		#expect(!(await fixture.store.resumePausedOrganizationProject(projectId: "team")))
+		#expect(fixture.store.error == "Sign in to lpm.dev to check for your sharing key.")
+		fixture.store.currentUser = LPMUser(
+			id: "usr_1", username: "dummy", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
+		#expect(!(await fixture.store.resumePausedOrganizationProject(projectId: "team")))
+		#expect(fixture.store.error == VaultStore.missingSharingKeyGuidance)
+		#expect(fixture.store.syncPauses["team"] != nil)
+
+		try fixture.keys.add(
+			service: BackupKeyStore.testSharingService,
+			account: VaultCrypto.x25519KeychainAccount(registryURL: registry, callerUserID: "usr_1"),
+			data: Data(BackupKeysTests.liveKey.utf8))
+		#expect(await fixture.store.resumePausedOrganizationProject(projectId: "team"))
+		#expect(fixture.store.syncPauses.isEmpty)
 	}
 
 	@Test("a project already here is merged: this Mac's values kept unless replaced, the backup's other keys added")

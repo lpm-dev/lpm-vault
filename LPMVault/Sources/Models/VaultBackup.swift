@@ -39,10 +39,12 @@ struct VaultBackupRecord: Codable, Equatable, Sendable {
 	}
 }
 
-/// A restored project whose sync stays paused because the backup didn't
-/// carry its keys, with the binding the backup recorded for recovering them.
-/// Pushing or pulling it now would encrypt with keys lpm.dev doesn't know, or
-/// fail to read what it holds.
+/// A restored project whose sync stays paused because this Mac doesn't have
+/// the key lpm.dev's copy needs, or holds a different one, with the binding
+/// the backup recorded. Syncing it now would make a key lpm.dev doesn't know,
+/// or fail to read what it holds. It ends when the key arrives, when the
+/// project is kept on this Mac only, or when lpm.dev's copy is replaced under
+/// this Mac's keys.
 struct VaultSyncPause: Codable, Equatable, Sendable {
 	static let defaultsKey = "lpm-vault-sync-paused"
 
@@ -65,6 +67,20 @@ struct VaultSyncPause: Codable, Equatable, Sendable {
 			orgSlug = slug
 		}
 		self.restoredAt = restoredAt
+	}
+
+	/// Where the project synced, as the backup recorded it; nil for a record
+	/// this version doesn't read.
+	var sync: BackupPayload.Sync? {
+		switch scope {
+		case "personal":
+			return BackupPayload.Sync(registry: registry, principalId: principalId, scope: .personal)
+		case "organization":
+			guard let orgSlug else { return nil }
+			return BackupPayload.Sync(registry: registry, principalId: principalId, scope: .organization(slug: orgSlug))
+		default:
+			return nil
+		}
 	}
 
 	static func load(from defaults: UserDefaults) -> [String: VaultSyncPause] {

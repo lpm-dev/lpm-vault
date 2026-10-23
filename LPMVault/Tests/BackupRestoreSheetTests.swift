@@ -154,18 +154,70 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { restored })
 		}
 
-		@Test("a project whose sync a restore paused says so above its values")
+		private func workspace(_ fixture: Fixture) -> SheetTestHost<some View> {
+			SheetTestHost(ContentView(store: fixture.store).environment(UpdateChecker())
+				.environment(VaultAppearanceSettings(defaults: fixture.defaults)).environment(VaultQuitSettings(defaults: fixture.defaults)),
+				size: NSSize(width: 1100, height: 700), keepsRequestedSize: true)
+		}
+
+		/// The question `host`'s window asks once it appears.
+		private func question<V: View>(_ host: SheetTestHost<V>) async throws -> NSWindow {
+			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "The banner's button asks first")
+			return try #require(host.window.sheets.first)
+		}
+
+		@Test("a paused personal project offers Reconnect, which asks first and says what it costs, and Keep on this Mac only, which ends the pause")
 		func pausedBanner() async throws {
 			let pause = VaultSyncPause(.init(registry: "https://lpm.dev", principalId: "usr_1", scope: .personal), restoredAt: Date())
 			let fixture = try fixture(["paused": ["default": ["TOKEN": "a"]]], pauses: ["paused": pause])
 			defer { fixture.tearDown() }
 			fixture.store.openProject(id: "paused")
-			let host = SheetTestHost(ContentView(store: fixture.store).environment(UpdateChecker())
-				.environment(VaultAppearanceSettings(defaults: fixture.defaults)).environment(VaultQuitSettings(defaults: fixture.defaults)),
-				size: NSSize(width: 1100, height: 700), keepsRequestedSize: true)
+			let host = workspace(fixture)
 			defer { host.window.close() }
 			try await host.settle()
-			#expect(try await host.waitForText("Sync paused: keys not recovered · values work locally"))
+			for text in ["Sync paused · values work on this Mac", "This Mac doesn’t have the key to lpm.dev’s copy."] {
+				#expect(try await host.waitForText(text), "The banner says \(text)")
+			}
+
+			try await host.click("Reconnect…")
+			let reconnect = try await question(host)
+			for text in ["Replace lpm.dev’s copy of this project?", "Changes made on lpm.dev or another device since the backup are lost.",
+				"CI loses access", "paused"]
+			{
+				#expect(try await host.waitForText(text, in: reconnect), "The question says \(text)")
+			}
+			try await host.click("Cancel", in: reconnect)
+			#expect(try await host.waitUntil { host.window.sheets.isEmpty })
+			#expect(fixture.store.syncPauses["paused"] != nil, "Cancel leaves the pause")
+
+			try await host.click("Keep on this Mac only…")
+			let keep = try await question(host)
+			#expect(try await host.waitForText("Keep this project on this Mac only?", exactly: true, in: keep))
+			#expect(try await host.waitForText("lpm.dev’s copy stays as it is", in: keep))
+			try await host.click("Keep on This Mac Only", in: keep)
+			#expect(try await host.waitForTextToDisappear("Sync paused · values work on this Mac"))
+			#expect(fixture.store.syncPauses.isEmpty)
+		}
+
+		@Test("a paused organization project says how to get a sharing key, and Check again says what's missing")
+		func pausedOrganizationBanner() async throws {
+			let pause = VaultSyncPause(
+				.init(registry: AppEnvironment.production.registryURL, principalId: "org_1", scope: .organization(slug: "acme")), restoredAt: Date())
+			let fixture = try fixture(["team": ["default": ["TOKEN": "a"]]], pauses: ["team": pause])
+			defer { fixture.tearDown() }
+			fixture.store.appEnvironment = .production
+			fixture.store.openProject(id: "team")
+			let host = workspace(fixture)
+			defer { host.window.close() }
+			try await host.settle()
+			for text in ["Sync paused · values work on this Mac", "Run `lpm env rotate-sharing-key` in Terminal"] {
+				#expect(try await host.waitForText(text), "The banner says \(text)")
+			}
+			#expect(element("Reconnect…", in: host.window) == nil, "An organization's copy isn't replaced from this Mac")
+			try await host.click("Check again")
+			let answer = try await question(host)
+			#expect(try await host.waitForText("Sign in to lpm.dev to check for your sharing key.", in: answer))
+			#expect(fixture.store.syncPauses["team"] != nil)
 		}
 	}
 }

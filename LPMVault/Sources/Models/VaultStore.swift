@@ -5543,7 +5543,13 @@ final class VaultStore {
       }
     }
     var pausedHere = Set(pausing.keys)
-    if !pausing.isEmpty {
+    let covered = installedKeys.map { installed in
+      syncPauses.compactMap { id, pause in
+        pause.sync.map { coverage?.addedKey(for: $0, installed: installed) ?? false } == true ? id : nil
+      }
+    } ?? []
+    if !pausing.isEmpty || !covered.isEmpty {
+      for id in covered { syncPauses[id] = nil }
       syncPauses.merge(pausing) { current, _ in current }
       VaultSyncPause.save(syncPauses, to: preferences)
     }
@@ -5657,7 +5663,72 @@ final class VaultStore {
   /// true when it is.
   private func refuseSyncIfPaused(_ project: VaultProject) -> Bool {
     guard syncPauses[project.id] != nil else { return false }
-    error = "Sync is paused for \(project.name.escapingDirectionControls): the backup it came from didn’t carry its keys. Its values work on this Mac."
+    error = "Sync is paused for \(project.name.escapingDirectionControls): this Mac doesn’t have its lpm.dev key. Its values work on this Mac."
+    return true
+  }
+
+  private func endSyncPause(_ projectId: String) {
+    guard syncPauses.removeValue(forKey: projectId) != nil else { return }
+    VaultSyncPause.save(syncPauses, to: preferences)
+  }
+
+  /// What a person whose sharing key isn't on this Mac does to sync their
+  /// organization's projects again.
+  static let missingSharingKeyGuidance =
+    "This Mac doesn’t have your lpm.dev sharing key. Run `lpm env rotate-sharing-key` in Terminal, then ask an organization admin to share the project with your new key."
+
+  /// Ends a restored project's sync pause by keeping it on this Mac only. An
+  /// organization's project stops being the organization's here, so nothing
+  /// syncs it; lpm.dev's copy stays as it is.
+  @discardableResult
+  func keepOnThisMacOnly(projectId: String) async -> Bool {
+    let write = writes.begin()
+    defer { writes.end(write) }
+    guard isUnlocked, let pause = syncPauses[projectId] else { return false }
+    let wasSelected = selectedProjectId == projectId
+    if pause.scope == "organization" {
+      guard let associations = await persistence.removeOrgAssociations([projectId]) else {
+        error = "The project couldn’t be moved out of its organization. Try again."
+        return false
+      }
+      vaultOrgAssociations = associations
+    }
+    endSyncPause(projectId)
+    if wasSelected, isUnlocked { openProject(id: projectId) }
+    return true
+  }
+
+  /// Ends an organization project's sync pause once this Mac holds a sharing
+  /// key for the signed-in lpm.dev account; true when it ended.
+  @discardableResult
+  func resumePausedOrganizationProject(projectId: String) async -> Bool {
+    guard isUnlocked, let pause = syncPauses[projectId], pause.scope == "organization" else { return false }
+    let registryURL = appEnvironment.registryURL
+    guard let userID = currentUser?.id else {
+      error = "Sign in to lpm.dev to check for your sharing key."
+      return false
+    }
+    guard pause.registry == registryURL else {
+      error = "This project synced with a different lpm.dev server."
+      return false
+    }
+    let keyStore = backupKeys
+    let found = await BlockingWork.run { () -> Bool? in
+      guard let account = try? VaultCrypto.x25519KeychainAccount(registryURL: registryURL, callerUserID: userID),
+        let present = try? keyStore.presentKeys()
+      else { return nil }
+      return present.liveSharingKeys.contains(String(account.dropFirst(VaultCrypto.scopedX25519AccountPrefix.count)))
+    }
+    guard let found else {
+      error = "This Mac’s sharing keys couldn’t be read. Try again."
+      return false
+    }
+    guard found else {
+      error = Self.missingSharingKeyGuidance
+      return false
+    }
+    guard isUnlocked, syncPauses[projectId] == pause else { return false }
+    endSyncPause(projectId)
     return true
   }
 
@@ -5978,12 +6049,56 @@ final class VaultStore {
   /// Push the selected project's secrets to cloud.
   /// Pushes ALL environments (default, live, local, etc.), not just the selected one.
   func pushToCloud(force: Bool = false) async {
+    await pushPersonal(force ? .force : .update)
+  }
+
+  /// Replaces lpm.dev's copy of the selected personal project, whose sync a
+  /// restore paused, with this Mac's values under this Mac's keys, once the
+  /// owner authenticates. The pause ends when lpm.dev holds the new copy.
+  func reconnectPausedProject(projectId: String) async {
+    guard isUnlocked, selectedAccount == .personal, let project = selectedProject, project.id == projectId,
+      let pause = syncPauses[project.id], pause.scope == "personal"
+    else { return }
+    guard let user = currentUser else {
+      error = "Sign in to lpm.dev to reconnect \(project.name.escapingDirectionControls)."
+      return
+    }
+    guard user.id == pause.principalId, pause.registry == appEnvironment.registryURL else {
+      error = Self.reconnectAccountMismatch(project)
+      return
+    }
+    guard await confirmSensitiveAction(reason: "replace lpm.dev’s copy of \(project.name.escapingDirectionControls)"),
+      selectedProject?.id == projectId
+    else { return }
+    await pushPersonal(.replace)
+  }
+
+  private static func reconnectAccountMismatch(_ project: VaultProject) -> String {
+    "\(project.name.escapingDirectionControls) synced with a different lpm.dev account. Sign in to that account to reconnect it."
+  }
+
+  /// How a personal push treats lpm.dev's copy.
+  private enum PersonalPushMode {
+    /// Expects the revision this Mac last synced.
+    case update
+    /// Writes over whatever revision lpm.dev holds, under the key it holds.
+    case force
+    /// Writes over lpm.dev's copy under this Mac's keys, for a project whose
+    /// sync a restore paused because this Mac can't open that copy.
+    case replace
+  }
+
+  private func pushPersonal(_ mode: PersonalPushMode) async {
     let write = writes.begin()
     defer { writes.end(write) }
     guard isUnlocked, selectedAccount == .personal, let project = selectedProject else {
       return
     }
-    guard !refuseSyncIfPaused(project) else { return }
+    if mode == .replace {
+      guard syncPauses[project.id]?.scope == "personal" else { return }
+    } else {
+      guard !refuseSyncIfPaused(project) else { return }
+    }
     syncOperationGeneration &+= 1
     let operationGeneration = syncOperationGeneration
     let sessionGeneration = vaultSessionGeneration
@@ -6041,6 +6156,12 @@ final class VaultStore {
       authorityGeneration: authResolution.authorityGeneration
     )
     guard isCurrentSync(authority) else { return }
+    if mode == .replace {
+      guard let pause = syncPauses[project.id], pause.principalId == principalID, pause.registry == environment.registryURL else {
+        error = Self.reconnectAccountMismatch(project)
+        return
+      }
+    }
 
     isSyncing = true
     lastSyncStatus = nil
@@ -6062,7 +6183,7 @@ final class VaultStore {
 
     let syncService = personalSyncServiceFactory(environment.baseURL)
     let localExpectedVersion = pushSnapshot.metadata?.lastVersion
-    let attemptLimit = force ? 3 : 1
+    let attemptLimit = mode == .force ? 3 : 1
     let environments = pushedProject.environments
     let encryptor = stableSyncEncryptor
     var plaintext: Data?
@@ -6076,9 +6197,9 @@ final class VaultStore {
           finishSyncIfOwned(authority)
           return
         }
-        let expectedVersion: Int?
-        let recreateMissing: Bool
-        if force {
+        var expectedVersion: Int?
+        var recreateMissing = false
+        if mode == .force {
           let preflightResponse = await syncService.versionPreflightAuthenticated(
             authToken: authToken,
             vaultId: pushedProject.id
@@ -6108,7 +6229,6 @@ final class VaultStore {
               return
             }
             expectedVersion = serverVersion
-            recreateMissing = false
           case .response(.notFound):
             expectedVersion = forcedRecreationFloor
             recreateMissing = expectedVersion != nil
@@ -6124,9 +6244,8 @@ final class VaultStore {
             )
             return
           }
-        } else {
+        } else if mode == .update {
           expectedVersion = localExpectedVersion
-          recreateMissing = false
         }
         guard await hasCurrentSyncAuth(authority) else {
           finishSyncIfOwned(authority)
@@ -6150,19 +6269,35 @@ final class VaultStore {
         guard let plaintext else {
           throw VaultSyncError("Could not serialize the env project for sync.")
         }
-        let targetRevision = try Self.nextSyncRevision(after: expectedVersion)
-        let preparedPush = try await syncService.preparePersonalPush(
-          authToken: authToken,
-          expectedPrincipalId: authority.principalID,
-          vaultId: pushedProject.id,
-          plaintext: plaintext,
-          expectedVersion: expectedVersion,
-          force: force,
-          recreateMissing: recreateMissing,
-          name: pushedProject.name,
-          schema: schema,
-          legacyEncryptor: encryptor
-        )
+        let preparedPush: PreparedRemoteOperation<SyncService.AuthenticatedResponse<SyncService.SyncStatus>>
+        let targetRevision: Int
+        if mode == .replace {
+          let replacement = try await syncService.preparePersonalReplacement(
+            authToken: authToken,
+            expectedPrincipalId: authority.principalID,
+            vaultId: pushedProject.id,
+            plaintext: plaintext,
+            name: pushedProject.name,
+            schema: schema
+          )
+          expectedVersion = replacement.expectedVersion
+          targetRevision = try Self.nextSyncRevision(after: expectedVersion)
+          preparedPush = replacement.operation
+        } else {
+          targetRevision = try Self.nextSyncRevision(after: expectedVersion)
+          preparedPush = try await syncService.preparePersonalPush(
+            authToken: authToken,
+            expectedPrincipalId: authority.principalID,
+            vaultId: pushedProject.id,
+            plaintext: plaintext,
+            expectedVersion: expectedVersion,
+            force: mode == .force,
+            recreateMissing: recreateMissing,
+            name: pushedProject.name,
+            schema: schema,
+            legacyEncryptor: encryptor
+          )
+        }
         guard await hasCurrentSyncAuth(authority) else {
           finishSyncIfOwned(authority)
           return
@@ -6197,6 +6332,7 @@ final class VaultStore {
         ), pushedVersion == targetRevision,
           result?.principalId == authority.principalID
         {
+          if mode == .replace { endSyncPause(pushedProject.id) }
           guard await hasCurrentDurableSyncAuth(authority) else {
             finishSyncIfOwned(authority)
             return
@@ -6248,7 +6384,7 @@ final class VaultStore {
           finishSyncIfOwned(authority)
           return
         }
-        if force, Self.isRetryablePushConflict(result) {
+        if mode == .force, Self.isRetryablePushConflict(result) {
           if recreateMissing, let serverVersion = result?.serverVersion, serverVersion > 0 {
             forcedRecreationFloor = max(forcedRecreationFloor ?? 0, serverVersion)
           }
@@ -6265,7 +6401,10 @@ final class VaultStore {
         } else {
           message = result?.displayError ?? "Push failed"
         }
-        if Self.isRetryablePushConflict(result) {
+        if mode == .replace, Self.isRetryablePushConflict(result) {
+          error = "lpm.dev’s copy of \(pushedProject.name.escapingDirectionControls) changed while reconnecting. Try again."
+          lastSyncStatus = "conflict"
+        } else if Self.isRetryablePushConflict(result) {
           error =
             Self.personalPushConflictMessage(
               result,

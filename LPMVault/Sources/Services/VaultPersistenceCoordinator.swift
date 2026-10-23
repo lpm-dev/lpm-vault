@@ -1027,17 +1027,21 @@ actor VaultPersistenceCoordinator {
 	}
 
 	/// Removes the organization associations of `vaultIds`, in one write.
+	/// Returns the associations left, or nil when they couldn't be saved.
 	@discardableResult
-	func removeOrgAssociations(_ vaultIds: Set<String>) -> Bool {
-		guard !vaultIds.isEmpty else { return true }
-		return switch service.withKeychainTransaction({ () -> Bool in
-			guard case .success(var associations) = loadOrgAssociationsResult() else { return false }
+	func removeOrgAssociations(_ vaultIds: Set<String>) -> [String: String]? {
+		switch service.withKeychainTransaction({ () -> [String: String]? in
+			guard case .success(var associations) = loadOrgAssociationsResult() else { return nil }
+			let before = associations.count
 			for vaultId in vaultIds { associations.removeValue(forKey: vaultId) }
-			guard let data = try? JSONEncoder().encode(associations) else { return false }
-			return service.writeData(account: "__org_associations__", data: data)
+			guard associations.count != before else { return associations }
+			guard let data = try? JSONEncoder().encode(associations),
+				service.writeData(account: "__org_associations__", data: data)
+			else { return nil }
+			return associations
 		}) {
-		case .success(let removed): removed
-		case .failure: false
+		case .success(let associations): associations
+		case .failure: nil
 		}
 	}
 

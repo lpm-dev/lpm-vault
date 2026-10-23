@@ -586,7 +586,7 @@ struct BackupRestoreSheet: View {
 								.fixedSize(horizontal: false, vertical: true)
 						}
 						if pausedCount > 0 {
-							Text("\(pausedCount.counted("synced project")) keep\(pausedCount == 1 ? "s" : "") sync paused: this Mac doesn’t have \(pausedCount == 1 ? "its" : "their") keys. Their values work on this Mac.")
+							Text("\(pausedCount.counted("synced project")) keep\(pausedCount == 1 ? "s" : "") sync paused: this Mac doesn’t have \(pausedCount == 1 ? "its" : "their") keys. Their values work here; open one to reconnect it or keep it on this Mac only.")
 								.font(.system(size: 11.5))
 								.foregroundStyle(VaultPalette.orangeTintText)
 								.fixedSize(horizontal: false, vertical: true)

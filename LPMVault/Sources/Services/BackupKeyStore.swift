@@ -106,6 +106,10 @@ struct BackupKeyStore: Sendable {
 		var differingRoots = Set<String>()
 		/// The sharing key digests this Mac holds a different live key for.
 		var differingLiveSharingKeys = Set<String>()
+		/// The personal root accounts this Mac had no key for, which a restore adds.
+		var addedRoots = Set<String>()
+		/// The sharing key digests this Mac had no live key for, which a restore adds.
+		var addedLiveSharingKeys = Set<String>()
 	}
 
 	/// The keys this Mac holds, by account, read from accounts alone.
@@ -147,14 +151,24 @@ struct BackupKeyStore: Sendable {
 		/// root key for a personal project, a sharing key for an organization's.
 		func hasKey(for sync: BackupPayload.Sync) -> Bool {
 			switch sync.scope {
-			case .personal:
-				guard let origin = try? PersonalProjectCrypto.registryOrigin(sync.registry),
-					let account = try? PersonalProjectCrypto.rootAccount(origin: origin, principalID: sync.principalId)
-				else { return false }
-				return roots.contains(account)
-			case .organization:
-				return organizations
+			case .personal: Self.rootAccount(of: sync).map(roots.contains) ?? false
+			case .organization: organizations
 			}
+		}
+
+		/// Whether `installed` added the key a project that syncs as `sync`
+		/// lacked, so a pause an earlier restore left on it can end. A key this
+		/// Mac already had says nothing about which one that project needs.
+		func addedKey(for sync: BackupPayload.Sync, installed: Review) -> Bool {
+			switch sync.scope {
+			case .personal: Self.rootAccount(of: sync).map { installed.addedRoots.contains($0) && roots.contains($0) } ?? false
+			case .organization: !installed.addedLiveSharingKeys.isEmpty && organizations
+			}
+		}
+
+		private static func rootAccount(of sync: BackupPayload.Sync) -> String? {
+			guard let origin = try? PersonalProjectCrypto.registryOrigin(sync.registry) else { return nil }
+			return try? PersonalProjectCrypto.rootAccount(origin: origin, principalID: sync.principalId)
 		}
 	}
 
@@ -185,7 +199,7 @@ struct BackupKeyStore: Sendable {
 		var review = Review()
 		func place(
 			_ text: SecretBytes, as account: String, in store: SharedKeychainStore, named name: String,
-			normalized: (Data) -> SecretBytes?, onDiffering: () -> Void = {}
+			normalized: (Data) -> SecretBytes?, onDiffering: () -> Void = {}, onAdded: () -> Void = {}
 		) throws(Failure) {
 			func compare(_ stored: Data) {
 				if let local = normalized(stored), Self.equal(local, text) {
@@ -201,6 +215,7 @@ struct BackupKeyStore: Sendable {
 			}
 			guard install else {
 				review.added += 1
+				onAdded()
 				return
 			}
 			do {
@@ -209,6 +224,7 @@ struct BackupKeyStore: Sendable {
 					try store.add(account: account, data: Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: base), count: bytes.count, deallocator: .none))
 				}
 				review.added += 1
+				onAdded()
 			} catch let error as KeychainStoreError where error.statusCode == errSecDuplicateItem {
 				guard let stored = try read(account, of: store, store: name) else { throw .unwritable(store: name) }
 				compare(stored)
@@ -217,16 +233,17 @@ struct BackupKeyStore: Sendable {
 			}
 		}
 		for root in keys.personalRoots {
-			try place(root.key, as: root.account, in: roots, named: "personal root keys", normalized: Self.hexKey) {
-				review.differingRoots.insert(root.account)
-			}
+			try place(
+				root.key, as: root.account, in: roots, named: "personal root keys", normalized: Self.hexKey,
+				onDiffering: { review.differingRoots.insert(root.account) }, onAdded: { review.addedRoots.insert(root.account) })
 		}
 		for key in keys.sharingKeys {
 			let account = VaultCrypto.scopedX25519AccountPrefix + key.account
 			if let live = key.live {
-				try place(live, as: account, in: sharing, named: "sharing keys", normalized: Self.base64Key) {
-					review.differingLiveSharingKeys.insert(key.account)
-				}
+				try place(
+					live, as: account, in: sharing, named: "sharing keys", normalized: Self.base64Key,
+					onDiffering: { review.differingLiveSharingKeys.insert(key.account) },
+					onAdded: { review.addedLiveSharingKeys.insert(key.account) })
 			}
 			if let pending = key.pending {
 				try place(pending, as: account + Self.pendingSuffix, in: sharing, named: "sharing keys", normalized: Self.base64Key)
