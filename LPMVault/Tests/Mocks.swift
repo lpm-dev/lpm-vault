@@ -343,9 +343,12 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var backupInventoryReadCount = 0
 
 	var failRestoreWrites = false
+	/// Runs as a restored project is about to be written.
+	var beforeRestoredProjectWrite: (@Sendable (VaultProject) -> Void)?
 
 	func createRestoredProjectResult(_ project: VaultProject, listed: Bool) -> KeychainResult {
-		lock.withLock {
+		beforeRestoredProjectWrite?(project)
+		return lock.withLock {
 			if shouldFail || failRestoreWrites { return .failure(failureError) }
 			guard envStorage[project.id] == nil, hiddenPayloads[project.id] == nil else { return .failure(.duplicateItem) }
 			let environments = project.environments.isEmpty ? ["default": [:]] : project.environments

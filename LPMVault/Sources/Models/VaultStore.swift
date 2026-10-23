@@ -5467,7 +5467,10 @@ final class VaultStore {
   /// project by project, telling `progress` as each one ends. A project that
   /// changed here since the review is left as it is. Cancelling stops after
   /// the current project. New projects require approval before the CLI reads
-  /// them, and a synced one keeps its sync paused until its keys are recovered.
+  /// them, and a synced one, listed or not, keeps its sync paused until its
+  /// keys are recovered. Pauses are saved before any project is written, so
+  /// no crash leaves a restored project syncing with keys this Mac doesn't
+  /// have; the projects that weren't written are unpaused after.
   func restoreBackup(
     _ review: BackupRestoreReview,
     choices: BackupRestoreChoices,
@@ -5482,7 +5485,14 @@ final class VaultStore {
     let restoredAt = Date()
     var items: [BackupRestoreResult.Item] = []
     var kept: [String] = []
-    var pauses = syncPauses
+    var pausedHere = Set<String>()
+    for project in review.plan.projects
+    where project.status == .new && choices.included.contains(project.id) && syncPauses[project.id] == nil {
+      guard let sync = project.backup.sync else { continue }
+      syncPauses[project.id] = VaultSyncPause(sync, restoredAt: restoredAt)
+      pausedHere.insert(project.id)
+    }
+    if !pausedHere.isEmpty { VaultSyncPause.save(syncPauses, to: preferences) }
     for project in review.plan.projects {
       guard !Task.isCancelled, isUnlocked, review.sessionGeneration == vaultSessionGeneration else { break }
       let id = project.id
@@ -5501,9 +5511,9 @@ final class VaultStore {
         let restored = VaultProject(id: id, name: project.backup.name, path: folder, environments: project.backup.environments)
         switch await persistence.restoreProject(.create(restored, listed: listed)) {
         case .written:
-          if listed, let sync = project.backup.sync { pauses[id] = VaultSyncPause(sync, restoredAt: restoredAt) }
           outcome = .restored(keys: project.keyCount, environments: project.backup.environments.count, needsFolder: listed && folder.isEmpty)
           kept.append(id)
+          pausedHere.remove(id)
         case .changedSinceReview, .failure(.duplicateItem):
           outcome = .changedSinceReview
         case .failure(let error):
@@ -5532,9 +5542,9 @@ final class VaultStore {
       items.append(item)
       progress(item)
     }
-    if pauses != syncPauses {
-      syncPauses = pauses
-      VaultSyncPause.save(pauses, to: preferences)
+    if !pausedHere.isEmpty {
+      for id in pausedHere { syncPauses[id] = nil }
+      VaultSyncPause.save(syncPauses, to: preferences)
     }
     await refreshLocalState()
 

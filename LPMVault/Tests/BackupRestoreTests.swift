@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import os
 
 @testable import LPMVault
 
@@ -97,6 +98,35 @@ struct BackupRestoreTests {
 		fixture.store.openProject(id: "synced")
 		await fixture.store.pushToCloud()
 		#expect(fixture.store.error?.hasPrefix("Sync is paused for synced") == true)
+	}
+
+	@Test("a synced project's pause is saved before the project, hidden ones too, and dropped when the project isn't written")
+	func pausesComeFirst() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let sync = BackupPayload.Sync(registry: "https://lpm.dev", principalId: "usr_1", scope: .personal)
+		let url = try backup([
+			project("listed", environments: ["default": ["A": "1"]], sync: sync),
+			project("hidden", hidden: true, environments: ["default": ["B": "2"]], sync: sync),
+			project("refused", environments: ["default": ["C": "3"]], sync: sync),
+		], in: fixture.folder)
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		var choices = BackupRestoreChoices.defaults(for: review.plan, hasLocalProjects: false)
+		choices.included.insert("hidden")
+
+		let pausedWhenWritten = OSAllocatedUnfairLock(initialState: [String: Bool]())
+		let defaults = ThreadSafeDefaults(defaults: fixture.defaults)
+		let keychain = fixture.keychain
+		keychain.beforeRestoredProjectWrite = { project in
+			pausedWhenWritten.withLock { $0[project.id] = VaultSyncPause.load(from: defaults.defaults)[project.id] != nil }
+			keychain.failRestoreWrites = project.id == "refused"
+		}
+		let result = try await fixture.store.restoreBackup(review, choices: choices)
+
+		#expect(pausedWhenWritten.withLock { $0 } == ["listed": true, "hidden": true, "refused": true])
+		#expect(result.items.map(\.outcome).last == .failed(KeychainError.accessDenied.description))
+		#expect(Set(fixture.store.syncPauses.keys) == ["listed", "hidden"])
+		#expect(Set(VaultSyncPause.load(from: fixture.defaults).keys) == ["listed", "hidden"])
 	}
 
 	@Test("a project already here is merged: this Mac's values kept unless replaced, the backup's other keys added")
