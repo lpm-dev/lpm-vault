@@ -1403,6 +1403,8 @@ final class VaultStore {
   private(set) var lastBackup: VaultBackupRecord?
   /// Restored projects whose sync stays paused until their keys are recovered.
   private(set) var syncPauses: [String: VaultSyncPause]
+  /// Whether a restore is writing, during which pauses exist before their projects.
+  @ObservationIgnored private var isRestoringBackup = false
 
   // SECURITY NOTE: Environment tab ordering is stored in UserDefaults (not Keychain).
   // This is intentional — it contains only the display order of environment names
@@ -2503,12 +2505,14 @@ final class VaultStore {
       self.error = nil
       self.localStateRefreshError = nil
       self.lastSuccessfulProjectLoadGeneration = generation
-      self.forgetPreferences(ofVaultsOutside: Set(snapshot.projects.lazy.map(\.id)))
+      let listed = Set(snapshot.projects.lazy.map(\.id))
+      self.forgetPreferences(ofVaultsOutside: listed)
       self.loadEnvironmentOrders()
       self.reconcileNavigationState()
       self.beginSelectedProjectLoadIfNeeded()
       self.isLoadingProjects = false
       self.projectLoadTask = nil
+      await self.forgetSyncPauses(ofVaultsOutside: listed)
     }
     projectLoadTask = task
     await task.value
@@ -5481,7 +5485,11 @@ final class VaultStore {
       review.sessionGeneration == vaultSessionGeneration
     else { throw CancellationError() }
     let write = writes.begin()
-    defer { writes.end(write) }
+    isRestoringBackup = true
+    defer {
+      isRestoringBackup = false
+      writes.end(write)
+    }
     let restoredAt = Date()
     var items: [BackupRestoreResult.Item] = []
     var kept: [String] = []
@@ -8375,11 +8383,22 @@ final class VaultStore {
       preferences.removeObject(forKey: key)
     }
     projectIcons.forget(keeping: vaultIds)
-    let keptPauses = syncPauses.filter { vaultIds.contains($0.key) }
-    if keptPauses != syncPauses {
-      syncPauses = keptPauses
-      VaultSyncPause.save(keptPauses, to: preferences)
-    }
+  }
+
+  /// Removes the sync pauses of vaults whose data is gone. A project removed
+  /// from the sidebar keeps its data, so it stays paused. A restore saves its
+  /// pauses before its projects exist, so nothing is removed while one runs,
+  /// and only pauses that were already there, unchanged, before the store was
+  /// read can go.
+  private func forgetSyncPauses(ofVaultsOutside listed: Set<String>) async {
+    let unlisted = syncPauses.filter { !listed.contains($0.key) }
+    guard !isRestoringBackup, !unlisted.isEmpty,
+      case .success(let stored) = await persistence.storedVaultIds(), !isRestoringBackup
+    else { return }
+    let gone = unlisted.filter { !stored.contains($0.key) && syncPauses[$0.key] == $0.value }
+    guard !gone.isEmpty else { return }
+    for id in gone.keys { syncPauses[id] = nil }
+    VaultSyncPause.save(syncPauses, to: preferences)
   }
 
   private func loadEnvironmentOrders() {

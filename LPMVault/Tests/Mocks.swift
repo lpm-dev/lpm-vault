@@ -343,6 +343,13 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var backupInventoryReadCount = 0
 
 	var failRestoreWrites = false
+	func storedVaultIdsResult() -> Result<Set<String>, KeychainError> {
+		lock.withLock {
+			if shouldFail { return .failure(failureError) }
+			return .success(Set(envStorage.keys).union(hiddenPayloads.keys))
+		}
+	}
+
 	/// Runs as a restored project is about to be written.
 	var beforeRestoredProjectWrite: (@Sendable (VaultProject) -> Void)?
 

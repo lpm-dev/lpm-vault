@@ -129,6 +129,31 @@ struct BackupRestoreTests {
 		#expect(Set(VaultSyncPause.load(from: fixture.defaults).keys) == ["listed", "hidden"])
 	}
 
+	@Test("a pause outlives loading projects while its project's data does, hidden or not, and goes with it")
+	func pausesFollowStoredProjects() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		let sync = BackupPayload.Sync(registry: "https://lpm.dev", principalId: "usr_1", scope: .personal)
+		let url = try backup([
+			project("listed", environments: ["default": ["A": "1"]], sync: sync),
+			project("hidden", hidden: true, environments: ["default": ["B": "2"]], sync: sync),
+		], in: fixture.folder)
+		let review = try await fixture.store.openBackup(at: url, passphrase: Self.passphrase)
+		var choices = BackupRestoreChoices.defaults(for: review.plan, hasLocalProjects: false)
+		choices.included.insert("hidden")
+		_ = try await fixture.store.restoreBackup(review, choices: choices)
+
+		await fixture.store.loadProjects()
+		#expect(Set(fixture.store.syncPauses.keys) == ["listed", "hidden"])
+		#expect(Set(VaultSyncPause.load(from: fixture.defaults).keys) == ["listed", "hidden"])
+
+		fixture.keychain.hiddenPayloads["hidden"] = nil
+		fixture.keychain.envStorage["listed"] = nil
+		await fixture.store.loadProjects()
+		#expect(fixture.store.syncPauses.isEmpty)
+		#expect(VaultSyncPause.load(from: fixture.defaults).isEmpty)
+	}
+
 	@Test("a project already here is merged: this Mac's values kept unless replaced, the backup's other keys added")
 	func merge() async throws {
 		let fixture = try fixture(["shared": ["default": ["A": "1", "B": "2"]], "same": ["default": ["X": "1"]]])

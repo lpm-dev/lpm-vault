@@ -260,6 +260,10 @@ actor VaultPersistenceCoordinator {
 
 	/// Every vault, removed ones included, with its sync metadata and org
 	/// associations, as of one moment the CLI can't change midway.
+	func storedVaultIds() -> Result<Set<String>, KeychainError> {
+		service.storedVaultIdsResult()
+	}
+
 	func backupSnapshot() -> Result<VaultBackupSnapshot, KeychainError> {
 		service.withKeychainTransaction {
 			guard !Task.isCancelled else { return .failure(.accessDenied) }

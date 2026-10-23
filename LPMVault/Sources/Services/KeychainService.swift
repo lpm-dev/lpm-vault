@@ -299,6 +299,9 @@ protocol KeychainServiceProtocol: Sendable {
 	/// it, whose payloads stay. A vault that can't be read fails it all, so a
 	/// backup never leaves one out unnoticed.
 	func backupInventoryResult() -> Result<VaultBackupInventory, KeychainError>
+	/// The ID of every vault whose data the shared store holds, listed in the
+	/// sidebar or not, read without reading any payload.
+	func storedVaultIdsResult() -> Result<Set<String>, KeychainError>
 	/// Adds a project a backup holds, requiring approval before the CLI reads
 	/// it, and lists it in the sidebar when `listed`. The payload is added with
 	/// that access before the transaction that indexes it, so a project never
@@ -2563,6 +2566,16 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				}
 				return VaultBackupInventory(projects: projects, unusableItems: vaultIds.count - usable.count)
 			})
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
+	func storedVaultIdsResult() -> Result<Set<String>, KeychainError> {
+		do {
+			return .success(Set(try store.accounts().keys.lazy.filter { !$0.hasPrefix("__") }))
 		} catch let error as KeychainStoreError {
 			return .failure(keychainError(from: error))
 		} catch {
