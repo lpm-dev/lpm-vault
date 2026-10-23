@@ -21,7 +21,7 @@ extension SheetInteractionTests {
 			}
 		}
 
-		private func fixture() async throws -> Fixture {
+		private func fixture(keys: InMemoryKeychainBackend = InMemoryKeychainBackend()) async throws -> Fixture {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-backup-sheet-\(UUID().uuidString)", directoryHint: .isDirectory)
 			try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 			let defaults = try #require(UserDefaults(suiteName: folder.lastPathComponent))
@@ -31,7 +31,8 @@ extension SheetInteractionTests {
 			let biometric = MockBiometricService()
 			let store = VaultStore(
 				keychainService: keychain, biometricService: biometric, apiService: MockAPIService(), preferences: defaults,
-				projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory))
+				projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory),
+				backupKeys: .inMemory(keys, home: try testLPMHome(in: folder)))
 			store.projects = [VaultProject(id: "vault-a", name: "api", path: "/tmp/api", environments: environments)]
 			store.isUnlocked = true
 			_ = try await store.publishing.save(vercelDestination(source: "default"), to: "vault-a").get()
@@ -63,6 +64,9 @@ extension SheetInteractionTests {
 			}
 			#expect(element("Export…", in: host.window)?.isEnabled == false)
 			#expect(element("Publish destinations", in: host.window)?.isOn == true)
+			#expect(try await host.waitForText("None on this Mac"), "A Mac without sync keys says so")
+			#expect(element("lpm.dev sync keys", in: host.window)?.isEnabled == false)
+			#expect(element("lpm.dev sync keys", in: host.window)?.isOn == false)
 			try await host.click("Publish destinations")
 			#expect(try await host.waitUntil { element("Publish destinations", in: host.window)?.isOn == false }, "Each optional item can be left out")
 
@@ -77,6 +81,27 @@ extension SheetInteractionTests {
 			_ = try await host.waitForElement(saying: "Passphrase strength: Strong")
 			#expect(try await host.waitUntil { element("Export…", in: host.window)?.isEnabled == true })
 			#expect(try await host.waitForTextToDisappear("The passphrases don’t match."))
+		}
+
+		@Test("with sync keys on this Mac, the sheet offers them, checked and counted")
+		func syncKeys() async throws {
+			let keys = InMemoryKeychainBackend()
+			try keys.add(service: BackupKeyStore.testRootService, account: BackupKeysTests.rootAccount, data: Data(BackupKeysTests.rootKey.utf8))
+			try keys.add(
+				service: BackupKeyStore.testWrappingService, account: VaultCrypto.wrappingKeyAccount, data: Data(BackupKeysTests.wrappingKey.utf8))
+			try keys.add(
+				service: BackupKeyStore.testSharingService, account: VaultCrypto.scopedX25519AccountPrefix + BackupKeysTests.sharingAccount,
+				data: Data(BackupKeysTests.liveKey.utf8))
+			let fixture = try await fixture(keys: keys)
+			defer { fixture.tearDown() }
+			let host = host(fixture)
+			defer { host.window.close() }
+			try await host.settle()
+			for text in ["lpm.dev sync keys", "So the new Mac keeps syncing with lpm.dev", "3 keys"] {
+				#expect(try await host.waitForText(text), "The sheet says \(text)")
+			}
+			#expect(try await host.waitUntil { element("lpm.dev sync keys", in: host.window)?.isOn == true })
+			#expect(element("lpm.dev sync keys", in: host.window)?.isEnabled == true)
 		}
 
 		@Test("Generate fills both fields with six words, shown with Copy, and the backup it seals is saved where chosen")

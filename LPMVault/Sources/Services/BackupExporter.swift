@@ -10,6 +10,8 @@ struct BackupExporter: Sendable {
 	struct Contents: Equatable, Sendable {
 		var destinations = true
 		var settingsAndIcons = true
+		/// The keys lpm.dev sync encrypts with, so another Mac keeps syncing.
+		var syncKeys = true
 	}
 
 	/// What a backup holds, counted as the person sees it.
@@ -19,6 +21,8 @@ struct BackupExporter: Sendable {
 		var removedProjects = 0
 		var keys = 0
 		var destinations = 0
+		/// lpm.dev sync keys, a sharing key's live and pending halves apart.
+		var syncKeys = 0
 		var settings = false
 		/// Keychain items whose names LPM Vault can't use as vault IDs, left out.
 		var unusableItems = 0
@@ -37,6 +41,7 @@ struct BackupExporter: Sendable {
 		case newerDestinations(project: String)
 		/// The LPM CLI couldn't store the project as it is, for the engine's `reason`.
 		case invalidProject(name: String, reason: String)
+		case keys(BackupKeyStore.Failure)
 		case engine(BackupEngine.Failure)
 
 		var message: String {
@@ -51,6 +56,8 @@ struct BackupExporter: Sendable {
 				reason == "project_too_large"
 					? "\(name.escapingDirectionControls) is larger than the LPM CLI can store, so it can’t be backed up. Remove values it doesn’t need, then export again."
 					: "\(name.escapingDirectionControls) holds a name the LPM CLI doesn’t accept, so it can’t be backed up."
+			case .keys(let failure):
+				failure.message
 			case .engine(let failure):
 				failure.message
 			}
@@ -60,6 +67,7 @@ struct BackupExporter: Sendable {
 	let persistence: VaultPersistenceCoordinator
 	let publishing: PublishingStore
 	let imagesDirectory: URL
+	let keyStore: BackupKeyStore
 
 	/// The sealed file and what it holds.
 	func seal(
@@ -112,12 +120,22 @@ struct BackupExporter: Sendable {
 				environments: project.environments,
 				sync: Self.sync(snapshot.syncMetadata[project.vaultId], orgSlug: snapshot.orgAssociations[project.vaultId]))
 		}
+		var keys: BackupKeys?
+		if contents.syncKeys {
+			let read = await BlockingWork.run { [keyStore] in Result { () throws(BackupKeyStore.Failure) in try keyStore.read() } }
+			switch read {
+			case .success(let value): keys = value
+			case .failure(let failure): throw .keys(failure)
+			}
+		}
+
 		let payload = BackupPayload(
 			createdAt: now,
 			producerVersion: BackupPayload.isLabel(producerVersion, maximumBytes: BackupPayload.maximumLabelBytes) ? producerVersion : "unknown",
 			deviceName: deviceName.flatMap { BackupPayload.isLabel($0, maximumBytes: BackupPayload.maximumDeviceNameBytes) ? $0 : nil },
 			projects: projects,
-			app: app)
+			app: app,
+			keys: keys)
 		guard let encoded = payload.encoded() else { throw .engine(.tooLarge) }
 
 		let sealed = await BlockingWork.run { BackupEngine.seal(payload: encoded.bytes, passphrase: passphrase) }
@@ -128,6 +146,7 @@ struct BackupExporter: Sendable {
 				removedProjects: inventory.count(where: { $0.listing == nil }),
 				keys: inventory.reduce(0) { total, project in total + project.environments.values.reduce(0) { $0 + $1.count } },
 				destinations: destinations.values.reduce(0) { $0 + $1.count },
+				syncKeys: keys?.keyCount ?? 0,
 				settings: app?.settings != nil,
 				unusableItems: snapshot.inventory.unusableItems)
 			return (file, summary)

@@ -1144,3 +1144,57 @@ final class PoolObservation: @unchecked Sendable {
 		lock.withLock { !observations.isEmpty && !observations.contains { $0.onPool || $0.onMain } }
 	}
 }
+
+/// Keychain items in memory, by service and account, for stores a test builds.
+final class InMemoryKeychainBackend: KeychainStoreBackend, @unchecked Sendable {
+	private let lock = NSLock()
+	private var items: [String: [String: Data]] = [:]
+
+	func read(service: String, account: String) throws -> Data? {
+		lock.withLock { items[service]?[account] }
+	}
+
+	func write(service: String, account: String, data: Data) throws {
+		lock.withLock { items[service, default: [:]][account] = data }
+	}
+
+	func add(service: String, account: String, data: Data) throws {
+		try lock.withLock {
+			guard items[service]?[account] == nil else {
+				throw KeychainStoreError.status(operation: "add", code: errSecDuplicateItem)
+			}
+			items[service, default: [:]][account] = data
+		}
+	}
+
+	@discardableResult
+	func delete(service: String, account: String) throws -> Bool {
+		lock.withLock { items[service]?.removeValue(forKey: account) != nil }
+	}
+
+	func accounts(service: String) throws -> [String: VaultCliAccess] {
+		lock.withLock { (items[service] ?? [:]).mapValues { _ in .automatic } }
+	}
+}
+
+extension BackupKeyStore {
+	static let testRootService = "test.env-personal-root-v2"
+	static let testSharingService = "test.vault"
+	static let testWrappingService = "test.vault-key"
+
+	/// Key stores in `backend`, with key floors in `home`.
+	static func inMemory(_ backend: InMemoryKeychainBackend, home: LPMHome) -> BackupKeyStore {
+		BackupKeyStore(
+			roots: SharedKeychainStore(service: testRootService, backend: backend),
+			sharing: SharedKeychainStore(service: testSharingService, backend: backend),
+			wrapping: SharedKeychainStore(service: testWrappingService, backend: backend),
+			home: home)
+	}
+}
+
+/// An LPM home in `folder`, its directory owner-only as the CLI makes it.
+func testLPMHome(in folder: URL) throws -> LPMHome {
+	let home = LPMHome(defaultIn: folder)
+	try FileManager.default.createDirectory(at: home.url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+	return home
+}

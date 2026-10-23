@@ -459,10 +459,12 @@ enum VaultCrypto {
 
 	// MARK: - X25519 Key Storage (Keychain via Security.framework)
 
-	private static let scopedX25519AccountPrefix = "__x25519_private_key__."
+	/// Sharing keys' accounts start with this, then their scope's digest, and
+	/// end in `.pending` while a rotation is uploading.
+	static let scopedX25519AccountPrefix = "__x25519_private_key__."
 	private static let x25519Service = VaultConstants.keychainService
 	static let wrappingKeyService = "dev.lpm.vault-key"
-	private static let wrappingKeyAccount = "wrapping-key"
+	static let wrappingKeyAccount = "wrapping-key"
 	private static let x25519KeyStore = SharedKeychainStore(service: LPMHome.current.service(x25519Service))
 	private static let wrappingKeyStore = SharedKeychainStore(service: LPMHome.current.service(wrappingKeyService))
 

@@ -12,6 +12,8 @@ struct BackupExportTests {
 	private struct Fixture {
 		let store: VaultStore
 		let keychain: MockKeychainService
+		/// The sync key stores the store reads.
+		let keys: InMemoryKeychainBackend
 		let biometric: MockBiometricService
 		let defaults: UserDefaults
 		let folder: URL
@@ -34,15 +36,17 @@ struct BackupExportTests {
 		keychain.cliAccessPolicies["vault-a"] = .requireApproval
 		keychain.hiddenPayloads["vault-hidden"] = ["default": ["OLD": "x"]]
 		let biometric = MockBiometricService()
+		let keys = InMemoryKeychainBackend()
 		let store = VaultStore(
 			keychainService: keychain,
 			biometricService: biometric,
 			apiService: MockAPIService(),
 			preferences: defaults,
-			projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory))
+			projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory),
+			backupKeys: .inMemory(keys, home: try testLPMHome(in: folder)))
 		store.projects = [VaultProject(id: "vault-a", name: "api", path: "/tmp/api", environments: environments)]
 		store.isUnlocked = true
-		return Fixture(store: store, keychain: keychain, biometric: biometric, defaults: defaults, folder: folder)
+		return Fixture(store: store, keychain: keychain, keys: keys, biometric: biometric, defaults: defaults, folder: folder)
 	}
 
 	/// The payload a saved backup holds.
@@ -103,6 +107,43 @@ struct BackupExportTests {
 
 		#expect(store.lastBackup?.bytes == result.bytes)
 		#expect(VaultBackupRecord(defaults: fixture.defaults) == store.lastBackup)
+	}
+
+	@Test("a backup carries this Mac's sync keys as their stores keep them, and none when they're left out")
+	func syncKeys() async throws {
+		let fixture = try fixture()
+		defer { fixture.tearDown() }
+		try BackupKeysTests.seed(fixture.keys, floorsIn: try testLPMHome(in: fixture.folder))
+		let authorization = try #require(await fixture.store.authorizeBackupExport())
+
+		let result = try await fixture.store.exportBackup(
+			BackupExporter.Contents(), passphrase: Self.passphrase, to: fixture.destination, authorization: authorization)
+		#expect(result.summary.syncKeys == 5)
+		let keys = try #require(try opened(fixture.destination)["keys"])
+		let entries = { (list: String) -> [LPMConfigJSON] in
+			guard case .array(let items)? = keys[list] else { return [] }
+			return items
+		}
+		let roots = entries("personalRoots")
+		#expect(roots.count == 1)
+		#expect(roots.first?["account"] == .string(BackupKeysTests.rootAccount))
+		#expect(roots.first?["key"] == .string(BackupKeysTests.rootKey))
+		let sharing = entries("sharingKeys")
+		#expect(sharing.map { $0["account"] } == [.string(BackupKeysTests.pendingOnlyAccount), .string(BackupKeysTests.sharingAccount)])
+		#expect(sharing.map { $0["live"] } == [nil, .string(BackupKeysTests.liveKey)])
+		#expect(sharing.map { $0["pending"] } == [.string(BackupKeysTests.liveKey), .string(BackupKeysTests.pendingKey)])
+		#expect(keys["wrappingKey"] == .string(BackupKeysTests.wrappingKey))
+		let floors = entries("keyFloors")
+		#expect(floors.map { $0["name"] } == [.string(BackupKeysTests.floor), .string(BackupKeysTests.otherFloor)])
+		#expect(floors.map { $0["version"] } == [.number("3"), .number("7")])
+		#expect(BackupExportSheet.fileDetail(result).contains("5 sync keys"))
+
+		var without = BackupExporter.Contents()
+		without.syncKeys = false
+		let other = fixture.folder.appending(path: "Without keys.lpmbackup")
+		let plain = try await fixture.store.exportBackup(without, passphrase: Self.passphrase, to: other, authorization: authorization)
+		#expect(plain.summary.syncKeys == 0)
+		#expect(try opened(other)["keys"] == nil)
 	}
 
 	@Test("without destinations, settings and icons, a backup carries only the projects")

@@ -40,6 +40,8 @@ struct BackupPayload: Sendable {
 	let projects: [Project]
 	/// LPM Vault's own section.
 	let app: BackupAppSection?
+	/// The sync keys the credential stores hold, when the backup carries them.
+	var keys: BackupKeys? = nil
 
 	/// A payload's JSON, and where each project's object starts in it, so a
 	/// problem the engine finds at an offset can name its project.
@@ -121,6 +123,66 @@ struct BackupPayload: Sendable {
 			sink.raw(",\"app\":")
 			sink.bytes(app)
 		}
+		if let keys, !keys.isEmpty {
+			sink.raw(",\"keys\":")
+			write(keys, into: &sink)
+		}
+		sink.raw("}")
+	}
+
+	private func write<Sink: JSONSink>(_ keys: BackupKeys, into sink: inout Sink) {
+		var members: [(inout Sink) -> Void] = []
+		if !keys.personalRoots.isEmpty {
+			members.append { sink in
+				sink.raw("\"personalRoots\":[")
+				for (index, root) in keys.personalRoots.enumerated() {
+					if index > 0 { sink.raw(",") }
+					sink.raw("{\"account\":\"\(root.account)\",\"key\":\"")
+					sink.secret(root.key)
+					sink.raw("\"}")
+				}
+				sink.raw("]")
+			}
+		}
+		if !keys.sharingKeys.isEmpty {
+			members.append { sink in
+				sink.raw("\"sharingKeys\":[")
+				for (index, key) in keys.sharingKeys.enumerated() {
+					if index > 0 { sink.raw(",") }
+					sink.raw("{\"account\":\"\(key.account)\"")
+					for (name, half) in [("live", key.live), ("pending", key.pending)] {
+						guard let half else { continue }
+						sink.raw(",\"\(name)\":\"")
+						sink.secret(half)
+						sink.raw("\"")
+					}
+					sink.raw("}")
+				}
+				sink.raw("]")
+			}
+		}
+		if let wrappingKey = keys.wrappingKey {
+			members.append { sink in
+				sink.raw("\"wrappingKey\":\"")
+				sink.secret(wrappingKey)
+				sink.raw("\"")
+			}
+		}
+		if !keys.floors.isEmpty {
+			members.append { sink in
+				sink.raw("\"keyFloors\":[")
+				for (index, floor) in keys.floors.enumerated() {
+					if index > 0 { sink.raw(",") }
+					sink.raw("{\"name\":\"\(floor.digest)\",\"version\":\(floor.version)}")
+				}
+				sink.raw("]")
+			}
+		}
+		sink.raw("{")
+		for (index, member) in members.enumerated() {
+			if index > 0 { sink.raw(",") }
+			member(&sink)
+		}
 		sink.raw("}")
 	}
 
@@ -181,6 +243,13 @@ private protocol JSONSink {
 
 extension JSONSink {
 	mutating func startProject() {}
+
+	/// Key text, which needs no escaping, written from the bytes that hold it.
+	mutating func secret(_ text: SecretBytes) {
+		text.withUnsafeBytes { bytes in
+			for byte in bytes { self.byte(byte) }
+		}
+	}
 
 	mutating func raw(_ text: String) {
 		for byte in text.utf8 { self.byte(byte) }

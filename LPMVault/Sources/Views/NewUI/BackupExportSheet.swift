@@ -19,6 +19,7 @@ struct BackupExportSheet: View {
 	@State private var reveals = false
 	@State private var meter = BackupPassphraseMeter()
 	@State private var destinationCount: Int?
+	@State private var syncKeyCount: Int?
 	@State private var phase: Phase = .editing
 	@State private var error: String?
 	@State private var task: Task<Void, Never>?
@@ -56,7 +57,12 @@ struct BackupExportSheet: View {
 		.frame(width: 560)
 		.background(VaultPalette.content)
 		.vaultUnsavedSheetWork(store, projectID: nil, projectName: "Settings", title: "Export backup", detail: passphrase.isEmpty ? nil : "A backup passphrase")
-		.task { destinationCount = await store.publishDestinationCount() }
+		.task {
+			async let destinations = store.publishDestinationCount()
+			async let keys = store.syncKeyCount()
+			(destinationCount, syncKeyCount) = await (destinations, keys)
+			if syncKeyCount == 0 { contents.syncKeys = false }
+		}
 		.onAppear { focusedField = .passphrase }
 		.onDisappear(perform: discard)
 	}
@@ -136,6 +142,13 @@ struct BackupExportSheet: View {
 				count: destinationCount.map { $0.counted("destination") }, isOn: $contents.destinations)
 			VaultHairline(color: VaultPalette.rowDivider)
 			includedRow("Settings & icons", detail: nil, count: nil, isOn: $contents.settingsAndIcons)
+			VaultHairline(color: VaultPalette.rowDivider)
+			includedRow(
+				"lpm.dev sync keys",
+				detail: syncKeyCount == 0 ? "None on this Mac" : "So the new Mac keeps syncing with lpm.dev",
+				count: syncKeyCount.flatMap { $0 > 0 ? $0.counted("key") : nil },
+				isOn: $contents.syncKeys)
+				.disabled(syncKeyCount == 0)
 		}
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.content))
 		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
@@ -379,6 +392,7 @@ struct BackupExportSheet: View {
 		var holds = [summary.projects.counted("project")]
 		if summary.removedProjects > 0 { holds.append("\(summary.removedProjects) removed from the sidebar") }
 		if summary.destinations > 0 { holds.append(summary.destinations.counted("destination")) }
+		if summary.syncKeys > 0 { holds.append(summary.syncKeys.counted("sync key")) }
 		if summary.settings { holds.append("settings") }
 		let folder = FileManager.default.componentsToDisplay(forPath: result.file.deletingLastPathComponent().path)?.suffix(2).joined(separator: " › ")
 		return [ByteCountFormatter.string(fromByteCount: Int64(result.bytes), countStyle: .file), folder, holds.joined(separator: ", ")]

@@ -1220,6 +1220,8 @@ final class VaultStore {
   let keyDrafts = VaultKeyDrafts()
   /// Each project's icon, chosen or found in its folder.
   let projectIcons: ProjectIconStore
+  /// The credential stores sync keys live in, which backups read and restores write.
+  let backupKeys: BackupKeyStore
   /// Where values are copied, and cleared from when the vault locks.
   let clipboard: ClipboardManager
   /// Unsaved Project Settings edits by project ID; cleared on lock and account changes.
@@ -2047,9 +2049,11 @@ final class VaultStore {
     autoLockDuration: TimeInterval = VaultConstants.vaultAutoLockDuration,
     schemaEditNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     projectIconsDirectory: URL = ProjectIconStore.defaultImagesDirectory,
+    backupKeys: BackupKeyStore = .live(),
     clipboard: ClipboardManager = ClipboardManager()
   ) {
     self.keychainService = keychainService
+    self.backupKeys = backupKeys
     self.clipboard = clipboard
     self.projectIcons = ProjectIconStore(preferences: preferences, imagesDirectory: projectIconsDirectory)
     self.persistence = VaultPersistenceCoordinator(service: keychainService)
@@ -5383,7 +5387,8 @@ final class VaultStore {
     await waitForLocalStateRefresh()
     guard isUnlocked, authorization.sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
     let exporter = BackupExporter(
-      persistence: persistence, publishing: publishing, imagesDirectory: projectIcons.imagesDirectory)
+      persistence: persistence, publishing: publishing, imagesDirectory: projectIcons.imagesDirectory,
+      keyStore: backupKeys)
     let appState = BackupExporter.AppState(
       settings: backupSettings(), iconChoices: projectIcons.savedChoices(for: projects.map(\.id)))
     let now = Date()
@@ -5406,6 +5411,12 @@ final class VaultStore {
 
   /// How many publish destinations the listed projects have, as a backup's
   /// checklist counts them; nil when one project's can't be read.
+  /// How many lpm.dev sync keys this Mac holds, or nil when their stores can't be read.
+  func syncKeyCount() async -> Int? {
+    let keys = backupKeys
+    return await BlockingWork.run { try? keys.count() }
+  }
+
   func publishDestinationCount() async -> Int? {
     var total = 0
     for project in projects {
