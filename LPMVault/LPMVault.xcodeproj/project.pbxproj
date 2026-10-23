@@ -160,6 +160,7 @@
 		82B30A80752864B3289D6440 /* AppDelegateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06490EEFC05413818E516BC3 /* AppDelegateTests.swift */; };
 		8317184044046DED39284AA1 /* ProjectCLILink.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA15A85B7406128FB479BB79 /* ProjectCLILink.swift */; };
 		83A901B1AD2EC57B33570483 /* SchemaAddKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2322C6F6BF378E0BC44C7042 /* SchemaAddKeyTests.swift */; };
+		84B8D27EE4FCC963578F6B93 /* Credits.html in Resources */ = {isa = PBXBuildFile; fileRef = 0F4511F049225B4D2D13306D /* Credits.html */; };
 		85D8879B93AEABF31B2C941C /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9FF906993D46DE0663FDBE6 /* Constants.swift */; };
 		8606B7CAFD64FF5A52433970 /* KeyInspectorInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A075C7BA1C52515081F1A50F /* KeyInspectorInteractionTests.swift */; };
 		860FD73B8CD4AF75C68D0268 /* VaultPaneBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F6C9EE8B916ECE78400C09 /* VaultPaneBudgetTests.swift */; };
@@ -328,6 +329,7 @@
 		0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CryptoInteropTests.swift; sourceTree = "<group>"; };
 		0D0B2CD3E26188E14F6418FB /* EnvFileImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvFileImportService.swift; sourceTree = "<group>"; };
 		0ED1EBE65DAC64E3E442E1A8 /* VaultConfirmDialog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultConfirmDialog.swift; sourceTree = "<group>"; };
+		0F4511F049225B4D2D13306D /* Credits.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = Credits.html; sourceTree = "<group>"; };
 		10F9038EDB0DF8525A388573 /* ModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelTests.swift; sourceTree = "<group>"; };
 		1164D09508447235F037F931 /* RawTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawTextTests.swift; sourceTree = "<group>"; };
 		132B8BB771BBAB418793A322 /* ProjectEnvValueCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvValueCheck.swift; sourceTree = "<group>"; };
@@ -605,6 +607,7 @@
 		1404F6763CEBFB29A4C063E7 = {
 			isa = PBXGroup;
 			children = (
+				0F4511F049225B4D2D13306D /* Credits.html */,
 				408CB91D419B483C1DED72C5 /* Resources */,
 				D1B7A69659C81657554157DA /* Sources */,
 				6746521328BAA2FF63764522 /* Tests */,
@@ -1054,6 +1057,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A249419F8F7C90D7FCC2C04D /* Assets.xcassets in Resources */,
+				84B8D27EE4FCC963578F6B93 /* Credits.html in Resources */,
 				3FE30DB5733578F8E3E98BFA /* Resources in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
