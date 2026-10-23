@@ -1397,6 +1397,8 @@ final class VaultStore {
   @ObservationIgnored var relaunch: @MainActor () -> Void = AppRelaunch.relaunch
   static let projectOrderKey = "lpm-vault-project-order"
   private var projectOrder: [String]
+  /// The last backup this Mac exported.
+  private(set) var lastBackup: VaultBackupRecord?
 
   // SECURITY NOTE: Environment tab ordering is stored in UserDefaults (not Keychain).
   // This is intentional — it contains only the display order of environment names
@@ -2076,6 +2078,7 @@ final class VaultStore {
     self.envFileExportService = envFileExportService
     self.preferences = preferences
     self.projectOrder = preferences.stringArray(forKey: Self.projectOrderKey) ?? []
+    self.lastBackup = VaultBackupRecord(defaults: preferences)
     if let sharingKeypairProvider {
       self.sharingKeypairProvider = { _, _, _, _ in
         try sharingKeypairProvider()
@@ -5349,6 +5352,78 @@ final class VaultStore {
       keychainService.setAuthenticationContext(biometricService.keychainAuthenticationContext)
     }
     return approved
+  }
+
+  // MARK: - Backups
+
+  /// Asks the person to authenticate before a backup reads every value,
+  /// every time, however recently they unlocked. The authorization holds only
+  /// while this session stays unlocked.
+  func authorizeBackupExport() async -> BackupExportAuthorization? {
+    guard canUseLocalSecrets else { return nil }
+    let sessionGeneration = vaultSessionGeneration
+    guard await confirmSensitiveAction(reason: "export a backup of your env projects"),
+      sessionGeneration == vaultSessionGeneration
+    else { return nil }
+    return BackupExportAuthorization(sessionGeneration: sessionGeneration)
+  }
+
+  /// Seals a backup of every env project, removed ones included, with
+  /// `passphrase`, and saves it to `destination`, replacing a file there.
+  /// Nothing is saved once the session `authorization` came from ends or the
+  /// task is cancelled.
+  func exportBackup(
+    _ contents: BackupExporter.Contents,
+    passphrase: String,
+    to destination: URL,
+    authorization: BackupExportAuthorization
+  ) async throws -> BackupExportResult {
+    let write = writes.begin()
+    defer { writes.end(write) }
+    await waitForLocalStateRefresh()
+    guard isUnlocked, authorization.sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
+    let exporter = BackupExporter(
+      persistence: persistence, publishing: publishing, imagesDirectory: projectIcons.imagesDirectory)
+    let appState = BackupExporter.AppState(
+      settings: backupSettings(), iconChoices: projectIcons.savedChoices(for: projects.map(\.id)))
+    let now = Date()
+    let sealed = try await exporter.seal(
+      contents,
+      appState: appState,
+      producerVersion: VaultBuildInfo().version,
+      deviceName: BackupExporter.computerName(),
+      passphrase: passphrase,
+      now: now)
+    try Task.checkCancellation()
+    guard isUnlocked, authorization.sessionGeneration == vaultSessionGeneration else { throw CancellationError() }
+    let file = sealed.file
+    try await BlockingWork.run { try SecureFileWriter.write(file, to: destination) }
+    let record = VaultBackupRecord(date: now, bytes: file.count)
+    record.save(to: preferences)
+    lastBackup = record
+    return BackupExportResult(file: destination, bytes: file.count, summary: sealed.summary)
+  }
+
+  /// How many publish destinations the listed projects have, as a backup's
+  /// checklist counts them; nil when one project's can't be read.
+  func publishDestinationCount() async -> Int? {
+    var total = 0
+    for project in projects {
+      guard case .success(let destinations) = await publishing.destinations(of: project.id) else { return nil }
+      total += destinations.count
+    }
+    return total
+  }
+
+  /// The settings a backup carries, as this Mac has them.
+  private func backupSettings() -> BackupAppSection.Settings {
+    BackupAppSection.Settings(
+      appearance: preferences.string(forKey: VaultAppearanceSettings.defaultsKey).flatMap(VaultAppearance.init(rawValue:)) ?? .system,
+      keySort: preferences.string(forKey: VaultKeySortOrder.defaultsKey).flatMap(VaultKeySortOrder.init(rawValue:)) ?? .ascending,
+      quitShortcut: VaultQuitShortcut.saved(in: preferences),
+      updateChannel: preferences.string(forKey: UpdateChecker.channelDefaultsKey).flatMap(VaultReleaseChannel.init(rawValue:)) ?? .stable,
+      projectOrder: projectOrder,
+      environmentOrders: environmentOrders)
   }
 
   /// Writes the environment's values to `destination`, kept out of git first

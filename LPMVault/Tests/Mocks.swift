@@ -337,6 +337,30 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		return true
 	}
 
+	/// Payloads of projects removed from the sidebar, which only a backup reads.
+	var hiddenPayloads: [String: [String: [String: String]]] = [:]
+	var failBackupInventory = false
+	var backupInventoryReadCount = 0
+
+	func backupInventoryResult() -> Result<VaultBackupInventory, KeychainError> {
+		lock.withLock {
+			backupInventoryReadCount += 1
+			if shouldFail || failBackupInventory { return .failure(failureError) }
+			let listed = envStorage.map { vaultId, project in
+				VaultBackupProject(
+					vaultId: vaultId,
+					listing: .init(name: project.name, folder: project.path),
+					environments: project.environments,
+					cliAccess: cliAccessPolicies[vaultId] ?? .automatic
+				)
+			}
+			let hidden = hiddenPayloads.map { vaultId, environments in
+				VaultBackupProject(vaultId: vaultId, listing: nil, environments: environments, cliAccess: cliAccessPolicies[vaultId] ?? .automatic)
+			}
+			return .success(VaultBackupInventory(projects: (listed + hidden).sorted { $0.vaultId < $1.vaultId }, unusableItems: 0))
+		}
+	}
+
 	func applyVaultTransaction(
 		project: VaultProjectKeychainMutation?,
 		data mutations: [VaultKeychainMutation]
