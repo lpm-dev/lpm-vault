@@ -5,6 +5,7 @@ import SwiftUI
 struct VaultBackupSettingsSection: View {
 	@Bindable var store: VaultStore
 	let exportBackup: () -> Void
+	let restoreBackup: () -> Void
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 12) {
@@ -28,6 +29,7 @@ struct VaultBackupSettingsSection: View {
 			VaultHairline(color: VaultPalette.rowDivider)
 			HStack(spacing: 8) {
 				VaultBarButton(systemImage: "square.and.arrow.up", title: "Export backup…", disabled: !store.canUseLocalSecrets, height: 28, action: exportBackup)
+				VaultBarButton(systemImage: "square.and.arrow.down", title: "Restore from backup…", disabled: !store.canUseLocalSecrets, height: 28, action: restoreBackup)
 				Spacer(minLength: 12)
 				Text(Self.lastBackupText(store.lastBackup))
 					.font(.system(size: 11.5))

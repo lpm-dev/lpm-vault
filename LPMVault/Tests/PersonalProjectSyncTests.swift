@@ -338,6 +338,168 @@ struct PersonalProjectSyncTests {
     store.lock()
   }
 
+  @Test("replacing a copy this Mac can't open writes a fresh project key one version past lpm.dev's, as a rotation, decrypting nothing")
+  func replacementRotatesPastRemoteKey() async throws {
+    let fixture = PersonalSyncFixture()
+    try fixture.makeCurrent(revision: 3, keyVersion: 4)
+    fixture.root = SymmetricKey(data: Data(repeating: 9, count: 32))
+    fixture.floor = 4
+    let service = fixture.service(legacyDecryptor: { _, _, _, _, _, _ in
+      Issue.record("Replacing never decrypts lpm.dev's copy")
+      return payload
+    })
+    let replacement = try await replace(service)
+    #expect(replacement.expectedVersion == 3)
+    #expect(fixture.writeCount == 0, "Preparing writes nothing")
+    let result = try #require(await replacement.operation.start().value().value)
+    #expect(result.version == 4)
+    let envelope = try #require(result.personalKeys)
+    #expect(envelope.projectKeyVersion == 5)
+    let written = try #require(fixture.lastWrite)
+    #expect(written["expectedVersion"] as? Int == 3)
+    #expect(written["force"] == nil && written["recreateMissing"] == nil)
+    let project = try PersonalProjectCrypto.open(
+      root: fixture.root, envelope: envelope, registryURL: fixture.origin, principalID: "user-a", vaultID: "project-a")
+    let plaintext = try PersonalProjectCrypto.decrypt(
+      project: project, encryptedBlob: #require(written["encryptedBlob"] as? String),
+      wrappedKey: #require(written["wrappedKey"] as? String), principalID: "user-a",
+      vaultID: "project-a", revision: 4, cryptoVersion: 3)
+    #expect(plaintext == payload, "This Mac's root opens the new copy")
+    #expect(fixture.rootCreates == 1)
+  }
+
+  @Test("replacing a copy from before project keys moves it to version 1 without decrypting it")
+  func replacementMigratesLegacyCopy() async throws {
+    let fixture = PersonalSyncFixture()
+    fixture.currentData = [
+      "revision": 3, "cryptoVersion": 3, "encryptedBlob": "legacy", "wrappedKey": "legacy-key",
+      "updatedAt": "2026-10-06T20:00:00Z",
+    ]
+    let service = fixture.service(legacyDecryptor: { _, _, _, _, _, _ in
+      Issue.record("Replacing never decrypts lpm.dev's copy")
+      return payload
+    })
+    let result = try #require(await (try await replace(service)).operation.start().value().value)
+    #expect(result.version == 4)
+    #expect(result.personalKeys?.projectKeyVersion == 1)
+  }
+
+  @Test("replacing a deleted copy recreates it past this Mac's floor; one lpm.dev never held starts at the next version")
+  func replacementRecreatesMissingCopy() async throws {
+    let fixture = PersonalSyncFixture()
+    fixture.missingRevision = 3
+    fixture.floor = 2
+    let replacement = try await replace(fixture.service())
+    #expect(replacement.expectedVersion == 3)
+    let result = try #require(await replacement.operation.start().value().value)
+    #expect(result.version == 4)
+    #expect(result.personalKeys?.projectKeyVersion == 3)
+    #expect(fixture.lastWrite?["recreateMissing"] as? Bool == true)
+    #expect(fixture.lastWrite?["force"] as? Bool == true)
+
+    let fresh = PersonalSyncFixture()
+    fresh.missingRevision = 0
+    let first = try await replace(fresh.service())
+    #expect(first.expectedVersion == nil)
+    let created = try #require(await first.operation.start().value().value)
+    #expect(created.version == 1)
+    #expect(created.personalKeys?.projectKeyVersion == 1)
+    #expect(fresh.lastWrite?["recreateMissing"] == nil)
+  }
+
+  @Test("a copy whose key version is below this Mac's floor isn't replaced: it's a rollback", arguments: [false, true])
+  func replacementRefusesRollback(legacy: Bool) async throws {
+    let fixture = PersonalSyncFixture()
+    if legacy {
+      fixture.currentData = [
+        "revision": 3, "cryptoVersion": 3, "encryptedBlob": "legacy", "wrappedKey": "legacy-key",
+        "updatedAt": "2026-10-06T20:00:00Z",
+      ]
+      fixture.floor = 1
+    } else {
+      try fixture.makeCurrent(revision: 3, keyVersion: 2)
+      fixture.floor = 3
+    }
+    let refusal = await #expect(throws: PersonalProjectCrypto.KeyError.self) { try await self.replace(fixture.service()) }
+    #expect({ if case .downgrade? = refusal { true } else { false } }())
+    #expect(fixture.writeCount == 0)
+    #expect(fixture.rootCreates == 0)
+  }
+
+  @MainActor
+  @Test("Reconnect replaces lpm.dev's copy of a paused project under this Mac's keys after Touch ID, and ends the pause")
+  func storeReconnectsPausedProject() async throws {
+    let fixture = PersonalSyncFixture()
+    try fixture.makeCurrent(revision: 3, keyVersion: 4)
+    fixture.root = SymmetricKey(data: Data(repeating: 9, count: 32))
+    let (store, biometric, defaults, suite) = try pausedStore(fixture, principal: "user-a")
+    defer { defaults.removePersistentDomain(forName: suite) }
+    await store.pushToCloud()
+    #expect(store.error?.hasPrefix("Sync is paused for Synthetic") == true)
+    #expect(fixture.writeCount == 0)
+
+    biometric.shouldSucceed = false
+    await store.reconnectPausedProject(projectId: "project-a")
+    #expect(fixture.writeCount == 0, "Nothing is replaced without the owner")
+    #expect(store.syncPauses["project-a"] != nil)
+
+    biometric.shouldSucceed = true
+    await store.reconnectPausedProject(projectId: "project-a")
+    #expect(biometric.confirmationReasons.last == "replace lpm.dev’s copy of Synthetic")
+    #expect(store.lastSyncStatus == "Pushed (v4)")
+    #expect(fixture.lastWrite?["projectKeyVersion"] as? Int == 5)
+    #expect(fixture.floor == 5)
+    #expect(store.syncMetadata["project-a"]?.lastVersion == 4)
+    #expect(store.syncPauses.isEmpty)
+    #expect(VaultSyncPause.load(from: defaults).isEmpty)
+    store.lock()
+  }
+
+  @MainActor
+  @Test("Reconnect refuses a project another lpm.dev account synced, and keeps it paused")
+  func storeReconnectNeedsSameAccount() async throws {
+    let fixture = PersonalSyncFixture()
+    try fixture.makeCurrent(revision: 3)
+    let (store, biometric, defaults, suite) = try pausedStore(fixture, principal: "user-b")
+    defer { defaults.removePersistentDomain(forName: suite) }
+    await store.reconnectPausedProject(projectId: "project-a")
+    #expect(store.error == "Synthetic synced with a different lpm.dev account. Sign in to that account to reconnect it.")
+    #expect(biometric.confirmationReasons.isEmpty, "Touch ID isn't asked for an account that can't reconnect")
+    #expect(fixture.readCount == 0)
+    #expect(store.syncPauses["project-a"] != nil)
+    store.lock()
+  }
+
+  /// A store signed in as user-a whose project-a a restore paused as `principal`'s.
+  @MainActor
+  private func pausedStore(
+    _ fixture: PersonalSyncFixture, principal: String
+  ) throws -> (VaultStore, MockBiometricService, UserDefaults, String) {
+    let suite = "lpm-reconnect-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    let sync = BackupPayload.Sync(registry: AppEnvironment.production.registryURL, principalId: principal, scope: .personal)
+    VaultSyncPause.save(["project-a": VaultSyncPause(sync, restoredAt: Date())], to: defaults)
+    let keychain = MockKeychainService()
+    keychain.envStorage["project-a"] = (name: "Synthetic", path: "", environments: ["default": ["TOKEN": "local"]])
+    let biometric = MockBiometricService()
+    let store = VaultStore(
+      keychainService: keychain, biometricService: biometric, apiService: MockAPIService(),
+      personalSyncServiceFactory: { _ in fixture.service() }, preferences: defaults, authTokenProvider: { _, _ in "dummy" })
+    store.appEnvironment = .production
+    store.currentUser = LPMUser(
+      id: "user-a", username: "dummy", name: nil, email: nil, avatarUrl: nil, plan: nil, createdAt: nil, orgs: nil)
+    store.projects = [VaultProject(id: "project-a", name: "Synthetic", path: "", environments: ["default": ["TOKEN": "local"]])]
+    store.isUnlocked = true
+    store.openProject(id: "project-a")
+    return (store, biometric, defaults, suite)
+  }
+
+  private func replace(_ service: SyncService) async throws -> SyncService.PersonalReplacement {
+    try await service.preparePersonalReplacement(
+      authToken: "dummy", expectedPrincipalId: "user-a", vaultId: "project-a", plaintext: payload,
+      name: "Synthetic", schema: nil)
+  }
+
   private func prepare(
     _ service: SyncService, expectedVersion: Int? = nil, force: Bool = false,
     recreate: Bool = false, schema: LPMJSONValue? = nil
@@ -373,16 +535,16 @@ private final class PersonalSyncFixture: @unchecked Sendable {
   private(set) var readCount = 0
   private(set) var lastWrite: [String: Any]?
 
-  func makeCurrent(revision: Int, plaintext: Data = payload) throws {
+  func makeCurrent(revision: Int, plaintext: Data = payload, keyVersion: Int = 1) throws {
     let project = try PersonalProjectCrypto.create(
-      root: root, registryOrigin: origin, principalID: "user-a", vaultID: "project-a", version: 1)
+      root: root, registryOrigin: origin, principalID: "user-a", vaultID: "project-a", version: keyVersion)
     let encrypted = try PersonalProjectCrypto.encrypt(
       project: project, plaintext: plaintext, principalID: "user-a", vaultID: "project-a",
       revision: revision)
     currentData = [
       "revision": revision, "cryptoVersion": 3, "encryptedBlob": encrypted.encryptedBlob,
       "wrappedKey": encrypted.wrappedKey, "updatedAt": "2026-10-06T20:00:00Z",
-      "personalKeyScheme": 2, "personalRegistryOrigin": origin, "projectKeyVersion": 1,
+      "personalKeyScheme": 2, "personalRegistryOrigin": origin, "projectKeyVersion": keyVersion,
       "wrappedProjectKey": project.envelope.wrappedProjectKey,
     ]
   }

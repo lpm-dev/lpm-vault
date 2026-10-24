@@ -231,6 +231,13 @@ final class SyncService: @unchecked Sendable {
     }
   }
 
+  /// A prepared replacement of lpm.dev's copy of a personal project, and the
+  /// revision it expects lpm.dev to hold, nil for none.
+  struct PersonalReplacement: Sendable {
+    let expectedVersion: Int?
+    let operation: PreparedRemoteOperation<AuthenticatedResponse<SyncStatus>>
+  }
+
   enum VersionPreflight: Sendable {
     case found(SyncStatus)
     case notFound
@@ -493,6 +500,74 @@ final class SyncService: @unchecked Sendable {
       vaultId: vaultId, encryptedBlob: encrypted.encryptedBlob, wrappedKey: encrypted.wrappedKey,
       expectedVersion: expectedVersion, force: force, recreateMissing: recreateMissing,
       name: name, schema: schema, personalKeys: project.envelope)
+  }
+
+  /// Prepares replacing lpm.dev's copy of a personal project with
+  /// `plaintext` under this Mac's root key, for a Mac that can't open the copy
+  /// lpm.dev holds. Nothing lpm.dev holds is decrypted. A copy with a project
+  /// key is replaced under a fresh key one version past its own, which lpm.dev
+  /// takes as a rotation; a copy from before project keys moves to a fresh key
+  /// at version 1; a deleted copy whose revision lpm.dev kept is recreated one
+  /// version past this Mac's floor. A copy whose key version is below this
+  /// Mac's floor is refused as a rollback.
+  func preparePersonalReplacement(
+    authToken: String, expectedPrincipalId: String, vaultId: String, plaintext: Data,
+    name: String?, schema: LPMJSONValue?
+  ) async throws -> PersonalReplacement {
+    if let schema { try ProjectEnvSchemaFile.validateMetadataSize(schema) }
+    let keys = personalProjectKeys
+    let remoteResponse = await pullAuthenticated(authToken: authToken, vaultId: vaultId)
+    guard case .response(let remote) = remoteResponse else {
+      return PersonalReplacement(expectedVersion: nil, operation: .completed(.unauthorized))
+    }
+    guard let remote else { throw VaultSyncError("Could not authenticate lpm.dev’s copy of the env project.") }
+    guard remote.principalId == expectedPrincipalId, remote.vaultId == vaultId else {
+      throw PersonalProjectCrypto.KeyError.invalidContext
+    }
+    let origin = try PersonalProjectCrypto.registryOrigin(apiBaseURL.absoluteString)
+    let expectedVersion: Int?
+    let recreateMissing: Bool
+    let keyVersion: Int?
+    switch remote.outcome {
+    case "current":
+      guard let revision = remote.version, revision > 0, revision < Int32.max else {
+        throw PersonalProjectCrypto.KeyError.invalidContext
+      }
+      try await BlockingWork.run {
+        try keys.validate(envelope: remote.personalKeys, registryURL: origin,
+          principalID: expectedPrincipalId, vaultID: vaultId)
+      }
+      expectedVersion = revision
+      recreateMissing = false
+      keyVersion = remote.personalKeys.map { $0.projectKeyVersion + 1 } ?? 1
+    case "missing":
+      let retained = remote.serverVersion ?? 0
+      guard retained >= 0, retained < Int32.max else { throw PersonalProjectCrypto.KeyError.invalidContext }
+      expectedVersion = retained == 0 ? nil : retained
+      recreateMissing = retained > 0
+      keyVersion = nil
+    default:
+      throw VaultSyncError(remote.displayError ?? "Could not authenticate lpm.dev’s copy of the env project.")
+    }
+    let project = try await BlockingWork.run {
+      let floor = try keys.checkpoint(origin, expectedPrincipalId, vaultId, nil)
+      let version = keyVersion ?? floor + 1
+      guard version > floor else { throw PersonalProjectCrypto.KeyError.downgrade }
+      guard version <= Int32.max else { throw PersonalProjectCrypto.KeyError.invalidContext }
+      return try PersonalProjectCrypto.create(root: keys.root(origin, expectedPrincipalId, true), registryOrigin: origin,
+        principalID: expectedPrincipalId, vaultID: vaultId, version: version)
+    }
+    let revision = (expectedVersion ?? 0) + 1
+    let encrypted = try await Task.detached(priority: .userInitiated) {
+      try PersonalProjectCrypto.encrypt(project: project, plaintext: plaintext,
+        principalID: expectedPrincipalId, vaultID: vaultId, revision: revision)
+    }.value
+    return PersonalReplacement(
+      expectedVersion: expectedVersion,
+      operation: preparedPushAuthenticated(authToken: authToken, expectedPrincipalId: expectedPrincipalId,
+        vaultId: vaultId, encryptedBlob: encrypted.encryptedBlob, wrappedKey: encrypted.wrappedKey,
+        expectedVersion: expectedVersion, force: recreateMissing, recreateMissing: recreateMissing,
+        name: name, schema: schema, personalKeys: project.envelope))
   }
 
   func pushAuthenticated(
@@ -1679,6 +1754,11 @@ protocol PersonalSyncServiceProtocol: Sendable {
     legacyEncryptor: @escaping @Sendable (Data, String, String, Int) throws -> (encryptedBlob: String, wrappedKey: String)
   ) async throws -> PreparedRemoteOperation<SyncService.AuthenticatedResponse<SyncService.SyncStatus>>
 
+  func preparePersonalReplacement(
+    authToken: String, expectedPrincipalId: String, vaultId: String, plaintext: Data,
+    name: String?, schema: LPMJSONValue?
+  ) async throws -> SyncService.PersonalReplacement
+
   func pushAuthenticated(
     authToken: String,
     expectedPrincipalId: String,
@@ -1731,6 +1811,13 @@ extension PersonalSyncServiceProtocol {
   }
 
   func rememberPersonalKeys(_ envelope: PersonalKeyEnvelope, principalID: String, vaultID: String) async throws {
+    throw PersonalProjectCrypto.KeyError.invalidContext
+  }
+
+  func preparePersonalReplacement(
+    authToken: String, expectedPrincipalId: String, vaultId: String, plaintext: Data,
+    name: String?, schema: LPMJSONValue?
+  ) async throws -> SyncService.PersonalReplacement {
     throw PersonalProjectCrypto.KeyError.invalidContext
   }
 

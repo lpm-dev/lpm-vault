@@ -1256,23 +1256,47 @@ private struct VaultTableEmptyRow: View {
 
 struct VaultWorkspaceEmptyView: View {
 	let isSearching: Bool
+	/// Whether this Mac has any project; with none, the first screen welcomes and offers a restore.
+	var hasProjects = true
 	let onCreate: () -> Void
 	let onImport: () -> Void
+	var onRestore: () -> Void = {}
+
+	private var welcomes: Bool { !hasProjects && !isSearching }
 
 	var body: some View {
 		VStack(spacing: 12) {
 			VaultAppMark(size: 42)
-			Text(isSearching ? "No matching env projects" : "Select an env project")
+			Text(isSearching ? "No matching env projects" : welcomes ? "Welcome to LPM Vault" : "Select an env project")
 				.font(.system(size: 18, weight: .bold))
 				.foregroundStyle(VaultPalette.textPrimary)
-			Text(isSearching ? "Try another project or key name." : "Create a local project or import one from lpm.dev.")
+			Text(isSearching
+				? "Try another project or key name."
+				: welcomes
+					? "Your project’s environment variables, encrypted in this Mac’s Keychain and read by the LPM CLI."
+					: "Create a local project or import one from lpm.dev.")
 				.font(.system(size: 12.5))
 				.foregroundStyle(VaultPalette.textTertiary)
+				.multilineTextAlignment(.center)
+				.frame(maxWidth: 380)
 			if !isSearching {
 				HStack(spacing: 8) {
 					VaultBarButton(title: "Create project", filled: true, action: onCreate)
 					VaultBarButton(systemImage: "cloud", title: "Import", action: onImport)
 				}
+			}
+			if welcomes {
+				VStack(spacing: 3) {
+					Button("Restore from a backup", action: onRestore)
+						.buttonStyle(.plain)
+						.font(.system(size: 12.5, weight: .semibold))
+						.foregroundStyle(VaultPalette.accentForeground)
+						.vaultPointingHand()
+					Text("Moving from another Mac? Bring your projects and settings over in one step.")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+				}
+				.padding(.top, 6)
 			}
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
