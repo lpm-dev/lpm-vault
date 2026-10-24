@@ -25,6 +25,13 @@ struct VaultPersistenceSnapshot: Sendable {
 	let cliAccess: [String: VaultCliAccess]
 }
 
+/// Every vault and what syncs it, read in one transaction for a backup.
+struct VaultBackupSnapshot: Sendable {
+	let inventory: VaultBackupInventory
+	let syncMetadata: [String: SyncMetadata]
+	let orgAssociations: [String: String]
+}
+
 struct ProjectCreationRecord: Sendable {
 	let cliAccess: VaultCliAccess?
 	let project: VaultProject?
@@ -241,6 +248,30 @@ actor VaultPersistenceCoordinator {
 			orgAssociations: associations,
 			cliAccess: policies
 		))
+	}
+
+	/// Every vault, removed ones included, with its sync metadata and org
+	/// associations, as of one moment the CLI can't change midway.
+	func backupSnapshot() -> Result<VaultBackupSnapshot, KeychainError> {
+		service.withKeychainTransaction {
+			guard !Task.isCancelled else { return .failure(.accessDenied) }
+			let inventory: VaultBackupInventory
+			switch service.backupInventoryResult() {
+			case .success(let value): inventory = value
+			case .failure(let error): return .failure(error)
+			}
+			let metadata: [String: SyncMetadata]
+			switch loadSyncMetadataResult(projectIds: inventory.projects.map(\.vaultId)) {
+			case .success(let value): metadata = value
+			case .failure(let error): return .failure(error)
+			}
+			switch loadOrgAssociationsResult() {
+			case .success(let associations):
+				return .success(VaultBackupSnapshot(inventory: inventory, syncMetadata: metadata, orgAssociations: associations))
+			case .failure(let error):
+				return .failure(error)
+			}
+		}.flatMap { $0 }
 	}
 
 	func loadProject(vaultId: String) -> Result<VaultProject?, KeychainError> {

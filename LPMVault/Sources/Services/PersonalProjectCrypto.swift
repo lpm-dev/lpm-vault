@@ -201,8 +201,46 @@ enum PersonalProjectCrypto {
   ) throws -> Int {
     let account = try rootAccount(origin: registryOrigin(registryURL), principalID: principalID)
     guard !vaultID.isEmpty, vaultID.utf8.count <= 256 else { throw KeyError.invalidContext }
-    let name =
-      ".env-project-key-floor-" + hex(Data(SHA256.hash(data: Data((account + vaultID).utf8))))
+    return try floor(
+      digest: hex(Data(SHA256.hash(data: Data((account + vaultID).utf8)))), advanceTo: advanceTo,
+      home: lpmHome)
+  }
+
+  /// The file names of personal key floors start with this, then their digest.
+  static let floorFilePrefix = ".env-project-key-floor-"
+
+  /// The digest of every personal key floor `home` holds, as their file names
+  /// carry them, whoever wrote them.
+  static func floorDigests(home lpmHome: LPMHome = .current) throws -> [String] {
+    let names: [String]
+    do {
+      names = try FileManager.default.contentsOfDirectory(atPath: lpmHome.url.path)
+    } catch CocoaError.fileReadNoSuchFile {
+      return []
+    } catch {
+      throw KeyError.storage
+    }
+    return names.compactMap { name in
+      guard name.hasPrefix(floorFilePrefix) else { return nil }
+      let digest = String(name.dropFirst(floorFilePrefix.count))
+      return isFloorDigest(digest) ? digest : nil
+    }.sorted()
+  }
+
+  /// Whether `digest` is a floor's: 64 lowercase hex digits.
+  static func isFloorDigest(_ digest: String) -> Bool {
+    digest.utf8.count == 64 && digest.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
+  }
+
+  /// The personal key floor whose file name carries `digest`, kept in `home`,
+  /// advanced to `advanceTo` when that's given; 0 when it doesn't exist.
+  /// `lockHeld` says the caller already holds `home`'s key-creation lock,
+  /// which another home's file lock can't take twice.
+  static func floor(
+    digest: String, advanceTo: Int? = nil, home lpmHome: LPMHome = .current, lockHeld: Bool = false
+  ) throws -> Int {
+    guard isFloorDigest(digest) else { throw KeyError.invalidContext }
+    let name = floorFilePrefix + digest
     let directoryName = lpmHome.url.lastPathComponent
     let operation = {
       let home = lpmHome.url.deletingLastPathComponent().withUnsafeFileSystemRepresentation { path in
@@ -290,6 +328,9 @@ enum PersonalProjectCrypto {
         try validateDirectory(directory, named: directoryName, in: home)
       }
       return next
+    }
+    if lockHeld {
+      return try operation()
     }
     if lpmHome == .current {
       return try VaultKeychainTransactionLock.withLock(operation)

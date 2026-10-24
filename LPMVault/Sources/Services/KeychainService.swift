@@ -294,6 +294,11 @@ protocol KeychainServiceProtocol: Sendable {
 		environments: [String: [String: String]]
 	) -> KeychainResult
 	func removeFromSidebar(vaultId: String) -> Bool
+	/// Every vault the shared store holds, read for a backup: the ones the
+	/// sidebar lists, with their names and folders, and the ones removed from
+	/// it, whose payloads stay. A vault that can't be read fails it all, so a
+	/// backup never leaves one out unnoticed.
+	func backupInventoryResult() -> Result<VaultBackupInventory, KeychainError>
 	/// The vaults among `vaultIds` whose payload is still in the Keychain,
 	/// found from item attributes alone, so no value is read and no
 	/// approval is asked for. A project removed from the sidebar still counts.
@@ -349,6 +354,29 @@ enum VaultCliAccess: Sendable, Equatable {
 	var keychainFlags: SecAccessControlCreateFlags {
 		self == .requireApproval ? .userPresence : []
 	}
+}
+
+/// A vault as a backup reads it.
+struct VaultBackupProject: Equatable, Sendable {
+	/// A project's name and folder while the sidebar lists it.
+	struct Listing: Equatable, Sendable {
+		let name: String
+		let folder: String
+	}
+
+	let vaultId: String
+	/// Nil for a project removed from the sidebar, whose name and folder went with it.
+	let listing: Listing?
+	let environments: [String: [String: String]]
+	let cliAccess: VaultCliAccess
+}
+
+struct VaultBackupInventory: Equatable, Sendable {
+	/// Sorted by vault ID.
+	let projects: [VaultBackupProject]
+	/// Items that hold no record of the store's own but whose names LPM
+	/// Vault can't use as vault IDs, so no backup can carry them.
+	let unusableItems: Int
 }
 
 enum VaultProjectKeychainMutation: Sendable {
@@ -457,9 +485,15 @@ protocol KeychainStoreBackend {
 	func add(service: String, account: String, data: Data) throws
 	@discardableResult
 	func delete(service: String, account: String) throws -> Bool
+	/// Every account of `service` with its CLI access, read from item
+	/// attributes alone, so no value is read and no approval asked.
+	func accounts(service: String) throws -> [String: VaultCliAccess]
 }
 
 extension KeychainStoreBackend {
+	func accounts(service: String) throws -> [String: VaultCliAccess] {
+		throw KeychainStoreError.status(operation: "list \(service)", code: errSecUnimplemented)
+	}
 	func cliAccess(service: String, account: String) throws -> VaultCliAccess { .automatic }
 	func cliAccess(service: String, accounts: [String]) throws -> [String: VaultCliAccess] {
 		var values = [String: VaultCliAccess](minimumCapacity: accounts.count)
@@ -1773,6 +1807,13 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
+	func accounts() throws -> [String: VaultCliAccess] {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			return try backend.accounts(service: service)
+		}
+	}
+
 	func cliAccessReadings(accounts: [String]) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
 		try VaultKeychainTransactionLock.withLock {
 			try ensureRecoveredUnlocked()
@@ -2457,6 +2498,36 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 				return warning.map(KeychainResult.successWithWarning) ?? .success
 			}
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
+	func backupInventoryResult() -> Result<VaultBackupInventory, KeychainError> {
+		do {
+			return .success(try VaultKeychainTransactionLock.withLock {
+				let listed = Dictionary(uniqueKeysWithValues: try readProjectMetadataThrowing().map { ($0.id, $0) })
+				let items = try store.accounts()
+				let vaultIds = items.keys.filter { !$0.hasPrefix("__") }
+				let usable = vaultIds.filter(EnvValidation.isSafeVaultId).sorted()
+				guard listed.keys.allSatisfy({ items[$0] != nil }) else {
+					throw KeychainStoreError.status(operation: "read indexed vault data", code: errSecItemNotFound)
+				}
+				let projects = try store.map(accounts: usable) { vaultId, data in
+					guard let data, let cliAccess = items[vaultId] else {
+						throw KeychainStoreError.status(operation: "read vault data", code: errSecItemNotFound)
+					}
+					return VaultBackupProject(
+						vaultId: vaultId,
+						listing: listed[vaultId].map { VaultBackupProject.Listing(name: $0.name, folder: $0.path) },
+						environments: try decodeEnvironments(data),
+						cliAccess: cliAccess
+					)
+				}
+				return VaultBackupInventory(projects: projects, unusableItems: vaultIds.count - usable.count)
+			})
 		} catch let error as KeychainStoreError {
 			return .failure(keychainError(from: error))
 		} catch {

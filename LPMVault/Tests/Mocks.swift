@@ -337,6 +337,30 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		return true
 	}
 
+	/// Payloads of projects removed from the sidebar, which only a backup reads.
+	var hiddenPayloads: [String: [String: [String: String]]] = [:]
+	var failBackupInventory = false
+	var backupInventoryReadCount = 0
+
+	func backupInventoryResult() -> Result<VaultBackupInventory, KeychainError> {
+		lock.withLock {
+			backupInventoryReadCount += 1
+			if shouldFail || failBackupInventory { return .failure(failureError) }
+			let listed = envStorage.map { vaultId, project in
+				VaultBackupProject(
+					vaultId: vaultId,
+					listing: .init(name: project.name, folder: project.path),
+					environments: project.environments,
+					cliAccess: cliAccessPolicies[vaultId] ?? .automatic
+				)
+			}
+			let hidden = hiddenPayloads.map { vaultId, environments in
+				VaultBackupProject(vaultId: vaultId, listing: nil, environments: environments, cliAccess: cliAccessPolicies[vaultId] ?? .automatic)
+			}
+			return .success(VaultBackupInventory(projects: (listed + hidden).sorted { $0.vaultId < $1.vaultId }, unusableItems: 0))
+		}
+	}
+
 	func applyVaultTransaction(
 		project: VaultProjectKeychainMutation?,
 		data mutations: [VaultKeychainMutation]
@@ -1119,4 +1143,58 @@ final class PoolObservation: @unchecked Sendable {
 	var stayedOffMainAndPool: Bool {
 		lock.withLock { !observations.isEmpty && !observations.contains { $0.onPool || $0.onMain } }
 	}
+}
+
+/// Keychain items in memory, by service and account, for stores a test builds.
+final class InMemoryKeychainBackend: KeychainStoreBackend, @unchecked Sendable {
+	private let lock = NSLock()
+	private var items: [String: [String: Data]] = [:]
+
+	func read(service: String, account: String) throws -> Data? {
+		lock.withLock { items[service]?[account] }
+	}
+
+	func write(service: String, account: String, data: Data) throws {
+		lock.withLock { items[service, default: [:]][account] = data }
+	}
+
+	func add(service: String, account: String, data: Data) throws {
+		try lock.withLock {
+			guard items[service]?[account] == nil else {
+				throw KeychainStoreError.status(operation: "add", code: errSecDuplicateItem)
+			}
+			items[service, default: [:]][account] = data
+		}
+	}
+
+	@discardableResult
+	func delete(service: String, account: String) throws -> Bool {
+		lock.withLock { items[service]?.removeValue(forKey: account) != nil }
+	}
+
+	func accounts(service: String) throws -> [String: VaultCliAccess] {
+		lock.withLock { (items[service] ?? [:]).mapValues { _ in .automatic } }
+	}
+}
+
+extension BackupKeyStore {
+	static let testRootService = "test.env-personal-root-v2"
+	static let testSharingService = "test.vault"
+	static let testWrappingService = "test.vault-key"
+
+	/// Key stores in `backend`, with key floors in `home`.
+	static func inMemory(_ backend: InMemoryKeychainBackend, home: LPMHome) -> BackupKeyStore {
+		BackupKeyStore(
+			roots: SharedKeychainStore(service: testRootService, backend: backend),
+			sharing: SharedKeychainStore(service: testSharingService, backend: backend),
+			wrapping: SharedKeychainStore(service: testWrappingService, backend: backend),
+			home: home)
+	}
+}
+
+/// An LPM home in `folder`, its directory owner-only as the CLI makes it.
+func testLPMHome(in folder: URL) throws -> LPMHome {
+	let home = LPMHome(defaultIn: folder)
+	try FileManager.default.createDirectory(at: home.url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+	return home
 }
