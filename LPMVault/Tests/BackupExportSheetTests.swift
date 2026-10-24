@@ -159,10 +159,10 @@ extension SheetInteractionTests {
 		func settingsSection() async throws {
 			let fixture = try await fixture()
 			defer { fixture.tearDown() }
-			let section = SheetTestHost(VaultBackupSettingsSection(store: fixture.store) {}, size: NSSize(width: 640, height: 200))
+			let section = SheetTestHost(VaultBackupSettingsSection(store: fixture.store, exportBackup: {}, restoreBackup: {}), size: NSSize(width: 640, height: 200))
 			defer { section.window.close() }
 			try await section.settle()
-			for text in ["Your Keychain data stays on this Mac", "Export backup…", "No backup yet"] {
+			for text in ["Your Keychain data stays on this Mac", "Export backup…", "Restore from backup…", "No backup yet"] {
 				#expect(try await section.waitForText(text), "The section says \(text)")
 			}
 			let authorization = try #require(await fixture.store.authorizeBackupExport())

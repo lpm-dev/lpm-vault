@@ -299,6 +299,23 @@ protocol KeychainServiceProtocol: Sendable {
 	/// it, whose payloads stay. A vault that can't be read fails it all, so a
 	/// backup never leaves one out unnoticed.
 	func backupInventoryResult() -> Result<VaultBackupInventory, KeychainError>
+	/// The ID of every vault whose data the shared store holds, listed in the
+	/// sidebar or not, read without reading any payload.
+	func storedVaultIdsResult() -> Result<Set<String>, KeychainError>
+	/// Adds a project a backup holds, requiring approval before the CLI reads
+	/// it, and lists it in the sidebar when `listed`. The payload is added with
+	/// that access before the transaction that indexes it, so a project never
+	/// exists without it; a crash between leaves the payload unlisted, still
+	/// requiring approval.
+	func createRestoredProjectResult(_ project: VaultProject, listed: Bool) -> KeychainResult
+	/// Writes `merged` over a project's values when they're still `expected`,
+	/// listed or not, with `additionalMutations` in the same transaction.
+	func mergeRestoredProjectResult(
+		vaultId: String,
+		expected: [String: [String: String]],
+		merged: [String: [String: String]],
+		additionalMutations: [VaultKeychainMutation]
+	) -> VaultRestoreWriteResult
 	/// The vaults among `vaultIds` whose payload is still in the Keychain,
 	/// found from item attributes alone, so no value is read and no
 	/// approval is asked for. A project removed from the sidebar still counts.
@@ -369,6 +386,13 @@ struct VaultBackupProject: Equatable, Sendable {
 	let listing: Listing?
 	let environments: [String: [String: String]]
 	let cliAccess: VaultCliAccess
+}
+
+enum VaultRestoreWriteResult: Equatable, Sendable {
+	case written(warning: String?)
+	/// The project's values changed since the review read them.
+	case changedSinceReview
+	case failure(KeychainError)
 }
 
 struct VaultBackupInventory: Equatable, Sendable {
@@ -1807,6 +1831,20 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
+	/// Adds an item that requires `access`, verified once written.
+	func add(account: String, data: Data, access: VaultCliAccess) throws {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			guard try backend.read(service: service, account: account) == nil else {
+				throw KeychainStoreError.status(operation: "add", code: errSecDuplicateItem)
+			}
+			try backend.write(service: service, account: account, data: data, access: access)
+			guard try backend.read(service: service, account: account) == data,
+				try backend.cliAccess(service: service, account: account) == access
+			else { throw KeychainStoreError.integrityValidationFailed }
+		}
+	}
+
 	func accounts() throws -> [String: VaultCliAccess] {
 		try VaultKeychainTransactionLock.withLock {
 			try ensureRecoveredUnlocked()
@@ -2532,6 +2570,72 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			return .failure(keychainError(from: error))
 		} catch {
 			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
+	func storedVaultIdsResult() -> Result<Set<String>, KeychainError> {
+		do {
+			return .success(Set(try store.accounts().keys.lazy.filter { !$0.hasPrefix("__") }))
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
+	func createRestoredProjectResult(_ project: VaultProject, listed: Bool) -> KeychainResult {
+		do {
+			return try VaultKeychainTransactionLock.withLock {
+				let payload = try prepareProjectPayload(project)
+				try store.add(account: project.id, data: payload.data, access: .requireApproval)
+				guard listed else { return .success }
+				try createProjectRecordsThrowing(
+					vaultId: project.id,
+					projectName: project.name,
+					projectPath: project.path,
+					payload: payload,
+					requirePayloadAbsent: false
+				)
+				return projectSizeWarning(payload.data.count).map(KeychainResult.successWithWarning) ?? .success
+			}
+		} catch let error as KeychainStoreError where error.statusCode == errSecDuplicateItem {
+			return .failure(.duplicateItem)
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.encodingFailed)
+		}
+	}
+
+	func mergeRestoredProjectResult(
+		vaultId: String,
+		expected: [String: [String: String]],
+		merged: [String: [String: String]],
+		additionalMutations: [VaultKeychainMutation]
+	) -> VaultRestoreWriteResult {
+		do {
+			return try VaultKeychainTransactionLock.withLock {
+				guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+				guard try getEnvironmentsThrowing(vaultId: vaultId) == expected else { return .changedSinceReview }
+				let environments = normalizedEnvironments(merged)
+				guard EnvValidation.areValidEnvironments(environments) else { return .failure(.encodingFailed) }
+				let payload = try prepareProjectPayload(environments: environments)
+				guard payload.data.count <= VaultConstants.maxVaultSizeWarning else {
+					return .failure(.dataTooLarge(payload.data.count))
+				}
+				let state = try ensureProjectIndexThrowing()
+				if try readProjectMetadataRecordThrowing(vaultId: vaultId, state: state) != nil {
+					try updateProjectPayloadThrowing(vaultId: vaultId, payload: payload, additionalMutations: additionalMutations)
+				} else {
+					try store.applyVaultTransaction(
+						[.write(account: vaultId, preparedProjectPayload: payload)] + additionalMutations)
+				}
+				return .written(warning: projectSizeWarning(payload.data.count))
+			}
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.encodingFailed)
 		}
 	}
 

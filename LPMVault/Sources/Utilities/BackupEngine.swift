@@ -139,6 +139,100 @@ enum BackupEngine {
 		return .success(SecretBytes(copying: UnsafeRawBufferPointer(start: data + offset, count: length)))
 	}
 
+	/// The payload of a backup file, checked by the engine, with its sync
+	/// keys taken out before anything parses it as text. Blocks. Both are
+	/// copied out of the engine's plaintext, which the engine then zeroes.
+	static func openSplit(_ file: Data, passphrase: String) -> Result<(payload: SecretBytes, keys: BackupKeys), Failure> {
+		guard file.count <= maximumFileBytes else { return .failure(.tooLarge) }
+		var payloadOffset = 0
+		var payloadLength = 0
+		var keysOffset = 0
+		var keysLength = 0
+		let result = file.withUnsafeBytes { file in
+			withPassphraseBytes(passphrase) { phrase in
+				lpm_env_backup_open_split(
+					file.bindMemory(to: UInt8.self).baseAddress, file.count,
+					phrase.baseAddress, phrase.count,
+					&payloadOffset, &payloadLength, &keysOffset, &keysLength)
+			}
+		}
+		defer { lpm_env_release(result) }
+		guard lpm_env_abi_version() == 1 else { return .failure(.engine(code: "env.abi_mismatch")) }
+		guard result.status == 0 else { return .failure(refusal(of: result)) }
+		guard let data = result.data, result.length <= maximumFileBytes,
+			payloadOffset <= result.length, payloadLength <= result.length - payloadOffset,
+			keysOffset <= result.length, keysLength <= result.length - keysOffset,
+			let keys = keyRecords(UnsafeRawBufferPointer(start: data + keysOffset, count: keysLength))
+		else { return .failure(.engine(code: "backup.unreadable_output")) }
+		return .success((SecretBytes(copying: UnsafeRawBufferPointer(start: data + payloadOffset, count: payloadLength)), keys))
+	}
+
+	/// The sync keys `lpm_env_backup_open_split` lays out as records: each a
+	/// kind byte, then an account digest and key text, or a floor's digest and
+	/// version. Nil when they aren't laid out that way, or name a key twice.
+	static func keyRecords(_ records: UnsafeRawBufferPointer) -> BackupKeys? {
+		var keys = BackupKeys()
+		var roots = Set<String>()
+		var floors = Set<String>()
+		var sharing: [String: (live: SecretBytes?, pending: SecretBytes?)] = [:]
+		var sharingOrder: [String] = []
+		var at = 0
+		func take(_ count: Int) -> UnsafeRawBufferPointer? {
+			guard count <= records.count - at else { return nil }
+			defer { at += count }
+			return UnsafeRawBufferPointer(rebasing: records[at..<at + count])
+		}
+		func digest() -> String? {
+			guard let bytes = take(32) else { return nil }
+			return String(unsafeUninitializedCapacity: 64) { text in
+				for (index, byte) in bytes.enumerated() {
+					text[2 * index] = lowercaseHexDigits[Int(byte >> 4)]
+					text[2 * index + 1] = lowercaseHexDigits[Int(byte & 0x0f)]
+				}
+				return 64
+			}
+		}
+		while at < records.count {
+			guard let kind = take(1)?.first else { return nil }
+			switch kind {
+			case 1:
+				guard let account = digest(), roots.insert(account).inserted, let key = take(64) else { return nil }
+				keys.personalRoots.append(.init(account: account, key: SecretBytes(copying: key)))
+			case 2, 3:
+				guard let account = digest(), let key = take(44) else { return nil }
+				var halves = sharing[account] ?? (nil, nil)
+				if halves.live == nil, halves.pending == nil { sharingOrder.append(account) }
+				if kind == 2 {
+					guard halves.live == nil else { return nil }
+					halves.live = SecretBytes(copying: key)
+				} else {
+					guard halves.pending == nil else { return nil }
+					halves.pending = SecretBytes(copying: key)
+				}
+				sharing[account] = halves
+			case 4:
+				guard keys.wrappingKey == nil, let key = take(64) else { return nil }
+				keys.wrappingKey = SecretBytes(copying: key)
+			case 5:
+				guard let name = digest(), floors.insert(name).inserted, let version = take(4) else { return nil }
+				let value = version.reduce(0) { $0 << 8 | Int($1) }
+				guard value > 0, value <= Int(Int32.max) else { return nil }
+				keys.floors.append(.init(digest: name, version: value))
+			default:
+				return nil
+			}
+		}
+		guard keys.personalRoots.count <= BackupKeys.maximumEntries, sharingOrder.count <= BackupKeys.maximumEntries,
+			keys.floors.count <= BackupKeys.maximumEntries
+		else { return nil }
+		keys.sharingKeys = sharingOrder.map { account in
+			BackupKeys.SharingKey(account: account, live: sharing[account]?.live, pending: sharing[account]?.pending)
+		}
+		return keys
+	}
+
+	private static let lowercaseHexDigits = Array("0123456789abcdef".utf8)
+
 	/// Runs `body` with a copy of `passphrase`'s UTF-8 bytes, which is
 	/// cleared when it returns.
 	private static func withPassphraseBytes<T>(_ passphrase: String, _ body: (UnsafeBufferPointer<UInt8>) -> T) -> T {

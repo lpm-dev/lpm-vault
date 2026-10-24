@@ -32,6 +32,14 @@ struct VaultBackupSnapshot: Sendable {
 	let orgAssociations: [String: String]
 }
 
+/// What restoring one project from a backup writes.
+enum VaultRestoreAction: Sendable {
+	/// A project not on this Mac, requiring approval before the CLI reads it.
+	case create(VaultProject, listed: Bool)
+	/// A project on this Mac, whose values become `merged` when they're still `expected`.
+	case merge(vaultId: String, expected: [String: [String: String]], merged: [String: [String: String]])
+}
+
 struct ProjectCreationRecord: Sendable {
 	let cliAccess: VaultCliAccess?
 	let project: VaultProject?
@@ -252,6 +260,10 @@ actor VaultPersistenceCoordinator {
 
 	/// Every vault, removed ones included, with its sync metadata and org
 	/// associations, as of one moment the CLI can't change midway.
+	func storedVaultIds() -> Result<Set<String>, KeychainError> {
+		service.storedVaultIdsResult()
+	}
+
 	func backupSnapshot() -> Result<VaultBackupSnapshot, KeychainError> {
 		service.withKeychainTransaction {
 			guard !Task.isCancelled else { return .failure(.accessDenied) }
@@ -272,6 +284,40 @@ actor VaultPersistenceCoordinator {
 				return .failure(error)
 			}
 		}.flatMap { $0 }
+	}
+
+	/// Restores one project from a backup. A merge into a synced project marks
+	/// it changed, so its next sync pushes what the backup brought.
+	func restoreProject(_ action: VaultRestoreAction) -> VaultRestoreWriteResult {
+		switch service.withKeychainTransaction({ restoreProjectUnlocked(action) }) {
+		case .success(let result): result
+		case .failure(let error): .failure(error)
+		}
+	}
+
+	private func restoreProjectUnlocked(_ action: VaultRestoreAction) -> VaultRestoreWriteResult {
+		guard !Task.isCancelled else { return .failure(.accessDenied) }
+		switch action {
+		case .create(let project, let listed):
+			switch service.createRestoredProjectResult(project, listed: listed) {
+			case .success: return .written(warning: nil)
+			case .successWithWarning(let warning): return .written(warning: warning)
+			case .failure(let error): return .failure(error)
+			}
+		case .merge(let vaultId, let expected, let merged):
+			var mutations: [VaultKeychainMutation] = []
+			switch loadSyncMetadataRecordSnapshotResult(vaultId: vaultId) {
+			case .success(let snapshot):
+				if var metadata = snapshot.metadata {
+					metadata.isDirty = true
+					guard let mutation = syncMetadataMutation(metadata, vaultId: vaultId) else { return .failure(.encodingFailed) }
+					mutations.append(mutation)
+				}
+			case .failure(let error):
+				return .failure(error)
+			}
+			return service.mergeRestoredProjectResult(vaultId: vaultId, expected: expected, merged: merged, additionalMutations: mutations)
+		}
 	}
 
 	func loadProject(vaultId: String) -> Result<VaultProject?, KeychainError> {
@@ -959,6 +1005,44 @@ actor VaultPersistenceCoordinator {
 			service.writeData(account: "__org_associations__", data: data)
 		else { return nil }
 		return associations
+	}
+
+	/// Associates each vault in `slugs` with its organization where it has
+	/// none, in one write. Returns the vaults it associated, or nil when the
+	/// associations couldn't be saved.
+	func addOrgAssociations(_ slugs: [String: String]) -> Set<String>? {
+		switch service.withKeychainTransaction({ () -> Set<String>? in
+			guard case .success(var associations) = loadOrgAssociationsResult() else { return nil }
+			let added = Set(slugs.keys.filter { associations[$0] == nil })
+			guard !added.isEmpty else { return [] }
+			for vaultId in added { associations[vaultId] = slugs[vaultId] }
+			guard let data = try? JSONEncoder().encode(associations),
+				service.writeData(account: "__org_associations__", data: data)
+			else { return nil }
+			return added
+		}) {
+		case .success(let added): added
+		case .failure: nil
+		}
+	}
+
+	/// Removes the organization associations of `vaultIds`, in one write.
+	/// Returns the associations left, or nil when they couldn't be saved.
+	@discardableResult
+	func removeOrgAssociations(_ vaultIds: Set<String>) -> [String: String]? {
+		switch service.withKeychainTransaction({ () -> [String: String]? in
+			guard case .success(var associations) = loadOrgAssociationsResult() else { return nil }
+			let before = associations.count
+			for vaultId in vaultIds { associations.removeValue(forKey: vaultId) }
+			guard associations.count != before else { return associations }
+			guard let data = try? JSONEncoder().encode(associations),
+				service.writeData(account: "__org_associations__", data: data)
+			else { return nil }
+			return associations
+		}) {
+		case .success(let associations): associations
+		case .failure: nil
+		}
 	}
 
 	func deleteProjectAndMetadata(vaultId: String) -> DeleteProjectPersistenceResult {
