@@ -9,7 +9,7 @@
   },
   "notices": "f51e6254fecdbf571d8bee5e4e14eb025e46478e5876100ba3969f243a4be8e2",
   "repository": "https://github.com/lpm-dev/rust-client",
-  "revision": "cbebaa6687b9b7814cae3cfa2c016efa9ab0a6b7",
+  "revision": "46a9ea0930808882f37f281508f6d06edd940640",
   "sources": {
     ".cargo/config.toml": "fccee23445e297786f527a4c0ae0b0171ba8bc5bf7c3ce001fd1f2c81f624ece",
     "Cargo.lock": "76bb17a467452b0407f73dd893a3a0631d9c5de6ab56c7a05de391619bca91f3",
@@ -113,7 +113,7 @@
     "crates/lpm-workspace/src/protocols.rs": "3ecfa060e4d31e6e324ed10b8315c2719ddbb2b456d53d8e7f4c0b660dd4affe",
     "crates/lpm-workspace/src/trust.rs": "94cf33b0648a1276f8d85a1ddacb754681bbe4fe8ac280d1f17878e0cb142033",
     "rust-toolchain.toml": "0ceb751d66f44e50985538d239e0f5712acccb9f7e71a8afb56878f8fc2ba74a",
-    "scripts/export-env-engine.py": "c2ef35faca82dd495a9005823560ec044efeeab06992dc1193806edda2cedd80"
+    "scripts/export-env-engine.py": "604ff420442092b8cf62f91014fc26a1cd4729207fd59f760367cc24b85c9ab0"
   },
   "targets": [
     "aarch64-apple-darwin",
