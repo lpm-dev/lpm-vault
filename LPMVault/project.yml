@@ -53,6 +53,8 @@ targets:
       - path: Sources/Resources
         type: folder
         buildPhase: resources
+      - path: Credits.html
+        buildPhase: resources
     dependencies:
       - package: Sparkle
       - framework: Vendor/EnvEngine/LPMEnv.xcframework

@@ -26,7 +26,9 @@ class EngineIntegrityTests(unittest.TestCase):
             artifact = root / 'LPMEnv.xcframework/library'
             artifact.parent.mkdir()
             artifact.write_bytes(b'library')
-            provenance = dict(repository=engine.REPOSITORY, revision='a' * 40, abiVersion=1, toolchain='1.94.0', targets=engine.TARGETS, sources={'Cargo.lock': 'b' * 64}, artifacts={'LPMEnv.xcframework/library': hashlib.sha256(b'library').hexdigest()})
+            notices = root / 'THIRD_PARTY_NOTICES.html'
+            notices.write_bytes(b'notices')
+            provenance = dict(repository=engine.REPOSITORY, revision='a' * 40, abiVersion=1, toolchain='1.94.0', targets=engine.TARGETS, sources={'Cargo.lock': 'b' * 64}, artifacts={'LPMEnv.xcframework/library': hashlib.sha256(b'library').hexdigest()}, notices=hashlib.sha256(b'notices').hexdigest())
             manifest = root / 'provenance.json'
             manifest.write_text(json.dumps(provenance))
             self.assertEqual(engine.verify(root), provenance)
@@ -39,6 +41,18 @@ class EngineIntegrityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 engine.verify(root)
             extra.unlink()
+            notices.write_bytes(b'tampered')
+            with self.assertRaisesRegex(ValueError, 'notices'):
+                engine.verify(root)
+            notices.unlink()
+            with self.assertRaisesRegex(ValueError, 'notices'):
+                engine.verify(root)
+            notices.write_bytes(b'notices')
+            manifest.write_text(json.dumps({key: value for key, value in provenance.items() if key != 'notices'}))
+            with self.assertRaisesRegex(ValueError, 'notices'):
+                engine.verify(root)
+            manifest.write_text(json.dumps(provenance))
+            self.assertEqual(engine.verify(root), provenance)
             for field, value in [('revision', 'main'), ('repository', 'https://example.test/source'), ('sources', {'../escape': 'b' * 64})]:
                 with self.subTest(field=field):
                     changed = dict(provenance, **{field: value})
