@@ -475,6 +475,21 @@ final class ProjectIconStore {
 		entries[projectID]?.importFailure = nil
 	}
 
+	/// The icon each of `projectIDs` has saved as its choice, leaving out
+	/// projects that show the icon found in their folder. Read from the
+	/// preferences, without loading the entries views show.
+	func savedChoices(for projectIDs: some Sequence<String>) -> [String: ProjectIconChoice] {
+		var choices: [String: ProjectIconChoice] = [:]
+		for projectID in projectIDs {
+			guard let data = preferences.data(forKey: Self.preferencePrefix + projectID),
+				let choice = try? JSONDecoder().decode(ProjectIconChoice.self, from: data),
+				choice.isValid, !choice.isAutomatic
+			else { continue }
+			choices[projectID] = choice
+		}
+		return choices
+	}
+
 	/// Forgets a project's chosen icon and its copied image, as when it's deleted.
 	func forget(_ projectID: String) {
 		forget([projectID])

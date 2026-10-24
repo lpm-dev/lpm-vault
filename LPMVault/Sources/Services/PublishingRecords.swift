@@ -22,38 +22,53 @@ enum PublishingRecords {
 	// MARK: - Destinations
 
 	static func encode(_ destinations: [PublishDestination], vaultID: String) -> Data? {
+		try? record(destinations, vaultID: vaultID)?.compactData(maximumBytes: maximumRecordBytes)
+	}
+
+	/// The record of a vault's destinations, as `encode` writes it, or nil
+	/// when reading would reject it.
+	static func record(_ destinations: [PublishDestination], vaultID: String) -> LPMConfigJSON? {
 		guard destinations.count <= maximumDestinations, destinations.allSatisfy({ $0.invalidity == nil }),
 			Set(destinations.map(\.id)).count == destinations.count,
 			Set(destinations.map(\.target.location)).count == destinations.count
 		else { return nil }
 		let entries = destinations.sorted { $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt < $1.createdAt }
-		let json = LPMConfigJSON.object([
+		return .object([
 			.init(key: "version", value: .number(String(version))),
 			.init(key: "vault", value: .string(vaultID)),
 			.init(key: "destinations", value: .array(entries.map(Self.json))),
 		])
-		return try? json.compactData(maximumBytes: maximumRecordBytes)
 	}
 
 	static func decodeDestinations(_ data: Data, vaultID: String) -> Result<[PublishDestination], DecodingError> {
 		decoding {
-			let fields = try header(of: data, binding: ["vault": vaultID], body: ["destinations"])
-			guard case .array(let items) = try fields.value("destinations"), items.count <= maximumDestinations else {
-				throw DecodingError.unreadable
-			}
-			var destinations: [PublishDestination] = []
-			var ids: Set<UUID> = []
-			var locations: Set<PublishTarget.Location> = []
-			for item in items {
-				let destination = try Self.destination(item)
-				guard destination.invalidity == nil,
-					ids.insert(destination.id).inserted,
-					locations.insert(destination.target.location).inserted
-				else { throw DecodingError.unreadable }
-				destinations.append(destination)
-			}
-			return destinations
+			guard data.count <= maximumRecordBytes else { throw DecodingError.unreadable }
+			return try destinations(LPMConfigJSON(parsing: data, rejectDuplicateKeys: true), vaultID: vaultID)
 		}
+	}
+
+	/// A vault's destinations from a record already parsed, as a backup holds them.
+	static func decodeDestinations(_ json: LPMConfigJSON, vaultID: String) -> Result<[PublishDestination], DecodingError> {
+		decoding { try destinations(json, vaultID: vaultID) }
+	}
+
+	private static func destinations(_ json: LPMConfigJSON, vaultID: String) throws -> [PublishDestination] {
+		let fields = try header(of: json, binding: ["vault": vaultID], body: ["destinations"])
+		guard case .array(let items) = try fields.value("destinations"), items.count <= maximumDestinations else {
+			throw DecodingError.unreadable
+		}
+		var destinations: [PublishDestination] = []
+		var ids: Set<UUID> = []
+		var locations: Set<PublishTarget.Location> = []
+		for item in items {
+			let destination = try Self.destination(item)
+			guard destination.invalidity == nil,
+				ids.insert(destination.id).inserted,
+				locations.insert(destination.target.location).inserted
+			else { throw DecodingError.unreadable }
+			destinations.append(destination)
+		}
+		return destinations
 	}
 
 	private static func json(_ destination: PublishDestination) -> LPMConfigJSON {
@@ -369,7 +384,10 @@ enum PublishingRecords {
 	/// to the expected vault and destination.
 	private static func header(of data: Data, binding: [String: String], body: Set<String>) throws -> Fields {
 		guard data.count <= maximumRecordBytes else { throw DecodingError.unreadable }
-		let json = try LPMConfigJSON(parsing: data, rejectDuplicateKeys: true)
+		return try header(of: LPMConfigJSON(parsing: data, rejectDuplicateKeys: true), binding: binding, body: body)
+	}
+
+	private static func header(of json: LPMConfigJSON, binding: [String: String], body: Set<String>) throws -> Fields {
 		guard case .number(let raw)? = json["version"], !raw.isEmpty, raw.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else {
 			throw DecodingError.unreadable
 		}

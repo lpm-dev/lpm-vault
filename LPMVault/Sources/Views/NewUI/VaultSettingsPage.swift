@@ -7,6 +7,7 @@ struct VaultSettingsPage: View {
 	@Bindable var store: VaultStore
 	@Environment(\.vaultContentObscured) private var isObscured
 	@State private var showLogoutConfirmation = false
+	@State private var showBackupExport = false
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -110,8 +111,12 @@ struct VaultSettingsPage: View {
 				},
 				actions: [.init(title: "Sign Out") { Task { await store.logout() } }])
 		}
+		.sheet(isPresented: $showBackupExport) { BackupExportSheet(store: store).vaultPrivacyProtected(isObscured) }
 		.onChange(of: isObscured) { _, obscured in
 			if obscured { showLogoutConfirmation = false }
+		}
+		.onChange(of: store.isUnlocked) { _, unlocked in
+			if !unlocked { showBackupExport = false }
 		}
 	}
 
@@ -119,6 +124,9 @@ struct VaultSettingsPage: View {
 	@ViewBuilder
 	private var appSettings: some View {
 		settingsSection("GENERAL") { VaultGeneralSettingsSection() }
+		settingsSection("BACKUP & RESTORE") {
+			VaultBackupSettingsSection(store: store) { showBackupExport = true }
+		}
 		settingsSection("LPM HOME") { VaultLPMHomeSettingsSection(store: store) }
 		settingsSection("APPEARANCE") { VaultAppearanceSettingsSection() }
 		settingsSection("UPDATES") { VaultUpdateSettingsSection() }
