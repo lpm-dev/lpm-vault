@@ -62,6 +62,7 @@ The proxy removes cookies, authorization, and referrer headers. It discards upst
 The proxy retains the forwarding chain for cookieless ingestion. Deployment proxies must preserve the visitor address in that chain.
 The proxy uses the container DNS resolvers and refreshes upstream addresses every five minutes.
 `VAULT_DNS_RESOLVERS` can override those resolvers.
+The proxy looks up IPv6 upstream addresses only when the container has an IPv6 default route; `VAULT_DNS_IPV6=on` or `off` overrides that.
 Pageviews use fetch delivery with SDK retries. Navigation clicks use sendBeacon.
 Same-origin delivery avoids blocks against PostHog domains. Blockers can still reject website paths.
 Browser privacy signals and the explicit opt-out always stop capture.
