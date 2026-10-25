@@ -16,6 +16,7 @@ def module(name, filename):
 
 cache = module('ci_cache', 'ci-cache-key.py')
 results = module('ci_results', 'ci-results.py')
+ui_suite = module('ui_suite_changes', 'ui-suite-changes.py')
 
 
 class CacheIdentityTests(unittest.TestCase):
@@ -178,6 +179,85 @@ class RequiredCheckTests(unittest.TestCase):
     def test_renaming_a_dependency_cannot_silently_bypass_its_gate(self):
         changed = {name: {'result': 'success'} for name in ['swift', 'engine', 'renamed_release']}
         self.assertEqual(results.failures(changed), ['release', 'renamed_release'])
+
+
+class UISuiteChangeTests(unittest.TestCase):
+    UI_TESTS = 'extension SheetInteractionTests {\n\t@Suite("Quitting")\n\tstruct QuitTests {}\n}\n'
+    OTHER_TESTS = '@Suite("Store")\nstruct StoreTests {\n\t@Test func loads() {}\n}\n'
+    SUPPORT = 'func waitUntil() {}\n'
+
+    def reason(self, path, before=None, after=None):
+        return ui_suite.reason(path, before, after)
+
+    def test_a_change_to_the_suite_or_a_suite_nested_in_it_needs_the_suite(self):
+        suite = '@Suite("Sheet interaction regressions", .serialized)\nstruct SheetInteractionTests {}\n'
+        self.assertIsNotNone(self.reason('LPMVault/Tests/SheetInteractionTests.swift', suite, suite + '// changed\n'))
+        self.assertIsNotNone(self.reason('LPMVault/Tests/QuitTests.swift', self.OTHER_TESTS + self.UI_TESTS, self.OTHER_TESTS + self.UI_TESTS + '// changed\n'))
+
+    def test_adding_removing_or_moving_ui_tests_needs_the_suite(self):
+        self.assertIsNotNone(self.reason('LPMVault/Tests/New.swift', after=self.UI_TESTS))
+        self.assertIsNotNone(self.reason('LPMVault/Tests/Old.swift', before=self.UI_TESTS))
+        self.assertIsNotNone(self.reason('LPMVault/Tests/Moved.swift', self.OTHER_TESTS + self.UI_TESTS, self.OTHER_TESTS))
+
+    def test_test_support_code_needs_the_suite(self):
+        self.assertIsNotNone(self.reason('LPMVault/Tests/Waiting.swift', self.SUPPORT, self.SUPPORT + '// changed\n'))
+
+    def test_a_change_to_how_the_suite_runs_needs_it(self):
+        for path in ui_suite.RUNNER:
+            with self.subTest(path=path):
+                self.assertIsNotNone(self.reason(path, 'before', 'after'))
+
+    def test_other_tests_app_code_and_other_files_leave_it_to_the_label(self):
+        self.assertIsNone(self.reason('LPMVault/Tests/StoreTests.swift', self.OTHER_TESTS, self.OTHER_TESTS + '// changed\n'))
+        self.assertIsNone(self.reason('LPMVault/Tests/XCStoreTests.swift', after='final class StoreTests: XCTestCase {}\n'))
+        for path in ['LPMVault/Sources/Views/Sheet.swift', '.github/workflows/ci.yml', 'web/nginx.conf', 'LPMVault/Tests/Fixtures/notes.txt']:
+            with self.subTest(path=path):
+                self.assertIsNone(self.reason(path, 'before', 'after'))
+
+    def test_runner_files_and_suite_name_match_the_repository(self):
+        root = Path(__file__).resolve().parents[3]
+        for path in ui_suite.RUNNER:
+            with self.subTest(path=path):
+                self.assertTrue((root / path).is_file())
+        workflow = (root / '.github/workflows/swift-tests.yml').read_text()
+        self.assertIn(f'SWIFT_TEST_ISOLATED_SUITE: LPMVaultTests.{ui_suite.SUITE}\n', workflow)
+
+    def test_a_pull_requests_merge_commit_is_compared_with_its_base(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        environment = {**os.environ, 'GIT_AUTHOR_NAME': 'Test', 'GIT_AUTHOR_EMAIL': 'test@example.com',
+                       'GIT_COMMITTER_NAME': 'Test', 'GIT_COMMITTER_EMAIL': 'test@example.com'}
+
+        def git(*arguments):
+            subprocess.run(['git', *arguments], cwd=root, env=environment, check=True, capture_output=True)
+
+        def commit(files, message):
+            for path, text in files.items():
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                if text is None:
+                    (root / path).unlink()
+                else:
+                    (root / path).write_text(text)
+            git('add', '--all')
+            git('commit', '--quiet', '--message', message)
+
+        git('init', '--quiet', '--initial-branch', 'main')
+        commit({'LPMVault/Tests/QuitTests.swift': self.UI_TESTS, 'LPMVault/Tests/StoreTests.swift': self.OTHER_TESTS,
+                'LPMVault/Tests/Old.swift': self.UI_TESTS}, 'base')
+        git('switch', '--quiet', '--create', 'feature')
+        commit({'LPMVault/Tests/StoreTests.swift': self.OTHER_TESTS + '// changed\n'}, 'other tests')
+        git('switch', '--quiet', 'main')
+        commit({'LPMVault/Sources/App.swift': 'app\n'}, 'base moves on')
+        git('merge', '--quiet', '--no-ff', '--no-edit', 'feature')
+        self.assertEqual(ui_suite.ui_suite_changes(root, 'HEAD^1', 'HEAD'), [])
+
+        git('switch', '--quiet', 'feature')
+        commit({'LPMVault/Tests/QuitTests.swift': self.UI_TESTS + '// changed\n', 'LPMVault/Tests/Old.swift': None}, 'ui tests')
+        git('switch', '--quiet', 'main')
+        git('merge', '--quiet', '--no-ff', '--no-edit', 'feature')
+        self.assertEqual([path for path, _ in ui_suite.ui_suite_changes(root, 'HEAD^1', 'HEAD')],
+                         ['LPMVault/Tests/Old.swift', 'LPMVault/Tests/QuitTests.swift'])
 
 
 if __name__ == '__main__':

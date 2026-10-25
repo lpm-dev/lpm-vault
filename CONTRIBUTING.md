@@ -65,6 +65,7 @@ bash LPMVault/Scripts/Tests/cooperative-executor-tests.sh
 ```
 
 The native UI suite's tests open real windows and run one at a time, so the [UI regressions workflow](.github/workflows/ui.yml) runs them after every merge to `main`, before every release, on demand from the Actions tab, and for a pull request labeled `ui-tests`.
+It also runs them, without the label, for a pull request that changes the suite's tests, the test support code they can use, or how the suite runs; `LPMVault/Scripts/ui-suite-changes.py` decides.
 Label a pull request `ui-tests` only when it changes what a sheet or view shows, or how it responds to input; the local run before you push covers the rest.
 The suite runs on one runner, in the order it runs locally. An on-demand run can take a `filter`, a regular expression for the identifiers of the tests to run, and runs only those. Use it to check one test on the runners' macOS without waiting for the whole suite:
 
