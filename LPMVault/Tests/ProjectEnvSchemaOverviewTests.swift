@@ -135,7 +135,7 @@ struct ProjectEnvSchemaOverviewTests {
 	}
 
 	@Test("unreadable rules name the file and location the engine reports", arguments: [
-		(#"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#, [String: String](), "lpm.json › envSchema.vars.PORT.rnage", "Invalid schema definition. Check the field name and value type at this location."),
+		(#"{"envSchema":{"vars":{"PORT":{"rnage":"1"}}}}"#, [String: String](), "lpm.json › envSchema.vars.PORT.rnage", "LPM doesn't know this field. Check its spelling, or update LPM Vault and the LPM CLI if a newer version wrote it."),
 		(#"{"envSchema":{"extends":["a.json","b.json"]}}"#, ["a.json": #"{"vars":{"X":{}}}"#, "b.json": #"{"vars":{"X":{}}}"#], "b.json › vars.X", "More than one schema declares this key. Add an override in lpm.json to choose one."),
 		(#"{"envSchema":{"extends":["a.json"]}}"#, ["a.json": #"{"extends":["lpm.json"]}"#], "lpm.json › envSchema.extends", "The imports form a cycle."),
 		(#"{"envSchema":{"extends":["preset:nope"]}}"#, [:], "preset:nope", "This preset doesn't exist."),

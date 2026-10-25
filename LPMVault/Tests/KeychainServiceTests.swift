@@ -220,7 +220,7 @@ struct KeychainServiceTests {
 		#expect(succeeded(service.createRestoredProjectResult(project, listed: true)))
 		#expect(try service.cliAccessResult(vaultId: "restored").get() == .requireApproval)
 		#expect(try service.listProjectMetadataResult().get().map(\.id) == ["restored"])
-		#expect(service.getEnvironments(vaultId: "restored") == ["default": ["TOKEN": "a"]])
+		#expect((try service.getEnvironmentsResult(vaultId: "restored").get()) == ["default": ["TOKEN": "a"]])
 
 		let hidden = VaultProject(id: "hidden", name: "hidden", path: "", environments: ["default": ["OLD": "x"]])
 		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false)))
@@ -257,7 +257,7 @@ struct KeychainServiceTests {
 		#expect(succeeded(service.createEnvironments(vaultId: "listed", projectName: "Listed", projectPath: "", environments: ["default": ["A": "1"]])))
 		#expect(try service.setCliAccess(vaultId: "listed", access: .requireApproval).get() == .requireApproval)
 		#expect(service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1"]], merged: ["default": ["A": "1", "B": "2"]], additionalMutations: []) == .written(warning: nil))
-		#expect(service.getEnvironments(vaultId: "listed") == ["default": ["A": "1", "B": "2"]])
+		#expect((try service.getEnvironmentsResult(vaultId: "listed").get()) == ["default": ["A": "1", "B": "2"]])
 		#expect(try service.cliAccessResult(vaultId: "listed").get() == .requireApproval, "A merge keeps this Mac's CLI approval")
 		#expect(try service.listProjectMetadataResult().get().first?.environmentSummaries.first?.keyCount == 2)
 
@@ -266,7 +266,7 @@ struct KeychainServiceTests {
 		let hidden = VaultProject(id: "hidden", name: "hidden", path: "", environments: ["default": ["OLD": "x"]])
 		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false)))
 		#expect(service.mergeRestoredProjectResult(vaultId: "hidden", expected: ["default": ["OLD": "x"]], merged: ["default": ["OLD": "y"]], additionalMutations: []) == .written(warning: nil))
-		#expect(service.getEnvironments(vaultId: "hidden") == ["default": ["OLD": "y"]])
+		#expect((try service.getEnvironmentsResult(vaultId: "hidden").get()) == ["default": ["OLD": "y"]])
 
 		let big = ["default": ["BIG": String(repeating: "x", count: VaultConstants.maxVaultSizeWarning)]]
 		guard case .failure(.dataTooLarge) = service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1", "B": "2"]], merged: big, additionalMutations: []) else {
@@ -300,9 +300,9 @@ struct KeychainServiceTests {
 		#expect(try service.cliAccessResult(vaultId: first).get() == .automatic)
 		#expect(try service.setCliAccess(vaultId: first, access: .requireApproval).get() == .requireApproval)
 		#expect(try service.cliAccessResult(vaultId: second).get() == .automatic)
-		#expect(service.getEnvironments(vaultId: first) == environments)
+		#expect((try service.getEnvironmentsResult(vaultId: first).get()) == environments)
 		#expect(try service.setCliAccess(vaultId: first, access: .automatic).get() == .automatic)
-		#expect(service.getEnvironments(vaultId: first) == environments)
+		#expect((try service.getEnvironmentsResult(vaultId: first).get()) == environments)
 	}
 
 	@Test("secret updates protect the staged copy and preserve CLI approval")
@@ -400,7 +400,7 @@ struct KeychainServiceTests {
 	}
 
 	@Test("round-trip: create then read returns the same environments")
-	func roundTrip() {
+	func roundTrip() throws {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
@@ -420,12 +420,12 @@ struct KeychainServiceTests {
 			return
 		}
 
-		let retrieved = service.getEnvironments(vaultId: vaultId)
+		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
 		#expect(retrieved == environments)
 	}
 
 	@Test("update overwrites existing secrets")
-	func update() {
+	func update() throws {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
@@ -451,13 +451,13 @@ struct KeychainServiceTests {
 			return
 		}
 
-		let retrieved = service.getEnvironments(vaultId: vaultId)
+		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
 		#expect(retrieved?["default"]?["KEY"] == "new-value")
 		#expect(retrieved?["default"]?["NEW_KEY"] == "added")
 	}
 
 	@Test("delete removes item")
-	func delete() {
+	func delete() throws {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 
@@ -477,7 +477,7 @@ struct KeychainServiceTests {
 		#expect(succeeded(deleted))
 
 		// Verify gone
-		let retrieved = service.getEnvironments(vaultId: vaultId)
+		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
 		#expect(retrieved == nil)
 	}
 
@@ -495,16 +495,16 @@ struct KeychainServiceTests {
 	}
 
 	@Test("get non-existent environment map returns nil")
-	func getNonExistent() {
+	func getNonExistent() throws {
 		let service = makeService()
-		let result = service.getEnvironments(vaultId: "nonexistent-\(UUID().uuidString)")
+		let result = try service.getEnvironmentsResult(vaultId: "nonexistent-\(UUID().uuidString)").get()
 		#expect(result == nil)
 	}
 
 	// MARK: - List
 
 	@Test("list projects returns all vault items")
-	func listProjects() {
+	func listProjects() throws {
 		// Isolated service to avoid race conditions with parallel tests sharing the index
 		let isolatedService = KeychainService(
 			testingService: "dev.lpm.vault.list.\(UUID().uuidString.prefix(8))",
@@ -529,7 +529,7 @@ struct KeychainServiceTests {
 			environments: ["default": ["B": "2"]]
 		)
 
-		let projects = isolatedService.listProjects()
+		let projects = try isolatedService.listProjectsResult().get()
 
 		#expect(projects.count == 2)
 
@@ -544,20 +544,20 @@ struct KeychainServiceTests {
 	}
 
 	@Test("list projects when empty returns empty array")
-	func listEmpty() {
+	func listEmpty() throws {
 		// Use a unique service that definitely has no items
 		let service = KeychainService(
 			testingService: "dev.lpm.vault.empty.\(UUID().uuidString.prefix(8))",
 			backend: KeychainServiceTestBackend()
 		)
-		let projects = service.listProjects()
+		let projects = try service.listProjectsResult().get()
 		#expect(projects.isEmpty)
 	}
 
 	// MARK: - Edge Cases
 
 	@Test("empty default environment is valid")
-	func emptySecrets() {
+	func emptySecrets() throws {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
@@ -574,12 +574,12 @@ struct KeychainServiceTests {
 			return
 		}
 
-		let retrieved = service.getEnvironments(vaultId: vaultId)
+		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
 		#expect(retrieved == ["default": [:]])
 	}
 
 	@Test("secrets with special characters preserved")
-	func specialCharacters() {
+	func specialCharacters() throws {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
@@ -598,13 +598,15 @@ struct KeychainServiceTests {
 			environments: ["default": secrets]
 		)
 
-		let retrieved = service.getEnvironments(vaultId: vaultId)
+		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
 		#expect(retrieved == ["default": secrets])
 	}
 
 	@Test("invalid decoded environment maps fail closed")
 	func invalidDecodedEnvironmentMapFailsClosed() throws {
-		let service = makeService()
+		let backend = KeychainServiceTestBackend()
+		let serviceName = "dev.lpm.vault.test.\(UUID().uuidString)"
+		let service = KeychainService(testingService: serviceName, backend: backend)
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
 		guard case .success = service.createEnvironments(
@@ -619,7 +621,8 @@ struct KeychainServiceTests {
 		let invalid = try JSONSerialization.data(withJSONObject: [
 			"environments": ["../unsafe": ["VALID_KEY": "value"]]
 		])
-		#expect(service.writeData(account: vaultId, data: invalid))
+		#expect(!service.writeData(account: vaultId, data: invalid), "values never go through the generic data calls")
+		try backend.write(service: serviceName, account: vaultId, data: invalid)
 
 		guard case .failure = service.getProjectResult(vaultId: vaultId) else {
 			Issue.record("Invalid decoded environments were accepted")
@@ -628,7 +631,7 @@ struct KeychainServiceTests {
 	}
 
 	@Test("invalid environment maps are rejected before writes")
-	func invalidEnvironmentMapWriteIsRejected() {
+	func invalidEnvironmentMapWriteIsRejected() throws {
 		let service = makeService()
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
@@ -642,12 +645,14 @@ struct KeychainServiceTests {
 			Issue.record("Invalid environment data was written")
 			return
 		}
-		#expect(service.getEnvironments(vaultId: vaultId) == nil)
+		#expect((try service.getEnvironmentsResult(vaultId: vaultId).get()) == nil)
 	}
 
 	@Test("an empty environment wrapper normalizes to the default environment")
 	func emptyEnvironmentWrapperNormalizesToDefault() throws {
-		let service = makeService()
+		let backend = KeychainServiceTestBackend()
+		let serviceName = "dev.lpm.vault.test.\(UUID().uuidString)"
+		let service = KeychainService(testingService: serviceName, backend: backend)
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
 		guard case .success = service.createEnvironments(
@@ -660,9 +665,9 @@ struct KeychainServiceTests {
 			return
 		}
 		let empty = try JSONSerialization.data(withJSONObject: ["environments": [:]])
-		#expect(service.writeData(account: vaultId, data: empty))
+		try backend.write(service: serviceName, account: vaultId, data: empty)
 
-		#expect(service.getEnvironments(vaultId: vaultId) == ["default": [:]])
+		#expect((try service.getEnvironmentsResult(vaultId: vaultId).get()) == ["default": [:]])
 	}
 }
 

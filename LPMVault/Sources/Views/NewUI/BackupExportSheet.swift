@@ -372,6 +372,18 @@ struct BackupExportSheet: View {
 						.foregroundStyle(VaultPalette.orangeTintText)
 						.fixedSize(horizontal: false, vertical: true)
 				}
+				ForEach(Array(result.summary.leftOut.enumerated()), id: \.offset) { _, leftOut in
+					Text("\(leftOut.name.escapingDirectionControls) wasn’t backed up. \(leftOut.reason)")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.orangeTintText)
+						.fixedSize(horizontal: false, vertical: true)
+				}
+				if let note = Self.newerDataNote(result.summary.withNewerData) {
+					Text(note)
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textSecondary)
+						.fixedSize(horizontal: false, vertical: true)
+				}
 			}
 			.padding(24)
 			VaultSheetFooter {
@@ -383,6 +395,13 @@ struct BackupExportSheet: View {
 					.keyboardShortcut(.defaultAction)
 			}
 		}
+	}
+
+	/// Which projects were backed up without their newer data, nil when none was.
+	static func newerDataNote(_ names: [String]) -> String? {
+		guard !names.isEmpty else { return nil }
+		let listed = ListFormatter.localizedString(byJoining: names.map(\.escapingDirectionControls))
+		return "Backups don’t carry newer data yet, such as personal overrides, so \(listed) \(names.count == 1 ? "was" : "were") backed up without it."
 	}
 
 	/// The file's size, where it is and what it holds:

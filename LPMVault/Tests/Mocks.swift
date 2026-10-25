@@ -25,6 +25,46 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
+	/// What each project's newer data allows, as the real store's listing reads it.
+	var companionStates: [String: CompanionEngine.Assessment] {
+		get { lock.withLock { storedCompanionStates } }
+		set { lock.withLock { storedCompanionStates = newValue } }
+	}
+	private var storedCompanionStates: [String: CompanionEngine.Assessment] = [:]
+	/// Why the gated calls refuse a project, as the real gate would.
+	var companionRefusals: [String: CompanionRefusal] {
+		get { lock.withLock { storedCompanionRefusals } }
+		set { lock.withLock { storedCompanionRefusals = newValue } }
+	}
+	private var storedCompanionRefusals: [String: CompanionRefusal] = [:]
+	private(set) var companionRepairs: [(vaultId: String, repair: CompanionEngine.Assessment.Repair)] = []
+	private(set) var companionMaintenanceCount = 0
+
+	func projectStatesResult(vaultIds: [String], strictAccess: Bool) -> Result<VaultProjectStates, KeychainError> {
+		let access = strictAccess ? cliAccessResults(vaultIds: vaultIds) : readableCliAccess(vaultIds: vaultIds)
+		return access.map { access in
+			let wanted = Set(vaultIds)
+			return VaultProjectStates(cliAccess: access, companion: companionStates.filter { wanted.contains($0.key) })
+		}
+	}
+
+	func repairCompanionData(vaultId: String, repair: CompanionEngine.Assessment.Repair) -> Result<Void, KeychainError> {
+		lock.withLock {
+			if shouldFail { return .failure(failureError) }
+			companionRepairs.append((vaultId, repair))
+			storedCompanionStates[vaultId] = nil
+			storedCompanionRefusals[vaultId] = nil
+			return .success(())
+		}
+	}
+
+	func maintainCompanionStorage() -> Result<CompanionMaintenance, KeychainError> {
+		lock.withLock {
+			companionMaintenanceCount += 1
+			return .success(CompanionMaintenance(orphanDeletions: 0, accessFixes: 0))
+		}
+	}
+
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
 		lock.withLock {
 			if shouldFail || failCliAccessChange { return .failure(failureError) }
@@ -184,6 +224,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 		return lock.withLock {
 			if failProjectReads { return .failure(failureError) }
+			if let refusal = storedCompanionRefusals[vaultId] { return .failure(.companion(refusal)) }
 			projectReadCount += 1
 			let hook = onGetEnvironments
 			onGetEnvironments = nil

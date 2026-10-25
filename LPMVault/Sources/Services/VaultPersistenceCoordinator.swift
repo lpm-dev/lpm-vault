@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let persistenceLogger = Logger(subsystem: "dev.lpm.vault", category: "Persistence")
 
 private struct PersistedOrgKeyTrust: Codable {
 	let schemaVersion: Int
@@ -23,6 +26,8 @@ struct VaultPersistenceSnapshot: Sendable {
 	let syncMetadata: [String: SyncMetadata]
 	let orgAssociations: [String: String]
 	let cliAccess: [String: VaultCliAccess]
+	/// What each project with companion data allows, for display only.
+	var companion: [String: CompanionEngine.Assessment] = [:]
 }
 
 /// Every vault and what syncs it, read in one transaction for a backup.
@@ -193,10 +198,6 @@ actor VaultPersistenceCoordinator {
 		self.service = service
 	}
 
-	func listProjects() -> [VaultProject] {
-		service.listProjects()
-	}
-
 	func loadSnapshot() -> Result<VaultPersistenceSnapshot, KeychainError> {
 		service.withKeychainTransaction {
 			loadSnapshotUnlocked(selectedProjectID: nil, strictPolicies: false)
@@ -233,20 +234,23 @@ actor VaultPersistenceCoordinator {
 		case .failure(let error): return .failure(error)
 		}
 		if strictPolicies && Task.isCancelled { return .failure(.accessDenied) }
-		let policies: [String: VaultCliAccess]
-		if strictPolicies {
-			switch service.cliAccessResults(vaultIds: projects.map(\.id)) {
-			case .success(let loaded): policies = loaded
-			case .failure(let error): return .failure(error)
-			}
-		} else {
-			policies = (try? service.readableCliAccess(vaultIds: projects.map(\.id)).get()) ?? [:]
+		let states: VaultProjectStates
+		switch service.projectStatesResult(vaultIds: projects.map(\.id), strictAccess: strictPolicies) {
+		case .success(let loaded): states = loaded
+		case .failure(let error) where strictPolicies: return .failure(error)
+		case .failure:
+			states = VaultProjectStates(
+				cliAccess: (try? service.readableCliAccess(vaultIds: projects.map(\.id)).get()) ?? [:],
+				companion: [:])
 		}
 		if strictPolicies && Task.isCancelled { return .failure(.accessDenied) }
 		if let selectedProjectID, let index = projects.firstIndex(where: { $0.id == selectedProjectID }) {
 			switch service.getProjectResult(vaultId: selectedProjectID) {
 			case .success(let project?): projects[index] = project
 			case .success(nil): return .failure(.itemNotFound)
+			// Newer data that keeps the project's values hidden is the project's
+			// state, which the snapshot carries, not a failure to refresh.
+			case .failure(.companion): break
 			case .failure(let error): return .failure(error)
 			}
 		}
@@ -254,8 +258,31 @@ actor VaultPersistenceCoordinator {
 			projects: projects,
 			syncMetadata: metadata,
 			orgAssociations: associations,
-			cliAccess: policies
+			cliAccess: states.cliAccess,
+			companion: states.companion
 		))
+	}
+
+	/// Repairs a project's damaged companion data, keeping its values, once
+	/// the person authorized it freshly, and returns what its data allows
+	/// afterwards, nil when it has none left.
+	func repairCompanionData(
+		vaultId: String,
+		repair: CompanionEngine.Assessment.Repair,
+		authorization: CommitAuthorization
+	) -> Result<CompanionEngine.Assessment?, KeychainError> {
+		service.withKeychainTransaction {
+			guard !Task.isCancelled, authorization.beginCommit() else { return .failure(.accessDenied) }
+			return service.repairCompanionData(vaultId: vaultId, repair: repair).flatMap {
+				service.projectStatesResult(vaultIds: [vaultId], strictAccess: false).map { $0.companion[vaultId] }
+			}
+		}.flatMap { $0 }
+	}
+
+	/// Collects companion records whose project is gone and matches each
+	/// record's approval to its values item's.
+	func maintainCompanionStorage() -> Result<CompanionMaintenance, KeychainError> {
+		service.maintainCompanionStorage()
 	}
 
 	/// Every vault, removed ones included, with its sync metadata and org
@@ -328,7 +355,7 @@ actor VaultPersistenceCoordinator {
 		service.cliAccessResult(vaultId: vaultId)
 	}
 
-	func setCliAccess(vaultId: String, access: VaultCliAccess, authorization: CliAccessChangeAuthorization) -> Result<VaultCliAccess, KeychainError> {
+	func setCliAccess(vaultId: String, access: VaultCliAccess, authorization: CommitAuthorization) -> Result<VaultCliAccess, KeychainError> {
 		service.withKeychainTransaction {
 			guard !Task.isCancelled, authorization.beginCommit() else { return .failure(.accessDenied) }
 			return service.setCliAccess(vaultId: vaultId, access: access)
@@ -1063,9 +1090,11 @@ actor VaultPersistenceCoordinator {
 		guard projectMetadata.contains(where: { $0.id == vaultId }) else {
 			return .failure(.itemNotFound)
 		}
-		switch service.getProjectResult(vaultId: vaultId) {
-		case .success(.some): break
-		case .success(nil): return .failure(.itemNotFound)
+		// Deleting never reads values, so a project whose newer data this app
+		// can't read, or that's damaged, can still be deleted.
+		switch service.existingVaultPayloads(vaultIds: [vaultId]) {
+		case .success(let existing) where existing.contains(vaultId): break
+		case .success: return .failure(.itemNotFound)
 		case .failure(let error): return .failure(error)
 		}
 		let metadata: [String: SyncMetadata]
@@ -1102,6 +1131,9 @@ actor VaultPersistenceCoordinator {
 			break
 		case .failure(let error):
 			return .failure(error)
+		}
+		if case .failure(let error) = service.maintainCompanionStorage() {
+			persistenceLogger.error("Companion maintenance after a deletion failed: \(error.description, privacy: .public)")
 		}
 		let remainingProjects = projectMetadata
 			.filter { $0.id != vaultId }
@@ -1448,14 +1480,6 @@ actor VaultPersistenceCoordinator {
 
 	func removeFromSidebar(vaultId: String) -> Bool {
 		service.removeFromSidebar(vaultId: vaultId)
-	}
-
-	func readData(account: String) -> Data? {
-		service.readData(account: account)
-	}
-
-	func writeData(account: String, data: Data) -> Bool {
-		service.writeData(account: account, data: data)
 	}
 
 	nonisolated private func syncMetadataAccount(vaultId: String) -> String {

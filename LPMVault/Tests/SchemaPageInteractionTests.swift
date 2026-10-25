@@ -93,7 +93,8 @@ extension SheetInteractionTests {
 			try await host.click("Schema")
 			#expect(try await host.waitForText("Schema can't be read"))
 			let text = try await host.text()
-			#expect(text.contains("Check the field name"))
+			#expect(text.contains("LPM doesn't know this field. Check its spelling"))
+			#expect(text.contains("PORT.rnage"), "The location names the unknown field")
 			#expect(text.contains("Checks paused"))
 
 			// Opening the page reads lpm.json; Recheck has to start a read of its own.

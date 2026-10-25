@@ -38,6 +38,7 @@ struct VaultWorkspaceView: View {
 	@State private var projectToDelete: VaultProject?
 	/// An exit from a restore's sync pause, waiting for the person to confirm it.
 	@State private var pauseExit: VaultSyncPauseExit?
+	@State private var companionRepair: CompanionRepairRequest?
 	@State private var isCheckingSharingKey = false
 	/// The project whose settings open once it's selected.
 	@State private var pendingProjectSettings: String?
@@ -297,6 +298,17 @@ struct VaultWorkspaceView: View {
 			}
 			if !isObscured, !store.isShowingAccountPage, let project, let pause = store.syncPauses[project.id] {
 				syncPausedBanner(project, pause)
+			}
+			if !isObscured, !store.isShowingAccountPage, let project,
+				let state = store.projectCompanionStates[project.id],
+				let presentation = CompanionStatePresentation(state)
+			{
+				VaultCompanionBanner(
+					presentation: presentation,
+					isRepairing: store.isRepairingCompanionData,
+					isRetrying: store.isRefreshingLocalState,
+					onRepair: { companionRepair = CompanionRepairRequest(projectId: project.id, presentation: presentation) },
+					onRetry: { Task { await store.refreshLocalState() } })
 			}
 
 			GeometryReader { geometry in
@@ -736,6 +748,18 @@ struct VaultWorkspaceView: View {
 		.vaultConfirmation(item: $pauseExit) { exit in
 			pauseExitConfirmation(exit)
 		}
+		.vaultConfirmation(item: $companionRepair) { request in
+			let project = store.projects.first { $0.id == request.projectId }
+			let subject = VaultConfirmation.Subject(
+				mark: .project(store.projectIcons.appearance(for: request.projectId)),
+				name: project?.name ?? request.projectId)
+			return request.presentation.repairConfirmation(subject: subject) {
+				guard let repair = request.presentation.repair else { return }
+				Task { await store.repairCompanionData(repair) }
+			} ?? VaultConfirmation(
+				symbol: "exclamationmark.triangle", tone: .warning, title: request.presentation.title,
+				message: request.presentation.detail, cancelTitle: nil, actions: [.init(title: "OK") {}])
+		}
 		.vaultConfirmation(item: $deleteEnvironmentTarget) { target in
 			VaultConfirmation(
 				symbol: "trash",
@@ -783,6 +807,13 @@ struct VaultWorkspaceView: View {
 				cancelTitle: nil,
 				actions: [.init(title: "OK") {}])
 		}
+	}
+
+	/// A repair of one project's damaged newer data, waiting for the person's answer.
+	private struct CompanionRepairRequest: Identifiable {
+		let id = UUID()
+		let projectId: String
+		let presentation: CompanionStatePresentation
 	}
 
 	/// An exit from a restore's sync pause for one project.

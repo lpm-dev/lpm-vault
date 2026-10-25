@@ -41,8 +41,9 @@ enum LPMHomeMoveError: LocalizedError, Equatable, Sendable {
 	case copyFailed(String)
 	case homeChanged(String)
 	/// The move failed for `reason`, and copies stayed in the home it was moving
-	/// to; the next unlock removes them.
-	case copiesLeft(reason: String, home: String)
+	/// to, some of them env projects' newer data when `includesNewerData`; the
+	/// next unlock removes them.
+	case copiesLeft(reason: String, home: String, includesNewerData: Bool)
 
 	/// Whether the move left copies in the home it was moving to.
 	var leftCopies: Bool {
@@ -63,8 +64,8 @@ enum LPMHomeMoveError: LocalizedError, Equatable, Sendable {
 			"Couldn't copy \(what), so nothing was moved."
 		case .homeChanged(let home):
 			"\(home) was moved or replaced during the move, so nothing was moved."
-		case .copiesLeft(let reason, let home):
-			"\(reason) Some copies stayed in \(home); LPM Vault removes them the next time it unlocks."
+		case .copiesLeft(let reason, let home, let includesNewerData):
+			"\(reason) Some copies stayed in \(home)\(includesNewerData ? ", among them env projects’ newer data" : ""); LPM Vault removes them the next time it unlocks."
 		}
 	}
 }
@@ -118,6 +119,13 @@ struct LPMHomeMove: Sendable {
 	init(shared: any LPMHomeKeychain, app: any LPMHomeKeychain) {
 		services = Self.sharedServices.map { MovedService(name: $0, keychain: shared) }
 			+ Self.appServices.map { MovedService(name: $0, keychain: app) }
+	}
+
+	/// Whether any of `accounts`, in the vault service, holds an env project's
+	/// newer data: a companion record or its marker.
+	static func holdsNewerData(_ accounts: [String]) -> Bool {
+		guard let described = try? CompanionEngine.describe(accounts) else { return false }
+		return described.contains { if case .account = $0 { true } else { false } }
 	}
 
 	func contents(of home: LPMHome) throws -> Contents {
@@ -184,12 +192,18 @@ struct LPMHomeMove: Sendable {
 			try adopt()
 		} catch {
 			var copiesLeft = false
+			var accountsLeft: [String] = []
 			for (service, account) in copiedItems {
-				do { try service.keychain.delete(service: target.service(service.name), account: account) } catch { copiesLeft = true }
+				do { try service.keychain.delete(service: target.service(service.name), account: account) } catch {
+					copiesLeft = true
+					if service.name == VaultConstants.keychainService { accountsLeft.append(account) }
+				}
 			}
 			for name in copiedFiles where unlinkat(targetFolder.descriptor, name, 0) != 0 && errno != ENOENT { copiesLeft = true }
 			if copiesLeft {
-				throw LPMHomeMoveError.copiesLeft(reason: error.localizedDescription, home: target.displayPath)
+				throw LPMHomeMoveError.copiesLeft(
+					reason: error.localizedDescription, home: target.displayPath,
+					includesNewerData: Self.holdsNewerData(accountsLeft))
 			}
 			throw error
 		}

@@ -1,6 +1,9 @@
 import CryptoKit
 import Foundation
 import LocalAuthentication
+import OSLog
+
+private let vaultStoreLogger = Logger(subsystem: "dev.lpm.vault", category: "Store")
 
 // MARK: - Strict Key Trust for Org Members
 
@@ -242,7 +245,9 @@ struct LocalEnvImportTarget: Hashable, Sendable {
   let environment: String
 }
 
-final class CliAccessChangeAuthorization: @unchecked Sendable {
+/// One commit a person authorized: the locked transaction claims it once,
+/// and the UI can withdraw it before then.
+final class CommitAuthorization: @unchecked Sendable {
   private let lock = NSLock()
   private var pending = true
 
@@ -1089,9 +1094,13 @@ enum ProjectSyncStatus {
 
 enum VaultLoadFailure: Equatable, Sendable {
   case keychainLocked, accessDenied, unsupportedBuild, invalidState, unavailable, authentication
+  /// The project's newer data stopped the read: a feature this app doesn't
+  /// support, or damage.
+  case companion(CompanionRefusal)
 
   init(_ error: KeychainError) {
     switch error {
+    case .companion(let refusal): self = .companion(refusal)
     case .keychainLocked: self = .keychainLocked
     case .accessDenied: self = .accessDenied
     case .missingEntitlement: self = .unsupportedBuild
@@ -1108,6 +1117,7 @@ enum VaultLoadFailure: Equatable, Sendable {
     case .invalidState: "Protected vault state could not be read. Retry after other LPM operations finish. If the error continues, contact support."
     case .unavailable: "Protected vault state is unavailable. Retry. If the error continues, contact support."
     case .authentication: "Could not authenticate with macOS. Try Touch ID or your Mac login password again."
+    case .companion(let refusal): refusal.message
     }
   }
 }
@@ -1321,11 +1331,15 @@ final class VaultStore {
   private(set) var autoLockCountdownSeconds: Int?
   private(set) var selectedProjectCliAccess: VaultCliAccess?
   private(set) var projectCliAccess: [String: VaultCliAccess] = [:]
+  /// What each project with newer data allows, as the last snapshot read it.
+  /// For display only: every operation checks again inside its lock.
+  private(set) var projectCompanionStates: [String: CompanionEngine.Assessment] = [:]
+  private(set) var isRepairingCompanionData = false
   private var cliAccessLoadTask: Task<Void, Never>?
   private var cliAccessLoadGeneration = 0
   private var cliAccessProjectRevisions: [String: UUID] = [:]
   private var cliAccessChangeID: UUID?
-  private var cliAccessChangeAuthorization: CliAccessChangeAuthorization?
+  private var cliAccessChangeAuthorization: CommitAuthorization?
   var isChangingCliAccess: Bool { cliAccessChangeID != nil }
 
   // Auth state
@@ -2252,6 +2266,7 @@ final class VaultStore {
       syncMetadata = snapshot.syncMetadata
       vaultOrgAssociations = snapshot.orgAssociations
       publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
+      projectCompanionStates = snapshot.companion
       loadEnvironmentOrders()
       reconcileNavigationState()
       selectedProjectCliAccess = selectedProjectId.flatMap { projectCliAccess[$0] }
@@ -2394,7 +2409,7 @@ final class VaultStore {
     else { return }
     invalidateProjectLoad()
     let requestID = UUID()
-    let authorization = CliAccessChangeAuthorization()
+    let authorization = CommitAuthorization()
     let session = vaultSessionGeneration
     cliAccessChangeID = requestID
     cliAccessProjectRevisions[projectID] = requestID
@@ -2434,6 +2449,45 @@ final class VaultStore {
         selectedProjectId == projectID, cliAccessChangeID == requestID
       else { return }
       error = "Could not change CLI approval. \(failure.description)"
+    }
+  }
+
+  /// What the selected project's newer data allows, for display.
+  var selectedProjectCompanionState: CompanionEngine.Assessment? {
+    selectedProjectId.flatMap { projectCompanionStates[$0] }
+  }
+
+  /// Repairs the selected project's damaged newer data as `repair` says,
+  /// keeping its values, after the person authenticates again.
+  @discardableResult
+  func repairCompanionData(_ repair: CompanionEngine.Assessment.Repair) async -> Bool {
+    let write = writes.begin()
+    defer { writes.end(write) }
+    guard isUnlocked, let projectID = selectedProjectId, projectBelongsToSelectedAccount(projectID),
+      !isRepairingCompanionData
+    else { return false }
+    let session = vaultSessionGeneration
+    isRepairingCompanionData = true
+    defer { isRepairingCompanionData = false }
+    guard await confirmSensitiveAction(reason: "repair this env project’s newer data"),
+      session == vaultSessionGeneration, isUnlocked, selectedProjectId == projectID
+    else { return false }
+    await waitForProjectMutations()
+    let authorization = CommitAuthorization()
+    let result = await persistence.repairCompanionData(vaultId: projectID, repair: repair, authorization: authorization)
+    guard session == vaultSessionGeneration, isUnlocked else { return false }
+    switch result {
+    case .success(let state):
+      projectCompanionStates[projectID] = state
+      error = nil
+      if selectedProjectId == projectID {
+        invalidateSelectedProjectLoad()
+        beginSelectedProjectLoadIfNeeded()
+      }
+      return true
+    case .failure(let failure):
+      error = "Could not repair this env project’s newer data. \(failure.description)"
+      return false
     }
   }
 
@@ -2500,6 +2554,7 @@ final class VaultStore {
       self.pendingWorkspaceSnapshots = [:]
       self.projects = snapshot.projects
       self.publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
+      self.projectCompanionStates = snapshot.companion
       self.syncMetadata = snapshot.syncMetadata
       self.vaultOrgAssociations = snapshot.orgAssociations
       self.error = nil
@@ -3105,6 +3160,7 @@ final class VaultStore {
     let shouldSelectFallback = wasSelected && selectedProjectId == project.id
     projects = snapshot.projects
     publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
+    projectCompanionStates.removeValue(forKey: project.id)
     syncMetadata = snapshot.syncMetadata
     vaultOrgAssociations = snapshot.orgAssociations
     if shouldSelectFallback {
@@ -5340,6 +5396,11 @@ final class VaultStore {
     scheduleAutoLock()
     Task { [platformCredentials] in await platformCredentials.resumeCleanup(now: true) }
     Task { [weak self] in await self?.reconcilePublishingRecords() }
+    Task { [persistence] in
+      if case .failure(let failure) = await persistence.maintainCompanionStorage() {
+        vaultStoreLogger.error("Companion maintenance after unlock failed: \(failure.description, privacy: .public)")
+      }
+    }
     if lpmHomeMoveRecovery == nil, LPMHome.unfinishedMove(in: preferences) != nil {
       lpmHomeMoveRecovery = Task { [weak self] in
         try? await self?.finishUnfinishedLPMHomeMove()
@@ -5918,6 +5979,7 @@ final class VaultStore {
     cliAccessLoadGeneration &+= 1
     selectedProjectCliAccess = nil
     projectCliAccess.removeAll(keepingCapacity: true)
+    projectCompanionStates.removeAll(keepingCapacity: true)
     cliAccessProjectRevisions.removeAll(keepingCapacity: true)
     keychainService.setAuthenticationContext(nil)
     unlockGeneration &+= 1

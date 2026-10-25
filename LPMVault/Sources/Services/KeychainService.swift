@@ -22,6 +22,7 @@ enum VaultKeychainTransactionLock {
 		var depth = 0
 		var descriptor: Int32 = -1
 		var recoveredStores = Set<ObjectIdentifier>()
+		var companionGates: [ObjectIdentifier: [String: CompanionEngine.Assessment]] = [:]
 	}
 
 	private static let state = State()
@@ -117,6 +118,7 @@ enum VaultKeychainTransactionLock {
 		state.processLock.lock()
 		if state.depth == 0 {
 			state.recoveredStores.removeAll(keepingCapacity: true)
+			state.companionGates.removeAll(keepingCapacity: true)
 			do {
 				state.descriptor = try openLockFile()
 			} catch {
@@ -129,6 +131,7 @@ enum VaultKeychainTransactionLock {
 			state.depth -= 1
 			if state.depth == 0 {
 				state.recoveredStores.removeAll(keepingCapacity: true)
+				state.companionGates.removeAll(keepingCapacity: true)
 				_ = flock(state.descriptor, LOCK_UN)
 				_ = Darwin.close(state.descriptor)
 				state.descriptor = -1
@@ -146,6 +149,21 @@ enum VaultKeychainTransactionLock {
 	static func markRecovered(_ store: AnyObject) {
 		precondition(state.depth > 0)
 		state.recoveredStores.insert(ObjectIdentifier(store))
+	}
+
+	/// What `store` concluded about `vaultId`'s companion state in the
+	/// outermost lock scope this thread holds, so each operation reads the
+	/// marker once per scope.
+	static func companionGate(_ store: AnyObject, vaultId: String) -> CompanionEngine.Assessment? {
+		precondition(state.depth > 0)
+		return state.companionGates[ObjectIdentifier(store)]?[vaultId]
+	}
+
+	/// Replaces what this scope knows about `vaultId`, after reading its
+	/// marker or changing it.
+	static func rememberCompanionGate(_ store: AnyObject, vaultId: String, _ gate: CompanionEngine.Assessment?) {
+		precondition(state.depth > 0)
+		state.companionGates[ObjectIdentifier(store), default: [:]][vaultId] = gate
 	}
 
 	/// Opens and locks the transaction lock the CLI shares, in `home`, which is
@@ -269,11 +287,20 @@ protocol KeychainServiceProtocol: Sendable {
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError>
 	func setAuthenticationContext(_ context: LAContext?)
 	func withKeychainTransaction<T>(_ operation: () -> T) -> Result<T, KeychainError>
-	func listProjects() -> [VaultProject]
 	func listProjectsResult() -> Result<[VaultProject], KeychainError>
 	func listProjectMetadataResult() -> Result<[VaultProjectMetadata], KeychainError>
 	func getProjectResult(vaultId: String) -> Result<VaultProject?, KeychainError>
-	func getEnvironments(vaultId: String) -> [String: [String: String]]?
+	/// The CLI approval of each project among `vaultIds` and the state of
+	/// those with companion data, from one names-only listing, for display.
+	/// With `strictAccess`, a project whose approval can't be read fails the
+	/// read; otherwise it's left out.
+	func projectStatesResult(vaultIds: [String], strictAccess: Bool) -> Result<VaultProjectStates, KeychainError>
+	/// Repairs a project's damaged companion data as `repair` says, keeping its values.
+	func repairCompanionData(vaultId: String, repair: CompanionEngine.Assessment.Repair) -> Result<Void, KeychainError>
+	/// Deletes companion records whose project is gone, at most 256 a pass,
+	/// and fixes each record that follows values toward its values item's
+	/// verified approval.
+	func maintainCompanionStorage() -> Result<CompanionMaintenance, KeychainError>
 	func getEnvironmentsResult(
 		vaultId: String
 	) -> Result<[String: [String: String]]?, KeychainError>
@@ -297,7 +324,8 @@ protocol KeychainServiceProtocol: Sendable {
 	/// Every vault the shared store holds, read for a backup: the ones the
 	/// sidebar lists, with their names and folders, and the ones removed from
 	/// it, whose payloads stay. A vault that can't be read fails it all, so a
-	/// backup never leaves one out unnoticed.
+	/// backup never leaves one out unnoticed; one whose newer data keeps its
+	/// values on the Mac is left out with the reason.
 	func backupInventoryResult() -> Result<VaultBackupInventory, KeychainError>
 	/// The ID of every vault whose data the shared store holds, listed in the
 	/// sidebar or not, read without reading any payload.
@@ -338,6 +366,22 @@ protocol KeychainServiceProtocol: Sendable {
 	func insertAppItem(_ store: AppKeychainStore, account: String, data: Data) -> Result<Bool, KeychainError>
 	func deleteAppItem(_ store: AppKeychainStore, account: String) -> Result<Void, KeychainError>
 	func appItemAccounts(_ store: AppKeychainStore) -> Result<[String], KeychainError>
+}
+
+/// What one listing says about a set of projects.
+struct VaultProjectStates: Equatable, Sendable {
+	/// Each project's CLI approval as its item claims it.
+	let cliAccess: [String: VaultCliAccess]
+	/// What each project with companion data allows, for display only.
+	let companion: [String: CompanionEngine.Assessment]
+}
+
+/// What one pass of companion maintenance changed.
+struct CompanionMaintenance: Equatable, Sendable {
+	/// Companion records deleted because their project is gone.
+	let orphanDeletions: Int
+	/// Records whose approval was changed to match their values item's.
+	let accessFixes: Int
 }
 
 extension KeychainServiceProtocol {
@@ -401,6 +445,19 @@ struct VaultBackupInventory: Equatable, Sendable {
 	/// Items that hold no record of the store's own but whose names LPM
 	/// Vault can't use as vault IDs, so no backup can carry them.
 	let unusableItems: Int
+	/// Projects whose newer data keeps their values from leaving the Mac:
+	/// data this version doesn't support, or damage. Sorted by vault ID.
+	var excluded: [VaultBackupExclusion] = []
+	/// Projects backed up without their newer data, which backups don't
+	/// carry yet.
+	var withNewerData: Set<String> = []
+}
+
+/// A project a backup leaves out, and why.
+struct VaultBackupExclusion: Equatable, Sendable {
+	let vaultId: String
+	let listing: VaultBackupProject.Listing?
+	let reason: String
 }
 
 enum VaultProjectKeychainMutation: Sendable {
@@ -416,6 +473,63 @@ enum KeychainResult: Sendable {
 	case failure(KeychainError)
 }
 
+/// Why companion storage stopped an operation on one env project: newer
+/// data this app doesn't support, or newer data that's damaged.
+enum CompanionRefusal: Equatable, Sendable {
+	case unsupported(feature: String, version: Int, level: CompanionEngine.Level)
+	case damaged(String)
+	/// The bundled engine couldn't decide, so nothing was touched.
+	case engine(String)
+
+	init(_ assessment: CompanionEngine.Assessment) {
+		if let damage = assessment.damage.first {
+			self = .damaged(Self.describe(damage))
+		} else if let unsupported = assessment.unsupported {
+			self = .unsupported(feature: unsupported.feature, version: unsupported.version, level: unsupported.level)
+		} else {
+			self = .engine("the project’s newer data allows nothing but maintenance")
+		}
+	}
+
+	var message: String {
+		switch self {
+		case .unsupported(let feature, let version, .readOnly):
+			"This env project uses \(Self.describe(feature: feature)) v\(version), which this version of LPM Vault can only read. Update LPM Vault to change it."
+		case .unsupported(let feature, let version, _):
+			"This env project uses \(Self.describe(feature: feature)) v\(version), which this version of LPM Vault doesn’t support. Update LPM Vault to open it."
+		case .damaged(let reason):
+			"This env project’s newer data is damaged: \(reason). Repair it from the project’s page."
+		case .engine(let reason):
+			"LPM Vault couldn’t check this env project’s newer data (\(reason)), so nothing was changed."
+		}
+	}
+
+	/// How messages name a feature. Feature names follow the identifier
+	/// grammar, so an unknown one is safe to show quoted.
+	static func describe(feature: String) -> String {
+		switch feature {
+		case "overrides": "personal overrides"
+		case "history": "local history"
+		case "releases": "a release log"
+		case "details": "project details"
+		default: "the feature \u{201C}\(feature)\u{201D}"
+		}
+	}
+
+	/// What one damage is, as a clause.
+	static func describe(_ damage: CompanionEngine.Assessment.Damage) -> String {
+		let kind = damage.kind.map { "\u{201C}\($0)\u{201D}" } ?? "a"
+		return switch damage.code {
+		case "invalidMarker": "its feature marker is invalid"
+		case "missingRecord": "its \(kind) record is missing"
+		case "invalidRecord": "its \(kind) record is invalid"
+		case "unlistedRecord": "it has \(kind) records no feature lists"
+		case "access": "its records’ approval settings contradict each other"
+		default: "it can’t be checked"
+		}
+	}
+}
+
 enum KeychainError: Error, CustomStringConvertible, Equatable, Sendable {
 	case encodingFailed
 	case itemNotFound
@@ -428,6 +542,9 @@ enum KeychainError: Error, CustomStringConvertible, Equatable, Sendable {
 	case syncCheckpointCapacity
 	case projectDiscoveryCapacity
 	case transactionOutcomeIndeterminate
+	case companion(CompanionRefusal)
+	/// A probe couldn't tell how an item is protected, as while the Mac is locked.
+	case keychainUnavailable
 
 	var description: String {
 		switch self {
@@ -454,6 +571,10 @@ enum KeychainError: Error, CustomStringConvertible, Equatable, Sendable {
 			return "The local env-project discovery store has reached its capacity."
 		case .transactionOutcomeIndeterminate:
 			return "The Keychain transaction may have committed. Local state must be reloaded before another write."
+		case .companion(let refusal):
+			return refusal.message
+		case .keychainUnavailable:
+			return "The Keychain is unavailable, so env approval couldn’t be confirmed. Retry once your Mac is unlocked."
 		}
 	}
 
@@ -468,6 +589,9 @@ enum KeychainStoreError: Error, LocalizedError, Equatable, Sendable {
 	case transactionOutcomeIndeterminate
 	/// The app moved to another LPM home, whose relaunch hasn't happened yet.
 	case homeRetired
+	case companion(CompanionRefusal)
+	/// A probe couldn't tell how an item is protected, as while the Mac is locked.
+	case keychainUnavailable
 
 	var errorDescription: String? {
 		switch self {
@@ -487,6 +611,10 @@ enum KeychainStoreError: Error, LocalizedError, Equatable, Sendable {
 			"The Keychain transaction may have committed and must be recovered before another write."
 		case .homeRetired:
 			"LPM Vault moved to another LPM home and is relaunching to use it, so nothing was saved here."
+		case .companion(let refusal):
+			refusal.message
+		case .keychainUnavailable:
+			"The Keychain is unavailable, so env approval couldn’t be confirmed. Retry once your Mac is unlocked."
 		}
 	}
 
@@ -512,6 +640,26 @@ protocol KeychainStoreBackend {
 	/// Every account of `service` with its CLI access, read from item
 	/// attributes alone, so no value is read and no approval asked.
 	func accounts(service: String) throws -> [String: VaultCliAccess]
+	/// How `account` is protected, found by reading it without letting macOS
+	/// ask for approval: an item's attributes can claim a protection its
+	/// access control doesn't enforce. `openAccounts` are items any process
+	/// in the group reads, which tell a protected item from a Keychain that
+	/// isn't available.
+	func probe(service: String, account: String, openAccounts: [String]) -> KeychainProbeOutcome
+	/// Every account of `service` with its CLI access, or why its attributes
+	/// can't be read, from one attribute listing, so one malformed item
+	/// doesn't hide the others.
+	func listing(service: String) throws -> [String: Result<VaultCliAccess, KeychainStoreError>]
+}
+
+enum KeychainProbeOutcome: Equatable, Sendable {
+	/// Read without approval.
+	case automatic
+	/// Readable only with approval.
+	case protected
+	case absent
+	/// The Keychain didn't let the probe tell, as while the Mac is locked.
+	case inconclusive
 }
 
 extension KeychainStoreBackend {
@@ -535,6 +683,19 @@ extension KeychainStoreBackend {
 	func setAuthenticationContext(_ context: LAContext?) {}
 	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess {
 		throw KeychainStoreError.status(operation: "change CLI approval", code: errSecUnimplemented)
+	}
+	func listing(service: String) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
+		try accounts(service: service).mapValues { .success($0) }
+	}
+
+	/// A store without access controls enforces what its items claim.
+	func probe(service: String, account: String, openAccounts: [String]) -> KeychainProbeOutcome {
+		do {
+			guard try read(service: service, account: account) != nil else { return .absent }
+			return try cliAccess(service: service, account: account) == .requireApproval ? .protected : .automatic
+		} catch {
+			return .inconclusive
+		}
 	}
 	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws {
 		guard access == .automatic else {
@@ -693,6 +854,35 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend, LPMHomeKeychain {
 		}
 		return readings
 	}
+	func listing(service: String) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
+		var query = Self.scopedQuery(service: service)
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitAll
+		query[kSecUseAuthenticationContext as String] = authentication.current()
+		var result: CFTypeRef?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		if status == errSecItemNotFound { return [:] }
+		guard status == errSecSuccess else {
+			throw KeychainStoreError.status(operation: "list \(service)", code: status)
+		}
+		guard let records = result as? [[String: Any]] else {
+			throw KeychainStoreError.integrityValidationFailed
+		}
+		var readings = [String: Result<VaultCliAccess, KeychainStoreError>](minimumCapacity: records.count)
+		for attributes in records {
+			guard let account = attributes[kSecAttrAccount as String] as? String else {
+				throw KeychainStoreError.integrityValidationFailed
+			}
+			guard readings[account] == nil else {
+				readings[account] = .failure(.integrityValidationFailed)
+				continue
+			}
+			do { readings[account] = .success(try Self.cliAccess(attributes: attributes)) }
+			catch { readings[account] = .failure(.integrityValidationFailed) }
+		}
+		return readings
+	}
+
 	/// Every account of `service` in the shared group with its CLI access, read
 	/// from item attributes alone, so no value is read and no approval asked.
 	func accounts(service: String) throws -> [String: VaultCliAccess] {
@@ -717,6 +907,40 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend, LPMHomeKeychain {
 			accounts[account] = try Self.cliAccess(attributes: attributes)
 		}
 		return accounts
+	}
+
+	/// Reads with a context of its own that may never ask for approval or
+	/// reuse one, so neither the app's unlock nor the CLI's approval can
+	/// answer for the item. macOS also refuses interaction while the Data
+	/// Protection Keychain is unavailable, so a refusal counts as protection
+	/// only when an open item reads with the same context.
+	func probe(service: String, account: String, openAccounts: [String]) -> KeychainProbeOutcome {
+		let context = LAContext()
+		context.interactionNotAllowed = true
+		context.touchIDAuthenticationAllowableReuseDuration = 0
+		defer { context.invalidate() }
+		func status(of account: String) -> OSStatus {
+			var query = Self.identityQuery(service: service, account: account)
+			query[kSecUseAuthenticationContext as String] = context
+			query[kSecReturnData as String] = true
+			query[kSecMatchLimit as String] = kSecMatchLimitOne
+			var result: AnyObject?
+			return SecItemCopyMatching(query as CFDictionary, &result)
+		}
+		switch status(of: account) {
+		case errSecSuccess: return .automatic
+		case errSecItemNotFound: return .absent
+		case errSecInteractionNotAllowed:
+			for open in openAccounts {
+				switch status(of: open) {
+				case errSecSuccess: return .protected
+				case errSecItemNotFound: continue
+				default: return .inconclusive
+				}
+			}
+			return .inconclusive
+		default: return .inconclusive
+		}
 	}
 
 	private static func scopedQuery(service: String) -> [String: Any] {
@@ -1267,6 +1491,13 @@ final class SharedKeychainStore: @unchecked Sendable {
 				Set(mutations.map(\.account)).count == mutations.count
 			else { throw KeychainStoreError.concurrentModification }
 
+			let companion = try companionTargetsUnlocked(mutations.map(\.account))
+			if !companion.isEmpty {
+				try checkCompanionTransactionUnlocked(
+					mutations.map { (account: $0.account, data: $0.data) }, companion: companion, names: nil)
+			}
+			let stageAccess = try followsValuesStageAccessUnlocked(mutations, companion: companion)
+
 			let transactionId = UUID().uuidString.lowercased()
 			let operations = try mutations.enumerated().map { index, mutation in
 				try validateTransactionTarget(
@@ -1301,9 +1532,10 @@ final class SharedKeychainStore: @unchecked Sendable {
 			var commitWasVerified = false
 			do {
 				try writeJournalUnlocked(journal)
-				for (mutation, operation) in zip(mutations, operations) {
+				for (index, (mutation, operation)) in zip(mutations, operations).enumerated() {
 					if let data = mutation.data, let stage = operation.stagedAccount {
-						try writeVerifiedUnlocked(account: stage, data: data, accessSource: operation.targetAccount)
+						try writeVerifiedUnlocked(
+							account: stage, data: data, accessSource: operation.targetAccount, access: stageAccess[index])
 					}
 				}
 				journal.state = .committed
@@ -1364,6 +1596,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 			try deleteVerifiedUnlocked(account: Self.transactionMarkerAccount)
 			return .discardedPreparing
 		case .committed:
+			try checkCommittedCompanionInvariantsUnlocked(journal)
 			try rollForwardVaultTransactionUnlocked(journal)
 			return .rolledForwardCommitted
 		}
@@ -1373,17 +1606,20 @@ final class SharedKeychainStore: @unchecked Sendable {
 		_ journal: VaultTransactionJournal,
 		liveMutations: [VaultKeychainMutation]? = nil
 	) throws {
+		let followsValues = try companionTargetsUnlocked(journal.operations.map(\.targetAccount))
+			.filter { $0.value.role != .marker && $0.value.access == .followsValues }
 		for (index, operation) in journal.operations.enumerated() {
 			switch operation.action {
 			case "write":
 				guard let stage = operation.stagedAccount
 				else { throw KeychainStoreError.integrityValidationFailed }
+				let access = try followsValues[index].map { _ in try backend.cliAccess(service: service, account: stage) }
 				if let liveMutation = liveMutations?[index],
 					liveMutation.account == operation.targetAccount,
 					let data = liveMutation.data
 				{
 					performanceCounters?.recordLivePayloadReuse()
-					try writeVerifiedUnlocked(account: operation.targetAccount, data: data, accessSource: stage)
+					try writeVerifiedUnlocked(account: operation.targetAccount, data: data, accessSource: stage, access: access)
 				} else if let data = try backend.read(
 					service: service, account: stage)
 				{
@@ -1395,7 +1631,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 						) == operation.operationSha256
 					else { throw KeychainStoreError.integrityValidationFailed }
 					try validateTransactionTarget(account: operation.targetAccount, data: data)
-					try writeVerifiedUnlocked(account: operation.targetAccount, data: data, accessSource: stage)
+					try writeVerifiedUnlocked(account: operation.targetAccount, data: data, accessSource: stage, access: access)
 				} else {
 					guard let target = try backend.read(
 						service: service,
@@ -1543,8 +1779,18 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
-	private func writeVerifiedUnlocked(account: String, data: Data, accessSource: String? = nil) throws {
-		if let accessSource, EnvValidation.isSafeVaultId(account) || EnvValidation.isSafeVaultId(accessSource) {
+	/// Writes `account` and reads it back. `access`, when given, is the
+	/// approval it takes; otherwise a values item and its stage copy each
+	/// other's, from `accessSource`.
+	private func writeVerifiedUnlocked(
+		account: String,
+		data: Data,
+		accessSource: String? = nil,
+		access: VaultCliAccess? = nil
+	) throws {
+		if let access {
+			try backend.write(service: service, account: account, data: data, access: access)
+		} else if let accessSource, EnvValidation.isSafeVaultId(account) || EnvValidation.isSafeVaultId(accessSource) {
 			let access = try backend.cliAccess(service: service, account: accessSource)
 			try backend.write(service: service, account: account, data: data, access: access)
 		} else {
@@ -1650,6 +1896,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 			try validateSyncMetadataTarget(account: account, data: data)
 			return
 		}
+		if try companionTargetsUnlocked([account])[0] != nil { return }
 		throw KeychainStoreError.integrityValidationFailed
 	}
 
@@ -1956,6 +2203,415 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
+	// MARK: - Companion storage
+
+	/// Every account with its CLI access, or why it can't be read, from one listing.
+	func listing() throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			return try backend.listing(service: service)
+		}
+	}
+
+	/// The companion account names among `names`, a names-only listing, by
+	/// the project they belong to; a project with none has no companion data.
+	func companionNamesByVault(_ names: [String]) throws -> [String: [String]] {
+		var byVault: [String: [String]] = [:]
+		for (name, account) in try companionAccountsUnlocked(names) {
+			byVault[account.vaultId, default: []].append(name)
+		}
+		return byVault
+	}
+
+	enum CompanionOperation: Sendable {
+		/// Reads values without personal overrides: display, export, pushes, backups.
+		case readExcludingOverrides
+		/// Writes values or companion records.
+		case write
+		/// Metadata, approval, recovery, resume and deletion, which never depend on content.
+		case maintenance
+	}
+
+	/// `vaultId`'s companion state inside the lock, once any interrupted
+	/// lifecycle step is finished. `listing`, a names-only listing taken in
+	/// this lock scope, settles a marker's absence without a read and shows
+	/// records no feature lists, for display and backups. Authorization uses
+	/// only the marker, as the CLI's does, so an operation is never allowed
+	/// in one scope and refused in the next for a listing it didn't take.
+	func companionAssessment(vaultId: String, listing: [String]? = nil) throws -> CompanionEngine.Assessment {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			if listing == nil, let remembered = VaultKeychainTransactionLock.companionGate(self, vaultId: vaultId) {
+				return remembered
+			}
+			let markerAccount = try markerAccountName(vaultId)
+			let marker: Data?
+			if let listing, !listing.contains(markerAccount) {
+				marker = nil
+			} else {
+				marker = try backend.read(service: service, account: markerAccount)
+			}
+			var assessment = try companion {
+				try CompanionEngine.assess(vaultId: vaultId, .init(marker: marker, inventory: listing))
+			}
+			if assessment.needsResume {
+				let names = try listing ?? Array(backend.accounts(service: service).keys)
+				let plan = try companion {
+					try CompanionEngine.plan(.resume, vaultId: vaultId, marker: marker, inventory: names)
+				}
+				try executeCompanionPlanUnlocked(plan, markerAccount: markerAccount)
+				if let notice = plan.notice {
+					keychainLogger.notice("Finished an interrupted \(notice.kind, privacy: .public) of an env project's newer data")
+				}
+				let remaining = try listing.map { _ in Array(try backend.accounts(service: service).keys) }
+				assessment = try companion {
+					try CompanionEngine.assess(vaultId: vaultId, .init(marker: plan.result, inventory: remaining))
+				}
+				VaultKeychainTransactionLock.rememberCompanionGate(self, vaultId: vaultId, nil)
+			}
+			if listing == nil {
+				VaultKeychainTransactionLock.rememberCompanionGate(self, vaultId: vaultId, assessment)
+			}
+			return assessment
+		}
+	}
+
+	/// What `vaultId`'s marker says as it is, an interrupted step left unfinished,
+	/// for showing a project whose step couldn't be finished.
+	func unresumedCompanionAssessment(vaultId: String, listing: [String]) throws -> CompanionEngine.Assessment {
+		try VaultKeychainTransactionLock.withLock {
+			let markerAccount = try markerAccountName(vaultId)
+			let marker = listing.contains(markerAccount) ? try backend.read(service: service, account: markerAccount) : nil
+			return try companion { try CompanionEngine.assess(vaultId: vaultId, .init(marker: marker, inventory: listing)) }
+		}
+	}
+
+	/// Applies the operation matrix to `vaultId` inside the lock.
+	func authorizeCompanion(vaultId: String, _ operation: CompanionOperation) throws {
+		let assessment = try companionAssessment(vaultId: vaultId)
+		let allowed = switch operation {
+		case .readExcludingOverrides: assessment.allows.readExcludingOverrides
+		case .write: assessment.allows.write
+		case .maintenance: true
+		}
+		guard allowed else { throw KeychainStoreError.companion(CompanionRefusal(assessment)) }
+	}
+
+	/// Deletes `vaultId`'s companion records through the deletion protocol,
+	/// committing `mutations`, the caller's deletions of the project itself,
+	/// with the first transaction: the shared key goes first, and a
+	/// `deleting` marker keeps what's left for later transactions resumable.
+	func deleteProject(vaultId: String, with mutations: [VaultKeychainMutation]) throws {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			try authorizeCompanion(vaultId: vaultId, .maintenance)
+			try planCompanionChangeUnlocked(vaultId: vaultId, first: mutations) { marker, names in
+				try CompanionEngine.plan(.delete, vaultId: vaultId, marker: marker, inventory: names, ownOperations: mutations.count)
+			}
+		}
+	}
+
+	/// Repairs `vaultId`'s damaged companion data as `repair` says, keeping its values.
+	func repairCompanionData(vaultId: String, _ repair: CompanionEngine.Assessment.Repair) throws {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			try authorizeCompanion(vaultId: vaultId, .maintenance)
+			try planCompanionChangeUnlocked(vaultId: vaultId) { marker, names in
+				switch repair.action {
+				case .discardProject:
+					try CompanionEngine.plan(.discard, vaultId: vaultId, marker: marker, inventory: names)
+				case .removeFeature:
+					try CompanionEngine.plan(
+						.removeFeature, vaultId: vaultId, marker: marker, inventory: names, feature: repair.feature)
+				case .removeUnlisted:
+					try CompanionEngine.plan(.removeUnlisted, vaultId: vaultId, marker: marker, inventory: names)
+				}
+			}
+		}
+	}
+
+	/// Deletes the companion records of projects whose values item is gone,
+	/// as a deletion by an app that predates companion storage leaves them,
+	/// at most `limit` deletions a pass. A project left `deleting` is
+	/// finished by the next pass, or by any client that touches it.
+	@discardableResult
+	func collectCompanionOrphans(limit: Int = 256) throws -> Int {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			let listing = try backend.accounts(service: service)
+			let names = Array(listing.keys)
+			let orphaned = Set(try companionAccountsUnlocked(names).values.lazy
+				.filter { listing[$0.vaultId] == nil }
+				.map(\.vaultId))
+			var budget = limit
+			for vaultId in orphaned.sorted() where budget > 0 {
+				let markerAccount = try markerAccountName(vaultId)
+				let marker = listing[markerAccount] == nil ? nil : try backend.read(service: service, account: markerAccount)
+				let plan = try companion {
+					try CompanionEngine.plan(.delete, vaultId: vaultId, marker: marker, inventory: names)
+				}
+				budget -= try executeCompanionPlanUnlocked(plan, markerAccount: markerAccount, limit: budget)
+				VaultKeychainTransactionLock.rememberCompanionGate(self, vaultId: vaultId, nil)
+			}
+			return limit - budget
+		}
+	}
+
+	/// Changes `vaultId`'s CLI approval with its companion records' in the
+	/// order that leaves, after a crash, at most the values item automatic
+	/// with a record still protected: turning approval on protects the
+	/// records first, and turning it off unprotects the values first.
+	func setProjectCliAccess(vaultId: String, access: VaultCliAccess) throws -> VaultCliAccess {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			try authorizeCompanion(vaultId: vaultId, .maintenance)
+			let records = try companionAccountsUnlocked(Array(backend.accounts(service: service).keys))
+				.filter { $0.value.vaultId == vaultId && $0.value.role != .marker && $0.value.access == .followsValues }
+				.map(\.key)
+				.sorted()
+			if access == .requireApproval {
+				for record in records { _ = try backend.setCliAccess(service: service, account: record, access: access) }
+			}
+			let saved = try backend.setCliAccess(service: service, account: vaultId, access: access)
+			if access == .automatic {
+				for record in records { _ = try backend.setCliAccess(service: service, account: record, access: access) }
+			}
+			return saved
+		}
+	}
+
+	/// Fixes each companion record that follows values toward its values
+	/// item's approval as a probe verifies it, probing each owning values
+	/// item and each record once. Nothing changes when everything matches,
+	/// and nothing is decided for an item whose probe is inconclusive.
+	/// Returns how many records it changed.
+	@discardableResult
+	func reconcileCompanionAccess() throws -> Int {
+		try VaultKeychainTransactionLock.withLock {
+			try ensureRecoveredUnlocked()
+			let listing = try backend.accounts(service: service)
+			var recordsByVault: [String: [String]] = [:]
+			for (name, account) in try companionAccountsUnlocked(Array(listing.keys))
+			where account.role != .marker && account.access == .followsValues && listing[account.vaultId] != nil {
+				recordsByVault[account.vaultId, default: []].append(name)
+			}
+			var changed = 0
+			for (vaultId, records) in recordsByVault.sorted(by: { $0.key < $1.key }) {
+				let openAccounts = [VaultKeychainRecordContract.projectIndexMarkerAccount, try markerAccountName(vaultId)]
+				let target: VaultCliAccess
+				switch backend.probe(service: service, account: vaultId, openAccounts: openAccounts) {
+				case .automatic: target = listing[vaultId] ?? .automatic
+				case .protected: target = .requireApproval
+				case .absent, .inconclusive: continue
+				}
+				for record in records.sorted() {
+					let enforced: VaultCliAccess
+					switch backend.probe(service: service, account: record, openAccounts: openAccounts) {
+					case .automatic: enforced = .automatic
+					case .protected: enforced = .requireApproval
+					case .absent, .inconclusive: continue
+					}
+					guard enforced != target || listing[record] != target else { continue }
+					_ = try backend.setCliAccess(service: service, account: record, access: target)
+					changed += 1
+				}
+			}
+			return changed
+		}
+	}
+
+	/// Plans one lifecycle change of `vaultId` from a names-only listing and
+	/// its marker, then commits it, `first` with its first transaction.
+	private func planCompanionChangeUnlocked(
+		vaultId: String,
+		first: [VaultKeychainMutation] = [],
+		_ plan: (_ marker: Data?, _ names: [String]) throws -> CompanionEngine.Plan
+	) throws {
+		let listing = try backend.accounts(service: service)
+		let markerAccount = try markerAccountName(vaultId)
+		let marker = listing[markerAccount] == nil ? nil : try backend.read(service: service, account: markerAccount)
+		let planned = try companion { try plan(marker, Array(listing.keys)) }
+		try executeCompanionPlanUnlocked(planned, markerAccount: markerAccount, first: first)
+		VaultKeychainTransactionLock.rememberCompanionGate(self, vaultId: vaultId, nil)
+	}
+
+	private func markerAccountName(_ vaultId: String) throws -> String {
+		try companion { try CompanionEngine.markerAccount(vaultId: vaultId) }
+	}
+
+	/// Commits each transaction of `plan` in order, `first`, the caller's own
+	/// changes, with its first, and stops before a transaction would take
+	/// `limit` past what's left. Returns how many changes it made.
+	@discardableResult
+	private func executeCompanionPlanUnlocked(
+		_ plan: CompanionEngine.Plan,
+		markerAccount: String,
+		first: [VaultKeychainMutation] = [],
+		limit: Int = .max
+	) throws -> Int {
+		var pending = first
+		var made = 0
+		for transaction in plan.transactions {
+			let size = transaction.deletes.count + transaction.moves.count * 2
+				+ (transaction.writesMarker == nil ? 0 : 1) + (transaction.deletesMarker ? 1 : 0)
+			guard made + size <= limit || made == 0 && limit > 0 else { break }
+			for move in transaction.moves {
+				guard let bytes = try backend.read(service: service, account: move.staged) else {
+					throw KeychainStoreError.integrityValidationFailed
+				}
+				pending.append(.write(account: move.live, data: bytes))
+				pending.append(.delete(account: move.staged))
+			}
+			pending += transaction.deletes.map { .delete(account: $0) }
+			if let marker = transaction.writesMarker { pending.append(.write(account: markerAccount, data: marker)) }
+			if transaction.deletesMarker { pending.append(.delete(account: markerAccount)) }
+			try applyVaultTransaction(pending)
+			pending = []
+			made += size
+		}
+		if !pending.isEmpty { try applyVaultTransaction(pending) }
+		return made
+	}
+
+	/// The companion accounts among `names`, by name, as the engine reads them.
+	private func companionAccountsUnlocked(_ names: [String]) throws -> [String: CompanionEngine.Account] {
+		var accounts: [String: CompanionEngine.Account] = [:]
+		for (index, account) in try companionTargetsUnlocked(names, invalid: .skip) {
+			accounts[names[index]] = account
+		}
+		return accounts
+	}
+
+	private enum InvalidCompanionName { case refuse, skip }
+
+	/// The companion accounts among `accounts`, by index, as the engine reads
+	/// them. Only names under the store's own `__vault_` prefix are asked
+	/// about; one in the companion namespace spelled any other way is
+	/// refused, or with `.skip` left out, as a listing leaves it.
+	private func companionTargetsUnlocked(
+		_ accounts: [String],
+		invalid: InvalidCompanionName = .refuse
+	) throws -> [Int: CompanionEngine.Account] {
+		let candidates = accounts.indices.filter { accounts[$0].hasPrefix("__vault_") }
+		guard !candidates.isEmpty else { return [:] }
+		let described = try companion { try CompanionEngine.describe(candidates.map { accounts[$0] }) }
+		var found: [Int: CompanionEngine.Account] = [:]
+		for (index, description) in zip(candidates, described) {
+			switch description {
+			case .outside: continue
+			case .invalid where invalid == .skip: continue
+			case .invalid: throw KeychainStoreError.integrityValidationFailed
+			case .account(let account): found[index] = account
+			}
+		}
+		return found
+	}
+
+	/// I1, I2 and I5 for the companion records a transaction changes, checked
+	/// by the CLI's own code. Only a marker's bytes are passed. With `names`,
+	/// recovery's listing, a marker change is also checked for records it
+	/// would orphan.
+	private func checkCompanionTransactionUnlocked(
+		_ changes: [(account: String, data: Data?)],
+		companion: [Int: CompanionEngine.Account],
+		names: [String]?
+	) throws {
+		var engineChanges: [CompanionEngine.Change] = []
+		var touched = Set<String>()
+		var markerChanged = Set<String>()
+		for (index, account) in companion.sorted(by: { $0.key < $1.key }) {
+			let change = changes[index]
+			touched.insert(account.vaultId)
+			if account.role == .marker { markerChanged.insert(account.vaultId) }
+			engineChanges.append(CompanionEngine.Change(
+				account: change.account,
+				bytes: change.data.map { account.role == .marker ? $0 : Data() }
+			))
+		}
+		let live = (names == nil ? touched.subtracting(markerChanged) : touched).sorted()
+		var markers: [String: Data?] = [:]
+		for (vaultId, account) in zip(live, try self.companion {
+			try CompanionEngine.accountNames(live.map { .init(role: .marker, vaultId: $0, kind: nil, part: nil) })
+		}) {
+			markers.updateValue(try backend.read(service: service, account: account), forKey: vaultId)
+		}
+		do {
+			try CompanionEngine.checkTransaction(engineChanges, markers: markers, names: names)
+		} catch where error.code == "companion.refused" {
+			keychainLogger.error("Refused a Keychain transaction: \(error.message, privacy: .public)")
+			throw KeychainStoreError.integrityValidationFailed
+		} catch {
+			throw KeychainStoreError.companion(.engine(error.message))
+		}
+	}
+
+	/// Recovery's check of a committed journal that touches companion records:
+	/// the marker each project is left with is the marker's stage, or the
+	/// live marker once that write was replayed.
+	private func checkCommittedCompanionInvariantsUnlocked(_ journal: VaultTransactionJournal) throws {
+		let companion = try companionTargetsUnlocked(journal.operations.map(\.targetAccount))
+		guard !companion.isEmpty else { return }
+		var changes: [(account: String, data: Data?)] = []
+		changes.reserveCapacity(journal.operations.count)
+		for (index, operation) in journal.operations.enumerated() {
+			guard operation.action == "write" else {
+				changes.append((operation.targetAccount, nil))
+				continue
+			}
+			guard companion[index]?.role == .marker else {
+				changes.append((operation.targetAccount, Data()))
+				continue
+			}
+			guard let stage = operation.stagedAccount,
+				let bytes = try backend.read(service: service, account: stage)
+					?? backend.read(service: service, account: operation.targetAccount),
+				operationSha256(action: "write", targetAccount: operation.targetAccount, data: bytes)
+					== operation.operationSha256
+			else { throw KeychainStoreError.integrityValidationFailed }
+			changes.append((operation.targetAccount, bytes))
+		}
+		try checkCompanionTransactionUnlocked(
+			changes, companion: companion, names: Array(backend.accounts(service: service).keys))
+	}
+
+	/// The approval each stage of a companion record that follows values
+	/// takes: its values item's, as a probe verifies it, not as its
+	/// attributes claim. A project without values can't have such records.
+	private func followsValuesStageAccessUnlocked(
+		_ mutations: [VaultKeychainMutation],
+		companion: [Int: CompanionEngine.Account]
+	) throws -> [Int: VaultCliAccess] {
+		var verified: [String: VaultCliAccess] = [:]
+		var access: [Int: VaultCliAccess] = [:]
+		for (index, account) in companion
+		where account.role != .marker && account.access == .followsValues && mutations[index].data != nil {
+			if verified[account.vaultId] == nil {
+				verified[account.vaultId] = try verifiedValuesAccessUnlocked(vaultId: account.vaultId)
+			}
+			access[index] = verified[account.vaultId]
+		}
+		return access
+	}
+
+	private func verifiedValuesAccessUnlocked(vaultId: String) throws -> VaultCliAccess {
+		let openAccounts = [VaultKeychainRecordContract.projectIndexMarkerAccount, try markerAccountName(vaultId)]
+		switch backend.probe(service: service, account: vaultId, openAccounts: openAccounts) {
+		// A weak item that claims approval passes approval on, not its weakness.
+		case .automatic: return try backend.cliAccess(service: service, account: vaultId)
+		case .protected: return .requireApproval
+		case .absent:
+			keychainLogger.error("Refused newer data for an env project without values")
+			throw KeychainStoreError.integrityValidationFailed
+		case .inconclusive: throw KeychainStoreError.keychainUnavailable
+		}
+	}
+
+	/// Runs `body`, an engine call, reporting a failure as the engine's.
+	private func companion<T>(_ body: () throws -> T) throws -> T {
+		do { return try body() } catch let failure as CompanionEngine.Failure {
+			throw KeychainStoreError.companion(.engine(failure.message))
+		}
+	}
 }
 
 struct VaultProjectEnvironmentSummary: Codable, Equatable, Sendable {
@@ -2135,7 +2791,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	func setCliAccess(vaultId: String, access: VaultCliAccess) -> Result<VaultCliAccess, KeychainError> {
 		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
 		do {
-			let saved = try store.setCliAccess(account: vaultId, access: access)
+			let saved = try store.setProjectCliAccess(vaultId: vaultId, access: access)
 			guard saved == access else { throw KeychainStoreError.integrityValidationFailed }
 			return .success(saved)
 		} catch let error as KeychainStoreError { return .failure(keychainError(from: error)) }
@@ -2155,19 +2811,13 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
-	func listProjects() -> [VaultProject] {
-		switch listProjectsResult() {
-		case .success(let projects): return projects
-		case .failure(let error):
-			keychainLogger.error("Keychain project listing failed: \(error.description, privacy: .public)")
-			return []
-		}
-	}
-
 	func listProjectsResult() -> Result<[VaultProject], KeychainError> {
 		do {
 			return try VaultKeychainTransactionLock.withLock {
 				let metadata = try readProjectMetadataThrowing()
+				for entry in metadata {
+					try store.authorizeCompanion(vaultId: entry.id, .readExcludingOverrides)
+				}
 				let entries = Dictionary(uniqueKeysWithValues: metadata.map { ($0.id, $0) })
 				let projects = try store.map(accounts: metadata.map(\.id)) { account, data in
 					guard let entry = entries[account], let data else {
@@ -2202,6 +2852,69 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
+	func projectStatesResult(vaultIds: [String], strictAccess: Bool) -> Result<VaultProjectStates, KeychainError> {
+		guard vaultIds.allSatisfy(EnvValidation.isSafeVaultId) else { return .failure(.accessDenied) }
+		do {
+			return .success(try VaultKeychainTransactionLock.withLock {
+				let listing = try store.listing()
+				var cliAccess = [String: VaultCliAccess](minimumCapacity: vaultIds.count)
+				for vaultId in vaultIds {
+					switch listing[vaultId] {
+					case .success(let access)?: cliAccess[vaultId] = access
+					case .failure(let error)? where strictAccess: throw error
+					case .failure?, nil: continue
+					}
+				}
+				let names = try store.companionNamesByVault(Array(listing.keys))
+				var companion: [String: CompanionEngine.Assessment] = [:]
+				for vaultId in vaultIds {
+					guard let projectNames = names[vaultId] else { continue }
+					do {
+						let assessment = try store.companionAssessment(vaultId: vaultId, listing: projectNames)
+						// A resume can leave a project with no newer data at all.
+						guard assessment.marker != .absent || !assessment.damage.isEmpty else { continue }
+						companion[vaultId] = assessment
+					} catch let error as KeychainStoreError {
+						// One project's unfinished step never hides the others; it shows as interrupted.
+						keychainLogger.error("Couldn't finish an env project's interrupted change: \(error.localizedDescription, privacy: .public)")
+						companion[vaultId] = try store.unresumedCompanionAssessment(vaultId: vaultId, listing: projectNames)
+					}
+				}
+				return VaultProjectStates(cliAccess: cliAccess, companion: companion)
+			})
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
+	func repairCompanionData(vaultId: String, repair: CompanionEngine.Assessment.Repair) -> Result<Void, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		do {
+			return .success(try store.repairCompanionData(vaultId: vaultId, repair))
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
+	func maintainCompanionStorage() -> Result<CompanionMaintenance, KeychainError> {
+		do {
+			return .success(try VaultKeychainTransactionLock.withLock {
+				CompanionMaintenance(
+					orphanDeletions: try store.collectCompanionOrphans(),
+					accessFixes: try store.reconcileCompanionAccess()
+				)
+			})
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
 	func getProjectResult(vaultId: String) -> Result<VaultProject?, KeychainError> {
 		do {
 			return try VaultKeychainTransactionLock.withLock {
@@ -2215,6 +2928,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				)?.record else {
 					return .success(nil)
 				}
+				try store.authorizeCompanion(vaultId: vaultId, .readExcludingOverrides)
 				guard let data = try store.read(account: vaultId) else {
 					return .failure(.itemNotFound)
 				}
@@ -2232,16 +2946,16 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
-	func getEnvironments(vaultId: String) -> [String: [String: String]]? {
-		try? getEnvironmentsResult(vaultId: vaultId).get()
-	}
-
 	func getEnvironmentsResult(
 		vaultId: String
 	) -> Result<[String: [String: String]]?, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
 		do {
-			guard let data = try readItemThrowing(account: vaultId) else { return .success(nil) }
-			return .success(try decodeEnvironments(data))
+			return .success(try VaultKeychainTransactionLock.withLock {
+				try store.authorizeCompanion(vaultId: vaultId, .readExcludingOverrides)
+				guard let data = try readItemThrowing(account: vaultId) else { return nil }
+				return try decodeEnvironments(data)
+			})
 		} catch let error as KeychainStoreError {
 			return .failure(keychainError(from: error))
 		} catch {
@@ -2289,6 +3003,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 		do {
 			try VaultKeychainTransactionLock.withLock {
+				try store.authorizeCompanion(vaultId: vaultId, .write)
 				try updateProjectPayloadThrowing(vaultId: vaultId, payload: payload)
 			}
 			if payload.data.count > VaultConstants.maxVaultSizeWarning * 9 / 10 {
@@ -2325,6 +3040,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 		do {
 			return try VaultKeychainTransactionLock.withLock {
+				try store.authorizeCompanion(vaultId: vaultId, .write)
 				try createProjectRecordsThrowing(
 					vaultId: vaultId,
 					projectName: projectName,
@@ -2357,6 +3073,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				switch project {
 				case .create(let project):
 					let payload = try prepareProjectPayload(project)
+					try store.authorizeCompanion(vaultId: project.id, .write)
 					try createProjectRecordsThrowing(
 						vaultId: project.id,
 						projectName: project.name,
@@ -2368,6 +3085,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 					warning = projectSizeWarning(payload.data.count)
 				case .upsert(let project):
 					let payload = try prepareProjectPayload(project)
+					try store.authorizeCompanion(vaultId: project.id, .write)
 					try upsertProjectRecordsThrowing(
 						vaultId: project.id,
 						projectName: project.name,
@@ -2388,6 +3106,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 					guard payload.data.count <= VaultConstants.maxVaultSizeWarning else {
 						return .failure(.dataTooLarge(payload.data.count))
 					}
+					try store.authorizeCompanion(vaultId: vaultId, .write)
 					try updateProjectPayloadThrowing(
 						vaultId: vaultId,
 						payload: payload,
@@ -2405,6 +3124,9 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 					)
 					warning = nil
 				case nil:
+					guard try mutations.allSatisfy({ try !isGatedAccount($0.account) }) else {
+						return .failure(.accessDenied)
+					}
 					try store.applyVaultTransaction(mutations)
 					warning = nil
 				}
@@ -2419,13 +3141,15 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
-	// Generic data storage
+	// Generic data storage, for the store's own records: values and companion
+	// records go through the calls that apply the companion gate.
 	func readData(account: String) -> Data? {
 		try? readDataResult(account: account).get()
 	}
 
 	func readDataResult(account: String) -> Result<Data?, KeychainError> {
 		do {
+			guard try !isGatedAccount(account) else { return .failure(.accessDenied) }
 			return .success(try readItemThrowing(account: account))
 		} catch let error as KeychainStoreError {
 			return .failure(keychainError(from: error))
@@ -2436,12 +3160,14 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	@discardableResult
 	func writeData(account: String, data: Data) -> Bool {
-		writeItem(account: account, data: data)
+		guard (try? isGatedAccount(account)) == false else { return false }
+		return writeItem(account: account, data: data)
 	}
 
 	@discardableResult
 	func deleteData(account: String) -> Bool {
 		do {
+			guard try !isGatedAccount(account) else { return false }
 			_ = try store.delete(account: account)
 			return true
 		} catch {
@@ -2527,6 +3253,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 		do {
 			return try VaultKeychainTransactionLock.withLock {
+				try store.authorizeCompanion(vaultId: vaultId, .write)
 				try upsertProjectRecordsThrowing(
 					vaultId: vaultId,
 					projectName: projectName,
@@ -2553,7 +3280,27 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				guard listed.keys.allSatisfy({ items[$0] != nil }) else {
 					throw KeychainStoreError.status(operation: "read indexed vault data", code: errSecItemNotFound)
 				}
-				let projects = try store.map(accounts: usable) { vaultId, data in
+				let companionNames = try store.companionNamesByVault(Array(items.keys))
+				var readable: [String] = []
+				var excluded: [VaultBackupExclusion] = []
+				var withNewerData: Set<String> = []
+				for vaultId in usable {
+					guard let names = companionNames[vaultId] else {
+						readable.append(vaultId)
+						continue
+					}
+					let assessment = try store.companionAssessment(vaultId: vaultId, listing: names)
+					guard assessment.allows.readExcludingOverrides else {
+						excluded.append(VaultBackupExclusion(
+							vaultId: vaultId,
+							listing: listed[vaultId].map { VaultBackupProject.Listing(name: $0.name, folder: $0.path) },
+							reason: CompanionRefusal(assessment).message))
+						continue
+					}
+					readable.append(vaultId)
+					if !assessment.features.isEmpty { withNewerData.insert(vaultId) }
+				}
+				let projects = try store.map(accounts: readable) { vaultId, data in
 					guard let data, let cliAccess = items[vaultId] else {
 						throw KeychainStoreError.status(operation: "read vault data", code: errSecItemNotFound)
 					}
@@ -2564,7 +3311,11 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 						cliAccess: cliAccess
 					)
 				}
-				return VaultBackupInventory(projects: projects, unusableItems: vaultIds.count - usable.count)
+				return VaultBackupInventory(
+					projects: projects,
+					unusableItems: vaultIds.count - usable.count,
+					excluded: excluded,
+					withNewerData: withNewerData)
 			})
 		} catch let error as KeychainStoreError {
 			return .failure(keychainError(from: error))
@@ -2587,6 +3338,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		do {
 			return try VaultKeychainTransactionLock.withLock {
 				let payload = try prepareProjectPayload(project)
+				try store.authorizeCompanion(vaultId: project.id, .write)
 				try store.add(account: project.id, data: payload.data, access: .requireApproval)
 				guard listed else { return .success }
 				try createProjectRecordsThrowing(
@@ -2616,6 +3368,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		do {
 			return try VaultKeychainTransactionLock.withLock {
 				guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+				try store.authorizeCompanion(vaultId: vaultId, .write)
 				guard try getEnvironmentsThrowing(vaultId: vaultId) == expected else { return .changedSinceReview }
 				let environments = normalizedEnvironments(merged)
 				guard EnvValidation.areValidEnvironments(environments) else { return .failure(.encodingFailed) }
@@ -2684,7 +3437,22 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		try store.write(account: account, data: data)
 	}
 
+	/// Whether `account` holds a project's values or companion data, which
+	/// only the calls that apply the companion gate may touch.
+	private func isGatedAccount(_ account: String) throws -> Bool {
+		if EnvValidation.isSafeVaultId(account) { return true }
+		guard account.hasPrefix("__vault_") else { return false }
+		do {
+			guard case .outside = try CompanionEngine.describe([account])[0] else { return true }
+			return false
+		} catch {
+			throw KeychainStoreError.companion(.engine(error.message))
+		}
+	}
+
 	private func keychainError(from error: KeychainStoreError) -> KeychainError {
+		if case .companion(let refusal) = error { return .companion(refusal) }
+		if error == .keychainUnavailable { return .keychainUnavailable }
 		if error == .projectDiscoveryCapacity { return .projectDiscoveryCapacity }
 		if error == .transactionOutcomeIndeterminate {
 			return .transactionOutcomeIndeterminate
@@ -3069,14 +3837,19 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		deletePayload: Bool,
 		additionalMutations: [VaultKeychainMutation] = []
 	) throws {
+		try store.authorizeCompanion(vaultId: vaultId, .maintenance)
 		var state = try ensureProjectIndexThrowing()
 		guard let metadata = try readProjectMetadataRecordThrowing(
 			vaultId: vaultId,
 			state: state
 		) else {
 			var mutations = additionalMutations
-			if deletePayload { mutations.insert(.delete(account: vaultId), at: 0) }
-			if !mutations.isEmpty { try store.applyVaultTransaction(mutations) }
+			if deletePayload {
+				mutations.insert(.delete(account: vaultId), at: 0)
+				try store.deleteProject(vaultId: vaultId, with: mutations)
+			} else if !mutations.isEmpty {
+				try store.applyVaultTransaction(mutations)
+			}
 			return
 		}
 		guard let shardSnapshot = try readProjectDiscoveryShardThrowing(
@@ -3133,7 +3906,11 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				))
 			}
 		}
-		try store.applyVaultTransaction(mutations + additionalMutations)
+		if deletePayload {
+			try store.deleteProject(vaultId: vaultId, with: mutations + additionalMutations)
+		} else {
+			try store.applyVaultTransaction(mutations + additionalMutations)
+		}
 	}
 
 	private func projectDiscoveryProbe(for vaultId: String) -> (start: Int, step: Int) {

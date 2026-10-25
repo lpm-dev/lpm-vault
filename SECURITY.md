@@ -56,6 +56,10 @@ Locking or changing approval cannot revoke values that a script or another proce
 An exported `.env` file remains plaintext after the app locks.
 Clipboard data can be read or retained by another application.
 
+An env project's newer data, such as personal overrides, lives in items next to its values item.
+Records that follow the values item take its CLI approval.
+The project's feature marker and the encrypted parts of a history stay readable without approval, so a binary entitled to the group can see each project's ID, its features and their versions, how many parts it has, and roughly how large they are.
+
 Optional sync encrypts values before upload.
 Project and account metadata are not secret values and can remain visible to the service.
 Organization sharing requires trust decisions about member keys.

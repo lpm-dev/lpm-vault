@@ -467,7 +467,7 @@ struct VaultStoreTests {
 		let keychain = MockKeychainService()
 		keychain.storage["first"] = ("First", "", [:])
 		let persistence = VaultPersistenceCoordinator(service: keychain)
-		let authorization = CliAccessChangeAuthorization()
+		let authorization = CommitAuthorization()
 		authorization.invalidate()
 		let result = await persistence.setCliAccess(vaultId: "first", access: .requireApproval, authorization: authorization)
 		guard case .failure(.accessDenied) = result else {
@@ -532,7 +532,7 @@ struct VaultStoreTests {
 		let keychain = MockKeychainService()
 		keychain.storage["first"] = ("First", "", [:])
 		let persistence = VaultPersistenceCoordinator(service: keychain)
-		let authorization = CliAccessChangeAuthorization()
+		let authorization = CommitAuthorization()
 		keychain.beforeKeychainTransaction = { authorization.invalidate() }
 		let result = await persistence.setCliAccess(vaultId: "first", access: .requireApproval, authorization: authorization)
 		#expect(keychain.cliAccessChangeCount == 0)

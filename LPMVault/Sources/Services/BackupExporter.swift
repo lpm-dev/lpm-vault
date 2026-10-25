@@ -26,6 +26,16 @@ struct BackupExporter: Sendable {
 		var settings = false
 		/// Keychain items whose names LPM Vault can't use as vault IDs, left out.
 		var unusableItems = 0
+		/// Projects left out because of their newer data, with why.
+		var leftOut: [LeftOut] = []
+		/// Names of projects backed up without their newer data, which backups don't carry yet.
+		var withNewerData: [String] = []
+	}
+
+	/// A project a backup left out.
+	struct LeftOut: Equatable, Sendable {
+		let name: String
+		let reason: String
 	}
 
 	/// LPM Vault's settings and each project's chosen icon, as the store holds
@@ -148,7 +158,13 @@ struct BackupExporter: Sendable {
 				destinations: destinations.values.reduce(0) { $0 + $1.count },
 				syncKeys: keys?.keyCount ?? 0,
 				settings: app?.settings != nil,
-				unusableItems: snapshot.inventory.unusableItems)
+				unusableItems: snapshot.inventory.unusableItems,
+				leftOut: snapshot.inventory.excluded.map {
+					LeftOut(name: $0.listing?.name ?? Self.removedProjectName, reason: $0.reason)
+				},
+				withNewerData: inventory
+					.filter { snapshot.inventory.withNewerData.contains($0.vaultId) }
+					.map { $0.listing?.name ?? Self.removedProjectName })
 			return (file, summary)
 		case .failure(.invalidContents(let reason, let offset?)):
 			if let index = encoded.project(at: offset) { throw .invalidProject(name: projects[index].name, reason: reason) }
@@ -157,6 +173,9 @@ struct BackupExporter: Sendable {
 			throw .engine(failure)
 		}
 	}
+
+	/// How a summary names a project removed from the sidebar, whose name went with it.
+	static let removedProjectName = "A project removed from the sidebar"
 
 	/// Where a project syncs, when its metadata binds it to a principal the
 	/// format can name; an organization's needs its slug.
