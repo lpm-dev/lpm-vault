@@ -398,7 +398,7 @@ struct BackupExportSheet: View {
 	}
 
 	/// Which projects were backed up without their newer data, nil when none was.
-	static func newerDataNote(_ names: [String]) -> String? {
+	nonisolated static func newerDataNote(_ names: [String]) -> String? {
 		guard !names.isEmpty else { return nil }
 		let listed = ListFormatter.localizedString(byJoining: names.map(\.escapingDirectionControls))
 		return "Backups don’t carry newer data yet, such as personal overrides, so \(listed) \(names.count == 1 ? "was" : "were") backed up without it."
