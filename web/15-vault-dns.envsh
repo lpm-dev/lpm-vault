@@ -2,4 +2,13 @@
 if [ -z "${VAULT_DNS_RESOLVERS:-}" ]; then
     VAULT_DNS_RESOLVERS=$(awk '/^nameserver / { if ($2 ~ /:/) printf "[%s] ", $2; else printf "%s ", $2 }' /etc/resolv.conf)
 fi
-export VAULT_DNS_RESOLVERS
+if [ -z "${VAULT_DNS_IPV6:-}" ]; then
+    # nginx dials every address it resolves, so without an IPv6 route each AAAA answer costs a failed connection.
+    # The kernel keeps an unreachable default route on lo even when IPv6 is off, hence the interface check.
+    if awk '$1 == "00000000000000000000000000000000" && $2 == "00" && $10 != "lo" { found = 1 } END { exit !found }' /proc/net/ipv6_route 2>/dev/null; then
+        VAULT_DNS_IPV6=on
+    else
+        VAULT_DNS_IPV6=off
+    fi
+fi
+export VAULT_DNS_RESOLVERS VAULT_DNS_IPV6
