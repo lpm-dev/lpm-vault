@@ -3,6 +3,7 @@ const { execFileSync } = require('node:child_process')
 const { before, after, test } = require('node:test')
 const { chromium } = require('playwright')
 const { gunzipSync } = require('node:zlib')
+const { startSite } = require('./site.cjs')
 
 let browser
 let container
@@ -11,8 +12,9 @@ let origin
 before(async () => {
   const image = process.env.VAULT_DELIVERY_TEST_IMAGE || 'lpm-vault-delivery-test'
   if (!process.env.VAULT_DELIVERY_TEST_IMAGE) execFileSync('docker', ['build', '-q', '-f', 'web/Dockerfile', '-t', image, '.'])
-  container = execFileSync('docker', ['run', '-d', '-p', '127.0.0.1::8080', image], { encoding: 'utf8' }).trim()
-  origin = `http://127.0.0.1:${execFileSync('docker', ['port', container, '8080'], { encoding: 'utf8' }).trim().split(':').at(-1)}`
+  const site = await startSite(image)
+  container = site.container
+  origin = site.origin
   browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH })
 })
 
