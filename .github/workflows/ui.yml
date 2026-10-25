@@ -1,11 +1,12 @@
 name: UI regressions
 # The native UI suite opens real windows and runs one test at a time, so it
 # runs here rather than in the pull request checks: after every merge to
-# main, on demand, for a pull request labeled ui-tests, and before every
-# release. Contributors run it locally before pushing. It runs on one
-# runner, in one process and in the order it runs locally; it takes a few
-# minutes, and more runners would each pay for a build. An on-demand run
-# given a filter runs only the tests it matches.
+# main, on demand, before every release, and for a pull request that is
+# labeled ui-tests or changes the suite's tests, their support code or how
+# the suite runs (see ui-suite-changes.py). Contributors run it locally
+# before pushing. It runs on one runner, in one process and in the order it
+# runs locally; it takes a few minutes, and more runners would each pay for
+# a build. An on-demand run given a filter runs only the tests it matches.
 on:
   push:
     branches: [main]
@@ -22,12 +23,31 @@ on:
 permissions:
   contents: read
 jobs:
+  changes:
+    name: UI suite changes
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      needed: ${{ steps.changes.outputs.needed }}
+    steps:
+      # The merge commit and its first parent, the base branch.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Find changes the UI suite needs to check
+        id: changes
+        run: python3 LPMVault/Scripts/ui-suite-changes.py --github-output "$GITHUB_OUTPUT"
   ui:
     name: UI regressions
+    needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
-      (contains(github.event.pull_request.labels.*.name, 'ui-tests') &&
-       (github.event.action != 'labeled' || github.event.label.name == 'ui-tests'))
+      !cancelled() &&
+      (github.event_name != 'pull_request' ||
+       (github.event.action == 'labeled' && github.event.label.name == 'ui-tests') ||
+       (github.event.action != 'labeled' &&
+        (contains(github.event.pull_request.labels.*.name, 'ui-tests') || needs.changes.outputs.needed == 'true')))
     uses: ./.github/workflows/swift-tests.yml
     with:
       shard: 1/1
