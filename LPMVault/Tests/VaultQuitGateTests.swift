@@ -480,9 +480,9 @@ extension SheetInteractionTests {
 	struct QuitShortcutRunLoopTests {
 		@MainActor
 		final class TerminationWait {
-			var terminated = false
 			var answered = false
-			var answeredWhileWaiting = false
+			/// Whether the answer came while AppKit waited, once the wait is over.
+			var answeredWhileWaiting: Bool?
 		}
 
 		@Test("a quit the gate's timer decides leaves room for the main-actor work that answers it, as AppKit's wait needs")
@@ -494,7 +494,6 @@ extension SheetInteractionTests {
 			delegate.quitShortcut = { .direct }
 			let wait = TerminationWait()
 			delegate.terminate = {
-				wait.terminated = true
 				// AppKit waits for a later answer in a modal run loop, and the answer comes from main-actor work.
 				Task { @MainActor in wait.answered = true }
 				let deadline = Date(timeIntervalSinceNow: testWaitSeconds)
@@ -505,8 +504,9 @@ extension SheetInteractionTests {
 			}
 			// The gate's timers run as blocks on the main queue.
 			DispatchQueue.main.async { delegate.quitGate.handle(.quitKeyDown(isRepeat: false), at: 0) }
-			#expect(try await waitUntil { wait.terminated })
-			#expect(wait.answeredWhileWaiting, "Main-actor work runs while AppKit waits for the answer")
+			// The test resumes on the main queue, which AppKit's wait drains, so it can resume inside the wait.
+			#expect(try await waitUntil { wait.answeredWhileWaiting != nil })
+			#expect(wait.answeredWhileWaiting == true, "Main-actor work runs while AppKit waits for the answer")
 		}
 	}
 }
