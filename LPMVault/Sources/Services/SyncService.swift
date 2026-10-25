@@ -361,16 +361,6 @@ final class SyncService: @unchecked Sendable {
     }
   }
 
-  struct PublicKeyUploadResponse: Decodable, Sendable {
-    let ok: Bool?
-    let status: String?
-    let publicKeyVersion: Int?
-    let publicKeyFingerprint: String?
-    let error: String?
-    let code: String?
-    let expectedScope: String?
-  }
-
   struct WrappedMemberKey: Encodable, Sendable {
     let userId: String
     let wrappedKey: String
@@ -1017,45 +1007,6 @@ final class SyncService: @unchecked Sendable {
     ).value
   }
 
-  func uploadPublicKey(
-    authToken: String,
-    expectedPrincipalId: String,
-    publicKey: String,
-    stepUpProof: String? = nil
-  ) async -> PublicKeyUploadResponse? {
-    guard let url = endpoint(["api", "users", "me", "public-key"]) else { return nil }
-    var headers: [String: String] = [:]
-    if let stepUpProof { headers["X-LPM-Step-Up-Proof"] = stepUpProof }
-    let writeResponse = await authenticatedEnvelopeRequest(
-      url: url,
-      method: "POST",
-      token: authToken,
-      body: .object([
-        "publicKey": .string(publicKey),
-        "expectedPrincipalId": .string(expectedPrincipalId),
-      ]),
-      headers: headers
-    ) { data, statusCode, nonce in
-      try AuthenticatedVaultEnvelopeParser.decodeSharingKeyWrite(
-        data,
-        statusCode: statusCode,
-        requestNonce: nonce,
-        expectedPrincipalID: expectedPrincipalId
-      )
-    }.value
-    guard let writeResponse else { return nil }
-    guard writeResponse.ok == true else { return writeResponse }
-    guard case .response(let authoritative) = await getMyPublicKeyAuthenticated(
-      authToken: authToken,
-      expectedPrincipalId: expectedPrincipalId
-    ),
-      authoritative?.publicKey == publicKey,
-      authoritative?.publicKeyVersion == writeResponse.publicKeyVersion,
-      authoritative?.publicKeyFingerprint == writeResponse.publicKeyFingerprint
-    else { return nil }
-    return writeResponse
-  }
-
   func listPersonalProjects(authToken: String) async -> Result<[RemoteProject], ProjectListError> {
     await listProjects(authToken: authToken, path: ["api", "vaults"])
   }
@@ -1332,7 +1283,6 @@ final class SyncService: @unchecked Sendable {
     token: String,
     body: LPMJSONValue? = nil,
     maximumBytes: Int? = nil,
-    headers: [String: String] = [:],
     decode: @escaping @Sendable (Data, Int, String) throws -> T
   ) async -> AuthenticatedResponse<T> {
     guard let nonce = Self.requestNonce() else { return .response(nil) }
@@ -1340,7 +1290,6 @@ final class SyncService: @unchecked Sendable {
     request.httpMethod = method
     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     request.setValue(nonce, forHTTPHeaderField: Self.requestNonceHeader)
-    for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
     if let body {
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
       guard let encoded = try? JSONEncoder().encode(body) else { return .response(nil) }

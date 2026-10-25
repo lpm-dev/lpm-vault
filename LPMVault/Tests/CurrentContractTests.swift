@@ -1996,50 +1996,6 @@ struct CurrentContractTests {
     #expect(record == nil)
   }
 
-  @Test("sharing-key writes require an authoritative signed reread")
-  func authenticatedSharingKeyWriteRequiresAuthoritativeReread() async throws {
-    let publicKeyData = Data(repeating: 7, count: 32)
-    let publicKey = publicKeyData.base64EncodedString()
-    let fingerprint = VaultCrypto.publicKeyFingerprint(publicKeyData)
-    let recorder = RequestRecorder()
-    let service = makeSyncService(recorder: recorder) { request in
-      let nonce = try #require(
-        request.value(forHTTPHeaderField: "X-LPM-Vault-Request-Nonce")
-      )
-      let isWrite = request.httpMethod == "POST"
-      return try signedSyncResponse(
-        vaultEnvelope(
-          operation: isWrite ? "sharingKey.write" : "sharingKey.read",
-          outcome: isWrite ? "set" : "absent",
-          requestNonce: nonce,
-          binding: ["scope": "account", "principalId": "account-1"],
-          data: isWrite
-            ? [
-              "sharingKey": [
-                "algorithm": "X25519",
-                "publicKey": publicKey,
-                "version": 1,
-                "fingerprint": fingerprint,
-                "createdAt": "2026-09-05T12:00:00.000Z",
-                "updatedAt": "2026-09-05T12:00:00.000Z",
-              ]
-            ]
-            : [:]
-        ),
-        token: "session-token"
-      )
-    }
-
-    let response = await service.uploadPublicKey(
-      authToken: "session-token",
-      expectedPrincipalId: "account-1",
-      publicKey: publicKey
-    )
-
-    #expect(response == nil)
-    #expect(recorder.requests.count == 2)
-  }
-
   private func personalPullEnvelope(requestNonce: String) -> [String: Any] {
     vaultEnvelope(
       operation: "vault.pull",
