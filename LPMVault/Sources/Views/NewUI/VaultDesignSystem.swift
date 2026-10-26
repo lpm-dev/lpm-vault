@@ -486,6 +486,7 @@ struct VaultRowIconButton: View {
 	var destructive = false
 	/// The button's name for accessibility, when the tooltip says more, such as a shortcut.
 	var label: String?
+	var disabled = false
 	let action: () -> Void
 
 	@State private var hovering = false
@@ -495,17 +496,19 @@ struct VaultRowIconButton: View {
 			Image(systemName: systemImage)
 				.font(.system(size: 12, weight: .medium))
 				.foregroundStyle(
-					hovering
+					hovering && !disabled
 						? (destructive ? VaultPalette.red : VaultPalette.textPrimary)
 						: VaultPalette.textTertiary
 				)
+				.opacity(disabled ? 0.45 : 1)
 				.frame(width: 26, height: 26)
 				.background {
 					RoundedRectangle(cornerRadius: 6)
-						.fill(hovering ? (destructive ? VaultPalette.redTint : VaultPalette.neutralTint) : .clear)
+						.fill(hovering && !disabled ? (destructive ? VaultPalette.redTint : VaultPalette.neutralTint) : .clear)
 				}
 		}
 		.buttonStyle(.plain)
+		.disabled(disabled)
 		.help(help)
 		.accessibilityLabel(label ?? help)
 		.onHover { hovering = $0 }

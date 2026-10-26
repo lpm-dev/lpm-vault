@@ -506,16 +506,17 @@ private struct VaultKeyEditor: View {
 	@ViewBuilder
 	private func addRows(_ addable: [String], draft: VaultKeyDraft?, checks: VaultValueCheckPresentation) -> some View {
 		let isSaving = draft?.isSaveInFlight == true
+		let canEdit = store.canEditValues(of: project.id)
 		if let singleEnvironment {
 			if addable.contains(singleEnvironment) {
-				addRow("Add to \(VaultProject.displayName(for: singleEnvironment))", note: addNote(singleEnvironment, checks: checks), disabled: isSaving) { add(singleEnvironment) }
+				addRow("Add to \(VaultProject.displayName(for: singleEnvironment))", note: addNote(singleEnvironment, checks: checks), disabled: isSaving || !canEdit) { add(singleEnvironment) }
 			}
 			if let other = addable.first(where: { $0 != singleEnvironment }) {
-				addRow("Add to another environment", disabled: false) { onAddElsewhere(key, other) }
+				addRow("Add to another environment", disabled: !canEdit) { onAddElsewhere(key, other) }
 			}
 		} else {
 			ForEach(addable, id: \.self) { environment in
-				addRow("Add to \(VaultProject.displayName(for: environment))", note: addNote(environment, checks: checks), disabled: isSaving) { add(environment) }
+				addRow("Add to \(VaultProject.displayName(for: environment))", note: addNote(environment, checks: checks), disabled: isSaving || !canEdit) { add(environment) }
 			}
 		}
 	}
@@ -726,7 +727,7 @@ private struct VaultKeyEditor: View {
 	private func footer(_ draft: VaultKeyDraft?, issue: VaultKeyEditError?) -> some View {
 		let changes = draft?.unsavedChangeCount ?? 0
 		let isSaving = draft?.isSaveInFlight == true
-		let canSave = draft?.canSave == true && issue == nil && store.canUseLocalSecrets
+		let canSave = draft?.canSave == true && issue == nil && store.canUseLocalSecrets && store.canEditValues(of: project.id)
 		return VStack(alignment: .leading, spacing: 8) {
 			if let saveError = draft?.saveError ?? saveError {
 				Text(saveError.localizedDescription)
@@ -867,7 +868,7 @@ private struct VaultKeyEditor: View {
 
 	private func save() {
 		guard let draft = store.keyDrafts.draft(id), draft.canSave,
-			Self.issue(for: draft, in: project) == nil, store.canUseLocalSecrets
+			Self.issue(for: draft, in: project) == nil, store.canUseLocalSecrets, store.canEditValues(of: project.id)
 		else { return }
 		let renamedTo = draft.isRenamed ? draft.name : nil
 		let generation = store.keyDrafts.generation

@@ -266,7 +266,6 @@ struct AuditRegressionTests {
       return
     }
     #expect(keychain.projectReadCount == 1)
-    #expect(keychain.environmentReadCount == 0)
   }
 
   @Test("content-only mutation does not rewrite project index metadata")

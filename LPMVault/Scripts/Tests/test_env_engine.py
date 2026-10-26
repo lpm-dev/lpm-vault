@@ -60,6 +60,33 @@ class EngineIntegrityTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         engine.verify(root)
 
+    def test_contract_fixtures_match_their_recorded_hashes_exactly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / 'LPMEnv.xcframework/library'
+            artifact.parent.mkdir()
+            artifact.write_bytes(b'library')
+            (root / 'THIRD_PARTY_NOTICES.html').write_bytes(b'notices')
+            fixture = root / 'fixtures/companion/markers.json'
+            fixture.parent.mkdir(parents=True)
+            fixture.write_bytes(b'{"cases": []}')
+            provenance = dict(repository=engine.REPOSITORY, revision='a' * 40, abiVersion=1, toolchain='1.94.0', targets=engine.TARGETS, sources={'Cargo.lock': 'b' * 64}, artifacts={'LPMEnv.xcframework/library': hashlib.sha256(b'library').hexdigest()}, notices=hashlib.sha256(b'notices').hexdigest(), fixtures={'fixtures/companion/markers.json': hashlib.sha256(b'{"cases": []}').hexdigest()})
+            manifest = root / 'provenance.json'
+            manifest.write_text(json.dumps(provenance))
+            self.assertEqual(engine.verify(root), provenance)
+            fixture.write_bytes(b'{"cases": [1]}')
+            with self.assertRaisesRegex(ValueError, 'fixtures'):
+                engine.verify(root)
+            fixture.write_bytes(b'{"cases": []}')
+            unrecorded = fixture.with_name('extra.json')
+            unrecorded.write_bytes(b'{}')
+            with self.assertRaisesRegex(ValueError, 'fixtures'):
+                engine.verify(root)
+            unrecorded.unlink()
+            fixture.unlink()
+            with self.assertRaisesRegex(ValueError, 'fixtures'):
+                engine.verify(root)
+
 
 if __name__ == '__main__':
     unittest.main()

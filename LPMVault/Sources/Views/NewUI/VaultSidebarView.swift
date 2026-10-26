@@ -437,13 +437,17 @@ struct VaultSidebarView: View {
 		.accessibilityValue(project.secretCount(for: environment).counted("secret"))
 		.accessibilityAddTraits(selected ? .isSelected : [])
 		.contextMenu {
+			let canEdit = store.canEditValues(of: project.id)
 			Button("Rename…") { onRenameEnvironment(target) }
+				.disabled(!canEdit)
 			Button("Duplicate…") { onDuplicateEnvironment(target) }
+				.disabled(!canEdit)
 			Divider()
 			Button("Clear All Secrets", role: .destructive) { onClearEnvironment(target) }
-				.disabled(project.secretCount(for: environment) == 0)
+				.disabled(!canEdit || project.secretCount(for: environment) == 0)
 			if project.environmentNames.count > 1 {
 				Button("Delete Environment", role: .destructive) { onDeleteEnvironment(target) }
+					.disabled(!canEdit)
 			}
 		}
 	}

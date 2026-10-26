@@ -1,6 +1,9 @@
 import CryptoKit
 import Foundation
 import LocalAuthentication
+import OSLog
+
+private let vaultStoreLogger = Logger(subsystem: "dev.lpm.vault", category: "Store")
 
 // MARK: - Strict Key Trust for Org Members
 
@@ -242,7 +245,9 @@ struct LocalEnvImportTarget: Hashable, Sendable {
   let environment: String
 }
 
-final class CliAccessChangeAuthorization: @unchecked Sendable {
+/// One commit a person authorized: the locked transaction claims it once,
+/// and the UI can withdraw it before then.
+final class CommitAuthorization: @unchecked Sendable {
   private let lock = NSLock()
   private var pending = true
 
@@ -1089,9 +1094,19 @@ enum ProjectSyncStatus {
 
 enum VaultLoadFailure: Equatable, Sendable {
   case keychainLocked, accessDenied, unsupportedBuild, invalidState, unavailable, authentication
+  /// The project's newer data stopped the read: a feature this app doesn't
+  /// support, or damage.
+  case companion(CompanionRefusal)
+
+  /// Whether the project's newer data stopped the read, which retrying
+  /// can't change.
+  var isCompanion: Bool {
+    if case .companion = self { true } else { false }
+  }
 
   init(_ error: KeychainError) {
     switch error {
+    case .companion(let refusal): self = .companion(refusal)
     case .keychainLocked: self = .keychainLocked
     case .accessDenied: self = .accessDenied
     case .missingEntitlement: self = .unsupportedBuild
@@ -1108,6 +1123,7 @@ enum VaultLoadFailure: Equatable, Sendable {
     case .invalidState: "Protected vault state could not be read. Retry after other LPM operations finish. If the error continues, contact support."
     case .unavailable: "Protected vault state is unavailable. Retry. If the error continues, contact support."
     case .authentication: "Could not authenticate with macOS. Try Touch ID or your Mac login password again."
+    case .companion(let refusal): refusal.message
     }
   }
 }
@@ -1321,11 +1337,25 @@ final class VaultStore {
   private(set) var autoLockCountdownSeconds: Int?
   private(set) var selectedProjectCliAccess: VaultCliAccess?
   private(set) var projectCliAccess: [String: VaultCliAccess] = [:]
+  /// What each project with newer data allows, as the last snapshot read it.
+  /// For display only: every operation checks again inside its lock.
+  private(set) var projectCompanionStates: [String: CompanionEngine.Assessment] = [:]
+  /// Why each project whose interrupted change couldn't be finished is still interrupted.
+  private(set) var projectCompanionUnfinished: [String: String] = [:]
+  /// What finishing an interrupted change did to a project's newer data,
+  /// until the person dismisses it.
+  private(set) var companionNotices: [String: CompanionEngine.Plan.Notice] = [:]
+  private(set) var isRepairingCompanionData = false
+  private var companionRepairAuthorization: CommitAuthorization?
+  private var companionMaintenanceTask: Task<Void, Never>?
+  /// Whether the selected project's approval attributes contradict each
+  /// other, so choosing its approval again sets them.
+  private(set) var selectedProjectCliAccessContradicts = false
   private var cliAccessLoadTask: Task<Void, Never>?
   private var cliAccessLoadGeneration = 0
   private var cliAccessProjectRevisions: [String: UUID] = [:]
   private var cliAccessChangeID: UUID?
-  private var cliAccessChangeAuthorization: CliAccessChangeAuthorization?
+  private var cliAccessChangeAuthorization: CommitAuthorization?
   var isChangingCliAccess: Bool { cliAccessChangeID != nil }
 
   // Auth state
@@ -1818,6 +1848,9 @@ final class VaultStore {
     contents: PublishSession.Snapshot.Contents
   ) async -> PublishSession.Snapshot? {
     await waitForLocalStateRefresh()
+    // Values leave the Mac only while the project's newer data allows it now,
+    // which a CLI may have changed since they were read.
+    guard case .success = await persistence.authorizeValuesLeaving(vaultId: projectID) else { return nil }
     guard canUseLocalSecrets, selectedProjectId == projectID, let project = selectedProject,
       project.environmentNames.contains(environment)
     else { return nil }
@@ -2252,9 +2285,15 @@ final class VaultStore {
       syncMetadata = snapshot.syncMetadata
       vaultOrgAssociations = snapshot.orgAssociations
       publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
+      publishCompanionSnapshot(snapshot)
       loadEnvironmentOrders()
       reconcileNavigationState()
       selectedProjectCliAccess = selectedProjectId.flatMap { projectCliAccess[$0] }
+      if let refusal = snapshot.selectedProjectRefusal, selectedProjectId == projectID,
+        selectedProject?.hasLoadedEnvironments == false
+      {
+        selectedProjectLoadFailure = .companion(refusal)
+      }
       reloadKeyDescriptions()
       return
     }
@@ -2354,6 +2393,7 @@ final class VaultStore {
     cliAccessLoadGeneration &+= 1
     let generation = cliAccessLoadGeneration
     selectedProjectCliAccess = nil
+    selectedProjectCliAccessContradicts = false
     guard isUnlocked, let projectID = selectedProjectId,
       projectBelongsToSelectedAccount(projectID)
     else { return }
@@ -2368,6 +2408,9 @@ final class VaultStore {
     case .success(let access):
       selectedProjectCliAccess = access
       projectCliAccess[projectID] = access
+    case .failure(.contradictoryApproval):
+      projectCliAccess.removeValue(forKey: projectID)
+      selectedProjectCliAccessContradicts = true
     case .failure(let failure):
       projectCliAccess.removeValue(forKey: projectID)
       error = "Could not load CLI approval. \(failure.description)"
@@ -2389,12 +2432,13 @@ final class VaultStore {
     let write = writes.begin()
     defer { writes.end(write) }
     guard isUnlocked, let projectID = selectedProjectId,
-      projectBelongsToSelectedAccount(projectID), selectedProjectCliAccess != nil,
-      selectedProjectCliAccess != access, !isChangingCliAccess
+      projectBelongsToSelectedAccount(projectID),
+      selectedProjectCliAccess.map({ $0 != access }) ?? selectedProjectCliAccessContradicts,
+      !isChangingCliAccess
     else { return }
     invalidateProjectLoad()
     let requestID = UUID()
-    let authorization = CliAccessChangeAuthorization()
+    let authorization = CommitAuthorization()
     let session = vaultSessionGeneration
     cliAccessChangeID = requestID
     cliAccessProjectRevisions[projectID] = requestID
@@ -2425,6 +2469,10 @@ final class VaultStore {
       else { return }
       selectedProjectCliAccess = saved
       error = nil
+      if selectedProjectCliAccessContradicts {
+        selectedProjectCliAccessContradicts = false
+        startLocalStateRefresh()
+      }
     case .failure(let failure):
       guard !Task.isCancelled, selectedProjectId == projectID,
         cliAccessChangeID == requestID
@@ -2434,6 +2482,74 @@ final class VaultStore {
         selectedProjectId == projectID, cliAccessChangeID == requestID
       else { return }
       error = "Could not change CLI approval. \(failure.description)"
+    }
+  }
+
+  /// Shows what a snapshot read of projects' newer data, keeping notices
+  /// the person hasn't dismissed.
+  private func publishCompanionSnapshot(_ snapshot: VaultPersistenceSnapshot) {
+    projectCompanionStates = snapshot.companion
+    projectCompanionUnfinished = snapshot.companionUnfinished
+    let listed = Set(snapshot.projects.lazy.map(\.id))
+    companionNotices.merge(snapshot.companionNotices.filter { listed.contains($0.key) }) { _, newer in newer }
+    companionNotices = companionNotices.filter { listed.contains($0.key) }
+  }
+
+  func dismissCompanionNotice(for projectID: String) {
+    companionNotices.removeValue(forKey: projectID)
+  }
+
+  /// Whether `projectID`'s values can be changed, as its newer data last read
+  /// allows; the write checks again inside its lock.
+  func canEditValues(of projectID: String) -> Bool {
+    projectCompanionStates[projectID]?.allows.write ?? true
+  }
+
+  /// Runs the repairs `reviewed`, the state of `projectID`'s newer data the
+  /// person reviewed, lists, keeping its values, after they authenticate
+  /// again. Locking the vault first withdraws it.
+  @discardableResult
+  func repairCompanionData(projectId projectID: String, reviewed: CompanionEngine.Assessment) async -> Bool {
+    let write = writes.begin()
+    defer { writes.end(write) }
+    guard isUnlocked, projectBelongsToSelectedAccount(projectID), !isRepairingCompanionData,
+      projects.contains(where: { $0.id == projectID })
+    else { return false }
+    let session = vaultSessionGeneration
+    let authorization = CommitAuthorization()
+    companionRepairAuthorization = authorization
+    isRepairingCompanionData = true
+    defer {
+      isRepairingCompanionData = false
+      if companionRepairAuthorization === authorization { companionRepairAuthorization = nil }
+    }
+    guard await confirmSensitiveAction(reason: "repair this env project’s newer data"),
+      session == vaultSessionGeneration, isUnlocked
+    else {
+      authorization.invalidate()
+      return false
+    }
+    await waitForProjectMutations()
+    let result = await persistence.repairCompanionData(vaultId: projectID, reviewed: reviewed, authorization: authorization)
+    guard session == vaultSessionGeneration, isUnlocked else { return false }
+    switch result {
+    case .success(.repaired(let state)):
+      projectCompanionStates[projectID] = state
+      projectCompanionUnfinished.removeValue(forKey: projectID)
+      error = nil
+      if selectedProjectId == projectID {
+        invalidateSelectedProjectLoad()
+        beginSelectedProjectLoadIfNeeded()
+      }
+      return true
+    case .success(.repairedStateUnknown):
+      error = nil
+      startLocalStateRefresh()
+      return true
+    case .failure(let failure):
+      error = "Could not repair this env project’s newer data. \(failure.description)"
+      if case .companion(.changedSinceReview) = failure { startLocalStateRefresh() }
+      return false
     }
   }
 
@@ -2453,6 +2569,13 @@ final class VaultStore {
     cliAccessChangeAuthorization?.invalidate()
     cliAccessChangeAuthorization = nil
     cliAccessChangeID = nil
+  }
+
+  private func cancelCompanionWork() {
+    companionRepairAuthorization?.invalidate()
+    companionRepairAuthorization = nil
+    companionMaintenanceTask?.cancel()
+    companionMaintenanceTask = nil
   }
 
   private func invalidateSelectedProjectLoad() {
@@ -2500,6 +2623,7 @@ final class VaultStore {
       self.pendingWorkspaceSnapshots = [:]
       self.projects = snapshot.projects
       self.publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
+      self.publishCompanionSnapshot(snapshot)
       self.syncMetadata = snapshot.syncMetadata
       self.vaultOrgAssociations = snapshot.orgAssociations
       self.error = nil
@@ -3105,6 +3229,7 @@ final class VaultStore {
     let shouldSelectFallback = wasSelected && selectedProjectId == project.id
     projects = snapshot.projects
     publishCliAccessSnapshot(snapshot.cliAccess, previousRevisions: policyRevisions)
+    projectCompanionStates.removeValue(forKey: project.id)
     syncMetadata = snapshot.syncMetadata
     vaultOrgAssociations = snapshot.orgAssociations
     if shouldSelectFallback {
@@ -5340,6 +5465,12 @@ final class VaultStore {
     scheduleAutoLock()
     Task { [platformCredentials] in await platformCredentials.resumeCleanup(now: true) }
     Task { [weak self] in await self?.reconcilePublishingRecords() }
+    companionMaintenanceTask?.cancel()
+    companionMaintenanceTask = Task { [persistence] in
+      if case .failure(let failure) = await persistence.maintainCompanionStorage(), !Task.isCancelled {
+        vaultStoreLogger.error("Companion maintenance after unlock failed: \(failure.description, privacy: .public)")
+      }
+    }
     if lpmHomeMoveRecovery == nil, LPMHome.unfinishedMove(in: preferences) != nil {
       lpmHomeMoveRecovery = Task { [weak self] in
         try? await self?.finishUnfinishedLPMHomeMove()
@@ -5416,14 +5547,26 @@ final class VaultStore {
     return BackupExportResult(file: destination, bytes: file.count, summary: sealed.summary)
   }
 
-  /// How many publish destinations the listed projects have, as a backup's
-  /// checklist counts them; nil when one project's can't be read.
+  /// Which projects a backup would leave out because of their newer data,
+  /// and which it would back up without it, read without reading any values.
+  func backupCompanionPreview() async -> BackupExporter.CompanionPreview? {
+    guard isUnlocked, case .success(let notes) = await persistence.backupCompanionNotes(), isUnlocked else { return nil }
+    let names = Dictionary(projects.lazy.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+    return BackupExporter.CompanionPreview(
+      leftOut: notes.excluded.map {
+        BackupExporter.LeftOut(name: $0.listing?.name ?? BackupExporter.removedProjectName($0.vaultId), reason: $0.reason)
+      },
+      withNewerData: notes.withNewerData.sorted().map { names[$0] ?? BackupExporter.removedProjectName($0) })
+  }
+
   /// How many lpm.dev sync keys this Mac holds, or nil when their stores can't be read.
   func syncKeyCount() async -> Int? {
     let keys = backupKeys
     return await BlockingWork.run { try? keys.count() }
   }
 
+  /// How many publish destinations the listed projects have, as a backup's
+  /// checklist counts them; nil when one project's can't be read.
   func publishDestinationCount() async -> Int? {
     var total = 0
     for project in projects {
@@ -5754,6 +5897,7 @@ final class VaultStore {
     let write = writes.begin()
     defer { writes.end(write) }
     await waitForLocalStateRefresh()
+    if case .failure(let refusal) = await persistence.authorizeValuesLeaving(vaultId: projectId) { throw refusal }
     guard canUseLocalSecrets,
       selectedProjectId == projectId,
       selectedEnvironment == environment,
@@ -5914,10 +6058,15 @@ final class VaultStore {
     openSheetWork.removeAll()
     clearKeyDescriptions()
     cancelCliAccessChange()
+    cancelCompanionWork()
     cliAccessLoadTask?.cancel()
     cliAccessLoadGeneration &+= 1
     selectedProjectCliAccess = nil
+    selectedProjectCliAccessContradicts = false
     projectCliAccess.removeAll(keepingCapacity: true)
+    projectCompanionStates.removeAll(keepingCapacity: true)
+    projectCompanionUnfinished.removeAll(keepingCapacity: true)
+    companionNotices.removeAll(keepingCapacity: true)
     cliAccessProjectRevisions.removeAll(keepingCapacity: true)
     keychainService.setAuthenticationContext(nil)
     unlockGeneration &+= 1
@@ -8480,10 +8629,17 @@ final class VaultStore {
     }
   }
 
+  /// Replaces a project with `project`, or, when `project` carries no
+  /// values, as a rename's commit doesn't, only its name and folder, so
+  /// values already loaded stay.
   private func updateProjectInPlace(_ project: VaultProject) {
-    if let index = projects.firstIndex(where: { $0.id == project.id }) {
+    guard let index = projects.firstIndex(where: { $0.id == project.id }) else { return }
+    if !project.hasLoadedEnvironments, projects[index].hasLoadedEnvironments {
+      projects[index].name = project.name
+      projects[index].path = project.path
+    } else {
       projects[index] = project
-	}
+    }
   }
 
   private func applySyncMetadata(_ metadata: SyncMetadata?, for vaultId: String) {

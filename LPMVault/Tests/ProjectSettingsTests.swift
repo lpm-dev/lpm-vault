@@ -103,7 +103,7 @@ struct ProjectSettingsTests {
 			$0.name = "renamed"
 			$0.icon = .emoji("🚀")
 		}
-		fixture.keychain.failNextSaveEnvironments = true
+		fixture.keychain.nextVaultTransactionError = .accessDenied
 		await store.saveProjectSettings(of: "demo")
 		#expect(store.projectSettingsDrafts["demo"] == ProjectSettingsDraft(name: .init(text: "renamed", base: "demo-api"), icon: .emoji("🚀")))
 		#expect(store.projectSettingsErrors["demo"] != nil)
@@ -219,10 +219,13 @@ struct ProjectSettingsTests {
 			$0.name = "renamed"
 			$0.icon = .emoji("🚀")
 		}
+		let entered = DispatchSemaphore(value: 0)
 		let gate = DispatchSemaphore(value: 0)
-		fixture.keychain.blockNextSaveEnvironments = { gate.wait() }
+		fixture.keychain.blockNextVaultTransaction = { entered.signal(); gate.wait() }
 		let save = Task { await store.saveProjectSettings(of: "demo") }
-		try #require(try await waitUntil { fixture.keychain.saveEnvironmentsCallCount > 0 })
+		await withCheckedContinuation { continuation in
+			DispatchQueue.global().async { entered.wait(); continuation.resume() }
+		}
 		store.selectedAccount = .org("acme")
 		gate.signal()
 		await save.value

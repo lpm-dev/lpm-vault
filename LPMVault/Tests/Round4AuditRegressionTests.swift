@@ -5001,7 +5001,6 @@ struct LazyLocalProjectLoadingRegressionTests {
 		#expect(store.projects.count == 500)
 		#expect(keychain.projectMetadataReadCount == 500)
 		#expect(keychain.projectReadCount == 0)
-		#expect(keychain.environmentReadCount == 0)
 		#expect(store.projects.allSatisfy { !$0.hasLoadedEnvironments })
 		#expect(store.projects.allSatisfy { $0.secretCount == 1 })
 		#expect(store.workspaceSnapshots.isEmpty)

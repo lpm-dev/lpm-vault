@@ -38,6 +38,7 @@ struct VaultWorkspaceView: View {
 	@State private var projectToDelete: VaultProject?
 	/// An exit from a restore's sync pause, waiting for the person to confirm it.
 	@State private var pauseExit: VaultSyncPauseExit?
+	@State private var companionRepair: CompanionRepairRequest?
 	@State private var isCheckingSharingKey = false
 	/// The project whose settings open once it's selected.
 	@State private var pendingProjectSettings: String?
@@ -298,6 +299,9 @@ struct VaultWorkspaceView: View {
 			if !isObscured, !store.isShowingAccountPage, let project, let pause = store.syncPauses[project.id] {
 				syncPausedBanner(project, pause)
 			}
+			if !isObscured, !store.isShowingAccountPage, let project {
+				companionBanners(for: project)
+			}
 
 			GeometryReader { geometry in
 				let budget = VaultPaneBudget(
@@ -348,7 +352,7 @@ struct VaultWorkspaceView: View {
 							.id(project.id)
 							.frame(maxWidth: .infinity, maxHeight: .infinity)
 						} else if let failure = store.selectedProjectLoadFailure {
-							VaultLoadErrorView(failure: failure, retry: store.retrySelectedProjectLoad)
+							VaultLoadErrorView(failure: failure, retry: retry(after: failure))
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
 						} else if let project, mode == .schema {
@@ -441,7 +445,9 @@ struct VaultWorkspaceView: View {
 									projectID: project.id, environment: store.selectedEnvironment
 								)),
 								canUseSecrets: store.canUseLocalSecrets,
+								canEditValues: store.canEditValues(of: project.id),
 								cliAccess: store.selectedProjectCliAccess,
+								cliAccessContradicts: store.selectedProjectCliAccessContradicts,
 								isChangingCliAccess: store.isChangingCliAccess,
 								onChangeCliAccess: { access in Task { await store.changeCliAccess(to: access) } },
 								onCopyAll: copyAll,
@@ -736,6 +742,15 @@ struct VaultWorkspaceView: View {
 		.vaultConfirmation(item: $pauseExit) { exit in
 			pauseExitConfirmation(exit)
 		}
+		.vaultConfirmation(item: $companionRepair) { request in
+			let project = store.projects.first { $0.id == request.projectId }
+			let subject = VaultConfirmation.Subject(
+				mark: .project(store.projectIcons.appearance(for: request.projectId)),
+				name: project?.name ?? request.projectId)
+			return request.presentation.repairConfirmation(subject: subject) {
+				Task { await store.repairCompanionData(projectId: request.projectId, reviewed: request.state) }
+			}
+		}
 		.vaultConfirmation(item: $deleteEnvironmentTarget) { target in
 			VaultConfirmation(
 				symbol: "trash",
@@ -783,6 +798,42 @@ struct VaultWorkspaceView: View {
 				cancelTitle: nil,
 				actions: [.init(title: "OK") {}])
 		}
+	}
+
+	/// How a failed load is retried; never when the project's newer data
+	/// stopped it, which the banner above explains and retrying can't change.
+	private func retry(after failure: VaultLoadFailure) -> (() -> Void)? {
+		failure.isCompanion ? nil : { store.retrySelectedProjectLoad() }
+	}
+
+	/// What `project`'s newer data means here, and what finishing an
+	/// interrupted change to it did.
+	@ViewBuilder
+	private func companionBanners(for project: VaultProject) -> some View {
+		if let state = store.projectCompanionStates[project.id],
+			let presentation = CompanionStatePresentation(state, unfinished: store.projectCompanionUnfinished[project.id])
+		{
+			VaultCompanionBanner(
+				presentation: presentation,
+				isRepairing: store.isRepairingCompanionData,
+				isRetrying: store.isRefreshingLocalState,
+				onRepair: { companionRepair = CompanionRepairRequest(projectId: project.id, state: state, presentation: presentation) },
+				onRetry: { Task { await store.refreshLocalState() } })
+		}
+		if let notice = store.companionNotices[project.id] {
+			VaultCompanionNoticeBanner(presentation: CompanionNoticePresentation(notice)) {
+				store.dismissCompanionNotice(for: project.id)
+			}
+		}
+	}
+
+	/// A repair of one project's damaged newer data, waiting for the person's
+	/// answer, bound to the state they reviewed.
+	private struct CompanionRepairRequest: Identifiable {
+		let id = UUID()
+		let projectId: String
+		let state: CompanionEngine.Assessment
+		let presentation: CompanionStatePresentation
 	}
 
 	/// An exit from a restore's sync pause for one project.
@@ -1378,6 +1429,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func resetProjectPresentation() {
+		companionRepair = nil
 		importRequest = nil
 		rawTextSaved = nil
 		mode = pendingProjectSettings != nil && pendingProjectSettings == store.selectedProjectId ? .projectSettings : .matrix

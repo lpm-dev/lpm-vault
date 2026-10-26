@@ -595,13 +595,18 @@ enum ProjectEnvSchemaState: Equatable, Sendable {
 		"group members must be unique declared variables": ("A group's members must be declared keys, each listed once.", ["vars"]),
 		"clientPrefixes must contain at most 32 unique portable prefixes ending in '_'":
 			("Client prefixes: at most 32, each listed once, using letters, digits and underscores, and ending in “_”.", []),
+		"This field isn't one this version of LPM knows. Check its spelling, or update LPM if a newer version wrote it.":
+			(unknownField, []),
 	]
+
+	private static let unknownField = "LPM doesn't know this field. Check its spelling, or update LPM Vault and the LPM CLI if a newer version wrote it."
 
 	/// Plain words for the engine's definition codes when it gives no message.
 	private static let reasons: [String: String] = {
 		let limits = "The imported schemas exceed the LPM CLI's limits."
 		return [
-			"env.invalid_definition": "A declaration has an unknown field or a value of the wrong type.",
+			"env.invalid_definition": "A declaration has a value of the wrong type, or a field given twice.",
+			"env.unknown_field": unknownField,
 			"env.invalid_rule": "This rule is invalid.",
 			"env.invalid_name": "A key or group name isn't a valid environment variable name.",
 			"env.invalid_pattern": "This pattern isn't a valid regular expression.",

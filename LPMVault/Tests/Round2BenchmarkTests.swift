@@ -150,11 +150,11 @@ struct Round2BenchmarkTests {
 				return
 			}
 		}
-		_ = service.listProjectsResult()
+		_ = Self.listedProjects(service)
 
 		let samples = (0..<5).map { _ -> Double in
 			let start = ContinuousClock.now
-			let result = service.listProjectsResult()
+			let result = Self.listedProjects(service)
 			guard case .success(let projects) = result, projects.count == projectIDs.count else {
 				Issue.record("Could not decode project-unlock fixture")
 				return .infinity
@@ -174,7 +174,7 @@ struct Round2BenchmarkTests {
 				valueBytes: 75_000
 			)
 		)
-		guard case .success(let warmProjects) = service.listProjectsResult(),
+		guard case .success(let warmProjects) = Self.listedProjects(service),
 			warmProjects.count == projectCount
 		else {
 			Issue.record("Could not warm the generated project-unlock fixture")
@@ -183,7 +183,7 @@ struct Round2BenchmarkTests {
 
 		let samples = (0..<5).map { _ -> Double in
 			let start = ContinuousClock.now
-			let result = service.listProjectsResult()
+			let result = Self.listedProjects(service)
 			guard case .success(let projects) = result, projects.count == projectCount else {
 				Issue.record("Could not decode the generated project-unlock fixture")
 				return .infinity
@@ -193,6 +193,25 @@ struct Round2BenchmarkTests {
 		print(
 			"ROUND2_BENCH generated_project_unlock_ms median=\(median(samples)) samples=\(samples)"
 		)
+	}
+
+	/// Every listed project with its values, read in one transaction as an
+	/// unlock that loads them all would.
+	private static func listedProjects(_ service: KeychainService) -> Result<[VaultProject], KeychainError> {
+		service.withKeychainTransaction { () -> Result<[VaultProject], KeychainError> in
+			service.listProjectMetadataResult().flatMap { metadata in
+				var projects: [VaultProject] = []
+				projects.reserveCapacity(metadata.count)
+				for entry in metadata {
+					switch service.getProjectResult(vaultId: entry.id) {
+					case .success(let project?): projects.append(project)
+					case .success(nil): return .failure(.itemNotFound)
+					case .failure(let error): return .failure(error)
+					}
+				}
+				return .success(projects)
+			}
+		}.flatMap { $0 }
 	}
 
 	private func makeProjects(projectCount: Int, keysPerProject: Int) -> [VaultProject] {

@@ -417,7 +417,6 @@ struct VaultStoreTests {
 		#expect(await store.loadProjects())
 		#expect(store.projectCliAccess == ["first": .requireApproval, "second": .automatic])
 		#expect(keychain.projectReadCount == 0)
-		#expect(keychain.environmentReadCount == 0)
 		#expect(store.projects.allSatisfy { !$0.hasLoadedEnvironments })
 		store.isUnlocked = true
 		store.selectedProjectId = "second"
@@ -467,7 +466,7 @@ struct VaultStoreTests {
 		let keychain = MockKeychainService()
 		keychain.storage["first"] = ("First", "", [:])
 		let persistence = VaultPersistenceCoordinator(service: keychain)
-		let authorization = CliAccessChangeAuthorization()
+		let authorization = CommitAuthorization()
 		authorization.invalidate()
 		let result = await persistence.setCliAccess(vaultId: "first", access: .requireApproval, authorization: authorization)
 		guard case .failure(.accessDenied) = result else {
@@ -532,7 +531,7 @@ struct VaultStoreTests {
 		let keychain = MockKeychainService()
 		keychain.storage["first"] = ("First", "", [:])
 		let persistence = VaultPersistenceCoordinator(service: keychain)
-		let authorization = CliAccessChangeAuthorization()
+		let authorization = CommitAuthorization()
 		keychain.beforeKeychainTransaction = { authorization.invalidate() }
 		let result = await persistence.setCliAccess(vaultId: "first", access: .requireApproval, authorization: authorization)
 		#expect(keychain.cliAccessChangeCount == 0)

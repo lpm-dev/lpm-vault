@@ -33,6 +33,9 @@ def verify(bundle):
     notices = bundle / NOTICES
     if not notices.is_file() or digest(notices) != provenance.get('notices'):
         raise ValueError('Engine third-party notices differ from their recorded hash')
+    fixtures = {str(path.relative_to(bundle)): digest(path) for path in (bundle / 'fixtures').rglob('*') if path.is_file()} if (bundle / 'fixtures').is_dir() else {}
+    if fixtures != provenance.get('fixtures', {}):
+        raise ValueError('Engine contract fixtures differ from their recorded hashes')
     for path, checksum in provenance['sources'].items():
         if Path(path).is_absolute() or '..' in Path(path).parts or not re.fullmatch(r'[0-9a-f]{64}', checksum):
             raise ValueError('Invalid engine source manifest')
@@ -66,7 +69,7 @@ def main():
         if args.target_dir is None:
             parser.error('--rebuild requires --target-dir')
         reproduce(args.bundle, provenance, args.target_dir)
-    print('Engine ABI, source provenance, artifact and notice hashes verified')
+    print('Engine ABI, source provenance, artifact, notice and fixture hashes verified')
 
 
 if __name__ == '__main__':
