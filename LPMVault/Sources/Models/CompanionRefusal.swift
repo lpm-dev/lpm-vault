@@ -7,7 +7,8 @@ enum CompanionRefusal: Equatable, Sendable {
 	case unsupported(feature: String, version: Int, level: CompanionEngine.Level)
 	/// Damaged newer data, described as one clause.
 	case damaged(String)
-	/// An interrupted change LPM Vault couldn't finish, and why.
+	/// An interrupted change LPM Vault couldn't finish this time, and why;
+	/// trying again may finish it. One that can never be finished is damage.
 	case unfinished(String)
 	/// The newer data changed since the person reviewed a repair of it.
 	case changedSinceReview
@@ -83,7 +84,8 @@ enum CompanionRefusal: Equatable, Sendable {
 		case "invalidRecord": "its \(kind) record is invalid"
 		case "unlistedRecord": "it has \(kind) records no feature lists"
 		case "access": damage.reason ?? "its approval settings contradict each other"
-		case "unfinishedChange": "an interrupted change to it can’t be finished"
+		case "unfinishedChange": damage.reason.map { "an interrupted change to it can’t be finished (\($0))" }
+			?? "an interrupted change to it can’t be finished"
 		default: "it can’t be checked"
 		}
 	}

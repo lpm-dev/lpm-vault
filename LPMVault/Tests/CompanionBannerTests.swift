@@ -20,14 +20,14 @@ extension SheetInteractionTests {
 
 		/// An unlocked store showing `project`, whose newer data is `marker`, as
 		/// a snapshot reads it.
-		private func fixture(marker: String, inventory: [String]? = nil) async throws -> Fixture {
+		private func fixture(marker: String, inventory: [String]? = nil, unfinished: String? = nil) async throws -> Fixture {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-companion-banner-\(UUID().uuidString)", directoryHint: .isDirectory)
 			try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 			let defaults = try #require(UserDefaults(suiteName: folder.lastPathComponent))
 			let keychain = MockKeychainService()
 			keychain.envStorage["project"] = (name: "Project", path: "", environments: ["default": ["TOKEN": "a"]])
 			keychain.companionStates["project"] = try CompanionEngine.assess(
-				vaultId: "project", .init(marker: Data(marker.utf8), inventory: inventory))
+				vaultId: "project", .init(marker: Data(marker.utf8), inventory: inventory, unfinished: unfinished))
 			let store = VaultStore(
 				keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(), preferences: defaults,
 				projectIconsDirectory: folder.appending(path: "icons", directoryHint: .isDirectory),
@@ -130,6 +130,33 @@ extension SheetInteractionTests {
 			fixture.keychain.companionStates["project"] = nil
 			try await host.click("Try Again")
 			#expect(try await host.waitForTextToDisappear("This project’s newer data has an unfinished change"))
+		}
+
+		@Test("a change that can never be finished is damage, and Repair… discards the newer data")
+		func unfinishableBanner() async throws {
+			let restoring = #"{"schemaVersion":1,"vaultId":"project","state":"restoring","features":{},"restore":{"phase":"activating","replaces":[],"features":{"overrides":{"version":1,"ifUnsupported":"refuse","kinds":["overrides"],"state":"active"}}}}"#
+			let fixture = try await fixture(marker: restoring, unfinished: "a restore lost a staged record before it was activated")
+			defer { fixture.tearDown() }
+			let host = workspace(fixture)
+			defer { host.window.close() }
+			try await host.settle()
+			for text in [
+				"This project’s newer data is damaged",
+				"An interrupted change to it can’t be finished (a restore lost a staged record before it was activated).",
+				"Its values stay hidden",
+			] {
+				#expect(try await host.waitForText(text), "The banner says \(text)")
+			}
+			#expect(element("Try Again", in: host.window) == nil, "trying again can never finish it")
+
+			try await host.click("Repair…")
+			let repair = try await question(host)
+			for text in ["discards all of this project’s newer data on this Mac", "Its values stay as they are."] {
+				#expect(try await host.waitForText(text, in: repair), "The question says \(text)")
+			}
+			try await host.click("Repair", in: repair)
+			#expect(try await host.waitForTextToDisappear("This project’s newer data is damaged"))
+			#expect(fixture.keychain.companionRepairs.map(\.reviewed.repairs) == [[.init(action: .discardProject, feature: nil)]])
 		}
 
 		@Test("a project using a newer feature's data asks to update, with nothing to repair")

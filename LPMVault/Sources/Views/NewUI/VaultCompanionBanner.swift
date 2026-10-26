@@ -9,6 +9,7 @@ struct CompanionStatePresentation: Equatable {
 		/// Damaged data; repairing fixes it.
 		case damaged
 		/// A change to the data that couldn't be finished yet; trying again does.
+		/// One that can never be finished is damaged.
 		case interrupted
 	}
 
@@ -20,11 +21,11 @@ struct CompanionStatePresentation: Equatable {
 	/// The features a discard removes, when the marker names them.
 	private let features: [String]
 
-	/// `unfinished` is why an interrupted change couldn't be finished, when
-	/// finishing it was tried.
+	/// `unfinished` is why the last try to finish an interrupted change
+	/// failed, when trying again may finish it.
 	init?(_ state: CompanionEngine.Assessment, unfinished: String? = nil) {
 		features = state.features.map(\.name)
-		if state.needsResume {
+		if state.needsResume, !state.damage.contains(where: { $0.code == "unfinishedChange" }) {
 			tone = .interrupted
 			title = "This project’s newer data has an unfinished change"
 			let why = unfinished.map { " It couldn’t be finished: \($0)." } ?? ""

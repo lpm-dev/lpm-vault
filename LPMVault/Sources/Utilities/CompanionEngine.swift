@@ -124,6 +124,9 @@ enum CompanionEngine {
 		var inventory: [String]?
 		/// Why the project's access was found damaged, if it was.
 		var accessDamage: String?
+		/// Why a resume found the project's interrupted step can never be
+		/// finished, if it did.
+		var unfinished: String?
 	}
 
 	enum PlanAction: String, Encodable, Sendable {
@@ -252,12 +255,14 @@ enum CompanionEngine {
 			let marker: Data?
 			let inventory: [String]?
 			let accessDamage: String?
+			let unfinished: String?
 		}
 		return try call(lpm_env_companion_assess, Request(
 			vaultId: vaultId,
 			marker: observed.marker,
 			inventory: observed.inventory,
-			accessDamage: observed.accessDamage
+			accessDamage: observed.accessDamage,
+			unfinished: observed.unfinished
 		))
 	}
 
@@ -285,6 +290,19 @@ enum CompanionEngine {
 			ownOperations: ownOperations,
 			feature: feature
 		))
+	}
+
+	/// Why a move can never activate `staged`, the staged record a resume
+	/// plan moves, given the length of what's stored there, nil when it's
+	/// missing; nil when it can.
+	static func checkMove(staged: String, length: Int?) throws(Failure) -> String? {
+		struct Request: Encodable {
+			let staged: String
+			let length: Int?
+		}
+		struct Response: Decodable { let unfinishable: String? }
+		let response: Response = try call(lpm_env_companion_check_move, Request(staged: staged, length: length))
+		return response.unfinishable
 	}
 
 	/// Checks one transaction before it commits, or when its committed

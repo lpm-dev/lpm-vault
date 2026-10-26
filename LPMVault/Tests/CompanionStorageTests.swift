@@ -904,13 +904,46 @@ struct CompanionStorageReviewTests {
 		#expect(try service.getProjectResult(vaultId: vault).get() != nil)
 	}
 
-	@Test("a project whose interrupted restore can't be finished can still be deleted")
-	func stuckRestoreIsDeletable() throws {
-		let (service, backend, _) = try makeService()
+	/// A restore whose staged record is larger than a record may be, which no
+	/// resume can ever move.
+	private func storeStuckRestore(_ backend: CompanionTestBackend) throws {
 		let restore = #"{"phase":"activating","replaces":[],"features":{\#(overridesV1)}}"#
 		backend.store(try markerName(), marker("", state: "restoring", restore: restore))
 		backend.store(try recordName("overrides", staged: true), Data(repeating: 0x61, count: 101 * 1024))
-		guard case .unfinished? = refusal(service.getProjectResult(vaultId: vault)) else {
+	}
+
+	@Test("a restore that can never be finished is damage Repair… discards, keeping the values")
+	func stuckRestoreIsRepaired() throws {
+		let (service, backend, _) = try makeService()
+		try storeStuckRestore(backend)
+		let reason = "a restore's staged overrides record holds 103424 bytes, more than the 102400 a record may"
+		#expect(refusal(service.getProjectResult(vaultId: vault)) == .damaged("an interrupted change to it can’t be finished (\(reason))"))
+
+		let states = try service.projectStatesResult(vaultIds: [vault]).get()
+		#expect(states.unfinished.isEmpty, "trying again can never finish it")
+		let state = try #require(states.companion[vault])
+		#expect(state.damage == [.init(code: "unfinishedChange", kind: nil, reason: reason, repair: .init(action: .discardProject, feature: nil))])
+		#expect(state.repairs == [.init(action: .discardProject, feature: nil)])
+		let presentation = try #require(CompanionStatePresentation(state))
+		#expect(presentation.tone == .damaged)
+		#expect(presentation.repairs == state.repairs)
+
+		guard case .success(.repaired(nil)) = service.repairCompanionData(vaultId: vault, reviewed: state) else {
+			Issue.record("Repair… discards the newer data")
+			return
+		}
+		#expect(backend.names.allSatisfy {
+			!$0.hasPrefix("__vault_companion") && !$0.hasPrefix("__vault_features") && !$0.hasPrefix("__vault_staged")
+		})
+		#expect(backend.data(vault) == values, "the values stay")
+		#expect(try service.getProjectResult(vaultId: vault).get() != nil, "the project reads again")
+	}
+
+	@Test("a project whose interrupted restore can't be finished can still be deleted")
+	func stuckRestoreIsDeletable() throws {
+		let (service, backend, _) = try makeService()
+		try storeStuckRestore(backend)
+		guard case .damaged? = refusal(service.getProjectResult(vaultId: vault)) else {
 			Issue.record("a restore that can't be finished hides the values, saying why")
 			return
 		}

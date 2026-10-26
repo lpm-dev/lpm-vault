@@ -291,6 +291,9 @@ final class CompanionScope {
 	var companionNames: [String: Set<String>]?
 	/// How the engine read each name asked about; naming never changes.
 	var described: [String: CompanionEngine.Described] = [:]
+	/// Why each project's interrupted step can never be finished, for those a
+	/// resume in this scope found can't be.
+	var unfinishable: [String: String] = [:]
 
 	/// Forgets everything a failed change may have made stale.
 	func reset() {
@@ -299,6 +302,7 @@ final class CompanionScope {
 		markers = [:]
 		listing = nil
 		companionNames = nil
+		unfinishable = [:]
 	}
 }
 
@@ -2564,7 +2568,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 		if let gate = scope.gates[vaultId] { return gate }
 		var gate = try assessUnlocked(vaultId, listed: false)
 		if gate.needsResume {
-			try resumeUnlocked(vaultId)
+			if let reason = try resumeUnlocked(vaultId) { scope.unfinishable[vaultId] = reason }
 			gate = try assessUnlocked(vaultId, listed: false)
 		}
 		scope.gates[vaultId] = gate
@@ -2589,11 +2593,15 @@ final class SharedKeychainStore: @unchecked Sendable {
 
 	/// The engine's assessment of `vaultId` from its marker, and with
 	/// `listed`, from the listing too: its records and contradictory approval.
+	/// An interrupted step this scope found can never be finished is damage.
 	private func assessUnlocked(_ vaultId: String, listed: Bool) throws -> CompanionEngine.Assessment {
 		let marker = try markerUnlocked(vaultId)
+		let unfinished = scope.unfinishable[vaultId]
 		let observed: CompanionEngine.Observed = listed
-			? .init(marker: marker, inventory: try projectNamesUnlocked(vaultId), accessDamage: try accessDamageUnlocked(vaultId))
-			: .init(marker: marker)
+			? .init(
+				marker: marker, inventory: try projectNamesUnlocked(vaultId), accessDamage: try accessDamageUnlocked(vaultId),
+				unfinished: unfinished)
+			: .init(marker: marker, unfinished: unfinished)
 		return try engine { try CompanionEngine.assess(vaultId: vaultId, observed) }
 	}
 
@@ -2610,15 +2618,27 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 	}
 
-	/// Finishes the interrupted lifecycle step `vaultId`'s marker describes.
-	/// A step that can't be finished refuses as unfinished, with why.
-	private func resumeUnlocked(_ vaultId: String) throws {
+	/// Finishes the interrupted lifecycle step `vaultId`'s marker describes,
+	/// returning why it can never be finished when the engine refuses its plan
+	/// or a move it needs, as the CLI decides. Any other failure refuses as
+	/// unfinished, with why, since trying again may finish it.
+	private func resumeUnlocked(_ vaultId: String) throws -> String? {
 		do {
-			let plan = try engine {
-				try CompanionEngine.plan(.resume, vaultId: vaultId, marker: try markerUnlocked(vaultId), inventory: try projectNamesUnlocked(vaultId))
+			let marker = try markerUnlocked(vaultId)
+			let names = try projectNamesUnlocked(vaultId)
+			let plan: CompanionEngine.Plan
+			do {
+				plan = try CompanionEngine.plan(.resume, vaultId: vaultId, marker: marker, inventory: names)
+			} catch where error.code == "companion.refused" {
+				return error.message
+			} catch {
+				throw KeychainStoreError.companion(.engine(error.message))
 			}
 			try executeCompanionPlanUnlocked(plan, vaultId: vaultId)
 			if let notice = plan.notice { resumeNotices.record(notice, for: vaultId) }
+			return nil
+		} catch let unmovable as UnmovableStagedRecord {
+			return unmovable.reason
 		} catch KeychainStoreError.homeRetired {
 			throw KeychainStoreError.homeRetired
 		} catch let error as KeychainStoreError {
@@ -2649,9 +2669,11 @@ final class SharedKeychainStore: @unchecked Sendable {
 			let deletions = transaction.deletes.count + transaction.moves.count + (transaction.deletesMarker ? 1 : 0)
 			guard deleted + deletions <= limit else { break }
 			for move in transaction.moves {
-				guard let bytes = try backend.read(service: service, account: move.staged) else {
-					throw KeychainStoreError.integrityValidationFailed
+				let read = try backend.read(service: service, account: move.staged)
+				if let reason = try engine({ try CompanionEngine.checkMove(staged: move.staged, length: read?.count) }) {
+					throw UnmovableStagedRecord(reason: reason)
 				}
+				guard let bytes = read else { throw KeychainStoreError.integrityValidationFailed }
 				pending.append(.write(account: move.live, data: bytes))
 				pending.append(.delete(account: move.staged))
 			}
@@ -2686,6 +2708,11 @@ final class SharedKeychainStore: @unchecked Sendable {
 	}
 
 	private enum InvalidCompanionName { case refuse, skip }
+
+	/// A staged record a resume's move can never activate, and why.
+	private struct UnmovableStagedRecord: Error {
+		let reason: String
+	}
 
 	/// The check a commit and recovery both pass, by the CLI's own code: each
 	/// record written belongs to a feature of the marker left behind, and a
@@ -2817,6 +2844,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 		guard case .account(let companion) = description else { return }
 		scope.listed[companion.vaultId] = nil
+		if scope.unfinishable.removeValue(forKey: companion.vaultId) != nil { scope.gates[companion.vaultId] = nil }
 		if scope.companionNames != nil {
 			switch change {
 			case .deleted: scope.companionNames?[companion.vaultId]?.remove(account)
