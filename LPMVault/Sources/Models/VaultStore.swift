@@ -1193,6 +1193,7 @@ final class VaultStore {
       }
       pruneSchemaDrafts()
       refreshValueChecks()
+      refreshCharacterChecks()
       workspaceSnapshotGeneration &+= 1
       let generation = workspaceSnapshotGeneration
       workspaceSnapshotBuildTask?.cancel()
@@ -1278,7 +1279,19 @@ final class VaultStore {
   /// starts or ends, so views that show it skip keystroke updates.
   private(set) var projectsWithSchemaDrafts: Set<String> = []
   /// Raw text edits not saved yet, by environment. Locking or another account discards them.
-  private(set) var rawTextDrafts: [VaultEnvironmentTarget: VaultRawTextDraft] = [:]
+  private(set) var rawTextDrafts: [VaultEnvironmentTarget: VaultRawTextDraft] = [:] {
+    didSet {
+      guard rawTextDrafts.count < oldValue.count else { return }
+      for target in rawTextCharacterChecks.keys where rawTextDrafts[target] == nil {
+        rawTextCharacterTasks.removeValue(forKey: target)?.cancel()
+        rawTextCharacterChecks[target] = nil
+      }
+    }
+  }
+  /// Each Raw text draft's values as last checked for characters that are
+  /// hard to see, and what was found. It goes with its draft.
+  private(set) var rawTextCharacterChecks: [VaultEnvironmentTarget: ValueCharacterChecker.Checked] = [:]
+  @ObservationIgnored private var rawTextCharacterTasks: [VaultEnvironmentTarget: Task<Void, Never>] = [:]
   /// The Raw text drafts being saved, each with its save's own number.
   private var rawTextSaves: [VaultEnvironmentTarget: UUID] = [:]
   /// The folder each draft's rules were read from.
@@ -1304,6 +1317,18 @@ final class VaultStore {
   @ObservationIgnored private var schemaDraftEvaluationTasks: [String: Task<Void, Never>] = [:]
   @ObservationIgnored var schemaDraftEvaluator = ProjectEnvSchemaDraftEvaluator()
   @ObservationIgnored let valueCheckWorker: ProjectEnvValueCheckWorker
+  /// What each project's stored values hold that's hard to see, by project
+  /// ID, whatever its rules, so values saved earlier, or by the LPM CLI,
+  /// sync, a pull or a backup restore, are caught without being edited.
+  private(set) var valueCharacters: [String: ValueCharacterCheck] = [:]
+  /// The values each project's check found that in, which its next check
+  /// starts from. A project whose values aren't loaded has none, so locking
+  /// leaves no value here.
+  @ObservationIgnored private(set) var characterCheckBases: [String: ValueCharacterChecker.Checked] = [:]
+  @ObservationIgnored let characterChecker: ValueCharacterChecker
+  /// The values each project's character check last started from.
+  @ObservationIgnored private var characterCheckIdentities: [String: UUID] = [:]
+  @ObservationIgnored private var characterCheckTasks: [String: Task<Void, Never>] = [:]
   @ObservationIgnored private var valueCheckInputs: [String: ValueCheckInputs] = [:]
   @ObservationIgnored private var valueCheckTasks: [String: Task<Void, Never>] = [:]
   private var unverifiedKeyDescriptionProjects: Set<String> = []
@@ -2034,6 +2059,7 @@ final class VaultStore {
     platformRevoker: (any PlatformTokenRevoking)? = nil,
     platformURLOpener: (@MainActor @Sendable (URL) -> Void)? = nil,
     valueChecker: ProjectEnvValueCheckWorker.Checker? = nil,
+    characterEngine: ValueCharacterChecker.Engine? = nil,
     authAuthorizationProvider:
       @escaping @Sendable (String, URL) async throws -> AuthSessionAuthorization? = {
         registryURL, baseURL in
@@ -2108,6 +2134,7 @@ final class VaultStore {
     self.cloudflareClient = cloudflareClient ?? { CloudflareClient(token: $0) }
     self.platformURLOpener = platformURLOpener
     self.valueCheckWorker = valueChecker.map(ProjectEnvValueCheckWorker.init(checker:)) ?? ProjectEnvValueCheckWorker()
+    self.characterChecker = characterEngine.map(ValueCharacterChecker.init(engine:)) ?? ValueCharacterChecker()
     self.biometricService = biometricService
     self.injectedAPIService = apiService
     self.apiServiceFactory = apiServiceFactory
@@ -3491,10 +3518,11 @@ final class VaultStore {
         return .failure(.targetUnavailable)
       }
       do {
-        let review = try await Task.detached(priority: .userInitiated) {
+        var review = try await Task.detached(priority: .userInitiated) {
           try EnvFileImportReview(id: reviewID, project: current, environment: environment, creating: creating,
             source: source, sessionGeneration: session, imported: imported)
         }.value
+        review.characters = await characterChecker.inspect(values: imported.secrets) ?? [:]
         guard isWanted() else { return .failure(.cancelled) }
         return .success(review)
       } catch let failure as EnvFileImportError { return .failure(failure) }
@@ -3673,6 +3701,7 @@ final class VaultStore {
     let target = VaultEnvironmentTarget(projectId: project.id, environment: selectedEnvironment)
     if rawTextDrafts[target] == nil {
       rawTextDrafts[target] = VaultRawTextDraft(target: target, baseline: values, order: order)
+      checkRawTextCharacters(target, after: nil)
     }
     return true
   }
@@ -3680,6 +3709,51 @@ final class VaultStore {
   func updateRawTextDraft(_ target: VaultEnvironmentTarget, text: String) {
     guard isUnlocked, rawTextSaves[target] == nil else { return }
     rawTextDrafts[target]?.text = text
+    checkRawTextCharacters(target, after: .milliseconds(150))
+  }
+
+  /// What `target`'s draft values hold that's hard to see now, by key. A key
+  /// whose value changed since its last check isn't in it until it's checked again.
+  func rawTextCharacters(_ target: VaultEnvironmentTarget) -> [String: ValueCharacters] {
+    guard let values = rawTextDrafts[target]?.check.values, let checked = rawTextCharacterChecks[target] else { return [:] }
+    var current: [String: ValueCharacters] = [:]
+    for key in (checked.check.environments["draft"] ?? [:]).keys {
+      guard let value = values[key], let found = checked.characters(of: key, in: "draft", whileItIs: value) else { continue }
+      current[key] = found
+    }
+    return current
+  }
+
+  /// Applies a fix the person chose to every value in a Raw text draft that
+  /// holds characters that are hard to see, rewriting the lines that set it.
+  func fixRawTextCharacters(_ target: VaultEnvironmentTarget, _ fix: RustSchemaEngine.CharacterFix) {
+    guard isUnlocked, rawTextSaves[target] == nil, let draft = rawTextDrafts[target] else { return }
+    var fixed: [String: String] = [:]
+    for (key, found) in rawTextCharacters(target) where fix == .removeHiddenCharacters ? found.removable : found.trimmable {
+      guard let value = draft.check.values[key], let replacement = RustSchemaEngine.fixCharacters(in: value, fix), replacement != value
+      else { continue }
+      fixed[key] = replacement
+    }
+    guard !fixed.isEmpty else { return }
+    rawTextDrafts[target]?.text = draft.text(replacing: fixed)
+    checkRawTextCharacters(target, after: nil)
+  }
+
+  /// Checks a draft's values once typing pauses for `delay`, sending the
+  /// engine only the values that changed since the draft's last check.
+  private func checkRawTextCharacters(_ target: VaultEnvironmentTarget, after delay: Duration?) {
+    rawTextCharacterTasks[target]?.cancel()
+    guard let values = rawTextDrafts[target]?.check.values else { return }
+    let previous = rawTextCharacterChecks[target]
+    rawTextCharacterTasks[target] = Task { [weak self, characterChecker] in
+      if let delay {
+        do { try await Task.sleep(for: delay) } catch { return }
+      }
+      let checked = await characterChecker.check(["draft": values], since: previous)
+      guard let self, !Task.isCancelled, let checked, self.rawTextDrafts[target] != nil else { return }
+      self.rawTextCharacterTasks[target] = nil
+      self.rawTextCharacterChecks[target] = checked
+    }
   }
 
   func discardRawTextDraft(_ target: VaultEnvironmentTarget) {
@@ -4167,6 +4241,42 @@ final class VaultStore {
       self.valueCheckTasks[projectID] = nil
       if self.valueChecks[projectID] != check { self.valueChecks[projectID] = check }
     }
+  }
+
+  // MARK: - Character checks
+
+  /// Checks the stored values of each project whose values changed since
+  /// its last check, off the main thread, sending the engine only the values
+  /// that changed. A project whose values aren't loaded has no check.
+  private func refreshCharacterChecks() {
+    var loaded: [String: VaultProject] = [:]
+    for project in projects where project.hasLoadedEnvironments { loaded[project.id] = project }
+    for projectID in characterCheckIdentities.keys where loaded[projectID] == nil {
+      characterCheckTasks.removeValue(forKey: projectID)?.cancel()
+      characterCheckIdentities[projectID] = nil
+      characterCheckBases[projectID] = nil
+      valueCharacters[projectID] = nil
+    }
+    for (projectID, project) in loaded where characterCheckIdentities[projectID] != project.workspaceSnapshotIdentity {
+      let identity = project.workspaceSnapshotIdentity
+      characterCheckIdentities[projectID] = identity
+      characterCheckTasks[projectID]?.cancel()
+      let environments = project.environments
+      let previous = characterCheckBases[projectID]
+      characterCheckTasks[projectID] = Task { [weak self, characterChecker] in
+        let checked = await characterChecker.check(environments, since: previous)
+        guard let self, !Task.isCancelled, self.characterCheckIdentities[projectID] == identity else { return }
+        self.characterCheckTasks[projectID] = nil
+        self.characterCheckBases[projectID] = checked
+        let check = checked?.check
+        if self.valueCharacters[projectID] != check { self.valueCharacters[projectID] = check }
+      }
+    }
+  }
+
+  /// What `key`'s stored value in `environment` holds that's hard to see.
+  func valueCharacters(of key: String, in environment: String, projectID: String) -> ValueCharacters? {
+    valueCharacters[projectID]?.characters(of: key, in: environment)
   }
 
   private func clearValueChecks() {

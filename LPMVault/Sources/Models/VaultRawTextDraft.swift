@@ -18,6 +18,8 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 	let values: [String: String]
 	/// The line each key in `values` is set on.
 	let lines: [String: Int]
+	/// The lines each key in `values` is set on, more than one when a quoted value spans lines.
+	let spans: [String: ClosedRange<Int>]
 	/// By line.
 	let problems: [Problem]
 	/// The lines to mark: each problem's, and the earlier line a duplicate repeats.
@@ -28,6 +30,7 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 	init(_ text: String, limits: EnvFileImportLimits = .standard) {
 		var values: [String: String] = [:]
 		var lines: [String: Int] = [:]
+		var spans: [String: ClosedRange<Int>] = [:]
 		var keysByFoldedName: [String: String] = [:]
 		var problems: [Problem] = []
 		var problemLines = Set<Int>()
@@ -39,7 +42,7 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 			problemLines.insert(line)
 		}
 
-		func assign(_ assignment: String, line: Int) {
+		func assign(_ assignment: String, line: Int, through end: Int) {
 			let trimmed = assignment.trimmingCharacters(in: .whitespaces)
 			let body = trimmed.hasPrefix("export ") ? String(trimmed.dropFirst("export ".count)) : trimmed
 			guard let equals = body.firstIndex(of: "=") else {
@@ -80,6 +83,7 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 			}
 			values[key] = value
 			lines[key] = line
+			spans[key] = line...end
 			keysByFoldedName[key.lowercased()] = key
 		}
 
@@ -92,7 +96,7 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 				let joined = open.text + "\n" + line
 				if EnvFileCodec.containsClosingQuote(in: line, quote: open.quote) {
 					pending = nil
-					assign(joined, line: open.line)
+					assign(joined, line: open.line, through: number)
 				} else {
 					pending = (joined, open.line, open.quote)
 				}
@@ -103,12 +107,13 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 				pending = (line, number, quote)
 				continue
 			}
-			assign(line, line: number)
+			assign(line, line: number, through: number)
 		}
 		if let open = pending { flag(open.line, "its value's opening \(open.quote) is never closed") }
 
 		self.values = values
 		self.lines = lines
+		self.spans = spans
 		self.problems = problems.sorted { $0.line < $1.line }
 		self.problemLines = problemLines
 		lineCount = number
@@ -183,6 +188,19 @@ struct VaultRawTextDraft: Equatable, Sendable {
 	}
 
 	var canSave: Bool { check.problems.isEmpty && changes.count > 0 }
+
+	/// The text with each of `values`' keys set by one line of its own, in
+	/// place of the lines that set it before.
+	func text(replacing values: [String: String]) -> String {
+		let replacements = values.compactMap { key, value in check.spans[key].map { ($0, EnvFileCodec.formatLine(key: key, value: value)) } }
+			.sorted { $0.0.lowerBound > $1.0.lowerBound }
+		guard !replacements.isEmpty else { return text }
+		var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+		for (span, line) in replacements where span.upperBound <= lines.count {
+			lines.replaceSubrange((span.lowerBound - 1)...(span.upperBound - 1), with: [line])
+		}
+		return lines.joined(separator: "\n")
+	}
 
 	/// The same edit, of the environment under its new name.
 	func renamed(to environment: String) -> VaultRawTextDraft {

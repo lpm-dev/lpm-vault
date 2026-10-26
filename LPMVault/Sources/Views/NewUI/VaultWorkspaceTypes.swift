@@ -355,6 +355,8 @@ extension EnvironmentValues {
 /// Raw text's edit of the selected environment, as the content view shows it.
 struct VaultRawTextEditing {
   let draft: VaultRawTextDraft
+  /// What the draft's values hold that's hard to see, by key.
+  var characters: [String: ValueCharacters] = [:]
   let isSaving: Bool
   /// Why the last save wrote nothing, until the next.
   let failure: VaultRawTextFailure?
@@ -367,6 +369,19 @@ struct VaultRawTextEditing {
   let onCompare: () -> Void
   /// Copies text cut or copied in the editor.
   let onCopy: (String) -> Void
+  /// Applies a fix the person chose to every value that holds characters that are hard to see.
+  var onFixCharacters: (RustSchemaEngine.CharacterFix) -> Void = { _ in }
+
+  /// Each line that sets a value holding characters that are hard to see,
+  /// with what they are, in line order.
+  var characterWarnings: [VaultEnvTextCheck.Problem] {
+    characters.compactMap { key, found in
+      draft.check.lines[key].map { line in
+        VaultEnvTextCheck.Problem(line: line, reason: "\(key) has hidden characters: \(ValueCharacterWording.spokenList(found))")
+      }
+    }
+    .sorted { $0.line < $1.line }
+  }
 }
 
 enum VaultRawTextFailure: Equatable {

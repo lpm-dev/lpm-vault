@@ -340,6 +340,43 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { element("Save", in: host)?.isEnabled == true })
 		}
 
+		@Test("a line whose value has hidden characters is flagged in words, never stops a save, and a fix rewrites it")
+		func hiddenCharacterLines() async throws {
+			let (store, _, _) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			let editor = try await editorView(in: host)
+			let original = editor.string
+			try type("in\u{200B}fo", over: "info", in: editor)
+			let warning = try await host.waitForElement(saying: "Warning: 1 line has hidden characters. Saving keeps them.")
+			#expect(warning.value == "Line 3: LOG_LEVEL has hidden characters: zero width space at character 3")
+			#expect(try await host.waitUntil { element("Save", in: host)?.isEnabled == true }, "Hidden characters never stop a save")
+			try record(host, named: "raw-text-hidden-characters")
+			try await host.click("Remove hidden characters")
+			#expect(try await host.waitUntil { editor.string == original })
+			#expect(try await host.waitForTextToDisappear("hidden characters"))
+			#expect(try await host.waitForText("No changes yet"))
+		}
+
+		@Test("the review says which new or changed values have hidden characters")
+		func reviewSaysHiddenCharacters() async throws {
+			let (store, _, keychain) = makeStore()
+			defer { store.lock() }
+			let host = try await rawText(store)
+			defer { host.window.close() }
+			try await host.click("Edit")
+			let editor = try await editorView(in: host)
+			try type("in\u{A0}fo", over: "info", in: editor)
+			try await save(in: host)
+			let sheet = try await reviewSheet(of: host)
+			#expect(try await host.waitForText("Warning: the edited value of LOG_LEVEL has hidden characters: no-break space at character 3.", in: sheet))
+			try await host.click("Apply 1 change", in: sheet)
+			#expect(try await host.waitUntil { keychain.envStorage["raw"]?.environments["default"]?["LOG_LEVEL"] == "in\u{A0}fo" },
+				"The review applies the value as it is")
+		}
+
 		@Test("text copied or cut in the editor goes to the clipboard as every copy of values does")
 		func editorCopiesLikeEveryCopy() async throws {
 			let waits = ClipboardClearWaits()

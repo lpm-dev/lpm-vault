@@ -108,6 +108,9 @@ private struct VaultKeyEditor: View {
 	let onOpenRules: (String) -> Void
 
 	@State private var revealedEnvironments: Set<String> = []
+	/// The engine's look at each card's value that's edited, or revealed
+	/// while it holds characters that are hard to see, by environment.
+	@State private var characterInspections: [String: ValueCharacterChecker.Inspection] = [:]
 	@State private var saveError: VaultKeyEditError?
 	/// The engine's check of the unsaved values, and the inputs it checked.
 	@State private var editCheck: (input: EditCheckInput, preview: ProjectEnvValueCheckWorker.Preview?)?
@@ -152,6 +155,65 @@ private struct VaultKeyEditor: View {
 		}
 		.background(VaultEscapeResponder(onEscape: onClose))
 		.task(id: checkInput) { await checkEdits(checkInput) }
+		.task(id: inspectedValues(draft, cards: cards).mapValues(ExactText.init)) {
+			await inspectCharacters(inspectedValues(draft, cards: cards))
+		}
+		.onDisappear { characterInspections = [:] }
+	}
+
+	// MARK: - Hidden characters
+
+	/// The values to look at more closely than the stored check does: each
+	/// edited one, and each revealed one whose stored value holds characters
+	/// that are hard to see, which the preview shows.
+	private func inspectedValues(_ draft: VaultKeyDraft?, cards: [String]) -> [String: String] {
+		var values: [String: String] = [:]
+		for environment in cards {
+			let value = currentValue(in: environment, draft: draft)
+			if !isStored(value, in: environment) || (isRevealed(environment) && storedCharacters(in: environment) != nil) {
+				values[environment] = value
+			}
+		}
+		return values
+	}
+
+	/// Whether `value` is the stored value, byte for byte, which the stored check describes.
+	private func isStored(_ value: String, in environment: String) -> Bool {
+		project.value(for: key, in: environment).map { ExactText($0) == ExactText(value) } ?? false
+	}
+
+	private func storedCharacters(in environment: String) -> ValueCharacters? {
+		store.valueCharacters(of: key, in: environment, projectID: project.id)
+	}
+
+	/// Looks at each value once typing pauses, keeping what's already known of values that didn't change.
+	private func inspectCharacters(_ values: [String: String]) async {
+		characterInspections = characterInspections.filter { environment, inspection in
+			values[environment].map(inspection.isOf) ?? false
+		}
+		let pending = values.filter { characterInspections[$0.key] == nil }
+		guard !pending.isEmpty else { return }
+		do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+		for (environment, value) in pending.sorted(by: { $0.key < $1.key }) {
+			guard let inspection = await store.characterChecker.inspect(value), !Task.isCancelled else { return }
+			characterInspections[environment] = inspection
+		}
+	}
+
+	/// What the card's value, as shown now, holds that's hard to see.
+	private func characters(in environment: String, draft: VaultKeyDraft?) -> (found: ValueCharacters, shown: ShownValueCharacters?)? {
+		let value = currentValue(in: environment, draft: draft)
+		let inspection = characterInspections[environment].flatMap { $0.isOf(value) ? $0 : nil }
+		let found = isStored(value, in: environment) ? storedCharacters(in: environment) : inspection?.found
+		guard let found else { return nil }
+		return (found, isRevealed(environment) ? inspection?.shown : nil)
+	}
+
+	/// Applies a fix the person chose to the card's value, as an unsaved edit.
+	private func fixCharacters(in environment: String, _ fix: RustSchemaEngine.CharacterFix) {
+		let value = currentValue(in: environment, draft: store.keyDrafts.draft(id))
+		guard let fixed = RustSchemaEngine.fixCharacters(in: value, fix), fixed != value else { return }
+		edit { $0.setValue(fixed, in: environment) }
 	}
 
 	// MARK: - Checks
@@ -433,6 +495,17 @@ private struct VaultKeyEditor: View {
 			.frame(minHeight: 34)
 			.vaultInputField(focused: focus == .value(environment), invalid: hasConflict || isOrphan || problem != nil)
 			.help(problem ?? "")
+
+			if let characters = characters(in: environment, draft: draft) {
+				VaultValueCharacterWarning(
+					found: characters.found,
+					subject: "the value in \(displayName)",
+					shown: characters.shown,
+					onRemoveHiddenCharacters: { fixCharacters(in: environment, .removeHiddenCharacters) },
+					onTrimEnds: { fixCharacters(in: environment, .trimEnds) },
+					disabled: isSaving || hasConflict || isOrphan || !store.canUseLocalSecrets || !store.canEditValues(of: project.id)
+				)
+			}
 
 			if hasConflict {
 				cardMessage("Changed outside the editor.") {

@@ -17,6 +17,8 @@ struct AddVariableSheet: View {
 	@State private var suggestionsHiddenFor: String?
 	/// The engine's check of the typed value, and what it checked.
 	@State private var valueCheck: (input: ValueCheckInput, problems: [String])?
+	/// What the typed value holds that's hard to see, as the engine last found.
+	@State private var valueCharacters: ValueCharacterChecker.Inspection?
 	@FocusState private var focusedField: Field?
 
 	private enum Field: Hashable {
@@ -118,6 +120,7 @@ struct AddVariableSheet: View {
 		.onDisappear {
 			submitTask?.cancel()
 			value = ""
+			valueCharacters = nil
 		}
 	}
 
@@ -342,8 +345,44 @@ struct AddVariableSheet: View {
 				.foregroundStyle(VaultPalette.redText)
 				.accessibilityElement(children: .combine)
 			}
+			if let inspection = currentValueCharacters, let found = inspection.found {
+				VaultValueCharacterWarning(
+					found: found,
+					subject: "the value",
+					shown: isValueRevealed ? inspection.shown : nil,
+					onRemoveHiddenCharacters: { fixValue(.removeHiddenCharacters) },
+					onTrimEnds: { fixValue(.trimEnds) },
+					disabled: isSubmitting
+				)
+			}
 		}
 		.task(id: valueCheckInput) { await checkValue(valueCheckInput) }
+		.task(id: ExactText(value)) { await checkCharacters(value) }
+	}
+
+	/// The engine's report on the value as it's typed now; nil until it's checked.
+	private var currentValueCharacters: ValueCharacterChecker.Inspection? {
+		guard let valueCharacters, valueCharacters.isOf(value) else { return nil }
+		return valueCharacters
+	}
+
+	/// Checks the typed value once typing pauses.
+	private func checkCharacters(_ typed: String) async {
+		guard !typed.isEmpty else {
+			valueCharacters = nil
+			return
+		}
+		do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+		let inspection = await store.characterChecker.inspect(typed)
+		guard !Task.isCancelled, let inspection, inspection.isOf(value) else { return }
+		valueCharacters = inspection
+	}
+
+	/// Applies a fix the person chose to the typed value.
+	private func fixValue(_ fix: RustSchemaEngine.CharacterFix) {
+		guard !isSubmitting, let fixed = RustSchemaEngine.fixCharacters(in: value, fix) else { return }
+		value = fixed
+		focusedField = .value
 	}
 
 	private var valueCheckInput: ValueCheckInput? {

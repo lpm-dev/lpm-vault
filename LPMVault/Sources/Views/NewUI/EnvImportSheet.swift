@@ -40,6 +40,8 @@ struct EnvImportSheet: View {
 	@State private var work: Work?
 	@State private var task: Task<Void, Never>?
 	@State private var failure: String?
+	/// The keys of the read values that hold characters that are hard to see, and the read they came from.
+	@State private var characterKeys: (read: ImportedEnvFile, keys: [String])?
 
 	/// `file` is one dropped on the window, which the sheet opens reading.
 	init(store: VaultStore, projectID: String, environment: String, file: URL? = nil) {
@@ -79,6 +81,7 @@ struct EnvImportSheet: View {
 			VaultHairline()
 			VStack(alignment: .leading, spacing: 18) {
 				EnvImportSourcePicker(store: store, projectID: projectID, state: $source, disabled: work != nil)
+				if let keys = currentCharacterKeys, !keys.isEmpty { characterNote(keys) }
 				targetSection
 				reviewOption
 				if let failure {
@@ -99,6 +102,7 @@ struct EnvImportSheet: View {
 		.vaultUnsavedSheetWork(store, projectID: projectID, projectName: project?.name ?? "", title: "Import variables",
 			detail: source.source.map { "\($0.name) into \(targetName)" })
 		.onChange(of: source.source, initial: true) { _, source in nameDraft.follow(source) }
+		.task(id: source.imported) { await checkCharacters(source.imported) }
 		.onChange(of: target) { _, _ in failure = nil }
 		.onChange(of: source.textRevision) { _, _ in failure = nil }
 		.onChange(of: source.fileRevision) { _, _ in failure = nil }
@@ -127,6 +131,39 @@ struct EnvImportSheet: View {
 		.padding(.horizontal, 24)
 		.padding(.top, 20)
 		.padding(.bottom, 16)
+	}
+
+	/// The keys whose read values hold characters that are hard to see, for the read shown now.
+	private var currentCharacterKeys: [String]? {
+		guard let characterKeys, characterKeys.read == source.imported else { return nil }
+		return characterKeys.keys
+	}
+
+	private func checkCharacters(_ read: ImportedEnvFile?) async {
+		guard let read, !read.secrets.isEmpty else {
+			characterKeys = nil
+			return
+		}
+		guard let check = await store.characterChecker.check(["default": read.secrets]), !Task.isCancelled else { return }
+		characterKeys = (read, (check.environments["default"] ?? [:]).keys.sorted())
+	}
+
+	/// Says which values hold characters that are hard to see before anything is imported.
+	private func characterNote(_ keys: [String]) -> some View {
+		let listed = keys.prefix(3).joined(separator: ", ") + (keys.count > 3 ? " and \(keys.count - 3) more" : "")
+		let place = reviewsFirst ? "The review shows where." : "Importing keeps them; the inspector shows where."
+		let text = keys.count == 1
+			? "\(listed) has hidden characters. \(place)"
+			: "\(keys.count) values have hidden characters: \(listed). \(place)"
+		return Label {
+			Text(text).fixedSize(horizontal: false, vertical: true)
+		} icon: {
+			Image(systemName: "exclamationmark.triangle")
+		}
+		.font(.system(size: 11.5))
+		.foregroundStyle(VaultPalette.orangeTintText)
+		.accessibilityElement(children: .ignore)
+		.accessibilityLabel("Warning: \(text)")
 	}
 
 	private var targetSection: some View {

@@ -243,6 +243,76 @@ enum RustSchemaEngine {
 		return output
 	}
 
+	/// The characters in each environment's values that are hard to see, by
+	/// the rule the LPM CLI uses. It needs no schema. Nil when the engine
+	/// refuses the input, such as a key that isn't a valid name.
+	static func checkCharacters(_ environments: [String: [String: String]]) -> ValueCharacterCheck? {
+		guard lpm_env_abi_version() == 1 else { return nil }
+		guard !environments.isEmpty else { return ValueCharacterCheck() }
+		var members: [LPMConfigJSON.Member] = []
+		members.reserveCapacity(environments.count)
+		for (environment, values) in environments {
+			members.append(.init(key: environment, value: .object(values.map { .init(key: $0.key, value: .string($0.value)) })))
+		}
+		let input: Data
+		do { input = try LPMConfigJSON.object([.init(key: "environments", value: .object(members))]).compactData(maximumBytes: inputLimit) }
+		catch { return nil }
+		let owned = input.withUnsafeBytes { bytes in
+			OwnedResult(lpm_env_check_characters(bytes.bindMemory(to: UInt8.self).baseAddress, input.count))
+		}
+		guard let output = try? owned.decode() else { return nil }
+		return ValueCharacterCheck(output: output)
+	}
+
+	/// `value` with each character that's hard to see written as its escape,
+	/// for showing someone who sees the value; nil when the engine can't.
+	static func showCharacters(in value: String) -> ShownValueCharacters? {
+		guard lpm_env_abi_version() == 1 else { return nil }
+		var value = value
+		let owned = value.withUTF8 { bytes in OwnedResult(lpm_env_show_characters(bytes.baseAddress, bytes.count)) }
+		guard let output = try? owned.decode(), output["abiVersion"] == .number("1"),
+			case .string(let text)? = output["text"], case .array(let rawMarks)? = output["marks"]
+		else { return nil }
+		let length = text.utf16.count
+		var marks: [NSRange] = []
+		marks.reserveCapacity(rawMarks.count)
+		for mark in rawMarks {
+			guard case .array(let bounds) = mark, bounds.count == 2,
+				case .number(let rawStart) = bounds[0], let start = Int(rawStart),
+				case .number(let rawLength) = bounds[1], let markLength = Int(rawLength),
+				start >= 0, markLength > 0, start + markLength <= length
+			else { return nil }
+			marks.append(NSRange(location: start, length: markLength))
+		}
+		return ShownValueCharacters(text: text, marks: marks)
+	}
+
+	/// A fix a person chooses for a value's characters that are hard to see.
+	enum CharacterFix: UInt32, Sendable {
+		/// Removes each one other than whitespace at an end; makes a space other
+		/// than U+0020 or a tab a plain space, a line break other than `\n` a
+		/// `\n`, and drops the carriage return of each `\r\n`.
+		case removeHiddenCharacters = 1
+		/// Removes the whitespace at either end, keeping a multiline value's
+		/// single final line break.
+		case trimEnds = 2
+	}
+
+	/// `value` fixed as `fix` says; nil when the engine can't.
+	static func fixCharacters(in value: String, _ fix: CharacterFix) -> String? {
+		guard lpm_env_abi_version() == 1 else { return nil }
+		var value = value
+		let owned = value.withUTF8 { bytes in OwnedResult(lpm_env_fix_characters(bytes.baseAddress, bytes.count, fix.rawValue)) }
+		defer { lpm_env_clear_output(&owned.result) }
+		guard owned.result.status == 0, owned.result.length <= inputLimit else { return nil }
+		guard owned.result.length > 0 else { return "" }
+		guard let data = owned.result.data else { return nil }
+		return String(decoding: UnsafeBufferPointer(start: data, count: owned.result.length), as: UTF8.self)
+	}
+
+	/// The most one engine call reads, `LPM_ENV_INPUT_LIMIT`.
+	private static let inputLimit = 2 * 1024 * 1024
+
 	/// Why `resolve` rejects `schema`, for showing the problem; nil when the
 	/// schema resolves or fails for another reason.
 	static func diagnostic(for schema: LPMConfigJSON, inFolder folder: String) -> Diagnostic? {

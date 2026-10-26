@@ -32,6 +32,9 @@ struct EnvFileImportReview: Identifiable, Sendable {
 	let unchanged: [Row]
 	let addedKeys: Set<String>
 	let changedKeys: Set<String>
+	/// What each imported value holds that's hard to see, by key; values
+	/// that hold none aren't in it. The import keeps them as they are.
+	var characters: [String: ValueCharacterChecker.Inspection] = [:]
 	var addedCount: Int { added.count }
 	var unchangedCount: Int { unchanged.count }
 
@@ -88,6 +91,11 @@ struct EnvFileImportReview: Identifiable, Sendable {
 		var changes: Int { added + replaced }
 
 		var summary: String { "\(added) added · \(replaced) replaced · \(kept) kept · \(skipped) skipped" }
+	}
+
+	/// The keys an import replacing `replacing` and leaving out `skipping` writes.
+	func writtenKeys(replacing: Set<String> = [], skipping: Set<String> = []) -> Set<String> {
+		addedKeys.subtracting(skipping).union(changedKeys.intersection(replacing))
 	}
 
 	func outcome(replacing: Set<String> = [], skipping: Set<String> = []) -> Outcome {

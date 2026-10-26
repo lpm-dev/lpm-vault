@@ -121,6 +121,8 @@ struct VaultRawTextEditor: NSViewRepresentable {
 	let text: String
 	let problems: [VaultEnvTextCheck.Problem]
 	let problemLines: Set<Int>
+	/// The lines whose values hold characters that are hard to see, which never stop a save.
+	var warnings: [VaultEnvTextCheck.Problem] = []
 	let label: String
 	var isEditable = true
 	let onChange: (String) -> Void
@@ -158,6 +160,7 @@ struct VaultRawTextEditor: NSViewRepresentable {
 		textView.textDidReplace()
 		textView.problems = problems
 		textView.problemLines = problemLines
+		textView.warnings = warnings
 		(scrollView.verticalRulerView as? VaultLineNumberGutter)?.problemLines = problemLines
 		// Starts at the empty line after the last key, ready to add one.
 		textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
@@ -179,6 +182,7 @@ struct VaultRawTextEditor: NSViewRepresentable {
 		}
 		if textView.problems != problems { textView.problems = problems }
 		if textView.problemLines != problemLines { textView.problemLines = problemLines }
+		if textView.warnings != warnings { textView.warnings = warnings }
 		if let gutter = scrollView.verticalRulerView as? VaultLineNumberGutter, gutter.problemLines != problemLines {
 			gutter.problemLines = problemLines
 		}
@@ -224,6 +228,11 @@ struct VaultRawTextEditor: NSViewRepresentable {
 		var problemLines: Set<Int> = [] {
 			didSet { needsDisplay = true }
 		}
+		/// Lines whose values hold characters that are hard to see, tinted
+		/// apart from problems, which they never are.
+		var warnings: [VaultEnvTextCheck.Problem] = [] {
+			didSet { needsDisplay = true }
+		}
 
 		override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.string] }
 		override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.string] }
@@ -244,7 +253,7 @@ struct VaultRawTextEditor: NSViewRepresentable {
 
 		override func drawBackground(in rect: NSRect) {
 			super.drawBackground(in: rect)
-			guard !problemLines.isEmpty, let layoutManager else { return }
+			guard !problemLines.isEmpty || !warnings.isEmpty, let layoutManager else { return }
 			let text = string as NSString
 			let starts = lineStarts
 			let tint = NSColor(VaultPalette.redTint)
@@ -272,11 +281,26 @@ struct VaultRawTextEditor: NSViewRepresentable {
 				forGlyphRange: layoutManager.glyphRange(forBoundingRect: inContainer, in: textContainer), actualGlyphRange: nil)
 			let shown = (VaultLineNumberGutter.line(containing: characters.location, starts: starts) + 1)...(
 				VaultLineNumberGutter.line(containing: NSMaxRange(characters), starts: starts) + 1)
+			let visible = visibleRect
+			let warningTint = NSColor(VaultPalette.orangeTint)
+			let warningAttributes: [NSAttributedString.Key: Any] = [
+				.font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
+				.foregroundColor: NSColor(VaultPalette.orangeTintText),
+			]
+			for warning in warnings where shown.contains(warning.line) && !problemLines.contains(warning.line) {
+				guard let row = row(of: warning.line) else { continue }
+				warningTint.setFill()
+				row.fill()
+				let reason = "Line \(warning.line): hidden characters" as NSString
+				let size = reason.size(withAttributes: warningAttributes)
+				let pill = NSRect(x: visible.maxX - size.width - 20, y: row.minY, width: size.width + 20, height: row.height)
+				pill.fill()
+				reason.draw(at: NSPoint(x: pill.minX + 8, y: row.midY - size.height / 2), withAttributes: warningAttributes)
+			}
 			tint.setFill()
 			for line in shown where problemLines.contains(line) {
 				row(of: line)?.fill()
 			}
-			let visible = visibleRect
 			for problem in problems where shown.contains(problem.line) {
 				guard let row = row(of: problem.line) else { continue }
 				let reason = problem.message as NSString
@@ -298,7 +322,7 @@ struct VaultRawTextEditor: NSViewRepresentable {
 
 		/// The reasons sit at the visible right edge, which moves as the text scrolls sideways.
 		@objc private func clipScrolled() {
-			if !problems.isEmpty { needsDisplay = true }
+			if !problems.isEmpty || !warnings.isEmpty { needsDisplay = true }
 		}
 	}
 }
