@@ -43,13 +43,8 @@ enum CompanionEngine {
 
 	/// What a project's feature marker lets a client that doesn't support a
 	/// feature do, from most to least permissive.
-	enum Level: String, Codable, Sendable, Comparable {
+	enum Level: String, Codable, Sendable {
 		case ignore, readOnly, refuse
-
-		static func < (lhs: Self, rhs: Self) -> Bool {
-			let order: [Self] = [.ignore, .readOnly, .refuse]
-			return order.firstIndex(of: lhs)! < order.firstIndex(of: rhs)!
-		}
 	}
 
 	enum ProjectState: String, Codable, Sendable {
@@ -92,7 +87,7 @@ enum CompanionEngine {
 
 		struct Damage: Equatable, Sendable, Decodable {
 			/// `invalidMarker`, `missingRecord`, `invalidRecord`,
-			/// `unlistedRecord`, or `access`.
+			/// `unlistedRecord`, `access`, or `unfinishedChange`.
 			let code: String
 			let kind: String?
 			/// What the engine found, never quoting a record's contents.
@@ -114,6 +109,10 @@ enum CompanionEngine {
 		let unsupported: Unsupported?
 		let features: [Feature]
 		let damage: [Damage]
+		/// What sets every damage right, each repair once in the order its
+		/// damage was found: a project-wide discard alone when any damage
+		/// needs one.
+		let repairs: [Repair]
 		let allows: Allows
 	}
 
@@ -178,7 +177,35 @@ enum CompanionEngine {
 		static func delete(_ account: String) -> Self { Self(account: account, bytes: nil) }
 	}
 
+	/// How the engine reads each of `names`, asked in requests small enough
+	/// for its input limit however many names there are.
 	static func describe(_ names: [String]) throws(Failure) -> [Described] {
+		var described: [Described] = []
+		described.reserveCapacity(names.count)
+		var start = names.startIndex
+		while start < names.endIndex {
+			var end = start
+			var bytes = 0
+			while end < names.endIndex, end == start || bytes + requestBytes(of: names[end]) <= maximumRequestBytes {
+				bytes += requestBytes(of: names[end])
+				end += 1
+			}
+			described += try describeChunk(Array(names[start..<end]))
+			start = end
+		}
+		return described
+	}
+
+	/// The engine refuses requests over 2 MiB; each describe request stays well under it.
+	private static let maximumRequestBytes = 1024 * 1024
+
+	/// An upper bound on the bytes `name` adds to a request's JSON, where an
+	/// escaped character takes at most six bytes.
+	private static func requestBytes(of name: String) -> Int {
+		name.utf8.count * 6 + 3
+	}
+
+	private static func describeChunk(_ names: [String]) throws(Failure) -> [Described] {
 		struct Request: Encodable { let names: [String] }
 		struct Entry: Decodable {
 			let valid: Bool

@@ -52,6 +52,7 @@
 		27447FD6BA072FEA0D48D8FD /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A457BD449E91D4CB9859C4BC /* Sparkle */; };
 		278DDE8E32E4AE8E31F346AE /* BackupKeysTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4D8F0FA8DF358843F61B40F /* BackupKeysTests.swift */; };
 		28110C97F5768C223A92AED9 /* SchemaClientPrefixTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E1922750CFA7B974B824160 /* SchemaClientPrefixTests.swift */; };
+		28EF371D6A362E3CD7A75A17 /* CompanionRefusal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2583F16D79859EC7E5FB25F4 /* CompanionRefusal.swift */; };
 		290FD907B22A1C8D82B7C27F /* EnvImportSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF425741AB4318D4F884CC2C /* EnvImportSheetTests.swift */; };
 		292CA418679C93A21914393C /* CoolifyPublishing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2965F7490F3928DA989BBC43 /* CoolifyPublishing.swift */; };
 		2B2B19A794629264CAEB0D0E /* CoolifyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1537A923FE9D31FAE64204AD /* CoolifyClient.swift */; };
@@ -386,6 +387,7 @@
 		2322C6F6BF378E0BC44C7042 /* SchemaAddKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaAddKeyTests.swift; sourceTree = "<group>"; };
 		237FE9B740DFACF0D52C8353 /* EnvSchemaScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvSchemaScopeTests.swift; sourceTree = "<group>"; };
 		2479E893F02645A97C38A9C1 /* ProjectConfigFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectConfigFile.swift; sourceTree = "<group>"; };
+		2583F16D79859EC7E5FB25F4 /* CompanionRefusal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionRefusal.swift; sourceTree = "<group>"; };
 		262EBDA4D72D70C5E237C904 /* SchemaPageStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaPageStateTests.swift; sourceTree = "<group>"; };
 		266550AAF7BE0ECE87C3EF15 /* BrowserAuthorization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserAuthorization.swift; sourceTree = "<group>"; };
 		275BE1DCB4AC27367E4E71F9 /* ConnectCoolifySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectCoolifySheet.swift; sourceTree = "<group>"; };
@@ -742,6 +744,7 @@
 				95700F2BFD11A848B52BF0B3 /* BackupPayload.swift */,
 				3DDB2269180B94E0C6D442E3 /* BackupRestorePlan.swift */,
 				55740ED45D46218CDDE5AFA2 /* CloudflareConnection.swift */,
+				2583F16D79859EC7E5FB25F4 /* CompanionRefusal.swift */,
 				B93FF58179E5B6CF737002F6 /* EnvFileImportReview.swift */,
 				7CEFDB752A8CA0EF3E0007CF /* LPMOrg.swift */,
 				178A6AD4D7254CB4955C912E /* LPMToken.swift */,
@@ -1308,6 +1311,7 @@
 				E8A8CDBF05BF844F6451A15C /* CloudflareConnector.swift in Sources */,
 				C2501FAC79BA7770EB0B1C36 /* CloudflarePublishing.swift in Sources */,
 				42475E7EC1F1861E20865813 /* CompanionEngine.swift in Sources */,
+				28EF371D6A362E3CD7A75A17 /* CompanionRefusal.swift in Sources */,
 				14E8D1B3AC9A80878E1E69A4 /* ConnectCLISheet.swift in Sources */,
 				31C37550C9C66D1D977DA12E /* ConnectCoolifySheet.swift in Sources */,
 				85D8879B93AEABF31B2C941C /* Constants.swift in Sources */,

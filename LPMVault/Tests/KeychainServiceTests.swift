@@ -174,6 +174,16 @@ struct KeychainServiceTests {
 		)
 	}
 
+	/// A vault's values as the store holds them, listed in the sidebar or not.
+	private func storedEnvironments(_ service: KeychainService, _ vaultId: String) throws -> [String: [String: String]]? {
+		try service.backupInventoryResult().get().projects.first { $0.vaultId == vaultId }?.environments
+	}
+
+	/// Every listed project with its values.
+	private func listedProjects(_ service: KeychainService) throws -> [VaultProject] {
+		try service.listProjectMetadataResult().get().compactMap { try service.getProjectResult(vaultId: $0.id).get() }
+	}
+
 	private func cleanup(service: KeychainService, vaultIds: [String]) {
 		for id in vaultIds {
 			_ = service.applyVaultTransaction(
@@ -220,7 +230,7 @@ struct KeychainServiceTests {
 		#expect(succeeded(service.createRestoredProjectResult(project, listed: true)))
 		#expect(try service.cliAccessResult(vaultId: "restored").get() == .requireApproval)
 		#expect(try service.listProjectMetadataResult().get().map(\.id) == ["restored"])
-		#expect((try service.getEnvironmentsResult(vaultId: "restored").get()) == ["default": ["TOKEN": "a"]])
+		#expect((try storedEnvironments(service, "restored")) == ["default": ["TOKEN": "a"]])
 
 		let hidden = VaultProject(id: "hidden", name: "hidden", path: "", environments: ["default": ["OLD": "x"]])
 		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false)))
@@ -257,7 +267,7 @@ struct KeychainServiceTests {
 		#expect(succeeded(service.createEnvironments(vaultId: "listed", projectName: "Listed", projectPath: "", environments: ["default": ["A": "1"]])))
 		#expect(try service.setCliAccess(vaultId: "listed", access: .requireApproval).get() == .requireApproval)
 		#expect(service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1"]], merged: ["default": ["A": "1", "B": "2"]], additionalMutations: []) == .written(warning: nil))
-		#expect((try service.getEnvironmentsResult(vaultId: "listed").get()) == ["default": ["A": "1", "B": "2"]])
+		#expect((try storedEnvironments(service, "listed")) == ["default": ["A": "1", "B": "2"]])
 		#expect(try service.cliAccessResult(vaultId: "listed").get() == .requireApproval, "A merge keeps this Mac's CLI approval")
 		#expect(try service.listProjectMetadataResult().get().first?.environmentSummaries.first?.keyCount == 2)
 
@@ -266,7 +276,7 @@ struct KeychainServiceTests {
 		let hidden = VaultProject(id: "hidden", name: "hidden", path: "", environments: ["default": ["OLD": "x"]])
 		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false)))
 		#expect(service.mergeRestoredProjectResult(vaultId: "hidden", expected: ["default": ["OLD": "x"]], merged: ["default": ["OLD": "y"]], additionalMutations: []) == .written(warning: nil))
-		#expect((try service.getEnvironmentsResult(vaultId: "hidden").get()) == ["default": ["OLD": "y"]])
+		#expect((try storedEnvironments(service, "hidden")) == ["default": ["OLD": "y"]])
 
 		let big = ["default": ["BIG": String(repeating: "x", count: VaultConstants.maxVaultSizeWarning)]]
 		guard case .failure(.dataTooLarge) = service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1", "B": "2"]], merged: big, additionalMutations: []) else {
@@ -300,9 +310,9 @@ struct KeychainServiceTests {
 		#expect(try service.cliAccessResult(vaultId: first).get() == .automatic)
 		#expect(try service.setCliAccess(vaultId: first, access: .requireApproval).get() == .requireApproval)
 		#expect(try service.cliAccessResult(vaultId: second).get() == .automatic)
-		#expect((try service.getEnvironmentsResult(vaultId: first).get()) == environments)
+		#expect((try storedEnvironments(service, first)) == environments)
 		#expect(try service.setCliAccess(vaultId: first, access: .automatic).get() == .automatic)
-		#expect((try service.getEnvironmentsResult(vaultId: first).get()) == environments)
+		#expect((try storedEnvironments(service, first)) == environments)
 	}
 
 	@Test("secret updates protect the staged copy and preserve CLI approval")
@@ -331,14 +341,14 @@ struct KeychainServiceTests {
 
 	@Test("an unknown CLI approval marker fails closed")
 	func unknownCliApprovalMarkerIsRejected() {
-		#expect(throws: KeychainStoreError.integrityValidationFailed) {
+		#expect(throws: KeychainStoreError.contradictoryApproval) {
 			try SecurityKeychainStoreBackend.cliAccess(attributes: [kSecAttrGeneric as String: Data("unknown-policy".utf8)])
 		}
 	}
 
 	@Test("an approval marker without native access control fails closed")
 	func cliApprovalRequiresNativeAccessControl() {
-		#expect(throws: KeychainStoreError.integrityValidationFailed) {
+		#expect(throws: KeychainStoreError.contradictoryApproval) {
 			try SecurityKeychainStoreBackend.cliAccess(attributes: [kSecAttrGeneric as String: VaultCliAccess.approvalMarker])
 		}
 	}
@@ -394,7 +404,7 @@ struct KeychainServiceTests {
 		)
 		#expect(try readings["protected"]?.get() == .requireApproval)
 		#expect(try readings["automatic"]?.get() == .automatic)
-		#expect(readings["malformed"].map { if case .failure(.integrityValidationFailed) = $0 { true } else { false } } == true)
+		#expect(readings["malformed"].map { if case .failure(.contradictoryApproval) = $0 { true } else { false } } == true)
 		#expect(readings["duplicated"].map { if case .failure(.integrityValidationFailed) = $0 { true } else { false } } == true)
 		#expect(readings["missing"] == nil)
 	}
@@ -420,7 +430,7 @@ struct KeychainServiceTests {
 			return
 		}
 
-		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
+		let retrieved = (try storedEnvironments(service, vaultId))
 		#expect(retrieved == environments)
 	}
 
@@ -451,7 +461,7 @@ struct KeychainServiceTests {
 			return
 		}
 
-		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
+		let retrieved = (try storedEnvironments(service, vaultId))
 		#expect(retrieved?["default"]?["KEY"] == "new-value")
 		#expect(retrieved?["default"]?["NEW_KEY"] == "added")
 	}
@@ -477,7 +487,7 @@ struct KeychainServiceTests {
 		#expect(succeeded(deleted))
 
 		// Verify gone
-		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
+		let retrieved = (try storedEnvironments(service, vaultId))
 		#expect(retrieved == nil)
 	}
 
@@ -497,7 +507,7 @@ struct KeychainServiceTests {
 	@Test("get non-existent environment map returns nil")
 	func getNonExistent() throws {
 		let service = makeService()
-		let result = try service.getEnvironmentsResult(vaultId: "nonexistent-\(UUID().uuidString)").get()
+		let result = try storedEnvironments(service, "nonexistent-\(UUID().uuidString)")
 		#expect(result == nil)
 	}
 
@@ -529,7 +539,7 @@ struct KeychainServiceTests {
 			environments: ["default": ["B": "2"]]
 		)
 
-		let projects = try isolatedService.listProjectsResult().get()
+		let projects = try listedProjects(isolatedService)
 
 		#expect(projects.count == 2)
 
@@ -550,7 +560,7 @@ struct KeychainServiceTests {
 			testingService: "dev.lpm.vault.empty.\(UUID().uuidString.prefix(8))",
 			backend: KeychainServiceTestBackend()
 		)
-		let projects = try service.listProjectsResult().get()
+		let projects = try listedProjects(service)
 		#expect(projects.isEmpty)
 	}
 
@@ -574,7 +584,7 @@ struct KeychainServiceTests {
 			return
 		}
 
-		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
+		let retrieved = (try storedEnvironments(service, vaultId))
 		#expect(retrieved == ["default": [:]])
 	}
 
@@ -598,7 +608,7 @@ struct KeychainServiceTests {
 			environments: ["default": secrets]
 		)
 
-		let retrieved = (try service.getEnvironmentsResult(vaultId: vaultId).get())
+		let retrieved = (try storedEnvironments(service, vaultId))
 		#expect(retrieved == ["default": secrets])
 	}
 
@@ -645,7 +655,7 @@ struct KeychainServiceTests {
 			Issue.record("Invalid environment data was written")
 			return
 		}
-		#expect((try service.getEnvironmentsResult(vaultId: vaultId).get()) == nil)
+		#expect((try storedEnvironments(service, vaultId)) == nil)
 	}
 
 	@Test("an empty environment wrapper normalizes to the default environment")
@@ -667,7 +677,7 @@ struct KeychainServiceTests {
 		let empty = try JSONSerialization.data(withJSONObject: ["environments": [:]])
 		try backend.write(service: serviceName, account: vaultId, data: empty)
 
-		#expect((try service.getEnvironmentsResult(vaultId: vaultId).get()) == ["default": [:]])
+		#expect((try storedEnvironments(service, vaultId)) == ["default": [:]])
 	}
 }
 

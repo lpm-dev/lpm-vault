@@ -15,49 +15,64 @@ struct CompanionStatePresentation: Equatable {
 	let tone: Tone
 	let title: String
 	let detail: String
-	/// What Repair… does, when the damage has a repair.
-	let repair: CompanionEngine.Assessment.Repair?
+	/// What Repair… runs, as the engine lists them; empty when nothing here repairs it.
+	let repairs: [CompanionEngine.Assessment.Repair]
+	/// The features a discard removes, when the marker names them.
+	private let features: [String]
 
-	init?(_ state: CompanionEngine.Assessment) {
-		let damage = state.damage
+	/// `unfinished` is why an interrupted change couldn't be finished, when
+	/// finishing it was tried.
+	init?(_ state: CompanionEngine.Assessment, unfinished: String? = nil) {
+		features = state.features.map(\.name)
 		if state.needsResume {
 			tone = .interrupted
 			title = "This project’s newer data has an unfinished change"
-			detail = "LPM Vault finishes it before anything else uses the project, so its values stay hidden until then."
-			repair = nil
-		} else if let first = damage.first {
+			let why = unfinished.map { " It couldn’t be finished: \($0)." } ?? ""
+			detail = "LPM Vault finishes it before anything else uses the project, so its values stay hidden until then.\(why)"
+			repairs = []
+		} else if !state.damage.isEmpty {
 			tone = .damaged
 			title = "This project’s newer data is damaged"
-			let others = damage.count > 1 ? " It has \(damage.count - 1) more problem\(damage.count == 2 ? "" : "s")." : ""
-			let consequence = switch first.code {
-			case "invalidMarker": "Its values stay hidden, and LPM won’t run it, until it’s repaired."
-			case "access": "LPM Vault fixes the approval settings the next time you unlock it."
-			default: "LPM may refuse to use it until it’s repaired."
+			let codes = Set(state.damage.map(\.code))
+			let consequence = if !codes.isDisjoint(with: ["invalidMarker", "unfinishedChange"]) {
+				"Its values stay hidden, and LPM won’t run it, until it’s repaired."
+			} else if codes == ["access"] {
+				"LPM won’t read it until they’re set again: choose its CLI approval again."
+			} else {
+				"LPM may refuse to use it until it’s repaired."
 			}
-			detail = "\(CompanionRefusal.describe(first).capitalizingFirstLetter).\(others) \(consequence)"
-			repair = damage.lazy.compactMap(\.repair).first
+			detail = "\(CompanionRefusal.describe(state.damage).capitalizingFirstLetter). \(consequence)"
+			repairs = state.repairs
 		} else if let unsupported = state.unsupported {
 			tone = .update
 			title = "This project uses data from a newer LPM"
 			detail = CompanionRefusal.unsupported(
 				feature: unsupported.feature, version: unsupported.version, level: unsupported.level
 			).message
-			repair = nil
+			repairs = []
 		} else {
 			return nil
 		}
 	}
 
-	/// The question Repair… asks before it changes anything.
-	func repairConfirmation(subject: VaultConfirmation.Subject, perform: @escaping () -> Void) -> VaultConfirmation? {
-		guard let repair else { return nil }
-		let message = switch repair.action {
-		case .discardProject:
-			"Repairing discards all of this project’s newer data on this Mac, such as personal overrides and local history. Its values stay as they are."
-		case .removeFeature:
-			"Repairing removes \(CompanionRefusal.describe(feature: repair.feature ?? "")) from this project on this Mac. Its values and other newer data stay as they are."
-		case .removeUnlisted:
-			"Repairing deletes the newer data no feature of this project uses. Its values and features stay as they are."
+	/// The question Repair… asks before it changes anything, saying what
+	/// every repair does.
+	func repairConfirmation(subject: VaultConfirmation.Subject, perform: @escaping () -> Void) -> VaultConfirmation {
+		let message: String
+		if repairs.contains(where: { $0.action == .discardProject }) {
+			let what = features.isEmpty
+				? "all of this project’s newer data on this Mac, such as personal overrides and local history"
+				: "all of this project’s newer data on this Mac: \(ListFormatter.localizedString(byJoining: features.map(CompanionRefusal.describe(feature:))))"
+			message = "Repairing discards \(what). Its values stay as they are."
+		} else {
+			let actions = repairs.compactMap { repair -> String? in
+				switch repair.action {
+				case .removeFeature: "removes \(CompanionRefusal.describe(feature: repair.feature ?? "")) from this project"
+				case .removeUnlisted: "deletes the newer data no feature of this project uses"
+				case .discardProject: nil
+				}
+			}
+			message = "Repairing \(ListFormatter.localizedString(byJoining: actions)) on this Mac. Its values and other newer data stay as they are."
 		}
 		return VaultConfirmation(
 			symbol: "wrench.and.screwdriver",
@@ -66,6 +81,51 @@ struct CompanionStatePresentation: Equatable {
 			subject: subject,
 			actions: [.init(title: "Repair", perform: perform)]
 		)
+	}
+}
+
+/// What finishing an interrupted change did to a project's newer data, in words.
+struct CompanionNoticePresentation: Equatable {
+	let text: String
+
+	init(_ notice: CompanionEngine.Plan.Notice) {
+		let unfinished = "which an earlier run left unfinished"
+		text = switch notice.kind {
+		case "deletion": "LPM Vault finished deleting this project’s newer data, \(unfinished)."
+		case "discard": "LPM Vault finished discarding this project’s newer data, \(unfinished)."
+		case "restoreUndone": "LPM Vault undid a restore of this project’s newer data that an earlier run left unfinished. Run the restore again."
+		case "restore": "LPM Vault finished restoring this project’s newer data, \(unfinished)."
+		case "featureRemoval" where !notice.features.isEmpty:
+			"LPM Vault finished removing \(ListFormatter.localizedString(byJoining: notice.features.map(CompanionRefusal.describe(feature:)))) from this project’s newer data, \(unfinished)."
+		default: "LPM Vault finished a change to this project’s newer data, \(unfinished)."
+		}
+	}
+}
+
+/// A banner saying what finishing an interrupted change did, until dismissed.
+struct VaultCompanionNoticeBanner: View {
+	let presentation: CompanionNoticePresentation
+	let onDismiss: () -> Void
+
+	var body: some View {
+		VStack(spacing: 0) {
+			HStack(spacing: 10) {
+				Image(systemName: "checkmark.circle.fill")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.orange)
+					.accessibilityHidden(true)
+				Text(presentation.text)
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.orangeTintText)
+					.fixedSize(horizontal: false, vertical: true)
+				Spacer(minLength: 12)
+				VaultBarButton(title: "Dismiss", height: 24, action: onDismiss)
+			}
+			.padding(.horizontal, 16)
+			.padding(.vertical, 8)
+			.background(VaultPalette.orangeTint)
+			VaultHairline(color: VaultPalette.titleBarBorder)
+		}
 	}
 }
 
@@ -97,7 +157,7 @@ struct VaultCompanionBanner: View {
 				.accessibilityElement(children: .combine)
 				Spacer(minLength: 12)
 				switch presentation.tone {
-				case .damaged where presentation.repair != nil:
+				case .damaged where !presentation.repairs.isEmpty:
 					VaultBarButton(title: isRepairing ? "Repairing…" : "Repair…", filled: true, disabled: isRepairing, height: 24, action: onRepair)
 				case .update:
 					VaultBarButton(title: "Check for Updates…", disabled: !updateChecker.canCheckForUpdates, height: 24) {

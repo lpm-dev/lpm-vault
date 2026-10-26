@@ -28,6 +28,14 @@ struct VaultPersistenceSnapshot: Sendable {
 	let cliAccess: [String: VaultCliAccess]
 	/// What each project with companion data allows, for display only.
 	var companion: [String: CompanionEngine.Assessment] = [:]
+	/// Why each project whose interrupted change couldn't be finished is
+	/// still interrupted.
+	var companionUnfinished: [String: String] = [:]
+	/// What resumes finished or undid, by project, for the person to hear.
+	var companionNotices: [String: CompanionEngine.Plan.Notice] = [:]
+	/// Why the selected project's values stayed hidden, when its newer data
+	/// keeps them hidden.
+	var selectedProjectRefusal: CompanionRefusal?
 }
 
 /// Every vault and what syncs it, read in one transaction for a backup.
@@ -235,7 +243,7 @@ actor VaultPersistenceCoordinator {
 		}
 		if strictPolicies && Task.isCancelled { return .failure(.accessDenied) }
 		let states: VaultProjectStates
-		switch service.projectStatesResult(vaultIds: projects.map(\.id), strictAccess: strictPolicies) {
+		switch service.projectStatesResult(vaultIds: projects.map(\.id)) {
 		case .success(let loaded): states = loaded
 		case .failure(let error) where strictPolicies: return .failure(error)
 		case .failure:
@@ -244,45 +252,60 @@ actor VaultPersistenceCoordinator {
 				companion: [:])
 		}
 		if strictPolicies && Task.isCancelled { return .failure(.accessDenied) }
+		var selectedProjectRefusal: CompanionRefusal?
 		if let selectedProjectID, let index = projects.firstIndex(where: { $0.id == selectedProjectID }) {
 			switch service.getProjectResult(vaultId: selectedProjectID) {
 			case .success(let project?): projects[index] = project
 			case .success(nil): return .failure(.itemNotFound)
 			// Newer data that keeps the project's values hidden is the project's
 			// state, which the snapshot carries, not a failure to refresh.
-			case .failure(.companion): break
+			case .failure(.companion(let refusal)): selectedProjectRefusal = refusal
 			case .failure(let error): return .failure(error)
 			}
 		}
-		return .success(VaultPersistenceSnapshot(
+		var snapshot = VaultPersistenceSnapshot(
 			projects: projects,
 			syncMetadata: metadata,
 			orgAssociations: associations,
 			cliAccess: states.cliAccess,
 			companion: states.companion
-		))
+		)
+		snapshot.companionUnfinished = states.unfinished
+		snapshot.companionNotices = states.resumed
+		snapshot.selectedProjectRefusal = selectedProjectRefusal
+		return .success(snapshot)
 	}
 
-	/// Repairs a project's damaged companion data, keeping its values, once
-	/// the person authorized it freshly, and returns what its data allows
-	/// afterwards, nil when it has none left.
+	/// Runs the repairs of `reviewed`, the state the person reviewed and
+	/// authorized freshly, keeping the project's values, and returns what its
+	/// data allows afterwards.
 	func repairCompanionData(
 		vaultId: String,
-		repair: CompanionEngine.Assessment.Repair,
+		reviewed: CompanionEngine.Assessment,
 		authorization: CommitAuthorization
-	) -> Result<CompanionEngine.Assessment?, KeychainError> {
+	) -> Result<CompanionRepairOutcome, KeychainError> {
 		service.withKeychainTransaction {
 			guard !Task.isCancelled, authorization.beginCommit() else { return .failure(.accessDenied) }
-			return service.repairCompanionData(vaultId: vaultId, repair: repair).flatMap {
-				service.projectStatesResult(vaultIds: [vaultId], strictAccess: false).map { $0.companion[vaultId] }
-			}
+			return service.repairCompanionData(vaultId: vaultId, reviewed: reviewed)
 		}.flatMap { $0 }
 	}
 
 	/// Collects companion records whose project is gone and matches each
-	/// record's approval to its values item's.
+	/// record's approval to its values item's, unless the session that asked
+	/// ended first.
 	func maintainCompanionStorage() -> Result<CompanionMaintenance, KeychainError> {
-		service.maintainCompanionStorage()
+		guard !Task.isCancelled else { return .failure(.accessDenied) }
+		return service.maintainCompanionStorage()
+	}
+
+	/// Whether `vaultId`'s values may leave the Mac now.
+	func authorizeValuesLeaving(vaultId: String) -> Result<Void, KeychainError> {
+		service.authorizeValuesLeaving(vaultId: vaultId)
+	}
+
+	/// What a backup would leave out, read without reading any values.
+	func backupCompanionNotes() -> Result<VaultBackupCompanionNotes, KeychainError> {
+		service.backupCompanionNotesResult()
 	}
 
 	/// Every vault, removed ones included, with its sync metadata and org
@@ -711,6 +734,11 @@ actor VaultPersistenceCoordinator {
 		expectedPath: String,
 		mutation: VaultProjectMutation
 	) -> ProjectMutationPersistenceResult {
+		if case .renameProject(let renamedFrom, let replacement) = mutation {
+			return renameProjectUnlocked(
+				projectId: projectId, expectedName: expectedName, expectedPath: expectedPath,
+				renamedFrom: renamedFrom, replacement: replacement)
+		}
 		var project: VaultProject
 		switch service.getProjectResult(vaultId: projectId) {
 		case .success(let stored?): project = stored
@@ -730,9 +758,8 @@ actor VaultPersistenceCoordinator {
 
 		let mutationApplies: Bool
 		switch mutation {
-		case .renameProject(let expectedName, let replacement):
-			mutationApplies = project.name == expectedName
-			if mutationApplies { project.name = replacement }
+		case .renameProject:
+			mutationApplies = false
 		case .deleteEnvironment(let name, let expectedSecrets):
 			mutationApplies =
 				project.environments.count > 1
@@ -777,6 +804,43 @@ actor VaultPersistenceCoordinator {
 			previousProject: previousProject,
 			previousMetadata: metadata
 		)
+	}
+
+	/// Renames a project in its metadata alone, so it never reads or writes
+	/// values, which newer data may keep hidden or read-only.
+	private func renameProjectUnlocked(
+		projectId: String,
+		expectedName: String,
+		expectedPath: String,
+		renamedFrom: String,
+		replacement: String
+	) -> ProjectMutationPersistenceResult {
+		let current: VaultProjectMetadata
+		switch service.projectMetadataResult(vaultId: projectId) {
+		case .success(let metadata?): current = metadata
+		case .success(nil): return .targetUnavailable
+		case .failure(let error): return .failure(error)
+		}
+		let metadata: SyncMetadataRecordSnapshot
+		switch loadSyncMetadataRecordSnapshotResult(vaultId: projectId) {
+		case .success(let snapshot): metadata = snapshot
+		case .failure(let error): return .failure(error)
+		}
+		guard current.name == expectedName, current.path == expectedPath, current.name == renamedFrom else {
+			return .conflict(latest: VaultProject(metadata: current), metadata: metadata.metadata)
+		}
+		var item = metadata.metadata ?? SyncMetadata()
+		item.isDirty = true
+		guard let metadataMutation = syncMetadataMutation(item, vaultId: projectId) else {
+			return .failure(.encodingFailed)
+		}
+		switch service.applyVaultTransaction(project: .rename(vaultId: projectId, name: replacement), data: [metadataMutation]) {
+		case .success, .successWithWarning: break
+		case .failure(let error): return .failure(error)
+		}
+		var renamed = VaultProject(metadata: current)
+		renamed.name = replacement
+		return .success(SecretPersistenceCommit(project: renamed, syncMetadata: item, warning: nil))
 	}
 
 	nonisolated private func persistMutation(

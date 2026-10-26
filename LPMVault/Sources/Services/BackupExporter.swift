@@ -38,6 +38,13 @@ struct BackupExporter: Sendable {
 		let reason: String
 	}
 
+	/// What a backup will do with projects' newer data, said before it runs.
+	struct CompanionPreview: Equatable, Sendable {
+		var leftOut: [LeftOut] = []
+		/// Names of projects that will be backed up without their newer data.
+		var withNewerData: [String] = []
+	}
+
 	/// LPM Vault's settings and each project's chosen icon, as the store holds
 	/// them on the main actor.
 	struct AppState: Sendable {
@@ -159,12 +166,12 @@ struct BackupExporter: Sendable {
 				syncKeys: keys?.keyCount ?? 0,
 				settings: app?.settings != nil,
 				unusableItems: snapshot.inventory.unusableItems,
-				leftOut: snapshot.inventory.excluded.map {
-					LeftOut(name: $0.listing?.name ?? Self.removedProjectName, reason: $0.reason)
+				leftOut: snapshot.inventory.companion.excluded.map {
+					LeftOut(name: $0.listing?.name ?? Self.removedProjectName($0.vaultId), reason: $0.reason)
 				},
 				withNewerData: inventory
-					.filter { snapshot.inventory.withNewerData.contains($0.vaultId) }
-					.map { $0.listing?.name ?? Self.removedProjectName })
+					.filter { snapshot.inventory.companion.withNewerData.contains($0.vaultId) }
+					.map { $0.listing?.name ?? Self.removedProjectName($0.vaultId) })
 			return (file, summary)
 		case .failure(.invalidContents(let reason, let offset?)):
 			if let index = encoded.project(at: offset) { throw .invalidProject(name: projects[index].name, reason: reason) }
@@ -174,8 +181,11 @@ struct BackupExporter: Sendable {
 		}
 	}
 
-	/// How a summary names a project removed from the sidebar, whose name went with it.
-	static let removedProjectName = "A project removed from the sidebar"
+	/// How a summary names a project removed from the sidebar, whose name
+	/// went with it: by its ID, so two of them can be told apart.
+	static func removedProjectName(_ vaultId: String) -> String {
+		"A project removed from the sidebar (\(vaultId))"
+	}
 
 	/// Where a project syncs, when its metadata binds it to a principal the
 	/// format can name; an organization's needs its slug.

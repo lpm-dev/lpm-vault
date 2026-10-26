@@ -2,10 +2,14 @@ import SwiftUI
 
 struct VaultCliAccessPresentation {
 	let access: VaultCliAccess?
+	/// Whether the item's approval attributes contradict each other, which
+	/// choosing approval again sets right.
+	var contradicts = false
 	var help: String {
 		switch access {
 		case .requireApproval: "CLI access requires Touch ID or your Mac login password."
 		case .automatic: "CLI access automatically injects env values."
+		case nil where contradicts: "This project’s approval settings contradict each other. Turn CLI approval on to set them."
 		case nil: "CLI approval is unavailable until its policy can be read."
 		}
 	}
@@ -13,6 +17,7 @@ struct VaultCliAccessPresentation {
 		switch access {
 		case .requireApproval: "Required"
 		case .automatic: "Automatic"
+		case nil where contradicts: "Contradicts itself"
 		case nil: "Unavailable"
 		}
 	}
@@ -35,7 +40,10 @@ struct VaultContentView: View {
 	let isCopyingAll: Bool
 	var isCopiedAll = false
 	var canUseSecrets = true
+	/// Whether the project's newer data lets its values change.
+	var canEditValues = true
 	let cliAccess: VaultCliAccess?
+	var cliAccessContradicts = false
 	let isChangingCliAccess: Bool
 	let onChangeCliAccess: (VaultCliAccess) -> Void
 	let onCopyAll: () -> Void
@@ -288,9 +296,9 @@ struct VaultContentView: View {
 			.toggleStyle(.switch)
 			.controlSize(.mini)
 			.font(.system(size: 11.5))
-			.disabled(cliAccess == nil || isChangingCliAccess || !canUseSecrets)
-			.help(VaultCliAccessPresentation(access: cliAccess).help)
-			.accessibilityValue(VaultCliAccessPresentation(access: cliAccess).accessibilityValue)
+			.disabled((cliAccess == nil && !cliAccessContradicts) || isChangingCliAccess || !canUseSecrets)
+			.help(VaultCliAccessPresentation(access: cliAccess, contradicts: cliAccessContradicts).help)
+			.accessibilityValue(VaultCliAccessPresentation(access: cliAccess, contradicts: cliAccessContradicts).accessibilityValue)
 		}
 		.lineLimit(1)
 		.fixedSize(horizontal: true, vertical: false)
@@ -309,6 +317,7 @@ struct VaultContentView: View {
 				systemImage: "plus",
 				title: "New key",
 				filled: true,
+				disabled: !canEditValues,
 				height: 27,
 				action: onAddSecret
 			)
@@ -356,7 +365,7 @@ struct VaultContentView: View {
 					title: compact ? nil : "Edit",
 					help: rawEditBlocker ?? "Edit \(environmentName) as text, with real values",
 					label: "Edit \(environmentName) as text",
-					disabled: rawEditBlocker != nil || !canUseSecrets,
+					disabled: rawEditBlocker != nil || !canUseSecrets || !canEditValues,
 					action: { onEditRaw(rawEditOrder) }
 				)
 			}
@@ -365,6 +374,7 @@ struct VaultContentView: View {
 				title: namesTransfers ? "Import" : nil,
 				help: importName,
 				label: importName,
+				disabled: !canEditValues,
 				action: onImport
 			)
 			VaultOutlineButton(
@@ -485,7 +495,8 @@ struct VaultContentView: View {
 										onCopy: { onCopySecret(key, selectedEnvironment) },
 										onEdit: { selectedKey = key; showsInspector = true },
 										onDelete: { onDeleteSecret(key, selectedEnvironment) },
-										onAdd: { onAddKey(key) }
+										onAdd: { onAddKey(key) },
+										canEdit: canEditValues
 									)
 									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 								}
@@ -1064,6 +1075,7 @@ private struct VaultEnvironmentRow: View {
 	let onEdit: () -> Void
 	let onDelete: () -> Void
 	var onAdd: () -> Void = {}
+	var canEdit = true
 
 	@State private var hovering = false
 
@@ -1087,13 +1099,13 @@ private struct VaultEnvironmentRow: View {
 
 			HStack(spacing: 2) {
 				if value == nil {
-					VaultRowIconButton(systemImage: "plus", help: "Add a value for \(key)", action: onAdd)
+					VaultRowIconButton(systemImage: "plus", help: "Add a value for \(key)", disabled: !canEdit, action: onAdd)
 				} else {
 					VaultRowIconButton(systemImage: isRevealed ? "eye.slash" : "eye", help: isRevealed ? "Hide value" : "Reveal value", action: onReveal)
 						.hidden(isPublic)
 					VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy key and value", action: onCopy)
-					VaultRowIconButton(systemImage: "pencil", help: "Edit key and value", action: onEdit)
-					VaultRowIconButton(systemImage: "trash", help: "Delete from this environment", destructive: true, action: onDelete)
+					VaultRowIconButton(systemImage: "pencil", help: "Edit key and value", disabled: !canEdit, action: onEdit)
+					VaultRowIconButton(systemImage: "trash", help: "Delete from this environment", destructive: true, disabled: !canEdit, action: onDelete)
 				}
 			}
 			.padding(.trailing, 16)

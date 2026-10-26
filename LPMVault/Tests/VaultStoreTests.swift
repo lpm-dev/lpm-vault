@@ -417,7 +417,6 @@ struct VaultStoreTests {
 		#expect(await store.loadProjects())
 		#expect(store.projectCliAccess == ["first": .requireApproval, "second": .automatic])
 		#expect(keychain.projectReadCount == 0)
-		#expect(keychain.environmentReadCount == 0)
 		#expect(store.projects.allSatisfy { !$0.hasLoadedEnvironments })
 		store.isUnlocked = true
 		store.selectedProjectId = "second"

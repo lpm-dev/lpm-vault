@@ -20,6 +20,7 @@ struct BackupExportSheet: View {
 	@State private var meter = BackupPassphraseMeter()
 	@State private var destinationCount: Int?
 	@State private var syncKeyCount: Int?
+	@State private var companionPreview: BackupExporter.CompanionPreview?
 	@State private var phase: Phase = .editing
 	@State private var error: String?
 	@State private var task: Task<Void, Never>?
@@ -60,7 +61,8 @@ struct BackupExportSheet: View {
 		.task {
 			async let destinations = store.publishDestinationCount()
 			async let keys = store.syncKeyCount()
-			(destinationCount, syncKeyCount) = await (destinations, keys)
+			async let preview = store.backupCompanionPreview()
+			(destinationCount, syncKeyCount, companionPreview) = await (destinations, keys, preview)
 			if syncKeyCount == 0 { contents.syncKeys = false }
 		}
 		.onAppear { focusedField = .passphrase }
@@ -103,6 +105,20 @@ struct BackupExportSheet: View {
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
+					if let companionPreview {
+						ForEach(Array(companionPreview.leftOut.enumerated()), id: \.offset) { _, leftOut in
+							Text("\(leftOut.name.escapingDirectionControls) won’t be backed up. \(leftOut.reason)")
+								.font(.system(size: 11.5))
+								.foregroundStyle(VaultPalette.orangeTintText)
+								.fixedSize(horizontal: false, vertical: true)
+						}
+						if let note = Self.newerDataNote(companionPreview.withNewerData, done: false) {
+							Text(note)
+								.font(.system(size: 11.5))
+								.foregroundStyle(VaultPalette.textTertiary)
+								.fixedSize(horizontal: false, vertical: true)
+						}
+					}
 				}
 				VStack(alignment: .leading, spacing: 8) {
 					Text("PASSPHRASE").vaultSectionLabel()
@@ -397,11 +413,13 @@ struct BackupExportSheet: View {
 		}
 	}
 
-	/// Which projects were backed up without their newer data, nil when none was.
-	nonisolated static func newerDataNote(_ names: [String]) -> String? {
+	/// Which projects were, or with `done` false will be, backed up without
+	/// their newer data; nil when none is.
+	nonisolated static func newerDataNote(_ names: [String], done: Bool = true) -> String? {
 		guard !names.isEmpty else { return nil }
 		let listed = ListFormatter.localizedString(byJoining: names.map(\.escapingDirectionControls))
-		return "Backups don’t carry newer data yet, such as personal overrides, so \(listed) \(names.count == 1 ? "was" : "were") backed up without it."
+		let verb = done ? (names.count == 1 ? "was" : "were") : "will be"
+		return "Backups don’t carry newer data yet, such as personal overrides, so \(listed) \(verb) backed up without it."
 	}
 
 	/// The file's size, where it is and what it holds:

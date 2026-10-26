@@ -348,7 +348,7 @@ struct BackupKeyStore: Sendable {
 	}
 
 	private func accounts(of store: SharedKeychainStore, store name: String) throws(Failure) -> [String] {
-		do { return Array(try store.accounts().keys) } catch { throw .unreadable(store: name) }
+		do { return Array(try store.listing().keys) } catch { throw .unreadable(store: name) }
 	}
 
 	private func read(_ account: String, of store: SharedKeychainStore, store name: String) throws(Failure) -> Data? {

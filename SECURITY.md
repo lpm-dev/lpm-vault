@@ -58,7 +58,8 @@ Clipboard data can be read or retained by another application.
 
 An env project's newer data, such as personal overrides, lives in items next to its values item.
 Records that follow the values item take its CLI approval.
-The project's feature marker and the encrypted parts of a history stay readable without approval, so a binary entitled to the group can see each project's ID, its features and their versions, how many parts it has, and roughly how large they are.
+The project's feature marker and the encrypted parts of a history or a release log stay readable without approval, so a binary entitled to the group can see each project's ID, its features and their versions, how many parts it has, and roughly how large they are.
+An LPM Vault older than companion storage that switches a project's approval changes only its values item, so until this version next unlocks and matches the records to it, or the CLI strengthens a record it reads, a record can keep the approval the project had before.
 
 Optional sync encrypts values before upload.
 Project and account metadata are not secret values and can remain visible to the service.

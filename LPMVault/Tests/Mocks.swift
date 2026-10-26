@@ -37,31 +37,92 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		set { lock.withLock { storedCompanionRefusals = newValue } }
 	}
 	private var storedCompanionRefusals: [String: CompanionRefusal] = [:]
-	private(set) var companionRepairs: [(vaultId: String, repair: CompanionEngine.Assessment.Repair)] = []
-	private(set) var companionMaintenanceCount = 0
+	/// Why each interrupted project's change couldn't be finished.
+	var companionUnfinished: [String: String] {
+		get { lock.withLock { storedCompanionUnfinished } }
+		set { lock.withLock { storedCompanionUnfinished = newValue } }
+	}
+	private var storedCompanionUnfinished: [String: String] = [:]
+	/// What resumes finished, which the next read of project states reports once.
+	var pendingCompanionNotices: [String: CompanionEngine.Plan.Notice] {
+		get { lock.withLock { storedCompanionNotices } }
+		set { lock.withLock { storedCompanionNotices = newValue } }
+	}
+	private var storedCompanionNotices: [String: CompanionEngine.Plan.Notice] = [:]
+	/// What a backup would say about projects' newer data.
+	var backupCompanionNotes: VaultBackupCompanionNotes {
+		get { lock.withLock { storedBackupCompanionNotes } }
+		set { lock.withLock { storedBackupCompanionNotes = newValue } }
+	}
+	private var storedBackupCompanionNotes = VaultBackupCompanionNotes()
+	/// Makes reading project states fail, as a Keychain error after a commit would.
+	var failCompanionStates: Bool {
+		get { lock.withLock { storedFailCompanionStates } }
+		set { lock.withLock { storedFailCompanionStates = newValue } }
+	}
+	private var storedFailCompanionStates = false
+	var companionRepairs: [(vaultId: String, reviewed: CompanionEngine.Assessment)] { lock.withLock { storedCompanionRepairs } }
+	private var storedCompanionRepairs: [(vaultId: String, reviewed: CompanionEngine.Assessment)] = []
+	var companionMaintenanceCount: Int { lock.withLock { storedCompanionMaintenanceCount } }
+	private var storedCompanionMaintenanceCount = 0
+	var valuesLeavingChecks: [String] { lock.withLock { storedValuesLeavingChecks } }
+	private var storedValuesLeavingChecks: [String] = []
 
-	func projectStatesResult(vaultIds: [String], strictAccess: Bool) -> Result<VaultProjectStates, KeychainError> {
-		let access = strictAccess ? cliAccessResults(vaultIds: vaultIds) : readableCliAccess(vaultIds: vaultIds)
-		return access.map { access in
-			let wanted = Set(vaultIds)
-			return VaultProjectStates(cliAccess: access, companion: companionStates.filter { wanted.contains($0.key) })
+	func projectStatesResult(vaultIds: [String]) -> Result<VaultProjectStates, KeychainError> {
+		// The real store reads every approval from one listing, which fails as a whole.
+		if failCompanionStates || lock.withLock({ shouldFail || failCliAccess }) { return .failure(failureError) }
+		return readableCliAccess(vaultIds: vaultIds).map { access in
+			lock.withLock {
+				let wanted = Set(vaultIds)
+				defer { storedCompanionNotices = [:] }
+				return VaultProjectStates(
+					cliAccess: access,
+					companion: storedCompanionStates.filter { wanted.contains($0.key) },
+					unfinished: storedCompanionUnfinished.filter { wanted.contains($0.key) },
+					resumed: storedCompanionNotices)
+			}
 		}
 	}
 
-	func repairCompanionData(vaultId: String, repair: CompanionEngine.Assessment.Repair) -> Result<Void, KeychainError> {
+	func repairCompanionData(vaultId: String, reviewed: CompanionEngine.Assessment) -> Result<CompanionRepairOutcome, KeychainError> {
 		lock.withLock {
 			if shouldFail { return .failure(failureError) }
-			companionRepairs.append((vaultId, repair))
+			guard storedCompanionStates[vaultId] == reviewed else { return .failure(.companion(.changedSinceReview)) }
+			storedCompanionRepairs.append((vaultId, reviewed))
 			storedCompanionStates[vaultId] = nil
 			storedCompanionRefusals[vaultId] = nil
-			return .success(())
+			return .success(storedFailCompanionStates ? .repairedStateUnknown : .repaired(nil))
 		}
 	}
 
 	func maintainCompanionStorage() -> Result<CompanionMaintenance, KeychainError> {
 		lock.withLock {
-			companionMaintenanceCount += 1
+			storedCompanionMaintenanceCount += 1
 			return .success(CompanionMaintenance(orphanDeletions: 0, accessFixes: 0))
+		}
+	}
+
+	func authorizeValuesLeaving(vaultId: String) -> Result<Void, KeychainError> {
+		lock.withLock {
+			storedValuesLeavingChecks.append(vaultId)
+			if let refusal = storedCompanionRefusals[vaultId] { return .failure(.companion(refusal)) }
+			return .success(())
+		}
+	}
+
+	func backupCompanionNotesResult() -> Result<VaultBackupCompanionNotes, KeychainError> {
+		.success(backupCompanionNotes)
+	}
+
+	func projectMetadataResult(vaultId: String) -> Result<VaultProjectMetadata?, KeychainError> {
+		lock.withLock {
+			if failProjectReads { return .failure(failureError) }
+			return .success(envStorage[vaultId].map { project in
+				VaultProjectMetadata(
+					id: vaultId, name: project.name, path: project.path,
+					environmentSummaries: project.environments.map { VaultProjectEnvironmentSummary(name: $0.key, keyCount: $0.value.count) }
+						.sorted { $0.name < $1.name })
+			})
 		}
 	}
 
@@ -107,7 +168,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	var failProjectReads = false
 	var projectReadCount = 0
 	var projectMetadataReadCount = 0
-	var environmentReadCount = 0
 	var failDataAccounts: Set<String> = []
 	var failNextReadDataAccounts: Set<String> = []
 	var dataReadCounts: [String: Int] = [:]
@@ -157,34 +217,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				}
 			}
 		}
-	}
-
-	func listProjects() -> [VaultProject] {
-		lock.lock()
-		let blocker = blockNextListProjects
-		blockNextListProjects = nil
-		lock.unlock()
-		blocker?()
-		lock.lock()
-		defer { lock.unlock() }
-		return envStorage.map { vaultId, data in
-			VaultProject(
-				id: vaultId,
-				name: data.name,
-				path: data.path,
-				environments: data.environments
-			)
-		}
-	}
-
-	func listProjectsResult() -> Result<[VaultProject], KeychainError> {
-		let failure = lock.withLock { () -> KeychainError? in
-			guard failProjectReads else { return nil }
-			return failureError
-		}
-		if let failure { return .failure(failure) }
-		lock.withLock { projectReadCount += envStorage.count }
-		return .success(listProjects())
 	}
 
 	func listProjectMetadataResult() -> Result<[VaultProjectMetadata], KeychainError> {
@@ -237,27 +269,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				environments: data.environments
 			))
 		}
-	}
-
-	func getEnvironments(vaultId: String) -> [String: [String: String]]? {
-		lock.withLock {
-			let hook = onGetEnvironments
-			onGetEnvironments = nil
-			hook?()
-			return envStorage[vaultId]?.environments
-		}
-	}
-
-	func getEnvironmentsResult(
-		vaultId: String
-	) -> Result<[String: [String: String]]?, KeychainError> {
-		let failure = lock.withLock { () -> KeychainError? in
-			guard failProjectReads else { return nil }
-			return failureError
-		}
-		if let failure { return .failure(failure) }
-		lock.withLock { environmentReadCount += 1 }
-		return .success(getEnvironments(vaultId: vaultId))
 	}
 
 	func simulateCLISet(
@@ -484,6 +495,13 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			)
 		case .update(let vaultId, let environments):
 			projectResult = updateEnvironments(vaultId: vaultId, environments: environments)
+		case .rename(let vaultId, let name):
+			if envStorage[vaultId] != nil {
+				envStorage[vaultId]?.name = name
+				projectResult = .success
+			} else {
+				projectResult = .failure(.itemNotFound)
+			}
 		case .delete(let vaultId, _):
 			projectResult = deleteProjectStorage(vaultId: vaultId)
 				? .success : .failure(failureError)
@@ -514,10 +532,6 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			return .failure(error)
 		}
 		return projectResult
-	}
-
-	func readData(account: String) -> Data? {
-		dataStorage[account]
 	}
 
 	func readDataResult(account: String) -> Result<Data?, KeychainError> {

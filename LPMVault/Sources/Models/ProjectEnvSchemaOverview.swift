@@ -595,7 +595,7 @@ enum ProjectEnvSchemaState: Equatable, Sendable {
 		"group members must be unique declared variables": ("A group's members must be declared keys, each listed once.", ["vars"]),
 		"clientPrefixes must contain at most 32 unique portable prefixes ending in '_'":
 			("Client prefixes: at most 32, each listed once, using letters, digits and underscores, and ending in “_”.", []),
-		"This field isn't one this LPM CLI knows. Check its spelling, or update the LPM CLI if a newer version wrote it.":
+		"This field isn't one this version of LPM knows. Check its spelling, or update LPM if a newer version wrote it.":
 			(unknownField, []),
 	]
 
