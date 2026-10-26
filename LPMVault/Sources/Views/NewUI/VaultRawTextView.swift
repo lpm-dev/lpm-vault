@@ -291,7 +291,7 @@ struct VaultRawTextEditor: NSViewRepresentable {
 				guard let row = row(of: warning.line) else { continue }
 				warningTint.setFill()
 				row.fill()
-				let reason = "Line \(warning.line): hidden characters" as NSString
+				let reason = warning.message as NSString
 				let size = reason.size(withAttributes: warningAttributes)
 				let pill = NSRect(x: visible.maxX - size.width - 20, y: row.minY, width: size.width + 20, height: row.height)
 				pill.fill()

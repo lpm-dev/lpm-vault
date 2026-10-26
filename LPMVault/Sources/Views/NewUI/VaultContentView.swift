@@ -570,7 +570,7 @@ struct VaultContentView: View {
 							text: draft.text,
 							problems: draft.check.problems,
 							problemLines: draft.check.problemLines,
-							warnings: editing.characterWarnings,
+							warnings: editing.characterWarningPills,
 							label: "\(name) as text, editing",
 							isEditable: !editing.isSaving,
 							onChange: editing.onChange,

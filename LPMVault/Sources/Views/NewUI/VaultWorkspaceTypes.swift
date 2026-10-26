@@ -382,6 +382,17 @@ struct VaultRawTextEditing {
     }
     .sorted { $0.line < $1.line }
   }
+
+  /// What the editor draws beside each flagged line: the first character
+  /// found, as an escape with its name, and where it is in the line's value.
+  var characterWarningPills: [VaultEnvTextCheck.Problem] {
+    characters.compactMap { key, found in
+      guard let line = draft.check.lines[key], let first = found.characters.first else { return nil }
+      let more = found.characters.count > 1 || found.more > 0 ? ", and more" : ""
+      return VaultEnvTextCheck.Problem(line: line, reason: ValueCharacterWording.line(first) + " of the value" + more)
+    }
+    .sorted { $0.line < $1.line }
+  }
 }
 
 enum VaultRawTextFailure: Equatable {
