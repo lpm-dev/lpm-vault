@@ -64,11 +64,21 @@ class CacheIdentityTests(unittest.TestCase):
         before = self.identity()
         self.assertNotEqual(before[0], self.identity(toolchain='other-SDK-build')[0])
         for path in ['LPMVault/Package.swift', 'LPMVault/Package.resolved',
-                     'LPMVault/Vendor/EnvEngine/provenance.json', '.github/workflows/ci.yml', '.github/workflows/swift-tests.yml']:
+                     '.github/workflows/ci.yml', '.github/workflows/swift-tests.yml']:
             with self.subTest(path=path):
                 self.write(path, 'changed')
                 self.assertNotEqual(before[0], self.identity()[0])
                 self.write(path, 'initial')
+
+    def test_an_engine_change_reuses_compatible_intermediates_with_a_new_save_key(self):
+        for kind in ['swift', 'release']:
+            with self.subTest(kind=kind):
+                before = self.identity(kind)
+                self.write('LPMVault/Vendor/EnvEngine/provenance.json', 'new revision')
+                after = self.identity(kind)
+                self.write('LPMVault/Vendor/EnvEngine/provenance.json', 'initial')
+                self.assertEqual(before[0], after[0])
+                self.assertNotEqual(before[1], after[1])
 
     def test_engine_cache_cannot_restore_outputs_of_a_different_pinned_revision(self):
         before = self.identity('engine')
@@ -113,6 +123,111 @@ class CacheIdentityTests(unittest.TestCase):
         header.touch()
         cache.source_times('swift', self.root, restore=True)
         self.assertEqual(header.stat().st_mtime_ns, previous)
+
+    def test_a_changed_engine_keeps_a_timestamp_that_invalidates_the_build(self):
+        engine = 'LPMVault/Vendor/EnvEngine/LPMEnv.xcframework'
+        for kind in ['swift', 'release']:
+            for relative in [engine + '/Headers/lpm_env.h', engine + '/macos-arm64_x86_64/libLPMEnv.a']:
+                with self.subTest(kind=kind, file=relative):
+                    self.write(relative, 'old engine')
+                    cache.source_times(kind, self.root, restore=False)
+                    path = self.root / relative
+                    recorded = path.stat().st_mtime_ns
+                    path.write_text('new engine')
+                    os.utime(path, ns=(recorded, recorded))
+                    cache.source_times(kind, self.root, restore=True)
+                    self.assertGreater(path.stat().st_mtime_ns, recorded)
+
+    def engine_fixture(self):
+        """A package whose engine is an xcframework, as LPM Vault's, and a way to export another."""
+        package = self.root / 'LPMVault'
+        self.write('LPMVault/Package.swift', '''// swift-tools-version: 6.0
+import PackageDescription
+let package = Package(name: "EngineFixture", platforms: [.macOS(.v14)], targets: [
+    .binaryTarget(name: "LPMEnv", path: "Vendor/EnvEngine/LPMEnv.xcframework"),
+    .executableTarget(name: "EngineFixture", dependencies: ["LPMEnv"], path: "Sources"),
+])
+''')
+        self.write('LPMVault/Package.resolved', '{"pins":[],"version":2}')
+        # Xcode 26 builds an executable's top-level code only from main.swift.
+        (package / 'Sources/View.swift').unlink()
+        (package / 'Sources/main.swift').write_text('import LPMEnv\nprint(lpm_env_fixture_value())\n')
+
+        def export(value):
+            work = Path(tempfile.mkdtemp(dir=self.root))
+            headers = work / 'Headers'
+            headers.mkdir()
+            (headers / 'lpm_env.h').write_text(f'int lpm_env_fixture_value(void); // engine {value}\n')
+            (headers / 'module.modulemap').write_text('module LPMEnv {\n  header "lpm_env.h"\n  export *\n}\n')
+            (work / 'value.c').write_text(f'int lpm_env_fixture_value(void) {{ return {value}; }}\n')
+            for command in [['xcrun', 'clang', '-mmacosx-version-min=14.0', '-c', str(work / 'value.c'), '-o', str(work / 'value.o')],
+                            ['xcrun', 'libtool', '-static', '-o', str(work / 'libLPMEnv.a'), str(work / 'value.o')],
+                            ['xcodebuild', '-create-xcframework', '-library', str(work / 'libLPMEnv.a'),
+                             '-headers', str(headers), '-output', str(work / 'LPMEnv.xcframework')]]:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return work / 'LPMEnv.xcframework'
+
+        engine = package / 'Vendor/EnvEngine/LPMEnv.xcframework'
+        shutil.copytree(export(1), engine)
+
+        def re_export():
+            """Replaces the engine's files with another export's, keeping their recorded times, as a checkout restored from cache has them."""
+            replacement = export(2)
+            for path in [path for path in engine.rglob('*') if path.is_file()]:
+                mtime = path.stat().st_mtime_ns
+                shutil.copyfile(replacement / path.relative_to(engine), path)
+                os.utime(path, ns=(mtime, mtime))
+
+        return package, re_export
+
+    def run_fixture(self, command, product=None):
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            errors = [line for line in (result.stdout + result.stderr).splitlines() if 'error' in line.lower()]
+            self.fail('\n'.join(errors[:40]) or result.stderr[-4000:])
+        if product is None:
+            return result.stdout.strip().splitlines()[-1]
+        run = subprocess.run([str(product)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        return run.stdout.strip()
+
+    @unittest.skipUnless(shutil.which('swift') and shutil.which('xcodebuild'), 'Swift and Xcode required')
+    def test_a_re_exported_engine_is_used_by_swift_after_cache_restoration(self):
+        package, re_export = self.engine_fixture()
+        command = ['swift', 'run', '--package-path', str(package), '--disable-index-store',
+                   '-Xswiftc', '-warnings-as-errors', 'EngineFixture']
+        self.assertEqual(self.run_fixture(command), '1')
+        cache.source_times('swift', self.root, restore=False)
+        re_export()
+        cache.source_times('swift', self.root, restore=True)
+        self.assertEqual(self.run_fixture(command), '2')
+
+    @unittest.skipUnless(shutil.which('xcodebuild'), 'Xcode required')
+    def test_a_re_exported_engine_is_used_by_xcodebuild_after_cache_restoration(self):
+        package, re_export = self.engine_fixture()
+        derived = self.root / 'build-check'
+        command = ['xcodebuild', '-quiet', '-scheme', 'EngineFixture', '-destination', 'platform=macOS',
+                   '-derivedDataPath', str(derived), 'COMPILER_INDEX_STORE_ENABLE=NO', 'CODE_SIGNING_ALLOWED=NO', 'build']
+        product = derived / 'Build/Products/Debug/EngineFixture'
+
+        def build():
+            # xcodebuild builds the package only where no project sits beside it.
+            project, aside = package / 'LPMVault.xcodeproj', self.root / 'LPMVault.xcodeproj'
+            project.rename(aside)
+            try:
+                return self.run_fixture(command, product)
+            finally:
+                aside.rename(project)
+
+        cwd = os.getcwd()
+        os.chdir(package)
+        self.addCleanup(os.chdir, cwd)
+        self.assertEqual(build(), '1')
+        cache.source_times('release', self.root, restore=False)
+        re_export()
+        cache.source_times('release', self.root, restore=True)
+        self.assertEqual(build(), '2')
 
     @unittest.skipUnless(shutil.which('swift'), 'Swift compiler required')
     def test_changed_source_rebuilds_after_cache_restoration(self):
