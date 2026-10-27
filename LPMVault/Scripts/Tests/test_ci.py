@@ -149,7 +149,9 @@ let package = Package(name: "EngineFixture", platforms: [.macOS(.v14)], targets:
 ])
 ''')
         self.write('LPMVault/Package.resolved', '{"pins":[],"version":2}')
-        (package / 'Sources/View.swift').write_text('import LPMEnv\nprint(lpm_env_fixture_value())\n')
+        # Xcode 26 builds an executable's top-level code only from main.swift.
+        (package / 'Sources/View.swift').unlink()
+        (package / 'Sources/main.swift').write_text('import LPMEnv\nprint(lpm_env_fixture_value())\n')
 
         def export(value):
             work = Path(tempfile.mkdtemp(dir=self.root))
