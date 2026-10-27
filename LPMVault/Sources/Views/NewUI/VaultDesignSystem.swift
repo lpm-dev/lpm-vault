@@ -155,16 +155,6 @@ extension View {
 }
 
 extension View {
-	/// Keeps macOS from offering saved passwords in a secure field that holds a
-	/// secret value. A one-time-code field is the only secure field it doesn't
-	/// offer them in; for a few minutes after a verification code arrives in
-	/// Messages or Mail, it offers that code instead.
-	func vaultSecretValueField() -> some View {
-		textContentType(.oneTimeCode)
-	}
-}
-
-extension View {
 	/// Hides the view but keeps its space, so neighboring controls don't move.
 	func hidden(_ isHidden: Bool) -> some View {
 		opacity(isHidden ? 0 : 1)

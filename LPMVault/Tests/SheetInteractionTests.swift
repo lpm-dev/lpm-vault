@@ -1074,6 +1074,21 @@ struct SheetInteractionTests {
 		#expect(try await host.waitUntil { stored(keychain, "default", "TOKEN") == "sk_fixture " }, "Hidden characters never stop an add")
 	}
 
+	@Test("a typed value changed to characters Swift calls equal names the characters it holds now")
+	func addVariableCanonicallyEqualValue() async throws {
+		let (store, keychain) = makeStore()
+		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "TOKEN"), size: NSSize(width: 560, height: 640))
+		defer { host.window.close() }
+		try await host.settle()
+		try host.enterValue("a\u{2000}b")
+		#expect(try await host.waitForText("Warning: the value has hidden characters: en quad at character 2."))
+		try host.enterValue("a\u{2002}b")
+		#expect(try await host.waitForText("Warning: the value has hidden characters: en space at character 2."))
+		try host.returnWhileEditing("secure value", modifiers: [])
+		#expect(try await host.waitUntil { stored(keychain, "default", "TOKEN").map(ExactText.init) == ExactText("a\u{2002}b") },
+			"the value is added with the characters typed last")
+	}
+
 	@Test("a revealed value shows where its hidden characters are, and VoiceOver hears that it's shown, not the value")
 	func addVariableHiddenCharacterPreview() async throws {
 		let (store, _) = makeStore()

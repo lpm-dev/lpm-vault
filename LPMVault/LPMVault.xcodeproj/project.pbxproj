@@ -111,6 +111,7 @@
 		4C9F5820A9BA4AFD15BAB060 /* VercelPublishingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2AB1D6BA22486C9CB6D596E /* VercelPublishingTests.swift */; };
 		4CFBF730D3404F13A4751FAB /* AddVariableSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 465AD9498C88039BB74D5D40 /* AddVariableSheet.swift */; };
 		4D0C2A52B3180DA0EC23D5A7 /* PlatformTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE7189FA596408E53283745A /* PlatformTimestamp.swift */; };
+		4E54645144E48B74F8C7D81A /* VaultValueField.swift in Sources */ = {isa = PBXBuildFile; fileRef = D87985A7AD99B39946A848C4 /* VaultValueField.swift */; };
 		4F2594937CC0514ABE83290E /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 176F614BCA46D100B0DFE439 /* KeychainService.swift */; };
 		4FEC5B4747EDBDBD66D24F79 /* VaultTypographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04EF250095A599AED29C4563 /* VaultTypographyTests.swift */; };
 		508FD36166C5FEB02214E818 /* PlatformCleanupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79E0B68BED021F796E3F741F /* PlatformCleanupTests.swift */; };
@@ -603,6 +604,7 @@
 		D26762F360804E157281F8C7 /* PlatformConnections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformConnections.swift; sourceTree = "<group>"; };
 		D487550C0437B4F55F50D03C /* VaultSchemaReviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSchemaReviewSheet.swift; sourceTree = "<group>"; };
 		D5DF41B6F41349F6482E5225 /* VaultWindowSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultWindowSupport.swift; sourceTree = "<group>"; };
+		D87985A7AD99B39946A848C4 /* VaultValueField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultValueField.swift; sourceTree = "<group>"; };
 		D91F5FE5131039D7E549BDAF /* AuthCredentialBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthCredentialBackend.swift; sourceTree = "<group>"; };
 		D9B4B1E110BB6BF664F8C0A7 /* PlatformTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformTestSupport.swift; sourceTree = "<group>"; };
 		DA185E326FAD6E725BDC009E /* VaultPersistenceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultPersistenceCoordinator.swift; sourceTree = "<group>"; };
@@ -736,6 +738,7 @@
 				1E9F20B5CB6FFB4B7CBFD25A /* VaultTitleBarView.swift */,
 				0AFDC6704941C25B7510E429 /* VaultValueCharacterWarning.swift */,
 				80577EEE6278D3E10CBC8986 /* VaultValueCheckPresentation.swift */,
+				D87985A7AD99B39946A848C4 /* VaultValueField.swift */,
 				C96D5EC68C7C4002C97583C4 /* VaultWindowMenu.swift */,
 				D5DF41B6F41349F6482E5225 /* VaultWindowSupport.swift */,
 				72073FDF6E5C1FDFD99BF330 /* VaultWorkspaceTypes.swift */,
@@ -1470,6 +1473,7 @@
 				62F686E49DE1FA689A89F65D /* VaultUnsavedWork.swift in Sources */,
 				E5B7E01700895E050F7167DD /* VaultValueCharacterWarning.swift in Sources */,
 				03F1F51A831ABC260AFAC351 /* VaultValueCheckPresentation.swift in Sources */,
+				4E54645144E48B74F8C7D81A /* VaultValueField.swift in Sources */,
 				CEFE501232CB7AD5BD0B9540 /* VaultWindowMenu.swift in Sources */,
 				4B88CD1D911996C20CEEBAC0 /* VaultWindowSupport.swift in Sources */,
 				F8A7C128DA66E5D1C401AE73 /* VaultWorkspaceTypes.swift in Sources */,

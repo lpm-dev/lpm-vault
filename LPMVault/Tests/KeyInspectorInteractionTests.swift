@@ -48,6 +48,22 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForTextToDisappear("hidden characters"))
 		}
 
+		@Test("an edit to characters Swift calls equal to the stored ones is an edit, named and saved as typed")
+		func canonicallyEqualEdit() async throws {
+			let (store, keychain) = makeStore(["default": ["TOKEN": "a\u{2000}b"]])
+			defer { store.lock() }
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			try await host.settle()
+			#expect(try await host.waitForText("Warning: the value in .env has hidden characters: en quad at character 2."))
+			try host.enterValue("a\u{2002}b")
+			#expect(try await host.waitForText("1 unsaved change"))
+			#expect(try await host.waitForText("Warning: the value in .env has hidden characters: en space at character 2."))
+			try await host.click("Save")
+			#expect(try await host.waitUntil { stored(keychain, "default", "TOKEN").map(ExactText.init) == ExactText("a\u{2002}b") })
+			#expect(try await host.waitForText("No unsaved changes"))
+		}
+
 		@Test("an edited value is checked as it's typed, and a revealed one shows where its hidden characters are")
 		func editedValueHiddenCharacters() async throws {
 			let (store, keychain) = makeStore(["default": ["TOKEN": "dev"]])
@@ -270,6 +286,25 @@ extension SheetInteractionTests {
 			})
 			#expect(try await host.waitForText("No unsaved changes"))
 			#expect(keychain.applyVaultTransactionCallCount == 0)
+		}
+
+		@Test("an edit to characters Swift calls equal to the last edit is checked against the rules again")
+		func canonicallyEqualEditIsRechecked() async throws {
+			let folder = FileManager.default.temporaryDirectory.appending(path: "inspector-recheck-\(UUID().uuidString)").path
+			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+			defer { try? FileManager.default.removeItem(atPath: folder) }
+			try #"{"envSchema":{"vars":{"TOKEN":{"minLength":2}}}}"#.write(toFile: folder + "/lpm.json", atomically: true, encoding: .utf8)
+			let (store, _) = makeStore(["default": ["TOKEN": "ok"]], path: folder)
+			defer { store.lock() }
+			store.reloadKeyDescriptions()
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			#expect(try await host.waitUntil { store.valueChecks["inspector"] != nil })
+			try host.enterValue("\u{E9}")
+			#expect(try await host.waitForText("Too short"))
+			try host.enterValue("e\u{301}")
+			#expect(try await host.waitForTextToDisappear("Too short"), "two scalars meet the rule")
+			#expect(store.isUnlocked && store.selectedProject != nil, "the inspector is still shown, so the rule is what passed")
 		}
 
 		@Test("a rejected schema rename keeps its error and draft visible")

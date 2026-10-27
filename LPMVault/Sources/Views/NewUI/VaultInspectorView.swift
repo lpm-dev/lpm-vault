@@ -81,14 +81,13 @@ private struct VaultKeyEditor: View {
 
 	private struct EditCheckInput: Hashable {
 		let newKey: String
-		let values: [String: String]
+		let values: [String: ExactText]
 		let effectiveSchema: Data
 		let workspaceSnapshotIdentity: UUID
 	}
 
 	private enum Field: Hashable {
 		case name
-		case value(String)
 		case description
 	}
 
@@ -115,6 +114,9 @@ private struct VaultKeyEditor: View {
 	/// The engine's check of the unsaved values, and the inputs it checked.
 	@State private var editCheck: (input: EditCheckInput, preview: ProjectEnvValueCheckWorker.Preview?)?
 	@FocusState private var focus: Field?
+	/// The environment whose value field is being edited; value fields are
+	/// AppKit's, so SwiftUI's focus doesn't reach them.
+	@State private var focusedValue: String?
 
 	private var checkedKey: String { store.keyDrafts.draft(id)?.name ?? key }
 
@@ -236,7 +238,7 @@ private struct VaultKeyEditor: View {
 		else { return nil }
 		return EditCheckInput(
 			newKey: newKey,
-			values: edits,
+			values: edits.mapValues(ExactText.init),
 			effectiveSchema: effectiveSchema,
 			workspaceSnapshotIdentity: project.workspaceSnapshotIdentity
 		)
@@ -262,7 +264,7 @@ private struct VaultKeyEditor: View {
 		}
 		do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
 		guard !Task.isCancelled else { return }
-		let edit = VaultKeyEdit(key: key, environments: project.environments, newKey: input.newKey, values: input.values)
+		let edit = VaultKeyEdit(key: key, environments: project.environments, newKey: input.newKey, values: input.values.mapValues(\.text))
 		let preview = await store.valueCheckWorker.preview(edit: edit, project: project, rules: rules)
 		guard !Task.isCancelled,
 			store.projects.first(where: { $0.id == project.id })?.workspaceSnapshotIdentity == input.workspaceSnapshotIdentity,
@@ -493,7 +495,7 @@ private struct VaultKeyEditor: View {
 			.padding(.leading, 10)
 			.padding(.trailing, 3)
 			.frame(minHeight: 34)
-			.vaultInputField(focused: focus == .value(environment), invalid: hasConflict || isOrphan || problem != nil)
+			.vaultInputField(focused: focusedValue == environment, invalid: hasConflict || isOrphan || problem != nil)
 			.help(problem ?? "")
 
 			if let characters = characters(in: environment, draft: draft) {
@@ -526,24 +528,23 @@ private struct VaultKeyEditor: View {
 
 	@ViewBuilder
 	private func valueField(_ environment: String, revealed: Bool, disabled: Bool) -> some View {
-		let binding = valueBinding(environment)
-		let label = "Value in \(VaultProject.displayName(for: environment))"
-		Group {
-			if revealed {
-				TextField(label, text: binding, prompt: Text("Empty"), axis: .vertical)
-					.lineLimit(1...4)
-			} else {
-				SecureField(label, text: binding, prompt: Text("Empty"))
-					.vaultSecretValueField()
-			}
-		}
-		.textFieldStyle(.plain)
-		.font(VaultTypography.code(11.5))
-		.foregroundStyle(VaultPalette.textPrimary)
-		.autocorrectionDisabled()
-		.focused($focus, equals: .value(environment))
-		.disabled(disabled)
-		.onSubmit(save)
+		VaultValueField(
+			text: valueBinding(environment),
+			isFocused: Binding(
+				get: { focusedValue == environment },
+				set: { focused in
+					if focused { focusedValue = environment } else if focusedValue == environment { focusedValue = nil }
+				}
+			),
+			label: "Value in \(VaultProject.displayName(for: environment))",
+			placeholder: "Empty",
+			isSecure: !revealed,
+			font: VaultTypography.codeNSFont(11.5),
+			maxLines: revealed ? 4 : 1,
+			isEnabled: !disabled,
+			onSubmit: save
+		)
+		.id(revealed)
 		.padding(.vertical, 8)
 		.frame(maxWidth: .infinity, alignment: .leading)
 	}
@@ -932,7 +933,7 @@ private struct VaultKeyEditor: View {
 	private func add(_ environment: String) {
 		edit { $0.add(environment) }
 		// The field appears with the next render.
-		Task { @MainActor in focus = .value(environment) }
+		Task { @MainActor in focusedValue = environment }
 	}
 
 	private func copy(_ environment: String, as format: VaultCopyFormat) {
