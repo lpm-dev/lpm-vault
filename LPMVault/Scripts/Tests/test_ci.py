@@ -143,7 +143,7 @@ class CacheIdentityTests(unittest.TestCase):
         package = self.root / 'LPMVault'
         self.write('LPMVault/Package.swift', '''// swift-tools-version: 6.0
 import PackageDescription
-let package = Package(name: "EngineFixture", targets: [
+let package = Package(name: "EngineFixture", platforms: [.macOS(.v14)], targets: [
     .binaryTarget(name: "LPMEnv", path: "Vendor/EnvEngine/LPMEnv.xcframework"),
     .executableTarget(name: "EngineFixture", dependencies: ["LPMEnv"], path: "Sources"),
 ])
@@ -158,7 +158,7 @@ let package = Package(name: "EngineFixture", targets: [
             (headers / 'lpm_env.h').write_text(f'int lpm_env_fixture_value(void); // engine {value}\n')
             (headers / 'module.modulemap').write_text('module LPMEnv {\n  header "lpm_env.h"\n  export *\n}\n')
             (work / 'value.c').write_text(f'int lpm_env_fixture_value(void) {{ return {value}; }}\n')
-            for command in [['xcrun', 'clang', '-c', str(work / 'value.c'), '-o', str(work / 'value.o')],
+            for command in [['xcrun', 'clang', '-mmacosx-version-min=14.0', '-c', str(work / 'value.c'), '-o', str(work / 'value.o')],
                             ['xcrun', 'libtool', '-static', '-o', str(work / 'libLPMEnv.a'), str(work / 'value.o')],
                             ['xcodebuild', '-create-xcframework', '-library', str(work / 'libLPMEnv.a'),
                              '-headers', str(headers), '-output', str(work / 'LPMEnv.xcframework')]]:
@@ -181,7 +181,9 @@ let package = Package(name: "EngineFixture", targets: [
 
     def run_fixture(self, command, product=None):
         result = subprocess.run(command, capture_output=True, text=True, timeout=300)
-        self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr[-4000:])
+        if result.returncode != 0:
+            errors = [line for line in (result.stdout + result.stderr).splitlines() if 'error' in line.lower()]
+            self.fail('\n'.join(errors[:40]) or result.stderr[-4000:])
         if product is None:
             return result.stdout.strip().splitlines()[-1]
         run = subprocess.run([str(product)], capture_output=True, text=True, timeout=60)
