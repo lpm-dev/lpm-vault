@@ -59,7 +59,7 @@ struct VaultProject: Identifiable, Hashable, Sendable {
 
 	static func == (lhs: VaultProject, rhs: VaultProject) -> Bool {
 		lhs.id == rhs.id && lhs.name == rhs.name && lhs.path == rhs.path
-			&& lhs.environments == rhs.environments
+			&& lhs.environments.isExactly(rhs.environments)
 			&& lhs.environmentKeyCounts == rhs.environmentKeyCounts
 			&& lhs.hasLoadedEnvironments == rhs.hasLoadedEnvironments
 	}

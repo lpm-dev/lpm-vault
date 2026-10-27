@@ -1319,12 +1319,11 @@ final class VaultStore {
   @ObservationIgnored let valueCheckWorker: ProjectEnvValueCheckWorker
   /// What each project's stored values hold that's hard to see, by project
   /// ID, whatever its rules, so values saved earlier, or by the LPM CLI,
-  /// sync, a pull or a backup restore, are caught without being edited.
-  private(set) var valueCharacters: [String: ValueCharacterCheck] = [:]
-  /// The values each project's check found that in, which its next check
-  /// starts from. A project whose values aren't loaded has none, so locking
-  /// leaves no value here.
-  @ObservationIgnored private(set) var characterCheckBases: [String: ValueCharacterChecker.Checked] = [:]
+  /// sync, a pull or a backup restore, are caught without being edited. Each
+  /// keeps the values it checked, which its next check starts from and which
+  /// a finding holds only while the value is still. A project whose values
+  /// aren't loaded has none, so locking leaves no value here.
+  private(set) var characterChecks: [String: ValueCharacterChecker.Checked] = [:]
   @ObservationIgnored let characterChecker: ValueCharacterChecker
   /// The values each project's character check last started from.
   @ObservationIgnored private var characterCheckIdentities: [String: UUID] = [:]
@@ -3730,7 +3729,8 @@ final class VaultStore {
     guard isUnlocked, rawTextSaves[target] == nil, let draft = rawTextDrafts[target] else { return }
     var fixed: [String: String] = [:]
     for (key, found) in rawTextCharacters(target) where fix == .removeHiddenCharacters ? found.removable : found.trimmable {
-      guard let value = draft.check.values[key], let replacement = RustSchemaEngine.fixCharacters(in: value, fix), replacement != value
+      guard let value = draft.check.values[key], let replacement = RustSchemaEngine.fixCharacters(in: value, fix),
+        ExactText(replacement) != ExactText(value)
       else { continue }
       fixed[key] = replacement
     }
@@ -3798,9 +3798,9 @@ final class VaultStore {
   /// is still the one reviewed and the environment still has the values it
   /// was reviewed against.
   func applyRawTextReview(_ review: VaultRawTextReview, skipping: Set<String>) async -> VaultRawTextSaveOutcome {
-    guard isUnlocked, let draft = rawTextDrafts[review.target], draft.check.values == review.edited else { return .unavailable }
+    guard isUnlocked, let draft = rawTextDrafts[review.target], draft.check.values.isExactly(review.edited) else { return .unavailable }
     let values = review.values(skipping: skipping)
-    guard values != review.current else { return .unavailable }
+    guard !values.isExactly(review.current) else { return .unavailable }
     return await writeRawText(review.target, expected: review.current, values: values)
   }
 
@@ -4254,29 +4254,31 @@ final class VaultStore {
     for projectID in characterCheckIdentities.keys where loaded[projectID] == nil {
       characterCheckTasks.removeValue(forKey: projectID)?.cancel()
       characterCheckIdentities[projectID] = nil
-      characterCheckBases[projectID] = nil
-      valueCharacters[projectID] = nil
+      characterChecks[projectID] = nil
     }
     for (projectID, project) in loaded where characterCheckIdentities[projectID] != project.workspaceSnapshotIdentity {
       let identity = project.workspaceSnapshotIdentity
       characterCheckIdentities[projectID] = identity
       characterCheckTasks[projectID]?.cancel()
       let environments = project.environments
-      let previous = characterCheckBases[projectID]
+      let previous = characterChecks[projectID]
       characterCheckTasks[projectID] = Task { [weak self, characterChecker] in
         let checked = await characterChecker.check(environments, since: previous)
         guard let self, !Task.isCancelled, self.characterCheckIdentities[projectID] == identity else { return }
         self.characterCheckTasks[projectID] = nil
-        self.characterCheckBases[projectID] = checked
-        let check = checked?.check
-        if self.valueCharacters[projectID] != check { self.valueCharacters[projectID] = check }
+        self.characterChecks[projectID] = checked
       }
     }
   }
 
-  /// What `key`'s stored value in `environment` holds that's hard to see.
+  /// What `key`'s stored value in `environment` holds that's hard to see,
+  /// while it's still the value checked; nil from the moment it changes until
+  /// its new check returns.
   func valueCharacters(of key: String, in environment: String, projectID: String) -> ValueCharacters? {
-    valueCharacters[projectID]?.characters(of: key, in: environment)
+    guard let checked = characterChecks[projectID],
+      let value = projects.first(where: { $0.id == projectID })?.environments[environment]?[key]
+    else { return nil }
+    return checked.characters(of: key, in: environment, whileItIs: value)
   }
 
   private func clearValueChecks() {
@@ -4905,7 +4907,7 @@ final class VaultStore {
     switch edit.applied(to: project.environments) {
     case .failure(let failure):
       throw VaultKeyEditError(failure, newKey: edit.newKey)
-    case .success(let environments) where environments == project.environments:
+    case .success(let environments) where environments.isExactly(project.environments):
       return
     case .success:
       break

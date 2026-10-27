@@ -223,7 +223,7 @@ private struct VaultKeyEditor: View {
 		var values: [String: String] = [:]
 		for environment in cards where !(draft?.orphanedEnvironments.contains(environment) ?? false) {
 			let value = currentValue(in: environment, draft: draft)
-			if value != project.value(for: key, in: environment) { values[environment] = value }
+			if !isStored(value, in: environment) { values[environment] = value }
 		}
 		return values
 	}

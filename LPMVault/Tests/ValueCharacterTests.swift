@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 
 @testable import LPMVault
@@ -200,12 +201,11 @@ struct ValueCharacterStoreTests {
 	@Test("locking forgets every check, and the values each started from")
 	func lockForgets() async throws {
 		let (store, _) = try await makeStore(["default": ["TOKEN": "fixture\u{200B}"]])
-		#expect(try await waitUntil { store.valueCharacters["p"] != nil })
+		#expect(try await waitUntil { store.characterChecks["p"] != nil })
 		#expect(store.beginRawTextEdit(order: ["TOKEN"]))
 		#expect(try await waitUntil { store.rawTextCharacterChecks.count == 1 })
 		store.lock()
-		#expect(store.valueCharacters.isEmpty)
-		#expect(store.characterCheckBases.isEmpty)
+		#expect(store.characterChecks.isEmpty)
 		#expect(store.rawTextCharacterChecks.isEmpty)
 	}
 
@@ -237,6 +237,31 @@ struct ValueCharacterStoreTests {
 			condition.broadcast()
 			condition.unlock()
 		}
+
+		func close() {
+			condition.lock()
+			isOpen = false
+			condition.unlock()
+		}
+	}
+
+	@Test("a stored value's warning goes as soon as the value changes, before its new check returns")
+	func storedWarningFollowsTheValue() async throws {
+		let gated = GatedEngine()
+		gated.open()
+		let (store, _) = try await makeStore(["default": ["TOKEN": "fixture\u{200B}"]], engine: gated.engine)
+		defer {
+			gated.open()
+			store.lock()
+		}
+		#expect(try await waitUntil { store.valueCharacters(of: "TOKEN", in: "default", projectID: "p") != nil })
+		gated.close()
+		let calls = gated.calls
+		var project = try #require(store.projects.first)
+		project.environments["default"]?["TOKEN"] = "clean"
+		store.projects = [project]
+		#expect(try await waitUntil { gated.calls > calls }, "the new check is held in the engine")
+		#expect(store.valueCharacters(of: "TOKEN", in: "default", projectID: "p") == nil)
 	}
 
 	@Test("a check still running when the vault locks keeps none of the values it was given")
@@ -249,8 +274,7 @@ struct ValueCharacterStoreTests {
 		// The checker's queue runs this after the held checks, which have returned by then.
 		_ = await store.characterChecker.inspect(values: [:])
 		try await quietPeriod()
-		#expect(store.characterCheckBases.isEmpty)
-		#expect(store.valueCharacters.isEmpty)
+		#expect(store.characterChecks.isEmpty)
 	}
 
 	@Test("a Raw text draft is checked as it's typed, sending only the values that changed")
@@ -347,5 +371,300 @@ struct DotenvBlankTests {
 		#expect(VaultEnvTextCheck("A=1\n\u{FEFF}B=2\n").problems.map(\.line) == [2])
 		let multiline = try await service.load(.text("\u{FEFF}PEM=\"one\n\u{FEFF}two\"\n"))
 		#expect(multiline.secrets == ["PEM": "one\n\u{FEFF}two"], "A value's own line keeps the mark it starts with")
+	}
+}
+
+@Suite("Values keep their exact characters")
+struct ExactValueTests {
+	private static let target = VaultEnvironmentTarget(projectId: "p", environment: "default")
+
+	@Test("a fix in CRLF Raw text rewrites only the assignments it fixes, and keeps their line endings")
+	func crlfFixKeepsOtherAssignments() {
+		var draft = VaultRawTextDraft(target: Self.target, baseline: [:], order: [])
+		draft.text = "A=\"x\u{200B}\"\r\nPEM=\"one\r\ntwo\u{200B}\"\r\nB=y\r\n"
+		#expect(draft.text(replacing: ["A": "x"]) == "A=x\r\nPEM=\"one\r\ntwo\u{200B}\"\r\nB=y\r\n")
+		#expect(draft.text(replacing: ["B": "z"]) == "A=\"x\u{200B}\"\r\nPEM=\"one\r\ntwo\u{200B}\"\r\nB=z\r\n")
+		#expect(draft.text(replacing: ["PEM": "one\ntwo"]) == "A=\"x\u{200B}\"\r\nPEM=\"one\\ntwo\"\r\nB=y\r\n")
+	}
+
+	@Test("Raw text reads an edit that Swift calls equal but whose characters differ")
+	func rawTextSeesCanonicallyEqualEdits() {
+		var draft = VaultRawTextDraft(target: Self.target, baseline: ["A": "x\u{2000}y"], order: ["A"])
+		draft.text = "A=x\u{2002}y\n"
+		#expect(draft.check.values["A"].map(ExactText.init) == ExactText("x\u{2002}y"))
+		#expect(draft.changes.changed == ["A"], "the edit is a change to save")
+		#expect(VaultEnvChanges(from: ["A": "e\u{301}"], to: ["A": "\u{E9}"]).changed == ["A"])
+	}
+
+	@Test("an import replaces a value that Swift calls equal but whose characters differ")
+	func importSeesCanonicallyEqualValues() throws {
+		let project = VaultProject(id: "p", name: "P", path: "", environments: ["default": ["A": "x\u{2000}y", "B": "same"]])
+		let review = try EnvFileImportReview(id: UUID(), project: project, environment: "default", source: .pastedText, sessionGeneration: 0,
+			imported: ImportedEnvFile(secrets: ["A": "x\u{2002}y", "B": "same"]))
+		#expect(review.changedKeys == ["A"])
+		#expect(review.unchanged.map(\.key) == ["B"])
+	}
+
+	@Test("an inspector edit that Swift calls equal to the saved value is still an edit")
+	func keyDraftSeesCanonicallyEqualEdits() {
+		var field = VaultSecretEditDraft(value: "x\u{2000}y")
+		field.draft = "x\u{2002}y"
+		#expect(field.isDirty)
+	}
+
+	@Test("values compare byte for byte, keys and environments included")
+	func valuesCompareByBytes() {
+		#expect(["A": "x\u{2000}y"].isExactly(["A": "x\u{2000}y"]))
+		#expect(!["A": "x\u{2000}y"].isExactly(["A": "x\u{2002}y"]))
+		#expect(!["A": "e\u{301}"].isExactly(["A": "\u{E9}"]))
+		#expect(!["A": "1"].isExactly(["A": "1", "B": "2"]))
+		#expect(["default": ["A": "1"]].isExactly(["default": ["A": "1"]]))
+		#expect(!["default": ["A": "x\u{2000}y"]].isExactly(["default": ["A": "x\u{2002}y"]]))
+		#expect(!["caf\u{E9}": ["A": "1"]].isExactly(["cafe\u{301}": ["A": "1"]]))
+		#expect(ExactText("") == ExactText(""))
+		#expect(Set([ExactText("x\u{2000}y"), ExactText("x\u{2002}y"), ExactText("x\u{2000}y")]).count == 2)
+		#expect(ExactText(String(repeating: "a", count: 4096) + "\u{2000}") != ExactText(String(repeating: "a", count: 4096) + "\u{2002}"))
+	}
+
+	@Test("a type that holds values is equal to another only when they hold the same characters")
+	func typesHoldingValuesCompareByBytes() {
+		let before = "x\u{2000}y", after = "x\u{2002}y"
+		#expect(VaultProject(id: "p", name: "P", path: "", environments: ["default": ["A": before]])
+			!= VaultProject(id: "p", name: "P", path: "", environments: ["default": ["A": after]]))
+		#expect(ImportedEnvFile(secrets: ["A": before]) != ImportedEnvFile(secrets: ["A": after]))
+		let receipt = EnvironmentChangeReceipt(projectId: "p", environment: "default", before: ["A": before], after: ["A": after])
+		#expect(receipt.changed, "an import or a save that changed which characters a value holds can be undone")
+		#expect(receipt != EnvironmentChangeReceipt(projectId: "p", environment: "default", before: ["A": before], after: ["A": before]))
+		#expect(VaultKeyEdit(key: "A", environments: ["default": ["A": before]])
+			!= VaultKeyEdit(key: "A", environments: ["default": ["A": after]]))
+		#expect(VaultKeyEdit(key: "A", environments: [:], values: ["default": before])
+			!= VaultKeyEdit(key: "A", environments: [:], values: ["default": after]))
+		var edited = VaultSecretEditDraft(value: before)
+		edited.draft = after
+		#expect(edited != VaultSecretEditDraft(value: before))
+		#expect(VaultEnvTextCheck("A=\(before)\n") != VaultEnvTextCheck("A=\(after)\n"))
+		var draft = VaultRawTextDraft(target: Self.target, baseline: [:], order: [])
+		let original = draft
+		draft.text = "# \(after)\n"
+		#expect(draft != original, "an edit to a comment is an edit too")
+		var other = original
+		other.text = "# \(before)\n"
+		#expect(draft != other)
+		#expect(ValueCharacterChecker.Inspection(value: "e\u{301}", found: nil, shown: nil)
+			!= ValueCharacterChecker.Inspection(value: "\u{E9}", found: nil, shown: nil))
+	}
+
+	@Test("a key edit finds a value changed since it began, though Swift calls the two equal")
+	func keyEditSeesCanonicallyEqualChange() {
+		let edit = VaultKeyEdit(key: "A", environments: ["default": ["A": "x\u{2000}y"]], values: ["default": "new"])
+		#expect(edit.applied(to: ["default": ["A": "x\u{2002}y"]]) == .failure(.changed))
+	}
+
+	@Test("values that differ between environments only in characters Swift calls equal drift")
+	func driftSeesCanonicallyEqualValues() {
+		let project = VaultProject(id: "p", name: "P", path: "", environments: [
+			"default": ["A": "x\u{2000}y", "B": "same"], "staging": ["A": "x\u{2002}y", "B": "same"],
+		])
+		let snapshot = VaultWorkspaceSnapshot(project: project)
+		#expect(snapshot.hasDrift(for: "A"))
+		#expect(!snapshot.hasDrift(for: "B"))
+	}
+}
+
+/// Every save and conflict check compares values byte for byte, since Swift
+/// calls values equal that hold different characters, such as U+2000 and U+2002.
+@Suite("Saves keep a value's exact characters", .serialized)
+@MainActor
+struct ExactValueSaveTests {
+	private static let before = "x\u{2000}y"
+	private static let after = "x\u{2002}y"
+
+	private func makeStore(_ environments: [String: [String: String]], incoming: [String: String] = [:])
+		async throws -> (VaultStore, MockKeychainService)
+	{
+		let importer = MockEnvFileImportService()
+		await importer.setImmediateResult(.success(ImportedEnvFile(secrets: incoming)))
+		let keychain = MockKeychainService()
+		keychain.envStorage["p"] = (name: "Project", path: "", environments: environments)
+		let store = VaultStore(keychainService: keychain, biometricService: MockBiometricService(), apiService: MockAPIService(),
+			envFileImportService: importer, authTokenProvider: { _, _ in nil })
+		store.isUnlocked = true
+		#expect(await store.loadProjects())
+		store.isUnlocked = true
+		#expect(await store.openProjectForSaving("p", timeout: testWaitLimit))
+		return (store, keychain)
+	}
+
+	private func stored(_ keychain: MockKeychainService, _ key: String = "A") -> ExactText? {
+		keychain.envStorage["p"]?.environments["default"]?[key].map(ExactText.init)
+	}
+
+	private func shown(_ store: VaultStore, _ key: String = "A") -> ExactText? {
+		store.projects.first?.environments["default"]?[key].map(ExactText.init)
+	}
+
+	private var target: VaultEnvironmentTarget { VaultEnvironmentTarget(projectId: "p", environment: "default") }
+
+	@Test("an inspector save writes a value that Swift calls equal to the stored one")
+	func inspectorSave() async throws {
+		let (store, keychain) = try await makeStore(["default": ["A": Self.before]])
+		defer { store.lock() }
+		let project = try #require(store.projects.first)
+		try await store.saveKeyEdit(VaultKeyEdit(key: "A", environments: project.environments, values: ["default": Self.after]), in: "p")
+		#expect(stored(keychain) == ExactText(Self.after))
+		#expect(shown(store) == ExactText(Self.after))
+	}
+
+	@Test("a Raw text save writes a value that Swift calls equal to the stored one, and undoing puts the old one back")
+	func rawTextSave() async throws {
+		let (store, keychain) = try await makeStore(["default": ["A": Self.before]])
+		defer { store.lock() }
+		#expect(store.beginRawTextEdit(order: ["A"]))
+		store.updateRawTextDraft(target, text: "A=\(Self.after)\n")
+		guard case .saved(let receipt) = await store.saveRawTextDraft(target) else {
+			Issue.record("the edit wasn't saved")
+			return
+		}
+		#expect(stored(keychain) == ExactText(Self.after))
+		#expect(receipt.changed)
+		#expect(await store.undoEnvironmentChange(receipt) == .saved)
+		#expect(stored(keychain) == ExactText(Self.before))
+	}
+
+	@Test("a Raw text save finds a value the LPM CLI changed meanwhile, though Swift calls the two equal")
+	func rawTextSaveSeesCLIChange() async throws {
+		let (store, keychain) = try await makeStore(["default": ["A": Self.before, "B": "1"]])
+		defer { store.lock() }
+		#expect(store.beginRawTextEdit(order: ["A", "B"]))
+		store.updateRawTextDraft(target, text: "A=\(Self.before)\nB=2\n")
+		keychain.simulateCLISet(vaultId: "p", environment: "default", key: "A", value: Self.after)
+		#expect(await store.saveRawTextDraft(target) == .changed)
+		#expect(stored(keychain) == ExactText(Self.after), "the LPM CLI's value stays")
+		#expect(stored(keychain, "B") == ExactText("1"))
+	}
+
+	@Test("a reviewed Raw text edit applies only to the text and the values it was made with, byte for byte")
+	func rawTextReviewIsOfExactValues() async throws {
+		let (store, keychain) = try await makeStore(["default": ["A": Self.before, "B": "1"]])
+		defer { store.lock() }
+		#expect(store.beginRawTextEdit(order: ["A", "B"]))
+		store.updateRawTextDraft(target, text: "A=\(Self.before)\nB=2\n")
+		let review = try #require(store.reviewRawTextDraft(target))
+		store.updateRawTextDraft(target, text: "A=\(Self.after)\nB=2\n")
+		#expect(await store.applyRawTextReview(review, skipping: []) == .unavailable, "the edit changed since it was reviewed")
+		#expect(stored(keychain) == ExactText(Self.before))
+	}
+
+	@Test("an import replaces a value that Swift calls equal to the stored one, and can be undone")
+	func importReplaces() async throws {
+		let (store, keychain) = try await makeStore(["default": ["A": Self.before]], incoming: ["A": Self.after])
+		defer { store.lock() }
+		let file = URL(fileURLWithPath: "/tmp/dummy.env")
+		let imported = try await store.loadEnvImport(.file(file), for: "p").get()
+		let review = try await store.prepareEnvImport(imported, from: .file(file), to: "p", environment: "default").get()
+		#expect(review.changedKeys == ["A"])
+		let receipt = try await store.applyEnvFileImport(review, replacingKeys: ["A"]).get()
+		#expect(stored(keychain) == ExactText(Self.after))
+		#expect(receipt.changed)
+	}
+
+	@Test("an import finds a value the LPM CLI changed after the review, though Swift calls the two equal")
+	func importSeesCLIChange() async throws {
+		let (store, keychain) = try await makeStore(["default": ["A": Self.before]], incoming: ["A": "new", "B": "added"])
+		defer { store.lock() }
+		let file = URL(fileURLWithPath: "/tmp/dummy.env")
+		let imported = try await store.loadEnvImport(.file(file), for: "p").get()
+		let review = try await store.prepareEnvImport(imported, from: .file(file), to: "p", environment: "default").get()
+		keychain.simulateCLISet(vaultId: "p", environment: "default", key: "A", value: Self.after)
+		#expect(await store.applyEnvFileImport(review, replacingKeys: ["A"]) == .failure(.reviewChanged))
+		#expect(stored(keychain) == ExactText(Self.after))
+	}
+
+	@Test("deleting a value finds it changed by the LPM CLI meanwhile, though Swift calls the two equal")
+	func deleteSeesCLIChange() async throws {
+		let (store, keychain) = try await makeStore(["default": ["A": Self.before, "B": "1"]])
+		defer { store.lock() }
+		keychain.simulateCLISet(vaultId: "p", environment: "default", key: "A", value: Self.after)
+		store.deleteSecret(from: "p", environment: "default", key: "A")
+		#expect(try await waitUntil { self.shown(store) != ExactText(Self.before) })
+		#expect(stored(keychain) == ExactText(Self.after), "the LPM CLI's value isn't deleted")
+		#expect(shown(store) == ExactText(Self.after), "the app shows the LPM CLI's value")
+	}
+
+	@Test("a project's values changing to characters Swift calls equal tell the views showing them")
+	func projectsNotifyObservers() async throws {
+		let (store, _) = try await makeStore(["default": ["A": Self.before]])
+		defer { store.lock() }
+		var project = try #require(store.projects.first)
+		project.environments["default"]?["A"] = Self.after
+		let notified = NotifiedFlag()
+		withObservationTracking { _ = store.projects } onChange: { notified.set() }
+		store.projects = [project]
+		#expect(notified.isSet)
+	}
+
+	@Test("a pull finds a value changed here since the last sync, though Swift calls it equal to the remote one")
+	func pullSeesLocalChange() async throws {
+		let keychain = MockKeychainService()
+		keychain.envStorage["p"] = (name: "Project", path: "", environments: ["default": ["A": Self.after]])
+		let result = await VaultPersistenceCoordinator(service: keychain).commitPull(
+			baseline: VaultProject(id: "p", name: "Project", path: "", environments: ["default": ["A": Self.before]]),
+			remotePayload: Data(#"{"environments":{"default":{"A":"x\u2000y"}}}"#.utf8),
+			action: "pull", version: 1,
+			binding: SyncPrincipalBinding(registryURL: "https://lpm.dev", principalID: "user-1", scope: "personal"))
+		guard case .conflict = result else {
+			Issue.record("expected a conflict, got \(result)")
+			return
+		}
+		#expect(stored(keychain) == ExactText(Self.after), "the change made here isn't overwritten")
+	}
+
+	final class NotifiedFlag: @unchecked Sendable {
+		private let lock = NSLock()
+		private var notified = false
+		var isSet: Bool { lock.withLock { notified } }
+		func set() { lock.withLock { notified = true } }
+	}
+}
+
+@Suite("Dotenv syntax is read by scalar")
+struct DotenvScalarTests {
+	@Test("a hidden character next to a quote or a syntax space stays in the value, as the LPM CLI reads it")
+	func hiddenCharacterNextToSyntax() async throws {
+		let service = EnvFileImportService()
+		let text = "CGJ=\"\u{34F}secret\"\nZWJ='\u{200D}x'\nSPACED= \u{34F}y\nCLOSE=\"z\u{34F}\"\n"
+		let expected = ["CGJ": "\u{34F}secret", "ZWJ": "\u{200D}x", "SPACED": "\u{34F}y", "CLOSE": "z\u{34F}"]
+		let imported = try await service.load(.text(text)).secrets
+		#expect(imported.mapValues(ExactText.init) == expected.mapValues(ExactText.init))
+		#expect(VaultEnvTextCheck(text).values.mapValues(ExactText.init) == expected.mapValues(ExactText.init))
+	}
+
+	@Test("a quoted value that spans lines keeps the blanks before its first line break")
+	func multilineKeepsBlanks() async throws {
+		let service = EnvFileImportService()
+		let text = "DOUBLE=\"a  \nb\"\nSINGLE='c\t\nd'\n"
+		let expected = ["DOUBLE": "a  \nb", "SINGLE": "c\t\nd"]
+		#expect(try await service.load(.text(text)).secrets == expected)
+		#expect(VaultEnvTextCheck(text).values == expected)
+	}
+
+	@Test("a carriage return that ends no CRLF stays in the value")
+	func loneCarriageReturn() async throws {
+		let service = EnvFileImportService()
+		#expect(try await service.load(.text("KEY=value\r")).secrets == ["KEY": "value\r"])
+		#expect(VaultEnvTextCheck("KEY=value\r").values == ["KEY": "value\r"])
+		#expect(VaultEnvTextCheck("KEY=value\r\nB=1").values == ["KEY": "value", "B": "1"])
+	}
+
+	@Test("only spaces and tabs come off the start of a line, and a byte order mark only at the start of the file")
+	func lineStarts() async throws {
+		let service = EnvFileImportService()
+		for text in ["\u{B}KEY=value\n", "\u{C}KEY=value\n", " \u{FEFF}KEY=value\n"] {
+			await #expect(throws: EnvFileImportError.invalidVariableName(line: 1), "\(text.debugDescription)") {
+				try await service.load(.text(text))
+			}
+		}
+		#expect(try await service.load(.text("\u{FEFF}# a comment\nKEY=1\n")).secrets == ["KEY": "1"])
+		#expect(try await service.load(.text("\u{FEFF}KEY=1\n")).secrets == ["KEY": "1"])
 	}
 }

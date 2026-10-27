@@ -496,7 +496,7 @@ struct VaultWorkspaceSnapshot: Equatable, Sendable {
 
     mutating func observe(_ value: String) {
       environmentCount += 1
-      if value != firstValue {
+      if ExactText(value) != ExactText(firstValue) {
         hasDrift = true
       }
     }
@@ -820,15 +820,20 @@ struct VaultSecretEditDraft: Equatable, Sendable {
     draft = value
   }
 
-  var isDirty: Bool { draft != baseline }
+  var isDirty: Bool { ExactText(draft) != ExactText(baseline) }
+
+  static func == (lhs: Self, rhs: Self) -> Bool {
+    ExactText(lhs.baseline) == ExactText(rhs.baseline) && ExactText(lhs.draft) == ExactText(rhs.draft)
+      && lhs.hasExternalConflict == rhs.hasExternalConflict
+  }
 
   mutating func receiveExternalValue(_ value: String) {
-    if value == draft {
+    if ExactText(value) == ExactText(draft) {
       baseline = value
       hasExternalConflict = false
       return
     }
-    guard value != baseline else { return }
+    guard ExactText(value) != ExactText(baseline) else { return }
     if !isDirty {
       baseline = value
       draft = value

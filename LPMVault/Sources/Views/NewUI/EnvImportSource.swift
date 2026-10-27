@@ -458,7 +458,7 @@ struct EnvImportPasteEditor: NSViewRepresentable {
 		textView.isSelectable = true
 		// The text comes from the box almost always; it's set only when
 		// something else changed it, such as Clear.
-		if text != context.coordinator.shownText {
+		if ExactText(text) != ExactText(context.coordinator.shownText) {
 			textView.string = text
 			context.coordinator.shownText = text
 			context.coordinator.undoManager.removeAllActions()

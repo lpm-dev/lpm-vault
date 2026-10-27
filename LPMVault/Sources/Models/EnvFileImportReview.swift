@@ -69,7 +69,8 @@ struct EnvFileImportReview: Identifiable, Sendable {
 		self.baseline = baseline
 		self.rows = imported.secrets.keys.sorted().map { key in
 			let change: Change =
-				baseline[key] == nil ? .added : baseline[key] == imported.secrets[key] ? .unchanged : .changed
+				baseline[key] == nil ? .added
+					: baseline[key].map(ExactText.init) == imported.secrets[key].map(ExactText.init) ? .unchanged : .changed
 			return Row(key: key, change: change)
 		}
 		self.added = rows.filter { $0.change == .added }
@@ -113,5 +114,10 @@ struct EnvironmentChangeReceipt: Sendable, Equatable {
 	let before: [String: String]
 	let after: [String: String]
 
-	var changed: Bool { before != after }
+	var changed: Bool { !before.isExactly(after) }
+
+	static func == (lhs: Self, rhs: Self) -> Bool {
+		lhs.projectId == rhs.projectId && lhs.environment == rhs.environment
+			&& lhs.before.isExactly(rhs.before) && lhs.after.isExactly(rhs.after)
+	}
 }

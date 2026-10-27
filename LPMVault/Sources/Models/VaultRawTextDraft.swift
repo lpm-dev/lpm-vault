@@ -43,12 +43,9 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 		}
 
 		func assign(_ assignment: String, line: Int, through end: Int) {
-			let trimmed = assignment.trimmingDotenvBlanks()
-			let body = trimmed.hasPrefix("export ") ? String(trimmed.dropFirst("export ".count)) : trimmed
-			guard let equals = body.firstIndex(of: "=") else {
+			guard let (key, raw) = EnvFileCodec.assignment(in: assignment[...]) else {
 				return flag(line, "not a KEY=value line")
 			}
-			let key = body[..<equals].trimmingDotenvBlanks()
 			guard !key.isEmpty else { return flag(line, "no key before =") }
 			guard EnvValidation.isValidVariableName(key) else {
 				return flag(line, "invalid key name — use letters, digits and _, not starting with a digit")
@@ -61,18 +58,17 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 				problemLines.insert(first)
 				return flag(line, "\(key) differs from \(other) on line \(first) only in letter case")
 			}
-			let raw = String(body[body.index(after: equals)...]).trimmingLeadingDotenvBlanks()
 			let value: String
 			if let quote = raw.first, quote == "\"" || quote == "'" {
 				// Quoted values unescape as an import reads them.
 				let single = EnvFileImportLimits(maximumInputBytes: limits.maximumInputBytes, maximumAssignments: 1,
 					maximumParsedBytes: limits.maximumParsedBytes)
-				guard let parsed = (try? EnvFileCodec.parse(key + "=" + raw, limits: single))?[key] else {
+				guard let parsed = (try? EnvFileCodec.parse(key + "=" + String(raw), limits: single))?[key] else {
 					return flag(line, "a value too large to keep")
 				}
 				value = parsed
 			} else {
-				value = raw.trimmingDotenvBlanks()
+				value = String(raw.trimmingDotenvBlanks())
 			}
 			guard values.count < limits.maximumAssignments else {
 				return flag(line, "more than \(limits.maximumAssignments.formatted()) keys")
@@ -88,10 +84,12 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 		}
 
 		var number = 0
-		for slice in text.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
+		let slices = text.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
+		for slice in slices {
 			number += 1
 			var line = String(decoding: slice, as: UTF8.self)
-			if line.hasSuffix("\r") { line.removeLast() }
+			// Only the carriage return of a "\r\n" ends a line; any other is the value's.
+			if number < slices.count, line.unicodeScalars.last == "\r" { line.unicodeScalars.removeLast() }
 			if number == 1 { line = line.droppingByteOrderMark() }
 			if let open = pending {
 				let joined = open.text + "\n" + line
@@ -119,6 +117,11 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 		self.problemLines = problemLines
 		lineCount = number
 	}
+
+	static func == (lhs: Self, rhs: Self) -> Bool {
+		lhs.values.isExactly(rhs.values) && lhs.lines == rhs.lines && lhs.spans == rhs.spans && lhs.problems == rhs.problems
+			&& lhs.problemLines == rhs.problemLines && lhs.lineCount == rhs.lineCount
+	}
 }
 
 /// How edited values differ from the environment's.
@@ -133,9 +136,9 @@ struct VaultEnvChanges: Equatable, Sendable {
 		var changed: [String] = []
 		var unchanged: [String] = []
 		for (key, value) in values {
-			switch baseline[key] {
+			switch baseline[key].map(ExactText.init) {
 			case nil: added.append(key)
-			case value: unchanged.append(key)
+			case ExactText(value): unchanged.append(key)
 			default: changed.append(key)
 			}
 		}
@@ -168,7 +171,7 @@ struct VaultRawTextDraft: Equatable, Sendable {
 	}
 	var text: String {
 		didSet {
-			guard text != oldValue else { return }
+			guard ExactText(text) != ExactText(oldValue) else { return }
 			check = VaultEnvTextCheck(text)
 			changes = VaultEnvChanges(from: baseline, to: check.values)
 		}
@@ -191,16 +194,33 @@ struct VaultRawTextDraft: Equatable, Sendable {
 	var canSave: Bool { check.problems.isEmpty && changes.count > 0 }
 
 	/// The text with each of `values`' keys set by one line of its own, in
-	/// place of the lines that set it before.
+	/// place of the lines that set it before, in one pass. Lines split by
+	/// scalar, as the check numbers them, and a replaced assignment keeps
+	/// the `\r\n` its last line ended with.
 	func text(replacing values: [String: String]) -> String {
-		let replacements = values.compactMap { key, value in check.spans[key].map { ($0, EnvFileCodec.formatLine(key: key, value: value)) } }
-			.sorted { $0.0.lowerBound > $1.0.lowerBound }
+		let replacements = values.compactMap { key, value in check.spans[key].map { (span: $0, line: EnvFileCodec.formatLine(key: key, value: value)) } }
+			.sorted { $0.span.lowerBound < $1.span.lowerBound }
 		guard !replacements.isEmpty else { return text }
-		var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-		for (span, line) in replacements where span.upperBound <= lines.count {
-			lines.replaceSubrange((span.lowerBound - 1)...(span.upperBound - 1), with: [line])
+		let lines = text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false)
+		var output = ""
+		output.reserveCapacity(text.utf8.count)
+		var next = replacements.startIndex
+		var number = 1
+		while number <= lines.count {
+			if number > 1 { output.append("\n") }
+			if next < replacements.endIndex, replacements[next].span.lowerBound == number {
+				let replacement = replacements[next]
+				let last = min(replacement.span.upperBound, lines.count)
+				output.append(replacement.line)
+				if last < lines.count, lines[last - 1].last == "\r" { output.append("\r") }
+				number = last + 1
+				next += 1
+			} else {
+				output.unicodeScalars.append(contentsOf: lines[number - 1])
+				number += 1
+			}
 		}
-		return lines.joined(separator: "\n")
+		return output
 	}
 
 	/// The same edit, of the environment under its new name.
@@ -208,6 +228,12 @@ struct VaultRawTextDraft: Equatable, Sendable {
 		var draft = self
 		draft.target = VaultEnvironmentTarget(projectId: target.projectId, environment: environment)
 		return draft
+	}
+
+	/// `check` and `changes` follow from the text and the baseline.
+	static func == (lhs: Self, rhs: Self) -> Bool {
+		lhs.target == rhs.target && ExactText(lhs.text) == ExactText(rhs.text) && lhs.baseline.isExactly(rhs.baseline)
+			&& lhs.reviewsBeforeSaving == rhs.reviewsBeforeSaving
 	}
 }
 

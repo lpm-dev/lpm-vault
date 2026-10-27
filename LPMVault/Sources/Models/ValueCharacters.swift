@@ -115,21 +115,6 @@ struct ValueCharacterCheck: Equatable, Sendable {
 	var valueCount: Int { environments.values.reduce(0) { $0 + $1.count } }
 }
 
-/// Text compared byte for byte. Swift's `==` compares strings by canonical
-/// equivalence, under which a value can equal one holding other characters,
-/// such as U+2000 and U+2002, so a check of one would stand for the other.
-struct ExactText: Equatable, Sendable {
-	let text: String
-
-	init(_ text: String) {
-		self.text = text
-	}
-
-	static func == (lhs: Self, rhs: Self) -> Bool {
-		lhs.text.utf8.count == rhs.text.utf8.count && lhs.text.utf8.elementsEqual(rhs.text.utf8)
-	}
-}
-
 /// A value shown with each character that's hard to see written as its
 /// escape, such as `\u{200b}`, for someone who sees the value.
 struct ShownValueCharacters: Equatable, Sendable {
@@ -235,6 +220,10 @@ actor ValueCharacterChecker {
 		/// Whether this inspection is of `value`, byte for byte.
 		func isOf(_ value: String) -> Bool {
 			ExactText(self.value) == ExactText(value)
+		}
+
+		static func == (lhs: Self, rhs: Self) -> Bool {
+			lhs.isOf(rhs.value) && lhs.found == rhs.found && lhs.shown == rhs.shown
 		}
 	}
 

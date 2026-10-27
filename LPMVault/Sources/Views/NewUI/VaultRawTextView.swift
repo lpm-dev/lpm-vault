@@ -174,7 +174,7 @@ struct VaultRawTextEditor: NSViewRepresentable {
 		guard let textView = scrollView.documentView as? EditorTextView else { return }
 		textView.setAccessibilityLabel(label)
 		textView.isEditable = isEditable
-		if text != coordinator.shownText {
+		if ExactText(text) != ExactText(coordinator.shownText) {
 			textView.string = text
 			coordinator.shownText = text
 			textView.undoManager?.removeAllActions()
