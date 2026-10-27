@@ -17,7 +17,7 @@
   },
   "notices": "993984d53d004715e977accd59449eca5c011d58802a14e9b568d7f7d34c2931",
   "repository": "https://github.com/lpm-dev/rust-client",
-  "revision": "532f8e51f179f5d4b6349623a5b286fed3c1d9bc",
+  "revision": "020e6061329d235bcae836ee1096f2dd99c7105e",
   "sources": {
     ".cargo/config.toml": "fccee23445e297786f527a4c0ae0b0171ba8bc5bf7c3ce001fd1f2c81f624ece",
     "Cargo.lock": "5b1509a7bb9e76bafbee491f896b12bbd291842df24b46cdacfdaea4df45bb09",
