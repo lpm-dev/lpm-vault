@@ -43,12 +43,12 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 		}
 
 		func assign(_ assignment: String, line: Int, through end: Int) {
-			let trimmed = assignment.trimmingCharacters(in: .whitespaces)
+			let trimmed = assignment.trimmingDotenvBlanks()
 			let body = trimmed.hasPrefix("export ") ? String(trimmed.dropFirst("export ".count)) : trimmed
 			guard let equals = body.firstIndex(of: "=") else {
 				return flag(line, "not a KEY=value line")
 			}
-			let key = body[..<equals].trimmingCharacters(in: .whitespaces)
+			let key = body[..<equals].trimmingDotenvBlanks()
 			guard !key.isEmpty else { return flag(line, "no key before =") }
 			guard EnvValidation.isValidVariableName(key) else {
 				return flag(line, "invalid key name — use letters, digits and _, not starting with a digit")
@@ -61,7 +61,7 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 				problemLines.insert(first)
 				return flag(line, "\(key) differs from \(other) on line \(first) only in letter case")
 			}
-			let raw = String(body[body.index(after: equals)...]).trimmingLeadingWhitespace()
+			let raw = String(body[body.index(after: equals)...]).trimmingLeadingDotenvBlanks()
 			let value: String
 			if let quote = raw.first, quote == "\"" || quote == "'" {
 				// Quoted values unescape as an import reads them.
@@ -72,7 +72,7 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 				}
 				value = parsed
 			} else {
-				value = raw.trimmingCharacters(in: .whitespaces)
+				value = raw.trimmingDotenvBlanks()
 			}
 			guard values.count < limits.maximumAssignments else {
 				return flag(line, "more than \(limits.maximumAssignments.formatted()) keys")
@@ -92,6 +92,7 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 			number += 1
 			var line = String(decoding: slice, as: UTF8.self)
 			if line.hasSuffix("\r") { line.removeLast() }
+			if number == 1 { line = line.droppingByteOrderMark() }
 			if let open = pending {
 				let joined = open.text + "\n" + line
 				if EnvFileCodec.containsClosingQuote(in: line, quote: open.quote) {

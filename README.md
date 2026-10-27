@@ -118,6 +118,7 @@ The inspector outlines failing values in red and lists problems under RULES.
 It checks pending value edits and key renames before you save.
 
 Values can hold characters that are hard to see, or that change how the text reads, such as a zero-width space or byte order mark from a paste, a no-break space, a direction override, a carriage return, or a space or newline at either end. LPM Vault flags them, with or without rules, using the same engine the LPM CLI uses for `lpm env set`, `import` and `check`: when you add a variable, in the inspector for stored and edited values, in Raw text and its review, and when you import. A warning names each character, as an escape such as `\u{200b}` with its Unicode name, and says where it is, never the value; a revealed value shows them in place. **Remove hidden characters** and **Trim the ends** fix a value only when you choose them, and a warning never stops a save or an import. Line breaks inside a multiline value and its final newline, emoji sequences, and text in scripts that need joiners aren't flagged.
+An import and Raw text read `.env` text as the LPM CLI does: only spaces and tabs around a key or an unquoted value are trimmed, and a byte order mark only at the start of a file, so every other character reaches the value and its warning.
 
 The connection sheet links a project directory through `lpm.json`.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.

@@ -307,3 +307,45 @@ struct RawTextSpanTests {
 		#expect(edited.text(replacing: ["A": "one two", "B": ""]) == "A=\"one two\"\nPEM=\"line one\nline two\"\nB=")
 	}
 }
+
+@Suite("Dotenv syntax trims only spaces and tabs")
+struct DotenvBlankTests {
+	private static let text = "\u{FEFF}FIRST=one\n\t PADDED = two \t\r\nNBSP=three\u{A0}\nZWSP=\u{200B}four\u{200B}\nWIDE=\u{3000}five\u{3000}\nFEED=six\u{C}\n"
+	private static let values = ["FIRST": "one", "PADDED": "two", "NBSP": "three\u{A0}", "ZWSP": "\u{200B}four\u{200B}",
+		"WIDE": "\u{3000}five\u{3000}", "FEED": "six\u{C}"]
+
+	@Test("an import keeps characters that look blank at the ends of unquoted values, as the LPM CLI does")
+	func importKeepsThem() async throws {
+		let service = EnvFileImportService()
+		#expect(try await service.load(.text(Self.text)).secrets == Self.values)
+	}
+
+	@Test("Raw text reads values as an import does")
+	func rawTextKeepsThem() {
+		let check = VaultEnvTextCheck(Self.text)
+		#expect(check.values == Self.values)
+		#expect(check.problems.isEmpty)
+	}
+
+	@Test("one assignment parses the same however its lines end")
+	func lineEndings() throws {
+		#expect(try EnvFileCodec.parse("A=1\r\nB= two \r\n") == ["A": "1", "B": "two"])
+	}
+
+	@Test("a key that starts with a character that looks blank isn't a valid name")
+	func blankLookingKey() async throws {
+		let service = EnvFileImportService()
+		await #expect(throws: EnvFileImportError.invalidVariableName(line: 2)) { try await service.load(.text("OK=1\n\u{A0}KEY=value\n")) }
+		#expect(VaultEnvTextCheck("OK=1\n\u{A0}KEY=value\n").problems.map(\.line) == [2])
+	}
+
+	@Test("a byte order mark counts only at the start of the text")
+	func byteOrderMarkOnlyAtTheStart() async throws {
+		let service = EnvFileImportService()
+		await #expect(throws: EnvFileImportError.invalidVariableName(line: 2)) { try await service.load(.text("A=1\n\u{FEFF}B=2\n")) }
+		#expect(try EnvFileCodec.parse("A=\u{FEFF}x\n") == ["A": "\u{FEFF}x"])
+		#expect(VaultEnvTextCheck("A=1\n\u{FEFF}B=2\n").problems.map(\.line) == [2])
+		let multiline = try await service.load(.text("\u{FEFF}PEM=\"one\n\u{FEFF}two\"\n"))
+		#expect(multiline.secrets == ["PEM": "one\n\u{FEFF}two"], "A value's own line keeps the mark it starts with")
+	}
+}

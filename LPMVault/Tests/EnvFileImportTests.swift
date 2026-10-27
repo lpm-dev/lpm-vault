@@ -387,7 +387,8 @@ struct EnvFileImportTests {
 		}
 		let imported = try await service.load(.text(samples[2]))
 		#expect(imported.secrets == ["TOKEN": "single quoted", "EMPTY": "", "LAST": "1"])
-		#expect(imported.skippedLineCount == 2 && imported.firstSkippedLine == 3, "A comment after a no-break space isn't skipped as a non-assignment")
+		#expect(imported.skippedLineCount == 3 && imported.firstSkippedLine == 3,
+			"A # after a no-break space starts no comment: only spaces and tabs are blanks, as in the LPM CLI, so the line is skipped and said")
 		#expect(imported.byteCount == samples[2].utf8.count)
 		#expect(try await service.load(.text(samples[6])).byteCount == samples[6].utf8.count, "Size counts bytes, not characters")
 	}

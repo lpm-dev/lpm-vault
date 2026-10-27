@@ -327,6 +327,7 @@ private struct StreamingEnvFileParser {
 
 	mutating func consume(_ line: String, lineNumber: Int) throws {
 		try Task.checkCancellation()
+		let line = lineNumber == 1 ? line.droppingByteOrderMark() : line
 		if pendingQuotedAssignment != nil {
 			let lineBytes = line.utf8.count
 			let (withNewline, newlineOverflow) =
@@ -673,10 +674,10 @@ enum BoundedEnvFileReader {
 				return
 			}
 			if terminatedByNewline, line.last == 0x0D { line.removeLast() }
-			guard let decoded = String(data: line, encoding: .utf8) else {
-				throw EnvFileImportError.invalidUTF8
-			}
-			try body(decoded, lineNumber)
+			// The validator has already checked these bytes are whole UTF-8.
+			// Foundation's decoding would drop a byte order mark that starts
+			// any line, even inside a value; only the file's first one goes.
+			try body(String(decoding: line, as: UTF8.self), lineNumber)
 		}
 
 		private mutating func consume(
@@ -796,20 +797,20 @@ enum EnvFileCodec {
 	}
 
 	static func unterminatedQuote(in line: String) -> Character? {
-		let trimmed = line.trimmingCharacters(in: .whitespaces)
+		let trimmed = line.trimmingDotenvBlanks()
 		if trimmed.isEmpty || trimmed.hasPrefix("#") { return nil }
 		let assignment = trimmed.hasPrefix("export ")
 			? String(trimmed.dropFirst("export ".count))
 			: trimmed
 		guard let equals = assignment.firstIndex(of: "=") else { return nil }
 		let value = String(assignment[assignment.index(after: equals)...])
-			.trimmingLeadingWhitespace()
+			.trimmingLeadingDotenvBlanks()
 		guard let quote = value.first, quote == "\"" || quote == "'" else { return nil }
 		return closingQuote(in: String(value.dropFirst()), quote: quote) == nil ? quote : nil
 	}
 
 	static func isBlankOrComment(_ line: String) -> Bool {
-		let trimmed = line.trimmingCharacters(in: .whitespaces)
+		let trimmed = line.trimmingDotenvBlanks()
 		return trimmed.isEmpty || trimmed.hasPrefix("#")
 	}
 
@@ -829,7 +830,7 @@ enum EnvFileCodec {
 
 		while let rawLine = lines.next() {
 			try Task.checkCancellation()
-			let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+			let trimmed = rawLine.trimmingDotenvBlanks()
 			if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
 
 			let assignment = trimmed.hasPrefix("export ")
@@ -837,7 +838,7 @@ enum EnvFileCodec {
 				: trimmed
 			guard let equalsIndex = assignment.firstIndex(of: "=") else { continue }
 			let key = assignment[..<equalsIndex]
-				.trimmingCharacters(in: .whitespaces)
+				.trimmingDotenvBlanks()
 			guard !key.isEmpty else { continue }
 
 			assignmentCount += 1
@@ -864,7 +865,7 @@ enum EnvFileCodec {
 				limits.maximumParsedBytes - parsedBytes + oldBytes - key.utf8.count
 			)
 			let value = try parseValue(
-				String(assignment[valueStart...]).trimmingLeadingWhitespace(),
+				String(assignment[valueStart...]).trimmingLeadingDotenvBlanks(),
 				lines: &lines,
 				maximumBytes: remainingValueBytes,
 				parsedLimit: limits.maximumParsedBytes
@@ -1010,7 +1011,7 @@ enum EnvFileCodec {
 		parsedLimit: Int
 	) throws -> String {
 		guard let quote = value.first, quote == "\"" || quote == "'" else {
-			let unquoted = value.trimmingCharacters(in: .whitespaces)
+			let unquoted = value.trimmingDotenvBlanks()
 			guard unquoted.utf8.count <= maximumBytes else {
 				throw EnvFileImportError.parsedDataTooLarge(limit: parsedLimit)
 			}
@@ -1099,21 +1100,44 @@ private struct EnvLineIterator {
 	mutating func next() -> String? {
 		guard nextIndex < content.endIndex else { return nil }
 		lineNumber += 1
-		if let newline = content[nextIndex...].firstIndex(of: "\n") {
-			var line = content[nextIndex..<newline]
-			nextIndex = content.index(after: newline)
+		// By scalars: as a Character, "\r\n" is one grapheme, which "\n" never matches.
+		let scalars = content.unicodeScalars
+		if let newline = scalars[nextIndex...].firstIndex(of: "\n") {
+			var line = scalars[nextIndex..<newline]
+			nextIndex = scalars.index(after: newline)
 			if line.last == "\r" { line = line.dropLast() }
 			return String(line)
 		}
-		let line = String(content[nextIndex...])
+		let line = String(scalars[nextIndex...])
 		nextIndex = content.endIndex
 		return line
 	}
 }
 
-extension String {
-	func trimmingLeadingWhitespace() -> String {
-		let index = firstIndex { !$0.isWhitespace } ?? endIndex
-		return String(self[index...])
+extension StringProtocol {
+	/// The text without the spaces and tabs at either end, the blanks of
+	/// dotenv syntax. Every other character, even one that looks blank such
+	/// as a no-break space, belongs to the value, where the warnings about
+	/// hidden characters find it. The LPM CLI's parsers keep the same rule.
+	func trimmingDotenvBlanks() -> String {
+		guard let first = firstIndex(where: { !$0.isDotenvBlank }), let last = lastIndex(where: { !$0.isDotenvBlank }) else { return "" }
+		return String(self[first...last])
 	}
+
+	/// The text without the spaces and tabs it starts with.
+	func trimmingLeadingDotenvBlanks() -> String {
+		String(self[(firstIndex { !$0.isDotenvBlank } ?? endIndex)...])
+	}
+}
+
+extension String {
+	/// The text without the byte order mark an editor can put at the start of a file.
+	func droppingByteOrderMark() -> String {
+		unicodeScalars.first == "\u{FEFF}" ? String(unicodeScalars.dropFirst()) : self
+	}
+}
+
+extension Character {
+	/// A space or a tab, the blanks of dotenv syntax.
+	var isDotenvBlank: Bool { self == " " || self == "\t" }
 }

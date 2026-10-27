@@ -380,7 +380,7 @@ class VaultCodeTextView: NSTextView {
 			let keyStart = line.location + leading + exportLength
 			let keyLength = body[..<equals].utf16.count - exportLength
 			guard keyLength >= 0 else { return }
-			let key = text.substring(with: NSRange(location: keyStart, length: keyLength)).trimmingCharacters(in: .whitespaces)
+			let key = text.substring(with: NSRange(location: keyStart, length: keyLength)).trimmingDotenvBlanks()
 			var attributes = keyAttributes
 			if !EnvValidation.isValidVariableName(key) { attributes[.foregroundColor] = NSColor(VaultPalette.redText) }
 			storage.addAttributes(attributes, range: NSRange(location: keyStart, length: keyLength))
