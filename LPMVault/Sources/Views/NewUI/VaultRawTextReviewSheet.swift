@@ -15,6 +15,8 @@ struct VaultRawTextReviewSheet: View {
 	@State private var showsUnchanged = false
 	@State private var task: Task<Void, Never>?
 	@State private var failure: VaultRawTextFailure?
+	/// What each new or changed value holds that's hard to see, by key.
+	@State private var characters: [String: ValueCharacterChecker.Inspection] = [:]
 
 	init(store: VaultStore, review: VaultRawTextReview, onApplied: @escaping (EnvironmentChangeReceipt, String) -> Void) {
 		_store = Bindable(wrappedValue: store)
@@ -77,9 +79,11 @@ struct VaultRawTextReviewSheet: View {
 		}
 		.frame(width: 600, height: 560)
 		.background(VaultPalette.content)
+		.task(id: review.id) { await inspectCharacters() }
 		.onDisappear {
 			task?.cancel()
 			revealed = false
+			characters = [:]
 		}
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { dismiss() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != review.target.projectId { dismiss() } }
@@ -179,6 +183,10 @@ struct VaultRawTextReviewSheet: View {
 					.lineLimit(1)
 					.truncationMode(.middle)
 				if revealed && !isObscured { values(of: key, removed: removed) }
+				if !removed, let inspection = characters[key], let found = inspection.found {
+					VaultValueCharacterWarning(found: found, subject: "the edited value of \(key)",
+						shown: revealed && !isObscured ? inspection.shown : nil)
+				}
 			}
 			.opacity(applies ? 1 : 0.5)
 			Text(detail)
@@ -302,6 +310,14 @@ struct VaultRawTextReviewSheet: View {
 			case .failed(let message): failure = .failed(message)
 			}
 		}
+	}
+
+	/// Checks the edit's new and changed values, the ones applying writes.
+	private func inspectCharacters() async {
+		let written = Set(review.changes.added + review.changes.changed)
+		let values = review.edited.filter { written.contains($0.key) }
+		guard let inspections = await store.characterChecker.inspect(values: values), !Task.isCancelled else { return }
+		characters = inspections
 	}
 
 	/// Compares the edit with the environment's values now, choosing every change again.

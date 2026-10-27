@@ -668,7 +668,7 @@ actor VaultPersistenceCoordinator {
 					default: return .failure(.changed)
 					}
 				}
-				let storesValues = next.environments != previous.environments
+				let storesValues = !next.environments.isExactly(previous.environments)
 				let rules = try ProjectEnvSchemaFile.edit(change, at: URL(fileURLWithPath: folder).appendingPathComponent("lpm.json"), vaultID: previous.id, fileWriter: fileWriter, beforeWrite: {
 					guard storesValues else {
 						persisted = SecretPersistenceCommit(project: previous, syncMetadata: metadata.metadata, warning: nil)
@@ -763,29 +763,29 @@ actor VaultPersistenceCoordinator {
 		case .deleteEnvironment(let name, let expectedSecrets):
 			mutationApplies =
 				project.environments.count > 1
-				&& project.environments[name] == expectedSecrets
+				&& project.environments[name]?.isExactly(expectedSecrets) == true
 			if mutationApplies { project.environments.removeValue(forKey: name) }
 		case .duplicateEnvironment(let source, let expectedSecrets, let destination):
 			mutationApplies =
-				project.environments[source] == expectedSecrets
+				project.environments[source]?.isExactly(expectedSecrets) == true
 				&& project.environments[destination] == nil
 			if mutationApplies { project.environments[destination] = expectedSecrets }
 		case .renameEnvironment(let source, let expectedSecrets, let destination):
 			mutationApplies =
-				project.environments[source] == expectedSecrets
+				project.environments[source]?.isExactly(expectedSecrets) == true
 				&& project.environments[destination] == nil
 			if mutationApplies {
 				project.environments.removeValue(forKey: source)
 				project.environments[destination] = expectedSecrets
 			}
 		case .clearEnvironment(let name, let expectedSecrets):
-			mutationApplies = project.environments[name] == expectedSecrets
+			mutationApplies = project.environments[name]?.isExactly(expectedSecrets) == true
 			if mutationApplies { project.environments[name] = [:] }
 		case .restoreEnvironment(let name, let expectedSecrets, let restored):
-			mutationApplies = project.environments[name] == expectedSecrets
+			mutationApplies = project.environments[name]?.isExactly(expectedSecrets) == true
 			if mutationApplies { project.environments[name] = restored }
 		case .deleteSecret(let environment, let key, let expectedValue):
-			mutationApplies = project.environments[environment]?[key] == expectedValue
+			mutationApplies = project.environments[environment]?[key].map(ExactText.init) == ExactText(expectedValue)
 			if mutationApplies { project.environments[environment]?.removeValue(forKey: key) }
 		case .editKey(let edit):
 			if case .success(let environments) = edit.applied(to: project.environments) {
@@ -1027,7 +1027,8 @@ actor VaultPersistenceCoordinator {
 			for (key, remoteValue) in remoteSecrets {
 				let baselineValue = baseline.environments[environment]?[key]
 				let durableValue = durableProject.environments[environment]?[key]
-				if durableValue != baselineValue, durableValue != remoteValue {
+				let durable = durableValue.map(ExactText.init)
+				if durable != baselineValue.map(ExactText.init), durable != ExactText(remoteValue) {
 					return .conflict(latest: durableProject, metadata: previousMetadata.metadata)
 				}
 			}
@@ -1035,7 +1036,7 @@ actor VaultPersistenceCoordinator {
 
 		var mergedProject = durableProject
 		mergedProject.environments = merge.environments
-		let isDirty = merge.environments != remote.environments
+		let isDirty = !merge.environments.isExactly(remote.environments)
 		var item = previousMetadata.metadata ?? SyncMetadata()
 		do {
 			try item.record(
@@ -1279,7 +1280,7 @@ actor VaultPersistenceCoordinator {
 		do {
 			try metadata.record(
 				binding: binding, version: version, action: "pull", date: Date(),
-				isDirty: importedProject.environments != project.environments
+				isDirty: !importedProject.environments.isExactly(project.environments)
 			)
 		} catch SyncCheckpointError.rollback {
 			return .staleVersion
@@ -1382,7 +1383,7 @@ actor VaultPersistenceCoordinator {
 		else { return .targetUnavailable }
 
 		var importedEnvironment = environments[environment] ?? [:]
-		if let expectedSecrets, importedEnvironment != expectedSecrets {
+		if let expectedSecrets, !importedEnvironment.isExactly(expectedSecrets) {
 			return .reviewChanged
 		}
 		var exactKeys = Set(importedEnvironment.keys)
@@ -1398,7 +1399,7 @@ actor VaultPersistenceCoordinator {
 		for (key, value) in secrets where importedEnvironment[key] == nil || replacingKeys.contains(key) {
 			importedEnvironment[key] = value
 		}
-		if importedEnvironment == environments[environment] {
+		if environments[environment]?.isExactly(importedEnvironment) == true {
 			switch readSyncMetadataRecordSnapshotResult(vaultId: projectId) {
 			case .success(let record):
 				guard authority.beginCommit(LocalEnvImportTarget(projectId: projectId, environment: environment), requestId: requestId) else { return .cancelled }

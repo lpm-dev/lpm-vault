@@ -6,7 +6,10 @@ struct AddVariableSheet: View {
 	@Environment(\.dismiss) private var dismiss
 
 	@State private var draft: AddVariableDraft
-	@State private var value = ""
+	/// Held as exact text, since SwiftUI doesn't update a view for a String
+	/// that changes to a canonically equivalent one.
+	@State private var typed = ExactText("")
+	private var value: String { typed.text }
 	@State private var isValueRevealed = false
 	@State private var submitTask: Task<Void, Never>?
 	@State private var submitError: String?
@@ -17,16 +20,15 @@ struct AddVariableSheet: View {
 	@State private var suggestionsHiddenFor: String?
 	/// The engine's check of the typed value, and what it checked.
 	@State private var valueCheck: (input: ValueCheckInput, problems: [String])?
-	@FocusState private var focusedField: Field?
-
-	private enum Field: Hashable {
-		case key, value
-	}
+	/// What the typed value holds that's hard to see, as the engine last found.
+	@State private var valueCharacters: ValueCharacterChecker.Inspection?
+	@FocusState private var isKeyFocused: Bool
+	@State private var isValueFocused = false
 
 	/// A declared key's typed value in the selected environments.
 	private struct ValueCheckInput: Equatable {
 		let key: String
-		let value: String
+		let value: ExactText
 		let environments: Set<String>
 		let effectiveSchema: Data
 		let workspaceSnapshotIdentity: UUID
@@ -103,7 +105,7 @@ struct AddVariableSheet: View {
 		}
 		.interactiveDismissDisabled(isSubmitting)
 		.onKeyPress(.return, phases: .down, action: handleReturn)
-		.onAppear { focusedField = .key }
+		.onAppear { isKeyFocused = true }
 		.onChange(of: draft.key) { _, key in
 			submitError = nil
 			if !key.isEmpty { lastAddedKey = nil }
@@ -111,13 +113,14 @@ struct AddVariableSheet: View {
 			if key != suggestionsHiddenFor { suggestionsHiddenFor = nil }
 		}
 		.onChange(of: draft.selection) { _, _ in submitError = nil }
-		.onChange(of: value) { _, _ in submitError = nil }
+		.onChange(of: ExactText(value)) { _, _ in submitError = nil }
 		.onChange(of: project?.workspaceSnapshotIdentity) { _, _ in refreshDraft() }
 		.onChange(of: store.isUnlocked) { _, unlocked in if !unlocked { dismissAndClear() } }
 		.onChange(of: store.selectedProjectId) { _, id in if id != projectId { dismissAndClear() } }
 		.onDisappear {
 			submitTask?.cancel()
-			value = ""
+			typed = ExactText("")
+			valueCharacters = nil
 		}
 	}
 
@@ -149,7 +152,7 @@ struct AddVariableSheet: View {
 	}
 
 	private var suggestions: [ProjectEnvSchemaOverview.Rule] {
-		guard focusedField == .key, suggestionsHiddenFor == nil, let overview, let project else { return [] }
+		guard isKeyFocused, suggestionsHiddenFor == nil, let overview, let project else { return [] }
 		return overview.suggestions(matching: draft.key, unsetIn: draft.selection, of: project)
 	}
 
@@ -172,7 +175,7 @@ struct AddVariableSheet: View {
 				.font(VaultTypography.tabular(13))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.autocorrectionDisabled()
-				.focused($focusedField, equals: .key)
+				.focused($isKeyFocused)
 				.disabled(isSubmitting)
 				.onKeyPress(.return, phases: .down, action: handleReturn)
 				.onKeyPress(.downArrow) { moveSuggestion(by: 1, in: suggestions) }
@@ -182,10 +185,10 @@ struct AddVariableSheet: View {
 					suggestionsHiddenFor = draft.key
 					return .handled
 				}
-				.onSubmit { focusedField = .value }
+				.onSubmit { isValueFocused = true }
 				.padding(.horizontal, 12)
 				.frame(height: 36)
-				.vaultInputField(focused: focusedField == .key, invalid: draft.keyIssue != nil)
+				.vaultInputField(focused: isKeyFocused, invalid: draft.keyIssue != nil)
 				.accessibilityLabel("Key")
 				.anchorPreference(key: KeyFieldBounds.self, value: .bounds) { $0 }
 			if let issue = draft.keyIssue {
@@ -221,7 +224,7 @@ struct AddVariableSheet: View {
 			VaultHairline().padding(.horizontal, 8).padding(.vertical, 2)
 			SuggestionButton {
 				suggestionsHiddenFor = draft.key
-				focusedField = .value
+				isValueFocused = true
 			} label: {
 				Label("Create \(draft.key.trimmingCharacters(in: .whitespaces)) as a new key", systemImage: "plus")
 					.font(.system(size: 12))
@@ -296,41 +299,40 @@ struct AddVariableSheet: View {
 				}
 			}
 			HStack(spacing: 6) {
-				Group {
-					if isValueRevealed {
-						TextField("Paste a value or generate one", text: $value)
-					} else {
-						SecureField("Paste a value or generate one", text: $value)
-							.vaultSecretValueField()
-					}
-				}
-				.textFieldStyle(.plain)
-				.font(VaultTypography.code(12.5))
-				.foregroundStyle(VaultPalette.textPrimary)
-				.autocorrectionDisabled()
-				.focused($focusedField, equals: .value)
-				.disabled(isSubmitting)
-				.onKeyPress(.return, phases: .down, action: handleReturn)
-				.onSubmit { submit(keepOpen: false) }
-				.accessibilityLabel("Value")
+				VaultValueField(
+					text: $typed.text,
+					isFocused: $isValueFocused,
+					label: "Value",
+					placeholder: "Paste a value or generate one",
+					isSecure: !isValueRevealed,
+					font: VaultTypography.codeNSFont(12.5),
+					isEnabled: !isSubmitting,
+					onReturn: { modifiers in
+						guard modifiers == .shift else { return false }
+						submit(keepOpen: true)
+						return true
+					},
+					onSubmit: { submit(keepOpen: false) }
+				)
+				.id(isValueRevealed)
 
 				FieldIconButton(
 					systemImage: isValueRevealed ? "eye.slash" : "eye",
 					label: isValueRevealed ? "Hide value" : "Show value"
 				) {
 					isValueRevealed.toggle()
-					focusedField = .value
+					isValueFocused = true
 				}
 
 				SecretGeneratorButton(disabled: isSubmitting) { generated in
-					value = generated
+					typed = ExactText(generated)
 					isValueRevealed = true
 				}
 			}
 			.padding(.leading, 12)
 			.padding(.trailing, 4)
 			.frame(height: 36)
-			.vaultInputField(focused: focusedField == .value, invalid: !valueProblems.isEmpty)
+			.vaultInputField(focused: isValueFocused, invalid: !valueProblems.isEmpty)
 			if !valueProblems.isEmpty {
 				Label {
 					Text(valueProblems.joined(separator: "; ") + " — you can still add it; the LPM CLI will flag it.")
@@ -342,8 +344,44 @@ struct AddVariableSheet: View {
 				.foregroundStyle(VaultPalette.redText)
 				.accessibilityElement(children: .combine)
 			}
+			if let inspection = currentValueCharacters, let found = inspection.found {
+				VaultValueCharacterWarning(
+					found: found,
+					subject: "the value",
+					shown: isValueRevealed ? inspection.shown : nil,
+					onRemoveHiddenCharacters: { fixValue(.removeHiddenCharacters) },
+					onTrimEnds: { fixValue(.trimEnds) },
+					disabled: isSubmitting
+				)
+			}
 		}
 		.task(id: valueCheckInput) { await checkValue(valueCheckInput) }
+		.task(id: ExactText(value)) { await checkCharacters(value) }
+	}
+
+	/// The engine's report on the value as it's typed now; nil until it's checked.
+	private var currentValueCharacters: ValueCharacterChecker.Inspection? {
+		guard let valueCharacters, valueCharacters.isOf(value) else { return nil }
+		return valueCharacters
+	}
+
+	/// Checks the typed value once typing pauses.
+	private func checkCharacters(_ typed: String) async {
+		guard !typed.isEmpty else {
+			valueCharacters = nil
+			return
+		}
+		do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+		let inspection = await store.characterChecker.inspect(typed)
+		guard !Task.isCancelled, let inspection, inspection.isOf(value) else { return }
+		valueCharacters = inspection
+	}
+
+	/// Applies a fix the person chose to the typed value.
+	private func fixValue(_ fix: RustSchemaEngine.CharacterFix) {
+		guard !isSubmitting, let fixed = RustSchemaEngine.fixCharacters(in: value, fix) else { return }
+		typed = ExactText(fixed)
+		isValueFocused = true
 	}
 
 	private var valueCheckInput: ValueCheckInput? {
@@ -354,7 +392,7 @@ struct AddVariableSheet: View {
 		else { return nil }
 		return ValueCheckInput(
 			key: key,
-			value: value,
+			value: ExactText(value),
 			environments: draft.selection,
 			effectiveSchema: effectiveSchema,
 			workspaceSnapshotIdentity: project.workspaceSnapshotIdentity
@@ -378,7 +416,7 @@ struct AddVariableSheet: View {
 		do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
 		guard !Task.isCancelled, valueCheckInput == input else { return }
 		var edited = project.environments
-		for environment in input.environments { edited[environment, default: [:]][input.key] = input.value }
+		for environment in input.environments { edited[environment, default: [:]][input.key] = input.value.text }
 		let environments = edited
 		let check = await store.valueCheckWorker.check(rules: rules, environments: environments)
 		guard !Task.isCancelled, valueCheckInput == input else { return }
@@ -525,7 +563,7 @@ struct AddVariableSheet: View {
 	private func pickSuggestion(_ key: String) {
 		suggestionsHiddenFor = key
 		draft.key = key
-		focusedField = .value
+		isValueFocused = true
 	}
 
 	private func submit(keepOpen: Bool) {
@@ -546,11 +584,11 @@ struct AddVariableSheet: View {
 			switch result {
 			case .success where keepOpen:
 				draft.key = ""
-				value = ""
+				typed = ExactText("")
 				isValueRevealed = false
 				lastAddedKey = key
 				refreshDraft()
-				focusedField = .key
+				isKeyFocused = true
 			case .success:
 				close()
 			case .failure(let error):
@@ -571,7 +609,7 @@ struct AddVariableSheet: View {
 	private func dismissAndClear() {
 		submitTask?.cancel()
 		submitTask = nil
-		value = ""
+		typed = ExactText("")
 		dismiss()
 	}
 

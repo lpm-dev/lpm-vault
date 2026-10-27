@@ -355,6 +355,8 @@ extension EnvironmentValues {
 /// Raw text's edit of the selected environment, as the content view shows it.
 struct VaultRawTextEditing {
   let draft: VaultRawTextDraft
+  /// What the draft's values hold that's hard to see.
+  var characterWarnings: VaultRawTextCharacterWarnings?
   let isSaving: Bool
   /// Why the last save wrote nothing, until the next.
   let failure: VaultRawTextFailure?
@@ -367,6 +369,8 @@ struct VaultRawTextEditing {
   let onCompare: () -> Void
   /// Copies text cut or copied in the editor.
   let onCopy: (String) -> Void
+  /// Applies a fix the person chose to every value that holds characters that are hard to see.
+  var onFixCharacters: (RustSchemaEngine.CharacterFix) -> Void = { _ in }
 }
 
 enum VaultRawTextFailure: Equatable {
@@ -470,7 +474,7 @@ struct VaultWorkspaceSnapshot: Equatable, Sendable {
 
     mutating func observe(_ value: String) {
       environmentCount += 1
-      if value != firstValue {
+      if ExactText(value) != ExactText(firstValue) {
         hasDrift = true
       }
     }
@@ -794,15 +798,20 @@ struct VaultSecretEditDraft: Equatable, Sendable {
     draft = value
   }
 
-  var isDirty: Bool { draft != baseline }
+  var isDirty: Bool { ExactText(draft) != ExactText(baseline) }
+
+  static func == (lhs: Self, rhs: Self) -> Bool {
+    ExactText(lhs.baseline) == ExactText(rhs.baseline) && ExactText(lhs.draft) == ExactText(rhs.draft)
+      && lhs.hasExternalConflict == rhs.hasExternalConflict
+  }
 
   mutating func receiveExternalValue(_ value: String) {
-    if value == draft {
+    if ExactText(value) == ExactText(draft) {
       baseline = value
       hasExternalConflict = false
       return
     }
-    guard value != baseline else { return }
+    guard ExactText(value) != ExactText(baseline) else { return }
     if !isDirty {
       baseline = value
       draft = value

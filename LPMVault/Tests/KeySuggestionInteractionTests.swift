@@ -159,6 +159,21 @@ extension SheetInteractionTests {
 			#expect(try await host.text().contains("2 chars"))
 		}
 
+		@Test("a value changed to characters Swift calls equal is checked again")
+		func canonicallyEqualValueIsRechecked() async throws {
+			let (store, folder) = try await makeStore(lpmJSON: #"{"envSchema":{"vars":{"TOKEN":{"minLength":2}}}}"#)
+			defer { store.lock(); try? FileManager.default.removeItem(atPath: folder) }
+			try #require(try await waitUntil { store.valueChecks["suggestions"] != nil })
+			let host = SheetTestHost(AddVariableSheet(store: store, projectId: "suggestions", environment: "default", initialKey: "TOKEN"), size: NSSize(width: 560, height: 560))
+			defer { host.window.close() }
+			try host.enterValue("\u{E9}")
+			#expect(try await host.waitForText("Too short"))
+			#expect(try await host.waitForText("1 char"))
+			try host.enterValue("e\u{301}")
+			#expect(try await host.waitForText("2 chars"), "the counter counts the scalars typed last")
+			#expect(try await !host.text().contains("Too short"), "two scalars meet the rule")
+		}
+
 		private func makeStore(lpmJSON: String = Self.schema) async throws -> (VaultStore, String) {
 			let folder = FileManager.default.temporaryDirectory.appending(path: "key-suggestions-\(UUID().uuidString)").path
 			try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)

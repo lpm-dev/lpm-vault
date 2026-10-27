@@ -18,6 +18,8 @@ struct EnvFileImportReviewSheet: View {
 
 		let receipt: EnvironmentChangeReceipt
 		let outcome: EnvFileImportReview.Outcome
+		/// The keys the import wrote.
+		let written: Set<String>
 		var undo: Undo
 	}
 
@@ -43,7 +45,7 @@ struct EnvFileImportReviewSheet: View {
 		_review = State(initialValue: review)
 		importedWithoutReview = receipt != nil
 		_completion = State(initialValue: receipt.map {
-			Completion(receipt: $0, outcome: review.outcome(), undo: $0.changed ? .available : .expired)
+			Completion(receipt: $0, outcome: review.outcome(), written: review.writtenKeys(), undo: $0.changed ? .available : .expired)
 		})
 	}
 
@@ -246,15 +248,19 @@ struct EnvFileImportReviewSheet: View {
 				caption: skippingKeys.isEmpty ? "will be added" : "will be added, except those you turn off")
 			rows(review.added) { row in
 				let skipped = skippingKeys.contains(row.key)
-				HStack(spacing: 12) {
-					keyText(row.key, faded: skipped)
-					value(review.imported.secrets[row.key] ?? "", named: incomingName, of: row.key, isCurrent: isCurrent, faded: skipped, labeled: false)
-					Toggle("Add", isOn: inclusion(of: row.key))
-						.toggleStyle(AddToggleStyle())
-						.accessibilityLabel("Add \(row.key)")
-						.frame(width: 120, alignment: .trailing)
+				VStack(alignment: .leading, spacing: 4) {
+					HStack(spacing: 12) {
+						keyText(row.key, faded: skipped)
+						value(review.imported.secrets[row.key] ?? "", named: incomingName, of: row.key, isCurrent: isCurrent, faded: skipped, labeled: false)
+						Toggle("Add", isOn: inclusion(of: row.key))
+							.toggleStyle(AddToggleStyle())
+							.accessibilityLabel("Add \(row.key)")
+							.frame(width: 120, alignment: .trailing)
+					}
+					characterWarning(of: row.key, isCurrent: isCurrent)
 				}
 				.padding(.horizontal, 12)
+				.padding(.vertical, review.characters[row.key] == nil ? 0 : 8)
 				.frame(minHeight: 42)
 			}
 		}
@@ -278,16 +284,19 @@ struct EnvFileImportReviewSheet: View {
 			}
 			rows(review.changed) { row in
 				let replacing = replacingKeys.contains(row.key)
-				HStack(spacing: 12) {
-					keyText(row.key, faded: false)
-					VStack(alignment: .leading, spacing: 3) {
-						value(review.baseline[row.key] ?? "", named: "Vault", of: row.key, isCurrent: isCurrent, faded: replacing, struck: replacing)
-						value(review.imported.secrets[row.key] ?? "", named: incomingName, of: row.key, isCurrent: isCurrent, faded: !replacing,
-							emphasized: replacing)
+				VStack(alignment: .leading, spacing: 4) {
+					HStack(spacing: 12) {
+						keyText(row.key, faded: false)
+						VStack(alignment: .leading, spacing: 3) {
+							value(review.baseline[row.key] ?? "", named: "Vault", of: row.key, isCurrent: isCurrent, faded: replacing, struck: replacing)
+							value(review.imported.secrets[row.key] ?? "", named: incomingName, of: row.key, isCurrent: isCurrent, faded: !replacing,
+								emphasized: replacing)
+						}
+						.frame(maxWidth: .infinity, alignment: .leading)
+						KeepReplaceControl(key: row.key, replacing: replacement(of: row.key))
+							.frame(width: 120, alignment: .trailing)
 					}
-					.frame(maxWidth: .infinity, alignment: .leading)
-					KeepReplaceControl(key: row.key, replacing: replacement(of: row.key))
-						.frame(width: 120, alignment: .trailing)
+					characterWarning(of: row.key, isCurrent: isCurrent)
 				}
 				.padding(.horizontal, 12)
 				.padding(.vertical, 8)
@@ -314,6 +323,16 @@ struct EnvFileImportReviewSheet: View {
 				.frame(minHeight: 42)
 				.opacity(0.75)
 			}
+		}
+	}
+
+	/// What the incoming value holds that's hard to see, which importing keeps;
+	/// the inspector can fix it afterwards.
+	@ViewBuilder
+	private func characterWarning(of key: String, isCurrent: Bool) -> some View {
+		if let inspection = review.characters[key], let found = inspection.found {
+			VaultValueCharacterWarning(found: found, subject: "the \(incomingName.lowercased()) value of \(key)",
+				shown: revealed && isCurrent && !isObscured ? inspection.shown : nil)
 		}
 	}
 
@@ -374,6 +393,7 @@ struct EnvFileImportReviewSheet: View {
 					.foregroundStyle(VaultPalette.textSecondary)
 					.textSelection(.enabled)
 			}
+			if completion.undo != .undone { writtenCharacters(completion) }
 			if importedWithoutReview, completion.undo != .undone, outcome.kept > 0 {
 				Text(outcome.kept == 1
 					? "1 existing value differs and was kept. To replace it, import again with Review before applying on."
@@ -405,6 +425,33 @@ struct EnvFileImportReviewSheet: View {
 		.padding(.horizontal, 24)
 		.padding(.vertical, 20)
 		.frame(maxWidth: .infinity, alignment: .leading)
+	}
+
+	/// The imported values that hold characters that are hard to see, as
+	/// they were written, so the person knows to fix them in the inspector.
+	@ViewBuilder
+	private func writtenCharacters(_ completion: Completion) -> some View {
+		let keys = completion.written.filter { review.characters[$0]?.found != nil }.sorted()
+		if !keys.isEmpty {
+			VStack(alignment: .leading, spacing: 8) {
+				Text(keys.count == 1
+					? "1 imported value has hidden characters. It was imported as it was; the inspector can remove them."
+					: "\(keys.count) imported values have hidden characters. They were imported as they were; the inspector can remove them.")
+					.font(.system(size: 11.5))
+					.foregroundStyle(VaultPalette.textSecondary)
+					.fixedSize(horizontal: false, vertical: true)
+				ForEach(keys, id: \.self) { key in
+					if let found = review.characters[key]?.found {
+						VStack(alignment: .leading, spacing: 2) {
+							Text(key)
+								.font(VaultTypography.tabular(12, .semibold))
+								.foregroundStyle(VaultPalette.textPrimary)
+							VaultValueCharacterWarning(found: found, subject: "the imported value of \(key)")
+						}
+					}
+				}
+			}
+		}
 	}
 
 	private func completionHeadline(_ completion: Completion) -> String {
@@ -513,12 +560,14 @@ struct EnvFileImportReviewSheet: View {
 		let replacing = replacingKeys
 		let skipping = skippingKeys
 		let outcome = outcome
+		let written = review.writtenKeys(replacing: replacing, skipping: skipping)
 		task = Task {
 			let result = await store.applyEnvFileImport(review, replacingKeys: replacing, skippingKeys: skipping)
 			guard !Task.isCancelled else { return }
 			task = nil
 			switch result {
-			case .success(let receipt): completion = Completion(receipt: receipt, outcome: outcome, undo: receipt.changed ? .available : .expired)
+			case .success(let receipt):
+				completion = Completion(receipt: receipt, outcome: outcome, written: written, undo: receipt.changed ? .available : .expired)
 			case .failure(.cancelled), .failure(.vaultLocked): dismiss()
 			case .failure(let error): failure = error.description(for: review.source)
 			}

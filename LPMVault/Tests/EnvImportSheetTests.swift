@@ -45,6 +45,27 @@ extension SheetInteractionTests {
 			#expect(fixture.stored("default") == ["TOKEN": "a", "NEW_KEY": "hello world"], "The review keeps existing values unless Replace is chosen")
 		}
 
+		@Test("pasted values with hidden characters are named before the review, shown in it, and listed once imported")
+		func pastedHiddenCharacters() async throws {
+			let fixture = try ImportWorkspace()
+			defer { fixture.tearDown() }
+			let host = try await fixture.workspace()
+			defer { host.window.close() }
+			let sheet = try await fixture.openImport(in: host)
+			try await host.click("Paste text", in: sheet)
+			try paste("TOKEN=ne\u{200B}w\nNEW_KEY=\"a\u{A0}b\"\nCLEAN=fixture\n", into: sheet)
+			#expect(try await host.waitForText("Warning: 2 values have hidden characters: NEW_KEY, TOKEN. The review shows where.", in: sheet))
+			try await clickEnabled("Review 3 variables, ⏎", in: sheet, of: host)
+			#expect(try await host.waitForText("Warning: the pasted value of NEW_KEY has hidden characters: no-break space at character 2.", in: sheet))
+			#expect(try await host.waitForText("Warning: the pasted value of TOKEN has hidden characters: zero width space at character 3.", in: sheet))
+			try pressReturn(in: sheet)
+			#expect(try await host.waitForText("Import complete", in: sheet))
+			#expect(try await host.waitForText("1 imported value has hidden characters. It was imported as it was; the inspector can remove them.", in: sheet),
+				"Only NEW_KEY was written: TOKEN kept its value")
+			#expect(try await host.waitForText("Warning: the imported value of NEW_KEY has hidden characters: no-break space at character 2.", in: sheet))
+			#expect(fixture.stored("default")?["NEW_KEY"] == "a\u{A0}b", "An import keeps values as they are")
+		}
+
 		@Test("Return in the paste box starts a new line instead of pressing Review")
 		func returnInPasteBox() async throws {
 			let fixture = try ImportWorkspace()

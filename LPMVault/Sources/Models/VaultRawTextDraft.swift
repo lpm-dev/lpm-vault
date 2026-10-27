@@ -18,6 +18,8 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 	let values: [String: String]
 	/// The line each key in `values` is set on.
 	let lines: [String: Int]
+	/// The lines each key in `values` is set on, more than one when a quoted value spans lines.
+	let spans: [String: ClosedRange<Int>]
 	/// By line.
 	let problems: [Problem]
 	/// The lines to mark: each problem's, and the earlier line a duplicate repeats.
@@ -28,6 +30,7 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 	init(_ text: String, limits: EnvFileImportLimits = .standard) {
 		var values: [String: String] = [:]
 		var lines: [String: Int] = [:]
+		var spans: [String: ClosedRange<Int>] = [:]
 		var keysByFoldedName: [String: String] = [:]
 		var problems: [Problem] = []
 		var problemLines = Set<Int>()
@@ -39,13 +42,10 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 			problemLines.insert(line)
 		}
 
-		func assign(_ assignment: String, line: Int) {
-			let trimmed = assignment.trimmingCharacters(in: .whitespaces)
-			let body = trimmed.hasPrefix("export ") ? String(trimmed.dropFirst("export ".count)) : trimmed
-			guard let equals = body.firstIndex(of: "=") else {
+		func assign(_ assignment: String, line: Int, through end: Int) {
+			guard let (key, raw) = EnvFileCodec.assignment(in: assignment[...]) else {
 				return flag(line, "not a KEY=value line")
 			}
-			let key = body[..<equals].trimmingCharacters(in: .whitespaces)
 			guard !key.isEmpty else { return flag(line, "no key before =") }
 			guard EnvValidation.isValidVariableName(key) else {
 				return flag(line, "invalid key name — use letters, digits and _, not starting with a digit")
@@ -58,18 +58,17 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 				problemLines.insert(first)
 				return flag(line, "\(key) differs from \(other) on line \(first) only in letter case")
 			}
-			let raw = String(body[body.index(after: equals)...]).trimmingLeadingWhitespace()
 			let value: String
 			if let quote = raw.first, quote == "\"" || quote == "'" {
 				// Quoted values unescape as an import reads them.
 				let single = EnvFileImportLimits(maximumInputBytes: limits.maximumInputBytes, maximumAssignments: 1,
 					maximumParsedBytes: limits.maximumParsedBytes)
-				guard let parsed = (try? EnvFileCodec.parse(key + "=" + raw, limits: single))?[key] else {
+				guard let parsed = (try? EnvFileCodec.parse(key + "=" + String(raw), limits: single))?[key] else {
 					return flag(line, "a value too large to keep")
 				}
 				value = parsed
 			} else {
-				value = raw.trimmingCharacters(in: .whitespaces)
+				value = String(raw.trimmingDotenvBlanks())
 			}
 			guard values.count < limits.maximumAssignments else {
 				return flag(line, "more than \(limits.maximumAssignments.formatted()) keys")
@@ -80,19 +79,23 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 			}
 			values[key] = value
 			lines[key] = line
+			spans[key] = line...end
 			keysByFoldedName[key.lowercased()] = key
 		}
 
 		var number = 0
-		for slice in text.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
+		let slices = text.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
+		for slice in slices {
 			number += 1
 			var line = String(decoding: slice, as: UTF8.self)
-			if line.hasSuffix("\r") { line.removeLast() }
+			// Only the carriage return of a "\r\n" ends a line; any other is the value's.
+			if number < slices.count, line.unicodeScalars.last == "\r" { line.unicodeScalars.removeLast() }
+			if number == 1 { line = line.droppingByteOrderMark() }
 			if let open = pending {
 				let joined = open.text + "\n" + line
 				if EnvFileCodec.containsClosingQuote(in: line, quote: open.quote) {
 					pending = nil
-					assign(joined, line: open.line)
+					assign(joined, line: open.line, through: number)
 				} else {
 					pending = (joined, open.line, open.quote)
 				}
@@ -103,15 +106,21 @@ struct VaultEnvTextCheck: Equatable, Sendable {
 				pending = (line, number, quote)
 				continue
 			}
-			assign(line, line: number)
+			assign(line, line: number, through: number)
 		}
 		if let open = pending { flag(open.line, "its value's opening \(open.quote) is never closed") }
 
 		self.values = values
 		self.lines = lines
+		self.spans = spans
 		self.problems = problems.sorted { $0.line < $1.line }
 		self.problemLines = problemLines
 		lineCount = number
+	}
+
+	static func == (lhs: Self, rhs: Self) -> Bool {
+		lhs.values.isExactly(rhs.values) && lhs.lines == rhs.lines && lhs.spans == rhs.spans && lhs.problems == rhs.problems
+			&& lhs.problemLines == rhs.problemLines && lhs.lineCount == rhs.lineCount
 	}
 }
 
@@ -127,9 +136,9 @@ struct VaultEnvChanges: Equatable, Sendable {
 		var changed: [String] = []
 		var unchanged: [String] = []
 		for (key, value) in values {
-			switch baseline[key] {
+			switch baseline[key].map(ExactText.init) {
 			case nil: added.append(key)
-			case value: unchanged.append(key)
+			case ExactText(value): unchanged.append(key)
 			default: changed.append(key)
 			}
 		}
@@ -162,7 +171,7 @@ struct VaultRawTextDraft: Equatable, Sendable {
 	}
 	var text: String {
 		didSet {
-			guard text != oldValue else { return }
+			guard ExactText(text) != ExactText(oldValue) else { return }
 			check = VaultEnvTextCheck(text)
 			changes = VaultEnvChanges(from: baseline, to: check.values)
 		}
@@ -184,11 +193,47 @@ struct VaultRawTextDraft: Equatable, Sendable {
 
 	var canSave: Bool { check.problems.isEmpty && changes.count > 0 }
 
+	/// The text with each of `values`' keys set by one line of its own, in
+	/// place of the lines that set it before, in one pass. Lines split by
+	/// scalar, as the check numbers them, and a replaced assignment keeps
+	/// the `\r\n` its last line ended with.
+	func text(replacing values: [String: String]) -> String {
+		let replacements = values.compactMap { key, value in check.spans[key].map { (span: $0, line: EnvFileCodec.formatLine(key: key, value: value)) } }
+			.sorted { $0.span.lowerBound < $1.span.lowerBound }
+		guard !replacements.isEmpty else { return text }
+		let lines = text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false)
+		var output = ""
+		output.reserveCapacity(text.utf8.count)
+		var next = replacements.startIndex
+		var number = 1
+		while number <= lines.count {
+			if number > 1 { output.append("\n") }
+			if next < replacements.endIndex, replacements[next].span.lowerBound == number {
+				let replacement = replacements[next]
+				let last = min(replacement.span.upperBound, lines.count)
+				output.append(replacement.line)
+				if last < lines.count, lines[last - 1].last == "\r" { output.append("\r") }
+				number = last + 1
+				next += 1
+			} else {
+				output.unicodeScalars.append(contentsOf: lines[number - 1])
+				number += 1
+			}
+		}
+		return output
+	}
+
 	/// The same edit, of the environment under its new name.
 	func renamed(to environment: String) -> VaultRawTextDraft {
 		var draft = self
 		draft.target = VaultEnvironmentTarget(projectId: target.projectId, environment: environment)
 		return draft
+	}
+
+	/// `check` and `changes` follow from the text and the baseline.
+	static func == (lhs: Self, rhs: Self) -> Bool {
+		lhs.target == rhs.target && ExactText(lhs.text) == ExactText(rhs.text) && lhs.baseline.isExactly(rhs.baseline)
+			&& lhs.reviewsBeforeSaving == rhs.reviewsBeforeSaving
 	}
 }
 
@@ -238,4 +283,92 @@ enum VaultRawTextSaveOutcome: Equatable, Sendable {
 	/// The draft, its project or its environment is gone, or the vault locked.
 	case unavailable
 	case failed(String)
+}
+
+/// A Raw text draft's check for characters that are hard to see, with each
+/// flagged value's warnings worded once, as the check returns, so an edit
+/// only matches them to the values again.
+struct VaultRawTextCharacterCheck: Sendable {
+	struct Wording: Sendable {
+		let found: ValueCharacters
+		/// What the line's value holds, as the footer lists it for VoiceOver.
+		let reason: String
+		/// The first character found and where, which the editor draws beside the line.
+		let pill: String
+	}
+
+	let checked: ValueCharacterChecker.Checked
+	let wording: [String: Wording]
+
+	/// The environment a draft's values are checked as.
+	static let environment = "draft"
+}
+
+extension VaultRawTextCharacterCheck {
+	/// Words what `checked` found, reusing `previous`'s wording of each value
+	/// whose finding is the same, so a check words only what changed.
+	init(_ checked: ValueCharacterChecker.Checked, reusing previous: VaultRawTextCharacterCheck? = nil) {
+		self.checked = checked
+		var wording: [String: Wording] = [:]
+		for (key, found) in checked.check.environments[Self.environment] ?? [:] {
+			if let kept = previous?.wording[key], kept.found == found {
+				wording[key] = kept
+				continue
+			}
+			guard let first = found.characters.first else { continue }
+			let more = found.characters.count > 1 || found.more > 0 ? ", and more" : ""
+			wording[key] = Wording(found: found, reason: "\(key) has hidden characters: \(ValueCharacterWording.spokenList(found))",
+				pill: ValueCharacterWording.line(first) + " of the value" + more)
+		}
+		self.wording = wording
+	}
+}
+
+/// What a Raw text draft's values hold that's hard to see now: what its last
+/// check found in each value that's still the one checked, by the line that sets it.
+struct VaultRawTextCharacterWarnings: Equatable, Sendable {
+	/// By key.
+	let characters: [String: ValueCharacters]
+	/// Each flagged line with what its value holds, in line order.
+	let lines: [VaultEnvTextCheck.Problem]
+	/// What the editor draws beside each flagged line, in line order.
+	let pills: [VaultEnvTextCheck.Problem]
+	let removable: Bool
+	let trimmable: Bool
+
+	init(_ check: VaultRawTextCharacterCheck, draft: VaultEnvTextCheck) {
+		var flagged: [(line: Int, wording: VaultRawTextCharacterCheck.Wording)] = []
+		flagged.reserveCapacity(check.wording.count)
+		var characters: [String: ValueCharacters] = [:]
+		for (key, wording) in check.wording {
+			guard let value = draft.values[key], let line = draft.lines[key],
+				check.checked.characters(of: key, in: VaultRawTextCharacterCheck.environment, whileItIs: value) != nil
+			else { continue }
+			flagged.append((line, wording))
+			characters[key] = wording.found
+		}
+		flagged.sort { $0.line < $1.line }
+		self.characters = characters
+		lines = flagged.map { VaultEnvTextCheck.Problem(line: $0.line, reason: $0.wording.reason) }
+		pills = flagged.map { VaultEnvTextCheck.Problem(line: $0.line, reason: $0.wording.pill) }
+		removable = characters.values.contains(where: \.removable)
+		trimmable = characters.values.contains(where: \.trimmable)
+	}
+
+	var isEmpty: Bool { lines.isEmpty }
+}
+
+extension Array where Element == VaultEnvTextCheck.Problem {
+	/// Those on `lines`, found by binary search, in problems sorted by line.
+	func on(_ lines: ClosedRange<Int>) -> ArraySlice<Element> {
+		func firstIndex(after line: Int) -> Int {
+			var low = startIndex, high = endIndex
+			while low < high {
+				let middle = low + (high - low) / 2
+				if self[middle].line <= line { low = middle + 1 } else { high = middle }
+			}
+			return low
+		}
+		return self[firstIndex(after: lines.lowerBound - 1)..<firstIndex(after: lines.upperBound)]
+	}
 }

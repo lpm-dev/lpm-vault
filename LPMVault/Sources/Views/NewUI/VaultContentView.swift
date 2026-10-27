@@ -570,6 +570,7 @@ struct VaultContentView: View {
 							text: draft.text,
 							problems: draft.check.problems,
 							problemLines: draft.check.problemLines,
+							warnings: editing.characterWarnings?.pills ?? [],
 							label: "\(name) as text, editing",
 							isEditable: !editing.isSaving,
 							onChange: editing.onChange,
@@ -577,45 +578,88 @@ struct VaultContentView: View {
 						)
 						.id("\(project.id)/\(selectedEnvironment)")
 						VaultHairline()
-						rawEditorFooter(draft)
+						rawEditorFooter(editing)
 					}
 				}
 			}
 		}
 	}
 
-	private func rawEditorFooter(_ draft: VaultRawTextDraft) -> some View {
+	private func rawEditorFooter(_ editing: VaultRawTextEditing) -> some View {
+		let draft = editing.draft
 		let problems = draft.check.problems
 		let state = problems.isEmpty
 			? (draft.changes.count == 0 ? "No changes yet" : "Ready to save: \(draft.changes.summary)")
 			: "\(problems.count.counted("problem")) · Save is available once every line is valid"
 		let note = "Comments, blank lines and line order aren't kept."
-		return HStack(spacing: 8) {
-			if problems.isEmpty {
-				Text(state)
-			} else {
-				HStack(spacing: 5) {
-					Image(systemName: "exclamationmark.circle.fill").accessibilityHidden(true)
-					Text(problems.count.counted("problem"))
+		return VStack(spacing: 0) {
+			HStack(spacing: 8) {
+				if problems.isEmpty {
+					Text(state)
+				} else {
+					HStack(spacing: 5) {
+						Image(systemName: "exclamationmark.circle.fill").accessibilityHidden(true)
+						Text(problems.count.counted("problem"))
+					}
+					.fontWeight(.semibold)
+					.foregroundStyle(VaultPalette.redText)
+					Text("·")
+					Text("Save is available once every line is valid")
 				}
-				.fontWeight(.semibold)
-				.foregroundStyle(VaultPalette.redText)
-				Text("·")
-				Text("Save is available once every line is valid")
+				Spacer(minLength: 12)
+				Text(note)
 			}
-			Spacer(minLength: 12)
-			Text(note)
+			.font(.system(size: 11.5))
+			.foregroundStyle(VaultPalette.textTertiary)
+			.lineLimit(1)
+			.padding(.horizontal, 14)
+			.frame(height: 30)
+			.accessibilityElement(children: .ignore)
+			.accessibilityLabel("\(state). \(note)")
+			// The reasons are drawn beside their lines, which VoiceOver reads as plain text.
+			.accessibilityValue(problems.map(\.message).joined(separator: ". "))
+			if let warnings = editing.characterWarnings { rawCharacterWarnings(editing, warnings: warnings) }
+		}
+		.background(VaultPalette.headerRow)
+	}
+
+	/// The lines whose values hold characters that are hard to see, which
+	/// never stop a save, with the fixes a person can choose for all of them.
+	private func rawCharacterWarnings(_ editing: VaultRawTextEditing, warnings: VaultRawTextCharacterWarnings) -> some View {
+		let summary = warnings.lines.count == 1 ? "1 line has hidden characters" : "\(warnings.lines.count) lines have hidden characters"
+		return HStack(spacing: 14) {
+			HStack(spacing: 5) {
+				Image(systemName: "exclamationmark.triangle").accessibilityHidden(true)
+				Text(summary).fontWeight(.semibold)
+				Text("· saving keeps them")
+			}
+			.foregroundStyle(VaultPalette.orangeTintText)
+			.accessibilityElement(children: .ignore)
+			.accessibilityLabel("Warning: \(summary). Saving keeps them.")
+			// The reasons are drawn beside their lines, which VoiceOver reads as plain text.
+			.accessibilityValue(warnings.lines.map(\.message).joined(separator: ". "))
+			Spacer(minLength: 8)
+			if warnings.removable {
+				rawFixButton("Remove hidden characters", disabled: editing.isSaving) { editing.onFixCharacters(.removeHiddenCharacters) }
+			}
+			if warnings.trimmable {
+				rawFixButton("Trim the ends", disabled: editing.isSaving) { editing.onFixCharacters(.trimEnds) }
+			}
 		}
 		.font(.system(size: 11.5))
-		.foregroundStyle(VaultPalette.textTertiary)
 		.lineLimit(1)
 		.padding(.horizontal, 14)
-		.frame(height: 30)
-		.background(VaultPalette.headerRow)
-		.accessibilityElement(children: .ignore)
-		.accessibilityLabel("\(state). \(note)")
-		// The reasons are drawn beside their lines, which VoiceOver reads as plain text.
-		.accessibilityValue(problems.map(\.message).joined(separator: ". "))
+		.frame(height: 28)
+	}
+
+	private func rawFixButton(_ title: String, disabled: Bool, action: @escaping () -> Void) -> some View {
+		Button(title, action: action)
+			.buttonStyle(.plain)
+			.font(.system(size: 11.5, weight: .semibold))
+			.foregroundStyle(disabled ? VaultPalette.textFaint : VaultPalette.accentForeground)
+			.disabled(disabled)
+			.fixedSize()
+			.vaultPointingHand()
 	}
 
 	private func rawFailureBanner(_ failure: VaultRawTextFailure, editing: VaultRawTextEditing, width: CGFloat) -> some View {

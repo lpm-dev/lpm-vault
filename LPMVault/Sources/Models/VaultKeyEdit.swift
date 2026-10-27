@@ -45,6 +45,12 @@ struct VaultKeyEdit: Equatable, Sendable {
 
 	var isRename: Bool { newKey != key }
 
+	static func == (lhs: Self, rhs: Self) -> Bool {
+		ExactText(lhs.key) == ExactText(rhs.key) && ExactText(lhs.newKey) == ExactText(rhs.newKey)
+			&& lhs.baseline.isExactly(rhs.baseline) { $0.map(ExactText.init) == $1.map(ExactText.init) }
+			&& lhs.values.isExactly(rhs.values)
+	}
+
 	/// Environments where a rename would apply: each one that has the key.
 	static func environments(containing key: String, in environments: [String: [String: String]]) -> [String] {
 		environments.compactMap { $0.value[key] == nil ? nil : $0.key }.sorted()
@@ -56,7 +62,7 @@ struct VaultKeyEdit: Equatable, Sendable {
 		if isRename || addsKey, !EnvValidation.isValidVariableName(newKey) {
 			return .failure(.invalidName)
 		}
-		for (name, secrets) in environments where secrets[key] != baseline[name] ?? nil {
+		for (name, secrets) in environments where secrets[key].map(ExactText.init) != (baseline[name] ?? nil).map(ExactText.init) {
 			return .failure(.changed)
 		}
 		for (name, value) in baseline where value != nil && environments[name] == nil {
