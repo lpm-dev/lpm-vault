@@ -34,6 +34,16 @@ struct ValueCharacterEngineTests {
 		#expect(found.characters == [.init(kind: .invisible, escape: nil, name: "tag characters", count: 2, runs: [.init(position: 3, count: 2)])])
 	}
 
+	@Test("a variation selector that picks an ideograph's glyph is text, and one after other text isn't")
+	func ideographVariationSelectors() throws {
+		let check = try #require(RustSchemaEngine.checkCharacters(["default": [
+			"STANDARDIZED": "\u{8FBB}\u{FE00}", "IVS": "\u{845B}\u{E0100}", "AFTER_LATIN": "a\u{FE00}",
+		]]))
+		#expect(check.characters(of: "STANDARDIZED", in: "default") == nil)
+		#expect(check.characters(of: "IVS", in: "default") == nil)
+		#expect(check.characters(of: "AFTER_LATIN", in: "default") != nil)
+	}
+
 	@Test("the engine refuses a key that isn't a valid name")
 	func invalidKeyIsRefused() {
 		#expect(RustSchemaEngine.checkCharacters(["default": ["not a key": "x"]]) == nil)

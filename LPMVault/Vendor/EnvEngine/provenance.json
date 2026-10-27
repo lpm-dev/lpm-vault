@@ -5,7 +5,7 @@
     "LPMEnv.xcframework/macos-arm64_x86_64/Headers/WORDLIST_NOTICE.md": "99286986f3affcfc5dc0b06d7b4265657d54fb2d7df8500f9caace4ce36bad44",
     "LPMEnv.xcframework/macos-arm64_x86_64/Headers/lpm_env.h": "e5a34848ea990aaeee434f331dcf10b24a7a2ce7bc010cf561bf0995deba1bfb",
     "LPMEnv.xcframework/macos-arm64_x86_64/Headers/module.modulemap": "17af0dabb7c84e8389670547eb7e75e8de0025d0995933f66eaaa7f7b060ec21",
-    "LPMEnv.xcframework/macos-arm64_x86_64/libLPMEnv.a": "f5a51b2c8ae5b54f3be9c5ea68c2d21c7eb3b25cbcc782867def6b12d3412fb3"
+    "LPMEnv.xcframework/macos-arm64_x86_64/libLPMEnv.a": "6f6684bef5106c1b970a283e40f24593e6f5e20aaa985cb80fe1fac806f5710e"
   },
   "fixtures": {
     "fixtures/companion/access-claims.json": "cd22d7e614782f4440238e00095fa9ed230ddb021e9bd626a88a939cc9e82540",
@@ -17,7 +17,7 @@
   },
   "notices": "993984d53d004715e977accd59449eca5c011d58802a14e9b568d7f7d34c2931",
   "repository": "https://github.com/lpm-dev/rust-client",
-  "revision": "fa4b4ff23a3025114cd16398c62016e593bc5844",
+  "revision": "532f8e51f179f5d4b6349623a5b286fed3c1d9bc",
   "sources": {
     ".cargo/config.toml": "fccee23445e297786f527a4c0ae0b0171ba8bc5bf7c3ce001fd1f2c81f624ece",
     "Cargo.lock": "5b1509a7bb9e76bafbee491f896b12bbd291842df24b46cdacfdaea4df45bb09",
@@ -106,7 +106,7 @@
     "crates/lpm-env-source/src/read.rs": "7d97cac038a81b9df5ec436243f62a531c876dcfd6820aa2ac3ef0f2beda6ca0",
     "crates/lpm-env-source/src/tests.rs": "737ad3d0498c6ea5ccb98ac7011c7d3c0d7118f349d6d82040cc67d19d269af8",
     "crates/lpm-env/Cargo.toml": "ebba00b5dfefd3cda81e42d22b70f2389239e20a24cf9cc3cc18c197d9a65b34",
-    "crates/lpm-env/src/characters.rs": "9c570cc7d5be612b80cbcab6d30026882f14a4af65315e9381d30d3e3573539c",
+    "crates/lpm-env/src/characters.rs": "ba8ccb4e6570027027364384fb9ea315da541ec96f767de8dd3d4914423150e5",
     "crates/lpm-env/src/constraints.rs": "71a03fa1fdef6309d8d3b517c44c7658fc65e98a5197b9cbf2ba36adf08e558d",
     "crates/lpm-env/src/definition.rs": "9e9f9ba7f2b8ea84f126ad749a516491b15e3d7c361b13941dcacd728e242c5d",
     "crates/lpm-env/src/example.rs": "167cd36fe00730f5f4802975df97001645a19596a531ac64e232ea120982e440",
