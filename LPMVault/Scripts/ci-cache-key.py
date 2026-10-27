@@ -24,21 +24,24 @@ def fingerprint(root, files):
 
 
 def cache_files(kind, root):
-    common = [root / '.github/workflows/ci.yml', root / 'LPMVault/Scripts/ci-cache-key.py',
-              root / 'LPMVault/Vendor/EnvEngine/provenance.json']
+    common = [root / '.github/workflows/ci.yml', root / 'LPMVault/Scripts/ci-cache-key.py']
+    # A Swift or release build restores a cache built with another engine, as
+    # with other sources: the engine's changed files get timestamps that make
+    # the build redo what depends on them, so a re-export needn't start cold.
+    engine = root / 'LPMVault/Vendor/EnvEngine/provenance.json'
     if kind == 'engine':
-        inputs = common + [root / 'LPMVault/Scripts/verify-env-engine.py']
+        inputs = common + [engine, root / 'LPMVault/Scripts/verify-env-engine.py']
         sources = inputs
     elif kind == 'swift':
         inputs = common + [root / '.github/workflows/swift-tests.yml', root / 'LPMVault/Package.swift', root / 'LPMVault/Package.resolved']
-        sources = [p for folder in ['Sources', 'Tests']
-                   for p in (root / 'LPMVault' / folder).rglob('*') if p.is_file()]
+        sources = [engine] + [p for folder in ['Sources', 'Tests']
+                              for p in (root / 'LPMVault' / folder).rglob('*') if p.is_file()]
     elif kind == 'release':
         project = root / 'LPMVault/LPMVault.xcodeproj'
         inputs = common + [project / 'project.pbxproj', root / 'LPMVault/Info.plist']
         inputs += [p for p in project.rglob('*') if p.is_file() and
                    (p.suffix == '.xcscheme' or p.name == 'Package.resolved')]
-        sources = [p for p in (root / 'LPMVault/Sources').rglob('*') if p.is_file()]
+        sources = [engine] + [p for p in (root / 'LPMVault/Sources').rglob('*') if p.is_file()]
         sources += [p for p in (root / 'LPMVault').glob('*') if p.suffix in ['.entitlements', '.xcconfig']]
     else:
         raise ValueError('Unknown cache kind: ' + kind)

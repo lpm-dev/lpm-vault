@@ -64,11 +64,21 @@ class CacheIdentityTests(unittest.TestCase):
         before = self.identity()
         self.assertNotEqual(before[0], self.identity(toolchain='other-SDK-build')[0])
         for path in ['LPMVault/Package.swift', 'LPMVault/Package.resolved',
-                     'LPMVault/Vendor/EnvEngine/provenance.json', '.github/workflows/ci.yml', '.github/workflows/swift-tests.yml']:
+                     '.github/workflows/ci.yml', '.github/workflows/swift-tests.yml']:
             with self.subTest(path=path):
                 self.write(path, 'changed')
                 self.assertNotEqual(before[0], self.identity()[0])
                 self.write(path, 'initial')
+
+    def test_an_engine_change_reuses_compatible_intermediates_with_a_new_save_key(self):
+        for kind in ['swift', 'release']:
+            with self.subTest(kind=kind):
+                before = self.identity(kind)
+                self.write('LPMVault/Vendor/EnvEngine/provenance.json', 'new revision')
+                after = self.identity(kind)
+                self.write('LPMVault/Vendor/EnvEngine/provenance.json', 'initial')
+                self.assertEqual(before[0], after[0])
+                self.assertNotEqual(before[1], after[1])
 
     def test_engine_cache_cannot_restore_outputs_of_a_different_pinned_revision(self):
         before = self.identity('engine')
@@ -113,6 +123,52 @@ class CacheIdentityTests(unittest.TestCase):
         header.touch()
         cache.source_times('swift', self.root, restore=True)
         self.assertEqual(header.stat().st_mtime_ns, previous)
+
+    def test_a_changed_engine_keeps_a_timestamp_that_invalidates_the_build(self):
+        engine = 'LPMVault/Vendor/EnvEngine/LPMEnv.xcframework'
+        for kind in ['swift', 'release']:
+            for relative in [engine + '/Headers/lpm_env.h', engine + '/macos-arm64_x86_64/libLPMEnv.a']:
+                with self.subTest(kind=kind, file=relative):
+                    self.write(relative, 'old engine')
+                    cache.source_times(kind, self.root, restore=False)
+                    path = self.root / relative
+                    recorded = path.stat().st_mtime_ns
+                    path.write_text('new engine')
+                    os.utime(path, ns=(recorded, recorded))
+                    cache.source_times(kind, self.root, restore=True)
+                    self.assertGreater(path.stat().st_mtime_ns, recorded)
+
+    @unittest.skipUnless(shutil.which('swift'), 'Swift compiler required')
+    def test_changed_engine_header_rebuilds_after_cache_restoration(self):
+        package = self.root / 'LPMVault'
+        self.write('LPMVault/Package.swift', '''// swift-tools-version: 6.0
+import PackageDescription
+let package = Package(name: "EngineFixture", targets: [
+    .target(name: "LPMEnv", path: "Vendor/EnvEngine/LPMEnv.xcframework"),
+    .executableTarget(name: "EngineFixture", dependencies: ["LPMEnv"], path: "Sources"),
+])
+''')
+        self.write('LPMVault/Package.resolved', '{"pins":[],"version":2}')
+        (package / 'Sources/View.swift').write_text('import LPMEnv\nprint(lpm_env_fixture_value())\n')
+        header = package / 'Vendor/EnvEngine/LPMEnv.xcframework/include/lpm_env.h'
+        header.parent.mkdir(parents=True, exist_ok=True)
+        header.write_text('static inline int lpm_env_fixture_value(void) { return 1; }\n')
+        (package / 'Vendor/EnvEngine/LPMEnv.xcframework/lpm_env.c').write_text('#include "lpm_env.h"\n')
+        command = ['swift', 'run', '--package-path', str(package), '--disable-index-store',
+                   '-Xswiftc', '-warnings-as-errors', 'EngineFixture']
+
+        def output():
+            result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout.strip().splitlines()[-1]
+
+        self.assertEqual(output(), '1')
+        cache.source_times('swift', self.root, restore=False)
+        previous = header.stat().st_mtime_ns
+        header.write_text('static inline int lpm_env_fixture_value(void) { return 2; }\n')
+        os.utime(header, ns=(previous, previous))
+        cache.source_times('swift', self.root, restore=True)
+        self.assertEqual(output(), '2')
 
     @unittest.skipUnless(shutil.which('swift'), 'Swift compiler required')
     def test_changed_source_rebuilds_after_cache_restoration(self):
