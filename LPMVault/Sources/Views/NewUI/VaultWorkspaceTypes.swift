@@ -355,8 +355,8 @@ extension EnvironmentValues {
 /// Raw text's edit of the selected environment, as the content view shows it.
 struct VaultRawTextEditing {
   let draft: VaultRawTextDraft
-  /// What the draft's values hold that's hard to see, by key.
-  var characters: [String: ValueCharacters] = [:]
+  /// What the draft's values hold that's hard to see.
+  var characterWarnings: VaultRawTextCharacterWarnings?
   let isSaving: Bool
   /// Why the last save wrote nothing, until the next.
   let failure: VaultRawTextFailure?
@@ -371,28 +371,6 @@ struct VaultRawTextEditing {
   let onCopy: (String) -> Void
   /// Applies a fix the person chose to every value that holds characters that are hard to see.
   var onFixCharacters: (RustSchemaEngine.CharacterFix) -> Void = { _ in }
-
-  /// Each line that sets a value holding characters that are hard to see,
-  /// with what they are, in line order.
-  var characterWarnings: [VaultEnvTextCheck.Problem] {
-    characters.compactMap { key, found in
-      draft.check.lines[key].map { line in
-        VaultEnvTextCheck.Problem(line: line, reason: "\(key) has hidden characters: \(ValueCharacterWording.spokenList(found))")
-      }
-    }
-    .sorted { $0.line < $1.line }
-  }
-
-  /// What the editor draws beside each flagged line: the first character
-  /// found, as an escape with its name, and where it is in the line's value.
-  var characterWarningPills: [VaultEnvTextCheck.Problem] {
-    characters.compactMap { key, found in
-      guard let line = draft.check.lines[key], let first = found.characters.first else { return nil }
-      let more = found.characters.count > 1 || found.more > 0 ? ", and more" : ""
-      return VaultEnvTextCheck.Problem(line: line, reason: ValueCharacterWording.line(first) + " of the value" + more)
-    }
-    .sorted { $0.line < $1.line }
-  }
 }
 
 enum VaultRawTextFailure: Equatable {

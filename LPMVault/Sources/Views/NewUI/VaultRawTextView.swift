@@ -229,7 +229,8 @@ struct VaultRawTextEditor: NSViewRepresentable {
 			didSet { needsDisplay = true }
 		}
 		/// Lines whose values hold characters that are hard to see, tinted
-		/// apart from problems, which they never are.
+		/// apart from problems, which they never are. In line order, as
+		/// `problems` are, so a draw finds the lines on screen by binary search.
 		var warnings: [VaultEnvTextCheck.Problem] = [] {
 			didSet { needsDisplay = true }
 		}
@@ -287,7 +288,7 @@ struct VaultRawTextEditor: NSViewRepresentable {
 				.font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
 				.foregroundColor: NSColor(VaultPalette.orangeTintText),
 			]
-			for warning in warnings where shown.contains(warning.line) && !problemLines.contains(warning.line) {
+			for warning in warnings.on(shown) where !problemLines.contains(warning.line) {
 				guard let row = row(of: warning.line) else { continue }
 				warningTint.setFill()
 				row.fill()
@@ -301,7 +302,7 @@ struct VaultRawTextEditor: NSViewRepresentable {
 			for line in shown where problemLines.contains(line) {
 				row(of: line)?.fill()
 			}
-			for problem in problems where shown.contains(problem.line) {
+			for problem in problems.on(shown) {
 				guard let row = row(of: problem.line) else { continue }
 				let reason = problem.message as NSString
 				let size = reason.size(withAttributes: attributes)

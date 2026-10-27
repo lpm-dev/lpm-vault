@@ -306,6 +306,33 @@ struct ValueCharacterStoreTests {
 		#expect(keychain.envStorage["p"]?.environments["default"] == ["A": "1", "B": "2"], "a fix is an unsaved edit")
 	}
 
+	@Test("Raw text warnings are worded with their check, follow an edit at once, and stay in line order")
+	func rawTextWarningsFollowEdits() async throws {
+		let gated = GatedEngine()
+		gated.open()
+		let (store, _) = try await makeStore(["default": ["A": "1"]], engine: gated.engine)
+		defer {
+			gated.open()
+			store.lock()
+		}
+		#expect(store.beginRawTextEdit(order: ["A"]))
+		store.updateRawTextDraft(target(), text: "C=\"\u{200B}c\"\nA=\"a \"\nB=\"b\u{200B}\"\n")
+		#expect(try await waitUntil { store.rawTextCharacterWarnings[target()]?.lines.count == 3 })
+		let warnings = try #require(store.rawTextCharacterWarnings[target()])
+		#expect(warnings.lines.map(\.line) == [1, 2, 3])
+		#expect(warnings.lines.map(\.reason) == [
+			"C has hidden characters: zero width space at character 1", "A has hidden characters: space at the end",
+			"B has hidden characters: zero width space at character 2",
+		])
+		#expect(warnings.pills.map(\.line) == [1, 2, 3])
+		#expect(warnings.removable && warnings.trimmable)
+		gated.close()
+		store.updateRawTextDraft(target(), text: "A=\"a \"\nC=\"\u{200B}c\"\nB=\"b\"\n")
+		let moved = try #require(store.rawTextCharacterWarnings[target()], "lines move with their keys before the next check")
+		#expect(moved.lines.map(\.line) == [1, 2])
+		#expect(moved.lines.map(\.reason).map { $0.prefix(1) } == ["A", "C"], "B's value changed, so its warning goes at once")
+	}
+
 	@Test("an import review reports the imported values that hold hidden characters, and which of them it writes")
 	func importReviewCharacters() async throws {
 		let (store, _) = try await makeStore(["default": ["KEPT": "old"]])
@@ -316,6 +343,44 @@ struct ValueCharacterStoreTests {
 		#expect(review.characters["NEW"]?.found?.characters.first?.name == "IDEOGRAPHIC SPACE")
 		#expect(review.writtenKeys() == ["NEW", "CLEAN"])
 		#expect(review.writtenKeys(replacing: ["KEPT"], skipping: ["NEW"]) == ["KEPT", "CLEAN"])
+	}
+}
+
+@Suite("Raw text warning wording")
+struct RawTextWordingTests {
+	@Test("a check words only the findings that changed, and keeps the wording of the rest")
+	func wordsOnlyChangedFindings() async throws {
+		let checker = ValueCharacterChecker()
+		let environment = VaultRawTextCharacterCheck.environment
+		let first = try #require(await checker.check([environment: ["A": "a\u{200B}", "B": "b\u{200B}"]], since: nil))
+		let found = try #require(first.check.characters(of: "A", in: environment))
+		let kept = VaultRawTextCharacterCheck.Wording(found: found, reason: "kept A", pill: "kept A pill")
+		let previous = VaultRawTextCharacterCheck(checked: first, wording: ["A": kept])
+		let second = try #require(await checker.check([environment: ["A": "a\u{200B}", "B": "\u{200B}b"]], since: first))
+		let worded = VaultRawTextCharacterCheck(second, reusing: previous)
+		#expect(worded.wording["A"]?.reason == "kept A", "an unchanged finding isn't worded again")
+		#expect(worded.wording["B"]?.reason == "B has hidden characters: zero width space at character 1")
+	}
+}
+
+@Suite("Lines on screen")
+struct ProblemLineSearchTests {
+	private func problems(_ lines: [Int]) -> [VaultEnvTextCheck.Problem] {
+		lines.map { VaultEnvTextCheck.Problem(line: $0, reason: "r\($0)") }
+	}
+
+	@Test("the problems on the lines shown are found by binary search, whatever lies around them")
+	func onLines() {
+		let sorted = problems([2, 4, 4, 7, 9])
+		#expect(sorted.on(1...1).isEmpty)
+		#expect(sorted.on(2...2).map(\.line) == [2])
+		#expect(sorted.on(3...7).map(\.line) == [4, 4, 7])
+		#expect(sorted.on(8...100).map(\.line) == [9])
+		#expect(sorted.on(10...20).isEmpty)
+		#expect(sorted.on(1...9).count == 5)
+		#expect(problems([]).on(1...5).isEmpty)
+		let many = problems(Array(1...200_000))
+		#expect(many.on(150_000...150_002).map(\.line) == [150_000, 150_001, 150_002])
 	}
 }
 

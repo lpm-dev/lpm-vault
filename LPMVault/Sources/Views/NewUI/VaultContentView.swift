@@ -570,7 +570,7 @@ struct VaultContentView: View {
 							text: draft.text,
 							problems: draft.check.problems,
 							problemLines: draft.check.problemLines,
-							warnings: editing.characterWarningPills,
+							warnings: editing.characterWarnings?.pills ?? [],
 							label: "\(name) as text, editing",
 							isEditable: !editing.isSaving,
 							onChange: editing.onChange,
@@ -588,7 +588,6 @@ struct VaultContentView: View {
 	private func rawEditorFooter(_ editing: VaultRawTextEditing) -> some View {
 		let draft = editing.draft
 		let problems = draft.check.problems
-		let warnings = editing.characterWarnings
 		let state = problems.isEmpty
 			? (draft.changes.count == 0 ? "No changes yet" : "Ready to save: \(draft.changes.summary)")
 			: "\(problems.count.counted("problem")) · Save is available once every line is valid"
@@ -619,17 +618,15 @@ struct VaultContentView: View {
 			.accessibilityLabel("\(state). \(note)")
 			// The reasons are drawn beside their lines, which VoiceOver reads as plain text.
 			.accessibilityValue(problems.map(\.message).joined(separator: ". "))
-			if !warnings.isEmpty { rawCharacterWarnings(editing, warnings: warnings) }
+			if let warnings = editing.characterWarnings { rawCharacterWarnings(editing, warnings: warnings) }
 		}
 		.background(VaultPalette.headerRow)
 	}
 
 	/// The lines whose values hold characters that are hard to see, which
 	/// never stop a save, with the fixes a person can choose for all of them.
-	private func rawCharacterWarnings(_ editing: VaultRawTextEditing, warnings: [VaultEnvTextCheck.Problem]) -> some View {
-		let summary = warnings.count == 1 ? "1 line has hidden characters" : "\(warnings.count) lines have hidden characters"
-		let removable = editing.characters.values.contains(where: \.removable)
-		let trimmable = editing.characters.values.contains(where: \.trimmable)
+	private func rawCharacterWarnings(_ editing: VaultRawTextEditing, warnings: VaultRawTextCharacterWarnings) -> some View {
+		let summary = warnings.lines.count == 1 ? "1 line has hidden characters" : "\(warnings.lines.count) lines have hidden characters"
 		return HStack(spacing: 14) {
 			HStack(spacing: 5) {
 				Image(systemName: "exclamationmark.triangle").accessibilityHidden(true)
@@ -640,12 +637,12 @@ struct VaultContentView: View {
 			.accessibilityElement(children: .ignore)
 			.accessibilityLabel("Warning: \(summary). Saving keeps them.")
 			// The reasons are drawn beside their lines, which VoiceOver reads as plain text.
-			.accessibilityValue(warnings.map(\.message).joined(separator: ". "))
+			.accessibilityValue(warnings.lines.map(\.message).joined(separator: ". "))
 			Spacer(minLength: 8)
-			if removable {
+			if warnings.removable {
 				rawFixButton("Remove hidden characters", disabled: editing.isSaving) { editing.onFixCharacters(.removeHiddenCharacters) }
 			}
-			if trimmable {
+			if warnings.trimmable {
 				rawFixButton("Trim the ends", disabled: editing.isSaving) { editing.onFixCharacters(.trimEnds) }
 			}
 		}

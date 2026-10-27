@@ -1281,16 +1281,21 @@ final class VaultStore {
   /// Raw text edits not saved yet, by environment. Locking or another account discards them.
   private(set) var rawTextDrafts: [VaultEnvironmentTarget: VaultRawTextDraft] = [:] {
     didSet {
-      guard rawTextDrafts.count < oldValue.count else { return }
-      for target in rawTextCharacterChecks.keys where rawTextDrafts[target] == nil {
-        rawTextCharacterTasks.removeValue(forKey: target)?.cancel()
-        rawTextCharacterChecks[target] = nil
+      if rawTextDrafts.count < oldValue.count {
+        for target in rawTextCharacterChecks.keys where rawTextDrafts[target] == nil {
+          rawTextCharacterTasks.removeValue(forKey: target)?.cancel()
+          rawTextCharacterChecks[target] = nil
+        }
       }
+      refreshRawTextCharacterWarnings()
     }
   }
   /// Each Raw text draft's values as last checked for characters that are
-  /// hard to see, and what was found. It goes with its draft.
-  private(set) var rawTextCharacterChecks: [VaultEnvironmentTarget: ValueCharacterChecker.Checked] = [:]
+  /// hard to see, what was found, and its wording. It goes with its draft.
+  @ObservationIgnored private(set) var rawTextCharacterChecks: [VaultEnvironmentTarget: VaultRawTextCharacterCheck] = [:]
+  /// What each Raw text draft's values hold that's hard to see now, matched
+  /// again as the draft changes, so a view reads it rather than building it.
+  private(set) var rawTextCharacterWarnings: [VaultEnvironmentTarget: VaultRawTextCharacterWarnings] = [:]
   @ObservationIgnored private var rawTextCharacterTasks: [VaultEnvironmentTarget: Task<Void, Never>] = [:]
   /// The Raw text drafts being saved, each with its save's own number.
   private var rawTextSaves: [VaultEnvironmentTarget: UUID] = [:]
@@ -3714,13 +3719,19 @@ final class VaultStore {
   /// What `target`'s draft values hold that's hard to see now, by key. A key
   /// whose value changed since its last check isn't in it until it's checked again.
   func rawTextCharacters(_ target: VaultEnvironmentTarget) -> [String: ValueCharacters] {
-    guard let values = rawTextDrafts[target]?.check.values, let checked = rawTextCharacterChecks[target] else { return [:] }
-    var current: [String: ValueCharacters] = [:]
-    for key in (checked.check.environments["draft"] ?? [:]).keys {
-      guard let value = values[key], let found = checked.characters(of: key, in: "draft", whileItIs: value) else { continue }
-      current[key] = found
+    rawTextCharacterWarnings[target]?.characters ?? [:]
+  }
+
+  /// Matches each draft's last check to its values now. It costs a byte
+  /// comparison per flagged value, as the wording was done with the check.
+  private func refreshRawTextCharacterWarnings() {
+    var warnings: [VaultEnvironmentTarget: VaultRawTextCharacterWarnings] = [:]
+    for (target, check) in rawTextCharacterChecks {
+      guard let draft = rawTextDrafts[target] else { continue }
+      let found = VaultRawTextCharacterWarnings(check, draft: draft.check)
+      if !found.isEmpty { warnings[target] = found }
     }
-    return current
+    if warnings != rawTextCharacterWarnings { rawTextCharacterWarnings = warnings }
   }
 
   /// Applies a fix the person chose to every value in a Raw text draft that
@@ -3749,10 +3760,11 @@ final class VaultStore {
       if let delay {
         do { try await Task.sleep(for: delay) } catch { return }
       }
-      let checked = await characterChecker.check(["draft": values], since: previous)
+      let checked = await characterChecker.check([VaultRawTextCharacterCheck.environment: values], since: previous?.checked)
       guard let self, !Task.isCancelled, let checked, self.rawTextDrafts[target] != nil else { return }
       self.rawTextCharacterTasks[target] = nil
-      self.rawTextCharacterChecks[target] = checked
+      self.rawTextCharacterChecks[target] = VaultRawTextCharacterCheck(checked, reusing: previous)
+      self.refreshRawTextCharacterWarnings()
     }
   }
 

@@ -284,3 +284,91 @@ enum VaultRawTextSaveOutcome: Equatable, Sendable {
 	case unavailable
 	case failed(String)
 }
+
+/// A Raw text draft's check for characters that are hard to see, with each
+/// flagged value's warnings worded once, as the check returns, so an edit
+/// only matches them to the values again.
+struct VaultRawTextCharacterCheck: Sendable {
+	struct Wording: Sendable {
+		let found: ValueCharacters
+		/// What the line's value holds, as the footer lists it for VoiceOver.
+		let reason: String
+		/// The first character found and where, which the editor draws beside the line.
+		let pill: String
+	}
+
+	let checked: ValueCharacterChecker.Checked
+	let wording: [String: Wording]
+
+	/// The environment a draft's values are checked as.
+	static let environment = "draft"
+}
+
+extension VaultRawTextCharacterCheck {
+	/// Words what `checked` found, reusing `previous`'s wording of each value
+	/// whose finding is the same, so a check words only what changed.
+	init(_ checked: ValueCharacterChecker.Checked, reusing previous: VaultRawTextCharacterCheck? = nil) {
+		self.checked = checked
+		var wording: [String: Wording] = [:]
+		for (key, found) in checked.check.environments[Self.environment] ?? [:] {
+			if let kept = previous?.wording[key], kept.found == found {
+				wording[key] = kept
+				continue
+			}
+			guard let first = found.characters.first else { continue }
+			let more = found.characters.count > 1 || found.more > 0 ? ", and more" : ""
+			wording[key] = Wording(found: found, reason: "\(key) has hidden characters: \(ValueCharacterWording.spokenList(found))",
+				pill: ValueCharacterWording.line(first) + " of the value" + more)
+		}
+		self.wording = wording
+	}
+}
+
+/// What a Raw text draft's values hold that's hard to see now: what its last
+/// check found in each value that's still the one checked, by the line that sets it.
+struct VaultRawTextCharacterWarnings: Equatable, Sendable {
+	/// By key.
+	let characters: [String: ValueCharacters]
+	/// Each flagged line with what its value holds, in line order.
+	let lines: [VaultEnvTextCheck.Problem]
+	/// What the editor draws beside each flagged line, in line order.
+	let pills: [VaultEnvTextCheck.Problem]
+	let removable: Bool
+	let trimmable: Bool
+
+	init(_ check: VaultRawTextCharacterCheck, draft: VaultEnvTextCheck) {
+		var flagged: [(line: Int, wording: VaultRawTextCharacterCheck.Wording)] = []
+		flagged.reserveCapacity(check.wording.count)
+		var characters: [String: ValueCharacters] = [:]
+		for (key, wording) in check.wording {
+			guard let value = draft.values[key], let line = draft.lines[key],
+				check.checked.characters(of: key, in: VaultRawTextCharacterCheck.environment, whileItIs: value) != nil
+			else { continue }
+			flagged.append((line, wording))
+			characters[key] = wording.found
+		}
+		flagged.sort { $0.line < $1.line }
+		self.characters = characters
+		lines = flagged.map { VaultEnvTextCheck.Problem(line: $0.line, reason: $0.wording.reason) }
+		pills = flagged.map { VaultEnvTextCheck.Problem(line: $0.line, reason: $0.wording.pill) }
+		removable = characters.values.contains(where: \.removable)
+		trimmable = characters.values.contains(where: \.trimmable)
+	}
+
+	var isEmpty: Bool { lines.isEmpty }
+}
+
+extension Array where Element == VaultEnvTextCheck.Problem {
+	/// Those on `lines`, found by binary search, in problems sorted by line.
+	func on(_ lines: ClosedRange<Int>) -> ArraySlice<Element> {
+		func firstIndex(after line: Int) -> Int {
+			var low = startIndex, high = endIndex
+			while low < high {
+				let middle = low + (high - low) / 2
+				if self[middle].line <= line { low = middle + 1 } else { high = middle }
+			}
+			return low
+		}
+		return self[firstIndex(after: lines.lowerBound - 1)..<firstIndex(after: lines.upperBound)]
+	}
+}

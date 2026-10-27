@@ -1235,7 +1235,7 @@ struct VaultWorkspaceView: View {
 		guard let draft = store.rawTextDraft(for: target) else { return nil }
 		return VaultRawTextEditing(
 			draft: draft,
-			characters: store.rawTextCharacters(target),
+			characterWarnings: store.rawTextCharacterWarnings[target],
 			isSaving: store.isSavingRawText(target),
 			failure: rawTextFailures[target],
 			onChange: { store.updateRawTextDraft(target, text: $0) },
