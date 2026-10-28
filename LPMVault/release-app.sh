@@ -6,6 +6,7 @@ set -euo pipefail
 # them to release hosting. Notarization necessarily submits copies to Apple.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+APPLE_SERVICE_RETRY="$SCRIPT_DIR/Scripts/with-apple-service-retry.sh"
 APP_NAME="LPM Vault"
 BUNDLE_ID="dev.lpm.vault"
 MINIMUM_SYSTEM_VERSION="14.0"
@@ -32,6 +33,11 @@ WORK_DIR=""
 LOG_DIR=""
 NOTARY_ARGS=()
 LAST_SUBMISSION_ID=""
+APPLE_SERVICE_BACKOFF_SECONDS="${LPM_APPLE_SERVICE_BACKOFF_SECONDS:-5}"
+NOTARY_AUTHENTICATION_ATTEMPTS=3
+NOTARY_SUBMIT_ATTEMPTS=4
+NOTARY_STATUS_CHECKS=120
+NOTARY_STATUS_INTERVAL_SECONDS=15
 
 usage() {
 	cat <<'EOF'
@@ -269,14 +275,19 @@ check_provisioning_profile() {
 		fail "provisioning profile does not authorize the shared Keychain group"
 }
 
+# notarytool's errors don't separate a dropped connection from a rejected
+# key, so every failure is checked again; a rejected key fails within seconds.
 check_notary_authentication() {
 	local output_file="$LOG_DIR/notary-auth-check.json"
 	local error_file="$LOG_DIR/notary-auth-check.stderr.log"
+	local attempt
 	echo "Checking notary authentication..."
-	if ! xcrun notarytool history "${NOTARY_ARGS[@]}" --output-format json >"$output_file" 2>"$error_file"; then
+	for ((attempt = 1; ; attempt++)); do
+		xcrun notarytool history "${NOTARY_ARGS[@]}" --output-format json >"$output_file" 2>"$error_file" && return 0
 		cat "$error_file" >&2
-		fail "notarytool authentication failed"
-	fi
+		[ "$attempt" -lt "$NOTARY_AUTHENTICATION_ATTEMPTS" ] || fail "notarytool authentication failed"
+		apple_service_backoff "Checking notary authentication" "$attempt" "$NOTARY_AUTHENTICATION_ATTEMPTS"
+	done
 }
 
 build_signed_app() {
@@ -310,7 +321,7 @@ build_signed_app() {
 	python3 "$SCRIPT_DIR/Scripts/validate-release-metadata.py" "$VERSION" "$BUILD_NUMBER" "$RELEASE_CHANNEL" "$RELEASE_VERSION" "$RELEASE_DATE" "$RELEASE_COMMIT" "$staged_app/Contents/Info.plist"
 	cp "$PROVISIONING_PROFILE" "$staged_app/Contents/embedded.provisionprofile"
 	bash "$SCRIPT_DIR/Scripts/sign-sparkle.sh" "$staged_app" "$SIGNING_IDENTITY" --timestamp
-	codesign --force --timestamp --options runtime \
+	bash "$APPLE_SERVICE_RETRY" codesign --force --timestamp --options runtime \
 		--entitlements "$SCRIPT_DIR/LPMVault.entitlements" \
 		--sign "$SIGNING_IDENTITY" \
 		"$staged_app"
@@ -386,43 +397,83 @@ fetch_notary_log() {
 		2>"$LOG_DIR/notarization-$label-log.stderr.log" || true
 }
 
+apple_service_backoff() {
+	local description="$1"
+	local attempt="$2"
+	local attempts="$3"
+	local delay=$((attempt * attempt * APPLE_SERVICE_BACKOFF_SECONDS))
+	echo "::warning::$description failed (attempt $attempt of $attempts); trying again in ${delay}s." >&2
+	sleep "$delay"
+}
+
+# Uploads the artifact until Apple returns a submission ID, then checks that
+# submission's status until Apple decides, so a dropped connection costs one
+# upload or one check rather than the release. An upload whose response was
+# lost leaves an extra submission behind, which Apple processes harmlessly.
 submit_for_notarization() {
 	local artifact="$1"
 	local label="$2"
 	local result_file="$LOG_DIR/notarization-$label.json"
 	local error_file="$LOG_DIR/notarization-$label.stderr.log"
-	local status submission_id
+	local attempt check status submission_id
 
 	echo "Submitting $label for notarization..."
-	if ! xcrun notarytool submit "$artifact" "${NOTARY_ARGS[@]}" \
-		--wait --output-format json >"$result_file" 2>"$error_file"; then
+	for ((attempt = 1; ; attempt++)); do
+		xcrun notarytool submit "$artifact" "${NOTARY_ARGS[@]}" \
+			--output-format json >"$result_file" 2>"$error_file" || true
 		submission_id="$(notary_result_value id "$result_file")"
-		fetch_notary_log "$submission_id" "$label"
+		[[ ! "$submission_id" =~ ^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$ ]] || break
 		cat "$error_file" >&2
-		fail "notarization submission failed for $label${submission_id:+ (submission $submission_id)}"
-	fi
+		[ "$attempt" -lt "$NOTARY_SUBMIT_ATTEMPTS" ] ||
+			fail "notarization upload failed for $label after $attempt attempts"
+		apple_service_backoff "Uploading $label for notarization" "$attempt" "$NOTARY_SUBMIT_ATTEMPTS"
+	done
 
-	submission_id="$(notary_result_value id "$result_file")"
-	status="$(notary_result_value status "$result_file")"
-	if [ "$status" != "Accepted" ]; then
-		fetch_notary_log "$submission_id" "$label"
-		fail "notarization was not accepted for $label${submission_id:+ (submission $submission_id)}; status: ${status:-unknown}"
-	fi
-	[ -n "$submission_id" ] || fail "notarytool accepted $label but returned no submission ID"
-	LAST_SUBMISSION_ID="$submission_id"
+	echo "Waiting for Apple to notarize $label (submission $submission_id)..."
+	for ((check = 1; check <= NOTARY_STATUS_CHECKS; check++)); do
+		[ "$check" -eq 1 ] || sleep "$NOTARY_STATUS_INTERVAL_SECONDS"
+		if ! xcrun notarytool info "$submission_id" "${NOTARY_ARGS[@]}" \
+			--output-format json >"$result_file" 2>"$error_file"; then
+			echo "::warning::Could not check notarization of $label (check $check of $NOTARY_STATUS_CHECKS); checking again." >&2
+			cat "$error_file" >&2
+			continue
+		fi
+		status="$(notary_result_value status "$result_file")"
+		case "$status" in
+			Accepted)
+				LAST_SUBMISSION_ID="$submission_id"
+				return 0
+				;;
+			"In Progress") ;;
+			Invalid | Rejected)
+				fetch_notary_log "$submission_id" "$label"
+				fail "notarization was not accepted for $label (submission $submission_id); status: $status"
+				;;
+			*)
+				fail "notarytool reported an unexpected status for $label (submission $submission_id): ${status:-none}"
+				;;
+		esac
+	done
+	fail "Apple had not notarized $label after $NOTARY_STATUS_CHECKS checks (submission $submission_id)"
+}
+
+report_apple_service_retries() {
+	grep -E '^::(warning|error)::' "$1" >&2 || true
 }
 
 staple_and_validate() {
 	local path="$1"
 	local label="$2"
-	xcrun stapler staple -v "$path" >"$LOG_DIR/stapler-$label.log" 2>&1 || {
-		cat "$LOG_DIR/stapler-$label.log" >&2
+	local log_file="$LOG_DIR/stapler-$label.log"
+	bash "$APPLE_SERVICE_RETRY" stapler staple -v "$path" >"$log_file" 2>&1 || {
+		cat "$log_file" >&2
 		fail "could not staple notarization ticket to $label"
 	}
-	xcrun stapler validate -v "$path" >>"$LOG_DIR/stapler-$label.log" 2>&1 || {
-		cat "$LOG_DIR/stapler-$label.log" >&2
+	bash "$APPLE_SERVICE_RETRY" stapler validate -v "$path" >>"$log_file" 2>&1 || {
+		cat "$log_file" >&2
 		fail "the stapled notarization ticket is invalid for $label"
 	}
+	report_apple_service_retries "$log_file"
 }
 
 verify_gatekeeper_app() {
@@ -455,10 +506,11 @@ verify_update_zip() {
 		cat "$signature_log" >&2
 		fail "the update ZIP did not preserve the app signature"
 	fi
-	if ! xcrun stapler validate -v "$extracted_app" >"$ticket_log" 2>&1; then
+	if ! bash "$APPLE_SERVICE_RETRY" stapler validate -v "$extracted_app" >"$ticket_log" 2>&1; then
 		cat "$ticket_log" >&2
 		fail "the update ZIP did not preserve the app notarization ticket"
 	fi
+	report_apple_service_retries "$ticket_log"
 }
 
 verify_signed_dmg() {
@@ -497,7 +549,7 @@ create_dmg() {
 		cat "$dmg_log" >&2
 		fail "could not create the DMG"
 	fi
-	codesign --force --sign "$SIGNING_IDENTITY" --timestamp "$destination"
+	bash "$APPLE_SERVICE_RETRY" codesign --force --sign "$SIGNING_IDENTITY" --timestamp "$destination"
 	verify_signed_dmg "$destination"
 }
 
