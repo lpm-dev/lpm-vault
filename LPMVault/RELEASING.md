@@ -165,6 +165,8 @@ If this verification fails, inspect the published release before recovery.
 
 The job signs every Sparkle component, signs Vault, notarizes the app, staples its ticket, and verifies Gatekeeper acceptance. It repeats notarization for the DMG. It then generates and verifies the signed feed and archive signatures.
 
+Apple's timestamp, notarization and ticket services sometimes drop a connection. The release tries each request again a few times, with a growing wait, and fails only when an outage lasts. Each retry appears as a warning in the job's log. A notarization upload whose response is lost leaves an extra submission in Apple's history.
+
 The workflow publishes these assets together:
 
 - `LPM-Vault-VERSION.dmg`
