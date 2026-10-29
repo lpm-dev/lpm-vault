@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 
 /// A key in one environment of one project: a place a value is stored.
 struct ValueLocation: Hashable, Sendable {
@@ -51,8 +52,6 @@ struct ValueSearchSkip: Identifiable, Hashable, Sendable {
 		case unchecked
 		/// The Keychain couldn't read it.
 		case unreadable
-		/// The search stopped before reading it.
-		case notReached
 
 		init(_ error: KeychainError) {
 			switch error {
@@ -80,9 +79,10 @@ struct ValueSearchTarget: Sendable {
 	let account: ValueSearchAccount
 	/// Its environments in the order the sidebar lists them.
 	let environments: [String]
-	/// Its stored values when the app holds them already, as it holds the
-	/// selected project's; the others are read as the search reaches them.
-	var loaded: VaultProject?
+	/// Whether the app holds its stored values already, as it holds the
+	/// selected project's, which a search borrows at the project's turn
+	/// rather than reading them again; the others are read then too.
+	var isHeld = false
 	/// The folder whose lpm.json says which of its keys are public or secret.
 	var folder: String = ""
 	/// What its rules say, when the app has read them already.
@@ -119,6 +119,43 @@ struct PersistedValueSearchSource: ValueSearchSource {
 	}
 }
 
+/// Lends the values the app holds, as it holds the selected project's, from
+/// the app at the project's turn, and the others through `others`: a search
+/// waiting on one project's read holds no other project's values.
+struct HeldValueSearchSource: ValueSearchSource {
+	/// The projects whose values the app held as the search began.
+	let heldProjectIDs: Set<String>
+	/// The values the app holds of a project now, if it still does.
+	let held: @MainActor @Sendable (String) -> VaultProject?
+	let others: any ValueSearchSource
+
+	func withValues<T>(of projectID: String, _ body: (VaultProject) -> T) async -> Result<T?, KeychainError> {
+		if heldProjectIDs.contains(projectID), let project = await held(projectID) { return .success(body(project)) }
+		return await others.withValues(of: projectID, body)
+	}
+}
+
+/// A secret a search borrows for each use, which whoever started the search
+/// can take back while the search still holds this: one left waiting on a
+/// read then holds nothing to match or link a value with.
+final class ValueSearchSecret<Secret: Sendable>: Sendable {
+	private let secret: OSAllocatedUnfairLock<Secret?>
+
+	init(_ secret: Secret) {
+		self.secret = OSAllocatedUnfairLock(initialState: secret)
+	}
+
+	/// Lets the secret go, which zeroes it as its last holder lets it go.
+	func revoke() {
+		secret.withLock { $0 = nil }
+	}
+
+	/// What `body` makes of the secret; nil once it's revoked.
+	func borrow<T>(_ body: (Secret) -> T) -> T? {
+		secret.withLockUnchecked { $0.map(body) }
+	}
+}
+
 /// What a value search looks for: values whose bytes are exactly the term's
 /// and, when asked, longer values that hold those bytes. Nothing is trimmed
 /// or normalized, since two values that look the same can differ.
@@ -127,15 +164,21 @@ struct ValueMatcher: Sendable {
 	/// found too: a shorter one is inside too many values to mean anything.
 	static let minimumContainedCharacters = 8
 
-	private let term: SecretBytes
+	private let term: ValueSearchSecret<Term>
 	let findsContainingValues: Bool
 
 	/// Nil for an empty term, which matches nothing.
 	init?(term: String, findsContainingValues: Bool) {
 		guard !term.isEmpty else { return nil }
+		let containing = findsContainingValues && Self.allowsContaining(term)
 		var bytes = term
-		self.term = bytes.withUTF8 { SecretBytes(copying: UnsafeRawBufferPointer($0)) }
-		self.findsContainingValues = findsContainingValues && Self.allowsContaining(term)
+		self.term = ValueSearchSecret(bytes.withUTF8 { Term(UnsafeRawBufferPointer($0), findsContainingValues: containing) })
+		self.findsContainingValues = containing
+	}
+
+	/// Lets the term go: every copy of this matcher matches nothing after.
+	func revoke() {
+		term.revoke()
 	}
 
 	static func allowsContaining(_ term: String) -> Bool {
@@ -145,13 +188,67 @@ struct ValueMatcher: Sendable {
 	func match(_ value: String) -> ValueSearchHit.Match? {
 		var value = value
 		return value.withUTF8 { value in
-			term.withUnsafeBytes { term in
+			term.borrow { $0.match(UnsafeRawBufferPointer(value)) } ?? nil
+		}
+	}
+
+	/// The term's bytes and, for a search that finds values containing it,
+	/// the table that reads each value's bytes once, Knuth–Morris–Pratt:
+	/// memmem compares from each start again, which a long repetitive value
+	/// makes quadratic. Both are zeroed as the term goes.
+	private struct Term: Sendable {
+		let bytes: SecretBytes
+		/// For each length of the term's start, the length of the longest
+		/// shorter start that also ends it, as 32-bit counts.
+		let borders: SecretBytes?
+
+		init(_ term: UnsafeRawBufferPointer, findsContainingValues: Bool) {
+			bytes = SecretBytes(copying: term)
+			borders = findsContainingValues ? Self.borders(of: term) : nil
+		}
+
+		func match(_ value: UnsafeRawBufferPointer) -> ValueSearchHit.Match? {
+			bytes.withUnsafeBytes { term in
 				if value.count == term.count {
 					return memcmp(value.baseAddress!, term.baseAddress!, term.count) == 0 ? .exact : nil
 				}
-				guard findsContainingValues, value.count > term.count else { return nil }
-				return memmem(value.baseAddress!, value.count, term.baseAddress!, term.count) == nil ? nil : .contains
+				guard let borders, value.count > term.count else { return nil }
+				return borders.withUnsafeBytes { Self.contains(term, in: value, borders: $0) } ? .contains : nil
 			}
+		}
+
+		private static func borders(of term: UnsafeRawBufferPointer) -> SecretBytes {
+			let width = MemoryLayout<UInt32>.size
+			return SecretBytes(count: term.count * width) { table in
+				var length = 0
+				var index = 1
+				while index < term.count {
+					if term[index] == term[length] {
+						length += 1
+						table.storeBytes(of: UInt32(length), toByteOffset: index * width, as: UInt32.self)
+						index += 1
+					} else if length > 0 {
+						length = Int(table.loadUnaligned(fromByteOffset: (length - 1) * width, as: UInt32.self))
+					} else {
+						index += 1
+					}
+				}
+			}
+		}
+
+		private static func contains(_ term: UnsafeRawBufferPointer, in value: UnsafeRawBufferPointer, borders: UnsafeRawBufferPointer) -> Bool {
+			let width = MemoryLayout<UInt32>.size
+			var matched = 0
+			for byte in value {
+				while matched > 0, byte != term[matched] {
+					matched = Int(borders.loadUnaligned(fromByteOffset: (matched - 1) * width, as: UInt32.self))
+				}
+				if byte == term[matched] {
+					matched += 1
+					if matched == term.count { return true }
+				}
+			}
+			return false
 		}
 	}
 }
@@ -166,14 +263,22 @@ struct ValueDigest: Hashable, Sendable {
 }
 
 struct ValueDigester: Sendable {
-	private let key = SymmetricKey(size: .bits256)
+	private let key = ValueSearchSecret(SymmetricKey(size: .bits256))
 
-	func digest(_ value: String) -> ValueDigest {
+	/// Nil once the key is revoked.
+	func digest(_ value: String) -> ValueDigest? {
 		var value = value
-		let code = value.withUTF8 { HMAC<SHA256>.authenticationCode(for: UnsafeRawBufferPointer($0), using: key) }
-		return code.withUnsafeBytes {
-			ValueDigest(high: $0.loadUnaligned(as: UInt64.self), low: $0.loadUnaligned(fromByteOffset: 8, as: UInt64.self))
+		return key.borrow { key in
+			let code = value.withUTF8 { HMAC<SHA256>.authenticationCode(for: UnsafeRawBufferPointer($0), using: key) }
+			return code.withUnsafeBytes {
+				ValueDigest(high: $0.loadUnaligned(as: UInt64.self), low: $0.loadUnaligned(fromByteOffset: 8, as: UInt64.self))
+			}
 		}
+	}
+
+	/// Lets the key go: the digests made with it can't be linked to a value after.
+	func revoke() {
+		key.revoke()
 	}
 }
 
@@ -211,27 +316,43 @@ struct ValueSecrecyRules: Sendable {
 	}
 
 	/// Whether any of `values` stored for `key` looks secret, judged off the
-	/// main actor, since the engine may check a value's format.
+	/// main actor, since the engine may check a value's format. A value
+	/// several environments hold is judged once.
 	func anyLooksSecret(key: String, values: [String]) async -> Bool {
-		values.contains { looksSecret(key: key, value: $0) }
+		var judged: Set<ExactText> = []
+		return values.contains { judged.insert(ExactText($0)).inserted && looksSecret(key: key, value: $0) }
 	}
 }
 
-/// The environments of one key that hold byte for byte the same value.
-enum SameValueEnvironments {
-	/// For each environment in `order` whose value isn't empty, the others,
-	/// in `order`, whose value is exactly its own.
-	static func matches(_ values: [String: String], order: [String]) -> [String: [String]] {
-		var byValue: [ExactText: [String]] = [:]
+/// The environments of one key that hold byte for byte the same value,
+/// grouped once; each card asks for its own others.
+struct SameValueEnvironments {
+	static let none = SameValueEnvironments()
+
+	private var groupOf: [String: Int] = [:]
+	private var groups: [[String]] = []
+
+	private init() {}
+
+	/// Groups the environments in `order` whose values aren't empty by value.
+	init(_ values: [String: String], order: [String]) {
+		var groupOfValue: [ExactText: Int] = [:]
 		for environment in order {
 			guard let value = values[environment], !value.isEmpty else { continue }
-			byValue[ExactText(value), default: []].append(environment)
+			let group = groupOfValue[ExactText(value)] ?? {
+				groups.append([])
+				groupOfValue[ExactText(value)] = groups.count - 1
+				return groups.count - 1
+			}()
+			groups[group].append(environment)
+			groupOf[environment] = group
 		}
-		var matches: [String: [String]] = [:]
-		for environments in byValue.values where environments.count > 1 {
-			for environment in environments { matches[environment] = environments.filter { $0 != environment } }
-		}
-		return matches
+	}
+
+	/// The other environments, in order, whose value is exactly `environment`'s.
+	func others(of environment: String) -> [String] {
+		guard let group = groupOf[environment], groups[group].count > 1 else { return [] }
+		return groups[group].filter { $0 != environment }
 	}
 }
 
@@ -284,7 +405,7 @@ struct ValueReuseIndex {
 		let key: Int32
 	}
 
-	private let digester = ValueDigester()
+	private let digester: ValueDigester
 	private var chains: [ValueDigest: Chain] = [:]
 	private var entries: [Entry] = []
 	private var keys: [String] = []
@@ -298,6 +419,10 @@ struct ValueReuseIndex {
 	/// How many places were judged secret or not.
 	private(set) var judgedPlaces = 0
 
+	init(digester: ValueDigester = ValueDigester()) {
+		self.digester = digester
+	}
+
 	/// Records every non-empty value of `project`, read for `targets[target]`.
 	mutating func add(_ project: VaultProject, target: Int, of targets: [ValueSearchTarget], secrecy: ValueSecrecyRules) {
 		let order = targets[target].environmentOrder(of: project)
@@ -306,7 +431,7 @@ struct ValueReuseIndex {
 		for (environmentIndex, environment) in order.enumerated() {
 			guard let values = project.environments[environment] else { continue }
 			for (key, value) in values where !value.isEmpty {
-				let digest = digester.digest(value)
+				guard let digest = digester.digest(value) else { return }
 				let entry = Entry(target: Int32(target), environment: Int32(environmentIndex), key: intern(key), previous: chains[digest]?.latest ?? -1)
 				let index = Int32(entries.count)
 				entries.append(entry)
@@ -400,6 +525,8 @@ enum ValueSearchScan {
 	struct Reuse: Sendable {
 		let groups: [ReusedValueGroup]
 		let skips: [ValueSearchSkip]
+		/// How many projects' values were read and compared.
+		let compared: Int
 	}
 
 	/// Compares every stored value of each target with `matcher`, one
@@ -411,17 +538,12 @@ enum ValueSearchScan {
 	) async {
 		for (index, target) in targets.enumerated() {
 			guard !Task.isCancelled else { return }
-			let outcome: FindOutcome
-			if let loaded = target.loaded {
-				outcome = .searched(hits(of: matcher, in: loaded, target: target))
-			} else {
-				let result = await source.withValues(of: target.id) { hits(of: matcher, in: $0, target: target) }
-				guard !Task.isCancelled else { return }
-				switch result {
-				case .success(let hits?): outcome = .searched(hits)
-				case .success(nil): outcome = .gone
-				case .failure(let error): outcome = .skipped(target.skip(ValueSearchSkip.Reason(error)))
-				}
+			let result = await source.withValues(of: target.id) { hits(of: matcher, in: $0, target: target) }
+			guard !Task.isCancelled else { return }
+			let outcome: FindOutcome = switch result {
+			case .success(let hits?): .searched(hits)
+			case .success(nil): .gone
+			case .failure(let error): .skipped(target.skip(ValueSearchSkip.Reason(error)))
 			}
 			guard await report(index, outcome) else { return }
 		}
@@ -430,31 +552,34 @@ enum ValueSearchScan {
 	/// Records where each stored value of every target is, by a digest made
 	/// for this scan, one target at a time, then groups the values stored in
 	/// more than one place. `secrecy` reads a target's rules before its
-	/// values are read. `progress` hears each target done, by its index, and
+	/// values are read; `digester` holds the scan's key, which whoever started
+	/// it can revoke. `progress` hears each target done, by its index, and
 	/// says whether to go on; nil when the scan stopped first.
 	static func reuse(
 		in targets: [ValueSearchTarget], from source: some ValueSearchSource,
 		secrecy: @Sendable (ValueSearchTarget) async -> ValueSecrecyRules,
+		digester: ValueDigester = ValueDigester(),
 		progress: @MainActor @Sendable (Int) -> Bool
 	) async -> Reuse? {
-		var index = ValueReuseIndex()
+		var index = ValueReuseIndex(digester: digester)
 		var skips: [ValueSearchSkip] = []
+		var compared = 0
 		for (position, target) in targets.enumerated() {
 			guard !Task.isCancelled else { return nil }
 			var rules = target.secrecy ?? .none
 			if target.secrecy == nil { rules = await secrecy(target) }
 			guard !Task.isCancelled else { return nil }
-			if let loaded = target.loaded {
-				index.add(loaded, target: position, of: targets, secrecy: rules)
-			} else {
-				let result = await source.withValues(of: target.id) { index.add($0, target: position, of: targets, secrecy: rules) }
-				guard !Task.isCancelled else { return nil }
-				if case .failure(let error) = result { skips.append(target.skip(ValueSearchSkip.Reason(error))) }
+			let result = await source.withValues(of: target.id) { index.add($0, target: position, of: targets, secrecy: rules) }
+			guard !Task.isCancelled else { return nil }
+			switch result {
+			case .success(_?): compared += 1
+			case .success(nil): break
+			case .failure(let error): skips.append(target.skip(ValueSearchSkip.Reason(error)))
 			}
 			guard await progress(position) else { return nil }
 		}
 		guard !Task.isCancelled else { return nil }
-		return Reuse(groups: index.groups(of: targets), skips: skips)
+		return Reuse(groups: index.groups(of: targets), skips: skips, compared: compared)
 	}
 
 	/// The project's places that hold the value, in its environments' order, then by key.

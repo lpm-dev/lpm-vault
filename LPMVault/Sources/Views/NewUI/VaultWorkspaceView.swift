@@ -206,7 +206,7 @@ struct VaultWorkspaceView: View {
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
 		.onReceive(NotificationCenter.default.publisher(for: .importVariables)) { _ in presentImport() }
 		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
-			if let project { openProjectSettings(project, focusingName: false) }
+			if let project, !hostWindow.hasAttachedSheet { openProjectSettings(project, focusingName: false) }
 		}
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
@@ -328,7 +328,8 @@ struct VaultWorkspaceView: View {
 							onRenameEnvironment: beginRenameEnvironment,
 							onDuplicateEnvironment: beginDuplicateEnvironment,
 							onClearEnvironment: { clearEnvironmentTarget = $0 },
-							onDeleteEnvironment: { deleteEnvironmentTarget = $0 }
+							onDeleteEnvironment: { deleteEnvironmentTarget = $0 },
+							onFindAsValue: findAsValue
 						)
 					}
 
@@ -479,7 +480,8 @@ struct VaultWorkspaceView: View {
 									presentAddSecret(key: key, environment: environment)
 								},
 								onRenamed: followRename,
-								onOpenRules: { openSchemaRules(of: $0, in: project) }
+								onOpenRules: { openSchemaRules(of: $0, in: project) },
+								onFindValue: findStoredValue
 							)
 						}
 						.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
@@ -924,7 +926,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func presentAddSecret(key: String, environment: String) {
-		guard addSecretTarget == nil, let project else { return }
+		guard addSecretTarget == nil, !hostWindow.hasAttachedSheet, let project else { return }
 		store.recordUserActivity()
 		addSecretTarget = VaultSecretTarget(projectId: project.id, environment: environment, initialKey: key)
 	}
@@ -1474,27 +1476,55 @@ struct VaultWorkspaceView: View {
 			onShowValueSearch: { presentValueSearch(store.valueSearch.find == nil ? .reuse : .find) },
 			onClearValueSearch: { store.valueSearch.clearResults() },
 			foundValues: store.valueSearch.foundEnvironments(in: project.id),
-			onFindValue: { key, environment in store.valueSearch.findStoredValue(of: key, in: environment) }
+			onFindValue: findStoredValue
 		)
+	}
+
+	/// Whether value search can open now: unlocked, and no other sheet showing.
+	private var canPresentValueSearch: Bool {
+		store.isUnlocked && (store.valueSearch.isPresented || !hostWindow.hasAttachedSheet)
 	}
 
 	/// Opens the value search sheet in `mode`, unless another sheet is showing.
 	private func presentValueSearch(_ mode: ValueSearchModel.Mode) {
-		guard store.isUnlocked, store.valueSearch.isPresented || !hostWindow.hasAttachedSheet else { return }
+		guard canPresentValueSearch else { return }
 		store.recordUserActivity()
 		store.valueSearch.present(mode)
 	}
 
-	/// Shows the place a value search result opened: its environment, with
-	/// the key selected in the inspector and nothing filtering it out.
+	/// Finds where the stored value of `key` in `environment` is used, unless another sheet is showing.
+	private func findStoredValue(_ key: String, in environment: String) {
+		guard canPresentValueSearch else { return }
+		store.recordUserActivity()
+		store.valueSearch.findStoredValue(of: key, in: environment)
+	}
+
+	/// Searches stored values for text typed where names are searched, unless another sheet is showing.
+	private func findAsValue(_ text: String) -> Bool {
+		guard canPresentValueSearch, !text.isEmpty else { return false }
+		store.recordUserActivity()
+		store.valueSearch.present(searchingFor: text)
+		return store.valueSearch.isPresented
+	}
+
+	/// Shows the place a value search result opened: its environment's table,
+	/// with the key selected in the inspector and nothing filtering it out.
+	/// The store selects the environment, once the project is read when its
+	/// listing didn't name it yet.
 	private func showOpenedValue(_ request: ValueSearchModel.OpenRequest) {
-		guard store.selectedProjectId == request.location.projectID else { return }
+		guard let project, project.id == request.projectID else { return }
+		store.valueSearch.finishOpening(request)
+		guard let location = request.location else {
+			AccessibilityNotification.Announcement(ValueSearchWording.opened(project: project.name)).post()
+			return
+		}
 		searchText = ""
 		filter = .all
-		mode = .environment(request.location.environment)
-		selectedKey = request.location.key
+		environmentViewMode = .table
+		mode = .environment(store.selectedEnvironment)
+		selectedKey = location.key
 		showsInspector = true
-		store.valueSearch.finishOpening(request)
+		AccessibilityNotification.Announcement(ValueSearchWording.opened(location, projectName: project.name)).post()
 	}
 
 	/// Copies a value of an unsaved edit whose project or key is gone.

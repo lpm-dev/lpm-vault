@@ -10,8 +10,11 @@ import Testing
 ///     VALUE_SEARCH_BENCHMARKS=1 VALUE_SEARCH_BENCH_MODE=scan swift test --skip-build --filter ValueSearchBenchmarkTests
 ///     VALUE_SEARCH_BENCHMARKS=1 VALUE_SEARCH_BENCH_MODE=all swift test --skip-build --filter ValueSearchBenchmarkTests
 ///
-/// `scan` runs the search as the app does, one project at a time; `all`
-/// holds every project's values at once, as a search that loaded them all would.
+/// Both modes do the same work, a scan for reused values and then a search
+/// for values that contain one shared value, whose hits are kept as the
+/// model keeps them. `scan` reads one project at a time, as the app does;
+/// `all` first holds every project's values at once, as a search that loaded
+/// them all would. Payloads are decoded as a Keychain read decodes them.
 @Suite(
 	"Value search benchmarks",
 	.serialized,
@@ -26,45 +29,41 @@ struct ValueSearchBenchmarkTests {
 	@Test("peak memory of a search over many large projects")
 	func peakMemory() async throws {
 		let mode = Self.environment["VALUE_SEARCH_BENCH_MODE"] ?? "scan"
-		let source = GeneratedProjectsSource(environments: Self.environments, keysPerEnvironment: Self.keysPerEnvironment)
+		let generated = GeneratedProjectsSource(environments: Self.environments, keysPerEnvironment: Self.keysPerEnvironment)
 		let targets = (0..<Self.projectCount).map { index in
 			ValueSearchTarget(id: "p\(index)", name: "Project \(index)",
 				account: ValueSearchAccount(account: .personal, name: "Personal vault"), environments: Self.environments)
 		}
-		let payloadBytes = source.payload(of: "p0").count
+		let payloadBytes = generated.payload(of: "p0").count
 		let residentBefore = residentBytes()
+		let peakBefore = peakRSSBytes()
 		let clock = ContinuousClock()
 		let started = clock.now
-		var groups = 0
-		var hits = 0
-		switch mode {
-		case "all":
-			var all: [VaultProject] = []
+		let source: any ValueSearchSource
+		if mode == "all" {
+			var held: [String: VaultProject] = [:]
 			for target in targets {
-				if case .success(let project?) = await source.withValues(of: target.id, { $0 }) { all.append(project) }
+				if case .success(let project?) = await generated.withValues(of: target.id, { $0 }) { held[target.id] = project }
 			}
-			var seen: [ExactText: Int] = [:]
-			for project in all {
-				for values in project.environments.values {
-					for value in values.values { seen[ExactText(value), default: 0] += 1 }
-				}
-			}
-			groups = seen.values.lazy.filter { $0 > 1 }.count
-			hits = all.count
-		default:
-			let reuse = try #require(await ValueSearchScan.reuse(in: targets, from: source, secrecy: { _ in .none }) { _ in true })
-			groups = reuse.groups.count
-			let matcher = try #require(ValueMatcher(term: GeneratedProjectsSource.sharedValue(key: 0), findsContainingValues: true))
-			await ValueSearchScan.find(matcher, in: targets, from: source) { _, outcome in
-				if case .searched(let found) = outcome { hits += found.count }
-				return true
-			}
+			source = InMemoryValueSearchSource(projects: held)
+		} else {
+			source = generated
+		}
+		let reuse = try #require(await ValueSearchScan.reuse(in: targets, from: source, secrecy: { _ in .none }) { _ in true })
+		let matcher = try #require(ValueMatcher(term: GeneratedProjectsSource.sharedValue(key: 0), findsContainingValues: true))
+		var find = ValueSearchModel.Find(scope: .account, accountName: "Personal vault", findsContainingValues: true, order: targets.map(\.id))
+		await ValueSearchScan.find(matcher, in: targets, from: source) { index, outcome in
+			if case .searched(let found) = outcome { find.add(found, from: targets[index].id) }
+			return true
 		}
 		let elapsed = started.duration(to: clock.now)
 		let peak = peakRSSBytes()
+		// ru_maxrss is the process's lifetime peak: a run that never passed
+		// the peak before it began rose by no more than that peak allows.
+		let rise = peak > peakBefore ? "\(peak - residentBefore)" : "<=\(peakBefore - residentBefore)"
 		print("VALUE_SEARCH_BENCH mode=\(mode) projects=\(Self.projectCount) values=\(Self.projectCount * Self.environments.count * Self.keysPerEnvironment) "
-			+ "payload_bytes_per_project=\(payloadBytes) resident_before=\(residentBefore) peak_rss=\(peak) "
-			+ "peak_over_baseline=\(peak - residentBefore) groups=\(groups) hits=\(hits) elapsed=\(elapsed)")
+			+ "payload_bytes_per_project=\(payloadBytes) resident_before=\(residentBefore) peak_before=\(peakBefore) peak_rss=\(peak) "
+			+ "peak_over_baseline=\(rise) groups=\(reuse.groups.count) hits=\(find.hits.count) elapsed=\(elapsed)")
 	}
 }
 
@@ -96,13 +95,9 @@ private struct GeneratedProjectsSource: ValueSearchSource {
 	}
 
 	func withValues<T>(of projectID: String, _ body: (VaultProject) -> T) async -> Result<T?, KeychainError> {
-		guard let decoded = try? JSONDecoder().decode(Payload.self, from: payload(of: projectID)) else { return .failure(.encodingFailed) }
-		return .success(body(VaultProject(id: projectID, name: projectID, path: "", environments: decoded.environments)))
+		guard let environments = try? KeychainService.decodeEnvironments(payload(of: projectID)) else { return .failure(.encodingFailed) }
+		return .success(body(VaultProject(id: projectID, name: projectID, path: "", environments: environments)))
 	}
-}
-
-private struct Payload: Decodable {
-	let environments: [String: [String: String]]
 }
 
 private struct SeededGenerator: RandomNumberGenerator {

@@ -95,6 +95,32 @@ struct ValueSearchMatchingTests {
 		#expect(contains.match("p4ssw0rd") == nil)
 	}
 
+	@Test("a value that contains the term is found wherever the term starts in it, overlaps and repeats included")
+	func containsFindsEveryStart() throws {
+		var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+		func next(_ bound: Int) -> Int {
+			state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+			return Int((state >> 33) % UInt64(bound))
+		}
+		func text(_ count: Int) -> String { String((0..<count).map { _ in next(2) == 0 ? "a" : "b" }) }
+		for _ in 0..<3_000 {
+			let term = text(8 + next(5))
+			let value = text(term.count + 1 + next(30))
+			let matcher = try #require(ValueMatcher(term: term, findsContainingValues: true))
+			#expect(matcher.match(value) == (value.contains(term) ? .contains : nil), "\(term) in \(value)")
+		}
+	}
+
+	@Test("finding values that contain the term reads each byte of a value once, however repetitive", .hangLimit)
+	func containsIsLinear() throws {
+		let half = 8 << 20
+		let term = String(repeating: "a", count: half - 1) + "b"
+		let matcher = try #require(ValueMatcher(term: term, findsContainingValues: true))
+		let repetitive = String(repeating: "a", count: half * 2)
+		#expect(matcher.match(repetitive) == nil)
+		#expect(matcher.match(repetitive + "b") == .contains)
+	}
+
 	@Test("a term shorter than eight characters never finds values that contain it")
 	func containsNeedsEightCharacters() throws {
 		#expect(!ValueMatcher.allowsContaining("1234567"))
@@ -123,14 +149,15 @@ struct ValueSearchMatchingTests {
 
 	@Test("the environments of a key with byte for byte the same value are paired in order, empty values left out")
 	func sameValueEnvironments() {
-		let matches = SameValueEnvironments.matches(
+		let matches = SameValueEnvironments(
 			["default": "s3cret", "staging": "other", "production": "s3cret", "preview": "s3cret", "test": "", "ci": ""],
 			order: ["default", "staging", "production", "preview", "test", "ci"])
-		#expect(matches["default"] == ["production", "preview"])
-		#expect(matches["production"] == ["default", "preview"])
-		#expect(matches["staging"] == nil)
-		#expect(matches["test"] == nil, "Empty values are never the same value")
-		#expect(SameValueEnvironments.matches(["default": "a\u{2000}b", "production": "a\u{2002}b"], order: ["default", "production"]).isEmpty)
+		#expect(matches.others(of: "default") == ["production", "preview"])
+		#expect(matches.others(of: "production") == ["default", "preview"])
+		#expect(matches.others(of: "staging").isEmpty)
+		#expect(matches.others(of: "test").isEmpty, "Empty values are never the same value")
+		#expect(matches.others(of: "missing").isEmpty)
+		#expect(SameValueEnvironments(["default": "a\u{2000}b", "production": "a\u{2002}b"], order: ["default", "production"]).others(of: "default").isEmpty)
 	}
 }
 
@@ -155,7 +182,7 @@ struct ValueSearchWordingTests {
 		#expect(ValueSearchWording.matchCounts(find) == "2 exact · 1 contain it")
 		#expect(ValueSearchWording.findSubtitle(find, termKept: false) == "3 places in 2 projects · from your last search. The value wasn’t kept.")
 		#expect(ValueSearchWording.strip(find: find, reuse: nil) == "Value search · 3 places in 2 projects")
-		find.skips = [ValueSearchSkip(projectID: "c", projectName: "c", account: personal, reason: .damaged)]
+		find.add(ValueSearchSkip(projectID: "c", projectName: "c", account: personal, reason: .damaged))
 		find.searched = 2
 		#expect(ValueSearchWording.findSubtitle(find, termKept: true) == "3 places in 2 projects. 1 project couldn’t be searched.")
 
@@ -168,7 +195,8 @@ struct ValueSearchWordingTests {
 			order: ["a", "b", "c", "d"], reached: 1, searched: 1, hits: [hit("a", "default", "X")], phase: .stopped)
 		#expect(ValueSearchWording.findSubtitle(stopped, termKept: true) == "Stopped after 1 of 4 projects.")
 		#expect(ValueSearchWording.stopped(unread: stopped.unread.count) == "Search stopped. 3 projects weren’t read.")
-		#expect(ValueSearchWording.resultsHeading(stopped) == "Found in the first 1 project · 1")
+		#expect(ValueSearchWording.resultsHeading(stopped) == "Found in 1 of 4 projects · 1")
+		#expect(ValueSearchWording.strip(find: stopped, reuse: nil) == "Value search · 1 place in 1 project, stopped after 1 of 4")
 	}
 
 	@Test("no matches suggests only what would read more")
@@ -177,9 +205,33 @@ struct ValueSearchWordingTests {
 			order: ["a"], reached: 1, searched: 1, phase: .finished)
 		#expect(ValueSearchWording.findSubtitle(none, termKept: true) == "Searched 1 project in Personal vault.")
 		#expect(ValueSearchWording.noMatches(none, canWidenToEveryAccount: true, canWidenToContaining: true)
-			== "This value isn’t stored in Personal vault. Try every account on this Mac, or turn on “Also find values that contain it”.")
+			== "This value isn’t stored in Personal vault. Try searching every account on this Mac, or turning on “Also find values that contain it”.")
+		#expect(ValueSearchWording.noMatches(none, canWidenToEveryAccount: false, canWidenToContaining: true)
+			== "This value isn’t stored in Personal vault. Try turning on “Also find values that contain it”.")
+		#expect(ValueSearchWording.noMatches(none, canWidenToEveryAccount: true, canWidenToContaining: false)
+			== "This value isn’t stored in Personal vault. Try searching every account on this Mac.")
 		#expect(ValueSearchWording.noMatches(none, canWidenToEveryAccount: false, canWidenToContaining: false)
 			== "This value isn’t stored in Personal vault.")
+	}
+
+	@Test("a search or scan that couldn't read every project speaks only for the ones it read")
+	func incompleteCoverage() {
+		let damaged = ValueSearchSkip(projectID: "c", projectName: "c", account: personal, reason: .damaged)
+		let two = ValueSearchModel.Find(scope: .account, accountName: "Personal vault", findsContainingValues: false,
+			order: ["a", "b", "c"], reached: 3, searched: 2, skips: [damaged], phase: .finished)
+		#expect(ValueSearchWording.noMatches(two, canWidenToEveryAccount: false, canWidenToContaining: false)
+			== "None of the 2 projects searched store this value.")
+		let one = ValueSearchModel.Find(scope: .account, accountName: "Personal vault", findsContainingValues: false,
+			order: ["a", "c"], reached: 2, searched: 1, skips: [damaged], phase: .finished)
+		#expect(ValueSearchWording.noMatches(one, canWidenToEveryAccount: false, canWidenToContaining: false)
+			== "The project searched doesn’t store this value.")
+
+		var reuse = ValueSearchModel.Reuse(scope: .account, accountName: "Personal vault", total: 3, reached: 3, compared: 3, phase: .finished)
+		#expect(ValueSearchWording.nothingReused(reuse) == "Every secret-looking value is stored under one key only.")
+		reuse.skips = [damaged]
+		reuse.compared = 2
+		#expect(ValueSearchWording.nothingReused(reuse) == "In the 2 projects compared, every secret-looking value is stored under one key only.")
+		#expect(ValueSearchWording.reuseSubtitle(reuse) == "Compared 2 projects in Personal vault. 1 project couldn’t be compared.")
 	}
 
 	@Test("a reused group is summed up without its value")
@@ -196,6 +248,8 @@ struct ValueSearchWordingTests {
 			span: .environments, isConfiguration: false)
 		#expect(ValueSearchWording.groupSummary(environments) == "a · \(ListFormatter.localizedString(byJoining: [".env.production", ".env.staging", ".env"]))")
 		#expect(ValueSearchWording.sameValue(as: ["production"]) == "Same value as .env.production.")
+		#expect(ValueSearchWording.opened(ValueLocation(projectID: "b", environment: "default", key: "PAYMENTS"), projectName: "Bravo")
+			== "Opened PAYMENTS in Bravo, .env")
 		#expect(ValueSearchWording.sameValue(as: ["default", "production"]) == "Same value as .env and .env.production.")
 		#expect(ValueSearchWording.sameValue(as: ["default", "staging", "production"])
 			== "Same value in 3 other environments: .env, .env.staging, .env.production.")
@@ -354,6 +408,22 @@ struct ValueSearchTests {
 		#expect(fixture.store.projects.filter(\.hasLoadedEnvironments).map(\.id) == ["p0"], "Only the selected project's values stay loaded")
 	}
 
+	@Test("a search's projects are named, never held: the selected one's values are lent at its turn")
+	func targetsHoldNoValues() async throws {
+		let marker = "marker-\(UUID().uuidString)"
+		let fixture = try await fixture([
+			(id: "alpha", name: "Alpha", environments: ["default": ["TOKEN": marker]]),
+			(id: "bravo", name: "Bravo", environments: ["default": ["TOKEN": marker]]),
+		], selected: "alpha")
+		defer { fixture.close() }
+		let targets = fixture.store.valueSearchTargets(everyAccount: true)
+		#expect(targets.map(\.id) == ["alpha", "bravo"])
+		#expect(!reflectedStrings(in: targets).contains { $0.contains(marker) }, "A search stalled on one read holds no other project's values")
+		let found = try await find(marker, in: fixture)
+		#expect(places(found.hits) == ["Alpha › default › TOKEN", "Bravo › default › TOKEN"])
+		#expect(fixture.source.reads == ["bravo"], "The selected project's values come from the app, not the Keychain")
+	}
+
 	@Test("projects that can't be read are listed as not searched with the reason, never left out")
 	func unreadableProjectsListed() async throws {
 		let fixture = try await fixture([
@@ -429,15 +499,50 @@ struct ValueSearchTests {
 		let running = try #require(search.task)
 		#expect(try await waitUntil { gate.held == ["second"] })
 		#expect(search.isRunning)
+		let matcher = try #require(Mirror(reflecting: search).descendant("_matcher") as? ValueMatcher)
+		#expect(matcher.match("shared") == .exact)
 
 		if trigger == "lock" { fixture.store.lock() } else { fixture.store.selectAccount(.org("acme")) }
 		#expect(search.find == nil)
 		#expect(search.term.text.isEmpty)
 		#expect(!search.isPresented)
+		#expect(matcher.match("shared") == nil, "The search waiting on a read no longer holds the term")
 		gate.open()
 		await running.value
 		#expect(search.find == nil, "The read that was under way adds nothing")
 		#expect(!search.isRunning)
+	}
+
+	@Test("locking, switching accounts or a new search lets a scan for reused values waiting on a read keep no key", arguments: ["lock", "account", "search"])
+	func reuseScanKeyGoes(trigger: String) async throws {
+		let fixture = try await fixture([
+			(id: "personal", name: "Personal", environments: ["default": ["TOKEN": "shared-secret-value"]]),
+			(id: "second", name: "Second", environments: ["default": ["TOKEN": "shared-secret-value"]]),
+		], selected: "personal", orgs: ["team": "acme"])
+		defer { fixture.close() }
+		let gate = ValueSearchReadGate()
+		fixture.keychain.beforeUnpromptedProjectRead = { gate.hold($0) }
+		let search = fixture.search
+		search.isPresented = true
+		search.startReuse()
+		let running = try #require(search.task)
+		#expect(try await waitUntil { gate.held == ["second"] })
+		let digester = try #require(Mirror(reflecting: search).descendant("reuseDigester") as? ValueDigester)
+		#expect(digester.digest("shared-secret-value") != nil)
+
+		switch trigger {
+		case "lock": fixture.store.lock()
+		case "account": fixture.store.selectAccount(.org("acme"))
+		default:
+			search.term = ExactText("shared-secret-value")
+			search.startFind()
+		}
+		#expect(digester.digest("shared-secret-value") == nil, "The digests it made link to no value")
+		#expect(search.reuse == nil)
+		fixture.keychain.beforeUnpromptedProjectRead = nil
+		gate.open()
+		await running.value
+		#expect(search.reuse == nil, "The read that was under way adds nothing")
 	}
 
 	@Test("opening a result in another account keeps the results it came from, and the term goes as the sheet closes")
@@ -460,6 +565,75 @@ struct ValueSearchTests {
 		#expect(!fixture.search.isPresented)
 		#expect(fixture.search.term.text.isEmpty)
 		#expect(fixture.search.foundEnvironments(in: "team") == ["API_TOKEN": ["staging"]])
+	}
+
+	@Test("a result in an environment added since the project was listed opens that environment once the project is read")
+	func openingNewEnvironment() async throws {
+		let fixture = try await fixture([
+			(id: "alpha", name: "Alpha", environments: ["default": ["TOKEN": "other"]]),
+			(id: "bravo", name: "Bravo", environments: ["default": ["TOKEN": "other"]]),
+		], selected: "alpha")
+		defer { fixture.close() }
+		fixture.keychain.envStorage["bravo"]?.environments["production"] = ["STRIPE_KEY": "sk_live_added_by_the_cli"]
+		fixture.search.isPresented = true
+		let found = try await find("sk_live_added_by_the_cli", in: fixture)
+		let place = try #require(found.hits.first?.place)
+		#expect(place.location == ValueLocation(projectID: "bravo", environment: "production", key: "STRIPE_KEY"))
+		fixture.search.open(place)
+		let store = fixture.store
+		#expect(try await waitUntil { store.selectedProject?.hasLoadedEnvironments == true && store.selectedProjectId == "bravo" })
+		#expect(store.selectedEnvironment == "production")
+	}
+
+	@Test("opening a result in another account asks first when unsaved changes would be discarded")
+	func openingElsewhereAsksBeforeDiscarding() async throws {
+		let fixture = try await fixture([
+			(id: "personal", name: "Personal", environments: ["default": ["TOKEN": "shared"]]),
+			(id: "team", name: "Team project", environments: ["staging": ["API_TOKEN": "shared"]]),
+		], selected: "personal", orgs: ["team": "acme"])
+		defer { fixture.close() }
+		let store = fixture.store
+		store.keyDrafts.edit(try #require(store.selectedProject), key: "TOKEN") { $0.setValue("a new value", in: "default") }
+		let search = fixture.search
+		search.isPresented = true
+		let team = try #require(try await find("shared", in: fixture, scope: .everyAccount).hits.last)
+
+		search.open(team.place)
+		#expect(store.selectedAccount == .personal, "Nothing is discarded before the person answers")
+		#expect(store.keyDrafts.draft(VaultKeyDraft.ID(projectID: "personal", key: "TOKEN")) != nil)
+		let pending = try #require(search.pendingOpen)
+		#expect(pending.accountName == "Acme")
+		search.cancelPendingOpen()
+		#expect(search.pendingOpen == nil)
+		#expect(search.isPresented)
+
+		search.open(team.place)
+		search.confirmPendingOpen()
+		#expect(store.selectedProjectId == "team")
+		#expect(store.keyDrafts.draft(VaultKeyDraft.ID(projectID: "personal", key: "TOKEN")) == nil)
+
+		let personal = try #require(search.find?.hits.first)
+		search.isPresented = true
+		search.open(personal.place)
+		#expect(search.pendingOpen == nil, "Nothing unsaved, so nothing to ask")
+		#expect(store.selectedProjectId == "personal")
+	}
+
+	@Test("a project a search couldn't read opens on its own page, where it can be repaired")
+	func openUnreadProject() async throws {
+		let fixture = try await fixture([
+			(id: "alpha", name: "Alpha", environments: ["default": ["TOKEN": "value"]]),
+			(id: "charlie", name: "Charlie", environments: ["default": ["TOKEN": "value"]]),
+		], selected: "alpha")
+		defer { fixture.close() }
+		fixture.keychain.companionRefusals["charlie"] = .damaged("a record is unreadable")
+		fixture.search.isPresented = true
+		let skip = try #require(try await find("value", in: fixture).skips.first)
+		fixture.search.openProject(of: skip)
+		#expect(fixture.store.selectedProjectId == "charlie")
+		#expect(fixture.search.openRequest?.projectID == "charlie")
+		#expect(fixture.search.openRequest?.location == nil, "No key is selected in a project that couldn't be read")
+		#expect(!fixture.search.isPresented)
 	}
 
 	@Test("a new search replaces the last one's results")
@@ -499,6 +673,11 @@ struct ValueSearchTests {
 		#expect(places(stopped.hits) == ["Alpha › default › TOKEN"])
 		#expect(Array(stopped.unread) == ["bravo", "charlie"])
 		#expect(search.canContinue)
+		search.term = ExactText("shared, edited")
+		#expect(!search.canContinue, "Continuing would search for another value than the field shows")
+		#expect(!search.fieldHoldsLastTerm)
+		search.term = ExactText("shared")
+		#expect(search.canContinue)
 
 		fixture.keychain.beforeUnpromptedProjectRead = nil
 		search.continueFind()
@@ -508,6 +687,38 @@ struct ValueSearchTests {
 		#expect(places(finished.hits) == ["Alpha › default › TOKEN", "Bravo › default › TOKEN", "Charlie › default › TOKEN"])
 		#expect(finished.reached == finished.total)
 		#expect(finished.unread.isEmpty)
+	}
+
+	@Test("continuing reads the projects a search didn't reach in its own order, even after the sidebar's changes")
+	func continueAfterReorder() async throws {
+		let fixture = try await fixture([
+			(id: "alpha", name: "Alpha", environments: ["default": ["TOKEN": "shared"]]),
+			(id: "bravo", name: "Bravo", environments: ["default": ["TOKEN": "shared"]]),
+			(id: "charlie", name: "Charlie", environments: ["default": ["TOKEN": "shared"]]),
+		], selected: "alpha")
+		defer { fixture.close() }
+		let gate = ValueSearchReadGate()
+		fixture.keychain.beforeUnpromptedProjectRead = { gate.hold($0) }
+		let search = fixture.search
+		search.isPresented = true
+		search.term = ExactText("shared")
+		search.startFind()
+		let first = try #require(search.task)
+		#expect(try await waitUntil { gate.held == ["bravo"] })
+		search.stop()
+		gate.open()
+		await first.value
+		#expect(fixture.store.moveProject(id: "charlie", relativeTo: "bravo", placement: .before))
+
+		search.continueFind()
+		let second = try #require(search.task)
+		#expect(try await waitUntil { gate.held == ["bravo", "bravo"] }, "Bravo is read first, as the search ordered it")
+		search.stop()
+		gate.open()
+		await second.value
+		let stopped = try #require(search.find)
+		#expect(Array(stopped.unread) == ["bravo", "charlie"], "Neither is counted as read, so both can be continued")
+		#expect(search.canContinue)
 	}
 
 	@Test("a project read again after the others lists its places where it belongs")
@@ -592,6 +803,99 @@ struct ValueSearchTests {
 		let groups = index.groups(of: targets)
 		#expect(groups.map(\.isConfiguration).sorted { !$0 && $1 } == [false, true])
 		#expect(index.judgedPlaces == 1 + projectCount, "The token's first place, which looks secret, then every place of the port; no value stored once")
+	}
+
+	@Test("stopping a retry once its project is read keeps what the read found, and lists the project once")
+	func stopAfterRetryRead() async throws {
+		let fixture = try await fixture([
+			(id: "alpha", name: "Alpha", environments: ["default": ["TOKEN": "shared"]]),
+			(id: "bravo", name: "Bravo", environments: ["default": ["TOKEN": "shared"]]),
+			(id: "charlie", name: "Charlie", environments: ["default": ["TOKEN": "shared"]]),
+		], selected: "alpha")
+		defer { fixture.close() }
+		fixture.keychain.unpromptedReadFailures["bravo"] = .unexpectedStatus(-25300)
+		let search = fixture.search
+		search.isPresented = true
+		let skip = try #require(try await find("shared", in: fixture).skips.first)
+		fixture.keychain.unpromptedReadFailures = [:]
+		search.retry(skip)
+		let running = try #require(search.task)
+		// Stops in the turn after Bravo's outcome is recorded, before the retry's task ends.
+		withObservationTracking { _ = search.find } onChange: {
+			DispatchQueue.main.async { MainActor.assumeIsolated { search.stop() } }
+		}
+		await running.value
+		let found = try #require(search.find)
+		#expect(found.skips.isEmpty, "Bravo was read")
+		#expect(places(found.hits) == ["Alpha › default › TOKEN", "Bravo › default › TOKEN", "Charlie › default › TOKEN"])
+		#expect(found.searched == 3)
+		#expect(found.phase == .finished)
+	}
+
+	@Test("a project deleted after a scan began isn't counted as compared")
+	func deletedProjectNotCompared() async throws {
+		let fixture = try await fixture([
+			(id: "alpha", name: "Alpha", environments: ["default": ["TOKEN": "value"]]),
+			(id: "bravo", name: "Bravo", environments: ["default": ["TOKEN": "value"]]),
+			(id: "charlie", name: "Charlie", environments: ["default": ["TOKEN": "value"]]),
+		], selected: "alpha")
+		defer { fixture.close() }
+		fixture.keychain.envStorage["charlie"] = nil
+		let reuse = try await scanForReuse(in: fixture)
+		#expect(reuse.total == 3)
+		#expect(reuse.compared == 2)
+		#expect(reuse.skips.isEmpty)
+		#expect(ValueSearchWording.reuseSubtitle(reuse) == "1 group in 2 projects. Riskiest first.")
+	}
+
+	@Test("a search stopped once its last project is read has read them all")
+	func stopAfterLastRead() async throws {
+		let fixture = try await fixture([
+			(id: "alpha", name: "Alpha", environments: ["default": ["TOKEN": "shared"]]),
+			(id: "bravo", name: "Bravo", environments: ["default": ["TOKEN": "shared"]]),
+		], selected: "alpha")
+		defer { fixture.close() }
+		let search = fixture.search
+		search.isPresented = true
+		search.term = ExactText("shared")
+		search.startFind()
+		let running = try #require(search.task)
+		Self.stopAfterLastProject(search)
+		await running.value
+		let found = try #require(search.find)
+		#expect(found.phase == .finished)
+		#expect(found.unread.isEmpty)
+		#expect(found.hits.count == 2)
+	}
+
+	/// Stops `search` in the turn after its last project's outcome is
+	/// recorded, before its task ends.
+	private static func stopAfterLastProject(_ search: ValueSearchModel) {
+		withObservationTracking { _ = search.find } onChange: {
+			DispatchQueue.main.async {
+				MainActor.assumeIsolated {
+					guard let find = search.find, find.phase == .running else { return }
+					if find.reached == find.total { search.stop() } else { stopAfterLastProject(search) }
+				}
+			}
+		}
+	}
+
+	@Test("a search's results grow by appending: earlier projects' hits aren't copied or sorted again", .hangLimit)
+	func findResultsAppend() {
+		let account = ValueSearchAccount(account: .personal, name: "Personal vault")
+		let projects = (0..<2_000).map { "p\($0)" }
+		var find = ValueSearchModel.Find(scope: .account, accountName: account.name, findsContainingValues: true, order: projects)
+		for project in projects {
+			find.add((0..<100).map { key in
+				ValueSearchHit(place: ValueSearchPlace(location: ValueLocation(projectID: project, environment: "default", key: "KEY_\(key)"),
+					projectName: project, account: account, environmentIndex: 0), match: key.isMultiple(of: 4) ? .contains : .exact)
+			}, from: project)
+		}
+		#expect(find.hits.count == 200_000)
+		#expect(find.projectCount == 2_000)
+		#expect(find.containingCount == 50_000)
+		#expect(find.hits.first?.place.location.projectID == "p0" && find.hits.last?.place.location.projectID == "p1999")
 	}
 
 	@Test("a scan of many large projects groups in one pass", .hangLimit)

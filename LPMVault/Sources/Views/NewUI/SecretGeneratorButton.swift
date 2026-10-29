@@ -4,6 +4,10 @@ struct SecretGeneratorButton: View {
 	var disabled = false
 	/// Shows only the icon, for fields that also hold other controls.
 	var compact = false
+	/// Shows this text as a link instead, for a note's actions.
+	var linkTitle: String?
+	/// What VoiceOver hears it as.
+	var label = "Generate value"
 	let onGenerate: (String) -> Void
 
 	@State private var showsGenerator = false
@@ -13,7 +17,12 @@ struct SecretGeneratorButton: View {
 
 	var body: some View {
 		Button { showsGenerator.toggle() } label: {
-			if compact {
+			if let linkTitle {
+				Text(linkTitle)
+					.font(.system(size: 11, weight: .semibold))
+					.foregroundStyle(VaultPalette.accentForeground)
+					.fixedSize()
+			} else if compact {
 				Image(systemName: "sparkles")
 					.font(.system(size: 11, weight: .semibold))
 					.foregroundStyle(hovering || showsGenerator ? VaultPalette.accentDeep : VaultPalette.textTertiary)
@@ -37,11 +46,11 @@ struct SecretGeneratorButton: View {
 		}
 		.buttonStyle(.plain)
 		.disabled(disabled)
-		.opacity(compact && disabled ? 0.45 : 1)
+		.opacity((compact || linkTitle != nil) && disabled ? 0.45 : 1)
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
-		.help("Generate value")
-		.accessibilityLabel("Generate value")
+		.help(label)
+		.accessibilityLabel(label)
 		.popover(isPresented: $showsGenerator, arrowEdge: .trailing) {
 			SecretGeneratorPanel(kind: $kind, length: $length) {
 				guard !disabled else { return }

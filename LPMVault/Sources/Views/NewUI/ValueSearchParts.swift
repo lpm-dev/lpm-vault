@@ -5,8 +5,8 @@ import SwiftUI
 enum ValueSearchWording {
 	static let findIntro = "Type or paste a value to see every place LPM Vault stores it. The value isn’t shown, saved or remembered."
 	static let reuseIntro = "Values stored under more than one key. Values are never shown."
-	static let findCoverage = "Searches the values LPM Vault stores. Personal overrides, .env files on disk and values already on platforms aren’t searched."
-	static let reuseCoverage = "Compares the values LPM Vault stores. Personal overrides, .env files on disk and values already on platforms aren’t compared."
+	static let findCoverage = "Searches stored values only — not personal overrides, .env files or platforms."
+	static let reuseCoverage = "Compares stored values only — not personal overrides, .env files or platforms."
 	static let containsOption = "Also find values that contain it"
 	static let containsMinimum = "· \(ValueMatcher.minimumContainedCharacters) characters or more"
 
@@ -15,10 +15,11 @@ enum ValueSearchWording {
 		accountName.map { "in \($0)" } ?? "on this Mac"
 	}
 
+	/// A choice of the scope menu, which follows "Search in": "Personal vault" or "Every account".
 	static func scopeOption(_ scope: ValueSearchModel.Scope, accountName: String) -> String {
 		switch scope {
-		case .account: "This account — \(accountName)"
-		case .everyAccount: "Every account on this Mac"
+		case .account: accountName
+		case .everyAccount: "Every account"
 		}
 	}
 
@@ -68,7 +69,7 @@ enum ValueSearchWording {
 	static func resultsHeading(_ find: ValueSearchModel.Find) -> String {
 		switch find.phase {
 		case .running: "Found so far · \(find.hits.count)"
-		case .stopped: "Found in the first \(find.reached.counted("project")) · \(find.hits.count)"
+		case .stopped: "Found in \(find.reached) of \(find.total.counted("project")) · \(find.hits.count)"
 		case .finished: find.hits.count.counted("place")
 		}
 	}
@@ -76,15 +77,22 @@ enum ValueSearchWording {
 	/// "5 exact · 2 contain it", when the search found values that contain the term.
 	static func matchCounts(_ find: ValueSearchModel.Find) -> String? {
 		guard find.findsContainingValues else { return nil }
-		let contained = find.hits.lazy.filter { $0.match == .contains }.count
-		return "\(find.hits.count - contained) exact · \(contained) contain it"
+		return "\(find.hits.count - find.containingCount) exact · \(find.containingCount) contain it"
 	}
 
+	/// What a search that found nothing says. With projects it couldn't
+	/// read, it speaks only for the ones it read.
 	static func noMatches(_ find: ValueSearchModel.Find, canWidenToEveryAccount: Bool, canWidenToContaining: Bool) -> String {
 		var tries: [String] = []
-		if find.scope == .account, canWidenToEveryAccount { tries.append("every account on this Mac") }
-		if canWidenToContaining, !find.findsContainingValues { tries.append("turn on “\(containsOption)”") }
-		let stored = "This value isn’t stored \(scope(find.accountName))."
+		if find.scope == .account, canWidenToEveryAccount { tries.append("searching every account on this Mac") }
+		if canWidenToContaining, !find.findsContainingValues { tries.append("turning on “\(containsOption)”") }
+		let stored = if find.skips.isEmpty {
+			"This value isn’t stored \(scope(find.accountName))."
+		} else if find.searched == 1 {
+			"The project searched doesn’t store this value."
+		} else {
+			"None of the \(find.searched) projects searched store this value."
+		}
 		return tries.isEmpty ? stored : "\(stored) Try \(tries.joined(separator: ", or "))."
 	}
 
@@ -116,11 +124,18 @@ enum ValueSearchWording {
 		case .running: return reuseIntro
 		case .stopped: return "Scan stopped after \(reuse.reached) of \(reuse.total.counted("project"))."
 		case .finished:
-			let compared = reuse.total - reuse.skips.count
 			let unread = reuse.skips.isEmpty ? "" : " \(couldNot(reuse.skips.count, "compared"))"
-			if reuse.reported.isEmpty { return "Compared \(compared.counted("project")) \(scope(reuse.accountName)).\(unread)" }
-			return "\(reuse.reported.count.counted("group")) in \(compared.counted("project")).\(reuse.skips.isEmpty ? " Riskiest first." : unread)"
+			if reuse.reported.isEmpty { return "Compared \(reuse.compared.counted("project")) \(scope(reuse.accountName)).\(unread)" }
+			return "\(reuse.reported.count.counted("group")) in \(reuse.compared.counted("project")).\(reuse.skips.isEmpty ? " Riskiest first." : unread)"
 		}
+	}
+
+	/// What a scan that found nothing reused says. With projects it couldn't
+	/// read, it speaks only for the ones it compared.
+	static func nothingReused(_ reuse: ValueSearchModel.Reuse) -> String {
+		reuse.skips.isEmpty
+			? "Every secret-looking value is stored under one key only."
+			: "In the \(reuse.compared.counted("project")) compared, every secret-looking value is stored under one key only."
 	}
 
 	static func idleReuse(projects: Int, accountName: String?) -> String {
@@ -139,10 +154,10 @@ enum ValueSearchWording {
 		guard let reuse else { return "Values are compared one project at a time and never kept." }
 		switch reuse.phase {
 		case .running: return "Values are compared one project at a time and never kept."
-		case .stopped: return "Groups appear only when a scan finishes."
+		case .stopped: return "Nothing from a stopped scan is kept. Scan again to compare every project."
 		case .finished:
 			if !reuse.skips.isEmpty { return "Fix a project and scan again to include it." }
-			if reuse.reported.isEmpty { return "All \(reuse.total.counted("project")) were compared." }
+			if reuse.reported.isEmpty { return "All \(reuse.compared.counted("project")) were compared." }
 			return "Click a key to open it. Groups stay until you lock, switch account or scan again."
 		}
 	}
@@ -214,6 +229,16 @@ enum ValueSearchWording {
 		return parts.joined(separator: ", ")
 	}
 
+	/// What VoiceOver hears once a result opens: "Opened PAYMENTS in Bravo, .env".
+	static func opened(_ location: ValueLocation, projectName: String) -> String {
+		"Opened \(location.key) in \(projectName), \(VaultProject.displayName(for: location.environment))"
+	}
+
+	/// What VoiceOver hears once a project a search couldn't read opens.
+	static func opened(project name: String) -> String {
+		"Opened \(name)"
+	}
+
 	static func reason(_ reason: ValueSearchSkip.Reason) -> String {
 		switch reason {
 		case .newerVersion: "Made with a newer LPM version. Update LPM Vault to read it."
@@ -221,7 +246,6 @@ enum ValueSearchWording {
 		case .unfinished: "An interrupted change to its newer data wasn’t finished."
 		case .unchecked: "Its newer data couldn’t be checked."
 		case .unreadable: "The Keychain couldn’t read it."
-		case .notReached: "The search stopped before reading it."
 		}
 	}
 
@@ -237,11 +261,11 @@ enum ValueSearchWording {
 	static func strip(find: ValueSearchModel.Find?, reuse: ValueSearchModel.Reuse?) -> String? {
 		if let find, find.phase != .running {
 			if find.hits.isEmpty { return "Value search · no matches in \(find.searched.counted("project"))" }
-			let range = find.phase == .stopped ? "the first \(find.reached.counted("project"))" : find.projectCount.counted("project")
-			return "Value search · \(find.hits.count.counted("place")) in \(range)"
+			let places = "Value search · \(find.hits.count.counted("place")) in \(find.projectCount.counted("project"))"
+			return find.phase == .stopped ? "\(places), stopped after \(find.reached) of \(find.total)" : places
 		}
 		if let reuse, reuse.phase == .finished {
-			return "Reused values · \(reuse.reported.count.counted("group")) in \((reuse.total - reuse.skips.count).counted("project"))"
+			return "Reused values · \(reuse.reported.count.counted("group")) in \(reuse.compared.counted("project"))"
 		}
 		return nil
 	}
@@ -271,27 +295,30 @@ struct ValueSearchPlaceRow: View {
 
 	@State private var hovering = false
 
-	private var canOpen: Bool { store.valueSearch.canOpen(place) }
-
 	var body: some View {
+		let canOpen = store.valueSearch.canOpen(place)
 		Button { store.valueSearch.open(place, group: group) } label: {
 			HStack(spacing: 7) {
 				VaultProjectIconView(appearance: store.projectIcons.appearance(for: place.location.projectID), size: 16)
 				VStack(alignment: .leading, spacing: 1) {
 					HStack(spacing: 7) {
+						// The project and key share what an environment's name, at most 140 points, leaves.
 						Text(place.projectName)
 							.font(.system(size: 13))
 							.foregroundStyle(VaultPalette.textPrimary)
 							.lineLimit(1)
 							.truncationMode(.middle)
-							.layoutPriority(0)
+							.layoutPriority(1)
 						separator
 						VaultEnvSwatch(color: VaultPalette.environment(place.environmentIndex))
 						Text(VaultProject.displayName(for: place.location.environment))
 							.font(VaultTypography.tabular(13))
 							.foregroundStyle(VaultPalette.textSecondary)
 							.lineLimit(1)
+							.truncationMode(.middle)
+							.frame(maxWidth: 140, alignment: .leading)
 							.fixedSize()
+							.layoutPriority(2)
 						separator
 						Text(place.location.key)
 							.font(VaultTypography.tabular(13, .semibold))
@@ -335,6 +362,7 @@ struct ValueSearchPlaceRow: View {
 		Text("›")
 			.font(.system(size: 12))
 			.foregroundStyle(VaultPalette.textTertiary)
+			.fixedSize()
 			.accessibilityHidden(true)
 	}
 }
@@ -405,9 +433,12 @@ struct ReusedValueGroupCard: View {
 			.accessibilityLabel(ValueSearchWording.groupSpoken(group))
 			.accessibilityAddTraits(.isHeader)
 			VaultHairline(color: VaultPalette.border)
-			ForEach(Array(group.places.enumerated()), id: \.element.id) { index, place in
-				if index > 0 { VaultHairline(color: VaultPalette.rowDivider) }
-				ValueSearchPlaceRow(store: store, place: place, showsAccount: showsAccount, group: group.id)
+			// A group can hold thousands of places; only those on screen are made.
+			LazyVStack(spacing: 0) {
+				ForEach(group.places) { place in
+					if place.id != group.places.first?.id { VaultHairline(color: VaultPalette.rowDivider) }
+					ValueSearchPlaceRow(store: store, place: place, showsAccount: showsAccount, group: group.id)
+				}
 			}
 		}
 		.accessibilityElement(children: .contain)
@@ -418,6 +449,8 @@ struct ReusedValueGroupCard: View {
 struct ValueSearchSkipRow: View {
 	@Bindable var store: VaultStore
 	let skip: ValueSearchSkip
+	/// What VoiceOver says of it: "not searched", or "not compared" in a scan for reused values.
+	var unreadAs = "not searched"
 	/// Whether a project that couldn't be read can be read again now.
 	var canRetry: Bool
 	let onCheckForUpdates: () -> Void
@@ -436,7 +469,7 @@ struct ValueSearchSkipRow: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 			.accessibilityElement(children: .ignore)
-			.accessibilityLabel("\(skip.projectName), not searched: \(ValueSearchWording.reason(skip.reason))")
+			.accessibilityLabel("\(skip.projectName), \(unreadAs): \(ValueSearchWording.reason(skip.reason))")
 			Spacer(minLength: 8)
 			action
 		}
@@ -457,8 +490,6 @@ struct ValueSearchSkipRow: View {
 			link("Open") { openProject() }
 		case .unchecked, .unreadable:
 			if canRetry { link("Try Again") { store.valueSearch.retry(skip) } }
-		case .notReached:
-			EmptyView()
 		}
 	}
 

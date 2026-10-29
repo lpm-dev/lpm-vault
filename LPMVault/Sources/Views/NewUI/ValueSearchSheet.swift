@@ -20,10 +20,10 @@ struct ValueSearchSheet: View {
 		VStack(alignment: .leading, spacing: 0) {
 			header
 			VStack(alignment: .leading, spacing: 14) {
-				HStack(spacing: 10) {
+				HStack(spacing: 8) {
 					modePicker
 					Spacer(minLength: 8)
-					scopePicker(label: search.mode == .find ? "Search" : "Compare")
+					if hasOtherAccounts { scopePicker(label: search.mode == .find ? "Search in" : "Compare in") }
 				}
 				if search.mode == .find { findControls }
 			}
@@ -49,11 +49,22 @@ struct ValueSearchSheet: View {
 		}
 		.frame(width: 560, height: 600)
 		.background(VaultPalette.content)
-		.onAppear { fieldFocused = search.mode == .find && !search.isRunning }
+		.onAppear { fieldFocused = search.mode == .find }
 		.onDisappear { search.sheetClosed() }
 		.onChange(of: search.mode) { _, mode in fieldFocused = mode == .find }
 		.onChange(of: search.find?.phase) { _, phase in announceFind(phase) }
 		.onChange(of: search.reuse?.phase) { _, phase in announceReuse(phase) }
+		.vaultConfirmation(item: Binding(get: { search.pendingOpen }, set: { if $0 == nil { search.cancelPendingOpen() } })) { pending in
+			VaultConfirmation(
+				symbol: "exclamationmark.triangle",
+				title: "Discard your unsaved changes?",
+				message: "Opening \(pending.name) switches to \(pending.accountName), which discards the changes you haven’t saved.",
+				subject: VaultConfirmation.Subject(
+					mark: .project(store.projectIcons.appearance(for: pending.projectID)),
+					name: store.projects.first { $0.id == pending.projectID }?.name ?? pending.name, detail: pending.accountName),
+				cancelTitle: "Keep Editing",
+				actions: [.init(title: "Discard and Open", perform: search.confirmPendingOpen)])
+		}
 	}
 
 	// MARK: - Header and controls
@@ -81,37 +92,14 @@ struct ValueSearchSheet: View {
 	}
 
 	private var modePicker: some View {
-		HStack(spacing: 2) {
-			modeButton("Find a value", .find)
-			modeButton("Reused values", .reuse)
+		Picker("Search for", selection: Binding(get: { search.mode }, set: { search.mode = $0 })) {
+			Text("Find a value").tag(ValueSearchModel.Mode.find)
+			Text("Reused values").tag(ValueSearchModel.Mode.reuse)
 		}
-		.padding(2)
-		.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.neutralTint))
+		.pickerStyle(.segmented)
+		.labelsHidden()
 		.fixedSize()
 		.disabled(search.isRunning)
-		.accessibilityElement(children: .contain)
-		.accessibilityLabel("Search for")
-	}
-
-	private func modeButton(_ title: String, _ mode: ValueSearchModel.Mode) -> some View {
-		let selected = search.mode == mode
-		return Button { search.mode = mode } label: {
-			Text(title)
-				.font(.system(size: 12, weight: selected ? .semibold : .regular))
-				.foregroundStyle(selected ? VaultPalette.textPrimary : VaultPalette.textSecondary)
-				.padding(.horizontal, 10)
-				.frame(height: 22)
-				.background {
-					if selected {
-						RoundedRectangle(cornerRadius: 5)
-							.fill(VaultPalette.content)
-							.shadow(color: VaultPalette.shadow.opacity(0.12), radius: 1, y: 1)
-					}
-				}
-				.contentShape(Rectangle())
-		}
-		.buttonStyle(.plain)
-		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 
 	private var findControls: some View {
@@ -128,7 +116,6 @@ struct ValueSearchSheet: View {
 					placeholder: "Paste a value",
 					isSecure: true,
 					font: .systemFont(ofSize: 12.5),
-					isEnabled: !search.isRunning,
 					recordsUndo: false,
 					onSubmit: submit
 				)
@@ -136,7 +123,6 @@ struct ValueSearchSheet: View {
 			.padding(.horizontal, 9)
 			.frame(height: 28)
 			.vaultInputField(focused: fieldFocused)
-			.opacity(search.isRunning ? 0.6 : 1)
 			containsOption
 		}
 	}
@@ -149,32 +135,45 @@ struct ValueSearchSheet: View {
 				set: { search.findsContainingValues = $0 }))
 				.toggleStyle(.checkbox)
 				.labelsHidden()
-			Text(ValueSearchWording.containsOption)
-				.font(.system(size: 12.5))
-				.foregroundStyle(VaultPalette.textPrimary)
-				.accessibilityHidden(true)
-			Text(ValueSearchWording.containsMinimum)
-				.font(.system(size: 11.5))
-				.foregroundStyle(VaultPalette.textTertiary)
-				.accessibilityHidden(true)
+			// A checkbox toggles on its title too; VoiceOver hears the checkbox's own.
+			Button { search.findsContainingValues.toggle() } label: {
+				HStack(spacing: 7) {
+					Text(ValueSearchWording.containsOption)
+						.font(.system(size: 12.5))
+						.foregroundStyle(VaultPalette.textPrimary)
+					Text(ValueSearchWording.containsMinimum)
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+				}
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHidden(true)
 		}
 		.disabled(search.isRunning || !allowed)
 		.opacity(search.isRunning || !allowed ? 0.6 : 1)
 		.fixedSize()
 	}
 
-	/// Which accounts the search reads; the menu's choices say it, and
-	/// VoiceOver hears what it's for as its name.
+	/// Which accounts the search reads, offered only to someone in an
+	/// organization: for anyone else, every account is the one they have.
 	private func scopePicker(label: String) -> some View {
-		VaultMenuField(
-			title: "\(label) in",
-			options: [ValueSearchModel.Scope.account, .everyAccount].map {
-				VaultMenuOption(value: $0, label: ValueSearchWording.scopeOption($0, accountName: accountName))
-			},
-			selection: Binding(get: { search.scope }, set: { if let scope = $0 { search.scope = scope } }),
-			disabled: search.isRunning
-		)
-		.frame(minWidth: 170, maxWidth: 240)
+		HStack(spacing: 7) {
+			Text(label)
+				.font(.system(size: 12))
+				.foregroundStyle(VaultPalette.textSecondary)
+				.fixedSize()
+				.accessibilityHidden(true)
+			VaultMenuField(
+				title: label,
+				options: [ValueSearchModel.Scope.account, .everyAccount].map {
+					VaultMenuOption(value: $0, label: ValueSearchWording.scopeOption($0, accountName: accountName))
+				},
+				selection: Binding(get: { search.scope }, set: { if let scope = $0 { search.scope = scope } }),
+				disabled: search.isRunning
+			)
+			.frame(minWidth: 170, maxWidth: 230)
+		}
 	}
 
 	// MARK: - Finding a value
@@ -213,8 +212,8 @@ struct ValueSearchSheet: View {
 			ValueSearchSectionHeading(title: ValueSearchWording.resultsHeading(find), detail: ValueSearchWording.matchCounts(find))
 			ValueSearchCard {
 				LazyVStack(spacing: 0) {
-					ForEach(Array(find.hits.enumerated()), id: \.element.id) { index, hit in
-						if index > 0 { VaultHairline(color: VaultPalette.rowDivider) }
+					ForEach(find.hits) { hit in
+						if hit.id != find.hits.first?.id { VaultHairline(color: VaultPalette.rowDivider) }
 						ValueSearchPlaceRow(store: store, place: hit.place, match: hit.match, showsAccount: find.scope == .everyAccount)
 					}
 				}
@@ -280,7 +279,7 @@ struct ValueSearchSheet: View {
 				}
 				.accessibilityElement(children: .combine)
 				Spacer(minLength: 8)
-				Button(showsUnread ? "Hide List" : "Show List") { showsUnread.toggle() }
+				Button(showsUnread ? "Hide Projects" : "Show Projects") { showsUnread.toggle() }
 					.buttonStyle(.plain)
 					.font(.system(size: 12, weight: .semibold))
 					.foregroundStyle(VaultPalette.accentForeground)
@@ -322,8 +321,7 @@ struct ValueSearchSheet: View {
 				emptyState(symbol: "stop.circle", title: "Scan stopped", detail: "Groups appear only when a scan finishes.")
 			case .finished:
 				if reuse.reported.isEmpty {
-					emptyState(symbol: "checkmark.circle", title: "Nothing reused",
-						detail: "Every secret-looking value is stored under one key only.")
+					emptyState(symbol: "checkmark.circle", title: "Nothing reused", detail: ValueSearchWording.nothingReused(reuse))
 				} else {
 					ForEach([ReusedValueGroup.Span.projects, .environments, .environment], id: \.self) { span in
 						groupSection(span, groups: reuse.reported.filter { $0.span == span }, scope: reuse.scope)
@@ -396,7 +394,7 @@ struct ValueSearchSheet: View {
 				ValueSearchCard {
 					ForEach(Array(reuse.skips.enumerated()), id: \.element.id) { index, skip in
 						if index > 0 { VaultHairline(color: VaultPalette.rowDivider) }
-						ValueSearchSkipRow(store: store, skip: skip, canRetry: false, onCheckForUpdates: checkForUpdates)
+						ValueSearchSkipRow(store: store, skip: skip, unreadAs: "not compared", canRetry: false, onCheckForUpdates: checkForUpdates)
 					}
 				}
 			}
@@ -495,7 +493,7 @@ struct ValueSearchSheet: View {
 				}
 			}
 			if hasTerm {
-				VaultBarButton(title: "Search Again", height: 28, action: submit)
+				VaultBarButton(title: search.fieldHoldsLastTerm ? "Search Again" : "Search", height: 28, action: submit)
 			} else {
 				VaultBarButton(title: "Clear Results", height: 28) { search.clearResults() }
 			}

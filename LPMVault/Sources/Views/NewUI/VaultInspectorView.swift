@@ -16,6 +16,8 @@ struct VaultInspectorView: View {
 	let onRenamed: (_ key: String, _ newKey: String) -> Void
 	/// Opens the key's rules on the Schema page, declaring it first when it can be.
 	var onOpenRules: (_ key: String) -> Void = { _ in }
+	/// Finds where the stored value of the key in an environment is used.
+	var onFindValue: (_ key: String, _ environment: String) -> Void = { _, _ in }
 
 	var body: some View {
 		Group {
@@ -33,7 +35,8 @@ struct VaultInspectorView: View {
 					onDelete: onDelete,
 					onAddElsewhere: onAddElsewhere,
 					onRenamed: onRenamed,
-					onOpenRules: onOpenRules
+					onOpenRules: onOpenRules,
+					onFindValue: onFindValue
 				)
 				// Reveal and focus state belong to one key in one view of the project.
 				.id(VaultKeyEditor.Identity(projectID: project.id, key: key, environment: store.selectedEnvironment, singleEnvironment: singleEnvironment))
@@ -105,6 +108,7 @@ private struct VaultKeyEditor: View {
 	let onAddElsewhere: (String, String) -> Void
 	let onRenamed: (String, String) -> Void
 	let onOpenRules: (String) -> Void
+	let onFindValue: (String, String) -> Void
 
 	@State private var revealedEnvironments: Set<String> = []
 	/// Whether the key looks secret, by its rules, its name and its stored
@@ -435,7 +439,7 @@ private struct VaultKeyEditor: View {
 			let sameValues = sameValueEnvironments(draft, cards: cards)
 			ForEach(cards, id: \.self) { environment in
 				card(environment, draft: draft, cards: cards, problem: checks.reason(for: checkedKey, in: environment),
-					sameAs: sameValues[environment] ?? [])
+					sameAs: sameValues.others(of: environment))
 			}
 			addRows(addable, draft: draft, checks: checks)
 		}
@@ -468,15 +472,16 @@ private struct VaultKeyEditor: View {
 	/// For each environment, the others whose value of a secret-looking key
 	/// is exactly the same: what each card shows, and what the environments
 	/// without a card store.
-	private func sameValueEnvironments(_ draft: VaultKeyDraft?, cards: [String]) -> [String: [String]] {
-		guard looksSecret else { return [:] }
+	private func sameValueEnvironments(_ draft: VaultKeyDraft?, cards: [String]) -> SameValueEnvironments {
+		guard looksSecret else { return .none }
+		let shown = Set(cards)
 		var values: [String: String] = [:]
 		for environment in environments {
 			if draft?.orphanedEnvironments.contains(environment) == true { continue }
-			values[environment] = cards.contains(environment)
+			values[environment] = shown.contains(environment)
 				? currentValue(in: environment, draft: draft) : project.value(for: key, in: environment)
 		}
-		return SameValueEnvironments.matches(values, order: environments)
+		return SameValueEnvironments(values, order: environments)
 	}
 
 	private func card(
@@ -511,8 +516,15 @@ private struct VaultKeyEditor: View {
 						.font(.system(size: 11, weight: .medium))
 						.foregroundStyle(VaultPalette.greenTintText)
 				}
-				VaultInspectorFindButton(label: "Find where the \(displayName) value is used") {
-					store.valueSearch.findStoredValue(of: key, in: environment)
+				let showsSaved = isStored(currentValue(in: environment, draft: draft), in: environment)
+				VaultRowIconButton(
+					systemImage: "binoculars",
+					help: showsSaved ? "Find where the \(displayName) value is used" : "Save or discard the edit to find where the \(displayName) value is used",
+					label: "Find where the \(displayName) value is used",
+					disabled: !showsSaved || !store.canUseLocalSecrets,
+					compact: true
+				) {
+					onFindValue(key, environment)
 				}
 				.hidden(project.value(for: key, in: environment)?.isEmpty != false)
 			}
@@ -669,10 +681,13 @@ private struct VaultKeyEditor: View {
 	}
 
 	/// A secret-looking value another environment holds too: where else it's
-	/// used, and a new value for this environment.
+	/// used, and a new value for this environment, unless it's an address,
+	/// such as a database URL, whose password is what to change.
 	private func sameValueNote(_ environment: String, as others: [String], draft: VaultKeyDraft?, disabled: Bool) -> some View {
 		let text = ValueSearchWording.sameValue(as: others)
-		let isSaved = isStored(currentValue(in: environment, draft: draft), in: environment)
+		let value = currentValue(in: environment, draft: draft)
+		let isSaved = isStored(value, in: environment)
+		let displayName = VaultProject.displayName(for: environment)
 		return VStack(alignment: .leading, spacing: 4) {
 			HStack(alignment: .firstTextBaseline, spacing: 5) {
 				Image(systemName: "exclamationmark.triangle")
@@ -686,14 +701,18 @@ private struct VaultKeyEditor: View {
 			.accessibilityLabel("Warning: \(text.prefix(1).lowercased() + text.dropFirst())")
 			HStack(spacing: 14) {
 				if isSaved {
-					cardAction("Show where") { store.valueSearch.findStoredValue(of: key, in: environment) }
-						.accessibilityLabel("Show where the \(VaultProject.displayName(for: environment)) value is used")
+					cardAction("Show where") { onFindValue(key, environment) }
+						.accessibilityLabel("Show where the \(displayName) value is used")
 				}
-				cardAction("Generate new") {
-					edit { $0.setValue(SecretValueGenerator.generate(.base64, length: SecretValueGenerator.defaultLength), in: environment) }
+				if !Self.isAddress(value) {
+					SecretGeneratorButton(
+						disabled: disabled || !store.canUseLocalSecrets,
+						linkTitle: "Generate new…",
+						label: "Generate new value for \(displayName)"
+					) { generated in
+						edit { $0.setValue(generated, in: environment) }
+					}
 				}
-				.disabled(disabled || !store.canUseLocalSecrets)
-				.accessibilityLabel("Generate new value for \(VaultProject.displayName(for: environment))")
 			}
 		}
 	}
@@ -716,6 +735,12 @@ private struct VaultKeyEditor: View {
 			!stored.isIgnored, stored.conflict == nil
 		else { return nil }
 		return "Declare in Schema"
+	}
+
+	/// A value with a scheme and a host, such as postgres://app:secret@db/app.
+	static func isAddress(_ value: String) -> Bool {
+		guard let components = URLComponents(string: value) else { return false }
+		return components.scheme != nil && components.host?.isEmpty == false
 	}
 
 	private func cardAction(_ title: String, action: @escaping () -> Void) -> some View {
@@ -1148,29 +1173,5 @@ struct VaultEscapeResponder: NSViewRepresentable {
 			window.makeFirstResponder(self)
 			return true
 		}
-	}
-}
-
-/// A small icon button in an inspector card's header.
-private struct VaultInspectorFindButton: View {
-	let label: String
-	let action: () -> Void
-
-	@State private var hovering = false
-
-	var body: some View {
-		Button(action: action) {
-			Image(systemName: "binoculars")
-				.font(.system(size: 10.5, weight: .medium))
-				.foregroundStyle(hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary)
-				.frame(width: 20, height: 20)
-				.background(RoundedRectangle(cornerRadius: 5).fill(hovering ? VaultPalette.neutralTint : .clear))
-				.contentShape(Rectangle())
-		}
-		.buttonStyle(.plain)
-		.onHover { hovering = $0 }
-		.help(label)
-		.accessibilityLabel(label)
-		.vaultPointingHand()
 	}
 }

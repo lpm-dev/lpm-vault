@@ -1400,6 +1400,8 @@ final class VaultStore {
   var isLoggingIn: Bool = false
 
   // Navigation state
+  /// The environment opening a project asked for before its values were read.
+  @ObservationIgnored private var requestedEnvironment: (projectID: String, environment: String)?
   var selectedAccount: SelectedAccount = .personal {
     didSet {
       guard oldValue != selectedAccount else { return }
@@ -1730,6 +1732,18 @@ final class VaultStore {
     resetAutoLock()
   }
 
+  /// Opens `environment` of a project. One its listing doesn't name yet,
+  /// such as one the CLI just added, opens once the project's values are read.
+  func openProject(id projectId: String, environment: String) {
+    openProject(id: projectId)
+    guard let selectedProject, selectedProject.id == projectId else { return }
+    if selectedProject.hasLoadedEnvironments || selectedProject.environmentNames.contains(environment) {
+      selectEnvironment(environment)
+    } else {
+      requestedEnvironment = (projectId, environment)
+    }
+  }
+
   /// Selects a project after switching to its owning account, and always
   /// leaves the Settings or Platforms page.
   func openProject(id projectId: String) {
@@ -1994,8 +2008,7 @@ final class VaultStore {
 
   /// The projects a value search reads, in the sidebar's order: the selected
   /// account's, or those of every account the person can open, personal
-  /// first. The selected project lends the values and rules the app holds
-  /// already; the others are read one at a time as the search reaches them.
+  /// first. The selected project lends the rules the app holds already.
   func valueSearchTargets(everyAccount: Bool) -> [ValueSearchTarget] {
     let accounts: [SelectedAccount] = everyAccount ? [.personal] + userOrgs.map { .org($0.slug) } : [selectedAccount]
     let ordered = orderedProjects
@@ -2008,7 +2021,7 @@ final class VaultStore {
           id: project.id, name: project.name, account: named,
           environments: orderedEnvironmentNames(for: project), folder: folder)
         if project.hasLoadedEnvironments {
-          target.loaded = project
+          target.isHeld = true
           if !unverifiedKeyDescriptionProjects.contains(project.id),
             let descriptions = keyDescriptions[project.id], descriptions.folder == folder, let schema = descriptions.schema
           {
@@ -2019,6 +2032,20 @@ final class VaultStore {
       }
     }
     return targets
+  }
+
+  /// Lends a value search the values of `targets` one project at a time: the
+  /// app's own for those it holds, at their turn, and the Keychain's for the others.
+  func valueSearchValues(for targets: [ValueSearchTarget]) -> HeldValueSearchSource {
+    HeldValueSearchSource(
+      heldProjectIDs: Set(targets.lazy.filter(\.isHeld).map(\.id)),
+      held: { [weak self] projectId in
+        guard let self, isUnlocked, let project = projects.first(where: { $0.id == projectId }),
+          project.hasLoadedEnvironments
+        else { return nil }
+        return project
+      },
+      others: valueSearchSource)
   }
 
   /// How many projects `valueSearchTargets(everyAccount:)` lists, without listing them.
@@ -2042,10 +2069,19 @@ final class VaultStore {
 
   private func normalizeSelectedEnvironment() {
     guard let selectedProject else {
+      requestedEnvironment = nil
       selectedEnvironment = "default"
       return
     }
     let names = orderedEnvironmentNames(for: selectedProject)
+    if let requested = requestedEnvironment, requested.projectID != selectedProject.id || selectedProject.hasLoadedEnvironments {
+      requestedEnvironment = nil
+      if requested.projectID == selectedProject.id, names.contains(requested.environment) {
+        if selectedEnvironment != requested.environment { cancelExports() }
+        selectedEnvironment = requested.environment
+        return
+      }
+    }
     if !names.contains(selectedEnvironment) {
       selectedEnvironment = names.first ?? "default"
     }

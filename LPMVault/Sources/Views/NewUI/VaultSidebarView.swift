@@ -39,6 +39,8 @@ struct VaultSidebarView: View {
 	let onDuplicateEnvironment: (VaultEnvironmentTarget) -> Void
 	let onClearEnvironment: (VaultEnvironmentTarget) -> Void
 	let onDeleteEnvironment: (VaultEnvironmentTarget) -> Void
+	/// Searches stored values for the text, false when it can't now.
+	var onFindAsValue: (String) -> Bool = { _ in false }
 	/// The project drag in progress, if any. Tests pass their own to follow it.
 	@State var reorder = VaultSidebarReorder()
 
@@ -162,7 +164,7 @@ struct VaultSidebarView: View {
 	/// field, and the search here is cleared.
 	private var findAsValue: some View {
 		Button {
-			store.valueSearch.present(searchingFor: searchText)
+			guard onFindAsValue(searchText) else { return }
 			searchText = ""
 			searchFocused = false
 		} label: {

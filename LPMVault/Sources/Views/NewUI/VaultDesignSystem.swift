@@ -477,6 +477,8 @@ struct VaultRowIconButton: View {
 	/// The button's name for accessibility, when the tooltip says more, such as a shortcut.
 	var label: String?
 	var disabled = false
+	/// Drawn smaller, for a card's header.
+	var compact = false
 	let action: () -> Void
 
 	@State private var hovering = false
@@ -484,16 +486,16 @@ struct VaultRowIconButton: View {
 	var body: some View {
 		Button(action: action) {
 			Image(systemName: systemImage)
-				.font(.system(size: 12, weight: .medium))
+				.font(.system(size: compact ? 10.5 : 12, weight: .medium))
 				.foregroundStyle(
 					hovering && !disabled
 						? (destructive ? VaultPalette.red : VaultPalette.textPrimary)
 						: VaultPalette.textTertiary
 				)
 				.opacity(disabled ? 0.45 : 1)
-				.frame(width: 26, height: 26)
+				.frame(width: compact ? 20 : 26, height: compact ? 20 : 26)
 				.background {
-					RoundedRectangle(cornerRadius: 6)
+					RoundedRectangle(cornerRadius: compact ? 5 : 6)
 						.fill(hovering && !disabled ? (destructive ? VaultPalette.redTint : VaultPalette.neutralTint) : .clear)
 				}
 		}

@@ -735,14 +735,22 @@ struct KeychainAuthenticationContextTests {
 		#expect(authentication.current() === unevaluated, "The context reads use outside the search is unchanged")
 	}
 
-	@Test("while prompts are refused, the context an unlock evaluated still answers for approval")
+	@Test("while prompts are refused, the context an unlock evaluated still answers for approval, and can't ask")
 	func unlockContextStillAnswers() {
 		let authentication = KeychainAuthenticationContext()
 		let unlock = LAContext()
 		authentication.replace(with: unlock)
 		authentication.withoutPrompts {
-			#expect(authentication.current() === unlock)
+			let reading = authentication.current()
+			#expect(reading === unlock)
+			#expect(reading.interactionNotAllowed, "What the unlock's approval doesn't cover fails instead of asking")
+			authentication.withoutPrompts {
+				#expect(authentication.current().interactionNotAllowed)
+			}
+			#expect(authentication.current().interactionNotAllowed, "An inner scope ending doesn't let the outer one ask")
 		}
+		#expect(authentication.current() === unlock)
+		#expect(!unlock.interactionNotAllowed, "Reads outside the search can ask again")
 		authentication.replace(with: nil)
 		authentication.withoutPrompts {
 			#expect(authentication.current().interactionNotAllowed, "After locking, a read that can't ask fails instead")
