@@ -374,6 +374,14 @@ actor VaultPersistenceCoordinator {
 		service.getProjectResult(vaultId: vaultId)
 	}
 
+	/// Reads one project's values for a search of many, without letting
+	/// macOS ask for approval, in a transaction of its own so the CLI waits
+	/// for one project at most.
+	func loadProjectWithoutPrompting(vaultId: String) -> Result<VaultProject?, KeychainError> {
+		guard !Task.isCancelled else { return .failure(.accessDenied) }
+		return service.getProjectResultWithoutPrompting(vaultId: vaultId)
+	}
+
 	func cliAccess(vaultId: String) -> Result<VaultCliAccess, KeychainError> {
 		service.cliAccessResult(vaultId: vaultId)
 	}
