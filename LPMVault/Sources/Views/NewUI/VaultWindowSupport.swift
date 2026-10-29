@@ -33,7 +33,11 @@ private struct VaultPrivacyProtected: ViewModifier {
 	let isObscured: Bool
 
 	func body(content: Content) -> some View {
+		// Hidden false on an ancestor makes SwiftUI read out everything its
+		// views hide themselves, such as decorative icons; a container keeps
+		// those hidden, and ignoring its children hides it all under the curtain.
 		content
+			.accessibilityElement(children: isObscured ? .ignore : .contain)
 			.accessibilityHidden(isObscured)
 			.overlay {
 				if isObscured { VaultPrivacyCurtain() }
