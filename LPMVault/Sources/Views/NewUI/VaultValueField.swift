@@ -19,6 +19,9 @@ struct VaultValueField: NSViewRepresentable {
 	/// Lines a value wraps to before it scrolls; 1 keeps it on one line.
 	var maxLines = 1
 	var isEnabled = true
+	/// Whether edits can be undone. A search term mustn't stay behind in the
+	/// window's undo history.
+	var recordsUndo = true
 	/// Return with the modifiers held, among Shift, Control, Option and Command;
 	/// true when it handled the press, which otherwise submits.
 	var onReturn: (NSEvent.ModifierFlags) -> Bool = { _ in false }
@@ -53,6 +56,7 @@ struct VaultValueField: NSViewRepresentable {
 		field.setContentHuggingPriority(.defaultLow, for: .horizontal)
 		field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 		field.stringValue = text
+		field.recordsUndo = recordsUndo
 		field.delegate = context.coordinator
 		field.onFocusChange = { [weak coordinator = context.coordinator] focused in coordinator?.focusChanged(focused) }
 		apply(to: field)
@@ -130,11 +134,13 @@ struct VaultValueField: NSViewRepresentable {
 @MainActor
 protocol ValueFieldFocus: AnyObject {
 	var onFocusChange: ((Bool) -> Void)? { get set }
+	var recordsUndo: Bool { get set }
 }
 
 extension ValueFieldFocus where Self: NSTextField {
 	func editingBegan() {
 		if let editor = currentEditor() as? NSTextView {
+			editor.allowsUndo = recordsUndo
 			editor.isAutomaticQuoteSubstitutionEnabled = false
 			editor.isAutomaticDashSubstitutionEnabled = false
 			editor.isAutomaticTextReplacementEnabled = false
@@ -154,6 +160,7 @@ extension ValueFieldFocus where Self: NSTextField {
 
 private final class PlainValueTextField: NSTextField, ValueFieldFocus {
 	var onFocusChange: ((Bool) -> Void)?
+	var recordsUndo = true
 
 	override func becomeFirstResponder() -> Bool {
 		let became = super.becomeFirstResponder()
@@ -162,6 +169,7 @@ private final class PlainValueTextField: NSTextField, ValueFieldFocus {
 	}
 
 	override func textDidEndEditing(_ notification: Notification) {
+		if !recordsUndo { (notification.object as? NSTextView)?.allowsUndo = true }
 		super.textDidEndEditing(notification)
 		onFocusChange?(false)
 	}
@@ -169,6 +177,7 @@ private final class PlainValueTextField: NSTextField, ValueFieldFocus {
 
 private final class SecureValueTextField: NSSecureTextField, ValueFieldFocus {
 	var onFocusChange: ((Bool) -> Void)?
+	var recordsUndo = true
 
 	override func becomeFirstResponder() -> Bool {
 		let became = super.becomeFirstResponder()
@@ -177,6 +186,7 @@ private final class SecureValueTextField: NSSecureTextField, ValueFieldFocus {
 	}
 
 	override func textDidEndEditing(_ notification: Notification) {
+		if !recordsUndo { (notification.object as? NSTextView)?.allowsUndo = true }
 		super.textDidEndEditing(notification)
 		onFocusChange?(false)
 	}

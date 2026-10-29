@@ -200,21 +200,47 @@ struct ProjectEnvSchemaSuggestion: Equatable, Identifiable, Sendable {
 	/// Words of a name for identifiers, whose values look random without being secret.
 	private static let identifierWords: Set<String> = ["ID", "SHA", "HASH", "COMMIT", "REVISION", "VERSION", "BUILD"]
 
+	/// Whether `value`, stored for `key`, looks secret, as the Secret
+	/// suggestion judges a key holding that one value. Empty values and keys
+	/// whose names say they're public never do. The engine checks the value's
+	/// format only when the judgment hinges on it.
+	static func looksSecret(key: String, value: String) -> Bool {
+		guard !value.isEmpty else { return false }
+		let parts = key.uppercased().split(separator: "_").map(String.init)
+		let words = Set(parts)
+		guard words.isDisjoint(with: publicWords) else { return false }
+		let values = [value]
+		return secretEvidence(parts: parts, values: values, count: 1, format: {
+			let engine = Engine(key: key, values: values, isPublic: false, clientPrefixes: [])
+			return formats(for: words, values: values).first { engine.passes(["format": .string($0.rawValue)]) }
+		}()) != nil
+	}
+
 	/// Why the key looks secret: its name says so, whatever its format; a URL
 	/// carries a password; or values without a format look random and the
 	/// name isn't an identifier's. A name ending in KEY says so only for long
-	/// values, since sort and cache keys are short words.
-	private static func secretEvidence(parts: [String], values: [String], count: Int, format: ProjectEnvSchemaRule.Format?) -> String? {
+	/// values, since sort and cache keys are short words. `format` is
+	/// evaluated at most once, and only once the values could look secret.
+	private static func secretEvidence(
+		parts: [String], values: [String], count: Int, format: @autoclosure () -> ProjectEnvSchemaRule.Format?
+	) -> String? {
 		if parts.contains(where: secretWords.contains) {
 			return "the name says it's secret"
 		}
 		if parts.count >= 2, parts.last == "KEY", values.allSatisfy({ $0.utf8.count >= 16 && !$0.contains(where: \.isWhitespace) }) {
 			return "the name says it's secret"
 		}
-		if format == .url, values.contains(where: { URLComponents(string: $0)?.password?.isEmpty == false }) {
+		var checked: ProjectEnvSchemaRule.Format??
+		func checkedFormat() -> ProjectEnvSchemaRule.Format? {
+			if let checked { return checked }
+			let found = format()
+			checked = .some(found)
+			return found
+		}
+		if values.contains(where: { URLComponents(string: $0)?.password?.isEmpty == false }), checkedFormat() == .url {
 			return count == 1 ? "the URL contains a password" : "a stored URL contains a password"
 		}
-		guard format == nil, !parts.contains(where: identifierWords.contains), values.allSatisfy(looksRandom) else { return nil }
+		guard !parts.contains(where: identifierWords.contains), values.allSatisfy(looksRandom), checkedFormat() == nil else { return nil }
 		return count == 1 ? "the value looks random" : "values look random"
 	}
 

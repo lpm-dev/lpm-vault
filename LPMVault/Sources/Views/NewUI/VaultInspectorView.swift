@@ -107,6 +107,9 @@ private struct VaultKeyEditor: View {
 	let onOpenRules: (String) -> Void
 
 	@State private var revealedEnvironments: Set<String> = []
+	/// Whether the key looks secret, by its rules, its name and its stored
+	/// values, which the same-value note needs.
+	@State private var looksSecret = false
 	/// The engine's look at each card's value that's edited, or revealed
 	/// while it holds characters that are hard to see, by environment.
 	@State private var characterInspections: [String: ValueCharacterChecker.Inspection] = [:]
@@ -128,6 +131,18 @@ private struct VaultKeyEditor: View {
 	}
 
 	private var id: VaultKeyDraft.ID { VaultKeyDraft.ID(projectID: project.id, key: key) }
+
+	/// What decides whether the key looks secret.
+	private struct SecrecyInput: Equatable {
+		let key: String
+		let values: [ExactText]
+		let schema: ProjectEnvSchemaState?
+	}
+
+	private var secrecyInput: SecrecyInput {
+		SecrecyInput(key: key, values: environments.compactMap { project.value(for: key, in: $0) }.map(ExactText.init),
+			schema: store.keyDescriptions[project.id]?.schema)
+	}
 
 	var body: some View {
 		let draft = store.keyDrafts.draft(id)
@@ -157,6 +172,10 @@ private struct VaultKeyEditor: View {
 		}
 		.background(VaultEscapeResponder(onEscape: onClose))
 		.task(id: checkInput) { await checkEdits(checkInput) }
+		.task(id: secrecyInput) {
+			let input = secrecyInput
+			looksSecret = await ValueSecrecyRules(overview: input.schema?.overview).anyLooksSecret(key: input.key, values: input.values.map(\.text))
+		}
 		.task(id: inspectedValues(draft, cards: cards).mapValues(ExactText.init)) {
 			await inspectCharacters(inspectedValues(draft, cards: cards))
 		}
@@ -413,8 +432,10 @@ private struct VaultKeyEditor: View {
 					sameValueMenu(draft, cards: cards)
 				}
 			}
+			let sameValues = sameValueEnvironments(draft, cards: cards)
 			ForEach(cards, id: \.self) { environment in
-				card(environment, draft: draft, cards: cards, problem: checks.reason(for: checkedKey, in: environment))
+				card(environment, draft: draft, cards: cards, problem: checks.reason(for: checkedKey, in: environment),
+					sameAs: sameValues[environment] ?? [])
 			}
 			addRows(addable, draft: draft, checks: checks)
 		}
@@ -444,7 +465,23 @@ private struct VaultKeyEditor: View {
 		.help("Give every environment the same value")
 	}
 
-	private func card(_ environment: String, draft: VaultKeyDraft?, cards: [String], problem: String?) -> some View {
+	/// For each environment, the others whose value of a secret-looking key
+	/// is exactly the same: what each card shows, and what the environments
+	/// without a card store.
+	private func sameValueEnvironments(_ draft: VaultKeyDraft?, cards: [String]) -> [String: [String]] {
+		guard looksSecret else { return [:] }
+		var values: [String: String] = [:]
+		for environment in environments {
+			if draft?.orphanedEnvironments.contains(environment) == true { continue }
+			values[environment] = cards.contains(environment)
+				? currentValue(in: environment, draft: draft) : project.value(for: key, in: environment)
+		}
+		return SameValueEnvironments.matches(values, order: environments)
+	}
+
+	private func card(
+		_ environment: String, draft: VaultKeyDraft?, cards: [String], problem: String?, sameAs: [String]
+	) -> some View {
 		let entry = draft?.values[environment]
 		let isAddition = draft?.additions.contains(environment) == true
 		let isOrphan = draft?.orphanedEnvironments.contains(environment) == true
@@ -474,6 +511,10 @@ private struct VaultKeyEditor: View {
 						.font(.system(size: 11, weight: .medium))
 						.foregroundStyle(VaultPalette.greenTintText)
 				}
+				VaultInspectorFindButton(label: "Find where the \(displayName) value is used") {
+					store.valueSearch.findStoredValue(of: key, in: environment)
+				}
+				.hidden(project.value(for: key, in: environment)?.isEmpty != false)
 			}
 
 			HStack(spacing: 0) {
@@ -507,6 +548,10 @@ private struct VaultKeyEditor: View {
 					onTrimEnds: { fixCharacters(in: environment, .trimEnds) },
 					disabled: isSaving || hasConflict || isOrphan || !store.canUseLocalSecrets || !store.canEditValues(of: project.id)
 				)
+			}
+
+			if !sameAs.isEmpty, !isOrphan {
+				sameValueNote(environment, as: sameAs, draft: draft, disabled: isSaving || hasConflict || !store.canEditValues(of: project.id))
 			}
 
 			if hasConflict {
@@ -619,6 +664,36 @@ private struct VaultKeyEditor: View {
 					.foregroundStyle(note.isProblem ? VaultPalette.redText : VaultPalette.textTertiary)
 					.lineLimit(1)
 					.truncationMode(.middle)
+			}
+		}
+	}
+
+	/// A secret-looking value another environment holds too: where else it's
+	/// used, and a new value for this environment.
+	private func sameValueNote(_ environment: String, as others: [String], draft: VaultKeyDraft?, disabled: Bool) -> some View {
+		let text = ValueSearchWording.sameValue(as: others)
+		let isSaved = isStored(currentValue(in: environment, draft: draft), in: environment)
+		return VStack(alignment: .leading, spacing: 4) {
+			HStack(alignment: .firstTextBaseline, spacing: 5) {
+				Image(systemName: "exclamationmark.triangle")
+					.font(.system(size: 10, weight: .semibold))
+				Text(text)
+					.font(.system(size: 11))
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			.foregroundStyle(VaultPalette.orangeTintText)
+			.accessibilityElement(children: .ignore)
+			.accessibilityLabel("Warning: \(text.prefix(1).lowercased() + text.dropFirst())")
+			HStack(spacing: 14) {
+				if isSaved {
+					cardAction("Show where") { store.valueSearch.findStoredValue(of: key, in: environment) }
+						.accessibilityLabel("Show where the \(VaultProject.displayName(for: environment)) value is used")
+				}
+				cardAction("Generate new") {
+					edit { $0.setValue(SecretValueGenerator.generate(.base64, length: SecretValueGenerator.defaultLength), in: environment) }
+				}
+				.disabled(disabled || !store.canUseLocalSecrets)
+				.accessibilityLabel("Generate new value for \(VaultProject.displayName(for: environment))")
 			}
 		}
 	}
@@ -1073,5 +1148,29 @@ struct VaultEscapeResponder: NSViewRepresentable {
 			window.makeFirstResponder(self)
 			return true
 		}
+	}
+}
+
+/// A small icon button in an inspector card's header.
+private struct VaultInspectorFindButton: View {
+	let label: String
+	let action: () -> Void
+
+	@State private var hovering = false
+
+	var body: some View {
+		Button(action: action) {
+			Image(systemName: "binoculars")
+				.font(.system(size: 10.5, weight: .medium))
+				.foregroundStyle(hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary)
+				.frame(width: 20, height: 20)
+				.background(RoundedRectangle(cornerRadius: 5).fill(hovering ? VaultPalette.neutralTint : .clear))
+				.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.onHover { hovering = $0 }
+		.help(label)
+		.accessibilityLabel(label)
+		.vaultPointingHand()
 	}
 }
