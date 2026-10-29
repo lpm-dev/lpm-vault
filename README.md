@@ -64,6 +64,7 @@ See [Release channels](docs/release-channels.md) for the publishing and recovery
 - Compare values and find missing keys in the environment matrix. The status bar of every project page counts the keys that drift between environments, are missing from one, or fail their rules, and each count opens the matrix filtered to those keys.
 - Import variables from an `.env` file, dropped on the window or chosen, or from pasted text. Review them with values hidden: keep existing values or replace them, leave new keys out, and undo the import for 30 seconds afterward.
 - Export `.env` files.
+- Find where a value is stored. **Find Value…** (⇧⌘F) lists every project, environment and key in the selected account that stores a value you paste, or in every account you belong to on this Mac, and **Find Reused Values…** lists credentials stored under more than one key, environment or project. Results name places, never values. A search reads one project at a time, runs only while the app is unlocked, and keeps no history or index.
 - Unlock with Touch ID or your Mac login password.
 - Use local values from `lpm env`, `lpm dev`, and `lpm run`.
 - Sync encrypted data to personal or organization env projects.

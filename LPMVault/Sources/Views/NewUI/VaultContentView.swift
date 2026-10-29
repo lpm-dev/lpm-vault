@@ -76,6 +76,14 @@ struct VaultContentView: View {
 	/// The last Raw text save, while it can be undone or says how undoing went.
 	var rawSaved: VaultRawTextSaved?
 	var onUndoRawSave: () -> Void = {}
+	/// What the last value search found, while there's a result to go back to.
+	var valueSearchSummary: String?
+	var onShowValueSearch: () -> Void = {}
+	var onClearValueSearch: () -> Void = {}
+	/// The keys a value search found, each with the environments it found them in.
+	var foundValues: [String: Set<String>] = [:]
+	/// Finds where the stored value of a key in an environment is used.
+	var onFindValue: (_ key: String, _ environment: String) -> Void = { _, _ in }
 
 	@State private var rawSelectedLineCount = 0
 
@@ -99,6 +107,9 @@ struct VaultContentView: View {
 		VStack(spacing: 0) {
 			header(derived)
 			VaultHairline()
+			if let valueSearchSummary {
+				ValueSearchStrip(summary: valueSearchSummary, onShow: onShowValueSearch, onClear: onClearValueSearch)
+			}
 
 			switch mode {
 			case .matrix:
@@ -417,6 +428,7 @@ struct VaultContentView: View {
 									isPublic: shownPublicKeys.contains(key),
 									isEdited: editedKeys.contains(key),
 									checks: valueChecks,
+									found: foundValues[key] ?? [],
 									onSelect: {
 										if snapshot.summaries[key] == nil {
 											onAddKey(key)
@@ -425,7 +437,8 @@ struct VaultContentView: View {
 											showsInspector = true
 										}
 									},
-									onReveal: { toggleReveal(key) }
+									onReveal: { toggleReveal(key) },
+									onFindValue: { onFindValue(key, $0) }
 								)
 								.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 							}
@@ -496,7 +509,9 @@ struct VaultContentView: View {
 										onEdit: { selectedKey = key; showsInspector = true },
 										onDelete: { onDeleteSecret(key, selectedEnvironment) },
 										onAdd: { onAddKey(key) },
-										canEdit: canEditValues
+										canEdit: canEditValues,
+										isFound: foundValues[key]?.contains(selectedEnvironment) == true,
+										onFindValue: { onFindValue(key, selectedEnvironment) }
 									)
 									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 								}
@@ -991,10 +1006,18 @@ private struct VaultMatrixRow: View {
 	let isPublic: Bool
 	let isEdited: Bool
 	var checks: VaultValueCheckPresentation = .none
+	/// The environments where a value search found the key's value.
+	var found: Set<String> = []
 	let onSelect: () -> Void
 	let onReveal: () -> Void
+	var onFindValue: (_ environment: String) -> Void = { _ in }
 
 	@State private var hovering = false
+
+	/// The environments that store a value of the key, which a value search can look for.
+	private var searchable: [String] {
+		environments.filter { project.value(for: key, in: $0)?.isEmpty == false }
+	}
 
 	var body: some View {
 		Button(action: onSelect) {
@@ -1008,6 +1031,7 @@ private struct VaultMatrixRow: View {
 					if isEdited { VaultUnsavedBadge() }
 					if snapshot.hasDrift(for: key) { VaultStatusDot(color: VaultPalette.orange).help("Values differ") }
 					if snapshot.isMissingSomewhere(key) { VaultStatusDot(color: VaultPalette.red).help("Missing in an environment") }
+					if !found.isEmpty { ValueSearchFoundBadge() }
 					Spacer(minLength: 0)
 				}
 				.padding(.horizontal, 20)
@@ -1028,6 +1052,7 @@ private struct VaultMatrixRow: View {
 							isRequired: stored == nil && checks.isRequiredAndUnset(key, in: environment),
 							size: 11.5
 						)
+						if found.contains(environment) { ValueSearchFoundMark() }
 						Spacer(minLength: 0)
 					}
 					.padding(.horizontal, 12)
@@ -1045,10 +1070,30 @@ private struct VaultMatrixRow: View {
 		.simultaneousGesture(TapGesture(count: 2).onEnded { onReveal() })
 		.onHover { hovering = $0 }
 		.accessibilityElement(children: .ignore)
-		.accessibilityLabel("\(key), set in \(snapshot.environmentCount(for: key)) of \(environments.count) environments\(isPublic ? ", public" : ""), values \(isRevealed ? "shown" : "hidden")\(checks.invalidKeys.contains(key) ? ", fails its rules" : "")\(isEdited ? ", unsaved changes" : "")")
+		.accessibilityLabel("\(key), set in \(snapshot.environmentCount(for: key)) of \(environments.count) environments\(isPublic ? ", public" : ""), values \(isRevealed ? "shown" : "hidden")\(checks.invalidKeys.contains(key) ? ", fails its rules" : "")\(isEdited ? ", unsaved changes" : "")\(found.isEmpty ? "" : ", found by value search")")
 		.accessibilityValue(snapshot.hasDrift(for: key) ? "Values differ" : "Values consistent")
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
 		.accessibilityAction(named: isRevealed ? "Hide values" : "Reveal values", onReveal)
+		.accessibilityActions {
+			ForEach(searchable, id: \.self) { environment in
+				Button("Find where the \(VaultProject.displayName(for: environment)) value is used") { onFindValue(environment) }
+			}
+		}
+		.contextMenu { findValueMenu }
+	}
+
+	@ViewBuilder
+	private var findValueMenu: some View {
+		let searchable = searchable
+		if searchable.count == 1, let environment = searchable.first {
+			Button("Find Where This Value Is Used") { onFindValue(environment) }
+		} else if !searchable.isEmpty {
+			Menu("Find Where This Value Is Used") {
+				ForEach(searchable, id: \.self) { environment in
+					Button(VaultProject.displayName(for: environment)) { onFindValue(environment) }
+				}
+			}
+		}
 	}
 }
 
@@ -1120,6 +1165,9 @@ private struct VaultEnvironmentRow: View {
 	let onDelete: () -> Void
 	var onAdd: () -> Void = {}
 	var canEdit = true
+	/// A value search found the value.
+	var isFound = false
+	var onFindValue: () -> Void = {}
 
 	@State private var hovering = false
 
@@ -1135,8 +1183,11 @@ private struct VaultEnvironmentRow: View {
 			.overlay(alignment: .leading) { if problem != nil { VaultProblemMarker().padding(.leading, 8) } }
 			VaultTableColumnLine()
 
-			VaultCheckedValue(value: value, isRevealed: isRevealed, problem: problem, defaultValue: defaultValue,
-				isRequired: isRequired, showsNotSet: false, size: 12)
+			HStack(spacing: 6) {
+				VaultCheckedValue(value: value, isRevealed: isRevealed, problem: problem, defaultValue: defaultValue,
+					isRequired: isRequired, showsNotSet: false, size: 12)
+				if isFound { ValueSearchFoundMark() }
+			}
 				.padding(.horizontal, 12)
 				.frame(width: layout[.value] - 1, alignment: .leading)
 			VaultTableColumnLine()
@@ -1161,9 +1212,19 @@ private struct VaultEnvironmentRow: View {
 		.contentShape(Rectangle())
 		.onTapGesture(perform: onSelect)
 		.onHover { hovering = $0 }
+		.contextMenu {
+			if value?.isEmpty == false {
+				Button("Find Where This Value Is Used", action: onFindValue)
+			}
+		}
 		.accessibilityElement(children: .contain)
 		.accessibilityLabel(accessibilityText)
 		.accessibilityAddTraits(isSelected ? .isSelected : [])
+		.accessibilityActions {
+			if value?.isEmpty == false {
+				Button("Find where this value is used", action: onFindValue)
+			}
+		}
 	}
 
 	private var accessibilityText: String {
@@ -1178,6 +1239,7 @@ private struct VaultEnvironmentRow: View {
 		}
 		if let problem { parts.append(problem.replacingOccurrences(of: "\n", with: ", ")) }
 		if isEdited { parts.append("unsaved changes") }
+		if isFound { parts.append("found by value search") }
 		return parts.joined(separator: ", ")
 	}
 
@@ -1196,6 +1258,7 @@ private struct VaultEnvironmentRow: View {
 					VaultUnsavedBadge()
 				}
 			}
+			if isFound && !compact { ValueSearchFoundBadge() }
 			if hasDrift {
 				if compact {
 					Image(systemName: "diamond.fill")

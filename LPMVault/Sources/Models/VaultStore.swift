@@ -1400,9 +1400,12 @@ final class VaultStore {
   var isLoggingIn: Bool = false
 
   // Navigation state
+  /// The environment opening a project asked for before its values were read.
+  @ObservationIgnored private var requestedEnvironment: (projectID: String, environment: String)?
   var selectedAccount: SelectedAccount = .personal {
     didSet {
       guard oldValue != selectedAccount else { return }
+      valueSearch.accountDidChange()
       lastSyncWarnings = []
       invalidateLocalStateRefresh()
       keyDrafts.discardAll()
@@ -1482,6 +1485,15 @@ final class VaultStore {
 
   private let keychainService: KeychainServiceProtocol
   private let persistence: VaultPersistenceCoordinator
+  let valueSearch = ValueSearchModel()
+  /// Lends a value search each project's values, one at a time.
+  @ObservationIgnored var valueSearchSource: any ValueSearchSource
+  /// Reads which keys of a project its lpm.json marks public or secret,
+  /// for a scan for reused values.
+  @ObservationIgnored var valueSecrecyRules: @Sendable (ValueSearchTarget) async -> ValueSecrecyRules = { target in
+    guard !target.folder.isEmpty else { return .none }
+    return ValueSecrecyRules(overview: await ProjectEnvSchemaFile.loadRules(inFolder: target.folder, vaultID: target.id).schema.overview)
+  }
   /// Publish destinations and this Mac's publish history.
   let publishing: PublishingStore
   private let platformConnect: PlatformConnections.Connect?
@@ -1718,6 +1730,18 @@ final class VaultStore {
     if selectedEnvironment != environment { cancelExports() }
     selectedEnvironment = environment
     resetAutoLock()
+  }
+
+  /// Opens `environment` of a project. One its listing doesn't name yet,
+  /// such as one the CLI just added, opens once the project's values are read.
+  func openProject(id projectId: String, environment: String) {
+    openProject(id: projectId)
+    guard let selectedProject, selectedProject.id == projectId else { return }
+    if selectedProject.hasLoadedEnvironments || selectedProject.environmentNames.contains(environment) {
+      selectEnvironment(environment)
+    } else {
+      requestedEnvironment = (projectId, environment)
+    }
   }
 
   /// Selects a project after switching to its owning account, and always
@@ -1968,11 +1992,74 @@ final class VaultStore {
   }
 
   private func projectBelongsToSelectedAccount(_ projectId: String) -> Bool {
-    switch selectedAccount {
+    projectBelongs(projectId, to: selectedAccount)
+  }
+
+  private func projectBelongs(_ projectId: String, to account: SelectedAccount) -> Bool {
+    switch account {
     case .personal:
       vaultOrgAssociations[projectId] == nil
     case .org(let slug):
       vaultOrgAssociations[projectId] == slug
+    }
+  }
+
+  // MARK: - Value search
+
+  /// The projects a value search reads, in the sidebar's order: the selected
+  /// account's, or those of every account the person can open, personal
+  /// first. The selected project lends the rules the app holds already.
+  func valueSearchTargets(everyAccount: Bool) -> [ValueSearchTarget] {
+    let accounts: [SelectedAccount] = everyAccount ? [.personal] + userOrgs.map { .org($0.slug) } : [selectedAccount]
+    let ordered = orderedProjects
+    var targets: [ValueSearchTarget] = []
+    for account in accounts {
+      let named = ValueSearchAccount(account: account, name: valueSearchAccountName(account))
+      for project in ordered where projectBelongs(project.id, to: account) {
+        let folder = keyDescriptionFolder(for: project)
+        var target = ValueSearchTarget(
+          id: project.id, name: project.name, account: named,
+          environments: orderedEnvironmentNames(for: project), folder: folder)
+        if project.hasLoadedEnvironments {
+          target.isHeld = true
+          if !unverifiedKeyDescriptionProjects.contains(project.id),
+            let descriptions = keyDescriptions[project.id], descriptions.folder == folder, let schema = descriptions.schema
+          {
+            target.secrecy = ValueSecrecyRules(overview: schema.overview)
+          }
+        }
+        targets.append(target)
+      }
+    }
+    return targets
+  }
+
+  /// Lends a value search the values of `targets` one project at a time: the
+  /// app's own for those it holds, at their turn, and the Keychain's for the others.
+  func valueSearchValues(for targets: [ValueSearchTarget]) -> HeldValueSearchSource {
+    HeldValueSearchSource(
+      heldProjectIDs: Set(targets.lazy.filter(\.isHeld).map(\.id)),
+      held: { [weak self] projectId in
+        guard let self, isUnlocked, let project = projects.first(where: { $0.id == projectId }),
+          project.hasLoadedEnvironments
+        else { return nil }
+        return project
+      },
+      others: valueSearchSource)
+  }
+
+  /// How many projects `valueSearchTargets(everyAccount:)` lists, without listing them.
+  func valueSearchProjectCount(everyAccount: Bool) -> Int {
+    guard everyAccount else { return projects.lazy.filter { self.projectBelongsToSelectedAccount($0.id) }.count }
+    let slugs = Set(userOrgs.map(\.slug))
+    return projects.lazy.filter { project in self.vaultOrgAssociations[project.id].map(slugs.contains) ?? true }.count
+  }
+
+  /// An account as value search results name it.
+  func valueSearchAccountName(_ account: SelectedAccount) -> String {
+    switch account {
+    case .personal: "Personal vault"
+    case .org(let slug): userOrgs.first { $0.slug == slug }?.name ?? slug
     }
   }
 
@@ -1982,10 +2069,19 @@ final class VaultStore {
 
   private func normalizeSelectedEnvironment() {
     guard let selectedProject else {
+      requestedEnvironment = nil
       selectedEnvironment = "default"
       return
     }
     let names = orderedEnvironmentNames(for: selectedProject)
+    if let requested = requestedEnvironment, requested.projectID != selectedProject.id || selectedProject.hasLoadedEnvironments {
+      requestedEnvironment = nil
+      if requested.projectID == selectedProject.id, names.contains(requested.environment) {
+        if selectedEnvironment != requested.environment { cancelExports() }
+        selectedEnvironment = requested.environment
+        return
+      }
+    }
     if !names.contains(selectedEnvironment) {
       selectedEnvironment = names.first ?? "default"
     }
@@ -2124,6 +2220,7 @@ final class VaultStore {
     self.clipboard = clipboard
     self.projectIcons = ProjectIconStore(preferences: preferences, imagesDirectory: projectIconsDirectory)
     self.persistence = VaultPersistenceCoordinator(service: keychainService)
+    self.valueSearchSource = PersistedValueSearchSource(persistence: persistence)
     self.publishing = PublishingStore(service: keychainService)
     self.platformConnect = platformConnect
     self.netlifyConnect = netlifyConnect
@@ -2179,6 +2276,7 @@ final class VaultStore {
     self.autoLockNow = autoLockNow
     self.autoLockDuration = autoLockDuration
     self.schemaEditNow = schemaEditNow
+    valueSearch.store = self
 
     #if DEBUG
       // Local-server selection is a debug-only developer convenience.
@@ -6174,6 +6272,7 @@ final class VaultStore {
   }
 
   func lock() {
+    valueSearch.reset()
     lastSyncWarnings = []
     unlockFailure = nil
     keyDrafts.discardAll()

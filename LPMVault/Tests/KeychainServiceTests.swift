@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import LocalAuthentication
 import Security
 import Testing
 
@@ -137,8 +138,22 @@ private final class KeychainServiceTestBackend: KeychainStoreBackend, @unchecked
 		"\(service)\u{0}\(account)"
 	}
 
+	private var promptRefusals = 0
+	private var reads: [(account: String, canPrompt: Bool)] = []
+	/// Each account read, and whether macOS could have asked for approval to read it.
+	var recordedReads: [(account: String, canPrompt: Bool)] { lock.withLock { reads } }
+
+	func withoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T {
+		lock.withLock { promptRefusals += 1 }
+		defer { lock.withLock { promptRefusals -= 1 } }
+		return try body()
+	}
+
 	func read(service: String, account: String) throws -> Data? {
-		lock.withLock { storage[key(service: service, account: account)] }
+		lock.withLock {
+			reads.append((account, promptRefusals == 0))
+			return storage[key(service: service, account: account)]
+		}
 	}
 
 	func write(service: String, account: String, data: Data) throws {
@@ -678,6 +693,68 @@ struct KeychainServiceTests {
 		try backend.write(service: serviceName, account: vaultId, data: empty)
 
 		#expect((try storedEnvironments(service, vaultId)) == ["default": [:]])
+	}
+
+	@Test("a read for a search of many projects reads every record of the project where macOS can't ask for approval")
+	func searchReadNeverPrompts() throws {
+		let backend = KeychainServiceTestBackend()
+		let service = KeychainService(testingService: "dev.lpm.vault.test.\(UUID().uuidString)", backend: backend)
+		let vaultId = "test-\(UUID().uuidString.prefix(8))"
+		defer { cleanup(service: service, vaultIds: [vaultId]) }
+		guard case .success = service.createEnvironments(
+			vaultId: vaultId, projectName: "search", projectPath: "", environments: ["default": ["TOKEN": "value"]]
+		) else {
+			Issue.record("Could not create the indexed test project")
+			return
+		}
+		let before = backend.recordedReads.count
+		let read = try service.getProjectResultWithoutPrompting(vaultId: vaultId).get()
+		#expect(read?.environments == ["default": ["TOKEN": "value"]])
+		let searchReads = backend.recordedReads.dropFirst(before)
+		#expect(searchReads.contains { $0.account == vaultId }, "The values item is read")
+		#expect(searchReads.allSatisfy { !$0.canPrompt }, "No read of the search could ask")
+
+		let selectionBefore = backend.recordedReads.count
+		_ = try service.getProjectResult(vaultId: vaultId).get()
+		#expect(backend.recordedReads.dropFirst(selectionBefore).allSatisfy { $0.canPrompt }, "Selecting a project still reads as it did")
+	}
+}
+
+@Suite("Keychain authentication context")
+struct KeychainAuthenticationContextTests {
+	@Test("while prompts are refused, a context no unlock evaluated is replaced by one that can't ask and isn't kept")
+	func refusedPromptsNeverAsk() {
+		let authentication = KeychainAuthenticationContext()
+		let unevaluated = authentication.current()
+		#expect(!unevaluated.interactionNotAllowed)
+		authentication.withoutPrompts {
+			let refusing = authentication.current()
+			#expect(refusing.interactionNotAllowed)
+			#expect(refusing !== unevaluated)
+		}
+		#expect(authentication.current() === unevaluated, "The context reads use outside the search is unchanged")
+	}
+
+	@Test("while prompts are refused, the context an unlock evaluated still answers for approval, and can't ask")
+	func unlockContextStillAnswers() {
+		let authentication = KeychainAuthenticationContext()
+		let unlock = LAContext()
+		authentication.replace(with: unlock)
+		authentication.withoutPrompts {
+			let reading = authentication.current()
+			#expect(reading === unlock)
+			#expect(reading.interactionNotAllowed, "What the unlock's approval doesn't cover fails instead of asking")
+			authentication.withoutPrompts {
+				#expect(authentication.current().interactionNotAllowed)
+			}
+			#expect(authentication.current().interactionNotAllowed, "An inner scope ending doesn't let the outer one ask")
+		}
+		#expect(authentication.current() === unlock)
+		#expect(!unlock.interactionNotAllowed, "Reads outside the search can ask again")
+		authentication.replace(with: nil)
+		authentication.withoutPrompts {
+			#expect(authentication.current().interactionNotAllowed, "After locking, a read that can't ask fails instead")
+		}
 	}
 }
 

@@ -129,6 +129,8 @@ struct VaultMenuField<Value: Hashable>: View {
 			.frame(maxWidth: .infinity)
 			.contentShape(Rectangle())
 			.vaultInputField(focused: false)
+			// A menu drawn as a button otherwise makes each part of its label a menu of its own.
+			.accessibilityElement(children: .combine)
 		}
 		.menuStyle(.button)
 		.buttonStyle(.plain)

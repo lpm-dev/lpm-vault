@@ -39,6 +39,8 @@ struct VaultSidebarView: View {
 	let onDuplicateEnvironment: (VaultEnvironmentTarget) -> Void
 	let onClearEnvironment: (VaultEnvironmentTarget) -> Void
 	let onDeleteEnvironment: (VaultEnvironmentTarget) -> Void
+	/// Searches stored values for the text, false when it can't now.
+	var onFindAsValue: (String) -> Bool = { _ in false }
 	/// The project drag in progress, if any. Tests pass their own to follow it.
 	@State var reorder = VaultSidebarReorder()
 
@@ -70,6 +72,7 @@ struct VaultSidebarView: View {
 								.foregroundStyle(VaultPalette.textTertiary)
 								.padding(.horizontal, 16)
 								.padding(.vertical, 12)
+							if !searchText.isEmpty, store.isUnlocked { findAsValue }
 						} else {
 							projectGroups(derivedProjects, order: order)
 						}
@@ -154,6 +157,42 @@ struct VaultSidebarView: View {
 			RoundedRectangle(cornerRadius: 8)
 				.stroke(searchFocused ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1)
 		}
+	}
+
+	/// Offers to look for what was typed among stored values, as typed text
+	/// that names nothing can be a pasted value. It moves into the masked
+	/// field, and the search here is cleared.
+	private var findAsValue: some View {
+		Button {
+			guard onFindAsValue(searchText) else { return }
+			searchText = ""
+			searchFocused = false
+		} label: {
+			VStack(alignment: .leading, spacing: 3) {
+				HStack(spacing: 6) {
+					Image(systemName: "binoculars")
+						.font(.system(size: 10.5, weight: .semibold))
+					Text("Find it as a value…")
+						.font(.system(size: 12, weight: .semibold))
+				}
+				.foregroundStyle(VaultPalette.accentForeground)
+				Text("Searches what’s stored, not names. Opens masked.")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+			.padding(.horizontal, 10)
+			.padding(.vertical, 8)
+			.frame(maxWidth: .infinity, alignment: .leading)
+			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
+			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.padding(.horizontal, 12)
+		.vaultPointingHand()
+		.accessibilityLabel("Find it as a value…")
+		.accessibilityHint("Searches what’s stored, not names. Opens masked.")
 	}
 
 	private var projectHeader: some View {

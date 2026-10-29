@@ -104,7 +104,7 @@ struct ProjectEnvSchemaSuggestion: Equatable, Identifiable, Sendable {
 			}
 		}
 		if publicPrefix == nil, words.isDisjoint(with: publicWords),
-			let reason = secretEvidence(parts: parts, values: distinct, count: stored.count, format: format)
+			let reason = secretEvidence(parts: parts, values: distinct, count: stored.count, format: .known(format))
 		{
 			suggestions.append(.init(change: .secret, evidence: reason))
 		}
@@ -200,21 +200,57 @@ struct ProjectEnvSchemaSuggestion: Equatable, Identifiable, Sendable {
 	/// Words of a name for identifiers, whose values look random without being secret.
 	private static let identifierWords: Set<String> = ["ID", "SHA", "HASH", "COMMIT", "REVISION", "VERSION", "BUILD"]
 
+	/// Whether `value`, stored for `key`, looks secret, as the Secret
+	/// suggestion judges a key holding that one value. Empty values and keys
+	/// whose names say they're public never do. The engine checks the value's
+	/// format only when the judgment hinges on it.
+	static func looksSecret(key: String, value: String) -> Bool {
+		guard !value.isEmpty else { return false }
+		let parts = key.uppercased().split(separator: "_").map(String.init)
+		let words = Set(parts)
+		guard words.isDisjoint(with: publicWords) else { return false }
+		let values = [value]
+		return secretEvidence(parts: parts, values: values, count: 1, format: .deferred {
+			let engine = Engine(key: key, values: values, isPublic: false, clientPrefixes: [])
+			return formats(for: words, values: values).first { engine.passes(["format": .string($0.rawValue)]) }
+		}) != nil
+	}
+
+	/// The values' format: known already, or found only if the judgment
+	/// hinges on it, since the engine checks it.
+	private enum FormatCheck {
+		case known(ProjectEnvSchemaRule.Format?)
+		case deferred(() -> ProjectEnvSchemaRule.Format?)
+	}
+
 	/// Why the key looks secret: its name says so, whatever its format; a URL
 	/// carries a password; or values without a format look random and the
 	/// name isn't an identifier's. A name ending in KEY says so only for long
-	/// values, since sort and cache keys are short words.
-	private static func secretEvidence(parts: [String], values: [String], count: Int, format: ProjectEnvSchemaRule.Format?) -> String? {
+	/// values, since sort and cache keys are short words. A known format is
+	/// checked before the values, which it spares; a deferred one after them,
+	/// and at most once.
+	private static func secretEvidence(parts: [String], values: [String], count: Int, format: FormatCheck) -> String? {
 		if parts.contains(where: secretWords.contains) {
 			return "the name says it's secret"
 		}
 		if parts.count >= 2, parts.last == "KEY", values.allSatisfy({ $0.utf8.count >= 16 && !$0.contains(where: \.isWhitespace) }) {
 			return "the name says it's secret"
 		}
-		if format == .url, values.contains(where: { URLComponents(string: $0)?.password?.isEmpty == false }) {
+		var detected: ProjectEnvSchemaRule.Format??
+		func formatIs(_ expected: ProjectEnvSchemaRule.Format?, and valuesAgree: () -> Bool) -> Bool {
+			switch format {
+			case .known(let known):
+				return known == expected && valuesAgree()
+			case .deferred(let detect):
+				guard valuesAgree() else { return false }
+				if detected == nil { detected = .some(detect()) }
+				return detected == .some(expected)
+			}
+		}
+		if formatIs(.url, and: { values.contains { URLComponents(string: $0)?.password?.isEmpty == false } }) {
 			return count == 1 ? "the URL contains a password" : "a stored URL contains a password"
 		}
-		guard format == nil, !parts.contains(where: identifierWords.contains), values.allSatisfy(looksRandom) else { return nil }
+		guard !parts.contains(where: identifierWords.contains), formatIs(nil, and: { values.allSatisfy(looksRandom) }) else { return nil }
 		return count == 1 ? "the value looks random" : "values look random"
 	}
 

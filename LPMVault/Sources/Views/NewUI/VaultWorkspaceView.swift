@@ -202,11 +202,11 @@ struct VaultWorkspaceView: View {
 	}
 
 	var body: some View {
-		workspaceDialogs
+		valueSearchHandling
 		.onReceive(NotificationCenter.default.publisher(for: .newSecret)) { _ in presentAddSecret() }
 		.onReceive(NotificationCenter.default.publisher(for: .importVariables)) { _ in presentImport() }
 		.onReceive(NotificationCenter.default.publisher(for: .showProjectSettings)) { _ in
-			if let project { openProjectSettings(project, focusingName: false) }
+			if let project, !hostWindow.hasAttachedSheet { openProjectSettings(project, focusingName: false) }
 		}
 		.onChange(of: store.selectedProjectId) { _, _ in resetProjectPresentation() }
 		.task(id: store.selectedProjectId) { store.reloadKeyDescriptions() }
@@ -328,7 +328,8 @@ struct VaultWorkspaceView: View {
 							onRenameEnvironment: beginRenameEnvironment,
 							onDuplicateEnvironment: beginDuplicateEnvironment,
 							onClearEnvironment: { clearEnvironmentTarget = $0 },
-							onDeleteEnvironment: { deleteEnvironmentTarget = $0 }
+							onDeleteEnvironment: { deleteEnvironmentTarget = $0 },
+							onFindAsValue: findAsValue
 						)
 					}
 
@@ -423,57 +424,7 @@ struct VaultWorkspaceView: View {
 						} else if let project,
 						let snapshot = store.workspaceSnapshots[project.id]
 						{
-							VaultContentView(
-								project: project,
-								snapshot: snapshot,
-								environments: store.orderedEnvironmentNames(for: project),
-								selectedEnvironment: store.selectedEnvironment,
-								mode: $mode,
-								filter: $filter,
-								environmentViewMode: $environmentViewMode,
-								sortOrder: $keySortOrder,
-								searchText: searchText,
-								selectedKey: $selectedKey,
-								revealedKeys: $revealedKeys,
-								showsInspector: $showsInspector,
-								columnWidths: Binding(
-									get: { tableColumnWidths[project.id] ?? VaultProjectTableColumnWidths() },
-									set: { tableColumnWidths[project.id] = $0 }
-								),
-								isCopyingAll: copyAllTask != nil,
-								isCopiedAll: copyFeedback?.target == .all(VaultSensitiveActionContext(
-									projectID: project.id, environment: store.selectedEnvironment
-								)),
-								canUseSecrets: store.canUseLocalSecrets,
-								canEditValues: store.canEditValues(of: project.id),
-								cliAccess: store.selectedProjectCliAccess,
-								cliAccessContradicts: store.selectedProjectCliAccessContradicts,
-								isChangingCliAccess: store.isChangingCliAccess,
-								onChangeCliAccess: { access in Task { await store.changeCliAccess(to: access) } },
-								onCopyAll: copyAll,
-								onImport: { presentImport() },
-								onExport: exportCurrentEnvironment,
-								onProjectSettings: { openProjectSettings(project, focusingName: false) },
-								editedKeys: store.keyDrafts.editedKeys(in: project.id),
-								publicKeys: store.publicKeys(in: project.id),
-								valueChecks: VaultValueCheckPresentation(
-									check: store.valueChecks[project.id],
-									rules: store.keyDescriptions[project.id]?.schema?.overview,
-									project: project
-								),
-								onAddSecret: presentAddSecret,
-								onAddKey: { presentAddSecret(key: $0, environment: store.selectedEnvironment) },
-								onCopySecret: copySecret,
-								onDeleteSecret: requestDeleteSecret,
-								onResizeColumns: { store.recordUserActivity() },
-								onCopyLines: copyLines,
-								copiedLineCount: copiedLineCount(in: project),
-								rawEditing: rawTextEditing(in: project),
-								rawEditBlocker: store.rawTextEditBlocker,
-								onEditRaw: { store.beginRawTextEdit(order: $0) },
-								rawSaved: rawTextSaved,
-								onUndoRawSave: undoRawTextSave
-							)
+							contentView(project, snapshot: snapshot)
 						} else {
 							VaultWorkspaceEmptyView(
 								isSearching: !searchText.isEmpty,
@@ -529,7 +480,8 @@ struct VaultWorkspaceView: View {
 									presentAddSecret(key: key, environment: environment)
 								},
 								onRenamed: followRename,
-								onOpenRules: { openSchemaRules(of: $0, in: project) }
+								onOpenRules: { openSchemaRules(of: $0, in: project) },
+								onFindValue: findStoredValue
 							)
 						}
 						.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
@@ -701,6 +653,22 @@ struct VaultWorkspaceView: View {
 			PublishSheet(store: store, session: session)
 				.vaultPrivacyProtected(isObscured)
 		}
+		.sheet(isPresented: Binding(
+			get: { store.valueSearch.isPresented },
+			set: { if !$0 { store.valueSearch.sheetClosed() } }
+		)) {
+			ValueSearchSheet(store: store).vaultPrivacyProtected(isObscured)
+		}
+	}
+
+	private var valueSearchHandling: some View {
+		workspaceDialogs
+			.onReceive(NotificationCenter.default.publisher(for: .findValue)) { _ in presentValueSearch(.find) }
+			.onReceive(NotificationCenter.default.publisher(for: .findReusedValues)) { _ in presentValueSearch(.reuse) }
+			.onChange(of: store.valueSearch.openRequest) { _, request in
+				// One that changed the project waits for the project's reset.
+				if let request, !request.changedProject { showOpenedValue(request) }
+			}
 	}
 
 	private var workspaceDialogs: some View {
@@ -958,7 +926,7 @@ struct VaultWorkspaceView: View {
 	}
 
 	private func presentAddSecret(key: String, environment: String) {
-		guard addSecretTarget == nil, let project else { return }
+		guard addSecretTarget == nil, !hostWindow.hasAttachedSheet, let project else { return }
 		store.recordUserActivity()
 		addSecretTarget = VaultSecretTarget(projectId: project.id, environment: environment, initialKey: key)
 	}
@@ -1449,6 +1417,114 @@ struct VaultWorkspaceView: View {
 		exportTask = nil
 		exportID = nil
 		resetCopyPresentation()
+		if let request = store.valueSearch.openRequest, request.changedProject { showOpenedValue(request) }
+	}
+
+	private func contentView(_ project: VaultProject, snapshot: VaultWorkspaceSnapshot) -> some View {
+		VaultContentView(
+			project: project,
+			snapshot: snapshot,
+			environments: store.orderedEnvironmentNames(for: project),
+			selectedEnvironment: store.selectedEnvironment,
+			mode: $mode,
+			filter: $filter,
+			environmentViewMode: $environmentViewMode,
+			sortOrder: $keySortOrder,
+			searchText: searchText,
+			selectedKey: $selectedKey,
+			revealedKeys: $revealedKeys,
+			showsInspector: $showsInspector,
+			columnWidths: Binding(
+				get: { tableColumnWidths[project.id] ?? VaultProjectTableColumnWidths() },
+				set: { tableColumnWidths[project.id] = $0 }
+			),
+			isCopyingAll: copyAllTask != nil,
+			isCopiedAll: copyFeedback?.target == .all(VaultSensitiveActionContext(
+				projectID: project.id, environment: store.selectedEnvironment
+			)),
+			canUseSecrets: store.canUseLocalSecrets,
+			canEditValues: store.canEditValues(of: project.id),
+			cliAccess: store.selectedProjectCliAccess,
+			cliAccessContradicts: store.selectedProjectCliAccessContradicts,
+			isChangingCliAccess: store.isChangingCliAccess,
+			onChangeCliAccess: { access in Task { await store.changeCliAccess(to: access) } },
+			onCopyAll: copyAll,
+			onImport: { presentImport() },
+			onExport: exportCurrentEnvironment,
+			onProjectSettings: { openProjectSettings(project, focusingName: false) },
+			editedKeys: store.keyDrafts.editedKeys(in: project.id),
+			publicKeys: store.publicKeys(in: project.id),
+			valueChecks: VaultValueCheckPresentation(
+				check: store.valueChecks[project.id],
+				rules: store.keyDescriptions[project.id]?.schema?.overview,
+				project: project
+			),
+			onAddSecret: presentAddSecret,
+			onAddKey: { presentAddSecret(key: $0, environment: store.selectedEnvironment) },
+			onCopySecret: copySecret,
+			onDeleteSecret: requestDeleteSecret,
+			onResizeColumns: { store.recordUserActivity() },
+			onCopyLines: copyLines,
+			copiedLineCount: copiedLineCount(in: project),
+			rawEditing: rawTextEditing(in: project),
+			rawEditBlocker: store.rawTextEditBlocker,
+			onEditRaw: { store.beginRawTextEdit(order: $0) },
+			rawSaved: rawTextSaved,
+			onUndoRawSave: undoRawTextSave,
+			valueSearchSummary: store.valueSearch.isPresented ? nil
+				: ValueSearchWording.strip(find: store.valueSearch.find, reuse: store.valueSearch.reuse),
+			onShowValueSearch: { presentValueSearch(store.valueSearch.find == nil ? .reuse : .find) },
+			onClearValueSearch: { store.valueSearch.clearResults() },
+			foundValues: store.valueSearch.foundEnvironments(in: project.id),
+			onFindValue: findStoredValue
+		)
+	}
+
+	/// Whether value search can open now: unlocked, and no other sheet showing.
+	private var canPresentValueSearch: Bool {
+		store.isUnlocked && (store.valueSearch.isPresented || !hostWindow.hasAttachedSheet)
+	}
+
+	/// Opens the value search sheet in `mode`, unless another sheet is showing.
+	private func presentValueSearch(_ mode: ValueSearchModel.Mode) {
+		guard canPresentValueSearch else { return }
+		store.recordUserActivity()
+		store.valueSearch.present(mode)
+	}
+
+	/// Finds where the stored value of `key` in `environment` is used, unless another sheet is showing.
+	private func findStoredValue(_ key: String, in environment: String) {
+		guard canPresentValueSearch else { return }
+		store.recordUserActivity()
+		store.valueSearch.findStoredValue(of: key, in: environment)
+	}
+
+	/// Searches stored values for text typed where names are searched, unless another sheet is showing.
+	private func findAsValue(_ text: String) -> Bool {
+		guard canPresentValueSearch, !text.isEmpty else { return false }
+		store.recordUserActivity()
+		store.valueSearch.present(searchingFor: text)
+		return store.valueSearch.isPresented
+	}
+
+	/// Shows the place a value search result opened: its environment's table,
+	/// with the key selected in the inspector and nothing filtering it out.
+	/// The store selects the environment, once the project is read when its
+	/// listing didn't name it yet.
+	private func showOpenedValue(_ request: ValueSearchModel.OpenRequest) {
+		guard let project, project.id == request.projectID else { return }
+		store.valueSearch.finishOpening(request)
+		guard let location = request.location else {
+			AccessibilityNotification.Announcement(ValueSearchWording.opened(project: project.name)).post()
+			return
+		}
+		searchText = ""
+		filter = .all
+		environmentViewMode = .table
+		mode = .environment(store.selectedEnvironment)
+		selectedKey = location.key
+		showsInspector = true
+		AccessibilityNotification.Announcement(ValueSearchWording.opened(location, projectName: project.name)).post()
 	}
 
 	/// Copies a value of an unsaved edit whose project or key is gone.

@@ -253,6 +253,17 @@ struct LPMVaultApp: App {
 				.keyboardShortcut("f", modifiers: .command)
 				.disabled(!store.isUnlocked || store.selectedProject == nil)
 
+				Button("Find Value…") {
+					NotificationCenter.default.post(name: .findValue, object: nil)
+				}
+				.keyboardShortcut("f", modifiers: [.command, .shift])
+				.disabled(!store.isUnlocked)
+
+				Button("Find Reused Values…") {
+					NotificationCenter.default.post(name: .findReusedValues, object: nil)
+				}
+				.disabled(!store.isUnlocked)
+
 				Button("Project Settings…") {
 					NotificationCenter.default.post(name: .showProjectSettings, object: nil)
 				}
@@ -281,6 +292,8 @@ extension Notification.Name {
 	static let newSecret = Notification.Name("dev.lpm.vault.new-secret")
 	static let importVariables = Notification.Name("dev.lpm.vault.import-variables")
 	static let findSecrets = Notification.Name("dev.lpm.vault.find-secrets")
+	static let findValue = Notification.Name("dev.lpm.vault.find-value")
+	static let findReusedValues = Notification.Name("dev.lpm.vault.find-reused-values")
 	static let showProjectSettings = Notification.Name("dev.lpm.vault.show-project-settings")
 	static let dismissVaultSearch = Notification.Name("dev.lpm.vault.dismiss-search")
 }

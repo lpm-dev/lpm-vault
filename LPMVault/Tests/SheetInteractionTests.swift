@@ -1089,6 +1089,18 @@ struct SheetInteractionTests {
 			"the value is added with the characters typed last")
 	}
 
+	@Test("a pasted value keeps its line breaks, as a private key's must")
+	func addVariableMultilineValue() async throws {
+		let (store, keychain) = makeStore()
+		let host = SheetTestHost(AddVariableSheet(store: store, projectId: "sheet-regression", environment: "default", initialKey: "TOKEN"), size: NSSize(width: 560, height: 640))
+		defer { host.window.close() }
+		try await host.settle()
+		let value = "-----BEGIN PRIVATE KEY-----\r\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n\n-----END PRIVATE KEY-----"
+		try host.enterValue(value)
+		try host.returnWhileEditing("secure value", modifiers: [])
+		#expect(try await host.waitUntil { stored(keychain, "default", "TOKEN").map(ExactText.init) == ExactText(value) })
+	}
+
 	@Test("a revealed value shows where its hidden characters are, and VoiceOver hears that it's shown, not the value")
 	func addVariableHiddenCharacterPreview() async throws {
 		let (store, _) = makeStore()

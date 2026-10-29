@@ -33,8 +33,12 @@ private struct VaultPrivacyProtected: ViewModifier {
 	let isObscured: Bool
 
 	func body(content: Content) -> some View {
+		// SwiftUI leaves a transparent view out of the accessibility tree and
+		// one at full opacity as it is. accessibilityHidden(false) on an
+		// ancestor would read out what its views hide themselves, such as
+		// decorative icons, and a container adds a group VoiceOver steps into.
 		content
-			.accessibilityHidden(isObscured)
+			.opacity(isObscured ? 0 : 1)
 			.overlay {
 				if isObscured { VaultPrivacyCurtain() }
 			}

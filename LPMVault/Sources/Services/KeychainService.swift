@@ -340,6 +340,10 @@ protocol KeychainServiceProtocol: Sendable {
 	/// without its values; nil when the sidebar doesn't list it.
 	func projectMetadataResult(vaultId: String) -> Result<VaultProjectMetadata?, KeychainError>
 	func getProjectResult(vaultId: String) -> Result<VaultProject?, KeychainError>
+	/// `getProjectResult(vaultId:)` with reads macOS can't ask approval for,
+	/// for reads of many projects in a row, which must never ask once per
+	/// project: values whose approval the unlock didn't give fail instead.
+	func getProjectResultWithoutPrompting(vaultId: String) -> Result<VaultProject?, KeychainError>
 	/// The CLI approval of each project among `vaultIds` and the state of
 	/// those with companion data, from one names-only listing, for display.
 	/// A project whose approval attributes contradict each other has no
@@ -678,6 +682,9 @@ protocol KeychainStoreBackend {
 	/// can't be read, from one attribute listing, so one malformed item
 	/// doesn't hide the others.
 	func listing(service: String) throws -> [String: Result<VaultCliAccess, KeychainStoreError>]
+	/// Runs `body` with reads macOS can't ask approval for: an item whose
+	/// approval the app's unlock didn't give fails to read instead.
+	func withoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T
 }
 
 enum KeychainProbeOutcome: Equatable, Sendable {
@@ -715,6 +722,7 @@ extension KeychainStoreBackend {
 	func listing(service: String) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
 		try accounts(service: service).mapValues { .success($0) }
 	}
+	func withoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T { try body() }
 
 	/// A store without access controls enforces what its items claim.
 	func probe(service: String, account: String, openAccounts: [String]) -> KeychainProbeOutcome {
@@ -733,12 +741,34 @@ extension KeychainStoreBackend {
 	}
 }
 
-private final class KeychainAuthenticationContext: @unchecked Sendable {
+final class KeychainAuthenticationContext: @unchecked Sendable {
 	private let lock = NSLock()
 	private var stored: LAContext?
+	/// Whether `stored` is the context an unlock evaluated, which answers
+	/// for approval without asking; one made here hasn't been.
+	private var storedIsAuthenticated = false
+	private var promptRefusals = 0
+	/// The unlock's context that refused prompts only for a search, which
+	/// can ask again when the search's reads are over.
+	private var refusingForSearch: LAContext?
 
+	/// The context reads use. While prompts are refused, a context no unlock
+	/// evaluated is replaced by one that can't ask, which isn't kept; the
+	/// unlock's still answers for the approval it holds, without asking for more.
 	func current() -> LAContext {
 		lock.withLock {
+			if promptRefusals > 0 {
+				guard storedIsAuthenticated, let stored else {
+					let context = LAContext()
+					context.interactionNotAllowed = true
+					return context
+				}
+				if !stored.interactionNotAllowed {
+					stored.interactionNotAllowed = true
+					refusingForSearch = stored
+				}
+				return stored
+			}
 			if let stored { return stored }
 			let context = LAContext()
 			context.localizedFallbackTitle = "Use Password"
@@ -751,17 +781,43 @@ private final class KeychainAuthenticationContext: @unchecked Sendable {
 		let previous = lock.withLock {
 			let previous = stored
 			stored = context
+			storedIsAuthenticated = context != nil
 			return previous
 		}
 		if previous !== context { previous?.invalidate() }
 	}
+
+	/// Runs `body` with reads that fail rather than ask for approval the
+	/// unlock didn't give. Callers hold the transaction lock, which every
+	/// read of the store takes, so no other read sees the refusal.
+	func withoutPrompts<T>(_ body: () throws -> T) rethrows -> T {
+		lock.withLock { promptRefusals += 1 }
+		defer {
+			lock.withLock {
+				promptRefusals -= 1
+				if promptRefusals == 0, let context = refusingForSearch {
+					context.interactionNotAllowed = false
+					refusingForSearch = nil
+				}
+			}
+		}
+		return try body()
+	}
 }
 
 struct SecurityKeychainStoreBackend: KeychainStoreBackend, LPMHomeKeychain {
-	private let authentication = KeychainAuthenticationContext()
+	private let authentication: KeychainAuthenticationContext
+
+	init(authentication: KeychainAuthenticationContext = KeychainAuthenticationContext()) {
+		self.authentication = authentication
+	}
 
 	func setAuthenticationContext(_ context: LAContext?) {
 		authentication.replace(with: context)
+	}
+
+	func withoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T {
+		try authentication.withoutPrompts(body)
 	}
 
 	static func approvalAttributes(_ access: VaultCliAccess) throws -> [String: Any] {
@@ -2171,6 +2227,14 @@ final class SharedKeychainStore: @unchecked Sendable {
 		backend.setAuthenticationContext(context)
 	}
 
+	/// Runs `body` holding the transaction lock, with reads macOS can't ask
+	/// approval for.
+	func withoutApprovalPrompts<T>(_ body: () throws -> T) throws -> T {
+		try VaultKeychainTransactionLock.withLock {
+			try backend.withoutApprovalPrompts(body)
+		}
+	}
+
 	func read(accounts: [String]) throws -> [String: Data?] {
 		try VaultKeychainTransactionLock.withLock {
 			try ensureRecoveredUnlocked()
@@ -3184,33 +3248,45 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func getProjectResult(vaultId: String) -> Result<VaultProject?, KeychainError> {
 		do {
-			return try VaultKeychainTransactionLock.withLock {
-				guard EnvValidation.isSafeVaultId(vaultId) else {
-					return .failure(.accessDenied)
-				}
-				let state = try ensureProjectIndexThrowing()
-				guard let entry = try readProjectMetadataRecordThrowing(
-					vaultId: vaultId,
-					state: state
-				)?.record else {
-					return .success(nil)
-				}
-				try store.authorizeCompanion(vaultId: vaultId, .readExcludingOverrides)
-				guard let data = try store.read(account: vaultId) else {
-					return .failure(.itemNotFound)
-				}
-				return .success(VaultProject(
-					id: entry.id,
-					name: entry.name,
-					path: entry.path,
-					environments: try decodeEnvironments(data)
-				))
-			}
+			return try VaultKeychainTransactionLock.withLock { try readProjectUnlocked(vaultId: vaultId) }
 		} catch let error as KeychainStoreError {
 			return .failure(keychainError(from: error))
 		} catch {
 			return .failure(.unexpectedStatus(errSecInternalComponent))
 		}
+	}
+
+	func getProjectResultWithoutPrompting(vaultId: String) -> Result<VaultProject?, KeychainError> {
+		do {
+			return try store.withoutApprovalPrompts { try readProjectUnlocked(vaultId: vaultId) }
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
+	}
+
+	private func readProjectUnlocked(vaultId: String) throws -> Result<VaultProject?, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId) else {
+			return .failure(.accessDenied)
+		}
+		let state = try ensureProjectIndexThrowing()
+		guard let entry = try readProjectMetadataRecordThrowing(
+			vaultId: vaultId,
+			state: state
+		)?.record else {
+			return .success(nil)
+		}
+		try store.authorizeCompanion(vaultId: vaultId, .readExcludingOverrides)
+		guard let data = try store.read(account: vaultId) else {
+			return .failure(.itemNotFound)
+		}
+		return .success(VaultProject(
+			id: entry.id,
+			name: entry.name,
+			path: entry.path,
+			environments: try Self.decodeEnvironments(data)
+		))
 	}
 
 	func saveEnvironments(
@@ -3222,7 +3298,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		guard EnvValidation.isSafeVaultId(vaultId) else {
 			return .failure(.accessDenied)
 		}
-		let environments = normalizedEnvironments(environments)
+		let environments = Self.normalizedEnvironments(environments)
 		guard EnvValidation.areValidEnvironments(environments) else {
 			return .failure(.encodingFailed)
 		}
@@ -3244,7 +3320,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		environments: [String: [String: String]]
 	) -> KeychainResult {
 		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
-		let environments = normalizedEnvironments(environments)
+		let environments = Self.normalizedEnvironments(environments)
 		guard EnvValidation.areValidEnvironments(environments),
 			let payload = try? prepareProjectPayload(environments: environments)
 		else { return .failure(.encodingFailed) }
@@ -3277,7 +3353,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		environments: [String: [String: String]]
 	) -> KeychainResult {
 		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
-		let environments = normalizedEnvironments(environments)
+		let environments = Self.normalizedEnvironments(environments)
 		guard EnvValidation.areValidEnvironments(environments) else {
 			return .failure(.encodingFailed)
 		}
@@ -3353,7 +3429,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 					guard EnvValidation.isSafeVaultId(vaultId) else {
 						return .failure(.accessDenied)
 					}
-					let normalized = normalizedEnvironments(environments)
+					let normalized = Self.normalizedEnvironments(environments)
 					guard EnvValidation.areValidEnvironments(normalized) else {
 						return .failure(.encodingFailed)
 					}
@@ -3464,7 +3540,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		guard EnvValidation.isSafeVaultId(project.id) else {
 			throw KeychainStoreError.status(operation: "validate vault ID", code: errSecParam)
 		}
-		let environments = normalizedEnvironments(project.environments)
+		let environments = Self.normalizedEnvironments(project.environments)
 		guard EnvValidation.areValidEnvironments(environments) else {
 			throw KeychainStoreError.status(operation: "validate environments", code: errSecDecode)
 		}
@@ -3543,7 +3619,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 					return VaultBackupProject(
 						vaultId: vaultId,
 						listing: listed[vaultId].map { VaultBackupProject.Listing(name: $0.name, folder: $0.path) },
-						environments: try decodeEnvironments(data),
+						environments: try Self.decodeEnvironments(data),
 						cliAccess: cliAccess
 					)
 				}
@@ -3661,7 +3737,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
 				try store.authorizeCompanion(vaultId: vaultId, .write)
 				guard try getEnvironmentsThrowing(vaultId: vaultId) == expected else { return .changedSinceReview }
-				let environments = normalizedEnvironments(merged)
+				let environments = Self.normalizedEnvironments(merged)
 				guard EnvValidation.areValidEnvironments(environments) else { return .failure(.encodingFailed) }
 				let payload = try prepareProjectPayload(environments: environments)
 				guard payload.data.count <= VaultConstants.maxVaultSizeWarning else {
@@ -4280,10 +4356,11 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	private func getEnvironmentsThrowing(vaultId: String) throws -> [String: [String: String]]? {
 		guard let data = try readItemThrowing(account: vaultId) else { return nil }
-		return try decodeEnvironments(data)
+		return try Self.decodeEnvironments(data)
 	}
 
-	private func decodeEnvironments(_ data: Data) throws -> [String: [String: String]] {
+	/// A values item's environments, as strictly as the LPM CLI writes them.
+	static func decodeEnvironments(_ data: Data) throws -> [String: [String: String]] {
 		do {
 			try StrictJSONKeyValidator.validate(data)
 			guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -4293,7 +4370,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 					operation: "decode vault data", code: errSecDecode)
 			}
 			let payload = try JSONDecoder().decode(EnvironmentsWrapper.self, from: data)
-			let environments = normalizedEnvironments(payload.environments)
+			let environments = Self.normalizedEnvironments(payload.environments)
 			guard EnvValidation.areValidEnvironments(environments) else {
 				throw KeychainStoreError.status(
 					operation: "validate vault data", code: errSecDecode)
@@ -4304,7 +4381,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
-	private func normalizedEnvironments(
+	private static func normalizedEnvironments(
 		_ environments: [String: [String: String]]
 	) -> [String: [String: String]] {
 		environments.isEmpty ? ["default": [:]] : environments

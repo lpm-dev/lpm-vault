@@ -271,6 +271,43 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
+	/// Projects whose values need an approval the unlock didn't give, which a
+	/// read that can't ask fails on, as macOS refuses it.
+	var projectsNeedingApproval: Set<String> {
+		get { lock.withLock { storedProjectsNeedingApproval } }
+		set { lock.withLock { storedProjectsNeedingApproval = newValue } }
+	}
+	private var storedProjectsNeedingApproval: Set<String> = []
+	/// Why a read that can't ask fails for a project, as a Keychain error would.
+	var unpromptedReadFailures: [String: KeychainError] {
+		get { lock.withLock { storedUnpromptedReadFailures } }
+		set { lock.withLock { storedUnpromptedReadFailures = newValue } }
+	}
+	private var storedUnpromptedReadFailures: [String: KeychainError] = [:]
+	/// Each project a read that can't ask read, in order.
+	var unpromptedProjectReads: [String] { lock.withLock { storedUnpromptedProjectReads } }
+	private var storedUnpromptedProjectReads: [String] = []
+	/// Runs before each read that can't ask, outside the lock, with the
+	/// project it reads, as a slow Keychain would.
+	var beforeUnpromptedProjectRead: (@Sendable (String) -> Void)? {
+		get { lock.withLock { storedBeforeUnpromptedProjectRead } }
+		set { lock.withLock { storedBeforeUnpromptedProjectRead = newValue } }
+	}
+	private var storedBeforeUnpromptedProjectRead: (@Sendable (String) -> Void)?
+
+	func getProjectResultWithoutPrompting(vaultId: String) -> Result<VaultProject?, KeychainError> {
+		let hook = lock.withLock {
+			storedUnpromptedProjectReads.append(vaultId)
+			return storedBeforeUnpromptedProjectRead
+		}
+		hook?(vaultId)
+		let failure = lock.withLock {
+			storedProjectsNeedingApproval.contains(vaultId) ? KeychainError.keychainLocked : storedUnpromptedReadFailures[vaultId]
+		}
+		if let failure { return .failure(failure) }
+		return getProjectResult(vaultId: vaultId)
+	}
+
 	func simulateCLISet(
 		vaultId: String,
 		environment: String,

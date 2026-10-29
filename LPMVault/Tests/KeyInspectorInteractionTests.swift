@@ -64,6 +64,20 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("No unsaved changes"))
 		}
 
+		@Test("a value pasted into the masked field keeps its line breaks")
+		func maskedMultilineEdit() async throws {
+			let (store, keychain) = makeStore(["default": ["TOKEN": "dev"]])
+			defer { store.lock() }
+			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
+			defer { host.window.close() }
+			try await host.settle()
+			let value = "line one\r\nline two\n"
+			try host.enterValue(value)
+			#expect(try await host.waitForText("1 unsaved change"))
+			try await host.click("Save")
+			#expect(try await host.waitUntil { stored(keychain, "default", "TOKEN").map(ExactText.init) == ExactText(value) })
+		}
+
 		@Test("an edited value is checked as it's typed, and a revealed one shows where its hidden characters are")
 		func editedValueHiddenCharacters() async throws {
 			let (store, keychain) = makeStore(["default": ["TOKEN": "dev"]])
