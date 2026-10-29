@@ -43,13 +43,14 @@ struct VaultValueField: NSViewRepresentable {
 		// them in; for a few minutes after a verification code arrives in Messages
 		// or Mail, it offers that code instead.
 		if isSecure { field.contentType = .oneTimeCode }
+		// Single-line mode drops the line breaks of a pasted value, such as a
+		// private key's, so a field kept on one line scrolls instead.
+		field.usesSingleLineMode = false
 		if maxLines > 1 {
-			field.usesSingleLineMode = false
 			field.cell?.wraps = true
 			field.cell?.isScrollable = false
 			field.lineBreakMode = .byCharWrapping
 		} else {
-			field.usesSingleLineMode = true
 			field.cell?.wraps = false
 			field.cell?.isScrollable = true
 		}
