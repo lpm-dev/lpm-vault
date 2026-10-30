@@ -45,9 +45,10 @@ jobs:
     runs-on: macos-15
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
-    # A build with no compatible cache, as after an Xcode or workflow change,
-    # builds every SDK module for both architectures and takes about 15 minutes.
-    timeout-minutes: 25
+    # Compiling the app once for each architecture takes 9 to 15 minutes on
+    # these 3-core runners, cache or not, and a slow runner has needed more
+    # than twice that.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:

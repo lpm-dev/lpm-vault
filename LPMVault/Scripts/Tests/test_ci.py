@@ -1,6 +1,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -382,6 +383,17 @@ class WebCheckTests(unittest.TestCase):
         installs = [line.strip() for workflow in sorted((self.ROOT / '.github/workflows').glob('*.yml'))
                     for line in workflow.read_text().splitlines() if 'playwright install' in line]
         self.assertEqual(installs, ['- run: npx --prefix web playwright install chromium'])
+
+
+class ReleaseBundleCheckTests(unittest.TestCase):
+    def time_limit(self, workflow, job):
+        lines = (WebCheckTests.ROOT / '.github/workflows' / workflow).read_text().splitlines()
+        start = lines.index(f'  {job}:') + 1
+        end = next((i for i in range(start, len(lines)) if re.match(r'  \S', lines[i])), len(lines))
+        return int(next(line.split(':', 1)[1] for line in lines[start:end] if line.startswith('    timeout-minutes:')))
+
+    def test_the_universal_check_waits_as_long_as_the_release_build_does(self):
+        self.assertGreaterEqual(self.time_limit('ci.yml', 'release'), self.time_limit('release.yml', 'release'))
 
 
 if __name__ == '__main__':
