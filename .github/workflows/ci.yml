@@ -110,7 +110,10 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web --ignore-scripts
       - run: npm run build:sdk --prefix web && git diff --exit-code -- web/public/vendor
-      - run: npx --prefix web playwright install --with-deps chromium
+      # The runner image already has Chromium's libraries, and the site serves
+      # its own fonts. --with-deps would add only fallback fonts and xvfb, and
+      # downloading them from Ubuntu's mirror has taken most of the time limit.
+      - run: npx --prefix web playwright install chromium
       - run: node --test web/tests/test_*.cjs
       - run: python3 web/tests/test_routes.py
       - run: python3 web/tests/test_proxy.py

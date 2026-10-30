@@ -375,5 +375,14 @@ class UISuiteChangeTests(unittest.TestCase):
                          ['LPMVault/Tests/Old.swift', 'LPMVault/Tests/QuitTests.swift'])
 
 
+class WebCheckTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[3]
+
+    def test_web_checks_install_the_browser_without_waiting_on_system_packages(self):
+        installs = [line.strip() for workflow in sorted((self.ROOT / '.github/workflows').glob('*.yml'))
+                    for line in workflow.read_text().splitlines() if 'playwright install' in line]
+        self.assertEqual(installs, ['- run: npx --prefix web playwright install chromium'])
+
+
 if __name__ == '__main__':
     unittest.main()
