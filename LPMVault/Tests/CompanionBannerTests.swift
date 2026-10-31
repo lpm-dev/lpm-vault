@@ -174,8 +174,11 @@ extension SheetInteractionTests {
 			#expect(element("Repair…", in: host.window) == nil)
 		}
 		/// An unlocked store showing `project`, with `other` in the sidebar, each
-		/// with newer data as `states` says, as a snapshot reads it.
-		private func twoProjects(_ states: [String: String], refusals: [String: CompanionRefusal] = [:]) async throws -> Fixture {
+		/// with newer data as `states` says, as a snapshot reads it. With
+		/// `loadGate`, `project`'s values stay loading until the gate is signaled.
+		private func twoProjects(_ states: [String: String], refusals: [String: CompanionRefusal] = [:],
+			loadGate: DispatchSemaphore? = nil) async throws -> Fixture
+		{
 			let folder = FileManager.default.temporaryDirectory.appending(path: "lpm-companion-banner-\(UUID().uuidString)", directoryHint: .isDirectory)
 			try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 			let defaults = try #require(UserDefaults(suiteName: folder.lastPathComponent))
@@ -193,6 +196,9 @@ extension SheetInteractionTests {
 				backupKeys: .inMemory(InMemoryKeychainBackend(), home: try testLPMHome(in: folder)))
 			store.isUnlocked = true
 			#expect(await store.loadProjects())
+			if let loadGate {
+				keychain.blockNextListProjects = { _ = loadGate.wait(timeout: .now() + testWaitSeconds) }
+			}
 			store.openProject(id: "project")
 			return Fixture(store: store, keychain: keychain, defaults: defaults, folder: folder)
 		}
@@ -218,15 +224,19 @@ extension SheetInteractionTests {
 		@Test("a project this version can only read offers no edits")
 		func readOnlyProjectOffersNoEdits() async throws {
 			let readOnly = #"{"schemaVersion":1,"vaultId":"VAULT","state":"active","features":{"future":{"version":1,"ifUnsupported":"readOnly","kinds":["future-log"],"state":"active"}}}"#
-			let fixture = try await twoProjects(["project": readOnly])
+			let load = DispatchSemaphore(value: 0)
+			defer { load.signal() }
+			let fixture = try await twoProjects(["project": readOnly], loadGate: load)
 			defer { fixture.tearDown() }
 			let host = workspace(fixture)
 			defer { host.window.close() }
 			try await host.settle()
 			#expect(try await host.waitForText("This project uses data from a newer LPM"))
-			let newKey = try #require(element("New key", in: host.window))
+			#expect(try await host.waitForText("Loading Project…"))
+			load.signal()
+			let newKey = try await host.waitForElement(saying: "New key")
 			#expect(!newKey.isEnabledNow, "New key is disabled")
-			let importer = try #require(element("Import variables into", in: host.window))
+			let importer = try await host.waitForElement(saying: "Import variables into")
 			#expect(!importer.isEnabledNow, "Import is disabled")
 		}
 
@@ -240,7 +250,8 @@ extension SheetInteractionTests {
 			try await host.settle()
 			#expect(try await host.waitForText("This project uses data from a newer LPM"))
 			#expect(try await host.waitUntil { fixture.store.selectedProjectLoadFailure != nil })
-			try await host.settle()
+			let failure = try #require(fixture.store.selectedProjectLoadFailure)
+			#expect(try await host.waitForText(failure.message), "the load error shows, where Retry would be")
 			#expect(element("Retry", in: host.window) == nil)
 		}
 
