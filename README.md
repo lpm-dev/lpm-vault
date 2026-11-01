@@ -63,7 +63,10 @@ See [Release channels](docs/release-channels.md) for the publishing and recovery
 - Manage project variables across multiple environments.
 - Compare values and find missing keys in the environment matrix. The status bar of every project page counts the keys that drift between environments, are missing from one, or fail their rules, and each count opens the matrix filtered to those keys.
 - Import variables from an `.env` file, dropped on the window or chosen, or from pasted text. Review them with values hidden: keep existing values or replace them, leave new keys out, and undo the import for 30 seconds afterward.
-- Export `.env` files.
+- Edit an environment as **Raw text**. Every line that can't be saved is marked with its reason, and a review lists each new, changed and removed key before the save.
+- Export `.env` files. As `lpm env export` does, Export makes git ignore the file before writing it and refuses a file git tracks.
+- Publish an environment to Vercel, Netlify, Coolify, GitHub Actions secrets and variables, or Cloudflare Worker secrets. Connect accounts on the **Platforms** page, then choose **Publish…** in the title bar. A review shows what will change before anything is sent, and each destination is saved for the next publish.
+- Back up every env project to one passphrase-protected file, and restore it after a review, from **Settings → Backup & Restore**. Your lpm.dev and platform logins aren't in the backup, so you sign in again on the new Mac.
 - Find where a value is stored. **Find Value…** (⇧⌘F) lists every project, environment and key in the selected account that stores a value you paste, or in every account you belong to on this Mac, and **Find Reused Values…** lists credentials stored under more than one key, environment or project. Results name places, never values. A search reads one project at a time, runs only while the app is unlocked, and keeps no history or index.
 - Unlock with Touch ID or your Mac login password.
 - Use local values from `lpm env`, `lpm dev`, and `lpm run`.
@@ -158,6 +161,8 @@ CLI approval protects secret reads and temporary records used during updates.
 It does not revoke values that a process already received.
 
 ## Changes from the CLI
+
+LPM Vault and the LPM CLI share the LPM home, `~/.lpm` by default, where they keep your login and env projects. If your shell sets `LPM_HOME`, choose the same folder under **Settings → LPM Home**. LPM Vault relaunches to use it. If that folder holds neither a login nor env projects, LPM Vault offers to move the ones in the current home there first.
 
 When you return to the unlocked app, it reloads local changes from the LPM CLI.
 Use **Refresh** to reload changes while the app stays active.
