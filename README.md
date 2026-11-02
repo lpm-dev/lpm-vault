@@ -13,9 +13,10 @@
   <a href="SECURITY.md">Security</a>
 </p>
 
-LPM Vault is a native macOS app for project environment variables and secrets.
-It stores local values in the macOS Keychain and shares them with the signed LPM CLI.
-Optional encrypted sync connects personal and organization env projects through [LPM.dev](https://lpm.dev).
+LPM Vault is a native macOS app for the environment variables and secrets of your projects.
+An env project holds the environments of one project, such as development and production, and the variables of each environment.
+LPM Vault stores the values in the macOS Keychain and shares them with the signed LPM CLI.
+Encrypted sync through [LPM.dev](https://lpm.dev) is optional. It connects personal and organization env projects.
 
 ![LPM Vault compares dummy variables across three environments](docs/assets/vault-workspace.png)
 
@@ -23,108 +24,168 @@ The screenshot uses dummy project data. It contains no real credentials.
 
 ## Install
 
-LPM Vault supports **macOS 14 or later**, on **Apple silicon and Intel**.
-Touch ID is optional. You can unlock the app with your Mac login password.
+LPM Vault runs on macOS 14 or later, on Apple silicon and Intel Macs.
+You unlock it with Touch ID or with your Mac login password.
 
-If protected state cannot load, the locked screen explains the recovery action.
-Failed project loads show **Retry** and a support link. The app keeps unreadable state protected.
-
-1. [Download the current installer](https://vault.lpm.dev/download).
+1. [Download the installer](https://vault.lpm.dev/download).
 2. Open the DMG.
 3. Drag **LPM Vault** into **Applications**.
 4. Open **LPM Vault**.
 
-Official releases include Developer ID signatures and Apple notarization.
-The application menu provides **Check for Updates…**.
-Sparkle asks before it enables background update checks.
+Official releases have a Developer ID signature and Apple notarization.
+If LPM Vault cannot read its protected data, the locked screen gives the recovery step.
+If a project does not load, LPM Vault shows **Retry** and a support link.
+Data that LPM Vault cannot read stays protected.
 
 ## Updates
 
+To look for a new version, choose **Check for Updates…** in the LPM Vault menu.
+LPM Vault asks before it starts to look for updates in the background.
+
 **Settings → Updates** shows the installed version and the update channel.
-Stable installations use **Stable** by default. Direct nightly installations use **Nightly** by default.
-Vault keeps your channel choice across app updates and account changes.
+The **Stable** channel offers stable releases.
+The **Nightly** channel offers development releases and newer stable releases. Development releases can contain bugs.
+A stable install starts on Stable. A nightly that you install from its DMG starts on Nightly.
+LPM Vault keeps your channel choice across app updates and account changes.
+Both channels use signed, notarized installers and signed update feeds.
 
-**Stable** offers stable releases. **Nightly** also offers development releases and newer stable releases.
-Nightly releases can contain bugs. Both channels use signed, notarized installers and signed update feeds.
-Changing the channel does not install an update or change your stored secrets.
-The channel picker waits until the current update session ends.
-If Sparkle keeps a downloaded or prepared update, install or skip it before changing channels.
-Use **Check for Updates…** to reopen that update.
+A change of channel does not install an update, and it does not change your stored secrets.
+If an update is downloaded or ready to install, install it or skip it before you change the channel.
+To open that update again, choose **Check for Updates…**.
+If you change from Nightly to Stable, LPM Vault keeps the installed nightly until a newer stable release is available.
+LPM Vault never installs an older version by itself. Settings shows when this is the case.
 
-If you switch from Nightly to Stable, Vault keeps the installed nightly until a newer stable build is available.
-The settings explain this state. Vault does not downgrade your app automatically.
-
-The release workflow runs nightly at **03:37 UTC**. It publishes only when `main` advances beyond the published nightly.
-Release maintainers can also run the workflow manually from `main`.
-See [Release channels](docs/release-channels.md) for the publishing and recovery procedures.
+The release workflow runs every night at 03:37 UTC.
+It publishes a nightly only when `main` has commits that the last nightly does not have.
+Release maintainers can also start the workflow from `main` by hand.
+[Release channels](docs/release-channels.md) gives the publishing and recovery procedures.
 
 ## What you can do
 
-- Manage project variables across multiple environments.
-- Compare values and find missing keys in the environment matrix. The status bar of every project page counts the keys that drift between environments, are missing from one, or fail their rules, and each count opens the matrix filtered to those keys.
-- Import variables from an `.env` file, dropped on the window or chosen, or from pasted text. Review them with values hidden: keep existing values or replace them, leave new keys out, and undo the import for 30 seconds afterward.
-- Edit an environment as **Raw text**. Every line that can't be saved is marked with its reason, and a review lists each new, changed and removed key before the save.
-- Export `.env` files. As `lpm env export` does, Export makes git ignore the file before writing it and refuses a file git tracks.
-- Publish an environment to Vercel, Netlify, Coolify, GitHub Actions secrets and variables, or Cloudflare Worker secrets. Connect accounts on the **Platforms** page, then choose **Publish…** in the title bar. A review shows what will change before anything is sent, and each destination is saved for the next publish.
-- Back up every env project to one passphrase-protected file, and restore it after a review, from **Settings → Backup & Restore**. Your lpm.dev and platform logins aren't in the backup, so you sign in again on the new Mac.
-- Find where a value is stored. **Find Value…** (⇧⌘F) lists every project, environment and key in the selected account that stores a value you paste, or in every account you belong to on this Mac, and **Find Reused Values…** lists credentials stored under more than one key, environment or project. Results name places, never values. A search reads one project at a time, runs only while the app is unlocked, and keeps no history or index.
-- Unlock with Touch ID or your Mac login password.
-- Use local values from `lpm env`, `lpm dev`, and `lpm run`.
+With LPM Vault, you can:
+
+- Keep the variables of a project in many environments.
+- Compare values across environments, and find missing keys, in **All variables**.
+- Edit an environment as `.env` text in **Raw text**.
+- Import variables from an `.env` file or from pasted text.
+- Export an environment to an `.env` file.
+- See and edit the rules that `lpm.json` declares for each key, on the **Schema** page.
+- Publish an environment to Vercel, Netlify, Coolify, GitHub Actions, or Cloudflare Workers.
+- Back up every env project to one file that a passphrase protects, and restore it.
+- Find where a value is stored, and find values that you store more than once.
+- Use the values with `lpm env`, `lpm dev`, and `lpm run`.
 - Sync encrypted data to personal or organization env projects.
-- Choose System, Light, or Dark appearance.
+- Choose a System, Light, or Dark appearance.
 
-Local project storage does not require an LPM.dev account.
-Cloud sync requires an account and the permissions for the selected project.
-
-Open **Account** from the account menu at the bottom of the sidebar, then choose **Sign in with browser** to connect your account.
-After browser verification, return to the app to check the connection status.
-The local callback page provides retry instructions if verification fails. It loads no external resources.
+You do not need an LPM.dev account to keep env projects on this Mac.
+Cloud sync needs an account and permission for the project.
+To connect your account, open **Settings…** from the account menu at the bottom of the sidebar, or press ⌘,.
+Then choose **Sign in with browser**.
+After the browser step, the browser opens a page that LPM Vault serves on your Mac.
+If the sign-in fails, this page tells you how to try again. It loads no external resources.
+Go back to LPM Vault to see the connection status.
 
 ## Start with a project
 
-1. Unlock the app.
+1. Unlock LPM Vault.
 2. Create an env project.
-3. Add environments, then add variables, or import them into each environment from an `.env` file or pasted text.
-4. Use **All variables** to compare environments.
-5. To connect the CLI, use **Connect CLI** for the selected project.
+3. Add environments to the project.
+4. Add variables to each environment, or import them.
+5. To compare the environments, select **All variables**.
+6. To connect the LPM CLI, select **Connect CLI**.
 
-Click anywhere in a key cell to open its inspector.
-Drag a column boundary in the table header to resize the column.
-Both **All variables** and each environment table support this gesture.
-Each project keeps its column widths during the session, including visits to the Settings page and project reloads.
+Click a key cell to open the inspector. The inspector shows the values, the rules, and the description of the key.
+To change the width of a column, drag its boundary in the table header.
+Each project keeps its column widths when you go to Settings and back. LPM Vault does not save them when you quit.
 
-Select **Schema** under a project to see and edit the rules its `lpm.json` declares for each key, such as required keys, formats, defaults, and keys exposed to the browser. The LPM CLI enforces them.
-Rules inherited from another schema file or a preset show where they come from.
+The status bar of a project page counts three kinds of keys.
+It counts keys that differ between environments, keys that an environment does not have, and keys that fail their rules.
+Click a count to see only those keys in **All variables**.
+
+## Edit, import, and export
+
+**Raw text** shows an environment as `.env` text. You can select and copy single lines, or edit the text.
+LPM Vault marks each line that it cannot save, and gives the reason.
+Before the save, a review lists each new, changed, and removed key. After the save, you can undo it.
+
+To import variables, drop an `.env` file on the window, choose a file, or paste text.
+The review sorts the keys into new, changed, and unchanged keys, and hides their values.
+You can keep an existing value or replace it, and you can leave new keys out.
+For 30 seconds after an import, you can undo it.
+
+Export makes git ignore the file before it writes the file, as `lpm env export` does.
+Export does not write to a file that git tracks.
+
+## Rules for keys
+
+The `lpm.json` file of a project can declare rules for each key. Examples are required keys, formats, defaults, and keys for the browser.
+The LPM CLI enforces these rules.
+Select **Schema** under a project to see and edit them.
+A rule from an imported schema file or a preset shows where it comes from.
+Rules from an imported schema are read-only. **Override rules** edits a copy in `lpm.json`, and **Reset to original** removes the copy.
+
 Select a key or a group to edit it in the side panel.
-Edits stay in an unsaved draft: rows show Draft, New, Renamed, or Removed, and ⌘Z and ⇧⌘Z undo and redo.
-**Review & save**, or ⌘S, shows each change as lines of `lpm.json` and what it does to each environment's stored values, naming problems but never values. Nothing is written until you choose **Save to lpm.json**.
-Renaming a key `lpm.json` declares is the exception: once your draft is saved or discarded, the panel renames it in `lpm.json` and in the stored values right away.
-**Add key** declares a new key. Keys you store that `lpm.json` doesn't declare are listed below the rules with **Declare**, or with **Open** for one that differs from a declared key only in letter case; keys the LPM CLI never passes to a process can't be declared. With no rules yet, one button declares them all at once, apart from keys that differ only in letter case, which are left for you to choose between.
-The trash button, or ⌘⌫, removes a key or group. Removing a key that other rules name offers a fix for each; a key or group declared in an imported schema says where.
-Rules imported from another schema are read-only until **Override rules** or **Override group**, which edits a copy in `lpm.json`; **Reset to original** removes the copy.
-**Client prefixes** lists the prefixes that make keys public. Adding a prefix marks the keys it matches public.
-When `lpm.json` or a schema it imports changes on disk, the draft is re-applied on top. A change that conflicts with your draft asks you to keep yours or take theirs.
-↑ and ↓ move through keys and groups, and Esc closes the panel.
-A key that fails its rules in an environment, such as a required key with no value there, shows a red dot, and the status bar counts the failures: against your draft once it's checked, and against `lpm.json`'s rules otherwise.
-The inspector lists the selected key's rules, read-only, between its values and its description, with a link to edit them on the Schema page.
-Keys whose rules make them public, because frameworks expose them to the browser, show a globe and their values unmasked; every other value stays masked until you reveal it.
-When you add a variable, typing a name suggests declared keys that are not yet set in the selected environments; use the arrow keys and Return, or click one, to pick it and see its rules beside the value.
-A declared key's value is checked as you type: a value that fails a rule is outlined in red with the reason below it, and you can still add it with Add anyway, as `lpm env set` does. A character count appears when the rule limits the value's length.
-LPM Vault checks each environment's stored values against these rules with the same engine the LPM CLI uses.
-A value that fails a rule gets a red marker and an underline. Its tooltip shows the reason.
-A missing required value reads Required. A value that the CLI fills from a schema default reads (default).
-The Invalid chip and the status bar's invalid count list the keys that fail.
-An environment's table shows a banner for each failing group.
-An environment without values of its own uses `.env`'s values in the LPM CLI. The app checks those values against the requested environment's rules and shows any failures.
-Raw text shows stored assignments. Required keys and schema defaults also appear in the table.
-The check covers stored values. The LPM CLI can also read project `.env` files and shell variables when it runs a command.
-The inspector outlines failing values in red and lists problems under RULES.
-It checks pending value edits and key renames before you save.
+Your edits stay in a draft until you save them. ⌘Z undoes an edit, and ⇧⌘Z does it again.
+**Review & save** (⌘S) shows each change as lines of `lpm.json`, and what the change does to the values of each environment.
+The review names problems, never values.
+LPM Vault writes nothing until you choose **Save to lpm.json**.
+A new name for a declared key is different. After you save or discard your draft, LPM Vault writes the new name to `lpm.json` and to the stored values at once.
+If `lpm.json` changes on disk, LPM Vault applies your draft again on top of the change.
+If the change conflicts with your draft, you choose which one to keep.
 
-Values can hold characters that are hard to see, or that change how the text reads, such as a zero-width space or byte order mark from a paste, a no-break space, a direction override, a carriage return, or a space or newline at either end. LPM Vault flags them, with or without rules, using the same engine the LPM CLI uses for `lpm env set`, `import` and `check`: when you add a variable, in the inspector for stored and edited values, in Raw text and its review, and when you import. A warning names each character, as an escape such as `\u{200b}` with its Unicode name, and says where it is, never the value; a revealed value shows them in place. **Remove hidden characters** and **Trim the ends** fix a value only when you choose them, and a warning never stops a save or an import. Line breaks inside a multiline value and its final newline, emoji sequences, and text in scripts that need joiners aren't flagged.
-An import and Raw text read `.env` text as the LPM CLI does: only spaces and tabs around a key or an unquoted value are trimmed, and a byte order mark only at the start of a file, so every other character reaches the value and its warning.
+LPM Vault tests each stored value against the rules, with the same engine as the LPM CLI.
+A value that fails a rule gets a red marker, and its tooltip gives the reason.
+When you add a value, LPM Vault tests it while you type.
+You can still add a value that fails a rule with **Add anyway**, as `lpm env set` does.
+The test covers stored values only. When the LPM CLI runs a command, it can also read the `.env` files of the project and shell variables.
 
-The connection sheet links a project directory through `lpm.json`.
+A key that the rules make public shows a globe, and its value is not masked. Frameworks give such keys to the browser.
+All other values stay masked until you reveal them.
+
+## Hidden characters
+
+Some characters are hard to see. Examples are a zero-width space, a no-break space, and a newline at the end of a value.
+LPM Vault warns about them with the same engine that `lpm env set`, `lpm env import`, and `lpm env check` use.
+A warning gives the name and the position of each character, never the value.
+**Remove hidden characters** and **Trim the ends** change a value only when you choose them.
+A warning never stops a save or an import.
+
+## Find values
+
+**Find Value…** (⇧⌘F) lists each project, environment, and key that stores a value that you paste.
+**Find Reused Values…** lists credentials that more than one key, environment, or project stores.
+You can search the selected account, or every account on this Mac.
+The results name places, never values.
+LPM Vault searches only while it is unlocked, and keeps no history or index of a search.
+
+## Publish to platforms
+
+You can publish an environment to these destinations:
+
+- A Vercel project.
+- A Netlify site.
+- A Coolify application or service.
+- GitHub Actions secrets and variables.
+- Cloudflare Worker secrets.
+
+1. Open **Platforms** from the account menu at the bottom of the sidebar.
+2. Connect your account for the platform.
+3. Select an environment.
+4. Choose **Publish…** in the title bar.
+5. Read the review. It shows what will change before LPM Vault sends anything.
+
+LPM Vault saves each destination for the next publish.
+
+## Back up and restore
+
+**Settings → Backup & Restore** exports every env project to one backup file. A passphrase that you choose protects the file.
+To restore a backup, open the same section and choose the file. A review comes before the restore.
+Your logins to lpm.dev and to the platforms are not in the backup. On a new Mac, you sign in again.
+
+## Connect the LPM CLI
+
+**Connect CLI** links a project folder through `lpm.json`.
+Linking a folder does not install the LPM CLI.
 Install the [official LPM CLI](https://cli.lpm.dev/docs/installation) for shared Keychain access.
 Then run a project script:
 
@@ -132,73 +193,72 @@ Then run a project script:
 lpm run dev
 ```
 
-Connect CLI shows commands for the selected environment, with an explicit `--env` flag.
+**Connect CLI** shows commands for the selected environment, with an explicit `--env` flag.
 Run these commands from the linked project folder.
-The flag overrides script environment settings. Existing `lpm.json` aliases still apply.
-If an alias selects another environment, the sheet explains the configuration change required before it shows commands.
-An empty environment uses default vault values when a script runs.
-Linking a folder does not install the CLI.
+The flag overrides the environment that the script settings select. Aliases in `lpm.json` still apply.
+If an alias selects another environment, the sheet tells you what to change in the configuration before it shows commands.
+If an environment is empty, a script uses the default vault values.
 
-See the [app guide](https://cli.lpm.dev/docs/dev/lpm-vault) and [env guide](https://cli.lpm.dev/docs/dev/env) for environment selection.
+The [app guide](https://cli.lpm.dev/docs/dev/lpm-vault) and the [env guide](https://cli.lpm.dev/docs/dev/env) tell how the LPM CLI selects an environment.
 
 ## CLI approval
 
-Select a project. Use **CLI approval** beside **All variables** to control CLI access for that project.
+CLI approval controls whether the LPM CLI must ask you before it reads the values of a project.
+To change it, select a project, then use **CLI approval** beside **All variables**.
+When CLI approval is off, `lpm run` gets the values without a prompt.
+When CLI approval is on, macOS asks for Touch ID or your Mac login password before the Keychain releases the values.
+If the authentication fails or you cancel it, the LPM CLI stops before it runs lifecycle hooks or the main script.
 
-- **Off:** `lpm run` injects env values automatically.
-- **On:** macOS requires Touch ID or your Mac login password before Keychain releases env values.
+In the sidebar, a folder marks automatic CLI access, and a lock marks required CLI approval.
+You can change the setting while LPM Vault is unlocked, with no other authentication prompt.
+The setting applies to every environment of the project on this Mac.
 
-If authentication fails or you cancel it, LPM stops before it runs lifecycle hooks or the main script.
-
-The sidebar shows a folder for automatic CLI access and a lock for required CLI approval.
-Change the setting while the app is unlocked. This change requires no extra authentication prompt.
-The setting applies to every environment in the selected project on this Mac.
-
-The app's **Lock** button hides secrets and clears the app's authentication context.
-It does not change CLI approval.
-
-CLI approval protects secret reads and temporary records used during updates.
-It does not revoke values that a process already received.
+The **Lock** button hides secrets and clears the authentication of LPM Vault. It does not change CLI approval.
+CLI approval protects secret reads and the temporary records that updates use.
+It does not take back values that a process already received.
 
 ## Changes from the CLI
 
-LPM Vault and the LPM CLI share the LPM home, `~/.lpm` by default, where they keep your login and env projects. If your shell sets `LPM_HOME`, choose the same folder under **Settings → LPM Home**. LPM Vault relaunches to use it. If that folder holds neither a login nor env projects, LPM Vault offers to move the ones in the current home there first.
+LPM Vault and the LPM CLI share the LPM home. The LPM home is the folder for your login and env projects, `~/.lpm` by default.
+If your shell sets `LPM_HOME`, choose the same folder in **Settings → LPM Home**. LPM Vault then restarts with that folder.
+If that folder has no login and no env projects, LPM Vault offers to move them there from the current home first.
 
-When you return to the unlocked app, it reloads local changes from the LPM CLI.
-Use **Refresh** to reload changes while the app stays active.
-This reads project metadata, CLI approval, and secrets for the selected project. It does not contact the cloud.
+When you go back to LPM Vault while it is unlocked, it refreshes the changes that the LPM CLI made.
+To refresh while LPM Vault stays active, use **Refresh**.
+A refresh reads the project metadata, CLI approval, and secrets of the selected project. It does not contact the cloud.
 
-Unsaved editor values remain in the editor. A changed or deleted secret shows a conflict and blocks Save.
-Copying and exporting wait for a refresh in progress, so they use the reloaded values.
-If a refresh fails, copying, revealing, and exporting pause until **Retry** succeeds.
-Automatic refresh does not extend the idle-lock timer. The locked app does not read secret values.
+Unsaved values stay in the editor.
+If the LPM CLI changed or deleted a secret, LPM Vault shows a conflict and blocks **Save**.
+Copy and export wait for a refresh in progress, so they use the new values.
+If a refresh fails, copy, reveal, and export stop until **Retry** succeeds.
+An automatic refresh does not reset the idle lock timer. While LPM Vault is locked, it does not read secret values.
 
 ## Security and privacy
 
-Local secrets use the Data Protection Keychain on this Mac. They do not sync through iCloud Keychain.
-Cloud sync encrypts values on your Mac before upload. It preserves named empty environments, including projects with no keys.
-Exported `.env` files and copied values require separate protection.
+LPM Vault keeps local secrets in the Data Protection Keychain on this Mac. They do not sync through iCloud Keychain.
+Cloud sync encrypts values on your Mac before the upload. It keeps named empty environments, and projects with no keys.
+Exported `.env` files and copied values are outside this protection. You must protect them yourself.
 
 The Mac app sends no analytics.
-The website uses limited analytics and provides an opt-out control.
-Read [PRIVACY.md](PRIVACY.md) for network activity and website privacy.
+The website uses limited analytics and has an opt-out control.
+[PRIVACY.md](PRIVACY.md) describes the network activity of LPM Vault and the privacy of the website.
 
-Read the [security model](https://cli.lpm.dev/docs/infra/secrets-vault) for storage and sync details.
-Report suspected vulnerabilities privately through [SECURITY.md](SECURITY.md).
+The [security model](https://cli.lpm.dev/docs/infra/secrets-vault) gives the details of storage and sync.
+To report a suspected vulnerability privately, follow [SECURITY.md](SECURITY.md).
 
 ## Support and contributions
 
-Read [SUPPORT.md](SUPPORT.md) for troubleshooting and issue reporting.
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and CI checks.
-Signed builds and release procedures are in [RELEASING.md](LPMVault/RELEASING.md).
+[SUPPORT.md](SUPPORT.md) tells you how to troubleshoot and how to report an issue.
+[CONTRIBUTING.md](CONTRIBUTING.md) gives the development setup and the CI checks.
+[RELEASING.md](LPMVault/RELEASING.md) gives signed builds and the release procedure.
 
-Source builds need their own signing identity and storage contract for Keychain access.
-Use the official installer for production secrets and CLI integration.
+A build from source needs its own signing identity and storage contract for Keychain access.
+For production secrets and the LPM CLI, use the official installer.
 
 LPM Vault is part of [LPM CLI](https://cli.lpm.dev), [LPM.dev Registry](https://lpm.dev), and [LPM Firewall](https://firewall.lpm.dev).
 
 ## License
 
-Dual-licensed under **MIT OR Apache-2.0**, at your option.
+LPM Vault is dual-licensed under `MIT OR Apache-2.0`, at your option.
 See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
-Third-party components retain their own licenses.
+Third-party components keep their own licenses.
