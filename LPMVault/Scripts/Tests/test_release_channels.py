@@ -53,8 +53,8 @@ class ReleaseMetadata(unittest.TestCase):
     def test_project_metadata_preserves_released_version_and_matches_generator(self):
         project = (SCRIPTS.parent / 'LPMVault.xcodeproj/project.pbxproj').read_text()
         generator = (SCRIPTS.parent / 'project.yml').read_text()
-        fields = [('MARKETING_VERSION', channels.version_tuple, (1, 0, 2)),
-                  ('CURRENT_PROJECT_VERSION', channels.build_tuple, (7, 0, 0))]
+        fields = [('MARKETING_VERSION', channels.version_tuple, (1, 1, 0)),
+                  ('CURRENT_PROJECT_VERSION', channels.build_tuple, (8, 0, 0))]
         for field, parse, minimum in fields:
             with self.subTest(field=field):
                 values = set(re.findall(rf'{field} = ([0-9.]+);', project))
