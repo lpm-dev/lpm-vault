@@ -20,8 +20,12 @@ usage() {
 service="$1"
 shift
 
-MAX_ATTEMPTS="${LPM_APPLE_SERVICE_MAX_ATTEMPTS:-5}"
+# CloudKit has dropped most ticket lookups for minutes at a time while letting
+# the odd one through. Waits stop growing at 30 seconds, so the attempts span
+# about 10 minutes and come often enough to land between dropped connections.
+MAX_ATTEMPTS="${LPM_APPLE_SERVICE_MAX_ATTEMPTS:-22}"
 BACKOFF_SECONDS="${LPM_APPLE_SERVICE_BACKOFF_SECONDS:-5}"
+MAX_BACKOFF_SECONDS=30
 
 # stapler exits with EX_NOHOST when CloudKit doesn't answer the ticket lookup,
 # and when staple runs before a just-accepted ticket has propagated.
@@ -95,6 +99,7 @@ while :; do
 		exit "$status"
 	fi
 	delay=$((attempt * attempt * BACKOFF_SECONDS))
+	[ "$delay" -le "$MAX_BACKOFF_SECONDS" ] || delay="$MAX_BACKOFF_SECONDS"
 	echo "::warning::$description hit a transient Apple service failure (attempt $attempt of $MAX_ATTEMPTS); retrying in ${delay}s." >&2
 	sleep "$delay"
 	attempt=$((attempt + 1))
