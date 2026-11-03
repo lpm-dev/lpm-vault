@@ -8,11 +8,11 @@ updates:
       time: '09:00'
       timezone: Etc/UTC
     open-pull-requests-limit: 5
-    commit-message:
-      prefix: chore(deps)
-      include: scope
     labels: [dependencies, github-actions]
+    # Every update in one weekly pull request: main requires up-to-date
+    # branches, and ci-cache-key.py hashes ci.yml and swift-tests.yml, so each
+    # separate update would cost another full macOS run and cold caches.
     groups:
-      actions-minor-and-patch:
+      github-actions:
         applies-to: version-updates
-        update-types: [minor, patch]
+        patterns: ['*']
