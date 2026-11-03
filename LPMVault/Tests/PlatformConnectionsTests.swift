@@ -1281,12 +1281,19 @@ extension SheetInteractionTests {
 			return CGRect(x: bounds.minX * size.width, y: bounds.minY * size.height, width: bounds.width * size.width, height: bounds.height * size.height)
 		}
 
+		/// Waits until the page, with nothing connected, shows its empty list. That list is taller than the
+		/// "Loading…" line before it and moves the tiles down, and the page draws it only after the store
+		/// finishes loading, so tiles measured once loading ends can still be where they were.
+		private func waitForEmptyList<V: View>(in host: SheetTestHost<V>) async throws -> Bool {
+			try await host.waitForText("No platforms connected", exactly: true)
+		}
+
 		// The windows fit CI's 1024 × 768 screen, which moves a window that doesn't.
 		@Test("tiles in a row are as tall as each other, so their Connect buttons line up though their descriptions don't")
 		func tilesLineUp() async throws {
 			let (store, host) = try await page(size: NSSize(width: 760, height: 700))
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitUntil { !store.platforms.isLoading })
+			#expect(try await waitForEmptyList(in: host))
 			for row in [["Vercel", "Netlify", "GitHub"], ["Cloudflare", "Coolify"]] {
 				var buttons: [CGRect] = []
 				for platform in row {
@@ -1302,7 +1309,7 @@ extension SheetInteractionTests {
 			// Four tiles fit across, so a row of four would leave Coolify alone under it.
 			let (store, host) = try await page(size: NSSize(width: 1_000, height: 700))
 			defer { host.window.close(); store.lock() }
-			#expect(try await host.waitUntil { !store.platforms.isLoading })
+			#expect(try await waitForEmptyList(in: host))
 			let vercel = try await layoutFrame(of: "Connect Vercel", in: host)
 			let netlify = try await layoutFrame(of: "Connect Netlify", in: host)
 			let github = try await layoutFrame(of: "Connect GitHub", in: host)
