@@ -165,7 +165,7 @@ If this verification fails, inspect the published release before recovery.
 
 The job signs every Sparkle component, signs Vault, notarizes the app, staples its ticket, and verifies Gatekeeper acceptance. It repeats notarization for the DMG. It then generates and verifies the signed feed and archive signatures.
 
-Apple's timestamp, notarization and ticket services sometimes drop a connection. The release tries each request again a few times, with a growing wait, and fails only when an outage lasts. Each retry appears as a warning in the job's log. A notarization upload whose response is lost leaves an extra submission in Apple's history.
+Apple's timestamp, notarization and ticket services sometimes drop a connection. The ticket service, CloudKit, can drop most requests for minutes at a time. The release keeps trying each timestamped signature and each ticket request for about 10 minutes: it waits 5 seconds, then 20, then 30 between tries. It tries a notarization upload up to 4 times and the notary authentication check up to 3 times. It fails only when an outage outlasts these tries. Each retry appears as a warning in the job's log. A notarization upload whose response is lost leaves an extra submission in Apple's history.
 
 The workflow publishes these assets together:
 

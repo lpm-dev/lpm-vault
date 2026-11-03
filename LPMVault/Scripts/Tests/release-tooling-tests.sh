@@ -196,6 +196,13 @@ exit "$status"
 EOF
 	chmod +x "$fake_bin/$tool"
 done
+# The fake sleep returns at once and records each wait in sleep.calls, so a
+# test can run the production backoff schedule and check it.
+cat >"$fake_bin/sleep" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$1" >>"$FAKE_TOOL_DIR/sleep.calls"
+EOF
+chmod +x "$fake_bin/sleep"
 
 export LPM_APPLE_SERVICE_BACKOFF_SECONDS=0
 APPLE_SERVICE_BACKOFF_SECONDS=0
@@ -216,6 +223,7 @@ run_with_fakes() {
 	printf '%s' "$codesign_outcomes" >"$FAKE_TOOL_DIR/codesign.outcomes"
 	: >"$FAKE_TOOL_DIR/xcrun.calls"
 	: >"$FAKE_TOOL_DIR/codesign.calls"
+	: >"$FAKE_TOOL_DIR/sleep.calls"
 	set +e
 	(
 		set -e
@@ -251,6 +259,15 @@ assert_equal "staples again only after the dropped connection, then validates" "
 assert_equal "staples the same app again" "$(quoted stapler staple -v "$stapled_app")" "$(call xcrun 2)"
 assert_equal "validates the stapled app" "$(quoted stapler validate -v "$stapled_app")" "$(call xcrun 3)"
 assert_success "reports the retry in the release output" grep -Fq '::warning::stapler staple hit a transient Apple service failure' "$FAKE_TOOL_DIR/stderr"
+
+LPM_APPLE_SERVICE_BACKOFF_SECONDS='' run_with_fakes "$(lines \
+	"68|$cloudkit_dropped" "68|$cloudkit_dropped" '0|The staple and validate action worked!' \
+	"68|$cloudkit_dropped" "68|$cloudkit_dropped" "68|$cloudkit_dropped" "68|$cloudkit_dropped" "68|$cloudkit_dropped" \
+	'0|The validate action worked!')" "" \
+	staple_and_validate "$stapled_app" app
+assert_equal "staples and validates the app through a CloudKit outage that drops five validations in a row" "0" "$FAKE_STATUS"
+assert_equal "tries each ticket request until CloudKit answers" "9" "$(call_count xcrun)"
+assert_equal "validates the stapled app once CloudKit answers" "$(quoted stapler validate -v "$stapled_app")" "$(call xcrun 9)"
 
 run_with_fakes "$(lines '65|The staple and validate action failed! Error 65.' '0|')" "" \
 	staple_and_validate "$stapled_app" app
@@ -423,6 +440,23 @@ LPM_APPLE_SERVICE_MAX_ATTEMPTS=3 run_with_fakes "$(lines "68|$cloudkit_dropped" 
 assert_equal "stapler gives up with its own status after the attempt budget" "68" "$FAKE_STATUS"
 assert_equal "stapler runs at most the attempt budget" "3" "$(call_count xcrun)"
 assert_success "reports a lasting ticketing outage" grep -Fq '::error::stapler validate still failed after 3 attempts' "$FAKE_TOOL_DIR/stderr"
+
+lasting_outage=()
+for ((i = 0; i < 30; i++)); do
+	lasting_outage+=("68|$cloudkit_dropped")
+done
+expected_waits=(5 20)
+for ((i = 0; i < 19; i++)); do
+	expected_waits+=(30)
+done
+LPM_APPLE_SERVICE_BACKOFF_SECONDS='' run_with_fakes "$(lines "${lasting_outage[@]}")" "" \
+	bash "$retry" stapler validate "$retry_bundle"
+assert_equal "stapler gives up on an outage that outlasts its budget with its own status" "68" "$FAKE_STATUS"
+assert_equal "stapler tries 22 times by default" "22" "$(call_count xcrun)"
+assert_equal "waits 5 and 20 seconds, then every 30 seconds" "${expected_waits[*]}" "$(paste -sd ' ' "$FAKE_TOOL_DIR/sleep.calls")"
+assert_equal "keeps trying for about 10 minutes" "595" "$(awk '{ total += $1 } END { print total }' "$FAKE_TOOL_DIR/sleep.calls")"
+assert_success "reports the default budget when it gives up" \
+	grep -Fq '::error::stapler validate still failed after 22 attempts' "$FAKE_TOOL_DIR/stderr"
 
 for arguments in "notarytool submit" "codesign" "stapler" "stapler validate" "stapler verify /tmp/LPM.app" \
 	"stapler validate /tmp/LPM.app extra" "stapler validate -q /tmp/LPM.app"; do
