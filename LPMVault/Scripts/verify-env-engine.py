@@ -25,7 +25,7 @@ def verify(bundle):
     provenance = json.loads((bundle / 'provenance.json').read_text())
     if provenance['repository'] != REPOSITORY or not re.fullmatch(r'[0-9a-f]{40}', provenance['revision']):
         raise ValueError('Engine provenance must pin a public Rust revision')
-    if provenance['abiVersion'] != 1 or provenance['toolchain'] != '1.94.0' or provenance['targets'] != TARGETS:
+    if provenance['abiVersion'] != 2 or provenance['toolchain'] != '1.99.1' or provenance['targets'] != TARGETS:
         raise ValueError('Unsupported engine ABI, toolchain, or architectures')
     actual = {str(path.relative_to(bundle)): digest(path) for path in (bundle / 'LPMEnv.xcframework').rglob('*') if path.is_file()}
     if actual != provenance['artifacts']:

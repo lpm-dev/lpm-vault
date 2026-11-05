@@ -335,7 +335,7 @@ enum CompanionEngine {
 		_ function: (UnsafePointer<UInt8>?, Int) -> LPMEnvResult,
 		_ request: Request
 	) throws(Failure) -> Response {
-		guard lpm_env_abi_version() == 1 else {
+		guard EnvEngineABI.matches else {
 			throw Failure(code: "env.abi_mismatch", message: "The bundled LPM engine is not the version this app expects.")
 		}
 		let input: Data

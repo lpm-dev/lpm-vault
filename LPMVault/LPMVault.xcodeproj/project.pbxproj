@@ -129,6 +129,7 @@
 		57DAF191901AC84D531626A6 /* CloudflareConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3641AF2727E3A5032DA8AD5E /* CloudflareConnectionTests.swift */; };
 		5838410E4F31FD9EA7FD0777 /* VaultSchemaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33C7D77A4843EE282AD836FE /* VaultSchemaView.swift */; };
 		586A14395A9C62885C8CA315 /* RustSchemaEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E22643ECC7E5386112087259 /* RustSchemaEngine.swift */; };
+		5952FA02D7445B7CD691A5B9 /* EnvEngineABI.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFB3E13A56BF9C9FBC507F70 /* EnvEngineABI.swift */; };
 		59EC2828AF356F418659FE0D /* NetlifyBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 316A30E15E450A3F7B451AAA /* NetlifyBenchmarkTests.swift */; };
 		5B26EC05347718999708A8E7 /* BackupExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A3CC0FD53508A708BD3D025 /* BackupExportSheet.swift */; };
 		5B691FBC3BF68B58E21B79B5 /* SchemaDraftBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6C87067D273C91F49ACAC02 /* SchemaDraftBenchmarkTests.swift */; };
@@ -664,6 +665,7 @@
 		FC8F78B4292032B8160B8A5A /* VaultQuitHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultQuitHUD.swift; sourceTree = "<group>"; };
 		FD248A688D2DCFD4318032CF /* CurrentContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrentContractTests.swift; sourceTree = "<group>"; };
 		FF474A097A709D41D9734C82 /* ProjectEnvSchemaRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaRule.swift; sourceTree = "<group>"; };
+		FFB3E13A56BF9C9FBC507F70 /* EnvEngineABI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvEngineABI.swift; sourceTree = "<group>"; };
 		FFE4B46C5693219A4558C620 /* VaultStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -830,6 +832,7 @@
 				4528C88B97AC91CFC946159D /* CompanionEngine.swift */,
 				F9FF906993D46DE0663FDBE6 /* Constants.swift */,
 				CF02796887E7ECB5B31624FB /* CountedNoun.swift */,
+				FFB3E13A56BF9C9FBC507F70 /* EnvEngineABI.swift */,
 				614C541032B4C27C2966138F /* EnvValidation.swift */,
 				FA106BFCE1ECC2B0A3AC4809 /* ExactText.swift */,
 				A9F299C0796F0A1335370EBB /* LPMConfigJSON.swift */,
@@ -1364,6 +1367,7 @@
 				4207B8276428EB5364562DA3 /* CoolifyConnector.swift in Sources */,
 				292CA418679C93A21914393C /* CoolifyPublishing.swift in Sources */,
 				7037E1423C720FF964CE88C7 /* CountedNoun.swift in Sources */,
+				5952FA02D7445B7CD691A5B9 /* EnvEngineABI.swift in Sources */,
 				8CA56038EA5DD843D6D0CBAE /* EnvFileImportReview.swift in Sources */,
 				C6896B6C44E9A15A012DC7F7 /* EnvFileImportReviewSheet.swift in Sources */,
 				79314C80BEC853A4C3E50B77 /* EnvFileImportService.swift in Sources */,

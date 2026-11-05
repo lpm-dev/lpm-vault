@@ -157,7 +157,7 @@ enum CLIFiles {
 	/// it succeeded, else why it didn't.
 	private static func decode(_ result: LPMEnvResult) -> Result<LPMConfigJSON, Refusal> {
 		defer { lpm_env_release(result) }
-		guard lpm_env_abi_version() == 1 else {
+		guard EnvEngineABI.matches else {
 			return .failure(Refusal(code: "env.abi_mismatch", message: "The bundled LPM engine is not the version this app expects."))
 		}
 		guard let data = result.data, result.length > 0, result.length <= maximumOutputBytes,

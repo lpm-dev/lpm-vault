@@ -28,7 +28,7 @@ class EngineIntegrityTests(unittest.TestCase):
             artifact.write_bytes(b'library')
             notices = root / 'THIRD_PARTY_NOTICES.html'
             notices.write_bytes(b'notices')
-            provenance = dict(repository=engine.REPOSITORY, revision='a' * 40, abiVersion=1, toolchain='1.94.0', targets=engine.TARGETS, sources={'Cargo.lock': 'b' * 64}, artifacts={'LPMEnv.xcframework/library': hashlib.sha256(b'library').hexdigest()}, notices=hashlib.sha256(b'notices').hexdigest())
+            provenance = dict(repository=engine.REPOSITORY, revision='a' * 40, abiVersion=2, toolchain='1.99.1', targets=engine.TARGETS, sources={'Cargo.lock': 'b' * 64}, artifacts={'LPMEnv.xcframework/library': hashlib.sha256(b'library').hexdigest()}, notices=hashlib.sha256(b'notices').hexdigest())
             manifest = root / 'provenance.json'
             manifest.write_text(json.dumps(provenance))
             self.assertEqual(engine.verify(root), provenance)
@@ -70,7 +70,7 @@ class EngineIntegrityTests(unittest.TestCase):
             fixture = root / 'fixtures/companion/markers.json'
             fixture.parent.mkdir(parents=True)
             fixture.write_bytes(b'{"cases": []}')
-            provenance = dict(repository=engine.REPOSITORY, revision='a' * 40, abiVersion=1, toolchain='1.94.0', targets=engine.TARGETS, sources={'Cargo.lock': 'b' * 64}, artifacts={'LPMEnv.xcframework/library': hashlib.sha256(b'library').hexdigest()}, notices=hashlib.sha256(b'notices').hexdigest(), fixtures={'fixtures/companion/markers.json': hashlib.sha256(b'{"cases": []}').hexdigest()})
+            provenance = dict(repository=engine.REPOSITORY, revision='a' * 40, abiVersion=2, toolchain='1.99.1', targets=engine.TARGETS, sources={'Cargo.lock': 'b' * 64}, artifacts={'LPMEnv.xcframework/library': hashlib.sha256(b'library').hexdigest()}, notices=hashlib.sha256(b'notices').hexdigest(), fixtures={'fixtures/companion/markers.json': hashlib.sha256(b'{"cases": []}').hexdigest()})
             manifest = root / 'provenance.json'
             manifest.write_text(json.dumps(provenance))
             self.assertEqual(engine.verify(root), provenance)
