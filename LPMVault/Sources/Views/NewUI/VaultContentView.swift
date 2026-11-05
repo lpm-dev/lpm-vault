@@ -116,7 +116,7 @@ struct VaultContentView: View {
 				matrix(derived)
 			case .environment:
 				environmentDetail(derived, raw: raw, editing: editing)
-			case .schema, .projectSettings:
+			case .schema, .history, .projectSettings:
 				// The workspace shows the Schema or Project Settings page instead of this view.
 				Spacer(minLength: 0)
 			}

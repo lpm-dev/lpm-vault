@@ -3898,6 +3898,9 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	/// Which of `vaultIds` a backup reads, and what it says about the others'
 	/// newer data: a project whose newer data keeps its values on the Mac,
 	/// or whose interrupted change can't be finished, is left out with why.
+	/// The marker's names for local history and for its being turned off.
+	private static let localHistoryFeatures: Set<String> = ["history", "history-off"]
+
 	private func backupCompanionNotesUnlocked(
 		_ vaultIds: [String],
 		listed: [String: VaultProjectMetadata],
@@ -3933,8 +3936,11 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				continue
 			}
 			readable.append(vaultId)
+			// Every backup leaves local history out, which the export sheet
+			// says once, so it alone doesn't name a project.
+			let carried = assessment.features.filter { !Self.localHistoryFeatures.contains($0.name) }
 			let records = projectNames.count - (assessment.marker == .absent ? 0 : 1)
-			if !assessment.features.isEmpty || records > 0 { notes.withNewerData.insert(vaultId) }
+			if !carried.isEmpty || (assessment.features.isEmpty && records > 0) { notes.withNewerData.insert(vaultId) }
 		}
 		return (readable, notes)
 	}

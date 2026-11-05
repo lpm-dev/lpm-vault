@@ -141,13 +141,14 @@ enum VaultProjectMutation: Sendable {
 	case deleteSecret(environment: String, key: String, expectedValue: String)
 	case editKey(VaultKeyEdit)
 	/// A reviewed rollback or undo, applied as the engine works it out from
-	/// the values stored now: refused with `history.changed_since_review`
-	/// once anything the review was bound to changed.
+	/// the values stored now: a conflict once anything the review was bound
+	/// to changed. `source` is the entry it records, a rollback or an undo.
 	case historyRollback(
 		target: HistoryEngine.RollbackTarget,
 		plan: HistoryEngine.Plan,
 		skipped: [HistoryRollbackSkip],
-		keepEmpty: [Int])
+		keepEmpty: [Int],
+		source: VaultHistorySource)
 }
 
 /// A rollback row switched off: its environment and row in the plan.
@@ -788,8 +789,8 @@ actor VaultPersistenceCoordinator {
 			source = VaultHistorySource(.delete)
 			mutationApplies = project.environments[environment]?[key].map(ExactText.init) == ExactText(expectedValue)
 			if mutationApplies { project.environments[environment]?.removeValue(forKey: key) }
-		case .historyRollback(let target, let plan, let skipped, let keepEmpty):
-			source = VaultHistorySource(plan.kind == "undo" ? .undo : .rollback, detail: .init(related: plan.point.related))
+		case .historyRollback(let target, let plan, let skipped, let keepEmpty, let rollbackSource):
+			source = rollbackSource
 			switch service.historyRolledBackEnvironmentsResult(
 				vaultId: projectId, target: target, fingerprint: plan.fingerprint,
 				skipped: skipped.map { ($0.environment, $0.row) }, keepEmpty: keepEmpty)
@@ -797,6 +798,8 @@ actor VaultPersistenceCoordinator {
 			case .success(let environments):
 				project.environments = environments
 				mutationApplies = true
+			case .failure(.history(code: "history.changed_since_review", _)):
+				mutationApplies = false
 			case .failure(let error):
 				return .failure(error)
 			}

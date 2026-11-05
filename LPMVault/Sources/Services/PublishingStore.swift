@@ -240,12 +240,37 @@ actor PublishingStore {
 		guard !environments.isEmpty else { return .success(()) }
 		return updateDestinations(of: vaultID) { destination in
 			guard environments.contains(destination.sourceEnvironment) else { return false }
-			let wasExcluded = destination.excludedKeys.contains(old)
-			guard wasExcluded || destination.excludedKeys.contains(new) else { return false }
-			destination.excludedKeys.remove(old)
-			if wasExcluded { destination.excludedKeys.insert(new) } else { destination.excludedKeys.remove(new) }
-			return true
+			return Self.carryExclusion(of: old, to: new, in: &destination)
 		}
+	}
+
+	/// Follows a rollback: the destinations of an environment it deletes go,
+	/// then the rest follow the names it gives back, environments together,
+	/// then keys.
+	func followRollback(_ follow: HistoryRollbackFollow, in vaultID: String) -> Result<Void, PublishingStoreError> {
+		for environment in follow.deletedEnvironments.sorted() {
+			if case .failure(let error) = removeDestinations(sourcedFrom: environment, in: vaultID) { return .failure(error) }
+		}
+		guard !follow.renamedEnvironments.isEmpty || !follow.renamedKeys.isEmpty else { return .success(()) }
+		return updateDestinations(of: vaultID) { destination in
+			var changed = false
+			if let renamed = follow.renamedEnvironments[destination.sourceEnvironment] {
+				destination.sourceEnvironment = renamed
+				changed = true
+			}
+			for rename in follow.renamedKeys where rename.environment == destination.sourceEnvironment {
+				if Self.carryExclusion(of: rename.from, to: rename.to, in: &destination) { changed = true }
+			}
+			return changed
+		}
+	}
+
+	private static func carryExclusion(of old: String, to new: String, in destination: inout PublishDestination) -> Bool {
+		let wasExcluded = destination.excludedKeys.contains(old)
+		guard wasExcluded || destination.excludedKeys.contains(new) else { return false }
+		destination.excludedKeys.remove(old)
+		if wasExcluded { destination.excludedKeys.insert(new) } else { destination.excludedKeys.remove(new) }
+		return true
 	}
 
 	/// Removes the destinations that publish from a deleted environment, so

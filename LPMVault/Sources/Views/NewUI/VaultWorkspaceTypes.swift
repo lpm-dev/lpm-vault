@@ -6,6 +6,8 @@ enum VaultWorkspaceMode: Equatable {
   case environment(String)
   /// The project's env rules from lpm.json.
   case schema
+  /// How the project's values changed on this Mac.
+  case history
   /// The project's name, icon, folder, CLI approval and deletion.
   case projectSettings
 
@@ -14,6 +16,7 @@ enum VaultWorkspaceMode: Equatable {
     case .matrix: .matrix
     case .environment: .environment(selectedEnvironment)
     case .schema: .schema
+    case .history: .history
     case .projectSettings: .projectSettings
     }
   }
@@ -773,7 +776,7 @@ struct VaultContentDerivation: Equatable {
         if sortOrder == .descending { matchingKeys.reverse() }
         environmentKeys = matchingKeys
       }
-    case .schema, .projectSettings:
+    case .schema, .history, .projectSettings:
       allKeys = snapshot.keys(sortOrder)
       filteredKeys = []
       environmentKeys = []

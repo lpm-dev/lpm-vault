@@ -43,21 +43,9 @@ extension SheetInteractionTests {
 			return host
 		}
 
-		/// The context menu of the sidebar row saying `name`.
-		private func rowMenu<V: View>(_ name: String, in host: SheetTestHost<V>) async throws -> NSMenu {
-			let row = try await host.waitForElement(saying: name, region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
-			let point = AccessibilityTree.center(of: row, in: host.window)
-			let event = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [],
-				timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber, context: nil,
-				eventNumber: 0, clickCount: 1, pressure: 1))
-			let target = try #require(host.view.hitTest(host.view.superview?.convert(point, from: nil) ?? point))
-			return try #require(target.menu(for: event) ?? host.view.menu(for: event), "\(name) has a context menu")
-		}
-
 		private func choose<V: View>(_ title: String, fromRow row: String, in host: SheetTestHost<V>) async throws -> NSWindow {
-			let menu = try await rowMenu(row, in: host)
-			let index = try #require(menu.items.firstIndex { $0.title == title }, "Missing \(title)")
-			menu.performActionForItem(at: index)
+			let menu = try await host.contextMenu(of: row, region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
+			try host.choose(title, in: menu)
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "\(title) asks first")
 			return try #require(host.window.sheets.first)
 		}

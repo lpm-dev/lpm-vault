@@ -188,9 +188,10 @@ struct HistoryKeychainTests {
 		let edit = try #require(try entries(service).first)
 		let target = HistoryEngine.RollbackTarget.undo(entry: edit.id, only: nil)
 		let plan = try await coordinator.historyRollbackPlan(vaultId: vaultId, target: target).get().response
+		let source = VaultHistorySource(.undo, detail: .init(related: plan.point.related))
 		guard case .success(let commit) = await coordinator.mutateProject(
 			projectId: vaultId, expectedName: "Project", expectedPath: "",
-			mutation: .historyRollback(target: target, plan: plan, skipped: [], keepEmpty: []))
+			mutation: .historyRollback(target: target, plan: plan, skipped: [], keepEmpty: [], source: source))
 		else {
 			Issue.record("the undo was refused")
 			return
@@ -199,6 +200,7 @@ struct HistoryKeychainTests {
 		#expect(commit.syncMetadata?.isDirty == true)
 		let newest = try #require(try entries(service).first)
 		#expect(newest.action == "undo")
+		#expect(newest.id == source.id, "the entry is the source the caller made, so it can offer to undo it")
 		#expect(newest.related == plan.point.related, "an undo names the entry it undoes, as the engine's plan points at it")
 	}
 
@@ -211,14 +213,28 @@ struct HistoryKeychainTests {
 		let plan = try await coordinator.historyRollbackPlan(vaultId: vaultId, target: target).get().response
 		_ = service.applyVaultTransaction(
 			project: .update(vaultId: vaultId, environments: ["default": ["A": "9"]], source: VaultHistorySource(.set)), data: [])
-		guard case .failure(.history(code: "history.changed_since_review", _)) = await coordinator.mutateProject(
+		guard case .conflict(let latest, _) = await coordinator.mutateProject(
 			projectId: vaultId, expectedName: "Project", expectedPath: "",
-			mutation: .historyRollback(target: target, plan: plan, skipped: [], keepEmpty: []))
+			mutation: .historyRollback(
+				target: target, plan: plan, skipped: [], keepEmpty: [],
+				source: VaultHistorySource(.undo, detail: .init(related: plan.point.related))))
 		else {
-			Issue.record("a stale review must be refused")
+			Issue.record("a stale review is a conflict, which hands the app the values that changed")
 			return
 		}
+		#expect(latest.environments == ["default": ["A": "9"]])
 		#expect(try service.getProjectResult(vaultId: vaultId).get()?.environments == ["default": ["A": "9"]])
+	}
+
+	@Test("a backup lists no project whose only newer data is its local history, which no backup carries")
+	func backupsDontListHistoryAsNewerData() throws {
+		let (service, _, _) = try edited()
+		let inventory = try service.backupInventoryResult().get()
+		#expect(inventory.projects.map(\.vaultId) == [vaultId])
+		#expect(inventory.companion.withNewerData.isEmpty)
+		#expect(inventory.companion.excluded.isEmpty)
+		try service.setHistoryEnabledResult(vaultId: vaultId, enabled: false).get()
+		#expect(try service.backupInventoryResult().get().companion.withNewerData.isEmpty, "history off is a setting, not data")
 	}
 
 	@Test("a restore merge reviewed against canonically equivalent values that differ is refused")

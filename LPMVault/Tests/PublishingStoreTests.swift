@@ -184,6 +184,26 @@ struct PublishingStoreTests {
 		#expect(movedProduction.sourceEnvironment == "production" && movedProduction.excludedKeys.isEmpty)
 	}
 
+	@Test("following a rollback removes a deleted environment's destinations, swaps names together and carries a renamed key's exclusion")
+	func followsRollback() async throws {
+		let store = store
+		let staging = vercelDestination(source: "staging", environment: .preview, excluded: ["NEW"])
+		let production = vercelDestination(source: "production")
+		let preview = vercelDestination(source: "preview", environment: .development)
+		for destination in [staging, production, preview] { _ = try await store.save(destination, to: publishTestVault).get() }
+		let follow = HistoryRollbackFollow(
+			deletedEnvironments: ["preview"],
+			renamedEnvironments: ["staging": "production", "production": "staging"],
+			renamedKeys: [.init(environment: "production", from: "NEW", to: "OLD")])
+		_ = try await store.followRollback(follow, in: publishTestVault).get()
+		let destinations = try await store.destinations(of: publishTestVault).get()
+		#expect(Set(destinations.map(\.id)) == [staging.id, production.id])
+		let movedStaging = try #require(destinations.first { $0.id == staging.id })
+		let movedProduction = try #require(destinations.first { $0.id == production.id })
+		#expect(movedStaging.sourceEnvironment == "production" && movedStaging.excludedKeys == ["OLD"])
+		#expect(movedProduction.sourceEnvironment == "staging" && movedProduction.excludedKeys.isEmpty)
+	}
+
 	@Test("deleting a deleted vault's records removes its destinations and histories, even unreadable ones, and nothing else")
 	func deleteRecords() async throws {
 		let store = store

@@ -8790,6 +8790,9 @@ final class VaultStore {
     switch mutation {
     case .renameEnvironment, .deleteEnvironment: break
     case .editKey(let edit) where edit.isRename: break
+    case .historyRollback(_, let plan, let skipped, let keepEmpty, _)
+    where !HistoryRollbackFollow(plan: plan, skipped: Set(skipped), keepEmpty: Set(keepEmpty)).isEmpty:
+      break
     default: return .untouched
     }
     switch saved {
@@ -8809,6 +8812,9 @@ final class VaultStore {
     case .editKey(let edit):
       let environments = Set(VaultKeyEdit.environments(containing: edit.key, in: project.environments))
       result = await publishing.renameKey(edit.key, to: edit.newKey, sourcedFrom: environments, in: project.id)
+    case .historyRollback(_, let plan, let skipped, let keepEmpty, _):
+      result = await publishing.followRollback(
+        HistoryRollbackFollow(plan: plan, skipped: Set(skipped), keepEmpty: Set(keepEmpty)), in: project.id)
     default:
       return .untouched
     }
@@ -8836,6 +8842,8 @@ final class VaultStore {
       return !renamed.isEmpty && renamed.allSatisfy { name in
         latest.environments[name]?[edit.key] == nil && latest.environments[name]?[edit.newKey] != nil
       }
+    case .historyRollback(_, let plan, let skipped, let keepEmpty, _):
+      return HistoryRollbackFollow(plan: plan, skipped: Set(skipped), keepEmpty: Set(keepEmpty)).isApplied(to: latest.environments)
     default:
       return false
     }

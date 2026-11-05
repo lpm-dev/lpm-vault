@@ -59,13 +59,16 @@ final class VaultLocalHistory {
 
 	struct Filter: Equatable {
 		var environment: String?
+		/// One key, by its name now, followed back through its renames.
+		var exactKey: String?
 		var keyContains = ""
 		var source: Source?
 
 		var engine: HistoryEngine.Filter? {
 			let key = keyContains.trimmingCharacters(in: .whitespaces)
-			guard environment != nil || !key.isEmpty || source != nil else { return nil }
-			return HistoryEngine.Filter(environment: environment, keyContains: key.isEmpty ? nil : key, source: source?.rawValue)
+			guard environment != nil || exactKey != nil || !key.isEmpty || source != nil else { return nil }
+			return HistoryEngine.Filter(
+				environment: environment, exactKey: exactKey, keyContains: key.isEmpty ? nil : key, source: source?.rawValue)
 		}
 	}
 
@@ -81,36 +84,120 @@ final class VaultLocalHistory {
 
 	/// A rollback being reviewed, with the values its rows show.
 	struct RollbackReview: Identifiable {
-		let id = UUID()
+		/// Kept when the review is made again, as for another environment,
+		/// so its sheet stays open.
+		let id: UUID
 		let projectID: String
 		let target: HistoryEngine.RollbackTarget
 		let plan: HistoryEngine.Plan
+		/// The entry the plan's point is at, when it's known.
+		let pointEntry: HistoryEngine.Entry?
 		/// Each row's current and target values, by environment and row.
 		let values: [[(current: String?, target: String?)]]
 		/// Rows switched off: unknown rows start off and stay off.
-		var skipped: Set<HistoryRollbackSkip>
+		private(set) var skipped: Set<HistoryRollbackSkip>
 		/// Environments the rollback would delete once empty, which stay.
 		var keptEnvironments: Set<Int> = []
+
+		init(
+			id: UUID = UUID(), projectID: String, target: HistoryEngine.RollbackTarget, plan: HistoryEngine.Plan,
+			pointEntry: HistoryEngine.Entry? = nil, values: [[(current: String?, target: String?)]]
+		) {
+			self.id = id
+			self.projectID = projectID
+			self.target = target
+			self.plan = plan
+			self.pointEntry = pointEntry
+			self.values = values
+			var skipped = Set<HistoryRollbackSkip>()
+			for (environmentIndex, environment) in plan.environments.enumerated() {
+				for (rowIndex, row) in environment.rows.enumerated() where row.change == "unknown" {
+					skipped.insert(HistoryRollbackSkip(environment: environmentIndex, row: rowIndex))
+				}
+			}
+			self.skipped = skipped
+		}
+
+		func applies(environment: Int, row: Int) -> Bool {
+			!skipped.contains(HistoryRollbackSkip(environment: environment, row: row))
+		}
+
+		/// Switches a row on or off, with the other rows of a key renamed
+		/// since, which apply together. An unknown row stays off.
+		mutating func setApplies(_ applies: Bool, environment: Int, row: Int) {
+			let rows = plan.environments[environment].rows
+			guard rows[row].change != "unknown" else { return }
+			let linked = Set(rows[row].linked)
+			for (index, other) in rows.enumerated() where index == row || linked.contains(other.key) {
+				let skip = HistoryRollbackSkip(environment: environment, row: index)
+				if applies { skipped.remove(skip) } else { skipped.insert(skip) }
+			}
+		}
 
 		/// How many keys the rollback changes with these switches.
 		var changing: Int {
 			plan.environments.enumerated().reduce(0) { total, item in
 				total + item.element.rows.indices.filter { row in
-					item.element.rows[row].changes && !skipped.contains(HistoryRollbackSkip(environment: item.offset, row: row))
+					item.element.rows[row].changes && applies(environment: item.offset, row: row)
 				}.count
 			}
+		}
+
+		/// Whether applying deletes the environment: it didn't exist at the
+		/// point, every key it has leaves, and it isn't kept.
+		func deletesEnvironment(_ index: Int) -> Bool {
+			let environment = plan.environments[index]
+			return environment.offersDeletion && !keptEnvironments.contains(index)
+				&& environment.rows.indices.allSatisfy { applies(environment: index, row: $0) }
+		}
+
+		/// Whether applying with these switches changes anything, as the
+		/// engine decides: a key, or an environment's name or existence.
+		var changesAnything: Bool {
+			changing > 0 || plan.environments.indices.contains { index in
+				let environment = plan.environments[index]
+				return environment.recreates || environment.renames || deletesEnvironment(index)
+			}
+		}
+
+		/// What applying with these switches does to publish destinations.
+		var follow: HistoryRollbackFollow {
+			HistoryRollbackFollow(plan: plan, skipped: skipped, keepEmpty: keptEnvironments)
 		}
 	}
 
 	/// A removal being reviewed, with the places switched on.
 	struct RemovalReview: Identifiable {
-		let id = UUID()
+		let id: UUID
 		let projectID: String
 		let review: HistoryEngine.Review
-		/// The chosen key, as the subject card names it.
+		/// The chosen value: a side of a key in an environment of an entry.
+		let entry: String
 		let key: String
 		let environment: String
+		let side: String
 		var selection: Set<Int>
+	}
+
+	/// A rollback just applied, which can be undone for a short while.
+	struct AppliedRollback: Equatable {
+		enum Undo: Equatable {
+			case available
+			case undoing
+			case undone
+			/// It opened a review instead, since the values changed or
+			/// something can't be put back exactly.
+			case reviewing
+			case failed(String)
+		}
+
+		/// The rollback's own entry.
+		let entry: String
+		let projectID: String
+		let isUndo: Bool
+		let keys: Int
+		let savedAt: Date
+		var undo: Undo = .available
 	}
 
 	private let actions: Actions
@@ -121,16 +208,41 @@ final class VaultLocalHistory {
 	var filter = Filter()
 	private(set) var selectedEntryID: String?
 	private(set) var revealed: [String: Revealed] = [:]
-	/// Why the project's last change wasn't recorded, until the page shows it.
-	private(set) var notRecorded: [String: String] = [:]
+	/// Why a change wasn't recorded: the outcome's stable reason and its message.
+	struct NotRecorded: Equatable {
+		let reason: String
+		let message: String
+	}
+
+	/// A project's history in brief, as its settings show it.
+	struct Summary: Equatable {
+		let state: VaultHistoryState
+		/// Counts and the oldest change, without rows; nil while history is off.
+		let timeline: HistoryEngine.Timeline?
+	}
+
+	/// Why each project's last change wasn't recorded, until a later one is.
+	private(set) var notRecorded: [String: NotRecorded] = [:]
 	var rollbackReview: RollbackReview?
 	var removalReview: RemovalReview?
+	private(set) var applied: AppliedRollback?
+	/// Changes whenever something asks to show the History page, filtered
+	/// as `show` says; the workspace follows it.
+	private(set) var showRequest: UUID?
+	private var pendingShow: (projectID: String, filter: Filter)?
 	/// Bumps whenever what the page shows changes hands, so an answer to an
 	/// older request is dropped.
 	private var generation = 0
+	/// Bumps when the app locks, so a review asked for before isn't opened after.
+	private var session = 0
+	private let undoTimer: VaultFeedbackTimer
+	private let now: () -> Date
+	private var appliedExpiry: Task<Void, Never>?
 
-	init(actions: Actions) {
+	init(actions: Actions, undoTimer: VaultFeedbackTimer = .importUndo, now: @escaping () -> Date = Date.init) {
 		self.actions = actions
+		self.undoTimer = undoTimer
+		self.now = now
 	}
 
 	var entries: [HistoryEngine.Entry] {
@@ -145,7 +257,8 @@ final class VaultLocalHistory {
 		return entries.first { $0.id == selectedEntryID }
 	}
 
-	/// Shows `projectID`'s history, from the top.
+	/// Shows `projectID`'s history, from the top, filtered as a pending
+	/// `show` asked.
 	func open(_ projectID: String) async {
 		if self.projectID != projectID {
 			forgetValues()
@@ -155,7 +268,33 @@ final class VaultLocalHistory {
 			timeline = nil
 			state = nil
 		}
+		if let pending = pendingShow, pending.projectID == projectID {
+			pendingShow = nil
+			filter = pending.filter
+			select(nil)
+		}
 		await reload()
+	}
+
+	/// Asks for the History page of `projectID`, filtered to an environment
+	/// or a key.
+	func show(_ projectID: String, environment: String? = nil, key: String? = nil) {
+		pendingShow = (projectID, Filter(environment: environment, exactKey: key))
+		showRequest = UUID()
+		if projectID == self.projectID {
+			Task { await open(projectID) }
+		}
+	}
+
+	/// The newest changes to `key` in `projectID`, through its renames, at
+	/// most `limit` of them, whatever the page shows.
+	func changes(to key: String, in projectID: String, limit: Int) async -> Result<[HistoryEngine.Entry], KeychainError> {
+		await actions.timeline(projectID, HistoryEngine.Filter(exactKey: key, limit: limit)).map { timeline in
+			timeline?.rows.compactMap { row in
+				if case .entry(let entry) = row { return entry }
+				return nil
+			} ?? []
+		}
 	}
 
 	/// Reads the project's history again, with the current filter.
@@ -214,6 +353,9 @@ final class VaultLocalHistory {
 	/// Clears everything, as locking does.
 	func reset() {
 		forgetValues()
+		dismissApplied()
+		pendingShow = nil
+		session += 1
 		generation += 1
 		projectID = nil
 		phase = .idle
@@ -225,42 +367,123 @@ final class VaultLocalHistory {
 
 	// MARK: - Rollback
 
-	/// Opens the review of rolling back to `target`.
-	func reviewRollback(_ target: HistoryEngine.RollbackTarget) async -> KeychainError? {
-		guard let projectID else { return nil }
-		let generation = generation
+	/// Opens the review of rolling back to `target`, in the page's project
+	/// unless `projectID` names another. `entry` is the entry the target
+	/// points at, when the caller has it.
+	func reviewRollback(
+		_ target: HistoryEngine.RollbackTarget, in projectID: String? = nil, entry: HistoryEngine.Entry? = nil
+	) async -> KeychainError? {
+		guard let projectID = projectID ?? self.projectID else { return nil }
+		let session = session
 		switch await actions.planRollback(projectID, target) {
 		case .success(let answer):
-			guard generation == self.generation, projectID == self.projectID else { return nil }
+			guard session == self.session else { return nil }
 			let plan = answer.response
-			let values = plan.environments.map { environment in
-				environment.rows.map { row in (current: text(answer.blobs, row.current), target: text(answer.blobs, row.target)) }
-			}
-			var skipped = Set<HistoryRollbackSkip>()
-			for (environmentIndex, environment) in plan.environments.enumerated() {
-				for (rowIndex, row) in environment.rows.enumerated() where row.change == "unknown" {
-					skipped.insert(HistoryRollbackSkip(environment: environmentIndex, row: rowIndex))
-				}
-			}
-			rollbackReview = RollbackReview(projectID: projectID, target: target, plan: plan, values: values, skipped: skipped)
+			rollbackReview = RollbackReview(
+				id: rollbackReview?.id ?? UUID(), projectID: projectID, target: target, plan: plan,
+				pointEntry: entry ?? entries.first { $0.id == plan.point.entry }, values: Self.values(of: answer))
 			return nil
 		case .failure(let error):
 			return error
 		}
 	}
 
-	/// Applies the rollback under review, as switched.
+	/// Applies the rollback under review, as switched, and offers to undo it.
 	func applyRollback() async -> ProjectMutationOutcome {
 		guard let review = rollbackReview else { return .unavailable }
-		let keepEmpty = review.plan.environments.indices.filter { review.keptEnvironments.contains($0) }
+		let source = Self.source(of: review.plan)
 		let outcome = await actions.mutate(
 			review.projectID,
-			.historyRollback(target: review.target, plan: review.plan, skipped: Array(review.skipped), keepEmpty: keepEmpty))
+			.historyRollback(
+				target: review.target, plan: review.plan, skipped: Array(review.skipped), keepEmpty: review.keptEnvironments.sorted(),
+				source: source))
 		if case .saved = outcome {
 			rollbackReview = nil
+			offerUndo(AppliedRollback(
+				entry: source.id, projectID: review.projectID, isUndo: review.plan.kind == "undo", keys: review.changing, savedAt: now()))
 			await reload()
 		}
 		return outcome
+	}
+
+	/// Undoes the rollback just applied: at once when its undo puts back
+	/// exactly what it replaced, else through a review.
+	func undoApplied() async {
+		guard var applied, applied.undo == .available else { return }
+		applied.undo = .undoing
+		self.applied = applied
+		let target = HistoryEngine.RollbackTarget.undo(entry: applied.entry, only: nil)
+		let answer: HistoryEngine.Answer<HistoryEngine.Plan>
+		switch await actions.planRollback(applied.projectID, target) {
+		case .success(let planned): answer = planned
+		case .failure(let error):
+			settleUndo(of: applied.entry, .failed(error.description))
+			return
+		}
+		guard self.applied?.entry == applied.entry else { return }
+		let plan = answer.response
+		guard Self.putsBackExactly(plan) else {
+			rollbackReview = RollbackReview(
+				projectID: applied.projectID, target: target, plan: plan,
+				pointEntry: entries.first { $0.id == plan.point.entry }, values: Self.values(of: answer))
+			settleUndo(of: applied.entry, .reviewing)
+			return
+		}
+		let outcome = await actions.mutate(
+			applied.projectID,
+			.historyRollback(target: target, plan: plan, skipped: [], keepEmpty: [], source: Self.source(of: plan)))
+		switch outcome {
+		case .saved:
+			settleUndo(of: applied.entry, .undone)
+			await reload()
+		case .changed:
+			settleUndo(of: applied.entry, .failed("The values changed since, so nothing was undone."))
+		case .unavailable:
+			settleUndo(of: applied.entry, .failed("The project isn't available, so nothing was undone."))
+		case .failed(let message):
+			settleUndo(of: applied.entry, .failed(message))
+		}
+	}
+
+	func dismissApplied() {
+		appliedExpiry?.cancel()
+		appliedExpiry = nil
+		applied = nil
+	}
+
+	private func offerUndo(_ rollback: AppliedRollback) {
+		appliedExpiry?.cancel()
+		applied = rollback
+		let timer = undoTimer
+		appliedExpiry = Task { [weak self] in
+			do { try await timer.wait() } catch { return }
+			guard let self, self.applied?.entry == rollback.entry else { return }
+			self.applied = nil
+		}
+	}
+
+	private func settleUndo(of entry: String, _ undo: AppliedRollback.Undo) {
+		guard applied?.entry == entry else { return }
+		applied?.undo = undo
+	}
+
+	/// Whether an undo, applied without a review, puts back exactly what the
+	/// change replaced: every key known, and nothing changed since.
+	private static func putsBackExactly(_ plan: HistoryEngine.Plan) -> Bool {
+		plan.environments.allSatisfy { environment in
+			environment.unnamedKeys == nil
+				&& environment.rows.allSatisfy { $0.change != "unknown" && $0.gaps.isEmpty && $0.changedAgain == nil }
+		}
+	}
+
+	private static func source(of plan: HistoryEngine.Plan) -> VaultHistorySource {
+		VaultHistorySource(plan.kind == "undo" ? .undo : .rollback, detail: .init(related: plan.point.related))
+	}
+
+	private static func values(of answer: HistoryEngine.Answer<HistoryEngine.Plan>) -> [[(current: String?, target: String?)]] {
+		answer.response.environments.map { environment in
+			environment.rows.map { row in (current: text(answer.blobs, row.current), target: text(answer.blobs, row.target)) }
+		}
 	}
 
 	// MARK: - Removal
@@ -270,8 +493,8 @@ final class VaultLocalHistory {
 		switch await actions.reviewRemoval(projectID, entry, environment, key, side) {
 		case .success(let review):
 			removalReview = RemovalReview(
-				projectID: projectID, review: review, key: key, environment: environment,
-				selection: Set(review.defaultSelection))
+				id: removalReview?.id ?? UUID(), projectID: projectID, review: review, entry: entry, key: key,
+				environment: environment, side: side, selection: Set(review.defaultSelection))
 			return nil
 		case .failure(let error):
 			return error
@@ -319,7 +542,7 @@ final class VaultLocalHistory {
 	func collectOutcomes() async {
 		for (vaultId, outcome) in await actions.takeOutcomes() {
 			switch outcome {
-			case .notRecorded(_, let message): notRecorded[vaultId] = message
+			case .notRecorded(let reason, let message): notRecorded[vaultId] = NotRecorded(reason: reason, message: message)
 			case .recorded, .nothing, .off: notRecorded[vaultId] = nil
 			}
 		}
@@ -329,7 +552,36 @@ final class VaultLocalHistory {
 		notRecorded[projectID] = nil
 	}
 
-	private func text(_ blobs: HistoryEngine.Blobs, _ index: Int?) -> String? {
+	/// The project's history state and its unfiltered counts, whatever the
+	/// History page is filtered to.
+	func summary(of projectID: String) async -> Result<Summary, KeychainError> {
+		await collectOutcomes()
+		let state: VaultHistoryState
+		switch await actions.state(projectID) {
+		case .success(let read): state = read
+		case .failure(let error): return .failure(error)
+		}
+		guard state.history != "off" else { return .success(Summary(state: state, timeline: nil)) }
+		return await actions.timeline(projectID, HistoryEngine.Filter(limit: 0)).map { Summary(state: state, timeline: $0) }
+	}
+
+	/// A side of an entry's change, once the entry is revealed.
+	func revealedValue(entry: String, environment: String, key: String, side: String) -> String? {
+		guard let revealed = revealed[entry], let changed = entries.first(where: { $0.id == entry }),
+			let environmentIndex = changed.environments.firstIndex(where: { $0.name == environment }),
+			let keyIndex = changed.environments[environmentIndex].keys?.firstIndex(where: { $0.key == key }),
+			revealed.environments.indices.contains(environmentIndex),
+			revealed.environments[environmentIndex].indices.contains(keyIndex)
+		else { return nil }
+		let sides = revealed.environments[environmentIndex][keyIndex]
+		return side == "before" ? sides.before : sides.after
+	}
+
+	private static func text(_ blobs: HistoryEngine.Blobs, _ index: Int?) -> String? {
 		index.flatMap { blobs[$0] }?.withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
+	}
+
+	private func text(_ blobs: HistoryEngine.Blobs, _ index: Int?) -> String? {
+		Self.text(blobs, index)
 	}
 }

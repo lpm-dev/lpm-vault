@@ -383,7 +383,7 @@ extension SheetInteractionTests {
 		}
 
 		@Test("child icon centers and visible labels share their columns", arguments: [CGFloat(280), 400],
-			[VaultWorkspaceMode.matrix, .schema, .environment("default")])
+			[VaultWorkspaceMode.matrix, .schema, .history, .environment("default")])
 		func childRowAlignment(width: CGFloat, mode: VaultWorkspaceMode) async throws {
 			let (store, _, preferences, domain) = try fixture()
 			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
@@ -396,7 +396,7 @@ extension SheetInteractionTests {
 			let project = bands[0]
 			let projectStart = try inkStart(in: host, band: project, columns: 32..<150)
 			var labelStarts: [CGFloat] = []
-			for (label, band) in zip(["Schema", "New environment", ".env", ".env.staging"], bands.dropFirst()) {
+			for (label, band) in zip(["Schema", "History", "New environment", ".env"], bands.dropFirst()) {
 				let icon = try inkBounds(in: host, band: band, columns: 32..<52)
 				#expect(abs(icon.midX - projectStart - 3) <= 0.5, "\(label) icon center is \(icon.midX), expected \(projectStart + 3)")
 				labelStarts.append(try inkStart(in: host, band: band, columns: 52..<200))
@@ -407,7 +407,8 @@ extension SheetInteractionTests {
 			Attachment.record(try #require(image.representation(using: .png, properties: [:])), named: "sidebar-\(Int(width)).png")
 		}
 
-		@Test("a selected environment or Schema row's background ends where a selected project row's does", arguments: [VaultWorkspaceMode.schema, .environment("default")])
+		@Test("a selected environment, Schema or History row's background ends where a selected project row's does",
+			arguments: [VaultWorkspaceMode.schema, .history, .environment("default")])
 		func childRowBackgroundEdge(mode: VaultWorkspaceMode) async throws {
 			let (store, _, preferences, domain) = try fixture()
 			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
@@ -421,12 +422,12 @@ extension SheetInteractionTests {
 				return try backgroundEdge(in: host, band: bands[row])
 			}
 			let project = try await selectedEdge(.matrix, row: 0)
-			let child = try await selectedEdge(mode, row: mode == .schema ? 1 : 3)
+			let child = try await selectedEdge(mode, row: Self.childRow(mode))
 			#expect(abs(child - project) <= 0.5, "The child row's background ends at \(child), the project row's at \(project)")
 		}
 
-		@Test("a selected environment or Schema row is the selected project row's gray, edge to edge",
-			arguments: [VaultAppearance.light, .dark], [VaultWorkspaceMode.schema, .environment("default")])
+		@Test("a selected environment, Schema or History row is the selected project row's gray, edge to edge",
+			arguments: [VaultAppearance.light, .dark], [VaultWorkspaceMode.schema, .history, .environment("default")])
 		func childRowSelectionColor(appearance: VaultAppearance, mode: VaultWorkspaceMode) async throws {
 			let (store, _, preferences, domain) = try fixture()
 			defer { store.lock(); preferences.removePersistentDomain(forName: domain) }
@@ -443,7 +444,7 @@ extension SheetInteractionTests {
 			let reference = try await colors(.matrix, row: 0, at: [VaultSidebarLayout.projectInset + 3])
 			let project = try #require(reference.first)
 			let columns = [VaultSidebarLayout.childInset + 1, VaultSidebarLayout.childInset + 5]
-			for (x, color) in zip(columns, try await colors(mode, row: mode == .schema ? 1 : 3, at: columns)) {
+			for (x, color) in zip(columns, try await colors(mode, row: Self.childRow(mode), at: columns)) {
 				let difference = abs(color.0 - project.0) + abs(color.1 - project.1) + abs(color.2 - project.2)
 				#expect(difference <= 4, "At x \(x) the selected child row reads \(color), a selected project row \(project)")
 			}
@@ -838,6 +839,16 @@ extension SheetInteractionTests {
 		}
 
 		/// The rows of the sidebar's projects and children with text in them, from the top, in window coordinates.
+		/// Where `mode`'s row is among the label bands under the project's:
+		/// Schema, History, New environment, then .env.
+		private static func childRow(_ mode: VaultWorkspaceMode) -> Int {
+			switch mode {
+			case .schema: 1
+			case .history: 2
+			default: 4
+			}
+		}
+
 		private func labelBands<V: View>(in host: SheetTestHost<V>) throws -> [CGRect] {
 			let image = try host.snapshot(host.view)
 			let context = try pixelContext(image)

@@ -105,6 +105,10 @@ struct BackupExportSheet: View {
 						.font(.system(size: 11.5))
 						.foregroundStyle(VaultPalette.textTertiary)
 						.fixedSize(horizontal: false, vertical: true)
+					Label("Local history stays on this Mac; backups never include it.", systemImage: "clock.arrow.circlepath")
+						.font(.system(size: 11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.fixedSize(horizontal: false, vertical: true)
 					if let companionPreview {
 						ForEach(Array(companionPreview.leftOut.enumerated()), id: \.offset) { _, leftOut in
 							Text("\(leftOut.name.escapingDirectionControls) won’t be backed up. \(leftOut.reason)")
