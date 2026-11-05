@@ -140,6 +140,20 @@ enum VaultProjectMutation: Sendable {
 	case restoreEnvironment(name: String, expectedSecrets: [String: String], restored: [String: String], source: VaultHistorySource)
 	case deleteSecret(environment: String, key: String, expectedValue: String)
 	case editKey(VaultKeyEdit)
+	/// A reviewed rollback or undo, applied as the engine works it out from
+	/// the values stored now: refused with `history.changed_since_review`
+	/// once anything the review was bound to changed.
+	case historyRollback(
+		target: HistoryEngine.RollbackTarget,
+		plan: HistoryEngine.Plan,
+		skipped: [HistoryRollbackSkip],
+		keepEmpty: [Int])
+}
+
+/// A rollback row switched off: its environment and row in the plan.
+struct HistoryRollbackSkip: Sendable, Equatable, Hashable {
+	let environment: Int
+	let row: Int
 }
 
 enum ProjectMutationPersistenceResult: Sendable {
@@ -774,6 +788,18 @@ actor VaultPersistenceCoordinator {
 			source = VaultHistorySource(.delete)
 			mutationApplies = project.environments[environment]?[key].map(ExactText.init) == ExactText(expectedValue)
 			if mutationApplies { project.environments[environment]?.removeValue(forKey: key) }
+		case .historyRollback(let target, let plan, let skipped, let keepEmpty):
+			source = VaultHistorySource(plan.kind == "undo" ? .undo : .rollback, detail: .init(related: plan.point.related))
+			switch service.historyRolledBackEnvironmentsResult(
+				vaultId: projectId, target: target, fingerprint: plan.fingerprint,
+				skipped: skipped.map { ($0.environment, $0.row) }, keepEmpty: keepEmpty)
+			{
+			case .success(let environments):
+				project.environments = environments
+				mutationApplies = true
+			case .failure(let error):
+				return .failure(error)
+			}
 		case .editKey(let edit):
 			source = edit.historySource
 			if case .success(let environments) = edit.applied(to: project.environments) {
@@ -1543,46 +1569,6 @@ actor VaultPersistenceCoordinator {
 
 	func historyRollbackPlan(vaultId: String, target: HistoryEngine.RollbackTarget) -> Result<HistoryEngine.Answer<HistoryEngine.Plan>, KeychainError> {
 		service.historyRollbackPlanResult(vaultId: vaultId, target: target)
-	}
-
-	/// Applies a reviewed rollback as one values write, recorded as a
-	/// rollback, or an undo, of the reviewed point. The engine refuses with
-	/// `history.changed_since_review` once anything it was bound to changed,
-	/// and then nothing is written.
-	func applyHistoryRollback(
-		vaultId: String,
-		target: HistoryEngine.RollbackTarget,
-		plan: HistoryEngine.Plan,
-		skipped: [(environment: Int, row: Int)],
-		keepEmpty: [Int]
-	) -> ProjectMutationPersistenceResult {
-		switch service.withKeychainTransaction({ () -> ProjectMutationPersistenceResult in
-			let previous: VaultProject
-			switch service.getProjectResult(vaultId: vaultId) {
-			case .success(let project?): previous = project
-			case .success(nil): return .targetUnavailable
-			case .failure(let error): return .failure(error)
-			}
-			let metadata: SyncMetadataRecordSnapshot
-			switch loadSyncMetadataRecordSnapshotResult(vaultId: vaultId) {
-			case .success(let snapshot): metadata = snapshot
-			case .failure(let error): return .failure(error)
-			}
-			let environments: [String: [String: String]]
-			switch service.historyRolledBackEnvironmentsResult(
-				vaultId: vaultId, target: target, fingerprint: plan.fingerprint, skipped: skipped, keepEmpty: keepEmpty)
-			{
-			case .success(let result): environments = result
-			case .failure(let error): return .failure(error)
-			}
-			var next = previous
-			next.environments = environments
-			let source = VaultHistorySource(plan.kind == "undo" ? .undo : .rollback, detail: .init(related: plan.point.related))
-			return persistMutation(next, previousProject: previous, previousMetadata: metadata, source: source)
-		}) {
-		case .success(let result): return result
-		case .failure(let error): return .failure(error)
-		}
 	}
 
 	func historyRemovalReview(

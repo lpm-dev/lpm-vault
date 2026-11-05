@@ -188,8 +188,9 @@ struct HistoryKeychainTests {
 		let edit = try #require(try entries(service).first)
 		let target = HistoryEngine.RollbackTarget.undo(entry: edit.id, only: nil)
 		let plan = try await coordinator.historyRollbackPlan(vaultId: vaultId, target: target).get().response
-		guard case .success(let commit) = await coordinator.applyHistoryRollback(
-			vaultId: vaultId, target: target, plan: plan, skipped: [], keepEmpty: [])
+		guard case .success(let commit) = await coordinator.mutateProject(
+			projectId: vaultId, expectedName: "Project", expectedPath: "",
+			mutation: .historyRollback(target: target, plan: plan, skipped: [], keepEmpty: []))
 		else {
 			Issue.record("the undo was refused")
 			return
@@ -210,8 +211,9 @@ struct HistoryKeychainTests {
 		let plan = try await coordinator.historyRollbackPlan(vaultId: vaultId, target: target).get().response
 		_ = service.applyVaultTransaction(
 			project: .update(vaultId: vaultId, environments: ["default": ["A": "9"]], source: VaultHistorySource(.set)), data: [])
-		guard case .failure(.history(code: "history.changed_since_review", _)) = await coordinator.applyHistoryRollback(
-			vaultId: vaultId, target: target, plan: plan, skipped: [], keepEmpty: [])
+		guard case .failure(.history(code: "history.changed_since_review", _)) = await coordinator.mutateProject(
+			projectId: vaultId, expectedName: "Project", expectedPath: "",
+			mutation: .historyRollback(target: target, plan: plan, skipped: [], keepEmpty: []))
 		else {
 			Issue.record("a stale review must be refused")
 			return
