@@ -181,6 +181,44 @@ struct HistoryKeychainTests {
 		#expect(try actions(try #require(try stored(backend, service: name))) == ["set"])
 	}
 
+	@Test("the coordinator applies a reviewed undo as one write recorded as an undo of that entry")
+	func coordinatorAppliesAnUndo() async throws {
+		let (service, _, _) = try edited()
+		let coordinator = VaultPersistenceCoordinator(service: service)
+		let edit = try #require(try entries(service).first)
+		let target = HistoryEngine.RollbackTarget.undo(entry: edit.id, only: nil)
+		let plan = try await coordinator.historyRollbackPlan(vaultId: vaultId, target: target).get().response
+		guard case .success(let commit) = await coordinator.applyHistoryRollback(
+			vaultId: vaultId, target: target, plan: plan, skipped: [], keepEmpty: [])
+		else {
+			Issue.record("the undo was refused")
+			return
+		}
+		#expect(commit.project.environments == ["default": ["A": "1"]])
+		#expect(commit.syncMetadata?.isDirty == true)
+		let newest = try #require(try entries(service).first)
+		#expect(newest.action == "undo")
+		#expect(newest.related == plan.point.related, "an undo names the entry it undoes, as the engine's plan points at it")
+	}
+
+	@Test("an undo reviewed before the values changed again writes nothing")
+	func staleUndoWritesNothing() async throws {
+		let (service, _, _) = try edited()
+		let coordinator = VaultPersistenceCoordinator(service: service)
+		let edit = try #require(try entries(service).first)
+		let target = HistoryEngine.RollbackTarget.undo(entry: edit.id, only: nil)
+		let plan = try await coordinator.historyRollbackPlan(vaultId: vaultId, target: target).get().response
+		_ = service.applyVaultTransaction(
+			project: .update(vaultId: vaultId, environments: ["default": ["A": "9"]], source: VaultHistorySource(.set)), data: [])
+		guard case .failure(.history(code: "history.changed_since_review", _)) = await coordinator.applyHistoryRollback(
+			vaultId: vaultId, target: target, plan: plan, skipped: [], keepEmpty: [])
+		else {
+			Issue.record("a stale review must be refused")
+			return
+		}
+		#expect(try service.getProjectResult(vaultId: vaultId).get()?.environments == ["default": ["A": "9"]])
+	}
+
 	@Test("a restore merge reviewed against canonically equivalent values that differ is refused")
 	func restoreMergeComparesExactly() throws {
 		let (service, _, _) = makeService()

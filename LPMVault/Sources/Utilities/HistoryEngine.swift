@@ -641,6 +641,9 @@ extension HistoryEngine {
 		let entry: String
 		let side: String
 		let time: Int64
+
+		/// The point as an entry that rolls back to it names it.
+		var related: Related { Related(id: entry, side: side, time: time) }
 	}
 
 	struct Plan: Decodable, Sendable, Equatable {

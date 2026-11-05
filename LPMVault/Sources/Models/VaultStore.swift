@@ -3778,9 +3778,7 @@ final class VaultStore {
         base: project,
         mutation: .restoreEnvironment(
           name: receipt.environment, expectedSecrets: receipt.after, restored: receipt.before,
-          source: VaultHistorySource(.undo, detail: .init(related: receipt.historyEntry.map {
-            HistoryEngine.Related(id: $0.id, side: "before", time: $0.time)
-          }))),
+          source: VaultHistorySource(.undo, detail: .init(related: receipt.historyEntry))),
         reportsFailures: false
       ) { continuation.resume(returning: $0) }
     }

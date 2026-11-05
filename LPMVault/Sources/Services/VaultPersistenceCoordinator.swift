@@ -1527,6 +1527,82 @@ actor VaultPersistenceCoordinator {
 			))
 	}
 
+	// MARK: - Local history
+
+	func historyState(vaultId: String) -> Result<VaultHistoryState, KeychainError> {
+		service.historyStateResult(vaultId: vaultId)
+	}
+
+	func historyTimeline(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError> {
+		service.historyTimelineResult(vaultId: vaultId, filter: filter)
+	}
+
+	func historyReveal(vaultId: String, ids: [String]) -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError> {
+		service.historyRevealResult(vaultId: vaultId, ids: ids)
+	}
+
+	func historyRollbackPlan(vaultId: String, target: HistoryEngine.RollbackTarget) -> Result<HistoryEngine.Answer<HistoryEngine.Plan>, KeychainError> {
+		service.historyRollbackPlanResult(vaultId: vaultId, target: target)
+	}
+
+	/// Applies a reviewed rollback as one values write, recorded as a
+	/// rollback, or an undo, of the reviewed point. The engine refuses with
+	/// `history.changed_since_review` once anything it was bound to changed,
+	/// and then nothing is written.
+	func applyHistoryRollback(
+		vaultId: String,
+		target: HistoryEngine.RollbackTarget,
+		plan: HistoryEngine.Plan,
+		skipped: [(environment: Int, row: Int)],
+		keepEmpty: [Int]
+	) -> ProjectMutationPersistenceResult {
+		switch service.withKeychainTransaction({ () -> ProjectMutationPersistenceResult in
+			let previous: VaultProject
+			switch service.getProjectResult(vaultId: vaultId) {
+			case .success(let project?): previous = project
+			case .success(nil): return .targetUnavailable
+			case .failure(let error): return .failure(error)
+			}
+			let metadata: SyncMetadataRecordSnapshot
+			switch loadSyncMetadataRecordSnapshotResult(vaultId: vaultId) {
+			case .success(let snapshot): metadata = snapshot
+			case .failure(let error): return .failure(error)
+			}
+			let environments: [String: [String: String]]
+			switch service.historyRolledBackEnvironmentsResult(
+				vaultId: vaultId, target: target, fingerprint: plan.fingerprint, skipped: skipped, keepEmpty: keepEmpty)
+			{
+			case .success(let result): environments = result
+			case .failure(let error): return .failure(error)
+			}
+			var next = previous
+			next.environments = environments
+			let source = VaultHistorySource(plan.kind == "undo" ? .undo : .rollback, detail: .init(related: plan.point.related))
+			return persistMutation(next, previousProject: previous, previousMetadata: metadata, source: source)
+		}) {
+		case .success(let result): return result
+		case .failure(let error): return .failure(error)
+		}
+	}
+
+	func historyRemovalReview(
+		vaultId: String, entry: String, environment: String, key: String, side: String
+	) -> Result<HistoryEngine.Review, KeychainError> {
+		service.historyRemovalReviewResult(vaultId: vaultId, entry: entry, environment: environment, key: key, side: side)
+	}
+
+	func removeFromHistory(vaultId: String, review: HistoryEngine.Review, selection: [Int]) -> Result<Void, KeychainError> {
+		service.removeFromHistoryResult(vaultId: vaultId, review: review, selection: selection)
+	}
+
+	func setHistoryEnabled(vaultId: String, enabled: Bool) -> Result<Void, KeychainError> {
+		service.setHistoryEnabledResult(vaultId: vaultId, enabled: enabled)
+	}
+
+	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
+		service.takeHistoryOutcomes()
+	}
+
 	func removeFromSidebar(vaultId: String) -> Bool {
 		service.removeFromSidebar(vaultId: vaultId)
 	}
