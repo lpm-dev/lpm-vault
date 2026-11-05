@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -383,6 +384,34 @@ class WebCheckTests(unittest.TestCase):
         installs = [line.strip() for workflow in sorted((self.ROOT / '.github/workflows').glob('*.yml'))
                     for line in workflow.read_text().splitlines() if 'playwright install' in line]
         self.assertEqual(installs, ['- run: npx --prefix web playwright install chromium'])
+
+
+class EngineToolchainTests(unittest.TestCase):
+    def step_script(self, name):
+        lines = (WebCheckTests.ROOT / '.github/workflows/ci.yml').read_text().splitlines()
+        start = lines.index(f'      - name: {name}') + 1
+        run = next(line for line in lines[start:] if line.startswith('        run:'))
+        if run.strip() != 'run: |':
+            return run.split(':', 1)[1].strip()
+        body = []
+        for line in lines[lines.index(run, start) + 1:]:
+            if line.strip() and not line.startswith(' ' * 10):
+                break
+            body.append(line[10:])
+        return '\n'.join(body)
+
+    def test_the_engine_job_installs_the_toolchain_and_targets_the_bundled_engine_was_built_with(self):
+        provenance = json.loads((WebCheckTests.ROOT / 'LPMVault/Vendor/EnvEngine/provenance.json').read_text())
+        with tempfile.TemporaryDirectory() as folder:
+            rustup = Path(folder) / 'rustup'
+            rustup.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            rustup.chmod(0o755)
+            installed = subprocess.run(
+                ['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', self.step_script('Install pinned env engine toolchain')],
+                cwd=WebCheckTests.ROOT, env={**os.environ, 'PATH': f'{folder}:{os.environ["PATH"]}'},
+                capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(installed, ['toolchain', 'install', provenance['toolchain'], '--profile', 'minimal',
+                                     '--component', 'llvm-tools-preview', '--target', ','.join(provenance['targets'])])
 
 
 class ReleaseBundleCheckTests(unittest.TestCase):

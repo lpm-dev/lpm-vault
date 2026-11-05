@@ -25,7 +25,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Install pinned env engine toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal --component llvm-tools-preview --target aarch64-apple-darwin,x86_64-apple-darwin
+        # The toolchain and targets the bundled engine was built with, as its
+        # provenance records them, so a re-export can't leave them behind.
+        run: |
+          read -r toolchain targets < <(python3 -c 'import json; p = json.load(open("LPMVault/Vendor/EnvEngine/provenance.json")); print(p["toolchain"], ",".join(p["targets"]))')
+          rustup toolchain install "$toolchain" --profile minimal --component llvm-tools-preview --target "$targets"
       - name: Identify compatible engine cache
         id: cache-key
         run: python3 LPMVault/Scripts/ci-cache-key.py engine --github-output "$GITHUB_OUTPUT"
