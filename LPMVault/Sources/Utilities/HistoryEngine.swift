@@ -894,7 +894,8 @@ extension HistoryEngine {
 		let afterTrims: Int
 		/// "full", "reduced" or "refused".
 		let creation: String
-		let ringLimit: Int
+		/// nil when creation is refused.
+		let ringLimit: Int?
 		let growth: Bool
 		let regrow: Bool
 	}
