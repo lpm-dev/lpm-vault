@@ -26,7 +26,7 @@ enum HistoryEngine {
 	private static let frameVersion: UInt8 = 1
 
 	/// The blobs of a request being built, or of an answer.
-	struct Blobs {
+	struct Blobs: Sendable {
 		private(set) var items: [SecretBytes] = []
 
 		/// Adds `bytes` and gives the index the JSON names it by.
@@ -43,7 +43,7 @@ enum HistoryEngine {
 	}
 
 	/// An answer: its JSON, decoded, and its blobs.
-	struct Answer<Response> {
+	struct Answer<Response: Sendable>: Sendable {
 		let response: Response
 		let blobs: Blobs
 	}

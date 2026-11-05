@@ -361,6 +361,52 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	/// What the next `takeHistoryOutcomes()` returns.
 	var pendingHistoryOutcomes: [String: VaultHistoryOutcome] = [:]
 
+	/// What the history calls answer; each fails until a test sets it.
+	var historyState: Result<VaultHistoryState, KeychainError> = .success(VaultHistoryState(history: "default", damage: []))
+	var historyTimeline: Result<HistoryEngine.Timeline?, KeychainError> = .success(nil)
+	var historyFailure = KeychainError.history(code: "history.off", message: "This project has no local history.")
+
+	func historyStateResult(vaultId: String) -> Result<VaultHistoryState, KeychainError> { lock.withLock { historyState } }
+
+	func historyTimelineResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError> {
+		lock.withLock { historyTimeline }
+	}
+
+	func historyRevealResult(vaultId: String, ids: [String]) -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func historyRollbackPlanResult(vaultId: String, target: HistoryEngine.RollbackTarget) -> Result<HistoryEngine.Answer<HistoryEngine.Plan>, KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func historyRolledBackEnvironmentsResult(
+		vaultId: String,
+		target: HistoryEngine.RollbackTarget,
+		fingerprint: String,
+		skipped: [(environment: Int, row: Int)],
+		keepEmpty: [Int]
+	) -> Result<[String: [String: String]], KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func historyRemovalReviewResult(
+		vaultId: String, entry: String, environment: String, key: String, side: String
+	) -> Result<HistoryEngine.Review, KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func removeFromHistoryResult(vaultId: String, review: HistoryEngine.Review, selection: [Int]) -> Result<Void, KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func setHistoryEnabledResult(vaultId: String, enabled: Bool) -> Result<Void, KeychainError> {
+		lock.withLock {
+			historyState = .success(VaultHistoryState(history: enabled ? "default" : "off", damage: []))
+			return .success(())
+		}
+	}
+
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
 		lock.withLock {
 			defer { pendingHistoryOutcomes = [:] }

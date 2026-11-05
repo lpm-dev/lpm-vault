@@ -73,6 +73,12 @@ protocol HistoryStorage {
 	func historyDelete(_ account: String) throws
 	/// Commits `writes` as one engine-checked journal transaction.
 	func historyCommit(_ writes: [HistoryEngine.RecordWrite]) throws
+	/// The project's values item as stored, nil when it has none.
+	func historyValues(vaultId: String) throws -> Data?
+	/// The project's companion account names, from a names-only listing.
+	func historyProjectNames(vaultId: String) throws -> [String]
+	/// Commits a companion lifecycle plan, transaction by transaction.
+	func historyRun(_ plan: CompanionEngine.Plan, vaultId: String) throws
 }
 
 /// Records one project's net change, as the LPM CLI does: never failing the
@@ -268,6 +274,15 @@ enum HistoryRecorder {
 			read.append((part, try storage.historyRecord(account("history", vaultId, part: part)).map(secret)))
 		}
 		return HistoryEngine.Stored(vaultId: vaultId, head: head, key: key, parts: read)
+	}
+
+	/// Finishes a key rotation or a removal left running, reading the head
+	/// and the key as stored now.
+	static func finishRunning(_ storage: some HistoryStorage, vaultId: String) throws {
+		guard let head = try storage.historyRecord(account("history-head", vaultId)).map(secret),
+			let key = try storage.historyRecord(account("key", vaultId)).map(secret)
+		else { throw HistoryEngine.Failure(code: "history.damaged", message: "This project's history head or key can't be read.") }
+		try finishRunning(storage, vaultId: vaultId, opened: Opened(head: head, key: key, tail: nil))
 	}
 
 	/// Finishes a key rotation or a removal another operation left running,

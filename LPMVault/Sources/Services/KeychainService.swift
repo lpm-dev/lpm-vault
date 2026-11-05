@@ -478,6 +478,32 @@ protocol KeychainServiceProtocol: Sendable {
 	/// What local history made of each project's last values change since
 	/// the last call, for projects whose change it recorded or didn't.
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome]
+	/// What local history says about the project: on, off, paused, damaged.
+	func historyStateResult(vaultId: String) -> Result<VaultHistoryState, KeychainError>
+	/// The project's history, newest first, or nil when it has none yet.
+	func historyTimelineResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError>
+	/// Entries with their values, each a blob of the answer.
+	func historyRevealResult(vaultId: String, ids: [String]) -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError>
+	/// A rollback's review, from the values stored now.
+	func historyRollbackPlanResult(vaultId: String, target: HistoryEngine.RollbackTarget) -> Result<HistoryEngine.Answer<HistoryEngine.Plan>, KeychainError>
+	/// The environments a reviewed rollback leaves, refused with
+	/// `history.changed_since_review` once the values or history changed.
+	/// Call it in the lock scope that writes them.
+	func historyRolledBackEnvironmentsResult(
+		vaultId: String,
+		target: HistoryEngine.RollbackTarget,
+		fingerprint: String,
+		skipped: [(environment: Int, row: Int)],
+		keepEmpty: [Int]
+	) -> Result<[String: [String: String]], KeychainError>
+	/// Reviews removing one value from the project's history.
+	func historyRemovalReviewResult(
+		vaultId: String, entry: String, environment: String, key: String, side: String
+	) -> Result<HistoryEngine.Review, KeychainError>
+	/// Removes the reviewed value from the selected places, rotating the key.
+	func removeFromHistoryResult(vaultId: String, review: HistoryEngine.Review, selection: [Int]) -> Result<Void, KeychainError>
+	/// Turns the project's history off, deleting it, or back on.
+	func setHistoryEnabledResult(vaultId: String, enabled: Bool) -> Result<Void, KeychainError>
 	func applyVaultTransaction(
 		project: VaultProjectKeychainMutation?,
 		data: [VaultKeychainMutation]
@@ -641,6 +667,9 @@ enum KeychainError: LocalizedError, CustomStringConvertible, Equatable, Sendable
 	/// An item's approval attributes contradict each other, as an approval
 	/// marker without an access control does.
 	case contradictoryApproval
+	/// Local history refused, with the engine's code, such as
+	/// `history.changed_since_review`, and what it said.
+	case history(code: String, message: String)
 
 	var description: String {
 		switch self {
@@ -673,6 +702,8 @@ enum KeychainError: LocalizedError, CustomStringConvertible, Equatable, Sendable
 			return "The Keychain is unavailable, so env approval couldn’t be confirmed. Retry once your Mac is unlocked."
 		case .contradictoryApproval:
 			return "This env project’s CLI approval settings contradict each other. Choose its CLI approval again to set them."
+		case .history(_, let message):
+			return message
 		}
 	}
 
@@ -3142,6 +3173,18 @@ extension SharedKeychainStore: HistoryStorage {
 			history: nil)
 	}
 
+	func historyValues(vaultId: String) throws -> Data? {
+		try backend.read(service: service, account: vaultId)
+	}
+
+	func historyProjectNames(vaultId: String) throws -> [String] {
+		try projectNamesUnlocked(vaultId)
+	}
+
+	func historyRun(_ plan: CompanionEngine.Plan, vaultId: String) throws {
+		try executeCompanionPlanUnlocked(plan, vaultId: vaultId)
+	}
+
 	/// The values item's access as a probe verifies it, once a scope for each
 	/// project, which history's records take.
 	private func historyAccessUnlocked(vaultId: String) throws -> VaultCliAccess {
@@ -3273,6 +3316,73 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
 		store.takeHistoryOutcomes()
+	}
+
+	func historyStateResult(vaultId: String) -> Result<VaultHistoryState, KeychainError> {
+		withHistory(vaultId, .maintenance) { try HistoryOperations.state(store, vaultId: vaultId) }
+	}
+
+	func historyTimelineResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError> {
+		withHistory(vaultId, .readExcludingOverrides) { try HistoryOperations.timeline(store, vaultId: vaultId, filter: filter) }
+	}
+
+	func historyRevealResult(vaultId: String, ids: [String]) -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError> {
+		withHistory(vaultId, .readExcludingOverrides) { try HistoryOperations.reveal(store, vaultId: vaultId, ids: ids) }
+	}
+
+	func historyRollbackPlanResult(vaultId: String, target: HistoryEngine.RollbackTarget) -> Result<HistoryEngine.Answer<HistoryEngine.Plan>, KeychainError> {
+		withHistory(vaultId, .readExcludingOverrides) { try HistoryOperations.planRollback(store, vaultId: vaultId, target: target) }
+	}
+
+	func historyRolledBackEnvironmentsResult(
+		vaultId: String,
+		target: HistoryEngine.RollbackTarget,
+		fingerprint: String,
+		skipped: [(environment: Int, row: Int)],
+		keepEmpty: [Int]
+	) -> Result<[String: [String: String]], KeychainError> {
+		withHistory(vaultId, .write) {
+			try HistoryOperations.rolledBackEnvironments(
+				store, vaultId: vaultId, target: target, fingerprint: fingerprint, skipped: skipped, keepEmpty: keepEmpty)
+		}
+	}
+
+	func historyRemovalReviewResult(
+		vaultId: String, entry: String, environment: String, key: String, side: String
+	) -> Result<HistoryEngine.Review, KeychainError> {
+		withHistory(vaultId, .readExcludingOverrides) {
+			try HistoryOperations.reviewRemoval(store, vaultId: vaultId, entry: entry, environment: environment, key: key, side: side)
+		}
+	}
+
+	func removeFromHistoryResult(vaultId: String, review: HistoryEngine.Review, selection: [Int]) -> Result<Void, KeychainError> {
+		withHistory(vaultId, .write) { try HistoryOperations.remove(store, vaultId: vaultId, review: review, selection: selection) }
+	}
+
+	func setHistoryEnabledResult(vaultId: String, enabled: Bool) -> Result<Void, KeychainError> {
+		withHistory(vaultId, .maintenance) { try HistoryOperations.setEnabled(store, vaultId: vaultId, enabled: enabled) }
+	}
+
+	/// Runs a history operation in the transaction lock, authorized against
+	/// the project's marker as values operations are.
+	private func withHistory<T>(
+		_ vaultId: String,
+		_ operation: SharedKeychainStore.CompanionOperation,
+		_ body: () throws -> T
+	) -> Result<T, KeychainError> {
+		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
+		do {
+			return .success(try VaultKeychainTransactionLock.withLock {
+				try store.authorizeCompanion(vaultId: vaultId, operation)
+				return try body()
+			})
+		} catch let failure as HistoryEngine.Failure {
+			return .failure(.history(code: failure.code, message: failure.message))
+		} catch let error as KeychainStoreError {
+			return .failure(keychainError(from: error))
+		} catch {
+			return .failure(.unexpectedStatus(errSecInternalComponent))
+		}
 	}
 
 	/// Whether values writes are recorded in local history; see

@@ -98,6 +98,89 @@ struct HistoryKeychainTests {
 		#expect(try actions(try #require(try stored(backend, service: name))) == ["set"])
 	}
 
+	/// A service whose project `vaultId` went from A=1 to A=2, recorded.
+	private func edited() throws -> (KeychainService, InMemoryKeychainBackend, String) {
+		let (service, backend, name) = makeService()
+		guard case .success = service.createEnvironments(
+			vaultId: vaultId, projectName: "Project", projectPath: "", environments: ["default": ["A": "1"]],
+			source: VaultHistorySource(.set))
+		else { throw KeychainError.encodingFailed }
+		guard case .success = service.applyVaultTransaction(
+			project: .update(vaultId: vaultId, environments: ["default": ["A": "2"]], source: VaultHistorySource(.editKey)), data: [])
+		else { throw KeychainError.encodingFailed }
+		_ = service.takeHistoryOutcomes()
+		return (service, backend, name)
+	}
+
+	private func entries(_ service: KeychainService) throws -> [HistoryEngine.Entry] {
+		try #require(try service.historyTimelineResult(vaultId: vaultId, filter: nil).get()).rows.compactMap { row in
+			if case .entry(let entry) = row { return entry }
+			return nil
+		}
+	}
+
+	@Test("the timeline and a reveal read the project's history through the service")
+	func timelineAndReveal() throws {
+		let (service, _, _) = try edited()
+		let timeline = try #require(try service.historyTimelineResult(vaultId: vaultId, filter: nil).get())
+		#expect(timeline.readable == 2 && timeline.liveGap == nil)
+		let edit = try #require(try entries(service).first)
+		let revealed = try service.historyRevealResult(vaultId: vaultId, ids: [edit.id]).get()
+		let sides = try #require(revealed.response.first?.values?.first?.first)
+		let before = sides.before.flatMap { revealed.blobs[$0] }?.withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
+		#expect(before == "1")
+		#expect(try service.historyStateResult(vaultId: vaultId).get() == VaultHistoryState(history: "on", damage: []))
+	}
+
+	@Test("a rollback plans from the history and gives back the reviewed point's values")
+	func rollbackGivesTheEarlierValues() throws {
+		let (service, _, _) = try edited()
+		let edit = try #require(try entries(service).first)
+		let target = HistoryEngine.RollbackTarget.undo(entry: edit.id, only: nil)
+		let plan = try service.historyRollbackPlanResult(vaultId: vaultId, target: target).get().response
+		guard case .failure(.history(code: "history.changed_since_review", _)) = service.historyRolledBackEnvironmentsResult(
+			vaultId: vaultId, target: target, fingerprint: "stale", skipped: [], keepEmpty: [])
+		else {
+			Issue.record("a stale review must be refused")
+			return
+		}
+		let environments = try service.historyRolledBackEnvironmentsResult(
+			vaultId: vaultId, target: target, fingerprint: plan.fingerprint, skipped: [], keepEmpty: []).get()
+		#expect(environments == ["default": ["A": "1"]])
+	}
+
+	@Test("removing a value from history leaves no entry that reveals it")
+	func removalTakesTheValueOut() throws {
+		let (service, _, _) = try edited()
+		let edit = try #require(try entries(service).first)
+		let review = try service.historyRemovalReviewResult(
+			vaultId: vaultId, entry: edit.id, environment: "default", key: "A", side: "before").get()
+		#expect(!review.defaultSelection.isEmpty)
+		try service.removeFromHistoryResult(vaultId: vaultId, review: review, selection: review.defaultSelection).get()
+		let revealed = try service.historyRevealResult(vaultId: vaultId, ids: try entries(service).map(\.id)).get()
+		let values = revealed.blobs.items.map { blob in blob.withUnsafeBytes { String(decoding: $0, as: UTF8.self) } }
+		#expect(!values.contains("1"), "\(values)")
+	}
+
+	@Test("turning history off deletes it and stops recording; turning it on starts again at the next change")
+	func historyOffAndOn() throws {
+		let (service, backend, name) = try edited()
+		try service.setHistoryEnabledResult(vaultId: vaultId, enabled: false).get()
+		#expect(try service.historyStateResult(vaultId: vaultId).get().history == "off")
+		#expect(try stored(backend, service: name) == nil)
+		_ = service.applyVaultTransaction(
+			project: .update(vaultId: vaultId, environments: ["default": ["A": "3"]], source: VaultHistorySource(.set)), data: [])
+		#expect(service.takeHistoryOutcomes()[vaultId] == .off)
+		#expect(try stored(backend, service: name) == nil)
+
+		try service.setHistoryEnabledResult(vaultId: vaultId, enabled: true).get()
+		let next = VaultHistorySource(.set)
+		_ = service.applyVaultTransaction(
+			project: .update(vaultId: vaultId, environments: ["default": ["A": "4"]], source: next), data: [])
+		#expect(service.takeHistoryOutcomes()[vaultId] == .recorded(entry: next.id, gap: false, crowded: nil))
+		#expect(try actions(try #require(try stored(backend, service: name))) == ["set"])
+	}
+
 	@Test("a restore merge reviewed against canonically equivalent values that differ is refused")
 	func restoreMergeComparesExactly() throws {
 		let (service, _, _) = makeService()

@@ -49,6 +49,22 @@ private final class FakeHistoryStorage: HistoryStorage {
 		}
 	}
 
+	var values: Data?
+
+	func historyValues(vaultId: String) throws -> Data? { values }
+
+	func historyProjectNames(vaultId: String) throws -> [String] {
+		Array(records.keys)
+	}
+
+	func historyRun(_ plan: CompanionEngine.Plan, vaultId: String) throws {
+		for transaction in plan.transactions {
+			for account in transaction.deletes { records[account] = nil }
+			if let marker = transaction.writesMarker { records[markerAccount] = marker }
+			if transaction.deletesMarker { records[markerAccount] = nil }
+		}
+	}
+
 	func resetCounts() {
 		reads = []
 		replaced = []

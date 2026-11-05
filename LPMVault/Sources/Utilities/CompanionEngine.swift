@@ -140,6 +140,10 @@ enum CompanionEngine {
 		case removeFeature
 		/// The records a valid marker doesn't list.
 		case removeUnlisted
+		/// Turn local history off: delete its records, leaving `history-off`.
+		case historyOff
+		/// Turn local history back on, removing `history-off`.
+		case historyOn
 	}
 
 	struct Plan: Equatable, Sendable, Decodable {
