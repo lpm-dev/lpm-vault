@@ -61,6 +61,13 @@ Records that follow the values item take its CLI approval.
 The project's feature marker and the encrypted parts of a history or a release log stay readable without approval, so a binary entitled to the group can see each project's ID, its features and their versions, how many parts it has, and roughly how large they are.
 An LPM Vault older than companion storage that switches a project's approval changes only its values item, so until this version next unlocks and matches the records to it, or the CLI strengthens a record it reads, a record can keep the approval the project had before.
 
+Local history keeps an encrypted record of a project's value changes on this Mac, in items next to its values item.
+Its key and its head follow the values item's CLI approval; its parts are encrypted with that key and stay readable without approval.
+So a binary entitled to the group can't read past values without approval, but the count, sizes and modification times of a project's history parts show roughly when and how much its values changed.
+Removing a value from history, and turning history off, delete it logically: LPM Vault and the LPM CLI can't read it any more, and the key rotates on removal, but copies in Time Machine, APFS snapshots or other backups of this Mac can remain.
+Raising a project's CLI approval protects its history's key and head too; the app and the CLI each protect a history record they find weaker than its values item before they use it.
+A project-wide discard of damaged newer data run by LPM CLI 0.84.0 or LPM Vault 1.1.0, which predate local history, deletes a project's "history off" setting with the rest, so history for that project turns back on and starts empty at its next change.
+
 Optional sync encrypts values before upload.
 Project and account metadata are not secret values and can remain visible to the service.
 Organization sharing requires trust decisions about member keys.

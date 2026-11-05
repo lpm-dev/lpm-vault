@@ -400,6 +400,10 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		.failure(lock.withLock { historyFailure })
 	}
 
+	func historyUpkeepResult(raising: Bool) -> Result<HistoryOperations.Upkeep, KeychainError> {
+		.success(HistoryOperations.Upkeep(records: 0, trimmed: 0, crowded: false, mayBeShrunk: false))
+	}
+
 	func setHistoryEnabledResult(vaultId: String, enabled: Bool) -> Result<Void, KeychainError> {
 		lock.withLock {
 			historyState = .success(VaultHistoryState(history: enabled ? "default" : "off", damage: []))

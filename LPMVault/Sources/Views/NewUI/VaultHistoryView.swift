@@ -165,6 +165,9 @@ struct VaultHistoryView: View {
 		if let paused = pausedMessage {
 			banner(paused, detail: nil, action: nil)
 		}
+		if let crowded = history.crowded {
+			banner(text.crowded(crowded), detail: nil, action: nil)
+		}
 		if let timeline = history.timeline {
 			if timeline.unreadableParts > 0 || timeline.damagedTail {
 				banner("Part of this project’s history couldn’t be read.", detail: nil, action: ("Try Again", { Task { await history.reload() } }))

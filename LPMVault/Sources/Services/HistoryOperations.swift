@@ -121,6 +121,58 @@ enum HistoryOperations {
 		try HistoryRecorder.finishRunning(storage, vaultId: vaultId)
 	}
 
+	/// What the pass after unlock found.
+	struct Upkeep: Equatable, Sendable {
+		/// The service's record count after the pass's trims.
+		let records: Int
+		/// Parts the pass trimmed from the largest rings.
+		let trimmed: Int
+		/// Whether the service is still past its target, so new rings start
+		/// smaller and rings can't grow.
+		let crowded: Bool
+		/// Whether some ring may still have fewer parts than a full one, so a
+		/// later pass raises it.
+		let mayBeShrunk: Bool
+	}
+
+	/// The most parts one pass after unlock trims.
+	static let maximumTrimsAfterUnlock = 64
+
+	/// The pass after unlock. While the service is past its target, it trims
+	/// the largest rings, at most `maximumTrimsAfterUnlock` parts; any project
+	/// may be trimmed, since the unlock's authentication covers them. Once
+	/// it's well below, it raises shrunk rings back to full when `raising`,
+	/// which reads every ring's head, so a caller asks only when a ring may
+	/// have shrunk.
+	static func upkeep(_ storage: some HistoryStorage, raising: Bool) throws -> Upkeep {
+		let admission = try HistoryEngine.admission(
+			names: storage.historyNames(), operation: .trim, maxTrims: maximumTrimsAfterUnlock)
+		let trimmed = try HistoryRecorder.trim(storage, admission.trims).values.reduce(0, +)
+		let crowded = admission.creation != "full"
+		var mayBeShrunk = raising || trimmed > 0 || crowded
+		if mayBeShrunk, !crowded, admission.regrow {
+			mayBeShrunk = !(try raiseShrunkRings(storage, existing: admission.afterTrims))
+		}
+		return Upkeep(records: admission.existing - trimmed, trimmed: trimmed, crowded: crowded, mayBeShrunk: mayBeShrunk)
+	}
+
+	/// Raises every shrunk ring's limit back to full; false when a ring
+	/// couldn't be read or written, so a later pass tries again.
+	private static func raiseShrunkRings(_ storage: some HistoryStorage, existing: Int) throws -> Bool {
+		var raisedAll = true
+		for vaultId in try storage.historyRings() {
+			do {
+				guard let head = try storage.historyRecord(HistoryRecorder.account("history-head", vaultId)).map(secret),
+					case .upkeep(let writes, let delete) = try HistoryEngine.ring(vaultId: vaultId, head: head, action: .raiseLimit(existing: existing))
+				else { continue }
+				try HistoryRecorder.apply(storage, writes: writes, delete: delete)
+			} catch {
+				raisedAll = false
+			}
+		}
+		return raisedAll
+	}
+
 	/// Turns history off, deleting it, or back on.
 	static func setEnabled(_ storage: some HistoryStorage, vaultId: String, enabled: Bool) throws {
 		let marker = try storage.historyMarker(vaultId: vaultId)

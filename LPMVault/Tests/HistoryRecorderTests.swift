@@ -57,6 +57,10 @@ private final class FakeHistoryStorage: HistoryStorage {
 		Array(records.keys)
 	}
 
+	func historyTrimmable(own vaultId: String) throws -> [String] { [vaultId] }
+
+	func historyRings() throws -> [String] { [vaultId] }
+
 	func historyRun(_ plan: CompanionEngine.Plan, vaultId: String) throws {
 		for transaction in plan.transactions {
 			for account in transaction.deletes { records[account] = nil }

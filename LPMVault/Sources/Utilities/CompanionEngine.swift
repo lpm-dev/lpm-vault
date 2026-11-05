@@ -7,6 +7,10 @@ import LPMEnv
 /// Nothing here touches the Keychain; callers bring what they read and
 /// commit what they're given.
 enum CompanionEngine {
+	/// The marker's names for local history and for its being turned off,
+	/// whose damage never blocks values and which no backup carries.
+	static let localHistoryFeatures: Set<String> = ["history", "history-off"]
+
 	/// Why the engine refused a request or couldn't answer it.
 	struct Failure: Error, Equatable, Sendable {
 		let code: String

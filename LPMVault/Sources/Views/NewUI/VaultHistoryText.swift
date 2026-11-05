@@ -78,6 +78,12 @@ struct VaultHistoryText {
 		return "\(timeline.readable.counted("change")) kept on this Mac since \(since)"
 	}
 
+	/// Why every project keeps less history: "This Mac holds a lot of LPM
+	/// data (4,120 records), so LPM keeps less local history for each project."
+	func crowded(_ records: Int) -> String {
+		"This Mac holds a lot of LPM data (\(records.formatted(.number.locale(locale))) records), so LPM keeps less local history for each project."
+	}
+
 	/// Project settings' line under the switch, or nil when there's nothing
 	/// to say, as while history is off.
 	struct StateLine: Equatable {

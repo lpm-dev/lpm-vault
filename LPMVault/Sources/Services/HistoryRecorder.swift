@@ -67,7 +67,8 @@ protocol HistoryStorage {
 	func historyNames() throws -> [String]
 	/// The access the values item verifiably has, nil when it can't be told.
 	func historyApproval(vaultId: String) throws -> HistoryEngine.Approval?
-	/// Replaces one record, verified, with the values item's access.
+	/// Replaces one record, verified, with the access its class takes: the
+	/// values item's for the head and the key, open for parts.
 	func historyReplace(_ account: String, with data: Data) throws
 	/// Deletes one record, verified.
 	func historyDelete(_ account: String) throws
@@ -79,6 +80,12 @@ protocol HistoryStorage {
 	func historyProjectNames(vaultId: String) throws -> [String]
 	/// Commits a companion lifecycle plan, transaction by transaction.
 	func historyRun(_ plan: CompanionEngine.Plan, vaultId: String) throws
+	/// The projects whose rings a creation or growth in `vaultId` may trim
+	/// without asking for authentication: its own, and those whose values
+	/// item is readable without approval.
+	func historyTrimmable(own vaultId: String) throws -> [String]
+	/// The projects that have a history ring, from a names-only listing.
+	func historyRings() throws -> [String]
 }
 
 /// Records one project's net change, as the LPM CLI does: never failing the
@@ -87,6 +94,8 @@ enum HistoryRecorder {
 	/// The most times an append plans again, after reading a part or asking
 	/// admission; the engine needs at most a few.
 	private static let maximumPlans = 8
+	/// The most parts one creation or growth trims, as the LPM CLI's do.
+	private static let maximumTrimsPerOperation = 16
 
 	static func record(
 		_ storage: some HistoryStorage,
@@ -157,7 +166,7 @@ enum HistoryRecorder {
 		before: SecretBytes,
 		after: SecretBytes
 	) throws -> VaultHistoryOutcome {
-		let admission = try HistoryEngine.admission(names: storage.historyNames(), operation: .creation)
+		let admission = try admit(storage, vaultId: vaultId, operation: .creation).admission
 		guard admission.creation != "refused", let ringLimit = admission.ringLimit else {
 			return .notRecorded(reason: "limit", message: "This Mac holds too many LPM records to start history for another project.")
 		}
@@ -215,21 +224,19 @@ enum HistoryRecorder {
 				}
 				previous = secret(bytes)
 			case .needsGrowthAdmission:
-				let admission = try HistoryEngine.admission(
-					names: storage.historyNames(), operation: .growth, growing: (vaultId, opened.head))
-				growth = admission.growth ? .allowed : .refused
-				if !admission.growth { crowded = admission.existing }
+				let admitted = try admit(storage, vaultId: vaultId, operation: .growth, growing: opened.head)
+				if admitted.trimmedOwn {
+					// The trim rewrote this ring's head, so the append plans from it again.
+					opened = try open(storage, vaultId: vaultId, marker: marker)
+					previous = nil
+				}
+				growth = admitted.admission.growth ? .allowed : .refused
+				if !admitted.admission.growth { crowded = admitted.admission.existing }
 			case .write(let writes, let journal, let entry, let gap, _, _):
 				if journal {
 					try storage.historyCommit(writes)
 				} else {
-					for write in writes {
-						guard let bytes = write.bytes else {
-							try storage.historyDelete(write.account)
-							continue
-						}
-						try storage.historyReplace(write.account, with: bytes.withUnsafeBytes { Data($0) })
-					}
+					try apply(storage, writes: writes, delete: [])
 				}
 				return .recorded(entry: entry, gap: gap, crowded: crowded)
 			case .notRecorded("needsMaintenance", _) where !maintained:
@@ -242,6 +249,78 @@ enum HistoryRecorder {
 			}
 		}
 		return .notRecorded(reason: "failed", message: "Recording this change didn't settle.")
+	}
+
+	/// What admission allows for an operation in `vaultId`, after trimming
+	/// the largest rings it may write without a prompt when the service would
+	/// pass its target, as the LPM CLI does. For growth, `head` is the growing
+	/// ring's, whose parts the head doesn't list are deleted first.
+	private static func admit(
+		_ storage: some HistoryStorage,
+		vaultId: String,
+		operation: HistoryEngine.AdmissionOperation,
+		growing head: SecretBytes? = nil
+	) throws -> (admission: HistoryEngine.Admission, trimmedOwn: Bool) {
+		if let head { try deleteOrphans(storage, vaultId: vaultId, head: head) }
+		let planned = try HistoryEngine.admission(
+			names: storage.historyNames(), operation: operation, trimmable: storage.historyTrimmable(own: vaultId),
+			maxTrims: maximumTrimsPerOperation, growing: head.map { (vaultId, $0) })
+		let trimmed = try trim(storage, planned.trims)
+		guard !trimmed.isEmpty else { return (planned, false) }
+		// Decided again from what the trims left, which may be less than planned.
+		let trimmedOwn = trimmed[vaultId] != nil
+		let current = trimmedOwn ? try storage.historyRecord(account("history-head", vaultId)).map(secret) : head
+		let admitted = try HistoryEngine.admission(
+			names: storage.historyNames(), operation: operation, trimmable: [], maxTrims: 0,
+			growing: current.map { (vaultId, $0) })
+		return (admitted, trimmedOwn)
+	}
+
+	/// Trims each ring admission planned, oldest part first, never below its
+	/// floor. A ring whose history can't be read is left for its own project
+	/// to repair. Returns how many parts each project's ring lost.
+	static func trim(_ storage: some HistoryStorage, _ trims: [HistoryEngine.Trim]) throws -> [String: Int] {
+		var trimmed: [String: Int] = [:]
+		for planned in trims {
+			for _ in 0..<planned.count {
+				guard let head = try storage.historyRecord(account("history-head", planned.vaultId)).map(secret) else { break }
+				var step = try? HistoryEngine.ring(vaultId: planned.vaultId, head: head, action: .trim(floor: planned.floor, tail: nil))
+				if case .needsTail? = step {
+					guard let key = try storage.historyRecord(account("key", planned.vaultId)).map(secret),
+						let marker = try storage.historyMarker(vaultId: planned.vaultId).map(secret),
+						let tailPart = try? HistoryEngine.check(vaultId: planned.vaultId, marker: marker, head: head, key: key).tailPart
+					else { break }
+					let tail = try storage.historyRecord(account("history", planned.vaultId, part: tailPart)).map(secret)
+					step = try? HistoryEngine.ring(
+						vaultId: planned.vaultId, head: head, action: .trim(floor: planned.floor, tail: (key, tail)))
+				}
+				guard case .upkeep(let writes, let delete)? = step, !(writes.isEmpty && delete.isEmpty) else { break }
+				try apply(storage, writes: writes, delete: delete)
+				trimmed[planned.vaultId, default: 0] += 1
+			}
+		}
+		return trimmed
+	}
+
+	/// Deletes the parts of a ring its head doesn't list, which a trim that
+	/// stopped before its deletion leaves.
+	private static func deleteOrphans(_ storage: some HistoryStorage, vaultId: String, head: SecretBytes) throws {
+		let inventory = try storage.historyProjectNames(vaultId: vaultId)
+		guard case .upkeep(let writes, let delete) = try HistoryEngine.ring(vaultId: vaultId, head: head, action: .orphans(inventory: inventory))
+		else { return }
+		try apply(storage, writes: writes, delete: delete)
+	}
+
+	/// Writes a ring's upkeep in order, then deletes what it frees.
+	static func apply(_ storage: some HistoryStorage, writes: [HistoryEngine.RecordWrite], delete: [String]) throws {
+		for write in writes {
+			guard let bytes = write.bytes else {
+				try storage.historyDelete(write.account)
+				continue
+			}
+			try storage.historyReplace(write.account, with: bytes.withUnsafeBytes { Data($0) })
+		}
+		for account in delete { try storage.historyDelete(account) }
 	}
 
 	private struct Opened {

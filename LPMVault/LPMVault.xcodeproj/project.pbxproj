@@ -219,6 +219,7 @@
 		9865BC8960054863333EE960 /* BackupPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95700F2BFD11A848B52BF0B3 /* BackupPayload.swift */; };
 		98E999243060235FCAE05FFF /* ProjectConfigWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4BA60E4876BDA7818D1F5A /* ProjectConfigWatcher.swift */; };
 		9985BDBA7A430BE63659F484 /* OrgVaultsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0682E805810ACD18F61FEDF2 /* OrgVaultsSheet.swift */; };
+		9C1E874368ECC145AFCEEE2E /* HistoryRingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF8F48495B2DC01EFBE3522D /* HistoryRingTests.swift */; };
 		9C4C6AC00EADDAFC7F798046 /* VaultAppearanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC906597DAFEA713D347A59B /* VaultAppearanceTests.swift */; };
 		9CC25A752C51EC5CE0FC47EA /* PlatformConnections.swift in Sources */ = {isa = PBXBuildFile; fileRef = D26762F360804E157281F8C7 /* PlatformConnections.swift */; };
 		9CC5E03AFA17044F49D52C69 /* VaultKeySortTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9322CE39D2436817423A53ED /* VaultKeySortTests.swift */; };
@@ -703,6 +704,7 @@
 		FC8F78B4292032B8160B8A5A /* VaultQuitHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultQuitHUD.swift; sourceTree = "<group>"; };
 		FD248A688D2DCFD4318032CF /* CurrentContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrentContractTests.swift; sourceTree = "<group>"; };
 		FF474A097A709D41D9734C82 /* ProjectEnvSchemaRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEnvSchemaRule.swift; sourceTree = "<group>"; };
+		FF8F48495B2DC01EFBE3522D /* HistoryRingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryRingTests.swift; sourceTree = "<group>"; };
 		FFB3E13A56BF9C9FBC507F70 /* EnvEngineABI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvEngineABI.swift; sourceTree = "<group>"; };
 		FFE4B46C5693219A4558C620 /* VaultStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -947,6 +949,7 @@
 				696D9E71EF79136CD32BCE75 /* HistoryInteractionTests.swift */,
 				0C40F5ED02620800BC80EA8A /* HistoryKeychainTests.swift */,
 				B75F168BC4928F0CD348FBD6 /* HistoryRecorderTests.swift */,
+				FF8F48495B2DC01EFBE3522D /* HistoryRingTests.swift */,
 				8A5F5EC0D9DAB453324E1924 /* HistoryRollbackFollowTests.swift */,
 				B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */,
 				A075C7BA1C52515081F1A50F /* KeyInspectorInteractionTests.swift */,
@@ -1293,6 +1296,7 @@
 				00C8582421D60ADB4F0FEAD9 /* HistoryInteractionTests.swift in Sources */,
 				1A80F7BC2053E8E9A4CD6BAC /* HistoryKeychainTests.swift in Sources */,
 				5273DF4EA6ABA7E0B4749379 /* HistoryRecorderTests.swift in Sources */,
+				9C1E874368ECC145AFCEEE2E /* HistoryRingTests.swift in Sources */,
 				6A892AD8393157333C6B9CB0 /* HistoryRollbackFollowTests.swift in Sources */,
 				8606B7CAFD64FF5A52433970 /* KeyInspectorInteractionTests.swift in Sources */,
 				B18071E270ACCC1AB6FEC2C7 /* KeySuggestionInteractionTests.swift in Sources */,

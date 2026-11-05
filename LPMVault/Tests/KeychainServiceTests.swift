@@ -345,7 +345,8 @@ struct KeychainServiceTests {
 		#expect(valuesWrites[0].0.hasPrefix("__vault_transaction_stage_v3__:"))
 		#expect(valuesWrites[1].0 == id)
 		let tail = try HistoryRecorder.account("history", id, part: 0)
-		#expect(protectedWrites.contains { $0.0 == tail }, "history's tail follows the values' approval")
+		#expect(!protectedWrites.contains { $0.0 == tail }, "history's parts stay open, as the LPM CLI reads them")
+		#expect(backend.recordedAccessWrites.contains { $0.0 == tail && $0.1 == .automatic })
 	}
 
 	@Test("CLI approval cannot target internal Keychain records")

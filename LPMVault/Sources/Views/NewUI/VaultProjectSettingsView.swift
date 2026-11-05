@@ -305,6 +305,10 @@ struct VaultProjectSettingsView: View {
 						}
 					}
 				}
+				if let crowded = store.history.crowded, state != "off" {
+					Text(VaultHistoryText(now: Date()).crowded(crowded))
+						.foregroundStyle(VaultPalette.orangeTintText)
+				}
 				if let historyFailure {
 					Text(historyFailure).foregroundStyle(VaultPalette.redText)
 				}

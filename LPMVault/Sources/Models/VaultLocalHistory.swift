@@ -223,6 +223,9 @@ final class VaultLocalHistory {
 
 	/// Why each project's last change wasn't recorded, until a later one is.
 	private(set) var notRecorded: [String: NotRecorded] = [:]
+	/// The Mac's LPM record count while it holds so many that new rings start
+	/// smaller and rings can't grow; nil otherwise.
+	private(set) var crowded: Int?
 	var rollbackReview: RollbackReview?
 	var removalReview: RemovalReview?
 	private(set) var applied: AppliedRollback?
@@ -543,6 +546,9 @@ final class VaultLocalHistory {
 		for (vaultId, outcome) in await actions.takeOutcomes() {
 			switch outcome {
 			case .notRecorded(let reason, let message): notRecorded[vaultId] = NotRecorded(reason: reason, message: message)
+			case .recorded(_, _, let crowded?):
+				notRecorded[vaultId] = nil
+				self.crowded = crowded
 			case .recorded, .nothing, .off: notRecorded[vaultId] = nil
 			}
 		}
@@ -550,6 +556,12 @@ final class VaultLocalHistory {
 
 	func dismissNotRecorded(_ projectID: String) {
 		notRecorded[projectID] = nil
+	}
+
+	/// What the pass after unlock found: the record count while the Mac is
+	/// past its target, nil once it isn't.
+	func noteCrowded(_ records: Int?) {
+		crowded = records
 	}
 
 	/// The project's history state and its unfiltered counts, whatever the

@@ -1602,3 +1602,90 @@ private struct AnyJSON: Decodable {
 		init?(intValue: Int) { nil }
 	}
 }
+
+@Suite("Local history on the shared Keychain", .serialized)
+struct HistoryCompanionStorageTests {
+	/// A service whose project `proj` records local history, created with
+	/// `access`.
+	private func makeHistoryService(_ access: VaultCliAccess = .automatic) throws -> (KeychainService, CompanionTestBackend) {
+		let backend = CompanionTestBackend()
+		let service = KeychainService(testingService: "dev.lpm.vault.history-companion.\(UUID().uuidString)", backend: backend)
+		guard case .success = service.createEnvironments(
+			vaultId: vault, projectName: "Project", projectPath: "", environments: ["default": ["TOKEN": "team"]], source: VaultHistorySource(.set))
+		else { throw KeychainError.encodingFailed }
+		if access == .requireApproval { _ = try service.setCliAccess(vaultId: vault, access: .requireApproval).get() }
+		_ = service.takeHistoryOutcomes()
+		return (service, backend)
+	}
+
+	private func edit(_ service: KeychainService, to value: String) throws {
+		guard case .success = service.applyVaultTransaction(
+			project: .update(vaultId: vault, environments: ["default": ["TOKEN": value]], source: VaultHistorySource(.set)), data: [])
+		else { throw KeychainError.encodingFailed }
+	}
+
+	@Test("a values write to a project whose only newer data is local history lists nothing")
+	func historyOnlyWritesDontList() throws {
+		let (service, backend) = try makeHistoryService()
+		#expect(backend.data(try markerName()) != nil, "history marks the project")
+		backend.resetCounts()
+		let source = VaultHistorySource(.set)
+		guard case .success = service.applyVaultTransaction(
+			project: .update(vaultId: vault, environments: ["default": ["TOKEN": "next"]], source: source), data: [])
+		else { throw KeychainError.encodingFailed }
+		#expect(backend.listings == 0)
+		#expect(service.takeHistoryOutcomes()[vault] == .recorded(entry: source.id, gap: false, crowded: nil))
+	}
+
+	@Test("a protected project's history record that's weak is protected before it's used")
+	func weakRecordIsStrengthened() throws {
+		let (service, backend) = try makeHistoryService(.requireApproval)
+		let head = try recordName("history-head")
+		let bytes = try #require(backend.data(head))
+		backend.store(head, bytes, access: .automatic)
+		backend.resetCounts()
+		try edit(service, to: "next")
+		#expect(backend.accessChanges.map(\.account) == [head])
+		#expect(backend.claim(head) == .requireApproval)
+		#expect(service.takeHistoryOutcomes()[vault].map { if case .recorded = $0 { true } else { false } } == true)
+	}
+
+	@Test("a protected project's history parts stay open, as the LPM CLI reads them, and its head and key follow the values")
+	func historyPartsStayOpen() throws {
+		let (service, backend) = try makeHistoryService(.requireApproval)
+		try edit(service, to: "next")
+		#expect(backend.claim(try recordName("history", part: 0)) == .automatic)
+		#expect(backend.claim(try recordName("history-head")) == .requireApproval)
+		#expect(backend.claim(try recordName("key")) == .requireApproval)
+	}
+
+	@Test("a history record whose approval attributes contradict each other is damage, and the values still change")
+	func contradictoryRecordIsDamage() throws {
+		let (service, backend) = try makeHistoryService()
+		backend.makeContradictory(try recordName("history-head"))
+		try edit(service, to: "next")
+		guard case .notRecorded("damaged", _)? = service.takeHistoryOutcomes()[vault] else {
+			Issue.record("the change isn't recorded on a head that contradicts itself")
+			return
+		}
+		#expect(backend.data(vault) == Data(#"{"environments":{"default":{"TOKEN":"next"}}}"#.utf8))
+	}
+
+	@Test("a creation on a crowded Mac never trims a ring whose project asks for approval")
+	func protectedRingsAreNotTrimmed() throws {
+		let (service, backend) = try makeHistoryService(.requireApproval)
+		let value = { (index: Int) in String(repeating: String(index % 10), count: 4096) }
+		for index in 1...12 { try edit(service, to: value(index)) }
+		let headAccount = try recordName("history-head")
+		struct Head: Decodable { let parts: [Int] }
+		let grown = try JSONDecoder().decode(Head.self, from: try #require(backend.data(headAccount))).parts
+		#expect(grown.count >= 3)
+		for account in try CompanionEngine.accountNames((0..<4_100).map { .init(role: .record, vaultId: "gone-\($0)", kind: "overrides", part: nil) }) {
+			backend.store(account, Data("x".utf8))
+		}
+		guard case .success = service.createEnvironments(
+			vaultId: "other", projectName: "Other", projectPath: "", environments: ["default": ["A": "1"]], source: VaultHistorySource(.set))
+		else { throw KeychainError.encodingFailed }
+		#expect(try JSONDecoder().decode(Head.self, from: try #require(backend.data(headAccount))).parts == grown)
+	}
+}

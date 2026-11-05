@@ -329,10 +329,14 @@ final class CompanionScope {
 	var unfinishable: [String: String] = [:]
 	/// Each values item's access as a probe verified it in this scope.
 	var verifiedAccess: [String: VaultCliAccess] = [:]
+	/// Each values item's access as its attributes claim it, read in this
+	/// scope without a listing.
+	var claimedAccess: [String: VaultCliAccess] = [:]
 
 	/// Forgets everything a failed change may have made stale.
 	func reset() {
 		verifiedAccess = [:]
+		claimedAccess = [:]
 		gates = [:]
 		listed = [:]
 		markers = [:]
@@ -504,6 +508,10 @@ protocol KeychainServiceProtocol: Sendable {
 	func removeFromHistoryResult(vaultId: String, review: HistoryEngine.Review, selection: [Int]) -> Result<Void, KeychainError>
 	/// Turns the project's history off, deleting it, or back on.
 	func setHistoryEnabledResult(vaultId: String, enabled: Bool) -> Result<Void, KeychainError>
+	/// Local history's pass after unlock: trims rings while the Mac holds
+	/// too many records, and raises shrunk ones once it's well below, when
+	/// `raising`.
+	func historyUpkeepResult(raising: Bool) -> Result<HistoryOperations.Upkeep, KeychainError>
 	func applyVaultTransaction(
 		project: VaultProjectKeychainMutation?,
 		data: [VaultKeychainMutation]
@@ -767,6 +775,10 @@ protocol KeychainStoreBackend {
 	func write(service: String, account: String, data: Data, access: VaultCliAccess) throws
 	func setAuthenticationContext(_ context: LAContext?)
 	func read(service: String, account: String) throws -> Data?
+	/// `account`'s data with the approval its attributes claim, from one
+	/// read; nil when it's absent. Throws `contradictoryApproval` for
+	/// attributes that contradict each other.
+	func readClaimingAccess(service: String, account: String) throws -> (data: Data, access: VaultCliAccess)?
 	func write(service: String, account: String, data: Data) throws
 	func add(service: String, account: String, data: Data) throws
 	@discardableResult
@@ -800,6 +812,11 @@ enum KeychainProbeOutcome: Equatable, Sendable {
 }
 
 extension KeychainStoreBackend {
+	func readClaimingAccess(service: String, account: String) throws -> (data: Data, access: VaultCliAccess)? {
+		guard let data = try read(service: service, account: account) else { return nil }
+		return (data, try cliAccess(service: service, account: account))
+	}
+
 	func accounts(service: String) throws -> [String: VaultCliAccess] {
 		throw KeychainStoreError.status(operation: "list \(service)", code: errSecUnimplemented)
 	}
@@ -1173,6 +1190,25 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend, LPMHomeKeychain {
 			throw KeychainStoreError.status(operation: "read", code: errSecInternalComponent)
 		}
 		return data
+	}
+
+	func readClaimingAccess(service: String, account: String) throws -> (data: Data, access: VaultCliAccess)? {
+		var query = Self.identityQuery(service: service, account: account)
+		query[kSecUseAuthenticationContext as String] = authentication.current()
+		query[kSecReturnData as String] = true
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+		var result: AnyObject?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		if status == errSecItemNotFound { return nil }
+		guard status == errSecSuccess else {
+			throw KeychainStoreError.status(operation: "read", code: status)
+		}
+		guard let attributes = result as? [String: Any], let data = attributes[kSecValueData as String] as? Data else {
+			throw KeychainStoreError.status(operation: "read", code: errSecInternalComponent)
+		}
+		return (data, try Self.cliAccess(attributes: attributes))
 	}
 
 	func write(
@@ -2580,6 +2616,9 @@ final class SharedKeychainStore: @unchecked Sendable {
 				// Without a marker only a writer outside LPM leaves records, which
 				// the CLI can't see either, so only a marked project is listed.
 				guard gate.marker != .absent else { return }
+				// History's damage never blocks values, so a project whose only
+				// newer data is local history isn't listed either.
+				guard gate.features.contains(where: { !CompanionEngine.localHistoryFeatures.contains($0.name) }) else { return }
 				let listed = try listedAssessmentUnlocked(vaultId)
 				guard listed.allows.write else { throw KeychainStoreError.companion(CompanionRefusal(listed)) }
 			}
@@ -3091,6 +3130,10 @@ final class SharedKeychainStore: @unchecked Sendable {
 		}
 		if EnvValidation.isSafeVaultId(account) {
 			scope.listed[account] = nil
+			switch change {
+			case .wrote(_, let access?), .access(let access): scope.claimedAccess[account] = access
+			case .wrote(_, nil), .deleted: scope.claimedAccess[account] = nil
+			}
 			return
 		}
 		guard account.hasPrefix("__vault_"), !Self.isOwnRecord(account) else { return }
@@ -3137,8 +3180,52 @@ extension SharedKeychainStore: HistoryStorage {
 		try markerUnlocked(vaultId)
 	}
 
+	/// A record read with the approval its attributes claim. One that follows
+	/// its values item and claims none while the values claim approval is
+	/// probed, and protected when it isn't, before its bytes are used, as the
+	/// LPM CLI does.
 	func historyRecord(_ account: String) throws -> Data? {
-		try backend.read(service: service, account: account)
+		let read: (data: Data, access: VaultCliAccess)?
+		do {
+			read = try backend.readClaimingAccess(service: service, account: account)
+		} catch KeychainStoreError.contradictoryApproval {
+			throw HistoryEngine.Failure(
+				code: "history.damaged", message: "A local history record has approval attributes that contradict each other.")
+		}
+		guard let read else { return nil }
+		if read.access == .automatic, case .account(let companion)? = try describedUnlocked([account]).first,
+			companion.access == .followsValues,
+			try claimedValuesAccessUnlocked(companion.vaultId) == .requireApproval
+		{
+			try requireValuesApprovalUnlocked(account, vaultId: companion.vaultId)
+		}
+		return read.data
+	}
+
+	/// `vaultId`'s values item's approval as its attributes claim it, from
+	/// this scope's listing when it has one, else read once a scope.
+	private func claimedValuesAccessUnlocked(_ vaultId: String) throws -> VaultCliAccess {
+		let scope = self.scope
+		if case .success(let access)? = scope.listing?[vaultId] { return access }
+		if let access = scope.claimedAccess[vaultId] { return access }
+		let access = try backend.cliAccess(service: service, account: vaultId)
+		scope.claimedAccess[vaultId] = access
+		return access
+	}
+
+	/// Protects `account` when a probe finds it readable without approval,
+	/// and confirms it then is.
+	private func requireValuesApprovalUnlocked(_ account: String, vaultId: String) throws {
+		let openAccounts = [VaultKeychainRecordContract.projectIndexMarkerAccount, try markerAccountName(vaultId)]
+		switch backend.probe(service: service, account: account, openAccounts: openAccounts) {
+		case .protected: return
+		case .automatic: try setCliAccessNotedUnlocked(account, .requireApproval)
+		case .absent: throw KeychainStoreError.integrityValidationFailed
+		case .inconclusive: throw KeychainStoreError.keychainUnavailable
+		}
+		guard backend.probe(service: service, account: account, openAccounts: openAccounts) == .protected else {
+			throw KeychainStoreError.integrityValidationFailed
+		}
 	}
 
 	func historyNames() throws -> [String] {
@@ -3153,11 +3240,15 @@ extension SharedKeychainStore: HistoryStorage {
 		}
 	}
 
+	/// Writes a record the way its access class says: the head and the key
+	/// with their values item's verified approval, parts open, as the LPM CLI
+	/// reads them without approval.
 	func historyReplace(_ account: String, with data: Data) throws {
 		guard case .account(let companion)? = try describedUnlocked([account]).first else {
 			throw KeychainStoreError.integrityValidationFailed
 		}
-		try writeVerifiedUnlocked(account: account, data: data, access: historyAccessUnlocked(vaultId: companion.vaultId))
+		let access = companion.access == .followsValues ? try historyAccessUnlocked(vaultId: companion.vaultId) : .automatic
+		try writeVerifiedUnlocked(account: account, data: data, access: access)
 	}
 
 	func historyDelete(_ account: String) throws {
@@ -3183,6 +3274,21 @@ extension SharedKeychainStore: HistoryStorage {
 
 	func historyRun(_ plan: CompanionEngine.Plan, vaultId: String) throws {
 		try executeCompanionPlanUnlocked(plan, vaultId: vaultId)
+	}
+
+	func historyTrimmable(own vaultId: String) throws -> [String] {
+		let listing = try listingUnlocked()
+		return [vaultId] + listing.compactMap { account, access in
+			guard account != vaultId, case .success(.automatic) = access, !account.hasPrefix("__"), EnvValidation.isSafeVaultId(account)
+			else { return nil }
+			return account
+		}.sorted()
+	}
+
+	func historyRings() throws -> [String] {
+		try companionNamesUnlocked().compactMap { vaultId, names in
+			try names.contains(HistoryRecorder.account("history-head", vaultId)) ? vaultId : nil
+		}.sorted()
 	}
 
 	/// The values item's access as a probe verifies it, once a scope for each
@@ -3363,6 +3469,15 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		withHistory(vaultId, .maintenance) { try HistoryOperations.setEnabled(store, vaultId: vaultId, enabled: enabled) }
 	}
 
+	func historyUpkeepResult(raising: Bool) -> Result<HistoryOperations.Upkeep, KeychainError> {
+		historyResult {
+			try VaultKeychainTransactionLock.withLock {
+				try store.recoverVaultTransaction()
+				return try HistoryOperations.upkeep(store, raising: raising)
+			}
+		}
+	}
+
 	/// Runs a history operation in the transaction lock, authorized against
 	/// the project's marker as values operations are.
 	private func withHistory<T>(
@@ -3371,11 +3486,18 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		_ body: () throws -> T
 	) -> Result<T, KeychainError> {
 		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
-		do {
-			return .success(try VaultKeychainTransactionLock.withLock {
+		return historyResult {
+			try VaultKeychainTransactionLock.withLock {
 				try store.authorizeCompanion(vaultId: vaultId, operation)
 				return try body()
-			})
+			}
+		}
+	}
+
+	/// A history operation's result, its errors as the app reports them.
+	private func historyResult<T>(_ body: () throws -> T) -> Result<T, KeychainError> {
+		do {
+			return .success(try body())
 		} catch let failure as HistoryEngine.Failure {
 			return .failure(.history(code: failure.code, message: failure.message))
 		} catch let error as KeychainStoreError {
@@ -3898,9 +4020,6 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	/// Which of `vaultIds` a backup reads, and what it says about the others'
 	/// newer data: a project whose newer data keeps its values on the Mac,
 	/// or whose interrupted change can't be finished, is left out with why.
-	/// The marker's names for local history and for its being turned off.
-	private static let localHistoryFeatures: Set<String> = ["history", "history-off"]
-
 	private func backupCompanionNotesUnlocked(
 		_ vaultIds: [String],
 		listed: [String: VaultProjectMetadata],
@@ -3938,7 +4057,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			readable.append(vaultId)
 			// Every backup leaves local history out, which the export sheet
 			// says once, so it alone doesn't name a project.
-			let carried = assessment.features.filter { !Self.localHistoryFeatures.contains($0.name) }
+			let carried = assessment.features.filter { !CompanionEngine.localHistoryFeatures.contains($0.name) }
 			let records = projectNames.count - (assessment.marker == .absent ? 0 : 1)
 			if !carried.isEmpty || (assessment.features.isEmpty && records > 0) { notes.withNewerData.insert(vaultId) }
 		}

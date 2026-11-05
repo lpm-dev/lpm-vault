@@ -227,5 +227,12 @@ struct VaultLocalHistoryTests {
 		outcomes.pending = ["p": .recorded(entry: nil, gap: false, crowded: nil)]
 		await history.collectOutcomes()
 		#expect(history.notRecorded["p"] == nil)
+		#expect(history.crowded == nil)
+
+		outcomes.pending = ["p": .recorded(entry: nil, gap: false, crowded: 4_200)]
+		await history.collectOutcomes()
+		#expect(history.crowded == 4_200, "a ring that started smaller says the Mac is crowded")
+		history.noteCrowded(nil)
+		#expect(history.crowded == nil, "until the pass after unlock finds it isn't")
 	}
 }

@@ -133,6 +133,11 @@ struct VaultHistoryTextTests {
 		#expect(text.stateLine(nil, notRecorded: nil, readFailed: true)?.retries == true)
 	}
 
+	@Test("a crowded Mac's note gives the record count as the locale writes numbers")
+	func crowdedNote() {
+		#expect(text.crowded(4_120) == "This Mac holds a lot of LPM data (4,120 records), so LPM keeps less local history for each project.")
+	}
+
 	private func review(_ target: HistoryEngine.RollbackTarget, kind: String, environments: String) throws -> VaultLocalHistory.RollbackReview {
 		let plan = try JSONDecoder().decode(HistoryEngine.Plan.self, from: Data("""
 			{"kind": "\(kind)", "point": {"entry": "e", "side": "after", "time": \(Self.time(2026, 11, 3, 14, 2))}, "generation": 1,

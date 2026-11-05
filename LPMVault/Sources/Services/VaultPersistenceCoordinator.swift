@@ -1588,6 +1588,11 @@ actor VaultPersistenceCoordinator {
 		service.setHistoryEnabledResult(vaultId: vaultId, enabled: enabled)
 	}
 
+	func historyUpkeep(raising: Bool) -> Result<HistoryOperations.Upkeep, KeychainError> {
+		guard !Task.isCancelled else { return .failure(.accessDenied) }
+		return service.historyUpkeepResult(raising: raising)
+	}
+
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
 		service.takeHistoryOutcomes()
 	}

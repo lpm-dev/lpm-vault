@@ -1526,6 +1526,9 @@ final class VaultStore {
     session: { [weak self] in await self?.platformSession() },
     cleanupChanged: { [weak self] in Task { @MainActor in self?.platformCleanupChanged() } }
   )
+  /// Whether a history ring may have fewer parts than a full one, which the
+  /// pass after unlock raises; unknown at launch.
+  @ObservationIgnored private var historyRingsMayBeShrunk = true
   /// The selected project's local history, as the History page shows it.
   @ObservationIgnored private(set) lazy var history = VaultLocalHistory(actions: .coordinator(
     persistence,
@@ -5708,15 +5711,34 @@ final class VaultStore {
     Task { [platformCredentials] in await platformCredentials.resumeCleanup(now: true) }
     Task { [weak self] in await self?.reconcilePublishingRecords() }
     companionMaintenanceTask?.cancel()
-    companionMaintenanceTask = Task { [persistence] in
+    companionMaintenanceTask = Task { [persistence, weak self] in
       if case .failure(let failure) = await persistence.maintainCompanionStorage(), !Task.isCancelled {
         vaultStoreLogger.error("Companion maintenance after unlock failed: \(failure.description, privacy: .public)")
       }
+      await self?.maintainHistoryRings()
     }
     if lpmHomeMoveRecovery == nil, LPMHome.unfinishedMove(in: preferences) != nil {
       lpmHomeMoveRecovery = Task { [weak self] in
         try? await self?.finishUnfinishedLPMHomeMove()
         self?.lpmHomeMoveRecovery = nil
+      }
+    }
+  }
+
+  /// Local history's pass after unlock: trims rings while the Mac holds too
+  /// many LPM records, and raises shrunk ones once it's well below. Raising
+  /// reads every ring's head, so it runs only while a ring may have shrunk:
+  /// at the first unlock after launch, and after a pass that saw the Mac
+  /// past its target.
+  private func maintainHistoryRings() async {
+    switch await persistence.historyUpkeep(raising: historyRingsMayBeShrunk) {
+    case .success(let upkeep):
+      guard !Task.isCancelled, isUnlocked else { return }
+      historyRingsMayBeShrunk = upkeep.mayBeShrunk
+      history.noteCrowded(upkeep.crowded ? upkeep.records : nil)
+    case .failure(let failure):
+      if !Task.isCancelled {
+        vaultStoreLogger.error("Local history upkeep after unlock failed: \(failure.description, privacy: .public)")
       }
     }
   }
