@@ -216,11 +216,12 @@ extension HistoryEngine {
 		let keys: [KeyChange]?
 	}
 
-	enum Remote: Decodable, Sendable, Equatable {
+	/// Where pulled values came from: "personal", or `{"org": slug}`.
+	enum Remote: Codable, Sendable, Equatable {
 		case personal
 		case org(String)
 
-		private struct Org: Decodable { let org: String }
+		private struct Org: Codable { let org: String }
 
 		init(from decoder: any Decoder) throws {
 			if let org = try? Org(from: decoder) {
@@ -231,9 +232,19 @@ extension HistoryEngine {
 				throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown remote"))
 			}
 		}
+
+		func encode(to encoder: any Encoder) throws {
+			switch self {
+			case .personal:
+				var container = encoder.singleValueContainer()
+				try container.encode("personal")
+			case .org(let slug):
+				try Org(org: slug).encode(to: encoder)
+			}
+		}
 	}
 
-	struct Related: Decodable, Sendable, Equatable {
+	struct Related: Codable, Sendable, Equatable {
 		let id: String
 		/// "before" or "after".
 		let side: String
@@ -393,5 +404,590 @@ extension HistoryEngine {
 			parts: parts.map { Part(part: $0.part, blob: $0.bytes.map { bytes in blobs.add(bytes) }) })
 		let answer: Answer<Check> = try call(lpm_env_history_check, request, blobs: blobs)
 		return answer.response
+	}
+}
+
+// MARK: - Writes
+
+extension HistoryEngine {
+	/// A record to write: its account and the answer blob with its bytes.
+	struct Write: Decodable, Sendable, Equatable {
+		let account: String
+		let blob: Int
+	}
+
+	/// A record write, or a deletion, with its bytes taken out of the answer.
+	struct RecordWrite: Sendable {
+		let account: String
+		/// nil deletes the record.
+		let bytes: SecretBytes?
+	}
+
+	/// `writes` with their bytes, or nil when an index names no blob.
+	static func resolve(_ writes: [Write], in blobs: Blobs) -> [RecordWrite]? {
+		var resolved: [RecordWrite] = []
+		resolved.reserveCapacity(writes.count)
+		for write in writes {
+			guard let bytes = blobs[write.blob] else { return nil }
+			resolved.append(RecordWrite(account: write.account, bytes: bytes))
+		}
+		return resolved
+	}
+}
+
+// MARK: - Recording
+
+extension HistoryEngine {
+	struct ChangeDetail: Encodable, Sendable, Equatable {
+		var fileName: String?
+		var pasted = false
+		var remote: Remote?
+		var remoteVersion: UInt64?
+		var platform: String?
+		var related: Related?
+	}
+
+	enum Rename: Encodable, Sendable, Equatable {
+		case environment(from: String, to: String)
+		case key(environment: String, from: String, to: String)
+
+		func encode(to encoder: any Encoder) throws {
+			switch self {
+			case .environment(let from, let to):
+				try ["environment": ["from": from, "to": to]].encode(to: encoder)
+			case .key(let environment, let from, let to):
+				try ["key": ["environment": environment, "from": from, "to": to]].encode(to: encoder)
+			}
+		}
+	}
+
+	/// One action's change, which history records as one entry.
+	struct Change: Encodable, Sendable, Equatable {
+		/// 32 hex digits, new for each action.
+		let id: String
+		/// Milliseconds since 1970.
+		let time: Int64
+		let action: String
+		var detail = ChangeDetail()
+		var renames: [Rename] = []
+	}
+
+	/// The access the values item claims, which a new key record takes.
+	enum Approval: String, Encodable, Sendable {
+		case automatic, `protected`, fileStore
+	}
+
+	enum Growth: String, Encodable, Sendable {
+		case unasked, allowed, refused
+	}
+
+	/// Whether the change creates history or appends to it, with what each
+	/// needs as stored, read in the same lock as the values.
+	enum Recording: Sendable {
+		case create(marker: SecretBytes?, approval: Approval, ringLimit: Int)
+		case append(marker: SecretBytes, head: SecretBytes, key: SecretBytes, tail: SecretBytes?, previous: SecretBytes?, growth: Growth)
+	}
+
+	/// What recording a change comes to.
+	enum Record: Sendable {
+		case noKeyChanges
+		case unchanged
+		case alreadyRecorded
+		/// Read this part, pass it as `previous` and record again.
+		case needsPrevious(part: Int)
+		/// Ask admission whether the ring may grow, then record again.
+		case needsGrowthAdmission
+		/// Write these, as one journal transaction when `journal`, else each
+		/// as a verified replacement in order.
+		case write(writes: [RecordWrite], journal: Bool, entry: String, gap: Bool, valuesKept: Bool, shape: String?)
+		/// History doesn't record this change; `reason` is the engine's code.
+		case notRecorded(reason: String, message: String)
+	}
+
+	/// Plans recording `change`, whose values were `before` and are `after`.
+	static func record(vaultId: String, change: Change, before: SecretBytes, after: SecretBytes, recording: Recording) throws(Failure) -> Record {
+		struct Create: Encodable {
+			let marker: Int?
+			let approval: Approval
+			let ringLimit: Int
+		}
+		struct Append: Encodable {
+			let marker: Int
+			let head: Int
+			let key: Int
+			let tail: Int?
+			let previous: Int?
+			let growth: Growth
+		}
+		struct Request: Encodable {
+			let vaultId: String
+			let change: Change
+			let before: Int
+			let after: Int
+			let create: Create?
+			let append: Append?
+		}
+		struct Response: Decodable {
+			let result: String
+			let reason: String?
+			let message: String?
+			let part: Int?
+			let writes: [Write]?
+			let journal: Bool?
+			let entry: String?
+			let gap: Bool?
+			let valuesKept: Bool?
+			let shape: String?
+		}
+		var blobs = Blobs()
+		let beforeIndex = blobs.add(before)
+		let afterIndex = blobs.add(after)
+		var create: Create?
+		var append: Append?
+		switch recording {
+		case .create(let marker, let approval, let ringLimit):
+			create = Create(marker: marker.map { blobs.add($0) }, approval: approval, ringLimit: ringLimit)
+		case .append(let marker, let head, let key, let tail, let previous, let growth):
+			append = Append(
+				marker: blobs.add(marker), head: blobs.add(head), key: blobs.add(key),
+				tail: tail.map { blobs.add($0) }, previous: previous.map { blobs.add($0) }, growth: growth)
+		}
+		let answer: Answer<Response> = try call(
+			lpm_env_history_record,
+			Request(vaultId: vaultId, change: change, before: beforeIndex, after: afterIndex, create: create, append: append),
+			blobs: blobs)
+		let response = answer.response
+		switch response.result {
+		case "noKeyChanges": return .noKeyChanges
+		case "unchanged": return .unchanged
+		case "alreadyRecorded": return .alreadyRecorded
+		case "needsPrevious":
+			guard let part = response.part else { throw unreadable }
+			return .needsPrevious(part: part)
+		case "needsGrowthAdmission": return .needsGrowthAdmission
+		case "write":
+			guard let writes = response.writes.flatMap({ resolve($0, in: answer.blobs) }), let journal = response.journal,
+				let entry = response.entry, let gap = response.gap, let valuesKept = response.valuesKept
+			else { throw unreadable }
+			return .write(writes: writes, journal: journal, entry: entry, gap: gap, valuesKept: valuesKept, shape: response.shape)
+		case "notRecorded":
+			guard let reason = response.reason else { throw unreadable }
+			return .notRecorded(reason: reason, message: response.message ?? reason)
+		default:
+			throw unreadable
+		}
+	}
+}
+
+// MARK: - Rollback
+
+extension HistoryEngine {
+	enum RollbackTarget: Sendable, Equatable {
+		/// An environment back to its state right before or after `entry`.
+		case environment(String, entry: String, side: String)
+		/// One key back to its value before `entry`.
+		case key(String, environment: String, entry: String)
+		/// Each key `entry` changed, back to its value before it; `only`
+		/// narrows it to one environment.
+		case undo(entry: String, only: String?)
+	}
+
+	struct Gap: Decodable, Sendable, Equatable {
+		let since: Int64?
+		let until: Int64?
+	}
+
+	struct Pulled: Decodable, Sendable, Equatable {
+		let remote: Remote
+		let version: UInt64?
+		let time: Int64
+	}
+
+	struct ChangedAgain: Decodable, Sendable, Equatable {
+		let time: Int64
+		let actor: String
+		let action: String
+	}
+
+	struct PlanRow: Decodable, Sendable, Equatable {
+		let key: String
+		/// "changed", "added", "removed" or "unknown".
+		let change: String
+		/// Whether applying the row changes a value.
+		let changes: Bool
+		/// Why an unknown row's earlier value isn't known.
+		let reason: String?
+		/// The value now and the value the row puts back, as answer blobs.
+		let current: Int?
+		let target: Int?
+		let gaps: [Gap]
+		let pulled: Pulled?
+		let changedAgain: ChangedAgain?
+		/// Rows of one renamed key, which apply together.
+		let linked: [String]
+	}
+
+	struct PlanEnvironment: Decodable, Sendable, Equatable {
+		let current: String?
+		let target: String?
+		let recreates: Bool
+		let offersDeletion: Bool
+		let renames: Bool
+		let unnamedKeys: String?
+		let rows: [PlanRow]
+	}
+
+	struct Point: Decodable, Sendable, Equatable {
+		let entry: String
+		let side: String
+		let time: Int64
+	}
+
+	struct Plan: Decodable, Sendable, Equatable {
+		let kind: String
+		let point: Point
+		let generation: UInt32
+		let fingerprint: String
+		let environments: [PlanEnvironment]
+	}
+
+	/// What applying a rollback writes: one values write that removes every
+	/// `renamedFrom` and each deleted environment first, then stores the rest.
+	struct RollbackWrite: Sendable {
+		let name: String
+		let renamedFrom: String?
+		/// nil deletes the environment.
+		let values: [(key: String, value: SecretBytes)]?
+	}
+
+	private struct RollbackRequest: Encodable {
+		let kind: String
+		let entry: String
+		let environment: String?
+		let key: String?
+		let side: String?
+
+		init(_ target: RollbackTarget) {
+			switch target {
+			case .environment(let environment, let entry, let side):
+				(kind, self.entry, self.environment, key, self.side) = ("environment", entry, environment, nil, side)
+			case .key(let key, let environment, let entry):
+				(kind, self.entry, self.environment, self.key, side) = ("key", entry, environment, key, nil)
+			case .undo(let entry, let only):
+				(kind, self.entry, environment, key, side) = ("undo", entry, only, nil, nil)
+			}
+		}
+	}
+
+	/// Plans rolling back to `target` from `values`, the payload now.
+	static func planRollback(_ stored: Stored, values: SecretBytes, target: RollbackTarget) throws(Failure) -> Answer<Plan> {
+		struct Rest: Encodable { let rollback: RollbackRequest }
+		struct Response: Decodable { let plan: Plan }
+		var blobs = Blobs()
+		let request = ReadingRequest(stored, values: values, rest: Rest(rollback: RollbackRequest(target)), blobs: &blobs)
+		let answer: Answer<Response> = try call(lpm_env_history_rollback, request, blobs: blobs)
+		return Answer(response: answer.response.plan, blobs: answer.blobs)
+	}
+
+	/// Applies the plan whose fingerprint is `fingerprint`, which the engine
+	/// plans again and refuses with `history.changed_since_review` unless
+	/// it and `values` still match. `skipped` holds environment and row
+	/// indexes; `keepEmpty` environment indexes.
+	static func applyRollback(
+		_ stored: Stored,
+		values: SecretBytes,
+		target: RollbackTarget,
+		fingerprint: String,
+		skipped: [(environment: Int, row: Int)] = [],
+		keepEmpty: [Int] = []
+	) throws(Failure) -> [RollbackWrite] {
+		struct Apply: Encodable {
+			let fingerprint: String
+			let skipped: [[Int]]
+			let keepEmpty: [Int]
+		}
+		struct Rest: Encodable {
+			let rollback: RollbackRequest
+			let apply: Apply
+		}
+		struct Value: Decodable { let key: String; let value: Int }
+		struct Write: Decodable {
+			let name: String
+			let renamedFrom: String?
+			let values: [Value]?
+		}
+		struct Response: Decodable { let writes: [Write] }
+		var blobs = Blobs()
+		let rest = Rest(
+			rollback: RollbackRequest(target),
+			apply: Apply(fingerprint: fingerprint, skipped: skipped.map { [$0.environment, $0.row] }, keepEmpty: keepEmpty))
+		let request = ReadingRequest(stored, values: values, rest: rest, blobs: &blobs)
+		let answer: Answer<Response> = try call(lpm_env_history_rollback, request, blobs: blobs)
+		var writes: [RollbackWrite] = []
+		for write in answer.response.writes {
+			var values: [(key: String, value: SecretBytes)]?
+			if let entries = write.values {
+				var resolved: [(key: String, value: SecretBytes)] = []
+				for entry in entries {
+					guard let value = answer.blobs[entry.value] else { throw unreadable }
+					resolved.append((entry.key, value))
+				}
+				values = resolved
+			}
+			writes.append(RollbackWrite(name: write.name, renamedFrom: write.renamedFrom, values: values))
+		}
+		return writes
+	}
+}
+
+// MARK: - Removal
+
+extension HistoryEngine {
+	struct Occurrence: Codable, Sendable, Equatable {
+		let set: Int64?
+		let replaced: Int64?
+	}
+
+	struct Place: Codable, Sendable, Equatable {
+		let environment: String
+		let key: String
+		let renamedFrom: [String]
+		let renamedEnvironments: [String]
+		/// "thisKey" or "otherKey".
+		let group: String
+		/// Whether a key holds the value now, which can't be removed.
+		let current: Bool
+		let occurrences: [Occurrence]
+		let digests: [String]
+	}
+
+	/// A removal's review, passed back whole to start it.
+	struct Review: Codable, Sendable, Equatable {
+		/// The value's keyed digest, never the value.
+		let value: String
+		let generation: UInt32
+		let keyId: String
+		let places: [Place]
+		let defaultSelection: [Int]
+		let fingerprint: String
+	}
+
+	/// Reviews removing the value `key` had in `environment` on `side`
+	/// ("before" or "after") of `entry`.
+	static func reviewRemoval(
+		_ stored: Stored,
+		values: SecretBytes,
+		entry: String,
+		environment: String,
+		key: String,
+		side: String
+	) throws(Failure) -> Review {
+		struct Chosen: Encodable {
+			let entry: String
+			let environment: String
+			let key: String
+			let side: String
+		}
+		struct Rest: Encodable { let chosen: Chosen }
+		struct Response: Decodable { let review: Review }
+		var blobs = Blobs()
+		let rest = Rest(chosen: Chosen(entry: entry, environment: environment, key: key, side: side))
+		let request = ReadingRequest(stored, values: values, rest: rest, blobs: &blobs)
+		let answer: Answer<Response> = try call(lpm_env_history_removal, request, blobs: blobs)
+		return answer.response.review
+	}
+
+	/// Starts removing the reviewed value from the places at `selection`:
+	/// one journal transaction, then `maintenance` finishes it.
+	static func startRemoval(
+		_ stored: Stored,
+		values: SecretBytes,
+		review: Review,
+		selection: [Int],
+		approval: Approval
+	) throws(Failure) -> [RecordWrite] {
+		struct Start: Encodable {
+			let review: Review
+			let selection: [Int]
+			let approval: Approval
+			let fingerprint: String
+		}
+		struct Rest: Encodable { let start: Start }
+		struct Response: Decodable { let writes: [Write] }
+		var blobs = Blobs()
+		let rest = Rest(start: Start(review: review, selection: selection, approval: approval, fingerprint: review.fingerprint))
+		let request = ReadingRequest(stored, values: values, rest: rest, blobs: &blobs)
+		let answer: Answer<Response> = try call(lpm_env_history_removal, request, blobs: blobs)
+		guard let writes = resolve(answer.response.writes, in: answer.blobs) else { throw unreadable }
+		return writes
+	}
+}
+
+// MARK: - Upkeep
+
+extension HistoryEngine {
+	enum MaintenanceStep: Sendable {
+		/// Whether a rotation is running, and whether the key needs one.
+		case check(approval: Approval)
+		case start(approval: Approval)
+		/// Rotate one part, whose bytes are in the stored parts.
+		case rotatePart(Int)
+		/// Every part as stored after its rotation.
+		case finish
+	}
+
+	struct Maintenance: Sendable {
+		let needsFinishing: Bool
+		let parts: [Int]
+		/// "nothing", "rotate" or "lower", for a check.
+		let key: String?
+		let journal: Bool
+		let writes: [RecordWrite]
+	}
+
+	static func maintenance(_ stored: Stored, step: MaintenanceStep) throws(Failure) -> Maintenance {
+		struct Rest: Encodable {
+			let step: String
+			let approval: Approval?
+			let part: Int?
+		}
+		struct Response: Decodable {
+			let needsFinishing: Bool?
+			let parts: [Int]?
+			let key: String?
+			let journal: Bool?
+			let writes: [Write]?
+		}
+		let rest: Rest
+		switch step {
+		case .check(let approval): rest = Rest(step: "check", approval: approval, part: nil)
+		case .start(let approval): rest = Rest(step: "start", approval: approval, part: nil)
+		case .rotatePart(let part): rest = Rest(step: "rotatePart", approval: nil, part: part)
+		case .finish: rest = Rest(step: "finish", approval: nil, part: nil)
+		}
+		var blobs = Blobs()
+		let request = ReadingRequest(stored, values: nil, rest: rest, blobs: &blobs)
+		let answer: Answer<Response> = try call(lpm_env_history_maintenance, request, blobs: blobs)
+		guard let writes = resolve(answer.response.writes ?? [], in: answer.blobs) else { throw unreadable }
+		return Maintenance(
+			needsFinishing: answer.response.needsFinishing ?? false,
+			parts: answer.response.parts ?? [],
+			key: answer.response.key,
+			journal: answer.response.journal ?? false,
+			writes: writes)
+	}
+
+	enum AdmissionOperation: String, Encodable, Sendable {
+		case creation, growth, trim
+	}
+
+	struct Trim: Decodable, Sendable, Equatable {
+		let vaultId: String
+		let count: Int
+		/// The fewest parts the trim may leave.
+		let floor: Int
+	}
+
+	struct Admission: Decodable, Sendable, Equatable {
+		let existing: Int
+		let trims: [Trim]
+		let afterTrims: Int
+		/// "full", "reduced" or "refused".
+		let creation: String
+		let ringLimit: Int
+		let growth: Bool
+		let regrow: Bool
+	}
+
+	/// Admission from a names-only listing of the shared service. For
+	/// growth, `growing` names the growing ring and its head.
+	static func admission(
+		names: [String],
+		operation: AdmissionOperation,
+		trimmable: [String]? = nil,
+		maxTrims: Int? = nil,
+		growing: (vaultId: String, head: SecretBytes)? = nil
+	) throws(Failure) -> Admission {
+		struct Request: Encodable {
+			let names: [String]
+			let operation: AdmissionOperation
+			let trimmable: [String]?
+			let maxTrims: Int?
+			let vaultId: String?
+			let head: Int?
+		}
+		var blobs = Blobs()
+		let request = Request(
+			names: names, operation: operation, trimmable: trimmable, maxTrims: maxTrims,
+			vaultId: growing?.vaultId, head: growing.map { blobs.add($0.head) })
+		let answer: Answer<Admission> = try call(lpm_env_history_admission, request, blobs: blobs)
+		return answer.response
+	}
+
+	enum RingAction: Sendable {
+		/// Trim the oldest part, never below `floor` parts. `tail` is the key
+		/// and the tail's bytes, read when a trim to one part asks for them.
+		case trim(floor: Int, tail: (key: SecretBytes, part: SecretBytes?)?)
+		case raiseLimit(existing: Int)
+		/// Delete the ring's parts the head doesn't list, from `inventory`.
+		case orphans(inventory: [String])
+	}
+
+	enum Ring: Sendable {
+		/// Read the key and the tail, then trim again with them.
+		case needsTail
+		/// Write these in order, then delete `delete`.
+		case upkeep(writes: [RecordWrite], delete: [String])
+	}
+
+	static func ring(vaultId: String, head: SecretBytes, action: RingAction) throws(Failure) -> Ring {
+		struct Tail: Encodable {
+			let key: Int
+			let part: Int?
+		}
+		struct Request: Encodable {
+			let vaultId: String
+			let head: Int
+			let action: String
+			let floor: Int?
+			let tail: Tail?
+			let existing: Int
+			let inventory: [String]
+		}
+		struct Response: Decodable {
+			let needsTail: Bool?
+			let writes: [Write]?
+			let delete: DeleteField?
+		}
+		var blobs = Blobs()
+		let headIndex = blobs.add(head)
+		let request: Request
+		switch action {
+		case .trim(let floor, let tail):
+			let tailIndexes = tail.map { Tail(key: blobs.add($0.key), part: $0.part.map { part in blobs.add(part) }) }
+			request = Request(vaultId: vaultId, head: headIndex, action: "trim", floor: floor, tail: tailIndexes, existing: 0, inventory: [])
+		case .raiseLimit(let existing):
+			request = Request(vaultId: vaultId, head: headIndex, action: "raiseLimit", floor: nil, tail: nil, existing: existing, inventory: [])
+		case .orphans(let inventory):
+			request = Request(vaultId: vaultId, head: headIndex, action: "orphans", floor: nil, tail: nil, existing: 0, inventory: inventory)
+		}
+		let answer: Answer<Response> = try call(lpm_env_history_ring, request, blobs: blobs)
+		if answer.response.needsTail == true { return .needsTail }
+		guard let writes = resolve(answer.response.writes ?? [], in: answer.blobs) else { throw unreadable }
+		return .upkeep(writes: writes, delete: answer.response.delete?.names ?? [])
+	}
+
+	/// The ring's `delete`: one account name, or a list of them.
+	private struct DeleteField: Decodable {
+		let names: [String]
+
+		init(from decoder: any Decoder) throws {
+			let container = try decoder.singleValueContainer()
+			if let one = try? container.decode(String.self) {
+				names = [one]
+			} else {
+				names = try container.decode([String].self)
+			}
+		}
 	}
 }

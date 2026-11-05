@@ -123,6 +123,95 @@ struct HistoryEngineTests {
 		#expect(check.damage == [], "\(check)")
 	}
 
+	private func payload(_ environments: [String: [String: String]]) -> SecretBytes {
+		secret(try! JSONSerialization.data(withJSONObject: ["environments": environments], options: .sortedKeys))
+	}
+
+	/// The stored history `writes` leave for `vaultId`, read back by account.
+	private func stored(after writes: [HistoryEngine.RecordWrite], vaultId: String, previous: [String: SecretBytes] = [:]) throws
+		-> (HistoryEngine.Stored, records: [String: SecretBytes])
+	{
+		var records = previous
+		for write in writes {
+			records[write.account] = write.bytes
+		}
+		let head = try #require(records[try account("history-head", vaultId)])
+		let key = try #require(records[try account("key", vaultId)])
+		let parts = try head.withUnsafeBytes { try JSONDecoder().decode(Head.self, from: Data($0)) }.parts.map { part in
+			(part: part, bytes: records[try account("history", vaultId, part: part)])
+		}
+		return (HistoryEngine.Stored(vaultId: vaultId, head: head, key: key, parts: parts), records)
+	}
+
+	@Test("recording a project's first change creates history the timeline reads back")
+	func recordCreatesHistory() throws {
+		let change = HistoryEngine.Change(id: String(repeating: "a", count: 32), time: 1_762_300_000_000, action: "set")
+		let plan = try HistoryEngine.record(
+			vaultId: "fresh", change: change,
+			before: payload(["production": [:]]), after: payload(["production": ["API_URL": "https://one.example"]]),
+			recording: .create(marker: nil, approval: .automatic, ringLimit: 16))
+		guard case .write(let writes, let journal, let entry, let gap, let valuesKept, _) = plan else {
+			Issue.record("expected writes, got \(plan)")
+			return
+		}
+		#expect(journal, "creation commits as one journal transaction")
+		#expect(entry == change.id)
+		#expect(!gap && valuesKept)
+		#expect(writes.contains { $0.account == (try? CompanionEngine.markerAccount(vaultId: "fresh")) })
+
+		let (stored, records) = try stored(after: writes, vaultId: "fresh")
+		let timeline = try HistoryEngine.timeline(stored, values: payload(["production": ["API_URL": "https://one.example"]]))
+		guard case .entry(let recorded)? = timeline.rows.first else {
+			Issue.record("expected the entry, got \(timeline.rows)")
+			return
+		}
+		#expect(recorded.id == change.id && recorded.action == "set" && recorded.actor == "app")
+
+		let next = HistoryEngine.Change(id: String(repeating: "b", count: 32), time: 1_762_300_060_000, action: "set")
+		let marker = try #require(records[try CompanionEngine.markerAccount(vaultId: "fresh")])
+		let appended = try HistoryEngine.record(
+			vaultId: "fresh", change: next,
+			before: payload(["production": ["API_URL": "https://one.example"]]),
+			after: payload(["production": ["API_URL": "https://two.example"]]),
+			recording: .append(marker: marker, head: stored.head, key: stored.key, tail: stored.parts.last?.bytes, previous: nil, growth: .unasked))
+		guard case .write(_, let appendJournal, let appendedEntry, _, _, let shape) = appended else {
+			Issue.record("expected writes, got \(appended)")
+			return
+		}
+		#expect(!appendJournal, "an append replaces the tail part, verified")
+		#expect(appendedEntry == next.id)
+		#expect(shape == "steady")
+	}
+
+	@Test("a rollback plans from the fixture's history and applies only with its fingerprint")
+	func rollbackPlansAndApplies() throws {
+		let (stored, _, values) = try stored("appended")
+		guard case .entry(let newest)? = try HistoryEngine.timeline(stored, values: values).rows.first else {
+			Issue.record("expected an entry")
+			return
+		}
+		let target = HistoryEngine.RollbackTarget.undo(entry: newest.id, only: nil)
+		let plan = try HistoryEngine.planRollback(stored, values: values, target: target)
+		#expect(plan.response.kind == "undo")
+		#expect(plan.response.environments.contains { $0.rows.contains(where: \.changes) })
+
+		#expect {
+			try HistoryEngine.applyRollback(stored, values: values, target: target, fingerprint: "stale")
+		} throws: { error in
+			(error as? HistoryEngine.Failure)?.code == "history.changed_since_review"
+		}
+		let writes = try HistoryEngine.applyRollback(stored, values: values, target: target, fingerprint: plan.response.fingerprint)
+		#expect(!writes.isEmpty)
+	}
+
+	@Test("an empty service admits a full ring for a new project")
+	func admissionOfAnEmptyService() throws {
+		let admission = try HistoryEngine.admission(names: [], operation: .creation)
+		#expect(admission.creation == "full")
+		#expect(admission.existing == 0 && admission.trims.isEmpty)
+		#expect(admission.ringLimit == 16)
+	}
+
 	@Test("an engine refusal keeps its code")
 	func refusalsKeepTheirCode() {
 		#expect {
