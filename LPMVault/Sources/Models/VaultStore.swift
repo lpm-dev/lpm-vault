@@ -1526,6 +1526,14 @@ final class VaultStore {
     session: { [weak self] in await self?.platformSession() },
     cleanupChanged: { [weak self] in Task { @MainActor in self?.platformCleanupChanged() } }
   )
+  /// The selected project's local history, as the History page shows it.
+  @ObservationIgnored private(set) lazy var history = VaultLocalHistory(actions: .coordinator(
+    persistence,
+    mutate: { [weak self] projectID, mutation in
+      await self?.mutateForHistory(projectID: projectID, mutation) ?? .unavailable
+    },
+    confirm: { [weak self] reason in await self?.confirmSensitiveAction(reason: reason) ?? false }
+  ))
   @ObservationIgnored private(set) lazy var platforms = PlatformConnections(
     store: platformConnectionStore,
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
@@ -5713,6 +5721,16 @@ final class VaultStore {
     }
   }
 
+  /// Applies a history mutation, a reviewed rollback, through the queue every
+  /// edit of `projectID` goes through.
+  private func mutateForHistory(projectID: String, _ mutation: VaultProjectMutation) async -> ProjectMutationOutcome {
+    guard isUnlocked, let project = projects.first(where: { $0.id == projectID }) else { return .unavailable }
+    recordUserActivity()
+    return await withCheckedContinuation { continuation in
+      enqueueProjectMutation(base: project, mutation: mutation, reportsFailures: false) { continuation.resume(returning: $0) }
+    }
+  }
+
   /// Asks the person to authenticate for an action that sends values off the
   /// Mac, every time, however recently they unlocked. Reading and copying
   /// values on the Mac asks nothing more than unlocking did.
@@ -6326,6 +6344,7 @@ final class VaultStore {
     projects = projects.map { VaultProject(metadata: $0.metadata) }
     workspaceSnapshots = [:]
     platforms.reset()
+    history.reset()
     // Nothing can be sent without a session while locked; unlocking resumes it.
     Task { [platformCredentials] in await platformCredentials.stopCleanup() }
     for entry in publishSessions { entry.session?.cancel() }
