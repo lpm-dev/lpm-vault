@@ -119,8 +119,10 @@ enum HistoryEngine {
 			return Int(field.reduce(UInt32(0)) { $0 << 8 | UInt32($1) })
 		}
 		guard try Array(take(magic.count)) == magic, try take(1)[0] == frameVersion else { throw unreadable }
+		// The blob limit is the engine's for requests; an answer carries one
+		// blob per value it holds, as many as its byte limit allows.
 		let count = try length()
-		guard count >= 1, count <= maximumBlobs + 1 else { throw unreadable }
+		guard count >= 1 else { throw unreadable }
 		let json = Data(try take(try length()))
 		var blobs = Blobs()
 		for _ in 1..<count {
@@ -583,8 +585,9 @@ extension HistoryEngine {
 
 extension HistoryEngine {
 	enum RollbackTarget: Sendable, Equatable {
-		/// An environment back to its state right before or after `entry`.
-		case environment(String, entry: String, side: String)
+		/// An environment back to its state right before or after `entry`,
+		/// named as it was then, or, with `namedNow`, as it is now.
+		case environment(String, entry: String, side: String, namedNow: Bool = false)
 		/// One key back to its value before `entry`.
 		case key(String, environment: String, entry: String)
 		/// Each key `entry` changed, back to its value before it; `only`
@@ -669,11 +672,13 @@ extension HistoryEngine {
 		let environment: String?
 		let key: String?
 		let side: String?
+		var environmentNamed: String?
 
 		init(_ target: RollbackTarget) {
 			switch target {
-			case .environment(let environment, let entry, let side):
+			case .environment(let environment, let entry, let side, let namedNow):
 				(kind, self.entry, self.environment, key, self.side) = ("environment", entry, environment, nil, side)
+				if namedNow { environmentNamed = "now" }
 			case .key(let key, let environment, let entry):
 				(kind, self.entry, self.environment, self.key, side) = ("key", entry, environment, key, nil)
 			case .undo(let entry, let only):

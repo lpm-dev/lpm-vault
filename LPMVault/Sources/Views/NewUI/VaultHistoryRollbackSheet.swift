@@ -8,6 +8,7 @@ struct VaultHistoryRollbackSheet: View {
 	let store: VaultStore
 	let project: VaultProject
 	@Environment(\.vaultContentObscured) private var obscured
+	@Environment(\.vaultClock) private var clock
 	@State private var revealed: Set<HistoryRollbackSkip> = []
 	@State private var working = false
 	@State private var failure: Failure?
@@ -29,7 +30,7 @@ struct VaultHistoryRollbackSheet: View {
 	private static let fieldWidth: CGFloat = 128
 
 	private var history: VaultLocalHistory { store.history }
-	private var text: VaultHistoryText { VaultHistoryText(now: Date()) }
+	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
 
 	var body: some View {
 		if let review = history.rollbackReview {
@@ -71,11 +72,13 @@ struct VaultHistoryRollbackSheet: View {
 			} actions: {
 				VaultBarButton(title: "Cancel", disabled: working, height: 28) { history.rollbackReview = nil }
 					.keyboardShortcut(.cancelAction)
+				// Deleting an environment is destructive, which Return never presses.
+				let deletes = review.plan.environments.indices.contains(where: review.deletesEnvironment)
 				VaultBarButton(
-					title: primaryTitle(review), filled: true,
+					title: primaryTitle(review), filled: true, destructive: deletes,
 					disabled: working || !review.changesAnything || failure == .changed, height: 28
 				) { apply() }
-					.keyboardShortcut(.defaultAction)
+					.keyboardShortcut(deletes ? nil : .defaultAction)
 			}
 		}
 		.frame(width: 620)
@@ -105,7 +108,7 @@ struct VaultHistoryRollbackSheet: View {
 				VaultSheetCloseButton(label: "Cancel") { history.rollbackReview = nil }
 					.disabled(working)
 			}
-			if case .environment(let name, let entryID, let side) = review.target, let entry, entry.environments.count > 1 {
+			if case .environment(let name, let entryID, let side, _) = review.target, let entry, entry.environments.count > 1 {
 				environmentPicker(name, names: entry.environments.map(\.name), entry: entryID, side: side)
 			}
 			HStack(spacing: 6) {
@@ -334,7 +337,7 @@ struct VaultHistoryRollbackSheet: View {
 			VaultHistoryNotice(text: VaultHistoryText.unknownReason(row.reason), warns: false)
 		}
 		if let pulled = row.pulled {
-			VaultHistoryNotice(text: text.pulled(pulled, key: row.key), boxed: true)
+			VaultHistoryNotice(text: text.pulled(pulled, key: row.key, undoes: review.plan.kind == "undo"), boxed: true)
 		}
 		ForEach(Array(row.gaps.enumerated()), id: \.offset) { _, gap in
 			VaultHistoryNotice(text: text.gap(gap))

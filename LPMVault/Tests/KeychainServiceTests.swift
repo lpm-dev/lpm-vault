@@ -337,16 +337,18 @@ struct KeychainServiceTests {
 		let id = "approval-update"
 		#expect(succeeded(service.createEnvironments(vaultId: id, projectName: id, projectPath: "", environments: ["default": ["TOKEN": "original"]], source: VaultHistorySource(.set))))
 		_ = try service.setCliAccess(vaultId: id, access: .requireApproval).get()
+		// What the update writes, after turning approval on rotated history's key.
+		let earlier = backend.recordedAccessWrites.count
 		#expect(succeeded(service.applyVaultTransaction(project: .update(vaultId: id, environments: ["default": ["TOKEN": "replacement"]], source: VaultHistorySource(.set)), data: [])))
 		#expect(try service.cliAccessResult(vaultId: id).get() == .requireApproval)
-		let protectedWrites = backend.recordedAccessWrites.filter { $0.1 == .requireApproval }
+		let protectedWrites = backend.recordedAccessWrites.dropFirst(earlier).filter { $0.1 == .requireApproval }
 		let valuesWrites = protectedWrites.filter { !$0.0.hasPrefix("__vault_companion_v1__:") }
 		#expect(valuesWrites.count == 2)
 		#expect(valuesWrites[0].0.hasPrefix("__vault_transaction_stage_v3__:"))
 		#expect(valuesWrites[1].0 == id)
 		let tail = try HistoryRecorder.account("history", id, part: 0)
 		#expect(!protectedWrites.contains { $0.0 == tail }, "history's parts stay open, as the LPM CLI reads them")
-		#expect(backend.recordedAccessWrites.contains { $0.0 == tail && $0.1 == .automatic })
+		#expect(backend.recordedAccessWrites.dropFirst(earlier).contains { $0.0 == tail && $0.1 == .automatic })
 	}
 
 	@Test("CLI approval cannot target internal Keychain records")

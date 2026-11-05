@@ -361,7 +361,9 @@ struct VaultWorkspaceView: View {
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
 						} else if let project, mode == .history {
+							// A project's own page, so its search and filters don't carry over.
 							VaultHistoryView(store: store, project: project)
+								.id(project.id)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 						} else if let project, mode == .schema {
 							let rules = store.keyDescriptions[project.id]
@@ -443,6 +445,11 @@ struct VaultWorkspaceView: View {
 						}
 					}
 					.frame(width: budget.content, height: geometry.size.height)
+					.overlay(alignment: .bottom) {
+						if !store.isShowingAccountPage {
+							VaultHistoryUndoToast(store: store).padding(.bottom, VaultMetrics.statusBar + 14)
+						}
+					}
 					.clipped()
 					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 

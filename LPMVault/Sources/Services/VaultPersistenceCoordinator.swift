@@ -790,15 +790,20 @@ actor VaultPersistenceCoordinator {
 			mutationApplies = project.environments[environment]?[key].map(ExactText.init) == ExactText(expectedValue)
 			if mutationApplies { project.environments[environment]?.removeValue(forKey: key) }
 		case .historyRollback(let target, let plan, let skipped, let keepEmpty, let rollbackSource):
-			source = rollbackSource
 			switch service.historyRolledBackEnvironmentsResult(
 				vaultId: projectId, target: target, fingerprint: plan.fingerprint,
 				skipped: skipped.map { ($0.environment, $0.row) }, keepEmpty: keepEmpty)
 			{
-			case .success(let environments):
-				project.environments = environments
+			case .success(let rolledBack):
+				project.environments = rolledBack.environments
+				// The entry records the renames back, so an environment's
+				// history stays one line.
+				var recorded = rollbackSource
+				recorded.renames += rolledBack.renames
+				source = recorded
 				mutationApplies = true
 			case .failure(.history(code: "history.changed_since_review", _)):
+				source = rollbackSource
 				mutationApplies = false
 			case .failure(let error):
 				return .failure(error)
@@ -1562,12 +1567,24 @@ actor VaultPersistenceCoordinator {
 		service.historyStateResult(vaultId: vaultId)
 	}
 
-	func historyTimeline(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError> {
-		service.historyTimelineResult(vaultId: vaultId, filter: filter)
+	// A history read asked for by a view that has moved on is cancelled, and
+	// does no storage work once its turn on this actor comes.
+
+	func historyKeyChanges(
+		vaultId: String, key: String, environments: [String], limit: Int
+	) -> Result<[String: [HistoryEngine.Entry]], KeychainError> {
+		guard !Task.isCancelled else { return .failure(.accessDenied) }
+		return service.historyKeyChangesResult(vaultId: vaultId, key: key, environments: environments, limit: limit)
+	}
+
+	func historyOverview(vaultId: String, filter: HistoryEngine.Filter?) -> Result<VaultHistoryOverview, KeychainError> {
+		guard !Task.isCancelled else { return .failure(.accessDenied) }
+		return service.historyOverviewResult(vaultId: vaultId, filter: filter)
 	}
 
 	func historyReveal(vaultId: String, ids: [String]) -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError> {
-		service.historyRevealResult(vaultId: vaultId, ids: ids)
+		guard !Task.isCancelled else { return .failure(.accessDenied) }
+		return service.historyRevealResult(vaultId: vaultId, ids: ids)
 	}
 
 	func historyRollbackPlan(vaultId: String, target: HistoryEngine.RollbackTarget) -> Result<HistoryEngine.Answer<HistoryEngine.Plan>, KeychainError> {
@@ -1588,9 +1605,13 @@ actor VaultPersistenceCoordinator {
 		service.setHistoryEnabledResult(vaultId: vaultId, enabled: enabled)
 	}
 
-	func historyUpkeep(raising: Bool) -> Result<HistoryOperations.Upkeep, KeychainError> {
-		guard !Task.isCancelled else { return .failure(.accessDenied) }
-		return service.historyUpkeepResult(raising: raising)
+	/// The work after unlock: companion maintenance, then local history's
+	/// upkeep, in one lock scope, each reported on its own.
+	func maintainAfterUnlock(
+		raisingHistoryRings raising: Bool
+	) -> (companion: Result<CompanionMaintenance, KeychainError>, history: Result<HistoryOperations.Upkeep, KeychainError>) {
+		guard !Task.isCancelled else { return (.failure(.accessDenied), .failure(.accessDenied)) }
+		return service.maintainAfterUnlockResult(raisingHistoryRings: raising)
 	}
 
 	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {

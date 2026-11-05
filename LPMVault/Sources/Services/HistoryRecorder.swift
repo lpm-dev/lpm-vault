@@ -86,6 +86,12 @@ protocol HistoryStorage {
 	func historyTrimmable(own vaultId: String) throws -> [String]
 	/// The projects that have a history ring, from a names-only listing.
 	func historyRings() throws -> [String]
+	/// The approval the project's values item claims, read once a lock scope,
+	/// which history's key maintenance follows, as the LPM CLI's does.
+	func historyClaimedApproval(vaultId: String) throws -> HistoryEngine.Approval
+	/// Runs `body` with reads that can't ask for approval: one that would
+	/// fails instead.
+	func historyWithoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T
 }
 
 /// Records one project's net change, as the LPM CLI does: never failing the
@@ -166,6 +172,23 @@ enum HistoryRecorder {
 		before: SecretBytes,
 		after: SecretBytes
 	) throws -> VaultHistoryOutcome {
+		// The engine says first whether the change is one history keeps, as
+		// the LPM CLI asks before admission: a change to no key, or one too
+		// large, needs no listing, no probe and no trim. The plan's ring
+		// limit and approval are placeholders; a real plan follows.
+		switch try HistoryEngine.record(
+			vaultId: vaultId, change: change, before: before, after: after,
+			recording: .create(marker: marker, approval: .automatic, ringLimit: 1))
+		{
+		case .noKeyChanges, .unchanged:
+			return .nothing
+		case .notRecorded(let reason, let message):
+			return .notRecorded(reason: reason, message: message)
+		case .alreadyRecorded:
+			return .recorded(entry: change.id, gap: false, crowded: nil)
+		case .write, .needsPrevious, .needsGrowthAdmission:
+			break
+		}
 		let admission = try admit(storage, vaultId: vaultId, operation: .creation).admission
 		guard admission.creation != "refused", let ringLimit = admission.ringLimit else {
 			return .notRecorded(reason: "limit", message: "This Mac holds too many LPM records to start history for another project.")
@@ -265,9 +288,10 @@ enum HistoryRecorder {
 		let planned = try HistoryEngine.admission(
 			names: storage.historyNames(), operation: operation, trimmable: storage.historyTrimmable(own: vaultId),
 			maxTrims: maximumTrimsPerOperation, growing: head.map { (vaultId, $0) })
-		let trimmed = try trim(storage, planned.trims)
-		guard !trimmed.isEmpty else { return (planned, false) }
-		// Decided again from what the trims left, which may be less than planned.
+		guard !planned.trims.isEmpty else { return (planned, false) }
+		let trimmed = try trim(storage, planned.trims, own: vaultId)
+		// Decided again from what the trims left: a ring that can't be read
+		// isn't trimmed, and its planned trims mustn't count.
 		let trimmedOwn = trimmed[vaultId] != nil
 		let current = trimmedOwn ? try storage.historyRecord(account("history-head", vaultId)).map(secret) : head
 		let admitted = try HistoryEngine.admission(
@@ -277,29 +301,45 @@ enum HistoryRecorder {
 	}
 
 	/// Trims each ring admission planned, oldest part first, never below its
-	/// floor. A ring whose history can't be read is left for its own project
-	/// to repair. Returns how many parts each project's ring lost.
-	static func trim(_ storage: some HistoryStorage, _ trims: [HistoryEngine.Trim]) throws -> [String: Int] {
+	/// floor. Another project's ring is read without letting macOS ask for
+	/// approval, and one that can't be read or is damaged is left for its own
+	/// project; trouble with `own`'s ring fails the operation. Returns how
+	/// many parts each project's ring lost.
+	static func trim(_ storage: some HistoryStorage, _ trims: [HistoryEngine.Trim], own: String? = nil) throws -> [String: Int] {
 		var trimmed: [String: Int] = [:]
 		for planned in trims {
 			for _ in 0..<planned.count {
-				guard let head = try storage.historyRecord(account("history-head", planned.vaultId)).map(secret) else { break }
-				var step = try? HistoryEngine.ring(vaultId: planned.vaultId, head: head, action: .trim(floor: planned.floor, tail: nil))
-				if case .needsTail? = step {
-					guard let key = try storage.historyRecord(account("key", planned.vaultId)).map(secret),
-						let marker = try storage.historyMarker(vaultId: planned.vaultId).map(secret),
-						let tailPart = try? HistoryEngine.check(vaultId: planned.vaultId, marker: marker, head: head, key: key).tailPart
-					else { break }
-					let tail = try storage.historyRecord(account("history", planned.vaultId, part: tailPart)).map(secret)
-					step = try? HistoryEngine.ring(
-						vaultId: planned.vaultId, head: head, action: .trim(floor: planned.floor, tail: (key, tail)))
+				let step: (writes: [HistoryEngine.RecordWrite], delete: [String])?
+				if planned.vaultId == own {
+					step = try trimStep(storage, planned)
+				} else {
+					step = try? storage.historyWithoutApprovalPrompts { try trimStep(storage, planned) }
 				}
-				guard case .upkeep(let writes, let delete)? = step, !(writes.isEmpty && delete.isEmpty) else { break }
-				try apply(storage, writes: writes, delete: delete)
+				guard let step else { break }
+				try apply(storage, writes: step.writes, delete: step.delete)
 				trimmed[planned.vaultId, default: 0] += 1
 			}
 		}
 		return trimmed
+	}
+
+	/// What trimming `planned`'s oldest part writes and deletes, nil when the
+	/// ring has nothing left to trim or its history can't be read.
+	private static func trimStep(
+		_ storage: some HistoryStorage, _ planned: HistoryEngine.Trim
+	) throws -> (writes: [HistoryEngine.RecordWrite], delete: [String])? {
+		guard let head = try storage.historyRecord(account("history-head", planned.vaultId)).map(secret) else { return nil }
+		var step = try? HistoryEngine.ring(vaultId: planned.vaultId, head: head, action: .trim(floor: planned.floor, tail: nil))
+		if case .needsTail? = step {
+			guard let key = try storage.historyRecord(account("key", planned.vaultId)).map(secret),
+				let marker = try storage.historyMarker(vaultId: planned.vaultId).map(secret),
+				let tailPart = try? HistoryEngine.check(vaultId: planned.vaultId, marker: marker, head: head, key: key).tailPart
+			else { return nil }
+			let tail = try storage.historyRecord(account("history", planned.vaultId, part: tailPart)).map(secret)
+			step = try? HistoryEngine.ring(vaultId: planned.vaultId, head: head, action: .trim(floor: planned.floor, tail: (key, tail)))
+		}
+		guard case .upkeep(let writes, let delete)? = step, !(writes.isEmpty && delete.isEmpty) else { return nil }
+		return (writes, delete)
 	}
 
 	/// Deletes the parts of a ring its head doesn't list, which a trim that
@@ -329,59 +369,126 @@ enum HistoryRecorder {
 		let tail: SecretBytes?
 	}
 
-	/// The head, the key and the tail as stored now; the engine says which
-	/// part is the tail.
+	/// The head, the key and the tail as stored now, once the key is
+	/// maintained; the engine says which part is the tail.
 	private static func open(_ storage: some HistoryStorage, vaultId: String, marker: SecretBytes) throws -> Opened {
-		guard let head = try storage.historyRecord(account("history-head", vaultId)).map(secret),
-			let key = try storage.historyRecord(account("key", vaultId)).map(secret),
+		guard let (head, key, _) = try maintained(storage, vaultId: vaultId),
 			let tailPart = try HistoryEngine.check(vaultId: vaultId, marker: marker, head: head, key: key).tailPart
-		else { throw HistoryEngine.Failure(code: "history.damaged", message: "This project's history head or key can't be read.") }
+		else { throw damagedHead }
 		let tail = try storage.historyRecord(account("history", vaultId, part: tailPart)).map(secret)
 		return Opened(head: head, key: key, tail: tail)
 	}
 
+	/// The head and the key once the key is maintained as every LPM history
+	/// operation maintains it first: a rotation or removal left running is
+	/// finished, a key made while approval was off is rotated once the values
+	/// claim approval, and a lowered approval is recorded. Only the head and
+	/// the key are read when nothing needs doing. Nil before any history.
+	/// `read` is the head and the key the caller just read, which aren't read
+	/// again when nothing needs doing.
+	static func maintained(
+		_ storage: some HistoryStorage, vaultId: String, read: (head: SecretBytes, key: SecretBytes)? = nil
+	) throws -> (head: SecretBytes, key: SecretBytes, changed: Bool)? {
+		guard let read = try read ?? headAndKey(storage, vaultId: vaultId) else { return nil }
+		let claimed = try storage.historyClaimedApproval(vaultId: vaultId)
+		let check = try HistoryEngine.maintenance(try listed(vaultId: vaultId, read.head, read.key), step: .check(approval: claimed))
+		guard check.needsFinishing || check.key != "nothing" else { return (read.head, read.key, false) }
+		if check.needsFinishing { try finishRunning(storage, vaultId: vaultId) }
+		guard let finished = try headAndKey(storage, vaultId: vaultId) else { throw damagedHead }
+		let listed = try listed(vaultId: vaultId, finished.head, finished.key)
+		let key = try HistoryEngine.maintenance(listed, step: .check(approval: claimed))
+		switch key.key {
+		case "lower":
+			try apply(storage, writes: key.writes, delete: [])
+		case "rotate":
+			try storage.historyCommit(try HistoryEngine.maintenance(listed, step: .start(approval: claimed)).writes)
+			try finishRunning(storage, vaultId: vaultId)
+		default:
+			break
+		}
+		guard let maintained = try headAndKey(storage, vaultId: vaultId) else { throw damagedHead }
+		return (maintained.head, maintained.key, true)
+	}
+
+	private static func headAndKey(_ storage: some HistoryStorage, vaultId: String) throws -> (head: SecretBytes, key: SecretBytes)? {
+		guard let head = try storage.historyRecord(account("history-head", vaultId)).map(secret) else { return nil }
+		guard let key = try storage.historyRecord(account("key", vaultId)).map(secret) else { throw damagedHead }
+		return (head, key)
+	}
+
+	/// The history with the parts its head lists and none of their bytes,
+	/// which a check of the key needs no more than.
+	private static func listed(vaultId: String, _ head: SecretBytes, _ key: SecretBytes) throws -> HistoryEngine.Stored {
+		guard let parts = try? head.withUnsafeBytes({ try JSONDecoder().decode(HeadParts.self, from: Data($0)) }).parts else {
+			throw damagedHead
+		}
+		return HistoryEngine.Stored(vaultId: vaultId, head: head, key: key, parts: parts.map { ($0, nil) })
+	}
+
+	private static let damagedHead = HistoryEngine.Failure(
+		code: "history.damaged", message: "This project's history head or key can't be read.")
+
 	private struct HeadParts: Decodable { let parts: [Int] }
 
-	/// The stored history with every part the head lists, as read now.
-	static func stored(_ storage: some HistoryStorage, vaultId: String, head: SecretBytes, key: SecretBytes) throws -> HistoryEngine.Stored {
+	/// The stored history with every part the head lists, as read now; a
+	/// part in `known` is taken from it instead of read again.
+	static func stored(
+		_ storage: some HistoryStorage,
+		vaultId: String,
+		head: SecretBytes,
+		key: SecretBytes,
+		known: [Int: SecretBytes] = [:]
+	) throws -> HistoryEngine.Stored {
 		guard let parts = try? head.withUnsafeBytes({ try JSONDecoder().decode(HeadParts.self, from: Data($0)) }).parts else {
 			throw HistoryEngine.Failure(code: "history.damaged", message: "This project's history head can't be read.")
 		}
 		var read: [(part: Int, bytes: SecretBytes?)] = []
 		read.reserveCapacity(parts.count)
 		for part in parts {
-			read.append((part, try storage.historyRecord(account("history", vaultId, part: part)).map(secret)))
+			if let bytes = known[part] {
+				read.append((part, bytes))
+			} else {
+				read.append((part, try storage.historyRecord(account("history", vaultId, part: part)).map(secret)))
+			}
 		}
 		return HistoryEngine.Stored(vaultId: vaultId, head: head, key: key, parts: read)
 	}
 
 	/// Finishes a key rotation or a removal left running, reading the head
-	/// and the key as stored now.
-	static func finishRunning(_ storage: some HistoryStorage, vaultId: String) throws {
+	/// and the key as stored now. `known` holds parts the caller has just
+	/// read and nothing has changed since, which aren't read again.
+	static func finishRunning(_ storage: some HistoryStorage, vaultId: String, known: [Int: SecretBytes] = [:]) throws {
 		guard let head = try storage.historyRecord(account("history-head", vaultId)).map(secret),
 			let key = try storage.historyRecord(account("key", vaultId)).map(secret)
 		else { throw HistoryEngine.Failure(code: "history.damaged", message: "This project's history head or key can't be read.") }
-		try finishRunning(storage, vaultId: vaultId, opened: Opened(head: head, key: key, tail: nil))
+		try finishRunning(storage, vaultId: vaultId, opened: Opened(head: head, key: key, tail: nil), known: known)
 	}
 
 	/// Finishes a key rotation or a removal another operation left running,
-	/// as every history operation does before its own.
-	private static func finishRunning(_ storage: some HistoryStorage, vaultId: String, opened: Opened) throws {
-		guard let approval = try storage.historyApproval(vaultId: vaultId) else {
-			throw HistoryEngine.Failure(code: "history.unavailable", message: "The values' approval couldn't be confirmed.")
-		}
-		var stored = try stored(storage, vaultId: vaultId, head: opened.head, key: opened.key)
+	/// as every history operation does before its own. Each part is read
+	/// once and rotated on its own; the rotated bytes stay in memory for the
+	/// step that finishes, since each write was verified as it was made.
+	private static func finishRunning(
+		_ storage: some HistoryStorage, vaultId: String, opened: Opened, known: [Int: SecretBytes] = [:]
+	) throws {
+		let approval = try storage.historyClaimedApproval(vaultId: vaultId)
+		let stored = try stored(storage, vaultId: vaultId, head: opened.head, key: opened.key, known: known)
 		let check = try HistoryEngine.maintenance(stored, step: .check(approval: approval))
 		guard check.needsFinishing else { return }
+		var parts = stored.parts
 		for part in check.parts {
-			let rotated = try HistoryEngine.maintenance(stored, step: .rotatePart(part))
+			guard let index = parts.firstIndex(where: { $0.part == part }) else { continue }
+			let single = HistoryEngine.Stored(vaultId: vaultId, head: stored.head, key: stored.key, parts: [parts[index]])
+			let rotated = try HistoryEngine.maintenance(single, step: .rotatePart(part))
+			let partAccount = try account("history", vaultId, part: part)
 			for write in rotated.writes {
 				guard let bytes = write.bytes else { continue }
 				try storage.historyReplace(write.account, with: bytes.withUnsafeBytes { Data($0) })
+				if write.account == partAccount { parts[index].bytes = bytes }
 			}
-			stored = try Self.stored(storage, vaultId: vaultId, head: stored.head, key: stored.key)
 		}
-		let finished = try HistoryEngine.maintenance(stored, step: .finish)
+		let rotatedStore = HistoryEngine.Stored(vaultId: vaultId, head: stored.head, key: stored.key, parts: parts)
+		let finished = try HistoryEngine.maintenance(rotatedStore, step: .finish)
 		try storage.historyCommit(finished.writes)
 	}
 

@@ -11,11 +11,43 @@ struct VaultHistoryState: Sendable, Equatable {
 	var isOn: Bool { history == "on" || history == "default" }
 }
 
+/// A project's history state with its timeline, read together.
+struct VaultHistoryOverview: Sendable, Equatable {
+	let state: VaultHistoryState
+	/// Nil while the project has no history.
+	let timeline: HistoryEngine.Timeline?
+}
+
 /// Local history's reads and changes, run while the caller holds the store's
 /// transaction lock. Every rule is the engine's; this only reads and commits.
 enum HistoryOperations {
 	/// The history's state, reading the parts the engine asks for.
 	static func state(_ storage: some HistoryStorage, vaultId: String) throws -> VaultHistoryState {
+		try checked(storage, vaultId: vaultId).state
+	}
+
+	/// The history's state and, when it has a head and a key, its timeline,
+	/// from one read of each record: the parts the state's check reads are
+	/// the timeline's too.
+	static func overview(
+		_ storage: some HistoryStorage, vaultId: String, filter: HistoryEngine.Filter?
+	) throws -> (state: VaultHistoryState, timeline: HistoryEngine.Timeline?) {
+		let checked = try checked(storage, vaultId: vaultId)
+		// Only history that's on and whole has a timeline; the state says why
+		// another doesn't.
+		guard checked.state.history == "on", checked.state.damage.isEmpty, let head = checked.head, let key = checked.key,
+			let maintained = try HistoryRecorder.maintained(storage, vaultId: vaultId, read: (head, key))
+		else { return (checked.state, nil) }
+		// Maintenance that did something rewrote parts the check read.
+		let stored = try HistoryRecorder.stored(
+			storage, vaultId: vaultId, head: maintained.head, key: maintained.key, known: maintained.changed ? [:] : checked.parts)
+		return (checked.state, try HistoryEngine.timeline(stored, values: try values(storage, vaultId: vaultId), filter: filter))
+	}
+
+	/// What `state` reads: the head, the key, and the parts the check asked for.
+	private static func checked(
+		_ storage: some HistoryStorage, vaultId: String
+	) throws -> (state: VaultHistoryState, head: SecretBytes?, key: SecretBytes?, parts: [Int: SecretBytes]) {
 		let marker = try storage.historyMarker(vaultId: vaultId).map(secret)
 		let head = try storage.historyRecord(HistoryRecorder.account("history-head", vaultId)).map(secret)
 		let key = try storage.historyRecord(HistoryRecorder.account("key", vaultId)).map(secret)
@@ -27,22 +59,52 @@ enum HistoryOperations {
 			}
 			check = try HistoryEngine.check(vaultId: vaultId, marker: marker, head: head, key: key, parts: parts)
 		}
-		return VaultHistoryState(history: check.history, damage: check.damage ?? [])
+		let read = Dictionary(parts.compactMap { part in part.bytes.map { (part.part, $0) } }, uniquingKeysWith: { first, _ in first })
+		return (VaultHistoryState(history: check.history, damage: check.damage ?? []), head, key, read)
 	}
 
-	/// The project's history as stored, every part the head lists, or nil
-	/// when it has none.
+	/// The project's history, every part the head lists, opened as the LPM
+	/// CLI opens it for reading or changing: nil before any history; refused
+	/// while it's off, kept by a newer version or damaged, whatever the
+	/// values allow; its key maintained first.
 	static func stored(_ storage: some HistoryStorage, vaultId: String) throws -> HistoryEngine.Stored? {
-		guard let head = try storage.historyRecord(HistoryRecorder.account("history-head", vaultId)),
-			let key = try storage.historyRecord(HistoryRecorder.account("key", vaultId))
-		else { return nil }
-		return try HistoryRecorder.stored(storage, vaultId: vaultId, head: secret(head), key: secret(key))
+		let marker = try storage.historyMarker(vaultId: vaultId).map(secret)
+		switch try HistoryEngine.check(vaultId: vaultId, marker: marker, head: nil, key: nil).history {
+		case "default": return nil
+		case "on": break
+		case "off": throw noHistory
+		case "removing", "unsupported": throw newerVersion
+		default: throw damaged
+		}
+		guard let maintained = try HistoryRecorder.maintained(storage, vaultId: vaultId) else { return nil }
+		return try HistoryRecorder.stored(storage, vaultId: vaultId, head: maintained.head, key: maintained.key)
 	}
 
 	/// The timeline, newest first, or nil when the project has no history.
 	static func timeline(_ storage: some HistoryStorage, vaultId: String, filter: HistoryEngine.Filter?) throws -> HistoryEngine.Timeline? {
 		guard let stored = try stored(storage, vaultId: vaultId) else { return nil }
 		return try HistoryEngine.timeline(stored, values: try values(storage, vaultId: vaultId), filter: filter)
+	}
+
+	/// The newest changes to `key` in each of `environments`, by their names
+	/// now, at most `limit` each: the engine follows the key and each
+	/// environment back through their renames, from one read of the history.
+	static func keyChanges(
+		_ storage: some HistoryStorage, vaultId: String, key: String, environments: [String], limit: Int
+	) throws -> [String: [HistoryEngine.Entry]] {
+		guard let stored = try stored(storage, vaultId: vaultId) else { return [:] }
+		let values = try values(storage, vaultId: vaultId)
+		var changes: [String: [HistoryEngine.Entry]] = [:]
+		for environment in environments {
+			let timeline = try HistoryEngine.timeline(
+				stored, values: values, filter: HistoryEngine.Filter(environment: environment, exactKey: key, limit: limit))
+			let entries = timeline.rows.compactMap { row -> HistoryEngine.Entry? in
+				if case .entry(let entry) = row { return entry }
+				return nil
+			}
+			if !entries.isEmpty { changes[environment] = entries }
+		}
+		return changes
 	}
 
 	/// Entries with their values, as blobs of the answer.
@@ -61,9 +123,16 @@ enum HistoryOperations {
 		return try HistoryEngine.planRollback(stored, values: try required(values(storage, vaultId: vaultId)), target: target)
 	}
 
-	/// The environments a reviewed rollback leaves, which the engine refuses
-	/// with `history.changed_since_review` unless the values and the plan
-	/// still match the review. The caller writes them as one values write.
+	/// What a reviewed rollback leaves: the environments, and the renames
+	/// back it makes, which its entry records as renames.
+	struct RolledBack: Sendable, Equatable {
+		let environments: [String: [String: String]]
+		let renames: [HistoryEngine.Rename]
+	}
+
+	/// What a reviewed rollback leaves, which the engine refuses with
+	/// `history.changed_since_review` unless the values and the plan still
+	/// match the review. The caller writes it as one values write.
 	static func rolledBackEnvironments(
 		_ storage: some HistoryStorage,
 		vaultId: String,
@@ -71,7 +140,7 @@ enum HistoryOperations {
 		fingerprint: String,
 		skipped: [(environment: Int, row: Int)],
 		keepEmpty: [Int]
-	) throws -> [String: [String: String]] {
+	) throws -> RolledBack {
 		guard let stored = try stored(storage, vaultId: vaultId) else { throw noHistory }
 		let current = try required(values(storage, vaultId: vaultId))
 		let writes = try HistoryEngine.applyRollback(
@@ -89,7 +158,10 @@ enum HistoryOperations {
 				(entry.key, entry.value.withUnsafeBytes { String(decoding: $0, as: UTF8.self) })
 			})
 		}
-		return environments
+		let renames = writes.compactMap { write in
+			write.renamedFrom.map { HistoryEngine.Rename.environment(from: $0, to: write.name) }
+		}
+		return RolledBack(environments: environments, renames: renames)
 	}
 
 	/// Reviews removing the value `key` had in `environment` on `side` of `entry`.
@@ -118,7 +190,10 @@ enum HistoryOperations {
 			stored, values: try required(values(storage, vaultId: vaultId)),
 			review: review, selection: selection, approval: approval)
 		try storage.historyCommit(writes)
-		try HistoryRecorder.finishRunning(storage, vaultId: vaultId)
+		// Starting writes only the head and the key, so the parts just read
+		// are still the ones stored.
+		let known = Dictionary(stored.parts.compactMap { part in part.bytes.map { (part.part, $0) } }, uniquingKeysWith: { first, _ in first })
+		try HistoryRecorder.finishRunning(storage, vaultId: vaultId, known: known)
 	}
 
 	/// What the pass after unlock found.
@@ -202,6 +277,9 @@ enum HistoryOperations {
 	}
 
 	private static let noHistory = HistoryEngine.Failure(code: "history.off", message: "This project has no local history.")
+	private static let newerVersion = HistoryEngine.Failure(
+		code: "history.unsupported", message: "A newer LPM CLI or LPM Vault keeps this project's history. Update LPM Vault to use it.")
+	private static let damaged = HistoryEngine.Failure(code: "history.damaged", message: "This project's history is damaged.")
 
 	private static func secret(_ data: Data) -> SecretBytes {
 		data.withUnsafeBytes { SecretBytes(copying: $0) }

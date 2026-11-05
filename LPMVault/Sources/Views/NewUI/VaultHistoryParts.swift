@@ -111,3 +111,68 @@ struct VaultHistoryNotice: View {
 		.accessibilityElement(children: .combine)
 	}
 }
+
+/// What a rollback just applied left, with Undo for a short while, wherever
+/// the project's values show: the History page, a key's inspector, the table.
+struct VaultHistoryUndoToast: View {
+	let store: VaultStore
+
+	private var history: VaultLocalHistory { store.history }
+
+	var body: some View {
+		if let applied = history.applied, applied.projectID == store.selectedProjectId {
+			VaultToast(hasButton: applied.undo == .available || applied.undo == .undoing) {
+				switch applied.undo {
+				case .available, .undoing:
+					Image(systemName: "checkmark")
+						.font(.system(size: 11, weight: .bold))
+						.foregroundStyle(VaultPalette.toastConfirmation)
+						.accessibilityHidden(true)
+					Text(applied.keys == 0
+						? (applied.isUndo ? "Undid the change" : "Rolled back")
+						: "\(applied.isUndo ? "Undid" : "Rolled back") \(applied.keys.counted("key"))")
+					Button {
+						Task { await history.undoApplied() }
+					} label: {
+						Label(applied.undo == .undoing ? "Undoing…" : "Undo", systemImage: "arrow.uturn.backward")
+							.font(.system(size: 12, weight: .semibold))
+							.foregroundStyle(VaultPalette.toastAction)
+					}
+					.buttonStyle(.plain)
+					.vaultPointingHand()
+					.disabled(applied.undo == .undoing)
+					.help(applied.isUndo ? "Put back what the undo replaced" : "Put back what the rollback replaced")
+					Rectangle()
+						.fill(VaultPalette.toastDivider)
+						.frame(width: 1, height: 16)
+						.accessibilityHidden(true)
+					TimelineView(.periodic(from: applied.savedAt, by: 1)) { context in
+						let left = max(0, VaultFeedbackTimer.undoSeconds - Int(context.date.timeIntervalSince(applied.savedAt)))
+						Text("\(left)s")
+							.font(VaultTypography.tabular(11))
+							.foregroundStyle(VaultPalette.toastSecondaryText)
+							.accessibilityLabel("\(left) seconds left to undo")
+					}
+				case .undone:
+					Image(systemName: "arrow.uturn.backward")
+						.font(.system(size: 11, weight: .bold))
+						.foregroundStyle(VaultPalette.toastConfirmation)
+						.accessibilityHidden(true)
+					Text("Put the values back as they were")
+				case .reviewing:
+					Image(systemName: "exclamationmark.triangle.fill")
+						.font(.system(size: 11, weight: .bold))
+						.foregroundStyle(VaultPalette.orange)
+						.accessibilityHidden(true)
+					Text("Not everything can be put back exactly, so review the undo")
+				case .failed(let message):
+					Image(systemName: "exclamationmark.triangle.fill")
+						.font(.system(size: 11, weight: .bold))
+						.foregroundStyle(VaultPalette.orange)
+						.accessibilityHidden(true)
+					Text(message)
+				}
+			}
+		}
+	}
+}

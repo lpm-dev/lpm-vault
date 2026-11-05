@@ -70,6 +70,26 @@ struct HistoryRingTests {
 		#expect(upkeep == .init(records: upkeep.records, trimmed: 0, crowded: false, mayBeShrunk: false))
 	}
 
+	@Test("admission decides from what trims left when a planned trim couldn't be made")
+	func admissionCountsOnlyTrimsMade() throws {
+		try grownRing("big")
+		let grown = try head("big")
+		let headAccount = try HistoryRecorder.account("history-head", "big")
+		try backend.write(service: name, account: headAccount, data: Data("not a head".utf8))
+		// 8,191 records: creating history's 3 would pass the hard limit of
+		// 8,192, unless the big ring's planned trims were made, which they can't be.
+		_ = try crowd(8_191 - (2 + grown.parts.count))
+		let service = service
+		guard case .success = service.createEnvironments(
+			vaultId: "new", projectName: "new", projectPath: "", environments: ["default": ["A": "1"]], source: VaultHistorySource(.set))
+		else { throw KeychainError.encodingFailed }
+		guard case .notRecorded("limit", _)? = service.takeHistoryOutcomes()["new"] else {
+			Issue.record("with nothing trimmed, the Mac is past the limit, so history can't start")
+			return
+		}
+		#expect(try backend.read(service: name, account: HistoryRecorder.account("history-head", "new")) == nil)
+	}
+
 	@Test("creating history on a crowded Mac trims another project's ring first, and the new ring starts smaller")
 	func creationTrimsFirst() throws {
 		try grownRing("big")

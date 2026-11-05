@@ -5711,12 +5711,7 @@ final class VaultStore {
     Task { [platformCredentials] in await platformCredentials.resumeCleanup(now: true) }
     Task { [weak self] in await self?.reconcilePublishingRecords() }
     companionMaintenanceTask?.cancel()
-    companionMaintenanceTask = Task { [persistence, weak self] in
-      if case .failure(let failure) = await persistence.maintainCompanionStorage(), !Task.isCancelled {
-        vaultStoreLogger.error("Companion maintenance after unlock failed: \(failure.description, privacy: .public)")
-      }
-      await self?.maintainHistoryRings()
-    }
+    companionMaintenanceTask = Task { [weak self] in await self?.maintainAfterUnlock() }
     if lpmHomeMoveRecovery == nil, LPMHome.unfinishedMove(in: preferences) != nil {
       lpmHomeMoveRecovery = Task { [weak self] in
         try? await self?.finishUnfinishedLPMHomeMove()
@@ -5725,21 +5720,24 @@ final class VaultStore {
     }
   }
 
-  /// Local history's pass after unlock: trims rings while the Mac holds too
-  /// many LPM records, and raises shrunk ones once it's well below. Raising
-  /// reads every ring's head, so it runs only while a ring may have shrunk:
-  /// at the first unlock after launch, and after a pass that saw the Mac
-  /// past its target.
-  private func maintainHistoryRings() async {
-    switch await persistence.historyUpkeep(raising: historyRingsMayBeShrunk) {
+  /// The work after unlock, in one lock scope: companion maintenance, then
+  /// local history's upkeep, which trims rings while the Mac holds too many
+  /// LPM records and raises shrunk ones once it's well below. Raising reads
+  /// every ring's head, so it runs only while a ring may have shrunk: at the
+  /// first unlock after launch, and after a pass that saw the Mac past its target.
+  private func maintainAfterUnlock() async {
+    let work = await persistence.maintainAfterUnlock(raisingHistoryRings: historyRingsMayBeShrunk)
+    guard !Task.isCancelled else { return }
+    if case .failure(let failure) = work.companion {
+      vaultStoreLogger.error("Companion maintenance after unlock failed: \(failure.description, privacy: .public)")
+    }
+    switch work.history {
     case .success(let upkeep):
-      guard !Task.isCancelled, isUnlocked else { return }
+      guard isUnlocked else { return }
       historyRingsMayBeShrunk = upkeep.mayBeShrunk
       history.noteCrowded(upkeep.crowded ? upkeep.records : nil)
     case .failure(let failure):
-      if !Task.isCancelled {
-        vaultStoreLogger.error("Local history upkeep after unlock failed: \(failure.description, privacy: .public)")
-      }
+      vaultStoreLogger.error("Local history upkeep after unlock failed: \(failure.description, privacy: .public)")
     }
   }
 
@@ -8924,6 +8922,9 @@ final class VaultStore {
   /// values, as a rename's commit doesn't, only its name and folder, so
   /// values already loaded stay.
   private func updateProjectInPlace(_ project: VaultProject) {
+    // A write this app made may not have been recorded; the sidebar says so
+    // for every project, whether or not its History page was opened.
+    Task { [history] in await history.collectOutcomes() }
     guard let index = projects.firstIndex(where: { $0.id == project.id }) else { return }
     if !project.hasLoadedEnvironments, projects[index].hasLoadedEnvironments {
       projects[index].name = project.name

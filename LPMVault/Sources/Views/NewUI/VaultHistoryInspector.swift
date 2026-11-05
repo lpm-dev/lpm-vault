@@ -6,10 +6,11 @@ struct VaultHistoryInspector: View {
 	let store: VaultStore
 	let project: VaultProject
 	@Environment(\.vaultContentObscured) private var obscured
+	@Environment(\.vaultClock) private var clock
 	@State private var failure: String?
 
 	private var history: VaultLocalHistory { store.history }
-	private var text: VaultHistoryText { VaultHistoryText(now: Date()) }
+	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -56,7 +57,7 @@ struct VaultHistoryInspector: View {
 				.buttonStyle(.plain)
 				.accessibilityLabel("Close change details")
 			}
-			Text(text.describe(entry) { id in history.entries.first { $0.id == id } })
+			Text(text.describe(entry) { id in history.entry(id) })
 				.font(.system(size: 14, weight: .semibold))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.fixedSize(horizontal: false, vertical: true)
@@ -140,10 +141,8 @@ struct VaultHistoryInspector: View {
 		change: HistoryEngine.KeyChange,
 		keyIndex: Int
 	) -> some View {
-		let revealed = history.revealed[entry.id].flatMap { revealed in
-			revealed.environments.indices.contains(environmentIndex) && revealed.environments[environmentIndex].indices.contains(keyIndex)
-				? revealed.environments[environmentIndex][keyIndex] : nil
-		}
+		let before = VaultLocalHistory.Side(entry: entry.id, environment: environmentIndex, key: keyIndex, side: "before")
+		let after = VaultLocalHistory.Side(entry: entry.id, environment: environmentIndex, key: keyIndex, side: "after")
 		return VStack(alignment: .leading, spacing: 6) {
 			HStack {
 				Text(change.key)
@@ -153,10 +152,10 @@ struct VaultHistoryInspector: View {
 				VaultTagBadge(text: kindTitle(change), foreground: kindForeground(change), background: kindBackground(change))
 			}
 			if change.renamedFrom != nil || change.change != "added" {
-				side("Before", kind: change.before, value: revealed?.before, entry: entry, environment: environment.name, key: change.key, sideName: "before")
+				side("Before", kind: change.before, side: before, entry: entry, environment: environment.name, key: change.key)
 			}
 			if change.change != "removed" {
-				side("After", kind: change.after, value: revealed?.after, entry: entry, environment: environment.name, key: change.key, sideName: "after")
+				side("After", kind: change.after, side: after, entry: entry, environment: environment.name, key: change.key)
 			}
 		}
 	}
@@ -190,15 +189,16 @@ struct VaultHistoryInspector: View {
 	private func side(
 		_ title: String,
 		kind: String,
-		value: String?,
+		side valueSide: VaultLocalHistory.Side,
 		entry: HistoryEngine.Entry,
 		environment: String,
-		key: String,
-		sideName: String
+		key: String
 	) -> some View {
 		let unknown = VaultHistoryText.unknownSide(kind, of: entry)
 		let absent = kind == "absent"
+		let value = history.shown.contains(valueSide) ? history.value(of: valueSide) : nil
 		let shown = value != nil && !obscured
+		let sideName = valueSide.side
 		let content: VaultHistoryValueField.Content =
 			if let unknown { .unknown(unknown) } else if absent { .absent } else if shown, let value { .shown(value) } else { .hidden }
 		let side = title.lowercased()
@@ -215,10 +215,10 @@ struct VaultHistoryInspector: View {
 					help: shown ? "Hide the \(side) value of \(key)" : "Reveal the \(side) value of \(key)",
 					disabled: obscured, compact: true
 				) {
-					if shown { history.hideRevealed() } else { Task { await history.reveal(entry.id) } }
+					if shown { history.hide(valueSide) } else { Task { await history.show(valueSide) } }
 				}
 				VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy the \(side) value of \(key)", disabled: obscured, compact: true) {
-					Task { await copy(entry: entry, environment: environment, key: key, sideName: sideName) }
+					Task { await copy(valueSide) }
 				}
 				Menu {
 					Button("Remove from History…") {
@@ -248,7 +248,7 @@ struct VaultHistoryInspector: View {
 	private func footer(_ entry: HistoryEngine.Entry) -> some View {
 		VStack(spacing: 8) {
 			Button {
-				Task { await review(.environment(rollbackEnvironment(entry), entry: entry.id, side: "after")) }
+				Task { await review(rollbackTarget(entry)) }
 			} label: {
 				Label("Roll Back to This Point…", systemImage: "arrow.uturn.backward")
 					.frame(maxWidth: .infinity)
@@ -265,12 +265,14 @@ struct VaultHistoryInspector: View {
 		.padding(16)
 	}
 
-	/// The environment Roll Back to This Point… opens on: the page's filter
-	/// when the entry touched it, else the entry's first.
-	private func rollbackEnvironment(_ entry: HistoryEngine.Entry) -> String {
-		let names = entry.environments.map(\.name)
-		if let filtered = history.filter.environment, names.contains(filtered) { return filtered }
-		return names.first ?? ""
+	/// What Roll Back to This Point… opens on: the environment the page is
+	/// filtered to, by its name now, since the entry may name it as it was
+	/// before a rename; else the entry's first environment, as the entry names it.
+	private func rollbackTarget(_ entry: HistoryEngine.Entry) -> HistoryEngine.RollbackTarget {
+		if let filtered = history.filter.environment {
+			return .environment(filtered, entry: entry.id, side: "after", namedNow: true)
+		}
+		return .environment(entry.environments.first?.name ?? "", entry: entry.id, side: "after")
 	}
 
 	private func review(_ target: HistoryEngine.RollbackTarget) async {
@@ -281,9 +283,10 @@ struct VaultHistoryInspector: View {
 		failure = await history.reviewRemoval(entry: entry.id, environment: environment, key: key, side: side)?.description
 	}
 
-	private func copy(entry: HistoryEngine.Entry, environment: String, key: String, sideName: String) async {
-		await history.reveal(entry.id)
-		guard let value = history.revealedValue(entry: entry.id, environment: environment, key: key, side: sideName) else { return }
+	/// Copies a value without showing it; covering the window while it's
+	/// read copies nothing.
+	private func copy(_ side: VaultLocalHistory.Side) async {
+		guard let value = await history.valueToCopy(side) else { return }
 		store.clipboard.copy(value)
 	}
 }

@@ -141,7 +141,8 @@ struct VaultHistoryText {
 		case "restore": Badge(text: "Restore", foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint)
 		case "pull": Badge(text: "Pull", foreground: VaultPalette.accentText, background: VaultPalette.accentTint)
 		case "rollback": Badge(text: "Rollback", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint)
-		default: Badge(text: "Outside", foreground: VaultPalette.orangeTintText, background: .clear, warns: true)
+		case "outside": Badge(text: "Outside", foreground: VaultPalette.orangeTintText, background: .clear, warns: true)
+		default: Badge(text: "Other", foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint)
 		}
 	}
 
@@ -213,9 +214,11 @@ struct VaultHistoryText {
 			}
 			return "Undid the change from \(moment(Self.date(point.time)))"
 		case "outside":
-			let until = clock(Self.date(entry.time))
-			if let since = entry.since { return "Changed outside local history · \(clock(Self.date(since))) to \(until)" }
-			return "Changed outside local history · until \(until)"
+			let until = Self.date(entry.time)
+			guard let since = entry.since.map(Self.date) else { return "Changed outside local history · until \(clock(until))" }
+			// Its row sits under the day it ended, so a start on another day names that day.
+			let start = calendar.isDate(since, inSameDayAs: until) ? clock(since) : moment(since)
+			return "Changed outside local history · \(start) to \(clock(until))"
 		default:
 			return "Changed \(counted)"
 		}
@@ -301,7 +304,7 @@ struct VaultHistoryText {
 	func rollbackTitle(_ target: HistoryEngine.RollbackTarget, at time: Int64) -> String {
 		let at = moment(Self.date(time))
 		switch target {
-		case .environment(let environment, _, let side):
+		case .environment(let environment, _, let side, _):
 			return side == "before" ? "Roll back \(environment) to before \(at)?" : "Roll back \(environment) to \(at)?"
 		case .key(let key, let environment, _):
 			return "Roll back \(key) in \(environment) to its value before \(at)?"
@@ -315,7 +318,7 @@ struct VaultHistoryText {
 	func rollbackDetail(_ review: VaultLocalHistory.RollbackReview, entry: HistoryEngine.Entry?) -> String {
 		let plan = review.plan
 		switch review.target {
-		case .environment(let name, _, let side):
+		case .environment(let name, _, let side, _):
 			let environment = plan.environments.first
 			if environment?.offersDeletion == true { return "\(name) goes back to its state at that point." }
 			let change = if let entry, entry.environments.count > 1 { "“\(describe(entry))”" } else { "that change" }
@@ -324,6 +327,9 @@ struct VaultHistoryText {
 			guard total > 1, environment?.recreates != true else { return state }
 			return "\(state) \(review.changing) of \(total) keys change; switch any off to keep its current value."
 		case .key:
+			if plan.environments.allSatisfy({ $0.rows.allSatisfy { $0.change == "unknown" } }) {
+				return "Its value from before \(Self.change(entry)) isn’t known, so it keeps its value now."
+			}
 			return "Only this key changes. The value from before \(Self.change(entry)) is restored."
 		case .undo:
 			let what = entry.map { "\(describe($0)) · " } ?? ""
@@ -341,8 +347,9 @@ struct VaultHistoryText {
 	func environmentNote(_ environment: HistoryEngine.PlanEnvironment, deletedAt: Int64?, undoes: Bool = false) -> String? {
 		if environment.recreates, let name = environment.target {
 			let keys = environment.rows.count.counted("key")
-			guard let deletedAt else { return "\(name) doesn’t exist now. Rolling back recreates it with \(keys)." }
-			return "\(name) was deleted on \(dayAndMonth(Self.date(deletedAt))). Rolling back recreates it with \(keys)."
+			let recreates = "\(undoes ? "Undoing" : "Rolling back") recreates it with \(keys)."
+			guard let deletedAt else { return "\(name) doesn’t exist now. \(recreates)" }
+			return "\(name) was deleted on \(dayAndMonth(Self.date(deletedAt))). \(recreates)"
 		}
 		if environment.offersDeletion, let name = environment.current {
 			let existed = "\(name) didn’t exist \(undoes ? "before that change" : "at that point")."
@@ -388,12 +395,13 @@ struct VaultHistoryText {
 
 	/// Where a key's current value came from, when a pull set it. The
 	/// wording follows the pull's own remote, not the project's sync now.
-	func pulled(_ pulled: HistoryEngine.Pulled, key: String) -> String {
+	func pulled(_ pulled: HistoryEngine.Pulled, key: String, undoes: Bool = false) -> String {
 		let version = pulled.version.map { ", v\($0)" } ?? ""
 		let came = "\(key)’s current value came from lpm.dev (pulled \(dayAndMonth(Self.date(pulled.time)))\(version))."
+		let change = undoes ? "undo" : "rollback"
 		let push = switch pulled.remote {
-		case .org: "If you push this rollback, it replaces that value for everyone on the team,"
-		case .personal: "If you push this rollback, it replaces that value on lpm.dev and on your other Macs when they pull,"
+		case .org: "If you push this \(change), it replaces that value for everyone on the team,"
+		case .personal: "If you push this \(change), it replaces that value on lpm.dev and on your other Macs when they pull,"
 		}
 		return "\(came) \(push) and the value it replaces then stays only in this Mac’s history. Until you push, pulling again brings lpm.dev’s value back."
 	}

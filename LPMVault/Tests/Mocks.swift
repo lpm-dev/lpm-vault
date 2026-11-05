@@ -372,6 +372,18 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		lock.withLock { historyTimeline }
 	}
 
+	func historyKeyChangesResult(
+		vaultId: String, key: String, environments: [String], limit: Int
+	) -> Result<[String: [HistoryEngine.Entry]], KeychainError> {
+		.success([:])
+	}
+
+	func historyOverviewResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<VaultHistoryOverview, KeychainError> {
+		lock.withLock {
+			historyState.flatMap { state in historyTimeline.map { VaultHistoryOverview(state: state, timeline: $0) } }
+		}
+	}
+
 	func historyRevealResult(vaultId: String, ids: [String]) -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError> {
 		.failure(lock.withLock { historyFailure })
 	}
@@ -386,7 +398,7 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		fingerprint: String,
 		skipped: [(environment: Int, row: Int)],
 		keepEmpty: [Int]
-	) -> Result<[String: [String: String]], KeychainError> {
+	) -> Result<HistoryOperations.RolledBack, KeychainError> {
 		.failure(lock.withLock { historyFailure })
 	}
 
@@ -398,6 +410,12 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func removeFromHistoryResult(vaultId: String, review: HistoryEngine.Review, selection: [Int]) -> Result<Void, KeychainError> {
 		.failure(lock.withLock { historyFailure })
+	}
+
+	func maintainAfterUnlockResult(
+		raisingHistoryRings: Bool
+	) -> (companion: Result<CompanionMaintenance, KeychainError>, history: Result<HistoryOperations.Upkeep, KeychainError>) {
+		(maintainCompanionStorage(), historyUpkeepResult(raising: raisingHistoryRings))
 	}
 
 	func historyUpkeepResult(raising: Bool) -> Result<HistoryOperations.Upkeep, KeychainError> {

@@ -486,11 +486,17 @@ protocol KeychainServiceProtocol: Sendable {
 	func historyStateResult(vaultId: String) -> Result<VaultHistoryState, KeychainError>
 	/// The project's history, newest first, or nil when it has none yet.
 	func historyTimelineResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError>
+	/// The history's state and timeline from one read of its records.
+	func historyOverviewResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<VaultHistoryOverview, KeychainError>
+	/// The newest changes to `key` in each of `environments`, named as they are now.
+	func historyKeyChangesResult(
+		vaultId: String, key: String, environments: [String], limit: Int
+	) -> Result<[String: [HistoryEngine.Entry]], KeychainError>
 	/// Entries with their values, each a blob of the answer.
 	func historyRevealResult(vaultId: String, ids: [String]) -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError>
 	/// A rollback's review, from the values stored now.
 	func historyRollbackPlanResult(vaultId: String, target: HistoryEngine.RollbackTarget) -> Result<HistoryEngine.Answer<HistoryEngine.Plan>, KeychainError>
-	/// The environments a reviewed rollback leaves, refused with
+	/// What a reviewed rollback leaves, refused with
 	/// `history.changed_since_review` once the values or history changed.
 	/// Call it in the lock scope that writes them.
 	func historyRolledBackEnvironmentsResult(
@@ -499,7 +505,7 @@ protocol KeychainServiceProtocol: Sendable {
 		fingerprint: String,
 		skipped: [(environment: Int, row: Int)],
 		keepEmpty: [Int]
-	) -> Result<[String: [String: String]], KeychainError>
+	) -> Result<HistoryOperations.RolledBack, KeychainError>
 	/// Reviews removing one value from the project's history.
 	func historyRemovalReviewResult(
 		vaultId: String, entry: String, environment: String, key: String, side: String
@@ -512,6 +518,11 @@ protocol KeychainServiceProtocol: Sendable {
 	/// too many records, and raises shrunk ones once it's well below, when
 	/// `raising`.
 	func historyUpkeepResult(raising: Bool) -> Result<HistoryOperations.Upkeep, KeychainError>
+	/// The work after unlock in one lock scope, so it takes one listing:
+	/// companion maintenance, then local history's upkeep, each with its own result.
+	func maintainAfterUnlockResult(
+		raisingHistoryRings: Bool
+	) -> (companion: Result<CompanionMaintenance, KeychainError>, history: Result<HistoryOperations.Upkeep, KeychainError>)
 	func applyVaultTransaction(
 		project: VaultProjectKeychainMutation?,
 		data: [VaultKeychainMutation]
@@ -2730,6 +2741,14 @@ final class SharedKeychainStore: @unchecked Sendable {
 			if access == .automatic {
 				for record in records { try setCliAccessNotedUnlocked(record, access) }
 			}
+			// History's key follows at once: one made while approval was off is
+			// rotated, and a lowered approval is recorded. Every history
+			// operation tries again first, so a failure here isn't the switch's.
+			do {
+				_ = try HistoryRecorder.maintained(self, vaultId: vaultId)
+			} catch {
+				keychainLogger.error("Local history key upkeep after an approval change failed: \(String(describing: error), privacy: .public)")
+			}
 			return saved
 		}
 	}
@@ -3183,7 +3202,8 @@ extension SharedKeychainStore: HistoryStorage {
 	/// A record read with the approval its attributes claim. One that follows
 	/// its values item and claims none while the values claim approval is
 	/// probed, and protected when it isn't, before its bytes are used, as the
-	/// LPM CLI does.
+	/// LPM CLI does. Claims decide it: probing every record on every read
+	/// would undo history's agreed cost, and the pass after unlock probes them all.
 	func historyRecord(_ account: String) throws -> Data? {
 		let read: (data: Data, access: VaultCliAccess)?
 		do {
@@ -3283,6 +3303,14 @@ extension SharedKeychainStore: HistoryStorage {
 			else { return nil }
 			return account
 		}.sorted()
+	}
+
+	func historyClaimedApproval(vaultId: String) throws -> HistoryEngine.Approval {
+		try claimedValuesAccessUnlocked(vaultId) == .requireApproval ? .protected : .automatic
+	}
+
+	func historyWithoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T {
+		try backend.withoutApprovalPrompts(body)
 	}
 
 	func historyRings() throws -> [String] {
@@ -3432,6 +3460,22 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		withHistory(vaultId, .readExcludingOverrides) { try HistoryOperations.timeline(store, vaultId: vaultId, filter: filter) }
 	}
 
+	func historyKeyChangesResult(
+		vaultId: String, key: String, environments: [String], limit: Int
+	) -> Result<[String: [HistoryEngine.Entry]], KeychainError> {
+		withHistory(vaultId, .readExcludingOverrides) {
+			try HistoryOperations.keyChanges(store, vaultId: vaultId, key: key, environments: environments, limit: limit)
+		}
+	}
+
+	func historyOverviewResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<VaultHistoryOverview, KeychainError> {
+		withHistory(vaultId, .maintenance) {
+			try store.authorizeCompanion(vaultId: vaultId, .readExcludingOverrides)
+			let overview = try HistoryOperations.overview(store, vaultId: vaultId, filter: filter)
+			return VaultHistoryOverview(state: overview.state, timeline: overview.timeline)
+		}
+	}
+
 	func historyRevealResult(vaultId: String, ids: [String]) -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError> {
 		withHistory(vaultId, .readExcludingOverrides) { try HistoryOperations.reveal(store, vaultId: vaultId, ids: ids) }
 	}
@@ -3446,7 +3490,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		fingerprint: String,
 		skipped: [(environment: Int, row: Int)],
 		keepEmpty: [Int]
-	) -> Result<[String: [String: String]], KeychainError> {
+	) -> Result<HistoryOperations.RolledBack, KeychainError> {
 		withHistory(vaultId, .write) {
 			try HistoryOperations.rolledBackEnvironments(
 				store, vaultId: vaultId, target: target, fingerprint: fingerprint, skipped: skipped, keepEmpty: keepEmpty)
@@ -3467,6 +3511,25 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 
 	func setHistoryEnabledResult(vaultId: String, enabled: Bool) -> Result<Void, KeychainError> {
 		withHistory(vaultId, .maintenance) { try HistoryOperations.setEnabled(store, vaultId: vaultId, enabled: enabled) }
+	}
+
+	func maintainAfterUnlockResult(
+		raisingHistoryRings raising: Bool
+	) -> (companion: Result<CompanionMaintenance, KeychainError>, history: Result<HistoryOperations.Upkeep, KeychainError>) {
+		var companion: Result<CompanionMaintenance, KeychainError> = .failure(.accessDenied)
+		var history: Result<HistoryOperations.Upkeep, KeychainError> = .failure(.accessDenied)
+		do {
+			try VaultKeychainTransactionLock.withLock {
+				companion = maintainCompanionStorage()
+				history = historyUpkeepResult(raising: raising)
+			}
+		} catch let error as KeychainStoreError {
+			let failure = keychainError(from: error)
+			return (.failure(failure), .failure(failure))
+		} catch {
+			return (.failure(.unexpectedStatus(errSecInternalComponent)), .failure(.unexpectedStatus(errSecInternalComponent)))
+		}
+		return (companion, history)
 	}
 
 	func historyUpkeepResult(raising: Bool) -> Result<HistoryOperations.Upkeep, KeychainError> {

@@ -10,8 +10,9 @@ final class VaultLocalHistory {
 	/// What the model asks of the app's storage, so tests can give it a real
 	/// coordinator or a stand-in.
 	struct Actions {
-		var state: @Sendable (String) async -> Result<VaultHistoryState, KeychainError>
-		var timeline: @Sendable (String, HistoryEngine.Filter?) async -> Result<HistoryEngine.Timeline?, KeychainError>
+		var overview: @Sendable (String, HistoryEngine.Filter?) async -> Result<VaultHistoryOverview, KeychainError>
+		var keyChanges: @Sendable (_ vaultId: String, _ key: String, _ environments: [String], _ limit: Int) async
+			-> Result<[String: [HistoryEngine.Entry]], KeychainError>
 		var reveal: @Sendable (String, [String]) async -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError>
 		var planRollback: @Sendable (String, HistoryEngine.RollbackTarget) async -> Result<HistoryEngine.Answer<HistoryEngine.Plan>, KeychainError>
 		var reviewRemoval: @Sendable (_ vaultId: String, _ entry: String, _ environment: String, _ key: String, _ side: String) async
@@ -30,8 +31,8 @@ final class VaultLocalHistory {
 			confirm: @escaping @MainActor (String) async -> Bool
 		) -> Actions {
 			Actions(
-				state: { await persistence.historyState(vaultId: $0) },
-				timeline: { await persistence.historyTimeline(vaultId: $0, filter: $1) },
+				overview: { await persistence.historyOverview(vaultId: $0, filter: $1) },
+				keyChanges: { await persistence.historyKeyChanges(vaultId: $0, key: $1, environments: $2, limit: $3) },
 				reveal: { await persistence.historyReveal(vaultId: $0, ids: $1) },
 				planRollback: { await persistence.historyRollbackPlan(vaultId: $0, target: $1) },
 				reviewRemoval: { await persistence.historyRemovalReview(vaultId: $0, entry: $1, environment: $2, key: $3, side: $4) },
@@ -72,7 +73,17 @@ final class VaultLocalHistory {
 		}
 	}
 
-	/// An entry's values, revealed: one list per environment, in its keys' order.
+	/// One side of one key's change in an entry: the value a Reveal shows.
+	struct Side: Hashable {
+		let entry: String
+		/// The environment's and the key's places in the entry.
+		let environment: Int
+		let key: Int
+		/// "before" or "after".
+		let side: String
+	}
+
+	/// An entry's values, read: one list per environment, in its keys' order.
 	struct Revealed: Equatable {
 		struct Sides: Equatable {
 			let before: String?
@@ -200,14 +211,40 @@ final class VaultLocalHistory {
 		var undo: Undo = .available
 	}
 
+	/// One day of the timeline: its rows, newest first.
+	struct Day: Identifiable {
+		struct Row: Identifiable {
+			let id: String
+			let row: HistoryEngine.Row
+		}
+
+		/// Its place among the days, which stays unique if two days share a date.
+		let id: Int
+		/// The day's start, in the calendar the rows were grouped in.
+		let start: Date
+		var rows: [Row]
+	}
+
 	private let actions: Actions
 	private(set) var projectID: String?
 	private(set) var phase: Phase = .idle
 	private(set) var timeline: HistoryEngine.Timeline?
+	/// The timeline's entries, in its order, and the timeline grouped by day,
+	/// both made once a timeline rather than on every render.
+	private(set) var entries: [HistoryEngine.Entry] = []
+	private(set) var days: [Day] = []
+	private var entryIndex: [String: Int] = [:]
 	private(set) var state: VaultHistoryState?
 	var filter = Filter()
 	private(set) var selectedEntryID: String?
+	/// Values read for the selected entry, which nothing shows until a side
+	/// is in `shown`.
 	private(set) var revealed: [String: Revealed] = [:]
+	/// The sides the person revealed.
+	private(set) var shown: Set<Side> = []
+	/// Bumps whenever read values are dropped, so a read or a copy that was
+	/// waiting then gives nothing.
+	private var valuesEpoch = 0
 	/// Why a change wasn't recorded: the outcome's stable reason and its message.
 	struct NotRecorded: Equatable {
 		let reason: String
@@ -239,25 +276,58 @@ final class VaultLocalHistory {
 	/// Bumps when the app locks, so a review asked for before isn't opened after.
 	private var session = 0
 	private let undoTimer: VaultFeedbackTimer
+	/// How long the result of an undo stays.
+	private let resultTimer: VaultFeedbackTimer
 	private let now: () -> Date
+	private let calendar: Calendar
 	private var appliedExpiry: Task<Void, Never>?
+	/// The read the latest reload waits on; a newer reload cancels it.
+	private var reading: Task<Result<VaultHistoryOverview, KeychainError>, Never>?
 
-	init(actions: Actions, undoTimer: VaultFeedbackTimer = .importUndo, now: @escaping () -> Date = Date.init) {
+	init(
+		actions: Actions, undoTimer: VaultFeedbackTimer = .importUndo, resultTimer: VaultFeedbackTimer = .copyConfirmation,
+		now: @escaping () -> Date = Date.init, calendar: Calendar = .current
+	) {
 		self.actions = actions
 		self.undoTimer = undoTimer
+		self.resultTimer = resultTimer
 		self.now = now
-	}
-
-	var entries: [HistoryEngine.Entry] {
-		timeline?.rows.compactMap { row in
-			if case .entry(let entry) = row { return entry }
-			return nil
-		} ?? []
+		self.calendar = calendar
 	}
 
 	var selectedEntry: HistoryEngine.Entry? {
-		guard let selectedEntryID else { return nil }
-		return entries.first { $0.id == selectedEntryID }
+		selectedEntryID.flatMap(entry)
+	}
+
+	/// The timeline's entry with `id`, nil when the timeline doesn't show it.
+	func entry(_ id: String) -> HistoryEngine.Entry? {
+		entryIndex[id].map { entries[$0] }
+	}
+
+	private func setTimeline(_ timeline: HistoryEngine.Timeline?) {
+		self.timeline = timeline
+		var entries: [HistoryEngine.Entry] = []
+		var days: [Day] = []
+		for (index, row) in (timeline?.rows ?? []).enumerated() {
+			let time: Int64
+			let id: String
+			switch row {
+			case .entry(let entry):
+				(time, id) = (entry.time, entry.id)
+				entries.append(entry)
+			case .unreadable(let part, let after, let before):
+				(time, id) = (before ?? after ?? 0, "unreadable-\(part)-\(index)")
+			}
+			let start = calendar.startOfDay(for: VaultHistoryText.date(time))
+			if days.last?.start == start {
+				days[days.count - 1].rows.append(Day.Row(id: id, row: row))
+			} else {
+				days.append(Day(id: days.count, start: start, rows: [Day.Row(id: id, row: row)]))
+			}
+		}
+		self.entries = entries
+		self.days = days
+		entryIndex = Dictionary(entries.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
 	}
 
 	/// Shows `projectID`'s history, from the top, filtered as a pending
@@ -268,7 +338,7 @@ final class VaultLocalHistory {
 			self.projectID = projectID
 			filter = Filter()
 			selectedEntryID = nil
-			timeline = nil
+			setTimeline(nil)
 			state = nil
 		}
 		if let pending = pendingShow, pending.projectID == projectID {
@@ -280,43 +350,47 @@ final class VaultLocalHistory {
 	}
 
 	/// Asks for the History page of `projectID`, filtered to an environment
-	/// or a key.
+	/// or a key. The page opens it: as it appears, or, when it's showing,
+	/// as the request changes.
 	func show(_ projectID: String, environment: String? = nil, key: String? = nil) {
 		pendingShow = (projectID, Filter(environment: environment, exactKey: key))
 		showRequest = UUID()
-		if projectID == self.projectID {
-			Task { await open(projectID) }
-		}
 	}
 
-	/// The newest changes to `key` in `projectID`, through its renames, at
-	/// most `limit` of them, whatever the page shows.
-	func changes(to key: String, in projectID: String, limit: Int) async -> Result<[HistoryEngine.Entry], KeychainError> {
-		await actions.timeline(projectID, HistoryEngine.Filter(exactKey: key, limit: limit)).map { timeline in
-			timeline?.rows.compactMap { row in
-				if case .entry(let entry) = row { return entry }
-				return nil
-			} ?? []
-		}
+	/// The newest changes to `key` in each of `environments` of
+	/// `projectID`, by their names now, at most `limit` each, whatever the
+	/// page shows.
+	func changes(
+		to key: String, in projectID: String, environments: [String], limit: Int
+	) async -> Result<[String: [HistoryEngine.Entry]], KeychainError> {
+		await actions.keyChanges(projectID, key, environments, limit)
 	}
 
-	/// Reads the project's history again, with the current filter.
+	/// Reads the project's history again, with the current filter. A newer
+	/// reload cancels this one's read, which then does no storage work if it
+	/// hasn't started.
 	func reload() async {
 		guard let projectID else { return }
 		generation += 1
 		let generation = generation
 		phase = .loading
+		reading?.cancel()
 		await collectOutcomes()
-		let state = await actions.state(projectID)
-		let timeline = await actions.timeline(projectID, filter.engine)
+		guard generation == self.generation else { return }
+		let filter = filter.engine
+		let actions = actions
+		let read = Task { await actions.overview(projectID, filter) }
+		reading = read
+		let overview = await read.value
 		guard generation == self.generation, projectID == self.projectID else { return }
-		switch (state, timeline) {
-		case (.success(let state), .success(let timeline)):
-			self.state = state
-			self.timeline = timeline
-			if let selectedEntryID, !entries.contains(where: { $0.id == selectedEntryID }) { select(nil) }
+		reading = nil
+		switch overview {
+		case .success(let overview):
+			state = overview.state
+			setTimeline(overview.timeline)
+			if let selectedEntryID, entryIndex[selectedEntryID] == nil { select(nil) }
 			phase = .loaded
-		case (.failure(let error), _), (_, .failure(let error)):
+		case .failure(let error):
 			phase = .failed(error.description)
 		}
 	}
@@ -327,13 +401,16 @@ final class VaultLocalHistory {
 		selectedEntryID = entryID
 	}
 
-	/// Reveals the selected entry's values, which stay until the selection
-	/// changes, the window is covered, or the app locks.
+	/// Reads the selected entry's values, which stay in memory until the
+	/// selection changes, the window is covered, or the app locks, and show
+	/// only where a side is revealed. Nothing when the values were dropped
+	/// while it waited.
 	func reveal(_ entryID: String) async {
 		guard let projectID, revealed[entryID] == nil else { return }
 		let generation = generation
+		let epoch = valuesEpoch
 		guard case .success(let answer) = await actions.reveal(projectID, [entryID]),
-			generation == self.generation, projectID == self.projectID, entryID == selectedEntryID,
+			generation == self.generation, epoch == valuesEpoch, projectID == self.projectID, entryID == selectedEntryID,
 			let entry = answer.response.first
 		else { return }
 		revealed[entryID] = Revealed(environments: (entry.values ?? []).map { sides in
@@ -341,14 +418,47 @@ final class VaultLocalHistory {
 		})
 	}
 
-	/// Hides every revealed value, as covering the window does.
-	func hideRevealed() {
-		revealed = [:]
+	/// Shows one side's value, reading the entry's values first.
+	func show(_ side: Side) async {
+		let epoch = valuesEpoch
+		await reveal(side.entry)
+		guard epoch == valuesEpoch, revealed[side.entry] != nil else { return }
+		shown.insert(side)
 	}
 
-	/// Drops every revealed value and withdraws pending reviews.
-	func forgetValues() {
+	func hide(_ side: Side) {
+		shown.remove(side)
+	}
+
+	/// One side's value for a copy, read without showing it; nil when the
+	/// values were dropped while it was read, as covering the window drops them.
+	func valueToCopy(_ side: Side) async -> String? {
+		let epoch = valuesEpoch
+		await reveal(side.entry)
+		guard epoch == valuesEpoch else { return nil }
+		return value(of: side)
+	}
+
+	/// One side's value, once read.
+	func value(of side: Side) -> String? {
+		guard let revealed = revealed[side.entry],
+			revealed.environments.indices.contains(side.environment),
+			revealed.environments[side.environment].indices.contains(side.key)
+		else { return nil }
+		let sides = revealed.environments[side.environment][side.key]
+		return side.side == "before" ? sides.before : sides.after
+	}
+
+	/// Drops every value read, as covering the window does.
+	func hideRevealed() {
+		valuesEpoch += 1
 		revealed = [:]
+		shown = []
+	}
+
+	/// Drops every value read and withdraws pending reviews.
+	func forgetValues() {
+		hideRevealed()
 		rollbackReview = nil
 		removalReview = nil
 	}
@@ -358,11 +468,13 @@ final class VaultLocalHistory {
 		forgetValues()
 		dismissApplied()
 		pendingShow = nil
+		reading?.cancel()
+		reading = nil
 		session += 1
 		generation += 1
 		projectID = nil
 		phase = .idle
-		timeline = nil
+		setTimeline(nil)
 		state = nil
 		selectedEntryID = nil
 		filter = Filter()
@@ -376,15 +488,17 @@ final class VaultLocalHistory {
 	func reviewRollback(
 		_ target: HistoryEngine.RollbackTarget, in projectID: String? = nil, entry: HistoryEngine.Entry? = nil
 	) async -> KeychainError? {
+		let forPage = projectID == nil
 		guard let projectID = projectID ?? self.projectID else { return nil }
 		let session = session
 		switch await actions.planRollback(projectID, target) {
 		case .success(let answer):
-			guard session == self.session else { return nil }
+			// Locking, or a page that moved to another project, withdraws it.
+			guard session == self.session, !forPage || projectID == self.projectID else { return nil }
 			let plan = answer.response
 			rollbackReview = RollbackReview(
 				id: rollbackReview?.id ?? UUID(), projectID: projectID, target: target, plan: plan,
-				pointEntry: entry ?? entries.first { $0.id == plan.point.entry }, values: Self.values(of: answer))
+				pointEntry: entry ?? self.entry(plan.point.entry), values: Self.values(of: answer))
 			return nil
 		case .failure(let error):
 			return error
@@ -395,16 +509,19 @@ final class VaultLocalHistory {
 	func applyRollback() async -> ProjectMutationOutcome {
 		guard let review = rollbackReview else { return .unavailable }
 		let source = Self.source(of: review.plan)
+		let session = session
 		let outcome = await actions.mutate(
 			review.projectID,
 			.historyRollback(
 				target: review.target, plan: review.plan, skipped: Array(review.skipped), keepEmpty: review.keptEnvironments.sorted(),
 				source: source))
 		if case .saved = outcome {
-			rollbackReview = nil
+			if rollbackReview?.id == review.id { rollbackReview = nil }
+			// A write that finished after locking offers nothing after unlock.
+			guard session == self.session else { return outcome }
 			offerUndo(AppliedRollback(
 				entry: source.id, projectID: review.projectID, isUndo: review.plan.kind == "undo", keys: review.changing, savedAt: now()))
-			await reload()
+			if review.projectID == projectID { await reload() }
 		}
 		return outcome
 	}
@@ -415,6 +532,7 @@ final class VaultLocalHistory {
 		guard var applied, applied.undo == .available else { return }
 		applied.undo = .undoing
 		self.applied = applied
+		scheduleExpiry()
 		let target = HistoryEngine.RollbackTarget.undo(entry: applied.entry, only: nil)
 		let answer: HistoryEngine.Answer<HistoryEngine.Plan>
 		switch await actions.planRollback(applied.projectID, target) {
@@ -428,7 +546,7 @@ final class VaultLocalHistory {
 		guard Self.putsBackExactly(plan) else {
 			rollbackReview = RollbackReview(
 				projectID: applied.projectID, target: target, plan: plan,
-				pointEntry: entries.first { $0.id == plan.point.entry }, values: Self.values(of: answer))
+				pointEntry: entry(plan.point.entry), values: Self.values(of: answer))
 			settleUndo(of: applied.entry, .reviewing)
 			return
 		}
@@ -438,7 +556,7 @@ final class VaultLocalHistory {
 		switch outcome {
 		case .saved:
 			settleUndo(of: applied.entry, .undone)
-			await reload()
+			if applied.projectID == projectID { await reload() }
 		case .changed:
 			settleUndo(of: applied.entry, .failed("The values changed since, so nothing was undone."))
 		case .unavailable:
@@ -455,19 +573,34 @@ final class VaultLocalHistory {
 	}
 
 	private func offerUndo(_ rollback: AppliedRollback) {
-		appliedExpiry?.cancel()
 		applied = rollback
-		let timer = undoTimer
-		appliedExpiry = Task { [weak self] in
-			do { try await timer.wait() } catch { return }
-			guard let self, self.applied?.entry == rollback.entry else { return }
-			self.applied = nil
-		}
+		scheduleExpiry()
 	}
 
 	private func settleUndo(of entry: String, _ undo: AppliedRollback.Undo) {
 		guard applied?.entry == entry else { return }
 		applied?.undo = undo
+		scheduleExpiry()
+	}
+
+	/// Times the toast by what it says, as the Raw text toast does: the undo
+	/// window while Undo is offered or a failure is shown, nothing while the
+	/// undo runs, a short while for its result.
+	private func scheduleExpiry() {
+		appliedExpiry?.cancel()
+		appliedExpiry = nil
+		guard let applied else { return }
+		let timer: VaultFeedbackTimer? = switch applied.undo {
+		case .available, .failed: undoTimer
+		case .undoing: nil
+		case .undone, .reviewing: resultTimer
+		}
+		guard let timer else { return }
+		appliedExpiry = Task { [weak self] in
+			do { try await timer.wait() } catch { return }
+			guard let self, self.applied == applied else { return }
+			self.applied = nil
+		}
 	}
 
 	/// Whether an undo, applied without a review, puts back exactly what the
@@ -493,8 +626,11 @@ final class VaultLocalHistory {
 
 	func reviewRemoval(entry: String, environment: String, key: String, side: String) async -> KeychainError? {
 		guard let projectID else { return nil }
+		let session = session
 		switch await actions.reviewRemoval(projectID, entry, environment, key, side) {
 		case .success(let review):
+			// Locking, or a page that moved to another project, withdraws it.
+			guard session == self.session, projectID == self.projectID else { return nil }
 			removalReview = RemovalReview(
 				id: removalReview?.id ?? UUID(), projectID: projectID, review: review, entry: entry, key: key,
 				environment: environment, side: side, selection: Set(review.defaultSelection))
@@ -568,25 +704,19 @@ final class VaultLocalHistory {
 	/// History page is filtered to.
 	func summary(of projectID: String) async -> Result<Summary, KeychainError> {
 		await collectOutcomes()
-		let state: VaultHistoryState
-		switch await actions.state(projectID) {
-		case .success(let read): state = read
-		case .failure(let error): return .failure(error)
+		return await actions.overview(projectID, HistoryEngine.Filter(limit: 0)).map { overview in
+			Summary(state: overview.state, timeline: overview.state.history == "off" ? nil : overview.timeline)
 		}
-		guard state.history != "off" else { return .success(Summary(state: state, timeline: nil)) }
-		return await actions.timeline(projectID, HistoryEngine.Filter(limit: 0)).map { Summary(state: state, timeline: $0) }
 	}
 
-	/// A side of an entry's change, once the entry is revealed.
-	func revealedValue(entry: String, environment: String, key: String, side: String) -> String? {
-		guard let revealed = revealed[entry], let changed = entries.first(where: { $0.id == entry }),
+	/// Where a key's change sits in an entry, by the environment's and the
+	/// key's names in it.
+	func side(entry: String, environment: String, key: String, side: String) -> Side? {
+		guard let changed = self.entry(entry),
 			let environmentIndex = changed.environments.firstIndex(where: { $0.name == environment }),
-			let keyIndex = changed.environments[environmentIndex].keys?.firstIndex(where: { $0.key == key }),
-			revealed.environments.indices.contains(environmentIndex),
-			revealed.environments[environmentIndex].indices.contains(keyIndex)
+			let keyIndex = changed.environments[environmentIndex].keys?.firstIndex(where: { $0.key == key })
 		else { return nil }
-		let sides = revealed.environments[environmentIndex][keyIndex]
-		return side == "before" ? sides.before : sides.after
+		return Side(entry: entry, environment: environmentIndex, key: keyIndex, side: side)
 	}
 
 	private static func text(_ blobs: HistoryEngine.Blobs, _ index: Int?) -> String? {

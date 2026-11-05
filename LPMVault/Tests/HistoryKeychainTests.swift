@@ -145,7 +145,7 @@ struct HistoryKeychainTests {
 			return
 		}
 		let environments = try service.historyRolledBackEnvironmentsResult(
-			vaultId: vaultId, target: target, fingerprint: plan.fingerprint, skipped: [], keepEmpty: []).get()
+			vaultId: vaultId, target: target, fingerprint: plan.fingerprint, skipped: [], keepEmpty: []).get().environments
 		#expect(environments == ["default": ["A": "1"]])
 	}
 
@@ -235,6 +235,87 @@ struct HistoryKeychainTests {
 		#expect(inventory.companion.excluded.isEmpty)
 		try service.setHistoryEnabledResult(vaultId: vaultId, enabled: false).get()
 		#expect(try service.backupInventoryResult().get().companion.withNewerData.isEmpty, "history off is a setting, not data")
+	}
+
+	@Test("a change to more keys than a request may carry blobs is revealed and rolled back whole")
+	func largeChangesRevealAndRollBack() throws {
+		let (service, _, _) = makeService()
+		let first = Dictionary(uniqueKeysWithValues: (0..<70).map { ("K\($0)", "one-\($0)") })
+		guard case .success = service.createEnvironments(
+			vaultId: vaultId, projectName: "Project", projectPath: "", environments: ["default": first], source: VaultHistorySource(.set))
+		else { throw KeychainError.encodingFailed }
+		var second = first
+		second["K0"] = "two-0"
+		guard case .success = service.applyVaultTransaction(
+			project: .update(vaultId: vaultId, environments: ["default": second], source: VaultHistorySource(.editKey)), data: [])
+		else { throw KeychainError.encodingFailed }
+		let created = try #require(try entries(service).last)
+		let revealed = try service.historyRevealResult(vaultId: vaultId, ids: [created.id]).get()
+		#expect(revealed.response.first?.values?.first?.count == 70)
+
+		let edit = try #require(try entries(service).first)
+		let target = HistoryEngine.RollbackTarget.key("K0", environment: "default", entry: edit.id)
+		let plan = try service.historyRollbackPlanResult(vaultId: vaultId, target: target).get().response
+		let environments = try service.historyRolledBackEnvironmentsResult(
+			vaultId: vaultId, target: target, fingerprint: plan.fingerprint, skipped: [], keepEmpty: []).get().environments
+		#expect(environments == ["default": first])
+	}
+
+	@Test("a rollback reviewed while history was supported is refused once the marker says a newer version keeps it")
+	func rollbackRefusedOnceHistoryIsUnsupported() throws {
+		let (service, backend, name) = try edited()
+		let edit = try #require(try entries(service).first)
+		let target = HistoryEngine.RollbackTarget.undo(entry: edit.id, only: nil)
+		let plan = try service.historyRollbackPlanResult(vaultId: vaultId, target: target).get().response
+		let markerAccount = try CompanionEngine.markerAccount(vaultId: vaultId)
+		let marker = try #require(try backend.read(service: name, account: markerAccount))
+		var json = try #require(try JSONSerialization.jsonObject(with: marker) as? [String: Any])
+		var features = try #require(json["features"] as? [String: Any])
+		var history = try #require(features["history"] as? [String: Any])
+		history["version"] = 2
+		features["history"] = history
+		json["features"] = features
+		try backend.write(service: name, account: markerAccount, data: try JSONSerialization.data(withJSONObject: json))
+		#expect(try service.historyStateResult(vaultId: vaultId).get().history == "unsupported")
+		guard case .failure = service.historyRolledBackEnvironmentsResult(
+			vaultId: vaultId, target: target, fingerprint: plan.fingerprint, skipped: [], keepEmpty: [])
+		else {
+			Issue.record("history this version doesn't support can't roll values back")
+			return
+		}
+	}
+
+	@Test("undoing an environment rename records a rename back, so the environment's history stays one line")
+	func undoingARenameRecordsARename() async throws {
+		let (service, _, _) = makeService()
+		guard case .success = service.createEnvironments(
+			vaultId: vaultId, projectName: "Project", projectPath: "", environments: ["production": ["A": "1"]],
+			source: VaultHistorySource(.set))
+		else { throw KeychainError.encodingFailed }
+		guard case .success = service.applyVaultTransaction(
+			project: .update(vaultId: vaultId, environments: ["live": ["A": "1"]],
+				source: VaultHistorySource(.renameEnvironment, renames: [.environment(from: "production", to: "live")])),
+			data: [])
+		else { throw KeychainError.encodingFailed }
+		let coordinator = VaultPersistenceCoordinator(service: service)
+		let rename = try #require(try entries(service).first)
+		let target = HistoryEngine.RollbackTarget.undo(entry: rename.id, only: nil)
+		let plan = try await coordinator.historyRollbackPlan(vaultId: vaultId, target: target).get().response
+		guard case .success = await coordinator.mutateProject(
+			projectId: vaultId, expectedName: "Project", expectedPath: "",
+			mutation: .historyRollback(
+				target: target, plan: plan, skipped: [], keepEmpty: [],
+				source: VaultHistorySource(.undo, detail: .init(related: plan.point.related))))
+		else {
+			Issue.record("the undo was refused")
+			return
+		}
+		let undo = try #require(try entries(service).first)
+		#expect(undo.action == "undo")
+		#expect(undo.environments.map(\.name) == ["production"])
+		#expect(undo.environments.first?.renamedFrom == "live")
+		let timeline = try #require(try service.historyTimelineResult(vaultId: vaultId, filter: nil).get())
+		#expect(timeline.environments.allSatisfy { $0.deletedAt == nil }, "\(timeline.environments)")
 	}
 
 	@Test("a restore merge reviewed against canonically equivalent values that differ is refused")

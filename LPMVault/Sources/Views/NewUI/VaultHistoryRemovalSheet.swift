@@ -7,6 +7,7 @@ struct VaultHistoryRemovalSheet: View {
 	let store: VaultStore
 	let project: VaultProject
 	@Environment(\.vaultContentObscured) private var obscured
+	@Environment(\.vaultClock) private var clock
 	@State private var shows = false
 	@State private var working = false
 	@State private var failure: Failure?
@@ -17,7 +18,7 @@ struct VaultHistoryRemovalSheet: View {
 	}
 
 	private var history: VaultLocalHistory { store.history }
-	private var text: VaultHistoryText { VaultHistoryText(now: Date()) }
+	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
 
 	var body: some View {
 		if let review = history.removalReview {
@@ -93,10 +94,9 @@ struct VaultHistoryRemovalSheet: View {
 	}
 
 	private func subject(_ review: VaultLocalHistory.RemovalReview) -> some View {
-		let entry = history.entries.first { $0.id == review.entry }
-		let value = shows && !obscured
-			? history.revealedValue(entry: review.entry, environment: review.environment, key: review.key, side: review.side)
-			: nil
+		let entry = history.entry(review.entry)
+		let side = history.side(entry: review.entry, environment: review.environment, key: review.key, side: review.side)
+		let value = shows && !obscured ? side.flatMap(history.value(of:)) : nil
 		return VStack(alignment: .leading, spacing: 10) {
 			HStack(spacing: 8) {
 				Text(review.key)

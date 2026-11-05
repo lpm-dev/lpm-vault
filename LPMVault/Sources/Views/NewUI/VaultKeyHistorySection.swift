@@ -10,25 +10,30 @@ struct VaultKeyHistorySection: View {
 
 	@State private var changes: Changes = .reading
 	@State private var failure: String?
+	@Environment(\.vaultClock) private var clock
 
 	private enum Changes: Equatable {
 		case reading
-		case read([HistoryEngine.Entry])
+		/// Each environment's newest changes to the key, environments in the
+		/// project's order.
+		case read([Group])
+		case off
 		case unavailable
 	}
 
-	/// What the section reads again on: the project, the key, and its values.
+	/// What the section reads again on: the project, the key, its values, and
+	/// the environments' names.
 	private struct Input: Equatable {
 		let projectID: String
 		let key: String
+		let environments: [String]
 		let values: [String: ExactText]
 	}
 
 	private static let perEnvironment = 3
-	private static let readLimit = 40
 
 	private var history: VaultLocalHistory { store.history }
-	private var text: VaultHistoryText { VaultHistoryText(now: Date()) }
+	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 10) {
@@ -59,7 +64,7 @@ struct VaultKeyHistorySection: View {
 
 	private var input: Input {
 		Input(
-			projectID: project.id, key: key,
+			projectID: project.id, key: key, environments: store.orderedEnvironmentNames(for: project),
 			values: project.environments.compactMapValues { $0[key].map(ExactText.init) })
 	}
 
@@ -68,73 +73,71 @@ struct VaultKeyHistorySection: View {
 		switch changes {
 		case .reading:
 			ProgressView().controlSize(.small).accessibilityLabel("Reading the history of \(key)")
+		case .off:
+			Text("Local history is off for this project.")
+				.font(.system(size: 12))
+				.foregroundStyle(VaultPalette.textTertiary)
 		case .unavailable:
 			Text("Local history can’t be read right now.")
 				.font(.system(size: 12))
 				.foregroundStyle(VaultPalette.textTertiary)
-		case .read(let entries) where entries.isEmpty:
+		case .read(let groups) where groups.isEmpty:
 			Text("No changes to \(key) are kept on this Mac yet.")
 				.font(.system(size: 12))
 				.foregroundStyle(VaultPalette.textTertiary)
 				.fixedSize(horizontal: false, vertical: true)
-		case .read(let entries):
+		case .read(let groups):
 			let ordered = store.orderedEnvironmentNames(for: project)
-			ForEach(groups(entries, ordered: ordered), id: \.name) { group in
+			ForEach(groups, id: \.environment) { group in
 				VStack(alignment: .leading, spacing: 4) {
 					HStack(spacing: 6) {
-						VaultEnvSwatch(color: VaultHistoryEnvironmentChip(group.name, in: ordered).color, size: 7)
-						Text(group.name)
+						VaultEnvSwatch(color: VaultHistoryEnvironmentChip(group.environment, in: ordered).color, size: 7)
+						Text(group.environment)
 							.font(.system(size: 12, weight: .semibold))
 							.foregroundStyle(VaultPalette.textPrimary)
 					}
 					.accessibilityElement(children: .combine)
 					ForEach(group.changes, id: \.entry.id) { change in
-						changeRow(change, environment: group.name, exists: ordered.contains(group.name))
+						changeRow(change, environment: group.environment)
 					}
 				}
 			}
 		}
 	}
 
-	private struct Change {
+	struct Change: Equatable {
 		let entry: HistoryEngine.Entry
-		let keyChange: HistoryEngine.KeyChange
+		/// The key's change in the entry, nil when the entry kept no keys.
+		let keyChange: HistoryEngine.KeyChange?
 	}
 
-	private struct Group {
-		let name: String
-		var changes: [Change]
+	struct Group: Equatable {
+		/// The environment's name now.
+		let environment: String
+		let changes: [Change]
 	}
 
-	/// Each environment's newest changes to the key, under every name it had,
-	/// environments in the project's order, then any that are gone.
-	private func groups(_ entries: [HistoryEngine.Entry], ordered: [String]) -> [Group] {
-		var groups: [String: Group] = [:]
-		var order: [String] = []
-		// Newest first, so a rename adds the name the key had before it.
-		var names: Set<String> = [key]
-		for entry in entries {
-			var earlier: [String] = []
-			for environment in entry.environments {
-				guard let change = environment.keys?.first(where: { names.contains($0.key) }) else { continue }
-				if let from = change.renamedFrom { earlier.append(from) }
-				if groups[environment.name] == nil {
-					groups[environment.name] = Group(name: environment.name, changes: [])
-					order.append(environment.name)
-				}
-				if groups[environment.name]!.changes.count < Self.perEnvironment {
-					groups[environment.name]!.changes.append(Change(entry: entry, keyChange: change))
-				}
+	/// Each environment's changes to the key as the engine matched them,
+	/// newest first, with the key's change in each: within one environment's
+	/// changes, a rename names the environment and the key as they were before it.
+	static func groups(_ changes: [String: [HistoryEngine.Entry]], key: String, environments: [String], limit: Int) -> [Group] {
+		environments.compactMap { environment in
+			guard let entries = changes[environment], !entries.isEmpty else { return nil }
+			var environmentName = environment
+			var keyName = key
+			var found: [Change] = []
+			for entry in entries {
+				let changed = entry.environments.first { $0.name == environmentName }
+				let keyChange = changed?.keys?.first { $0.key == keyName }
+				if found.count < limit { found.append(Change(entry: entry, keyChange: keyChange)) }
+				if let from = keyChange?.renamedFrom { keyName = from }
+				if let from = changed?.renamedFrom { environmentName = from }
 			}
-			names.formUnion(earlier)
+			return Group(environment: environment, changes: found)
 		}
-		let rank = Dictionary(ordered.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
-		return order.enumerated()
-			.sorted { (rank[$0.element] ?? .max, $0.offset) < (rank[$1.element] ?? .max, $1.offset) }
-			.compactMap { groups[$0.element] }
 	}
 
-	private func changeRow(_ change: Change, environment: String, exists: Bool) -> some View {
+	private func changeRow(_ change: Change, environment: String) -> some View {
 		let badge = VaultHistoryText.badge(change.entry)
 		let moment = text.moment(VaultHistoryText.date(change.entry.time))
 		return HStack(spacing: 6) {
@@ -150,35 +153,38 @@ struct VaultKeyHistorySection: View {
 				.truncationMode(.tail)
 				.layoutPriority(-1)
 			Spacer(minLength: 4)
-			if exists {
-				Button("Roll Back…") {
-					Task { await rollBack(change, environment: environment) }
-				}
-				.buttonStyle(.plain)
-				.font(.system(size: 11.5, weight: .semibold))
-				.foregroundStyle(VaultPalette.accentForeground)
-				.fixedSize()
-				.vaultPointingHand()
-				.help("Roll \(key) in \(environment) back to its value before this change")
-				.accessibilityLabel("Roll Back \(key) in \(environment) to its value before \(moment)")
+			Button("Roll Back…") {
+				Task { await rollBack(change, environment: environment) }
 			}
+			.buttonStyle(.plain)
+			.font(.system(size: 11.5, weight: .semibold))
+			.foregroundStyle(VaultPalette.accentForeground)
+			.fixedSize()
+			.vaultPointingHand()
+			.help("Roll \(key) in \(environment) back to its value before this change")
+			.accessibilityLabel("Roll Back… \(key) in \(environment) to its value before \(moment)")
 		}
 		.accessibilityElement(children: .contain)
 	}
 
-	private static func kind(_ change: HistoryEngine.KeyChange) -> String {
-		switch change.change {
+	private static func kind(_ change: HistoryEngine.KeyChange?) -> String {
+		switch change?.change {
 		case "added": "Added"
 		case "removed": "Removed"
-		case "renamed": change.renamedFrom.map { "Renamed from \($0)" } ?? "Renamed"
+		case "renamed": change?.renamedFrom.map { "Renamed from \($0)" } ?? "Renamed"
 		default: "Changed"
 		}
 	}
 
 	private func read() async {
-		switch await history.changes(to: key, in: project.id, limit: Self.readLimit) {
-		case .success(let entries): changes = .read(entries)
-		case .failure: changes = .unavailable
+		let environments = store.orderedEnvironmentNames(for: project)
+		switch await history.changes(to: key, in: project.id, environments: environments, limit: Self.perEnvironment) {
+		case .success(let changes):
+			self.changes = .read(Self.groups(changes, key: key, environments: environments, limit: Self.perEnvironment))
+		case .failure(.history(code: "history.off", _)):
+			changes = .off
+		case .failure:
+			changes = .unavailable
 		}
 	}
 

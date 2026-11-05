@@ -449,12 +449,17 @@ struct VaultSidebarView: View {
 		let selected = !store.isShowingAccountPage && mode == .history
 		let history = store.history
 		let showsThisProject = history.projectID == project.id
-		let warns = showsThisProject && (
-			history.notRecorded[project.id] != nil
-			|| ["unsupported", "removing", "both"].contains(history.state?.history ?? "")
-			|| history.state?.damage.isEmpty == false
-			|| (history.timeline?.unreadableParts ?? 0) > 0
-			|| history.timeline?.damagedTail == true)
+		// What's known of every project: why its last change wasn't recorded,
+		// and what its listing shows; the page adds what reading found.
+		let listed = store.projectCompanionStates[project.id]
+		let warns = history.notRecorded[project.id] != nil
+			|| listed?.features.contains { $0.name == "history" && !$0.supported } == true
+			|| listed?.damage.contains { $0.repair?.feature == "history" } == true
+			|| (showsThisProject && (
+				["unsupported", "removing", "both"].contains(history.state?.history ?? "")
+				|| history.state?.damage.isEmpty == false
+				|| (history.timeline?.unreadableParts ?? 0) > 0
+				|| history.timeline?.damagedTail == true))
 		return Button {
 			store.openProject(id: project.id)
 			mode = .history

@@ -133,6 +133,45 @@ struct VaultHistoryTextTests {
 		#expect(text.stateLine(nil, notRecorded: nil, readFailed: true)?.retries == true)
 	}
 
+	@Test("edge wording: an outside change across days, an undo's recreate and push, an unknown key, an unknown source")
+	func edgeWording() throws {
+		let overnight = try entry(
+			action: "outside", source: "outside", actor: "outside", time: Self.time(2026, 11, 4, 8, 5),
+			extra: #", "since": \#(Self.time(2026, 11, 3, 22, 10))"#)
+		#expect(text.describe(overnight) == "Changed outside local history · Yesterday, \(clock(22, 10)) to \(clock(8, 5))")
+
+		let plan = try JSONDecoder().decode(HistoryEngine.Plan.self, from: Data("""
+			{"kind": "undo", "point": {"entry": "e", "side": "after", "time": 0}, "generation": 1, "fingerprint": "f",
+			 "environments": [\(Self.environment(current: nil, target: "local", rows: ["added"], recreates: true))]}
+			""".utf8))
+		#expect(text.environmentNote(plan.environments[0], deletedAt: nil, undoes: true) == "local doesn’t exist now. Undoing recreates it with 1 key.")
+
+		let pulled = text.pulled(.init(remote: .org("acme"), version: 1, time: Self.time(2026, 11, 3, 14, 2)), key: "A", undoes: true)
+		#expect(pulled.contains("If you push this undo,") && !pulled.contains("rollback"))
+
+		let unknown = try review(.key("API_KEY", environment: "production", entry: "e"), kind: "key", environments: "[\(Self.environment(current: "production", target: "production", rows: ["unknown"]))]")
+		#expect(text.rollbackDetail(unknown, entry: nil) == "Its value from before that change isn’t known, so it keeps its value now.")
+
+		#expect(VaultHistoryText.badge(try entry(action: "set", source: "future")).text == "Other")
+		#expect(!VaultHistoryText.badge(try entry(action: "set", source: "future")).warns)
+	}
+
+	@Test("the key inspector finds the key's change in each entry under the names it had then, environment by environment")
+	@MainActor
+	func keyHistoryFollowsRenamesPerEnvironment() throws {
+		let renamedKey = try entry(action: "renameKey", time: Self.time(2026, 11, 4, 12, 0), environments:
+			#"[{"name": "production", "change": "unchanged", "keys": [{"key": "TOKEN", "change": "renamed", "before": "value", "after": "value", "renamedFrom": "OLD"}]}]"#)
+		let renamedEnvironment = try entry(action: "renameEnvironment", time: Self.time(2026, 11, 3, 12, 0), environments:
+			#"[{"name": "production", "change": "renamed", "renamedFrom": "prod", "keys": []}]"#)
+		let setInProd = try entry(action: "set", time: Self.time(2026, 11, 2, 12, 0), environments:
+			#"[{"name": "prod", "change": "unchanged", "keys": [{"key": "OLD", "change": "changed", "before": "value", "after": "value"}]}, {"name": "staging", "change": "unchanged", "keys": [{"key": "OLD", "change": "changed", "before": "value", "after": "value"}]}]"#)
+		let groups = VaultKeyHistorySection.groups(
+			["production": [renamedKey, renamedEnvironment, setInProd]], key: "TOKEN", environments: ["production", "staging"], limit: 3)
+		#expect(groups.map(\.environment) == ["production"], "staging's OLD isn't this key: the engine didn't match it there")
+		#expect(groups.first?.changes.map { $0.keyChange?.change } == ["renamed", nil, "changed"])
+		#expect(groups.first?.changes.last?.keyChange?.key == "OLD")
+	}
+
 	@Test("a crowded Mac's note gives the record count as the locale writes numbers")
 	func crowdedNote() {
 		#expect(text.crowded(4_120) == "This Mac holds a lot of LPM data (4,120 records), so LPM keeps less local history for each project.")

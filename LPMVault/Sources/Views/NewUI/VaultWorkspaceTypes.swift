@@ -353,6 +353,16 @@ struct VaultFeedbackTimer: Sendable {
 extension EnvironmentValues {
   @Entry var vaultCopyFeedbackTimer = VaultFeedbackTimer.copyConfirmation
   @Entry var vaultImportUndoTimer = VaultFeedbackTimer.importUndo
+  /// The time history's pages say things relative to, such as "Today".
+  @Entry var vaultClock = VaultClock.system
+}
+
+/// The time now, which a test sets, so what's "Today" doesn't depend on
+/// when it runs.
+struct VaultClock: Sendable {
+  let now: @Sendable () -> Date
+
+  static let system = VaultClock { Date() }
 }
 
 /// Raw text's edit of the selected environment, as the content view shows it.

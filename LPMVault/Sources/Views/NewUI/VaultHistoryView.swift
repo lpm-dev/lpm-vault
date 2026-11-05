@@ -5,11 +5,12 @@ struct VaultHistoryView: View {
 	let store: VaultStore
 	let project: VaultProject
 	@Environment(\.vaultContentObscured) private var obscured
+	@Environment(\.vaultClock) private var clock
 	@State private var keySearch = ""
 	@State private var searchTask: Task<Void, Never>?
 
 	private var history: VaultLocalHistory { store.history }
-	private var text: VaultHistoryText { VaultHistoryText(now: Date()) }
+	private var text: VaultHistoryText { VaultHistoryText(now: clock.now()) }
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -21,9 +22,6 @@ struct VaultHistoryView: View {
 			banners
 			content
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
-				.overlay(alignment: .bottom) {
-					rollbackToast.padding(.bottom, 14)
-				}
 			if let timeline = history.timeline, history.state?.history != "off" {
 				VaultHairline()
 				Text(text.status(timeline))
@@ -36,6 +34,21 @@ struct VaultHistoryView: View {
 		}
 		.background(VaultPalette.content)
 		.task(id: project.id) { await history.open(project.id) }
+		// A request to show this project again, filtered: a request for
+		// another project changes `project`, which the task above follows.
+		.onChange(of: history.showRequest) { _, _ in
+			searchTask?.cancel()
+			if history.projectID == project.id { Task { await history.open(project.id) } }
+		}
+		// The field follows the filter when opening a project or a request to
+		// show one sets it.
+		.onChange(of: history.filter.keyContains) { _, value in
+			if keySearch != value { keySearch = value }
+		}
+		// A pull, a sync or the LPM CLI changed the values while the page shows.
+		.onChange(of: project.environments) { _, _ in
+			if history.projectID == project.id { Task { await history.reload() } }
+		}
 		.onChange(of: obscured) { _, covered in if covered { history.hideRevealed() } }
 		.onDisappear { searchTask?.cancel() }
 	}
@@ -145,9 +158,11 @@ struct VaultHistoryView: View {
 	/// Reads history again once typing pauses, not on every keystroke.
 	private func search(_ value: String) {
 		searchTask?.cancel()
+		guard value != history.filter.keyContains else { return }
+		let projectID = project.id
 		searchTask = Task {
 			try? await Task.sleep(for: .milliseconds(250))
-			guard !Task.isCancelled else { return }
+			guard !Task.isCancelled, history.projectID == projectID else { return }
 			history.filter.keyContains = value
 			await history.reload()
 		}
@@ -191,66 +206,6 @@ struct VaultHistoryView: View {
 		}
 	}
 
-	// MARK: - Undo
-
-	@ViewBuilder
-	private var rollbackToast: some View {
-		if let applied = history.applied, applied.projectID == project.id {
-			VaultToast(hasButton: applied.undo == .available || applied.undo == .undoing) {
-				switch applied.undo {
-				case .available, .undoing:
-					Image(systemName: "checkmark")
-						.font(.system(size: 11, weight: .bold))
-						.foregroundStyle(VaultPalette.toastConfirmation)
-						.accessibilityHidden(true)
-					Text(applied.keys == 0
-						? (applied.isUndo ? "Undid the change" : "Rolled back")
-						: "\(applied.isUndo ? "Undid" : "Rolled back") \(applied.keys.counted("key"))")
-					Button {
-						Task { await history.undoApplied() }
-					} label: {
-						Label(applied.undo == .undoing ? "Undoing…" : "Undo", systemImage: "arrow.uturn.backward")
-							.font(.system(size: 12, weight: .semibold))
-							.foregroundStyle(VaultPalette.toastAction)
-					}
-					.buttonStyle(.plain)
-					.vaultPointingHand()
-					.disabled(applied.undo == .undoing)
-					.help(applied.isUndo ? "Put back what the undo replaced" : "Put back what the rollback replaced")
-					Rectangle()
-						.fill(VaultPalette.toastDivider)
-						.frame(width: 1, height: 16)
-						.accessibilityHidden(true)
-					TimelineView(.periodic(from: applied.savedAt, by: 1)) { context in
-						let left = max(0, VaultFeedbackTimer.undoSeconds - Int(context.date.timeIntervalSince(applied.savedAt)))
-						Text("\(left)s")
-							.font(VaultTypography.tabular(11))
-							.foregroundStyle(VaultPalette.toastSecondaryText)
-							.accessibilityLabel("\(left) seconds left to undo")
-					}
-				case .undone:
-					Image(systemName: "arrow.uturn.backward")
-						.font(.system(size: 11, weight: .bold))
-						.foregroundStyle(VaultPalette.toastConfirmation)
-						.accessibilityHidden(true)
-					Text("Put the values back as they were")
-				case .reviewing:
-					Image(systemName: "exclamationmark.triangle.fill")
-						.font(.system(size: 11, weight: .bold))
-						.foregroundStyle(VaultPalette.orange)
-						.accessibilityHidden(true)
-					Text("Not everything can be put back exactly, so review the undo")
-				case .failed(let message):
-					Image(systemName: "exclamationmark.triangle.fill")
-						.font(.system(size: 11, weight: .bold))
-						.foregroundStyle(VaultPalette.orange)
-						.accessibilityHidden(true)
-					Text(message)
-				}
-			}
-		}
-	}
-
 	private func banner(_ title: String, detail: String?, action: (String, () -> Void)?) -> some View {
 		HStack(alignment: .top, spacing: 10) {
 			Image(systemName: "exclamationmark.triangle")
@@ -268,6 +223,8 @@ struct VaultHistoryView: View {
 				}
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
+			// The words read as one element, and the button stays its own control.
+			.accessibilityElement(children: .combine)
 			if let action {
 				Button(action.0, action: action.1)
 					.controlSize(.small)
@@ -276,7 +233,7 @@ struct VaultHistoryView: View {
 		.padding(.horizontal, 20)
 		.padding(.vertical, 10)
 		.background(VaultPalette.orangeTint)
-		.accessibilityElement(children: .combine)
+		.accessibilityElement(children: .contain)
 	}
 
 	// MARK: - Content
@@ -296,8 +253,10 @@ struct VaultHistoryView: View {
 					"Local history is off for \(project.name)",
 					detail: "Turn it on to keep a record of value changes on this Mac. It starts with the next change.",
 					action: ("Turn On", { Task { _ = await history.setEnabled(true, projectID: project.id) } }))
+			} else if history.timeline == nil, let paused = pausedMessage {
+				empty("Nothing to show while history is paused", detail: paused, action: nil)
 			} else if let timeline = history.timeline, !timeline.rows.isEmpty {
-				timelineList(timeline)
+				timelineList
 			} else if history.timeline != nil {
 				empty("No changes match", detail: "Try another environment, key or source.", action: nil)
 			} else {
@@ -334,17 +293,17 @@ struct VaultHistoryView: View {
 		.padding(24)
 	}
 
-	private func timelineList(_ timeline: HistoryEngine.Timeline) -> some View {
+	private var timelineList: some View {
 		ScrollView {
 			LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-				ForEach(days(timeline.rows), id: \.title) { day in
+				ForEach(history.days) { day in
 					Section {
 						ForEach(day.rows) { row in
 							rowView(row)
 							VaultHairline()
 						}
 					} header: {
-						Text(day.title.uppercased(with: Locale.current))
+						Text(text.day(day.start).uppercased(with: Locale.current))
 							.font(VaultTypography.sectionLabel)
 							.tracking(0.6)
 							.foregroundStyle(VaultPalette.textTertiary)
@@ -359,37 +318,8 @@ struct VaultHistoryView: View {
 		}
 	}
 
-	private struct Row: Identifiable {
-		let id: String
-		let row: HistoryEngine.Row
-	}
-
-	private struct Day {
-		let title: String
-		var rows: [Row]
-	}
-
-	private func days(_ rows: [HistoryEngine.Row]) -> [Day] {
-		var days: [Day] = []
-		for (index, row) in rows.enumerated() {
-			let time: Int64
-			let id: String
-			switch row {
-			case .entry(let entry): (time, id) = (entry.time, entry.id)
-			case .unreadable(let part, let after, let before): (time, id) = (before ?? after ?? 0, "unreadable-\(part)-\(index)")
-			}
-			let title = text.day(VaultHistoryText.date(time))
-			if days.last?.title == title {
-				days[days.count - 1].rows.append(Row(id: id, row: row))
-			} else {
-				days.append(Day(title: title, rows: [Row(id: id, row: row)]))
-			}
-		}
-		return days
-	}
-
 	@ViewBuilder
-	private func rowView(_ row: Row) -> some View {
+	private func rowView(_ row: VaultLocalHistory.Day.Row) -> some View {
 		switch row.row {
 		case .entry(let entry):
 			entryRow(entry)
@@ -415,7 +345,7 @@ struct VaultHistoryView: View {
 	private func entryRow(_ entry: HistoryEngine.Entry) -> some View {
 		let selected = history.selectedEntryID == entry.id
 		let badge = VaultHistoryText.badge(entry)
-		let description = text.describe(entry) { id in history.entries.first { $0.id == id } }
+		let description = text.describe(entry) { id in history.entry(id) }
 		let keys = VaultHistoryText.keys(entry)
 		let shownKeys = Array(keys.prefix(3))
 		let time = text.clock(VaultHistoryText.date(entry.time))

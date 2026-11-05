@@ -14,6 +14,7 @@ struct VaultProjectSettingsView: View {
 	let onDelete: () -> Void
 
 	@Environment(\.vaultContentObscured) private var isObscured
+	@Environment(\.vaultClock) private var clock
 	@FocusState private var nameFocused: Bool
 	@AccessibilityFocusState private var titleFocused: Bool
 	@State private var showsIconPicker = false
@@ -286,7 +287,7 @@ struct VaultProjectSettingsView: View {
 	}
 
 	private var historyRow: some View {
-		let line = VaultHistoryText(now: Date()).stateLine(
+		let line = VaultHistoryText(now: clock.now()).stateLine(
 			historySummary, notRecorded: store.history.notRecorded[project.id]?.reason, readFailed: historyReadFailed)
 		let state = historySummary?.state.history
 		return row("Local history") {
@@ -306,7 +307,7 @@ struct VaultProjectSettingsView: View {
 					}
 				}
 				if let crowded = store.history.crowded, state != "off" {
-					Text(VaultHistoryText(now: Date()).crowded(crowded))
+					Text(VaultHistoryText(now: clock.now()).crowded(crowded))
 						.foregroundStyle(VaultPalette.orangeTintText)
 				}
 				if let historyFailure {

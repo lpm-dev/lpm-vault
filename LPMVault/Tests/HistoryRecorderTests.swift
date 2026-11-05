@@ -12,6 +12,8 @@ private final class FakeHistoryStorage: HistoryStorage {
 	private(set) var reads: [String] = []
 	private(set) var replaced: [String] = []
 	private(set) var commits = 0
+	private(set) var listings = 0
+	private(set) var approvalChecks = 0
 	let vaultId: String
 	let markerAccount: String
 
@@ -27,9 +29,15 @@ private final class FakeHistoryStorage: HistoryStorage {
 		return records[account]
 	}
 
-	func historyNames() throws -> [String] { Array(records.keys) + extraNames }
+	func historyNames() throws -> [String] {
+		listings += 1
+		return Array(records.keys) + extraNames
+	}
 
-	func historyApproval(vaultId: String) throws -> HistoryEngine.Approval? { approval }
+	func historyApproval(vaultId: String) throws -> HistoryEngine.Approval? {
+		approvalChecks += 1
+		return approval
+	}
 
 	func historyReplace(_ account: String, with data: Data) throws {
 		replaced.append(account)
@@ -59,6 +67,10 @@ private final class FakeHistoryStorage: HistoryStorage {
 
 	func historyTrimmable(own vaultId: String) throws -> [String] { [vaultId] }
 
+	func historyClaimedApproval(vaultId: String) throws -> HistoryEngine.Approval { approval ?? .automatic }
+
+	func historyWithoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T { try body() }
+
 	func historyRings() throws -> [String] { [vaultId] }
 
 	func historyRun(_ plan: CompanionEngine.Plan, vaultId: String) throws {
@@ -73,6 +85,8 @@ private final class FakeHistoryStorage: HistoryStorage {
 		reads = []
 		replaced = []
 		commits = 0
+		listings = 0
+		approvalChecks = 0
 	}
 }
 
@@ -130,6 +144,81 @@ struct HistoryRecorderTests {
 		}
 		#expect(entries.map(\.action) == ["editKey", "set"])
 		#expect(entries.allSatisfy { $0.actor == "app" })
+	}
+
+	@Test("removing a value from a ring of several parts reads each part once, however many the key rotation rewrites")
+	func removalReadsEachPartOnce() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let value = { (index: Int) in String(repeating: String(index % 10), count: 4096) }
+		var current = payload(["production": [:]])
+		for index in 0...12 {
+			let next = payload(["production": ["BIG": value(index)]])
+			_ = HistoryRecorder.record(storage, vaultId: vaultId, before: current, after: next, source: VaultHistorySource(.set))
+			current = next
+		}
+		storage.values = current
+		let headAccount = try HistoryRecorder.account("history-head", vaultId)
+		struct Head: Decodable { let parts: [Int] }
+		let parts = try JSONDecoder().decode(Head.self, from: try #require(storage.records[headAccount])).parts
+		#expect(parts.count >= 3, "\(parts)")
+		let partAccounts = Set(try parts.map { try HistoryRecorder.account("history", vaultId, part: $0) })
+		let newest = try #require(try HistoryOperations.timeline(storage, vaultId: vaultId, filter: nil)?.rows.first)
+		guard case .entry(let entry) = newest else {
+			Issue.record("expected an entry")
+			return
+		}
+		let review = try HistoryOperations.reviewRemoval(
+			storage, vaultId: vaultId, entry: entry.id, environment: "production", key: "BIG", side: "before")
+		storage.resetCounts()
+
+		try HistoryOperations.remove(storage, vaultId: vaultId, review: review, selection: review.defaultSelection)
+
+		let partReads = storage.reads.filter(partAccounts.contains)
+		#expect(partReads.count == parts.count, "each part once: \(partReads.count) reads of \(parts.count) parts")
+		#expect(Set(storage.replaced).isSuperset(of: partAccounts), "the rotation rewrites every part")
+	}
+
+	@Test("a change to no key before history exists asks no admission and no approval")
+	func changeWithoutKeysStartsNothing() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let outcome = HistoryRecorder.record(
+			storage, vaultId: vaultId,
+			before: payload(["production": [:]]), after: payload(["staging": [:]]),
+			source: VaultHistorySource(.renameEnvironment, renames: [.environment(from: "production", to: "staging")]))
+		#expect(outcome == .nothing)
+		#expect(storage.listings == 0 && storage.approvalChecks == 0, "listings \(storage.listings), approval checks \(storage.approvalChecks)")
+		#expect(storage.commits == 0)
+	}
+
+	@Test("reading history finishes a removal another operation started and left running")
+	func readingFinishesARunningRemoval() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let before = payload(["production": ["A": "one"]])
+		let after = payload(["production": ["A": "two"]])
+		_ = HistoryRecorder.record(storage, vaultId: vaultId, before: payload(["production": [:]]), after: before, source: VaultHistorySource(.set))
+		_ = HistoryRecorder.record(storage, vaultId: vaultId, before: before, after: after, source: VaultHistorySource(.set))
+		storage.values = after
+		guard case .entry(let edit)? = try HistoryOperations.timeline(storage, vaultId: vaultId, filter: nil)?.rows.first else {
+			Issue.record("expected an entry")
+			return
+		}
+		let review = try HistoryOperations.reviewRemoval(storage, vaultId: vaultId, entry: edit.id, environment: "production", key: "A", side: "before")
+		/// The history as stored, read without maintaining anything.
+		func asStored() throws -> HistoryEngine.Stored {
+			let head = try #require(storage.records[try HistoryRecorder.account("history-head", vaultId)])
+			let key = try #require(storage.records[try HistoryRecorder.account("key", vaultId)])
+			return try HistoryRecorder.stored(
+				storage, vaultId: vaultId, head: head.withUnsafeBytes { SecretBytes(copying: $0) },
+				key: key.withUnsafeBytes { SecretBytes(copying: $0) })
+		}
+		try storage.historyCommit(try HistoryEngine.startRemoval(
+			try asStored(), values: after.withUnsafeBytes { SecretBytes(copying: $0) }, review: review,
+			selection: review.defaultSelection, approval: .automatic))
+		#expect(try HistoryEngine.maintenance(try asStored(), step: .check(approval: .automatic)).needsFinishing)
+
+		_ = try HistoryOperations.timeline(storage, vaultId: vaultId, filter: nil)
+
+		#expect(try !HistoryEngine.maintenance(try asStored(), step: .check(approval: .automatic)).needsFinishing)
 	}
 
 	@Test("a write that changes nothing records nothing and reads nothing")

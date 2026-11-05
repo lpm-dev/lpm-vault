@@ -23,6 +23,9 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 	/// Durable changes left before the process "dies"; nil while it runs on.
 	private var mutationsBeforeCrash: Int?
 	private var mutationCount = 0
+	/// Inside `withoutApprovalPrompts`, where reading an item that enforces
+	/// approval fails, as macOS fails a read it isn't allowed to ask about.
+	private var promptsRefused = 0
 
 	func reads(of account: String) -> Int { lock.withLock { readCounts[account] ?? 0 } }
 	var deleted: [String] { lock.withLock { deletions } }
@@ -63,10 +66,19 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 	}
 
 	func read(service: String, account: String) throws -> Data? {
-		lock.withLock {
+		try lock.withLock {
 			readCounts[account, default: 0] += 1
+			if promptsRefused > 0, items[account] != nil, enforced[account] == .requireApproval {
+				throw KeychainStoreError.status(operation: "read", code: errSecInteractionNotAllowed)
+			}
 			return items[account]
 		}
+	}
+
+	func withoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T {
+		lock.withLock { promptsRefused += 1 }
+		defer { lock.withLock { promptsRefused -= 1 } }
+		return try body()
 	}
 
 	func write(service: String, account: String, data: Data) throws {
@@ -1635,6 +1647,80 @@ struct HistoryCompanionStorageTests {
 		else { throw KeychainError.encodingFailed }
 		#expect(backend.listings == 0)
 		#expect(service.takeHistoryOutcomes()[vault] == .recorded(entry: source.id, gap: false, crowded: nil))
+	}
+
+	@Test("the work after unlock lists the service once for companion maintenance and history's upkeep together")
+	func unlockMaintenanceListsOnce() async throws {
+		let (service, backend) = try makeHistoryService()
+		let coordinator = VaultPersistenceCoordinator(service: service)
+		backend.resetCounts()
+		let work = await coordinator.maintainAfterUnlock(raisingHistoryRings: false)
+		#expect((try? work.companion.get()) != nil && (try? work.history.get()) != nil)
+		#expect(backend.listings == 1)
+	}
+
+	@Test("turning approval on rotates the history key made while it was off, and every part follows the new key")
+	func approvalRotatesTheKey() throws {
+		let (service, backend) = try makeHistoryService()
+		let key = try recordName("key")
+		let made = try #require(backend.data(key))
+		_ = try service.setCliAccess(vaultId: vault, access: .requireApproval).get()
+		#expect(backend.data(key) != made, "a process that read the key while approval was off can't read what comes next")
+		try edit(service, to: "after")
+		guard case .recorded? = service.takeHistoryOutcomes()[vault] else {
+			Issue.record("history keeps recording under the new key")
+			return
+		}
+		let timeline = try #require(try service.historyTimelineResult(vaultId: vault, filter: nil).get())
+		#expect(timeline.readable == 2 && timeline.unreadableParts == 0)
+	}
+
+	@Test("a creation on a crowded Mac leaves alone a ring it could only read by asking for approval")
+	func ringNeedingApprovalIsNotTrimmed() throws {
+		let (service, backend) = try makeHistoryService()
+		let value = { (index: Int) in String(repeating: String(index % 10), count: 4096) }
+		for index in 1...12 { try edit(service, to: value(index)) }
+		let headAccount = try recordName("history-head")
+		struct Head: Decodable { let parts: [Int] }
+		let grown = try JSONDecoder().decode(Head.self, from: try #require(backend.data(headAccount))).parts
+		#expect(grown.count >= 3)
+		// Its values claim no approval, which makes it a candidate, but they
+		// and its head enforce it.
+		backend.store(vault, try #require(backend.data(vault)), access: .automatic, enforcing: .requireApproval)
+		backend.store(headAccount, try #require(backend.data(headAccount)), access: .requireApproval)
+		for account in try CompanionEngine.accountNames((0..<4_100).map { .init(role: .record, vaultId: "gone-\($0)", kind: "overrides", part: nil) }) {
+			backend.store(account, Data("x".utf8))
+		}
+		guard case .success = service.createEnvironments(
+			vaultId: "other", projectName: "Other", projectPath: "", environments: ["default": ["A": "1"]], source: VaultHistorySource(.set))
+		else { throw KeychainError.encodingFailed }
+		#expect(try JSONDecoder().decode(Head.self, from: try #require(backend.data(headAccount))).parts == grown)
+	}
+
+	@Test("a ring whose records contradict their approval is left alone, and the pass after unlock trims the others")
+	func damagedRingDoesntStopUpkeep() throws {
+		let (service, backend) = try makeHistoryService()
+		let value = { (index: Int) in String(repeating: String(index % 10), count: 4096) }
+		for index in 1...16 { try edit(service, to: value(index)) }
+		guard case .success = service.createEnvironments(
+			vaultId: "other", projectName: "Other", projectPath: "", environments: ["default": ["A": value(0)]], source: VaultHistorySource(.set))
+		else { throw KeychainError.encodingFailed }
+		for index in 1...12 {
+			guard case .success = service.applyVaultTransaction(
+				project: .update(vaultId: "other", environments: ["default": ["A": value(index)]], source: VaultHistorySource(.set)), data: [])
+			else { throw KeychainError.encodingFailed }
+		}
+		struct Head: Decodable { let parts: [Int] }
+		let otherHead = try recordName("history-head", vaultId: "other")
+		let otherParts = try JSONDecoder().decode(Head.self, from: try #require(backend.data(otherHead))).parts.count
+		#expect(otherParts >= 3)
+		backend.makeContradictory(try recordName("history-head"))
+		for account in try CompanionEngine.accountNames((0..<4_100).map { .init(role: .record, vaultId: "gone-\($0)", kind: "overrides", part: nil) }) {
+			backend.store(account, Data("x".utf8))
+		}
+		let upkeep = try service.historyUpkeepResult(raising: false).get()
+		#expect(upkeep.trimmed == otherParts - 2)
+		#expect(try JSONDecoder().decode(Head.self, from: try #require(backend.data(otherHead))).parts.count == 2)
 	}
 
 	@Test("a protected project's history record that's weak is protected before it's used")
