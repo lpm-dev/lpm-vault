@@ -35,6 +35,7 @@
 		16C4331A9241547A050CE20F /* LPMConfigJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9F299C0796F0A1335370EBB /* LPMConfigJSON.swift */; };
 		18D14FDF4E02AABB85B21335 /* GitHubClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA31CAE9BF2A0CCEE6F18C60 /* GitHubClientTests.swift */; };
 		19D89CB98C5DBE28ECF56875 /* Round4AuditRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DD9BE611F1BB7A4B5E38DE1 /* Round4AuditRegressionTests.swift */; };
+		1A80F7BC2053E8E9A4CD6BAC /* HistoryKeychainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C40F5ED02620800BC80EA8A /* HistoryKeychainTests.swift */; };
 		1AFF6F5E3F0F9E36B6643167 /* ValueSearchBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43161E12F852E8E59D5F3C64 /* ValueSearchBenchmarkTests.swift */; };
 		1B056271E3962D1199BDDB40 /* VaultRawTextDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2C68A33AA017623D0261817 /* VaultRawTextDraft.swift */; };
 		1B65DFA8F8C5EE52C99C8D2D /* CurrentContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD248A688D2DCFD4318032CF /* CurrentContractTests.swift */; };
@@ -370,6 +371,7 @@
 		09F3D97EC4B3C023F301406F /* BiometricService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiometricService.swift; sourceTree = "<group>"; };
 		0AFDC6704941C25B7510E429 /* VaultValueCharacterWarning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultValueCharacterWarning.swift; sourceTree = "<group>"; };
 		0C3CCFB224C65999D7D718F9 /* Waiting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Waiting.swift; sourceTree = "<group>"; };
+		0C40F5ED02620800BC80EA8A /* HistoryKeychainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryKeychainTests.swift; sourceTree = "<group>"; };
 		0C4BA60E4876BDA7818D1F5A /* ProjectConfigWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectConfigWatcher.swift; sourceTree = "<group>"; };
 		0C6AC2FB02EDCD85F6095DAE /* EnvSchemaCompositionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvSchemaCompositionTests.swift; sourceTree = "<group>"; };
 		0C8C6B96022C2B477B14D0DF /* CryptoInteropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CryptoInteropTests.swift; sourceTree = "<group>"; };
@@ -905,6 +907,7 @@
 				DA31CAE9BF2A0CCEE6F18C60 /* GitHubClientTests.swift */,
 				2309117ABCF624F8EE7FB041 /* GitHubPublishingTests.swift */,
 				82543E7F3B20691A1EE304BD /* HistoryEngineTests.swift */,
+				0C40F5ED02620800BC80EA8A /* HistoryKeychainTests.swift */,
 				B75F168BC4928F0CD348FBD6 /* HistoryRecorderTests.swift */,
 				B16B153E8EE58F5F2864EF77 /* KeychainServiceTests.swift */,
 				A075C7BA1C52515081F1A50F /* KeyInspectorInteractionTests.swift */,
@@ -1245,6 +1248,7 @@
 				18D14FDF4E02AABB85B21335 /* GitHubClientTests.swift in Sources */,
 				BD27DE813492BA8FD11E62F9 /* GitHubPublishingTests.swift in Sources */,
 				33CA0040BB80D66AF2F0F3A9 /* HistoryEngineTests.swift in Sources */,
+				1A80F7BC2053E8E9A4CD6BAC /* HistoryKeychainTests.swift in Sources */,
 				5273DF4EA6ABA7E0B4749379 /* HistoryRecorderTests.swift in Sources */,
 				8606B7CAFD64FF5A52433970 /* KeyInspectorInteractionTests.swift in Sources */,
 				B18071E270ACCC1AB6FEC2C7 /* KeySuggestionInteractionTests.swift in Sources */,

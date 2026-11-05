@@ -139,3 +139,15 @@ enum VaultKeyEditError: LocalizedError, Equatable, Sendable {
 		}
 	}
 }
+
+extension VaultKeyEdit {
+	/// What history records this edit as: a rename, in each environment that
+	/// held the key, or a change to its values.
+	var historySource: VaultHistorySource {
+		guard newKey != key else { return VaultHistorySource(.editKey) }
+		let renames = baseline.compactMap { environment, value in
+			value.map { _ in HistoryEngine.Rename.key(environment: environment, from: key, to: newKey) }
+		}.sorted { String(describing: $0) < String(describing: $1) }
+		return VaultHistorySource(.renameKey, renames: renames)
+	}
+}

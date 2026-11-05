@@ -221,8 +221,8 @@ struct KeychainServiceTests {
 	func backupInventory() throws {
 		let backend = KeychainServiceTestBackend()
 		let service = KeychainService(testingService: "backup-inventory", backend: backend)
-		#expect(succeeded(service.createEnvironments(vaultId: "listed", projectName: "Listed", projectPath: "/tmp/listed", environments: ["default": ["A": "1"]])))
-		#expect(succeeded(service.createEnvironments(vaultId: "removed", projectName: "Removed", projectPath: "", environments: ["staging": ["B": "2"]])))
+		#expect(succeeded(service.createEnvironments(vaultId: "listed", projectName: "Listed", projectPath: "/tmp/listed", environments: ["default": ["A": "1"]], source: VaultHistorySource(.set))))
+		#expect(succeeded(service.createEnvironments(vaultId: "removed", projectName: "Removed", projectPath: "", environments: ["staging": ["B": "2"]], source: VaultHistorySource(.set))))
 		#expect(try service.setCliAccess(vaultId: "listed", access: .requireApproval).get() == .requireApproval)
 		#expect(service.removeFromSidebar(vaultId: "removed"))
 		try backend.write(service: "backup-inventory", account: "bad\u{200E}id", data: Data(#"{"environments":{}}"#.utf8))
@@ -242,18 +242,18 @@ struct KeychainServiceTests {
 	func restoredProjectRequiresApproval() throws {
 		let service = makeService()
 		let project = VaultProject(id: "restored", name: "Restored", path: "", environments: ["default": ["TOKEN": "a"]])
-		#expect(succeeded(service.createRestoredProjectResult(project, listed: true)))
+		#expect(succeeded(service.createRestoredProjectResult(project, listed: true, source: VaultHistorySource(.set))))
 		#expect(try service.cliAccessResult(vaultId: "restored").get() == .requireApproval)
 		#expect(try service.listProjectMetadataResult().get().map(\.id) == ["restored"])
 		#expect((try storedEnvironments(service, "restored")) == ["default": ["TOKEN": "a"]])
 
 		let hidden = VaultProject(id: "hidden", name: "hidden", path: "", environments: ["default": ["OLD": "x"]])
-		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false)))
+		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false, source: VaultHistorySource(.set))))
 		#expect(try service.cliAccessResult(vaultId: "hidden").get() == .requireApproval)
 		#expect(try service.listProjectMetadataResult().get().map(\.id) == ["restored"])
 		#expect(try service.backupInventoryResult().get().projects.map(\.vaultId) == ["hidden", "restored"])
 
-		guard case .failure(.duplicateItem) = service.createRestoredProjectResult(project, listed: true) else {
+		guard case .failure(.duplicateItem) = service.createRestoredProjectResult(project, listed: true, source: VaultHistorySource(.set)) else {
 			Issue.record("a project already here was created again")
 			return
 		}
@@ -266,7 +266,7 @@ struct KeychainServiceTests {
 		let service = KeychainService(testingService: "restore-fails-closed", backend: backend)
 		backend.failingWritePrefix = "__vault_transaction"
 		let project = VaultProject(id: "restored", name: "Restored", path: "", environments: ["default": ["TOKEN": "a"]])
-		guard case .failure = service.createRestoredProjectResult(project, listed: true) else {
+		guard case .failure = service.createRestoredProjectResult(project, listed: true, source: VaultHistorySource(.set)) else {
 			Issue.record("the restore reported success")
 			return
 		}
@@ -279,22 +279,22 @@ struct KeychainServiceTests {
 	@Test("a merge writes only over the values the review read, listed or not, and within the size limit")
 	func restoredMerge() throws {
 		let service = makeService()
-		#expect(succeeded(service.createEnvironments(vaultId: "listed", projectName: "Listed", projectPath: "", environments: ["default": ["A": "1"]])))
+		#expect(succeeded(service.createEnvironments(vaultId: "listed", projectName: "Listed", projectPath: "", environments: ["default": ["A": "1"]], source: VaultHistorySource(.set))))
 		#expect(try service.setCliAccess(vaultId: "listed", access: .requireApproval).get() == .requireApproval)
-		#expect(service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1"]], merged: ["default": ["A": "1", "B": "2"]], additionalMutations: []) == .written(warning: nil))
+		#expect(service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1"]], merged: ["default": ["A": "1", "B": "2"]], additionalMutations: [], source: VaultHistorySource(.set)) == .written(warning: nil))
 		#expect((try storedEnvironments(service, "listed")) == ["default": ["A": "1", "B": "2"]])
 		#expect(try service.cliAccessResult(vaultId: "listed").get() == .requireApproval, "A merge keeps this Mac's CLI approval")
 		#expect(try service.listProjectMetadataResult().get().first?.environmentSummaries.first?.keyCount == 2)
 
-		#expect(service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1"]], merged: ["default": [:]], additionalMutations: []) == .changedSinceReview)
+		#expect(service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1"]], merged: ["default": [:]], additionalMutations: [], source: VaultHistorySource(.set)) == .changedSinceReview)
 
 		let hidden = VaultProject(id: "hidden", name: "hidden", path: "", environments: ["default": ["OLD": "x"]])
-		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false)))
-		#expect(service.mergeRestoredProjectResult(vaultId: "hidden", expected: ["default": ["OLD": "x"]], merged: ["default": ["OLD": "y"]], additionalMutations: []) == .written(warning: nil))
+		#expect(succeeded(service.createRestoredProjectResult(hidden, listed: false, source: VaultHistorySource(.set))))
+		#expect(service.mergeRestoredProjectResult(vaultId: "hidden", expected: ["default": ["OLD": "x"]], merged: ["default": ["OLD": "y"]], additionalMutations: [], source: VaultHistorySource(.set)) == .written(warning: nil))
 		#expect((try storedEnvironments(service, "hidden")) == ["default": ["OLD": "y"]])
 
 		let big = ["default": ["BIG": String(repeating: "x", count: VaultConstants.maxVaultSizeWarning)]]
-		guard case .failure(.dataTooLarge) = service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1", "B": "2"]], merged: big, additionalMutations: []) else {
+		guard case .failure(.dataTooLarge) = service.mergeRestoredProjectResult(vaultId: "listed", expected: ["default": ["A": "1", "B": "2"]], merged: big, additionalMutations: [], source: VaultHistorySource(.set)) else {
 			Issue.record("a merge past the size limit was written")
 			return
 		}
@@ -307,7 +307,7 @@ struct KeychainServiceTests {
 	func cliApprovalChangeReadsBackOnlyOnce() throws {
 		let backend = KeychainServiceTestBackend()
 		let service = KeychainService(testingService: "readback-fixture", backend: backend)
-		#expect(succeeded(service.createEnvironments(vaultId: "first", projectName: "First", projectPath: "", environments: ["default": [:]])))
+		#expect(succeeded(service.createEnvironments(vaultId: "first", projectName: "First", projectPath: "", environments: ["default": [:]], source: VaultHistorySource(.set))))
 		let before = backend.recordedAccessReadCount
 		#expect(try service.setCliAccess(vaultId: "first", access: .requireApproval).get() == .requireApproval)
 		#expect(backend.recordedAccessReadCount - before == 1)
@@ -320,7 +320,7 @@ struct KeychainServiceTests {
 		let second = "approval-second"
 		let environments = ["default": ["TOKEN": "synthetic-fixture"]]
 		for id in [first, second] {
-			#expect(succeeded(service.createEnvironments(vaultId: id, projectName: id, projectPath: "", environments: environments)))
+			#expect(succeeded(service.createEnvironments(vaultId: id, projectName: id, projectPath: "", environments: environments, source: VaultHistorySource(.set))))
 		}
 		#expect(try service.cliAccessResult(vaultId: first).get() == .automatic)
 		#expect(try service.setCliAccess(vaultId: first, access: .requireApproval).get() == .requireApproval)
@@ -335,14 +335,17 @@ struct KeychainServiceTests {
 		let backend = KeychainServiceTestBackend()
 		let service = KeychainService(testingService: "fixture", backend: backend)
 		let id = "approval-update"
-		#expect(succeeded(service.createEnvironments(vaultId: id, projectName: id, projectPath: "", environments: ["default": ["TOKEN": "original"]])))
+		#expect(succeeded(service.createEnvironments(vaultId: id, projectName: id, projectPath: "", environments: ["default": ["TOKEN": "original"]], source: VaultHistorySource(.set))))
 		_ = try service.setCliAccess(vaultId: id, access: .requireApproval).get()
-		#expect(succeeded(service.updateEnvironments(vaultId: id, environments: ["default": ["TOKEN": "replacement"]])))
+		#expect(succeeded(service.applyVaultTransaction(project: .update(vaultId: id, environments: ["default": ["TOKEN": "replacement"]], source: VaultHistorySource(.set)), data: [])))
 		#expect(try service.cliAccessResult(vaultId: id).get() == .requireApproval)
 		let protectedWrites = backend.recordedAccessWrites.filter { $0.1 == .requireApproval }
-		#expect(protectedWrites.count == 2)
-		#expect(protectedWrites[0].0.hasPrefix("__vault_transaction_stage_v3__:"))
-		#expect(protectedWrites[1].0 == id)
+		let valuesWrites = protectedWrites.filter { !$0.0.hasPrefix("__vault_companion_v1__:") }
+		#expect(valuesWrites.count == 2)
+		#expect(valuesWrites[0].0.hasPrefix("__vault_transaction_stage_v3__:"))
+		#expect(valuesWrites[1].0 == id)
+		let tail = try HistoryRecorder.account("history", id, part: 0)
+		#expect(protectedWrites.contains { $0.0 == tail }, "history's tail follows the values' approval")
 	}
 
 	@Test("CLI approval cannot target internal Keychain records")
@@ -437,7 +440,7 @@ struct KeychainServiceTests {
 			vaultId: vaultId,
 			projectName: "test-project",
 			projectPath: "/tmp/test-project",
-			environments: environments
+			environments: environments, source: VaultHistorySource(.set)
 		)
 
 		guard case .success = result else {
@@ -460,15 +463,16 @@ struct KeychainServiceTests {
 			vaultId: vaultId,
 			projectName: "project",
 			projectPath: "/tmp/p",
-			environments: ["default": ["KEY": "old-value"]]
+			environments: ["default": ["KEY": "old-value"]], source: VaultHistorySource(.set)
 		)
 
 		// Update
-		let result = service.saveEnvironments(
-			vaultId: vaultId,
-			projectName: "project-renamed",
-			projectPath: "/tmp/p-new",
-			environments: ["default": ["KEY": "new-value", "NEW_KEY": "added"]]
+		let result = service.applyVaultTransaction(
+			project: .upsert(VaultProject(
+				id: vaultId, name: "project-renamed", path: "/tmp/p-new",
+				environments: ["default": ["KEY": "new-value", "NEW_KEY": "added"]]
+			), source: VaultHistorySource(.set)),
+			data: []
 		)
 
 		guard case .success = result else {
@@ -491,7 +495,7 @@ struct KeychainServiceTests {
 			vaultId: vaultId,
 			projectName: "to-delete",
 			projectPath: "/tmp/d",
-			environments: ["default": ["KEY": "val"]]
+			environments: ["default": ["KEY": "val"]], source: VaultHistorySource(.set)
 		)
 
 		// Delete
@@ -545,13 +549,13 @@ struct KeychainServiceTests {
 			vaultId: id1,
 			projectName: "project-alpha",
 			projectPath: "/tmp/alpha",
-			environments: ["default": ["A": "1"]]
+			environments: ["default": ["A": "1"]], source: VaultHistorySource(.set)
 		)
 		_ = isolatedService.createEnvironments(
 			vaultId: id2,
 			projectName: "project-beta",
 			projectPath: "/tmp/beta",
-			environments: ["default": ["B": "2"]]
+			environments: ["default": ["B": "2"]], source: VaultHistorySource(.set)
 		)
 
 		let projects = try listedProjects(isolatedService)
@@ -591,7 +595,7 @@ struct KeychainServiceTests {
 			vaultId: vaultId,
 			projectName: "empty-project",
 			projectPath: "/tmp/empty",
-			environments: ["default": [:]]
+			environments: ["default": [:]], source: VaultHistorySource(.set)
 		)
 
 		guard case .success = result else {
@@ -620,7 +624,7 @@ struct KeychainServiceTests {
 			vaultId: vaultId,
 			projectName: "special",
 			projectPath: "/tmp/special",
-			environments: ["default": secrets]
+			environments: ["default": secrets], source: VaultHistorySource(.set)
 		)
 
 		let retrieved = (try storedEnvironments(service, vaultId))
@@ -638,7 +642,7 @@ struct KeychainServiceTests {
 			vaultId: vaultId,
 			projectName: "invalid",
 			projectPath: "",
-			environments: ["default": [:]]
+			environments: ["default": [:]], source: VaultHistorySource(.set)
 		) else {
 			Issue.record("Could not create the indexed test project")
 			return
@@ -661,11 +665,12 @@ struct KeychainServiceTests {
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
 
-		guard case .failure = service.saveEnvironments(
-			vaultId: vaultId,
-			projectName: "invalid",
-			projectPath: "",
-			environments: ["default": ["BAD-KEY": "value"]]
+		guard case .failure = service.applyVaultTransaction(
+			project: .upsert(VaultProject(
+				id: vaultId, name: "invalid", path: "",
+				environments: ["default": ["BAD-KEY": "value"]]
+			), source: VaultHistorySource(.set)),
+			data: []
 		) else {
 			Issue.record("Invalid environment data was written")
 			return
@@ -684,7 +689,7 @@ struct KeychainServiceTests {
 			vaultId: vaultId,
 			projectName: "empty",
 			projectPath: "",
-			environments: ["default": [:]]
+			environments: ["default": [:]], source: VaultHistorySource(.set)
 		) else {
 			Issue.record("Could not create the indexed test project")
 			return
@@ -702,7 +707,7 @@ struct KeychainServiceTests {
 		let vaultId = "test-\(UUID().uuidString.prefix(8))"
 		defer { cleanup(service: service, vaultIds: [vaultId]) }
 		guard case .success = service.createEnvironments(
-			vaultId: vaultId, projectName: "search", projectPath: "", environments: ["default": ["TOKEN": "value"]]
+			vaultId: vaultId, projectName: "search", projectPath: "", environments: ["default": ["TOKEN": "value"]], source: VaultHistorySource(.set)
 		) else {
 			Issue.record("Could not create the indexed test project")
 			return
@@ -998,7 +1003,7 @@ struct SharedKeychainMigrationTests {
 
 		try store.applyVaultTransaction([
 			.write(account: "vault-id", data: payload)
-		])
+		], history: VaultHistorySource(.set))
 
 		#expect(backend.shared["vault-id"] == payload)
 		#expect(backend.shared["__vault_transaction_v3__"] == nil)
@@ -1034,7 +1039,7 @@ struct SharedKeychainMigrationTests {
 		#expect(throws: KeychainStoreError.transactionOutcomeIndeterminate) {
 			try store.applyVaultTransaction([
 				.write(account: "vault-id", data: payload)
-			])
+			], history: VaultHistorySource(.set))
 		}
 		#expect(backend.shared["__vault_transaction_v3__"] != nil)
 		#expect(backend.shared["vault-id"] == nil)
@@ -1055,7 +1060,7 @@ struct SharedKeychainMigrationTests {
 
 		try store.applyVaultTransaction([
 			.write(account: "vault-id", data: payload)
-		])
+		], history: VaultHistorySource(.set))
 
 		#expect(backend.shared["vault-id"] == payload)
 		#expect(backend.shared["__vault_transaction_v3__"] == nil)
@@ -1071,7 +1076,7 @@ struct SharedKeychainMigrationTests {
 
 		try store.applyVaultTransaction([
 			.write(account: "vault-id", data: newPayload)
-		])
+		], history: VaultHistorySource(.set))
 
 		#expect(try store.read(account: "vault-id") == newPayload)
 		#expect(backend.shared["vault-id"] == newPayload)
@@ -1083,7 +1088,7 @@ struct SharedKeychainMigrationTests {
 		let store = SharedKeychainStore(service: "service", backend: backend)
 		let payload = Data(#"{"environments":{"default":{"TOKEN":"secret"}}}"#.utf8)
 
-		try store.applyVaultTransaction([.write(account: "vault-id", data: payload)])
+		try store.applyVaultTransaction([.write(account: "vault-id", data: payload)], history: VaultHistorySource(.set))
 
 		let stageReadCounts = backend.sharedReadCounts.filter {
 			$0.key.hasPrefix("__vault_transaction_stage_v3__:")
@@ -1105,7 +1110,7 @@ struct SharedKeychainMigrationTests {
 			vaultId: "vault-id",
 			projectName: "Project",
 			projectPath: "",
-			environments: ["default": ["TOKEN": "secret"]]
+			environments: ["default": ["TOKEN": "secret"]], source: VaultHistorySource(.set)
 		)
 
 		guard case .success = result else {
@@ -1366,7 +1371,7 @@ struct SharedKeychainMigrationTests {
 		#expect(throws: KeychainStoreError.self) {
 			try store.applyVaultTransaction([
 				.write(account: "__sync_metadata__:dmF1bHQ=", data: record)
-			])
+			], history: VaultHistorySource(.set))
 		}
 	}
 
@@ -1379,12 +1384,12 @@ struct SharedKeychainMigrationTests {
 		#expect(throws: KeychainStoreError.self) {
 			try store.applyVaultTransaction([
 				.write(account: "__sync_metadata_v2__:dmF1bHQ", data: record)
-			])
+			], history: VaultHistorySource(.set))
 		}
 		#expect(throws: KeychainStoreError.self) {
 			try store.applyVaultTransaction([
 				.delete(account: "__sync_metadata_v2_marker__")
-			])
+			], history: VaultHistorySource(.set))
 		}
 	}
 
@@ -1413,7 +1418,7 @@ struct SharedKeychainMigrationTests {
 		)
 
 		guard case .failure(.dataTooLarge(let byteCount)) = service.applyVaultTransaction(
-			project: .create(project),
+			project: .create(project, source: VaultHistorySource(.set)),
 			data: []
 		) else {
 			Issue.record("Expected the exact oversized-payload error.")

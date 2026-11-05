@@ -3377,7 +3377,8 @@ final class VaultStore {
   func addEnvironment(
     to projectId: String,
     name: String,
-    secrets: [String: String] = [:]
+    secrets: [String: String] = [:],
+    importedFrom origin: EnvImportSource? = nil
   ) async -> Bool {
     guard isUnlocked else {
       error = EnvFileImportError.vaultLocked.localizedDescription
@@ -3389,7 +3390,8 @@ final class VaultStore {
       secrets.keys.allSatisfy(EnvValidation.isValidVariableName),
       project.environments[name] == nil
     else { return false }
-    switch await insertEnvironment(name, secrets: secrets, into: project) {
+    let source = VaultHistorySource(.createEnvironment, detail: origin?.historyDetail ?? .init())
+    switch await insertEnvironment(name, secrets: secrets, into: project, source: source) {
     case .success: return true
     case .failure(.cancelled): return false
     case .failure(.persistence(let message)): error = message
@@ -3418,13 +3420,14 @@ final class VaultStore {
     }
     let secrets = skippingKeys.isEmpty
       ? review.imported.secrets : review.imported.secrets.filter { !skippingKeys.contains($0.key) }
-    return await insertEnvironment(review.environment, secrets: secrets, into: project)
+    let source = VaultHistorySource(.createEnvironment, detail: review.source.historyDetail)
+    return await insertEnvironment(review.environment, secrets: secrets, into: project, source: source)
   }
 
   /// Persists `name`, a new environment holding `secrets`, in `project`, then
   /// shows it. A review of that environment ends here, whatever the outcome.
   private func insertEnvironment(
-    _ name: String, secrets: [String: String], into project: VaultProject
+    _ name: String, secrets: [String: String], into project: VaultProject, source: VaultHistorySource
   ) async -> Result<Void, EnvFileImportError> {
     let write = writes.begin()
     defer { writes.end(write) }
@@ -3450,7 +3453,8 @@ final class VaultStore {
         environment: name,
         secrets: secrets,
         requestId: requestId,
-        authority: localEnvImportAuthority
+        authority: localEnvImportAuthority,
+        source: source
       )
     } onCancel: { [localEnvImportAuthority] in
       localEnvImportAuthority.cancel(target, requestId: requestId)
@@ -3698,6 +3702,7 @@ final class VaultStore {
     }
 
     invalidateProjectLoad()
+    let source = VaultHistorySource(.import, detail: review.source.historyDetail)
     let commit = await withTaskCancellationHandler {
       await persistence.importSecrets(
         projectId: projectId,
@@ -3708,7 +3713,8 @@ final class VaultStore {
         expectedSecrets: review.baseline,
         replacingKeys: replacingKeys,
         requestId: requestId,
-        authority: localEnvImportAuthority
+        authority: localEnvImportAuthority,
+        source: source
       )
     } onCancel: { [localEnvImportAuthority] in
       localEnvImportAuthority.cancel(target, requestId: requestId)
@@ -3718,7 +3724,8 @@ final class VaultStore {
     case .success(let persisted):
       let receipt = EnvironmentChangeReceipt(
         projectId: projectId, environment: environment, before: review.baseline,
-        after: persisted.project.environments[environment] ?? [:])
+        after: persisted.project.environments[environment] ?? [:],
+        historyEntry: source.related(side: "after"))
       guard sessionGeneration == vaultSessionGeneration,
         isUnlocked,
         projects.contains(where: { $0.id == projectId })
@@ -3769,7 +3776,11 @@ final class VaultStore {
     return await withCheckedContinuation { continuation in
       enqueueProjectMutation(
         base: project,
-        mutation: .restoreEnvironment(name: receipt.environment, expectedSecrets: receipt.after, restored: receipt.before),
+        mutation: .restoreEnvironment(
+          name: receipt.environment, expectedSecrets: receipt.after, restored: receipt.before,
+          source: VaultHistorySource(.undo, detail: .init(related: receipt.historyEntry.map {
+            HistoryEngine.Related(id: $0.id, side: "before", time: $0.time)
+          }))),
         reportsFailures: false
       ) { continuation.resume(returning: $0) }
     }
@@ -3926,17 +3937,20 @@ final class VaultStore {
     rawTextSaves[target] = saveID
     defer { if rawTextSaves[target] == saveID { rawTextSaves.removeValue(forKey: target) } }
     recordUserActivity()
+    let source = VaultHistorySource(.rawEdit)
     let outcome = await withCheckedContinuation { continuation in
       enqueueProjectMutation(
         base: project,
-        mutation: .restoreEnvironment(name: target.environment, expectedSecrets: expected, restored: values),
+        mutation: .restoreEnvironment(name: target.environment, expectedSecrets: expected, restored: values, source: source),
         reportsFailures: false
       ) { continuation.resume(returning: $0) }
     }
     switch outcome {
     case .saved:
       rawTextDrafts.removeValue(forKey: target)
-      return .saved(EnvironmentChangeReceipt(projectId: target.projectId, environment: target.environment, before: expected, after: values))
+      return .saved(EnvironmentChangeReceipt(
+        projectId: target.projectId, environment: target.environment, before: expected, after: values,
+        historyEntry: source.related(side: "after")))
     case .changed: return .changed
     case .unavailable: return .unavailable
     case .failed(let message): return .failed(message)
@@ -7865,6 +7879,12 @@ final class VaultStore {
     defer { writes.end(write) }
     let persistence = persistence
     let binding = syncBinding(for: authority)
+    let remote: HistoryEngine.Remote
+    switch authority.account {
+    case .personal: remote = .personal
+    case .org(let slug): remote = .org(slug)
+    }
+    let source = VaultHistorySource(.pull, detail: .init(remote: remote, remoteVersion: UInt64(max(version, 0))))
     let operation: @Sendable () async -> PullPersistenceResult = { [weak self] in
       guard let self, await self.hasCurrentSyncAuth(authority) else {
         return .cancelled
@@ -7874,7 +7894,8 @@ final class VaultStore {
         remotePayload: remotePayload,
         action: action,
         version: version,
-        binding: binding
+        binding: binding,
+        source: source
       )
     }
     if let generation = authority.authorityGeneration {

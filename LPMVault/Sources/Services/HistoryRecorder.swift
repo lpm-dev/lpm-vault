@@ -15,12 +15,25 @@ struct VaultHistorySource: Sendable, Equatable {
 	var renames: [HistoryEngine.Rename] = []
 	/// The entry's ID, new for each action, so one retried can't be recorded twice.
 	let id: String
+	/// When the action happened, in milliseconds since 1970: the entry's time.
+	let time: Int64
 
-	init(_ action: Action, detail: HistoryEngine.ChangeDetail = .init(), renames: [HistoryEngine.Rename] = []) {
+	init(
+		_ action: Action,
+		detail: HistoryEngine.ChangeDetail = .init(),
+		renames: [HistoryEngine.Rename] = [],
+		at date: Date = Date()
+	) {
 		self.action = action
 		self.detail = detail
 		self.renames = renames
 		id = Self.newId()
+		time = Int64((date.timeIntervalSince1970 * 1000).rounded(.down))
+	}
+
+	/// This source's entry, as a later change that refers to it names it.
+	func related(side: String) -> HistoryEngine.Related {
+		HistoryEngine.Related(id: id, side: side, time: time)
 	}
 
 	private static func newId() -> String {
@@ -75,13 +88,12 @@ enum HistoryRecorder {
 		before: Data?,
 		after: Data?,
 		unreadableBefore: String? = nil,
-		source: VaultHistorySource,
-		now: Date = Date()
+		source: VaultHistorySource
 	) -> VaultHistoryOutcome {
 		do {
 			return try recordThrowing(
 				storage, vaultId: vaultId, before: before, after: after,
-				unreadableBefore: unreadableBefore, source: source, now: now)
+				unreadableBefore: unreadableBefore, source: source)
 		} catch let failure as HistoryEngine.Failure {
 			return .notRecorded(reason: failure.code == "history.damaged" ? "damaged" : "failed", message: failure.message)
 		} catch {
@@ -95,8 +107,7 @@ enum HistoryRecorder {
 		before: Data?,
 		after: Data?,
 		unreadableBefore: String?,
-		source: VaultHistorySource,
-		now: Date
+		source: VaultHistorySource
 	) throws -> VaultHistoryOutcome {
 		guard let after else { return .nothing }
 		if before == after, unreadableBefore == nil { return .nothing }
@@ -120,7 +131,7 @@ enum HistoryRecorder {
 		guard let before else { return .nothing }
 		let change = HistoryEngine.Change(
 			id: source.id,
-			time: Int64((now.timeIntervalSince1970 * 1000).rounded(.down)),
+			time: source.time,
 			action: source.action.rawValue,
 			detail: source.detail,
 			renames: source.renames)

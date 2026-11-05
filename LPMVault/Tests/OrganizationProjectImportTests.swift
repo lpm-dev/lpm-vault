@@ -66,9 +66,9 @@ struct OrganizationProjectImportTests {
 			if changeAssociation {
 				_ = await coordinator.associate(vaultId: local.id, orgSlug: "other-org")
 			} else {
-				var edited = local
-				edited.environments["default"]?["TOKEN"] = "new-local"
-				_ = await coordinator.saveProject(edited, markDirty: true)
+				let edit = VaultKeyEdit(key: "TOKEN", newKey: "TOKEN", baseline: ["default": "local"], values: ["default": "new-local"])
+				_ = await coordinator.mutateProject(
+					projectId: local.id, expectedName: local.name, expectedPath: local.path, mutation: .editKey(edit))
 			}
 			let before = keychain.dataStorage
 			let result = await coordinator.importProject(remote, orgSlug: "acme", version: 2, binding: binding, existing: baseline)

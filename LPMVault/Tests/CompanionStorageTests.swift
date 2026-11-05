@@ -184,8 +184,10 @@ private func makeService() throws -> (KeychainService, CompanionTestBackend, Str
 	let backend = CompanionTestBackend()
 	let name = "dev.lpm.vault.companion.\(UUID().uuidString)"
 	let service = KeychainService(testingService: name, backend: backend)
+	// Companion storage's own rules, without the records history would add.
+	service.recordsHistory = false
 	guard case .success = service.createEnvironments(
-		vaultId: vault, projectName: "Project", projectPath: "", environments: ["default": ["TOKEN": "team"]])
+		vaultId: vault, projectName: "Project", projectPath: "", environments: ["default": ["TOKEN": "team"]], source: VaultHistorySource(.set))
 	else { throw KeychainError.encodingFailed }
 	return (service, backend, name)
 }
@@ -263,7 +265,7 @@ struct CompanionStorageTests {
 		backend.store(try recordName("overrides"), Data("v2".utf8))
 
 		#expect(refusal(service.getProjectResult(vaultId: vault)) == .unsupported(feature: "overrides", version: 2, level: .refuse))
-		#expect(refusal(service.updateEnvironments(vaultId: vault, environments: ["default": ["TOKEN": "new"]])) != nil)
+		#expect(refusal(service.applyVaultTransaction(project: .update(vaultId: vault, environments: ["default": ["TOKEN": "new"]], source: VaultHistorySource(.set)), data: [])) != nil)
 		#expect(backend.data(vault) == values)
 		#expect(refusal(service.getProjectResult(vaultId: vault))?.message.contains("doesn’t support") == true)
 
@@ -279,7 +281,7 @@ struct CompanionStorageTests {
 		backend.store(try recordName("future-log", part: 0), Data("entry".utf8))
 
 		#expect(try service.getProjectResult(vaultId: vault).get()?.secrets(for: "default") == ["TOKEN": "team"])
-		let refused = refusal(service.updateEnvironments(vaultId: vault, environments: ["default": ["TOKEN": "new"]]))
+		let refused = refusal(service.applyVaultTransaction(project: .update(vaultId: vault, environments: ["default": ["TOKEN": "new"]], source: VaultHistorySource(.set)), data: []))
 		#expect(refused == .unsupported(feature: "future", version: 1, level: .readOnly))
 		#expect(refused?.message.contains("can only read") == true)
 		#expect(backend.data(vault) == values)
@@ -332,7 +334,7 @@ struct CompanionStorageTests {
 		_ = try service.withKeychainTransaction {
 			_ = service.getProjectResult(vaultId: vault)
 			_ = service.getProjectResult(vaultId: vault)
-			_ = service.updateEnvironments(vaultId: vault, environments: ["default": ["TOKEN": "new"]])
+			_ = service.applyVaultTransaction(project: .update(vaultId: vault, environments: ["default": ["TOKEN": "new"]], source: VaultHistorySource(.set)), data: [])
 		}.get()
 		#expect(backend.reads(of: try markerName()) == 1)
 
@@ -387,14 +389,14 @@ struct CompanionStorageTests {
 		let record = try recordName("overrides")
 
 		#expect(throws: KeychainStoreError.integrityValidationFailed) {
-			try store.applyVaultTransaction([.write(account: record, data: overridesRecord)])
+			try store.applyVaultTransaction([.write(account: record, data: overridesRecord)], history: nil)
 		}
 		#expect(backend.data(record) == nil)
 
 		try store.applyVaultTransaction([
 			.write(account: try markerName(), data: marker(overridesV1)),
 			.write(account: record, data: overridesRecord),
-		])
+		], history: nil)
 		#expect(backend.data(record) == overridesRecord)
 	}
 
@@ -408,7 +410,7 @@ struct CompanionStorageTests {
 		let record = try recordName("overrides")
 		backend.failWrites(to: [record])
 
-		#expect(throws: KeychainStoreError.self) { try store.applyVaultTransaction([.write(account: record, data: overridesRecord)]) }
+		#expect(throws: KeychainStoreError.self) { try store.applyVaultTransaction([.write(account: record, data: overridesRecord)], history: nil) }
 		#expect(backend.data("__vault_transaction_v3__") != nil, "the committed journal waits for recovery")
 
 		backend.failWrites(to: [])
@@ -522,7 +524,7 @@ struct CompanionStorageTests {
 		let (service, backend, _) = try makeService()
 		backend.store(try markerName(), marker("", state: "deleting"))
 		backend.store(try recordName("future-kind"), Data("x".utf8))
-		guard case .success = service.createEnvironments(vaultId: "other", projectName: "Other", projectPath: "", environments: ["default": [:]])
+		guard case .success = service.createEnvironments(vaultId: "other", projectName: "Other", projectPath: "", environments: ["default": [:]], source: VaultHistorySource(.set))
 		else { Issue.record("couldn't create the second project"); return }
 		backend.store(try markerName("other"), marker(overridesV2).replacing(Data("proj".utf8), with: Data("other".utf8)))
 		backend.failWrites(to: ["__vault_transaction_v3__"])
@@ -587,7 +589,7 @@ struct CompanionStorageTests {
 		let (service, backend, _) = try makeService()
 		backend.store(try markerName(), marker(overridesV1))
 		backend.store(try recordName("overrides"), overridesRecord)
-		guard case .success = service.createEnvironments(vaultId: "newer", projectName: "Newer", projectPath: "", environments: ["default": [:]])
+		guard case .success = service.createEnvironments(vaultId: "newer", projectName: "Newer", projectPath: "", environments: ["default": [:]], source: VaultHistorySource(.set))
 		else { Issue.record("couldn't create the second project"); return }
 		backend.store(try markerName("newer"), marker(overridesV2).replacing(Data("proj".utf8), with: Data("newer".utf8)))
 
@@ -852,11 +854,11 @@ struct CompanionStorageReviewTests {
 		backend.store(try recordName("overrides"), overridesRecord)
 
 		#expect(throws: KeychainStoreError.integrityValidationFailed) {
-			try store.applyVaultTransaction([.delete(account: try markerName())])
+			try store.applyVaultTransaction([.delete(account: try markerName())], history: nil)
 		}
 		#expect(backend.data(try markerName()) == marker(overridesV1))
 
-		try store.applyVaultTransaction([.delete(account: try markerName()), .delete(account: try recordName("overrides"))])
+		try store.applyVaultTransaction([.delete(account: try markerName()), .delete(account: try recordName("overrides"))], history: nil)
 		#expect(backend.data(try markerName()) == nil)
 	}
 
@@ -868,7 +870,7 @@ struct CompanionStorageReviewTests {
 		backend.store(vault, values)
 		try VaultKeychainTransactionLock.withLock {
 			try store.authorizeCompanion(vaultId: vault, .write)
-			try store.applyVaultTransaction([.write(account: try markerName(), data: marker(overridesV2))])
+			try store.applyVaultTransaction([.write(account: try markerName(), data: marker(overridesV2))], history: nil)
 			#expect(throws: KeychainStoreError.companion(.unsupported(feature: "overrides", version: 2, level: .refuse))) {
 				try store.authorizeCompanion(vaultId: vault, .readExcludingOverrides)
 			}
@@ -879,13 +881,13 @@ struct CompanionStorageReviewTests {
 	@Test("a project's transaction can't write another project's values past that project's gate")
 	func otherOwnersValuesAreGated() throws {
 		let (service, backend, _) = try makeService()
-		guard case .success = service.createEnvironments(vaultId: "other", projectName: "Other", projectPath: "", environments: ["default": ["A": "1"]])
+		guard case .success = service.createEnvironments(vaultId: "other", projectName: "Other", projectPath: "", environments: ["default": ["A": "1"]], source: VaultHistorySource(.set))
 		else { Issue.record("couldn't create the second project"); return }
 		backend.store(try markerName("other"), marker(overridesV2).replacing(Data("proj".utf8), with: Data("other".utf8)))
 		let otherValues = backend.data("other")
 
 		let result = service.applyVaultTransaction(
-			project: .update(vaultId: vault, environments: ["default": ["TOKEN": "new"]]),
+			project: .update(vaultId: vault, environments: ["default": ["TOKEN": "new"]], source: VaultHistorySource(.set)),
 			data: [.write(account: "other", data: values)])
 
 		guard case .failure(.accessDenied) = result else { Issue.record("another project's values were written: \(result)"); return }
@@ -898,7 +900,7 @@ struct CompanionStorageReviewTests {
 		let (service, backend, _) = try makeService()
 		backend.store(try markerName(), marker(overridesV1))
 
-		let refused = refusal(service.updateEnvironments(vaultId: vault, environments: ["default": ["TOKEN": "new"]]))
+		let refused = refusal(service.applyVaultTransaction(project: .update(vaultId: vault, environments: ["default": ["TOKEN": "new"]], source: VaultHistorySource(.set)), data: []))
 		#expect(refused == .damaged("its “overrides” record is missing"))
 		#expect(backend.data(vault) == values)
 		#expect(try service.getProjectResult(vaultId: vault).get() != nil)
@@ -1114,7 +1116,7 @@ struct CompanionStorageReviewTests {
 	@Test("a backup leaves out only the project whose interrupted change can't be finished")
 	func backupSurvivesStuckResume() throws {
 		let (service, backend, _) = try makeService()
-		guard case .success = service.createEnvironments(vaultId: "other", projectName: "Other", projectPath: "", environments: ["default": ["A": "1"]])
+		guard case .success = service.createEnvironments(vaultId: "other", projectName: "Other", projectPath: "", environments: ["default": ["A": "1"]], source: VaultHistorySource(.set))
 		else { Issue.record("couldn't create the second project"); return }
 		backend.store(try markerName(), marker("", state: "deleting"))
 		backend.store(try recordName("future-kind"), Data("x".utf8))
@@ -1492,7 +1494,7 @@ struct CompanionStorageReviewTests {
 		backend.store(vault, values)
 		for name in ownMetadataNames(30_000) { backend.store(name, Data()) }
 		backend.failWrites(to: [try markerName()])
-		#expect(throws: KeychainStoreError.self) { try store.applyVaultTransaction([.write(account: try markerName(), data: marker(overridesV1))]) }
+		#expect(throws: KeychainStoreError.self) { try store.applyVaultTransaction([.write(account: try markerName(), data: marker(overridesV1))], history: nil) }
 		backend.failWrites(to: [])
 
 		try store.recoverVaultTransaction()
@@ -1516,7 +1518,7 @@ struct CompanionStorageReviewTests {
 		let counters = VaultKeychainPerformanceCounters()
 		let service = KeychainService(testingService: "companion-\(UUID().uuidString)", backend: backend, performanceCounters: counters)
 		guard case .success = service.createEnvironments(
-			vaultId: vault, projectName: "Project", projectPath: "", environments: ["default": ["TOKEN": "team"]])
+			vaultId: vault, projectName: "Project", projectPath: "", environments: ["default": ["TOKEN": "team"]], source: VaultHistorySource(.set))
 		else { Issue.record("couldn't create the project"); return }
 		backend.store(try markerName(), marker(overridesV1))
 		backend.store(try recordName("overrides"), overridesRecord)
@@ -1546,7 +1548,7 @@ struct CompanionStorageReviewTests {
 		let counters = VaultKeychainPerformanceCounters()
 		let backend = CompanionTestBackend()
 		let service = KeychainService(testingService: "companion-\(UUID().uuidString)", backend: backend, performanceCounters: counters)
-		guard case .success = service.createEnvironments(vaultId: vault, projectName: "Project", projectPath: "", environments: ["default": [:]])
+		guard case .success = service.createEnvironments(vaultId: vault, projectName: "Project", projectPath: "", environments: ["default": [:]], source: VaultHistorySource(.set))
 		else { Issue.record("couldn't create the project"); return }
 		let history = #""history":{"version":1,"ifUnsupported":"ignore","kinds":["history-head","history","key"],"state":"active"}"#
 		backend.store(try markerName(), marker(history))

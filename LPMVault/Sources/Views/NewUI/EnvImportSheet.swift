@@ -291,7 +291,7 @@ struct EnvImportSheet: View {
 			guard !reviewsFirst else { return prepare(imported, from: origin, into: name, creating: true) }
 			work = .creating
 			task = Task {
-				let added = await store.addEnvironment(to: projectID, name: name, secrets: imported.secrets)
+				let added = await store.addEnvironment(to: projectID, name: name, secrets: imported.secrets, importedFrom: origin)
 				guard !Task.isCancelled else { return }
 				work = nil
 				task = nil

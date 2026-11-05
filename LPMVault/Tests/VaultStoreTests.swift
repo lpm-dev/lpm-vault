@@ -5398,7 +5398,7 @@ struct VaultStoreTests {
 				registryURL: "https://lpm.dev",
 				principalID: "user-1",
 				scope: "personal"
-			)
+			), source: VaultHistorySource(.pull)
 		)
 
 		guard case .success(let commit) = result else {
@@ -5445,7 +5445,7 @@ struct VaultStoreTests {
 				registryURL: "https://lpm.dev",
 				principalID: "user-1",
 				scope: "personal"
-			)
+			), source: VaultHistorySource(.pull)
 		)
 
 		guard case .success(let commit) = result else {
@@ -5484,7 +5484,7 @@ struct VaultStoreTests {
 				registryURL: "https://lpm.dev",
 				principalID: "user-1",
 				scope: "personal"
-			)
+			), source: VaultHistorySource(.pull)
 		)
 
 		guard case .success(let commit) = result else {
@@ -5518,7 +5518,7 @@ struct VaultStoreTests {
 				registryURL: "https://lpm.dev",
 				principalID: "user-1",
 				scope: "personal"
-			)
+			), source: VaultHistorySource(.pull)
 		)
 
 		guard case .success(let commit) = result else {
@@ -5557,7 +5557,7 @@ struct VaultStoreTests {
 				registryURL: "https://lpm.dev",
 				principalID: "user-1",
 				scope: "personal"
-			)
+			), source: VaultHistorySource(.pull)
 		)
 
 		guard case .conflict(let latest, _) = result else {
@@ -5600,7 +5600,7 @@ struct VaultStoreTests {
 				registryURL: "https://lpm.dev",
 				principalID: "user-1",
 				scope: "personal"
-			)
+			), source: VaultHistorySource(.pull)
 		)
 
 		guard case .conflict(let latest, _) = result else {
@@ -5642,7 +5642,7 @@ struct VaultStoreTests {
 				registryURL: "https://lpm.dev",
 				principalID: "user-1",
 				scope: "personal"
-			)
+			), source: VaultHistorySource(.pull)
 		)
 
 		guard case .failure(.unexpectedStatus(-1)) = result else {

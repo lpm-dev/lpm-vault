@@ -23,6 +23,8 @@ enum VaultKeychainTransactionLock {
 		var descriptor: Int32 = -1
 		var recoveredStores = Set<ObjectIdentifier>()
 		var companionScopes: [ObjectIdentifier: CompanionScope] = [:]
+		var historyScopes: [ObjectIdentifier: HistoryScope] = [:]
+		var flushingHistory = false
 	}
 
 	private static let state = State()
@@ -132,13 +134,26 @@ enum VaultKeychainTransactionLock {
 			if state.depth == 0 {
 				state.recoveredStores.removeAll(keepingCapacity: true)
 				state.companionScopes.removeAll(keepingCapacity: true)
+				state.historyScopes.removeAll(keepingCapacity: true)
 				_ = flock(state.descriptor, LOCK_UN)
 				_ = Darwin.close(state.descriptor)
 				state.descriptor = -1
 			}
 			state.processLock.unlock()
 		}
-		return try operation()
+		let result = Result { try operation() }
+		// The outermost scope records its net change, still in the lock, after
+		// its last durable step, whether the operation succeeded or not: a
+		// failed one may have changed values all the same.
+		if state.depth == 1, !state.flushingHistory, !state.historyScopes.isEmpty {
+			state.flushingHistory = true
+			defer { state.flushingHistory = false }
+			for scope in state.historyScopes.values {
+				scope.flush(scope)
+			}
+			state.historyScopes.removeAll(keepingCapacity: true)
+		}
+		return try result.get()
 	}
 
 	static func hasRecovered(_ store: AnyObject) -> Bool {
@@ -150,6 +165,24 @@ enum VaultKeychainTransactionLock {
 		precondition(state.depth > 0)
 		state.recoveredStores.insert(ObjectIdentifier(store))
 	}
+
+	/// `store`'s history in the outermost lock scope this thread holds, made
+	/// with `flush`, which records it when the scope ends.
+	static func historyScope(_ store: AnyObject, flush: @escaping (HistoryScope) -> Void) -> HistoryScope {
+		precondition(state.depth > 0)
+		let key = ObjectIdentifier(store)
+		if let scope = state.historyScopes[key] { return scope }
+		let scope = HistoryScope(flush: flush)
+		state.historyScopes[key] = scope
+		return scope
+	}
+
+	/// Whether the history of a scope is being recorded, when values writes
+	/// are history's own and record nothing more.
+	static var isFlushingHistory: Bool { state.flushingHistory }
+
+	/// Whether this thread holds the lock: only its holder may ask.
+	static var isHeld: Bool { state.depth > 0 }
 
 	/// What `store` learned about companion storage in the outermost lock
 	/// scope this thread holds.
@@ -294,9 +327,12 @@ final class CompanionScope {
 	/// Why each project's interrupted step can never be finished, for those a
 	/// resume in this scope found can't be.
 	var unfinishable: [String: String] = [:]
+	/// Each values item's access as a probe verified it in this scope.
+	var verifiedAccess: [String: VaultCliAccess] = [:]
 
 	/// Forgets everything a failed change may have made stale.
 	func reset() {
+		verifiedAccess = [:]
 		gates = [:]
 		listed = [:]
 		markers = [:]
@@ -319,6 +355,45 @@ final class CompanionResumeNotices: @unchecked Sendable {
 		lock.withLock {
 			defer { notices = [:] }
 			return notices
+		}
+	}
+}
+
+/// One store's history in one outermost lock scope: each project's values as
+/// the scope first saw them and as its last write left them, and what changed
+/// them. Only the thread holding the lock touches it.
+final class HistoryScope {
+	struct Project {
+		var before: Data?
+		/// Why the values the scope replaced couldn't be read.
+		var unreadableBefore: String?
+		var after: Data?
+		let source: VaultHistorySource
+	}
+
+	var projects: [String: Project] = [:]
+	/// Projects in the order the scope first wrote them.
+	var order: [String] = []
+	let flush: (HistoryScope) -> Void
+
+	init(flush: @escaping (HistoryScope) -> Void) {
+		self.flush = flush
+	}
+}
+
+/// What history made of each project's last change, until the app shows it.
+final class HistoryOutcomes: @unchecked Sendable {
+	private let lock = NSLock()
+	private var outcomes: [String: VaultHistoryOutcome] = [:]
+
+	func record(_ outcome: VaultHistoryOutcome, for vaultId: String) {
+		lock.withLock { outcomes[vaultId] = outcome }
+	}
+
+	func take() -> [String: VaultHistoryOutcome] {
+		lock.withLock {
+			defer { outcomes = [:] }
+			return outcomes
 		}
 	}
 }
@@ -363,21 +438,13 @@ protocol KeychainServiceProtocol: Sendable {
 	/// Which projects a backup would leave out, and which it would back up
 	/// without their newer data, read without reading any values.
 	func backupCompanionNotesResult() -> Result<VaultBackupCompanionNotes, KeychainError>
-	func saveEnvironments(
-		vaultId: String,
-		projectName: String,
-		projectPath: String,
-		environments: [String: [String: String]]
-	) -> KeychainResult
-	func updateEnvironments(
-		vaultId: String,
-		environments: [String: [String: String]]
-	) -> KeychainResult
+	/// Creates a project that doesn't exist yet, recorded as `source`.
 	func createEnvironments(
 		vaultId: String,
 		projectName: String,
 		projectPath: String,
-		environments: [String: [String: String]]
+		environments: [String: [String: String]],
+		source: VaultHistorySource
 	) -> KeychainResult
 	func removeFromSidebar(vaultId: String) -> Bool
 	/// Every vault the shared store holds, read for a backup: the ones the
@@ -394,19 +461,23 @@ protocol KeychainServiceProtocol: Sendable {
 	/// that access before the transaction that indexes it, so a project never
 	/// exists without it; a crash between leaves the payload unlisted, still
 	/// requiring approval.
-	func createRestoredProjectResult(_ project: VaultProject, listed: Bool) -> KeychainResult
+	func createRestoredProjectResult(_ project: VaultProject, listed: Bool, source: VaultHistorySource) -> KeychainResult
 	/// Writes `merged` over a project's values when they're still `expected`,
 	/// listed or not, with `additionalMutations` in the same transaction.
 	func mergeRestoredProjectResult(
 		vaultId: String,
 		expected: [String: [String: String]],
 		merged: [String: [String: String]],
-		additionalMutations: [VaultKeychainMutation]
+		additionalMutations: [VaultKeychainMutation],
+		source: VaultHistorySource
 	) -> VaultRestoreWriteResult
 	/// The vaults among `vaultIds` whose payload is still in the Keychain,
 	/// found from item attributes alone, so no value is read and no
 	/// approval is asked for. A project removed from the sidebar still counts.
 	func existingVaultPayloads(vaultIds: [String]) -> Result<Set<String>, KeychainError>
+	/// What local history made of each project's last values change since
+	/// the last call, for projects whose change it recorded or didn't.
+	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome]
 	func applyVaultTransaction(
 		project: VaultProjectKeychainMutation?,
 		data: [VaultKeychainMutation]
@@ -538,9 +609,9 @@ struct VaultBackupExclusion: Equatable, Sendable {
 }
 
 enum VaultProjectKeychainMutation: Sendable {
-	case create(VaultProject)
-	case upsert(VaultProject)
-	case update(vaultId: String, environments: [String: [String: String]])
+	case create(VaultProject, source: VaultHistorySource)
+	case upsert(VaultProject, source: VaultHistorySource)
+	case update(vaultId: String, environments: [String: [String: String]], source: VaultHistorySource)
 	/// Renames a listed project, writing only its metadata.
 	case rename(vaultId: String, name: String)
 	case delete(vaultId: String, deletePayload: Bool)
@@ -1582,6 +1653,16 @@ final class SharedKeychainStore: @unchecked Sendable {
 	private let backend: any KeychainStoreBackend
 	private let performanceCounters: VaultKeychainPerformanceCounters?
 	private let resumeNotices = CompanionResumeNotices()
+	private let historyOutcomes = HistoryOutcomes()
+	private let historySwitch = NSLock()
+	nonisolated(unsafe) private var historyEnabled = true
+
+	/// Whether values writes are recorded in local history. Tests turn it off
+	/// to seed values as a client without history would.
+	var recordsHistory: Bool {
+		get { historySwitch.withLock { historyEnabled } }
+		set { historySwitch.withLock { historyEnabled = newValue } }
+	}
 
 	init(
 		service: String,
@@ -1593,7 +1674,87 @@ final class SharedKeychainStore: @unchecked Sendable {
 		self.performanceCounters = performanceCounters
 	}
 
-	func applyVaultTransaction(_ mutations: [VaultKeychainMutation]) throws {
+	/// Commits `mutations` as one journal transaction. A transaction that
+	/// writes a project's values names what changed them, `history`, which
+	/// the lock scope records when it ends; one that doesn't passes nil.
+	func applyVaultTransaction(_ mutations: [VaultKeychainMutation], history source: VaultHistorySource?) throws {
+		try VaultKeychainTransactionLock.withLock {
+			let valuesWrites = mutations.filter { EnvValidation.isSafeVaultId($0.account) && $0.data != nil }
+			precondition(valuesWrites.isEmpty || source != nil || VaultKeychainTransactionLock.isFlushingHistory,
+				"A values write must name its history source")
+			if let source {
+				for mutation in valuesWrites {
+					trackHistoryBeforeUnlocked(vaultId: mutation.account, source: source)
+				}
+			}
+			try applyVaultTransactionUnlocked(mutations)
+			if source != nil {
+				for mutation in valuesWrites {
+					historyScope.projects[mutation.account]?.after = mutation.data
+				}
+			}
+			for mutation in mutations where mutation.data == nil && EnvValidation.isSafeVaultId(mutation.account) {
+				historyScope.projects[mutation.account] = nil
+			}
+		}
+	}
+
+	/// Notes `data`, the values `vaultId` holds now as its caller just read
+	/// them, as what this scope replaces, unless it saw them first.
+	func noteHistoryBefore(vaultId: String, data: Data?, source: VaultHistorySource) {
+		precondition(VaultKeychainTransactionLock.isHeld)
+		guard historyScope.projects[vaultId] == nil else { return }
+		historyScope.projects[vaultId] = .init(before: data ?? Self.emptyPayload, after: nil, source: source)
+		historyScope.order.append(vaultId)
+	}
+
+	/// Notes `data` as what `vaultId` holds after a write outside a
+	/// transaction, which the scope records like any other.
+	func noteHistoryAfter(vaultId: String, data: Data) {
+		precondition(VaultKeychainTransactionLock.isHeld)
+		historyScope.projects[vaultId]?.after = data
+	}
+
+	/// What history made of each project's last change since the last call.
+	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
+		historyOutcomes.take()
+	}
+
+	/// A project without a values item, as history compares it.
+	private static let emptyPayload = Data(#"{"environments":{}}"#.utf8)
+
+	private var historyScope: HistoryScope {
+		VaultKeychainTransactionLock.historyScope(self) { [weak self] scope in
+			self?.recordHistoryUnlocked(scope)
+		}
+	}
+
+	private func trackHistoryBeforeUnlocked(vaultId: String, source: VaultHistorySource) {
+		guard historyScope.projects[vaultId] == nil else { return }
+		var project = HistoryScope.Project(before: nil, after: nil, source: source)
+		do {
+			project.before = try backend.read(service: service, account: vaultId) ?? Self.emptyPayload
+		} catch {
+			project.unreadableBefore = error.localizedDescription
+		}
+		historyScope.projects[vaultId] = project
+		historyScope.order.append(vaultId)
+	}
+
+	private func recordHistoryUnlocked(_ scope: HistoryScope) {
+		guard recordsHistory else { return }
+		for vaultId in scope.order {
+			guard let project = scope.projects[vaultId], project.after != nil else { continue }
+			let outcome = HistoryRecorder.record(
+				self, vaultId: vaultId, before: project.before, after: project.after,
+				unreadableBefore: project.unreadableBefore, source: project.source)
+			if outcome != .nothing {
+				historyOutcomes.record(outcome, for: vaultId)
+			}
+		}
+	}
+
+	private func applyVaultTransactionUnlocked(_ mutations: [VaultKeychainMutation]) throws {
 		try VaultKeychainTransactionLock.withLock {
 			try ensureRecoveredUnlocked()
 			guard !mutations.isEmpty,
@@ -2744,11 +2905,11 @@ final class SharedKeychainStore: @unchecked Sendable {
 			pending += transaction.deletes.map { .delete(account: $0) }
 			if let marker = transaction.writesMarker { pending.append(.write(account: markerAccount, data: marker)) }
 			if transaction.deletesMarker { pending.append(.delete(account: markerAccount)) }
-			try applyVaultTransaction(pending)
+			try applyVaultTransaction(pending, history: nil)
 			pending = []
 			deleted += deletions
 		}
-		if !pending.isEmpty { try applyVaultTransaction(pending) }
+		if !pending.isEmpty { try applyVaultTransaction(pending, history: nil) }
 		return deleted
 	}
 
@@ -2940,6 +3101,57 @@ final class SharedKeychainStore: @unchecked Sendable {
 	}
 }
 
+extension SharedKeychainStore: HistoryStorage {
+	func historyMarker(vaultId: String) throws -> Data? {
+		try markerUnlocked(vaultId)
+	}
+
+	func historyRecord(_ account: String) throws -> Data? {
+		try backend.read(service: service, account: account)
+	}
+
+	func historyNames() throws -> [String] {
+		Array(try listingUnlocked().keys)
+	}
+
+	func historyApproval(vaultId: String) throws -> HistoryEngine.Approval? {
+		do {
+			return try historyAccessUnlocked(vaultId: vaultId) == .requireApproval ? .protected : .automatic
+		} catch KeychainStoreError.keychainUnavailable {
+			return nil
+		}
+	}
+
+	func historyReplace(_ account: String, with data: Data) throws {
+		guard case .account(let companion)? = try describedUnlocked([account]).first else {
+			throw KeychainStoreError.integrityValidationFailed
+		}
+		try writeVerifiedUnlocked(account: account, data: data, access: historyAccessUnlocked(vaultId: companion.vaultId))
+	}
+
+	func historyDelete(_ account: String) throws {
+		try deleteVerifiedUnlocked(account: account)
+	}
+
+	func historyCommit(_ writes: [HistoryEngine.RecordWrite]) throws {
+		try applyVaultTransaction(
+			writes.map { write in
+				guard let bytes = write.bytes else { return .delete(account: write.account) }
+				return .write(account: write.account, data: bytes.withUnsafeBytes { Data($0) })
+			},
+			history: nil)
+	}
+
+	/// The values item's access as a probe verifies it, once a scope for each
+	/// project, which history's records take.
+	private func historyAccessUnlocked(vaultId: String) throws -> VaultCliAccess {
+		if let verified = scope.verifiedAccess[vaultId] { return verified }
+		let verified = try verifiedValuesAccessUnlocked(vaultId: vaultId)
+		scope.verifiedAccess[vaultId] = verified
+		return verified
+	}
+}
+
 struct VaultProjectEnvironmentSummary: Codable, Equatable, Sendable {
 	let name: String
 	let keyCount: Int
@@ -3058,6 +3270,17 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	private static let maximumProjectDiscoveryShardSize = 128
 
 	private let store: SharedKeychainStore
+
+	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
+		store.takeHistoryOutcomes()
+	}
+
+	/// Whether values writes are recorded in local history; see
+	/// `SharedKeychainStore.recordsHistory`.
+	var recordsHistory: Bool {
+		get { store.recordsHistory }
+		set { store.recordsHistory = newValue }
+	}
 	private let appItemBackends: [AppKeychainStore: any AppKeychainItemBackend]
 
 	init() {
@@ -3289,68 +3512,14 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		))
 	}
 
-	func saveEnvironments(
-		vaultId: String,
-		projectName: String,
-		projectPath: String,
-		environments: [String: [String: String]]
-	) -> KeychainResult {
-		guard EnvValidation.isSafeVaultId(vaultId) else {
-			return .failure(.accessDenied)
-		}
-		let environments = Self.normalizedEnvironments(environments)
-		guard EnvValidation.areValidEnvironments(environments) else {
-			return .failure(.encodingFailed)
-		}
-		guard let payload = try? prepareProjectPayload(environments: environments) else {
-			return .failure(.encodingFailed)
-		}
-		return saveData(
-			vaultId: vaultId,
-			projectName: projectName,
-			projectPath: projectPath,
-			payload: payload
-		)
-	}
-
-	/// Updates only the protected vault payload. Callers must already have
-	/// verified that the indexed name and path are unchanged.
-	func updateEnvironments(
-		vaultId: String,
-		environments: [String: [String: String]]
-	) -> KeychainResult {
-		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
-		let environments = Self.normalizedEnvironments(environments)
-		guard EnvValidation.areValidEnvironments(environments),
-			let payload = try? prepareProjectPayload(environments: environments)
-		else { return .failure(.encodingFailed) }
-		guard payload.data.count <= VaultConstants.maxVaultSizeWarning else {
-			return .failure(.dataTooLarge(payload.data.count))
-		}
-		do {
-			try VaultKeychainTransactionLock.withLock {
-				try store.authorizeCompanion(vaultId: vaultId, .write)
-				try updateProjectPayloadThrowing(vaultId: vaultId, payload: payload)
-			}
-			if payload.data.count > VaultConstants.maxVaultSizeWarning * 9 / 10 {
-				return .successWithWarning(
-					"Env project is approaching size limit (\(payload.data.count) bytes)")
-			}
-			return .success
-		} catch let error as KeychainStoreError {
-			return .failure(keychainError(from: error))
-		} catch {
-			return .failure(.unexpectedStatus(errSecInternalComponent))
-		}
-	}
-
 	/// Creates a new env project without ever updating an existing Keychain
 	/// account. This is the import boundary shared with the Rust CLI.
 	func createEnvironments(
 		vaultId: String,
 		projectName: String,
 		projectPath: String,
-		environments: [String: [String: String]]
+		environments: [String: [String: String]],
+		source: VaultHistorySource
 	) -> KeychainResult {
 		guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
 		let environments = Self.normalizedEnvironments(environments)
@@ -3372,7 +3541,8 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 					projectName: projectName,
 					projectPath: projectPath,
 					payload: payload,
-					requirePayloadAbsent: true
+					requirePayloadAbsent: true,
+					source: source
 				)
 				if payload.data.count > VaultConstants.maxVaultSizeWarning * 9 / 10 {
 					return .successWithWarning(
@@ -3402,7 +3572,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			return try VaultKeychainTransactionLock.withLock {
 				let warning: String?
 				switch project {
-				case .create(let project):
+				case .create(let project, let source):
 					let payload = try prepareProjectPayload(project)
 					try store.authorizeCompanion(vaultId: project.id, .write)
 					try createProjectRecordsThrowing(
@@ -3411,10 +3581,11 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 						projectPath: project.path,
 						payload: payload,
 						requirePayloadAbsent: true,
+						source: source,
 						additionalMutations: mutations
 					)
 					warning = projectSizeWarning(payload.data.count)
-				case .upsert(let project):
+				case .upsert(let project, let source):
 					let payload = try prepareProjectPayload(project)
 					try store.authorizeCompanion(vaultId: project.id, .write)
 					try upsertProjectRecordsThrowing(
@@ -3422,10 +3593,11 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 						projectName: project.name,
 						projectPath: project.path,
 						payload: payload,
+						source: source,
 						additionalMutations: mutations
 					)
 					warning = projectSizeWarning(payload.data.count)
-				case .update(let vaultId, let environments):
+				case .update(let vaultId, let environments, let source):
 					guard EnvValidation.isSafeVaultId(vaultId) else {
 						return .failure(.accessDenied)
 					}
@@ -3441,6 +3613,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 					try updateProjectPayloadThrowing(
 						vaultId: vaultId,
 						payload: payload,
+						source: source,
 						additionalMutations: mutations
 					)
 					warning = projectSizeWarning(payload.data.count)
@@ -3462,7 +3635,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 					)
 					warning = nil
 				case nil:
-					try store.applyVaultTransaction(mutations)
+					try store.applyVaultTransaction(mutations, history: nil)
 					warning = nil
 				}
 				return warning.map(KeychainResult.successWithWarning) ?? .success
@@ -3566,41 +3739,6 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			: nil
 	}
 
-	private func saveData(
-		vaultId: String,
-		projectName: String,
-		projectPath: String,
-		payload: PreparedProjectPayload
-	) -> KeychainResult {
-
-		if payload.data.count > VaultConstants.maxVaultSizeWarning {
-			return .failure(.dataTooLarge(payload.data.count))
-		}
-
-		let warning =
-			payload.data.count > VaultConstants.maxVaultSizeWarning * 9 / 10
-			? "Env project is approaching size limit (\(payload.data.count) bytes)"
-			: nil
-
-		do {
-			return try VaultKeychainTransactionLock.withLock {
-				try store.authorizeCompanion(vaultId: vaultId, .write)
-				try upsertProjectRecordsThrowing(
-					vaultId: vaultId,
-					projectName: projectName,
-					projectPath: projectPath,
-					payload: payload
-				)
-
-				return warning.map(KeychainResult.successWithWarning) ?? .success
-			}
-		} catch let error as KeychainStoreError {
-			return .failure(keychainError(from: error))
-		} catch {
-			return .failure(.unexpectedStatus(errSecInternalComponent))
-		}
-	}
-
 	func backupInventoryResult() -> Result<VaultBackupInventory, KeychainError> {
 		do {
 			return .success(try VaultKeychainTransactionLock.withLock {
@@ -3701,19 +3839,22 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		}
 	}
 
-	func createRestoredProjectResult(_ project: VaultProject, listed: Bool) -> KeychainResult {
+	func createRestoredProjectResult(_ project: VaultProject, listed: Bool, source: VaultHistorySource) -> KeychainResult {
 		do {
 			return try VaultKeychainTransactionLock.withLock {
 				let payload = try prepareProjectPayload(project)
 				try store.authorizeCompanion(vaultId: project.id, .write)
+				store.noteHistoryBefore(vaultId: project.id, data: nil, source: source)
 				try store.add(account: project.id, data: payload.data, access: .requireApproval)
+				store.noteHistoryAfter(vaultId: project.id, data: payload.data)
 				guard listed else { return .success }
 				try createProjectRecordsThrowing(
 					vaultId: project.id,
 					projectName: project.name,
 					projectPath: project.path,
 					payload: payload,
-					requirePayloadAbsent: false
+					requirePayloadAbsent: false,
+					source: source
 				)
 				return projectSizeWarning(payload.data.count).map(KeychainResult.successWithWarning) ?? .success
 			}
@@ -3730,13 +3871,17 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		vaultId: String,
 		expected: [String: [String: String]],
 		merged: [String: [String: String]],
-		additionalMutations: [VaultKeychainMutation]
+		additionalMutations: [VaultKeychainMutation],
+		source: VaultHistorySource
 	) -> VaultRestoreWriteResult {
 		do {
 			return try VaultKeychainTransactionLock.withLock {
 				guard EnvValidation.isSafeVaultId(vaultId) else { return .failure(.accessDenied) }
 				try store.authorizeCompanion(vaultId: vaultId, .write)
-				guard try getEnvironmentsThrowing(vaultId: vaultId) == expected else { return .changedSinceReview }
+				// Exactly: Swift's == calls canonically equivalent values equal.
+				guard let current = try getEnvironmentsThrowing(vaultId: vaultId), current.isExactly(expected) else {
+					return .changedSinceReview
+				}
 				let environments = Self.normalizedEnvironments(merged)
 				guard EnvValidation.areValidEnvironments(environments) else { return .failure(.encodingFailed) }
 				let payload = try prepareProjectPayload(environments: environments)
@@ -3745,10 +3890,11 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				}
 				let state = try ensureProjectIndexThrowing()
 				if try readProjectMetadataRecordThrowing(vaultId: vaultId, state: state) != nil {
-					try updateProjectPayloadThrowing(vaultId: vaultId, payload: payload, additionalMutations: additionalMutations)
+					try updateProjectPayloadThrowing(
+						vaultId: vaultId, payload: payload, source: source, additionalMutations: additionalMutations)
 				} else {
 					try store.applyVaultTransaction(
-						[.write(account: vaultId, preparedProjectPayload: payload)] + additionalMutations)
+						[.write(account: vaultId, preparedProjectPayload: payload)] + additionalMutations, history: source)
 				}
 				return .written(warning: projectSizeWarning(payload.data.count))
 			}
@@ -4028,7 +4174,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			.write(
 				account: projectMetadataAccount(storageID: state.marker.storageId, vaultId: vaultId),
 				data: JSONEncoder().encode(renamed)),
-		] + additionalMutations)
+		] + additionalMutations, history: nil)
 	}
 
 	private func upsertProjectRecordsThrowing(
@@ -4036,6 +4182,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		projectName: String,
 		projectPath: String,
 		payload: PreparedProjectPayload,
+		source: VaultHistorySource,
 		additionalMutations: [VaultKeychainMutation] = []
 	) throws {
 		let state = try ensureProjectIndexThrowing()
@@ -4050,22 +4197,24 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				payload: payload,
 				requirePayloadAbsent: false,
 				state: state,
+				source: source,
 				additionalMutations: additionalMutations
 			)
 			return
 		}
 
-		guard try readItemThrowing(account: vaultId) != nil else {
+		guard let current = try readItemThrowing(account: vaultId) else {
 			throw KeychainStoreError.status(
 				operation: "read indexed vault data", code: errSecItemNotFound)
 		}
+		store.noteHistoryBefore(vaultId: vaultId, data: current, source: source)
 		var updated = metadata.record
 		updated.name = projectName
 		updated.path = projectPath
 		updated.environmentSummaries = payload.environmentSummaries
 		if updated == metadata.record {
 			try store.applyVaultTransaction(
-				[.write(account: vaultId, preparedProjectPayload: payload)] + additionalMutations)
+				[.write(account: vaultId, preparedProjectPayload: payload)] + additionalMutations, history: source)
 			return
 		}
 
@@ -4076,12 +4225,13 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		try store.applyVaultTransaction([
 			.write(account: vaultId, preparedProjectPayload: payload),
 			.write(account: metadataAccount, data: JSONEncoder().encode(updated)),
-		] + additionalMutations)
+		] + additionalMutations, history: source)
 	}
 
 	private func updateProjectPayloadThrowing(
 		vaultId: String,
 		payload: PreparedProjectPayload,
+		source: VaultHistorySource,
 		additionalMutations: [VaultKeychainMutation] = []
 	) throws {
 		let state = try ensureProjectIndexThrowing()
@@ -4092,15 +4242,16 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 			throw KeychainStoreError.status(
 				operation: "read project metadata", code: errSecItemNotFound)
 		}
-		guard try readItemThrowing(account: vaultId) != nil else {
+		guard let current = try readItemThrowing(account: vaultId) else {
 			throw KeychainStoreError.status(
 				operation: "read indexed vault data", code: errSecItemNotFound)
 		}
+		store.noteHistoryBefore(vaultId: vaultId, data: current, source: source)
 		var updated = metadata.record
 		updated.environmentSummaries = payload.environmentSummaries
 		if updated == metadata.record {
 			try store.applyVaultTransaction(
-				[.write(account: vaultId, preparedProjectPayload: payload)] + additionalMutations)
+				[.write(account: vaultId, preparedProjectPayload: payload)] + additionalMutations, history: source)
 			return
 		}
 
@@ -4111,7 +4262,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		try store.applyVaultTransaction([
 			.write(account: vaultId, preparedProjectPayload: payload),
 			.write(account: metadataAccount, data: JSONEncoder().encode(updated)),
-		] + additionalMutations)
+		] + additionalMutations, history: source)
 	}
 
 	private func createProjectRecordsThrowing(
@@ -4121,6 +4272,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		payload: PreparedProjectPayload,
 		requirePayloadAbsent: Bool,
 		state providedState: VaultProjectIndexState? = nil,
+		source: VaultHistorySource,
 		additionalMutations: [VaultKeychainMutation] = []
 	) throws {
 		var state = try providedState ?? ensureProjectIndexThrowing()
@@ -4182,7 +4334,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				data: try JSONEncoder().encode(state.marker)
 			))
 		}
-		try store.applyVaultTransaction(mutations + additionalMutations)
+		try store.applyVaultTransaction(mutations + additionalMutations, history: source)
 	}
 
 	private func selectProjectDiscoveryShard(
@@ -4236,7 +4388,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 				mutations.insert(.delete(account: vaultId), at: 0)
 				try store.deleteProject(vaultId: vaultId, with: mutations)
 			} else if !mutations.isEmpty {
-				try store.applyVaultTransaction(mutations)
+				try store.applyVaultTransaction(mutations, history: nil)
 			}
 			return
 		}
@@ -4297,7 +4449,7 @@ final class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		if deletePayload {
 			try store.deleteProject(vaultId: vaultId, with: mutations + additionalMutations)
 		} else {
-			try store.applyVaultTransaction(mutations + additionalMutations)
+			try store.applyVaultTransaction(mutations + additionalMutations, history: nil)
 		}
 	}
 

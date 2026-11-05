@@ -135,8 +135,9 @@ enum VaultProjectMutation: Sendable {
 		destination: String
 	)
 	case clearEnvironment(name: String, expectedSecrets: [String: String])
-	/// Sets an environment back to `restored`, as an undone import does.
-	case restoreEnvironment(name: String, expectedSecrets: [String: String], restored: [String: String])
+	/// Sets an environment to `restored`, as a Raw text save or an undone
+	/// import does; `source` says which.
+	case restoreEnvironment(name: String, expectedSecrets: [String: String], restored: [String: String], source: VaultHistorySource)
 	case deleteSecret(environment: String, key: String, expectedValue: String)
 	case editKey(VaultKeyEdit)
 }
@@ -349,7 +350,7 @@ actor VaultPersistenceCoordinator {
 		guard !Task.isCancelled else { return .failure(.accessDenied) }
 		switch action {
 		case .create(let project, let listed):
-			switch service.createRestoredProjectResult(project, listed: listed) {
+			switch service.createRestoredProjectResult(project, listed: listed, source: VaultHistorySource(.restore)) {
 			case .success: return .written(warning: nil)
 			case .successWithWarning(let warning): return .written(warning: warning)
 			case .failure(let error): return .failure(error)
@@ -366,7 +367,9 @@ actor VaultPersistenceCoordinator {
 			case .failure(let error):
 				return .failure(error)
 			}
-			return service.mergeRestoredProjectResult(vaultId: vaultId, expected: expected, merged: merged, additionalMutations: mutations)
+			return service.mergeRestoredProjectResult(
+				vaultId: vaultId, expected: expected, merged: merged, additionalMutations: mutations,
+				source: VaultHistorySource(.restore))
 		}
 	}
 
@@ -471,8 +474,9 @@ actor VaultPersistenceCoordinator {
 			}
 			mutations.append(.write(account: "__org_associations__", data: data))
 		}
+		// A new project's environment holds no key, so this starts no history.
 		let saveResult = service.applyVaultTransaction(
-			project: .create(project),
+			project: .create(project, source: VaultHistorySource(.createEnvironment)),
 			data: mutations
 		)
 		let warning: String?
@@ -487,39 +491,6 @@ actor VaultPersistenceCoordinator {
 			orgAssociations: associations,
 			warning: warning
 		))
-	}
-
-	func saveProject(_ project: VaultProject, markDirty: Bool) -> (
-		result: KeychainResult,
-		metadata: SyncMetadata?
-	) {
-		switch service.withKeychainTransaction({
-			saveProjectUnlocked(project, markDirty: markDirty)
-		}) {
-		case .success(let result): return result
-		case .failure(let error): return (.failure(error), nil)
-		}
-	}
-
-	private func saveProjectUnlocked(_ project: VaultProject, markDirty: Bool) -> (
-		result: KeychainResult,
-		metadata: SyncMetadata?
-	) {
-		let previousMetadata: SyncMetadataRecordSnapshot
-		switch loadSyncMetadataRecordSnapshotResult(vaultId: project.id) {
-		case .success(let snapshot):
-			previousMetadata = snapshot
-		case .failure(let error):
-			return (.failure(error), nil)
-		}
-		guard markDirty else { return (save(project), previousMetadata.metadata) }
-		var item = previousMetadata.metadata ?? SyncMetadata()
-		item.isDirty = true
-		guard let mutation = syncMetadataMutation(item, vaultId: project.id) else {
-			return (.failure(.encodingFailed), previousMetadata.metadata)
-		}
-		let result = service.applyVaultTransaction(project: .upsert(project), data: [mutation])
-		return (result, result.succeeded ? item : previousMetadata.metadata)
 	}
 
 	/// Adds one secret to the latest durable snapshot. The in-memory store only
@@ -600,7 +571,7 @@ actor VaultPersistenceCoordinator {
 			return .failure(.encodingFailed)
 		}
 		let saveResult = service.applyVaultTransaction(
-			project: .update(vaultId: projectId, environments: environments),
+			project: .update(vaultId: projectId, environments: environments, source: VaultHistorySource(.set)),
 			data: [metadataMutation]
 		)
 		let warning: String?
@@ -640,6 +611,7 @@ actor VaultPersistenceCoordinator {
 		folderIdentity: ProjectConfigFile.DirectoryIdentity? = nil, fileWriter: ProjectConfigFile.FileWriter = ProjectConfigFile.writeSecurely
 	) -> SchemaKeyRenameResult {
 		// Match the CLI's Keychain-before-config lock order; compensate before either lock is released.
+		let source = edit.historySource
 		let transaction = service.withKeychainTransaction { () -> SchemaKeyRenameResult in
 			let previous: VaultProject
 			switch service.getProjectResult(vaultId: expected.id) {
@@ -670,7 +642,7 @@ actor VaultPersistenceCoordinator {
 				var isDirectory: ObjCBool = false
                 if !FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory) || !isDirectory.boolValue {
                     if change.description != nil { throw ProjectEnvSchemaFile.FileError.noFolder }
-					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
+					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata, source: source) {
 					case .success(let commit): return .success(commit, nil)
 					case .failure(let error): return .keychainFailure(error)
 					default: return .failure(.changed)
@@ -682,7 +654,7 @@ actor VaultPersistenceCoordinator {
 						persisted = SecretPersistenceCommit(project: previous, syncMetadata: metadata.metadata, warning: nil)
 						return
 					}
-					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata) {
+					switch self.persistMutation(next, previousProject: previous, previousMetadata: metadata, source: source) {
 					case .success(let commit): persisted = commit
 					case .failure(let error):
 						if case .transactionOutcomeIndeterminate = error { outcomeIndeterminate = true }
@@ -692,7 +664,7 @@ actor VaultPersistenceCoordinator {
 				}, onWriteFailure: {
 					guard storesValues else { return }
 					let restore: VaultKeychainMutation = metadata.data.map { .write(account: metadata.account, data: $0) } ?? .delete(account: metadata.account)
-					rollbackFailed = !self.service.applyVaultTransaction(project: .upsert(previous), data: [restore]).succeeded
+					rollbackFailed = !self.service.applyVaultTransaction(project: .upsert(previous, source: source), data: [restore]).succeeded
 				}, onPrepared: { rules, source in updatedRules = rules; selectedSource = source }, strictRename: true,
 				onRootSchema: { rootSchema = $0 }, folderIdentity: folderIdentity)
 
@@ -765,37 +737,45 @@ actor VaultPersistenceCoordinator {
 		let previousProject = project
 
 		let mutationApplies: Bool
+		let source: VaultHistorySource
 		switch mutation {
 		case .renameProject:
-			mutationApplies = false
+			return .conflict(latest: project, metadata: metadata.metadata)
 		case .deleteEnvironment(let name, let expectedSecrets):
+			source = VaultHistorySource(.deleteEnvironment)
 			mutationApplies =
 				project.environments.count > 1
 				&& project.environments[name]?.isExactly(expectedSecrets) == true
 			if mutationApplies { project.environments.removeValue(forKey: name) }
-		case .duplicateEnvironment(let source, let expectedSecrets, let destination):
+		case .duplicateEnvironment(let original, let expectedSecrets, let destination):
+			source = VaultHistorySource(.duplicateEnvironment)
 			mutationApplies =
-				project.environments[source]?.isExactly(expectedSecrets) == true
+				project.environments[original]?.isExactly(expectedSecrets) == true
 				&& project.environments[destination] == nil
 			if mutationApplies { project.environments[destination] = expectedSecrets }
-		case .renameEnvironment(let source, let expectedSecrets, let destination):
+		case .renameEnvironment(let original, let expectedSecrets, let destination):
+			source = VaultHistorySource(.renameEnvironment, renames: [.environment(from: original, to: destination)])
 			mutationApplies =
-				project.environments[source]?.isExactly(expectedSecrets) == true
+				project.environments[original]?.isExactly(expectedSecrets) == true
 				&& project.environments[destination] == nil
 			if mutationApplies {
-				project.environments.removeValue(forKey: source)
+				project.environments.removeValue(forKey: original)
 				project.environments[destination] = expectedSecrets
 			}
 		case .clearEnvironment(let name, let expectedSecrets):
+			source = VaultHistorySource(.clearEnvironment)
 			mutationApplies = project.environments[name]?.isExactly(expectedSecrets) == true
 			if mutationApplies { project.environments[name] = [:] }
-		case .restoreEnvironment(let name, let expectedSecrets, let restored):
+		case .restoreEnvironment(let name, let expectedSecrets, let restored, let restoreSource):
+			source = restoreSource
 			mutationApplies = project.environments[name]?.isExactly(expectedSecrets) == true
 			if mutationApplies { project.environments[name] = restored }
 		case .deleteSecret(let environment, let key, let expectedValue):
+			source = VaultHistorySource(.delete)
 			mutationApplies = project.environments[environment]?[key].map(ExactText.init) == ExactText(expectedValue)
 			if mutationApplies { project.environments[environment]?.removeValue(forKey: key) }
 		case .editKey(let edit):
+			source = edit.historySource
 			if case .success(let environments) = edit.applied(to: project.environments) {
 				mutationApplies = true
 				project.environments = environments
@@ -810,7 +790,8 @@ actor VaultPersistenceCoordinator {
 		return persistMutation(
 			project,
 			previousProject: previousProject,
-			previousMetadata: metadata
+			previousMetadata: metadata,
+			source: source
 		)
 	}
 
@@ -854,7 +835,8 @@ actor VaultPersistenceCoordinator {
 	nonisolated private func persistMutation(
 		_ project: VaultProject,
 		previousProject: VaultProject,
-		previousMetadata: SyncMetadataRecordSnapshot
+		previousMetadata: SyncMetadataRecordSnapshot,
+		source: VaultHistorySource
 	) -> ProjectMutationPersistenceResult {
 		var item = previousMetadata.metadata ?? SyncMetadata()
 		item.isDirty = true
@@ -864,8 +846,8 @@ actor VaultPersistenceCoordinator {
 		}
 		let projectMutation: VaultProjectKeychainMutation =
 			project.name == previousProject.name && project.path == previousProject.path
-			? .update(vaultId: project.id, environments: project.environments)
-			: .upsert(project)
+			? .update(vaultId: project.id, environments: project.environments, source: source)
+			: .upsert(project, source: source)
 		let saveResult = service.applyVaultTransaction(
 			project: projectMutation,
 			data: [metadataMutation]
@@ -974,7 +956,8 @@ actor VaultPersistenceCoordinator {
 		remotePayload: Data,
 		action: String,
 		version: Int,
-		binding: SyncPrincipalBinding
+		binding: SyncPrincipalBinding,
+		source: VaultHistorySource
 	) -> PullPersistenceResult {
 		switch service.withKeychainTransaction({
 			commitPullUnlocked(
@@ -982,7 +965,8 @@ actor VaultPersistenceCoordinator {
 				remotePayload: remotePayload,
 				action: action,
 				version: version,
-				binding: binding
+				binding: binding,
+				source: source
 			)
 		}) {
 		case .success(let result): return result
@@ -995,7 +979,8 @@ actor VaultPersistenceCoordinator {
 		remotePayload: Data,
 		action: String,
 		version: Int,
-		binding: SyncPrincipalBinding
+		binding: SyncPrincipalBinding,
+		source: VaultHistorySource
 	) -> PullPersistenceResult {
 		let durableProject: VaultProject
 		switch service.getProjectResult(vaultId: baseline.id) {
@@ -1066,7 +1051,8 @@ actor VaultPersistenceCoordinator {
 		let saveResult = service.applyVaultTransaction(
 			project: .update(
 				vaultId: mergedProject.id,
-				environments: mergedProject.environments
+				environments: mergedProject.environments,
+				source: source
 			),
 			data: [metadataMutation]
 		)
@@ -1305,9 +1291,12 @@ actor VaultPersistenceCoordinator {
 		if orgSlug != nil {
 			mutations.append(.write(account: "__org_associations__", data: associationData))
 		}
+		let source = VaultHistorySource(
+			.projectImport,
+			detail: .init(remote: orgSlug.map(HistoryEngine.Remote.org) ?? .personal, remoteVersion: UInt64(max(version, 0))))
 		let saveResult = service.applyVaultTransaction(
-			project: existing == nil ? .create(importedProject) : .update(
-				vaultId: importedProject.id, environments: importedProject.environments
+			project: existing == nil ? .create(importedProject, source: source) : .update(
+				vaultId: importedProject.id, environments: importedProject.environments, source: source
 			),
 			data: mutations
 		)
@@ -1346,7 +1335,8 @@ actor VaultPersistenceCoordinator {
 		expectedSecrets: [String: String]?,
 		replacingKeys: Set<String>,
 		requestId: UUID,
-		authority: LocalEnvImportAuthority
+		authority: LocalEnvImportAuthority,
+		source: VaultHistorySource
 	) -> LocalEnvImportPersistenceResult {
 		switch service.withKeychainTransaction({
 			importSecretsUnlocked(
@@ -1358,7 +1348,8 @@ actor VaultPersistenceCoordinator {
 				expectedSecrets: expectedSecrets,
 				replacingKeys: replacingKeys,
 				requestId: requestId,
-				authority: authority
+				authority: authority,
+				source: source
 			)
 		}) {
 		case .success(let result): return result
@@ -1375,7 +1366,8 @@ actor VaultPersistenceCoordinator {
 		expectedSecrets: [String: String]?,
 		replacingKeys: Set<String>,
 		requestId: UUID,
-		authority: LocalEnvImportAuthority
+		authority: LocalEnvImportAuthority,
+		source: VaultHistorySource
 	) -> LocalEnvImportPersistenceResult {
 		let storedProject: VaultProject
 		switch service.getProjectResult(vaultId: projectId) {
@@ -1427,7 +1419,8 @@ actor VaultPersistenceCoordinator {
 			project,
 			target: LocalEnvImportTarget(projectId: projectId, environment: environment),
 			requestId: requestId,
-			authority: authority
+			authority: authority,
+			source: source
 		)
 	}
 
@@ -1438,7 +1431,8 @@ actor VaultPersistenceCoordinator {
 		environment: String,
 		secrets: [String: String],
 		requestId: UUID,
-		authority: LocalEnvImportAuthority
+		authority: LocalEnvImportAuthority,
+		source: VaultHistorySource
 	) -> LocalEnvImportPersistenceResult {
 		switch service.withKeychainTransaction({
 			addEnvironmentUnlocked(
@@ -1448,7 +1442,8 @@ actor VaultPersistenceCoordinator {
 				environment: environment,
 				secrets: secrets,
 				requestId: requestId,
-				authority: authority
+				authority: authority,
+				source: source
 			)
 		}) {
 		case .success(let result): return result
@@ -1463,7 +1458,8 @@ actor VaultPersistenceCoordinator {
 		environment: String,
 		secrets: [String: String],
 		requestId: UUID,
-		authority: LocalEnvImportAuthority
+		authority: LocalEnvImportAuthority,
+		source: VaultHistorySource
 	) -> LocalEnvImportPersistenceResult {
 		let storedProject: VaultProject
 		switch service.getProjectResult(vaultId: projectId) {
@@ -1485,7 +1481,8 @@ actor VaultPersistenceCoordinator {
 			project,
 			target: LocalEnvImportTarget(projectId: projectId, environment: environment),
 			requestId: requestId,
-			authority: authority
+			authority: authority,
+			source: source
 		)
 	}
 
@@ -1493,7 +1490,8 @@ actor VaultPersistenceCoordinator {
 		_ project: VaultProject,
 		target: LocalEnvImportTarget,
 		requestId: UUID,
-		authority: LocalEnvImportAuthority
+		authority: LocalEnvImportAuthority,
+		source: VaultHistorySource
 	) -> LocalEnvImportPersistenceResult {
 		let projectId = project.id
 		let currentMetadata: SyncMetadataRecordSnapshot
@@ -1509,7 +1507,7 @@ actor VaultPersistenceCoordinator {
 		guard let metadataMutation = syncMetadataMutation(item, vaultId: projectId)
 		else { return .failure(.encodingFailed) }
 		let saveResult = service.applyVaultTransaction(
-			project: .update(vaultId: projectId, environments: project.environments),
+			project: .update(vaultId: projectId, environments: project.environments, source: source),
 			data: [metadataMutation]
 		)
 		let warning: String?
@@ -1527,28 +1525,6 @@ actor VaultPersistenceCoordinator {
 				syncMetadata: item,
 				warning: warning
 			))
-	}
-
-	func save(_ project: VaultProject) -> KeychainResult {
-		service.saveEnvironments(
-			vaultId: project.id,
-			projectName: project.name,
-			projectPath: project.path,
-			environments: project.environments
-		)
-	}
-
-	private func saveMutationProject(
-		_ project: VaultProject,
-		previousProject: VaultProject
-	) -> KeychainResult {
-		guard project.name == previousProject.name,
-			project.path == previousProject.path
-		else { return save(project) }
-		return service.updateEnvironments(
-			vaultId: project.id,
-			environments: project.environments
-		)
 	}
 
 	func removeFromSidebar(vaultId: String) -> Bool {

@@ -165,7 +165,8 @@ struct Round4BenchmarkTests {
 					vaultId: "00000000-0000-4000-8000-\(String(format: "%012d", iteration))",
 					projectName: "Benchmark",
 					projectPath: "",
-					environments: environments
+					environments: environments,
+					source: VaultHistorySource(.set)
 				)
 				guard case .success = result else {
 					Issue.record("Prepared project transaction failed: \(result)")

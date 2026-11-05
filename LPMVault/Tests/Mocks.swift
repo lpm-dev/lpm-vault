@@ -356,12 +356,26 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		return .success
 	}
 
+	/// Every history source a values write named, in order.
+	private(set) var historySources: [VaultHistorySource] = []
+	/// What the next `takeHistoryOutcomes()` returns.
+	var pendingHistoryOutcomes: [String: VaultHistoryOutcome] = [:]
+
+	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
+		lock.withLock {
+			defer { pendingHistoryOutcomes = [:] }
+			return pendingHistoryOutcomes
+		}
+	}
+
 	func createEnvironments(
 		vaultId: String,
 		projectName: String,
 		projectPath: String,
-		environments: [String: [String: String]]
+		environments: [String: [String: String]],
+		source: VaultHistorySource
 	) -> KeychainResult {
+		historySources.append(source)
 		onCreateEnvironments?()
 		if envStorage[vaultId] != nil { return .failure(.duplicateItem) }
 		return saveEnvironments(
@@ -442,9 +456,10 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	/// Runs as a restored project is about to be written.
 	var beforeRestoredProjectWrite: (@Sendable (VaultProject) -> Void)?
 
-	func createRestoredProjectResult(_ project: VaultProject, listed: Bool) -> KeychainResult {
+	func createRestoredProjectResult(_ project: VaultProject, listed: Bool, source: VaultHistorySource) -> KeychainResult {
 		beforeRestoredProjectWrite?(project)
 		return lock.withLock {
+			historySources.append(source)
 			if shouldFail || failRestoreWrites { return .failure(failureError) }
 			guard envStorage[project.id] == nil, hiddenPayloads[project.id] == nil else { return .failure(.duplicateItem) }
 			let environments = project.environments.isEmpty ? ["default": [:]] : project.environments
@@ -462,9 +477,11 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		vaultId: String,
 		expected: [String: [String: String]],
 		merged: [String: [String: String]],
-		additionalMutations: [VaultKeychainMutation]
+		additionalMutations: [VaultKeychainMutation],
+		source: VaultHistorySource
 	) -> VaultRestoreWriteResult {
 		lock.withLock {
+			historySources.append(source)
 			if shouldFail || failRestoreWrites { return .failure(failureError) }
 			if let listed = envStorage[vaultId] {
 				guard listed.environments == expected else { return .changedSinceReview }
@@ -516,21 +533,24 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		let previousData = dataStorage
 		let projectResult: KeychainResult
 		switch project {
-		case .create(let project):
+		case .create(let project, let source):
 			projectResult = createEnvironments(
 				vaultId: project.id,
 				projectName: project.name,
 				projectPath: project.path,
-				environments: project.environments
+				environments: project.environments,
+				source: source
 			)
-		case .upsert(let project):
+		case .upsert(let project, let source):
+			historySources.append(source)
 			projectResult = saveEnvironments(
 				vaultId: project.id,
 				projectName: project.name,
 				projectPath: project.path,
 				environments: project.environments
 			)
-		case .update(let vaultId, let environments):
+		case .update(let vaultId, let environments, let source):
+			historySources.append(source)
 			projectResult = updateEnvironments(vaultId: vaultId, environments: environments)
 		case .rename(let vaultId, let name):
 			if envStorage[vaultId] != nil {
