@@ -79,7 +79,10 @@ struct HistoryEngineTests {
 	func malformedAnswersAreUnreadable() throws {
 		let frame = try HistoryEngine.frame(json: Data("{}".utf8), blobs: [secret(Data("value".utf8))])
 		let bytes = frame.withUnsafeBytes { Array($0) }
-		for broken in [Array(bytes.dropLast()), bytes + [0], Array("LPMX".utf8) + bytes.dropFirst(4)] {
+		let truncated = Array(bytes.dropLast())
+		let extended = bytes + [0]
+		let misnamed = Array("LPMX".utf8) + Array(bytes.dropFirst(4))
+		for broken in [truncated, extended, misnamed] {
 			#expect(throws: HistoryEngine.Failure.self) {
 				try broken.withUnsafeBytes { _ = try HistoryEngine.decodeFrame($0) }
 			}
