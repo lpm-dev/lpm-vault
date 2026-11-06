@@ -1526,6 +1526,17 @@ final class VaultStore {
     session: { [weak self] in await self?.platformSession() },
     cleanupChanged: { [weak self] in Task { @MainActor in self?.platformCleanupChanged() } }
   )
+  /// Whether a history ring may have fewer parts than a full one, which the
+  /// pass after unlock raises; unknown at launch.
+  @ObservationIgnored private var historyRingsMayBeShrunk = true
+  /// The selected project's local history, as the History page shows it.
+  @ObservationIgnored private(set) lazy var history = VaultLocalHistory(actions: .coordinator(
+    persistence,
+    mutate: { [weak self] projectID, mutation in
+      await self?.mutateForHistory(projectID: projectID, mutation) ?? .unavailable
+    },
+    confirm: { [weak self] reason in await self?.confirmSensitiveAction(reason: reason) ?? false }
+  ))
   @ObservationIgnored private(set) lazy var platforms = PlatformConnections(
     store: platformConnectionStore,
     connect: platformConnect ?? { await VercelConnector().connect(session: $0, open: $1) },
@@ -3377,7 +3388,8 @@ final class VaultStore {
   func addEnvironment(
     to projectId: String,
     name: String,
-    secrets: [String: String] = [:]
+    secrets: [String: String] = [:],
+    importedFrom origin: EnvImportSource? = nil
   ) async -> Bool {
     guard isUnlocked else {
       error = EnvFileImportError.vaultLocked.localizedDescription
@@ -3389,7 +3401,8 @@ final class VaultStore {
       secrets.keys.allSatisfy(EnvValidation.isValidVariableName),
       project.environments[name] == nil
     else { return false }
-    switch await insertEnvironment(name, secrets: secrets, into: project) {
+    let source = VaultHistorySource(.createEnvironment, detail: origin?.historyDetail ?? .init())
+    switch await insertEnvironment(name, secrets: secrets, into: project, source: source) {
     case .success: return true
     case .failure(.cancelled): return false
     case .failure(.persistence(let message)): error = message
@@ -3418,13 +3431,14 @@ final class VaultStore {
     }
     let secrets = skippingKeys.isEmpty
       ? review.imported.secrets : review.imported.secrets.filter { !skippingKeys.contains($0.key) }
-    return await insertEnvironment(review.environment, secrets: secrets, into: project)
+    let source = VaultHistorySource(.createEnvironment, detail: review.source.historyDetail)
+    return await insertEnvironment(review.environment, secrets: secrets, into: project, source: source)
   }
 
   /// Persists `name`, a new environment holding `secrets`, in `project`, then
   /// shows it. A review of that environment ends here, whatever the outcome.
   private func insertEnvironment(
-    _ name: String, secrets: [String: String], into project: VaultProject
+    _ name: String, secrets: [String: String], into project: VaultProject, source: VaultHistorySource
   ) async -> Result<Void, EnvFileImportError> {
     let write = writes.begin()
     defer { writes.end(write) }
@@ -3450,7 +3464,8 @@ final class VaultStore {
         environment: name,
         secrets: secrets,
         requestId: requestId,
-        authority: localEnvImportAuthority
+        authority: localEnvImportAuthority,
+        source: source
       )
     } onCancel: { [localEnvImportAuthority] in
       localEnvImportAuthority.cancel(target, requestId: requestId)
@@ -3698,6 +3713,7 @@ final class VaultStore {
     }
 
     invalidateProjectLoad()
+    let source = VaultHistorySource(.import, detail: review.source.historyDetail)
     let commit = await withTaskCancellationHandler {
       await persistence.importSecrets(
         projectId: projectId,
@@ -3708,7 +3724,8 @@ final class VaultStore {
         expectedSecrets: review.baseline,
         replacingKeys: replacingKeys,
         requestId: requestId,
-        authority: localEnvImportAuthority
+        authority: localEnvImportAuthority,
+        source: source
       )
     } onCancel: { [localEnvImportAuthority] in
       localEnvImportAuthority.cancel(target, requestId: requestId)
@@ -3718,7 +3735,8 @@ final class VaultStore {
     case .success(let persisted):
       let receipt = EnvironmentChangeReceipt(
         projectId: projectId, environment: environment, before: review.baseline,
-        after: persisted.project.environments[environment] ?? [:])
+        after: persisted.project.environments[environment] ?? [:],
+        historyEntry: source.related(side: "after"))
       guard sessionGeneration == vaultSessionGeneration,
         isUnlocked,
         projects.contains(where: { $0.id == projectId })
@@ -3769,7 +3787,9 @@ final class VaultStore {
     return await withCheckedContinuation { continuation in
       enqueueProjectMutation(
         base: project,
-        mutation: .restoreEnvironment(name: receipt.environment, expectedSecrets: receipt.after, restored: receipt.before),
+        mutation: .restoreEnvironment(
+          name: receipt.environment, expectedSecrets: receipt.after, restored: receipt.before,
+          source: VaultHistorySource(.undo, detail: .init(related: receipt.historyEntry))),
         reportsFailures: false
       ) { continuation.resume(returning: $0) }
     }
@@ -3926,17 +3946,20 @@ final class VaultStore {
     rawTextSaves[target] = saveID
     defer { if rawTextSaves[target] == saveID { rawTextSaves.removeValue(forKey: target) } }
     recordUserActivity()
+    let source = VaultHistorySource(.rawEdit)
     let outcome = await withCheckedContinuation { continuation in
       enqueueProjectMutation(
         base: project,
-        mutation: .restoreEnvironment(name: target.environment, expectedSecrets: expected, restored: values),
+        mutation: .restoreEnvironment(name: target.environment, expectedSecrets: expected, restored: values, source: source),
         reportsFailures: false
       ) { continuation.resume(returning: $0) }
     }
     switch outcome {
     case .saved:
       rawTextDrafts.removeValue(forKey: target)
-      return .saved(EnvironmentChangeReceipt(projectId: target.projectId, environment: target.environment, before: expected, after: values))
+      return .saved(EnvironmentChangeReceipt(
+        projectId: target.projectId, environment: target.environment, before: expected, after: values,
+        historyEntry: source.related(side: "after")))
     case .changed: return .changed
     case .unavailable: return .unavailable
     case .failed(let message): return .failed(message)
@@ -5688,16 +5711,43 @@ final class VaultStore {
     Task { [platformCredentials] in await platformCredentials.resumeCleanup(now: true) }
     Task { [weak self] in await self?.reconcilePublishingRecords() }
     companionMaintenanceTask?.cancel()
-    companionMaintenanceTask = Task { [persistence] in
-      if case .failure(let failure) = await persistence.maintainCompanionStorage(), !Task.isCancelled {
-        vaultStoreLogger.error("Companion maintenance after unlock failed: \(failure.description, privacy: .public)")
-      }
-    }
+    companionMaintenanceTask = Task { [weak self] in await self?.maintainAfterUnlock() }
     if lpmHomeMoveRecovery == nil, LPMHome.unfinishedMove(in: preferences) != nil {
       lpmHomeMoveRecovery = Task { [weak self] in
         try? await self?.finishUnfinishedLPMHomeMove()
         self?.lpmHomeMoveRecovery = nil
       }
+    }
+  }
+
+  /// The work after unlock, in one lock scope: companion maintenance, then
+  /// local history's upkeep, which trims rings while the Mac holds too many
+  /// LPM records and raises shrunk ones once it's well below. Raising reads
+  /// every ring's head, so it runs only while a ring may have shrunk: at the
+  /// first unlock after launch, and after a pass that saw the Mac past its target.
+  private func maintainAfterUnlock() async {
+    let work = await persistence.maintainAfterUnlock(raisingHistoryRings: historyRingsMayBeShrunk)
+    guard !Task.isCancelled else { return }
+    if case .failure(let failure) = work.companion {
+      vaultStoreLogger.error("Companion maintenance after unlock failed: \(failure.description, privacy: .public)")
+    }
+    switch work.history {
+    case .success(let upkeep):
+      guard isUnlocked else { return }
+      historyRingsMayBeShrunk = upkeep.mayBeShrunk
+      history.noteCrowded(upkeep.crowded ? upkeep.records : nil)
+    case .failure(let failure):
+      vaultStoreLogger.error("Local history upkeep after unlock failed: \(failure.description, privacy: .public)")
+    }
+  }
+
+  /// Applies a history mutation, a reviewed rollback, through the queue every
+  /// edit of `projectID` goes through.
+  private func mutateForHistory(projectID: String, _ mutation: VaultProjectMutation) async -> ProjectMutationOutcome {
+    guard isUnlocked, let project = projects.first(where: { $0.id == projectID }) else { return .unavailable }
+    recordUserActivity()
+    return await withCheckedContinuation { continuation in
+      enqueueProjectMutation(base: project, mutation: mutation, reportsFailures: false) { continuation.resume(returning: $0) }
     }
   }
 
@@ -6314,6 +6364,7 @@ final class VaultStore {
     projects = projects.map { VaultProject(metadata: $0.metadata) }
     workspaceSnapshots = [:]
     platforms.reset()
+    history.reset()
     // Nothing can be sent without a session while locked; unlocking resumes it.
     Task { [platformCredentials] in await platformCredentials.stopCleanup() }
     for entry in publishSessions { entry.session?.cancel() }
@@ -7865,6 +7916,12 @@ final class VaultStore {
     defer { writes.end(write) }
     let persistence = persistence
     let binding = syncBinding(for: authority)
+    let remote: HistoryEngine.Remote
+    switch authority.account {
+    case .personal: remote = .personal
+    case .org(let slug): remote = .org(slug)
+    }
+    let source = VaultHistorySource(.pull, detail: .init(remote: remote, remoteVersion: UInt64(max(version, 0))))
     let operation: @Sendable () async -> PullPersistenceResult = { [weak self] in
       guard let self, await self.hasCurrentSyncAuth(authority) else {
         return .cancelled
@@ -7874,7 +7931,8 @@ final class VaultStore {
         remotePayload: remotePayload,
         action: action,
         version: version,
-        binding: binding
+        binding: binding,
+        source: source
       )
     }
     if let generation = authority.authorityGeneration {
@@ -8752,6 +8810,9 @@ final class VaultStore {
     switch mutation {
     case .renameEnvironment, .deleteEnvironment: break
     case .editKey(let edit) where edit.isRename: break
+    case .historyRollback(_, let plan, let skipped, let keepEmpty, _)
+    where !HistoryRollbackFollow(plan: plan, skipped: Set(skipped), keepEmpty: Set(keepEmpty)).isEmpty:
+      break
     default: return .untouched
     }
     switch saved {
@@ -8771,6 +8832,9 @@ final class VaultStore {
     case .editKey(let edit):
       let environments = Set(VaultKeyEdit.environments(containing: edit.key, in: project.environments))
       result = await publishing.renameKey(edit.key, to: edit.newKey, sourcedFrom: environments, in: project.id)
+    case .historyRollback(_, let plan, let skipped, let keepEmpty, _):
+      result = await publishing.followRollback(
+        HistoryRollbackFollow(plan: plan, skipped: Set(skipped), keepEmpty: Set(keepEmpty)), in: project.id)
     default:
       return .untouched
     }
@@ -8798,6 +8862,8 @@ final class VaultStore {
       return !renamed.isEmpty && renamed.allSatisfy { name in
         latest.environments[name]?[edit.key] == nil && latest.environments[name]?[edit.newKey] != nil
       }
+    case .historyRollback(_, let plan, let skipped, let keepEmpty, _):
+      return HistoryRollbackFollow(plan: plan, skipped: Set(skipped), keepEmpty: Set(keepEmpty)).isApplied(to: latest.environments)
     default:
       return false
     }
@@ -8856,6 +8922,9 @@ final class VaultStore {
   /// values, as a rename's commit doesn't, only its name and folder, so
   /// values already loaded stay.
   private func updateProjectInPlace(_ project: VaultProject) {
+    // A write this app made may not have been recorded; the sidebar says so
+    // for every project, whether or not its History page was opened.
+    Task { [history] in await history.collectOutcomes() }
     guard let index = projects.firstIndex(where: { $0.id == project.id }) else { return }
     if !project.hasLoadedEnvironments, projects[index].hasLoadedEnvironments {
       projects[index].name = project.name

@@ -87,7 +87,7 @@ struct NewEnvironmentSheet: View {
 		let requestID = UUID()
 		creationID = requestID
 		creationTask = Task {
-			let added = await store.addEnvironment(to: project.id, name: resolvedName, secrets: values)
+			let added = await store.addEnvironment(to: project.id, name: resolvedName, secrets: values, importedFrom: source.source)
 			guard creationID == requestID else { return }
 			creationTask = nil
 			creationID = nil

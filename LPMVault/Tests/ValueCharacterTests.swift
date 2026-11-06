@@ -686,7 +686,8 @@ struct ExactValueSaveTests {
 			baseline: VaultProject(id: "p", name: "Project", path: "", environments: ["default": ["A": Self.before]]),
 			remotePayload: Data(#"{"environments":{"default":{"A":"x\u2000y"}}}"#.utf8),
 			action: "pull", version: 1,
-			binding: SyncPrincipalBinding(registryURL: "https://lpm.dev", principalID: "user-1", scope: "personal"))
+			binding: SyncPrincipalBinding(registryURL: "https://lpm.dev", principalID: "user-1", scope: "personal"),
+			source: VaultHistorySource(.pull))
 		guard case .conflict = result else {
 			Issue.record("expected a conflict, got \(result)")
 			return

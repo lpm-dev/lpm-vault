@@ -240,12 +240,44 @@ actor PublishingStore {
 		guard !environments.isEmpty else { return .success(()) }
 		return updateDestinations(of: vaultID) { destination in
 			guard environments.contains(destination.sourceEnvironment) else { return false }
-			let wasExcluded = destination.excludedKeys.contains(old)
-			guard wasExcluded || destination.excludedKeys.contains(new) else { return false }
-			destination.excludedKeys.remove(old)
-			if wasExcluded { destination.excludedKeys.insert(new) } else { destination.excludedKeys.remove(new) }
-			return true
+			return Self.carryExclusion(of: old, to: new, in: &destination)
 		}
+	}
+
+	/// Follows a rollback in one read and one write: the destinations of an
+	/// environment it deletes go, with their histories, and the rest follow
+	/// the names it gives back, environments together, then keys.
+	func followRollback(_ follow: HistoryRollbackFollow, in vaultID: String) -> Result<Void, PublishingStoreError> {
+		guard !follow.isEmpty else { return .success(()) }
+		return Result {
+			var destinations = try readDestinations(of: vaultID)
+			let removed = destinations.filter { follow.deletedEnvironments.contains($0.sourceEnvironment) }
+			destinations.removeAll { follow.deletedEnvironments.contains($0.sourceEnvironment) }
+			let updated = Self.update(&destinations) { destination in
+				var changed = false
+				if let renamed = follow.renamedEnvironments[destination.sourceEnvironment] {
+					destination.sourceEnvironment = renamed
+					changed = true
+				}
+				for rename in follow.renamedKeys where rename.environment == destination.sourceEnvironment {
+					if Self.carryExclusion(of: rename.from, to: rename.to, in: &destination) { changed = true }
+				}
+				return changed
+			}
+			guard updated || !removed.isEmpty else { return }
+			try writeDestinations(destinations, of: vaultID)
+			for destination in removed {
+				try service.deleteAppItem(.publishing, account: Self.historyAccount(vaultID, destination.id)).get()
+			}
+		}.mapError(Self.storeError)
+	}
+
+	private static func carryExclusion(of old: String, to new: String, in destination: inout PublishDestination) -> Bool {
+		let wasExcluded = destination.excludedKeys.contains(old)
+		guard wasExcluded || destination.excludedKeys.contains(new) else { return false }
+		destination.excludedKeys.remove(old)
+		if wasExcluded { destination.excludedKeys.insert(new) } else { destination.excludedKeys.remove(new) }
+		return true
 	}
 
 	/// Removes the destinations that publish from a deleted environment, so
@@ -294,16 +326,22 @@ actor PublishingStore {
 	) -> Result<Void, PublishingStoreError> {
 		Result {
 			var destinations = try readDestinations(of: vaultID)
-			var changed = false
-			let now = Date()
-			for index in destinations.indices {
-				let previous = destinations[index].updatedAt
-				guard update(&destinations[index]) else { continue }
-				destinations[index].updatedAt = PublishTimestamp.next(after: previous, at: now)
-				changed = true
-			}
-			if changed { try writeDestinations(destinations, of: vaultID) }
+			if Self.update(&destinations, update) { try writeDestinations(destinations, of: vaultID) }
 		}.mapError(Self.storeError)
+	}
+
+	/// Applies `update` to each destination, stamping the ones it changes;
+	/// whether it changed any.
+	private static func update(_ destinations: inout [PublishDestination], _ update: (inout PublishDestination) -> Bool) -> Bool {
+		var changed = false
+		let now = Date()
+		for index in destinations.indices {
+			let previous = destinations[index].updatedAt
+			guard update(&destinations[index]) else { continue }
+			destinations[index].updatedAt = PublishTimestamp.next(after: previous, at: now)
+			changed = true
+		}
+		return changed
 	}
 
 	private func readDestinations(of vaultID: String) throws -> [PublishDestination] {

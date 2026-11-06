@@ -184,6 +184,7 @@ struct VaultWorkspaceView: View {
 		guard !store.isShowingAccountPage else { return false }
 		if hasUnsavedRecovery { return true }
 		if mode == .schema { return schemaPanelVisible }
+		if mode == .history { return store.history.selectedEntry != nil && store.history.projectID == project?.id }
 		if mode == .projectSettings { return false }
 		guard showsInspector, let project else { return false }
 		return store.workspaceSnapshots[project.id] != nil
@@ -228,6 +229,9 @@ struct VaultWorkspaceView: View {
 		.onChange(of: mode) { _, _ in
 			revealedKeys.removeAll()
 			shownMenu = nil
+		}
+		.onChange(of: store.history.showRequest) { _, request in
+			if request != nil { mode = .history }
 		}
 		.onChange(of: store.isShowingAccountPage) { _, showingAccount in
 			shownMenu = nil
@@ -356,6 +360,11 @@ struct VaultWorkspaceView: View {
 							VaultLoadErrorView(failure: failure, retry: retry(after: failure))
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.background(VaultPalette.content)
+						} else if let project, mode == .history {
+							// A project's own page, so its search and filters don't carry over.
+							VaultHistoryView(store: store, project: project)
+								.id(project.id)
+								.frame(maxWidth: .infinity, maxHeight: .infinity)
 						} else if let project, mode == .schema {
 							let rules = store.keyDescriptions[project.id]
 							let draft = store.schemaDraft(for: project.id)
@@ -436,6 +445,11 @@ struct VaultWorkspaceView: View {
 						}
 					}
 					.frame(width: budget.content, height: geometry.size.height)
+					.overlay(alignment: .bottom) {
+						if !store.isShowingAccountPage {
+							VaultHistoryUndoToast(store: store).padding(.bottom, VaultMetrics.statusBar + 14)
+						}
+					}
 					.clipped()
 					.simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
 
@@ -447,6 +461,10 @@ struct VaultWorkspaceView: View {
 								onCopy: copyUnsavedValue,
 								onDiscard: discardUnsaved
 							)
+						}
+					} else if inspectorVisible, mode == .history, let project {
+						VaultResizablePane(width: budget.inspector.width, edge: .leading) {
+							VaultHistoryInspector(store: store, project: project)
 						}
 					} else if inspectorVisible, mode == .schema, let project, let schemaSelection {
 						VaultResizablePane(width: budget.inspector.width, edge: .leading) {
@@ -659,6 +677,16 @@ struct VaultWorkspaceView: View {
 		)) {
 			ValueSearchSheet(store: store).vaultPrivacyProtected(isObscured)
 		}
+		.sheet(item: Binding(get: { store.history.rollbackReview }, set: { store.history.rollbackReview = $0 })) { review in
+			if let project = store.projects.first(where: { $0.id == review.projectID }) {
+				VaultHistoryRollbackSheet(store: store, project: project).vaultPrivacyProtected(isObscured)
+			}
+		}
+		.sheet(item: Binding(get: { store.history.removalReview }, set: { store.history.removalReview = $0 })) { review in
+			if let project = store.projects.first(where: { $0.id == review.projectID }) {
+				VaultHistoryRemovalSheet(store: store, project: project).vaultPrivacyProtected(isObscured)
+			}
+		}
 	}
 
 	private var valueSearchHandling: some View {
@@ -701,7 +729,7 @@ struct VaultWorkspaceView: View {
 			VaultConfirmation(
 				symbol: "trash",
 				title: "Delete this project locally?",
-				message: "Removes the project and its Keychain values from this Mac. Its folder, its lpm.json and a synced cloud copy stay.",
+				message: "Removes the project, its Keychain values and its local history from this Mac. Its folder, its lpm.json and a synced cloud copy stay.",
 				subject: .init(
 					mark: .project(store.projectIcons.appearance(for: project.id)), name: project.name,
 					detail: project.path.isEmpty ? nil : (project.path as NSString).abbreviatingWithTildeInPath),

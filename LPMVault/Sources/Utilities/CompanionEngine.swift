@@ -7,6 +7,10 @@ import LPMEnv
 /// Nothing here touches the Keychain; callers bring what they read and
 /// commit what they're given.
 enum CompanionEngine {
+	/// The marker's names for local history and for its being turned off,
+	/// whose damage never blocks values and which no backup carries.
+	static let localHistoryFeatures: Set<String> = ["history", "history-off"]
+
 	/// Why the engine refused a request or couldn't answer it.
 	struct Failure: Error, Equatable, Sendable {
 		let code: String
@@ -140,6 +144,10 @@ enum CompanionEngine {
 		case removeFeature
 		/// The records a valid marker doesn't list.
 		case removeUnlisted
+		/// Turn local history off: delete its records, leaving `history-off`.
+		case historyOff
+		/// Turn local history back on, removing `history-off`.
+		case historyOn
 	}
 
 	struct Plan: Equatable, Sendable, Decodable {
@@ -335,7 +343,7 @@ enum CompanionEngine {
 		_ function: (UnsafePointer<UInt8>?, Int) -> LPMEnvResult,
 		_ request: Request
 	) throws(Failure) -> Response {
-		guard lpm_env_abi_version() == 1 else {
+		guard EnvEngineABI.matches else {
 			throw Failure(code: "env.abi_mismatch", message: "The bundled LPM engine is not the version this app expects.")
 		}
 		let input: Data

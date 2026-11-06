@@ -163,13 +163,30 @@ final class SheetTestHost<V: View> {
 	/// is read, as VoiceOver reads it.
 	func scrollToEnd() throws {
 		view.layoutSubtreeIfNeeded()
-		let scrollView = try #require(Self.firstScrollView(in: view), "The view has a scroll view")
+		try scrollToEnd(try #require(Self.firstScrollView(in: view), "The view has a scroll view"))
+	}
+
+	/// Scrolls the scroll view that shows `label` now to its end, for a
+	/// window with several, such as the sidebar's and a page's.
+	func scrollToEnd(ofScrollViewShowing label: String) async throws {
+		let point = AccessibilityTree.center(of: try await waitForElement(saying: label), in: window)
+		let scrollView = try #require(
+			Self.scrollViews(in: view).last { $0.convert($0.bounds, to: nil).contains(point) }, "A scroll view shows \(label)")
+		try scrollToEnd(scrollView)
+	}
+
+	private func scrollToEnd(_ scrollView: NSScrollView) throws {
 		let clip = scrollView.contentView
 		let documentHeight = scrollView.documentView?.frame.height ?? 0
 		let end = clip.isFlipped ? max(0, documentHeight - clip.bounds.height) : 0
 		clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: end))
 		scrollView.reflectScrolledClipView(clip)
 		view.layoutSubtreeIfNeeded()
+	}
+
+	/// Every scroll view in `view`, outer ones before those inside them.
+	private static func scrollViews(in view: NSView) -> [NSScrollView] {
+		((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap { scrollViews(in: $0) }
 	}
 
 	private static func firstScrollView(in view: NSView) -> NSScrollView? {
@@ -238,6 +255,24 @@ final class SheetTestHost<V: View> {
 			}
 			try await Task.sleep(for: .milliseconds(20))
 		}
+	}
+
+	/// The context menu of the element saying `name`, as a right-click on it
+	/// opens it. `region` narrows where to look, as `click`'s does.
+	func contextMenu(of name: String, region: CGRect? = nil) async throws -> NSMenu {
+		let element = try await waitForElement(saying: name, region: region)
+		let point = AccessibilityTree.center(of: element, in: window)
+		let event = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [],
+			timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+			eventNumber: 0, clickCount: 1, pressure: 1))
+		let target = try #require(view.hitTest(view.superview?.convert(point, from: nil) ?? point))
+		return try #require(target.menu(for: event) ?? view.menu(for: event), "\(name) has a context menu")
+	}
+
+	/// Chooses the item titled `title`, as clicking it does.
+	func choose(_ title: String, in menu: NSMenu) throws {
+		let index = try #require(menu.items.firstIndex { $0.title == title }, "Missing \(title)")
+		menu.performActionForItem(at: index)
 	}
 
 	/// Returns as soon as `unexpected` is no longer said, or `false` after `testWaitLimit`.

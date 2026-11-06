@@ -356,12 +356,94 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		return .success
 	}
 
+	/// Every history source a values write named, in order.
+	private(set) var historySources: [VaultHistorySource] = []
+	/// What the next `takeHistoryOutcomes()` returns.
+	var pendingHistoryOutcomes: [String: VaultHistoryOutcome] = [:]
+
+	/// What the history calls answer; each fails until a test sets it.
+	var historyState: Result<VaultHistoryState, KeychainError> = .success(VaultHistoryState(history: "default", damage: []))
+	var historyTimeline: Result<HistoryEngine.Timeline?, KeychainError> = .success(nil)
+	var historyFailure = KeychainError.history(code: "history.off", message: "This project has no local history.")
+
+	func historyStateResult(vaultId: String) -> Result<VaultHistoryState, KeychainError> { lock.withLock { historyState } }
+
+	func historyTimelineResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<HistoryEngine.Timeline?, KeychainError> {
+		lock.withLock { historyTimeline }
+	}
+
+	func historyKeyChangesResult(
+		vaultId: String, key: String, environments: [String], limit: Int
+	) -> Result<[String: [HistoryEngine.Entry]], KeychainError> {
+		.success([:])
+	}
+
+	func historyOverviewResult(vaultId: String, filter: HistoryEngine.Filter?) -> Result<VaultHistoryOverview, KeychainError> {
+		lock.withLock {
+			historyState.flatMap { state in historyTimeline.map { VaultHistoryOverview(state: state, timeline: $0) } }
+		}
+	}
+
+	func historyRevealResult(vaultId: String, ids: [String]) -> Result<HistoryEngine.Answer<[HistoryEngine.Entry]>, KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func historyRollbackPlanResult(vaultId: String, target: HistoryEngine.RollbackTarget) -> Result<HistoryEngine.Answer<HistoryEngine.Plan>, KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func historyRolledBackEnvironmentsResult(
+		vaultId: String,
+		target: HistoryEngine.RollbackTarget,
+		fingerprint: String,
+		skipped: [(environment: Int, row: Int)],
+		keepEmpty: [Int]
+	) -> Result<HistoryOperations.RolledBack, KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func historyRemovalReviewResult(
+		vaultId: String, entry: String, environment: String, key: String, side: String
+	) -> Result<HistoryEngine.Review, KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func removeFromHistoryResult(vaultId: String, review: HistoryEngine.Review, selection: [Int]) -> Result<Void, KeychainError> {
+		.failure(lock.withLock { historyFailure })
+	}
+
+	func maintainAfterUnlockResult(
+		raisingHistoryRings: Bool
+	) -> (companion: Result<CompanionMaintenance, KeychainError>, history: Result<HistoryOperations.Upkeep, KeychainError>) {
+		(maintainCompanionStorage(), historyUpkeepResult(raising: raisingHistoryRings))
+	}
+
+	func historyUpkeepResult(raising: Bool) -> Result<HistoryOperations.Upkeep, KeychainError> {
+		.success(HistoryOperations.Upkeep(records: 0, trimmed: 0, crowded: false, mayBeShrunk: false))
+	}
+
+	func setHistoryEnabledResult(vaultId: String, enabled: Bool) -> Result<Void, KeychainError> {
+		lock.withLock {
+			historyState = .success(VaultHistoryState(history: enabled ? "default" : "off", damage: []))
+			return .success(())
+		}
+	}
+
+	func takeHistoryOutcomes() -> [String: VaultHistoryOutcome] {
+		lock.withLock {
+			defer { pendingHistoryOutcomes = [:] }
+			return pendingHistoryOutcomes
+		}
+	}
+
 	func createEnvironments(
 		vaultId: String,
 		projectName: String,
 		projectPath: String,
-		environments: [String: [String: String]]
+		environments: [String: [String: String]],
+		source: VaultHistorySource
 	) -> KeychainResult {
+		historySources.append(source)
 		onCreateEnvironments?()
 		if envStorage[vaultId] != nil { return .failure(.duplicateItem) }
 		return saveEnvironments(
@@ -442,9 +524,10 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 	/// Runs as a restored project is about to be written.
 	var beforeRestoredProjectWrite: (@Sendable (VaultProject) -> Void)?
 
-	func createRestoredProjectResult(_ project: VaultProject, listed: Bool) -> KeychainResult {
+	func createRestoredProjectResult(_ project: VaultProject, listed: Bool, source: VaultHistorySource) -> KeychainResult {
 		beforeRestoredProjectWrite?(project)
 		return lock.withLock {
+			historySources.append(source)
 			if shouldFail || failRestoreWrites { return .failure(failureError) }
 			guard envStorage[project.id] == nil, hiddenPayloads[project.id] == nil else { return .failure(.duplicateItem) }
 			let environments = project.environments.isEmpty ? ["default": [:]] : project.environments
@@ -462,9 +545,11 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		vaultId: String,
 		expected: [String: [String: String]],
 		merged: [String: [String: String]],
-		additionalMutations: [VaultKeychainMutation]
+		additionalMutations: [VaultKeychainMutation],
+		source: VaultHistorySource
 	) -> VaultRestoreWriteResult {
 		lock.withLock {
+			historySources.append(source)
 			if shouldFail || failRestoreWrites { return .failure(failureError) }
 			if let listed = envStorage[vaultId] {
 				guard listed.environments == expected else { return .changedSinceReview }
@@ -516,21 +601,24 @@ final class MockKeychainService: KeychainServiceProtocol, @unchecked Sendable {
 		let previousData = dataStorage
 		let projectResult: KeychainResult
 		switch project {
-		case .create(let project):
+		case .create(let project, let source):
 			projectResult = createEnvironments(
 				vaultId: project.id,
 				projectName: project.name,
 				projectPath: project.path,
-				environments: project.environments
+				environments: project.environments,
+				source: source
 			)
-		case .upsert(let project):
+		case .upsert(let project, let source):
+			historySources.append(source)
 			projectResult = saveEnvironments(
 				vaultId: project.id,
 				projectName: project.name,
 				projectPath: project.path,
 				environments: project.environments
 			)
-		case .update(let vaultId, let environments):
+		case .update(let vaultId, let environments, let source):
+			historySources.append(source)
 			projectResult = updateEnvironments(vaultId: vaultId, environments: environments)
 		case .rename(let vaultId, let name):
 			if envStorage[vaultId] != nil {

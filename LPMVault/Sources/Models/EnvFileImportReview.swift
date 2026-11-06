@@ -113,6 +113,8 @@ struct EnvironmentChangeReceipt: Sendable, Equatable {
 	let environment: String
 	let before: [String: String]
 	let after: [String: String]
+	/// The history entry the change recorded as, which an undo names.
+	var historyEntry: HistoryEngine.Related?
 
 	var changed: Bool { !before.isExactly(after) }
 

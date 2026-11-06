@@ -15,7 +15,7 @@ enum SealedBox {
 	/// nil when the key or value can't be sealed. The copy of the value made
 	/// for the engine is cleared once it's sealed.
 	static func seal(_ value: String, to publicKey: Data) -> Data? {
-		guard lpm_env_abi_version() == 1, publicKey.count == publicKeyBytes else { return nil }
+		guard EnvEngineABI.matches, publicKey.count == publicKeyBytes else { return nil }
 		var plaintext = Array(value.utf8)
 		defer { plaintext.withUnsafeMutableBytes { bytes in if let base = bytes.baseAddress { _ = memset_s(base, bytes.count, 0, bytes.count) } } }
 		guard plaintext.count <= maximumPlaintextBytes else { return nil }

@@ -29,6 +29,22 @@ enum EnvImportSource: Sendable, Equatable {
 	case file(URL)
 	case pastedText
 
+	/// The detail history keeps: the file's name, at most the 255 bytes the
+	/// engine keeps, or that the text was pasted.
+	var historyDetail: HistoryEngine.ChangeDetail {
+		switch self {
+		case .file(let url):
+			var name = ""
+			for character in url.lastPathComponent {
+				guard name.utf8.count + String(character).utf8.count <= 255 else { break }
+				name.append(character)
+			}
+			return HistoryEngine.ChangeDetail(fileName: name)
+		case .pastedText:
+			return HistoryEngine.ChangeDetail(pasted: true)
+		}
+	}
+
 	var name: String {
 		switch self {
 		case .file(let url): url.lastPathComponent

@@ -92,7 +92,7 @@ struct ValueCharacterCheck: Equatable, Sendable {
 
 	/// Decodes the engine's output; nil when it isn't the expected shape.
 	init?(output: LPMConfigJSON) {
-		guard output["abiVersion"] == .number("1"), case .object(let checked)? = output["environments"] else { return nil }
+		guard output["abiVersion"] == EnvEngineABI.answerVersion, case .object(let checked)? = output["environments"] else { return nil }
 		var environments = Dictionary<String, [String: ValueCharacters]>(minimumCapacity: checked.count)
 		for environment in checked {
 			guard case .object(let values) = environment.value else { return nil }

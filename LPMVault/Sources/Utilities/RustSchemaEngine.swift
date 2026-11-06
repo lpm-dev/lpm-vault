@@ -113,7 +113,7 @@ enum RustSchemaEngine {
 
 	static func validate(_ schema: LPMConfigJSON) throws(ProjectEnvSchemaFile.FileError) -> LPMConfigJSON {
 		let schema = schema == .null ? .object([]) : schema
-		guard lpm_env_abi_version() == 1, case .object = schema else { throw .invalidSchema }
+		guard EnvEngineABI.matches, case .object = schema else { throw .invalidSchema }
 		let input: Data
 		do { input = try schema.compactData(maximumBytes: 2 * 1024 * 1024) } catch { throw .tooLarge }
 		let owned = input.withUnsafeBytes { bytes in
@@ -152,7 +152,7 @@ enum RustSchemaEngine {
 	/// name what the effective schema declares, so a malformed output is
 	/// rejected rather than shown.
 	static func resolved(from output: LPMConfigJSON) throws(ProjectEnvSchemaFile.FileError) -> Resolved {
-		guard output["abiVersion"] == .number("1"), let effective = output["effective"],
+		guard output["abiVersion"] == EnvEngineABI.answerVersion, let effective = output["effective"],
 			case .array(let rawDependencies)? = output["dependencies"], case .object(let rawReplaced)? = output["replacedVars"],
 			case .object(let rawReplacedGroups)? = output["replacedGroups"], case .array(let rawSources)? = output["sources"]
 		else { throw .invalidSchema }
@@ -230,7 +230,7 @@ enum RustSchemaEngine {
 	/// The engine's evaluation of stored values against a flat schema, such as
 	/// a resolution's `effective` schema; nil when it rejects either input.
 	static func check(schema: Data, values: Data) -> LPMConfigJSON? {
-		guard lpm_env_abi_version() == 1, !schema.isEmpty, !values.isEmpty else { return nil }
+		guard EnvEngineABI.matches, !schema.isEmpty, !values.isEmpty else { return nil }
 		let owned = schema.withUnsafeBytes { schema in
 			values.withUnsafeBytes { values in
 				OwnedResult(lpm_env_check(
@@ -239,7 +239,7 @@ enum RustSchemaEngine {
 				))
 			}
 		}
-		guard let output = try? owned.decode(), output["abiVersion"] == .number("1") else { return nil }
+		guard let output = try? owned.decode(), output["abiVersion"] == EnvEngineABI.answerVersion else { return nil }
 		return output
 	}
 
@@ -247,7 +247,7 @@ enum RustSchemaEngine {
 	/// the rule the LPM CLI uses. It needs no schema. Nil when the engine
 	/// refuses the input, such as a key that isn't a valid name.
 	static func checkCharacters(_ environments: [String: [String: String]]) -> ValueCharacterCheck? {
-		guard lpm_env_abi_version() == 1 else { return nil }
+		guard EnvEngineABI.matches else { return nil }
 		guard !environments.isEmpty else { return ValueCharacterCheck() }
 		var members: [LPMConfigJSON.Member] = []
 		members.reserveCapacity(environments.count)
@@ -267,10 +267,10 @@ enum RustSchemaEngine {
 	/// `value` with each character that's hard to see written as its escape,
 	/// for showing someone who sees the value; nil when the engine can't.
 	static func showCharacters(in value: String) -> ShownValueCharacters? {
-		guard lpm_env_abi_version() == 1 else { return nil }
+		guard EnvEngineABI.matches else { return nil }
 		var value = value
 		let owned = value.withUTF8 { bytes in OwnedResult(lpm_env_show_characters(bytes.baseAddress, bytes.count)) }
-		guard let output = try? owned.decode(), output["abiVersion"] == .number("1"),
+		guard let output = try? owned.decode(), output["abiVersion"] == EnvEngineABI.answerVersion,
 			case .string(let text)? = output["text"], case .array(let rawMarks)? = output["marks"]
 		else { return nil }
 		let length = text.utf16.count
@@ -300,7 +300,7 @@ enum RustSchemaEngine {
 
 	/// `value` fixed as `fix` says; nil when the engine can't.
 	static func fixCharacters(in value: String, _ fix: CharacterFix) -> String? {
-		guard lpm_env_abi_version() == 1 else { return nil }
+		guard EnvEngineABI.matches else { return nil }
 		var value = value
 		let owned = value.withUTF8 { bytes in OwnedResult(lpm_env_fix_characters(bytes.baseAddress, bytes.count, fix.rawValue)) }
 		defer { lpm_env_clear_output(&owned.result) }
@@ -321,7 +321,7 @@ enum RustSchemaEngine {
 
 	private static func resolution(of schema: LPMConfigJSON, inFolder folder: String) throws(ProjectEnvSchemaFile.FileError) -> OwnedResult {
 		let schema = schema == .null ? .object([]) : schema
-		guard lpm_env_abi_version() == 1, case .object = schema else { throw .invalidSchema }
+		guard EnvEngineABI.matches, case .object = schema else { throw .invalidSchema }
 		let input: Data
 		do { input = try schema.compactData(maximumBytes: 2 * 1024 * 1024) } catch { throw .tooLarge }
 		let path = Data(folder.utf8)

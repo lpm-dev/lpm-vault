@@ -14,9 +14,15 @@ struct VaultProjectSettingsView: View {
 	let onDelete: () -> Void
 
 	@Environment(\.vaultContentObscured) private var isObscured
+	@Environment(\.vaultClock) private var clock
 	@FocusState private var nameFocused: Bool
 	@AccessibilityFocusState private var titleFocused: Bool
 	@State private var showsIconPicker = false
+	@State private var historySummary: VaultLocalHistory.Summary?
+	@State private var historyReadFailed = false
+	@State private var historyFailure: String?
+	@State private var confirmsHistoryOff = false
+	@State private var changingHistory = false
 
 	private var settings: ProjectSettingsValues { store.projectSettings(for: project) }
 	private var isImporting: Bool { store.projectIcons.isImporting(project.id) }
@@ -41,6 +47,7 @@ struct VaultProjectSettingsView: View {
 						folderRow
 					}
 					section("SECURITY") { cliApprovalRow }
+					section("HISTORY") { historyRow }
 					section("DANGER ZONE") { deleteRow }
 				}
 				.frame(maxWidth: 640, alignment: .leading)
@@ -52,6 +59,14 @@ struct VaultProjectSettingsView: View {
 		.background(VaultPalette.content)
 		.onAppear { store.projectIcons.beginDetailing(project.id) }
 		.onDisappear { store.projectIcons.endDetailing(project.id) }
+		.task(id: project.id) { await readHistory() }
+		.vaultConfirmation(isPresented: $confirmsHistoryOff) {
+			VaultConfirmation(
+				symbol: "clock.arrow.circlepath",
+				title: "Turn off local history for \(project.name)?",
+				message: "LPM deletes this project’s history on this Mac and stops recording changes. Values stay as they are. Deleting means LPM Vault and the LPM CLI can’t read the history any more. Copies in Time Machine, APFS snapshots or other backups of this Mac can remain. Turning history back on starts an empty history.",
+				actions: [.init(title: "Turn Off and Delete") { setHistory(enabled: false) }])
+		}
 		.task(id: nameFocusRequest) {
 			// VoiceOver lands on the page's title, or follows focus to the name Rename edits.
 			if nameFocusRequest == nil { titleFocused = true }
@@ -271,9 +286,74 @@ struct VaultProjectSettingsView: View {
 		}
 	}
 
+	private var historyRow: some View {
+		let line = VaultHistoryText(now: clock.now()).stateLine(
+			historySummary, notRecorded: store.history.notRecorded[project.id]?.reason, readFailed: historyReadFailed)
+		let state = historySummary?.state.history
+		return row("Local history") {
+			VStack(alignment: .leading, spacing: 6) {
+				Text("Keeps an encrypted record of value changes on this Mac, so you can see and roll them back. It never leaves this Mac.")
+				if let line {
+					HStack(alignment: .firstTextBaseline, spacing: 8) {
+						Text(line.text)
+							.foregroundStyle(line.warns ? VaultPalette.orangeTintText : VaultPalette.textSecondary)
+						if line.retries {
+							Button("Try Again") { Task { await readHistory() } }
+								.buttonStyle(.plain)
+								.font(.system(size: 12, weight: .semibold))
+								.foregroundStyle(VaultPalette.accentForeground)
+								.vaultPointingHand()
+						}
+					}
+				}
+				if let crowded = store.history.crowded, state != "off" {
+					Text(VaultHistoryText(now: clock.now()).crowded(crowded))
+						.foregroundStyle(VaultPalette.orangeTintText)
+				}
+				if let historyFailure {
+					Text(historyFailure).foregroundStyle(VaultPalette.redText)
+				}
+			}
+		} controls: {
+			Toggle("Local history", isOn: Binding(
+				get: { historySummary?.state.history != "off" },
+				set: { on in
+					if on { setHistory(enabled: true) } else { confirmsHistoryOff = true }
+				}
+			))
+			.toggleStyle(.switch)
+			.controlSize(.small)
+			.labelsHidden()
+			.disabled(historySummary == nil || changingHistory || !store.canUseLocalSecrets || state == "unsupported" || state == "removing")
+			.help(state == "off" ? "Start keeping history with the next change" : "Turn off and delete this project’s history")
+		}
+	}
+
+	private func readHistory() async {
+		switch await store.history.summary(of: project.id) {
+		case .success(let summary):
+			historySummary = summary
+			historyReadFailed = false
+		case .failure:
+			historyReadFailed = true
+		}
+	}
+
+	private func setHistory(enabled: Bool) {
+		changingHistory = true
+		historyFailure = nil
+		Task {
+			if let error = await store.history.setEnabled(enabled, projectID: project.id) {
+				historyFailure = error.description
+			}
+			await readHistory()
+			changingHistory = false
+		}
+	}
+
 	private var deleteRow: some View {
 		row("Delete locally") {
-			Text("Removes the project and its Keychain values from this Mac. Its folder, its lpm.json and a synced cloud copy stay.")
+			Text("Removes the project, its Keychain values and its local history from this Mac. Its folder, its lpm.json and a synced cloud copy stay.")
 		} controls: {
 			VaultBarButton(title: "Delete Locally…", destructive: true, disabled: isSaving, height: 28, action: onDelete)
 		}

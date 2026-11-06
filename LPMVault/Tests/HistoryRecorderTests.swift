@@ -1,0 +1,437 @@
+import Foundation
+import Testing
+
+@testable import LPMVault
+
+/// A store of named records that counts what recording does with it, and
+/// checks each journal commit as the shared Keychain store does.
+private final class FakeHistoryStorage: HistoryStorage {
+	var records: [String: Data] = [:]
+	var approval: HistoryEngine.Approval? = .automatic
+	var extraNames: [String] = []
+	private(set) var reads: [String] = []
+	private(set) var replaced: [String] = []
+	private(set) var commits = 0
+	private(set) var listings = 0
+	private(set) var approvalChecks = 0
+	let vaultId: String
+	let markerAccount: String
+
+	init(vaultId: String) throws {
+		self.vaultId = vaultId
+		markerAccount = try CompanionEngine.markerAccount(vaultId: vaultId)
+	}
+
+	func historyMarker(vaultId: String) throws -> Data? { records[markerAccount] }
+
+	func historyRecord(_ account: String) throws -> Data? {
+		reads.append(account)
+		return records[account]
+	}
+
+	func historyNames() throws -> [String] {
+		listings += 1
+		return Array(records.keys) + extraNames
+	}
+
+	func historyApproval(vaultId: String) throws -> HistoryEngine.Approval? {
+		approvalChecks += 1
+		return approval
+	}
+
+	func historyReplace(_ account: String, with data: Data) throws {
+		replaced.append(account)
+		records[account] = data
+	}
+
+	func historyDelete(_ account: String) throws { records[account] = nil }
+
+	func historyCommit(_ writes: [HistoryEngine.RecordWrite]) throws {
+		commits += 1
+		let changes = writes.map { write in
+			CompanionEngine.Change(account: write.account, bytes: write.bytes.map { bytes in bytes.withUnsafeBytes { Data($0) } })
+		}
+		try CompanionEngine.checkTransaction(changes, markers: [vaultId: records[markerAccount]], names: Array(records.keys))
+		for write in writes {
+			records[write.account] = write.bytes.map { bytes in bytes.withUnsafeBytes { Data($0) } }
+		}
+	}
+
+	var values: Data?
+
+	func historyValues(vaultId: String) throws -> Data? { values }
+
+	func historyProjectNames(vaultId: String) throws -> [String] {
+		Array(records.keys)
+	}
+
+	func historyTrimmable(own vaultId: String) throws -> [String] { [vaultId] }
+
+	func historyClaimedApproval(vaultId: String) throws -> HistoryEngine.Approval { approval ?? .automatic }
+
+	func historyWithoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T { try body() }
+
+	func historyRings() throws -> [String] { [vaultId] }
+
+	func historyRun(_ plan: CompanionEngine.Plan, vaultId: String) throws {
+		for transaction in plan.transactions {
+			for account in transaction.deletes { records[account] = nil }
+			if let marker = transaction.writesMarker { records[markerAccount] = marker }
+			if transaction.deletesMarker { records[markerAccount] = nil }
+		}
+	}
+
+	func resetCounts() {
+		reads = []
+		replaced = []
+		commits = 0
+		listings = 0
+		approvalChecks = 0
+	}
+}
+
+@Suite("History recorder")
+struct HistoryRecorderTests {
+	private let vaultId = "recorder-proj"
+
+	private func payload(_ environments: [String: [String: String]]) -> Data {
+		try! JSONSerialization.data(withJSONObject: ["environments": environments], options: .sortedKeys)
+	}
+
+	@Test("a project's first value change creates history in one journal transaction")
+	func firstChangeCreatesHistory() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let source = VaultHistorySource(.set)
+		let outcome = HistoryRecorder.record(
+			storage, vaultId: vaultId,
+			before: payload(["production": [:]]), after: payload(["production": ["API_URL": "one"]]),
+			source: source)
+		#expect(outcome == .recorded(entry: source.id, gap: false, crowded: nil))
+		#expect(storage.commits == 1)
+		#expect(storage.records[storage.markerAccount] != nil)
+		#expect(storage.records[try HistoryRecorder.account("history-head", vaultId)] != nil)
+		#expect(storage.records[try HistoryRecorder.account("key", vaultId)] != nil)
+	}
+
+	@Test("the next change appends by reading the head, the key and the tail once each")
+	func nextChangeAppends() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		_ = HistoryRecorder.record(
+			storage, vaultId: vaultId,
+			before: payload(["production": [:]]), after: payload(["production": ["API_URL": "one"]]),
+			source: VaultHistorySource(.set))
+		storage.resetCounts()
+
+		let source = VaultHistorySource(.editKey)
+		let outcome = HistoryRecorder.record(
+			storage, vaultId: vaultId,
+			before: payload(["production": ["API_URL": "one"]]), after: payload(["production": ["API_URL": "two"]]),
+			source: source)
+		#expect(outcome == .recorded(entry: source.id, gap: false, crowded: nil))
+		#expect(storage.commits == 0, "an append is a verified replacement, not a journal")
+		#expect(storage.reads.count == 3, "\(storage.reads)")
+		#expect(storage.replaced == [try HistoryRecorder.account("history", vaultId, part: 0)])
+
+		let head = try #require(storage.records[try HistoryRecorder.account("history-head", vaultId)])
+		let key = try #require(storage.records[try HistoryRecorder.account("key", vaultId)])
+		let stored = try HistoryRecorder.stored(
+			storage, vaultId: vaultId,
+			head: head.withUnsafeBytes { SecretBytes(copying: $0) }, key: key.withUnsafeBytes { SecretBytes(copying: $0) })
+		let timeline = try HistoryEngine.timeline(stored, values: nil)
+		let entries = timeline.rows.compactMap { row -> HistoryEngine.Entry? in
+			if case .entry(let entry) = row { return entry }
+			return nil
+		}
+		#expect(entries.map(\.action) == ["editKey", "set"])
+		#expect(entries.allSatisfy { $0.actor == "app" })
+	}
+
+	@Test("removing a value from a ring of several parts reads each part once, however many the key rotation rewrites")
+	func removalReadsEachPartOnce() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let value = { (index: Int) in String(repeating: String(index % 10), count: 4096) }
+		var current = payload(["production": [:]])
+		for index in 0...12 {
+			let next = payload(["production": ["BIG": value(index)]])
+			_ = HistoryRecorder.record(storage, vaultId: vaultId, before: current, after: next, source: VaultHistorySource(.set))
+			current = next
+		}
+		storage.values = current
+		let headAccount = try HistoryRecorder.account("history-head", vaultId)
+		struct Head: Decodable { let parts: [Int] }
+		let parts = try JSONDecoder().decode(Head.self, from: try #require(storage.records[headAccount])).parts
+		#expect(parts.count >= 3, "\(parts)")
+		let partAccounts = Set(try parts.map { try HistoryRecorder.account("history", vaultId, part: $0) })
+		let newest = try #require(try HistoryOperations.timeline(storage, vaultId: vaultId, filter: nil)?.rows.first)
+		guard case .entry(let entry) = newest else {
+			Issue.record("expected an entry")
+			return
+		}
+		let review = try HistoryOperations.reviewRemoval(
+			storage, vaultId: vaultId, entry: entry.id, environment: "production", key: "BIG", side: "before")
+		storage.resetCounts()
+
+		try HistoryOperations.remove(storage, vaultId: vaultId, review: review, selection: review.defaultSelection)
+
+		let partReads = storage.reads.filter(partAccounts.contains)
+		#expect(partReads.count == parts.count, "each part once: \(partReads.count) reads of \(parts.count) parts")
+		#expect(Set(storage.replaced).isSuperset(of: partAccounts), "the rotation rewrites every part")
+	}
+
+	@Test("a change to no key before history exists asks no admission and no approval")
+	func changeWithoutKeysStartsNothing() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let outcome = HistoryRecorder.record(
+			storage, vaultId: vaultId,
+			before: payload(["production": [:]]), after: payload(["staging": [:]]),
+			source: VaultHistorySource(.renameEnvironment, renames: [.environment(from: "production", to: "staging")]))
+		#expect(outcome == .nothing)
+		#expect(storage.listings == 0 && storage.approvalChecks == 0, "listings \(storage.listings), approval checks \(storage.approvalChecks)")
+		#expect(storage.commits == 0)
+	}
+
+	@Test("reading history finishes a removal another operation started and left running")
+	func readingFinishesARunningRemoval() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let before = payload(["production": ["A": "one"]])
+		let after = payload(["production": ["A": "two"]])
+		_ = HistoryRecorder.record(storage, vaultId: vaultId, before: payload(["production": [:]]), after: before, source: VaultHistorySource(.set))
+		_ = HistoryRecorder.record(storage, vaultId: vaultId, before: before, after: after, source: VaultHistorySource(.set))
+		storage.values = after
+		guard case .entry(let edit)? = try HistoryOperations.timeline(storage, vaultId: vaultId, filter: nil)?.rows.first else {
+			Issue.record("expected an entry")
+			return
+		}
+		let review = try HistoryOperations.reviewRemoval(storage, vaultId: vaultId, entry: edit.id, environment: "production", key: "A", side: "before")
+		/// The history as stored, read without maintaining anything.
+		func asStored() throws -> HistoryEngine.Stored {
+			let head = try #require(storage.records[try HistoryRecorder.account("history-head", vaultId)])
+			let key = try #require(storage.records[try HistoryRecorder.account("key", vaultId)])
+			return try HistoryRecorder.stored(
+				storage, vaultId: vaultId, head: head.withUnsafeBytes { SecretBytes(copying: $0) },
+				key: key.withUnsafeBytes { SecretBytes(copying: $0) })
+		}
+		try storage.historyCommit(try HistoryEngine.startRemoval(
+			try asStored(), values: after.withUnsafeBytes { SecretBytes(copying: $0) }, review: review,
+			selection: review.defaultSelection, approval: .automatic))
+		#expect(try HistoryEngine.maintenance(try asStored(), step: .check(approval: .automatic)).needsFinishing)
+
+		_ = try HistoryOperations.timeline(storage, vaultId: vaultId, filter: nil)
+
+		#expect(try !HistoryEngine.maintenance(try asStored(), step: .check(approval: .automatic)).needsFinishing)
+	}
+
+	@Test("a write that changes nothing records nothing and reads nothing")
+	func noNetChangeRecordsNothing() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let same = payload(["production": ["API_URL": "one"]])
+		#expect(HistoryRecorder.record(storage, vaultId: vaultId, before: same, after: same, source: VaultHistorySource(.set)) == .nothing)
+		#expect(storage.reads.isEmpty && storage.commits == 0)
+	}
+
+	@Test("a project whose history is off records nothing")
+	func historyOffRecordsNothing() throws {
+		struct Fixture: Decodable {
+			struct State: Decodable { let name: String; let records: [String: String] }
+			let vaultId: String
+			let states: [State]
+		}
+		let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: #filePath)
+			.deletingLastPathComponent().deletingLastPathComponent()
+			.appending(path: "Vendor/EnvEngine/fixtures/companion/history.json")))
+		let off = try #require(fixture.states.first { $0.name == "off" })
+		let storage = try FakeHistoryStorage(vaultId: fixture.vaultId)
+		storage.records = off.records.compactMapValues { Data(base64Encoded: $0) }
+		let before = storage.records
+		let outcome = HistoryRecorder.record(
+			storage, vaultId: fixture.vaultId,
+			before: payload(["production": [:]]), after: payload(["production": ["A": "1"]]),
+			source: VaultHistorySource(.set))
+		#expect(outcome == .off)
+		#expect(storage.records == before && storage.commits == 0)
+	}
+
+	@Test("history doesn't start when the values' approval can't be confirmed")
+	func unconfirmedApprovalDoesNotStartHistory() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		storage.approval = nil
+		let outcome = HistoryRecorder.record(
+			storage, vaultId: vaultId,
+			before: payload(["production": [:]]), after: payload(["production": ["A": "1"]]),
+			source: VaultHistorySource(.set))
+		guard case .notRecorded("unavailable", _) = outcome else {
+			Issue.record("expected unavailable, got \(outcome)")
+			return
+		}
+		#expect(storage.records.isEmpty && storage.commits == 0)
+	}
+
+	@Test("a service at the record limit refuses to start another project's history")
+	func fullServiceRefusesCreation() throws {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		storage.extraNames = try CompanionEngine.accountNames((0..<8_192).map { index in
+			.init(role: .record, vaultId: "crowded-\(index)", kind: "key", part: nil)
+		})
+		let outcome = HistoryRecorder.record(
+			storage, vaultId: vaultId,
+			before: payload(["production": [:]]), after: payload(["production": ["A": "1"]]),
+			source: VaultHistorySource(.set))
+		guard case .notRecorded("limit", _) = outcome else {
+			Issue.record("expected limit, got \(outcome)")
+			return
+		}
+		#expect(storage.commits == 0)
+	}
+}
+
+@Suite("History read part by part")
+struct HistoryPartialReadTests {
+	private let vaultId = "partial-proj"
+
+	private struct Ring {
+		let storage: FakeHistoryStorage
+		/// Each part's account, newest part first.
+		let parts: [String]
+		/// Newest first.
+		let entries: [HistoryEngine.Entry]
+
+		/// The part accounts read since the counts were reset, in order.
+		var partReads: [String] { storage.reads.filter(Set(parts).contains) }
+	}
+
+	private func payload(_ environments: [String: [String: String]]) -> Data {
+		try! JSONSerialization.data(withJSONObject: ["environments": environments], options: .sortedKeys)
+	}
+
+	/// A ring of several parts: each change replaces a value large enough
+	/// that a part holds only a few entries.
+	private func grownRing() throws -> Ring {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let value = { (index: Int) in String(repeating: String(index % 10), count: 4096) }
+		var current = payload(["production": [:], "staging": [:]])
+		for index in 0...12 {
+			let next = payload(["production": ["BIG": value(index)], "staging": [:]])
+			_ = HistoryRecorder.record(storage, vaultId: vaultId, before: current, after: next, source: VaultHistorySource(.set))
+			current = next
+		}
+		storage.values = current
+		struct Head: Decodable { let parts: [Int] }
+		let listed = try JSONDecoder().decode(
+			Head.self, from: try #require(storage.records[try HistoryRecorder.account("history-head", vaultId)])).parts
+		#expect(listed.count >= 3, "\(listed)")
+		let timeline = try #require(try HistoryOperations.timeline(storage, vaultId: vaultId, filter: nil))
+		let entries = timeline.rows.compactMap { row -> HistoryEngine.Entry? in
+			if case .entry(let entry) = row { return entry }
+			return nil
+		}
+		let newestFirst = try listed.sorted(by: >).map { try HistoryRecorder.account("history", vaultId, part: $0) }
+		storage.resetCounts()
+		return Ring(storage: storage, parts: newestFirst, entries: entries)
+	}
+
+	private func whole(_ ring: Ring) throws -> HistoryEngine.Stored {
+		let stored = try #require(try HistoryOperations.stored(ring.storage, vaultId: vaultId))
+		ring.storage.resetCounts()
+		return stored
+	}
+
+	private func bytes(_ blobs: HistoryEngine.Blobs) -> [Data] {
+		blobs.items.map { $0.withUnsafeBytes { Data($0) } }
+	}
+
+	@Test("revealing the newest change reads only the part holding it, and answers as a whole read does")
+	func newestRevealReadsOnePart() throws {
+		let ring = try grownRing()
+		let newest = try #require(ring.entries.first)
+		let expected = try HistoryEngine.reveal(try whole(ring), ids: [newest.id])
+
+		let revealed = try HistoryOperations.reveal(ring.storage, vaultId: vaultId, ids: [newest.id])
+
+		#expect(ring.partReads == Array(ring.parts.prefix(1)), "\(ring.partReads.count) of \(ring.parts.count) parts")
+		#expect(revealed.response == expected.response)
+		#expect(bytes(revealed.blobs) == bytes(expected.blobs))
+	}
+
+	@Test("revealing the oldest change reads each part on the way to it once, newest first")
+	func oldestRevealReadsEachPartOnce() throws {
+		let ring = try grownRing()
+		let oldest = try #require(ring.entries.last)
+		let expected = try HistoryEngine.reveal(try whole(ring), ids: [oldest.id])
+
+		let revealed = try HistoryOperations.reveal(ring.storage, vaultId: vaultId, ids: [oldest.id])
+
+		#expect(ring.partReads == ring.parts)
+		#expect(revealed.response == expected.response)
+		#expect(bytes(revealed.blobs) == bytes(expected.blobs))
+	}
+
+	@Test("planning and applying an undo of the newest change read only the part holding it")
+	func newestUndoReadsOnePart() throws {
+		let ring = try grownRing()
+		let newest = try #require(ring.entries.first)
+		let target = HistoryEngine.RollbackTarget.undo(entry: newest.id, only: nil)
+		let expected = try HistoryEngine.planRollback(
+			try whole(ring), values: try #require(ring.storage.values).withUnsafeBytes { SecretBytes(copying: $0) }, target: target)
+
+		let plan = try HistoryOperations.planRollback(ring.storage, vaultId: vaultId, target: target)
+		#expect(ring.partReads == Array(ring.parts.prefix(1)), "planning read \(ring.partReads.count) of \(ring.parts.count) parts")
+		#expect(plan.response == expected.response)
+		ring.storage.resetCounts()
+
+		let rolledBack = try HistoryOperations.rolledBackEnvironments(
+			ring.storage, vaultId: vaultId, target: target, fingerprint: plan.response.fingerprint, skipped: [], keepEmpty: [])
+		#expect(ring.partReads == Array(ring.parts.prefix(1)), "applying read \(ring.partReads.count) of \(ring.parts.count) parts")
+		#expect(rolledBack.environments["production"]?["BIG"] == String(repeating: "1", count: 4096))
+	}
+
+	@Test("the key inspector's changes read each part once across environments, since a timeline walks every part")
+	func keyChangesReadEachPartOnce() throws {
+		let ring = try grownRing()
+		let changes = try HistoryOperations.keyChanges(
+			ring.storage, vaultId: vaultId, key: "BIG", environments: ["staging", "production"], limit: 1)
+		#expect(changes["staging"] == nil)
+		#expect(changes["production"]?.map(\.id) == [ring.entries[0].id])
+		#expect(ring.partReads.sorted() == ring.parts.sorted(), "\(ring.partReads)")
+	}
+
+	@Test("a removal's review reads each part once and reviews as a whole read does")
+	func removalReviewReadsEachPartOnce() throws {
+		let ring = try grownRing()
+		let newest = try #require(ring.entries.first)
+		let expected = try HistoryEngine.reviewRemoval(
+			try whole(ring), values: try #require(ring.storage.values).withUnsafeBytes { SecretBytes(copying: $0) },
+			entry: newest.id, environment: "production", key: "BIG", side: "before")
+
+		let review = try HistoryOperations.reviewRemoval(
+			ring.storage, vaultId: vaultId, entry: newest.id, environment: "production", key: "BIG", side: "before")
+
+		#expect(review == expected)
+		#expect(Set(ring.partReads).count == ring.partReads.count, "\(ring.partReads)")
+	}
+
+	@Test("a part whose account is gone reads as absent, as a whole read takes it")
+	func missingPartReadsAsAbsent() throws {
+		let ring = try grownRing()
+		let gone = try #require(ring.parts.last)
+		ring.storage.records[gone] = nil
+		func outcome(_ read: () throws -> HistoryEngine.Answer<[HistoryEngine.Entry]>) -> String {
+			do {
+				let answer = try read()
+				return "\(answer.response.map(\.id)) \(bytes(answer.blobs).map(\.count))"
+			} catch let failure as HistoryEngine.Failure {
+				return failure.code
+			} catch {
+				return "\(error)"
+			}
+		}
+		for entry in [ring.entries.first, ring.entries.last].compactMap({ $0 }) {
+			let stored = try whole(ring)
+			let expected = outcome { try HistoryEngine.reveal(stored, ids: [entry.id]) }
+			let revealed = outcome { try HistoryOperations.reveal(ring.storage, vaultId: vaultId, ids: [entry.id]) }
+			#expect(revealed == expected, "entry \(entry.seq)")
+		}
+		ring.storage.resetCounts()
+		_ = try HistoryOperations.reveal(ring.storage, vaultId: vaultId, ids: [try #require(ring.entries.first).id])
+		#expect(!ring.partReads.contains(gone), "the newest change never reaches the oldest part")
+	}
+}

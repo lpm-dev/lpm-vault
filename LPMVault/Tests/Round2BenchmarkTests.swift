@@ -139,11 +139,12 @@ struct Round2BenchmarkTests {
 		}
 		let value = String(repeating: "x", count: 75_000)
 		for projectID in projectIDs {
-			let result = service.saveEnvironments(
-				vaultId: projectID,
-				projectName: projectID,
-				projectPath: "",
-				environments: ["default": ["PAYLOAD": value]]
+			let result = service.applyVaultTransaction(
+				project: .upsert(VaultProject(
+					id: projectID, name: projectID, path: "",
+					environments: ["default": ["PAYLOAD": value]]
+				), source: VaultHistorySource(.set)),
+				data: []
 			)
 			if case .failure = result {
 				Issue.record("Could not create project-unlock fixture")

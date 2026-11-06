@@ -76,7 +76,7 @@ enum BackupEngine {
 	static func generatePassphrase() -> Result<String, Failure> {
 		let result = lpm_env_backup_generate_passphrase()
 		defer { lpm_env_release(result) }
-		guard lpm_env_abi_version() == 1 else { return .failure(.engine(code: "env.abi_mismatch")) }
+		guard EnvEngineABI.matches else { return .failure(.engine(code: "env.abi_mismatch")) }
 		guard result.status == 0, let data = result.data, result.length > 0,
 			let phrase = String(bytes: UnsafeBufferPointer(start: data, count: result.length), encoding: .utf8)
 		else { return .failure(refusal(of: result)) }
@@ -94,7 +94,7 @@ enum BackupEngine {
 			}
 		}
 		defer { lpm_env_release(result) }
-		guard lpm_env_abi_version() == 1 else { return .failure(.engine(code: "env.abi_mismatch")) }
+		guard EnvEngineABI.matches else { return .failure(.engine(code: "env.abi_mismatch")) }
 		guard result.status == 0 else { return .failure(refusal(of: result)) }
 		guard let data = result.data, result.length > 0, result.length <= maximumFileBytes else {
 			return .failure(.engine(code: "backup.unreadable_output"))
@@ -131,7 +131,7 @@ enum BackupEngine {
 			}
 		}
 		defer { lpm_env_release(result) }
-		guard lpm_env_abi_version() == 1 else { return .failure(.engine(code: "env.abi_mismatch")) }
+		guard EnvEngineABI.matches else { return .failure(.engine(code: "env.abi_mismatch")) }
 		guard result.status == 0 else { return .failure(refusal(of: result)) }
 		guard let data = result.data, result.length <= maximumFileBytes,
 			offset <= result.length, length <= result.length - offset
@@ -157,7 +157,7 @@ enum BackupEngine {
 			}
 		}
 		defer { lpm_env_release(result) }
-		guard lpm_env_abi_version() == 1 else { return .failure(.engine(code: "env.abi_mismatch")) }
+		guard EnvEngineABI.matches else { return .failure(.engine(code: "env.abi_mismatch")) }
 		guard result.status == 0 else { return .failure(refusal(of: result)) }
 		guard let data = result.data, result.length <= maximumFileBytes,
 			payloadOffset <= result.length, payloadLength <= result.length - payloadOffset,
@@ -244,7 +244,7 @@ enum BackupEngine {
 	/// A JSON output when the call succeeded, else why it didn't. Releases it.
 	private static func decodeJSON(_ result: LPMEnvResult) -> Result<LPMConfigJSON, Failure> {
 		defer { lpm_env_release(result) }
-		guard lpm_env_abi_version() == 1 else { return .failure(.engine(code: "env.abi_mismatch")) }
+		guard EnvEngineABI.matches else { return .failure(.engine(code: "env.abi_mismatch")) }
 		guard result.status == 0 else { return .failure(refusal(of: result)) }
 		guard let output = json(result) else { return .failure(.engine(code: "backup.unreadable_output")) }
 		return .success(output)

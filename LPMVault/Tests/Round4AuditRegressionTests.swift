@@ -2918,7 +2918,8 @@ extension VaultStoreTests {
 			remotePayload: remote,
 			action: "pull",
 			version: 4,
-			binding: binding
+			binding: binding,
+			source: VaultHistorySource(.pull)
 		)
 
 		#expect(keychain.envStorage[project.id]?.environments == project.environments)
@@ -4801,21 +4802,23 @@ struct VersionedProjectDiscoveryRegressionTests {
 			vaultId: "existing-project",
 			projectName: "Original",
 			projectPath: "/original",
-			environments: ["default": ["TOKEN": "old"]]
+			environments: ["default": ["TOKEN": "old"]],
+			source: VaultHistorySource(.set)
 		) else {
 			Issue.record("Could not create the project mutation fixture")
 			return
 		}
 		backend.resetOperationCounts()
 
-		guard case .success = service.saveEnvironments(
-			vaultId: "existing-project",
-			projectName: "Renamed",
-			projectPath: "/renamed",
-			environments: [
+		guard case .success = service.applyVaultTransaction(
+			project: .upsert(VaultProject(
+				id: "existing-project", name: "Renamed", path: "/renamed",
+				environments: [
 				"default": ["TOKEN": "new", "URL": "https://example.com"],
 				"production": ["TOKEN": "production"],
 			]
+			), source: VaultHistorySource(.set)),
+			data: []
 		) else {
 			Issue.record("Could not update the project mutation fixture")
 			return
@@ -4843,7 +4846,8 @@ struct VersionedProjectDiscoveryRegressionTests {
 				vaultId: "dense-\(index)",
 				projectName: "Project \(index)",
 				projectPath: "",
-				environments: ["default": [:]]
+				environments: ["default": [:]],
+				source: VaultHistorySource(.set)
 			) else {
 				Issue.record("Could not create dense-shard fixture \(index)")
 				return

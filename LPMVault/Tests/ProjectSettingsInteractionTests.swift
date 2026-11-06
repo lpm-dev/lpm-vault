@@ -58,6 +58,8 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Project Settings"))
 			#expect(try await host.waitForText("public/favicon.png"))
 			#expect(try await host.waitForText("CLI approval"))
+			try await host.scrollToEnd(ofScrollViewShowing: "CLI approval")
+			#expect(try await host.waitForText("HISTORY", exactly: true))
 			#expect(try await host.waitForText("Delete Locally"))
 			#expect(try await !host.text().contains("Unsaved changes"))
 			try host.enterText("renamed-project", placeholder: "Project name")
@@ -93,18 +95,7 @@ extension SheetInteractionTests {
 
 		/// The context menu of the sidebar row showing `name`.
 		private func rowMenu<V: View>(_ name: String, in host: SheetTestHost<V>) async throws -> NSMenu {
-			let row = try await host.waitForElement(saying: name, region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
-			let point = AccessibilityTree.center(of: row, in: host.window)
-			let event = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [],
-				timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber, context: nil,
-				eventNumber: 0, clickCount: 1, pressure: 1))
-			let target = try #require(host.view.hitTest(host.view.superview?.convert(point, from: nil) ?? point))
-			return try #require(target.menu(for: event) ?? host.view.menu(for: event), "\(name) has a context menu")
-		}
-
-		private func perform(_ title: String, in menu: NSMenu) throws {
-			let index = try #require(menu.items.firstIndex { $0.title == title }, "Missing \(title)")
-			menu.performActionForItem(at: index)
+			try await host.contextMenu(of: name, region: CGRect(x: 0, y: 0, width: 0.26, height: 1))
 		}
 
 		private func editingName<V: View>(in host: SheetTestHost<V>) -> Bool {
@@ -117,7 +108,7 @@ extension SheetInteractionTests {
 			defer { fixture.tearDown() }
 			let host = try await workspace(fixture)
 			defer { host.window.close() }
-			try perform("Rename…", in: try await rowMenu("demo-api", in: host))
+			try host.choose("Rename…", in: try await rowMenu("demo-api", in: host))
 			#expect(try await host.waitUntilRendered { editingName(in: host) })
 			try await host.click("All variables")
 			#expect(try await host.waitForText("New key", exactly: true))
@@ -134,7 +125,7 @@ extension SheetInteractionTests {
 			defer { fixture.tearDown() }
 			let host = try await workspace(fixture)
 			defer { host.window.close() }
-			try perform("Project Settings…", in: try await rowMenu("web-dashboard", in: host))
+			try host.choose("Project Settings…", in: try await rowMenu("web-dashboard", in: host))
 			#expect(try await host.waitUntil { fixture.store.selectedProjectId == "other" })
 			#expect(try await host.waitUntil { host.textField(placeholder: "Project name")?.stringValue == "web-dashboard" },
 				"The page opens on the project chosen, not the one that was selected")
@@ -149,6 +140,8 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, onBack: {}, onDelete: { deletes += 1 }),
 				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
 			defer { host.window.close() }
+			try await host.settle()
+			try host.scrollToEnd()
 			try await host.click("Delete Locally…")
 			#expect(try await host.waitUntil { deletes == 1 })
 		}
@@ -161,7 +154,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			let menu = try await rowMenu("web-dashboard", in: host)
 			fixture.store.projects.removeAll { $0.id == "other" }
-			try perform("Project Settings…", in: menu)
+			try host.choose("Project Settings…", in: menu)
 			try await host.settle()
 			#expect(fixture.store.selectedProjectId == "demo")
 			#expect(try await host.waitForText("New key", exactly: true))
@@ -214,17 +207,25 @@ extension SheetInteractionTests {
 				((view as? NSSwitch).map { [$0] } ?? []) + view.subviews.flatMap { switches(in: $0) }
 			}
 			func cliSwitch() -> AccessibilityTree.Element? {
-				AccessibilityTree.visibleElements(in: host.window, of: host.view).first { $0.role == .checkBox }
+				AccessibilityTree.visibleElements(in: host.window, of: host.view).first {
+					$0.role == .checkBox && ($0.label ?? $0.title) == "CLI approval"
+				}
 			}
-			#expect(try await host.waitUntil { switches(in: host.view).count == 1 })
+			/// The switch drawn where VoiceOver finds CLI approval's, beside Local history's.
+			func cliNativeSwitch() -> NSSwitch? {
+				guard let element = cliSwitch() else { return nil }
+				let point = AccessibilityTree.center(of: element, in: host.window)
+				return switches(in: host.view).first { $0.convert($0.bounds, to: nil).contains(point) }
+			}
+			#expect(try await host.waitUntil { cliNativeSwitch() != nil })
 			#expect(fixture.store.projectCliAccess["demo"] == nil)
-			#expect(switches(in: host.view).allSatisfy { !$0.isEnabled }, "An unreadable policy can't be changed from here")
-			#expect(try await host.waitUntil { cliSwitch().map { ($0.label ?? $0.title) == "CLI approval" && $0.value == "Unavailable" } ?? false })
+			#expect(cliNativeSwitch()?.isEnabled == false, "An unreadable policy can't be changed from here")
+			#expect(try await host.waitUntil { cliSwitch()?.value == "Unavailable" })
 			fixture.keychain.cliAccessPolicies["demo"] = .requireApproval
 			#expect(await fixture.store.loadProjects())
 			fixture.store.isUnlocked = true
-			#expect(try await host.waitUntil { switches(in: host.view).first?.isEnabled == true })
-			#expect(switches(in: host.view).first?.state == .on)
+			#expect(try await host.waitUntil { cliNativeSwitch()?.isEnabled == true })
+			#expect(cliNativeSwitch()?.state == .on)
 			#expect(try await host.waitUntil { cliSwitch()?.value == "Required" })
 		}
 

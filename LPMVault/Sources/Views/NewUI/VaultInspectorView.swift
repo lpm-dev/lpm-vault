@@ -166,6 +166,8 @@ private struct VaultKeyEditor: View {
 					VaultHairline()
 					valuesSection(draft, cards: cards, checks: checks)
 					VaultHairline()
+					VaultKeyHistorySection(store: store, project: project, key: key)
+					VaultHairline()
 					rulesSection(checks)
 					descriptionSection(draft, descriptions: descriptions)
 				}

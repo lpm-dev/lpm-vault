@@ -368,6 +368,7 @@ struct VaultSidebarView: View {
 		let environments = store.orderedEnvironmentNames(for: project)
 		return LazyVStack(spacing: 1) {
 			schemaRow(project)
+			historyRow(project)
 
 			Button(action: onNewEnvironment) {
 				HStack(spacing: VaultSidebarLayout.childSpacing) {
@@ -444,6 +445,54 @@ struct VaultSidebarView: View {
 		.accessibilityAddTraits(selected ? .isSelected : [])
 	}
 
+	private func historyRow(_ project: VaultProject) -> some View {
+		let selected = !store.isShowingAccountPage && mode == .history
+		let history = store.history
+		let showsThisProject = history.projectID == project.id
+		// What's known of every project: why its last change wasn't recorded,
+		// and what its listing shows; the page adds what reading found.
+		let listed = store.projectCompanionStates[project.id]
+		let warns = history.notRecorded[project.id] != nil
+			|| listed?.features.contains { $0.name == "history" && !$0.supported } == true
+			|| listed?.damage.contains { $0.repair?.feature == "history" } == true
+			|| (showsThisProject && (
+				["unsupported", "removing", "both"].contains(history.state?.history ?? "")
+				|| history.state?.damage.isEmpty == false
+				|| (history.timeline?.unreadableParts ?? 0) > 0
+				|| history.timeline?.damagedTail == true))
+		return Button {
+			store.openProject(id: project.id)
+			mode = .history
+		} label: {
+			HStack(spacing: VaultSidebarLayout.childSpacing) {
+				Image(systemName: "clock.arrow.circlepath")
+					.font(.system(size: 9.5, weight: .semibold))
+					.frame(width: VaultSidebarLayout.childIconWidth)
+					.offset(x: VaultSidebarLayout.childIconOffset)
+					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
+				Text("History")
+					.font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
+				if warns {
+					Image(systemName: "exclamationmark.triangle.fill")
+						.font(.system(size: 9.5))
+						.foregroundStyle(VaultPalette.orange)
+						.help("Local history needs attention")
+				}
+				Spacer(minLength: 4)
+			}
+			.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
+			.padding(.trailing, VaultSidebarLayout.rowInset)
+			.padding(.vertical, 5)
+			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.sidebarSelection : .clear))
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.accessibilityLabel("History")
+		.accessibilityValue(warns ? "needs attention" : "")
+		.accessibilityAddTraits(selected ? .isSelected : [])
+	}
+
 	private func environmentRow(_ project: VaultProject, environment: String, color: Color) -> some View {
 		let selected = !store.isShowingAccountPage && mode == .environment(environment)
 		let target = VaultEnvironmentTarget(projectId: project.id, environment: environment)
@@ -481,6 +530,10 @@ struct VaultSidebarView: View {
 				.disabled(!canEdit)
 			Button("Duplicate…") { onDuplicateEnvironment(target) }
 				.disabled(!canEdit)
+			Button("Show History") {
+				store.openProject(id: project.id)
+				store.history.show(project.id, environment: environment)
+			}
 			Divider()
 			Button("Clear All Secrets", role: .destructive) { onClearEnvironment(target) }
 				.disabled(!canEdit || project.secretCount(for: environment) == 0)

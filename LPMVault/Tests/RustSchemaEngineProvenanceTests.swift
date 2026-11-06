@@ -81,7 +81,7 @@ struct RustSchemaEngineProvenanceTests {
 		groupDeclaring: String = "{}"
 	) throws -> LPMConfigJSON {
 		try json(#"""
-			{"abiVersion":1,"effective":{"vars":{"TOKEN":{},"OTHER":{}},"clientPrefixes":["OWN_","SHOP_"]},
+			{"abiVersion":\#(EnvEngineABI.version),"effective":{"vars":{"TOKEN":{},"OTHER":{}},"clientPrefixes":["OWN_","SHOP_"]},
 			 "origins":{"TOKEN":{"source":"lpm.json","pointer":"/envSchema/overrides/TOKEN"},"OTHER":{"source":"base.json","pointer":"/vars/OTHER"}},
 			 "groupOrigins":{},"declaringOrigins":{"TOKEN":{"source":"base.json","pointer":"/vars/TOKEN"}},
 			 "sources":\#(sources),"groupDeclaringOrigins":\#(groupDeclaring),"clientPrefixOrigins":\#(prefixOrigins),"replacedVars":\#(replaced),"replacedGroups":{},
