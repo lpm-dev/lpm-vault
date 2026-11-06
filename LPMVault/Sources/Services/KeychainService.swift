@@ -320,6 +320,9 @@ final class CompanionScope {
 	/// A names-only listing with each item's claimed approval, or why it
 	/// can't be read.
 	var listing: [String: Result<VaultCliAccess, KeychainStoreError>]?
+	/// Each listed item's version, for those that haven't changed since the
+	/// listing as far as this scope knows.
+	var versions: [String: KeychainItemVersion] = [:]
 	/// The companion accounts in `listing`, by project.
 	var companionNames: [String: Set<String>]?
 	/// How the engine read each name asked about; naming never changes.
@@ -341,6 +344,7 @@ final class CompanionScope {
 		listed = [:]
 		markers = [:]
 		listing = nil
+		versions = [:]
 		companionNames = nil
 		unfinishable = [:]
 	}
@@ -804,9 +808,9 @@ protocol KeychainStoreBackend {
 	/// isn't available.
 	func probe(service: String, account: String, openAccounts: [String]) -> KeychainProbeOutcome
 	/// Every account of `service` with its CLI access, or why its attributes
-	/// can't be read, from one attribute listing, so one malformed item
-	/// doesn't hide the others.
-	func listing(service: String) throws -> [String: Result<VaultCliAccess, KeychainStoreError>]
+	/// can't be read, and its version, from one attribute listing, so one
+	/// malformed item doesn't hide the others.
+	func listing(service: String) throws -> KeychainListing
 	/// Runs `body` with reads macOS can't ask approval for: an item whose
 	/// approval the app's unlock didn't give fails to read instead.
 	func withoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T
@@ -820,6 +824,64 @@ enum KeychainProbeOutcome: Equatable, Sendable {
 	case absent
 	/// The Keychain didn't let the probe tell, as while the Mac is locked.
 	case inconclusive
+}
+
+/// What changes whenever a Keychain item does. macOS moves an item's
+/// modification date, to the microsecond, on every update, its access
+/// control included, and gives an item deleted and added again a new
+/// persistent reference. A caller can set neither, and only a process the
+/// item's approval lets in can update a protected item.
+struct KeychainItemVersion: Hashable, Sendable {
+	let reference: Data
+	let modified: Date
+}
+
+/// A service's items from one attribute listing.
+struct KeychainListing {
+	/// Each account's claimed approval, or why its attributes can't be read.
+	var readings: [String: Result<VaultCliAccess, KeychainStoreError>]
+	/// Each account's version, for those the listing gave one.
+	var versions: [String: KeychainItemVersion] = [:]
+}
+
+/// Each item's protection as a probe found it, and the item's version
+/// then. A probe of an item whose version hasn't moved would find the same,
+/// so the reconcile pass after unlock probes only items that changed. The
+/// memory lasts while the app runs and holds no values.
+final class KeychainProbeMemory: @unchecked Sendable {
+	private struct Found {
+		let version: KeychainItemVersion
+		let outcome: KeychainProbeOutcome
+	}
+
+	private let lock = NSLock()
+	private var found: [String: Found] = [:]
+
+	/// What a probe found when `account` had `version`, if one did.
+	func outcome(of account: String, at version: KeychainItemVersion) -> KeychainProbeOutcome? {
+		lock.withLock {
+			guard let entry = found[account], entry.version == version else { return nil }
+			return entry.outcome
+		}
+	}
+
+	/// Keeps what a probe found for `account` at `version`, when it could tell.
+	func remember(_ outcome: KeychainProbeOutcome, of account: String, at version: KeychainItemVersion) {
+		lock.withLock {
+			switch outcome {
+			case .automatic, .protected: found[account] = Found(version: version, outcome: outcome)
+			case .absent, .inconclusive: found[account] = nil
+			}
+		}
+	}
+
+	/// Forgets every account `listed` doesn't have.
+	func forget<Value>(allBut listed: [String: Value]) {
+		lock.withLock {
+			guard found.keys.contains(where: { listed[$0] == nil }) else { return }
+			found = found.filter { listed[$0.key] != nil }
+		}
+	}
 }
 
 extension KeychainStoreBackend {
@@ -849,8 +911,8 @@ extension KeychainStoreBackend {
 	func setCliAccess(service: String, account: String, access: VaultCliAccess) throws -> VaultCliAccess {
 		throw KeychainStoreError.status(operation: "change CLI approval", code: errSecUnimplemented)
 	}
-	func listing(service: String) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
-		try accounts(service: service).mapValues { .success($0) }
+	func listing(service: String) throws -> KeychainListing {
+		KeychainListing(readings: try accounts(service: service).mapValues { .success($0) })
 	}
 	func withoutApprovalPrompts<T>(_ body: () throws -> T) rethrows -> T { try body() }
 
@@ -1078,33 +1140,46 @@ struct SecurityKeychainStoreBackend: KeychainStoreBackend, LPMHomeKeychain {
 		return readings
 	}
 
-	func listing(service: String) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
+	func listing(service: String) throws -> KeychainListing {
 		var query = Self.scopedQuery(service: service)
 		query[kSecReturnAttributes as String] = true
+		query[kSecReturnPersistentRef as String] = true
 		query[kSecMatchLimit as String] = kSecMatchLimitAll
 		query[kSecUseAuthenticationContext as String] = authentication.current()
 		var result: CFTypeRef?
 		let status = SecItemCopyMatching(query as CFDictionary, &result)
-		if status == errSecItemNotFound { return [:] }
+		if status == errSecItemNotFound { return KeychainListing(readings: [:]) }
 		guard status == errSecSuccess else {
 			throw KeychainStoreError.status(operation: "list \(service)", code: status)
 		}
 		guard let records = result as? [[String: Any]] else {
 			throw KeychainStoreError.integrityValidationFailed
 		}
-		var readings = [String: Result<VaultCliAccess, KeychainStoreError>](minimumCapacity: records.count)
+		return try Self.listing(records: records)
+	}
+
+	/// Each listed item's claimed approval and version. Two items that claim
+	/// one account can't be read, and neither has a version.
+	static func listing(records: [[String: Any]]) throws -> KeychainListing {
+		var listing = KeychainListing(readings: .init(minimumCapacity: records.count), versions: .init(minimumCapacity: records.count))
 		for attributes in records {
 			guard let account = attributes[kSecAttrAccount as String] as? String else {
 				throw KeychainStoreError.integrityValidationFailed
 			}
-			guard readings[account] == nil else {
-				readings[account] = .failure(.integrityValidationFailed)
+			guard listing.readings[account] == nil else {
+				listing.readings[account] = .failure(.integrityValidationFailed)
+				listing.versions[account] = nil
 				continue
 			}
-			do { readings[account] = .success(try Self.cliAccess(attributes: attributes)) }
-			catch { readings[account] = .failure(.contradictoryApproval) }
+			do { listing.readings[account] = .success(try cliAccess(attributes: attributes)) }
+			catch { listing.readings[account] = .failure(.contradictoryApproval) }
+			if let reference = attributes[kSecValuePersistentRef as String] as? Data,
+				let modified = attributes[kSecAttrModificationDate as String] as? Date
+			{
+				listing.versions[account] = KeychainItemVersion(reference: reference, modified: modified)
+			}
 		}
-		return readings
+		return listing
 	}
 
 	/// Every account of `service` in the shared group with its CLI access, read
@@ -1731,6 +1806,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 	private let backend: any KeychainStoreBackend
 	private let performanceCounters: VaultKeychainPerformanceCounters?
 	private let resumeNotices = CompanionResumeNotices()
+	private let probeMemory = KeychainProbeMemory()
 	private let historyOutcomes = HistoryOutcomes()
 	private let historySwitch = NSLock()
 	nonisolated(unsafe) private var historyEnabled = true
@@ -2755,12 +2831,13 @@ final class SharedKeychainStore: @unchecked Sendable {
 
 	/// Fixes each companion record that follows values toward its values
 	/// item's approval as a probe verifies it, probing each owning values
-	/// item and each record once. Values that claim approval the Keychain
-	/// doesn't enforce get it first, as the CLI gives it them. Nothing changes when everything matches,
-	/// and nothing is decided for an item whose probe is inconclusive, or for
-	/// values whose own approval attributes contradict each other, which the
-	/// person sets by choosing the project's approval again. Returns how many
-	/// records it changed.
+	/// item and each record once, unless a probe already found how the item
+	/// is protected and it hasn't changed since. Values that claim approval
+	/// the Keychain doesn't enforce get it first, as the CLI gives it them.
+	/// Nothing changes when everything matches, and nothing is decided for an
+	/// item whose probe is inconclusive, or for values whose own approval
+	/// attributes contradict each other, which the person sets by choosing
+	/// the project's approval again. Returns how many records it changed.
 	@discardableResult
 	func reconcileCompanionAccess() throws -> Int {
 		try VaultKeychainTransactionLock.withLock {
@@ -2772,7 +2849,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 				guard !records.isEmpty else { continue }
 				let openAccounts = [VaultKeychainRecordContract.projectIndexMarkerAccount, try markerAccountName(vaultId)]
 				let target: VaultCliAccess
-				switch backend.probe(service: service, account: vaultId, openAccounts: openAccounts) {
+				switch probeRememberedUnlocked(vaultId, openAccounts: openAccounts) {
 				case .automatic:
 					guard case .success(let claimed)? = listing[vaultId] else { continue }
 					if claimed == .requireApproval { try setCliAccessNotedUnlocked(vaultId, .requireApproval) }
@@ -2782,7 +2859,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 				}
 				for record in records {
 					let enforced: VaultCliAccess
-					switch backend.probe(service: service, account: record, openAccounts: openAccounts) {
+					switch probeRememberedUnlocked(record, openAccounts: openAccounts) {
 					case .automatic: enforced = .automatic
 					case .protected: enforced = .requireApproval
 					case .absent, .inconclusive: continue
@@ -2792,8 +2869,24 @@ final class SharedKeychainStore: @unchecked Sendable {
 					changed += 1
 				}
 			}
+			probeMemory.forget(allBut: try listingUnlocked())
 			return changed
 		}
+	}
+
+	/// What a probe of `account` finds, or found when the item had the
+	/// version this scope's listing gives it. Without a version, as after
+	/// the scope changed the item, it probes and remembers nothing. The
+	/// version is read before the probe, so an item another process changes
+	/// in between is only probed again by the next pass.
+	private func probeRememberedUnlocked(_ account: String, openAccounts: [String]) -> KeychainProbeOutcome {
+		guard let version = scope.versions[account] else {
+			return backend.probe(service: service, account: account, openAccounts: openAccounts)
+		}
+		if let outcome = probeMemory.outcome(of: account, at: version) { return outcome }
+		let outcome = backend.probe(service: service, account: account, openAccounts: openAccounts)
+		probeMemory.remember(outcome, of: account, at: version)
+		return outcome
 	}
 
 	// MARK: Companion storage inside the lock
@@ -2804,8 +2897,9 @@ final class SharedKeychainStore: @unchecked Sendable {
 		let scope = self.scope
 		if let listing = scope.listing { return listing }
 		let listing = try backend.listing(service: service)
-		scope.listing = listing
-		return listing
+		scope.listing = listing.readings
+		scope.versions = listing.versions
+		return listing.readings
 	}
 
 	private func companionNamesUnlocked() throws -> [String: Set<String>] {
@@ -3140,6 +3234,7 @@ final class SharedKeychainStore: @unchecked Sendable {
 	/// listing, the project's companion accounts, its marker and what it allows.
 	private func noteUnlocked(_ account: String, _ change: NotedChange) {
 		let scope = self.scope
+		scope.versions[account] = nil
 		if scope.listing != nil {
 			switch change {
 			case .deleted: scope.listing?.removeValue(forKey: account)
@@ -3181,6 +3276,8 @@ final class SharedKeychainStore: @unchecked Sendable {
 
 	@discardableResult
 	private func setCliAccessNotedUnlocked(_ account: String, _ access: VaultCliAccess) throws -> VaultCliAccess {
+		// A change that fails partway leaves no version this scope would trust.
+		scope.versions[account] = nil
 		let saved = try backend.setCliAccess(service: service, account: account, access: access)
 		noteUnlocked(account, .access(saved))
 		return saved
