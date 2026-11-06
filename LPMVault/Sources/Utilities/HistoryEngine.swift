@@ -225,16 +225,21 @@ extension HistoryEngine {
 
 		private mutating func asking<T>(_ read: (Stored) throws(Failure) -> T) throws -> T {
 			while true {
+				// Reading parts inside the catch crashes Swift 6.2's ownership
+				// verifier, so the catch only takes the parts asked for.
+				let needed: [Int]
 				do {
 					return try read(stored)
-				} catch where error.code == HistoryEngine.partsNeeded {
-					// Each round adds a part the engine hadn't been given, so
-					// the walk ends within the parts the head lists.
-					guard !error.neededParts.isEmpty else { throw HistoryEngine.unreadable }
-					for part in error.neededParts {
-						guard !stored.parts.contains(where: { $0.part == part }) else { throw HistoryEngine.unreadable }
-						stored.parts.append((part, try readPart(part)))
-					}
+				} catch {
+					guard error.code == HistoryEngine.partsNeeded else { throw error }
+					needed = error.neededParts
+				}
+				// Each round adds a part the engine hadn't been given, so the
+				// walk ends within the parts the head lists.
+				guard !needed.isEmpty else { throw HistoryEngine.unreadable }
+				for part in needed {
+					guard !stored.parts.contains(where: { $0.part == part }) else { throw HistoryEngine.unreadable }
+					stored.parts.append((part, try readPart(part)))
 				}
 			}
 		}
