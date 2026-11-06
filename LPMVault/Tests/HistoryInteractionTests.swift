@@ -246,9 +246,8 @@ extension SheetInteractionTests {
 			json["features"] = features
 			try backend.write(service: serviceName, account: markerAccount, data: try JSONSerialization.data(withJSONObject: json))
 			#expect(await store.addSecret(to: Self.projectID, environment: "staging", key: "NEW", value: "x") == .success)
-			#expect(try await host.waitUntil { store.history.notRecorded[Self.projectID] != nil })
-			let row = try await host.waitForElement(saying: "History", region: Self.sidebar)
-			#expect(row.texts.contains("needs attention"), "\(row.texts)")
+			let warning = try await host.waitForElement(saying: "needs attention", region: Self.sidebar)
+			#expect(warning.says("History"), "\(warning.texts)")
 
 			try await host.click("History", region: Self.sidebar)
 			#expect(try await host.waitForText("This change wasn’t added to local history"))
