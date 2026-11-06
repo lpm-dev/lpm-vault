@@ -5,11 +5,17 @@ import Testing
 @testable import LPMVault
 
 /// A shared Keychain service that records what companion storage does with
-/// it: reads per account, the order of deletions and approval changes, and
-/// the protection a probe finds, which can differ from what an item claims.
+/// it: reads and probes per account, the order of deletions and approval
+/// changes, and the protection a probe finds, which can differ from what an
+/// item claims. Each item has a version as macOS keeps one: a reference that
+/// lasts until the item is deleted, and a date every change moves.
 private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Sendable {
 	private let lock = NSLock()
 	private var items: [String: Data] = [:]
+	private var versions: [String: (reference: Int, modified: Int)] = [:]
+	private var versionClock = 0
+	private var versionsHidden = false
+	private var probeCounts: [String: Int] = [:]
 	private var claims: [String: VaultCliAccess] = [:]
 	private var enforced: [String: VaultCliAccess] = [:]
 	private var readCounts: [String: Int] = [:]
@@ -17,7 +23,10 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 	private var changes: [(account: String, access: VaultCliAccess)] = []
 	private var accessWrites: [(account: String, access: VaultCliAccess)] = []
 	private var listingCount = 0
+	private var versionListingCount = 0
 	private var failingWrites: Set<String> = []
+	private var failingAfterChange: Set<String> = []
+	private var inconclusiveProbes: Set<String> = []
 	private var probesInconclusive = false
 	private var contradictory: Set<String> = []
 	/// Durable changes left before the process "dies"; nil while it runs on.
@@ -28,18 +37,34 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 	private var promptsRefused = 0
 
 	func reads(of account: String) -> Int { lock.withLock { readCounts[account] ?? 0 } }
+	/// How often each account was probed since the counts were reset.
+	var probes: [String: Int] { lock.withLock { probeCounts } }
+	/// Leaves versions out of listings, as for items whose attributes don't carry one.
+	func hideVersions() { lock.withLock { versionsHidden = true } }
 	var deleted: [String] { lock.withLock { deletions } }
 	var accessChanges: [(account: String, access: VaultCliAccess)] { lock.withLock { changes } }
 	var writesWithAccess: [(account: String, access: VaultCliAccess)] { lock.withLock { accessWrites } }
 	var listings: Int { lock.withLock { listingCount } }
+	/// Listings that asked for each item's version.
+	var versionListings: Int { lock.withLock { versionListingCount } }
 	var names: Set<String> { lock.withLock { Set(items.keys) } }
 	func data(_ account: String) -> Data? { lock.withLock { items[account] } }
 	func claim(_ account: String) -> VaultCliAccess? { lock.withLock { items[account] == nil ? nil : claims[account] ?? .automatic } }
 	func failWrites(to accounts: Set<String>) { lock.withLock { failingWrites = accounts } }
-	func makeProbesInconclusive() { lock.withLock { probesInconclusive = true } }
+	/// Makes writes, deletions and approval changes to `accounts` fail after
+	/// they're made, as one whose check afterward can't read the item.
+	func failAfterChanging(_ accounts: Set<String>) { lock.withLock { failingAfterChange = accounts } }
+	/// Makes probes of `accounts` unable to tell, and every other probe tell.
+	func makeProbesInconclusive(for accounts: Set<String>) { lock.withLock { inconclusiveProbes = accounts } }
+	func makeProbesInconclusive(_ inconclusive: Bool = true) { lock.withLock { probesInconclusive = inconclusive } }
 	/// Makes `account`'s approval attributes contradict each other, as an
 	/// approval marker without an access control does.
-	func makeContradictory(_ account: String) { lock.withLock { _ = contradictory.insert(account) } }
+	func makeContradictory(_ account: String) {
+		lock.withLock {
+			contradictory.insert(account)
+			changedUnlocked(account)
+		}
+	}
 	/// Lets `count` more writes, deletions and approval changes through, then
 	/// refuses every one, as a process that died after them would leave things.
 	func crash(after count: Int?) { lock.withLock { mutationsBeforeCrash = count } }
@@ -53,7 +78,13 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 		}
 		mutationCount += 1
 	}
-	func resetCounts() { lock.withLock { readCounts = [:]; deletions = []; changes = []; accessWrites = []; listingCount = 0 } }
+	func resetCounts() { lock.withLock { readCounts = [:]; probeCounts = [:]; deletions = []; changes = []; accessWrites = []; listingCount = 0; versionListingCount = 0 } }
+
+	/// Moves `account`'s date, keeping its reference unless it's new.
+	private func changedUnlocked(_ account: String) {
+		versionClock += 1
+		versions[account] = (versions[account]?.reference ?? versionClock, versionClock)
+	}
 
 	/// Stores `data` as `account`, claiming `access`, and enforcing `enforcing`
 	/// when it differs, as an item whose attributes don't match its access control.
@@ -62,6 +93,18 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 			items[account] = data
 			claims[account] = access
 			enforced[account] = enforcing ?? access
+			changedUnlocked(account)
+		}
+	}
+
+	/// Deletes `account` and adds it back, as a process that can't change a
+	/// protected item can, under a new reference with the date it had.
+	func addBack(_ account: String, access: VaultCliAccess, enforcing: VaultCliAccess) {
+		lock.withLock {
+			versionClock += 1
+			versions[account] = (versionClock, versions[account]?.modified ?? versionClock)
+			claims[account] = access
+			enforced[account] = enforcing
 		}
 	}
 
@@ -86,6 +129,8 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 			if failingWrites.contains(account) { throw KeychainStoreError.status(operation: "write", code: errSecIO) }
 			try mutateUnlocked()
 			items[account] = data
+			changedUnlocked(account)
+			if failingAfterChange.contains(account) { throw KeychainStoreError.integrityValidationFailed }
 		}
 	}
 
@@ -93,10 +138,16 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 		try lock.withLock {
 			if failingWrites.contains(account) { throw KeychainStoreError.status(operation: "write", code: errSecIO) }
 			try mutateUnlocked()
+			// As the real backend does, writing `.automatic` changes only the
+			// data, so an existing item keeps the approval it has.
+			if access == .requireApproval || items[account] == nil {
+				claims[account] = access
+				enforced[account] = access
+			}
 			items[account] = data
-			claims[account] = access
-			enforced[account] = access
+			changedUnlocked(account)
 			accessWrites.append((account, access))
+			if failingAfterChange.contains(account) { throw KeychainStoreError.integrityValidationFailed }
 		}
 	}
 
@@ -105,6 +156,7 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 			guard items[account] == nil else { throw KeychainStoreError.status(operation: "add", code: errSecDuplicateItem) }
 			try mutateUnlocked()
 			items[account] = data
+			changedUnlocked(account)
 		}
 	}
 
@@ -115,6 +167,8 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 			if found { deletions.append(account) }
 			claims.removeValue(forKey: account)
 			enforced.removeValue(forKey: account)
+			versions.removeValue(forKey: account)
+			if failingAfterChange.contains(account) { throw KeychainStoreError.integrityValidationFailed }
 			return found
 		}
 	}
@@ -127,12 +181,17 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 		}
 	}
 
-	func listing(service: String) throws -> [String: Result<VaultCliAccess, KeychainStoreError>] {
+	func listing(service: String, versions withVersions: Bool) throws -> KeychainListing {
 		lock.withLock {
 			listingCount += 1
-			return Dictionary(uniqueKeysWithValues: items.keys.map { account in
-				(account, contradictory.contains(account) ? .failure(.contradictoryApproval) : .success(claims[account] ?? .automatic))
-			})
+			if withVersions { versionListingCount += 1 }
+			return KeychainListing(
+				readings: Dictionary(uniqueKeysWithValues: items.keys.map { account in
+					(account, contradictory.contains(account) ? .failure(.contradictoryApproval) : .success(claims[account] ?? .automatic))
+				}),
+				versions: versionsHidden || !withVersions ? [:] : versions.mapValues {
+					KeychainItemVersion(reference: Data(String($0.reference).utf8), modified: Date(timeIntervalSinceReferenceDate: Double($0.modified)))
+				})
 		}
 	}
 
@@ -150,14 +209,17 @@ private final class CompanionTestBackend: KeychainStoreBackend, @unchecked Senda
 			contradictory.remove(account)
 			claims[account] = access
 			enforced[account] = access
+			changedUnlocked(account)
 			changes.append((account, access))
+			if failingAfterChange.contains(account) { throw KeychainStoreError.integrityValidationFailed }
 			return access
 		}
 	}
 
 	func probe(service: String, account: String, openAccounts: [String]) -> KeychainProbeOutcome {
 		lock.withLock {
-			if probesInconclusive { return .inconclusive }
+			probeCounts[account, default: 0] += 1
+			if probesInconclusive || inconclusiveProbes.contains(account) { return .inconclusive }
 			guard items[account] != nil else { return .absent }
 			return (enforced[account] ?? .automatic) == .requireApproval ? .protected : .automatic
 		}
@@ -192,16 +254,31 @@ private func vendoredFixture(_ name: String) throws -> Data {
 }
 
 /// A Keychain service holding one indexed project, `proj`, with `values`.
-private func makeService() throws -> (KeychainService, CompanionTestBackend, String) {
+private func makeService(
+	performanceCounters: VaultKeychainPerformanceCounters? = nil
+) throws -> (KeychainService, CompanionTestBackend, String) {
 	let backend = CompanionTestBackend()
 	let name = "dev.lpm.vault.companion.\(UUID().uuidString)"
-	let service = KeychainService(testingService: name, backend: backend)
+	let service = KeychainService(testingService: name, backend: backend, performanceCounters: performanceCounters)
 	// Companion storage's own rules, without the records history would add.
 	service.recordsHistory = false
 	guard case .success = service.createEnvironments(
 		vaultId: vault, projectName: "Project", projectPath: "", environments: ["default": ["TOKEN": "team"]], source: VaultHistorySource(.set))
 	else { throw KeychainError.encodingFailed }
 	return (service, backend, name)
+}
+
+/// `proj` with protected values and an overrides record that follows them,
+/// which a reconcile pass probes and leaves as they are.
+private func protectedProject(
+	performanceCounters: VaultKeychainPerformanceCounters? = nil
+) throws -> (KeychainService, CompanionTestBackend, String) {
+	let (service, backend, _) = try makeService(performanceCounters: performanceCounters)
+	backend.store(vault, values, access: .requireApproval)
+	backend.store(try markerName(), marker(overridesV1))
+	let record = try recordName("overrides")
+	backend.store(record, overridesRecord, access: .requireApproval)
+	return (service, backend, record)
 }
 
 private func refusal<T>(_ result: Result<T, KeychainError>) -> CompanionRefusal? {
@@ -510,6 +587,234 @@ struct CompanionStorageTests {
 
 		#expect(try service.maintainCompanionStorage().get().accessFixes == 0)
 		#expect(backend.claim(try recordName("overrides")) == .automatic)
+	}
+
+	// MARK: - Remembered probes
+
+	@Test("a reconcile pass probes only the items that changed since a probe last verified them")
+	func reconcileProbesOnlyChangedItems() throws {
+		let (service, backend, record) = try protectedProject()
+		backend.resetCounts()
+		#expect(try service.maintainCompanionStorage().get().accessFixes == 0)
+		#expect(backend.probes == [vault: 1, record: 1])
+
+		backend.resetCounts()
+		#expect(try service.maintainCompanionStorage().get().accessFixes == 0)
+		#expect(backend.probes == [:], "nothing changed since the last pass")
+
+		backend.store(record, overridesRecord, access: .requireApproval)
+		backend.resetCounts()
+		#expect(try service.maintainCompanionStorage().get().accessFixes == 0)
+		#expect(backend.probes == [record: 1], "another process rewrote the record")
+	}
+
+	@Test("the work after unlock probes only the items that changed since the last unlock")
+	func workAfterUnlockRemembersProbes() throws {
+		let (service, backend, record) = try protectedProject()
+		backend.resetCounts()
+		_ = try service.maintainAfterUnlockResult(raisingHistoryRings: true).companion.get()
+		#expect(backend.probes == [vault: 1, record: 1])
+
+		backend.resetCounts()
+		_ = try service.maintainAfterUnlockResult(raisingHistoryRings: false).companion.get()
+		#expect(backend.probes == [:])
+		#expect(backend.versionListings == 1)
+	}
+
+	@Test("a record that loses its access control after a remembered probe is protected again")
+	func weakenedRecordIsFoundAgain() throws {
+		let (service, backend, record) = try protectedProject()
+		_ = try service.maintainCompanionStorage().get()
+		backend.store(record, overridesRecord, access: .requireApproval, enforcing: .automatic)
+		backend.resetCounts()
+
+		#expect(try service.maintainCompanionStorage().get().accessFixes == 1)
+		#expect(backend.accessChanges.map(\.account) == [record])
+		#expect(backend.probe(service: "", account: record, openAccounts: []) == .protected)
+	}
+
+	@Test("values that lose their access control after a remembered probe get it back")
+	func weakenedValuesAreFoundAgain() throws {
+		let (service, backend, record) = try protectedProject()
+		_ = try service.maintainCompanionStorage().get()
+		backend.store(vault, values, access: .requireApproval, enforcing: .automatic)
+		backend.resetCounts()
+
+		_ = try service.maintainCompanionStorage().get()
+		#expect(backend.accessChanges.map(\.account) == [vault])
+		#expect(backend.probe(service: "", account: vault, openAccounts: []) == .protected)
+		#expect(backend.claim(record) == .requireApproval)
+	}
+
+	@Test("an item deleted and added back is probed again, even with the date it had")
+	func addedBackItemIsProbedAgain() throws {
+		let (service, backend, record) = try protectedProject()
+		_ = try service.maintainCompanionStorage().get()
+		backend.addBack(record, access: .requireApproval, enforcing: .automatic)
+		backend.resetCounts()
+
+		#expect(try service.maintainCompanionStorage().get().accessFixes == 1)
+		#expect(backend.probes == [record: 1])
+	}
+
+	@Test("a record the pass protected is probed once more, then remembered")
+	func fixedRecordIsProbedOnceMore() throws {
+		let (service, backend, record) = try protectedProject()
+		backend.store(record, overridesRecord, access: .requireApproval, enforcing: .automatic)
+		#expect(try service.maintainCompanionStorage().get().accessFixes == 1)
+
+		backend.resetCounts()
+		#expect(try service.maintainCompanionStorage().get().accessFixes == 0)
+		#expect(backend.probes == [record: 1], "the pass's own change moved the record's date")
+
+		backend.resetCounts()
+		_ = try service.maintainCompanionStorage().get()
+		#expect(backend.probes == [:])
+	}
+
+	@Test("a probe that can't tell is never remembered")
+	func inconclusiveProbesAreNotRemembered() throws {
+		let (service, backend, record) = try protectedProject()
+		backend.makeProbesInconclusive()
+		_ = try service.maintainCompanionStorage().get()
+		backend.makeProbesInconclusive(false)
+		backend.resetCounts()
+
+		_ = try service.maintainCompanionStorage().get()
+		#expect(backend.probes == [vault: 1, record: 1])
+	}
+
+	@Test("items listed without a version are probed every pass")
+	func unversionedItemsAreAlwaysProbed() throws {
+		let (service, backend, record) = try protectedProject()
+		backend.hideVersions()
+		_ = try service.maintainCompanionStorage().get()
+		backend.resetCounts()
+
+		_ = try service.maintainCompanionStorage().get()
+		#expect(backend.probes == [vault: 1, record: 1])
+	}
+
+	@Test("a change the app makes after its scope listed the service is probed, not taken from an earlier pass")
+	func changeAfterTheScopesListingIsProbed() throws {
+		let (service, backend, record) = try protectedProject()
+		_ = try service.maintainCompanionStorage().get()
+		backend.resetCounts()
+
+		let maintenance = try service.withKeychainTransaction {
+			_ = service.maintainCompanionStorage()
+			_ = service.setCliAccess(vaultId: vault, access: .automatic)
+			return service.maintainCompanionStorage()
+		}.get()
+
+		#expect(try maintenance.get().accessFixes == 0)
+		#expect(backend.versionListings == 1, "the scope's one listing carries versions")
+		#expect(backend.probes == [vault: 1, record: 1])
+		#expect(!backend.accessChanges.contains { $0.access == .requireApproval }, "\(backend.accessChanges)")
+		#expect(backend.probe(service: "", account: vault, openAccounts: []) == .automatic)
+		#expect(backend.probe(service: "", account: record, openAccounts: []) == .automatic)
+	}
+
+	@Test("an approval change that fails after it's made is probed, not taken from an earlier pass")
+	func failedApprovalChangeIsProbed() throws {
+		let (service, backend, _) = try makeService()
+		backend.store(try markerName(), marker(overridesV1))
+		let record = try recordName("overrides")
+		backend.store(record, overridesRecord)
+		_ = try service.maintainCompanionStorage().get()
+		backend.failAfterChanging([record])
+
+		backend.resetCounts()
+
+		let maintenance = try service.withKeychainTransaction {
+			_ = service.maintainCompanionStorage()
+			_ = service.setCliAccess(vaultId: vault, access: .requireApproval)
+			backend.failAfterChanging([])
+			return service.maintainCompanionStorage()
+		}.get()
+
+		#expect(try maintenance.get().accessFixes == 1)
+		#expect(backend.versionListings == 1, "the scope's one listing carries versions")
+		#expect(backend.probe(service: "", account: vault, openAccounts: []) == .automatic)
+		#expect(backend.probe(service: "", account: record, openAccounts: []) == .automatic, "the record matches its values again")
+	}
+
+	@Test("a write or deletion that's made and then fails is probed, not taken from an earlier pass", arguments: [false, true])
+	func failedChangeIsProbed(deleting: Bool) throws {
+		let backend = CompanionTestBackend()
+		let store = SharedKeychainStore(service: "companion-\(UUID().uuidString)", backend: backend)
+		backend.store(vault, values, access: .requireApproval)
+		backend.store(try markerName(), marker(overridesV1))
+		let record = try recordName("overrides")
+		backend.store(record, overridesRecord, access: .requireApproval)
+		_ = try store.reconcileCompanionAccess()
+		backend.failAfterChanging([record])
+		backend.resetCounts()
+
+		try VaultKeychainTransactionLock.withLock {
+			_ = try store.collectCompanionOrphans()
+			#expect(throws: KeychainStoreError.self) {
+				if deleting { try store.historyDelete(record) } else { try store.historyReplace(record, with: overridesRecord) }
+			}
+			backend.failAfterChanging([])
+			_ = try store.reconcileCompanionAccess()
+		}
+
+		#expect(backend.versionListings == 1, "the scope's one listing carries versions")
+		#expect(backend.probes[record] == 1)
+	}
+
+	@Test("a record whose probe couldn't tell is probed again on the next pass")
+	func inconclusiveRecordIsProbedAgain() throws {
+		let (service, backend, record) = try protectedProject()
+		backend.makeProbesInconclusive(for: [record])
+		_ = try service.maintainCompanionStorage().get()
+		backend.makeProbesInconclusive(for: [])
+		backend.resetCounts()
+
+		_ = try service.maintainCompanionStorage().get()
+		#expect(backend.probes == [record: 1])
+	}
+
+	@Test("a pass whose probes all come from memory asks the engine for no marker names")
+	func rememberedPassNamesNoMarkers() throws {
+		let counters = VaultKeychainPerformanceCounters()
+		let (service, _, _) = try protectedProject(performanceCounters: counters)
+		_ = try service.maintainCompanionStorage().get()
+		let named = counters.snapshot.markerAccountNameCount
+
+		_ = try service.maintainCompanionStorage().get()
+		#expect(counters.snapshot.markerAccountNameCount == named)
+	}
+
+	@Test("a pass forgets what probes found for items that are gone")
+	func goneItemsAreForgotten() throws {
+		let backend = CompanionTestBackend()
+		let store = SharedKeychainStore(service: "companion-\(UUID().uuidString)", backend: backend)
+		backend.store(vault, values, access: .requireApproval)
+		backend.store(try markerName(), marker(overridesV1))
+		let record = try recordName("overrides")
+		backend.store(record, overridesRecord, access: .requireApproval)
+		_ = try store.reconcileCompanionAccess()
+		#expect(store.rememberedProbeCount == 2)
+
+		_ = try backend.delete(service: "", account: record)
+		_ = try store.reconcileCompanionAccess()
+		#expect(store.rememberedProbeCount == 1, "the values item is still listed")
+	}
+
+	@Test("only companion maintenance asks the listing for versions")
+	func onlyMaintenanceListsVersions() throws {
+		let (service, backend, _) = try protectedProject()
+		backend.resetCounts()
+
+		_ = try service.projectStatesResult(vaultIds: [vault]).get()
+		#expect(backend.listings == 1)
+		#expect(backend.versionListings == 0)
+
+		_ = try service.maintainCompanionStorage().get()
+		#expect(backend.listings == 2)
+		#expect(backend.versionListings == 1)
 	}
 
 	// MARK: - Display and backups

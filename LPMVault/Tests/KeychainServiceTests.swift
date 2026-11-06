@@ -374,6 +374,29 @@ struct KeychainServiceTests {
 		}
 	}
 
+	@Test("a listing gives each item its persistent reference and modification date as its version")
+	func listingReadsVersions() throws {
+		let modified = Date(timeIntervalSinceReferenceDate: 815_000_000.123456)
+		let listing = try SecurityKeychainStoreBackend.listing(records: [
+			[kSecAttrAccount as String: "versioned", kSecValuePersistentRef as String: Data([1, 2]), kSecAttrModificationDate as String: modified],
+			[kSecAttrAccount as String: "no-reference", kSecAttrModificationDate as String: modified],
+			[kSecAttrAccount as String: "no-date", kSecValuePersistentRef as String: Data([3])],
+		])
+		#expect(listing.readings.mapValues { try? $0.get() } == ["versioned": .automatic, "no-reference": .automatic, "no-date": .automatic])
+		#expect(listing.versions == ["versioned": KeychainItemVersion(reference: Data([1, 2]), modified: modified)])
+	}
+
+	@Test("two items that claim one account have no version")
+	func duplicateAccountsHaveNoVersion() throws {
+		let modified = Date(timeIntervalSinceReferenceDate: 815_000_000)
+		let listing = try SecurityKeychainStoreBackend.listing(records: [
+			[kSecAttrAccount as String: "twice", kSecValuePersistentRef as String: Data([1]), kSecAttrModificationDate as String: modified],
+			[kSecAttrAccount as String: "twice", kSecValuePersistentRef as String: Data([2]), kSecAttrModificationDate as String: modified],
+		])
+		#expect(listing.readings["twice"] == .failure(.integrityValidationFailed))
+		#expect(listing.versions.isEmpty)
+	}
+
 	@Test("approval uses user presence with password fallback and automatic access does not")
 	func cliApprovalUsesNativeUserPresence() throws {
 		#expect(VaultCliAccess.requireApproval.keychainFlags == .userPresence)
@@ -725,6 +748,45 @@ struct KeychainServiceTests {
 		let selectionBefore = backend.recordedReads.count
 		_ = try service.getProjectResult(vaultId: vaultId).get()
 		#expect(backend.recordedReads.dropFirst(selectionBefore).allSatisfy { $0.canPrompt }, "Selecting a project still reads as it did")
+	}
+}
+
+@Suite("Remembered probes")
+struct KeychainProbeMemoryTests {
+	private let first = KeychainItemVersion(reference: Data([1]), modified: Date(timeIntervalSinceReferenceDate: 1))
+	private let moved = KeychainItemVersion(reference: Data([1]), modified: Date(timeIntervalSinceReferenceDate: 1.000001))
+	private let addedBack = KeychainItemVersion(reference: Data([2]), modified: Date(timeIntervalSinceReferenceDate: 1))
+
+	@Test("a probe's outcome answers only for the version the item had")
+	func outcomeAnswersForItsVersion() {
+		let memory = KeychainProbeMemory()
+		memory.remember(.protected, of: "item", at: first)
+		#expect(memory.outcome(of: "item", at: first) == .protected)
+		#expect(memory.outcome(of: "item", at: moved) == nil, "a microsecond later is another version")
+		#expect(memory.outcome(of: "item", at: addedBack) == nil, "an item added back has a new reference")
+		#expect(memory.outcome(of: "other", at: first) == nil)
+	}
+
+	@Test("only a probe that could tell is remembered, and one that couldn't forgets the last")
+	func onlyConclusiveOutcomesAreRemembered() {
+		let memory = KeychainProbeMemory()
+		memory.remember(.inconclusive, of: "unavailable", at: first)
+		memory.remember(.absent, of: "gone", at: first)
+		#expect(memory.outcome(of: "unavailable", at: first) == nil)
+		#expect(memory.outcome(of: "gone", at: first) == nil)
+		memory.remember(.automatic, of: "item", at: first)
+		memory.remember(.inconclusive, of: "item", at: moved)
+		#expect(memory.outcome(of: "item", at: first) == nil)
+	}
+
+	@Test("accounts a listing no longer has are forgotten")
+	func unlistedAccountsAreForgotten() {
+		let memory = KeychainProbeMemory()
+		memory.remember(.automatic, of: "kept", at: first)
+		memory.remember(.protected, of: "deleted", at: first)
+		memory.forget(allBut: ["kept": VaultCliAccess.automatic])
+		#expect(memory.outcome(of: "kept", at: first) == .automatic)
+		#expect(memory.outcome(of: "deleted", at: first) == nil)
 	}
 }
 
