@@ -283,3 +283,155 @@ struct HistoryRecorderTests {
 		#expect(storage.commits == 0)
 	}
 }
+
+@Suite("History read part by part")
+struct HistoryPartialReadTests {
+	private let vaultId = "partial-proj"
+
+	private struct Ring {
+		let storage: FakeHistoryStorage
+		/// Each part's account, newest part first.
+		let parts: [String]
+		/// Newest first.
+		let entries: [HistoryEngine.Entry]
+
+		/// The part accounts read since the counts were reset, in order.
+		var partReads: [String] { storage.reads.filter(Set(parts).contains) }
+	}
+
+	private func payload(_ environments: [String: [String: String]]) -> Data {
+		try! JSONSerialization.data(withJSONObject: ["environments": environments], options: .sortedKeys)
+	}
+
+	/// A ring of several parts: each change replaces a value large enough
+	/// that a part holds only a few entries.
+	private func grownRing() throws -> Ring {
+		let storage = try FakeHistoryStorage(vaultId: vaultId)
+		let value = { (index: Int) in String(repeating: String(index % 10), count: 4096) }
+		var current = payload(["production": [:], "staging": [:]])
+		for index in 0...12 {
+			let next = payload(["production": ["BIG": value(index)], "staging": [:]])
+			_ = HistoryRecorder.record(storage, vaultId: vaultId, before: current, after: next, source: VaultHistorySource(.set))
+			current = next
+		}
+		storage.values = current
+		struct Head: Decodable { let parts: [Int] }
+		let listed = try JSONDecoder().decode(
+			Head.self, from: try #require(storage.records[try HistoryRecorder.account("history-head", vaultId)])).parts
+		#expect(listed.count >= 3, "\(listed)")
+		let timeline = try #require(try HistoryOperations.timeline(storage, vaultId: vaultId, filter: nil))
+		let entries = timeline.rows.compactMap { row -> HistoryEngine.Entry? in
+			if case .entry(let entry) = row { return entry }
+			return nil
+		}
+		let newestFirst = try listed.sorted(by: >).map { try HistoryRecorder.account("history", vaultId, part: $0) }
+		storage.resetCounts()
+		return Ring(storage: storage, parts: newestFirst, entries: entries)
+	}
+
+	private func whole(_ ring: Ring) throws -> HistoryEngine.Stored {
+		let stored = try #require(try HistoryOperations.stored(ring.storage, vaultId: vaultId))
+		ring.storage.resetCounts()
+		return stored
+	}
+
+	private func bytes(_ blobs: HistoryEngine.Blobs) -> [Data] {
+		blobs.items.map { $0.withUnsafeBytes { Data($0) } }
+	}
+
+	@Test("revealing the newest change reads only the part holding it, and answers as a whole read does")
+	func newestRevealReadsOnePart() throws {
+		let ring = try grownRing()
+		let newest = try #require(ring.entries.first)
+		let expected = try HistoryEngine.reveal(try whole(ring), ids: [newest.id])
+
+		let revealed = try HistoryOperations.reveal(ring.storage, vaultId: vaultId, ids: [newest.id])
+
+		#expect(ring.partReads == Array(ring.parts.prefix(1)), "\(ring.partReads.count) of \(ring.parts.count) parts")
+		#expect(revealed.response == expected.response)
+		#expect(bytes(revealed.blobs) == bytes(expected.blobs))
+	}
+
+	@Test("revealing the oldest change reads each part on the way to it once, newest first")
+	func oldestRevealReadsEachPartOnce() throws {
+		let ring = try grownRing()
+		let oldest = try #require(ring.entries.last)
+		let expected = try HistoryEngine.reveal(try whole(ring), ids: [oldest.id])
+
+		let revealed = try HistoryOperations.reveal(ring.storage, vaultId: vaultId, ids: [oldest.id])
+
+		#expect(ring.partReads == ring.parts)
+		#expect(revealed.response == expected.response)
+		#expect(bytes(revealed.blobs) == bytes(expected.blobs))
+	}
+
+	@Test("planning and applying an undo of the newest change read only the part holding it")
+	func newestUndoReadsOnePart() throws {
+		let ring = try grownRing()
+		let newest = try #require(ring.entries.first)
+		let target = HistoryEngine.RollbackTarget.undo(entry: newest.id, only: nil)
+		let expected = try HistoryEngine.planRollback(
+			try whole(ring), values: try #require(ring.storage.values).withUnsafeBytes { SecretBytes(copying: $0) }, target: target)
+
+		let plan = try HistoryOperations.planRollback(ring.storage, vaultId: vaultId, target: target)
+		#expect(ring.partReads == Array(ring.parts.prefix(1)), "planning read \(ring.partReads.count) of \(ring.parts.count) parts")
+		#expect(plan.response == expected.response)
+		ring.storage.resetCounts()
+
+		let rolledBack = try HistoryOperations.rolledBackEnvironments(
+			ring.storage, vaultId: vaultId, target: target, fingerprint: plan.response.fingerprint, skipped: [], keepEmpty: [])
+		#expect(ring.partReads == Array(ring.parts.prefix(1)), "applying read \(ring.partReads.count) of \(ring.parts.count) parts")
+		#expect(rolledBack.environments["production"]?["BIG"] == String(repeating: "1", count: 4096))
+	}
+
+	@Test("the key inspector's changes read each part once across environments, since a timeline walks every part")
+	func keyChangesReadEachPartOnce() throws {
+		let ring = try grownRing()
+		let changes = try HistoryOperations.keyChanges(
+			ring.storage, vaultId: vaultId, key: "BIG", environments: ["staging", "production"], limit: 1)
+		#expect(changes["staging"] == nil)
+		#expect(changes["production"]?.map(\.id) == [ring.entries[0].id])
+		#expect(ring.partReads.sorted() == ring.parts.sorted(), "\(ring.partReads)")
+	}
+
+	@Test("a removal's review reads each part once and reviews as a whole read does")
+	func removalReviewReadsEachPartOnce() throws {
+		let ring = try grownRing()
+		let newest = try #require(ring.entries.first)
+		let expected = try HistoryEngine.reviewRemoval(
+			try whole(ring), values: try #require(ring.storage.values).withUnsafeBytes { SecretBytes(copying: $0) },
+			entry: newest.id, environment: "production", key: "BIG", side: "before")
+
+		let review = try HistoryOperations.reviewRemoval(
+			ring.storage, vaultId: vaultId, entry: newest.id, environment: "production", key: "BIG", side: "before")
+
+		#expect(review == expected)
+		#expect(Set(ring.partReads).count == ring.partReads.count, "\(ring.partReads)")
+	}
+
+	@Test("a part whose account is gone reads as absent, as a whole read takes it")
+	func missingPartReadsAsAbsent() throws {
+		let ring = try grownRing()
+		let gone = try #require(ring.parts.last)
+		ring.storage.records[gone] = nil
+		func outcome(_ read: () throws -> HistoryEngine.Answer<[HistoryEngine.Entry]>) -> String {
+			do {
+				let answer = try read()
+				return "\(answer.response.map(\.id)) \(bytes(answer.blobs).map(\.count))"
+			} catch let failure as HistoryEngine.Failure {
+				return failure.code
+			} catch {
+				return "\(error)"
+			}
+		}
+		for entry in [ring.entries.first, ring.entries.last].compactMap({ $0 }) {
+			let stored = try whole(ring)
+			let expected = outcome { try HistoryEngine.reveal(stored, ids: [entry.id]) }
+			let revealed = outcome { try HistoryOperations.reveal(ring.storage, vaultId: vaultId, ids: [entry.id]) }
+			#expect(revealed == expected, "entry \(entry.seq)")
+		}
+		ring.storage.resetCounts()
+		_ = try HistoryOperations.reveal(ring.storage, vaultId: vaultId, ids: [try #require(ring.entries.first).id])
+		#expect(!ring.partReads.contains(gone), "the newest change never reaches the oldest part")
+	}
+}

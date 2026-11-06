@@ -63,11 +63,25 @@ enum HistoryOperations {
 		return (VaultHistoryState(history: check.history, damage: check.damage ?? []), head, key, read)
 	}
 
-	/// The project's history, every part the head lists, opened as the LPM
-	/// CLI opens it for reading or changing: nil before any history; refused
-	/// while it's off, kept by a newer version or damaged, whatever the
-	/// values allow; its key maintained first.
+	/// The project's history, every part the head lists, opened as `lazy`
+	/// opens it.
 	static func stored(_ storage: some HistoryStorage, vaultId: String) throws -> HistoryEngine.Stored? {
+		guard let opened = try maintained(storage, vaultId: vaultId) else { return nil }
+		return try HistoryRecorder.stored(storage, vaultId: vaultId, head: opened.head, key: opened.key)
+	}
+
+	/// The project's history opened as the LPM CLI opens it for reading or
+	/// changing, its parts read as its calls ask: nil before any history;
+	/// refused while it's off, kept by a newer version or damaged, whatever
+	/// the values allow; its key maintained first.
+	static func lazy(_ storage: some HistoryStorage, vaultId: String) throws -> HistoryEngine.LazyHistory? {
+		guard let opened = try maintained(storage, vaultId: vaultId) else { return nil }
+		return HistoryEngine.LazyHistory(vaultId: vaultId, head: opened.head, key: opened.key) { part in
+			try storage.historyRecord(HistoryRecorder.account("history", vaultId, part: part)).map(secret)
+		}
+	}
+
+	private static func maintained(_ storage: some HistoryStorage, vaultId: String) throws -> (head: SecretBytes, key: SecretBytes)? {
 		let marker = try storage.historyMarker(vaultId: vaultId).map(secret)
 		switch try HistoryEngine.check(vaultId: vaultId, marker: marker, head: nil, key: nil).history {
 		case "default": return nil
@@ -77,7 +91,7 @@ enum HistoryOperations {
 		default: throw damaged
 		}
 		guard let maintained = try HistoryRecorder.maintained(storage, vaultId: vaultId) else { return nil }
-		return try HistoryRecorder.stored(storage, vaultId: vaultId, head: maintained.head, key: maintained.key)
+		return (maintained.head, maintained.key)
 	}
 
 	/// The timeline, newest first, or nil when the project has no history.
@@ -109,8 +123,8 @@ enum HistoryOperations {
 
 	/// Entries with their values, as blobs of the answer.
 	static func reveal(_ storage: some HistoryStorage, vaultId: String, ids: [String]) throws -> HistoryEngine.Answer<[HistoryEngine.Entry]> {
-		guard let stored = try stored(storage, vaultId: vaultId) else { throw noHistory }
-		return try HistoryEngine.reveal(stored, ids: ids)
+		guard var history = try lazy(storage, vaultId: vaultId) else { throw noHistory }
+		return try history.reveal(ids: ids)
 	}
 
 	/// A rollback's plan from the values stored now.
@@ -119,8 +133,8 @@ enum HistoryOperations {
 		vaultId: String,
 		target: HistoryEngine.RollbackTarget
 	) throws -> HistoryEngine.Answer<HistoryEngine.Plan> {
-		guard let stored = try stored(storage, vaultId: vaultId) else { throw noHistory }
-		return try HistoryEngine.planRollback(stored, values: try required(values(storage, vaultId: vaultId)), target: target)
+		guard var history = try lazy(storage, vaultId: vaultId) else { throw noHistory }
+		return try history.planRollback(values: try required(values(storage, vaultId: vaultId)), target: target)
 	}
 
 	/// What a reviewed rollback leaves: the environments, and the renames
@@ -141,10 +155,10 @@ enum HistoryOperations {
 		skipped: [(environment: Int, row: Int)],
 		keepEmpty: [Int]
 	) throws -> RolledBack {
-		guard let stored = try stored(storage, vaultId: vaultId) else { throw noHistory }
+		guard var history = try lazy(storage, vaultId: vaultId) else { throw noHistory }
 		let current = try required(values(storage, vaultId: vaultId))
-		let writes = try HistoryEngine.applyRollback(
-			stored, values: current, target: target, fingerprint: fingerprint, skipped: skipped, keepEmpty: keepEmpty)
+		let writes = try history.applyRollback(
+			values: current, target: target, fingerprint: fingerprint, skipped: skipped, keepEmpty: keepEmpty)
 		var environments = try current.withUnsafeBytes { bytes in
 			try JSONDecoder().decode(Payload.self, from: Data(bytes)).environments
 		}

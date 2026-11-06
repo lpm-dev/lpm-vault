@@ -12,7 +12,13 @@ enum HistoryEngine {
 	struct Failure: Error, Equatable, Sendable {
 		let code: String
 		let message: String
+		/// With `partsNeeded`, the parts a partial read reached without being
+		/// given; `LazyHistory` reads them and calls again.
+		var neededParts: [Int] = []
 	}
+
+	/// The code of a partial read that stopped at parts it wasn't given.
+	static let partsNeeded = "history.parts_needed"
 
 	/// lpm_env.h's `LPM_ENV_HISTORY_INPUT_LIMIT`.
 	static let inputLimit = 4 * 1024 * 1024
@@ -49,10 +55,13 @@ enum HistoryEngine {
 	}
 
 	/// Calls `function` with `request` and `blobs` framed, and decodes its answer.
+	/// With `partial`, an answer naming the parts the call needs first
+	/// throws `partsNeeded`.
 	static func call<Request: Encodable, Response: Decodable>(
 		_ function: (UnsafePointer<UInt8>?, Int) -> LPMEnvResult,
 		_ request: Request,
-		blobs: Blobs = Blobs()
+		blobs: Blobs = Blobs(),
+		partial: Bool = false
 	) throws(Failure) -> Answer<Response> {
 		guard EnvEngineABI.matches else {
 			throw Failure(code: "env.abi_mismatch", message: "The bundled LPM engine is not the version this app expects.")
@@ -71,6 +80,9 @@ enum HistoryEngine {
 		guard result.status == 0 else { throw refusal(output) }
 		let (answerJSON, answerBlobs) = try decodeFrame(output)
 		lpm_env_clear_output(&result)
+		if partial, let asked = try? JSONDecoder().decode(Asked.self, from: answerJSON) {
+			throw Failure(code: partsNeeded, message: "The LPM engine needs more of this project's history.", neededParts: asked.needsParts)
+		}
 		do {
 			return Answer(response: try JSONDecoder().decode(Response.self, from: answerJSON), blobs: answerBlobs)
 		} catch {
@@ -137,12 +149,16 @@ enum HistoryEngine {
 		let message: String?
 	}
 
+	private struct Asked: Decodable {
+		let needsParts: [Int]
+	}
+
 	private static func refusal(_ output: UnsafeRawBufferPointer) -> Failure {
 		guard let refusal = try? JSONDecoder().decode(Refusal.self, from: Data(output)) else { return unreadable }
 		return Failure(code: refusal.code, message: refusal.message ?? "The LPM engine refused (\(refusal.code)).")
 	}
 
-	private static let unreadable = Failure(code: "env.engine_internal", message: "The LPM engine returned an unreadable answer.")
+	fileprivate static let unreadable = Failure(code: "env.engine_internal", message: "The LPM engine returned an unreadable answer.")
 	private static let tooLarge = Failure(code: "history.too_large", message: "This project's history is too large to read at once.")
 }
 
@@ -155,8 +171,73 @@ extension HistoryEngine {
 		let head: SecretBytes
 		let key: SecretBytes
 		/// Each part the head lists, with its bytes, or nil when its account
-		/// is absent.
-		let parts: [(part: Int, bytes: SecretBytes?)]
+		/// is absent; only the parts read so far when `partial`.
+		fileprivate(set) var parts: [(part: Int, bytes: SecretBytes?)]
+		/// Whether this is `LazyHistory`'s, which reading calls ask for the
+		/// parts they reach.
+		fileprivate(set) var partial = false
+
+		init(vaultId: String, head: SecretBytes, key: SecretBytes, parts: [(part: Int, bytes: SecretBytes?)]) {
+			self.vaultId = vaultId
+			self.head = head
+			self.key = key
+			self.parts = parts
+		}
+	}
+
+	/// A project's history read as its calls ask, as the LPM CLI reads it:
+	/// it starts with the head and the key, and each part a call reaches is
+	/// read once, by `readPart`, and kept for later calls. A reveal or a
+	/// rollback near the newest change then reads only the parts that hold
+	/// it. The timeline and a removal's review walk every part, so they take
+	/// one whole read instead.
+	struct LazyHistory {
+		private var stored: Stored
+		/// The part's bytes, or nil when its account is absent.
+		private let readPart: (Int) throws -> SecretBytes?
+
+		init(vaultId: String, head: SecretBytes, key: SecretBytes, readPart: @escaping (Int) throws -> SecretBytes?) {
+			stored = Stored(vaultId: vaultId, head: head, key: key, parts: [])
+			stored.partial = true
+			self.readPart = readPart
+		}
+
+		mutating func reveal(ids: [String]) throws -> Answer<[Entry]> {
+			try asking { stored throws(Failure) in try HistoryEngine.reveal(stored, ids: ids) }
+		}
+
+		mutating func planRollback(values: SecretBytes, target: RollbackTarget) throws -> Answer<Plan> {
+			try asking { stored throws(Failure) in try HistoryEngine.planRollback(stored, values: values, target: target) }
+		}
+
+		mutating func applyRollback(
+			values: SecretBytes,
+			target: RollbackTarget,
+			fingerprint: String,
+			skipped: [(environment: Int, row: Int)],
+			keepEmpty: [Int]
+		) throws -> [RollbackWrite] {
+			try asking { stored throws(Failure) in
+				try HistoryEngine.applyRollback(
+					stored, values: values, target: target, fingerprint: fingerprint, skipped: skipped, keepEmpty: keepEmpty)
+			}
+		}
+
+		private mutating func asking<T>(_ read: (Stored) throws(Failure) -> T) throws -> T {
+			while true {
+				do {
+					return try read(stored)
+				} catch where error.code == HistoryEngine.partsNeeded {
+					// Each round adds a part the engine hadn't been given, so
+					// the walk ends within the parts the head lists.
+					guard !error.neededParts.isEmpty else { throw HistoryEngine.unreadable }
+					for part in error.neededParts {
+						guard !stored.parts.contains(where: { $0.part == part }) else { throw HistoryEngine.unreadable }
+						stored.parts.append((part, try readPart(part)))
+					}
+				}
+			}
+		}
 	}
 
 	/// A reading call's request: the stored history and the current values
@@ -172,19 +253,26 @@ extension HistoryEngine {
 		let key: Int
 		let values: Int?
 		let parts: [Part]
+		let partial: Bool
 		let rest: Rest
 
-		init(_ stored: Stored, values: SecretBytes?, rest: Rest, blobs: inout Blobs) {
+		/// Calls that don't ask for parts refuse a partial history: its
+		/// missing parts would read as absent.
+		init(_ stored: Stored, values: SecretBytes?, rest: Rest, blobs: inout Blobs, asking: Bool = false) throws(Failure) {
+			guard asking || !stored.partial else {
+				throw Failure(code: "history.invalid_input", message: "This history call needs every part the head lists.")
+			}
 			vaultId = stored.vaultId
 			head = blobs.add(stored.head)
 			key = blobs.add(stored.key)
 			self.values = values.map { blobs.add($0) }
 			parts = stored.parts.map { Part(part: $0.part, blob: $0.bytes.map { bytes in blobs.add(bytes) }) }
+			partial = stored.partial
 			self.rest = rest
 		}
 
 		private enum CodingKeys: String, CodingKey {
-			case vaultId, head, key, values, parts
+			case vaultId, head, key, values, parts, partial
 		}
 
 		func encode(to encoder: any Encoder) throws {
@@ -194,6 +282,7 @@ extension HistoryEngine {
 			try container.encode(key, forKey: .key)
 			try container.encodeIfPresent(values, forKey: .values)
 			try container.encode(parts, forKey: .parts)
+			if partial { try container.encode(true, forKey: .partial) }
 			try rest.encode(to: encoder)
 		}
 	}
@@ -346,7 +435,7 @@ extension HistoryEngine {
 	static func timeline(_ stored: Stored, values: SecretBytes?, filter: Filter? = nil) throws(Failure) -> Timeline {
 		struct Rest: Encodable { let filter: Filter? }
 		var blobs = Blobs()
-		let request = ReadingRequest(stored, values: values, rest: Rest(filter: filter), blobs: &blobs)
+		let request = try ReadingRequest(stored, values: values, rest: Rest(filter: filter), blobs: &blobs)
 		let answer: Answer<Timeline> = try call(lpm_env_history_timeline, request, blobs: blobs)
 		return answer.response
 	}
@@ -356,8 +445,8 @@ extension HistoryEngine {
 		struct Rest: Encodable { let ids: [String] }
 		struct Response: Decodable { let entries: [Entry] }
 		var blobs = Blobs()
-		let request = ReadingRequest(stored, values: nil, rest: Rest(ids: ids), blobs: &blobs)
-		let answer: Answer<Response> = try call(lpm_env_history_reveal, request, blobs: blobs)
+		let request = try ReadingRequest(stored, values: nil, rest: Rest(ids: ids), blobs: &blobs, asking: true)
+		let answer: Answer<Response> = try call(lpm_env_history_reveal, request, blobs: blobs, partial: stored.partial)
 		return Answer(response: answer.response.entries, blobs: answer.blobs)
 	}
 }
@@ -692,8 +781,8 @@ extension HistoryEngine {
 		struct Rest: Encodable { let rollback: RollbackRequest }
 		struct Response: Decodable { let plan: Plan }
 		var blobs = Blobs()
-		let request = ReadingRequest(stored, values: values, rest: Rest(rollback: RollbackRequest(target)), blobs: &blobs)
-		let answer: Answer<Response> = try call(lpm_env_history_rollback, request, blobs: blobs)
+		let request = try ReadingRequest(stored, values: values, rest: Rest(rollback: RollbackRequest(target)), blobs: &blobs, asking: true)
+		let answer: Answer<Response> = try call(lpm_env_history_rollback, request, blobs: blobs, partial: stored.partial)
 		return Answer(response: answer.response.plan, blobs: answer.blobs)
 	}
 
@@ -729,8 +818,8 @@ extension HistoryEngine {
 		let rest = Rest(
 			rollback: RollbackRequest(target),
 			apply: Apply(fingerprint: fingerprint, skipped: skipped.map { [$0.environment, $0.row] }, keepEmpty: keepEmpty))
-		let request = ReadingRequest(stored, values: values, rest: rest, blobs: &blobs)
-		let answer: Answer<Response> = try call(lpm_env_history_rollback, request, blobs: blobs)
+		let request = try ReadingRequest(stored, values: values, rest: rest, blobs: &blobs, asking: true)
+		let answer: Answer<Response> = try call(lpm_env_history_rollback, request, blobs: blobs, partial: stored.partial)
 		var writes: [RollbackWrite] = []
 		for write in answer.response.writes {
 			var values: [(key: String, value: SecretBytes)]?
@@ -800,7 +889,7 @@ extension HistoryEngine {
 		struct Response: Decodable { let review: Review }
 		var blobs = Blobs()
 		let rest = Rest(chosen: Chosen(entry: entry, environment: environment, key: key, side: side))
-		let request = ReadingRequest(stored, values: values, rest: rest, blobs: &blobs)
+		let request = try ReadingRequest(stored, values: values, rest: rest, blobs: &blobs)
 		let answer: Answer<Response> = try call(lpm_env_history_removal, request, blobs: blobs)
 		return answer.response.review
 	}
@@ -824,7 +913,7 @@ extension HistoryEngine {
 		struct Response: Decodable { let writes: [Write] }
 		var blobs = Blobs()
 		let rest = Rest(start: Start(review: review, selection: selection, approval: approval, fingerprint: review.fingerprint))
-		let request = ReadingRequest(stored, values: values, rest: rest, blobs: &blobs)
+		let request = try ReadingRequest(stored, values: values, rest: rest, blobs: &blobs)
 		let answer: Answer<Response> = try call(lpm_env_history_removal, request, blobs: blobs)
 		guard let writes = resolve(answer.response.writes, in: answer.blobs) else { throw unreadable }
 		return writes
@@ -874,7 +963,7 @@ extension HistoryEngine {
 		case .finish: rest = Rest(step: "finish", approval: nil, part: nil)
 		}
 		var blobs = Blobs()
-		let request = ReadingRequest(stored, values: nil, rest: rest, blobs: &blobs)
+		let request = try ReadingRequest(stored, values: nil, rest: rest, blobs: &blobs)
 		let answer: Answer<Response> = try call(lpm_env_history_maintenance, request, blobs: blobs)
 		guard let writes = resolve(answer.response.writes ?? [], in: answer.blobs) else { throw unreadable }
 		return Maintenance(
