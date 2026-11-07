@@ -42,23 +42,14 @@ struct VaultHistoryInspector: View {
 		let badge = VaultHistoryText.badge(entry)
 		return VStack(alignment: .leading, spacing: 6) {
 			HStack {
-				Text("CHANGE")
-					.font(VaultTypography.sectionLabel)
-					.tracking(0.6)
-					.foregroundStyle(VaultPalette.textTertiary)
+				Text("CHANGE").vaultSectionLabel()
 				Spacer()
-				Button {
+				VaultRowIconButton(systemImage: "xmark", help: "Close change details", compact: true) {
 					history.select(nil)
-				} label: {
-					Image(systemName: "xmark")
-						.font(.system(size: 11, weight: .semibold))
-						.foregroundStyle(VaultPalette.textTertiary)
 				}
-				.buttonStyle(.plain)
-				.accessibilityLabel("Close change details")
 			}
 			Text(text.describe(entry) { id in history.entry(id) })
-				.font(.system(size: 14, weight: .semibold))
+				.font(.system(size: 15, weight: .semibold))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.fixedSize(horizontal: false, vertical: true)
 			Text(text.full(VaultHistoryText.date(entry.time)))
@@ -99,7 +90,7 @@ struct VaultHistoryInspector: View {
 		return VStack(alignment: .leading, spacing: 10) {
 			HStack(spacing: 6) {
 				VaultEnvSwatch(color: color, size: 8)
-				Text(environment.name)
+				Text(VaultProject.displayName(for: environment.name))
 					.font(.system(size: 12.5, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text("· \((environment.keyCount ?? keys.count).counted("key"))")
@@ -173,7 +164,7 @@ struct VaultHistoryInspector: View {
 		switch change.change {
 		case "added": VaultPalette.greenTintText
 		case "removed": VaultPalette.redText
-		default: VaultPalette.accentText
+		default: VaultPalette.textSecondary
 		}
 	}
 
@@ -181,7 +172,7 @@ struct VaultHistoryInspector: View {
 		switch change.change {
 		case "added": VaultPalette.greenTint
 		case "removed": VaultPalette.redTint
-		default: VaultPalette.accentTint
+		default: VaultPalette.neutralTint
 		}
 	}
 
@@ -245,24 +236,32 @@ struct VaultHistoryInspector: View {
 		}
 	}
 
+	/// Both ways back open a review, which holds the one filled button, so neither looks like the safe default here.
 	private func footer(_ entry: HistoryEngine.Entry) -> some View {
-		VStack(spacing: 8) {
-			Button {
-				Task { await review(rollbackTarget(entry)) }
-			} label: {
-				Label("Roll Back to This Point…", systemImage: "arrow.uturn.backward")
-					.frame(maxWidth: .infinity)
+		VStack(alignment: .leading, spacing: 14) {
+			VStack(alignment: .leading, spacing: 6) {
+				VaultBarButton(systemImage: "arrow.uturn.backward", title: "Roll Back to This Point…",
+					disabled: entry.environments.isEmpty, height: 30, fillsWidth: true) {
+					Task { await review(rollbackTarget(entry)) }
+				}
+				footerNote("Restores the values as they were just after this change, undoing every later one.")
 			}
-			.disabled(entry.environments.isEmpty)
-			Button {
-				Task { await review(.undo(entry: entry.id, only: nil)) }
-			} label: {
-				Label("Undo This Change…", systemImage: "arrow.uturn.backward.circle")
-					.frame(maxWidth: .infinity)
+			VStack(alignment: .leading, spacing: 6) {
+				VaultBarButton(systemImage: "arrow.uturn.backward.circle", title: "Undo This Change…", height: 30, fillsWidth: true) {
+					Task { await review(.undo(entry: entry.id, only: nil)) }
+				}
+				footerNote("Reverses only this change and keeps the ones after it.")
 			}
 		}
-		.controlSize(.large)
 		.padding(16)
+	}
+
+	private func footerNote(_ text: String) -> some View {
+		Text(text)
+			.font(.system(size: 11))
+			.foregroundStyle(VaultPalette.textTertiary)
+			.fixedSize(horizontal: false, vertical: true)
+			.accessibilityHidden(true)
 	}
 
 	/// What Roll Back to This Point… opens on: the environment the page is

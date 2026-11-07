@@ -89,7 +89,7 @@ struct AddVariableDraft: Equatable {
 	var submitTitle: String {
 		let selected = selectedEnvironments
 		switch selected.count {
-		case 0: return "Add variable"
+		case 0: return "Add Key"
 		case 1: return "Add to \(VaultProject.displayName(for: selected[0]))"
 		default: return "Add to \(selected.count) environments"
 		}

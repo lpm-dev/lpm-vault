@@ -124,6 +124,10 @@ private struct VaultKeyEditor: View {
 	/// The environment whose value field is being edited; value fields are
 	/// AppKit's, so SwiftUI's focus doesn't reach them.
 	@State private var focusedValue: String?
+	/// The environment whose value the generator is making, from its field's More menu.
+	@State private var generatingEnvironment: String?
+	@State private var generatorKind: SecretValueKind = .base64
+	@State private var generatorLength = SecretValueGenerator.defaultLength
 
 	private var checkedKey: String { store.keyDrafts.draft(id)?.name ?? key }
 
@@ -166,11 +170,12 @@ private struct VaultKeyEditor: View {
 					VaultHairline()
 					valuesSection(draft, cards: cards, checks: checks)
 					VaultHairline()
-					VaultKeyHistorySection(store: store, project: project, key: key)
-					VaultHairline()
 					rulesSection(checks)
 					descriptionSection(draft, descriptions: descriptions)
+					VaultHairline()
+					VaultKeyHistorySection(store: store, project: project, key: key)
 				}
+				.padding(.bottom, 16)
 				.frame(maxWidth: .infinity, alignment: .leading)
 			}
 			VaultHairline()
@@ -304,14 +309,16 @@ private struct VaultKeyEditor: View {
 		let allRevealed = store.canUseLocalSecrets
 			&& (isPublic || revealedKeys.contains(key) || (!cards.isEmpty && cards.allSatisfy(revealedEnvironments.contains)))
 		return HStack(spacing: 6) {
-			Text("KEY").vaultSectionLabel()
-			VaultTagBadge(text: "ENCRYPTED", foreground: VaultPalette.accentForeground, background: VaultPalette.accentTint, size: 9)
-			Text(saved.count == 1 ? "in 1 env" : "in \(saved.count) envs")
-				.font(.system(size: 11))
+			Image(systemName: "lock.fill")
+				.font(.system(size: 9.5, weight: .semibold))
 				.foregroundStyle(VaultPalette.textTertiary)
+				.accessibilityHidden(true)
+			Text("Encrypted · \(saved.count == 1 ? "in 1 env" : "in \(saved.count) envs")")
+				.font(.system(size: 11.5))
+				.foregroundStyle(VaultPalette.textSecondary)
 				.lineLimit(1)
 			Spacer(minLength: 4)
-			VaultRowIconButton(systemImage: allRevealed ? "eye.slash" : "eye", help: allRevealed ? "Hide all values" : "Reveal all values") {
+			VaultRowIconButton(systemImage: allRevealed ? "eye.slash" : "eye", help: allRevealed ? "Hide all values" : "Reveal all values", compact: true) {
 				toggleRevealAll(allRevealed)
 			}
 			.disabled(!store.canUseLocalSecrets)
@@ -319,7 +326,7 @@ private struct VaultKeyEditor: View {
 			.hidden(isPublic)
 			deleteControl(saved: saved)
 			Rectangle().fill(VaultPalette.divider).frame(width: 1, height: 14)
-			VaultRowIconButton(systemImage: "xmark", help: "Hide inspector", action: onClose)
+			VaultRowIconButton(systemImage: "xmark", help: "Hide inspector", compact: true, action: onClose)
 		}
 		.padding(.leading, 18)
 		.padding(.trailing, 12)
@@ -331,7 +338,7 @@ private struct VaultKeyEditor: View {
 	private func deleteControl(saved: [String]) -> some View {
 		let targets = singleEnvironment.map { environment in saved.filter { $0 == environment } } ?? saved
 		if targets.count == 1, let environment = targets.first {
-			VaultRowIconButton(systemImage: "trash", help: "Delete from \(VaultProject.displayName(for: environment))", destructive: true) {
+			VaultRowIconButton(systemImage: "trash", help: "Delete from \(VaultProject.displayName(for: environment))", destructive: true, compact: true) {
 				onDelete(key, environment)
 			}
 		} else if targets.count > 1 {
@@ -341,13 +348,13 @@ private struct VaultKeyEditor: View {
 				}
 			} label: {
 				Image(systemName: "trash")
-					.font(.system(size: 12, weight: .medium))
+					.font(.system(size: 11, weight: .medium))
 					.foregroundStyle(VaultPalette.textTertiary)
-					.frame(width: 26, height: 26)
+					.frame(width: 24, height: 24)
 					.contentShape(Rectangle())
 			}
 			.menuStyle(.button)
-			.buttonStyle(.plain)
+			.buttonStyle(VaultPressStyle(cornerRadius: 6))
 			.menuIndicator(.hidden)
 			.fixedSize()
 			.help("Delete from an environment")
@@ -361,12 +368,12 @@ private struct VaultKeyEditor: View {
 		let name = draft?.name ?? key
 		let renamed = name != key
 		let focused = focus == .name
-		let stroke = issue != nil ? VaultPalette.red : (focused ? VaultPalette.accent : (renamed ? VaultPalette.border : .clear))
+		let stroke = issue != nil ? VaultPalette.problemMark : (focused ? VaultPalette.focusRing : (renamed ? VaultPalette.border : .clear))
 		return VStack(alignment: .leading, spacing: 6) {
 			HStack(spacing: 6) {
 				TextField("KEY_NAME", text: nameBinding)
 					.textFieldStyle(.plain)
-					.font(VaultTypography.tabular(14, .bold))
+					.font(VaultTypography.tabular(16, .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.autocorrectionDisabled()
 					.focused($focus, equals: .name)
@@ -374,24 +381,18 @@ private struct VaultKeyEditor: View {
 					.onSubmit(save)
 					.accessibilityLabel("Key name")
 				if !focused && !renamed {
-					Button { focus = .name } label: {
-						Image(systemName: "pencil")
-							.font(.system(size: 10, weight: .semibold))
-							.foregroundStyle(VaultPalette.textFaint)
-							.frame(width: 20, height: 20)
-							.contentShape(Rectangle())
+					VaultRowIconButton(systemImage: "pencil", help: "Rename key", disabled: draft?.isSaveInFlight == true, compact: true) {
+						focus = .name
 					}
-					.buttonStyle(.plain)
-					.disabled(draft?.isSaveInFlight == true)
-					.help("Rename key")
-					.accessibilityLabel("Rename key")
-					.vaultPointingHand()
+					.padding(.trailing, -6)
 				}
 			}
 			.padding(.horizontal, 9)
-			.frame(height: 32)
-			.background(RoundedRectangle(cornerRadius: 8).fill(focused || renamed ? VaultPalette.control : .clear))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(stroke, lineWidth: focused || issue != nil ? 1.5 : 1) }
+			.frame(height: 34)
+			.background(RoundedRectangle(cornerRadius: 7).fill(focused || renamed ? VaultPalette.control : .clear))
+			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(stroke, lineWidth: focused ? 2 : (issue != nil ? 1.5 : 1)) }
+			// The field's box reaches into the margin, so the name lines up with the section labels.
+			.padding(.horizontal, -9)
 
 			if renamed {
 				HStack(spacing: 5) {
@@ -430,7 +431,7 @@ private struct VaultKeyEditor: View {
 
 	private func valuesSection(_ draft: VaultKeyDraft?, cards: [String], checks: VaultValueCheckPresentation) -> some View {
 		let addable = environments.filter { project.value(for: key, in: $0) == nil && draft?.values[$0] == nil }
-		return VStack(alignment: .leading, spacing: 14) {
+		return VStack(alignment: .leading, spacing: 12) {
 			HStack(spacing: 8) {
 				Text(singleEnvironment == nil ? "VALUES" : "VALUE").vaultSectionLabel()
 				Spacer(minLength: 4)
@@ -446,12 +447,12 @@ private struct VaultKeyEditor: View {
 			addRows(addable, draft: draft, checks: checks)
 		}
 		.padding(.horizontal, 18)
-		.padding(.vertical, 14)
+		.padding(.vertical, 12)
 	}
 
 	private func sameValueMenu(_ draft: VaultKeyDraft?, cards: [String]) -> some View {
 		let sources = cards.filter { environments.contains($0) && !currentValue(in: $0, draft: draft).isEmpty }
-		return Menu {
+		return VaultBarMenu(accessibilityLabel: "Use One Value for All", borderless: true, height: 24) {
 			ForEach(sources, id: \.self) { source in
 				Button("Use the \(VaultProject.displayName(for: source)) value") {
 					let value = currentValue(in: source, draft: draft)
@@ -459,16 +460,12 @@ private struct VaultKeyEditor: View {
 				}
 			}
 		} label: {
-			Text("Same value in all")
-				.font(.system(size: 11.5, weight: .semibold))
+			Text("Use One Value for All")
+				.font(.system(size: 12, weight: .medium))
 				.foregroundStyle(sources.isEmpty ? VaultPalette.textFaint : VaultPalette.accentForeground)
 		}
-		.menuStyle(.button)
-		.buttonStyle(.plain)
-		.menuIndicator(.hidden)
-		.fixedSize()
 		.disabled(sources.isEmpty || draft?.isSaveInFlight == true)
-		.help("Give every environment the same value")
+		.help("Give every environment the value of one of them")
 	}
 
 	/// For each environment, the others whose value of a secret-looking key
@@ -501,7 +498,7 @@ private struct VaultKeyEditor: View {
 			HStack(spacing: 6) {
 				VaultEnvSwatch(color: environments.firstIndex(of: environment).map(VaultPalette.environment) ?? VaultPalette.textFaint)
 				Text(displayName)
-					.font(VaultTypography.tabular(11.5, .bold))
+					.font(.system(size: 12, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -518,18 +515,8 @@ private struct VaultKeyEditor: View {
 						.font(.system(size: 11, weight: .medium))
 						.foregroundStyle(VaultPalette.greenTintText)
 				}
-				let showsSaved = isStored(currentValue(in: environment, draft: draft), in: environment)
-				VaultRowIconButton(
-					systemImage: "binoculars",
-					help: showsSaved ? "Find where the \(displayName) value is used" : "Save or discard the edit to find where the \(displayName) value is used",
-					label: "Find where the \(displayName) value is used",
-					disabled: !showsSaved || !store.canUseLocalSecrets,
-					compact: true
-				) {
-					onFindValue(key, environment)
-				}
-				.hidden(project.value(for: key, in: environment)?.isEmpty != false)
 			}
+			.frame(height: 18)
 
 			HStack(spacing: 0) {
 				valueField(environment, revealed: revealed, disabled: isSaving)
@@ -539,13 +526,12 @@ private struct VaultKeyEditor: View {
 				.disabled(!store.canUseLocalSecrets)
 				.opacity(store.canUseLocalSecrets ? 1 : 0.45)
 				.hidden(isPublic)
-				copyControl(environment)
-				SecretGeneratorButton(
-					disabled: !store.canUseLocalSecrets || isSaving || hasConflict || isOrphan,
-					compact: true
-				) { generated in
-					edit { $0.setValue(generated, in: environment) }
-				}
+				valueControls(
+					environment,
+					canGenerate: store.canUseLocalSecrets && !isSaving && !hasConflict && !isOrphan,
+					search: project.value(for: key, in: environment)?.isEmpty == false
+						? (store.canUseLocalSecrets && isStored(currentValue(in: environment, draft: draft), in: environment)) : nil
+				)
 			}
 			.padding(.leading, 10)
 			.padding(.trailing, 3)
@@ -587,6 +573,7 @@ private struct VaultKeyEditor: View {
 
 	@ViewBuilder
 	private func valueField(_ environment: String, revealed: Bool, disabled: Bool) -> some View {
+		let conceals = !revealed && focusedValue != environment && !valueBinding(environment).wrappedValue.isEmpty
 		VaultValueField(
 			text: valueBinding(environment),
 			isFocused: Binding(
@@ -598,42 +585,96 @@ private struct VaultKeyEditor: View {
 			label: "Value in \(VaultProject.displayName(for: environment))",
 			placeholder: "Empty",
 			isSecure: !revealed,
-			font: VaultTypography.codeNSFont(11.5),
+			// Hidden values show as dots, which need no code font; the system font's are lighter.
+			font: revealed ? VaultTypography.codeNSFont(11.5) : .systemFont(ofSize: 11),
 			maxLines: revealed ? 4 : 1,
 			isEnabled: !disabled,
+			concealsDots: conceals,
 			onSubmit: save
 		)
 		.id(revealed)
+		.overlay(alignment: .leading) {
+			if conceals {
+				VaultValueText(text: VaultValueText.mask, masked: true, size: 12)
+					.allowsHitTesting(false)
+			}
+		}
 		.padding(.vertical, 8)
+		.padding(.trailing, 8)
 		.frame(maxWidth: .infinity, alignment: .leading)
 	}
 
-	private func copyControl(_ environment: String) -> some View {
+	/// Copy, and a More menu with the other formats, the generator and the value
+	/// search, so a field holds three controls. `search` says whether the value
+	/// search can run, or is nil when there's no stored value to look for.
+	/// Each of the menu's actions is also the More button's own accessibility
+	/// action, which VoiceOver's Actions rotor runs without opening the menu.
+	private func valueControls(_ environment: String, canGenerate: Bool, search: Bool?) -> some View {
 		let displayName = VaultProject.displayName(for: environment)
+		let canCopy = store.canUseLocalSecrets
 		return HStack(spacing: 0) {
 			VaultRowIconButton(systemImage: "doc.on.doc", help: "Copy \(displayName) value") {
 				copy(environment, as: .value)
 			}
+			.disabled(!canCopy)
+			.opacity(canCopy ? 1 : 0.45)
 			Menu {
-				ForEach(VaultCopyFormat.allCases) { format in
-					Button(format.title) { copy(environment, as: format) }
+				Section("Copy As") {
+					ForEach(VaultCopyFormat.allCases) { format in
+						Button(format.title) { copy(environment, as: format) }
+					}
+				}
+				.disabled(!canCopy)
+				Divider()
+				Button("Generate Value…") { generatingEnvironment = environment }
+					.disabled(!canGenerate)
+				if let search {
+					Button(search ? "Find Where This Value Is Used" : "Save to Find Where This Value Is Used") { onFindValue(key, environment) }
+						.disabled(!search)
 				}
 			} label: {
-				Image(systemName: "chevron.down")
-					.font(.system(size: 7, weight: .bold))
+				Image(systemName: "ellipsis")
+					.font(.system(size: 11.5, weight: .semibold))
 					.foregroundStyle(VaultPalette.textTertiary)
-					.frame(width: 12, height: 26)
+					.frame(width: 28, height: 28)
 					.contentShape(Rectangle())
 			}
 			.menuStyle(.button)
-			.buttonStyle(.plain)
+			.buttonStyle(VaultPressStyle(cornerRadius: 6))
 			.menuIndicator(.hidden)
 			.fixedSize()
-			.help("More copy formats")
-			.accessibilityLabel("More ways to copy the \(displayName) value")
+			.help("More for the \(displayName) value")
+			.accessibilityLabel("More for the \(displayName) value")
+			.accessibilityActions {
+				if canCopy {
+					ForEach(VaultCopyFormat.allCases) { format in
+						Button("\(format.title) of \(displayName)") { copy(environment, as: format) }
+					}
+				}
+				if generatingEnvironment == environment {
+					Button("Close the value generator for \(displayName)") { generatingEnvironment = nil }
+				} else if canGenerate {
+					Button("Generate a value for \(displayName)") { generatingEnvironment = environment }
+				}
+				if search == true {
+					Button("Find where the \(displayName) value is used") { onFindValue(key, environment) }
+				}
+			}
+			.popover(isPresented: Binding(
+				get: { generatingEnvironment == environment },
+				set: { if !$0, generatingEnvironment == environment { generatingEnvironment = nil } }
+			), arrowEdge: .trailing) {
+				SecretGeneratorPanel(kind: $generatorKind, length: $generatorLength) {
+					guard canGenerate else { return }
+					let generated = SecretValueGenerator.generate(generatorKind, length: generatorLength)
+					edit { $0.setValue(generated, in: environment) }
+				}
+				.disabled(!canGenerate)
+			}
+			.onChange(of: canGenerate) { _, available in
+				if !available, generatingEnvironment == environment { generatingEnvironment = nil }
+			}
 		}
-		.disabled(!store.canUseLocalSecrets)
-		.opacity(store.canUseLocalSecrets ? 1 : 0.45)
 	}
 
 	@ViewBuilder
@@ -671,7 +712,7 @@ private struct VaultKeyEditor: View {
 			}
 			.buttonStyle(.plain)
 			.disabled(disabled)
-			.vaultPointingHand()
+			.vaultPointingHand(enabled: !disabled)
 			if let note {
 				Text("· \(note.text)")
 					.font(.system(size: 11.5, weight: note.isProblem ? .semibold : .regular))
@@ -766,9 +807,10 @@ private struct VaultKeyEditor: View {
 				HStack(spacing: 6) {
 					Text("RULES").vaultSectionLabel()
 					Spacer(minLength: 4)
-					Label("read-only · \(rule?.source ?? "lpm.json")", systemImage: "lock")
-						.font(.system(size: 10.5))
-						.foregroundStyle(VaultPalette.textFaint)
+					Label("Managed in \(rule?.source ?? "lpm.json")", systemImage: "doc.text")
+						.font(.system(size: 11))
+						.foregroundStyle(VaultPalette.textTertiary)
+						.help("Rules are declared in lpm.json, and the LPM CLI enforces them")
 						.lineLimit(1)
 						.truncationMode(.middle)
 				}
@@ -792,16 +834,12 @@ private struct VaultKeyEditor: View {
 				ForEach(problemEnvironments(checks), id: \.self) { environment in
 					problemLine(environment, reason: checks.reason(for: checkedKey, in: environment) ?? "")
 				}
-				Text("Rules are declared in lpm.json and enforced by the LPM CLI.")
-					.font(.system(size: 10.5))
-					.foregroundStyle(VaultPalette.textFaint)
-					.fixedSize(horizontal: false, vertical: true)
 				if let action = schemaAction {
 					cardAction(action) { onOpenRules(checkedKey) }
 				}
 			}
 			.padding(.horizontal, 18)
-			.padding(.vertical, 14)
+			.padding(.vertical, 12)
 			VaultHairline()
 		case .unreadable?:
 			VStack(alignment: .leading, spacing: 6) {
@@ -812,7 +850,7 @@ private struct VaultKeyEditor: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 			.padding(.horizontal, 18)
-			.padding(.vertical, 14)
+			.padding(.vertical, 12)
 			VaultHairline()
 		case .noFolder?, nil:
 			EmptyView()
@@ -865,7 +903,7 @@ private struct VaultKeyEditor: View {
 					TextField(
 						"Description",
 						text: descriptionBinding(saved: rules.descriptions[key] ?? ""),
-						prompt: Text("What it is for, who owns it, when to rotate it"),
+						prompt: Text("Purpose, owner, when to rotate"),
 						axis: .vertical
 					)
 					.lineLimit(2...6)
@@ -897,7 +935,7 @@ private struct VaultKeyEditor: View {
 			}
 		}
 		.padding(.horizontal, 18)
-		.padding(.vertical, 14)
+		.padding(.vertical, 12)
 	}
 
 	private func footer(_ draft: VaultKeyDraft?, issue: VaultKeyEditError?) -> some View {
@@ -922,8 +960,11 @@ private struct VaultKeyEditor: View {
 				}
 				.layoutPriority(-1)
 				Spacer(minLength: 0)
-				VaultBarButton(title: "Revert", disabled: changes == 0 || isSaving, height: 28) {
-					edit { $0.revert() }
+				// Revert shows only once there's an edit to undo, so it never reads as available when nothing is.
+				if changes > 0 {
+					VaultBarButton(title: "Revert", disabled: isSaving, height: 28) {
+						edit { $0.revert() }
+					}
 				}
 				VaultBarButton(title: isSaving ? "Saving…" : "Save", shortcut: "⌘S", filled: true, disabled: !canSave, height: 28, action: save)
 					.keyboardShortcut("s", modifiers: .command)
@@ -1109,7 +1150,7 @@ struct VaultKeyRecoveryView: View {
 						.lineLimit(1)
 						.truncationMode(.middle)
 					Spacer(minLength: 4)
-					VaultValueText(text: "••••••••", size: 11)
+					VaultValueText(text: VaultValueText.mask, size: 11)
 					let isCopied = copied == .unsaved(draft.id, environment: environment)
 					VaultBarButton(
 						systemImage: isCopied ? "checkmark" : "doc.on.doc",

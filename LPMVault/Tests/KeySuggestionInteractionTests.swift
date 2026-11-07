@@ -65,7 +65,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("OAUTH_TOKEN"))
 			try host.pressWhileEditing("\u{1b}", code: 53)
 			#expect(try await host.waitForTextToDisappear("DECLARED, NOT SET"))
-			#expect(try await host.text().contains("Add variable"))
+			#expect(try await host.text().contains("New Key"))
 		}
 
 		@Test("a long list stays inside the sheet, above the footer, and scrolls to the highlighted key")

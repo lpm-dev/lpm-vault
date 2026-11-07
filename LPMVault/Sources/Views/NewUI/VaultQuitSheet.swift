@@ -53,7 +53,7 @@ struct VaultQuitSheet: View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text(title)
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 					.accessibilityAddTraits(.isHeader)
 				Text(subtitle)
@@ -158,7 +158,7 @@ struct VaultQuitSheet: View {
 		}
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
 		.clipShape(RoundedRectangle(cornerRadius: 10))
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func row(_ item: VaultQuitCoordinator.Item) -> some View {

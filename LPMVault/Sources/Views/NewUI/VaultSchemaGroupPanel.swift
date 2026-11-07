@@ -312,7 +312,7 @@ struct VaultSchemaGroupEditor: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(renamable ? VaultPalette.control : .clear))
 			.overlay {
 				RoundedRectangle(cornerRadius: 8)
-					.stroke(invalid ? VaultPalette.red : (renamable ? (nameFocused ? VaultPalette.accent : VaultPalette.border) : .clear),
+					.strokeBorder(invalid ? VaultPalette.red : (renamable ? (nameFocused ? VaultPalette.accent : VaultPalette.border) : .clear),
 						lineWidth: invalid || nameFocused ? 1.5 : 1)
 			}
 			if renamable {
@@ -364,7 +364,7 @@ struct VaultSchemaGroupEditor: View {
 							.font(.system(size: 11, weight: .semibold))
 							.foregroundStyle(VaultPalette.accentForeground)
 							.disabled(action.edits && !canEdit)
-							.vaultPointingHand()
+							.vaultPointingHand(enabled: !(action.edits && !canEdit))
 					}
 				}
 				.padding(.leading, 16)
@@ -492,7 +492,7 @@ struct VaultSchemaGroupEditor: View {
 					.padding(10)
 					.frame(maxWidth: .infinity, alignment: .leading)
 					.background(RoundedRectangle(cornerRadius: 8).fill(selected ? VaultPalette.accentTint : VaultPalette.content))
-					.overlay { RoundedRectangle(cornerRadius: 8).stroke(selected ? VaultPalette.accent : VaultPalette.border, lineWidth: selected ? 1.5 : 1) }
+					.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? VaultPalette.accent : VaultPalette.border, lineWidth: selected ? 1.5 : 1) }
 					.contentShape(Rectangle())
 				}
 				.buttonStyle(.plain)
@@ -613,7 +613,7 @@ struct VaultSchemaGroupEditor: View {
 		.buttonStyle(.plain)
 		.disabled(full)
 		.opacity(full ? 0.4 : 1)
-		.vaultPointingHand()
+		.vaultPointingHand(enabled: !full)
 		.help(full ? "The LPM CLI accepts at most \(SchemaGroup.maximumMembers) group members in all" : "Add a declared key to the group")
 		.accessibilityLabel("Add a key to the group")
 		.popover(isPresented: $pickingMember, arrowEdge: .leading) {
@@ -670,7 +670,7 @@ struct VaultSchemaGroupEditor: View {
 			.padding(12)
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.redTint.opacity(0.6)))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.red.opacity(0.6), lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.red.opacity(0.6), lineWidth: 1) }
 			.padding(.horizontal, 16)
 			.padding(.bottom, 12)
 		case .reset(let source):
@@ -938,7 +938,7 @@ private struct VaultGroupMemberChips: View {
 				}
 				.padding(.horizontal, 7)
 				.frame(height: 24)
-				.overlay { RoundedRectangle(cornerRadius: 5).stroke(VaultPalette.border, lineWidth: 1) }
+				.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				.help(isDeclared ? "" : "\(shown) isn't declared, which the LPM CLI rejects")
 			}
 		}

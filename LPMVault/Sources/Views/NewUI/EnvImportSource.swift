@@ -358,7 +358,7 @@ private struct EnvImportModeControl: View {
 		}
 		.padding(2)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.neutralTint.opacity(0.6)))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.accessibilityElement(children: .contain)
 		.accessibilityLabel("Import from")
 	}

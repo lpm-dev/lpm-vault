@@ -8,13 +8,9 @@ struct VaultGeneralSettingsSection: View {
 		@Bindable var quitSettings = quitSettings
 		VaultSettingsRows {
 			VaultSettingsRow(title: "Quit shortcut", detail: quitSettings.selection.explanation) {
-				Picker("Quit shortcut", selection: $quitSettings.selection) {
-					ForEach(VaultQuitShortcut.allCases) { Text($0.title).tag($0) }
-				}
-				.pickerStyle(.segmented)
-				.labelsHidden()
-				.fixedSize()
-				.accessibilityHint(quitSettings.selection.explanation)
+				VaultSegmentedPicker(title: "Quit shortcut", options: VaultQuitShortcut.allCases.map { ($0, $0.title) },
+					selection: $quitSettings.selection)
+					.accessibilityHint(quitSettings.selection.explanation)
 			}
 		}
 	}
@@ -30,13 +26,9 @@ struct VaultAppearanceSettingsSection: View {
 		@Bindable var appearanceSettings = appearanceSettings
 		VaultSettingsRows {
 			VaultSettingsRow(title: "Theme", detail: Self.themeExplanation) {
-				Picker("Appearance", selection: $appearanceSettings.selection) {
-					ForEach(VaultAppearance.allCases) { Text($0.title).tag($0) }
-				}
-				.pickerStyle(.segmented)
-				.labelsHidden()
-				.fixedSize()
-				.accessibilityHint(Self.themeExplanation)
+				VaultSegmentedPicker(title: "Appearance", options: VaultAppearance.allCases.map { ($0, $0.title) },
+					selection: $appearanceSettings.selection)
+					.accessibilityHint(Self.themeExplanation)
 			}
 		}
 	}
@@ -56,13 +48,9 @@ struct VaultUpdateSettingsSection: View {
 			}
 			VaultHairline(color: VaultPalette.rowDivider)
 			VaultSettingsRow(title: "Update channel", detail: updates.channelDescription) {
-				Picker("Update channel", selection: $updates.channel) {
-					ForEach(VaultReleaseChannel.allCases) { Text($0.title).tag($0) }
-				}
-				.pickerStyle(.segmented)
-				.labelsHidden()
-				.fixedSize()
-				.disabled(!updates.canChangeChannel)
+				VaultSegmentedPicker(title: "Update channel", options: VaultReleaseChannel.allCases.map { ($0, $0.title) },
+					selection: $updates.channel)
+					.disabled(!updates.canChangeChannel)
 				.accessibilityHint(updates.channelDescription)
 			}
 			if updates.hasPendingUpdate {
@@ -250,7 +238,7 @@ private struct VaultSettingsRow<Control: View>: View {
 		HStack(alignment: .center, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text(title)
-					.font(.system(size: 13))
+					.font(.system(size: 13, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				if detailIsSelectable {
 					Text(detail)

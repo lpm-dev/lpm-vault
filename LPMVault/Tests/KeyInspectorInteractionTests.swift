@@ -179,24 +179,24 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(KeyInspectorFixture(store: store).environment(\.colorScheme, scheme), size: NSSize(width: 300, height: 640))
 			defer { host.window.close() }
 			try await host.settle()
-			try host.click(.generate)
+			#expect(try await host.perform(Self.generate, on: Self.more))
 			let panel = try await host.generatorWindow()
 			try await host.click("Password", in: panel)
 			try await host.waitUntil { host.value != "old" }
 			let generated = host.value
 			#expect(generated.count == SecretValueGenerator.defaultLength)
 			#expect(stored(keychain, "default", "TOKEN") == "old")
-			// Synthetic clicks bypass the popover's outside-click monitor, so close it with its button.
-			try host.click(.generate)
+			// Synthetic clicks bypass the popover's outside-click monitor, so close it as VoiceOver does.
+			#expect(try await host.perform(Self.closeGenerator, on: Self.more))
 			#expect(try await host.waitForGeneratorDismissal(panel))
 			try await host.click("Revert")
 			#expect(try await host.waitUntil { host.value == "old" })
-			try host.click(.generate)
+			#expect(try await host.perform(Self.generate, on: Self.more))
 			let secondPanel = try await host.generatorWindow()
 			try await host.click("UUID v4", in: secondPanel, caseInsensitive: true)
 			try await host.waitUntil { UUID(uuidString: host.value) != nil }
 			let second = host.value
-			try host.click(.generate)
+			#expect(try await host.perform(Self.closeGenerator, on: Self.more))
 			#expect(try await host.waitForGeneratorDismissal(secondPanel))
 			try await host.click("Save")
 			#expect(try await host.waitUntil { stored(keychain, "default", "TOKEN") == second })
@@ -210,7 +210,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(KeyInspectorFixture(store: store), size: NSSize(width: 300, height: 640))
 			defer { host.window.close() }
 			try await host.settle()
-			try host.click(.generate)
+			#expect(try await host.perform(Self.generate, on: Self.more))
 			let panel = try await host.generatorWindow()
 			try await host.click("Hexadecimal", in: panel)
 			try await host.waitUntil { host.value != "old" }
@@ -230,16 +230,16 @@ extension SheetInteractionTests {
 				#expect(try await host.waitForText("Changed outside the editor"))
 			}
 			#expect(try await host.waitForGeneratorDismissal(panel))
-			try host.click(.generate)
+			#expect(try await !host.perform(Self.generate, on: Self.more), "Generate Value… is unavailable")
 			try await host.settle()
 			#expect(try await host.visibleGeneratorWindow() == nil)
 			#expect(host.value == generated)
 			if reason == "conflict" {
 				try await host.click("Use latest")
 				#expect(try await host.waitUntil { host.value == "external" })
-				try host.click(.generate)
+				#expect(try await host.perform(Self.generate, on: Self.more))
 				let recoveredPanel = try await host.generatorWindow()
-				try host.click(.generate)
+				#expect(try await host.perform(Self.closeGenerator, on: Self.more))
 				#expect(try await host.waitForGeneratorDismissal(recoveredPanel))
 			}
 		}
@@ -361,6 +361,10 @@ extension SheetInteractionTests {
 			#expect(store.keyDrafts.draft(id) == fresh)
 			#expect(keychain.applyVaultTransactionCallCount == 0)
 		}
+
+		private static let generate = "Generate a value for .env"
+		private static let more = "More for the .env value"
+		private static let closeGenerator = "Close the value generator for .env"
 
 		private func makeStore(_ environments: [String: [String: String]], path: String = "") -> (VaultStore, MockKeychainService) {
 			let keychain = MockKeychainService()

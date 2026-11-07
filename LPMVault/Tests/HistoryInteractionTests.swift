@@ -75,7 +75,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try await openHistory(host)
 			let text = try await host.text()
-			for expected in ["TODAY", "Set 3 keys", "2 changes kept on this Mac since", "All, 2", "LPM Vault, 2", "LPM CLI, 0"] {
+			for expected in ["TODAY", "Set 2 keys", "2 changes kept on this Mac since", "Source, All sources, 2"] {
 				#expect(text.contains(expected), "Missing \(expected)")
 			}
 
@@ -129,7 +129,7 @@ extension SheetInteractionTests {
 			let host = try await workspace(store)
 			defer { host.window.close() }
 			try await openHistory(host)
-			try await host.click("Set 3 keys")
+			try await host.click("Set 2 keys")
 			try await host.click("Roll Back to This Point…")
 			let review = try await sheet(of: host)
 			#expect(try await host.waitForText("Roll back production to", in: review))
@@ -176,7 +176,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			try host.choose("Show History", in: try await host.contextMenu(of: ".env.staging", region: Self.sidebar))
 			#expect(try await host.waitForText("Changes to my-app’s values on this Mac"))
-			#expect(try await host.waitForText("Set 3 keys"))
+			#expect(try await host.waitForText("Set 2 keys"))
 			#expect(store.history.filter.environment == "staging")
 			#expect(try await !host.text().contains("Changed API_KEY"), "The edit in production isn't staging's")
 		}
@@ -214,7 +214,7 @@ extension SheetInteractionTests {
 			let host = try await workspace(store)
 			defer { host.window.close() }
 			try await openHistory(host)
-			try await host.click("Set 3 keys")
+			try await host.click("Set 2 keys")
 			try await host.click("Undo This Change…")
 			let review = try await sheet(of: host)
 			#expect(try await host.waitForText("Also delete the empty environment", in: review))

@@ -138,9 +138,7 @@ struct VaultSchemaView: View {
 	private var header: some View {
 		HStack(spacing: 10) {
 			Text("Schema")
-				.font(.system(size: 19, weight: .bold))
-				.tracking(-0.28)
-				.foregroundStyle(VaultPalette.textPrimary)
+				.vaultPageTitle()
 			if case .noFolder? = state {
 				Text("no project folder linked")
 					.font(.system(size: 12.5))
@@ -159,19 +157,21 @@ struct VaultSchemaView: View {
 				// Shown in every state, and off while they can't be used, so the page keeps its shape.
 				let showsPrefixes = if case .loaded? = state { clientPrefixes != nil } else { false }
 				VaultOutlineButton(systemImage: "globe", title: "Client prefixes \(clientPrefixCount)", help: "Prefixes that make keys public",
-					active: showsClientPrefixes, disabled: !showsPrefixes) { showsClientPrefixes.toggle() }
+					active: showsClientPrefixes, disabled: !showsPrefixes, borderless: true) { showsClientPrefixes.toggle() }
 					.fixedSize()
 					.popover(isPresented: $showsClientPrefixes, arrowEdge: .bottom) { clientPrefixes }
-				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor", disabled: configFile == nil) {
+				VaultOutlineButton(systemImage: "doc", title: "Open lpm.json", help: "Open lpm.json in your JSON editor", disabled: configFile == nil,
+					borderless: true) {
 					if let configFile { ProjectConfigOpener.open(configFile) }
 				}
 				.fixedSize()
-				VaultBarButton(systemImage: "plus", title: "Add key", filled: true, disabled: !canEdit, height: 27, action: onAddKey)
+				VaultBarButton(systemImage: "plus", title: "Declare Key", filled: true, disabled: !canEdit, action: onAddKey)
+					.padding(.leading, 4)
 					.help(editingUnavailable ?? "Declare a new key in lpm.json")
 			}
 		}
 		.padding(.horizontal, 20)
-		.frame(height: 64)
+		.frame(height: 60)
 	}
 
 	// MARK: - Changes on disk
@@ -200,7 +200,7 @@ struct VaultSchemaView: View {
 			.padding(.trailing, 4)
 			.frame(height: 36)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.headerRow))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.padding(.horizontal, 20)
 			.padding(.top, 12)
 			.accessibilityElement(children: .combine)
@@ -250,7 +250,7 @@ struct VaultSchemaView: View {
 				}
 			}
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.content))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		}
 		.padding(12)
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.orangeTint))
@@ -286,7 +286,7 @@ struct VaultSchemaView: View {
 					: "Declare your first key to give the LPM CLI something to enforce: formats, defaults, and required keys."
 			) {
 				if canEdit {
-					VaultBarButton(systemImage: "plus", title: "Add key", filled: true, height: 28, action: onAddKey)
+					VaultBarButton(systemImage: "plus", title: "Declare Key", filled: true, height: 28, action: onAddKey)
 					if declarableCount > 0 {
 						let tooMany = declarableCount > ProjectEnvSchemaRule.maximumKeys
 						VaultBarButton(title: declarableCount == 1 ? "Declare 1 stored key" : "Declare \(declarableCount) stored keys", disabled: tooMany, height: 28,
@@ -428,6 +428,14 @@ struct VaultSchemaView: View {
 						}
 						if !listed.groups.isEmpty || canEdit {
 							groupsHeader(count: listed.groupCount)
+							if listed.groups.isEmpty {
+								Text("No groups yet. A group asks the LPM CLI for all, one or none of its keys.")
+									.font(.system(size: 12))
+									.foregroundStyle(VaultPalette.textTertiary)
+									.padding(.horizontal, 20)
+									.frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
+							}
 							ForEach(listed.groups, id: \.name) { group in
 								groupRow(group, state: groupState(group.name, in: saved))
 									.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
@@ -476,7 +484,7 @@ struct VaultSchemaView: View {
 		return rows[min(max(index + offset, 0), rows.count - 1)]
 	}
 
-	private static let keyWidth: CGFloat = 260
+	private static let keyWidth: CGFloat = 320
 
 	/// What the page lists: the rules with the draft applied, from A to Z.
 	private struct Listed {
@@ -603,15 +611,8 @@ struct VaultSchemaView: View {
 		HStack(alignment: .top, spacing: 0) {
 			VStack(alignment: .leading, spacing: 3) {
 				HStack(spacing: 7) {
-					if let environments = failures[rule.key], state != .removed {
-						Circle().fill(VaultPalette.red).frame(width: 6, height: 6)
-							.help("Fails its rules in \(environments.joined(separator: ", "))")
-							.accessibilityLabel("Fails its rules in \(environments.joined(separator: ", "))")
-							// Read after the key, so the row says its key first.
-							.accessibilitySortPriority(-1)
-					}
 					Text(rule.key)
-						.font(VaultTypography.tabular(12.5, .semibold))
+						.font(VaultTypography.tabular(13, .medium))
 						.foregroundStyle(state == .removed ? VaultPalette.textFaint : VaultPalette.textPrimary)
 						.strikethrough(state == .removed)
 						.lineLimit(1)
@@ -639,12 +640,14 @@ struct VaultSchemaView: View {
 			.frame(width: Self.keyWidth, alignment: .leading)
 
 			Group {
-				if rule.badges.isEmpty, rule.source == nil, rule.overrides == nil {
+				let failing = state == .removed ? nil : failures[rule.key]
+				if rule.badges.isEmpty, rule.source == nil, rule.overrides == nil, failing == nil {
 					Text("No rules")
 						.font(.system(size: 11.5).italic())
 						.foregroundStyle(VaultPalette.textFaint)
 				} else {
 					VaultFlowLayout {
+						if let failing { VaultRuleFailureBadge(environments: failing) }
 						ForEach(rule.badges, id: \.self) { VaultRuleBadge(badge: $0) }
 						if let source = rule.source { VaultSourceBadge(source: source) }
 						if let source = rule.overrides { VaultSourceBadge(source: source, isOverridden: true) }
@@ -655,11 +658,8 @@ struct VaultSchemaView: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.opacity(state == .removed ? 0.6 : 1)
 		}
-		.padding(.vertical, 10)
-		.background(selected ? VaultPalette.schemaRowSelected : .clear)
-		.overlay(alignment: .leading) {
-			if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
-		}
+		.padding(.vertical, 11)
+		.vaultRowBackground(selected: selected)
 		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
 	}
@@ -693,7 +693,7 @@ struct VaultSchemaView: View {
 		HStack(spacing: 0) {
 			HStack(spacing: 8) {
 				Text(stored.key.escapingDirectionControls)
-					.font(VaultTypography.tabular(12.5))
+					.font(VaultTypography.tabular(13))
 					.foregroundStyle(VaultPalette.textSecondary)
 					.lineLimit(1)
 					.truncationMode(.middle)
@@ -717,27 +717,24 @@ struct VaultSchemaView: View {
 						.foregroundStyle(VaultPalette.orangeTintText)
 						.lineLimit(1)
 						.help("Windows reads both as one name, so the LPM CLI can't tell them apart there. Rename the stored key to match.")
-				} else {
-					Text("Not in schema")
-						.font(.system(size: 11.5).italic())
-						.foregroundStyle(VaultPalette.textFaint)
 				}
 				Spacer(minLength: 8)
 				if let conflict = stored.conflict, !stored.isIgnored {
-					VaultBarButton(title: "Open \(conflict)", height: 24) { onSelect(.key(conflict)) }
+					VaultBarButton(title: "Open \(conflict)", height: 26) { onSelect(.key(conflict)) }
 						.accessibilityLabel("Open \(conflict.escapingDirectionControls)")
 				} else if canEdit, storedKeysChecked, !stored.isIgnored {
-					VaultBarButton(systemImage: "plus", title: "Declare", height: 24) { onDeclare(stored.key) }
+					VaultBarButton(systemImage: "plus", title: "Declare", height: 26) { onDeclare(stored.key) }
 						.accessibilityLabel("Declare \(stored.key.escapingDirectionControls)")
 				}
 			}
-			.padding(.horizontal, 14)
+			.padding(.leading, 14)
+			.padding(.trailing, 20)
 		}
 		.frame(height: Self.undeclaredRowHeight)
 		.overlay(alignment: .bottom) { VaultHairline(color: VaultPalette.rowDivider) }
 	}
 
-	private static let undeclaredRowHeight: CGFloat = 42
+	private static let undeclaredRowHeight: CGFloat = 44
 
 	private func groupsHeader(count: Int) -> some View {
 		HStack(spacing: 8) {
@@ -752,14 +749,14 @@ struct VaultSchemaView: View {
 				Button(action: onAddGroup) {
 					HStack(spacing: 4) {
 						Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
-						Text("Add group").font(.system(size: 11.5, weight: .semibold))
+						Text("Add Group").font(.system(size: 11.5, weight: .semibold))
 					}
 					.foregroundStyle(VaultPalette.accentForeground)
 				}
 				.buttonStyle(.plain)
 				.disabled(full)
 				.opacity(full ? 0.4 : 1)
-				.vaultPointingHand()
+				.vaultPointingHand(enabled: !full)
 				.help(full ? "The LPM CLI accepts at most \(ProjectEnvSchemaGroup.maximumGroups) groups" : "Declare a group of keys in lpm.json")
 			}
 		}
@@ -801,11 +798,8 @@ struct VaultSchemaView: View {
 				Spacer(minLength: 0)
 			}
 			.padding(.horizontal, 20)
-			.frame(minHeight: 38)
-			.background(selected ? VaultPalette.schemaRowSelected : .clear)
-			.overlay(alignment: .leading) {
-				if selected { Rectangle().fill(VaultPalette.accent).frame(width: 2) }
-			}
+			.frame(minHeight: 40)
+			.vaultRowBackground(selected: selected)
 			.contentShape(Rectangle())
 			.accessibilityElement(children: .combine)
 		}
@@ -868,7 +862,7 @@ struct VaultSchemaView: View {
 			}
 			Spacer(minLength: 0)
 			if let smartViews {
-				VaultSmartViewLinks(counts: smartViews, compact: compactLinks, open: onOpenSmartView)
+				VaultSmartViewLinks(counts: smartViews, scope: "Project", compact: compactLinks, open: onOpenSmartView)
 			}
 			draftActions
 		}
@@ -884,10 +878,15 @@ struct VaultSchemaView: View {
 		draftStatus
 		if let failing = failureSummary {
 			Text("·")
-			Text(failing)
-				.fontWeight(.semibold)
-				.foregroundStyle(VaultPalette.redText)
-				.layoutPriority(1)
+			HStack(spacing: 4) {
+				Image(systemName: VaultSmartView.invalid.symbol)
+					.font(.system(size: 9.5, weight: .semibold))
+					.foregroundStyle(VaultSmartView.invalid.tint)
+					.accessibilityHidden(true)
+				Text(failing)
+					.foregroundStyle(VaultPalette.textSecondary)
+			}
+			.layoutPriority(1)
 		}
 		if (draft?.changeCount ?? 0) == 0 {
 			Text("·")

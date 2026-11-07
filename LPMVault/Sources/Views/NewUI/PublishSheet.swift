@@ -58,7 +58,7 @@ struct PublishSheet: View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text(session.step == .results ? "Published" : "Publish environment")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text(subtitle)
 					.font(.system(size: 12.5))
@@ -295,7 +295,7 @@ struct PublishSheet: View {
 			}
 			.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
 			.clipShape(RoundedRectangle(cornerRadius: 10))
-			.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.disabled(session.isPublishing)
 			PublishNoteList(notes: Self.notes(for: review), error: session.reviewError)
 		}
@@ -592,7 +592,7 @@ struct PublishSheet: View {
 				}
 				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.control))
 				.clipShape(RoundedRectangle(cornerRadius: 10))
-				.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+				.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				if results.needsReconnect {
 					Text("\(results.destination.target.platform.displayName) no longer accepts this connection. Connect it again on the Platforms page.")
 						.font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)

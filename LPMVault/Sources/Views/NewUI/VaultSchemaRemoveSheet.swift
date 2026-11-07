@@ -173,7 +173,7 @@ struct VaultSchemaRemoveSheet: View {
 			}
 			.frame(height: min(max(listHeight, 1), Self.maximumListHeight))
 			.onPreferenceChange(ListHeightKey.self) { listHeight = $0 }
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		}
 		.padding(20)
 	}

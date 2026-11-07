@@ -14,16 +14,16 @@ struct VaultHistoryEnvironmentChip: View {
 
 	var body: some View {
 		HStack(spacing: 5) {
-			VaultEnvSwatch(color: color, size: 7)
-			Text(name)
-				.font(.system(size: 11))
+			VaultEnvSwatch(color: color, size: 6)
+			Text(VaultProject.displayName(for: name))
+				.font(.system(size: 11, weight: .medium))
 				.foregroundStyle(VaultPalette.textSecondary)
 				.lineLimit(1)
 				.truncationMode(.middle)
 		}
 		.padding(.horizontal, 6)
-		.padding(.vertical, 2)
-		.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, lineWidth: 1) }
+		.frame(height: 20)
+		.background(RoundedRectangle(cornerRadius: 5).fill(VaultPalette.neutralTint))
 		.fixedSize(horizontal: false, vertical: true)
 	}
 }
@@ -53,7 +53,7 @@ struct VaultHistoryValueField: View {
 		Group {
 			switch content {
 			case .hidden:
-				VaultValueText(text: "••••••••••")
+				VaultValueText(text: VaultValueText.mask)
 			case .shown(let value):
 				VaultValueText(text: value.isEmpty ? "(empty)" : value, masked: false)
 			case .absent:
@@ -71,7 +71,7 @@ struct VaultHistoryValueField: View {
 		.background(RoundedRectangle(cornerRadius: 5).fill(isValue ? VaultPalette.control : .clear))
 		.overlay {
 			RoundedRectangle(cornerRadius: 5)
-				.stroke(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: isValue ? [] : [3]))
+				.strokeBorder(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: isValue ? [] : [3]))
 		}
 		.accessibilityElement(children: .ignore)
 		.accessibilityLabel(label)

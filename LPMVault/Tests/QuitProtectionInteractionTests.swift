@@ -284,7 +284,7 @@ extension SheetInteractionTests {
 			#expect(store.openSheetWork.isEmpty, "Nothing typed, nothing to lose")
 			try host.typeInFirstField("NEW_KEY")
 			#expect(try await host.waitUntil { store.openSheetWork.values.map(\.detail) == ["NEW_KEY"] })
-			#expect(store.openSheetWork.values.first?.title == "Add variable")
+			#expect(store.openSheetWork.values.first?.title == "New Key")
 			#expect(!store.unsavedWork().isEmpty)
 			try host.typeInFirstField("")
 			#expect(try await host.waitUntil { store.openSheetWork.isEmpty })

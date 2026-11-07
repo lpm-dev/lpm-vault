@@ -61,10 +61,11 @@ struct VaultHistoryText {
 		calendar.isDate(date, inSameDayAs: now) ? "since \(clock(date)) today" : "since \(moment(date))"
 	}
 
-	/// The inspector's full time: "Today, Nov 4, 2026 at 13:40:07".
+	/// The inspector's full time: "Today at 13:40:07", or "Nov 4, 2026 at 13:40:07" on another day.
 	func full(_ date: Date) -> String {
-		let written = date.formatted(style(date: .abbreviated, time: .standard))
-		return calendar.isDate(date, inSameDayAs: now) ? "Today, \(written)" : written
+		calendar.isDate(date, inSameDayAs: now)
+			? "Today at \(date.formatted(style(date: .omitted, time: .standard)))"
+			: date.formatted(style(date: .abbreviated, time: .standard))
 	}
 
 	/// The status bar: "312 changes kept on this Mac since Oct 2, 2026", or
@@ -135,11 +136,11 @@ struct VaultHistoryText {
 	/// The badge a row shows for where its change came from.
 	static func badge(_ entry: HistoryEngine.Entry) -> Badge {
 		switch entry.source {
-		case "app": Badge(text: "LPM Vault", foreground: VaultPalette.accentText, background: VaultPalette.accentTint)
+		case "app": Badge(text: "LPM Vault", foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint)
 		case "cli": Badge(text: "LPM CLI", foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint)
 		case "import": Badge(text: "Import", foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint)
 		case "restore": Badge(text: "Restore", foreground: VaultPalette.greenTintText, background: VaultPalette.greenTint)
-		case "pull": Badge(text: "Pull", foreground: VaultPalette.accentText, background: VaultPalette.accentTint)
+		case "pull": Badge(text: "Pull", foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint)
 		case "rollback": Badge(text: "Rollback", foreground: VaultPalette.orangeTintText, background: VaultPalette.orangeTint)
 		case "outside": Badge(text: "Outside", foreground: VaultPalette.orangeTintText, background: .clear, warns: true)
 		default: Badge(text: "Other", foreground: VaultPalette.textSecondary, background: VaultPalette.neutralTint)
@@ -152,18 +153,21 @@ struct VaultHistoryText {
 		return entry.environments.flatMap { $0.keys ?? [] }.map(\.key).filter { seen.insert($0).inserted }
 	}
 
-	/// How many keys the entry changed, counting an oversized change's too.
-	static func keyCount(_ entry: HistoryEngine.Entry) -> Int {
-		entry.environments.reduce(0) { $0 + ($1.keys?.count ?? $1.keyCount ?? 0) }
+	/// How many keys the entry changed, as "3 keys", each counted once however many
+	/// environments it changed in. An oversized change keeps no names to tell its keys
+	/// apart, so across environments it counts the values it changed, as "25 values".
+	static func countedKeys(_ entry: HistoryEngine.Entry) -> String {
+		if entry.environments.allSatisfy({ $0.keys != nil }) { return keys(entry).count.counted("key") }
+		let values = entry.environments.reduce(0) { $0 + ($1.keys?.count ?? $1.keyCount ?? 0) }
+		return values.counted(entry.environments.count > 1 ? "value" : "key")
 	}
 
 	/// The entry's one line: "Set API_URL", "Imported .env.local · 12 keys".
 	/// `related` finds the entry an undo or rollback refers to.
 	func describe(_ entry: HistoryEngine.Entry, related: (String) -> HistoryEngine.Entry? = { _ in nil }) -> String {
 		let keys = Self.keys(entry)
-		let count = Self.keyCount(entry)
 		let oneKey = keys.count == 1 ? keys[0] : nil
-		let counted = count.counted("key")
+		let counted = Self.countedKeys(entry)
 		let environment = entry.environments.first?.name ?? ""
 		switch entry.action {
 		case "set": return oneKey.map { "Set \($0)" } ?? "Set \(counted)"

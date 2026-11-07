@@ -56,25 +56,27 @@ struct VaultHistoryView: View {
 	// MARK: - Header and filters
 
 	private var header: some View {
-		VStack(alignment: .leading, spacing: 2) {
+		HStack(alignment: .firstTextBaseline, spacing: 10) {
 			Text("History")
-				.font(.system(size: 20, weight: .bold))
-				.foregroundStyle(VaultPalette.textPrimary)
+				.vaultPageTitle()
 				.accessibilityAddTraits(.isHeader)
 			Text("Changes to \(project.name)’s values on this Mac")
-				.font(.system(size: 12))
-				.foregroundStyle(VaultPalette.textSecondary)
+				.font(.system(size: 12.5))
+				.foregroundStyle(VaultPalette.textTertiary)
+				.lineLimit(1)
+			Spacer(minLength: 0)
 		}
-		.frame(maxWidth: .infinity, alignment: .leading)
 		.padding(.horizontal, 20)
-		.padding(.top, 14)
-		.padding(.bottom, 10)
+		.frame(height: 60)
 	}
 
+	/// Where, from what and which key, in one row: the sources are a menu,
+	/// since most of them are empty for most projects.
 	private var filters: some View {
 		VStack(alignment: .leading, spacing: 10) {
-			HStack(spacing: 10) {
+			HStack(spacing: 8) {
 				environmentMenu
+				sourceMenu
 				if let key = history.filter.exactKey {
 					VaultFilterChip(title: key, symbol: "key", trailing: "×", selected: true) {
 						history.filter.exactKey = nil
@@ -94,34 +96,18 @@ struct VaultHistoryView: View {
 						.accessibilityLabel("Key name")
 						.onChange(of: keySearch) { _, value in search(value) }
 				}
-				.padding(.horizontal, 9)
+				.padding(.horizontal, 10)
 				.frame(width: 220, height: 28)
-				.background(RoundedRectangle(cornerRadius: 6).fill(VaultPalette.control))
-				.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
+				.vaultInputField(focused: false)
 				Spacer(minLength: 0)
-			}
-			ScrollView(.horizontal, showsIndicators: false) {
-				HStack(spacing: 6) {
-					ForEach(VaultHistoryText.sources, id: \.1) { source, title in
-						VaultFilterChip(
-							title: title,
-							trailing: count(source).map(String.init),
-							selected: history.filter.source == source
-						) {
-							history.filter.source = source
-							Task { await history.reload() }
-						}
-						.accessibilityLabel(count(source).map { "\(title), \($0)" } ?? title)
-					}
-				}
 			}
 		}
 		.padding(.horizontal, 20)
-		.padding(.bottom, 10)
+		.padding(.bottom, 12)
 	}
 
 	private var environmentMenu: some View {
-		Menu {
+		VaultBarMenu(accessibilityLabel: "Environment, \(history.filter.environment ?? "All environments")") {
 			Button("All environments") { setEnvironment(nil) }
 			if let environments = history.timeline?.environments, !environments.isEmpty {
 				Divider()
@@ -133,15 +119,37 @@ struct VaultHistoryView: View {
 			}
 		} label: {
 			Text(history.filter.environment ?? "All environments")
-				.font(.system(size: 12.5))
+				.font(.system(size: 12.5, weight: .medium))
 		}
-		.menuStyle(.borderlessButton)
-		.fixedSize()
-		.padding(.horizontal, 9)
-		.frame(height: 28)
-		.background(RoundedRectangle(cornerRadius: 6).fill(VaultPalette.control))
-		.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
-		.accessibilityLabel("Environment, \(history.filter.environment ?? "All environments")")
+	}
+
+	/// The sources a change can come from, each with how many changes it made.
+	private var sourceMenu: some View {
+		let selected = VaultHistoryText.sources.first { $0.0 == history.filter.source }?.1 ?? "All"
+		let title = history.filter.source == nil ? "All sources" : selected
+		let selectedCount = count(history.filter.source)
+		return VaultBarMenu(accessibilityLabel: "Source, \(title)\(selectedCount.map { ", \($0)" } ?? "")") {
+			ForEach(VaultHistoryText.sources, id: \.1) { source, name in
+				Button {
+					history.filter.source = source
+					Task { await history.reload() }
+				} label: {
+					let label = source == nil ? "All sources" : name
+					Text(count(source).map { "\(label)  \($0)" } ?? label)
+				}
+				if source == nil { Divider() }
+			}
+		} label: {
+			HStack(spacing: 6) {
+				Text(title).font(.system(size: 12.5, weight: .medium))
+				// A count says how many changes the filter leaves, so it shows only once one does.
+				if history.filter.source != nil, let selectedCount {
+					Text("\(selectedCount)")
+						.font(VaultTypography.tabular(11.5))
+						.foregroundStyle(VaultPalette.textTertiary)
+				}
+			}
+		}
 	}
 
 	private func count(_ source: VaultLocalHistory.Source?) -> Int? {
@@ -353,7 +361,7 @@ struct VaultHistoryView: View {
 		return Button {
 			history.select(selected ? nil : entry.id)
 		} label: {
-			HStack(alignment: .center, spacing: 12) {
+			HStack(alignment: .firstTextBaseline, spacing: 12) {
 				Text(time)
 					.font(VaultTypography.tabular(12.5))
 					.foregroundStyle(VaultPalette.textSecondary)
@@ -371,35 +379,37 @@ struct VaultHistoryView: View {
 				.frame(width: 88, alignment: .leading)
 				VStack(alignment: .leading, spacing: 4) {
 					Text(description)
-						.font(.system(size: 12.5))
+						.font(.system(size: 13, weight: .medium))
 						.foregroundStyle(badge.warns ? VaultPalette.orangeTintText : VaultPalette.textPrimary)
 						.lineLimit(1)
-					HStack(spacing: 6) {
-						ForEach(environments.prefix(2), id: \.self) { name in environmentChip(name) }
-						if environments.count > 2 {
-							Text("+\(environments.count - 2) envs")
-								.font(.system(size: 11))
-								.foregroundStyle(VaultPalette.textTertiary)
+					// Environments stay whole; the key list gives way first.
+					HStack(spacing: 10) {
+						ViewThatFits(in: .horizontal) {
+							environmentChips(environments, limit: environments.count)
+							environmentChips(environments, limit: 2)
+							environmentChips(environments, limit: 1)
 						}
-						Text(shownKeys.joined(separator: " · "))
-							.font(VaultTypography.tabular(11.5))
-							.foregroundStyle(VaultPalette.textSecondary)
-							.lineLimit(1)
-						if keys.count > shownKeys.count {
-							Text("+\(keys.count - shownKeys.count) more")
-								.font(.system(size: 11))
-								.foregroundStyle(VaultPalette.textTertiary)
+						.layoutPriority(1)
+						HStack(spacing: 6) {
+							Text(shownKeys.joined(separator: " · "))
+								.font(VaultTypography.tabular(11.5))
+								.foregroundStyle(VaultPalette.textSecondary)
+								.lineLimit(1)
+								.truncationMode(.tail)
+							if keys.count > shownKeys.count {
+								Text("+\(keys.count - shownKeys.count) more")
+									.font(.system(size: 11))
+									.foregroundStyle(VaultPalette.textTertiary)
+									.fixedSize()
+							}
 						}
 					}
 				}
 				Spacer(minLength: 0)
 			}
 			.padding(.horizontal, 20)
-			.padding(.vertical, 9)
-			.background(selected ? VaultPalette.rowSelected : (badge.warns ? VaultPalette.orangeTint : .clear))
-			.overlay(alignment: .leading) {
-				if selected { Rectangle().fill(VaultPalette.accent).frame(width: 3) }
-			}
+			.padding(.vertical, 10)
+			.vaultRowBackground(selected: selected, resting: badge.warns ? VaultPalette.orangeTint : .clear)
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
@@ -409,5 +419,18 @@ struct VaultHistoryView: View {
 
 	private func environmentChip(_ name: String) -> some View {
 		VaultHistoryEnvironmentChip(name, in: store.orderedEnvironmentNames(for: project))
+	}
+
+	/// The first `limit` environments as chips, then how many more.
+	private func environmentChips(_ environments: [String], limit: Int) -> some View {
+		HStack(spacing: 6) {
+			ForEach(environments.prefix(limit), id: \.self) { name in environmentChip(name) }
+			if environments.count > limit {
+				Text("+\((environments.count - limit).counted("env"))")
+					.font(.system(size: 11))
+					.foregroundStyle(VaultPalette.textTertiary)
+			}
+		}
+		.fixedSize()
 	}
 }

@@ -147,10 +147,10 @@ extension SheetInteractionTests {
 				size: NSSize(width: 700, height: 460))
 			defer { host.window.close() }
 			try await host.settle()
-			for text in ["Welcome to LPM Vault", "Create project", "Restore from a backup", "Moving from another Mac?"] {
+			for text in ["Welcome to LPM Vault", "Create Project", "Restore from a Backup", "Moving from another Mac?"] {
 				#expect(try await host.waitForText(text), "The welcome says \(text)")
 			}
-			try await host.click("Restore from a backup")
+			try await host.click("Restore from a Backup")
 			#expect(try await host.waitUntil { restored })
 		}
 

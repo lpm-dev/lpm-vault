@@ -42,7 +42,7 @@ struct VaultPublishMenu: View {
 				.fill(VaultPalette.control)
 				.shadow(color: VaultPalette.shadow.opacity(0.18), radius: 17, y: 14)
 		}
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.background {
 			VaultMenuKeys { key in
 				switch key {

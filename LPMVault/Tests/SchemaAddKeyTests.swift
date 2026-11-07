@@ -235,7 +235,7 @@ extension SheetInteractionTests {
 		func addKey() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			#expect(try await host.waitForText("NEW KEY", exactly: true))
 
 			try host.enterText("api-token", placeholder: "KEY_NAME")
@@ -257,7 +257,7 @@ extension SheetInteractionTests {
 			try host.enterText("MAIL_HOST", placeholder: "KEY_NAME")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.changedItems == [.key("MAIL_HOST")] }, "Renaming a new key moves it in the draft")
 
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			// A new key's panel, not the one it replaces: a click lands on a display pass.
 			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try host.enterText("MAIL_HOST", placeholder: "KEY_NAME")
@@ -269,7 +269,7 @@ extension SheetInteractionTests {
 		func publicNewKey() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			#expect(try await host.waitForText("NEW KEY", exactly: true))
 			try host.enterText("NEXT_PUBLIC_ANALYTICS", placeholder: "KEY_NAME")
 			#expect(try await host.waitUntil {
@@ -291,7 +291,7 @@ extension SheetInteractionTests {
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			#expect(try await host.waitForText("STORED, NOT DECLARED"))
 			#expect(try await host.waitForText("REDIS_URL"))
-			try await host.click("Declare")
+			try await host.click("Declare REDIS_URL")
 			#expect(try await host.waitUntil { store.schemaDraft(for: "schema-add")?.declaration(of: .key("REDIS_URL")) == .declared(.object([])) })
 			#expect(try await host.waitForText("SUGGESTED FROM STORED VALUES", exactly: true))
 			#expect(!host.hasField(placeholder: "KEY_NAME"), "A declared key keeps the name its values are stored under")
@@ -305,7 +305,7 @@ extension SheetInteractionTests {
 		func typingLeavesNoStrayKeys() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			#expect(try await host.waitUntil { host.isEditing(placeholder: "KEY_NAME") }, "Add key puts the cursor in the name")
 			try await host.typeCharacters("DATABASE_URL", placeholder: "KEY_NAME")
 			#expect(try await host.waitForText("Already declared"))
@@ -314,7 +314,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("Read-only"))
 			#expect(store.schemaDraft(for: "schema-add") == nil)
 
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			// A new key's panel, not the one it replaces: a click lands on a display pass.
 			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try await host.typeCharacters("api-token", placeholder: "KEY_NAME")
@@ -338,7 +338,7 @@ extension SheetInteractionTests {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			store.editSchemaDraft(in: "schema-add") { $0.set(.absent, for: .key("PORT")) }
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			// A new key's panel, not the one it replaces: a click lands on a display pass.
 			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try await host.typeCharacters("PORT", placeholder: "KEY_NAME")
@@ -355,7 +355,7 @@ extension SheetInteractionTests {
 			let editClock = ManualClock()
 			let (store, host, folder) = try await workspace(editClock: editClock)
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			// A new key's panel, not the one it replaces: a click lands on a display pass.
 			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try await host.typeCharacters("SMTP_HOST", placeholder: "KEY_NAME")
@@ -376,7 +376,7 @@ extension SheetInteractionTests {
 		func referencesFollowNewName() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			// A new key's panel, not the one it replaces: a click lands on a display pass.
 			#expect(try await host.waitUntilRendered { host.fieldText(placeholder: "KEY_NAME") == "" })
 			try host.typeText("FOO", placeholder: "KEY_NAME")
@@ -399,7 +399,7 @@ extension SheetInteractionTests {
 				"default": ["PORT": "3000", "SESSION_TOKEN": "k3J9x2Lq8vR4mP7wZ1nB5cT6"],
 			])
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Declare")
+			try await host.click("Declare SESSION_TOKEN")
 			#expect(try await host.waitForText("says it's secret"))
 			store.editSchemaDraft(in: "schema-add") { draft in
 				draft.set(draft.declaration(of: .key("PORT")).replacingJSON {

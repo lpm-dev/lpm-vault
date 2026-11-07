@@ -454,9 +454,10 @@ extension SheetInteractionTests {
 		@Test("the sheet shows the vault ID, lpm.json snippet, and terminal commands")
 		func rendersSheet() async throws {
 			let store = makeStore(path: "")
+			// The sheet's own height, which shows it all.
 			let text = try await renderedText(
 				of: ConnectCLISheet(store: store, projectId: "7f3a1e2c-5b9d-4a8f-b6c1-9b1d2e3f4a5b"),
-				size: NSSize(width: 600, height: 560),
+				size: NSSize(width: 600, height: 690),
 				named: "connect-cli-sheet.png"
 			)
 
@@ -479,7 +480,7 @@ extension SheetInteractionTests {
 				named: "connect-cli-staging.png"
 			)
 			#expect(text.contains("--env=staging"))
-			#expect(text.contains("Run from the linked project folder"))
+			#expect(text.contains("In the linked project folder"))
 		}
 
 		@Test("the title bar's Connect CLI button offers to connect the project to the LPM CLI")

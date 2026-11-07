@@ -151,6 +151,6 @@ struct VaultValueCharacterWarning: View {
 			.foregroundStyle(disabled ? VaultPalette.textFaint : VaultPalette.accentForeground)
 			.disabled(disabled)
 			.fixedSize()
-			.vaultPointingHand()
+			.vaultPointingHand(enabled: !disabled)
 	}
 }

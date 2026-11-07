@@ -595,7 +595,7 @@ private struct VaultSchemaKeyEditor: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(renamable ? VaultPalette.control : .clear))
 			.overlay {
 				RoundedRectangle(cornerRadius: 8)
-					.stroke(issue != nil ? VaultPalette.red : (renamable ? VaultPalette.border : .clear), lineWidth: issue != nil ? 1.5 : 1)
+					.strokeBorder(issue != nil ? VaultPalette.red : (renamable ? VaultPalette.border : .clear), lineWidth: issue != nil ? 1.5 : 1)
 			}
 			if changed, renamable {
 				if let issue {
@@ -755,7 +755,7 @@ private struct VaultSchemaKeyEditor: View {
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 			.overlay {
 				RoundedRectangle(cornerRadius: 8)
-					.stroke(invalid ? VaultPalette.red : (nameFocused ? VaultPalette.accent : VaultPalette.border), lineWidth: invalid || nameFocused ? 1.5 : 1)
+					.strokeBorder(invalid ? VaultPalette.red : (nameFocused ? VaultPalette.accent : VaultPalette.border), lineWidth: invalid || nameFocused ? 1.5 : 1)
 			}
 			switch status {
 			case .empty:
@@ -840,7 +840,7 @@ private struct VaultSchemaKeyEditor: View {
 							.font(.system(size: 11, weight: .semibold))
 							.foregroundStyle(VaultPalette.accentForeground)
 							.disabled(action.edits && !canEdit)
-							.vaultPointingHand()
+							.vaultPointingHand(enabled: !(action.edits && !canEdit))
 					}
 				}
 				.padding(.leading, 16)
@@ -997,7 +997,7 @@ private struct VaultSchemaKeyEditor: View {
 					.padding(10)
 					.frame(maxWidth: .infinity, alignment: .leading)
 					.background(RoundedRectangle(cornerRadius: 8).fill(applied ? VaultPalette.accentTint : VaultPalette.content))
-					.overlay { RoundedRectangle(cornerRadius: 8).stroke(applied ? VaultPalette.accent.opacity(0.5) : VaultPalette.border, lineWidth: 1) }
+					.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(applied ? VaultPalette.accent.opacity(0.5) : VaultPalette.border, lineWidth: 1) }
 				}
 				Text("Defaults are never suggested — lpm.json is shared, and a value may be a secret.")
 					.font(.system(size: 10.5))
@@ -1018,7 +1018,7 @@ private struct VaultSchemaKeyEditor: View {
 			.padding(.horizontal, 9)
 			.padding(.vertical, 8)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.disabled(!canEdit)
 			.accessibilityLabel("Description")
 	}
@@ -1197,9 +1197,8 @@ private struct VaultSchemaKeyEditor: View {
 	/// Reads and writes the rule as it is when asked, like `textBinding`.
 	private func toggle(_ field: WritableKeyPath<Rule, Bool>, label: String, disabled: Bool = false) -> some View {
 		Toggle(label, isOn: Binding(get: { rule[keyPath: field] }, set: { value in update { $0[keyPath: field] = value } }))
-			.toggleStyle(.switch)
+			.toggleStyle(VaultSwitchStyle())
 			.controlSize(.mini)
-			.labelsHidden()
 			.disabled(disabled || !canEdit)
 	}
 
@@ -1230,7 +1229,7 @@ private struct VaultSchemaKeyEditor: View {
 			}
 		}
 		.clipShape(RoundedRectangle(cornerRadius: 6))
-		.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.fixedSize()
 	}
 
@@ -1247,7 +1246,7 @@ private struct VaultSchemaKeyEditor: View {
 		.frame(height: 28)
 		.frame(maxWidth: .infinity)
 		.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-		.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.contentShape(Rectangle())
 	}
 
@@ -1274,7 +1273,7 @@ private struct VaultSchemaKeyEditor: View {
 			.padding(.horizontal, 9)
 			.frame(height: 28)
 			.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.disabled(!canEdit)
 			.accessibilityLabel(label)
 	}
@@ -1338,7 +1337,7 @@ private struct VaultSchemaKeyEditor: View {
 						.padding(.horizontal, 9)
 						.frame(height: 28)
 						.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-						.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+						.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
 						.disabled(!canEdit)
 						.accessibilityLabel("Required when value")
 					}
@@ -1390,7 +1389,7 @@ private struct VaultSchemaKeyEditor: View {
 				.padding(.leading, 8)
 				.padding(.vertical, 3)
 				.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-				.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+				.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				.popover(item: popoverBinding(field: field, index: index), arrowEdge: .leading) { target in
 					scopeEditor(target, lines: lines)
 				}
@@ -1403,7 +1402,7 @@ private struct VaultSchemaKeyEditor: View {
 				.foregroundStyle(VaultPalette.textTertiary)
 				.padding(.horizontal, 8)
 				.frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-				.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
+				.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
 				.contentShape(Rectangle())
 			}
 			.buttonStyle(.plain)
@@ -1479,7 +1478,7 @@ private struct VaultSchemaKeyEditor: View {
 							.font(.system(size: 11, weight: .semibold))
 							.foregroundStyle(VaultPalette.accentForeground)
 							.disabled(!canEdit)
-							.vaultPointingHand()
+							.vaultPointingHand(enabled: canEdit)
 					}
 				}
 				.padding(.leading, 16)
@@ -1505,7 +1504,7 @@ private struct VaultSchemaKeyEditor: View {
 			.padding(.horizontal, 10)
 			.frame(height: 26)
 			.background(RoundedRectangle(cornerRadius: 7).fill(addingRule ? VaultPalette.accentTint : VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 7).stroke(addingRule ? VaultPalette.accent.opacity(0.5) : VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(addingRule ? VaultPalette.accent.opacity(0.5) : VaultPalette.border, lineWidth: 1) }
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
@@ -1623,7 +1622,7 @@ private struct VaultSchemaKeyEditor: View {
 		}
 		.padding(12)
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
 		.padding(16)
 	}
 
@@ -1648,7 +1647,7 @@ private struct VaultSchemaKeyEditor: View {
 		.padding(12)
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.redTint.opacity(0.6)))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.red.opacity(0.6), lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.red.opacity(0.6), lineWidth: 1) }
 		.padding(.horizontal, 16)
 		.padding(.bottom, 12)
 	}
@@ -2093,7 +2092,7 @@ private struct VaultScopeEditor: View {
 							.padding(.horizontal, 7)
 							.frame(height: 22)
 							.background(RoundedRectangle(cornerRadius: 5).fill(on ? VaultPalette.accentTint : .clear))
-							.overlay { RoundedRectangle(cornerRadius: 5).stroke(on ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1) }
+							.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(on ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1) }
 							.contentShape(Rectangle())
 					}
 					.buttonStyle(.plain)
@@ -2174,14 +2173,14 @@ struct VaultChipField: View {
 					}
 					.padding(.horizontal, 7)
 					.frame(height: 22)
-					.overlay { RoundedRectangle(cornerRadius: 5).stroke(VaultPalette.border, lineWidth: 1) }
+					.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				}
 				TextField(values.isEmpty ? placeholder : "Add", text: $entry)
 					.textFieldStyle(.plain)
 					.font(VaultTypography.tabular(11))
 					.frame(width: 110, height: 22)
 					.padding(.horizontal, 6)
-					.overlay { RoundedRectangle(cornerRadius: 5).stroke(problem == nil ? VaultPalette.border : VaultPalette.red, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
+					.overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(problem == nil ? VaultPalette.border : VaultPalette.red, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
 					.disabled(disabled)
 					.focused($focused)
 					.onSubmit(commit)

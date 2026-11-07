@@ -95,15 +95,9 @@ struct ConnectCoolifySheet: View {
 
 	private var header: some View {
 		HStack(alignment: .top, spacing: 14) {
-			Image(systemName: "server.rack")
-				.font(.system(size: 16, weight: .semibold))
-				.foregroundStyle(VaultPalette.accentForeground)
-				.frame(width: 38, height: 38)
-				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.accentTint))
-				.accessibilityHidden(true)
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Connect Coolify")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text("Publish to the applications and services of a team on your Coolify instance.")
 					.font(.system(size: 12.5))
@@ -126,8 +120,8 @@ struct ConnectCoolifySheet: View {
 		}
 		.padding(12)
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.sidebar))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.card))
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func step(_ number: Int, _ text: String) -> some View {

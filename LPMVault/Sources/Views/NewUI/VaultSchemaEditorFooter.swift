@@ -219,7 +219,7 @@ struct VaultSchemaSaveFailureNotice: View {
 			.padding(10)
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.redTint))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.red.opacity(0.5), lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.red.opacity(0.5), lineWidth: 1) }
 			.padding(.horizontal, 16)
 			.padding(.bottom, 12)
 		}

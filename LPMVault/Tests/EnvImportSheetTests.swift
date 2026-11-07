@@ -293,7 +293,7 @@ extension SheetInteractionTests {
 			NotificationCenter.default.post(name: .newSecret, object: nil)
 			#expect(try await host.waitUntil { host.window.attachedSheet != nil })
 			let addVariable = try #require(host.window.attachedSheet)
-			#expect(try await host.waitForText("Add variable", in: addVariable))
+			#expect(try await host.waitForText("New Key", in: addVariable))
 			NotificationCenter.default.post(name: .importVariables, object: nil)
 			try await host.settle()
 			#expect(try await !host.text(in: addVariable).contains("Import variables"))

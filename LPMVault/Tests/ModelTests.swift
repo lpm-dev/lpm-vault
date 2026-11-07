@@ -30,14 +30,14 @@ extension SheetInteractionTests {
 			#expect(!labels.contains("Open Settings"))
 			let lines = AccessibilityTree.lines(in: host.view)
 			let explanation = try #require(lines.first { $0.text.contains("Sign in to sync personal") })
-			let signIn = try #require(lines.first { $0.text.contains("Sign in with browser") })
+			let signIn = try #require(lines.first { $0.text.contains("Sign In with Browser") })
 			let server = try #require(lines.first { $0.text.caseInsensitiveCompare("Server") == .orderedSame }, "Lines: \(lines.map(\.text))")
 			#expect(explanation.bounds.minY > signIn.bounds.maxY)
 			#expect(signIn.bounds.minY > server.bounds.maxY)
 			#if DEBUG
-			#expect(labels.contains("Use local"))
+			#expect(labels.contains("Use Local"))
 			#else
-			#expect(!labels.contains("Use local"))
+			#expect(!labels.contains("Use Local"))
 			#endif
 		}
 
@@ -54,7 +54,7 @@ extension SheetInteractionTests {
 				.environment(UpdateChecker()).environment(VaultQuitSettings()), size: NSSize(width: 700, height: 700), keepsRequestedSize: true)
 			defer { host.window.close() }
 			try host.scrollToEnd()
-			try await host.click("Sign out")
+			try await host.click("Sign Out")
 			#expect(try await host.waitUntil { host.window.sheets.first != nil }, "Signing out asks first")
 			let dialog = try #require(host.window.sheets.first)
 			#expect(try await host.waitForText("Sign out of LPM?", exactly: true, in: dialog))

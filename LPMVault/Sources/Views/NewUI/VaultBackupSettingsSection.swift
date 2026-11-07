@@ -10,12 +10,7 @@ struct VaultBackupSettingsSection: View {
 	var body: some View {
 		VStack(alignment: .leading, spacing: 12) {
 			HStack(alignment: .top, spacing: 12) {
-				Image(systemName: "archivebox")
-					.font(.system(size: 15, weight: .medium))
-					.foregroundStyle(VaultPalette.accentForeground)
-					.frame(width: 36, height: 36)
-					.background(RoundedRectangle(cornerRadius: 9).fill(VaultPalette.accentTint))
-					.accessibilityHidden(true)
+				VaultCardIcon(systemImage: "archivebox")
 				VStack(alignment: .leading, spacing: 3) {
 					Text("Your Keychain data stays on this Mac")
 						.font(.system(size: 13, weight: .semibold))
@@ -28,8 +23,8 @@ struct VaultBackupSettingsSection: View {
 			}
 			VaultHairline(color: VaultPalette.rowDivider)
 			HStack(spacing: 8) {
-				VaultBarButton(systemImage: "square.and.arrow.up", title: "Export backup…", disabled: !store.canUseLocalSecrets, height: 28, action: exportBackup)
-				VaultBarButton(systemImage: "square.and.arrow.down", title: "Restore from backup…", disabled: !store.canUseLocalSecrets, height: 28, action: restoreBackup)
+				VaultBarButton(systemImage: "tray.and.arrow.up", title: "Export Backup…", disabled: !store.canUseLocalSecrets, height: 28, action: exportBackup)
+				VaultBarButton(systemImage: "tray.and.arrow.down", title: "Restore from Backup…", disabled: !store.canUseLocalSecrets, height: 28, action: restoreBackup)
 				Spacer(minLength: 12)
 				Text(Self.lastBackupText(store.lastBackup))
 					.font(.system(size: 11.5))

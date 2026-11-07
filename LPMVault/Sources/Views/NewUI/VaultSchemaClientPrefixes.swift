@@ -98,7 +98,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 							.foregroundStyle(VaultPalette.textSecondary)
 							.padding(.horizontal, 6)
 							.frame(height: 20)
-							.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, lineWidth: 1) }
+							.overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(VaultPalette.border, lineWidth: 1) }
 					}
 				}
 				.padding(.leading, 15)
@@ -129,7 +129,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.font(VaultTypography.tabular(10.5))
 					.foregroundStyle(VaultPalette.textTertiary)
 					.padding(.horizontal, 5)
-					.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
+					.overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(VaultPalette.border, style: StrokeStyle(lineWidth: 1, dash: [3, 2])) }
 					.help(removable
 						? "\(file), which lpm.json imports, lists it too, so it stays in effect if you remove it here"
 						: "Listed in \(file), which lpm.json imports, so it can't be removed here")
@@ -190,7 +190,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 		.padding(10)
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.orangeTint))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.orange.opacity(0.6), lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.orange.opacity(0.6), lineWidth: 1) }
 		.padding(.horizontal, 10)
 		.padding(.vertical, 4)
 	}
@@ -229,7 +229,7 @@ struct VaultSchemaClientPrefixesPopover: View {
 					.lineLimit(1)
 					.padding(.horizontal, 6)
 					.frame(height: 20)
-					.overlay { RoundedRectangle(cornerRadius: 4).stroke(VaultPalette.border, lineWidth: 1) }
+					.overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			}
 			if keys.count > shownKeys {
 				Text("and \(keys.count - shownKeys) more").font(.system(size: 11)).foregroundStyle(VaultPalette.textTertiary).frame(height: 20)
@@ -291,7 +291,7 @@ private struct VaultSchemaPrefixField: View {
 					.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
 					.overlay {
 						RoundedRectangle(cornerRadius: 7)
-							.stroke(issue != nil ? VaultPalette.red : (entryFocused ? VaultPalette.accent : VaultPalette.border), lineWidth: issue != nil || entryFocused ? 1.5 : 1)
+							.strokeBorder(issue != nil ? VaultPalette.red : (entryFocused ? VaultPalette.accent : VaultPalette.border), lineWidth: issue != nil || entryFocused ? 1.5 : 1)
 					}
 					.accessibilityLabel("New client prefix")
 				VaultBarButton(title: "Add", filled: true, disabled: change == nil, height: 28) { if let change { add(prefix, shown: change) } }

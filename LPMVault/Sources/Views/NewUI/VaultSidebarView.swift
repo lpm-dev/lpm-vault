@@ -4,7 +4,8 @@ import SwiftUI
 enum VaultSidebarLayout {
 	static let projectInset: CGFloat = 6
 	static let rowInset: CGFloat = 8
-	static let rowHeight: CGFloat = 31
+	static let rowHeight: CGFloat = 30
+	static let childRowHeight: CGFloat = 27
 	/// The project icon's slot, which the grip takes over on hover.
 	static let projectIconWidth: CGFloat = 16
 	/// How far the grip slides in. No farther than the row's padding, so it stays on the row's background.
@@ -90,6 +91,7 @@ struct VaultSidebarView: View {
 			.frame(maxHeight: .infinity, alignment: .top)
 			.simultaneousGesture(TapGesture().onEnded { searchFocused = false })
 
+			appPages
 			VaultHairline(color: VaultPalette.sidebarBorder)
 			accountFooter
 				.simultaneousGesture(TapGesture().onEnded { searchFocused = false })
@@ -155,7 +157,7 @@ struct VaultSidebarView: View {
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
 		.overlay {
 			RoundedRectangle(cornerRadius: 8)
-				.stroke(searchFocused ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1)
+				.strokeBorder(searchFocused ? VaultPalette.accent.opacity(0.6) : VaultPalette.border, lineWidth: 1)
 		}
 	}
 
@@ -170,7 +172,7 @@ struct VaultSidebarView: View {
 		} label: {
 			VStack(alignment: .leading, spacing: 3) {
 				HStack(spacing: 6) {
-					Image(systemName: "binoculars")
+					Image(systemName: "text.magnifyingglass")
 						.font(.system(size: 10.5, weight: .semibold))
 					Text("Find it as a value…")
 						.font(.system(size: 12, weight: .semibold))
@@ -185,7 +187,7 @@ struct VaultSidebarView: View {
 			.padding(.vertical, 8)
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
@@ -201,31 +203,27 @@ struct VaultSidebarView: View {
 			Spacer(minLength: 4)
 
 			if store.isLoggedIn {
-				Button(action: onCloudProjects) {
-					Image(systemName: "cloud")
-						.font(.system(size: 10, weight: .semibold))
-						.foregroundStyle(VaultPalette.accentForeground)
-						.frame(width: 20, height: 20)
-				}
-				.buttonStyle(.plain)
-				.help("Import from lpm.dev")
-				.accessibilityLabel("Import env project from lpm.dev")
+				VaultRowIconButton(systemImage: "icloud.and.arrow.down", help: "Import from lpm.dev",
+					label: "Import env project from lpm.dev", compact: true, action: onCloudProjects)
 			}
 
 			Button(action: onNewProject) {
 				HStack(spacing: 4) {
-					Image(systemName: "plus").font(.system(size: 8.5, weight: .bold))
-					Text("New Project").font(.system(size: 10.5, weight: .semibold))
+					Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
+					Text("New Project").font(.system(size: 11, weight: .medium))
 				}
 				.foregroundStyle(VaultPalette.accentForeground)
+				.padding(.horizontal, 6)
+				.frame(height: 22)
 			}
-			.buttonStyle(.plain)
+			.buttonStyle(VaultPressStyle(cornerRadius: 5))
+			.vaultPointingHand()
 			.accessibilityLabel("Create env project")
 		}
 		.padding(.leading, 16)
-		.padding(.trailing, 10)
-		.padding(.top, 2)
-		.padding(.bottom, 6)
+		.padding(.trailing, 6)
+		.padding(.top, 4)
+		.padding(.bottom, 4)
 	}
 
 	private func projectGroups(_ projects: [VaultProject], order: [String]) -> some View {
@@ -345,18 +343,21 @@ struct VaultSidebarView: View {
 				)
 				Text(project.name)
 					.font(.system(size: 13, weight: selected ? .semibold : .regular))
-					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
+					.foregroundStyle(selected ? VaultPalette.textPrimary : VaultPalette.textSecondary)
 					.lineLimit(1)
 					.frame(maxWidth: .infinity, alignment: .leading)
 				VaultSidebarApprovalIndicator(access: cliAccess)
 				Text("\(project.secretCount)")
-					.font(VaultTypography.tabular(10.5))
-					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textTertiary)
+					.font(VaultTypography.tabular(11))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.help("\(project.secretCount.counted("value")) across \(project.environmentNames.count.counted("environment"))")
 					.frame(minWidth: VaultSidebarLayout.countMinimumWidth, alignment: .trailing)
 			}
 			.padding(.horizontal, VaultSidebarLayout.rowInset)
 			.frame(height: VaultSidebarLayout.rowHeight)
-			.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.sidebarSelection : .clear))
+			.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.sidebarSelection
+				: (hovered && reorder.lift == nil ? VaultPalette.sidebarHover : .clear)))
+			.vaultHoverAnimation(hovered)
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
@@ -370,32 +371,31 @@ struct VaultSidebarView: View {
 			schemaRow(project)
 			historyRow(project)
 
-			Button(action: onNewEnvironment) {
-				HStack(spacing: VaultSidebarLayout.childSpacing) {
-					Image(systemName: "plus")
-						.font(.system(size: 9, weight: .bold))
-						.frame(width: VaultSidebarLayout.childIconWidth)
-						.offset(x: VaultSidebarLayout.childIconOffset)
-					Text("New environment").font(.system(size: 10.5, weight: .semibold))
-					Spacer()
-				}
-				.foregroundStyle(VaultPalette.accentForeground)
-				.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
-				.padding(.trailing, VaultSidebarLayout.rowInset)
-				.padding(.vertical, 5)
-				.contentShape(Rectangle())
-			}
-			.buttonStyle(.plain)
-			.accessibilityLabel("Add environment to \(project.name)")
-
 			ForEach(Array(environments.enumerated()), id: \.element) { index, environment in
 				environmentRow(project, environment: environment, color: VaultPalette.environment(index))
+			}
+
+			VaultSidebarHoverReader { hovered in
+				Button(action: onNewEnvironment) {
+					HStack(spacing: VaultSidebarLayout.childSpacing) {
+						Image(systemName: "plus")
+							.font(.system(size: 9.5, weight: .semibold))
+							.frame(width: VaultSidebarLayout.childIconWidth)
+							.offset(x: VaultSidebarLayout.childIconOffset)
+						Text("New Environment").font(.system(size: 12))
+						Spacer()
+					}
+					.foregroundStyle(hovered ? VaultPalette.accentForeground : VaultPalette.textTertiary)
+					.childRow(selected: false, hovered: hovered)
+				}
+				.buttonStyle(.plain)
+				.accessibilityLabel("Add environment to \(project.name)")
 			}
 		}
 		.padding(.leading, VaultSidebarLayout.childInset)
 		.padding(.trailing, VaultSidebarLayout.projectInset)
 		.padding(.top, 2)
-		.padding(.bottom, 6)
+		.padding(.bottom, 8)
 	}
 
 	private func schemaRow(_ project: VaultProject) -> some View {
@@ -404,19 +404,19 @@ struct VaultSidebarView: View {
 		let count = state?.overview?.rules.count
 		let unreadable = if case .unreadable? = state { true } else { false }
 		let hasDraft = store.projectsWithSchemaDrafts.contains(project.id)
-		return Button {
+		return VaultSidebarHoverReader { hovered in Button {
 			store.openProject(id: project.id)
 			mode = .schema
 		} label: {
 			HStack(spacing: VaultSidebarLayout.childSpacing) {
 				Image(systemName: "curlybraces")
-					.font(.system(size: 9, weight: .bold))
+					.font(.system(size: 10, weight: .semibold))
 					.frame(width: VaultSidebarLayout.childIconWidth)
 					.offset(x: VaultSidebarLayout.childIconOffset)
 					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 				Text("Schema")
-					.font(.system(size: 11.5, weight: selected ? .semibold : .regular))
-					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
+					.font(.system(size: 12, weight: selected ? .medium : .regular))
+					.foregroundStyle(selected ? VaultPalette.textPrimary : VaultPalette.textSecondary)
 				if hasDraft {
 					VaultStatusDot(color: VaultPalette.orange)
 						.help("Unsaved rule changes")
@@ -429,17 +429,13 @@ struct VaultSidebarView: View {
 						.help("lpm.json can't be read")
 				} else if let count, count > 0 {
 					Text("\(count)")
-						.font(VaultTypography.tabular(10.5))
-						.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
+						.font(VaultTypography.tabular(11))
+						.foregroundStyle(VaultPalette.textTertiary)
 				}
 			}
-			.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
-			.padding(.trailing, VaultSidebarLayout.rowInset)
-			.padding(.vertical, 5)
-			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.sidebarSelection : .clear))
-			.contentShape(Rectangle())
+			.childRow(selected: selected, hovered: hovered)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(.plain) }
 		.accessibilityLabel("Schema")
 		.accessibilityValue([unreadable ? "lpm.json can't be read" : count.map { $0.counted("declared key") }, hasDraft ? "unsaved rule changes" : nil].compactMap { $0 }.joined(separator: ", "))
 		.accessibilityAddTraits(selected ? .isSelected : [])
@@ -460,19 +456,19 @@ struct VaultSidebarView: View {
 				|| history.state?.damage.isEmpty == false
 				|| (history.timeline?.unreadableParts ?? 0) > 0
 				|| history.timeline?.damagedTail == true))
-		return Button {
+		return VaultSidebarHoverReader { hovered in Button {
 			store.openProject(id: project.id)
 			mode = .history
 		} label: {
 			HStack(spacing: VaultSidebarLayout.childSpacing) {
 				Image(systemName: "clock.arrow.circlepath")
-					.font(.system(size: 9.5, weight: .semibold))
+					.font(.system(size: 10, weight: .semibold))
 					.frame(width: VaultSidebarLayout.childIconWidth)
 					.offset(x: VaultSidebarLayout.childIconOffset)
 					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 				Text("History")
-					.font(.system(size: 11.5, weight: selected ? .semibold : .regular))
-					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
+					.font(.system(size: 12, weight: selected ? .medium : .regular))
+					.foregroundStyle(selected ? VaultPalette.textPrimary : VaultPalette.textSecondary)
 				if warns {
 					Image(systemName: "exclamationmark.triangle.fill")
 						.font(.system(size: 9.5))
@@ -481,13 +477,9 @@ struct VaultSidebarView: View {
 				}
 				Spacer(minLength: 4)
 			}
-			.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
-			.padding(.trailing, VaultSidebarLayout.rowInset)
-			.padding(.vertical, 5)
-			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.sidebarSelection : .clear))
-			.contentShape(Rectangle())
+			.childRow(selected: selected, hovered: hovered)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(.plain) }
 		.accessibilityLabel("History")
 		.accessibilityValue(warns ? "needs attention" : "")
 		.accessibilityAddTraits(selected ? .isSelected : [])
@@ -496,7 +488,7 @@ struct VaultSidebarView: View {
 	private func environmentRow(_ project: VaultProject, environment: String, color: Color) -> some View {
 		let selected = !store.isShowingAccountPage && mode == .environment(environment)
 		let target = VaultEnvironmentTarget(projectId: project.id, environment: environment)
-		return Button {
+		return VaultSidebarHoverReader { hovered in Button {
 			store.openProject(id: project.id)
 			store.selectEnvironment(environment)
 			mode = .environment(environment)
@@ -506,21 +498,18 @@ struct VaultSidebarView: View {
 					.frame(width: VaultSidebarLayout.childIconWidth)
 					.offset(x: VaultSidebarLayout.childIconOffset)
 				Text(VaultProject.displayName(for: environment))
-					.font(VaultTypography.tabular(11.5, selected ? .bold : .regular))
-					.foregroundStyle(selected ? VaultPalette.accentText : VaultPalette.textSecondary)
+					.font(.system(size: 12, weight: selected ? .medium : .regular))
+					.foregroundStyle(selected ? VaultPalette.textPrimary : VaultPalette.textSecondary)
 					.lineLimit(1)
+					.truncationMode(.middle)
 				Spacer(minLength: 4)
 				Text("\(project.secretCount(for: environment))")
-					.font(VaultTypography.tabular(10.5))
-					.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
+					.font(VaultTypography.tabular(11))
+					.foregroundStyle(VaultPalette.textTertiary)
 			}
-			.padding(.leading, VaultSidebarLayout.childRowLeadingInset)
-			.padding(.trailing, VaultSidebarLayout.rowInset)
-			.padding(.vertical, 5)
-			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.sidebarSelection : .clear))
-			.contentShape(Rectangle())
+			.childRow(selected: selected, hovered: hovered)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(.plain) }
 		.accessibilityLabel(VaultProject.displayName(for: environment))
 		.accessibilityValue(project.secretCount(for: environment).counted("secret"))
 		.accessibilityAddTraits(selected ? .isSelected : [])
@@ -544,6 +533,50 @@ struct VaultSidebarView: View {
 		}
 	}
 
+	/// The app's own pages, in the sidebar so it shows where the window is
+	/// while one of them takes the place of a project.
+	private var appPages: some View {
+		VStack(spacing: 1) {
+			appPageRow("Platforms", systemImage: "square.stack.3d.up", page: .platforms) { store.showPlatforms() }
+			appPageRow("Settings", systemImage: "gearshape", page: .settings, shortcut: "⌘,") { store.showSettings() }
+		}
+		.padding(.horizontal, VaultSidebarLayout.projectInset)
+		.padding(.vertical, 6)
+	}
+
+	private func appPageRow(_ title: String, systemImage: String, page: AccountPage, shortcut: String? = nil,
+		action: @escaping () -> Void) -> some View {
+		let selected = store.accountPage == page
+		return VaultSidebarHoverReader { hovered in
+			Button(action: action) {
+				HStack(spacing: VaultSidebarLayout.projectSpacing) {
+					Image(systemName: systemImage)
+						.font(.system(size: 11.5, weight: .medium))
+						.foregroundStyle(selected ? VaultPalette.accentForeground : VaultPalette.textTertiary)
+						.frame(width: VaultSidebarLayout.projectIconWidth)
+					Text(title)
+						.font(.system(size: 13, weight: selected ? .semibold : .regular))
+						.foregroundStyle(selected ? VaultPalette.textPrimary : VaultPalette.textSecondary)
+					Spacer(minLength: 4)
+					if let shortcut {
+						Text(shortcut)
+							.font(VaultTypography.tabular(10.5))
+							.foregroundStyle(VaultPalette.textFaint)
+							.opacity(hovered || selected ? 1 : 0)
+					}
+				}
+				.padding(.horizontal, VaultSidebarLayout.rowInset)
+				.frame(height: 28)
+				.background(RoundedRectangle(cornerRadius: 7).fill(selected ? VaultPalette.sidebarSelection
+					: (hovered ? VaultPalette.sidebarHover : .clear)))
+				.vaultHoverAnimation(hovered)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+		}
+		.accessibilityAddTraits(selected ? .isSelected : [])
+	}
+
 	private var accountFooter: some View {
 		Button {
 			showsAccountSwitcher.toggle()
@@ -552,15 +585,15 @@ struct VaultSidebarView: View {
 				VaultInitialsAvatar(initials: accountInitials)
 				VStack(alignment: .leading, spacing: 1) {
 					Text(accountName)
-						.font(.system(size: 12, weight: .semibold))
+						.font(.system(size: 12.5, weight: .medium))
 						.foregroundStyle(VaultPalette.textPrimary)
 					Text(store.isLoggedIn ? "Encrypted locally · unlocked" : "Local only · unlocked")
-						.font(.system(size: 10.5))
+						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.textTertiary)
 				}
 				Spacer(minLength: 4)
 				Image(systemName: showsAccountSwitcher ? "chevron.up" : "chevron.down")
-					.font(.system(size: 10, weight: .bold))
+					.font(.system(size: 9.5, weight: .semibold))
 					.foregroundStyle(showsAccountSwitcher ? VaultPalette.accentForeground : VaultPalette.textTertiary)
 			}
 			.padding(.horizontal, 14)
@@ -583,6 +616,19 @@ struct VaultSidebarView: View {
 		let words = accountName.split(separator: " ")
 		let result = words.prefix(2).compactMap(\.first).map(String.init).joined()
 		return result.isEmpty ? "LP" : result.uppercased()
+	}
+}
+
+private extension View {
+	/// The padding, fill and hover of a row under a project: Schema, History, an environment.
+	func childRow(selected: Bool, hovered: Bool) -> some View {
+		padding(.leading, VaultSidebarLayout.childRowLeadingInset)
+			.padding(.trailing, VaultSidebarLayout.rowInset)
+			.frame(height: VaultSidebarLayout.childRowHeight)
+			.background(RoundedRectangle(cornerRadius: 6).fill(selected ? VaultPalette.sidebarSelection
+				: (hovered ? VaultPalette.sidebarHover : .clear)))
+			.vaultHoverAnimation(hovered)
+			.contentShape(Rectangle())
 	}
 }
 
@@ -641,7 +687,7 @@ private struct VaultSidebarApprovalIndicator: View {
 		case nil:
 			Image(systemName: "questionmark.circle")
 				.font(.system(size: 10, weight: .medium))
-				.foregroundStyle(VaultPalette.orangeTintText)
+				.foregroundStyle(VaultPalette.textFaint)
 				.frame(width: VaultSidebarLayout.approvalWidth)
 				.help("CLI approval policy can't be read")
 				.accessibilityHidden(true)
@@ -752,7 +798,7 @@ struct VaultAccountSwitcher: View {
 				.fill(VaultPalette.control)
 				.shadow(color: VaultPalette.shadow.opacity(0.18), radius: 17, y: 14)
 		}
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.onExitCommand { isPresented = false }
 	}
 

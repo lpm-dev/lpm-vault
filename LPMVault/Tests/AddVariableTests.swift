@@ -113,7 +113,7 @@ struct AddVariableDraftTests {
 	@Test("submit title names one environment or counts several")
 	func submitTitle() {
 		var draft = makeDraft(selection: [])
-		#expect(draft.submitTitle == "Add variable")
+		#expect(draft.submitTitle == "Add Key")
 		draft.selection = ["staging"]
 		#expect(draft.submitTitle == "Add to .env.staging")
 		draft.selection = ["default", "production"]
@@ -291,7 +291,7 @@ extension SheetInteractionTests {
 				named: "add-variable-sheet.png"
 			)
 
-			for expected in ["Add variable", "my-api-server", "Key", "Value", "Generate", "Environments", ".env.staging", "adds and keeps the sheet open", "Cancel"] {
+			for expected in ["New Key", "my-api-server", "Key", "Value", "Generate", "Environments", ".env.staging", "adds and keeps the sheet open", "Cancel"] {
 				#expect(text.contains(expected), "missing \(expected)")
 			}
 		}

@@ -234,7 +234,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitForText("This project uses data from a newer LPM"))
 			#expect(try await host.waitForText("Loading Project…"))
 			load.signal()
-			let newKey = try await host.waitForElement(saying: "New key")
+			let newKey = try await host.waitForElement(saying: "New Key")
 			#expect(!newKey.isEnabledNow, "New key is disabled")
 			let importer = try await host.waitForElement(saying: "Import variables into")
 			#expect(!importer.isEnabledNow, "Import is disabled")

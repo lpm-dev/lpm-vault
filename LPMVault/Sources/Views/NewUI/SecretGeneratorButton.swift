@@ -23,17 +23,19 @@ struct SecretGeneratorButton: View {
 					.foregroundStyle(VaultPalette.accentForeground)
 					.fixedSize()
 			} else if compact {
-				Image(systemName: "sparkles")
-					.font(.system(size: 11, weight: .semibold))
-					.foregroundStyle(hovering || showsGenerator ? VaultPalette.accentDeep : VaultPalette.textTertiary)
-					.frame(width: 26, height: 26)
-					.background(RoundedRectangle(cornerRadius: 6).fill(hovering || showsGenerator ? VaultPalette.accentTint : .clear))
+				let active = (hovering || showsGenerator) && !disabled
+				Image(systemName: "wand.and.stars")
+					.font(.system(size: 11.5, weight: .medium))
+					.foregroundStyle(active ? VaultPalette.textPrimary : VaultPalette.textTertiary)
+					.frame(width: 28, height: 28)
+					.background(RoundedRectangle(cornerRadius: 6).fill(active ? VaultPalette.controlHover : .clear))
+					.vaultHoverAnimation(active)
 			} else {
 				HStack(spacing: 5) {
-					Image(systemName: "sparkles")
-						.font(.system(size: 11, weight: .semibold))
+					Image(systemName: "wand.and.stars")
+						.font(.system(size: 11, weight: .medium))
 					Text("Generate")
-						.font(.system(size: 12, weight: .semibold))
+						.font(.system(size: 12, weight: .medium))
 					Image(systemName: "chevron.down")
 						.font(.system(size: 8, weight: .bold))
 				}
@@ -44,11 +46,11 @@ struct SecretGeneratorButton: View {
 				.fixedSize()
 			}
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(cornerRadius: 6))
 		.disabled(disabled)
 		.opacity((compact || linkTitle != nil) && disabled ? 0.45 : 1)
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
+		.vaultPointingHand(enabled: !disabled)
 		.help(label)
 		.accessibilityLabel(label)
 		.popover(isPresented: $showsGenerator, arrowEdge: .trailing) {
@@ -153,7 +155,7 @@ struct SecretGeneratorPanel: View {
 				.fixedSize()
 				.accessibilityLabel("Other length")
 			}
-			.overlay { RoundedRectangle(cornerRadius: 6).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(VaultPalette.border, lineWidth: 1) }
 			.clipShape(RoundedRectangle(cornerRadius: 6))
 			Text(kind.lengthUnit?.label ?? "bytes")
 				.font(.system(size: 10.5))

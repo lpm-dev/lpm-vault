@@ -120,7 +120,7 @@ struct PublishRoute: View {
 		.padding(.horizontal, 14)
 		.padding(.vertical, 12)
 		.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.headerRow))
-		.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func side(

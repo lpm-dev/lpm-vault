@@ -317,9 +317,9 @@ extension SheetInteractionTests {
 		func addGroup() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add group")
+			try await host.click("Add Group")
 			#expect(try await host.waitForText("NEW GROUP", exactly: true))
-			#expect(try await host.waitUntil { host.isEditing(placeholder: "group_name") }, "Add group puts the cursor in the name")
+			#expect(try await host.waitUntil { host.isEditing(placeholder: "group_name") }, "Add Group puts the cursor in the name")
 			try await host.typeCharacters("auth", placeholder: "group_name")
 			#expect(try await host.waitForText("already declared"))
 			try host.enterText("smtp", placeholder: "group_name")
@@ -444,7 +444,7 @@ extension SheetInteractionTests {
 		func removeLastMember() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add group")
+			try await host.click("Add Group")
 			#expect(try await host.waitUntil { host.hasField(placeholder: "group_name") })
 			try host.enterText("smtp", placeholder: "group_name")
 			try await host.click("Add a key to the group")
@@ -582,7 +582,7 @@ extension SheetInteractionTests {
 		func pendingText() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add group")
+			try await host.click("Add Group")
 			#expect(try await host.waitUntil { host.isEditing(placeholder: "group_name") })
 			try await host.click("Add a key to the group")
 			try await host.click("PORT", in: try await host.popoverWindow())

@@ -19,6 +19,9 @@ struct VaultValueField: NSViewRepresentable {
 	/// Lines a value wraps to before it scrolls; 1 keeps it on one line.
 	var maxLines = 1
 	var isEnabled = true
+	/// Draws the field's own dots invisible, for a hidden value whose mask the
+	/// view draws over it, the same as the tables'. Editing shows them again.
+	var concealsDots = false
 	/// Whether edits can be undone. A search term mustn't stay behind in the
 	/// window's undo history.
 	var recordsUndo = true
@@ -35,7 +38,6 @@ struct VaultValueField: NSViewRepresentable {
 		field.isBezeled = false
 		field.drawsBackground = false
 		field.focusRingType = .none
-		field.textColor = NSColor(VaultPalette.textPrimary)
 		field.isAutomaticTextCompletionEnabled = false
 		field.allowsCharacterPickerTouchBarItem = false
 		// Keeps macOS from offering saved passwords in a field that holds a secret
@@ -91,8 +93,17 @@ struct VaultValueField: NSViewRepresentable {
 	}
 
 	private func apply(to field: NSTextField) {
+		// Hidden values' dots stay quiet, like the masked values in the tables.
+		let textColor = concealsDots ? NSColor.clear : NSColor(isSecure ? VaultPalette.textTertiary : VaultPalette.textPrimary)
+		if field.textColor != textColor { field.textColor = textColor }
 		if field.font != font { field.font = font }
-		if field.placeholderString != placeholder { field.placeholderString = placeholder }
+		if field.placeholderAttributedString?.string != placeholder {
+			// Placeholders are prose, in the system font, whatever font values are typed in.
+			field.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
+				.font: NSFont.systemFont(ofSize: font.pointSize),
+				.foregroundColor: NSColor(VaultPalette.textFaint),
+			])
+		}
 		if field.accessibilityLabel() != label { field.setAccessibilityLabel(label) }
 		if field.isEnabled != isEnabled { field.isEnabled = isEnabled }
 		if maxLines > 1, field.maximumNumberOfLines != maxLines { field.maximumNumberOfLines = maxLines }
@@ -163,6 +174,12 @@ private final class PlainValueTextField: NSTextField, ValueFieldFocus {
 	var onFocusChange: ((Bool) -> Void)?
 	var recordsUndo = true
 
+	/// The placeholder's words, which the field draws from its attributed placeholder.
+	override var placeholderString: String? {
+		get { super.placeholderString ?? placeholderAttributedString?.string }
+		set { super.placeholderString = newValue }
+	}
+
 	override func becomeFirstResponder() -> Bool {
 		let became = super.becomeFirstResponder()
 		if became { editingBegan() }
@@ -179,6 +196,12 @@ private final class PlainValueTextField: NSTextField, ValueFieldFocus {
 private final class SecureValueTextField: NSSecureTextField, ValueFieldFocus {
 	var onFocusChange: ((Bool) -> Void)?
 	var recordsUndo = true
+
+	/// The placeholder's words, which the field draws from its attributed placeholder.
+	override var placeholderString: String? {
+		get { super.placeholderString ?? placeholderAttributedString?.string }
+		set { super.placeholderString = newValue }
+	}
 
 	override func becomeFirstResponder() -> Bool {
 		let became = super.becomeFirstResponder()

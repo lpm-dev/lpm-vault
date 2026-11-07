@@ -69,7 +69,7 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { fixture.store.projectSettingsDrafts.isEmpty })
 			#expect(try await host.waitForTextToDisappear("Unsaved changes"))
 			try await host.click("All variables")
-			#expect(try await host.waitForText("New key", exactly: true))
+			#expect(try await host.waitForText("New Key", exactly: true))
 		}
 
 		@Test("the folder row copies the project's folder path")
@@ -111,7 +111,7 @@ extension SheetInteractionTests {
 			try host.choose("Rename…", in: try await rowMenu("demo-api", in: host))
 			#expect(try await host.waitUntilRendered { editingName(in: host) })
 			try await host.click("All variables")
-			#expect(try await host.waitForText("New key", exactly: true))
+			#expect(try await host.waitForText("New Key", exactly: true))
 			host.window.makeFirstResponder(nil)
 			NotificationCenter.default.post(name: .showProjectSettings, object: nil)
 			#expect(try await host.waitForText("Project Settings"))
@@ -157,7 +157,7 @@ extension SheetInteractionTests {
 			try host.choose("Project Settings…", in: menu)
 			try await host.settle()
 			#expect(fixture.store.selectedProjectId == "demo")
-			#expect(try await host.waitForText("New key", exactly: true))
+			#expect(try await host.waitForText("New Key", exactly: true))
 			#expect(try await !host.text().contains("Delete Locally"), "The page didn't open")
 		}
 
@@ -169,7 +169,7 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, onBack: {}, onDelete: {}),
 				size: NSSize(width: 820, height: 640), keepsRequestedSize: true)
 			defer { host.window.close() }
-			#expect(try await host.waitForText("Choose icon"))
+			#expect(try await host.waitForText("Choose Icon"))
 			#expect(try await !host.text().contains("Reset"))
 			fixture.store.editProjectSettings(of: project) {
 				$0.name = "renamed"
@@ -203,29 +203,20 @@ extension SheetInteractionTests {
 			let host = SheetTestHost(VaultProjectSettingsView(store: fixture.store, project: project, onBack: {}, onDelete: {}),
 				size: NSSize(width: 820, height: 680), keepsRequestedSize: true)
 			defer { host.window.close() }
-			func switches(in view: NSView) -> [NSSwitch] {
-				((view as? NSSwitch).map { [$0] } ?? []) + view.subviews.flatMap { switches(in: $0) }
-			}
 			func cliSwitch() -> AccessibilityTree.Element? {
 				AccessibilityTree.visibleElements(in: host.window, of: host.view).first {
 					$0.role == .checkBox && ($0.label ?? $0.title) == "CLI approval"
 				}
 			}
-			/// The switch drawn where VoiceOver finds CLI approval's, beside Local history's.
-			func cliNativeSwitch() -> NSSwitch? {
-				guard let element = cliSwitch() else { return nil }
-				let point = AccessibilityTree.center(of: element, in: host.window)
-				return switches(in: host.view).first { $0.convert($0.bounds, to: nil).contains(point) }
-			}
-			#expect(try await host.waitUntil { cliNativeSwitch() != nil })
+			#expect(try await host.waitUntil { cliSwitch() != nil })
 			#expect(fixture.store.projectCliAccess["demo"] == nil)
-			#expect(cliNativeSwitch()?.isEnabled == false, "An unreadable policy can't be changed from here")
+			#expect(cliSwitch()?.isEnabledNow == false, "An unreadable policy can't be changed from here")
 			#expect(try await host.waitUntil { cliSwitch()?.value == "Unavailable" })
 			fixture.keychain.cliAccessPolicies["demo"] = .requireApproval
 			#expect(await fixture.store.loadProjects())
 			fixture.store.isUnlocked = true
-			#expect(try await host.waitUntil { cliNativeSwitch()?.isEnabled == true })
-			#expect(cliNativeSwitch()?.state == .on)
+			#expect(try await host.waitUntil { cliSwitch()?.isEnabledNow == true })
+			#expect(cliSwitch()?.isOn == true)
 			#expect(try await host.waitUntil { cliSwitch()?.value == "Required" })
 		}
 

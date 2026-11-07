@@ -55,7 +55,7 @@ struct VaultHistoryTextTests {
 		#expect(text.since(date(2026, 11, 4, 13, 0)) == "since \(clock(13, 0)) today")
 		#expect(text.since(date(2026, 10, 30, 9, 10)) == "since 30 Oct, \(clock(9, 10))")
 		let full = text.full(date(2026, 11, 4, 13, 40))
-		#expect(full.hasPrefix("Today, ") && full.contains("2026") && full.contains("13:40:00"), "\(full)")
+		#expect(full.hasPrefix("Today at ") && !full.contains("2026") && full.contains("13:40:00"), "\(full)")
 		#expect(!text.full(date(2026, 11, 2, 13, 40)).hasPrefix("Today"))
 	}
 
@@ -74,6 +74,27 @@ struct VaultHistoryTextTests {
 		#expect(text.describe(undo) == "Undid the change from Today, \(clock(13, 0))")
 		let outside = try entry(action: "outside", source: "outside", actor: "outside", extra: #", "since": \#(Self.time(2026, 11, 4, 9, 10))"#)
 		#expect(text.describe(outside) == "Changed outside local history · \(clock(9, 10)) to \(clock(13, 40))")
+	}
+
+	@Test("a change across environments counts each key once, and an oversized one counts values")
+	func countsAcrossEnvironments() throws {
+		let both = #"[{"key": "A", "change": "changed", "before": "value", "after": "value"}, {"key": "B", "change": "added", "before": "absent", "after": "value"}]"#
+		let spread = try entry(action: "set", environments: """
+			[{"name": "default", "change": "unchanged", "keys": \(both)},
+			 {"name": "production", "change": "unchanged", "keys": \(both)},
+			 {"name": "staging", "change": "unchanged", "keys": [{"key": "C", "change": "added", "before": "absent", "after": "value"}]}]
+			""")
+		#expect(text.describe(spread) == "Set 3 keys")
+		let pulled = try entry(action: "pull", source: "pull", extra: #", "remote": {"org": "acme"}, "remoteVersion": 2"#, environments: """
+			[{"name": "default", "change": "unchanged", "keys": \(both)}, {"name": "production", "change": "unchanged", "keys": \(both)}]
+			""")
+		#expect(text.describe(pulled) == "Pulled from lpm.dev (acme, v2) · 2 keys changed")
+		let oversized = try entry(action: "set", environments: """
+			[{"name": "default", "change": "unchanged", "keyCount": 14}, {"name": "production", "change": "unchanged", "keyCount": 11}]
+			""")
+		#expect(text.describe(oversized) == "Set 25 values")
+		let oversizedOne = try entry(action: "set", environments: #"[{"name": "default", "change": "unchanged", "keyCount": 14}]"#)
+		#expect(text.describe(oversizedOne) == "Set 14 keys")
 	}
 
 	@Test("a gap says when the change outside history happened")

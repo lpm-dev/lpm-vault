@@ -223,11 +223,12 @@ final class SheetTestHost<V: View> {
 	}
 
 	/// What the window says right now, for assertions that text is absent or present.
-	func text(in targetWindow: NSWindow? = nil) async throws -> AccessibleText {
+	/// `footer` limits it to the bottom points of the window.
+	func text(in targetWindow: NSWindow? = nil, footer: CGFloat? = nil) async throws -> AccessibleText {
 		let window = targetWindow ?? self.window
 		let target = try #require(targetWindow?.contentView ?? view)
 		target.layoutSubtreeIfNeeded()
-		return AccessibilityTree.text(in: target, root: window)
+		return AccessibilityTree.text(in: target, root: window, area: footer.map { bottomBand(of: target, height: $0) })
 	}
 
 	/// Returns as soon as the window says `expected`, or `false` after
@@ -267,6 +268,15 @@ final class SheetTestHost<V: View> {
 			eventNumber: 0, clickCount: 1, pressure: 1))
 		let target = try #require(view.hitTest(view.superview?.convert(point, from: nil) ?? point))
 		return try #require(target.menu(for: event) ?? view.menu(for: event), "\(name) has a context menu")
+	}
+
+	/// Runs the action named `action` of the element saying `label`, as
+	/// VoiceOver's Actions rotor does, such as an item of a More menu that
+	/// offers its items as the button's own actions. Returns false when the
+	/// element offers no such action now, as when the item is unavailable.
+	@discardableResult
+	func perform(_ action: String, on label: String) async throws -> Bool {
+		try await waitForElement(saying: label).perform(action)
 	}
 
 	/// Chooses the item titled `title`, as clicking it does.
@@ -627,7 +637,6 @@ final class SheetTestHost<V: View> {
 	enum ValueFieldControl: CGFloat {
 		case reveal = 13
 		case copy = 39
-		case generate = 77
 	}
 
 	/// Clicks an icon control of the secure value field at `index`, counting from
@@ -919,9 +928,9 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
-		try await host.click("write file")
-		try await host.click("Choose folder")
-		#expect(try await host.waitForText("Replace vault ID"))
+		try await host.click("Write File")
+		try await host.click("Choose Folder")
+		#expect(try await host.waitForText("Replace Vault ID"))
 		try await host.settle()
 		#expect(try Data(contentsOf: config) == original)
 	}
@@ -944,9 +953,9 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
-		try await host.click("write file")
-		try await host.click("Choose folder")
-		#expect(try await host.waitForText("Replace vault ID"))
+		try await host.click("Write File")
+		try await host.click("Choose Folder")
+		#expect(try await host.waitForText("Replace Vault ID"))
 		if onThisMac {
 			#expect(try await host.text().contains("lpm.json links Billing API"))
 			try await host.click("Open Billing API")
@@ -972,10 +981,10 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { source }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
-		try await host.click("write file")
-		try await host.click("Choose folder")
+		try await host.click("Write File")
+		try await host.click("Choose Folder")
 		#expect(try await host.waitForText("Using the project folder around src, as the LPM CLI does."))
-		// The "write file" segment also says Write until the folder's status loads.
+		// The "Write File" segment also says Write until the folder's status loads.
 		try #require(try await host.waitForText("Write lpm.json"))
 		try await host.click("Write lpm.json")
 		try #require(try await host.waitForText("Linked in lpm.json"))
@@ -996,8 +1005,8 @@ struct SheetInteractionTests {
 		let host = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { user }), size: NSSize(width: 600, height: 560))
 		defer { host.window.close() }
 		try await host.settle()
-		try await host.click("write file")
-		try await host.click("Choose folder")
+		try await host.click("Write File")
+		try await host.click("Choose Folder")
 		#expect(try await host.waitForText("so it can't hold a project"))
 		#expect(try await !host.text().contains("Write lpm.json"))
 		#expect(ProjectCLILink.folder(vaultId: "sheet-regression", projectPath: "", defaults: defaults) != user.path)
@@ -1064,10 +1073,10 @@ struct SheetInteractionTests {
 		let (store, _) = makeStore(preferences: defaults)
 		let first = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression", folderPicker: { folder }), size: NSSize(width: 600, height: 560))
 		try await first.settle()
-		try await first.click("write file")
-		try await first.click("Choose folder")
+		try await first.click("Write File")
+		try await first.click("Choose Folder")
 		try #require(try await first.waitForText("Write lpm.json"))
-		try await first.click("Write")
+		try await first.click("Write lpm.json")
 		try #require(try await first.waitForText("Linked in lpm.json"))
 		first.window.close()
 		let second = SheetTestHost(ConnectCLISheet(store: store, projectId: "sheet-regression"), size: NSSize(width: 600, height: 560))
@@ -1201,7 +1210,7 @@ struct SheetInteractionTests {
 		defer { host.window.close() }
 		#expect(host.view.fittingSize.height <= 640)
 		let rendered = try await host.text()
-		#expect(rendered.contains("Add variable"))
+		#expect(rendered.contains("New Key"))
 		#expect(rendered.contains("Cancel"))
 	}
 
@@ -1232,7 +1241,7 @@ struct SheetInteractionTests {
 		if transition == "generator" {
 			try await host.click("Generate", in: sheet)
 			_ = try await host.generatorWindow()
-			try await host.click("Add variable", in: sheet)
+			try await host.click("New Key", in: sheet)
 		} else {
 			for _ in 0..<2 { try host.key("\t", code: 48, in: sheet); try await host.settle() }
 		}

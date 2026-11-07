@@ -125,7 +125,7 @@ struct VaultHistoryRemovalSheet: View {
 		}
 		.padding(14)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func group(_ title: String, note: String?, places: [Int], review: VaultLocalHistory.RemovalReview) -> some View {
@@ -145,7 +145,7 @@ struct VaultHistoryRemovalSheet: View {
 				}
 			}
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		}
 	}
 
@@ -181,9 +181,8 @@ struct VaultHistoryRemovalSheet: View {
 						if on { history.removalReview?.selection.insert(index) } else { history.removalReview?.selection.remove(index) }
 					}
 				))
-				.toggleStyle(.switch)
+				.toggleStyle(VaultSwitchStyle())
 				.controlSize(.mini)
-				.labelsHidden()
 				.disabled(place.current)
 			}
 			.opacity(place.current ? 0.75 : 1)

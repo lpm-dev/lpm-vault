@@ -88,7 +88,7 @@ struct AddVariableSheet: View {
 		}
 		.frame(width: 560)
 		.background(VaultPalette.content)
-		.vaultUnsavedSheetWork(store, projectID: projectId, projectName: project?.name ?? "", title: "Add variable", detail: unsavedWork)
+		.vaultUnsavedSheetWork(store, projectID: projectId, projectName: project?.name ?? "", title: "New Key", detail: unsavedWork)
 		.overlayPreferenceValue(KeyFieldBounds.self) { anchor in
 			let suggestions = suggestions
 			if let anchor, !suggestions.isEmpty {
@@ -129,8 +129,8 @@ struct AddVariableSheet: View {
 	private var header: some View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
-				Text("Add variable")
-					.font(.system(size: 17, weight: .bold))
+				Text("New Key")
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text("to \(Text(project?.name ?? "").fontWeight(.semibold).foregroundStyle(VaultPalette.textSecondary)) · stored encrypted locally")
 					.font(.system(size: 12.5))
@@ -170,7 +170,7 @@ struct AddVariableSheet: View {
 						.truncationMode(.middle)
 				}
 			}
-			TextField("DATABASE_URL", text: $draft.key)
+			TextField("e.g. DATABASE_URL", text: $draft.key)
 				.textFieldStyle(.plain)
 				.font(VaultTypography.tabular(13))
 				.foregroundStyle(VaultPalette.textPrimary)
@@ -285,8 +285,8 @@ struct AddVariableSheet: View {
 				} else {
 					VaultTagBadge(
 						text: "SECRET",
-						foreground: VaultPalette.accentForeground,
-						background: VaultPalette.accentTint
+						foreground: VaultPalette.textSecondary,
+						background: VaultPalette.neutralTint
 					)
 				}
 				Spacer()
@@ -468,12 +468,12 @@ struct AddVariableSheet: View {
 				VaultFieldLabel(title: "Environments")
 				Spacer()
 				if draft.environments.count > 1 {
-					Button(draft.allSelected ? "Clear" : "Select all") { draft.toggleAll() }
+					Button(draft.allSelected ? "Clear" : "Select All") { draft.toggleAll() }
 						.buttonStyle(.plain)
 						.font(.system(size: 11))
 						.foregroundStyle(VaultPalette.accentForeground)
 						.disabled(isSubmitting)
-						.vaultPointingHand()
+						.vaultPointingHand(enabled: !isSubmitting)
 				}
 			}
 			ScrollView(.vertical) {
@@ -675,7 +675,7 @@ private struct FieldIconButton: View {
 				.frame(width: 28, height: 28)
 				.background(RoundedRectangle(cornerRadius: 6).fill(hovering ? VaultPalette.neutralTint : .clear))
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(cornerRadius: 6))
 		.onHover { hovering = $0 }
 		.help(label)
 		.accessibilityLabel(label)
@@ -688,14 +688,14 @@ private struct EnvironmentChipToggleStyle: ToggleStyle {
 
 	func makeBody(configuration: Configuration) -> some View {
 		let selected = configuration.isOn
-		let stroke = hasConflict ? VaultPalette.red : (selected ? VaultPalette.accent : VaultPalette.border)
+		let stroke = hasConflict ? VaultPalette.red : (selected ? VaultPalette.selectedBorder : VaultPalette.border)
 		return Button { configuration.isOn.toggle() } label: {
 			HStack(spacing: 7) {
 				ZStack {
 					RoundedRectangle(cornerRadius: 4)
 						.fill(selected ? VaultPalette.accent : .clear)
 					RoundedRectangle(cornerRadius: 4)
-						.stroke(selected ? VaultPalette.accent : VaultPalette.textFaint.opacity(0.6), lineWidth: 1.5)
+						.strokeBorder(selected ? VaultPalette.accent : VaultPalette.textFaint.opacity(0.6), lineWidth: 1.5)
 					if selected {
 						Image(systemName: "checkmark")
 							.font(.system(size: 8, weight: .heavy))
@@ -714,10 +714,10 @@ private struct EnvironmentChipToggleStyle: ToggleStyle {
 			.padding(.horizontal, 9)
 			.padding(.vertical, 9)
 			.contentShape(Rectangle())
-			.background(RoundedRectangle(cornerRadius: 8).fill(selected ? VaultPalette.rowSelected : VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 8).stroke(stroke, lineWidth: 1.5) }
+			.background(RoundedRectangle(cornerRadius: 8).fill(selected ? VaultPalette.selectedFill : VaultPalette.control))
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(stroke, lineWidth: hasConflict ? 1.5 : 1) }
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(cornerRadius: 8))
 		.accessibilityAddTraits(selected ? .isSelected : [])
 		.accessibilityValue(hasConflict ? "Key already exists" : "")
 	}

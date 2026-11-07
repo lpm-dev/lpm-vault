@@ -70,7 +70,7 @@ struct CloudVaultsSheet: View {
 				} actions: {
 					Button("Retry") { reloadID &+= 1 }
 					if loadErrorRequiresSignIn {
-						Button(store.isLoggingIn ? "Waiting for browser…" : "Sign in again") {
+						Button(store.isLoggingIn ? "Waiting for Browser…" : "Sign In Again") {
 							Task {
 								if await store.login() { reloadID &+= 1 }
 							}

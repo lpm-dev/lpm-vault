@@ -206,7 +206,7 @@ struct VaultHistoryRollbackSheet: View {
 						}
 					}
 					.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-					.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+					.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 				}
 			}
 			if environment.offersDeletion, let current = environment.current {
@@ -242,16 +242,15 @@ struct VaultHistoryRollbackSheet: View {
 					if delete { history.rollbackReview?.keptEnvironments.remove(index) } else { history.rollbackReview?.keptEnvironments.insert(index) }
 				}
 			))
-			.toggleStyle(.switch)
+			.toggleStyle(VaultSwitchStyle())
 			.controlSize(.mini)
-			.labelsHidden()
 			.disabled(!empties)
 			.help(empties ? "Delete \(name) once its keys are gone" : "Keys you keep stay in \(name), so it isn't deleted")
 		}
 		.padding(.horizontal, 14)
 		.padding(.vertical, 10)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func rowView(
@@ -300,9 +299,8 @@ struct VaultHistoryRollbackSheet: View {
 					get: { review.applies(environment: environment, row: index) },
 					set: { history.rollbackReview?.setApplies($0, environment: environment, row: index) }
 				))
-				.toggleStyle(.switch)
+				.toggleStyle(VaultSwitchStyle())
 				.controlSize(.mini)
-				.labelsHidden()
 				.disabled(unknown)
 				.help(unknown ? "Its earlier value isn’t known, so it keeps its value now" : "Switch off to keep its value now")
 			}

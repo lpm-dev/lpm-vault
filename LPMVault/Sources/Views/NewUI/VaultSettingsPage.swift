@@ -14,19 +14,18 @@ struct VaultSettingsPage: View {
 		VStack(spacing: 0) {
 			HStack {
 				Text("Settings")
-					.font(.system(size: 19, weight: .bold))
-					.foregroundStyle(VaultPalette.textPrimary)
+					.vaultPageTitle()
 					.accessibilityAddTraits(.isHeader)
 				Spacer()
 			}
 			.padding(.horizontal, 20)
-			.frame(height: 58)
+			.frame(height: 60)
 
 			VaultHairline()
 
 			if let user = store.currentUser {
 				ScrollView {
-					VStack(alignment: .leading, spacing: 18) {
+					VStack(alignment: .leading, spacing: 20) {
 						settingsSection("ACCOUNT") {
 							HStack(spacing: 12) {
 								profileAvatar(user)
@@ -53,51 +52,49 @@ struct VaultSettingsPage: View {
 								VaultBarButton(systemImage: "globe", title: "Manage on lpm.dev") {
 									if let url = store.accountManagementURL { NSWorkspace.shared.open(url) }
 								}
-								VaultBarButton(systemImage: "rectangle.portrait.and.arrow.right", title: "Sign out") {
+								VaultBarButton(systemImage: "rectangle.portrait.and.arrow.right", title: "Sign Out") {
 									showLogoutConfirmation = true
 								}
 							}
 						}
 					}
-					.padding(20)
+					.vaultFormColumn()
 				}
 			} else {
 				ScrollView {
-					VStack(spacing: 16) {
-						VaultAppMark(size: 42)
-
-						Text("Not logged in")
-							.font(.system(size: 18, weight: .bold))
-							.foregroundStyle(VaultPalette.textPrimary)
-						Text("Sign in to sync personal and organization env projects.")
-							.font(.system(size: 12.5))
-							.foregroundStyle(VaultPalette.textTertiary)
-
-						VaultBarButton(systemImage: "globe", title: store.isLoggingIn ? "Waiting for browser…" : "Sign in with browser", filled: true, disabled: store.isLoggingIn) {
-							Task { await store.login() }
+					VStack(alignment: .leading, spacing: 20) {
+						settingsSection("ACCOUNT") {
+							VStack(alignment: .leading, spacing: 12) {
+								HStack(spacing: 12) {
+									VaultCardIcon(systemImage: "person")
+									VStack(alignment: .leading, spacing: 2) {
+										Text("Not logged in")
+											.font(.system(size: 13.5, weight: .semibold))
+											.foregroundStyle(VaultPalette.textPrimary)
+										Text("Sign in to sync personal and organization env projects.")
+											.font(.system(size: 12))
+											.foregroundStyle(VaultPalette.textTertiary)
+									}
+								}
+								HStack(spacing: 10) {
+									VaultBarButton(systemImage: "globe", title: store.isLoggingIn ? "Waiting for Browser…" : "Sign In with Browser", filled: true, disabled: store.isLoggingIn) {
+										Task { await store.login() }
+									}
+									if store.isLoggingIn {
+										ProgressView().controlSize(.small)
+									}
+								}
+								if let error = store.error {
+									Text(error)
+										.font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
+										.fixedSize(horizontal: false, vertical: true)
+								}
+							}
 						}
-
-						if store.isLoggingIn {
-							ProgressView().controlSize(.small)
-						}
-
-						if let error = store.error {
-							Text(error)
-								.font(.system(size: 11.5)).foregroundStyle(VaultPalette.redText)
-								.multilineTextAlignment(.center)
-								.frame(maxWidth: 320)
-						}
-
-						VStack(alignment: .leading, spacing: 18) {
-							serverSettings
-							appSettings
-						}
-						.frame(maxWidth: 520)
-						.padding(.top, 6)
-
+						serverSettings
+						appSettings
 					}
-					.frame(maxWidth: .infinity, maxHeight: .infinity)
-					.padding(20)
+					.vaultFormColumn()
 				}
 			}
 		}
@@ -139,12 +136,12 @@ struct VaultSettingsPage: View {
 
 	private var serverSettings: some View {
 		settingsSection("SERVER") {
-			HStack(spacing: 10) {
-				Image(systemName: store.appEnvironment == .production ? "globe" : "laptopcomputer")
-					.foregroundStyle(VaultPalette.accentForeground)
+			HStack(spacing: 12) {
+				VaultCardIcon(systemImage: store.appEnvironment == .production ? "globe" : "laptopcomputer")
 				VStack(alignment: .leading, spacing: 2) {
 					Text(store.appEnvironment == .production ? "Production" : "Local development")
 						.font(.system(size: 13, weight: .semibold))
+						.foregroundStyle(VaultPalette.textPrimary)
 					Text(store.appEnvironment == .production ? "lpm.dev" : "localhost:3000")
 						.font(VaultTypography.tabular(11))
 						.foregroundStyle(VaultPalette.textTertiary)
@@ -152,7 +149,7 @@ struct VaultSettingsPage: View {
 				Spacer()
 				#if DEBUG
 				VaultBarButton(
-					title: store.appEnvironment == .production ? "Use local" : "Use production"
+					title: store.appEnvironment == .production ? "Use Local" : "Use Production"
 				) {
 					store.switchEnvironment(to: store.appEnvironment == .production ? .development : .production)
 				}
@@ -168,10 +165,11 @@ struct VaultSettingsPage: View {
 		VStack(alignment: .leading, spacing: 8) {
 			Text(title).vaultSectionLabel()
 			content()
-				.padding(14)
+				.padding(.horizontal, 16)
+				.padding(.vertical, 14)
 				.frame(maxWidth: .infinity, alignment: .leading)
-				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.sidebar))
-				.overlay { RoundedRectangle(cornerRadius: 10).stroke(VaultPalette.border, lineWidth: 1) }
+				.background(RoundedRectangle(cornerRadius: 10).fill(VaultPalette.card))
+				.overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		}
 	}
 

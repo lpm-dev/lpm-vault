@@ -30,7 +30,7 @@ struct VaultSchemaReviewSheet: View {
 			HStack(alignment: .top, spacing: 12) {
 				VStack(alignment: .leading, spacing: 4) {
 					Text("Review changes to lpm.json")
-						.font(.system(size: 17, weight: .bold))
+						.font(.system(size: 17, weight: .semibold))
 						.foregroundStyle(VaultPalette.textPrimary)
 					Text("Plain text, shared with the team. The LPM CLI enforces these rules on its next run.")
 						.font(.system(size: 12.5))
@@ -285,7 +285,7 @@ struct VaultSchemaReviewSheet: View {
 		.padding(.vertical, 6)
 		.textSelection(.enabled)
 		.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.control))
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 		.clipShape(RoundedRectangle(cornerRadius: 8))
 		.accessibilityElement(children: .contain)
 		.accessibilityLabel("Changes to lpm.json")
@@ -392,7 +392,7 @@ struct VaultSchemaReviewSheet: View {
 			}
 		}
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.overlay { RoundedRectangle(cornerRadius: 8).stroke(VaultPalette.border, lineWidth: 1) }
+		.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(VaultPalette.border, lineWidth: 1) }
 	}
 
 	private func environmentColor(_ environment: String) -> Color {

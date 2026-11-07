@@ -9,12 +9,13 @@ struct VaultSheetCloseButton: View {
 	var body: some View {
 		Button(action: action) {
 			Image(systemName: "xmark")
-				.font(.system(size: 10, weight: .bold))
+				.font(.system(size: 10, weight: .semibold))
 				.foregroundStyle(hovering ? VaultPalette.textPrimary : VaultPalette.textTertiary)
-				.frame(width: 26, height: 26)
-				.background(Circle().fill(hovering ? VaultPalette.border : VaultPalette.neutralTint))
+				.frame(width: 28, height: 28)
+				.background(Circle().fill(hovering ? VaultPalette.controlHover : .clear))
+				.vaultHoverAnimation(hovering)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(shape: Circle()))
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
 		.help(label)
@@ -37,8 +38,7 @@ struct VaultSheetFooter<Leading: View, Actions: View>: View {
 			}
 			.frame(maxWidth: .infinity, alignment: .trailing)
 			.padding(.horizontal, 24)
-			.padding(.top, 14)
-			.padding(.bottom, 18)
+			.padding(.vertical, 16)
 			.background(VaultPalette.headerRow)
 		}
 	}
@@ -55,19 +55,15 @@ struct VaultFieldLabel: View {
 }
 
 extension View {
-	/// Rounded input frame with the accent focus ring used by sheet fields.
+	/// Rounded input frame used by sheet fields. Focus draws one crisp accent
+	/// border inside the frame, never a halo around it.
 	func vaultInputField(focused: Bool, invalid: Bool = false, background: Color = VaultPalette.control) -> some View {
-		let stroke = invalid ? VaultPalette.red : (focused ? VaultPalette.accent : VaultPalette.border)
+		let stroke = invalid ? VaultPalette.problemMark : (focused ? VaultPalette.focusRing : VaultPalette.inputBorder)
 		return self
-			.background(RoundedRectangle(cornerRadius: 8).fill(background))
+			.background(RoundedRectangle(cornerRadius: 7).fill(background))
 			.overlay {
-				RoundedRectangle(cornerRadius: 8)
-					.stroke(stroke, lineWidth: focused || invalid ? 1.5 : 1)
-			}
-			.background {
-				RoundedRectangle(cornerRadius: 10)
-					.fill(focused ? (invalid ? VaultPalette.red : VaultPalette.accent).opacity(0.15) : .clear)
-					.padding(-3)
+				RoundedRectangle(cornerRadius: 7)
+					.strokeBorder(stroke, lineWidth: focused ? 2 : 1)
 			}
 	}
 }
@@ -90,6 +86,9 @@ struct VaultMenuField<Value: Hashable>: View {
 	@Binding var selection: Value?
 	var placeholder = "Choose…"
 	var disabled = false
+
+	@FocusState private var focused: Bool
+	@State private var hovering = false
 
 	private var selected: VaultMenuOption<Value>? {
 		selection.flatMap { value in options.first { $0.value == value } }
@@ -125,18 +124,46 @@ struct VaultMenuField<Value: Hashable>: View {
 					.foregroundStyle(VaultPalette.textQuaternary)
 			}
 			.padding(.horizontal, 10)
-			.frame(height: 28)
+			.frame(height: 30)
 			.frame(maxWidth: .infinity)
 			.contentShape(Rectangle())
-			.vaultInputField(focused: false)
+			.vaultInputField(focused: focused, background: hovering && !disabled ? VaultPalette.controlHover : VaultPalette.control)
+			.vaultHoverAnimation(hovering)
 			// A menu drawn as a button otherwise makes each part of its label a menu of its own.
 			.accessibilityElement(children: .combine)
 		}
 		.menuStyle(.button)
 		.buttonStyle(.plain)
 		.menuIndicator(.hidden)
+		.focusEffectDisabled()
+		.focused($focused)
+		.onHover { hovering = $0 }
 		.disabled(disabled)
 		.accessibilityLabel(title)
 		.accessibilityValue(selected?.label ?? placeholder)
+	}
+}
+
+/// A caution in a sheet or panel: amber text that stays readable on light
+/// and dark backgrounds, with a warning glyph so it isn't said by color alone.
+struct VaultInlineWarning: View {
+	let text: String
+
+	var body: some View {
+		HStack(alignment: .firstTextBaseline, spacing: 7) {
+			Image(systemName: "exclamationmark.triangle.fill")
+				.font(.system(size: 10.5))
+				.foregroundStyle(VaultPalette.warningMark)
+				.accessibilityHidden(true)
+			Text(text)
+				.foregroundStyle(VaultPalette.textPrimary)
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.fixedSize(horizontal: false, vertical: true)
+		}
+		.font(.system(size: 11.5))
+		.padding(.horizontal, 10)
+		.padding(.vertical, 7)
+		.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.orangeTint))
+		.accessibilityElement(children: .combine)
 	}
 }

@@ -101,7 +101,7 @@ struct VaultRawTextReviewSheet: View {
 		HStack(alignment: .top, spacing: 12) {
 			VStack(alignment: .leading, spacing: 3) {
 				Text("Review changes to \(name)")
-					.font(.system(size: 17, weight: .bold))
+					.font(.system(size: 17, weight: .semibold))
 					.foregroundStyle(VaultPalette.textPrimary)
 				Text(revealed ? "Switch off any line you don't want to apply." : "Switch off any line you don't want to apply. Values stay hidden.")
 					.font(.system(size: 12.5))
@@ -198,9 +198,8 @@ struct VaultRawTextReviewSheet: View {
 				get: { !skipping.contains(key) },
 				set: { if $0 { skipping.remove(key) } else { skipping.insert(key) } }
 			))
-			.toggleStyle(.switch)
+			.toggleStyle(VaultSwitchStyle())
 			.controlSize(.mini)
-			.labelsHidden()
 			.help(applies ? "Leave this change out" : "Make this change")
 		}
 		.padding(.horizontal, 14)

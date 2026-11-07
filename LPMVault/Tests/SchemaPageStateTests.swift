@@ -291,11 +291,14 @@ extension SheetInteractionTests {
 			#expect(try await host.waitUntil { host.fieldText(placeholder: "KEY_NAME") == "PORT" })
 		}
 
-		@Test("a failing stored value shows a dot on its row and a count in the status bar")
+		@Test("a failing stored value's row says where it fails, first among its rules, and the status bar counts it")
 		func failures() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
 			#expect(try await host.waitForText("1 key fails in .env", footer: 30))
+			// The row reads as one line: its key, then where it fails, then its rules.
+			let row = try await host.waitForElement(saying: "RETRY_COUNT, Fails its rules in .env, Integer, 0–10")
+			#expect(row.texts == ["RETRY_COUNT, Fails its rules in .env, Integer, 0–10"])
 		}
 
 		@Test("with no rules, one button declares every stored key in one change")
@@ -371,7 +374,7 @@ extension SheetInteractionTests {
 		func arrowsKeepNewKey() async throws {
 			let (store, host, folder) = try await workspace()
 			defer { host.window.close(); store.lock(); try? FileManager.default.removeItem(atPath: folder) }
-			try await host.click("Add key")
+			try await host.click("Declare Key")
 			#expect(try await host.waitUntil { host.hasField(placeholder: "KEY_NAME") })
 			try host.typeText("api-token", placeholder: "KEY_NAME")
 			host.window.makeFirstResponder(nil)

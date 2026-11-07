@@ -56,7 +56,7 @@ struct VaultUnsavedWork: Equatable {
 		let projectID: String?
 		/// The project's name, or where the sheet is, such as "Platforms".
 		let projectName: String
-		/// What the sheet does, such as "Add variable".
+		/// What the sheet does, such as "New Key".
 		let title: String
 		/// What's typed into it, such as the new key's name.
 		let detail: String

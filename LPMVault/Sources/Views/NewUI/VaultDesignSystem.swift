@@ -2,93 +2,124 @@ import AppKit
 import SwiftUI
 
 enum VaultPalette {
-	static let titleBar = adaptive(light: 0xFAFAFC, dark: 0x101010)
-	static let titleBarBorder = adaptive(light: 0xDCDBE2, dark: 0x262626)
-	static let sidebar = adaptive(light: 0xF7F7FA, dark: 0x101010)
-	static let sidebarBorder = adaptive(light: 0xE4E3E9, dark: 0x262626)
-	static let content = adaptive(light: 0xFFFFFF, dark: 0x121212)
-	static let control = adaptive(light: 0xFFFFFF, dark: 0x101010)
-	static let inspector = adaptive(light: 0xFAFAFC, dark: 0x101010)
+	// Content is the brightest layer in both appearances; the title bar, sidebar and
+	// inspector sit a step below it, and controls and cards a step above the content.
+	static let titleBar = adaptive(light: 0xF8F8FA, dark: 0x161618)
+	static let titleBarBorder = adaptive(light: 0xE2E1E7, dark: 0x2C2C30)
+	static let sidebar = adaptive(light: 0xF6F6F8, dark: 0x161618)
+	static let sidebarBorder = adaptive(light: 0xE2E1E7, dark: 0x2C2C30)
+	static let content = adaptive(light: 0xFFFFFF, dark: 0x1C1C1F)
+	/// A group of settings or a tile on the content.
+	static let card = adaptive(light: 0xF8F8FA, dark: 0x222225)
+	static let control = adaptive(light: 0xFFFFFF, dark: 0x242428)
+	static let controlHover = adaptive(light: 0xF1F1F4, dark: 0x2D2D32)
+	static let inspector = adaptive(light: 0xF8F8FA, dark: 0x19191B)
 
-	// Dark text is white at two strengths, so it takes on the tint of what it sits on.
-	static let textPrimary = adaptive(light: 0x1C1C1E, dark: 0xFFFFFF, darkOpacity: 0.8)
-	static let textSecondary = adaptive(light: 0x3C3C43, dark: 0xFFFFFF, darkOpacity: 0.55)
-	static let textTertiary = adaptive(light: 0x6F6F75, dark: 0xFFFFFF, darkOpacity: 0.55)
-	static let textQuaternary = adaptive(light: 0x717178, dark: 0xFFFFFF, darkOpacity: 0.55)
-	static let textFaint = adaptive(light: 0x73737A, dark: 0xFFFFFF, darkOpacity: 0.55)
-	static let masked = adaptive(light: 0x6B6B72, dark: 0xFFFFFF, darkOpacity: 0.55)
+	// Dark text is white at four strengths, so it takes on the tint of what it sits on.
+	static let textPrimary = adaptive(light: 0x1C1C1E, dark: 0xFFFFFF, darkOpacity: 0.92)
+	static let textSecondary = adaptive(light: 0x45454C, dark: 0xFFFFFF, darkOpacity: 0.74)
+	static let textTertiary = adaptive(light: 0x5C5C64, dark: 0xFFFFFF, darkOpacity: 0.58)
+	static let textQuaternary = textTertiary
+	/// Hints and placeholders: still 4.5:1 on the content, the weakest text that says something.
+	static let textFaint = adaptive(light: 0x6C6C74, dark: 0xFFFFFF, darkOpacity: 0.48)
+	static let masked = textFaint
 
-	static let border = adaptive(light: 0xDCDBE2, dark: 0x262626)
-	static let divider = adaptive(light: 0xECEAF0, dark: 0x262626)
-	static let rowDivider = adaptive(light: 0xF0EFF4, dark: 0x191919)
+	static let border = adaptive(light: 0xDCDBE2, dark: 0x3A3A3F)
+	/// A text field's edge: 3:1 against the field and what's around it, as a
+	/// control's boundary needs, where cards and tables keep the quieter `border`.
+	static let inputBorder = adaptive(light: 0x8E8E99, dark: 0x73737D)
+	static let divider = adaptive(light: 0xEAE9EF, dark: 0x2C2C30)
+	static let rowDivider = adaptive(light: 0xF0EFF4, dark: 0x252528)
 
 	static let accent = Color(hex: 0x5E5CE6)
-	static let accentForeground = adaptive(light: 0x5E5CE6, dark: 0xB9B8FF)
-	static let accentHover = adaptive(light: 0x7A78F0, dark: 0x6664E8)
-	static let accentTint = adaptive(light: 0xECEAFC, dark: 0x29263D)
-	static let accentText = adaptive(light: 0x2C2B4A, dark: 0xD5D4FF)
+	static let accentForeground = adaptive(light: 0x5654DE, dark: 0xB4B3FF)
+	static let accentHover = adaptive(light: 0x5250DA, dark: 0x5452DC)
+	static let accentPressed = adaptive(light: 0x4542C8, dark: 0x5250D6)
+	static let accentTint = adaptive(light: 0xEEEDFD, dark: 0x2B2946)
+	static let accentText = adaptive(light: 0x2E2C8A, dark: 0xD5D4FF)
 	static let accentDeep = adaptive(light: 0x4B48D6, dark: 0xB9B8FF)
+	/// The ring around a control that has keyboard focus.
+	static let focusRing = adaptive(light: 0x5E5CE6, dark: 0x8C8AFF)
 
 	static let green = Color(hex: 0x34C759)
 	static let orange = Color(hex: 0xFF9F0A)
 	static let red = Color(hex: 0xFF3B30)
 	static let redText = adaptive(light: 0xC8342B, dark: 0xFF847D)
+	/// A status glyph that needs fixing: a value that fails its rules.
+	static let problemMark = adaptive(light: 0xD7372E, dark: 0xFF6B61)
+	/// A status glyph worth a look: a key missing from an environment.
+	static let warningMark = adaptive(light: 0xB86200, dark: 0xFFB547)
 	/// A destructive action's solid button.
 	static let destructiveFill = adaptive(light: 0xE5342A, dark: 0xFF453A)
 	static let destructiveFillHover = adaptive(light: 0xCC2B22, dark: 0xFF5F55)
-	static let greenTint = adaptive(light: 0xE4F7E8, dark: 0x233528)
+	static let greenTint = adaptive(light: 0xE4F7E8, dark: 0x1F3326)
 	static let greenTintText = adaptive(light: 0x1A7F37, dark: 0x75DB94)
-	static let orangeTint = adaptive(light: 0xFFF1DE, dark: 0x3B3020)
+	static let orangeTint = adaptive(light: 0xFFF1DE, dark: 0x392C1B)
 	static let orangeTintText = adaptive(light: 0xA05A12, dark: 0xFFC06A)
-	static let redTint = adaptive(light: 0xFFE9E7, dark: 0x3D2423)
-	static let neutralTint = adaptive(light: 0xECEAF0, dark: 0x262626)
-	static let publicTint = adaptive(light: 0xE3F2FA, dark: 0x173140)
+	static let redTint = adaptive(light: 0xFFEBE9, dark: 0x3B2325)
+	static let neutralTint = adaptive(light: 0xEEEDF2, dark: 0x2C2C30)
+	static let publicTint = adaptive(light: 0xE3F2FA, dark: 0x16303D)
 	static let publicText = adaptive(light: 0x0B6A96, dark: 0x6CCFF6)
 
-	static let rowSelected = adaptive(light: 0xF6F5FD, dark: 0x191919)
-	static let rowHover = adaptive(light: 0xFAFAFC, dark: 0x161616)
-	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x101010)
-	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x262626)
-	static let sidebarHover = adaptive(light: 0xEEEDF3, dark: 0x191919)
-	static let sidebarSelection = adaptive(light: 0xEAEAEA, dark: 0x1C1C1E)
-	static let schemaRowSelected = adaptive(light: 0xFAF9FF, dark: 0x211F2E)
+	static let rowSelected = adaptive(light: 0xF1F0FD, dark: 0x27263B)
+	static let rowHover = adaptive(light: 0xF8F8FA, dark: 0x212124)
+	static let headerRow = adaptive(light: 0xFAFAFC, dark: 0x19191C)
+	static let headerHover = adaptive(light: 0xF0EFF4, dark: 0x26262A)
+	static let sidebarHover = adaptive(light: 0xEDEDF1, dark: 0x202023)
+	static let sidebarSelection = adaptive(light: 0xE7E7EA, dark: 0x2A2A2D)
+	static let schemaRowSelected = adaptive(light: 0xF5F4FE, dark: 0x252439)
 
+	/// A selected chip, segment or toggle: the same tinted look in both appearances.
+	static let selectedFill = accentTint
+	static let selectedText = accentText
+	static let selectedBorder = adaptive(light: 0x5E5CE6, dark: 0x8C8AFF, lightOpacity: 0.35, darkOpacity: 0.45)
 	static let strongFill = adaptive(light: 0x1C1C1E, dark: 0x5E5CE6)
 	static let shadow = adaptive(light: 0x1C1C1E, dark: 0x000000)
+	/// A switch's track while it's off: visible on every surface, with its own edge.
+	static let switchOff = adaptive(light: 0xE4E3E9, dark: 0x3A3A3F)
+	static let switchOffBorder = adaptive(light: 0xCFCED6, dark: 0x4A4A50)
+	/// Darkens a control while it's pressed, over whatever fill it has.
+	static let pressedOverlay = adaptive(light: 0x000000, dark: 0xFFFFFF, lightOpacity: 0.07, darkOpacity: 0.08)
 
-	static let avatarNeutral = adaptive(light: 0xD9D8E4, dark: 0x262626)
-	static let avatarNeutralForeground = adaptive(light: 0x5B5A6E, dark: 0xFFFFFF, darkOpacity: 0.55)
-	static let terminal = adaptive(light: 0x1C1C1E, dark: 0x101010)
-	static let terminalText = Color(hex: 0xE8E8ED)
+	static let avatarNeutral = adaptive(light: 0xE2E1EA, dark: 0x2E2E33)
+	static let avatarNeutralForeground = adaptive(light: 0x55546A, dark: 0xFFFFFF, darkOpacity: 0.7)
+	static let terminal = adaptive(light: 0x1C1C1E, dark: 0x111113)
+	/// A block of code or a command, a calm panel in both appearances.
+	static let codeBlock = adaptive(light: 0xF6F6F9, dark: 0x151517)
+	static let codeText = adaptive(light: 0x1C1C1E, dark: 0xE8E8ED)
+	static let codeKey = adaptive(light: 0x0B6A96, dark: 0x9FD4FF)
+	static let codeString = adaptive(light: 0x1A7F37, dark: 0xC3E88D)
 	/// A toast is dark in both appearances, with white text.
-	static let toast = adaptive(light: 0x1C1C1E, dark: 0x1E1E20)
-	static let toastSecondaryText = Color.white.opacity(0.55)
+	static let toast = adaptive(light: 0x1C1C1E, dark: 0x2A2A2E)
+	static let toastSecondaryText = Color.white.opacity(0.6)
 	static let toastConfirmation = Color(hex: 0x75DB94)
 	static let toastAction = Color(hex: 0xB9B8FF)
 	static let toastDivider = Color.white.opacity(0.2)
 
-	private static func adaptive(light: UInt, dark: UInt, darkOpacity: Double = 1) -> Color {
+	private static func adaptive(light: UInt, dark: UInt, lightOpacity: Double = 1, darkOpacity: Double = 1) -> Color {
 		func color(_ hex: UInt, alpha: Double) -> NSColor {
 			NSColor(srgbRed: Double((hex >> 16) & 0xFF) / 255,
 				green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255, alpha: alpha)
 		}
-		let lightColor = color(light, alpha: 1)
+		let lightColor = color(light, alpha: lightOpacity)
 		let darkColor = color(dark, alpha: darkOpacity)
 		return Color(nsColor: NSColor(name: nil) { appearance in
 			appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
 		})
 	}
 
+	/// An environment's color. None of them is green, orange or red, which mean a key's state.
 	static func environment(_ index: Int) -> Color {
-		let colors = [green, orange, red, accent, Color(hex: 0x0A84FF), Color(hex: 0xAF52DE)]
-		return colors[index % colors.count]
+		environmentColors[index % environmentColors.count]
 	}
+
+	private static let environmentColors = [0x2FA6C0, 0x8D6BEA, 0xD6579A, 0x3D84F2, 0x8B909A, 0xA97C52].map { Color(hex: $0) }
 }
 
 enum VaultMetrics {
 	static let titleBar: CGFloat = 46
-	static let sidebar: CGFloat = 280
-	static let sidebarMinimum: CGFloat = 280
+	static let sidebar: CGFloat = 260
+	static let sidebarMinimum: CGFloat = 240
 	static let sidebarMaximum: CGFloat = 460
 	static let inspector: CGFloat = 300
 	static let inspectorMinimum: CGFloat = 280
@@ -101,12 +132,17 @@ enum VaultMetrics {
 	static let contentMinimum: CGFloat = 420
 	static let tableHeader: CGFloat = 34
 	static let matrixRow: CGFloat = 44
-	static let fileRow: CGFloat = 46
+	static let fileRow: CGFloat = 44
 	static let statusBar: CGFloat = 30
-	static let keyColumn: CGFloat = 230
+	static let keyColumn: CGFloat = 270
 	static let environmentColumn: CGFloat = 190
 	static let environmentValueColumn: CGFloat = 280
 	static let environmentActionsColumn: CGFloat = 132
+	/// The widest a settings-style page's column of cards grows.
+	static let formWidth: CGFloat = 720
+	/// Below this window width, opening the inspector hides the sidebar, so the
+	/// table keeps room for its environments; the title bar's button brings it back.
+	static let sidebarAutoHideWidth: CGFloat = 1180
 }
 
 enum VaultTypography {
@@ -125,7 +161,7 @@ enum VaultTypography {
 		.monospacedSystemFont(ofSize: size, weight: weight)
 	}
 
-	static let sectionLabel = Font.system(size: 10.5, weight: .bold)
+	static let sectionLabel = Font.system(size: 11, weight: .semibold)
 }
 
 extension Color {
@@ -141,15 +177,76 @@ extension Color {
 }
 
 extension View {
+	/// A settings-style page's column of cards: the page's inset, and no wider
+	/// than lines of text stay easy to read.
+	func vaultFormColumn() -> some View {
+		frame(maxWidth: VaultMetrics.formWidth, alignment: .leading)
+			.padding(.horizontal, 20)
+			.padding(.vertical, 20)
+			.frame(maxWidth: .infinity, alignment: .leading)
+	}
+
+	/// A page's title, the same size on every page.
+	func vaultPageTitle() -> some View {
+		font(.system(size: 20, weight: .semibold))
+			.tracking(-0.3)
+			.foregroundStyle(VaultPalette.textPrimary)
+	}
+
 	func vaultSectionLabel(_ color: Color = VaultPalette.textQuaternary) -> some View {
 		font(VaultTypography.sectionLabel)
-			.tracking(0.95)
+			.tracking(0.5)
 			.foregroundStyle(color)
 	}
 
-	func vaultPointingHand() -> some View {
-		onHover { inside in
-			if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+	/// Shows the pointing hand while the pointer is over the view and it's
+	/// enabled. `enabled` is for a control that disables itself inside this
+	/// modifier, which the environment here can't see; a disabled parent is
+	/// read from the environment.
+	func vaultPointingHand(enabled: Bool = true) -> some View {
+		modifier(VaultPointingHand(enabled: enabled))
+	}
+}
+
+/// Whether a control shows the pointing hand, and the one cursor change each
+/// update needs, so every push is popped exactly once.
+struct VaultPointingHandState {
+	enum Change { case push, pop }
+
+	private(set) var showsHand = false
+
+	mutating func update(hovering: Bool, enabled: Bool) -> Change? {
+		let wanted = hovering && enabled
+		guard wanted != showsHand else { return nil }
+		showsHand = wanted
+		return wanted ? .push : .pop
+	}
+}
+
+private struct VaultPointingHand: ViewModifier {
+	let enabled: Bool
+	@Environment(\.isEnabled) private var parentEnabled
+	@State private var hovering = false
+	@State private var state = VaultPointingHandState()
+
+	func body(content: Content) -> some View {
+		content
+			.onHover { inside in
+				hovering = inside
+				apply()
+			}
+			.onChange(of: enabled && parentEnabled) { apply() }
+			.onDisappear {
+				hovering = false
+				apply()
+			}
+	}
+
+	private func apply() {
+		switch state.update(hovering: hovering, enabled: enabled && parentEnabled) {
+		case .push?: NSCursor.pointingHand.push()
+		case .pop?: NSCursor.pop()
+		case nil: break
 		}
 	}
 }
@@ -227,6 +324,9 @@ struct VaultToast<Content: View>: View {
 	var hasButton = false
 	@ViewBuilder let content: Content
 
+	@State private var arrived = false
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
+
 	var body: some View {
 		HStack(spacing: 8) { content }
 			.font(.system(size: 12))
@@ -235,7 +335,11 @@ struct VaultToast<Content: View>: View {
 			.padding(.horizontal, 12)
 			.frame(height: 30)
 			.background(RoundedRectangle(cornerRadius: 8).fill(VaultPalette.toast))
-			.shadow(color: .black.opacity(0.35), radius: 12, y: 8)
+			.overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.08), lineWidth: 1) }
+			.shadow(color: .black.opacity(0.18), radius: 6, y: 3)
+			.offset(y: arrived || reduceMotion ? 0 : 8)
+			.opacity(arrived || reduceMotion ? 1 : 0)
+			.onAppear { withAnimation(reduceMotion ? nil : VaultMotion.enter) { arrived = true } }
 			.accessibilityElement(children: hasButton ? .contain : .combine)
 	}
 }
@@ -281,7 +385,8 @@ struct VaultTagBadge: View {
 
 	var body: some View {
 		Text(text)
-			.font(.system(size: size, weight: .bold))
+			.font(.system(size: size, weight: .semibold))
+			.tracking(0.2)
 			.foregroundStyle(foreground)
 			.padding(.horizontal, 6)
 			.padding(.vertical, 2)
@@ -296,11 +401,97 @@ struct VaultCountPill: View {
 
 	var body: some View {
 		Text("\(count)")
-			.font(.system(size: 10.5, weight: .bold))
+			.font(VaultTypography.tabular(10.5, .semibold))
 			.foregroundStyle(.white)
 			.padding(.horizontal, 6)
 			.padding(.vertical, 1)
 			.background(Capsule().fill(tint))
+	}
+}
+
+/// How the app's buttons respond to a press and to keyboard focus: a press
+/// darkens whatever the button draws, and keyboard focus draws a crisp ring
+/// inside its edge. Hover belongs to each button, which knows its own colors.
+struct VaultPressStyle<S: InsettableShape>: ButtonStyle {
+	let shape: S
+
+	func makeBody(configuration: Configuration) -> some View {
+		VaultPressBody(configuration: configuration, shape: shape)
+	}
+}
+
+extension VaultPressStyle where S == RoundedRectangle {
+	init(cornerRadius: CGFloat = 7) {
+		shape = RoundedRectangle(cornerRadius: cornerRadius)
+	}
+}
+
+/// A shape's border as the ring between the shape and its inset, for filling
+/// even-odd. A stroked capsule picks up marks at its round ends when it's drawn
+/// into a bitmap, as screenshots and the Accessibility Inspector do; a filled
+/// ring draws the same border without them.
+struct VaultRing<S: InsettableShape>: Shape {
+	let shape: S
+	let lineWidth: CGFloat
+
+	func path(in rect: CGRect) -> Path {
+		var path = shape.path(in: rect)
+		path.addPath(shape.inset(by: lineWidth).path(in: rect))
+		return path
+	}
+}
+
+extension InsettableShape {
+	/// Draws the shape's border inside its edge, like `strokeBorder`, without the marks a stroked capsule can leave.
+	func vaultBorder(_ content: some ShapeStyle, lineWidth: CGFloat = 1) -> some View {
+		VaultRing(shape: self, lineWidth: lineWidth).fill(content, style: FillStyle(eoFill: true))
+	}
+}
+
+private struct VaultPressBody<S: InsettableShape>: View {
+	let configuration: ButtonStyleConfiguration
+	let shape: S
+	@Environment(\.isFocused) private var isFocused
+	@Environment(\.isEnabled) private var isEnabled
+
+	var body: some View {
+		configuration.label
+			.environment(\.vaultControlFocused, isFocused)
+			.overlay { shape.fill(VaultPalette.pressedOverlay).opacity(configuration.isPressed && isEnabled ? 1 : 0) }
+			.overlay { if isFocused { shape.vaultBorder(VaultPalette.focusRing, lineWidth: 2) } }
+			.contentShape(shape)
+	}
+}
+
+extension EnvironmentValues {
+	/// Whether the button a label belongs to has keyboard focus, which `VaultPressStyle` tells its label.
+	@Entry var vaultControlFocused = false
+}
+
+/// The app's motion: short, eased, and none under Reduce Motion, which
+/// `VaultHoverAnimation` and each use check.
+enum VaultMotion {
+	/// Hover and press feedback.
+	static let quick = Animation.easeOut(duration: 0.12)
+	/// Something arriving, such as a toast.
+	static let enter = Animation.spring(response: 0.28, dampingFraction: 0.9)
+	/// A pane opening or closing, such as the sidebar.
+	static let panel = Animation.spring(response: 0.3, dampingFraction: 0.88)
+}
+
+extension View {
+	/// Eases a hover change in over a tenth of a second, or switches at once under Reduce Motion.
+	func vaultHoverAnimation(_ hovering: Bool) -> some View {
+		modifier(VaultHoverAnimation(hovering: hovering))
+	}
+}
+
+private struct VaultHoverAnimation: ViewModifier {
+	let hovering: Bool
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+	func body(content: Content) -> some View {
+		content.animation(reduceMotion ? nil : VaultMotion.quick, value: hovering)
 	}
 }
 
@@ -310,37 +501,41 @@ struct VaultBarButton: View {
 	var shortcut: String?
 	var leadingDot: Color?
 	var filled = false
-	var invertsOnHover = false
+	/// Drawn without a border or fill until the pointer is over it, as in the title bar.
+	var borderless = false
 	var destructive = false
 	/// Drawn in the accent tint, as while the sheet it opens is showing.
 	var active = false
 	var disabled = false
-	var height: CGFloat = 26
+	var height: CGFloat = 28
+	/// Stretches across its container, as a panel's footer actions do.
+	var fillsWidth = false
 	let action: () -> Void
 
 	@State private var hovering = false
 
 	private var foreground: Color {
-		if disabled { return filled && destructive ? .white.opacity(0.7) : VaultPalette.textFaint }
+		if disabled { return VaultPalette.textFaint }
 		if filled { return .white }
 		if destructive { return VaultPalette.redText }
-		if active { return VaultPalette.accentText }
-		return invertsOnHover && hovering ? .white : VaultPalette.textPrimary
+		if active { return VaultPalette.selectedText }
+		return borderless ? VaultPalette.textSecondary : VaultPalette.textPrimary
 	}
 
 	private var background: Color {
-		if disabled && filled && destructive { return VaultPalette.destructiveFill.opacity(0.35) }
-		if disabled { return filled ? VaultPalette.accent.opacity(0.35) : VaultPalette.control.opacity(0.7) }
+		if disabled { return filled ? VaultPalette.neutralTint : .clear }
 		if filled && destructive { return hovering ? VaultPalette.destructiveFillHover : VaultPalette.destructiveFill }
 		if filled { return hovering ? VaultPalette.accentHover : VaultPalette.accent }
-		if active { return VaultPalette.accentTint }
-		if invertsOnHover && hovering { return VaultPalette.strongFill }
-		return hovering ? VaultPalette.sidebar : VaultPalette.control
+		if active { return VaultPalette.selectedFill }
+		if borderless { return hovering ? VaultPalette.controlHover : .clear }
+		return hovering ? VaultPalette.controlHover : VaultPalette.control
 	}
 
 	private var border: Color {
-		if filled { return .clear }
-		return active ? VaultPalette.accent.opacity(0.35) : VaultPalette.border
+		if filled && !disabled { return .clear }
+		if active { return VaultPalette.selectedBorder }
+		if disabled && !filled && !borderless { return VaultPalette.border.opacity(0.6) }
+		return borderless ? .clear : VaultPalette.border
 	}
 
 	var body: some View {
@@ -348,42 +543,49 @@ struct VaultBarButton: View {
 			HStack(spacing: 6) {
 				if let leadingDot { VaultStatusDot(color: leadingDot) }
 				if let systemImage {
-					Image(systemName: systemImage).font(.system(size: 11, weight: .medium))
+					Image(systemName: systemImage).font(.system(size: 11.5, weight: .medium))
 				}
 				if let title {
-					Text(title).font(.system(size: 12.5, weight: filled ? .semibold : .regular))
+					Text(title).font(.system(size: 12.5, weight: filled ? .semibold : .medium))
 				}
 				if let shortcut {
 					Text(shortcut)
-						.font(VaultTypography.tabular(10))
-						.foregroundStyle(!disabled && (filled || (invertsOnHover && hovering)) ? .white.opacity(0.7) : VaultPalette.textFaint)
+						.font(VaultTypography.tabular(10.5))
+						.foregroundStyle(filled && !disabled ? .white.opacity(0.75) : VaultPalette.textFaint)
 				}
 			}
 			.foregroundStyle(foreground)
-			.padding(.horizontal, filled ? 12 : 11)
+			.padding(.horizontal, title == nil ? 0 : (borderless ? 9 : 11))
+			.frame(minWidth: title == nil ? height : nil, maxWidth: fillsWidth ? .infinity : nil)
 			.frame(height: height)
 			.background(RoundedRectangle(cornerRadius: 7).fill(background))
-			.overlay {
-				RoundedRectangle(cornerRadius: 7)
-					.stroke(border, lineWidth: 1)
-			}
-			.fixedSize()
+			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(border, lineWidth: 1) }
+			.vaultHoverAnimation(hovering)
+			.fixedSize(horizontal: !fillsWidth, vertical: true)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle())
 		.disabled(disabled)
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
+		.vaultPointingHand(enabled: !disabled)
 	}
 }
 
 /// A control that opens a menu, drawn like a `VaultBarButton` with a chevron after its label.
 struct VaultBarMenu<Items: View, Label: View>: View {
 	let accessibilityLabel: String
+	/// Drawn without a border or fill until the pointer is over it, as in the title bar.
+	var borderless = false
+	var height: CGFloat = 28
 	let items: Items
 	let label: Label
 
-	init(accessibilityLabel: String, @ViewBuilder items: () -> Items, @ViewBuilder label: () -> Label) {
+	@State private var hovering = false
+
+	init(accessibilityLabel: String, borderless: Bool = false, height: CGFloat = 28,
+		@ViewBuilder items: () -> Items, @ViewBuilder label: () -> Label) {
 		self.accessibilityLabel = accessibilityLabel
+		self.borderless = borderless
+		self.height = height
 		self.items = items()
 		self.label = label()
 	}
@@ -396,20 +598,22 @@ struct VaultBarMenu<Items: View, Label: View>: View {
 				label
 				Image(systemName: "chevron.down")
 					.font(.system(size: 8, weight: .bold))
-					.foregroundStyle(VaultPalette.textQuaternary)
+					.foregroundStyle(VaultPalette.textTertiary)
 			}
-			.foregroundStyle(VaultPalette.textPrimary)
-			.padding(.horizontal, 11)
-			.frame(height: 26)
-			.background(RoundedRectangle(cornerRadius: 7).fill(VaultPalette.control))
-			.overlay { RoundedRectangle(cornerRadius: 7).stroke(VaultPalette.border, lineWidth: 1) }
+			.foregroundStyle(borderless ? VaultPalette.textSecondary : VaultPalette.textPrimary)
+			.padding(.horizontal, borderless ? 8 : 11)
+			.frame(height: height)
+			.background(RoundedRectangle(cornerRadius: 7).fill(hovering ? VaultPalette.controlHover : (borderless ? .clear : VaultPalette.control)))
+			.overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(borderless ? .clear : VaultPalette.border, lineWidth: 1) }
+			.vaultHoverAnimation(hovering)
 			// A menu drawn as a button otherwise makes each part of its label a menu of its own.
 			.accessibilityElement(children: .combine)
 		}
 		.menuStyle(.button)
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle())
 		.menuIndicator(.hidden)
 		.fixedSize()
+		.onHover { hovering = $0 }
 		.accessibilityLabel(accessibilityLabel)
 	}
 }
@@ -426,46 +630,53 @@ struct VaultOutlineButton: View {
 	/// Whether `active` is an on-off state, which makes it a toggle button for accessibility.
 	var toggles = false
 	var disabled = false
+	/// Drawn without a border or fill until the pointer is over it, as in a toolbar.
+	var borderless = false
 	let action: () -> Void
 
 	@State private var hovering = false
+
+	private var background: Color {
+		if active { return VaultPalette.selectedFill }
+		if hovering && !disabled { return VaultPalette.controlHover }
+		return borderless ? .clear : VaultPalette.control
+	}
 
 	var body: some View {
 		Button(action: action) {
 			HStack(spacing: 6) {
 				if let systemImage {
 					Image(systemName: systemImage)
-						.font(.system(size: 11, weight: .medium))
-						.frame(width: 12)
+						.font(.system(size: 11.5, weight: .medium))
+						.frame(width: 14)
 				}
 				if let title {
 					ZStack {
 						ForEach(reservedTitles, id: \.self) { Text($0).hidden().accessibilityHidden(true) }
 						Text(title)
 					}
-					.font(.system(size: 12.5))
+					.font(.system(size: 12.5, weight: .medium))
 				}
 			}
-			.foregroundStyle(disabled ? VaultPalette.textFaint : (active ? VaultPalette.accentForeground : VaultPalette.textPrimary))
-			.padding(.horizontal, title == nil ? 0 : 11)
-			.frame(width: title == nil ? 27 : nil, height: 27)
-			.background {
-				RoundedRectangle(cornerRadius: 7)
-					.fill(active ? VaultPalette.accentTint : (hovering ? VaultPalette.sidebar : VaultPalette.control))
-			}
+			.foregroundStyle(disabled ? VaultPalette.textFaint
+				: (active ? VaultPalette.selectedText : (borderless ? VaultPalette.textSecondary : VaultPalette.textPrimary)))
+			.padding(.horizontal, title == nil ? 0 : (borderless ? 9 : 11))
+			.frame(width: title == nil ? 28 : nil, height: 28)
+			.background { RoundedRectangle(cornerRadius: 7).fill(background) }
 			.overlay {
 				RoundedRectangle(cornerRadius: 7)
-					.stroke(active ? VaultPalette.accent.opacity(0.35) : VaultPalette.border, lineWidth: 1)
+					.strokeBorder(active ? VaultPalette.selectedBorder : (borderless ? .clear : VaultPalette.border), lineWidth: 1)
 			}
+			.vaultHoverAnimation(hovering)
 			.fixedSize()
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle())
 		.disabled(disabled)
 		.help(help ?? title ?? "")
 		.accessibilityLabel(label ?? title ?? help ?? "")
 		.accessibilityAddTraits(toggles ? (active ? [.isToggle, .isSelected] : .isToggle) : [])
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
+		.vaultPointingHand(enabled: !disabled)
 	}
 }
 
@@ -479,32 +690,50 @@ struct VaultRowIconButton: View {
 	var disabled = false
 	/// Drawn smaller, for a card's header.
 	var compact = false
+	/// Draws nothing until the pointer or keyboard focus reaches it, as on a
+	/// table row that isn't hovered or selected. It stays pressable and named.
+	var resting = false
 	let action: () -> Void
 
 	@State private var hovering = false
 
 	var body: some View {
 		Button(action: action) {
-			Image(systemName: systemImage)
-				.font(.system(size: compact ? 10.5 : 12, weight: .medium))
+			VaultRowIconGlyph(systemImage: systemImage, compact: compact, resting: resting, hovering: hovering)
 				.foregroundStyle(
 					hovering && !disabled
-						? (destructive ? VaultPalette.red : VaultPalette.textPrimary)
+						? (destructive ? VaultPalette.redText : VaultPalette.textPrimary)
 						: VaultPalette.textTertiary
 				)
 				.opacity(disabled ? 0.45 : 1)
-				.frame(width: compact ? 20 : 26, height: compact ? 20 : 26)
+				.frame(width: compact ? 24 : 28, height: compact ? 24 : 28)
 				.background {
-					RoundedRectangle(cornerRadius: compact ? 5 : 6)
-						.fill(hovering && !disabled ? (destructive ? VaultPalette.redTint : VaultPalette.neutralTint) : .clear)
+					RoundedRectangle(cornerRadius: 6)
+						.fill(hovering && !disabled ? (destructive ? VaultPalette.redTint : VaultPalette.controlHover) : .clear)
 				}
+				.vaultHoverAnimation(hovering)
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(cornerRadius: 6))
 		.disabled(disabled)
 		.help(help)
 		.accessibilityLabel(label ?? help)
 		.onHover { hovering = $0 }
-		.vaultPointingHand()
+		.vaultPointingHand(enabled: !disabled)
+	}
+}
+
+/// A row icon's glyph, hidden while it rests until the pointer or keyboard focus reaches it.
+private struct VaultRowIconGlyph: View {
+	let systemImage: String
+	let compact: Bool
+	let resting: Bool
+	let hovering: Bool
+	@Environment(\.vaultControlFocused) private var focused
+
+	var body: some View {
+		Image(systemName: systemImage)
+			.font(.system(size: compact ? 11 : 12, weight: .medium))
+			.opacity(resting && !hovering && !focused ? 0 : 1)
 	}
 }
 
@@ -512,33 +741,205 @@ struct VaultFilterChip: View {
 	let title: String
 	var dot: Color?
 	var symbol: String?
+	/// The symbol's color, matching the glyph the chip's keys carry.
+	var symbolTint: Color?
 	var trailing: String?
-	/// Draws the chip in red, for a view of things to fix.
+	/// Draws the chip's symbol and count in red, for a view of things to fix.
 	var alert = false
+	/// Shows only the symbol and count, for a narrow header. The chip keeps its title for accessibility.
+	var compact = false
 	let selected: Bool
 	let action: () -> Void
 
 	@State private var hovering = false
 
+	private var background: Color {
+		if selected { return alert ? VaultPalette.redTint : VaultPalette.selectedFill }
+		return hovering ? VaultPalette.controlHover : .clear
+	}
+
+	private var border: Color {
+		if selected { return alert ? VaultPalette.problemMark.opacity(0.45) : VaultPalette.selectedBorder }
+		return VaultPalette.border
+	}
+
+	private var foreground: Color {
+		if selected { return alert ? VaultPalette.redText : VaultPalette.selectedText }
+		return VaultPalette.textSecondary
+	}
+
 	var body: some View {
 		Button(action: action) {
 			HStack(spacing: 6) {
 				if let dot { VaultStatusDot(color: dot) }
-				if let symbol { Image(systemName: symbol).font(.system(size: 10.5, weight: .semibold)) }
-				Text(title).font(.system(size: 12, weight: selected || alert ? .semibold : .regular))
-				if let trailing { Text(trailing).font(VaultTypography.tabular(11)) }
+				if let symbol {
+					Image(systemName: symbol)
+						.font(.system(size: 11, weight: .semibold))
+						.foregroundStyle(alert ? VaultPalette.redText : (symbolTint ?? foreground))
+				}
+				if !compact || symbol == nil {
+					Text(title).font(.system(size: 12, weight: selected ? .semibold : .medium))
+				}
+				if let trailing {
+					Text(trailing)
+						.font(VaultTypography.tabular(11, .medium))
+						.foregroundStyle(alert ? VaultPalette.redText : (selected ? foreground : VaultPalette.textTertiary))
+				}
 			}
-			.foregroundStyle(selected ? .white : (alert ? VaultPalette.redText : VaultPalette.textSecondary))
+			.foregroundStyle(foreground)
 			.padding(.horizontal, 11)
 			.frame(height: 26)
-			.background(Capsule().fill(selected ? (alert ? VaultPalette.red : VaultPalette.strongFill) : (hovering ? VaultPalette.sidebar : (alert ? VaultPalette.redTint : .clear))))
-			.overlay { Capsule().stroke(selected ? .clear : (alert ? VaultPalette.red.opacity(0.55) : VaultPalette.border), lineWidth: 1) }
+			.background(Capsule().fill(background))
+			.overlay { Capsule().vaultBorder(border) }
+			.vaultHoverAnimation(hovering)
+			.vaultHoverAnimation(selected)
 			.fixedSize()
 		}
-		.buttonStyle(.plain)
+		.buttonStyle(VaultPressStyle(shape: Capsule()))
+		.help(compact && symbol != nil ? title : "")
+		.accessibilityLabel(trailing.map { "\(title), \($0)" } ?? title)
 		.accessibilityAddTraits(selected ? .isSelected : [])
 		.onHover { hovering = $0 }
 		.vaultPointingHand()
+	}
+}
+
+/// The app's switch: the accent track when on and a neutral, edged track when
+/// off, the same in every window state, so on and off never look alike. The
+/// native switch underneath takes clicks, the keyboard and accessibility; this
+/// only draws over it.
+struct VaultSwitchStyle: ToggleStyle {
+	/// Shows the toggle's title before the switch; most switches sit beside a title of their own.
+	var showsLabel = false
+
+	func makeBody(configuration: Configuration) -> some View {
+		HStack(spacing: 8) {
+			if showsLabel {
+				configuration.label.accessibilityHidden(true)
+			}
+			Toggle(isOn: configuration.$isOn) { configuration.label }
+				.toggleStyle(.switch)
+				.labelsHidden()
+				.overlay { VaultSwitchTrack(isOn: configuration.isOn).allowsHitTesting(false).accessibilityHidden(true) }
+		}
+	}
+}
+
+private struct VaultSwitchTrack: View {
+	let isOn: Bool
+	@Environment(\.isEnabled) private var isEnabled
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+	var body: some View {
+		ZStack(alignment: isOn ? .trailing : .leading) {
+			Capsule().fill(isOn ? VaultPalette.accent : VaultPalette.switchOff)
+			Capsule().vaultBorder(isOn ? .clear : VaultPalette.switchOffBorder)
+			Circle()
+				.fill(.white)
+				.overlay { Circle().strokeBorder(.black.opacity(0.08), lineWidth: 0.5) }
+				.padding(2)
+		}
+		.opacity(isEnabled ? 1 : 0.5)
+		.animation(reduceMotion ? nil : VaultMotion.quick, value: isOn)
+	}
+}
+
+/// What sets a key apart, one distinct glyph per state, in a slot of its own so
+/// the glyphs line up down a table: it fails its rules, it's missing from an
+/// environment, or its values differ between environments.
+struct VaultKeyStatusMarks: View {
+	var invalid = false
+	var missing = false
+	var drifts = false
+	/// Keeps every mark's place when it isn't shown, so down a table each kind
+	/// of mark stays in its own column.
+	var slotted = false
+
+	var body: some View {
+		HStack(spacing: 4) {
+			slot(.invalid, shown: invalid)
+			slot(.missing, shown: missing)
+			slot(.drift, shown: drifts)
+		}
+		.fixedSize()
+	}
+
+	@ViewBuilder
+	private func slot(_ view: VaultSmartView, shown: Bool) -> some View {
+		if shown {
+			mark(view)
+		} else if slotted {
+			Color.clear.frame(width: 14, height: 14).accessibilityHidden(true)
+		}
+	}
+
+	private func mark(_ view: VaultSmartView) -> some View {
+		Image(systemName: view.symbol)
+			.font(.system(size: 11.5, weight: view == .drift ? .regular : .semibold))
+			.foregroundStyle(view.tint)
+			.frame(width: 14, height: 14)
+			.help(view.meaning)
+			.accessibilityLabel(view.meaning)
+	}
+}
+
+extension View {
+	/// A list row's fill: the selection's tint and bar, a lighter tint under the
+	/// pointer, and `resting` otherwise.
+	func vaultRowBackground(selected: Bool, resting: Color = .clear) -> some View {
+		modifier(VaultRowBackground(selected: selected, resting: resting))
+	}
+}
+
+private struct VaultRowBackground: ViewModifier {
+	let selected: Bool
+	let resting: Color
+	@State private var hovering = false
+
+	func body(content: Content) -> some View {
+		content
+			.background { VaultRowFill(selected: selected, hovering: hovering, resting: resting) }
+			.onHover { hovering = $0 }
+	}
+}
+
+/// A row's fill and selection bar, with the hover easing only the fill.
+struct VaultRowFill: View {
+	let selected: Bool
+	let hovering: Bool
+	var resting: Color = .clear
+
+	var body: some View {
+		Rectangle()
+			.fill(selected ? VaultPalette.rowSelected : (hovering ? VaultPalette.rowHover : resting))
+			.vaultHoverAnimation(hovering)
+			.overlay(alignment: .leading) { if selected { VaultSelectionBar() } }
+	}
+}
+
+/// A card's leading icon: a glyph on a small neutral tile, the same on every card.
+struct VaultCardIcon: View {
+	let systemImage: String
+	var size: CGFloat = 30
+
+	var body: some View {
+		Image(systemName: systemImage)
+			.font(.system(size: size * 0.47, weight: .medium))
+			.foregroundStyle(VaultPalette.textSecondary)
+			.frame(width: size, height: size)
+			.background(RoundedRectangle(cornerRadius: size * 0.25).fill(VaultPalette.neutralTint))
+			.accessibilityHidden(true)
+	}
+}
+
+/// The bar on a selected row's leading edge, which marks the selection
+/// alongside its tint in every list and table.
+struct VaultSelectionBar: View {
+	var body: some View {
+		Rectangle()
+			.fill(VaultPalette.accent)
+			.frame(width: 3)
+			.accessibilityHidden(true)
 	}
 }
 
@@ -549,7 +950,7 @@ struct VaultInitialsAvatar: View {
 
 	var body: some View {
 		Text(initials)
-			.font(.system(size: size * 0.42, weight: .bold))
+			.font(.system(size: size * 0.4, weight: .semibold))
 			.foregroundStyle(VaultPalette.avatarNeutralForeground)
 			.frame(width: size, height: size)
 			.background {
@@ -562,9 +963,9 @@ struct VaultInitialsAvatar: View {
 	}
 }
 
-/// A table cell's value as the rules see it: the stored value, underlined in
-/// red with the reason as its tooltip when it fails a rule; or, without a
-/// stored value, "Required", the default that fills it, or "Not set".
+/// A table cell's value as the rules see it: the stored value, in red with the
+/// reason as its tooltip when it fails a rule; or, without a stored value,
+/// "Required", the default that fills it, or "Not set".
 struct VaultCheckedValue: View {
 	let value: String?
 	var isRevealed = false
@@ -578,43 +979,59 @@ struct VaultCheckedValue: View {
 	var body: some View {
 		Group {
 			if let value, !value.isEmpty || defaultValue == nil {
-				VaultValueText(text: isRevealed ? value : "••••••••••", masked: !isRevealed, size: size)
-					.overlay(alignment: .bottom) { if problem != nil { underline } }
-					.help(problem ?? "")
+				HStack(spacing: 5) {
+					// The failing cell carries the glyph too, so it isn't told by its color alone.
+					if problem != nil { glyph(.invalid) }
+					VaultValueText(text: isRevealed ? value : VaultValueText.mask, masked: !isRevealed, size: size, fails: problem != nil)
+				}
+				.help(problem ?? "")
 			} else if isRequired {
-				Text("Required")
-					.font(.system(size: size - 0.5, weight: .semibold))
-					.foregroundStyle(VaultPalette.redText)
-					.overlay(alignment: .bottom) { underline }
-					.help(problem ?? "Required")
+				HStack(spacing: 5) {
+					glyph(.invalid)
+					Text("Required")
+						.font(.system(size: size - 0.5, weight: .medium))
+						.foregroundStyle(VaultPalette.redText)
+				}
+				.help(problem ?? "Required")
 			} else if let defaultValue {
-				(Text(defaultValue).font(VaultTypography.tabular(size)).foregroundColor(VaultPalette.textTertiary)
+				(Text(defaultValue).font(VaultTypography.tabular(size)).foregroundColor(problem == nil ? VaultPalette.textTertiary : VaultPalette.redText)
 					+ Text("  (default)").font(VaultTypography.tabular(size - 1)).foregroundColor(VaultPalette.textFaint))
 					.lineLimit(1)
 					.truncationMode(.middle)
-					.overlay(alignment: .bottom) { if problem != nil { underline } }
 					.help(problem ?? "The schema default the LPM CLI uses: \(defaultValue)")
 			} else if showsNotSet {
-				Text("Not set").font(.system(size: size - 1, weight: .semibold)).foregroundStyle(VaultPalette.redText)
+				HStack(spacing: 5) {
+					glyph(.missing)
+					Text("Not set").font(.system(size: size - 0.5)).foregroundStyle(VaultPalette.textTertiary)
+				}
 			}
 		}
 	}
 
-	private var underline: some View {
-		Rectangle().fill(VaultPalette.red).frame(height: 1.5).offset(y: 3).accessibilityHidden(true)
+	/// The key column's mark for the cell's state, so the cell says it without its color.
+	private func glyph(_ view: VaultSmartView) -> some View {
+		Image(systemName: view.symbol)
+			.font(.system(size: size - 1.5, weight: .semibold))
+			.foregroundStyle(view.tint)
+			.accessibilityHidden(true)
 	}
 }
 
 struct VaultValueText: View {
+	/// What a hidden value shows, the same length whatever the value, everywhere a value is hidden.
+	static let mask = "••••••"
+
 	let text: String
 	var masked = true
 	var size: CGFloat = 12
+	/// Draws the value in red, as when it fails its rules.
+	var fails = false
 
 	var body: some View {
 		Text(text)
 			.font(masked ? VaultTypography.tabular(size) : VaultTypography.code(size))
 			.tracking(masked ? 1.2 : 0)
-			.foregroundStyle(masked ? VaultPalette.masked : VaultPalette.textSecondary)
+			.foregroundStyle(fails ? VaultPalette.redText : (masked ? VaultPalette.masked : VaultPalette.textSecondary))
 			.lineLimit(1)
 			.truncationMode(.tail)
 			.accessibilityHidden(true)

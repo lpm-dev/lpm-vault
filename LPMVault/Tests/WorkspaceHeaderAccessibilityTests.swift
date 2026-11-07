@@ -19,7 +19,7 @@ extension SheetInteractionTests {
 			defer { host.window.close() }
 			let expected: [(String, NSAccessibility.Role)] = [
 				("Connect CLI", .button), ("Refresh", .button), ("Publish…", .button), ("Lock LPM Vault", .button),
-				("CLI approval", .checkBox), ("Show inspector", .button), ("Project Settings", .button), ("New key", .button),
+				("CLI approval off", .button), ("Show inspector", .button), ("Project Settings", .button), ("New Key", .button),
 				("Reveal all values", .checkBox), ("Copy all .env values", .button),
 				("Import variables into .env", .button), ("Export .env", .button),
 			]
@@ -30,7 +30,7 @@ extension SheetInteractionTests {
 			for symbolName in ["Split View Horizontally Right", "Download", "Share", "New secret"] {
 				#expect(!elements.contains { $0.says(symbolName) }, "A control is named \(symbolName)")
 			}
-			#expect(elements.first { $0.role == .checkBox && $0.title == "CLI approval" }?.value == "Automatic")
+			#expect(elements.first { $0.role == .button && ($0.label ?? $0.title) == "CLI approval off" }?.value == "Automatic")
 		}
 
 		@Test("Refresh sits beside the project's name, and Connect CLI leads the actions on the right, before Publish and Lock")
@@ -47,6 +47,16 @@ extension SheetInteractionTests {
 			#expect(name.maxX < refresh.minX && refresh.minX - name.maxX < 40, "Refresh follows the name: \(name) \(refresh)")
 			#expect(connect.minX > host.view.bounds.width / 2, "Connect CLI is with the actions on the right: \(connect)")
 			#expect(refresh.maxX < connect.minX && connect.maxX < publish.minX && publish.maxX < lock.minX)
+		}
+
+		@Test("the header's CLI approval chip says the setting and opens Project Settings, where it changes")
+		func approvalChip() async throws {
+			let fixture = try makeFixture()
+			defer { fixture.tearDown() }
+			let host = try await workspace(fixture.store)
+			defer { host.window.close() }
+			try await host.click("CLI approval off")
+			#expect(try await host.waitForText("Delete Locally"))
 		}
 
 		@Test("the header's Settings button opens the project's settings")

@@ -40,27 +40,30 @@ struct VaultAppearanceTests {
 		#expect(VaultAppearance.dark.nativeAppearance?.name == .darkAqua)
 	}
 
-	@Test("the palette keeps its light colors and resolves the near-black dark theme, with text as translucent white")
+	@Test("the palette resolves its light colors and the layered dark theme, with text as translucent white at four strengths")
 	func paletteColors() {
 		let colors: [(color: Color, light: UInt, dark: UInt, darkOpacity: Float)] = [
-			(VaultPalette.content, 0xFFFFFF, 0x121212, 1),
-			(VaultPalette.titleBar, 0xFAFAFC, 0x101010, 1),
-			(VaultPalette.sidebar, 0xF7F7FA, 0x101010, 1),
-			(VaultPalette.sidebarSelection, 0xEAEAEA, 0x1C1C1E, 1),
-			(VaultPalette.inspector, 0xFAFAFC, 0x101010, 1),
-			(VaultPalette.control, 0xFFFFFF, 0x101010, 1),
-			(VaultPalette.border, 0xDCDBE2, 0x262626, 1),
-			(VaultPalette.titleBarBorder, 0xDCDBE2, 0x262626, 1),
-			(VaultPalette.sidebarBorder, 0xE4E3E9, 0x262626, 1),
-			(VaultPalette.divider, 0xECEAF0, 0x262626, 1),
-			(VaultPalette.rowDivider, 0xF0EFF4, 0x191919, 1),
-			(VaultPalette.rowHover, 0xFAFAFC, 0x161616, 1),
-			(VaultPalette.headerHover, 0xF0EFF4, 0x262626, 1),
-			(VaultPalette.textPrimary, 0x1C1C1E, 0xFFFFFF, 0.8),
-			(VaultPalette.textSecondary, 0x3C3C43, 0xFFFFFF, 0.55),
-			(VaultPalette.textTertiary, 0x6F6F75, 0xFFFFFF, 0.55),
-			(VaultPalette.accentTint, 0xECEAFC, 0x29263D, 1),
-			(VaultPalette.accentText, 0x2C2B4A, 0xD5D4FF, 1),
+			(VaultPalette.content, 0xFFFFFF, 0x1C1C1F, 1),
+			(VaultPalette.titleBar, 0xF8F8FA, 0x161618, 1),
+			(VaultPalette.sidebar, 0xF6F6F8, 0x161618, 1),
+			(VaultPalette.sidebarSelection, 0xE7E7EA, 0x2A2A2D, 1),
+			(VaultPalette.inspector, 0xF8F8FA, 0x19191B, 1),
+			(VaultPalette.control, 0xFFFFFF, 0x242428, 1),
+			(VaultPalette.controlHover, 0xF1F1F4, 0x2D2D32, 1),
+			(VaultPalette.card, 0xF8F8FA, 0x222225, 1),
+			(VaultPalette.border, 0xDCDBE2, 0x3A3A3F, 1),
+			(VaultPalette.titleBarBorder, 0xE2E1E7, 0x2C2C30, 1),
+			(VaultPalette.sidebarBorder, 0xE2E1E7, 0x2C2C30, 1),
+			(VaultPalette.divider, 0xEAE9EF, 0x2C2C30, 1),
+			(VaultPalette.rowDivider, 0xF0EFF4, 0x252528, 1),
+			(VaultPalette.rowHover, 0xF8F8FA, 0x212124, 1),
+			(VaultPalette.headerHover, 0xF0EFF4, 0x26262A, 1),
+			(VaultPalette.textPrimary, 0x1C1C1E, 0xFFFFFF, 0.92),
+			(VaultPalette.textSecondary, 0x45454C, 0xFFFFFF, 0.74),
+			(VaultPalette.textTertiary, 0x5C5C64, 0xFFFFFF, 0.58),
+			(VaultPalette.textFaint, 0x6C6C74, 0xFFFFFF, 0.48),
+			(VaultPalette.accentTint, 0xEEEDFD, 0x2B2946, 1),
+			(VaultPalette.accentText, 0x2E2C8A, 0xD5D4FF, 1),
 			(VaultPalette.accent, 0x5E5CE6, 0x5E5CE6, 1),
 		]
 		for entry in colors {
@@ -91,23 +94,8 @@ struct VaultAppearanceTests {
 		#expect(abs(hover) < abs(selected), "Hover moves \(hover) from the content, selection \(selected)")
 	}
 
-	@Test("dark text and status labels retain readable contrast")
-	func darkTextContrast() {
-		var environment = EnvironmentValues()
-		environment.colorScheme = .dark
-		func linear(_ value: Double) -> Double {
-			value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
-		}
-		/// The luminance of `color` as it's drawn over `background`, which a translucent color shows through.
-		func luminance(_ color: Color, over background: Color.Resolved? = nil) -> Double {
-			let resolved = color.resolve(in: environment)
-			let alpha = Double(resolved.opacity)
-			func channel(_ value: Float, _ under: Float?) -> Double {
-				linear(Double(value) * alpha + Double(under ?? 0) * (1 - alpha))
-			}
-			return 0.2126 * channel(resolved.red, background?.red) + 0.7152 * channel(resolved.green, background?.green)
-				+ 0.0722 * channel(resolved.blue, background?.blue)
-		}
+	@Test("text, status labels and selected controls keep 4.5:1 contrast in both appearances", arguments: [ColorScheme.light, .dark])
+	func textContrast(scheme: ColorScheme) {
 		for (foreground, background) in [
 			(VaultPalette.textPrimary, VaultPalette.content),
 			(VaultPalette.textSecondary, VaultPalette.control),
@@ -119,12 +107,47 @@ struct VaultAppearanceTests {
 			(VaultPalette.greenTintText, VaultPalette.greenTint),
 			(VaultPalette.orangeTintText, VaultPalette.orangeTint),
 			(VaultPalette.redText, VaultPalette.redTint),
-			(Color.white, VaultPalette.strongFill),
+			(VaultPalette.textFaint, VaultPalette.content),
+			(VaultPalette.textFaint, VaultPalette.inspector),
+			(VaultPalette.textFaint, VaultPalette.card),
+			(VaultPalette.textTertiary, VaultPalette.card),
+			(VaultPalette.textSecondary, VaultPalette.inspector),
+			(VaultPalette.selectedText, VaultPalette.selectedFill),
+			(VaultPalette.accentForeground, VaultPalette.content),
+			(VaultPalette.orangeTintText, VaultPalette.content),
+			(Color.white, VaultPalette.accent),
 			(Color.white, VaultPalette.accentHover),
 		] {
-			let values = [luminance(foreground, over: background.resolve(in: environment)), luminance(background)].sorted()
-			#expect((values[1] + 0.05) / (values[0] + 0.05) >= 4.5, "\(foreground) on \(background)")
+			#expect(Self.contrast(foreground, on: background, in: scheme) >= 4.5, "\(foreground) on \(background) in \(scheme)")
 		}
+	}
+
+	@Test("a text field's edge keeps 3:1 against the field and the surfaces fields sit on, in both appearances",
+		arguments: [ColorScheme.light, .dark])
+	func inputBorderContrast(scheme: ColorScheme) {
+		for surface in [VaultPalette.control, VaultPalette.content, VaultPalette.inspector, VaultPalette.card, VaultPalette.headerRow] {
+			#expect(Self.contrast(VaultPalette.inputBorder, on: surface, in: scheme) >= 3, "The field edge on \(surface) in \(scheme)")
+		}
+	}
+
+	/// The contrast ratio of `foreground` drawn over `background`, which a translucent foreground shows through.
+	static func contrast(_ foreground: Color, on background: Color, in scheme: ColorScheme) -> Double {
+		var environment = EnvironmentValues()
+		environment.colorScheme = scheme
+		func linear(_ value: Double) -> Double {
+			value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+		}
+		func luminance(_ color: Color, over background: Color.Resolved? = nil) -> Double {
+			let resolved = color.resolve(in: environment)
+			let alpha = Double(resolved.opacity)
+			func channel(_ value: Float, _ under: Float?) -> Double {
+				linear(Double(value) * alpha + Double(under ?? 0) * (1 - alpha))
+			}
+			return 0.2126 * channel(resolved.red, background?.red) + 0.7152 * channel(resolved.green, background?.green)
+				+ 0.0722 * channel(resolved.blue, background?.blue)
+		}
+		let values = [luminance(foreground, over: background.resolve(in: environment)), luminance(background)].sorted()
+		return (values[1] + 0.05) / (values[0] + 0.05)
 	}
 
 	@Test("the Settings page's Appearance card exposes a working picker")
@@ -275,11 +298,53 @@ extension SheetInteractionTests {
 				expectedText: ["Settings", "SERVER", "GENERAL", "Quit shortcut", "APPEARANCE", "Theme", "UPDATES", "Installed version"])
 			try await render(AddVariableSheet(store: store, projectId: project.id, environment: "development"),
 				size: CGSize(width: 560, height: 520), scheme: scheme, name: "add-variable-\(suffix)",
-				expectedText: ["Add variable", "Key", "Value", "Environments", "Cancel"])
+				expectedText: ["New Key", "Key", "Value", "Environments", "Cancel"])
 			store.lock()
 			try await render(ContentView(store: store).environment(settings),
 				size: CGSize(width: 1040, height: 640), scheme: scheme, name: "locked-\(suffix)",
 				expectedText: ["LPM Vault is Locked", "Unlock"])
+		}
+
+		/// A stroked capsule drawn into a bitmap had short vertical marks at its
+		/// round ends, beyond the curve, where the page should show.
+		@Test("filter chips draw nothing past their round ends", arguments: [ColorScheme.light, .dark], [true, false])
+		func chipEndsFollowTheirCurve(scheme: ColorScheme, selected: Bool) async throws {
+			let chipHeight: CGFloat = 26, inset: CGFloat = 10
+			let page = Color(nsColor: .init(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+			let view = VaultFilterChip(title: "All keys", trailing: "12", selected: selected) {}
+				.padding(inset)
+				.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+				.background(page)
+			let host = SheetTestHost(view, size: NSSize(width: 160, height: chipHeight + inset * 2), keepsRequestedSize: true, usesHostingView: true)
+			defer { host.window.close() }
+			host.window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+			try await host.settle()
+
+			let image = try host.snapshot(host.view)
+			let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+				bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+			context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+			let pixels = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+			let scale = CGFloat(image.width) / host.view.bounds.width
+			func isPage(_ x: CGFloat, _ y: CGFloat) -> Bool {
+				let offset = (Int(y * scale) * image.width + Int(x * scale)) * 4
+				return (0..<3).allSatisfy { pixels[offset + $0] > 250 }
+			}
+			let middle = inset + chipHeight / 2
+			let drawn = stride(from: 0, to: host.view.bounds.width, by: 0.5).filter { !isPage($0, middle) }
+			let left = try #require(drawn.first), right = try #require(drawn.last)
+			#expect(abs(left - inset) <= 0.5)
+			#expect(right - left > chipHeight)
+
+			// Near either end, the curve spans under 4 points either side of the middle. The marks
+			// reached 5 to 7 points out. The left end sits on a pixel; the right end falls wherever
+			// the title ends, so its edge blends a little further out.
+			for (x, nearest) in [(left + 0.25, CGFloat(5)), (right - 0.25, 6)] {
+				for offset in stride(from: nearest, through: 9, by: 0.5) {
+					#expect(isPage(x, middle - offset), "Drawn above the curve at x \(x), \(offset) points up")
+					#expect(isPage(x, middle + offset), "Drawn below the curve at x \(x), \(offset) points down")
+				}
+			}
 		}
 
 		private func render<V: View>(_ view: V, size: CGSize, scheme: ColorScheme, name: String, expectedText: [String]) async throws {
@@ -289,5 +354,22 @@ extension SheetInteractionTests {
 				#expect(text.contains(label), "Missing \(label) in \(name): \(text)")
 			}
 		}
+	}
+}
+
+/// Disabled controls kept showing the pointing hand, as if a click would do something.
+@Suite("Pointing hand")
+struct VaultPointingHandTests {
+	@Test("a control shows the pointing hand only while the pointer is over it and it's enabled, and gives it back once")
+	func followsHoverAndEnabled() {
+		var state = VaultPointingHandState()
+		#expect(state.update(hovering: true, enabled: false) == nil, "A disabled control keeps the arrow")
+		#expect(state.update(hovering: false, enabled: false) == nil)
+		#expect(state.update(hovering: true, enabled: true) == .push)
+		#expect(state.update(hovering: true, enabled: true) == nil, "Hovering again pushes nothing more")
+		#expect(state.update(hovering: true, enabled: false) == .pop, "Disabling under the pointer gives the arrow back")
+		#expect(state.update(hovering: false, enabled: false) == nil, "Leaving after that pops nothing more")
+		#expect(state.update(hovering: true, enabled: true) == .push)
+		#expect(state.update(hovering: false, enabled: true) == .pop)
 	}
 }

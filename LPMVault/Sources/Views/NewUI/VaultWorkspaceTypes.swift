@@ -88,6 +88,17 @@ struct VaultTableColumnLayout {
       if case .environment = column { count + 1 } else { count }
     }
     let extra = requested.isEmpty ? max(0, available - defaultTotal) : 0
+    // A narrow viewport takes width from the value columns first, in proportion
+    // to how far each can shrink, and from the key column only once they're at
+    // their minimums, so keys stay readable and every column stays in view
+    // before any of them scrolls.
+    let deficit = requested.isEmpty ? max(0, defaultTotal - available) : 0
+    func slack(_ column: VaultTableColumn) -> CGFloat {
+      max(0, column.defaultWidth - (column == .key ? Self.fittedKeyMinimum : column.minimumWidth))
+    }
+    let valueSlack = columns.filter { $0 != .key }.reduce(CGFloat.zero) { $0 + slack($1) }
+    let valueShrink = valueSlack > 0 ? min(1, deficit / valueSlack) : 0
+    let keyShrink = columns.contains(.key) && slack(.key) > 0 ? min(1, max(0, deficit - valueSlack) / slack(.key)) : 0
     var widths: [VaultTableColumn: CGFloat] = [:]
     var boundaries: [Boundary] = []
     var position: CGFloat = 0
@@ -96,9 +107,10 @@ struct VaultTableColumnLayout {
       if case .environment = column {
         share = extra / CGFloat(environmentCount)
       } else {
-        share = environmentCount == 0 && column == .key ? extra : 0
+        share = environmentCount == 0 && column == .value ? extra : 0
       }
-      let width = max(column.minimumWidth, requested[column] ?? (column.defaultWidth + share))
+      let fitted = column.defaultWidth - slack(column) * (column == .key ? keyShrink : valueShrink)
+      let width = max(column.minimumWidth, requested[column] ?? (fitted + share))
       widths[column] = width
       position += width
       boundaries.append(Boundary(id: column, position: position))
@@ -109,6 +121,11 @@ struct VaultTableColumnLayout {
   }
 
   subscript(column: VaultTableColumn) -> CGFloat { widths[column] ?? column.defaultWidth }
+
+  /// The narrowest a fitted key column gets, wide enough for a typical key and
+  /// its status glyphs; the table scrolls rather than cut keys shorter. A
+  /// person can still drag it down to the key column's minimum.
+  static let fittedKeyMinimum: CGFloat = 220
 }
 
 struct VaultTableColumnWidths {

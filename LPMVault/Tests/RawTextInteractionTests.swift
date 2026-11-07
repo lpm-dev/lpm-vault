@@ -588,7 +588,7 @@ private struct FixInTableView: View {
 			searchText: "", selectedKey: .constant(nil), revealedKeys: .constant([]),
 			showsInspector: .constant(false), columnWidths: .constant(VaultProjectTableColumnWidths()),
 			isCopyingAll: false, cliAccess: nil,
-			isChangingCliAccess: false, onChangeCliAccess: { _ in }, onCopyAll: {},
+			onCopyAll: {},
 			onImport: {}, onExport: {},
 			valueChecks: VaultValueCheckPresentation(check: check, rules: nil, project: project),
 			onAddSecret: {}, onCopySecret: { _, _ in },

@@ -4,6 +4,8 @@ struct VaultTitleBarView: View {
 	@Bindable var store: VaultStore
 	@Environment(UpdateChecker.self) private var updateChecker
 	let mode: VaultWorkspaceMode
+	var sidebarVisible = true
+	var onToggleSidebar: () -> Void = {}
 	let onConnectCLI: () -> Void
 	let onPull: () -> Void
 	let onPush: () -> Void
@@ -45,33 +47,46 @@ struct VaultTitleBarView: View {
 	}
 
 	var body: some View {
-		HStack(spacing: 10) {
+		HStack(spacing: 6) {
 			VaultTrafficLights()
-			breadcrumb.padding(.leading, 8)
+			VaultBarButton(systemImage: "sidebar.left", borderless: true, active: false, action: onToggleSidebar)
+				.keyboardShortcut("s", modifiers: [.control, .command])
+				.help(sidebarVisible ? "Hide Sidebar (⌃⌘S)" : "Show Sidebar (⌃⌘S)")
+				.accessibilityLabel(sidebarVisible ? "Hide sidebar" : "Show sidebar")
+				.padding(.leading, 10)
+			breadcrumb.padding(.leading, 6)
 
 			VaultBarButton(
 				systemImage: "arrow.clockwise",
-				title: "Refresh",
+				borderless: true,
 				disabled: store.isRefreshingLocalState || store.isChangingCliAccess
 			) { Task { await store.refreshLocalState() } }
 			.help("Reload local changes from the LPM CLI")
+			.accessibilityLabel("Refresh")
 			.accessibilityIdentifier("vault-refresh-local-state")
+			.padding(.leading, 2)
 
 			Spacer(minLength: 8)
 
 			if let project {
-				VaultBarButton(systemImage: "link", title: "Connect CLI", active: isConnectSheetPresented, action: onConnectCLI)
+				VaultBarButton(systemImage: "link", title: "Connect CLI", borderless: true, active: isConnectSheetPresented, action: onConnectCLI)
 					.help("Connect \(project.name) to the LPM CLI")
 			}
 
 			syncMenu
 
-			publishControl
+			// Status on the left of the line, actions on the right.
+			Rectangle()
+				.fill(VaultPalette.divider)
+				.frame(width: 1, height: 16)
+				.padding(.horizontal, 4)
+				.accessibilityHidden(true)
 
 			if let version = updateChecker.availableUpdateVersion {
 				VaultBarButton(
 					systemImage: "arrow.down.circle",
 					title: "Update available",
+					borderless: true,
 					disabled: !updateChecker.canCheckForUpdates
 				) {
 					updateChecker.checkForUpdates()
@@ -81,17 +96,21 @@ struct VaultTitleBarView: View {
 				.accessibilityLabel("Update available: LPM Vault \(version)")
 			}
 
+			publishControl
+				.padding(.horizontal, 2)
+
 			VaultBarButton(
-				systemImage: "lock.fill",
+				systemImage: "lock",
 				title: lockTitle,
 				shortcut: "⌘L",
-				invertsOnHover: true
+				borderless: true
 			) {
 				store.lock()
 			}
 			.accessibilityLabel(lockAccessibilityLabel)
 		}
-		.padding(.horizontal, 14)
+		.padding(.leading, 14)
+		.padding(.trailing, 10)
 		.frame(height: VaultMetrics.titleBar)
 		.background {
 			VaultPalette.titleBar
@@ -100,14 +119,19 @@ struct VaultTitleBarView: View {
 	}
 
 	private var breadcrumb: some View {
-		HStack(spacing: 8) {
-			VaultAppMark()
+		HStack(spacing: 7) {
+			VaultAppMark(size: 18)
 			Text("LPM Vault")
 				.font(.system(size: 13, weight: .semibold))
 				.foregroundStyle(VaultPalette.textPrimary)
 				.fixedSize()
 
-			if let project {
+			if let page = accountPageName {
+				Text("— \(page)")
+					.font(.system(size: 13))
+					.foregroundStyle(VaultPalette.textTertiary)
+					.lineLimit(1)
+			} else if let project {
 				Text("— \(project.name)")
 					.font(.system(size: 13))
 					.foregroundStyle(VaultPalette.textTertiary)
@@ -115,10 +139,12 @@ struct VaultTitleBarView: View {
 
 				if case .environment(let environment) = mode {
 					Text("/")
-						.foregroundStyle(VaultPalette.textTertiary)
+						.font(.system(size: 13))
+						.foregroundStyle(VaultPalette.textFaint)
 					Text(VaultProject.displayName(for: environment))
-						.font(VaultTypography.tabular(12))
+						.font(.system(size: 13))
 						.foregroundStyle(VaultPalette.textTertiary)
+						.lineLimit(1)
 				}
 			}
 		}
@@ -126,7 +152,7 @@ struct VaultTitleBarView: View {
 	}
 
 	private var syncMenu: some View {
-		VaultBarMenu(accessibilityLabel: "Sync status: \(syncLabel)") {
+		VaultBarMenu(accessibilityLabel: "Sync status: \(syncLabel)", borderless: true) {
 			if store.isLoggedIn, project != nil {
 				Button("Pull…", action: onPull)
 					.keyboardShortcut("l", modifiers: [.command, .shift])
@@ -144,7 +170,7 @@ struct VaultTitleBarView: View {
 			} else {
 				VaultStatusDot(color: syncColor)
 			}
-			Text(syncLabel).font(.system(size: 12.5))
+			Text(syncLabel).font(.system(size: 12.5, weight: .medium))
 		}
 		.disabled(store.isSyncing || (store.isLoggedIn && project == nil))
 	}
@@ -163,6 +189,15 @@ struct VaultTitleBarView: View {
 			.anchorPreference(key: VaultPublishButtonAnchor.self, value: .bounds) { $0 }
 			.help(hasSaved ? "Publish to a saved destination or a new one" : "Publish an environment to a platform")
 			.task(id: project.id) { await store.loadPublishDestinations(for: project.id) }
+		}
+	}
+
+	/// The app-level page the window shows, which the title names instead of the project.
+	private var accountPageName: String? {
+		switch store.accountPage {
+		case .settings?: "Settings"
+		case .platforms?: "Platforms"
+		case nil: nil
 		}
 	}
 

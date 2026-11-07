@@ -90,6 +90,22 @@ enum AccessibilityTree {
 			object.accessibilityPerformPress?() ?? false
 		}
 
+		/// The names of its own actions, as VoiceOver's Actions rotor lists them.
+		var actionNames: [String] {
+			(object.accessibilityCustomActions?() ?? nil)?.map(\.name) ?? []
+		}
+
+		/// Runs its own action named `name`, as VoiceOver's Actions rotor does.
+		/// Returns false when it has no such action.
+		@discardableResult
+		func perform(_ name: String) -> Bool {
+			guard let action = (object.accessibilityCustomActions?() ?? nil)?.first(where: { $0.name == name }) else { return false }
+			if let handler = action.handler { return handler() }
+			guard let target = action.target as? NSObject, let selector = action.selector else { return false }
+			target.perform(selector, with: action)
+			return true
+		}
+
 		/// Whether it's enabled now, which may have changed since it was read.
 		var isEnabledNow: Bool {
 			object.isAccessibilityEnabled?() ?? isEnabled

@@ -6,6 +6,7 @@ struct VaultWorkspaceView: View {
 	@Environment(\.vaultContentObscured) private var isObscured
 	@Environment(\.vaultCopyFeedbackTimer) private var copyFeedbackTimer
 	@Environment(\.vaultImportUndoTimer) private var undoTimer
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
 
 	@State private var mode: VaultWorkspaceMode = .matrix
 	@State private var filter: VaultWorkspaceFilter = .all
@@ -21,6 +22,9 @@ struct VaultWorkspaceView: View {
 	@State private var showsInspector = false
 	@State private var shownMenu: WorkspaceMenu?
 	@State private var sidebarWidth = VaultMetrics.sidebar
+	/// Whether the person chose to show or hide the sidebar; nil follows the window's width.
+	@State private var sidebarChoice: Bool?
+	@State private var workspaceWidth: CGFloat = 0
 	@State private var inspectorWidth = VaultMetrics.inspector
 	@State private var tableColumnWidths: [String: VaultProjectTableColumnWidths] = [:]
 
@@ -280,11 +284,23 @@ struct VaultWorkspaceView: View {
 		}
 	}
 
+	/// The sidebar shows unless the person hid it, or, in a narrow window, the inspector needs its room.
+	private var sidebarVisible: Bool {
+		sidebarChoice ?? !(inspectorVisible && workspaceWidth > 0 && workspaceWidth < VaultMetrics.sidebarAutoHideWidth)
+	}
+
+	private func toggleSidebar() {
+		let show = !sidebarVisible
+		withAnimation(reduceMotion ? nil : VaultMotion.panel) { sidebarChoice = show }
+	}
+
 	private var workspaceLayout: some View {
 		VStack(spacing: 0) {
 			VaultTitleBarView(
 				store: store,
 				mode: mode,
+				sidebarVisible: sidebarVisible,
+				onToggleSidebar: toggleSidebar,
 				onConnectCLI: { showConnectCLISheet = true },
 				onPull: { showPullConfirmation = true },
 				onPush: { showPushConfirmation = true },
@@ -312,29 +328,33 @@ struct VaultWorkspaceView: View {
 					available: geometry.size.width,
 					requestedSidebar: sidebarWidth,
 					requestedInspector: inspectorWidth,
-					showsInspector: inspectorVisible
+					showsInspector: inspectorVisible,
+					showsSidebar: sidebarVisible
 				)
 
 				HStack(spacing: 0) {
-					VaultResizablePane(width: budget.sidebar.width, edge: .trailing) {
-						VaultSidebarView(
-							store: store,
-							mode: $mode,
-							filter: $filter,
-							searchText: $searchText,
-							showsAccountSwitcher: shows(.account),
-							onNewProject: { showNewProject = true },
-							onCloudProjects: { showCloudProjects = true },
-							onNewEnvironment: { showNewEnvironment = true },
-							onProjectSettings: { openProjectSettings($0, focusingName: false) },
-							onRenameProject: { openProjectSettings($0, focusingName: true) },
-							onDeleteProject: { projectToDelete = $0 },
-							onRenameEnvironment: beginRenameEnvironment,
-							onDuplicateEnvironment: beginDuplicateEnvironment,
-							onClearEnvironment: { clearEnvironmentTarget = $0 },
-							onDeleteEnvironment: { deleteEnvironmentTarget = $0 },
-							onFindAsValue: findAsValue
-						)
+					if sidebarVisible {
+						VaultResizablePane(width: budget.sidebar.width, edge: .trailing) {
+							VaultSidebarView(
+								store: store,
+								mode: $mode,
+								filter: $filter,
+								searchText: $searchText,
+								showsAccountSwitcher: shows(.account),
+								onNewProject: { showNewProject = true },
+								onCloudProjects: { showCloudProjects = true },
+								onNewEnvironment: { showNewEnvironment = true },
+								onProjectSettings: { openProjectSettings($0, focusingName: false) },
+								onRenameProject: { openProjectSettings($0, focusingName: true) },
+								onDeleteProject: { projectToDelete = $0 },
+								onRenameEnvironment: beginRenameEnvironment,
+								onDuplicateEnvironment: beginDuplicateEnvironment,
+								onClearEnvironment: { clearEnvironmentTarget = $0 },
+								onDeleteEnvironment: { deleteEnvironmentTarget = $0 },
+								onFindAsValue: findAsValue
+							)
+						}
+						.transition(.move(edge: .leading))
 					}
 
 					Group {
@@ -509,14 +529,16 @@ struct VaultWorkspaceView: View {
 				.clipped()
 				.overlay(alignment: .topLeading) {
 					ZStack(alignment: .topLeading) {
-						VaultPaneResizeHandle(
-							width: $sidebarWidth,
-							bounds: budget.sidebar,
-							edge: .trailing,
-							accessibilityLabel: "Resize sidebar",
-							onResize: { store.recordUserActivity() }
-						)
-						.padding(.leading, budget.sidebarDividerCenter - VaultMetrics.paneDividerHitWidth / 2)
+						if sidebarVisible {
+							VaultPaneResizeHandle(
+								width: $sidebarWidth,
+								bounds: budget.sidebar,
+								edge: .trailing,
+								accessibilityLabel: "Resize sidebar",
+								onResize: { store.recordUserActivity() }
+							)
+							.padding(.leading, budget.sidebarDividerCenter - VaultMetrics.paneDividerHitWidth / 2)
+						}
 
 						if inspectorVisible {
 							VaultPaneResizeHandle(
@@ -531,6 +553,8 @@ struct VaultWorkspaceView: View {
 					}
 				}
 			}
+			.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { workspaceWidth = $0 }
+			.onChange(of: workspaceWidth < VaultMetrics.sidebarAutoHideWidth) { _, _ in sidebarChoice = nil }
 		}
 		.background(VaultPalette.content)
 		.frame(minWidth: 1040, minHeight: 640)
@@ -1474,8 +1498,6 @@ struct VaultWorkspaceView: View {
 			canEditValues: store.canEditValues(of: project.id),
 			cliAccess: store.selectedProjectCliAccess,
 			cliAccessContradicts: store.selectedProjectCliAccessContradicts,
-			isChangingCliAccess: store.isChangingCliAccess,
-			onChangeCliAccess: { access in Task { await store.changeCliAccess(to: access) } },
 			onCopyAll: copyAll,
 			onImport: { presentImport() },
 			onExport: exportCurrentEnvironment,

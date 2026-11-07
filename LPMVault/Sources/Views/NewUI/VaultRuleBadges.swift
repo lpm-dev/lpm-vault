@@ -17,6 +17,36 @@ struct VaultRuleBadge: View {
 	}
 }
 
+/// Where a key's stored values fail its rules, as the first of its rules: the
+/// environment when there's one, else how many, each named in the help.
+struct VaultRuleFailureBadge: View {
+	/// The failing environments as shown, such as ".env.production".
+	let environments: [String]
+
+	private var text: String {
+		environments.count == 1 ? "Fails in \(environments[0])" : "Fails in \(environments.count) environments"
+	}
+
+	var body: some View {
+		HStack(spacing: 4) {
+			Image(systemName: VaultSmartView.invalid.symbol)
+				.font(.system(size: 10, weight: .semibold))
+				.foregroundStyle(VaultSmartView.invalid.tint)
+				.accessibilityHidden(true)
+			Text(text)
+				.font(.system(size: 11, weight: .medium))
+				.foregroundStyle(VaultPalette.redText)
+				.lineLimit(1)
+		}
+		.padding(.horizontal, 7)
+		.padding(.vertical, 3)
+		.background(RoundedRectangle(cornerRadius: 5).fill(VaultPalette.redTint))
+		.help("A stored value fails these rules in \(environments.joined(separator: ", "))")
+		.accessibilityElement(children: .ignore)
+		.accessibilityLabel("Fails its rules in \(environments.joined(separator: ", "))")
+	}
+}
+
 /// The file an inherited rule comes from; dashed so it reads as a source, not a rule.
 struct VaultSourceBadge: View {
 	let source: String

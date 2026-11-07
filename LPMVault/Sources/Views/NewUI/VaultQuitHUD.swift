@@ -54,7 +54,7 @@ struct VaultQuitHUD: View {
 			Capsule().fill(Color(hex: colorScheme == .dark ? 0x323234 : 0xFFFFFF).opacity(0.86))
 		}
 		.overlay {
-			Capsule().strokeBorder(colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.12), lineWidth: 0.5)
+			Capsule().vaultBorder(colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.12), lineWidth: 0.5)
 		}
 		.shadow(color: .black.opacity(0.28), radius: 12, y: 8)
 		.opacity(visible ? 1 : 0)
