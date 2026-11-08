@@ -113,7 +113,9 @@ struct VaultHorizontalScrollTarget: Equatable {
 }
 
 /// Scrolls the scroll view it sits in sideways to each new target, keeping
-/// its vertical position: eased, or at once under Reduce Motion.
+/// its vertical position: eased over a few frames, or at once under Reduce
+/// Motion. Each frame scrolls the clip view as a person's scroll does, so the
+/// scroll view sees every step; a scroll by the person meanwhile ends it.
 struct VaultHorizontalScroller: NSViewRepresentable {
 	let target: VaultHorizontalScrollTarget
 
@@ -123,32 +125,73 @@ struct VaultHorizontalScroller: NSViewRepresentable {
 		view.scroll(to: target)
 	}
 
+	static func dismantleNSView(_ view: ScrollerView, coordinator: ()) {
+		view.stop()
+	}
+
 	final class ScrollerView: NSView {
+		static let duration: CFTimeInterval = 0.22
+
 		private var serial = 0
+		private var link: CADisplayLink?
+		private var step: (from: CGFloat, to: CGFloat, start: CFTimeInterval?, last: CGFloat)?
 
 		override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+		override func viewDidMoveToWindow() {
+			super.viewDidMoveToWindow()
+			if window == nil { stop() }
+		}
 
 		func scroll(to target: VaultHorizontalScrollTarget) {
 			guard target.serial != serial else { return }
 			serial = target.serial
-			guard let scrollView = enclosingScrollView else { return }
-			let clip = scrollView.contentView
+			guard let clip = enclosingScrollView?.contentView else { return }
 			var bounds = clip.bounds
 			bounds.origin.x = target.x
-			let origin = clip.constrainBoundsRect(bounds).origin
-			guard origin != clip.bounds.origin else { return }
-			if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-				clip.scroll(to: origin)
-				scrollView.reflectScrolledClipView(clip)
+			let destination = clip.constrainBoundsRect(bounds).origin.x
+			stop()
+			guard destination != clip.bounds.origin.x else { return }
+			guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, window != nil else {
+				move(to: destination)
 				return
 			}
-			NSAnimationContext.runAnimationGroup { context in
-				context.duration = 0.22
-				context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-				clip.animator().setBoundsOrigin(origin)
-			} completionHandler: {
-				MainActor.assumeIsolated { scrollView.reflectScrolledClipView(clip) }
-			}
+			step = (clip.bounds.origin.x, destination, nil, clip.bounds.origin.x)
+			let link = displayLink(target: self, selector: #selector(advance))
+			link.add(to: .main, forMode: .common)
+			self.link = link
+		}
+
+		func stop() {
+			link?.invalidate()
+			link = nil
+			step = nil
+		}
+
+		@objc private func advance(_ link: CADisplayLink) {
+			guard var step, let clip = enclosingScrollView?.contentView else { return stop() }
+			// The person scrolled meanwhile: theirs wins.
+			guard abs(clip.bounds.origin.x - step.last) < 0.5 else { return stop() }
+			let start = step.start ?? link.timestamp
+			let progress = min(1, (link.targetTimestamp - start) / Self.duration)
+			let eased = 1 - pow(1 - progress, 3)
+			step.start = start
+			step.last = move(to: step.from + (step.to - step.from) * eased)
+			self.step = step
+			if progress >= 1 { stop() }
+		}
+
+		/// Scrolls to `x`, keeping the vertical position; returns where it got to.
+		@discardableResult
+		private func move(to x: CGFloat) -> CGFloat {
+			guard let scrollView = enclosingScrollView else { return x }
+			let clip = scrollView.contentView
+			var bounds = clip.bounds
+			bounds.origin.x = x
+			let origin = clip.constrainBoundsRect(bounds).origin
+			clip.scroll(to: origin)
+			scrollView.reflectScrolledClipView(clip)
+			return origin.x
 		}
 	}
 }

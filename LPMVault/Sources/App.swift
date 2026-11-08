@@ -165,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct LPMVaultApp: App {
 	@NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 	@Environment(\.openWindow) private var openWindow
-	@State private var store = VaultStore()
+	@State private var store = VaultStore(layout: VaultLayoutPreferences(defaults: .standard))
 	@State private var updateChecker = UpdateChecker()
 	@State private var appearanceSettings = VaultAppearanceSettings()
 	@State private var quitSettings = VaultQuitSettings()

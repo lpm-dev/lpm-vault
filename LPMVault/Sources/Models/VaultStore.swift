@@ -1441,6 +1441,9 @@ final class VaultStore {
 
   /// Local display preferences and folders linked for the CLI.
   let preferences: UserDefaults
+  /// The workspace's pane and column widths, kept across a lock, and across
+  /// launches when the app gives it somewhere to save them.
+  let layout: VaultLayoutPreferences
 
   /// Where the LPM CLI keeps login and env state, which no project's state may be.
   var lpmHome = LPMHome.current
@@ -2129,6 +2132,7 @@ final class VaultStore {
     envFileImportService: any EnvFileImportServiceProtocol = EnvFileImportService.shared,
     envFileExportService: EnvFileExportService = .shared,
     preferences: UserDefaults = .standard,
+    layout: VaultLayoutPreferences? = nil,
     sharingKeypairProvider:
       (@Sendable () throws -> (privateKey: Data, publicKey: Data))? = nil,
     stableSyncEncryptor:
@@ -2263,6 +2267,7 @@ final class VaultStore {
     self.envFileImportService = envFileImportService
     self.envFileExportService = envFileExportService
     self.preferences = preferences
+    self.layout = layout ?? VaultLayoutPreferences()
     self.projectOrder = preferences.stringArray(forKey: Self.projectOrderKey) ?? []
     self.lastBackup = VaultBackupRecord(defaults: preferences)
     self.syncPauses = VaultSyncPause.load(from: preferences)
@@ -9015,6 +9020,7 @@ final class VaultStore {
     preferences.removeObject(forKey: Self.envOrderPrefix + vaultId)
     ProjectCLILink.forgetFolder(vaultId: vaultId, defaults: preferences)
     projectIcons.forget(vaultId)
+    layout.forget(vaultId)
   }
 
   /// Removes preferences of vaults that are no longer on this Mac, such as
@@ -9034,6 +9040,7 @@ final class VaultStore {
       preferences.removeObject(forKey: key)
     }
     projectIcons.forget(keeping: vaultIds)
+    layout.forget(keeping: vaultIds)
   }
 
   /// Removes the sync pauses of vaults whose data is gone. A project removed

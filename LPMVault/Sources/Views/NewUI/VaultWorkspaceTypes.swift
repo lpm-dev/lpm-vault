@@ -232,7 +232,7 @@ enum VaultKeyNameWidths {
   }
 }
 
-struct VaultTableColumnWidths {
+struct VaultTableColumnWidths: Equatable {
   private(set) var requested: [VaultTableColumn: CGFloat] = [:]
 
   mutating func resize(_ column: VaultTableColumn, to width: CGFloat, in layout: VaultTableColumnLayout) {
@@ -241,9 +241,50 @@ struct VaultTableColumnWidths {
   }
 }
 
-struct VaultProjectTableColumnWidths {
+/// Saved as each column's name and width, such as `{"key": 300, "env:production": 240}`.
+extension VaultTableColumnWidths: Codable {
+  init(from decoder: any Decoder) throws {
+    let saved = try decoder.singleValueContainer().decode([String: Double].self)
+    for (name, width) in saved {
+      guard let column = VaultTableColumn(savedName: name), width.isFinite, width > 0 else { continue }
+      requested[column] = max(column.minimumWidth, CGFloat(width))
+    }
+  }
+
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(Dictionary(uniqueKeysWithValues: requested.map { ($0.key.savedName, Double($0.value)) }))
+  }
+}
+
+struct VaultProjectTableColumnWidths: Equatable, Codable {
   var matrix = VaultTableColumnWidths()
   var environment = VaultTableColumnWidths()
+}
+
+extension VaultTableColumn {
+  private static let environmentPrefix = "env:"
+
+  /// The name a saved width goes by.
+  var savedName: String {
+    switch self {
+    case .key: "key"
+    case .value: "value"
+    case .actions: "actions"
+    case .environment(let name): Self.environmentPrefix + name
+    }
+  }
+
+  init?(savedName: String) {
+    switch savedName {
+    case "key": self = .key
+    case "value": self = .value
+    case "actions": self = .actions
+    default:
+      guard savedName.hasPrefix(Self.environmentPrefix) else { return nil }
+      self = .environment(String(savedName.dropFirst(Self.environmentPrefix.count)))
+    }
+  }
 }
 
 /// The order the workspace lists keys in, kept across launches.

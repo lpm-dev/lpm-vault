@@ -65,6 +65,94 @@ struct VaultPaneLayoutTests {
 		#expect(view.acceptsFirstMouse(for: nil))
 	}
 
+	@Test("the sidebar keeps the width a person gave it across a lock, and the next launch")
+	func sidebarWidthSurvivesLock() async throws {
+		let domain = "pane-widths-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(),
+			apiService: MockAPIService(), layout: VaultLayoutPreferences(defaults: defaults), authTokenProvider: { _, _ in nil })
+		let project = VaultProject(id: "pane-lock", name: "Layout Preview", path: "",
+			environments: ["default": ["EXAMPLE_KEY": "example-value"]])
+		store.isUnlocked = true
+		defer { store.lock() }
+		store.projects = [project]
+		store.selectedProjectId = project.id
+		try #require(try await waitUntil { store.workspaceSnapshots[project.id] != nil })
+		let host = NSHostingView(rootView: ContentView(store: store)
+			.environment(UpdateChecker())
+			.environment(\.colorScheme, .light))
+		let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 800),
+			styleMask: [.titled], backing: .buffered, defer: false)
+		window.isReleasedWhenClosed = false
+		window.contentView = host
+		defer { window.close() }
+		window.orderBack(nil)
+		try await waitForLayout(host) { resizeViews(in: host).count == 1 }
+		let sidebar = try #require(resizeViews(in: host).first)
+		#expect(sidebar.accessibilityPerformIncrement())
+		try await waitForLayout(host) { sidebar.accessibilityValue() as? String == "280 points" }
+
+		store.lock()
+		try await waitForLayout(host) { resizeViews(in: host).isEmpty }
+		#expect(resizeViews(in: host).isEmpty, "Locked, the workspace is gone")
+		store.isUnlocked = true
+		store.projects = [project]
+		try await waitForLayout(host) { resizeViews(in: host).count == 1 }
+		#expect(resizeViews(in: host).first?.accessibilityValue() as? String == "280 points")
+		#expect(VaultLayoutPreferences(defaults: defaults).sidebarWidth == 280, "The next launch starts where this one left off")
+
+		// Hidden, as the title bar's sidebar button hides it, it stays hidden across a lock too.
+		store.layout.sidebarChoice = false
+		try await waitForLayout(host) { resizeViews(in: host).isEmpty }
+		store.lock()
+		store.isUnlocked = true
+		store.projects = [project]
+		try await waitForLayout(host) { says("Show sidebar", in: window) }
+		#expect(says("Show sidebar", in: window))
+		#expect(resizeViews(in: host).isEmpty && store.layout.sidebarChoice == false)
+	}
+
+	private func says(_ label: String, in window: NSWindow) -> Bool {
+		AccessibilityTree.elements(in: window).contains { $0.label == label }
+	}
+
+	@Test("the layout a person set is saved and read back: pane widths, a shown or hidden sidebar, and each project's column widths")
+	func layoutPreferencesRoundTrip() throws {
+		let domain = "layout-\(UUID().uuidString)"
+		let defaults = try #require(UserDefaults(suiteName: domain))
+		defer { defaults.removePersistentDomain(forName: domain) }
+		let fresh = VaultLayoutPreferences(defaults: defaults)
+		#expect(fresh.sidebarWidth == VaultMetrics.sidebar && fresh.inspectorWidth == VaultMetrics.inspector)
+		#expect(fresh.sidebarChoice == nil)
+
+		var widths = VaultProjectTableColumnWidths()
+		widths.matrix.resize(.environment("prod:eu"), to: 280, in: VaultTableColumnLayout(columns: [.key, .environment("prod:eu")], available: 900))
+		widths.environment.resize(.value, to: 410, in: VaultTableColumnLayout(columns: [.key, .value, .actions], available: 900))
+		fresh.sidebarWidth = 312
+		fresh.inspectorWidth = 344
+		fresh.sidebarChoice = false
+		fresh.setColumnWidths(widths, for: "project")
+
+		let relaunched = VaultLayoutPreferences(defaults: defaults)
+		#expect(relaunched.sidebarWidth == 312 && relaunched.inspectorWidth == 344)
+		#expect(relaunched.sidebarChoice == false)
+		#expect(relaunched.columnWidths(for: "project") == widths, "Every column, an environment named with a colon too")
+		relaunched.sidebarChoice = nil
+		#expect(VaultLayoutPreferences(defaults: defaults).sidebarChoice == nil, "Following the window's width again is saved too")
+
+		defaults.set(Double.nan, forKey: VaultLayoutPreferences.sidebarWidthKey)
+		defaults.set(-40.0, forKey: VaultLayoutPreferences.inspectorWidthKey)
+		defaults.set(Data("not json".utf8), forKey: VaultLayoutPreferences.columnWidthsPrefix + "project")
+		let damaged = VaultLayoutPreferences(defaults: defaults)
+		#expect(damaged.sidebarWidth == VaultMetrics.sidebar && damaged.inspectorWidth == VaultMetrics.inspector, "Unusable widths start over")
+		#expect(damaged.columnWidths(for: "project") == VaultProjectTableColumnWidths())
+
+		let unsaved = VaultLayoutPreferences()
+		unsaved.sidebarWidth = 300
+		#expect(unsaved.sidebarWidth == 300, "Without somewhere to save, it lasts as long as its store")
+	}
+
 	@Test("workspace dividers resize accessibly and retain inspector width when reopened")
 	func workspaceResizeAndReopen() async throws {
 		let store = VaultStore(keychainService: MockKeychainService(), biometricService: MockBiometricService(),

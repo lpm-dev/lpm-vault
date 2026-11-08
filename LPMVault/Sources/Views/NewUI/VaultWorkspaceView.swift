@@ -23,12 +23,7 @@ struct VaultWorkspaceView: View {
 	@State private var revealedKeys: Set<String> = []
 	@State private var showsInspector = false
 	@State private var shownMenu: WorkspaceMenu?
-	@State private var sidebarWidth = VaultMetrics.sidebar
-	/// Whether the person chose to show or hide the sidebar; nil follows the window's width.
-	@State private var sidebarChoice: Bool?
 	@State private var workspaceWidth: CGFloat = 0
-	@State private var inspectorWidth = VaultMetrics.inspector
-	@State private var tableColumnWidths: [String: VaultProjectTableColumnWidths] = [:]
 
 	@State private var showNewProject = false
 	@State private var showBackupRestore = false
@@ -295,12 +290,17 @@ struct VaultWorkspaceView: View {
 
 	/// The sidebar shows unless the person hid it, or, in a narrow window, the inspector needs its room.
 	private var sidebarVisible: Bool {
-		sidebarChoice ?? !(inspectorVisible && workspaceWidth > 0 && workspaceWidth < VaultMetrics.sidebarAutoHideWidth)
+		store.layout.sidebarChoice ?? !(inspectorVisible && workspaceWidth > 0 && workspaceWidth < VaultMetrics.sidebarAutoHideWidth)
+	}
+
+	/// Whether the window is narrow enough for the inspector to take the sidebar's room; nil until it's measured.
+	private var sidebarAutoHides: Bool? {
+		workspaceWidth > 0 ? workspaceWidth < VaultMetrics.sidebarAutoHideWidth : nil
 	}
 
 	private func toggleSidebar() {
 		let show = !sidebarVisible
-		withAnimation(reduceMotion ? nil : VaultMotion.panel) { sidebarChoice = show }
+		withAnimation(reduceMotion ? nil : VaultMotion.panel) { store.layout.sidebarChoice = show }
 	}
 
 	private var workspaceLayout: some View {
@@ -335,8 +335,8 @@ struct VaultWorkspaceView: View {
 			GeometryReader { geometry in
 				let budget = VaultPaneBudget(
 					available: geometry.size.width,
-					requestedSidebar: sidebarWidth,
-					requestedInspector: inspectorWidth,
+					requestedSidebar: store.layout.sidebarWidth,
+					requestedInspector: store.layout.inspectorWidth,
 					showsInspector: inspectorVisible,
 					showsSidebar: sidebarVisible
 				)
@@ -542,7 +542,7 @@ struct VaultWorkspaceView: View {
 					ZStack(alignment: .topLeading) {
 						if sidebarVisible {
 							VaultPaneResizeHandle(
-								width: $sidebarWidth,
+								width: Bindable(store.layout).sidebarWidth,
 								bounds: budget.sidebar,
 								edge: .trailing,
 								accessibilityLabel: "Resize sidebar",
@@ -553,7 +553,7 @@ struct VaultWorkspaceView: View {
 
 						if inspectorVisible {
 							VaultPaneResizeHandle(
-								width: $inspectorWidth,
+								width: Bindable(store.layout).inspectorWidth,
 								bounds: budget.inspector,
 								edge: .leading,
 								accessibilityLabel: "Resize inspector",
@@ -565,7 +565,10 @@ struct VaultWorkspaceView: View {
 				}
 			}
 			.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { workspaceWidth = $0 }
-			.onChange(of: workspaceWidth < VaultMetrics.sidebarAutoHideWidth) { _, _ in sidebarChoice = nil }
+			// A window resized across the line goes back to following its width; the first measure isn't a resize.
+			.onChange(of: sidebarAutoHides) { old, new in
+				if old != nil, new != nil { store.layout.sidebarChoice = nil }
+			}
 		}
 		.background(VaultPalette.content)
 		.frame(minWidth: 1040, minHeight: 640)
@@ -589,7 +592,7 @@ struct VaultWorkspaceView: View {
 						onSignOut: { confirmsSignOut = true }
 					)
 					.frame(width: VaultPaneBudget.clamp(
-						sidebarWidth,
+						store.layout.sidebarWidth,
 						minimum: VaultMetrics.sidebarMinimum,
 						maximum: VaultMetrics.sidebarMaximum
 					) - 16)
@@ -1501,8 +1504,8 @@ struct VaultWorkspaceView: View {
 			revealedKeys: $revealedKeys,
 			showsInspector: $showsInspector,
 			columnWidths: Binding(
-				get: { tableColumnWidths[project.id] ?? VaultProjectTableColumnWidths() },
-				set: { tableColumnWidths[project.id] = $0 }
+				get: { store.layout.columnWidths(for: project.id) },
+				set: { store.layout.setColumnWidths($0, for: project.id) }
 			),
 			isCopyingAll: copyAllTask != nil,
 			isCopiedAll: copyFeedback?.target == .all(VaultSensitiveActionContext(
